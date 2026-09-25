@@ -218,6 +218,21 @@ checkout so local source changes are used immediately:
 nix develop --command katlctl --help
 ```
 
+The flake also builds a standalone `katlctl` package from its pinned source for
+`x86_64-linux` and `aarch64-darwin`. A downstream flake can pin a Katl release
+tag and include `katl.packages.${system}.katlctl` in its shell packages instead
+of downloading a CLI binary separately. Replace `RELEASE_VERSION` with a KatlOS
+release that includes these flake outputs:
+
+```nix
+inputs.katl.url = "github:katl-dev/katl/vRELEASE_VERSION";
+# In the system-specific dev shell:
+packages = [ katl.packages.${system}.katlctl ];
+```
+
+The source-built CLI reports the pinned Git commit in `katlctl version`. The
+development-shell command above continues to run the checkout source directly.
+
 `katldev` owns persistent developer workflows. To boot the current checkout's
 installer ISO in a reusable libvirt VM:
 
@@ -464,7 +479,7 @@ tags such as `v2026.7.0-alpha.1` and release branches such as
 the version and rejects noncanonical versions. See
 `docs/internal/adrs/adr-009-katlos-calendar-versioning.md` for the policy.
 
-The published set contains the Linux amd64 `katlctl` operator CLI, the KatlOS
+The published set contains Linux amd64 and Darwin arm64 `katlctl` binaries, the KatlOS
 install and upgrade SquashFS images, and the installer UKI, kernel, initrd, and
 UEFI-bootable ISO variants, each with
 adjacent JSON metadata and SHA-256 files. The ISO embeds the matching KatlOS

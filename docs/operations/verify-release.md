@@ -25,6 +25,9 @@ SHA256SUMS
 PROVENANCE.md
 ```
 
+On an Apple Silicon Mac, use the `darwin-arm64` CLI and checksum file in place
+of the `linux-amd64` files.
+
 For a host upgrade, use the matching
 `katlos-upgrade-<version>-<arch>.squashfs` plus its adjacent `.json` and
 `.sha256` files.
@@ -43,6 +46,10 @@ checksum can verify one file, but it does not replace the release-wide manifest:
 ```sh
 sha256sum --check katl-installer.iso.sha256
 ```
+
+On macOS, use `shasum -a 256 --check katl-installer.iso.sha256` for the adjacent
+checksum. To verify each downloaded file against `SHA256SUMS`, select its exact
+filename and pipe the matching line to `shasum -a 256 --check -`.
 
 Stop if a digest fails. Delete the mismatched file and fetch it again from the
 same release. Do not edit a release artifact or its metadata.
@@ -66,11 +73,13 @@ attestation verification passed.
 
 ## Confirm Release Identity
 
-Install the matching CLI under its stable name and inspect its identity:
+Install the matching CLI under its stable name and inspect its identity. Replace
+`RELEASE_VERSION` with the selected release:
 
 ```sh
-VERSION=2026.7.0-beta.1
-install -m 0755 "katlctl-$VERSION-linux-amd64" ~/.local/bin/katlctl
+VERSION=RELEASE_VERSION
+PLATFORM=linux-amd64 # Use darwin-arm64 on an Apple Silicon Mac.
+install -m 0755 "katlctl-$VERSION-$PLATFORM" ~/.local/bin/katlctl
 katlctl version
 ```
 
@@ -92,8 +101,8 @@ tag and immutable manifest digest:
 ghcr.io/katl-dev/kubernetes:<version>@sha256:<oci-manifest-digest>
 ```
 
-Release notes list the kernel and systemd versions installed in each standard
-and LTS installer and runtime image, plus containerd and crun in the runtime.
-These versions come from the published `katl-*.packages.tsv` inventories,
-including RPM release and architecture. Zero RPM epochs are omitted; nonzero
-epochs are preserved. Kubernetes extensions are distributed separately.
+Release notes compare the standard and LTS kernels, list shared runtime package
+versions, and list extensions built for the release. Package versions come from
+the published `katl-*.packages.tsv` inventories, including RPM release and
+architecture. Zero RPM epochs are omitted; nonzero epochs are preserved.
+Kubernetes extensions are distributed separately.

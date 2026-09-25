@@ -23,6 +23,9 @@ katlos-install-<version>-x86_64.squashfs.json
 katlctl-<version>-linux-amd64
 ```
 
+On an Apple Silicon Mac, use `katlctl-<version>-darwin-arm64` in place of the
+Linux CLI.
+
 Verify their adjacent checksums before publishing. The kernel and initrd boot
 the temporary installer. The SquashFS is the verified KatlOS payload written to
 the selected disk.
