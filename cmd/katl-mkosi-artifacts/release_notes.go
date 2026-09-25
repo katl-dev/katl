@@ -19,7 +19,7 @@ const componentsHeading = "## Included components\n"
 
 func writeReleaseComponents(dir string, flavours []string) error {
 	var section strings.Builder
-	section.WriteString(componentsHeading + "\nExact installed RPM versions from the shipped package inventories (version-release.architecture, nonzero RPM epochs retained). Release-owned extension versions come from the verified OCI bundles selected by each image. Kubernetes extensions are distributed separately.\n\n| Flavour | Image | Kernel | systemd | containerd | crun |\n| --- | --- | --- | --- | --- | --- |\n")
+	section.WriteString(componentsHeading + "\nInstalled RPM versions from the shipped package inventories (version-release.architecture). Release-owned extension versions come from the OCI bundles selected by each image. Kubernetes extensions are distributed separately.\n\n| Flavour | Image | Kernel | systemd | containerd | crun |\n| --- | --- | --- | --- | --- | --- |\n")
 	seen := make(map[string]bool)
 	var releaseVersion string
 	var extensions []struct {
