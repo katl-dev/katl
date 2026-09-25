@@ -46,6 +46,7 @@ Katl produces KatlOS, an installable, upgradeable, systemd-native Kubernetes nod
 - Deliver changes through ready-for-review pull requests. Use drafts only when explicitly requested. Keep PR descriptions concise: state what changed, why, and the root cause when fixing a defect; omit routine local-check inventories.
 - Enable auto-merge after required checks when authorized, then monitor the PR through merge. Do not treat opening a PR as completion.
 - Commit with `git commit-wrapped` and provide both title and body. Titles use `area: summary`, where the summary completes “When merged, this change will …”. Bodies should concisely explain the durable change and its reason.
+- Release notes use commit subjects by default. For commits that should appear under a different name, add one `Release-Note: <reader-facing summary>` trailer to the commit body. Use `Release-Note: skip` to omit internal changes. Keep the summary on one line; it replaces the full displayed entry, including the area label. Use these trailers only when the default subject would mislead release readers or add noise.
 - Do not rewrite history, reset, discard changes, publish releases, or mutate unrelated external state without explicit authority.
 
 Close a Bead only after this sequence:

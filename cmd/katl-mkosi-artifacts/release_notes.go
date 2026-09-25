@@ -15,18 +15,19 @@ import (
 	"github.com/katl-dev/katl/internal/resourcetest"
 )
 
-const componentsHeading = "## Included components\n"
+const componentsHeading = "## Packages\n"
+
+type releaseComponents struct {
+	kernels    [2]string
+	packages   map[string]string
+	extensions map[string]string
+}
 
 func writeReleaseComponents(dir string, flavours []string) error {
-	var section strings.Builder
-	section.WriteString(componentsHeading + "\nInstalled RPM versions from the shipped package inventories (version-release.architecture). Release-owned extension versions come from the OCI bundles selected by each image. Kubernetes extensions are distributed separately.\n\n| Flavour | Image | Kernel | systemd | containerd | crun |\n| --- | --- | --- | --- | --- | --- |\n")
 	seen := make(map[string]bool)
+	components := make(map[string]releaseComponents)
+	var order []string
 	var releaseVersion string
-	var extensions []struct {
-		flavour string
-		name    string
-		version string
-	}
 	for _, value := range flavours {
 		value, err := flavour.Normalize(value)
 		if err != nil {
@@ -36,6 +37,8 @@ func writeReleaseComponents(dir string, flavours []string) error {
 			return fmt.Errorf("duplicate release flavour %q", value)
 		}
 		seen[value] = true
+		order = append(order, value)
+		component := releaseComponents{packages: make(map[string]string), extensions: make(map[string]string)}
 		inventoryName := publicationName("katl-runtime.extensions.json", value)
 		inventory, err := readReleaseExtensionInventory(filepath.Join(dir, inventoryName), value)
 		if err != nil {
@@ -52,17 +55,13 @@ func writeReleaseComponents(dir string, flavours []string) error {
 					return fmt.Errorf("%s: invalid extension %s", inventoryName, field)
 				}
 			}
-			extensions = append(extensions, struct {
-				flavour string
-				name    string
-				version string
-			}{flavour: value, name: extension.Name, version: extension.PayloadVersion})
+			component.extensions[extension.Name] = extension.PayloadVersion
 		}
 		kernel := "kernel-core"
 		if value == flavour.LTS {
 			kernel = "kernel-longterm-core"
 		}
-		for _, image := range []string{"installer", "runtime"} {
+		for index, image := range []string{"installer", "runtime"} {
 			name := publicationName("katl-"+image+".packages.tsv", value)
 			data, err := os.ReadFile(filepath.Join(dir, name))
 			if err != nil {
@@ -72,35 +71,72 @@ func writeReleaseComponents(dir string, flavours []string) error {
 			if err != nil {
 				return fmt.Errorf("%s: %w", name, err)
 			}
-			required := []string{kernel, "systemd"}
+			required := []string{kernel}
 			if image == "runtime" {
-				required = append(required, "containerd", "crun")
+				required = append(required, "systemd", "containerd", "crun")
 			}
-			versions := []string{value, image}
-			for _, component := range required {
-				var matches []string
-				for _, pkg := range packages {
-					if pkg.Name == component {
-						matches = append(matches, pkg.NEVRA)
-					}
+			for _, packageName := range required {
+				version, err := releasePackageVersion(packages, packageName)
+				if err != nil {
+					return fmt.Errorf("%s: %w", name, err)
 				}
-				if len(matches) != 1 {
-					return fmt.Errorf("%s: expected exactly one %s package, found %d", name, component, len(matches))
+				if packageName == kernel {
+					component.kernels[index] = version
+				} else {
+					component.packages[packageName] = version
 				}
-				if strings.ContainsAny(matches[0], "|`\r\n") {
-					return fmt.Errorf("%s: invalid version for %s", name, component)
-				}
-				versions = append(versions, "`"+strings.TrimPrefix(matches[0], "0:")+"`")
 			}
-			if image == "installer" {
-				versions = append(versions, "—", "—")
+		}
+		components[value] = component
+	}
+	if len(order) == 0 {
+		return fmt.Errorf("release has no flavours")
+	}
+	for _, value := range order[1:] {
+		for _, name := range []string{"systemd", "containerd", "crun"} {
+			if components[value].packages[name] != components[order[0]].packages[name] {
+				return fmt.Errorf("%s differs between %s and %s", name, order[0], value)
 			}
-			fmt.Fprintf(&section, "| %s |\n", strings.Join(versions, " | "))
+		}
+		for name, version := range components[order[0]].extensions {
+			if components[value].extensions[name] != version {
+				return fmt.Errorf("extension %s differs between %s and %s", name, order[0], value)
+			}
+		}
+		if len(components[value].extensions) != len(components[order[0]].extensions) {
+			return fmt.Errorf("extension set differs between %s and %s", order[0], value)
 		}
 	}
-	section.WriteString("\n| Flavour | Release extension | Version |\n| --- | --- | --- |\n")
-	for _, extension := range extensions {
-		fmt.Fprintf(&section, "| %s | %s | `%s` |\n", extension.flavour, extension.name, extension.version)
+	for _, value := range order {
+		if components[value].kernels[0] != components[value].kernels[1] {
+			return fmt.Errorf("installer and runtime kernel versions differ for %s", value)
+		}
+	}
+
+	var section strings.Builder
+	section.WriteString(componentsHeading + "\nInstalled RPM versions from the runtime image and installer kernel. Kubernetes extensions are distributed separately.\n\n")
+	section.WriteString("### Kernels\n\n| Package |")
+	for _, value := range order {
+		fmt.Fprintf(&section, " %s |", releaseFlavourName(value))
+	}
+	section.WriteString("\n| --- |" + strings.Repeat(" --- |", len(order)) + "\n")
+	section.WriteString("| Kernel |")
+	for _, value := range order {
+		fmt.Fprintf(&section, " `%s` |", components[value].kernels[1])
+	}
+	section.WriteByte('\n')
+	section.WriteString("\n### Versions\n\n| Package | Version |\n| --- | --- |\n")
+	for _, name := range []string{"systemd", "containerd", "crun"} {
+		fmt.Fprintf(&section, "| %s | `%s` |\n", name, components[order[0]].packages[name])
+	}
+	section.WriteString("\n### Extensions\n\n| Extension | Version |\n| --- | --- |\n")
+	names := make([]string, 0, len(components[order[0]].extensions))
+	for name := range components[order[0]].extensions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		fmt.Fprintf(&section, "| %s | `%s` |\n", name, components[order[0]].extensions[name])
 	}
 	path := filepath.Join(dir, "RELEASE_NOTES.md")
 	notes, err := os.ReadFile(path)
@@ -108,15 +144,49 @@ func writeReleaseComponents(dir string, flavours []string) error {
 		return err
 	}
 	body := string(notes)
-	// Bundling replaces the per-flavour table while preserving the change notes.
-	if strings.HasPrefix(body, componentsHeading) {
-		next := strings.Index(body[len(componentsHeading):], "\n## ")
+	if strings.HasPrefix(body, "## Included components\n") {
+		next := strings.Index(body, "\n## ")
 		if next < 0 {
 			return fmt.Errorf("%s: missing release notes after component table", path)
 		}
-		body = body[len(componentsHeading)+next+1:]
+		body = body[next+1:]
 	}
-	return os.WriteFile(path, []byte(section.String()+"\n"+body), 0o644)
+	start := strings.Index(body, componentsHeading)
+	if start >= 0 {
+		end := strings.Index(body[start:], "\n## Verify\n")
+		if end < 0 {
+			return fmt.Errorf("%s: missing verification section after packages", path)
+		}
+		body = body[:start] + body[start+end+1:]
+	}
+	verify := strings.Index(body, "## Verify\n")
+	if verify < 0 {
+		return fmt.Errorf("%s: missing verification section", path)
+	}
+	return os.WriteFile(path, []byte(body[:verify]+section.String()+"\n"+body[verify:]), 0o644)
+}
+
+func releaseFlavourName(value string) string {
+	if value == flavour.LTS {
+		return "LTS"
+	}
+	return "Standard"
+}
+
+func releasePackageVersion(packages []resourcetest.Package, name string) (string, error) {
+	var matches []string
+	for _, pkg := range packages {
+		if pkg.Name == name {
+			matches = append(matches, pkg.NEVRA)
+		}
+	}
+	if len(matches) != 1 {
+		return "", fmt.Errorf("expected exactly one %s package, found %d", name, len(matches))
+	}
+	if strings.ContainsAny(matches[0], "|`\r\n") {
+		return "", fmt.Errorf("invalid version for %s", name)
+	}
+	return strings.TrimPrefix(matches[0], "0:"), nil
 }
 
 func readReleaseExtensionInventory(path, expectedFlavour string) (releaseExtensionInventory, error) {
