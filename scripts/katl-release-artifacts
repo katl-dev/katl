@@ -45,7 +45,7 @@ generate_release_notes() {
     local version="$1"
     local current_tag="v$version"
     local repository_url="${KATL_RELEASE_REPOSITORY_URL:-https://github.com/katl-dev/katl}"
-    local target previous_tag="" range commit hash subject short_hash area summary
+    local target previous_tag="" range commit hash subject short_hash area summary note
     local -a commits=()
 
     validate_version "$version"
@@ -62,23 +62,22 @@ generate_release_notes() {
     fi
 
     mapfile -t commits < <(git log --format='%H%x09%s' "$range")
-    printf '## Support boundary\n\n'
-    if [[ "$version" == *-alpha.* ]]; then
-        printf 'This is an experimental alpha release, not a production-supported release. '
-    elif [[ "$version" == *-beta.* ]]; then
-        printf 'This is an experimental beta release for home-lab evaluation, not a production-supported release. '
-    fi
-    printf 'Read SUPPORT.md before installation for the tested surface, trust and compatibility limits, recovery scope, and required issue evidence.\n\n'
-
     printf '## Changes\n\n'
     if ((${#commits[@]} == 0)); then
         printf '_No commits were added since the previous KatlOS release._\n'
     fi
+    local shown=0
     for commit in "${commits[@]}"; do
         IFS=$'\t' read -r hash subject <<<"$commit"
         [[ -n "$hash" ]] || continue
+        note="$(git show -s --format=%B "$hash" | git interpret-trailers --parse | sed -n 's/^Release-Note: //p')"
+        [[ "$note" != skip ]] || continue
         short_hash="${hash:0:7}"
-        if [[ "$subject" =~ ^([^:]+):[[:space:]]+(.+)$ ]]; then
+        if [[ -n "$note" ]]; then
+            [[ "$note" != *$'\n'* ]] || fail "multiple Release-Note trailers in $hash"
+            printf -- "- %s ([\`%s\`](%s/commit/%s))\n" \
+                "$note" "$short_hash" "$repository_url" "$hash"
+        elif [[ "$subject" =~ ^([^:]+):[[:space:]]+(.+)$ ]]; then
             area="${BASH_REMATCH[1]}"
             summary="${BASH_REMATCH[2]}"
             printf -- "- **%s:** %s ([\`%s\`](%s/commit/%s))\n" \
@@ -87,17 +86,31 @@ generate_release_notes() {
             printf -- "- %s ([\`%s\`](%s/commit/%s))\n" \
                 "$subject" "$short_hash" "$repository_url" "$hash"
         fi
+        ((shown += 1))
     done
+    if ((${#commits[@]} > 0 && shown == 0)); then
+        printf '_No release note entries for this release._\n'
+    fi
 
-    printf '\n## Verify downloads\n\n'
+    printf '\n## Verify\n\n'
     printf 'Release assets have keyless GitHub build-provenance attestations. '
-    printf "See \`PROVENANCE.md\` for verification instructions and scope.\n"
+    printf 'See [PROVENANCE.md](%s/releases/download/%s/PROVENANCE.md) for verification instructions and scope.\n' \
+        "$repository_url" "$current_tag"
     if [[ -n "$previous_tag" ]]; then
         printf "\n**Full comparison:** [\`%s...%s\`](%s/compare/%s...%s)\n" \
             "$previous_tag" "$current_tag" "$repository_url" "$previous_tag" "$current_tag"
     else
         printf '\nThis is the first KatlOS release in the repository history.\n'
     fi
+
+    printf '\n## Support\n\n'
+    if [[ "$version" == *-alpha.* ]]; then
+        printf 'This is an experimental alpha release, not a production-supported release. '
+    elif [[ "$version" == *-beta.* ]]; then
+        printf 'This is an experimental beta release for home-lab evaluation, not a production-supported release. '
+    fi
+    printf 'Read [SUPPORT.md](%s/releases/download/%s/SUPPORT.md) before installation for the tested surface, trust and compatibility limits, recovery scope, and required issue evidence.\n\n' \
+        "$repository_url" "$current_tag"
 }
 
 validate_version() {

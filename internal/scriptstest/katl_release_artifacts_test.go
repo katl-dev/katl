@@ -123,6 +123,8 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 		"release: publish first artifacts",
 		"release: automate Kubernetes bundles",
 		"release: attest KatlOS artifacts",
+		"test: exercise release note suppression",
+		"management: rotate credentials internally",
 	}
 	var hashes []string
 	for index, subject := range commits {
@@ -131,7 +133,13 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 			t.Fatal(err)
 		}
 		runGit(t, gitDir, "add", filepath.Base(path))
-		runGit(t, gitDir, "commit", "--quiet", "-m", subject)
+		args := []string{"commit", "--quiet", "-m", subject}
+		if index == 4 {
+			args = append(args, "-m", "Release-Note: skip")
+		} else if index == 5 {
+			args = append(args, "-m", "Release-Note: Rotate node credentials")
+		}
+		runGit(t, gitDir, args...)
 		hashes = append(hashes, strings.TrimSpace(runGit(t, gitDir, "rev-parse", "HEAD")))
 		if index == 1 {
 			runGit(t, gitDir, "tag", "v2026.7.0-dev.3")
@@ -154,14 +162,16 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 	}
 	notes := string(output)
 	for _, value := range []string{
-		"## Support boundary",
+		"## Support",
 		"SUPPORT.md",
 		"## Changes",
+		"- Rotate node credentials",
 		"- **release:** attest KatlOS artifacts",
 		"- **release:** automate Kubernetes bundles",
 		"https://github.example/katl-dev/katl/commit/" + hashes[3],
-		"## Verify downloads",
-		"`PROVENANCE.md`",
+		"## Verify",
+		"[PROVENANCE.md](https://github.example/katl-dev/katl/releases/download/v2026.7.0-dev.4/PROVENANCE.md)",
+		"[SUPPORT.md](https://github.example/katl-dev/katl/releases/download/v2026.7.0-dev.4/SUPPORT.md)",
 		"v2026.7.0-dev.3...v2026.7.0-dev.4",
 		"https://github.example/katl-dev/katl/compare/v2026.7.0-dev.3...v2026.7.0-dev.4",
 	} {
@@ -169,7 +179,7 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 			t.Fatalf("release notes missing %q:\n%s", value, notes)
 		}
 	}
-	for _, value := range []string{commits[0], commits[1], "v1.36.0-katl.99"} {
+	for _, value := range []string{commits[0], commits[1], commits[4], commits[5], "v1.36.0-katl.99"} {
 		if strings.Contains(notes, value) {
 			t.Fatalf("release notes unexpectedly contain %q:\n%s", value, notes)
 		}
@@ -312,7 +322,7 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 		}
 	}
 	releaseNotes := string(mustReadFile(t, filepath.Join(output, "RELEASE_NOTES.md")))
-	for _, value := range []string{"## Included components", "| standard | runtime | `6.19.1-1.fc44.x86_64` | `259.9-1.fc44.x86_64` | `2.2.0-1.fc44.x86_64` | `1.26-1.fc44.x86_64` |", "| standard | drbd9 | `9.3.4` |", "## Support boundary", "SUPPORT.md", "## Changes", "## Verify downloads", "`PROVENANCE.md`"} {
+	for _, value := range []string{"## Packages", "| Kernel | `6.19.1-1.fc44.x86_64` |", "| systemd | `259.9-1.fc44.x86_64` |", "| drbd9 | `9.3.4` |", "## Support", "SUPPORT.md", "## Changes", "## Verify", "[PROVENANCE.md]("} {
 		if !strings.Contains(releaseNotes, value) {
 			t.Fatalf("release notes missing %q: %q", value, releaseNotes)
 		}

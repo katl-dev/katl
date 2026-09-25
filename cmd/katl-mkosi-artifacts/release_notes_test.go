@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-const changesFixture = "## Changes\n\nKeep these changes.\n"
+const changesFixture = "## Changes\n\nKeep these changes.\n\n## Verify\n\nVerify assets.\n\n## Support\n\nRead SUPPORT.md.\n"
 
 func TestReleaseComponentsRendersTables(t *testing.T) {
 	dir := releaseNotesFixture(t)
@@ -18,20 +18,22 @@ func TestReleaseComponentsRendersTables(t *testing.T) {
 	}
 	notes := string(readFile(t, filepath.Join(dir, "RELEASE_NOTES.md")))
 
-	wantPackages := "| Flavour | Image | Kernel | systemd | containerd | crun |\n" +
-		"| --- | --- | --- | --- | --- | --- |\n" +
-		"| standard | installer | `6.19-2.x86_64` | `259-2.x86_64` | — | — |\n" +
-		"| standard | runtime | `6.19-2.x86_64` | `259-2.x86_64` | `2.2-1.x86_64` | `1.26-1.x86_64` |\n" +
-		"| lts | installer | `6.18-1.x86_64` | `259-3.x86_64` | — | — |\n" +
-		"| lts | runtime | `6.18-2.x86_64` | `259-4.x86_64` | `2.2-2.x86_64` | `2:1.26-2.x86_64` |"
-	wantExtensions := "| Flavour | Release extension | Version |\n" +
+	wantKernels := "| Package | Standard | LTS |\n" +
 		"| --- | --- | --- |\n" +
-		"| standard | alpha | `1.2.3` |\n" +
-		"| standard | drbd9 | `9.3.4` |\n" +
-		"| lts | drbd9 | `9.3.3` |"
+		"| Kernel | `6.19-2.x86_64` | `6.18-2.x86_64` |"
+	wantPackages := "| Package | Version |\n" +
+		"| --- | --- |\n" +
+		"| systemd | `259-2.x86_64` |\n" +
+		"| containerd | `2.2-1.x86_64` |\n" +
+		"| crun | `1.26-1.x86_64` |"
+	wantExtensions := "| Extension | Version |\n" +
+		"| --- | --- |\n" +
+		"| alpha | `1.2.3` |\n" +
+		"| drbd9 | `9.3.4` |"
 	for _, tc := range []struct{ name, header, want string }{
-		{"packages", "| Flavour | Image | Kernel | systemd | containerd | crun |", wantPackages},
-		{"extensions", "| Flavour | Release extension | Version |", wantExtensions},
+		{"kernels", "| Package | Standard | LTS |", wantKernels},
+		{"packages", "| Package | Version |", wantPackages},
+		{"extensions", "| Extension | Version |", wantExtensions},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := markdownTable(notes, tc.header); got != tc.want {
@@ -39,8 +41,11 @@ func TestReleaseComponentsRendersTables(t *testing.T) {
 			}
 		})
 	}
-	if !strings.HasSuffix(notes, changesFixture) {
+	if !strings.HasPrefix(notes, "## Changes\n") || !strings.Contains(notes, changesFixture[:strings.Index(changesFixture, "## Verify")]) {
 		t.Fatalf("release notes did not preserve change notes:\n%s", notes)
+	}
+	if !(strings.Index(notes, "## Changes") < strings.Index(notes, "## Packages") && strings.Index(notes, "## Packages") < strings.Index(notes, "## Verify") && strings.Index(notes, "## Verify") < strings.Index(notes, "## Support")) {
+		t.Fatalf("release note sections are out of order:\n%s", notes)
 	}
 }
 
@@ -82,6 +87,30 @@ func TestReleaseComponentsRejectsInvalidPackageInventory(t *testing.T) {
 	}
 }
 
+func TestReleaseComponentsRejectsDifferentSharedVersions(t *testing.T) {
+	dir := releaseNotesFixture(t)
+	writeFile(t, filepath.Join(dir, "katl-runtime-lts.packages.tsv"), "kernel-longterm-core\t6.18-2.x86_64\nsystemd\t259-2.x86_64\ncontainerd\t2.3-1.x86_64\ncrun\t1.26-1.x86_64\n")
+
+	assertReleaseNotesUnchangedOnError(t, dir, "containerd differs", "standard", "lts")
+}
+
+func TestReleaseComponentsRejectsDifferentImageKernels(t *testing.T) {
+	dir := releaseNotesFixture(t)
+	writeFile(t, filepath.Join(dir, "katl-installer.packages.tsv"), "kernel-core\t6.20-1.x86_64\nsystemd\t259-2.x86_64\n")
+
+	assertReleaseNotesUnchangedOnError(t, dir, "installer and runtime kernel versions differ")
+}
+
+func TestReleaseComponentsRejectsDifferentExtensionVersions(t *testing.T) {
+	dir := releaseNotesFixture(t)
+	writeInventory(t, filepath.Join(dir, "katl-runtime-lts.extensions.json"), extensionInventory("lts", "6.18", []releaseExtensionVersion{
+		extensionVersion("alpha", "1.2.3", "c"),
+		extensionVersion("drbd9", "9.3.3", "d"),
+	}))
+
+	assertReleaseNotesUnchangedOnError(t, dir, "extension drbd9 differs", "standard", "lts")
+}
+
 func TestReleaseComponentsRejectsInvalidExtensionInventory(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -112,14 +141,15 @@ func releaseNotesFixture(t *testing.T) string {
 	writeFile(t, filepath.Join(dir, "RELEASE_NOTES.md"), changesFixture)
 	writeFile(t, filepath.Join(dir, "katl-installer.packages.tsv"), "kernel-core\t6.19-2.x86_64\nsystemd\t259-2.x86_64\n")
 	writeFile(t, filepath.Join(dir, "katl-runtime.packages.tsv"), "kernel-core\t0:6.19-2.x86_64\nsystemd\t0:259-2.x86_64\ncontainerd\t0:2.2-1.x86_64\ncrun\t0:1.26-1.x86_64\n")
-	writeFile(t, filepath.Join(dir, "katl-installer-lts.packages.tsv"), "kernel-longterm-core\t0:6.18-1.x86_64\nsystemd\t0:259-3.x86_64\n")
-	writeFile(t, filepath.Join(dir, "katl-runtime-lts.packages.tsv"), "kernel-longterm-core\t0:6.18-2.x86_64\nsystemd\t0:259-4.x86_64\ncontainerd\t0:2.2-2.x86_64\ncrun\t2:1.26-2.x86_64\n")
+	writeFile(t, filepath.Join(dir, "katl-installer-lts.packages.tsv"), "kernel-longterm-core\t0:6.18-2.x86_64\nsystemd\t0:259-3.x86_64\n")
+	writeFile(t, filepath.Join(dir, "katl-runtime-lts.packages.tsv"), "kernel-longterm-core\t0:6.18-2.x86_64\nsystemd\t0:259-2.x86_64\ncontainerd\t0:2.2-1.x86_64\ncrun\t0:1.26-1.x86_64\n")
 	writeInventory(t, filepath.Join(dir, "katl-runtime.extensions.json"), extensionInventory("standard", "6.19", []releaseExtensionVersion{
 		extensionVersion("alpha", "1.2.3", "a"),
 		extensionVersion("drbd9", "9.3.4", "b"),
 	}))
 	writeInventory(t, filepath.Join(dir, "katl-runtime-lts.extensions.json"), extensionInventory("lts", "6.18", []releaseExtensionVersion{
-		extensionVersion("drbd9", "9.3.3", "c"),
+		extensionVersion("alpha", "1.2.3", "c"),
+		extensionVersion("drbd9", "9.3.4", "d"),
 	}))
 	return dir
 }
@@ -185,11 +215,14 @@ func markdownTable(notes, header string) string {
 	return table
 }
 
-func assertReleaseNotesUnchangedOnError(t *testing.T, dir, want string) {
+func assertReleaseNotesUnchangedOnError(t *testing.T, dir, want string, flavours ...string) {
 	t.Helper()
+	if len(flavours) == 0 {
+		flavours = []string{"standard"}
+	}
 	path := filepath.Join(dir, "RELEASE_NOTES.md")
 	before := readFile(t, path)
-	err := writeReleaseComponents(dir, []string{"standard"})
+	err := writeReleaseComponents(dir, flavours)
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("error = %v, want %q", err, want)
 	}
