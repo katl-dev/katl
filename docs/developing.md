@@ -430,9 +430,10 @@ does not currently provide hosted VM orchestration.
 
 ## Fedora Package Inputs
 
-Fedora 44 is the selected base release. Builds consume its signed release and
-stable-updates repositories without committing the complete transitive package
-closure as source policy.
+The selected Fedora base release is set in `mkosi.conf`. The builder image,
+runtime identity, and build cache derive from it. Builds consume signed Fedora
+repositories without committing the complete transitive package closure as
+source policy.
 
 The mkosi build records resolved package inventories under `_build/mkosi/`.
 Release and VM preparation copy those identities into their resource manifests

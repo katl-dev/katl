@@ -2385,6 +2385,35 @@ func TestHostUpgradeLocalPlanAcquiresWithoutActivation(t *testing.T) {
 	}
 }
 
+func TestHostUpgradeLocalAlreadyInstalledSkipsReboot(t *testing.T) {
+	artifact, _, _ := writeHostUpgradeArtifact(t, "2026.7.0-dev.13", "x86_64", 1024)
+	for _, plan := range []bool{true, false} {
+		t.Run(fmt.Sprint("plan=", plan), func(t *testing.T) {
+			fake := readyHostUpgradeClient()
+			fake.upgradePreview.NoChanges = true
+			installKatlcDial(t, nil, fake)
+			args := []string{"node", "upgrade", "cp-1", "--artifact", artifact, "--config", writeClusterConfig(t), "--output", "json"}
+			if plan {
+				args = append(args, "--plan")
+			}
+			var stdout, stderr bytes.Buffer
+			if err := run(context.Background(), args, &stdout, &stderr); err != nil {
+				t.Fatalf("upgrade: %v\n%s", err, stderr.String())
+			}
+			if len(fake.submitRequests) != 1 || !fake.submitRequests[0].DryRun || len(fake.rebootRequests) != 0 {
+				t.Fatalf("unexpected mutation: submits=%d reboots=%d", len(fake.submitRequests), len(fake.rebootRequests))
+			}
+			var report hostUpgradeReport
+			if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+				t.Fatal(err)
+			}
+			if report.Result != "unchanged" || report.Rebooted {
+				t.Fatalf("report = %#v", report)
+			}
+		})
+	}
+}
+
 func TestHostUpgradeLocalArtifactExplainsAgentUpgradeRequirement(t *testing.T) {
 	artifact, _, _ := writeHostUpgradeArtifact(t, "2026.7.0-dev.14", "x86_64", 1024)
 	fake := readyHostUpgradeClient()

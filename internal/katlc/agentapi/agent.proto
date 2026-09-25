@@ -394,6 +394,7 @@ message HostUpgradePreview {
   ExtensionRelease extension_release = 6;
   repeated HostUpgradeExtensionChange extensions = 7;
   repeated string changed_domains = 8;
+  bool no_changes = 9;
 }
 
 message HostUpgradeExtensionChange {

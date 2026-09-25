@@ -488,22 +488,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	// Published releases are immutable; local builds may reuse a version label
 	// with different runtime or extension content and must undergo preflight.
 	if localArtifact == nil && !opts.applyConfig && current.GetRuntimeVersion() == opts.version && installedFlavour == opts.flavour && current.GetCommitState() == generation.CommitStateCommitted && current.GetBootState() == generation.BootStateGood && current.GetHealthState() == generation.HealthStateHealthy {
-		node := target.nodeName
-		if node == "" {
-			node = target.endpoint
-		}
-		recovery := nodeUpgradeRecovery(status, recoveryRequirement)
-		if !recovery.Ready {
-			recoveryCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
-			recoveryConn, recoveredStatus, recoveryErr := waitNodeKubernetesRecovery(recoveryCtx, node, target.endpoint, recoveryRequirement, "upgrade node="+node, stderr)
-			cancel()
-			if recoveryErr != nil {
-				return recoveryErr
-			}
-			recovery = nodeUpgradeRecovery(recoveredStatus, recoveryRequirement)
-			_ = recoveryConn.Close()
-		}
-		return writeHostUpgradeReport(stdout, opts.output, hostUpgradeReport{Node: node, Version: opts.version, Flavour: opts.flavour, Image: image, Result: operation.ResultSucceeded, BootHealth: generation.HealthStateHealthy, Kubernetes: recovery.State})
+		return reportInstalledHostUpgrade(ctx, opts, target, status, recoveryRequirement, image, operation.ResultSucceeded, stdout, stderr)
 	}
 	if localArtifact != nil {
 		localRef, err := stageHostUpgradeArtifact(ctx, conn.Client, strings.TrimSpace(opts.actor), status, *localArtifact, target.nodeName, stderr)
@@ -547,6 +532,9 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	}
 	if prepared.GetHostUpgradePreview() == nil {
 		return fmt.Errorf("source agent does not provide target-generation upgrade planning; upgrade the source agent before retrying")
+	}
+	if prepared.HostUpgradePreview.GetNoChanges() {
+		return reportInstalledHostUpgrade(ctx, opts, target, status, recoveryRequirement, image, "unchanged", stdout, stderr)
 	}
 	submit.HostUpgrade.ImageSha256 = prepared.HostUpgradePreview.ImageSha256
 	submit.HostUpgrade.ImageSizeBytes = prepared.HostUpgradePreview.ImageSizeBytes
@@ -626,6 +614,25 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	return writeHostUpgradeReport(stdout, opts.output, report)
 }
 
+func reportInstalledHostUpgrade(ctx context.Context, opts hostUpgradeOptions, target managementTarget, status *agentapi.NodeStatus, requirement nodeRecoveryRequirement, image, result string, stdout, stderr io.Writer) error {
+	node := target.nodeName
+	if node == "" {
+		node = target.endpoint
+	}
+	recovery := nodeUpgradeRecovery(status, requirement)
+	if !recovery.Ready {
+		recoveryCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
+		recoveryConn, recoveredStatus, err := waitNodeKubernetesRecovery(recoveryCtx, node, target.endpoint, requirement, "upgrade node="+node, stderr)
+		cancel()
+		if err != nil {
+			return err
+		}
+		recovery = nodeUpgradeRecovery(recoveredStatus, requirement)
+		_ = recoveryConn.Close()
+	}
+	return writeHostUpgradeReport(stdout, opts.output, hostUpgradeReport{Node: node, Version: opts.version, Flavour: opts.flavour, Image: image, Result: result, BootHealth: generation.HealthStateHealthy, Kubernetes: recovery.State})
+}
+
 func writeHostUpgradeReport(stdout io.Writer, output string, report hostUpgradeReport) error {
 	label := "KatlOS" + flavour.Suffix(report.Flavour)
 	if output == "json" {
@@ -662,6 +669,10 @@ func writeHostUpgradeReport(stdout io.Writer, output string, report hostUpgradeR
 			kubernetes = "; Kubernetes " + report.Kubernetes
 		}
 		_, err := fmt.Fprintf(stdout, "%s runs %s %s; health %s%s\n", report.Node, label, report.Version, report.BootHealth, kubernetes)
+		return err
+	}
+	if report.Result == "unchanged" {
+		_, err := fmt.Fprintf(stdout, "%s already runs %s %s; no reboot needed\n", report.Node, label, report.Version)
 		return err
 	}
 	_, err := fmt.Fprintf(stdout, "%s %s %s upgrade result: %s\n", report.Node, label, report.Version, report.Result)

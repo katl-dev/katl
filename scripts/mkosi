@@ -7,7 +7,8 @@ shared_repo_root="$repo_root"
 if [[ "$(basename "$git_common_dir")" == .git ]]; then
     shared_repo_root="$(dirname "$git_common_dir")"
 fi
-image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-44-go-squashfs}"
+fedora_release="$("$repo_root/scripts/fedora-release")"
+image="${KATL_MKOSI_IMAGE:-localhost/katl-mkosi-builder:fedora-${fedora_release}-go-squashfs}"
 runtime="${KATL_CONTAINER_RUNTIME:-}"
 build_commit="${KATL_BUILD_COMMIT:-${KATL_VERSION:-0.0.0-dev}}"
 flavour="${KATL_FLAVOUR:-standard}"
@@ -93,7 +94,7 @@ cache_input_matches_target() {
         *_test.go | docs/*)
             return 1
             ;;
-        mkosi.conf | mkosi.conf.d/* | mkosi.kernel-lts/* | Containerfile.mkosi | containers-policy.json | go.mod | go.sum | scripts/mkosi)
+        mkosi.conf | mkosi.conf.d/* | mkosi.kernel-lts/* | Containerfile.mkosi | containers-policy.json | go.mod | go.sum | scripts/mkosi | scripts/fedora-release)
             return 0
             ;;
         *.go)
@@ -416,7 +417,7 @@ clear_installer_iso() {
 write_installer_package_set() {
     local output="$repo_root/_build/mkosi/katl-installer.packages.tsv"
     local manifest="$build_dir/katl-installer.manifest"
-    local cache_root="$repo_root/_build/mkosi/cache/fedora~44~x86-64~main.cache"
+    local cache_root="$repo_root/_build/mkosi/cache/fedora~${fedora_release}~x86-64~main.cache"
     if [[ -f "$manifest" ]]; then
         mkdir -p "$(dirname "$output")"
         jq -r '
@@ -482,6 +483,7 @@ if ! image_exists; then
         build
         --file "$repo_root/Containerfile.mkosi"
         --tag "$image"
+        --build-arg "FEDORA_RELEASE=$fedora_release"
     )
 
     if [[ "$runtime" == podman ]]; then
@@ -730,7 +732,8 @@ set +e
 "$runtime" "${run_flags[@]}" "$image" bash -lc '
     set -uo pipefail
     log=$(mktemp)
-    trap "rm -f \"$log\"" EXIT
+    owner_marker=$(mktemp /mkosi-build/.katl-owner.XXXXXX)
+    trap "rm -f \"$log\" \"$owner_marker\"" EXIT
     mkdir -p \
         /work/_build/go-mod \
         /work/_build/go-cache \
@@ -757,7 +760,7 @@ set +e
     }
     if [[ "$status" -eq 0 && -n "${KATL_INSTALLER_PACKAGE_SET:-}" ]]; then
         installer_manifest=/mkosi-build/katl-installer.manifest
-        installer_cache_root=/mkosi-cache/fedora~44~x86-64~main.cache
+        installer_cache_root=/mkosi-cache/fedora~$(/work/scripts/fedora-release)~x86-64~main.cache
         if [[ -f "$installer_manifest" ]]; then
             if ! jq -r '\''
                 .packages[]
@@ -971,8 +974,8 @@ set +e
     fi
     if [[ -d _build/mkosi ]]; then
         find /mkosi-cache /mkosi-package-cache _build/mkosi/builddir _build/mkosi/workspace -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
-        # Bind-mount owners are translated into the active user namespace.
-        # Host numeric IDs cannot be used here, and unrelated _build data is not ours.
+        # A previous build may own artifacts in a different user namespace.
+        # Only normalize outputs written by this invocation.
         for output in \
             _build/mkosi/artifacts.json \
             _build/mkosi/katl-* \
@@ -980,6 +983,7 @@ set +e
             _build/mkosi/*.sha256 \
             _build/mkosi/*.packages.tsv; do
             [[ -e "$output" || -L "$output" ]] || continue
+            [[ -n "$(find "$output" -maxdepth 0 -cnewer "$owner_marker" -print -quit)" ]] || continue
             chown -h --reference=/mkosi-build "$output" || status=1
         done
     fi

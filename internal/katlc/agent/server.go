@@ -472,6 +472,9 @@ func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperat
 		}
 		req.HostUpgrade.ImageSha256 = preview.ImageSha256
 		req.HostUpgrade.ImageSizeBytes = preview.ImageSizeBytes
+		if !req.DryRun && preview.NoChanges {
+			return operation.OperationRecord{}, nil, status.Error(codes.FailedPrecondition, "target KatlOS image is already installed")
+		}
 	}
 	if req.DryRun {
 		if req.GetKubeadmControlPlaneConfig() != nil {
