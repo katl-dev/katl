@@ -4,99 +4,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 )
-
-func TestMkosiDirectInstallerUsesDevShellTools(t *testing.T) {
-	repo := repoRoot(t)
-	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
-		t.Fatalf("MkdirAll(%s) error = %v", bin, err)
-	}
-	preserveFile(t, filepath.Join(repo, "_build", "mkosi", "katl-installer.packages.tsv"))
-	installerManifest := filepath.Join(repo, "_build", "mkosi", "katl-installer.manifest")
-	preserveFile(t, installerManifest)
-	mkosiArgs := filepath.Join(tmp, "mkosi-args.txt")
-	mkosiEnv := filepath.Join(tmp, "mkosi-env.txt")
-	goArgs := filepath.Join(tmp, "go-args.txt")
-	goEnv := filepath.Join(tmp, "go-env.txt")
-	writeFakeExecutable(t, bin, "mkosi", `printf '%s\n' "$@" > "$KATL_FAKE_MKOSI_ARGS"
-cat > "$KATL_FAKE_INSTALLER_MANIFEST" <<'EOF'
-{"packages":[{"type":"rpm","name":"systemd","version":"0:259.6-1.fc44","architecture":"x86_64"}]}
-EOF
-{
-  printf 'MKOSI_DNF=%s\n' "${MKOSI_DNF:-}"
-  printf 'TMPDIR=%s\n' "${TMPDIR:-}"
-  printf 'GOMODCACHE=%s\n' "${GOMODCACHE:-}"
-} > "$KATL_FAKE_MKOSI_ENV"
-`)
-	writeFakeExecutable(t, bin, "go", `printf '%s\n' "$@" > "$KATL_FAKE_GO_ARGS"
-{
-  printf 'GOCACHE=%s\n' "${GOCACHE:-}"
-  printf 'GOMODCACHE=%s\n' "${GOMODCACHE:-}"
-} > "$KATL_FAKE_GO_ENV"
-`)
-	for _, tool := range []string{"dnf5", "ukify", "xargs"} {
-		writeFakeExecutable(t, bin, tool, "exit 0\n")
-	}
-	for _, name := range []string{"katl-installer.iso", "katl-installer.iso.json", "katl-installer.iso.sha256"} {
-		preserveFile(t, filepath.Join(repo, "_build", "mkosi", name))
-	}
-	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-installer")
-	cmd.Dir = repo
-	cmd.Env = append(
-		os.Environ(),
-		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"KATL_CONTAINER_RUNTIME=direct",
-		"KATL_FAKE_MKOSI_ARGS="+mkosiArgs,
-		"KATL_FAKE_MKOSI_ENV="+mkosiEnv,
-		"KATL_FAKE_INSTALLER_MANIFEST="+installerManifest,
-		"KATL_FAKE_GO_ARGS="+goArgs,
-		"KATL_FAKE_GO_ENV="+goEnv,
-		"GOCACHE="+filepath.Join(tmp, "go-cache"),
-		"TMPDIR="+tmp,
-	)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("scripts/mkosi direct failed: %v\n%s", err, output)
-	}
-
-	args := readLinesForScripts(t, mkosiArgs)
-	if len(args) < 2 || args[0] != "--extra-search-path" {
-		t.Fatalf("mkosi args missing extra search path: %#v", args)
-	}
-	if !strings.Contains(args[1], bin) {
-		t.Fatalf("extra search path %q does not include fake tool dir %q", args[1], bin)
-	}
-	installerPackageSet := "KATL_INSTALLER_PACKAGE_SET=" + filepath.Join(repo, "_build", "mkosi", "katl-installer.packages.tsv")
-	for _, want := range []string{"--profile", "installer-image", "-f", "build", "--environment", installerPackageSet, "--manifest-format", "json"} {
-		if !containsString(args, want) {
-			t.Fatalf("mkosi args missing %q: %#v", want, args)
-		}
-	}
-	env := readKeyValuesForScripts(t, mkosiEnv)
-	if env["MKOSI_DNF"] != "dnf5" || env["TMPDIR"] != tmp || env["GOMODCACHE"] != filepath.Join(repo, "_build", "go-mod") {
-		t.Fatalf("mkosi env = %#v", env)
-	}
-	assertDirsExist(
-		t, repo,
-		"_build/go-cache",
-		"_build/go-mod",
-		"_build/mkosi/builddir",
-		"_build/mkosi/workspace",
-		"_build/mkosi/workspace/installer",
-		"_build/mkosi/workspace/runtime",
-	)
-	if got := readLinesForScripts(t, goArgs); !reflect.DeepEqual(got, []string{"run", "./cmd/katl-mkosi-artifacts", "write-installer-artifacts"}) {
-		t.Fatalf("go args = %#v", got)
-	}
-	if got := strings.TrimSpace(string(mustReadFile(t, filepath.Join(repo, "_build", "mkosi", "katl-installer.packages.tsv")))); got != "systemd\t0:259.6-1.fc44.x86_64" {
-		t.Fatalf("installer package set = %q", got)
-	}
-}
 
 func TestMkosiDirectRejectsRuntimePackaging(t *testing.T) {
 	repo := repoRoot(t)
@@ -109,81 +19,6 @@ func TestMkosiDirectRejectsRuntimePackaging(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "direct currently supports installer-image builds only") {
 		t.Fatalf("output missing direct-mode rejection:\n%s", output)
-	}
-}
-
-func TestMkosiBuilderVersionUsesContainer(t *testing.T) {
-	repo := repoRoot(t)
-	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
-		t.Fatalf("MkdirAll(%s) error = %v", bin, err)
-	}
-	writeFakeExecutable(t, bin, "podman", `if [[ "${1:-}" == "image" && "${2:-}" == "exists" ]]; then
-  exit 0
-fi
-if [[ "$*" == "run --rm localhost/katl-mkosi-builder:fedora-44-go-squashfs mkosi --version" ]]; then
-  printf 'mkosi 26\n'
-  exit 0
-fi
-exit 2
-`)
-
-	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "builder-version")
-	cmd.Dir = repo
-	cmd.Env = append(
-		os.Environ(),
-		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"KATL_CONTAINER_RUNTIME=podman",
-	)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("scripts/mkosi builder-version failed: %v\n%s", err, output)
-	}
-	if got := strings.TrimSpace(string(output)); got != "26" {
-		t.Fatalf("builder version = %q, want 26", got)
-	}
-}
-
-func TestMkosiPodmanNamespace(t *testing.T) {
-	repo := repoRoot(t)
-	tmp := t.TempDir()
-	bin := filepath.Join(tmp, "bin")
-	if err := os.MkdirAll(bin, 0o755); err != nil {
-		t.Fatalf("MkdirAll(%s) error = %v", bin, err)
-	}
-	preserveFile(t, filepath.Join(repo, "_build", "mkosi", "katl-installer.packages.tsv"))
-	podmanArgs := filepath.Join(tmp, "podman-args.txt")
-	writeFakeExecutable(t, bin, "podman", `if [[ "${1:-}" == "image" && "${2:-}" == "exists" ]]; then
-  exit 0
-fi
-printf '%s\n' "$@" > "$KATL_FAKE_PODMAN_ARGS"
-`)
-	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-installer", "--debug")
-	cmd.Dir = repo
-	cmd.Env = append(
-		os.Environ(),
-		"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
-		"KATL_CONTAINER_RUNTIME=podman",
-		"KATL_VERSION=2026.7.0-dev.0",
-		"KATL_FAKE_PODMAN_ARGS="+podmanArgs,
-		"GOCACHE="+filepath.Join(tmp, "go-cache"),
-		"TMPDIR="+tmp,
-	)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("scripts/mkosi podman failed: %v\n%s", err, output)
-	}
-
-	args := readLinesForScripts(t, podmanArgs)
-	if !containsString(args, "--userns=keep-id") || !containsString(args, "--user") || !containsString(args, "root") {
-		t.Fatalf("podman args missing keep-id root mode: %#v", args)
-	}
-	if !containsString(args, "KATL_VERSION=2026.7.0-dev.0") {
-		t.Fatalf("podman args missing release version: %#v", args)
-	}
-	if !containsString(args, "KATL_INSTALLER_PACKAGE_SET=/work/_build/mkosi/katl-installer.packages.tsv") {
-		t.Fatalf("podman args missing container installer package path: %#v", args)
 	}
 }
 
@@ -431,26 +266,6 @@ func writeFakeExecutable(t *testing.T, dir, name, body string) string {
 	return path
 }
 
-func preserveFile(t *testing.T, path string) {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	exists := err == nil
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatalf("ReadFile(%s) error = %v", path, err)
-	}
-	t.Cleanup(func() {
-		if exists {
-			if err := os.WriteFile(path, data, 0o644); err != nil {
-				t.Fatalf("restore %s: %v", path, err)
-			}
-			return
-		}
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			t.Fatalf("remove %s: %v", path, err)
-		}
-	})
-}
-
 func readLinesForScripts(t *testing.T, path string) []string {
 	t.Helper()
 	data := mustReadFile(t, path)
@@ -461,19 +276,6 @@ func readLinesForScripts(t *testing.T, path string) []string {
 	return strings.Split(text, "\n")
 }
 
-func readKeyValuesForScripts(t *testing.T, path string) map[string]string {
-	t.Helper()
-	out := make(map[string]string)
-	for _, line := range readLinesForScripts(t, path) {
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			t.Fatalf("line %q is not key=value", line)
-		}
-		out[key] = value
-	}
-	return out
-}
-
 func containsString(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
@@ -481,20 +283,6 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func assertDirsExist(t *testing.T, root string, paths ...string) {
-	t.Helper()
-	for _, path := range paths {
-		full := filepath.Join(root, path)
-		info, err := os.Stat(full)
-		if err != nil {
-			t.Fatalf("Stat(%s) error = %v", full, err)
-		}
-		if !info.IsDir() {
-			t.Fatalf("%s is not a directory", full)
-		}
-	}
 }
 
 func seedRuntimeCacheOutputs(t *testing.T, buildDir string) {

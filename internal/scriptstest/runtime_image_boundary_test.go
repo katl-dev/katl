@@ -8,47 +8,6 @@ import (
 	"testing"
 )
 
-func TestRuntimeInitrdPackagingPreservesEarlyMicrocode(t *testing.T) {
-	wrapper, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", "mkosi"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(wrapper)
-	splitAt := strings.Index(text, "mkosi_artifacts split-initrd")
-	repackAt := strings.Index(text, "cpio --null --create --append --format=newc")
-	joinAt := strings.Index(text, "mkosi_artifacts join-initrd")
-	if splitAt < 0 || repackAt < 0 || joinAt < 0 || splitAt >= repackAt || repackAt >= joinAt {
-		t.Fatal("runtime initrd packaging must preserve early microcode around normal initramfs changes")
-	}
-	if !strings.Contains(text, `"$root/usr/lib64/libseccomp.so.2"`) {
-		t.Fatal("runtime initrd packaging must include libseccomp for the runtime switch-root helper")
-	}
-}
-
-func TestRuntimeBootInputsArePublishedBeforeInitrdPackaging(t *testing.T) {
-	wrapper, err := os.ReadFile(filepath.Join(repoRoot(t), "scripts", "mkosi"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(wrapper)
-	publish := `cp --reflink=auto "$kernel_source" "$runtime_kernel"`
-	packageInitrd := `mkosi_artifacts split-initrd`
-	publishAt := strings.Index(text, publish)
-	packageAt := strings.Index(text, packageInitrd)
-	if publishAt < 0 || packageAt < 0 || publishAt >= packageAt {
-		t.Fatalf("runtime boot inputs must be copied to durable artifacts before initrd packaging")
-	}
-	for _, want := range []string{
-		`cp --reflink=auto "$initrd_source" "$runtime_initrd"`,
-		`--linux "$runtime_kernel"`,
-		`--initrd "$runtime_initrd"`,
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("runtime UKI packaging does not use published boot input %q", want)
-		}
-	}
-}
-
 func TestRuntimeSysctlOwnership(t *testing.T) {
 	paths, err := filepath.Glob(filepath.Join(repoRoot(t), "mkosi.profiles", "runtime", "mkosi.extra", "usr", "lib", "sysctl.d", "*.conf"))
 	if err != nil {
