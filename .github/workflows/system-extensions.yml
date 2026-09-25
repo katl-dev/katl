@@ -5,6 +5,7 @@ on:
     paths:
       - .github/workflows/system-extensions.yml
       - Containerfile.mkosi
+      - mkosi.conf
       - cmd/katlctl/system_extension.go
       - extensions/**
       - mkosi.profiles/system-extension-*/**
@@ -12,12 +13,14 @@ on:
       - internal/installer/systemextensionbundle/**
       - scripts/build-system-extension
       - scripts/check-system-extension
+      - scripts/fedora-release
       - scripts/mkosi
   push:
     branches: [main]
     paths:
       - .github/workflows/system-extensions.yml
       - Containerfile.mkosi
+      - mkosi.conf
       - cmd/katlctl/system_extension.go
       - extensions/**
       - mkosi.profiles/system-extension-*/**
@@ -25,6 +28,7 @@ on:
       - internal/installer/systemextensionbundle/**
       - scripts/build-system-extension
       - scripts/check-system-extension
+      - scripts/fedora-release
       - scripts/mkosi
   workflow_dispatch:
     inputs:
@@ -51,10 +55,10 @@ jobs:
       contents: read
       packages: write
     env:
-      KATL_BIRD_RECIPE_PATTERN: '^(Containerfile\.mkosi$|extensions/bird/|mkosi\.conf$|mkosi\.profiles/runtime/|mkosi\.profiles/system-extension-bird/|scripts/build-system-extension$|scripts/mkosi$)'
+      KATL_BIRD_RECIPE_PATTERN: '^(Containerfile\.mkosi$|extensions/bird/|mkosi\.conf$|mkosi\.profiles/runtime/|mkosi\.profiles/system-extension-bird/|scripts/build-system-extension$|scripts/fedora-release$|scripts/mkosi$)'
       KATL_ARCHITECTURE: x86_64
       KATL_CONTAINER_RUNTIME: docker
-      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs
+      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:go-squashfs
     steps:
       - uses: actions/checkout@v7
         with:

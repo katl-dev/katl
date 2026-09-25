@@ -32,6 +32,7 @@ var recipeRoots = []string{
 	"mkosi.profiles/runtime/os-release.in",
 	"scripts/build-kubernetes-sysext",
 	"scripts/check-kubernetes-sysext",
+	"scripts/fedora-release",
 }
 
 var recipeExcludedPaths = map[string]bool{

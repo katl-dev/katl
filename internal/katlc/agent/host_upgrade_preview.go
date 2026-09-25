@@ -48,6 +48,13 @@ func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOpe
 		if err := kernelcmdline.ValidateRequiredCompatibility(previous.ConfiguredKernelCommandLine, payload.Boot.Compatibility.KernelCommandLine); err != nil {
 			return nil, err
 		}
+		if executor.activeHostUpgradeImage(payload, request.ConfigYAML) {
+			return &agentapi.HostUpgradePreview{
+				ImageSha256: payload.ImageSHA256, ImageSizeBytes: payload.ImageSizeBytes,
+				PreviousVersion: previous.RuntimeVersion, Version: payload.Index.Version,
+				NoChanges: true,
+			}, nil
+		}
 		slot, err := inactiveRoot(previous.Root.Slot)
 		if err != nil {
 			return nil, err
@@ -104,6 +111,14 @@ func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOpe
 			ExtensionRelease: agentapi.ExtensionReleaseFromManifest(payload.Index.ExtensionRelease),
 		}, nil
 	}
+	if executor.activeHostUpgradeImage(payload, req.HostUpgrade.GetConfigYaml()) {
+		return &agentapi.HostUpgradePreview{
+			ImageSha256:    payload.ImageSHA256,
+			ImageSizeBytes: payload.ImageSizeBytes,
+			Version:        payload.Index.Version,
+			NoChanges:      true,
+		}, nil
+	}
 	prepared, err := executor.planHostUpgrade(ctx, operation.OperationRecord{
 		OperationID:                 "host-upgrade-preflight",
 		HostUpgradeRequest:          &request,
@@ -149,4 +164,24 @@ func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOpe
 	}
 	sort.Slice(preview.Extensions, func(i, j int) bool { return preview.Extensions[i].Name < preview.Extensions[j].Name })
 	return preview, nil
+}
+
+func (e *Executor) activeHostUpgradeImage(payload katlosimage.Payload, configYAML string) bool {
+	if configYAML != "" {
+		return false
+	}
+	currentID, err := currentGenerationID(e.Root)
+	if err != nil {
+		return false
+	}
+	current, state, err := generation.ReadGeneration(e.Root, currentID)
+	if err != nil || !generation.IsKnownGood(state) || state.CommittedByOperation == "" || current.RuntimeVersion != payload.Index.Version {
+		return false
+	}
+	record, err := e.Store.Read(state.CommittedByOperation)
+	if err != nil || (record.OperationKind != OperationKindHostUpgrade && record.OperationKind != operationKindHostUpgradeHandoff) || !record.Terminal || record.Result != operation.ResultSucceeded || record.CandidateGenerationID != currentID || record.HostUpgradeRequest == nil {
+		return false
+	}
+	// The operation that committed this generation owns its complete image identity.
+	return record.HostUpgradeRequest.ImageSHA256 == payload.ImageSHA256 && record.HostUpgradeRequest.ImageSizeBytes == payload.ImageSizeBytes
 }

@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+release="$(awk '
+    /^\[Distribution\]$/ { in_distribution = 1; next }
+    /^\[/ { in_distribution = 0 }
+    in_distribution && /^Release=/ { sub(/^Release=/, ""); print; exit }
+' "$repo_root/mkosi.conf")"
+if [[ ! "$release" =~ ^[0-9]+$ ]]; then
+    echo "error: mkosi.conf must set a numeric [Distribution] Release" >&2
+    exit 1
+fi
+printf '%s\n' "$release"

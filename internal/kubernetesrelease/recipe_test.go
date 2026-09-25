@@ -35,6 +35,7 @@ func TestRecipeChanged(t *testing.T) {
 		{"docs/input.md", false},
 		{"cmd/katl-kubernetes-metadata/main_test.go", false},
 		{"scripts/build-kubernetes-sysext", true},
+		{"scripts/fedora-release", true},
 		{".github/workflows/kubernetes-bundles.yml", true},
 	} {
 		t.Run(test.path, func(t *testing.T) {
@@ -110,6 +111,7 @@ func TestRecipeDigestTracksBundleProducerSources(t *testing.T) {
 		"cmd/katl-publish-kubernetes-sysext/input.go",
 		"mkosi.profiles/kubernetes-sysext/input.go",
 		"mkosi.profiles/runtime/mkosi.conf",
+		"scripts/fedora-release",
 	} {
 		t.Run(relative, func(t *testing.T) {
 			root := writeRecipeFixture(t)

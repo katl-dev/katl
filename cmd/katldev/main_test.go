@@ -575,7 +575,7 @@ func TestInstallerReadyCreatesClusterConfigWithKatlctl(t *testing.T) {
 		t.Fatal(err)
 	}
 	configPath := filepath.Join(repo, "_build", "katldev", "cluster.yaml")
-	if gotName != "katlctl" || !reflect.DeepEqual(gotArgs, []string{"config", "init", configPath, "--installer", state.Endpoint}) {
+	if gotName != "go" || !reflect.DeepEqual(gotArgs, []string{"run", "./cmd/katlctl", "config", "init", configPath, "--installer", state.Endpoint}) {
 		t.Fatalf("config command = %s %#v", gotName, gotArgs)
 	}
 	if !strings.Contains(stdout.String(), "Cluster config: "+configPath+" (created)") {
@@ -629,7 +629,7 @@ func TestInstallerReadyRequiresExplicitReplacementForMismatchedConfig(t *testing
 	if _, created, err := manager.ensureClusterConfig(context.Background(), state, true); err != nil || !created {
 		t.Fatalf("forced config: created=%t, error=%v", created, err)
 	}
-	if !reflect.DeepEqual(gotArgs, []string{"config", "init", configPath, "--installer", state.Endpoint, "--force"}) {
+	if !reflect.DeepEqual(gotArgs, []string{"run", "./cmd/katlctl", "config", "init", configPath, "--installer", state.Endpoint, "--force"}) {
 		t.Fatalf("forced config args = %#v", gotArgs)
 	}
 }

@@ -33,7 +33,8 @@ mkdir -p "$DESTDIR/usr/lib"
 flavour="${KATL_FLAVOUR:-standard}"
 flavour_suffix=""
 [[ "$flavour" == standard ]] || flavour_suffix="-$flavour"
-awk -v version="$version" -v flavour="$flavour" -v suffix="$flavour_suffix" '{gsub(/@KATL_FLAVOUR@/, flavour); gsub(/@KATL_FLAVOUR_SUFFIX@/, suffix); gsub(/@KATL_VERSION@/, version); print}' \
+base_version="$(KATL_REPO_ROOT="$repo" "$repo/scripts/fedora-release")"
+awk -v version="$version" -v flavour="$flavour" -v suffix="$flavour_suffix" -v base_version="$base_version" '{gsub(/@KATL_FLAVOUR@/, flavour); gsub(/@KATL_FLAVOUR_SUFFIX@/, suffix); gsub(/@KATL_VERSION@/, version); gsub(/@KATL_BASE_VERSION_ID@/, base_version); print}' \
     "$os_release_template" >"$DESTDIR/usr/lib/os-release"
 
 case "$vmtest_image_support" in

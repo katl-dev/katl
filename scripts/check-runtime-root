@@ -158,7 +158,7 @@ need unsquashfs
 [[ -f "$packages" ]] || fail "runtime package inventory not found: $packages"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/katl-runtime-check.XXXXXX")"
-trap 'rm -rf "$work"' EXIT
+trap 'chmod -R u+w "$work" && rm -rf "$work"' EXIT
 
 GOCACHE="${GOCACHE:-$repo_root/_build/go-cache}" \
     go run "$repo_root/cmd/katl-mkosi-artifacts" verify-firmware-packages \
@@ -307,7 +307,7 @@ file_has_line /usr/lib/os-release "PRETTY_NAME=\"KatlOS$flavour_suffix $runtime_
 file_has_line /usr/lib/os-release 'VARIANT="Kubernetes Node OS"'
 file_has_line /usr/lib/os-release "VARIANT_ID=katlos$flavour_suffix"
 file_has_line /usr/lib/os-release 'KATL_BASE_ID=fedora'
-file_has_line /usr/lib/os-release 'KATL_BASE_VERSION_ID=44'
+file_has_line /usr/lib/os-release "KATL_BASE_VERSION_ID=$("$repo_root/scripts/fedora-release")"
 file_has_line /usr/lib/os-release "SYSEXT_LEVEL=katl-runtime-1"
 file_has /usr/lib/systemd/system/var.mount "What=/dev/disk/by-partlabel/KATL_STATE"
 file_has /usr/lib/systemd/system/etc-kubernetes.mount "What=/var/lib/katl/kubernetes/etc-kubernetes"

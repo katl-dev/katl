@@ -593,7 +593,7 @@ func (manager installerManager) ensureClusterConfig(ctx context.Context, state i
 	if force {
 		args = append(args, "--force")
 	}
-	if err := run(ctx, manager.repoRoot, "katlctl", args, nil, manager.stdout, manager.stderr); err != nil {
+	if err := run(ctx, manager.repoRoot, "go", append([]string{"run", "./cmd/katlctl"}, args...), nil, manager.stdout, manager.stderr); err != nil {
 		return "", false, fmt.Errorf("generate ClusterConfig for waiting installer: %w", err)
 	}
 	if _, err := os.Stat(configPath); err != nil {
