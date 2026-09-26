@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"path/filepath"
 	"strings"
@@ -72,6 +73,11 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	}
 	if _, err := AuditStartup(store, timeNow()); err != nil {
 		return err
+	}
+	if err := recoverInterruptedConfigApplies(root, store, timeNow()); err != nil {
+		// Keep management available so an operator can inspect and repair the
+		// interrupted operation; its resource locks still block mutation.
+		log.Printf("recover interrupted configuration apply: %v", err)
 	}
 
 	agentServer.Dispatcher = dispatcher

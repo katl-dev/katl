@@ -14,20 +14,28 @@ func TestPromoteLiveGenerationMakesHealthyPersistentDefault(t *testing.T) {
 	writeBootHealthGeneration(t, root, "gen0", "", CommitStateCommitted, BootStateGood, HealthStateHealthy, now.Add(-time.Hour))
 	writeBootHealthGeneration(t, root, "gen1", "gen0", CommitStateCandidate, BootStatePending, HealthStateUnknown, now.Add(-time.Minute))
 	writeBootHealthSelection(t, root, BootSelectionRecord{
-		APIVersion:            APIVersion,
-		Kind:                  BootSelectionKind,
-		DefaultGenerationID:   "gen0",
-		BootedGenerationID:    "gen0",
-		Generation0FallbackID: "gen0",
-		DefaultBootEntry:      "loader/entries/katl-gen0.conf",
-		BootedBootEntry:       "loader/entries/katl-gen0.conf",
-		UpdatedAt:             now.Add(-time.Hour),
+		APIVersion:             APIVersion,
+		Kind:                   BootSelectionKind,
+		DefaultGenerationID:    "gen0",
+		BootedGenerationID:     "gen0",
+		Generation0FallbackID:  "gen0",
+		DefaultBootEntry:       "loader/entries/katl-gen0.conf",
+		BootedBootEntry:        "loader/entries/katl-gen0.conf",
+		TargetBootGenerationID: "gen0",
+		TargetBootEntry:        "loader/entries/katl-gen0.conf",
+		OneShot:                true,
+		UpdatedAt:              now.Add(-time.Hour),
 	})
+	var nextBoot string
 	if err := PromoteLiveGeneration(LivePromotionRequest{
 		Root: root, GenerationID: "gen1", OperationID: "upgrade-1", Now: now,
 		SetBootDefault: bootHealthDefaultRecorder(t, "loader/entries/katl-gen1.conf"),
+		SetBootOneshot: func(_ string, entry string) error { nextBoot = entry; return nil },
 	}); err != nil {
 		t.Fatal(err)
+	}
+	if nextBoot != "loader/entries/katl-gen1.conf" {
+		t.Fatalf("firmware next boot = %q", nextBoot)
 	}
 	_, status, err := ReadGeneration(root, "gen1")
 	if err != nil {
@@ -77,6 +85,7 @@ func TestPromoteLiveGenerationPersistsPromotionBeforeBootDefault(t *testing.T) {
 	inspected := false
 	err := PromoteLiveGeneration(LivePromotionRequest{
 		Root: root, GenerationID: "gen1", OperationID: "upgrade-1", Now: now,
+		SetBootOneshot: func(string, string) error { return nil },
 		SetBootDefault: func(_ string, entry string) error {
 			if entry != "loader/entries/katl-gen1.conf" {
 				t.Fatalf("boot default entry = %q", entry)
@@ -120,6 +129,7 @@ func TestPromoteLiveGenerationRestoresDurableStateWhenBootDefaultFails(t *testin
 	calls := 0
 	err := PromoteLiveGeneration(LivePromotionRequest{
 		Root: root, GenerationID: "gen1", OperationID: "upgrade-1", Now: now,
+		SetBootOneshot: func(string, string) error { return nil },
 		SetBootDefault: func(_ string, entry string) error {
 			calls++
 			if calls == 1 {
@@ -157,6 +167,47 @@ func TestPromoteLiveGenerationRestoresDurableStateWhenBootDefaultFails(t *testin
 	}
 }
 
+func TestPromoteLiveGenerationRestoresBootSelectionWhenNextBootFails(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 8, 9, 15, 0, 0, 0, time.UTC)
+	writeBootHealthGeneration(t, root, "gen0", "", CommitStateCommitted, BootStateGood, HealthStateHealthy, now.Add(-time.Hour))
+	writeBootHealthGeneration(t, root, "gen1", "gen0", CommitStateCandidate, BootStatePending, HealthStateUnknown, now.Add(-time.Minute))
+	writeBootHealthSelection(t, root, BootSelectionRecord{
+		APIVersion: APIVersion, Kind: BootSelectionKind, DefaultGenerationID: "gen0", BootedGenerationID: "gen0",
+		DefaultBootEntry: "loader/entries/katl-gen0.conf", BootedBootEntry: "loader/entries/katl-gen0.conf", UpdatedAt: now.Add(-time.Hour),
+	})
+	defaultEntry := "loader/entries/katl-gen0.conf"
+	var nextBoot string
+	err := PromoteLiveGeneration(LivePromotionRequest{
+		Root: root, GenerationID: "gen1", OperationID: "upgrade-1", Now: now,
+		SetBootDefault: func(_ string, entry string) error { defaultEntry = entry; return nil },
+		SetBootOneshot: func(_ string, entry string) error {
+			nextBoot = entry
+			if entry == "loader/entries/katl-gen1.conf" {
+				return os.ErrPermission
+			}
+			return nil
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "set boot one-shot") {
+		t.Fatalf("PromoteLiveGeneration() error = %v", err)
+	}
+	if defaultEntry != "loader/entries/katl-gen0.conf" || nextBoot != "" {
+		t.Fatalf("firmware default=%q next=%q, want previous default without a one-shot", defaultEntry, nextBoot)
+	}
+	_, previous, err := ReadGeneration(root, "gen0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection, err := ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if previous.CommitState != CommitStateCommitted || selection.DefaultGenerationID != "gen0" {
+		t.Fatalf("previous state=%#v selection=%#v", previous, selection)
+	}
+}
+
 func TestPromoteLiveGenerationRestoresDurableStateWhenBootDefaultRestoreFails(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 8, 9, 15, 0, 0, 0, time.UTC)
@@ -169,6 +220,7 @@ func TestPromoteLiveGenerationRestoresDurableStateWhenBootDefaultRestoreFails(t 
 	calls := 0
 	err := PromoteLiveGeneration(LivePromotionRequest{
 		Root: root, GenerationID: "gen1", OperationID: "upgrade-1", Now: now,
+		SetBootOneshot: func(string, string) error { return nil },
 		SetBootDefault: func(_ string, _ string) error {
 			calls++
 			return os.ErrPermission

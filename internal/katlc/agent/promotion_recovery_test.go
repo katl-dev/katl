@@ -65,6 +65,7 @@ func testRecoverLivePromotion(t *testing.T, failure bool) {
 	// bookkeeping without attempting runtime activation again.
 	restarted := NewExecutor(server.Root, server.Store, "restarted-agent")
 	defaultPath := filepath.Join(server.Root, "observed-boot-default")
+	restarted.SetBootOneshot = func(context.Context, string, string) error { return nil }
 	restarted.SetBootDefault = func(_ context.Context, _ string, entry string) error {
 		if failure {
 			return errors.New("boot default unavailable")

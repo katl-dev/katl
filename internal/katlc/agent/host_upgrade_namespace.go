@@ -245,7 +245,7 @@ func publishPreparedUpgrade(root string, prepared preparedUpgrade, candidate str
 	if err := os.Rename(stage, destination); err != nil {
 		return err
 	}
-	return syncUpgradeDirectory(filepath.Dir(destination))
+	return syncDirectory(filepath.Dir(destination))
 }
 
 func syncUpgradeTree(root string) error {
@@ -269,7 +269,7 @@ func syncUpgradeTree(root string) error {
 	})
 }
 
-func syncUpgradeDirectory(path string) error {
+func syncDirectory(path string) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err

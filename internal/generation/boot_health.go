@@ -49,6 +49,7 @@ type LivePromotionRequest struct {
 	Reason         string
 	Now            time.Time
 	SetBootDefault BootDefaultSetter
+	SetBootOneshot BootDefaultSetter
 }
 
 // PromoteLiveGeneration records a candidate as known-good when the candidate's
@@ -87,6 +88,9 @@ func promoteLiveGeneration(request LivePromotionRequest) error {
 	if err != nil {
 		return err
 	}
+	if request.SetBootOneshot == nil {
+		return fmt.Errorf("boot one-shot updater is required for live promotion")
+	}
 	// A committed, healthy candidate records that live validation passed. On
 	// retry, replay the external boot-default write even if selection.json was
 	// already published: that file cannot prove the EFI update completed.
@@ -97,7 +101,10 @@ func promoteLiveGeneration(request LivePromotionRequest) error {
 		if request.SetBootDefault == nil {
 			return fmt.Errorf("boot default updater is required to resume live promotion")
 		}
-		return request.SetBootDefault(root, entry)
+		if err := request.SetBootDefault(root, entry); err != nil {
+			return err
+		}
+		return request.SetBootOneshot(root, entry)
 	}
 	if resuming && selection.DefaultGenerationID != spec.PreviousGenerationID {
 		return fmt.Errorf("live promotion %s no longer follows the default generation", generationID)
@@ -193,18 +200,27 @@ func promoteLiveGeneration(request LivePromotionRequest) error {
 	if err := WriteBootSelection(root, selection); err != nil {
 		return rollbackDurable(err)
 	}
-	if previousEntry == entry {
-		return nil
+	if previousEntry != entry {
+		if err := request.SetBootDefault(root, entry); err != nil {
+			cause := fmt.Errorf("set boot default %s: %w", entry, err)
+			if previousEntry == "" {
+				return rollbackDurable(errors.Join(cause, fmt.Errorf("restore boot default: previous boot entry is unavailable")))
+			}
+			if restoreErr := request.SetBootDefault(root, previousEntry); restoreErr != nil {
+				return rollbackDurable(errors.Join(cause, fmt.Errorf("restore boot default %s: %w", previousEntry, restoreErr)))
+			}
+			return rollbackDurable(cause)
+		}
 	}
-	if err := request.SetBootDefault(root, entry); err != nil {
-		cause := fmt.Errorf("set boot default %s: %w", entry, err)
-		if previousEntry == "" {
-			return rollbackDurable(errors.Join(cause, fmt.Errorf("restore boot default: previous boot entry is unavailable")))
+	// A prior one-shot EFI choice can outlive its durable selection. Point the
+	// next boot at the promoted generation before reporting a successful apply.
+	if err := request.SetBootOneshot(root, entry); err != nil {
+		cause := fmt.Errorf("set boot one-shot %s: %w", entry, err)
+		restoreErr := request.SetBootOneshot(root, previousSelection.TargetBootEntry)
+		if previousEntry != entry && previousEntry != "" {
+			restoreErr = errors.Join(restoreErr, request.SetBootDefault(root, previousEntry))
 		}
-		if restoreErr := request.SetBootDefault(root, previousEntry); restoreErr != nil {
-			return rollbackDurable(errors.Join(cause, fmt.Errorf("restore boot default %s: %w", previousEntry, restoreErr)))
-		}
-		return rollbackDurable(cause)
+		return rollbackDurable(errors.Join(cause, restoreErr))
 	}
 	return nil
 }

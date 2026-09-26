@@ -1001,8 +1001,9 @@ func (e *Executor) failKubeadmUpgrade(record operation.OperationRecord, phase st
 	cause = errors.Join(cause, cleanupErr)
 	var abandonErr error
 	if !mutated {
-		abandonErr = e.abandonKubeadmCandidate(record.CandidateGenerationID, record.OperationID, now)
+		abandonErr = abandonCandidateGeneration(e.Root, record.CandidateGenerationID, record.OperationID, "Kubernetes upgrade failed before kubeadm mutation", now)
 	}
+	cause = errors.Join(cause, abandonErr)
 	_, err := e.Store.Update(record.OperationID, "kubeadm-upgrade-failed-"+strings.ReplaceAll(phase, "-", "_"), "kubeadm-upgrade-failed", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		current.Phase = phase
 		current.Terminal = true
@@ -1012,6 +1013,12 @@ func (e *Executor) failKubeadmUpgrade(record operation.OperationRecord, phase st
 		current.Result = "failed"
 		current.GenerationCommitState = operation.GenerationCommitAbandoned
 		current.NextAction = "fix the pre-mutation failure and submit a new explicit upgrade operation"
+		if abandonErr != nil {
+			current.RecoveryRequired = true
+			current.Result = operation.ResultFailedNeedsRepair
+			current.GenerationCommitState = operation.GenerationCommitCandidate
+			current.NextAction = "inspect the candidate generation and repair its status before retrying"
+		}
 		if mutated {
 			current.RecoveryRequired = true
 			current.Result = operation.ResultFailedNeedsRepair
@@ -1023,7 +1030,7 @@ func (e *Executor) failKubeadmUpgrade(record operation.OperationRecord, phase st
 		}
 		return current, nil
 	})
-	return errors.Join(cause, readErr, abandonErr, err)
+	return errors.Join(cause, readErr, err)
 }
 
 func (e *Executor) restoreSourceKubernetesAfterFailure(record operation.OperationRecord) error {
@@ -1077,27 +1084,6 @@ func (e *Executor) restoreSourceKubernetesAfterFailure(record operation.Operatio
 		}
 	}
 	return restoreErr
-}
-
-func (e *Executor) abandonKubeadmCandidate(candidate, operationID string, now time.Time) error {
-	if strings.TrimSpace(candidate) == "" {
-		return nil
-	}
-	spec, status, err := generation.ReadGeneration(e.Root, candidate)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	if status.CommitState != generation.CommitStateCandidate {
-		return nil
-	}
-	status.CommitState = generation.CommitStateAbandoned
-	status.BootState = generation.BootStateFailed
-	status.UpdatedAt = now
-	status.StatusTransitions = append(status.StatusTransitions, generation.StatusTransition{At: now, OperationID: operationID, Reason: "Kubernetes upgrade failed before kubeadm mutation", CommitState: status.CommitState, BootState: status.BootState, HealthState: status.HealthState})
-	return generation.WriteGenerationStatus(e.Root, spec, status)
 }
 
 func kubernetesRef(refs []generation.ExtensionRef) (generation.ExtensionRef, bool) {

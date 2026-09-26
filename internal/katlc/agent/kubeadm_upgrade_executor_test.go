@@ -37,6 +37,12 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 		}
 		return nil
 	}
+	executor.SetBootOneshot = func(_ context.Context, _ string, entry string) error {
+		if entry != "loader/entries/katl-gen1.conf" {
+			t.Fatalf("next boot entry = %q", entry)
+		}
+		return nil
+	}
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		commands = append(commands, append([]string(nil), argv...))
 		joined := strings.Join(argv, " ")
@@ -352,6 +358,7 @@ func TestExecutorKeepsSingleControlPlaneAvailableForKubeadm(t *testing.T) {
 	executor.Async = false
 	executor.Now = func() time.Time { return now.Add(time.Minute) }
 	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
+	executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
 	executor.WaitBeforeKubeadm = func(context.Context, time.Duration) error {
 		t.Fatal("single control plane waited for API connection drain")
 		return nil

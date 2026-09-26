@@ -813,6 +813,12 @@ func (e *Executor) promoteLiveGeneration(ctx context.Context, record operation.O
 			}
 			return e.SetBootDefault(ctx, root, entry)
 		},
+		SetBootOneshot: func(root, entry string) error {
+			if e.SetBootOneshot == nil {
+				return fmt.Errorf("boot one-shot updater is not configured")
+			}
+			return e.SetBootOneshot(ctx, root, entry)
+		},
 	})
 }
 
