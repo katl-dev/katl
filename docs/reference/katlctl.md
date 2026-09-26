@@ -202,8 +202,9 @@ or the physical/serial console for failed boot, network, or agent recovery.
 workloads. Katlctl does not provide an arbitrary remote shell, an automatic fleet
 rollout scheduler, or a complete etcd backup/restore system.
 
-Generate shell completion with `katlctl completion bash`, `fish`, `zsh`, or
-`powershell`, and install it using your shell's completion convention.
+The Nix flake package installs Bash, Fish, and Zsh completion scripts. For
+other installations, generate a script with `katlctl completion bash`, `fish`,
+`zsh`, or `powershell`, and install it using your shell's completion convention.
 
 Bootstrap reads management and Kubernetes addresses from ClusterConfig. Set
 `management.address` and, when distinct, `kubernetes.address` there so every
