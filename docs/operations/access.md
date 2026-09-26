@@ -1,4 +1,4 @@
-# Access Installed KatlOS Nodes
+# Access installed KatlOS nodes
 
 Use the cluster configuration for installed node access from any workstation.
 A saved workstation context is optional convenience.
@@ -15,7 +15,7 @@ writes a private file from a bootstrapped control plane without changing
 Remove a shortcut with `katlctl context delete NAME`. External cluster secrets
 and nodes are untouched. Deleting the current context leaves no current selection.
 
-## Security Boundary
+## Security boundary
 
 The `katlc` agent listens on TCP `9443`. New configurations default to
 `spec.managementAuthentication: trusted-network`: the API uses plaintext,
@@ -46,7 +46,7 @@ messages use `tty3` (`Ctrl+Alt+F3`) so they cannot scroll the dashboard or
 the login console. Serial output remains available on `ttyS0`. Katl owns
 the graphical console kernel argument; custom serial consoles remain configurable.
 
-## Confirm Generation 0
+## Confirm generation 0
 
 On each node:
 
@@ -64,7 +64,7 @@ Expected state before Kubernetes bootstrap:
 - runtime handoff reports `waiting-for-cluster-bootstrap`; and
 - `katl-kubeadm-ready.target` is not active yet.
 
-## Save a Workstation Shortcut
+## Save a workstation shortcut
 
 Use the same source used for installation:
 
@@ -83,7 +83,7 @@ authorization. This works with agent-only keys such as 1Password. An explicit
 `--ssh-authorized-key PATH` remains available when only one key should be
 authorized.
 
-## Durable Cluster Secrets
+## Durable cluster secrets
 
 This section applies only to opt-in mTLS. Trusted-network clusters need only
 their configuration on each workstation. Reinstalling a node refreshes the
@@ -137,7 +137,7 @@ published copy after installation. Exposure does not grant caller access to an
 installed agent, but it can let an attacker impersonate that node to an
 operator who is also redirected to the attacker.
 
-## Connectivity Check
+## Connectivity check
 
 Inspect the resolved context after saving it:
 
@@ -226,7 +226,7 @@ NAME` to switch between saved clusters. `katlctl cluster status --config
 ./cluster.yaml` summarizes every configured node without requiring a saved
 context.
 
-## Routine Host Management
+## Routine host management
 
 Show the current KatlOS version, generation, any staged next boot, health, and
 whether the node is busy without exposing machine identity or operation IDs:

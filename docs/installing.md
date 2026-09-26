@@ -143,7 +143,7 @@ and source commit. It does not make the build vulnerability-free and is not a
 UEFI Secure Boot signature; production boot-key policy and node-side signature
 enforcement remain separate work.
 
-## Author One ClusterConfig
+## Author one ClusterConfig
 
 Normal installation starts from one `config.katl.dev/v1alpha1` `ClusterConfig`.
 It describes operator choices: the Kubernetes version and the desired identity,
@@ -259,9 +259,9 @@ unit and stops managing the target. It does not format, repartition, run
 `wipefs`, or erase the partition, filesystem, mount-point directory, or data.
 Re-adding a matching selector mounts the preserved filesystem again.
 
-A disk-backed entry with `wipe: true` requests reinitialization of the selected
-disk. It is desired state, not permission to overwrite existing contents. Katl
-uses `systemd-repart` to create and format its convention-labelled partition:
+A disk-backed entry with `wipe: true` authorizes reinitialization of the
+selected disk, including any existing contents. Katl uses `systemd-repart`
+to create and format its convention-labeled partition:
 
 ```yaml
 install:
@@ -417,8 +417,9 @@ enforcement. This beta artifact has not yet been validated with a physical GPU,
 a Kubernetes GPU workload, or a host upgrade and rollback. Verify `nvidia-smi`
 on the node after reboot before placing GPU workloads on it.
 
-Payload changes and removal select a next-boot generation. With the payload unchanged, configuration, unit drop-ins,
-and enablement changes apply live. Katl reloads or restarts running consumers;
+Payload changes and removal select a next-boot generation. If the
+payload is unchanged, configuration, unit drop-ins, and enablement changes
+apply live. Katl reloads or restarts running consumers;
 unit definition changes restart them so the new definition takes effect.
 Native `[Install]` metadata controls enablement. `requiredForBootHealth` makes
 the unit an explicit boot prerequisite; ordinary enabled units may start later.
@@ -542,7 +543,7 @@ Disk installation is destructive. Always inspect each resolved target disk
 before enabling automatic install. Use `byID`, WWN, or serial selectors, never
 `/dev/sda`-style names.
 
-## PXE Or Matchbox
+## PXE or Matchbox
 
 The complete, copyable Matchbox machine-profile journey is in
 [Install KatlOS with PXE and Matchbox](install-pxe-matchbox.md). This section
@@ -560,14 +561,14 @@ katlctl config bundle ./cluster.yaml \
   --katlos-image-metadata ./katlos-install-2026.7.0-x86_64.squashfs.json
 ```
 
-Katl writes the compiled bundle mode 0600 because it includes each node's
-non-CA management server key. Serve it only on the trusted provisioning
-network, prevent workload networks from reaching the published path, and
-remove the served copy after installation. Back up the separately reported
+For mTLS management, the compiled bundle includes each node's server
+private key. Katl writes bundles mode `0600`. Serve a bundle only on the trusted
+provisioning network, prevent workload networks from reaching it, and remove
+the served copy after installation. Back up the separately reported
 configuration-referenced management secrets file when using mTLS; a `.katlcfg`
 is not an authority backup. Trusted-network management requires no keys.
 
-Current bundle-oriented kernel arguments are:
+Bundle-oriented kernel arguments are:
 
 ```text
 katl.bundle.url=<config bundle URL>
@@ -622,7 +623,7 @@ Matchbox profiles carry the same `katl.*` arguments. Groups should select only
 `katl.node`; they do not need a different bundle URL per node. Katl does not
 create or operate DHCP, iPXE, or matchbox configuration.
 
-## ISO Or Local Handoff
+## ISO or local handoff
 
 Boot the same `katl-installer.iso` on each node without preseed input. The
 installer mounts its embedded KatlOS image read-only and waits without mutating
@@ -730,7 +731,7 @@ The console advertises `/v1/config-bundle` as the preferred endpoint.
 Separate seed media with the `KATLSEED` label or `virtio-katl-seed` disk ID is
 only needed when provisioning input without the HTTP handoff.
 
-## Advanced Compiled InstallManifest Boundary
+## Compiled InstallManifest for advanced integrations
 
 The bundle contains one compiled `install.katl.dev/v1alpha1` `InstallManifest`
 per node. That schema and the legacy `katl.manifest.*` kernel arguments remain
@@ -740,7 +741,7 @@ embedded kubeadm sidecars, resolved inventory, and proof that every node was
 compiled from the same source. Author `ClusterConfig` and distribute its bundle
 unless you are deliberately integrating at that lower-level boundary.
 
-## Installer Safety And Status
+## Verify installer safety and status
 
 `katlos-install` validates before destructive disk mutation:
 
@@ -783,7 +784,7 @@ systemctl status katl-kubeadm-ready.target
 journalctl -b -u katlos-install.service -u katl-runtime-handoff-status.service -u katlc-agent.service
 ```
 
-## Bootstrap Handoff
+## Bootstrap handoff
 
 Installation does not run `kubeadm`, fetch Kubernetes payloads, or bundle a
 Kubernetes sysext. It stores the node role and bootstrap intent needed for a
@@ -801,7 +802,7 @@ After all nodes are installed and reachable through their node-local `katlc`
 management endpoints, enroll their identities and then bootstrap from the same
 source:
 
-```text
+```sh
 katlctl context save --config ./cluster.yaml
 katlctl cluster bootstrap --config ./cluster.yaml \
   --init-node cp-1
@@ -809,8 +810,8 @@ katlctl cluster bootstrap --config ./cluster.yaml \
 
 Katl compiles the source internally to obtain the control-plane endpoint, node
 topology, roles, kubeadm references, Kubernetes version, and OCI bundle
-selection. `--node-address node=address` remains available for an
-operator-observed address that differs from the compiled source.
+selection. Set `management.address` and, when different, `kubernetes.address` in
+`ClusterConfig` so bootstrap and readiness checks use the intended addresses.
 Bootstrap reports phase changes while it runs and writes `./kubeconfig` by
 default. Rerun the unchanged command to resume observing an interrupted
 bootstrap; add `--verbose` for operation IDs and recovery details. At this
@@ -833,7 +834,7 @@ storage classes, and cluster add-ons. Test fixtures may apply a small CNI or
 workload manifest to prove handoff behavior, but Katl is not a Kubernetes
 distribution or add-on manager.
 
-## Apply Runtime Configuration
+## Apply runtime configuration
 
 `ClusterConfig` is the user-authored source for installation and supported
 node runtime configuration. `katlctl` compiles and submits the node-agent
@@ -841,7 +842,7 @@ request internally; operators do not maintain a second configuration schema.
 
 Apply the complete retained cluster configuration:
 
-```text
+```sh
 katlctl cluster apply --config ./cluster.yaml
 ```
 
@@ -853,7 +854,7 @@ validated before mutation begins.
 If the source has already been compiled, use the bundle instead of
 recompiling it:
 
-```text
+```sh
 katlctl cluster apply --config ./katl-lab.katlcfg
 ```
 
@@ -939,7 +940,7 @@ node boots but bootstrap fails
   kubeadm or Kubernetes partial state.
 ```
 
-## Outside The Install Workflow
+## Responsibility outside installation
 
 Installation intentionally does not own:
 

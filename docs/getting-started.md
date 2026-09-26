@@ -1,4 +1,4 @@
-# Build Your First KatlOS Cluster
+# Build your first KatlOS cluster
 
 This journey installs KatlOS from the release ISO, verifies generation 0,
 bootstraps kubeadm, and hands the cluster to you for CNI installation. It is
@@ -10,7 +10,7 @@ independent backups before continuing. Keep installer TCP `8080` and management
 TCP `9443` on trusted networks; new configurations use unauthenticated management
 access by default. mTLS is available as an explicit configuration choice.
 
-## 1. Download One Release
+## 1. Download one release
 
 Download the matching CLI and installer ISO from a single
 [Katl release](https://github.com/katl-dev/katl/releases). Replace
@@ -44,7 +44,7 @@ attestation verification.
 Attach the ISO as virtual media or write it to removable media with a tool that
 performs a raw image copy. Boot every target in UEFI mode.
 
-## 2. Discover the Waiting Installers
+## 2. Discover the waiting installers
 
 The installer boots into a non-mutating wait state and shows its address and
 disk inventory on the console. From the operator workstation:
@@ -77,7 +77,7 @@ katlctl config init ./cluster.yaml \
   --node worker-1=worker,192.0.2.21,/dev/disk/by-id/ata-KATL_WORKER_1_ROOT
 ```
 
-## 3. Review the Destructive Inputs
+## 3. Review the destructive inputs
 
 Open `cluster.yaml` and verify, for every node:
 
@@ -104,9 +104,9 @@ secrets. Use the same configuration from any workstation, including after a
 reinstall. For authenticated and encrypted management, choose
 `--management-authentication mtls`; see [management access](operations/access.md).
 
-## 4. Install Each Node
+## 4. Install each node
 
-Optional: enable the selected node's configured SSH keys in the live installer
+**Optional:** Enable the selected node's configured SSH keys in the live installer
 without accepting an install or touching the disk:
 
 ```sh
@@ -130,7 +130,7 @@ when it contains data. No extra acknowledgement is needed. With `wipe: false`,
 Katl preserves compatible filesystems and refuses any required formatting.
 System-disk installation is always destructive once its validated plan proceeds.
 
-## 5. Verify Generation 0
+## 5. Verify generation 0
 
 Remove or detach ISO media if firmware would otherwise boot it again. For a PXE
 first boot order, use the installed-disk guard in the
@@ -184,7 +184,7 @@ First inspect the non-mutating plan:
 ```sh
 katlctl cluster bootstrap --config ./cluster.yaml \
   --identity ./homelab-kubernetes-identity.katlkey \
-  --init-node cp-1 --dry-run
+  --init-node cp-1 --plan
 ```
 
 Then perform bootstrap:
@@ -196,7 +196,7 @@ katlctl cluster bootstrap --config ./cluster.yaml \
 ```
 
 The command stages the release-compatible Kubernetes payload, creates the
-cluster, joins the other listed nodes, trial-boots the resulting generation,
+cluster, joins the other listed nodes, activates the resulting generation live,
 checks kubeadm and local control-plane health, and writes a mode-`0600`
 `./kubeconfig`. Repeating the unchanged command observes or resumes the same
 durable work instead of blindly starting over.
@@ -211,7 +211,7 @@ kubectl --kubeconfig ./kubeconfig get pods -A
 At this point the API should answer, but nodes normally remain `NotReady` and
 CoreDNS remains pending. That is expected until you install a CNI.
 
-## 7. Install Your Cluster Network
+## 7. Install your cluster network
 
 Choose and manage a CNI through your own Helm, CLI, or GitOps workflow. Katl
 does not install one. If you choose Cilium, follow the tested
@@ -230,7 +230,7 @@ kubectl --kubeconfig ./kubeconfig get pods -A
 Deploy a small application with your normal workflow and prove DNS, Service
 endpoints, and cross-node traffic before moving real workloads.
 
-## 8. Retain Recovery Inputs
+## 8. Retain recovery inputs
 
 Keep the release tag and checksums, `cluster.yaml`, any referenced native files,
 the kubeconfig, and independent etcd/application/data backups. Do not commit the

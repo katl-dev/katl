@@ -1,4 +1,4 @@
-# Verify KatlOS Release Artifacts
+# Verify KatlOS release artifacts
 
 This is an optional expert workflow for operators who want to authenticate
 downloaded artifacts against the Katl release pipeline. It is not a prerequisite
@@ -32,7 +32,7 @@ For a host upgrade, use the matching
 `katlos-upgrade-<version>-<arch>.squashfs` plus its adjacent `.json` and
 `.sha256` files.
 
-## Verify Integrity
+## Verify integrity
 
 Run from the directory containing the downloaded assets:
 
@@ -54,7 +54,7 @@ filename and pipe the matching line to `shasum -a 256 --check -`.
 Stop if a digest fails. Delete the mismatched file and fetch it again from the
 same release. Do not edit a release artifact or its metadata.
 
-## Verify Build Provenance
+## Verify build provenance
 
 Authenticate each executable or image asset against the exact tag and Katl
 release workflow:
@@ -71,7 +71,7 @@ Repeat for `katlctl`, a loose PXE artifact, or the upgrade SquashFS you will
 actually use. Record the tag, source commit, filename, SHA-256, and whether
 attestation verification passed.
 
-## Confirm Release Identity
+## Confirm release identity
 
 Install the matching CLI under its stable name and inspect its identity. Replace
 `RELEASE_VERSION` with the selected release:
@@ -86,7 +86,7 @@ katlctl version
 The CLI and KatlOS assets must come from the same release unless release notes
 explicitly declare another combination supported.
 
-## Trust Boundary
+## Trust boundary
 
 Checksums detect changed bytes. GitHub attestations bind bytes to a repository,
 workflow, source ref, and commit. They do not provide Secure Boot signatures,

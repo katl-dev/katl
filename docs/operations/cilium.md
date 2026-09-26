@@ -16,7 +16,7 @@ configuration](../installing.md). Katl honors that setting when configuring
 node-local API access. Configure Cilium's replacement mode in your own Cilium
 values; Katl does not select it for you.
 
-## Preserve The Immutable Host Boundary
+## Preserve the immutable host boundary
 
 KatlOS owns `/etc` as part of the selected, versioned host generation. A
 privileged Kubernetes workload may change live kernel state through
@@ -28,7 +28,7 @@ CNI datapath and routing topology, so Katl does not override the distribution's
 filtering policy. Cilium-specific filtering settings belong in the cluster's
 retained host configuration.
 
-## Configure Cilium Host Settings
+## Configure Cilium host settings
 
 Copy the [example sysctl file](../examples/cilium/90-cilium.conf) next to your
 ClusterConfig and include it in the existing defaults:
@@ -98,7 +98,7 @@ The setting is part of Cilium's public
 When disabled, the chart omits the `apply-sysctl-overwrites` init container;
 Cilium can still program live sysctls for interfaces it creates.
 
-## Verify The Handoff
+## Verify the handoff
 
 Wait for the Cilium components, nodes, and cluster DNS:
 
@@ -148,7 +148,7 @@ Repeat the health, sysctl, and connectivity checks after a node reboot. This
 proves both KatlOS boot-time policy and Cilium's handling of newly created
 interfaces.
 
-## Change Host Sysctls Deliberately
+## Change host sysctls deliberately
 
 If another CNI or a site-specific network design requires different persistent
 host settings, declare a native `/etc/sysctl.d/*.conf` file through
@@ -161,7 +161,7 @@ A CNI that requires a writable `/etc` and does not provide a supported
 disable or redirect setting is not compatible with KatlOS until that behavior
 can be changed.
 
-## Repair An Existing API Certificate
+## Repair an existing API certificate
 
 An older cluster may lack the loopback certificate address. On a control-plane
 node, test the actual TLS identity rather than the canonical-name override in
@@ -213,7 +213,7 @@ does not add the missing address. See Kubernetes'
 [certificate management](https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/)
 and [API certificate phase](https://kubernetes.io/docs/reference/setup-tools/kubeadm/generated/kubeadm_init/kubeadm_init_phase_certs_apiserver/).
 
-## Diagnose The Default Cilium Setting
+## Diagnose the default Cilium setting
 
 An installation that omitted `sysctlfix.enabled=false` may log:
 

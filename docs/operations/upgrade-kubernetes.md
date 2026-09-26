@@ -27,24 +27,23 @@ new versions require workstation registry access during planning. See
 [Kubernetes release delivery](../concepts/kubernetes-releases.md) for the
 publication policy and the deferred Actions VM-validation boundary.
 
-## Plan
+## Plan the Kubernetes upgrade
+
+Set `spec.kubernetes.version` in the retained `ClusterConfig` to the target
+version. Review the change, then plan the rollout:
 
 ```sh
-# Edit spec.kubernetes.version in the Git-managed ClusterConfig first.
-katlctl kubernetes upgrade \
-  --config ./cluster.yaml --plan
+katlctl kubernetes upgrade --config ./cluster.yaml --plan
 ```
 
-`spec.kubernetes.version` is the rollout's sole desired-version authority.
-Review and commit that Git change before planning. The command intentionally
-does not accept a positional target version, so an executed rollout cannot
-leave Git declaring an older version.
+`spec.kubernetes.version` is the rollout's desired version. The command
+does not accept a positional target version, so the executed rollout uses the
+version in the reviewed configuration.
 
-The `ClusterConfig` is always required and supplies both the desired version
-and topology. The saved context created during enrollment supplies the
-immutable identity and current management address for each node. Use
-`--context NAME` to select a non-current saved context; a context cannot replace
-the `ClusterConfig`.
+The `ClusterConfig` supplies the desired version and topology. An optional
+saved context supplies workstation shortcuts and observed node
+identities. Use `--context NAME` to select a saved context when needed;
+the command still requires `ClusterConfig`.
 
 The plan connects to every node, reads its current healthy generation and
 Kubernetes payload, derives the control-plane/worker order, and asks every
@@ -56,9 +55,9 @@ selects the release-owned compatible bundle and records its digest, sysext paths
 and sizes, candidate generation IDs, operation IDs, and snapshot evidence
 internally. An unavailable version fails before any node operation is accepted.
 
-## Execute
+## Execute the rollout
 
-Run the same command without `--plan`:
+Run the reviewed command without `--plan`:
 
 ```sh
 katlctl kubernetes upgrade --config ./cluster.yaml
@@ -93,8 +92,8 @@ require the conservative upstream procedure.
 The command stops immediately on the first failed or recovery-required node and
 does not touch the remaining nodes.
 
-To resume an interrupted rollout, check out the same configuration revision
-and rerun the same command. Nodes already at `spec.kubernetes.version` are
+To resume an interrupted rollout, restore the same configuration revision
+and rerun the command. Nodes already at `spec.kubernetes.version` are
 skipped. Every pending node must still report the rollout's common source
 version, so Katl cannot silently resume with a different source/target pair.
 Do not change `spec.kubernetes.version` while a rollout is incomplete.

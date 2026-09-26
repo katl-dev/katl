@@ -1,4 +1,4 @@
-# Preserve Kubernetes Identity Across Reprovisioning
+# Preserve Kubernetes identity across reprovisioning
 
 A Kubernetes identity is an operator-held secret that lets kubeadm build a
 newly provisioned cluster with the same trust roots and signing identity as a
@@ -80,13 +80,13 @@ API.
 
 ## Bootstrap or rebuild with the identity
 
-Dry-run validates the local identity and its cluster binding without sending
+Planning validates the local identity and its cluster binding without sending
 it or mutating nodes:
 
 ```sh
 katlctl cluster bootstrap --config ./cluster.yaml \
   --identity ./homelab-kubernetes-identity.katlkey \
-  --init-node cp-1 --dry-run
+  --init-node cp-1 --plan
 ```
 
 Then use the same inputs for bootstrap:

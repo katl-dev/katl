@@ -1,4 +1,4 @@
-# KatlOS Operator Guide
+# KatlOS operator guide
 
 These runbooks describe the implemented KatlOS beta operating surface. Start
 with the task that matches the current node state; do not skip directly to a
@@ -10,7 +10,7 @@ installed-node API on port 9443 defaults to trusted-network access for new
 configurations, with opt-in mTLS. See [management access](access.md).
 Keep both on trusted home-lab networks and off the Internet.
 
-## Lifecycle Map
+## Lifecycle map
 
 | Current state | Operator goal | Runbook |
 | --- | --- | --- |
@@ -28,7 +28,7 @@ Keep both on trusted home-lab networks and off the Internet.
 | Cluster is intentionally being discarded | Reset boot state and reinstall | [Wipe and reinstall](wipe-reinstall.md) |
 | A step failed or its state is unclear | Collect evidence and classify the failure | [Troubleshoot KatlOS](troubleshoot.md) |
 
-## Operating Rules
+## Operating rules
 
 The operator workstation needs the `katlctl` binary from the matching release,
 `ssh`, `curl`, and `jq`. Optional checksum and provenance inspection uses GNU
@@ -39,10 +39,10 @@ workstation, not inside the KatlOS image.
 Keep these artifacts together for the life of an evaluation:
 
 - the KatlOS release URL and assets used;
-- the source `ClusterConfig` and any `.katlcfg` produced for PXE or offline use;
+- the source `ClusterConfig`, any `.katlcfg` produced for PXE or offline use,
+  and any optional workstation context;
 - the configured Kubernetes version and any resolved bundle identity reported
   in operation evidence;
-- the retained cluster config and any optional workstation topology context;
 - the mode-`0600` Kubernetes identity and its public fingerprint, when used;
 - the kubeconfig, command results, generation IDs, and relevant timestamps; and
 - independent etcd, application, and persistent-data backups.
@@ -73,7 +73,7 @@ katlctl operations list \
 path for one exact record. Use `--diagnostics verbose` when normal redacted
 status is insufficient.
 
-## Boundaries That Matter During Operations
+## Boundaries that matter during operations
 
 KatlOS generations own the immutable root, UKI, selected sysexts, and compiled
 node configuration. They do not own or roll back etcd, kubeadm mutations,
