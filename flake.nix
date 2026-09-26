@@ -77,6 +77,7 @@
               curl
               dosfstools
               erofs-utils
+              fish
               git
               go
               gofumpt
@@ -96,6 +97,7 @@
               systemdUkify
               util-linux
               xorriso
+              zsh
               zstd
             ])
             ++ [
@@ -105,6 +107,9 @@
 
           shellHook = ''
             source ${katlctlPackageFor pkgs}/share/bash-completion/completions/katlctl.bash
+            export XDG_DATA_DIRS="${katlctlPackageFor pkgs}/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+            # FPATH replaces Zsh's built-in search path, so retain its stock functions.
+            export FPATH="${katlctlPackageFor pkgs}/share/zsh/site-functions:''${FPATH:-$(${pkgs.zsh}/bin/zsh -f -c 'print -r -- $FPATH')}"
             export TMPDIR="''${TMPDIR:-/tmp}"
             export KATL_OVMF_CODE="''${KATL_OVMF_CODE:-${pkgs.OVMFFull.fd}/FV/OVMF_CODE.fd}"
             export KATL_OVMF_VARS="''${KATL_OVMF_VARS:-${pkgs.OVMFFull.fd}/FV/OVMF_VARS.fd}"
