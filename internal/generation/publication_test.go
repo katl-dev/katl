@@ -118,6 +118,7 @@ func TestResumeLivePromotion(t *testing.T) {
 			request := LivePromotionRequest{
 				Root: root, GenerationID: "new", OperationID: "validated-live-apply", Now: now,
 				SetBootDefault: func(_ string, entry string) error { externalDefault = entry; return nil },
+				SetBootOneshot: func(string, string) error { return nil },
 			}
 			if err := PromoteLiveGeneration(request); err != nil {
 				t.Fatal(err)

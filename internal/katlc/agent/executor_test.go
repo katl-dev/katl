@@ -176,8 +176,9 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 		bootDefaults = append(bootDefaults, root+" "+bootEntry)
 		return nil
 	}
-	executor.SetBootOneshot = func(context.Context, string, string) error {
-		t.Fatal("bootstrap armed a boot trial")
+	var bootOneshots []string
+	executor.SetBootOneshot = func(_ context.Context, root string, bootEntry string) error {
+		bootOneshots = append(bootOneshots, root+" "+bootEntry)
 		return nil
 	}
 	ready := false
@@ -237,6 +238,9 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	}
 	if len(bootDefaults) != 1 || bootDefaults[0] != server.Root+" loader/entries/katl-bootstrap-init-01-candidate.conf" {
 		t.Fatalf("boot default calls = %v", bootDefaults)
+	}
+	if len(bootOneshots) != 1 || bootOneshots[0] != server.Root+" loader/entries/katl-bootstrap-init-01-candidate.conf" {
+		t.Fatalf("boot one-shot calls = %v", bootOneshots)
 	}
 	if len(record.PreExecMutationMarkers) != 1 || record.PreExecMutationMarkers[0].MarkerID != "kubeadm-init" {
 		t.Fatalf("markers = %+v", record.PreExecMutationMarkers)
@@ -1335,6 +1339,7 @@ func createAcceptedBootstrapOperation(t *testing.T, store operation.Store, id st
 func configureExecutorBundle(t *testing.T, executor *Executor, payloadVersion string, payload string) (string, string) {
 	t.Helper()
 	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
+	executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
 	executor.ConfigureLocalAPI = func(context.Context, string, operation.BootstrapRequest, ToolRunner) error { return nil }
 	fixture := writeExecutorKubernetesBundleFixture(t, payloadVersion, payload)
 	server := httptest.NewTLSServer(http.FileServer(http.Dir(fixture.root)))

@@ -187,6 +187,32 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 	}
 }
 
+func TestKatlReleaseArtifactNotesIncludeVersionedUpgradeGuide(t *testing.T) {
+	repo := repoRoot(t)
+	gitDir := t.TempDir()
+	runGit(t, gitDir, "init", "--quiet")
+	runGit(t, gitDir, "config", "user.name", "Katl Test")
+	runGit(t, gitDir, "config", "user.email", "test@katl.dev")
+	if err := os.WriteFile(filepath.Join(gitDir, "change"), []byte("release candidate\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, gitDir, "add", "change")
+	runGit(t, gitDir, "commit", "--quiet", "-m", "release: prepare candidate")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.9.0-beta.18")
+	cmd.Dir = gitDir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("notes failed: %v\n%s", err, output)
+	}
+	notes := string(output)
+	for _, want := range []string{"## Upgrade paths", "beta.17", "beta.14", "## Verify"} {
+		if !strings.Contains(notes, want) {
+			t.Fatalf("release notes missing %q:\n%s", want, notes)
+		}
+	}
+}
+
 func TestKatlReleaseArtifactBuildKatlctl(t *testing.T) {
 	repo := repoRoot(t)
 	buildDir := t.TempDir()

@@ -57,6 +57,8 @@ the exact reference for flags in the installed release.
 
 ## Project Documentation
 
+- [Beta.18 release notes](releases/2026.9.0-beta.18.md) explain upgrade paths
+  from earlier betas and their limits.
 - [Support boundary](support.md) defines the tested evaluation surface,
   compatibility promise, trust model, and reporting checklist.
 - [Developing Katl](developing.md) covers builds, persistent `katldev` VMs,

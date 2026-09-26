@@ -1838,6 +1838,7 @@ func TestValidateConfigAutoLiveDigestMatchesConcreteSubmit(t *testing.T) {
 	executor.ConfigApplyRunner = &fakeConfigApplyRunner{}
 	executor.ConfigApplyActivator = &fakeConfigApplyActivator{}
 	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
+	executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
 	server.Dispatcher = executor
 
 	result, err := server.ValidateConfig(context.Background(), &agentapi.ValidateConfigRequest{
@@ -1964,6 +1965,7 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	executor.ConfigApplyRunner = runner
 	executor.ConfigApplyActivator = activator
 	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
+	executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
 	server.Dispatcher = executor
 
 	accepted, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
@@ -2175,6 +2177,7 @@ func TestSubmitOperationAutoConfigApplyRunsAcceptedLivePath(t *testing.T) {
 	executor.ConfigApplyRunner = runner
 	executor.ConfigApplyActivator = activator
 	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
+	executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
 	server.Dispatcher = executor
 
 	accepted, err := server.SubmitOperation(context.Background(), &agentapi.SubmitOperationRequest{
@@ -2227,6 +2230,7 @@ func TestApplyGenerationLiveLoadsInstalledKubeadmInputs(t *testing.T) {
 	executor.ConfigApplyRunner = runner
 	executor.ConfigApplyActivator = activator
 	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
+	executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
 	server.Dispatcher = executor
 
 	accepted, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
@@ -2309,6 +2313,19 @@ func TestApplyGenerationLiveFailureRecordsRollbackState(t *testing.T) {
 	}
 	if activator.rollbackTarget != "generation-0" {
 		t.Fatalf("rollback target = %q, want generation-0", activator.rollbackTarget)
+	}
+	_, candidateStatus, err := generation.ReadGeneration(server.Root, "generation-live-fail")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidateStatus.CommitState != generation.CommitStateAbandoned {
+		t.Fatalf("rolled-back candidate commit state = %q", candidateStatus.CommitState)
+	}
+	if _, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
+		ApiVersion: APIVersion, Kind: "GenerationApplyRequest", ClientRequestId: "retry-after-live-rollback",
+		Actor: "test-actor", CandidateGenerationId: "generation-live-retry", ConfigYaml: configApplyLiveYAML(),
+	}); err != nil {
+		t.Fatalf("retry after successful rollback: %v", err)
 	}
 }
 

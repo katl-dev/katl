@@ -836,10 +836,17 @@ func (e *Executor) markLiveConfigApplyStarted(operationID string, result configa
 }
 
 func (e *Executor) failConfigApplyRecord(operationID string, result configapply.TrustedBundleResult, eventID string, eventType string, phase string, nextAction string, cause error, now time.Time) (operation.OperationRecord, error) {
+	rolledBack := result.Status.Phase == generation.ConfigApplyPhaseRolledBack &&
+		result.Status.Rollback != nil && result.Status.Rollback.Result == generation.ConfigApplyActionPassed
+	if rolledBack {
+		candidate := result.Plan.GenerationRecord.GenerationID
+		if err := abandonCandidateGeneration(e.Root, candidate, operationID, "configuration apply rolled back", now); err != nil {
+			cause = errorsJoin(cause, fmt.Errorf("abandon rolled-back candidate: %w", err))
+			nextAction = "inspect the rolled-back candidate generation and repair its status before retrying"
+			rolledBack = false
+		}
+	}
 	return e.Store.Update(operationID, eventID, eventType, func(record operation.OperationRecord) (operation.OperationRecord, error) {
-		rolledBack := result.Status.Phase == generation.ConfigApplyPhaseRolledBack &&
-			result.Status.Rollback != nil &&
-			result.Status.Rollback.Result == generation.ConfigApplyActionPassed
 		record.Phase = phase
 		record.Result = operation.ResultFailedNeedsRepair
 		record.RecoveryRequired = true

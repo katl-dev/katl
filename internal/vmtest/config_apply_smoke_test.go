@@ -143,6 +143,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 		}
 	}()
 	currentGeneration := currentGenerationFromGuest(t, ctx, guest)
+	waitGenerationPromotion(t, ctx, guest, currentGeneration)
 	enrollConfigApplyNode(t, ctx, result, katlctl, endpoint)
 	guest, client = runConfigApplyModeSmoke(t, ctx, &node, guest, client, result, katlctl, endpoint, currentGeneration)
 	node.Result.finish(StatusPassed, "", runner.time())

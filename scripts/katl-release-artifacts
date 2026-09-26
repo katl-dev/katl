@@ -45,7 +45,7 @@ generate_release_notes() {
     local version="$1"
     local current_tag="v$version"
     local repository_url="${KATL_RELEASE_REPOSITORY_URL:-https://github.com/katl-dev/katl}"
-    local target previous_tag="" range commit hash subject short_hash area summary note
+    local target previous_tag="" range commit hash subject short_hash area summary note release_notes
     local -a commits=()
 
     validate_version "$version"
@@ -90,6 +90,12 @@ generate_release_notes() {
     done
     if ((${#commits[@]} > 0 && shown == 0)); then
         printf '_No release note entries for this release._\n'
+    fi
+
+    release_notes="$repo_root/docs/releases/$version.md"
+    if [[ -f "$release_notes" ]]; then
+        printf '\n'
+        cat "$release_notes"
     fi
 
     printf '\n## Verify\n\n'

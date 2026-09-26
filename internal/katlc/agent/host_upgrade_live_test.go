@@ -35,7 +35,7 @@ func TestHostUpgradeAfterLivePromotion(t *testing.T) {
 			if err := generation.WriteGeneration(server.Root, spec, state); err != nil {
 				t.Fatal(err)
 			}
-			if err := generation.PromoteLiveGeneration(generation.LivePromotionRequest{Root: server.Root, GenerationID: spec.GenerationID, Now: time.Now(), SetBootDefault: func(string, string) error { return nil }}); err != nil {
+			if err := generation.PromoteLiveGeneration(generation.LivePromotionRequest{Root: server.Root, GenerationID: spec.GenerationID, Now: time.Now(), SetBootDefault: func(string, string) error { return nil }, SetBootOneshot: func(string, string) error { return nil }}); err != nil {
 				t.Fatal(err)
 			}
 
