@@ -58,7 +58,10 @@ when direnv changes the environment:
 ```sh
 mkdir -p ~/.config/fish/completions
 katlctl completion fish > ~/.config/fish/completions/katlctl.fish
+source ~/.config/fish/completions/katlctl.fish
 ```
+
+New Fish sessions load the installed script automatically.
 
 The `v2026.9.0-beta.16` tag does not include this flake package; for that
 release, use Homebrew or the [release binary](installing.md#artifacts).
