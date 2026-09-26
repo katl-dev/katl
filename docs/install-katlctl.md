@@ -50,8 +50,15 @@ katlctl version
 
 The Nix-built CLI reports the pinned Git commit rather than the release version.
 The flake package installs Bash, Fish, and Zsh completion scripts alongside
-`katlctl`. The flake's development shell enables completion in Bash, Fish,
-and Zsh.
+`katlctl`. Shells started by `nix develop` load those completions. If you use
+direnv in an already-running Fish shell, install the Fish script in its user
+completion directory once; Fish does not refresh its completion search path
+when direnv changes the environment:
+
+```sh
+mkdir -p ~/.config/fish/completions
+katlctl completion fish > ~/.config/fish/completions/katlctl.fish
+```
 
 The `v2026.9.0-beta.16` tag does not include this flake package; for that
 release, use Homebrew or the [release binary](installing.md#artifacts).

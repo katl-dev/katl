@@ -35,6 +35,7 @@ func TestDocumentedKatlctlCommandsAndFlagsExist(t *testing.T) {
 	}
 
 	root := newKatlctlCommand(context.Background(), io.Discard, io.Discard)
+	root.InitDefaultCompletionCmd()
 	for _, path := range paths {
 		content, err := os.Open(path)
 		if err != nil {
