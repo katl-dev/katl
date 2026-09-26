@@ -94,6 +94,10 @@ install -m 0755 "katlctl-$VERSION-$PLATFORM" ~/.local/bin/katlctl
 katlctl version
 ```
 
+You can also install `katlctl` through the
+[Katl Homebrew tap or Nix flake](docs/install-katlctl.md). Check that the CLI
+source matches the selected KatlOS release.
+
 The ISO already contains the matching KatlOS root image. Users do not need to
 distribute a separate root image for ISO installs. Loose artifacts remain
 available for PXE.

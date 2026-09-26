@@ -63,6 +63,10 @@ install -m 0755 "katlctl-$VERSION-$PLATFORM" ~/.local/bin/katlctl
 katlctl version
 ```
 
+For package-manager installation, see [Install katlctl](install-katlctl.md).
+The Nix-built CLI reports a Git commit rather than a release version; select
+the release tag that matches the KatlOS artifacts.
+
 For USB, optical, or virtual media, use the primary release artifact:
 
 ```text

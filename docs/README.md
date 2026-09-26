@@ -29,6 +29,7 @@ above are the better place to begin.
 
 | Goal | Guide |
 | --- | --- |
+| Install the workstation CLI | [Install katlctl](install-katlctl.md) |
 | Install a first ISO-based cluster | [Build your first cluster](getting-started.md) |
 | Author and validate all installation inputs | [Installation reference](installing.md) |
 | Automate UEFI network boot | [Install with PXE and Matchbox](install-pxe-matchbox.md) |
