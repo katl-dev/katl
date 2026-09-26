@@ -28,6 +28,7 @@
           src = self;
           vendorHash = "sha256-e2EZlawAo8JWsrRl6cbKM+IY2ipbjzDfiRROrfjZgpI=";
           subPackages = [ "cmd/katlctl" ];
+          nativeBuildInputs = [ pkgs.installShellFiles ];
           env.CGO_ENABLED = "0";
           ldflags = [
             "-s"
@@ -36,6 +37,15 @@
             "-X main.commit=${revision}"
             "-X main.date=${self.lastModifiedDate or "unknown"}"
           ];
+          postInstall = ''
+            "$out/bin/katlctl" completion bash > katlctl.bash
+            "$out/bin/katlctl" completion fish > katlctl.fish
+            "$out/bin/katlctl" completion zsh > katlctl.zsh
+            installShellCompletion --cmd katlctl \
+              --bash katlctl.bash \
+              --fish katlctl.fish \
+              --zsh katlctl.zsh
+          '';
           meta.mainProgram = "katlctl";
         };
       katlctlFor =
@@ -94,6 +104,7 @@
             ];
 
           shellHook = ''
+            source ${katlctlPackageFor pkgs}/share/bash-completion/completions/katlctl.bash
             export TMPDIR="''${TMPDIR:-/tmp}"
             export KATL_OVMF_CODE="''${KATL_OVMF_CODE:-${pkgs.OVMFFull.fd}/FV/OVMF_CODE.fd}"
             export KATL_OVMF_VARS="''${KATL_OVMF_VARS:-${pkgs.OVMFFull.fd}/FV/OVMF_VARS.fd}"
