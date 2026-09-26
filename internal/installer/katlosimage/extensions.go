@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"slices"
 
-	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/systemextensionbundle"
 )
 
@@ -36,10 +35,7 @@ func (p Payload) validateExtensionClosure(ctx context.Context) error {
 		return nil
 	}
 	for _, name := range slices.Sorted(maps.Keys(release.Extensions)) {
-		_, _, err := systemextensionbundle.ResolveSelection(ctx, release.Target, release, manifest.SystemExtension{
-			Release: name,
-		}, p.ResolveReleaseExtension)
-		if err != nil {
+		if err := systemextensionbundle.VerifyLocal(ctx, filepath.Join(p.Root, ExtensionLayoutPath), release.Extensions[name], name, release.Target); err != nil {
 			return fmt.Errorf("image extension %q: %w", name, err)
 		}
 	}

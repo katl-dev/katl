@@ -79,7 +79,7 @@ func TestImageExtensionClosure(t *testing.T) {
 	if err := os.WriteFile(image, []byte("selected driver image"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	packed, _, err := systemextensionbundle.Export(context.Background(), filepath.Join(root, ExtensionLayoutPath), systemextensionbundle.BuildRequest{
+	packed, built, err := systemextensionbundle.Export(context.Background(), filepath.Join(root, ExtensionLayoutPath), systemextensionbundle.BuildRequest{
 		Name:                       "drbd9",
 		ArtifactVersion:            index.Version,
 		PayloadVersion:             "9.3.4",
@@ -139,6 +139,24 @@ func TestImageExtensionClosure(t *testing.T) {
 	}
 	if _, err := ResolveDirectory(context.Background(), root, expectedImage()); err == nil || !strings.Contains(err.Error(), "kernel release") {
 		t.Fatalf("wrong-kernel embedded extension = %v", err)
+	}
+	index.ExtensionRelease.Target.Kernel.Release = "6.12.1"
+	data, err = json.Marshal(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "katlos/image.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	blob := filepath.Join(root, ExtensionLayoutPath, "blobs", "sha256", strings.TrimPrefix(built.Bundle.Payloads[0].Digest, "sha256:"))
+	if err := os.Chmod(blob, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blob, []byte(strings.Repeat("x", len("selected driver image"))), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveDirectory(context.Background(), root, expectedImage()); err == nil || !strings.Contains(err.Error(), "verify OCI layer") {
+		t.Fatalf("corrupt embedded extension = %v", err)
 	}
 	if err := os.RemoveAll(filepath.Join(root, ExtensionLayoutPath)); err != nil {
 		t.Fatal(err)
