@@ -543,14 +543,25 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		submit.HostUpgrade.ConfigYaml = string(document)
 	}
 	prepared, err := conn.Client.SubmitOperation(ctx, submit)
+	if grpcstatus.Code(err) == codes.InvalidArgument && grpcstatus.Convert(err).Message() == `kind must be "SubmitOperationRequest"` {
+		if opts.applyConfig {
+			return fmt.Errorf("this node cannot plan a combined OS and configuration upgrade; upgrade without --apply-config first, then apply the configuration separately")
+		}
+		// Older agents support host upgrades, but only the original request kind
+		// and source-state dry-run. Reuse that contract for the first upgrade.
+		submit.Kind = "SubmitOperationRequest"
+		prepared, err = conn.Client.SubmitOperation(ctx, submit)
+	}
 	if err != nil {
 		return err
 	}
-	if prepared.GetHostUpgradePreview() == nil {
+	if submit.Kind == "HostUpgradeRequestV2" && prepared.GetHostUpgradePreview() == nil {
 		return fmt.Errorf("source agent does not provide target-generation upgrade planning; upgrade the source agent before retrying")
 	}
-	submit.HostUpgrade.ImageSha256 = prepared.HostUpgradePreview.ImageSha256
-	submit.HostUpgrade.ImageSizeBytes = prepared.HostUpgradePreview.ImageSizeBytes
+	if preview := prepared.GetHostUpgradePreview(); preview != nil {
+		submit.HostUpgrade.ImageSha256 = preview.ImageSha256
+		submit.HostUpgrade.ImageSizeBytes = preview.ImageSizeBytes
+	}
 	report := hostUpgradeReport{
 		Node:       target.nodeName,
 		Version:    opts.version,
@@ -633,11 +644,12 @@ func writeHostUpgradeReport(stdout io.Writer, output string, report hostUpgradeR
 		return writeJSON(stdout, report)
 	}
 	if report.Result == "planned" {
-		if _, err := fmt.Fprintf(stdout, "%s can upgrade to %s %s\n", report.Node, label, report.Version); err != nil {
+		if report.Plan == nil {
+			_, err := fmt.Fprintf(stdout, "%s passed source upgrade prerequisites for %s %s; the target image will be checked during staging\n", report.Node, label, report.Version)
 			return err
 		}
-		if report.Plan == nil {
-			return nil
+		if _, err := fmt.Fprintf(stdout, "%s can upgrade to %s %s\n", report.Node, label, report.Version); err != nil {
+			return err
 		}
 		w := newTable(stdout)
 		w.row("COMPONENT", "CURRENT", "TARGET")

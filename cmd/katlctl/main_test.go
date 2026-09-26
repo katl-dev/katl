@@ -2295,6 +2295,79 @@ func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 	}
 }
 
+func TestHostUpgradePlanUsesLegacyRequestForOlderNode(t *testing.T) {
+	fake := readyHostUpgradeClient()
+	fake.submitError = func(request *agentapi.SubmitOperationRequest) error {
+		if request.Kind == "HostUpgradeRequestV2" {
+			return grpcstatus.Error(codes.InvalidArgument, `kind must be "SubmitOperationRequest"`)
+		}
+		return nil
+	}
+	installKatlcDial(t, func(string) {}, fake)
+
+	var stdout bytes.Buffer
+	err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--version", "2026.9.0-beta.16", "--config", writeClusterConfig(t), "--plan"}, &stdout, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.submitRequests) != 2 || fake.submitRequests[0].Kind != "HostUpgradeRequestV2" || fake.submitRequests[1].Kind != "SubmitOperationRequest" || !fake.submitRequests[1].DryRun {
+		t.Fatalf("plan requests = %#v", fake.submitRequests)
+	}
+	if len(fake.rebootRequests) != 0 {
+		t.Fatal("plan rebooted the node")
+	}
+	if !strings.Contains(stdout.String(), "passed source upgrade prerequisites") || !strings.Contains(stdout.String(), "target image will be checked during staging") {
+		t.Fatalf("plan output = %q", stdout.String())
+	}
+}
+
+func TestHostUpgradeCombinedPlanExplainsOlderNode(t *testing.T) {
+	fake := readyHostUpgradeClient()
+	fake.nodeStatus.InventoryNodeName = "cp-1"
+	fake.submitError = func(request *agentapi.SubmitOperationRequest) error {
+		return grpcstatus.Error(codes.InvalidArgument, `kind must be "SubmitOperationRequest"`)
+	}
+	installKatlcDial(t, func(string) {}, fake)
+
+	err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--version", "2026.9.0-beta.16", "--config", writeClusterConfig(t), "--apply-config", "--plan"}, io.Discard, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "upgrade without --apply-config first") {
+		t.Fatalf("run() error = %v", err)
+	}
+	if len(fake.submitRequests) != 1 || !fake.submitRequests[0].DryRun {
+		t.Fatalf("combined plan requests = %#v", fake.submitRequests)
+	}
+}
+
+func TestHostUpgradeUsesLegacyRequestThroughReboot(t *testing.T) {
+	fake := readyHostUpgradeClient()
+	fake.submitError = func(request *agentapi.SubmitOperationRequest) error {
+		if request.Kind == "HostUpgradeRequestV2" {
+			return grpcstatus.Error(codes.InvalidArgument, `kind must be "SubmitOperationRequest"`)
+		}
+		return nil
+	}
+	installKatlcDial(t, func(string) {}, fake)
+
+	var stdout bytes.Buffer
+	err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--version", "2026.9.0-beta.16", "--config", writeClusterConfig(t), "--timeout", "1m", "--output", "json"}, &stdout, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.submitRequests) != 3 || fake.submitRequests[1].Kind != "SubmitOperationRequest" || !fake.submitRequests[1].DryRun || fake.submitRequests[2].Kind != "SubmitOperationRequest" || fake.submitRequests[2].DryRun {
+		t.Fatalf("upgrade requests = %#v", fake.submitRequests)
+	}
+	if len(fake.rebootRequests) != 1 {
+		t.Fatalf("reboot requests = %d, want one", len(fake.rebootRequests))
+	}
+	var report hostUpgradeReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Result != operation.ResultSucceeded || !report.Rebooted || report.BootHealth != generation.HealthStateHealthy {
+		t.Fatalf("upgrade report = %#v", report)
+	}
+}
+
 func TestHostUpgradeUsesRuntimeArchitectureWithoutKubernetesExtension(t *testing.T) {
 	architecture, err := nodeArtifactArchitecture(&agentapi.Generation{RuntimeArchitecture: "amd64"})
 	if err != nil {
@@ -2834,6 +2907,7 @@ type fakeKatlcAgentClient struct {
 	operationLists          []*agentapi.ListOperationsResponse
 	operationsRequest       *agentapi.ListOperationsRequest
 	onSubmit                func(*agentapi.SubmitOperationRequest)
+	submitError             func(*agentapi.SubmitOperationRequest) error
 	rebootRequests          []*agentapi.RebootRequest
 	onReboot                func(*agentapi.RebootRequest)
 	shutdownRequests        []*agentapi.ShutdownRequest
@@ -3018,9 +3092,14 @@ func (c *fakeKatlcAgentClient) SubmitOperation(_ context.Context, req *agentapi.
 	}
 	c.submitRequest = req
 	c.submitRequests = append(c.submitRequests, req)
+	if c.submitError != nil {
+		if err := c.submitError(req); err != nil {
+			return nil, err
+		}
+	}
 	if req.DryRun {
 		var preview *agentapi.HostUpgradePreview
-		if req.HostUpgrade != nil && c.upgradePreview != nil {
+		if req.Kind == "HostUpgradeRequestV2" && req.HostUpgrade != nil && c.upgradePreview != nil {
 			preview = proto.Clone(c.upgradePreview).(*agentapi.HostUpgradePreview)
 			if req.HostUpgrade.ImageSha256 != "" {
 				preview.ImageSha256 = req.HostUpgrade.ImageSha256
