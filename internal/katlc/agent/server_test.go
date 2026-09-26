@@ -867,6 +867,45 @@ func TestSubmitOperationRecordsHostUpgrade(t *testing.T) {
 	}
 }
 
+func TestHostUpgradeOperationKindOwnsNewFields(t *testing.T) {
+	server := newTestServer(t)
+	writeKnownGoodHostUpgradeSource(t, server.Root)
+	nodeStatus, err := server.GetNodeStatus(context.Background(), &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(nodeStatus.GetSupportedOperationKinds(), OperationKindHostUpgrade) || !contains(nodeStatus.GetSupportedOperationKinds(), operationKindHostUpgradeV2) {
+		t.Fatalf("supported operation kinds = %v, want both host upgrade contracts", nodeStatus.GetSupportedOperationKinds())
+	}
+	req := hostUpgradeSubmitRequest("req-versioned-host-upgrade")
+	req.DryRun = true
+	req.HostUpgrade.ConfigYaml = "apiVersion: katl.dev/v1alpha1\n"
+
+	_, err = server.SubmitOperation(context.Background(), req)
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "requires HostUpgradeRequestV2") {
+		t.Fatalf("SubmitOperation error = %v, want versioned RPC guidance", err)
+	}
+	req.OperationKind = operationKindHostUpgradeV2
+	req.RequestDigest = ""
+	_, err = server.SubmitOperation(context.Background(), req)
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "host upgrade planner is not available") {
+		t.Fatalf("host-upgrade-v2 error = %v, want planner preflight", err)
+	}
+
+	req.OperationKind = OperationKindHostUpgrade
+	req.Kind = hostUpgradeRequestKind
+	req.RequestDigest = ""
+	_, err = server.SubmitOperation(context.Background(), req)
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "host upgrade planner is not available") {
+		t.Fatalf("SubmitOperation with beta kind error = %v, want retained beta preflight", err)
+	}
+	req.OperationKind = operationKindHostUpgradeV2
+	_, err = server.SubmitOperation(context.Background(), req)
+	if status.Code(err) != codes.InvalidArgument || !strings.Contains(err.Error(), "kind must be") {
+		t.Fatalf("host-upgrade-v2 with beta request kind error = %v, want original request kind", err)
+	}
+}
+
 func TestHostUpgradeDryRunRejectsUnknownSourceWithoutRecord(t *testing.T) {
 	server := newTestServer(t)
 	writeKnownGoodHostUpgradeSource(t, server.Root)

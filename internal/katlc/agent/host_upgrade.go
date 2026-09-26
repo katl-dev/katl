@@ -15,10 +15,13 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-const OperationKindHostUpgrade = "host-upgrade"
+const (
+	OperationKindHostUpgrade   = "host-upgrade"
+	operationKindHostUpgradeV2 = "host-upgrade-v2"
+)
 
-// A distinct request kind makes older source agents reject required planning
-// and combined-configuration semantics instead of ignoring new protobuf fields.
+// The beta.16 client used this kind on SubmitOperation. Retain it while those
+// clients and nodes remain supported; new clients use host-upgrade-v2.
 const hostUpgradeRequestKind = "HostUpgradeRequestV2"
 
 func hostUpgradeFromProto(req *agentapi.HostUpgradeOperationRequest) operation.HostUpgrade {
@@ -36,7 +39,7 @@ func hostUpgradeFromProto(req *agentapi.HostUpgradeOperationRequest) operation.H
 }
 
 func validateHostUpgradeRequest(kind string, req *agentapi.HostUpgradeOperationRequest) error {
-	if kind != OperationKindHostUpgrade {
+	if kind != OperationKindHostUpgrade && kind != operationKindHostUpgradeV2 {
 		return fmt.Errorf("operationKind %q does not accept hostUpgrade", kind)
 	}
 	return operation.ValidateHostUpgrade(hostUpgradeFromProto(req))
@@ -107,6 +110,7 @@ func (s *Server) acceptHostUpgradeOperation(req *agentapi.SubmitOperationRequest
 	if err := s.validateHostUpgradePlan(req.GetHostUpgrade()); err != nil {
 		return operation.OperationRecord{}, nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
+	// Both host upgrade operation kinds use the same durable lifecycle after preflight.
 	record := operation.OperationRecord{
 		OperationID:                 id,
 		OperationKind:               OperationKindHostUpgrade,

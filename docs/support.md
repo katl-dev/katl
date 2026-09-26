@@ -3,7 +3,9 @@
 KatlOS is experimental beta software for home-lab evaluation and development.
 It is not supported for production clusters, security-sensitive workloads,
 compliance environments, or systems whose availability depends on KatlOS.
-There is no support SLA, security-response SLA, or compatibility guarantee.
+There is no support SLA or security-response SLA. The network management API
+has a bounded compatibility guarantee beginning with the first stable release;
+see [agent API compatibility](internal/agent-api-compatibility.md).
 
 ## Supported Evaluation Surface
 
@@ -66,16 +68,19 @@ This proves which repository workflow produced the bytes. It does not provide:
 
 ## Compatibility Promise
 
-All `v1alpha1` source, bundle, operation, API, and persisted-state formats are
+All `v1alpha1` source, bundle, operation, and persisted-state formats are
 experimental. They may change incompatibly between beta releases. Katl does
-not promise forward or backward compatibility with another beta, automatic
-state migration, or an upgrade path from every development build. Preserve the
-source `ClusterConfig`, exact release assets, checksums, OCI digests, and
-recovery data. Reinstall may be required after an incompatible change.
+not promise automatic state migration or an upgrade path from every development
+build. Beginning with the first stable release, the node's network management
+API follows the [agent API compatibility policy](internal/agent-api-compatibility.md):
+a newer `katlctl` supports the current and two preceding stable release series
+where the node has the required capability. Preserve the source `ClusterConfig`,
+exact release assets, checksums, OCI digests, and recovery data. Reinstall may
+be required after an incompatible change outside that API guarantee.
 
 Use the `katlctl` binary from the same KatlOS release to validate and compile
-configuration. Mixing release trains is outside the tested surface unless the
-release notes explicitly say otherwise.
+configuration. The management API window does not make configuration formats
+from different release trains interchangeable.
 
 ## Upgrade And Recovery Limits
 

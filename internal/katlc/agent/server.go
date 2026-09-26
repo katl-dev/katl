@@ -62,6 +62,7 @@ var bootstrapOperationKinds = []string{
 	OperationKindKubeadmControlPlaneConfig,
 	OperationKindDestructiveReset,
 	OperationKindHostUpgrade,
+	operationKindHostUpgradeV2,
 	OperationKindEtcdMemberRemove,
 }
 
@@ -464,7 +465,7 @@ func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperat
 	}
 	now := s.clock()
 	var preview *agentapi.HostUpgradePreview
-	if req.Kind == hostUpgradeRequestKind {
+	if req.GetHostUpgrade() != nil && (req.OperationKind == operationKindHostUpgradeV2 || req.Kind == hostUpgradeRequestKind) {
 		var err error
 		preview, err = s.previewHostUpgrade(ctx, req)
 		if err != nil {
@@ -815,13 +816,14 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	if req.ApiVersion != APIVersion {
 		return status.Errorf(codes.InvalidArgument, "apiVersion must be %q", APIVersion)
 	}
-	if req.Kind != RequestKind && !(req.Kind == hostUpgradeRequestKind && req.OperationKind == OperationKindHostUpgrade && req.GetHostUpgrade() != nil) {
+	betaHostUpgrade := req.Kind == hostUpgradeRequestKind && req.OperationKind == OperationKindHostUpgrade && req.GetHostUpgrade() != nil
+	if req.Kind != RequestKind && !betaHostUpgrade {
 		return status.Errorf(codes.InvalidArgument, "kind must be %q", RequestKind)
 	}
-	if req.GetHostUpgrade().GetConfigYaml() != "" && req.Kind != hostUpgradeRequestKind {
+	if req.GetHostUpgrade().GetConfigYaml() != "" && req.OperationKind != operationKindHostUpgradeV2 && !betaHostUpgrade {
 		return status.Error(codes.InvalidArgument, "combined upgrade requires HostUpgradeRequestV2")
 	}
-	if req.GetHostUpgrade().GetResolveTargetOnly() && (!req.DryRun || req.Kind != hostUpgradeRequestKind) {
+	if req.GetHostUpgrade().GetResolveTargetOnly() && (!req.DryRun || (req.OperationKind != operationKindHostUpgradeV2 && !betaHostUpgrade)) {
 		return status.Error(codes.InvalidArgument, "target discovery is only valid for a versioned upgrade dry-run")
 	}
 	if strings.TrimSpace(req.ClientRequestId) == "" {
@@ -1387,7 +1389,7 @@ func resourceLocks(kind string) []string {
 		return []string{"generation-state.lock", "config-apply.lock"}
 	case OperationKindDestructiveReset:
 		return []string{"generation-state.lock", "kubeadm-state.lock", "destructive-reset.lock"}
-	case OperationKindHostUpgrade:
+	case OperationKindHostUpgrade, operationKindHostUpgradeV2:
 		return []string{"generation-state.lock", "sysupdate.lock"}
 	case OperationKindEtcdMemberRemove:
 		return []string{"generation-state.lock", "etcd-state.lock"}
@@ -1408,7 +1410,7 @@ func operationScope(kind string) string {
 		return "host-generation"
 	case OperationKindDestructiveReset:
 		return "destructive-reset"
-	case OperationKindHostUpgrade:
+	case OperationKindHostUpgrade, operationKindHostUpgradeV2:
 		return "host-generation"
 	case OperationKindEtcdMemberRemove:
 		return "etcd-state"

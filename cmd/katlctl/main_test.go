@@ -2251,7 +2251,7 @@ func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 			ImageSha256:    strings.Repeat("b", 64),
 			ImageSizeBytes: 4096,
 		},
-		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-cp-1", AgentStartId: "before", CurrentGenerationId: "generation-current", Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
+		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-cp-1", AgentStartId: "before", CurrentGenerationId: "generation-current", SupportedOperationKinds: []string{"host-upgrade-v2"}, Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
 		generation:      &agentapi.Generation{GenerationId: "generation-current", Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", Architecture: "x86_64"}}},
 		submitAccepted:  &agentapi.OperationAccepted{OperationId: "host-upgrade-01", OperationKind: "host-upgrade"},
 		operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "arm-trial-boot"},
@@ -2279,6 +2279,9 @@ func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 	if err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--version", "v2026.7.0-alpha.9", "--config", writeClusterConfig(t), "--timeout", "1m", "--output", "json"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
+	if fake.submitRequest.OperationKind != "host-upgrade-v2" || fake.submitRequest.Kind != "SubmitOperationRequest" {
+		t.Fatalf("upgrade request kind = %q, operation kind = %q", fake.submitRequest.Kind, fake.submitRequest.OperationKind)
+	}
 	request := fake.submitRequest.GetHostUpgrade()
 	if request.GetImageUrl() != "https://github.com/katl-dev/katl/releases/download/v2026.7.0-alpha.9/katlos-upgrade-2026.7.0-alpha.9-x86_64.squashfs" || !strings.HasPrefix(request.GetCandidateGenerationId(), "katlos-2026.7.0-alpha.9-") {
 		t.Fatalf("host upgrade request = %#v", request)
@@ -2297,6 +2300,7 @@ func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 
 func TestHostUpgradePlanUsesLegacyRequestForOlderNode(t *testing.T) {
 	fake := readyHostUpgradeClient()
+	fake.nodeStatus.SupportedOperationKinds = []string{"host-upgrade"}
 	fake.submitError = func(request *agentapi.SubmitOperationRequest) error {
 		if request.Kind == "HostUpgradeRequestV2" {
 			return grpcstatus.Error(codes.InvalidArgument, `kind must be "SubmitOperationRequest"`)
@@ -2321,8 +2325,40 @@ func TestHostUpgradePlanUsesLegacyRequestForOlderNode(t *testing.T) {
 	}
 }
 
+func TestHostUpgradePlanUsesShippedBetaRequest(t *testing.T) {
+	fake := readyHostUpgradeClient()
+	fake.nodeStatus.SupportedOperationKinds = []string{"host-upgrade"}
+	installKatlcDial(t, func(string) {}, fake)
+
+	var stdout bytes.Buffer
+	err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--version", "2026.9.0-beta.16", "--config", writeClusterConfig(t), "--plan"}, &stdout, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.submitRequests) != 1 || fake.submitRequests[0].Kind != "HostUpgradeRequestV2" || fake.submitRequests[0].OperationKind != "host-upgrade" {
+		t.Fatalf("plan requests = %#v", fake.submitRequests)
+	}
+	if !strings.Contains(stdout.String(), "can upgrade to KatlOS 2026.9.0-beta.16") {
+		t.Fatalf("plan output = %q", stdout.String())
+	}
+}
+
+func TestHostUpgradePlanDoesNotRetryRejectedV2Operation(t *testing.T) {
+	fake := readyHostUpgradeClient()
+	fake.submitError = func(*agentapi.SubmitOperationRequest) error {
+		return grpcstatus.Error(codes.FailedPrecondition, "source generation is unhealthy")
+	}
+	installKatlcDial(t, func(string) {}, fake)
+
+	err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--version", "2026.9.0-beta.16", "--config", writeClusterConfig(t), "--plan"}, io.Discard, io.Discard)
+	if grpcstatus.Code(err) != codes.FailedPrecondition || len(fake.submitRequests) != 1 || fake.submitRequests[0].OperationKind != "host-upgrade-v2" {
+		t.Fatalf("plan error = %v, requests = %#v, want V2 refusal without retry", err, fake.submitRequests)
+	}
+}
+
 func TestHostUpgradeCombinedPlanExplainsOlderNode(t *testing.T) {
 	fake := readyHostUpgradeClient()
+	fake.nodeStatus.SupportedOperationKinds = []string{"host-upgrade"}
 	fake.nodeStatus.InventoryNodeName = "cp-1"
 	fake.submitError = func(request *agentapi.SubmitOperationRequest) error {
 		return grpcstatus.Error(codes.InvalidArgument, `kind must be "SubmitOperationRequest"`)
@@ -2340,6 +2376,7 @@ func TestHostUpgradeCombinedPlanExplainsOlderNode(t *testing.T) {
 
 func TestHostUpgradeUsesLegacyRequestThroughReboot(t *testing.T) {
 	fake := readyHostUpgradeClient()
+	fake.nodeStatus.SupportedOperationKinds = []string{"host-upgrade"}
 	fake.submitError = func(request *agentapi.SubmitOperationRequest) error {
 		if request.Kind == "HostUpgradeRequestV2" {
 			return grpcstatus.Error(codes.InvalidArgument, `kind must be "SubmitOperationRequest"`)
@@ -2491,7 +2528,7 @@ func readyHostUpgradeClient() *fakeKatlcAgentClient {
 			ImageSha256:    strings.Repeat("b", 64),
 			ImageSizeBytes: 4096,
 		},
-		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-cp-1", AgentStartId: "before", CurrentGenerationId: "generation-current", Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
+		nodeStatus:      &agentapi.NodeStatus{MachineId: "machine-cp-1", AgentStartId: "before", CurrentGenerationId: "generation-current", SupportedOperationKinds: []string{"host-upgrade-v2"}, Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
 		generation:      &agentapi.Generation{GenerationId: "generation-current", RuntimeArchitecture: "x86_64", RuntimeFlavour: "standard"},
 		submitAccepted:  &agentapi.OperationAccepted{OperationId: "host-upgrade-01", OperationKind: "host-upgrade"},
 		operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "arm-trial-boot"},
@@ -3099,7 +3136,7 @@ func (c *fakeKatlcAgentClient) SubmitOperation(_ context.Context, req *agentapi.
 	}
 	if req.DryRun {
 		var preview *agentapi.HostUpgradePreview
-		if req.Kind == "HostUpgradeRequestV2" && req.HostUpgrade != nil && c.upgradePreview != nil {
+		if (req.OperationKind == "host-upgrade-v2" || req.Kind == "HostUpgradeRequestV2") && req.HostUpgrade != nil && c.upgradePreview != nil {
 			preview = proto.Clone(c.upgradePreview).(*agentapi.HostUpgradePreview)
 			if req.HostUpgrade.ImageSha256 != "" {
 				preview.ImageSha256 = req.HostUpgrade.ImageSha256
