@@ -33,6 +33,9 @@ else
 fi
 ```
 
+You can install the CLI through [Homebrew or Nix](install-katlctl.md) instead of
+the downloaded binary. Keep the CLI source aligned with the ISO release.
+
 The CLI and KatlOS artifacts must come from the same release. Checksums are a
 quick transport-integrity check; the optional
 [release verification guide](operations/verify-release.md) adds GitHub build
