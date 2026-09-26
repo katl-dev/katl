@@ -1,4 +1,4 @@
-# Wipe and Reinstall KatlOS
+# Wipe and reinstall KatlOS
 
 This is destructive cluster-discard or node-replacement preparation. It is not
 backup, etcd recovery, same-cluster repair, or rollback.
@@ -8,7 +8,7 @@ installer media or PXE. Existing on-disk Kubernetes and Katl state remain until
 the installer subsequently wipes the selected disk. Keep installer media ready
 before accepting the operation.
 
-## Reinstall From The Installer
+## Reinstall from the installer
 
 Before Kubernetes bootstrap, you can boot PXE or installer media and run:
 
@@ -36,7 +36,7 @@ arguments. Existing generations retain their original image paths for rollback;
 an older installation can therefore still show its legacy raw-runtime entry
 until it is reinstalled. Select the explicitly named configuration entry.
 
-## Before Planning
+## Before planning
 
 - preserve any required external backups and recovery material;
 - confirm which cluster identity is being discarded;
@@ -50,7 +50,7 @@ The retained `ClusterConfig` or PXE/offline config bundle is the normal topology
 source. A saved workstation context is optional shorthand for repeated work;
 the lower-level inventory input is reserved for recovery tooling.
 
-## Plan a Whole-Cluster Wipe
+## Plan a whole-cluster wipe
 
 ```sh
 katlctl cluster wipe \
@@ -75,7 +75,7 @@ Do not proceed to reinstall until every intended reset reports `terminal: true`
 and `result: succeeded`, then confirm the nodes are off. Treat
 `recoveryRequired: true` as a stop condition.
 
-## Plan One Node Replacement
+## Plan one node replacement
 
 For an enrolled worker, single-node wipe coordinates Kubernetes Node cleanup
 before the node-local reset:
@@ -84,8 +84,8 @@ before the node-local reset:
 katlctl node wipe worker-1 --config ./cluster.yaml --plan
 ```
 
-After saving it, the workstation context supplies topology, so
-the source can be omitted:
+After reviewing the plan, run the wipe with a kubeconfig so Katl can
+remove the enrolled Kubernetes Node:
 
 ```sh
 katlctl node wipe worker-1 --config ./cluster.yaml --kubeconfig ./kubeconfig
@@ -127,11 +127,11 @@ Kubernetes Node object if necessary, then reinstall the failed machine.
 
 After every selected wipe operation succeeds and powers off its node:
 
-1. select the verified installer ISO or PXE path and start the node;
-2. apply the intended `ClusterConfig` source and node selection;
-3. inspect the target disk again before authorizing installer wipe;
-4. wait for generation 0 handoff; and
-5. run `katlctl node join NODE --config ./cluster.yaml` for a replacement in an
+1. Select the verified installer ISO or PXE path and start the node.
+2. Apply the intended `ClusterConfig` source and node selection.
+3. Inspect the target disk again before authorizing installer wipe.
+4. Wait for generation 0 handoff.
+5. Run `katlctl node join NODE --config ./cluster.yaml` for a replacement in an
    existing cluster, or `katlctl cluster bootstrap --config ./cluster.yaml` for a
    newly installed cluster.
 

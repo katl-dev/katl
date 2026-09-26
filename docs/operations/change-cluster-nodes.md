@@ -1,4 +1,4 @@
-# Add, Replace, or Remove Cluster Nodes
+# Add, replace, or remove cluster nodes
 
 Katl changes cluster membership only through explicit bootstrap, join, and wipe
 operations. Editing `spec.nodes` by itself is not authority to drain, delete,
@@ -18,7 +18,7 @@ katlctl cluster etcd members --config ./cluster.yaml
 The etcd check is required for control-plane work and optional for a worker-only
 cluster change.
 
-## Add One Node
+## Add one node
 
 Add one uniquely named node with its final role, stable disk selector,
 management address, and SSH access to `cluster.yaml`. Validate the whole source:
@@ -49,7 +49,7 @@ Verify the new Kubernetes Node, and for a control plane verify the new stacked
 etcd member and local static pods. Your CNI remains responsible for scheduling
 its node components and making the Node Ready.
 
-## Replace One Node Without Renaming It
+## Replace one node without renaming it
 
 While the old node is still listed under its original name, plan its removal:
 
@@ -77,7 +77,7 @@ Katl joins the named replacement without rerunning
 `kubeadm init`. Confirm etcd membership, Node readiness after CNI convergence,
 and workload behavior before replacing another machine.
 
-## Remove One Node Permanently
+## Remove one node permanently
 
 Do not delete the config entry first. Keep the node listed while planning and
 executing its Kubernetes/etcd-aware wipe:
@@ -97,7 +97,7 @@ state.
 Omitting a node merely stops `cluster apply` from targeting it. Katl deliberately
 does not infer that omission means removal.
 
-## Recover a Failed Control Plane
+## Recover a failed control plane
 
 If a failed control plane cannot complete a coordinated wipe, inspect membership
 through a healthy survivor:
@@ -119,7 +119,7 @@ Kubernetes Node through the Kubernetes API, then reinstall and join the machine
 with `node join`. Loss of etcd quorum and snapshot-based disaster recovery
 remain outside the supported beta workflow.
 
-## Refused Transitions
+## Refused transitions
 
 Katl refuses enrolled-node rename and role change during `cluster apply`.
 Changing a control plane into a worker, or the reverse, requires explicit wipe,

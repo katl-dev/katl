@@ -87,7 +87,7 @@ go run ./cmd/katl-mkosi-artifacts inventory-release-extensions
 VM lifecycle qualification is separate from build verification and runs locally;
 VM tests are not supported in CI.
 
-## Current VM Stance
+## Run VM tests with libvirt
 
 Use the libvirt-backed vmtest world as the supported automated VM layer:
 
@@ -101,7 +101,7 @@ Use the libvirt-backed vmtest world as the supported automated VM layer:
 `virt-manager` is useful for interactive debugging, but it is not a project
 dependency and should not be required by automated tests.
 
-## Local Artifact And Boot Contract
+## Local artifacts and boot contract
 
 Local builds produce the same release-shaped installer, KatlOS, and upgrade
 artifacts exercised by the public user journeys. Automated coverage must use
@@ -129,11 +129,11 @@ serial output, lifecycle, and cleanup are consistent.
   Intel firmware references are checked individually. AMD uses Fedora's
   packaged firmware set: its module metadata also lists optional sideloaded
   files, so requiring every declared filename would reject usable images.
-- Dashboard colours use [Catppuccin Mocha](https://catppuccin.com/palette/).
+- Dashboard colors use [Catppuccin Mocha](https://catppuccin.com/palette/).
   The native Linux console has 16 programmable RGB slots, rather than
-  per-cell true colour. The dashboard programs its own VT's palette with
-  exact theme colours and resets it on exit; login and log VTs retain their
-  own palettes. Plain-text snapshots contain no palette or colour escapes.
+  per-cell true color. The dashboard programs its own VT's palette with
+  exact theme colors and resets it on exit; login and log VTs retain their
+  own palettes. Plain-text snapshots contain no palette or color escapes.
 - Vertical dashboard rules begin at the bottom of their parent horizontal
   rule, or at the pane's top when there is no parent rule, and run to the next
   horizontal boundary. They do not extend into the parent title row. The
@@ -166,7 +166,7 @@ run `KATL_TEST_KERNEL_LOG_ROUTING=1 ./katl-console.test -test.run=TestKernelLogR
 Restart the dashboard afterwards. Include framebuffer resizing, log traffic,
 terminal switching, and reboot in the persistent VM journey.
 
-## Required For The Current Loop
+## Required development tools
 
 - `scripts/mkosi`: builds installer, runtime, and KatlOS
   image artifacts through the containerized mkosi builder.
@@ -188,7 +188,7 @@ The supported top-level script surface is intentionally small. Use
 wrappers, debug aids, or temporary validators for scaffolding work; do not
 treat the whole `scripts/` directory as the public developer interface.
 
-## Nix Dev Shell
+## Nix dev shell
 
 On NixOS or any host with flakes enabled, enter the default development shell:
 
@@ -330,14 +330,14 @@ The host must provide:
 - An active libvirt storage pool named `default`, or
   `KATL_VMTEST_LIBVIRT_STORAGE_POOL` set to the active test pool.
 
-## Optional During The Current Loop
+## Optional development tools
 
 - `virt-install`: useful for manual libvirt VM creation.
 - `virt-manager`: useful GUI for inspecting and debugging local VMs.
 - `/dev/net/tun` and `vhost_net`: useful for libvirt networks and richer VM
   networking.
 
-## VM Test Worlds
+## VM test worlds
 
 Enabled VM, first-install, installed-runtime, and multinode kubeadm smokes run
 through one runner-created world. Use `scripts/vmtest-run` instead of preparing
@@ -405,7 +405,7 @@ World run directories and scenario manifests are the supported inspection path
 for already-produced artifacts during harness development. Lower-level helper
 scripts are not the supported way to run enabled VM or kubeadm suites.
 
-## GitHub Fast Checks
+## GitHub fast checks
 
 The low-cost pull-request workflow runs formatting, whitespace, unit/golden, and
 delivery fixture checks through the same command used locally. Before pushing a
@@ -425,10 +425,9 @@ loop.
 
 It intentionally skips mkosi builds, libvirt/KVM setup, VM scenarios, and
 publishing. Run host-specific VM gates locally with `scripts/vmtest-run` on a
-capable host and record the result with the change or release evidence. Katl
-does not currently provide hosted VM orchestration.
+capable host and record the result with the change or release evidence. GitHub Actions does not run hosted VM tests.
 
-## Fedora Package Inputs
+## Fedora package inputs
 
 Fedora 44 is the selected base release. Builds consume its signed release and
 stable-updates repositories without committing the complete transitive package
@@ -444,7 +443,7 @@ Pin an individual package only when a documented Katl compatibility or security
 constraint requires it. See `docs/internal/testing-contract-policy.md` for the
 distinction between product contracts and build evidence.
 
-## GitHub Release Artifacts
+## GitHub release artifacts
 
 `.github/workflows/release-artifacts.yml` builds Katl artifacts for pushes to
 `release/**` branches and pushed `v*` KatlOS tags. It can also be dispatched manually
@@ -507,7 +506,7 @@ deliberately excluded when selecting the previous KatlOS release.
 This provenance does not provide Secure Boot signatures or implement Katl's
 future node-side trust-root, revocation, and downgrade policy.
 
-## Kubernetes Bundle Artifacts
+## Kubernetes bundle artifacts
 
 `.github/workflows/kubernetes-bundles.yml` discovers upstream Kubernetes releases
 on a schedule. Each upstream patch is published once, using a short version tag
@@ -549,7 +548,7 @@ the committed policy, resolves each immutable digest anonymously, verifies
 every OCI blob, and verifies each GitHub attestation. A patch release therefore
 does not require a second commit just to update hard-coded verifier digests.
 
-## VM Tests on a Capable Host
+## VM tests on a capable host
 
 Katl does not currently run VM tests in GitHub Actions because no hosted runner
 provides the required libvirt, KVM, OVMF, and vsock environment. The repository
@@ -611,7 +610,7 @@ Use delete-on-success retention for routine gates. While debugging, use
 evidence, and clean retained domains with `scripts/vmtest-clean` when inspection
 is done.
 
-### Capable-Host Proof
+### Prove host capabilities
 
 Run the full enabled world suite from the Nix development shell on a host with
 readable OVMF firmware, `/dev/kvm`, `/dev/vhost-vsock`, `/dev/net/tun`,
@@ -630,7 +629,7 @@ tests write their own per-scenario artifacts under the world directory. A
 restricted host should fail during setup with explicit host capability gaps
 rather than fixture generation errors.
 
-## Sanity Checks
+## Sanity checks
 
 Run these from the same shell/session that will build and test Katl:
 
@@ -660,7 +659,7 @@ test -n "${KATL_OVMF_VARS:-}" && test -r "$KATL_OVMF_VARS"
 Set `KATL_OVMF_CODE` and `KATL_OVMF_VARS` explicitly when the host keeps
 OVMF/edk2 firmware somewhere outside the devshell defaults.
 
-## Common Issues
+## Common issues
 
 If `/dev/kvm` is missing, load the host KVM module and confirm virtualization is
 enabled in firmware. If `/dev/kvm` exists but cannot be opened, add the user

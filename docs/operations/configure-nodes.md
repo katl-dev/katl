@@ -1,4 +1,4 @@
-# Apply Cluster Configuration
+# Apply cluster configuration
 
 Use `katlctl cluster apply` for supported configuration changes after
 installation. The same `ClusterConfig` remains the source of truth for every
@@ -42,10 +42,9 @@ accepting operations; Kubernetes component readiness is checked on apply.
 report separately from progress. Routine apply and planning never save or select
 a workstation context.
 
-## Supported Input
+## Supported input
 
-The normal source is the same `ClusterConfig` used for installation. The current
-renderer carries:
+Use the `ClusterConfig` from installation. Apply supports these inputs:
 
 - SSH authorized keys;
 - operator-owned kernel command-line additions;
@@ -60,7 +59,7 @@ and kubeadm phases internally. System-disk installation selection and
 Kubernetes version changes use the dedicated install and Kubernetes upgrade
 workflows; data disks remain desired node storage.
 
-## Inspect Effective Configuration
+## Inspect effective configuration
 
 Resolve one node before applying a config:
 
@@ -108,7 +107,7 @@ node. After applying, inspect `/var/lib/kubelet/config.yaml` on the node and
 check its `status.allocatable.memory` through `kubectl get node NODE -o yaml`.
 The allocatable value excludes the reservation and kubelet's eviction threshold.
 
-## Node Lifecycle Matrix
+## Node lifecycle matrix
 
 `spec.nodes` is both the install inventory and the set of nodes targeted by
 `katlctl cluster apply`. Editing the list is not authority to mutate a node that
@@ -139,7 +138,7 @@ node, proves Kubernetes and stacked-etcd removal where required, reports what
 disk state is preserved, and stops before installer formatting. See
 [Wipe and reinstall KatlOS](wipe-reinstall.md#plan-one-node-replacement).
 
-## Destructive Storage Changes
+## Destructive storage changes
 
 `wipe: true` authorizes formatting a selected node volume, including erasing
 existing contents. `cluster apply` validates every selected node before mutation; no
@@ -153,12 +152,14 @@ following the logical label again. If a selector changes to a different
 device, planning fails until the operator supplies the reported one-shot
 `--rebind-volume NODE/VOLUME` authority. Use an exact `byID`, `partUUID`, or
 `filesystemUUID` selector for the replacement; an ambiguous `byVolumeName`
-label remains an error even with rebind authority. Set `wipe: true` if the replacement should be formatted.
+label remains an error even with rebind authority. Set `wipe: true` if the
+replacement must be formatted.
+
 `katlctl node status NODE` reports the active exact mount source so the
 operator can verify the retained identity before and after the change without
 exposing the generation's internal binding metadata as a separate API.
 
-## Configure Kernel Arguments
+## Configure kernel arguments
 
 Set `kernel.commandLine` under defaults or a concrete node:
 
@@ -189,7 +190,7 @@ runtime mounting, generation and machine identity, and recovery targets.
 Attempts to configure those arguments fail validation with the offending list
 entry.
 
-## Enable And Configure Systemd Units
+## Enable and configure systemd units
 
 Declare services, timers, sockets, or instantiated template units in
 `hostConfiguration.enabledUnits`. For example, enable the shipped time service
@@ -215,7 +216,7 @@ spec:
 ```
 
 `katlctl cluster apply --config ./cluster.yaml` enables and starts newly listed
-units without a reboot. Katl honours native `[Install]` metadata, recreates its
+units without a reboot. Katl honors native `[Install]` metadata, recreates its
 enablement at boot, and starts units after configuration and system extensions
 are available. Native `After=`, `Before=`, and dependency directives determine
 ordering; listing units in a particular order does not. Ordinary enabled units
@@ -242,7 +243,7 @@ runtime enablement, and observed service state. Unit removal stops the service
 before its old files disappear. Native unit dependencies can affect additional
 units; use them with the same care as with ordinary systemd administration.
 
-## Keep Unwanted Services Stopped
+## Keep unwanted services stopped
 
 Use `hostConfiguration.maskedUnits` to stop unwanted services and prevent
 systemd from starting them again, including through dependencies or manual
@@ -264,9 +265,8 @@ still allow activation through sockets, dependencies, or D-Bus.
 
 A node's `maskedUnits` list replaces the defaults. Set `maskedUnits: []` on a
 node to clear inherited masks. Removing a mask restores the vendor unit's
-normal activation behavior without starting it as part of the apply. Mask
-triggering socket, timer, or path units too when you want to suppress those
-activation attempts. Use concrete unit names, including an instance name for
+normal activation behavior without starting it as part of the apply. Also mask triggering socket, timer, or path units when you want to
+suppress those activation attempts. Use concrete unit names, including an instance name for
 template units.
 
 Verify through the node's SSH interface:
@@ -277,7 +277,7 @@ systemctl show bluetooth.service --property=LoadState,ActiveState
 
 The masked unit should report `LoadState=masked` and `ActiveState=inactive`.
 
-## Disable Bluetooth Drivers
+## Disable Bluetooth drivers
 
 Masking `bluetooth.service` stops the userspace service. It does not prevent
 kernel drivers from loading or retrying missing firmware. For a node that
@@ -309,7 +309,7 @@ After reboot, inspect `/proc/cmdline`, check that `/sys/module/bluetooth` and
 retry messages. To restore Bluetooth, remove these arguments and the service
 mask, apply, and reboot again.
 
-## Configure Native Linux Facilities
+## Configure native Linux facilities
 
 Use `hostConfiguration.fileSets` for file-based Linux and systemd configuration.
 Katl validates ownership and carries the files in the node's generation; the
@@ -368,7 +368,6 @@ spec:
 `katlctl` builds the self-contained configuration bundle. Use `content` or
 `source`, never both. Files default to mode `0644`; `0600` and `0640` are also
 accepted.
-
 
 For a collection of native files, include a directory instead of listing every
 source and destination:
@@ -490,7 +489,7 @@ trailing whitespace. A node-level `sysfs` list replaces the defaults list; use
 `sysfs: []` to clear inherited settings. Operator-authored files below
 `/etc/tmpfiles.d` are rejected because Katl owns the generated sysfs rule.
 
-## Apply The Cluster
+## Apply the cluster
 
 Apply the source configuration directly:
 
@@ -516,7 +515,7 @@ operation identities internally. A successful return means the selected nodes'
 supported configuration is active or staged with a reported reboot requirement;
 unsupported plans fail with the node, field, and recovery action.
 
-## Check Status
+## Check status
 
 Use `katlctl node status cp-1 --config ./cluster.yaml` for the current healthy
 generation. Use `katlctl operations list --config ./cluster.yaml --node cp-1`

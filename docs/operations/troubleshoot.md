@@ -22,7 +22,7 @@ includes current network addresses plus a live journal tail. Use
 `Ctrl+Alt+F2` for a local shell. The last rendered dashboard is also available
 at `/run/katl/console/rendered.txt` for collection over SSH.
 
-## First Classification
+## First classification
 
 | Symptom | Primary evidence |
 | --- | --- |
@@ -36,7 +36,7 @@ at `/run/katl/console/rendered.txt` for collection over SSH.
 | Host upgrade does not stage or boot | host-upgrade operation; boot selection; boot-health journal |
 | Wipe is refused | wipe JSON refusals; selected topology; Kubernetes cleanup diagnostics |
 
-## Collect Installed-Node Evidence
+## Collect installed-node evidence
 
 Run on the affected node and preserve timestamps:
 
@@ -72,7 +72,7 @@ snapshot looks stale:
 
 Do not edit operation, generation, or boot-selection records as a repair method.
 
-## Installer Evidence
+## Installer evidence
 
 While the installer is still waiting for configuration, enable its ephemeral
 key-only SSH access without starting an install:
@@ -91,11 +91,10 @@ find /var/lib/katl/install -maxdepth 2 -type f -print
 ```
 
 Also retain the installer console, exact release filename and SHA-256, config
-bundle, selected node, and disk
-identity. A failure before validation completes must not repartition the disk;
+bundle, selected node, and disk identity. A failure before validation completes must not repartition the disk;
 record disk state before attempting anything else.
 
-## Interpret Operation State
+## Interpret operation state
 
 - `terminal: false`: the operation may still be running or interrupted. Check
   the latest journal event and agent service before acting.
@@ -110,7 +109,7 @@ record disk state before attempting anything else.
 Host rollback changes KatlOS artifacts around persistent state. It does not
 prove kubeadm, etcd, Kubernetes API, CNI, or workload mutations were reverted.
 
-## Agent Access Failures
+## Agent access failures
 
 Confirm the service and listener on the isolated management network:
 
@@ -140,7 +139,7 @@ network or disabling TLS verification.
 
 ## Reporting
 
-Follow the [support-boundary reporting checklist](../support.md#reporting-a-problem).
+Follow the [support-boundary reporting checklist](../support.md#report-a-problem).
 Redact bearer tokens, private keys, kubeconfigs, join commands, certificate
 material, registry credentials, and workload secrets. Use GitHub private
 vulnerability reporting for security-sensitive findings.

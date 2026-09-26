@@ -1,4 +1,4 @@
-# `katlctl` Command Map
+# `katlctl` command map
 
 `katlctl` is the public workstation client for KatlOS installation and bounded
 lifecycle operations. Use the binary from the same release as the KatlOS
@@ -17,7 +17,7 @@ installed release.
 | `katlctl management` | Create, export, inspect, and recover durable cluster management secrets. |
 | `katlctl system-extension` | Inspect, validate, publish, and query operator-owned system extensions. |
 
-## Input Conventions
+## Input conventions
 
 The normal cluster input is always `--config ./cluster.yaml`. Commands that
 accept config also accept a compiled `.katlcfg` bundle through the same flag.
@@ -84,7 +84,7 @@ json` provide the bounded automation surface. Progress is written separately
 from the final result so scripts should consume the structured output rather
 than parse human progress lines.
 
-## Operation Semantics
+## Operation semantics
 
 Mutating commands submit idempotent, durable node operations and normally wait
 for a terminal result. A lost workstation connection does not cancel accepted
@@ -158,10 +158,9 @@ optional when the source has one node. `cluster apply --node NAME` is repeatable
 and defaults to all configured nodes. Bootstrap's `--init-node` selects the
 initial control plane rather than limiting cluster membership.
 
-Use `--plan` for bootstrap, apply, upgrade, and wipe previews. Bootstrap retains
-`--dry-run` as an alias. Apply plans validate host configuration on selected
-nodes without accepting operations; Kubernetes component readiness is checked
-during execution. A plan does not reserve the observed state.
+Use `--plan` for bootstrap, apply, upgrade, and wipe previews. Apply plans
+validate host configuration on selected nodes without accepting
+operations. Kubernetes component readiness is checked during execution. A plan does not reserve the observed state.
 
 `cluster apply --mode auto` applies safe live changes and stages changes needing
 a reboot. `--mode live` refuses reboot-requiring changes; `--mode next-boot`
@@ -208,10 +207,10 @@ Generate shell completion with `katlctl completion bash`, `fish`, `zsh`, or
 
 Bootstrap reads management and Kubernetes addresses from ClusterConfig. Set
 `management.address` and, when distinct, `kubernetes.address` there so every
-readiness and bootstrap phase uses consistent targets. The legacy `--node-address`
-override is restricted to advanced inventory input. The older `node upgrade
-VERSION NODE` invocation remains accepted; new scripts should use the explicit
-`--version` form shown above.
+readiness and bootstrap phase uses consistent targets. The
+`--node-address` override is restricted to advanced inventory input. The older
+`node upgrade VERSION NODE` invocation remains accepted; use the explicit
+`--version` form shown above for new scripts.
 
 ### Boot generation management
 

@@ -1,17 +1,16 @@
 # Install KatlOS with PXE and Matchbox
 
-This journey gives KatlOS a Talos-like network-boot handoff: Matchbox selects a
-machine by MAC address, boots the release kernel and initrd, and publishes one
-compiled `.katlcfg` containing the install and Kubernetes intent for every
-node. The selected node installs automatically and is left at generation 0,
-ready for `katlctl cluster bootstrap`.
+Matchbox selects a machine by MAC address and boots the KatlOS release
+kernel and initrd. One compiled `.katlcfg` supplies installation and Kubernetes
+intent for every node. The selected node installs automatically and reaches generation 0, ready
+for `katlctl cluster bootstrap`.
 
 Katl does not run DHCP, TFTP, iPXE, or Matchbox. Those services are
 operator-owned and must be isolated from networks where they are not intended
 to answer. The container example below is for a dedicated lab bridge; adapt the
 profile to existing provisioning infrastructure on real hardware.
 
-## Required Release Assets
+## Required release assets
 
 Keep all files from one Katl release:
 
@@ -30,7 +29,7 @@ Verify their adjacent checksums before publishing. The kernel and initrd boot
 the temporary installer. The SquashFS is the verified KatlOS payload written to
 the selected disk.
 
-## Compile One Machine-Config Bundle
+## Compile one cluster configuration bundle
 
 Author and validate the normal `ClusterConfig`. It must contain stable disk
 selectors, management addresses, node roles, Kubernetes version, and SSH keys
@@ -55,16 +54,16 @@ sha256sum ./cluster.katlcfg
 
 The URL becomes part of the compiled install plan, so it must remain reachable
 from the live installer. The bundle carries all node plans and the native
-kubeadm inputs needed later; no node-specific Ignition or Talos machine-config
-file is required.
+kubeadm inputs needed later; no separate per-node configuration file is required.
 
-The bundle also carries a non-CA management server private key for each node.
-Katl writes it mode 0600. Publish it only on the trusted provisioning network,
-restrict the HTTP path from workload networks, and remove the published copy
-after all selected machines are installed. Keep the separately reported
-`.katlkey` backup; the bundle cannot replace that management authority backup.
+When mTLS management is configured, the bundle contains each node's
+server private key. Katl writes the bundle mode `0600`. Publish it only on the
+trusted provisioning network, restrict access from workload networks, and
+remove the published copy after installation. Back up the file referenced by
+`spec.managementIdentity` separately; the bundle cannot replace that authority.
+Trusted-network management uses no management keys.
 
-## Lay Out Matchbox Data
+## Lay out Matchbox data
 
 Use Matchbox's normal file store:
 
@@ -135,7 +134,7 @@ network-boot program.
 internal descriptors. Supplying it pins the external handoff to the reviewed
 bundle bytes and catches accidental replacement before extraction.
 
-## Retry a Refused Installation
+## Retry a refused installation
 
 If automatic installation refuses a disk or volume during planning, it keeps its
 HTTP handoff available and displays the original error and a retry command.
@@ -157,7 +156,7 @@ katlctl install apply --config ./cluster.yaml --node cp-1 \
 Failures after disk mutation do not enable this safe retry path; preserve the
 diagnostics and inspect the target before recovery.
 
-## Run Matchbox on an Isolated Lab Bridge
+## Run Matchbox on an isolated lab bridge
 
 Matchbox can serve the file store directly from a pinned container:
 
@@ -200,7 +199,7 @@ Matchbox's upstream [network setup](https://matchbox.psdn.io/network-setup/)
 documents proxy-DHCP and existing-infrastructure variants. Katl assumes UEFI;
 the BIOS `undionly.kpxe` path is outside Katl's supported boot boundary.
 
-## Boot, Observe, and Verify Installation
+## Boot, observe, and verify installation
 
 Boot a blank UEFI VM or machine from the selected NIC. The expected request
 chain is:
@@ -228,7 +227,7 @@ intended node reaches this state, follow
 `cluster.yaml` or published `.katlcfg` drives bootstrap; the result is ready for
 you to install a CNI.
 
-## Keep PXE First Safely
+## Keep PXE first safely
 
 Automatic install profiles authorize replacement of the selected system disk,
 including an existing Katl installation. Remove the install profile or switch
@@ -240,7 +239,7 @@ mutation and retains API and SSH access. Run `katlctl install apply --config
 cluster.yaml --node NODE` to explicitly reinstall from that installer, or remove
 the guard for automatic reinstallation. Runtime-agent access is not required.
 
-## Diagnose the Handoff
+## Diagnose the handoff
 
 If the machine does not install, preserve the failed disk and console state.
 Check, in order:

@@ -22,7 +22,7 @@ Katl resolves and fetches the immutable Kubernetes bundle during this
 operation. Nodes need registry and CA access to `ghcr.io` unless the bundle is
 supplied through an explicitly supported local mechanism.
 
-## Review Changed Intent
+## Review changed intent
 
 If the source changed after installation, review the diff before bootstrap and
 make sure it still describes the installed nodes. `katlctl` compiles the source
@@ -30,7 +30,7 @@ internally; the normal path does not require a separate bundle file.
 
 Do not silently replace the cluster intent merely to make bootstrap proceed.
 
-## Dry Run
+## Plan bootstrap
 
 Validate topology, node access, bundle selection, and bootstrap ordering without
 running kubeadm:
@@ -43,15 +43,16 @@ katlctl cluster bootstrap --config ./cluster.yaml \
 ```
 
 Planning uses the configured management mode without extra credential flags.
-Trusted-network mode needs no secrets; mTLS uses the referenced secrets file. Use `--node-address
-node=address` only for an observed address that differs from the compiled
-source.
+Trusted-network mode needs no secrets; mTLS uses the referenced secrets
+file. Set `management.address` and, when different, `kubernetes.address` in
+`ClusterConfig` before planning. The address override is reserved for advanced
+inventory input.
 
 Review the plan, selected init node, node order, control-plane endpoint, and
-Kubernetes version. Katl records the resolved bundle identity internally. A dry
-run must not create generation 1 or invoke kubeadm.
+Kubernetes version. Katl records the resolved bundle identity internally.
+The plan does not create generation 1 or invoke kubeadm.
 
-## Execute Bootstrap
+## Execute bootstrap
 
 Run the same command without `--plan`:
 
@@ -103,7 +104,7 @@ katlctl operations list \
   --config ./cluster.yaml --node cp-1
 ```
 
-## Establish Cluster Networking
+## Establish cluster networking
 
 Kubeadm nodes normally remain `NotReady` and CoreDNS pending until a CNI is
 installed. That is the expected successful bootstrap handoff: the API and
@@ -131,7 +132,7 @@ to the immutable host generation. Follow [Run Cilium on
 KatlOS](cilium.md) and set `sysctlfix.enabled=false`; do not make
 `/etc/sysctl.d` writable for its default init container.
 
-## Verify Handoff
+## Verify handoff
 
 ```sh
 kubectl --kubeconfig ./kubeconfig get nodes -o wide
@@ -151,7 +152,7 @@ operation records are terminal, and the API is reachable through the intended
 endpoint. Node and CoreDNS readiness are post-bootstrap outcomes of the
 user-selected CNI.
 
-## Failure Boundary
+## Failure boundary
 
 Rerunning the unchanged bootstrap command is the supported way to resume an
 interrupted invocation. Do not change cluster intent merely to bypass a failed

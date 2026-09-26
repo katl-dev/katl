@@ -1,4 +1,4 @@
-# KatlOS Support Boundary
+# KatlOS support boundary
 
 KatlOS is experimental beta software for home-lab evaluation and development.
 It is not supported for production clusters, security-sensitive workloads,
@@ -7,7 +7,7 @@ There is no support SLA or security-response SLA. The network management API
 has a bounded compatibility guarantee beginning with the first stable release;
 see [agent API compatibility](internal/agent-api-compatibility.md).
 
-## Supported Evaluation Surface
+## Supported evaluation surface
 
 The beta release surface is deliberately narrow:
 
@@ -36,9 +36,9 @@ KatlOS standard follows Fedora's stable kernel packages. KatlOS-lts uses the
 maintained kwizart 6.18 LTS kernel RPMs for the same Fedora release. Both have
 the same beta support boundary; LTS does not extend Fedora userspace support.
 See [kernel flavours](operations/upgrade-host.md#kernel-flavours) for selection
-and upgrade behaviour.
+and upgrade behavior.
 
-## Artifact Trust
+## Artifact trust
 
 KatlOS release assets provide SHA-256 checksums and keyless GitHub build-
 provenance attestations. Kubernetes bundles are digest-addressable OCI
@@ -66,7 +66,7 @@ This proves which repository workflow produced the bytes. It does not provide:
 - confidential secret distribution; or
 - a production supply-chain or incident-response guarantee.
 
-## Compatibility Promise
+## Compatibility promise
 
 All `v1alpha1` source, bundle, operation, and persisted-state formats are
 experimental. They may change incompatibly between beta releases. Katl does
@@ -82,7 +82,7 @@ Use the `katlctl` binary from the same KatlOS release to validate and compile
 configuration. The management API window does not make configuration formats
 from different release trains interchangeable.
 
-## Upgrade And Recovery Limits
+## Upgrade and recovery limits
 
 KatlOS host update and rollback are node-local root, UKI, sysext, and confext
 operations. They do not roll back etcd, kubeadm mutations, Kubernetes API
@@ -99,7 +99,7 @@ Wipe/reinstall is destructive recovery, not backup. Keep independent etcd,
 workload, and data backups; do not rely on Katl generation rollback as a
 cluster backup.
 
-## Explicitly Unsupported
+## Explicitly unsupported
 
 Do not use the beta as the basis for:
 
@@ -112,7 +112,7 @@ Do not use the beta as the basis for:
   or
 - private artifact and credential distribution policy.
 
-## Reporting A Problem
+## Report a problem
 
 Open a [Katl GitHub issue](https://github.com/katl-dev/katl/issues/new/choose)
 using the bug report form. Remove tokens, private keys, kubeconfigs, join

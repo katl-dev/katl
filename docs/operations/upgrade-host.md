@@ -1,4 +1,4 @@
-# Upgrade a KatlOS Host
+# Upgrade a KatlOS host
 
 KatlOS host upgrades are one-node-at-a-time operations. The normal command
 resolves a release, stages its root and UKI into the inactive slot, reboots into
@@ -18,10 +18,12 @@ availability across several hosts.
 - the command is run during the intended reboot window; and
 - Kubernetes and workload availability have been handled outside Katl.
 
-## Plan
+## Plan the host upgrade
+
+Replace the version in this example with the target KatlOS release:
 
 ```sh
-katlctl node upgrade v2026.7.0-beta.1 cp-1 --config ./cluster.yaml --plan
+katlctl node upgrade cp-1 --config ./cluster.yaml --version 2026.9.0-beta.18 --plan
 ```
 
 A plan response has no durable mutation and does not reboot the node.
@@ -33,12 +35,12 @@ preparation, the target release also prepares the complete candidate generation
 in an isolated state view. A planning failure leaves the active root and boot
 selection untouched.
 
-## Upgrade
+## Upgrade the host
 
-Run the command without `--plan`:
+Run the reviewed command without `--plan`:
 
 ```sh
-katlctl node upgrade v2026.7.0-beta.1 cp-1 --config ./cluster.yaml
+katlctl node upgrade cp-1 --config ./cluster.yaml --version 2026.9.0-beta.18
 ```
 
 For repeated day-two commands, `katlctl context save --config ./cluster.yaml`
@@ -61,7 +63,7 @@ complete rather than forcing power off, which can increase the risk of
 workload data loss. If it repeatedly reaches the systemd timeout, preserve the
 previous-boot journal before retrying the upgrade.
 
-## Failure Boundary
+## Failure boundary
 
 Boot health may select the previous known-good host generation. A failed trial
 keeps the source generation as the persistent EFI default. If the target loses
@@ -99,7 +101,7 @@ sha256sum "$bridge/$(basename "$image")"
 Compare the printed SHA-256 with the published image checksum before running
 either upgrade command. The bridge image must be a regular file because the
 beta.14 client does not accept a symlink as `--artifact`. After the upgrade,
-use a current `katlctl` and confirm `katlctl node status cp-1 --config
+use the target release's `katlctl` and confirm `katlctl node status cp-1 --config
 ./cluster.yaml` reports a healthy node. This procedure is limited to the
 beta.14 metadata incompatibility; do not use it to bypass a failed target
 preparation or compatibility check. Keep the beta.14 CLI for this bridge only.

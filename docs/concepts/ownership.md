@@ -1,11 +1,11 @@
-# What KatlOS Owns
+# What KatlOS owns
 
 KatlOS prepares and manages Kubernetes nodes. It is not a Kubernetes
 distribution and does not take ownership of the platform you run on top of
 kubeadm. This boundary is intentional: a successful Katl bootstrap leaves the
 Kubernetes API and kubeconfig ready for your cluster-management workflow.
 
-## Responsibility Map
+## Responsibility map
 
 | Area | Owner | What that means |
 | --- | --- | --- |
@@ -21,7 +21,7 @@ Kubernetes API and kubeconfig ready for your cluster-management workflow.
 | Workloads and cluster add-ons | Operator | GitOps, ingress, storage classes, CSI, monitoring, policy, secrets, and applications are outside Katl. |
 | Backups and disaster recovery | Operator | Keep independent etcd, workload, and persistent-data backups. Host generation fallback is not a cluster backup. |
 
-## The Two Initial Handoffs
+## The two initial handoffs
 
 After installation, **generation 0** is healthy when the immutable host,
 network, SSH, and `katlc` agent are usable. Kubernetes is deliberately absent.
@@ -33,11 +33,11 @@ remain `NotReady` and CoreDNS remains pending. That is a successful Katl
 handoff, not a failed bootstrap. The cluster becomes generally schedulable only
 after you install compatible networking.
 
-Katl's optional `--bootstrap-manifest` and wait flags can apply reviewed
+Katl's optional `--manifest` and wait flags can apply reviewed
 operator manifests during the bootstrap command. They do not transfer
 ownership of those resources to Katl.
 
-## Persistent State and Rollback
+## Persistent state and rollback
 
 Katl generations own the immutable runtime root, UKI, selected system
 extensions, and compiled host configuration. Writable identity, container,
@@ -53,7 +53,7 @@ commands, etcd membership or data, Kubernetes API objects, CNI state, volumes,
 or external infrastructure. Stop and inspect a `recoveryRequired` result rather
 than assuming a host rollback restored the cluster.
 
-## Trust Boundary
+## Trust boundary
 
 The beta installer handoff on TCP `8080` is intentionally unauthenticated HTTP
 and belongs only on a trusted provisioning network. The installed-node API on

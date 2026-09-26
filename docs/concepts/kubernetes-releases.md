@@ -8,9 +8,8 @@ versions or upgrade any cluster. A missed intermediate patch is superseded by
 the newest patch in its minor. An exact stable version can also be built through
 workflow dispatch.
 
-The policy follows the separation used by
-[kubernetes.nix](https://github.com/Zariel/kubernetes.nix): the available versions
-update automatically, while operators explicitly select cluster upgrades.
+Publication does not upgrade any cluster. Operators select a version in
+`ClusterConfig` and start the upgrade explicitly.
 
 ## Publication and recovery
 
@@ -33,9 +32,10 @@ existing version or compatibility tag to a different digest.
 
 New bundles use an immutable build tag such as `v1.37.0-1`, alongside the short
 version tag `v1.37.0`. The build suffix stays at `1` under the current policy.
-Existing publications gain both aliases without changing their metadata or digest.
-The new reference format requires the updated Katl CLI and node release. A future runtime compatibility change needs an explicit release
-policy decision; ordinary recipe changes do not stand in for that decision.
+Existing publications gain both aliases without changing their metadata or
+digest. The reference format requires a compatible Katl CLI and node release.
+A runtime compatibility change requires an explicit release policy decision;
+ordinary recipe changes do not make that decision.
 
 Publication checks the runtime and sysext, verifies the anonymous registry
 contents, and verifies GitHub provenance before moving the compatibility tag.
@@ -47,8 +47,9 @@ lifecycle guarantee for a newly released minor.
 ## Compatibility selection
 
 The registry's `vVERSION` tag points directly to a verified Kubernetes bundle.
-The resolver also supports existing compatibility aliases during migration. The bundle already contains its payload version,
-architecture, runtime interfaces and layer descriptors; no separate catalogue
+The resolver also supports existing compatibility aliases during
+migration. The bundle contains its payload version, architecture, runtime
+interfaces, and layer descriptors; no separate catalog
 or generated source pull request is needed for delivery. Promotion is per
 version, so another version's failure cannot withhold a successful release.
 

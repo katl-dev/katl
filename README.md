@@ -218,9 +218,8 @@ katlctl cluster bootstrap --config ./cluster.yaml \
   --init-node cp-1
 ```
 
-The node agent fetches the selected Kubernetes OCI bundle, verifies its
-manifest and layer digests, stages the sysext, creates generation 1, and runs
-the bounded kubeadm operation. Katl reports phase changes and writes the
+The node agent fetches and verifies the selected Kubernetes bundle,
+activates generation 1, and runs kubeadm. Katl reports phase changes and writes the
 operator kubeconfig to `./kubeconfig`; rerunning the unchanged command resumes
 an interrupted bootstrap. Nodes normally remain `NotReady` and CoreDNS pending
 until the user installs a CNI; Katl does not choose or manage one.
@@ -272,12 +271,13 @@ honors any generation already staged for the next boot and waits for a new
 agent instance to report healthy. Shutdown waits for the management API to go
 offline. `--no-wait` deliberately detaches after either action is scheduled.
 
-Host upgrades take a release version and select the node from `ClusterConfig`.
+For a host upgrade, choose a KatlOS release version and a node from `ClusterConfig`.
+Replace the version in this example with the release you intend to install.
 `katlctl` resolves the published image, stages it, reboots the node, and waits
 for the new generation to pass boot health:
 
 ```sh
-katlctl node upgrade v2026.7.0-beta.1 cp-1 --config ./cluster.yaml
+katlctl node upgrade cp-1 --config ./cluster.yaml --version 2026.9.0-beta.18
 ```
 
 Add `--plan` to check the upgrade without changing or rebooting the node. The
@@ -331,7 +331,7 @@ artifacts.
 
 ## Project status and documentation
 
-The current supported evaluation surface is x86-64 UEFI, the published ISO or
+The supported beta evaluation surface is x86-64 UEFI, the published ISO or
 matching loose artifacts, one explicitly selected disk per node, the matching
 `katlctl`, and kubeadm bootstrap using a compatible published Kubernetes
 bundle. Hardware claims extend only to retained release evidence.

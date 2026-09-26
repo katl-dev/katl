@@ -1,4 +1,4 @@
-# KatlOS Documentation
+# KatlOS documentation
 
 KatlOS is an installable, upgradeable, systemd-native operating system for
 kubeadm Kubernetes nodes. These guides cover the supported beta journey from a
@@ -10,7 +10,7 @@ KatlOS is experimental home-lab software. Before using real hardware, read the
 node-management APIs are designed for a trusted network and must not be exposed
 to the Internet.
 
-## Start Here
+## Start here
 
 1. [Understand what Katl owns](concepts/ownership.md).
 2. [Build your first cluster](getting-started.md) with the release ISO.
@@ -21,11 +21,10 @@ to the Internet.
 5. Use the [operator guide](operations/README.md) for routine and recovery
    work.
 
-The [complete installation reference](installing.md) describes every
-`ClusterConfig` field and advanced installation option. The focused journeys
-above are the better place to begin.
+Use the [installation reference](installing.md) for `ClusterConfig` fields
+and advanced installation options.
 
-## Install and Bootstrap
+## Install and bootstrap
 
 | Goal | Guide |
 | --- | --- |
@@ -39,7 +38,7 @@ above are the better place to begin.
 | Preserve trust across a whole-cluster rebuild | [Preserve Kubernetes identity](operations/kubernetes-identity.md) |
 | Install Cilium on the immutable host | [Run Cilium on KatlOS](operations/cilium.md) |
 
-## Operate and Recover
+## Operate and recover
 
 | Goal | Guide |
 | --- | --- |
@@ -55,7 +54,7 @@ For command discovery and automation boundaries, see the
 [`katlctl` command map](reference/katlctl.md). The CLI's `--help` output remains
 the exact reference for flags in the installed release.
 
-## Project Documentation
+## Project documentation
 
 - [Beta.18 release notes](releases/2026.9.0-beta.18.md) explain upgrade paths
   from earlier betas and their limits.
