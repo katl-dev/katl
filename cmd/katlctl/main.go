@@ -518,7 +518,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	}
 	submit := &agentapi.SubmitOperationRequest{
 		ApiVersion:                  operation.APIVersion,
-		Kind:                        "HostUpgradeRequestV2",
+		Kind:                        "SubmitOperationRequest",
 		ClientRequestId:             requestID,
 		OperationKind:               "host-upgrade",
 		Actor:                       strings.TrimSpace(opts.actor),
@@ -542,20 +542,26 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		}
 		submit.HostUpgrade.ConfigYaml = string(document)
 	}
+	useV2Kind := slices.Contains(status.GetSupportedOperationKinds(), "host-upgrade-v2")
+	if useV2Kind {
+		submit.OperationKind = "host-upgrade-v2"
+	} else {
+		// The shipped beta.16 agent used a distinct request kind on the original
+		// RPC. Older agents reject that kind, so only then use its source-only plan.
+		submit.Kind = "HostUpgradeRequestV2"
+	}
 	prepared, err := conn.Client.SubmitOperation(ctx, submit)
-	if grpcstatus.Code(err) == codes.InvalidArgument && grpcstatus.Convert(err).Message() == `kind must be "SubmitOperationRequest"` {
+	if !useV2Kind && grpcstatus.Code(err) == codes.InvalidArgument && grpcstatus.Convert(err).Message() == `kind must be "SubmitOperationRequest"` {
 		if opts.applyConfig {
 			return fmt.Errorf("this node cannot plan a combined OS and configuration upgrade; upgrade without --apply-config first, then apply the configuration separately")
 		}
-		// Older agents support host upgrades, but only the original request kind
-		// and source-state dry-run. Reuse that contract for the first upgrade.
 		submit.Kind = "SubmitOperationRequest"
 		prepared, err = conn.Client.SubmitOperation(ctx, submit)
 	}
 	if err != nil {
 		return err
 	}
-	if submit.Kind == "HostUpgradeRequestV2" && prepared.GetHostUpgradePreview() == nil {
+	if (useV2Kind || submit.Kind == "HostUpgradeRequestV2") && prepared.GetHostUpgradePreview() == nil {
 		return fmt.Errorf("source agent does not provide target-generation upgrade planning; upgrade the source agent before retrying")
 	}
 	if preview := prepared.GetHostUpgradePreview(); preview != nil {

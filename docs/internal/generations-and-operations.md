@@ -452,6 +452,12 @@ KatlcAgent.GetOperation(GetOperationRequest) returns (OperationStatus)
 KatlcAgent.WatchOperation(WatchOperationRequest) returns (stream OperationEvent)
 ```
 
+`host-upgrade-v2` adds target-aware host upgrade planning and combined OS and
+configuration upgrades within `SubmitOperation`. The original `host-upgrade`
+operation kind retains its behavior. The
+[agent API compatibility policy](agent-api-compatibility.md) governs kind
+retirement.
+
 `GetNodeStatus` reports generation 0 readiness, current boot selection,
 machine identity, supported API versions, supported operation kinds, and whether
 conflicting operation locks are held. It must not synthesize authoritative state
