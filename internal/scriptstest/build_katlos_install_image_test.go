@@ -3,6 +3,7 @@ package scriptstest
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -118,6 +119,26 @@ func TestBuildKatlOSInstallImageBuildsWithStaleInstallerArtifacts(t *testing.T) 
 	readJSONFile(t, filepath.Join(root, "katlos", "image.json"), &imageIndex)
 	if imageIndex.Kind != "KatlOSImage" || len(imageIndex.Components) != 3 {
 		t.Fatalf("image index = %#v", imageIndex)
+	}
+	indexData, err := os.ReadFile(filepath.Join(root, "katlos", "image.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var indexFields map[string]json.RawMessage
+	if err := json.Unmarshal(indexData, &indexFields); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := indexFields["extensionRelease"]; ok {
+		t.Fatal("extension release changed the legacy image index")
+	}
+	var release struct {
+		Target struct {
+			Version string `json:"version"`
+		} `json:"target"`
+	}
+	readJSONFile(t, filepath.Join(root, "katlos", "extension-release.json"), &release)
+	if release.Target.Version != "0.1.0" {
+		t.Fatalf("extension release target version = %q", release.Target.Version)
 	}
 	assertFileEquals(t, filepath.Join(root, "components", "metadata", "runtime-root.sha256"), runtimeRootSHA+"  ../runtime/root.squashfs\n")
 

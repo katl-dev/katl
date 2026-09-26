@@ -400,18 +400,17 @@ type sourceRepo struct {
 }
 
 type katlosIndex struct {
-	ExtensionRelease *extensionrelease.Manifest `json:"extensionRelease"`
-	Flavour          string                     `json:"flavour,omitempty"`
-	APIVersion       string                     `json:"apiVersion"`
-	Kind             string                     `json:"kind"`
-	ImageRole        string                     `json:"imageRole"`
-	Format           string                     `json:"format"`
-	Version          string                     `json:"version"`
-	BuildID          string                     `json:"buildID"`
-	Architecture     string                     `json:"architecture"`
-	RuntimeInterface string                     `json:"runtimeInterface"`
-	CreatedAt        string                     `json:"createdAt"`
-	Components       []katlosComponent          `json:"components"`
+	Flavour          string            `json:"flavour,omitempty"`
+	APIVersion       string            `json:"apiVersion"`
+	Kind             string            `json:"kind"`
+	ImageRole        string            `json:"imageRole"`
+	Format           string            `json:"format"`
+	Version          string            `json:"version"`
+	BuildID          string            `json:"buildID"`
+	Architecture     string            `json:"architecture"`
+	RuntimeInterface string            `json:"runtimeInterface"`
+	CreatedAt        string            `json:"createdAt"`
+	Components       []katlosComponent `json:"components"`
 }
 
 type katlosComponent struct {
@@ -947,7 +946,6 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 	}
 
 	index := katlosIndex{
-		ExtensionRelease: &release,
 		APIVersion:       "katl.dev/v1alpha1",
 		Flavour:          cfg.Flavour,
 		Kind:             "KatlOSImage",
@@ -1023,6 +1021,9 @@ func runWriteKatlOSIndex(args []string, stdout, stderr io.Writer, cfg config) er
 	if err := writeJSON(absPath(cfg.RepoRoot, *output), index, cfg.RepoRoot); err != nil {
 		return err
 	}
+	if err := writeJSON(filepath.Join(filepath.Dir(absPath(cfg.RepoRoot, *output)), "extension-release.json"), release, cfg.RepoRoot); err != nil {
+		return err
+	}
 	fmt.Fprintf(stdout, "katlos index: %s\n", relPath(cfg.RepoRoot, absPath(cfg.RepoRoot, *output)))
 	return nil
 }
@@ -1083,13 +1084,24 @@ func runWriteKatlOSArtifact(args []string, stdout, stderr io.Writer, cfg config)
 	if err := json.Unmarshal(data, &index); err != nil {
 		return err
 	}
-	if index.ExtensionRelease == nil || index.Version != metadata.Version || index.Architecture != metadata.Architecture || index.Flavour != metadata.Flavour || index.RuntimeInterface != metadata.RuntimeInterface || index.ImageRole != metadata.ImageRole || index.BuildID != metadata.BuildID {
+	if index.Version != metadata.Version || index.Architecture != metadata.Architecture || index.Flavour != metadata.Flavour || index.RuntimeInterface != metadata.RuntimeInterface || index.ImageRole != metadata.ImageRole || index.BuildID != metadata.BuildID {
 		return fmt.Errorf("embedded index does not match artifact metadata")
 	}
-	if err := index.ExtensionRelease.Validate(); err != nil {
+	releaseData, err := os.ReadFile(filepath.Join(filepath.Dir(absPath(cfg.RepoRoot, *indexPath)), "extension-release.json"))
+	if err != nil {
+		return fmt.Errorf("read embedded extension release: %w", err)
+	}
+	var release extensionrelease.Manifest
+	if err := json.Unmarshal(releaseData, &release); err != nil {
+		return fmt.Errorf("decode embedded extension release: %w", err)
+	}
+	if err := release.Validate(); err != nil {
 		return err
 	}
-	metadata.ExtensionRelease = index.ExtensionRelease
+	if err := release.Target.ValidateRuntime(index.Version, index.Architecture, index.Flavour, index.RuntimeInterface, release.Target.Kernel.RuntimeSHA256); err != nil {
+		return err
+	}
+	metadata.ExtensionRelease = &release
 	if err := writeJSON(metadataPath(artifactPath), metadata, cfg.RepoRoot); err != nil {
 		return err
 	}

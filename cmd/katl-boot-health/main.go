@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,6 +54,20 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	forceFailure := false
 	var failedUnits []string
 	if requestedResult == generation.BootHealthSuccess {
+		_, selectedStatus, err := generation.ReadGeneration(*root, selected)
+		if err != nil {
+			return err
+		}
+		// A network outage cannot invalidate a generation already proven healthy.
+		if !generation.IsKnownGood(selectedStatus) {
+			if err := waitForManagementNetwork(ctx); err != nil {
+				requestedResult = generation.BootHealthFailure
+				requestedReason = "management network unavailable: " + err.Error()
+				forceFailure = true
+			}
+		}
+	}
+	if requestedResult == generation.BootHealthSuccess {
 		failedUnits, err = systemdFailedUnits(ctx)
 		if err != nil {
 			return fmt.Errorf("inspect systemd failed units: %w", err)
@@ -98,7 +113,58 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	if len(failedUnits) > 0 {
 		return fmt.Errorf("systemd has failed units: %s", strings.Join(failedUnits, ", "))
 	}
+	if forceFailure && requestedResult == generation.BootHealthFailure {
+		return errors.New(requestedReason)
+	}
 	return nil
+}
+
+func managementNetworkReady() (bool, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return false, err
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addresses, err := iface.Addrs()
+		if err != nil {
+			return false, err
+		}
+		for _, address := range addresses {
+			ip, _, err := net.ParseCIDR(address.String())
+			if err == nil && usableManagementIP(ip) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+func usableManagementIP(ip net.IP) bool {
+	return ip.IsGlobalUnicast() && !ip.IsLinkLocalUnicast()
+}
+
+var waitForManagementNetwork = func(ctx context.Context) error {
+	deadline, cancel := context.WithTimeout(ctx, 90*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		ready, err := managementNetworkReady()
+		if err != nil {
+			return err
+		}
+		if ready {
+			return nil
+		}
+		select {
+		case <-deadline.Done():
+			return fmt.Errorf("no non-loopback interface has a usable address after 90 seconds")
+		case <-ticker.C:
+		}
+	}
 }
 
 func markConfigApplyBootActive(root, generationID string, now time.Time) error {

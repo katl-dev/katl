@@ -33,12 +33,22 @@ func (p preparedHostUpgrade) close() {
 // Preparation acquires and validates the complete future selection without
 // writing an inactive slot, changing live configuration, or selecting a boot.
 func (e *Executor) planHostUpgrade(ctx context.Context, record operation.OperationRecord, payload katlosimage.Payload) (preparedHostUpgrade, error) {
-	if err := generation.ValidateMutationBase(e.Root, record.ExpectedCurrentGenerationID); err != nil {
-		return preparedHostUpgrade{}, err
+	return e.planHostUpgradeWithHandoff(ctx, record, payload, false)
+}
+
+func (e *Executor) planHostUpgradeWithHandoff(ctx context.Context, record operation.OperationRecord, payload katlosimage.Payload, handoff bool) (preparedHostUpgrade, error) {
+	if !handoff {
+		if err := generation.ValidateMutationBase(e.Root, record.ExpectedCurrentGenerationID); err != nil {
+			return preparedHostUpgrade{}, err
+		}
 	}
-	currentID, err := currentGenerationID(e.Root)
-	if err != nil {
-		return preparedHostUpgrade{}, err
+	currentID := record.ExpectedCurrentGenerationID
+	if !handoff {
+		var err error
+		currentID, err = currentGenerationID(e.Root)
+		if err != nil {
+			return preparedHostUpgrade{}, err
+		}
 	}
 	previous, previousStatus, err := generation.ReadGeneration(e.Root, currentID)
 	if err != nil {
@@ -48,16 +58,30 @@ func (e *Executor) planHostUpgrade(ctx context.Context, record operation.Operati
 	if err != nil {
 		return preparedHostUpgrade{}, fmt.Errorf("read current generation configuration: %w", err)
 	}
-	if err := validateHostUpgradeBootEvidence(e.Root, currentID, previous); err != nil {
-		return preparedHostUpgrade{}, err
+	if !handoff {
+		if err := validateHostUpgradeBootEvidence(e.Root, currentID, previous); err != nil {
+			return preparedHostUpgrade{}, err
+		}
 	}
 	inactiveSlot, err := inactiveRoot(previous.Root.Slot)
 	if err != nil {
 		return preparedHostUpgrade{}, err
 	}
-	slots, err := e.inspectRootSlots(ctx, previous.Root.PartitionUUID)
-	if err != nil {
-		return preparedHostUpgrade{}, err
+	var slots rootSlots
+	if handoff {
+		staged, err := generation.ReadUpgradeHandoff(e.Root, record.HostUpgradeRequest.CandidateGenerationID)
+		if err != nil {
+			return preparedHostUpgrade{}, err
+		}
+		if staged.SourceGenerationID != currentID || staged.OperationID != record.OperationID {
+			return preparedHostUpgrade{}, fmt.Errorf("target preparation does not match staged upgrade")
+		}
+		slots.InactivePartUUID = staged.RootPartitionUUID
+	} else {
+		slots, err = e.inspectRootSlots(ctx, previous.Root.PartitionUUID)
+		if err != nil {
+			return preparedHostUpgrade{}, err
+		}
 	}
 	kubernetesState, err := inspectKubernetesNodeState(e.Root, e.Store)
 	if err != nil {

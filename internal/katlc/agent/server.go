@@ -63,6 +63,7 @@ var bootstrapOperationKinds = []string{
 	OperationKindDestructiveReset,
 	OperationKindHostUpgrade,
 	operationKindHostUpgradeV2,
+	operationKindHostUpgradeHandoff,
 	OperationKindEtcdMemberRemove,
 }
 
@@ -146,8 +147,7 @@ func (s *Server) Reboot(ctx context.Context, req *agentapi.RebootRequest) (*agen
 	_, generationStatus, err := generation.ReadGeneration(s.Root, target)
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "read target generation: %v", err)
-	}
-	if generationStatus.UnavailableReason != "" || (generationStatus.CommitState != generation.CommitStateCommitted && !generation.IsKnownGood(generationStatus)) {
+	} else if generationStatus.UnavailableReason != "" || (generationStatus.CommitState != generation.CommitStateCommitted && !generation.IsKnownGood(generationStatus)) {
 		return nil, status.Errorf(codes.FailedPrecondition, "target generation %q is not committed", target)
 	}
 	selection, err := generation.ReadBootSelection(s.Root)
@@ -465,7 +465,7 @@ func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperat
 	}
 	now := s.clock()
 	var preview *agentapi.HostUpgradePreview
-	if req.GetHostUpgrade() != nil && (req.OperationKind == operationKindHostUpgradeV2 || req.Kind == hostUpgradeRequestKind) {
+	if req.GetHostUpgrade() != nil && (req.OperationKind == operationKindHostUpgradeV2 || req.OperationKind == operationKindHostUpgradeHandoff || req.Kind == hostUpgradeRequestKind) {
 		var err error
 		preview, err = s.previewHostUpgrade(ctx, req)
 		if err != nil {
@@ -1389,7 +1389,7 @@ func resourceLocks(kind string) []string {
 		return []string{"generation-state.lock", "config-apply.lock"}
 	case OperationKindDestructiveReset:
 		return []string{"generation-state.lock", "kubeadm-state.lock", "destructive-reset.lock"}
-	case OperationKindHostUpgrade, operationKindHostUpgradeV2:
+	case OperationKindHostUpgrade, operationKindHostUpgradeV2, operationKindHostUpgradeHandoff:
 		return []string{"generation-state.lock", "sysupdate.lock"}
 	case OperationKindEtcdMemberRemove:
 		return []string{"generation-state.lock", "etcd-state.lock"}
@@ -1410,7 +1410,7 @@ func operationScope(kind string) string {
 		return "host-generation"
 	case OperationKindDestructiveReset:
 		return "destructive-reset"
-	case OperationKindHostUpgrade, operationKindHostUpgradeV2:
+	case OperationKindHostUpgrade, operationKindHostUpgradeV2, operationKindHostUpgradeHandoff:
 		return "host-generation"
 	case OperationKindEtcdMemberRemove:
 		return "etcd-state"

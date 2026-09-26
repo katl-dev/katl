@@ -327,7 +327,7 @@ jobs:
               --env "KATL_TEST_KATLOS_IMAGE=/work/_build/mkosi/katlos-${role}-${KATL_VERSION}-${KATL_ARCHITECTURE}.squashfs" \
               "$KATL_MKOSI_IMAGE" \
               /work/_build/extension-closure.test \
-                -test.run '^TestBuiltImageExtensionClosure$' -test.count=1 -test.v
+                -test.run '^TestBuiltImage(ExtensionClosure|IndexReadableByBeta14)$' -test.count=1 -test.v
           done
 
       - name: Upload runtime and KatlOS image intermediates

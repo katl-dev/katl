@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -121,8 +122,11 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 		t.Fatalf("read node status before host upgrade: %v", err)
 	}
 	conn.Close()
+	if !slices.Contains(nodeStatus.GetSupportedOperationKinds(), "host-upgrade-handoff") {
+		t.Fatal("installed runtime does not advertise target-prepared host upgrade")
+	}
 	localRef := stageHostUpgradeArtifactForVMTest(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), upgrade)
-	operationID, status := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, candidateGeneration, localRef, upgrade)
+	operationID, status := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, candidateGeneration, localRef, upgrade, "host-upgrade-handoff")
 	if status.GetResult() != operation.ResultSucceeded || !status.GetBootHealthPending() || status.GetCandidateGenerationId() != candidateGeneration {
 		t.Fatalf("host upgrade operation status = %+v", status)
 	}
@@ -193,7 +197,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	}
 	repeatedGeneration := candidateGeneration + "-repeat"
 	localRef = stageHostUpgradeArtifactForVMTest(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), upgrade)
-	_, repeatedStatus := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, repeatedGeneration, localRef, upgrade)
+	_, repeatedStatus := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, repeatedGeneration, localRef, upgrade, agent.OperationKindHostUpgrade)
 	if repeatedStatus.GetResult() != operation.ResultSucceeded || !repeatedStatus.GetBootHealthPending() || repeatedStatus.GetCandidateGenerationId() != repeatedGeneration {
 		t.Fatalf("repeated host upgrade operation status = %+v", repeatedStatus)
 	}
@@ -236,7 +240,7 @@ func guestFileSHA256(t *testing.T, ctx context.Context, guest *GuestControl, nam
 	return fields[0]
 }
 
-func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, nodeName, machineID, currentGeneration, candidateGeneration, localRef string, upgrade builtUpgradeImage) (string, *agentapi.OperationStatus) {
+func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, nodeName, machineID, currentGeneration, candidateGeneration, localRef string, upgrade builtUpgradeImage, kind string) (string, *agentapi.OperationStatus) {
 	t.Helper()
 	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint, nodeName)
 	nodeStatus, err := katlc.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
@@ -252,7 +256,7 @@ func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, nodeN
 		ApiVersion:                  operation.APIVersion,
 		Kind:                        agent.RequestKind,
 		ClientRequestId:             "vmtest-host-upgrade-" + candidateGeneration,
-		OperationKind:               agent.OperationKindHostUpgrade,
+		OperationKind:               kind,
 		Actor:                       "installed runtime host upgrade vmtest",
 		ExpectedEnrollmentId:        nodeStatus.GetEnrollmentId(),
 		ExpectedInventoryNodeName:   nodeStatus.GetInventoryNodeName(),

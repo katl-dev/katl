@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/extensionrelease"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
@@ -374,8 +375,17 @@ func TestMetadataWriters(t *testing.T) {
 	if index.Kind != "KatlOSImage" || len(index.Components) != 2 {
 		t.Fatalf("KatlOS index = %#v", index)
 	}
-	if index.ExtensionRelease == nil || index.ExtensionRelease.Target.Kernel.Release != "6.12.0" || index.ExtensionRelease.Target.Kernel.RuntimeSHA256 != runtimeSHA || index.ExtensionRelease.Target.Version != "0.1.0" {
-		t.Fatalf("release target = %+v", index.ExtensionRelease)
+	var release extensionrelease.Manifest
+	readTestJSON(t, filepath.Join(filepath.Dir(indexPath), "extension-release.json"), &release)
+	if release.Target.Kernel.Release != "6.12.0" || release.Target.Kernel.RuntimeSHA256 != runtimeSHA || release.Target.Version != "0.1.0" {
+		t.Fatalf("release target = %+v", release.Target)
+	}
+	indexBytes, err := os.ReadFile(indexPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(indexBytes, []byte(`"extensionRelease"`)) {
+		t.Fatal("image index includes the extension release sidecar")
 	}
 	if index.Components[0].Version != "0.1.0" {
 		t.Fatalf("runtime component version = %q, want release version", index.Components[0].Version)
@@ -427,7 +437,7 @@ func TestMetadataWriters(t *testing.T) {
 	if artifact.Kind != "KatlOSImageArtifact" || artifact.SHA256 != strings.TrimSpace(stdout.String()) {
 		t.Fatalf("KatlOS artifact metadata = %#v, stdout %q", artifact, stdout.String())
 	}
-	if artifact.ExtensionRelease == nil || artifact.ExtensionRelease.Target != index.ExtensionRelease.Target {
+	if artifact.ExtensionRelease == nil || artifact.ExtensionRelease.Target != release.Target {
 		t.Fatalf("artifact lost embedded release target: %+v", artifact.ExtensionRelease)
 	}
 	assertFileContains(t, image+".sha256", artifact.SHA256+"  "+filepath.Base(image)+"\n")

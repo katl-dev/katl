@@ -72,6 +72,7 @@ func writeKatlOSImageCheckFixture(t *testing.T, commandLine []string) (string, s
 	dir := t.TempDir()
 	artifact := writeArtifact(t, dir, "katlos-install.squashfs", "katlos image")
 	writeChecksum(t, artifact)
+	release := map[string]any{"target": map[string]any{"version": "0.1.0"}}
 	writeJSONFile(t, artifact+".json", map[string]any{
 		"apiVersion":        "katl.dev/v1alpha1",
 		"kind":              "KatlOSImageArtifact",
@@ -81,6 +82,7 @@ func writeKatlOSImageCheckFixture(t *testing.T, commandLine []string) (string, s
 		"sizeBytes":         int64(len("katlos image")),
 		"sha256":            fileSHA256(t, artifact),
 		"embeddedIndexPath": "katlos/image.json",
+		"extensionRelease":  release,
 	})
 
 	squashfsRoot := filepath.Join(dir, "squashfs")
@@ -151,6 +153,7 @@ func writeKatlOSImageCheckFixture(t *testing.T, commandLine []string) (string, s
 			},
 		},
 	})
+	writeJSONFile(t, filepath.Join(squashfsRoot, "katlos", "extension-release.json"), release)
 
 	fakeBin := filepath.Join(dir, "bin")
 	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
