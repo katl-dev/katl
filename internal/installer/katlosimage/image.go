@@ -1,10 +1,12 @@
 package katlosimage
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,8 +27,9 @@ import (
 )
 
 const (
-	APIVersion = "katl.dev/v1alpha1"
-	Kind       = "KatlOSImage"
+	APIVersion           = "katl.dev/v1alpha1"
+	Kind                 = "KatlOSImage"
+	ExtensionReleasePath = "katlos/extension-release.json"
 
 	RoleInstall                 = "install"
 	RoleUpgrade                 = "upgrade"
@@ -40,6 +43,7 @@ const (
 
 type Payload struct {
 	Root               string
+	ImagePath          string
 	ImageSHA256        string
 	ImageSizeBytes     uint64
 	Index              Index
@@ -74,6 +78,7 @@ type Resolver struct {
 	WorkDir   string
 	Commands  CommandRunner
 	Client    HTTPClient
+	Opaque    bool
 }
 
 func (r Resolver) ResolveKatlosImage(ctx context.Context, expected manifest.KatlosImage) (Payload, error) {
@@ -83,12 +88,14 @@ func (r Resolver) ResolveKatlosImage(ctx context.Context, expected manifest.Katl
 			MediaRoot: r.MediaRoot,
 			WorkDir:   r.WorkDir,
 			Commands:  r.Commands,
+			Opaque:    r.Opaque,
 		}).ResolveKatlosImage(ctx, expected)
 	case strings.TrimSpace(expected.URL) != "":
 		return (RemoteResolver{
 			WorkDir:  r.WorkDir,
 			Commands: r.Commands,
 			Client:   r.Client,
+			Opaque:   r.Opaque,
 		}).ResolveKatlosImage(ctx, expected)
 	default:
 		return Payload{}, fmt.Errorf("KatlOS image URL or localRef is required")
@@ -99,6 +106,7 @@ type LocalResolver struct {
 	MediaRoot string
 	WorkDir   string
 	Commands  CommandRunner
+	Opaque    bool
 }
 
 func (r LocalResolver) ResolveKatlosImage(ctx context.Context, expected manifest.KatlosImage) (Payload, error) {
@@ -131,12 +139,17 @@ func (r LocalResolver) ResolveKatlosImage(ctx context.Context, expected manifest
 	if err != nil {
 		return Payload{}, err
 	}
-	payload, err := ResolveDirectory(ctx, mountPoint, expected)
+	resolve := ResolveDirectory
+	if r.Opaque {
+		resolve = ResolveStagingDirectory
+	}
+	payload, err := resolve(ctx, mountPoint, expected)
 	if err != nil {
 		return Payload{}, err
 	}
 	payload.ImageSHA256 = digest
 	payload.ImageSizeBytes = size
+	payload.ImagePath = imagePath
 	return payload, nil
 }
 
@@ -144,6 +157,7 @@ type RemoteResolver struct {
 	WorkDir  string
 	Commands CommandRunner
 	Client   HTTPClient
+	Opaque   bool
 }
 
 func (r RemoteResolver) ResolveKatlosImage(ctx context.Context, expected manifest.KatlosImage) (Payload, error) {
@@ -162,12 +176,17 @@ func (r RemoteResolver) ResolveKatlosImage(ctx context.Context, expected manifes
 	if err != nil {
 		return Payload{}, err
 	}
-	payload, err := ResolveDirectory(ctx, mountPoint, expected)
+	resolve := ResolveDirectory
+	if r.Opaque {
+		resolve = ResolveStagingDirectory
+	}
+	payload, err := resolve(ctx, mountPoint, expected)
 	if err != nil {
 		return Payload{}, err
 	}
 	payload.ImageSHA256 = digest
 	payload.ImageSizeBytes = size
+	payload.ImagePath = imagePath
 	return payload, nil
 }
 
@@ -251,6 +270,25 @@ func ResolveDirectory(ctx context.Context, root string, expected manifest.Katlos
 	index, err := readIndex(filepath.Join(root, "katlos", "image.json"))
 	if err != nil {
 		return Payload{}, err
+	}
+	releaseData, err := os.ReadFile(filepath.Join(root, ExtensionReleasePath))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return Payload{}, fmt.Errorf("read KatlOS extension release: %w", err)
+	}
+	if err == nil {
+		if index.ExtensionRelease != nil {
+			return Payload{}, fmt.Errorf("KatlOS image declares extension release in both index and sidecar")
+		}
+		var release extensionrelease.Manifest
+		decoder := json.NewDecoder(bytes.NewReader(releaseData))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&release); err != nil {
+			return Payload{}, fmt.Errorf("decode KatlOS extension release: %w", err)
+		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			return Payload{}, fmt.Errorf("decode KatlOS extension release: multiple JSON values")
+		}
+		index.ExtensionRelease = &release
 	}
 	return validate(ctx, root, index, expected)
 }

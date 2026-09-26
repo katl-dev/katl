@@ -436,6 +436,11 @@ func copyUpgradeComponent(source, target string) error {
 		out.Close()
 		return err
 	}
+	// Staged assets must be durable before the next boot can select them.
+	if err := out.Sync(); err != nil {
+		out.Close()
+		return err
+	}
 	return out.Close()
 }
 

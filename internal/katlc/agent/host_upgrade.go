@@ -16,12 +16,13 @@ import (
 )
 
 const (
-	OperationKindHostUpgrade   = "host-upgrade"
-	operationKindHostUpgradeV2 = "host-upgrade-v2"
+	OperationKindHostUpgrade        = "host-upgrade"
+	operationKindHostUpgradeV2      = "host-upgrade-v2"
+	operationKindHostUpgradeHandoff = "host-upgrade-handoff"
 )
 
 // The beta.16 client used this kind on SubmitOperation. Retain it while those
-// clients and nodes remain supported; new clients use host-upgrade-v2.
+// clients and nodes remain supported; new clients select an advertised kind.
 const hostUpgradeRequestKind = "HostUpgradeRequestV2"
 
 func hostUpgradeFromProto(req *agentapi.HostUpgradeOperationRequest) operation.HostUpgrade {
@@ -39,7 +40,7 @@ func hostUpgradeFromProto(req *agentapi.HostUpgradeOperationRequest) operation.H
 }
 
 func validateHostUpgradeRequest(kind string, req *agentapi.HostUpgradeOperationRequest) error {
-	if kind != OperationKindHostUpgrade && kind != operationKindHostUpgradeV2 {
+	if kind != OperationKindHostUpgrade && kind != operationKindHostUpgradeV2 && kind != operationKindHostUpgradeHandoff {
 		return fmt.Errorf("operationKind %q does not accept hostUpgrade", kind)
 	}
 	return operation.ValidateHostUpgrade(hostUpgradeFromProto(req))
@@ -110,10 +111,15 @@ func (s *Server) acceptHostUpgradeOperation(req *agentapi.SubmitOperationRequest
 	if err := s.validateHostUpgradePlan(req.GetHostUpgrade()); err != nil {
 		return operation.OperationRecord{}, nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
-	// Both host upgrade operation kinds use the same durable lifecycle after preflight.
+	kind := OperationKindHostUpgrade
+	phases := []string{"accepted", "verify-katlos-image", "stage-sysupdate-components", "write-candidate-generation", "arm-trial-boot"}
+	if req.OperationKind == operationKindHostUpgradeHandoff {
+		kind = operationKindHostUpgradeHandoff
+		phases = []string{"accepted", "verify-katlos-image", "stage-sysupdate-components", "write-candidate-generation", "arm-trial-boot"}
+	}
 	record := operation.OperationRecord{
 		OperationID:                 id,
-		OperationKind:               OperationKindHostUpgrade,
+		OperationKind:               kind,
 		Scope:                       "host-generation",
 		ClientRequestID:             req.ClientRequestId,
 		Actor:                       req.Actor,
@@ -121,7 +127,7 @@ func (s *Server) acceptHostUpgradeOperation(req *agentapi.SubmitOperationRequest
 		ExpectedCurrentGenerationID: req.ExpectedCurrentGenerationId,
 		RequestDigest:               digest,
 		Phase:                       "accepted",
-		PhasePlan:                   []string{"accepted", "verify-katlos-image", "stage-sysupdate-components", "write-candidate-generation", "arm-trial-boot"},
+		PhasePlan:                   phases,
 		CandidateGenerationID:       request.CandidateGenerationID,
 		HostUpgradeRequest:          &request,
 		ActivationMode:              operation.ActivationModeNextBoot,

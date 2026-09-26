@@ -28,7 +28,10 @@ A plan response has no durable mutation and does not reboot the node.
 
 During staging, the node downloads or opens the image, calculates its SHA-256
 and size, records that resolved identity in the operation, and checks the image's
-component metadata before changing the inactive slot.
+boot components before changing the inactive slot. On nodes that support target
+preparation, the target release also prepares the complete candidate generation
+in an isolated state view. A planning failure leaves the active root and boot
+selection untouched.
 
 ## Upgrade
 
@@ -60,14 +63,46 @@ previous-boot journal before retrying the upgrade.
 
 ## Failure Boundary
 
-Boot health may select the previous known-good host generation. `katlctl`
-reports that rollback and stops. It does not
+Boot health may select the previous known-good host generation. A failed trial
+keeps the source generation as the persistent EFI default. If the target loses
+management networking, preserve its console evidence, then reboot it from the
+console or out-of-band management to return to that source. `katlctl` reports
+the failure when it can reconnect. Host rollback does not
 undo Kubernetes, etcd, workload, or external-infrastructure changes. If the
 operation record says `recoveryRequired: true`, or the node fails to return,
 stop the rollout and collect the evidence in [Troubleshoot KatlOS](troubleshoot.md).
 If KatlOS returns but Kubernetes does not recover before the timeout, do not
 schedule workloads on that node. `katlctl node status` reports whether kubelet,
 Node Ready, local control-plane components, or managed routing is still waiting.
+
+## Move a beta.14 node across the image metadata change
+
+The beta.14 agent rejects the `extensionRelease` field in newer upgrade
+artifact metadata. Use the beta.14 `katlctl` binary and a local copy of the
+intended target image for this one-time bridge. Preserve the image bytes and
+their checksum; remove only that field from the adjacent `.json` file. First
+verify the target image and beta.14 CLI against their release checksums.
+
+```sh
+image=./katlos-upgrade-TARGET-x86_64.squashfs
+bridge=./beta14-bridge
+mkdir -p "$bridge"
+cp "$image" "$bridge/$(basename "$image")"
+jq 'del(.extensionRelease)' "$image.json" > "$bridge/$(basename "$image").json"
+sha256sum "$bridge/$(basename "$image")"
+./katlctl-2026.9.0-beta.14-linux-amd64 node upgrade cp-1 \
+  --config ./cluster.yaml --artifact "$bridge/$(basename "$image")" --plan
+./katlctl-2026.9.0-beta.14-linux-amd64 node upgrade cp-1 \
+  --config ./cluster.yaml --artifact "$bridge/$(basename "$image")"
+```
+
+Compare the printed SHA-256 with the published image checksum before running
+either upgrade command. The bridge image must be a regular file because the
+beta.14 client does not accept a symlink as `--artifact`. After the upgrade,
+use a current `katlctl` and confirm `katlctl node status cp-1 --config
+./cluster.yaml` reports a healthy node. This procedure is limited to the
+beta.14 metadata incompatibility; do not use it to bypass a failed target
+preparation or compatibility check. Keep the beta.14 CLI for this bridge only.
 
 ## Kernel flavours
 

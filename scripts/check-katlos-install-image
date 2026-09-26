@@ -96,6 +96,13 @@ trap 'rm -rf "$tmpdir"' EXIT
 index="$tmpdir/image.json"
 unsquashfs -cat "$artifact" katlos/image.json >"$index"
 reject_host_paths_json "embedded KatlOS image index" "$index"
+jq -e 'has("extensionRelease") | not' "$index" >/dev/null ||
+    fail "embedded KatlOS image index adds a field rejected by older agents"
+extension_release="$tmpdir/extension-release.json"
+unsquashfs -cat "$artifact" katlos/extension-release.json >"$extension_release"
+reject_host_paths_json "embedded extension release" "$extension_release"
+jq -e --slurpfile release "$extension_release" '.extensionRelease == $release[0]' "$metadata" >/dev/null ||
+    fail "embedded extension release does not match artifact metadata"
 
 jq -e --arg role "$image_role" \
     '.apiVersion == "katl.dev/v1alpha1"

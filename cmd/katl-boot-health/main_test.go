@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,6 +131,7 @@ func TestRunPromotesTrialAndSetsBootDefault(t *testing.T) {
 }
 
 func TestRunRejectsFailedSystemdUnits(t *testing.T) {
+	stubManagementNetwork(t)
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 17, 30, 0, 0, time.UTC)
 	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
@@ -165,6 +168,90 @@ func TestRunRejectsFailedSystemdUnits(t *testing.T) {
 	}
 	if status.BootState != generation.BootStateFailed || status.HealthState != generation.HealthStateUnhealthy {
 		t.Fatalf("status = %#v, want failed/unhealthy", status)
+	}
+}
+
+func TestRunDoesNotPromoteWithoutManagementNetwork(t *testing.T) {
+	stubSystemdFailedUnits(t)
+	root := t.TempDir()
+	now := time.Date(2026, 6, 15, 17, 30, 0, 0, time.UTC)
+	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
+	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
+		APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind,
+		DefaultGenerationID: "gen0", BootedGenerationID: "gen0",
+		DefaultBootEntry: "loader/entries/katl-gen0.conf", BootedBootEntry: "loader/entries/katl-gen0.conf",
+		UpdatedAt: now.Add(-30 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen0\n")
+	oldWait := waitForManagementNetwork
+	waitForManagementNetwork = func(context.Context) error { return errors.New("no usable address") }
+	t.Cleanup(func() { waitForManagementNetwork = oldWait })
+
+	var stdout bytes.Buffer
+	err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, &stdout)
+	if err == nil || !strings.Contains(err.Error(), "no usable address") {
+		t.Fatalf("run() error = %v", err)
+	}
+	if !strings.Contains(stdout.String(), "result=failure") || !strings.Contains(stdout.String(), "promoted=false") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	_, status, err := generation.ReadGeneration(root, "gen0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.BootState != generation.BootStateFailed {
+		t.Fatalf("boot state = %q, want failed", status.BootState)
+	}
+}
+
+func TestUsableManagementIP(t *testing.T) {
+	for _, test := range []struct {
+		address string
+		usable  bool
+	}{
+		{address: "127.0.0.1"},
+		{address: "169.254.8.1"},
+		{address: "fe80::1"},
+		{address: "192.168.122.23", usable: true},
+		{address: "fd00::23", usable: true},
+	} {
+		if got := usableManagementIP(net.ParseIP(test.address)); got != test.usable {
+			t.Errorf("usableManagementIP(%s) = %t, want %t", test.address, got, test.usable)
+		}
+	}
+}
+
+func TestRunKeepsKnownGoodGenerationOnNetworkOutage(t *testing.T) {
+	stubSystemdFailedUnits(t)
+	root := t.TempDir()
+	now := time.Date(2026, 6, 15, 17, 45, 0, 0, time.UTC)
+	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
+	markCommandGenerationHealthy(t, root, "gen0", now.Add(-30*time.Minute))
+	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
+		APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind,
+		DefaultGenerationID: "gen0", BootedGenerationID: "gen0",
+		DefaultBootEntry: "loader/entries/katl-gen0.conf", BootedBootEntry: "loader/entries/katl-gen0.conf",
+		UpdatedAt: now.Add(-30 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen0\n")
+	oldWait := waitForManagementNetwork
+	waitForManagementNetwork = func(context.Context) error { return errors.New("no usable address") }
+	t.Cleanup(func() { waitForManagementNetwork = oldWait })
+
+	var stdout bytes.Buffer
+	if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, &stdout); err != nil {
+		t.Fatalf("known-good boot failed during network outage: %v", err)
+	}
+	_, status, err := generation.ReadGeneration(root, "gen0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !generation.IsKnownGood(status) || !strings.Contains(stdout.String(), "result=success") {
+		t.Fatalf("known-good generation was failed: status=%#v output=%q", status, stdout.String())
 	}
 }
 
@@ -259,7 +346,15 @@ func writeCommandLine(t *testing.T, root string, commandLine string) string {
 
 func stubSystemdFailedUnits(t *testing.T) {
 	t.Helper()
+	stubManagementNetwork(t)
 	oldCheck := systemdFailedUnits
 	systemdFailedUnits = func(context.Context) ([]string, error) { return nil, nil }
 	t.Cleanup(func() { systemdFailedUnits = oldCheck })
+}
+
+func stubManagementNetwork(t *testing.T) {
+	t.Helper()
+	oldWait := waitForManagementNetwork
+	waitForManagementNetwork = func(context.Context) error { return nil }
+	t.Cleanup(func() { waitForManagementNetwork = oldWait })
 }

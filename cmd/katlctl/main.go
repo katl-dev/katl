@@ -317,15 +317,16 @@ type hostUpgradeOptions struct {
 }
 
 type hostUpgradeReport struct {
-	Plan       *agentapi.HostUpgradePreview `json:"plan,omitempty"`
-	Flavour    string                       `json:"flavour"`
-	Node       string                       `json:"node"`
-	Version    string                       `json:"version"`
-	Image      string                       `json:"image"`
-	Result     string                       `json:"result"`
-	Rebooted   bool                         `json:"rebooted"`
-	BootHealth string                       `json:"bootHealth"`
-	Kubernetes string                       `json:"kubernetes,omitempty"`
+	Plan           *agentapi.HostUpgradePreview `json:"plan,omitempty"`
+	DeferredChecks bool                         `json:"deferredChecks,omitempty"`
+	Flavour        string                       `json:"flavour"`
+	Node           string                       `json:"node"`
+	Version        string                       `json:"version"`
+	Image          string                       `json:"image"`
+	Result         string                       `json:"result"`
+	Rebooted       bool                         `json:"rebooted"`
+	BootHealth     string                       `json:"bootHealth"`
+	Kubernetes     string                       `json:"kubernetes,omitempty"`
 }
 
 type hostUpgradeArtifact struct {
@@ -542,8 +543,11 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		}
 		submit.HostUpgrade.ConfigYaml = string(document)
 	}
+	useHandoff := slices.Contains(status.GetSupportedOperationKinds(), "host-upgrade-handoff") && !opts.applyConfig
 	useV2Kind := slices.Contains(status.GetSupportedOperationKinds(), "host-upgrade-v2")
-	if useV2Kind {
+	if useHandoff {
+		submit.OperationKind = "host-upgrade-handoff"
+	} else if useV2Kind {
 		submit.OperationKind = "host-upgrade-v2"
 	} else {
 		// The shipped beta.16 agent used a distinct request kind on the original
@@ -551,7 +555,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		submit.Kind = "HostUpgradeRequestV2"
 	}
 	prepared, err := conn.Client.SubmitOperation(ctx, submit)
-	if !useV2Kind && grpcstatus.Code(err) == codes.InvalidArgument && grpcstatus.Convert(err).Message() == `kind must be "SubmitOperationRequest"` {
+	if !useHandoff && !useV2Kind && grpcstatus.Code(err) == codes.InvalidArgument && grpcstatus.Convert(err).Message() == `kind must be "SubmitOperationRequest"` {
 		if opts.applyConfig {
 			return fmt.Errorf("this node cannot plan a combined OS and configuration upgrade; upgrade without --apply-config first, then apply the configuration separately")
 		}
@@ -561,7 +565,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if err != nil {
 		return err
 	}
-	if (useV2Kind || submit.Kind == "HostUpgradeRequestV2") && prepared.GetHostUpgradePreview() == nil {
+	if (useV2Kind || useHandoff || submit.Kind == "HostUpgradeRequestV2") && prepared.GetHostUpgradePreview() == nil {
 		return fmt.Errorf("source agent does not provide target-generation upgrade planning; upgrade the source agent before retrying")
 	}
 	if preview := prepared.GetHostUpgradePreview(); preview != nil {
@@ -577,6 +581,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		BootHealth: "not-run",
 	}
 	report.Plan = prepared.HostUpgradePreview
+	report.DeferredChecks = false
 	if report.Node == "" {
 		report.Node = target.endpoint
 	}
@@ -614,10 +619,14 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		_ = writeHostUpgradeReport(stdout, opts.output, report)
 		return err
 	}
-	if stagedStatus.GetCurrentGenerationId() != request.CandidateGenerationID {
+	stagedGeneration := stagedStatus.GetCurrentGenerationId()
+	if useHandoff {
+		stagedGeneration = stagedStatus.GetBootTargetGenerationId()
+	}
+	if stagedGeneration != request.CandidateGenerationID {
 		report.Result = "staged"
 		_ = writeHostUpgradeReport(stdout, opts.output, report)
-		return fmt.Errorf("staged host upgrade reports current generation %q, want %q before reboot", stagedStatus.GetCurrentGenerationId(), request.CandidateGenerationID)
+		return fmt.Errorf("staged host upgrade reports target generation %q, want %q before reboot", stagedGeneration, request.CandidateGenerationID)
 	}
 	if err := requestNodeReboot(ctx, conn.Client, opts.actor, stagedStatus, request.CandidateGenerationID); err != nil {
 		report.Result = "staged"
@@ -652,6 +661,10 @@ func writeHostUpgradeReport(stdout io.Writer, output string, report hostUpgradeR
 	if report.Result == "planned" {
 		if report.Plan == nil {
 			_, err := fmt.Fprintf(stdout, "%s passed source upgrade prerequisites for %s %s; the target image will be checked during staging\n", report.Node, label, report.Version)
+			return err
+		}
+		if report.DeferredChecks {
+			_, err := fmt.Fprintf(stdout, "%s passed source staging checks for %s %s; target configuration and extensions will be checked during the trial boot\n", report.Node, label, report.Version)
 			return err
 		}
 		if _, err := fmt.Fprintf(stdout, "%s can upgrade to %s %s\n", report.Node, label, report.Version); err != nil {

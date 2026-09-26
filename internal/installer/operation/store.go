@@ -931,10 +931,10 @@ func validateRequestBodyConsistency(record OperationRecord) error {
 	if record.OperationKind == "destructive-reset" && record.DestructiveResetRequest == nil {
 		return fmt.Errorf("destructive-reset operation requires destructiveResetRequest")
 	}
-	if record.HostUpgradeRequest != nil && record.OperationKind != "host-upgrade" {
+	if record.HostUpgradeRequest != nil && record.OperationKind != "host-upgrade" && record.OperationKind != "host-upgrade-handoff" {
 		return fmt.Errorf("operation kind %q cannot include hostUpgradeRequest", record.OperationKind)
 	}
-	if record.OperationKind == "host-upgrade" && record.HostUpgradeRequest == nil {
+	if (record.OperationKind == "host-upgrade" || record.OperationKind == "host-upgrade-handoff") && record.HostUpgradeRequest == nil {
 		return fmt.Errorf("host-upgrade operation requires hostUpgradeRequest")
 	}
 	if record.EtcdMemberRemoveRequest != nil && record.OperationKind != "etcd-member-remove" {

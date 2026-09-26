@@ -66,6 +66,34 @@ promise target-image validation, and a combined configuration upgrade cannot
 use it. Future changes to required `host-upgrade-v2` semantics need a new
 operation kind and the same retirement process.
 
-This guarantee covers the network management API. It does not establish
-compatibility for `v1alpha1` configuration documents, persisted state formats,
-image layouts, or every upgrade path between KatlOS releases.
+For a plain host upgrade, agents that advertise `host-upgrade-handoff` run the
+target release's generation planner before staging the inactive slot. A client
+selects that kind when available. Combined `--apply-config` upgrades continue
+to use `host-upgrade-v2` until configuration and external extension inputs are
+part of the target preparation contract. The client must describe that
+limitation if the older kind cannot represent the requested configuration.
+
+## Image and persisted-state compatibility
+
+Beginning with the first stable series, a target image must support host
+upgrades from the current and two preceding published stable series. Its
+preparation program must run on each supported source kernel and produce a
+generation that both the target runtime and the source's rollback path can
+read. The boot envelope, planner invocation, generation core, boot selection,
+and rollback-sensitive state are stable contracts for that window. Additive
+descriptive image metadata may be ignored by old agents. A new required boot
+capability needs an explicit version check and a pre-mutation error that names
+the minimum source release.
+
+Target-specific generation data belongs in separate versioned attachments.
+Do not add fields to the stable generation core that an old source must
+understand to validate, publish, list, or roll back a candidate. Test each
+supported source release with a frozen agent and the target image through
+`katlctl` planning, upgrade, failed preparation, trial failure, rollback,
+repeat boot, and rollforward. Patch releases cannot narrow an existing path.
+Pre-releases do not advance this window; their release notes must state the
+supported upgrade paths and any bridge needed from older betas. See
+[ADR-016](adrs/adr-016-opaque-host-upgrade-handoff.md) for the ownership model.
+
+This policy does not extend the compatibility guarantee to every
+`v1alpha1` configuration document or arbitrary persisted-state changes.

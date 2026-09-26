@@ -103,15 +103,15 @@ func TestImageExtensionClosure(t *testing.T) {
 		t.Fatal(err)
 	}
 	ref := "registry.example/drbd9@" + packed.ManifestDigest
-	index.ExtensionRelease = &extensionrelease.Manifest{
+	release := extensionrelease.Manifest{
 		Target:     target,
 		Extensions: map[string]string{"registry.example/drbd9": ref},
 	}
-	data, err := json.Marshal(index)
+	data, err := json.Marshal(release)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "katlos/image.json"), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ExtensionReleasePath), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -129,23 +129,23 @@ func TestImageExtensionClosure(t *testing.T) {
 		t.Fatalf("offline release artifact = %+v, %v", resolved, err)
 	}
 
-	index.ExtensionRelease.Target.Kernel.Release = "6.12.2"
-	data, err = json.Marshal(index)
+	release.Target.Kernel.Release = "6.12.2"
+	data, err = json.Marshal(release)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "katlos/image.json"), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ExtensionReleasePath), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := ResolveDirectory(context.Background(), root, expectedImage()); err == nil || !strings.Contains(err.Error(), "kernel release") {
 		t.Fatalf("wrong-kernel embedded extension = %v", err)
 	}
-	index.ExtensionRelease.Target.Kernel.Release = "6.12.1"
-	data, err = json.Marshal(index)
+	release.Target.Kernel.Release = "6.12.1"
+	data, err = json.Marshal(release)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "katlos/image.json"), data, 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, ExtensionReleasePath), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	blob := filepath.Join(root, ExtensionLayoutPath, "blobs", "sha256", strings.TrimPrefix(built.Bundle.Payloads[0].Digest, "sha256:"))
@@ -163,5 +163,49 @@ func TestImageExtensionClosure(t *testing.T) {
 	}
 	if _, err := ResolveDirectory(context.Background(), root, expectedImage()); err == nil || !strings.Contains(err.Error(), "local OCI layout") {
 		t.Fatalf("image with missing advertised closure = %v", err)
+	}
+}
+
+func TestLegacyEmbeddedExtensionRelease(t *testing.T) {
+	root, index := writeImagePayload(t, func(*Index) {})
+	var runtimeSHA string
+	for _, component := range index.Components {
+		if component.Role == ComponentRuntimeRoot {
+			runtimeSHA = component.SHA256
+		}
+	}
+	index.ExtensionRelease = &extensionrelease.Manifest{
+		Target: extensionrelease.Target{
+			Version:          index.Version,
+			Architecture:     index.Architecture,
+			Flavour:          "standard",
+			RuntimeInterface: index.RuntimeInterface,
+			Kernel: kernelmodule.Target{
+				Release:       "6.12.1",
+				RuntimeSHA256: runtimeSHA,
+			},
+		},
+	}
+	data, err := json.Marshal(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "katlos/image.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	payload, err := ResolveDirectory(context.Background(), root, expectedImage())
+	if err != nil || payload.Index.ExtensionRelease == nil {
+		t.Fatalf("legacy image extension release = %#v, %v", payload.Index.ExtensionRelease, err)
+	}
+	data, err = json.Marshal(index.ExtensionRelease)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ExtensionReleasePath), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ResolveDirectory(context.Background(), root, expectedImage()); err == nil || !strings.Contains(err.Error(), "both index and sidecar") {
+		t.Fatalf("duplicate extension release = %v", err)
 	}
 }

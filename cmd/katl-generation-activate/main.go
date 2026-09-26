@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/katlc/agent"
 	"golang.org/x/sys/unix"
 )
 
@@ -25,8 +26,23 @@ func run(_ context.Context, args []string, stdout io.Writer) error {
 	root := flags.String("root", "/", "runtime root containing /var/lib/katl")
 	generationID := flags.String("generation", "", "selected generation id; defaults to katl.generation from cmdline")
 	cmdline := flags.String("cmdline", "/proc/cmdline", "kernel command line path")
+	preflightImage := flags.String("prepare-upgrade-image-root", "", "mounted upgrade image for isolated generation preparation")
+	preflightSource := flags.String("prepare-upgrade-source", "", "source generation for isolated generation preparation")
+	preflightOperation := flags.String("prepare-upgrade-operation", "", "operation ID for isolated generation preparation")
+	preflightConfig := flags.String("prepare-upgrade-config", "", "configuration document for generation preparation")
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	if *preflightImage != "" {
+		if *generationID == "" || *preflightSource == "" || *preflightOperation == "" {
+			return fmt.Errorf("experimental preflight requires generation, source, and operation ID")
+		}
+		spec, err := agent.PreflightHostUpgrade(context.Background(), *root, *preflightImage, *generationID, *preflightSource, *preflightOperation, *preflightConfig)
+		if err != nil {
+			return fmt.Errorf("target preflight: %w", err)
+		}
+		fmt.Fprintf(stdout, "target preparation generation=%s version=%s sysexts=%d confexts=%d\n", spec.GenerationID, spec.RuntimeVersion, len(spec.Sysexts), len(spec.Confexts))
+		return nil
 	}
 
 	selected := *generationID

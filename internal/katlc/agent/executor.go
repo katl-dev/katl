@@ -215,6 +215,9 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 		return e.executeDestructiveReset(ctx, record)
 	}
 	if record.HostUpgradeRequest != nil {
+		if record.OperationKind == operationKindHostUpgradeHandoff {
+			return e.executeHostUpgradeHandoff(ctx, record)
+		}
 		return e.executeHostUpgrade(ctx, record)
 	}
 	if record.KubernetesSysextUpdate != nil {
