@@ -50,7 +50,8 @@ katlctl version
 
 The Nix-built CLI reports the pinned Git commit rather than the release version.
 The flake package installs Bash, Fish, and Zsh completion scripts alongside
-`katlctl`. The flake's development shell also enables Bash completion.
+`katlctl`. The flake's development shell enables completion in Bash, Fish,
+and Zsh.
 
 The `v2026.9.0-beta.16` tag does not include this flake package; for that
 release, use Homebrew or the [release binary](installing.md#artifacts).
