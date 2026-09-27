@@ -19,8 +19,7 @@ import (
 func TestConfigBundlePreservesProjectManagementAccess(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("KATLCTL_CONFIG", "")
-	t.Setenv("KATLCTL_CONFIG_DIR", "")
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("KATLCTL_CONFIG_DIR", filepath.Join(dir, "config"))
 	sourcePath := filepath.Join(dir, "cluster.yaml")
 	if err := os.WriteFile(sourcePath, []byte(configBundleSource()), 0o644); err != nil {
 		t.Fatal(err)

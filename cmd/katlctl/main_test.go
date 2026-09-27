@@ -506,58 +506,39 @@ func TestOutputFormatValidation(t *testing.T) {
 	}
 }
 
-func TestConfigPathUsesXDGDefault(t *testing.T) {
-	configHome := t.TempDir()
+func TestConfigPathCommandUsesUserConfigDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	t.Setenv("KATLCTL_CONFIG", "")
 	t.Setenv("KATLCTL_CONFIG_DIR", "")
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-
-	path, err := workstationConfigPath()
+	t.Setenv("XDG_CONFIG_HOME", "")
+	configDir, err := os.UserConfigDir()
 	if err != nil {
-		t.Fatalf("workstationConfigPath() error = %v", err)
+		t.Fatal(err)
 	}
-	if want := filepath.Join(configHome, "katl", "katlctl.yaml"); path != want {
-		t.Fatalf("workstationConfigPath() = %q, want %q", path, want)
-	}
-}
-
-func TestConfigPathEnvOverrides(t *testing.T) {
-	configHome := t.TempDir()
-	configDir := filepath.Join(t.TempDir(), "katlctl-config")
-	configFile := filepath.Join(t.TempDir(), "custom.yaml")
-	t.Setenv("XDG_CONFIG_HOME", configHome)
-	t.Setenv("KATLCTL_CONFIG_DIR", configDir)
-	t.Setenv("KATLCTL_CONFIG", "")
-
-	path, err := workstationConfigPath()
-	if err != nil {
-		t.Fatalf("workstationConfigPath() error = %v", err)
-	}
-	if want := filepath.Join(configDir, "katlctl.yaml"); path != want {
-		t.Fatalf("workstationConfigPath() = %q, want %q", path, want)
-	}
-
-	t.Setenv("KATLCTL_CONFIG", configFile)
-	path, err = workstationConfigPath()
-	if err != nil {
-		t.Fatalf("workstationConfigPath() with file override error = %v", err)
-	}
-	if path != configFile {
-		t.Fatalf("workstationConfigPath() = %q, want %q", path, configFile)
-	}
-}
-
-func TestConfigPathCommandPrintsResolvedPath(t *testing.T) {
-	configHome := t.TempDir()
-	t.Setenv("KATLCTL_CONFIG", "")
-	t.Setenv("KATLCTL_CONFIG_DIR", "")
-	t.Setenv("XDG_CONFIG_HOME", configHome)
 
 	var stdout, stderr bytes.Buffer
 	if err := run(context.Background(), []string{"context", "path"}, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
-	if got, want := strings.TrimSpace(stdout.String()), filepath.Join(configHome, "katl", "katlctl.yaml"); got != want {
+	if got, want := strings.TrimSpace(stdout.String()), filepath.Join(configDir, "katl", "katlctl.yaml"); got != want {
+		t.Fatalf("stdout = %q, want %q", got, want)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestConfigPathCommandPrintsResolvedPath(t *testing.T) {
+	configDir := t.TempDir()
+	t.Setenv("KATLCTL_CONFIG", "")
+	t.Setenv("KATLCTL_CONFIG_DIR", configDir)
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"context", "path"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if got, want := strings.TrimSpace(stdout.String()), filepath.Join(configDir, "katlctl.yaml"); got != want {
 		t.Fatalf("stdout = %q, want %q", got, want)
 	}
 	if stderr.Len() != 0 {
@@ -568,8 +549,7 @@ func TestConfigPathCommandPrintsResolvedPath(t *testing.T) {
 func TestConfigBundleCommandWritesBundle(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("KATLCTL_CONFIG", "")
-	t.Setenv("KATLCTL_CONFIG_DIR", "")
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("KATLCTL_CONFIG_DIR", filepath.Join(dir, "config"))
 	sourcePath := filepath.Join(dir, "cluster.yaml")
 	outputPath := filepath.Join(dir, "homelab.katlcfg")
 	if err := os.WriteFile(sourcePath, []byte(configBundleSource()), 0o644); err != nil {
