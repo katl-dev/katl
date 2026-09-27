@@ -84,7 +84,7 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	maintenanceCtx, stopMaintenance := context.WithCancel(ctx)
 	maintenanceDone := make(chan struct{})
 	defer func() { stopMaintenance(); <-maintenanceDone }()
-	go func() { defer close(maintenanceDone); agentServer.maintainGenerations(maintenanceCtx) }()
+	go func() { defer close(maintenanceDone); agentServer.maintainGenerations(maintenanceCtx, 5*time.Second) }()
 	agentapi.RegisterKatlcAgentServer(server, agentServer)
 	errc := make(chan error, 1)
 	go func() {
