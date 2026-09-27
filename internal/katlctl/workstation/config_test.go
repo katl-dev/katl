@@ -11,15 +11,14 @@ import (
 )
 
 func TestResolvePathPrecedence(t *testing.T) {
-	configHome := filepath.Join(t.TempDir(), "xdg")
+	defaultDir := filepath.Join(t.TempDir(), "default")
 	configDir := filepath.Join(t.TempDir(), "katlctl")
 	configFile := filepath.Join(t.TempDir(), "custom.yaml")
 	env := map[string]string{
-		"XDG_CONFIG_HOME":    configHome,
 		"KATLCTL_CONFIG_DIR": configDir,
 	}
 	path, err := ResolvePath(func(name string) string { return env[name] }, func() (string, error) {
-		return configHome, nil
+		return defaultDir, nil
 	})
 	if err != nil {
 		t.Fatalf("ResolvePath() error = %v", err)
@@ -30,13 +29,25 @@ func TestResolvePathPrecedence(t *testing.T) {
 
 	env["KATLCTL_CONFIG"] = configFile
 	path, err = ResolvePath(func(name string) string { return env[name] }, func() (string, error) {
-		return configHome, nil
+		return defaultDir, nil
 	})
 	if err != nil {
 		t.Fatalf("ResolvePath() with file override error = %v", err)
 	}
 	if path != configFile {
 		t.Fatalf("ResolvePath() = %q, want %q", path, configFile)
+	}
+
+	delete(env, "KATLCTL_CONFIG")
+	delete(env, "KATLCTL_CONFIG_DIR")
+	path, err = ResolvePath(func(name string) string { return env[name] }, func() (string, error) {
+		return defaultDir, nil
+	})
+	if err != nil {
+		t.Fatalf("ResolvePath() with default error = %v", err)
+	}
+	if want := filepath.Join(defaultDir, "katl", "katlctl.yaml"); path != want {
+		t.Fatalf("ResolvePath() = %q, want %q", path, want)
 	}
 }
 

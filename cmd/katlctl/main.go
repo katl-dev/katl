@@ -2025,16 +2025,12 @@ func newConfigPathCommand(stdout, stderr io.Writer) *cobra.Command {
 
 func runConfigPath(stdout, stderr io.Writer) error {
 	_ = stderr
-	path, err := workstationConfigPath()
+	path, err := workstation.ConfigPath()
 	if err != nil {
 		return err
 	}
 	fmt.Fprintln(stdout, path)
 	return nil
-}
-
-func workstationConfigPath() (string, error) {
-	return workstation.ConfigPath()
 }
 
 type configTopologyOptions struct {
