@@ -282,7 +282,8 @@ func Prune(root string, policy Retention, now time.Time) ([]string, error) {
 			if len(item.ProtectedBy) > 0 {
 				continue
 			}
-			if item.Status.UnavailableReason == "" && (counts[key] <= count || !item.Spec.CreatedAt.Before(now.Add(-age))) {
+			if item.Status.UnavailableReason == "" && item.UnavailableReason != "OS slot has been replaced" &&
+				(counts[key] <= count || !item.Spec.CreatedAt.Before(now.Add(-age))) {
 				continue
 			}
 			if err := clearRemovedPointers(root, &selection, item.Spec.GenerationID); err != nil {

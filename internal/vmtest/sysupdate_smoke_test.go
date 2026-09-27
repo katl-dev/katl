@@ -216,6 +216,22 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	}
 	guestCommand(t, ctx, guest, "boot-health-evidence", "systemctl", "show", "katl-boot-health.service", "--property=Result,ExecMainStatus")
 	guestCommand(t, ctx, guest, "boot-complete-evidence", "systemctl", "is-active", "katl-boot-complete.target")
+	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
+	waitGenerationPromotion(t, ctx, guest, repeatedGeneration)
+	obsoletePath := "/var/lib/katl/generations/" + candidateGeneration
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		check, err := guest.RunCommand(ctx, GuestCommandRequest{
+			Name: "obsolete-generation-cleanup", Argv: []string{"test", "!", "-e", obsoletePath}, AllowFailure: true,
+		})
+		if err == nil && check.ExitStatus == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("replaced OS generation %s remained after healthy boot: %v %#v", candidateGeneration, err, check)
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
 	t.Log("host upgrade, rollback, and repeated upgrade staging are serialized per node in v0.1; multi-node rollout orchestration remains operator-controlled")
 	powerOffGuestForCleanSuccess(t, ctx, &node, guest, client)
 	client = nil
@@ -351,8 +367,9 @@ func discoverBuiltUpgradeImage(t *testing.T, baseVersion string) builtUpgradeIma
 	}
 	var runtimeMetadata struct {
 		BuildID string `json:"generation"`
+		SHA256  string `json:"sha256"`
 	}
-	if err := json.Unmarshal(runtimeData, &runtimeMetadata); err != nil || runtimeMetadata.BuildID == "" {
+	if err := json.Unmarshal(runtimeData, &runtimeMetadata); err != nil || runtimeMetadata.BuildID == "" || runtimeMetadata.SHA256 == "" {
 		t.Fatalf("decode current runtime artifact identity: %v", err)
 	}
 	matches, err := filepath.Glob(filepath.Join(repoRoot(t), "_build", "mkosi", "katlos-upgrade-*-x86_64.squashfs.json"))
@@ -397,6 +414,23 @@ func discoverBuiltUpgradeImage(t *testing.T, baseVersion string) builtUpgradeIma
 	}
 	if uint64(info.Size()) != metadata.SizeBytes {
 		t.Fatalf("KatlOS upgrade image size = %d, metadata = %d", info.Size(), metadata.SizeBytes)
+	}
+	indexData, err := exec.Command("unsquashfs", "-cat", path, "katlos/image.json").Output()
+	if err != nil {
+		t.Fatalf("read KatlOS upgrade image index: %v", err)
+	}
+	var index katlosimage.Index
+	if err := json.Unmarshal(indexData, &index); err != nil {
+		t.Fatalf("decode KatlOS upgrade image index: %v", err)
+	}
+	rootMatches := false
+	for _, component := range index.Components {
+		if component.Role == katlosimage.ComponentRuntimeRoot && component.SHA256 == runtimeMetadata.SHA256 {
+			rootMatches = true
+		}
+	}
+	if !rootMatches {
+		t.Fatal("KatlOS upgrade image does not contain the current runtime root; rebuild the upgrade image")
 	}
 	digest, err := fileSHA256(path)
 	if err != nil {

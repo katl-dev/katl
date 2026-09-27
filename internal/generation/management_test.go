@@ -132,6 +132,31 @@ func TestRetentionFloors(t *testing.T) {
 	}
 }
 
+func TestPruneReplacedOS(t *testing.T) {
+	root, now := managementFixture(t)
+	managedFixture(t, root, "obsolete", "root-b", "0", now.Add(-time.Hour))
+	managedFixture(t, root, "replacement", "root-b", "1", now)
+
+	items, _, err := Inspect(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.Spec.GenerationID == "obsolete" {
+			if item.Status.UnavailableReason != "" || item.UnavailableReason != "OS slot has been replaced" {
+				t.Fatalf("obsolete generation availability = %+v", item)
+			}
+		}
+	}
+	removed, err := Prune(root, Retention{}, now)
+	if err != nil || !slices.Equal(removed, []string{"obsolete"}) {
+		t.Fatalf("replaced OS cleanup = %v, %v", removed, err)
+	}
+	if _, _, err := ReadGeneration(root, "replacement"); err != nil {
+		t.Fatalf("replacement generation was removed: %v", err)
+	}
+}
+
 func TestProtectedRemoval(t *testing.T) {
 	for _, role := range []string{"active", "booted", "default", "target", "trial", "rollback"} {
 		t.Run(role, func(t *testing.T) {

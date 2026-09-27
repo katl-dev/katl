@@ -97,54 +97,61 @@ func (s *Server) generationRetention() (generation.Retention, error) {
 	return *manifest.Node.GenerationRetention, nil
 }
 
-func (s *Server) pruneGenerations(ctx context.Context) error {
+func (s *Server) pruneGenerations(ctx context.Context) (bool, error) {
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
 	ids, err := s.activeOperationIDs()
 	if err != nil {
-		return err
+		return false, err
 	}
 	if len(ids) > 0 {
-		return nil
+		return false, nil
 	}
 	selection, err := generation.ReadBootSelection(s.Root)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if selection.PendingHealthValidation || selection.RecoveryRequired {
-		return nil
+		return false, nil
 	}
 	if readNodeBootHealth(s.Root).State != nodeBootHealthHealthy {
-		return nil
+		return false, nil
 	}
 	policy, err := s.generationRetention()
 	if err != nil {
-		return err
+		return false, err
 	}
 	if err := s.mountGenerationBootRoot(ctx); err != nil {
-		return err
+		return false, err
 	}
 	removed, err := generation.Prune(s.Root, policy, s.clock())
 	if len(removed) > 0 {
 		log.Printf("generation cleanup removed %v", removed)
 	}
-	return err
+	return err == nil, err
 }
 
-func (s *Server) maintainGenerations(ctx context.Context) {
-	// Periodic evaluation ages out generations even when no configuration changes.
-	ticker := time.NewTicker(time.Hour)
-	defer ticker.Stop()
+func (s *Server) maintainGenerations(ctx context.Context, retryInterval time.Duration) {
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 	for {
-		runCtx, cancel := context.WithTimeout(ctx, time.Minute)
-		if err := s.pruneGenerations(runCtx); err != nil && ctx.Err() == nil {
-			log.Printf("generation cleanup: %v", err)
-		}
-		cancel()
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
+		runCtx, cancel := context.WithTimeout(ctx, time.Minute)
+		complete, err := s.pruneGenerations(runCtx)
+		if err != nil && ctx.Err() == nil {
+			log.Printf("generation cleanup: %v", err)
+		}
+		cancel()
+		// Retry until boot health and active operations permit cleanup. Once it
+		// succeeds, periodic evaluation ages out retained generations.
+		interval := retryInterval
+		if complete {
+			interval = time.Hour
+		}
+		timer.Reset(interval)
 	}
 }
