@@ -281,6 +281,7 @@ Documentation=man:systemd.service(5)
 Requires=katl-runtime-handoff-status.service katl-system-extensions-activate.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service
 After=katl-runtime-handoff-status.service katl-system-extensions-activate.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service
 Before=katl-boot-complete.target
+OnFailure=katl-boot-recovery.service
 RequiresMountsFor=/efi /var/lib/katl
 
 [Service]
@@ -295,9 +296,28 @@ RequiredBy=katl-boot-complete.target
 	if assets.BootHealthService != wantHealth {
 		t.Fatalf("katl-boot-health.service:\n%s\nwant:\n%s", assets.BootHealthService, wantHealth)
 	}
+	wantRecovery := `[Unit]
+Description=Recover a failed Katl boot trial
+Documentation=man:systemd.unit(5) man:systemd.service(5)
+SuccessAction=reboot
+Requires=var.mount
+After=var.mount
+RequiresMountsFor=/efi /var/lib/katl
+
+[Service]
+Type=oneshot
+StandardOutput=journal+console
+SyslogIdentifier=katl-boot-recovery
+ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=failure --reason=katl-boot-health.service-failed --force-failure --request-reboot
+`
+	if assets.BootRecoveryService != wantRecovery {
+		t.Fatalf("katl-boot-recovery.service:\n%s\nwant:\n%s", assets.BootRecoveryService, wantRecovery)
+	}
 	wantDeadman := `[Unit]
 Description=Fail Katl boot health after deadline
 Documentation=man:systemd.service(5)
+SuccessAction=reboot
+ConditionPathExists=/run/katl/boot-health/pending
 Requires=var.mount
 After=var.mount
 RequiresMountsFor=/efi /var/lib/katl
@@ -306,7 +326,7 @@ RequiresMountsFor=/efi /var/lib/katl
 Type=oneshot
 StandardOutput=journal+console
 SyslogIdentifier=katl-boot-deadman
-ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=timeout --reason=katl-boot-health-deadline-expired --request-reboot
+ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=timeout --reason=katl-boot-health-deadline-expired --force-failure --request-reboot
 `
 	if assets.BootDeadmanService != wantDeadman {
 		t.Fatalf("katl-boot-deadman.service:\n%s\nwant:\n%s", assets.BootDeadmanService, wantDeadman)
@@ -400,6 +420,7 @@ func TestWriteState(t *testing.T) {
 	assertMissing(t, filepath.Join(root, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target"))
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-boot-complete.target"), assets.BootCompleteTarget)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-boot-health.service"), assets.BootHealthService)
+	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-boot-recovery.service"), assets.BootRecoveryService)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-boot-deadman.service"), assets.BootDeadmanService)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-boot-deadman.timer"), assets.BootDeadmanTimer)
 	assertSymlink(t, filepath.Join(root, "etc/systemd/system/multi-user.target.wants/katl-boot-complete.target"), "../katl-boot-complete.target")
@@ -460,6 +481,7 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-kubeadm-ready.target"), assets.KubeadmReadyTarget)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-boot-complete.target"), assets.BootCompleteTarget)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-boot-health.service"), assets.BootHealthService)
+	assertRepoFile(t, filepath.Join(systemdRoot, "katl-boot-recovery.service"), assets.BootRecoveryService)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-boot-deadman.service"), assets.BootDeadmanService)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-boot-deadman.timer"), assets.BootDeadmanTimer)
 	assertRepoFile(t, filepath.Join(systemdRoot, "containerd.service.d/10-katl-runtime.conf"), assets.ContainerdDropIn)
@@ -589,6 +611,7 @@ func stateVerifyUnits() []string {
 		"/etc/systemd/system/katl-kubeadm-ready.target",
 		"/etc/systemd/system/katl-boot-complete.target",
 		"/etc/systemd/system/katl-boot-health.service",
+		"/etc/systemd/system/katl-boot-recovery.service",
 		"/etc/systemd/system/katl-boot-deadman.service",
 		"/etc/systemd/system/katl-boot-deadman.timer",
 		"/etc/systemd/system/katl-state-projection-check.service",

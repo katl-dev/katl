@@ -87,6 +87,8 @@ To roll back after a failed trial:
 3. arm or restore the previous known-good boot entry
 4. clear trialGenerationID and pendingTransactionID
 5. record recoveryRequired when no previous known-good generation is available
+6. allow systemd to reboot only when the validated previous generation was
+   selected successfully
 ```
 
 Every `selection.json` update uses same-filesystem temporary files, `fsync`,
@@ -108,6 +110,15 @@ started.
 
 If a booted generation cannot prove `bootedGenerationID`, root PARTUUID, and spec
 digest agreement, Katl must not promote or bless the boot.
+
+If the trial fails after the recovery units are available, Katl persists the
+failed trial and restored default before `katl-boot-recovery.service` requests a
+normal systemd reboot. Activation arms that reboot only on the selected trial
+after validating a distinct known-good fallback, and failure handling consumes
+the authorization before requesting it. The fallback cannot re-arm recovery and
+is the final automatic attempt. If it also fails, Katl records recovery-required
+state and leaves the node running for console diagnosis instead of creating a
+reboot loop.
 
 If `selection.json` is missing, corrupt, or inconsistent with generation
 metadata, boot-time reconciliation reports recovery-required. It may reconstruct

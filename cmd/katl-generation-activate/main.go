@@ -56,6 +56,10 @@ func run(_ context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 	}
+	armed, err := generation.ArmBootRecovery(*root, selected)
+	if err != nil {
+		return fmt.Errorf("prepare boot recovery: %w", err)
+	}
 	metadataPath, err := generation.MetadataPath(*root, selected)
 	if err != nil {
 		return err
@@ -81,7 +85,7 @@ func run(_ context.Context, args []string, stdout io.Writer) error {
 		}
 	}
 	if stdout != nil {
-		fmt.Fprintf(stdout, "katl-generation-activate generation=%s sysexts=%d confexts=%d\n", plan.GenerationID, len(plan.Sysexts), len(plan.Confexts))
+		fmt.Fprintf(stdout, "katl-generation-activate generation=%s sysexts=%d confexts=%d recoveryArmed=%t\n", plan.GenerationID, len(plan.Sysexts), len(plan.Confexts), armed)
 	}
 	return nil
 }

@@ -170,6 +170,44 @@ model. Rollback selection is defined in
 `docs/internal/rollback-selection-rules.md`; transaction details are defined in
 `docs/internal/boot-selection-transaction.md`.
 
+## Failed-trial recovery
+
+Katl automatically reboots once after a supported trial fails. Before allowing
+that reboot, `katl-boot-health` must validate that the previous generation is
+still `good` and `healthy`, restore its boot entry as the default, mark the
+trial `failed` and `unhealthy`, and persist `selection.json`. The
+`katl-boot-recovery.service` unit then uses systemd's normal reboot transaction.
+The boot-health deadline uses the same path when the candidate does not reach
+the health target within 10 minutes. Generation activation creates the
+ephemeral `/run/katl/boot-health/pending` authorization only when the running
+generation is the pending trial and its distinct fallback is still `good` and
+`healthy`. The fallback and ordinary boots do not arm recovery. A successful
+boot removes the authorization. The timer may remain scheduled, but its service
+is condition-skipped without that authorization. Failure handling consumes the
+authorization before systemd requests the one reboot, so restarting a service
+cannot request another automatic reboot.
+
+This mechanism supports failures after PID 1 has started the boot deadline and
+`/var` and `/efi` are available. It includes an unreachable management network,
+required-unit or generation activation failure, and a boot that stalls before
+the health target. The candidate's journal, immutable generation record, status
+transitions, and boot-selection record remain available after fallback.
+
+Katl does not automatically reboot in these cases:
+
+- No validated previous known-good generation exists.
+- The fallback generation also fails or times out.
+- Firmware, the UKI, the root filesystem, PID 1, `/var`, or `/efi` fails before
+  the recovery service can run.
+- Boot metadata is missing, corrupt, or does not match the running root.
+
+These cases set or retain `recoveryRequired` when durable state is available.
+The fallback boot never recreates the trial authorization; if it fails, Katl
+preserves the failed state and stops for console or out-of-band recovery. Katl
+does not use `FailureAction=reboot`, an unbounded service restart, or a hardware
+watchdog for this policy because those mechanisms cannot prove a remaining
+known-good boot source before resetting the node.
+
 ## First Install
 
 First install has no previous known-good generation. The installer writes the
@@ -188,8 +226,9 @@ bootState: good
 healthState: healthy
 ```
 
-If first boot fails, repair tooling or reinstall is required; A/B rollback only
-applies after a known-good generation exists.
+If first boot fails, Katl records recovery-required state when possible but does
+not reboot automatically. Repair tooling or reinstall is required; A/B rollback
+only applies after a known-good generation exists.
 
 The first runtime boot of generation 0 is evaluated against the
 installed-runtime profile. It must not wait for `/etc/kubernetes`, containerd,
@@ -214,6 +253,8 @@ remote attestation
 TPM measured boot policy
 multi-attempt boot counting
 automatic root cause classification
+automatic recovery before generation activation arms the trial or required
+state mounts are available
 ```
 
 Those can be layered on later without changing the minimum rule: an update is

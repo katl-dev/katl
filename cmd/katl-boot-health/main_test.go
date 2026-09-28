@@ -40,6 +40,13 @@ func TestRunPromotesGenerationFromCommandLine(t *testing.T) {
 	oldClock := bootHealthClock
 	bootHealthClock = func() time.Time { return now }
 	t.Cleanup(func() { bootHealthClock = oldClock })
+	pending := filepath.Join(root, "run/katl/boot-health/pending")
+	if err := os.MkdirAll(filepath.Dir(pending), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(pending, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	var stdout bytes.Buffer
 	if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result", generation.BootHealthSuccess}, &stdout); err != nil {
@@ -54,6 +61,9 @@ func TestRunPromotesGenerationFromCommandLine(t *testing.T) {
 	}
 	if status.BootState != generation.BootStateGood || status.HealthState != generation.HealthStateHealthy {
 		t.Fatalf("status = %#v, want good/healthy", status)
+	}
+	if _, err := os.Stat(pending); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("boot deadline marker remains after success: %v", err)
 	}
 }
 
@@ -255,36 +265,78 @@ func TestRunKeepsKnownGoodGenerationOnNetworkOutage(t *testing.T) {
 	}
 }
 
-func TestRunDeadmanRequestsReboot(t *testing.T) {
+func TestRunDeadmanArmsRebootForTrialFailure(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 18, 0, 0, 0, time.UTC)
 	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
+	markCommandGenerationHealthy(t, root, "gen0", now.Add(-45*time.Minute))
+	writeCommandGeneration(t, root, "gen1", now.Add(-30*time.Minute))
 	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
-		APIVersion:          generation.APIVersion,
-		Kind:                generation.BootSelectionKind,
-		DefaultGenerationID: "gen0",
-		BootedGenerationID:  "gen0",
-		DefaultBootEntry:    "loader/entries/katl-gen0.conf",
-		BootedBootEntry:     "loader/entries/katl-gen0.conf",
-		UpdatedAt:           now.Add(-30 * time.Minute),
+		APIVersion:                    generation.APIVersion,
+		Kind:                          generation.BootSelectionKind,
+		DefaultGenerationID:           "gen0",
+		TargetBootGenerationID:        "gen1",
+		TrialGenerationID:             "gen1",
+		PreviousKnownGoodGenerationID: "gen0",
+		BootedGenerationID:            "gen1",
+		DefaultBootEntry:              "loader/entries/katl-gen0.conf",
+		PreviousKnownGoodBootEntry:    "loader/entries/katl-gen0.conf",
+		TrialBootEntry:                "loader/entries/katl-gen1.conf",
+		BootedBootEntry:               "loader/entries/katl-gen1.conf",
+		PendingHealthValidation:       true,
+		PersistentDefaultPromotion:    generation.DefaultPromotionPending,
+		UpdatedAt:                     now.Add(-15 * time.Minute),
 	}); err != nil {
 		t.Fatalf("WriteBootSelection() error = %v", err)
+	}
+	if armed, err := generation.ArmBootRecovery(root, "gen1"); err != nil || !armed {
+		t.Fatalf("ArmBootRecovery(gen1) = %t, %v", armed, err)
+	}
+	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen1\n")
+	oldClock := bootHealthClock
+	bootHealthClock = func() time.Time { return now }
+	t.Cleanup(func() { bootHealthClock = oldClock })
+
+	var stdout bytes.Buffer
+	if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result=timeout", "--reason=katl-boot-health-deadline-expired", "--force-failure", "--request-reboot"}, &stdout); err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if !strings.Contains(stdout.String(), "rebootRequested=true") {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	selection, err := generation.ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.DefaultGenerationID != "gen0" || selection.FailedBootGenerationID != "gen1" || selection.RecoveryRequired {
+		t.Fatalf("selection = %#v, want bounded fallback to gen0", selection)
+	}
+}
+
+func TestRunDeadmanRefusesRebootWithoutFallback(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 6, 15, 18, 30, 0, 0, time.UTC)
+	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
+	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
+		APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind,
+		DefaultGenerationID: "gen0", BootedGenerationID: "gen0",
+		DefaultBootEntry: "loader/entries/katl-gen0.conf", BootedBootEntry: "loader/entries/katl-gen0.conf",
+		UpdatedAt: now.Add(-30 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
 	}
 	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen0\n")
 	oldClock := bootHealthClock
 	bootHealthClock = func() time.Time { return now }
 	t.Cleanup(func() { bootHealthClock = oldClock })
 
-	marker := filepath.Join(root, "run/katl/boot-health/reboot-requested")
 	var stdout bytes.Buffer
-	if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result=timeout", "--reason=katl-boot-health-deadline-expired", "--request-reboot"}, &stdout); err != nil {
-		t.Fatalf("run() error = %v", err)
+	err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result=timeout", "--force-failure", "--request-reboot"}, &stdout)
+	if err == nil || !strings.Contains(err.Error(), "not an armed trial") {
+		t.Fatalf("run() error = %v, want manual recovery guidance", err)
 	}
-	if !strings.Contains(stdout.String(), "rebootRequested=true") {
+	if !strings.Contains(stdout.String(), "recoveryRequired=true") || !strings.Contains(stdout.String(), "rebootRequested=false") {
 		t.Fatalf("stdout = %q", stdout.String())
-	}
-	if data, err := os.ReadFile(marker); err != nil || !strings.Contains(string(data), "result=timeout") {
-		t.Fatalf("reboot marker = %q, %v", data, err)
 	}
 }
 
@@ -315,6 +367,15 @@ func writeCommandGeneration(t *testing.T, root string, id string, created time.T
 	}
 	if err := generation.WriteGeneration(root, spec, status); err != nil {
 		t.Fatalf("WriteGeneration() error = %v", err)
+	}
+	for _, path := range []string{spec.Boot.UKIPath, filepath.Join("/efi", spec.Boot.LoaderEntryPath)} {
+		path = filepath.Join(root, strings.TrimPrefix(path, "/"))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(id), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

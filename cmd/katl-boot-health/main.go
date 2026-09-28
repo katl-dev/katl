@@ -30,8 +30,8 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	cmdline := flags.String("cmdline", "/proc/cmdline", "kernel command line path")
 	result := flags.String("result", generation.BootHealthSuccess, "boot health result: success, failure, or timeout")
 	reason := flags.String("reason", "", "boot health transition reason")
-	rebootRequestPath := flags.String("reboot-request-path", "/run/katl/boot-health/reboot-requested", "path for timeout/failure reboot request marker")
-	requestReboot := flags.Bool("request-reboot", false, "record a reboot request marker for failure or timeout")
+	requestReboot := flags.Bool("request-reboot", false, "allow systemd to reboot after a validated fallback is selected")
+	forceFailureFlag := flags.Bool("force-failure", false, "record failure even when the running generation was previously healthy")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -51,7 +51,7 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	bootHealthClockValue := bootHealthClock()
 	requestedResult := strings.TrimSpace(*result)
 	requestedReason := strings.TrimSpace(*reason)
-	forceFailure := false
+	forceFailure := *forceFailureFlag
 	var failedUnits []string
 	if requestedResult == generation.BootHealthSuccess {
 		_, selectedStatus, err := generation.ReadGeneration(*root, selected)
@@ -79,22 +79,24 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 	}
 	record, err := generation.RecordBootHealth(generation.BootHealthRequest{
-		Root:               *root,
-		GenerationID:       selected,
-		Result:             requestedResult,
-		Reason:             requestedReason,
-		Now:                bootHealthClockValue,
-		CommandLine:        commandLine,
-		RebootRequestPath:  *rebootRequestPath,
-		WriteRebootRequest: *requestReboot,
-		ForceFailure:       forceFailure,
-		SetBootDefault:     bootDefaultCommand,
+		Root:           *root,
+		GenerationID:   selected,
+		Result:         requestedResult,
+		Reason:         requestedReason,
+		Now:            bootHealthClockValue,
+		CommandLine:    commandLine,
+		RequestReboot:  *requestReboot,
+		ForceFailure:   forceFailure,
+		SetBootDefault: bootDefaultCommand,
 	})
 	if err != nil {
 		return err
 	}
 	if requestedResult == generation.BootHealthSuccess {
 		if err := markConfigApplyBootActive(*root, selected, bootHealthClockValue); err != nil {
+			return err
+		}
+		if err := generation.ClearBootRecovery(*root); err != nil {
 			return err
 		}
 	}
@@ -110,10 +112,13 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 			record.RebootRequested,
 		)
 	}
+	if *requestReboot && !record.RebootRequested {
+		return fmt.Errorf("automatic reboot refused: this is not an armed trial with a validated known-good fallback; preserve boot diagnostics and recover from the console")
+	}
 	if len(failedUnits) > 0 {
 		return fmt.Errorf("systemd has failed units: %s", strings.Join(failedUnits, ", "))
 	}
-	if forceFailure && requestedResult == generation.BootHealthFailure {
+	if forceFailure && requestedResult == generation.BootHealthFailure && !record.RebootRequested {
 		return errors.New(requestedReason)
 	}
 	return nil
