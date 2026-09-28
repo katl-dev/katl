@@ -46,8 +46,10 @@ jobs:
         env:
           PAYLOAD_VERSION: ${{ matrix.release.payloadVersion }}
         run: |
-          reference=$(go run ./cmd/katl-kubernetes-release resolve --payload-version "$PAYLOAD_VERSION" | jq -r .bundle)
-          image="${reference%@*}"
+          release=$(go run ./cmd/katl-kubernetes-release resolve --payload-version "$PAYLOAD_VERSION")
+          reference=$(jq -r .bundle <<<"$release")
+          artifact_version=$(jq -r .artifactVersion <<<"$release")
+          image="${reference%@*}:${artifact_version}"
           digest="${reference##*@}"
           scripts/check-public-kubernetes-bundle "$image" "$digest"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
