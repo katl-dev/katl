@@ -115,100 +115,105 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 			continue
 		}
 		plan.Sets = append(plan.Sets, name)
-		beforeFiles := hostFilesByPath(before, beforeOK)
-		afterFiles := hostFilesByPath(after, afterOK)
-		changedPaths := sortedStringUnion(hostFilePaths(beforeFiles), hostFilePaths(afterFiles))
-		for _, filePath := range changedPaths {
-			if reflect.DeepEqual(beforeFiles[filePath], afterFiles[filePath]) {
-				continue
-			}
-			plan.Paths = append(plan.Paths, filePath)
-			switch {
-			case filePath == "/etc/systemd/system/"+systemdunit.TargetName:
-				systemdReload = true
-			case changedUnit(filePath) != "":
-				unit := changedUnit(filePath)
-				unitFiles[unit] = true
-				if slices.Contains(desired.EnabledUnits, unit) && !slices.Contains(plan.unitsToEnable, unit) {
-					plan.unitsToEnable = append(plan.unitsToEnable, unit)
-				}
-			case networkdconfig.IsPath(filePath):
-				if stagedReason == "" {
-					stagedReason = "systemd-networkd configuration applies on next boot"
-				}
-				if _, exists := afterFiles[filePath]; exists {
-					plan.Effects = append(plan.Effects, plannedEffect("load", "networkd configuration "+filePath))
-				} else {
-					plan.Effects = append(plan.Effects, plannedEffect("stop-managing", "networkd configuration "+filePath))
-				}
-			case strings.HasPrefix(filePath, "/etc/modules-load.d/"),
-				strings.HasPrefix(filePath, "/etc/modprobe.d/"):
-				if stagedReason == "" {
-					stagedReason = "kernel module configuration is next-boot-only"
-				}
-				if strings.HasPrefix(filePath, "/etc/modules-load.d/") {
-					if file, exists := afterFiles[filePath]; exists && file.Content != nil {
-						for _, module := range parseModulesLoad(*file.Content) {
-							plan.Effects = append(plan.Effects, plannedEffect("load-and-verify", "module "+module))
-						}
-					}
-				}
-			case strings.HasPrefix(filePath, "/etc/sysctl.d/") && strings.HasSuffix(filePath, ".conf"):
-				assignments, ok := liveSysctlDiff(beforeFiles[filePath], afterFiles[filePath])
-				if !ok {
-					if file, exists := afterFiles[filePath]; exists && file.Content != nil {
-						if values, concrete := parseConcreteSysctl(*file.Content); concrete {
-							for key := range values {
-								plan.Effects = append(plan.Effects, plannedEffect("apply-and-verify", "sysctl "+key))
-							}
-						}
-					}
-					if stagedReason == "" {
-						stagedReason = "sysctl additions, removals, ambiguous assignments, and key-set changes require next boot"
-					}
-					continue
-				}
-				plan.SysctlAssignments = append(plan.SysctlAssignments, assignments...)
-				for _, assignment := range assignments {
-					plan.Effects = append(plan.Effects, plannedEffect("apply-and-verify", "sysctl "+assignment.Key))
-				}
-			case strings.HasPrefix(filePath, "/etc/containerd/conf.d/") && strings.HasSuffix(filePath, ".toml"):
-				if stagedReason == "" {
-					stagedReason = "containerd configuration overlays load on next boot"
-				}
-				if _, exists := afterFiles[filePath]; exists {
-					plan.Effects = append(plan.Effects, plannedEffect("load", "containerd configuration "+filePath))
-				}
-			case strings.HasPrefix(filePath, "/etc/udev/rules.d/") && strings.HasSuffix(filePath, ".rules"):
-				udevReload = true
-				if _, exists := afterFiles[filePath]; exists {
-					plan.Effects = append(plan.Effects, plannedEffect("verify", "udev rules "+filePath))
-					plan.Commands = append(plan.Commands, Command{
-						Name:         "udev-rules-verify",
-						EffectAction: "verify",
-						EffectTarget: "udev rules " + filePath,
-						Argv:         []string{"/usr/bin/udevadm", "verify", activeHostConfigurationPath(filePath)},
-					})
-				}
-			default:
-				selected := after
-				if !afterOK {
-					selected = before
-				}
-				if len(selected.Notify.Systemd) == 0 && stagedReason == "" {
-					stagedReason = fmt.Sprintf("%s has no proven live adapter or bounded systemd notification", filePath)
-				}
-			}
-			if strings.HasPrefix(filePath, "/etc/systemd/system/") {
-				systemdReload = true
-			}
-		}
 		selected := after
 		if !afterOK {
 			selected = before
 		}
 		for _, notification := range selected.Notify.Systemd {
 			notifications[notification.Unit] = notification.Action
+		}
+	}
+
+	currentFiles := hostFilesByPath(currentSets)
+	desiredFiles := hostFilesByPath(desiredSets)
+	changedPaths := sortedStringUnion(hostFilePaths(currentFiles), hostFilePaths(desiredFiles))
+	runtimeFilesChanged := false
+	for _, filePath := range changedPaths {
+		before, beforeExists := currentFiles[filePath]
+		after, afterExists := desiredFiles[filePath]
+		if beforeExists == afterExists && reflect.DeepEqual(before.File, after.File) {
+			continue
+		}
+		runtimeFilesChanged = true
+		plan.Paths = append(plan.Paths, filePath)
+		switch {
+		case filePath == "/etc/systemd/system/"+systemdunit.TargetName:
+			systemdReload = true
+		case changedUnit(filePath) != "":
+			unit := changedUnit(filePath)
+			unitFiles[unit] = true
+			if slices.Contains(desired.EnabledUnits, unit) && !slices.Contains(plan.unitsToEnable, unit) {
+				plan.unitsToEnable = append(plan.unitsToEnable, unit)
+			}
+		case networkdconfig.IsPath(filePath):
+			if stagedReason == "" {
+				stagedReason = "systemd-networkd configuration applies on next boot"
+			}
+			if afterExists {
+				plan.Effects = append(plan.Effects, plannedEffect("load", "networkd configuration "+filePath))
+			} else {
+				plan.Effects = append(plan.Effects, plannedEffect("stop-managing", "networkd configuration "+filePath))
+			}
+		case strings.HasPrefix(filePath, "/etc/modules-load.d/"),
+			strings.HasPrefix(filePath, "/etc/modprobe.d/"):
+			if stagedReason == "" {
+				stagedReason = "kernel module configuration is next-boot-only"
+			}
+			if strings.HasPrefix(filePath, "/etc/modules-load.d/") {
+				if afterExists && after.File.Content != nil {
+					for _, module := range parseModulesLoad(*after.File.Content) {
+						plan.Effects = append(plan.Effects, plannedEffect("load-and-verify", "module "+module))
+					}
+				}
+			}
+		case strings.HasPrefix(filePath, "/etc/sysctl.d/") && strings.HasSuffix(filePath, ".conf"):
+			assignments, ok := liveSysctlDiff(before.File, after.File)
+			if !ok {
+				if afterExists && after.File.Content != nil {
+					if values, concrete := parseConcreteSysctl(*after.File.Content); concrete {
+						for key := range values {
+							plan.Effects = append(plan.Effects, plannedEffect("apply-and-verify", "sysctl "+key))
+						}
+					}
+				}
+				if stagedReason == "" {
+					stagedReason = "sysctl additions, removals, ambiguous assignments, and key-set changes require next boot"
+				}
+				continue
+			}
+			plan.SysctlAssignments = append(plan.SysctlAssignments, assignments...)
+			for _, assignment := range assignments {
+				plan.Effects = append(plan.Effects, plannedEffect("apply-and-verify", "sysctl "+assignment.Key))
+			}
+		case strings.HasPrefix(filePath, "/etc/containerd/conf.d/") && strings.HasSuffix(filePath, ".toml"):
+			if stagedReason == "" {
+				stagedReason = "containerd configuration overlays load on next boot"
+			}
+			if afterExists {
+				plan.Effects = append(plan.Effects, plannedEffect("load", "containerd configuration "+filePath))
+			}
+		case strings.HasPrefix(filePath, "/etc/udev/rules.d/") && strings.HasSuffix(filePath, ".rules"):
+			udevReload = true
+			if afterExists {
+				plan.Effects = append(plan.Effects, plannedEffect("verify", "udev rules "+filePath))
+				plan.Commands = append(plan.Commands, Command{
+					Name:         "udev-rules-verify",
+					EffectAction: "verify",
+					EffectTarget: "udev rules " + filePath,
+					Argv:         []string{"/usr/bin/udevadm", "verify", activeHostConfigurationPath(filePath)},
+				})
+			}
+		default:
+			selected := after.Notify
+			if !afterExists {
+				selected = before.Notify
+			}
+			if len(selected.Systemd) == 0 && stagedReason == "" {
+				stagedReason = fmt.Sprintf("%s has no proven live adapter or bounded systemd notification", filePath)
+			}
+		}
+		if strings.HasPrefix(filePath, "/etc/systemd/system/") {
+			systemdReload = true
 		}
 	}
 	for unit := range unitFiles {
@@ -293,9 +298,11 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 		plan.rollbackCommands = append(plan.rollbackCommands, previous.Commands...)
 	}
 	plan.Commands = append(plan.Commands, masks.Commands...)
-	if len(plan.Effects) == 0 {
+	if len(plan.Effects) == 0 && runtimeFilesChanged {
 		plan.Live = false
 		plan.Message = "changed host configuration has no live action"
+	} else if len(plan.Effects) == 0 {
+		plan.Message = "host configuration metadata changed without changing runtime state"
 	} else {
 		plan.Message = hostConfigurationMessage("", plan.Effects)
 		if udevReload {
@@ -442,18 +449,25 @@ func hostSetNames(sets map[string]manifest.HostConfigurationSet) map[string]stru
 	return names
 }
 
-func hostFilesByPath(set manifest.HostConfigurationSet, exists bool) map[string]manifest.HostConfigurationFile {
-	files := make(map[string]manifest.HostConfigurationFile)
-	if !exists {
-		return files
-	}
-	for _, file := range set.Files {
-		files[file.Path] = file
+type ownedHostFile struct {
+	File   manifest.HostConfigurationFile
+	Notify manifest.HostConfigurationNotifications
+}
+
+func hostFilesByPath(sets map[string]manifest.HostConfigurationSet) map[string]ownedHostFile {
+	files := make(map[string]ownedHostFile)
+	for _, set := range sets {
+		if strings.TrimSpace(set.State) == manifest.HostConfigurationAbsent {
+			continue
+		}
+		for _, file := range set.Files {
+			files[file.Path] = ownedHostFile{File: file, Notify: set.Notify}
+		}
 	}
 	return files
 }
 
-func hostFilePaths(files map[string]manifest.HostConfigurationFile) map[string]struct{} {
+func hostFilePaths(files map[string]ownedHostFile) map[string]struct{} {
 	paths := make(map[string]struct{}, len(files))
 	for filePath := range files {
 		paths[filePath] = struct{}{}

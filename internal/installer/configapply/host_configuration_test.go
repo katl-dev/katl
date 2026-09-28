@@ -1,6 +1,7 @@
 package configapply
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -133,6 +134,71 @@ func TestPlanHostConfigurationUsesBoundedSystemdNotification(t *testing.T) {
 	}
 	if len(plan.Effects) != 1 || plan.Effects[0].Action != "try-reload-or-restart" || plan.Effects[0].Target != "systemd unit systemd-journald.service" {
 		t.Fatalf("effects = %#v", plan.Effects)
+	}
+}
+
+func TestPlanHostConfigurationRegrouping(t *testing.T) {
+	content := "[Journal]\nSystemMaxUse=2G\n"
+	changedContent := "[Journal]\nSystemMaxUse=3G\n"
+	file := manifest.HostConfigurationFile{
+		Path:    "/etc/systemd/journald.conf.d/80-home-lab.conf",
+		Content: &content,
+		Mode:    0o644,
+	}
+	current := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+		"host": {Files: []manifest.HostConfigurationFile{file}},
+	}}
+	notification := manifest.HostConfigurationNotifications{Systemd: []manifest.HostConfigurationSystemdNotification{{
+		Unit:   "systemd-journald.service",
+		Action: "try-reload-or-restart",
+	}}}
+
+	for _, tt := range []struct {
+		name        string
+		destination manifest.HostConfigurationSet
+		wantLive    bool
+		wantEffect  string
+	}{
+		{
+			name:        "unchanged file with notification",
+			destination: manifest.HostConfigurationSet{Files: []manifest.HostConfigurationFile{file}, Notify: notification},
+			wantLive:    true,
+			wantEffect:  "try-reload-or-restart systemd unit systemd-journald.service",
+		},
+		{
+			name:        "unchanged file without notification",
+			destination: manifest.HostConfigurationSet{Files: []manifest.HostConfigurationFile{file}},
+			wantLive:    true,
+		},
+		{
+			name: "changed file without notification",
+			destination: manifest.HostConfigurationSet{Files: []manifest.HostConfigurationFile{{
+				Path: file.Path, Content: &changedContent, Mode: file.Mode,
+			}}},
+			wantLive: false,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			desired := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+				"journald": tt.destination,
+			}}
+			plan := planHostConfigurationChange(current, desired)
+			if plan.Live != tt.wantLive {
+				t.Fatalf("plan = %#v, want live = %t", plan, tt.wantLive)
+			}
+			if !slices.Equal(plan.Sets, []string{"host", "journald"}) {
+				t.Fatalf("sets = %v", plan.Sets)
+			}
+			if tt.wantLive && len(plan.Paths) != 0 {
+				t.Fatalf("paths = %v, unchanged runtime path must not be planned", plan.Paths)
+			}
+			if tt.wantEffect != "" && !strings.Contains(plan.Message, tt.wantEffect) {
+				t.Fatalf("message = %q, want effect %q", plan.Message, tt.wantEffect)
+			}
+			if !tt.wantLive && !strings.Contains(plan.Message, "no proven live adapter") {
+				t.Fatalf("message = %q, want missing live adapter", plan.Message)
+			}
+		})
 	}
 }
 
