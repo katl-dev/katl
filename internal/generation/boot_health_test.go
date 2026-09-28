@@ -1,6 +1,7 @@
 package generation
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -608,17 +609,17 @@ func TestRecordBootHealthTimeoutRestoresPreviousAndRequestsReboot(t *testing.T) 
 		PersistentDefaultPromotion:    DefaultPromotionPending,
 		UpdatedAt:                     now.Add(-30 * time.Minute),
 	})
-	marker := filepath.Join(root, "run/katl/boot-health/reboot-requested")
-
+	if armed, err := ArmBootRecovery(root, "gen1"); err != nil || !armed {
+		t.Fatalf("ArmBootRecovery(gen1) = %t, %v", armed, err)
+	}
 	result, err := RecordBootHealth(BootHealthRequest{
-		Root:               root,
-		GenerationID:       "gen1",
-		CommandLine:        bootHealthCommandLine("gen1"),
-		Result:             BootHealthTimeout,
-		Reason:             "deadline",
-		Now:                now,
-		RebootRequestPath:  "/run/katl/boot-health/reboot-requested",
-		WriteRebootRequest: true,
+		Root:          root,
+		GenerationID:  "gen1",
+		CommandLine:   bootHealthCommandLine("gen1"),
+		Result:        BootHealthTimeout,
+		Reason:        "deadline",
+		Now:           now,
+		RequestReboot: true,
 	})
 	if err != nil {
 		t.Fatalf("RecordBootHealth(timeout) error = %v", err)
@@ -632,13 +633,6 @@ func TestRecordBootHealthTimeoutRestoresPreviousAndRequestsReboot(t *testing.T) 
 	}
 	if gen1Status.BootState != BootStateFailed || gen1Status.HealthState != HealthStateUnhealthy {
 		t.Fatalf("gen1 status = %#v, want failed/unhealthy", gen1Status)
-	}
-	data, err := os.ReadFile(marker)
-	if err != nil {
-		t.Fatalf("read reboot marker: %v", err)
-	}
-	if !strings.Contains(string(data), "generation=gen1") || !strings.Contains(string(data), "result=timeout") {
-		t.Fatalf("reboot marker = %q", data)
 	}
 	selection, err := ReadBootSelection(root)
 	if err != nil {
@@ -669,12 +663,12 @@ func TestRecordBootHealthFailureWithoutPreviousRequiresRecovery(t *testing.T) {
 		UpdatedAt:           now.Add(-30 * time.Minute),
 	})
 
-	result, err := RecordBootHealth(BootHealthRequest{Root: root, GenerationID: "gen0", CommandLine: bootHealthCommandLine("gen0"), Result: BootHealthFailure, Now: now})
+	result, err := RecordBootHealth(BootHealthRequest{Root: root, GenerationID: "gen0", CommandLine: bootHealthCommandLine("gen0"), Result: BootHealthFailure, Now: now, RequestReboot: true})
 	if err != nil {
 		t.Fatalf("RecordBootHealth(failure) error = %v", err)
 	}
-	if !result.Failed || !result.RecoveryRequired {
-		t.Fatalf("failure result = %#v, want recovery required", result)
+	if !result.Failed || !result.RecoveryRequired || result.RebootRequested {
+		t.Fatalf("failure result = %#v, want manual recovery without reboot", result)
 	}
 	selection, err := ReadBootSelection(root)
 	if err != nil {
@@ -730,15 +724,13 @@ func TestRecordBootHealthIsIdempotentAfterPromotion(t *testing.T) {
 	if !first.Promoted || !second.Promoted || second.DefaultGeneration != "gen0" {
 		t.Fatalf("success results = %#v / %#v", first, second)
 	}
-	marker := filepath.Join(root, "run/katl/boot-health/reboot-requested")
 	timeout, err := RecordBootHealth(BootHealthRequest{
-		Root:               root,
-		GenerationID:       "gen0",
-		CommandLine:        bootHealthCommandLine("gen0"),
-		Result:             BootHealthTimeout,
-		Now:                now.Add(2 * time.Minute),
-		RebootRequestPath:  "/run/katl/boot-health/reboot-requested",
-		WriteRebootRequest: true,
+		Root:          root,
+		GenerationID:  "gen0",
+		CommandLine:   bootHealthCommandLine("gen0"),
+		Result:        BootHealthTimeout,
+		Now:           now.Add(2 * time.Minute),
+		RequestReboot: true,
 	})
 	if err != nil {
 		t.Fatalf("RecordBootHealth(timeout after success) error = %v", err)
@@ -746,8 +738,64 @@ func TestRecordBootHealthIsIdempotentAfterPromotion(t *testing.T) {
 	if timeout.Failed || timeout.RebootRequested {
 		t.Fatalf("timeout after success = %#v, want no-op", timeout)
 	}
-	if _, err := os.Stat(marker); !os.IsNotExist(err) {
-		t.Fatalf("reboot marker exists after no-op timeout: %v", err)
+}
+
+func TestRecordBootHealthStopsAfterFallbackAlsoFails(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 6, 15, 15, 30, 0, 0, time.UTC)
+	writeBootHealthGeneration(t, root, "gen0", "", CommitStateCommitted, BootStateGood, HealthStateHealthy, now.Add(-2*time.Hour))
+	writeBootHealthGeneration(t, root, "gen1", "gen0", CommitStateCommitted, BootStateTrying, HealthStateUnknown, now.Add(-time.Hour))
+	writeBootHealthSelection(t, root, BootSelectionRecord{
+		APIVersion:                    APIVersion,
+		Kind:                          BootSelectionKind,
+		DefaultGenerationID:           "gen0",
+		TargetBootGenerationID:        "gen1",
+		TrialGenerationID:             "gen1",
+		PreviousKnownGoodGenerationID: "gen0",
+		BootedGenerationID:            "gen1",
+		DefaultBootEntry:              "loader/entries/katl-gen0.conf",
+		PreviousKnownGoodBootEntry:    "loader/entries/katl-gen0.conf",
+		TrialBootEntry:                "loader/entries/katl-gen1.conf",
+		BootedBootEntry:               "loader/entries/katl-gen1.conf",
+		PendingHealthValidation:       true,
+		PersistentDefaultPromotion:    DefaultPromotionPending,
+		UpdatedAt:                     now.Add(-time.Minute),
+	})
+	if armed, err := ArmBootRecovery(root, "gen1"); err != nil || !armed {
+		t.Fatalf("ArmBootRecovery(gen1) = %t, %v", armed, err)
+	}
+
+	trial, err := RecordBootHealth(BootHealthRequest{Root: root, GenerationID: "gen1", CommandLine: bootHealthCommandLine("gen1"), Result: BootHealthFailure, Now: now, ForceFailure: true, RequestReboot: true})
+	if err != nil {
+		t.Fatalf("RecordBootHealth(trial failure) error = %v", err)
+	}
+	if !trial.RebootRequested || trial.RecoveryRequired {
+		t.Fatalf("trial failure = %#v, want one reboot to gen0", trial)
+	}
+	if _, err := os.Stat(filepath.Join(root, "run/katl/boot-health/pending")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("trial recovery authorization was not consumed: %v", err)
+	}
+	selection, err := ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection.BootedGenerationID = "gen0"
+	selection.ActiveGenerationID = "gen0"
+	selection.BootedBootEntry = "loader/entries/katl-gen0.conf"
+	selection.UpdatedAt = now.Add(time.Minute)
+	if err := WriteBootSelection(root, selection); err != nil {
+		t.Fatal(err)
+	}
+	if armed, err := ArmBootRecovery(root, "gen0"); err != nil || armed {
+		t.Fatalf("ArmBootRecovery(gen0) = %t, %v, want fallback boot disarmed", armed, err)
+	}
+
+	fallback, err := RecordBootHealth(BootHealthRequest{Root: root, GenerationID: "gen0", CommandLine: bootHealthCommandLine("gen0"), Result: BootHealthTimeout, Now: now.Add(2 * time.Minute), ForceFailure: true, RequestReboot: true})
+	if err != nil {
+		t.Fatalf("RecordBootHealth(fallback failure) error = %v", err)
+	}
+	if !fallback.Failed || !fallback.RecoveryRequired || fallback.RebootRequested {
+		t.Fatalf("fallback failure = %#v, want bounded manual recovery", fallback)
 	}
 }
 
@@ -931,6 +979,15 @@ func writeBootHealthGeneration(t *testing.T, root string, id string, previous st
 	}
 	if err := WriteGeneration(root, spec, status); err != nil {
 		t.Fatalf("WriteGeneration(%s) error = %v", id, err)
+	}
+	for _, path := range []string{spec.Boot.UKIPath, filepath.Join("/efi", spec.Boot.LoaderEntryPath)} {
+		path = rootedPathUnchecked(root, path)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(id), 0o644); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

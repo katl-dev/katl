@@ -1,0 +1,13 @@
+[Unit]
+Description=Recover a failed Katl boot trial
+Documentation=man:systemd.unit(5) man:systemd.service(5)
+SuccessAction=reboot
+Requires=var.mount
+After=var.mount
+RequiresMountsFor=/efi /var/lib/katl
+
+[Service]
+Type=oneshot
+StandardOutput=journal+console
+SyslogIdentifier=katl-boot-recovery
+ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=failure --reason=katl-boot-health.service-failed --force-failure --request-reboot

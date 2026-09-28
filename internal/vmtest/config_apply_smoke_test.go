@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agent "github.com/katl-dev/katl/internal/katlc/agent"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -64,7 +65,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 		KVM:     runner.options().KVM,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 	if err := CreateDisks(ctx, diskExec(nil), result.Disks); err != nil {
 		t.Fatalf("create config apply data disk: %v", err)
@@ -74,7 +75,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	vm.KVM = runner.options().KVM
 	vm.RAMMiB = 2048
 	vm.CPUs = 2
-	vm.Timeout = 8 * time.Minute
+	vm.Timeout = 15 * time.Minute
 	vm.Network.MAC = first(vm.Network.MAC, plannedMAC)
 	vm.VSock.Enabled = true
 	vm.Agent.RequireHealth = true
@@ -728,9 +729,71 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	if bootedGenerationStatus.GetConfigApply().GetPhase() != "active" || bootedGenerationStatus.GetConfigApply().GetAcceptedApplyMode() != "next-boot" {
 		t.Fatalf("booted networkd katlctl generation status = %+v, want active next-boot config apply", bootedGenerationStatus.GetConfigApply())
 	}
+	guest, client = runFailedTrialRecoverySmoke(t, ctx, node, guest, client, result, katlctl, endpoint, stagedGeneration)
 	assertBootstrappedKubernetesSysextChangeRejected(t, ctx, guest, endpoint)
 	shutdownGuestThroughKatlctl(t, ctx, result, katlctl, endpoint, node, client)
 	return guest, nil
+}
+
+func runFailedTrialRecoverySmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl, endpoint, fallbackGeneration string) (*GuestControl, *AgentClient) {
+	t.Helper()
+	candidate := "2026.06.06-vmtest-failed-trial"
+	accepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-failed-trial", "next-boot", candidate, configApplyFixture(t, "next-boot-required-unit-failure.yaml"), false)
+	status := waitKatlcOperationTerminal(t, ctx, endpoint, accepted.OperationId)
+	if status.Result != operation.ResultSucceeded || status.ConfigApplyPhase != "next-boot" {
+		t.Fatalf("failed-trial staging status = %+v, want succeeded next-boot apply", status)
+	}
+	selection := bootSelectionFromGuest(t, ctx, guest)
+	if selection.TrialGenerationID != candidate || selection.PreviousKnownGoodGenerationID != fallbackGeneration {
+		t.Fatalf("failed-trial selection = %#v", selection)
+	}
+
+	previousBootID := guestBootID(t, ctx, client)
+	_, rebootErr := runKatlctlOutcome(t, ctx, result, katlctl, "host-reboot-failed-trial", "node", "reboot", "cp-1", "--timeout", "3m")
+	if rebootErr == nil || !strings.Contains(rebootErr.Error(), "rejected generation "+candidate+" during boot health and returned on generation "+fallbackGeneration) {
+		t.Fatalf("failed-trial reboot error = %v, want actionable fallback report", rebootErr)
+	}
+	_ = client.Close()
+	guest, client = reconnectGuestAfterGeneration(t, ctx, node, previousBootID, fallbackGeneration)
+
+	fallbackSpec := generationFromGuest(t, ctx, guest, fallbackGeneration)
+	assertBootedGenerationIdentity(t, ctx, guest, fallbackSpec)
+	_, candidateStatus := generationRecordsFromGuest(t, ctx, guest, candidate)
+	if candidateStatus.BootState != generation.BootStateFailed || candidateStatus.HealthState != generation.HealthStateUnhealthy {
+		t.Fatalf("failed candidate status = %#v, want failed/unhealthy", candidateStatus)
+	}
+	selection = bootSelectionFromGuest(t, ctx, guest)
+	if selection.DefaultGenerationID != fallbackGeneration || selection.BootedGenerationID != fallbackGeneration || selection.PendingHealthValidation || selection.RecoveryRequired {
+		t.Fatalf("fallback boot selection = %#v", selection)
+	}
+	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "boot-deadman-after-fallback", "systemctl", "show", "--property=ActiveState", "--value", "katl-boot-deadman.timer")); got != "active" {
+		t.Fatalf("boot deadline timer = %q, want active with its trial switch cleared", got)
+	}
+	assertGuestMissing(t, ctx, guest, "/run/katl/boot-health/pending")
+	fallbackBootID := guestBootID(t, ctx, client)
+	guestCommand(t, ctx, guest, "deadman-skips-without-trial", "systemctl", "start", "katl-boot-deadman.service")
+	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "deadman-condition-after-fallback", "systemctl", "show", "--property=ConditionResult", "--value", "katl-boot-deadman.service")); got != "no" {
+		t.Fatalf("deadman condition = %q, want no without an armed trial", got)
+	}
+	if got := guestBootID(t, ctx, client); got != fallbackBootID {
+		t.Fatalf("condition-skipped deadman changed boot ID from %s to %s", fallbackBootID, got)
+	}
+	previousJournal := guestCommandOutput(t, ctx, guest, "failed-trial-recovery-journal", "journalctl", "-b", "-1", "--no-pager", "-u", "katl-boot-health.service", "-u", "katl-boot-recovery.service")
+	if !strings.Contains(previousJournal, "katl-boot-recovery") || !strings.Contains(previousJournal, "rebootRequested=true") {
+		t.Fatalf("failed trial journal does not prove automatic fallback:\n%s", previousJournal)
+	}
+	list := runKatlctl(t, ctx, result, katlctl, "generations-after-failed-trial", "node", "generations", "list", "cp-1")
+	if !strings.Contains(string(list), candidate) || !strings.Contains(string(list), fallbackGeneration) {
+		t.Fatalf("katlctl generation list missing recovery evidence:\n%s", list)
+	}
+
+	repeatBootID := guestBootID(t, ctx, client)
+	runKatlctl(t, ctx, result, katlctl, "host-reboot-after-fallback", "node", "reboot", "cp-1", "--timeout", "3m")
+	_ = client.Close()
+	guest, client = reconnectGuestAfterGeneration(t, ctx, node, repeatBootID, fallbackGeneration)
+	assertBootedGenerationIdentity(t, ctx, guest, fallbackSpec)
+	assertGuestMissing(t, ctx, guest, "/run/katl/boot-health/pending")
+	return guest, client
 }
 
 func runVolumeRemovalSmoke(t *testing.T, ctx context.Context, guest *GuestControl, result Result, katlctl, endpoint string) string {
@@ -927,6 +990,20 @@ func reconnectGuestAfterBoot(t *testing.T, ctx context.Context, node *RunningIns
 		failIfRestartExited(t, node.handle)
 	}
 	t.Fatalf("vmtest agent did not reconnect with a new boot ID after staged generation restart: %v", lastErr)
+	return nil, nil
+}
+
+func reconnectGuestAfterGeneration(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, previousBootID, generationID string) (*GuestControl, *AgentClient) {
+	t.Helper()
+	for attempt := 0; attempt < 2; attempt++ {
+		guest, client := reconnectGuestAfterBoot(t, ctx, node, previousBootID)
+		if currentGenerationFromGuest(t, ctx, guest) == generationID {
+			return guest, client
+		}
+		previousBootID = guestBootID(t, ctx, client)
+		_ = client.Close()
+	}
+	t.Fatalf("vmtest agent did not reconnect on generation %s after automatic recovery", generationID)
 	return nil, nil
 }
 

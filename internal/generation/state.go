@@ -35,31 +35,32 @@ type KubernetesProjectionRequest struct {
 }
 
 type StateAssets struct {
-	VarMount           string
-	EFIMount           string
-	EtcKubernetesMount string
-	GenerationActivate string
-	HostConfigPrepare  string
-	HostConfigVerify   string
-	ExtensionReload    string
-	ExtensionActivate  string
-	VolumesTarget      string
-	VolumesActivate    string
-	KubeadmActivate    string
-	KubeadmReadyTarget string
-	BootCompleteTarget string
-	BootHealthService  string
-	BootDeadmanService string
-	BootDeadmanTimer   string
-	ContainerdDropIn   string
-	KubeletDropIn      string
-	StateCheckService  string
-	RuntimeStatus      string
-	AgentService       string
-	Tmpfiles           string
-	ExtraMounts        []ExtraMountUnit
-	Dirs               []StateDir
-	MountPoints        []StateDir
+	VarMount            string
+	EFIMount            string
+	EtcKubernetesMount  string
+	GenerationActivate  string
+	HostConfigPrepare   string
+	HostConfigVerify    string
+	ExtensionReload     string
+	ExtensionActivate   string
+	VolumesTarget       string
+	VolumesActivate     string
+	KubeadmActivate     string
+	KubeadmReadyTarget  string
+	BootCompleteTarget  string
+	BootHealthService   string
+	BootRecoveryService string
+	BootDeadmanService  string
+	BootDeadmanTimer    string
+	ContainerdDropIn    string
+	KubeletDropIn       string
+	StateCheckService   string
+	RuntimeStatus       string
+	AgentService        string
+	Tmpfiles            string
+	ExtraMounts         []ExtraMountUnit
+	Dirs                []StateDir
+	MountPoints         []StateDir
 }
 
 type StateDir struct {
@@ -120,29 +121,30 @@ func RenderState(request StateRequest) (StateAssets, error) {
 			"WantedBy=local-fs.target",
 			"",
 		}, "\n"),
-		EtcKubernetesMount: kubernetesMount,
-		GenerationActivate: renderGenerationActivateService(),
-		HostConfigPrepare:  renderHostConfigPrepareService(),
-		HostConfigVerify:   renderHostConfigVerifyService(),
-		ExtensionReload:    renderSystemExtensionReloadService(),
-		ExtensionActivate:  renderSystemExtensionActivateService(),
-		VolumesTarget:      renderVolumesTarget(),
-		VolumesActivate:    renderVolumesActivateService(),
-		KubeadmActivate:    renderKubeadmActivateService(),
-		KubeadmReadyTarget: renderKubeadmReadyTarget(),
-		BootCompleteTarget: renderBootCompleteTarget(),
-		BootHealthService:  renderBootHealthService(),
-		BootDeadmanService: renderBootDeadmanService(),
-		BootDeadmanTimer:   renderBootDeadmanTimer(),
-		ContainerdDropIn:   renderContainerdDropIn(),
-		KubeletDropIn:      renderKubeletDropIn(),
-		StateCheckService:  renderStateCheckService(),
-		RuntimeStatus:      renderRuntimeStatusService(),
-		AgentService:       renderAgentService(),
-		Tmpfiles:           renderTmpfiles(dirs),
-		ExtraMounts:        extraMounts,
-		Dirs:               dirs,
-		MountPoints:        append([]StateDir{{Path: KubernetesTarget, Mode: 0o755}}, extraMountPoints...),
+		EtcKubernetesMount:  kubernetesMount,
+		GenerationActivate:  renderGenerationActivateService(),
+		HostConfigPrepare:   renderHostConfigPrepareService(),
+		HostConfigVerify:    renderHostConfigVerifyService(),
+		ExtensionReload:     renderSystemExtensionReloadService(),
+		ExtensionActivate:   renderSystemExtensionActivateService(),
+		VolumesTarget:       renderVolumesTarget(),
+		VolumesActivate:     renderVolumesActivateService(),
+		KubeadmActivate:     renderKubeadmActivateService(),
+		KubeadmReadyTarget:  renderKubeadmReadyTarget(),
+		BootCompleteTarget:  renderBootCompleteTarget(),
+		BootHealthService:   renderBootHealthService(),
+		BootRecoveryService: renderBootRecoveryService(),
+		BootDeadmanService:  renderBootDeadmanService(),
+		BootDeadmanTimer:    renderBootDeadmanTimer(),
+		ContainerdDropIn:    renderContainerdDropIn(),
+		KubeletDropIn:       renderKubeletDropIn(),
+		StateCheckService:   renderStateCheckService(),
+		RuntimeStatus:       renderRuntimeStatusService(),
+		AgentService:        renderAgentService(),
+		Tmpfiles:            renderTmpfiles(dirs),
+		ExtraMounts:         extraMounts,
+		Dirs:                dirs,
+		MountPoints:         append([]StateDir{{Path: KubernetesTarget, Mode: 0o755}}, extraMountPoints...),
 	}
 	return assets, nil
 }
@@ -424,6 +426,7 @@ func renderBootHealthService() string {
 		"Requires=katl-runtime-handoff-status.service katl-system-extensions-activate.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service",
 		"After=katl-runtime-handoff-status.service katl-system-extensions-activate.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service",
 		"Before=katl-boot-complete.target",
+		"OnFailure=katl-boot-recovery.service",
 		"RequiresMountsFor=/efi /var/lib/katl",
 		"",
 		"[Service]",
@@ -438,11 +441,32 @@ func renderBootHealthService() string {
 	}, "\n")
 }
 
+func renderBootRecoveryService() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Recover a failed Katl boot trial",
+		"Documentation=man:systemd.unit(5) man:systemd.service(5)",
+		"SuccessAction=reboot",
+		"Requires=var.mount",
+		"After=var.mount",
+		"RequiresMountsFor=/efi /var/lib/katl",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"StandardOutput=journal+console",
+		"SyslogIdentifier=katl-boot-recovery",
+		"ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=failure --reason=katl-boot-health.service-failed --force-failure --request-reboot",
+		"",
+	}, "\n")
+}
+
 func renderBootDeadmanService() string {
 	return strings.Join([]string{
 		"[Unit]",
 		"Description=Fail Katl boot health after deadline",
 		"Documentation=man:systemd.service(5)",
+		"SuccessAction=reboot",
+		"ConditionPathExists=/run/katl/boot-health/pending",
 		"Requires=var.mount",
 		"After=var.mount",
 		"RequiresMountsFor=/efi /var/lib/katl",
@@ -451,7 +475,7 @@ func renderBootDeadmanService() string {
 		"Type=oneshot",
 		"StandardOutput=journal+console",
 		"SyslogIdentifier=katl-boot-deadman",
-		"ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=timeout --reason=katl-boot-health-deadline-expired --request-reboot",
+		"ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=timeout --reason=katl-boot-health-deadline-expired --force-failure --request-reboot",
 		"",
 	}, "\n")
 }
@@ -632,6 +656,9 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 	if err := writeFile(root, "etc/systemd/system/katl-boot-health.service", assets.BootHealthService, 0o644); err != nil {
 		return StateAssets{}, err
 	}
+	if err := writeFile(root, "etc/systemd/system/katl-boot-recovery.service", assets.BootRecoveryService, 0o644); err != nil {
+		return StateAssets{}, err
+	}
 	if err := writeFile(root, "etc/systemd/system/katl-boot-deadman.service", assets.BootDeadmanService, 0o644); err != nil {
 		return StateAssets{}, err
 	}
@@ -737,8 +764,7 @@ func stateDirs() []StateDir {
 }
 
 func renderTmpfiles(dirs []StateDir) string {
-	lines := make([]string, 0, len(dirs)+1)
-	lines = append(lines, "# Katl writable state seed directories")
+	lines := []string{"# Katl writable state seed directories"}
 	for _, dir := range dirs {
 		owner := "root"
 		group := "root"

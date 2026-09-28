@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
 )
@@ -58,6 +59,36 @@ func TestGenerationActivateRejectsMismatchedMetadata(t *testing.T) {
 	err = run(t.Context(), []string{"--root", root, "--generation", "2026.06.05-001"}, nil)
 	if err == nil || !strings.Contains(err.Error(), "does not match selected generation") {
 		t.Fatalf("run() error = %v, want metadata mismatch", err)
+	}
+}
+
+func TestGenerationActivateArmsRecoveryBeforeCandidateActivation(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 9, 28, 14, 0, 0, 0, time.UTC)
+	writeActivationFallback(t, root, "known-good", now.Add(-time.Hour))
+	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
+		APIVersion:                    generation.APIVersion,
+		Kind:                          generation.BootSelectionKind,
+		DefaultGenerationID:           "known-good",
+		TargetBootGenerationID:        "candidate",
+		TrialGenerationID:             "candidate",
+		PreviousKnownGoodGenerationID: "known-good",
+		DefaultBootEntry:              "loader/entries/katl-known-good.conf",
+		TrialBootEntry:                "loader/entries/katl-candidate.conf",
+		PreviousKnownGoodBootEntry:    "loader/entries/katl-known-good.conf",
+		PendingHealthValidation:       true,
+		PersistentDefaultPromotion:    generation.DefaultPromotionPending,
+		UpdatedAt:                     now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := run(t.Context(), []string{"--root", root, "--generation", "candidate"}, nil)
+	if err == nil {
+		t.Fatal("activation with missing candidate metadata succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(root, "run/katl/boot-health/pending")); err != nil {
+		t.Fatalf("activation failure was not recovery-armed: %v", err)
 	}
 }
 
@@ -138,6 +169,39 @@ func commandActivationRecord(t *testing.T, root string, id string) generation.Re
 				},
 			},
 		},
+	}
+}
+
+func writeActivationFallback(t *testing.T, root string, id string, updatedAt time.Time) {
+	t.Helper()
+	spec := generation.GenerationSpec{
+		APIVersion:     generation.APIVersion,
+		Kind:           generation.SpecKind,
+		GenerationID:   id,
+		RuntimeVersion: "0.1.0",
+		Root: generation.RootSelection{
+			Slot:                  "root-a",
+			PartitionUUID:         "11111111-2222-3333-4444-555555555555",
+			RuntimeVersion:        "0.1.0",
+			RuntimeInterface:      "katl-runtime-1",
+			Architecture:          "x86_64",
+			RuntimeArtifactSHA256: strings.Repeat("a", 64),
+		},
+		Boot: generation.BootSelection{
+			UKIPath:         "/efi/EFI/Linux/katl-" + id + ".efi",
+			LoaderEntryPath: "loader/entries/katl-" + id + ".conf",
+		},
+		CreatedAt: updatedAt,
+	}
+	status, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, updatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.WriteGeneration(root, spec, status); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{spec.Boot.UKIPath, filepath.Join("/efi", spec.Boot.LoaderEntryPath)} {
+		writeCommandFile(t, filepath.Join(root, strings.TrimPrefix(path, "/")), id)
 	}
 }
 

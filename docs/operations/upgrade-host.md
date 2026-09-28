@@ -65,14 +65,23 @@ previous-boot journal before retrying the upgrade.
 
 ## Failure boundary
 
-Boot health may select the previous known-good host generation. A failed trial
-keeps the source generation as the persistent EFI default. If the target loses
-management networking, preserve its console evidence, then reboot it from the
-console or out-of-band management to return to that source. `katlctl` reports
-the failure when it can reconnect. Host rollback does not
-undo Kubernetes, etcd, workload, or external-infrastructure changes. If the
-operation record says `recoveryRequired: true`, or the node fails to return,
-stop the rollout and collect the evidence in [Troubleshoot KatlOS](troubleshoot.md).
+Boot health selects the previous known-good host generation and performs one
+automatic reboot when an armed trial loses management networking, fails required
+activation, or misses the 10-minute boot deadline. Activation arms recovery only
+after proving that the selected boot is the pending trial and its distinct
+fallback remains healthy. The source generation stays the persistent EFI
+default. `katlctl` reports that the candidate was rejected after the node
+reconnects on the source generation.
+
+Katl does not reboot automatically when no validated fallback exists, the
+fallback also fails, required state or EFI storage is unavailable, or the
+failure occurs before generation activation arms boot recovery. The fallback
+does not re-arm the switch, so a failed fallback stops instead of boot-looping.
+Use the console or out-of-band management to preserve the failed boot's journal
+and inspect boot-selection state. Host rollback does not undo Kubernetes, etcd,
+workload, or external-infrastructure changes. If the operation record says
+`recoveryRequired: true`, or the node fails to return, stop the rollout and
+collect the evidence in [Troubleshoot KatlOS](troubleshoot.md).
 If KatlOS returns but Kubernetes does not recover before the timeout, do not
 schedule workloads on that node. `katlctl node status` reports whether kubelet,
 Node Ready, local control-plane components, or managed routing is still waiting.

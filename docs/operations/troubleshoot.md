@@ -43,9 +43,11 @@ Run on the affected node and preserve timestamps:
 ```sh
 systemctl --failed --no-pager
 systemctl status katl-boot-complete.target katl-boot-health.service --no-pager
+systemctl status katl-boot-recovery.service katl-boot-deadman.timer --no-pager
 systemctl status katl-runtime-handoff-status.service katlc-agent.service --no-pager
 journalctl -b --no-pager
-journalctl -b -u katl-boot-health.service -u katlc-agent.service --no-pager
+journalctl -b -u katl-boot-health.service -u katl-boot-recovery.service -u katlc-agent.service --no-pager
+journalctl -b -1 -u katl-boot-health.service -u katl-boot-recovery.service --no-pager
 cat /var/lib/katl/boot/selection.json
 find /var/lib/katl/generations -maxdepth 2 -type f -print
 find /var/lib/katl/operations -maxdepth 3 -type f -print
@@ -71,6 +73,13 @@ snapshot looks stale:
 ```
 
 Do not edit operation, generation, or boot-selection records as a repair method.
+
+After a failed trial, the previous-boot journal shows why boot health failed and
+whether `katl-boot-recovery.service` requested the single automatic fallback
+reboot. If the fallback also failed, or `recoveryRequired` is true, Katl does not
+reboot again. Preserve the journal and use the console to select or repair a
+validated generation. If no validated generation remains, reinstall the host
+without treating host rollback as a Kubernetes or data backup.
 
 ## Installer evidence
 

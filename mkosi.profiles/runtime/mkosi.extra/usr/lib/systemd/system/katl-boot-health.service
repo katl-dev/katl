@@ -4,6 +4,7 @@ Documentation=man:systemd.service(5)
 Requires=katl-runtime-handoff-status.service katl-system-extensions-activate.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service
 After=katl-runtime-handoff-status.service katl-system-extensions-activate.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service
 Before=katl-boot-complete.target
+OnFailure=katl-boot-recovery.service
 RequiresMountsFor=/efi /var/lib/katl
 
 [Service]

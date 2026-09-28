@@ -3,7 +3,6 @@ package generation
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -16,16 +15,15 @@ const (
 )
 
 type BootHealthRequest struct {
-	Root               string
-	GenerationID       string
-	CommandLine        string
-	Result             string
-	Reason             string
-	Now                time.Time
-	RebootRequestPath  string
-	WriteRebootRequest bool
-	ForceFailure       bool
-	SetBootDefault     BootDefaultSetter
+	Root           string
+	GenerationID   string
+	CommandLine    string
+	Result         string
+	Reason         string
+	Now            time.Time
+	RequestReboot  bool
+	ForceFailure   bool
+	SetBootDefault BootDefaultSetter
 }
 
 type BootHealthResult struct {
@@ -376,6 +374,10 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 
 func failBootedGeneration(request BootHealthRequest, generationID string, now time.Time) (BootHealthResult, error) {
 	root := cleanRoot(request.Root)
+	recoveryArmed, err := bootRecoveryArmed(root, generationID)
+	if err != nil {
+		return BootHealthResult{}, err
+	}
 	selection, err := ReadBootSelection(root)
 	if err != nil {
 		return BootHealthResult{}, err
@@ -455,15 +457,16 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 			return BootHealthResult{}, err
 		}
 	}
-	if err := WriteBootSelection(root, selection); err != nil {
-		return BootHealthResult{}, err
-	}
-	rebootRequested := false
-	if request.WriteRebootRequest {
-		if err := writeRebootRequest(root, request.RebootRequestPath, generationID, request.Result, now); err != nil {
+	// Consume the ephemeral authorization before handing a clean exit to
+	// systemd. A service restart cannot request a second automatic reboot.
+	rebootRequested := request.RequestReboot && recoveryArmed && !selection.RecoveryRequired
+	if rebootRequested {
+		if err := ClearBootRecovery(root); err != nil {
 			return BootHealthResult{}, err
 		}
-		rebootRequested = true
+	}
+	if err := WriteBootSelection(root, selection); err != nil {
+		return BootHealthResult{}, err
 	}
 	return BootHealthResult{
 		GenerationID:      generationID,
@@ -633,18 +636,6 @@ func supersedePreviousGeneration(root string, previousID string, replacementID s
 		HealthState: status.HealthState,
 	})
 	return WriteGenerationStatus(root, spec, status)
-}
-
-func writeRebootRequest(root string, path string, generationID string, result string, now time.Time) error {
-	if strings.TrimSpace(path) == "" {
-		path = "/run/katl/boot-health/reboot-requested"
-	}
-	path = rootedPathUnchecked(root, path)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	content := fmt.Sprintf("generation=%s\nresult=%s\nrequestedAt=%s\n", generationID, result, now.UTC().Format(time.RFC3339Nano))
-	return os.WriteFile(path, []byte(content), 0o644)
 }
 
 func transitionReason(value string, fallback string) string {
