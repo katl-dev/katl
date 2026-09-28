@@ -19,8 +19,7 @@ func TestPlanHostConfigurationActivationOrdersPrepareAndVerifyEffects(t *testing
 		"modules": {Files: []manifest.HostConfigurationFile{{Path: "/etc/modules-load.d/80-lab.conf", Content: &modules}}},
 		"udev":    {Files: []manifest.HostConfigurationFile{{Path: "/etc/udev/rules.d/80-ups.rules", Content: &rules}}},
 		"journal": {
-			Files:  []manifest.HostConfigurationFile{{Path: "/etc/systemd/journald.conf.d/80-home-lab.conf", Content: &journal}},
-			Notify: manifest.HostConfigurationNotifications{Systemd: []manifest.HostConfigurationSystemdNotification{{Unit: "systemd-journald.service", Action: "try-reload-or-restart"}}},
+			Files: []manifest.HostConfigurationFile{{Path: "/etc/systemd/journald.conf.d/80-home-lab.conf", Content: &journal}},
 		},
 	}}
 	prepare := PlanHostConfigurationActivation(config, HostConfigurationPhasePrepare)

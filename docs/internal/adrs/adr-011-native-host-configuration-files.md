@@ -148,10 +148,6 @@ spec:
               content: |
                 [Journal]
                 SystemMaxUse=2G
-          onChange:
-            systemd:
-              - unit: systemd-journald.service
-                action: try-reload-or-restart
 ```
 
 `hostConfiguration` may appear under `spec.defaults` or on a concrete entry in
@@ -415,8 +411,14 @@ Refreshing the generated confext is followed by one systemd manager
 `daemon-reload` when systemd unit files or drop-ins changed. A daemon reload
 does not imply that a running service consumes its new configuration.
 
-A set may declare bounded notification for an existing unprotected systemd
-unit:
+Katl derives the bounded consumer action from concrete unit files and drop-ins
+under `/etc/systemd/system`, and from supported native systemd component
+drop-ins such as `journald.conf.d` and `timesyncd.conf.d`. It reloads when the
+active component supports that operation and otherwise restarts it. An inactive
+consumer remains stopped unless it is declaratively enabled.
+
+A set may declare a bounded notification for application configuration whose
+consumer cannot be inferred:
 
 ```yaml
 onChange:
@@ -495,7 +497,7 @@ ceremony. A plan should read like:
 kernel-forwarding: live; 2 kernel settings will change
 ups-device: live reload; existing devices will not be retriggered
 storage-modules: next boot; kernel module state is not changed online
-journal-limits: live; systemd-journald.service will be notified
+journal-limits: live; systemd-journald.service will reload or restart
 ```
 
 Persisted records contain set names, paths, content digests, classifications,

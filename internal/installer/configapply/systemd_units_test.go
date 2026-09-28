@@ -182,6 +182,49 @@ func TestBootNotificationsWaitForExtensions(t *testing.T) {
 	}
 }
 
+func TestBootDerivesSystemdComponentNotification(t *testing.T) {
+	content := "[Journal]\nSystemMaxUse=2G\n"
+	node := manifest.NodeConfig{HostConfiguration: testHostConfiguration(
+		"journal", "/etc/systemd/journald.conf.d/80-home-lab.conf", content,
+	)}
+	runner := commandRunnerFunc(func(_ context.Context, command Command) (CommandResult, error) {
+		switch {
+		case command.Name == "systemd-state-systemd-journald.service":
+			return CommandResult{Stdout: "active"}, nil
+		case strings.HasSuffix(command.Name, "-CanReload"):
+			return CommandResult{Stdout: "yes"}, nil
+		default:
+			return CommandResult{}, nil
+		}
+	})
+	plan, err := PrepareSystemdActivation(t.Context(), t.TempDir(), node, runner)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Commands) != 1 || strings.Join(plan.Commands[0].Argv, " ") != "systemctl reload systemd-journald.service" {
+		t.Fatalf("boot component commands = %#v", plan.Commands)
+	}
+}
+
+func TestDerivedSystemdComponentNotificationLeavesInactiveUnitStopped(t *testing.T) {
+	content := "[Time]\nNTP=192.0.2.123\n"
+	host := planHostConfigurationChange(manifest.HostConfiguration{}, testHostConfiguration(
+		"time", "/etc/systemd/timesyncd.conf.d/80-site.conf", content,
+	))
+	runner := commandRunnerFunc(func(_ context.Context, command Command) (CommandResult, error) {
+		if command.Name == "systemd-state-systemd-timesyncd.service" {
+			return CommandResult{Stdout: "inactive"}, nil
+		}
+		return CommandResult{}, nil
+	})
+	if err := (Executor{Runner: runner, HostConfiguration: &host}).prepareHostSystemd(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if len(host.Commands) != 0 || !slices.Equal(host.inactiveNotifications, []string{"systemd-timesyncd.service"}) {
+		t.Fatalf("inactive component plan = %#v", host)
+	}
+}
+
 func TestExtensionConfigurationSharesUnitLifecycle(t *testing.T) {
 	oldConfig, newConfig := "old", "new"
 	before := manifest.NodeConfig{SystemExtensions: []manifest.SystemExtension{{

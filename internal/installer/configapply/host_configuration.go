@@ -57,7 +57,6 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 	names := sortedStringUnion(hostSetNames(currentSets), hostSetNames(desiredSets))
 	plan := HostConfigurationChangePlan{Live: true}
 	notifications := make(map[string]string)
-	unitFiles := make(map[string]bool)
 	plan.unitsToEnable = unitDifference(desired.EnabledUnits, current.EnabledUnits)
 	plan.unitsToDisable = unitDifference(current.EnabledUnits, desired.EnabledUnits)
 	for _, unit := range slices.Concat(plan.unitsToEnable, plan.unitsToDisable) {
@@ -136,15 +135,18 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 		}
 		runtimeFilesChanged = true
 		plan.Paths = append(plan.Paths, filePath)
+		unit := changedUnit(filePath)
+		component := changedSystemdComponent(filePath)
 		switch {
 		case filePath == "/etc/systemd/system/"+systemdunit.TargetName:
 			systemdReload = true
-		case changedUnit(filePath) != "":
-			unit := changedUnit(filePath)
-			unitFiles[unit] = true
+		case unit != "":
+			deriveSystemdNotification(notifications, filePath)
 			if slices.Contains(desired.EnabledUnits, unit) && !slices.Contains(plan.unitsToEnable, unit) {
 				plan.unitsToEnable = append(plan.unitsToEnable, unit)
 			}
+		case component != "":
+			deriveSystemdNotification(notifications, filePath)
 		case networkdconfig.IsPath(filePath):
 			if stagedReason == "" {
 				stagedReason = "systemd-networkd configuration applies on next boot"
@@ -214,14 +216,6 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 		}
 		if strings.HasPrefix(filePath, "/etc/systemd/system/") {
 			systemdReload = true
-		}
-	}
-	for unit := range unitFiles {
-		switch notifications[unit] {
-		case "restart", "reload-or-restart":
-			notifications[unit] = "restart"
-		default:
-			notifications[unit] = "try-restart"
 		}
 	}
 	for unit := range notifications {

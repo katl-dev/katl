@@ -124,7 +124,7 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 	case "configbundle.SourceHostConfigurationFileSet.files":
 		return description("Files owned by this set when present.")
 	case "configbundle.SourceHostConfigurationFileSet.onChange":
-		return description("Bounded systemd notifications after this set changes.")
+		return description("Bounded systemd notifications for files whose consumer Katl cannot derive.")
 	case "configbundle.SourceSystemExtension.state":
 		return enumRule("Whether the extension is present or removed.", "present", "", "present", "absent")
 	case "configbundle.SourceSystemExtension.bundle":
