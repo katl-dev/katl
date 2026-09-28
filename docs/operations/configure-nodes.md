@@ -215,10 +215,6 @@ spec:
               content: |
                 [Time]
                 NTP=192.0.2.123
-          onChange:
-            systemd:
-              - unit: systemd-timesyncd.service
-                action: try-restart
 ```
 
 `katlctl cluster apply --config ./cluster.yaml` enables and starts newly listed
@@ -237,11 +233,14 @@ enabled and masked, or managed through both this list and an extension's units.
 Put native unit definitions and drop-ins in file sets under
 `/etc/systemd/system`. Changes to a concrete unit or its drop-ins automatically
 reload systemd's configuration and restart that unit if it was running or is
-declared enabled. Stopped, undeclared units stay stopped. Application
-configuration files, template-wide and type-wide drop-ins need explicit
-`onChange.systemd` notifications to identify their consumers. Configuration
-and unit changes in an extension also apply live when its payload is unchanged;
-changing the extension payload still requires the next boot.
+declared enabled. Katl also derives the consumer for supported native systemd
+component drop-ins, including `journald.conf.d` and `timesyncd.conf.d`, and
+reloads or restarts an active consumer as appropriate. Stopped, undeclared
+units stay stopped. Application configuration files, template-wide and
+type-wide drop-ins need explicit `onChange.systemd` notifications when their
+consumer cannot be inferred. Configuration and unit changes in an extension
+also apply live when its payload is unchanged; changing the extension payload
+still requires the next boot.
 
 Live apply groups affected service stops and starts using native systemd
 dependency transactions. On failure it restores the previous configuration,
@@ -471,13 +470,17 @@ next-boot-only.
 Katl renders `hostConfiguration.sysfs` to an internal tmpfiles rule, applies
 each value, and reads it back before boot health succeeds. Containerd imports
 `/etc/containerd/conf.d/*.toml` when it starts. Other permitted files are
-next-boot unless their set declares a bounded notification for an unprotected
-existing unit:
+next-boot unless Katl can derive their consumer or their set declares a bounded
+notification for an unprotected existing unit:
 
 ```yaml
+files:
+  - path: /etc/example/config.yaml
+    content: |
+      enabled: true
 onChange:
   systemd:
-    - unit: systemd-journald.service
+    - unit: example.service
       action: try-reload-or-restart
 ```
 

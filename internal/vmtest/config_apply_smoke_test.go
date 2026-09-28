@@ -1435,6 +1435,7 @@ func runSystemdUnitSmoke(t *testing.T, ctx context.Context, guest *GuestControl,
 	}
 	beforeBoot := guestBootID(t, ctx, client)
 	var lastConfig string
+	var timePID string
 	for version, value := range []string{"first", "second"} {
 		config := strings.Replace(string(base), "      sets:\n", `      enabledUnits: [a-consumer.service, z-producer.service, systemd-timesyncd.service]
       sets:
@@ -1458,6 +1459,10 @@ func runSystemdUnitSmoke(t *testing.T, ctx context.Context, guest *GuestControl,
                 ExecStart=/usr/bin/sh -c 'test "$(cat /run/unit-order)" = "`+value+`"'
                 [Install]
                 WantedBy=multi-user.target
+            - path: /etc/systemd/timesyncd.conf.d/80-katl-vmtest.conf
+              content: |
+                [Time]
+                PollIntervalMinSec=`+strconv.Itoa(version+30)+`s
 `, 1)
 		config = strings.Replace(config, "sourceID: operator", "sourceID: systemd-journey", 1)
 		config = strings.Replace(config, `desiredVersion: "21"`, fmt.Sprintf("desiredVersion: %q", strconv.Itoa(version+1)), 1)
@@ -1476,6 +1481,18 @@ func runSystemdUnitSmoke(t *testing.T, ctx context.Context, guest *GuestControl,
 		if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "native-enable-"+value, "systemctl", "show", "--property=UnitFileState", "--value", "systemd-timesyncd.service")); got != "enabled-runtime" {
 			t.Fatalf("time service enablement = %q", got)
 		}
+		if got := guestCommandOutput(
+			t, ctx, guest, "time-config-"+value,
+			"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
+			"/usr/bin/systemd-analyze", "cat-config", "systemd/timesyncd.conf",
+		); !strings.Contains(got, "PollIntervalMinSec="+strconv.Itoa(version+30)+"s") {
+			t.Fatalf("timesyncd configuration does not include the applied drop-in:\n%s", got)
+		}
+		pid := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "time-pid-"+value, "systemctl", "show", "--property=MainPID", "--value", "systemd-timesyncd.service"))
+		if timePID != "" && pid == timePID {
+			t.Fatalf("timesyncd PID remained %s after its drop-in changed", pid)
+		}
+		timePID = pid
 	}
 	rejected := strings.ReplaceAll(lastConfig, "second", "rejected")
 	rejected = strings.Replace(rejected, `desiredVersion: "2"`, `desiredVersion: "3"`, 1)

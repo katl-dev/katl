@@ -117,23 +117,29 @@ func TestPlanHostConfigurationStagesSysfsSettings(t *testing.T) {
 	}
 }
 
-func TestPlanHostConfigurationUsesBoundedSystemdNotification(t *testing.T) {
-	content := "[Journal]\nSystemMaxUse=2G\n"
-	desired := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
-		"journal-limits": {
-			Files: []manifest.HostConfigurationFile{{Path: "/etc/systemd/journald.conf.d/80-home-lab.conf", Content: &content}},
-			Notify: manifest.HostConfigurationNotifications{Systemd: []manifest.HostConfigurationSystemdNotification{{
-				Unit:   "systemd-journald.service",
-				Action: "try-reload-or-restart",
-			}}},
-		},
-	}}
-	plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired)
-	if !plan.Live {
-		t.Fatalf("plan = %#v", plan)
+func TestPlanHostConfigurationDerivesSystemdComponentNotification(t *testing.T) {
+	for _, tt := range []struct {
+		path, unit string
+	}{
+		{path: "/etc/systemd/journald.conf.d/80-home-lab.conf", unit: "systemd-journald.service"},
+		{path: "/etc/systemd/timesyncd.conf.d/80-home-lab.conf", unit: "systemd-timesyncd.service"},
+	} {
+		t.Run(tt.unit, func(t *testing.T) {
+			content := "[Service]\nSetting=value\n"
+			desired := testHostConfiguration("component", tt.path, content)
+			plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired)
+			if !plan.Live {
+				t.Fatalf("plan = %#v", plan)
+			}
+			if len(plan.Effects) != 1 || plan.Effects[0].Action != "try-reload-or-restart" || plan.Effects[0].Target != "systemd unit "+tt.unit {
+				t.Fatalf("effects = %#v", plan.Effects)
+			}
+		})
 	}
-	if len(plan.Effects) != 1 || plan.Effects[0].Action != "try-reload-or-restart" || plan.Effects[0].Target != "systemd unit systemd-journald.service" {
-		t.Fatalf("effects = %#v", plan.Effects)
+
+	unsupported := testHostConfiguration("manager", "/etc/systemd/system.conf.d/80-home-lab.conf", "[Manager]\nShowStatus=yes\n")
+	if plan := planHostConfigurationChange(manifest.HostConfiguration{}, unsupported); plan.Live || !strings.Contains(plan.Message, "no proven live adapter") {
+		t.Fatalf("unsupported component plan = %#v", plan)
 	}
 }
 
@@ -158,6 +164,7 @@ func TestPlanHostConfigurationRegrouping(t *testing.T) {
 		destination manifest.HostConfigurationSet
 		wantLive    bool
 		wantEffect  string
+		wantPath    bool
 	}{
 		{
 			name:        "unchanged file with notification",
@@ -175,7 +182,9 @@ func TestPlanHostConfigurationRegrouping(t *testing.T) {
 			destination: manifest.HostConfigurationSet{Files: []manifest.HostConfigurationFile{{
 				Path: file.Path, Content: &changedContent, Mode: file.Mode,
 			}}},
-			wantLive: false,
+			wantLive:   true,
+			wantEffect: "try-reload-or-restart systemd unit systemd-journald.service",
+			wantPath:   true,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -189,14 +198,11 @@ func TestPlanHostConfigurationRegrouping(t *testing.T) {
 			if !slices.Equal(plan.Sets, []string{"host", "journald"}) {
 				t.Fatalf("sets = %v", plan.Sets)
 			}
-			if tt.wantLive && len(plan.Paths) != 0 {
-				t.Fatalf("paths = %v, unchanged runtime path must not be planned", plan.Paths)
+			if (len(plan.Paths) != 0) != tt.wantPath {
+				t.Fatalf("paths = %v, want changed path = %t", plan.Paths, tt.wantPath)
 			}
 			if tt.wantEffect != "" && !strings.Contains(plan.Message, tt.wantEffect) {
 				t.Fatalf("message = %q, want effect %q", plan.Message, tt.wantEffect)
-			}
-			if !tt.wantLive && !strings.Contains(plan.Message, "no proven live adapter") {
-				t.Fatalf("message = %q, want missing live adapter", plan.Message)
 			}
 		})
 	}
@@ -215,9 +221,6 @@ func TestPlanHostConfigurationExposesEveryBoundedEffect(t *testing.T) {
 		"udev":   {Files: []manifest.HostConfigurationFile{{Path: "/etc/udev/rules.d/80-ups.rules", Content: &rules}}},
 		"journal": {
 			Files: []manifest.HostConfigurationFile{{Path: "/etc/systemd/journald.conf.d/80-home-lab.conf", Content: &journal}},
-			Notify: manifest.HostConfigurationNotifications{Systemd: []manifest.HostConfigurationSystemdNotification{{
-				Unit: "systemd-journald.service", Action: "try-reload-or-restart",
-			}}},
 		},
 	}}
 	plan := planHostConfigurationChange(current, desired)

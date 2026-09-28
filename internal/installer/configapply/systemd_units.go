@@ -3,6 +3,7 @@ package configapply
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -27,22 +28,31 @@ func PrepareSystemdActivation(ctx context.Context, root string, node manifest.No
 	host := HostConfigurationChangePlan{unitNotifications: map[string]string{}}
 	e := Executor{Runner: runner, HostConfiguration: &host}
 	config := effectiveHostConfiguration(node)
+	notifications := make(map[string]string)
 	for _, name := range sortedHostConfigurationSetNames(config.Sets) {
 		set := config.Sets[name]
 		if set.State == manifest.HostConfigurationAbsent {
 			continue
 		}
 		for _, notification := range set.Notify.Systemd {
-			if slices.Contains(config.MaskedUnits, notification.Unit) {
-				continue
-			}
-			state, err := e.systemdProperty(ctx, notification.Unit, "ActiveState")
-			if err != nil {
-				return plan, err
-			}
-			if state == "active" {
-				host.unitNotifications[notification.Unit] = notification.Action
-			}
+			notifications[notification.Unit] = notification.Action
+		}
+		for _, file := range set.Files {
+			deriveSystemdNotification(notifications, file.Path)
+		}
+	}
+	units := slices.Collect(maps.Keys(notifications))
+	slices.Sort(units)
+	for _, unit := range units {
+		if slices.Contains(config.MaskedUnits, unit) {
+			continue
+		}
+		state, err := e.systemdProperty(ctx, unit, "ActiveState")
+		if err != nil {
+			return plan, err
+		}
+		if state == "active" {
+			host.unitNotifications[unit] = notifications[unit]
 		}
 	}
 	if err := e.prepareHostSystemd(ctx); err != nil {
@@ -261,6 +271,37 @@ func changedUnit(filePath string) string {
 		return ""
 	}
 	return unit
+}
+
+var systemdComponentDropInUnits = map[string]string{
+	"/etc/systemd/journald.conf.d":  "systemd-journald.service",
+	"/etc/systemd/timesyncd.conf.d": "systemd-timesyncd.service",
+}
+
+func changedSystemdComponent(filePath string) string {
+	directory, name := filepath.Split(filePath)
+	if !strings.HasSuffix(name, ".conf") {
+		return ""
+	}
+	return systemdComponentDropInUnits[strings.TrimSuffix(directory, "/")]
+}
+
+func deriveSystemdNotification(notifications map[string]string, filePath string) {
+	if filePath == "/etc/systemd/system/"+systemdunit.TargetName {
+		return
+	}
+	if unit := changedUnit(filePath); unit != "" {
+		switch notifications[unit] {
+		case "restart", "reload-or-restart":
+			notifications[unit] = "restart"
+		default:
+			notifications[unit] = "try-restart"
+		}
+		return
+	}
+	if unit := changedSystemdComponent(filePath); unit != "" && notifications[unit] == "" {
+		notifications[unit] = "try-reload-or-restart"
+	}
 }
 
 func unitDifference(left, right []string) []string {
