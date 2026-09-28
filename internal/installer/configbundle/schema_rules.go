@@ -184,7 +184,7 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 	case "configbundle.SourceKubernetesLayer.taints":
 		return description("Complete Kubernetes taint list; an empty node list clears inherited taints.")
 	case "configbundle.SourceKubernetesLayer.kubelet":
-		return description("Per-node native KubeletConfiguration applied through kubeadm's bounded kubelet patch path.")
+		return description("Node-local native KubeletConfiguration inherited from defaults or overridden per node and applied through kubeadm's bounded kubelet patch path.")
 	case "configbundle.SourceKubeletConfig.configFile":
 		return schemaFieldRule{Required: true, Description: "Relative path to one kubelet.config.k8s.io/v1beta1 KubeletConfiguration document.", MinLength: intPointer(1)}
 	case "controlplaneendpoint.Config.host":

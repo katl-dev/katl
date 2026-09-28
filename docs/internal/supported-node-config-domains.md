@@ -218,7 +218,7 @@ Bootstrap profile input
 
 per-node kubelet input
   accept one native kubelet.config.k8s.io/v1beta1 KubeletConfiguration from a
-  node-specific source path; defaults cannot set it
+  defaults or node-specific source path; a node reference replaces the default
   compile it to a node-local kubeadm patch and a node-specific desired
   KubeletConfiguration without exposing the generated profile as public input
   apply online with kubeadm upgrade node phase kubelet-config --patches and

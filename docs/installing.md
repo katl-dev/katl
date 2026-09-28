@@ -464,8 +464,8 @@ defaults.
 Katl reserves `1Gi` of node memory for the operating system by default through
 `KubeletConfiguration.systemReserved.memory`. Kubelet subtracts this reservation
 from node allocatable memory, so the scheduler leaves room for node services.
-To change it for every node, add a native `KubeletConfiguration` document to
-`spec.kubernetes.kubeadm.configFile`:
+To change the shared cluster kubelet configuration, add a native
+`KubeletConfiguration` document to `spec.kubernetes.kubeadm.configFile`:
 
 ```yaml
 apiVersion: kubelet.config.k8s.io/v1beta1
@@ -475,10 +475,11 @@ systemReserved:
 ```
 
 Katl retains the `1Gi` default when that native document omits
-`systemReserved.memory`. For one node, set the same field in
-`nodes[].kubernetes.kubelet.configFile` as shown below. The node-specific value
-overrides the cluster-wide value. This reservation changes scheduling capacity;
-it does not impose a hard memory limit on pods or system services.
+`systemReserved.memory`. To keep the policy in Katl's node-local input, set a
+reference in `spec.defaults.kubernetes.kubelet.configFile` or on one node as
+shown below. A resolved node-local value overrides the cluster-wide value. This
+reservation changes scheduling capacity; it does not impose a hard memory limit
+on pods or system services.
 
 This bounded native file is the stable interface for cluster-wide Kubernetes
 networking choices. Set Pod and Service CIDRs in
@@ -502,17 +503,25 @@ Katl honors the cluster's disabled setting during bootstrap and control-plane
 joins, and leaves service routing to your chosen CNI. Disabling kube-proxy
 does not install or configure a replacement CNI.
 
-For node-specific kubelet policy, reference one native
-`kubelet.config.k8s.io/v1beta1` `KubeletConfiguration` from that node:
+For a kubelet policy that applies to every node, reference one native
+`kubelet.config.k8s.io/v1beta1` `KubeletConfiguration` from the node defaults:
 
 ```yaml
 spec:
+  defaults:
+    kubernetes:
+      kubelet:
+        configFile: ./kubelet.yaml
   nodes:
     - name: worker-1
       kubernetes:
         kubelet:
           configFile: ./worker-1-kubelet.yaml
 ```
+
+Nodes inherit the default reference. A node-level reference, such as the
+`worker-1` value above, replaces it for that node. Use `katlctl config resolve`
+to see the effective reference and whether it came from defaults or the node.
 
 ```yaml
 apiVersion: kubelet.config.k8s.io/v1beta1
@@ -524,12 +533,12 @@ topologyManagerPolicy: restricted
 ```
 
 The file is a bounded native overlay, not a Katl-owned host path. Katl applies
-it as a node-local kubeadm kubelet patch during bootstrap and online changes,
-then verifies the local kubelet configuration and node health. It is never
-uploaded to the cluster-wide `kubelet-config` ConfigMap and does not change
-other nodes. This input is node-only: defaults cannot set it. Katl rejects
-multiple documents, other API kinds or versions, and fields that replace
-Katl-owned runtime paths.
+each node's resolved reference as a node-local kubeadm kubelet patch during
+bootstrap and online changes, then verifies the local kubelet configuration and
+node health. It never uploads the overlay to the cluster-wide `kubelet-config`
+ConfigMap. Changing a default changes the desired input for every node that
+inherits it. Katl rejects multiple documents, other API kinds or versions, and
+fields that replace Katl-owned runtime paths.
 
 The ISO flow consumes this source directly: `katlctl install apply` and
 `katlctl cluster bootstrap` compile the internal bundle automatically. Produce

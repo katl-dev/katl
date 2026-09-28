@@ -69,11 +69,16 @@ func resolveNodeKubeletConfigs(sourceRoot string, source SourceConfig, base map[
 	}
 	var inputs []kubeadmSourceInput
 	for i, node := range source.Spec.Nodes {
-		if node.Kubernetes.Kubelet == nil {
+		kubelet := source.Spec.Defaults.Kubernetes.Kubelet
+		field := "spec.defaults.kubernetes.kubelet.configFile"
+		if node.Kubernetes.Kubelet != nil {
+			kubelet = node.Kubernetes.Kubelet
+			field = sourceNodePath(node, i) + ".kubernetes.kubelet.configFile"
+		}
+		if kubelet == nil {
 			continue
 		}
-		field := sourceNodePath(node, i) + ".kubernetes.kubelet.configFile"
-		configFile := strings.TrimSpace(node.Kubernetes.Kubelet.ConfigFile)
+		configFile := strings.TrimSpace(kubelet.ConfigFile)
 		data, err := readHostConfigurationSource(sourceRoot, configFile)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", field, err)
