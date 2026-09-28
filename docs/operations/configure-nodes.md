@@ -51,7 +51,9 @@ Use the `ClusterConfig` from installation. Apply supports these inputs:
 - native host configuration file sets, including systemd-networkd files and
   drop-ins;
 - desired data disks under `storage.volumes`;
-- per-node native kubelet configuration under `nodes[].kubernetes.kubelet`;
+- node-local native kubelet configuration inherited from
+  `spec.defaults.kubernetes.kubelet` or overridden under
+  `nodes[].kubernetes.kubelet`;
 - operation-only system role and role-dependent Kubernetes bootstrap state.
 
 Runtime-safe fields apply normally. Katl coordinates affected node generations
@@ -91,21 +93,25 @@ mutation and then reconciles every affected Kubernetes component online. A
 Kubernetes configuration change never falls back to next-boot application or
 requires a host reboot.
 
-Per-node `kubernetes.kubelet.configFile` changes use kubeadm's node-local patch
-path. Katl validates and stages the native KubeletConfiguration, refreshes only
-that node's `/var/lib/kubelet/config.yaml`, restarts its kubelet, and checks node
-health. It does not upload the overlay to the shared kubelet ConfigMap. Removing
-the per-node input refreshes that node from the shared kubeadm configuration.
-Use `config resolve` to see the selected native input and owned patch path, and
+Resolved `kubernetes.kubelet.configFile` changes use kubeadm's node-local patch
+path. Set a shared reference under `spec.defaults` and override it on individual
+nodes when needed. Katl validates and stages the native KubeletConfiguration,
+refreshes only the affected node's `/var/lib/kubelet/config.yaml`, restarts its
+kubelet, and checks node health. It does not upload the overlay to the shared
+kubelet ConfigMap. Removing the resolved input refreshes that node from the
+shared kubeadm configuration. Use `config resolve` to see the selected native
+input, its default or node provenance, and the owned patch path. Use
 `config diff` to review its `kubeadm-aware operation` classification before
 applying.
 
 Katl's default `systemReserved.memory` is `1Gi`. Set that field in a native
 `KubeletConfiguration` under `spec.kubernetes.kubeadm.configFile` for a
-cluster-wide value, or under `nodes[].kubernetes.kubelet.configFile` for one
-node. After applying, inspect `/var/lib/kubelet/config.yaml` on the node and
-check its `status.allocatable.memory` through `kubectl get node NODE -o yaml`.
-The allocatable value excludes the reservation and kubelet's eviction threshold.
+cluster-wide value, under `spec.defaults.kubernetes.kubelet.configFile` for a
+node-local value inherited by every node, or under
+`nodes[].kubernetes.kubelet.configFile` for one node. After applying, inspect
+`/var/lib/kubelet/config.yaml` on the node and check its
+`status.allocatable.memory` through `kubectl get node NODE -o yaml`. The
+allocatable value excludes the reservation and kubelet's eviction threshold.
 
 ## Node lifecycle matrix
 

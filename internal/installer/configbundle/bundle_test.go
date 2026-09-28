@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -648,6 +649,64 @@ topologyManagerPolicy: restricted
 	}
 }
 
+func TestBuildArchiveLayersDefaultKubeletConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "default-kubelet.yaml"), `apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+maxPods: 110
+`)
+	writeFile(t, filepath.Join(dir, "worker-kubelet.yaml"), `apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+maxPods: 120
+`)
+	source := strings.Replace(validSourceConfig(), "  defaults:\n", "  defaults:\n    kubernetes:\n      kubelet:\n        configFile: ./default-kubelet.yaml\n", 1)
+	source = strings.Replace(source, "      kubernetes:\n        labels:\n          katl.dev/pool: workers", "      kubernetes:\n        kubelet:\n          configFile: ./worker-kubelet.yaml\n        labels:\n          katl.dev/pool: workers", 1)
+	sourcePath := filepath.Join(dir, "cluster.yaml")
+	writeFile(t, sourcePath, source)
+
+	archive, _, err := BuildArchive(BuildRequest{SourcePath: sourcePath})
+	if err != nil {
+		t.Fatalf("BuildArchive() error = %v", err)
+	}
+	for _, test := range []struct {
+		node       string
+		configFile string
+		maxPods    string
+		source     string
+		kind       string
+	}{
+		{node: "cp-1", configFile: "./default-kubelet.yaml", maxPods: "110", source: "spec.defaults.kubernetes.kubelet.configFile", kind: "default"},
+		{node: "worker-1", configFile: "./worker-kubelet.yaml", maxPods: "120", source: `spec.nodes["worker-1"].kubernetes.kubelet.configFile`, kind: "node"},
+	} {
+		t.Run(test.node, func(t *testing.T) {
+			selected, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: test.node, AllowMissingKatlosImage: true})
+			if err != nil {
+				t.Fatalf("ReadSelectedNode() error = %v", err)
+			}
+			ref := nodeKubeadmConfigRef(test.node)
+			plan, ok := selected.KubeadmConfigs[ref]
+			if selected.NodeMaterial.KubeadmConfig.Ref != ref || !ok || !plan.NodeLocalKubelet {
+				t.Fatalf("selected kubeadm plan = %#v / %#v", selected.NodeMaterial.KubeadmConfig, selected.KubeadmConfigs)
+			}
+			if !strings.Contains(string(plan.Config.Content), "maxPods: "+test.maxPods) {
+				t.Fatalf("kubelet config does not contain maxPods %s:\n%s", test.maxPods, plan.Config.Content)
+			}
+
+			report, err := InspectSelectedNode(selected)
+			if err != nil {
+				t.Fatalf("InspectSelectedNode() error = %v", err)
+			}
+			if report.Effective.Kubernetes.Kubelet == nil || report.Effective.Kubernetes.Kubelet.ConfigFile != test.configFile || report.Derived.KubeadmConfig != ref {
+				t.Fatalf("resolved kubelet config = %#v", report)
+			}
+			path := fmt.Sprintf(`spec.nodes[%q].kubernetes.kubelet.configFile`, test.node)
+			if !slices.Contains(report.Provenance, FieldProvenance{Path: path, Source: test.source, Kind: test.kind}) {
+				t.Fatalf("kubelet provenance = %#v", report.Provenance)
+			}
+		})
+	}
+}
+
 func TestBuildArchiveRejectsInvalidPerNodeKubeletConfiguration(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -673,9 +732,9 @@ func TestBuildArchiveRejectsInvalidPerNodeKubeletConfiguration(t *testing.T) {
 	}
 }
 
-func TestBuildArchiveRequiresConcretePerNodeKubeletConfiguration(t *testing.T) {
-	defaultSource := strings.Replace(validSourceConfig(), "    access:\n", "    kubernetes:\n      kubelet:\n        configFile: ./kubelet.yaml\n    access:\n", 1)
-	if _, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, defaultSource)}); err == nil || !strings.Contains(err.Error(), "spec.defaults.kubernetes.kubelet is not allowed") {
+func TestBuildArchiveRequiresConcreteKubeletConfiguration(t *testing.T) {
+	defaultSource := strings.Replace(validSourceConfig(), "    access:\n", "    kubernetes:\n      kubelet: {}\n    access:\n", 1)
+	if _, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, defaultSource)}); err == nil || !strings.Contains(err.Error(), "spec.defaults.kubernetes.kubelet.configFile is required") {
 		t.Fatalf("default BuildArchive() error = %v", err)
 	}
 	emptySource := strings.Replace(validSourceConfig(), "      kubernetes:\n        labels:\n          katl.dev/pool: workers", "      kubernetes:\n        kubelet:\n          configFile: \"\"\n        labels:\n          katl.dev/pool: workers", 1)

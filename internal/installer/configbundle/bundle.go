@@ -641,7 +641,7 @@ func LowerSource(source SourceConfig, planning PlanningInputs) (clusterplan.Conf
 			layer.Bootstrap.Access = access
 		}
 		layer.Kubernetes.KubeadmConfigRef = defaultKubeadmConfigRef(role)
-		if node.Kubernetes.Kubelet != nil {
+		if resolved.Kubernetes.Kubelet != nil {
 			layer.Kubernetes.KubeadmConfigRef = nodeKubeadmConfigRef(node.Name)
 		}
 		nodes = append(nodes, clusterplan.Node{
@@ -813,8 +813,8 @@ func normalizeSourceIssues(source SourceConfig) (SourceConfig, []error) {
 	if strings.TrimSpace(source.Spec.Defaults.Kubernetes.Address) != "" {
 		errs = append(errs, fmt.Errorf("spec.defaults.kubernetes.address is not allowed; Kubernetes address must be set per node"))
 	}
-	if source.Spec.Defaults.Kubernetes.Kubelet != nil {
-		errs = append(errs, fmt.Errorf("spec.defaults.kubernetes.kubelet is not allowed; kubelet configuration must be set per node"))
+	if kubelet := source.Spec.Defaults.Kubernetes.Kubelet; kubelet != nil && strings.TrimSpace(kubelet.ConfigFile) == "" {
+		errs = append(errs, fmt.Errorf("spec.defaults.kubernetes.kubelet.configFile is required"))
 	}
 	if source.Spec.Defaults.Kernel != nil {
 		if err := manifest.ValidateKernelConfig(*lowerKernelConfig(source.Spec.Defaults.Kernel)); err != nil {

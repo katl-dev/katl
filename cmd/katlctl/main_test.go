@@ -819,7 +819,7 @@ spec:
 	}
 	wants := []string{
 		"spec.defaults.kubernetes.address is not allowed; Kubernetes address must be set per node (line 9)",
-		"spec.defaults.kubernetes.kubelet is not allowed; kubelet configuration must be set per node (line 10)",
+		"spec.defaults.kubernetes.kubelet.configFile is required (line 10)",
 		"spec.defaults.storage.disks: field is not supported (line 12)",
 		"spec.kubernetes.version is required; set an exact version such as v1.36.1 (line 6)",
 		`spec.nodes["node-a"].access.ssh.authorizedKeys[0] must be an SSH public key (line 28)`,
