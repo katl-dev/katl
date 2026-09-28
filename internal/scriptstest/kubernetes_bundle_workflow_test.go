@@ -193,6 +193,70 @@ func TestKubernetesReleasePlan(t *testing.T) {
 	}
 }
 
+func TestPublicKubernetesBundleWorkflowUsesImmutableTag(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/public-kubernetes-bundle.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct{ ID, Run string } `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	var script string
+	for _, step := range workflow.Jobs["verify"].Steps {
+		if step.ID == "bundle" {
+			script = step.Run
+		}
+	}
+	if script == "" {
+		t.Fatal("public bundle resolution script is missing")
+	}
+
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	digest := "sha256:" + strings.Repeat("a", 64)
+	writeFakeExecutable(t, dir, "go", `
+printf '{"artifactVersion":"v1.37.1-1","bundle":"ghcr.io/katl-dev/kubernetes@%s"}\n' "$KATL_TEST_DIGEST"
+`)
+	writeFakeExecutable(t, filepath.Join(dir, "scripts"), "check-public-kubernetes-bundle", `
+printf '%s\n' "$@" > "$KATL_TEST_ARGS"
+`)
+	argsPath := filepath.Join(dir, "args")
+	outputPath := filepath.Join(dir, "output")
+	cmd := exec.Command("bash", "-euo", "pipefail", "-c", script)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"PAYLOAD_VERSION=v1.37.1",
+		"GITHUB_OUTPUT="+outputPath,
+		"KATL_TEST_ARGS="+argsPath,
+		"KATL_TEST_DIGEST="+digest,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("resolve public bundle: %v\n%s", err, output)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(args), "ghcr.io/katl-dev/kubernetes:v1.37.1-1\n"+digest+"\n"; got != want {
+		t.Fatalf("public bundle verifier arguments = %q, want %q", got, want)
+	}
+	output, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(output), "digest="+digest+"\n"; got != want {
+		t.Fatalf("workflow output = %q, want %q", got, want)
+	}
+}
+
 func hasWorkflowNeed(value any, want string) bool {
 	switch needs := value.(type) {
 	case string:
