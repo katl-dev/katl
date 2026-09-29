@@ -170,11 +170,14 @@ func TestWaitNodeBootHealthRequiresRollbackRebootAfterRejectedTrial(t *testing.T
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	_, _, err := waitNodeBootHealth(ctx, "cp-1", "10.0.0.11:9443", "before", "katlos-next", nodeRecoveryRequirement{}, io.Discard)
+	_, observed, err := waitNodeBootHealth(ctx, "cp-1", "10.0.0.11:9443", "before", "katlos-next", nodeRecoveryRequirement{}, io.Discard)
 	if err == nil ||
 		!strings.Contains(err.Error(), "rollback generation katlos-previous is selected for next boot") ||
 		!strings.Contains(err.Error(), "reboot the node before retrying") {
 		t.Fatalf("waitNodeBootHealth() error = %v, want actionable rollback reboot", err)
+	}
+	if observed.Status != fake.nodeStatus || observed.Generation != fake.generation {
+		t.Fatalf("observed boot = %#v, want rejected generation evidence", observed)
 	}
 }
 

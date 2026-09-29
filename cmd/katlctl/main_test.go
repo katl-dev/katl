@@ -2273,8 +2273,113 @@ func TestHostUpgradeVersionStagesRebootsAndVerifiesHealth(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.Result != operation.ResultSucceeded || !report.Rebooted || report.BootHealth != generation.HealthStateHealthy {
+	if report.Result != operation.ResultSucceeded || !report.Rebooted || report.BootHealth != generation.HealthStateHealthy || report.Kubernetes != "not-configured" {
 		t.Fatalf("report = %#v", report)
+	}
+}
+
+func TestHostUpgradeReportsObservedRebootOutcomes(t *testing.T) {
+	previousPollInterval := upgradeRebootPollInterval
+	upgradeRebootPollInterval = time.Millisecond
+	t.Cleanup(func() { upgradeRebootPollInterval = previousPollInterval })
+
+	t.Run("healthy OS and waiting Kubernetes", func(t *testing.T) {
+		fake := readyHostUpgradeClient()
+		fake.nodeStatus.Kubernetes = readyWorkerKubernetesStatus()
+		fake.onReboot = func(request *agentapi.RebootRequest) {
+			fake.nodeStatus.AgentStartId = "after"
+			fake.nodeStatus.CurrentGenerationId = request.TargetGenerationId
+			fake.nodeStatus.Kubernetes = &agentapi.KubernetesStatus{
+				State:         "waiting-for-node",
+				Role:          "worker",
+				KubeletActive: true,
+				FailureReason: "Kubernetes node cp-1 is not Ready",
+			}
+			fake.generation = &agentapi.Generation{
+				GenerationId: request.TargetGenerationId,
+				CommitState:  generation.CommitStateCommitted,
+				BootState:    generation.BootStateGood,
+				HealthState:  generation.HealthStateHealthy,
+			}
+		}
+		installKatlcDial(t, nil, fake)
+
+		var stdout bytes.Buffer
+		err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--version", "2026.9.0-beta.16", "--config", writeClusterConfig(t), "--timeout", "50ms", "--output", "json"}, &stdout, io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "did not recover Kubernetes") {
+			t.Fatalf("run() error = %v", err)
+		}
+		var report hostUpgradeReport
+		if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+			t.Fatal(err)
+		}
+		if report.Result != "failed" || !report.Rebooted || report.BootHealth != "healthy" || report.Kubernetes != "waiting-for-node" {
+			t.Fatalf("report = %#v", report)
+		}
+	})
+
+	t.Run("rejected boot", func(t *testing.T) {
+		fake := readyHostUpgradeClient()
+		fake.nodeStatus.Kubernetes = readyWorkerKubernetesStatus()
+		fake.onReboot = func(request *agentapi.RebootRequest) {
+			fake.nodeStatus.AgentStartId = "after"
+			fake.nodeStatus.CurrentGenerationId = "generation-current"
+			fake.generation = &agentapi.Generation{
+				GenerationId: request.TargetGenerationId,
+				BootState:    generation.BootStateFailed,
+				HealthState:  generation.HealthStateUnhealthy,
+			}
+		}
+		installKatlcDial(t, nil, fake)
+
+		var stdout bytes.Buffer
+		err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--version", "2026.9.0-beta.16", "--config", writeClusterConfig(t), "--timeout", "1s"}, &stdout, io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "rejected generation") {
+			t.Fatalf("run() error = %v", err)
+		}
+		for _, want := range []string{"upgrade result: failed", "health failed", "Kubernetes ready"} {
+			if !strings.Contains(stdout.String(), want) {
+				t.Fatalf("stdout = %q, want %q", stdout.String(), want)
+			}
+		}
+	})
+
+	t.Run("unreachable outcome", func(t *testing.T) {
+		fake := readyHostUpgradeClient()
+		rebooted := false
+		fake.onReboot = func(*agentapi.RebootRequest) { rebooted = true }
+		oldDial := dialKatlcAgent
+		dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
+			if rebooted {
+				return katlcAgentConnection{}, errors.New("node is unreachable")
+			}
+			return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
+		}
+		t.Cleanup(func() { dialKatlcAgent = oldDial })
+
+		var stdout bytes.Buffer
+		err := run(context.Background(), []string{"node", "upgrade", "cp-1", "--version", "2026.9.0-beta.16", "--config", writeClusterConfig(t), "--timeout", "50ms", "--output", "json"}, &stdout, io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "did not return healthy") {
+			t.Fatalf("run() error = %v", err)
+		}
+		var report hostUpgradeReport
+		if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+			t.Fatal(err)
+		}
+		if report.Result != "failed" || !report.Rebooted || report.BootHealth != "unknown" || report.Kubernetes != "unknown" {
+			t.Fatalf("report = %#v", report)
+		}
+	})
+}
+
+func readyWorkerKubernetesStatus() *agentapi.KubernetesStatus {
+	return &agentapi.KubernetesStatus{
+		State:                       "ready",
+		Role:                        "worker",
+		NodeName:                    "cp-1",
+		KubeletActive:               true,
+		NodeReady:                   true,
+		ControlPlaneComponentsReady: true,
 	}
 }
 
