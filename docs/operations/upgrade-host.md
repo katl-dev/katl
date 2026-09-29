@@ -93,7 +93,12 @@ and healthy. On a bootstrapped node it also waits for kubelet, Node Ready, local
 control-plane components where applicable, and the managed API and route
 exchange paths. The default result is concise text; use `--output json` when
 automation needs the structured `rebooted`, `bootHealth`, and `kubernetes`
-fields. Check workload availability before upgrading another host.
+fields. These fields report independently observed outcomes. For example, if
+KatlOS becomes healthy but Kubernetes does not recover before the timeout, the
+command fails overall while reporting `bootHealth` as `healthy` and
+`kubernetes` as its last observed waiting state. An unreachable node reports
+`unknown` health instead of treating an unobserved boot as a failed boot. Check
+workload availability before upgrading another host.
 
 During the reboot, the console may show a containerd stop-job
 countdown after the containerd daemon has exited. Containerd deliberately keeps

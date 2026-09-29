@@ -637,20 +637,37 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	bootCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
 	verifiedConn, verified, err := waitNodeBootHealth(bootCtx, report.Node, target.endpoint, agentStart, request.CandidateGenerationID, recoveryRequirement, stderr)
 	cancel()
+	report.Rebooted = true
+	report.BootHealth = observedBootHealth(verified, request.CandidateGenerationID)
+	report.Kubernetes = "unknown"
+	if verified.Status != nil {
+		report.Kubernetes = nodeUpgradeRecovery(verified.Status, recoveryRequirement).State
+	}
 	if err != nil {
 		report.Result = "failed"
-		report.Rebooted = true
-		report.BootHealth = "failed"
 		_ = writeHostUpgradeReport(stdout, opts.output, report)
 		return err
 	}
-	recovery := nodeUpgradeRecovery(verified.Status, recoveryRequirement)
 	_ = verifiedConn.Close()
 	report.Result = operation.ResultSucceeded
-	report.Rebooted = true
-	report.BootHealth = generation.HealthStateHealthy
-	report.Kubernetes = recovery.State
 	return writeHostUpgradeReport(stdout, opts.output, report)
+}
+
+func observedBootHealth(verified verifiedNodeBoot, targetGeneration string) string {
+	if verified.Generation == nil {
+		return "unknown"
+	}
+	if verified.Generation.GetHealthState() == generation.HealthStateUnhealthy {
+		return "failed"
+	}
+	if verified.Status != nil &&
+		verified.Status.GetCurrentGenerationId() == targetGeneration &&
+		verified.Generation.GetCommitState() == generation.CommitStateCommitted &&
+		verified.Generation.GetBootState() == generation.BootStateGood &&
+		verified.Generation.GetHealthState() == generation.HealthStateHealthy {
+		return generation.HealthStateHealthy
+	}
+	return "unknown"
 }
 
 func writeHostUpgradeReport(stdout io.Writer, output string, report hostUpgradeReport) error {
@@ -696,7 +713,11 @@ func writeHostUpgradeReport(stdout io.Writer, output string, report hostUpgradeR
 		_, err := fmt.Fprintf(stdout, "%s runs %s %s; health %s%s\n", report.Node, label, report.Version, report.BootHealth, kubernetes)
 		return err
 	}
-	_, err := fmt.Fprintf(stdout, "%s %s %s upgrade result: %s\n", report.Node, label, report.Version, report.Result)
+	kubernetes := ""
+	if report.Kubernetes != "" {
+		kubernetes = "; Kubernetes " + report.Kubernetes
+	}
+	_, err := fmt.Fprintf(stdout, "%s %s %s upgrade result: %s; health %s%s\n", report.Node, label, report.Version, report.Result, report.BootHealth, kubernetes)
 	return err
 }
 
