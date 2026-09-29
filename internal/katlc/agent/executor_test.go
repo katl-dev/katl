@@ -286,6 +286,25 @@ func TestNewExecutorProvidesBundleHTTPClient(t *testing.T) {
 	}
 }
 
+func TestRunChildProcessCancellationStopsOwnedDescendants(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "descendant-finished")
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan ToolResult, 1)
+	go func() {
+		done <- runChildProcess(ctx, []string{"sh", "-c", "(sleep 0.2; touch '" + marker + "') & wait"}, nil)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	result := <-done
+	if result.Err == nil {
+		t.Fatalf("cancelled child result = %+v", result)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("owned descendant survived cancellation: %v", err)
+	}
+}
+
 func TestSubmitOperationExecutesDestructiveReset(t *testing.T) {
 	server := newTestServer(t)
 	writeResetGenerationZero(t, server.Root)

@@ -614,6 +614,8 @@ func TestRemoteResolverDownloadsAndMountsURL(t *testing.T) {
 	expected.URL = "https://artifacts.example.invalid/katlos-install.squashfs"
 	expected.SHA256 = ""
 	expected.SizeBytes = 0
+	expected.SHA256 = ""
+	expected.SizeBytes = 0
 	mounter := &fixtureMountRunner{populate: func(root string) {
 		writeImagePayloadAt(t, root, func(*Index) {})
 	}}
@@ -643,6 +645,51 @@ func TestRemoteResolverDownloadsAndMountsURL(t *testing.T) {
 	}
 	if payload.ImageSHA256 != hex.EncodeToString(sum[:]) || payload.ImageSizeBytes != uint64(len(imageBytes)) {
 		t.Fatalf("derived image identity = %s/%d", payload.ImageSHA256, payload.ImageSizeBytes)
+	}
+}
+
+func TestRemoteResolverBoundsDownloadBeforeWriting(t *testing.T) {
+	expected := expectedImage()
+	expected.LocalRef = ""
+	expected.URL = "https://artifacts.example.invalid/katlos-install.squashfs"
+	expected.SHA256 = ""
+	expected.SizeBytes = 0
+	client := &fixtureHTTPClient{response: &http.Response{
+		StatusCode: http.StatusOK, Status: "200 OK", ContentLength: 11,
+		Body: io.NopCloser(strings.NewReader("remote data")),
+	}}
+	work := filepath.Join(t.TempDir(), "work")
+
+	_, err := (RemoteResolver{
+		WorkDir: work, Commands: &fixtureMountRunner{}, Client: client,
+		MaxDownloadSize: 10,
+	}).ResolveKatlosImage(context.Background(), expected)
+	if err == nil || !strings.Contains(err.Error(), "exceeds download limit") {
+		t.Fatalf("ResolveKatlosImage() error = %v, want size limit", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(work, "downloads")); !os.IsNotExist(statErr) {
+		t.Fatalf("oversized response created download storage: %v", statErr)
+	}
+}
+
+func TestRemoteResolverPreservesStorageReserve(t *testing.T) {
+	expected := expectedImage()
+	expected.LocalRef = ""
+	expected.URL = "https://artifacts.example.invalid/katlos-install.squashfs"
+	expected.SHA256 = ""
+	expected.SizeBytes = 0
+	client := &fixtureHTTPClient{response: &http.Response{
+		StatusCode: http.StatusOK, Status: "200 OK", ContentLength: 11,
+		Body: io.NopCloser(strings.NewReader("remote data")),
+	}}
+
+	_, err := (RemoteResolver{
+		WorkDir: filepath.Join(t.TempDir(), "work"), Commands: &fixtureMountRunner{}, Client: client,
+		MaxDownloadSize: 20, RequiredFreeBytes: 100,
+		AvailableBytes: func(string) (uint64, error) { return 110, nil },
+	}).ResolveKatlosImage(context.Background(), expected)
+	if err == nil || !strings.Contains(err.Error(), "insufficient storage") {
+		t.Fatalf("ResolveKatlosImage() error = %v, want headroom refusal", err)
 	}
 }
 

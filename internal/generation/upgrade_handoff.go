@@ -12,17 +12,18 @@ import (
 const UpgradeHandoffVersion = 1
 
 type UpgradeHandoff struct {
-	Version               int       `json:"version"`
-	OperationID           string    `json:"operationID"`
-	SourceGenerationID    string    `json:"sourceGenerationID"`
-	CandidateGenerationID string    `json:"candidateGenerationID"`
-	ImageSHA256           string    `json:"imageSHA256"`
-	ImageSizeBytes        uint64    `json:"imageSizeBytes"`
-	RootSlot              string    `json:"rootSlot"`
-	RootPartitionUUID     string    `json:"rootPartitionUUID"`
-	UKIPath               string    `json:"ukiPath"`
-	LoaderEntryPath       string    `json:"loaderEntryPath"`
-	CreatedAt             time.Time `json:"createdAt"`
+	Version                int       `json:"version"`
+	OperationID            string    `json:"operationID"`
+	SourceGenerationID     string    `json:"sourceGenerationID"`
+	CandidateGenerationID  string    `json:"candidateGenerationID"`
+	ImageSHA256            string    `json:"imageSHA256"`
+	ImageSizeBytes         uint64    `json:"imageSizeBytes"`
+	RootSlot               string    `json:"rootSlot"`
+	RootPartitionUUID      string    `json:"rootPartitionUUID"`
+	UKIPath                string    `json:"ukiPath"`
+	LoaderEntryPath        string    `json:"loaderEntryPath"`
+	KubernetesBootstrapped bool      `json:"kubernetesBootstrapped,omitempty"`
+	CreatedAt              time.Time `json:"createdAt"`
 }
 
 func upgradeHandoffDirectory(root, candidate string) (string, error) {

@@ -212,6 +212,31 @@ func TestStageHostUpgradeArtifactCommitsVerifiedContent(t *testing.T) {
 	}
 }
 
+func TestStageHostUpgradeArtifactRejectsLowStorageBeforeWriting(t *testing.T) {
+	server := newTestServer(t)
+	content := []byte("upgrade image")
+	digest := sha256.Sum256(content)
+	server.AvailableStorage = func(string) (uint64, error) {
+		return hostUpgradeStorageReserve + uint64(len(content)) - 1, nil
+	}
+	stream := newHostUpgradeArtifactServerStream(&agentapi.StageHostUpgradeArtifactRequest{
+		ApiVersion: APIVersion, Kind: StageHostUpgradeArtifactRequestKind,
+		Actor: "katlctl node upgrade", ExpectedMachineId: testMachineID,
+		Sha256: hex.EncodeToString(digest[:]), SizeBytes: uint64(len(content)), Chunk: content,
+	})
+
+	err := server.StageHostUpgradeArtifact(stream)
+	if status.Code(err) != codes.ResourceExhausted || !strings.Contains(err.Error(), "reserved for the running node") {
+		t.Fatalf("StageHostUpgradeArtifact() error = %v, want storage headroom refusal", err)
+	}
+	directory := filepath.Join(server.Root, "var/lib/katl/artifacts", filepath.FromSlash(hostUpgradeUploadDirectory))
+	if entries, readErr := os.ReadDir(directory); readErr == nil && len(entries) != 0 {
+		t.Fatalf("low-space refusal wrote files: %v", entries)
+	} else if readErr != nil && !os.IsNotExist(readErr) {
+		t.Fatal(readErr)
+	}
+}
+
 func TestStageHostUpgradeArtifactAcceptsKubernetesPayload(t *testing.T) {
 	server := newTestServer(t)
 	content := []byte("local Kubernetes sysext")

@@ -25,6 +25,9 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if record.HostUpgradeRequest == nil {
 		return fmt.Errorf("host upgrade request is required")
 	}
+	if err := cleanupHostUpgradeStorage(ctx, e.Root, record.HostUpgradeRequest.ImageLocalRef, e.toolRunner(), e.clock()); err != nil {
+		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("clean obsolete host upgrade workspace: %w", err))
+	}
 	if err := generation.ValidateMutationBase(e.Root, record.ExpectedCurrentGenerationID); err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", err)
 	}
@@ -60,6 +63,20 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	}
 	plan, extensions, slots := prepared.plan, prepared.extensions, prepared.slots
 	defer prepared.close()
+	stagingBytes, err := hostUpgradeStagingBytes(payload)
+	if err != nil {
+		return e.failHostUpgrade(record, "verify-katlos-image", err)
+	}
+	generationBytes, err := hostUpgradeGenerationBytes(e.Root, plan, extensions.materials)
+	if err != nil {
+		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("measure candidate generation storage: %w", err))
+	}
+	if generationBytes > stagingBytes {
+		stagingBytes = generationBytes
+	}
+	if err := requireHostUpgradeStorage(e.AvailableStorage, hostUpgradeArtifactRoot(e.Root), stagingBytes, "root and UKI staging"); err != nil {
+		return e.failHostUpgrade(record, "verify-katlos-image", err)
+	}
 	candidate := plan.Spec.GenerationID
 	inactiveSlot, ukiPath, entry := plan.Spec.Root.Slot, plan.Spec.Boot.UKIPath, plan.Spec.Boot.LoaderEntryPath
 	bootRoot := filepath.Join(runtimeRoot(e.Root), "efi")
@@ -194,16 +211,81 @@ func (e *Executor) cleanupHostUpgradeMount(payload katlosimage.Payload) {
 	ctx, cancel := context.WithTimeout(context.Background(), bootRootMountTimeout)
 	defer cancel()
 	_ = hostUpgradeCommands{run: e.toolRunner()}.Run(ctx, "umount", payload.Root)
+	_ = os.RemoveAll(payload.Root)
+	downloads := filepath.Join(root, "var/lib/katl/artifacts/host-upgrade/downloads")
+	if rel, err := filepath.Rel(downloads, payload.ImagePath); err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		_ = os.Remove(payload.ImagePath)
+	}
+}
+
+func hostUpgradeStagingBytes(payload katlosimage.Payload) (uint64, error) {
+	if payload.Runtime.SizeBytes <= 0 || payload.Boot.SizeBytes <= 0 {
+		return 0, fmt.Errorf("target root and UKI sizes must be positive")
+	}
+	root := uint64(payload.Runtime.SizeBytes)
+	boot := uint64(payload.Boot.SizeBytes)
+	if root > ^uint64(0)-boot {
+		return 0, fmt.Errorf("target root and UKI sizes overflow storage accounting")
+	}
+	return root + boot, nil
+}
+
+func hostUpgradeGenerationBytes(root string, plan katlosimage.HostUpgradePlan, materials []configapply.SystemExtensionPayload) (uint64, error) {
+	var total uint64
+	add := func(size uint64) error {
+		if total > ^uint64(0)-size {
+			return fmt.Errorf("candidate generation size overflows storage accounting")
+		}
+		total += size
+		return nil
+	}
+	for _, asset := range plan.PreservedAssets {
+		source := filepath.Join(runtimeRoot(root), strings.TrimPrefix(filepath.Clean(asset.SourcePath), string(filepath.Separator)))
+		if asset.Directory {
+			size, err := upgradeTreeBytes(source)
+			if err != nil {
+				return 0, err
+			}
+			if err := add(size); err != nil {
+				return 0, err
+			}
+			continue
+		}
+		info, err := os.Stat(source)
+		if err != nil {
+			return 0, err
+		}
+		if err := add(uint64(info.Size())); err != nil {
+			return 0, err
+		}
+	}
+	for _, asset := range plan.BundledAssets {
+		info, err := os.Stat(asset.SourcePath)
+		if err != nil {
+			return 0, err
+		}
+		if err := add(uint64(info.Size())); err != nil {
+			return 0, err
+		}
+	}
+	for _, material := range materials {
+		if err := add(uint64(len(material.Data))); err != nil {
+			return 0, err
+		}
+	}
+	return total, nil
 }
 
 func (e *Executor) resolveHostUpgrade(ctx context.Context, request operation.HostUpgrade) (katlosimage.Payload, error) {
 	root := runtimeRoot(e.Root)
 	work := filepath.Join(root, "var/lib/katl/artifacts/host-upgrade")
 	return (katlosimage.Resolver{
-		MediaRoot: filepath.Join(root, "var/lib/katl/artifacts"),
-		WorkDir:   work,
-		Commands:  hostUpgradeCommands{run: e.toolRunner()},
-		Client:    e.BundleClient,
+		MediaRoot:       filepath.Join(root, "var/lib/katl/artifacts"),
+		WorkDir:         work,
+		Commands:        hostUpgradeCommands{run: e.toolRunner()},
+		Client:          e.BundleClient,
+		MaxDownloadSize: maxHostUpgradeArtifactSize, RequiredFreeBytes: hostUpgradeStorageReserve,
+		AvailableBytes: e.AvailableStorage,
 	}).ResolveKatlosImage(ctx, manifest.KatlosImage{
 		URL:       request.ImageURL,
 		LocalRef:  request.ImageLocalRef,
@@ -226,6 +308,7 @@ func (c hostUpgradeCommands) Run(ctx context.Context, name string, args ...strin
 func (e *Executor) stageHostUpgrade(ctx context.Context, record operation.OperationRecord, payload katlosimage.Payload, inactiveDevice, inactiveSlot, ukiPath string) error {
 	root := runtimeRoot(e.Root)
 	work := filepath.Join(root, "var/lib/katl/artifacts/host-upgrade", record.OperationID)
+	defer os.RemoveAll(work)
 	source := filepath.Join(work, "source")
 	definitions := filepath.Join(work, "sysupdate.d")
 	if err := os.MkdirAll(source, 0o700); err != nil {

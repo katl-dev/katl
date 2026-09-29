@@ -96,6 +96,7 @@ type Server struct {
 	RunShutdown              ToolRunner
 	Now                      func() time.Time
 	OperationID              func(string, time.Time) (string, error)
+	AvailableStorage         availableStorageFunc
 	submitMu                 sync.Mutex
 }
 
@@ -121,6 +122,7 @@ func NewServer(root string, store operation.Store) *Server {
 		RunShutdown:              runChildProcess,
 		Now:                      func() time.Time { return time.Now().UTC() },
 		OperationID:              defaultOperationID,
+		AvailableStorage:         filesystemAvailable,
 	}
 }
 

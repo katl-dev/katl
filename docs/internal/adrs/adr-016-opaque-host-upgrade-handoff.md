@@ -52,10 +52,13 @@ The source sequence is:
 1. Check the expected source generation, pending operations, architecture,
    runtime interface, and the target image's stable boot envelope. Verify the
    image identity and boot components by size and digest.
-2. Snapshot the generation and operation stores plus the state needed to derive
-   an unchanged configuration. The source preserves target-specific image
-   metadata without decoding and rewriting it. A combined `--apply-config`
-   upgrade currently uses the older operation kind.
+2. Snapshot the selected source generation, the generation assets that it
+   references, and the state needed to derive an unchanged configuration. The
+   handoff carries the source agent's derived Kubernetes-state classification,
+   so target preparation does not copy or rescan the operation store. The
+   source preserves target-specific image metadata without decoding and
+   rewriting it. A combined `--apply-config` upgrade uses the older operation
+   kind.
 3. Run the target preparation program in an isolated environment. Its output
    contains the complete candidate generation and a preparation receipt. A
    planning failure discards the scratch output before boot mutation.
@@ -86,6 +89,36 @@ source booted by rollback still enumerates generation records, so its readable
 generation core must remain available for the supported rollback window. Put
 new required semantics in versioned attachments read by the target; do not
 change the meaning of a field the older source uses to select its own boot.
+
+### Storage and execution ownership
+
+The generation store owns committed and superseded generations, including
+assets referenced by another generation. Generation retention is the only
+component that removes those assets, and it protects active, booted, default,
+trial, and rollback selections.
+
+The operation store owns the durable request, journal, failure reason, and
+diagnostic evidence. Host-upgrade cleanup does not remove operation records.
+
+The host-upgrade workspace owns uploaded and downloaded images, read-only image
+mounts, private preparation snapshots, configuration scratch trees, and the
+per-operation root and UKI transfer copies. These inputs are transient. The
+agent removes them after use, removes abandoned scratch after an agent restart
+or before another upgrade, and expires unreferenced uploads after one hour.
+Cleanup never scans the generation store for deletion candidates.
+
+The agent reserves 512 MiB of writable state for the running node. It checks
+that reserve before accepting an upload, downloading an image, preparing the
+target generation, or creating the root and UKI transfer copies. Downloads are
+limited to 8 GiB and must declare their size. The selected-generation snapshot
+is limited to 2 GiB. A capacity refusal occurs before root-slot invalidation or
+another boot mutation.
+
+The complete agent-side host upgrade has a 25-minute deadline. Target
+preparation runs in a transient service with a 20-minute runtime limit. Context
+cancellation terminates agent-owned process groups and explicitly stops the
+target preparation service. Transient storage is discarded, while the
+operation record preserves the failure and recovery guidance.
 
 ### Preparation ABI
 
@@ -201,9 +234,6 @@ as one generation.
   the current-plus-two-previous-series matrix using published source agents,
   persisted-state fixtures, and actual target images. A proposed target that
   needs a newer source must fail before mutation with specific guidance.
-- Bound the size and time cost of the private snapshot. The first implementation
-  copies retained generations and operation records; a source-generation-only
-  snapshot needs an explicit inventory of target planner inputs.
 - Exercise preparation failure, crash recovery, trial failure, repeat boot,
   rollback, and rollforward in the VM gates. Preserve failed VM state before
   recovery. A trial whose management network never acquires a usable address

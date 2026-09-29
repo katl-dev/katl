@@ -235,6 +235,11 @@ The authoritative recovery source is the operation journal under that directory.
 status, bootstrap summary, and upgrade status are summaries or views unless they
 name that storage root.
 
+Operation records are durable evidence and are not host-upgrade workspace
+artifacts. A host upgrade can read or derive state from an operation record, but
+it must not copy the complete operation store into preparation scratch or
+delete records while cleaning transient image and transfer data.
+
 One record tracks one explicit node-local attempt from request acceptance to
 terminal result. Multi-node workflows link returned node-local operation IDs.
 Any `katlctl` invocation summary is non-authoritative and must not be used for

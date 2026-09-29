@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
@@ -30,6 +31,9 @@ func (e *Executor) prepareUpgradeInNamespace(ctx context.Context, payload katlos
 		return preparedUpgrade{}, fmt.Errorf("target preparation requires a verified image file")
 	}
 	base := filepath.Join(runtimeRoot(e.Root), "var/lib/katl/artifacts/host-upgrade")
+	if err := requireHostUpgradeStorage(e.AvailableStorage, base, 0, "target generation preparation"); err != nil {
+		return preparedUpgrade{}, err
+	}
 	if err := os.MkdirAll(base, 0o700); err != nil {
 		return preparedUpgrade{}, err
 	}
@@ -81,8 +85,12 @@ func (e *Executor) prepareUpgradeInNamespace(ctx context.Context, payload katlos
 	if err := os.Chmod(program, 0o500); err != nil {
 		return preparedUpgrade{}, err
 	}
+	unit := "katl-host-upgrade-prepare-" + cleanID(filepath.Base(work))
 	args := []string{
 		"--wait", "--pipe", "--collect", "--service-type=exec",
+		"--unit=" + unit,
+		"--property=RuntimeMaxSec=" + hostUpgradePreparationTimeout.String(),
+		"--property=TimeoutStopSec=30s",
 		"--property=PrivateNetwork=yes", "--property=PrivateDevices=yes",
 		"--property=ProtectSystem=strict", "--property=ProtectHome=yes",
 		"--property=NoNewPrivileges=yes", "--property=RestrictNamespaces=yes",
@@ -98,6 +106,11 @@ func (e *Executor) prepareUpgradeInNamespace(ctx context.Context, payload katlos
 	command := exec.CommandContext(ctx, "systemd-run", args...)
 	output, err := command.CombinedOutput()
 	if err != nil {
+		if ctx.Err() != nil {
+			stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			_ = hostUpgradeCommands{run: e.toolRunner()}.Run(stopCtx, "systemctl", "stop", unit+".service")
+		}
 		return preparedUpgrade{}, fmt.Errorf("target generation preparation failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	result, err := readPreparedUpgradeResult(p.root, handoff, payload)
@@ -127,8 +140,40 @@ func extractTargetPlanner(ctx context.Context, rootImage, destination string) er
 }
 
 func snapshotUpgradeSource(source, target string, handoff generation.UpgradeHandoff) error {
-	for _, dir := range []string{"var/lib/katl/generations", "var/lib/katl/operations"} {
-		if err := copyUpgradeTree(filepath.Join(runtimeRoot(source), dir), filepath.Join(target, dir)); err != nil {
+	spec, _, err := generation.ReadGeneration(source, handoff.SourceGenerationID)
+	if err != nil {
+		return err
+	}
+	if err := requireHostUpgradeStorage(filesystemAvailable, filepath.Dir(target), 0, "target generation snapshot"); err != nil {
+		return err
+	}
+	free, err := filesystemAvailable(filepath.Dir(target))
+	if err != nil {
+		return err
+	}
+	budget := maxHostUpgradePreparationInput
+	if usable := free - hostUpgradeStorageReserve; usable < budget {
+		budget = usable
+	}
+	sourceGeneration, err := generation.GenerationDir(source, handoff.SourceGenerationID)
+	if err != nil {
+		return err
+	}
+	targetGeneration, err := generation.GenerationDir(target, handoff.SourceGenerationID)
+	if err != nil {
+		return err
+	}
+	if err := copyUpgradeTreeBounded(sourceGeneration, targetGeneration, &budget); err != nil {
+		return err
+	}
+	copied := map[string]bool{filepath.Clean(sourceGeneration): true}
+	for _, ref := range append(append([]generation.ExtensionRef(nil), spec.Sysexts...), spec.BundledConfexts...) {
+		if err := copyUpgradeReference(source, target, ref.Path, copied, &budget); err != nil {
+			return err
+		}
+	}
+	for _, ref := range spec.Confexts {
+		if err := copyUpgradeReference(source, target, ref.Path, copied, &budget); err != nil {
 			return err
 		}
 	}
@@ -172,6 +217,10 @@ func snapshotUpgradeSource(source, target string, handoff generation.UpgradeHand
 }
 
 func copyUpgradeTree(source, target string) error {
+	return copyUpgradeTreeBounded(source, target, nil)
+}
+
+func copyUpgradeTreeBounded(source, target string, remaining *uint64) error {
 	return filepath.WalkDir(source, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -205,6 +254,13 @@ func copyUpgradeTree(source, target string) error {
 		if !info.Mode().IsRegular() {
 			return fmt.Errorf("unsupported file in upgrade tree: %s", path)
 		}
+		if remaining != nil {
+			size := uint64(info.Size())
+			if size > *remaining {
+				return fmt.Errorf("upgrade preparation input exceeds %d bytes", maxHostUpgradePreparationInput)
+			}
+			*remaining -= size
+		}
 		if err := copyUpgradeComponent(path, to); err != nil {
 			return err
 		}
@@ -212,6 +268,47 @@ func copyUpgradeTree(source, target string) error {
 		// publication must preserve it exactly.
 		return os.Chmod(to, info.Mode().Perm())
 	})
+}
+
+func copyUpgradeReference(sourceRoot, targetRoot, absolute string, copied map[string]bool, remaining *uint64) error {
+	clean := filepath.Clean(absolute)
+	prefix := filepath.Clean(generation.GenerationRecordsDir) + string(filepath.Separator)
+	if !filepath.IsAbs(clean) || !strings.HasPrefix(clean, prefix) {
+		return fmt.Errorf("upgrade generation asset is outside %s: %s", generation.GenerationRecordsDir, absolute)
+	}
+	source := filepath.Join(runtimeRoot(sourceRoot), strings.TrimPrefix(clean, string(filepath.Separator)))
+	for path := range copied {
+		if source == path || strings.HasPrefix(source, path+string(filepath.Separator)) {
+			return nil
+		}
+	}
+	target := filepath.Join(runtimeRoot(targetRoot), strings.TrimPrefix(clean, string(filepath.Separator)))
+	info, err := os.Stat(source)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		if err := copyUpgradeTreeBounded(source, target, remaining); err != nil {
+			return err
+		}
+	} else {
+		size := uint64(info.Size())
+		if size > *remaining {
+			return fmt.Errorf("upgrade preparation input exceeds %d bytes", maxHostUpgradePreparationInput)
+		}
+		*remaining -= size
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return err
+		}
+		if err := copyUpgradeComponent(source, target); err != nil {
+			return err
+		}
+		if err := os.Chmod(target, info.Mode().Perm()); err != nil {
+			return err
+		}
+	}
+	copied[source] = true
+	return nil
 }
 
 // Publication occurs on the state filesystem in one rename. Until that rename,
@@ -276,4 +373,30 @@ func syncDirectory(path string) error {
 	}
 	defer file.Close()
 	return file.Sync()
+}
+
+func upgradeTreeBytes(root string) (uint64, error) {
+	var total uint64
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("unsupported file in upgrade tree: %s", path)
+		}
+		size := uint64(info.Size())
+		if total > ^uint64(0)-size {
+			return fmt.Errorf("upgrade tree size overflows storage accounting")
+		}
+		total += size
+		return nil
+	})
+	return total, err
 }

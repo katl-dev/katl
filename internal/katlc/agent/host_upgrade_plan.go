@@ -83,9 +83,18 @@ func (e *Executor) planHostUpgradeWithHandoff(ctx context.Context, record operat
 			return preparedHostUpgrade{}, err
 		}
 	}
-	kubernetesState, err := inspectKubernetesNodeState(e.Root, e.Store)
-	if err != nil {
-		return preparedHostUpgrade{}, fmt.Errorf("inspect Kubernetes node state: %w", err)
+	kubernetesState := kubernetesNodeState{}
+	if handoff {
+		staged, err := generation.ReadUpgradeHandoff(e.Root, record.HostUpgradeRequest.CandidateGenerationID)
+		if err != nil {
+			return preparedHostUpgrade{}, err
+		}
+		kubernetesState.bootstrapped = staged.KubernetesBootstrapped
+	} else {
+		kubernetesState, err = inspectKubernetesNodeState(e.Root, e.Store)
+		if err != nil {
+			return preparedHostUpgrade{}, fmt.Errorf("inspect Kubernetes node state: %w", err)
+		}
 	}
 	candidate := record.HostUpgradeRequest.CandidateGenerationID
 	var extensions hostExtensionPlan

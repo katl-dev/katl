@@ -22,6 +22,9 @@ func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOpe
 		return nil, fmt.Errorf("host upgrade planner is not available on this agent")
 	}
 	request := hostUpgradeFromProto(req.HostUpgrade)
+	if err := cleanupHostUpgradeStorage(ctx, s.Root, request.ImageLocalRef, executor.toolRunner(), s.clock()); err != nil {
+		return nil, fmt.Errorf("clean obsolete host upgrade workspace: %w", err)
+	}
 	if req.OperationKind == operationKindHostUpgradeHandoff {
 		if request.ConfigYAML != "" {
 			return nil, fmt.Errorf("combined configuration is not supported by the target preparation operation; upgrade first, then apply configuration")
@@ -35,7 +38,11 @@ func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOpe
 		if err != nil {
 			return nil, err
 		}
-		if err := katlosimage.ValidateHostUpgradeSource(previous, previousStatus, false); err != nil {
+		kubernetesState, err := inspectKubernetesNodeState(s.Root, s.Store)
+		if err != nil {
+			return nil, fmt.Errorf("inspect Kubernetes node state: %w", err)
+		}
+		if err := katlosimage.ValidateHostUpgradeSource(previous, previousStatus, kubernetesState.bootstrapped); err != nil {
 			return nil, err
 		}
 		if payload.Index.Architecture != previous.Root.Architecture || payload.Index.RuntimeInterface != previous.Root.RuntimeInterface {
@@ -61,9 +68,10 @@ func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOpe
 			SourceGenerationID: previous.GenerationID, CandidateGenerationID: request.CandidateGenerationID,
 			ImageSHA256: payload.ImageSHA256, ImageSizeBytes: payload.ImageSizeBytes,
 			RootSlot: slot, RootPartitionUUID: slots.InactivePartUUID,
-			UKIPath:         generation.UKIDirectory + "/katl-" + slot + "-1.efi",
-			LoaderEntryPath: "loader/entries/katl-" + request.CandidateGenerationID + ".conf",
-			CreatedAt:       time.Now().UTC(),
+			UKIPath:                generation.UKIDirectory + "/katl-" + slot + "-1.efi",
+			LoaderEntryPath:        "loader/entries/katl-" + request.CandidateGenerationID + ".conf",
+			CreatedAt:              time.Now().UTC(),
+			KubernetesBootstrapped: kubernetesState.bootstrapped,
 		}
 		prepared, err := executor.prepareUpgradeInNamespace(ctx, payload, handoff)
 		if err != nil {

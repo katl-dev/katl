@@ -35,6 +35,20 @@ preparation, the target release also prepares the complete candidate generation
 in an isolated state view. A planning failure leaves the active root and boot
 selection untouched.
 
+The node rejects an upgrade before changing its inactive root slot if writable
+state cannot hold the bounded image, preparation inputs, and transfer copies
+while retaining 512 MiB for the running node. Free space under
+`/var/lib/katl` or remove operator-owned data, then repeat the plan. Katl
+removes completed and abandoned host-upgrade scratch automatically; do not
+manually delete generation directories to make space because a retained
+generation can own rollback assets that another generation references.
+
+An uploaded local image can remain available for up to one hour after a
+plan-only call so the reviewed plan can be submitted without another upload.
+Remote plan images, private preparation snapshots, image mounts, and root and
+UKI transfer copies are removed after the call. Operation records remain as
+durable success or failure evidence.
+
 ## Upgrade the host
 
 Run the reviewed command without `--plan`:
