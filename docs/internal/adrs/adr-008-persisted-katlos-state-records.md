@@ -192,6 +192,19 @@ cannot read well enough to select rollback or report repair unless the
 operation explicitly declares rollback compatibility broken and has a tested
 repair path.
 
+For host upgrades, the image `runtimeInterface` is that compatibility gate. A
+target that retains the source runtime interface promises backward readability
+for rollback-sensitive Katl records and for shared service state that normal
+target use can mutate. Target preparation runs against a private snapshot and
+must not migrate live state. Promotion does not permit an incompatible
+migration because the previous root remains a supported rollback target. An
+incompatible transition requires a different runtime interface plus an explicit
+migration or reinstall procedure and is rejected by the ordinary upgrade path
+before inactive-slot mutation.
+
+The complete state and service ownership rules are in
+`docs/internal/persistent-state-inventory.md`.
+
 Migrations are explicit operations, not incidental reads:
 
 ```text

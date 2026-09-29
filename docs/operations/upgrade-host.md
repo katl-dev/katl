@@ -103,6 +103,26 @@ complete rather than forcing power off, which can increase the risk of
 workload data loss. If it repeatedly reaches the systemd timeout, preserve the
 previous-boot journal before retrying the upgrade.
 
+## Understand rollback retention
+
+KatlOS keeps two root slots. After an upgrade, one slot contains the active
+runtime and the other contains the previous runtime. The generation list can
+retain more metadata and configuration history, but it does not retain more OS
+images. Staging the next host upgrade overwrites the inactive slot and makes any
+older generation that used that slot unavailable for boot.
+
+Both slots use the same writable `/var`, EFI System Partition (ESP), firmware
+boot variables, and usually the same physical disk. A rollback changes the
+selected root, UKI, sysexts, and confexts. It does not restore containerd,
+kubelet, kubeadm, etcd, persistent-volume, workload, or application data to an
+earlier point in time. It also cannot recover a damaged or full `/var`, a lost
+ESP, invalid firmware state, or disk failure.
+
+Before upgrading, keep independent etcd and workload backups and ensure that
+you have console or out-of-band access. Preserve the source release assets and
+CLI until you have accepted the target and no longer need its one-step rollback
+path.
+
 ## Failure boundary
 
 Boot health selects the previous known-good host generation and performs one

@@ -96,5 +96,10 @@ Pre-releases do not advance this window; their release notes must state the
 supported upgrade paths and any bridge needed from older betas. See
 [ADR-016](adrs/adr-016-opaque-host-upgrade-handoff.md) for the ownership model.
 
-This policy does not extend the compatibility guarantee to every
-`v1alpha1` configuration document or arbitrary persisted-state changes.
+Within the same runtime interface, this policy covers Katl-owned records and
+service-owned writable state that target preparation, trial activation, or
+normal target use can affect before rollback. It does not make every
+`v1alpha1` authoring format interchangeable across releases or promise that a
+host rollback reverses service-owned data. See the
+[persistent-state inventory](persistent-state-inventory.md) for ownership,
+migration timing, and recovery limits.

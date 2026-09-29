@@ -90,11 +90,8 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 	if strings.TrimSpace(request.OperationID) == "" {
 		return HostUpgradePlan{}, fmt.Errorf("operation id is required")
 	}
-	if p.Index.Architecture != request.PreviousSpec.Root.Architecture {
-		return HostUpgradePlan{}, fmt.Errorf("KatlOS image architecture %q does not match current runtime architecture %q", p.Index.Architecture, request.PreviousSpec.Root.Architecture)
-	}
-	if p.Index.RuntimeInterface != request.PreviousSpec.Root.RuntimeInterface {
-		return HostUpgradePlan{}, fmt.Errorf("KatlOS image runtime interface %q does not match current runtime interface %q", p.Index.RuntimeInterface, request.PreviousSpec.Root.RuntimeInterface)
+	if err := ValidateUpgradeCompatibility(request.PreviousSpec, p.Index); err != nil {
+		return HostUpgradePlan{}, err
 	}
 	if err := kernelcmdline.ValidateRequiredCompatibility(request.PreviousSpec.ConfiguredKernelCommandLine, p.Boot.Compatibility.KernelCommandLine); err != nil {
 		return HostUpgradePlan{}, fmt.Errorf("host upgrade kernel command line: %w", err)
@@ -185,6 +182,19 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 		PreservedAssets: append(append(sysextAssets, bundledConfextAssets...), confextAssets...),
 		BundledAssets:   bundledAssets,
 	}, nil
+}
+
+// ValidateUpgradeCompatibility rejects a target that cannot safely use the
+// source node's boot and writable-state contracts. Callers must run it before
+// target preparation or writes to the inactive root slot.
+func ValidateUpgradeCompatibility(source generation.GenerationSpec, target Index) error {
+	if target.Architecture != source.Root.Architecture {
+		return fmt.Errorf("KatlOS image architecture %q does not match current runtime architecture %q", target.Architecture, source.Root.Architecture)
+	}
+	if target.RuntimeInterface != source.Root.RuntimeInterface {
+		return fmt.Errorf("KatlOS image runtime interface %q does not match current runtime interface %q; choose a compatible target or follow that release's migration or reinstall procedure", target.RuntimeInterface, source.Root.RuntimeInterface)
+	}
+	return nil
 }
 
 func rehomeBundledConfexts(previous generation.GenerationSpec, generationID string, root generation.RootSelection) ([]generation.ExtensionRef, []PreservedAsset, error) {

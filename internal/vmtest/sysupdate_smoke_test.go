@@ -106,6 +106,11 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	previousSpec, _ := generationRecordsFromGuest(t, ctx, guest, previousGeneration)
 	assertBootedGenerationIdentity(t, ctx, guest, previousSpec)
 	previousUKIDigest := guestFileSHA256(t, ctx, guest, "previous-uki", previousSpec.Boot.UKIPath)
+	sharedStateDigests := guestFileDigests(t, ctx, guest, "source", []string{
+		"/var/lib/katl/identity/machine-id",
+		"/var/lib/katl/cluster/intent.json",
+	})
+	sourceAuthorizedKeyDigest := guestFileSHA256(t, ctx, guest, "source-authorized-key", "/etc/ssh/authorized_keys/root")
 	stateMarker := "/var/lib/katl/test-artifacts/host-upgrade-state-marker"
 	writeGuestFile(t, ctx, guest, stateMarker, []byte("state-survives-host-upgrade-and-rollback\n"), 0o600)
 	hostKeyPath := "/var/lib/katl/ssh/host-keys/ssh_host_ed25519_key"
@@ -171,6 +176,8 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 		t.Fatalf("upgrade changed the previous generation UKI: %s, want %s", got, previousUKIDigest)
 	}
 	assertInstalledSSHReady(t, ctx, guest)
+	assertHostUpgradeRuntimeReady(t, ctx, guest, "target")
+	assertGuestFileDigests(t, ctx, guest, "target", sharedStateDigests)
 	wantAuthorizedKeyDigest := sha256.Sum256([]byte(combinedAuthorizedKey + "\n"))
 	if got := guestFileSHA256(t, ctx, guest, "combined-authorized-key", "/etc/ssh/authorized_keys/root"); got != hex.EncodeToString(wantAuthorizedKeyDigest[:]) {
 		t.Fatalf("combined upgrade authorized key digest = %s, want %x", got, wantAuthorizedKeyDigest)
@@ -189,6 +196,14 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
 	waitActiveGeneration(t, ctx, guest, previousGeneration)
 	assertBootedGenerationIdentity(t, ctx, guest, previousSpec)
+	assertHostUpgradeRuntimeReady(t, ctx, guest, "one-shot-rollback")
+	assertGuestFileDigests(t, ctx, guest, "one-shot-rollback", sharedStateDigests)
+	if got := guestFileSHA256(t, ctx, guest, "one-shot-rollback-host-key", hostKeyPath); got != repairedHostKeyDigest {
+		t.Fatalf("one-shot rollback host key digest = %s, want %s", got, repairedHostKeyDigest)
+	}
+	if got := guestFileSHA256(t, ctx, guest, "one-shot-rollback-authorized-key", "/etc/ssh/authorized_keys/root"); got != sourceAuthorizedKeyDigest {
+		t.Fatalf("one-shot rollback authorized key digest = %s, want source %s", got, sourceAuthorizedKeyDigest)
+	}
 	temporary := bootSelectionFromGuest(t, ctx, guest)
 	if temporary.DefaultGenerationID != candidateGeneration {
 		t.Fatalf("one-shot boot changed default: %+v", temporary)
@@ -197,11 +212,27 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
 	waitActiveGeneration(t, ctx, guest, candidateGeneration)
 	assertBootedGenerationIdentity(t, ctx, guest, candidateSpec)
+	assertHostUpgradeRuntimeReady(t, ctx, guest, "repeat-target")
+	assertGuestFileDigests(t, ctx, guest, "repeat-target", sharedStateDigests)
+	if got := guestFileSHA256(t, ctx, guest, "repeat-target-host-key", hostKeyPath); got != repairedHostKeyDigest {
+		t.Fatalf("repeat target host key digest = %s, want %s", got, repairedHostKeyDigest)
+	}
+	if got := guestFileSHA256(t, ctx, guest, "repeat-target-authorized-key", "/etc/ssh/authorized_keys/root"); got != hex.EncodeToString(wantAuthorizedKeyDigest[:]) {
+		t.Fatalf("repeat target authorized key digest = %s, want %x", got, wantAuthorizedKeyDigest)
+	}
 	selectBootGeneration(t, ctx, endpoint, spec.Name, previousGeneration, false)
 
 	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
 	waitGenerationPromotion(t, ctx, guest, previousGeneration)
 	assertBootedGenerationIdentity(t, ctx, guest, previousSpec)
+	assertHostUpgradeRuntimeReady(t, ctx, guest, "persistent-rollback")
+	assertGuestFileDigests(t, ctx, guest, "persistent-rollback", sharedStateDigests)
+	if got := guestFileSHA256(t, ctx, guest, "persistent-rollback-host-key", hostKeyPath); got != repairedHostKeyDigest {
+		t.Fatalf("persistent rollback host key digest = %s, want %s", got, repairedHostKeyDigest)
+	}
+	if got := guestFileSHA256(t, ctx, guest, "persistent-rollback-authorized-key", "/etc/ssh/authorized_keys/root"); got != sourceAuthorizedKeyDigest {
+		t.Fatalf("persistent rollback authorized key digest = %s, want source %s", got, sourceAuthorizedKeyDigest)
+	}
 	assertGuestFileContains(t, ctx, guest, stateMarker, "state-survives-host-upgrade-and-rollback")
 	rolledBack := bootSelectionFromGuest(t, ctx, guest)
 	if rolledBack.DefaultGenerationID != previousGeneration || rolledBack.PreviousKnownGoodGenerationID != candidateGeneration || rolledBack.PendingHealthValidation {
@@ -270,6 +301,50 @@ func guestFileSHA256(t *testing.T, ctx context.Context, guest *GuestControl, nam
 		t.Fatalf("%s returned invalid sha256sum output: %q", name, strings.Join(fields, " "))
 	}
 	return fields[0]
+}
+
+func guestFileDigests(t *testing.T, ctx context.Context, guest *GuestControl, phase string, paths []string) map[string]string {
+	t.Helper()
+	digests := make(map[string]string, len(paths))
+	for _, path := range paths {
+		digests[path] = guestFileSHA256(t, ctx, guest, phase+"-"+filepath.Base(path), path)
+	}
+	return digests
+}
+
+func assertGuestFileDigests(t *testing.T, ctx context.Context, guest *GuestControl, phase string, want map[string]string) {
+	t.Helper()
+	for path, digest := range want {
+		if got := guestFileSHA256(t, ctx, guest, phase+"-"+filepath.Base(path), path); got != digest {
+			t.Fatalf("%s digest after %s = %s, want %s", path, phase, got, digest)
+		}
+	}
+}
+
+func assertHostUpgradeRuntimeReady(t *testing.T, ctx context.Context, guest *GuestControl, phase string) {
+	t.Helper()
+	units := []string{"katlc-agent.service", "sshd.service", "katl-boot-complete.target"}
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		active, err := guest.RunCommand(ctx, GuestCommandRequest{
+			Name:         phase + "-runtime-ready",
+			Argv:         append([]string{"systemctl", "is-active", "--quiet"}, units...),
+			AllowFailure: true,
+		})
+		if err == nil && active.ExitStatus == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			states := guestCommandOutput(t, ctx, guest, phase+"-runtime-states", append([]string{"systemctl", "show", "--property=Id,ActiveState,SubState"}, units...)...)
+			t.Fatalf("runtime did not become ready after %s: %v %#v\n%s", phase, err, active, states)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	guestCommand(t, ctx, guest, phase+"-sshd-config", "sshd", "-t")
 }
 
 func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, nodeName, machineID, currentGeneration, candidateGeneration, localRef string, upgrade builtUpgradeImage, kind, configYAML string) (string, *agentapi.OperationStatus) {

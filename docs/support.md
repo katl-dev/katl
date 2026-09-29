@@ -78,6 +78,12 @@ where the node has the required capability. Preserve the source `ClusterConfig`,
 exact release assets, checksums, OCI digests, and recovery data. Reinstall may
 be required after an incompatible change outside that API guarantee.
 
+For stable host upgrades, matching `runtimeInterface` values also declare that
+the target and the retained source can use the same Katl records and writable
+service state across that window. Katl rejects a mismatched runtime interface
+before target preparation or inactive-slot writes. Follow the target release's
+migration or reinstall procedure instead of bypassing this check.
+
 Use the `katlctl` binary from the same KatlOS release to validate and compile
 configuration. The management API window does not make configuration formats
 from different release trains interchangeable.
@@ -89,6 +95,12 @@ operations. They do not roll back etcd, kubeadm mutations, Kubernetes API
 objects, persistent volumes, application data, or external infrastructure.
 After a partial kubeadm or Kubernetes mutation, the node may report that manual
 recovery is required.
+
+KatlOS has two root slots, so only the active OS and one peer OS can remain
+bootable. A later upgrade overwrites the peer slot; extra generation records do
+not retain extra runtime roots. Both slots also share `/var`, the EFI System
+Partition, firmware boot state, and usually one disk. A/B rollback does not
+recover failure or corruption in those shared components.
 
 Kubernetes upgrades support an explicit serial rollout to a newer patch or the
 next minor using a published Katl bundle. A healthy multi-control-plane cluster
