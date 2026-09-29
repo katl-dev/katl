@@ -1,0 +1,60 @@
+apiVersion: katl.dev/v1alpha1
+kind: NodeConfigurationChange
+metadata:
+  sourceID: operator
+  desiredVersion: "25"
+apply:
+  mode: next-boot
+spec:
+  clusterDefaults:
+    hostConfiguration:
+      sets:
+        vmtest-management-network:
+          files:
+            - path: /etc/systemd/network/10-vmtest-transport.network
+              content: |
+                [Match]
+                Name=en*
+
+                [Link]
+                RequiredForOnline=no
+
+                [Network]
+                DHCP=yes
+
+                [DHCPv4]
+                ClientIdentifier=mac
+                UseHostname=no
+
+                [DHCPv6]
+                UseHostname=no
+            - path: /etc/systemd/network/20-vmtest-management.netdev
+              content: |
+                [NetDev]
+                Name=vmtest-mgmt
+                Kind=dummy
+            - path: /etc/systemd/network/20-vmtest-management.network
+              content: |
+                [Match]
+                Name=vmtest-mgmt
+
+                [Link]
+                RequiredForOnline=routable
+
+                [Network]
+                LinkLocalAddressing=no
+            - path: /etc/systemd/network/30-vmtest-workload.netdev
+              content: |
+                [NetDev]
+                Name=vmtest-workload
+                Kind=dummy
+            - path: /etc/systemd/network/30-vmtest-workload.network
+              content: |
+                [Match]
+                Name=vmtest-workload
+
+                [Link]
+                RequiredForOnline=no
+
+                [Network]
+                Address=198.18.0.1/24

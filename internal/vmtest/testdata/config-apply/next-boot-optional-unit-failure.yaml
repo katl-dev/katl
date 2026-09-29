@@ -2,21 +2,21 @@ apiVersion: katl.dev/v1alpha1
 kind: NodeConfigurationChange
 metadata:
   sourceID: operator
-  desiredVersion: "26"
+  desiredVersion: "24"
 apply:
   mode: next-boot
 spec:
   clusterDefaults:
     hostConfiguration:
       enabledUnits:
-        - vmtest-boot-failure.service
+        - vmtest-optional-failure.service
       sets:
-        vmtest-boot-failure:
+        vmtest-optional-failure:
           files:
-            - path: /etc/systemd/system/vmtest-boot-failure.service
+            - path: /etc/systemd/system/vmtest-optional-failure.service
               content: |
                 [Unit]
-                Description=Fail the Katl VM trial boot
+                Description=Fail an optional service before Katl boot health
                 Before=katl-boot-health.service
 
                 [Service]
@@ -24,4 +24,4 @@ spec:
                 ExecStart=/usr/bin/false
 
                 [Install]
-                RequiredBy=katl-boot-health.service
+                WantedBy=multi-user.target

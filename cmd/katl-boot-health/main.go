@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -52,7 +52,6 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	requestedResult := strings.TrimSpace(*result)
 	requestedReason := strings.TrimSpace(*reason)
 	forceFailure := *forceFailureFlag
-	var failedUnits []string
 	if requestedResult == generation.BootHealthSuccess {
 		_, selectedStatus, err := generation.ReadGeneration(*root, selected)
 		if err != nil {
@@ -65,17 +64,6 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 				requestedReason = "management network unavailable: " + err.Error()
 				forceFailure = true
 			}
-		}
-	}
-	if requestedResult == generation.BootHealthSuccess {
-		failedUnits, err = systemdFailedUnits(ctx)
-		if err != nil {
-			return fmt.Errorf("inspect systemd failed units: %w", err)
-		}
-		if len(failedUnits) > 0 {
-			requestedResult = generation.BootHealthFailure
-			requestedReason = "systemd failed units: " + strings.Join(failedUnits, ", ")
-			forceFailure = true
 		}
 	}
 	record, err := generation.RecordBootHealth(generation.BootHealthRequest{
@@ -115,61 +103,93 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	if *requestReboot && !record.RebootRequested {
 		return fmt.Errorf("automatic reboot refused: this is not an armed trial with a validated known-good fallback; preserve boot diagnostics and recover from the console")
 	}
-	if len(failedUnits) > 0 {
-		return fmt.Errorf("systemd has failed units: %s", strings.Join(failedUnits, ", "))
-	}
 	if forceFailure && requestedResult == generation.BootHealthFailure && !record.RebootRequested {
 		return errors.New(requestedReason)
 	}
 	return nil
 }
 
-func managementNetworkReady() (bool, error) {
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return false, err
-	}
-	for _, iface := range interfaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
-			continue
-		}
-		addresses, err := iface.Addrs()
-		if err != nil {
-			return false, err
-		}
-		for _, address := range addresses {
-			ip, _, err := net.ParseCIDR(address.String())
-			if err == nil && usableManagementIP(ip) {
-				return true, nil
-			}
-		}
-	}
-	return false, nil
+type networkctlState struct {
+	Interfaces []networkctlLink `json:"Interfaces"`
 }
 
-func usableManagementIP(ip net.IP) bool {
-	return ip.IsGlobalUnicast() && !ip.IsLinkLocalUnicast()
+type networkctlLink struct {
+	Name              string  `json:"Name"`
+	OperationalState  string  `json:"OperationalState"`
+	OnlineState       *string `json:"OnlineState"`
+	NetworkFile       string  `json:"NetworkFile"`
+	RequiredForOnline bool    `json:"RequiredForOnline"`
+}
+
+func managementNetworkReady(data []byte) (bool, string, error) {
+	var state networkctlState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return false, "", fmt.Errorf("decode networkctl state: %w", err)
+	}
+
+	var required, offline []string
+	routable := false
+	for _, link := range state.Interfaces {
+		if link.NetworkFile == "" || !link.RequiredForOnline {
+			continue
+		}
+		required = append(required, link.Name)
+		if link.OnlineState == nil || *link.OnlineState != "online" {
+			offline = append(offline, link.Name)
+		}
+		if link.OperationalState == "routable" {
+			routable = true
+		}
+	}
+	if len(required) == 0 {
+		return false, "no systemd-networkd link is required for online", nil
+	}
+	if len(offline) > 0 {
+		return false, "required links are not online: " + strings.Join(offline, ", "), nil
+	}
+	if !routable {
+		return false, "no required link is routable", nil
+	}
+	return true, "", nil
 }
 
 var waitForManagementNetwork = func(ctx context.Context) error {
-	deadline, cancel := context.WithTimeout(ctx, 90*time.Second)
+	healthCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
+	lastReason := "network state has not been observed"
 	for {
-		ready, err := managementNetworkReady()
+		data, err := readNetworkctlState(healthCtx)
+		if err != nil {
+			if errors.Is(healthCtx.Err(), context.DeadlineExceeded) {
+				return fmt.Errorf("configured management network is not ready after 90 seconds: %s", lastReason)
+			}
+			return err
+		}
+		ready, reason, err := managementNetworkReady(data)
 		if err != nil {
 			return err
 		}
 		if ready {
 			return nil
 		}
+		lastReason = reason
 		select {
-		case <-deadline.Done():
-			return fmt.Errorf("no non-loopback interface has a usable address after 90 seconds")
+		case <-healthCtx.Done():
+			return fmt.Errorf("configured management network is not ready after 90 seconds: %s", lastReason)
 		case <-ticker.C:
 		}
 	}
+}
+
+var readNetworkctlState = func(ctx context.Context) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, "networkctl", "list", "--json=short", "--no-pager")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("networkctl list: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return output, nil
 }
 
 func markConfigApplyBootActive(root, generationID string, now time.Time) error {
@@ -193,23 +213,6 @@ func markConfigApplyBootActive(root, generationID string, now time.Time) error {
 	}
 	status.HealthState = generation.HealthStateHealthy
 	return generation.WriteConfigApplyStatus(path, status)
-}
-
-var systemdFailedUnits = func(ctx context.Context) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "systemctl", "list-units", "--failed", "--no-legend", "--plain", "--no-pager")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("systemctl list-units --failed: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	var units []string
-	for _, line := range strings.Split(string(output), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) == 0 {
-			continue
-		}
-		units = append(units, fields[0])
-	}
-	return units, nil
 }
 
 var bootHealthClock = func() time.Time {

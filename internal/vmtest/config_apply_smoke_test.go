@@ -65,7 +65,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 		KVM:     runner.options().KVM,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	if err := CreateDisks(ctx, diskExec(nil), result.Disks); err != nil {
 		t.Fatalf("create config apply data disk: %v", err)
@@ -75,7 +75,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	vm.KVM = runner.options().KVM
 	vm.RAMMiB = 2048
 	vm.CPUs = 2
-	vm.Timeout = 15 * time.Minute
+	vm.Timeout = 20 * time.Minute
 	vm.Network.MAC = first(vm.Network.MAC, plannedMAC)
 	vm.VSock.Enabled = true
 	vm.Agent.RequireHealth = true
@@ -180,8 +180,8 @@ func assertDefaultNetworkdCNIOwnership(t *testing.T, ctx context.Context, guest 
 		"systemd-run", "--quiet", "--wait", "--collect", "--pipe",
 		"/usr/bin/systemd-analyze", "cat-config", "systemd/network/80-katl-vmtest-dhcp.network",
 	)
-	if !strings.Contains(networkConfig, "[Match]\nType=ether\nKind=!*\n") {
-		t.Fatalf("default networkd policy does not exclude virtual netdev kinds:\n%s", networkConfig)
+	if !containsAll(networkConfig, "[Match]\nType=ether\nKind=!*\n", "[Link]\nRequiredForOnline=routable\n") {
+		t.Fatalf("default networkd policy does not isolate a routable physical management path:\n%s", networkConfig)
 	}
 
 	hostLink := defaultRouteLink(t, ctx, guest)
@@ -729,10 +729,69 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	if bootedGenerationStatus.GetConfigApply().GetPhase() != "active" || bootedGenerationStatus.GetConfigApply().GetAcceptedApplyMode() != "next-boot" {
 		t.Fatalf("booted networkd katlctl generation status = %+v, want active next-boot config apply", bootedGenerationStatus.GetConfigApply())
 	}
-	guest, client = runFailedTrialRecoverySmoke(t, ctx, node, guest, client, result, katlctl, endpoint, stagedGeneration)
+	guest, client = runOptionalUnitFailureSmoke(t, ctx, node, guest, client, result, katlctl, endpoint)
+	optionalGeneration := currentGenerationFromGuest(t, ctx, guest)
+	guest, client = runManagementNetworkFailureSmoke(t, ctx, node, guest, client, result, katlctl, endpoint, optionalGeneration)
+	guest, client = runFailedTrialRecoverySmoke(t, ctx, node, guest, client, result, katlctl, endpoint, optionalGeneration)
 	assertBootstrappedKubernetesSysextChangeRejected(t, ctx, guest, endpoint)
 	shutdownGuestThroughKatlctl(t, ctx, result, katlctl, endpoint, node, client)
 	return guest, nil
+}
+
+func runOptionalUnitFailureSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl, endpoint string) (*GuestControl, *AgentClient) {
+	t.Helper()
+	candidate := "2026.06.06-vmtest-optional-unit"
+	accepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-optional-unit", "next-boot", candidate, configApplyFixture(t, "next-boot-optional-unit-failure.yaml"), false)
+	status := waitKatlcOperationTerminal(t, ctx, endpoint, accepted.OperationId)
+	if status.Result != operation.ResultSucceeded || status.ConfigApplyPhase != "next-boot" {
+		t.Fatalf("optional-unit staging status = %+v, want succeeded next-boot apply", status)
+	}
+
+	previousBootID := guestBootID(t, ctx, client)
+	runKatlctl(t, ctx, result, katlctl, "host-reboot-optional-unit", "node", "reboot", "cp-1", "--timeout", "3m")
+	_ = client.Close()
+	guest, client = reconnectGuestAfterGeneration(t, ctx, node, previousBootID, candidate)
+
+	_, candidateStatus := generationRecordsFromGuest(t, ctx, guest, candidate)
+	if !generation.IsKnownGood(candidateStatus) {
+		t.Fatalf("optional-unit generation status = %#v, want good/healthy", candidateStatus)
+	}
+	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "optional-unit-result", "systemctl", "show", "--property=Result", "--value", "vmtest-optional-failure.service")); got != "exit-code" {
+		t.Fatalf("optional unit result = %q, want exit-code", got)
+	}
+	statusOutput := runKatlctl(t, ctx, result, katlctl, "status-after-optional-unit-failure", "node", "status", "cp-1")
+	if !strings.Contains(string(statusOutput), candidate) {
+		t.Fatalf("katlctl status does not show promoted generation %s:\n%s", candidate, statusOutput)
+	}
+	return guest, client
+}
+
+func runManagementNetworkFailureSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl, endpoint, fallbackGeneration string) (*GuestControl, *AgentClient) {
+	t.Helper()
+	candidate := "2026.06.06-vmtest-management-network"
+	accepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-management-network", "next-boot", candidate, configApplyFixture(t, "next-boot-management-network-failure.yaml"), false)
+	status := waitKatlcOperationTerminal(t, ctx, endpoint, accepted.OperationId)
+	if status.Result != operation.ResultSucceeded || status.ConfigApplyPhase != "next-boot" {
+		t.Fatalf("management-network staging status = %+v, want succeeded next-boot apply", status)
+	}
+
+	previousBootID := guestBootID(t, ctx, client)
+	_, rebootErr := runKatlctlOutcome(t, ctx, result, katlctl, "host-reboot-management-network", "node", "reboot", "cp-1", "--timeout", "4m")
+	if rebootErr == nil || !strings.Contains(rebootErr.Error(), "rejected generation "+candidate+" during boot health and returned on generation "+fallbackGeneration) {
+		t.Fatalf("management-network reboot error = %v, want actionable fallback report", rebootErr)
+	}
+	_ = client.Close()
+	guest, client = reconnectGuestAfterGeneration(t, ctx, node, previousBootID, fallbackGeneration)
+
+	_, candidateStatus := generationRecordsFromGuest(t, ctx, guest, candidate)
+	if candidateStatus.BootState != generation.BootStateFailed || candidateStatus.HealthState != generation.HealthStateUnhealthy {
+		t.Fatalf("management-network candidate status = %#v, want failed/unhealthy", candidateStatus)
+	}
+	previousJournal := guestCommandOutput(t, ctx, guest, "management-network-recovery-journal", "journalctl", "-b", "-1", "--no-pager", "-u", "katl-boot-health.service")
+	if !strings.Contains(previousJournal, "required links are not online: vmtest-mgmt") {
+		t.Fatalf("management-network journal does not identify the required path:\n%s", previousJournal)
+	}
+	return guest, client
 }
 
 func runFailedTrialRecoverySmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl, endpoint, fallbackGeneration string) (*GuestControl, *AgentClient) {

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +14,7 @@ import (
 )
 
 func TestRunPromotesGenerationFromCommandLine(t *testing.T) {
-	stubSystemdFailedUnits(t)
+	stubManagementNetwork(t)
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 16, 0, 0, 0, time.UTC)
 	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
@@ -68,7 +67,7 @@ func TestRunPromotesGenerationFromCommandLine(t *testing.T) {
 }
 
 func TestRunPromotesTrialAndSetsBootDefault(t *testing.T) {
-	stubSystemdFailedUnits(t)
+	stubManagementNetwork(t)
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 17, 0, 0, 0, time.UTC)
 	writeCommandGeneration(t, root, "gen0", now.Add(-2*time.Hour))
@@ -140,49 +139,7 @@ func TestRunPromotesTrialAndSetsBootDefault(t *testing.T) {
 	}
 }
 
-func TestRunRejectsFailedSystemdUnits(t *testing.T) {
-	stubManagementNetwork(t)
-	root := t.TempDir()
-	now := time.Date(2026, 6, 15, 17, 30, 0, 0, time.UTC)
-	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
-	markCommandGenerationHealthy(t, root, "gen0", now.Add(-30*time.Minute))
-	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
-		APIVersion:          generation.APIVersion,
-		Kind:                generation.BootSelectionKind,
-		DefaultGenerationID: "gen0",
-		BootedGenerationID:  "gen0",
-		DefaultBootEntry:    "loader/entries/katl-gen0.conf",
-		BootedBootEntry:     "loader/entries/katl-gen0.conf",
-		UpdatedAt:           now.Add(-30 * time.Minute),
-	}); err != nil {
-		t.Fatalf("WriteBootSelection() error = %v", err)
-	}
-	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen0\n")
-	oldCheck := systemdFailedUnits
-	systemdFailedUnits = func(context.Context) ([]string, error) {
-		return []string{"boot.automount", "example.service"}, nil
-	}
-	t.Cleanup(func() { systemdFailedUnits = oldCheck })
-
-	var stdout bytes.Buffer
-	err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result", generation.BootHealthSuccess}, &stdout)
-	if err == nil || !strings.Contains(err.Error(), "boot.automount, example.service") {
-		t.Fatalf("run() error = %v", err)
-	}
-	if !strings.Contains(stdout.String(), "result=failure") || !strings.Contains(stdout.String(), "failed=true") {
-		t.Fatalf("stdout = %q", stdout.String())
-	}
-	_, status, err := generation.ReadGeneration(root, "gen0")
-	if err != nil {
-		t.Fatalf("ReadGeneration(gen0) error = %v", err)
-	}
-	if status.BootState != generation.BootStateFailed || status.HealthState != generation.HealthStateUnhealthy {
-		t.Fatalf("status = %#v, want failed/unhealthy", status)
-	}
-}
-
 func TestRunDoesNotPromoteWithoutManagementNetwork(t *testing.T) {
-	stubSystemdFailedUnits(t)
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 17, 30, 0, 0, time.UTC)
 	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
@@ -216,25 +173,57 @@ func TestRunDoesNotPromoteWithoutManagementNetwork(t *testing.T) {
 	}
 }
 
-func TestUsableManagementIP(t *testing.T) {
+func TestManagementNetworkReadyUsesConfiguredRequiredLinks(t *testing.T) {
 	for _, test := range []struct {
-		address string
-		usable  bool
+		name       string
+		links      string
+		ready      bool
+		wantReason string
 	}{
-		{address: "127.0.0.1"},
-		{address: "169.254.8.1"},
-		{address: "fe80::1"},
-		{address: "192.168.122.23", usable: true},
-		{address: "fd00::23", usable: true},
+		{
+			name:  "required management link",
+			links: `{"Interfaces":[{"Name":"enp1s0","NetworkFile":"/etc/systemd/network/10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable"}]}`,
+			ready: true,
+		},
+		{
+			name:       "workload address cannot mask offline management",
+			links:      `{"Interfaces":[{"Name":"enp1s0","NetworkFile":"/etc/systemd/network/10-lan.network","RequiredForOnline":true,"OnlineState":"offline","OperationalState":"no-carrier"},{"Name":"cni0","OnlineState":null,"OperationalState":"routable"}]}`,
+			wantReason: "enp1s0",
+		},
+		{
+			name:       "workload address cannot supply required route",
+			links:      `{"Interfaces":[{"Name":"enp1s0","NetworkFile":"/etc/systemd/network/10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"degraded"},{"Name":"cni0","OnlineState":null,"OperationalState":"routable"}]}`,
+			wantReason: "no required link is routable",
+		},
+		{
+			name:  "optional secondary link is ignored",
+			links: `{"Interfaces":[{"Name":"enp1s0","NetworkFile":"/etc/systemd/network/10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable"},{"Name":"enp2s0","NetworkFile":"/etc/systemd/network/20-secondary.network","RequiredForOnline":false,"OnlineState":"offline","OperationalState":"no-carrier"}]}`,
+			ready: true,
+		},
+		{
+			name:       "required secondary link blocks readiness",
+			links:      `{"Interfaces":[{"Name":"enp1s0","NetworkFile":"/etc/systemd/network/10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable"},{"Name":"enp2s0","NetworkFile":"/etc/systemd/network/20-secondary.network","RequiredForOnline":true,"OnlineState":"offline","OperationalState":"no-carrier"}]}`,
+			wantReason: "enp2s0",
+		},
+		{
+			name:       "no configured management link",
+			links:      `{"Interfaces":[{"Name":"cni0","OnlineState":null,"OperationalState":"routable"}]}`,
+			wantReason: "no systemd-networkd link",
+		},
 	} {
-		if got := usableManagementIP(net.ParseIP(test.address)); got != test.usable {
-			t.Errorf("usableManagementIP(%s) = %t, want %t", test.address, got, test.usable)
-		}
+		t.Run(test.name, func(t *testing.T) {
+			ready, reason, err := managementNetworkReady([]byte(test.links))
+			if err != nil {
+				t.Fatalf("managementNetworkReady() error = %v", err)
+			}
+			if ready != test.ready || !strings.Contains(reason, test.wantReason) {
+				t.Fatalf("managementNetworkReady() = %t, %q, want %t, reason containing %q", ready, reason, test.ready, test.wantReason)
+			}
+		})
 	}
 }
 
 func TestRunKeepsKnownGoodGenerationOnNetworkOutage(t *testing.T) {
-	stubSystemdFailedUnits(t)
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 17, 45, 0, 0, time.UTC)
 	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
@@ -403,14 +392,6 @@ func writeCommandLine(t *testing.T, root string, commandLine string) string {
 		t.Fatal(err)
 	}
 	return cmdline
-}
-
-func stubSystemdFailedUnits(t *testing.T) {
-	t.Helper()
-	stubManagementNetwork(t)
-	oldCheck := systemdFailedUnits
-	systemdFailedUnits = func(context.Context) ([]string, error) { return nil, nil }
-	t.Cleanup(func() { systemdFailedUnits = oldCheck })
 }
 
 func stubManagementNetwork(t *testing.T) {
