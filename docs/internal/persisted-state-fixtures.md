@@ -4,9 +4,11 @@ Katl keeps static fixtures for the current persisted record shapes. They prove
 that readers validate identity, paths, digests, enums, timestamps, and replay
 behavior using representative data that is independent of the current writer.
 
-These fixtures are not, by themselves, a backward-compatibility promise. All
-current formats are `v1alpha1`; the support boundary permits incompatible
-changes between alpha releases and may require reinstall. When a current shape
+These fixtures are not, by themselves, a backward-compatibility promise. Before
+the first stable release, the support boundary permits incompatible changes and
+may require reinstall. Beginning with the first stable release, retain fixtures
+for the current and two preceding stable release series when those releases are
+in the host-upgrade window for the same runtime interface. When a current shape
 changes, update or replace its fixture and review the affected lifecycle
 behavior.
 

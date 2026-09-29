@@ -310,8 +310,32 @@ func TestHostUpgradePlanRejectsRuntimeInterfaceChange(t *testing.T) {
 	payload.Index.RuntimeInterface = "katl-runtime-2"
 	previousSpec, previousStatus := knownGoodGeneration(t, "gen0", strings.Repeat("b", 64), "v1.36.0")
 	_, err := payload.HostUpgradePlan(validHostUpgradeRequest(previousSpec, previousStatus))
-	if err == nil || !strings.Contains(err.Error(), "runtime interface") {
+	if err == nil || !strings.Contains(err.Error(), "runtime interface") || !strings.Contains(err.Error(), "migration or reinstall procedure") {
 		t.Fatalf("HostUpgradePlan() error = %v, want runtime interface mismatch", err)
+	}
+}
+
+func TestValidateUpgradeCompatibility(t *testing.T) {
+	source, _ := knownGoodGeneration(t, "gen0", strings.Repeat("b", 64), "v1.36.0")
+	compatible := upgradePayload(t, nil).Index
+	for _, test := range []struct {
+		name   string
+		target Index
+		want   string
+	}{
+		{name: "compatible", target: compatible},
+		{name: "architecture", target: func() Index { target := compatible; target.Architecture = "aarch64"; return target }(), want: "architecture"},
+		{name: "writable state interface", target: func() Index { target := compatible; target.RuntimeInterface = "katl-runtime-2"; return target }(), want: "migration or reinstall procedure"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := ValidateUpgradeCompatibility(source, test.target)
+			if test.want == "" && err != nil {
+				t.Fatalf("ValidateUpgradeCompatibility() error = %v", err)
+			}
+			if test.want != "" && (err == nil || !strings.Contains(err.Error(), test.want)) {
+				t.Fatalf("ValidateUpgradeCompatibility() error = %v, want %q", err, test.want)
+			}
+		})
 	}
 }
 

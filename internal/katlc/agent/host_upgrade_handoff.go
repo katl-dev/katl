@@ -48,8 +48,8 @@ func (e *Executor) executeHostUpgradeHandoff(ctx context.Context, record operati
 	if err := katlosimage.ValidateHostUpgradeSource(previous, previousStatus, kubernetesState.bootstrapped); err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", err)
 	}
-	if payload.Index.Architecture != previous.Root.Architecture || payload.Index.RuntimeInterface != previous.Root.RuntimeInterface {
-		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("target boot envelope is incompatible with current runtime"))
+	if err := katlosimage.ValidateUpgradeCompatibility(previous, payload.Index); err != nil {
+		return e.failHostUpgrade(record, "verify-katlos-image", err)
 	}
 	if err := kernelcmdline.ValidateRequiredCompatibility(previous.ConfiguredKernelCommandLine, payload.Boot.Compatibility.KernelCommandLine); err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", err)

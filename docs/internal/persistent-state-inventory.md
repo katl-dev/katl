@@ -49,7 +49,56 @@ writers should populate `writtenBy.katlVersion`, `writtenBy.runtimeInterface`,
 and `writtenAt` when that data is available, but readers must not require those
 fields until a later record version explicitly makes them required.
 
-## Record Contract Inventory
+## Host rollback compatibility contract
+
+The KatlOS image `runtimeInterface` identifies both the immutable runtime ABI
+and the writable-state contract used during host upgrade and rollback. A target
+with the same runtime interface declares all of the following:
+
+- The target can read and validate Katl-owned records written by every source
+  release in the supported host-upgrade window.
+- The previous known-good source can read every rollback-sensitive record that
+  the target may write before or during its trial boot. New target-only data
+  must use a separate versioned attachment that the source does not need.
+- A target trial does not make containerd, kubelet, kubeadm, etcd, SSH, machine
+  identity, or application state unreadable to the previous known-good runtime.
+- The target does not change a shared filesystem, mount, EFI System Partition
+  (ESP), or service-state format in a way that prevents the previous runtime
+  from booting and reporting recovery.
+
+Beginning with the first stable series, this declaration covers the current
+stable series and the two preceding published stable series. Patch releases
+cannot narrow it. Pre-releases do not advance the window and retain the beta
+support limits in `docs/support.md`.
+
+The source validates architecture and `runtimeInterface` before it runs target
+preparation or writes the inactive root. A mismatch is not a routine A/B
+upgrade: the node rejects it and directs the operator to a release-specific
+migration or reinstall procedure. Release tooling and the frozen-version VM
+matrix must prevent an image from retaining a runtime interface when its
+packages or services no longer satisfy this contract.
+
+## State access during a host upgrade
+
+The following table identifies the state each phase can observe or mutate.
+Target preparation receives a bounded private copy, not the live state tree.
+
+| State | Target preparation | Trial activation and normal services | Rollback requirement |
+| --- | --- | --- | --- |
+| Generation spec, status, assets, and effective manifest for the source | Reads a private copy and writes only the private candidate | Publishes the validated candidate, updates candidate status, and derives `/run` activation links | The source must read its own records plus the target-written boot-selection fields needed to select and report rollback |
+| Boot selection and upgrade handoff | Reads a private copy and a source-written handoff; writes a private result | Source arms the one-shot EFI entry; boot health updates selection and generation status | The source's loader entry and UKI remain intact until the candidate is healthy; both runtimes must understand every pre-promotion state |
+| Operation journal and snapshot | Not copied into target preparation | Source appends upgrade phases; the booted runtime records health and recovery | Older code must replay journal events and report the operation without dropping unknown records it does not own |
+| Cluster intent and installed kubeadm inputs | Reads a private copy for target-owned planning | Host upgrade must not mutate them | Both runtimes must preserve the same node and cluster identity |
+| Machine ID and SSH host keys | Reads machine identity from the private view; does not receive private SSH keys | Identity and host-key services read and may repair their durable files | Values written by either runtime must remain valid to the other runtime |
+| `/etc/kubernetes`, `/var/lib/kubelet`, `/var/lib/etcd`, and Kubernetes API state | Receives only bounded presence evidence and selected non-secret planning inputs, not a mutable clone | Kubernetes, kubelet, and etcd own normal runtime mutation | Host rollback reuses the live state; target package versions must not make it unreadable to the source |
+| `/var/lib/containerd` and workload data | Not copied or mutated | containerd, shims, and workloads own normal runtime mutation | Host rollback does not rewind data; both runtime versions must support the resulting state |
+| ESP loader entries, UKIs, and EFI variables | Uses private path metadata only | Source writes the candidate entry and one-shot selection; promotion can change the persistent default | The retained source entry and UKI must remain independently bootable; ESP failure is outside A/B root rollback |
+
+Reading a private snapshot is not permission for the target planner to migrate
+live state. A successful preparation result can publish only the candidate
+generation tree described by the handoff.
+
+## Record contract inventory
 
 The following table is the release-stable inventory for Katl-owned persisted
 record families. The payload owner names the Go package expected to own the
@@ -57,15 +106,15 @@ versioned payload decoder and semantic validation.
 
 | Path pattern | recordType | recordVersion | Payload owner | Mutability | Digest rule | Migration policy | Rollback sensitivity | Test fixture path |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| `/var/lib/katl/generations/<id>/spec.json` | `katl.generation.spec` | 1 | `internal/installer/generation` | Immutable after creation | `katl.generation.status.payload.specDigest` is computed from canonical generation spec payload bytes for this version | New selection semantics require a new generation record version and explicit old/new fixture coverage | High: rollback selection depends on this record | `internal/installer/persistedrecord/testdata/v1/katl.generation.spec.json` |
-| `/var/lib/katl/generations/<id>/status.json` | `katl.generation.status` | 1 | `internal/installer/generation` | Mutable health and commit state only | Must carry the canonical digest of the matching generation spec payload | New commit, boot, health, or digest semantics require a new record version and rollback fixture | High: known-good and rollback eligibility depend on this record | `internal/installer/persistedrecord/testdata/v1/katl.generation.status.json` |
-| `/var/lib/katl/generations/<id>/config-apply-status.json` | `katl.generation.config-apply-status` | 1 | `internal/installer/generation` | Mutable operation-facing status for one config apply generation | No standalone content digest; validates generation IDs, phase, and referenced diagnostic artifacts | New phase semantics, rollback result shape, or kubeadm action semantics require a new record version | Medium: config apply repair and live/next-boot reconciliation depend on it, but generation rollback authority remains spec/status/boot selection | `internal/installer/persistedrecord/testdata/v1/katl.generation.config-apply-status.json` |
-| `/var/lib/katl/boot/selection.json` | `katl.boot.selection` | 1 | `internal/installer/generation` | Mutable boot transaction state | No standalone content digest; path, boot entry, and generation references must validate against generation records | New promotion, trial, boot-count, or recovery semantics require a new record version and VM rollback coverage | High: boot default, trial, previous known-good, and repair state depend on it | `internal/installer/persistedrecord/testdata/v1/katl.boot.selection.json` |
-| `/var/lib/katl/install/status.json` | `katl.install.status` | 1 | `internal/installer/status` | Mutable installer and runtime handoff summary | Contains request and image digests; no separate record digest | New state machine meanings or handoff semantics require a new record version | Medium: first-install repair and handoff diagnostics depend on it; normal generation rollback does not | `internal/installer/persistedrecord/testdata/v1/katl.install.status.json` |
-| `/var/lib/katl/operations/<id>/record.json` | `katl.operation.record` | 1 | `internal/installer/operation` | Mutable operation snapshot rebuilt from journal | Must agree with latest valid journal event, latest sequence, and journal digest | New operation recovery, mutation marker, or repair semantics require a new record version and journal fixture | High: interruption recovery and repair classification depend on it | `internal/installer/persistedrecord/testdata/v1/katl.operation.record.json` |
-| `/var/lib/katl/operations/<id>/journal/<seq>.<event>.json` | `katl.operation.journal-event` | 1 | `internal/installer/operation` | Append-only | Ordered canonical event bytes feed the operation journal digest recorded in `record.json` | New event shape or replay semantics require a new record version; old event fixtures must keep replaying | High: operation recovery source of truth | `internal/installer/persistedrecord/testdata/v1/katl.operation.journal-event.json` |
-| `/var/lib/katl/cluster/intent.json` | `katl.cluster.intent` | 1 | `internal/installer` | Immutable install-normalized cluster bootstrap intent until an explicit future reintent operation exists | Source request and KatlOS image digests tie the payload to install input; no separate record digest | New bootstrap intent semantics require a new record version and bootstrap compatibility fixture | Medium: bootstrap depends on it; host rollback must not mutate it | `internal/installer/persistedrecord/testdata/v1/katl.cluster.intent.json` |
-| `/var/lib/katl/config-requests/<source>/<version>.json` | `katl.config-request.decision` | 1 | `internal/installer/configapply` | Immutable decision for one source/version request | `payload.requestDigest` binds the decision to the submitted config | New decision, freshness, or apply-mode semantics require a new record version | Medium: idempotent config apply and repair diagnostics depend on it | `internal/installer/persistedrecord/testdata/v1/katl.config-request.decision.json` |
+| `/var/lib/katl/generations/<id>/spec.json` | `katl.generation.spec` | 1 | `internal/generation` | Immutable after creation | `katl.generation.status.payload.specDigest` is computed from canonical generation spec payload bytes for this version | New selection semantics require a new generation record version and explicit old/new fixture coverage | High: rollback selection depends on this record | `internal/installer/testdata/persisted/v1/katl.generation.spec.json` |
+| `/var/lib/katl/generations/<id>/status.json` | `katl.generation.status` | 1 | `internal/generation` | Mutable health and commit state only | Must carry the canonical digest of the matching generation spec payload | New commit, boot, health, or digest semantics require a new record version and rollback fixture | High: known-good and rollback eligibility depend on this record | `internal/installer/testdata/persisted/v1/katl.generation.status.json` |
+| `/var/lib/katl/generations/<id>/config-apply-status.json` | `katl.generation.config-apply-status` | 1 | `internal/generation` | Mutable operation-facing status for one config apply generation | No standalone content digest; validates generation IDs, phase, and referenced diagnostic artifacts | New phase semantics, rollback result shape, or kubeadm action semantics require a new record version | Medium: config apply repair and live/next-boot reconciliation depend on it, but generation rollback authority remains spec/status/boot selection | `internal/installer/testdata/persisted/v1/katl.generation.config-apply-status.json` |
+| `/var/lib/katl/boot/selection.json` | `katl.boot.selection` | 1 | `internal/generation` | Mutable boot transaction state | No standalone content digest; path, boot entry, and generation references must validate against generation records | New promotion, trial, boot-count, or recovery semantics require a new record version and VM rollback coverage | High: boot default, trial, previous known-good, and repair state depend on it | `internal/installer/testdata/persisted/v1/katl.boot.selection.json` |
+| `/var/lib/katl/install/status.json` | `katl.install.status` | 1 | `internal/installer/status` | Mutable installer and runtime handoff summary | Contains request and image digests; no separate record digest | New state machine meanings or handoff semantics require a new record version | Medium: first-install repair and handoff diagnostics depend on it; normal generation rollback does not | `internal/installer/testdata/persisted/v1/katl.install.status.json` |
+| `/var/lib/katl/operations/<id>/record.json` | `katl.operation.record` | 1 | `internal/installer/operation` | Mutable operation snapshot rebuilt from journal | Must agree with latest valid journal event, latest sequence, and journal digest | New operation recovery, mutation marker, or repair semantics require a new record version and journal fixture | High: interruption recovery and repair classification depend on it | `internal/installer/testdata/persisted/v1/katl.operation.record.json` |
+| `/var/lib/katl/operations/<id>/journal/<seq>.<event>.json` | `katl.operation.journal-event` | 1 | `internal/installer/operation` | Append-only | Ordered canonical event bytes feed the operation journal digest recorded in `record.json` | New event shape or replay semantics require a new record version; old event fixtures must keep replaying | High: operation recovery source of truth | `internal/installer/testdata/persisted/v1/katl.operation.journal-event.json` |
+| `/var/lib/katl/cluster/intent.json` | `katl.cluster.intent` | 1 | `internal/installer` | Immutable install-normalized cluster bootstrap intent until an explicit future reintent operation exists | Source request and KatlOS image digests tie the payload to install input; no separate record digest | New bootstrap intent semantics require a new record version and bootstrap compatibility fixture | Medium: bootstrap depends on it; host rollback must not mutate it | `internal/installer/testdata/persisted/v1/katl.cluster.intent.json` |
+| `/var/lib/katl/config-requests/<source>/<version>.json` | `katl.config-request.decision` | 1 | `internal/installer/configapply` | Immutable decision for one source/version request | `payload.requestDigest` binds the decision to the submitted config | New decision, freshness, or apply-mode semantics require a new record version | Medium: idempotent config apply and repair diagnostics depend on it | `internal/installer/testdata/persisted/v1/katl.config-request.decision.json` |
 
 The fixture paths above are the canonical locations for released compatibility
 fixtures. The common persisted-record package owns envelope fixtures and
@@ -79,7 +128,7 @@ under `/var/lib/katl/operations/<id>/apps/<appID>/status.json` are app-owned
 operation evidence identified by each app bundle's status schema ID; they are
 not Katl core record envelopes unless a later node app contract says so.
 
-## Decoding And Unknown Fields
+## Decoding and unknown fields
 
 Readers must process Katl record files in this order:
 
@@ -101,7 +150,7 @@ Readers must not silently rewrite records just because they were read. Writers
 must write canonical JSON and use atomic replace for mutable records. Immutable
 records use create-without-replace semantics after path validation.
 
-## Migration Policy
+## Migration policy
 
 Changing a persisted record contract requires a concrete migration decision. A
 record version changes when a payload field is added, removed, renamed, changes
@@ -130,14 +179,28 @@ runtime cannot read well enough to roll back or report repair unless the
 operation explicitly declares rollback compatibility broken and has a tested
 repair path.
 
-## Schema Change Checklist
+Migration timing follows the rollback boundary:
+
+1. Target preparation can transform only its private snapshot and candidate
+   tree. It must not migrate live shared state.
+2. Staging and trial boot can write only changes that remain readable by the
+   retained source runtime. An additive record change is compatible only when
+   old code can ignore it without changing selection, recovery, or ownership.
+3. Promotion does not end rollback compatibility. The previous root and UKI
+   remain a supported rollback target until another host upgrade overwrites
+   that slot.
+4. An incompatible Katl or service-state migration requires a new runtime
+   interface and an explicit migration or reinstall procedure. It must not run
+   from ordinary service startup or a same-interface A/B trial.
+
+## Schema change checklist
 
 Before adding or changing a Katl persisted record:
 
 ```text
 update ADR-008 or this inventory with the recordType, path, owner, and version
 add or update the versioned payload decoder
-add valid fixtures under internal/installer/persistedrecord/testdata/v1/
+add valid fixtures under internal/installer/testdata/persisted/v1/
 add negative fixtures for missing payload, unsupported version, unknown fields,
   malformed timestamps, and path/type mismatch where applicable
 define canonical digest bytes and update any status or journal digest checks
@@ -147,7 +210,7 @@ run VM gates when rollback-sensitive, boot-sensitive, disk-layout-sensitive,
   destructive-reset-sensitive, or kubeadm-state-sensitive behavior changes
 ```
 
-## Separate Contracts
+## Separate contracts
 
 These are not Katl persisted record-envelope contracts:
 
@@ -167,7 +230,7 @@ Each has its own compatibility policy. Persisted Katl node state may reference
 those contracts by digest, path, schema ID, or bundle identity, but it does not
 inherit their versioning rules.
 
-## State Layout Inventory
+## State layout inventory
 
 | Path | Owner | Mutability | Placement |
 | --- | --- | --- | --- |
@@ -220,7 +283,7 @@ state, operation records, generation records, health state, machine identity, an
 boot-selection state live on the node and are owned by `katlc`, `katlos-install`,
 or KatlOS runtime services.
 
-## Rollback Boundary For Persistent Kubernetes State
+## Rollback boundary for persistent Kubernetes state
 
 Persistent Kubernetes state is mounted or native writable state, not selected by
 generation spec. `/etc/kubernetes`, its backing path,
@@ -232,7 +295,21 @@ command line, sysext activation set, and confext activation set. It does not
 rewind kubeadm output, kubelet runtime files, etcd contents, etcd member records,
 or cluster API objects.
 
-## Service Ordering Implications
+The installed disk has two root slots. At most two generation records can refer
+to distinct, intact runtime roots: the active slot and its peer. A later upgrade
+overwrites the peer slot and makes any older generation that referred to it
+unavailable, even if metadata for that generation was retained temporarily.
+Generation retention is therefore an audit and configuration retention policy,
+not an unbounded OS rollback history.
+
+Both root slots share `/var`, the ESP, firmware variables, and usually the same
+physical disk. A/B rollback can recover from an invalid target root or target
+runtime failure when the shared state and source boot artifacts remain sound. It
+cannot recover corruption, exhaustion, or loss of `/var`, the ESP, firmware boot
+state, or the disk, and it does not restore service-owned data. Recovery from
+those failures requires independent backups, rescue access, or reinstall.
+
+## Service ordering implications
 
 Katl must establish persistent identity and projected state before dependent
 services read it:
@@ -281,7 +358,7 @@ The detailed mount rules are recorded in
 projection decision is recorded in
 `docs/internal/etc-kubernetes-projection.md`.
 
-## Deferred Details
+## Deferred details
 
 The exact generated unit file contents belong in the follow-up mount unit
 implementation tasks. VM validation must prove that `/etc/machine-id`,
