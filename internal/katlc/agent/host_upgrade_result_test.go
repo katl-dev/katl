@@ -40,7 +40,7 @@ func TestPreparedUpgradeResultAcceptsOpaqueCandidate(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(resultPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := writePreparedUpgradeResult(root, handoff, spec); err != nil {
+	if err := writePreparedUpgradeResult(root, handoff, spec, nil); err != nil {
 		t.Fatal(err)
 	}
 	resultData, err := os.ReadFile(resultPath)
@@ -76,7 +76,7 @@ func TestPreparedUpgradeResultRejectsChangedBootAndCandidate(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(resultPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := writePreparedUpgradeResult(root, handoff, spec); err != nil {
+	if err := writePreparedUpgradeResult(root, handoff, spec, nil); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(resultPath)
@@ -118,6 +118,46 @@ func TestPreparedUpgradeResultRejectsChangedBootAndCandidate(t *testing.T) {
 	}
 	if _, err := readPreparedUpgradeResult(root, handoff, payload); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
 		t.Fatalf("changed candidate error = %v", err)
+	}
+}
+
+func TestPreparedUpgradeResultBindsConfiguration(t *testing.T) {
+	root := t.TempDir()
+	writeResetGenerationZero(t, root)
+	spec, _, err := generation.ReadGeneration(root, "0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	handoff, payload := resultTestInputs(spec)
+	handoff.ConfigurationSHA256 = strings.Repeat("a", 64)
+	resultPath := preparedUpgradeResultPath(root, "0")
+	if err := os.MkdirAll(filepath.Dir(resultPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := writePreparedUpgradeResult(root, handoff, spec, []string{"host-configuration"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result preparedUpgradeResult
+	if err := json.Unmarshal(data, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.ChangedDomains) != 1 || result.ChangedDomains[0] != "host-configuration" {
+		t.Fatalf("changed domains = %v", result.ChangedDomains)
+	}
+	result.ConfigurationSHA256 = strings.Repeat("b", 64)
+	changed, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(resultPath, changed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readPreparedUpgradeResult(root, handoff, payload); err == nil || !strings.Contains(err.Error(), "boot contract") {
+		t.Fatalf("changed configuration identity error = %v", err)
 	}
 }
 

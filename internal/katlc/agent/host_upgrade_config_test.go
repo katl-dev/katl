@@ -71,3 +71,37 @@ func TestUpgradeConfigRejectsMembershipChanges(t *testing.T) {
 		t.Fatal("combined upgrade accepted a role transition")
 	}
 }
+
+func TestUpgradeConfigPreservesKubernetesIdentity(t *testing.T) {
+	root := t.TempDir()
+	writeConfigApplyBaseState(t, root)
+	executor := &Executor{Root: root}
+	document := strings.Replace(configApplyNoChangesYAML(), "hostname: node-a", "hostname: renamed-node", 1)
+	_, _, _, err := executor.planUpgradeConfig(context.Background(), "candidate", document, katlosimage.Payload{
+		Index: katlosimage.Index{
+			Version:          "2026.9.2",
+			Architecture:     "x86_64",
+			RuntimeInterface: "katl-runtime-1",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), configapply.DomainNodeIdentity) {
+		t.Fatalf("node identity change error = %v", err)
+	}
+}
+
+func TestUpgradeConfigRejectsPrebootChanges(t *testing.T) {
+	root := t.TempDir()
+	writeConfigApplyBaseState(t, root)
+	executor := &Executor{Root: root}
+	document := strings.Replace(configApplyNoChangesYAML(), "    systemRole: control-plane", "    kernel:\n      commandLine:\n        - console=ttyS0\n    systemRole: control-plane", 1)
+	_, _, _, err := executor.planUpgradeConfig(context.Background(), "candidate", document, katlosimage.Payload{
+		Index: katlosimage.Index{
+			Version:          "2026.9.2",
+			Architecture:     "x86_64",
+			RuntimeInterface: "katl-runtime-1",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "upgrade without --apply-config first") {
+		t.Fatalf("preboot change error = %v", err)
+	}
+}

@@ -543,7 +543,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		}
 		submit.HostUpgrade.ConfigYaml = string(document)
 	}
-	useHandoff := slices.Contains(status.GetSupportedOperationKinds(), "host-upgrade-handoff") && !opts.applyConfig
+	useHandoff := slices.Contains(status.GetSupportedOperationKinds(), "host-upgrade-handoff")
 	useV2Kind := slices.Contains(status.GetSupportedOperationKinds(), "host-upgrade-v2")
 	if useHandoff {
 		submit.OperationKind = "host-upgrade-handoff"

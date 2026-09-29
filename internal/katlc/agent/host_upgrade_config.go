@@ -59,11 +59,12 @@ func (e *Executor) planUpgradeConfig(ctx context.Context, candidate, document st
 	}
 	for _, domain := range result.Plan.Decision.ChangedDomains {
 		switch domain {
-		case configapply.DomainGenerationRetention, configapply.DomainNodeIdentity,
-			configapply.DomainSSHOperatorAccess, configapply.DomainKernelCommandLine,
+		case configapply.DomainGenerationRetention, configapply.DomainSSHOperatorAccess,
 			configapply.DomainSystemExtensions, configapply.DomainHostConfiguration,
 			configapply.DomainModulesLoad, configapply.DomainTmpfiles,
 			configapply.DomainResolved, configapply.DomainAPIProxy:
+		case configapply.DomainKernelCommandLine:
+			return hostExtensionPlan{}, nil, nil, fmt.Errorf("--apply-config cannot change the kernel command line during an OS upgrade; upgrade without --apply-config first, then apply the configuration separately")
 		default:
 			return hostExtensionPlan{}, nil, nil, fmt.Errorf("--apply-config cannot combine %s with an OS upgrade; use the configuration, Kubernetes, or storage workflow separately", domain)
 		}

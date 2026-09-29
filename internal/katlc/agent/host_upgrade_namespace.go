@@ -26,7 +26,7 @@ type preparedUpgrade struct {
 
 func (p preparedUpgrade) close() { _ = os.RemoveAll(p.work) }
 
-func (e *Executor) prepareUpgradeInNamespace(ctx context.Context, payload katlosimage.Payload, handoff generation.UpgradeHandoff) (preparedUpgrade, error) {
+func (e *Executor) prepareUpgradeInNamespace(ctx context.Context, payload katlosimage.Payload, handoff generation.UpgradeHandoff, config string) (preparedUpgrade, error) {
 	if payload.ImagePath == "" {
 		return preparedUpgrade{}, fmt.Errorf("target preparation requires a verified image file")
 	}
@@ -53,6 +53,13 @@ func (e *Executor) prepareUpgradeInNamespace(ctx context.Context, payload katlos
 	}
 	if err := generation.WriteUpgradeHandoff(p.root, handoff); err != nil {
 		return preparedUpgrade{}, err
+	}
+	configPath := ""
+	if config != "" {
+		configPath = filepath.Join(work, "configuration.yaml")
+		if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+			return preparedUpgrade{}, err
+		}
 	}
 	previous, _, err := generation.ReadGeneration(p.root, handoff.SourceGenerationID)
 	if err != nil {
@@ -102,6 +109,9 @@ func (e *Executor) prepareUpgradeInNamespace(ctx context.Context, payload katlos
 		"--prepare-upgrade-image-root=" + imageRoot,
 		"--prepare-upgrade-source=" + handoff.SourceGenerationID,
 		"--prepare-upgrade-operation=" + handoff.OperationID,
+	}
+	if configPath != "" {
+		args = append(args, "--prepare-upgrade-config="+configPath)
 	}
 	command := exec.CommandContext(ctx, "systemd-run", args...)
 	output, err := command.CombinedOutput()
@@ -177,7 +187,7 @@ func snapshotUpgradeSource(source, target string, handoff generation.UpgradeHand
 			return err
 		}
 	}
-	for _, name := range []string{"etc/machine-id", "var/lib/katl/install/manifest.json"} {
+	for _, name := range []string{"etc/machine-id", "var/lib/katl/boot/selection.json", "var/lib/katl/install/manifest.json"} {
 		from := filepath.Join(runtimeRoot(source), name)
 		if _, err := os.Stat(from); os.IsNotExist(err) {
 			continue
@@ -191,6 +201,17 @@ func snapshotUpgradeSource(source, target string, handoff generation.UpgradeHand
 		if err := copyUpgradeComponent(from, to); err != nil {
 			return err
 		}
+	}
+	// Cluster intent and its installed kubeadm inputs are opaque durable identity
+	// inputs to target-owned configuration planning. Snapshot the namespace as a
+	// whole so the source does not need to interpret the target planner's schema.
+	clusterState := filepath.Join(runtimeRoot(source), "var/lib/katl/cluster")
+	if _, err := os.Stat(clusterState); err == nil {
+		if err := copyUpgradeTreeBounded(clusterState, filepath.Join(target, "var/lib/katl/cluster"), &budget); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return err
 	}
 	for _, name := range []string{"etc/kubernetes/admin.conf", "etc/kubernetes/manifests/kube-apiserver.yaml", "etc/kubernetes/kubelet.conf", "var/lib/kubelet/config.yaml", "var/lib/etcd/member"} {
 		from := filepath.Join(runtimeRoot(source), name)

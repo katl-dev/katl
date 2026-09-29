@@ -3116,7 +3116,7 @@ func (c *fakeKatlcAgentClient) SubmitOperation(_ context.Context, req *agentapi.
 	}
 	if req.DryRun {
 		var preview *agentapi.HostUpgradePreview
-		if (req.OperationKind == "host-upgrade-v2" || req.Kind == "HostUpgradeRequestV2") && req.HostUpgrade != nil && c.upgradePreview != nil {
+		if (req.OperationKind == "host-upgrade-v2" || req.OperationKind == "host-upgrade-handoff" || req.Kind == "HostUpgradeRequestV2") && req.HostUpgrade != nil && c.upgradePreview != nil {
 			preview = proto.Clone(c.upgradePreview).(*agentapi.HostUpgradePreview)
 			if req.HostUpgrade.ImageSha256 != "" {
 				preview.ImageSha256 = req.HostUpgrade.ImageSha256

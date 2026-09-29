@@ -18,6 +18,7 @@ type UpgradeHandoff struct {
 	CandidateGenerationID  string    `json:"candidateGenerationID"`
 	ImageSHA256            string    `json:"imageSHA256"`
 	ImageSizeBytes         uint64    `json:"imageSizeBytes"`
+	ConfigurationSHA256    string    `json:"configurationSHA256,omitempty"`
 	RootSlot               string    `json:"rootSlot"`
 	RootPartitionUUID      string    `json:"rootPartitionUUID"`
 	UKIPath                string    `json:"ukiPath"`
@@ -83,6 +84,9 @@ func validateUpgradeHandoff(record UpgradeHandoff) error {
 	if record.Version != UpgradeHandoffVersion || record.OperationID == "" || record.SourceGenerationID == "" || record.CandidateGenerationID == "" || record.ImageSHA256 == "" || record.ImageSizeBytes == 0 || record.RootPartitionUUID == "" || record.UKIPath == "" || record.LoaderEntryPath == "" || record.CreatedAt.IsZero() {
 		return fmt.Errorf("incomplete or unsupported upgrade handoff")
 	}
+	if record.ConfigurationSHA256 != "" && !validUpgradeDigest(record.ConfigurationSHA256) {
+		return fmt.Errorf("invalid handoff configuration digest")
+	}
 	if _, err := MetadataPath("/", record.SourceGenerationID); err != nil {
 		return err
 	}
@@ -96,4 +100,16 @@ func validateUpgradeHandoff(record UpgradeHandoff) error {
 		return fmt.Errorf("invalid handoff boot path")
 	}
 	return nil
+}
+
+func validUpgradeDigest(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for _, char := range value {
+		if !strings.ContainsRune("0123456789abcdef", char) {
+			return false
+		}
+	}
+	return true
 }

@@ -208,6 +208,12 @@ func rejectKubernetesSysextChange(root string, record Record) error {
 	if !nextOK {
 		return nil
 	}
+	// A generation that has already passed boot health is a self-contained
+	// rollback target. Its predecessor may have been pruned after another slot
+	// was upgraded, so activation must not depend on lineage after acceptance.
+	if record.BootState == BootStateGood && record.HealthState == HealthStateHealthy {
+		return nil
+	}
 	previousID, err := previousGenerationForActivation(root, record)
 	if err != nil {
 		return err

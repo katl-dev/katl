@@ -101,6 +101,29 @@ func TestApplyActivationRejectsRawKubernetesSysextChangeFromSplitLineage(t *test
 	assertMissing(t, filepath.Join(root, "run/extensions/kubernetes.raw"))
 }
 
+func TestApplyActivationUsesKnownGoodGenerationWithPrunedLineage(t *testing.T) {
+	root := t.TempDir()
+	record := activationRecord(t, root, "rollback", "retained extension")
+	record.PreviousGenerationID = "pruned"
+	spec := SpecFromRecord(record)
+	status, err := NewGenerationStatus(spec, CommitStateSuperseded, BootStateGood, HealthStateHealthy, record.CreatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteGeneration(root, spec, status); err != nil {
+		t.Fatal(err)
+	}
+	selected, err := ReadRecord(filepath.Join(root, "var/lib/katl/generations/rollback/metadata.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ApplyActivation(root, selected); err != nil {
+		t.Fatalf("ApplyActivation() error = %v, want self-contained known-good rollback", err)
+	}
+	assertSymlink(t, filepath.Join(root, "run/extensions/kubernetes.raw"), selected.Sysexts[0].Path)
+}
+
 func TestKubernetesUpgradeActivationRecognizesSelectedGate(t *testing.T) {
 	record := Record{
 		GenerationID: "upgrade-v1361-cp",

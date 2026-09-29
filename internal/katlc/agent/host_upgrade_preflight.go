@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -32,13 +34,9 @@ func PreflightHostUpgrade(ctx context.Context, root, imageRoot, candidate, sourc
 	if handoff.OperationID != operationID || handoff.SourceGenerationID != source {
 		return generation.GenerationSpec{}, fmt.Errorf("preflight inputs do not match the staged handoff")
 	}
-	config := ""
-	if configPath != "" {
-		data, err := os.ReadFile(configPath)
-		if err != nil {
-			return generation.GenerationSpec{}, err
-		}
-		config = string(data)
+	config, err := readHostUpgradeConfiguration(configPath, handoff.ConfigurationSHA256)
+	if err != nil {
+		return generation.GenerationSpec{}, err
 	}
 	executor := NewExecutor(root, store, "")
 	executor.Now = func() time.Time { return handoff.CreatedAt }
@@ -55,8 +53,31 @@ func PreflightHostUpgrade(ctx context.Context, root, imageRoot, candidate, sourc
 	if err := commitPreparedHostUpgrade(root, handoff, payload, prepared.plan, prepared.extensions); err != nil {
 		return generation.GenerationSpec{}, err
 	}
-	if err := writePreparedUpgradeResult(root, handoff, prepared.plan.Spec); err != nil {
+	if err := writePreparedUpgradeResult(root, handoff, prepared.plan.Spec, prepared.domains); err != nil {
 		return generation.GenerationSpec{}, err
 	}
 	return prepared.plan.Spec, nil
+}
+
+func readHostUpgradeConfiguration(path, wantDigest string) (string, error) {
+	if path == "" {
+		if wantDigest != "" {
+			return "", fmt.Errorf("target preparation configuration is missing")
+		}
+		return "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	document := string(data)
+	if hostUpgradeConfigurationDigest(document) != wantDigest {
+		return "", fmt.Errorf("target preparation configuration does not match the staged handoff")
+	}
+	return document, nil
+}
+
+func hostUpgradeConfigurationDigest(document string) string {
+	digest := sha256.Sum256([]byte(document))
+	return hex.EncodeToString(digest[:])
 }

@@ -11,22 +11,24 @@ import (
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 )
 
-// preparedUpgradeResult is the source-to-target preparation ABI. Its fields
-// describe only the boot selection and the opaque candidate tree. Target-owned
-// generation contents are not part of this interface.
+// preparedUpgradeResult is the source-to-target preparation ABI. Its validated
+// fields bind the opaque input, boot selection, and candidate tree. Changed
+// domains are target-owned, informational plan output.
 type preparedUpgradeResult struct {
-	Version               int    `json:"version"`
-	OperationID           string `json:"operationID"`
-	SourceGenerationID    string `json:"sourceGenerationID"`
-	CandidateGenerationID string `json:"candidateGenerationID"`
-	ImageSHA256           string `json:"imageSHA256"`
-	RuntimeVersion        string `json:"runtimeVersion"`
-	RuntimeArtifactSHA256 string `json:"runtimeArtifactSHA256"`
-	RootSlot              string `json:"rootSlot"`
-	RootPartitionUUID     string `json:"rootPartitionUUID"`
-	UKIPath               string `json:"ukiPath"`
-	LoaderEntryPath       string `json:"loaderEntryPath"`
-	CandidateSHA256       string `json:"candidateSHA256"`
+	Version               int      `json:"version"`
+	OperationID           string   `json:"operationID"`
+	SourceGenerationID    string   `json:"sourceGenerationID"`
+	CandidateGenerationID string   `json:"candidateGenerationID"`
+	ImageSHA256           string   `json:"imageSHA256"`
+	ConfigurationSHA256   string   `json:"configurationSHA256,omitempty"`
+	RuntimeVersion        string   `json:"runtimeVersion"`
+	RuntimeArtifactSHA256 string   `json:"runtimeArtifactSHA256"`
+	RootSlot              string   `json:"rootSlot"`
+	RootPartitionUUID     string   `json:"rootPartitionUUID"`
+	UKIPath               string   `json:"ukiPath"`
+	LoaderEntryPath       string   `json:"loaderEntryPath"`
+	CandidateSHA256       string   `json:"candidateSHA256"`
+	ChangedDomains        []string `json:"changedDomains,omitempty"`
 }
 
 const preparedUpgradeResultVersion = 1
@@ -35,7 +37,7 @@ func preparedUpgradeResultPath(root, candidate string) string {
 	return filepath.Join(runtimeRoot(root), "var/lib/katl/upgrade-handoffs", candidate, "prepare-result.json")
 }
 
-func writePreparedUpgradeResult(root string, handoff generation.UpgradeHandoff, spec generation.GenerationSpec) error {
+func writePreparedUpgradeResult(root string, handoff generation.UpgradeHandoff, spec generation.GenerationSpec, changedDomains []string) error {
 	dir, err := generation.GenerationDir(root, handoff.CandidateGenerationID)
 	if err != nil {
 		return err
@@ -47,11 +49,11 @@ func writePreparedUpgradeResult(root string, handoff generation.UpgradeHandoff, 
 	result := preparedUpgradeResult{
 		Version: preparedUpgradeResultVersion, OperationID: handoff.OperationID,
 		SourceGenerationID: handoff.SourceGenerationID, CandidateGenerationID: handoff.CandidateGenerationID,
-		ImageSHA256: handoff.ImageSHA256, RuntimeVersion: spec.RuntimeVersion,
+		ImageSHA256: handoff.ImageSHA256, ConfigurationSHA256: handoff.ConfigurationSHA256, RuntimeVersion: spec.RuntimeVersion,
 		RuntimeArtifactSHA256: spec.Root.RuntimeArtifactSHA256,
 		RootSlot:              handoff.RootSlot, RootPartitionUUID: handoff.RootPartitionUUID,
 		UKIPath: handoff.UKIPath, LoaderEntryPath: handoff.LoaderEntryPath,
-		CandidateSHA256: digest,
+		CandidateSHA256: digest, ChangedDomains: changedDomains,
 	}
 	data, err := json.MarshalIndent(result, "", "  ")
 	if err != nil {
@@ -73,7 +75,7 @@ func readPreparedUpgradeResult(root string, handoff generation.UpgradeHandoff, p
 		return preparedUpgradeResult{}, fmt.Errorf("unsupported target preparation ABI version %d", result.Version)
 	}
 	if result.OperationID != handoff.OperationID || result.SourceGenerationID != handoff.SourceGenerationID || result.CandidateGenerationID != handoff.CandidateGenerationID ||
-		result.ImageSHA256 != handoff.ImageSHA256 || result.RuntimeVersion != payload.Index.Version || result.RuntimeArtifactSHA256 != payload.Runtime.SHA256 ||
+		result.ImageSHA256 != handoff.ImageSHA256 || result.ConfigurationSHA256 != handoff.ConfigurationSHA256 || result.RuntimeVersion != payload.Index.Version || result.RuntimeArtifactSHA256 != payload.Runtime.SHA256 ||
 		result.RootSlot != handoff.RootSlot || !strings.EqualFold(result.RootPartitionUUID, handoff.RootPartitionUUID) ||
 		result.UKIPath != handoff.UKIPath || result.LoaderEntryPath != handoff.LoaderEntryPath {
 		return preparedUpgradeResult{}, fmt.Errorf("target preparation result changed the verified boot contract")
