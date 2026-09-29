@@ -457,11 +457,17 @@ network configuration outside that Katl-controlled directory. Any operator
 `.netdev`, and drop-in files can compose with the fallback.
 
 The fallback offers DHCP only to Ethernet links that have no virtual netdev
-kind. Interfaces created later by a CNI, including veth pairs, Cilium host
-devices, overlays, and CNI bridges, therefore remain unmanaged by networkd.
+kind and marks those links required and routable for boot health. Interfaces
+created later by a CNI, including veth pairs, Cilium host devices, overlays, and
+CNI bridges, therefore remain unmanaged by networkd and cannot make a broken
+management path appear healthy.
 To make a host bridge, bond, VLAN, or tunnel part of the node's own network,
 declare its native networkd units here; the operator units then replace the
-fallback and own that topology explicitly.
+fallback and own that topology explicitly. Boot health requires every managed
+link whose effective networkd configuration enables `RequiredForOnline` to be
+online and at least one of those links to be routable. Set
+`RequiredForOnline=no` in a link's `[Link]` section when a managed secondary
+link is intentionally optional at boot.
 
 Sysctl files with a reversible concrete-key change can apply live. Udev rules
 can reload live, but Katl does not retrigger existing devices. Module load,

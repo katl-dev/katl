@@ -18,6 +18,37 @@ katl-boot-complete.target reached
 The target is generation-scoped. The required local services depend on the
 selected generation's capability profile.
 
+Management-network readiness is also local and generation-scoped. For a
+generation that has not previously passed boot health, Katl reads
+systemd-networkd's effective link state and requires:
+
+```text
+at least one networkd-managed link with RequiredForOnline enabled
+every such required link in networkd's online state
+at least one such required link in the routable operational state
+```
+
+The generated DHCP fallback marks its physical Ethernet links
+`RequiredForOnline=routable`. Native networkd configuration may explicitly
+exclude a secondary link with `RequiredForOnline=no`. Unmanaged workload links
+and excluded secondary links cannot satisfy the routable-link requirement or
+hide an offline required link. This check proves the configured local path is
+usable; it does not depend on a particular workstation, gateway, or other
+remote client answering a probe.
+
+Systemd owns required-service qualification. The boot-health unit has explicit
+`Requires=` and `After=` dependencies for Katl's baseline management services,
+and selected system extensions add generation-scoped requirements through
+`RequiredBy=katl-boot-health.service`. A required dependency failure prevents
+the boot-health command from running successfully. An unrelated failed unit is
+reported through ordinary systemd and Katl status but does not invalidate the
+generation.
+
+A generation already recorded as `good` and `healthy` does not repeat network
+qualification during an ordinary boot. This preserves a known-good local
+fallback during a transient network outage; required-service dependencies still
+apply on every boot.
+
 For generation 0, "machine identity available" means PID 1 received the
 install-generated value through `systemd.machine_id=`, `/etc/machine-id`
 resolves to that same value during runtime, and

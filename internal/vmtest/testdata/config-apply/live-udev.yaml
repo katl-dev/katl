@@ -18,6 +18,9 @@ spec:
                 Type=ether
                 Kind=!*
 
+                [Link]
+                RequiredForOnline=routable
+
                 [Network]
                 DHCP=yes
 

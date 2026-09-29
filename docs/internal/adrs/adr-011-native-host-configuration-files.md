@@ -349,7 +349,11 @@ that fallback; `.link`, `.netdev`, and drop-in files can compose with it.
 
 Networkd changes are next-boot-only. Katl renders the complete candidate
 generation without refreshing networkd in the current boot; installed boot
-health verifies the resulting systemd-networkd service and operator access.
+health verifies the resulting systemd-networkd service and the local management
+path. Every effective networkd link with `RequiredForOnline` enabled must be
+online, and at least one of those required links must be routable. Unmanaged or
+explicitly optional links do not satisfy this gate. The check does not require
+an arbitrary remote operator client to be online.
 This handler replaces the dedicated public `networkd` field.
 
 ### sysctl.d
