@@ -931,6 +931,19 @@ func TestHostUpgradeOperationKindOwnsNewFields(t *testing.T) {
 	}
 }
 
+func TestHostUpgradeHandoffAcceptsOpaqueConfiguration(t *testing.T) {
+	server := newTestServer(t)
+	writeKnownGoodHostUpgradeSource(t, server.Root)
+	req := hostUpgradeSubmitRequest("req-target-prepared-configuration")
+	req.OperationKind = operationKindHostUpgradeHandoff
+	req.ExpectedCurrentGenerationId = "generation-0"
+	req.HostUpgrade.ConfigYaml = "apiVersion: katl.dev/v1alpha1\nfutureTargetField: true\n"
+
+	if err := server.validateSubmit(req); err != nil {
+		t.Fatalf("validateSubmit() error = %v", err)
+	}
+}
+
 func TestHostUpgradeDryRunRejectsUnknownSourceWithoutRecord(t *testing.T) {
 	server := newTestServer(t)
 	writeKnownGoodHostUpgradeSource(t, server.Root)

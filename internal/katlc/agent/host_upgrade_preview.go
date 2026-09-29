@@ -26,9 +26,6 @@ func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOpe
 		return nil, fmt.Errorf("clean obsolete host upgrade workspace: %w", err)
 	}
 	if req.OperationKind == operationKindHostUpgradeHandoff {
-		if request.ConfigYAML != "" {
-			return nil, fmt.Errorf("combined configuration is not supported by the target preparation operation; upgrade first, then apply configuration")
-		}
 		payload, err := executor.resolveHostUpgradeOpaque(ctx, request)
 		if err != nil {
 			return nil, err
@@ -73,7 +70,10 @@ func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOpe
 			CreatedAt:              time.Now().UTC(),
 			KubernetesBootstrapped: kubernetesState.bootstrapped,
 		}
-		prepared, err := executor.prepareUpgradeInNamespace(ctx, payload, handoff)
+		if request.ConfigYAML != "" {
+			handoff.ConfigurationSHA256 = hostUpgradeConfigurationDigest(request.ConfigYAML)
+		}
+		prepared, err := executor.prepareUpgradeInNamespace(ctx, payload, handoff, request.ConfigYAML)
 		if err != nil {
 			return nil, err
 		}
@@ -81,6 +81,7 @@ func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOpe
 		return &agentapi.HostUpgradePreview{
 			ImageSha256: payload.ImageSHA256, ImageSizeBytes: payload.ImageSizeBytes,
 			PreviousVersion: previous.RuntimeVersion, Version: payload.Index.Version,
+			ChangedDomains: prepared.result.ChangedDomains,
 		}, nil
 	}
 	resolve := executor.ResolveHostUpgrade

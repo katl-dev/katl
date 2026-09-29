@@ -28,6 +28,9 @@ func commitPreparedHostUpgrade(root string, handoff generation.UpgradeHandoff, p
 		return fmt.Errorf("read staged loader entry: %w", err)
 	}
 	if string(actualEntry) != expectedEntry.Content {
+		if handoff.ConfigurationSHA256 != "" {
+			return fmt.Errorf("combined configuration requires an unsupported preboot change; upgrade without --apply-config first, then apply the configuration separately")
+		}
 		return fmt.Errorf("target generation requires a different preboot loader entry")
 	}
 	if err := katlosimage.StagePreservedAssets(runtimeRoot(root), plan); err != nil {

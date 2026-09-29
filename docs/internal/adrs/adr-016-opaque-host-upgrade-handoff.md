@@ -1,7 +1,6 @@
 # ADR-016: Prepare host upgrades with target code before reboot
 
-Status: accepted for plain host upgrades. Combined configuration upgrades remain
-on `host-upgrade-v2` until their inputs are part of target preparation.
+Status: accepted.
 
 Date: 2026-09-26.
 
@@ -52,13 +51,15 @@ The source sequence is:
 1. Check the expected source generation, pending operations, architecture,
    runtime interface, and the target image's stable boot envelope. Verify the
    image identity and boot components by size and digest.
-2. Snapshot the selected source generation, the generation assets that it
-   references, and the state needed to derive an unchanged configuration. The
-   handoff carries the source agent's derived Kubernetes-state classification,
+2. Snapshot the selected source generation, its boot selection, the generation
+   assets that it references, and the opaque durable cluster intent needed to
+   derive an unchanged configuration. The handoff carries the source agent's
+   derived Kubernetes-state classification,
    so target preparation does not copy or rescan the operation store. The
    source preserves target-specific image metadata without decoding and
-   rewriting it. A combined `--apply-config` upgrade uses the older operation
-   kind.
+   rewriting it. For a combined `--apply-config` upgrade, it also writes the
+   rendered configuration document into private scratch and records its digest
+   in the handoff.
 3. Run the target preparation program in an isolated environment. Its output
    contains the complete candidate generation and a preparation receipt. A
    planning failure discards the scratch output before boot mutation.
@@ -81,6 +82,45 @@ and state-mount changes needed before the planner or early boot cannot be
 hidden in the opaque bundle. Reject such a combined change with recovery
 guidance until an explicit preboot contract supports it.
 
+### Combined configuration contract
+
+The target planner is the sole preparation authority for plain and combined
+host upgrades. `katlctl` uses `host-upgrade-handoff` whenever the source agent
+advertises it, including with `--apply-config`. The source treats the rendered
+configuration as opaque input, binds it to the handoff by SHA-256 digest, and
+passes it to the target preparation process. The target compiles the document
+against its own image metadata and writes the resulting configuration,
+extensions, and generation state into the private candidate. No part of the
+configuration is applied live to the source generation.
+
+Combined preparation supports these generation-scoped domains:
+
+- generation retention;
+- SSH operator access;
+- system extensions, including an extension first available in the target
+  release;
+- native host configuration; and
+- module loading, temporary-file rules, resolver configuration, and API proxy
+  configuration.
+
+The target rejects kernel command-line changes because the source constructs
+and verifies the loader entry before publication. It also rejects Kubernetes
+version, kubeadm, kubelet identity, system-role or cluster-membership changes,
+mount and volume transitions, unsafe arbitrary `/etc` changes, root or
+extension selection internals, and destructive storage actions. Those changes
+must use their dedicated workflow after the OS upgrade. Rejection happens
+during target preparation, before root-slot labels, runtime partitions, UKIs,
+EFI selection, or the live generation store are mutated. The error directs the
+operator to upgrade without `--apply-config` and then apply the configuration
+separately when that sequence is safe.
+
+The target derives a candidate from the selected source generation. A plain
+upgrade preserves its effective host configuration. A combined upgrade changes
+only the accepted domains. Both paths preserve the source generation's
+Kubernetes artifacts and bootstrapped-state classification; a configuration
+document cannot use the combined operation to change Kubernetes identity or
+membership.
+
 The private handoff and candidate stay outside the live generation directory
 until the complete candidate is copied, checked, synced, and published by one
 rename. The source does not decode the candidate during preparation or
@@ -89,6 +129,10 @@ source booted by rollback still enumerates generation records, so its readable
 generation core must remain available for the supported rollback window. Put
 new required semantics in versioned attachments read by the target; do not
 change the meaning of a field the older source uses to select its own boot.
+After boot health accepts a generation, activation treats that generation as a
+self-contained rollback target. It does not require the predecessor merely to
+revalidate the recorded Kubernetes extension selection, because slot
+replacement can legitimately remove that older lineage before rollback.
 
 ### Storage and execution ownership
 
@@ -127,12 +171,15 @@ private handoff, and `prepare-result.json` in the private handoff directory.
 The result reports its ABI version, operation and source and candidate IDs,
 image digest, target runtime version and runtime artifact digest, inactive root
 slot and partition UUID, UKI and loader-entry paths, and a digest of the entire
-candidate directory. The source compares those values with its own verified
-image and boot plan, requires regular nonempty `spec.json` and `status.json`,
-and hashes the tree before and after copying. Successful target exit and a
-valid receipt assert that the target has prepared a complete generation. The
-source does not decode extension lists, configuration, target status semantics,
-or other generation contents to make that assertion.
+candidate directory. For a combined upgrade, the handoff and result also carry
+the opaque configuration document's SHA-256 digest. The result can report the
+target planner's changed domains for the public plan. The source compares the
+required values with its own verified image, input digest, and boot plan,
+requires regular nonempty `spec.json` and `status.json`, and hashes the tree
+before and after copying. Successful target exit and a valid receipt assert
+that the target has prepared a complete generation. The source does not decode
+extension lists, configuration, target status semantics, or other generation
+contents to make that assertion.
 
 Additional JSON fields are optional and ignored by an older source. A new
 required preboot capability needs a new ABI version or an explicit minimum
@@ -227,9 +274,6 @@ as one generation.
 
 ## Follow-up and release gates
 
-- Define which configuration domains and external extension bundles can join a
-  target-prepared upgrade. Until then, `--apply-config` uses the earlier kind;
-  plain upgrades preserve the effective configuration.
 - Before the first stable release, freeze the source-kernel baseline and run
   the current-plus-two-previous-series matrix using published source agents,
   persisted-state fixtures, and actual target images. A proposed target that
@@ -247,4 +291,6 @@ a small staging and rollback contract. The target image remains self-contained
 for release-owned extensions. A target program must run on supported source
 kernels, and the source must provide a constrained execution environment and
 verify its output. This replaces the source-owned target-generation planning
-described in ADR-015 for plain host upgrades.
+described in ADR-015 for plain and combined host upgrades. Older operation
+kinds remain only for the published compatibility window; new clients do not
+select them when the source advertises `host-upgrade-handoff`.

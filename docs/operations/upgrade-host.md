@@ -43,6 +43,32 @@ removes completed and abandoned host-upgrade scratch automatically; do not
 manually delete generation directories to make space because a retained
 generation can own rollback assets that another generation references.
 
+### Combine supported host configuration
+
+Use `--apply-config` when a target release and a host configuration must become
+active as one generation. For example, an extension selected in
+`cluster.yaml` might first exist in the target release:
+
+```sh
+katlctl node upgrade cp-1 --config ./cluster.yaml \
+  --version 2026.9.0-beta.18 --apply-config --plan
+```
+
+The target release validates and prepares the configuration in isolation. The
+source node does not interpret target extension metadata, and it does not apply
+any subset of the configuration before reboot. Run the command without
+`--plan` only after reviewing the target-prepared plan.
+
+Combined upgrades support generation retention, SSH access, system extensions,
+native host settings, module loading, temporary-file rules, resolver settings,
+and API proxy settings. They do not support kernel command-line changes,
+Kubernetes or kubeadm changes, node role or membership transitions, volume or
+mount changes, destructive storage changes, or arbitrary unsafe `/etc` files.
+If the plan rejects one of these domains, upgrade without `--apply-config`,
+then use the dedicated configuration, Kubernetes, or storage workflow. A
+rejected plan leaves the inactive root, EFI selection, and current generation
+unchanged.
+
 An uploaded local image can remain available for up to one hour after a
 plan-only call so the reviewed plan can be submitted without another upload.
 Remote plan images, private preparation snapshots, image mounts, and root and

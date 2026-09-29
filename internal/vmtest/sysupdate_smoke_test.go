@@ -126,11 +126,22 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 		t.Fatal("installed runtime does not advertise target-prepared host upgrade")
 	}
 	localRef := stageHostUpgradeArtifactForVMTest(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), upgrade)
-	operationID, status := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, candidateGeneration, localRef, upgrade, "host-upgrade-handoff")
+	selectionBeforeRejectedPlan := readGuestFile(t, ctx, guest, "/var/lib/katl/boot/selection.json")
+	rejectedCandidate := candidateGeneration + "-preboot-rejected"
+	rejectedConfig := hostUpgradeConfiguration("2", "    kernel:\n      commandLine:\n        - console=ttyS0\n")
+	assertHostUpgradePlanRejected(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, rejectedCandidate, localRef, upgrade, rejectedConfig, "upgrade without --apply-config first")
+	if got := readGuestFile(t, ctx, guest, "/var/lib/katl/boot/selection.json"); got != selectionBeforeRejectedPlan {
+		t.Fatal("rejected combined plan changed boot selection")
+	}
+	assertGuestMissing(t, ctx, guest, "/var/lib/katl/generations/"+rejectedCandidate)
+
+	combinedAuthorizedKey := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm combined-upgrade@katl"
+	combinedConfig := hostUpgradeConfiguration("3", "    identity:\n      authorizedKeys:\n        - "+combinedAuthorizedKey+"\n")
+	operationID, status := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, candidateGeneration, localRef, upgrade, "host-upgrade-handoff", combinedConfig)
 	if status.GetResult() != operation.ResultSucceeded || !status.GetBootHealthPending() || status.GetCandidateGenerationId() != candidateGeneration {
 		t.Fatalf("host upgrade operation status = %+v", status)
 	}
-	assertGuestMissing(t, ctx, guest, "/var/lib/katl/artifacts/"+localRef)
+	waitHostUpgradeWorkspaceClean(t, ctx, guest, "initial")
 	recordData := readGuestFile(t, ctx, guest, "/var/lib/katl/operations/"+operationID+"/record.json")
 	envelope, err := persistedrecord.DecodeEnvelope([]byte(recordData))
 	if err != nil {
@@ -160,6 +171,10 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 		t.Fatalf("upgrade changed the previous generation UKI: %s, want %s", got, previousUKIDigest)
 	}
 	assertInstalledSSHReady(t, ctx, guest)
+	wantAuthorizedKeyDigest := sha256.Sum256([]byte(combinedAuthorizedKey + "\n"))
+	if got := guestFileSHA256(t, ctx, guest, "combined-authorized-key", "/etc/ssh/authorized_keys/root"); got != hex.EncodeToString(wantAuthorizedKeyDigest[:]) {
+		t.Fatalf("combined upgrade authorized key digest = %s, want %x", got, wantAuthorizedKeyDigest)
+	}
 	repairedHostKeyDigest := guestFileSHA256(t, ctx, guest, "repaired-ssh-host-key", hostKeyPath)
 	if repairedHostKeyDigest == originalHostKeyDigest {
 		t.Fatalf("repaired SSH host key was not replaced: %s", repairedHostKeyDigest)
@@ -197,13 +212,11 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	}
 	repeatedGeneration := candidateGeneration + "-repeat"
 	localRef = stageHostUpgradeArtifactForVMTest(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), upgrade)
-	_, repeatedStatus := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, repeatedGeneration, localRef, upgrade, agent.OperationKindHostUpgrade)
+	_, repeatedStatus := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, repeatedGeneration, localRef, upgrade, agent.OperationKindHostUpgrade, "")
 	if repeatedStatus.GetResult() != operation.ResultSucceeded || !repeatedStatus.GetBootHealthPending() || repeatedStatus.GetCandidateGenerationId() != repeatedGeneration {
 		t.Fatalf("repeated host upgrade operation status = %+v", repeatedStatus)
 	}
-	if remaining := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "host-upgrade-workspace-clean", "find", "/var/lib/katl/artifacts/host-upgrade", "-type", "f", "-print", "-quit")); remaining != "" {
-		t.Fatalf("repeated upgrade retained transient artifact %s", remaining)
-	}
+	waitHostUpgradeWorkspaceClean(t, ctx, guest, "repeat")
 	repeatedSpec := generationFromGuest(t, ctx, guest, repeatedGeneration)
 	if repeatedSpec.Root.Slot != candidateSpec.Root.Slot || repeatedSpec.Root.PartitionUUID != candidateSpec.Root.PartitionUUID {
 		t.Fatalf("repeated host upgrade root = %#v, want previously upgraded peer %#v", repeatedSpec.Root, candidateSpec.Root)
@@ -259,7 +272,7 @@ func guestFileSHA256(t *testing.T, ctx context.Context, guest *GuestControl, nam
 	return fields[0]
 }
 
-func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, nodeName, machineID, currentGeneration, candidateGeneration, localRef string, upgrade builtUpgradeImage, kind string) (string, *agentapi.OperationStatus) {
+func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, nodeName, machineID, currentGeneration, candidateGeneration, localRef string, upgrade builtUpgradeImage, kind, configYAML string) (string, *agentapi.OperationStatus) {
 	t.Helper()
 	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint, nodeName)
 	nodeStatus, err := katlc.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
@@ -271,6 +284,13 @@ func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, nodeN
 		conn.Close()
 		t.Fatalf("host upgrade machine identity = %q, want %q", nodeStatus.GetMachineId(), machineID)
 	}
+	hostUpgrade := &agentapi.HostUpgradeOperationRequest{
+		ImageLocalRef:         localRef,
+		ImageSha256:           upgrade.SHA256,
+		ImageSizeBytes:        upgrade.SizeBytes,
+		CandidateGenerationId: candidateGeneration,
+	}
+	hostUpgrade.ConfigYaml = configYAML
 	accepted, err := katlc.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
 		ApiVersion:                  operation.APIVersion,
 		Kind:                        agent.RequestKind,
@@ -281,18 +301,68 @@ func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, nodeN
 		ExpectedInventoryNodeName:   nodeStatus.GetInventoryNodeName(),
 		ExpectedMachineId:           machineID,
 		ExpectedCurrentGenerationId: currentGeneration,
-		HostUpgrade: &agentapi.HostUpgradeOperationRequest{
-			ImageLocalRef:         localRef,
-			ImageSha256:           upgrade.SHA256,
-			ImageSizeBytes:        upgrade.SizeBytes,
-			CandidateGenerationId: candidateGeneration,
-		},
+		HostUpgrade:                 hostUpgrade,
 	})
 	conn.Close()
 	if err != nil {
 		t.Fatalf("submit host upgrade operation: %v", err)
 	}
 	return accepted.GetOperationId(), waitKatlcOperationTerminal(t, ctx, endpoint, accepted.GetOperationId(), nodeName)
+}
+
+func assertHostUpgradePlanRejected(t *testing.T, ctx context.Context, endpoint, nodeName, machineID, currentGeneration, candidateGeneration, localRef string, upgrade builtUpgradeImage, configYAML, want string) {
+	t.Helper()
+	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint, nodeName)
+	defer conn.Close()
+	nodeStatus, err := katlc.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatalf("read enrolled node identity before rejected host upgrade plan: %v", err)
+	}
+	_, err = katlc.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
+		ApiVersion: operation.APIVersion, Kind: agent.RequestKind,
+		ClientRequestId: "vmtest-host-upgrade-" + candidateGeneration,
+		OperationKind:   "host-upgrade-handoff", Actor: "installed runtime host upgrade vmtest",
+		ExpectedEnrollmentId: nodeStatus.GetEnrollmentId(), ExpectedInventoryNodeName: nodeStatus.GetInventoryNodeName(),
+		ExpectedMachineId: machineID, ExpectedCurrentGenerationId: currentGeneration, DryRun: true,
+		HostUpgrade: &agentapi.HostUpgradeOperationRequest{
+			ImageLocalRef: localRef, ImageSha256: upgrade.SHA256, ImageSizeBytes: upgrade.SizeBytes,
+			CandidateGenerationId: candidateGeneration, ConfigYaml: configYAML,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("combined host upgrade plan error = %v, want %q", err, want)
+	}
+}
+
+func hostUpgradeConfiguration(version, overlay string) string {
+	return "apiVersion: katl.dev/v1alpha1\n" +
+		"kind: NodeConfigurationChange\n" +
+		"metadata:\n" +
+		"  sourceID: vmtest\n" +
+		"  desiredVersion: \"" + version + "\"\n" +
+		"apply:\n" +
+		"  mode: next-boot\n" +
+		"spec:\n" +
+		"  clusterDefaults:\n" + overlay
+}
+
+func waitHostUpgradeWorkspaceClean(t *testing.T, ctx context.Context, guest *GuestControl, phase string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		remaining := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "host-upgrade-workspace-clean-"+phase, "find", "/var/lib/katl/artifacts/host-upgrade", "-type", "f", "-print", "-quit"))
+		if remaining == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%s host upgrade retained transient artifact %s", phase, remaining)
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 func stageHostUpgradeArtifactForVMTest(t *testing.T, ctx context.Context, endpoint, nodeName, machineID string, upgrade builtUpgradeImage) string {

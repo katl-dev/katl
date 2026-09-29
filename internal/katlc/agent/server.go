@@ -822,7 +822,7 @@ func (s *Server) validateSubmit(req *agentapi.SubmitOperationRequest) error {
 	if req.Kind != RequestKind && !betaHostUpgrade {
 		return status.Errorf(codes.InvalidArgument, "kind must be %q", RequestKind)
 	}
-	if req.GetHostUpgrade().GetConfigYaml() != "" && req.OperationKind != operationKindHostUpgradeV2 && !betaHostUpgrade {
+	if req.GetHostUpgrade().GetConfigYaml() != "" && req.OperationKind != operationKindHostUpgradeV2 && req.OperationKind != operationKindHostUpgradeHandoff && !betaHostUpgrade {
 		return status.Error(codes.InvalidArgument, "combined upgrade requires HostUpgradeRequestV2")
 	}
 	if req.GetHostUpgrade().GetResolveTargetOnly() && (!req.DryRun || (req.OperationKind != operationKindHostUpgradeV2 && !betaHostUpgrade)) {

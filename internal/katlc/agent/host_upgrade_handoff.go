@@ -18,8 +18,8 @@ import (
 // The target release prepares a complete generation in a private state view
 // before the source mutates the inactive root slot or arms a boot trial.
 func (e *Executor) executeHostUpgradeHandoff(ctx context.Context, record operation.OperationRecord) error {
-	if record.HostUpgradeRequest == nil || record.HostUpgradeRequest.ConfigYAML != "" {
-		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("target-prepared host upgrades do not yet support --apply-config; upgrade first, then apply configuration"))
+	if record.HostUpgradeRequest == nil {
+		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("host upgrade request is required"))
 	}
 	if err := cleanupHostUpgradeStorage(ctx, e.Root, record.HostUpgradeRequest.ImageLocalRef, e.toolRunner(), e.clock()); err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("clean obsolete host upgrade workspace: %w", err))
@@ -94,7 +94,10 @@ func (e *Executor) executeHostUpgradeHandoff(ctx context.Context, record operati
 		UKIPath: ukiPath, LoaderEntryPath: entry, CreatedAt: createdAt,
 		KubernetesBootstrapped: kubernetesState.bootstrapped,
 	}
-	prepared, err := e.prepareUpgradeInNamespace(ctx, payload, handoff)
+	if record.HostUpgradeRequest.ConfigYAML != "" {
+		handoff.ConfigurationSHA256 = hostUpgradeConfigurationDigest(record.HostUpgradeRequest.ConfigYAML)
+	}
+	prepared, err := e.prepareUpgradeInNamespace(ctx, payload, handoff, record.HostUpgradeRequest.ConfigYAML)
 	if err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("prepare target generation before reboot: %w", err))
 	}

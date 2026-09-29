@@ -14,6 +14,7 @@ import (
 func TestHostUpgradeCombinedPlan(t *testing.T) {
 	fake := readyHostUpgradeClient()
 	fake.nodeStatus.InventoryNodeName = "cp-1"
+	fake.nodeStatus.SupportedOperationKinds = append(fake.nodeStatus.SupportedOperationKinds, "host-upgrade-handoff")
 	installKatlcDial(t, func(string) {}, fake)
 
 	err := run(context.Background(), []string{
@@ -25,6 +26,9 @@ func TestHostUpgradeCombinedPlan(t *testing.T) {
 	}
 	if len(fake.submitRequests) != 1 {
 		t.Fatalf("requests = %d, want one complete combined preflight", len(fake.submitRequests))
+	}
+	if fake.submitRequests[0].OperationKind != "host-upgrade-handoff" {
+		t.Fatalf("operation kind = %q, want target-owned handoff", fake.submitRequests[0].OperationKind)
 	}
 	for _, request := range fake.submitRequests {
 		if !request.DryRun {

@@ -390,6 +390,12 @@ Omitting `--plan` executes the combined operation. The proposed host
 configuration is compiled against the target release and staged with it for one
 reboot. No subset of that combined change is applied live to the old generation.
 
+The target release's preparation program compiles both plain and combined
+upgrades. The source agent treats target image metadata and the rendered
+configuration document as opaque, verifies their identities, and publishes
+only a candidate that satisfies the stable preboot contract. See
+[ADR-016](adr-016-opaque-host-upgrade-handoff.md).
+
 The option covers supported host changes that can participate in that candidate.
 It does not include Kubernetes version or cluster-wide kubeadm changes,
 cluster-membership operations, destructive storage actions or workload

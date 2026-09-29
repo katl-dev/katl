@@ -50,8 +50,8 @@ definition before removing anything.
 
 ## Host upgrade transition
 
-`host-upgrade-v2` owns target-aware host upgrade planning and combined OS and
-configuration upgrades on `SubmitOperation`. It uses the original
+`host-upgrade-v2` owns the legacy source-prepared host upgrade contract on
+`SubmitOperation`. It uses the original
 `SubmitOperationRequest` envelope kind. The `host-upgrade` operation kind with
 that envelope retains its source-only semantics for existing clients. This
 legacy request contract is deprecated as of the first stable series and remains
@@ -66,12 +66,13 @@ promise target-image validation, and a combined configuration upgrade cannot
 use it. Future changes to required `host-upgrade-v2` semantics need a new
 operation kind and the same retirement process.
 
-For a plain host upgrade, agents that advertise `host-upgrade-handoff` run the
-target release's generation planner before staging the inactive slot. A client
-selects that kind when available. Combined `--apply-config` upgrades continue
-to use `host-upgrade-v2` until configuration and external extension inputs are
-part of the target preparation contract. The client must describe that
-limitation if the older kind cannot represent the requested configuration.
+Agents that advertise `host-upgrade-handoff` run the target release's
+generation planner before staging the inactive slot. A client selects that kind
+when available for both plain and combined `--apply-config` upgrades. The
+source passes combined configuration as a digest-bound opaque input; target
+code owns its configuration and extension semantics. Clients use
+`host-upgrade-v2` for a combined upgrade only when talking to an older agent
+that does not advertise the handoff operation.
 
 ## Image and persisted-state compatibility
 

@@ -35,9 +35,24 @@ func TestPublishPreparedUpgradeIsCompleteAtVisibilityBoundary(t *testing.T) {
 	}
 }
 
-func TestSnapshotUpgradeSourceCopiesOnlySelectedGenerationInputs(t *testing.T) {
+func TestSnapshotUpgradeSourceCopiesPlanningInputsOnly(t *testing.T) {
 	root := t.TempDir()
 	writeResetGenerationZero(t, root)
+	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
+		APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind,
+		DefaultGenerationID: "0", ActiveGenerationID: "0", BootedGenerationID: "0",
+		DefaultBootEntry: "loader/entries/katl-0.conf", BootedBootEntry: "loader/entries/katl-0.conf",
+		UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	clusterInput := filepath.Join(root, "var/lib/katl/cluster/kubeadm/control-plane/config.yaml")
+	if err := os.MkdirAll(filepath.Dir(clusterInput), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(clusterInput, []byte("kind: ClusterConfiguration\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	unrelated := filepath.Join(root, "var/lib/katl/generations/unrelated")
 	if err := os.MkdirAll(unrelated, 0o700); err != nil {
 		t.Fatal(err)
@@ -66,6 +81,12 @@ func TestSnapshotUpgradeSourceCopiesOnlySelectedGenerationInputs(t *testing.T) {
 	}
 	if _, _, err := generation.ReadGeneration(target, "0"); err != nil {
 		t.Fatalf("selected generation is incomplete: %v", err)
+	}
+	if _, err := generation.ReadBootSelection(target); err != nil {
+		t.Fatalf("selected boot state is incomplete: %v", err)
+	}
+	if got, err := os.ReadFile(filepath.Join(target, "var/lib/katl/cluster/kubeadm/control-plane/config.yaml")); err != nil || string(got) != "kind: ClusterConfiguration\n" {
+		t.Fatalf("installed kubeadm input = %q, %v", got, err)
 	}
 	for _, path := range []string{"var/lib/katl/generations/unrelated", "var/lib/katl/operations"} {
 		if _, err := os.Stat(filepath.Join(target, path)); !os.IsNotExist(err) {
