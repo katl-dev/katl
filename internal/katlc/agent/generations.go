@@ -107,6 +107,9 @@ func (s *Server) pruneGenerations(ctx context.Context) (bool, error) {
 	if len(ids) > 0 {
 		return false, nil
 	}
+	if err := cleanupHostUpgradeStorage(ctx, s.Root, "", runChildProcess, s.clock()); err != nil {
+		return false, fmt.Errorf("clean host upgrade workspace: %w", err)
+	}
 	selection, err := generation.ReadBootSelection(s.Root)
 	if err != nil {
 		return false, err

@@ -201,6 +201,9 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	if repeatedStatus.GetResult() != operation.ResultSucceeded || !repeatedStatus.GetBootHealthPending() || repeatedStatus.GetCandidateGenerationId() != repeatedGeneration {
 		t.Fatalf("repeated host upgrade operation status = %+v", repeatedStatus)
 	}
+	if remaining := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "host-upgrade-workspace-clean", "find", "/var/lib/katl/artifacts/host-upgrade", "-type", "f", "-print", "-quit")); remaining != "" {
+		t.Fatalf("repeated upgrade retained transient artifact %s", remaining)
+	}
 	repeatedSpec := generationFromGuest(t, ctx, guest, repeatedGeneration)
 	if repeatedSpec.Root.Slot != candidateSpec.Root.Slot || repeatedSpec.Root.PartitionUUID != candidateSpec.Root.PartitionUUID {
 		t.Fatalf("repeated host upgrade root = %#v, want previously upgraded peer %#v", repeatedSpec.Root, candidateSpec.Root)

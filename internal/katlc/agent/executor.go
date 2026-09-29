@@ -73,6 +73,7 @@ type Executor struct {
 	ConfigApplyActivator   configapply.ConfextActivator
 	BundleClient           *http.Client
 	ResolveHostUpgrade     HostUpgradeResolver
+	AvailableStorage       availableStorageFunc
 	ResolveSystemExtension func(context.Context, systemextensionbundle.ResolveRequest) (systemextensionbundle.Resolved, error)
 	WaitBeforeKubeadm      ContextWaiter
 	ConfigureLocalAPI      LocalAPIAccessConfigurator
@@ -100,6 +101,7 @@ func NewExecutor(root string, store operation.Store, agentStartID string) *Execu
 		RunPoweroff:          runChildProcess,
 		MountBootRoot:        mountRuntimeBootRoot,
 		BundleClient:         http.DefaultClient,
+		AvailableStorage:     filesystemAvailable,
 		WaitBeforeKubeadm:    waitForContext,
 		ConfigureLocalAPI:    configureLocalAPIAccess,
 		Async:                true,
@@ -215,10 +217,12 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 		return e.executeDestructiveReset(ctx, record)
 	}
 	if record.HostUpgradeRequest != nil {
+		runCtx, cancel := context.WithTimeout(ctx, hostUpgradeOperationTimeout)
+		defer cancel()
 		if record.OperationKind == operationKindHostUpgradeHandoff {
-			return e.executeHostUpgradeHandoff(ctx, record)
+			return e.executeHostUpgradeHandoff(runCtx, record)
 		}
-		return e.executeHostUpgrade(ctx, record)
+		return e.executeHostUpgrade(runCtx, record)
 	}
 	if record.KubernetesSysextUpdate != nil {
 		return e.executeKubeadmUpgrade(ctx, record)
@@ -1310,6 +1314,17 @@ func setBootEntry(ctx context.Context, root, verb, bootEntry string) error {
 
 func runChildProcess(ctx context.Context, argv []string, started func(int)) ToolResult {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return nil
+		}
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if errors.Is(err, syscall.ESRCH) {
+			return nil
+		}
+		return err
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

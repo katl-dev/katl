@@ -21,6 +21,9 @@ func (e *Executor) executeHostUpgradeHandoff(ctx context.Context, record operati
 	if record.HostUpgradeRequest == nil || record.HostUpgradeRequest.ConfigYAML != "" {
 		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("target-prepared host upgrades do not yet support --apply-config; upgrade first, then apply configuration"))
 	}
+	if err := cleanupHostUpgradeStorage(ctx, e.Root, record.HostUpgradeRequest.ImageLocalRef, e.toolRunner(), e.clock()); err != nil {
+		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("clean obsolete host upgrade workspace: %w", err))
+	}
 	if err := generation.ValidateMutationBase(e.Root, record.ExpectedCurrentGenerationID); err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", err)
 	}
@@ -38,7 +41,11 @@ func (e *Executor) executeHostUpgradeHandoff(ctx context.Context, record operati
 	if err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", err)
 	}
-	if err := katlosimage.ValidateHostUpgradeSource(previous, previousStatus, false); err != nil {
+	kubernetesState, err := inspectKubernetesNodeState(e.Root, e.Store)
+	if err != nil {
+		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("inspect Kubernetes node state: %w", err))
+	}
+	if err := katlosimage.ValidateHostUpgradeSource(previous, previousStatus, kubernetesState.bootstrapped); err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", err)
 	}
 	if payload.Index.Architecture != previous.Root.Architecture || payload.Index.RuntimeInterface != previous.Root.RuntimeInterface {
@@ -85,12 +92,31 @@ func (e *Executor) executeHostUpgradeHandoff(ctx context.Context, record operati
 		ImageSHA256: payload.ImageSHA256, ImageSizeBytes: payload.ImageSizeBytes,
 		RootSlot: slot, RootPartitionUUID: slots.InactivePartUUID,
 		UKIPath: ukiPath, LoaderEntryPath: entry, CreatedAt: createdAt,
+		KubernetesBootstrapped: kubernetesState.bootstrapped,
 	}
 	prepared, err := e.prepareUpgradeInNamespace(ctx, payload, handoff)
 	if err != nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("prepare target generation before reboot: %w", err))
 	}
 	defer prepared.close()
+	stagingBytes, err := hostUpgradeStagingBytes(payload)
+	if err != nil {
+		return e.failHostUpgrade(record, "verify-katlos-image", err)
+	}
+	candidateDir, err := generation.GenerationDir(prepared.root, handoff.CandidateGenerationID)
+	if err != nil {
+		return e.failHostUpgrade(record, "verify-katlos-image", err)
+	}
+	publicationBytes, err := upgradeTreeBytes(candidateDir)
+	if err != nil {
+		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("measure prepared candidate: %w", err))
+	}
+	if publicationBytes > stagingBytes {
+		stagingBytes = publicationBytes
+	}
+	if err := requireHostUpgradeStorage(e.AvailableStorage, hostUpgradeArtifactRoot(e.Root), stagingBytes, "root and UKI staging"); err != nil {
+		return e.failHostUpgrade(record, "verify-katlos-image", err)
+	}
 	record, err = e.Store.Update(record.OperationID, "host-upgrade-handoff-mutation-start", "stage-sysupdate-components", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		current.Phase = "stage-sysupdate-components"
 		current.ExternalMutationStarted = true
@@ -171,7 +197,9 @@ func (e *Executor) resolveHostUpgradeOpaque(ctx context.Context, request operati
 		MediaRoot: filepath.Join(root, "var/lib/katl/artifacts"),
 		WorkDir:   filepath.Join(root, "var/lib/katl/artifacts/host-upgrade"),
 		Commands:  hostUpgradeCommands{run: e.toolRunner()}, Client: e.BundleClient,
-		Opaque: true,
+		Opaque:          true,
+		MaxDownloadSize: maxHostUpgradeArtifactSize, RequiredFreeBytes: hostUpgradeStorageReserve,
+		AvailableBytes: e.AvailableStorage,
 	}).ResolveKatlosImage(ctx, manifest.KatlosImage{
 		URL: request.ImageURL, LocalRef: request.ImageLocalRef,
 		SHA256: request.ImageSHA256, SizeBytes: request.ImageSizeBytes,

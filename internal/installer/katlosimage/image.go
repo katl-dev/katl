@@ -74,11 +74,14 @@ type HTTPClient interface {
 }
 
 type Resolver struct {
-	MediaRoot string
-	WorkDir   string
-	Commands  CommandRunner
-	Client    HTTPClient
-	Opaque    bool
+	MediaRoot         string
+	WorkDir           string
+	Commands          CommandRunner
+	Client            HTTPClient
+	Opaque            bool
+	MaxDownloadSize   uint64
+	RequiredFreeBytes uint64
+	AvailableBytes    func(string) (uint64, error)
 }
 
 func (r Resolver) ResolveKatlosImage(ctx context.Context, expected manifest.KatlosImage) (Payload, error) {
@@ -92,10 +95,13 @@ func (r Resolver) ResolveKatlosImage(ctx context.Context, expected manifest.Katl
 		}).ResolveKatlosImage(ctx, expected)
 	case strings.TrimSpace(expected.URL) != "":
 		return (RemoteResolver{
-			WorkDir:  r.WorkDir,
-			Commands: r.Commands,
-			Client:   r.Client,
-			Opaque:   r.Opaque,
+			WorkDir:           r.WorkDir,
+			Commands:          r.Commands,
+			Client:            r.Client,
+			Opaque:            r.Opaque,
+			MaxDownloadSize:   r.MaxDownloadSize,
+			RequiredFreeBytes: r.RequiredFreeBytes,
+			AvailableBytes:    r.AvailableBytes,
 		}).ResolveKatlosImage(ctx, expected)
 	default:
 		return Payload{}, fmt.Errorf("KatlOS image URL or localRef is required")
@@ -154,10 +160,13 @@ func (r LocalResolver) ResolveKatlosImage(ctx context.Context, expected manifest
 }
 
 type RemoteResolver struct {
-	WorkDir  string
-	Commands CommandRunner
-	Client   HTTPClient
-	Opaque   bool
+	WorkDir           string
+	Commands          CommandRunner
+	Client            HTTPClient
+	Opaque            bool
+	MaxDownloadSize   uint64
+	RequiredFreeBytes uint64
+	AvailableBytes    func(string) (uint64, error)
 }
 
 func (r RemoteResolver) ResolveKatlosImage(ctx context.Context, expected manifest.KatlosImage) (Payload, error) {
@@ -168,7 +177,7 @@ func (r RemoteResolver) ResolveKatlosImage(ctx context.Context, expected manifes
 	if workDir == "" {
 		workDir = filepath.Join(os.TempDir(), "katlos-image")
 	}
-	imagePath, digest, size, err := downloadImage(ctx, expected, workDir, r.Client)
+	imagePath, digest, size, err := downloadImage(ctx, expected, workDir, r.Client, r.MaxDownloadSize, r.RequiredFreeBytes, r.AvailableBytes)
 	if err != nil {
 		return Payload{}, err
 	}
@@ -334,7 +343,7 @@ func imageFileIdentity(imagePath string, expectedSHA256 string, expectedSize uin
 	return got, uint64(size), nil
 }
 
-func downloadImage(ctx context.Context, expected manifest.KatlosImage, workDir string, client HTTPClient) (string, string, uint64, error) {
+func downloadImage(ctx context.Context, expected manifest.KatlosImage, workDir string, client HTTPClient, maxSize, requiredFree uint64, available func(string) (uint64, error)) (string, string, uint64, error) {
 	expectedSHA256 := strings.TrimSpace(expected.SHA256)
 	if expectedSHA256 != "" {
 		if err := validateSHA256(expectedSHA256); err != nil {
@@ -364,9 +373,34 @@ func downloadImage(ctx context.Context, expected manifest.KatlosImage, workDir s
 	if response.StatusCode != http.StatusOK {
 		return "", "", 0, fmt.Errorf("fetch KatlOS image: status %s", response.Status)
 	}
+	declared := expected.SizeBytes
+	if response.ContentLength > 0 {
+		if declared > 0 && uint64(response.ContentLength) != declared {
+			return "", "", 0, fmt.Errorf("KatlOS image response size %d does not match manifest %d", response.ContentLength, declared)
+		}
+		declared = uint64(response.ContentLength)
+	}
+	if maxSize > 0 {
+		if declared == 0 {
+			return "", "", 0, fmt.Errorf("KatlOS image response must declare its size")
+		}
+		if declared > maxSize {
+			return "", "", 0, fmt.Errorf("KatlOS image size %d exceeds download limit %d", declared, maxSize)
+		}
+	}
 	downloadDir := filepath.Join(workDir, "downloads")
 	if err := os.MkdirAll(downloadDir, 0o755); err != nil {
 		return "", "", 0, fmt.Errorf("create KatlOS image download dir: %w", err)
+	}
+	if available != nil {
+		free, err := available(downloadDir)
+		if err != nil {
+			return "", "", 0, fmt.Errorf("inspect KatlOS image download storage: %w", err)
+		}
+		need := declared + requiredFree
+		if need < declared || free < need {
+			return "", "", 0, fmt.Errorf("insufficient storage for KatlOS image download: %d bytes available, need %d bytes", free, need)
+		}
 	}
 	file, err := os.CreateTemp(downloadDir, ".katlos-image-*.squashfs")
 	if err != nil {
@@ -379,13 +413,20 @@ func downloadImage(ctx context.Context, expected manifest.KatlosImage, workDir s
 		return "", "", 0, fmt.Errorf("protect KatlOS image download: %w", err)
 	}
 	hash := sha256.New()
-	written, copyErr := io.Copy(file, io.TeeReader(response.Body, hash))
+	reader := io.Reader(response.Body)
+	if maxSize > 0 {
+		reader = io.LimitReader(response.Body, int64(maxSize)+1)
+	}
+	written, copyErr := io.Copy(file, io.TeeReader(reader, hash))
 	closeErr := file.Close()
 	if copyErr != nil {
 		return "", "", 0, fmt.Errorf("download KatlOS image: %w", copyErr)
 	}
 	if closeErr != nil {
 		return "", "", 0, fmt.Errorf("close KatlOS image download: %w", closeErr)
+	}
+	if maxSize > 0 && uint64(written) > maxSize {
+		return "", "", 0, fmt.Errorf("KatlOS image download exceeds limit %d", maxSize)
 	}
 	if expected.SizeBytes > 0 && uint64(written) != expected.SizeBytes {
 		return "", "", 0, fmt.Errorf("KatlOS image size %d does not match manifest %d", written, expected.SizeBytes)

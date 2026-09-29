@@ -55,6 +55,9 @@ func (s *Server) StageHostUpgradeArtifact(stream grpc.ClientStreamingServer[agen
 	}
 
 	directory := filepath.Join(runtimeRoot(s.Root), "var/lib/katl/artifacts", filepath.FromSlash(target.directory))
+	if err := requireHostUpgradeStorage(s.AvailableStorage, directory, first.SizeBytes, target.label+" upgrade upload"); err != nil {
+		return status.Error(codes.ResourceExhausted, err.Error())
+	}
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return status.Errorf(codes.Internal, "prepare %s artifact staging directory: %v", target.label, err)
 	}
