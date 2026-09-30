@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -46,7 +47,8 @@ node in the config; use --node NAME to select a node, repeating it for more node
 Keep the complete ClusterConfig when selecting nodes.
 
 Validates selected nodes before applying supported host and Kubernetes changes.
-Unchanged configuration is a no-op. Changes that require a reboot are staged for
+Unchanged host configuration reuses its generation; Kubernetes reconciliation
+still runs so an interrupted or failed apply can be retried. Changes that require a reboot are staged for
 the next boot and reported. Use 'katlctl node join NODE --config cluster.yaml'
 to join an installed node to an existing cluster. Apply never joins nodes.
 Kubernetes settings shared by the cluster can still affect the whole cluster.
@@ -201,7 +203,11 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 		}
 		summary, err := runKubeadmConfigComponent(ctx, componentOpts, inv, generations)
 		if err != nil {
-			return err
+			_ = clusterApplyProgress(opts.progress, "component=%s status=failed", component)
+			results[component] = map[string]string{"result": "failed", "reason": err.Error()}
+			const recovery = "Host configuration is retained. Resolve the reported Kubernetes failure, then rerun katlctl cluster apply with the same configuration; unchanged host configuration reuses its generation."
+			reportErr := writeClusterApplyReport(stdout, opts.output, clusterApplyReport{Nodes: len(selected), NodePlans: nodePlans, Kubernetes: results, Result: "partial", NextAction: recovery})
+			return errors.Join(fmt.Errorf("%w; %s", err, recovery), reportErr)
 		}
 		results[component] = summary
 		if err := clusterApplyProgress(opts.progress, "component=%s status=succeeded", component); err != nil {
@@ -225,6 +231,7 @@ type clusterApplyReport struct {
 	Result         string                  `json:"result"`
 	RebootRequired bool                    `json:"rebootRequired,omitempty"`
 	StagedNodes    []string                `json:"stagedNodes,omitempty"`
+	NextAction     string                  `json:"nextAction,omitempty"`
 }
 
 func writeClusterApplyReport(stdout io.Writer, format string, report clusterApplyReport) error {
@@ -248,6 +255,10 @@ func writeClusterApplyReport(stdout io.Writer, format string, report clusterAppl
 	}
 	if report.Result == "planned" {
 		_, err := fmt.Fprintln(stdout, "Plan complete; no operations accepted. Run without --plan to apply.")
+		return err
+	}
+	if report.Result == "partial" {
+		_, err := fmt.Fprintln(stdout, "Kubernetes configuration is incomplete. "+report.NextAction)
 		return err
 	}
 	if report.RebootRequired {
@@ -427,7 +438,7 @@ func runKubeadmConfigComponent(ctx context.Context, opts kubeadmControlPlaneConf
 			return nil, fmt.Errorf("node %s: %w", t.node.Name, err)
 		}
 		if terminal.Result != operation.ResultSucceeded {
-			return nil, fmt.Errorf("node %s stopped rollout: %s: %s", t.node.Name, terminal.Phase, terminal.FailureReason)
+			return nil, fmt.Errorf("node %s stopped rollout: %s: %s; %s", t.node.Name, terminal.Phase, terminal.FailureReason, terminal.NextAction)
 		}
 		if err := clusterApplyProgress(opts.progress, "component=%s node=%s phase=%s status=succeeded", opts.component, t.node.Name, firstNonEmpty(terminal.Phase, "complete")); err != nil {
 			return nil, err
@@ -651,10 +662,10 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		input.acceptedApplyMode = validation.AcceptedApplyMode
 		input.changedDomains = slices.Clone(validation.ChangedDomains)
 		_ = conn.Close()
-		if containsKubernetesConfigDomain(validation.ChangedDomains) {
-			for _, component := range input.components {
-				components[component] = true
-			}
+		// Host files can already match after a failed Kubernetes rollout.
+		// Each component owns convergence against its observed state.
+		for _, component := range input.components {
+			components[component] = true
 		}
 		if validation.NoChanges {
 			if len(validation.Diagnostics) > 0 {
@@ -688,14 +699,6 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 			}
 		}
 	}
-	if preBootstrap {
-		for _, input := range prepared {
-			for _, component := range input.components {
-				components[component] = true
-			}
-		}
-	}
-
 	for _, input := range prepared {
 		node := input.node
 		if input.noChanges || opts.plan {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -113,9 +114,11 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 			return fmt.Errorf("%s: %w: %s", name, err, stderr)
 		}
 		var report struct {
-			Result         string                     `json:"result"`
-			RebootRequired bool                       `json:"rebootRequired"`
-			Kubernetes     map[string]json.RawMessage `json:"kubernetes"`
+			Result         string `json:"result"`
+			RebootRequired bool   `json:"rebootRequired"`
+			NodePlans      []struct {
+				NoChanges bool `json:"noChanges"`
+			} `json:"nodePlans"`
 		}
 		if err := json.Unmarshal(stdout, &report); err != nil {
 			return err
@@ -123,8 +126,12 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 		if report.Result != "succeeded" {
 			return fmt.Errorf("%s result: %s", name, stdout)
 		}
-		if unchanged && len(report.Kubernetes) != 0 {
-			return fmt.Errorf("%s repeated Kubernetes operations: %s", name, stdout)
+		if unchanged {
+			for _, plan := range report.NodePlans {
+				if !plan.NoChanges {
+					return fmt.Errorf("%s created another host generation: %s", name, stdout)
+				}
+			}
 		}
 		if report.RebootRequired {
 			return fmt.Errorf("%s unexpectedly requires reboot", name)
@@ -132,10 +139,10 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 		return nil
 	}
 	// Observe kernel identity through operator SSH, independently of apply status.
-	bootID := func(node string) (string, error) {
+	observe := func(node, commandText string) (string, error) {
 		probe, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		command := exec.CommandContext(probe, "ssh", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=5", "-i", smoke.Inputs.SSHPrivateKey, "root@"+addresses[node], "cat /proc/sys/kernel/random/boot_id")
+		command := exec.CommandContext(probe, "ssh", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=5", "-i", smoke.Inputs.SSHPrivateKey, "root@"+addresses[node], commandText)
 		output, err := command.Output()
 		if err != nil {
 			return "", fmt.Errorf("read %s kernel boot identity: %w", node, err)
@@ -146,6 +153,27 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 		}
 		return id, nil
 	}
+	bootID := func(node string) (string, error) { return observe(node, "cat /proc/sys/kernel/random/boot_id") }
+	generationIDs := func(node, label string) ([]string, error) {
+		data, stderr, err := runProofKatlctl(ctx, katlctl, dir, node+"-generations-"+label, "node", "generations", "list", node, "--config", configPath, "-o", "json")
+		if err != nil {
+			return nil, fmt.Errorf("list generations: %w: %s", err, stderr)
+		}
+		var report struct {
+			Generations []struct {
+				ID string `json:"generationId"`
+			} `json:"generations"`
+		}
+		if err := json.Unmarshal(data, &report); err != nil {
+			return nil, err
+		}
+		var ids []string
+		for _, item := range report.Generations {
+			ids = append(ids, item.ID)
+		}
+		slices.Sort(ids)
+		return ids, nil
+	}
 	before := map[string]string{}
 	for _, node := range nodes {
 		id, err := bootID(node.Name)
@@ -154,7 +182,42 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 		}
 		before[node.Name] = id
 	}
-	if err := apply("live", false); err != nil {
+	// Remove only the shared input, leaving running nodes healthy. Restoring it
+	// must make the same desired configuration retryable without another generation.
+	restorePath := filepath.Join(dir, "restore-kubelet-config.json")
+	restore, err := json.Marshal(map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]string{"name": "kubelet-config", "namespace": "kube-system"}, "data": map[string]string{"kubelet": string(shared)}})
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(restorePath, restore, 0o600); err != nil {
+		return err
+	}
+	if _, err := kubectlOutput(ctx, kubeconfig, "-n", "kube-system", "delete", "configmap", "kubelet-config"); err != nil {
+		return err
+	}
+	failedOutput, failedStderr, applyErr := runProofKatlctl(ctx, katlctl, dir, "missing-shared-config", "cluster", "apply", "--config", configPath, "-o", "json")
+	if _, err := kubectlOutput(ctx, kubeconfig, "create", "-f", restorePath); err != nil {
+		return err
+	}
+	var failed struct {
+		Result     string `json:"result"`
+		NextAction string `json:"nextAction"`
+	}
+	if err := json.Unmarshal(failedOutput, &failed); err != nil {
+		return fmt.Errorf("partial report: %w: %s", err, failedStderr)
+	}
+	if applyErr == nil || failed.Result != "partial" || !strings.Contains(failed.NextAction, "rerun") {
+		return fmt.Errorf("missing shared configuration did not report recoverable partial success: %s %s", failedOutput, failedStderr)
+	}
+	retained := map[string][]string{}
+	for _, node := range nodes {
+		ids, err := generationIDs(node.Name, "failed")
+		if err != nil {
+			return err
+		}
+		retained[node.Name] = ids
+	}
+	if err := apply("live", true); err != nil {
 		return err
 	}
 	verify := func(node vmtest.RunningInstalledRuntimeNode, unchangedBoot bool) error {
@@ -191,8 +254,32 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 			return err
 		}
 	}
+	starts := map[string]string{}
+	for _, node := range nodes {
+		start, err := observe(node.Name, "systemctl show kubelet.service -p ExecMainStartTimestampMonotonic --value")
+		if err != nil {
+			return err
+		}
+		starts[node.Name] = start
+	}
 	if err := apply("repeat", true); err != nil {
 		return err
+	}
+	for _, node := range nodes {
+		ids, err := generationIDs(node.Name, "repeat")
+		if err != nil {
+			return err
+		}
+		if !slices.Equal(ids, retained[node.Name]) {
+			return fmt.Errorf("%s retry created generations: %v -> %v", node.Name, retained[node.Name], ids)
+		}
+		start, err := observe(node.Name, "systemctl show kubelet.service -p ExecMainStartTimestampMonotonic --value")
+		if err != nil {
+			return err
+		}
+		if start != starts[node.Name] {
+			return fmt.Errorf("%s unchanged apply restarted kubelet", node.Name)
+		}
 	}
 	sharedAfter, err := kubectlOutput(ctx, kubeconfig, "-n", "kube-system", "get", "configmap", "kubelet-config", "-o", "jsonpath={.data.kubelet}")
 	if err != nil {

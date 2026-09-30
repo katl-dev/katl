@@ -202,6 +202,7 @@ func TestExecuteKubeadmControlPlaneConfigNoChangeIsIdempotent(t *testing.T) {
 	var commands [][]string
 	executor := NewExecutor(root, store, "agent-start")
 	executor.Async = false
+	executor.RunPostHealth = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		commands = append(commands, append([]string(nil), argv...))
 		return ToolResult{Stdout: []byte(liveConfig)}
@@ -215,6 +216,19 @@ func TestExecuteKubeadmControlPlaneConfigNoChangeIsIdempotent(t *testing.T) {
 	completed, err := store.Read(record.OperationID)
 	if err != nil || !completed.Terminal || completed.Result != operation.ResultSucceeded || completed.MutatingToolRan {
 		t.Fatalf("completed = %#v, err = %v", completed, err)
+	}
+
+	failedAt := time.Now().UTC().Add(-time.Minute)
+	_, err = store.Create(operation.OperationRecord{OperationID: "earlier-mutation", OperationKind: OperationKindKubeadmControlPlaneConfig, Scope: "kubeadm-state", RequestDigest: strings.Repeat("c", 64), Phase: "post-upload-health", Terminal: true, CompletedAt: &failedAt, Result: operation.ResultFailedNeedsRepair, RecoveryRequired: true, ExternalMutationStarted: true, FailureReason: "health failed", NextAction: "inspect retained manifests", KubeadmControlPlaneConfig: &body}, "failed", failedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retry, err := store.Create(operation.OperationRecord{OperationID: "cp-config-retry", OperationKind: OperationKindKubeadmControlPlaneConfig, Scope: "kubeadm-state", RequestDigest: strings.Repeat("d", 64), Phase: "accepted", KubeadmControlPlaneConfig: &body}, "accepted", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.Execute(context.Background(), retry); err == nil || !strings.Contains(err.Error(), "inspect retained manifests") {
+		t.Fatalf("unresolved mutation was hidden by a matching shared config: %v", err)
 	}
 }
 
@@ -308,6 +322,7 @@ func TestExecuteKubeletConfigUploadsUpdatesAndRestarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	var commands [][]string
+	sharedConfig := "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 110\n"
 	executor := NewExecutor(root, store, "agent-start")
 	executor.Async = false
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
@@ -319,7 +334,10 @@ func TestExecuteKubeletConfigUploadsUpdatesAndRestarts(t *testing.T) {
 		}
 		commands = append(commands, append([]string(nil), argv...))
 		if slices.Contains(argv, "jsonpath={.data.kubelet}") {
-			return ToolResult{Stdout: []byte("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 110\n")}
+			return ToolResult{Stdout: []byte(sharedConfig)}
+		}
+		if slices.Contains(argv, "upload-config") {
+			sharedConfig = desiredConfig + "cgroupDriver: systemd\n"
 		}
 		if reflect.DeepEqual(argv, []string{"/usr/bin/kubeadm", "upgrade", "node", "phase", "kubelet-config"}) {
 			data := "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 120\ncgroupDriver: systemd\n"
@@ -353,10 +371,26 @@ func TestExecuteKubeletConfigUploadsUpdatesAndRestarts(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(store.Root, record.OperationID, "kubelet-config-backup", "config.yaml")); err != nil {
 		t.Fatalf("backup kubelet config: %v", err)
 	}
+
+	repeat, err := store.Create(operation.OperationRecord{OperationID: "kubelet-config-repeat", OperationKind: OperationKindKubeadmControlPlaneConfig, Scope: "kubeadm-state", RequestDigest: strings.Repeat("e", 64), Phase: "accepted", KubeadmControlPlaneConfig: &body}, "accepted", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands = nil
+	if err := executor.Execute(context.Background(), repeat); err != nil {
+		t.Fatal(err)
+	}
+	for _, argv := range commands {
+		if argv[0] == "/usr/bin/kubeadm" || slices.Contains(argv, "restart") {
+			t.Fatalf("defaulted shared configuration caused a repeat mutation: %#v", argv)
+		}
+	}
 }
 
 func TestExecuteKubeletConfigNoChangeDoesNotRestart(t *testing.T) {
 	root := t.TempDir()
+	writeKubernetesStatusFile(t, root, "etc/hostname", "worker-1\n")
+	writeKubernetesStatusFile(t, root, "etc/kubernetes/kubelet.conf", "kubelet\n")
 	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
 	if err != nil {
 		t.Fatal(err)
@@ -393,17 +427,34 @@ func TestExecuteKubeletConfigNoChangeDoesNotRestart(t *testing.T) {
 	executor.Async = false
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		commands = append(commands, append([]string(nil), argv...))
-		return ToolResult{}
+		return ToolResult{Stdout: []byte("True")}
 	}
 	if err := executor.Execute(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}
-	if len(commands) != 0 {
-		t.Fatalf("commands = %#v, want no kubeadm or restart calls", commands)
+	for _, argv := range commands {
+		if argv[0] == "/usr/bin/kubeadm" || slices.Contains(argv, "restart") {
+			t.Fatalf("unchanged apply mutated kubelet: %#v", argv)
+		}
 	}
 	completed, err := store.Read(record.OperationID)
 	if err != nil || !completed.Terminal || completed.Result != operation.ResultSucceeded || completed.MutatingToolRan {
 		t.Fatalf("completed = %#v, err = %v", completed, err)
+	}
+
+	unhealthy, err := store.Create(operation.OperationRecord{OperationID: "kubelet-config-unhealthy", OperationKind: OperationKindKubeadmControlPlaneConfig, Scope: "kubeadm-state", RequestDigest: strings.Repeat("f", 64), Phase: "accepted", KubeadmControlPlaneConfig: &body}, "accepted", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor.RunTool = func(context.Context, []string, func(int)) ToolResult { return ToolResult{ExitStatus: 1} }
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := executor.Execute(ctx, unhealthy); err == nil {
+		t.Fatal("matching config on an unhealthy kubelet was reported successful")
+	}
+	failed, err := store.Read(unhealthy.OperationID)
+	if err != nil || failed.Result == operation.ResultSucceeded || failed.Phase != "configuration-health" || failed.MutatingToolRan {
+		t.Fatalf("unhealthy result = %#v, error = %v", failed, err)
 	}
 }
 
@@ -578,5 +629,134 @@ func TestExecuteKubeProxyConfigUpdatesAddonOnline(t *testing.T) {
 func validControlPlaneConfigRequest() *agentapi.KubeadmControlPlaneConfigOperationRequest {
 	return &agentapi.KubeadmControlPlaneConfigOperationRequest{
 		RolloutId: "rollout-1", NodePosition: 1, NodeCount: 3, CoordinatorNode: "cp-3", NodeName: "cp-1", DesiredGenerationId: "gen-2", ConfigName: "control-plane",
+	}
+}
+
+func TestKubeletRetryCompletesRestart(t *testing.T) {
+	root := t.TempDir()
+	writeKubernetesStatusFile(t, root, "etc/hostname", "worker-1\n")
+	writeKubernetesStatusFile(t, root, "etc/kubernetes/kubelet.conf", "kubelet\n")
+	desired := "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 120\n"
+	initial := "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 110\n"
+	writeKubernetesStatusFile(t, root, "etc/katl/kubeadm/worker/config.yaml", desired)
+	writeKubernetesStatusFile(t, root, "var/lib/kubelet/config.yaml", initial)
+	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := controlPlaneConfigFromProto(validControlPlaneConfigRequest())
+	body.Component = "kubelet"
+	body.ConfigName = "worker"
+	body.ConfigPath = "/etc/katl/kubeadm/worker/config.yaml"
+	body.CoordinatorUpload = false
+	body.NodeLocalKubelet = true
+	body.KubernetesPayloadVersion = "v1.36.1"
+	body.KubernetesPayloadSHA256 = strings.Repeat("c", 64)
+	body.DesiredConfigSHA256, _ = kubeadmplan.CanonicalKubeletConfigurationSHA256([]byte(desired))
+	livePath := filepath.Join(root, "var/lib/kubelet/config.yaml")
+	running := initial
+	restarts := 0
+	executor := NewExecutor(root, store, "agent-start")
+	executor.Async = false
+	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		if argv[0] == "/usr/bin/kubeadm" && slices.Contains(argv, "kubelet-config") && !slices.Contains(argv, "--dry-run") {
+			if err := os.WriteFile(livePath, []byte(desired), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if argv[0] == "/usr/bin/systemctl" && slices.Contains(argv, "restart") {
+			restarts++
+			if restarts == 1 {
+				return ToolResult{ExitStatus: 1, Stderr: []byte("restart interrupted")}
+			}
+			data, err := os.ReadFile(livePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			running = string(data)
+		}
+		return ToolResult{Stdout: []byte("True")}
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		record, err := store.Create(operation.OperationRecord{OperationID: fmt.Sprintf("kubelet-retry-%d", attempt), OperationKind: OperationKindKubeadmControlPlaneConfig, Scope: "kubeadm-state", RequestDigest: strings.Repeat("a", 64), Phase: "accepted", KubeadmControlPlaneConfig: &body}, "accepted", time.Now().UTC())
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = executor.Execute(context.Background(), record)
+		if attempt == 0 {
+			if err == nil || !strings.Contains(err.Error(), "restart interrupted") {
+				t.Fatalf("first apply: %v", err)
+			}
+			data, readErr := os.ReadFile(livePath)
+			if readErr != nil || string(data) != desired || running != initial {
+				t.Fatalf("failure did not leave a written but unloaded config: %q, %v", data, readErr)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("attempt %d: %v", attempt, err)
+		}
+		if running != desired {
+			t.Fatalf("attempt %d returned success with stale running config: %s", attempt, running)
+		}
+		if restarts != 2 {
+			t.Fatalf("attempt %d: restart count %d, want failed restart plus one recovery", attempt, restarts)
+		}
+	}
+}
+
+func TestKubeletApplyResetsRemovedFields(t *testing.T) {
+	root := t.TempDir()
+	writeKubernetesStatusFile(t, root, "etc/hostname", "worker-1\n")
+	writeKubernetesStatusFile(t, root, "etc/kubernetes/kubelet.conf", "kubelet\n")
+	desired := "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\n"
+	previous := desired + "maxPods: 120\n"
+	shared := desired + "maxPods: 110\ncgroupDriver: systemd\n"
+	writeKubernetesStatusFile(t, root, "etc/katl/kubeadm/worker/config.yaml", desired)
+	writeKubernetesStatusFile(t, root, "var/lib/kubelet/config.yaml", previous)
+	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := controlPlaneConfigFromProto(validControlPlaneConfigRequest())
+	body.Component = "kubelet"
+	body.ConfigName = "worker"
+	body.ConfigPath = "/etc/katl/kubeadm/worker/config.yaml"
+	body.CoordinatorUpload = false
+	body.NodeLocalKubelet = true
+	body.KubernetesPayloadVersion = "v1.36.1"
+	body.KubernetesPayloadSHA256 = strings.Repeat("c", 64)
+	body.DesiredConfigSHA256, _ = kubeadmplan.CanonicalKubeletConfigurationSHA256([]byte(previous))
+	completedAt := time.Now().UTC().Add(-time.Minute)
+	_, err = store.Create(operation.OperationRecord{OperationID: "previous", OperationKind: OperationKindKubeadmControlPlaneConfig, Scope: "kubeadm-state", RequestDigest: strings.Repeat("a", 64), Phase: operation.HostBookkeepingCompletionPhase, Terminal: true, CompletedAt: &completedAt, Result: operation.ResultSucceeded, ExternalMutationStarted: true, KubeadmControlPlaneConfig: &body}, "completed", completedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body.DesiredConfigSHA256, _ = kubeadmplan.CanonicalKubeletConfigurationSHA256([]byte(desired))
+	record, err := store.Create(operation.OperationRecord{OperationID: "remove-field", OperationKind: OperationKindKubeadmControlPlaneConfig, Scope: "kubeadm-state", RequestDigest: strings.Repeat("b", 64), Phase: "accepted", KubeadmControlPlaneConfig: &body}, "accepted", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	running := previous
+	executor := NewExecutor(root, store, "agent-start")
+	executor.Async = false
+	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		if argv[0] == "/usr/bin/kubeadm" && slices.Contains(argv, "kubelet-config") && !slices.Contains(argv, "--dry-run") {
+			writeKubernetesStatusFile(t, root, "var/lib/kubelet/config.yaml", shared)
+		}
+		if argv[0] == "/usr/bin/systemctl" && slices.Contains(argv, "restart") {
+			data, err := os.ReadFile(filepath.Join(root, "var/lib/kubelet/config.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			running = string(data)
+		}
+		return ToolResult{Stdout: []byte("True")}
+	}
+	if err := executor.Execute(context.Background(), record); err != nil {
+		t.Fatal(err)
+	}
+	if running != shared {
+		t.Fatalf("removed node-local field survived in running config: %s", running)
 	}
 }
