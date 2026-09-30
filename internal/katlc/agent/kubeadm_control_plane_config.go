@@ -270,24 +270,11 @@ func (e *Executor) executeKubeadmControlPlaneConfig(ctx context.Context, record 
 		if err != nil {
 			return e.failControlPlaneConfig(record, "preflight", err)
 		}
-		completedAt := e.clock()
-		if _, err := e.Store.Update(record.OperationID, "no-change", operation.HostBookkeepingCompletionPhase, func(current operation.OperationRecord) (operation.OperationRecord, error) {
-			current.KubeadmControlPlaneConfig.ExpectedLiveConfigSHA256 = liveDigest
-			current.KubeadmControlPlaneConfig.SupportedFieldDelta = []string{}
-			current.KubeadmControlPlaneConfig.BeforeManifestSHA256 = manifests
-			current.KubeadmControlPlaneConfig.AfterManifestSHA256 = maps.Clone(manifests)
-			current.Phase = operation.HostBookkeepingCompletionPhase
-			current.CompletedPhases = appendMissing(current.CompletedPhases, "preflight-complete", operation.HostBookkeepingCompletionPhase)
-			current.CompletedAt = &completedAt
-			current.Terminal = true
-			current.Result = operation.ResultSucceeded
-			current.NextAction = "desired control-plane configuration already matches live state"
-			current.UpdatedAt = completedAt
-			return current, nil
-		}); err != nil {
-			return err
-		}
-		return nil
+		request.ExpectedLiveConfigSHA256 = liveDigest
+		request.SupportedFieldDelta = []string{}
+		request.BeforeManifestSHA256 = manifests
+		request.AfterManifestSHA256 = maps.Clone(manifests)
+		return e.completeUnchangedKubeadmConfig(ctx, record)
 	}
 	effectivePath, err := e.writeEffectiveControlPlaneConfig(record.OperationID, effective)
 	if err != nil {
@@ -464,20 +451,7 @@ func (e *Executor) executeKubeProxyConfig(ctx context.Context, record operation.
 		return e.failControlPlaneConfig(record, "preflight", fmt.Errorf("collect live kube-proxy config: %s", toolFailure(liveBefore)))
 	}
 	if kubeadmplan.KubeProxyConfigurationContains(liveBefore.Stdout, desired) == nil {
-		completedAt := e.clock()
-		if _, err := e.Store.Update(record.OperationID, "no-change", operation.HostBookkeepingCompletionPhase, func(current operation.OperationRecord) (operation.OperationRecord, error) {
-			current.Phase = operation.HostBookkeepingCompletionPhase
-			current.CompletedPhases = appendMissing(current.CompletedPhases, "preflight-complete", operation.HostBookkeepingCompletionPhase)
-			current.CompletedAt = &completedAt
-			current.Terminal = true
-			current.Result = operation.ResultSucceeded
-			current.NextAction = "desired kube-proxy configuration already matches live state"
-			current.UpdatedAt = completedAt
-			return current, nil
-		}); err != nil {
-			return err
-		}
-		return nil
+		return e.completeUnchangedKubeadmConfig(ctx, record)
 	}
 	argv := []string{"/usr/bin/kubeadm", "init", "phase", "addon", "kube-proxy", "--config", request.ConfigPath}
 	if err := e.runControlPlaneConfigCommand(ctx, record, "preflight-kube-proxy-config-validate", []string{"/usr/bin/kubeadm", "config", "validate", "--config", request.ConfigPath}, false); err != nil {
@@ -538,36 +512,29 @@ func (e *Executor) executeKubeletConfig(ctx context.Context, record operation.Op
 		return e.failControlPlaneConfig(record, "preflight", err)
 	}
 	localMatches := kubeadmplan.KubeletConfigurationContains(localBefore, desired) == nil
+	previous, err := e.lastKubeadmConfigMutation(record)
+	if err != nil {
+		return e.failControlPlaneConfig(record, "preflight", err)
+	}
+	// A subset match cannot detect removal of previously managed fields.
+	desiredChanged := previous != nil && previous.KubeadmControlPlaneConfig.DesiredConfigSHA256 != request.DesiredConfigSHA256
+	incomplete := previous != nil && previous.Result != operation.ResultSucceeded
+	localMatches = localMatches && !desiredChanged && !incomplete
+	// A matching file is not evidence that an interrupted restart loaded it.
+	restartNeeded := !localMatches
 	uploadNeeded := request.CoordinatorUpload
 	if request.CoordinatorUpload {
 		liveResult := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "kube-system", "get", "configmap", "kubelet-config", "-o", "jsonpath={.data.kubelet}"}, nil)
 		if liveResult.Err != nil || liveResult.ExitStatus != 0 {
 			return e.failControlPlaneConfig(record, "preflight", fmt.Errorf("collect live kubelet config: %s", toolFailure(liveResult)))
 		}
-		liveDigest, err := kubeadmplan.CanonicalKubeletConfigurationSHA256(liveResult.Stdout)
-		if err != nil {
-			return e.failControlPlaneConfig(record, "preflight", fmt.Errorf("identify live kubelet config: %w", err))
-		}
-		uploadNeeded = liveDigest != desiredDigest
+		uploadNeeded = desiredChanged || incomplete || kubeadmplan.KubeletConfigurationContains(liveResult.Stdout, desired) != nil
 	}
 	before := sha256Bytes(localBefore)
-	if !uploadNeeded && localMatches {
-		completedAt := e.clock()
-		if _, err := e.Store.Update(record.OperationID, "no-change", operation.HostBookkeepingCompletionPhase, func(current operation.OperationRecord) (operation.OperationRecord, error) {
-			current.KubeadmControlPlaneConfig.BeforeKubeletConfigSHA256 = before
-			current.KubeadmControlPlaneConfig.AfterKubeletConfigSHA256 = before
-			current.Phase = operation.HostBookkeepingCompletionPhase
-			current.CompletedPhases = appendMissing(current.CompletedPhases, "preflight-complete", operation.HostBookkeepingCompletionPhase)
-			current.CompletedAt = &completedAt
-			current.Terminal = true
-			current.Result = operation.ResultSucceeded
-			current.NextAction = "desired kubelet configuration already matches live state"
-			current.UpdatedAt = completedAt
-			return current, nil
-		}); err != nil {
-			return err
-		}
-		return nil
+	if !uploadNeeded && !restartNeeded {
+		request.BeforeKubeletConfigSHA256 = before
+		request.AfterKubeletConfigSHA256 = before
+		return e.completeUnchangedKubeadmConfig(ctx, record)
 	}
 	if uploadNeeded {
 		argv := []string{"/usr/bin/kubeadm", "config", "validate", "--config", request.ConfigPath}
@@ -646,7 +613,7 @@ func (e *Executor) executeKubeletConfig(ctx context.Context, record operation.Op
 	}); err != nil {
 		return err
 	}
-	if !localMatches {
+	if restartNeeded {
 		if err := e.runControlPlaneConfigCommand(ctx, record, "kubelet-restart-running", []string{"/usr/bin/systemctl", "restart", "kubelet.service"}, true); err != nil {
 			return err
 		}
@@ -671,6 +638,60 @@ func (e *Executor) executeKubeletConfig(ctx context.Context, record operation.Op
 		return err
 	}
 	return e.finalizeSuccessfulOperation(ctx, record.OperationID)
+}
+
+// Only a completed mutation supersedes an interrupted one. A later refusal or
+// file-only no-op cannot prove that the earlier runtime transition completed.
+func (e *Executor) lastKubeadmConfigMutation(record operation.OperationRecord) (*operation.OperationRecord, error) {
+	records, err := e.Store.List()
+	if err != nil {
+		return nil, err
+	}
+	for _, previous := range records {
+		if previous.OperationID == record.OperationID || previous.KubeadmControlPlaneConfig == nil || previous.KubeadmControlPlaneConfig.Component != record.KubeadmControlPlaneConfig.Component || !previous.ExternalMutationStarted {
+			continue
+		}
+		return &previous, nil
+	}
+	return nil, nil
+}
+
+func (e *Executor) completeUnchangedKubeadmConfig(ctx context.Context, record operation.OperationRecord) error {
+	request := record.KubeadmControlPlaneConfig
+	if request.Component == "control-plane" {
+		previous, err := e.lastKubeadmConfigMutation(record)
+		if err != nil {
+			return e.failControlPlaneConfig(record, "preflight", err)
+		}
+		if previous != nil && previous.Result != operation.ResultSucceeded {
+			return e.failControlPlaneConfig(record, "preflight", fmt.Errorf("control-plane operation %s requires repair: %s", previous.OperationID, previous.NextAction))
+		}
+	}
+	var health ToolResult
+	switch request.Component {
+	case "kubelet":
+		health = e.runKubeletConfigHealth(ctx)
+	case "kube-proxy":
+		health = e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "kube-system", "rollout", "status", "daemonset/kube-proxy", "--timeout=5m"}, nil)
+	default:
+		health = e.runControlPlaneConfigHealth(ctx, request.NodeName)
+	}
+	if health.Err != nil || health.ExitStatus != 0 {
+		return e.failControlPlaneConfig(record, "configuration-health", fmt.Errorf("%s health failed: %s", request.Component, toolFailure(health)))
+	}
+	completedAt := e.clock()
+	_, err := e.Store.Update(record.OperationID, "no-change", operation.HostBookkeepingCompletionPhase, func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.KubeadmControlPlaneConfig = request
+		current.Phase = operation.HostBookkeepingCompletionPhase
+		current.CompletedPhases = appendMissing(current.CompletedPhases, "preflight-complete", "configuration-health", operation.HostBookkeepingCompletionPhase)
+		current.CompletedAt = &completedAt
+		current.Terminal = true
+		current.Result = operation.ResultSucceeded
+		current.NextAction = "desired " + request.Component + " configuration matches and health checks passed"
+		current.UpdatedAt = completedAt
+		return current, nil
+	})
+	return err
 }
 
 func (e *Executor) backupKubeletConfig(operationID string) (string, error) {

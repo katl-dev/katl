@@ -274,6 +274,8 @@ func TestRunClusterApplyManagementAddressOnlyTargetsWithoutMutation(t *testing.T
 			Kubernetes:          &agentapi.KubernetesStatus{State: "ready"},
 		},
 		validateResult: &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: generation.ApplyModeLive, NoChanges: true},
+		submitAccepted: &agentapi.OperationAccepted{OperationId: "reconcile", RequestDigest: strings.Repeat("e", 64)},
+		generation:     &agentapi.Generation{GenerationId: "generation-current", CommitState: "committed", HealthState: "healthy", ConfigApply: &agentapi.ConfigApplyStatus{SelectedKubeadmConfigName: "control-plane"}, Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", PayloadVersion: "v1.36.1", Sha256: strings.Repeat("c", 64)}}},
 	}
 	previousDial := dialKatlcAgent
 	defer func() { dialKatlcAgent = previousDial }()
@@ -288,8 +290,10 @@ func TestRunClusterApplyManagementAddressOnlyTargetsWithoutMutation(t *testing.T
 	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: afterPath}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
-	if len(client.submitRequests) != 0 || client.generationRequest != nil {
-		t.Fatalf("management-only apply mutated node state: submits=%#v generation=%#v", client.submitRequests, client.generationRequest)
+	for _, request := range client.submitRequests {
+		if request.OperationKind != "kubeadm-control-plane-config" {
+			t.Fatalf("management-only apply changed host configuration: %#v", request)
+		}
 	}
 	if !strings.Contains(stderr.String(), "phase=node-config node=cp-1 status=unchanged") {
 		t.Fatalf("apply progress = %q, want unchanged node", stderr.String())
@@ -299,7 +303,7 @@ func TestRunClusterApplyManagementAddressOnlyTargetsWithoutMutation(t *testing.T
 	}
 }
 
-func TestRunClusterApplyStagesPostBootstrapHostOnlyChangeAndRepeatsWithoutKubeadm(t *testing.T) {
+func TestRunClusterApplyStagesHostChangeThenReconciles(t *testing.T) {
 	configPath := writeClusterConfig(t)
 	client := &fakeKatlcAgentClient{
 		nodeStatus: &agentapi.NodeStatus{
@@ -349,6 +353,7 @@ func TestRunClusterApplyStagesPostBootstrapHostOnlyChangeAndRepeatsWithoutKubead
 
 	client.nodeStatus.CurrentGenerationId = "cluster-config-42"
 	client.validateResult = &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: generation.ApplyModeLive, NoChanges: true}
+	client.generation = &agentapi.Generation{GenerationId: "cluster-config-42", CommitState: "committed", HealthState: "healthy", ConfigApply: &agentapi.ConfigApplyStatus{SelectedKubeadmConfigName: "control-plane"}, Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", PayloadVersion: "v1.36.1", Sha256: strings.Repeat("c", 64)}}}
 	stdout.Reset()
 	stderr.Reset()
 	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath}, &stdout, &stderr); err != nil {
@@ -358,11 +363,13 @@ func TestRunClusterApplyStagesPostBootstrapHostOnlyChangeAndRepeatsWithoutKubead
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.RebootRequired || len(report.Kubernetes) != 0 {
+	if report.RebootRequired || report.Kubernetes["kubelet"] == nil {
 		t.Fatalf("repeat stdout = %s", stdout.String())
 	}
-	if len(client.submitRequests) != 1 || client.generationRequest != nil {
-		t.Fatalf("repeat apply mutated state: submits=%#v generation=%#v", client.submitRequests, client.generationRequest)
+	for _, request := range client.submitRequests[1:] {
+		if request.OperationKind != "kubeadm-control-plane-config" {
+			t.Fatalf("repeat apply changed host configuration: %#v", request)
+		}
 	}
 }
 
@@ -797,4 +804,69 @@ func writeControlPlaneEnrollmentContext(t *testing.T, names ...string) {
 		})
 	}
 	writeTestEnrollmentContext(t, "lab", nodes...)
+}
+
+func TestClusterApplyRetriesWithoutAnotherGeneration(t *testing.T) {
+	configPath := writeClusterConfig(t)
+	client := &fakeKatlcAgentClient{
+		nodeStatus:     &agentapi.NodeStatus{MachineId: "machine-cp-1", CurrentGenerationId: "generation-1"},
+		validateResult: &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: "live", ChangedDomains: []string{configapply.DomainKubeadmConfig}},
+		submitAccepted: &agentapi.OperationAccepted{OperationId: "apply", RequestDigest: strings.Repeat("e", 64)},
+		generation:     &agentapi.Generation{GenerationId: "generation-applied", CommitState: "committed", HealthState: "healthy", ConfigApply: &agentapi.ConfigApplyStatus{SelectedKubeadmConfigName: "control-plane"}, Sysexts: []*agentapi.ExtensionRef{{Name: "kubernetes", PayloadVersion: "v1.36.1", Sha256: strings.Repeat("c", 64)}}},
+	}
+	failed := false
+	generations, kubelets := 0, 0
+	client.onSubmit = func(request *agentapi.SubmitOperationRequest) {
+		if request.DryRun {
+			return
+		}
+		client.operationStatus = &agentapi.OperationStatus{OperationId: "apply", Terminal: true, Result: operation.ResultSucceeded}
+		if request.OperationKind == "generation-apply" {
+			generations++
+			client.nodeStatus.CurrentGenerationId = "generation-applied"
+			client.validateResult = &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: "live", NoChanges: true}
+		}
+		if request.KubeadmControlPlaneConfig != nil && slices.Contains(request.KubeadmControlPlaneConfig.SupportedFieldDelta, kubeadmConfigComponentKubelet) {
+			kubelets++
+			if !failed {
+				failed = true
+				client.operationStatus.Result = operation.ResultFailedNeedsRepair
+				client.operationStatus.Phase = "kubelet-config-verify"
+				client.operationStatus.FailureReason = "systemReserved.memory differs"
+				client.operationStatus.NextAction = "inspect configuration differences"
+			}
+		}
+	}
+	previousDial := dialKatlcAgent
+	defer func() { dialKatlcAgent = previousDial }()
+	dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
+		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
+	}
+	var stdout, stderr bytes.Buffer
+	opts := kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath}
+	err := runClusterApply(context.Background(), opts, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "inspect configuration differences") {
+		t.Fatalf("failed apply: %v", err)
+	}
+	var report clusterApplyReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Result != "partial" || !strings.Contains(report.NextAction, "reuses its generation") || report.Kubernetes["control-plane"] == nil || report.Kubernetes["kubelet"] == nil {
+		t.Fatalf("partial report: %s", stdout.String())
+	}
+	if !strings.Contains(stderr.String(), "component=kubelet status=failed") {
+		t.Fatalf("failure progress: %s", stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if err := runClusterApply(context.Background(), opts, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	if generations != 1 || kubelets != 2 {
+		t.Fatalf("generations=%d kubelet attempts=%d, want one generation and retry", generations, kubelets)
+	}
+	if !strings.Contains(stdout.String(), `"result":"succeeded"`) || !strings.Contains(stdout.String(), `"noChanges":true`) {
+		t.Fatalf("retry report: %s", stdout.String())
+	}
 }

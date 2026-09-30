@@ -514,8 +514,18 @@ katlctl cluster apply --config ./cluster.yaml
 
 Katl compiles and validates every selected node configuration,
 and starts no mutation if any selected node rejects the plan. It then applies node
-configuration and all affected Kubernetes component phases in a safe serial
+configuration and the configured Kubernetes component phases in a safe serial
 order, checking the affected nodes' health.
+
+An unchanged host configuration reuses its generation. Kubernetes reconciliation
+still runs to finish an interrupted or failed apply; matching, healthy components
+do not need a restart.
+
+If a Kubernetes phase fails after host configuration succeeds, apply reports a
+partial result and retains the active host configuration. Follow the reported
+recovery action, then rerun the same command. You do not need to delete the
+generation or edit an unrelated field to force a retry. Host generation rollback
+does not undo Kubernetes API changes.
 
 If the source has already been compiled, pass the bundle through the same flag:
 
