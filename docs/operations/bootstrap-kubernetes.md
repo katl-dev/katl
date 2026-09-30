@@ -163,4 +163,4 @@ KatlOS](troubleshoot.md). Kubernetes upgrades use the separate
 addition or one-for-one replacement in a healthy cluster uses the explicit
 [cluster membership](change-cluster-nodes.md) workflow. General reconciliation,
 loss-of-quorum recovery, and arbitrary repair after partial kubeadm mutation
-remain unsupported beta operations.
+remain unsupported operations.

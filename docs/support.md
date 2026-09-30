@@ -1,15 +1,20 @@
 # KatlOS support boundary
 
-KatlOS is experimental beta software for home-lab evaluation and development.
+KatlOS is stable software for home-lab use and development, beginning with
+2026.9.0. Stable means the maintainer considers Katl ready to use and is
+committed to continued use and fixing issues in subsequent releases. It does
+not mean that future releases will be free of bugs, regressions, or breaking
+changes.
+
 It is not supported for production clusters, security-sensitive workloads,
 compliance environments, or systems whose availability depends on KatlOS.
 There is no support SLA or security-response SLA. The network management API
 has a bounded compatibility guarantee beginning with the first stable release;
 see [agent API compatibility](internal/agent-api-compatibility.md).
 
-## Supported evaluation surface
+## Supported home-lab surface
 
-The beta release surface is deliberately narrow:
+The supported release surface is deliberately narrow:
 
 - x86-64 machines booted with UEFI;
 - the self-contained installer ISO, or the matching loose UEFI/PXE artifacts;
@@ -34,7 +39,7 @@ application lifecycle.
 
 KatlOS standard follows Fedora's stable kernel packages. KatlOS-lts uses the
 maintained kwizart 6.18 LTS kernel RPMs for the same Fedora release. Both have
-the same beta support boundary; LTS does not extend Fedora userspace support.
+the same support boundary; LTS does not extend Fedora userspace support.
 See [kernel flavours](operations/upgrade-host.md#kernel-flavours) for selection
 and upgrade behavior.
 
@@ -68,10 +73,11 @@ This proves which repository workflow produced the bytes. It does not provide:
 
 ## Compatibility promise
 
-All `v1alpha1` source, bundle, operation, and persisted-state formats are
-experimental. They may change incompatibly between beta releases. Katl does
-not promise automatic state migration or an upgrade path from every development
-build. Beginning with the first stable release, the node's network management
+The stable release designation does not freeze every interface or format.
+The `v1alpha1` configuration authoring format may still change incompatibly;
+use the matching release's CLI to validate and compile it. Katl does not
+promise automatic state migration or an upgrade path from every development
+or beta build. Beginning with 2026.9.0, the node's network management
 API follows the [agent API compatibility policy](internal/agent-api-compatibility.md):
 a newer `katlctl` supports the current and two preceding stable release series
 where the node has the required capability. Preserve the source `ClusterConfig`,
@@ -113,15 +119,15 @@ cluster backup.
 
 ## Explicitly unsupported
 
-Do not use the beta as the basis for:
+Do not use KatlOS as the basis for:
 
 - production, regulated, multi-tenant, or security-critical clusters;
 - an availability or disaster-recovery commitment;
 - unattended host or Kubernetes fleet upgrades;
 - Secure Boot or measured-boot policy enforcement;
 - hardware enablement beyond retained release evidence;
-- stable API, schema, on-disk-state, or long-term Kubernetes support promises;
-  or
+- API, schema, or on-disk-state compatibility beyond the documented window,
+  or long-term Kubernetes support promises; or
 - private artifact and credential distribution policy.
 
 ## Report a problem

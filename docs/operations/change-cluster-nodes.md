@@ -117,7 +117,7 @@ katlctl cluster etcd remove cp-3 --member-id MEMBER_ID \
 This command removes only stacked-etcd membership. Delete any remaining
 Kubernetes Node through the Kubernetes API, then reinstall and join the machine
 with `node join`. Loss of etcd quorum and snapshot-based disaster recovery
-remain outside the supported beta workflow.
+remain outside the supported workflow.
 
 ## Refused transitions
 

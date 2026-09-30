@@ -1,6 +1,6 @@
 # Installing KatlOS
 
-KatlOS is experimental beta software; read the
+KatlOS is intended for home-lab use on trusted networks; read the
 [support boundary](support.md) before installing it.
 
 This document is the complete installation and configuration reference. For a
