@@ -1,7 +1,7 @@
 # Katl
 
 [![Fast Checks](https://github.com/katl-dev/katl/actions/workflows/fast-checks.yml/badge.svg)](https://github.com/katl-dev/katl/actions/workflows/fast-checks.yml)
-[![Release](https://img.shields.io/github/v/release/katl-dev/katl?include_prereleases&sort=date)](https://github.com/katl-dev/katl/releases)
+[![Release](https://img.shields.io/github/v/release/katl-dev/katl?sort=date)](https://github.com/katl-dev/katl/releases)
 [![License](https://img.shields.io/github/license/katl-dev/katl)](LICENSE)
 
 Katl produces and maintains **KatlOS**, an immutable, installable, upgradeable,
@@ -13,12 +13,15 @@ uses standard Linux interfaces—systemd-boot, UKIs, `systemd-sysext`,
 `systemd-confext`, `systemd-repart`, networkd, and kubeadm—rather than hiding
 them behind a new cluster API.
 
-> [!WARNING]
-> KatlOS is experimental beta software for home-lab evaluation. Do not use it
-> for production, security-sensitive, regulated, or availability-critical
-> clusters. Beta formats and workflows may change incompatibly and reinstall
-> may be required.
-> Read the [support boundary](docs/support.md) before evaluating a release.
+KatlOS 2026.9.0 is the first stable release. After ten days running Katl in my
+home-lab cluster without issues, I consider it stable enough to use. I am
+committed to using Katl and fixing issues as development continues.
+
+Stable does not mean finished or free of bugs. Future releases may introduce
+breaking changes or regressions. Katl is intended for home-lab use on trusted
+networks; read the [support boundary](docs/support.md) and
+[2026.9.0 release notes](docs/releases/2026.9.0.md) for compatibility and
+recovery expectations.
 
 ## What Katl provides
 
@@ -331,7 +334,7 @@ artifacts.
 
 ## Project status and documentation
 
-The supported beta evaluation surface is x86-64 UEFI, the published ISO or
+The supported home-lab surface is x86-64 UEFI, the published ISO or
 matching loose artifacts, one explicitly selected disk per node, the matching
 `katlctl`, and kubeadm bootstrap using a compatible published Kubernetes
 bundle. Hardware claims extend only to retained release evidence.

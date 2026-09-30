@@ -1,11 +1,13 @@
 # KatlOS documentation
 
 KatlOS is an installable, upgradeable, systemd-native operating system for
-kubeadm Kubernetes nodes. These guides cover the supported beta journey from a
+kubeadm Kubernetes nodes. These guides cover the supported home-lab journey from a
 blank UEFI machine to a cluster that is ready for you to install a CNI and the
 rest of your platform.
 
-KatlOS is experimental home-lab software. Before using real hardware, read the
+KatlOS 2026.9.0 is the first stable release. Stable means ready for home-lab
+use with continued maintenance; future releases may still introduce breaking
+changes or regressions. Read the [release notes](releases/2026.9.0.md) and the
 [support and security boundary](support.md). In particular, the installer and
 node-management APIs are designed for a trusted network and must not be exposed
 to the Internet.

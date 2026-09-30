@@ -1,10 +1,10 @@
 # KatlOS operator guide
 
-These runbooks describe the implemented KatlOS beta operating surface. Start
+These runbooks describe the supported KatlOS home-lab operating surface. Start
 with the task that matches the current node state; do not skip directly to a
 mutating command.
 
-KatlOS is experimental. Read the [support boundary](../support.md) before using
+Read the [support boundary](../support.md) before using
 these procedures. The installer handoff on port 8080 is unauthenticated; the
 installed-node API on port 9443 defaults to trusted-network access for new
 configurations, with opt-in mTLS. See [management access](access.md).
@@ -36,7 +36,7 @@ The operator workstation needs the `katlctl` binary from the matching release,
 compatible with the selected Kubernetes release. These tools run on the
 workstation, not inside the KatlOS image.
 
-Keep these artifacts together for the life of an evaluation:
+Keep these artifacts together for the life of the cluster:
 
 - the KatlOS release URL and assets used;
 - the source `ClusterConfig`, any `.katlcfg` produced for PXE or offline use,
@@ -86,6 +86,6 @@ the planner so they produce an explicit lifecycle action instead of being
 silently ignored. Disk policy and Kubernetes version selection use their named
 install or upgrade workflows.
 
-There is no supported beta workflow for automatic host fleet rollout, loss of
+There is no supported workflow for automatic host fleet rollout, loss of
 etcd quorum, snapshot-based etcd disaster recovery, or general cluster
 reconciliation.
