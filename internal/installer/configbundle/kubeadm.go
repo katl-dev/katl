@@ -146,6 +146,15 @@ func kubeadmPlanWithNodeKubeletConfig(base kubeadmconfig.Plan, name, sourcePath 
 			continue
 		}
 		mergeKubeletFields(document, patchFields)
+		// Kubeadm applies this patch to the shared ConfigMap, which can predate
+		// the selected defaults. Carry the same desired fields as verification.
+		completeKubeletPatch(patchFields, document)
+		delete(patchFields, "apiVersion")
+		delete(patchFields, "kind")
+		patch, err = yaml.Marshal(patchFields)
+		if err != nil {
+			return kubeadmconfig.Plan{}, fmt.Errorf("encode effective kubelet patch: %w", err)
+		}
 		foundKubelet = true
 		break
 	}
@@ -187,6 +196,22 @@ func kubeadmPlanWithNodeKubeletConfig(base kubeadmconfig.Plan, name, sourcePath 
 	}
 	plan.NodeLocalKubelet = true
 	return plan, nil
+}
+
+func completeKubeletPatch(patch, desired map[string]any) {
+	for key, value := range desired {
+		patchValue, exists := patch[key]
+		if !exists {
+			patch[key] = value
+			continue
+		}
+		// Explicit nulls must survive as merge-patch deletions.
+		patchMap, patchIsMap := patchValue.(map[string]any)
+		desiredMap, desiredIsMap := value.(map[string]any)
+		if patchIsMap && desiredIsMap {
+			completeKubeletPatch(patchMap, desiredMap)
+		}
+	}
 }
 
 func mergeKubeletFields(target, patch map[string]any) {

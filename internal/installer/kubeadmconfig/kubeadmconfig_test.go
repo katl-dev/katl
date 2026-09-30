@@ -98,6 +98,29 @@ func TestPlanFromRenderedFilesReconstructsStoredInput(t *testing.T) {
 	}
 }
 
+func TestKubeletPatchPaths(t *testing.T) {
+	for _, test := range []struct {
+		name, patch, content string
+		allowed              bool
+	}{
+		{"kubelet plugin directory", "kubeletconfiguration+merge.yaml", "volumePluginDir: /var/lib/kubelet/plugins/volume/exec\n", true},
+		{"kubelet resolver", "kubeletconfiguration+merge.yaml", "resolvConf: /run/systemd/resolve/resolv.conf\n", true},
+		{"other directory", "kubeletconfiguration+merge.yaml", "volumePluginDir: /var/lib/kubelet/other\n", false},
+		{"other field", "kubeletconfiguration+merge.yaml", "staticPodPath: /var/lib/kubelet/plugins/volume/exec\n", false},
+		{"other target", "kube-apiserver+merge.yaml", "volumePluginDir: /var/lib/kubelet/plugins/volume/exec\n", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := PlanFromRenderedFiles("control-plane", []File{
+				{RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml", Content: []byte(initConfig())},
+				{RenderPath: "/etc/katl/kubeadm/control-plane/patches/" + test.patch, Content: []byte(test.content)},
+			})
+			if (err == nil) != test.allowed {
+				t.Fatalf("allowed=%v, error=%v", test.allowed, err)
+			}
+		})
+	}
+}
+
 func TestPlanFromRenderedFilesRejectsUnsafePatch(t *testing.T) {
 	_, err := PlanFromRenderedFiles("control-plane", []File{
 		{

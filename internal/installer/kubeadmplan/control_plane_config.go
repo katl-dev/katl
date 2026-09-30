@@ -9,6 +9,7 @@ import (
 	"io"
 	"reflect"
 	"sort"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -73,8 +74,8 @@ func KubeletConfigurationContains(actual, desired []byte) error {
 	}
 	normalizeKubeletDurationValues(actualConfig)
 	normalizeKubeletDurationValues(desiredConfig)
-	if !containsValue(actualConfig, desiredConfig) {
-		return fmt.Errorf("live KubeletConfiguration does not contain the desired fields")
+	if differences := configurationDifferences(actualConfig, desiredConfig, "", true); len(differences) > 0 {
+		return fmt.Errorf("KubeletConfiguration differs: %s", strings.Join(differences, "; "))
 	}
 	return nil
 }
@@ -106,32 +107,42 @@ func KubeProxyConfigurationContains(actual, desired []byte) error {
 	if err != nil {
 		return fmt.Errorf("desired: %w", err)
 	}
-	if !containsValue(actualConfig, desiredConfig) {
-		return fmt.Errorf("live KubeProxyConfiguration does not contain the desired fields")
+	if differences := configurationDifferences(actualConfig, desiredConfig, "", true); len(differences) > 0 {
+		return fmt.Errorf("KubeProxyConfiguration differs: %s", strings.Join(differences, "; "))
 	}
 	return nil
 }
 
 func containsValue(actual, desired any) bool {
-	switch desiredValue := desired.(type) {
-	case map[string]any:
-		actualValue, ok := actual.(map[string]any)
-		if !ok {
-			return false
-		}
-		for key, desiredChild := range desiredValue {
-			actualChild, exists := actualValue[key]
-			if !exists || !containsValue(actualChild, desiredChild) {
-				return false
+	return len(configurationDifferences(actual, desired, "", true)) == 0
+}
+
+func configurationDifferences(actual, desired any, path string, present bool) []string {
+	if desiredMap, ok := desired.(map[string]any); ok {
+		actualMap, actualIsMap := actual.(map[string]any)
+		if actualIsMap || !present && len(desiredMap) > 0 {
+			var differences []string
+			for key, value := range desiredMap {
+				childPath := key
+				if path != "" {
+					childPath = path + "." + key
+				}
+				actualValue, exists := actualMap[key]
+				differences = append(differences, configurationDifferences(actualValue, value, childPath, exists)...)
 			}
+			sort.Strings(differences)
+			return differences
 		}
-		return true
-	case []any:
-		actualValue, ok := actual.([]any)
-		return ok && reflect.DeepEqual(actualValue, desiredValue)
-	default:
-		return reflect.DeepEqual(actual, desired)
 	}
+	if present && reflect.DeepEqual(actual, desired) {
+		return nil
+	}
+	desiredJSON, _ := json.Marshal(desired)
+	actualJSON, _ := json.Marshal(actual)
+	if !present {
+		actualJSON = []byte("<missing>")
+	}
+	return []string{fmt.Sprintf("%s: desired %s, actual %s", path, desiredJSON, actualJSON)}
 }
 
 var profilingComponents = []string{"apiServer", "controllerManager", "scheduler"}

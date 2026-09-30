@@ -86,6 +86,23 @@ func TestKubeletConfigurationCanonicalizesDurations(t *testing.T) {
 	}
 }
 
+func TestKubeletConfigurationDifferences(t *testing.T) {
+	actual := []byte("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 110\n")
+	desired := []byte("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 150\nsystemReserved:\n  memory: 1Gi\n")
+	err := KubeletConfigurationContains(actual, desired)
+	if err == nil {
+		t.Fatal("missing and unequal fields were accepted")
+	}
+	for _, difference := range []string{
+		"maxPods: desired 150, actual 110",
+		`systemReserved.memory: desired "1Gi", actual <missing>`,
+	} {
+		if !strings.Contains(err.Error(), difference) {
+			t.Errorf("error %q does not identify %q", err, difference)
+		}
+	}
+}
+
 func TestSupportedControlPlaneProfilingDelta(t *testing.T) {
 	live := []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nclusterName: katl\nkubernetesVersion: v1.36.1\n")
 	desired := []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nclusterName: katl\nkubernetesVersion: v1.36.1\napiServer:\n  extraArgs:\n    - name: profiling\n      value: \"false\"\nscheduler:\n  extraArgs:\n    - name: profiling\n      value: \"false\"\n")

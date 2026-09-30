@@ -43,6 +43,7 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 	source.Metadata.Name = "three-control-plane"
 	source.Spec.ControlPlaneEndpoint.Host = "api.unpublished.katl.test"
 	source.Spec.Kubernetes.Kubeadm = &configbundle.SourceKubeadmInput{ConfigFile: "kubeadm.yaml"}
+	source.Spec.Defaults.Kubernetes.Kubelet = &configbundle.SourceKubeletConfig{ConfigFile: "kubelet.yaml"}
 	node := source.Spec.Nodes[0]
 	source.Spec.Nodes = nil
 	for _, name := range []string{"cp-1", "cp-2", "cp-3"} {
@@ -72,8 +73,31 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 	t.Setenv("KATLCTL_CONFIG", contextPath)
 	t.Setenv("KATLCTL_CONFIG_DIR", "")
 	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t))
-	desired := fmt.Sprintf("%s\n---\napiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 111\n", strings.TrimSpace(string(live)))
-	if err := os.WriteFile(filepath.Join(dir, "kubeadm.yaml"), []byte(desired), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "kubeadm.yaml"), live, 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(dir, "kubelet.yaml"), []byte("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 111\n"), 0o600); err != nil {
+		return err
+	}
+	// Model an existing cluster whose shared config predates Katl's defaults.
+	shared, err := kubectlOutput(ctx, kubeconfig, "-n", "kube-system", "get", "configmap", "kubelet-config", "-o", "jsonpath={.data.kubelet}")
+	if err != nil {
+		return err
+	}
+	var sharedConfig map[string]any
+	if err := yaml.Unmarshal(shared, &sharedConfig); err != nil {
+		return err
+	}
+	delete(sharedConfig, "systemReserved")
+	shared, err = yaml.Marshal(sharedConfig)
+	if err != nil {
+		return err
+	}
+	patch, err := json.Marshal(map[string]any{"data": map[string]string{"kubelet": string(shared)}})
+	if err != nil {
+		return err
+	}
+	if _, err := kubectlOutput(ctx, kubeconfig, "-n", "kube-system", "patch", "configmap", "kubelet-config", "--type=merge", "--patch", string(patch)); err != nil {
 		return err
 	}
 	management, err := vmtest.VMTestManagementPlanning(vmtest.VMTestManagementClusterName, []string{"cp-1", "cp-2", "cp-3"})
@@ -84,7 +108,7 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 		return err
 	}
 	apply := func(name string, unchanged bool) error {
-		stdout, stderr, err := runProofKatlctl(ctx, katlctl, dir, name, "cluster", "apply", "--config", configPath)
+		stdout, stderr, err := runProofKatlctl(ctx, katlctl, dir, name, "cluster", "apply", "--config", configPath, "-o", "json")
 		if err != nil {
 			return fmt.Errorf("%s: %w: %s", name, err, stderr)
 		}
@@ -140,7 +164,8 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 		}
 		var config struct {
 			Kubelet struct {
-				MaxPods int `json:"maxPods"`
+				MaxPods        int               `json:"maxPods"`
+				SystemReserved map[string]string `json:"systemReserved"`
 			} `json:"kubeletconfig"`
 		}
 		if err := json.Unmarshal(data, &config); err != nil {
@@ -148,6 +173,9 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 		}
 		if config.Kubelet.MaxPods != 111 {
 			return fmt.Errorf("%s kubelet maxPods=%d, want 111", node.Name, config.Kubelet.MaxPods)
+		}
+		if config.Kubelet.SystemReserved["memory"] != "1Gi" {
+			return fmt.Errorf("%s kubelet systemReserved.memory=%q, want 1Gi", node.Name, config.Kubelet.SystemReserved["memory"])
 		}
 		id, err := bootID(node.Name)
 		if err != nil {
@@ -165,6 +193,13 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 	}
 	if err := apply("repeat", true); err != nil {
 		return err
+	}
+	sharedAfter, err := kubectlOutput(ctx, kubeconfig, "-n", "kube-system", "get", "configmap", "kubelet-config", "-o", "jsonpath={.data.kubelet}")
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(sharedAfter, shared) {
+		return fmt.Errorf("node-local kubelet apply changed the shared configuration")
 	}
 	for _, node := range nodes {
 		if err := verify(node, true); err != nil {

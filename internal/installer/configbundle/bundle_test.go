@@ -691,6 +691,16 @@ maxPods: 120
 			if !strings.Contains(string(plan.Config.Content), "maxPods: "+test.maxPods) {
 				t.Fatalf("kubelet config does not contain maxPods %s:\n%s", test.maxPods, plan.Config.Content)
 			}
+			patches, err := decodeKubeadmDocuments(plan.Patches[0].Content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := nestedString(patches[0], "systemReserved", "memory"); got != "1Gi" {
+				t.Fatalf("node-local patch system memory reservation = %q, want 1Gi", got)
+			}
+			if got := nestedString(patches[0], "volumePluginDir"); got != "/var/lib/kubelet/plugins/volume/exec" {
+				t.Fatalf("node-local patch volume plugin directory = %q", got)
+			}
 
 			report, err := InspectSelectedNode(selected)
 			if err != nil {
@@ -1024,12 +1034,16 @@ func TestBuildArchiveOverridesSystemMemoryReservation(t *testing.T) {
 	writeFile(t, filepath.Join(dir, "kubeadm.yaml"), `apiVersion: kubelet.config.k8s.io/v1beta1
 kind: KubeletConfiguration
 systemReserved:
+  cpu: 250m
   memory: 3Gi
+allowedUnsafeSysctls:
+  - net.ipv4.*
 `)
 	writeFile(t, filepath.Join(dir, "worker-kubelet.yaml"), `apiVersion: kubelet.config.k8s.io/v1beta1
 kind: KubeletConfiguration
 systemReserved:
   memory: 4Gi
+allowedUnsafeSysctls: null
 `)
 	source := strings.Replace(validSourceConfig(), "    version: v1.36.1", "    version: v1.36.1\n    kubeadm:\n      configFile: ./kubeadm.yaml", 1)
 	source = strings.Replace(source, "      kubernetes:\n        labels:\n          katl.dev/pool: workers", "      kubernetes:\n        kubelet:\n          configFile: ./worker-kubelet.yaml\n        labels:\n          katl.dev/pool: workers", 1)
@@ -1056,6 +1070,19 @@ systemReserved:
 		}
 		if got := nestedString(kubeadmDocument(documents, "KubeletConfiguration"), "systemReserved", "memory"); got != node.want {
 			t.Fatalf("%s system memory reservation = %q, want %q", node.name, got, node.want)
+		}
+		if node.name == "worker-1" {
+			patches, err := decodeKubeadmDocuments(selected.KubeadmConfigs[node.ref].Patches[0].Content)
+			if err != nil {
+				t.Fatal(err)
+			}
+			patch := patches[0]
+			if nestedString(patch, "systemReserved", "cpu") != "250m" || nestedString(patch, "systemReserved", "memory") != "4Gi" {
+				t.Fatalf("patch must combine shared CPU and node memory reservations: %#v", patch)
+			}
+			if value, exists := patch["allowedUnsafeSysctls"]; !exists || value != nil {
+				t.Fatalf("patch must retain the explicit field deletion: %#v", patch)
+			}
 		}
 	}
 }
