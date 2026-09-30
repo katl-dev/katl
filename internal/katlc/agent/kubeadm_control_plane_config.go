@@ -774,6 +774,9 @@ func (e *Executor) failControlPlaneConfig(record operation.OperationRecord, phas
 			current.RecoveryRequired = true
 			current.Result = operation.ResultFailedNeedsRepair
 			current.NextAction = "stop rollout; inspect manifest backups and kubeadm diagnostics, then submit an explicit repair or reverse operation"
+			if current.KubeadmControlPlaneConfig.Component == "kubelet" {
+				current.NextAction = "inspect the reported kubelet configuration differences and operation diagnostics; correct the desired configuration or update Katl, then rerun katlctl cluster apply; the kubelet configuration backup is retained with this operation"
+			}
 		} else {
 			current.NextAction = "fix the refusal and submit a new rollout"
 		}

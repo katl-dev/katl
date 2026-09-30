@@ -154,7 +154,7 @@ func PlanFromRenderedFiles(name string, files []File) (Plan, error) {
 			if patch.Mode == 0 {
 				patch.Mode = 0o644
 			}
-			if err := validatePatchYAML(patch.Content); err != nil {
+			if err := validatePatchYAML(filepath.Base(renderPath), patch.Content); err != nil {
 				return Plan{}, fmt.Errorf("patch %q: %w", strings.TrimPrefix(renderPath, patchesRenderDir+"/"), err)
 			}
 			patches = append(patches, patch)
@@ -558,7 +558,7 @@ func resolvePatches(repoRoot, patchesDir, renderDir string) ([]File, error) {
 		if err != nil {
 			return err
 		}
-		if err := validatePatchYAML(data); err != nil {
+		if err := validatePatchYAML(filepath.Base(path), data); err != nil {
 			return fmt.Errorf("patch %q: %w", rel, err)
 		}
 		rel = filepath.ToSlash(filepath.Clean(rel))
@@ -579,7 +579,7 @@ func resolvePatches(repoRoot, patchesDir, renderDir string) ([]File, error) {
 	return patches, nil
 }
 
-func validatePatchYAML(data []byte) error {
+func validatePatchYAML(name string, data []byte) error {
 	decoder := yaml.NewDecoder(bytes.NewReader(data))
 	for index := 0; ; index++ {
 		var node yaml.Node
@@ -593,7 +593,10 @@ func validatePatchYAML(data []byte) error {
 		if emptyDocument(&node) {
 			continue
 		}
-		if err := walkYAML(&node, nil, func(_ []string, value string) error {
+		if err := walkYAML(&node, nil, func(path []string, value string) error {
+			if strings.HasPrefix(name, "kubeletconfiguration") && allowedKubeletHostPath(path, value) {
+				return nil
+			}
 			if strings.HasPrefix(value, "/") && deniedHostPath(value) {
 				return fmt.Errorf("host path %s is denied", value)
 			}
