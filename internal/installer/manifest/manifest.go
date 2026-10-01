@@ -867,8 +867,11 @@ func ValidateHostConfiguration(config HostConfiguration, allowSource bool) error
 		if setting.Name != strings.TrimSpace(setting.Name) || path.Clean(setting.Name) != setting.Name || !strings.HasPrefix(setting.Name, "/sys/") {
 			return fmt.Errorf("%s.name %q must be a normalized path below /sys", field, setting.Name)
 		}
-		if strings.IndexFunc(setting.Name, unicode.IsSpace) >= 0 || strings.ContainsAny(setting.Name, "*?[]%\\\x00") || !utf8.ValidString(setting.Name) {
-			return fmt.Errorf("%s.name %q must not contain whitespace, globs, specifiers, or escapes", field, setting.Name)
+		if strings.IndexFunc(setting.Name, unicode.IsSpace) >= 0 || strings.ContainsAny(setting.Name, "%\\\x00") || !utf8.ValidString(setting.Name) {
+			return fmt.Errorf("%s.name %q must not contain whitespace, specifiers, or escapes", field, setting.Name)
+		}
+		if _, err := path.Match(setting.Name, setting.Name); err != nil {
+			return fmt.Errorf("%s.name %q has invalid glob syntax: %w", field, setting.Name, err)
 		}
 		if _, exists := sysfsNames[setting.Name]; exists {
 			return fmt.Errorf("%s.name %q duplicates another sysfs setting", field, setting.Name)

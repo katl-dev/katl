@@ -3,6 +3,7 @@ package configapply
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -110,6 +111,9 @@ func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase st
 				"/usr/bin/cat",
 				target,
 			)
+			if strings.ContainsAny(target, "*?[") {
+				plan.Commands[len(plan.Commands)-1].sysfsGlob = target
+			}
 		}
 	}
 	if prepare {
@@ -127,7 +131,7 @@ func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase st
 
 func ExecuteHostConfigurationActivation(ctx context.Context, plan HostConfigurationActivationPlan, runner CommandRunner, observe func(generation.ConfigApplyEffect)) error {
 	for index, command := range plan.Commands {
-		result, err := runner.Run(ctx, command)
+		result, err := runHostConfigurationCommand(ctx, runner, command)
 		if err == nil && !commandSucceeded(command, result) {
 			err = commandFailure(command, result)
 		}
@@ -151,7 +155,7 @@ func InspectHostConfiguration(ctx context.Context, config manifest.HostConfigura
 	plan := PlanHostConfigurationActivation(config, HostConfigurationPhaseVerify)
 	var drift []generation.ConfigApplyEffect
 	for index, command := range plan.Commands {
-		result, err := runner.Run(ctx, command)
+		result, err := runHostConfigurationCommand(ctx, runner, command)
 		if err == nil && !commandSucceeded(command, result) {
 			err = commandFailure(command, result)
 		}
@@ -164,6 +168,33 @@ func InspectHostConfiguration(ctx context.Context, config manifest.HostConfigura
 		drift = append(drift, effect)
 	}
 	return drift
+}
+
+func runHostConfigurationCommand(ctx context.Context, runner CommandRunner, command Command) (CommandResult, error) {
+	if command.sysfsGlob == "" {
+		return runner.Run(ctx, command)
+	}
+	return verifySysfsGlob(command.sysfsGlob, command.ExpectedStdout)
+}
+
+func verifySysfsGlob(pattern, expected string) (CommandResult, error) {
+	paths, err := filepath.Glob(pattern)
+	if err != nil {
+		return CommandResult{}, fmt.Errorf("expand sysfs path %q: %w", pattern, err)
+	}
+	if len(paths) == 0 {
+		return CommandResult{}, fmt.Errorf("sysfs path %q matched no files", pattern)
+	}
+	for _, target := range paths {
+		value, err := os.ReadFile(target)
+		if err != nil {
+			return CommandResult{}, fmt.Errorf("read sysfs path %q: %w", target, err)
+		}
+		if strings.TrimSpace(string(value)) != expected {
+			return CommandResult{}, fmt.Errorf("sysfs path %q returned %q, want %q", target, strings.TrimSpace(string(value)), expected)
+		}
+	}
+	return CommandResult{Stdout: expected}, nil
 }
 
 func HostConfigurationDriftIsLive(drift []generation.ConfigApplyEffect) bool {

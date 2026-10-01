@@ -656,7 +656,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		`"acceptedApplyMode": "next-boot"`,
 		`"domain": "host-configuration"`,
 		`"domain": "kernel-command-line"`,
-		`"target": "sysfs /sys/module/printk/parameters/time"`,
+		`"target": "sysfs /sys/module/printk/parameters/tim*"`,
 		`"target": "containerd configuration /etc/containerd/conf.d/80-katl-vmtest.toml"`,
 	)
 	assertGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/confext/etc/systemd/network/80-katl-vmtest-dhcp.network.d/50-address.conf", "Address=198.51.100.77/32")

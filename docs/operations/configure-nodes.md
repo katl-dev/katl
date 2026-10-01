@@ -327,6 +327,8 @@ spec:
       sysfs:
         - path: /sys/module/printk/parameters/time
           value: N
+        - path: /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference
+          value: balance_performance
       fileSets:
         forwarding:
           files:
@@ -499,7 +501,10 @@ configuration when they start. Use `enabledUnits` for persistent activation.
 Katl rejects protected paths, duplicate path ownership, executable or writable
 modes, and attempts to notify release-critical units before rendering a
 candidate generation. Each sysfs `path` must be a unique normalized `/sys/...`
-path, and each `value` must be a non-empty single-line value without leading or
+path. Paths may use `*`, `?`, and bracket ranges such as `[0-9]` to match
+multiple files. At boot, every matched file receives the same value; verification
+fails if the pattern matches no files or any matched file has a different value.
+Each `value` must be a non-empty single-line value without leading or
 trailing whitespace. A node-level `sysfs` list replaces the defaults list; use
 `sysfs: []` to clear inherited settings. Operator-authored files below
 `/etc/tmpfiles.d` are rejected because Katl owns the generated sysfs rule.

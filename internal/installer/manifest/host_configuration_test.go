@@ -53,7 +53,8 @@ func TestValidateHostConfigurationRejectsUnsafeSysfsSettings(t *testing.T) {
 	}{
 		{name: "outside sysfs", setting: HostConfigurationSysfsSetting{Name: "/proc/sys/kernel/hostname", Value: "lab"}, want: "below /sys"},
 		{name: "not normalized", setting: HostConfigurationSysfsSetting{Name: "/sys/module/../example", Value: "1"}, want: "normalized"},
-		{name: "name glob", setting: HostConfigurationSysfsSetting{Name: "/sys/class/net/*/mtu", Value: "9000"}, want: "globs"},
+		{name: "invalid glob", setting: HostConfigurationSysfsSetting{Name: "/sys/class/net/[*/mtu", Value: "9000"}, want: "invalid glob syntax"},
+		{name: "specifier", setting: HostConfigurationSysfsSetting{Name: "/sys/class/net/%m/mtu", Value: "9000"}, want: "specifiers"},
 		{name: "name whitespace", setting: HostConfigurationSysfsSetting{Name: "/sys/example value", Value: "1"}, want: "must not contain whitespace"},
 		{name: "empty value", setting: HostConfigurationSysfsSetting{Name: "/sys/example"}, want: "non-empty single-line"},
 		{name: "leading whitespace", setting: HostConfigurationSysfsSetting{Name: "/sys/example", Value: " one two"}, want: "leading or trailing whitespace"},
@@ -68,6 +69,16 @@ func TestValidateHostConfigurationRejectsUnsafeSysfsSettings(t *testing.T) {
 				t.Fatalf("ValidateHostConfiguration() error = %v, want %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestValidateHostConfigurationAcceptsSysfsGlob(t *testing.T) {
+	config := HostConfiguration{Sysfs: []HostConfigurationSysfsSetting{{
+		Name:  "/sys/devices/system/cpu/cpu[0-9]*/cpufreq/energy_performance_preference",
+		Value: "balance_performance",
+	}}}
+	if err := ValidateHostConfiguration(config, false); err != nil {
+		t.Fatalf("ValidateHostConfiguration() error = %v", err)
 	}
 }
 

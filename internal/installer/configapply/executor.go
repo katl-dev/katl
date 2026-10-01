@@ -23,6 +23,7 @@ type Command struct {
 	ExpectedStdout      string
 	Timeout             time.Duration
 	SuccessExitStatuses []int
+	sysfsGlob           string
 }
 
 type CommandResult struct {

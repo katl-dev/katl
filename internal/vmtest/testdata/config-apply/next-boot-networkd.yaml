@@ -17,7 +17,7 @@ spec:
         - systemd-userdbd.service
         - systemd-userdbd.socket
       sysfs:
-        - name: /sys/module/printk/parameters/time
+        - name: /sys/module/printk/parameters/tim*
           value: N
       sets:
         vmtest-network:
