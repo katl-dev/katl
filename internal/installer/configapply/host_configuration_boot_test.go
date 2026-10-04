@@ -2,6 +2,8 @@ package configapply
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -83,6 +85,39 @@ func TestPlanHostConfigurationActivationAppliesAndVerifiesSysfsWrites(t *testing
 	}
 	if HostConfigurationDriftIsLive(verify.Effects) {
 		t.Fatalf("sysfs drift must require next-boot reconciliation: %#v", verify.Effects)
+	}
+}
+
+func TestHostConfigurationVerifiesEverySysfsGlobMatch(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"cpu0", "cpu1"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("balance_performance\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config := manifest.HostConfiguration{Sysfs: []manifest.HostConfigurationSysfsSetting{{
+		Name: filepath.Join(dir, "cpu*"), Value: "balance_performance",
+	}}}
+	plan := PlanHostConfigurationActivation(config, HostConfigurationPhaseVerify)
+	if err := ExecuteHostConfigurationActivation(context.Background(), plan, nil, nil); err != nil {
+		t.Fatalf("verify matching paths: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cpu1"), []byte("power\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	drift := InspectHostConfiguration(context.Background(), config, nil)
+	if len(drift) != 1 || !strings.Contains(drift[0].Diagnostic, "cpu1") {
+		t.Fatalf("drift = %#v, want mismatched cpu1", drift)
+	}
+	if err := os.Remove(filepath.Join(dir, "cpu0")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, "cpu1")); err != nil {
+		t.Fatal(err)
+	}
+	drift = InspectHostConfiguration(context.Background(), config, nil)
+	if len(drift) != 1 || !strings.Contains(drift[0].Diagnostic, "matched no files") {
+		t.Fatalf("drift = %#v, want missing matches", drift)
 	}
 }
 

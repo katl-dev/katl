@@ -116,7 +116,7 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 	case "configbundle.SourceHostConfiguration.fileSets":
 		return mapRule("Named native /etc file sets; an empty node map clears inherited sets.", dnsLabelPattern)
 	case "configbundle.SourceHostConfigurationSysfsSetting.path":
-		return stringRule("Normalized writable path below /sys.", `^/sys/`, 6, 0)
+		return stringRule("Normalized writable path or glob below /sys.", `^/sys/`, 6, 0)
 	case "configbundle.SourceHostConfigurationSysfsSetting.value":
 		return stringRule("Non-empty single-line value written at boot.", `^[^\r\n]+$`, 1, 0)
 	case "configbundle.SourceHostConfigurationFileSet.state":
