@@ -92,6 +92,41 @@ func TestGenerationActivateArmsRecoveryBeforeCandidateActivation(t *testing.T) {
 	}
 }
 
+func TestGenerationActivateRecordsFallbackBootIdentity(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 10, 4, 15, 0, 0, 0, time.UTC)
+	writeActivationFallback(t, root, "known-good", now.Add(-time.Hour))
+	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
+		APIVersion:                    generation.APIVersion,
+		Kind:                          generation.BootSelectionKind,
+		DefaultGenerationID:           "known-good",
+		PreviousKnownGoodGenerationID: "known-good",
+		BootedGenerationID:            "failed-trial",
+		FailedBootGenerationID:        "failed-trial",
+		DefaultBootEntry:              "loader/entries/katl-known-good.conf",
+		PreviousKnownGoodBootEntry:    "loader/entries/katl-known-good.conf",
+		BootedBootEntry:               "loader/entries/katl-failed-trial.conf",
+		UpdatedAt:                     now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cmdline := filepath.Join(root, "proc-cmdline")
+	if err := os.WriteFile(cmdline, []byte("root=PARTUUID=11111111-2222-3333-4444-555555555555 katl.generation=known-good\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, nil); err != nil {
+		t.Fatal(err)
+	}
+	selection, err := generation.ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.BootedGenerationID != "known-good" || selection.BootedBootEntry != "loader/entries/katl-known-good.conf" || selection.FailedBootGenerationID != "failed-trial" {
+		t.Fatalf("boot selection after activation = %#v", selection)
+	}
+}
+
 func TestActivateHostnameUsesSelectedVerifiedConfext(t *testing.T) {
 	root := t.TempDir()
 	confext := "/var/lib/katl/generations/1/confext"

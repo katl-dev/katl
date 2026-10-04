@@ -46,12 +46,14 @@ func run(_ context.Context, args []string, stdout io.Writer) error {
 	}
 
 	selected := *generationID
+	var commandLine string
 	if selected == "" {
 		data, err := os.ReadFile(*cmdline)
 		if err != nil {
 			return fmt.Errorf("read kernel command line: %w", err)
 		}
-		selected, err = generation.SelectedGenerationFromCommandLine(string(data))
+		commandLine = string(data)
+		selected, err = generation.SelectedGenerationFromCommandLine(commandLine)
 		if err != nil {
 			return err
 		}
@@ -70,6 +72,12 @@ func run(_ context.Context, args []string, stdout io.Writer) error {
 	}
 	if record.GenerationID != selected {
 		return fmt.Errorf("metadata generation %q does not match selected generation %q", record.GenerationID, selected)
+	}
+	if commandLine != "" {
+		// Recovery is armed first so a failed identity write can still roll back a trial.
+		if err := generation.RecordBootedGeneration(*root, commandLine); err != nil {
+			return fmt.Errorf("record booted generation: %w", err)
+		}
 	}
 	plan, err := generation.ApplyActivation(*root, record)
 	if err != nil {

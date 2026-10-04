@@ -3,6 +3,7 @@ package generation
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -39,6 +40,38 @@ type BootHealthResult struct {
 }
 
 type BootDefaultSetter func(root string, bootEntry string) error
+
+// RecordBootedGeneration records the kernel's selected generation before
+// services can report boot state. Health validation still decides promotion.
+func RecordBootedGeneration(root, commandLine string) error {
+	root = cleanRoot(root)
+	return withStateLock(filepath.Join(root, "var/lib/katl/boot"), func() error {
+		selection, err := ReadBootSelection(root)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		generationID, err := SelectedGenerationFromCommandLine(commandLine)
+		if err != nil {
+			return err
+		}
+		spec, _, err := ReadGeneration(root, generationID)
+		if err != nil {
+			return err
+		}
+		observed := inferBootedSelection(selection, spec, generationID, commandLine)
+		if err := validateBootedSelection(observed, spec, generationID, commandLine); err != nil {
+			return err
+		}
+		if observed.BootedGenerationID == selection.BootedGenerationID && observed.BootedBootEntry == selection.BootedBootEntry {
+			return nil
+		}
+		observed.UpdatedAt = time.Now().UTC()
+		return WriteBootSelection(root, observed)
+	})
+}
 
 type LivePromotionRequest struct {
 	Root           string
@@ -350,13 +383,14 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 		if err := supersedePreviousGeneration(root, previousID, generationID, now); err != nil {
 			return BootHealthResult{}, err
 		}
-		if fallbackRecovery {
-			selection.PreviousKnownGoodGenerationID = ""
-			selection.PreviousKnownGoodBootEntry = ""
-		} else {
+		if !fallbackRecovery {
 			selection.PreviousKnownGoodGenerationID = previousID
 			selection.PreviousKnownGoodBootEntry = previousBootEntry
 		}
+	}
+	if fallbackRecovery {
+		selection.PreviousKnownGoodGenerationID = ""
+		selection.PreviousKnownGoodBootEntry = ""
 	}
 	selection.UpdatedAt = now.UTC()
 	if err := WriteBootSelection(root, selection); err != nil {
@@ -536,6 +570,12 @@ func isManualKnownGoodFallback(selection BootSelectionRecord, generationID strin
 
 func isFallbackRecovery(selection BootSelectionRecord, generationID string) bool {
 	if isManualKnownGoodFallback(selection, generationID) {
+		return true
+	}
+	failedID := strings.TrimSpace(selection.FailedBootGenerationID)
+	if !selection.PendingHealthValidation && failedID != "" && generationID != failedID &&
+		generationID == strings.TrimSpace(selection.DefaultGenerationID) &&
+		generationID == strings.TrimSpace(selection.PreviousKnownGoodGenerationID) {
 		return true
 	}
 	return !selection.PendingHealthValidation &&
