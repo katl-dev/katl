@@ -58,6 +58,8 @@ the exact reference for flags in the installed release.
 
 ## Project documentation
 
+- [2026.10.0 release notes](releases/2026.10.0.md) explain live network
+  configuration and the Fedora 44 base.
 - [2026.9.1 release notes](releases/2026.9.1.md) explain recovery from failed
   kubelet configuration applies.
 - [Beta.18 release notes](releases/2026.9.0-beta.18.md) explain upgrade paths
