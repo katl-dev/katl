@@ -119,19 +119,14 @@ jobs:
         with:
           ref: ${{ needs.propose.outputs.commit || github.sha }}
           persist-credentials: false
-          fetch-depth: 0
       - id: plan
-        env:
-          BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.sha }}
         run: |
           directory="kernels/fedora-$(scripts/fedora-release)/x86_64"
           if [[ -f "$directory/standard.json" && -f "$directory/lts.json" ]]; then
             echo 'qualify=true' >> "$GITHUB_OUTPUT"
-          elif [[ -d kernels ]] || git cat-file -e "$BASE_COMMIT:kernels" 2>/dev/null; then
+          else
             echo 'kernel locks must cover both flavours of the selected Fedora release' >&2
             exit 1
-          else
-            echo 'qualify=false' >> "$GITHUB_OUTPUT"
           fi
 
   qualify:

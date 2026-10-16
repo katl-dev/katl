@@ -124,7 +124,7 @@ func TestKernelIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(config, "CacheKey=katl-runtime-"+after) || strings.Contains(config, before) {
+	if !strings.Contains(config, "CacheKey=katl-runtime-kernel-v1-"+after) || strings.Contains(config, before) {
 		t.Fatal("mkosi cache identity does not bind the changed RPM bytes")
 	}
 }

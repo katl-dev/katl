@@ -695,18 +695,23 @@ the output directory; use separate directories for concurrent builds. Internal
 filenames are identical inside these isolated directories. Release staging adds `-lts` to published LTS
 assets and rewrites their adjacent metadata and checksum filenames.
 
-The LTS repository is configured in `mkosi.kernel-lts`. Only `kernel-longterm*`
-packages are admitted from it, with RPM signature verification enabled. Its
-6.18 series is pinned; patches follow the maintained repository. A Fedora release
-bump requires confirming that this repository publishes matching LTS RPMs and
-running both flavours' installer and upgrade journeys.
+Both flavours consume the reviewed lock in
+`kernels/fedora-<release>/x86_64/<flavour>.json`. Runtime, installer, and extension
+builds use the retained RPM bytes identified by that lock. The matching `devel`
+package supplies the runtime's exported headers. Generic `kernel-headers` and
+userspace packages continue to resolve from their existing repositories.
+
+A Fedora release bump requires publishing and qualifying both new kernel sets
+before changing the base release. Builds fail if a selected lock or retained
+package is missing; they do not fall back to a moving kernel repository.
 
 ### Qualify retained kernel inputs
 
 The Kernel Updates workflow captures signed kernel RPM sets and proposes their
 locks after building runtime and installer artifacts, every release-owned
 extension recipe, and complete module composition. It runs weekly or on manual
-dispatch. To qualify an exact kernel pair instead of discovering newer versions:
+dispatch. Automatic discovery refuses versions older than the committed lock.
+An explicit release permits a deliberate rollback. To qualify an exact kernel pair instead of discovering newer versions:
 
 ```sh
 gh workflow run kernel-updates.yml --ref main \

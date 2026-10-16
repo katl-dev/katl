@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/installer/payloadbundle"
+	"github.com/katl-dev/katl/internal/kernelrelease"
 )
 
 func kernelInputFixture(t *testing.T) (string, config) {
@@ -14,12 +17,12 @@ func kernelInputFixture(t *testing.T) (string, config) {
 	root := t.TempDir()
 	output := t.TempDir()
 	for path, value := range map[string]string{
-		"usr/lib/modules/6.18.1/example.ko":                    "runtime module",
-		"usr/src/kernels/6.18.1/include/config/kernel.release": "6.18.1\n",
-		"usr/src/kernels/6.18.1/include/generated/autoconf.h":  "#define CONFIG_MODVERSIONS 1\n",
-		"usr/src/kernels/6.18.1/Module.symvers":                "symbol versions",
-		"usr/src/kernels/6.18.1/.config":                       "CONFIG_MODVERSIONS=y\n",
-		"etc/private-build-state":                              "must not be exported",
+		"usr/lib/modules/6.18.1-200.fc44.x86_64/example.ko":                    "runtime module",
+		"usr/src/kernels/6.18.1-200.fc44.x86_64/include/config/kernel.release": "6.18.1-200.fc44.x86_64\n",
+		"usr/src/kernels/6.18.1-200.fc44.x86_64/include/generated/autoconf.h":  "#define CONFIG_MODVERSIONS 1\n",
+		"usr/src/kernels/6.18.1-200.fc44.x86_64/Module.symvers":                "symbol versions",
+		"usr/src/kernels/6.18.1-200.fc44.x86_64/.config":                       "CONFIG_MODVERSIONS=y\n",
+		"etc/private-build-state":                                              "must not be exported",
 	} {
 		path = filepath.Join(root, path)
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -50,8 +53,36 @@ func kernelInputFixture(t *testing.T) (string, config) {
 		"--artifact", cfg.RuntimeUKI,
 		"--runtime-artifact", cfg.RuntimeRoot,
 		"--runtime-sha256", digest,
-		"--kernel-version", "6.18.1",
+		"--kernel-version", "6.18.1-200.fc44.x86_64",
 	}, io.Discard, io.Discard, cfg); err != nil {
+		t.Fatal(err)
+	}
+	set := kernelrelease.Set{SchemaVersion: 1, FedoraRelease: "44", Architecture: "x86_64", Flavour: "standard", KernelRelease: "6.18.1-200.fc44.x86_64"}
+	for i, name := range []string{"kernel-core", "kernel-modules", "kernel-modules-core", "kernel-devel"} {
+		role := "runtime"
+		if i == 3 {
+			role = "build"
+		}
+		file := name + "-" + set.KernelRelease + ".rpm"
+		blob := payloadbundle.DescribeBytes([]byte(name), role, kernelrelease.RPMMediaType, file)
+		set.Packages = append(set.Packages, kernelrelease.Package{Name: name, NEVRA: name + "-0:" + set.KernelRelease, SourceURL: "https://example.invalid/" + file, Descriptor: blob.Descriptor})
+	}
+	lock := kernelrelease.Lock{Set: set, Reference: "registry.example/kernel-inputs@sha256:" + strings.Repeat("a", 64)}
+	identity, err := lock.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(output, "kernel-rpms", identity), 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, pkg := range set.Packages {
+		writeTestFile(t, output, filepath.Join("kernel-rpms", identity, pkg.FileName), pkg.Name)
+	}
+	cfg.KernelLock = filepath.Join(output, kernelLockFile)
+	if err := kernelrelease.Write(cfg.KernelLock, lock); err != nil {
+		t.Fatal(err)
+	}
+	if err := kernelrelease.Write(filepath.Join(root, embeddedKernelLock), lock); err != nil {
 		t.Fatal(err)
 	}
 	return root, cfg
@@ -60,7 +91,7 @@ func kernelInputFixture(t *testing.T) (string, config) {
 func TestKernelInputExport(t *testing.T) {
 	root, cfg := kernelInputFixture(t)
 	output := filepath.Dir(cfg.RuntimeRoot)
-	if err := runExportKernelInputs([]string{root, output}, io.Discard, io.Discard); err != nil {
+	if err := runExportKernelInputs([]string{root, output, cfg.KernelLock}, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	archive := filepath.Join(output, kernelInputsFile)
@@ -84,7 +115,7 @@ func TestKernelInputExport(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !strings.HasPrefix(header.Name, "usr/src/kernels/6.18.1/") {
+		if !strings.HasPrefix(header.Name, "usr/src/kernels/6.18.1-200.fc44.x86_64/") {
 			t.Fatalf("unexpected archive member %s", header.Name)
 		}
 		if header.Typeflag != tar.TypeReg {
@@ -96,10 +127,10 @@ func TestKernelInputExport(t *testing.T) {
 		}
 		found[header.Name] = string(data)
 	}
-	if len(found) != 4 || found["usr/src/kernels/6.18.1/Module.symvers"] != "symbol versions" || found["usr/src/kernels/6.18.1/.config"] != "CONFIG_MODVERSIONS=y\n" {
+	if len(found) != 4 || found["usr/src/kernels/6.18.1-200.fc44.x86_64/Module.symvers"] != "symbol versions" || found["usr/src/kernels/6.18.1-200.fc44.x86_64/.config"] != "CONFIG_MODVERSIONS=y\n" {
 		t.Fatalf("exported prepared inputs = %v", found)
 	}
-	if err := runExportKernelInputs([]string{root, output}, io.Discard, io.Discard); err != nil {
+	if err := runExportKernelInputs([]string{root, output, cfg.KernelLock}, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	repeated, err := os.ReadFile(archive)
@@ -122,7 +153,7 @@ func TestKernelInputExport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inputs.Target.Release != "6.18.1" || inputs.Target.RuntimeSHA256 != runtimeDigest {
+	if inputs.Target.Release != "6.18.1-200.fc44.x86_64" || inputs.Target.RuntimeSHA256 != runtimeDigest {
 		t.Fatalf("input ownership = %#v", inputs.Target)
 	}
 }
@@ -131,10 +162,10 @@ func TestKernelInputsRejectIncompleteHeaders(t *testing.T) {
 	for _, missing := range []string{"Module.symvers", ".config", "include/generated/autoconf.h", "include/config/kernel.release"} {
 		t.Run(missing, func(t *testing.T) {
 			root, cfg := kernelInputFixture(t)
-			if err := os.Remove(filepath.Join(root, "usr/src/kernels/6.18.1", missing)); err != nil {
+			if err := os.Remove(filepath.Join(root, "usr/src/kernels/6.18.1-200.fc44.x86_64", missing)); err != nil {
 				t.Fatal(err)
 			}
-			if err := runExportKernelInputs([]string{root, filepath.Dir(cfg.RuntimeRoot)}, io.Discard, io.Discard); err == nil {
+			if err := runExportKernelInputs([]string{root, filepath.Dir(cfg.RuntimeRoot), cfg.KernelLock}, io.Discard, io.Discard); err == nil {
 				t.Fatal("accepted incomplete kernel headers")
 			}
 		})
@@ -146,7 +177,7 @@ func TestKernelInputBinding(t *testing.T) {
 		t.Run(scenario, func(t *testing.T) {
 			root, cfg := kernelInputFixture(t)
 			output := filepath.Dir(cfg.RuntimeRoot)
-			if err := runExportKernelInputs([]string{root, output}, io.Discard, io.Discard); err != nil {
+			if err := runExportKernelInputs([]string{root, output, cfg.KernelLock}, io.Discard, io.Discard); err != nil {
 				t.Fatal(err)
 			}
 			if err := runBindKernelInputs(nil, cfg); err != nil {
@@ -201,5 +232,51 @@ func TestExtensionRequiresRuntimeInputs(t *testing.T) {
 	err := runBuildKernelExtension([]string{"example"}, io.Discard, io.Discard, cfg)
 	if err == nil || !strings.Contains(err.Error(), "read kernel build inputs") {
 		t.Fatalf("extension did not reject missing inputs before source or package acquisition: %v", err)
+	}
+}
+
+func TestKernelInputProvenance(t *testing.T) {
+	for _, scenario := range []string{"missing record", "different RPM bytes", "different header set"} {
+		t.Run(scenario, func(t *testing.T) {
+			root, cfg := kernelInputFixture(t)
+			output := filepath.Dir(cfg.RuntimeRoot)
+			if scenario == "different header set" {
+				if err := runExportKernelInputs([]string{root, output, cfg.KernelLock}, io.Discard, io.Discard); err != nil {
+					t.Fatal(err)
+				}
+				archive := filepath.Join(output, kernelInputsFile)
+				inputs, err := readKernelInputs(archive)
+				if err != nil {
+					t.Fatal(err)
+				}
+				inputs.KernelSetSHA256 = strings.Repeat("b", 64)
+				writeTestJSON(t, archive+".json", inputs)
+				if err := runBindKernelInputs(nil, cfg); err == nil || !strings.Contains(err.Error(), "selected RPM lock") {
+					t.Fatalf("accepted swapped headers: %v", err)
+				}
+				return
+			}
+			path := filepath.Join(root, embeddedKernelLock)
+			if scenario == "missing record" {
+				if err := os.Remove(path); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				lock, err := kernelrelease.Read(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				lock.Packages[0].Digest = "sha256:" + strings.Repeat("b", 64)
+				if err := kernelrelease.Write(path, lock); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := runExportKernelInputs([]string{root, output, cfg.KernelLock}, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "kernel") {
+				t.Fatalf("accepted runtime without matching provenance: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(output, kernelInputsFile)); !os.IsNotExist(err) {
+				t.Fatalf("published headers after failed verification: %v", err)
+			}
+		})
 	}
 }

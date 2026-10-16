@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -215,5 +216,57 @@ esac
 	t.Setenv("FAKE_STANDARD", string(reply))
 	if err := run(context.Background(), args, io.Discard, io.Discard); err == nil || !strings.Contains(err.Error(), "different kernel inputs") {
 		t.Fatalf("changed existing proposal accepted: %v", err)
+	}
+}
+
+func TestDiscoveryVersionGuard(t *testing.T) {
+	lock, _ := capturedLock(t, "lts")
+	path := filepath.Join(t.TempDir(), "lock.json")
+	if err := kernelrelease.Write(path, lock); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		comparison string
+		reject     bool
+	}{{"-1", true}, {"0", false}, {"1", false}, {"invalid", true}} {
+		t.Run(test.comparison, func(t *testing.T) {
+			bin := t.TempDir()
+			if err := os.WriteFile(filepath.Join(bin, "rpm"), []byte("#!/bin/sh\nprintf '%s\\n' '"+test.comparison+"'\n"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			err := rejectKernelDowngrade(context.Background(), path, "6.18.58-200.fc44.x86_64")
+			if (err != nil) != test.reject {
+				t.Fatalf("RPM comparison %s: %v", test.comparison, err)
+			}
+		})
+	}
+}
+
+func TestRPMVersionOrdering(t *testing.T) {
+	if _, err := exec.LookPath("rpm"); err != nil {
+		t.Skip("run inside scripts/mkosi box to exercise native RPM ordering")
+	}
+	lock, _ := capturedLock(t, "lts")
+	path := filepath.Join(t.TempDir(), "lock.json")
+	if err := kernelrelease.Write(path, lock); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		release string
+		older   bool
+	}{
+		{"6.18.9-200.fc44.x86_64", true},
+		{"6.18.57-200.fc44.x86_64", false},
+		{"6.18.100-200.fc44.x86_64", false},
+	} {
+		err := rejectKernelDowngrade(context.Background(), path, test.release)
+		if test.older {
+			if err == nil || !strings.Contains(err.Error(), "older than committed") {
+				t.Fatalf("accepted automatic downgrade %s: %v", test.release, err)
+			}
+		} else if err != nil {
+			t.Fatalf("rejected %s: %v", test.release, err)
+		}
 	}
 }

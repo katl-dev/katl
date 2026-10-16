@@ -108,10 +108,7 @@ jobs:
             sha256sum \
               Containerfile.mkosi \
               mkosi.conf \
-              mkosi.conf.d/*.conf \
-              mkosi.kernel-lts/etc/yum.repos.d/*.repo \
-              mkosi.profiles/runtime/mkosi.conf.d/*.conf \
-              mkosi.profiles/installer-image/mkosi.conf.d/*.conf \
+              "kernels/fedora-$(scripts/fedora-release)/x86_64/$KATL_FLAVOUR.json" \
               mkosi.profiles/installer-image/mkosi.conf \
               mkosi.profiles/kubernetes-sysext/kubernetes.env \
               mkosi.profiles/kubernetes-sysext/mkosi.conf \
@@ -172,6 +169,7 @@ jobs:
           name: katl-runtime-${{ matrix.flavour }}-${{ github.sha }}
           path: |
             _build/mkosi/katl-runtime-root.squashfs*
+            _build/mkosi/katl-kernel-lock.json
             _build/mkosi/katl-kernel-inputs.tar*
             _build/mkosi/katl-endpoint-advertiser.raw*
             _build/mkosi/katl-runtime.efi*
@@ -405,10 +403,7 @@ jobs:
             sha256sum \
               Containerfile.mkosi \
               mkosi.conf \
-              mkosi.conf.d/*.conf \
-              mkosi.kernel-lts/etc/yum.repos.d/*.repo \
-              mkosi.profiles/runtime/mkosi.conf.d/*.conf \
-              mkosi.profiles/installer-image/mkosi.conf.d/*.conf \
+              "kernels/fedora-$(scripts/fedora-release)/x86_64/$KATL_FLAVOUR.json" \
               mkosi.profiles/installer-image/mkosi.conf \
               mkosi.profiles/kubernetes-sysext/kubernetes.env \
               mkosi.profiles/kubernetes-sysext/mkosi.conf \
