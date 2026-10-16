@@ -24,7 +24,6 @@ import (
 	"github.com/katl-dev/katl/internal/installer/apivip"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
-	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/kubernetesidentity"
@@ -2110,14 +2109,13 @@ func TestConfigApplyBaseLoadsRetainedEndpointAdvertiser(t *testing.T) {
 	}
 }
 
-func TestActiveGenerationKubeadmConfigsPreferActiveConfext(t *testing.T) {
+func TestConfigApplyBasePrefersActiveKubeadmConfext(t *testing.T) {
 	root := t.TempDir()
+	writeConfigApplyBaseState(t, root)
 	const ref = "control-plane-profiled"
-	currentManifest := manifest.Manifest{Node: manifest.NodeConfig{
-		Kubernetes: manifest.KubernetesConfig{Kubeadm: manifest.KubeadmReference{ConfigRef: ref}},
-	}}
+	writeConfigApplyManifestWithKubeadmRef(t, root, ref)
 	writeStoredKubeadmConfig(t, root, ref)
-	generationDir, err := generation.GenerationDir(root, "generation-live")
+	generationDir, err := generation.GenerationDir(root, "generation-0")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2130,22 +2128,20 @@ func TestActiveGenerationKubeadmConfigsPreferActiveConfext(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	configs, err := activeGenerationKubeadmConfigs(root, "generation-live", currentManifest)
+	base, err := configApplyBase(root, "node-a", "generation-next", time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(configs[ref].Config.Content); got != active {
+	if got := string(base.KubeadmConfigs[ref].Config.Content); got != active {
 		t.Fatalf("active config = %q, want %q", got, active)
 	}
 }
 
-func TestActiveGenerationKubeadmConfigsPreferDesiredInputOverBootstrapRuntime(t *testing.T) {
+func TestConfigApplyBasePrefersDesiredKubeadmInput(t *testing.T) {
 	root := t.TempDir()
 	writeConfigApplyBaseState(t, root)
 	const ref = "control-plane"
-	currentManifest := manifest.Manifest{Node: manifest.NodeConfig{
-		Kubernetes: manifest.KubernetesConfig{Kubeadm: manifest.KubeadmReference{ConfigRef: ref}},
-	}}
+	writeConfigApplyManifestWithKubeadmRef(t, root, ref)
 	confextDir := filepath.Join(root, "var/lib/katl/generations/generation-0/confext/etc/katl/kubeadm", ref)
 	if err := os.MkdirAll(confextDir, 0o750); err != nil {
 		t.Fatal(err)
@@ -2167,11 +2163,11 @@ func TestActiveGenerationKubeadmConfigsPreferDesiredInputOverBootstrapRuntime(t 
 		t.Fatal(err)
 	}
 
-	configs, err := activeGenerationKubeadmConfigs(root, "generation-0", currentManifest)
+	base, err := configApplyBase(root, "node-a", "generation-next", time.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(configs[ref].Config.Content); got != desired {
+	if got := string(base.KubeadmConfigs[ref].Config.Content); got != desired {
 		t.Fatalf("active desired config = %q, want %q", got, desired)
 	}
 }

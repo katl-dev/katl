@@ -9,7 +9,6 @@ import (
 
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/manifest"
-	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 const generationManifestName = "manifest.json"
@@ -23,21 +22,22 @@ func GenerationManifestPath(root, generationID string) (string, error) {
 }
 
 func WriteGenerationManifest(root, generationID string, value manifest.Manifest) error {
-	if err := manifest.Validate(value); err != nil {
-		return fmt.Errorf("validate generation manifest: %w", err)
-	}
-	path, err := GenerationManifestPath(root, generationID)
+	file, err := generationManifestFile(value)
 	if err != nil {
 		return err
 	}
+	return writeConfigurationFiles(root, generationID, []configurationFile{file})
+}
+
+func generationManifestFile(value manifest.Manifest) (configurationFile, error) {
+	if err := manifest.Validate(value); err != nil {
+		return configurationFile{}, fmt.Errorf("validate generation manifest: %w", err)
+	}
 	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode generation manifest: %w", err)
+		return configurationFile{}, fmt.Errorf("encode generation manifest: %w", err)
 	}
-	if err := persistedrecord.WriteFileAtomic(path, append(data, '\n'), 0o644); err != nil {
-		return fmt.Errorf("write generation manifest: %w", err)
-	}
-	return nil
+	return configurationFile{path: generationManifestName, content: append(data, '\n'), mode: 0o644}, nil
 }
 
 func ReadGenerationManifest(root, generationID string) (manifest.Manifest, error) {
@@ -58,29 +58,12 @@ func ReadGenerationManifest(root, generationID string) (manifest.Manifest, error
 }
 
 func ReadEffectiveGenerationManifest(root, generationID string) (manifest.Manifest, string, error) {
-	selected := generationID
-	visited := map[string]bool{}
-	for selected != "" {
-		if visited[selected] {
-			return manifest.Manifest{}, "", fmt.Errorf("generation manifest ancestry contains a cycle at %q", selected)
-		}
-		visited[selected] = true
-		value, err := ReadGenerationManifest(root, selected)
-		if err == nil {
-			return value, selected, nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return manifest.Manifest{}, "", err
-		}
-		spec, _, specErr := generation.ReadGeneration(root, selected)
-		if specErr != nil {
-			return manifest.Manifest{}, "", fmt.Errorf("read generation %q while resolving its configuration: %w", selected, specErr)
-		}
-		previous := spec.PreviousGenerationID
-		if previous == "" {
-			return manifest.Manifest{}, "", fmt.Errorf("generation %q and its ancestry have no manifest: %w", generationID, err)
-		}
-		selected = previous
+	value, source, err := readGenerationInput(root, generationID, "manifest", func(id string) (manifest.Manifest, error) {
+		return ReadGenerationManifest(root, id)
+	})
+	if !errors.Is(err, os.ErrNotExist) {
+		return value, source, err
 	}
-	return manifest.Manifest{}, "", fmt.Errorf("generation %q has no manifest ancestry", generationID)
+	value, err = readInstalledManifest(root)
+	return value, "", err
 }

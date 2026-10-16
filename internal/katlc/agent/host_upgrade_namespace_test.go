@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/installer/configapply"
 )
 
 func TestPublishPreparedUpgradeIsCompleteAtVisibilityBoundary(t *testing.T) {
@@ -38,6 +39,9 @@ func TestPublishPreparedUpgradeIsCompleteAtVisibilityBoundary(t *testing.T) {
 func TestSnapshotUpgradeSourceCopiesPlanningInputsOnly(t *testing.T) {
 	root := t.TempDir()
 	writeResetGenerationZero(t, root)
+	if err := configapply.WriteGenerationManifest(root, "0", validVolumeStatusManifest()); err != nil {
+		t.Fatal(err)
+	}
 	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
 		APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind,
 		DefaultGenerationID: "0", ActiveGenerationID: "0", BootedGenerationID: "0",

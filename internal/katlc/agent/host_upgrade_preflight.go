@@ -34,6 +34,9 @@ func PreflightHostUpgrade(ctx context.Context, root, imageRoot, candidate, sourc
 	if handoff.OperationID != operationID || handoff.SourceGenerationID != source {
 		return generation.GenerationSpec{}, fmt.Errorf("preflight inputs do not match the staged handoff")
 	}
+	if err := completeUpgradeSourceConfiguration(root, "/", source); err != nil {
+		return generation.GenerationSpec{}, fmt.Errorf("complete upgrade source configuration: %w", err)
+	}
 	config, err := readHostUpgradeConfiguration(configPath, handoff.ConfigurationSHA256)
 	if err != nil {
 		return generation.GenerationSpec{}, err

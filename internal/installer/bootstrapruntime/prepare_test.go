@@ -15,6 +15,8 @@ import (
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/bootstrapplan"
 	"github.com/katl-dev/katl/internal/installer/configapply"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
+	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
 )
 
@@ -204,6 +206,51 @@ func TestPrepareRejectsTamperedKubeadmInput(t *testing.T) {
 	}
 }
 
+func TestPreparePreservesConfiguration(t *testing.T) {
+	root := t.TempDir()
+	plan := preparePlan(t, root)
+	current, err := configapply.ReadGenerationManifest(root, "0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := "net.ipv4.ip_forward = 1\n"
+	current.Node.HostConfiguration = manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+		"forwarding": {State: manifest.HostConfigurationPresent, Files: []manifest.HostConfigurationFile{{
+			Path: "/etc/sysctl.d/80-forwarding.conf", Content: &content, Mode: 0o644,
+		}}},
+	}}
+	if err := configapply.WriteGenerationManifest(root, "0", current); err != nil {
+		t.Fatal(err)
+	}
+	oldInput := kubeadmconfig.Plan{Config: kubeadmconfig.File{
+		RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml",
+		Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\nnodeRegistration:\n  name: obsolete\n"), Mode: 0o644,
+	}}
+	if err := configapply.WriteGenerationKubeadmConfig(root, "0", "control-plane", oldInput); err != nil {
+		t.Fatal(err)
+	}
+	newInput := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\nnodeRegistration:\n  name: cp-1\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n"
+	writeFile(t, filepath.Join(root, "var/lib/katl/cluster/kubeadm/control-plane/config.yaml"), newInput)
+	plan.RuntimeInputs.KubeadmInput.Digest = storedInputDigest(t, root, plan.RuntimeInputs.KubeadmInput)
+
+	if _, err := Prepare(root, plan, time.Date(2026, 6, 16, 12, 5, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "var/lib/katl/generations/0")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := configapply.ReadLocalGenerationConfiguration(root, "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if content := got.Manifest.Node.HostConfiguration.Sets["forwarding"].Files[0].Content; content == nil || *content != "net.ipv4.ip_forward = 1\n" {
+		t.Fatalf("bootstrap lost current host configuration: %#v", content)
+	}
+	if got.Manifest.Node.Kubernetes.Kubeadm.ConfigRef != "control-plane" || string(got.KubeadmConfigs["control-plane"].Config.Content) != newInput {
+		t.Fatalf("bootstrap did not retain newly selected desired input: %#v", got.KubeadmConfigs)
+	}
+}
+
 func TestPrepareRejectsStaleStoredKubeadmInputFile(t *testing.T) {
 	root := t.TempDir()
 	plan := preparePlan(t, root)
@@ -326,6 +373,17 @@ func writeGenerationZero(t *testing.T, root string) (generation.GenerationSpec, 
 	}
 	status := generation.StatusFromRecord(record, specDigest)
 	if err := generation.WriteGeneration(root, spec, status); err != nil {
+		t.Fatal(err)
+	}
+	if err := configapply.WriteGenerationManifest(root, "0", manifest.Manifest{
+		APIVersion: manifest.APIVersion, Kind: manifest.Kind,
+		Node: manifest.NodeConfig{
+			Identity:   manifest.NodeIdentity{Hostname: "cp-1", SSH: manifest.SSHIdentity{AuthorizedKeys: []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl"}}},
+			SystemRole: "control-plane",
+		},
+		Install:     manifest.InstallConfig{WipeTarget: true, TargetDisk: manifest.DiskSelector{ByID: "disk/by-id/test"}},
+		KatlosImage: manifest.KatlosImage{LocalRef: "images/katlos.raw", SHA256: strings.Repeat("a", 64), SizeBytes: 1024, Version: "0.1.0", Architecture: "x86_64", Role: "install"},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(root, "var/lib/katl/generations/0/confext/etc/systemd/network/80-katl-vmtest-dhcp.network"), "[Match]\nName=en*\n\n[Network]\nDHCP=yes\n")
