@@ -67,6 +67,10 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 	if currentRef.PayloadVersion != request.SourcePayloadVersion {
 		return e.failKubeadmUpgrade(record, "staged", fmt.Errorf("current Kubernetes payload %q does not match requested source %q", currentRef.PayloadVersion, request.SourcePayloadVersion), false)
 	}
+	patchesDir, err := e.prepareKubeadmPatches(record.OperationID, currentID)
+	if err != nil {
+		return e.failKubeadmUpgrade(record, "staged", err, false)
+	}
 	if err := verifyFileDigest(rootedRuntimePath(e.Root, request.TargetSysextPath), request.TargetSysextSHA256, request.TargetSysextSize); err != nil {
 		return e.failKubeadmUpgrade(record, "staged", fmt.Errorf("verify target Kubernetes sysext: %w", err), false)
 	}
@@ -177,6 +181,9 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 	retainToolView = true
 	if request.UpgradeRole == "apply" {
 		argv := []string{targetKubeadm, "upgrade", "apply", "--yes", request.TargetPayloadVersion}
+		if patchesDir != "" {
+			argv = append(argv, "--patches", patchesDir)
+		}
 		if apiDrain.KubeadmConfig != "" {
 			argv = append(argv, "--kubeconfig", apiDrain.KubeadmConfig)
 		}
@@ -185,6 +192,9 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 		}
 	} else {
 		argv := []string{targetKubeadm, "upgrade", "node"}
+		if patchesDir != "" {
+			argv = append(argv, "--patches", patchesDir)
+		}
 		if apiDrain.KubeadmConfig != "" {
 			argv = append(argv, "--kubeconfig", apiDrain.KubeadmConfig)
 		}
