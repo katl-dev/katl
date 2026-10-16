@@ -1,9 +1,6 @@
 --- a/drbd/drbd-kernel-compat/gen_patch_names.c
 +++ b/drbd/drbd-kernel-compat/gen_patch_names.c
-@@ -544,8 +544,11 @@
- 	patch(1, "queue_limits_max_hw_wzeroes_unmap_sectors", true, false,
- 	      COMPAT_QUEUE_LIMITS_HAS_MAX_HW_WZEROES_UNMAP_SECTORS, "present");
- 
+@@ -547,2 +547,5 @@
 -	patch(1, "struct_sockaddr_unsized", true, false,
 -	      COMPAT_HAVE_STRUCT_SOCKADDR_UNSIZED, "present");
 +	patch(1, "proto_ops_bind_sockaddr_unsized", true, false,
@@ -11,9 +8,6 @@
 +
 +	patch(1, "proto_ops_connect_sockaddr_unsized", true, false,
 +	      COMPAT_HAVE_PROTO_OPS_CONNECT_SOCKADDR_UNSIZED, "present");
- 
- /* #define BLKDEV_ISSUE_ZEROOUT_EXPORTED */
- /* #define BLKDEV_ZERO_NOUNMAP */
 --- a/drbd/drbd-kernel-compat/tests/have_struct_sockaddr_unsized.c
 +++ /dev/null
 @@ -1,5 +0,0 @@
