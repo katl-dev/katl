@@ -60,6 +60,10 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	currentManifest, _, err := configapply.ReadEffectiveGenerationManifest(root, plan.Previous.GenerationID)
+	if err != nil {
+		return Result{}, fmt.Errorf("read bootstrap source configuration: %w", err)
+	}
 	files, err := runtimeFiles(root, plan)
 	if err != nil {
 		return Result{}, err
@@ -160,8 +164,12 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 	if err != nil {
 		return Result{}, fmt.Errorf("preserve desired kubeadm input: %w", err)
 	}
-	if err := configapply.WriteGenerationKubeadmConfig(root, candidate, kubeadmRef, kubeadmPlan); err != nil {
-		return Result{}, fmt.Errorf("preserve desired kubeadm input: %w", err)
+	currentManifest.Node.Kubernetes.Kubeadm.ConfigRef = kubeadmRef
+	if err := configapply.WriteGenerationConfiguration(root, candidate, configapply.GenerationConfiguration{
+		Manifest:       currentManifest,
+		KubeadmConfigs: map[string]kubeadmconfig.Plan{kubeadmRef: kubeadmPlan},
+	}); err != nil {
+		return Result{}, fmt.Errorf("preserve bootstrap configuration: %w", err)
 	}
 	if err := writeLiveActivationOverride(root, candidate); err != nil {
 		return Result{}, err

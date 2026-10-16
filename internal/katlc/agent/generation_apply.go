@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -988,25 +987,13 @@ func configApplyBase(root string, nodeName string, generationID string, now func
 		return configapply.TrustedBundleRequest{}, fmt.Errorf("read current generation: %w", err)
 	}
 	current := generation.RecordFromSplit(spec, status)
-	currentManifest, err := configapply.ReadGenerationManifest(root, currentID)
-	if errors.Is(err, os.ErrNotExist) {
-		manifestPath := filepath.Join(filepath.Clean(root), "var/lib/katl/install/manifest.json")
-		manifestFile, openErr := os.Open(manifestPath)
-		if openErr != nil {
-			return configapply.TrustedBundleRequest{}, fmt.Errorf("open current install manifest: %w", openErr)
-		}
-		defer manifestFile.Close()
-		currentManifest, err = manifest.Decode(manifestFile)
-	}
+	configuration, err := configapply.ReadGenerationConfiguration(root, currentID)
 	if err != nil {
 		return configapply.TrustedBundleRequest{}, err
 	}
+	currentManifest := configuration.Manifest
 	if strings.TrimSpace(nodeName) == "" {
 		nodeName = currentManifest.Node.Identity.Hostname
-	}
-	kubeadmConfigs, err := activeGenerationKubeadmConfigs(root, currentID, currentManifest)
-	if err != nil {
-		return configapply.TrustedBundleRequest{}, err
 	}
 	kubernetesVersion := currentKubernetesPayloadVersion(current)
 	kubernetesActivationPath := currentKubernetesActivationPath(current)
@@ -1038,7 +1025,7 @@ func configApplyBase(root string, nodeName string, generationID string, now func
 		GenerationID:                    strings.TrimSpace(generationID),
 		CurrentManifest:                 currentManifest,
 		CurrentRecord:                   current,
-		KubeadmConfigs:                  kubeadmConfigs,
+		KubeadmConfigs:                  configuration.KubeadmConfigs,
 		RuntimeKubernetesVersion:        kubernetesVersion,
 		RuntimeKubernetesActivationPath: kubernetesActivationPath,
 		KubernetesInitialized:           controlPlaneKubernetesInitialized(root),
@@ -1084,79 +1071,6 @@ func currentKubernetesActivationPath(record generation.Record) string {
 		}
 	}
 	return ""
-}
-
-func activeGenerationKubeadmConfigs(root string, currentGenerationID string, currentManifest manifest.Manifest) (map[string]kubeadmconfig.Plan, error) {
-	ref := strings.TrimSpace(currentManifest.Node.Kubernetes.Kubeadm.ConfigRef)
-	if ref == "" {
-		return nil, nil
-	}
-	if plan, _, err := configapply.ReadEffectiveGenerationKubeadmConfig(root, currentGenerationID, ref); err == nil {
-		return map[string]kubeadmconfig.Plan{ref: plan}, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	generationDir, err := generation.GenerationDir(root, currentGenerationID)
-	if err != nil {
-		return nil, err
-	}
-	dir := filepath.Join(generationDir, "confext", "etc", "katl", "kubeadm", ref)
-	if info, statErr := os.Stat(dir); statErr == nil {
-		if !info.IsDir() {
-			return nil, fmt.Errorf("active generation kubeadm config %q is not a directory", ref)
-		}
-		return kubeadmConfigsFromDir(ref, dir, "active generation")
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return nil, fmt.Errorf("inspect active generation kubeadm config %q: %w", ref, statErr)
-	}
-	dir, err = installer.StoredKubeadmInputDir(root, ref)
-	if err != nil {
-		return nil, err
-	}
-	return kubeadmConfigsFromDir(ref, dir, "installed")
-}
-
-func kubeadmConfigsFromDir(ref string, dir string, source string) (map[string]kubeadmconfig.Plan, error) {
-	var files []kubeadmconfig.File
-	if err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("%s kubeadm input %s is not a regular file", source, path)
-		}
-		rel, err := filepath.Rel(dir, path)
-		if err != nil {
-			return err
-		}
-		if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-			return fmt.Errorf("%s kubeadm input %s escapes input directory", source, path)
-		}
-		content, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		files = append(files, kubeadmconfig.File{
-			RenderPath: filepath.ToSlash(filepath.Join("/etc/katl/kubeadm", ref, rel)),
-			Content:    content,
-			Mode:       info.Mode().Perm(),
-		})
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read %s kubeadm config %q: %w", source, ref, err)
-	}
-	plan, err := kubeadmconfig.PlanFromRenderedFiles(ref, files)
-	if err != nil {
-		return nil, err
-	}
-	return map[string]kubeadmconfig.Plan{ref: plan}, nil
 }
 
 func (s *Server) validateCandidateGenerationAvailable(generationID string) error {

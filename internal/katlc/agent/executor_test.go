@@ -21,6 +21,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/bootstrapplan"
+	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
@@ -1554,6 +1555,12 @@ func seedBootstrapRuntimeRootForRole(t *testing.T, root string, role string) {
 	writeTestFile(t, filepath.Join(root, "var/lib/katl/generations/0/confext/etc/extension-release.d/extension-release.katl-node"), "ID=katlos\n")
 	writeTestFile(t, filepath.Join(root, "var/lib/katl/identity/machine-id"), "0123456789abcdef0123456789abcdef\n")
 	writeBootSelection(t, root, "0")
+	configuration := validVolumeStatusManifest()
+	configuration.Node = bootstrapRuntimeManifest(role).Node
+	configuration.Node.Identity.SSH = validVolumeStatusManifest().Node.Identity.SSH
+	if err := configapply.WriteGenerationManifest(root, "0", configuration); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := installer.WriteClusterIntent(installer.ClusterIntentRequest{
 		TargetRoot:         root,
 		Manifest:           bootstrapRuntimeManifest(role),

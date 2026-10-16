@@ -14,6 +14,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/apivip"
+	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 )
@@ -154,6 +155,16 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	dropIn := filepath.Join(root, "run/systemd/system/kubelet.service.d/20-katl-upgrade-gate.conf")
 	if _, err := os.Stat(dropIn); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("completed kubelet gate drop-in still exists: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "var/lib/katl/generations/gen0")); err != nil {
+		t.Fatal(err)
+	}
+	configuration, err := configapply.ReadLocalGenerationConfiguration(root, "gen1")
+	if err != nil {
+		t.Fatalf("candidate depends on configuration ancestry: %v", err)
+	}
+	if got := string(configuration.KubeadmConfigs["default"].Config.Content); got != "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n" {
+		t.Fatalf("candidate lost desired kubeadm input: %s", got)
 	}
 }
 
@@ -917,6 +928,13 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 		t.Fatal(err)
 	}
 	if err := generation.WriteGeneration(root, previous, status); err != nil {
+		t.Fatal(err)
+	}
+	configuration := validVolumeStatusManifest()
+	configuration.Node.Kubernetes.Kubeadm.ConfigRef = "default"
+	if err := configapply.WriteGenerationConfiguration(root, previous.GenerationID, configapply.GenerationConfiguration{
+		Manifest: configuration, KubeadmConfigs: bootstrapRuntimeKubeadmConfigs("control-plane"),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind, DefaultGenerationID: "gen0", BootedGenerationID: "gen0", Generation0FallbackID: "gen0", DefaultBootEntry: "loader/entries/katl-gen0.conf", BootedBootEntry: "loader/entries/katl-gen0.conf", UpdatedAt: now}); err != nil {

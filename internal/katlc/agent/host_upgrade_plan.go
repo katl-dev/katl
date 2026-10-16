@@ -54,10 +54,11 @@ func (e *Executor) planHostUpgradeWithHandoff(ctx context.Context, record operat
 	if err != nil {
 		return preparedHostUpgrade{}, fmt.Errorf("read current generation: %w", err)
 	}
-	current, _, err := configapply.ReadEffectiveGenerationManifest(e.Root, currentID)
+	configuration, err := configapply.ReadGenerationConfiguration(e.Root, currentID)
 	if err != nil {
 		return preparedHostUpgrade{}, fmt.Errorf("read current generation configuration: %w", err)
 	}
+	current := configuration.Manifest
 	if !handoff {
 		if err := validateHostUpgradeBootEvidence(e.Root, currentID, previous); err != nil {
 			return preparedHostUpgrade{}, err
@@ -111,6 +112,7 @@ func (e *Executor) planHostUpgradeWithHandoff(ctx context.Context, record operat
 	if err != nil {
 		return preparedHostUpgrade{}, err
 	}
+	extensions.kubeadmConfigs = configuration.KubeadmConfigs
 	ukiPath := generation.UKIDirectory + "/katl-" + inactiveSlot + "-1.efi"
 	if ukiPath == previous.Boot.UKIPath {
 		return preparedHostUpgrade{}, fmt.Errorf("inactive root slot UKI path is still used by the active generation")

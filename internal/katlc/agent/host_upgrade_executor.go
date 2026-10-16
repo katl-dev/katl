@@ -129,7 +129,7 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if err := generation.WriteGeneration(e.Root, plan.Spec, plan.Status); err != nil {
 		return e.failHostUpgrade(record, "write-candidate-generation", err)
 	}
-	if err := configapply.WriteGenerationManifest(e.Root, candidate, extensions.manifest); err != nil {
+	if err := configapply.WriteGenerationConfiguration(e.Root, candidate, configapply.GenerationConfiguration{Manifest: extensions.manifest, KubeadmConfigs: extensions.kubeadmConfigs}); err != nil {
 		return e.failHostUpgrade(record, "write-candidate-generation", fmt.Errorf("preserve current generation configuration: %w", err))
 	}
 	machineID, err := os.ReadFile(filepath.Join(runtimeRoot(e.Root), "etc/machine-id"))
