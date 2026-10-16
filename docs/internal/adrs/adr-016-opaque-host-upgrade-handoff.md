@@ -46,6 +46,14 @@ and write access only to its private work directory. EFI is inaccessible.
 The source gives the planner the inactive slot's partition UUID through the
 handoff record; the planner does not inspect or write block devices.
 
+Module-index preparation obtains read-only detached filesystem descriptors from
+`systemd-mountfsd` when the planner lacks mount privileges. The planner inspects
+the complete image contents through those descriptors and closes them after
+composition. It does not attach mounts, create namespaces, or gain device
+access. This uses the source host's native image service without extending the
+source-to-target handoff. Privileged installer, configuration, and release
+verification paths retain direct image dissection.
+
 The source sequence is:
 
 1. Check the expected source generation, pending operations, architecture,
