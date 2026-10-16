@@ -2545,26 +2545,26 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	if err := bindManagementStatus(&target, status); err != nil {
 		return err
 	}
+	result, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
+		ApiVersion:                         operation.APIVersion,
+		Kind:                               "ValidateConfigRequest",
+		ClientRequestId:                    requestID,
+		Actor:                              opts.actor,
+		ExpectedEnrollmentId:               target.enrollmentID,
+		ExpectedInventoryNodeName:          target.nodeName,
+		ExpectedMachineId:                  target.machineID,
+		ExpectedCurrentGenerationId:        status.GetCurrentGenerationId(),
+		ApplyMode:                          opts.mode,
+		CandidateGenerationId:              opts.candidateGeneration,
+		NodeName:                           opts.nodeConfig.nodeName,
+		ConfigYaml:                         string(configYAML),
+		DestructiveStorageAcknowledgements: acknowledgements,
+		VolumeRebinds:                      rebinds,
+	})
+	if err != nil {
+		return err
+	}
 	if opts.plan {
-		result, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
-			ApiVersion:                         operation.APIVersion,
-			Kind:                               "ValidateConfigRequest",
-			ClientRequestId:                    requestID,
-			Actor:                              opts.actor,
-			ExpectedEnrollmentId:               target.enrollmentID,
-			ExpectedInventoryNodeName:          target.nodeName,
-			ExpectedMachineId:                  target.machineID,
-			ExpectedCurrentGenerationId:        status.GetCurrentGenerationId(),
-			ApplyMode:                          opts.mode,
-			CandidateGenerationId:              opts.candidateGeneration,
-			NodeName:                           opts.nodeConfig.nodeName,
-			ConfigYaml:                         string(configYAML),
-			DestructiveStorageAcknowledgements: acknowledgements,
-			VolumeRebinds:                      rebinds,
-		})
-		if err != nil {
-			return err
-		}
 		if opts.output == "text" {
 			if !result.Accepted {
 				return fmt.Errorf("configuration for %s was rejected: %s", opts.nodeConfig.nodeName, firstNonEmpty(result.FailureReason, strings.Join(result.Diagnostics, "; ")))
@@ -2582,6 +2582,15 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 		publicResult := proto.Clone(result).(*agentapi.ConfigValidationResult)
 		publicResult.RequestDigest = ""
 		return writeProtoJSON(stdout, "validation result", publicResult)
+	}
+	// Explicit modes retain a terminal operation receipt for rejected requests.
+	if !result.Accepted && strings.TrimSpace(opts.mode) == generation.ApplyModeAuto {
+		return fmt.Errorf("config validation rejected: %s", firstNonEmpty(result.FailureReason, strings.Join(result.Diagnostics, "; ")))
+	}
+	if result.Accepted {
+		for _, diagnostic := range result.Diagnostics {
+			fmt.Fprintf(stderr, "%s: %s\n", opts.nodeConfig.nodeName, diagnostic)
+		}
 	}
 	requestedMode := strings.TrimSpace(opts.mode)
 	req := &agentapi.GenerationApplyRequest{
@@ -2606,31 +2615,6 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	case generation.ApplyModeNextBoot:
 		accepted, err = conn.Client.StageGeneration(ctx, req)
 	case generation.ApplyModeAuto:
-		result, err := conn.Client.ValidateConfig(ctx, &agentapi.ValidateConfigRequest{
-			ApiVersion:                         operation.APIVersion,
-			Kind:                               "ValidateConfigRequest",
-			ClientRequestId:                    requestID,
-			Actor:                              opts.actor,
-			ExpectedEnrollmentId:               target.enrollmentID,
-			ExpectedInventoryNodeName:          target.nodeName,
-			ExpectedMachineId:                  target.machineID,
-			ExpectedCurrentGenerationId:        status.GetCurrentGenerationId(),
-			ApplyMode:                          requestedMode,
-			CandidateGenerationId:              opts.candidateGeneration,
-			NodeName:                           opts.nodeConfig.nodeName,
-			ConfigYaml:                         string(configYAML),
-			DestructiveStorageAcknowledgements: acknowledgements,
-			VolumeRebinds:                      rebinds,
-		})
-		if err != nil {
-			return err
-		}
-		if !result.Accepted {
-			if strings.TrimSpace(result.FailureReason) != "" {
-				return fmt.Errorf("config validation rejected: %s", result.FailureReason)
-			}
-			return fmt.Errorf("config validation rejected: %s", strings.Join(result.Diagnostics, "; "))
-		}
 		if result.GetNoChanges() {
 			if len(result.Diagnostics) > 0 {
 				return fmt.Errorf("%s configuration files match, but runtime state is not current: %s", opts.nodeConfig.nodeName, strings.Join(result.Diagnostics, "; "))

@@ -1,0 +1,44 @@
+apiVersion: katl.dev/v1alpha1
+kind: NodeConfigurationChange
+metadata:
+  sourceID: network-operator
+  desiredVersion: "1"
+apply:
+  mode: live
+spec:
+  clusterDefaults:
+    hostConfiguration:
+      sets:
+        vmtest-network:
+          files:
+            - path: /etc/systemd/network/80-katl-vmtest-dhcp.network
+              content: |
+                [Match]
+                Name=en*
+
+                [Network]
+                DHCP=yes
+
+                [DHCPv4]
+                ClientIdentifier=mac
+                UseHostname=no
+
+                [DHCPv6]
+                UseHostname=no
+        vmtest-live-network:
+          files:
+            - path: /etc/systemd/network/80-katl-vmtest-dhcp.network.d/40-live.conf
+              content: |
+                [Network]
+                Address=198.51.100.76/32
+            - path: /etc/systemd/network/10-vmtest-live.link
+              content: |
+                [Match]
+                OriginalName=katllive0
+                [Link]
+                Alias=katl-live-netdev
+            - path: /etc/systemd/network/30-vmtest-live.netdev
+              content: |
+                [NetDev]
+                Name=katllive0
+                Kind=dummy

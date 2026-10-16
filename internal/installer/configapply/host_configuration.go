@@ -22,6 +22,7 @@ type HostConfigurationChangePlan struct {
 	Paths                  []string
 	Effects                []generation.ConfigApplyEffect
 	Message                string
+	warnings               []string
 	Commands               []Command
 	rollbackCommands       []Command
 	unitsToStop            []string
@@ -63,6 +64,8 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 		plan.Paths = append(plan.Paths, "systemd:"+unit)
 	}
 	udevReload := false
+	networkdReload := false
+	linkReload := false
 	systemdReload := false
 	stagedReason := ""
 	for _, unit := range desired.MaskedUnits {
@@ -148,8 +151,11 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 		case component != "":
 			deriveSystemdNotification(notifications, filePath)
 		case networkdconfig.IsPath(filePath):
-			if stagedReason == "" {
-				stagedReason = "systemd-networkd configuration applies on next boot"
+			if isLinkConfigurationPath(filePath) {
+				udevReload = true
+				linkReload = true
+			} else {
+				networkdReload = true
 			}
 			if afterExists {
 				plan.Effects = append(plan.Effects, plannedEffect("load", "networkd configuration "+filePath))
@@ -240,6 +246,9 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 	if udevReload {
 		plan.Effects = append(plan.Effects, plannedEffect("reload", "udev rules"))
 	}
+	if networkdReload {
+		plan.Effects = append(plan.Effects, plannedEffect("reload", "network configuration"))
+	}
 	if systemdReload {
 		plan.Effects = append(plan.Effects, plannedEffect("reload", "systemd manager"))
 	}
@@ -284,6 +293,19 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 			Argv:         []string{"systemctl", "daemon-reload"},
 		})
 	}
+	if networkdReload {
+		// Let networkd reconfigure matching links without deleting devices it retains.
+		plan.Commands = append(plan.Commands, Command{
+			Name: "networkd-reload", EffectAction: "reload", EffectTarget: "network configuration",
+			Argv: []string{"networkctl", "reload"},
+		})
+	}
+	if networkdReload || linkReload {
+		plan.warnings = append(plan.warnings, "Live network changes may interrupt management access and may leave running interfaces different from the saved configuration; inspect the network and recreate affected interfaces if needed.")
+	}
+	if linkReload {
+		plan.warnings = append(plan.warnings, "Changed .link settings are loaded for future device events; existing interfaces are not retriggered. Recreate the affected interface or reboot when needed to apply them.")
+	}
 	// Rollback reloads the restored generation, then enforces its masks.
 	plan.rollbackCommands = slices.Clone(plan.Commands)
 	if systemdReload && len(current.MaskedUnits) > 0 {
@@ -308,6 +330,10 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 
 func plannedEffect(action, target string) generation.ConfigApplyEffect {
 	return generation.ConfigApplyEffect{Action: action, Target: target, Status: generation.ConfigApplyActionPlanned}
+}
+
+func isLinkConfigurationPath(filePath string) bool {
+	return networkdconfig.IsPath(filePath) && (strings.HasSuffix(filePath, ".link") || strings.Contains(filePath, ".link.d/"))
 }
 
 func hostSysfsByName(settings []manifest.HostConfigurationSysfsSetting) map[string]string {

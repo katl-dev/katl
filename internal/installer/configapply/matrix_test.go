@@ -60,6 +60,32 @@ func TestPlanDefaultsOmittedModeToAutoAndAcceptsHostConfigurationLive(t *testing
 	}
 }
 
+func TestPlanWarnsOnlyForLiveActivation(t *testing.T) {
+	for _, test := range []struct {
+		name, mode   string
+		staged, warn bool
+	}{
+		{"auto", generation.ApplyModeAuto, false, true},
+		{"live", generation.ApplyModeLive, false, true},
+		{"explicit stage", generation.ApplyModeNextBoot, false, false},
+		{"mixed stage", generation.ApplyModeAuto, true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			changes := []Change{{Domain: DomainHostConfiguration, LivePreflightOK: true, Warnings: []string{"network may differ"}}}
+			if test.staged {
+				changes = append(changes, Change{Domain: DomainNodeIdentity})
+			}
+			decision, err := Plan(test.mode, changes)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (len(decision.Warnings) > 0) != test.warn {
+				t.Fatalf("decision = %#v, want warning = %t", decision, test.warn)
+			}
+		})
+	}
+}
+
 func TestPlanExplainsLiveEndpointVIPImpact(t *testing.T) {
 	impact := &EndpointVIPImpact{
 		MayInterruptEndpoint: true,

@@ -272,6 +272,8 @@ func renderHostConfigPrepareService() string {
 		"DefaultDependencies=no",
 		"Requires=systemd-sysext.service systemd-confext.service",
 		"After=systemd-sysext.service systemd-confext.service",
+		"# Reload link configuration before networkd creates virtual interfaces.",
+		"Before=systemd-networkd.service",
 		"",
 		"[Service]",
 		"Type=oneshot",

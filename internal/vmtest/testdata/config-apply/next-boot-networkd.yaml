@@ -42,6 +42,23 @@ spec:
               content: |
                 [Network]
                 Address=198.51.100.77/32
+        vmtest-live-network:
+          files:
+            - path: /etc/systemd/network/80-katl-vmtest-dhcp.network.d/40-live.conf
+              content: |
+                [Network]
+                Address=198.51.100.76/32
+            - path: /etc/systemd/network/10-vmtest-live.link
+              content: |
+                [Match]
+                OriginalName=katllive0
+                [Link]
+                Alias=katl-live-netdev
+            - path: /etc/systemd/network/30-vmtest-live.netdev
+              content: |
+                [NetDev]
+                Name=katllive0
+                Kind=dummy
         vmtest-udev:
           files:
             - path: /etc/udev/rules.d/80-katl-vmtest.rules

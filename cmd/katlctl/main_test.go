@@ -2189,7 +2189,8 @@ func TestConfigApplySubmitsStageGenerationToAgent(t *testing.T) {
 		t.Fatal(err)
 	}
 	fake := &fakeKatlcAgentClient{
-		nodeStatus: enrolledNodeAStatus(),
+		nodeStatus:     enrolledNodeAStatus(),
+		validateResult: &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: generation.ApplyModeNextBoot},
 		stageAccepted: &agentapi.OperationAccepted{
 			OperationId:   "generation-stage-01",
 			OperationKind: "generation-stage",
@@ -2725,6 +2726,54 @@ func TestConfigApplyDefaultsAutoAndSubmitsAcceptedOperationKind(t *testing.T) {
 	assertSuccessfulMutationOutput(t, stdout.Bytes())
 }
 
+func TestConfigApplyWarnsBeforeSubmission(t *testing.T) {
+	for _, mode := range []string{generation.ApplyModeAuto, generation.ApplyModeLive} {
+		t.Run(mode, func(t *testing.T) {
+			contextPath := writeNodeAEnrollmentContext(t)
+			configPath := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(configPath, []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			const warning = "Live network changes may interrupt management access"
+			fake := &fakeKatlcAgentClient{
+				nodeStatus:     enrolledNodeAStatus(),
+				validateResult: &agentapi.ConfigValidationResult{Accepted: true, AcceptedApplyMode: generation.ApplyModeLive, Diagnostics: []string{warning}},
+				stageAccepted:  &agentapi.OperationAccepted{OperationId: "network-apply", OperationKind: "generation-apply"},
+			}
+
+			var stdout, stderr bytes.Buffer
+			submitted := false
+			checkWarning := func() {
+				submitted = true
+				if !strings.Contains(stderr.String(), warning) {
+					t.Fatalf("warning missing before submission: %s", stderr.String())
+				}
+			}
+			fake.onSubmit = func(*agentapi.SubmitOperationRequest) { checkWarning() }
+			fake.onApply = func(*agentapi.GenerationApplyRequest) { checkWarning() }
+
+			oldDial := dialKatlcAgent
+			dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
+				return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
+			}
+			t.Cleanup(func() { dialKatlcAgent = oldDial })
+
+			err := run(context.Background(), []string{"node", "apply", "--context-file", contextPath, "--endpoint", "node-a.example.test:9443", "--config", configPath, "--mode", mode, "--no-wait", "--output", "json"}, &stdout, &stderr)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			if !submitted || fake.validateRequest == nil || fake.validateRequest.ApplyMode != mode {
+				t.Fatalf("apply was not validated and submitted: %s", stdout.String())
+			}
+			if strings.Contains(stdout.String(), warning) {
+				t.Fatalf("warning polluted JSON stdout: %s", stdout.String())
+			}
+		})
+	}
+}
+
 func TestNormalizeDestructiveStorageAcknowledgements(t *testing.T) {
 	got, err := normalizeDestructiveStorageAcknowledgements([]string{"worker-1/cache", " cp-1/data "})
 	if err != nil {
@@ -3029,6 +3078,7 @@ type fakeKatlcAgentClient struct {
 	operationLists          []*agentapi.ListOperationsResponse
 	operationsRequest       *agentapi.ListOperationsRequest
 	onSubmit                func(*agentapi.SubmitOperationRequest)
+	onApply                 func(*agentapi.GenerationApplyRequest)
 	submitError             func(*agentapi.SubmitOperationRequest) error
 	rebootRequests          []*agentapi.RebootRequest
 	onReboot                func(*agentapi.RebootRequest)
@@ -3165,6 +3215,9 @@ func (c *fakeKatlcAgentClient) ValidateConfig(_ context.Context, req *agentapi.V
 
 func (c *fakeKatlcAgentClient) ApplyGeneration(_ context.Context, req *agentapi.GenerationApplyRequest, _ ...grpc.CallOption) (*agentapi.OperationAccepted, error) {
 	c.applyRequest = req
+	if c.onApply != nil {
+		c.onApply(req)
+	}
 	return c.stageAccepted, nil
 }
 

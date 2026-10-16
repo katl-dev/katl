@@ -188,6 +188,7 @@ RequiredBy=systemd-confext.service
 	}
 	if !strings.Contains(assets.HostConfigPrepare, "After=systemd-sysext.service systemd-confext.service") ||
 		!strings.Contains(assets.HostConfigPrepare, "Requires=systemd-sysext.service systemd-confext.service") ||
+		!strings.Contains(assets.HostConfigPrepare, "Before=systemd-networkd.service") ||
 		strings.Contains(assets.HostConfigPrepare, "systemd-udev-trigger.service") {
 		t.Fatalf("katl-host-config-prepare.service:\n%s", assets.HostConfigPrepare)
 	}

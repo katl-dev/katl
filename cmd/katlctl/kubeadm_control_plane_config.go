@@ -222,6 +222,7 @@ type clusterConfigNodePlan struct {
 	ApplyMode      string   `json:"applyMode"`
 	NoChanges      bool     `json:"noChanges"`
 	ChangedDomains []string `json:"changedDomains,omitempty"`
+	Diagnostics    []string `json:"diagnostics,omitempty"`
 }
 
 type clusterApplyReport struct {
@@ -560,6 +561,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		noChanges         bool
 		acceptedApplyMode string
 		changedDomains    []string
+		diagnostics       []string
 		components        []string
 	}
 	selected, err := selectConfigNodes(nodes, opts.selectedNodes)
@@ -661,6 +663,13 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		input.noChanges = validation.NoChanges
 		input.acceptedApplyMode = validation.AcceptedApplyMode
 		input.changedDomains = slices.Clone(validation.ChangedDomains)
+		input.diagnostics = slices.Clone(validation.Diagnostics)
+		for _, diagnostic := range input.diagnostics {
+			if err := clusterApplyProgress(opts.progress, "node=%s warning=%s", node.Name, diagnostic); err != nil {
+				_ = conn.Close()
+				return activatedClusterConfig{}, err
+			}
+		}
 		_ = conn.Close()
 		// Host files can already match after a failed Kubernetes rollout.
 		// Each component owns convergence against its observed state.
@@ -758,7 +767,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 	var stagedNodes []string
 	var nodePlans []clusterConfigNodePlan
 	for _, input := range prepared {
-		nodePlans = append(nodePlans, clusterConfigNodePlan{Node: input.node.Name, ApplyMode: input.acceptedApplyMode, NoChanges: input.noChanges, ChangedDomains: input.changedDomains})
+		nodePlans = append(nodePlans, clusterConfigNodePlan{Node: input.node.Name, ApplyMode: input.acceptedApplyMode, NoChanges: input.noChanges, ChangedDomains: input.changedDomains, Diagnostics: input.diagnostics})
 		if input.acceptedApplyMode == generation.ApplyModeNextBoot {
 			stagedNodes = append(stagedNodes, input.node.Name)
 		}

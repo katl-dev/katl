@@ -89,6 +89,7 @@ func TestRunKubeadmControlPlaneConfigSubmitsSerialCoordinatorLast(t *testing.T) 
 }
 
 func TestRunClusterApplyReconcilesWholeConfigAndAllKubernetesComponents(t *testing.T) {
+	const warning = "Live network changes may interrupt management access."
 	configPath := writeClusterConfig(t)
 	var stdout, stderr bytes.Buffer
 	client := &fakeKatlcAgentClient{
@@ -97,6 +98,7 @@ func TestRunClusterApplyReconcilesWholeConfigAndAllKubernetesComponents(t *testi
 			Accepted:          true,
 			AcceptedApplyMode: "live",
 			ChangedDomains:    []string{configapply.DomainKubeadmConfig},
+			Diagnostics:       []string{warning},
 		},
 		submitAccepted:  &agentapi.OperationAccepted{OperationId: "operation-1", RequestDigest: strings.Repeat("e", 64)},
 		operationStatus: &agentapi.OperationStatus{OperationId: "operation-1", Terminal: true, Result: operation.ResultSucceeded},
@@ -109,6 +111,9 @@ func TestRunClusterApplyReconcilesWholeConfigAndAllKubernetesComponents(t *testi
 		},
 	}
 	client.onSubmit = func(request *agentapi.SubmitOperationRequest) {
+		if !strings.Contains(stderr.String(), warning) {
+			t.Fatalf("operation accepted before warning: %s", stderr.String())
+		}
 		if request.DryRun {
 			return
 		}
@@ -141,7 +146,7 @@ func TestRunClusterApplyReconcilesWholeConfigAndAllKubernetesComponents(t *testi
 	if err := runClusterApply(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath}, &stdout, &stderr); err != nil {
 		t.Fatal(err)
 	}
-	for _, required := range []string{`"result":"succeeded"`, `"control-plane"`, `"kubelet"`} {
+	for _, required := range []string{`"result":"succeeded"`, `"control-plane"`, `"kubelet"`, warning} {
 		if !strings.Contains(stdout.String(), required) {
 			t.Fatalf("stdout = %s, missing %s", stdout.String(), required)
 		}

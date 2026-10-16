@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/installer/networkdconfig"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	katlconfig "github.com/katl-dev/katl/internal/katlc/config"
@@ -232,6 +234,7 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 		AcceptedApplyMode:     plan.Plan.Decision.AcceptedMode,
 		CandidateGenerationId: candidateID,
 		ChangedDomains:        append([]string(nil), plan.Plan.Decision.ChangedDomains...),
+		Diagnostics:           slices.Clone(plan.Plan.Decision.Warnings),
 		RequiredVolumeRebinds: volumePlan.requiredRebinds,
 	}, nil
 }
@@ -846,6 +849,12 @@ func (e *Executor) failConfigApplyRecord(operationID string, result configapply.
 			rolledBack = false
 		}
 	}
+	networkChanged := false
+	for _, diagnostic := range result.Plan.Decision.Diagnostics {
+		for _, path := range diagnostic.Paths {
+			networkChanged = networkChanged || networkdconfig.IsPath(path)
+		}
+	}
 	return e.Store.Update(operationID, eventID, eventType, func(record operation.OperationRecord) (operation.OperationRecord, error) {
 		record.Phase = phase
 		record.Result = operation.ResultFailedNeedsRepair
@@ -868,6 +877,12 @@ func (e *Executor) failConfigApplyRecord(operationID string, result configapply.
 			record.GenerationCommitState = operation.GenerationCommitAbandoned
 			record.HostRollback = result.Status.Rollback.TargetGenerationID
 			record.NextAction = fmt.Sprintf("previous generation %s and its runtime state were restored; correct the rejected configuration and retry", result.Status.Rollback.TargetGenerationID)
+			if networkChanged {
+				// Native reloads restore saved inputs but can retain changed kernel devices.
+				record.Result = operation.ResultFailedNeedsRepair
+				record.RecoveryRequired = true
+				record.NextAction = fmt.Sprintf("previous generation %s was restored, but running networking may differ; inspect the network and recreate affected interfaces or reboot before retrying", result.Status.Rollback.TargetGenerationID)
+			}
 		}
 		completeConfigApplyInvocation(record.Invocations, liveConfigApplyInvocationID(operationID), now, record.Result)
 		record.Terminal = true

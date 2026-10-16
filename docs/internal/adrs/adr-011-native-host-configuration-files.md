@@ -347,10 +347,24 @@ If no operator `.network` unit exists below `/etc/systemd/network`, Katl
 renders its DHCP fallback internally. Supplying a base `.network` unit disables
 that fallback; `.link`, `.netdev`, and drop-in files can compose with it.
 
-Networkd changes are next-boot-only. Katl renders the complete candidate
-generation without refreshing networkd in the current boot; installed boot
-health verifies the resulting systemd-networkd service and the local management
-path. Every effective networkd link with `RequiredForOnline` enabled must be
+Network files are live-applicable. Katl uses `networkctl reload` for `.network`
+and `.netdev` changes and `udevadm control --reload` for `.link` changes.
+Validation and apply warn before mutation that connectivity can be interrupted
+and existing interfaces might not converge to the saved configuration. Katl
+does not delete retained virtual interfaces or retrigger existing devices to
+force convergence. Operators can recreate affected interfaces or reboot when
+needed, or explicitly stage with `--mode next-boot`.
+
+These limits follow the native [networkctl reload semantics](https://github.com/systemd/systemd/blob/v261/man/networkctl.xml):
+networkd reconfigures matching links, but some existing netdev properties cannot
+change in place, and removing a netdev file does not remove its device. Udev
+reload makes `.link` settings available for future device events.
+
+At boot, host preparation reloads saved `.link` configuration before networkd
+starts creating virtual interfaces. It does not retrigger existing interfaces.
+
+Installed boot health verifies systemd-networkd and the local management path.
+Every effective networkd link with `RequiredForOnline` enabled must be
 online, and at least one of those required links must be routable. Unmanaged or
 explicitly optional links do not satisfy this gate. The check does not require
 an arbitrary remote operator client to be online.

@@ -736,8 +736,8 @@ runtime apply, reload, or restart behavior
 
 For example, the native host-configuration surface can accept `.network`,
 `.netdev`, and `.link` file content while Katl constrains those files to
-`/etc/systemd/network/` and owns their next-boot application and health
-semantics.
+`/etc/systemd/network/` and owns native reloads, convergence warnings, and boot
+health semantics.
 
 For the initial install, `katlos-install` owns this conversion:
 

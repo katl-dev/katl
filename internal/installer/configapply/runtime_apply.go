@@ -961,6 +961,7 @@ func (a *domainAccumulator) changes(overlays ...NodeOverlay) []Change {
 			change.Sets = slices.Clone(a.hostConfiguration.Sets)
 			change.Paths = slices.Clone(a.hostConfiguration.Paths)
 			change.Message = a.hostConfiguration.Message
+			change.Warnings = slices.Clone(a.hostConfiguration.warnings)
 			change.Effects = slices.Clone(a.hostConfiguration.Effects)
 		}
 		changes = append(changes, change)

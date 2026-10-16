@@ -66,7 +66,8 @@ native host configuration
   named file sets below validated /etc paths
   a built-in networkd handler accepts .link, .netdev, .network, and their
     one-level .d/*.conf drop-ins below /etc/systemd/network
-  networkd paths are next-boot-only and use installed boot health
+  network files apply live through native reloads with connectivity and convergence warnings
+  explicit next-boot apply remains available and uses installed boot health
 
 mount units
   persistent state projections and disk- or partition-backed volumes
@@ -270,8 +271,9 @@ kernel command line
   stage a next-boot generation and require reboot before the change is active
 
 networkd host files
-  stage a next-boot generation; systemd-networkd and operator access
-  participate in installed boot health
+  reload networkd for .network/.netdev files and udev for .link files
+  warn that connectivity and existing interface convergence are not guaranteed
+  systemd-networkd and operator access participate in installed boot health
 
 resolved
   reload or restart systemd-resolved only through tested KatlOS runtime logic
