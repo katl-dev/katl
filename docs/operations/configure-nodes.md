@@ -104,6 +104,11 @@ input, its default or node provenance, and the owned patch path. Use
 `config diff` to review its `kubeadm-aware operation` classification before
 applying.
 
+Install your CNI and wait for the node to become Ready before changing kubelet
+configuration. A pre-CNI apply can persist the configuration and restart
+kubelet, then fail its Node Ready health check. Inspect the persisted
+configuration and node status before retrying a failed apply.
+
 Katl's default `systemReserved.memory` is `1Gi`. Set that field in a native
 `KubeletConfiguration` under `spec.kubernetes.kubeadm.configFile` for a
 cluster-wide value, under `spec.defaults.kubernetes.kubelet.configFile` for a
