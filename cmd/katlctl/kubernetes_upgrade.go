@@ -237,25 +237,28 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 
 func runKubernetesUpgradeTarget(ctx context.Context, topology workstation.ResolvedTopology, opts kubernetesUpgradeOptions, target kubernetesUpgradeTarget, image reference.Named, desiredVersion string, localArtifact *kubernetesUpgradeArtifact, stderr io.Writer) (nodeReport kubernetesUpgradeNodeReport, resultErr error) {
 	nodeReport = kubernetesUpgradeNodeReport{Name: target.node.Name, Role: string(target.node.SystemRole), SourceVersion: target.source, TargetVersion: desiredVersion}
-	cordoned := false
 	if opts.cordon {
-		if err := setKubernetesNodeCordon(ctx, opts.kubeconfig, target.node.Name, true); err != nil {
+		unschedulable, err := kubernetesNodeUnschedulable(ctx, opts.kubeconfig, target.node.Name)
+		if err != nil {
 			nodeReport.Result = "cordon-failed"
-			return nodeReport, fmt.Errorf("Kubernetes upgrade stopped while cordoning node %s: %w", target.node.Name, err)
+			return nodeReport, fmt.Errorf("read scheduling state for node %s: %w", target.node.Name, err)
 		}
-		cordoned = true
-		defer func() {
-			if !cordoned {
-				return
+		if !unschedulable {
+			if err := setKubernetesNodeCordon(ctx, opts.kubeconfig, target.node.Name, true); err != nil {
+				nodeReport.Result = "cordon-failed"
+				return nodeReport, fmt.Errorf("Kubernetes upgrade stopped while cordoning node %s: %w", target.node.Name, err)
 			}
-			if err := setKubernetesNodeCordon(ctx, opts.kubeconfig, target.node.Name, false); err != nil {
-				if resultErr == nil {
-					nodeReport.Result = "uncordon-failed"
+			// Restore scheduling only when this invocation changed it.
+			defer func() {
+				if err := setKubernetesNodeCordon(ctx, opts.kubeconfig, target.node.Name, false); err != nil {
+					if resultErr == nil {
+						nodeReport.Result = "uncordon-failed"
+					}
+					nodeReport.NextAction = "uncordon the node after confirming it is healthy"
+					resultErr = errors.Join(resultErr, fmt.Errorf("uncordon node %s: %w", target.node.Name, err))
 				}
-				nodeReport.NextAction = "uncordon the node after confirming it is healthy"
-				resultErr = errors.Join(resultErr, fmt.Errorf("uncordon node %s: %w", target.node.Name, err))
-			}
-		}()
+			}()
+		}
 	}
 	body := kubernetesUpgradeBody(target, image, desiredVersion, localArtifact)
 	if localArtifact != nil {
@@ -304,6 +307,24 @@ func runKubernetesUpgradeTarget(ctx context.Context, topology workstation.Resolv
 	nodeReport.Phase = "healthy"
 	nodeReport.NextAction = ""
 	return nodeReport, nil
+}
+
+func kubernetesNodeUnschedulable(ctx context.Context, kubeconfig, node string) (bool, error) {
+	result, err := operatorKubectlRunner.Run(ctx, []string{"kubectl", "--kubeconfig", filepath.Clean(kubeconfig), "get", "node", node, "-o", "jsonpath={.spec.unschedulable}"})
+	if err != nil {
+		return false, err
+	}
+	if result.ExitStatus != 0 {
+		return false, fmt.Errorf("kubectl get node failed: %s", inventory.Redact(strings.TrimSpace(result.Stderr)))
+	}
+	switch strings.TrimSpace(result.Stdout) {
+	case "true":
+		return true, nil
+	case "", "false":
+		return false, nil
+	default:
+		return false, fmt.Errorf("kubectl returned an invalid node scheduling state")
+	}
 }
 
 func setKubernetesNodeCordon(ctx context.Context, kubeconfig, node string, cordon bool) error {

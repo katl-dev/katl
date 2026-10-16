@@ -794,11 +794,23 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 	if err := os.WriteFile(contextPath, []byte(contextConfig), 0o600); err != nil {
 		return fmt.Errorf("write katlctl upgrade context: %w", err)
 	}
-	clusterConfig := fmt.Sprintf("apiVersion: config.katl.dev/v1alpha1\nkind: ClusterConfig\nmetadata:\n  name: upgrade\nspec:\n  controlPlaneEndpoint:\n    host: %s\n    port: 6443\n  kubernetes:\n    version: %s\n  defaults:\n    install:\n      systemDisk:\n        minSizeMiB: 32768\n    access:\n      ssh:\n        authorizedKeys:\n          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm vmtest@katl\n  nodes:\n    - name: cp-1\n      controlPlane: true\n      management:\n        address: %s\n      install:\n        systemDisk:\n          byID: /dev/disk/by-id/virtio-katl-cp-root\n    - name: worker-1\n      management:\n        address: %s\n      install:\n        systemDisk:\n          byID: /dev/disk/by-id/virtio-katl-worker-root\n", cpAddress, targetVersion, cpAddress, workerAddress)
+	clusterConfig := fmt.Sprintf("apiVersion: config.katl.dev/v1alpha1\nkind: ClusterConfig\nmetadata:\n  name: upgrade\nspec:\n  managementAuthentication: mtls\n  controlPlaneEndpoint:\n    host: %s\n    port: 6443\n  kubernetes:\n    version: %s\n  defaults:\n    install:\n      systemDisk:\n        minSizeMiB: 32768\n    access:\n      ssh:\n        authorizedKeys:\n          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm vmtest@katl\n  nodes:\n    - name: cp-1\n      controlPlane: true\n      management:\n        address: %s\n      install:\n        systemDisk:\n          byID: /dev/disk/by-id/virtio-katl-cp-root\n    - name: worker-1\n      management:\n        address: %s\n      install:\n        systemDisk:\n          byID: /dev/disk/by-id/virtio-katl-worker-root\n", cpAddress, targetVersion, cpAddress, workerAddress)
 	if err := os.WriteFile(configPath, []byte(clusterConfig), 0o600); err != nil {
 		return fmt.Errorf("write Kubernetes upgrade ClusterConfig: %w", err)
 	}
-	command := exec.CommandContext(ctx, "go", "run", "./cmd/katlctl", "kubernetes", "upgrade", "--config", configPath, "--context-file", contextPath, "--bundle", bundle, "--timeout", "25m", "--output", "json")
+	for _, name := range []string{"cp-1", "worker-1"} {
+		state, err := kubectlOutput(ctx, kubeconfigPath, "get", "node", name, "-o", "jsonpath={.spec.unschedulable}")
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(string(state)) == "true" {
+			return fmt.Errorf("%s must start schedulable for the upgrade cordon proof", name)
+		}
+	}
+	if _, err := kubectlOutput(ctx, kubeconfigPath, "cordon", "worker-1"); err != nil {
+		return err
+	}
+	command := exec.CommandContext(ctx, "go", "run", "./cmd/katlctl", "kubernetes", "upgrade", "--config", configPath, "--context-file", contextPath, "--bundle", bundle, "--cordon", "--kubeconfig", kubeconfigPath, "--timeout", "25m", "--output", "json")
 	command.Dir = repoRoot
 	stdout, err := command.Output()
 	if err != nil {
@@ -837,6 +849,18 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 	if err := verifyKubernetesVersions(ctx, kubeconfigPath, evidenceDir, targetVersion); err != nil {
 		return err
 	}
+	for _, item := range []struct {
+		name          string
+		unschedulable bool
+	}{{"cp-1", false}, {"worker-1", true}} {
+		state, err := kubectlOutput(ctx, kubeconfigPath, "get", "node", item.name, "-o", "jsonpath={.spec.unschedulable}")
+		if err != nil {
+			return err
+		}
+		if got := strings.TrimSpace(string(state)) == "true"; got != item.unschedulable {
+			return fmt.Errorf("%s schedulability changed across upgrade: unschedulable=%v", item.name, got)
+		}
+	}
 	if err := assertNodeBootIDsUnchanged(ctx, bootIDs, cpNode, workerNode); err != nil {
 		return err
 	}
@@ -853,8 +877,8 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 		if err != nil {
 			return err
 		}
-		if record.KubernetesSysextUpdate == nil || record.KubernetesSysextUpdate.KubernetesBundleRef != image.String() || record.KubernetesSysextUpdate.BundleManifestDigest == "" || record.KubernetesSysextUpdate.TargetSysextSHA256 == "" {
-			return fmt.Errorf("%s upgrade did not resolve the published bundle internally: %+v", item.Name, record.KubernetesSysextUpdate)
+		if err := verifyUpgradeBundle(image.String(), record.KubernetesSysextUpdate); err != nil {
+			return fmt.Errorf("%s upgrade bundle evidence: %w", item.Name, err)
 		}
 		if item.Name == cpNode.Name && (record.KubernetesSysextUpdate.SnapshotDigest == "" || record.KubernetesSysextUpdate.SnapshotStorageLocation == "") {
 			return fmt.Errorf("%s upgrade did not capture etcd snapshot evidence", item.Name)
@@ -863,6 +887,27 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 		if nodeStatus.GetCurrentGenerationId() != record.CandidateGenerationID || nodeStatus.GetBootHealthState() != "healthy" || nodeStatus.GetBootHealthDiagnostic() != "" {
 			return fmt.Errorf("%s live-promoted generation is not current and healthy: current=%s candidate=%s bootHealth=%s diagnostic=%q", item.Name, nodeStatus.GetCurrentGenerationId(), record.CandidateGenerationID, nodeStatus.GetBootHealthState(), nodeStatus.GetBootHealthDiagnostic())
 		}
+	}
+	return nil
+}
+
+func verifyUpgradeBundle(requested string, update *operation.KubernetesSysextUpdate) error {
+	if update == nil || update.BundleManifestDigest == "" || update.TargetSysextSHA256 == "" {
+		return fmt.Errorf("missing bundle or extension digest evidence: %+v", update)
+	}
+	want, err := kubernetesbundle.ParseImageReference(requested)
+	if err != nil {
+		return err
+	}
+	got, err := kubernetesbundle.ParseImageReference(update.KubernetesBundleRef)
+	if err != nil {
+		return err
+	}
+	if payloadbundle.Source(got) != payloadbundle.Source(want) || payloadbundle.ManifestDigest(got) == "" {
+		return fmt.Errorf("resolved bundle %q must pin the requested repository %q", got, want)
+	}
+	if pin := payloadbundle.ManifestDigest(want); pin != "" && payloadbundle.ManifestDigest(got) != pin {
+		return fmt.Errorf("resolved bundle %q differs from requested pin %q", got, want)
 	}
 	return nil
 }
