@@ -18,6 +18,13 @@ availability across several hosts.
 - the command is run during the intended reboot window; and
 - Kubernetes and workload availability have been handled outside Katl.
 
+Host reboot, shutdown, and upgrade can hang with mounted Ceph RBD filesystems.
+Katl does not automatically quiesce storage workloads or guarantee that CSI
+staging mounts and devices are released before their dependencies stop.
+Arrange and verify storage teardown outside Katl before host maintenance.
+Ordinary workload drain and longer shutdown waits are not verified workarounds
+for this limitation.
+
 ## Plan the host upgrade
 
 Replace the version in this example with the target KatlOS release:
@@ -188,7 +195,7 @@ KatlOS has two kernel tracks, released together with the same KatlOS version:
 - **lts** uses the maintained [kwizart 6.18 LTS kernel RPMs](https://copr.fedorainfracloud.org/coprs/kwizart/kernel-longterm-6.18/) for the same Fedora release.
 
 LTS refers to the kernel series, not extended support for Fedora userspace.
-Patch updates within 6.18 enter new KatlOS builds through the package repository;
+Kernel versions enter KatlOS builds through reviewed, retained RPM selections;
 changing the LTS series is a deliberate Katl build-policy change. Nodes only
 change kernels when you upgrade KatlOS, not through background RPM updates.
 
@@ -200,7 +207,9 @@ katlctl node upgrade cp-1 --config cluster.yaml --version VERSION --flavour lts
 katlctl node upgrade cp-1 --config cluster.yaml --version VERSION --flavour standard
 ```
 
-Both commands stage a complete OS image and reboot. Kubernetes extensions remain
+Changing flavour stages a complete OS image and reboots. Repeating an upgrade
+to the identical active image without `--apply-config` returns unchanged
+without rebooting. Kubernetes extensions remain
 independent of the kernel flavour. `--artifact` must match the selected flavour.
 Pass `--flavour lts` for a local LTS image; omitting the flag selects standard.
 
