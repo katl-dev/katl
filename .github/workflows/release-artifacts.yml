@@ -350,7 +350,7 @@ jobs:
             _build/mkosi/katlos-upgrade-*.squashfs.json
             _build/mkosi/katlos-upgrade-*.squashfs.sha256
           if-no-files-found: error
-          retention-days: 1
+          retention-days: 30
           compression-level: 0
 
   installer:
@@ -633,10 +633,20 @@ jobs:
           compression-level: 0
 
 
+  release-approval:
+    name: Approve Release Publication
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: bundle
+    runs-on: ubuntu-24.04
+    environment: release
+    steps:
+      - name: Record publication approval
+        run: echo 'The assembled artifacts from this run are approved for publication.'
+
   publish-extensions:
     name: Publish Kernel Extensions
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [images]
+    needs: [images, release-approval]
     runs-on: ubuntu-24.04
     permissions:
       contents: read

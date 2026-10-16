@@ -103,6 +103,7 @@ func TestReleasePublishesKernelExtensions(t *testing.T) {
 	var workflow struct {
 		Jobs map[string]struct {
 			If              string    `yaml:"if"`
+			Environment     string    `yaml:"environment"`
 			Needs           yaml.Node `yaml:"needs"`
 			ContinueOnError bool      `yaml:"continue-on-error"`
 			Steps           []struct {
@@ -117,6 +118,8 @@ func TestReleasePublishesKernelExtensions(t *testing.T) {
 	for _, edge := range [][2]string{
 		{"publish-tag", "publish-extensions"},
 		{"publish-extensions", "images"},
+		{"publish-extensions", "release-approval"},
+		{"release-approval", "bundle"},
 		{"images", "extensions"},
 		{"extensions", "runtime"},
 		{"extensions", "extension-inventory"},
@@ -133,6 +136,10 @@ func TestReleasePublishesKernelExtensions(t *testing.T) {
 		if !found {
 			t.Fatalf("%s can publish before %s succeeds", edge[0], edge[1])
 		}
+	}
+	approval := workflow.Jobs["release-approval"]
+	if approval.Environment != "release" || approval.If != "github.event_name == 'push' && github.ref_type == 'tag'" || approval.ContinueOnError {
+		t.Fatal("release publication requires successful approval through the protected release environment")
 	}
 	publication := workflow.Jobs["publish-extensions"]
 	if publication.If != "github.event_name == 'push' && github.ref_type == 'tag'" || publication.ContinueOnError {
@@ -182,6 +189,9 @@ func TestReleaseEmbedsKernelExtensions(t *testing.T) {
 			}
 		}
 		paths := step.With["path"]
+		if step.With["name"] == "katl-runtime-images-${{ matrix.flavour }}-${{ github.sha }}" && step.With["retention-days"] != "30" {
+			t.Fatal("extension publication inputs must survive the 30-day release approval window")
+		}
 		carried = carried || (strings.Contains(paths, "_build/mkosi/extension-bundles/") && strings.Contains(paths, "_build/mkosi/release-extensions.json"))
 		carriedInventory = carriedInventory || strings.Contains(paths, "_build/mkosi/katl-runtime.extensions.json")
 	}
