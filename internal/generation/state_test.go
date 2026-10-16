@@ -56,6 +56,7 @@ WantedBy=local-fs.target
 		t.Fatalf("efi.mount:\n%s\nwant:\n%s", assets.EFIMount, wantEFIMount)
 	}
 	for _, want := range []string{
+		"d /run/systemd/logind.conf.d 0755 root root -",
 		"d /var/lib/katl 0755 root root -",
 		"d /var/lib/katl/boot 0755 root root -",
 		"d /var/lib/katl/generations 0755 root root -",
@@ -247,7 +248,8 @@ RequiresMountsFor=/var/lib/containerd
 	wantKubelet := `[Unit]
 ConditionPathExists=/var/lib/kubelet/config.yaml
 Requires=containerd.service etc-kubernetes.mount
-After=var.mount containerd.service etc-kubernetes.mount
+Wants=systemd-logind.service
+After=var.mount containerd.service etc-kubernetes.mount systemd-logind.service systemd-tmpfiles-setup.service
 Before=katl-kubeadm-ready.target
 RequiresMountsFor=/var/lib/kubelet /etc/kubernetes
 
@@ -429,6 +431,7 @@ func TestWriteState(t *testing.T) {
 	assertSymlink(t, filepath.Join(root, "etc/systemd/system/timers.target.wants/katl-boot-deadman.timer"), "../katl-boot-deadman.timer")
 	assertFile(t, filepath.Join(root, "etc/systemd/system/containerd.service.d/10-katl-runtime.conf"), assets.ContainerdDropIn)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/kubelet.service.d/10-katl-runtime.conf"), assets.KubeletDropIn)
+	assertSymlink(t, filepath.Join(root, "etc/systemd/logind.conf.d/99-kubelet.conf"), "/run/systemd/logind.conf.d/99-kubelet.conf")
 	assertSymlink(t, filepath.Join(root, "etc/systemd/system/systemd-sysext.service.requires/katl-generation-activate.service"), "../katl-generation-activate.service")
 	assertSymlink(t, filepath.Join(root, "etc/systemd/system/systemd-confext.service.requires/katl-generation-activate.service"), "../katl-generation-activate.service")
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-state-projection-check.service"), assets.StateCheckService)
@@ -487,6 +490,7 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-boot-deadman.timer"), assets.BootDeadmanTimer)
 	assertRepoFile(t, filepath.Join(systemdRoot, "containerd.service.d/10-katl-runtime.conf"), assets.ContainerdDropIn)
 	assertRepoFile(t, filepath.Join(systemdRoot, "kubelet.service.d/10-katl-runtime.conf"), assets.KubeletDropIn)
+	assertSymlink(t, filepath.Join(root, "mkosi.profiles/runtime/mkosi.extra/etc/systemd/logind.conf.d/99-kubelet.conf"), "/run/systemd/logind.conf.d/99-kubelet.conf")
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-state-projection-check.service"), assets.StateCheckService)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-runtime-handoff-status.service"), assets.RuntimeStatus)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katlc-agent.service"), assets.AgentService)
@@ -571,6 +575,8 @@ func writeStateVerifyFixture(t *testing.T, root string) {
 	writeUnit(t, root, "usr/lib/systemd/system/systemd-modules-load.service", "[Unit]\nDescription=Load Kernel Modules\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/systemd-sysctl.service", "[Unit]\nDescription=Apply Kernel Variables\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/systemd-udev-trigger.service", "[Unit]\nDescription=Coldplug Devices\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
+	writeUnit(t, root, "usr/lib/systemd/system/systemd-logind.service", "[Unit]\nDescription=Login Management\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
+	writeUnit(t, root, "usr/lib/systemd/system/systemd-tmpfiles-setup.service", "[Unit]\nDescription=Create Volatile Files\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/containerd.service", "[Unit]\nDescription=Containerd\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/kubelet.service", "[Unit]\nDescription=Kubelet\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/network-online.target", "[Unit]\nDescription=Network Online\n")

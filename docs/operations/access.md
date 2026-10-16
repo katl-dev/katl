@@ -241,6 +241,10 @@ the stable endpoint, local API readiness, and whether that node owns the VIP.
 the operator workstation, so local ownership is not mistaken for end-to-end
 reachability. Use `--output json` for the complete bounded status.
 
+For a Kubernetes node, first review
+[workload and storage maintenance](maintain-node.md). Host lifecycle commands
+leave workload drain and scheduling state under your control.
+
 Reboot a node and wait for it to return healthy:
 
 ```sh

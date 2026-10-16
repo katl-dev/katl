@@ -25,6 +25,10 @@ Arrange and verify storage teardown outside Katl before host maintenance.
 Ordinary workload drain and longer shutdown waits are not verified workarounds
 for this limitation.
 
+See [Prepare a Kubernetes node for host maintenance](maintain-node.md) for
+operator-owned drain and native kubelet shutdown configuration. Host upgrade
+does not require a drain or uncordon a node that you left cordoned.
+
 ## Plan the host upgrade
 
 Replace the version in this example with the target KatlOS release:

@@ -514,7 +514,8 @@ func renderKubeletDropIn() string {
 		"[Unit]",
 		"ConditionPathExists=/var/lib/kubelet/config.yaml",
 		"Requires=containerd.service etc-kubernetes.mount",
-		"After=var.mount containerd.service etc-kubernetes.mount",
+		"Wants=systemd-logind.service",
+		"After=var.mount containerd.service etc-kubernetes.mount systemd-logind.service systemd-tmpfiles-setup.service",
 		"Before=katl-kubeadm-ready.target",
 		"RequiresMountsFor=/var/lib/kubelet /etc/kubernetes",
 		"",
@@ -682,6 +683,10 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 	if err := writeFile(root, "etc/systemd/system/kubelet.service.d/10-katl-runtime.conf", assets.KubeletDropIn, 0o644); err != nil {
 		return StateAssets{}, err
 	}
+	// Kubelet owns the derived logind budget; only that file is writable.
+	if err := writeSymlink(root, "etc/systemd/logind.conf.d/99-kubelet.conf", "/run/systemd/logind.conf.d/99-kubelet.conf"); err != nil {
+		return StateAssets{}, err
+	}
 	if err := writeSymlink(root, "etc/systemd/system/systemd-sysext.service.requires/katl-generation-activate.service", "../katl-generation-activate.service"); err != nil {
 		return StateAssets{}, err
 	}
@@ -766,7 +771,10 @@ func stateDirs() []StateDir {
 }
 
 func renderTmpfiles(dirs []StateDir) string {
-	lines := []string{"# Katl writable state seed directories"}
+	lines := []string{
+		"# Katl writable state seed directories",
+		"d /run/systemd/logind.conf.d 0755 root root -",
+	}
 	for _, dir := range dirs {
 		owner := "root"
 		group := "root"
