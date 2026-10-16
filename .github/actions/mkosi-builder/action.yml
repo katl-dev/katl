@@ -10,6 +10,14 @@ inputs:
 runs:
   using: composite
   steps:
+    - name: Configure package mirror failover
+      shell: bash
+      run: |
+        mkdir -p mkosi.conf.d
+        cat > mkosi.conf.d/ci-downloads.conf <<'EOF'
+        [Build]
+        SandboxTrees=.github/actions/mkosi-builder/sandbox
+        EOF
     - id: fedora
       shell: bash
       run: echo "release=$(scripts/fedora-release)" >> "$GITHUB_OUTPUT"
