@@ -700,3 +700,59 @@ packages are admitted from it, with RPM signature verification enabled. Its
 6.18 series is pinned; patches follow the maintained repository. A Fedora release
 bump requires confirming that this repository publishes matching LTS RPMs and
 running both flavours' installer and upgrade journeys.
+
+### Qualify retained kernel inputs
+
+The Kernel Updates workflow captures signed kernel RPM sets and proposes their
+locks after building runtime and installer artifacts, every release-owned
+extension recipe, and complete module composition. It runs weekly or on manual
+dispatch. To qualify an exact kernel pair instead of discovering newer versions:
+
+```sh
+gh workflow run kernel-updates.yml --ref main \
+  -f standard_release=7.2.10-200.fc44.x86_64 \
+  -f lts_release=6.18.57-200.fc44.x86_64
+```
+
+The proposal records its exact qualified commit. Existing bot-created PR checks
+can require maintainer approval before they run. Kernel updates remain reviewed
+changes; build qualification does not replace DRBD replication, applicable VM
+gates, persistent operator journeys, or NVIDIA hardware evidence.
+
+For local candidate qualification, capture the selected flavour inside the
+builder and select its retained OCI layout explicitly:
+
+```sh
+scripts/mkosi box -- go run ./cmd/katl-kernel-release candidate \
+  --fedora-release "$(scripts/fedora-release)" --flavour lts \
+  --kernel-release 6.18.57-200.fc44.x86_64 --output _build/kernel-candidates/lts
+
+export KATL_FLAVOUR=lts
+export KATL_KERNEL_LOCK="$PWD/_build/kernel-candidates/lts/lock.json"
+export KATL_KERNEL_LAYOUT="$PWD/_build/kernel-candidates/lts/layout"
+export KATL_MKOSI_BUILD_DIR="$PWD/_build/kernel-qualified-lts"
+scripts/mkosi build-runtime
+scripts/mkosi build-installer
+scripts/build-release-extensions
+scripts/assemble-release-extensions
+```
+
+The lock fixes `core`, `modules`, `modules-core`, and matching `devel` RPM bytes.
+Other packages retain their existing repository resolution. The builder verifies
+the RPM cache before image-cache reuse and uses a digest-specific mkosi cache
+key. If verification reports a corrupt RPM cache, remove only the directory
+named in the error and repeat the build.
+
+The dedicated `katl/kernel-inputs` GHCR package needs public visibility after its
+first publication. Before selecting a retained lock for ordinary builds, verify
+anonymous retrieval from a fresh cache without supplying a local layout:
+
+```sh
+go run ./cmd/katl-kernel-release verify \
+  --lock _build/kernel-candidates/lts/lock.json --cache _build/kernel-public-check
+```
+
+Keep immutable digest-tagged kernel inputs available while committed locks
+reference them. Actions artifacts and caches are temporary workflow handoff;
+they do not replace retained RPM storage. The design and bootstrap boundary are
+specified in `docs/internal/adrs/adr-017-retained-kernel-inputs.md`.
