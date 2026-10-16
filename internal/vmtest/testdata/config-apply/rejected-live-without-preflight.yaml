@@ -9,11 +9,8 @@ spec:
   clusterDefaults:
     hostConfiguration:
       sets:
-        rejected-network:
+        rejected-modules:
           files:
-            - path: /etc/systemd/network/20-vmtest-rejected.network
+            - path: /etc/modprobe.d/80-vmtest-rejected.conf
               content: |
-                [Match]
-                Name=*
-                [Network]
-                DHCP=yes
+                options loop max_loop=64

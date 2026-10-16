@@ -546,8 +546,8 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	rejectedOutput := runKatlctl(t, ctx, result, katlctl, "config-apply-validate-rejected", rejectedArgs...)
 	var rejected agentapi.ConfigValidationResult
 	mustUnmarshalProtoJSON(t, rejectedOutput, &rejected)
-	if rejected.Accepted || !strings.Contains(strings.Join(rejected.Diagnostics, "\n"), "systemd-networkd configuration applies on next boot") {
-		t.Fatalf("rejected validation = %+v, want fail closed next-boot network diagnostic", rejected)
+	if rejected.Accepted || !strings.Contains(strings.Join(rejected.Diagnostics, "\n"), "kernel module configuration is next-boot-only") {
+		t.Fatalf("rejected validation = %+v, want fail closed next-boot module diagnostic", rejected)
 	}
 	assertGuestMissing(t, ctx, guest, "/var/lib/katl/generations/"+rejectedGeneration)
 	assertOptionalReadlink(t, ctx, guest, "/run/extensions/katl-kubernetes.raw", beforeSysext)
@@ -569,7 +569,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	if got := currentGenerationFromGuest(t, ctx, guest); got != currentGeneration {
 		t.Fatalf("current generation after rejected apply = %q, want %q", got, currentGeneration)
 	}
-	assertGuestFileContains(t, ctx, guest, rejectedAccepted.RecordPath, `"operationKind": "generation-apply"`, `"result": "failed"`, "systemd-networkd configuration applies on next boot")
+	assertGuestFileContains(t, ctx, guest, rejectedAccepted.RecordPath, `"operationKind": "generation-apply"`, `"result": "failed"`, "kernel module configuration is next-boot-only")
 
 	guestCommand(t, ctx, guest, "start-service-before-mask", "systemctl", "start", "systemd-userdbd.service")
 	guestCommand(t, ctx, guest, "service-active-before-mask", "systemctl", "is-active", "--quiet", "systemd-userdbd.service")
@@ -626,6 +626,20 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		`"bootedGenerationID": "`+currentGeneration+`"`,
 		`"pendingHealthValidation": false`,
 	)
+	networkAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-network-live", "live", "2026.06.06-vmtest-network-live", configApplyFixture(t, "live-network.yaml"), false)
+	networkStatus := waitKatlcOperationTerminal(t, ctx, endpoint, networkAccepted.OperationId)
+	if networkStatus.Result != operation.ResultSucceeded || networkStatus.ConfigApplyPhase != "active" || networkStatus.BootHealthPending {
+		t.Fatalf("live network status = %+v", networkStatus)
+	}
+	if got := guestBootID(t, ctx, client); got != beforeLiveBootID {
+		t.Fatalf("network apply rebooted the node: %s became %s", beforeLiveBootID, got)
+	}
+	assertGuestAddress(t, ctx, guest, "198.51.100.76", 32)
+	guestCommand(t, ctx, guest, "live-netdev-initialized", "udevadm", "wait", "--timeout=30", "--initialized=yes", "/sys/class/net/katllive0")
+	if output := guestCommandOutput(t, ctx, guest, "live-netdev", "ip", "-d", "link", "show", "katllive0"); !strings.Contains(output, "alias katl-live-netdev") {
+		t.Fatalf("live netdev did not use its .link file: %s", output)
+	}
+
 	runSystemdUnitSmoke(t, ctx, guest, client, result, katlctl, endpoint)
 	activeGeneration := runVolumeRemovalSmoke(t, ctx, guest, result, katlctl, endpoint)
 
@@ -691,6 +705,10 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		"/usr/bin/test", "-r", "/etc/systemd/network/80-katl-vmtest-dhcp.network.d/50-address.conf",
 	)
 	assertGuestAddress(t, ctx, guest, "198.51.100.77", 32)
+	guestCommand(t, ctx, guest, "booted-netdev-initialized", "udevadm", "wait", "--timeout=30", "--initialized=yes", "/sys/class/net/katllive0")
+	if output := guestCommandOutput(t, ctx, guest, "booted-netdev", "ip", "-d", "link", "show", "katllive0"); !strings.Contains(output, "alias katl-live-netdev") {
+		t.Fatalf("booted netdev did not use its .link file: %s", output)
+	}
 	assertGuestFileContains(t, ctx, guest, "/proc/cmdline", "katl.vmtest.config_apply_kernel=1")
 	assertMaskedUnits(t, ctx, guest, "reboot")
 	assertGuestFileContains(t, ctx, guest, "/proc/cmdline", "module_blacklist=bluetooth,btusb,btmtk", "modprobe.blacklist=bluetooth,btusb,btmtk")

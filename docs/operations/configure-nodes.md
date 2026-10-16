@@ -471,10 +471,21 @@ online and at least one of those links to be routable. Set
 `RequiredForOnline=no` in a link's `[Link]` section when a managed secondary
 link is intentionally optional at boot.
 
+Network files can apply live. Katl reloads networkd for `.network` and `.netdev`
+changes and reloads udev for `.link` changes. Planning and apply warn that
+connectivity can be interrupted and running interfaces might differ from the
+saved configuration. A failed apply can restore the previous saved generation
+while leaving runtime network changes in place; follow the operation's recovery
+guidance to inspect the network and recreate affected interfaces or reboot.
+Inspect the network after applying. Some settings require
+recreating an interface; removing a `.netdev` file does not remove the existing
+device. Existing interfaces are not retriggered for `.link` changes. Recreate
+the affected interface or reboot when needed to apply those settings. Use
+`--mode next-boot` when you prefer to defer network changes until a reboot.
+
 Sysctl files with a reversible concrete-key change can apply live. Udev rules
 can reload live, but Katl does not retrigger existing devices. Module load,
-modprobe, typed sysfs settings, containerd overlays, and networkd files are
-next-boot-only.
+modprobe, typed sysfs settings, and containerd overlays are next-boot-only.
 Katl renders `hostConfiguration.sysfs` to an internal tmpfiles rule, applies
 each value, and reads it back before boot health succeeds. Containerd imports
 `/etc/containerd/conf.d/*.toml` when it starts. Other permitted files are

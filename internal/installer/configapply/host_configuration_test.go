@@ -65,13 +65,6 @@ func TestPlanHostConfigurationStagesBootOwnedOverlays(t *testing.T) {
 			want:    "load on next boot",
 			target:  "containerd configuration /etc/containerd/conf.d/80-debug.toml",
 		},
-		{
-			name:    "networkd drop-in",
-			path:    "/etc/systemd/network/20-bond0.network.d/50-address.conf",
-			content: "[Network]\nAddress=10.254.1.1/31\n",
-			want:    "applies on next boot",
-			target:  "networkd configuration /etc/systemd/network/20-bond0.network.d/50-address.conf",
-		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -86,6 +79,46 @@ func TestPlanHostConfigurationStagesBootOwnedOverlays(t *testing.T) {
 			}
 			if !found {
 				t.Fatalf("effects = %#v, want target %q", plan.Effects, tt.target)
+			}
+		})
+	}
+}
+
+func TestPlanHostConfigurationReloadsNetworking(t *testing.T) {
+	for _, test := range []struct {
+		path    string
+		command []string
+	}{
+		{"20-lan.network", []string{"networkctl", "reload"}},
+		{"20-lan.network.d/50-address.conf", []string{"networkctl", "reload"}},
+		{"20-lan.netdev", []string{"networkctl", "reload"}},
+		{"20-lan.netdev.d/50-options.conf", []string{"networkctl", "reload"}},
+		{"10-uplink.link", []string{"/usr/bin/udevadm", "control", "--reload"}},
+		{"10-uplink.link.d/50-options.conf", []string{"/usr/bin/udevadm", "control", "--reload"}},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			before := testHostConfiguration("network", "/etc/systemd/network/"+test.path, "[Match]\nName=old\n")
+			after := testHostConfiguration("network", "/etc/systemd/network/"+test.path, "[Match]\nName=new\n")
+			for _, transition := range []struct {
+				name          string
+				before, after manifest.HostConfiguration
+			}{
+				{"add", manifest.HostConfiguration{}, after},
+				{"change", before, after},
+				{"remove", before, manifest.HostConfiguration{}},
+			} {
+				t.Run(transition.name, func(t *testing.T) {
+					plan := planHostConfigurationChange(transition.before, transition.after)
+					if !plan.Live || len(plan.warnings) == 0 || !strings.Contains(plan.warnings[0], "different from the saved configuration") {
+						t.Fatalf("plan = %#v, want live networking with convergence warning", plan)
+					}
+					if len(plan.Commands) != 1 || !slices.Equal(plan.Commands[0].Argv, test.command) {
+						t.Fatalf("commands = %#v", plan.Commands)
+					}
+					if len(plan.rollbackCommands) != 1 || !slices.Equal(plan.rollbackCommands[0].Argv, test.command) {
+						t.Fatalf("rollback commands = %#v", plan.rollbackCommands)
+					}
+				})
 			}
 		})
 	}

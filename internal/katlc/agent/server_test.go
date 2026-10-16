@@ -1527,12 +1527,9 @@ func TestValidateConfigReturnsDeterministicPlanDiagnostics(t *testing.T) {
 			"                net.ipv4.ip_forward = 0",
 			"        network:",
 			"          files:",
-			"            - path: /etc/systemd/network/20-uplink.network",
+			"            - path: /etc/modprobe.d/80-storage.conf",
 			"              content: |",
-			"                [Match]",
-			"                Name=ens3",
-			"                [Network]",
-			"                DHCP=yes",
+			"                options loop max_loop=64",
 			"",
 		}, "\n"),
 	}
@@ -1554,8 +1551,8 @@ func TestValidateConfigReturnsDeterministicPlanDiagnostics(t *testing.T) {
 	diagnostics := strings.Join(first.Diagnostics, "\n")
 	if !reflect.DeepEqual(first.Diagnostics, second.Diagnostics) ||
 		!strings.Contains(diagnostics, "node-identity: staged-required") ||
-		!strings.Contains(diagnostics, "host-configuration: staged-required: systemd-networkd configuration applies on next boot") {
-		t.Fatalf("diagnostics = %#v/%#v, want stable identity and next-boot network diagnostics", first.Diagnostics, second.Diagnostics)
+		!strings.Contains(diagnostics, "host-configuration: staged-required: kernel module configuration is next-boot-only") {
+		t.Fatalf("diagnostics = %#v/%#v, want stable identity and module diagnostics", first.Diagnostics, second.Diagnostics)
 	}
 	if first.FailureReason != second.FailureReason || !strings.Contains(first.FailureReason, "config apply live request rejected for 2 domain(s)") {
 		t.Fatalf("failure reasons = %q/%q, want stable plan rejection", first.FailureReason, second.FailureReason)
@@ -1916,6 +1913,32 @@ func TestValidateConfigAutoLiveDigestMatchesConcreteSubmit(t *testing.T) {
 	}
 }
 
+func TestValidateConfigWarnsForLiveNetworkChanges(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+
+	config := configApplyLiveYAML() + `        network:
+          files:
+            - path: /etc/systemd/network/20-uplink.network
+              content: |
+                [Match]
+                Name=ens3
+                [Network]
+                DHCP=yes
+`
+	result, err := server.ValidateConfig(context.Background(), &agentapi.ValidateConfigRequest{
+		ApiVersion: APIVersion, Kind: "ValidateConfigRequest", ClientRequestId: "req-live-network",
+		Actor: "test", CandidateGenerationId: "generation-network", ApplyMode: generation.ApplyModeLive,
+		ConfigYaml: config,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Accepted || result.AcceptedApplyMode != generation.ApplyModeLive || len(result.Diagnostics) == 0 || !strings.Contains(result.Diagnostics[0], "may interrupt management access") {
+		t.Fatalf("validation = %+v, want live with warning", result)
+	}
+}
+
 func TestValidateConfigRejectsPlanPolicyWithoutRecord(t *testing.T) {
 	server := newTestServer(t)
 	writeConfigApplyBaseState(t, server.Root)
@@ -1968,8 +1991,8 @@ func TestApplyGenerationLiveRejectedRecordsPlanDiagnostics(t *testing.T) {
 	if !record.Terminal || record.Result != "failed" || record.RecoveryRequired || record.ExternalMutationStarted {
 		t.Fatalf("record = %+v, want terminal failed before external mutation", record)
 	}
-	if !strings.Contains(record.FailureReason, "systemd-networkd configuration applies on next boot") {
-		t.Fatalf("failure reason = %q, want next-boot network diagnostic", record.FailureReason)
+	if !strings.Contains(record.FailureReason, "kernel module configuration is next-boot-only") {
+		t.Fatalf("failure reason = %q, want next-boot module diagnostic", record.FailureReason)
 	}
 	if len(record.DiagnosticArtifacts) != 1 || record.DiagnosticArtifacts[0].ArtifactID != "config-apply-plan-diagnostics" {
 		t.Fatalf("diagnostic artifacts = %+v", record.DiagnosticArtifacts)
@@ -1978,8 +2001,8 @@ func TestApplyGenerationLiveRejectedRecordsPlanDiagnostics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read diagnostic attachment: %v", err)
 	}
-	if !strings.Contains(string(attachment), "systemd-networkd configuration applies on next boot") {
-		t.Fatalf("diagnostic attachment = %q, want next-boot network diagnostic", attachment)
+	if !strings.Contains(string(attachment), "kernel module configuration is next-boot-only") {
+		t.Fatalf("diagnostic attachment = %q, want next-boot module diagnostic", attachment)
 	}
 	status, err := server.GetOperation(context.Background(), &agentapi.GetOperationRequest{
 		OperationId:        accepted.OperationId,
@@ -2302,68 +2325,94 @@ func TestApplyGenerationLiveLoadsInstalledKubeadmInputs(t *testing.T) {
 }
 
 func TestApplyGenerationLiveFailureRecordsRollbackState(t *testing.T) {
-	server := newTestServer(t)
-	writeConfigApplyBaseState(t, server.Root)
-	var acceptedRecord operation.OperationRecord
-	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
-		acceptedRecord = record
-		return nil
-	})
-	accepted, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
-		ApiVersion:            APIVersion,
-		Kind:                  "GenerationApplyRequest",
-		ClientRequestId:       "req-live-generation-fail",
-		Actor:                 "test-actor",
-		CandidateGenerationId: "generation-live-fail",
-		ConfigYaml:            configApplyLiveYAML(),
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	runner := &fakeConfigApplyRunner{
-		exitStatus: 1,
-		stderr:     "sysctl apply failed",
-		failName:   "sysctl-apply-net.ipv4.ip_forward",
-	}
-	activator := &fakeConfigApplyActivator{}
-	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
-	executor.Async = false
-	executor.ConfigApplyRunner = runner
-	executor.ConfigApplyActivator = activator
-	if err := executor.Execute(context.Background(), acceptedRecord); err == nil {
-		t.Fatal("Execute() error = nil, want live action failure")
-	}
-	record, err := server.Store.Read(accepted.OperationId)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !record.Terminal || record.Result != operation.ResultFailedRolledBack || record.RecoveryRequired || !record.ExternalMutationStarted {
-		t.Fatalf("record = %+v, want terminal rolled-back failure without repair required", record)
-	}
-	if record.ActivationState != operation.ActivationStateRolledBack || record.ConfigApplyPhase != generation.ConfigApplyPhaseRolledBack {
-		t.Fatalf("activation/config phase = %q/%q, want rolled-back/rolled-back", record.ActivationState, record.ConfigApplyPhase)
-	}
-	if len(record.Invocations) != 1 || record.Invocations[0].CompletedAt == nil || record.Invocations[0].Result != operation.ResultFailedRolledBack {
-		t.Fatalf("invocations = %+v, want completed rolled-back live config apply invocation", record.Invocations)
-	}
-	if record.HostRollback != "generation-0" || !strings.Contains(record.NextAction, "correct the rejected configuration and retry") {
-		t.Fatalf("rollback/next action = %q/%q", record.HostRollback, record.NextAction)
-	}
-	if activator.rollbackTarget != "generation-0" {
-		t.Fatalf("rollback target = %q, want generation-0", activator.rollbackTarget)
-	}
-	_, candidateStatus, err := generation.ReadGeneration(server.Root, "generation-live-fail")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if candidateStatus.CommitState != generation.CommitStateAbandoned {
-		t.Fatalf("rolled-back candidate commit state = %q", candidateStatus.CommitState)
-	}
-	if _, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
-		ApiVersion: APIVersion, Kind: "GenerationApplyRequest", ClientRequestId: "retry-after-live-rollback",
-		Actor: "test-actor", CandidateGenerationId: "generation-live-retry", ConfigYaml: configApplyLiveYAML(),
-	}); err != nil {
-		t.Fatalf("retry after successful rollback: %v", err)
+	for _, network := range []bool{false, true} {
+		t.Run(fmt.Sprintf("network=%t", network), func(t *testing.T) {
+			configYAML := configApplyLiveYAML()
+			wantResult := operation.ResultFailedRolledBack
+			wantGuidance := "correct the rejected configuration and retry"
+			if network {
+				configYAML += `            - path: /etc/systemd/network/30-rollback.netdev
+              content: |
+                [NetDev]
+                Name=rollback0
+                Kind=dummy
+`
+				wantResult = operation.ResultFailedNeedsRepair
+				wantGuidance = "running networking may differ; inspect the network"
+			}
+
+			server := newTestServer(t)
+			writeConfigApplyBaseState(t, server.Root)
+			var acceptedRecord operation.OperationRecord
+			server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
+				acceptedRecord = record
+				return nil
+			})
+			accepted, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
+				ApiVersion:            APIVersion,
+				Kind:                  "GenerationApplyRequest",
+				ClientRequestId:       "req-live-generation-fail",
+				Actor:                 "test-actor",
+				CandidateGenerationId: "generation-live-fail",
+				ConfigYaml:            configYAML,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			runner := &fakeConfigApplyRunner{
+				exitStatus: 1,
+				stderr:     "sysctl apply failed",
+				failName:   "sysctl-apply-net.ipv4.ip_forward",
+			}
+			if network {
+				runner.failName = "networkd-reload"
+				runner.stderr = "network reload partially failed"
+			}
+
+			activator := &fakeConfigApplyActivator{}
+			executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+			executor.Async = false
+			executor.ConfigApplyRunner = runner
+			executor.ConfigApplyActivator = activator
+			if err := executor.Execute(context.Background(), acceptedRecord); err == nil {
+				t.Fatal("Execute() error = nil, want live action failure")
+			}
+			record, err := server.Store.Read(accepted.OperationId)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !record.Terminal || record.Result != wantResult || record.RecoveryRequired != network || !record.ExternalMutationStarted {
+				t.Fatalf("record = %+v, want terminal rollback with result %s and recovery required %t", record, wantResult, network)
+			}
+			if network && !strings.Contains(record.FailureReason, "network reload partially failed") {
+				t.Fatalf("failure did not reach network reload: %s", record.FailureReason)
+			}
+			if record.ActivationState != operation.ActivationStateRolledBack || record.ConfigApplyPhase != generation.ConfigApplyPhaseRolledBack {
+				t.Fatalf("activation/config phase = %q/%q, want rolled-back/rolled-back", record.ActivationState, record.ConfigApplyPhase)
+			}
+			if len(record.Invocations) != 1 || record.Invocations[0].CompletedAt == nil || record.Invocations[0].Result != wantResult {
+				t.Fatalf("invocations = %+v, want completed rolled-back live config apply invocation", record.Invocations)
+			}
+			if record.HostRollback != "generation-0" || !strings.Contains(record.NextAction, wantGuidance) {
+				t.Fatalf("rollback/next action = %q/%q", record.HostRollback, record.NextAction)
+			}
+			if activator.rollbackTarget != "generation-0" {
+				t.Fatalf("rollback target = %q, want generation-0", activator.rollbackTarget)
+			}
+			_, candidateStatus, err := generation.ReadGeneration(server.Root, "generation-live-fail")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if candidateStatus.CommitState != generation.CommitStateAbandoned {
+				t.Fatalf("rolled-back candidate commit state = %q", candidateStatus.CommitState)
+			}
+			if _, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
+				ApiVersion: APIVersion, Kind: "GenerationApplyRequest", ClientRequestId: "retry-after-live-rollback",
+				Actor: "test-actor", CandidateGenerationId: "generation-live-retry", ConfigYaml: configApplyLiveYAML(),
+			}); err != nil {
+				t.Fatalf("retry after successful rollback: %v", err)
+			}
+		})
 	}
 }
 
@@ -3847,12 +3896,9 @@ func configApplyYAML(mode string) string {
 		"                net.ipv4.ip_forward = 0",
 		"        network:",
 		"          files:",
-		"            - path: /etc/systemd/network/20-uplink.network",
+		"            - path: /etc/modprobe.d/80-storage.conf",
 		"              content: |",
-		"                [Match]",
-		"                Name=ens3",
-		"                [Network]",
-		"                DHCP=yes",
+		"                options loop max_loop=64",
 		"",
 	}, "\n")
 }

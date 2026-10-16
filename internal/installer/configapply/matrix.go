@@ -59,6 +59,7 @@ type Change struct {
 	Paths             []string
 	Effects           []generation.ConfigApplyEffect
 	Message           string
+	Warnings          []string
 }
 
 type EndpointVIPImpact struct {
@@ -70,6 +71,7 @@ type Decision struct {
 	AcceptedMode   string
 	ChangedDomains []string
 	Diagnostics    []Diagnostic
+	Warnings       []string
 }
 
 type Diagnostic struct {
@@ -160,6 +162,13 @@ func Plan(requestedMode string, changes []Change) (Decision, error) {
 		decision.AcceptedMode = generation.ApplyModeNextBoot
 	} else {
 		decision.AcceptedMode = generation.ApplyModeLive
+		for _, change := range changes {
+			for _, warning := range change.Warnings {
+				if !slices.Contains(decision.Warnings, warning) {
+					decision.Warnings = append(decision.Warnings, warning)
+				}
+			}
+		}
 	}
 	return decision, nil
 }

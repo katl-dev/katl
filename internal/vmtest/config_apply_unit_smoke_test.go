@@ -60,7 +60,7 @@ func TestConfigApplySmokeRejectsLiveAndStagesNextBoot(t *testing.T) {
 		rejected.Audit.Diagnostics[0].Domain != configapply.DomainHostConfiguration ||
 		rejected.Audit.Diagnostics[0].Decision != configapply.DecisionStagedRequired ||
 		rejected.Audit.Diagnostics[0].Classification != configapply.ClassificationOnlineApplicable ||
-		!strings.Contains(rejected.Audit.Diagnostics[0].Message, "systemd-networkd configuration applies on next boot") {
+		!strings.Contains(rejected.Audit.Diagnostics[0].Message, "kernel module configuration is next-boot-only") {
 		t.Fatalf("rejected diagnostics = %#v", rejected.Audit.Diagnostics)
 	}
 	if !strings.Contains(rejected.Audit.FailureReason, "config apply live request rejected for 1 domain") {
@@ -88,6 +88,73 @@ func TestConfigApplySmokeRejectsLiveAndStagesNextBoot(t *testing.T) {
 	assertFileContains(t, filepath.Join(work, "var/lib/katl/generations", acceptedGeneration, "confext/etc/extension-release.d/extension-release.katl-node"), "CONFEXT_LEVEL=1")
 	assertPathMissing(t, filepath.Join(work, "run/extensions/kubernetes"))
 	assertPathMissing(t, filepath.Join(work, "run/confexts/katl-node"))
+}
+
+func TestConfigApplyNetworkFixtures(t *testing.T) {
+	fixture := runtimeUserspaceFixture(t)
+	currentManifest, err := manifest.Decode(strings.NewReader(configApplyCurrentManifest))
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadataPath, err := generation.MetadataPath(fixture.Root, fixture.GenerationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	currentRecord, err := generation.ReadRecord(metadataPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := configapply.TrustedBundleRequest{Root: fixture.Root, NodeName: "cp-1", GenerationID: "planned-network", CurrentManifest: currentManifest, CurrentRecord: currentRecord}
+	identities := map[string]string{}
+
+	for _, test := range []struct {
+		file, mode string
+		network    bool
+	}{
+		{"live-udev.yaml", generation.ApplyModeLive, false},
+		{"live-network.yaml", generation.ApplyModeLive, true},
+		{"next-boot-networkd.yaml", generation.ApplyModeNextBoot, true},
+	} {
+		t.Run(test.file, func(t *testing.T) {
+			data, err := os.ReadFile(configApplyFixture(t, test.file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request, err := configapply.DecodeNodeConfigurationChange(strings.NewReader(string(data)), base)
+			if err != nil {
+				t.Fatal(err)
+			}
+			identity := request.SourceID + "/" + request.DesiredVersion
+			if previous, exists := identities[identity]; exists {
+				t.Fatalf("request identity %s is shared with %s", identity, previous)
+			}
+			identities[identity] = test.file
+
+			plan, err := configapply.PlanTrustedBundle(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if plan.Plan.Decision.AcceptedMode != test.mode {
+				t.Fatalf("apply mode = %s, want %s", plan.Plan.Decision.AcceptedMode, test.mode)
+			}
+			if !test.network {
+				return
+			}
+			for path, content := range map[string]string{
+				"/etc/systemd/network/80-katl-vmtest-dhcp.network": "Name=en*",
+				"/etc/systemd/network/30-vmtest-live.netdev":       "Name=katllive0",
+				"/etc/systemd/network/10-vmtest-live.link":         "Alias=katl-live-netdev",
+			} {
+				found := false
+				for _, file := range plan.Files {
+					found = found || (file.Path == path && strings.Contains(file.Content, content))
+				}
+				if !found {
+					t.Errorf("desired network is missing %s with %q", path, content)
+				}
+			}
+		})
+	}
 }
 
 func withGeneration(request configapply.TrustedBundleRequest, generationID string) configapply.TrustedBundleRequest {
@@ -160,14 +227,11 @@ spec:
   clusterDefaults:
     hostConfiguration:
       sets:
-        rejected-network:
+        rejected-modules:
           files:
-            - path: /etc/systemd/network/20-rejected.network
+            - path: /etc/modprobe.d/80-rejected.conf
               content: |
-                [Match]
-                Name=*
-                [Network]
-                DHCP=yes
+                options loop max_loop=64
 `
 
 const configApplyAcceptedRequest = `apiVersion: katl.dev/v1alpha1

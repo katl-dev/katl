@@ -49,6 +49,18 @@ func TestPlanHostConfigurationActivationReplaysWildcardSysctls(t *testing.T) {
 	}
 }
 
+func TestPlanHostConfigurationReloadsLinksBeforeBootActivation(t *testing.T) {
+	for _, filePath := range []string{"/etc/systemd/network/10-uplink.link", "/etc/systemd/network/10-uplink.link.d/50-alias.conf"} {
+		t.Run(filePath, func(t *testing.T) {
+			config := testHostConfiguration("link", filePath, "[Link]\nAlias=lab\n")
+			plan := PlanHostConfigurationActivation(config, HostConfigurationPhasePrepare)
+			if len(plan.Commands) != 1 || strings.Join(plan.Commands[0].Argv, " ") != "/usr/bin/udevadm control --reload" {
+				t.Fatalf("prepare commands = %#v, want reload without retrigger", plan.Commands)
+			}
+		})
+	}
+}
+
 func TestInspectHostConfigurationClassifiesLiveSysctlDrift(t *testing.T) {
 	sysctl := "net.ipv4.ip_forward = 1\n"
 	config := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{

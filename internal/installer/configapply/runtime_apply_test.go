@@ -21,22 +21,21 @@ import (
 	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
-func TestApplyTrustedBundleRejectsLiveNetworkdFileSetBeforeRender(t *testing.T) {
+func TestPlanTrustedBundleAppliesNetworkdLive(t *testing.T) {
 	root := t.TempDir()
-	result, err := ApplyTrustedBundle(context.Background(), trustedBundleRequest(root, TrustedBundleRequest{
+	result, err := PlanTrustedBundle(trustedBundleRequest(root, TrustedBundleRequest{
 		ApplyMode:    generation.ApplyModeLive,
 		GenerationID: "2026.06.05-002",
 		ClusterDefaults: NodeOverlay{
 			HostConfiguration: networkHostConfiguration("20-uplink.network", "[Match]\nName=ens3\n[Network]\nDHCP=yes\n"),
 		},
 	}))
-	if err == nil || !strings.Contains(err.Error(), "live request rejected") {
-		t.Fatalf("ApplyTrustedBundle() error = %v, want live networkd rejection; result = %#v", err, result)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if result.Audit.SourceID != "operator" || result.Audit.DesiredVersion != "2" || result.Audit.Decision != DecisionRejected {
-		t.Fatalf("audit = %#v", result.Audit)
+	if result.Plan.Decision.AcceptedMode != generation.ApplyModeLive || len(result.Plan.Decision.Warnings) == 0 {
+		t.Fatalf("decision = %#v, want live with a warning", result.Plan.Decision)
 	}
-	assertGenerationMissing(t, root, "2026.06.05-002")
 }
 
 func TestPlanTrustedBundleAppliesAPIProxyBackendChangesOnline(t *testing.T) {
@@ -495,12 +494,13 @@ func TestApplyTrustedBundleStagesStrictNextBootSysctl(t *testing.T) {
 	}
 }
 
-func TestApplyTrustedBundleDefaultsAutoToNextBootForNetworkdFileSet(t *testing.T) {
+func TestApplyTrustedBundleDefaultsAutoToNextBootForBootOnlyFiles(t *testing.T) {
 	root := t.TempDir()
+	host := testHostConfiguration("modules", "/etc/modprobe.d/80-storage.conf", "options loop max_loop=64\n")
 	request := trustedBundleRequest(root, TrustedBundleRequest{
 		GenerationID: "2026.06.05-002",
 		ClusterDefaults: NodeOverlay{
-			HostConfiguration: networkHostConfiguration("10-common.network", "[Match]\nName=*\n[Network]\nDHCP=yes\n"),
+			HostConfiguration: &host,
 		},
 	})
 	request.ApplyMode = ""

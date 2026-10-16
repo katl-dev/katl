@@ -30,6 +30,7 @@ func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase st
 	modules := map[string]struct{}{}
 	sysfs := map[string]string{}
 	udevPaths := map[string]struct{}{}
+	linkConfiguration := false
 	systemdReload := len(config.MaskedUnits) > 0
 
 	for _, setting := range config.Sysfs {
@@ -41,6 +42,7 @@ func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase st
 			continue
 		}
 		for _, file := range set.Files {
+			linkConfiguration = linkConfiguration || isLinkConfigurationPath(file.Path)
 			switch {
 			case strings.HasPrefix(file.Path, "/etc/sysctl.d/") && strings.HasSuffix(file.Path, ".conf") && file.Content != nil:
 				hasSysctlFiles = true
@@ -124,6 +126,8 @@ func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase st
 			plan.addCommand("udev-rules-reload", "reload", "udev rules", "/usr/bin/udevadm", "control", "--reload")
 			plan.addCommand("udev-devices-trigger", "trigger", "udev devices", "/usr/bin/udevadm", "trigger", "--type=devices", "--action=add")
 			plan.addCommand("udev-events-settle", "settle", "udev events", "/usr/bin/udevadm", "settle")
+		} else if linkConfiguration {
+			plan.addCommand("udev-link-reload", "reload", "udev link configuration", "/usr/bin/udevadm", "control", "--reload")
 		}
 	}
 	return plan
