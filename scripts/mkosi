@@ -39,7 +39,6 @@ go_mod_cache="${KATL_GO_MOD_CACHE:-$repo_root/_build/go-mod}"
 go_build_cache="${KATL_GO_BUILD_CACHE:-$repo_root/_build/go-cache}"
 mkosi_env=(--environment "KATL_FLAVOUR=$flavour" --environment "KATL_BUILD_COMMIT=$build_commit")
 kernel_set_sha256=""
-kernel_locked=0
 if [[ -n "${KATL_VERSION:-}" ]]; then
     mkosi_env+=(--environment "KATL_VERSION=$KATL_VERSION")
 fi
@@ -332,6 +331,7 @@ target_outputs() {
                 "$build_dir/katl-runtime-root.squashfs.json" \
                 "$build_dir/katl-runtime-root.squashfs.sha256" \
                 "$build_dir/katl-runtime.packages.tsv" \
+                "$build_dir/katl-kernel-lock.json" \
                 "$build_dir/katl-kernel-inputs.tar" \
                 "$build_dir/katl-kernel-inputs.tar.json" \
                 "$build_dir/katl-kernel-inputs.tar.sha256" \
@@ -380,6 +380,14 @@ target_sidecars_match() {
             '.sha256 == $digest and .sizeBytes == $size' "$metadata" >/dev/null ||
             return 1
     done < <(target_outputs "$target")
+    case "$target" in
+        runtime|katlos-install-image)
+            jq -e --arg identity "$kernel_set_sha256" \
+                --arg runtime "$(jq -er .sha256 "$build_dir/katl-runtime-root.squashfs.json")" \
+                '.kernelSetSHA256 == $identity and .target.runtimeSHA256 == $runtime' \
+                "$build_dir/katl-kernel-inputs.tar.json" >/dev/null || return 1
+            ;;
+    esac
 }
 
 target_cache_hit() {
@@ -418,8 +426,8 @@ prepare_cached_target() {
 }
 
 prepare_kernel_inputs() {
-    [[ -n "${KATL_KERNEL_LOCK:-}" ]] || return 0
     local profile="$1" visible config_path result
+    local lock="${KATL_KERNEL_LOCK:-$repo_root/kernels/fedora-$fedora_release/x86_64/$flavour.json}"
     prepare_build_dirs
     visible=/work/_build/mkosi/kernel-rpms
     config_path="/work/_build/mkosi/kernel-$profile.conf"
@@ -427,17 +435,17 @@ prepare_kernel_inputs() {
         visible="$build_dir/kernel-rpms"
         config_path="$build_dir/kernel-$profile.conf"
     fi
-    local -a arguments=(prepare --lock "$KATL_KERNEL_LOCK"
+    local -a arguments=(prepare --lock "$lock"
         --flavour "$flavour" --fedora-release "$fedora_release"
         --cache "$build_dir/kernel-rpms" --profile "$profile"
+        --record "$build_dir/katl-kernel-lock.json"
         --config "$build_dir/kernel-$profile.conf" --visible-directory "$visible")
     if [[ -n "${KATL_KERNEL_LAYOUT:-}" ]]; then
         arguments+=(--layout "$KATL_KERNEL_LAYOUT")
     fi
     result="$(cd "$repo_root" && GOCACHE="$go_build_cache" GOMODCACHE="$go_mod_cache" \
-        go run ./cmd/katl-kernel-release "${arguments[@]}")"
+        go run -buildvcs=false ./cmd/katl-kernel-release "${arguments[@]}")"
     kernel_set_sha256="$(jq -er .identity <<<"$result")"
-    kernel_locked=1
     mkosi_env+=(--include "$config_path")
 }
 
@@ -577,9 +585,12 @@ for ((argument_index=1; argument_index<=$#; argument_index++)); do
     esac
 done
 if [[ -n "$kernel_profile" ]]; then
+    if [[ "$runtime" == direct && "$kernel_profile" == runtime ]]; then
+        echo 'error: KATL_CONTAINER_RUNTIME=direct currently supports installer-image builds only' >&2
+        exit 1
+    fi
     prepare_kernel_inputs "$kernel_profile"
 fi
-mkosi_env+=(--environment "KATL_KERNEL_LOCKED=$kernel_locked")
 
 if [[ $# -eq 0 ]]; then
     cache_target=installer
@@ -690,8 +701,11 @@ run_flags=(
     --env "KATL_EMIT_RUNTIME_ARTIFACT=$emit_runtime_artifact"
     --env "KATL_EMIT_INSTALLER_ISO=$emit_installer_iso"
     --env "KATL_VMTEST_IMAGE_SUPPORT=$vmtest_image_support"
-    --env "KATL_KERNEL_LOCKED=$kernel_locked"
 )
+if [[ -n "$kernel_set_sha256" ]]; then
+    run_flags+=(--env "KATL_KERNEL_LOCK=/work/_build/mkosi/kernel-rpms/records/$kernel_set_sha256.json")
+fi
+
 if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
     run_flags+=(--env "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH")
 fi

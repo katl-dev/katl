@@ -124,7 +124,7 @@ printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 }
 
 func TestMkosiRuntimeCacheMissesWhenBinaryIdentityUnavailable(t *testing.T) {
-	repo := repoRoot(t)
+	repo := scriptRepoFixture(t)
 	tmp := t.TempDir()
 	buildDir := filepath.Join(tmp, "mkosi-build")
 	bin := filepath.Join(tmp, "bin")
@@ -144,7 +144,14 @@ if [[ "${1:-}" == "image" && "${2:-}" == "inspect" ]]; then
 fi
 printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 `)
-	writeFakeExecutable(t, bin, "go", `exit 42
+	realGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFakeExecutable(t, bin, "go", `if [[ "$*" == "run -buildvcs=false ./cmd/katl-kernel-release "* ]]; then
+  exec `+realGo+` "$@"
+fi
+exit 42
 `)
 	seedRuntimeCacheOutputs(t, buildDir)
 	stamp := filepath.Join(buildDir, ".katl-stamps", "runtime.sha256")
@@ -161,6 +168,7 @@ printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 		"KATL_VERSION=0.0.0-cache-test",
 		"TMPDIR="+tmp,
 	)
+	env = append(env, activeGoCacheEnv(t)...)
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
 	cmd.Dir = repo
@@ -184,7 +192,7 @@ printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 func TestMkosiImageCacheWithExternalExtensions(t *testing.T) {
 	repo := repoRoot(t)
 	tmp := t.TempDir()
-	fixture := filepath.Join(tmp, "repo")
+	fixture := scriptRepoFixture(t)
 	bin := filepath.Join(tmp, "bin")
 	scripts := filepath.Join(fixture, "scripts")
 	buildDir := filepath.Join(fixture, "_build", "mkosi")
@@ -194,7 +202,7 @@ func TestMkosiImageCacheWithExternalExtensions(t *testing.T) {
 		}
 	}
 	seedRuntimeCacheOutputs(t, buildDir)
-	if err := os.WriteFile(filepath.Join(fixture, "mkosi.conf"), []byte("[Distribution]\nRelease=99\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(fixture, "mkosi.conf"), []byte("[Distribution]\nRelease=44\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	baseRelease, err := os.ReadFile(filepath.Join(repo, "scripts", "fedora-release"))
@@ -212,7 +220,14 @@ func TestMkosiImageCacheWithExternalExtensions(t *testing.T) {
 `)
 	writeFakeExecutable(t, bin, "podman", `if [[ "${2:-}" == inspect ]]; then printf 'builder-id\n'; fi
 `)
-	writeFakeExecutable(t, bin, "go", `while [[ $# -gt 0 ]]; do
+	realGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFakeExecutable(t, bin, "go", `if [[ "$*" == "run -buildvcs=false ./cmd/katl-kernel-release "* ]]; then
+  exec `+realGo+` "$@"
+fi
+while [[ $# -gt 0 ]]; do
   if [[ "$1" == -o ]]; then printf 'binary\n' > "$2"; exit 0; fi
   shift
 done
@@ -228,6 +243,7 @@ exit 1
 		"KATL_ARCHITECTURE=x86_64",
 		"KATL_ASSEMBLY_LOG="+log,
 	)
+	env = append(env, activeGoCacheEnv(t)...)
 	// A repeated ordinary build is cached. An external selection must always
 	// reach assembly, including when only its blob contents have changed.
 	for _, step := range []struct {
@@ -321,6 +337,7 @@ func seedRuntimeCacheOutputs(t *testing.T, buildDir string) {
 	for _, name := range []string{"katl-runtime-root.squashfs", "katl-runtime.efi", "katl-kernel-inputs.tar"} {
 		writeReleaseArtifact(t, buildDir, name)
 	}
+	seedKernelMetadata(t, buildDir, scriptKernelSet("standard"))
 }
 
 func scriptRepoFixture(t *testing.T) string {
@@ -329,6 +346,10 @@ func scriptRepoFixture(t *testing.T) string {
 	cmd := exec.Command("bash", "-euo", "pipefail", "-c", `tar -C "$1" --exclude=./.git --exclude=./.jj --exclude=./.beads --exclude=./_build --exclude=./build -cf - . | tar -C "$2" -xf -`, "bash", repo, fixture)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("copy script test repository: %v\n%s", err, output)
+	}
+	seedKernelLocks(t, fixture)
+	if err := os.MkdirAll(filepath.Join(fixture, "mkosi.conf.d"), 0755); err != nil {
+		t.Fatal(err)
 	}
 	return fixture
 }
@@ -395,6 +416,7 @@ printf '%s\n' "$@" >> "$KATL_FAKE_PODMAN_ARGS.detail"
 		flavour string
 		builds  int
 	}{{"standard", 1}, {"standard", 1}, {"lts", 2}, {"lts", 2}, {"standard", 3}} {
+		seedKernelMetadata(t, buildDir, scriptKernelSet(step.flavour))
 		cmd := exec.Command(filepath.Join(repo, "scripts/mkosi"), "build-runtime")
 		cmd.Dir, cmd.Env = repo, append(append([]string(nil), env...), "KATL_FLAVOUR="+step.flavour)
 		if out, err := cmd.CombinedOutput(); err != nil {

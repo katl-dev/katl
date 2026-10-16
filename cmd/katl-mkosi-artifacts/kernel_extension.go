@@ -35,10 +35,11 @@ type kernelRecipe struct {
 }
 
 type kernelBuildRecord struct {
-	Recipe        kernelRecipe          `json:"recipe"`
-	Kernel        kernelmodule.Contract `json:"kernel"`
-	SymversSHA256 string                `json:"symversSHA256"`
-	ConfigSHA256  string                `json:"configSHA256"`
+	KernelSetSHA256 string                `json:"kernelSetSHA256"`
+	Recipe          kernelRecipe          `json:"recipe"`
+	Kernel          kernelmodule.Contract `json:"kernel"`
+	SymversSHA256   string                `json:"symversSHA256"`
+	ConfigSHA256    string                `json:"configSHA256"`
 }
 
 func readKernelRecipe(repo, name string) (kernelRecipe, error) {
@@ -125,6 +126,9 @@ func runBuildKernelExtension(args []string, stdout, stderr io.Writer, cfg config
 	if inputs.Target != target {
 		return fmt.Errorf("prepared kernel inputs do not belong to the selected runtime; rebuild the runtime")
 	}
+	if err := verifyKernelLock(cfg, inputs); err != nil {
+		return err
+	}
 	sources := filepath.Join(buildDir, "kernel-sources")
 	if err := os.MkdirAll(sources, 0o755); err != nil {
 		return err
@@ -170,6 +174,9 @@ func runBuildKernelExtension(args []string, stdout, stderr io.Writer, cfg config
 	if err := extract.Run(); err != nil {
 		return fmt.Errorf("extract runtime build base: %w", err)
 	}
+	if _, err := verifyEmbeddedKernelLock(filepath.Join(baseDir, "root"), inputs.KernelSetSHA256, target.Release); err != nil {
+		return err
+	}
 	unpack := exec.Command(filepath.Join(cfg.RepoRoot, "scripts/mkosi"), "box", "--",
 		"tar", "--extract", "--file", filepath.Join(basePath, kernelInputsFile),
 		"--directory", filepath.Join(basePath, "root"), "--no-same-owner", "--no-same-permissions")
@@ -192,8 +199,10 @@ func runBuildKernelExtension(args []string, stdout, stderr io.Writer, cfg config
 	// confined to its build overlay, never copied into the driver payload.
 	command := exec.Command(filepath.Join(cfg.RepoRoot, "scripts/mkosi"),
 		"--profile", "kernel-extension-"+name,
+		"--cache-key", "katl-"+name+"-"+target.RuntimeSHA256+"-"+inputs.KernelSetSHA256,
 		"--base-tree", filepath.Join(basePath, "root"),
 		"--environment", "KATL_KERNEL_RELEASE="+target.Release,
+		"--environment", "KATL_KERNEL_SET_SHA256="+inputs.KernelSetSHA256,
 		"--environment", "KATL_RUNTIME_SHA256="+target.RuntimeSHA256,
 		"--environment", "KATL_RUNTIME_INTERFACE="+root.RuntimeInterface,
 		"-f", "build")
@@ -214,7 +223,7 @@ func runBuildKernelExtension(args []string, stdout, stderr io.Writer, cfg config
 	if record.Kernel.Target != target || !reflect.DeepEqual(record.Recipe, recipe) {
 		return fmt.Errorf("kernel extension build record does not match the requested inputs")
 	}
-	if record.SymversSHA256 != inputs.SymversSHA256 || record.ConfigSHA256 != inputs.ConfigSHA256 {
+	if record.SymversSHA256 != inputs.SymversSHA256 || record.ConfigSHA256 != inputs.ConfigSHA256 || record.KernelSetSHA256 != inputs.KernelSetSHA256 {
 		return fmt.Errorf("extension did not use the runtime's prepared kernel inputs")
 	}
 	created, err := time.Parse(time.RFC3339, root.Created)

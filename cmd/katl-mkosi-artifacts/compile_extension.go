@@ -32,6 +32,14 @@ func runCompileExtension(name string, args []string, stdout, stderr io.Writer, c
 	if err := target.Validate(); err != nil {
 		return err
 	}
+	setSHA256 := os.Getenv("KATL_KERNEL_SET_SHA256")
+	if setSHA256 == "" {
+		return fmt.Errorf("kernel extension requires the selected RPM set identity")
+	}
+	setSHA256, err := verifyEmbeddedKernelLock("/", setSHA256, target.Release)
+	if err != nil {
+		return err
+	}
 	kdir := filepath.Join("/usr/src/kernels", target.Release)
 	if err := validateKernelInputs(kdir, target.Release); err != nil {
 		return err
@@ -87,7 +95,8 @@ func runCompileExtension(name string, args []string, stdout, stderr io.Writer, c
 		return err
 	}
 	return writeJSON(filepath.Join(*output, "katl-"+name+".build.json"), kernelBuildRecord{
-		Recipe: recipe, Kernel: contract, SymversSHA256: symvers, ConfigSHA256: configDigest,
+		KernelSetSHA256: setSHA256,
+		Recipe:          recipe, Kernel: contract, SymversSHA256: symvers, ConfigSHA256: configDigest,
 	}, cfg.RepoRoot)
 }
 

@@ -82,6 +82,12 @@ func candidate(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	if *release != "" && *release != set.KernelRelease {
 		return fmt.Errorf("resolved kernel does not match the requested release")
 	}
+	if *release == "" {
+		path := filepath.Join("kernels", "fedora-"+*fedora, *architecture, *flavour+".json")
+		if err := rejectKernelDowngrade(ctx, path, set.KernelRelease); err != nil {
+			return err
+		}
+	}
 	// Keep incomplete captures private; only the final lock names usable bytes.
 	if err := os.MkdirAll(*output, 0o755); err != nil {
 		return err
@@ -215,4 +221,31 @@ func download(ctx context.Context, url, destination string, limit int64) error {
 		return fmt.Errorf("kernel input exceeds download bound")
 	}
 	return closeErr
+}
+
+func rejectKernelDowngrade(ctx context.Context, path, release string) error {
+	current, err := kernelrelease.Read(path)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	// Lock validation and discovery restrict releases to safe RPM characters.
+	// The supported package set has epoch zero; architecture is not EVR.
+	architecture := "." + current.Architecture
+	left := "0:" + strings.TrimSuffix(release, architecture)
+	right := "0:" + strings.TrimSuffix(current.KernelRelease, architecture)
+	data, err := exec.CommandContext(ctx, "rpm", "--eval", `%{lua:print(rpm.vercmp("`+left+`", "`+right+`"))}`).Output()
+	if err != nil {
+		return fmt.Errorf("compare discovered kernel EVR: %w", err)
+	}
+	switch strings.TrimSpace(string(data)) {
+	case "-1":
+		return fmt.Errorf("discovered kernel %s is older than committed %s; use --kernel-release for an intentional rollback", release, current.KernelRelease)
+	case "0", "1":
+		return nil
+	default:
+		return fmt.Errorf("invalid RPM version comparison result")
+	}
 }

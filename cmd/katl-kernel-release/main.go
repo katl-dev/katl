@@ -36,6 +36,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	cache := flags.String("cache", "_build/kernel-rpms", "verified RPM cache")
 	profile := flags.String("profile", "runtime", "mkosi profile")
 	config := flags.String("config", "", "write native mkosi configuration")
+	record := flags.String("record", "", "write the verified selected kernel lock")
 	visible := flags.String("visible-directory", "", "RPM cache directory as seen by mkosi")
 	flavour := flags.String("flavour", "", "expected build flavour")
 	fedora := flags.String("fedora-release", "", "expected Fedora release")
@@ -70,6 +71,11 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if err != nil {
 			return err
 		}
+		if *record != "" {
+			if err := kernelrelease.Write(*record, lock); err != nil {
+				return err
+			}
+		}
 		if *config != "" {
 			path, err := filepath.Abs(directory)
 			if err != nil {
@@ -78,10 +84,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			if *visible != "" {
 				path = filepath.Join(*visible, identity)
 			}
+			// Snapshot the verified record beside the RPM cache, outside its exact
+			// four-file closure. SkeletonTrees makes it part of the cached root.
+			snapshot := filepath.Join(filepath.Dir(directory), "records", identity+".json")
+			if err := kernelrelease.Write(snapshot, lock); err != nil {
+				return err
+			}
+			visibleRecord := filepath.Join(filepath.Dir(path), "records", identity+".json")
 			contents, err := lock.Config(*profile, path)
 			if err != nil {
 				return err
 			}
+			contents += "\n[Content]\nSkeletonTrees=" + visibleRecord + ":/usr/lib/katl/kernel-inputs.json\n"
 			if err := os.MkdirAll(filepath.Dir(*config), 0o755); err != nil {
 				return err
 			}

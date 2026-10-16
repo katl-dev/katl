@@ -32,7 +32,8 @@ func (set Set) Config(profile, directory string) (string, error) {
 		}
 	}
 	// mkosi 26 fingerprints local RPM names and mtimes, not package contents.
-	// Namespace its incremental images by the verified set's content identity.
-	fmt.Fprintf(&result, "\n[Build]\nCacheKey=katl-%s-%s\n", profile, identity)
+	// Namespace incremental images by the embedded-record schema and RPM set.
+	// SkeletonTrees itself is absent from mkosi 26's cache manifest.
+	fmt.Fprintf(&result, "\n[Build]\nCacheKey=katl-%s-kernel-v1-%s\n", profile, identity)
 	return result.String(), nil
 }

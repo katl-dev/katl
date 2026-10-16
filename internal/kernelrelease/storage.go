@@ -17,7 +17,7 @@ func Export(ctx context.Context, set Set, rpmDirectory, layout, repository strin
 	if err := set.Validate(); err != nil {
 		return Lock{}, err
 	}
-	if err := verifyDirectory(rpmDirectory, set); err != nil {
+	if err := set.VerifyDirectory(rpmDirectory); err != nil {
 		return Lock{}, err
 	}
 	blobs := make([]payloadbundle.Blob, 0, len(set.Packages))
@@ -85,7 +85,7 @@ func Prepare(ctx context.Context, lock Lock, cache, layout string) (string, erro
 	}
 	destination := filepath.Join(cache, identity)
 	if _, err := os.Lstat(destination); err == nil {
-		if err := verifyDirectory(destination, lock.Set); err != nil {
+		if err := lock.Set.VerifyDirectory(destination); err != nil {
 			return "", fmt.Errorf("cached kernel RPMs are invalid; remove %s and retry: %w", destination, err)
 		}
 		return destination, nil
@@ -114,14 +114,17 @@ func Prepare(ctx context.Context, lock Lock, cache, layout string) (string, erro
 		}
 	}
 	if err := os.Rename(staging, destination); err != nil {
-		if verifyErr := verifyDirectory(destination, lock.Set); verifyErr != nil {
+		if verifyErr := lock.Set.VerifyDirectory(destination); verifyErr != nil {
 			return "", err
 		}
 	}
 	return destination, nil
 }
 
-func verifyDirectory(directory string, set Set) error {
+func (set Set) VerifyDirectory(directory string) error {
+	if err := set.Validate(); err != nil {
+		return err
+	}
 	info, err := os.Lstat(directory)
 	if err != nil {
 		return err

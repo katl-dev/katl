@@ -183,7 +183,7 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 }
 
 const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
-       katl-mkosi-artifacts export-kernel-inputs BUILDROOT OUTPUT_DIR
+       katl-mkosi-artifacts export-kernel-inputs BUILDROOT OUTPUT_DIR KERNEL_LOCK
        katl-mkosi-artifacts bind-kernel-inputs
        katl-mkosi-artifacts inventory-release-extensions
        katl-mkosi-artifacts build-release-extensions [NAME...]
@@ -226,6 +226,7 @@ Kinds:
 `
 
 type config struct {
+	KernelLock           string
 	Flavour              string
 	RepoRoot             string
 	DefaultIndex         string
@@ -277,6 +278,7 @@ func configFromEnv(env map[string]string, repo string) (config, error) {
 	katlosImage, katlosExplicit := envPathExplicit(env, repo, "KATL_KATLOS_IMAGE", katlosDefault)
 
 	return config{
+		KernelLock:           envPath(env, repo, "KATL_KERNEL_LOCK", ""),
 		Flavour:              flavourValue,
 		RepoRoot:             repo,
 		DefaultIndex:         filepath.Join(buildDir, "artifacts.json"),
