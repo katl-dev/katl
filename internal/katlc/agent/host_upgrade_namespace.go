@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/kernelcmdline"
 )
@@ -189,11 +190,16 @@ func snapshotUpgradeSource(source, target string, handoff generation.UpgradeHand
 	}
 	for _, name := range []string{"etc/machine-id", "var/lib/katl/boot/selection.json", "var/lib/katl/install/manifest.json"} {
 		from := filepath.Join(runtimeRoot(source), name)
-		if _, err := os.Stat(from); os.IsNotExist(err) {
+		info, err := os.Stat(from)
+		if os.IsNotExist(err) {
 			continue
 		} else if err != nil {
 			return err
 		}
+		if !info.Mode().IsRegular() || uint64(info.Size()) > budget {
+			return fmt.Errorf("upgrade source identity input exceeds the remaining preparation input budget or is not a regular file")
+		}
+		budget -= uint64(info.Size())
 		to := filepath.Join(target, name)
 		if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
 			return err
@@ -234,7 +240,11 @@ func snapshotUpgradeSource(source, target string, handoff generation.UpgradeHand
 			return err
 		}
 	}
-	return nil
+	configuration, err := configapply.ReadGenerationConfiguration(source, handoff.SourceGenerationID)
+	if err != nil {
+		return fmt.Errorf("resolve upgrade source configuration: %w", err)
+	}
+	return materializeUpgradeSourceConfiguration(target, handoff.SourceGenerationID, configuration, budget, filesystemAvailable)
 }
 
 func copyUpgradeTree(source, target string) error {

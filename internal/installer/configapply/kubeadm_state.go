@@ -10,75 +10,66 @@ import (
 
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
-	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
-const (
-	generationKubeadmInputDir = "kubeadm-input"
-	maxGenerationAncestry     = 256
-)
+const generationKubeadmInputDir = "kubeadm-input"
 
 func WriteGenerationKubeadmConfig(root, generationID, ref string, plan kubeadmconfig.Plan) error {
-	dir, err := generation.GenerationDir(root, generationID)
+	files, err := generationKubeadmFiles(ref, plan)
 	if err != nil {
 		return err
 	}
-	ref, err = cleanKubeadmInputRef(ref)
+	return writeConfigurationFiles(root, generationID, files)
+}
+
+func generationKubeadmFiles(ref string, plan kubeadmconfig.Plan) ([]configurationFile, error) {
+	ref, err := cleanKubeadmInputRef(ref)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	files := append([]kubeadmconfig.File{plan.Config}, plan.Patches...)
 	if _, err := kubeadmconfig.PlanFromRenderedFiles(ref, files); err != nil {
-		return fmt.Errorf("validate desired kubeadm input: %w", err)
+		return nil, fmt.Errorf("validate desired kubeadm input: %w", err)
 	}
-	base := filepath.Join(dir, generationKubeadmInputDir, ref)
+	var result []configurationFile
 	for _, file := range files {
 		rel, err := kubeadmInputRelativePath(ref, file.RenderPath)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		path := filepath.Join(base, rel)
 		mode := file.Mode.Perm()
 		if mode == 0 {
 			mode = 0o644
 		}
-		if err := persistedrecord.WriteFileAtomic(path, file.Content, mode); err != nil {
-			return fmt.Errorf("write desired kubeadm input %s: %w", rel, err)
-		}
+		result = append(result, configurationFile{path: filepath.Join(generationKubeadmInputDir, ref, rel), content: file.Content, mode: mode})
 	}
-	return nil
+	return result, nil
 }
 
 func ReadEffectiveGenerationKubeadmConfig(root, generationID, ref string) (kubeadmconfig.Plan, string, error) {
-	var err error
-	ref, err = cleanKubeadmInputRef(ref)
+	ref, err := cleanKubeadmInputRef(ref)
 	if err != nil {
 		return kubeadmconfig.Plan{}, "", err
 	}
-	selected := strings.TrimSpace(generationID)
-	visited := map[string]bool{}
-	for depth := 0; selected != "" && depth < maxGenerationAncestry; depth++ {
-		if visited[selected] {
-			return kubeadmconfig.Plan{}, "", fmt.Errorf("generation kubeadm input ancestry contains a cycle at %q", selected)
-		}
-		visited[selected] = true
-		plan, err := readGenerationKubeadmConfig(root, selected, ref)
-		if err == nil {
-			return plan, selected, nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return kubeadmconfig.Plan{}, "", err
-		}
-		spec, _, readErr := generation.ReadGeneration(root, selected)
-		if readErr != nil {
-			return kubeadmconfig.Plan{}, "", fmt.Errorf("read generation %q while resolving its kubeadm input: %w", selected, readErr)
-		}
-		selected = strings.TrimSpace(spec.PreviousGenerationID)
+	plan, source, err := readGenerationInput(root, generationID, "kubeadm input", func(id string) (kubeadmconfig.Plan, error) {
+		return readGenerationKubeadmConfig(root, id, ref)
+	})
+	if !errors.Is(err, os.ErrNotExist) {
+		return plan, source, err
 	}
-	if selected != "" {
-		return kubeadmconfig.Plan{}, "", fmt.Errorf("generation kubeadm input ancestry exceeds %d generations", maxGenerationAncestry)
+	// Older generations kept only rendered kubeadm inputs in their confext.
+	plan, source, err = readGenerationInput(root, generationID, "kubeadm input", func(id string) (kubeadmconfig.Plan, error) {
+		dir, err := generation.GenerationDir(root, id)
+		if err != nil {
+			return kubeadmconfig.Plan{}, err
+		}
+		return readKubeadmConfigDir(filepath.Join(dir, "confext/etc/katl/kubeadm", ref), ref)
+	})
+	if !errors.Is(err, os.ErrNotExist) {
+		return plan, source, err
 	}
-	return kubeadmconfig.Plan{}, "", fmt.Errorf("generation %q has no desired kubeadm input ancestry: %w", generationID, os.ErrNotExist)
+	plan, err = readKubeadmConfigDir(filepath.Join(root, "var/lib/katl/cluster/kubeadm", ref), ref)
+	return plan, "", err
 }
 
 func readGenerationKubeadmConfig(root, generationID, ref string) (kubeadmconfig.Plan, error) {
@@ -86,7 +77,10 @@ func readGenerationKubeadmConfig(root, generationID, ref string) (kubeadmconfig.
 	if err != nil {
 		return kubeadmconfig.Plan{}, err
 	}
-	base := filepath.Join(dir, generationKubeadmInputDir, ref)
+	return readKubeadmConfigDir(filepath.Join(dir, generationKubeadmInputDir, ref), ref)
+}
+
+func readKubeadmConfigDir(base, ref string) (kubeadmconfig.Plan, error) {
 	var files []kubeadmconfig.File
 	if err := filepath.WalkDir(base, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -117,11 +111,11 @@ func readGenerationKubeadmConfig(root, generationID, ref string) (kubeadmconfig.
 		})
 		return nil
 	}); err != nil {
-		return kubeadmconfig.Plan{}, fmt.Errorf("read generation %s desired kubeadm input: %w", generationID, err)
+		return kubeadmconfig.Plan{}, fmt.Errorf("read kubeadm input %s: %w", base, err)
 	}
 	plan, err := kubeadmconfig.PlanFromRenderedFiles(ref, files)
 	if err != nil {
-		return kubeadmconfig.Plan{}, fmt.Errorf("decode generation %s desired kubeadm input: %w", generationID, err)
+		return kubeadmconfig.Plan{}, fmt.Errorf("decode kubeadm input %s: %w", base, err)
 	}
 	return plan, nil
 }

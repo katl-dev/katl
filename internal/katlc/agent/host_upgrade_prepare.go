@@ -45,7 +45,7 @@ func commitPreparedHostUpgrade(root string, handoff generation.UpgradeHandoff, p
 	if err := generation.WriteGeneration(root, plan.Spec, plan.Status); err != nil {
 		return err
 	}
-	if err := configapply.WriteGenerationManifest(root, handoff.CandidateGenerationID, extensions.manifest); err != nil {
+	if err := configapply.WriteGenerationConfiguration(root, handoff.CandidateGenerationID, configapply.GenerationConfiguration{Manifest: extensions.manifest, KubeadmConfigs: extensions.kubeadmConfigs}); err != nil {
 		return err
 	}
 	plan.Status.CommitState = generation.CommitStateCommitted

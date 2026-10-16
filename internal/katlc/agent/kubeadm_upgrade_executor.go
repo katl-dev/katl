@@ -19,6 +19,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"gopkg.in/yaml.v3"
@@ -845,6 +846,13 @@ func (e *Executor) stageKubernetesCandidate(previous generation.GenerationSpec, 
 	}
 	if err := generation.WriteGeneration(e.Root, spec, status); err != nil {
 		return generation.ExtensionRef{}, fmt.Errorf("write candidate generation %s (%s): %w", request.CandidateGenerationID, dir, err)
+	}
+	configuration, err := configapply.ReadGenerationConfiguration(e.Root, previous.GenerationID)
+	if err != nil {
+		return generation.ExtensionRef{}, err
+	}
+	if err := configapply.WriteGenerationConfiguration(e.Root, request.CandidateGenerationID, configuration); err != nil {
+		return generation.ExtensionRef{}, err
 	}
 	return ref, nil
 }
