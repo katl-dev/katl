@@ -75,7 +75,7 @@ jobs:
       KATL_ARCHITECTURE: x86_64
       KATL_BUILD_COMMIT: ${{ github.sha }}
       KATL_CONTAINER_RUNTIME: docker
-      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs
+      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:go-squashfs
       KATL_VERSION: ${{ needs.identity.outputs.version }}
       KATL_VMTEST_IMAGE_SUPPORT: "0"
 
@@ -115,7 +115,8 @@ jobs:
               mkosi.profiles/installer-image/mkosi.conf \
               mkosi.profiles/kubernetes-sysext/kubernetes.env \
               mkosi.profiles/kubernetes-sysext/mkosi.conf \
-              mkosi.profiles/runtime/mkosi.conf
+              mkosi.profiles/runtime/mkosi.conf \
+              scripts/fedora-release
           } | sha256sum | cut -d ' ' -f 1)"
           echo "key=$digest" >> "$GITHUB_OUTPUT"
 
@@ -123,10 +124,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: _build/mkosi/package-cache
-          key: katl-mkosi-packages-runtime-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}-${{ github.sha }}
+          key: katl-mkosi-packages-runtime-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ steps.mkosi-cache.outputs.key }}-${{ github.sha }}
           restore-keys: |
-            katl-mkosi-packages-runtime-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}-
-            katl-mkosi-packages-runtime-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
+            katl-mkosi-packages-runtime-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ steps.mkosi-cache.outputs.key }}-
 
       - name: Prepare cached builder
         uses: ./.github/actions/mkosi-builder
@@ -214,7 +214,7 @@ jobs:
       KATL_ARCHITECTURE: x86_64
       KATL_BUILD_COMMIT: ${{ github.sha }}
       KATL_CONTAINER_RUNTIME: docker
-      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs
+      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:go-squashfs
       KATL_VERSION: ${{ needs.identity.outputs.version }}
       KATL_VMTEST_IMAGE_SUPPORT: "0"
 
@@ -266,7 +266,7 @@ jobs:
       KATL_ARCHITECTURE: x86_64
       KATL_BUILD_COMMIT: ${{ github.sha }}
       KATL_CONTAINER_RUNTIME: docker
-      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs
+      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:go-squashfs
       KATL_VERSION: ${{ needs.identity.outputs.version }}
       KATL_VMTEST_IMAGE_SUPPORT: "0"
 
@@ -372,7 +372,7 @@ jobs:
       KATL_ARCHITECTURE: x86_64
       KATL_BUILD_COMMIT: ${{ github.sha }}
       KATL_CONTAINER_RUNTIME: docker
-      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:fedora-44-go-squashfs
+      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:go-squashfs
       KATL_VERSION: ${{ needs.identity.outputs.version }}
       KATL_VMTEST_IMAGE_SUPPORT: "0"
 
@@ -412,7 +412,8 @@ jobs:
               mkosi.profiles/installer-image/mkosi.conf \
               mkosi.profiles/kubernetes-sysext/kubernetes.env \
               mkosi.profiles/kubernetes-sysext/mkosi.conf \
-              mkosi.profiles/runtime/mkosi.conf
+              mkosi.profiles/runtime/mkosi.conf \
+              scripts/fedora-release
           } | sha256sum | cut -d ' ' -f 1)"
           echo "key=$digest" >> "$GITHUB_OUTPUT"
 
@@ -420,10 +421,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: _build/mkosi/package-cache
-          key: katl-mkosi-packages-installer-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}-${{ github.sha }}
+          key: katl-mkosi-packages-installer-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ steps.mkosi-cache.outputs.key }}-${{ github.sha }}
           restore-keys: |
-            katl-mkosi-packages-installer-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-${{ steps.mkosi-cache.outputs.key }}-
-            katl-mkosi-packages-installer-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-fedora-44-
+            katl-mkosi-packages-installer-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ steps.mkosi-cache.outputs.key }}-
 
       - name: Prepare cached builder
         uses: ./.github/actions/mkosi-builder

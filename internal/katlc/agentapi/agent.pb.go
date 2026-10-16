@@ -3283,6 +3283,7 @@ type HostUpgradePreview struct {
 	ExtensionRelease *ExtensionRelease             `protobuf:"bytes,6,opt,name=extension_release,json=extensionRelease,proto3" json:"extension_release,omitempty"`
 	Extensions       []*HostUpgradeExtensionChange `protobuf:"bytes,7,rep,name=extensions,proto3" json:"extensions,omitempty"`
 	ChangedDomains   []string                      `protobuf:"bytes,8,rep,name=changed_domains,json=changedDomains,proto3" json:"changed_domains,omitempty"`
+	NoChanges        bool                          `protobuf:"varint,9,opt,name=no_changes,json=noChanges,proto3" json:"no_changes,omitempty"`
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
@@ -3371,6 +3372,13 @@ func (x *HostUpgradePreview) GetChangedDomains() []string {
 		return x.ChangedDomains
 	}
 	return nil
+}
+
+func (x *HostUpgradePreview) GetNoChanges() bool {
+	if x != nil {
+		return x.NoChanges
+	}
+	return false
 }
 
 type HostUpgradeExtensionChange struct {
@@ -6348,7 +6356,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x17candidate_generation_id\x18\x05 \x01(\tR\x15candidateGenerationId\x12\x1f\n" +
 	"\vconfig_yaml\x18\x06 \x01(\tR\n" +
 	"configYaml\x12.\n" +
-	"\x13resolve_target_only\x18\a \x01(\bR\x11resolveTargetOnly\"\x91\x03\n" +
+	"\x13resolve_target_only\x18\a \x01(\bR\x11resolveTargetOnly\"\xb0\x03\n" +
 	"\x12HostUpgradePreview\x12!\n" +
 	"\fimage_sha256\x18\x01 \x01(\tR\vimageSha256\x12(\n" +
 	"\x10image_size_bytes\x18\x02 \x01(\x04R\x0eimageSizeBytes\x12)\n" +
@@ -6359,7 +6367,9 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\n" +
 	"extensions\x18\a \x03(\v2).katl.agent.v1.HostUpgradeExtensionChangeR\n" +
 	"extensions\x12'\n" +
-	"\x0fchanged_domains\x18\b \x03(\tR\x0echangedDomains\"q\n" +
+	"\x0fchanged_domains\x18\b \x03(\tR\x0echangedDomains\x12\x1d\n" +
+	"\n" +
+	"no_changes\x18\t \x01(\bR\tnoChanges\"q\n" +
 	"\x1aHostUpgradeExtensionChange\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12'\n" +
 	"\x0fprevious_digest\x18\x02 \x01(\tR\x0epreviousDigest\x12\x16\n" +

@@ -177,6 +177,8 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 	}
 
 	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "mkosi.conf"), "[Distribution]\nRelease=99\n")
+	t.Setenv("KATL_REPO_ROOT", dir)
 	mkosiDir := filepath.Join(dir, "_build", "mkosi")
 	runtimeRoot := filepath.Join(mkosiDir, "katl-runtime-root")
 	if err := os.MkdirAll(runtimeRoot, 0o755); err != nil {
@@ -229,6 +231,9 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 		}
 	}
 	installerSet := packageSet(manifest.PackageSets, "installer-image")
+	if installerSet.Release != "99" || packageSet(manifest.PackageSets, "runtime").Release != "99" {
+		t.Fatalf("package set releases do not match mkosi.conf: %#v", manifest.PackageSets)
+	}
 	if packageNEVRA(installerSet.Packages, "systemd") != "systemd-0:259.6-1.fc44.x86_64" {
 		t.Fatalf("installer package set = %#v", installerSet)
 	}

@@ -102,7 +102,6 @@ systemd-networkd and systemd-resolved
 installer input discovery and local handoff support
 openssh-server
 ca-certificates
-curl
 util-linux, lsblk, blkid, wipefs, findmnt, mount, umount
 systemd-repart
 dosfstools

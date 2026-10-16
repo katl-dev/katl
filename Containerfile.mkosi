@@ -1,4 +1,5 @@
-FROM registry.fedoraproject.org/fedora:44
+ARG FEDORA_RELEASE
+FROM registry.fedoraproject.org/fedora:${FEDORA_RELEASE}
 
 RUN dnf5 -y install \
         bash \
