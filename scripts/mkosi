@@ -38,6 +38,8 @@ stamp_dir="$build_dir/.katl-stamps"
 go_mod_cache="${KATL_GO_MOD_CACHE:-$repo_root/_build/go-mod}"
 go_build_cache="${KATL_GO_BUILD_CACHE:-$repo_root/_build/go-cache}"
 mkosi_env=(--environment "KATL_FLAVOUR=$flavour" --environment "KATL_BUILD_COMMIT=$build_commit")
+kernel_set_sha256=""
+kernel_locked=0
 if [[ -n "${KATL_VERSION:-}" ]]; then
     mkosi_env+=(--environment "KATL_VERSION=$KATL_VERSION")
 fi
@@ -94,7 +96,7 @@ cache_input_matches_target() {
         *_test.go | docs/*)
             return 1
             ;;
-        mkosi.conf | mkosi.conf.d/* | mkosi.kernel-lts/* | Containerfile.mkosi | containers-policy.json | go.mod | go.sum | scripts/mkosi | scripts/fedora-release)
+        mkosi.conf | mkosi.conf.d/* | mkosi.kernel-lts/* | kernels/* | Containerfile.mkosi | containers-policy.json | go.mod | go.sum | scripts/mkosi | scripts/fedora-release)
             return 0
             ;;
         *.go)
@@ -132,6 +134,13 @@ cache_input_matches_target() {
 }
 
 target_go_binaries() {
+    case "$1" in
+        installer | installer-iso | runtime)
+            if [[ -n "$kernel_set_sha256" ]]; then
+                printf '%s\t%s\t%s\n' "build-tool:katl-kernel-release" "./cmd/katl-kernel-release" "plain"
+            fi
+            ;;
+    esac
     case "$1" in
         installer | installer-iso)
             printf '%s\t%s\t%s\n' "included-binary:/usr/bin/katlos-install" "./cmd/katlos-install" "versioned"
@@ -238,6 +247,7 @@ cache_fingerprint() {
             printf 'KATL_BUILD_COMMIT=%s\n' "$build_commit"
             printf 'SOURCE_DATE_EPOCH=%s\n' "${SOURCE_DATE_EPOCH:-}"
             printf 'KATL_FLAVOUR=%s\n' "$flavour"
+            printf 'KATL_KERNEL_SET_SHA256=%s\n' "$kernel_set_sha256"
             printf 'KATL_VERSION=%s\n' "${KATL_VERSION:-}"
             printf 'KATL_ARCHITECTURE=%s\n' "${KATL_ARCHITECTURE:-$(uname -m)}"
             printf 'KATL_KATLOS_IMAGE_ROLE=%s\n' "${KATL_KATLOS_IMAGE_ROLE:-install}"
@@ -407,6 +417,30 @@ prepare_cached_target() {
     fi
 }
 
+prepare_kernel_inputs() {
+    [[ -n "${KATL_KERNEL_LOCK:-}" ]] || return 0
+    local profile="$1" visible config_path result
+    prepare_build_dirs
+    visible=/work/_build/mkosi/kernel-rpms
+    config_path="/work/_build/mkosi/kernel-$profile.conf"
+    if [[ "$runtime" == direct ]]; then
+        visible="$build_dir/kernel-rpms"
+        config_path="$build_dir/kernel-$profile.conf"
+    fi
+    local -a arguments=(prepare --lock "$KATL_KERNEL_LOCK"
+        --flavour "$flavour" --fedora-release "$fedora_release"
+        --cache "$build_dir/kernel-rpms" --profile "$profile"
+        --config "$build_dir/kernel-$profile.conf" --visible-directory "$visible")
+    if [[ -n "${KATL_KERNEL_LAYOUT:-}" ]]; then
+        arguments+=(--layout "$KATL_KERNEL_LAYOUT")
+    fi
+    result="$(cd "$repo_root" && GOCACHE="$go_build_cache" GOMODCACHE="$go_mod_cache" \
+        go run ./cmd/katl-kernel-release "${arguments[@]}")"
+    kernel_set_sha256="$(jq -er .identity <<<"$result")"
+    kernel_locked=1
+    mkosi_env+=(--include "$config_path")
+}
+
 clear_installer_iso() {
     rm -f \
         "$build_dir/katl-installer.iso" \
@@ -511,6 +545,41 @@ if [[ "${1:-}" == builder-version ]]; then
     printf '%s\n' "$version"
     exit 0
 fi
+
+kernel_profile=""
+case "${1:-build-installer}" in
+    build-installer | build-installer-iso | installer-image)
+        kernel_profile=installer-image
+        ;;
+    build-runtime | runtime | build-katlos-install-image | build-katlos-upgrade-image)
+        kernel_profile=runtime
+        ;;
+esac
+for ((argument_index=1; argument_index<=$#; argument_index++)); do
+    argument="${!argument_index}"
+    [[ "$argument" != -- ]] || break
+    selected_profile=""
+    case "$argument" in
+        --profile=*) selected_profile="${argument#--profile=}" ;;
+        --profile)
+            next_index=$((argument_index+1))
+            selected_profile="${!next_index:-}"
+            ;;
+    esac
+    case "$selected_profile" in
+        runtime | installer-image)
+            if [[ -n "$kernel_profile" && "$kernel_profile" != "$selected_profile" ]]; then
+                echo 'error: kernel inputs require one runtime or installer-image profile' >&2
+                exit 2
+            fi
+            kernel_profile="$selected_profile"
+            ;;
+    esac
+done
+if [[ -n "$kernel_profile" ]]; then
+    prepare_kernel_inputs "$kernel_profile"
+fi
+mkosi_env+=(--environment "KATL_KERNEL_LOCKED=$kernel_locked")
 
 if [[ $# -eq 0 ]]; then
     cache_target=installer
@@ -621,6 +690,7 @@ run_flags=(
     --env "KATL_EMIT_RUNTIME_ARTIFACT=$emit_runtime_artifact"
     --env "KATL_EMIT_INSTALLER_ISO=$emit_installer_iso"
     --env "KATL_VMTEST_IMAGE_SUPPORT=$vmtest_image_support"
+    --env "KATL_KERNEL_LOCKED=$kernel_locked"
 )
 if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then
     run_flags+=(--env "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH")
