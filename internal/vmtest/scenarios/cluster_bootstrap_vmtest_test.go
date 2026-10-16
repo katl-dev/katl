@@ -371,11 +371,18 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("read worker IP address: %v", err)
 	}
-	cniFixtures, err := stageTwoNodeCNIFixtures(ctx, katlRepoRoot(t), cpNode, workerNode, cpAddress, workerAddress)
-	if err != nil {
-		collectTwoNodeDiagnostics("", nodes...)
-		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-		t.Fatalf("stage test CNI fixtures: %v", err)
+	var cniFixtures map[string]nodeCNIFixture
+	// Bootstrap and configuration must work before the operator installs CNI.
+	for _, node := range nodes {
+		started, err := runNodeCommand(ctx, node, []string{"systemctl", "start", "containerd.service"}, 32<<10)
+		if err == nil && started.ExitStatus != 0 {
+			err = commandErrorDetail(started)
+		}
+		if err != nil {
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("start %s containerd for image fixtures: %v", node.Name, err)
+		}
 	}
 	imageFixtures, err := stageKubernetesImageFixtures(ctx, katlRepoRoot(t), inputs.KubernetesVersion, nodes...)
 	if err == nil && proveUpgrade {
@@ -447,6 +454,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		t.Fatal(err)
 	}
 	t.Setenv("KATLCTL_CONFIG", contextPath)
+	t.Setenv("KATLCTL_CONFIG_DIR", "")
 	assertSwappedEnrollmentRefused(t, ctx, result.RunDir, inputs.KubernetesVersion, kubernetesBundle, cpAddress, workerAddress, enrollments)
 	for _, node := range nodes {
 		if err := assertOperatorSSH(ctx, inputs.SSHPrivateKey, node.Result.IPAddress); err != nil {
@@ -478,7 +486,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		t.Fatalf("read boot IDs before bootstrap: %v", err)
 	}
 	var stdout, stderr bytes.Buffer
-	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), appendBootstrapFixtureArgs([]string{
+	bootstrapArgs := []string{
 		"cluster", "bootstrap",
 		"--inventory", inventoryPath,
 		"--init-node", "cp-1",
@@ -488,7 +496,8 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		"--node-address", "worker-1=" + workerAddress,
 		"--kubeconfig-out", kubeconfigPath,
 		"--overwrite-kubeconfig",
-	}, bootstrapFixture), &stdout, &stderr)
+	}
+	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), bootstrapArgs, &stdout, &stderr)
 	if err == nil {
 		err = assertNodeBootIDsUnchanged(ctx, bootIDs, nodes...)
 	}
@@ -541,7 +550,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	assertOperationBackedWorkerRecord(t, workerRecord, canonicalEndpoint)
 	assertOperationJournalOrder(t, cpEvidenceDir, "bootstrap-runtime-ready-complete", "kubeadm-init-complete", "post-kubeadm-health-start", "operation-complete")
 	assertOperationJournalOrder(t, workerEvidenceDir, "bootstrap-runtime-ready-complete", "kubeadm-join-worker-complete", "post-kubeadm-health-start", "operation-complete")
-	assertOperationBackedBootstrapPhases(t, stdout.String())
+	assertOperationBackedNodeBootstrapPhases(t, stdout.String())
 	cpGenerationPath, cpGenerationRecord, err := collectGenerationEvidence(ctx, cpNode, cpEvidenceDir, cpRecord.CandidateGenerationID)
 	if err != nil {
 		collectTwoNodeDiagnostics("", nodes...)
@@ -598,6 +607,71 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	if err := writeOperationBackedArtifactManifest(artifactManifestPath, result, inputs, nodes, evidenceArtifacts); err != nil {
 		t.Fatal(err)
 	}
+	addresses := map[string]string{"cp-1": cpAddress, "worker-1": workerAddress}
+	if err := runPreCNIClusterApply(t, ctx, smoke, addresses, kubeconfigPath, kubernetesBundle); err != nil {
+		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+		collectTwoNodeDiagnostics("", nodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("public configuration before CNI: %v", err)
+	}
+	cniFixtures, err = stageTwoNodeCNIFixtures(ctx, katlRepoRoot(t), cpNode, workerNode, cpAddress, workerAddress)
+	if err != nil {
+		collectTwoNodeDiagnostics("", nodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("stage test CNI fixtures: %v", err)
+	}
+	evidenceArtifacts.CNIFixtures = cniFixtures
+	if err := writeOperationBackedArtifactManifest(artifactManifestPath, result, inputs, nodes, evidenceArtifacts); err != nil {
+		t.Fatal(err)
+	}
+	// Resume the original bootstrap only after CNI is installed. This preserves
+	// its workload manifests and waits without making them bootstrap prerequisites.
+	beforeResume, err := readTwoNodeEnrollments(ctx, cpAddress, workerAddress)
+	if err != nil {
+		t.Fatalf("read configured generations before bootstrap resume: %v", err)
+	}
+	var resumedStdout, resumedStderr bytes.Buffer
+	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), appendBootstrapFixtureArgs(slices.Clone(bootstrapArgs), bootstrapFixture), &resumedStdout, &resumedStderr)
+	_ = os.WriteFile(filepath.Join(result.RunDir, "katlctl-bootstrap-workloads.stdout"), resumedStdout.Bytes(), 0o644)
+	_ = os.WriteFile(filepath.Join(result.RunDir, "katlctl-bootstrap-workloads.stderr"), resumedStderr.Bytes(), 0o644)
+	if err != nil {
+		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+		collectTwoNodeDiagnostics("", nodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("resume bootstrap workload fixtures: %v\n%s\n%s", err, &resumedStdout, &resumedStderr)
+	}
+	assertOperationBackedNodeBootstrapPhases(t, resumedStdout.String())
+	if !strings.Contains(resumedStdout.String(), "phase=user-bootstrap status=passed") {
+		t.Fatalf("resumed bootstrap did not complete workload fixtures:\n%s", resumedStdout.String())
+	}
+	for _, expected := range []struct {
+		node   vmtest.RunningInstalledRuntimeNode
+		kind   string
+		record operation.OperationRecord
+	}{{cpNode, "bootstrap-init", cpRecord}, {workerNode, "bootstrap-join-worker", workerRecord}} {
+		_, resumed, err := collectOperationEvidence(ctx, expected.node, filepath.Join(evidenceDir, expected.node.Name, "resumed"), expected.kind)
+		if err != nil {
+			t.Fatalf("read %s resumed operation: %v", expected.node.Name, err)
+		}
+		if resumed.OperationID != expected.record.OperationID {
+			t.Fatalf("%s bootstrap resume created operation %s instead of retaining %s", expected.node.Name, resumed.OperationID, expected.record.OperationID)
+		}
+		if len(resumed.Invocations) != len(expected.record.Invocations) || len(resumed.MutatingToolInvocations) != len(expected.record.MutatingToolInvocations) {
+			t.Fatalf("%s bootstrap resume ran additional operation tools", expected.node.Name)
+		}
+	}
+	afterResume, err := readTwoNodeEnrollments(ctx, cpAddress, workerAddress)
+	if err != nil {
+		t.Fatalf("read configured generations after bootstrap resume: %v", err)
+	}
+	for _, node := range nodes {
+		if afterResume[node.Name].GetCurrentGenerationId() != beforeResume[node.Name].GetCurrentGenerationId() {
+			t.Fatalf("%s bootstrap resume replaced its configured generation", node.Name)
+		}
+	}
+	if err := assertNodeBootIDsUnchanged(ctx, bootIDs, nodes...); err != nil {
+		t.Fatalf("bootstrap resume rebooted a node: %v", err)
+	}
 	output, err := waitForKubectlNodes(ctx, kubeconfigPath, kubectlOut, 3*time.Minute, "node/cp-1", "node/worker-1")
 	if err != nil {
 		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
@@ -621,14 +695,18 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	}
 	assertKubeconfigOutput(t, kubeconfigPath, kubeconfigMetadataPath, "https://"+cpAddress+":7445", "api.unpublished.katl.test")
 	assertKubeProxyLocalAPIAccess(t, ctx, kubeconfigPath, "api.unpublished.katl.test")
+	current, err := readTwoNodeEnrollments(ctx, cpAddress, workerAddress)
+	if err != nil {
+		t.Fatalf("read configured generations before reboot: %v", err)
+	}
 	for _, node := range []struct {
 		running    vmtest.RunningInstalledRuntimeNode
 		generation string
-	}{{cpNode, cpRecord.CandidateGenerationID}, {workerNode, workerRecord.CandidateGenerationID}} {
+	}{{cpNode, current["cp-1"].GetCurrentGenerationId()}, {workerNode, current["worker-1"].GetCurrentGenerationId()}} {
 		if err := rebootIntoGeneration(ctx, node.running, node.generation); err != nil {
 			collectTwoNodeDiagnostics("", nodes...)
 			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-			t.Fatalf("reboot %s into bootstrap generation: %v", node.running.Name, err)
+			t.Fatalf("reboot %s into configured generation: %v", node.running.Name, err)
 		}
 		if err := activateNodeCNIFixture(ctx, node.running, cniFixtures[node.running.Name]); err != nil {
 			t.Fatalf("reactivate %s CNI fixture after bootstrap reboot: %v", node.running.Name, err)
@@ -645,6 +723,16 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("cluster did not return after bootstrap generation reboot: %v", err)
+	}
+	for _, node := range nodes {
+		// Cached Ready may survive a reboot until kubelet publishes this boot's
+		// status. Require independently observed current-boot configuration.
+		observeCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		_, err := waitForConfiguredKubelet(observeCtx, filepath.Join(result.RunDir, "pre-cni-apply"), "reboot", inputs.SSHPrivateKey, addresses[node.Name], node.Name, kubeconfigPath, 111, true)
+		cancel()
+		if err != nil {
+			t.Fatalf("%s kubelet configuration after reboot: %v", node.Name, err)
+		}
 	}
 	if proveUpgrade {
 		if err := runTwoNodeKubeadmUpgradeProof(t, ctx, smoke, cpNode, workerNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir); err != nil {
@@ -2713,13 +2801,12 @@ func assertBootstrapPhases(t *testing.T, output string) {
 	}
 }
 
-func assertOperationBackedBootstrapPhases(t *testing.T, output string) {
+func assertOperationBackedNodeBootstrapPhases(t *testing.T, output string) {
 	t.Helper()
 	for _, want := range []string{
 		"katlctl cluster bootstrap init-node=cp-1",
 		"phase=bootstrap-init node=cp-1 status=passed",
 		"phase=worker-join node=worker-1 status=passed",
-		"phase=user-bootstrap status=passed",
 		"phase=kubeconfig status=passed",
 	} {
 		if !strings.Contains(output, want) {

@@ -1004,6 +1004,66 @@ func TestStoreRejectsControlPlaneConfigBodyMismatch(t *testing.T) {
 	}
 }
 
+func TestStoreReadinessRequirement(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		before   string
+		after    string
+		mutated  bool
+		starting bool
+		allowed  bool
+	}{
+		{"record Ready", "", "ready", false, false, true},
+		{"record CNI pending", "", "cni-uninitialized", false, false, true},
+		{"tighten CNI", "cni-uninitialized", "ready", false, false, true},
+		{"tighten after mutation", "cni-uninitialized", "ready", true, false, true},
+		{"preserve after mutation", "cni-uninitialized", "cni-uninitialized", true, false, true},
+		{"cannot relax Ready", "ready", "cni-uninitialized", false, false, false},
+		{"cannot erase", "cni-uninitialized", "", false, false, false},
+		{"legacy cannot gain CNI", "", "cni-uninitialized", true, false, false},
+		{"legacy remains strict", "", "ready", true, false, true},
+		{"cannot begin mutation with new CNI exception", "", "cni-uninitialized", false, true, false},
+		{"unknown baseline", "", "anything", false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := testStore(t)
+			record := baseRecord("config-health")
+			record.OperationKind = "kubeadm-control-plane-config"
+			record.KubeadmControlPlaneConfig = validControlPlaneConfigBody()
+			record.KubeadmControlPlaneConfig.ReadinessRequirement = tc.before
+			record.ExternalMutationStarted = tc.mutated
+			if _, err := store.Create(record, "accepted", time.Now().UTC()); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := store.Update(record.OperationID, "health-baseline", "preflight", func(current OperationRecord) (OperationRecord, error) {
+				current.KubeadmControlPlaneConfig.ReadinessRequirement = tc.after
+				current.ExternalMutationStarted = current.ExternalMutationStarted || tc.starting
+				return current, nil
+			})
+			if (err == nil) != tc.allowed {
+				t.Fatalf("baseline update error = %v, allowed %v", err, tc.allowed)
+			}
+
+			reopened, err := NewStore(store.Root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			persisted, err := reopened.Read(record.OperationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := tc.before
+			if tc.allowed {
+				want = tc.after
+			}
+			if persisted.KubeadmControlPlaneConfig.ReadinessRequirement != want {
+				t.Fatalf("persisted baseline = %q, want %q", persisted.KubeadmControlPlaneConfig.ReadinessRequirement, want)
+			}
+		})
+	}
+}
+
 func validControlPlaneConfigBody() *KubeadmControlPlaneConfig {
 	return &KubeadmControlPlaneConfig{
 		Component: "control-plane",

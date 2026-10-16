@@ -108,7 +108,7 @@ func TestPlanChangeRejectsUnsupportedLiveChangeBeforeCandidateRecord(t *testing.
 	}
 }
 
-func TestPlanChangeActivatesKubeadmInputAndRebindsKubeletWatcher(t *testing.T) {
+func TestPlanChangeStagesKubeadmInput(t *testing.T) {
 	live, err := PlanChange(currentRecord(), NodeConfigurationChange{
 		Sysexts:          currentRecord().Sysexts,
 		APIVersion:       generation.APIVersion,
@@ -122,7 +122,7 @@ func TestPlanChangeActivatesKubeadmInputAndRebindsKubeletWatcher(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PlanChange(live kubeadm) error = %v, result = %#v", err, live)
 	}
-	if live.Decision.AcceptedMode != generation.ApplyModeLive || len(live.Status.DomainActions) != 1 || live.Status.DomainActions[0].Action != "kubelet-config-watcher-rebind" || live.Status.DomainActions[0].Status != generation.ConfigApplyActionPlanned {
+	if live.Decision.AcceptedMode != generation.ApplyModeLive || len(live.Status.DomainActions) != 1 || live.Status.DomainActions[0].Action != "kubeadm-operation-required" || live.Status.DomainActions[0].Status != generation.ConfigApplyActionSkipped {
 		t.Fatalf("live kubeadm result = %#v", live)
 	}
 

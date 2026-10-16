@@ -1133,8 +1133,7 @@ func runPostKubeadmHealthCommand(ctx context.Context, argv []string, started fun
 func requiresLocalControlPlaneHealth(kind string) bool {
 	switch kind {
 	case bootstrapplan.OperationKindInit,
-		bootstrapplan.OperationKindJoinControlPlane,
-		OperationKindKubeadmControlPlaneConfig:
+		bootstrapplan.OperationKindJoinControlPlane:
 		return true
 	default:
 		return false
@@ -1145,20 +1144,6 @@ func postKubeadmHealthCommands(args ...string) [][]string {
 	kind := ""
 	if len(args) > 0 {
 		kind = args[0]
-	}
-	if kind == OperationKindKubeadmControlPlaneConfig {
-		node := ""
-		if len(args) > 1 {
-			node = args[1]
-		}
-		return [][]string{
-			{"/usr/bin/test", "-s", "/etc/kubernetes/manifests/kube-apiserver.yaml"},
-			{"/usr/bin/test", "-s", "/etc/kubernetes/manifests/kube-controller-manager.yaml"},
-			{"/usr/bin/test", "-s", "/etc/kubernetes/manifests/kube-scheduler.yaml"},
-			{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "wait", "--for=condition=Ready", "node/" + node, "--timeout=2m"},
-			{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "kube-system", "wait", "--for=condition=Ready", "pod/etcd-" + node, "--timeout=2m"},
-			{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "kube-system", "exec", "etcd-" + node, "--", "etcdctl", "--endpoints=https://127.0.0.1:2379", "--cacert=/etc/kubernetes/pki/etcd/ca.crt", "--cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt", "--key=/etc/kubernetes/pki/etcd/healthcheck-client.key", "endpoint", "health", "--cluster"},
-		}
 	}
 	if kind == bootstrapplan.OperationKindJoinWorker {
 		return [][]string{

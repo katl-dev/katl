@@ -284,6 +284,14 @@ func (e *Executor) executeKubeadmControlPlaneConfig(ctx context.Context, record 
 	if err := e.runControlPlaneConfigCommand(ctx, record, "preflight-dry-run", []string{"/usr/bin/kubeadm", "init", "phase", "control-plane", component, "--config", effectivePath, "--dry-run"}, false); err != nil {
 		return err
 	}
+	rebind, err := e.kubeletNeedsRestart(ctx)
+	if err != nil {
+		return e.failControlPlaneConfig(record, "preflight", err)
+	}
+	mirrorsBefore, err := e.controlPlaneMirrors(ctx, request.NodeName)
+	if err != nil {
+		return e.failControlPlaneConfig(record, "preflight", err)
+	}
 	schedResult := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "get", "node", request.NodeName, "-o", "jsonpath={.spec.unschedulable}"}, nil)
 	if schedResult.Err != nil || schedResult.ExitStatus != 0 {
 		return e.failControlPlaneConfig(record, "preflight", fmt.Errorf("read node schedulability: %s", toolFailure(schedResult)))
@@ -337,6 +345,17 @@ func (e *Executor) executeKubeadmControlPlaneConfig(ctx context.Context, record 
 		return current, nil
 	}); err != nil {
 		return err
+	}
+	if rebind {
+		// Rebind the refreshed /etc tree only after writing the final manifests.
+		// Native startup notification precedes the initial static-pod sync, which
+		// must not race replacement of the manifests it is starting to consume.
+		if err := e.runControlPlaneConfigCommand(ctx, record, "kubelet-watcher-rebind-running", []string{"/usr/bin/systemctl", "restart", "kubelet.service"}, true); err != nil {
+			return err
+		}
+	}
+	if err := e.waitControlPlaneManifests(ctx, record, mirrorsBefore); err != nil {
+		return e.failControlPlaneConfig(record, "post-manifest-convergence", err)
 	}
 	if result := e.runControlPlaneConfigHealth(ctx, request.NodeName); result.Err != nil || result.ExitStatus != 0 {
 		return e.failControlPlaneConfig(record, "post-manifest-health", fmt.Errorf("post-manifest health failed: %s", toolFailure(result)))
@@ -522,6 +541,12 @@ func (e *Executor) executeKubeletConfig(ctx context.Context, record operation.Op
 	localMatches = localMatches && !desiredChanged && !incomplete
 	// A matching file is not evidence that an interrupted restart loaded it.
 	restartNeeded := !localMatches
+	if !restartNeeded {
+		restartNeeded, err = e.kubeletNeedsRestart(ctx)
+		if err != nil {
+			return e.failControlPlaneConfig(record, "preflight", err)
+		}
+	}
 	uploadNeeded := request.CoordinatorUpload
 	if request.CoordinatorUpload {
 		liveResult := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "kube-system", "get", "configmap", "kubelet-config", "-o", "jsonpath={.data.kubelet}"}, nil)
@@ -529,6 +554,9 @@ func (e *Executor) executeKubeletConfig(ctx context.Context, record operation.Op
 			return e.failControlPlaneConfig(record, "preflight", fmt.Errorf("collect live kubelet config: %s", toolFailure(liveResult)))
 		}
 		uploadNeeded = desiredChanged || incomplete || kubeadmplan.KubeletConfigurationContains(liveResult.Stdout, desired) != nil
+	}
+	if err := e.captureKubeletHealth(ctx, record); err != nil {
+		return e.failControlPlaneConfig(record, "preflight", err)
 	}
 	before := sha256Bytes(localBefore)
 	if !uploadNeeded && !restartNeeded {
@@ -618,7 +646,7 @@ func (e *Executor) executeKubeletConfig(ctx context.Context, record operation.Op
 			return err
 		}
 	}
-	if result := e.runKubeletConfigHealth(ctx); result.Err != nil || result.ExitStatus != 0 {
+	if result := e.runKubeletConfigHealth(ctx, record); result.Err != nil || result.ExitStatus != 0 {
 		return e.failControlPlaneConfig(record, "post-kubelet-health", fmt.Errorf("post-kubelet health failed: %s", toolFailure(result)))
 	}
 	if _, err := e.Store.Update(record.OperationID, "post-kubelet-health-complete", "post-kubelet-health-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
@@ -669,10 +697,10 @@ func (e *Executor) completeUnchangedKubeadmConfig(ctx context.Context, record op
 	}
 	var health ToolResult
 	switch request.Component {
-	case "kubelet":
-		health = e.runKubeletConfigHealth(ctx)
 	case "kube-proxy":
 		health = e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "kube-system", "rollout", "status", "daemonset/kube-proxy", "--timeout=5m"}, nil)
+	case "kubelet":
+		health = e.runKubeletConfigHealth(ctx, record)
 	default:
 		health = e.runControlPlaneConfigHealth(ctx, request.NodeName)
 	}
@@ -712,31 +740,6 @@ func (e *Executor) backupKubeletConfig(operationID string) (string, error) {
 func sha256Bytes(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
-}
-
-func (e *Executor) runControlPlaneConfigHealth(ctx context.Context, nodeName string) ToolResult {
-	healthCtx, cancel := context.WithTimeout(ctx, postKubeadmHealthTimeout)
-	defer cancel()
-	return e.postHealthRunner()(healthCtx, []string{OperationKindKubeadmControlPlaneConfig, nodeName}, nil)
-}
-
-func (e *Executor) runKubeletConfigHealth(ctx context.Context) ToolResult {
-	healthCtx, cancel := context.WithTimeout(ctx, postKubeadmHealthTimeout)
-	defer cancel()
-	for {
-		status, err := nodeKubernetesStatus(healthCtx, e.Root, e.toolRunner())
-		if err != nil {
-			return ToolResult{Err: err, ExitStatus: 1}
-		}
-		if status.State == "ready" {
-			return ToolResult{}
-		}
-		select {
-		case <-healthCtx.Done():
-			return ToolResult{Err: fmt.Errorf("%s: %w", status.FailureReason, healthCtx.Err()), ExitStatus: 1}
-		case <-time.After(time.Second):
-		}
-	}
 }
 
 var controlPlaneManifestNames = []string{"kube-apiserver.yaml", "kube-controller-manager.yaml", "kube-scheduler.yaml"}
