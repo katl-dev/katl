@@ -82,8 +82,10 @@ katlctl kubernetes upgrade --config ./cluster.yaml \
   --cordon --kubeconfig ./kubeconfig
 ```
 
-This flag cordons before the node operation and uncordons afterward; it does not
-evict running pods. [Kubernetes upstream recommends draining before minor
+This flag temporarily cordons a schedulable node and restores scheduling
+afterward. A node that you already cordoned remains cordoned, including when
+the upgrade fails. The flag does not evict running pods.
+[Kubernetes upstream recommends draining before minor
 kubelet upgrades](https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-upgrade/).
 Katl's no-drain default deliberately favors uninterrupted home-lab workloads;
 use an external maintenance workflow if your workloads or support policy

@@ -17,6 +17,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/payloadbundle"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/bootstrap/readiness"
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
@@ -355,39 +356,83 @@ func TestKubernetesUpgradeCordonRequiresKubeconfig(t *testing.T) {
 	}
 }
 
-func TestKubernetesUpgradeCordonIsExplicitAndNonDraining(t *testing.T) {
-	runner := &fakeKubectlRunner{}
-	previous := operatorKubectlRunner
-	operatorKubectlRunner = runner
-	t.Cleanup(func() { operatorKubectlRunner = previous })
-	client := &fakeKatlcAgentClient{
-		submitAccepted:  &agentapi.OperationAccepted{OperationId: "upgrade-worker-1"},
-		operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "healthy"},
-	}
-	image, err := kubernetesbundle.ParseImageReference("ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	report, err := runKubernetesUpgradeTarget(context.Background(), workstation.ResolvedTopology{}, kubernetesUpgradeOptions{cordon: true, kubeconfig: "/tmp/admin.conf", timeout: time.Minute}, kubernetesUpgradeTarget{
-		node: workstation.TopologyNode{Name: "worker-1", SystemRole: "worker"}, upgradeRole: "worker", conn: katlcAgentConnection{Client: client}, machineID: "machine-worker-1", generation: "gen0", source: "v1.36.0", candidate: "gen1",
-	}, image, "v1.36.1", nil, &bytes.Buffer{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.Result != operation.ResultSucceeded || report.Phase != "healthy" {
-		t.Fatalf("report = %#v", report)
-	}
-	want := [][]string{
-		{"kubectl", "--kubeconfig", "/tmp/admin.conf", "cordon", "worker-1"},
-		{"kubectl", "--kubeconfig", "/tmp/admin.conf", "uncordon", "worker-1"},
-	}
-	if !reflect.DeepEqual(runner.calls, want) {
-		t.Fatalf("kubectl calls = %#v, want %#v", runner.calls, want)
-	}
-	for _, call := range runner.calls {
-		if strings.Contains(strings.Join(call, " "), "drain") {
-			t.Fatalf("cordon option invoked drain: %#v", runner.calls)
-		}
+func TestKubernetesUpgradeCordon(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		initial       string
+		readStatus    int32
+		readErr       error
+		cordonStatus  int32
+		cleanupFailed bool
+		upgradeFailed bool
+		wantErr       bool
+		wantSubmit    bool
+		mutations     []string
+	}{
+		{name: "schedulable", initial: "false", wantSubmit: true, mutations: []string{"cordon", "uncordon"}},
+		{name: "omitted field", wantSubmit: true, mutations: []string{"cordon", "uncordon"}},
+		{name: "operator cordon", initial: "true", wantSubmit: true},
+		{name: "operator cordon with failed upgrade", initial: "true", upgradeFailed: true, wantErr: true, wantSubmit: true},
+		{name: "temporary cordon with failed upgrade", initial: "false", upgradeFailed: true, wantErr: true, wantSubmit: true, mutations: []string{"cordon", "uncordon"}},
+		{name: "read failure", readStatus: 1, wantErr: true},
+		{name: "runner failure", readErr: fmt.Errorf("runner unavailable"), wantErr: true},
+		{name: "invalid state", initial: "unexpected", wantErr: true},
+		{name: "cordon failure", cordonStatus: 1, wantErr: true, mutations: []string{"cordon"}},
+		{name: "cleanup failure", cleanupFailed: true, wantErr: true, wantSubmit: true, mutations: []string{"cordon", "uncordon"}},
+		{name: "cleanup and upgrade failure", cleanupFailed: true, upgradeFailed: true, wantErr: true, wantSubmit: true, mutations: []string{"cordon", "uncordon"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeKubectlRunner{results: []readiness.CommandResult{{Stdout: tc.initial, ExitStatus: tc.readStatus}, {ExitStatus: tc.cordonStatus}}}
+			runner.errs = []error{tc.readErr}
+			if tc.cleanupFailed {
+				runner.results = append(runner.results, readiness.CommandResult{ExitStatus: 1, Stderr: "cleanup rejected"})
+			}
+			previous := operatorKubectlRunner
+			operatorKubectlRunner = runner
+			t.Cleanup(func() { operatorKubectlRunner = previous })
+			terminal := &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "healthy"}
+			if tc.upgradeFailed {
+				terminal.Result = operation.ResultFailedNeedsRepair
+				terminal.FailureReason = "upgrade failed"
+			}
+			client := &fakeKatlcAgentClient{submitAccepted: &agentapi.OperationAccepted{OperationId: "upgrade-worker-1"}, operationStatus: terminal}
+			image, err := kubernetesbundle.ParseImageReference("ghcr.io/katl-dev/kubernetes:v1.36.1-katl.1")
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			report, err := runKubernetesUpgradeTarget(context.Background(), workstation.ResolvedTopology{}, kubernetesUpgradeOptions{cordon: true, kubeconfig: "/tmp/admin.conf", timeout: time.Minute}, kubernetesUpgradeTarget{
+				node: workstation.TopologyNode{Name: "worker-1", SystemRole: "worker"}, upgradeRole: "worker", conn: katlcAgentConnection{Client: client}, machineID: "machine-worker-1", generation: "gen0", source: "v1.36.0", candidate: "gen1",
+			}, image, "v1.36.1", nil, &bytes.Buffer{})
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("upgrade error = %v", err)
+			}
+			if got := len(client.submitRequests) != 0; got != tc.wantSubmit {
+				t.Fatalf("submitted upgrade = %v, want %v", got, tc.wantSubmit)
+			}
+			if tc.cleanupFailed {
+				wantResult := "uncordon-failed"
+				if tc.upgradeFailed {
+					wantResult = operation.ResultFailedNeedsRepair
+				}
+				if report.Result != wantResult || report.NextAction != "uncordon the node after confirming it is healthy" || !strings.Contains(err.Error(), "cleanup rejected") {
+					t.Fatalf("cleanup report = %#v, error = %v", report, err)
+				}
+			} else if tc.wantSubmit && !tc.upgradeFailed && (report.Result != operation.ResultSucceeded || report.Phase != "healthy") {
+				t.Fatalf("report = %#v", report)
+			}
+			if tc.upgradeFailed && !strings.Contains(err.Error(), "upgrade failed") {
+				t.Fatalf("upgrade failure lost: %v", err)
+			}
+
+			want := [][]string{{"kubectl", "--kubeconfig", "/tmp/admin.conf", "get", "node", "worker-1", "-o", "jsonpath={.spec.unschedulable}"}}
+			for _, verb := range tc.mutations {
+				want = append(want, []string{"kubectl", "--kubeconfig", "/tmp/admin.conf", verb, "worker-1"})
+			}
+			if !reflect.DeepEqual(runner.calls, want) {
+				t.Fatalf("kubectl calls = %#v, want %#v", runner.calls, want)
+			}
+		})
 	}
 }
 
