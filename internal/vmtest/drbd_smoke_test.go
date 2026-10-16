@@ -2,11 +2,13 @@ package vmtest
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -21,7 +23,7 @@ const drbdToolsRoot = "/var/lib/katl/test-artifacts/drbd-tools"
 
 func TestDRBDConfiguration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cluster.yaml")
-	if err := os.WriteFile(path, []byte(drbdConfiguration("192.0.2.1", "192.0.2.2", "v1.36.1")), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(drbdConfiguration("192.0.2.1", "192.0.2.2", "v1.36.1", []string{"console=ttyS0"})), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := configbundle.PlanConfiguration(configbundle.BuildRequest{SourcePath: path}); err != nil {
@@ -91,6 +93,7 @@ func TestInstalledRuntimeDRBDReplication(t *testing.T) {
 	var previousGenerations [2]string
 	var driverVersion string
 	var kubernetesVersion string
+	var kernelCommandLine []string
 	for i := range nodes {
 		name := fmt.Sprintf("cp-%d", i+1)
 		world, ok := installedRuntimeWorldRunFor(t, "drbd-"+name, NodeSpec{
@@ -177,6 +180,10 @@ func TestInstalledRuntimeDRBDReplication(t *testing.T) {
 			t.Fatalf("DRBD fixture needs matching Kubernetes bootstrap intent, got %q and %q", kubernetesVersion, installedVersion)
 		}
 		kubernetesVersion = installedVersion
+		if i > 0 && !slices.Equal(kernelCommandLine, installed.Node.Kernel.CommandLine) {
+			t.Fatal("DRBD fixtures need matching configured kernel command lines")
+		}
+		kernelCommandLine = slices.Clone(installed.Node.Kernel.CommandLine)
 	}
 
 	directory := filepath.Join(nodes[0].Result.RunDir, "configuration")
@@ -193,7 +200,7 @@ func TestInstalledRuntimeDRBDReplication(t *testing.T) {
 	t.Setenv("KATLCTL_CONFIG", filepath.Join(directory, "katlctl.yaml"))
 	t.Setenv("KATLCTL_CONFIG_DIR", "")
 	configPath := filepath.Join(directory, "cluster.yaml")
-	config := drbdConfiguration(nodes[0].Result.IPAddress, nodes[1].Result.IPAddress, kubernetesVersion)
+	config := drbdConfiguration(nodes[0].Result.IPAddress, nodes[1].Result.IPAddress, kubernetesVersion, kernelCommandLine)
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -421,7 +428,8 @@ func assertDRBDReplication(t *testing.T, ctx context.Context, guests [2]*GuestCo
 	assertDRBDMarker(t, ctx, guests[1], marker)
 }
 
-func drbdConfiguration(firstAddress, secondAddress, kubernetesVersion string) string {
+func drbdConfiguration(firstAddress, secondAddress, kubernetesVersion string, kernelCommandLine []string) string {
+	kernel, _ := json.Marshal(kernelCommandLine)
 	return fmt.Sprintf(`apiVersion: config.katl.dev/v1alpha1
 kind: ClusterConfig
 metadata:
@@ -434,6 +442,8 @@ spec:
   kubernetes:
     version: %s
   defaults:
+    kernel:
+      commandLine: %s
     access:
       ssh:
         authorizedKeys:
@@ -471,5 +481,5 @@ spec:
           byID: /dev/disk/by-id/virtio-katl-root
       management:
         address: %s
-`, VMTestManagementClusterName, firstAddress, kubernetesVersion, firstAddress, secondAddress)
+`, VMTestManagementClusterName, firstAddress, kubernetesVersion, kernel, firstAddress, secondAddress)
 }

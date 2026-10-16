@@ -1,6 +1,7 @@
 package drbd9
 
 import (
+	_ "embed"
 	"fmt"
 	"io"
 	"io/fs"
@@ -13,6 +14,9 @@ import (
 	"github.com/katl-dev/katl/internal/kernelmodule"
 	"github.com/katl-dev/katl/internal/releaseextensions"
 )
+
+//go:embed socket-compat.patch
+var socketCompat string
 
 type Input struct {
 	Target      kernelmodule.Target
@@ -45,12 +49,21 @@ func Compile(input Input) (kernelmodule.Contract, error) {
 			return kernelmodule.Contract{}, err
 		}
 	}
+	// Probe each callback signature: stable kernels can backport bind and
+	// connect separately, even when sockaddr_unsized is already defined.
+	command := exec.Command("patch", "--batch", "--forward", "--fuzz=0", "-p1", "--directory", input.Work)
+	command.Stdin = strings.NewReader(socketCompat)
+	command.Stdout, command.Stderr = input.Stdout, input.Stderr
+	if err := command.Run(); err != nil {
+		return kernelmodule.Contract{}, fmt.Errorf("patch DRBD socket compatibility: %w", err)
+	}
+
 	checksum := strings.TrimSuffix(filepath.Base(input.Sources["source"]), ".tar.gz")
 	if err := os.WriteFile(filepath.Join(input.Work, "drbd/.drbd_git_revision"), []byte("source-sha256: "+checksum+"\n"), 0o644); err != nil {
 		return kernelmodule.Contract{}, err
 	}
 	kdir := filepath.Join("/usr/src/kernels", input.Target.Release)
-	command := exec.Command("make", "-C", input.Work, fmt.Sprintf("-j%d", min(runtime.NumCPU(), 8)), "KVER="+input.Target.Release, "KDIR="+kdir, "SPAAS=false", "WANT_DRBD_REPRODUCIBLE_BUILD=1", "SOURCE_DATE_EPOCH=315532800", "module")
+	command = exec.Command("make", "-C", input.Work, fmt.Sprintf("-j%d", min(runtime.NumCPU(), 8)), "KVER="+input.Target.Release, "KDIR="+kdir, "SPAAS=false", "WANT_DRBD_REPRODUCIBLE_BUILD=1", "SOURCE_DATE_EPOCH=315532800", "module")
 	command.Stdout, command.Stderr = input.Stdout, input.Stderr
 	if err := command.Run(); err != nil {
 		return kernelmodule.Contract{}, fmt.Errorf("compile DRBD: %w", err)
