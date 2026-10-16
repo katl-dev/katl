@@ -53,8 +53,8 @@ func (p PreparedIndexes) Close() error {
 }
 
 // PrepareImages inspects read-only source images, composes the full target
-// module tree, and packages only its generated indexes. It requires mount
-// privileges, but never merges extensions or loads modules into the host.
+// module tree, and packages only its generated indexes. Image access uses mount
+// privileges or systemd-mountfsd; no extensions are merged or modules loaded.
 func PrepareImages(ctx context.Context, request ImageRequest) (prepared PreparedIndexes, resultErr error) {
 	if err := request.Target.Validate(); err != nil {
 		return PreparedIndexes{}, err
@@ -78,7 +78,13 @@ func PrepareImages(ctx context.Context, request ImageRequest) (prepared Prepared
 		return PreparedIndexes{}, err
 	}
 	var mounts []string
+	var descriptors []*os.File
 	defer func() {
+		// Detached mounts live only as long as their descriptors. They are never
+		// attached to the planner's namespace or exposed as block devices.
+		for _, descriptor := range descriptors {
+			resultErr = errors.Join(resultErr, descriptor.Close())
+		}
 		// Unmount in reverse order, even after cancellation. A failed unmount
 		// keeps its scratch directory intact rather than traversing a mount.
 		unmounted := true
@@ -96,9 +102,22 @@ func PrepareImages(ctx context.Context, request ImageRequest) (prepared Prepared
 			_ = os.RemoveAll(work)
 		}
 	}()
-	mount := func(image Image, runtime bool) (string, error) {
+	privileged, err := canMountImages()
+	if err != nil {
+		return PreparedIndexes{}, err
+	}
+
+	openImage := func(image Image, runtime bool) (string, error) {
 		if err := verifyImage(image, runtime); err != nil {
 			return "", err
+		}
+		if !privileged {
+			view, err := openServiceImage(ctx, "/run/systemd/io.systemd.MountFileSystem", image.Path)
+			if err != nil {
+				return "", fmt.Errorf("open module input %s through systemd-mountfsd: %w", image.Path, err)
+			}
+			descriptors = append(descriptors, view.descriptor)
+			return view.root, nil
 		}
 		path := filepath.Join(work, fmt.Sprintf("mount-%d", len(mounts)))
 		command := exec.CommandContext(ctx, "systemd-dissect", "--read-only", "--fsck=no", "--mount", "--mkdir", image.Path, path)
@@ -117,7 +136,7 @@ func PrepareImages(ctx context.Context, request ImageRequest) (prepared Prepared
 		}
 		hasModules = hasModules || bundle.Contract != nil
 		for _, image := range bundle.Images {
-			root, err := mount(image, false)
+			root, err := openImage(image, false)
 			if err != nil {
 				return PreparedIndexes{}, err
 			}
@@ -133,7 +152,7 @@ func PrepareImages(ctx context.Context, request ImageRequest) (prepared Prepared
 		if request.Runtime.SHA256 != request.Target.RuntimeSHA256 {
 			return PreparedIndexes{}, fmt.Errorf("runtime image does not match the kernel target")
 		}
-		base, err = mount(request.Runtime, true)
+		base, err = openImage(request.Runtime, true)
 		if err != nil {
 			return PreparedIndexes{}, err
 		}
@@ -172,6 +191,11 @@ func PrepareImages(ctx context.Context, request ImageRequest) (prepared Prepared
 		SHA256:    digest,
 		directory: work,
 	}, nil
+}
+
+type serviceImage struct {
+	root       string
+	descriptor *os.File
 }
 
 func verifyImage(image Image, runtime bool) error {

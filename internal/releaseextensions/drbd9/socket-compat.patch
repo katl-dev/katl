@@ -1,0 +1,69 @@
+--- a/drbd/drbd-kernel-compat/gen_patch_names.c
++++ b/drbd/drbd-kernel-compat/gen_patch_names.c
+@@ -547,2 +547,5 @@
+-	patch(1, "struct_sockaddr_unsized", true, false,
+-	      COMPAT_HAVE_STRUCT_SOCKADDR_UNSIZED, "present");
++	patch(1, "proto_ops_bind_sockaddr_unsized", true, false,
++	      COMPAT_HAVE_PROTO_OPS_BIND_SOCKADDR_UNSIZED, "present");
++
++	patch(1, "proto_ops_connect_sockaddr_unsized", true, false,
++	      COMPAT_HAVE_PROTO_OPS_CONNECT_SOCKADDR_UNSIZED, "present");
+--- a/drbd/drbd-kernel-compat/tests/have_struct_sockaddr_unsized.c
++++ /dev/null
+@@ -1,5 +0,0 @@
+-/* { "version": "v6.18-rc4", "commit": "bf33247a90d3e85d53a9b55bb276b725456ff0bf", "comment": "struct sockaddr_unsized was introduced", "author": "Kees Cook <kees@kernel.org>", "date": "Mon Nov 3 16:26:09 2025 -0800" } */
+-
+-#include <linux/socket.h>
+-
+-struct sockaddr_unsized x;
+--- a/drbd/drbd-kernel-compat/cocci/struct_sockaddr_unsized__no_present.cocci
++++ /dev/null
+@@ -1,4 +0,0 @@
+-@@
+-@@
+-- struct sockaddr_unsized
+-+ struct sockaddr
+--- /dev/null
++++ b/drbd/drbd-kernel-compat/tests/have_proto_ops_bind_sockaddr_unsized.c
+@@ -0,0 +1,9 @@
++/* Socket callback signatures can change independently in stable kernels. */
++#include <linux/net.h>
++
++struct sockaddr_unsized;
++
++_Static_assert(__builtin_types_compatible_p(
++	typeof(((struct proto_ops *)0)->bind),
++	int (*)(struct socket *, struct sockaddr_unsized *, int)),
++	"proto_ops.bind must accept sockaddr_unsized");
+--- /dev/null
++++ b/drbd/drbd-kernel-compat/cocci/proto_ops_bind_sockaddr_unsized__no_present.cocci
+@@ -0,0 +1,7 @@
++@@
++expression socket, address, length;
++@@
++ socket->ops->bind(socket,
++- (struct sockaddr_unsized *)
+++ (struct sockaddr *)
++ address, length)
+--- /dev/null
++++ b/drbd/drbd-kernel-compat/tests/have_proto_ops_connect_sockaddr_unsized.c
+@@ -0,0 +1,9 @@
++/* Socket callback signatures can change independently in stable kernels. */
++#include <linux/net.h>
++
++struct sockaddr_unsized;
++
++_Static_assert(__builtin_types_compatible_p(
++	typeof(((struct proto_ops *)0)->connect),
++	int (*)(struct socket *, struct sockaddr_unsized *, int, int)),
++	"proto_ops.connect must accept sockaddr_unsized");
+--- /dev/null
++++ b/drbd/drbd-kernel-compat/cocci/proto_ops_connect_sockaddr_unsized__no_present.cocci
+@@ -0,0 +1,7 @@
++@@
++expression socket, address, length, flags;
++@@
++ socket->ops->connect(socket,
++- (struct sockaddr_unsized *)
+++ (struct sockaddr *)
++ address, length, flags)
