@@ -623,7 +623,11 @@ func submitInstallBundle(ctx context.Context, client *http.Client, endpoint stri
 	req.ContentLength = int64(len(archive))
 	req.Header.Set("Content-Type", "application/vnd.katl.config.bundle.v1")
 	req.Header.Set("Accept", "application/json")
-	return doInstallRequest(client, req, "submit installer config bundle")
+	status, err := doInstallRequest(client, req, "submit installer config bundle")
+	if err != nil && err.Error() == `submit installer config bundle: HTTP 400: invalid config bundle: config bundle requires unsupported installer feature "shared-kubelet-base-v1"` {
+		return status, fmt.Errorf("%w; boot installer media from the KatlOS release matching this katlctl, then retry 'katlctl install apply'", err)
+	}
+	return status, err
 }
 
 func submitInstallerSSHKeys(ctx context.Context, client *http.Client, endpoint string, keys []string) (handoff.HandoffStatus, error) {

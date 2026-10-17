@@ -326,6 +326,29 @@ and rollback boundary are defined by
 
 ### Effective kubelet configuration
 
+Bundles require the `shared-kubelet-base-v1` installer feature only when a
+serialized node input carries the shared-base marker. Selecting a plain node
+does not inherit a requirement from an unused node-local input. The bundle
+schema remains version 1; installers that do not recognize this feature reject
+the bundle before accepting it.
+
+Installer support alone does not prove that the selected runtime implements
+these semantics. Before disk planning or preparation, the installer reads
+`/usr/lib/katl/configuration-capabilities-v1` from the verified runtime root
+squashfs and requires the exact `shared-kubelet-base-v1` token for marked input.
+This immutable declaration belongs to the runtime source, including when an
+image assembler uses an overridden runtime artifact. Both explicit runtime
+selection and the installer media default use the same check. The declaration
+contains newline-separated lowercase ASCII names with digits and hyphens;
+unknown valid names are additive, while malformed declarations fail closed.
+Plain and retained unmarked inputs do not require this declaration.
+
+When older installer media rejects this feature, use installer media from the
+KatlOS release matching `katlctl` and repeat `katlctl install apply`. If an older
+installed node rejects `sharedKubeletBase` during configuration validation,
+upgrade its runtime before repeating the apply. Katl preserves the rejection
+and does not strip the marker or retry with reduced semantics.
+
 The selected plan keeps the unpatched shared `KubeletConfiguration` in its
 Config document. Ordinary native patches retain their relative paths under
 `patches/00-native`; the node-local merge patch under `patches/10-node`

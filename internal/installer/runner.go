@@ -323,6 +323,9 @@ func (verifyKatlosImageStep) Run(ctx context.Context, install *Context) error {
 		install.KatlosImage = &payload
 		install.imageReleaseAttempted = false
 	}
+	if err := verifyRuntimeConfiguration(ctx, install); err != nil {
+		return fmt.Errorf("runtime configuration compatibility: %w; use installer media and a target runtime from the KatlOS release matching this katlctl, then retry 'katlctl install apply'; no disk changes were made", err)
+	}
 	if install.KatlosImage != nil {
 		payload := install.KatlosImage
 		target := generation.RootSelection{

@@ -2573,7 +2573,17 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 		VolumeRebinds:                      rebinds,
 	})
 	if err != nil {
-		return err
+		return configCompatibilityError(err)
+	}
+	if !result.Accepted {
+		message := strings.Join(append([]string{result.FailureReason}, result.Diagnostics...), "\n")
+		if explained := configCompatibilityDiagnostic(message); explained != message {
+			result = proto.Clone(result).(*agentapi.ConfigValidationResult)
+			result.FailureReason = explained
+			if !opts.plan && opts.mode != generation.ApplyModeAuto {
+				fmt.Fprintln(stderr, explained)
+			}
+		}
 	}
 	if opts.plan {
 		if opts.output == "text" {

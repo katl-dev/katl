@@ -18,7 +18,8 @@ const (
 	APIVersion = "config.katl.dev/v1alpha1"
 	Kind       = "KubeadmConfig"
 
-	KubeletVolumePluginDir = "/var/lib/kubelet/plugins/volume/exec"
+	KubeletVolumePluginDir   = "/var/lib/kubelet/plugins/volume/exec"
+	SharedKubeletBaseFeature = "shared-kubelet-base-v1"
 )
 
 type Object struct {

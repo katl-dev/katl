@@ -165,6 +165,10 @@ func ReadSelectedNode(reader io.Reader, options ReadOptions) (SelectedNodeMateri
 	if err != nil {
 		return SelectedNodeMaterial{}, err
 	}
+	selectedRef := installManifest.Node.Kubernetes.Kubeadm.ConfigRef
+	if kubeadmConfigs[selectedRef].SharedKubeletBase && !containsString(bundle.Compatibility.RequiredInstallerFeatures, kubeadmconfig.SharedKubeletBaseFeature) {
+		return SelectedNodeMaterial{}, fmt.Errorf("node %s kubeadm config %q requires the undeclared installer feature %q; recompile the original ClusterConfig with the current katlctl, then retry the command", node.Name, selectedRef, kubeadmconfig.SharedKubeletBaseFeature)
+	}
 
 	systemExtensionPayloads, err := selectedSystemExtensionPayloads(archive, node, installManifest.Node.SystemExtensions)
 	if err != nil {
@@ -347,7 +351,7 @@ func validateBundleManifest(bundle BundleManifest) error {
 		return fmt.Errorf("config bundle cluster plan schema %q is not supported", bundle.Compatibility.ClusterPlanSchemaVersion)
 	}
 	for _, feature := range bundle.Compatibility.RequiredInstallerFeatures {
-		if feature != "config-bundle-v1" {
+		if feature != "config-bundle-v1" && feature != kubeadmconfig.SharedKubeletBaseFeature {
 			return fmt.Errorf("config bundle requires unsupported installer feature %q", feature)
 		}
 	}

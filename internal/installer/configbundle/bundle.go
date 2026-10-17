@@ -1140,6 +1140,7 @@ func buildMembers(source SourceConfig, normalized []byte, sourceDigest string, p
 		return nil, BundleManifest{}, err
 	}
 	nodeRecords := make([]NodeRecord, 0, len(plan.Nodes))
+	requiredFeatures := []string{"config-bundle-v1"}
 	for _, node := range plan.Nodes {
 		materialDesc, err := add("node-material", node.Name, "application/vnd.katl.node-material.v1+json", "nodes/"+node.Name+"/material.json", node, nil)
 		if err != nil {
@@ -1171,6 +1172,11 @@ func buildMembers(source SourceConfig, normalized []byte, sourceDigest string, p
 		kubeadmDescs, err := addNodeKubeadmInputs(&members, &descriptors, node, kubeadmConfigs)
 		if err != nil {
 			return nil, BundleManifest{}, err
+		}
+		for _, input := range kubeadmDescs {
+			if input.Annotations["dev.katl.kubeadm.shared-kubelet-base"] == "true" && !slices.Contains(requiredFeatures, kubeadmconfig.SharedKubeletBaseFeature) {
+				requiredFeatures = append(requiredFeatures, kubeadmconfig.SharedKubeletBaseFeature)
+			}
 		}
 		systemExtensionDescs, err := selectedSystemExtensionDescriptors(node.InstallManifest.Node.SystemExtensions, extensionDescriptors)
 		if err != nil {
@@ -1205,7 +1211,7 @@ func buildMembers(source SourceConfig, normalized []byte, sourceDigest string, p
 		Compatibility: Compatibility{
 			SupportedArchitectures:           nonEmptyStrings(plan.KatlosImage.Architecture),
 			SupportedKatlOSRuntimeInterfaces: nonEmptyStrings(plan.KatlosImage.RuntimeInterface),
-			RequiredInstallerFeatures:        []string{"config-bundle-v1"},
+			RequiredInstallerFeatures:        requiredFeatures,
 			InstallMaterialSchemaVersion:     manifest.APIVersion,
 			ClusterPlanSchemaVersion:         clusterplan.APIVersion,
 			KubeadmAPIVersions:               kubeadmAPIVersions(kubeadmConfigs),
