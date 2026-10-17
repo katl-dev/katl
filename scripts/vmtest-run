@@ -1362,6 +1362,13 @@ if ! acquire_vmtest_host_lock; then
     fi
     exit 2
 fi
+trap 'exit 143' TERM
+trap 'exit 130' INT
+printf 'vmtest interruption: owner-only signals wait for active work to finish; Ctrl-C stops the run\n' >&2
+# Only this shell owns the host lease. Foreground work cannot pass it to
+# auxiliary processes, and deferred signal traps retain it until work exits.
+(
+exec {host_lock_fd}>&-
 if ! cleanup_existing_vmtest_domains; then
     write_run_index "setup-failed" "$@"
     printf 'setup failed: %s\n' "${setup_failures[@]}" >&2
@@ -1437,3 +1444,4 @@ if ! cleanup_run_dir "passed"; then
 fi
 printf 'vmtest passed\n' >&2
 exit "$exit_code"
+)
