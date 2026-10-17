@@ -1651,6 +1651,13 @@ func TestReadSelectedNodeRejectsIncompatibleBundleMetadata(t *testing.T) {
 			want: "unsupported config bundle schema version",
 		},
 		{
+			name: "installer feature",
+			mutate: func(bundle *BundleManifest) {
+				bundle.Compatibility.RequiredInstallerFeatures = []string{"unknown-feature-v1"}
+			},
+			want: "unsupported installer feature",
+		},
+		{
 			name: "runtime interface",
 			mutate: func(bundle *BundleManifest) {
 				bundle.Compatibility.SupportedKatlOSRuntimeInterfaces = []string{"katl-runtime-2"}

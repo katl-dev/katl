@@ -309,6 +309,7 @@ file_has_line /usr/lib/os-release "VARIANT_ID=katlos$flavour_suffix"
 file_has_line /usr/lib/os-release 'KATL_BASE_ID=fedora'
 file_has_line /usr/lib/os-release "KATL_BASE_VERSION_ID=$("$repo_root/scripts/fedora-release")"
 file_has_line /usr/lib/os-release "SYSEXT_LEVEL=katl-runtime-1"
+file_has_line /usr/lib/katl/configuration-capabilities-v1 'shared-kubelet-base-v1'
 file_has /usr/lib/systemd/system/var.mount "What=/dev/disk/by-partlabel/KATL_STATE"
 file_has /usr/lib/systemd/system/etc-kubernetes.mount "What=/var/lib/katl/kubernetes/etc-kubernetes"
 file_has /etc/containerd/config.toml 'imports = ["/etc/containerd/conf.d/*.toml"]'

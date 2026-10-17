@@ -647,7 +647,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		})
 		if err != nil {
 			_ = conn.Close()
-			return activatedClusterConfig{}, fmt.Errorf("validate cluster config on %s: %w", node.Name, err)
+			return activatedClusterConfig{}, fmt.Errorf("validate cluster config on %s: %w", node.Name, configCompatibilityError(err))
 		}
 		if !validation.Accepted {
 			_ = conn.Close()
@@ -817,12 +817,12 @@ func clusterConfigRejection(node string, validation *agentapi.ConfigValidationRe
 	}
 	failure := strings.TrimSpace(validation.FailureReason)
 	if diagnostics == "" {
-		return firstNonEmpty(failure, "configuration was rejected without a diagnostic")
+		return configCompatibilityDiagnostic(firstNonEmpty(failure, "configuration was rejected without a diagnostic"))
 	}
 	if failure == "" || (strings.HasPrefix(failure, "config apply ") && strings.Contains(failure, " request rejected for ")) {
-		return diagnostics
+		return configCompatibilityDiagnostic(diagnostics)
 	}
-	return failure + "; " + diagnostics
+	return configCompatibilityDiagnostic(failure + "; " + diagnostics)
 }
 
 func containsKubernetesConfigDomain(domains []string) bool {
