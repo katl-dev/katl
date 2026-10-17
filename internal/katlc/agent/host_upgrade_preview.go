@@ -2,18 +2,20 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/imagemount"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/kernelcmdline"
 )
 
-func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOperationRequest) (*agentapi.HostUpgradePreview, error) {
+func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOperationRequest) (preview *agentapi.HostUpgradePreview, resultErr error) {
 	if err := s.validateHostUpgradePlan(req.HostUpgrade); err != nil {
 		return nil, err
 	}
@@ -30,7 +32,22 @@ func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOpe
 		if err != nil {
 			return nil, err
 		}
-		defer executor.cleanupHostUpgradeMount(payload)
+		var prepared preparedUpgrade
+		defer func() {
+			if imagemount.Retained(resultErr) {
+				preview = nil
+				return
+			}
+			if err := prepared.close(); err != nil {
+				preview = nil
+				resultErr = errors.Join(resultErr, err)
+				return
+			}
+			if err := payload.Close(); err != nil {
+				preview = nil
+				resultErr = errors.Join(resultErr, err)
+			}
+		}()
 		previous, previousStatus, err := generation.ReadGeneration(s.Root, req.ExpectedCurrentGenerationId)
 		if err != nil {
 			return nil, err
@@ -80,11 +97,10 @@ func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOpe
 		if request.ConfigYAML != "" {
 			handoff.ConfigurationSHA256 = hostUpgradeConfigurationDigest(request.ConfigYAML)
 		}
-		prepared, err := executor.prepareUpgradeInNamespace(ctx, payload, handoff, request.ConfigYAML)
+		prepared, err = executor.prepareUpgradeInNamespace(ctx, payload, handoff, request.ConfigYAML)
 		if err != nil {
 			return nil, err
 		}
-		defer prepared.close()
 		return &agentapi.HostUpgradePreview{
 			ImageSha256: payload.ImageSHA256, ImageSizeBytes: payload.ImageSizeBytes,
 			PreviousVersion: previous.RuntimeVersion, Version: payload.Index.Version,
@@ -99,7 +115,22 @@ func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOpe
 	if err != nil {
 		return nil, err
 	}
-	defer executor.cleanupHostUpgradeMount(payload)
+	var prepared preparedHostUpgrade
+	defer func() {
+		if imagemount.Retained(resultErr) {
+			preview = nil
+			return
+		}
+		if err := prepared.close(); err != nil {
+			preview = nil
+			resultErr = errors.Join(resultErr, err)
+			return
+		}
+		if err := payload.Close(); err != nil {
+			preview = nil
+			resultErr = errors.Join(resultErr, err)
+		}
+	}()
 	if payload.ImageSHA256 == "" || payload.ImageSizeBytes == 0 {
 		return nil, fmt.Errorf("target image identity is incomplete")
 	}
@@ -119,7 +150,7 @@ func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOpe
 			NoChanges:      true,
 		}, nil
 	}
-	prepared, err := executor.planHostUpgrade(ctx, operation.OperationRecord{
+	prepared, err = executor.planHostUpgrade(ctx, operation.OperationRecord{
 		OperationID:                 "host-upgrade-preflight",
 		HostUpgradeRequest:          &request,
 		ExpectedCurrentGenerationID: req.ExpectedCurrentGenerationId,
@@ -127,13 +158,12 @@ func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOpe
 	if err != nil {
 		return nil, err
 	}
-	defer prepared.close()
 	if !req.DryRun && len(prepared.extensions.document) != 0 {
 		// Preserve the acquired configuration in the accepted operation. The
 		// executor must not resolve a mutable tag again after preflight.
 		req.HostUpgrade.ConfigYaml = string(prepared.extensions.document)
 	}
-	preview := &agentapi.HostUpgradePreview{
+	preview = &agentapi.HostUpgradePreview{
 		ChangedDomains:   prepared.domains,
 		ImageSha256:      payload.ImageSHA256,
 		ImageSizeBytes:   payload.ImageSizeBytes,

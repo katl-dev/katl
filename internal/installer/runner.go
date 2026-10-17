@@ -18,6 +18,7 @@ import (
 	"github.com/katl-dev/katl/internal/nodeidentity"
 
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/imagemount"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/discovery"
@@ -99,6 +100,7 @@ type Context struct {
 	ReportStep                         func(StepID)
 	progress                           *installProgress
 	moduleIndexes                      configapply.PreparedModuleIndexes
+	imageReleaseAttempted              bool
 }
 
 type Step interface {
@@ -179,11 +181,22 @@ func NewRunner(plan Plan, ctx *Context) Runner {
 	return Runner{plan: plan, ctx: ctx}
 }
 
-func (r Runner) Run(ctx context.Context) error {
+func (r Runner) Run(ctx context.Context) (resultErr error) {
 	if r.ctx == nil {
 		return fmt.Errorf("installer context is required")
 	}
-	defer func() { _ = r.ctx.moduleIndexes.Close() }()
+	var currentStep StepID
+	defer func() {
+		if !r.ctx.imageReleaseAttempted && !imagemount.Retained(resultErr) {
+			resultErr = errors.Join(resultErr, r.ctx.closeImage())
+		}
+		if resultErr != nil && currentStep != "" {
+			if statusErr := recordFailure(context.WithoutCancel(ctx), r.ctx, currentStep, resultErr); statusErr != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("record failure status: %w", statusErr))
+			}
+			resultErr = fmt.Errorf("%s: %w", currentStep, resultErr)
+		}
+	}()
 	if r.ctx.Commands == nil {
 		return fmt.Errorf("command runner is required")
 	}
@@ -195,6 +208,7 @@ func (r Runner) Run(ctx context.Context) error {
 	}
 
 	for _, step := range r.plan {
+		currentStep = step.ID()
 		if err := r.ctx.startProgress(ctx, step.ID()); err != nil {
 			return err
 		}
@@ -204,13 +218,22 @@ func (r Runner) Run(ctx context.Context) error {
 		err := step.Run(ctx, r.ctx)
 		err = errors.Join(err, r.ctx.stopProgress())
 		if err != nil {
-			if statusErr := recordFailure(ctx, r.ctx, step.ID(), err); statusErr != nil {
-				return fmt.Errorf("%s: %w", step.ID(), errors.Join(err, fmt.Errorf("record failure status: %w", statusErr)))
-			}
-			return fmt.Errorf("%s: %w", step.ID(), err)
+			return err
 		}
 	}
 
+	return nil
+}
+
+func (install *Context) closeImage() error {
+	install.imageReleaseAttempted = true
+	// Module preparation must release its consumers before their source image.
+	if err := install.moduleIndexes.Close(); err != nil {
+		return err
+	}
+	if install.KatlosImage != nil {
+		return install.KatlosImage.Close()
+	}
 	return nil
 }
 
@@ -298,6 +321,7 @@ func (verifyKatlosImageStep) Run(ctx context.Context, install *Context) error {
 			return err
 		}
 		install.KatlosImage = &payload
+		install.imageReleaseAttempted = false
 	}
 	if install.KatlosImage != nil {
 		payload := install.KatlosImage
@@ -1046,6 +1070,9 @@ func (rebootStep) Run(ctx context.Context, install *Context) error {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
+	}
+	if err := install.closeImage(); err != nil {
+		return fmt.Errorf("release install image before reboot: %w", err)
 	}
 	if err := recordStep(ctx, install, Reboot); err != nil {
 		return fmt.Errorf("persist reboot status: %w", err)

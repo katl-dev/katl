@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -526,6 +525,12 @@ func TestLocalResolverAcceptsDirectoryRef(t *testing.T) {
 	if payload.Root != imageRoot || payload.Index.BuildID != index.BuildID {
 		t.Fatalf("payload = %#v, index = %#v", payload, index)
 	}
+	if err := payload.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(imageRoot); err != nil {
+		t.Fatalf("closing borrowed directory removed it: %v", err)
+	}
 }
 
 func TestLocalResolverMountsFileRef(t *testing.T) {
@@ -567,7 +572,7 @@ func TestLocalResolverMountsFileRef(t *testing.T) {
 	}
 }
 
-func TestLocalResolverReusesMountedFileRef(t *testing.T) {
+func TestLocalResolverOwnsIndependentMounts(t *testing.T) {
 	mediaRoot := t.TempDir()
 	imagePath := filepath.Join(mediaRoot, "payloads", "katlos-install.squashfs")
 	imageBytes := []byte("squashfs image bytes")
@@ -580,7 +585,7 @@ func TestLocalResolverReusesMountedFileRef(t *testing.T) {
 	expected := expectedImage()
 	expected.SHA256 = ""
 	expected.SizeBytes = 0
-	mounter := &fixtureReusableMountRunner{populate: func(root string) {
+	mounter := &fixtureMountRunner{populate: func(root string) {
 		writeImagePayloadAt(t, root, func(*Index) {})
 	}}
 	resolver := LocalResolver{
@@ -597,14 +602,30 @@ func TestLocalResolverReusesMountedFileRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second ResolveKatlosImage() error = %v", err)
 	}
-	if mounter.mounts != 1 {
-		t.Fatalf("mount calls = %d, want 1", mounter.mounts)
+	if len(mounter.calls) != 2 {
+		t.Fatalf("mount calls = %d, want 2", len(mounter.calls))
 	}
-	if mounter.lookups != 2 {
-		t.Fatalf("mountpoint lookups = %d, want 2", mounter.lookups)
+	if first.Root == second.Root {
+		t.Fatalf("independent acquisitions share root %q", first.Root)
 	}
-	if first.Root != second.Root {
-		t.Fatalf("payload roots = %q and %q, want reused mount", first.Root, second.Root)
+	copy := first
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := copy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(first.Root); !os.IsNotExist(err) {
+		t.Fatalf("closed acquisition remains: %v", err)
+	}
+	if _, err := os.ReadFile(filepath.Join(second.Root, "katlos/image.json")); err != nil {
+		t.Fatalf("closing first acquisition damaged second: %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(imagePath); err != nil || !bytes.Equal(data, imageBytes) {
+		t.Fatalf("borrowed image changed: %q, %v", data, err)
 	}
 }
 
@@ -1097,48 +1118,34 @@ func validHostUpgradeRequest(previousSpec generation.GenerationSpec, previousSta
 type fixtureMountRunner struct {
 	calls    [][]string
 	populate func(root string)
+	mounted  map[string]bool
 }
 
 func (r *fixtureMountRunner) Run(_ context.Context, name string, args ...string) error {
+	path := args[len(args)-1]
+	if name == "mountpoint" {
+		if r.mounted[path] {
+			return nil
+		}
+		return resourceExit(32)
+	}
 	call := append([]string{name}, args...)
 	r.calls = append(r.calls, call)
+	if name == "umount" {
+		delete(r.mounted, path)
+		return nil
+	}
 	if name != "mount" || len(args) != 4 {
 		return nil
 	}
+	if r.mounted == nil {
+		r.mounted = map[string]bool{}
+	}
+	r.mounted[path] = true
 	if r.populate != nil {
 		r.populate(args[3])
 	}
 	return nil
-}
-
-type fixtureReusableMountRunner struct {
-	mounted  bool
-	mounts   int
-	lookups  int
-	populate func(root string)
-}
-
-func (r *fixtureReusableMountRunner) Run(_ context.Context, name string, args ...string) error {
-	if name != "mount" || len(args) != 4 {
-		return nil
-	}
-	r.mounts++
-	r.mounted = true
-	if r.populate != nil {
-		r.populate(args[3])
-	}
-	return nil
-}
-
-func (r *fixtureReusableMountRunner) Output(_ context.Context, name string, _ ...string) ([]byte, error) {
-	if name != "findmnt" {
-		return nil, nil
-	}
-	r.lookups++
-	if !r.mounted {
-		return nil, errors.New("not mounted")
-	}
-	return []byte("mounted"), nil
 }
 
 type fixtureHTTPClient struct {

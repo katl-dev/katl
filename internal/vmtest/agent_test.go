@@ -224,6 +224,11 @@ func TestAgentWriteFileRejectsSymlinkParentWithoutCreatingChild(t *testing.T) {
 
 func TestAgentCommandAllowlist(t *testing.T) {
 	server := NewAgentServer("test")
+	for _, command := range []string{"findmnt", "losetup"} {
+		if !commandAllowed(command, server.AllowedCommands) {
+			t.Fatalf("image resource inspection command %s is not allowed", command)
+		}
+	}
 	_, err := server.runCommand(context.Background(), &vmtestpb.RunCommandRequest{
 		Argv: []string{"sh", "-c", "true"},
 	})
