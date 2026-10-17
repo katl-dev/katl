@@ -277,6 +277,27 @@ only then repartition, write root slots, install boot assets, and create the
   generation 0 record
 ```
 
+Each file resolution owns a separate temporary workspace, mount, and any URL
+download. A failed resolution releases acquired resources before returning; a
+successful resolution transfers their lifetime to `Payload.Close`. Copies of a
+payload share that ownership. Local files, media files, and directory inputs
+remain borrowed and survive cleanup.
+
+The installer releases prepared consumers before the image on every attempt
+exit, before accepting a retry, and before scheduling reboot. The handoff
+listener separately owns its media extension layout across attempts and drains
+requests before closing that layout and its image. Host-upgrade planning and
+execution use the same image ownership contract. Cleanup errors join the
+original failure before terminal status is persisted.
+
+Cleanup uses a bounded context independent of operation cancellation. Native
+mount-absence checks must succeed before backing data is removed; a failed
+probe or unmount retains the data and its diagnostic evidence. Stale workspace
+cleanup first proves target preparation services inactive, then releases image
+and module mounts, and finally removes backing files or expires uploaded
+artifacts. A constructor that cannot prove native release carries that retained
+ownership through its error so enclosing scratch owners preserve its inputs.
+
 Failure behavior:
 
 ```text

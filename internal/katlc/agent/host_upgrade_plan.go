@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/imagemount"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
@@ -23,11 +24,14 @@ type preparedHostUpgrade struct {
 	indexes    configapply.PreparedModuleIndexes
 }
 
-func (p preparedHostUpgrade) close() {
-	_ = p.indexes.Close()
-	if p.workDir != "" {
-		_ = os.RemoveAll(p.workDir)
+func (p preparedHostUpgrade) close() error {
+	if err := p.indexes.Close(); err != nil {
+		return err
 	}
+	if p.workDir != "" {
+		return os.RemoveAll(p.workDir)
+	}
+	return nil
 }
 
 // Preparation acquires and validates the complete future selection without
@@ -150,7 +154,7 @@ func (e *Executor) planHostUpgradeWithHandoff(ctx context.Context, record operat
 	}
 	indexes, err := e.prepareHostModuleIndexes(ctx, payload, &plan, extensions)
 	if err != nil {
-		if work != "" {
+		if work != "" && !imagemount.Retained(err) {
 			_ = os.RemoveAll(work)
 		}
 		return preparedHostUpgrade{}, err

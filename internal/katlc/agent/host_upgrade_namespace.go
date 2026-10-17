@@ -3,13 +3,13 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/configapply"
@@ -20,14 +20,23 @@ import (
 // preparedUpgrade is a private snapshot and a candidate produced by the target
 // release. It is removed after validation or publication.
 type preparedUpgrade struct {
-	work   string
-	root   string
-	result preparedUpgradeResult
+	work     string
+	root     string
+	result   preparedUpgradeResult
+	closeErr error
 }
 
-func (p preparedUpgrade) close() { _ = os.RemoveAll(p.work) }
+func (p preparedUpgrade) close() error {
+	if p.closeErr != nil {
+		return p.closeErr
+	}
+	if p.work == "" {
+		return nil
+	}
+	return os.RemoveAll(p.work)
+}
 
-func (e *Executor) prepareUpgradeInNamespace(ctx context.Context, payload katlosimage.Payload, handoff generation.UpgradeHandoff, config string) (preparedUpgrade, error) {
+func (e *Executor) prepareUpgradeInNamespace(ctx context.Context, payload katlosimage.Payload, handoff generation.UpgradeHandoff, config string) (prepared preparedUpgrade, resultErr error) {
 	if payload.ImagePath == "" {
 		return preparedUpgrade{}, fmt.Errorf("target preparation requires a verified image file")
 	}
@@ -46,7 +55,7 @@ func (e *Executor) prepareUpgradeInNamespace(ctx context.Context, payload katlos
 	ok := false
 	defer func() {
 		if !ok {
-			p.close()
+			resultErr = errors.Join(resultErr, p.close())
 		}
 	}()
 	if err := snapshotUpgradeSource(e.Root, p.root, handoff); err != nil {
@@ -93,7 +102,7 @@ func (e *Executor) prepareUpgradeInNamespace(ctx context.Context, payload katlos
 	if err := os.Chmod(program, 0o500); err != nil {
 		return preparedUpgrade{}, err
 	}
-	unit := "katl-host-upgrade-prepare-" + cleanID(filepath.Base(work))
+	unit := upgradePreparationUnit(work)
 	args := []string{
 		"--wait", "--pipe", "--collect", "--service-type=exec",
 		"--unit=" + unit,
@@ -117,12 +126,13 @@ func (e *Executor) prepareUpgradeInNamespace(ctx context.Context, payload katlos
 	command := exec.CommandContext(ctx, "systemd-run", args...)
 	output, err := command.CombinedOutput()
 	if err != nil {
-		if ctx.Err() != nil {
-			stopCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			_ = hostUpgradeCommands{run: e.toolRunner()}.Run(stopCtx, "systemctl", "stop", unit+".service")
+		cause := fmt.Errorf("target generation preparation failed: %w: %s", err, strings.TrimSpace(string(output)))
+		if stopErr := stopUpgradePreparation(unit, e.toolRunner()); stopErr != nil {
+			p.closeErr = stopErr
+			ok = true
+			return p, errors.Join(cause, stopErr)
 		}
-		return preparedUpgrade{}, fmt.Errorf("target generation preparation failed: %w: %s", err, strings.TrimSpace(string(output)))
+		return preparedUpgrade{}, cause
 	}
 	result, err := readPreparedUpgradeResult(p.root, handoff, payload)
 	if err != nil {

@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/katl-dev/katl/internal/imagemount"
 )
 
 const IndexExtensionName = "zzzz-katl-module-indexes"
@@ -89,8 +91,8 @@ func PrepareImages(ctx context.Context, request ImageRequest) (prepared Prepared
 		// keeps its scratch directory intact rather than traversing a mount.
 		unmounted := true
 		for i := len(mounts) - 1; i >= 0; i-- {
-			if output, err := exec.Command("systemd-dissect", "--umount", mounts[i]).CombinedOutput(); err != nil {
-				resultErr = errors.Join(resultErr, fmt.Errorf("unmount module input %s: %w: %s", mounts[i], err, output))
+			if err := imagemount.DissectUnmount(imageCommands{}, mounts[i]); err != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("unmount module input %s: %w", mounts[i], err))
 				unmounted = false
 			}
 		}
@@ -99,7 +101,7 @@ func PrepareImages(ctx context.Context, request ImageRequest) (prepared Prepared
 			return
 		}
 		if resultErr != nil || prepared.Path == "" {
-			_ = os.RemoveAll(work)
+			resultErr = errors.Join(resultErr, os.RemoveAll(work))
 		}
 	}()
 	privileged, err := canMountImages()
@@ -120,11 +122,14 @@ func PrepareImages(ctx context.Context, request ImageRequest) (prepared Prepared
 			return view.root, nil
 		}
 		path := filepath.Join(work, fmt.Sprintf("mount-%d", len(mounts)))
+		if err := os.Mkdir(path, 0o700); err != nil {
+			return "", err
+		}
+		mounts = append(mounts, path)
 		command := exec.CommandContext(ctx, "systemd-dissect", "--read-only", "--fsck=no", "--mount", "--mkdir", image.Path, path)
 		if output, err := command.CombinedOutput(); err != nil {
 			return "", fmt.Errorf("mount module input %s: %w: %s", image.Path, err, output)
 		}
-		mounts = append(mounts, path)
 		return path, nil
 	}
 	var selections []mountedBundle
@@ -191,6 +196,16 @@ func PrepareImages(ctx context.Context, request ImageRequest) (prepared Prepared
 		SHA256:    digest,
 		directory: work,
 	}, nil
+}
+
+type imageCommands struct{}
+
+func (imageCommands) Run(ctx context.Context, name string, args ...string) error {
+	output, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s: %w: %s", name, err, output)
+	}
+	return nil
 }
 
 type serviceImage struct {

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/katl-dev/katl/internal/imagemount"
 )
 
 const (
@@ -68,30 +70,68 @@ func cleanupHostUpgradeStorage(ctx context.Context, root, preservedLocalRef stri
 		return err
 	}
 	var cleanupErr error
+	// A private target namespace can still hold an image whose outer mount is
+	// releasable. Prove all preparation units stopped before touching any image.
 	for _, entry := range entries {
-		path := filepath.Join(base, entry.Name())
-		switch entry.Name() {
-		case "uploads":
-			cleanupErr = errors.Join(cleanupErr, cleanupUpgradeUploads(path, preservedLocalRef, now))
-		case "mounts":
+		if strings.HasPrefix(entry.Name(), "prepare-") {
+			cleanupErr = errors.Join(cleanupErr, stopUpgradePreparation(upgradePreparationUnit(entry.Name()), run))
+		}
+	}
+	if cleanupErr != nil {
+		return cleanupErr
+	}
+	// Release every possible backing-file consumer before any sweep of downloads
+	// or uploads. A failed unmount keeps all backing data available for recovery.
+	// Module loop devices hold files inside the outer image mounts, so release
+	// those consumers before attempting to unmount their source filesystems.
+	for _, modulePhase := range []bool{true, false} {
+		for _, entry := range entries {
+			path := filepath.Join(base, entry.Name())
+			moduleImages := strings.HasPrefix(entry.Name(), "kernel-images-")
+			if moduleImages != modulePhase || entry.Name() != "mounts" && entry.Name() != "acquisitions" && !moduleImages {
+				continue
+			}
 			mounts, readErr := os.ReadDir(path)
-			if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			if readErr != nil {
 				cleanupErr = errors.Join(cleanupErr, readErr)
 				continue
 			}
 			for _, mount := range mounts {
 				mountPath := filepath.Join(path, mount.Name())
-				if run != nil {
-					result := run(ctx, []string{"umount", mountPath}, nil)
-					if result.Err != nil && !strings.Contains(string(result.Stderr), "not mounted") {
-						cleanupErr = errors.Join(cleanupErr, fmt.Errorf("unmount stale host upgrade image %s: %s", mount.Name(), toolFailure(result)))
+				if moduleImages && !strings.HasPrefix(mount.Name(), "mount-") {
+					continue
+				}
+				if entry.Name() == "acquisitions" {
+					mountPath = filepath.Join(mountPath, "mount")
+					if _, err := os.Stat(mountPath); errors.Is(err, os.ErrNotExist) {
+						continue
+					} else if err != nil {
+						cleanupErr = errors.Join(cleanupErr, err)
 						continue
 					}
 				}
-				cleanupErr = errors.Join(cleanupErr, os.RemoveAll(mountPath))
+				if run == nil {
+					cleanupErr = errors.Join(cleanupErr, fmt.Errorf("cannot release stale image mount %s without a command runner", mountPath))
+					continue
+				}
+				release := imagemount.Unmount
+				if moduleImages {
+					release = imagemount.DissectUnmount
+				}
+				if err := release(hostUpgradeCommands{run: run}, mountPath); err != nil {
+					cleanupErr = errors.Join(cleanupErr, fmt.Errorf("unmount stale host upgrade image %s: %w", mountPath, err))
+				}
 			}
-		case "downloads":
-			cleanupErr = errors.Join(cleanupErr, os.RemoveAll(path))
+		}
+		if cleanupErr != nil {
+			return cleanupErr
+		}
+	}
+	for _, entry := range entries {
+		path := filepath.Join(base, entry.Name())
+		switch entry.Name() {
+		case "uploads":
+			cleanupErr = errors.Join(cleanupErr, cleanupUpgradeUploads(path, preservedLocalRef, now))
 		default:
 			cleanupErr = errors.Join(cleanupErr, os.RemoveAll(path))
 		}

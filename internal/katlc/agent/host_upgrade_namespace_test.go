@@ -123,7 +123,16 @@ func TestCleanupHostUpgradeStorageKeepsRecentUploadAndDurableEvidence(t *testing
 		t.Fatal(err)
 	}
 
-	if err := cleanupHostUpgradeStorage(context.Background(), root, "", nil, now); err != nil {
+	run := func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		if argv[0] != "systemctl" {
+			t.Fatalf("unexpected scratch cleanup command %v", argv)
+		}
+		if argv[1] == "show" {
+			return ToolResult{Stdout: []byte("LoadState=not-found\nActiveState=inactive\n")}
+		}
+		return ToolResult{}
+	}
+	if err := cleanupHostUpgradeStorage(context.Background(), root, "", run, now); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"old", "partial", "scratch"} {

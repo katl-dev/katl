@@ -14,6 +14,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/imagemount"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
@@ -21,31 +22,60 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 )
 
-func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.OperationRecord) error {
+func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.OperationRecord) (resultErr error) {
 	if record.HostUpgradeRequest == nil {
 		return fmt.Errorf("host upgrade request is required")
 	}
+	var payload katlosimage.Payload
+	var prepared preparedHostUpgrade
+	var err error
+	request := *record.HostUpgradeRequest
+	phase := "verify-katlos-image"
+	acquired := false
+	releaseAttempted := false
+	release := func() error {
+		releaseAttempted = true
+		if err := prepared.close(); err != nil {
+			return err
+		}
+		if acquired {
+			return e.releaseHostUpgradeImage(payload, request)
+		}
+		return nil
+	}
+	defer func() {
+		var cleanupErr error
+		if !releaseAttempted && !imagemount.Retained(resultErr) {
+			cleanupErr = release()
+		}
+		resultErr = errors.Join(resultErr, cleanupErr)
+		if resultErr != nil {
+			resultErr = e.failHostUpgrade(record, phase, resultErr)
+		}
+	}()
+	fail := func(failedPhase string, cause error) error {
+		phase = failedPhase
+		return cause
+	}
 	if err := cleanupHostUpgradeStorage(ctx, e.Root, record.HostUpgradeRequest.ImageLocalRef, e.toolRunner(), e.clock()); err != nil {
-		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("clean obsolete host upgrade workspace: %w", err))
+		return fail("verify-katlos-image", fmt.Errorf("clean obsolete host upgrade workspace: %w", err))
 	}
 	if err := generation.ValidateMutationBase(e.Root, record.ExpectedCurrentGenerationID); err != nil {
-		return e.failHostUpgrade(record, "verify-katlos-image", err)
+		return fail("verify-katlos-image", err)
 	}
 	resolve := e.ResolveHostUpgrade
 	if resolve == nil {
 		resolve = e.resolveHostUpgrade
 	}
-	payload, err := resolve(ctx, *record.HostUpgradeRequest)
+	payload, err = resolve(ctx, request)
 	if err != nil {
-		e.cleanupManagedHostUpgradeArtifact(*record.HostUpgradeRequest)
-		return e.failHostUpgrade(record, "verify-katlos-image", err)
+		return fail("verify-katlos-image", err)
 	}
-	defer e.cleanupManagedHostUpgradeArtifact(*record.HostUpgradeRequest)
-	defer e.cleanupHostUpgradeMount(payload)
+	acquired = true
 	if strings.TrimSpace(payload.ImageSHA256) == "" || payload.ImageSizeBytes == 0 {
-		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("resolved KatlOS image identity is incomplete"))
+		return fail("verify-katlos-image", fmt.Errorf("resolved KatlOS image identity is incomplete"))
 	}
-	record, err = e.Store.Update(record.OperationID, "host-upgrade-image-resolved", "verify-katlos-image", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+	updatedRecord, err := e.Store.Update(record.OperationID, "host-upgrade-image-resolved", "verify-katlos-image", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		current.HostUpgradeRequest.ImageSHA256 = payload.ImageSHA256
 		current.HostUpgradeRequest.ImageSizeBytes = payload.ImageSizeBytes
 		current.Phase = "verify-katlos-image"
@@ -57,35 +87,36 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if err != nil {
 		return err
 	}
-	prepared, err := e.planHostUpgrade(ctx, record, payload)
+	record = updatedRecord
+	prepared, err = e.planHostUpgrade(ctx, record, payload)
 	if err != nil {
-		return e.failHostUpgrade(record, "verify-katlos-image", err)
+		return fail("verify-katlos-image", err)
 	}
 	plan, extensions, slots := prepared.plan, prepared.extensions, prepared.slots
-	defer prepared.close()
 	stagingBytes, err := hostUpgradeStagingBytes(payload)
 	if err != nil {
-		return e.failHostUpgrade(record, "verify-katlos-image", err)
+		return fail("verify-katlos-image", err)
 	}
 	generationBytes, err := hostUpgradeGenerationBytes(e.Root, plan, extensions.materials)
 	if err != nil {
-		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("measure candidate generation storage: %w", err))
+		return fail("verify-katlos-image", fmt.Errorf("measure candidate generation storage: %w", err))
 	}
 	if generationBytes > stagingBytes {
 		stagingBytes = generationBytes
 	}
 	if err := requireHostUpgradeStorage(e.AvailableStorage, hostUpgradeArtifactRoot(e.Root), stagingBytes, "root and UKI staging"); err != nil {
-		return e.failHostUpgrade(record, "verify-katlos-image", err)
+		return fail("verify-katlos-image", err)
 	}
 	candidate := plan.Spec.GenerationID
 	inactiveSlot, ukiPath, entry := plan.Spec.Root.Slot, plan.Spec.Boot.UKIPath, plan.Spec.Boot.LoaderEntryPath
 	bootRoot := filepath.Join(runtimeRoot(e.Root), "efi")
 	if e.MountBootRoot != nil {
 		if err := e.MountBootRoot(ctx, bootRoot); err != nil {
-			return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("mount boot root: %w", err))
+			return fail("verify-katlos-image", fmt.Errorf("mount boot root: %w", err))
 		}
 	}
-	record, err = e.Store.Update(record.OperationID, "host-upgrade-mutation-start", "stage-sysupdate-components", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+	phase = "stage-sysupdate-components"
+	updatedRecord, err = e.Store.Update(record.OperationID, "host-upgrade-mutation-start", "stage-sysupdate-components", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		current.Phase = "stage-sysupdate-components"
 		current.ExternalMutationStarted = true
 		current.MutationScopes = appendMissing(current.MutationScopes, "root-slot-labels", "runtime-root", "runtime-uki")
@@ -96,6 +127,7 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if err != nil {
 		return err
 	}
+	record = updatedRecord
 	if err := generation.InvalidateSlot(e.Root, slots.InactivePartUUID, e.clock(),
 		func(root, entry string) error {
 			if e.SetBootDefault == nil {
@@ -109,57 +141,57 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 			}
 			return e.SetBootOneshot(ctx, root, entry)
 		}); err != nil {
-		return e.failHostUpgrade(record, "stage-sysupdate-components", err)
+		return fail("stage-sysupdate-components", err)
 	}
 	if err := e.prepareSysupdateSlots(ctx, slots); err != nil {
-		return e.failHostUpgrade(record, "stage-sysupdate-components", err)
+		return fail("stage-sysupdate-components", err)
 	}
 	if err := e.stageHostUpgrade(ctx, record, payload, slots.InactiveDevice, inactiveSlot, ukiPath); err != nil {
-		return e.failHostUpgrade(record, "stage-sysupdate-components", err)
+		return fail("stage-sysupdate-components", err)
 	}
 	if err := katlosimage.StagePreservedAssets(runtimeRoot(e.Root), plan); err != nil {
-		return e.failHostUpgrade(record, "write-candidate-generation", err)
+		return fail("write-candidate-generation", err)
 	}
 	if err := katlosimage.StageBundledAssets(runtimeRoot(e.Root), plan); err != nil {
-		return e.failHostUpgrade(record, "write-candidate-generation", err)
+		return fail("write-candidate-generation", err)
 	}
 	if _, _, err := configapply.MaterializeSystemExtensions(e.Root, candidate, plan.Spec.Root, plan.Spec.ExtensionRelease, extensions.desired, extensions.materials); err != nil {
-		return e.failHostUpgrade(record, "write-candidate-generation", err)
+		return fail("write-candidate-generation", err)
 	}
 	if err := generation.WriteGeneration(e.Root, plan.Spec, plan.Status); err != nil {
-		return e.failHostUpgrade(record, "write-candidate-generation", err)
+		return fail("write-candidate-generation", err)
 	}
 	if err := configapply.WriteGenerationConfiguration(e.Root, candidate, configapply.GenerationConfiguration{Manifest: extensions.manifest, KubeadmConfigs: extensions.kubeadmConfigs}); err != nil {
-		return e.failHostUpgrade(record, "write-candidate-generation", fmt.Errorf("preserve current generation configuration: %w", err))
+		return fail("write-candidate-generation", fmt.Errorf("preserve current generation configuration: %w", err))
 	}
 	machineID, err := os.ReadFile(filepath.Join(runtimeRoot(e.Root), "etc/machine-id"))
 	if err != nil {
-		return e.failHostUpgrade(record, "write-candidate-generation", err)
+		return fail("write-candidate-generation", err)
 	}
 	written, err := generation.WriteEntry(bootRoot, generation.LoaderRequest{
 		Record:    generation.RecordFromSplit(plan.Spec, plan.Status),
 		MachineID: strings.TrimSpace(string(machineID)),
 	})
 	if err != nil {
-		return e.failHostUpgrade(record, "write-candidate-generation", err)
+		return fail("write-candidate-generation", err)
 	}
 	rel, err := bootRelativePath(bootRoot, written)
 	if err != nil || rel != entry {
-		return e.failHostUpgrade(record, "write-candidate-generation", fmt.Errorf("loader entry %q does not match plan %q: %w", rel, entry, err))
+		return fail("write-candidate-generation", fmt.Errorf("loader entry %q does not match plan %q: %w", rel, entry, err))
 	}
 	previousSelection, err := generation.ReadBootSelection(e.Root)
 	if err != nil {
-		return e.failHostUpgrade(record, "arm-trial-boot", err)
+		return fail("arm-trial-boot", err)
 	}
 	if err := generation.WriteBootSelection(e.Root, plan.BootSelection); err != nil {
-		return e.failHostUpgrade(record, "arm-trial-boot", err)
+		return fail("arm-trial-boot", err)
 	}
 	if e.SetBootOneshot != nil {
 		if err := e.SetBootOneshot(ctx, e.Root, entry); err != nil {
 			if restoreErr := generation.WriteBootSelection(e.Root, previousSelection); restoreErr != nil {
 				err = errors.Join(err, fmt.Errorf("restore boot selection: %w", restoreErr))
 			}
-			return e.failHostUpgrade(record, "arm-trial-boot", err)
+			return fail("arm-trial-boot", err)
 		}
 	}
 	now := e.clock()
@@ -169,7 +201,11 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	plan.Status.CommittedByOperation = record.OperationID
 	plan.Status.UpdatedAt = now
 	if err := generation.WriteGenerationStatus(e.Root, plan.Spec, plan.Status); err != nil {
-		return e.failHostUpgrade(record, "arm-trial-boot", err)
+		return fail("arm-trial-boot", err)
+	}
+	phase = "arm-trial-boot"
+	if err := release(); err != nil {
+		return fail("arm-trial-boot", err)
 	}
 	_, err = e.Store.Update(record.OperationID, "host-upgrade-staged", "arm-trial-boot", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		current.PreviousGenerationID = prepared.previous.GenerationID
@@ -187,35 +223,28 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	return err
 }
 
-func (e *Executor) cleanupManagedHostUpgradeArtifact(request operation.HostUpgrade) {
+func (e *Executor) releaseHostUpgradeImage(payload katlosimage.Payload, request operation.HostUpgrade) error {
+	if err := payload.Close(); err != nil {
+		return err
+	}
+	return e.cleanupManagedHostUpgradeArtifact(request)
+}
+
+func (e *Executor) cleanupManagedHostUpgradeArtifact(request operation.HostUpgrade) error {
 	localRef := filepath.ToSlash(filepath.Clean(strings.TrimSpace(request.ImageLocalRef)))
 	if path.Dir(localRef) != hostUpgradeUploadDirectory {
-		return
+		return nil
 	}
 	name := path.Base(localRef)
 	digest := strings.TrimSuffix(name, ".squashfs")
 	if name != digest+".squashfs" || validateArtifactSHA256(digest) != nil {
-		return
+		return nil
 	}
 	artifactPath := filepath.Join(runtimeRoot(e.Root), "var/lib/katl/artifacts", filepath.FromSlash(localRef))
-	_ = os.Remove(artifactPath)
-}
-
-func (e *Executor) cleanupHostUpgradeMount(payload katlosimage.Payload) {
-	root := runtimeRoot(e.Root)
-	mounts := filepath.Join(root, "var/lib/katl/artifacts/host-upgrade/mounts")
-	rel, err := filepath.Rel(mounts, payload.Root)
-	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
-		return
+	if err := os.Remove(artifactPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), bootRootMountTimeout)
-	defer cancel()
-	_ = hostUpgradeCommands{run: e.toolRunner()}.Run(ctx, "umount", payload.Root)
-	_ = os.RemoveAll(payload.Root)
-	downloads := filepath.Join(root, "var/lib/katl/artifacts/host-upgrade/downloads")
-	if rel, err := filepath.Rel(downloads, payload.ImagePath); err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		_ = os.Remove(payload.ImagePath)
-	}
+	return nil
 }
 
 func hostUpgradeStagingBytes(payload katlosimage.Payload) (uint64, error) {
@@ -300,10 +329,19 @@ type hostUpgradeCommands struct{ run ToolRunner }
 func (c hostUpgradeCommands) Run(ctx context.Context, name string, args ...string) error {
 	result := c.run(ctx, append([]string{name}, args...), nil)
 	if result.Err != nil || result.ExitStatus != 0 {
-		return fmt.Errorf("%s: %s", name, toolFailure(result))
+		return hostUpgradeCommandError{name: name, result: result}
 	}
 	return nil
 }
+
+type hostUpgradeCommandError struct {
+	name   string
+	result ToolResult
+}
+
+func (e hostUpgradeCommandError) Error() string { return e.name + ": " + toolFailure(e.result) }
+func (e hostUpgradeCommandError) Unwrap() error { return e.result.Err }
+func (e hostUpgradeCommandError) ExitCode() int { return e.result.ExitStatus }
 
 func (e *Executor) stageHostUpgrade(ctx context.Context, record operation.OperationRecord, payload katlosimage.Payload, inactiveDevice, inactiveSlot, ukiPath string) error {
 	root := runtimeRoot(e.Root)

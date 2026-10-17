@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/katl-dev/katl/internal/extensionrelease"
+	"github.com/katl-dev/katl/internal/imagemount"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/payloadbundle"
 	"github.com/katl-dev/katl/internal/installer/systemextensionbundle"
@@ -239,7 +241,7 @@ func verifyReleaseImages(release, runtime, layout string, stdout, stderr io.Writ
 	return command.Run()
 }
 
-func runVerifyReleaseExtensions(args []string) error {
+func runVerifyReleaseExtensions(args []string) (resultErr error) {
 	if len(args) != 3 {
 		return fmt.Errorf("verify-release-extensions requires MANIFEST RUNTIME OCI_LAYOUT")
 	}
@@ -251,7 +253,11 @@ func runVerifyReleaseExtensions(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(work)
+	defer func() {
+		if !imagemount.Retained(resultErr) {
+			resultErr = errors.Join(resultErr, os.RemoveAll(work))
+		}
+	}()
 	request := kernelmodule.ImageRequest{
 		Target: release.Target.Kernel,
 		Runtime: kernelmodule.Image{

@@ -2,6 +2,7 @@ package configapply
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/extensionrelease"
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/imagemount"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/kernelmodule"
 )
@@ -57,7 +59,7 @@ func (p PreparedModuleIndexes) Materialize(root string) error {
 // PrepareModuleIndexes freezes a complete future selection before lifecycle
 // mutation. Sources overrides paths that will exist only after staging; other
 // inputs come from verified materials or retained generation assets.
-func PrepareModuleIndexes(ctx context.Context, request ModuleIndexRequest) (PreparedModuleIndexes, error) {
+func PrepareModuleIndexes(ctx context.Context, request ModuleIndexRequest) (prepared PreparedModuleIndexes, resultErr error) {
 	hasModules := false
 	for _, ref := range request.Sysexts {
 		hasModules = hasModules || ref.Compatibility.Kernel != nil
@@ -93,7 +95,11 @@ func PrepareModuleIndexes(ctx context.Context, request ModuleIndexRequest) (Prep
 	if err != nil {
 		return PreparedModuleIndexes{}, err
 	}
-	defer os.RemoveAll(inputs)
+	defer func() {
+		if !imagemount.Retained(resultErr) {
+			resultErr = errors.Join(resultErr, os.RemoveAll(inputs))
+		}
+	}()
 	materials := map[string]string{}
 	for _, material := range request.Materials {
 		if digestPayload(material.Data) != material.Ref.Digest {

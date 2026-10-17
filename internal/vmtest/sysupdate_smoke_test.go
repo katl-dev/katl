@@ -135,6 +135,9 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	rejectedCandidate := candidateGeneration + "-preboot-rejected"
 	rejectedConfig := hostUpgradeConfiguration("2", "    kernel:\n      commandLine:\n        - console=ttyS0\n")
 	assertHostUpgradePlanRejected(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, rejectedCandidate, localRef, upgrade, rejectedConfig, "upgrade without --apply-config first")
+	if resources := hostUpgradeImageResources(t, ctx, guest, "rejected-preview"); resources != "" {
+		t.Fatalf("rejected preview retained native image resources: %s", resources)
+	}
 	if got := readGuestFile(t, ctx, guest, "/var/lib/katl/boot/selection.json"); got != selectionBeforeRejectedPlan {
 		t.Fatal("rejected combined plan changed boot selection")
 	}
@@ -426,11 +429,12 @@ func waitHostUpgradeWorkspaceClean(t *testing.T, ctx context.Context, guest *Gue
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		remaining := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "host-upgrade-workspace-clean-"+phase, "find", "/var/lib/katl/artifacts/host-upgrade", "-type", "f", "-print", "-quit"))
-		if remaining == "" {
+		resources := hostUpgradeImageResources(t, ctx, guest, phase)
+		if remaining == "" && resources == "" {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("%s host upgrade retained transient artifact %s", phase, remaining)
+			t.Fatalf("%s host upgrade retained transient artifact %s or native image resources %s", phase, remaining, resources)
 		}
 		select {
 		case <-ctx.Done():
@@ -438,6 +442,19 @@ func waitHostUpgradeWorkspaceClean(t *testing.T, ctx context.Context, guest *Gue
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
+}
+
+func hostUpgradeImageResources(t *testing.T, ctx context.Context, guest *GuestControl, phase string) string {
+	t.Helper()
+	const base = "/var/lib/katl/artifacts/host-upgrade"
+	mounts := guestCommandOutput(t, ctx, guest, "host-upgrade-mounts-"+phase, "findmnt", "--raw", "--noheadings", "--output", "TARGET,SOURCE")
+	loops := guestCommandOutput(t, ctx, guest, "host-upgrade-loops-"+phase, "losetup", "--list", "--noheadings", "--output", "BACK-FILE")
+	for _, line := range strings.Split(mounts+"\n"+loops, "\n") {
+		if strings.Contains(line, base+"/") {
+			return strings.TrimSpace(line)
+		}
+	}
+	return ""
 }
 
 func stageHostUpgradeArtifactForVMTest(t *testing.T, ctx context.Context, endpoint, nodeName, machineID string, upgrade builtUpgradeImage) string {

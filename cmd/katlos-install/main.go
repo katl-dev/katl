@@ -625,13 +625,28 @@ func readFile(path string) ([]byte, bool) {
 	return data, err == nil
 }
 
-func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer, initial *installer.BootInput) error {
+func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer, initial *installer.BootInput) (resultErr error) {
 	reportInstallerProgress(stdout, "starting configuration handoff listener on "+addr, false)
 	media, _, err := loadInstallMedia()
 	if err != nil {
 		return err
 	}
 	server := handoff.NewHandoffServerWithDefaultImage(nil, media.Image)
+	var mediaPayload katlosimage.Payload
+	var extensionRoot *os.Root
+	mediaConsumersClosed := true
+	defer func() {
+		if !mediaConsumersClosed {
+			return
+		}
+		if extensionRoot != nil {
+			if err := extensionRoot.Close(); err != nil {
+				resultErr = errors.Join(resultErr, err)
+				return
+			}
+		}
+		resultErr = errors.Join(resultErr, mediaPayload.Close())
+	}()
 	if media.Image.ExtensionRelease != nil && len(media.Image.ExtensionRelease.Extensions) > 0 {
 		payload, err := (katlosimage.LocalResolver{
 			MediaRoot: media.Root,
@@ -641,12 +656,12 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer, init
 		if err != nil {
 			return fmt.Errorf("prepare installer extension artifacts: %w", err)
 		}
-		root, err := os.OpenRoot(filepath.Join(payload.Root, katlosimage.ExtensionLayoutPath))
+		mediaPayload = payload
+		extensionRoot, err = os.OpenRoot(filepath.Join(payload.Root, katlosimage.ExtensionLayoutPath))
 		if err != nil {
 			return err
 		}
-		defer root.Close()
-		server.SetExtensionLayout(root.FS())
+		server.SetExtensionLayout(extensionRoot.FS())
 	}
 	if initial != nil {
 		server.BeginAutomatic(initial.NodeName)
@@ -671,6 +686,7 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer, init
 	defer listener.Close()
 
 	httpServer := &http.Server{Handler: server.Handler()}
+	mediaConsumersClosed = false
 	errc := make(chan error, 1)
 	go func() {
 		if err := httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
@@ -679,7 +695,15 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer, init
 		}
 		errc <- nil
 	}()
-	defer httpServer.Shutdown(context.Background())
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("drain handoff requests before releasing installer media: %w", err))
+			return
+		}
+		mediaConsumersClosed = true
+	}()
 
 	// Offline media can install without a network address. Only a handoff or
 	// retry needs an address to announce; the API is already reserved and serving.

@@ -1,6 +1,7 @@
 package kernelmodule
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -57,6 +58,40 @@ func TestImageComposition(t *testing.T) {
 		SHA256: prepared.SHA256,
 	}, false); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestImageCompositionFailureReleasesInputs(t *testing.T) {
+	if os.Getenv("KATL_TEST_IMAGE_MOUNTS") != "1" {
+		t.Skip("set KATL_TEST_IMAGE_MOUNTS=1 with image-mount privileges")
+	}
+	_, selection := compositionFixture(t)
+	writeModuleFile(t, selection.Roots[0], "usr/lib/extension-release.d/extension-release.example", "ID=other-os\nSYSEXT_LEVEL=other-interface\n")
+	extension := squashImage(t, selection.Roots[0])
+	extension.Name = "example.raw"
+	before, err := os.ReadFile(extension.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	work := t.TempDir()
+	_, err = PrepareImages(context.Background(), ImageRequest{
+		Target: selection.Contract.Target, RuntimeInterface: "katl-runtime-1", Architecture: "x86_64", WorkDir: work,
+		Bundles: []BundleImages{{Name: selection.Name, Images: []Image{extension}, Contract: selection.Contract}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "extension") {
+		t.Fatalf("incompatible mounted extension was accepted: %v", err)
+	}
+	after, err := os.ReadFile(extension.Path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("failed preparation damaged borrowed image: %v", err)
+	}
+	entries, err := os.ReadDir(work)
+	if err != nil || len(entries) != 0 {
+		t.Fatalf("failed preparation retained scratch: %v, %v", entries, err)
+	}
+	data, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil || strings.Contains(string(data), work) {
+		t.Fatalf("failed preparation retained a native source mount: %v", err)
 	}
 }
 
