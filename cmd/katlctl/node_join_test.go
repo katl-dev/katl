@@ -5,35 +5,54 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/configbundle"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 )
 
 func TestNodeJoin(t *testing.T) {
 	for _, test := range []struct {
-		name   string
-		role   inventory.SystemRole
-		resume bool
+		name                   string
+		role                   inventory.SystemRole
+		resume, source, bundle bool
 	}{
 		{name: "control plane", role: inventory.RoleControlPlane},
 		{name: "worker", role: inventory.RoleWorker},
 		{name: "resume trial boot", role: inventory.RoleControlPlane, resume: true},
+		{name: "source credentials", role: inventory.RoleWorker, source: true},
+		{name: "compiled bundle", role: inventory.RoleWorker, bundle: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			path := writeClusterConfig(t)
-			writeTestEnrollmentContext(
-				t, "lab",
-				workstation.Node{Name: "cp-1", ManagementEndpoint: "10.0.0.11:9443", SystemRole: inventory.RoleControlPlane, EnrollmentID: "enrollment-cp-1", MachineID: "machine-cp-1"},
-				workstation.Node{Name: "node-2", ManagementEndpoint: "10.0.0.12:9443", SystemRole: test.role, EnrollmentID: "enrollment-node-2", MachineID: "machine-node-2"},
-				workstation.Node{Name: "offline", ManagementEndpoint: "192.0.2.99:9443", SystemRole: inventory.RoleControlPlane, EnrollmentID: "enrollment-offline", MachineID: "machine-offline"},
-			)
+			coordinatorAddress, targetAddress := "10.0.0.11", "10.0.0.12"
+			if !test.source {
+				coordinatorAddress, targetAddress = "10.0.0.21", "10.0.0.22"
+			}
+			enrollments := []workstation.Node{
+				{Name: "cp-1", ManagementEndpoint: coordinatorAddress + ":9443", SystemRole: inventory.RoleControlPlane, EnrollmentID: "enrollment-cp-1", MachineID: "machine-cp-1"},
+				{Name: "node-2", ManagementEndpoint: targetAddress + ":9443", SystemRole: test.role, EnrollmentID: "enrollment-node-2", MachineID: "machine-node-2"},
+			}
+			if !test.source {
+				enrollments = append(enrollments, workstation.Node{Name: "offline", ManagementEndpoint: "192.0.2.99:9443", SystemRole: inventory.RoleControlPlane, EnrollmentID: "enrollment-offline", MachineID: "machine-offline"})
+			}
+			writeTestEnrollmentContext(t, "lab", enrollments...)
+			if _, _, err := ensureManagementIdentity("lab", &bytes.Buffer{}); err != nil {
+				t.Fatal(err)
+			}
 			source := configBundleSource() + fmt.Sprintf(`    - name: node-2
       controlPlane: %t
+      kubernetes:
+        kubelet:
+          configFile: kubelet.yaml
+        labels:
+          test.example/join: preserved
       management:
         address: 10.0.0.12
       install:
@@ -50,6 +69,29 @@ func TestNodeJoin(t *testing.T) {
 			if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			if err := os.WriteFile(filepath.Join(filepath.Dir(path), "kubelet.yaml"), []byte("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 121\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if test.bundle {
+				archive, _, err := configbundle.BuildArchive(configbundle.BuildRequest{SourcePath: path})
+				if err != nil {
+					t.Fatal(err)
+				}
+				path = filepath.Join(filepath.Dir(path), "cluster.katlcfg")
+				if err := os.WriteFile(path, archive, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var sourceCA string
+			if test.source {
+				createTestManagementSecrets(t, path)
+				identity, err := readManagementIdentity(filepath.Join(filepath.Dir(path), defaultManagementSecrets))
+				if err != nil {
+					t.Fatal(err)
+				}
+				sourceCA = identity.CertificateAuthority.Certificate
+				t.Setenv("KATLCTL_CONFIG", filepath.Join(t.TempDir(), "missing-context.yaml"))
+			}
 			coordinator := &fakeKatlcAgentClient{
 				nodeStatus: &agentapi.NodeStatus{MachineId: "machine-cp-1", CurrentGenerationId: "current", Kubernetes: &agentapi.KubernetesStatus{State: "ready", Role: "control-plane", NodeName: "cp-1", KubeletActive: true, ControlPlaneComponentsReady: true}},
 				generation: &agentapi.Generation{GenerationId: "current", CommitState: "committed", HealthState: "healthy", BootState: "good"},
@@ -57,6 +99,10 @@ func TestNodeJoin(t *testing.T) {
 			target := &fakeKatlcAgentClient{
 				nodeStatus: &agentapi.NodeStatus{MachineId: "machine-node-2", CurrentGenerationId: "0", AgentStartId: "before", Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
 				generation: &agentapi.Generation{GenerationId: "0", CommitState: "committed", HealthState: "healthy", BootState: "good"},
+			}
+			if test.source {
+				coordinator.nodeStatus.EnrollmentId, coordinator.nodeStatus.MachineId, coordinator.nodeStatus.InventoryNodeName = "current-cp-1", "current-machine-cp-1", "cp-1"
+				target.nodeStatus.EnrollmentId, target.nodeStatus.MachineId, target.nodeStatus.InventoryNodeName = "current-node-2", "current-machine-node-2", "node-2"
 			}
 			joined := func() {
 				target.nodeStatus.CurrentGenerationId = "bootstrap-join-example-candidate"
@@ -76,8 +122,8 @@ func TestNodeJoin(t *testing.T) {
 			dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
 				client := target
 				switch endpoint {
-				case "10.0.0.12:9443":
-				case "10.0.0.11:9443":
+				case targetAddress + ":9443":
+				case coordinatorAddress + ":9443":
 					if repeating || test.resume {
 						t.Fatal("completed/resuming join contacted a coordinator")
 					}
@@ -88,13 +134,47 @@ func TestNodeJoin(t *testing.T) {
 				return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 			}
 			joins := 0
-			runAgentNodeJoin = func(_ context.Context, request cluster.Request, node string, deps cluster.AgentBootstrapDependencies) (cluster.Result, error) {
+			runAgentNodeJoin = func(ctx context.Context, request cluster.Request, node string, deps cluster.AgentBootstrapDependencies) (cluster.Result, error) {
 				joins++
 				if test.resume || repeating {
 					t.Fatal("repeated membership transition")
 				}
 				if node != "node-2" || request.InitNode != "cp-1" || deps.Actor != "katlctl node join" {
 					t.Fatalf("join node=%s request=%+v actor=%s", node, request, deps.Actor)
+				}
+				plan, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: request.Inventory, InitNode: request.InitNode})
+				if err != nil {
+					return cluster.Result{}, fmt.Errorf("plan node join: %w", err)
+				}
+				if request.ClusterName != "lab" || plan.ControlPlaneEndpoint != "api.katl.test:6443" || plan.KubernetesVersion != "v1.36.1" || plan.KubernetesBundleRef == "" || plan.KubernetesBundleSource == "" {
+					t.Fatalf("join lost complete cluster configuration: %+v", request)
+				}
+				if len(plan.Nodes) != 2 {
+					t.Fatalf("join participants = %+v", plan.Nodes)
+				}
+				for _, planned := range plan.Nodes {
+					observed := coordinator.nodeStatus
+					address := coordinatorAddress
+					ref, intent := "control-plane", inventory.IntentControlPlane
+					if planned.Name == "node-2" {
+						observed, ref = target.nodeStatus, "node-node-2"
+						address = targetAddress
+						if test.role == inventory.RoleWorker {
+							intent = inventory.IntentWorker
+						}
+						if planned.Labels["test.example/join"] != "preserved" || !planned.KubeadmConfig.NodeLocalKubelet {
+							t.Fatalf("join lost per-node native configuration: %+v", planned)
+						}
+					}
+					if planned.Address != address || planned.EnrollmentID != observed.EnrollmentId || planned.MachineID != observed.MachineId || planned.KubernetesVersion != "v1.36.1" || planned.KubeadmConfig.Ref != ref || planned.KubeadmConfig.Path != "/etc/katl/kubeadm/"+ref+"/config.yaml" || planned.KubeadmConfig.Intent != intent || planned.Access.Method != "agent" {
+						t.Fatalf("join input differs from desired configuration or current enrollment: %+v", planned)
+					}
+				}
+				if sourceCA != "" {
+					credentials := transport.ClientCredentialsFromContext(ctx)
+					if credentials == nil || credentials.CACertificate != sourceCA {
+						t.Fatal("join connector did not receive the source management credentials")
+					}
 				}
 				for _, node := range request.Inventory.Nodes {
 					if node.Name != "cp-1" && node.Name != "node-2" {
