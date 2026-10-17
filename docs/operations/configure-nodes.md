@@ -104,10 +104,13 @@ input, its default or node provenance, and the owned patch path. Use
 `config diff` to review its `kubeadm-aware operation` classification before
 applying.
 
-Install your CNI and wait for the node to become Ready before changing kubelet
-configuration. A pre-CNI apply can persist the configuration and restart
-kubelet, then fail its Node Ready health check. Inspect the persisted
-configuration and node status before retrying a failed apply.
+You can apply kubelet and control-plane configuration after bootstrap and
+before installing your CNI when the node is otherwise healthy and reports
+only an uninitialized CNI.
+Apply checks the affected Kubernetes components and permits that existing
+network condition. The node remains `NotReady` until you
+[install your CNI](bootstrap-kubernetes.md#establish-cluster-networking).
+A node that was Ready must regain Ready after the configuration change.
 
 Katl's default `systemReserved.memory` is `1Gi`. Set that field in a native
 `KubeletConfiguration` under `spec.kubernetes.kubeadm.configFile` for a

@@ -205,6 +205,7 @@ type KubeadmControlPlaneConfig struct {
 	AfterManifestSHA256       map[string]string `json:"afterManifestSHA256,omitempty"`
 	BeforeKubeletConfigSHA256 string            `json:"beforeKubeletConfigSHA256,omitempty"`
 	AfterKubeletConfigSHA256  string            `json:"afterKubeletConfigSHA256,omitempty"`
+	ReadinessRequirement      string            `json:"readinessRequirement,omitempty"`
 	OriginalNodeUnschedulable bool              `json:"originalNodeUnschedulable"`
 }
 
@@ -1004,6 +1005,10 @@ func ValidateTransition(previous OperationRecord, next OperationRecord) error {
 	if !kubeadmControlPlaneConfigTransitionAllowed(previous.KubeadmControlPlaneConfig, next.KubeadmControlPlaneConfig) {
 		return fmt.Errorf("operation kubeadmControlPlaneConfig request fields are immutable")
 	}
+	if next.KubeadmControlPlaneConfig != nil && next.ExternalMutationStarted &&
+		previous.KubeadmControlPlaneConfig.ReadinessRequirement == "" && next.KubeadmControlPlaneConfig.ReadinessRequirement == "cni-uninitialized" {
+		return fmt.Errorf("operation pre-CNI readiness requirement must be recorded before external mutation")
+	}
 	if previous.KubeadmUpgradeEvidence != nil {
 		if next.KubeadmUpgradeEvidence == nil || next.KubeadmUpgradeEvidence.TargetKubeadmAccessMode != previous.KubeadmUpgradeEvidence.TargetKubeadmAccessMode || next.KubeadmUpgradeEvidence.KubeletActivationGate != previous.KubeadmUpgradeEvidence.KubeletActivationGate || next.KubeadmUpgradeEvidence.SourceKubeletPolicy != previous.KubeadmUpgradeEvidence.SourceKubeletPolicy || (previous.KubeadmUpgradeEvidence.GlobalTargetActiveBeforeKubeadm && !next.KubeadmUpgradeEvidence.GlobalTargetActiveBeforeKubeadm) {
 			return fmt.Errorf("operation kubeadmUpgradeEvidence safety policy is immutable")
@@ -1107,6 +1112,8 @@ func kubeadmControlPlaneConfigTransitionAllowed(previous *KubeadmControlPlaneCon
 	nextComparable.BeforeKubeletConfigSHA256 = ""
 	previousComparable.AfterKubeletConfigSHA256 = ""
 	nextComparable.AfterKubeletConfigSHA256 = ""
+	previousComparable.ReadinessRequirement = ""
+	nextComparable.ReadinessRequirement = ""
 	previousComparable.OriginalNodeUnschedulable = false
 	nextComparable.OriginalNodeUnschedulable = false
 	previousComparable.ExpectedLiveConfigSHA256 = ""
@@ -1115,6 +1122,7 @@ func kubeadmControlPlaneConfigTransitionAllowed(previous *KubeadmControlPlaneCon
 	nextComparable.SupportedFieldDelta = nil
 	return reflect.DeepEqual(previousComparable, nextComparable) &&
 		resolvedDigestTransitionAllowed(previous.ExpectedLiveConfigSHA256, next.ExpectedLiveConfigSHA256) &&
+		(previous.ReadinessRequirement == next.ReadinessRequirement || previous.ReadinessRequirement == "" || next.ReadinessRequirement == "ready") &&
 		(previous.SupportedFieldDelta == nil || reflect.DeepEqual(previous.SupportedFieldDelta, next.SupportedFieldDelta))
 }
 
@@ -1842,6 +1850,11 @@ func validateConfigApplyRequest(request ConfigApplyRequest) error {
 func validateKubeadmControlPlaneConfig(request KubeadmControlPlaneConfig) error {
 	if request.Component != "control-plane" && request.Component != "kubelet" && request.Component != "kube-proxy" {
 		return fmt.Errorf("kubeadmControlPlaneConfig component must be control-plane, kubelet, or kube-proxy")
+	}
+	switch request.ReadinessRequirement {
+	case "", "ready", "cni-uninitialized":
+	default:
+		return fmt.Errorf("kubeadmControlPlaneConfig readiness requirement is invalid")
 	}
 	required := map[string]string{
 		"rolloutID": request.RolloutID, "coordinatorNode": request.CoordinatorNode,

@@ -107,9 +107,7 @@ func kubernetesNodeName(root string) (string, error) {
 }
 
 func kubernetesStatusCommand(ctx context.Context, run ToolRunner, argv []string, requireOutput bool) (string, bool) {
-	probeCtx, cancel := context.WithTimeout(ctx, kubernetesStatusProbeTimeout)
-	defer cancel()
-	result := run(probeCtx, argv, func(int) {})
+	result := boundedHealthRunner(run)(ctx, argv, func(int) {})
 	if result.Err != nil || result.ExitStatus != 0 {
 		return "", false
 	}

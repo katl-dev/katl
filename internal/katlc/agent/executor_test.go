@@ -700,7 +700,7 @@ func TestControlPlaneHealthOperations(t *testing.T) {
 	tests := map[string]bool{
 		bootstrapplan.OperationKindInit:             true,
 		bootstrapplan.OperationKindJoinControlPlane: true,
-		OperationKindKubeadmControlPlaneConfig:      true,
+		OperationKindKubeadmControlPlaneConfig:      false,
 		bootstrapplan.OperationKindJoinWorker:       false,
 	}
 	for kind, want := range tests {

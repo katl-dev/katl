@@ -520,6 +520,9 @@ func renderKubeletDropIn() string {
 		"RequiresMountsFor=/var/lib/kubelet /etc/kubernetes",
 		"",
 		"[Service]",
+		"Type=notify",
+		"NotifyAccess=main",
+		"ExecStartPre=/usr/lib/katl/runtime/katl-kubelet-startup",
 		"Environment=KUBELET_EXTRA_ARGS=",
 		"",
 	}, "\n")

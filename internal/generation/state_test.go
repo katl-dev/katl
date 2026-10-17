@@ -254,6 +254,9 @@ Before=katl-kubeadm-ready.target
 RequiresMountsFor=/var/lib/kubelet /etc/kubernetes
 
 [Service]
+Type=notify
+NotifyAccess=main
+ExecStartPre=/usr/lib/katl/runtime/katl-kubelet-startup
 Environment=KUBELET_EXTRA_ARGS=
 `
 	if assets.KubeletDropIn != wantKubelet {
@@ -586,11 +589,12 @@ func writeStateVerifyFixture(t *testing.T, root string) {
 	writeUnit(t, root, "usr/lib/katl/runtime/katl-host-config-activate", "#!/bin/sh\nexit 0\n")
 	writeUnit(t, root, "usr/lib/katl/runtime/katl-boot-health", "#!/bin/sh\nexit 0\n")
 	writeUnit(t, root, "usr/lib/katl/runtime/katl-runtime-status", "#!/bin/sh\nexit 0\n")
+	writeUnit(t, root, "usr/lib/katl/runtime/katl-kubelet-startup", "#!/bin/sh\nexit 0\n")
 	writeUnit(t, root, "usr/bin/katlc", "#!/bin/sh\nexit 0\n")
 	writeUnit(t, root, "usr/bin/printf", "#!/bin/sh\nexit 0\n")
 	writeUnit(t, root, "usr/bin/systemctl", "#!/bin/sh\nexit 0\n")
 	writeUnit(t, root, "usr/bin/true", "#!/bin/sh\nexit 0\n")
-	for _, fixture := range []string{"usr/bin/katlc", "usr/bin/printf", "usr/bin/systemctl", "usr/bin/true", "usr/lib/katl/runtime/katl-generation-activate", "usr/lib/katl/runtime/katl-host-config-activate", "usr/lib/katl/runtime/katl-boot-health", "usr/lib/katl/runtime/katl-runtime-status"} {
+	for _, fixture := range []string{"usr/bin/katlc", "usr/bin/printf", "usr/bin/systemctl", "usr/bin/true", "usr/lib/katl/runtime/katl-generation-activate", "usr/lib/katl/runtime/katl-host-config-activate", "usr/lib/katl/runtime/katl-boot-health", "usr/lib/katl/runtime/katl-runtime-status", "usr/lib/katl/runtime/katl-kubelet-startup"} {
 		if err := os.Chmod(filepath.Join(root, filepath.FromSlash(fixture)), 0o755); err != nil {
 			t.Fatalf("chmod %s fixture: %v", fixture, err)
 		}

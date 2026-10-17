@@ -183,18 +183,9 @@ func (e Executor) endpointOwnershipEnabled(record generation.Record) (bool, erro
 }
 
 func (e Executor) runActions(ctx context.Context, status *generation.ConfigApplyStatus) error {
-	kubeletRebound := false
 	for i := range status.DomainActions {
 		action := &status.DomainActions[i]
 		if action.Status == generation.ConfigApplyActionSkipped {
-			continue
-		}
-		if kubeadmInputDomain(action.Domain) && kubeletRebound {
-			action.Status = generation.ConfigApplyActionPassed
-			action.Diagnostic = ""
-			if err := e.writeStatus(*status); err != nil {
-				return err
-			}
 			continue
 		}
 		if action.Domain == DomainHostConfiguration {
@@ -238,9 +229,6 @@ func (e Executor) runActions(ctx context.Context, status *generation.ConfigApply
 					return err
 				}
 			}
-		}
-		if kubeadmInputDomain(action.Domain) {
-			kubeletRebound = true
 		}
 		action.Status = generation.ConfigApplyActionPassed
 		if action.Domain == DomainHostConfiguration && e.HostConfiguration != nil {
@@ -325,11 +313,9 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 	case DomainGenerationRetention:
 		return nil, nil
 	case DomainKubeadmConfig, DomainSelectedKubeadmConfig:
-		commands = []Command{{
-			Name:                "kubelet-config-watcher-rebind",
-			Argv:                []string{"systemctl", "try-restart", "kubelet.service"},
-			SuccessExitStatuses: []int{5},
-		}}
+		// Effective Kubernetes configuration must be repaired before restarting
+		// its consumer. The component operation owns that transition.
+		return nil, nil
 	case DomainResolved:
 		commands = append(commands, Command{Name: "systemd-resolved-reload", Argv: []string{"systemctl", "reload-or-restart", "systemd-resolved.service"}})
 	case DomainTmpfiles:
@@ -554,12 +540,8 @@ func (e Executor) failAndRollback(ctx context.Context, status generation.ConfigA
 }
 
 func (e Executor) replayRollbackActions(ctx context.Context, actions []generation.ConfigApplyDomainAction, sysctlSnapshot map[string]string) error {
-	kubeletRebound := false
 	for _, action := range actions {
 		if action.Status == generation.ConfigApplyActionSkipped {
-			continue
-		}
-		if kubeadmInputDomain(action.Domain) && kubeletRebound {
 			continue
 		}
 		if action.Domain == DomainHostConfiguration {
@@ -583,15 +565,8 @@ func (e Executor) replayRollbackActions(ctx context.Context, actions []generatio
 				return fmt.Errorf("rollback %w", commandFailure(command, result))
 			}
 		}
-		if kubeadmInputDomain(action.Domain) {
-			kubeletRebound = true
-		}
 	}
 	return nil
-}
-
-func kubeadmInputDomain(domain string) bool {
-	return domain == DomainKubeadmConfig || domain == DomainSelectedKubeadmConfig
 }
 
 func (e Executor) markRollbackFailed(status generation.ConfigApplyStatus, target string, cause error, rollbackErr error) (generation.ConfigApplyStatus, error) {

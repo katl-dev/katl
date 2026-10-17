@@ -54,7 +54,7 @@ func TestExecutorActivatesSelectedConfextAndRecordsSuccess(t *testing.T) {
 	}
 }
 
-func TestExecutorRebindsKubeletWatcherOnceForKubeadmInput(t *testing.T) {
+func TestExecutorStagesKubeadmInput(t *testing.T) {
 	plan := liveExecutorPlan(t, []Change{
 		{Domain: DomainKubeadmConfig},
 		{Domain: DomainSelectedKubeadmConfig},
@@ -69,15 +69,12 @@ func TestExecutorRebindsKubeletWatcherOnceForKubeadmInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecuteLive() error = %v", err)
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,kubelet-config-watcher-rebind"; got != want {
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh"; got != want {
 		t.Fatalf("commands = %q, want %q", got, want)
 	}
-	if got, want := runner.commands[1].Argv, []string{"systemctl", "try-restart", "kubelet.service"}; strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Fatalf("kubelet rebind argv = %#v, want %#v", got, want)
-	}
 	for _, action := range status.DomainActions {
-		if action.Status != generation.ConfigApplyActionPassed {
-			t.Fatalf("action = %#v, want passed", action)
+		if action.Status != generation.ConfigApplyActionSkipped || action.Action != "kubeadm-operation-required" {
+			t.Fatalf("action = %#v, want component reconciliation deferred to kubeadm", action)
 		}
 	}
 }
@@ -113,14 +110,7 @@ func TestExecutorActivatesPreparedVolumesBeforeReportingSuccess(t *testing.T) {
 
 func TestExecutorAllowsKubeadmInputBeforeKubeletUnitExists(t *testing.T) {
 	plan := liveExecutorPlan(t, []Change{{Domain: DomainKubeadmConfig}})
-	runner := &fakeCommandRunner{
-		results: map[string]CommandResult{
-			"kubelet-config-watcher-rebind": {
-				ExitStatus: 5,
-				Stderr:     "Failed to try-restart kubelet.service: Unit kubelet.service not found.",
-			},
-		},
-	}
+	runner := &fakeCommandRunner{}
 	activator := &fakeActivator{}
 
 	status, err := Executor{
@@ -131,7 +121,7 @@ func TestExecutorAllowsKubeadmInputBeforeKubeletUnitExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExecuteLive() error = %v", err)
 	}
-	if status.Phase != generation.ConfigApplyPhaseActive || status.DomainActions[0].Status != generation.ConfigApplyActionPassed {
+	if status.Phase != generation.ConfigApplyPhaseActive || status.DomainActions[0].Status != generation.ConfigApplyActionSkipped {
 		t.Fatalf("status = %#v, want active kubeadm input", status)
 	}
 	if activator.rollbackTarget != "" {
