@@ -12,6 +12,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/installer/configbundle"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/spf13/cobra"
 )
@@ -107,11 +108,32 @@ func runNodeJoin(ctx context.Context, opts nodeJoinOptions, stdout, stderr io.Wr
 		if err != nil {
 			return err
 		}
-		topology, err := resolveClusterConfigTopology(ctx, opts.configPath)
+		participants := []string{coordinator.Name, target.Name}
+		configuration, err := loadNodeConfiguration(ctx, opts.configPath, configbundle.PlanningInputs{Nodes: participants})
 		if err != nil {
 			return err
 		}
-		deps := agentBootstrapDependencies(topology.ClusterName)
+		inv = configuration.Inventory
+		inv.Nodes, err = selectConfigNodes(inv.Nodes, participants)
+		if err != nil {
+			return err
+		}
+		// Desired configuration owns planning inputs; observed installations own
+		// the addresses and instance identities used for this operation.
+		for index := range inv.Nodes {
+			observed := target
+			if inv.Nodes[index].Name == coordinator.Name {
+				observed = coordinator
+			}
+			inv.Nodes[index].Address = observed.Address
+			inv.Nodes[index].EnrollmentID = observed.EnrollmentID
+			inv.Nodes[index].MachineID = observed.MachineID
+		}
+		ctx, err = managementContextForCluster(ctx, opts.configPath, "", "")
+		if err != nil {
+			return err
+		}
+		deps := agentBootstrapDependencies(configuration.ClusterName)
 		deps.Actor = "katlctl node join"
 		deps.Progress = func(progress cluster.AgentBootstrapProgress) {
 			if progress.Node == target.Name && progress.Phase != "" {
@@ -119,10 +141,7 @@ func runNodeJoin(ctx context.Context, opts nodeJoinOptions, stdout, stderr io.Wr
 			}
 		}
 		_, _ = fmt.Fprintf(stderr, "node join node=%s coordinator=%s status=started\n", target.Name, coordinator.Name)
-		// Only the target and coordinator participate in joining; unrelated nodes
-		// need not be reachable and must not receive lifecycle operations.
-		inv.Nodes = []inventory.Node{coordinator, target}
-		if _, err := runAgentNodeJoin(ctx, cluster.Request{Inventory: inv, InitNode: coordinator.Name}, target.Name, deps); err != nil {
+		if _, err := runAgentNodeJoin(ctx, cluster.Request{Inventory: inv, ClusterName: configuration.ClusterName, InitNode: coordinator.Name}, target.Name, deps); err != nil {
 			return fmt.Errorf("join %s: %w; inspect 'katlctl node status %s --config %s' and retry node join", target.Name, err, target.Name, opts.configPath)
 		}
 		if err := finishNodeJoin(ctx, opts.configPath, target, stderr); err != nil {
