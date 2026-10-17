@@ -20,6 +20,13 @@ func TestBootstrapContinuation(t *testing.T) {
 		{"bootstrap-init", "post-health"},
 		{"bootstrap-join-worker", "post-health"},
 		{"bootstrap-init", "intervening"},
+		{"bootstrap-init", "legacy-health"},
+		{"bootstrap-init", "legacy-explicit"},
+		{"bootstrap-init", "source-changed"},
+		{"bootstrap-init", "legacy-source-changed"},
+		{"bootstrap-init", "legacy-candidate-missing"},
+		{"bootstrap-init", "legacy-candidate-changed"},
+		{"bootstrap-init", "legacy-candidate-corrupt"},
 	} {
 		t.Run(scenario.kind+"/"+scenario.failure, func(t *testing.T) {
 			failure := scenario.failure
@@ -50,7 +57,7 @@ func TestBootstrapContinuation(t *testing.T) {
 				return nil
 			}
 			executor.RunPostHealth = func(context.Context, []string, func(int)) ToolResult {
-				if broken && failure == "post-health" {
+				if broken && (failure == "post-health" || failure == "source-changed" || strings.HasPrefix(failure, "legacy-")) {
 					return ToolResult{ExitStatus: 1}
 				}
 				return ToolResult{}
@@ -73,12 +80,45 @@ func TestBootstrapContinuation(t *testing.T) {
 			if !bootstrapContinuationEligible(original) {
 				t.Fatalf("not resumable: %+v", original)
 			}
+			pinnedInput := original.BootstrapRequest.KubeadmInputDigest
+			if strings.HasPrefix(failure, "legacy-") {
+				// Recreate the persisted receipt shape from before input pinning;
+				// terminal records remain immutable through the product API.
+				if err := os.RemoveAll(filepath.Join(server.Store.Root, original.OperationID)); err != nil {
+					t.Fatal(err)
+				}
+				original.BootstrapRequest.KubeadmInputDigest = ""
+				original, err = server.Store.Create(original, "legacy-receipt-fixture", original.CreatedAt)
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
 
 			continuation := proto.Clone(req).(*agentapi.SubmitOperationRequest)
 			continuation.RequestDigest = ""
 			continuation.ClientRequestId = "bootstrap-retry"
 			continuation.Bootstrap.ResumeOperationId = original.OperationID
 			continuation.Bootstrap.WorkerJoinMaterial = nil
+			if failure == "legacy-explicit" {
+				continuation.Bootstrap.KubeadmInputDigest = pinnedInput
+			}
+			if failure == "source-changed" || failure == "legacy-source-changed" || failure == "legacy-candidate-changed" || failure == "legacy-candidate-missing" || failure == "legacy-candidate-corrupt" {
+				if failure == "legacy-source-changed" || failure == "source-changed" {
+					writeTestFile(t, filepath.Join(server.Root, "var/lib/katl/cluster/kubeadm/default/config.yaml"), "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\nnodeRegistration:\n  name: changed-source\n")
+				} else if failure == "legacy-candidate-missing" {
+					if err := os.RemoveAll(filepath.Join(server.Root, "var/lib/katl/generations", original.CandidateGenerationID, "kubeadm-input")); err != nil {
+						t.Fatal(err)
+					}
+				} else if failure == "legacy-candidate-corrupt" {
+					writeTestFile(t, filepath.Join(server.Root, "var/lib/katl/generations", original.CandidateGenerationID, "kubeadm-input/default/config.yaml"), "invalid: [")
+				} else {
+					writeTestFile(t, filepath.Join(server.Root, "var/lib/katl/generations", original.CandidateGenerationID, "kubeadm-input/default/config.yaml"), "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\nnodeRegistration:\n  name: changed-candidate\n")
+				}
+				if _, err := server.SubmitOperation(context.Background(), continuation); err == nil || kubeadmRuns != 1 {
+					t.Fatalf("unproven legacy continuation accepted: %v; native invocations %d", err, kubeadmRuns)
+				}
+				return
+			}
 			if failure == "intervening" {
 				other := original
 				other.OperationID = "another-mutation"
@@ -115,6 +155,11 @@ func TestBootstrapContinuation(t *testing.T) {
 				})
 			}
 			changed := proto.Clone(continuation).(*agentapi.SubmitOperationRequest)
+			changed.Bootstrap.KubeadmInputDigest = strings.Repeat("f", 64)
+			if _, err := server.SubmitOperation(context.Background(), changed); err == nil {
+				t.Fatal("accepted a different input digest for continuation")
+			}
+			changed = proto.Clone(continuation).(*agentapi.SubmitOperationRequest)
 			changed.Bootstrap.ControlPlaneEndpoint = "another.example:6443"
 			if _, err := server.SubmitOperation(context.Background(), changed); err == nil {
 				t.Fatal("accepted changed bootstrap configuration")

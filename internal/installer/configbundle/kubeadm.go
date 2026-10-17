@@ -54,8 +54,12 @@ func resolveKubeadmConfigs(sourceRoot string, input *SourceKubeadmInput, kuberne
 	}
 	inputs := []kubeadmSourceInput{{Name: configFile, Content: resolved.Config.Content}}
 	for _, patch := range resolved.Patches {
+		rel, err := filepath.Rel(filepath.Join(sourceRoot, patchesDir), patch.SourcePath)
+		if err != nil || !filepath.IsLocal(rel) {
+			return nil, nil, fmt.Errorf("invalid kubeadm patch source %q", patch.SourcePath)
+		}
 		inputs = append(inputs, kubeadmSourceInput{
-			Name:    filepath.ToSlash(filepath.Join(patchesDir, filepath.Base(patch.SourcePath))),
+			Name:    filepath.ToSlash(filepath.Join(patchesDir, rel)),
 			Content: patch.Content,
 		})
 	}
@@ -136,24 +140,10 @@ func kubeadmPlanWithNodeKubeletConfig(base kubeadmconfig.Plan, name, sourcePath 
 	if err != nil {
 		return kubeadmconfig.Plan{}, fmt.Errorf("decode base kubeadm input: %w", err)
 	}
-	var patchFields map[string]any
-	if err := yaml.Unmarshal(patch, &patchFields); err != nil {
-		return kubeadmconfig.Plan{}, fmt.Errorf("decode kubelet patch: %w", err)
-	}
 	foundKubelet := false
 	for _, document := range documents {
 		if document["kind"] != "KubeletConfiguration" {
 			continue
-		}
-		mergeKubeletFields(document, patchFields)
-		// Kubeadm applies this patch to the shared ConfigMap, which can predate
-		// the selected defaults. Carry the same desired fields as verification.
-		completeKubeletPatch(patchFields, document)
-		delete(patchFields, "apiVersion")
-		delete(patchFields, "kind")
-		patch, err = yaml.Marshal(patchFields)
-		if err != nil {
-			return kubeadmconfig.Plan{}, fmt.Errorf("encode effective kubelet patch: %w", err)
 		}
 		foundKubelet = true
 		break
@@ -171,22 +161,20 @@ func kubeadmPlanWithNodeKubeletConfig(base kubeadmconfig.Plan, name, sourcePath 
 		Content:    content,
 		Mode:       0o644,
 	}}
-	basePrefix := "/etc/katl/kubeadm/" + base.Name + "/patches/"
 	for _, existing := range base.Patches {
-		rel := strings.TrimPrefix(filepath.ToSlash(existing.RenderPath), basePrefix)
+		rel, err := base.PatchRelativePath(existing)
+		if err != nil {
+			return kubeadmconfig.Plan{}, err
+		}
 		copy := existing
-		copy.RenderPath = "/etc/katl/kubeadm/" + name + "/patches/" + rel
+		copy.RenderPath = "/etc/katl/kubeadm/" + name + "/patches/00-native/" + rel
 		files = append(files, copy)
 	}
-	const patchName = "kubeletconfiguration999+merge.yaml"
-	for _, existing := range files[1:] {
-		if filepath.Base(existing.RenderPath) == patchName {
-			return kubeadmconfig.Plan{}, fmt.Errorf("cluster kubeadm patches already contain reserved per-node patch name %q", patchName)
-		}
-	}
+	// Kubeadm walks patch directories in lexical order. Separate groups retain
+	// the operator's native ordering and apply the explicit node overlay last.
 	files = append(files, kubeadmconfig.File{
 		SourcePath: sourcePath,
-		RenderPath: "/etc/katl/kubeadm/" + name + "/patches/" + patchName,
+		RenderPath: "/etc/katl/kubeadm/" + name + "/patches/10-node/kubeletconfiguration+merge.yaml",
 		Content:    patch,
 		Mode:       0o644,
 	})
@@ -195,39 +183,8 @@ func kubeadmPlanWithNodeKubeletConfig(base kubeadmconfig.Plan, name, sourcePath 
 		return kubeadmconfig.Plan{}, fmt.Errorf("compile per-node kubelet input: %w", err)
 	}
 	plan.NodeLocalKubelet = true
+	plan.SharedKubeletBase = true
 	return plan, nil
-}
-
-func completeKubeletPatch(patch, desired map[string]any) {
-	for key, value := range desired {
-		patchValue, exists := patch[key]
-		if !exists {
-			patch[key] = value
-			continue
-		}
-		// Explicit nulls must survive as merge-patch deletions.
-		patchMap, patchIsMap := patchValue.(map[string]any)
-		desiredMap, desiredIsMap := value.(map[string]any)
-		if patchIsMap && desiredIsMap {
-			completeKubeletPatch(patchMap, desiredMap)
-		}
-	}
-}
-
-func mergeKubeletFields(target, patch map[string]any) {
-	for key, value := range patch {
-		if value == nil {
-			delete(target, key)
-			continue
-		}
-		patchMap, patchIsMap := value.(map[string]any)
-		targetMap, targetIsMap := target[key].(map[string]any)
-		if patchIsMap && targetIsMap {
-			mergeKubeletFields(targetMap, patchMap)
-			continue
-		}
-		target[key] = value
-	}
 }
 
 func nodeKubeadmConfigRef(nodeName string) string {

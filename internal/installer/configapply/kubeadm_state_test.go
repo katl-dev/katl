@@ -1,6 +1,8 @@
 package configapply
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -75,5 +77,35 @@ func writeKubeadmStateGeneration(t *testing.T, root, id, previous string) {
 	}
 	if err := generation.WriteGeneration(root, spec, status); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestKubeadmInputOwnership(t *testing.T) {
+	root := t.TempDir()
+	plan, err := kubeadmconfig.PlanFromRenderedFiles("node-cp", []kubeadmconfig.File{{RenderPath: "/etc/katl/kubeadm/node-cp/config.yaml", Content: []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan.NodeLocalKubelet, plan.SharedKubeletBase = true, true
+	if err := WriteGenerationKubeadmConfig(root, "gen0", "node-cp", plan); err != nil {
+		t.Fatal(err)
+	}
+	got, err := readGenerationKubeadmConfig(root, "gen0", "node-cp")
+	if err != nil || !got.NodeLocalKubelet || !got.SharedKubeletBase || len(got.Patches) != 0 {
+		t.Fatalf("owned input = %#v, %v", got, err)
+	}
+	path := filepath.Join(root, "var/lib/katl/generations/gen0/kubeadm-input/node-cp/katl-input.json")
+	if err := os.WriteFile(path, []byte(`{"sharedKubeletBase":"yes"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readGenerationKubeadmConfig(root, "gen0", "node-cp"); err == nil {
+		t.Fatal("malformed ownership metadata accepted")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	got, err = readGenerationKubeadmConfig(root, "gen0", "node-cp")
+	if err != nil || got.SharedKubeletBase {
+		t.Fatalf("legacy input gained shared-base proof: %#v, %v", got, err)
 	}
 }

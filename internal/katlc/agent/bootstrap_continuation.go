@@ -7,6 +7,10 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/bootstrapplan"
+	"github.com/katl-dev/katl/internal/installer/configapply"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc/codes"
@@ -72,6 +76,39 @@ func (s *Server) validateBootstrapContinuation(previous operation.OperationRecor
 	got := bootstrapRequestFromProto(req.Bootstrap)
 	got.KubernetesIdentityFingerprint = req.Bootstrap.GetKubernetesIdentityFingerprint()
 	want := *previous.BootstrapRequest
+	installed, _, err := installer.ReadClusterIntent(s.Root)
+	if err != nil {
+		return fmt.Errorf("read installed bootstrap identity: %w", err)
+	}
+	selected, err := bootstrapplan.SelectInput(s.Root, previous.ExpectedCurrentGenerationID, installed, want)
+	if err != nil {
+		return fmt.Errorf("validate recorded bootstrap snapshot: %w", err)
+	}
+	if want.KubeadmInputDigest == "" {
+		candidate, err := configapply.ReadLocalGenerationConfiguration(s.Root, previous.CandidateGenerationID)
+		if err != nil {
+			return fmt.Errorf("failed bootstrap has no pinned input and its local candidate snapshot is unavailable; preserve node state for repair: %w", err)
+		}
+		ref := candidate.Manifest.Node.Kubernetes.Kubeadm.ConfigRef
+		input, ok := candidate.KubeadmConfigs[ref]
+		if !ok || ref != selected.Input.ConfigRef || input.Config.RenderPath != selected.Input.Path {
+			return fmt.Errorf("failed bootstrap candidate does not own the recorded source input; preserve node state for repair")
+		}
+		input, err = kubeadmconfig.WithNodeAddress(input, candidate.Manifest.Node.Kubernetes.Address)
+		if err != nil {
+			return fmt.Errorf("normalize failed bootstrap candidate input: %w", err)
+		}
+		digest, err := input.InputDigest()
+		if err != nil || digest != selected.Input.Digest {
+			return fmt.Errorf("failed bootstrap candidate differs from the recorded source input; preserve node state for repair")
+		}
+		// This proof permits health-only continuation; it never authorizes a
+		// new native invocation or changes the original unpinned receipt.
+		want.KubeadmInputDigest = digest
+	}
+	if got.KubeadmInputDigest == "" {
+		got.KubeadmInputDigest = want.KubeadmInputDigest
+	}
 	for _, request := range []*operation.BootstrapRequest{&got, &want} {
 		request.ResumeOperationID = ""
 		request.CandidateGenerationID = ""
@@ -91,6 +128,9 @@ func (s *Server) validateBootstrapContinuation(previous operation.OperationRecor
 	original := previous
 	seen := map[string]bool{}
 	for original.BootstrapRequest != nil && original.BootstrapRequest.ResumeOperationID != "" {
+		if original.CandidateGenerationID != previous.CandidateGenerationID || original.ExpectedCurrentGenerationID != previous.ExpectedCurrentGenerationID {
+			return fmt.Errorf("bootstrap continuation history changes candidate or source generation")
+		}
 		if seen[original.OperationID] {
 			return fmt.Errorf("bootstrap continuation history contains a cycle")
 		}
@@ -102,6 +142,12 @@ func (s *Server) validateBootstrapContinuation(previous operation.OperationRecor
 		}
 	}
 	seen[original.OperationID] = true
+	if original.CandidateGenerationID != previous.CandidateGenerationID || original.ExpectedCurrentGenerationID != previous.ExpectedCurrentGenerationID {
+		return fmt.Errorf("original kubeadm receipt belongs to a different candidate or source generation")
+	}
+	if original.BootstrapRequest == nil || (original.BootstrapRequest.KubeadmInputDigest != "" && original.BootstrapRequest.KubeadmInputDigest != selected.Input.Digest) {
+		return fmt.Errorf("original kubeadm receipt belongs to a different input snapshot")
+	}
 	proved := false
 	if original.ExecutorPlan == nil || original.OperationKind != previous.OperationKind {
 		return fmt.Errorf("original kubeadm receipt is invalid")

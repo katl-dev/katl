@@ -104,6 +104,19 @@ input, its default or node provenance, and the owned patch path. Use
 `config diff` to review its `kubeadm-aware operation` classification before
 applying.
 
+Native kubelet patches selected through `spec.kubernetes.kubeadm.patchesDir`
+also apply during online refresh. Kubeadm applies those patches in native
+directory and filename order, followed by the fields explicitly set in the
+node-local kubelet overlay. Fields omitted from that overlay retain the
+patched shared value. Removing a patch or overlay refreshes the node from the
+remaining inputs.
+
+The shared `KubeletConfiguration` stays separate from both patch layers. A
+coordinator uploads changes to that shared base even when it also has a
+node-local overlay. Katl checks the complete native result before restarting
+kubelet and checks health afterward; an unchanged healthy result does not
+restart kubelet.
+
 You can apply kubelet and control-plane configuration after bootstrap and
 before installing your CNI when the node is otherwise healthy and reports
 only an uninitialized CNI.

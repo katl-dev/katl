@@ -540,6 +540,10 @@ ConfigMap. Changing a default changes the desired input for every node that
 inherits it. Katl rejects multiple documents, other API kinds or versions, and
 fields that replace Katl-owned runtime paths.
 
+Kubeadm applies the selected ordinary native patches first, then the explicit
+fields in this overlay. Omitted overlay fields retain their value from the
+patched shared configuration.
+
 The ISO flow consumes this source directly: `katlctl install apply` and
 `katlctl cluster bootstrap` compile the internal bundle automatically. Produce
 an explicit bundle only for PXE or offline provisioning, as shown in the next

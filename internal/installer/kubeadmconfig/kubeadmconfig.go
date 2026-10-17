@@ -50,6 +50,8 @@ type Plan struct {
 	Patches          []File
 	Documents        []Document
 	NodeLocalKubelet bool
+	// SharedKubeletBase identifies Config as the unpatched cluster-wide base.
+	SharedKubeletBase bool `json:"sharedKubeletBase,omitempty" yaml:"sharedKubeletBase,omitempty"`
 }
 
 type File struct {
@@ -57,6 +59,16 @@ type File struct {
 	RenderPath string
 	Content    []byte
 	Mode       fs.FileMode
+}
+
+// PatchRelativePath preserves native kubeadm's directory ordering while keeping
+// every patch within the selected configuration's owned subtree.
+func (p Plan) PatchRelativePath(patch File) (string, error) {
+	rel, err := filepath.Rel(filepath.Join("/etc/katl/kubeadm", p.Name, "patches"), patch.RenderPath)
+	if err != nil || !filepath.IsLocal(rel) || rel == "." {
+		return "", fmt.Errorf("invalid kubeadm patch path %q for configuration %q", patch.RenderPath, p.Name)
+	}
+	return filepath.ToSlash(rel), nil
 }
 
 type Document struct {

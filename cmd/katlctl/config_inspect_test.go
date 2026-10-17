@@ -186,7 +186,7 @@ func TestConfigInspectionReportsPerNodeKubeletConfiguration(t *testing.T) {
 	if err := run(context.Background(), []string{"config", "resolve", beforePath, "--output", "json"}, &stdout, &stderr); err != nil {
 		t.Fatalf("resolve error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
 	}
-	for _, want := range []string{`"kubelet"`, `"configFile": "./kubelet-a.yaml"`, `/etc/katl/kubeadm/node-cp-1/patches/kubeletconfiguration999+merge.yaml`} {
+	for _, want := range []string{`"kubelet"`, `"configFile": "./kubelet-a.yaml"`, `/etc/katl/kubeadm/node-cp-1/patches/10-node/kubeletconfiguration+merge.yaml`} {
 		if !strings.Contains(stdout.String(), want) {
 			t.Fatalf("resolve output missing %q:\n%s", want, stdout.String())
 		}

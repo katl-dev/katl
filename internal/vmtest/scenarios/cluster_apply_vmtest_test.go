@@ -74,6 +74,7 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 	t.Setenv("KATLCTL_CONFIG", contextPath)
 	t.Setenv("KATLCTL_CONFIG_DIR", "")
 	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t))
+	live = append(live, []byte("\n---\napiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 120\n")...)
 	if err := os.WriteFile(filepath.Join(dir, "kubeadm.yaml"), live, 0o600); err != nil {
 		return err
 	}
@@ -81,6 +82,8 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 		return err
 	}
 	// Model an existing cluster whose shared config predates Katl's defaults.
+	// Applying the shared base must restore the reservation without uploading
+	// the node overlay's maxPods value.
 	shared, err := kubectlOutput(ctx, kubeconfig, "-n", "kube-system", "get", "configmap", "kubelet-config", "-o", "jsonpath={.data.kubelet}")
 	if err != nil {
 		return err
@@ -285,8 +288,15 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 	if err != nil {
 		return err
 	}
-	if !bytes.Equal(sharedAfter, shared) {
-		return fmt.Errorf("node-local kubelet apply changed the shared configuration")
+	var sharedResult struct {
+		MaxPods        int               `yaml:"maxPods"`
+		SystemReserved map[string]string `yaml:"systemReserved"`
+	}
+	if err := yaml.Unmarshal(sharedAfter, &sharedResult); err != nil {
+		return err
+	}
+	if sharedResult.MaxPods != 120 || sharedResult.SystemReserved["memory"] != "1Gi" {
+		return fmt.Errorf("shared kubelet configuration did not preserve base ownership: %s", sharedAfter)
 	}
 	for _, node := range nodes {
 		if err := verify(node, true); err != nil {

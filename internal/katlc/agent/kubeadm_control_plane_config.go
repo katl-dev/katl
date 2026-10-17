@@ -86,9 +86,6 @@ func validateKubeadmControlPlaneConfigRequest(kind string, req *agentapi.Kubeadm
 	if req.GetNodeLocalKubelet() && component != kubeadmConfigComponentKubelet {
 		return fmt.Errorf("nodeLocalKubelet requires the kubelet component")
 	}
-	if req.GetNodeLocalKubelet() && req.GetCoordinatorUpload() {
-		return fmt.Errorf("node-local kubelet configuration must not be uploaded cluster-wide")
-	}
 	return nil
 }
 
@@ -194,6 +191,9 @@ func (s *Server) validateKubeadmControlPlaneConfigState(req *agentapi.SubmitOper
 	}
 	if body.Component == "kubelet" && node.Kubeadm.NodeLocalKubelet != body.NodeLocalKubelet {
 		return body, fmt.Errorf("active generation node-local kubelet mode does not match the request")
+	}
+	if err := validateSharedKubeletBase(s.Root, &body); err != nil {
+		return body, err
 	}
 	applyStatusPath, err := generation.ConfigApplyStatusPath(s.Root, body.DesiredGenerationID)
 	if err != nil {
@@ -518,6 +518,9 @@ func (e *Executor) executeKubeProxyConfig(ctx context.Context, record operation.
 
 func (e *Executor) executeKubeletConfig(ctx context.Context, record operation.OperationRecord) error {
 	request := record.KubeadmControlPlaneConfig
+	if err := validateSharedKubeletBase(e.Root, request); err != nil {
+		return e.failControlPlaneConfig(record, "preflight", err)
+	}
 	desired, err := os.ReadFile(rootedRuntimePath(e.Root, request.ConfigPath))
 	if err != nil {
 		return e.failControlPlaneConfig(record, "preflight", err)
@@ -530,72 +533,50 @@ func (e *Executor) executeKubeletConfig(ctx context.Context, record operation.Op
 	if err != nil {
 		return e.failControlPlaneConfig(record, "preflight", err)
 	}
-	localMatches := kubeadmplan.KubeletConfigurationContains(localBefore, desired) == nil
 	previous, err := e.lastKubeadmConfigMutation(record)
 	if err != nil {
 		return e.failControlPlaneConfig(record, "preflight", err)
 	}
-	// A subset match cannot detect removal of previously managed fields.
-	desiredChanged := previous != nil && previous.KubeadmControlPlaneConfig.DesiredConfigSHA256 != request.DesiredConfigSHA256
 	incomplete := previous != nil && previous.Result != operation.ResultSucceeded
-	localMatches = localMatches && !desiredChanged && !incomplete
-	// A matching file is not evidence that an interrupted restart loaded it.
-	restartNeeded := !localMatches
-	if !restartNeeded {
-		restartNeeded, err = e.kubeletNeedsRestart(ctx)
-		if err != nil {
-			return e.failControlPlaneConfig(record, "preflight", err)
-		}
+	// Service repair is independent of whether native rendering changes the file.
+	restartNeeded, err := e.kubeletNeedsRestart(ctx)
+	if err != nil {
+		return e.failControlPlaneConfig(record, "preflight", err)
+	}
+	patchesDir, err := e.prepareKubeadmPatches(record.OperationID, request.DesiredGenerationID)
+	if err != nil {
+		return e.failControlPlaneConfig(record, "preflight", err)
+	}
+	previewDir, err := e.prepareKubeletPreview(record.OperationID)
+	if err != nil {
+		return e.failControlPlaneConfig(record, "preflight", err)
 	}
 	uploadNeeded := request.CoordinatorUpload
 	if request.CoordinatorUpload {
+		uploadedDigest, err := e.lastSharedKubeletUpload(record.OperationID)
+		if err != nil {
+			return e.failControlPlaneConfig(record, "preflight", err)
+		}
 		liveResult := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "kube-system", "get", "configmap", "kubelet-config", "-o", "jsonpath={.data.kubelet}"}, nil)
 		if liveResult.Err != nil || liveResult.ExitStatus != 0 {
 			return e.failControlPlaneConfig(record, "preflight", fmt.Errorf("collect live kubelet config: %s", toolFailure(liveResult)))
 		}
-		uploadNeeded = desiredChanged || incomplete || kubeadmplan.KubeletConfigurationContains(liveResult.Stdout, desired) != nil
+		// A subset match cannot establish that removed source fields were applied.
+		// Without a completed upload receipt, reconcile the shared base once.
+		uploadNeeded = uploadedDigest != request.DesiredConfigSHA256 || kubeadmplan.KubeletConfigurationContains(liveResult.Stdout, desired) != nil
 	}
 	if err := e.captureKubeletHealth(ctx, record); err != nil {
 		return e.failControlPlaneConfig(record, "preflight", err)
 	}
-	before := sha256Bytes(localBefore)
-	if !uploadNeeded && !restartNeeded {
-		request.BeforeKubeletConfigSHA256 = before
-		request.AfterKubeletConfigSHA256 = before
-		return e.completeUnchangedKubeadmConfig(ctx, record)
-	}
 	if uploadNeeded {
-		argv := []string{"/usr/bin/kubeadm", "config", "validate", "--config", request.ConfigPath}
-		if err := e.runControlPlaneConfigCommand(ctx, record, "preflight-kubelet-config-validate", argv, false); err != nil {
-			return err
-		}
-	}
-	if !localMatches {
-		argv := []string{"/usr/bin/kubeadm", "upgrade", "node", "phase", "kubelet-config"}
-		if request.NodeLocalKubelet {
-			argv = append(argv, "--patches", filepath.Dir(request.ConfigPath)+"/patches")
-		}
-		argv = append(argv, "--dry-run")
-		if err := e.runControlPlaneConfigCommand(ctx, record, "preflight-kubelet-config-dry-run", argv, false); err != nil {
+		// Only upload consumes the selected file; local refresh validates through
+		// native upgrade preview without requiring bootstrap join credentials.
+		if err := e.runControlPlaneConfigCommand(ctx, record, "preflight-kubelet-config-validate", []string{"/usr/bin/kubeadm", "config", "validate", "--config", request.ConfigPath}, false); err != nil {
 			return err
 		}
 	}
 	if _, err := e.Store.Update(record.OperationID, "preflight-complete", "preflight-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		current.Phase = "preflight-complete"
-		current.UpdatedAt = e.clock()
-		return current, nil
-	}); err != nil {
-		return err
-	}
-	if !localMatches {
-		before, err = e.backupKubeletConfig(record.OperationID)
-		if err != nil {
-			return e.failControlPlaneConfig(record, "kubelet-config-backup", err)
-		}
-	}
-	if _, err := e.Store.Update(record.OperationID, "kubelet-config-backup-complete", "kubelet-config-backup-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
-		current.KubeadmControlPlaneConfig.BeforeKubeletConfigSHA256 = before
-		current.Phase = "kubelet-config-backup-complete"
 		current.UpdatedAt = e.clock()
 		return current, nil
 	}); err != nil {
@@ -615,11 +596,47 @@ func (e *Executor) executeKubeletConfig(ctx context.Context, record operation.Op
 			return err
 		}
 	}
+	// Resolve against the authoritative shared base after a required upload.
+	// A later patch failure retains that valid shared base for a corrected apply.
+	effective, err := e.previewKubeletConfig(ctx, record, previewDir, patchesDir)
+	if err != nil {
+		return e.failControlPlaneConfig(record, "kubelet-config-preview", err)
+	}
+	effectiveDigest, err := kubeadmplan.CanonicalKubeletConfigurationSHA256(effective)
+	if err != nil {
+		return e.failControlPlaneConfig(record, "kubelet-config-preview", err)
+	}
+	localDigest, err := kubeadmplan.CanonicalKubeletConfigurationSHA256(localBefore)
+	if err != nil {
+		return e.failControlPlaneConfig(record, "kubelet-config-preview", err)
+	}
+	localMatches := localDigest == effectiveDigest
+	restartNeeded = restartNeeded || incomplete || !localMatches
+	before := sha256Bytes(localBefore)
+	if !uploadNeeded && !restartNeeded {
+		request.BeforeKubeletConfigSHA256 = before
+		request.AfterKubeletConfigSHA256 = before
+		return e.completeUnchangedKubeadmConfig(ctx, record)
+	}
+	if !localMatches {
+		before, err = e.backupKubeletConfig(record.OperationID)
+		if err != nil {
+			return e.failControlPlaneConfig(record, "kubelet-config-backup", err)
+		}
+	}
+	if _, err := e.Store.Update(record.OperationID, "kubelet-config-backup-complete", "kubelet-config-backup-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.KubeadmControlPlaneConfig.BeforeKubeletConfigSHA256 = before
+		current.Phase = "kubelet-config-backup-complete"
+		current.UpdatedAt = e.clock()
+		return current, nil
+	}); err != nil {
+		return err
+	}
 	afterData := localBefore
 	if !localMatches {
 		argv := []string{"/usr/bin/kubeadm", "upgrade", "node", "phase", "kubelet-config"}
-		if request.NodeLocalKubelet {
-			argv = append(argv, "--patches", filepath.Dir(request.ConfigPath)+"/patches")
+		if patchesDir != "" {
+			argv = append(argv, "--patches", patchesDir)
 		}
 		if err := e.runControlPlaneConfigCommand(ctx, record, "kubelet-config-running", argv, true); err != nil {
 			return err
@@ -628,8 +645,12 @@ func (e *Executor) executeKubeletConfig(ctx context.Context, record operation.Op
 		if err != nil {
 			return e.failControlPlaneConfig(record, "kubelet-config-verify", err)
 		}
-		if err := kubeadmplan.KubeletConfigurationContains(afterData, desired); err != nil {
-			return e.failControlPlaneConfig(record, "kubelet-config-verify", err)
+		afterDigest, err := kubeadmplan.CanonicalKubeletConfigurationSHA256(afterData)
+		if err != nil {
+			return e.failControlPlaneConfig(record, "kubelet-config-verify", fmt.Errorf("identify written kubelet configuration: %w", err))
+		}
+		if afterDigest != effectiveDigest {
+			return e.failControlPlaneConfig(record, "kubelet-config-verify", fmt.Errorf("written kubelet configuration does not match native preview"))
 		}
 	}
 	after := sha256Bytes(afterData)
@@ -682,6 +703,28 @@ func (e *Executor) lastKubeadmConfigMutation(record operation.OperationRecord) (
 		return &previous, nil
 	}
 	return nil, nil
+}
+
+func (e *Executor) lastSharedKubeletUpload(operationID string) (string, error) {
+	records, err := e.Store.List()
+	if err != nil {
+		return "", err
+	}
+	for _, previous := range records {
+		body := previous.KubeadmControlPlaneConfig
+		if previous.OperationID == operationID || body == nil || body.Component != "kubelet" {
+			continue
+		}
+		// A failed coordinator may have changed the shared base before its upload
+		// receipt was recorded. An older success cannot establish current intent.
+		if body.CoordinatorUpload && previous.ExternalMutationStarted && previous.Result != operation.ResultSucceeded {
+			return "", nil
+		}
+		if body.ConfigUploadRan && previous.Result == operation.ResultSucceeded {
+			return body.DesiredConfigSHA256, nil
+		}
+	}
+	return "", nil
 }
 
 func (e *Executor) completeUnchangedKubeadmConfig(ctx context.Context, record operation.OperationRecord) error {
@@ -799,7 +842,7 @@ func (e *Executor) failControlPlaneConfig(record operation.OperationRecord, phas
 			current.Result = operation.ResultFailedNeedsRepair
 			current.NextAction = "stop rollout; inspect manifest backups and kubeadm diagnostics, then submit an explicit repair or reverse operation"
 			if current.KubeadmControlPlaneConfig.Component == "kubelet" {
-				current.NextAction = "inspect the reported kubelet configuration differences and operation diagnostics; correct the desired configuration or update Katl, then rerun katlctl cluster apply; the kubelet configuration backup is retained with this operation"
+				current.NextAction = "inspect the reported kubelet configuration differences and operation diagnostics; correct the desired configuration or update Katl, then rerun katlctl cluster apply"
 			}
 		} else {
 			current.NextAction = "fix the refusal and submit a new rollout"

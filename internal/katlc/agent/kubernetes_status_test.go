@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -24,13 +25,15 @@ func TestNodeKubernetesStatusReportsNotConfiguredBeforeBootstrap(t *testing.T) {
 
 func TestControlPlaneHealth(t *testing.T) {
 	for _, tc := range []struct {
-		name             string
-		failAPI, failPod bool
-		want             string
+		name, podReady, containersReady, nodeReady string
+		failAPI                                    bool
+		want                                       string
 	}{
-		{name: "healthy", want: "ready"},
+		{name: "healthy", podReady: "True", containersReady: "True", nodeReady: "True", want: "ready"},
+		{name: "node controller marks pods unready", podReady: "False", containersReady: "True", nodeReady: "True", want: "ready"},
+		{name: "PodReady cannot mask failed container probes", podReady: "True", containersReady: "False", nodeReady: "True", want: "waiting-for-control-plane"},
+		{name: "healthy components cannot mask unready node", podReady: "False", containersReady: "True", nodeReady: "False", want: "waiting-for-node"},
 		{name: "peer cannot mask local API", failAPI: true, want: "waiting-for-control-plane"},
-		{name: "running scheduler is not ready", failPod: true, want: "waiting-for-control-plane"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -51,12 +54,18 @@ func TestControlPlaneHealth(t *testing.T) {
 					if tc.failAPI && strings.Contains(command, "--raw=/readyz") {
 						return ToolResult{ExitStatus: 1}
 					}
-					if tc.failPod && strings.Contains(command, "pod/kube-scheduler-cp-1") && strings.Contains(command, "--for=condition=Ready") {
-						return ToolResult{ExitStatus: 1}
+					if slices.Contains(argv, "wait") {
+						conditions := map[string]string{"Ready": tc.podReady, "ContainersReady": tc.containersReady}
+						for _, argument := range argv {
+							if condition, ok := strings.CutPrefix(argument, "--for=condition="); ok && conditions[condition] != "True" {
+								return ToolResult{ExitStatus: 1}
+							}
+						}
 					}
 				}
-				// Peer, existence and CRI Running observations succeed; only
-				// the local readiness condition can fail.
+				if slices.Contains(argv, "node") {
+					return ToolResult{Stdout: []byte(tc.nodeReady)}
+				}
 				return ToolResult{Stdout: []byte("True")}
 			}
 
@@ -64,7 +73,7 @@ func TestControlPlaneHealth(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if status.GetState() != tc.want || status.GetControlPlaneComponentsReady() != (tc.want == "ready") {
+			if status.GetState() != tc.want || status.GetControlPlaneComponentsReady() != (tc.want != "waiting-for-control-plane") {
 				t.Fatalf("status=%s, want %s", status, tc.want)
 			}
 		})

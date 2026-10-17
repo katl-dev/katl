@@ -34,11 +34,15 @@ func TestOrderControlPlanesChangesCoordinatorLast(t *testing.T) {
 	}
 }
 
-func TestKubeadmControlPlaneConfigBodyKeepsNodeLocalKubeletOffCluster(t *testing.T) {
-	node := inventory.Node{Name: "cp-1", KubeadmConfig: inventory.KubeadmConfig{Ref: "node-cp-1", NodeLocalKubelet: true}}
-	body := kubeadmControlPlaneConfigBody(kubeadmControlPlaneConfigOptions{rolloutID: "rollout", coordinator: "cp-1", component: "kubelet"}, node, "generation-1", 1, 1)
-	if !body.NodeLocalKubelet || body.CoordinatorUpload {
-		t.Fatalf("body = %#v", body)
+func TestKubeletUploadOwnership(t *testing.T) {
+	for _, name := range []string{"cp-1", "worker-1"} {
+		t.Run(name, func(t *testing.T) {
+			node := inventory.Node{Name: name, KubeadmConfig: inventory.KubeadmConfig{Ref: "node-" + name, NodeLocalKubelet: true}}
+			body := kubeadmControlPlaneConfigBody(kubeadmControlPlaneConfigOptions{rolloutID: "rollout", coordinator: "cp-1", component: "kubelet"}, node, "generation-1", 1, 2)
+			if !body.NodeLocalKubelet || body.CoordinatorUpload != (name == "cp-1") {
+				t.Fatalf("body = %#v", body)
+			}
+		})
 	}
 }
 

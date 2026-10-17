@@ -15,6 +15,7 @@ import (
 	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
@@ -47,6 +48,7 @@ type Plan struct {
 	Previous      generation.GenerationSpec
 	PreviousState generation.GenerationStatus
 	RuntimeInputs RuntimeInputs
+	SelectedInput InputSelection
 }
 
 type RuntimeInputs struct {
@@ -118,11 +120,16 @@ func Create(request Request) (Plan, error) {
 	if err := validateRequest(kind, intent, bootstrap); err != nil {
 		return Plan{}, err
 	}
+	selection, err := SelectInput(root, currentGenerationID, intent, bootstrap)
+	if err != nil {
+		return Plan{}, err
+	}
+	bootstrap.KubeadmInputDigest = selection.Input.Digest
 	previous, previousState, err := generation.ReadGeneration(root, currentGenerationID)
 	if err != nil {
 		return Plan{}, fmt.Errorf("read current generation %s records: %w", currentGenerationID, err)
 	}
-	inputs, err := runtimeInputs(root, previous, intent, bootstrap, request.BundleClient)
+	inputs, err := runtimeInputs(root, previous, bootstrap, selection, request.BundleClient)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -172,6 +179,7 @@ func Create(request Request) (Plan, error) {
 		Previous:      previous,
 		PreviousState: previousState,
 		RuntimeInputs: inputs,
+		SelectedInput: selection,
 	}, nil
 }
 
@@ -217,14 +225,21 @@ func fromOperation(root string, record operation.OperationRecord, client *http.C
 		return Plan{}, fmt.Errorf("operation bootstrapRequest is required")
 	}
 	bootstrap := *cloneBootstrapRequest(*record.BootstrapRequest)
+	if bootstrap.KubeadmInputDigest == "" {
+		return Plan{}, fmt.Errorf("bootstrap operation has no pinned kubeadm input digest; preserve node state and submit a new bootstrap operation")
+	}
 	if err := validateRequest(record.OperationKind, intent, bootstrap); err != nil {
+		return Plan{}, err
+	}
+	selection, err := SelectInput(root, currentGenerationID, intent, bootstrap)
+	if err != nil {
 		return Plan{}, err
 	}
 	previous, previousState, err := generation.ReadGeneration(root, currentGenerationID)
 	if err != nil {
 		return Plan{}, fmt.Errorf("read current generation %s records: %w", currentGenerationID, err)
 	}
-	inputs, err := runtimeInputs(root, previous, intent, bootstrap, client)
+	inputs, err := runtimeInputs(root, previous, bootstrap, selection, client)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -240,6 +255,7 @@ func fromOperation(root string, record operation.OperationRecord, client *http.C
 		Previous:      previous,
 		PreviousState: previousState,
 		RuntimeInputs: inputs,
+		SelectedInput: selection,
 	}, nil
 }
 
@@ -255,44 +271,6 @@ func validateIntent(intent installer.ClusterIntent) error {
 	}
 	if strings.TrimSpace(intent.Inventory.NodeName) == "" {
 		return fmt.Errorf("cluster intent inventory nodeName is required")
-	}
-	if intent.BootstrapProfile == nil || strings.TrimSpace(intent.BootstrapProfile.Ref) == "" {
-		return fmt.Errorf("cluster intent bootstrapProfile ref is required")
-	}
-	if strings.TrimSpace(intent.BootstrapProfile.ResolvedID) == "" {
-		return fmt.Errorf("cluster intent bootstrapProfile resolvedID is required")
-	}
-	if strings.TrimSpace(intent.BootstrapProfile.KubeadmConfigRef) == "" || strings.TrimSpace(intent.BootstrapProfile.KubeadmInputDigest) == "" {
-		return fmt.Errorf("cluster intent bootstrapProfile kubeadm refs are required")
-	}
-	if intent.Kubeadm == nil || strings.TrimSpace(intent.Kubeadm.ConfigRef) == "" || strings.TrimSpace(intent.Kubeadm.ConfigPath) == "" || strings.TrimSpace(intent.Kubeadm.InputDigest) == "" {
-		return fmt.Errorf("cluster intent kubeadm input is required")
-	}
-	if intent.Kubeadm.Intent != role {
-		return fmt.Errorf("cluster intent kubeadm intent %q does not match systemRole %q", intent.Kubeadm.Intent, role)
-	}
-	if err := validateKubeadmPath(intent.Kubeadm.ConfigPath); err != nil {
-		return err
-	}
-	if intent.BootstrapProfile.KubeadmConfigRef != "" && intent.BootstrapProfile.KubeadmConfigRef != intent.Kubeadm.ConfigRef {
-		return fmt.Errorf("cluster intent bootstrapProfile kubeadmConfigRef %q does not match kubeadm configRef %q", intent.BootstrapProfile.KubeadmConfigRef, intent.Kubeadm.ConfigRef)
-	}
-	if intent.BootstrapProfile.KubeadmInputDigest != "" && intent.BootstrapProfile.KubeadmInputDigest != intent.Kubeadm.InputDigest {
-		return fmt.Errorf("cluster intent bootstrapProfile kubeadmInputDigest does not match kubeadm inputDigest")
-	}
-	return nil
-}
-
-func validateKubeadmPath(path string) error {
-	path = filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
-	if path == "." || path == "/" || strings.Contains(path, "/../") || strings.HasSuffix(path, "/..") {
-		return fmt.Errorf("cluster intent kubeadm configPath must be clean")
-	}
-	if !strings.HasPrefix(path, "/etc/katl/kubeadm/") {
-		return fmt.Errorf("cluster intent kubeadm configPath must be under /etc/katl/kubeadm")
-	}
-	if filepath.Ext(path) != ".yaml" {
-		return fmt.Errorf("cluster intent kubeadm configPath must name a YAML file")
 	}
 	return nil
 }
@@ -313,12 +291,6 @@ func validateRequest(kind string, intent installer.ClusterIntent, request operat
 	if kind == OperationKindJoinControlPlane && request.SystemRole != "control-plane" {
 		return fmt.Errorf("%s requires control-plane systemRole", OperationKindJoinControlPlane)
 	}
-	if strings.TrimSpace(intent.Kubernetes.PayloadVersion) != "" && request.KubernetesPayloadVersion != intent.Kubernetes.PayloadVersion {
-		return fmt.Errorf("bootstrapRequest kubernetesPayloadVersion %q does not match stored intent %q", request.KubernetesPayloadVersion, intent.Kubernetes.PayloadVersion)
-	}
-	if request.BootstrapProfileRef != intent.BootstrapProfile.Ref {
-		return fmt.Errorf("bootstrapRequest bootstrapProfileRef %q does not match stored intent %q", request.BootstrapProfileRef, intent.BootstrapProfile.Ref)
-	}
 	if strings.TrimSpace(request.APIProxyConfig) != "" {
 		var proxy apiproxy.Config
 		if err := json.Unmarshal([]byte(request.APIProxyConfig), &proxy); err != nil {
@@ -327,9 +299,6 @@ func validateRequest(kind string, intent installer.ClusterIntent, request operat
 		if _, err := apiproxy.Normalize(proxy); err != nil {
 			return fmt.Errorf("bootstrapRequest API proxy config: %w", err)
 		}
-	}
-	if strings.TrimSpace(request.KubeadmInputDigest) != "" && request.KubeadmInputDigest != intent.Kubeadm.InputDigest {
-		return fmt.Errorf("bootstrapRequest kubeadmInputDigest does not match stored intent")
 	}
 	candidate := strings.TrimSpace(request.CandidateGenerationID)
 	if candidate == "" || candidate == defaultGenerationID {
@@ -360,26 +329,34 @@ func validateRequest(kind string, intent installer.ClusterIntent, request operat
 	})
 }
 
-func runtimeInputs(root string, previous generation.GenerationSpec, intent installer.ClusterIntent, request operation.BootstrapRequest, client *http.Client) (RuntimeInputs, error) {
-	selected, err := selectKubernetesSysext(root, previous, intent.Kubernetes, request, client)
+func runtimeInputs(root string, previous generation.GenerationSpec, request operation.BootstrapRequest, selection InputSelection, client *http.Client) (RuntimeInputs, error) {
+	selected, err := selectKubernetesSysext(root, previous, request, client)
 	if err != nil {
 		return RuntimeInputs{}, err
+	}
+	endpoint, vip := "", ""
+	if configured := selection.Configuration.Manifest.Node.ControlPlaneEndpoint; configured != nil {
+		plan, err := controlplaneendpoint.Normalize(*configured)
+		if err != nil {
+			return RuntimeInputs{}, err
+		}
+		endpoint = plan.Endpoint
+		if plan.Config.Advertisement != nil {
+			vip = plan.Config.Advertisement.VIP
+		}
+	} else if bootstrap := selection.Configuration.Manifest.Node.Bootstrap; bootstrap != nil {
+		endpoint = bootstrap.ControlPlaneEndpoint
 	}
 	return RuntimeInputs{
 		SelectedKubernetesSysext: selected,
 		HostConfig: HostConfig{
 			NodeName:                request.InventoryNodeName,
 			SystemRole:              request.SystemRole,
-			ControlPlaneEndpoint:    firstNonEmpty(request.ControlPlaneEndpoint, intent.Inventory.ControlPlaneEndpoint),
-			ControlPlaneEndpointVIP: intent.Inventory.ControlPlaneEndpointVIP,
+			ControlPlaneEndpoint:    firstNonEmpty(request.ControlPlaneEndpoint, endpoint),
+			ControlPlaneEndpointVIP: vip,
 			NodeMetadataPath:        "/etc/katl/node.json",
 		},
-		KubeadmInput: KubeadmInput{
-			ConfigRef: intent.Kubeadm.ConfigRef,
-			Intent:    intent.Kubeadm.Intent,
-			Path:      intent.Kubeadm.ConfigPath,
-			Digest:    intent.Kubeadm.InputDigest,
-		},
+		KubeadmInput: selection.Input,
 		KubernetesProjection: KubernetesProjection{
 			What:  generation.KubernetesSource,
 			Where: generation.KubernetesTarget,
@@ -387,7 +364,7 @@ func runtimeInputs(root string, previous generation.GenerationSpec, intent insta
 	}, nil
 }
 
-func selectKubernetesSysext(root string, previous generation.GenerationSpec, _ installer.ClusterIntentKubernetes, request operation.BootstrapRequest, client *http.Client) (SelectedKubernetesSysext, error) {
+func selectKubernetesSysext(root string, previous generation.GenerationSpec, request operation.BootstrapRequest, client *http.Client) (SelectedKubernetesSysext, error) {
 	if strings.TrimSpace(request.KubernetesBundleSource) == "" && strings.TrimSpace(request.KubernetesBundleRef) == "" {
 		return SelectedKubernetesSysext{}, fmt.Errorf("bootstrapRequest kubernetesBundleSource and kubernetesBundleRef are required")
 	}

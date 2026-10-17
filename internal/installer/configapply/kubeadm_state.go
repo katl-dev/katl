@@ -27,8 +27,9 @@ func generationKubeadmFiles(ref string, plan kubeadmconfig.Plan) ([]configuratio
 	if err != nil {
 		return nil, err
 	}
-	files := append([]kubeadmconfig.File{plan.Config}, plan.Patches...)
-	if _, err := kubeadmconfig.PlanFromRenderedFiles(ref, files); err != nil {
+	plan.Name = ref
+	files, err := plan.InputFiles()
+	if err != nil {
 		return nil, fmt.Errorf("validate desired kubeadm input: %w", err)
 	}
 	var result []configurationFile
@@ -113,7 +114,7 @@ func readKubeadmConfigDir(base, ref string) (kubeadmconfig.Plan, error) {
 	}); err != nil {
 		return kubeadmconfig.Plan{}, fmt.Errorf("read kubeadm input %s: %w", base, err)
 	}
-	plan, err := kubeadmconfig.PlanFromRenderedFiles(ref, files)
+	plan, err := kubeadmconfig.PlanFromInputFiles(ref, files)
 	if err != nil {
 		return kubeadmconfig.Plan{}, fmt.Errorf("decode kubeadm input %s: %w", base, err)
 	}

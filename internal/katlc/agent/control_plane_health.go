@@ -8,7 +8,8 @@ import (
 
 // Local health must bypass the API proxy: a healthy peer cannot establish that
 // this node's API or static pods have recovered. Node readiness remains a
-// separate requirement because bootstrap can precede CNI installation.
+// separate requirement because bootstrap can precede CNI installation. Use
+// container probe results because NodeLifecycle can clear PodReady before CNI.
 func localControlPlaneHealthCommands(root, node string, timeout time.Duration) ([][]string, error) {
 	endpoint, err := localKubeAPIServerEndpoint(root)
 	if err != nil {
@@ -17,6 +18,6 @@ func localControlPlaneHealthCommands(root, node string, timeout time.Duration) (
 	client := []string{"/usr/bin/kubectl", "--kubeconfig", rootedRuntimePath(root, "/etc/kubernetes/admin.conf"), "--server", endpoint.URL(), "--request-timeout", timeout.String()}
 	return [][]string{
 		append(slices.Clone(client), "get", "--raw=/readyz"),
-		append(slices.Clone(client), "-n", "kube-system", "wait", "--for=condition=Ready", "--timeout="+timeout.String(), "pod/etcd-"+node, "pod/kube-apiserver-"+node, "pod/kube-controller-manager-"+node, "pod/kube-scheduler-"+node),
+		append(slices.Clone(client), "-n", "kube-system", "wait", "--for=condition=ContainersReady", "--timeout="+timeout.String(), "pod/etcd-"+node, "pod/kube-apiserver-"+node, "pod/kube-controller-manager-"+node, "pod/kube-scheduler-"+node),
 	}, nil
 }

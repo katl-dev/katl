@@ -2,6 +2,7 @@ package configapply
 
 import (
 	"errors"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/manifest"
+	"gopkg.in/yaml.v3"
 )
 
 func TestRenderNodeConfigurationChange(t *testing.T) {
@@ -130,6 +132,7 @@ func TestRenderNodeConfigurationChangeCarriesSelectedKubeadmInput(t *testing.T) 
 		t.Fatal(err)
 	}
 	plan.NodeLocalKubelet = true
+	plan.SharedKubeletBase = true
 	data, err := RenderNodeConfigurationChange(RenderNodeRequest{
 		NodeName: "cp-1",
 		Manifest: manifest.Manifest{Node: manifest.NodeConfig{
@@ -149,11 +152,52 @@ func TestRenderNodeConfigurationChangeCarriesSelectedKubeadmInput(t *testing.T) 
 		t.Fatalf("DecodeNodeConfigurationChange() error = %v\n%s", err, data)
 	}
 	resolved := request.KubeadmConfigs["control-plane"]
-	if !strings.Contains(string(resolved.Config.Content), "kubernetesVersion: v1.36.1") || !resolved.NodeLocalKubelet || len(resolved.Patches) != 1 {
+	if !strings.Contains(string(resolved.Config.Content), "kubernetesVersion: v1.36.1") || !resolved.NodeLocalKubelet || !resolved.SharedKubeletBase || len(resolved.Patches) != 1 {
 		t.Fatalf("resolved kubeadm input = %#v", resolved)
 	}
 	if !request.NodeOverrides["cp-1"].KubeadmChanged {
 		t.Fatal("rendered kubeadm input was not planned as an operation-only change")
+	}
+}
+
+func TestRenderedKubeadmPatchPaths(t *testing.T) {
+	plan, err := kubeadmconfig.PlanFromRenderedFiles("control-plane", []kubeadmconfig.File{
+		{RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml", Content: []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n")},
+		{RenderPath: "/etc/katl/kubeadm/control-plane/patches/00-native/early/kubeletconfiguration+merge.yaml", Content: []byte("maxPods: 121\n")},
+		{RenderPath: "/etc/katl/kubeadm/control-plane/patches/00-native/late/kubeletconfiguration+merge.yaml", Content: []byte("maxPods: 122\n")},
+		{RenderPath: "/etc/katl/kubeadm/control-plane/patches/10-node/kubeletconfiguration+merge.yaml", Content: []byte("healthzPort: 0\n")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := RenderNodeConfigurationChange(RenderNodeRequest{
+		NodeName: "cp-1", SourceID: "lab", DesiredVersion: "2",
+		Manifest: manifest.Manifest{Node: manifest.NodeConfig{
+			Kubernetes: manifest.KubernetesConfig{Kubeadm: manifest.KubeadmReference{ConfigRef: "control-plane"}},
+		}},
+		KubeadmConfigs: map[string]kubeadmconfig.Plan{"control-plane": plan},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var document struct {
+		Spec struct {
+			KubeadmConfigs map[string]struct {
+				Patches map[string]string `yaml:"patches"`
+			} `yaml:"kubeadmConfigs"`
+		} `yaml:"spec"`
+	}
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"00-native/early/kubeletconfiguration+merge.yaml": "maxPods: 121\n",
+		"00-native/late/kubeletconfiguration+merge.yaml":  "maxPods: 122\n",
+		"10-node/kubeletconfiguration+merge.yaml":         "healthzPort: 0\n",
+	}
+	if got := document.Spec.KubeadmConfigs["control-plane"].Patches; !reflect.DeepEqual(got, want) {
+		t.Fatalf("rendered patch tree = %#v, want %#v", got, want)
 	}
 }
 

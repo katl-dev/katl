@@ -1259,10 +1259,11 @@ func addNodeKubeadmInputs(members *[]member, descriptors *[]Descriptor, node clu
 	for _, file := range files {
 		rel := strings.TrimPrefix(strings.TrimPrefix(filepath.ToSlash(file.RenderPath), "/etc/katl/kubeadm/"+ref+"/"), "/")
 		desc := addBytes(members, descriptors, "kubeadm-input", node.Name, "application/vnd.katl.kubeadm.input.v1+yaml", "nodes/"+node.Name+"/kubernetes/kubeadm/"+rel, file.Content, map[string]string{
-			"dev.katl.kubeadm.resolved-id":        ref,
-			"dev.katl.kubeadm.intent":             string(node.KubeadmConfig.Intent),
-			"dev.katl.kubeadm.api-versions":       strings.Join(kubeadmAPIVersions(map[string]kubeadmconfig.Plan{ref: plan}), ","),
-			"dev.katl.kubeadm.node-local-kubelet": strconv.FormatBool(plan.NodeLocalKubelet),
+			"dev.katl.kubeadm.resolved-id":         ref,
+			"dev.katl.kubeadm.intent":              string(node.KubeadmConfig.Intent),
+			"dev.katl.kubeadm.api-versions":        strings.Join(kubeadmAPIVersions(map[string]kubeadmconfig.Plan{ref: plan}), ","),
+			"dev.katl.kubeadm.node-local-kubelet":  strconv.FormatBool(plan.NodeLocalKubelet),
+			"dev.katl.kubeadm.shared-kubelet-base": strconv.FormatBool(plan.SharedKubeletBase),
 		})
 		out = append(out, desc)
 	}

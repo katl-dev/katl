@@ -130,6 +130,7 @@ func TestExecutorRemovesStagedKubernetesIdentityAfterPreparationFailure(t *testi
 			KubernetesIdentityCluster:     info.ClusterName,
 			KubernetesIdentityFingerprint: info.Fingerprint,
 			KubernetesIdentityDigest:      "sha256:" + strings.Repeat("f", 64),
+			KubeadmInputDigest:            bootstrapInputDigest(t, server.Root),
 		},
 		ClientRequestID: "client-op-identity-fail",
 	}, "accepted", server.clock())
@@ -1326,6 +1327,8 @@ func createBootstrapOperationWithoutPlan(t *testing.T, store operation.Store, id
 
 func createAcceptedBootstrapOperation(t *testing.T, store operation.Store, id string, candidate string, bundleSource string, bundleRef string, plan *operation.ExecutorPlan) operation.OperationRecord {
 	t.Helper()
+	root := filepath.Clean(filepath.Join(store.Root, "../../../.."))
+	inputDigest := bootstrapInputDigest(t, root)
 	record, err := store.Create(operation.OperationRecord{
 		OperationID:                 id,
 		OperationKind:               "bootstrap-init",
@@ -1340,6 +1343,7 @@ func createAcceptedBootstrapOperation(t *testing.T, store operation.Store, id st
 		ResourceLocks:               []string{"generation:0", "kubeadm-state"},
 		ExecutorPlan:                plan,
 		BootstrapRequest: &operation.BootstrapRequest{
+			KubeadmInputDigest:       inputDigest,
 			InventoryNodeName:        "node-a",
 			SystemRole:               "control-plane",
 			KubernetesPayloadVersion: "v1.35.0",
@@ -1354,6 +1358,20 @@ func createAcceptedBootstrapOperation(t *testing.T, store operation.Store, id st
 		t.Fatal(err)
 	}
 	return record
+}
+
+func bootstrapInputDigest(t *testing.T, root string) string {
+	t.Helper()
+	configuration, err := configapply.ReadGenerationConfiguration(root, "0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected := configuration.KubeadmConfigs[configuration.Manifest.Node.Kubernetes.Kubeadm.ConfigRef]
+	inputDigest, err := selected.InputDigest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return inputDigest
 }
 
 func configureExecutorBundle(t *testing.T, executor *Executor, payloadVersion string, payload string) (string, string) {

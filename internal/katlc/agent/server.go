@@ -26,6 +26,8 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/bootstrapplan"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -580,7 +582,16 @@ func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperat
 			bootstrapRequest.JoinMaterialRef = "request:" + bootstrapRequest.JoinMaterialDigest[:12]
 		}
 	}
-	plan, err := kubeadmPlanFromSubmit(req, id, temporaryJoinConfig)
+	installed, _, err := installer.ReadClusterIntent(s.Root)
+	if err != nil {
+		return operation.OperationRecord{}, nil, status.Errorf(codes.FailedPrecondition, "read installed bootstrap identity: %v", err)
+	}
+	selection, err := bootstrapplan.SelectInput(s.Root, req.ExpectedCurrentGenerationId, installed, bootstrapRequest)
+	if err != nil {
+		return operation.OperationRecord{}, nil, status.Errorf(codes.FailedPrecondition, "select bootstrap input: %v", err)
+	}
+	bootstrapRequest.KubeadmInputDigest = selection.Input.Digest
+	plan, err := kubeadmPlanFromSubmit(req, id, temporaryJoinConfig, selection.Input.Path)
 	if err != nil {
 		return operation.OperationRecord{}, nil, status.Errorf(codes.InvalidArgument, "operation request: %v", err)
 	}
@@ -623,7 +634,7 @@ func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperat
 		}
 	}
 	if isJoinOperation(req.OperationKind) {
-		metadata, err := s.materializeJoinConfig(req, id)
+		metadata, err := s.materializeJoinConfig(req, id, selection.Configuration.KubeadmConfigs[selection.Input.ConfigRef])
 		if err != nil {
 			updated, updateErr := s.markMaterializationFailed(id, err)
 			if updateErr != nil {
@@ -1424,7 +1435,7 @@ func operationScope(kind string) string {
 	}
 }
 
-func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest, operationID string, temporaryJoinConfigPath string) (toolPlan, error) {
+func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest, operationID string, temporaryJoinConfigPath, configPath string) (toolPlan, error) {
 	if req == nil || req.Bootstrap == nil {
 		return toolPlan{}, fmt.Errorf("bootstrap request is required")
 	}
@@ -1435,7 +1446,6 @@ func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest, operationID str
 	if err := cleanPublicID("bootstrapProfileRef", ref); err != nil {
 		return toolPlan{}, err
 	}
-	configPath := "/etc/katl/kubeadm/" + ref + "/config.yaml"
 	plan := toolPlan{
 		MutationScopes: []string{"etc-kubernetes", "kubelet-state", "etcd-state", "cluster-objects"},
 	}
@@ -1595,21 +1605,13 @@ func kubernetesIdentityStagingPath(storeRoot, operationID string) string {
 	return filepath.Join(filepath.Clean(storeRoot), operationID, "kubernetes-identity.katlkey")
 }
 
-func (s *Server) materializeJoinConfig(req *agentapi.SubmitOperationRequest, operationID string) (workerJoinMetadata, error) {
+func (s *Server) materializeJoinConfig(req *agentapi.SubmitOperationRequest, operationID string, selected kubeadmconfig.Plan) (workerJoinMetadata, error) {
 	bootstrap := req.GetBootstrap()
 	material, err := joinMaterial(bootstrap.GetWorkerJoinMaterial())
 	if err != nil {
 		return workerJoinMetadata{}, err
 	}
-	ref := strings.TrimSpace(bootstrap.GetBootstrapProfileRef())
-	inputDir, err := installer.StoredKubeadmInputDir(s.Root, ref)
-	if err != nil {
-		return workerJoinMetadata{}, err
-	}
-	base, err := os.ReadFile(filepath.Join(inputDir, "config.yaml"))
-	if err != nil {
-		return workerJoinMetadata{}, fmt.Errorf("read stored kubeadm config: %w", err)
-	}
+	base := selected.Config.Content
 	runtimePath := temporaryJoinConfigPath(operationID)
 	discoveryPath := ""
 	if len(material.DiscoveryKubeconfig) > 0 {

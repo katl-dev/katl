@@ -68,9 +68,10 @@ func (data *payloadData) UnmarshalYAML(node *yaml.Node) error {
 }
 
 type inlineKubeadmConfig struct {
-	Config           string            `json:"config" yaml:"config"`
-	Patches          map[string]string `json:"patches,omitempty" yaml:"patches,omitempty"`
-	NodeLocalKubelet bool              `json:"nodeLocalKubelet,omitempty" yaml:"nodeLocalKubelet,omitempty"`
+	Config            string            `json:"config" yaml:"config"`
+	Patches           map[string]string `json:"patches,omitempty" yaml:"patches,omitempty"`
+	NodeLocalKubelet  bool              `json:"nodeLocalKubelet,omitempty" yaml:"nodeLocalKubelet,omitempty"`
+	SharedKubeletBase bool              `json:"sharedKubeletBase,omitempty" yaml:"sharedKubeletBase,omitempty"`
 }
 
 type nodeConfigurationOverlay struct {
@@ -278,6 +279,7 @@ func mergeInlineKubeadmConfigs(installed map[string]kubeadmconfig.Plan, inline m
 			return nil, nil, fmt.Errorf("spec.kubeadmConfigs.%s: %w", name, err)
 		}
 		plan.NodeLocalKubelet = input.NodeLocalKubelet
+		plan.SharedKubeletBase = input.SharedKubeletBase
 		previous, exists := installed[name]
 		if !exists || !equivalentKubeadmPlans(previous, plan) {
 			changed[name] = struct{}{}
@@ -288,6 +290,9 @@ func mergeInlineKubeadmConfigs(installed map[string]kubeadmconfig.Plan, inline m
 }
 
 func equivalentKubeadmPlans(previous, desired kubeadmconfig.Plan) bool {
+	if previous.NodeLocalKubelet != desired.NodeLocalKubelet || previous.SharedKubeletBase != desired.SharedKubeletBase {
+		return false
+	}
 	previousFiles := previous.NativeEtcFiles()
 	desiredFiles := desired.NativeEtcFiles()
 	if len(previousFiles) != len(desiredFiles) {

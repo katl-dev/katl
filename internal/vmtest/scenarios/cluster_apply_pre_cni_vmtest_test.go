@@ -26,43 +26,11 @@ func runPreCNIClusterApply(t *testing.T, ctx context.Context, smoke operationBac
 		return err
 	}
 
-	// Preserve each installed node's intent; omitted host or kernel configuration
-	// would turn this kubelet edit into an unrelated host change.
-	var source configbundle.SourceConfig
-	for _, name := range []string{"cp-1", "worker-1"} {
-		producer := filepath.Dir(smoke.Inputs.WorldProvenance.FixtureProducerScenarios[name])
-		original, err := os.ReadFile(filepath.Join(producer, "inputs", "config-bundle-source", name, "cluster.yaml"))
-		if err != nil {
-			return fmt.Errorf("read %s installed ClusterConfig: %w", name, err)
-		}
-		installed, err := configbundle.DecodeSource(bytes.NewReader(original))
-		if err != nil {
-			return err
-		}
-		if name == "cp-1" {
-			source = installed
-			source.Spec.Nodes = nil
-		} else if !reflect.DeepEqual(source.Spec.Defaults, installed.Spec.Defaults) || source.Spec.ManagementAuthentication != installed.Spec.ManagementAuthentication {
-			return fmt.Errorf("installed node sources disagree on shared host intent")
-		}
-		found := false
-		for _, node := range installed.Spec.Nodes {
-			if node.Name == name {
-				node.Management.Address = addresses[name]
-				source.Spec.Nodes = append(source.Spec.Nodes, node)
-				found = true
-			}
-		}
-		if !found {
-			return fmt.Errorf("installed source does not describe %s", name)
-		}
+	source, err := twoNodeInstalledSource(smoke, addresses)
+	if err != nil {
+		return err
 	}
-	if source.Spec.ControlPlaneEndpoint == nil {
-		return fmt.Errorf("installed source has no control-plane endpoint")
-	}
-	source.Metadata.Name = "two-node"
-	source.Spec.ControlPlaneEndpoint.Host = "api.unpublished.katl.test"
-	source.Spec.Kubernetes.Kubeadm = &configbundle.SourceKubeadmInput{ConfigFile: "kubeadm.yaml"}
+	source.Spec.Kubernetes.Kubeadm = &configbundle.SourceKubeadmInput{ConfigFile: "kubeadm.yaml", PatchesDir: "patches"}
 	source.Spec.Defaults.Kubernetes.Kubelet = &configbundle.SourceKubeletConfig{ConfigFile: "kubelet.yaml"}
 	data, err := yaml.Marshal(source)
 	if err != nil {
@@ -80,11 +48,26 @@ func runPreCNIClusterApply(t *testing.T, ctx context.Context, smoke operationBac
 	if err != nil {
 		return err
 	}
+	live = append(live, []byte("\n---\napiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 108\n")...)
 	if err := os.WriteFile(filepath.Join(dir, "kubeadm.yaml"), live, 0o600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "kubelet.yaml"), []byte("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 111\nhealthzPort: 0\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "kubelet.yaml"), []byte("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nhealthzPort: 0\n"), 0o600); err != nil {
 		return err
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "patches"), 0o700); err != nil {
+		return err
+	}
+	// The JSON test requires the new shared base. Every native patch type then
+	// contributes to the effective result, before the unrelated node overlay.
+	for name, content := range map[string]string{
+		"kubeletconfiguration0+json.json":      `[{"op":"test","path":"/maxPods","value":108},{"op":"replace","path":"/maxPods","value":109},{"op":"add","path":"/serializeImagePulls","value":false}]`,
+		"kubeletconfiguration1+strategic.yaml": "maxPods: 110\nregistryPullQPS: 7\n",
+		"kubeletconfigurationzzzz+merge.yaml":  "maxPods: 111\n",
+	} {
+		if err := os.WriteFile(filepath.Join(dir, "patches", name), []byte(content), 0o600); err != nil {
+			return err
+		}
 	}
 	management, err := vmtest.VMTestManagementPlanning(vmtest.VMTestManagementClusterName, []string{"cp-1", "worker-1"})
 	if err != nil {
@@ -197,6 +180,22 @@ func runPreCNIClusterApply(t *testing.T, ctx context.Context, smoke operationBac
 			if err != nil {
 				return err
 			}
+			configz, err := kubectlOutput(ctx, kubeconfig, "get", "--raw", "/api/v1/nodes/"+name+"/proxy/configz")
+			if err != nil {
+				return err
+			}
+			var patched struct {
+				Kubelet struct {
+					SerializeImagePulls *bool `json:"serializeImagePulls"`
+					RegistryPullQPS     int   `json:"registryPullQPS"`
+				} `json:"kubeletconfig"`
+			}
+			if err := json.Unmarshal(configz, &patched); err != nil {
+				return err
+			}
+			if patched.Kubelet.SerializeImagePulls == nil || *patched.Kubelet.SerializeImagePulls || patched.Kubelet.RegistryPullQPS != 7 {
+				return fmt.Errorf("%s %s lost a native JSON or strategic patch: %s", name, label, configz)
+			}
 			if observed.BootID != before[name].BootID {
 				return fmt.Errorf("%s pre-CNI %s rebooted the node", name, label)
 			}
@@ -211,6 +210,21 @@ func runPreCNIClusterApply(t *testing.T, ctx context.Context, smoke operationBac
 		}
 		appliedGenerations = generations
 	}
+	shared, err := kubectlOutput(ctx, kubeconfig, "-n", "kube-system", "get", "configmap", "kubelet-config", "-o", "jsonpath={.data.kubelet}")
+	if err != nil {
+		return err
+	}
+	var sharedConfig struct {
+		MaxPods     int `yaml:"maxPods"`
+		HealthzPort int `yaml:"healthzPort"`
+	}
+	if err := yaml.Unmarshal(shared, &sharedConfig); err != nil {
+		return err
+	}
+	if sharedConfig.MaxPods != 108 || sharedConfig.HealthzPort == 0 {
+		return fmt.Errorf("shared kubelet configuration contains a local patch or overlay: %s", shared)
+	}
+
 	for _, failure := range []struct{ name, input, diagnostic string }{
 		{"invalid-policy", "cpuManagerPolicy: katl-invalid\n", "unknown policy"},
 		{"checkpoint-policy", "cpuManagerPolicy: static\nreservedSystemCPUs: \"0\"\n", "differs from state checkpoint policy"},

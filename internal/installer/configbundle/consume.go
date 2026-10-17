@@ -410,6 +410,7 @@ func selectedKubeadmConfigs(archive ociArchive, node NodeRecord) (map[string]kub
 	}
 	filesByRef := map[string][]kubeadmconfig.File{}
 	nodeLocalByRef := map[string]bool{}
+	sharedBaseByRef := map[string]bool{}
 	prefix := "nodes/" + node.Name + "/kubernetes/kubeadm/"
 	for _, desc := range node.KubeadmInputs {
 		if desc.Role != "kubeadm-input" {
@@ -434,6 +435,18 @@ func selectedKubeadmConfigs(archive ociArchive, node NodeRecord) (map[string]kub
 			return nil, fmt.Errorf("node %s kubeadm config %q has inconsistent node-local kubelet annotations", node.Name, ref)
 		}
 		nodeLocalByRef[ref] = nodeLocal
+		sharedBase := false
+		if value, ok := desc.Annotations["dev.katl.kubeadm.shared-kubelet-base"]; ok {
+			var err error
+			sharedBase, err = strconv.ParseBool(value)
+			if err != nil {
+				return nil, fmt.Errorf("node %s kubeadm input %s has invalid shared kubelet base annotation", node.Name, desc.FileName)
+			}
+		}
+		if previous, exists := sharedBaseByRef[ref]; exists && previous != sharedBase {
+			return nil, fmt.Errorf("node %s kubeadm config %q has inconsistent shared kubelet base annotations", node.Name, ref)
+		}
+		sharedBaseByRef[ref] = sharedBase
 		if !strings.HasPrefix(desc.FileName, prefix) {
 			return nil, fmt.Errorf("node %s kubeadm input %s is outside expected prefix", node.Name, desc.FileName)
 		}
@@ -463,6 +476,7 @@ func selectedKubeadmConfigs(archive ociArchive, node NodeRecord) (map[string]kub
 			return nil, fmt.Errorf("node %s kubeadm config %q: %w", node.Name, ref, err)
 		}
 		plan.NodeLocalKubelet = nodeLocalByRef[ref]
+		plan.SharedKubeletBase = sharedBaseByRef[ref]
 		configs[ref] = plan
 	}
 	return configs, nil
