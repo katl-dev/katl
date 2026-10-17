@@ -62,7 +62,7 @@ Timeout failures include the tail of the serial log.
 A capable host provides:
 
 ```text
-virsh and script in PATH
+virsh in PATH
 qemu-img or KATL_VMTEST_IMAGE_TOOL for disk image creation
 readable OVMF code and vars images
 /dev/kvm when KATL_VMTEST_KVM=on
@@ -132,8 +132,8 @@ backend.
 The default executor:
 
 1. Defines the libvirt domain from the generated XML.
-2. Starts live serial capture through `virsh console`.
-3. Starts the domain.
+2. Starts the domain.
+3. Captures serial output with a direct `virsh console` process using a Go-owned PTY. The harness appends output to the serial artifact and tails it to stderr for live progress.
 4. Waits for the expected serial signal, timeout, idle timeout, or early exit.
 5. Runs optional serial hooks and guest-agent checks.
 6. Destroys and undefines the domain with NVRAM cleanup.

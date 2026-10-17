@@ -13,8 +13,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/creack/pty"
 )
 
 type VMBoot struct {
@@ -40,7 +41,6 @@ type VMConfig struct {
 	MediaRunner       DiskRunner
 	CommandPath       string
 	VirshPath         string
-	ScriptPath        string
 	ImageTool         string
 	LibvirtURI        string
 	LibvirtNetwork    string
@@ -118,7 +118,6 @@ const defaultSerialIdleTimeout = 45 * time.Second
 type VMPlan struct {
 	CommandPath    string
 	VirshPath      string
-	ScriptPath     string
 	Args           []string
 	Accel          string
 	DomainName     string
@@ -168,7 +167,6 @@ func (e ExecVMExecutor) Run(ctx context.Context, name string, args []string, ser
 type LibvirtVMExecutor struct {
 	TempDir           string
 	VirshPath         string
-	ScriptPath        string
 	URI               string
 	DomainName        string
 	DomainXMLFile     string
@@ -346,58 +344,35 @@ func (e LibvirtVMExecutor) startConsoleCapture(ctx context.Context, serial io.Wr
 	if serial == nil {
 		return nil, nil
 	}
-	cmd := e.consoleCommand(ctx)
+	cmd := e.virshCommand(ctx, "console", e.DomainName, "--force")
 	cmd.Stdout = serial
 	cmd.Stderr = serial
-	if err := cmd.Start(); err != nil {
+	// Only this process owns the master. Closing it on exit also disconnects
+	// virsh's terminal input if the test process dies without cleanup.
+	master, err := pty.Start(cmd)
+	if err != nil {
 		return nil, fmt.Errorf("start libvirt console capture for %q: %w", e.DomainName, err)
 	}
 	done := make(chan error, 1)
 	go func() {
-		done <- cmd.Wait()
+		err := cmd.Wait()
+		_ = master.Close()
+		done <- err
 		close(done)
 	}()
 	return done, nil
 }
 
-func (e LibvirtVMExecutor) consoleCommand(ctx context.Context) *exec.Cmd {
-	virsh, virshArgs := e.virshInvocation("console", e.DomainName, "--force")
-	parts := make([]string, 0, len(virshArgs)+1)
-	parts = append(parts, shellQuote(virsh))
-	for _, arg := range virshArgs {
-		parts = append(parts, shellQuote(arg))
-	}
-	script := e.ScriptPath
-	if script == "" {
-		script = "script"
-	}
-	cmd := exec.CommandContext(ctx, script, "--return", "--flush", "--quiet", "--command", strings.Join(parts, " "), "/dev/null")
-	if e.TempDir != "" {
-		cmd.Env = append(os.Environ(), "TMPDIR="+e.TempDir)
-	}
-	configureProcessGroupCancel(cmd)
-	return cmd
-}
-
 func (e LibvirtVMExecutor) virshCommand(ctx context.Context, args ...string) *exec.Cmd {
 	virsh, fullArgs := e.virshInvocation(args...)
+	// Ordinary commands stay in the terminal group so Ctrl-C reaches them
+	// even if the Go test process exits before cancelling its context.
 	cmd := exec.CommandContext(ctx, virsh, fullArgs...)
 	if e.TempDir != "" {
 		cmd.Env = append(os.Environ(), "TMPDIR="+e.TempDir)
 	}
-	configureProcessGroupCancel(cmd)
-	return cmd
-}
-
-func configureProcessGroupCancel(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		if cmd.Process == nil {
-			return nil
-		}
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
 	cmd.WaitDelay = 100 * time.Millisecond
+	return cmd
 }
 
 func (e LibvirtVMExecutor) virshInvocation(args ...string) (string, []string) {
@@ -663,7 +638,6 @@ func defaultVMExecutor(result Result, plan VMPlan, config VMConfig) (VMExecutor,
 	return LibvirtVMExecutor{
 		TempDir:           filepath.Join(result.VMDir, "tmp"),
 		VirshPath:         plan.VirshPath,
-		ScriptPath:        plan.ScriptPath,
 		URI:               plan.LibvirtURI,
 		DomainName:        plan.DomainName,
 		DomainXMLFile:     plan.DomainXMLFile,
@@ -919,17 +893,6 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		}
 		virsh = found
 	}
-	script := config.ScriptPath
-	if script == "" {
-		found, err := probe.lookPath("script")
-		if err != nil {
-			return VMPlan{}, PrereqError{Missing: []MissingPrerequisite{{
-				Name:   "script",
-				Detail: "not found in PATH",
-			}}}
-		}
-		script = found
-	}
 	libvirtURI := first(config.LibvirtURI, probe.env("KATL_VMTEST_LIBVIRT_URI"), "qemu:///system")
 	libvirtNetwork := first(config.LibvirtNetwork, probe.env("KATL_VMTEST_LIBVIRT_NETWORK"), "default")
 	directKernel := config.Boot.Kernel != ""
@@ -1013,7 +976,6 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 	return VMPlan{
 		CommandPath:    virsh,
 		VirshPath:      virsh,
-		ScriptPath:     script,
 		Args:           args,
 		Accel:          accel,
 		DomainName:     domainName,

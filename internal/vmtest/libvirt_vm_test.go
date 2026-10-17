@@ -318,8 +318,8 @@ func TestExecVMExecutorSetsTMPDIR(t *testing.T) {
 
 func TestLibvirtVMExecutorCapturesConsole(t *testing.T) {
 	tmp := t.TempDir()
+	t.Setenv("KATL_CONSOLE_CAPTURED", filepath.Join(tmp, "console-captured"))
 	virsh := filepath.Join(tmp, "virsh")
-	script := filepath.Join(tmp, "script")
 	writeExecutable(t, virsh, `#!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == "-c" ]]; then
@@ -330,12 +330,13 @@ case "${1:-}" in
         exit 0
         ;;
     console)
+        [[ -t 0 ]] || exit 41
         printf 'Katl installer ready\n'
+        touch "$KATL_CONSOLE_CAPTURED"
         exit 0
         ;;
     domstate)
-        sleep 0.05
-        printf 'shut off\n'
+        if [[ -e "$KATL_CONSOLE_CAPTURED" ]]; then printf 'shut off\n'; else printf 'running\n'; fi
         exit 0
         ;;
     *)
@@ -343,19 +344,6 @@ case "${1:-}" in
         exit 40
         ;;
 esac
-`)
-	writeExecutable(t, script, `#!/usr/bin/env bash
-set -euo pipefail
-while (($# > 0)); do
-    case "$1" in
-        --command)
-            shift
-            exec bash -lc "$1"
-            ;;
-    esac
-    shift
-done
-exit 42
 `)
 	xmlPath := filepath.Join(tmp, "domain.xml")
 	if err := os.WriteFile(xmlPath, []byte("<domain/>"), 0o644); err != nil {
@@ -365,7 +353,6 @@ exit 42
 	var serial strings.Builder
 	err := LibvirtVMExecutor{
 		VirshPath:     virsh,
-		ScriptPath:    script,
 		URI:           "qemu:///system",
 		DomainName:    "katl-run-1",
 		DomainXMLFile: xmlPath,
