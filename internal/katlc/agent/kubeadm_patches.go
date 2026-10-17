@@ -28,9 +28,9 @@ func (e *Executor) prepareKubeadmPatches(operationID, generationID string) (stri
 		return "", err
 	}
 	for _, patch := range plan.Patches {
-		rel, err := filepath.Rel(filepath.Join("/etc/katl/kubeadm", ref, "patches"), patch.RenderPath)
-		if err != nil || !filepath.IsLocal(rel) {
-			return "", fmt.Errorf("invalid kubeadm patch path %q", patch.RenderPath)
+		rel, err := plan.PatchRelativePath(patch)
+		if err != nil {
+			return "", err
 		}
 		path := filepath.Join(hostDir, rel)
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

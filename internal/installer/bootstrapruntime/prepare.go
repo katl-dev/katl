@@ -1,25 +1,26 @@
 package bootstrapruntime
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"syscall"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/generation"
-	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/bootstrapplan"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/configapply"
@@ -32,13 +33,6 @@ type Result struct {
 	Status         generation.GenerationStatus
 	ActivationPlan generation.ActivationPlan
 	KubeadmPath    string
-}
-
-type storedInputFile struct {
-	Rel        string
-	RenderPath string
-	Content    []byte
-	Mode       os.FileMode
 }
 
 func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error) {
@@ -59,10 +53,6 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 	}
 	if now.IsZero() {
 		now = time.Now().UTC()
-	}
-	currentManifest, _, err := configapply.ReadEffectiveGenerationManifest(root, plan.Previous.GenerationID)
-	if err != nil {
-		return Result{}, fmt.Errorf("read bootstrap source configuration: %w", err)
 	}
 	files, err := runtimeFiles(root, plan)
 	if err != nil {
@@ -147,28 +137,7 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 		return Result{}, err
 	}
 
-	desiredFiles, _, err := readStoredKubeadmInput(root, plan.RuntimeInputs.KubeadmInput)
-	if err != nil {
-		return Result{}, err
-	}
-	kubeadmFiles := make([]kubeadmconfig.File, 0, len(desiredFiles))
-	for _, input := range desiredFiles {
-		kubeadmFiles = append(kubeadmFiles, kubeadmconfig.File{
-			RenderPath: input.RenderPath,
-			Content:    input.Content,
-			Mode:       input.Mode,
-		})
-	}
-	kubeadmRef := strings.TrimSpace(plan.RuntimeInputs.KubeadmInput.ConfigRef)
-	kubeadmPlan, err := kubeadmconfig.PlanFromRenderedFiles(kubeadmRef, kubeadmFiles)
-	if err != nil {
-		return Result{}, fmt.Errorf("preserve desired kubeadm input: %w", err)
-	}
-	currentManifest.Node.Kubernetes.Kubeadm.ConfigRef = kubeadmRef
-	if err := configapply.WriteGenerationConfiguration(root, candidate, configapply.GenerationConfiguration{
-		Manifest:       currentManifest,
-		KubeadmConfigs: map[string]kubeadmconfig.Plan{kubeadmRef: kubeadmPlan},
-	}); err != nil {
+	if err := configapply.WriteGenerationConfiguration(root, candidate, plan.SelectedInput.Configuration); err != nil {
 		return Result{}, fmt.Errorf("preserve bootstrap configuration: %w", err)
 	}
 	if err := writeLiveActivationOverride(root, candidate); err != nil {
@@ -357,21 +326,41 @@ func runtimeFiles(root string, plan bootstrapplan.Plan) ([]confext.NativeEtcFile
 	if err != nil {
 		return nil, err
 	}
-	inputs, digest, err := readStoredKubeadmInput(root, plan.RuntimeInputs.KubeadmInput)
+	inputPlan := plan.SelectedInput.Configuration.KubeadmConfigs[plan.SelectedInput.Input.ConfigRef]
+	ref := plan.SelectedInput.Configuration.Manifest.Node.Kubernetes.Kubeadm.ConfigRef
+	if ref == "" || ref != plan.RuntimeInputs.KubeadmInput.ConfigRef || inputPlan.Name != ref || inputPlan.Config.RenderPath != plan.RuntimeInputs.KubeadmInput.Path {
+		return nil, fmt.Errorf("selected bootstrap snapshot does not match requested kubeadm input")
+	}
+	digest, err := inputPlan.InputDigest()
 	if err != nil {
 		return nil, err
 	}
-	if expected := strings.TrimSpace(plan.RuntimeInputs.KubeadmInput.Digest); expected != "" && digest != expected {
-		return nil, fmt.Errorf("stored kubeadm input digest %s does not match intent %s", digest, expected)
+	if expected := strings.TrimSpace(plan.RuntimeInputs.KubeadmInput.Digest); expected == "" || digest != expected {
+		return nil, fmt.Errorf("selected kubeadm input digest %s does not match operation %s", digest, expected)
 	}
-	for _, input := range inputs {
+	if plan.Operation.OperationKind == bootstrapplan.OperationKindInit {
+		if err := validateInitSharedBase(inputPlan, plan.RuntimeInputs.KubeadmInput, files); err != nil {
+			return nil, err
+		}
+	}
+	// The selected input owns its whole subtree, including patches removed from
+	// the desired configuration. Keep other configuration references intact.
+	selectedRoot := filepath.Join("/etc/katl/kubeadm", strings.TrimSpace(plan.RuntimeInputs.KubeadmInput.ConfigRef)) + "/"
+	files = slices.DeleteFunc(files, func(file confext.NativeEtcFile) bool {
+		return strings.HasPrefix(file.Path, selectedRoot)
+	})
+
+	for _, input := range append([]kubeadmconfig.File{inputPlan.Config}, inputPlan.Patches...) {
 		content := input.Content
 		if plan.Operation.OperationKind == bootstrapplan.OperationKindInit && input.RenderPath == plan.RuntimeInputs.KubeadmInput.Path {
 			rendered, err := cluster.RenderInitConfig(input.Content, plan.RuntimeInputs.HostConfig.ControlPlaneEndpoint, plan.RuntimeInputs.HostConfig.ControlPlaneEndpointVIP)
 			if err != nil {
 				return nil, err
 			}
-			content = rendered
+			content, err = delegateInitHealth(rendered)
+			if err != nil {
+				return nil, err
+			}
 		}
 		files = replaceNativeEtcFile(files, confext.NativeEtcFile{
 			Path:    input.RenderPath,
@@ -398,6 +387,106 @@ func runtimeFiles(root string, plan bootstrapplan.Plan) ([]confext.NativeEtcFile
 		})
 	}
 	return files, nil
+}
+
+func validateInitSharedBase(plan kubeadmconfig.Plan, input bootstrapplan.KubeadmInput, files []confext.NativeEtcFile) error {
+	if plan.Name != strings.TrimSpace(input.ConfigRef) || plan.Config.RenderPath != strings.TrimSpace(input.Path) {
+		return fmt.Errorf("selected kubeadm input does not match the requested shared base")
+	}
+	for _, file := range files {
+		if file.Path != "/etc/katl/node.json" {
+			continue
+		}
+		var metadata struct {
+			Kubeadm json.RawMessage `json:"kubeadm"`
+		}
+		if err := json.Unmarshal([]byte(file.Content), &metadata); err != nil {
+			return fmt.Errorf("decode selected node metadata: %w", err)
+		}
+		if len(metadata.Kubeadm) == 0 {
+			continue
+		}
+		var identity struct {
+			ConfigRef  string `json:"configRef"`
+			ConfigPath string `json:"configPath"`
+		}
+		if err := json.Unmarshal(metadata.Kubeadm, &identity); err != nil {
+			return fmt.Errorf("decode selected node metadata kubeadm identity: %w", err)
+		}
+		if identity.ConfigRef != plan.Name {
+			continue
+		}
+		if identity.ConfigPath != plan.Config.RenderPath {
+			return fmt.Errorf("selected node metadata kubeadm configPath %q does not match input %q", identity.ConfigPath, plan.Config.RenderPath)
+		}
+		var ownership struct {
+			NodeLocalKubelet bool `json:"nodeLocalKubelet"`
+		}
+		if err := json.Unmarshal(metadata.Kubeadm, &ownership); err != nil {
+			return fmt.Errorf("decode selected node metadata kubeadm ownership: %w", err)
+		}
+		// Older installed input lacks ownership metadata. Source-generation
+		// node metadata can prove risk, but cannot prove a safe shared base.
+		plan.NodeLocalKubelet = plan.NodeLocalKubelet || ownership.NodeLocalKubelet
+	}
+	return plan.ValidateSharedKubeletBase()
+}
+
+func delegateInitHealth(content []byte) ([]byte, error) {
+	decoder := yaml.NewDecoder(bytes.NewReader(content))
+	var documents []map[string]any
+	found := false
+	for {
+		var document map[string]any
+		if err := decoder.Decode(&document); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			return nil, fmt.Errorf("decode managed kubeadm init config: %w", err)
+		}
+		if len(document) == 0 {
+			continue
+		}
+		if document["kind"] == "InitConfiguration" {
+			found = true
+			phases, ok := document["skipPhases"].([]any)
+			if document["skipPhases"] != nil && !ok {
+				return nil, fmt.Errorf("InitConfiguration.skipPhases must be a list of strings")
+			}
+			for _, phase := range phases {
+				if _, ok := phase.(string); !ok {
+					return nil, fmt.Errorf("InitConfiguration.skipPhases must be a list of strings")
+				}
+			}
+			// Katl verifies local API, kubelet, and static-pod health before
+			// promotion. Kubeadm's wait reads the unpatched shared kubelet base.
+			if !slices.Contains(phases, "wait-control-plane") {
+				phases = append(phases, "wait-control-plane")
+			}
+			document["skipPhases"] = phases
+		}
+		documents = append(documents, document)
+	}
+	if !found {
+		documents = append(documents, map[string]any{
+			"apiVersion": "kubeadm.k8s.io/v1beta4",
+			"kind":       "InitConfiguration",
+			"skipPhases": []string{"wait-control-plane"},
+		})
+	}
+
+	var out bytes.Buffer
+	encoder := yaml.NewEncoder(&out)
+	encoder.SetIndent(2)
+	for _, document := range documents {
+		if err := encoder.Encode(document); err != nil {
+			_ = encoder.Close()
+			return nil, fmt.Errorf("encode managed kubeadm init config: %w", err)
+		}
+	}
+	if err := encoder.Close(); err != nil {
+		return nil, fmt.Errorf("encode managed kubeadm init config: %w", err)
+	}
+	return out.Bytes(), nil
 }
 
 func inheritedConfextFiles(root string, previous generation.GenerationSpec) ([]confext.NativeEtcFile, error) {
@@ -470,95 +559,6 @@ func replaceNativeEtcFile(files []confext.NativeEtcFile, replacement confext.Nat
 		}
 	}
 	return append(files, replacement)
-}
-
-func readStoredKubeadmInput(root string, input bootstrapplan.KubeadmInput) ([]storedInputFile, string, error) {
-	ref := strings.TrimSpace(input.ConfigRef)
-	dir, err := installer.StoredKubeadmInputDir(root, ref)
-	if err != nil {
-		return nil, "", err
-	}
-	configPath, err := cleanRenderPath(input.Path)
-	if err != nil {
-		return nil, "", err
-	}
-	var inputs []storedInputFile
-	if err := filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("stored kubeadm input %s is not a regular file", path)
-		}
-		rel, err := filepath.Rel(dir, path)
-		if err != nil {
-			return err
-		}
-		if strings.HasPrefix(rel, "..") || filepath.IsAbs(rel) {
-			return fmt.Errorf("stored kubeadm input %s escapes input directory", path)
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		mode := info.Mode().Perm()
-		if mode == 0 {
-			mode = 0o644
-		}
-		inputs = append(inputs, storedInputFile{
-			Rel:        filepath.ToSlash(rel),
-			RenderPath: filepath.ToSlash(filepath.Join("/etc/katl/kubeadm", ref, rel)),
-			Content:    data,
-			Mode:       mode,
-		})
-		return nil
-	}); err != nil {
-		return nil, "", fmt.Errorf("read stored kubeadm input: %w", err)
-	}
-	if len(inputs) == 0 {
-		return nil, "", fmt.Errorf("stored kubeadm input %q is empty", ref)
-	}
-	sort.Slice(inputs, func(i, j int) bool { return inputs[i].RenderPath < inputs[j].RenderPath })
-	configIndex := -1
-	for i, file := range inputs {
-		if file.RenderPath == configPath {
-			configIndex = i
-			break
-		}
-	}
-	if configIndex < 0 {
-		return nil, "", fmt.Errorf("stored kubeadm input missing config %s", configPath)
-	}
-	hash := sha256.New()
-	writeStoredDigestFile(hash, "config", inputs[configIndex])
-	for i, file := range inputs {
-		if i == configIndex {
-			continue
-		}
-		writeStoredDigestFile(hash, "patch", file)
-	}
-	return inputs, hex.EncodeToString(hash.Sum(nil)), nil
-}
-
-func cleanRenderPath(path string) (string, error) {
-	path = filepath.ToSlash(filepath.Clean("/" + strings.TrimPrefix(strings.TrimSpace(path), "/")))
-	if path == "/" || !strings.HasPrefix(path, "/etc/katl/kubeadm/") {
-		return "", fmt.Errorf("kubeadm input path %q must be under /etc/katl/kubeadm", path)
-	}
-	return path, nil
-}
-
-func writeStoredDigestFile(hash hash.Hash, kind string, file storedInputFile) {
-	fmt.Fprintf(hash, "%s\x00%s\x00%#o\x00", kind, file.RenderPath, file.Mode)
-	hash.Write(file.Content)
-	hash.Write([]byte{0})
 }
 
 func nodeMetadata(plan bootstrapplan.Plan) (confext.NativeEtcFile, error) {

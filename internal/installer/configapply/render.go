@@ -2,7 +2,6 @@ package configapply
 
 import (
 	"fmt"
-	"path/filepath"
 	"slices"
 	"strings"
 
@@ -170,7 +169,10 @@ func renderKubeadmConfigs(ref string, configs map[string]kubeadmconfig.Plan) (ma
 	}
 	patches := make(map[string]string, len(plan.Patches))
 	for _, patch := range plan.Patches {
-		name := filepath.Base(patch.RenderPath)
+		name, err := plan.PatchRelativePath(patch)
+		if err != nil {
+			return nil, err
+		}
 		if _, exists := patches[name]; exists {
 			return nil, fmt.Errorf("selected kubeadm config %q contains duplicate patch name %q", ref, name)
 		}
@@ -180,6 +182,6 @@ func renderKubeadmConfigs(ref string, configs map[string]kubeadmconfig.Plan) (ma
 		patches = nil
 	}
 	return map[string]inlineKubeadmConfig{
-		ref: {Config: string(plan.Config.Content), Patches: patches, NodeLocalKubelet: plan.NodeLocalKubelet},
+		ref: {Config: string(plan.Config.Content), Patches: patches, NodeLocalKubelet: plan.NodeLocalKubelet, SharedKubeletBase: plan.SharedKubeletBase},
 	}, nil
 }

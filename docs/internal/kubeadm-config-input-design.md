@@ -270,6 +270,24 @@ Kubeadm and kubelet own the live state derived from that input. Normal Katl
 generation activation must not reconcile, overwrite, or roll back live
 kubeadm/kubelet state.
 
+Bootstrap selects desired input from the operation's recorded source generation,
+including configuration applied before Kubernetes initialization. Acceptance
+pins the native input digest after projecting the selected node address. Init,
+temporary join configuration, rendered candidate files, and the candidate's
+durable desired configuration all consume that same snapshot. Reconstruction
+checks the recorded generation and digest before mutation. Missing legacy input
+can use the generation reader's installation fallback; corrupt selected input
+or broken ancestry cannot.
+
+Installed cluster intent retains node identity, installation provenance, legacy
+profile aliases that still map to the selected input, and the existing
+Kubernetes payload-version compatibility restriction. It does not override a
+generation's selected kubeadm configuration or receive copies of later applies.
+Health-only continuation reuses the prepared candidate and never reruns native
+kubeadm. A receipt without a pinned input digest requires the candidate's own
+local snapshot to match the recorded source generation; missing or conflicting
+proof requires repair.
+
 Live kubeadm cluster state lives in Kubernetes objects and node-local kubeadm
 outputs, including:
 
@@ -305,6 +323,63 @@ reconfiguration operation.
 The supported v0.1 live control-plane reconfiguration surface, serial rollout,
 and rollback boundary are defined by
 `docs/internal/adrs/adr-010-kubeadm-control-plane-config-operation.md`.
+
+### Effective kubelet configuration
+
+The selected plan keeps the unpatched shared `KubeletConfiguration` in its
+Config document. Ordinary native patches retain their relative paths under
+`patches/00-native`; the node-local merge patch under `patches/10-node`
+contains only explicitly authored overlay fields. Native kubeadm traversal
+therefore applies the overlay after the complete ordinary patch tree during
+bootstrap, refresh, and upgrade.
+
+For a Katl-managed init operation, Katl adds `wait-control-plane` to the rendered
+`InitConfiguration.skipPhases` while preserving operator-selected skips. Native
+kubeadm still runs the other init phases, applies patches once, and uploads the
+unpatched shared kubelet base. Its internal wait reads that base rather than
+the patched local kubelet configuration, so it cannot own readiness when a node
+disables or changes its kubelet health endpoint.
+
+Katl owns the post-kubeadm health gate before generation promotion: kubelet must
+be active, the local API must pass `/readyz`, and all local control-plane static
+pods must report `ContainersReady`. Container probe results remain meaningful
+before CNI installation, when NodeLifecycle can mark the mirror pods' `Ready`
+condition false. Node readiness remains a separate requirement for status and
+upgrade workflows. The existing two-minute post-kubeadm health budget and safe
+continuation after a failed gate apply; native API writes retain kubeadm's
+configured `kubernetesAPICall` timeout. The stored desired input, its digest,
+the shared kubelet document, and join behavior are unchanged by this delegation.
+
+An online refresh captures its health requirement before any external mutation.
+When a shared upload is needed, the coordinator validates the selected input and
+uploads the base. Refresh then renders the effective local configuration through native
+`kubeadm upgrade node phase kubelet-config --dry-run`. The private dry-run
+directory carries the actual node instance configuration or legacy kubeadm
+flags. Preview and apply use the same operation-owned patch tree. Katl compares
+the complete canonical native output with the local file for no-op detection
+and again after a write. An interrupted restart still requires convergence,
+even when the file already matches.
+
+Only a shared upload consumes the selected bootstrap document. Other refreshes
+use the authoritative cluster ConfigMaps and do not require join discovery
+credentials.
+
+The preview runs after a required shared upload so native JSON patch tests see
+the intended base. These phases do not form an atomic cluster transaction. If
+the shared upload succeeds and a local patch fails, the valid base remains
+uploaded and the operation reports that repair is required. Correcting the
+source and repeating `katlctl cluster apply` completes the local transition.
+
+`SharedKubeletBase` records that the selected plan uses this representation.
+Previously published bundles can contain node-local fields projected into the
+Config document. Both bootstrap init and online shared uploads require the
+marker when the selected input has a node-local overlay, and bind that plan to
+the requested config identity. Older installed inputs can lack persisted
+ownership metadata. Matching node metadata from the selected source generation
+can identify these as node-local and require regeneration; it cannot grant
+permission to publish a shared base. An ambiguous retained bundle must be
+regenerated from its original ClusterConfig source; the shared base cannot be
+reconstructed safely from the projected document.
 
 Rolling back rendered `/etc/katl/kubeadm/<role>/config.yaml` restores desired
 input only. It does not restore kubeadm output, kubelet runtime config, etcd

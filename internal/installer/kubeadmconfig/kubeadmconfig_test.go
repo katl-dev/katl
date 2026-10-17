@@ -447,12 +447,13 @@ func TestWithNodeAddressPreservesNodeLocalKubeletMode(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan.NodeLocalKubelet = true
+	plan.SharedKubeletBase = true
 	got, err := WithNodeAddress(plan, "192.0.2.10")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !got.NodeLocalKubelet {
-		t.Fatal("WithNodeAddress() dropped node-local kubelet mode")
+	if !got.NodeLocalKubelet || !got.SharedKubeletBase {
+		t.Fatal("WithNodeAddress() dropped kubelet input ownership")
 	}
 }
 
@@ -484,4 +485,25 @@ discovery:
   file:
     kubeConfigPath: /etc/katl/kubeadm/join-discovery.yaml
 `
+}
+
+func TestPatchRelativePath(t *testing.T) {
+	plan := Plan{Name: "node-cp"}
+	for _, tc := range []struct{ path, want string }{
+		{"/etc/katl/kubeadm/node-cp/patches/00-native/zz/kubeletconfiguration+merge.yaml", "00-native/zz/kubeletconfiguration+merge.yaml"},
+		{"/etc/katl/kubeadm/other/patches/a.yaml", ""},
+		{"/etc/katl/kubeadm/node-cp/config.yaml", ""},
+		{"/etc/katl/kubeadm/node-cp/patches", ""},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			got, err := plan.PatchRelativePath(File{RenderPath: tc.path})
+			if tc.want == "" {
+				if err == nil {
+					t.Fatal("outside patch subtree accepted")
+				}
+			} else if err != nil || got != tc.want {
+				t.Fatalf("relative patch = %q, %v", got, err)
+			}
+		})
+	}
 }

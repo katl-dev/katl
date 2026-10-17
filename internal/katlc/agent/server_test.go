@@ -317,6 +317,7 @@ func TestStageHostUpgradeArtifactRejectsMetadataAfterFirstChunk(t *testing.T) {
 
 func TestSubmitOperationCreatesRecord(t *testing.T) {
 	server := newTestServer(t)
+	seedBootstrapRuntimeRoot(t, server.Root)
 	var dispatched atomic.Int32
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		dispatched.Add(1)
@@ -356,6 +357,7 @@ func TestSubmitOperationCreatesRecord(t *testing.T) {
 
 func TestSubmitOperationStagesKubernetesIdentityOutsideRecord(t *testing.T) {
 	server := newTestServer(t)
+	seedBootstrapRuntimeRoot(t, server.Root)
 	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error { return nil })
 	bundle, err := kubernetesidentity.Generate(kubernetesidentity.GenerateOptions{ClusterName: "homelab", Now: server.clock()})
 	if err != nil {
@@ -1113,6 +1115,7 @@ func writeKnownGoodHostUpgradeSource(t *testing.T, root string) {
 
 func TestSubmitOperationRecordsKubernetesBundleRequest(t *testing.T) {
 	server := newTestServer(t)
+	seedBootstrapRuntimeRoot(t, server.Root)
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
 	})
@@ -1295,14 +1298,22 @@ func TestKubernetesSysextUpdateRejectsInvalidDigest(t *testing.T) {
 
 func TestKubernetesSysextUpdateCleanGenerationZeroUsesBootstrapPath(t *testing.T) {
 	server := newTestServer(t)
+	seedBootstrapRuntimeRoot(t, server.Root)
 	writeCleanGenerationZeroState(t, server.Root)
+	configuration, err := configapply.ReadGenerationConfiguration(server.Root, "0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := configapply.WriteGenerationConfiguration(server.Root, "generation-0", configuration); err != nil {
+		t.Fatal(err)
+	}
 	var dispatched atomic.Int32
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		dispatched.Add(1)
 		return nil
 	})
 
-	_, err := server.SubmitOperation(context.Background(), kubernetesSysextUpdateRequest("req-kube-clean-gen0", "v1.35.0", strings.Repeat("e", 64)))
+	_, err = server.SubmitOperation(context.Background(), kubernetesSysextUpdateRequest("req-kube-clean-gen0", "v1.35.0", strings.Repeat("e", 64)))
 	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "bootstrap operation path") {
 		t.Fatalf("SubmitOperation() error = %v, want bootstrap-path FailedPrecondition", err)
 	}
@@ -2459,6 +2470,7 @@ func TestNodeStatusAdvertisesControlPlaneJoin(t *testing.T) {
 
 func TestSubmitOperationAcceptsControlPlaneJoin(t *testing.T) {
 	server := newTestServer(t)
+	seedBootstrapRuntimeRoot(t, server.Root)
 	writeStoredKubeadmConfig(t, server.Root, "default")
 	var dispatched atomic.Int32
 	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
@@ -2508,6 +2520,7 @@ func TestSubmitOperationRejectsDigestMismatch(t *testing.T) {
 
 func TestSubmitOperationIdempotentClientRequest(t *testing.T) {
 	server := newTestServer(t)
+	seedBootstrapRuntimeRoot(t, server.Root)
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
 	})
@@ -2535,6 +2548,7 @@ func TestSubmitOperationIdempotentClientRequest(t *testing.T) {
 
 func TestSubmitOperationRejectsConflictingLocks(t *testing.T) {
 	server := newTestServer(t)
+	seedBootstrapRuntimeRoot(t, server.Root)
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
 	})
@@ -2550,6 +2564,8 @@ func TestSubmitOperationRejectsConflictingLocks(t *testing.T) {
 
 func TestSubmitOperationRecordsWorkerJoinMaterializationFailureBeforeDispatch(t *testing.T) {
 	server := newTestServer(t)
+	seedBootstrapRuntimeRootForRole(t, server.Root, "worker")
+	writeTestFile(t, filepath.Join(server.Root, "run/katl/bootstrap-join"), "blocked")
 	var dispatched atomic.Int32
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		dispatched.Add(1)
@@ -2578,13 +2594,14 @@ func TestSubmitOperationRecordsWorkerJoinMaterializationFailureBeforeDispatch(t 
 	if record.BootstrapRequest == nil || record.BootstrapRequest.JoinMaterialDigest == "" || record.BootstrapRequest.TemporaryJoinConfigPath == "" {
 		t.Fatalf("bootstrap metadata = %+v, want non-secret join material metadata", record.BootstrapRequest)
 	}
-	if _, err := os.Lstat(filepath.Join(server.Root, "run/katl/bootstrap-join", accepted.OperationId, "config.yaml")); !os.IsNotExist(err) {
+	if _, err := os.Lstat(filepath.Join(server.Root, "run/katl/bootstrap-join", accepted.OperationId, "config.yaml")); err == nil {
 		t.Fatalf("temporary join config exists after failed materialization: %v", err)
 	}
 }
 
 func TestSubmitOperationDoesNotPersistRawWorkerJoinMaterial(t *testing.T) {
 	server := newTestServer(t)
+	seedBootstrapRuntimeRootForRole(t, server.Root, "worker")
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
 	})
@@ -2621,6 +2638,7 @@ func TestSubmitOperationDoesNotPersistRawWorkerJoinMaterial(t *testing.T) {
 
 func TestSubmitOperationSerializesConcurrentConflicts(t *testing.T) {
 	server := newTestServer(t)
+	seedBootstrapRuntimeRoot(t, server.Root)
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
 	})
@@ -2780,6 +2798,8 @@ func TestSubmitOperationValidatesRequestBodyAndUnsupportedExpectations(t *testin
 
 func TestSubmitOperationRecordsControlPlaneJoinMaterializationNextAction(t *testing.T) {
 	server := newTestServer(t)
+	seedBootstrapRuntimeRoot(t, server.Root)
+	writeTestFile(t, filepath.Join(server.Root, "run/katl/bootstrap-join"), "blocked")
 	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
 		t.Fatal("dispatcher called after materialization failure")
 		return nil
@@ -2893,6 +2913,7 @@ func TestCreateWorkerJoinMaterialRejectsActiveOperationLock(t *testing.T) {
 
 func TestCreateWorkerJoinMaterialSerializesWithSubmitOperation(t *testing.T) {
 	server := newTestServer(t)
+	seedBootstrapRuntimeRoot(t, server.Root)
 	writeJoinMaterialAdminKubeconfig(t, server.Server)
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
@@ -2993,13 +3014,16 @@ func createWorkerJoinMaterialRequest() *agentapi.CreateWorkerJoinMaterialRequest
 
 func TestSubmitOperationAcceptsExpectedGenerationAndIntentConstraints(t *testing.T) {
 	server := newTestServer(t)
+	seedBootstrapRuntimeRoot(t, server.Root)
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
 	})
-	writeBootSelection(t, server.Root, "generation-0")
-	intentDigest := writeClusterIntent(t, server.Root, []byte("{\"profile\":\"default\",\"role\":\"control-plane\"}\n"))
+	_, intentDigest, err := installer.ReadClusterIntent(server.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	req := submitRequest("req-constraints")
-	req.ExpectedCurrentGenerationId = "generation-0"
+	req.ExpectedCurrentGenerationId = "0"
 	req.ExpectedClusterIntentDigest = intentDigest
 	req.Bootstrap.CandidateGenerationId = "generation-1"
 
@@ -3011,9 +3035,9 @@ func TestSubmitOperationAcceptsExpectedGenerationAndIntentConstraints(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.ExpectedCurrentGenerationID != "generation-0" ||
-		record.PreviousGenerationID != "generation-0" ||
-		record.HostRollback != "generation-0" ||
+	if record.ExpectedCurrentGenerationID != "0" ||
+		record.PreviousGenerationID != "0" ||
+		record.HostRollback != "0" ||
 		record.ExpectedClusterIntentDigest != req.ExpectedClusterIntentDigest ||
 		record.CandidateGenerationID != "generation-1" {
 		t.Fatalf("record constraints = %+v", record)
@@ -3036,6 +3060,7 @@ func TestSubmitOperationAcceptsExpectedGenerationAndIntentConstraints(t *testing
 
 func TestSubmitOperationDispatchFailureIsRedactedAndTerminal(t *testing.T) {
 	server := newTestServer(t)
+	seedBootstrapRuntimeRoot(t, server.Root)
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return errors.New("dispatch failed")
 	})
@@ -3055,6 +3080,7 @@ func TestSubmitOperationDispatchFailureIsRedactedAndTerminal(t *testing.T) {
 
 func TestSubmitOperationDispatchFailureRemovesStagedKubernetesIdentity(t *testing.T) {
 	server := newTestServer(t)
+	seedBootstrapRuntimeRoot(t, server.Root)
 	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
 		return errors.New("dispatch failed")
 	})
@@ -3109,6 +3135,7 @@ func TestDryRunDoesNotCreateRecord(t *testing.T) {
 
 func TestGetOperationChecksDigest(t *testing.T) {
 	server := newTestServer(t)
+	seedBootstrapRuntimeRoot(t, server.Root)
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
 	})

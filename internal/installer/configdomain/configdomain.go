@@ -259,10 +259,11 @@ type nodeMetadataIdentity struct {
 }
 
 type nodeMetadataKubeadm struct {
-	ConfigRef        string `json:"configRef,omitempty"`
-	ConfigPath       string `json:"configPath,omitempty"`
-	Intent           string `json:"intent,omitempty"`
-	NodeLocalKubelet bool   `json:"nodeLocalKubelet,omitempty"`
+	ConfigRef         string `json:"configRef,omitempty"`
+	ConfigPath        string `json:"configPath,omitempty"`
+	Intent            string `json:"intent,omitempty"`
+	NodeLocalKubelet  bool   `json:"nodeLocalKubelet,omitempty"`
+	SharedKubeletBase bool   `json:"sharedKubeletBase,omitempty"`
 }
 
 type nodeMetadataKubernetes struct {
@@ -291,10 +292,11 @@ func nodeMetadataFile(installManifest manifest.Manifest, config *kubeadmconfig.P
 			return confext.NativeEtcFile{}, err
 		}
 		metadata.Kubeadm = &nodeMetadataKubeadm{
-			ConfigRef:        config.Name,
-			ConfigPath:       config.Config.RenderPath,
-			Intent:           intent,
-			NodeLocalKubelet: config.NodeLocalKubelet,
+			ConfigRef:         config.Name,
+			ConfigPath:        config.Config.RenderPath,
+			Intent:            intent,
+			NodeLocalKubelet:  config.NodeLocalKubelet,
+			SharedKubeletBase: config.SharedKubeletBase,
 		}
 	}
 	data, err := json.MarshalIndent(metadata, "", "  ")

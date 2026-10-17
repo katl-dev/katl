@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -254,7 +253,10 @@ func BuildClusterIntent(request ClusterIntentRequest) (ClusterIntent, error) {
 	if err != nil {
 		return ClusterIntent{}, err
 	}
-	inputDigest := digestKubeadmPlan(config)
+	inputDigest, err := config.InputDigest()
+	if err != nil {
+		return ClusterIntent{}, fmt.Errorf("digest kubeadm input: %w", err)
+	}
 	profileRef := ref
 	resolvedID := "kubeadm:" + ref
 	if bootstrap != nil {
@@ -306,11 +308,12 @@ func writeClusterKubeadmInput(root string, intent ClusterIntent, configs map[str
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create stored kubeadm input directory: %w", err)
 	}
-	if err := writeStoredKubeadmFile(dir, ref, plan.Config); err != nil {
+	files, err := plan.InputFiles()
+	if err != nil {
 		return err
 	}
-	for _, patch := range plan.Patches {
-		if err := writeStoredKubeadmFile(dir, ref, patch); err != nil {
+	for _, file := range files {
+		if err := writeStoredKubeadmFile(dir, ref, file); err != nil {
 			return err
 		}
 	}
@@ -349,26 +352,9 @@ func storedKubeadmRelativePath(ref string, renderPath string) (string, error) {
 	return filepath.FromSlash(rel), nil
 }
 
-func digestKubeadmPlan(plan kubeadmconfig.Plan) string {
-	hash := sha256.New()
-	writeDigestFile(hash, "config", plan.Config)
-	patches := append([]kubeadmconfig.File(nil), plan.Patches...)
-	sort.Slice(patches, func(i, j int) bool { return patches[i].RenderPath < patches[j].RenderPath })
-	for _, patch := range patches {
-		writeDigestFile(hash, "patch", patch)
-	}
-	return hex.EncodeToString(hash.Sum(nil))
-}
-
 func digestBytes(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
-}
-
-func writeDigestFile(hash interface{ Write([]byte) (int, error) }, kind string, file kubeadmconfig.File) {
-	fmt.Fprintf(hash, "%s\x00%s\x00%#o\x00", kind, file.RenderPath, file.Mode)
-	hash.Write(file.Content)
-	hash.Write([]byte{0})
 }
 
 func inventoryNodeName(m manifest.Manifest) string {

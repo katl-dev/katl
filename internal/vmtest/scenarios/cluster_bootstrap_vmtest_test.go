@@ -29,6 +29,8 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/artifact"
+	"github.com/katl-dev/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -485,17 +487,45 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("read boot IDs before bootstrap: %v", err)
 	}
+	addresses := map[string]string{"cp-1": cpAddress, "worker-1": workerAddress}
+	if !proveUpgrade {
+		if err := stageBootstrapKubeletInput(t, ctx, smoke, addresses, kubernetesBundle); err != nil {
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("prepare fresh-bootstrap native kubelet input: %v", err)
+		}
+	}
+	bootstrapSources, err := readTwoNodeEnrollments(ctx, cpAddress, workerAddress)
+	if err != nil {
+		t.Fatalf("read configured generations before bootstrap: %v", err)
+	}
+	bootstrapIntentDigests := map[string]string{}
+	for _, node := range nodes {
+		intent, err := readKubeletNode(ctx, inputs.SSHPrivateKey, addresses[node.Name], node.Name, "cat /var/lib/katl/cluster/intent.json")
+		if err != nil {
+			t.Fatalf("read %s bootstrap source intent: %v", node.Name, err)
+		}
+		if err := os.WriteFile(filepath.Join(evidenceDir, node.Name, "bootstrap-source-intent.json"), intent, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		digest := sha256.Sum256(intent)
+		bootstrapIntentDigests[node.Name] = hex.EncodeToString(digest[:])
+	}
 	var stdout, stderr bytes.Buffer
 	bootstrapArgs := []string{
 		"cluster", "bootstrap",
-		"--inventory", inventoryPath,
 		"--init-node", "cp-1",
-		"--control-plane-endpoint", canonicalEndpoint,
-		"--kubernetes-bundle", kubernetesBundle.Ref,
-		"--node-address", "cp-1=" + cpAddress,
-		"--node-address", "worker-1=" + workerAddress,
 		"--kubeconfig-out", kubeconfigPath,
 		"--overwrite-kubeconfig",
+	}
+	if proveUpgrade {
+		bootstrapArgs = append(bootstrapArgs, "--inventory", inventoryPath,
+			"--control-plane-endpoint", canonicalEndpoint,
+			"--kubernetes-bundle", kubernetesBundle.Ref,
+			"--node-address", "cp-1="+cpAddress,
+			"--node-address", "worker-1="+workerAddress)
+	} else {
+		bootstrapArgs = append(bootstrapArgs, "--config", filepath.Join(result.RunDir, "bootstrap-kubelet/cluster.katlcfg"))
 	}
 	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), bootstrapArgs, &stdout, &stderr)
 	if err == nil {
@@ -546,8 +576,33 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("collect worker operation evidence: %v", err)
 	}
-	assertOperationBackedInitRecord(t, cpRecord, canonicalEndpoint)
-	assertOperationBackedWorkerRecord(t, workerRecord, canonicalEndpoint)
+	initConfigRef := "control-plane"
+	if !proveUpgrade {
+		initConfigRef = "node-cp-1"
+	}
+	assertOperationBackedInitRecord(t, cpRecord, canonicalEndpoint, bootstrapSources["cp-1"].GetCurrentGenerationId(), initConfigRef)
+	assertOperationBackedWorkerRecord(t, workerRecord, canonicalEndpoint, bootstrapSources["worker-1"].GetCurrentGenerationId())
+	for _, record := range []operation.OperationRecord{cpRecord, workerRecord} {
+		name := record.BootstrapRequest.InventoryNodeName
+		if record.ExpectedClusterIntentDigest != "" && record.ExpectedClusterIntentDigest != bootstrapIntentDigests[name] {
+			t.Fatalf("%s bootstrap installation provenance changed: got intent digest %s, want %s", name, record.ExpectedClusterIntentDigest, bootstrapIntentDigests[name])
+		}
+		if !proveUpgrade {
+			material, err := configbundle.ReadSelectedNodeFile(filepath.Join(result.RunDir, "bootstrap-kubelet/cluster.katlcfg"), configbundle.ReadOptions{NodeName: name, AllowMissingKatlosImage: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref := material.InstallManifest.Node.Kubernetes.Kubeadm.ConfigRef
+			selected, err := kubeadmconfig.WithNodeAddress(material.KubeadmConfigs[ref], material.InstallManifest.Node.Kubernetes.Address)
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest, err := selected.InputDigest()
+			if err != nil || record.BootstrapRequest.KubeadmInputDigest != digest {
+				t.Fatalf("%s bootstrap did not pin the staged generation input: got %s, want %s (%v)", name, record.BootstrapRequest.KubeadmInputDigest, digest, err)
+			}
+		}
+	}
 	assertOperationJournalOrder(t, cpEvidenceDir, "bootstrap-runtime-ready-complete", "kubeadm-init-complete", "post-kubeadm-health-start", "operation-complete")
 	assertOperationJournalOrder(t, workerEvidenceDir, "bootstrap-runtime-ready-complete", "kubeadm-join-worker-complete", "post-kubeadm-health-start", "operation-complete")
 	assertOperationBackedNodeBootstrapPhases(t, stdout.String())
@@ -557,28 +612,28 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("collect control-plane generation evidence: %v", err)
 	}
-	assertActiveGeneration(t, cpGenerationRecord, cpRecord.CandidateGenerationID)
+	assertActiveGeneration(t, cpGenerationRecord, cpRecord.CandidateGenerationID, bootstrapSources["cp-1"].GetCurrentGenerationId())
 	workerGenerationPath, workerGenerationRecord, err := collectGenerationEvidence(ctx, workerNode, workerEvidenceDir, workerRecord.CandidateGenerationID)
 	if err != nil {
 		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("collect worker generation evidence: %v", err)
 	}
-	assertActiveGeneration(t, workerGenerationRecord, workerRecord.CandidateGenerationID)
+	assertActiveGeneration(t, workerGenerationRecord, workerRecord.CandidateGenerationID, bootstrapSources["worker-1"].GetCurrentGenerationId())
 	cpSelectionPath, cpSelection, err := collectBootSelectionEvidence(ctx, cpNode, cpEvidenceDir)
 	if err != nil {
 		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("collect control-plane boot selection evidence: %v", err)
 	}
-	assertPostBootstrapSelection(t, cpSelection, cpRecord.CandidateGenerationID)
+	assertPostBootstrapSelection(t, cpSelection, cpRecord.CandidateGenerationID, bootstrapSources["cp-1"].GetCurrentGenerationId())
 	workerSelectionPath, workerSelection, err := collectBootSelectionEvidence(ctx, workerNode, workerEvidenceDir)
 	if err != nil {
 		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("collect worker boot selection evidence: %v", err)
 	}
-	assertPostBootstrapSelection(t, workerSelection, workerRecord.CandidateGenerationID)
+	assertPostBootstrapSelection(t, workerSelection, workerRecord.CandidateGenerationID, bootstrapSources["worker-1"].GetCurrentGenerationId())
 	nodeStatus := collectNodeStatusDiagnostics(ctx, evidenceDir, nodes...)
 	assertNodeAPIProxyAccess(t, ctx, cpNode, canonicalEndpoint, cpAddress+":6443", true)
 	assertNodeAPIProxyAccess(t, ctx, workerNode, canonicalEndpoint, cpAddress+":6443", false)
@@ -607,7 +662,13 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	if err := writeOperationBackedArtifactManifest(artifactManifestPath, result, inputs, nodes, evidenceArtifacts); err != nil {
 		t.Fatal(err)
 	}
-	addresses := map[string]string{"cp-1": cpAddress, "worker-1": workerAddress}
+	if !proveUpgrade {
+		if err := assertBootstrapKubeletConfig(ctx, smoke, addresses, kubeconfigPath); err != nil {
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("fresh-bootstrap native kubelet input: %v", err)
+		}
+	}
 	if err := runPreCNIClusterApply(t, ctx, smoke, addresses, kubeconfigPath, kubernetesBundle); err != nil {
 		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics("", nodes...)
@@ -3303,10 +3364,10 @@ func collectOperationDiagnosticArtifacts(ctx context.Context, node vmtest.Runnin
 	return nil
 }
 
-func assertOperationBackedInitRecord(t *testing.T, record operation.OperationRecord, endpoint string) {
+func assertOperationBackedInitRecord(t *testing.T, record operation.OperationRecord, endpoint, sourceGeneration, configRef string) {
 	t.Helper()
 	if record.OperationKind != "bootstrap-init" ||
-		record.ExpectedCurrentGenerationID != "0" ||
+		record.ExpectedCurrentGenerationID != sourceGeneration ||
 		record.CandidateGenerationID == "" ||
 		record.CandidateGenerationID == "0" {
 		t.Fatalf("operation identity = kind %q current %q candidate %q", record.OperationKind, record.ExpectedCurrentGenerationID, record.CandidateGenerationID)
@@ -3328,7 +3389,7 @@ func assertOperationBackedInitRecord(t *testing.T, record operation.OperationRec
 	}
 	if record.ExecutorPlan == nil ||
 		record.ExecutorPlan.Phase != "kubeadm-init" ||
-		!stringSliceEqual(record.ExecutorPlan.Argv, []string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"}) {
+		!stringSliceEqual(record.ExecutorPlan.Argv, []string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/kubeadm/" + configRef + "/config.yaml"}) {
 		t.Fatalf("executor plan = %#v, want kubeadm init through katlc agent executor", record.ExecutorPlan)
 	}
 	if !record.ExternalMutationStarted || !record.MutatingToolRan || len(record.PreExecMutationMarkers) == 0 {
@@ -3359,10 +3420,10 @@ func assertOperationBackedInitRecord(t *testing.T, record operation.OperationRec
 	}
 }
 
-func assertOperationBackedWorkerRecord(t *testing.T, record operation.OperationRecord, endpoint string) {
+func assertOperationBackedWorkerRecord(t *testing.T, record operation.OperationRecord, endpoint, sourceGeneration string) {
 	t.Helper()
 	if record.OperationKind != "bootstrap-join-worker" ||
-		record.ExpectedCurrentGenerationID != "0" ||
+		record.ExpectedCurrentGenerationID != sourceGeneration ||
 		record.CandidateGenerationID == "" ||
 		record.CandidateGenerationID == "0" {
 		t.Fatalf("worker operation identity = kind %q current %q candidate %q", record.OperationKind, record.ExpectedCurrentGenerationID, record.CandidateGenerationID)
@@ -3522,7 +3583,7 @@ func decodePersistedOrLegacy[T any](data []byte) (T, error) {
 	return record, nil
 }
 
-func assertActiveGeneration(t *testing.T, record operationBackedGenerationRecord, generationID string) {
+func assertActiveGeneration(t *testing.T, record operationBackedGenerationRecord, generationID, sourceGeneration string) {
 	t.Helper()
 	if record.Spec.GenerationID != generationID || record.Status.GenerationID != generationID {
 		t.Fatalf("generation IDs = spec %q status %q want %q", record.Spec.GenerationID, record.Status.GenerationID, generationID)
@@ -3534,8 +3595,8 @@ func assertActiveGeneration(t *testing.T, record operationBackedGenerationRecord
 		record.Status.CommittedByOperation == "" {
 		t.Fatalf("generation status = %#v, want committed healthy active generation", record.Status)
 	}
-	if record.Spec.PreviousGenerationID != "0" {
-		t.Fatalf("generation previous ID = %q, want 0", record.Spec.PreviousGenerationID)
+	if record.Spec.PreviousGenerationID != sourceGeneration {
+		t.Fatalf("generation previous ID = %q, want %s", record.Spec.PreviousGenerationID, sourceGeneration)
 	}
 	if len(record.Spec.Sysexts) == 0 || len(record.Spec.Confexts) == 0 {
 		t.Fatalf("generation spec missing sysext/confext refs: sysexts=%d confexts=%d", len(record.Spec.Sysexts), len(record.Spec.Confexts))
@@ -3657,12 +3718,12 @@ func collectNodeStatusDiagnostics(ctx context.Context, evidenceDir string, nodes
 	return paths
 }
 
-func assertPostBootstrapSelection(t *testing.T, selection generation.BootSelectionRecord, candidate string) {
+func assertPostBootstrapSelection(t *testing.T, selection generation.BootSelectionRecord, candidate, sourceGeneration string) {
 	t.Helper()
 	if selection.DefaultGenerationID != candidate ||
 		selection.TargetBootGenerationID != "" ||
 		selection.TrialGenerationID != "" ||
-		selection.PreviousKnownGoodGenerationID != "0" ||
+		selection.PreviousKnownGoodGenerationID != sourceGeneration ||
 		selection.Generation0FallbackID != "0" ||
 		selection.ActiveGenerationID != candidate ||
 		selection.BootedGenerationID != "0" ||

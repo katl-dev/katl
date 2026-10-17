@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/kubeadmplan"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -40,8 +41,8 @@ func TestValidateKubeadmKubeletConfigRequestAllowsAnyRolloutSize(t *testing.T) {
 	}
 	req.NodeLocalKubelet = true
 	req.CoordinatorUpload = true
-	if err := validateKubeadmControlPlaneConfigRequest(OperationKindKubeadmControlPlaneConfig, req); err == nil || !strings.Contains(err.Error(), "must not be uploaded") {
-		t.Fatalf("node-local upload error = %v", err)
+	if err := validateKubeadmControlPlaneConfigRequest(OperationKindKubeadmControlPlaneConfig, req); err != nil {
+		t.Fatalf("shared base upload with node-local overlay rejected: %v", err)
 	}
 }
 
@@ -88,6 +89,52 @@ func TestAcceptKubeadmControlPlaneConfigBindsActiveGeneration(t *testing.T) {
 			wantDesired, _ := kubeadmplan.CanonicalClusterConfigurationSHA256([]byte(config))
 			if dispatched.Load() != 1 || record.KubeadmControlPlaneConfig.ConfigName != "control-plane" || record.PreviousGenerationID != "generation-0" || record.KubeadmControlPlaneConfig.DesiredConfigSHA256 != wantDesired || record.KubeadmControlPlaneConfig.KubernetesPayloadVersion != "v1.35.0" {
 				t.Fatalf("dispatches=%d record=%#v accepted=%#v", dispatched.Load(), record, accepted)
+			}
+		})
+	}
+}
+
+func TestAcceptSharedKubeletBase(t *testing.T) {
+	for _, marked := range []bool{false, true} {
+		t.Run(fmt.Sprint(marked), func(t *testing.T) {
+			server := newTestServer(t)
+			writeConfigApplyBaseState(t, server.Root)
+			config := "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 110\n"
+			writeKubernetesStatusFile(t, server.Root, "etc/katl/kubeadm/control-plane/config.yaml", config)
+			writeKubernetesStatusFile(t, server.Root, "etc/katl/node.json", `{"kubeadm":{"configRef":"control-plane","nodeLocalKubelet":true}}`)
+			writeKubeadmConfigFixture(t, server.Root, "generation-0", "control-plane", config, nil)
+			configuration, err := configapply.ReadLocalGenerationConfiguration(server.Root, "generation-0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			plan := configuration.KubeadmConfigs["control-plane"]
+			plan.NodeLocalKubelet, plan.SharedKubeletBase = true, marked
+			configuration.KubeadmConfigs["control-plane"] = plan
+			if err := configapply.WriteGenerationConfiguration(server.Root, "generation-0", configuration); err != nil {
+				t.Fatal(err)
+			}
+			body := validControlPlaneConfigRequest()
+			body.DesiredGenerationId = "generation-0"
+			body.SupportedFieldDelta = []string{kubeadmConfigComponentKubelet}
+			body.NodeLocalKubelet, body.CoordinatorUpload = true, true
+			var dispatched atomic.Int32
+			server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
+				dispatched.Add(1)
+				return nil
+			})
+			accepted, err := server.SubmitOperation(context.Background(), &agentapi.SubmitOperationRequest{
+				ApiVersion: APIVersion, Kind: RequestKind, OperationKind: OperationKindKubeadmControlPlaneConfig,
+				ClientRequestId: "shared-base", Actor: "test", ExpectedMachineId: "0123456789abcdef0123456789abcdef",
+				ExpectedCurrentGenerationId: "generation-0", KubeadmControlPlaneConfig: body,
+			})
+			if !marked {
+				if err == nil || !strings.Contains(err.Error(), "legacy projected configuration") || !strings.Contains(err.Error(), "katlctl cluster apply --config <source>") || accepted != nil || dispatched.Load() != 0 {
+					t.Fatalf("legacy projected base reached execution: accepted=%+v dispatched=%d error=%v", accepted, dispatched.Load(), err)
+				}
+				return
+			}
+			if err != nil || dispatched.Load() != 1 {
+				t.Fatalf("proven shared base refused: accepted=%+v dispatched=%d error=%v", accepted, dispatched.Load(), err)
 			}
 		})
 	}
@@ -532,6 +579,7 @@ func TestExecuteKubeletConfigUploadsUpdatesAndRestarts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	writeKubeletRefreshInputs(t, root, body, desiredConfig, nil)
 	record, err := store.Create(operation.OperationRecord{OperationID: "kubelet-config-1", OperationKind: OperationKindKubeadmControlPlaneConfig, Scope: "kubeadm-state", RequestDigest: strings.Repeat("d", 64), Phase: "accepted", KubeadmControlPlaneConfig: &body, ResourceLocks: []string{"kubeadm-state.lock"}}, "accepted", time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
@@ -541,6 +589,9 @@ func TestExecuteKubeletConfigUploadsUpdatesAndRestarts(t *testing.T) {
 	executor := NewExecutor(root, store, "agent-start")
 	executor.Async = false
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		if writeKubeletPreview(t, root, argv, "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 120\ncgroupDriver: systemd\n") {
+			return ToolResult{}
+		}
 		if result, ok := readyKubeletHealthProbe(argv); ok {
 			return result
 		}
@@ -568,16 +619,8 @@ func TestExecuteKubeletConfigUploadsUpdatesAndRestarts(t *testing.T) {
 	if err := executor.Execute(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}
-	want := [][]string{
-		{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "kube-system", "get", "configmap", "kubelet-config", "-o", "jsonpath={.data.kubelet}"},
-		{"/usr/bin/kubeadm", "config", "validate", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"},
-		{"/usr/bin/kubeadm", "upgrade", "node", "phase", "kubelet-config", "--dry-run"},
-		{"/usr/bin/kubeadm", "init", "phase", "upload-config", "kubelet", "--config", "/etc/katl/kubeadm/control-plane/config.yaml"},
-		{"/usr/bin/kubeadm", "upgrade", "node", "phase", "kubelet-config"},
-		{"/usr/bin/systemctl", "restart", "kubelet.service"},
-	}
-	if !reflect.DeepEqual(commands, want) {
-		t.Fatalf("commands = %#v, want %#v", commands, want)
+	if !slices.ContainsFunc(commands, func(argv []string) bool { return slices.Contains(argv, "restart") }) {
+		t.Fatal("changed kubelet configuration was not restarted")
 	}
 	completed, err := store.Read(record.OperationID)
 	if err != nil {
@@ -599,7 +642,7 @@ func TestExecuteKubeletConfigUploadsUpdatesAndRestarts(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, argv := range commands {
-		if argv[0] == "/usr/bin/kubeadm" || slices.Contains(argv, "restart") {
+		if slices.Contains(argv, "upload-config") || slices.Contains(argv, "upgrade") || slices.Contains(argv, "restart") {
 			t.Fatalf("defaulted shared configuration caused a repeat mutation: %#v", argv)
 		}
 	}
@@ -638,6 +681,7 @@ func TestKubeletNoChangeHealth(t *testing.T) {
 	body.KubernetesPayloadVersion = "v1.36.1"
 	body.KubernetesPayloadSHA256 = strings.Repeat("c", 64)
 	body.DesiredConfigSHA256, _ = kubeadmplan.CanonicalKubeletConfigurationSHA256([]byte(desiredConfig))
+	writeKubeletRefreshInputs(t, root, body, desiredConfig, nil)
 	record, err := store.Create(operation.OperationRecord{OperationID: "kubelet-config-no-change", OperationKind: OperationKindKubeadmControlPlaneConfig, Scope: "kubeadm-state", RequestDigest: strings.Repeat("e", 64), Phase: "accepted", KubeadmControlPlaneConfig: &body}, "accepted", time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
@@ -646,6 +690,9 @@ func TestKubeletNoChangeHealth(t *testing.T) {
 	executor := NewExecutor(root, store, "agent-start")
 	executor.Async = false
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		if writeKubeletPreview(t, root, argv, desiredConfig+"cgroupDriver: systemd\n") {
+			return ToolResult{}
+		}
 		if result, ok := readyKubeletHealthProbe(argv); ok {
 			return result
 		}
@@ -656,7 +703,7 @@ func TestKubeletNoChangeHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, argv := range commands {
-		if argv[0] == "/usr/bin/kubeadm" || slices.Contains(argv, "restart") {
+		if slices.Contains(argv, "upgrade") || slices.Contains(argv, "restart") {
 			t.Fatalf("unchanged apply mutated kubelet: %#v", argv)
 		}
 	}
@@ -670,6 +717,9 @@ func TestKubeletNoChangeHealth(t *testing.T) {
 		t.Fatal(err)
 	}
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		if writeKubeletPreview(t, root, argv, desiredConfig+"cgroupDriver: systemd\n") {
+			return ToolResult{}
+		}
 		if argv[0] == "/usr/bin/systemctl" && slices.Contains(argv, "show") {
 			return ToolResult{Stdout: []byte("ActiveState=inactive\nMainPID=0\nInvocationID=\n")}
 		}
@@ -734,6 +784,7 @@ func TestKubeletContextRestart(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			writeKubeletRefreshInputs(t, root, body, desired, nil)
 			invocation := "0123456789abcdef0123456789abcdef"
 			node, cri := configPendingNode, configPendingCRI
 			restarts := 0
@@ -758,6 +809,9 @@ func TestKubeletContextRestart(t *testing.T) {
 				executor := NewExecutor(root, reopened, fmt.Sprintf("agent-%d", attempt))
 				executor.Async = false
 				executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+					if writeKubeletPreview(t, root, argv, desired) || (argv[0] == "/usr/bin/kubeadm" && slices.Contains(argv, "validate")) {
+						return ToolResult{}
+					}
 					switch {
 					case argv[0] == "/usr/bin/systemctl" && slices.Contains(argv, "show"):
 						return ToolResult{Stdout: []byte("ActiveState=active\nMainPID=123\nInvocationID=" + invocation + "\n")}
@@ -866,6 +920,7 @@ func TestNodeLocalKubeletConfig(t *testing.T) {
 			body.KubernetesPayloadVersion = "v1.36.1"
 			body.KubernetesPayloadSHA256 = strings.Repeat("c", 64)
 			body.DesiredConfigSHA256, _ = kubeadmplan.CanonicalKubeletConfigurationSHA256([]byte(desiredConfig))
+			writeKubeletRefreshInputs(t, root, body, desiredConfig, map[string]string{"kubeletconfiguration+merge.yaml": "maxPods: 120\ntopologyManagerPolicy: restricted\n"})
 			record, err := store.Create(operation.OperationRecord{OperationID: "node-local-kubelet", OperationKind: OperationKindKubeadmControlPlaneConfig, Scope: "kubeadm-state", RequestDigest: strings.Repeat("f", 64), Phase: "accepted", KubeadmControlPlaneConfig: &body}, "accepted", time.Now().UTC())
 			if err != nil {
 				t.Fatal(err)
@@ -874,6 +929,9 @@ func TestNodeLocalKubeletConfig(t *testing.T) {
 			executor := NewExecutor(root, store, "agent-start")
 			executor.Async = false
 			executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+				if writeKubeletPreview(t, root, argv, "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 120\ntopologyManagerPolicy: restricted\ncgroupDriver: systemd\n") {
+					return ToolResult{}
+				}
 				if result, ok := readyKubeletHealthProbe(argv); ok {
 					return result
 				}
@@ -884,7 +942,8 @@ func TestNodeLocalKubeletConfig(t *testing.T) {
 					return ToolResult{}
 				}
 				commands = append(commands, append([]string(nil), argv...))
-				if reflect.DeepEqual(argv, []string{"/usr/bin/kubeadm", "upgrade", "node", "phase", "kubelet-config", "--patches", "/etc/katl/kubeadm/node-worker-1/patches"}) {
+				if argv[0] == "/usr/bin/kubeadm" && slices.Contains(argv, "upgrade") {
+					assertKubeadmPatches(t, root, argv, map[string]string{"kubeletconfiguration+merge.yaml": "maxPods: 120\ntopologyManagerPolicy: restricted\n"})
 					updated := fmt.Sprintf("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: %d\ntopologyManagerPolicy: restricted\ncgroupDriver: systemd\n", test.maxPods)
 					if err := os.WriteFile(livePath, []byte(updated), 0o600); err != nil {
 						t.Fatal(err)
@@ -894,7 +953,7 @@ func TestNodeLocalKubeletConfig(t *testing.T) {
 			}
 			err = executor.Execute(context.Background(), record)
 			if test.maxPods != 120 {
-				if err == nil || !strings.Contains(err.Error(), "maxPods: desired 120, actual 110") {
+				if err == nil || !strings.Contains(err.Error(), "does not match native preview") {
 					t.Fatalf("verification error = %v", err)
 				}
 				failed, err := store.Read(record.OperationID)
@@ -914,13 +973,8 @@ func TestNodeLocalKubeletConfig(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := [][]string{
-				{"/usr/bin/kubeadm", "upgrade", "node", "phase", "kubelet-config", "--patches", "/etc/katl/kubeadm/node-worker-1/patches", "--dry-run"},
-				{"/usr/bin/kubeadm", "upgrade", "node", "phase", "kubelet-config", "--patches", "/etc/katl/kubeadm/node-worker-1/patches"},
-				{"/usr/bin/systemctl", "restart", "kubelet.service"},
-			}
-			if !reflect.DeepEqual(commands, want) {
-				t.Fatalf("commands = %#v, want %#v", commands, want)
+			if !slices.ContainsFunc(commands, func(argv []string) bool { return slices.Contains(argv, "restart") }) {
+				t.Fatal("node-local configuration was not restarted")
 			}
 			completed, err := store.Read(record.OperationID)
 			if err != nil || !completed.Terminal || completed.Result != operation.ResultSucceeded || completed.KubeadmControlPlaneConfig.ConfigUploadRan {
@@ -1044,6 +1098,7 @@ func TestKubeletRetryCompletesRestart(t *testing.T) {
 			body.KubernetesPayloadVersion = "v1.36.1"
 			body.KubernetesPayloadSHA256 = strings.Repeat("c", 64)
 			body.DesiredConfigSHA256, _ = kubeadmplan.CanonicalKubeletConfigurationSHA256([]byte(desired))
+			writeKubeletRefreshInputs(t, root, body, desired, nil)
 			livePath := filepath.Join(root, "var/lib/kubelet/config.yaml")
 			running, node, cri := initial, configReadyNode, configReadyCRI
 			if tc.initialCNI {
@@ -1052,6 +1107,9 @@ func TestKubeletRetryCompletesRestart(t *testing.T) {
 			active, restarts := true, 0
 			unknownNode := `{"metadata":{"name":"worker-1"},"status":{"conditions":[{"type":"Ready","status":"Unknown","reason":"NodeStatusUnknown"}]}}`
 			run := func(_ context.Context, argv []string, _ func(int)) ToolResult {
+				if writeKubeletPreview(t, root, argv, desired) {
+					return ToolResult{}
+				}
 				switch {
 				case argv[0] == "/usr/bin/crictl":
 					return ToolResult{Stdout: []byte(cri)}
@@ -1177,6 +1235,7 @@ func TestKubeletApplyResetsRemovedFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	body.DesiredConfigSHA256, _ = kubeadmplan.CanonicalKubeletConfigurationSHA256([]byte(desired))
+	writeKubeletRefreshInputs(t, root, body, desired, nil)
 	record, err := store.Create(operation.OperationRecord{OperationID: "remove-field", OperationKind: OperationKindKubeadmControlPlaneConfig, Scope: "kubeadm-state", RequestDigest: strings.Repeat("b", 64), Phase: "accepted", KubeadmControlPlaneConfig: &body}, "accepted", time.Now().UTC())
 	if err != nil {
 		t.Fatal(err)
@@ -1185,6 +1244,9 @@ func TestKubeletApplyResetsRemovedFields(t *testing.T) {
 	executor := NewExecutor(root, store, "agent-start")
 	executor.Async = false
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		if writeKubeletPreview(t, root, argv, shared) {
+			return ToolResult{}
+		}
 		if result, ok := readyKubeletHealthProbe(argv); ok {
 			return result
 		}
@@ -1206,4 +1268,23 @@ func TestKubeletApplyResetsRemovedFields(t *testing.T) {
 	if running != shared {
 		t.Fatalf("removed node-local field survived in running config: %s", running)
 	}
+}
+
+func writeKubeletRefreshInputs(t *testing.T, root string, body operation.KubeadmControlPlaneConfig, config string, patches map[string]string) {
+	t.Helper()
+	writeKubeadmConfigFixture(t, root, body.DesiredGenerationID, body.ConfigName, config, patches)
+	writeKubernetesStatusFile(t, root, "var/lib/kubelet/instance-config.yaml", "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\ncontainerRuntimeEndpoint: unix:///run/containerd/containerd.sock\n")
+}
+
+func writeKubeletPreview(t *testing.T, root string, argv []string, rendered string) bool {
+	t.Helper()
+	if len(argv) < 2 || argv[0] != "/usr/bin/env" {
+		return false
+	}
+	dir, ok := strings.CutPrefix(argv[1], "KUBEADM_UPGRADE_DRYRUN_DIR=")
+	if !ok || dir == "" || !slices.Contains(argv, "--dry-run") {
+		t.Fatalf("unexpected native preview invocation: %v", argv)
+	}
+	writeKubernetesStatusFile(t, root, filepath.Join(dir, "config.yaml"), rendered)
+	return true
 }

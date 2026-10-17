@@ -622,10 +622,10 @@ topologyManagerPolicy: restricted
 		t.Fatalf("selected kubeadm ref = %#v / %#v", selected.NodeMaterial.KubeadmConfig, selected.InstallManifest.Node.Kubernetes.Kubeadm)
 	}
 	plan, ok := selected.KubeadmConfigs["node-worker-1"]
-	if !ok || !plan.NodeLocalKubelet || len(plan.Patches) != 1 {
+	if !ok || !plan.NodeLocalKubelet || !plan.SharedKubeletBase || len(plan.Patches) != 1 {
 		t.Fatalf("per-node kubeadm plan = %#v", selected.KubeadmConfigs)
 	}
-	if !strings.Contains(string(plan.Config.Content), "directory: /etc/katl/kubeadm/node-worker-1/patches") || !strings.Contains(string(plan.Config.Content), "topologyManagerPolicy: restricted") || !strings.Contains(string(plan.Patches[0].Content), "topologyManagerPolicy: restricted") || strings.Contains(string(plan.Patches[0].Content), "kind: KubeletConfiguration") {
+	if !strings.Contains(string(plan.Config.Content), "directory: /etc/katl/kubeadm/node-worker-1/patches") || strings.Contains(string(plan.Config.Content), "topologyManagerPolicy: restricted") || !strings.Contains(string(plan.Patches[0].Content), "topologyManagerPolicy: restricted") || strings.Contains(string(plan.Patches[0].Content), "kind: KubeletConfiguration") {
 		t.Fatalf("per-node kubelet material = config %s patch %s", plan.Config.Content, plan.Patches[0].Content)
 	}
 	report, err := InspectSelectedNode(selected)
@@ -688,18 +688,18 @@ maxPods: 120
 			if selected.NodeMaterial.KubeadmConfig.Ref != ref || !ok || !plan.NodeLocalKubelet {
 				t.Fatalf("selected kubeadm plan = %#v / %#v", selected.NodeMaterial.KubeadmConfig, selected.KubeadmConfigs)
 			}
-			if !strings.Contains(string(plan.Config.Content), "maxPods: "+test.maxPods) {
-				t.Fatalf("kubelet config does not contain maxPods %s:\n%s", test.maxPods, plan.Config.Content)
+			if !plan.SharedKubeletBase || strings.Contains(string(plan.Config.Content), "maxPods:") || !strings.Contains(string(plan.Patches[0].Content), "maxPods: "+test.maxPods) {
+				t.Fatalf("explicit node overlay leaked into shared base: %#v", plan)
 			}
 			patches, err := decodeKubeadmDocuments(plan.Patches[0].Content)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := nestedString(patches[0], "systemReserved", "memory"); got != "1Gi" {
-				t.Fatalf("node-local patch system memory reservation = %q, want 1Gi", got)
+			if got := nestedString(patches[0], "systemReserved", "memory"); got != "" {
+				t.Fatalf("node-local patch contains an unselected memory reservation: %q", got)
 			}
-			if got := nestedString(patches[0], "volumePluginDir"); got != "/var/lib/kubelet/plugins/volume/exec" {
-				t.Fatalf("node-local patch volume plugin directory = %q", got)
+			if got := nestedString(patches[0], "volumePluginDir"); got != "" {
+				t.Fatalf("node-local patch contains an unselected volume plugin directory: %q", got)
 			}
 
 			report, err := InspectSelectedNode(selected)
@@ -1058,7 +1058,7 @@ allowedUnsafeSysctls: null
 		name, ref, want string
 	}{
 		{name: "cp-1", ref: "control-plane", want: "3Gi"},
-		{name: "worker-1", ref: "node-worker-1", want: "4Gi"},
+		{name: "worker-1", ref: "node-worker-1", want: "3Gi"},
 	} {
 		selected, err := ReadSelectedNode(bytes.NewReader(archive), ReadOptions{NodeName: node.name, AllowMissingKatlosImage: true})
 		if err != nil {
@@ -1077,8 +1077,8 @@ allowedUnsafeSysctls: null
 				t.Fatal(err)
 			}
 			patch := patches[0]
-			if nestedString(patch, "systemReserved", "cpu") != "250m" || nestedString(patch, "systemReserved", "memory") != "4Gi" {
-				t.Fatalf("patch must combine shared CPU and node memory reservations: %#v", patch)
+			if nestedString(patch, "systemReserved", "cpu") != "" || nestedString(patch, "systemReserved", "memory") != "4Gi" {
+				t.Fatalf("patch must contain only the explicit node memory reservation: %#v", patch)
 			}
 			if value, exists := patch["allowedUnsafeSysctls"]; !exists || value != nil {
 				t.Fatalf("patch must retain the explicit field deletion: %#v", patch)

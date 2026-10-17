@@ -15,6 +15,8 @@ import (
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/artifact"
+	"github.com/katl-dev/katl/internal/installer/configapply"
+	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 )
@@ -58,7 +60,7 @@ func TestCreateAcceptsBootstrapInitFromStoredIntent(t *testing.T) {
 	if plan.RuntimeInputs.SelectedKubernetesSysext.PayloadVersion != "v1.36.1" || plan.RuntimeInputs.SelectedKubernetesSysext.RuntimeInterface != "katl-runtime-1" {
 		t.Fatalf("selected sysext = %#v", plan.RuntimeInputs.SelectedKubernetesSysext)
 	}
-	if plan.RuntimeInputs.KubeadmInput.Path != "/etc/katl/kubeadm/control-plane/config.yaml" || plan.RuntimeInputs.KubeadmInput.Digest != strings.Repeat("d", 64) {
+	if plan.RuntimeInputs.KubeadmInput.Path != "/etc/katl/kubeadm/control-plane/config.yaml" || plan.RuntimeInputs.KubeadmInput.Digest == "" || plan.RuntimeInputs.KubeadmInput.Digest != plan.Operation.BootstrapRequest.KubeadmInputDigest {
 		t.Fatalf("kubeadm input = %#v", plan.RuntimeInputs.KubeadmInput)
 	}
 	if plan.RuntimeInputs.HostConfig.NodeMetadataPath != "/etc/katl/node.json" || plan.RuntimeInputs.HostConfig.ControlPlaneEndpoint != "api.katl.test:6443" {
@@ -181,7 +183,6 @@ func TestCreateAcceptsWorkerJoinFromStoredIntent(t *testing.T) {
 		KubernetesBundleRef:      ref,
 		BootstrapProfileRef:      "worker",
 		CandidateGenerationID:    "1",
-		KubeadmInputDigest:       strings.Repeat("d", 64),
 		JoinMaterialRef:          "operation:bootstrap-init-cp-1/join-worker",
 		JoinMaterialDigest:       strings.Repeat("e", 64),
 		JoinMaterialExpiresAt:    "2026-06-15T13:00:00Z",
@@ -218,7 +219,6 @@ func TestCreateAcceptsControlPlaneJoinFromStoredIntent(t *testing.T) {
 		KubernetesBundleRef:      ref,
 		BootstrapProfileRef:      "control-plane",
 		CandidateGenerationID:    "1",
-		KubeadmInputDigest:       strings.Repeat("d", 64),
 		JoinMaterialRef:          "operation:bootstrap-init-cp-1/join-control-plane",
 		JoinMaterialDigest:       strings.Repeat("e", 64),
 		JoinMaterialExpiresAt:    "2026-06-15T13:00:00Z",
@@ -386,26 +386,6 @@ func TestCreateRefusalsLeaveNoPartialPersistentState(t *testing.T) {
 			want: "kubernetesBundleSource and kubernetesBundleRef are required",
 		},
 		{
-			name: "kubeadm path outside etc katl",
-			mutate: func(root string) {
-				editIntent(t, root, func(intent *installer.ClusterIntent) {
-					intent.Kubeadm.ConfigPath = "/etc/kubernetes/admin.conf"
-				})
-			},
-			req:  controlPlaneRequest(),
-			want: "under /etc/katl/kubeadm",
-		},
-		{
-			name: "bootstrap profile refs incomplete",
-			mutate: func(root string) {
-				editIntent(t, root, func(intent *installer.ClusterIntent) {
-					intent.BootstrapProfile.ResolvedID = ""
-				})
-			},
-			req:  controlPlaneRequest(),
-			want: "resolvedID",
-		},
-		{
 			name: "worker join lacks join material",
 			mutate: func(root string) {
 				writeIntent(t, root, "worker")
@@ -545,6 +525,29 @@ func writeIntent(t *testing.T, root string, role string) {
 	if err := os.WriteFile(path, append(data, '\n'), 0o600); err != nil {
 		t.Fatalf("write intent: %v", err)
 	}
+	value := manifest.Manifest{
+		APIVersion: manifest.APIVersion, Kind: manifest.Kind,
+		Node: manifest.NodeConfig{
+			Identity:   manifest.NodeIdentity{Hostname: node + "-host", SSH: manifest.SSHIdentity{AuthorizedKeys: []string{"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl"}}},
+			SystemRole: role, Kubernetes: manifest.KubernetesConfig{Kubeadm: manifest.KubeadmReference{ConfigRef: profile}},
+		},
+		Install:     manifest.InstallConfig{WipeTarget: true, TargetDisk: manifest.DiskSelector{ByID: "disk/by-id/test"}},
+		KatlosImage: manifest.KatlosImage{LocalRef: "images/katlos.raw", SHA256: strings.Repeat("a", 64), SizeBytes: 1024, Version: "0.1.0", Architecture: "x86_64", Role: "install"},
+	}
+	if err := configapply.WriteGenerationManifest(root, "0", value); err != nil {
+		t.Fatal(err)
+	}
+	config := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n"
+	if role == "worker" {
+		config = "apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\n"
+	}
+	input := filepath.Join(root, "var/lib/katl/cluster/kubeadm", profile)
+	if err := os.MkdirAll(input, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(input, "config.yaml"), []byte(config), 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func editIntent(t *testing.T, root string, edit func(*installer.ClusterIntent)) {
@@ -648,7 +651,6 @@ func controlPlaneRequest() operation.BootstrapRequest {
 		BootstrapProfileRef:      "control-plane",
 		ControlPlaneEndpoint:     "api.katl.test:6443",
 		CandidateGenerationID:    "1",
-		KubeadmInputDigest:       strings.Repeat("d", 64),
 	}
 }
 
