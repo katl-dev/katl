@@ -106,8 +106,10 @@ jobs:
             > _build/hosted-evidence/qemu.log || true
           # shellcheck disable=SC2024
           sudo journalctl -k --no-pager -g 'apparmor|DENIED' -n 100 > _build/hosted-evidence/kernel-access.log || true
-          find _build/hosted-probe -name OVMF_VARS.fd -exec stat -c '%A %U %G %n' {} + \
-            > _build/hosted-evidence/nvram-ownership.txt
+          if [[ -d _build/hosted-probe ]]; then
+            find _build/hosted-probe -name OVMF_VARS.fd -exec stat -c '%A %U %G %n' {} + \
+              > _build/hosted-evidence/nvram-ownership.txt
+          fi
           df -h > _build/hosted-evidence/host-after.txt
       - uses: actions/upload-artifact@v7
         if: always()
