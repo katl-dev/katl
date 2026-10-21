@@ -740,7 +740,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("kubectl nodes did not converge: %v\n%s", err, output)
 	}
-	if err := verifyKubernetesNodeOSImages(ctx, kubeconfigPath, filepath.Join(result.RunDir, "kubectl-node-os-images.json"), map[string]string{
+	if err := verifyKubernetesNodeOSImages(ctx, kubeconfigPath, filepath.Join(result.RunDir, "kubectl-node-os-images.json"), inputs.SSHPrivateKey, nodes, map[string]string{
 		"cp-1":     cpGenerationRecord.Spec.RuntimeVersion,
 		"worker-1": workerGenerationRecord.Spec.RuntimeVersion,
 	}); err != nil {
@@ -4161,7 +4161,7 @@ func waitForKubectlNodes(ctx context.Context, kubeconfigPath, outputPath string,
 	}
 }
 
-func verifyKubernetesNodeOSImages(ctx context.Context, kubeconfigPath, outputPath string, runtimeVersions map[string]string) error {
+func verifyKubernetesNodeOSImages(ctx context.Context, kubeconfigPath, outputPath, sshKey string, nodes []vmtest.RunningInstalledRuntimeNode, runtimeVersions map[string]string) error {
 	cmd := exec.CommandContext(ctx, selectedKubectl(), "--kubeconfig", kubeconfigPath, "get", "nodes", "-o", "json")
 	output, err := cmd.CombinedOutput()
 	if len(output) > 0 {
@@ -4191,10 +4191,18 @@ func verifyKubernetesNodeOSImages(ctx context.Context, kubeconfigPath, outputPat
 	for _, node := range list.Items {
 		observed[node.Metadata.Name] = strings.TrimSpace(node.Status.NodeInfo.OSImage)
 	}
-	for node, version := range runtimeVersions {
-		want := "KatlOS " + strings.TrimSpace(version)
-		if observed[node] != want {
-			return fmt.Errorf("node %s reports OS image %q, want %q", node, observed[node], want)
+	for _, node := range nodes {
+		// Observe the OS's declared identity independently of Kubernetes.
+		release, err := readKubeletNode(ctx, sshKey, node.Result.IPAddress, node.Name, `. /usr/lib/os-release && printf '%s\n%s' "$VERSION_ID" "$PRETTY_NAME"`)
+		if err != nil {
+			return fmt.Errorf("read %s OS identity: %w", node.Name, err)
+		}
+		identity := strings.SplitN(strings.TrimSpace(string(release)), "\n", 2)
+		if len(identity) != 2 || identity[0] != runtimeVersions[node.Name] || identity[1] == "" {
+			return fmt.Errorf("node %s OS identity %q does not match runtime %q", node.Name, release, runtimeVersions[node.Name])
+		}
+		if observed[node.Name] != identity[1] {
+			return fmt.Errorf("node %s reports OS image %q, running OS reports %q", node.Name, observed[node.Name], identity[1])
 		}
 	}
 	return nil
