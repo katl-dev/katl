@@ -15,6 +15,9 @@ runs:
       run: |
         mkdir -p mkosi.conf.d
         cat > mkosi.conf.d/ci-downloads.conf <<'EOF'
+        [Distribution]
+        Mirror=https://dl.fedoraproject.org/pub/fedora
+
         [Build]
         SandboxTrees=.github/actions/mkosi-builder/sandbox
         EOF

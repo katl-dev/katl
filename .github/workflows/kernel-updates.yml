@@ -12,34 +12,13 @@ on:
         description: Exact LTS kernel release; empty discovers the newest
         type: string
   pull_request:
-    paths:
-      - 'kernels/**'
-      - 'extensions/**'
-      - 'internal/kernelrelease/**'
-      - 'internal/kernelmodule/**'
-      - 'internal/extensionrelease/**'
-      - 'internal/releaseextensions/**'
-      - 'cmd/katl-kernel-release/**'
-      - 'cmd/katl-mkosi-artifacts/**'
-      - 'mkosi.conf*'
-      - 'mkosi.conf.d/**'
-      - 'mkosi.profiles/runtime/**'
-      - 'mkosi.profiles/installer-image/**'
-      - 'mkosi.profiles/kernel-extension-*/**'
-      - 'scripts/mkosi'
-      - 'scripts/fedora-release'
-      - 'scripts/build-release-extensions'
-      - 'scripts/assemble-release-extensions'
-      - 'Containerfile.mkosi'
-      - '.github/actions/mkosi-builder/**'
-      - '.github/workflows/kernel-updates.yml'
 
 permissions:
   contents: read
 
 concurrency:
-  group: kernel-updates-${{ github.event.pull_request.number || 'proposals' }}
-  cancel-in-progress: false
+  group: kernel-inputs-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   capture:
@@ -109,21 +88,39 @@ jobs:
           jq -r 'to_entries[] | "\(.key)=\(.value)"' proposal.json >> "$GITHUB_OUTPUT"
 
   plan:
-    if: always() && (github.event_name == 'pull_request' || needs.propose.outputs.changed == 'true')
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') || needs.propose.outputs.changed == 'true') }}
     needs: propose
     runs-on: ubuntu-24.04
     outputs:
       qualify: ${{ steps.plan.outputs.qualify }}
+      version: ${{ steps.plan.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ needs.propose.outputs.commit || github.sha }}
           persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
       - id: plan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            required="$(git diff --name-only --no-renames -z "$BASE_SHA...$HEAD_SHA" | go run ./cmd/katl-vmtest-plan --kernel-changes)"
+            if [[ "$required" == false ]]; then
+              echo 'qualify=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            [[ "$required" == true ]]
+          fi
           directory="kernels/fedora-$(scripts/fedora-release)/x86_64"
           if [[ -f "$directory/standard.json" && -f "$directory/lts.json" ]]; then
             echo 'qualify=true' >> "$GITHUB_OUTPUT"
+            echo "version=$(date -u +%Y.%-m).0-dev.0" >> "$GITHUB_OUTPUT"
           else
             echo 'kernel locks must cover both flavours of the selected Fedora release' >&2
             exit 1
@@ -131,7 +128,7 @@ jobs:
 
   qualify:
     name: Qualify Kernel (${{ matrix.flavour }})
-    if: always() && needs.plan.outputs.qualify == 'true'
+    if: ${{ !cancelled() && needs.plan.outputs.qualify == 'true' }}
     needs: [propose, plan]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -145,8 +142,15 @@ jobs:
       KATL_CONTAINER_RUNTIME: docker
       KATL_MKOSI_IMAGE: localhost/katl-kernel-inputs:builder
       KATL_VMTEST_IMAGE_SUPPORT: '0'
-      KATL_VERSION: 0.0.0-dev.0
+      KATL_VERSION: ${{ needs.plan.outputs.version }}
       KATL_BUILD_COMMIT: ${{ needs.propose.outputs.commit || github.sha }}
+      KATL_VMTEST_KVM: 'on'
+      KATL_VMTEST_KEEP: failed
+      KATL_VMTEST_DEBUG_ON_FAILURE: '0'
+      KATL_OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
+      KATL_OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
+      KATL_VMTEST_GO: ${{ github.workspace }}/.github/scripts/hosted-vmtest-go
+      KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/kernel-journey
     steps:
       - uses: actions/checkout@v7
         with:
@@ -161,7 +165,7 @@ jobs:
           profile: kernel-qualification
           image: ${{ env.KATL_MKOSI_IMAGE }}
       - uses: actions/download-artifact@v8
-        if: github.event_name != 'pull_request'
+        if: needs.propose.outputs.changed == 'true'
         with:
           name: kernel-candidates
           path: _build/kernel-candidates
@@ -183,11 +187,59 @@ jobs:
           scripts/mkosi build-installer
           scripts/build-release-extensions
           scripts/assemble-release-extensions
+      - uses: ./.github/actions/hosted-vmtest
+      - name: Exercise the production DRBD driver
+        run: |
+          KATL_EXTENSION_RELEASE=_build/mkosi/release-extensions.json \
+            scripts/mkosi build-katlos-upgrade-image
+          mkdir -p _build/qualified-kernel
+          mv _build/mkosi/katlos-upgrade-* _build/qualified-kernel/
+          images=(_build/qualified-kernel/katlos-upgrade-*.squashfs)
+          test "${#images[@]}" = 1
+          export KATL_VMTEST_DRBD_UPGRADE_IMAGE="$GITHUB_WORKSPACE/${images[0]}"
+          export KATL_VMTEST_IMAGE_SUPPORT=1
+          scripts/mkosi build-katlos-install-image
+          scripts/mkosi build-installer
+          scripts/mkosi --profile vmtest-drbd-tools -f build
+          .github/scripts/hosted-vmtest-measure drbd .github/scripts/hosted-vmtest-run \
+            --artifact-set=install --no-rebuild ./internal/vmtest \
+            -run '^TestInstalledRuntimeDRBDReplication$' -count=1 -json -timeout 40m
+          jq -se 'any(.[]; .Action == "pass" and .Test == "TestInstalledRuntimeDRBDReplication")' \
+            _build/hosted-evidence/go-test.jsonl
       - name: Record the qualified commit and inputs
         run: |
           printf 'Qualified commit: `%s`\n\n' "$KATL_BUILD_COMMIT" >> "$GITHUB_STEP_SUMMARY"
           jq '{flavour, kernelRelease, reference, packages: [.packages[] | {name, nevra, digest}]}' \
             "$KATL_KERNEL_LOCK" >> "$GITHUB_STEP_SUMMARY"
+      - name: Collect VM diagnostics
+        if: always()
+        run: .github/scripts/hosted-vmtest-diagnostics
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: kernel-driver-${{ matrix.flavour }}-${{ github.run_id }}
+          path: |
+            _build/hosted-evidence/
+            _build/kernel-journey/**/*.log
+            _build/kernel-journey/**/*.json
+            _build/kernel-journey/**/*.xml
+            _build/kernel-journey/**/*.txt
+            _build/kernel-journey/**/*.stdout
+            _build/kernel-journey/**/*.stderr
+          retention-days: 3
+
+  vmtests:
+    name: Kernel VM (${{ matrix.flavour }})
+    if: ${{ !cancelled() && needs.plan.outputs.qualify == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')) }}
+    needs: [propose, plan]
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: [standard, lts]
+    uses: ./.github/workflows/hosted-vmtests.yml
+    with:
+      flavour: ${{ matrix.flavour }}
+      ref: ${{ needs.propose.outputs.commit || github.sha }}
 
   publish:
     if: github.event_name != 'pull_request' && needs.propose.outputs.changed == 'true'
@@ -229,6 +281,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      actions: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -267,7 +320,7 @@ jobs:
             printf 'Both boot artifacts, every release-owned extension, and complete module composition passed for `%s` in [Kernel Updates](%s/%s/actions/runs/%s).\n' \
               "$QUALIFIED_COMMIT" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
             echo
-            echo 'Build qualification does not establish DRBD replication or NVIDIA hardware behavior. Run the applicable VM and operator journeys before merging.'
+            echo 'Kernel Input Qualification also requires the full VM suite for both flavours before auto-merge. NVIDIA hardware behavior requires separate hardware qualification.'
           } > body.md
           number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
           if [[ -n "$number" ]]; then
@@ -276,17 +329,26 @@ jobs:
             gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
               --title 'kernel: update retained kernel inputs' --body-file body.md
           fi
+          # GITHUB_TOKEN-created PRs do not emit another workflow-triggering event.
+          for workflow in fast-checks.yml kubernetes-bundles.yml kernel-updates.yml; do
+            gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+          done
 
   result:
     name: Kernel Input Qualification
-    if: always() && github.event_name == 'pull_request'
-    needs: [plan, qualify]
+    if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'))
+    needs: [plan, qualify, vmtests]
     runs-on: ubuntu-24.04
     steps:
       - env:
           PLAN_RESULT: ${{ needs.plan.result }}
           REQUIRED: ${{ needs.plan.outputs.qualify }}
           QUALIFY_RESULT: ${{ needs.qualify.result }}
+          VM_RESULT: ${{ needs.vmtests.result }}
         run: |
           [[ "$PLAN_RESULT" == success ]]
-          [[ "$REQUIRED" != true || "$QUALIFY_RESULT" == success ]]
+          if [[ "$REQUIRED" == true ]]; then
+            [[ "$QUALIFY_RESULT" == success && "$VM_RESULT" == success ]]
+          else
+            [[ "$REQUIRED" == false && "$QUALIFY_RESULT" == skipped && "$VM_RESULT" == skipped ]]
+          fi
