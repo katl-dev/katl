@@ -17,8 +17,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: kernel-updates-${{ github.event.pull_request.number || 'proposals' }}
-  cancel-in-progress: false
+  group: kernel-inputs-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   capture:
