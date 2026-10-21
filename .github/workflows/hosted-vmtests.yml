@@ -5,12 +5,12 @@ on:
   workflow_dispatch:
     inputs:
       runner:
-        description: Runner label or scale-set name; blank uses KATL_VMTEST_RUNNER or Blacksmith
+        description: Hosted runner or katl-vmtest (main only); blank uses repository settings
         type: string
   workflow_call:
     inputs:
       runner:
-        description: Runner label or scale-set name; blank uses KATL_VMTEST_RUNNER or Blacksmith
+        description: Hosted runner or katl-vmtest (main only); blank uses repository settings
         type: string
 
 permissions:
@@ -35,6 +35,8 @@ jobs:
     outputs:
       run: ${{ steps.plan.outputs.run }}
       matrix: ${{ steps.plan.outputs.matrix }}
+      runner: ${{ steps.host.outputs.runner }}
+      prepared: ${{ steps.host.outputs.prepared }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -44,6 +46,34 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Select VM runner
+        id: host
+        env:
+          REQUESTED_RUNNER: ${{ inputs.runner }}
+          HOSTED_RUNNER: ${{ vars.KATL_VMTEST_RUNNER }}
+          MAIN_RUNNER: ${{ vars.KATL_VMTEST_MAIN_RUNNER }}
+        run: |
+          runner="${REQUESTED_RUNNER:-${HOSTED_RUNNER:-blacksmith-4vcpu-ubuntu-2404}}"
+          trusted_main=false
+          if [[ "$GITHUB_REPOSITORY" == katl-dev/katl && "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" != pull_request ]]; then
+            trusted_main=true
+            if [[ -z "$REQUESTED_RUNNER" && -n "$MAIN_RUNNER" ]]; then runner="$MAIN_RUNNER"; fi
+          fi
+          prepared=false
+          case "$runner" in
+            katl-vmtest)
+              if [[ "$trusted_main" != true ]]; then
+                echo '::error::katl-vmtest accepts trusted main revisions only; use a hosted runner for this ref.'
+                exit 1
+              fi
+              prepared=true
+              ;;
+            ubuntu-24.04|blacksmith-2vcpu-ubuntu-2404|blacksmith-4vcpu-ubuntu-2404|blacksmith-8vcpu-ubuntu-2404) ;;
+            *) echo "::error::Unsupported VM runner: $runner"; exit 1 ;;
+          esac
+          echo "runner=$runner" >> "$GITHUB_OUTPUT"
+          echo "prepared=$prepared" >> "$GITHUB_OUTPUT"
+          echo "VM runner: $runner (prepared: $prepared)" >> "$GITHUB_STEP_SUMMARY"
       - name: Select VM groups
         id: plan
         env:
@@ -65,7 +95,7 @@ jobs:
   images:
     needs: plan
     if: needs.plan.outputs.run == 'true'
-    runs-on: ${{ inputs.runner || vars.KATL_VMTEST_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ needs.plan.outputs.runner }}
     timeout-minutes: 60
     outputs:
       mkosi-version: ${{ steps.builder.outputs.version }}
@@ -84,6 +114,8 @@ jobs:
           go-version-file: go.mod
           cache: true
       - uses: ./.github/actions/hosted-vmtest
+        with:
+          prepared: ${{ needs.plan.outputs.prepared }}
       - uses: actions/cache/restore@v6
         id: build-cache
         with:
@@ -151,12 +183,7 @@ jobs:
       - name: Collect host diagnostics
         if: always()
         run: |
-          # sudo reads host logs; the workflow user owns the evidence files.
-          # shellcheck disable=SC2024
-          sudo journalctl -u libvirtd --no-pager -n 200 > _build/hosted-evidence/libvirtd.log
-          # shellcheck disable=SC2024
-          sudo find /var/log/libvirt/qemu -type f -exec tail -n 100 {} + > _build/hosted-evidence/qemu.log || true
-          df -h > _build/hosted-evidence/host-after.txt
+          .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
         if: always()
         with:
@@ -183,7 +210,7 @@ jobs:
     name: VM / ${{ matrix.name }}
     needs: [plan, images]
     if: needs.plan.outputs.run == 'true'
-    runs-on: ${{ inputs.runner || vars.KATL_VMTEST_RUNNER || 'blacksmith-4vcpu-ubuntu-2404' }}
+    runs-on: ${{ needs.plan.outputs.runner }}
     timeout-minutes: 55
     strategy:
       fail-fast: false
@@ -203,6 +230,8 @@ jobs:
           go-version-file: go.mod
           cache: true
       - uses: ./.github/actions/hosted-vmtest
+        with:
+          prepared: ${{ needs.plan.outputs.prepared }}
       - uses: actions/download-artifact@v8
         if: matrix.name != 'boot'
         with:
@@ -255,11 +284,7 @@ jobs:
       - name: Collect host diagnostics
         if: always()
         run: |
-          # shellcheck disable=SC2024
-          sudo journalctl -u libvirtd --no-pager -n 200 > _build/hosted-evidence/libvirtd.log
-          # shellcheck disable=SC2024
-          sudo find /var/log/libvirt/qemu -type f -exec tail -n 100 {} + > _build/hosted-evidence/qemu.log || true
-          df -h > _build/hosted-evidence/host-after.txt
+          .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
         if: always()
         with:

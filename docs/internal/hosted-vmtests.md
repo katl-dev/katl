@@ -12,17 +12,53 @@ The workflow defaults to the four-core Blacksmith runner; select `ubuntu-24.04`
 with its runner input for the GitHub baseline. The four-core Blacksmith runner has 16 GB RAM and 80 GB storage;
 the eight-core runner has 32 GB RAM and 160 GB storage.
 
-Set the repository Actions variable `KATL_VMTEST_RUNNER` to a runner label or
-runner scale-set name to switch the producer and scenario jobs for PR, main,
-and candidate builds together. An explicit workflow `runner` input overrides
-that variable; leaving both unset keeps Blacksmith. Planning and final result
-checks continue on GitHub-hosted runners.
+Set the repository Actions variable `KATL_VMTEST_RUNNER` to choose the hosted
+default: `ubuntu-24.04` or a Blacksmith Ubuntu 24.04 label with 2, 4, or 8 vCPUs.
+An explicit workflow `runner` input overrides repository settings. Planning and
+final result checks continue on GitHub-hosted runners.
 
-The provisioning action expects an ephemeral Ubuntu 24.04 x64 host with Docker,
-passwordless sudo, and systemd. It installs the remaining tools and probes real
-KVM, vhost-vsock, and TUN access. Cluster-hosted runners must supply those same
-capabilities; an ordinary unprivileged runner pod does not meet this contract.
-Validate one manual run on the new label before changing the repository variable.
+For the dedicated cluster pool, set `KATL_VMTEST_MAIN_RUNNER=katl-vmtest` after
+the rollout checks below pass. This override applies only to `katl-dev/katl`
+`main` revisions. Pull requests, release branches, tags, and other candidate
+refs retain the hosted default. Requests for `katl-vmtest` on other refs fail
+in planning before any VM job is scheduled. Keep a hosted provider available
+for those refs even after switching main.
+
+The hosted preparation path expects an ephemeral Ubuntu 24.04 x64 host with
+Docker, passwordless sudo, and systemd. It installs the remaining tools. The
+`katl-vmtest` path uses the prepared ARC image's existing Docker and libvirt
+daemons without invoking systemd or reconfiguring QEMU. It installs Podman if
+absent, because the Kubernetes fixture cache requires multi-image archives.
+Both paths check active libvirt networking and storage, firmware, KVM VM
+creation, vhost-vsock access, and AF_VSOCK binding. The producer then proves
+actual guest-agent communication. An unprivileged runner pod cannot meet this
+contract.
+
+## Enable the ARC pool
+
+The runner label and image contract are defined by
+[home-ops #3132](https://github.com/Zariel/home-ops/pull/3132). Each privileged
+ephemeral pod owns its Docker daemon, libvirt network, storage, and test disks.
+The node supplies KVM, vhost-vsock, and TUN. The image starts its daemons before
+accepting work; workflow preparation does not own their lifecycle.
+
+1. Deploy the runner image and scale set using the home-ops rollout procedure.
+2. Dispatch `Hosted VM scenarios` on `main`, setting `runner` to `katl-vmtest`.
+   Require the producer agent probe, all eight scenario groups, and final
+   `VM validation` to pass. Inspect uploaded cgroup memory/CPU diagnostics and
+   failure evidence. A build or runner-image check alone does not qualify the
+   multi-VM suite.
+3. Verify overlapping jobs on the same node. Pod networks are separate, but
+   guest vsock CIDs share a host-kernel allocation domain. Check guest identity
+   and absence of CID conflicts under the pool's actual concurrency.
+4. Set `KATL_VMTEST_MAIN_RUNNER` to `katl-vmtest`. Subsequent main builds use the
+   pool; delete that variable to return main to the hosted default.
+
+[Katl #370](https://github.com/katl-dev/katl/pull/370) provides the dedicated
+pool's dispatch entry point. When combining it with this matrix, use one main
+trigger: the release-artifact workflow already calls this suite. Keep the
+dedicated entry point manual to avoid running a second full suite on every
+main push. Do not route pull-request revisions to the privileged pool.
 
 ## Gate selection
 
@@ -149,10 +185,14 @@ two-node bootstrap; minimum root-filesystem space was 58.92 GiB during
 three-node installation. These observations support the four-core runner for
 this suite and identify bootstrap as the longest command.
 
-During the successful Blacksmith groups, sampled available RAM stayed above
-12 GiB and root-filesystem space stayed above 58 GiB. Start with four-core
-runners; measure simultaneous multi-control-plane and Kubernetes-upgrade
-journeys before assigning them the same capacity.
+A [two-core, 8 GB run](https://github.com/katl-dev/katl/actions/runs/39657973632)
+also passed every group in 24m25s. Two-node bootstrap took 8m36s and sampled
+available host RAM reached 1.93 GiB; three-node installation took 5m06s.
+Allocated VM capacity was about 115 vCPU-minutes versus 214 for the first
+four-core pass. These independent samples suggest a smaller hosted lane can
+reduce allocated capacity, but do not establish billing savings or ARC cgroup
+limits. Start ARC with its configured resources and measure actual pod peaks
+and concurrent jobs before reducing them.
 
 The split inputs measured 848,896,000 bytes for base, 825,958,400 for media, and
 430,284,800 for upgrade. Across the original seven consumer groups this reduced

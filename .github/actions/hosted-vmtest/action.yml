@@ -1,9 +1,13 @@
-name: Prepare hosted VM test host
-description: Provision the existing libvirt VM-test harness on an ephemeral Ubuntu runner
+name: Prepare VM test host
+description: Provision an Ubuntu host or validate a prepared ARC runner
+inputs:
+  prepared:
+    description: Use the runner image's existing libvirt and Docker daemons
+    default: 'false'
 runs:
   using: composite
   steps:
-    - name: Provision libvirt and device access
+    - name: Record host
       shell: bash
       run: |
         mkdir -p _build/hosted-evidence
@@ -14,6 +18,10 @@ runs:
           df -h
           ls -l /dev/kvm /dev/vhost-vsock /dev/net/tun || true
         } > _build/hosted-evidence/host-before.txt
+    - name: Provision libvirt and device access
+      if: inputs.prepared != 'true'
+      shell: bash
+      run: |
         sudo apt-get update -qq
         sudo apt-get install -y --no-install-recommends \
           qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients \
@@ -38,11 +46,34 @@ runs:
         if ! virsh -c qemu:///system pool-list --name | grep -Fxq default; then
           virsh -c qemu:///system pool-start default
         fi
+    - name: Prepare Kubernetes fixture tools
+      if: inputs.prepared == 'true'
+      shell: bash
+      run: |
+        # The initial ARC image has Docker; Kubernetes fixture archives also require Podman.
+        if ! command -v podman >/dev/null; then
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends podman
+        fi
+    - name: Verify host capabilities
+      shell: bash
+      run: |
+        export LC_ALL=C
+        for device in /dev/kvm /dev/vhost-vsock /dev/net/tun; do
+          test -r "$device" && test -w "$device"
+        done
+        test -r "$KATL_OVMF_CODE"
+        test -r "$KATL_OVMF_VARS"
+        command -v podman
+        command -v kubectl
+        docker info > _build/hosted-evidence/docker.txt
         {
           ls -l /dev/kvm /dev/vhost-vsock /dev/net/tun
           virsh -c qemu:///system uri
           virsh -c qemu:///system net-info default
           virsh -c qemu:///system pool-info default
+          virsh -c qemu:///system net-info default | grep -Eq '^Active:[[:space:]]+yes$'
+          virsh -c qemu:///system pool-info default | grep -Eq '^State:[[:space:]]+running$'
           sudo virt-host-validate qemu || true
         } > _build/hosted-evidence/capabilities.txt
         python3 - <<'PY' > _build/hosted-evidence/device-access.txt
