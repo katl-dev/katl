@@ -16,8 +16,10 @@ the eight-core runner has 32 GB RAM and 160 GB storage.
 
 `cmd/katl-vmtest-plan` owns the scenario catalog and conservative pre-merge
 selection. Documentation, maintainer release tooling, and ordinary unit-test
-changes need no VM build. `katlctl` changes select configuration, management,
-and two-node bootstrap. Shared product changes, VM infrastructure changes, and
+changes need no VM build. Changes to the CLI's configuration compatibility
+and inspection files select configuration, management, and
+two-node bootstrap. Credential-rotation changes select management. Shared CLI
+and product changes, VM infrastructure changes, and
 unrecognized paths select all groups. Main and candidate builds always select
 all groups. This is a coarse policy, not a claim to infer all Go dependencies.
 
@@ -134,20 +136,3 @@ qualifying the exact production bytes and supported journeys; instrumented
 source tests alone do not establish that contract. Do not remove the approval
 step solely because a subset of these scenarios passes.
 
-## Self-hosting alternatives
-
-Self-hosting does not inherently require a different VM-test backend. A
-disposable capable runner VM on the Katl cluster could run the existing
-libvirt world. KubeVirt supports a
-[host-passthrough CPU model](https://kubevirt.io/user-guide/compute/virtual_hardware/);
-actual nested KVM, vsock, TUN, firmware, storage, and networking capabilities
-must be demonstrated inside that runner. This option keeps VM-test policy and
-fixtures portable between hosted and self-hosted execution.
-
-A native KubeVirt backend would instead own remote VM lifecycle, image import,
-disk snapshots, firmware state, network allocation, diagnostics, and cleanup.
-KubeVirt has a [vsock facility](https://kubevirt.io/user-guide/compute/vsock/), but
-that does not make the harness's local CID connections portable across cluster
-nodes. Prefer the runner-level option first unless distributed guest placement
-or a measured nesting constraint justifies the additional backend. Keep a
-recovery path outside the cluster hosting its own qualification jobs.

@@ -78,8 +78,10 @@ func selectGroups(paths []string) []group {
 			name == ".github/workflows/fast-checks.yml", strings.HasPrefix(name, "cmd/katl-release/"), name == "scripts/katl-release",
 			strings.HasSuffix(name, "_test.go") && !strings.HasPrefix(name, "internal/vmtest/"):
 			continue
-		case strings.HasPrefix(name, "cmd/katlctl/"), strings.HasPrefix(name, "internal/katlctl/"):
+		case name == "cmd/katlctl/config_compatibility.go", name == "cmd/katlctl/config_inspect.go":
 			selected["config"], selected["management"], selected["two-node"] = true, true, true
+		case name == "cmd/katlctl/management_rotation.go":
+			selected["management"] = true
 		default:
 			// Unknown and shared changes receive the full suite: missing coverage must not look green.
 			return groups
