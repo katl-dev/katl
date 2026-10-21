@@ -62,7 +62,5 @@ jobs:
       - name: Run fast checks
         run: scripts/check-fast "${{ steps.comparison.outputs.range }}"
 
-      # VM/libvirt/KVM, mkosi artifact builds, and publishing are intentionally
-      # excluded from this low-cost workflow. Run VM gates with
-      # scripts/vmtest-run on a capable host; hosted orchestration is not yet
-      # available.
+      # VM tests and their mkosi artifact builds run separately on the trusted
+      # self-hosted pool in vmtest.yml. Publishing uses the release workflows.

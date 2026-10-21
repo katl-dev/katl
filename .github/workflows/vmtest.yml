@@ -1,0 +1,73 @@
+name: VM Tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vmtest-main
+  cancel-in-progress: false
+
+jobs:
+  vmtest:
+    name: Libvirt VM Tests
+    # This pool can run privileged image builders; only run trusted main code.
+    if: github.repository == 'katl-dev/katl' && github.ref == 'refs/heads/main'
+    runs-on: katl-vmtest
+    timeout-minutes: 240
+    env:
+      GOTOOLCHAIN: auto
+      KATL_VMTEST_RUN_DIR: /tmp/katl-vmtest-ci
+      KATL_VMTEST_KEEP: failed
+      KATL_VMTEST_DEBUG_ON_FAILURE: "0"
+      KATL_VMTEST_KVM: "on"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify VM-test host
+        shell: bash
+        run: |
+          test -r /dev/kvm && test -w /dev/kvm
+          test -r /dev/vhost-vsock && test -w /dev/vhost-vsock
+          test -r /dev/net/tun && test -w /dev/net/tun
+          test -r "$KATL_OVMF_CODE"
+          test -r "$KATL_OVMF_VARS"
+          virsh --connect qemu:///system uri
+          virsh --connect qemu:///system net-info default
+          virsh --connect qemu:///system pool-info default
+          docker info
+
+      - name: Run VM tests
+        run: scripts/vmtest-run ./internal/vmtest ./internal/vmtest/scenarios -count=1 -failfast
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vmtest-failure-${{ github.run_id }}-${{ github.run_attempt }}
+          retention-days: 7
+          if-no-files-found: warn
+          path: |
+            ${{ env.KATL_VMTEST_RUN_DIR }}/run.json
+            ${{ env.KATL_VMTEST_RUN_DIR }}/world.json
+            ${{ env.KATL_VMTEST_RUN_DIR }}/host-capabilities.json
+            ${{ env.KATL_VMTEST_RUN_DIR }}/go-test.log
+            ${{ env.KATL_VMTEST_RUN_DIR }}/scenarios/**/*.json
+            ${{ env.KATL_VMTEST_RUN_DIR }}/scenarios/**/*.jsonl
+            ${{ env.KATL_VMTEST_RUN_DIR }}/scenarios/**/*.log
+            ${{ env.KATL_VMTEST_RUN_DIR }}/scenarios/**/*.txt
+            ${{ env.KATL_VMTEST_RUN_DIR }}/scenarios/**/*.xml

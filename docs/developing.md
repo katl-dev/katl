@@ -84,8 +84,8 @@ Inspect the inventory with:
 go run ./cmd/katl-mkosi-artifacts inventory-release-extensions
 ```
 
-VM lifecycle qualification is separate from build verification and runs locally;
-VM tests are not supported in CI.
+VM lifecycle qualification is separate from build verification. Run it locally
+with `scripts/vmtest-run` or through the self-hosted `VM Tests` workflow.
 
 ## Run VM tests with libvirt
 
@@ -423,9 +423,30 @@ no-op for unrelated changes and builds every affected supported bundle when
 producer inputs change. Direct pushes are not part of the supported development
 loop.
 
-It intentionally skips mkosi builds, libvirt/KVM setup, VM scenarios, and
-publishing. Run host-specific VM gates locally with `scripts/vmtest-run` on a
-capable host and record the result with the change or release evidence. GitHub Actions does not run hosted VM tests.
+Fast checks skip mkosi builds, libvirt/KVM setup, VM scenarios, and publishing.
+Run host-specific VM gates locally with `scripts/vmtest-run` on a capable host
+and record the result with the change or release evidence.
+
+### Self-hosted VM tests
+
+The `VM Tests` workflow runs on pushes to `main` and can be dispatched manually
+for `main`. It selects the `katl-vmtest` runner scale set registered with this
+repository and runs:
+
+```sh
+scripts/vmtest-run ./internal/vmtest ./internal/vmtest/scenarios -count=1 -failfast
+```
+
+The dedicated runner image provides Go, Docker, libvirt, QEMU, OVMF, `kubectl`,
+and image-inspection tools. Each ephemeral runner owns its libvirt network,
+storage pool, nested container daemon, and test disks. The underlying host must
+provide KVM, `/dev/vhost-vsock`, and `/dev/net/tun`. Runner pods need privileged
+execution for libvirt and nested mkosi builds; do not route untrusted
+pull-request revisions to this pool.
+
+Successful runs delete their temporary worlds. Failed runs upload logs and
+scenario metadata for seven days, excluding disk images. Live VM debugging is
+disabled in CI, and all remaining pod storage is discarded with the runner.
 
 ## Fedora package inputs
 
