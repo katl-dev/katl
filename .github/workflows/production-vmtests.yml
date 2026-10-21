@@ -74,7 +74,7 @@ jobs:
           (cd dist && sha256sum --check SHA256SUMS)
           gh release download "$PREVIOUS_TAG" --repo "$GITHUB_REPOSITORY" --dir previous
           (cd previous && sha256sum --check SHA256SUMS)
-          printf 'Upgrade source: `%s`\n' "$PREVIOUS_TAG" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Upgrade source: %s\n' "$PREVIOUS_TAG" >> "$GITHUB_STEP_SUMMARY"
       - name: Qualify production installation, reboot, upgrade, and rollback
         run: |
           .github/scripts/hosted-vmtest-measure production .github/scripts/hosted-vmtest-run \
