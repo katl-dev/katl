@@ -12,6 +12,18 @@ The workflow defaults to the four-core Blacksmith runner; select `ubuntu-24.04`
 with its runner input for the GitHub baseline. The four-core Blacksmith runner has 16 GB RAM and 80 GB storage;
 the eight-core runner has 32 GB RAM and 160 GB storage.
 
+Set the repository Actions variable `KATL_VMTEST_RUNNER` to a runner label or
+runner scale-set name to switch the producer and scenario jobs for PR, main,
+and candidate builds together. An explicit workflow `runner` input overrides
+that variable; leaving both unset keeps Blacksmith. Planning and final result
+checks continue on GitHub-hosted runners.
+
+The provisioning action expects an ephemeral Ubuntu 24.04 x64 host with Docker,
+passwordless sudo, and systemd. It installs the remaining tools and probes real
+KVM, vhost-vsock, and TUN access. Cluster-hosted runners must supply those same
+capabilities; an ordinary unprivileged runner pod does not meet this contract.
+Validate one manual run on the new label before changing the repository variable.
+
 ## Gate selection
 
 `cmd/katl-vmtest-plan` owns the scenario catalog and conservative pre-merge
@@ -114,7 +126,28 @@ These samples use independent cache scopes and runner allocations. They do not
 establish a general speed multiplier or warm-main build cost. Both runs failed
 the two-node group before Kubernetes bootstrap completed. The Blacksmith
 comparison also exposed an install test that depended on interleaved serial
-text. Consult the PR's final gate results for the corrected harness.
+text.
+
+The subsequent [complete Blacksmith run](https://github.com/katl-dev/katl/actions/runs/39653082651)
+passed all eight groups with the corrected harness. It finished in 21 minutes
+including planning, provisioning, image builds, transfer, and final validation.
+The producer job took 8m13s. Consumer command durations were:
+
+| Group | Duration |
+| --- | --- |
+| Boot | 1m22s |
+| Install | 1m25s |
+| Storage | 50s |
+| Configuration | 4m13s |
+| Management | 1m45s |
+| Update and rollback | 3m57s |
+| Two-node bootstrap | 9m36s |
+| Three-node install | 4m20s |
+
+The full run's sampled available RAM reached a minimum of 9.59 GiB during
+two-node bootstrap; minimum root-filesystem space was 58.92 GiB during
+three-node installation. These observations support the four-core runner for
+this suite and identify bootstrap as the longest command.
 
 During the successful Blacksmith groups, sampled available RAM stayed above
 12 GiB and root-filesystem space stayed above 58 GiB. Start with four-core
