@@ -36,19 +36,24 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
             qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients \
-            ovmf mtools fdisk jq acl
+            ovmf mtools fdisk jq acl dnsmasq-base
           sudo modprobe vhost_vsock
           sudo modprobe tun
+          sudo usermod -aG kvm "$(id -un)"
           sudo setfacl -m "u:$(id -un):rw" /dev/kvm /dev/vhost-vsock
           # Reexec via group membership is unnecessary with an explicit system socket ACL.
           sudo systemctl start libvirtd
           sudo setfacl -m "u:$(id -un):rw" /run/libvirt/libvirt-sock
-          sudo virsh -c qemu:///system net-start default || sudo virsh -c qemu:///system net-info default
+          if ! virsh -c qemu:///system net-list --name | grep -Fxq default; then
+            virsh -c qemu:///system net-start default
+          fi
           sudo mkdir -p /var/lib/libvirt/images
           if ! sudo virsh -c qemu:///system pool-info default; then
             sudo virsh -c qemu:///system pool-define-as default dir --target /var/lib/libvirt/images
           fi
-          sudo virsh -c qemu:///system pool-start default || sudo virsh -c qemu:///system pool-info default
+          if ! virsh -c qemu:///system pool-list --name | grep -Fxq default; then
+            virsh -c qemu:///system pool-start default
+          fi
           {
             ls -l /dev/kvm /dev/vhost-vsock /dev/net/tun
             virsh -c qemu:///system uri
@@ -84,13 +89,17 @@ jobs:
           echo "KATL_INSTALLER_ISO=$GITHUB_WORKSPACE/_build/probe-media/katl-installer.iso" >> "$GITHUB_ENV"
       - name: Boot published ISO through existing vmtest runner
         run: |
-          scripts/vmtest-run --artifact-set=none --no-rebuild \
-            ./internal/vmtest/scenarios -run '^TestInstallerISOBootSmoke$' \
-            -count=1 -v -timeout 8m
+          getfacl /dev/kvm /dev/vhost-vsock > _build/hosted-evidence/device-acls-before-test.txt
+          sg kvm -c 'scripts/vmtest-run --artifact-set=none --no-rebuild \
+            ./internal/vmtest/scenarios -run "^TestInstallerISOBootSmoke$" \
+            -count=1 -v -timeout 8m'
       - name: Preserve diagnostics
         if: always()
         run: |
+          # sudo reads host logs; the runner owns the output files.
+          # shellcheck disable=SC2024
           sudo journalctl -u libvirtd --no-pager -n 200 > _build/hosted-evidence/libvirtd.log
+          # shellcheck disable=SC2024
           sudo find /var/log/libvirt/qemu -maxdepth 1 -type f -exec tail -n 100 {} + \
             > _build/hosted-evidence/qemu.log || true
           df -h > _build/hosted-evidence/host-after.txt
