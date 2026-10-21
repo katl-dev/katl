@@ -149,17 +149,10 @@ jobs:
         with:
           profile: hosted-vmtest
           image: ${{ env.KATL_MKOSI_IMAGE }}
-      - name: Select the canonical Fedora repository
-        run: |
-          # Mirror-list metadata can lag package updates. Fetch both from the same source.
-          cat > mkosi.conf.d/hosted-fedora.conf <<'EOF'
-          [Distribution]
-          Mirror=https://dl.fedoraproject.org/pub/fedora
-          EOF
-          cp mkosi.conf.d/hosted-fedora.conf _build/hosted-evidence/
       - name: Record builder identity
         id: builder
         run: |
+          cp mkosi.conf.d/ci-downloads.conf _build/hosted-evidence/
           version="$(scripts/mkosi builder-version)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           printf '%s\n' "$KATL_BUILD_COMMIT" > _build/hosted-evidence/source.txt

@@ -10,10 +10,11 @@ inputs:
 runs:
   using: composite
   steps:
-    - name: Configure package mirror failover
+    - name: Configure build downloads
       shell: bash
       run: |
         mkdir -p mkosi.conf.d
+        # Fetch metadata and RPMs from the same canonical repository.
         cat > mkosi.conf.d/ci-downloads.conf <<'EOF'
         [Distribution]
         Mirror=https://dl.fedoraproject.org/pub/fedora
