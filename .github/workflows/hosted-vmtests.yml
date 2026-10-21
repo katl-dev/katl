@@ -14,6 +14,7 @@ env:
   KATL_VMTEST_DEBUG_ON_FAILURE: '0'
   KATL_OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
   KATL_OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
+  KATL_VMTEST_GO: ${{ github.workspace }}/.github/scripts/hosted-vmtest-go
 
 jobs:
   images:
@@ -34,7 +35,8 @@ jobs:
           go-version-file: go.mod
           cache: true
       - uses: ./.github/actions/hosted-vmtest
-      - uses: actions/cache@v6
+      - uses: actions/cache/restore@v6
+        id: build-cache
         with:
           path: |
             _build/go-mod
@@ -55,12 +57,13 @@ jobs:
           printf '%s\n' "$GITHUB_SHA" > _build/hosted-evidence/source.txt
           printf '%s\n' "$version" > _build/hosted-evidence/mkosi-version.txt
       - name: Build instrumented runtime
+        id: runtime
         run: .github/scripts/hosted-vmtest-measure build-runtime scripts/mkosi build-runtime
       - name: Prove guest agent and vsock on producer host
         run: |
           .github/scripts/hosted-vmtest-measure agent sg kvm -c \
             'scripts/vmtest-run --artifact-set=runtime --no-rebuild ./internal/vmtest -run "^TestDirectRuntimeVMTestAgentSmoke$" -count=1 -v -timeout 8m'
-          grep -Eq '^--- PASS: TestDirectRuntimeVMTestAgentSmoke ' _build/hosted-evidence/agent.log
+          grep -Eq '^--- PASS: TestDirectRuntimeVMTestAgentSmoke ' _build/hosted-evidence/go-test.log
       - name: Build shared installer and lifecycle inputs
         run: |
           .github/scripts/hosted-vmtest-measure build-install scripts/mkosi build-installer-iso
@@ -71,7 +74,7 @@ jobs:
           # Carry files and modes, excluding builder caches and mutable guest fixtures.
           find _build/mkosi -maxdepth 1 -type f -print0 | sort -z > _build/hosted-evidence/input-files.list
           xargs -0 sha256sum < _build/hosted-evidence/input-files.list > _build/hosted-evidence/inputs.sha256
-          .github/scripts/hosted-vmtest-measure pack tar --null -T _build/hosted-evidence/input-files.list \
+          .github/scripts/hosted-vmtest-measure pack tar --sparse --null -T _build/hosted-evidence/input-files.list \
             -cf _build/hosted-vmtest-inputs.tar
           stat -c '%s' _build/hosted-vmtest-inputs.tar > _build/hosted-evidence/archive-bytes.txt
           cp _build/hosted-evidence/{source.txt,mkosi-version.txt,inputs.sha256} _build/
@@ -104,6 +107,14 @@ jobs:
             _build/hosted-agent/**/*.json
             _build/hosted-agent/**/*.xml
           retention-days: 3
+      - uses: actions/cache/save@v6
+        if: always() && steps.runtime.outcome == 'success' && steps.build-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            _build/go-mod
+            _build/go-cache
+            _build/mkosi/package-cache
+          key: ${{ steps.build-cache.outputs.cache-primary-key }}
 
   scenarios:
     needs: images
@@ -167,7 +178,7 @@ jobs:
           # A successful test process must actually pass every selected VM test.
           IFS='|' read -ra tests <<< "$TEST_NAMES"
           for test_name in "${tests[@]}"; do
-            grep -Fq -- "--- PASS: $test_name (" _build/hosted-evidence/scenarios.log
+            grep -Fq -- "--- PASS: $test_name (" _build/hosted-evidence/go-test.log
           done
       - name: Collect host diagnostics
         if: always()

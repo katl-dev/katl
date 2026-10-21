@@ -7,21 +7,26 @@ evidence="${GITHUB_WORKSPACE:?}/_build/hosted-evidence"
 mkdir -p "$evidence"
 samples="$evidence/$stage-resources.tsv"
 printf 'unix_seconds\tmem_available_kib\troot_used_bytes\troot_available_bytes\n' > "$samples"
+sample() {
+    local available used free
+    available="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+    read -r used free < <(df -B1 --output=used,avail "$GITHUB_WORKSPACE" | tail -1)
+    printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$available" "$used" "$free" >> "$samples"
+}
+sample
 (
-    while true; do
-        available="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
-        read -r used free < <(df -B1 --output=used,avail "$GITHUB_WORKSPACE" | tail -1)
-        printf '%s\t%s\t%s\t%s\n' "$(date +%s)" "$available" "$used" "$free" >> "$samples"
-        sleep 10
+    while sleep 10; do
+        sample
     done
 ) &
 sampler=$!
 trap 'kill "$sampler" 2>/dev/null || true; wait "$sampler" 2>/dev/null || true' EXIT
 
 set +e
-/usr/bin/time -v -o "$evidence/$stage-time.txt" "$@" 2>&1 | tee "$evidence/$stage.log"
+env time -v -o "$evidence/$stage-time.txt" "$@" 2>&1 | tee "$evidence/$stage.log"
 statuses=("${PIPESTATUS[@]}")
 set -e
+sample
 printf '%s\n' "${statuses[0]}" > "$evidence/$stage-exit.txt"
 [[ "${statuses[1]}" == 0 ]] || exit "${statuses[1]}"
 exit "${statuses[0]}"

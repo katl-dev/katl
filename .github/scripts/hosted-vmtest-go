@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Keep the Go result independently of the harness's successful-world cleanup.
+go "$@" 2>&1 | tee "${GITHUB_WORKSPACE:?}/_build/hosted-evidence/go-test.log"
