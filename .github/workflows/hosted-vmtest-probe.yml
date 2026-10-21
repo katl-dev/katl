@@ -1,0 +1,110 @@
+name: Hosted VM Test Feasibility
+
+on:
+  push:
+    branches: [investigate-hosted-vmtests]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      KATL_VMTEST_KVM: 'on'
+      KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/hosted-probe
+      KATL_VMTEST_KEEP: failed
+      KATL_VMTEST_DEBUG_ON_FAILURE: '0'
+      KATL_OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
+      KATL_OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Record host and install VM tools
+        run: |
+          mkdir -p _build/hosted-evidence
+          {
+            uname -a
+            lscpu
+            free -h
+            df -h
+          } > _build/hosted-evidence/host-before.txt
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients \
+            ovmf mtools fdisk jq acl
+          sudo modprobe vhost_vsock
+          sudo modprobe tun
+          sudo setfacl -m "u:$(id -un):rw" /dev/kvm /dev/vhost-vsock
+          # Reexec via group membership is unnecessary with an explicit system socket ACL.
+          sudo systemctl start libvirtd
+          sudo setfacl -m "u:$(id -un):rw" /run/libvirt/libvirt-sock
+          sudo virsh -c qemu:///system net-start default || sudo virsh -c qemu:///system net-info default
+          sudo mkdir -p /var/lib/libvirt/images
+          if ! sudo virsh -c qemu:///system pool-info default; then
+            sudo virsh -c qemu:///system pool-define-as default dir --target /var/lib/libvirt/images
+          fi
+          sudo virsh -c qemu:///system pool-start default || sudo virsh -c qemu:///system pool-info default
+          {
+            ls -l /dev/kvm /dev/vhost-vsock /dev/net/tun
+            virsh -c qemu:///system uri
+            virsh -c qemu:///system net-info default
+            virsh -c qemu:///system pool-info default
+            sudo virt-host-validate qemu || true
+          } > _build/hosted-evidence/capabilities.txt
+          python3 - <<'PY' > _build/hosted-evidence/device-access.txt
+          import fcntl, os, socket
+          kvm = os.open('/dev/kvm', os.O_RDWR)
+          print('KVM API version:', fcntl.ioctl(kvm, 0xAE00, 0))
+          vm = fcntl.ioctl(kvm, 0xAE01, 0)
+          print('KVM_CREATE_VM succeeded')
+          os.close(vm)
+          os.close(kvm)
+          vsock = os.open('/dev/vhost-vsock', os.O_RDWR)
+          print('vhost-vsock opened read/write')
+          os.close(vsock)
+          sock = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
+          sock.bind((socket.VMADDR_CID_ANY, socket.VMADDR_PORT_ANY))
+          print('AF_VSOCK bound:', sock.getsockname())
+          sock.close()
+          PY
+      - name: Fetch published installer media
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p _build/probe-media
+          gh release download v2026.10.1 --repo "$GITHUB_REPOSITORY" \
+            --pattern katl-installer.iso --pattern katl-installer.iso.sha256 \
+            --dir _build/probe-media
+          (cd _build/probe-media && sha256sum --check katl-installer.iso.sha256)
+          echo "KATL_INSTALLER_ISO=$GITHUB_WORKSPACE/_build/probe-media/katl-installer.iso" >> "$GITHUB_ENV"
+      - name: Boot published ISO through existing vmtest runner
+        run: |
+          scripts/vmtest-run --artifact-set=none --no-rebuild \
+            ./internal/vmtest/scenarios -run '^TestInstallerISOBootSmoke$' \
+            -count=1 -v -timeout 8m
+      - name: Preserve diagnostics
+        if: always()
+        run: |
+          sudo journalctl -u libvirtd --no-pager -n 200 > _build/hosted-evidence/libvirtd.log
+          sudo find /var/log/libvirt/qemu -maxdepth 1 -type f -exec tail -n 100 {} + \
+            > _build/hosted-evidence/qemu.log || true
+          df -h > _build/hosted-evidence/host-after.txt
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: hosted-vmtest-evidence-${{ github.run_id }}
+          path: |
+            _build/hosted-evidence/
+            _build/hosted-probe/host-capabilities.json
+            _build/hosted-probe/world.json
+            _build/hosted-probe/run.json
+            _build/hosted-probe/go-test.log
+            _build/hosted-probe/scenarios/**/*.log
+            _build/hosted-probe/scenarios/**/*.json
+            _build/hosted-probe/scenarios/**/*.xml
+          retention-days: 3
