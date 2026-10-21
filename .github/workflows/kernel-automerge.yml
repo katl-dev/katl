@@ -1,0 +1,42 @@
+name: Merge Qualified Kernels
+
+on:
+  workflow_run:
+    workflows: [Kernel Updates]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  merge:
+    if: (github.event.workflow_run.event == 'pull_request' || github.event.workflow_run.event == 'workflow_dispatch') && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+    steps:
+      # Never check out or execute the proposal in this privileged workflow.
+      - name: Enable auto-merge for the qualified kernel-only revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+          QUALIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          [[ "$BRANCH" == automation/kernels-* ]]
+          proposal="$(gh pr list --head "$BRANCH" --base main --state open --json number,headRefOid,author,isCrossRepository --jq '.[0]')"
+          [[ "$(jq -r '.headRefOid' <<< "$proposal")" == "$QUALIFIED_SHA" ]]
+          [[ "$(jq -r '.author.login' <<< "$proposal")" == 'app/github-actions' ]]
+          [[ "$(jq -r '.isCrossRepository' <<< "$proposal")" == false ]]
+          number="$(jq -r .number <<< "$proposal")"
+          gh pr view "$number" --json files --jq '.files[].path' > files.txt
+          test -s files.txt
+          while IFS= read -r file; do
+            [[ "$file" =~ ^kernels/fedora-[0-9]+/x86_64/(standard|lts)\.json$ ]]
+          done < files.txt
+          gh pr checks "$number" --json name,state --jq '.[] | select(.name == "Kernel Input Qualification")' > qualification.json
+          jq -se 'length == 1 and .[0].state == "SUCCESS"' qualification.json
+          gh pr merge "$number" --auto --squash --match-head-commit "$QUALIFIED_SHA"

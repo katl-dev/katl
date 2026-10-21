@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# The workflow user owns evidence files; sudo is only needed to read daemon logs.
+# shellcheck disable=SC2024
+set -euo pipefail
+
+mkdir -p _build/hosted-evidence
+# systemd owns host daemons; the ARC image's entrypoint owns pod daemons.
+if [[ -d /run/systemd/system ]]; then
+    sudo journalctl -u libvirtd --no-pager -n 200 > _build/hosted-evidence/libvirtd.log || true
+fi
+sudo find /var/log/libvirt/qemu -type f -exec tail -n 100 {} + > _build/hosted-evidence/qemu.log || true
+if [[ -f /var/log/dockerd.log ]]; then
+    sudo tail -n 200 /var/log/dockerd.log > _build/hosted-evidence/dockerd.log || true
+fi
+df -h > _build/hosted-evidence/host-after.txt
+# Whole-host availability does not describe a runner pod's resource limit.
+cat /proc/self/cgroup > _build/hosted-evidence/cgroup.txt
+cgroup_dir=/sys/fs/cgroup
+while IFS=: read -r hierarchy controllers cgroup_path; do
+    if [[ "$hierarchy" == 0 && -z "$controllers" && -d "/sys/fs/cgroup$cgroup_path" ]]; then
+        cgroup_dir="/sys/fs/cgroup$cgroup_path"
+    fi
+done < /proc/self/cgroup
+printf '%s\n' "$cgroup_dir" > _build/hosted-evidence/cgroup-directory.txt
+for resource in memory.max memory.peak memory.events cpu.max cpu.stat; do
+    if [[ -r "$cgroup_dir/$resource" ]]; then
+        cat "$cgroup_dir/$resource" > "_build/hosted-evidence/cgroup-$resource.txt"
+    fi
+done
