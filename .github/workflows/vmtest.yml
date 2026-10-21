@@ -1,10 +1,7 @@
-name: VM Tests
+name: Dedicated VM suite
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
 
 permissions:
   contents: read
@@ -41,6 +38,12 @@ jobs:
       - name: Verify VM-test host
         shell: bash
         run: |
+          # Kubernetes image fixtures require Podman's multi-image archive support.
+          if ! command -v podman >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends podman
+          fi
+          command -v kubectl
           test -r /dev/kvm && test -w /dev/kvm
           test -r /dev/vhost-vsock && test -w /dev/vhost-vsock
           test -r /dev/net/tun && test -w /dev/net/tun

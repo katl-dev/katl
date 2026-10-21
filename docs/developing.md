@@ -85,7 +85,7 @@ go run ./cmd/katl-mkosi-artifacts inventory-release-extensions
 ```
 
 VM lifecycle qualification is separate from build verification. Run it locally
-with `scripts/vmtest-run` or through the self-hosted `VM Tests` workflow.
+with `scripts/vmtest-run` or through the self-hosted `Dedicated VM suite` workflow.
 
 ## Run VM tests with libvirt
 
@@ -429,16 +429,24 @@ and record the result with the change or release evidence.
 
 ### Self-hosted VM tests
 
-The `VM Tests` workflow runs on pushes to `main` and can be dispatched manually
-for `main`. It selects the `katl-vmtest` runner scale set registered with this
-repository and runs:
+Dispatch `Dedicated VM suite` manually for `main` to exercise the full test
+packages on the `katl-vmtest` runner scale set:
 
 ```sh
 scripts/vmtest-run ./internal/vmtest ./internal/vmtest/scenarios -count=1 -failfast
 ```
 
+This broad suite is a separate qualification run. The release-artifact
+workflow's eight-group VM matrix owns routine main and candidate gates; avoid
+adding a second main push trigger here. For the matrix's rollout checks and
+main-only runner setting, see
+[the VM workflow integration](https://github.com/katl-dev/katl/pull/368).
+Keep its hosted default until the deployed ARC pool passes its eight groups
+and its one-runner-per-node device allocation is verified.
+
 The dedicated runner image provides Go, Docker, libvirt, QEMU, OVMF, `kubectl`,
-and image-inspection tools. Each ephemeral runner owns its libvirt network,
+and image-inspection tools. Workflow preparation installs Podman if absent
+for Kubernetes fixture archives. Each ephemeral runner owns its libvirt network,
 storage pool, nested container daemon, and test disks. The underlying host must
 provide KVM, `/dev/vhost-vsock`, and `/dev/net/tun`. Runner pods need privileged
 execution for libvirt and nested mkosi builds; do not route untrusted
