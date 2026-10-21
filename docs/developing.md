@@ -84,8 +84,8 @@ Inspect the inventory with:
 go run ./cmd/katl-mkosi-artifacts inventory-release-extensions
 ```
 
-VM lifecycle qualification is separate from build verification and runs locally;
-VM tests are not supported in CI.
+VM lifecycle qualification runs through the same libvirt harness locally and
+in [GitHub Actions](development/ci.md).
 
 ## Run VM tests with libvirt
 
@@ -423,9 +423,10 @@ no-op for unrelated changes and builds every affected supported bundle when
 producer inputs change. Direct pushes are not part of the supported development
 loop.
 
-It intentionally skips mkosi builds, libvirt/KVM setup, VM scenarios, and
-publishing. Run host-specific VM gates locally with `scripts/vmtest-run` on a
-capable host and record the result with the change or release evidence. GitHub Actions does not run hosted VM tests.
+Fast checks skip mkosi builds, libvirt/KVM setup, VM scenarios, and publishing.
+The separate [VM CI workflows](development/ci.md) exercise integrated journeys.
+Run focused VM gates locally with `scripts/vmtest-run` on a capable host and
+record the result with the change or release evidence.
 
 ## Fedora package inputs
 

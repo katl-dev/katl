@@ -45,13 +45,16 @@ Both standard and LTS flavours must pass:
 Qualification downloads the final publication bundle from the same run and
 verifies its checksums. Publication consumes those artifacts without rebuilding.
 Skipped, failed, or cancelled required VM tests prevent promotion. Successful
-tag runs publish the extension OCI bytes and GitHub release assets, then verify
-attestations against the source commit and tag.
+tag runs publish the extension OCI bytes and GitHub release assets. Asset
+attestations must match the source commit and tag before GitHub release
+publication.
 
 These VM gates do not establish NVIDIA hardware behavior or replace focused
 hardware and workload qualification for changes that affect those paths.
 
-## Inspect or diagnose a candidate
+## Inspect a release or diagnose qualification
+
+For a tag run:
 
 ```sh
 scripts/katl-release inspect RUN_ID
