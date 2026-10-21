@@ -311,7 +311,7 @@ jobs:
           } > body.md
           number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
           if [[ -n "$number" ]]; then
-            gh pr edit "$number" --repo "$GITHUB_REPOSITORY" --body-file body.md
+            gh pr edit "$number" --repo "$GITHUB_REPOSITORY" --base main --body-file body.md
           else
             gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
               --title 'kernel: update retained kernel inputs' --body-file body.md
