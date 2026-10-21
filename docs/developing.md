@@ -452,6 +452,17 @@ provide KVM, `/dev/vhost-vsock`, and `/dev/net/tun`. Runner pods need privileged
 execution for libvirt and nested mkosi builds; do not route untrusted
 pull-request revisions to this pool.
 
+Workflow conditions prevent accidental routing; they are not runner admission
+policy. A pull request can edit its workflow. Before exposing this privileged
+pool to the public repository, enforce access to trusted workflow revisions
+outside PR-controlled YAML. Where supported, configure
+[runner-group workflow access](https://docs.github.com/en/enterprise-cloud@latest/actions/how-tos/manage-runners/self-hosted-runners/manage-access)
+for `katl-dev/katl/.github/workflows/hosted-vmtests.yml@refs/heads/main` and
+`katl-dev/katl/.github/workflows/vmtest.yml@refs/heads/main`. The ARC registration
+must join that group; repository-scoped registration alone does not enforce
+these restrictions. Verify the account's available controls before rollout;
+keep the pool disabled if trusted-only admission cannot be enforced.
+
 Successful runs delete their temporary worlds. Failed runs upload logs and
 scenario metadata for seven days, excluding disk images. Live VM debugging is
 disabled in CI, and all remaining pod storage is discarded with the runner.
