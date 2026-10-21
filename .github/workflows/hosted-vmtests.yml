@@ -113,8 +113,9 @@ jobs:
         run: .github/scripts/hosted-vmtest-measure build-runtime scripts/mkosi build-runtime
       - name: Prove guest agent and vsock on producer host
         run: |
-          .github/scripts/hosted-vmtest-measure agent sg kvm -c \
-            'scripts/vmtest-run --artifact-set=runtime --no-rebuild ./internal/vmtest -run "^TestDirectRuntimeVMTestAgentSmoke$" -count=1 -json -timeout 8m'
+          .github/scripts/hosted-vmtest-measure agent .github/scripts/hosted-vmtest-run \
+            --artifact-set=runtime --no-rebuild ./internal/vmtest \
+            -run '^TestDirectRuntimeVMTestAgentSmoke$' -count=1 -json -timeout 8m
           jq -se 'any(.[]; .Action == "pass" and .Test == "TestDirectRuntimeVMTestAgentSmoke")' \
             _build/hosted-evidence/go-test.jsonl
       - name: Build shared installer and lifecycle inputs
@@ -237,10 +238,9 @@ jobs:
           (cd _build/mkosi && sha256sum --check katl-runtime-root.squashfs.sha256 katl-runtime.efi.sha256)
       - name: Run existing scenarios
         run: |
-          # Variables are expanded by the shell launched with refreshed KVM membership.
-          # shellcheck disable=SC2016
-          .github/scripts/hosted-vmtest-measure scenarios sg kvm -c \
-            'scripts/vmtest-run --artifact-set="$ARTIFACT_SET" --no-rebuild "$TEST_PACKAGE" -run "^($TEST_NAMES)$" -count=1 -json -timeout 45m'
+          .github/scripts/hosted-vmtest-measure scenarios .github/scripts/hosted-vmtest-run \
+            --artifact-set="$ARTIFACT_SET" --no-rebuild "$TEST_PACKAGE" \
+            -run "^($TEST_NAMES)$" -count=1 -json -timeout 45m
           # A successful test process must actually pass every selected VM test.
           IFS='|' read -ra tests <<< "$TEST_NAMES"
           for test_name in "${tests[@]}"; do
