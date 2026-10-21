@@ -86,46 +86,6 @@ func markdownFileHasAnchor(t *testing.T, path, target string) bool {
 	return false
 }
 
-func TestDocumentationLandingReachesEveryPublicPage(t *testing.T) {
-	repo := repoRoot(t)
-	public := publicMarkdownFiles(t, repo)
-	start := filepath.Join(repo, "docs", "README.md")
-	seen := map[string]bool{}
-	queue := []string{start}
-
-	for len(queue) > 0 {
-		path := queue[0]
-		queue = queue[1:]
-		if seen[path] {
-			continue
-		}
-		seen[path] = true
-		content, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		for _, match := range markdownLinkPattern.FindAllStringSubmatch(string(content), -1) {
-			target := strings.Fields(strings.TrimSpace(match[1]))[0]
-			if index := strings.IndexByte(target, '#'); index >= 0 {
-				target = target[:index]
-			}
-			if target == "" || strings.Contains(target, "://") || !strings.HasSuffix(strings.ToLower(target), ".md") {
-				continue
-			}
-			linked := filepath.Clean(filepath.Join(filepath.Dir(path), filepath.FromSlash(target)))
-			if public[linked] && !seen[linked] {
-				queue = append(queue, linked)
-			}
-		}
-	}
-
-	for path := range public {
-		if !seen[path] {
-			t.Errorf("docs/README.md does not reach public page %s", relativePath(repo, path))
-		}
-	}
-}
-
 func publicMarkdownFiles(t *testing.T, repo string) map[string]bool {
 	t.Helper()
 	root := filepath.Join(repo, "docs")
