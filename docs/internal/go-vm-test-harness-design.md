@@ -15,7 +15,7 @@ runner:
 
 ```sh
 scripts/vmtest-run --artifact-set=runtime ./internal/vmtest -run '^TestDirectRuntimeVMTestAgentSmoke$' -count=1
-scripts/vmtest-run ./internal/vmtest -run '^TestFirstInstallTargetDiskSerialSmoke$' -count=1
+scripts/vmtest-run ./internal/vmtest -run '^TestFirstInstallTargetDiskBootSmoke$' -count=1
 scripts/vmtest-run ./internal/vmtest/scenarios -run 'TwoNode|ThreeControlPlane' -count=1
 ```
 

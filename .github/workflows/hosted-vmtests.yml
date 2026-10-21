@@ -204,7 +204,7 @@ jobs:
           name: hosted-vmtest-base-${{ github.sha }}
           path: _build/import/base
       - uses: actions/download-artifact@v8
-        if: matrix.name == 'boot' || matrix.name == 'install'
+        if: matrix.name == 'boot' || matrix.name == 'install' || matrix.name == 'storage'
         with:
           name: hosted-vmtest-media-${{ github.sha }}
           path: _build/import/media

@@ -53,6 +53,7 @@ The test groups cover these contracts:
 | Producer | Direct runtime boot and guest-agent health over vsock. |
 | Boot | Installer ISO and PXE boot, including network readiness. |
 | Install | First install, installed boot health, and local configuration handoff. |
+| Storage | Refuse destructive data-disk changes, preserve the existing filesystem, then accept corrected install configuration. |
 | Config | Configuration apply modes, including online and next-boot behavior. |
 | Management | Management credential rotation, repeat operation, and reboot. |
 | Update | Host upgrade, health promotion, rollback, repeated upgrade, and preserved state. |
@@ -62,6 +63,12 @@ The test groups cover these contracts:
 Every selected top-level VM test must report a Go JSON pass event. A skipped
 selected test fails the workflow. Existing guest assertions and timeouts remain in
 effect; the workflow does not disable guest durability or security settings.
+
+First-install readiness requires active boot-complete, SSH, and management
+services, successful boot health, the persisted bootstrap handoff, and a healthy
+promoted generation zero. The runtime test agent supplies the observation
+transport. Interleaved console messages do not decide readiness. Fixture
+production waits for the same contract before making a disk reusable.
 
 ## Evidence
 

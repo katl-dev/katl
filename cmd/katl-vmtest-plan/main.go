@@ -19,7 +19,8 @@ type group struct {
 
 var groups = []group{
 	{"boot", "./internal/vmtest/scenarios", "TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke"},
-	{"install", "./internal/vmtest", "TestFirstInstallTargetDiskSerialSmoke|TestFirstInstallTargetDiskLocalHandoffSmoke"},
+	{"install", "./internal/vmtest", "TestFirstInstallTargetDiskBootSmoke|TestFirstInstallTargetDiskLocalHandoffSmoke"},
+	{"storage", "./internal/vmtest/scenarios", "TestInstallerISOFirstInstallStorageAuthority"},
 	{"config", "./internal/vmtest", "TestInstalledRuntimeConfigApplyModesSmoke"},
 	{"management", "./internal/vmtest", "TestInstalledRuntimeManagementRotationSmoke"},
 	{"update", "./internal/vmtest", "TestInstalledRuntimeSysupdateRootUKITransfer"},

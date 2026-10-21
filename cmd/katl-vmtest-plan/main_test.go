@@ -40,7 +40,7 @@ func TestSelectGroups(t *testing.T) {
 }
 
 func allNames() []string {
-	return []string{"boot", "install", "config", "management", "update", "two-node", "three-node-install"}
+	return []string{"boot", "install", "storage", "config", "management", "update", "two-node", "three-node-install"}
 }
 
 func TestPlan(t *testing.T) {
