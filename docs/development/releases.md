@@ -65,6 +65,16 @@ Download requires a fresh directory and verifies checksums and GitHub
 attestations. Review `RELEASE_NOTES.md` and `SUPPORT.md` for the selected release.
 
 When qualification fails, inspect the failed job's small VM evidence before
-rerunning. Guest disks are excluded from retained artifacts. Fix the defect and
+rerunning. To exercise the production journeys against the same built bundle
+with the selected workflow revision, run:
+
+```sh
+gh workflow run release-artifacts.yml --ref main -f qualify_run=RUN_ID
+```
+
+This diagnostic run reuses the immutable bundle and has no publication path.
+Tag promotion still requires all gates in the tag's own build run.
+
+Guest disks are excluded from retained artifacts. Fix the defect and
 repeat the affected gates; a rebuilt candidate must qualify its own bytes. Do
 not bypass **Release validation** or promote a different run's artifacts.

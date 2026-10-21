@@ -11,8 +11,11 @@ on:
     inputs:
       version:
         description: CalVer embedded in artifacts (for example 2026.7.0-beta.1)
-        required: true
         type: string
+      qualify_run:
+        description: Requalify a final bundle from this run without rebuilding; zero builds a new candidate
+        type: number
+        default: 0
 
 permissions:
   contents: read
@@ -23,9 +26,42 @@ concurrency:
   cancel-in-progress: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
 
 jobs:
+  existing-bundle:
+    name: Resolve Existing Bundle
+    if: inputs.qualify_run > 0
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact: ${{ steps.bundle.outputs.artifact }}
+      previous-tag: ${{ steps.bundle.outputs.previous-tag }}
+    steps:
+      - id: bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.qualify_run }}
+        run: |
+          source="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID")"
+          [[ "$(jq -r .path <<< "$source")" == .github/workflows/release-artifacts.yml ]]
+          commit="$(jq -r .head_sha <<< "$source")"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          bundles="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" | jq -s '[.[].artifacts[] | select(.name | test("^katl-[0-9]{4}[.][0-9]+[.][0-9]+(-[a-z0-9.-]+)?-x86_64-[0-9a-f]{12}$"))]')"
+          jq -e 'length == 1 and .[0].expired == false' <<< "$bundles"
+          artifact="$(jq -r '.[0].name' <<< "$bundles")"
+          [[ "$artifact" == *-"${commit:0:12}" ]]
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          echo "previous-tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)" >> "$GITHUB_OUTPUT"
+
+  requalify:
+    name: Requalify production VM
+    needs: existing-bundle
+    uses: ./.github/workflows/production-vmtests.yml
+    with:
+      artifact-name: ${{ needs.existing-bundle.outputs.artifact }}
+      run-id: ${{ inputs.qualify_run }}
+      previous-tag: ${{ needs.existing-bundle.outputs.previous-tag }}
+
   unit:
     name: Release unit tests
-    if: github.ref != 'refs/heads/main' || github.event_name != 'push'
+    if: ${{ !inputs.qualify_run && (github.ref != 'refs/heads/main' || github.event_name != 'push') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -40,6 +76,7 @@ jobs:
 
   vmtests:
     name: VM regression
+    if: ${{ !inputs.qualify_run }}
     strategy:
       fail-fast: false
       matrix:
@@ -50,6 +87,7 @@ jobs:
 
   identity:
     name: Resolve Release Identity
+    if: ${{ !inputs.qualify_run }}
     runs-on: ubuntu-24.04
     outputs:
       artifact-name: ${{ steps.release.outputs.artifact-name }}
@@ -212,6 +250,7 @@ jobs:
 
   extension-inventory:
     name: Inventory Release Extensions
+    if: ${{ !inputs.qualify_run }}
     runs-on: ubuntu-24.04
     outputs:
       extensions: ${{ steps.inventory.outputs.extensions }}
@@ -675,7 +714,7 @@ jobs:
 
   release-validation:
     name: Release validation
-    if: always() && (github.ref != 'refs/heads/main' || github.event_name != 'push')
+    if: ${{ always() && !inputs.qualify_run && (github.ref != 'refs/heads/main' || github.event_name != 'push') }}
     needs: [bundle, vmtests, qualification, unit]
     runs-on: ubuntu-24.04
     steps:
