@@ -93,6 +93,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       qualify: ${{ steps.plan.outputs.qualify }}
+      version: ${{ steps.plan.outputs.version }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -119,6 +120,7 @@ jobs:
           directory="kernels/fedora-$(scripts/fedora-release)/x86_64"
           if [[ -f "$directory/standard.json" && -f "$directory/lts.json" ]]; then
             echo 'qualify=true' >> "$GITHUB_OUTPUT"
+            echo "version=$(date -u +%Y.%-m).0-dev.0" >> "$GITHUB_OUTPUT"
           else
             echo 'kernel locks must cover both flavours of the selected Fedora release' >&2
             exit 1
@@ -140,7 +142,7 @@ jobs:
       KATL_CONTAINER_RUNTIME: docker
       KATL_MKOSI_IMAGE: localhost/katl-kernel-inputs:builder
       KATL_VMTEST_IMAGE_SUPPORT: '0'
-      KATL_VERSION: 0.0.0-dev.0
+      KATL_VERSION: ${{ needs.plan.outputs.version }}
       KATL_BUILD_COMMIT: ${{ needs.propose.outputs.commit || github.sha }}
       KATL_VMTEST_KVM: 'on'
       KATL_VMTEST_KEEP: failed
