@@ -11,6 +11,11 @@ flavour. The default runner is `ubuntu-24.04`. `KATL_VMTEST_RUNNER` can select a
 supported hosted provider. Run output is deleted on success; small failure
 logs remain available in the workflow artifacts.
 
+**VM presubmit** runs both flavours on pull requests. Documentation and unit-only
+changes skip VM builds; recognized CLI changes select relevant groups. Shared
+and unknown changes require all eight groups. A failed, skipped, or cancelled
+selected test fails the required aggregate check. Main builds run the full suite.
+
 **Kernel Updates** qualifies both standard and LTS kernels. It builds both boot
 artifacts and every release extension, verifies module composition, and runs the
 VM suite for each flavour. A two-node DRBD workload also exercises each
@@ -18,7 +23,9 @@ production driver closure through upgrade, replication, and removal.
 **Merge Qualified Kernels** enables auto-merge only
 for the successfully qualified, unchanged revision of a bot-authored,
 kernel-lock-only PR. Branch protection also requires the ordinary presubmit
-checks. These virtual machines do not qualify NVIDIA hardware.
+checks. After a bot merge, the workflow dispatches a trusted main build because
+token-created merges do not trigger push workflows. These virtual machines do
+not qualify NVIDIA hardware.
 
 The optional `katl-vmtest` ARC pool is restricted to trusted main revisions by
 workflow routing. Before enabling it, enforce trusted workflow/ref admission
@@ -27,7 +34,7 @@ vsock CIDs share the host kernel. Qualify the deployed pool manually before
 setting `KATL_VMTEST_MAIN_RUNNER=katl-vmtest`.
 
 **Kernel Input Qualification** reports a result for every PR and can be required
-by branch protection. Unrelated changes skip kernel builds and VM jobs; changed
+by branch protection. Unrelated changes skip kernel builds; changed
 kernel inputs and their build tools require the complete qualification.
 
 **Katl Release Artifacts** runs the regression suite for both flavours and

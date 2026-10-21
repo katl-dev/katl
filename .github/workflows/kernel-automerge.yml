@@ -2,11 +2,15 @@ name: Merge Qualified Kernels
 
 on:
   workflow_run:
-    workflows: [Kernel Updates]
+    workflows: [Kernel Updates, VM presubmit, Fast Checks, Kubernetes Bundle Artifacts]
     types: [completed]
 
 permissions:
   contents: read
+
+concurrency:
+  group: kernel-promotion-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
 
 jobs:
   merge:
@@ -19,7 +23,7 @@ jobs:
       checks: read
     steps:
       # Never check out or execute the proposal in this privileged workflow.
-      - name: Enable auto-merge for the qualified kernel-only revision
+      - name: Merge the qualified kernel-only revision and start its main build
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -27,16 +31,32 @@ jobs:
           QUALIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           [[ "$BRANCH" == automation/kernels-* ]]
-          proposal="$(gh pr list --head "$BRANCH" --base main --state open --json number,headRefOid,author,isCrossRepository --jq '.[0]')"
-          [[ "$(jq -r '.headRefOid' <<< "$proposal")" == "$QUALIFIED_SHA" ]]
+          proposal="$(gh pr list --head "$BRANCH" --base main --state all --limit 1 --json number,headRefOid,author,isCrossRepository,state --jq '.[0]')"
+          [[ "$(jq -r '.headRefOid' <<< "$proposal")" == "$QUALIFIED_SHA" ]] || exit 0
           [[ "$(jq -r '.author.login' <<< "$proposal")" == 'app/github-actions' ]]
           [[ "$(jq -r '.isCrossRepository' <<< "$proposal")" == false ]]
+          state="$(jq -r .state <<< "$proposal")"
+          [[ "$state" == OPEN || "$state" == MERGED ]] || exit 0
           number="$(jq -r .number <<< "$proposal")"
-          gh pr view "$number" --json files --jq '.files[].path' > files.txt
-          test -s files.txt
+          gh pr view "$number" --json changedFiles,files > files.json
+          jq -e '.changedFiles > 0 and .changedFiles <= 2 and .changedFiles == (.files | length)' files.json
           while IFS= read -r file; do
             [[ "$file" =~ ^kernels/fedora-[0-9]+/x86_64/(standard|lts)\.json$ ]]
-          done < files.txt
-          gh pr checks "$number" --json name,state --jq '.[] | select(.name == "Kernel Input Qualification")' > qualification.json
-          jq -se 'length == 1 and .[0].state == "SUCCESS"' qualification.json
-          gh pr merge "$number" --auto --squash --match-head-commit "$QUALIFIED_SHA"
+          done < <(jq -r '.files[].path' files.json)
+          if ! gh pr checks "$number" --json name,state --jq '.[] | select(.name == "Kernel Input Qualification")' > qualification.json; then exit 0; fi
+          jq -se 'length == 1 and .[0].state == "SUCCESS"' qualification.json >/dev/null || exit 0
+          if [[ "$state" == OPEN ]]; then
+            gh pr merge "$number" --auto --squash --match-head-commit "$QUALIFIED_SHA"
+            if ! gh pr checks "$number" --required --json state > required.json; then exit 0; fi
+            jq -e 'length > 0 and all(.[]; .state == "SUCCESS")' required.json >/dev/null || exit 0
+            # Native auto-merge may complete just after the final required check.
+            for attempt in {1..30}; do
+              state="$(gh pr view "$number" --json state --jq .state)"
+              [[ "$state" == MERGED ]] && break
+              sleep 1
+            done
+            [[ "$state" == MERGED ]]
+          fi
+          # GITHUB_TOKEN merges suppress push workflows; dispatch runs trusted main.
+          printf '{"event_type":"main-build"}\n' > dispatch.json
+          gh api --method POST "repos/$GH_REPO/dispatches" --input dispatch.json

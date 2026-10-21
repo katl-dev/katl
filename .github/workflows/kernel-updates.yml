@@ -228,19 +228,6 @@ jobs:
             _build/kernel-journey/**/*.stderr
           retention-days: 3
 
-  vmtests:
-    name: Kernel VM (${{ matrix.flavour }})
-    if: ${{ !cancelled() && needs.plan.outputs.qualify == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')) }}
-    needs: [propose, plan]
-    strategy:
-      fail-fast: false
-      matrix:
-        flavour: [standard, lts]
-    uses: ./.github/workflows/hosted-vmtests.yml
-    with:
-      flavour: ${{ matrix.flavour }}
-      ref: ${{ needs.propose.outputs.commit || github.sha }}
-
   publish:
     if: github.event_name != 'pull_request' && needs.propose.outputs.changed == 'true'
     needs: [propose, qualify]
@@ -320,7 +307,7 @@ jobs:
             printf 'Both boot artifacts, every release-owned extension, and complete module composition passed for `%s` in [Kernel Updates](%s/%s/actions/runs/%s).\n' \
               "$QUALIFIED_COMMIT" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
             echo
-            echo 'Kernel Input Qualification also requires the full VM suite for both flavours before auto-merge. NVIDIA hardware behavior requires separate hardware qualification.'
+            echo 'VM presubmit also requires the full suite for both kernel flavours before auto-merge. NVIDIA hardware behavior requires separate hardware qualification.'
           } > body.md
           number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
           if [[ -n "$number" ]]; then
@@ -329,26 +316,25 @@ jobs:
             gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
               --title 'kernel: update retained kernel inputs' --body-file body.md
           fi
-          # GITHUB_TOKEN-created PRs do not emit another workflow-triggering event.
-          for workflow in fast-checks.yml kubernetes-bundles.yml kernel-updates.yml; do
+          # Explicit dispatch avoids approval-required runs for GITHUB_TOKEN-created PRs.
+          for workflow in fast-checks.yml kubernetes-bundles.yml kernel-updates.yml pr-vmtests.yml; do
             gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
           done
 
   result:
     name: Kernel Input Qualification
     if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'))
-    needs: [plan, qualify, vmtests]
+    needs: [plan, qualify]
     runs-on: ubuntu-24.04
     steps:
       - env:
           PLAN_RESULT: ${{ needs.plan.result }}
           REQUIRED: ${{ needs.plan.outputs.qualify }}
           QUALIFY_RESULT: ${{ needs.qualify.result }}
-          VM_RESULT: ${{ needs.vmtests.result }}
         run: |
           [[ "$PLAN_RESULT" == success ]]
           if [[ "$REQUIRED" == true ]]; then
-            [[ "$QUALIFY_RESULT" == success && "$VM_RESULT" == success ]]
+            [[ "$QUALIFY_RESULT" == success ]]
           else
-            [[ "$REQUIRED" == false && "$QUALIFY_RESULT" == skipped && "$VM_RESULT" == skipped ]]
+            [[ "$REQUIRED" == false && "$QUALIFY_RESULT" == skipped ]]
           fi
