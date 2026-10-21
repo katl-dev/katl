@@ -447,7 +447,7 @@ distinction between product contracts and build evidence.
 ## GitHub release artifacts
 
 Follow [Release KatlOS](development/releases.md) to prepare a version, download
-and verify a candidate, qualify its exact artifacts, and approve publication.
+and verify a candidate, and monitor automated qualification and publication.
 Start with `scripts/katl-release prepare VERSION`; it performs read-only checks
 and prints the commands for starting the tag build.
 
@@ -576,11 +576,10 @@ does not require a second commit just to update hard-coded verifier digests.
 
 ## VM tests on a capable host
 
-Katl does not currently run VM tests in GitHub Actions because no hosted runner
-provides the required libvirt, KVM, OVMF, and vsock environment. The repository
-deliberately has no VM workflow until the hosting and orchestration model is
-designed and provisioned. Do not make VM jobs required checks while no runner
-can accept them.
+GitHub-hosted Ubuntu runners execute the libvirt suite with KVM, OVMF, and
+vsock. See [VM continuous integration](development/ci.md) for the automated
+journeys, required results, and optional runner configuration. The commands
+below run the same harness on a capable development host.
 
 The [Kubernetes release producer](concepts/kubernetes-releases.md) discovers
 stable upstream versions and publishes verified bundles automatically. Its

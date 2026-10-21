@@ -23,6 +23,21 @@ concurrency:
   cancel-in-progress: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
 
 jobs:
+  unit:
+    name: Release unit tests
+    if: github.ref != 'refs/heads/main' || github.event_name != 'push'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends dosfstools mtools xorriso
+      - run: scripts/check-fast
+
   vmtests:
     name: VM regression
     strategy:
@@ -661,14 +676,16 @@ jobs:
   release-validation:
     name: Release validation
     if: always() && (github.ref != 'refs/heads/main' || github.event_name != 'push')
-    needs: [bundle, vmtests, qualification]
+    needs: [bundle, vmtests, qualification, unit]
     runs-on: ubuntu-24.04
     steps:
       - env:
+          UNIT: ${{ needs.unit.result }}
           BUNDLE: ${{ needs.bundle.result }}
           REGRESSION: ${{ needs.vmtests.result }}
           PRODUCTION: ${{ needs.qualification.result }}
         run: |
+          test "$UNIT" = success
           test "$BUNDLE" = success
           test "$REGRESSION" = success
           test "$PRODUCTION" = success
@@ -764,4 +781,3 @@ jobs:
               "${prerelease[@]}" \
               dist/*
           fi
-
