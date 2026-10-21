@@ -25,3 +25,7 @@ workflow routing. Before enabling it, enforce trusted workflow/ref admission
 outside PR-editable YAML and allocate at most one VM runner per node because
 vsock CIDs share the host kernel. Qualify the deployed pool manually before
 setting `KATL_VMTEST_MAIN_RUNNER=katl-vmtest`.
+
+**Kernel Input Qualification** reports a result for every PR and can be required
+by branch protection. Unrelated changes skip kernel builds and VM jobs; changed
+kernel inputs and their build tools require the complete qualification.

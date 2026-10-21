@@ -389,14 +389,16 @@ func TestAgentStartup(t *testing.T) {
 					defer cancel()
 				}
 				runner := VMRunner{AgentConnector: func(ctx context.Context, _ VSockPlan, _ string) (AgentHealthClient, error) {
-					timer := time.NewTimer(tc.delay)
-					defer timer.Stop()
-					select {
-					case <-ctx.Done():
-						return nil, ctx.Err()
-					case <-timer.C:
-						return fakeHealthClient{err: tc.healthErr}, nil
+					if tc.delay > 0 {
+						timer := time.NewTimer(tc.delay)
+						defer timer.Stop()
+						select {
+						case <-ctx.Done():
+							return nil, ctx.Err()
+						case <-timer.C:
+						}
 					}
+					return fakeHealthClient{err: tc.healthErr}, nil
 				}}
 
 				err := runner.checkAgent(ctx, Result{VSock: VSockPlan{Enabled: true}}, VMConfig{

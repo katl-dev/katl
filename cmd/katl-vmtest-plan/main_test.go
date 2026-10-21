@@ -88,3 +88,40 @@ func TestInvalidChanges(t *testing.T) {
 		}
 	}
 }
+
+func TestKernelChanges(t *testing.T) {
+	for _, tc := range []struct {
+		name, input string
+		want        bool
+	}{
+		{"empty", "", false},
+		{"documentation", "docs/development/ci.md\x00", false},
+		{"unrelated command", "cmd/katlctl/main.go\x00", false},
+		{"mixed with lock", "README.md\x00kernels/fedora-44/x86_64/standard.json\x00", true},
+		{"LTS lock", "kernels/fedora-44/x86_64/lts.json\x00", true},
+		{"module source", "internal/kernelmodule/compose.go\x00", true},
+		{"extension recipe", "extensions/drbd9/build.sh\x00", true},
+		{"runtime hook", "mkosi.profiles/runtime/mkosi.postinst\x00", true},
+		{"builder configuration", "mkosi.conf.d/packages.conf\x00", true},
+		{"Go dependency", "go.sum\x00", true},
+		{"builder tool", "scripts/mkosi\x00", true},
+		{"workflow", ".github/workflows/kernel-updates.yml\x00", true},
+		{"planner", "cmd/katl-vmtest-plan/main.go\x00", true},
+		{"directory boundary", "kernels-not-related/file\x00", false},
+		{"deleted or renamed module", "docs/moved.go\x00internal/kernelmodule/old.go\x00", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := run([]string{"--kernel-changes"}, strings.NewReader(tc.input), &output); err != nil {
+				t.Fatal(err)
+			}
+			var got bool
+			if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("kernel qualification = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
