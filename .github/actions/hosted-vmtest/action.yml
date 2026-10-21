@@ -12,13 +12,15 @@ runs:
           lscpu
           free -h
           df -h
+          ls -l /dev/kvm /dev/vhost-vsock /dev/net/tun || true
         } > _build/hosted-evidence/host-before.txt
         sudo apt-get update -qq
         sudo apt-get install -y --no-install-recommends \
           qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients \
             ovmf mtools fdisk jq acl dnsmasq-base squashfs-tools dosfstools podman
-        sudo modprobe vhost_vsock
-        sudo modprobe tun
+        # A provider kernel may compile these drivers in without shipping module metadata.
+        if [[ ! -c /dev/vhost-vsock ]]; then sudo modprobe vhost_vsock; fi
+        if [[ ! -c /dev/net/tun ]]; then sudo modprobe tun; fi
         sudo usermod -aG kvm "$(id -un)"
         sudo setfacl -m "u:$(id -un):rw" /dev/kvm /dev/vhost-vsock
         # Generated NVRAM belongs to the workflow user; use that identity for QEMU too.
