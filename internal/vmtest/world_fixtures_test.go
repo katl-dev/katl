@@ -1,6 +1,12 @@
 package vmtest
 
 import (
+	"crypto/sha256"
+	"encoding/json"
+	"fmt"
+	"os/exec"
+
+	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"os"
 	"path/filepath"
 	"strings"
@@ -329,4 +335,86 @@ func hasFixtureKind(records []FixtureRecord, kind string) bool {
 		}
 	}
 	return false
+}
+
+func TestInstallManifestFromImage(t *testing.T) {
+	for _, tool := range []string{"mksquashfs", "unsquashfs"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skip("install squashfs-tools to test self-contained image fixtures")
+		}
+	}
+	for _, damaged := range []bool{false, true} {
+		t.Run(fmt.Sprintf("damaged=%v", damaged), func(t *testing.T) {
+			directory := t.TempDir()
+			manifest := writeFixtureLocalInstallManifest(t, directory)
+			root := filepath.Join(directory, "katlos-install-root")
+			if damaged {
+				if err := os.WriteFile(filepath.Join(root, "components/runtime/root.squashfs"), []byte("RUNTIME ROOT"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			image := filepath.Join(directory, "katlos-install.squashfs")
+			if err := os.Remove(image); err != nil {
+				t.Fatal(err)
+			}
+			if output, err := exec.Command("mksquashfs", root, image, "-noappend", "-no-progress", "-processors", "1").CombinedOutput(); err != nil {
+				t.Fatalf("build fixture image: %v: %s", err, output)
+			}
+			data, err := os.ReadFile(image)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sum := sha256.Sum256(data)
+			digest := fmt.Sprintf("%x", sum)
+			encoded, err := os.ReadFile(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var input map[string]any
+			if err := json.Unmarshal(encoded, &input); err != nil {
+				t.Fatal(err)
+			}
+			identity := input["katlosImage"].(map[string]any)
+			identity["sha256"], identity["sizeBytes"] = digest, len(data)
+			if err := writeJSON(manifest, input); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.RemoveAll(root); err != nil {
+				t.Fatal(err)
+			}
+
+			scenario := testWorld(t).NewScenario(t, "standalone-image")
+			node := scenario.NewNode(t, NodeSpec{Name: "cp-1", Role: ControlPlane})
+			factory := scenario.NodeFixtures(node)
+			record, err := factory.InstallManifest(manifest)
+			if damaged {
+				if err == nil {
+					t.Fatal("accepted image with a damaged embedded component")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			proofData, err := os.ReadFile(filepath.Join(filepath.Dir(record.Path), "single-image-proof.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var proof katlosimage.SingleImageProofReport
+			if err := json.Unmarshal(proofData, &proof); err != nil {
+				t.Fatal(err)
+			}
+			if proof.ImageSHA256 != digest || proof.ImageSizeBytes != uint64(len(data)) || len(proof.Components) != 2 {
+				t.Fatalf("incorrect image proof: %+v", proof)
+			}
+			for _, component := range proof.Components {
+				if !component.Verified {
+					t.Fatalf("unverified component: %+v", component)
+				}
+			}
+			if _, err := factory.InstallManifest(manifest); err != nil {
+				t.Fatalf("repeat fixture staging: %v", err)
+			}
+		})
+	}
 }

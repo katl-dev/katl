@@ -56,7 +56,7 @@ jobs:
     uses: ./.github/workflows/production-vmtests.yml
     with:
       artifact-name: ${{ needs.existing-bundle.outputs.artifact }}
-      run-id: ${{ inputs.qualify_run }}
+      run-id: ${{ fromJSON(inputs.qualify_run) }}
       previous-tag: ${{ needs.existing-bundle.outputs.previous-tag }}
 
   unit:
@@ -71,7 +71,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends dosfstools mtools xorriso
+      - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends dosfstools mtools xorriso squashfs-tools
       - run: scripts/check-fast
 
   vmtests:
