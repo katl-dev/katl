@@ -1,0 +1,61 @@
+name: Prepare hosted VM test host
+description: Provision the existing libvirt VM-test harness on an ephemeral Ubuntu runner
+runs:
+  using: composite
+  steps:
+    - name: Provision libvirt and device access
+      shell: bash
+      run: |
+        mkdir -p _build/hosted-evidence
+        {
+          uname -a
+          lscpu
+          free -h
+          df -h
+        } > _build/hosted-evidence/host-before.txt
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients \
+            ovmf mtools fdisk jq acl dnsmasq-base squashfs-tools dosfstools podman
+        sudo modprobe vhost_vsock
+        sudo modprobe tun
+        sudo usermod -aG kvm "$(id -un)"
+        sudo setfacl -m "u:$(id -un):rw" /dev/kvm /dev/vhost-vsock
+        # Generated NVRAM belongs to the workflow user; use that identity for QEMU too.
+        printf 'user = "%s"\ngroup = "kvm"\n' "$(id -un)" | sudo tee -a /etc/libvirt/qemu.conf
+        # Grant system libvirt access without a second group change.
+        sudo systemctl restart libvirtd
+        sudo setfacl -m "u:$(id -un):rw" /run/libvirt/libvirt-sock
+        if ! virsh -c qemu:///system net-list --name | grep -Fxq default; then
+          virsh -c qemu:///system net-start default
+        fi
+        sudo mkdir -p /var/lib/libvirt/images
+        if ! sudo virsh -c qemu:///system pool-info default; then
+          sudo virsh -c qemu:///system pool-define-as default dir --target /var/lib/libvirt/images
+        fi
+        if ! virsh -c qemu:///system pool-list --name | grep -Fxq default; then
+          virsh -c qemu:///system pool-start default
+        fi
+        {
+          ls -l /dev/kvm /dev/vhost-vsock /dev/net/tun
+          virsh -c qemu:///system uri
+          virsh -c qemu:///system net-info default
+          virsh -c qemu:///system pool-info default
+          sudo virt-host-validate qemu || true
+        } > _build/hosted-evidence/capabilities.txt
+        python3 - <<'PY' > _build/hosted-evidence/device-access.txt
+        import fcntl, os, socket
+        kvm = os.open('/dev/kvm', os.O_RDWR)
+        print('KVM API version:', fcntl.ioctl(kvm, 0xAE00, 0))
+        vm = fcntl.ioctl(kvm, 0xAE01, 0)
+        print('KVM_CREATE_VM succeeded')
+        os.close(vm)
+        os.close(kvm)
+        vsock = os.open('/dev/vhost-vsock', os.O_RDWR)
+        print('vhost-vsock opened read/write')
+        os.close(vsock)
+        sock = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
+        sock.bind((socket.VMADDR_CID_ANY, socket.VMADDR_PORT_ANY))
+        print('AF_VSOCK bound:', sock.getsockname())
+        sock.close()
+        PY

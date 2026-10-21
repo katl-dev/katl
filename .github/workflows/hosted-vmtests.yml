@@ -1,0 +1,189 @@
+name: Hosted VM scenarios
+
+on:
+  push:
+    branches: [expand-hosted-vmtests]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  KATL_VMTEST_KVM: 'on'
+  KATL_VMTEST_KEEP: failed
+  KATL_VMTEST_DEBUG_ON_FAILURE: '0'
+  KATL_OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
+  KATL_OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
+
+jobs:
+  images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      mkosi-version: ${{ steps.builder.outputs.version }}
+    env:
+      KATL_CONTAINER_RUNTIME: docker
+      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:go-squashfs
+      KATL_BUILD_COMMIT: ${{ github.sha }}
+      KATL_VMTEST_IMAGE_SUPPORT: '1'
+      KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/hosted-agent
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: ./.github/actions/hosted-vmtest
+      - uses: actions/cache@v6
+        with:
+          path: |
+            _build/go-mod
+            _build/go-cache
+            _build/mkosi/package-cache
+          key: hosted-vmtest-build-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi', 'mkosi.conf', 'mkosi.profiles/**/mkosi.conf', 'kernels/**') }}-${{ github.sha }}
+          restore-keys: |
+            hosted-vmtest-build-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi', 'mkosi.conf', 'mkosi.profiles/**/mkosi.conf', 'kernels/**') }}-
+      - uses: ./.github/actions/mkosi-builder
+        with:
+          profile: hosted-vmtest
+          image: ${{ env.KATL_MKOSI_IMAGE }}
+      - name: Record builder identity
+        id: builder
+        run: |
+          version="$(scripts/mkosi builder-version)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$GITHUB_SHA" > _build/hosted-evidence/source.txt
+          printf '%s\n' "$version" > _build/hosted-evidence/mkosi-version.txt
+      - name: Build instrumented runtime
+        run: .github/scripts/hosted-vmtest-measure build-runtime scripts/mkosi build-runtime
+      - name: Prove guest agent and vsock on producer host
+        run: |
+          .github/scripts/hosted-vmtest-measure agent sg kvm -c \
+            'scripts/vmtest-run --artifact-set=runtime --no-rebuild ./internal/vmtest -run "^TestDirectRuntimeVMTestAgentSmoke$" -count=1 -v -timeout 8m'
+          grep -Eq '^--- PASS: TestDirectRuntimeVMTestAgentSmoke ' _build/hosted-evidence/agent.log
+      - name: Build shared installer and lifecycle inputs
+        run: |
+          .github/scripts/hosted-vmtest-measure build-install scripts/mkosi build-installer-iso
+          .github/scripts/hosted-vmtest-measure build-upgrade scripts/mkosi build-katlos-upgrade-image
+          .github/scripts/hosted-vmtest-measure build-kubernetes scripts/build-kubernetes-sysext
+      - name: Package immutable test inputs
+        run: |
+          # Carry files and modes, excluding builder caches and mutable guest fixtures.
+          find _build/mkosi -maxdepth 1 -type f -print0 | sort -z > _build/hosted-evidence/input-files.list
+          xargs -0 sha256sum < _build/hosted-evidence/input-files.list > _build/hosted-evidence/inputs.sha256
+          .github/scripts/hosted-vmtest-measure pack tar --null -T _build/hosted-evidence/input-files.list \
+            -cf _build/hosted-vmtest-inputs.tar
+          stat -c '%s' _build/hosted-vmtest-inputs.tar > _build/hosted-evidence/archive-bytes.txt
+          cp _build/hosted-evidence/{source.txt,mkosi-version.txt,inputs.sha256} _build/
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hosted-vmtest-inputs-${{ github.sha }}
+          path: |
+            _build/hosted-vmtest-inputs.tar
+            _build/source.txt
+            _build/mkosi-version.txt
+            _build/inputs.sha256
+          compression-level: 0
+          retention-days: 1
+      - name: Collect host diagnostics
+        if: always()
+        run: |
+          # sudo reads host logs; the workflow user owns the evidence files.
+          # shellcheck disable=SC2024
+          sudo journalctl -u libvirtd --no-pager -n 200 > _build/hosted-evidence/libvirtd.log
+          # shellcheck disable=SC2024
+          sudo find /var/log/libvirt/qemu -type f -exec tail -n 100 {} + > _build/hosted-evidence/qemu.log || true
+          df -h > _build/hosted-evidence/host-after.txt
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: hosted-vmtest-producer-evidence-${{ github.run_id }}
+          path: |
+            _build/hosted-evidence/
+            _build/hosted-agent/**/*.log
+            _build/hosted-agent/**/*.json
+            _build/hosted-agent/**/*.xml
+          retention-days: 3
+
+  scenarios:
+    needs: images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: boot
+            package: ./internal/vmtest/scenarios
+            tests: TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke
+          - name: install
+            package: ./internal/vmtest
+            tests: TestFirstInstallTargetDiskSerialSmoke|TestFirstInstallTargetDiskLocalHandoffSmoke
+          - name: config
+            package: ./internal/vmtest
+            tests: TestInstalledRuntimeConfigApplyModesSmoke
+          - name: management
+            package: ./internal/vmtest
+            tests: TestInstalledRuntimeManagementRotationSmoke
+          - name: update
+            package: ./internal/vmtest
+            tests: TestInstalledRuntimeSysupdateRootUKITransfer
+          - name: two-node
+            package: ./internal/vmtest/scenarios
+            tests: TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke
+          - name: three-node-install
+            package: ./internal/vmtest/scenarios
+            tests: TestThreeNodeGeneration0InstallSmoke
+    env:
+      KATL_VMTEST_MKOSI_VERSION: ${{ needs.images.outputs.mkosi-version }}
+      KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/hosted-scenario
+      TEST_PACKAGE: ${{ matrix.package }}
+      TEST_NAMES: ${{ matrix.tests }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: ./.github/actions/hosted-vmtest
+      - uses: actions/download-artifact@v8
+        with:
+          name: hosted-vmtest-inputs-${{ github.sha }}
+          path: _build/import
+      - name: Verify and import producer inputs
+        run: |
+          test "$(cat _build/import/source.txt)" = "$GITHUB_SHA"
+          test "$(cat _build/import/mkosi-version.txt)" = "$KATL_VMTEST_MKOSI_VERSION"
+          .github/scripts/hosted-vmtest-measure unpack tar -xf _build/import/hosted-vmtest-inputs.tar
+          sha256sum --check _build/import/inputs.sha256 > _build/hosted-evidence/import-check.txt
+          cp _build/import/{source.txt,mkosi-version.txt,inputs.sha256} _build/hosted-evidence/
+          rm _build/import/hosted-vmtest-inputs.tar
+      - name: Run existing scenarios
+        run: |
+          # Variables are expanded by the shell launched with refreshed KVM membership.
+          # shellcheck disable=SC2016
+          .github/scripts/hosted-vmtest-measure scenarios sg kvm -c \
+            'scripts/vmtest-run --artifact-set=install --no-rebuild "$TEST_PACKAGE" -run "^($TEST_NAMES)$" -count=1 -v -timeout 45m'
+          # A successful test process must actually pass every selected VM test.
+          IFS='|' read -ra tests <<< "$TEST_NAMES"
+          for test_name in "${tests[@]}"; do
+            grep -Fq -- "--- PASS: $test_name (" _build/hosted-evidence/scenarios.log
+          done
+      - name: Collect host diagnostics
+        if: always()
+        run: |
+          # shellcheck disable=SC2024
+          sudo journalctl -u libvirtd --no-pager -n 200 > _build/hosted-evidence/libvirtd.log
+          # shellcheck disable=SC2024
+          sudo find /var/log/libvirt/qemu -type f -exec tail -n 100 {} + > _build/hosted-evidence/qemu.log || true
+          df -h > _build/hosted-evidence/host-after.txt
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: hosted-vmtest-${{ matrix.name }}-evidence-${{ github.run_id }}
+          path: |
+            _build/hosted-evidence/
+            _build/hosted-scenario/**/*.log
+            _build/hosted-scenario/**/*.json
+            _build/hosted-scenario/**/*.xml
+          retention-days: 3
