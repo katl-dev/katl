@@ -135,4 +135,3 @@ publication-approval step. Automatic publication remains conditional on
 qualifying the exact production bytes and supported journeys; instrumented
 source tests alone do not establish that contract. Do not remove the approval
 step solely because a subset of these scenarios passes.
-
