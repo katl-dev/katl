@@ -97,6 +97,7 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)
 	defer cancel()
 	vm := VMConfig{KVM: KVMOn, RAMMiB: 2048, CPUs: 2, Timeout: 35 * time.Minute, SerialIdleTimeout: -1, PreserveNVRAM: true, Expect: runtimeKernelBootSignal}
+	vm.Network.MAC = run.Node.MACAddress
 	vm.SerialHooks = []SerialHook{{Name: "release-lifecycle", Signal: runtimeKernelBootSignal, Run: func(ctx context.Context, event SerialHookEvent) error {
 		lease, err := WaitLibvirtLease(ctx, event.Plan.VirshPath, event.Plan.LibvirtURI, event.Plan.LibvirtNetwork, event.Plan.MACAddress, 2*time.Minute)
 		if err != nil {
