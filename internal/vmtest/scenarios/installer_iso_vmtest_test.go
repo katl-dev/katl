@@ -238,6 +238,9 @@ install:
 	defer cancel()
 	var dataDisk string
 	diskRunner := nonBlankDataDiskRunner{dataPath: &dataDisk}
+	// This domain reboots from installer media into the installed runtime, so
+	// its runtime observer and vsock device must survive that same-domain reboot.
+	runtimeVM := vmtest.FirstInstallRuntimeVMConfig(vm)
 	result, err := vmtest.RunFirstInstall(ctx, vmtest.NewRunner(options), vmtest.Scenario{
 		Name: "installer-iso-first-install-storage-authority",
 		Disks: []vmtest.DiskFixture{
@@ -245,9 +248,9 @@ install:
 			vmtest.ExtraDisk("data", string(vmtest.DiskRaw), "4G"),
 		},
 	}, vmtest.FirstInstallConfig{
-		Installer: vmtest.InstallerBootConfig{InstallerISO: iso, VM: vm},
+		Installer: vmtest.InstallerBootConfig{InstallerISO: iso, VM: runtimeVM},
 		Runtime: vmtest.InstalledRuntimeConfig{
-			VM: vmtest.FirstInstallRuntimeVMConfig(vm),
+			VM: runtimeVM,
 		},
 		Manifest:            manifest,
 		PreseedManifest:     true,
