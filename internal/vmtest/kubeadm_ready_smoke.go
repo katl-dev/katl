@@ -120,7 +120,7 @@ func normalizeKubeadmReadySmokePlan(plan KubeadmReadySmokePlan) KubeadmReadySmok
 		plan.ReadyPollInterval = 2 * time.Second
 	}
 	if plan.AgentConnectTimeout == 0 {
-		plan.AgentConnectTimeout = 30 * time.Second
+		plan.AgentConnectTimeout = defaultAgentStartupTimeout
 	}
 	if plan.AgentConnectInterval == 0 {
 		plan.AgentConnectInterval = 250 * time.Millisecond

@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
@@ -363,6 +364,52 @@ func TestVMRunnerChecksAgentAfterSerial(t *testing.T) {
 	}
 }
 
+func TestAgentStartup(t *testing.T) {
+	unhealthy := errors.New("agent is unhealthy")
+	for _, tc := range []struct {
+		name          string
+		delay         time.Duration
+		timeout       time.Duration
+		parentTimeout time.Duration
+		healthErr     error
+		wantErr       error
+	}{
+		{name: "agent after early boot", delay: 12 * time.Second},
+		{name: "configured budget", delay: 2 * time.Second, timeout: 3 * time.Second},
+		{name: "configured deadline", delay: 2 * time.Second, timeout: time.Second, wantErr: context.DeadlineExceeded},
+		{name: "parent deadline", delay: 2 * time.Second, parentTimeout: time.Second, wantErr: context.DeadlineExceeded},
+		{name: "connected but unhealthy", healthErr: unhealthy, wantErr: unhealthy},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx := context.Background()
+				if tc.parentTimeout != 0 {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, tc.parentTimeout)
+					defer cancel()
+				}
+				runner := VMRunner{AgentConnector: func(ctx context.Context, _ VSockPlan, _ string) (AgentHealthClient, error) {
+					timer := time.NewTimer(tc.delay)
+					defer timer.Stop()
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-timer.C:
+						return fakeHealthClient{err: tc.healthErr}, nil
+					}
+				}}
+
+				err := runner.checkAgent(ctx, Result{VSock: VSockPlan{Enabled: true}}, VMConfig{
+					Agent: AgentControlConfig{RequireHealth: true, Timeout: tc.timeout},
+				})
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("startup error = %v, want %v", err, tc.wantErr)
+				}
+			})
+		})
+	}
+}
+
 type fakeAgentRunner struct {
 	result *vmtestpb.CommandResult
 	err    error
@@ -389,10 +436,10 @@ func (r delayedAgentRunner) Run(ctx context.Context, _ *vmtestpb.RunCommandReque
 	}
 }
 
-type fakeHealthClient struct{}
+type fakeHealthClient struct{ err error }
 
-func (fakeHealthClient) Health(context.Context) error { return nil }
-func (fakeHealthClient) Close() error                 { return nil }
+func (c fakeHealthClient) Health(context.Context) error { return c.err }
+func (fakeHealthClient) Close() error                   { return nil }
 
 func readTranscript(t *testing.T, path string) []transcriptEntry {
 	t.Helper()
