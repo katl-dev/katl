@@ -1,0 +1,94 @@
+name: Prepare VM test host
+description: Provision an Ubuntu host or validate a prepared ARC runner
+inputs:
+  prepared:
+    description: Use the runner image's existing libvirt and Docker daemons
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - name: Record host
+      shell: bash
+      run: |
+        mkdir -p _build/hosted-evidence
+        {
+          uname -a
+          lscpu
+          free -h
+          df -h
+          ls -l /dev/kvm /dev/vhost-vsock /dev/net/tun || true
+        } > _build/hosted-evidence/host-before.txt
+    - name: Provision libvirt and device access
+      if: inputs.prepared != 'true'
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y --no-install-recommends \
+          qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients \
+            ovmf mtools fdisk jq acl dnsmasq-base squashfs-tools dosfstools podman
+        # A provider kernel may compile these drivers in without shipping module metadata.
+        if [[ ! -c /dev/vhost-vsock ]]; then sudo modprobe vhost_vsock; fi
+        if [[ ! -c /dev/net/tun ]]; then sudo modprobe tun; fi
+        sudo usermod -aG kvm "$(id -un)"
+        sudo setfacl -m "u:$(id -un):rw" /dev/kvm /dev/vhost-vsock
+        # Generated NVRAM belongs to the workflow user; use that identity for QEMU too.
+        printf 'user = "%s"\ngroup = "kvm"\n' "$(id -un)" | sudo tee -a /etc/libvirt/qemu.conf
+        # Grant system libvirt access without a second group change.
+        sudo systemctl restart libvirtd
+        sudo setfacl -m "u:$(id -un):rw" /run/libvirt/libvirt-sock
+        if ! virsh -c qemu:///system net-list --name | grep -Fxq default; then
+          virsh -c qemu:///system net-start default
+        fi
+        sudo mkdir -p /var/lib/libvirt/images
+        if ! sudo virsh -c qemu:///system pool-info default; then
+          sudo virsh -c qemu:///system pool-define-as default dir --target /var/lib/libvirt/images
+        fi
+        if ! virsh -c qemu:///system pool-list --name | grep -Fxq default; then
+          virsh -c qemu:///system pool-start default
+        fi
+    - name: Prepare Kubernetes fixture tools
+      if: inputs.prepared == 'true'
+      shell: bash
+      run: |
+        # The initial ARC image has Docker; Kubernetes fixture archives also require Podman.
+        if ! command -v podman >/dev/null; then
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends podman
+        fi
+    - name: Verify host capabilities
+      shell: bash
+      run: |
+        export LC_ALL=C
+        for device in /dev/kvm /dev/vhost-vsock /dev/net/tun; do
+          test -r "$device" && test -w "$device"
+        done
+        test -r "$KATL_OVMF_CODE"
+        test -r "$KATL_OVMF_VARS"
+        command -v podman
+        command -v kubectl
+        docker info > _build/hosted-evidence/docker.txt
+        {
+          ls -l /dev/kvm /dev/vhost-vsock /dev/net/tun
+          virsh -c qemu:///system uri
+          virsh -c qemu:///system net-info default
+          virsh -c qemu:///system pool-info default
+          virsh -c qemu:///system net-info default | grep -Eq '^Active:[[:space:]]+yes$'
+          virsh -c qemu:///system pool-info default | grep -Eq '^State:[[:space:]]+running$'
+          sudo virt-host-validate qemu || true
+        } > _build/hosted-evidence/capabilities.txt
+        python3 - <<'PY' > _build/hosted-evidence/device-access.txt
+        import fcntl, os, socket
+        kvm = os.open('/dev/kvm', os.O_RDWR)
+        print('KVM API version:', fcntl.ioctl(kvm, 0xAE00, 0))
+        vm = fcntl.ioctl(kvm, 0xAE01, 0)
+        print('KVM_CREATE_VM succeeded')
+        os.close(vm)
+        os.close(kvm)
+        vsock = os.open('/dev/vhost-vsock', os.O_RDWR)
+        print('vhost-vsock opened read/write')
+        os.close(vsock)
+        sock = socket.socket(socket.AF_VSOCK, socket.SOCK_STREAM)
+        sock.bind((socket.VMADDR_CID_ANY, socket.VMADDR_PORT_ANY))
+        print('AF_VSOCK bound:', sock.getsockname())
+        sock.close()
+        PY

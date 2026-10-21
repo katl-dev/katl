@@ -109,7 +109,7 @@ jobs:
           jq -r 'to_entries[] | "\(.key)=\(.value)"' proposal.json >> "$GITHUB_OUTPUT"
 
   plan:
-    if: always() && (github.event_name == 'pull_request' || needs.propose.outputs.changed == 'true')
+    if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') || needs.propose.outputs.changed == 'true')
     needs: propose
     runs-on: ubuntu-24.04
     outputs:
@@ -189,6 +189,19 @@ jobs:
           jq '{flavour, kernelRelease, reference, packages: [.packages[] | {name, nevra, digest}]}' \
             "$KATL_KERNEL_LOCK" >> "$GITHUB_STEP_SUMMARY"
 
+  vmtests:
+    name: Kernel VM (${{ matrix.flavour }})
+    if: always() && needs.plan.outputs.qualify == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'))
+    needs: [propose, plan]
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: [standard, lts]
+    uses: ./.github/workflows/hosted-vmtests.yml
+    with:
+      flavour: ${{ matrix.flavour }}
+      ref: ${{ needs.propose.outputs.commit || github.sha }}
+
   publish:
     if: github.event_name != 'pull_request' && needs.propose.outputs.changed == 'true'
     needs: [propose, qualify]
@@ -229,6 +242,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      actions: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -267,7 +281,7 @@ jobs:
             printf 'Both boot artifacts, every release-owned extension, and complete module composition passed for `%s` in [Kernel Updates](%s/%s/actions/runs/%s).\n' \
               "$QUALIFIED_COMMIT" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
             echo
-            echo 'Build qualification does not establish DRBD replication or NVIDIA hardware behavior. Run the applicable VM and operator journeys before merging.'
+            echo 'Kernel Input Qualification also requires the full VM suite for both flavours before auto-merge. NVIDIA hardware behavior requires separate hardware qualification.'
           } > body.md
           number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
           if [[ -n "$number" ]]; then
@@ -276,17 +290,23 @@ jobs:
             gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
               --title 'kernel: update retained kernel inputs' --body-file body.md
           fi
+          # GITHUB_TOKEN-created PRs do not emit another workflow-triggering event.
+          for workflow in fast-checks.yml kubernetes-bundles.yml kernel-updates.yml; do
+            gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+          done
 
   result:
     name: Kernel Input Qualification
-    if: always() && github.event_name == 'pull_request'
-    needs: [plan, qualify]
+    if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'))
+    needs: [plan, qualify, vmtests]
     runs-on: ubuntu-24.04
     steps:
       - env:
           PLAN_RESULT: ${{ needs.plan.result }}
           REQUIRED: ${{ needs.plan.outputs.qualify }}
           QUALIFY_RESULT: ${{ needs.qualify.result }}
+          VM_RESULT: ${{ needs.vmtests.result }}
         run: |
           [[ "$PLAN_RESULT" == success ]]
           [[ "$REQUIRED" != true || "$QUALIFY_RESULT" == success ]]
+          [[ "$REQUIRED" != true || "$VM_RESULT" == success ]]
