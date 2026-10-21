@@ -376,7 +376,7 @@ func firstInstallFixtureVMConfigs(base VMConfig) (VMConfig, VMConfig) {
 	installer := base
 	installer.VSock = VSockConfig{}
 	installer.Agent = AgentControlConfig{}
-	return installer, base
+	return installer, FirstInstallRuntimeVMConfig(base)
 }
 
 func publishFirstInstallRuntimeWorldFixture(contract FirstInstallRuntimeFixtureContract, installedDisk, fixtureESP string) (ProducedInstalledRuntimeFixture, error) {

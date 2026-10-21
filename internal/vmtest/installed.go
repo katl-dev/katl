@@ -395,24 +395,43 @@ func copyDir(src, dst string) error {
 	if err := os.RemoveAll(dst); err != nil {
 		return err
 	}
-	return filepath.WalkDir(src, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		rel, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-		target := filepath.Join(dst, rel)
+	if err := os.MkdirAll(dst, 0o700); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		path := filepath.Join(src, entry.Name())
+		target := filepath.Join(dst, entry.Name())
 		if entry.IsDir() {
-			return os.MkdirAll(target, 0o755)
+			if err := copyDir(path, target); err != nil {
+				return err
+			}
+			continue
+		}
+		if !entry.Type().IsRegular() {
+			return fmt.Errorf("unsupported non-regular entry: %s", path)
+		}
+		fileInfo, err := entry.Info()
+		if err != nil {
+			return err
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(target, data, 0o644)
-	})
+		if err := os.WriteFile(target, data, 0o600); err != nil {
+			return err
+		}
+		if err := os.Chmod(target, fileInfo.Mode().Perm()); err != nil {
+			return err
+		}
+	}
+	// Fixture digests include permissions. Apply directory modes after copying
+	// children so read-only source directories remain reproducible.
+	return os.Chmod(dst, info.Mode().Perm())
 }
 
 func diskFormat(format DiskFormat) DiskFormat {

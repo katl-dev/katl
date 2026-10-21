@@ -57,6 +57,45 @@ func TestWorldFixturesWriteInstalledRuntimeManifest(t *testing.T) {
 	}
 }
 
+func TestInstalledFixturePreservesESPModes(t *testing.T) {
+	world := testWorld(t)
+	scenario := world.NewScenario(t, "ESP permissions")
+	node := scenario.NewNode(t, NodeSpec{Name: "cp-1", Role: ControlPlane})
+	factory := scenario.NodeFixtures(node)
+	disk := writeFixtureFile(t, filepath.Join(t.TempDir(), "source.qcow2"), "disk")
+	esp := writeFixtureESP(t, filepath.Join(t.TempDir(), "esp"))
+	entry := loaderEntry(t, esp)
+	if err := os.Chmod(filepath.Dir(entry), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(entry, 0o640); err != nil {
+		t.Fatal(err)
+	}
+
+	fixture, err := factory.InstalledRuntime(InstalledRuntimeFixtureInput{Disk: disk, DiskFormat: DiskQCOW2, ESPArtifacts: esp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		path string
+		mode os.FileMode
+	}{
+		{"loader/entries", 0o750},
+		{filepath.Join("loader/entries", filepath.Base(entry)), 0o640},
+	} {
+		info, err := os.Stat(filepath.Join(fixture.ESPArtifacts, tc.path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != tc.mode {
+			t.Fatalf("%s mode = %o, want %o", tc.path, info.Mode().Perm(), tc.mode)
+		}
+	}
+	if _, err := factory.InstalledRuntime(InstalledRuntimeFixtureInput{Disk: disk, DiskFormat: DiskQCOW2, ESPArtifacts: esp}); err != nil {
+		t.Fatalf("reuse unchanged fixture: %v", err)
+	}
+}
+
 func TestWorldFixturesStageFirstInstallInputs(t *testing.T) {
 	world := testWorld(t)
 	scenario := world.NewScenario(t, "first install inputs")

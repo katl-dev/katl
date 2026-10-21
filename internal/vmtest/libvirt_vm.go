@@ -110,10 +110,13 @@ type VSockPlan struct {
 
 type AgentControlConfig struct {
 	RequireHealth bool
-	Timeout       time.Duration
+
+	// Timeout includes connecting to and health-checking the agent during guest startup.
+	Timeout time.Duration
 }
 
 const defaultSerialIdleTimeout = 45 * time.Second
+const defaultAgentStartupTimeout = 30 * time.Second
 
 type VMPlan struct {
 	CommandPath    string
@@ -822,7 +825,7 @@ func (r VMRunner) checkAgent(ctx context.Context, result Result, config VMConfig
 	}
 	timeout := config.Agent.Timeout
 	if timeout == 0 {
-		timeout = 10 * time.Second
+		timeout = defaultAgentStartupTimeout
 	}
 	agentCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

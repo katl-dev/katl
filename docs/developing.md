@@ -597,7 +597,7 @@ scripts/vmtest-run --artifact-set=runtime ./internal/vmtest \
   -run '^TestDirectRuntimeVMTestAgentSmoke$' \
   -count=1 -failfast -timeout 20m
 scripts/vmtest-run --artifact-set=default ./internal/vmtest \
-  -run '^TestFirstInstallTargetDiskSerialSmoke$' \
+  -run '^TestFirstInstallTargetDiskBootSmoke$' \
   -count=1 -failfast -timeout 35m
 scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \
   -run '^(TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke|TestInstallerISOFirstInstallSmoke)$' \
