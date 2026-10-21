@@ -1,0 +1,15 @@
+name: Blacksmith VM qualification
+
+on:
+  push:
+    branches: [compare-blacksmith-vmtests]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vmtests:
+    uses: ./.github/workflows/hosted-vmtests.yml
+    with:
+      runner: blacksmith-4vcpu-ubuntu-2404

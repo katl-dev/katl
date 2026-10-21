@@ -4,6 +4,18 @@ on:
   push:
     branches: [expand-hosted-vmtests]
   workflow_dispatch:
+    inputs:
+      runner:
+        description: VM test host
+        type: choice
+        default: ubuntu-24.04
+        options: [ubuntu-24.04, blacksmith-4vcpu-ubuntu-2404, blacksmith-8vcpu-ubuntu-2404]
+  workflow_call:
+    inputs:
+      runner:
+        description: VM test host
+        type: string
+        default: ubuntu-24.04
 
 permissions:
   contents: read
@@ -18,7 +30,7 @@ env:
 
 jobs:
   images:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 60
     outputs:
       mkosi-version: ${{ steps.builder.outputs.version }}
@@ -30,6 +42,8 @@ jobs:
       KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/hosted-agent
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -124,7 +138,7 @@ jobs:
   scenarios:
     name: VM / ${{ matrix.name }}
     needs: images
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 55
     strategy:
       fail-fast: false
@@ -159,6 +173,8 @@ jobs:
       ARTIFACT_SET: ${{ matrix.name == 'boot' && 'none' || 'install' }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
