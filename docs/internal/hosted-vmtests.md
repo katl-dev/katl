@@ -85,6 +85,41 @@ or runner capacity promises. GNU time's maximum resident set is a process
 measurement, not the sum of concurrent guests. Actions step durations include
 the upload and download costs outside the measured test commands.
 
+## Measured sizing
+
+The October 21, 2026 [GitHub baseline](https://github.com/katl-dev/katl/actions/runs/39645570687)
+and [four-core Blacksmith comparison](https://github.com/katl-dev/katl/actions/runs/39646270394)
+produced these successful command durations, rounded to the nearest second:
+
+| Command | GitHub Ubuntu 24.04 | Blacksmith 4 vCPU |
+| --- | --- | --- |
+| Runtime build | 4m10s | 4m22s |
+| Installer and install image build | 3m05s | 2m09s |
+| Direct agent gate | 35s | 32s |
+| ISO and PXE boot group | 1m20s | 1m03s |
+| Configuration group | 4m55s | 4m24s |
+| Management group | 1m46s | 1m51s |
+| Update and rollback group | 5m39s | 4m03s |
+| Three-node install group | 5m13s | 5m06s |
+
+These samples use independent cache scopes and runner allocations. They do not
+establish a general speed multiplier or warm-main build cost. Both runs failed
+the two-node group before Kubernetes bootstrap completed. The Blacksmith
+comparison also exposed an install test that depended on interleaved serial
+text. Consult the PR's final gate results for the corrected harness.
+
+During the successful Blacksmith groups, sampled available RAM stayed above
+12 GiB and root-filesystem space stayed above 58 GiB. Start with four-core
+runners; measure simultaneous multi-control-plane and Kubernetes-upgrade
+journeys before assigning them the same capacity.
+
+The split inputs measured 848,896,000 bytes for base, 825,958,400 for media, and
+430,284,800 for upgrade. Across the original seven consumer groups this reduced
+transfer from 20.27 GB to 7.18 GB, about 65%. Adding the storage group makes
+the corresponding totals 23.17 GB and 8.85 GB, about 62%. These totals count
+consumer payload downloads, excluding producer uploads, diagnostics, cache
+traffic, and archive overhead from subsequent source changes.
+
 ## Qualification boundary
 
 These tests qualify instrumented standard images built from the selected
