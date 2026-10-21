@@ -8,8 +8,8 @@ manually. It does not publish artifacts. GitHub describes nested virtualization 
 [technically possible but unsupported](https://docs.github.com/en/actions/concepts/runners/github-hosted-runners).
 Blacksmith documents
 [KVM support on x64 Linux](https://docs.blacksmith.sh/blacksmith-runners/overview).
-Use the workflow's runner input to compare the providers before changing the
-default. The four-core Blacksmith runner has 16 GB RAM and 80 GB storage;
+The workflow defaults to the four-core Blacksmith runner; select `ubuntu-24.04`
+with its runner input for the GitHub baseline. The four-core Blacksmith runner has 16 GB RAM and 80 GB storage;
 the eight-core runner has 32 GB RAM and 160 GB storage.
 
 ## Gate selection
