@@ -38,6 +38,7 @@ func main() {
 func run(args []string, input io.Reader, output io.Writer) error {
 	flags := flag.NewFlagSet("katl-vmtest-plan", flag.ContinueOnError)
 	changed := flags.Bool("changed", false, "select groups from NUL-delimited changed paths on stdin; default: all groups")
+	kernel := flags.Bool("kernel-changes", false, "print whether NUL-delimited changed paths require kernel qualification")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -45,7 +46,7 @@ func run(args []string, input io.Reader, output io.Writer) error {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 	}
 	selected := groups
-	if *changed {
+	if *changed || *kernel {
 		data, err := io.ReadAll(input)
 		if err != nil {
 			return err
@@ -62,11 +63,35 @@ func run(args []string, input io.Reader, output io.Writer) error {
 				return fmt.Errorf("changed path must be repository-relative: %q", name)
 			}
 		}
+		if *kernel {
+			return json.NewEncoder(output).Encode(kernelChanges(paths))
+		}
 		selected = selectGroups(paths)
 	}
 	return json.NewEncoder(output).Encode(struct {
 		Include []group `json:"include"`
 	}{selected})
+}
+
+func kernelChanges(paths []string) bool {
+	for _, name := range paths {
+		for _, prefix := range []string{
+			"kernels/", "extensions/", "internal/kernelrelease/", "internal/kernelmodule/",
+			"internal/extensionrelease/", "internal/releaseextensions/", "cmd/katl-kernel-release/",
+			"cmd/katl-mkosi-artifacts/", "cmd/katl-vmtest-plan/", "mkosi.conf", "mkosi.profiles/runtime/",
+			"mkosi.profiles/installer-image/", "mkosi.profiles/kernel-extension-", ".github/actions/mkosi-builder/",
+		} {
+			if strings.HasPrefix(name, prefix) {
+				return true
+			}
+		}
+		switch name {
+		case "go.mod", "go.sum", "Containerfile.mkosi", "scripts/mkosi", "scripts/fedora-release",
+			"scripts/build-release-extensions", "scripts/assemble-release-extensions", ".github/workflows/kernel-updates.yml":
+			return true
+		}
+	}
+	return false
 }
 
 func selectGroups(paths []string) []group {

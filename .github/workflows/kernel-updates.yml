@@ -12,34 +12,13 @@ on:
         description: Exact LTS kernel release; empty discovers the newest
         type: string
   pull_request:
-    paths:
-      - 'kernels/**'
-      - 'extensions/**'
-      - 'internal/kernelrelease/**'
-      - 'internal/kernelmodule/**'
-      - 'internal/extensionrelease/**'
-      - 'internal/releaseextensions/**'
-      - 'cmd/katl-kernel-release/**'
-      - 'cmd/katl-mkosi-artifacts/**'
-      - 'mkosi.conf*'
-      - 'mkosi.conf.d/**'
-      - 'mkosi.profiles/runtime/**'
-      - 'mkosi.profiles/installer-image/**'
-      - 'mkosi.profiles/kernel-extension-*/**'
-      - 'scripts/mkosi'
-      - 'scripts/fedora-release'
-      - 'scripts/build-release-extensions'
-      - 'scripts/assemble-release-extensions'
-      - 'Containerfile.mkosi'
-      - '.github/actions/mkosi-builder/**'
-      - '.github/workflows/kernel-updates.yml'
 
 permissions:
   contents: read
 
 concurrency:
-  group: kernel-updates-${{ github.event.pull_request.number || 'proposals' }}
-  cancel-in-progress: false
+  group: kernel-inputs-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   capture:
@@ -119,8 +98,24 @@ jobs:
         with:
           ref: ${{ needs.propose.outputs.commit || github.sha }}
           persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
       - id: plan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            required="$(git diff --name-only --no-renames -z "$BASE_SHA...$HEAD_SHA" | go run ./cmd/katl-vmtest-plan --kernel-changes)"
+            if [[ "$required" == false ]]; then
+              echo 'qualify=false' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            [[ "$required" == true ]]
+          fi
           directory="kernels/fedora-$(scripts/fedora-release)/x86_64"
           if [[ -f "$directory/standard.json" && -f "$directory/lts.json" ]]; then
             echo 'qualify=true' >> "$GITHUB_OUTPUT"
@@ -350,5 +345,8 @@ jobs:
           VM_RESULT: ${{ needs.vmtests.result }}
         run: |
           [[ "$PLAN_RESULT" == success ]]
-          [[ "$REQUIRED" != true || "$QUALIFY_RESULT" == success ]]
-          [[ "$REQUIRED" != true || "$VM_RESULT" == success ]]
+          if [[ "$REQUIRED" == true ]]; then
+            [[ "$QUALIFY_RESULT" == success && "$VM_RESULT" == success ]]
+          else
+            [[ "$REQUIRED" == false && "$QUALIFY_RESULT" == skipped && "$VM_RESULT" == skipped ]]
+          fi
