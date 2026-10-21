@@ -126,7 +126,7 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 			return err
 		}
 		// Reuse the installation's management identity through the public CLI.
-		enrollConfigApplyNode(t, ctx, result, katlctl, lease.IPAddress+":7443", strings.TrimSpace(string(public)))
+		enrollConfigApplyNode(t, ctx, result, katlctl, lease.IPAddress+":9443", strings.TrimSpace(string(public)))
 		cli := func(label string, args ...string) { runKatlctl(t, ctx, result, katlctl, label, args...) }
 		cli("initial-status", "node", "status", "cp-1", "--output", "json")
 		selection := func() (generation.BootSelectionRecord, error) {
@@ -172,12 +172,12 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 		}
 		if upgrade {
 			config := filepath.Join(result.RunDir, "katlctl", "enrollment", "cluster.yaml")
-			cli("upgrade-plan", "node", "upgrade", "cp-1", "--config", config, "--artifact", target, "--plan")
+			cli("upgrade-plan", "node", "upgrade", "cp-1", "--config", config, "--artifact", target, "--flavour", first(targetMetadata.Flavour, "standard"), "--plan")
 			planned, err := selection()
 			if err != nil || planned.BootedGenerationID != original.BootedGenerationID {
 				return fmt.Errorf("plan changed current generation: %v", err)
 			}
-			cli("upgrade", "node", "upgrade", "cp-1", "--config", config, "--artifact", target, "--timeout", "10m")
+			cli("upgrade", "node", "upgrade", "cp-1", "--config", config, "--artifact", target, "--flavour", first(targetMetadata.Flavour, "standard"), "--timeout", "10m")
 			if err := healthy(targetMetadata.Version); err != nil {
 				return err
 			}
