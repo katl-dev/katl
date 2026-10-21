@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -210,7 +211,17 @@ func (factory NodeFixtureFactory) writeInstallSingleImageProof(sourceManifest, s
 	}
 	imageRoot, ok := katlosImageProofRoot(sourceImage, expected.Role)
 	if !ok {
-		return fmt.Errorf("KatlOS image proof root with embedded index is required for %s", sourceImage)
+		directory, err := os.MkdirTemp("", "katl-vmtest-proof-")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(directory)
+
+		// Published images carry their proof inputs inside the SquashFS payload.
+		imageRoot = filepath.Join(directory, "root")
+		if output, err := exec.Command("unsquashfs", "-no-progress", "-d", imageRoot, sourceImage).CombinedOutput(); err != nil {
+			return fmt.Errorf("extract KatlOS image proof inputs (requires squashfs-tools): %w: %s", err, output)
+		}
 	}
 	payload, err := katlosimage.ResolveDirectory(context.Background(), imageRoot, expected)
 	if err != nil {
