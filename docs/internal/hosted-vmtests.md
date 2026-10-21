@@ -36,6 +36,12 @@ installer ISO, install and upgrade images, and Kubernetes sysext once. These
 instrumented images are test inputs and must never be promoted into release
 assets.
 
+The producer uses mkosi's native `Mirror=` setting for Fedora's canonical
+HTTPS repository, keeping repository metadata and package downloads on the
+same source. The generated setting is included in the evidence. Package
+integrity checks remain enabled; this does not provide immutable package
+inputs or production-artifact qualification.
+
 Independent scenario jobs download the producer's immutable files, verify the
 source commit, builder version, and SHA256 checksums, then invoke
 `scripts/vmtest-run --artifact-set=install --no-rebuild`. The existing harness
