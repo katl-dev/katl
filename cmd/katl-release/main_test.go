@@ -50,6 +50,7 @@ func (f *githubFixture) call(name string, args ...string) ([]byte, error) {
 		if len(args) != 2 {
 			f.t.Fatalf("unexpected API mutation: %q", args)
 		}
+		// Keep GitHub's wire fields independent of the production JSON tags.
 		var value any
 		switch strings.TrimPrefix(args[1], "repos/"+repository+"/") {
 		case "commits/main":
@@ -63,13 +64,23 @@ func (f *githubFixture) call(name string, args ...string) ([]byte, error) {
 			}
 			value = map[string]any{"protection_rules": rules}
 		case "actions/runs/42":
-			value = f.run
+			value = map[string]any{
+				"id": f.run.ID, "run_attempt": f.run.Attempt, "head_branch": f.run.Tag,
+				"head_sha": f.run.Commit, "event": f.run.Event, "path": f.run.Path,
+				"status": f.run.Status, "conclusion": f.run.Conclusion,
+			}
 		case "actions/runs/42/artifacts?per_page=100&page=1":
 			f.artifactAPI++
-			value = map[string]any{"artifacts": f.artifacts}
+			var artifacts []map[string]any
+			for _, artifact := range f.artifacts {
+				artifacts = append(artifacts, map[string]any{
+					"id": artifact.ID, "name": artifact.Name, "digest": artifact.Digest, "expired": artifact.Expired,
+				})
+			}
+			value = map[string]any{"artifacts": artifacts}
 		case "actions/runs/42/artifacts?per_page=100&page=2":
 			f.artifactAPI++
-			value = map[string]any{"artifacts": []artifact{{ID: 123, Name: "katl-2026.10.2-x86_64-1234567890ab"}}}
+			value = map[string]any{"artifacts": []any{map[string]any{"id": 123, "name": "katl-2026.10.2-x86_64-1234567890ab"}}}
 		default:
 			f.t.Fatalf("unexpected endpoint: %q", args)
 		}
@@ -175,8 +186,16 @@ func TestInspect(t *testing.T) {
 				}
 				return
 			}
-			var receipt candidate
-			if err != nil || json.Unmarshal(output.Bytes(), &receipt) != nil || receipt.Artifact.ID != 123 || receipt.Run.Attempt != 1 {
+			var receipt struct {
+				Run struct {
+					Attempt int    `json:"run_attempt"`
+					Commit  string `json:"head_sha"`
+				} `json:"run"`
+				Artifact struct {
+					ID int64 `json:"id"`
+				} `json:"artifact"`
+			}
+			if err != nil || json.Unmarshal(output.Bytes(), &receipt) != nil || receipt.Artifact.ID != 123 || receipt.Run.Attempt != 1 || receipt.Run.Commit != testCommit {
 				t.Fatalf("inspect = %s, %v", output.String(), err)
 			}
 		})
