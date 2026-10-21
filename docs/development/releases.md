@@ -90,6 +90,12 @@ Run the applicable automated VM gates on a capable host, as documented in
 test builds provide regression evidence; they do not replace qualification of
 the downloaded production artifacts.
 
+The release-artifact workflow runs the full hosted VM regression suite for main
+and candidate builds and requires success before publication approval. Review
+its selected tests and outcomes as part of qualification. See
+[Hosted VM scenarios](../internal/hosted-vmtests.md) for selection, artifacts,
+evidence, and the remaining production-artifact qualification boundary.
+
 Use the downloaded `katlctl` and production images for the affected public
 journeys in a persistent `katldev` VM. Follow the supported
 [development VM workflow](../developing.md) and public operator documentation.

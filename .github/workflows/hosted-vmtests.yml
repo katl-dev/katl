@@ -1,8 +1,7 @@
 name: Hosted VM scenarios
 
 on:
-  push:
-    branches: [expand-hosted-vmtests]
+  pull_request:
   workflow_dispatch:
     inputs:
       runner:
@@ -20,6 +19,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: hosted-vmtests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+
 env:
   KATL_VMTEST_KVM: 'on'
   KATL_VMTEST_KEEP: failed
@@ -29,7 +32,42 @@ env:
   KATL_VMTEST_GO: ${{ github.workspace }}/.github/scripts/hosted-vmtest-go
 
 jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      run: ${{ steps.plan.outputs.run }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Select VM groups
+        id: plan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mkdir -p _build
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            # Include both sides of renames so moving a product file into docs cannot skip its gate.
+            git diff --name-only --no-renames -z "$BASE_SHA...$HEAD_SHA" > _build/vmtest-changes
+            go run ./cmd/katl-vmtest-plan --changed < _build/vmtest-changes > _build/vmtest-plan.json
+          else
+            go run ./cmd/katl-vmtest-plan > _build/vmtest-plan.json
+          fi
+          echo "matrix=$(cat _build/vmtest-plan.json)" >> "$GITHUB_OUTPUT"
+          echo "run=$(jq '.include | length > 0' _build/vmtest-plan.json)" >> "$GITHUB_OUTPUT"
+          echo "VM groups: $(jq -r '[.include[].name] | join(", ")' _build/vmtest-plan.json)" >> "$GITHUB_STEP_SUMMARY"
+
   images:
+    needs: plan
+    if: needs.plan.outputs.run == 'true'
     runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 60
     outputs:
@@ -137,34 +175,13 @@ jobs:
 
   scenarios:
     name: VM / ${{ matrix.name }}
-    needs: images
+    needs: [plan, images]
+    if: needs.plan.outputs.run == 'true'
     runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 55
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - name: boot
-            package: ./internal/vmtest/scenarios
-            tests: TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke
-          - name: install
-            package: ./internal/vmtest
-            tests: TestFirstInstallTargetDiskSerialSmoke|TestFirstInstallTargetDiskLocalHandoffSmoke
-          - name: config
-            package: ./internal/vmtest
-            tests: TestInstalledRuntimeConfigApplyModesSmoke
-          - name: management
-            package: ./internal/vmtest
-            tests: TestInstalledRuntimeManagementRotationSmoke
-          - name: update
-            package: ./internal/vmtest
-            tests: TestInstalledRuntimeSysupdateRootUKITransfer
-          - name: two-node
-            package: ./internal/vmtest/scenarios
-            tests: TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke
-          - name: three-node-install
-            package: ./internal/vmtest/scenarios
-            tests: TestThreeNodeGeneration0InstallSmoke
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       KATL_VMTEST_MKOSI_VERSION: ${{ needs.images.outputs.mkosi-version }}
       KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/hosted-scenario
@@ -251,3 +268,27 @@ jobs:
             _build/hosted-scenario/**/*.stdout
             _build/hosted-scenario/**/*.stderr
           retention-days: 3
+
+  validation:
+    name: VM validation
+    if: always()
+    needs: [plan, images, scenarios]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    env:
+      PLAN: ${{ needs.plan.result }}
+      RUN: ${{ needs.plan.outputs.run }}
+      IMAGES: ${{ needs.images.result }}
+      SCENARIOS: ${{ needs.scenarios.result }}
+    steps:
+      - name: Require the selected gates
+        run: |
+          test "$PLAN" = success
+          if [[ "$RUN" == true ]]; then
+            test "$IMAGES" = success
+            test "$SCENARIOS" = success
+          else
+            test "$RUN" = false
+            test "$IMAGES" = skipped
+            test "$SCENARIOS" = skipped
+          fi

@@ -1,10 +1,30 @@
 # Hosted VM scenario experiments
 
 Use the `Hosted VM scenarios` workflow to evaluate Katl's existing libvirt
-journeys on standard `ubuntu-24.04` GitHub-hosted runners. The workflow is
-experimental and manually invoked; it does not publish artifacts or establish
-a required release gate. GitHub describes nested virtualization as
+journeys on ephemeral Ubuntu x64 runners. Pull requests select groups by changed
+paths; the release-artifact workflow calls the full suite for main, release
+branches, tags, and manual candidate builds. You can also invoke the VM workflow
+manually. It does not publish artifacts. GitHub describes nested virtualization as
 [technically possible but unsupported](https://docs.github.com/en/actions/concepts/runners/github-hosted-runners).
+Blacksmith documents
+[KVM support on x64 Linux](https://docs.blacksmith.sh/blacksmith-runners/overview).
+Use the workflow's runner input to compare the providers before changing the
+default. The four-core Blacksmith runner has 16 GB RAM and 80 GB storage;
+the eight-core runner has 32 GB RAM and 160 GB storage.
+
+## Gate selection
+
+`cmd/katl-vmtest-plan` owns the scenario catalog and conservative pre-merge
+selection. Documentation, maintainer release tooling, and ordinary unit-test
+changes need no VM build. `katlctl` changes select configuration, management,
+and two-node bootstrap. Shared product changes, VM infrastructure changes, and
+unrecognized paths select all groups. Main and candidate builds always select
+all groups. This is a coarse policy, not a claim to infer all Go dependencies.
+
+The PR diff includes both sides of renames. Empty selections skip the producer
+and VM jobs explicitly. The stable `VM validation` job checks the plan and all
+selected job results, including failure and cancellation; a skipped selected
+gate cannot satisfy it. Keep the ordinary unit and generated-asset checks too.
 
 ## Execution model
 
@@ -18,8 +38,13 @@ Independent scenario jobs download the producer's immutable files, verify the
 source commit, builder version, and SHA256 checksums, then invoke
 `scripts/vmtest-run --artifact-set=install --no-rebuild`. The existing harness
 records its resource manifest, creates fresh VM worlds, and owns libvirt
-lifecycle. Builder caches and installed guest fixtures are excluded from the
-transfer. The archive preserves file modes and sparse files.
+lifecycle. Boot-only jobs use `--artifact-set=none` with their verified
+current-source media. The producer splits boot media, installed-node inputs,
+and upgrade inputs into separate bundles. Each consumer downloads only the
+bundles it needs. It derives the proof directory and loose runtime components
+from the self-contained install image, then checks the original component
+checksums. Builder caches and installed guest fixtures are excluded from the
+transfer. Archives preserve file modes and sparse files.
 
 The test groups cover these contracts:
 
@@ -34,8 +59,8 @@ The test groups cover these contracts:
 | Two-node | Operation-backed Kubernetes bootstrap and dependent configuration. |
 | Three-node install | Independent generation-zero installation and identity across three nodes. |
 
-Every selected top-level VM test must report a pass. A skipped test or an empty
-selection fails the workflow. Existing guest assertions and timeouts remain in
+Every selected top-level VM test must report a Go JSON pass event. A skipped
+selected test fails the workflow. Existing guest assertions and timeouts remain in
 effect; the workflow does not disable guest durability or security settings.
 
 ## Evidence
@@ -61,6 +86,26 @@ upgrades, multi-control-plane recovery, and repeated reliability across runner
 allocations need their own evidence. Hosted automation does not replace the
 required public `katlctl` journey in a persistent `katldev` VM.
 
-Keep tests optional until their failure modes, runtime, storage demand, and
-reliability are understood. Use measurements to choose test groups before
-provisioning paid runners or adding required checks.
+The release workflow requires this source-regression suite before its
+publication-approval step. Automatic publication remains conditional on
+qualifying the exact production bytes and supported journeys; instrumented
+source tests alone do not establish that contract. Do not remove the approval
+step solely because a subset of these scenarios passes.
+
+## Self-hosting alternatives
+
+Self-hosting does not inherently require a different VM-test backend. A
+disposable capable runner VM on the Katl cluster could run the existing
+libvirt world. KubeVirt supports a
+[host-passthrough CPU model](https://kubevirt.io/user-guide/compute/virtual_hardware/);
+actual nested KVM, vsock, TUN, firmware, storage, and networking capabilities
+must be demonstrated inside that runner. This option keeps VM-test policy and
+fixtures portable between hosted and self-hosted execution.
+
+A native KubeVirt backend would instead own remote VM lifecycle, image import,
+disk snapshots, firmware state, network allocation, diagnostics, and cleanup.
+KubeVirt has a [vsock facility](https://kubevirt.io/user-guide/compute/vsock/), but
+that does not make the harness's local CID connections portable across cluster
+nodes. Prefer the runner-level option first unless distributed guest placement
+or a measured nesting constraint justifies the additional backend. Keep a
+recovery path outside the cluster hosting its own qualification jobs.

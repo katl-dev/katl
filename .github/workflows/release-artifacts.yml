@@ -22,6 +22,10 @@ concurrency:
   cancel-in-progress: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
 
 jobs:
+  vmtests:
+    name: VM regression
+    uses: ./.github/workflows/hosted-vmtests.yml
+
   identity:
     name: Resolve Release Identity
     runs-on: ubuntu-24.04
@@ -636,7 +640,7 @@ jobs:
   release-approval:
     name: Approve Release Publication
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: bundle
+    needs: [bundle, vmtests]
     runs-on: ubuntu-24.04
     environment: release
     steps:
