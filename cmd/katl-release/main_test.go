@@ -140,7 +140,6 @@ func TestPrepare(t *testing.T) {
 		{"available", func(f *githubFixture) {}, ""},
 		{"prefix tag", func(f *githubFixture) { f.refs = []map[string]string{{"ref": "refs/tags/v2026.10.20"}} }, ""},
 		{"used tag", func(f *githubFixture) { f.refs = []map[string]string{{"ref": "refs/tags/v2026.10.2"}} }, "already exists"},
-		{"unprotected", func(f *githubFixture) { f.protected = false }, "required reviewers"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newFixture(t)

@@ -24,7 +24,13 @@ concurrency:
 jobs:
   vmtests:
     name: VM regression
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: [standard, lts]
     uses: ./.github/workflows/hosted-vmtests.yml
+    with:
+      flavour: ${{ matrix.flavour }}
 
   identity:
     name: Resolve Release Identity
@@ -32,6 +38,7 @@ jobs:
     outputs:
       artifact-name: ${{ steps.release.outputs.artifact-name }}
       version: ${{ steps.release.outputs.version }}
+      previous-tag: ${{ steps.previous.outputs.tag }}
 
     env:
       KATL_ARCHITECTURE: x86_64
@@ -59,6 +66,11 @@ jobs:
           artifact_name="katl-${version}-${KATL_ARCHITECTURE}-${short_sha}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "artifact-name=$artifact_name" >> "$GITHUB_OUTPUT"
+      - name: Resolve supported upgrade source
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)" >> "$GITHUB_OUTPUT"
 
   runtime:
     name: Build And Verify Runtime
@@ -637,20 +649,93 @@ jobs:
           compression-level: 0
 
 
-  release-approval:
-    name: Approve Release Publication
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: bundle
+  qualification:
+    name: Production VM (${{ matrix.flavour }})
+    needs: [identity, bundle]
     runs-on: ubuntu-24.04
-    environment: release
+    timeout-minutes: 80
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: [standard, lts]
+    env:
+      KATL_FLAVOUR: ${{ matrix.flavour }}
+      KATL_VMTEST_KVM: 'on'
+      KATL_VMTEST_KEEP: failed
+      KATL_VMTEST_DEBUG_ON_FAILURE: '0'
+      KATL_OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
+      KATL_OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
+      KATL_VMTEST_GO: ${{ github.workspace }}/.github/scripts/hosted-vmtest-go
+      KATL_VMTEST_RELEASE_DIR: ${{ github.workspace }}/dist
+      KATL_VMTEST_PREVIOUS_RELEASE_DIR: ${{ github.workspace }}/previous
+      KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/production-vmtest
     steps:
-      - name: Record publication approval
-        run: echo 'The assembled artifacts from this run are approved for publication.'
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: ./.github/actions/hosted-vmtest
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.identity.outputs.artifact-name }}
+          path: dist
+      - name: Verify candidate and download the previous stable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PREVIOUS_TAG: ${{ needs.identity.outputs.previous-tag }}
+        run: |
+          (cd dist && sha256sum --check SHA256SUMS)
+          gh release download "$PREVIOUS_TAG" --repo "$GITHUB_REPOSITORY" --dir previous
+          (cd previous && sha256sum --check SHA256SUMS)
+          printf 'Upgrade source: `%s`\n' "$PREVIOUS_TAG" >> "$GITHUB_STEP_SUMMARY"
+      - name: Qualify production installation, reboot, upgrade, and rollback
+        run: |
+          .github/scripts/hosted-vmtest-measure production .github/scripts/hosted-vmtest-run \
+            --artifact-set=none --no-rebuild ./internal/vmtest \
+            -run '^TestReleaseLifecycle$' -count=1 -json -timeout 75m
+          for test_name in TestReleaseLifecycle/install TestReleaseLifecycle/upgrade TestReleaseLifecycle; do
+            jq -se --arg test "$test_name" 'any(.[]; .Action == "pass" and .Test == $test)' \
+              _build/hosted-evidence/go-test.jsonl
+          done
+      - name: Collect diagnostics
+        if: always()
+        run: .github/scripts/hosted-vmtest-diagnostics
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: production-vmtest-${{ matrix.flavour }}-${{ github.run_id }}
+          path: |
+            _build/hosted-evidence/
+            _build/production-vmtest/**/*.log
+            _build/production-vmtest/**/*.json
+            _build/production-vmtest/**/*.xml
+            _build/production-vmtest/**/*.txt
+            _build/production-vmtest/**/*.stdout
+            _build/production-vmtest/**/*.stderr
+          retention-days: 3
+
+  release-validation:
+    name: Release validation
+    if: always() && (github.ref != 'refs/heads/main' || github.event_name != 'push')
+    needs: [bundle, vmtests, qualification]
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          BUNDLE: ${{ needs.bundle.result }}
+          REGRESSION: ${{ needs.vmtests.result }}
+          PRODUCTION: ${{ needs.qualification.result }}
+        run: |
+          test "$BUNDLE" = success
+          test "$REGRESSION" = success
+          test "$PRODUCTION" = success
 
   publish-extensions:
     name: Publish Kernel Extensions
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [images, release-approval]
+    needs: [images, release-validation]
     runs-on: ubuntu-24.04
     permissions:
       contents: read

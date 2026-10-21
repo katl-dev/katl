@@ -37,7 +37,7 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer, call command) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n\nPreparation is read-only. Publication requires approval in GitHub Actions.")
+		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
 		return nil
 	}
 	if args[0] == "prepare" {
@@ -111,29 +111,13 @@ func prepare(args []string, stdout, stderr io.Writer, call command) error {
 			return fmt.Errorf("tag %s already exists; inspect its run or choose a new version", tag)
 		}
 	}
-	var environment struct {
-		Rules []struct {
-			Type      string            `json:"type"`
-			Reviewers []json.RawMessage `json:"reviewers"`
-		} `json:"protection_rules"`
-	}
-	if err := api(call, "environments/release", &environment); err != nil {
-		return err
-	}
-	protected := false
-	for _, rule := range environment.Rules {
-		protected = protected || rule.Type == "required_reviewers" && len(rule.Reviewers) > 0
-	}
-	if !protected {
-		return errors.New("configure required reviewers on the GitHub release environment before pushing a tag")
-	}
-	fmt.Fprintf(stdout, "Release: %s\nSource:  %s (%s)\nApproval: release environment has required reviewers\n\nReview release guidance in docs/releases/%s.md if needed, and record qualification in a release Bead.\nAfter source review, start the candidate build with:\n\n", tag, source.SHA, *ref, version)
+	fmt.Fprintf(stdout, "Release: %s\nSource:  %s (%s)\nPublication: automatic after regression and production VM qualification\n\nReview release guidance in docs/releases/%s.md if needed.\nAfter source review, start the candidate build with:\n\n", tag, source.SHA, *ref, version)
 	if _, err := os.Stat(".jj"); err == nil {
 		fmt.Fprintf(stdout, "jj git fetch --remote origin\njj tag set %s --revision %s\njj git push --remote origin --tag %s\n", tag, source.SHA, tag)
 	} else {
 		fmt.Fprintf(stdout, "git fetch origin\ngit tag %s %s\ngit push origin refs/tags/%s\n", tag, source.SHA, tag)
 	}
-	fmt.Fprintln(stdout, "\nThen find the tag run in GitHub Actions and use:\nscripts/katl-release inspect RUN_ID\nscripts/katl-release download RUN_ID DIRECTORY\n\nFollow docs/development/releases.md before approving publication.")
+	fmt.Fprintln(stdout, "\nThen find the tag run in GitHub Actions and use:\nscripts/katl-release inspect RUN_ID\nscripts/katl-release download RUN_ID DIRECTORY\n\nFollow docs/development/releases.md and monitor Release validation through publication.")
 	return nil
 }
 
@@ -234,7 +218,7 @@ func download(release candidate, dir string, stderr io.Writer, call command) err
 	if current.Run.Attempt != release.Run.Attempt || current.Run.Commit != release.Run.Commit || current.Artifact != release.Artifact {
 		return errors.New("candidate changed during verification; download into a fresh directory and qualify again")
 	}
-	fmt.Fprintln(stderr, "Integrity and provenance verified. VM and hands-on qualification are still required before approval.")
+	fmt.Fprintln(stderr, "Integrity and provenance verified. Release validation must pass before publication.")
 	return nil
 }
 
