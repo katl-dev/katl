@@ -41,8 +41,10 @@ jobs:
           sudo modprobe tun
           sudo usermod -aG kvm "$(id -un)"
           sudo setfacl -m "u:$(id -un):rw" /dev/kvm /dev/vhost-vsock
-          # Reexec via group membership is unnecessary with an explicit system socket ACL.
-          sudo systemctl start libvirtd
+          # Generated NVRAM belongs to the workflow user; use that identity for QEMU too.
+          printf 'user = "%s"\ngroup = "kvm"\n' "$(id -un)" | sudo tee -a /etc/libvirt/qemu.conf
+          # Grant system libvirt access without a second group change.
+          sudo systemctl restart libvirtd
           sudo setfacl -m "u:$(id -un):rw" /run/libvirt/libvirt-sock
           if ! virsh -c qemu:///system net-list --name | grep -Fxq default; then
             virsh -c qemu:///system net-start default
@@ -102,6 +104,10 @@ jobs:
           # shellcheck disable=SC2024
           sudo find /var/log/libvirt/qemu -maxdepth 1 -type f -exec tail -n 100 {} + \
             > _build/hosted-evidence/qemu.log || true
+          # shellcheck disable=SC2024
+          sudo journalctl -k --no-pager -g 'apparmor|DENIED' -n 100 > _build/hosted-evidence/kernel-access.log || true
+          find _build/hosted-probe -name OVMF_VARS.fd -exec stat -c '%A %U %G %n' {} + \
+            > _build/hosted-evidence/nvram-ownership.txt
           df -h > _build/hosted-evidence/host-after.txt
       - uses: actions/upload-artifact@v7
         if: always()
