@@ -16,6 +16,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -650,72 +651,12 @@ jobs:
 
 
   qualification:
-    name: Production VM (${{ matrix.flavour }})
+    name: Production VM
     needs: [identity, bundle]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 80
-    strategy:
-      fail-fast: false
-      matrix:
-        flavour: [standard, lts]
-    env:
-      KATL_FLAVOUR: ${{ matrix.flavour }}
-      KATL_VMTEST_KVM: 'on'
-      KATL_VMTEST_KEEP: failed
-      KATL_VMTEST_DEBUG_ON_FAILURE: '0'
-      KATL_OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
-      KATL_OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
-      KATL_VMTEST_GO: ${{ github.workspace }}/.github/scripts/hosted-vmtest-go
-      KATL_VMTEST_RELEASE_DIR: ${{ github.workspace }}/dist
-      KATL_VMTEST_PREVIOUS_RELEASE_DIR: ${{ github.workspace }}/previous
-      KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/production-vmtest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: ./.github/actions/hosted-vmtest
-      - uses: actions/download-artifact@v8
-        with:
-          name: ${{ needs.identity.outputs.artifact-name }}
-          path: dist
-      - name: Verify candidate and download the previous stable release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PREVIOUS_TAG: ${{ needs.identity.outputs.previous-tag }}
-        run: |
-          (cd dist && sha256sum --check SHA256SUMS)
-          gh release download "$PREVIOUS_TAG" --repo "$GITHUB_REPOSITORY" --dir previous
-          (cd previous && sha256sum --check SHA256SUMS)
-          printf 'Upgrade source: `%s`\n' "$PREVIOUS_TAG" >> "$GITHUB_STEP_SUMMARY"
-      - name: Qualify production installation, reboot, upgrade, and rollback
-        run: |
-          .github/scripts/hosted-vmtest-measure production .github/scripts/hosted-vmtest-run \
-            --artifact-set=none --no-rebuild ./internal/vmtest \
-            -run '^TestReleaseLifecycle$' -count=1 -json -timeout 75m
-          for test_name in TestReleaseLifecycle/install TestReleaseLifecycle/upgrade TestReleaseLifecycle; do
-            jq -se --arg test "$test_name" 'any(.[]; .Action == "pass" and .Test == $test)' \
-              _build/hosted-evidence/go-test.jsonl
-          done
-      - name: Collect diagnostics
-        if: always()
-        run: .github/scripts/hosted-vmtest-diagnostics
-      - uses: actions/upload-artifact@v7
-        if: always()
-        with:
-          name: production-vmtest-${{ matrix.flavour }}-${{ github.run_id }}
-          path: |
-            _build/hosted-evidence/
-            _build/production-vmtest/**/*.log
-            _build/production-vmtest/**/*.json
-            _build/production-vmtest/**/*.xml
-            _build/production-vmtest/**/*.txt
-            _build/production-vmtest/**/*.stdout
-            _build/production-vmtest/**/*.stderr
-          retention-days: 3
+    uses: ./.github/workflows/production-vmtests.yml
+    with:
+      artifact-name: ${{ needs.identity.outputs.artifact-name }}
+      previous-tag: ${{ needs.identity.outputs.previous-tag }}
 
   release-validation:
     name: Release validation

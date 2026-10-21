@@ -109,7 +109,7 @@ jobs:
           jq -r 'to_entries[] | "\(.key)=\(.value)"' proposal.json >> "$GITHUB_OUTPUT"
 
   plan:
-    if: always() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') || needs.propose.outputs.changed == 'true')
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main') || needs.propose.outputs.changed == 'true') }}
     needs: propose
     runs-on: ubuntu-24.04
     outputs:
@@ -131,7 +131,7 @@ jobs:
 
   qualify:
     name: Qualify Kernel (${{ matrix.flavour }})
-    if: always() && needs.plan.outputs.qualify == 'true'
+    if: ${{ !cancelled() && needs.plan.outputs.qualify == 'true' }}
     needs: [propose, plan]
     runs-on: ubuntu-24.04
     timeout-minutes: 120
@@ -233,7 +233,7 @@ jobs:
 
   vmtests:
     name: Kernel VM (${{ matrix.flavour }})
-    if: always() && needs.plan.outputs.qualify == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'))
+    if: ${{ !cancelled() && needs.plan.outputs.qualify == 'true' && (github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main')) }}
     needs: [propose, plan]
     strategy:
       fail-fast: false

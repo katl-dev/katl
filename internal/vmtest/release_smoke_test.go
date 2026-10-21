@@ -105,16 +105,20 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 		result := event.Result
 		result.IPAddress = lease.IPAddress
 		observe := func(command string) (string, error) { return releaseSSH(ctx, key, lease.IPAddress, command) }
-		healthy := func(version string) error {
+		healthy := func(expected katlosimage.ArtifactMetadata) error {
+			if expected.ExtensionRelease == nil {
+				return fmt.Errorf("release %s has no kernel identity", expected.Version)
+			}
+			want := expected.Version + "\n" + expected.ExtensionRelease.Target.Kernel.Release
 			deadline, stop := context.WithTimeout(ctx, 3*time.Minute)
 			defer stop()
 			var last error
 			for {
-				text, err := releaseSSH(deadline, key, lease.IPAddress, "systemctl is-active --quiet katl-boot-complete.target sshd.service katlc-agent.service && test \"$(systemctl show katl-boot-health.service -p Result --value)\" = success && test ! -e /usr/lib/katl/vmtest/katl-vmtest-agent && . /usr/lib/os-release && printf '%s' \"$VERSION_ID\"")
-				if err == nil && text == version {
+				text, err := releaseSSH(deadline, key, lease.IPAddress, "systemctl is-active --quiet katl-boot-complete.target sshd.service katlc-agent.service && test \"$(systemctl show katl-boot-health.service -p Result --value)\" = success && test ! -e /usr/lib/katl/vmtest/katl-vmtest-agent && . /usr/lib/os-release && printf '%s\\n' \"$VERSION_ID\" && uname -r")
+				if err == nil && text == want {
 					return nil
 				}
-				last = fmt.Errorf("version/health: %q, expected %q: %v", text, version, err)
+				last = fmt.Errorf("version/health: %q, expected %q: %v", text, want, err)
 				select {
 				case <-deadline.Done():
 					return last
@@ -122,7 +126,7 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 				}
 			}
 		}
-		if err := healthy(metadata.Version); err != nil {
+		if err := healthy(metadata); err != nil {
 			return err
 		}
 		// Reuse the installation's management identity through the public CLI.
@@ -163,7 +167,7 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 			return err
 		}
 		cli("reboot", "node", "reboot", "cp-1", "--timeout", "5m")
-		if err := healthy(metadata.Version); err != nil {
+		if err := healthy(metadata); err != nil {
 			return err
 		}
 		rebooted, err := observe("cat /proc/sys/kernel/random/boot_id")
@@ -174,11 +178,15 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 			config := filepath.Join(result.RunDir, "katlctl", "enrollment", "cluster.yaml")
 			cli("upgrade-plan", "node", "upgrade", "cp-1", "--config", config, "--artifact", target, "--flavour", first(targetMetadata.Flavour, "standard"), "--plan")
 			planned, err := selection()
-			if err != nil || planned.BootedGenerationID != original.BootedGenerationID {
+			if err != nil || planned.BootedGenerationID != original.BootedGenerationID || planned.DefaultGenerationID != original.DefaultGenerationID || planned.TargetBootGenerationID != "" || planned.TrialGenerationID != "" {
 				return fmt.Errorf("plan changed current generation: %v", err)
 			}
+			plannedBoot, err := observe("cat /proc/sys/kernel/random/boot_id")
+			if err != nil || plannedBoot != rebooted {
+				return fmt.Errorf("plan rebooted the node: %v", err)
+			}
 			cli("upgrade", "node", "upgrade", "cp-1", "--config", config, "--artifact", target, "--flavour", first(targetMetadata.Flavour, "standard"), "--timeout", "10m")
-			if err := healthy(targetMetadata.Version); err != nil {
+			if err := healthy(targetMetadata); err != nil {
 				return err
 			}
 			active, err := selection()
@@ -195,13 +203,17 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 			}
 			cli("rollback-select", "node", "generations", "select", original.BootedGenerationID, "cp-1")
 			cli("rollback-reboot", "node", "reboot", "cp-1", "--timeout", "5m")
-			if err := healthy(metadata.Version); err != nil {
+			if err := healthy(metadata); err != nil {
 				return err
 			}
 			rolledBack, err := selection()
 			if err != nil || rolledBack.BootedGenerationID != original.BootedGenerationID {
 				return fmt.Errorf("rollback did not restore source generation: %v", err)
 			}
+		}
+		finalSelection, err := selection()
+		if err != nil || finalSelection.BootedGenerationID != original.BootedGenerationID {
+			return fmt.Errorf("final boot selection differs from the source: %v", err)
 		}
 		persisted, err := observe("cat /etc/machine-id")
 		if err != nil || persisted != machine {
