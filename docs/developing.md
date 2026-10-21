@@ -425,7 +425,9 @@ loop.
 
 It intentionally skips mkosi builds, libvirt/KVM setup, VM scenarios, and
 publishing. Run host-specific VM gates locally with `scripts/vmtest-run` on a
-capable host and record the result with the change or release evidence. GitHub Actions does not run hosted VM tests.
+capable host and record the result with the change or release evidence. Hosted
+VM tests are not part of the required checks; see the
+[hosted-runner feasibility study](internal/hosted-vmtest-feasibility.md).
 
 ## Fedora package inputs
 
@@ -571,11 +573,13 @@ does not require a second commit just to update hard-coded verifier digests.
 
 ## VM tests on a capable host
 
-Katl does not currently run VM tests in GitHub Actions because no hosted runner
-provides the required libvirt, KVM, OVMF, and vsock environment. The repository
-deliberately has no VM workflow until the hosting and orchestration model is
-designed and provisioned. Do not make VM jobs required checks while no runner
-can accept them.
+Katl has no supported GitHub-hosted VM-test gate. A hosted-runner investigation
+has demonstrated the existing installer ISO boot smoke with KVM on standard
+Ubuntu x64 runners. See the [feasibility study](internal/hosted-vmtest-feasibility.md)
+for provisioning requirements, platform support limits, and the lifecycle and
+artifact-delivery checks still needed. Keep the capable-host gates below until
+hosted execution of those journeys is qualified; the boot probe does not replace
+them or make hosted VM tests required checks.
 
 The [Kubernetes release producer](concepts/kubernetes-releases.md) discovers
 stable upstream versions and publishes verified bundles automatically. Its
