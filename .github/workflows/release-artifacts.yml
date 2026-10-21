@@ -56,7 +56,7 @@ jobs:
     uses: ./.github/workflows/production-vmtests.yml
     with:
       artifact-name: ${{ needs.existing-bundle.outputs.artifact }}
-      run-id: ${{ fromJSON(inputs.qualify_run) }}
+      run-id: ${{ fromJSON(inputs.qualify_run || '0') }}
       previous-tag: ${{ needs.existing-bundle.outputs.previous-tag }}
 
   unit:
