@@ -446,6 +446,11 @@ distinction between product contracts and build evidence.
 
 ## GitHub release artifacts
 
+Follow [Release KatlOS](development/releases.md) to prepare a version, download
+and verify a candidate, qualify its exact artifacts, and approve publication.
+Start with `scripts/katl-release prepare VERSION`; it performs read-only checks
+and prints the commands for starting the tag build.
+
 `.github/workflows/release-artifacts.yml` builds Katl artifacts for pushes to
 `release/**` branches and pushed `v*` KatlOS tags. It can also be dispatched manually
 with an explicit version for build verification. Release-branch and manual runs
