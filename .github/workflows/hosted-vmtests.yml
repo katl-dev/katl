@@ -62,30 +62,32 @@ jobs:
       - name: Prove guest agent and vsock on producer host
         run: |
           .github/scripts/hosted-vmtest-measure agent sg kvm -c \
-            'scripts/vmtest-run --artifact-set=runtime --no-rebuild ./internal/vmtest -run "^TestDirectRuntimeVMTestAgentSmoke$" -count=1 -v -timeout 8m'
-          grep -Eq '^--- PASS: TestDirectRuntimeVMTestAgentSmoke ' _build/hosted-evidence/go-test.log
+            'scripts/vmtest-run --artifact-set=runtime --no-rebuild ./internal/vmtest -run "^TestDirectRuntimeVMTestAgentSmoke$" -count=1 -json -timeout 8m'
+          jq -se 'any(.[]; .Action == "pass" and .Test == "TestDirectRuntimeVMTestAgentSmoke")' \
+            _build/hosted-evidence/go-test.jsonl
       - name: Build shared installer and lifecycle inputs
         run: |
           .github/scripts/hosted-vmtest-measure build-install scripts/mkosi build-installer-iso
           .github/scripts/hosted-vmtest-measure build-upgrade scripts/mkosi build-katlos-upgrade-image
           .github/scripts/hosted-vmtest-measure build-kubernetes scripts/build-kubernetes-sysext
       - name: Package immutable test inputs
-        run: |
-          # Carry files and modes, excluding builder caches and mutable guest fixtures.
-          find _build/mkosi -maxdepth 1 -type f -print0 | sort -z > _build/hosted-evidence/input-files.list
-          xargs -0 sha256sum < _build/hosted-evidence/input-files.list > _build/hosted-evidence/inputs.sha256
-          .github/scripts/hosted-vmtest-measure pack tar --sparse --null -T _build/hosted-evidence/input-files.list \
-            -cf _build/hosted-vmtest-inputs.tar
-          stat -c '%s' _build/hosted-vmtest-inputs.tar > _build/hosted-evidence/archive-bytes.txt
-          cp _build/hosted-evidence/{source.txt,mkosi-version.txt,inputs.sha256} _build/
+        run: .github/scripts/hosted-vmtest-measure pack .github/scripts/hosted-vmtest-package
       - uses: actions/upload-artifact@v7
         with:
-          name: hosted-vmtest-inputs-${{ github.sha }}
-          path: |
-            _build/hosted-vmtest-inputs.tar
-            _build/source.txt
-            _build/mkosi-version.txt
-            _build/inputs.sha256
+          name: hosted-vmtest-base-${{ github.sha }}
+          path: _build/hosted-inputs/base/
+          compression-level: 0
+          retention-days: 1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hosted-vmtest-media-${{ github.sha }}
+          path: _build/hosted-inputs/media/
+          compression-level: 0
+          retention-days: 1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: hosted-vmtest-upgrade-${{ github.sha }}
+          path: _build/hosted-inputs/upgrade/
           compression-level: 0
           retention-days: 1
       - name: Collect host diagnostics
@@ -106,6 +108,9 @@ jobs:
             _build/hosted-agent/**/*.log
             _build/hosted-agent/**/*.json
             _build/hosted-agent/**/*.xml
+            _build/hosted-agent/**/*.txt
+            _build/hosted-agent/**/*.stdout
+            _build/hosted-agent/**/*.stderr
           retention-days: 3
       - uses: actions/cache/save@v6
         if: always() && steps.runtime.outcome == 'success' && steps.build-cache.outputs.cache-hit != 'true'
@@ -117,6 +122,7 @@ jobs:
           key: ${{ steps.build-cache.outputs.cache-primary-key }}
 
   scenarios:
+    name: VM / ${{ matrix.name }}
     needs: images
     runs-on: ubuntu-24.04
     timeout-minutes: 55
@@ -150,6 +156,7 @@ jobs:
       KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/hosted-scenario
       TEST_PACKAGE: ${{ matrix.package }}
       TEST_NAMES: ${{ matrix.tests }}
+      ARTIFACT_SET: ${{ matrix.name == 'boot' && 'none' || 'install' }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v6
@@ -158,27 +165,54 @@ jobs:
           cache: true
       - uses: ./.github/actions/hosted-vmtest
       - uses: actions/download-artifact@v8
+        if: matrix.name != 'boot'
         with:
-          name: hosted-vmtest-inputs-${{ github.sha }}
-          path: _build/import
+          name: hosted-vmtest-base-${{ github.sha }}
+          path: _build/import/base
+      - uses: actions/download-artifact@v8
+        if: matrix.name == 'boot' || matrix.name == 'install'
+        with:
+          name: hosted-vmtest-media-${{ github.sha }}
+          path: _build/import/media
+      - uses: actions/download-artifact@v8
+        if: matrix.name == 'update'
+        with:
+          name: hosted-vmtest-upgrade-${{ github.sha }}
+          path: _build/import/upgrade
       - name: Verify and import producer inputs
         run: |
-          test "$(cat _build/import/source.txt)" = "$GITHUB_SHA"
-          test "$(cat _build/import/mkosi-version.txt)" = "$KATL_VMTEST_MKOSI_VERSION"
-          .github/scripts/hosted-vmtest-measure unpack tar -xf _build/import/hosted-vmtest-inputs.tar
-          sha256sum --check _build/import/inputs.sha256 > _build/hosted-evidence/import-check.txt
-          cp _build/import/{source.txt,mkosi-version.txt,inputs.sha256} _build/hosted-evidence/
-          rm _build/import/hosted-vmtest-inputs.tar
+          for bundle in _build/import/*; do
+            test "$(cat "$bundle/source.txt")" = "$GITHUB_SHA"
+            test "$(cat "$bundle/mkosi-version.txt")" = "$KATL_VMTEST_MKOSI_VERSION"
+            .github/scripts/hosted-vmtest-measure "unpack-${bundle##*/}" tar -xf "$bundle/inputs.tar"
+            sha256sum --check "$bundle/inputs.sha256" > "_build/hosted-evidence/import-${bundle##*/}.txt"
+            mkdir -p "_build/hosted-evidence/inputs-${bundle##*/}"
+            cp "$bundle/"{source.txt,mkosi-version.txt,inputs.sha256} "_build/hosted-evidence/inputs-${bundle##*/}/"
+            rm "$bundle/inputs.tar"
+          done
+      - name: Derive component and proof inputs from the install image
+        if: matrix.name != 'boot'
+        run: |
+          images=(_build/mkosi/katlos-install-*-x86_64.squashfs)
+          test "${#images[@]}" = 1
+          unsquashfs -no-progress -d _build/mkosi/katlos-install-root "${images[0]}"
+          # The install image owns these bytes; do not transfer loose duplicates or builder trees.
+          ln -s "$GITHUB_WORKSPACE/_build/mkosi/katlos-install-root/components/runtime/root.squashfs" \
+            _build/mkosi/katl-runtime-root.squashfs
+          ln -s "$GITHUB_WORKSPACE/_build/mkosi/katlos-install-root/components/boot/katl.efi" \
+            _build/mkosi/katl-runtime.efi
+          (cd _build/mkosi && sha256sum --check katl-runtime-root.squashfs.sha256 katl-runtime.efi.sha256)
       - name: Run existing scenarios
         run: |
           # Variables are expanded by the shell launched with refreshed KVM membership.
           # shellcheck disable=SC2016
           .github/scripts/hosted-vmtest-measure scenarios sg kvm -c \
-            'scripts/vmtest-run --artifact-set=install --no-rebuild "$TEST_PACKAGE" -run "^($TEST_NAMES)$" -count=1 -v -timeout 45m'
+            'scripts/vmtest-run --artifact-set="$ARTIFACT_SET" --no-rebuild "$TEST_PACKAGE" -run "^($TEST_NAMES)$" -count=1 -json -timeout 45m'
           # A successful test process must actually pass every selected VM test.
           IFS='|' read -ra tests <<< "$TEST_NAMES"
           for test_name in "${tests[@]}"; do
-            grep -Fq -- "--- PASS: $test_name (" _build/hosted-evidence/go-test.log
+            jq -se --arg test "$test_name" 'any(.[]; .Action == "pass" and .Test == $test)' \
+              _build/hosted-evidence/go-test.jsonl
           done
       - name: Collect host diagnostics
         if: always()
@@ -197,4 +231,7 @@ jobs:
             _build/hosted-scenario/**/*.log
             _build/hosted-scenario/**/*.json
             _build/hosted-scenario/**/*.xml
+            _build/hosted-scenario/**/*.txt
+            _build/hosted-scenario/**/*.stdout
+            _build/hosted-scenario/**/*.stderr
           retention-days: 3
