@@ -782,6 +782,24 @@ jobs:
           name: ${{ needs.identity.outputs.artifact-name }}
           path: dist
 
+      - name: Verify release checksums and provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dist && sha256sum --check SHA256SUMS)
+          # The inner shell expands its positional artifact argument.
+          # shellcheck disable=SC2016
+          find dist -mindepth 1 -maxdepth 1 -type f -print0 | \
+            xargs -0 -r -n1 -P4 bash -euo pipefail -c '
+              artifact="$1"
+              gh attestation verify "$artifact" \
+                --repo "$GITHUB_REPOSITORY" \
+                --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-artifacts.yml" \
+                --source-ref "$GITHUB_REF" \
+                --source-digest "$GITHUB_SHA" >/dev/null
+            ' _
+
       - name: Publish tag release
         shell: bash
         env:
@@ -806,19 +824,3 @@ jobs:
               dist/*
           fi
 
-      - name: Verify published release provenance
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # The inner shell expands its positional artifact argument.
-          # shellcheck disable=SC2016
-          find dist -mindepth 1 -maxdepth 1 -type f -print0 | \
-            xargs -0 -r -n1 -P4 bash -euo pipefail -c '
-              artifact="$1"
-              gh attestation verify "$artifact" \
-                --repo "$GITHUB_REPOSITORY" \
-                --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-artifacts.yml" \
-                --source-ref "$GITHUB_REF" \
-                --source-digest "$GITHUB_SHA" >/dev/null
-            ' _

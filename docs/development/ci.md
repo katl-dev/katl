@@ -13,7 +13,9 @@ logs remain available in the workflow artifacts.
 
 **Kernel Updates** qualifies both standard and LTS kernels. It builds both boot
 artifacts and every release extension, verifies module composition, and runs the
-VM suite for each flavour. **Merge Qualified Kernels** enables auto-merge only
+VM suite for each flavour. A two-node DRBD workload also exercises each
+production driver closure through upgrade, replication, and removal.
+**Merge Qualified Kernels** enables auto-merge only
 for the successfully qualified, unchanged revision of a bot-authored,
 kernel-lock-only PR. Branch protection also requires the ordinary presubmit
 checks. These virtual machines do not qualify NVIDIA hardware.
