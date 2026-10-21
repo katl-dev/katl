@@ -48,9 +48,11 @@ accepting work; workflow preparation does not own their lifecycle.
    `VM validation` to pass. Inspect uploaded cgroup memory/CPU diagnostics and
    failure evidence. A build or runner-image check alone does not qualify the
    multi-VM suite.
-3. Verify overlapping jobs on the same node. Pod networks are separate, but
-   guest vsock CIDs share a host-kernel allocation domain. Check guest identity
-   and absence of CID conflicts under the pool's actual concurrency.
+3. Verify the exclusive device allocation: each eligible node advertises one
+   `kernel.org/vmtest` device and each runner requests one. Overlapping runner
+   jobs must occupy different nodes or queue. Guest vsock CIDs share a
+   host-kernel allocation domain, so revisit ownership before allowing multiple
+   runners or other vsock VM consumers on one node.
 4. Set `KATL_VMTEST_MAIN_RUNNER` to `katl-vmtest`. Subsequent main builds use the
    pool; delete that variable to return main to the hosted default.
 
