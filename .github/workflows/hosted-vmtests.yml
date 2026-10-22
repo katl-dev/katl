@@ -145,6 +145,7 @@ jobs:
           key: hosted-vmtest-build-${{ env.KATL_FLAVOUR }}-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi', 'mkosi.conf', 'mkosi.profiles/**/mkosi.conf', 'kernels/**') }}-${{ needs.plan.outputs.source }}
           restore-keys: |
             hosted-vmtest-build-${{ env.KATL_FLAVOUR }}-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi', 'mkosi.conf', 'mkosi.profiles/**/mkosi.conf', 'kernels/**') }}-
+            hosted-vmtest-build-${{ env.KATL_FLAVOUR }}-${{ runner.os }}-
       - uses: ./.github/actions/mkosi-builder
         with:
           profile: hosted-vmtest
