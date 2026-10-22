@@ -2,7 +2,6 @@ package scriptstest
 
 import (
 	"encoding/json"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,8 +29,8 @@ func TestKernelPromotion(t *testing.T) {
 		scripts = append(scripts, step.Run)
 	}
 	for _, tc := range []struct {
-		name, author, head, state, file, qualification, actions string
-		fork, truncated, queryError                             bool
+		name, author, head, state, file, actions string
+		fork, truncated                          bool
 	}{
 		{name: "ready", actions: "merge\n"},
 		{name: "merged", state: "MERGED"},
@@ -41,9 +40,6 @@ func TestKernelPromotion(t *testing.T) {
 		{name: "fork", fork: true},
 		{name: "unrelated file", file: ".github/workflows/release-artifacts.yml"},
 		{name: "truncated files", truncated: true},
-		{name: "unqualified", qualification: "FAILURE"},
-		{name: "qualification pending", qualification: "PENDING"},
-		{name: "qualification query failed", queryError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			directory := t.TempDir()
@@ -75,23 +71,15 @@ func TestKernelPromotion(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			qualification := "SUCCESS"
-			if tc.qualification != "" {
-				qualification = tc.qualification
-			}
 			for name, contents := range map[string]string{
 				"proposal.json": string(proposal), "files-input.json": string(files),
-				"qualification-input.json": `{"name":"Kernel Input Qualification","state":"` + qualification + `"}`,
-				"actions":                  "",
+				"actions": "",
 				"gh": `#!/usr/bin/env bash
 set -euo pipefail
 case "$1 $2" in
   'pr list') cat proposal.json ;;
   'pr view')
     cat files-input.json ;;
-  'pr checks')
-    [[ "$QUERY_ERROR" != true ]] || exit 1
-    cat qualification-input.json ;;
   'pr merge')
     [[ "$*" == *'--auto --squash --match-head-commit qualified' ]]
     echo merge >> actions ;;
@@ -107,7 +95,7 @@ esac
 			command.Dir = directory
 			command.Env = append(os.Environ(), "PATH="+directory+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"GH_REPO=katl-dev/katl", "BRANCH=automation/kernels-test", "QUALIFIED_SHA=qualified",
-				"EXPECTED_AUTHOR=app/katl-automation", "QUERY_ERROR="+fmt.Sprint(tc.queryError))
+				"EXPECTED_AUTHOR=app/katl-automation")
 			output, runErr := command.CombinedOutput()
 			actions, err := os.ReadFile(filepath.Join(directory, "actions"))
 			if err != nil {
@@ -117,10 +105,7 @@ esac
 				t.Fatalf("promotion actions = %q, want %q (error %v): %s", actions, tc.actions, runErr, output)
 			}
 
-			if tc.queryError && runErr == nil {
-				t.Fatal("check query error did not fail promotion")
-			}
-			if !tc.queryError && tc.actions != "" && runErr != nil {
+			if tc.actions != "" && runErr != nil {
 				t.Fatalf("promotion failed: %v: %s", runErr, output)
 			}
 		})

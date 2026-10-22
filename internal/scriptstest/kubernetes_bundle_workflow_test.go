@@ -40,8 +40,8 @@ func TestKubernetesReleaseAutomation(t *testing.T) {
 	if _, ok := workflow.On["push"]; ok {
 		t.Fatal("Katl commits must not trigger Kubernetes publication")
 	}
-	if _, ok := workflow.On["pull_request"]; !ok {
-		t.Fatal("producer has no presubmit")
+	if _, ok := workflow.On["pull_request"]; ok {
+		t.Fatal("PR validation must use read-only CI rather than the publication workflow")
 	}
 	if _, ok := workflow.Jobs["compatibility"]; ok {
 		t.Fatal("publication still depends on a shared catalog update")
@@ -72,14 +72,7 @@ func TestKubernetesReleaseAutomation(t *testing.T) {
 			t.Fatalf("%s must precede %s", pair[0], pair[1])
 		}
 	}
-	if workflow.Jobs["presubmit"].Name != "Kubernetes Bundle Presubmit" {
-		t.Fatal("stable required-check name changed")
-	}
-	for _, dependency := range []string{"plan", "build"} {
-		if !hasWorkflowNeed(workflow.Jobs["presubmit"].Needs, dependency) {
-			t.Fatalf("presubmit does not wait for %s", dependency)
-		}
-	}
+
 }
 
 func TestKubernetesReleasePlan(t *testing.T) {
@@ -111,11 +104,9 @@ func TestKubernetesReleasePlan(t *testing.T) {
 		wantPublish                        bool
 	}{
 		{name: "scheduled", event: "schedule", ref: "refs/heads/main", wantPublish: true},
+		{name: "no upstream changes", event: "schedule", ref: "refs/heads/main", empty: true, wantPublish: true},
 		{name: "main push", event: "push", ref: "refs/heads/main"},
 		{name: "branch push", event: "push", ref: "refs/heads/topic"},
-		{name: "pull request", event: "pull_request", ref: "refs/pull/12/merge"},
-		{name: "pull request with main ref", event: "pull_request", ref: "refs/heads/main"},
-		{name: "unrelated pull request", event: "pull_request", ref: "refs/pull/12/merge", empty: true},
 		{name: "manual defaults", event: "workflow_dispatch", ref: "refs/heads/main"},
 		{name: "manual publish", event: "workflow_dispatch", ref: "refs/heads/main", version: "v1.37.0", publish: "true", queryFailure: true, wantPublish: true},
 		{name: "branch cannot publish", event: "workflow_dispatch", ref: "refs/heads/topic", version: "v1.37.0", publish: "true"},
@@ -140,12 +131,7 @@ func TestKubernetesReleasePlan(t *testing.T) {
 			t.Setenv("GITHUB_OUTPUT", output)
 			t.Setenv("PAYLOAD_VERSION", test.version)
 			t.Setenv("REQUEST_PUBLISH", test.publish)
-			t.Setenv("BASE_SHA", "base")
-			command := "discover"
-			if test.event == "pull_request" {
-				command = "presubmit"
-			}
-			t.Setenv("EXPECTED_COMMAND", command)
+			t.Setenv("EXPECTED_COMMAND", "discover")
 			t.Setenv("RELEASE_MATRIX", matrix)
 			t.Setenv("QUERY_FAILURE", strconv.FormatBool(test.queryFailure))
 			cmd := exec.Command("bash", "-euo", "pipefail", "-c", script)
@@ -255,20 +241,6 @@ printf '%s\n' "$@" > "$KATL_TEST_ARGS"
 	if got, want := string(output), "digest="+digest+"\n"; got != want {
 		t.Fatalf("workflow output = %q, want %q", got, want)
 	}
-}
-
-func hasWorkflowNeed(value any, want string) bool {
-	switch needs := value.(type) {
-	case string:
-		return needs == want
-	case []any:
-		for _, need := range needs {
-			if need == want {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 func TestPublicKubernetesBundleCheckRequiresUpstreamRelease(t *testing.T) {

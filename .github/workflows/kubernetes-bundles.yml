@@ -3,7 +3,6 @@ name: Kubernetes Bundle Artifacts
 on:
   schedule:
     - cron: '41 * * * *'
-  pull_request:
   workflow_dispatch:
     inputs:
       payload_version:
@@ -44,14 +43,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PAYLOAD_VERSION: ${{ inputs.payload_version }}
           REQUEST_PUBLISH: ${{ inputs.publish }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         shell: bash
         run: |
           if [[ -n "$PAYLOAD_VERSION" ]]; then
             [[ "$PAYLOAD_VERSION" =~ ^v1\.[0-9]+\.[0-9]+$ ]]
             matrix="$(jq -cn --arg version "$PAYLOAD_VERSION" '{include:[{payloadVersion:$version}]}')"
-          elif [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            matrix="$(go run ./cmd/katl-kubernetes-release presubmit --base "$BASE_SHA")"
           else
             matrix="$(go run ./cmd/katl-kubernetes-release discover)"
           fi
@@ -252,22 +248,3 @@ jobs:
           go run ./cmd/katl-kubernetes-release promote \
             --payload-version "$PAYLOAD_VERSION" --artifact-version "$ARTIFACT_VERSION" \
             --manifest-digest "$MANIFEST_DIGEST" | tee -a "$GITHUB_STEP_SUMMARY"
-
-  presubmit:
-    name: Kubernetes Bundle Presubmit
-    if: always() && github.event_name == 'pull_request'
-    needs: [plan, build]
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Require successful producer validation
-        env:
-          PLAN_RESULT: ${{ needs.plan.result }}
-          BUILD_RESULT: ${{ needs.build.result }}
-          BUILD_REQUIRED: ${{ needs.plan.outputs.build }}
-        run: |
-          test "$PLAN_RESULT" = success
-          if [[ "$BUILD_REQUIRED" == true ]]; then
-            test "$BUILD_RESULT" = success
-          else
-            test "$BUILD_RESULT" = skipped
-          fi

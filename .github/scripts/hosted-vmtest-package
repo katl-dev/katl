@@ -2,33 +2,25 @@
 set -euo pipefail
 
 evidence=_build/hosted-evidence
-for bundle in base media upgrade; do
-    mkdir -p "_build/hosted-inputs/$bundle"
-    : > "$evidence/$bundle-files.list"
-done
+destination=_build/hosted-inputs
+mkdir -p "$destination"
+: > "$evidence/input-files.list"
 
 while IFS= read -r -d '' path; do
     case "${path##*/}" in
         artifacts.json | katl-installer.efi* | katl-installer.packages.tsv | \
             katlos-install-*.squashfs* | katl-kubernetes.raw* | katl-runtime.packages.tsv | \
             katl-runtime-root.squashfs.json | katl-runtime-root.squashfs.sha256 | \
-            katl-runtime.efi.json | katl-runtime.efi.sha256)
-            bundle=base ;;
-        katl-installer.iso* | katl-installer.vmlinuz* | katl-installer.initrd*)
-            bundle=media ;;
-        katlos-upgrade-*.squashfs*)
-            bundle=upgrade ;;
-        *) continue ;;
+            katl-runtime.efi.json | katl-runtime.efi.sha256 | \
+            katl-installer.iso* | katl-installer.vmlinuz* | katl-installer.initrd* | \
+            katlos-upgrade-*.squashfs*)
+            printf '%s\0' "$path" >> "$evidence/input-files.list" ;;
     esac
-    printf '%s\0' "$path" >> "$evidence/$bundle-files.list"
 done < <(find _build/mkosi -maxdepth 1 -type f -print0 | sort -z)
 
-for bundle in base media upgrade; do
-    destination="_build/hosted-inputs/$bundle"
-    test -s "$evidence/$bundle-files.list"
-    xargs -0 sha256sum < "$evidence/$bundle-files.list" > "$destination/inputs.sha256"
-    tar --sparse --null -T "$evidence/$bundle-files.list" -cf "$destination/inputs.tar"
-    cp "$evidence/"{source.txt,mkosi-version.txt} "$destination/"
-    stat -c '%s' "$destination/inputs.tar" > "$evidence/$bundle-bytes.txt"
-    cp "$destination/inputs.sha256" "$evidence/$bundle-inputs.sha256"
-done
+test -s "$evidence/input-files.list"
+xargs -0 sha256sum < "$evidence/input-files.list" > "$destination/inputs.sha256"
+tar --sparse --null -T "$evidence/input-files.list" -cf "$destination/inputs.tar"
+cp "$evidence/"{source.txt,mkosi-version.txt} "$destination/"
+stat -c '%s' "$destination/inputs.tar" > "$evidence/input-bytes.txt"
+cp "$destination/inputs.sha256" "$evidence/inputs.sha256"
