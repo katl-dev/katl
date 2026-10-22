@@ -16,11 +16,11 @@ func TestRuntimeInventory(t *testing.T) {
 		name, inventory string
 		valid           bool
 	}{
-		{"katl packages", "containerd\tcontainerd-2.3.7-1.katl.fc44.x86_64\ncrun\tcrun-1.30.1-1.katl.fc44.x86_64\n", true},
-		{"Fedora containerd", "containerd\tcontainerd-2.3.7-1.fc44.x86_64\ncrun\tcrun-1.30.1-1.katl.fc44.x86_64\n", false},
-		{"old crun", "containerd\tcontainerd-2.3.7-1.katl.fc44.x86_64\ncrun\tcrun-1.28-1.katl.fc44.x86_64\n", false},
-		{"missing crun", "containerd\tcontainerd-2.3.7-1.katl.fc44.x86_64\n", false},
-		{"duplicate crun", "containerd\tcontainerd-2.3.7-1.katl.fc44.x86_64\ncrun\tcrun-1.30.1-1.katl.fc44.x86_64\ncrun\tcrun-1.30.1-1.katl.fc44.x86_64\n", false},
+		{"katl packages", "containerd\t0:2.3.7-1.katl.fc44.x86_64\ncrun\t0:1.30.1-1.katl.fc44.x86_64\n", true},
+		{"Fedora containerd", "containerd\t0:2.3.7-1.fc44.x86_64\ncrun\t0:1.30.1-1.katl.fc44.x86_64\n", false},
+		{"old crun", "containerd\t0:2.3.7-1.katl.fc44.x86_64\ncrun\t0:1.28-1.katl.fc44.x86_64\n", false},
+		{"missing crun", "containerd\t0:2.3.7-1.katl.fc44.x86_64\n", false},
+		{"duplicate crun", "containerd\t0:2.3.7-1.katl.fc44.x86_64\ncrun\t0:1.30.1-1.katl.fc44.x86_64\ncrun\t0:1.30.1-1.katl.fc44.x86_64\n", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := filepath.Join(t.TempDir(), "packages.tsv")

@@ -205,13 +205,13 @@ func verifyInventory(path string, sources map[string]source, fedora string) erro
 		return err
 	}
 	for _, name := range []string{"containerd", "crun"} {
-		want := fmt.Sprintf("%s-%s-1.katl.fc%s.x86_64", name, strings.TrimPrefix(sources[name].Version, "v"), fedora)
+		want := fmt.Sprintf("0:%s-1.katl.fc%s.x86_64", strings.TrimPrefix(sources[name].Version, "v"), fedora)
 		count := 0
 		for _, pkg := range packages {
 			if pkg.Name == name {
 				count++
 				if pkg.NEVRA != want {
-					return fmt.Errorf("runtime requires %s; installed %s", want, pkg.NEVRA)
+					return fmt.Errorf("runtime requires %s %s; installed %s", name, want, pkg.NEVRA)
 				}
 			}
 		}
