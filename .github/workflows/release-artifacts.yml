@@ -71,7 +71,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends dosfstools mtools xorriso squashfs-tools
+      - run: .github/scripts/hosted-apt-install dosfstools mtools xorriso squashfs-tools
       - run: scripts/check-fast
 
   vmtests:
@@ -303,9 +303,7 @@ jobs:
           name: katl-runtime-${{ matrix.flavour }}-${{ github.sha }}
           path: _build/mkosi
       - name: Install module inspection tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes systemd-container kmod squashfs-tools
+        run: .github/scripts/hosted-apt-install systemd-container kmod squashfs-tools
 
       - name: Build and verify release recipe
         run: scripts/build-release-extensions "${{ matrix.extension }}"
@@ -355,9 +353,7 @@ jobs:
           name: katl-runtime-${{ matrix.flavour }}-${{ github.sha }}
           path: _build/mkosi
       - name: Install module inspection tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes systemd-container kmod squashfs-tools
+        run: .github/scripts/hosted-apt-install systemd-container kmod squashfs-tools
 
       - name: Download release extension closures
         uses: actions/download-artifact@v8
@@ -624,9 +620,7 @@ jobs:
 
       - name: Install ISO assembly tools
         shell: bash
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends --yes dosfstools mtools xorriso
+        run: .github/scripts/hosted-apt-install dosfstools mtools xorriso
 
       - name: Assemble and verify installer ISO
         shell: bash
