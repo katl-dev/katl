@@ -80,7 +80,7 @@ func driverChange(name string) bool {
 		"internal/extensionrelease/", "internal/releaseextensions/", "cmd/katl-kernel-release/",
 		"cmd/katl-mkosi-artifacts/", "cmd/katl-vmtest-plan/", "mkosi.conf", "mkosi.conf.d/", "mkosi.profiles/runtime/",
 		"mkosi.profiles/installer-image/", "mkosi.profiles/kernel-extension-", ".github/actions/mkosi-builder/",
-		".github/actions/hosted-vmtest/", ".github/scripts/hosted-vmtest-",
+		"mkosi.profiles/vmtest-drbd-tools/", ".github/actions/hosted-vmtest/", ".github/scripts/hosted-vmtest-",
 	} {
 		if strings.HasPrefix(name, prefix) {
 			return true
@@ -88,7 +88,8 @@ func driverChange(name string) bool {
 	}
 	switch name {
 	case "go.mod", "go.sum", "Containerfile.mkosi", "scripts/mkosi", "scripts/fedora-release",
-		"scripts/build-release-extensions", "scripts/assemble-release-extensions", ".github/workflows/kernel-qualification.yml",
+		"scripts/build-kernel-extension", "scripts/build-release-extensions", "scripts/assemble-release-extensions",
+		"internal/vmtest/drbd_smoke_test.go", ".github/workflows/kernel-qualification.yml",
 		".github/workflows/ci.yml":
 		return true
 	}
