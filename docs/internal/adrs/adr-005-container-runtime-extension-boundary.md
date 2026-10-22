@@ -38,12 +38,16 @@ kubelet dependency wiring on the local CRI runtime
 runtime health, repair, image-surface, and VM-test checks
 ```
 
-KatlOS should keep this runtime stack current with the supported KatlOS base
-runtime. "Latest supported" means the newest containerd and OCI runtime versions
-that are supported by the selected KatlOS base distribution, pass KatlOS runtime
-checks, and pass the Kubernetes VM gates for the release. It does not mean an
-arbitrary upstream latest version outside the base OS support and validation
-surface.
+KatlOS selects supported upstream containerd and crun releases independently of
+the Fedora package update cadence. Katl builds RPMs from pinned sources against
+the selected Fedora base and installs those exact packages into the immutable
+runtime. Fedora supplies the host libraries. Containerd and its shim come from
+the same source release; crun retains systemd cgroup and seccomp support.
+
+Runtime updates must pass KatlOS image checks and the relevant Kubernetes and
+lifecycle VM gates. Select containerd versions compatible with the supported
+Kubernetes payloads. Validate rollback against persistent containerd state;
+changing the immutable root does not restore an older copy of that state.
 
 KatlOS does not own the production cluster CNI choice. Users install the CNI
 implementation they choose, such as Cilium or Calico, after bootstrap. KatlOS may
