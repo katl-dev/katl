@@ -315,6 +315,36 @@ extensions for its target runtime:
 nix develop --command katldev build upgrade --release-extensions
 ```
 
+### Container runtime packages
+
+`scripts/mkosi build-runtime` builds containerd and crun RPMs before assembling
+the runtime. The image installs the exact Katl package versions; a missing
+package fails the build. To build only the RPMs:
+
+```sh
+scripts/mkosi build-runtime-rpms
+```
+
+The RPMs, source pins, build identity, and generated mkosi configuration are
+under `_build/mkosi/runtime-rpms`. Verified RPMs are cached with the package
+cache. Changes to source pins, RPM specs, build tooling, or the builder's
+installed packages invalidate that cache.
+
+`packages/containerd/source.json` pins the upstream tag, its commit, and the Go
+toolchain. `packages/crun/source.json` pins the upstream release archive's
+SHA-256. The corresponding specs define the compiled features and package
+contents. `renovate.json` includes managers for these version and integrity
+fields; containerd updates stay on the selected 2.3 release line. Self-hosted
+Renovate needs no post-upgrade command to update these pins.
+
+Package inventory verification rejects missing, duplicate, stale, or Fedora
+containerd and crun packages. Before landing an update, exercise Kubernetes
+bootstrap and workloads, reboot, upgrade, and rollback with the resulting
+images. The runtime remains part of the OS image and follows the ordinary
+KatlOS upgrade path.
+
+### VM host requirements
+
 The development shell includes the complete supported VM test toolchain. It
 does not configure host libvirt, `/dev/kvm`, `/dev/net/tun`, networks, storage
 pools, or polkit access; keep those in the host configuration.

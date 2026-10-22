@@ -2,5 +2,36 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended"
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^packages/containerd/source\\.json$/"],
+      "matchStrings": ["\"version\":\\s*\"(?<currentValue>[^\"]+)\",\\s*\"revision\":\\s*\"(?<currentDigest>[a-f0-9]{40})\""],
+      "depNameTemplate": "containerd/containerd",
+      "datasourceTemplate": "github-tags"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^packages/crun/source\\.json$/"],
+      "matchStrings": ["\"version\":\\s*\"(?<currentValue>[^\"]+)\",\\s*\"sha256\":\\s*\"(?<currentDigest>[a-f0-9]{64})\""],
+      "depNameTemplate": "containers/crun",
+      "datasourceTemplate": "github-release-attachments",
+      "versioningTemplate": "semver-coerced"
+    },
+    {
+      "customType": "regex",
+      "managerFilePatterns": ["/^packages/containerd/source\\.json$/"],
+      "matchStrings": ["\"goVersion\":\\s*\"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "go",
+      "datasourceTemplate": "golang-version"
+    }
+  ],
+  "packageRules": [
+    {
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["containerd/containerd"],
+      "allowedVersions": "/^v?2\\.3\\./"
+    }
   ]
 }

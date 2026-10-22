@@ -76,7 +76,7 @@ func run(args []string, input io.Reader, output io.Writer) error {
 func kernelChanges(paths []string) bool {
 	for _, name := range paths {
 		for _, prefix := range []string{
-			"kernels/", "extensions/", "internal/kernelrelease/", "internal/kernelmodule/",
+			"kernels/", "extensions/", "packages/", "cmd/katl-runtime-rpms/", "internal/kernelrelease/", "internal/kernelmodule/",
 			"internal/extensionrelease/", "internal/releaseextensions/", "cmd/katl-kernel-release/",
 			"cmd/katl-mkosi-artifacts/", "cmd/katl-vmtest-plan/", "mkosi.conf", "mkosi.profiles/runtime/",
 			"mkosi.profiles/installer-image/", "mkosi.profiles/kernel-extension-", ".github/actions/mkosi-builder/",
