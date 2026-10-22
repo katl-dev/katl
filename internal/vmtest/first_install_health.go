@@ -3,8 +3,6 @@ package vmtest
 import (
 	"context"
 	"fmt"
-	"os"
-	"strings"
 	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
@@ -44,11 +42,10 @@ func waitFirstInstallHealth(ctx context.Context, event SerialHookEvent) error {
 			}
 		}
 		if guest != nil {
-			// The target orders both handoff status and boot-health persistence.
-			_, lastErr = guest.Systemctl(ctx, "is-active", "--quiet", "katl-boot-complete.target")
-			if lastErr == nil {
-				return checkFirstInstallHealth(ctx, guest)
+			if err := guest.WaitBootComplete(ctx); err != nil {
+				return err
 			}
+			return checkFirstInstallHealth(ctx, guest)
 		}
 		select {
 		case <-ctx.Done():
@@ -59,21 +56,8 @@ func waitFirstInstallHealth(ctx context.Context, event SerialHookEvent) error {
 }
 
 func checkFirstInstallHealth(ctx context.Context, guest *GuestControl) error {
-	for _, unit := range []string{"katl-boot-complete.target", "sshd.service", "katlc-agent.service"} {
-		if _, err := guest.Systemctl(ctx, "is-active", "--quiet", unit); err != nil {
-			return fmt.Errorf("first-install access service %s: %w", unit, err)
-		}
-	}
-	health, err := guest.Systemctl(ctx, "show", "--property=Result", "--value", "katl-boot-health.service")
-	if err != nil {
+	if err := checkBootHealth(ctx, guest); err != nil {
 		return err
-	}
-	result, err := os.ReadFile(health.Stdout)
-	if err != nil {
-		return err
-	}
-	if strings.TrimSpace(string(result)) != "success" {
-		return fmt.Errorf("first-install boot-health result = %q", strings.TrimSpace(string(result)))
 	}
 
 	file, err := guest.ReadFile(ctx, GuestFileRequest{Path: "/var/lib/katl/install/status.json", StoreContent: true})

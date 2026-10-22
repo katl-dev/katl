@@ -541,34 +541,34 @@ func normalizeGeneration0Evidence(path string, data []byte) ([]byte, error) {
 }
 
 func waitForGeneration0BootHealth(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, timeout time.Duration) ([]byte, error) {
-	deadline := time.Now().Add(timeout)
-	var lastErr error
-	for {
-		data, err := readNodeFile(ctx, node, "/var/lib/katl/generations/0/status.json", 256<<10)
-		if err == nil {
-			status, err := decodePersistedOrLegacy[generation.GenerationStatus](data)
-			if err != nil {
-				lastErr = err
-			} else if status.CommitState == generation.CommitStateCommitted && status.BootState == generation.BootStateGood && status.HealthState == generation.HealthStateHealthy {
-				normalized, err := json.MarshalIndent(status, "", "  ")
-				if err != nil {
-					return nil, err
-				}
-				return append(normalized, '\n'), nil
-			} else {
-				lastErr = fmt.Errorf("generation 0 status = commit:%q boot:%q health:%q", status.CommitState, status.BootState, status.HealthState)
-			}
-		} else {
-			lastErr = err
-		}
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		if time.Now().After(deadline) {
-			return nil, lastErr
-		}
-		time.Sleep(250 * time.Millisecond)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	client, err := vmtest.DialAgent(ctx, node.VSock.GuestCID, node.VSock.Port, node.Result.Artifacts.VSockTranscript)
+	if err != nil {
+		return nil, err
 	}
+	defer client.Close()
+	guest := vmtest.NewGuestControl(node.Result, client)
+	if err := guest.WaitBootComplete(ctx); err != nil {
+		return nil, err
+	}
+
+	data, err := readNodeFile(ctx, node, "/var/lib/katl/generations/0/status.json", 256<<10)
+	if err != nil {
+		return nil, err
+	}
+	status, err := decodePersistedOrLegacy[generation.GenerationStatus](data)
+	if err != nil {
+		return nil, err
+	}
+	if status.CommitState != generation.CommitStateCommitted || status.BootState != generation.BootStateGood || status.HealthState != generation.HealthStateHealthy {
+		return nil, fmt.Errorf("generation 0 status = commit:%q boot:%q health:%q", status.CommitState, status.BootState, status.HealthState)
+	}
+	normalized, err := json.MarshalIndent(status, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(normalized, '\n'), nil
 }
 
 func collectGeneration0LayoutProbe(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, evidenceDir string) (string, error) {
