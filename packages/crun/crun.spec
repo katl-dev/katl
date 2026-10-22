@@ -7,7 +7,7 @@ License:        GPL-2.0-or-later AND LGPL-2.1-or-later
 URL:            https://github.com/containers/crun
 Source0:        crun-%{version}.tar.zst
 Source1:        crun-source.json
-BuildRequires:  gcc, make, pkgconf-pkg-config, python3
+BuildRequires:  gcc, make, pkgconf-pkg-config, python3, binutils
 BuildRequires:  libcap-devel, libseccomp-devel, systemd-devel, json-c-devel
 Provides:       oci-runtime
 
@@ -32,6 +32,7 @@ install -Dpm0755 crun %{buildroot}%{_bindir}/crun
 ./crun --version | grep -F '+SYSTEMD'
 ./crun --version | grep -F '+SECCOMP'
 ./crun --version | grep -F '+CAP'
+readelf -h ./crun | grep -E 'Type:.*DYN'
 
 %files
 %license COPYING COPYING.libcrun
