@@ -39,7 +39,7 @@ func run(args []string, input io.Reader, output io.Writer) error {
 	flags := flag.NewFlagSet("katl-vmtest-plan", flag.ContinueOnError)
 	changed := flags.Bool("changed", false, "select groups from NUL-delimited changed paths on stdin; default: all groups")
 	ci := flags.Bool("ci", false, "plan VM and driver flavours from NUL-delimited changed paths")
-	main := flags.Bool("main", false, "exercise both supported flavours for product changes")
+	main := flags.Bool("main", false, "run both regression flavours after merge; driver qualification belongs to PRs")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -128,6 +128,10 @@ func planCI(paths []string, main bool) ciPlan {
 	}
 	if main && len(vms) != 0 {
 		vms["standard"], vms["lts"] = true, true
+	}
+	if main {
+		// Strict branch protection already requires driver qualification before merge.
+		drivers = map[string]bool{}
 	}
 	plan := ciPlan{VMFlavours: []string{}, DriverFlavours: []string{}}
 	for _, flavour := range []string{"standard", "lts"} {

@@ -41,14 +41,13 @@ jobs:
         run: |
           mkdir -p _build
           options=(--ci)
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then options+=(--main); fi
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
             base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
           elif [[ "$GITHUB_EVENT_NAME" == push && "$BEFORE_SHA" != 0000000000000000000000000000000000000000 ]]; then
             base="$BEFORE_SHA"
-            options+=(--main)
           else
             base="$(git hash-object -t tree /dev/null)"
-            options+=(--main)
           fi
           # Include deletions as well as additions when a file is renamed.
           git diff --name-only --no-renames -z "$base" HEAD > _build/ci-changes

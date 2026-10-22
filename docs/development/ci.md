@@ -19,6 +19,9 @@ Every selected test must emit a Go JSON pass event. Ordinary product PRs use
 standard; kernel lock changes use the affected flavour. Shared boot, builder,
 module, runtime package, and VM infrastructure changes use both standard and
 LTS. Main product changes and release regression always use both flavours.
+Main relies on the driver qualification required before merge instead of
+rebuilding the same driver closure again. Manual CI dispatch includes driver
+qualification for both flavours.
 Recognized CLI changes select only the affected scenarios within those lanes;
 unknown product changes receive the complete suite.
 
