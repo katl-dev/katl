@@ -95,4 +95,3 @@ jobs:
             _build/kernel-journey/**/*.stdout
             _build/kernel-journey/**/*.stderr
           retention-days: 3
-
