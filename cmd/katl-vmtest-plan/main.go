@@ -17,15 +17,16 @@ type group struct {
 	Tests   string `json:"tests"`
 }
 
+// Start long journeys first to reduce wall time at bounded parallelism.
 var groups = []group{
-	{"boot", "./internal/vmtest/scenarios", "TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke"},
-	{"install", "./internal/vmtest", "TestFirstInstallTargetDiskBootSmoke|TestFirstInstallTargetDiskLocalHandoffSmoke"},
-	{"storage", "./internal/vmtest/scenarios", "TestInstallerISOFirstInstallStorageAuthority"},
-	{"config", "./internal/vmtest", "TestInstalledRuntimeConfigApplyModesSmoke"},
-	{"management", "./internal/vmtest", "TestInstalledRuntimeManagementRotationSmoke"},
-	{"update", "./internal/vmtest", "TestInstalledRuntimeSysupdateRootUKITransfer"},
 	{"two-node", "./internal/vmtest/scenarios", "TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke"},
 	{"three-node-install", "./internal/vmtest/scenarios", "TestThreeNodeGeneration0InstallSmoke"},
+	{"install", "./internal/vmtest", "TestFirstInstallTargetDiskBootSmoke|TestFirstInstallTargetDiskLocalHandoffSmoke"},
+	{"config", "./internal/vmtest", "TestInstalledRuntimeConfigApplyModesSmoke"},
+	{"update", "./internal/vmtest", "TestInstalledRuntimeSysupdateRootUKITransfer"},
+	{"management", "./internal/vmtest", "TestInstalledRuntimeManagementRotationSmoke"},
+	{"storage", "./internal/vmtest/scenarios", "TestInstallerISOFirstInstallStorageAuthority"},
+	{"boot", "./internal/vmtest/scenarios", "TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke"},
 }
 
 func main() {
