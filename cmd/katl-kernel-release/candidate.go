@@ -126,7 +126,20 @@ func candidate(ctx context.Context, args []string, stdout, stderr io.Writer) err
 			return fmt.Errorf("kernel package %s does not match the selected build", name)
 		}
 		path := filepath.Join(rpms, selector+".rpm")
-		if err := download(ctx, fields[2], path, 512*1024*1024); err != nil {
+		origin := fields[2]
+		if *flavour == "standard" {
+			// Fetch and record the same canonical HTTPS origin, independent of
+			// the mirror selected by discovery. RPM signatures verify the bytes.
+			switch fields[3] {
+			case "fedora":
+				origin = "https://dl.fedoraproject.org/pub/fedora/linux/releases/" + *fedora + "/Everything/" + *architecture + "/os/Packages/k/" + filepath.Base(path)
+			case "updates":
+				origin = "https://dl.fedoraproject.org/pub/fedora/linux/updates/" + *fedora + "/Everything/" + *architecture + "/Packages/k/" + filepath.Base(path)
+			default:
+				return fmt.Errorf("unexpected standard kernel repository %q", fields[3])
+			}
+		}
+		if err := download(ctx, origin, path, 512*1024*1024); err != nil {
 			return err
 		}
 		if err := command(ctx, stderr, "rpmkeys", "--define", "_pkgverify_level signature", "--dbpath", db, "--checksig", path); err != nil {
@@ -143,19 +156,6 @@ func candidate(ctx context.Context, args []string, stdout, stderr io.Writer) err
 		blob, err := payloadbundle.DescribeFile(path, role, kernelrelease.RPMMediaType, filepath.Base(path))
 		if err != nil {
 			return err
-		}
-		origin := fields[2]
-		if *flavour == "standard" {
-			// Record the canonical repository origin, independent of the mirror
-			// selected by this discovery run. Byte verification uses RPM digests.
-			switch fields[3] {
-			case "fedora":
-				origin = "https://dl.fedoraproject.org/pub/fedora/linux/releases/" + *fedora + "/Everything/" + *architecture + "/os/Packages/k/" + filepath.Base(path)
-			case "updates":
-				origin = "https://dl.fedoraproject.org/pub/fedora/linux/updates/" + *fedora + "/Everything/" + *architecture + "/Packages/k/" + filepath.Base(path)
-			default:
-				return fmt.Errorf("unexpected standard kernel repository %q", fields[3])
-			}
 		}
 		set.Packages = append(set.Packages, kernelrelease.Package{Name: name, NEVRA: fields[1], SourceURL: origin, Descriptor: blob.Descriptor})
 	}
