@@ -29,8 +29,8 @@ func TestKernelPromotion(t *testing.T) {
 		scripts = append(scripts, step.Run)
 	}
 	for _, tc := range []struct {
-		name, author, head, state, file, qualification, actions string
-		fork, pending, truncated                                bool
+		name, author, head, state, file, qualification, requiredState, actions string
+		fork, checkError, truncated                                            bool
 	}{
 		{name: "ready", actions: "merge\ndispatch\n"},
 		{name: "merged", state: "MERGED", actions: "dispatch\n"},
@@ -40,7 +40,9 @@ func TestKernelPromotion(t *testing.T) {
 		{name: "unrelated file", file: ".github/workflows/release-artifacts.yml"},
 		{name: "truncated files", truncated: true},
 		{name: "unqualified", qualification: "FAILURE"},
-		{name: "required check pending", pending: true, actions: "merge\n"},
+		{name: "required check pending", requiredState: "PENDING", actions: "merge\n"},
+		{name: "required check failed", requiredState: "FAILURE", actions: "merge\n"},
+		{name: "check query failed", checkError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			directory := t.TempDir()
@@ -87,9 +89,9 @@ case "$1 $2" in
   'pr view')
     if [[ "$*" == *changedFiles* ]]; then cat files-input.json; else echo MERGED; fi ;;
   'pr checks')
+    [[ "$CHECK_ERROR" != true ]] || exit 1
     if [[ "$*" == *--required* ]]; then
-      [[ "$PENDING" != true ]] || exit 8
-      echo '[{"state":"SUCCESS"}]'
+      printf '[{"state":"%s"}]\n' "$REQUIRED_STATE"
     else
       cat qualification-input.json
     fi ;;
@@ -108,14 +110,18 @@ esac
 					t.Fatal(err)
 				}
 			}
-			pending := "false"
-			if tc.pending {
-				pending = "true"
+			requiredState, checkError := "SUCCESS", "false"
+			if tc.requiredState != "" {
+				requiredState = tc.requiredState
+			}
+			if tc.checkError {
+				checkError = "true"
 			}
 			command := exec.Command("bash", "-euo", "pipefail", "-c", strings.Join(scripts, "\n"))
 			command.Dir = directory
 			command.Env = append(os.Environ(), "PATH="+directory+string(os.PathListSeparator)+os.Getenv("PATH"),
-				"GH_REPO=katl-dev/katl", "BRANCH=automation/kernels-test", "QUALIFIED_SHA=qualified", "PENDING="+pending)
+				"GH_REPO=katl-dev/katl", "BRANCH=automation/kernels-test", "QUALIFIED_SHA=qualified",
+				"REQUIRED_STATE="+requiredState, "CHECK_ERROR="+checkError)
 			output, runErr := command.CombinedOutput()
 			actions, err := os.ReadFile(filepath.Join(directory, "actions"))
 			if err != nil {
