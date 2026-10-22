@@ -120,7 +120,10 @@ func TestInstalledRuntimeManagementRotationSmoke(t *testing.T) {
 	runKatlctl(t, ctx, result, katlctl, "rotation-context-refresh", "context", "save", "--config", configPath)
 	runKatlctl(t, ctx, result, katlctl, "rotation-new-client", "node", "status", "cp-1")
 	runKatlctl(t, ctx, result, katlctl, "rotation-repeat", append(args, knownHosts)...)
-	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
+	previousBootID := guestBootID(t, ctx, client)
+	runKatlctl(t, ctx, result, katlctl, "rotation-reboot", "node", "reboot", "cp-1")
+	_ = client.Close()
+	guest, client = reconnectGuestAfterBoot(t, ctx, &node, previousBootID)
 	runKatlctl(t, ctx, result, katlctl, "rotation-after-reboot", "node", "status", "cp-1")
 	guestCommand(t, ctx, guest, "rotation-agent-active", "systemctl", "is-active", "--quiet", "katlc-agent.service")
 
