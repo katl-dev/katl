@@ -3,6 +3,8 @@ FROM registry.fedoraproject.org/fedora:${FEDORA_RELEASE}
 
 RUN dnf5 -y install \
         bash \
+        autoconf \
+        automake \
         ca-certificates \
         cpio \
         dnf5 \
@@ -11,16 +13,27 @@ RUN dnf5 -y install \
         erofs-utils \
         findutils \
         git-core \
+        gcc \
         golang \
+        json-c-devel \
         jq \
         kmod \
+        libcap-devel \
+        libseccomp-devel \
+        libtool \
+        make \
         mkosi \
         mtools \
         opensc \
         openssl \
+        pkgconf-pkg-config \
+        python3 \
         rpm \
+        rpm-build \
         squashfs-tools \
         systemd \
+        systemd-devel \
+        systemd-rpm-macros \
         systemd-boot-unsigned \
         systemd-ukify \
         tar \

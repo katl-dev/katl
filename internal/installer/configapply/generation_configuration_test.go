@@ -120,6 +120,48 @@ func TestGenerationConfigurationLegacyInputs(t *testing.T) {
 	}
 }
 
+func TestGenerationConfigurationOwnsLegacyInput(t *testing.T) {
+	for _, ancestor := range []string{"missing", "canonical", "corrupt selected"} {
+		t.Run(ancestor, func(t *testing.T) {
+			root := t.TempDir()
+			writeKubeadmStateGeneration(t, root, "selected", "ancestor")
+			if err := WriteGenerationManifest(root, "selected", manifestWithKubeadm()); err != nil {
+				t.Fatal(err)
+			}
+			if ancestor == "canonical" {
+				writeKubeadmStateGeneration(t, root, "ancestor", "")
+				if err := WriteGenerationKubeadmConfig(root, "ancestor", "control-plane", configurationKubeadm(t, "ancestor")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			base := filepath.Join(root, "var/lib/katl/generations/selected/confext/etc/katl/kubeadm/control-plane")
+			writeConfigurationFile(t, filepath.Join(base, "config.yaml"), string(configurationKubeadm(t, "selected").Config.Content))
+			writeConfigurationFile(t, filepath.Join(base, "patches/kubeletconfiguration999+merge.yaml"), "shutdownGracePeriod: 30s\n")
+			if ancestor == "corrupt selected" {
+				writeConfigurationFile(t, filepath.Join(root, "var/lib/katl/generations/selected/kubeadm-input/control-plane/config.yaml"), "[invalid")
+			}
+
+			got, err := ReadGenerationConfiguration(root, "selected")
+			if ancestor == "corrupt selected" {
+				if err == nil {
+					t.Fatal("corrupt selected input replaced by legacy input")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := got.KubeadmConfigs["control-plane"]
+			if !strings.Contains(string(input.Config.Content), "name: selected\n") {
+				t.Fatalf("selected input replaced by ancestor: %s", input.Config.Content)
+			}
+			if len(input.Patches) != 1 || string(input.Patches[0].Content) != "shutdownGracePeriod: 30s\n" {
+				t.Fatalf("selected native patch lost: %#v", input.Patches)
+			}
+		})
+	}
+}
+
 func TestLocalGenerationConfigurationRequiresSelectedInput(t *testing.T) {
 	root := t.TempDir()
 	if err := WriteGenerationManifest(root, "selected", manifestWithKubeadm()); err != nil {

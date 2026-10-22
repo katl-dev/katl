@@ -53,13 +53,11 @@ func ReadEffectiveGenerationKubeadmConfig(root, generationID, ref string) (kubea
 		return kubeadmconfig.Plan{}, "", err
 	}
 	plan, source, err := readGenerationInput(root, generationID, "kubeadm input", func(id string) (kubeadmconfig.Plan, error) {
-		return readGenerationKubeadmConfig(root, id, ref)
-	})
-	if !errors.Is(err, os.ErrNotExist) {
-		return plan, source, err
-	}
-	// Older generations kept only rendered kubeadm inputs in their confext.
-	plan, source, err = readGenerationInput(root, generationID, "kubeadm input", func(id string) (kubeadmconfig.Plan, error) {
+		plan, err := readGenerationKubeadmConfig(root, id, ref)
+		if !errors.Is(err, os.ErrNotExist) {
+			return plan, err
+		}
+		// Input ownership follows the generation, regardless of its storage format.
 		dir, err := generation.GenerationDir(root, id)
 		if err != nil {
 			return kubeadmconfig.Plan{}, err

@@ -7,6 +7,9 @@ metadata="${artifact}.json"
 checksum="${artifact}.sha256"
 packages="${KATL_RUNTIME_PACKAGE_SET:-$(dirname "$artifact")/katl-runtime.packages.tsv}"
 
+go run "$repo_root/cmd/katl-runtime-rpms" --repo "$repo_root" \
+    --fedora-release "$("$repo_root/scripts/fedora-release")" --inventory "$packages"
+
 fail() {
     echo "error: $*" >&2
     exit 1
