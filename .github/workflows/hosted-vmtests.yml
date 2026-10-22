@@ -145,21 +145,15 @@ jobs:
           key: hosted-vmtest-build-${{ env.KATL_FLAVOUR }}-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi', 'mkosi.conf', 'mkosi.profiles/**/mkosi.conf', 'kernels/**') }}-${{ needs.plan.outputs.source }}
           restore-keys: |
             hosted-vmtest-build-${{ env.KATL_FLAVOUR }}-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi', 'mkosi.conf', 'mkosi.profiles/**/mkosi.conf', 'kernels/**') }}-
+            hosted-vmtest-build-${{ env.KATL_FLAVOUR }}-${{ runner.os }}-
       - uses: ./.github/actions/mkosi-builder
         with:
           profile: hosted-vmtest
           image: ${{ env.KATL_MKOSI_IMAGE }}
-      - name: Select the canonical Fedora repository
-        run: |
-          # Mirror-list metadata can lag package updates. Fetch both from the same source.
-          cat > mkosi.conf.d/hosted-fedora.conf <<'EOF'
-          [Distribution]
-          Mirror=https://dl.fedoraproject.org/pub/fedora
-          EOF
-          cp mkosi.conf.d/hosted-fedora.conf _build/hosted-evidence/
       - name: Record builder identity
         id: builder
         run: |
+          cp mkosi.conf.d/ci-downloads.conf _build/hosted-evidence/
           version="$(scripts/mkosi builder-version)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           printf '%s\n' "$KATL_BUILD_COMMIT" > _build/hosted-evidence/source.txt

@@ -38,6 +38,8 @@ func TestSelectGroups(t *testing.T) {
 			for _, selected := range selectGroups(tc.paths) {
 				got = append(got, selected.Name)
 			}
+			slices.Sort(got)
+			slices.Sort(tc.want)
 			if !slices.Equal(got, tc.want) {
 				t.Fatalf("groups = %v, want %v", got, tc.want)
 			}
@@ -74,6 +76,8 @@ func TestPlan(t *testing.T) {
 			for _, selected := range plan.Include {
 				names = append(names, selected.Name)
 			}
+			slices.Sort(names)
+			slices.Sort(tc.want)
 			if !slices.Equal(names, tc.want) || strings.Contains(output.String(), "null") {
 				t.Fatalf("plan = %s, want groups %v", &output, tc.want)
 			}

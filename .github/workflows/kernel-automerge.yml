@@ -2,41 +2,53 @@ name: Merge Qualified Kernels
 
 on:
   workflow_run:
-    workflows: [Kernel Updates]
+    workflows: [Kernel Updates, VM presubmit, Fast Checks, Kubernetes Bundle Artifacts]
     types: [completed]
 
 permissions:
   contents: read
 
+concurrency:
+  group: kernel-promotion-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
 jobs:
   merge:
-    if: startsWith(github.event.workflow_run.head_branch, 'automation/kernels-') && (github.event.workflow_run.event == 'pull_request' || github.event.workflow_run.event == 'workflow_dispatch') && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository
+    if: startsWith(github.event.workflow_run.head_branch, 'automation/kernels-') && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    permissions:
-      contents: write
-      pull-requests: write
-      checks: read
     steps:
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
+          private-key: ${{ secrets.KATL_AUTOMATION_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-checks: read
+          permission-actions: read
       # Never check out or execute the proposal in this privileged workflow.
       - name: Enable auto-merge for the qualified kernel-only revision
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
+          EXPECTED_AUTHOR: app/${{ steps.app-token.outputs.app-slug }}
           BRANCH: ${{ github.event.workflow_run.head_branch }}
           QUALIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
           [[ "$BRANCH" == automation/kernels-* ]]
-          proposal="$(gh pr list --head "$BRANCH" --base main --state open --json number,headRefOid,author,isCrossRepository --jq '.[0]')"
-          [[ "$(jq -r '.headRefOid' <<< "$proposal")" == "$QUALIFIED_SHA" ]]
-          [[ "$(jq -r '.author.login' <<< "$proposal")" == 'app/github-actions' ]]
+          proposal="$(gh pr list --head "$BRANCH" --base main --state open --limit 1 --json number,headRefOid,author,isCrossRepository,state --jq '.[0]')"
+          [[ "$(jq -r '.headRefOid' <<< "$proposal")" == "$QUALIFIED_SHA" ]] || exit 0
+          [[ "$(jq -r '.author.login' <<< "$proposal")" == "$EXPECTED_AUTHOR" ]]
           [[ "$(jq -r '.isCrossRepository' <<< "$proposal")" == false ]]
+          [[ "$(jq -r .state <<< "$proposal")" == OPEN ]] || exit 0
           number="$(jq -r .number <<< "$proposal")"
-          gh pr view "$number" --json files --jq '.files[].path' > files.txt
-          test -s files.txt
+          gh pr view "$number" --json changedFiles,files > files.json
+          jq -e '.changedFiles > 0 and .changedFiles <= 2 and .changedFiles == (.files | length)' files.json
           while IFS= read -r file; do
             [[ "$file" =~ ^kernels/fedora-[0-9]+/x86_64/(standard|lts)\.json$ ]]
-          done < files.txt
+          done < <(jq -r '.files[].path' files.json)
           gh pr checks "$number" --json name,state --jq '.[] | select(.name == "Kernel Input Qualification")' > qualification.json
-          jq -se 'length == 1 and .[0].state == "SUCCESS"' qualification.json
+          jq -se 'length == 1 and .[0].state == "SUCCESS"' qualification.json >/dev/null || exit 0
+          # Native required checks control the merge; the App's merge triggers main CI.
           gh pr merge "$number" --auto --squash --match-head-commit "$QUALIFIED_SHA"
