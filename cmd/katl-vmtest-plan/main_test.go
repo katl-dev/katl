@@ -94,13 +94,24 @@ func TestInvalidChanges(t *testing.T) {
 }
 
 func TestCoverage(t *testing.T) {
+	t.Run("default", func(t *testing.T) { testCoverage(t, nil, "") })
+	t.Run("main", func(t *testing.T) {
+		testCoverage(t, []string{"--ci", "--main"}, "cmd/katlctl/management_rotation.go\x00")
+	})
+}
+
+func testCoverage(t *testing.T, args []string, input string) {
+	t.Helper()
 	var output bytes.Buffer
-	if err := run(nil, strings.NewReader(""), &output); err != nil {
+	if err := run(args, strings.NewReader(input), &output); err != nil {
 		t.Fatal(err)
 	}
-	var plan struct{ Include []group }
+	var plan struct{ Include, Groups []group }
 	if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
 		t.Fatal(err)
+	}
+	if len(args) != 0 {
+		plan.Include = plan.Groups
 	}
 	want := map[string][]string{
 		"./internal/vmtest/scenarios": {
@@ -133,6 +144,21 @@ func TestCoverage(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("missing packages: %v", want)
+	}
+}
+
+func TestCIScenarios(t *testing.T) {
+	var output bytes.Buffer
+	if err := run([]string{"--ci"}, strings.NewReader("cmd/katlctl/management_rotation.go\x00"), &output); err != nil {
+		t.Fatal(err)
+	}
+	var plan ciPlan
+	if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	want := []group{{"lifecycle", "./internal/vmtest", "TestInstalledRuntimeManagementRotationSmoke"}}
+	if !slices.Equal(plan.Groups, want) {
+		t.Fatalf("scenarios = %v, want %v", plan.Groups, want)
 	}
 }
 

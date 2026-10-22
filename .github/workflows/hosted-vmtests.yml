@@ -27,6 +27,9 @@ on:
       kubernetes-version:
         description: Validate this supported Kubernetes candidate in the shared image build
         type: string
+      scenarios:
+        description: Planned include matrix; empty runs the complete suite
+        type: string
 
 permissions:
   contents: read
@@ -57,9 +60,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.sha }}
-          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@v6
+        if: inputs.scenarios == ''
         with:
           go-version-file: go.mod
           cache: true
@@ -97,14 +100,11 @@ jobs:
       - name: Select VM groups
         id: plan
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SCENARIOS: ${{ inputs.scenarios }}
         run: |
           mkdir -p _build
-          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            # Include both sides of renames so moving a product file into docs cannot skip its gate.
-            git diff --name-only --no-renames -z "$BASE_SHA...$HEAD_SHA" > _build/vmtest-changes
-            go run ./cmd/katl-vmtest-plan --changed < _build/vmtest-changes > _build/vmtest-plan.json
+          if [[ -n "$SCENARIOS" ]]; then
+            printf '%s\n' "$SCENARIOS" > _build/vmtest-plan.json
           else
             go run ./cmd/katl-vmtest-plan > _build/vmtest-plan.json
           fi

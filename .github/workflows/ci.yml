@@ -22,6 +22,7 @@ jobs:
       vm-flavours: ${{ steps.plan.outputs.vm-flavours }}
       driver-flavours: ${{ steps.plan.outputs.driver-flavours }}
       kubernetes-version: ${{ steps.plan.outputs.kubernetes-version }}
+      scenarios: ${{ steps.plan.outputs.scenarios }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -36,14 +37,13 @@ jobs:
         id: plan
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BEFORE_SHA: ${{ github.event.before }}
         run: |
           mkdir -p _build
           options=(--ci)
           if [[ "$GITHUB_EVENT_NAME" == push ]]; then options+=(--main); fi
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            base="$(git merge-base "$BASE_SHA" "$HEAD_SHA")"
+            base="$BASE_SHA"
           elif [[ "$GITHUB_EVENT_NAME" == push && "$BEFORE_SHA" != 0000000000000000000000000000000000000000 ]]; then
             base="$BEFORE_SHA"
           else
@@ -56,6 +56,7 @@ jobs:
           {
             echo "vm-flavours=$(jq -c .vmFlavours _build/ci-plan.json)"
             echo "driver-flavours=$(jq -c .driverFlavours _build/ci-plan.json)"
+            echo "scenarios=$(jq -c '{include: .groups}' _build/ci-plan.json)"
             echo "kubernetes-version=$(jq -r '.include[0].payloadVersion // empty' _build/kubernetes-plan.json)"
             echo "range=$base..HEAD"
           } >> "$GITHUB_OUTPUT"
@@ -83,6 +84,7 @@ jobs:
     with:
       flavour: ${{ matrix.flavour }}
       kubernetes-version: ${{ needs.checks.outputs.kubernetes-version }}
+      scenarios: ${{ needs.checks.outputs.scenarios }}
 
   drivers:
     name: Drivers (${{ matrix.flavour }})

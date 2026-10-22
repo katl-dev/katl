@@ -99,6 +99,7 @@ func driverChange(name string) bool {
 type ciPlan struct {
 	VMFlavours     []string `json:"vmFlavours"`
 	DriverFlavours []string `json:"driverFlavours"`
+	Groups         []group  `json:"groups"`
 }
 
 func planCI(paths []string, main bool) ciPlan {
@@ -134,7 +135,11 @@ func planCI(paths []string, main bool) ciPlan {
 		// Strict branch protection already requires driver qualification before merge.
 		drivers = map[string]bool{}
 	}
-	plan := ciPlan{VMFlavours: []string{}, DriverFlavours: []string{}}
+	selected := selectGroups(paths)
+	if main && len(vms) != 0 {
+		selected = groups
+	}
+	plan := ciPlan{VMFlavours: []string{}, DriverFlavours: []string{}, Groups: batchGroups(selected)}
 	for _, flavour := range []string{"standard", "lts"} {
 		if vms[flavour] {
 			plan.VMFlavours = append(plan.VMFlavours, flavour)
