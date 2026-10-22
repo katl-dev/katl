@@ -2,7 +2,8 @@ name: Merge Qualified Kernels
 
 on:
   workflow_run:
-    workflows: [Kernel Updates, VM presubmit, Fast Checks, Kubernetes Bundle Artifacts]
+    workflows: [CI]
+    branches: [automation/kernels-**]
     types: [completed]
 
 permissions:
@@ -48,7 +49,5 @@ jobs:
           while IFS= read -r file; do
             [[ "$file" =~ ^kernels/fedora-[0-9]+/x86_64/(standard|lts)\.json$ ]]
           done < <(jq -r '.files[].path' files.json)
-          gh pr checks "$number" --json name,state --jq '.[] | select(.name == "Kernel Input Qualification")' > qualification.json
-          jq -se 'length == 1 and .[0].state == "SUCCESS"' qualification.json >/dev/null || exit 0
           # Native required checks control the merge; the App's merge triggers main CI.
           gh pr merge "$number" --auto --squash --match-head-commit "$QUALIFIED_SHA"

@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Fast checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      vm-flavours: ${{ steps.plan.outputs.vm-flavours }}
+      driver-flavours: ${{ steps.plan.outputs.driver-flavours }}
+      kubernetes-version: ${{ steps.plan.outputs.kubernetes-version }}
+      scenarios: ${{ steps.plan.outputs.scenarios }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: .github/scripts/hosted-apt-install dosfstools mtools xorriso squashfs-tools
+      - name: Select validation
+        id: plan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          mkdir -p _build
+          options=(--ci)
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then options+=(--main); fi
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            base="$BASE_SHA"
+          elif [[ "$GITHUB_EVENT_NAME" == push && "$BEFORE_SHA" != 0000000000000000000000000000000000000000 ]]; then
+            base="$BEFORE_SHA"
+          else
+            base="$(git hash-object -t tree /dev/null)"
+          fi
+          # Include deletions as well as additions when a file is renamed.
+          git diff --name-only --no-renames -z "$base" HEAD > _build/ci-changes
+          go run ./cmd/katl-vmtest-plan "${options[@]}" < _build/ci-changes > _build/ci-plan.json
+          go run ./cmd/katl-kubernetes-release presubmit --base "$base" > _build/kubernetes-plan.json
+          {
+            echo "vm-flavours=$(jq -c .vmFlavours _build/ci-plan.json)"
+            echo "driver-flavours=$(jq -c .driverFlavours _build/ci-plan.json)"
+            echo "scenarios=$(jq -c '{include: .groups}' _build/ci-plan.json)"
+            echo "kubernetes-version=$(jq -r '.include[0].payloadVersion // empty' _build/kubernetes-plan.json)"
+            echo "range=$base..HEAD"
+          } >> "$GITHUB_OUTPUT"
+          cat _build/ci-plan.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Run fast checks
+        env:
+          COMPARISON: ${{ steps.plan.outputs.range }}
+        run: scripts/check-fast "$COMPARISON"
+      - name: Validate workflows
+        # This actionlint release predates the App action's client-id input.
+        run: >-
+          go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          -shellcheck=
+          -ignore 'input "(app-id|client-id)".*action "actions/create-github-app-token@v3"'
+
+  vms:
+    name: VM (${{ matrix.flavour }})
+    needs: checks
+    if: needs.checks.outputs.vm-flavours != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: ${{ fromJSON(needs.checks.outputs.vm-flavours) }}
+    uses: ./.github/workflows/hosted-vmtests.yml
+    with:
+      flavour: ${{ matrix.flavour }}
+      kubernetes-version: ${{ needs.checks.outputs.kubernetes-version }}
+      scenarios: ${{ needs.checks.outputs.scenarios }}
+
+  drivers:
+    name: Drivers (${{ matrix.flavour }})
+    needs: checks
+    if: needs.checks.outputs.driver-flavours != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: ${{ fromJSON(needs.checks.outputs.driver-flavours) }}
+    uses: ./.github/workflows/kernel-qualification.yml
+    with:
+      flavour: ${{ matrix.flavour }}
+
+  result:
+    name: CI
+    if: always()
+    needs: [checks, vms, drivers]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require selected validation
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          jq -e '
+            .checks.result == "success" and
+            ([{flavours: .checks.outputs["vm-flavours"], result: .vms.result},
+              {flavours: .checks.outputs["driver-flavours"], result: .drivers.result}]
+             | all(.[];
+                 (.flavours | fromjson) as $flavours |
+                 ($flavours | type == "array") and
+                 (if ($flavours | length) > 0 then .result == "success"
+                  else .result == "skipped" end)))
+          ' <<< "$NEEDS"

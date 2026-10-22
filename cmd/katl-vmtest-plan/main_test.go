@@ -58,10 +58,10 @@ func TestPlan(t *testing.T) {
 		input string
 		want  []string
 	}{
-		{"full by default", nil, "", allNames()},
+		{"full by default", nil, "", []string{"cluster", "lifecycle"}},
 		{"empty diff", []string{"--changed"}, "", []string{}},
 		{"docs with spaces", []string{"--changed"}, "docs/design notes.md\x00", []string{}},
-		{"newline in unknown path", []string{"--changed"}, "source\nname\x00", allNames()},
+		{"newline in unknown path", []string{"--changed"}, "source\nname\x00", []string{"cluster", "lifecycle"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var output bytes.Buffer
@@ -93,41 +93,134 @@ func TestInvalidChanges(t *testing.T) {
 	}
 }
 
-func TestKernelChanges(t *testing.T) {
+func TestCoverage(t *testing.T) {
+	t.Run("default", func(t *testing.T) { testCoverage(t, nil, "") })
+	t.Run("main", func(t *testing.T) {
+		testCoverage(t, []string{"--ci", "--main"}, "cmd/katlctl/management_rotation.go\x00")
+	})
+}
+
+func testCoverage(t *testing.T, args []string, input string) {
+	t.Helper()
+	var output bytes.Buffer
+	if err := run(args, strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	var plan struct{ Include, Groups []group }
+	if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(args) != 0 {
+		plan.Include = plan.Groups
+	}
+	want := map[string][]string{
+		"./internal/vmtest/scenarios": {
+			"TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke",
+			"TestThreeNodeGeneration0InstallSmoke",
+			"TestInstallerISOFirstInstallStorageAuthority",
+			"TestInstallerISOBootSmoke",
+			"TestInstallerPXEBootSmoke",
+		},
+		"./internal/vmtest": {
+			"TestFirstInstallTargetDiskBootSmoke",
+			"TestFirstInstallTargetDiskLocalHandoffSmoke",
+			"TestInstalledRuntimeConfigApplyModesSmoke",
+			"TestInstalledRuntimeSysupdateRootUKITransfer",
+			"TestInstalledRuntimeManagementRotationSmoke",
+		},
+	}
+	if len(plan.Include) != 2 {
+		t.Fatalf("expected two VM lanes, got %s", &output)
+	}
+	for _, lane := range plan.Include {
+		tests := strings.Split(lane.Tests, "|")
+		slices.Sort(tests)
+		expected, ok := want[lane.Package]
+		slices.Sort(expected)
+		if !ok || !slices.Equal(tests, expected) {
+			t.Fatalf("%s tests = %v, want %v", lane.Package, tests, expected)
+		}
+		delete(want, lane.Package)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing packages: %v", want)
+	}
+}
+
+func TestCIScenarios(t *testing.T) {
+	var output bytes.Buffer
+	if err := run([]string{"--ci"}, strings.NewReader("cmd/katlctl/management_rotation.go\x00"), &output); err != nil {
+		t.Fatal(err)
+	}
+	var plan ciPlan
+	if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	want := []group{{"lifecycle", "./internal/vmtest", "TestInstalledRuntimeManagementRotationSmoke"}}
+	if !slices.Equal(plan.Groups, want) {
+		t.Fatalf("scenarios = %v, want %v", plan.Groups, want)
+	}
+}
+
+func TestCIPlan(t *testing.T) {
+	both := []string{"standard", "lts"}
 	for _, tc := range []struct {
-		name, input string
-		want        bool
+		name, paths  string
+		main         bool
+		vms, drivers []string
 	}{
-		{"empty", "", false},
-		{"documentation", "docs/development/ci.md\x00", false},
-		{"unrelated command", "cmd/katlctl/main.go\x00", false},
-		{"mixed with lock", "README.md\x00kernels/fedora-44/x86_64/standard.json\x00", true},
-		{"LTS lock", "kernels/fedora-44/x86_64/lts.json\x00", true},
-		{"module source", "internal/kernelmodule/compose.go\x00", true},
-		{"extension recipe", "extensions/drbd9/build.sh\x00", true},
-		{"runtime source", "packages/containerd/source.json\x00", true},
-		{"runtime spec", "packages/crun/crun.spec\x00", true},
-		{"runtime builder", "cmd/katl-runtime-rpms/main.go\x00", true},
-		{"runtime hook", "mkosi.profiles/runtime/mkosi.postinst\x00", true},
-		{"builder configuration", "mkosi.conf.d/packages.conf\x00", true},
-		{"Go dependency", "go.sum\x00", true},
-		{"builder tool", "scripts/mkosi\x00", true},
-		{"workflow", ".github/workflows/kernel-updates.yml\x00", true},
-		{"planner", "cmd/katl-vmtest-plan/main.go\x00", true},
-		{"directory boundary", "kernels-not-related/file\x00", false},
-		{"deleted or renamed module", "docs/moved.go\x00internal/kernelmodule/old.go\x00", true},
+		{name: "empty"},
+		{name: "documentation", paths: "docs/development/ci.md"},
+		{name: "unit only", paths: "internal/installer/run_test.go"},
+		{name: "release tooling", paths: "cmd/katl-release/main.go"},
+		{name: "capture tooling", paths: "cmd/katl-kernel-release/candidate.go"},
+		{name: "proposal workflow", paths: ".github/workflows/kernel-updates.yml"},
+		{name: "product", paths: "cmd/katlctl/main.go", vms: []string{"standard"}},
+		{name: "main product", paths: "cmd/katlctl/main.go", main: true, vms: both},
+		{name: "main docs", paths: "README.md", main: true},
+		{name: "standard lock", paths: "kernels/fedora-44/x86_64/standard.json", vms: []string{"standard"}, drivers: []string{"standard"}},
+		{name: "LTS lock", paths: "kernels/fedora-44/x86_64/lts.json", vms: []string{"lts"}, drivers: []string{"lts"}},
+		{name: "main LTS lock", paths: "kernels/fedora-44/x86_64/lts.json", main: true, vms: both},
+		{name: "main shared ABI", paths: "extensions/drbd9/build.sh", main: true, vms: both},
+		{name: "both locks", paths: "kernels/fedora-44/x86_64/standard.json\x00kernels/fedora-44/x86_64/lts.json", vms: both, drivers: both},
+		{name: "DRBD recipe", paths: "extensions/drbd9/build.sh", vms: both, drivers: both},
+		{name: "driver builder", paths: "scripts/build-kernel-extension", vms: both, drivers: both},
+		{name: "DRBD tools", paths: "mkosi.profiles/vmtest-drbd-tools/mkosi.conf", vms: both, drivers: both},
+		{name: "DRBD journey", paths: "internal/vmtest/drbd_smoke_test.go", vms: both, drivers: both},
+		{name: "module source", paths: "internal/kernelmodule/compose.go", vms: both, drivers: both},
+		{name: "runtime source", paths: "packages/containerd/source.json", vms: both},
+		{name: "runtime spec", paths: "packages/crun/crun.spec", vms: both},
+		{name: "runtime builder", paths: "cmd/katl-runtime-rpms/main.go", vms: both},
+		{name: "runtime hook", paths: "mkosi.profiles/runtime/mkosi.postinst", vms: both, drivers: both},
+		{name: "shared config", paths: "mkosi.conf.d/packages.conf", vms: both, drivers: both},
+		{name: "Go dependency", paths: "go.sum", vms: both, drivers: both},
+		{name: "builder", paths: "scripts/mkosi", vms: both, drivers: both},
+		{name: "VM test", paths: "internal/vmtest/installed_smoke_test.go", vms: both},
+		{name: "VM workflow", paths: ".github/workflows/hosted-vmtests.yml", vms: both},
+		{name: "CI workflow", paths: ".github/workflows/ci.yml", vms: both, drivers: both},
+		{name: "planner", paths: "cmd/katl-vmtest-plan/main.go", vms: both, drivers: both},
+		{name: "directory boundary", paths: "kernels-not-related/file", vms: []string{"standard"}},
+		{name: "renamed module", paths: "docs/moved.go\x00internal/kernelmodule/old.go", vms: both, drivers: both},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			input := tc.paths
+			if input != "" {
+				input += "\x00"
+			}
+			args := []string{"--ci"}
+			if tc.main {
+				args = append(args, "--main")
+			}
 			var output bytes.Buffer
-			if err := run([]string{"--kernel-changes"}, strings.NewReader(tc.input), &output); err != nil {
+			if err := run(args, strings.NewReader(input), &output); err != nil {
 				t.Fatal(err)
 			}
-			var got bool
+			var got ciPlan
 			if err := json.Unmarshal(output.Bytes(), &got); err != nil {
 				t.Fatal(err)
 			}
-			if got != tc.want {
-				t.Fatalf("kernel qualification = %v, want %v", got, tc.want)
+			if !slices.Equal(got.VMFlavours, tc.vms) || !slices.Equal(got.DriverFlavours, tc.drivers) || strings.Contains(output.String(), "null") {
+				t.Fatalf("CI plan = %s, want VMs %v and drivers %v", &output, tc.vms, tc.drivers)
 			}
 		})
 	}

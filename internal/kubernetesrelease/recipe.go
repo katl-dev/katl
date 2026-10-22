@@ -68,8 +68,7 @@ func RecipeDigest(root string) (string, error) {
 	return fmt.Sprintf("sha256:%x", digest.Sum(nil)), nil
 }
 
-// RecipeChanged keeps unrelated pull requests from rebuilding the image while
-// retaining the producer's required presubmit result on every pull request.
+// RecipeChanged selects Kubernetes candidate validation when producer inputs change.
 func RecipeChanged(root, revision string) (bool, error) {
 	if revision == "" || strings.HasPrefix(revision, "-") {
 		return false, fmt.Errorf("comparison revision is required")

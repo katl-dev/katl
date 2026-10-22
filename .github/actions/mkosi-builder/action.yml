@@ -1,9 +1,6 @@
 name: Prepare mkosi builder
-description: Load the builder image using profile-specific Docker layer caches
+description: Load the builder image using a shared Docker layer cache
 inputs:
-  profile:
-    description: Build profile owning the cache
-    required: true
   image:
     description: Local image tag consumed by scripts/mkosi
     required: true
@@ -37,5 +34,5 @@ runs:
         build-args: FEDORA_RELEASE=${{ steps.fedora.outputs.release }}
         # Refresh the Fedora base; unchanged layers reuse the cached tools.
         pull: true
-        cache-from: type=gha,scope=mkosi-builder-${{ inputs.profile }}
-        cache-to: type=gha,scope=mkosi-builder-${{ inputs.profile }},mode=max
+        cache-from: type=gha,scope=mkosi-builder
+        cache-to: type=gha,scope=mkosi-builder,mode=max

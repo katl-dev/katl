@@ -435,7 +435,7 @@ World run directories and scenario manifests are the supported inspection path
 for already-produced artifacts during harness development. Lower-level helper
 scripts are not the supported way to run enabled VM or kubeadm suites.
 
-## GitHub fast checks
+## GitHub checks
 
 The low-cost pull-request workflow runs formatting, whitespace, unit/golden, and
 delivery fixture checks through the same command used locally. Before pushing a
@@ -447,15 +447,12 @@ scripts/check-fast origin/main...HEAD
 
 The command checks all tracked Go formatting, patch whitespace, and runs the
 complete Go suite with `-count=1` so cached test results cannot hide failures.
-Changes reach `main` through pull requests after `Format And Unit Tests`,
-`Kubernetes Bundle Presubmit`, `Kernel Input Qualification`, and
-[VM presubmit](development/ci.md) pass. The Kubernetes check is a quick
-no-op for unrelated changes and builds every affected supported bundle when
-producer inputs change. Direct pushes are not part of the supported development
-loop.
+Changes reach `main` through pull requests after [CI](development/ci.md) passes.
+CI combines fast checks with the relevant VM journeys and kernel driver gates.
+Kubernetes producer validation shares the VM image build and cluster lane.
+Direct pushes are not part of the supported development loop.
 
 Fast checks skip mkosi builds, libvirt/KVM setup, VM scenarios, and publishing.
-The separate [VM CI workflows](development/ci.md) exercise integrated journeys.
 Run focused VM gates locally with `scripts/vmtest-run` on a capable host and
 record the result with the change or release evidence.
 
@@ -500,11 +497,10 @@ Manual builds qualify the source and packaging but produce separate bytes from
 a later tag run. Rebuilding or rerunning producer jobs invalidates the recorded
 artifact qualification and requires repeating the affected journeys.
 
-Pushes to `main` build and verify the runtime and installer to warm the caches
-that subsequent release tags can restore. These runs also execute both regression flavours and skip final release
-packaging, attestations, and publication. GitHub isolates caches between
-tags, so warming them only during a release does not help the next release.
-New main pushes cancel superseded warm builds; release runs are not cancelled.
+Pushes to `main` run CI for both kernel flavours. Those image builds populate
+caches visible to subsequent release tags. Release-artifact builds run only for
+release branches, tags, or explicit manual candidates. Superseded main CI runs
+are cancelled; release runs are not.
 
 Release production uses a dependency-aware job graph. Runtime, installer, and
 `katlctl` builds start concurrently. The install and upgrade images are then
@@ -755,8 +751,7 @@ package is missing; they do not fall back to a moving kernel repository.
 ### Qualify retained kernel inputs
 
 The Kernel Updates workflow captures signed kernel RPM sets and proposes their
-locks after building runtime and installer artifacts, every release-owned
-extension recipe, and complete module composition. It runs weekly or on manual
+locks after retaining the signed inputs and verifying anonymous retrieval. It runs weekly or on manual
 dispatch. Automatic discovery refuses versions older than the committed lock.
 An explicit release permits a deliberate rollback. To qualify an exact kernel pair instead of discovering newer versions:
 
@@ -766,11 +761,11 @@ gh workflow run kernel-updates.yml --ref main \
   -f lts_release=6.18.57-200.fc44.x86_64
 ```
 
-The proposal records its exact qualified commit. Kernel Input Qualification also
-requires the VM regression suite and production-driver DRBD replication for both
-flavours. Unchanged bot-authored kernel-lock-only proposals can then merge
-automatically after branch protection passes. These virtual machines do not
-qualify NVIDIA hardware.
+PR CI qualifies each changed kernel flavour with runtime and installer builds,
+every release extension, complete module composition, VM regression, and
+production-driver DRBD replication. Unchanged App-authored kernel-lock-only
+proposals can merge automatically after CI and branch protection pass. These
+virtual machines do not qualify NVIDIA hardware.
 
 For local candidate qualification, capture the selected flavour inside the
 builder and select its retained OCI layout explicitly:

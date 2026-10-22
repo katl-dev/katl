@@ -72,23 +72,25 @@ as well as verification before wrapper cache reuse.
 ## Updates and promotion
 
 The scheduled or manually invoked Kernel Updates workflow captures both
-flavours, creates a lock proposal commit, and qualifies that exact commit.
-Build both boot artifacts and every release-owned extension, then verify their
-complete composition. A failed recipe cannot reduce advertised coverage or
-produce a ready proposal.
+flavours and creates a lock proposal commit. Trusted workflow-source jobs retain
+the signed bytes, verify anonymous retrieval of every RPM, and confirm the
+proposal branch still points to the captured commit before opening a
+ready-for-review PR. Input retention does not constitute qualification or
+promotion. Retry incomplete publication; skip only when main selects the same
+dependency identities. Advance proposals by merging main without rewriting
+history.
 
-Keep build jobs read-only. Separate jobs retain the qualified bytes and create
-the ready-for-review pull request using trusted workflow-source helpers. Verify
-anonymous retrieval of every retained RPM and confirm the proposal branch still
-points to the qualified commit before opening the PR. Retry incomplete
-publication; skip only when main already selects the same dependency identities.
-Advance an existing proposal by merging main without rewriting its history.
+PR CI is the qualification owner. For each changed flavour, build both boot
+artifacts and every release extension, verify their complete composition, and
+run VM regression and production DRBD replication. Shared ABI inputs require
+both flavours. Do not duplicate this qualification before opening the PR or
+carry custom qualification state between runs.
 
-Pull-request updates rerun kernel qualification. Scheduled-run evidence names
-the checked-out candidate commit because the workflow run itself belongs to its
-original main revision. Existing required checks can require maintainer approval
-for bot-created PRs; do not bypass that security boundary or automatically merge
-kernel updates.
+A repository-scoped GitHub App opens proposals so native PR checks run. A
+privileged workflow triggered by successful CI may enable native auto-merge
+only for the exact unchanged App-authored, same-repository, kernel-lock-only
+revision. It never executes proposal code. Branch protection remains the merge
+authority; failed, skipped, or cancelled selected gates cannot permit promotion.
 
 Build and composition qualification does not prove functional driver behavior.
 Run the applicable capable-host VM gates and persistent public `katlctl`

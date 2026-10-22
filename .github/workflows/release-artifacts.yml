@@ -3,7 +3,6 @@ name: Katl Release Artifacts
 on:
   push:
     branches:
-      - main
       - "release/**"
     tags:
       - "v*"
@@ -23,7 +22,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
+  cancel-in-progress: false
 
 jobs:
   existing-bundle:
@@ -61,7 +60,7 @@ jobs:
 
   unit:
     name: Release unit tests
-    if: ${{ !inputs.qualify_run && (github.ref != 'refs/heads/main' || github.event_name != 'push') }}
+    if: ${{ !inputs.qualify_run }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -108,11 +107,6 @@ jobs:
           MANUAL_VERSION: ${{ inputs.version }}
         run: |
           event="$GITHUB_EVENT_NAME"
-          # Main builds warm caches visible to subsequent release tags.
-          if [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" == push ]]; then
-            MANUAL_VERSION="$(date -u +%Y.%-m).0-dev.0"
-            event=workflow_dispatch
-          fi
           version="$(scripts/katl-release-artifacts version \
             "$event" "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" \
             "$MANUAL_VERSION")"
@@ -198,7 +192,6 @@ jobs:
       - name: Prepare cached builder
         uses: ./.github/actions/mkosi-builder
         with:
-          profile: runtime
           image: ${{ env.KATL_MKOSI_IMAGE }}
 
       - name: Build runtime
@@ -295,7 +288,6 @@ jobs:
           cache: true
       - uses: ./.github/actions/mkosi-builder
         with:
-          profile: runtime
           image: ${{ env.KATL_MKOSI_IMAGE }}
       - name: Download runtime build inputs
         uses: actions/download-artifact@v8
@@ -318,7 +310,6 @@ jobs:
 
   images:
     name: Package KatlOS Images (${{ matrix.flavour }})
-    if: github.ref != 'refs/heads/main' || github.event_name != 'push'
     needs: [identity, extensions]
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -345,7 +336,6 @@ jobs:
           cache: true
       - uses: ./.github/actions/mkosi-builder
         with:
-          profile: runtime
           image: ${{ env.KATL_MKOSI_IMAGE }}
       - name: Download runtime build inputs
         uses: actions/download-artifact@v8
@@ -490,7 +480,6 @@ jobs:
       - name: Prepare cached builder
         uses: ./.github/actions/mkosi-builder
         with:
-          profile: installer
           image: ${{ env.KATL_MKOSI_IMAGE }}
 
       - name: Build installer
@@ -507,7 +496,6 @@ jobs:
             scripts/check-installer-image
 
       - name: Upload installer intermediates
-        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         uses: actions/upload-artifact@v7
         with:
           name: katl-installer-${{ matrix.flavour }}-${{ github.sha }}
@@ -528,7 +516,6 @@ jobs:
 
   katlctl:
     name: Build And Verify katlctl
-    if: github.ref != 'refs/heads/main' || github.event_name != 'push'
     needs: identity
     runs-on: ubuntu-24.04
 
@@ -562,7 +549,6 @@ jobs:
 
   assemble:
     name: Assemble And Verify Katl Release
-    if: github.ref != 'refs/heads/main' || github.event_name != 'push'
     needs:
       - identity
       - runtime
@@ -708,7 +694,7 @@ jobs:
 
   release-validation:
     name: Release validation
-    if: ${{ always() && !inputs.qualify_run && (github.ref != 'refs/heads/main' || github.event_name != 'push') }}
+    if: ${{ always() && !inputs.qualify_run }}
     needs: [bundle, vmtests, qualification, unit]
     runs-on: ubuntu-24.04
     steps:

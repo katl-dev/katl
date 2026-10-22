@@ -24,6 +24,12 @@ on:
         default: standard
       ref:
         type: string
+      kubernetes-version:
+        description: Validate this supported Kubernetes candidate in the shared image build
+        type: string
+      scenarios:
+        description: Planned include matrix; empty runs the complete suite
+        type: string
 
 permissions:
   contents: read
@@ -46,7 +52,6 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
-      run: ${{ steps.plan.outputs.run }}
       matrix: ${{ steps.plan.outputs.matrix }}
       runner: ${{ steps.host.outputs.runner }}
       prepared: ${{ steps.host.outputs.prepared }}
@@ -55,9 +60,9 @@ jobs:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.ref || github.sha }}
-          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@v6
+        if: inputs.scenarios == ''
         with:
           go-version-file: go.mod
           cache: true
@@ -95,24 +100,20 @@ jobs:
       - name: Select VM groups
         id: plan
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          SCENARIOS: ${{ inputs.scenarios }}
         run: |
           mkdir -p _build
-          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            # Include both sides of renames so moving a product file into docs cannot skip its gate.
-            git diff --name-only --no-renames -z "$BASE_SHA...$HEAD_SHA" > _build/vmtest-changes
-            go run ./cmd/katl-vmtest-plan --changed < _build/vmtest-changes > _build/vmtest-plan.json
+          if [[ -n "$SCENARIOS" ]]; then
+            printf '%s\n' "$SCENARIOS" > _build/vmtest-plan.json
           else
             go run ./cmd/katl-vmtest-plan > _build/vmtest-plan.json
           fi
           echo "matrix=$(cat _build/vmtest-plan.json)" >> "$GITHUB_OUTPUT"
-          echo "run=$(jq '.include | length > 0' _build/vmtest-plan.json)" >> "$GITHUB_OUTPUT"
+          jq -e '.include | length > 0' _build/vmtest-plan.json
           echo "VM groups: $(jq -r '[.include[].name] | join(", ")' _build/vmtest-plan.json)" >> "$GITHUB_STEP_SUMMARY"
 
   images:
     needs: plan
-    if: needs.plan.outputs.run == 'true'
     runs-on: ${{ needs.plan.outputs.runner }}
     timeout-minutes: 60
     outputs:
@@ -148,7 +149,6 @@ jobs:
             hosted-vmtest-build-${{ env.KATL_FLAVOUR }}-${{ runner.os }}-
       - uses: ./.github/actions/mkosi-builder
         with:
-          profile: hosted-vmtest
           image: ${{ env.KATL_MKOSI_IMAGE }}
       - name: Record builder identity
         id: builder
@@ -158,6 +158,23 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           printf '%s\n' "$KATL_BUILD_COMMIT" > _build/hosted-evidence/source.txt
           printf '%s\n' "$version" > _build/hosted-evidence/mkosi-version.txt
+      - name: Resolve Kubernetes candidate
+        if: inputs.kubernetes-version != ''
+        env:
+          PAYLOAD_VERSION: ${{ inputs.kubernetes-version }}
+        run: |
+          go run ./cmd/katl-kubernetes-release candidate \
+            --payload-version "$PAYLOAD_VERSION" --repoquery scripts/kubernetes-repoquery \
+            > _build/hosted-evidence/kubernetes-candidate.json
+          jq -r '
+            "KATL_KUBERNETES_PAYLOAD_VERSION=\(.payloadVersion)",
+            "KATL_KUBERNETES_MINOR=\(.minor)",
+            "KATL_KUBERNETES_ARTIFACT_REVISION=\(.artifactRevision)",
+            "KATL_KUBERNETES_KUBEADM_VERSION=\(.kubeadmVersion)",
+            "KATL_KUBERNETES_KUBELET_VERSION=\(.kubeletVersion)",
+            "KATL_KUBERNETES_KUBECTL_VERSION=\(.kubectlVersion)",
+            "KATL_KUBERNETES_CRITOOLS_VERSION=\(.criToolsVersion)"
+          ' _build/hosted-evidence/kubernetes-candidate.json >> "$GITHUB_ENV"
       - name: Build instrumented runtime
         id: runtime
         run: .github/scripts/hosted-vmtest-measure build-runtime scripts/mkosi build-runtime
@@ -173,26 +190,24 @@ jobs:
           .github/scripts/hosted-vmtest-measure build-install scripts/mkosi build-installer-iso
           .github/scripts/hosted-vmtest-measure build-upgrade scripts/mkosi build-katlos-upgrade-image
           .github/scripts/hosted-vmtest-measure build-kubernetes scripts/build-kubernetes-sysext
+      - name: Verify and stage Kubernetes bundle
+        run: |
+          docker run --rm --volume "$GITHUB_WORKSPACE:/work" --workdir /work \
+            --env KATL_KUBERNETES_MINOR --env KATL_KUBERNETES_PAYLOAD_VERSION \
+            --env KATL_KUBERNETES_KUBEADM_VERSION --env KATL_KUBERNETES_KUBELET_VERSION \
+            --env KATL_KUBERNETES_KUBECTL_VERSION --env KATL_KUBERNETES_CRITOOLS_VERSION \
+            "$KATL_MKOSI_IMAGE" scripts/check-kubernetes-sysext
+          go run ./cmd/katl-publish-kubernetes-sysext --output-dir _build/kubernetes-bundle \
+            > _build/hosted-evidence/kubernetes-bundle.txt
       - name: Package immutable test inputs
         run: .github/scripts/hosted-vmtest-measure pack .github/scripts/hosted-vmtest-package
       - uses: actions/upload-artifact@v7
         with:
-          name: hosted-vmtest-${{ env.KATL_FLAVOUR }}-base-${{ needs.plan.outputs.source }}
-          path: _build/hosted-inputs/base/
+          name: hosted-vmtest-${{ env.KATL_FLAVOUR }}-inputs-${{ needs.plan.outputs.source }}
+          path: _build/hosted-inputs/
           compression-level: 0
           retention-days: 1
-      - uses: actions/upload-artifact@v7
-        with:
-          name: hosted-vmtest-${{ env.KATL_FLAVOUR }}-media-${{ needs.plan.outputs.source }}
-          path: _build/hosted-inputs/media/
-          compression-level: 0
-          retention-days: 1
-      - uses: actions/upload-artifact@v7
-        with:
-          name: hosted-vmtest-${{ env.KATL_FLAVOUR }}-upgrade-${{ needs.plan.outputs.source }}
-          path: _build/hosted-inputs/upgrade/
-          compression-level: 0
-          retention-days: 1
+          if-no-files-found: error
       - name: Collect host diagnostics
         if: always()
         run: |
@@ -222,12 +237,11 @@ jobs:
   scenarios:
     name: VM / ${{ matrix.name }}
     needs: [plan, images]
-    if: needs.plan.outputs.run == 'true'
     runs-on: ${{ needs.plan.outputs.runner }}
-    timeout-minutes: 55
+    timeout-minutes: 90
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 2
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       KATL_BUILD_COMMIT: ${{ needs.plan.outputs.source }}
@@ -235,7 +249,7 @@ jobs:
       KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/hosted-scenario
       TEST_PACKAGE: ${{ matrix.package }}
       TEST_NAMES: ${{ matrix.tests }}
-      ARTIFACT_SET: ${{ matrix.name == 'boot' && 'none' || 'install' }}
+      ARTIFACT_SET: install
     steps:
       - uses: actions/checkout@v7
         with:
@@ -249,33 +263,18 @@ jobs:
         with:
           prepared: ${{ needs.plan.outputs.prepared }}
       - uses: actions/download-artifact@v8
-        if: matrix.name != 'boot'
         with:
-          name: hosted-vmtest-${{ env.KATL_FLAVOUR }}-base-${{ needs.plan.outputs.source }}
-          path: _build/import/base
-      - uses: actions/download-artifact@v8
-        if: matrix.name == 'boot' || matrix.name == 'install' || matrix.name == 'storage'
-        with:
-          name: hosted-vmtest-${{ env.KATL_FLAVOUR }}-media-${{ needs.plan.outputs.source }}
-          path: _build/import/media
-      - uses: actions/download-artifact@v8
-        if: matrix.name == 'update'
-        with:
-          name: hosted-vmtest-${{ env.KATL_FLAVOUR }}-upgrade-${{ needs.plan.outputs.source }}
-          path: _build/import/upgrade
+          name: hosted-vmtest-${{ env.KATL_FLAVOUR }}-inputs-${{ needs.plan.outputs.source }}
+          path: _build/import
       - name: Verify and import producer inputs
         run: |
-          for bundle in _build/import/*; do
-            test "$(cat "$bundle/source.txt")" = "$KATL_BUILD_COMMIT"
-            test "$(cat "$bundle/mkosi-version.txt")" = "$KATL_VMTEST_MKOSI_VERSION"
-            .github/scripts/hosted-vmtest-measure "unpack-${bundle##*/}" tar -xf "$bundle/inputs.tar"
-            sha256sum --check "$bundle/inputs.sha256" > "_build/hosted-evidence/import-${bundle##*/}.txt"
-            mkdir -p "_build/hosted-evidence/inputs-${bundle##*/}"
-            cp "$bundle/"{source.txt,mkosi-version.txt,inputs.sha256} "_build/hosted-evidence/inputs-${bundle##*/}/"
-            rm "$bundle/inputs.tar"
-          done
+          test "$(cat _build/import/source.txt)" = "$KATL_BUILD_COMMIT"
+          test "$(cat _build/import/mkosi-version.txt)" = "$KATL_VMTEST_MKOSI_VERSION"
+          .github/scripts/hosted-vmtest-measure unpack tar -xf _build/import/inputs.tar
+          sha256sum --check _build/import/inputs.sha256 > _build/hosted-evidence/import.txt
+          cp _build/import/{source.txt,mkosi-version.txt,inputs.sha256} _build/hosted-evidence/
+          rm _build/import/inputs.tar
       - name: Derive component and proof inputs from the install image
-        if: matrix.name != 'boot'
         run: |
           images=(_build/mkosi/katlos-install-*-x86_64.squashfs)
           test "${#images[@]}" = 1
@@ -290,7 +289,7 @@ jobs:
         run: |
           .github/scripts/hosted-vmtest-measure scenarios .github/scripts/hosted-vmtest-run \
             --artifact-set="$ARTIFACT_SET" --no-rebuild "$TEST_PACKAGE" \
-            -run "^($TEST_NAMES)$" -count=1 -json -timeout 45m
+            -run "^($TEST_NAMES)$" -count=1 -json -timeout 75m
           # A successful test process must actually pass every selected VM test.
           IFS='|' read -ra tests <<< "$TEST_NAMES"
           for test_name in "${tests[@]}"; do
@@ -314,27 +313,3 @@ jobs:
             _build/hosted-scenario/**/*.stdout
             _build/hosted-scenario/**/*.stderr
           retention-days: 3
-
-  validation:
-    name: VM validation
-    if: always()
-    needs: [plan, images, scenarios]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    env:
-      PLAN: ${{ needs.plan.result }}
-      RUN: ${{ needs.plan.outputs.run }}
-      IMAGES: ${{ needs.images.result }}
-      SCENARIOS: ${{ needs.scenarios.result }}
-    steps:
-      - name: Require the selected gates
-        run: |
-          test "$PLAN" = success
-          if [[ "$RUN" == true ]]; then
-            test "$IMAGES" = success
-            test "$SCENARIOS" = success
-          else
-            test "$RUN" = false
-            test "$IMAGES" = skipped
-            test "$SCENARIOS" = skipped
-          fi
