@@ -17,7 +17,7 @@
       "matchStrings": ["\"version\":\\s*\"(?<currentValue>[^\"]+)\",\\s*\"sha256\":\\s*\"(?<currentDigest>[a-f0-9]{64})\""],
       "depNameTemplate": "containers/crun",
       "datasourceTemplate": "github-release-attachments",
-      "versioningTemplate": "semver"
+      "versioningTemplate": "semver-coerced"
     },
     {
       "customType": "regex",

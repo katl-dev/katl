@@ -35,6 +35,7 @@ type buildRecord struct {
 }
 
 var stableVersion = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+$`)
+var crunVersion = regexp.MustCompile(`^[0-9]+\.[0-9]+(\.[0-9]+)?$`)
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -231,7 +232,11 @@ func readSource(path, name string) (source, error) {
 	if err := json.Unmarshal(data, &s); err != nil {
 		return s, err
 	}
-	if !stableVersion.MatchString(s.Version) {
+	versionPattern := stableVersion
+	if name == "crun" {
+		versionPattern = crunVersion
+	}
+	if !versionPattern.MatchString(s.Version) {
 		return s, fmt.Errorf("%s requires a stable upstream version", name)
 	}
 	if name == "containerd" {

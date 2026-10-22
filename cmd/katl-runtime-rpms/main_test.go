@@ -35,6 +35,22 @@ func TestRuntimeInventory(t *testing.T) {
 }
 
 func TestSourcePins(t *testing.T) {
+	for _, version := range []string{"1.30", "1.30.1"} {
+		t.Run(version, func(t *testing.T) {
+			data, err := json.Marshal(source{Version: version, SHA256: strings.Repeat("a", 64)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(t.TempDir(), "source.json")
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := readSource(path, "crun"); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+
 	for _, tc := range []struct {
 		name, pkg string
 		source    source
@@ -42,6 +58,8 @@ func TestSourcePins(t *testing.T) {
 		{"missing commit", "containerd", source{Version: "v2.3.7", GoVersion: "1.26.9"}},
 		{"missing toolchain", "containerd", source{Version: "v2.3.7", Revision: strings.Repeat("a", 40)}},
 		{"missing checksum", "crun", source{Version: "1.30.1"}},
+		{"incomplete containerd version", "containerd", source{Version: "v2.3", Revision: strings.Repeat("a", 40), GoVersion: "1.26.9"}},
+		{"crun prerelease", "crun", source{Version: "1.31-rc.1", SHA256: strings.Repeat("a", 64)}},
 		{"release candidate", "crun", source{Version: "1.31.0-rc.1", SHA256: strings.Repeat("a", 64)}},
 		{"RPM macro", "crun", source{Version: "%{lua:os.execute('false')}", SHA256: strings.Repeat("a", 64)}},
 	} {
