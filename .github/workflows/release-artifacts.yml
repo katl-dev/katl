@@ -1,8 +1,6 @@
 name: Katl Release Artifacts
 
 on:
-  repository_dispatch:
-    types: [main-build]
   push:
     branches:
       - main
@@ -25,7 +23,7 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref == 'refs/heads/main' && github.event_name != 'workflow_dispatch' }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
 
 jobs:
   existing-bundle:
@@ -63,7 +61,7 @@ jobs:
 
   unit:
     name: Release unit tests
-    if: ${{ !inputs.qualify_run && (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ !inputs.qualify_run && (github.ref != 'refs/heads/main' || github.event_name != 'push') }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -111,7 +109,7 @@ jobs:
         run: |
           event="$GITHUB_EVENT_NAME"
           # Main builds warm caches visible to subsequent release tags.
-          if [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then
+          if [[ "$GITHUB_REF" == refs/heads/main && "$GITHUB_EVENT_NAME" == push ]]; then
             MANUAL_VERSION="$(date -u +%Y.%-m).0-dev.0"
             event=workflow_dispatch
           fi
@@ -322,7 +320,7 @@ jobs:
 
   images:
     name: Package KatlOS Images (${{ matrix.flavour }})
-    if: github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: github.ref != 'refs/heads/main' || github.event_name != 'push'
     needs: [identity, extensions]
     runs-on: ubuntu-24.04
     timeout-minutes: 90
@@ -513,7 +511,7 @@ jobs:
             scripts/check-installer-image
 
       - name: Upload installer intermediates
-        if: github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        if: github.ref != 'refs/heads/main' || github.event_name != 'push'
         uses: actions/upload-artifact@v7
         with:
           name: katl-installer-${{ matrix.flavour }}-${{ github.sha }}
@@ -534,7 +532,7 @@ jobs:
 
   katlctl:
     name: Build And Verify katlctl
-    if: github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: github.ref != 'refs/heads/main' || github.event_name != 'push'
     needs: identity
     runs-on: ubuntu-24.04
 
@@ -568,7 +566,7 @@ jobs:
 
   assemble:
     name: Assemble And Verify Katl Release
-    if: github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+    if: github.ref != 'refs/heads/main' || github.event_name != 'push'
     needs:
       - identity
       - runtime
@@ -716,7 +714,7 @@ jobs:
 
   release-validation:
     name: Release validation
-    if: ${{ always() && !inputs.qualify_run && (github.ref != 'refs/heads/main' || github.event_name == 'workflow_dispatch') }}
+    if: ${{ always() && !inputs.qualify_run && (github.ref != 'refs/heads/main' || github.event_name != 'push') }}
     needs: [bundle, vmtests, qualification, unit]
     runs-on: ubuntu-24.04
     steps:

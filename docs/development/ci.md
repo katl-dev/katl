@@ -23,9 +23,16 @@ production driver closure through upgrade, replication, and removal.
 **Merge Qualified Kernels** enables auto-merge only
 for the successfully qualified, unchanged revision of a bot-authored,
 kernel-lock-only PR. Branch protection also requires the ordinary presubmit
-checks. After a bot merge, the workflow dispatches a trusted main build because
-token-created merges do not trigger push workflows. These virtual machines do
-not qualify NVIDIA hardware.
+checks. A dedicated GitHub App opens and merges proposals so native PR and push
+events run the same CI as operator changes. These virtual machines do not
+qualify NVIDIA hardware.
+
+Install an automation GitHub App on this repository with **Contents** and
+**Pull requests** write access, and **Checks** and **Actions** read access. Set
+the repository variable `KATL_AUTOMATION_CLIENT_ID` to its client ID and the
+repository secret `KATL_AUTOMATION_PRIVATE_KEY` to its private key. Keep these
+credentials in the trusted proposal and promotion jobs; PR test jobs use the
+read-only built-in token. See [Creating a GitHub App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app).
 
 The optional `katl-vmtest` ARC pool is restricted to trusted main revisions by
 workflow routing. Before enabling it, enforce trusted workflow/ref admission

@@ -62,8 +62,6 @@ jobs:
   propose:
     needs: capture
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
     outputs:
       changed: ${{ steps.propose.outputs.changed }}
       branch: ${{ steps.propose.outputs.branch }}
@@ -80,9 +78,15 @@ jobs:
         with:
           name: kernel-candidates
           path: _build/kernel-candidates
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
+          private-key: ${{ secrets.KATL_AUTOMATION_PRIVATE_KEY }}
+          permission-contents: write
       - id: propose
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           go run ./cmd/katl-kernel-release propose > proposal.json
           jq -r 'to_entries[] | "\(.key)=\(.value)"' proposal.json >> "$GITHUB_OUTPUT"
@@ -265,10 +269,6 @@ jobs:
   pull-request:
     needs: [propose, qualify, publish]
     runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      pull-requests: write
-      actions: write
     steps:
       - uses: actions/checkout@v7
         with:
@@ -289,9 +289,16 @@ jobs:
               --lock "_build/kernel-candidates/$flavour/lock.json" \
               --cache "_build/public-verification/$flavour"
           done
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
+          private-key: ${{ secrets.KATL_AUTOMATION_PRIVATE_KEY }}
+          permission-contents: read
+          permission-pull-requests: write
       - name: Open the qualified proposal for review
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BRANCH: ${{ needs.propose.outputs.branch }}
           QUALIFIED_COMMIT: ${{ needs.propose.outputs.commit }}
         run: |
@@ -316,10 +323,6 @@ jobs:
             gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
               --title 'kernel: update retained kernel inputs' --body-file body.md
           fi
-          # Explicit dispatch avoids approval-required runs for GITHUB_TOKEN-created PRs.
-          for workflow in fast-checks.yml kubernetes-bundles.yml kernel-updates.yml pr-vmtests.yml; do
-            gh workflow run "$workflow" --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
-          done
 
   result:
     name: Kernel Input Qualification
