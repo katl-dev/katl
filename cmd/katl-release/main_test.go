@@ -20,7 +20,6 @@ type githubFixture struct {
 	run         workflowRun
 	artifacts   []artifact
 	refs        []map[string]string
-	protected   bool
 	rerun       bool
 	replaced    bool
 	corrupt     bool
@@ -34,7 +33,6 @@ func newFixture(t *testing.T) *githubFixture {
 		t:         t,
 		run:       workflowRun{ID: 42, Attempt: 1, Tag: "v2026.10.2", Commit: testCommit, Event: "push", Path: workflow, Status: "waiting"},
 		artifacts: []artifact{{ID: 123, Name: "katl-2026.10.2-x86_64-1234567890ab", Digest: "sha256:archive"}},
-		protected: true,
 	}
 }
 
@@ -57,12 +55,6 @@ func (f *githubFixture) call(name string, args ...string) ([]byte, error) {
 			value = map[string]string{"sha": testCommit}
 		case "git/matching-refs/tags/v2026.10.2":
 			value = f.refs
-		case "environments/release":
-			rules := []any{}
-			if f.protected {
-				rules = append(rules, map[string]any{"type": "required_reviewers", "reviewers": []any{map[string]any{"type": "User"}}})
-			}
-			value = map[string]any{"protection_rules": rules}
 		case "actions/runs/42":
 			value = map[string]any{
 				"id": f.run.ID, "run_attempt": f.run.Attempt, "head_branch": f.run.Tag,
@@ -140,7 +132,6 @@ func TestPrepare(t *testing.T) {
 		{"available", func(f *githubFixture) {}, ""},
 		{"prefix tag", func(f *githubFixture) { f.refs = []map[string]string{{"ref": "refs/tags/v2026.10.20"}} }, ""},
 		{"used tag", func(f *githubFixture) { f.refs = []map[string]string{{"ref": "refs/tags/v2026.10.2"}} }, "already exists"},
-		{"unprotected", func(f *githubFixture) { f.protected = false }, "required reviewers"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := newFixture(t)

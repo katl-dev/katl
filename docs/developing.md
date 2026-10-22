@@ -84,8 +84,8 @@ Inspect the inventory with:
 go run ./cmd/katl-mkosi-artifacts inventory-release-extensions
 ```
 
-VM lifecycle qualification is separate from build verification and runs locally;
-VM tests are not supported in CI.
+VM lifecycle qualification runs through the same libvirt harness locally and
+in [GitHub Actions](development/ci.md).
 
 ## Run VM tests with libvirt
 
@@ -423,9 +423,10 @@ no-op for unrelated changes and builds every affected supported bundle when
 producer inputs change. Direct pushes are not part of the supported development
 loop.
 
-It intentionally skips mkosi builds, libvirt/KVM setup, VM scenarios, and
-publishing. Run host-specific VM gates locally with `scripts/vmtest-run` on a
-capable host and record the result with the change or release evidence. GitHub Actions does not run hosted VM tests.
+Fast checks skip mkosi builds, libvirt/KVM setup, VM scenarios, and publishing.
+The separate [VM CI workflows](development/ci.md) exercise integrated journeys.
+Run focused VM gates locally with `scripts/vmtest-run` on a capable host and
+record the result with the change or release evidence.
 
 ## Fedora package inputs
 
@@ -447,7 +448,7 @@ distinction between product contracts and build evidence.
 ## GitHub release artifacts
 
 Follow [Release KatlOS](development/releases.md) to prepare a version, download
-and verify a candidate, qualify its exact artifacts, and approve publication.
+and verify a candidate, and monitor automated qualification and publication.
 Start with `scripts/katl-release prepare VERSION`; it performs read-only checks
 and prints the commands for starting the tag build.
 
@@ -457,29 +458,20 @@ with an explicit version for build verification. Release-branch and manual runs
 retain one GitHub Actions artifact; tag runs additionally publish those exact
 files as assets on the matching GitHub Release.
 
-Tag runs pause at **Approve Release Publication** after the complete bundle has
-been assembled and attested. The repository's `release` environment must have a
-required maintainer reviewer. Configure it before creating release tags; an
-unprotected environment does not pause publication. The single-maintainer
-workflow permits that reviewer to approve a run they initiated.
-
-Download the final `katl-VERSION-x86_64-COMMIT` artifact from that exact run with
-`gh run download RUN_ID --name ARTIFACT_NAME --dir DESTINATION`. Check its
-`SHA256SUMS`, generated `RELEASE_NOTES.md`, component inventories, metadata and
-attestations. Exercise the applicable install, upgrade and recovery journeys
-using those files and the bundled `katlctl`. Record the run, commit, artifact
-IDs and digests, commands and outcomes in the release Bead before approving the
-pending `release` deployment for that run. Approval publishes those existing
-GitHub and extension artifacts without rebuilding them. Both are retained for
-30 days while awaiting approval.
+Tag runs publish only after **Release validation** passes baseline tests, the
+regression suite for both flavours, and lifecycle tests against the final
+production bundle. Publication uses those qualified artifacts without rebuilding.
+See the [release procedure](development/releases.md) for candidate inspection,
+qualification coverage, and failure handling. Final bundles remain available as
+Actions artifacts for 30 days.
 
 Manual builds qualify the source and packaging but produce separate bytes from
 a later tag run. Rebuilding or rerunning producer jobs invalidates the recorded
 artifact qualification and requires repeating the affected journeys.
 
 Pushes to `main` build and verify the runtime and installer to warm the caches
-that subsequent release tags can restore. These runs skip release packaging,
-artifact uploads, attestations, and publication. GitHub isolates caches between
+that subsequent release tags can restore. These runs also execute both regression flavours and skip final release
+packaging, attestations, and publication. GitHub isolates caches between
 tags, so warming them only during a release does not help the next release.
 New main pushes cancel superseded warm builds; release runs are not cancelled.
 
@@ -576,11 +568,10 @@ does not require a second commit just to update hard-coded verifier digests.
 
 ## VM tests on a capable host
 
-Katl does not currently run VM tests in GitHub Actions because no hosted runner
-provides the required libvirt, KVM, OVMF, and vsock environment. The repository
-deliberately has no VM workflow until the hosting and orchestration model is
-designed and provisioned. Do not make VM jobs required checks while no runner
-can accept them.
+GitHub-hosted Ubuntu runners execute the libvirt suite with KVM, OVMF, and
+vsock. See [VM continuous integration](development/ci.md) for the automated
+journeys, required results, and optional runner configuration. The commands
+below run the same harness on a capable development host.
 
 The [Kubernetes release producer](concepts/kubernetes-releases.md) discovers
 stable upstream versions and publishes verified bundles automatically. Its
@@ -744,10 +735,11 @@ gh workflow run kernel-updates.yml --ref main \
   -f lts_release=6.18.57-200.fc44.x86_64
 ```
 
-The proposal records its exact qualified commit. Existing bot-created PR checks
-can require maintainer approval before they run. Kernel updates remain reviewed
-changes; build qualification does not replace DRBD replication, applicable VM
-gates, persistent operator journeys, or NVIDIA hardware evidence.
+The proposal records its exact qualified commit. Kernel Input Qualification also
+requires the VM regression suite and production-driver DRBD replication for both
+flavours. Unchanged bot-authored kernel-lock-only proposals can then merge
+automatically after branch protection passes. These virtual machines do not
+qualify NVIDIA hardware.
 
 For local candidate qualification, capture the selected flavour inside the
 builder and select its retained OCI layout explicitly:

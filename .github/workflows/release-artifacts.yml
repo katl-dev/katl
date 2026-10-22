@@ -11,27 +11,88 @@ on:
     inputs:
       version:
         description: CalVer embedded in artifacts (for example 2026.7.0-beta.1)
-        required: true
         type: string
+      qualify_run:
+        description: Requalify a final bundle from this run without rebuilding; zero builds a new candidate
+        type: number
+        default: 0
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref == 'refs/heads/main' && github.event_name == 'push' }}
 
 jobs:
+  existing-bundle:
+    name: Resolve Existing Bundle
+    if: inputs.qualify_run > 0
+    runs-on: ubuntu-24.04
+    outputs:
+      artifact: ${{ steps.bundle.outputs.artifact }}
+      previous-tag: ${{ steps.bundle.outputs.previous-tag }}
+    steps:
+      - id: bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.qualify_run }}
+        run: |
+          source="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID")"
+          [[ "$(jq -r .path <<< "$source")" == .github/workflows/release-artifacts.yml ]]
+          commit="$(jq -r .head_sha <<< "$source")"
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          bundles="$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/artifacts?per_page=100" | jq -s '[.[].artifacts[] | select(.name | test("^katl-[0-9]{4}[.][0-9]+[.][0-9]+(-[a-z0-9.-]+)?-x86_64-[0-9a-f]{12}$"))]')"
+          jq -e 'length == 1 and .[0].expired == false' <<< "$bundles"
+          artifact="$(jq -r '.[0].name' <<< "$bundles")"
+          [[ "$artifact" == *-"${commit:0:12}" ]]
+          echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
+          echo "previous-tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)" >> "$GITHUB_OUTPUT"
+
+  requalify:
+    name: Requalify production VM
+    needs: existing-bundle
+    uses: ./.github/workflows/production-vmtests.yml
+    with:
+      artifact-name: ${{ needs.existing-bundle.outputs.artifact }}
+      run-id: ${{ fromJSON(inputs.qualify_run || '0') }}
+      previous-tag: ${{ needs.existing-bundle.outputs.previous-tag }}
+
+  unit:
+    name: Release unit tests
+    if: ${{ !inputs.qualify_run && (github.ref != 'refs/heads/main' || github.event_name != 'push') }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends dosfstools mtools xorriso squashfs-tools
+      - run: scripts/check-fast
+
   vmtests:
     name: VM regression
+    if: ${{ !inputs.qualify_run }}
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: [standard, lts]
     uses: ./.github/workflows/hosted-vmtests.yml
+    with:
+      flavour: ${{ matrix.flavour }}
 
   identity:
     name: Resolve Release Identity
+    if: ${{ !inputs.qualify_run }}
     runs-on: ubuntu-24.04
     outputs:
       artifact-name: ${{ steps.release.outputs.artifact-name }}
       version: ${{ steps.release.outputs.version }}
+      previous-tag: ${{ steps.previous.outputs.tag }}
 
     env:
       KATL_ARCHITECTURE: x86_64
@@ -59,6 +120,11 @@ jobs:
           artifact_name="katl-${version}-${KATL_ARCHITECTURE}-${short_sha}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "artifact-name=$artifact_name" >> "$GITHUB_OUTPUT"
+      - name: Resolve supported upgrade source
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)" >> "$GITHUB_OUTPUT"
 
   runtime:
     name: Build And Verify Runtime
@@ -184,6 +250,7 @@ jobs:
 
   extension-inventory:
     name: Inventory Release Extensions
+    if: ${{ !inputs.qualify_run }}
     runs-on: ubuntu-24.04
     outputs:
       extensions: ${{ steps.inventory.outputs.extensions }}
@@ -637,20 +704,35 @@ jobs:
           compression-level: 0
 
 
-  release-approval:
-    name: Approve Release Publication
-    if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: bundle
+  qualification:
+    name: Production VM
+    needs: [identity, bundle]
+    uses: ./.github/workflows/production-vmtests.yml
+    with:
+      artifact-name: ${{ needs.identity.outputs.artifact-name }}
+      previous-tag: ${{ needs.identity.outputs.previous-tag }}
+
+  release-validation:
+    name: Release validation
+    if: ${{ always() && !inputs.qualify_run && (github.ref != 'refs/heads/main' || github.event_name != 'push') }}
+    needs: [bundle, vmtests, qualification, unit]
     runs-on: ubuntu-24.04
-    environment: release
     steps:
-      - name: Record publication approval
-        run: echo 'The assembled artifacts from this run are approved for publication.'
+      - env:
+          UNIT: ${{ needs.unit.result }}
+          BUNDLE: ${{ needs.bundle.result }}
+          REGRESSION: ${{ needs.vmtests.result }}
+          PRODUCTION: ${{ needs.qualification.result }}
+        run: |
+          test "$UNIT" = success
+          test "$BUNDLE" = success
+          test "$REGRESSION" = success
+          test "$PRODUCTION" = success
 
   publish-extensions:
     name: Publish Kernel Extensions
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [images, release-approval]
+    needs: [images, release-validation]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -697,6 +779,24 @@ jobs:
           name: ${{ needs.identity.outputs.artifact-name }}
           path: dist
 
+      - name: Verify release checksums and provenance
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dist && sha256sum --check SHA256SUMS)
+          # The inner shell expands its positional artifact argument.
+          # shellcheck disable=SC2016
+          find dist -mindepth 1 -maxdepth 1 -type f -print0 | \
+            xargs -0 -r -n1 -P4 bash -euo pipefail -c '
+              artifact="$1"
+              gh attestation verify "$artifact" \
+                --repo "$GITHUB_REPOSITORY" \
+                --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-artifacts.yml" \
+                --source-ref "$GITHUB_REF" \
+                --source-digest "$GITHUB_SHA" >/dev/null
+            ' _
+
       - name: Publish tag release
         shell: bash
         env:
@@ -720,20 +820,3 @@ jobs:
               "${prerelease[@]}" \
               dist/*
           fi
-
-      - name: Verify published release provenance
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # The inner shell expands its positional artifact argument.
-          # shellcheck disable=SC2016
-          find dist -mindepth 1 -maxdepth 1 -type f -print0 | \
-            xargs -0 -r -n1 -P4 bash -euo pipefail -c '
-              artifact="$1"
-              gh attestation verify "$artifact" \
-                --repo "$GITHUB_REPOSITORY" \
-                --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release-artifacts.yml" \
-                --source-ref "$GITHUB_REF" \
-                --source-digest "$GITHUB_SHA" >/dev/null
-            ' _

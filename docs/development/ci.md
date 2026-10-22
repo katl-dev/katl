@@ -29,3 +29,7 @@ setting `KATL_VMTEST_MAIN_RUNNER=katl-vmtest`.
 **Kernel Input Qualification** reports a result for every PR and can be required
 by branch protection. Unrelated changes skip kernel builds and VM jobs; changed
 kernel inputs and their build tools require the complete qualification.
+
+**Katl Release Artifacts** runs the regression suite for both flavours and
+qualifies the final production bundle before publishing a tag. See
+[Release KatlOS](releases.md) for the promotion contract and failure handling.
