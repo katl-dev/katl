@@ -43,14 +43,14 @@ jobs:
           while IFS= read -r file; do
             [[ "$file" =~ ^kernels/fedora-[0-9]+/x86_64/(standard|lts)\.json$ ]]
           done < <(jq -r '.files[].path' files.json)
-          if ! gh pr checks "$number" --json name,state --jq '.[] | select(.name == "Kernel Input Qualification")' > qualification.json; then exit 0; fi
+          gh pr checks "$number" --json name,state --jq '.[] | select(.name == "Kernel Input Qualification")' > qualification.json
           jq -se 'length == 1 and .[0].state == "SUCCESS"' qualification.json >/dev/null || exit 0
           if [[ "$state" == OPEN ]]; then
             gh pr merge "$number" --auto --squash --match-head-commit "$QUALIFIED_SHA"
-            if ! gh pr checks "$number" --required --json state > required.json; then exit 0; fi
+            gh pr checks "$number" --required --json state > required.json
             jq -e 'length > 0 and all(.[]; .state == "SUCCESS")' required.json >/dev/null || exit 0
             # Native auto-merge may complete just after the final required check.
-            for attempt in {1..30}; do
+            for ((attempt=0; attempt<30; attempt++)); do
               state="$(gh pr view "$number" --json state --jq .state)"
               [[ "$state" == MERGED ]] && break
               sleep 1

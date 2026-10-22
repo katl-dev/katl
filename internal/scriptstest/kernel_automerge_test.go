@@ -29,8 +29,8 @@ func TestKernelPromotion(t *testing.T) {
 		scripts = append(scripts, step.Run)
 	}
 	for _, tc := range []struct {
-		name, author, head, state, file, qualification, requiredState, actions string
-		fork, checkError, truncated                                            bool
+		name, author, head, state, file, qualification, requiredState, queryError, actions string
+		fork, truncated                                                                    bool
 	}{
 		{name: "ready", actions: "merge\ndispatch\n"},
 		{name: "merged", state: "MERGED", actions: "dispatch\n"},
@@ -42,7 +42,8 @@ func TestKernelPromotion(t *testing.T) {
 		{name: "unqualified", qualification: "FAILURE"},
 		{name: "required check pending", requiredState: "PENDING", actions: "merge\n"},
 		{name: "required check failed", requiredState: "FAILURE", actions: "merge\n"},
-		{name: "check query failed", checkError: true},
+		{name: "qualification query failed", queryError: "qualification"},
+		{name: "required checks query failed", queryError: "required", actions: "merge\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			directory := t.TempDir()
@@ -89,10 +90,11 @@ case "$1 $2" in
   'pr view')
     if [[ "$*" == *changedFiles* ]]; then cat files-input.json; else echo MERGED; fi ;;
   'pr checks')
-    [[ "$CHECK_ERROR" != true ]] || exit 1
     if [[ "$*" == *--required* ]]; then
+      [[ "$QUERY_ERROR" != required ]] || exit 1
       printf '[{"state":"%s"}]\n' "$REQUIRED_STATE"
     else
+      [[ "$QUERY_ERROR" != qualification ]] || exit 1
       cat qualification-input.json
     fi ;;
   'pr merge')
@@ -110,25 +112,29 @@ esac
 					t.Fatal(err)
 				}
 			}
-			requiredState, checkError := "SUCCESS", "false"
+			requiredState := "SUCCESS"
 			if tc.requiredState != "" {
 				requiredState = tc.requiredState
-			}
-			if tc.checkError {
-				checkError = "true"
 			}
 			command := exec.Command("bash", "-euo", "pipefail", "-c", strings.Join(scripts, "\n"))
 			command.Dir = directory
 			command.Env = append(os.Environ(), "PATH="+directory+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"GH_REPO=katl-dev/katl", "BRANCH=automation/kernels-test", "QUALIFIED_SHA=qualified",
-				"REQUIRED_STATE="+requiredState, "CHECK_ERROR="+checkError)
+				"REQUIRED_STATE="+requiredState, "QUERY_ERROR="+tc.queryError)
 			output, runErr := command.CombinedOutput()
 			actions, err := os.ReadFile(filepath.Join(directory, "actions"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(actions) != tc.actions || tc.actions != "" && runErr != nil {
+			if string(actions) != tc.actions {
 				t.Fatalf("promotion actions = %q, want %q (error %v): %s", actions, tc.actions, runErr, output)
+			}
+
+			if tc.queryError != "" && runErr == nil {
+				t.Fatal("check query error did not fail promotion")
+			}
+			if tc.queryError == "" && tc.actions != "" && runErr != nil {
+				t.Fatalf("promotion failed: %v: %s", runErr, output)
 			}
 		})
 	}
