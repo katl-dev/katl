@@ -61,17 +61,13 @@ func TestLibvirtConsoleProcess(t *testing.T) {
 		if err != nil {
 			panic(err)
 		}
-		if err := os.WriteFile(filepath.Join(root, "terminal"), []byte(terminalPath), 0o600); err != nil {
-			panic(err)
-		}
+		publishProcessFile(filepath.Join(root, "terminal"), terminalPath)
 		// Observe stdin hangup directly, including when the owner cannot run
 		// cleanup. Native virsh also exits when its terminal input closes.
 		signal.Ignore(syscall.SIGHUP)
 		_, _ = os.Stdout.WriteString(os.Getenv("KATL_CONSOLE_MARKER") + "\n")
 		_, _ = os.Stderr.WriteString("console stderr\n")
-		if err := os.WriteFile(filepath.Join(root, "console.pid"), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
-			panic(err)
-		}
+		publishProcessFile(filepath.Join(root, "console.pid"), strconv.Itoa(os.Getpid()))
 		var input [1]byte
 		if n, err := os.Stdin.Read(input[:]); n != 0 || err == nil {
 			os.Exit(41)
@@ -82,6 +78,16 @@ func TestLibvirtConsoleProcess(t *testing.T) {
 		os.Exit(0)
 	}
 	os.Exit(40)
+}
+
+func publishProcessFile(path, content string) {
+	// Existence signals readiness, so readers must see the complete contents.
+	if err := os.WriteFile(path+".tmp", []byte(content), 0o600); err != nil {
+		panic(err)
+	}
+	if err := os.Rename(path+".tmp", path); err != nil {
+		panic(err)
+	}
 }
 
 func consoleFixture(t *testing.T) string {
@@ -225,22 +231,19 @@ func TestLibvirtCommandProcess(t *testing.T) {
 	root := os.Getenv("KATL_COMMAND_FIXTURE")
 	interrupted := make(chan os.Signal, 1)
 	signal.Notify(interrupted, os.Interrupt)
-	go func() {
-		<-interrupted
-		if mode == "virsh" {
-			_ = os.WriteFile(filepath.Join(root, "interrupted"), nil, 0o600)
-		}
-		os.Exit(130)
-	}()
 	if mode == "owner" {
 		e := LibvirtVMExecutor{VirshPath: filepath.Join(root, "virsh"), DomainName: "fixture"}
 		_ = e.Run(context.Background(), "", nil, nil)
-		os.Exit(0)
+	} else {
+		publishProcessFile(filepath.Join(root, "command.pid"), strconv.Itoa(os.Getpid()))
 	}
-	if err := os.WriteFile(filepath.Join(root, "command.pid"), []byte(strconv.Itoa(os.Getpid())), 0o600); err != nil {
-		panic(err)
+
+	// The child may exit before its owner's signal notification is delivered.
+	<-interrupted
+	if mode == "virsh" {
+		_ = os.WriteFile(filepath.Join(root, "interrupted"), nil, 0o600)
 	}
-	select {}
+	os.Exit(130)
 }
 
 func TestLibvirtCommandInterrupt(t *testing.T) {
@@ -304,7 +307,9 @@ func TestLibvirtCommandCancellation(t *testing.T) {
 	root := t.TempDir()
 	virsh := filepath.Join(root, "virsh")
 	writeExecutable(t, virsh, `#!/usr/bin/env bash
-printf '%s' "$$" >"$KATL_COMMAND_PID"
+set -euo pipefail
+printf '%s' "$$" >"$KATL_COMMAND_PID.tmp"
+mv "$KATL_COMMAND_PID.tmp" "$KATL_COMMAND_PID"
 exec sleep 60
 `)
 	pidFile := filepath.Join(root, "command.pid")
