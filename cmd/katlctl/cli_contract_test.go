@@ -122,6 +122,108 @@ func TestRepeatedNodeFlagDoesNotInheritEnvironment(t *testing.T) {
 	}
 }
 
+func TestNodeSelectionPrecedence(t *testing.T) {
+	t.Setenv("KATLCTL_CONFIG", filepath.Join(t.TempDir(), "contexts.yaml"))
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "environment", want: "env-node"},
+		{name: "positional", args: []string{"chosen-node"}, want: "chosen-node"},
+		{name: "flag", args: []string{"--node", "chosen-node"}, want: "chosen-node"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("KATLCTL_NODE", "env-node")
+			installKatlcDial(t, nil, healthyHostClient("machine", "agent", "generation-0"))
+			args := append([]string{"node", "status"}, tc.args...)
+			args = append(args, "--endpoint", "192.0.2.1", "--output", "json")
+			var out bytes.Buffer
+			if err := run(context.Background(), args, &out, io.Discard); err != nil {
+				t.Fatal(err)
+			}
+
+			var report hostStatusReport
+			if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+				t.Fatal(err)
+			}
+			if report.Node != tc.want {
+				t.Fatalf("selected node = %q, want %q", report.Node, tc.want)
+			}
+		})
+	}
+}
+
+func TestNodeArgumentsRejectBeforeEffects(t *testing.T) {
+	t.Setenv("KATLCTL_CONFIG", filepath.Join(t.TempDir(), "contexts.yaml"))
+	commands := [][]string{
+		{"node", "status"}, {"node", "reboot"}, {"node", "shutdown"},
+		{"node", "logs"}, {"node", "join"}, {"node", "wipe"},
+		{"node", "upgrade", "--version", "2026.10.3"},
+		{"node", "generations", "list"},
+		{"node", "generations", "select", "generation"},
+		{"node", "generations", "remove", "generation"},
+		{"install", "status"},
+	}
+	for _, command := range commands {
+		for _, tc := range []struct {
+			args []string
+			want string
+		}{
+			{args: []string{""}, want: "NODE must not be empty"},
+			{args: []string{"--node", ""}, want: "--node must not be empty"},
+			{args: []string{"cp-1", "--node", "cp-2"}, want: "NODE cannot be combined with --node"},
+		} {
+			args := append(append([]string{}, command...), tc.args...)
+			t.Run(strings.Join(args, " "), func(t *testing.T) {
+				t.Setenv("KATLCTL_NODE", "env-node")
+				installKatlcDial(t, func(string) { t.Fatal("invalid selection contacted a node") }, nil)
+				var out bytes.Buffer
+				err := run(context.Background(), args, &out, io.Discard)
+				if err == nil || !strings.Contains(err.Error(), tc.want) || out.Len() != 0 {
+					t.Fatalf("output = %q, error = %v; want %q", &out, err, tc.want)
+				}
+			})
+		}
+	}
+}
+
+func TestNodeSelectionGuidance(t *testing.T) {
+	config := writeClusterConfig(t)
+	contextPath := writeKatlctlConfig(t, `currentContext: lab
+contexts:
+- name: lab
+  cluster: lab
+clusters:
+- name: lab
+  nodes:
+  - name: cp-1
+    managementEndpoint: 192.0.2.1:9443
+    systemRole: control-plane
+  - name: worker-1
+    managementEndpoint: 192.0.2.2:9443
+    systemRole: worker
+`)
+	for _, tc := range []struct {
+		args []string
+		want []string
+	}{
+		{args: []string{"absent", "--config", config}, want: []string{"--config", "choose one of: cp-1"}},
+		{args: []string{"absent", "--context-file", contextPath}, want: []string{`context "lab"`, "cp-1", "worker-1"}},
+		{args: []string{"--context-file", contextPath}, want: []string{"NODE or --node", "cp-1", "worker-1"}},
+	} {
+		err := run(context.Background(), append([]string{"node", "status"}, tc.args...), io.Discard, io.Discard)
+		if err == nil {
+			t.Fatal("invalid selection succeeded")
+		}
+		for _, want := range tc.want {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %v, missing %q", err, want)
+			}
+		}
+	}
+}
+
 func TestConfigApplyHasOneOperatorPath(t *testing.T) {
 	bundle, _ := writeConfigBundle(t)
 	for _, path := range []string{writeClusterConfig(t), bundle} {

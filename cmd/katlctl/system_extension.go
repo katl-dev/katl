@@ -16,6 +16,7 @@ import (
 )
 
 type systemExtensionStatusOptions struct {
+	verbose bool
 	target  managementTargetOptions
 	timeout time.Duration
 	output  string
@@ -179,7 +180,7 @@ func newSystemExtensionStatusCommand(ctx context.Context, stdout, stderr io.Writ
 	opts := systemExtensionStatusOptions{timeout: 15 * time.Second, output: "text"}
 	cmd := &cobra.Command{
 		Use:   "status [NAME]",
-		Short: "Show generic extension, payload, configuration, and unit state",
+		Short: "Show extension state and failures; use --verbose for details",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
 			name := ""
@@ -190,6 +191,7 @@ func newSystemExtensionStatusCommand(ctx context.Context, stdout, stderr io.Writ
 		},
 	}
 	addManagementTargetFlags(cmd, &opts.target)
+	cmd.Flags().BoolVar(&opts.verbose, "verbose", false, "include artifact digests, files, payloads, and healthy units")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "management request timeout")
 	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
@@ -226,10 +228,10 @@ func runSystemExtensionStatus(ctx context.Context, opts systemExtensionStatusOpt
 	if opts.output == "json" {
 		return json.NewEncoder(stdout).Encode(report)
 	}
-	return writeSystemExtensionStatus(stdout, report)
+	return writeSystemExtensionStatus(stdout, report, opts.verbose)
 }
 
-func writeSystemExtensionStatus(stdout io.Writer, report systemExtensionStatusReport) error {
+func writeSystemExtensionStatus(stdout io.Writer, report systemExtensionStatusReport, verbose bool) error {
 	w := newTable(stdout)
 	w.row("NAME", "DESIRED", "STAGED", "ACTIVE", "COMPATIBILITY", "GENERATION", "REBOOT")
 	for _, extension := range report.Extensions {
@@ -238,17 +240,27 @@ func writeSystemExtensionStatus(stdout io.Writer, report systemExtensionStatusRe
 			generationID = extension.GetObservedGenerationId() + " -> " + extension.GetDesiredGenerationId()
 		}
 		w.row(extension.GetName(), extension.GetDesiredState(), extension.GetStagingState(), extension.GetActivationState(), extension.GetCompatibility(), generationID, yesNo(extension.GetRebootRequired()))
-		if extension.GetSubmittedReference() != "" {
+		if verbose && extension.GetSubmittedReference() != "" {
 			w.row("", "bundle", extension.GetSubmittedReference())
 			w.row("", "digests", fmt.Sprintf("oci=%s bundle=%s", extension.GetOciManifestDigest(), extension.GetBundleManifestDigest()))
 		}
 		for _, payload := range extension.GetPayloads() {
-			w.row("", "payload", fmt.Sprintf("%s %s selected=%s active=%s digest=%s", payload.GetRole(), payload.GetName(), yesNo(payload.GetSelected()), yesNo(payload.GetActive()), payload.GetDigest()))
+			if verbose {
+				w.row("", "payload", fmt.Sprintf("%s %s selected=%s active=%s digest=%s", payload.GetRole(), payload.GetName(), yesNo(payload.GetSelected()), yesNo(payload.GetActive()), payload.GetDigest()))
+			}
 		}
 		for _, file := range extension.GetFiles() {
-			w.row("", "file", fmt.Sprintf("%s mode=%#o sha256=%s", file.GetPath(), file.GetMode(), file.GetSha256()))
+			if verbose {
+				w.row("", "file", fmt.Sprintf("%s mode=%#o sha256=%s", file.GetPath(), file.GetMode(), file.GetSha256()))
+			}
 		}
 		for _, unit := range extension.GetUnits() {
+			failed := unit.GetFailureDiagnostic() != "" || unit.GetActiveState() == "failed" ||
+				unit.GetLoadState() == "error" || unit.GetLoadState() == "not-found" ||
+				(unit.GetResult() != "" && unit.GetResult() != "success")
+			if !verbose && !failed {
+				continue
+			}
 			w.row("", "unit", fmt.Sprintf("%s enabled=%s boot-health=%s %s/%s result=%s", unit.GetName(), yesNo(unit.GetEnable()), yesNo(unit.GetRequiredForBootHealth()), unit.GetActiveState(), unit.GetSubState(), unit.GetResult()))
 			if unit.GetFailureDiagnostic() != "" {
 				w.row("", "", strings.ReplaceAll(unit.GetFailureDiagnostic(), "\n", "\n\t\t"))

@@ -210,11 +210,12 @@ func TestDetachedAcceptanceHidesNodeRecordPath(t *testing.T) {
 	var stdout bytes.Buffer
 	err := writeOperationAccepted(&stdout, &agentapi.OperationAccepted{
 		OperationId: "op-1", OperationKind: "host-upgrade", RecordPath: "/var/lib/katl/operations/op-1/record.json",
+		InitialStatus: &agentapi.OperationStatus{ClientRequestId: "internal-request", RequestDigest: "internal-digest"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(stdout.String(), "op-1") || strings.Contains(stdout.String(), "recordPath") || strings.Contains(stdout.String(), "/var/lib/katl") {
+	if !strings.Contains(stdout.String(), "op-1") || strings.Contains(stdout.String(), "recordPath") || strings.Contains(stdout.String(), "/var/lib/katl") || strings.Contains(stdout.String(), "internal-") {
 		t.Fatalf("detached output = %s", stdout.String())
 	}
 }
@@ -249,7 +250,7 @@ func TestFollowOperationFallsBackToPolling(t *testing.T) {
 	if status != terminal || len(client.getRequests) != 1 {
 		t.Fatalf("status=%#v get requests=%d", status, len(client.getRequests))
 	}
-	if !strings.Contains(stderr.String(), "falling back to authoritative status polling") {
+	if !strings.Contains(stderr.String(), "continuing to check operation status") {
 		t.Fatalf("stderr = %q", stderr.String())
 	}
 }

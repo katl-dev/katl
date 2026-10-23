@@ -41,29 +41,21 @@ type operationLister interface {
 }
 
 type operationStatusOptions struct {
-	clusterConfig string
-	endpoint      string
-	configPath    string
-	contextName   string
-	nodeName      string
-	operationID   string
-	diagnostics   string
-	watch         bool
-	timeout       time.Duration
-	output        string
+	target      managementTargetOptions
+	operationID string
+	diagnostics string
+	watch       bool
+	timeout     time.Duration
+	output      string
 }
 
 type operationListOptions struct {
-	clusterConfig string
-	endpoint      string
-	configPath    string
-	contextName   string
-	nodeName      string
-	activeOnly    bool
-	limit         int32
-	diagnostics   string
-	timeout       time.Duration
-	output        string
+	target      managementTargetOptions
+	activeOnly  bool
+	limit       int32
+	diagnostics string
+	timeout     time.Duration
+	output      string
 }
 
 func newOperationCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
@@ -90,12 +82,7 @@ func newOperationStatusCommand(ctx context.Context, stdout, stderr io.Writer) *c
 			return runOperationStatus(ctx, opts, stdout, stderr)
 		},
 	}
-	cmd.Flags().StringVar(&opts.clusterConfig, "config", "", "ClusterConfig YAML or Katl config bundle")
-	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "node address override: IP, hostname, host:port, or tcp:// URL")
-	cmd.Flags().StringVar(&opts.configPath, "context-file", "", "workstation context file path")
-	cmd.Flags().Lookup("context-file").Hidden = true
-	cmd.Flags().StringVar(&opts.contextName, "context", "", "optional saved context created by 'katlctl context save'")
-	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name from --config or a saved context; optional for one node")
+	addManagementTargetFlags(cmd, &opts.target)
 	cmd.Flags().StringVar(&opts.operationID, "operation-id", "", "accepted operation id")
 	cmd.Flags().Lookup("operation-id").Hidden = true
 	cmd.Flags().StringVar(&opts.diagnostics, "diagnostics", opts.diagnostics, "diagnostics detail: normal or verbose")
@@ -115,12 +102,7 @@ func newOperationListCommand(ctx context.Context, stdout, stderr io.Writer) *cob
 			return runOperationList(ctx, opts, stdout, stderr)
 		},
 	}
-	cmd.Flags().StringVar(&opts.clusterConfig, "config", "", "ClusterConfig YAML or Katl config bundle")
-	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "node address override: IP, hostname, host:port, or tcp:// URL")
-	cmd.Flags().StringVar(&opts.configPath, "context-file", "", "workstation context file path")
-	cmd.Flags().Lookup("context-file").Hidden = true
-	cmd.Flags().StringVar(&opts.contextName, "context", "", "optional saved context created by 'katlctl context save'")
-	cmd.Flags().StringVar(&opts.nodeName, "node", "", "node name from --config or a saved context; optional for one node")
+	addManagementTargetFlags(cmd, &opts.target)
 	cmd.Flags().BoolVar(&opts.activeOnly, "active", false, "show only non-terminal operations")
 	cmd.Flags().Int32Var(&opts.limit, "limit", opts.limit, "maximum operations to return")
 	cmd.Flags().StringVar(&opts.diagnostics, "diagnostics", opts.diagnostics, "diagnostics detail: normal or verbose")
@@ -140,10 +122,7 @@ func runOperationList(ctx context.Context, opts operationListOptions, stdout, st
 	if opts.diagnostics != "normal" && opts.diagnostics != "verbose" {
 		return fmt.Errorf("--diagnostics must be %q or %q", "normal", "verbose")
 	}
-	session, err := openManagementSession(ctx, managementTargetOptions{
-		clusterConfigPath: opts.clusterConfig, configPath: opts.configPath, contextName: opts.contextName, nodeName: opts.nodeName,
-		endpoint: opts.endpoint,
-	}, opts.timeout)
+	session, err := openManagementSession(ctx, opts.target, opts.timeout)
 	if err != nil {
 		return err
 	}
@@ -156,9 +135,9 @@ func runOperationList(ctx context.Context, opts operationListOptions, stdout, st
 	if err != nil {
 		return err
 	}
-	for _, status := range response.GetOperations() {
-		status.ClientRequestId = ""
-		status.RequestDigest = ""
+	response = proto.Clone(response).(*agentapi.ListOperationsResponse)
+	for i, status := range response.GetOperations() {
+		response.Operations[i] = publicOperationStatus(status)
 	}
 	if opts.output == "text" {
 		w := newTable(stdout)
@@ -182,10 +161,7 @@ func runOperationStatus(ctx context.Context, opts operationStatusOptions, stdout
 	if opts.diagnostics != "normal" && opts.diagnostics != "verbose" {
 		return fmt.Errorf("--diagnostics must be %q or %q", "normal", "verbose")
 	}
-	session, err := openManagementSession(ctx, managementTargetOptions{
-		clusterConfigPath: opts.clusterConfig, configPath: opts.configPath, contextName: opts.contextName, nodeName: opts.nodeName,
-		endpoint: opts.endpoint,
-	}, opts.timeout)
+	session, err := openManagementSession(ctx, opts.target, opts.timeout)
 	if err != nil {
 		return err
 	}
@@ -264,7 +240,7 @@ func followOperation(ctx context.Context, client operationClient, request *agent
 	for {
 		progress := fmt.Sprintf("%s/%s/%t/%s", status.GetOperationKind(), status.GetPhase(), status.GetTerminal(), status.GetResult())
 		if progress != lastProgress {
-			fmt.Fprintf(stderr, "katlctl operation kind=%s phase=%s terminal=%t result=%s\n", status.GetOperationKind(), status.GetPhase(), status.GetTerminal(), status.GetResult())
+			fmt.Fprintf(stderr, "%s: %s\n", firstNonEmpty(status.GetOperationKind(), "Operation"), firstNonEmpty(status.GetResult(), status.GetPhase(), "running"))
 			lastProgress = progress
 		}
 		if status.GetTerminal() {
@@ -300,7 +276,10 @@ func followOperation(ctx context.Context, client operationClient, request *agent
 			}
 		}
 		if watchErr != nil && !errors.Is(watchErr, io.EOF) && !errors.Is(watchErr, context.DeadlineExceeded) && !errors.Is(watchErr, context.Canceled) && !streamWarning {
-			fmt.Fprintf(stderr, "katlctl operation watch interrupted; falling back to authoritative status polling: %v\n", watchErr)
+			fmt.Fprintln(stderr, "Live updates unavailable; continuing to check operation status.")
+			if request.GetIncludeDiagnostics() == "verbose" {
+				fmt.Fprintf(stderr, "Watch error: %v\n", watchErr)
+			}
 			streamWarning = true
 			watchAvailable = false
 		}
@@ -330,13 +309,21 @@ func followOperation(ctx context.Context, client operationClient, request *agent
 	}
 }
 
+func publicOperationStatus(status *agentapi.OperationStatus) *agentapi.OperationStatus {
+	if status == nil {
+		return nil
+	}
+	result := proto.Clone(status).(*agentapi.OperationStatus)
+	result.ClientRequestId = ""
+	result.RequestDigest = ""
+	return result
+}
+
 func writeOperationStatus(stdout io.Writer, output string, status *agentapi.OperationStatus) error {
 	if status == nil {
 		return fmt.Errorf("agent returned an empty operation status")
 	}
-	publicStatus := proto.Clone(status).(*agentapi.OperationStatus)
-	publicStatus.ClientRequestId = ""
-	publicStatus.RequestDigest = ""
+	publicStatus := publicOperationStatus(status)
 	if output == "text" {
 		result := publicStatus.GetResult()
 		if result == "" {
@@ -344,6 +331,16 @@ func writeOperationStatus(stdout io.Writer, output string, status *agentapi.Oper
 		}
 		if _, err := fmt.Fprintf(stdout, "%s %s: phase=%s result=%s\n", publicStatus.GetOperationId(), publicStatus.GetOperationKind(), publicStatus.GetPhase(), result); err != nil {
 			return err
+		}
+		if reason := strings.TrimSpace(publicStatus.GetFailureReason()); reason != "" {
+			if _, err := fmt.Fprintf(stdout, "Failure: %s\n", reason); err != nil {
+				return err
+			}
+		}
+		if publicStatus.GetRecoveryRequired() {
+			if _, err := fmt.Fprintln(stdout, "Recovery required."); err != nil {
+				return err
+			}
 		}
 		if apply := publicStatus.GetConfigApply(); apply != nil {
 			for _, action := range apply.GetDomainActions() {
@@ -370,22 +367,9 @@ func writeMutationOperationStatus(stdout io.Writer, status *agentapi.OperationSt
 	if status == nil {
 		return fmt.Errorf("agent returned an empty operation status")
 	}
-	publicStatus := proto.Clone(status).(*agentapi.OperationStatus)
+	publicStatus := publicOperationStatus(status)
 	publicStatus.OperationId = ""
-	publicStatus.ClientRequestId = ""
-	publicStatus.RequestDigest = ""
 	return writeProtoJSON(stdout, "operation result", publicStatus)
-}
-
-func waitAcceptedOperation(ctx context.Context, client operationClient, accepted *agentapi.OperationAccepted, timeout time.Duration, stdout, stderr io.Writer) error {
-	status, err := waitAcceptedOperationStatus(ctx, client, accepted, timeout, stderr)
-	if writeErr := writeMutationOperationStatus(stdout, status); writeErr != nil {
-		return writeErr
-	}
-	if err != nil {
-		return err
-	}
-	return operationResultError(status)
 }
 
 func waitAcceptedOperationStatus(ctx context.Context, client operationClient, accepted *agentapi.OperationAccepted, timeout time.Duration, stderr io.Writer) (*agentapi.OperationStatus, error) {
@@ -427,9 +411,7 @@ func writeOperationAccepted(stdout io.Writer, accepted *agentapi.OperationAccept
 	publicAccepted := proto.Clone(accepted).(*agentapi.OperationAccepted)
 	publicAccepted.RequestDigest = ""
 	publicAccepted.RecordPath = ""
-	if publicAccepted.InitialStatus != nil {
-		publicAccepted.InitialStatus.RequestDigest = ""
-	}
+	publicAccepted.InitialStatus = publicOperationStatus(publicAccepted.InitialStatus)
 	return writeProtoJSON(stdout, "operation accepted", publicAccepted)
 }
 

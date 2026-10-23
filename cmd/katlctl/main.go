@@ -87,9 +87,14 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	cmd := newKatlctlCommand(ctx, stdout, stderr)
+	output := &commandOutput{writer: stdout}
+	cmd := newKatlctlCommand(ctx, output, stderr)
 	cmd.SetArgs(args)
-	return cmd.Execute()
+	err := cmd.Execute()
+	if err != nil {
+		return err
+	}
+	return output.err
 }
 
 func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
@@ -358,7 +363,7 @@ Use --version VERSION for a published release, or --artifact for an upgrade imag
 				if len(args) == 1 && opts.artifact != "" && katlOSReleasePattern.MatchString(strings.TrimPrefix(strings.TrimSpace(args[0]), "v")) {
 					return fmt.Errorf("VERSION cannot be combined with --artifact; pass NODE as the positional argument or with --node")
 				}
-				if err := selectHostNode(&opts.target.nodeName, args); err != nil {
+				if err := selectHostNode(command, &opts.target.nodeName, args); err != nil {
 					return err
 				}
 			} else {
@@ -367,7 +372,7 @@ Use --version VERSION for a published release, or --artifact for an upgrade imag
 				}
 				opts.version = args[0]
 				if len(args) == 2 {
-					if err := selectHostNode(&opts.target.nodeName, args[1:]); err != nil {
+					if err := selectHostNode(command, &opts.target.nodeName, args[1:]); err != nil {
 						return err
 					}
 				}
@@ -1108,8 +1113,8 @@ func newWipeNodeCommand(ctx context.Context, stdout, stderr io.Writer, commandNa
 		Short: "Remove one node and reset it for installer-media reinstall",
 		Long:  "Remove one node from Kubernetes and erase its KatlOS boot artifacts. A control-plane node can be wiped before bootstrap; an enrolled control-plane requires etcd membership coordination. The node must boot installer media or PXE before it can be used again.",
 		Args:  cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			if err := selectHostNode(&nodeName, args); err != nil {
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := selectHostNode(command, &nodeName, args); err != nil {
 				return err
 			}
 			if strings.TrimSpace(nodeName) == "" {
@@ -2430,9 +2435,9 @@ func newConfigApplyCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 		Use:   "apply [NODE]",
 		Short: "Advanced: apply a rendered NodeConfigurationChange",
 		Args:  cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
 			if len(args) == 1 {
-				if err := selectHostNode(&opts.nodeConfig.nodeName, args); err != nil {
+				if err := selectHostNode(command, &opts.nodeConfig.nodeName, args); err != nil {
 					return err
 				}
 			}
@@ -3196,7 +3201,22 @@ func writeBootstrapResult(stdout io.Writer, format string, result cluster.Result
 }
 
 func bootstrapProgressWriter(stderr io.Writer, verbose bool) func(cluster.AgentBootstrapProgress) {
+	last := ""
 	return func(progress cluster.AgentBootstrapProgress) {
+		if !verbose {
+			message := firstNonEmpty(progress.Node, "Bootstrap") + ": " + progress.Phase
+			if progress.Terminal {
+				message += " (" + fallbackText(progress.Result, "completed") + ")"
+			}
+			if message != last {
+				fmt.Fprintln(stderr, message)
+				last = message
+			}
+			if progress.Terminal && progress.Result != "succeeded" && progress.NextAction != "" {
+				fmt.Fprintln(stderr, "Next: "+progress.NextAction)
+			}
+			return
+		}
 		fmt.Fprint(stderr, "katlctl cluster bootstrap")
 		if progress.Node != "" {
 			fmt.Fprintf(stderr, " node=%s", progress.Node)

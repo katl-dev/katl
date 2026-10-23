@@ -32,7 +32,13 @@ func applyOptionEnv(command *cobra.Command) {
 			continue
 		}
 		if value := os.Getenv(env); value != "" {
-			_ = command.Flags().Set(name, value)
+			if name == "node" {
+				// Preserve Changed for explicit --node so positional NODE can
+				// override the environment default without hiding conflicts.
+				_ = flag.Value.Set(value)
+			} else {
+				_ = command.Flags().Set(name, value)
+			}
 		}
 	}
 	for _, child := range command.Commands() {
@@ -53,6 +59,10 @@ func validateCommandFlags(command *cobra.Command, _ []string) error {
 	var invalid error
 	command.Flags().VisitAll(func(flag *pflag.Flag) {
 		if invalid != nil {
+			return
+		}
+		if flag.Name == "node" && flag.Value.Type() == "string" && flag.Changed && strings.TrimSpace(flag.Value.String()) == "" {
+			invalid = fmt.Errorf("--node must not be empty; choose a node name from your configuration")
 			return
 		}
 		if formats := flag.Annotations[outputFormatsAnnotation]; len(formats) > 0 && !slices.Contains(formats, flag.Value.String()) {

@@ -24,26 +24,20 @@ func newNodeLogsCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 		Long:    "Read the native system journal through the management API. The current boot and last 100 entries are shown by default. JSON output is one journal object per line. Ctrl+C stops following without changing the node.",
 		Example: "katlctl node logs cp-1 --config cluster.yaml --unit kubelet --follow\nkatlctl node logs cp-1 --config cluster.yaml --boot=-1 --lines 200",
 		Args:    cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			if err := selectHostNode(&targetOptions.nodeName, args); err != nil {
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := selectHostNode(command, &targetOptions.nodeName, args); err != nil {
 				return err
 			}
 			if request.Lines < 0 || request.Lines > 10000 {
 				return fmt.Errorf("--lines must be between 0 and 10000")
 			}
-			ctx, cancel := context.WithTimeout(ctx, timeout)
-			defer cancel()
-			target, err := resolveManagementTarget(ctx, targetOptions)
+			session, err := openManagementSession(ctx, targetOptions, timeout)
 			if err != nil {
 				return err
 			}
-			ctx = withManagementTarget(ctx, target)
-			conn, err := dialKatlcAgent(ctx, target.endpoint)
-			if err != nil {
-				return err
-			}
-			defer conn.Close()
-			observed, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+			defer session.close()
+			ctx, target := session.ctx, session.target
+			observed, err := session.client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 			if err != nil {
 				return err
 			}
@@ -52,7 +46,7 @@ func newNodeLogsCommand(ctx context.Context, stdout io.Writer) *cobra.Command {
 					return err
 				}
 			}
-			stream, err := conn.Client.ReadJournal(ctx, &request)
+			stream, err := session.client.ReadJournal(ctx, &request)
 			if err != nil {
 				return diagnosticError("read journal", err)
 			}

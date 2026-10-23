@@ -84,6 +84,20 @@ json` provide the bounded automation surface. Progress is written separately
 from the final result so scripts should consume the structured output rather
 than parse human progress lines.
 
+`system-extension status` shows extension summaries and unit failures by default.
+Use `--verbose` to include artifact digests, payloads, files, and healthy units.
+JSON output includes the full report regardless of `--verbose`. When
+`install discover PATH --output json` creates a configuration, its JSON result
+contains the saved `path`; creation notices go to standard error.
+
+`node status` includes API proxy details when a configured cluster has a proxy
+problem. Use `--verbose` to also show healthy proxy details and listener
+addresses. JSON output always includes those details.
+
+`KATLCTL_NODE` supplies a default node. A positional `NODE` or explicit `--node`
+overrides that default. Passing both positional `NODE` and `--node`, or passing
+an empty node argument, is an error.
+
 ## Operation semantics
 
 Mutating commands submit idempotent, durable node operations and normally wait

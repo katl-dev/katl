@@ -98,9 +98,6 @@ func TestInstallApplyCluster(t *testing.T) {
 						t.Fatalf("node %d received bundle for %q, want %q", i, payload.NodeName, name)
 					}
 				}
-				if state != "reject" && !strings.Contains(stderr.String(), "skipping node worker-1") {
-					t.Fatalf("missing skip: %s", stderr.String())
-				}
 			}
 		})
 	}
@@ -169,7 +166,7 @@ func TestInstallClusterExtensionTargets(t *testing.T) {
 			t.Fatalf("missing installer-specific target %s: %v\n%s", version, err, stderr.String())
 		}
 	}
-	if strings.Contains(err.Error(), "node worker-2:") || !strings.Contains(stderr.String(), "skipping node worker-2") {
-		t.Fatalf("busy node was not skipped before extension preparation: %v\n%s", err, stderr.String())
+	if strings.Contains(err.Error(), "node worker-2:") || !strings.Contains(stdout.String(), "worker-2") || !strings.Contains(stdout.String(), "Skipped: installer state=") {
+		t.Fatalf("busy node was not skipped before extension preparation: %v\n%s", err, stdout.String())
 	}
 }

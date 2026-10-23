@@ -124,6 +124,28 @@ func TestInstallDiscoverWritesClusterConfig(t *testing.T) {
 	if err := run(context.Background(), []string{"config", "validate", outputPath}, &stdout, &stderr); err != nil {
 		t.Fatalf("validate generated config: %v\nstderr=%s", err, stderr.String())
 	}
+
+	stdout.Reset()
+	jsonPath := filepath.Join(dir, "discovered.yaml")
+	if err := run(context.Background(), []string{"install", "discover", jsonPath, "--output", "json"}, &stdout, &stderr); err != nil {
+		t.Fatal(err)
+	}
+	var report struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("discovery emitted non-JSON output: %s: %v", &stdout, err)
+	}
+	if report.Path != jsonPath {
+		t.Fatalf("reported path = %q, want %q", report.Path, jsonPath)
+	}
+	data, err = os.ReadFile(report.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := configbundle.DecodeSource(bytes.NewReader(data)); err != nil {
+		t.Fatalf("reported config is invalid: %v", err)
+	}
 }
 
 func TestDiscoveredInitNodesRejectsUnsafeInference(t *testing.T) {
@@ -573,7 +595,7 @@ func TestInstallApplyWaitsForRebootReady(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
 		t.Fatal(err)
 	}
-	if report.Handoff.InstallStatus.State != installstatus.StateRebootRequested || !strings.Contains(stderr.String(), "state=reboot-requested") {
+	if report.Handoff.InstallStatus.State != installstatus.StateRebootRequested || !strings.Contains(stderr.String(), "reboot-requested") {
 		t.Fatalf("report=%#v stderr=%q", report, stderr.String())
 	}
 }
@@ -759,5 +781,20 @@ func TestInstallReportShowsInstallationProgress(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "reboot-requested") || strings.Contains(out.String(), "install-starting") || !strings.Contains(out.String(), "cluster bootstrap") {
 		t.Fatalf("misleading final report: %s", &out)
+	}
+}
+
+func TestInstallReportIncludesFailure(t *testing.T) {
+	var out bytes.Buffer
+	report := newInstallHandoffReport("http://192.0.2.1:8080", "cp-1", installTestStatus(handoff.HandoffAccepted, installstatus.StateFailedBeforeMutation, "Check disk"))
+	report.Handoff.InstallStatus.LastError = "target disk is unavailable"
+	report.Handoff.InstallStatus.RetryHint = "check the configured disk path"
+	if err := writeInstallReport(&out, "text", report); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"target disk is unavailable", "check the configured disk path"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q: %s", want, &out)
+		}
 	}
 }

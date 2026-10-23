@@ -35,13 +35,13 @@ func newGenerationsCommand(ctx context.Context, stdout io.Writer) *cobra.Command
 		if action != "list" {
 			cmd.Args = cobra.RangeArgs(1, 2)
 		}
-		cmd.RunE = func(_ *cobra.Command, args []string) error {
+		cmd.RunE = func(command *cobra.Command, args []string) error {
 			id := ""
 			if action != "list" {
 				id = args[0]
 				args = args[1:]
 			}
-			if err := selectHostNode(&targetOptions.nodeName, args); err != nil {
+			if err := selectHostNode(command, &targetOptions.nodeName, args); err != nil {
 				return err
 			}
 			session, err := openManagementSession(ctx, targetOptions, timeout)
