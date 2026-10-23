@@ -72,6 +72,14 @@ func runInstallDiscover(ctx context.Context, opts installDiscoverOptions, stdout
 		if err != nil {
 			return err
 		}
+		if opts.output == "json" {
+			if err := runConfigInit(ctx, opts.configInit, stderr, stderr); err != nil {
+				return err
+			}
+			return writeJSON(stdout, struct {
+				Path string `json:"path"`
+			}{opts.configInit.outputPath})
+		}
 		return runConfigInit(ctx, opts.configInit, stdout, stderr)
 	}
 	report := installDiscoveryReport{APIVersion: "katl.dev/v1alpha1", Kind: "InstallerDiscovery", Installers: installers}

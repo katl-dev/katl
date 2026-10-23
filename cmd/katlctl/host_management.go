@@ -21,6 +21,7 @@ type hostStatusOptions struct {
 	target  managementTargetOptions
 	timeout time.Duration
 	output  string
+	verbose bool
 }
 
 type hostRebootOptions struct {
@@ -132,8 +133,8 @@ func newHostStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.
 		Use:   "status [NODE]",
 		Short: "Show the current state of one KatlOS node",
 		Args:  cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			if err := selectHostNode(&opts.target.nodeName, args); err != nil {
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := selectHostNode(command, &opts.target.nodeName, args); err != nil {
 				return err
 			}
 			return runHostStatus(ctx, opts, stdout, stderr)
@@ -141,6 +142,7 @@ func newHostStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.
 	}
 	addManagementTargetFlags(cmd, &opts.target)
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "management request timeout")
+	cmd.Flags().BoolVar(&opts.verbose, "verbose", false, "include healthy API proxy details and listener addresses")
 	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
 }
@@ -151,8 +153,8 @@ func newHostRebootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.
 		Use:   "reboot [NODE]",
 		Short: "Reboot one KatlOS node and wait for it to return healthy",
 		Args:  cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			if err := selectHostNode(&opts.target.nodeName, args); err != nil {
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := selectHostNode(command, &opts.target.nodeName, args); err != nil {
 				return err
 			}
 			return runHostReboot(ctx, opts, stdout, stderr)
@@ -174,8 +176,8 @@ func newHostShutdownCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 
 Use the same ClusterConfig used to install the node. --endpoint can override its recorded address when DHCP or local routing changed.`,
 		Args: cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			if err := selectHostNode(&opts.target.nodeName, args); err != nil {
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := selectHostNode(command, &opts.target.nodeName, args); err != nil {
 				return err
 			}
 			return runHostShutdown(ctx, opts, stdout, stderr)
@@ -188,12 +190,15 @@ Use the same ClusterConfig used to install the node. --endpoint can override its
 	return cmd
 }
 
-func selectHostNode(selected *string, args []string) error {
+func selectHostNode(command *cobra.Command, selected *string, args []string) error {
 	if len(args) == 0 {
 		return nil
 	}
-	if strings.TrimSpace(*selected) != "" {
+	if command.Flags().Changed("node") {
 		return fmt.Errorf("NODE cannot be combined with --node")
+	}
+	if strings.TrimSpace(args[0]) == "" {
+		return fmt.Errorf("NODE must not be empty; choose a node name from your configuration")
 	}
 	*selected = args[0]
 	return nil
@@ -217,7 +222,7 @@ func runHostStatus(ctx context.Context, opts hostStatusOptions, stdout, stderr i
 		return err
 	}
 	report := newHostStatusReport(node, target.endpoint, status, current)
-	return writeHostStatus(stdout, opts.output, report)
+	return writeHostStatus(stdout, opts.output, report, opts.verbose)
 }
 
 func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr io.Writer) error {
@@ -463,7 +468,7 @@ func displayHostHealth(current *agentapi.Generation) string {
 	return "unknown"
 }
 
-func writeHostStatus(stdout io.Writer, output string, report hostStatusReport) error {
+func writeHostStatus(stdout io.Writer, output string, report hostStatusReport, verbose bool) error {
 	if output == hostOutputJSON {
 		return writeJSON(stdout, report)
 	}
@@ -496,24 +501,32 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport) e
 	}
 	if report.APIProxy != nil {
 		proxy := report.APIProxy
-		eligible := 0
-		for _, backend := range proxy.Backends {
-			if backend.Eligible {
-				eligible++
+		waitingForBootstrap := report.Kubernetes != nil && report.Kubernetes.State == "not-configured" && proxy.State == "no-eligible-backends"
+		if verbose || !waitingForBootstrap && (proxy.State != "ready" || proxy.CanonicalState != "reachable" || proxy.FailureReason != "") {
+			eligible := 0
+			for _, backend := range proxy.Backends {
+				if backend.Eligible {
+					eligible++
+				}
 			}
-		}
-		w = newTable(stdout)
-		w.row()
-		w.row("API PROXY", "LOCAL API", "CANONICAL ENDPOINT", "CANONICAL", "BACKENDS")
-		w.row(proxy.State, yesNo(proxy.LocalAPIEligible), proxy.CanonicalEndpoint, proxy.CanonicalState, fmt.Sprintf("%d/%d", eligible, len(proxy.Backends)))
-		if proxy.FailureReason != "" {
-			w.row("", proxy.FailureReason)
-		}
-		for _, listener := range proxy.Listeners {
-			w.row("listener", listener.Exposure, listener.Address)
-		}
-		if err := w.flush(); err != nil {
-			return err
+			w = newTable(stdout)
+			w.row()
+			w.row("API PROXY", "LOCAL API", "CANONICAL ENDPOINT", "CANONICAL", "BACKENDS")
+			w.row(proxy.State, yesNo(proxy.LocalAPIEligible), proxy.CanonicalEndpoint, proxy.CanonicalState, fmt.Sprintf("%d/%d", eligible, len(proxy.Backends)))
+			if proxy.FailureReason != "" {
+				w.row("", proxy.FailureReason)
+			}
+			if proxy.CanonicalFailureReason != "" && proxy.CanonicalFailureReason != proxy.FailureReason {
+				w.row("", proxy.CanonicalFailureReason)
+			}
+			if verbose {
+				for _, listener := range proxy.Listeners {
+					w.row("listener", listener.Exposure, listener.Address)
+				}
+			}
+			if err := w.flush(); err != nil {
+				return err
+			}
 		}
 	}
 	if len(report.Volumes) > 0 {

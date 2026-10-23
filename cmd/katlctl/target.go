@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -206,39 +205,23 @@ func mergeEnrolledTopology(ctx context.Context, resolved *workstation.ResolvedTo
 	}
 }
 
-func targetFromInventory(inv inventory.Inventory, selected string) (managementTarget, error) {
-	selected = strings.TrimSpace(selected)
-	if selected == "" {
-		if len(inv.Nodes) != 1 {
-			return managementTarget{}, fmt.Errorf("--node is required because --config contains %d nodes", len(inv.Nodes))
-		}
-		selected = inv.Nodes[0].Name
+func targetFromTopology(topology workstation.Topology, selected string) (managementTarget, error) {
+	source := "--config"
+	if topology.ContextName != "" {
+		source = fmt.Sprintf("context %q", topology.ContextName)
 	}
-	for _, node := range inv.Nodes {
-		if node.Name == selected {
-			endpoint := ""
-			if strings.TrimSpace(node.Address) != "" {
-				endpoint = cluster.AgentEndpoint(node.Address, "9443")
-			}
-			return managementTarget{nodeName: node.Name, endpoint: endpoint}, nil
-		}
-	}
-	return managementTarget{}, fmt.Errorf("node %q was not found in --config; choose one of: %s", selected, inventoryNodeNames(inv.Nodes))
-}
-
-func inventoryNodeNames(nodes []inventory.Node) string {
-	names := make([]string, 0, len(nodes))
-	for _, node := range nodes {
+	names := make([]string, 0, len(topology.Nodes))
+	for _, node := range topology.Nodes {
 		names = append(names, node.Name)
 	}
-	return strings.Join(names, ", ")
-}
+	if len(names) == 0 {
+		return managementTarget{}, fmt.Errorf("%s contains no nodes; add nodes to your ClusterConfig and use --config cluster.yaml", source)
+	}
 
-func targetFromTopology(topology workstation.Topology, selected string) (managementTarget, error) {
 	nodeName := strings.TrimSpace(selected)
 	if nodeName == "" {
 		if len(topology.Nodes) != 1 {
-			return managementTarget{}, fmt.Errorf("--node is required because context %q contains %d nodes", topology.ContextName, len(topology.Nodes))
+			return managementTarget{}, fmt.Errorf("select a node with NODE or --node because %s contains %d nodes; choose one of: %s", source, len(topology.Nodes), strings.Join(names, ", "))
 		}
 		nodeName = topology.Nodes[0].Name
 	}
@@ -248,7 +231,7 @@ func targetFromTopology(topology workstation.Topology, selected string) (managem
 		}
 		return managementTarget{nodeName: nodeName, endpoint: node.ManagementEndpoint, enrollmentID: node.EnrollmentID, machineID: node.MachineID, credentials: topology.Management}, nil
 	}
-	return managementTarget{}, fmt.Errorf("node %q was not found in context %q", nodeName, topology.ContextName)
+	return managementTarget{}, fmt.Errorf("node %q was not found in %s; choose one of: %s", nodeName, source, strings.Join(names, ", "))
 }
 
 func enrolledTarget(ctx context.Context, configPath, contextName, clusterName, nodeName string) (managementTarget, bool) {

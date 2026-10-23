@@ -10,6 +10,24 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
+// Keep output failures visible even when a command ignores a formatting error.
+type commandOutput struct {
+	writer io.Writer
+	err    error
+}
+
+func (w *commandOutput) Write(data []byte) (int, error) {
+	if w.err != nil {
+		return 0, w.err
+	}
+	n, err := w.writer.Write(data)
+	if err == nil && n < len(data) {
+		err = io.ErrShortWrite
+	}
+	w.err = err
+	return n, err
+}
+
 type tableWriter struct {
 	writer *tabwriter.Writer
 	err    error

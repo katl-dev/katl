@@ -35,8 +35,8 @@ health checks, rebooting only if the joined generation still needs a trial boot.
 Use 'katlctl cluster bootstrap' to create the first control plane, and
 'katlctl cluster apply' for configuration changes.`,
 		Args: cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			if err := selectHostNode(&opts.node, args); err != nil {
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := selectHostNode(command, &opts.node, args); err != nil {
 				return err
 			}
 			return runNodeJoin(ctx, opts, stdout, stderr)

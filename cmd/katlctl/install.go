@@ -139,8 +139,8 @@ func newInstallStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cob
 		Use:   "status [NODE]",
 		Short: "Report a waiting or running KatlOS installer",
 		Args:  cobra.MaximumNArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
-			if err := selectHostNode(&opts.nodeName, args); err != nil {
+		RunE: func(command *cobra.Command, args []string) error {
+			if err := selectHostNode(command, &opts.nodeName, args); err != nil {
 				return err
 			}
 			return runInstallStatus(ctx, opts, stdout, stderr)
@@ -245,7 +245,6 @@ func applyInstallNode(ctx context.Context, opts installApplyOptions, inventory c
 			report := newInstallHandoffReport(endpoint, nodeName, before)
 			report.Skipped = true
 			report.SkipReason = fmt.Sprintf("handoff unavailable: %v", err)
-			fmt.Fprintf(stderr, "skipping node %s: %s\n", nodeName, report.SkipReason)
 			return writeInstallReport(stdout, opts.output, report)
 		}
 		return err
@@ -254,7 +253,6 @@ func applyInstallNode(ctx context.Context, opts installApplyOptions, inventory c
 		report := newInstallHandoffReport(endpoint, nodeName, before)
 		report.Skipped = true
 		report.SkipReason = fmt.Sprintf("installer state=%s", before.State)
-		fmt.Fprintf(stderr, "skipping node %s: %s\n", nodeName, report.SkipReason)
 		return writeInstallReport(stdout, opts.output, report)
 	}
 	// Prepare only waiting nodes, using each installer's own release target.
@@ -690,11 +688,14 @@ func waitForInstall(ctx context.Context, client *http.Client, endpoint string, i
 			progress += "/" + p.Operation + "/" + p.Target
 		}
 		if progress != lastProgress || last.InstallStatus.Progress != nil && time.Since(lastProgressAt) >= 10*time.Second {
-			fmt.Fprintf(stderr, "katlctl install state=%s step=%s", last.InstallStatus.State, last.InstallStatus.CurrentStep)
+			step := firstNonEmpty(last.InstallStatus.CurrentStep, last.InstallStatus.State)
 			if p := last.InstallStatus.Progress; p != nil {
-				fmt.Fprintf(stderr, " progress=%q", p.Summary(time.Now()))
+				step = p.Summary(time.Now())
 			}
-			fmt.Fprintln(stderr)
+			if installTerminal(last.InstallStatus.State) {
+				step = last.InstallStatus.State
+			}
+			fmt.Fprintf(stderr, "Install: %s\n", step)
 			lastProgress = progress
 			lastProgressAt = time.Now()
 		}
@@ -789,6 +790,16 @@ func writeInstallReport(stdout io.Writer, output string, report installHandoffRe
 		w.row(node, report.Endpoint, state, step)
 		if err := w.flush(); err != nil {
 			return err
+		}
+		if report.Skipped && report.SkipReason != "" {
+			if _, err := fmt.Fprintf(stdout, "Skipped: %s\n", report.SkipReason); err != nil {
+				return err
+			}
+		}
+		if installFailed(report.Handoff.InstallStatus.State) {
+			if _, err := fmt.Fprintf(stdout, "Failure: %s\n", installFailure(report.Handoff.InstallStatus)); err != nil {
+				return err
+			}
 		}
 		if report.Handoff.InstallStatus.State == installstatus.StateRebootRequested {
 			_, err := fmt.Fprintln(stdout, "Installation finished; the node is rebooting. Check 'katlctl node status' with the same config, then run 'katlctl cluster bootstrap'.")
