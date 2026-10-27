@@ -653,11 +653,7 @@ func observedBootHealth(verified verifiedNodeBoot, targetGeneration string) stri
 	if verified.Generation.GetHealthState() == generation.HealthStateUnhealthy {
 		return "failed"
 	}
-	if verified.Status != nil &&
-		verified.Status.GetCurrentGenerationId() == targetGeneration &&
-		verified.Generation.GetCommitState() == generation.CommitStateCommitted &&
-		verified.Generation.GetBootState() == generation.BootStateGood &&
-		verified.Generation.GetHealthState() == generation.HealthStateHealthy {
+	if verified.healthyOn(targetGeneration) {
 		return generation.HealthStateHealthy
 	}
 	return "unknown"
