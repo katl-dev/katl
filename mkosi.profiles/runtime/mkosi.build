@@ -50,8 +50,6 @@ gomodcache="${KATL_GOMODCACHE:-$repo/_build/go-mod}"
 mkdir -p "$gomodcache"
 GOCACHE="$builddir/go-build" GOMODCACHE="$gomodcache" \
     go run ./cmd/katl-mkosi-artifacts export-kernel-inputs "$BUILDROOT" "$BUILDDIR" "$repo/_build/mkosi/katl-kernel-lock.json"
-GOCACHE="$builddir/go-build" GOMODCACHE="$gomodcache" \
-    go run ./cmd/katl-mkosi-artifacts build-fixed-buttons "$BUILDROOT" "$DESTDIR" "$BUILDDIR"
 
 commit="${KATL_BUILD_COMMIT:-}"
 if [[ -z "$commit" ]]; then

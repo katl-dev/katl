@@ -148,7 +148,6 @@ target_go_binaries() {
             printf '%s\t%s\t%s\n' "metadata-tool:katl-mkosi-artifacts" "./cmd/katl-mkosi-artifacts" "plain"
             ;;
         runtime)
-            printf '%s\t%s\t%s\n' "build-tool:katl-mkosi-artifacts" "./cmd/katl-mkosi-artifacts" "plain"
             printf '%s\t%s\t%s\n' "build-tool:katl-runtime-rpms" "./cmd/katl-runtime-rpms" "plain"
             printf '%s\t%s\t%s\n' "included-binary:/usr/bin/katlc" "./cmd/katlc" "versioned"
             printf '%s\t%s\t%s\n' "included-binary:/usr/bin/katl-console" "./cmd/katl-console" "versioned"

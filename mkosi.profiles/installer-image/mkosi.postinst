@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-# Refresh locally built modules before mkosi resolves filtering dependencies.
-for modules in "$BUILDROOT"/usr/lib/modules/*; do
-    depmod --all --basedir "$BUILDROOT" "${modules##*/}"
-done

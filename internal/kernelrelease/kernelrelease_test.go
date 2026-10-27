@@ -143,8 +143,8 @@ func TestKernelConfiguration(t *testing.T) {
 				}
 			}
 			devel := "BuildPackages=/repository/kernel-longterm-devel-6.18.57-200.fc44.x86_64.rpm"
-			if !strings.Contains(config, devel) {
-				t.Fatal("devel RPM must be available in the kernel build overlay")
+			if strings.Contains(config, devel) != (profile == "runtime") {
+				t.Fatal("devel RPM must be confined to the runtime build overlay")
 			}
 			if strings.Contains(config, "kernel-headers") || strings.Contains(config, "Repositories=") {
 				t.Fatal("kernel configuration changes userspace resolution")

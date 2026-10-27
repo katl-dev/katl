@@ -61,8 +61,6 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 	}
 
 	switch command {
-	case "build-fixed-buttons":
-		return runBuildFixedButtons(args, stdout, stderr)
 	case "export-kernel-inputs":
 		return runExportKernelInputs(args, stdout, stderr)
 	case "bind-kernel-inputs":
@@ -185,7 +183,6 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 }
 
 const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
-       katl-mkosi-artifacts build-fixed-buttons BUILDROOT DESTDIR BUILDDIR
        katl-mkosi-artifacts export-kernel-inputs BUILDROOT OUTPUT_DIR KERNEL_LOCK
        katl-mkosi-artifacts bind-kernel-inputs
        katl-mkosi-artifacts inventory-release-extensions
