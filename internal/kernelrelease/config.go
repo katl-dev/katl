@@ -24,11 +24,9 @@ func (set Set) Config(profile, directory string) (string, error) {
 			fmt.Fprintf(&result, "    /repository/%s\n", pkg.FileName)
 		}
 	}
-	if profile == "runtime" {
-		for _, pkg := range set.Packages {
-			if pkg.Role == "build" {
-				fmt.Fprintf(&result, "BuildPackages=/repository/%s\n", pkg.FileName)
-			}
+	for _, pkg := range set.Packages {
+		if pkg.Role == "build" {
+			fmt.Fprintf(&result, "BuildPackages=/repository/%s\n", pkg.FileName)
 		}
 	}
 	// mkosi 26 fingerprints local RPM names and mtimes, not package contents.

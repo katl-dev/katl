@@ -106,7 +106,7 @@ func TestRuntimeBuildExcludesVMTestSupportByDefault(t *testing.T) {
 		t.Fatalf("mkdir fake bin: %v", err)
 	}
 	writeFakeExecutable(t, bin, "go", `
-if [[ "${1:-}" == run && "${3:-}" == export-kernel-inputs ]]; then
+if [[ "${1:-}" == run && ( "${3:-}" == export-kernel-inputs || "${3:-}" == build-fixed-buttons ) ]]; then
   exit 0
 fi
 output=""
