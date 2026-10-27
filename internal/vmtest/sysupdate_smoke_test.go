@@ -1075,7 +1075,8 @@ func guestCommandOutput(t *testing.T, ctx context.Context, guest *GuestControl, 
 func collectSysupdateFailureEvidence(ctx context.Context, guest *GuestControl) {
 	for _, req := range []GuestCommandRequest{
 		{Name: "upgrade-agent-journal", Argv: []string{"journalctl", "-b", "-u", "katlc-agent.service", "--no-pager", "-n", "1000"}, AllowFailure: true, StdoutLimit: 1 << 20},
-		{Name: "upgrade-storage", Argv: []string{"df", "-B1", "/var/lib/katl", "/efi"}, AllowFailure: true},
+		{Name: "upgrade-state-storage", Argv: []string{"findmnt", "--df", "--bytes", "--target", "/var/lib/katl"}, AllowFailure: true},
+		{Name: "upgrade-efi-storage", Argv: []string{"findmnt", "--df", "--bytes", "--target", "/efi"}, AllowFailure: true},
 		{Name: "sysupdate-status", Argv: []string{"/usr/lib/systemd/systemd-sysupdate", "--no-pager", "--verify=no", "--definitions=/var/lib/katl/test-artifacts/sysupdate/sysupdate.d", "list"}, AllowFailure: true},
 		{Name: "root-labels", Argv: []string{"blkid", "-o", "export"}, AllowFailure: true, StdoutLimit: 1 << 20},
 		{Name: "sysupdate-files", Argv: []string{"find", "/var/lib/katl/test-artifacts/sysupdate", "-maxdepth", "4", "-type", "f", "-print"}, AllowFailure: true},
