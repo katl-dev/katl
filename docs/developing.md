@@ -750,22 +750,44 @@ package is missing; they do not fall back to a moving kernel repository.
 
 ### Qualify retained kernel inputs
 
-The Kernel Updates workflow captures signed kernel RPM sets and proposes their
-locks after retaining the signed inputs and verifying anonymous retrieval. It runs weekly or on manual
-dispatch. Automatic discovery refuses versions older than the committed lock.
-An explicit release permits a deliberate rollback. To qualify an exact kernel pair instead of discovering newer versions:
+The Kernel Updates workflow captures signed vendor RPMs independently for
+standard and LTS. Each flavour has its own capture, retention, proposal branch,
+and PR. A failed LTS capture or qualification does not prevent a standard
+proposal. The workflow runs weekly or on manual dispatch. Discovery refuses
+versions older than the committed lock; an explicit release permits a deliberate
+rollback.
+
+To propose an exact standard kernel without running LTS discovery:
 
 ```sh
 gh workflow run kernel-updates.yml --ref main \
-  -f standard_release=7.2.10-200.fc44.x86_64 \
-  -f lts_release=6.18.57-200.fc44.x86_64
+  -f flavour=standard -f standard_release=7.2.11-200.fc44.x86_64
 ```
 
-PR CI qualifies each changed kernel flavour with runtime and installer builds,
-every release extension, complete module composition, VM regression, and
-production-driver DRBD replication. Unchanged App-authored kernel-lock-only
-proposals can merge automatically after CI and branch protection pass. These
-virtual machines do not qualify NVIDIA hardware.
+Use `flavour=lts` with `lts_release` for LTS, or `flavour=both` to create two
+independent proposals.
+
+Kernel Qualification is separate from product CI. It qualifies each selected
+flavour with runtime and installer builds, native ACPI power-button shutdown,
+cluster and lifecycle journeys, every release extension, module composition,
+and production DRBD replication. Product CI retains compatibility coverage for
+product changes. Kernel qualification owns the complete VM suite for its
+selected flavours.
+
+Require both `CI` and `Kernel qualification` on the protected main branch.
+The existing CI kernel gates remain in place during this rollout. After the
+qualification workflow is available on main and its status is required, remove
+those duplicate gates from product CI.
+App-authored proposals can enable auto-merge only after the qualification
+workflow succeeds for their exact current revision. A proposal must change
+exactly one lock matching its branch's flavour. These virtual machines do not
+qualify NVIDIA hardware.
+
+To qualify the currently selected LTS kernel without proposing an update:
+
+```sh
+gh workflow run kernel-qualification.yml --ref main -f flavour=lts
+```
 
 For local candidate qualification, capture the selected flavour inside the
 builder and select its retained OCI layout explicitly:
@@ -773,7 +795,7 @@ builder and select its retained OCI layout explicitly:
 ```sh
 scripts/mkosi box -- go run ./cmd/katl-kernel-release candidate \
   --fedora-release "$(scripts/fedora-release)" --flavour lts \
-  --kernel-release 6.18.57-200.fc44.x86_64 --output _build/kernel-candidates/lts
+  --output _build/kernel-candidates/lts
 
 export KATL_FLAVOUR=lts
 export KATL_KERNEL_LOCK="$PWD/_build/kernel-candidates/lts/lock.json"

@@ -29,10 +29,13 @@ func TestKernelPromotion(t *testing.T) {
 		scripts = append(scripts, step.Run)
 	}
 	for _, tc := range []struct {
-		name, author, head, state, file, actions string
-		fork, truncated                          bool
+		name, author, head, state, file, actions, branch string
+		fork, truncated                                  bool
 	}{
 		{name: "ready", actions: "merge\n"},
+		{name: "LTS ready", branch: "automation/kernels-lts-0123456789abcdef", file: "kernels/fedora-44/x86_64/lts.json", actions: "merge\n"},
+		{name: "opposite flavour", file: "kernels/fedora-44/x86_64/lts.json"},
+		{name: "legacy combined branch", branch: "automation/kernels-0123456789abcdef"},
 		{name: "merged", state: "MERGED"},
 		{name: "stale revision", head: "another"},
 		{name: "different author", author: "operator"},
@@ -91,10 +94,14 @@ esac
 					t.Fatal(err)
 				}
 			}
+			branch := tc.branch
+			if branch == "" {
+				branch = "automation/kernels-standard-0123456789abcdef"
+			}
 			command := exec.Command("bash", "-euo", "pipefail", "-c", strings.Join(scripts, "\n"))
 			command.Dir = directory
 			command.Env = append(os.Environ(), "PATH="+directory+string(os.PathListSeparator)+os.Getenv("PATH"),
-				"GH_REPO=katl-dev/katl", "BRANCH=automation/kernels-test", "QUALIFIED_SHA=qualified",
+				"GH_REPO=katl-dev/katl", "BRANCH="+branch, "QUALIFIED_SHA=qualified",
 				"EXPECTED_AUTHOR=app/katl-automation")
 			output, runErr := command.CombinedOutput()
 			actions, err := os.ReadFile(filepath.Join(directory, "actions"))

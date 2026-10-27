@@ -62,7 +62,7 @@ func TestCIChanges(t *testing.T) {
 case "$2" in
   ./cmd/katl-vmtest-plan)
     cat > observed-paths
-    printf '{"vmFlavours":[],"driverFlavours":[],"groups":[]}\n' ;;
+    printf '{"vmFlavours":[],"kernelFlavours":[],"groups":[]}\n' ;;
   ./cmd/katl-kubernetes-release)
     printf '{"include":[]}\n' ;;
   *) exit 2 ;;
@@ -86,53 +86,58 @@ esac
 }
 
 func TestCIGate(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/ci.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var workflow struct {
-		Jobs map[string]struct {
-			Steps []struct{ Run string }
-		}
-	}
-	if err := yaml.Unmarshal(data, &workflow); err != nil {
-		t.Fatal(err)
-	}
-	script := workflow.Jobs["result"].Steps[0].Run
-	for _, tc := range []struct {
-		name, checks, vms, drivers, vmFlavours, driverFlavours string
-		pass                                                   bool
-	}{
-		{"documentation", "success", "skipped", "skipped", `[]`, `[]`, true},
-		{"product", "success", "success", "skipped", `["standard"]`, `[]`, true},
-		{"kernel", "success", "success", "success", `["lts"]`, `["lts"]`, true},
-		{"fast failure", "failure", "skipped", "skipped", `[]`, `[]`, false},
-		{"fast cancelled", "cancelled", "skipped", "skipped", `[]`, `[]`, false},
-		{"VM failure", "success", "failure", "success", `["lts"]`, `["lts"]`, false},
-		{"VM cancelled", "success", "cancelled", "success", `["lts"]`, `["lts"]`, false},
-		{"selected VM skipped", "success", "skipped", "skipped", `["standard"]`, `[]`, false},
-		{"driver failure", "success", "success", "failure", `["lts"]`, `["lts"]`, false},
-		{"selected driver skipped", "success", "success", "skipped", `["lts"]`, `["lts"]`, false},
-		{"missing plan", "success", "skipped", "skipped", ``, ``, false},
-		{"invalid plan", "success", "skipped", "skipped", `false`, `[]`, false},
-		{"unexpected execution", "success", "success", "skipped", `[]`, `[]`, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			needs, err := json.Marshal(map[string]any{
-				"checks": map[string]any{"result": tc.checks, "outputs": map[string]string{
-					"vm-flavours": tc.vmFlavours, "driver-flavours": tc.driverFlavours,
-				}},
-				"vms": map[string]string{"result": tc.vms}, "drivers": map[string]string{"result": tc.drivers},
-			})
+	for _, workflowFile := range []string{"ci.yml", "kernel-qualification.yml"} {
+		t.Run(workflowFile, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows", workflowFile))
 			if err != nil {
 				t.Fatal(err)
 			}
-
-			command := exec.Command("bash", "-euo", "pipefail", "-c", script)
-			command.Env = append(os.Environ(), "NEEDS="+string(needs))
-			output, err := command.CombinedOutput()
-			if (err == nil) != tc.pass {
-				t.Fatalf("CI passed = %v, want %v: %s", err == nil, tc.pass, output)
+			var workflow struct {
+				Jobs map[string]struct{ Steps []struct{ Run string } }
+			}
+			if err := yaml.Unmarshal(data, &workflow); err != nil {
+				t.Fatal(err)
+			}
+			script := workflow.Jobs["result"].Steps[0].Run
+			for _, tc := range []struct {
+				name, planned, vms, drivers, flavours string
+				pass                                  bool
+			}{
+				{"unselected", "success", "skipped", "skipped", `[]`, true},
+				{"selected", "success", "success", "success", `["lts"]`, true},
+				{"plan failed", "failure", "skipped", "skipped", `[]`, false},
+				{"plan cancelled", "cancelled", "skipped", "skipped", `[]`, false},
+				{"VM failed", "success", "failure", "success", `["lts"]`, false},
+				{"VM cancelled", "success", "cancelled", "success", `["lts"]`, false},
+				{"VM skipped", "success", "skipped", "success", `["lts"]`, false},
+				{"driver failed", "success", "success", "failure", `["lts"]`, false},
+				{"driver cancelled", "success", "success", "cancelled", `["lts"]`, false},
+				{"driver skipped", "success", "success", "skipped", `["lts"]`, false},
+				{"missing selection", "success", "skipped", "skipped", ``, false},
+				{"invalid selection", "success", "skipped", "skipped", `false`, false},
+				{"unexpected execution", "success", "success", "success", `[]`, false},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					needs := map[string]any{
+						"vms":     map[string]string{"result": tc.vms},
+						"drivers": map[string]string{"result": tc.drivers},
+					}
+					if workflowFile == "ci.yml" {
+						needs["checks"] = map[string]any{"result": tc.planned, "outputs": map[string]string{"vm-flavours": tc.flavours, "kernel-flavours": tc.flavours}}
+					} else {
+						needs["plan"] = map[string]any{"result": tc.planned, "outputs": map[string]string{"flavours": tc.flavours}}
+					}
+					data, err := json.Marshal(needs)
+					if err != nil {
+						t.Fatal(err)
+					}
+					command := exec.Command("bash", "-euo", "pipefail", "-c", script)
+					command.Env = append(os.Environ(), "NEEDS="+string(data))
+					output, err := command.CombinedOutput()
+					if (err == nil) != tc.pass {
+						t.Fatalf("gate passed=%v, want %v: %s", err == nil, tc.pass, output)
+					}
+				})
 			}
 		})
 	}

@@ -26,6 +26,7 @@ var groups = []group{
 	{"management", "./internal/vmtest", "TestInstalledRuntimeManagementRotationSmoke"},
 	{"storage", "./internal/vmtest/scenarios", "TestInstallerISOFirstInstallStorageAuthority"},
 	{"boot", "./internal/vmtest/scenarios", "TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke"},
+	{"shutdown", "./internal/vmtest", "TestInstalledRuntimePowerButton"},
 }
 
 func main() {
@@ -38,8 +39,8 @@ func main() {
 func run(args []string, input io.Reader, output io.Writer) error {
 	flags := flag.NewFlagSet("katl-vmtest-plan", flag.ContinueOnError)
 	changed := flags.Bool("changed", false, "select groups from NUL-delimited changed paths on stdin; default: all groups")
-	ci := flags.Bool("ci", false, "plan VM and driver flavours from NUL-delimited changed paths")
-	main := flags.Bool("main", false, "run both regression flavours after merge; driver qualification belongs to PRs")
+	ci := flags.Bool("ci", false, "plan product VM and kernel qualification flavours from NUL-delimited changed paths")
+	main := flags.Bool("main", false, "run both regression flavours after merge; kernel qualification belongs to PRs")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -74,7 +75,7 @@ func run(args []string, input io.Reader, output io.Writer) error {
 	}{batchGroups(selected)})
 }
 
-func driverChange(name string) bool {
+func kernelChange(name string) bool {
 	for _, prefix := range []string{
 		"kernels/", "extensions/", "internal/kernelrelease/", "internal/kernelmodule/",
 		"internal/extensionrelease/", "internal/releaseextensions/", "cmd/katl-kernel-release/",
@@ -89,7 +90,8 @@ func driverChange(name string) bool {
 	switch name {
 	case "go.mod", "go.sum", "Containerfile.mkosi", "scripts/mkosi", "scripts/fedora-release",
 		"scripts/build-kernel-extension", "scripts/build-release-extensions", "scripts/assemble-release-extensions",
-		"internal/vmtest/drbd_smoke_test.go", ".github/workflows/kernel-qualification.yml",
+		"internal/vmtest/drbd_smoke_test.go", "internal/vmtest/kernel_shutdown_vmtest_test.go",
+		".github/workflows/kernel-qualification.yml", ".github/workflows/kernel-drivers.yml",
 		".github/workflows/ci.yml":
 		return true
 	}
@@ -98,29 +100,29 @@ func driverChange(name string) bool {
 
 type ciPlan struct {
 	VMFlavours     []string `json:"vmFlavours"`
-	DriverFlavours []string `json:"driverFlavours"`
+	KernelFlavours []string `json:"kernelFlavours"`
 	Groups         []group  `json:"groups"`
 }
 
 func planCI(paths []string, main bool) ciPlan {
-	vms, drivers := map[string]bool{}, map[string]bool{}
+	vms, kernels := map[string]bool{}, map[string]bool{}
 	for _, name := range paths {
 		if len(selectGroups([]string{name})) == 0 {
 			continue
 		}
 		if strings.HasPrefix(name, "kernels/") {
 			if strings.HasSuffix(name, "/standard.json") {
-				vms["standard"], drivers["standard"] = true, true
+				vms["standard"], kernels["standard"] = true, true
 				continue
 			}
 			if strings.HasSuffix(name, "/lts.json") {
-				vms["lts"], drivers["lts"] = true, true
+				vms["lts"], kernels["lts"] = true, true
 				continue
 			}
 		}
-		if driverChange(name) {
+		if kernelChange(name) {
 			vms["standard"], vms["lts"] = true, true
-			drivers["standard"], drivers["lts"] = true, true
+			kernels["standard"], kernels["lts"] = true, true
 		} else if strings.HasPrefix(name, "packages/") || strings.HasPrefix(name, "cmd/katl-runtime-rpms/") ||
 			strings.HasPrefix(name, "internal/vmtest/") || strings.HasPrefix(name, ".github/") {
 			vms["standard"], vms["lts"] = true, true
@@ -132,20 +134,24 @@ func planCI(paths []string, main bool) ciPlan {
 		vms["standard"], vms["lts"] = true, true
 	}
 	if main {
-		// Strict branch protection already requires driver qualification before merge.
-		drivers = map[string]bool{}
+		// Proposals qualify kernel and drivers before main rechecks compatibility.
+		kernels = map[string]bool{}
+	}
+	// Kernel qualification owns the complete VM suite for its selected flavours.
+	for flavour := range kernels {
+		delete(vms, flavour)
 	}
 	selected := selectGroups(paths)
 	if main && len(vms) != 0 {
 		selected = groups
 	}
-	plan := ciPlan{VMFlavours: []string{}, DriverFlavours: []string{}, Groups: batchGroups(selected)}
+	plan := ciPlan{VMFlavours: []string{}, KernelFlavours: []string{}, Groups: batchGroups(selected)}
 	for _, flavour := range []string{"standard", "lts"} {
 		if vms[flavour] {
 			plan.VMFlavours = append(plan.VMFlavours, flavour)
 		}
-		if drivers[flavour] {
-			plan.DriverFlavours = append(plan.DriverFlavours, flavour)
+		if kernels[flavour] {
+			plan.KernelFlavours = append(plan.KernelFlavours, flavour)
 		}
 	}
 	return plan
@@ -183,7 +189,7 @@ func selectGroups(paths []string) []group {
 			continue
 		case name == "cmd/katl-kernel-release/candidate.go", name == "cmd/katl-kernel-release/propose.go",
 			name == "cmd/katl-kernel-release/publish.go", name == "cmd/katl-kernel-release/update-commit.txt",
-			name == ".github/workflows/kernel-updates.yml", name == ".github/workflows/kernel-automerge.yml":
+			name == ".github/workflows/kernel-updates.yml", name == ".github/workflows/kernel-update.yml", name == ".github/workflows/kernel-automerge.yml":
 			continue
 		case name == "cmd/katlctl/config_compatibility.go", name == "cmd/katlctl/config_inspect.go":
 			selected["config"], selected["management"], selected["two-node"] = true, true, true

@@ -1,7 +1,5 @@
-kernel: update retained kernel inputs
+kernel: update %s to %s
 
-Select the standard and LTS kernel RPMs resolved by the kernel update
-workflow. Qualify the proposed inputs against all release-owned
-extension recipes before reviewing this selection for main.
-
-Release-Note: Update the qualified kernel versions.
+Select the retained vendor kernel RPMs for this flavour. Qualify
+the proposed inputs against boot, shutdown, cluster, lifecycle,
+and release extension contracts before promotion to main.
