@@ -2,8 +2,8 @@ name: Merge Qualified Kernels
 
 on:
   workflow_run:
-    workflows: [CI]
-    branches: [automation/kernels-**]
+    workflows: [Kernel Qualification]
+    branches: [automation/kernels-standard-**, automation/kernels-lts-**]
     types: [completed]
 
 permissions:
@@ -37,7 +37,8 @@ jobs:
           BRANCH: ${{ github.event.workflow_run.head_branch }}
           QUALIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          [[ "$BRANCH" == automation/kernels-* ]]
+          [[ "$BRANCH" =~ ^automation/kernels-(standard|lts)-[a-f0-9]{16}$ ]]
+          flavour="${BASH_REMATCH[1]}"
           proposal="$(gh pr list --head "$BRANCH" --base main --state open --limit 1 --json number,headRefOid,author,isCrossRepository,state --jq '.[0]')"
           [[ "$(jq -r '.headRefOid' <<< "$proposal")" == "$QUALIFIED_SHA" ]] || exit 0
           [[ "$(jq -r '.author.login' <<< "$proposal")" == "$EXPECTED_AUTHOR" ]]
@@ -45,9 +46,8 @@ jobs:
           [[ "$(jq -r .state <<< "$proposal")" == OPEN ]] || exit 0
           number="$(jq -r .number <<< "$proposal")"
           gh pr view "$number" --json changedFiles,files > files.json
-          jq -e '.changedFiles > 0 and .changedFiles <= 2 and .changedFiles == (.files | length)' files.json
-          while IFS= read -r file; do
-            [[ "$file" =~ ^kernels/fedora-[0-9]+/x86_64/(standard|lts)\.json$ ]]
-          done < <(jq -r '.files[].path' files.json)
+          jq -e '.changedFiles == 1 and (.files | length) == 1' files.json
+          file="$(jq -r '.files[0].path' files.json)"
+          [[ "$file" =~ ^kernels/fedora-[0-9]+/x86_64/"$flavour"\.json$ ]]
           # Native required checks control the merge; the App's merge triggers main CI.
           gh pr merge "$number" --auto --squash --match-head-commit "$QUALIFIED_SHA"

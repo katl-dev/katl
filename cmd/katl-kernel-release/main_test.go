@@ -109,7 +109,7 @@ func TestProposalUnchanged(t *testing.T) {
 	// branch merely because discovery ran again.
 	t.Setenv("PATH", t.TempDir())
 	var stdout bytes.Buffer
-	if err := run(context.Background(), []string{"propose", "--candidates", candidates, "--repository", "example/katl", "--base", strings.Repeat("a", 40)}, &stdout, io.Discard); err != nil {
+	if err := run(context.Background(), []string{"propose", "--flavour", "standard", "--candidates", candidates, "--repository", "example/katl", "--base", strings.Repeat("a", 40)}, &stdout, io.Discard); err != nil {
 		t.Fatal(err)
 	}
 	if strings.TrimSpace(stdout.String()) != `{"changed":false}` {
@@ -179,7 +179,7 @@ esac
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	args := []string{"propose", "--candidates", candidates, "--repository", "example/katl", "--base", strings.Repeat("a", 40)}
+	args := []string{"propose", "--flavour", "standard", "--candidates", candidates, "--repository", "example/katl", "--base", strings.Repeat("a", 40)}
 	var stdout bytes.Buffer
 	if err := run(context.Background(), args, &stdout, io.Discard); err != nil {
 		t.Fatal(err)

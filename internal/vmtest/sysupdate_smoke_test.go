@@ -179,7 +179,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 		t.Fatalf("upgrade changed the previous generation UKI: %s, want %s", got, previousUKIDigest)
 	}
 	assertInstalledSSHReady(t, ctx, guest)
-	assertHostUpgradeRuntimeReady(t, ctx, guest, "target")
+	assertInstalledRuntimeReady(t, ctx, guest, "target")
 	assertGuestFileDigests(t, ctx, guest, "target", sharedStateDigests)
 	wantAuthorizedKeyDigest := sha256.Sum256([]byte(combinedAuthorizedKey + "\n"))
 	if got := guestFileSHA256(t, ctx, guest, "combined-authorized-key", "/etc/ssh/authorized_keys/root"); got != hex.EncodeToString(wantAuthorizedKeyDigest[:]) {
@@ -199,7 +199,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
 	waitActiveGeneration(t, ctx, guest, previousGeneration)
 	assertBootedGenerationIdentity(t, ctx, guest, previousSpec)
-	assertHostUpgradeRuntimeReady(t, ctx, guest, "one-shot-rollback")
+	assertInstalledRuntimeReady(t, ctx, guest, "one-shot-rollback")
 	assertGuestFileDigests(t, ctx, guest, "one-shot-rollback", sharedStateDigests)
 	if got := guestFileSHA256(t, ctx, guest, "one-shot-rollback-host-key", hostKeyPath); got != repairedHostKeyDigest {
 		t.Fatalf("one-shot rollback host key digest = %s, want %s", got, repairedHostKeyDigest)
@@ -215,7 +215,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
 	waitActiveGeneration(t, ctx, guest, candidateGeneration)
 	assertBootedGenerationIdentity(t, ctx, guest, candidateSpec)
-	assertHostUpgradeRuntimeReady(t, ctx, guest, "repeat-target")
+	assertInstalledRuntimeReady(t, ctx, guest, "repeat-target")
 	assertGuestFileDigests(t, ctx, guest, "repeat-target", sharedStateDigests)
 	if got := guestFileSHA256(t, ctx, guest, "repeat-target-host-key", hostKeyPath); got != repairedHostKeyDigest {
 		t.Fatalf("repeat target host key digest = %s, want %s", got, repairedHostKeyDigest)
@@ -228,7 +228,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
 	waitGenerationPromotion(t, ctx, guest, previousGeneration)
 	assertBootedGenerationIdentity(t, ctx, guest, previousSpec)
-	assertHostUpgradeRuntimeReady(t, ctx, guest, "persistent-rollback")
+	assertInstalledRuntimeReady(t, ctx, guest, "persistent-rollback")
 	assertGuestFileDigests(t, ctx, guest, "persistent-rollback", sharedStateDigests)
 	if got := guestFileSHA256(t, ctx, guest, "persistent-rollback-host-key", hostKeyPath); got != repairedHostKeyDigest {
 		t.Fatalf("persistent rollback host key digest = %s, want %s", got, repairedHostKeyDigest)
@@ -324,9 +324,9 @@ func assertGuestFileDigests(t *testing.T, ctx context.Context, guest *GuestContr
 	}
 }
 
-func assertHostUpgradeRuntimeReady(t *testing.T, ctx context.Context, guest *GuestControl, phase string) {
+func assertInstalledRuntimeReady(t *testing.T, ctx context.Context, guest *GuestControl, phase string) {
 	t.Helper()
-	units := []string{"katlc-agent.service", "sshd.service", "katl-boot-complete.target"}
+	units := []string{"katlc-agent.service", "sshd.service", "systemd-logind.service", "katl-boot-complete.target"}
 	deadline := time.Now().Add(30 * time.Second)
 	for {
 		active, err := guest.RunCommand(ctx, GuestCommandRequest{
@@ -496,6 +496,11 @@ func stageHostUpgradeArtifactForVMTest(t *testing.T, ctx context.Context, endpoi
 				first = false
 			}
 			if err := stream.Send(request); err != nil {
+				if err == io.EOF {
+					if _, receiveErr := stream.CloseAndRecv(); receiveErr != nil {
+						err = receiveErr
+					}
+				}
 				t.Fatalf("send host upgrade artifact: %v", err)
 			}
 		}
@@ -1069,6 +1074,9 @@ func guestCommandOutput(t *testing.T, ctx context.Context, guest *GuestControl, 
 
 func collectSysupdateFailureEvidence(ctx context.Context, guest *GuestControl) {
 	for _, req := range []GuestCommandRequest{
+		{Name: "upgrade-agent-journal", Argv: []string{"journalctl", "-b", "-u", "katlc-agent.service", "--no-pager", "-n", "1000"}, AllowFailure: true, StdoutLimit: 1 << 20},
+		{Name: "upgrade-state-storage", Argv: []string{"findmnt", "--df", "--bytes", "--target", "/var/lib/katl"}, AllowFailure: true},
+		{Name: "upgrade-efi-storage", Argv: []string{"findmnt", "--df", "--bytes", "--target", "/efi"}, AllowFailure: true},
 		{Name: "sysupdate-status", Argv: []string{"/usr/lib/systemd/systemd-sysupdate", "--no-pager", "--verify=no", "--definitions=/var/lib/katl/test-artifacts/sysupdate/sysupdate.d", "list"}, AllowFailure: true},
 		{Name: "root-labels", Argv: []string{"blkid", "-o", "export"}, AllowFailure: true, StdoutLimit: 1 << 20},
 		{Name: "sysupdate-files", Argv: []string{"find", "/var/lib/katl/test-artifacts/sysupdate", "-maxdepth", "4", "-type", "f", "-print"}, AllowFailure: true},

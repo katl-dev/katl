@@ -1,0 +1,172 @@
+name: Propose Kernel Update
+
+on:
+  workflow_call:
+    inputs:
+      flavour:
+        type: string
+        required: true
+      kernel-release:
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+env:
+  KATL_KERNEL_FLAVOUR: ${{ inputs.flavour }}
+
+jobs:
+  capture:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      KATL_CONTAINER_RUNTIME: docker
+      KATL_MKOSI_IMAGE: localhost/katl-kernel-inputs:builder
+      KERNEL_RELEASE: ${{ inputs.kernel-release }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: ./.github/actions/mkosi-builder
+        with:
+          image: ${{ env.KATL_MKOSI_IMAGE }}
+      - name: Capture signed kernel RPMs once
+        run: |
+          scripts/mkosi box -- go run ./cmd/katl-kernel-release candidate \
+            --fedora-release "$(scripts/fedora-release)" --flavour "$KATL_KERNEL_FLAVOUR" \
+            --kernel-release "$KERNEL_RELEASE" --output "_build/kernel-candidates/$KATL_KERNEL_FLAVOUR"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kernel-candidate-${{ inputs.flavour }}
+          path: _build/kernel-candidates/${{ inputs.flavour }}
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
+
+  propose:
+    timeout-minutes: 10
+    needs: capture
+    runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.propose.outputs.changed }}
+      branch: ${{ steps.propose.outputs.branch }}
+      commit: ${{ steps.propose.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: kernel-candidate-${{ inputs.flavour }}
+          path: _build/kernel-candidates/${{ inputs.flavour }}
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
+          private-key: ${{ secrets.KATL_AUTOMATION_PRIVATE_KEY }}
+          permission-contents: write
+      - id: propose
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          go run ./cmd/katl-kernel-release propose --flavour "$KATL_KERNEL_FLAVOUR" > proposal.json
+          jq -r 'to_entries[] | "\(.key)=\(.value)"' proposal.json >> "$GITHUB_OUTPUT"
+
+  publish:
+    timeout-minutes: 30
+    if: needs.propose.outputs.changed == 'true'
+    needs: propose
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      # Publication executes only helper code from the trusted workflow source.
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: kernel-candidate-${{ inputs.flavour }}
+          path: _build/kernel-candidates/${{ inputs.flavour }}
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Retain the signed RPM bytes
+        run: |
+          go run ./cmd/katl-kernel-release publish \
+            --lock "_build/kernel-candidates/$KATL_KERNEL_FLAVOUR/lock.json" \
+            --layout "_build/kernel-candidates/$KATL_KERNEL_FLAVOUR/layout"
+
+  pull-request:
+    timeout-minutes: 15
+    needs: [propose, publish]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: kernel-candidate-${{ inputs.flavour }}
+          path: _build/kernel-candidates/${{ inputs.flavour }}
+      - name: Verify anonymous availability of every retained RPM
+        run: |
+          go run ./cmd/katl-kernel-release verify \
+            --lock "_build/kernel-candidates/$KATL_KERNEL_FLAVOUR/lock.json" \
+            --cache "_build/public-verification/$KATL_KERNEL_FLAVOUR"
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
+          private-key: ${{ secrets.KATL_AUTOMATION_PRIVATE_KEY }}
+          permission-contents: read
+          permission-pull-requests: write
+      - name: Open the proposal for CI
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ needs.propose.outputs.branch }}
+          PROPOSED_COMMIT: ${{ needs.propose.outputs.commit }}
+        run: |
+          actual="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$BRANCH" --jq .object.sha)"
+          [[ "$actual" == "$PROPOSED_COMMIT" ]] || { echo 'candidate changed after capture; rerun the workflow' >&2; exit 1; }
+          {
+            echo 'Select retained kernel RPMs for reproducible runtime, installer, and extension builds.'
+            echo
+            jq -r '"- **\(.flavour):** `\(.kernelRelease)`"' "_build/kernel-candidates/$KATL_KERNEL_FLAVOUR/lock.json"
+            echo
+            printf 'Signed RPMs for `%s` were captured and retained by [Kernel Updates](%s/%s/actions/runs/%s).\n' \
+              "$PROPOSED_COMMIT" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            echo
+            echo 'Kernel Qualification requires boot, shutdown, lifecycle, cluster, extension composition, and production DRBD tests for this flavour before auto-merge. NVIDIA hardware behavior requires separate hardware qualification.'
+          } > body.md
+          release="$(jq -r .kernelRelease "_build/kernel-candidates/$KATL_KERNEL_FLAVOUR/lock.json")"
+          number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$number" ]]; then
+            gh pr edit "$number" --repo "$GITHUB_REPOSITORY" --base main --body-file body.md
+          else
+            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
+              --title "kernel: update $KATL_KERNEL_FLAVOUR to $release" --body-file body.md
+          fi

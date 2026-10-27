@@ -48,7 +48,7 @@ func TestSelectGroups(t *testing.T) {
 }
 
 func allNames() []string {
-	return []string{"boot", "install", "storage", "config", "management", "update", "two-node", "three-node-install"}
+	return []string{"boot", "install", "storage", "config", "management", "update", "two-node", "three-node-install", "shutdown"}
 }
 
 func TestPlan(t *testing.T) {
@@ -127,6 +127,7 @@ func testCoverage(t *testing.T, args []string, input string) {
 			"TestInstalledRuntimeConfigApplyModesSmoke",
 			"TestInstalledRuntimeSysupdateRootUKITransfer",
 			"TestInstalledRuntimeManagementRotationSmoke",
+			"TestInstalledRuntimePowerButton",
 		},
 	}
 	if len(plan.Include) != 2 {
@@ -175,32 +176,34 @@ func TestCIPlan(t *testing.T) {
 		{name: "release tooling", paths: "cmd/katl-release/main.go"},
 		{name: "capture tooling", paths: "cmd/katl-kernel-release/candidate.go"},
 		{name: "proposal workflow", paths: ".github/workflows/kernel-updates.yml"},
+		{name: "single proposal workflow", paths: ".github/workflows/kernel-update.yml"},
 		{name: "product", paths: "cmd/katlctl/main.go", vms: []string{"standard"}},
 		{name: "main product", paths: "cmd/katlctl/main.go", main: true, vms: both},
 		{name: "main docs", paths: "README.md", main: true},
-		{name: "standard lock", paths: "kernels/fedora-44/x86_64/standard.json", vms: []string{"standard"}, drivers: []string{"standard"}},
-		{name: "LTS lock", paths: "kernels/fedora-44/x86_64/lts.json", vms: []string{"lts"}, drivers: []string{"lts"}},
+		{name: "standard lock", paths: "kernels/fedora-44/x86_64/standard.json", drivers: []string{"standard"}},
+		{name: "LTS lock", paths: "kernels/fedora-44/x86_64/lts.json", drivers: []string{"lts"}},
 		{name: "main LTS lock", paths: "kernels/fedora-44/x86_64/lts.json", main: true, vms: both},
 		{name: "main shared ABI", paths: "extensions/drbd9/build.sh", main: true, vms: both},
-		{name: "both locks", paths: "kernels/fedora-44/x86_64/standard.json\x00kernels/fedora-44/x86_64/lts.json", vms: both, drivers: both},
-		{name: "DRBD recipe", paths: "extensions/drbd9/build.sh", vms: both, drivers: both},
-		{name: "driver builder", paths: "scripts/build-kernel-extension", vms: both, drivers: both},
-		{name: "DRBD tools", paths: "mkosi.profiles/vmtest-drbd-tools/mkosi.conf", vms: both, drivers: both},
-		{name: "DRBD journey", paths: "internal/vmtest/drbd_smoke_test.go", vms: both, drivers: both},
-		{name: "module source", paths: "internal/kernelmodule/compose.go", vms: both, drivers: both},
+		{name: "both locks", paths: "kernels/fedora-44/x86_64/standard.json\x00kernels/fedora-44/x86_64/lts.json", drivers: both},
+		{name: "DRBD recipe", paths: "extensions/drbd9/build.sh", drivers: both},
+		{name: "driver builder", paths: "scripts/build-kernel-extension", drivers: both},
+		{name: "DRBD tools", paths: "mkosi.profiles/vmtest-drbd-tools/mkosi.conf", drivers: both},
+		{name: "DRBD journey", paths: "internal/vmtest/drbd_smoke_test.go", drivers: both},
+		{name: "power button qualification", paths: "internal/vmtest/kernel_shutdown_vmtest_test.go", drivers: both},
+		{name: "module source", paths: "internal/kernelmodule/compose.go", drivers: both},
 		{name: "runtime source", paths: "packages/containerd/source.json", vms: both},
 		{name: "runtime spec", paths: "packages/crun/crun.spec", vms: both},
 		{name: "runtime builder", paths: "cmd/katl-runtime-rpms/main.go", vms: both},
-		{name: "runtime hook", paths: "mkosi.profiles/runtime/mkosi.postinst", vms: both, drivers: both},
-		{name: "shared config", paths: "mkosi.conf.d/packages.conf", vms: both, drivers: both},
-		{name: "Go dependency", paths: "go.sum", vms: both, drivers: both},
-		{name: "builder", paths: "scripts/mkosi", vms: both, drivers: both},
+		{name: "runtime hook", paths: "mkosi.profiles/runtime/mkosi.postinst", drivers: both},
+		{name: "shared config", paths: "mkosi.conf.d/packages.conf", drivers: both},
+		{name: "Go dependency", paths: "go.sum", drivers: both},
+		{name: "builder", paths: "scripts/mkosi", drivers: both},
 		{name: "VM test", paths: "internal/vmtest/installed_smoke_test.go", vms: both},
 		{name: "VM workflow", paths: ".github/workflows/hosted-vmtests.yml", vms: both},
-		{name: "CI workflow", paths: ".github/workflows/ci.yml", vms: both, drivers: both},
-		{name: "planner", paths: "cmd/katl-vmtest-plan/main.go", vms: both, drivers: both},
+		{name: "CI workflow", paths: ".github/workflows/ci.yml", drivers: both},
+		{name: "planner", paths: "cmd/katl-vmtest-plan/main.go", drivers: both},
 		{name: "directory boundary", paths: "kernels-not-related/file", vms: []string{"standard"}},
-		{name: "renamed module", paths: "docs/moved.go\x00internal/kernelmodule/old.go", vms: both, drivers: both},
+		{name: "renamed module", paths: "docs/moved.go\x00internal/kernelmodule/old.go", drivers: both},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			input := tc.paths
@@ -219,9 +222,32 @@ func TestCIPlan(t *testing.T) {
 			if err := json.Unmarshal(output.Bytes(), &got); err != nil {
 				t.Fatal(err)
 			}
-			if !slices.Equal(got.VMFlavours, tc.vms) || !slices.Equal(got.DriverFlavours, tc.drivers) || strings.Contains(output.String(), "null") {
+			if !slices.Equal(got.VMFlavours, tc.vms) || !slices.Equal(got.KernelFlavours, tc.drivers) || strings.Contains(output.String(), "null") {
 				t.Fatalf("CI plan = %s, want VMs %v and drivers %v", &output, tc.vms, tc.drivers)
 			}
 		})
+	}
+}
+
+func TestKernelQualification(t *testing.T) {
+	var output bytes.Buffer
+	input := "kernels/fedora-44/x86_64/lts.json\x00"
+	if err := run([]string{"--ci"}, strings.NewReader(input), &output); err != nil {
+		t.Fatal(err)
+	}
+	var plan ciPlan
+	if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.VMFlavours) != 0 || !slices.Equal(plan.KernelFlavours, []string{"lts"}) {
+		t.Fatalf("qualification ownership = %s", output.Bytes())
+	}
+	var boot, shutdown bool
+	for _, group := range plan.Groups {
+		boot = boot || strings.Contains(group.Tests, "TestInstallerISOBootSmoke")
+		shutdown = shutdown || strings.Contains(group.Tests, "TestInstalledRuntimePowerButton")
+	}
+	if !boot || !shutdown {
+		t.Fatalf("kernel qualification omits boot or native shutdown: %s", output.Bytes())
 	}
 }

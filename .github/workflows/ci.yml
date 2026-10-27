@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 20
     outputs:
       vm-flavours: ${{ steps.plan.outputs.vm-flavours }}
-      driver-flavours: ${{ steps.plan.outputs.driver-flavours }}
+      kernel-flavours: ${{ steps.plan.outputs.kernel-flavours }}
       kubernetes-version: ${{ steps.plan.outputs.kubernetes-version }}
       scenarios: ${{ steps.plan.outputs.scenarios }}
     steps:
@@ -54,8 +54,8 @@ jobs:
           go run ./cmd/katl-vmtest-plan "${options[@]}" < _build/ci-changes > _build/ci-plan.json
           go run ./cmd/katl-kubernetes-release presubmit --base "$base" > _build/kubernetes-plan.json
           {
-            echo "vm-flavours=$(jq -c .vmFlavours _build/ci-plan.json)"
-            echo "driver-flavours=$(jq -c .driverFlavours _build/ci-plan.json)"
+            echo "vm-flavours=$(jq -c '.vmFlavours + .kernelFlavours | unique' _build/ci-plan.json)"
+            echo "kernel-flavours=$(jq -c .kernelFlavours _build/ci-plan.json)"
             echo "scenarios=$(jq -c '{include: .groups}' _build/ci-plan.json)"
             echo "kubernetes-version=$(jq -r '.include[0].payloadVersion // empty' _build/kubernetes-plan.json)"
             echo "range=$base..HEAD"
@@ -86,15 +86,16 @@ jobs:
       kubernetes-version: ${{ needs.checks.outputs.kubernetes-version }}
       scenarios: ${{ needs.checks.outputs.scenarios }}
 
+  # CI remains a complete gate until Kernel qualification is required on main.
   drivers:
     name: Drivers (${{ matrix.flavour }})
     needs: checks
-    if: needs.checks.outputs.driver-flavours != '[]'
+    if: needs.checks.outputs.kernel-flavours != '[]'
     strategy:
       fail-fast: false
       matrix:
-        flavour: ${{ fromJSON(needs.checks.outputs.driver-flavours) }}
-    uses: ./.github/workflows/kernel-qualification.yml
+        flavour: ${{ fromJSON(needs.checks.outputs.kernel-flavours) }}
+    uses: ./.github/workflows/kernel-drivers.yml
     with:
       flavour: ${{ matrix.flavour }}
 
@@ -112,7 +113,7 @@ jobs:
           jq -e '
             .checks.result == "success" and
             ([{flavours: .checks.outputs["vm-flavours"], result: .vms.result},
-              {flavours: .checks.outputs["driver-flavours"], result: .drivers.result}]
+              {flavours: .checks.outputs["kernel-flavours"], result: .drivers.result}]
              | all(.[];
                  (.flavours | fromjson) as $flavours |
                  ($flavours | type == "array") and

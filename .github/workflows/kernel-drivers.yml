@@ -1,0 +1,97 @@
+name: Kernel drivers
+
+on:
+  workflow_call:
+    inputs:
+      flavour:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  drivers:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      KATL_FLAVOUR: ${{ inputs.flavour }}
+      KATL_MKOSI_BUILD_DIR: ${{ github.workspace }}/_build/mkosi
+      KATL_CONTAINER_RUNTIME: docker
+      KATL_MKOSI_IMAGE: localhost/katl-kernel-inputs:builder
+      KATL_VMTEST_IMAGE_SUPPORT: '0'
+      KATL_BUILD_COMMIT: ${{ github.sha }}
+      KATL_VMTEST_KVM: 'on'
+      KATL_VMTEST_KEEP: failed
+      KATL_VMTEST_DEBUG_ON_FAILURE: '0'
+      KATL_OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
+      KATL_OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
+      KATL_VMTEST_GO: ${{ github.workspace }}/.github/scripts/hosted-vmtest-go
+      KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/kernel-journey
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: ./.github/actions/mkosi-builder
+        with:
+          image: ${{ env.KATL_MKOSI_IMAGE }}
+      - name: Select the committed kernel lock
+        run: |
+          case "$KATL_FLAVOUR" in standard|lts) ;; *) exit 1 ;; esac
+          lock="kernels/fedora-$(scripts/fedora-release)/x86_64/$KATL_FLAVOUR.json"
+          test -f "$lock"
+          echo "KATL_KERNEL_LOCK=$GITHUB_WORKSPACE/$lock" >> "$GITHUB_ENV"
+          echo "KATL_VERSION=$(date -u +%Y.%-m).0-dev.0" >> "$GITHUB_ENV"
+      - name: Install module inspection tools
+        run: .github/scripts/hosted-apt-install systemd-container kmod squashfs-tools
+      - name: Build both boot artifacts and every release recipe
+        run: |
+          scripts/mkosi build-runtime
+          scripts/mkosi build-installer
+          scripts/build-release-extensions
+          scripts/assemble-release-extensions
+      - uses: ./.github/actions/hosted-vmtest
+      - name: Exercise the production DRBD driver
+        run: |
+          KATL_EXTENSION_RELEASE=_build/mkosi/release-extensions.json \
+            scripts/mkosi build-katlos-upgrade-image
+          mkdir -p _build/qualified-kernel
+          mv _build/mkosi/katlos-upgrade-* _build/qualified-kernel/
+          images=(_build/qualified-kernel/katlos-upgrade-*.squashfs)
+          test "${#images[@]}" = 1
+          export KATL_VMTEST_DRBD_UPGRADE_IMAGE="$GITHUB_WORKSPACE/${images[0]}"
+          export KATL_VMTEST_IMAGE_SUPPORT=1
+          scripts/mkosi build-katlos-install-image
+          scripts/mkosi build-installer
+          scripts/mkosi --profile vmtest-drbd-tools -f build
+          .github/scripts/hosted-vmtest-measure drbd .github/scripts/hosted-vmtest-run \
+            --artifact-set=install --no-rebuild ./internal/vmtest \
+            -run '^TestInstalledRuntimeDRBDReplication$' -count=1 -json -timeout 40m
+          jq -se 'any(.[]; .Action == "pass" and .Test == "TestInstalledRuntimeDRBDReplication")' \
+            _build/hosted-evidence/go-test.jsonl
+      - name: Record the qualified commit and inputs
+        run: |
+          printf 'Qualified commit: `%s`\n\n' "$KATL_BUILD_COMMIT" >> "$GITHUB_STEP_SUMMARY"
+          jq '{flavour, kernelRelease, reference, packages: [.packages[] | {name, nevra, digest}]}' \
+            "$KATL_KERNEL_LOCK" >> "$GITHUB_STEP_SUMMARY"
+      - name: Collect VM diagnostics
+        if: always()
+        run: .github/scripts/hosted-vmtest-diagnostics
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: kernel-driver-${{ inputs.flavour }}-${{ github.run_id }}
+          path: |
+            _build/hosted-evidence/
+            _build/kernel-journey/**/*.log
+            _build/kernel-journey/**/*.json
+            _build/kernel-journey/**/*.xml
+            _build/kernel-journey/**/*.txt
+            _build/kernel-journey/**/*.stdout
+            _build/kernel-journey/**/*.stderr
+          retention-days: 3

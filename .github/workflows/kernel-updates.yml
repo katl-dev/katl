@@ -5,6 +5,11 @@ on:
     - cron: '23 6 * * 1'
   workflow_dispatch:
     inputs:
+      flavour:
+        description: Kernel flavour to update
+        type: choice
+        options: [both, standard, lts]
+        default: both
       standard_release:
         description: Exact standard kernel release; empty discovers the newest
         type: string
@@ -15,171 +20,31 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: kernel-inputs-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
-  capture:
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    env:
-      KATL_CONTAINER_RUNTIME: docker
-      KATL_MKOSI_IMAGE: localhost/katl-kernel-inputs:builder
-      STANDARD_RELEASE: ${{ inputs.standard_release }}
-      LTS_RELEASE: ${{ inputs.lts_release }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: ./.github/actions/mkosi-builder
-        with:
-          image: ${{ env.KATL_MKOSI_IMAGE }}
-      - name: Capture signed kernel RPMs once
-        run: |
-          for flavour in standard lts; do
-            release="$STANDARD_RELEASE"
-            [[ "$flavour" != lts ]] || release="$LTS_RELEASE"
-            scripts/mkosi box -- go run ./cmd/katl-kernel-release candidate \
-              --fedora-release "$(scripts/fedora-release)" --flavour "$flavour" \
-              --kernel-release "$release" --output "_build/kernel-candidates/$flavour"
-          done
-      - uses: actions/upload-artifact@v7
-        with:
-          name: kernel-candidates
-          path: _build/kernel-candidates
-          retention-days: 7
-          compression-level: 0
-          if-no-files-found: error
-
-  propose:
-    timeout-minutes: 10
-    needs: capture
-    runs-on: ubuntu-24.04
-    outputs:
-      changed: ${{ steps.propose.outputs.changed }}
-      branch: ${{ steps.propose.outputs.branch }}
-      commit: ${{ steps.propose.outputs.commit }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: actions/download-artifact@v8
-        with:
-          name: kernel-candidates
-          path: _build/kernel-candidates
-      - uses: actions/create-github-app-token@v3
-        id: app-token
-        with:
-          client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
-          private-key: ${{ secrets.KATL_AUTOMATION_PRIVATE_KEY }}
-          permission-contents: write
-      - id: propose
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          go run ./cmd/katl-kernel-release propose > proposal.json
-          jq -r 'to_entries[] | "\(.key)=\(.value)"' proposal.json >> "$GITHUB_OUTPUT"
-
-  publish:
-    timeout-minutes: 30
-    if: needs.propose.outputs.changed == 'true'
-    needs: propose
-    runs-on: ubuntu-24.04
+  standard:
+    if: github.ref == 'refs/heads/main' && inputs.flavour != 'lts'
+    concurrency:
+      group: kernel-inputs-standard-${{ github.ref }}
+      cancel-in-progress: false
     permissions:
       contents: read
       packages: write
-    steps:
-      # Publication executes only helper code from the trusted workflow source.
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: actions/download-artifact@v8
-        with:
-          name: kernel-candidates
-          path: _build/kernel-candidates
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
-      - name: Retain the signed RPM bytes
-        run: |
-          for flavour in standard lts; do
-            go run ./cmd/katl-kernel-release publish \
-              --lock "_build/kernel-candidates/$flavour/lock.json" \
-              --layout "_build/kernel-candidates/$flavour/layout"
-          done
+    uses: ./.github/workflows/kernel-update.yml
+    with:
+      flavour: standard
+      kernel-release: ${{ inputs.standard_release }}
+    secrets: inherit
 
-  pull-request:
-    timeout-minutes: 15
-    needs: [propose, publish]
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: actions/download-artifact@v8
-        with:
-          name: kernel-candidates
-          path: _build/kernel-candidates
-      - name: Verify anonymous availability of every retained RPM
-        run: |
-          for flavour in standard lts; do
-            go run ./cmd/katl-kernel-release verify \
-              --lock "_build/kernel-candidates/$flavour/lock.json" \
-              --cache "_build/public-verification/$flavour"
-          done
-      - uses: actions/create-github-app-token@v3
-        id: app-token
-        with:
-          client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
-          private-key: ${{ secrets.KATL_AUTOMATION_PRIVATE_KEY }}
-          permission-contents: read
-          permission-pull-requests: write
-      - name: Open the proposal for CI
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-          BRANCH: ${{ needs.propose.outputs.branch }}
-          PROPOSED_COMMIT: ${{ needs.propose.outputs.commit }}
-        run: |
-          actual="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$BRANCH" --jq .object.sha)"
-          [[ "$actual" == "$PROPOSED_COMMIT" ]] || { echo 'candidate changed after capture; rerun the workflow' >&2; exit 1; }
-          {
-            echo 'Select retained kernel RPMs for reproducible runtime, installer, and extension builds.'
-            echo
-            for flavour in standard lts; do
-              jq -r '"- **\(.flavour):** `\(.kernelRelease)`"' "_build/kernel-candidates/$flavour/lock.json"
-            done
-            echo
-            printf 'Signed RPMs for `%s` were captured and retained by [Kernel Updates](%s/%s/actions/runs/%s).\n' \
-              "$PROPOSED_COMMIT" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
-            echo
-            echo 'CI requires boot, lifecycle, cluster, extension composition, and production DRBD tests for each changed kernel flavour before auto-merge. NVIDIA hardware behavior requires separate hardware qualification.'
-          } > body.md
-          number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
-          if [[ -n "$number" ]]; then
-            gh pr edit "$number" --repo "$GITHUB_REPOSITORY" --base main --body-file body.md
-          else
-            gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
-              --title 'kernel: update retained kernel inputs' --body-file body.md
-          fi
+  lts:
+    if: github.ref == 'refs/heads/main' && inputs.flavour != 'standard'
+    concurrency:
+      group: kernel-inputs-lts-${{ github.ref }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/kernel-update.yml
+    with:
+      flavour: lts
+      kernel-release: ${{ inputs.lts_release }}
+    secrets: inherit
