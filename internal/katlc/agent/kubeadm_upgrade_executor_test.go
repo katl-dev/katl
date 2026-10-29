@@ -50,6 +50,8 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 		switch {
 		case strings.Contains(joined, "/usr/bin/kubeadm version"):
 			return ToolResult{Stdout: []byte("v1.36.2\n")}
+		case strings.Contains(joined, "get configmap kubeadm-config"):
+			return ToolResult{Stdout: []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n")}
 		case strings.Contains(joined, "get endpoints kubernetes"):
 			return ToolResult{Stdout: testKubeAPIServerEndpoints("10.0.0.1", "10.0.0.2")}
 		case joined == "systemctl show --property=Environment --value kubelet.service":
@@ -165,6 +167,123 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	}
 	if got := string(configuration.KubeadmConfigs["default"].Config.Content); got != "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n" {
 		t.Fatalf("candidate lost desired kubeadm input: %s", got)
+	}
+}
+
+func TestKubeadmUpgradeDNSOwnership(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		dns        string
+		check      string
+		wantError  bool
+		wantIgnore bool
+	}{
+		{name: "external DNS", dns: "dns:\n  disabled: true\n", check: "CoreDNSMigration", wantIgnore: true},
+		{name: "managed DNS", dns: "dns:\n  disabled: false\n"},
+		{name: "default DNS"},
+		{name: "managed DNS migration fails", dns: "dns:\n  disabled: false\n", check: "CoreDNSMigration", wantError: true},
+		{name: "default DNS migration fails", check: "CoreDNSUnsupportedPlugins", wantError: true},
+		{name: "external DNS preserves other checks", dns: "dns:\n  disabled: true\n", check: "Swap", wantIgnore: true, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, store, record, now := kubeadmUpgradeFixture(t, "apply")
+			executor := NewExecutor(root, store, "agent-test")
+			executor.Async = false
+			executor.Now = func() time.Time { return now.Add(time.Minute) }
+			executor.SetBootDefault = func(context.Context, string, string) error { return nil }
+			executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
+			var upgradeCommands []string
+			executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+				joined := strings.Join(argv, " ")
+				switch {
+				case strings.Contains(joined, "kubeadm version"):
+					return ToolResult{Stdout: []byte("v1.36.2\n")}
+				case strings.Contains(joined, "get configmap kubeadm-config"):
+					return ToolResult{Stdout: []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n" + tc.dns)}
+				case strings.Contains(joined, "get endpoints kubernetes"):
+					return ToolResult{Stdout: testKubeAPIServerEndpoints("10.0.0.1")}
+				case strings.Contains(joined, "kubelet --version"):
+					return ToolResult{Stdout: []byte("Kubernetes v1.36.2\n")}
+				case strings.Contains(joined, "kubeadm upgrade"):
+					upgradeCommands = append(upgradeCommands, argv[2])
+					ignore := ""
+					for _, arg := range argv {
+						if strings.HasPrefix(arg, "--ignore-preflight-errors") {
+							ignore = arg
+						}
+					}
+					want := ""
+					if tc.wantIgnore {
+						want = "--ignore-preflight-errors=CoreDNSUnsupportedPlugins,CoreDNSMigration"
+					}
+					if ignore != want {
+						t.Errorf("%s preflight flag = %q, want %q", argv[2], ignore, want)
+					}
+					if tc.check != "" && !strings.Contains(ignore, tc.check) {
+						return ToolResult{Err: errors.New(tc.check), ExitStatus: 1}
+					}
+				}
+				return ToolResult{}
+			}
+
+			err := executor.Execute(context.Background(), record)
+			if tc.wantError {
+				if err == nil || !strings.Contains(err.Error(), tc.check) {
+					t.Fatalf("Execute() = %v, want %s failure", err, tc.check)
+				}
+				if !slices.Equal(upgradeCommands, []string{"plan"}) {
+					t.Fatalf("commands after failed preflight = %v", upgradeCommands)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !slices.Equal(upgradeCommands, []string{"plan", "apply"}) {
+					t.Fatalf("upgrade commands = %v", upgradeCommands)
+				}
+			}
+		})
+	}
+}
+
+func TestKubeadmUpgradeRejectsUnknownDNSOwnership(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		result ToolResult
+	}{
+		{name: "API unavailable", result: ToolResult{ExitStatus: 1, Err: errors.New("API unavailable")}},
+		{name: "empty"},
+		{name: "malformed", result: ToolResult{Stdout: []byte("dns: [")}},
+		{name: "wrong kind", result: ToolResult{Stdout: []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\ndns: {disabled: true}\n")}},
+		{name: "invalid disabled", result: ToolResult{Stdout: []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\ndns: {disabled: invalid}\n")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, store, record, _ := kubeadmUpgradeFixture(t, "apply")
+			executor := NewExecutor(root, store, "agent-test")
+			executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+				joined := strings.Join(argv, " ")
+				switch {
+				case strings.Contains(joined, "kubeadm version"):
+					return ToolResult{Stdout: []byte("v1.36.2\n")}
+				case strings.Contains(joined, "get configmap kubeadm-config"):
+					return tc.result
+				case strings.Contains(joined, "kubeadm upgrade"), joined == "systemctl stop kubelet.service":
+					t.Fatalf("upgrade proceeded with unknown ownership: %s", joined)
+				}
+				return ToolResult{}
+			}
+
+			if err := executor.Execute(context.Background(), record); err == nil || !strings.Contains(err.Error(), "live kubeadm") {
+				t.Fatalf("Execute() = %v, want live config failure", err)
+			}
+			failed, err := store.Read(record.OperationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !failed.Terminal || failed.RecoveryRequired || failed.ExternalMutationStarted {
+				t.Fatalf("failure must permit a corrected retry: %+v", failed)
+			}
+		})
 	}
 }
 
@@ -505,6 +624,8 @@ func TestExecutorRestoresKubeletAPIHandoffWhenKubeadmFails(t *testing.T) {
 			return ToolResult{Stdout: []byte("KUBELET_KUBECONFIG_ARGS=--kubeconfig=/var/lib/katl/operations/kubeadm-upgrade-1/kubelet-peer.conf\n")}
 		case strings.Contains(joined, "kubeadm upgrade apply"):
 			return ToolResult{Err: errors.New("health check failed"), ExitStatus: 1}
+		case strings.Contains(joined, "get configmap kubeadm-config"):
+			return ToolResult{Stdout: []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n")}
 		default:
 			return ToolResult{}
 		}
