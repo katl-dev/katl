@@ -133,8 +133,14 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 		return err
 	}
 
+	var preflightArgs []string
 	if request.UpgradeRole == "apply" {
-		if err := e.runKubeadmUpgradeCommand(ctx, record, "kubeadm-plan-running", []string{targetKubeadm, "upgrade", "plan", request.TargetPayloadVersion}, false); err != nil {
+		preflightArgs, err = e.kubeadmUpgradePreflightArgs(ctx)
+		if err != nil {
+			return e.failKubeadmUpgrade(record, "kubeadm-plan-running", err, false)
+		}
+		argv := append([]string{targetKubeadm, "upgrade", "plan", request.TargetPayloadVersion}, preflightArgs...)
+		if err := e.runKubeadmUpgradeCommand(ctx, record, "kubeadm-plan-running", argv, false); err != nil {
 			return err
 		}
 		if _, err := e.Store.Update(record.OperationID, "kubeadm-plan-complete", "kubeadm-plan-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
@@ -181,6 +187,7 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 	retainToolView = true
 	if request.UpgradeRole == "apply" {
 		argv := []string{targetKubeadm, "upgrade", "apply", "--yes", request.TargetPayloadVersion}
+		argv = append(argv, preflightArgs...)
 		if patchesDir != "" {
 			argv = append(argv, "--patches", patchesDir)
 		}
@@ -265,6 +272,32 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 	}
 	retainToolView = false
 	return nil
+}
+
+func (e *Executor) kubeadmUpgradePreflightArgs(ctx context.Context) ([]string, error) {
+	result := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "--request-timeout=30s", "-n", "kube-system", "get", "configmap", "kubeadm-config", "-o", "jsonpath={.data.ClusterConfiguration}"}, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		return nil, fmt.Errorf("read live kubeadm ClusterConfiguration: %s", toolFailure(result))
+	}
+	var config struct {
+		APIVersion string `yaml:"apiVersion"`
+		Kind       string `yaml:"kind"`
+		DNS        struct {
+			Disabled bool `yaml:"disabled"`
+		} `yaml:"dns"`
+	}
+	if err := yaml.Unmarshal(result.Stdout, &config); err != nil {
+		return nil, fmt.Errorf("decode live kubeadm ClusterConfiguration: %w", err)
+	}
+	if config.APIVersion != "kubeadm.k8s.io/v1beta4" || config.Kind != "ClusterConfiguration" {
+		return nil, fmt.Errorf("live kubeadm config must be a kubeadm.k8s.io/v1beta4 ClusterConfiguration")
+	}
+	// kubeadm runs DNS migration preflights even when its addon phase honors
+	// dns.disabled. Only the live cluster setting establishes addon ownership.
+	if config.DNS.Disabled {
+		return []string{"--ignore-preflight-errors=CoreDNSUnsupportedPlugins,CoreDNSMigration"}, nil
+	}
+	return nil, nil
 }
 
 func cleanupManagedKubernetesUpgradeArtifact(root string, request operation.KubernetesSysextUpdate) error {
