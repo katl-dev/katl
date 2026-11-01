@@ -9,6 +9,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/configapply"
+	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -19,6 +20,9 @@ func (s *Server) SelectGeneration(ctx context.Context, req *agentapi.GenerationM
 	defer s.submitMu.Unlock()
 	if err := s.validateGenerationMutation(ctx, req); err != nil {
 		return nil, err
+	}
+	if err := s.validateEtcdGeneration(req.GenerationId); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "select generation: %v", err)
 	}
 	if err := s.mountGenerationBootRoot(ctx); err != nil {
 		return nil, err
@@ -32,6 +36,37 @@ func (s *Server) SelectGeneration(ctx context.Context, req *agentapi.GenerationM
 		return nil, status.Errorf(codes.FailedPrecondition, "select generation: %v", err)
 	}
 	return &agentapi.GenerationMutationResult{GenerationId: req.GenerationId, OneShot: req.OneShot}, nil
+}
+
+// Persistent etcd manifests and data outlive host generations. A boot fallback
+// does not supply the evidence needed to authorize older Kubernetes tooling.
+func (s *Server) validateEtcdGeneration(generationID string) error {
+	ids, err := s.Store.OperationIDs()
+	if err != nil {
+		return err
+	}
+	var latest operation.OperationRecord
+	for _, id := range ids {
+		record, err := s.Store.Read(id)
+		if err != nil {
+			return err
+		}
+		if record.OperationKind == OperationKindKubeadmUpgrade && record.ExternalMutationStarted && record.KubernetesSysextUpdate != nil && record.KubernetesSysextUpdate.UpgradeRole != "worker" && (latest.OperationID == "" || record.CreatedAt.After(latest.CreatedAt)) {
+			latest = record
+		}
+	}
+	if latest.OperationID == "" {
+		return nil
+	}
+	spec, _, err := generation.ReadGeneration(s.Root, generationID)
+	if err != nil {
+		return err
+	}
+	ref, ok := kubernetesRef(spec.Sysexts)
+	if !ok || ref.PayloadVersion != latest.KubernetesSysextUpdate.TargetPayloadVersion {
+		return fmt.Errorf("host generation fallback cannot authorize older Kubernetes or etcd against potentially migrated data; inspect upgrade %s and repair or replace the affected member", latest.OperationID)
+	}
+	return nil
 }
 
 func (s *Server) RemoveGeneration(ctx context.Context, req *agentapi.GenerationMutationRequest) (*agentapi.GenerationMutationResult, error) {

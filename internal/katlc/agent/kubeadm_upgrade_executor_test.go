@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,7 +24,7 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	root, store, record, now := kubeadmUpgradeFixture(t, "apply")
 	writeTestFile(t, filepath.Join(root, apivip.OwnershipEnabledPath), "enabled\n")
 	var commands [][]string
-	executor := NewExecutor(root, store, "agent-test")
+	executor := newUpgradeExecutor(root, store)
 	executor.Async = false
 	executor.Now = func() time.Time { return now.Add(time.Minute) }
 	executor.WaitBeforeKubeadm = func(_ context.Context, delay time.Duration) error {
@@ -187,7 +188,7 @@ func TestKubeadmUpgradeDNSOwnership(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root, store, record, now := kubeadmUpgradeFixture(t, "apply")
-			executor := NewExecutor(root, store, "agent-test")
+			executor := newUpgradeExecutor(root, store)
 			executor.Async = false
 			executor.Now = func() time.Time { return now.Add(time.Minute) }
 			executor.SetBootDefault = func(context.Context, string, string) error { return nil }
@@ -259,7 +260,7 @@ func TestKubeadmUpgradeRejectsUnknownDNSOwnership(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root, store, record, _ := kubeadmUpgradeFixture(t, "apply")
-			executor := NewExecutor(root, store, "agent-test")
+			executor := newUpgradeExecutor(root, store)
 			executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 				joined := strings.Join(argv, " ")
 				switch {
@@ -352,7 +353,7 @@ func TestActivateKubeletAPIHandoffClearsUpgradeGate(t *testing.T) {
 
 func TestExecutorKeepsRecoveryRequiredAfterKubeadmMutationFailure(t *testing.T) {
 	root, store, record, now := kubeadmUpgradeFixture(t, "worker")
-	executor := NewExecutor(root, store, "agent-test")
+	executor := newUpgradeExecutor(root, store)
 	executor.Async = false
 	executor.Now = func() time.Time { return now.Add(time.Minute) }
 	sawUnmount := false
@@ -380,7 +381,7 @@ func TestExecutorKeepsRecoveryRequiredAfterKubeadmMutationFailure(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !failed.Terminal || !failed.RecoveryRequired || failed.Result != operation.ResultFailedNeedsRepair || failed.HostRollback != "gen0" {
+	if !failed.Terminal || !failed.RecoveryRequired || failed.Result != operation.ResultFailedNeedsRepair || failed.HostRollback != "gen0" || !failed.PostMutationRollbackAllowed {
 		t.Fatalf("failed operation = %+v", failed)
 	}
 	if !strings.Contains(failed.NextAction, "host rollback does not repair") {
@@ -456,7 +457,7 @@ func TestExecutorStopsBeforeKubeadmWhenAPIServerDrainFails(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root, store, record, now := kubeadmUpgradeFixture(t, "control-plane")
-			executor := NewExecutor(root, store, "agent-test")
+			executor := newUpgradeExecutor(root, store)
 			executor.Async = false
 			executor.Now = func() time.Time { return now.Add(time.Minute) }
 			executor.RunTool = tc.run
@@ -484,7 +485,7 @@ func TestExecutorStopsBeforeKubeadmWhenAPIServerDrainFails(t *testing.T) {
 
 func TestExecutorKeepsSingleControlPlaneAvailableForKubeadm(t *testing.T) {
 	root, store, record, now := kubeadmUpgradeFixture(t, "control-plane")
-	executor := NewExecutor(root, store, "agent-test")
+	executor := newUpgradeExecutor(root, store)
 	executor.Async = false
 	executor.Now = func() time.Time { return now.Add(time.Minute) }
 	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
@@ -520,7 +521,7 @@ func TestExecutorKeepsSingleControlPlaneAvailableForKubeadm(t *testing.T) {
 
 func TestExecutorKeepsLocalAPIServerWhenNoPeerIsReady(t *testing.T) {
 	root, store, record, now := kubeadmUpgradeFixture(t, "control-plane")
-	executor := NewExecutor(root, store, "agent-test")
+	executor := newUpgradeExecutor(root, store)
 	executor.Async = false
 	executor.Now = func() time.Time { return now.Add(time.Minute) }
 	killed := false
@@ -556,7 +557,7 @@ func TestExecutorKeepsLocalAPIServerWhenNoPeerIsReady(t *testing.T) {
 
 func TestExecutorRestoresKubeletAfterHandoffActivationFailure(t *testing.T) {
 	root, store, record, now := kubeadmUpgradeFixture(t, "control-plane")
-	executor := NewExecutor(root, store, "agent-test")
+	executor := newUpgradeExecutor(root, store)
 	executor.Async = false
 	executor.Now = func() time.Time { return now.Add(time.Minute) }
 	var commands [][]string
@@ -605,9 +606,9 @@ func TestExecutorRestoresKubeletAfterHandoffActivationFailure(t *testing.T) {
 	}
 }
 
-func TestExecutorRestoresKubeletAPIHandoffWhenKubeadmFails(t *testing.T) {
+func TestExecutorPreservesKubeletAfterKubeadmFailure(t *testing.T) {
 	root, store, record, now := kubeadmUpgradeFixture(t, "apply")
-	executor := NewExecutor(root, store, "agent-test")
+	executor := newUpgradeExecutor(root, store)
 	executor.Async = false
 	executor.Now = func() time.Time { return now.Add(time.Minute) }
 	executor.WaitBeforeKubeadm = func(context.Context, time.Duration) error { return nil }
@@ -646,7 +647,6 @@ func TestExecutorRestoresKubeletAPIHandoffWhenKubeadmFails(t *testing.T) {
 		"/usr/bin/killall -s SIGTERM kube-apiserver",
 		"kubeadm upgrade apply --yes v1.36.2",
 		"systemctl daemon-reload",
-		"systemctl restart kubelet.service",
 	)
 	for _, path := range []string{
 		"var/lib/katl/operations/kubeadm-upgrade-1/kubeadm-peer.conf",
@@ -754,7 +754,7 @@ func TestCleanupManagedKubernetesUpgradeArtifact(t *testing.T) {
 
 func TestExecutorRestoresSourceSysextAndKubeletWhenLiveActivationFails(t *testing.T) {
 	root, store, record, now := kubeadmUpgradeFixture(t, "worker")
-	executor := NewExecutor(root, store, "agent-test")
+	executor := newUpgradeExecutor(root, store)
 	executor.Async = false
 	executor.Now = func() time.Time { return now.Add(time.Minute) }
 	restarts := 0
@@ -841,7 +841,7 @@ func TestExecutorResolvesUpgradeBundleInsideNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	executor := NewExecutor(root, store, "agent-test")
+	executor := newUpgradeExecutor(root, store)
 	source, ref := configureExecutorBundle(t, executor, "v1.35.1", "target-payload")
 	record := createUnresolvedUpgradeRecord(t, store, "resolve-upgrade", &operation.KubernetesSysextUpdate{TargetPayloadVersion: "v1.35.1", CandidateGenerationID: "gen1", UpgradeRole: "worker", SourcePayloadVersion: "v1.35.0", KubernetesBundleSource: source, KubernetesBundleRef: ref})
 	resolved, err := executor.resolveKubernetesUpgradePayload(context.Background(), record)
@@ -874,7 +874,7 @@ func TestExecutorCapturesUpgradeSnapshotInsideNode(t *testing.T) {
 		t.Fatal(err)
 	}
 	record := createUnresolvedUpgradeRecord(t, store, "snapshot-upgrade", &operation.KubernetesSysextUpdate{TargetPayloadVersion: "v1.36.2", TargetSysextPath: "/var/lib/katl/artifacts/kubernetes.raw", TargetSysextSHA256: strings.Repeat("a", 64), CandidateGenerationID: "gen1", UpgradeRole: "apply", SourcePayloadVersion: "v1.36.1"})
-	executor := NewExecutor(root, store, "agent-test")
+	executor := newUpgradeExecutor(root, store)
 	executor.Now = func() time.Time { return time.Date(2026, 7, 12, 12, 0, 0, 0, time.UTC) }
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		joined := strings.Join(argv, " ")
@@ -887,15 +887,22 @@ func TestExecutorCapturesUpgradeSnapshotInsideNode(t *testing.T) {
 			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 				return ToolResult{Err: err, ExitStatus: 1}
 			}
-			if err := os.WriteFile(path, []byte("snapshot"), 0o600); err != nil {
+			if err := os.WriteFile(path, testEtcdSnapshot(), 0o600); err != nil {
 				return ToolResult{Err: err, ExitStatus: 1}
 			}
 			return ToolResult{}
-		case strings.Contains(joined, "member list"):
-			return ToolResult{Stdout: []byte("member-a\n")}
+		case strings.Contains(joined, "snapshot status"):
+			return ToolResult{Stdout: []byte(`{"hash":123,"revision":42,"totalKey":7}`)}
 		default:
 			return ToolResult{Err: errors.New("unexpected command: " + joined), ExitStatus: 1}
 		}
+	}
+	record, err = store.Update(record.OperationID, "etcd-observed", "etcd-observed", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.KubeadmUpgradeEvidence.Etcd = testUpgradeEtcdEvidence()
+		return current, nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	resolved, err := executor.prepareKubeadmUpgradeSnapshot(context.Background(), record)
 	if err != nil {
@@ -940,7 +947,7 @@ func TestExecutorRefusesUpgradeBeforeMutationWhenSafetyGateFails(t *testing.T) {
 			if tc.prepare != nil {
 				tc.prepare(t, root, record)
 			}
-			executor := NewExecutor(root, store, "agent-test")
+			executor := newUpgradeExecutor(root, store)
 			executor.Async = false
 			executor.Now = func() time.Time { return now.Add(time.Minute) }
 			executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
@@ -984,10 +991,11 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 	writeTestFile(t, filepath.Join(root, "etc/kubernetes/admin.conf"), "apiVersion: v1\nkind: Config\nclusters:\n  - name: kubernetes\n    cluster:\n      certificate-authority-data: Y2E=\n      server: https://10.0.0.100:6443\ncontexts:\n  - name: kubernetes-admin@kubernetes\n    context:\n      cluster: kubernetes\n      user: kubernetes-admin\ncurrent-context: kubernetes-admin@kubernetes\nusers:\n  - name: kubernetes-admin\n    user:\n      client-certificate-data: Y2VydA==\n      client-key-data: a2V5\n")
 	writeTestFile(t, filepath.Join(root, "etc/kubernetes/kubelet.conf"), "apiVersion: v1\nkind: Config\nclusters:\n  - name: kubernetes\n    cluster:\n      certificate-authority-data: Y2E=\n      server: https://10.0.0.1:6443\ncontexts:\n  - name: system:node:cp-1@kubernetes\n    context:\n      cluster: kubernetes\n      user: system:node:cp-1\ncurrent-context: system:node:cp-1@kubernetes\nusers:\n  - name: system:node:cp-1\n    user:\n      client-certificate-data: Y2VydA==\n      client-key-data: a2V5\n")
 	writeTestFile(t, filepath.Join(root, "etc/kubernetes/manifests/kube-apiserver.yaml"), "apiVersion: v1\nkind: Pod\nspec:\n  containers:\n    - name: kube-apiserver\n      command:\n        - kube-apiserver\n        - --advertise-address=10.0.0.1\n")
+	writeTestFile(t, filepath.Join(root, "etc/kubernetes/manifests/etcd.yaml"), "apiVersion: v1\nkind: Pod\nspec:\n  containers:\n    - name: etcd\n      image: registry.k8s.io/etcd:3.6.5-0\n")
 	target := []byte("target Kubernetes sysext")
 	targetDigest := sha256.Sum256(target)
 	targetSHA := hex.EncodeToString(targetDigest[:])
-	snapshot := []byte("verified stacked etcd snapshot")
+	snapshot := testEtcdSnapshot()
 	snapshotDigest := sha256.Sum256(snapshot)
 	snapshotSHA := hex.EncodeToString(snapshotDigest[:])
 	confextPath := filepath.Join(root, "var/lib/katl/generations/gen0/confext")
@@ -1066,7 +1074,17 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 		t.Fatal(err)
 	}
 	request := &operation.KubernetesSysextUpdate{TargetPayloadVersion: "v1.36.2", TargetSysextPath: "/var/lib/katl/artifacts/kubernetes.raw", TargetSysextSHA256: targetSHA, TargetSysextSize: uint64(len(target)), CandidateGenerationID: "gen1", UpgradeRole: role, SourcePayloadVersion: "v1.36.1", SnapshotRef: "snapshot-1", SnapshotDigest: snapshotSHA, SnapshotCreatedAt: now.Format(time.RFC3339), CapturedMemberListDigest: strings.Repeat("c", 64), SnapshotStorageLocation: "/var/lib/katl/etcd-snapshots/snapshot-1.db", SnapshotOperatorIdentity: "operator-a"}
-	record, err := store.Create(operation.OperationRecord{OperationID: "kubeadm-upgrade-1", OperationKind: OperationKindKubeadmUpgrade, Scope: "kubeadm-state", RequestDigest: strings.Repeat("f", 64), Phase: "accepted", PhasePlan: kubeadmUpgradePhasePlan(role), CompletedPhases: []string{"accepted"}, PhaseIndex: 1, CandidateGenerationID: "gen1", KubernetesSysextUpdate: request, KubeadmUpgradeEvidence: &operation.KubeadmUpgradeEvidence{TargetKubeadmAccessMode: kubeadmAccessOperationPrivate, KubeletActivationGate: kubeletGateOperationReleased, KubeletGateState: "locked", SourceKubeletPolicy: "keep-running"}, ActivationMode: operation.ActivationModeLive, ActivationState: operation.ActivationStatePending, GenerationCommitState: operation.GenerationCommitCandidate, PostKubeadmHealthState: operation.PostKubeadmHealthNotRun, ResourceLocks: []string{"generation-state.lock", "kubeadm-state.lock"}}, "accepted", now)
+	if role != "worker" {
+		preparedRequest := *request
+		completedAt := now
+		preparedEvidence := &operation.KubeadmUpgradeEvidence{TargetKubeadmAccessMode: kubeadmAccessOperationPrivate, KubeletActivationGate: kubeletGateOperationReleased, KubeletGateState: "locked", SourceKubeletPolicy: "keep-running", Etcd: testUpgradeEtcdEvidence()}
+		preparedEvidence.Etcd.Snapshot = &operation.EtcdSnapshot{Path: request.SnapshotStorageLocation, SHA256: request.SnapshotDigest, Revision: 42, Hash: 123, TotalKeys: 7, CreatedAt: now.Format(time.RFC3339)}
+		if _, err := store.Create(operation.OperationRecord{OperationID: "prepared-1", OperationKind: OperationKindKubeadmUpgradePrepare, Scope: "kubeadm-state", RequestDigest: strings.Repeat("a", 64), Phase: "etcd-prepared", Terminal: true, Result: operation.ResultSucceeded, CompletedAt: &completedAt, PreviousGenerationID: "gen0", KubernetesSysextUpdate: &preparedRequest, KubeadmUpgradeEvidence: preparedEvidence}, "etcd-prepared", now); err != nil {
+			t.Fatal(err)
+		}
+		request.PreparedOperationID = "prepared-1"
+	}
+	record, err := store.Create(operation.OperationRecord{OperationID: "kubeadm-upgrade-1", OperationKind: OperationKindKubeadmUpgrade, Scope: "kubeadm-state", RequestDigest: strings.Repeat("f", 64), Phase: "accepted", PhasePlan: kubeadmUpgradePhasePlan(role), CompletedPhases: []string{"accepted"}, PhaseIndex: 1, CandidateGenerationID: "gen1", PreviousGenerationID: "gen0", KubernetesSysextUpdate: request, KubeadmUpgradeEvidence: &operation.KubeadmUpgradeEvidence{TargetKubeadmAccessMode: kubeadmAccessOperationPrivate, KubeletActivationGate: kubeletGateOperationReleased, KubeletGateState: "locked", SourceKubeletPolicy: "keep-running"}, ActivationMode: operation.ActivationModeLive, ActivationState: operation.ActivationStatePending, GenerationCommitState: operation.GenerationCommitCandidate, PostKubeadmHealthState: operation.PostKubeadmHealthNotRun, ResourceLocks: []string{"generation-state.lock", "kubeadm-state.lock"}}, "accepted", now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1097,4 +1115,31 @@ func assertCommandOrder(t *testing.T, commands [][]string, needles ...string) {
 		}
 		index = found
 	}
+}
+
+func testEtcdSnapshot() []byte {
+	data := make([]byte, 512)
+	copy(data, []byte("test snapshot database"))
+	sum := sha256.Sum256(data)
+	return append(data, sum[:]...)
+}
+
+func testUpgradeEtcdEvidence() *operation.EtcdUpgradeEvidence {
+	before := &operation.EtcdObservation{ObservedAt: "2026-11-01T12:00:00Z", ClusterID: "cluster-1", LocalMemberID: "member-1", LeaderID: "member-2", BarrierIndex: 100, LocalImage: "registry.k8s.io/etcd:3.6.5-0", LocalContainerID: "container-1"}
+	for i, name := range []string{"cp-1", "cp-2", "cp-3"} {
+		before.Members = append(before.Members, operation.EtcdMemberObservation{ID: fmt.Sprintf("member-%d", i+1), Name: name, Endpoint: fmt.Sprintf("https://10.0.0.%d:2379", i+1), PeerURLs: []string{fmt.Sprintf("https://10.0.0.%d:2380", i+1)}, Healthy: true, Version: "3.6.5", ClusterVersion: "3.6.0", StorageVersion: "3.6.0", RaftTerm: 9, AppliedIndex: 100, Revision: 42})
+	}
+	return &operation.EtcdUpgradeEvidence{SourceImage: "registry.k8s.io/etcd:3.6.5-0", TargetImage: "registry.k8s.io/etcd:3.6.5-0", Before: before}
+}
+
+func newUpgradeExecutor(root string, store operation.Store) *Executor {
+	executor := NewExecutor(root, store, "agent-test")
+	executor.inspectUpgradeEtcd = func(context.Context, operation.OperationRecord, string) (*operation.EtcdUpgradeEvidence, error) {
+		return testUpgradeEtcdEvidence(), nil
+	}
+	executor.observeUpgradeEtcd = func(context.Context, *operation.EtcdObservation) (*operation.EtcdObservation, error) {
+		return testUpgradeEtcdEvidence().Before, nil
+	}
+
+	return executor
 }

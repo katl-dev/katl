@@ -61,6 +61,7 @@ var bootstrapOperationKinds = []string{
 	"generation-apply",
 	"generation-stage",
 	"kubeadm-upgrade",
+	"kubeadm-upgrade-prepare",
 	OperationKindKubeadmControlPlaneConfig,
 	OperationKindDestructiveReset,
 	OperationKindHostUpgrade,
@@ -1330,6 +1331,9 @@ func (s *Server) operationStatus(record operation.OperationRecord, includeDiagno
 		ResumeSupported:         bootstrapContinuationEligible(record),
 		ChangedDomains:          slices.Clone(record.ChangedDomains),
 	}
+	if record.KubeadmUpgradeEvidence != nil {
+		out.EtcdUpgrade = etcdEvidenceProto(record.KubeadmUpgradeEvidence.Etcd)
+	}
 	if strings.TrimSpace(record.CandidateGenerationID) == "" {
 		return out
 	}
@@ -1397,7 +1401,7 @@ func resourceLocks(kind string) []string {
 	switch kind {
 	case "bootstrap-init", "bootstrap-join-control-plane", "bootstrap-join-worker":
 		return []string{"generation-state.lock", "kubeadm-state.lock"}
-	case "kubeadm-upgrade":
+	case "kubeadm-upgrade", "kubeadm-upgrade-prepare":
 		return []string{"generation-state.lock", "kubeadm-state.lock"}
 	case OperationKindKubeadmControlPlaneConfig:
 		return []string{"generation-state.lock", "kubeadm-state.lock"}
@@ -1418,7 +1422,7 @@ func operationScope(kind string) string {
 	switch kind {
 	case "bootstrap-init", "bootstrap-join-control-plane", "bootstrap-join-worker":
 		return "kubeadm-state"
-	case "kubeadm-upgrade":
+	case "kubeadm-upgrade", "kubeadm-upgrade-prepare":
 		return "kubeadm-state"
 	case OperationKindKubeadmControlPlaneConfig:
 		return "kubeadm-state"

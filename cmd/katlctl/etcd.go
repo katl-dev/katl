@@ -370,7 +370,7 @@ func printEtcdStatus(w io.Writer, coordinator string, status *agentapi.EtcdStatu
 	}
 	fmt.Fprintf(w, "etcd cluster=%s coordinator=%s healthy=%d/%d quorum=%d\n", status.GetClusterId(), coordinator, status.GetHealthyMembers(), len(status.GetMembers()), status.GetQuorum())
 	table := newTable(w)
-	table.row("NODE", "MEMBER", "PEER", "HEALTH", "LEADER")
+	table.row("NODE", "MEMBER", "PEER", "HEALTH", "LEADER", "SERVER", "CLUSTER", "STORAGE", "APPLIED")
 	for _, member := range status.GetMembers() {
 		health := "unhealthy"
 		if member.GetHealthy() {
@@ -380,7 +380,23 @@ func printEtcdStatus(w io.Writer, coordinator string, status *agentapi.EtcdStatu
 		if len(member.GetPeerUrls()) > 0 {
 			peer = member.GetPeerUrls()[0]
 		}
-		table.row(member.GetName(), member.GetId(), peer, health, fmt.Sprintf("%t", member.GetLeader()))
+		serverVersion, clusterVersion, storageVersion, applied := "-", "-", "-", "-"
+		for _, observed := range status.GetObservation().GetMembers() {
+			if observed.GetId() == member.GetId() {
+				serverVersion = observed.GetVersion()
+				clusterVersion = observed.GetClusterVersion()
+				storageVersion = observed.GetStorageVersion()
+				applied = fmt.Sprint(observed.GetAppliedIndex())
+			}
+		}
+		table.row(member.GetName(), member.GetId(), peer, health, fmt.Sprintf("%t", member.GetLeader()), serverVersion, clusterVersion, storageVersion, applied)
 	}
-	return table.flush()
+	if err := table.flush(); err != nil {
+		return err
+	}
+	if status.ObservationError != "" {
+		_, err := fmt.Fprintf(w, "Direct etcd observation incomplete: %s\n", status.ObservationError)
+		return err
+	}
+	return nil
 }

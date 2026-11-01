@@ -32,16 +32,19 @@ func runPreCNIClusterApply(t *testing.T, ctx context.Context, smoke operationBac
 	}
 	source.Spec.Kubernetes.Kubeadm = &configbundle.SourceKubeadmInput{ConfigFile: "kubeadm.yaml", PatchesDir: "patches"}
 	source.Spec.Defaults.Kubernetes.Kubelet = &configbundle.SourceKubeletConfig{ConfigFile: "kubelet.yaml"}
+	live, err := kubectlOutput(ctx, kubeconfig, "-n", "kube-system", "get", "configmap", "kubeadm-config", "-o", "jsonpath={.data.ClusterConfiguration}")
+	if err != nil {
+		return err
+	}
+	if err := retainClusterEndpoint(&source, live); err != nil {
+		return err
+	}
 	data, err := yaml.Marshal(source)
 	if err != nil {
 		return err
 	}
 	sourcePath := filepath.Join(dir, "cluster.yaml")
 	if err := os.WriteFile(sourcePath, data, 0o600); err != nil {
-		return err
-	}
-	live, err := kubectlOutput(ctx, kubeconfig, "-n", "kube-system", "get", "configmap", "kubeadm-config", "-o", "jsonpath={.data.ClusterConfiguration}")
-	if err != nil {
 		return err
 	}
 	live, err = disableAPIServerProfiling(live)

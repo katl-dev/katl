@@ -3317,6 +3317,9 @@ func (c *fakeKatlcAgentClient) SubmitOperation(_ context.Context, req *agentapi.
 			InitialStatus:      &agentapi.OperationStatus{Phase: "dry-run"},
 		}, nil
 	}
+	if req.OperationKind == "kubeadm-upgrade-prepare" {
+		return &agentapi.OperationAccepted{OperationId: "prepared-" + req.ExpectedInventoryNodeName}, nil
+	}
 	if c.submitAccepted != nil {
 		return c.submitAccepted, nil
 	}
@@ -3329,6 +3332,14 @@ func (c *fakeKatlcAgentClient) CreateWorkerJoinMaterial(context.Context, *agenta
 
 func (c *fakeKatlcAgentClient) GetOperation(_ context.Context, req *agentapi.GetOperationRequest, _ ...grpc.CallOption) (*agentapi.OperationStatus, error) {
 	c.operationRequest = req
+	if strings.HasPrefix(req.OperationId, "prepared-") {
+		return &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "etcd-prepared", EtcdUpgrade: testKubernetesUpgradeEtcd()}, nil
+	}
+	if c.operationStatus != nil && c.operationStatus.Result == operation.ResultSucceeded && c.operationStatus.EtcdUpgrade == nil && c.submitRequest != nil && c.submitRequest.OperationKind == "kubeadm-upgrade" && c.submitRequest.KubernetesSysextUpdate.GetUpgradeRole() != "worker" {
+		out := proto.Clone(c.operationStatus).(*agentapi.OperationStatus)
+		out.EtcdUpgrade = testKubernetesUpgradeEtcd()
+		return out, nil
+	}
 	if c.operationStatus == nil {
 		accepted := c.stageAccepted
 		if c.submitAccepted != nil {

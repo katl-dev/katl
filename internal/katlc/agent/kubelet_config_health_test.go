@@ -146,8 +146,14 @@ func TestKubeletConfigHealth(t *testing.T) {
 				}
 			}}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-			defer cancel()
+			ctx := context.Background()
+			if tc.wantError {
+				// Bound the unsuccessful convergence loop; successful health has
+				// no wall-clock requirement and may include durable store writes.
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 30*time.Millisecond)
+				defer cancel()
+			}
 			result := executor.runKubeletConfigHealth(ctx, record)
 			if gotError := result.Err != nil || result.ExitStatus != 0; gotError != tc.wantError {
 				t.Fatalf("health result = %#v, want error %v", result, tc.wantError)
@@ -219,8 +225,14 @@ func TestKubeletControlPlaneHealth(t *testing.T) {
 				},
 			}
 
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-			defer cancel()
+			ctx := context.Background()
+			if tc.wantError {
+				// Bound the unsuccessful convergence loop; successful health has
+				// no wall-clock requirement and may include durable store writes.
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, 30*time.Millisecond)
+				defer cancel()
+			}
 			result := executor.runKubeletConfigHealth(ctx, record)
 			if gotError := result.Err != nil || result.ExitStatus != 0; gotError != tc.wantError {
 				t.Fatalf("health result = %#v, want error %t", result, tc.wantError)
