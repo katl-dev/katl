@@ -99,4 +99,6 @@ jobs:
             _build/production-vmtest/**/*.txt
             _build/production-vmtest/**/*.stdout
             _build/production-vmtest/**/*.stderr
+            _build/production-vmtest/**/stdout
+            _build/production-vmtest/**/stderr
           retention-days: 3
