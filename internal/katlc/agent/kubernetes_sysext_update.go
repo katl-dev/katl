@@ -24,7 +24,8 @@ import (
 )
 
 const (
-	OperationKindKubeadmUpgrade = "kubeadm-upgrade"
+	OperationKindKubeadmUpgrade        = "kubeadm-upgrade"
+	OperationKindKubeadmUpgradePrepare = "kubeadm-upgrade-prepare"
 
 	kubeadmUpgradeRefusedPhase  = "execution-refused-unsupported"
 	kubeadmUpgradeNoopPhase     = "planned-current-kubernetes-sysext"
@@ -65,6 +66,20 @@ func (s *Server) dryRunKubernetesSysextUpdateOperation(req *agentapi.SubmitOpera
 func (s *Server) planKubernetesSysextUpdateOperation(req *agentapi.SubmitOperationRequest, digest string, id string, locks []string, now time.Time) (operation.OperationRecord, error) {
 	update := kubernetesSysextUpdateFromProto(req.GetKubernetesSysextUpdate())
 	if update.UpgradeRole != "" {
+		// A caller's topology cannot authorize skipping voter safety checks.
+		controlPlane := false
+		for _, path := range []string{"/etc/kubernetes/admin.conf", "/etc/kubernetes/manifests/kube-apiserver.yaml", "/etc/kubernetes/manifests/etcd.yaml", "/var/lib/etcd/member"} {
+			exists, err := pathExists(s.Root, path)
+			if err != nil {
+				return operation.OperationRecord{}, status.Errorf(codes.FailedPrecondition, "inspect local Kubernetes role: %v", err)
+			}
+			controlPlane = controlPlane || exists
+		}
+		if (update.UpgradeRole == "worker") == controlPlane {
+			return operation.OperationRecord{}, status.Error(codes.FailedPrecondition, "requested upgrade role does not match local control-plane state; correct the ClusterConfig node roles before upgrading")
+		}
+	}
+	if update.UpgradeRole != "" && req.OperationKind != OperationKindKubeadmUpgradePrepare {
 		if err := s.validateCandidateGenerationAvailable(update.CandidateGenerationID); err != nil {
 			return operation.OperationRecord{}, status.Error(codes.FailedPrecondition, err.Error())
 		}
@@ -156,6 +171,11 @@ func (s *Server) planKubernetesSysextUpdateOperation(req *agentapi.SubmitOperati
 			record.NextAction = "queued for verified private target kubeadm staging"
 		}
 	}
+	if req.OperationKind == OperationKindKubeadmUpgradePrepare {
+		record.CandidateGenerationID = ""
+		record.GenerationCommitState = ""
+		record.PhasePlan = []string{"accepted", "target-resolved", "etcd-prepared"}
+	}
 	return record, nil
 }
 
@@ -164,6 +184,8 @@ func kubernetesSysextUpdateFromProto(req *agentapi.KubernetesSysextUpdateOperati
 		return operation.KubernetesSysextUpdate{}
 	}
 	return operation.KubernetesSysextUpdate{
+		PreparedOperationID:      strings.TrimSpace(req.PreparedOperationId),
+		PreviewOnly:              req.PreviewOnly,
 		TargetPayloadVersion:     strings.TrimSpace(req.TargetPayloadVersion),
 		TargetSysextPath:         strings.TrimSpace(req.TargetSysextPath),
 		TargetSysextSHA256:       strings.ToLower(strings.TrimSpace(req.TargetSysextSha256)),
@@ -187,11 +209,22 @@ func kubernetesSysextUpdateFromProto(req *agentapi.KubernetesSysextUpdateOperati
 }
 
 func validateKubernetesSysextUpdateRequest(operationKind string, req *agentapi.KubernetesSysextUpdateOperationRequest) error {
-	if operationKind != OperationKindKubeadmUpgrade {
+	if operationKind != OperationKindKubeadmUpgrade && operationKind != OperationKindKubeadmUpgradePrepare {
 		return fmt.Errorf("operationKind %q does not accept kubernetesSysextUpdate", operationKind)
 	}
 	if req == nil {
 		return fmt.Errorf("kubernetesSysextUpdate is required")
+	}
+	if req.PreviewOnly && operationKind != OperationKindKubeadmUpgradePrepare {
+		return fmt.Errorf("previewOnly requires kubeadm-upgrade-prepare")
+	}
+	if req.PreparedOperationId != "" {
+		if operationKind != OperationKindKubeadmUpgrade {
+			return fmt.Errorf("preparedOperationID is only valid for kubeadm-upgrade")
+		}
+		if err := cleanPublicID("preparedOperationID", req.PreparedOperationId); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(req.TargetPayloadVersion) == "" {
 		return fmt.Errorf("targetPayloadVersion is required")

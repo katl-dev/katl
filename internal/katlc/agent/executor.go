@@ -57,6 +57,8 @@ type (
 )
 
 type Executor struct {
+	observeUpgradeEtcd     func(context.Context, *operation.EtcdObservation) (*operation.EtcdObservation, error)
+	inspectUpgradeEtcd     func(context.Context, operation.OperationRecord, string) (*operation.EtcdUpgradeEvidence, error)
 	Root                   string
 	Store                  operation.Store
 	AgentStartID           string
@@ -225,6 +227,9 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 		return e.executeHostUpgrade(runCtx, record)
 	}
 	if record.KubernetesSysextUpdate != nil {
+		if record.OperationKind == OperationKindKubeadmUpgradePrepare {
+			return e.executeKubeadmUpgradePrepare(ctx, record)
+		}
 		return e.executeKubeadmUpgrade(ctx, record)
 	}
 	if record.EtcdMemberRemoveRequest != nil {

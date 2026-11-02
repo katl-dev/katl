@@ -210,6 +210,8 @@ type KubeadmControlPlaneConfig struct {
 }
 
 type KubernetesSysextUpdate struct {
+	PreparedOperationID      string `json:"preparedOperationID,omitempty"`
+	PreviewOnly              bool   `json:"previewOnly,omitempty"`
 	TargetPayloadVersion     string `json:"targetPayloadVersion"`
 	TargetSysextPath         string `json:"targetSysextPath"`
 	TargetSysextSHA256       string `json:"targetSysextSHA256"`
@@ -232,17 +234,67 @@ type KubernetesSysextUpdate struct {
 }
 
 type KubeadmUpgradeEvidence struct {
-	TargetKubeadmAccessMode         string `json:"targetKubeadmAccessMode"`
-	TargetKubeadmArtifactPath       string `json:"targetKubeadmArtifactPath,omitempty"`
-	TargetKubeadmArtifactDigest     string `json:"targetKubeadmArtifactDigest,omitempty"`
-	TargetKubeadmObservedVersion    string `json:"targetKubeadmObservedVersion,omitempty"`
-	KubeletActivationGate           string `json:"kubeletActivationGate"`
-	KubeletGateState                string `json:"kubeletGateState"`
-	KubeletGateTokenPath            string `json:"kubeletGateTokenPath,omitempty"`
-	KubeletGateEnforcementUnit      string `json:"kubeletGateEnforcementUnit,omitempty"`
-	SourceKubeletPolicy             string `json:"sourceKubeletPolicy"`
-	GlobalTargetActiveBeforeKubeadm bool   `json:"globalTargetSysextActiveBeforeKubeadmMutation"`
-	AlternateAPIEndpoint            string `json:"alternateAPIEndpoint,omitempty"`
+	Etcd                            *EtcdUpgradeEvidence `json:"etcd,omitempty"`
+	TargetKubeadmAccessMode         string               `json:"targetKubeadmAccessMode"`
+	TargetKubeadmArtifactPath       string               `json:"targetKubeadmArtifactPath,omitempty"`
+	TargetKubeadmArtifactDigest     string               `json:"targetKubeadmArtifactDigest,omitempty"`
+	TargetKubeadmObservedVersion    string               `json:"targetKubeadmObservedVersion,omitempty"`
+	KubeletActivationGate           string               `json:"kubeletActivationGate"`
+	KubeletGateState                string               `json:"kubeletGateState"`
+	KubeletGateTokenPath            string               `json:"kubeletGateTokenPath,omitempty"`
+	KubeletGateEnforcementUnit      string               `json:"kubeletGateEnforcementUnit,omitempty"`
+	SourceKubeletPolicy             string               `json:"sourceKubeletPolicy"`
+	GlobalTargetActiveBeforeKubeadm bool                 `json:"globalTargetSysextActiveBeforeKubeadmMutation"`
+	AlternateAPIEndpoint            string               `json:"alternateAPIEndpoint,omitempty"`
+}
+
+type EtcdUpgradeEvidence struct {
+	SourceImage  string           `json:"sourceImage"`
+	TargetImage  string           `json:"targetImage"`
+	ImageChanges bool             `json:"imageChanges"`
+	Snapshot     *EtcdSnapshot    `json:"snapshot,omitempty"`
+	Before       *EtcdObservation `json:"before,omitempty"`
+	PreRestart   *EtcdObservation `json:"preRestart,omitempty"`
+	After        *EtcdObservation `json:"after,omitempty"`
+	Failure      string           `json:"failure,omitempty"`
+}
+
+type EtcdSnapshot struct {
+	Path      string `json:"path"`
+	SHA256    string `json:"sha256"`
+	Revision  uint64 `json:"revision"`
+	Hash      uint64 `json:"hash"`
+	TotalKeys uint64 `json:"totalKeys"`
+	CreatedAt string `json:"createdAt"`
+}
+
+type EtcdObservation struct {
+	LocalImage       string                  `json:"localImage"`
+	LocalContainerID string                  `json:"localContainerID"`
+	ObservedAt       string                  `json:"observedAt"`
+	ClusterID        string                  `json:"clusterID"`
+	LocalMemberID    string                  `json:"localMemberID"`
+	LeaderID         string                  `json:"leaderID"`
+	BarrierIndex     uint64                  `json:"barrierIndex"`
+	Members          []EtcdMemberObservation `json:"members"`
+}
+
+type EtcdMemberObservation struct {
+	DowngradeEnabled bool     `json:"downgradeEnabled"`
+	DowngradeTarget  string   `json:"downgradeTarget,omitempty"`
+	ID               string   `json:"id"`
+	Name             string   `json:"name"`
+	Endpoint         string   `json:"endpoint"`
+	PeerURLs         []string `json:"peerURLs"`
+	Learner          bool     `json:"learner"`
+	Healthy          bool     `json:"healthy"`
+	Version          string   `json:"version"`
+	ClusterVersion   string   `json:"clusterVersion"`
+	StorageVersion   string   `json:"storageVersion"`
+	RaftTerm         uint64   `json:"raftTerm"`
+	AppliedIndex     uint64   `json:"appliedIndex"`
+	Revision         int64    `json:"revision"`
+	Error            string   `json:"error,omitempty"`
 }
 
 type DestructiveReset struct {
@@ -914,7 +966,7 @@ func validateRequestBodyConsistency(record OperationRecord) error {
 	if bodyCount > 1 {
 		return fmt.Errorf("operation record has multiple request bodies")
 	}
-	if record.KubernetesSysextUpdate != nil && record.OperationKind != "kubeadm-upgrade" {
+	if record.KubernetesSysextUpdate != nil && record.OperationKind != "kubeadm-upgrade" && record.OperationKind != "kubeadm-upgrade-prepare" {
 		return fmt.Errorf("operation kind %q cannot include kubernetesSysextUpdate", record.OperationKind)
 	}
 	if record.OperationKind == "kubeadm-upgrade" && record.KubernetesSysextUpdate == nil {
@@ -1201,6 +1253,25 @@ func cloneRecord(record OperationRecord) OperationRecord {
 	}
 	if record.KubeadmUpgradeEvidence != nil {
 		evidence := *record.KubeadmUpgradeEvidence
+		if evidence.Etcd != nil {
+			etcd := *evidence.Etcd
+			if etcd.Snapshot != nil {
+				snapshot := *etcd.Snapshot
+				etcd.Snapshot = &snapshot
+			}
+			for _, slot := range []**EtcdObservation{&etcd.Before, &etcd.PreRestart, &etcd.After} {
+				if *slot == nil {
+					continue
+				}
+				observed := **slot
+				observed.Members = append([]EtcdMemberObservation(nil), observed.Members...)
+				for i := range observed.Members {
+					observed.Members[i].PeerURLs = cloneStrings(observed.Members[i].PeerURLs)
+				}
+				*slot = &observed
+			}
+			evidence.Etcd = &etcd
+		}
 		record.KubeadmUpgradeEvidence = &evidence
 	}
 	if record.DestructiveResetRequest != nil {

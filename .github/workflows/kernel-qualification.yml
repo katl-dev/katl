@@ -94,4 +94,6 @@ jobs:
             _build/kernel-journey/**/*.txt
             _build/kernel-journey/**/*.stdout
             _build/kernel-journey/**/*.stderr
+            _build/kernel-journey/**/stdout
+            _build/kernel-journey/**/stderr
           retention-days: 3

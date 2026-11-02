@@ -34,7 +34,6 @@ import (
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
-	"github.com/katl-dev/katl/internal/kubernetesrelease"
 	"github.com/katl-dev/katl/internal/persistedrecord"
 	"github.com/katl-dev/katl/internal/vmtest"
 	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
@@ -260,7 +259,7 @@ func firstInstallProvenanceFromPublished(published vmtest.PublishedFirstInstallR
 
 func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRun, proveUpgrade bool) {
 	t.Helper()
-	const canonicalEndpoint = "api.unpublished.katl.test:6443"
+	canonicalEndpoint := "api.unpublished.katl.test:6443"
 	options := smoke.Options
 	runner := smoke.Runner
 	scenario := smoke.Scenario
@@ -386,13 +385,14 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 			t.Fatalf("start %s containerd for image fixtures: %v", node.Name, err)
 		}
 	}
+	if proveUpgrade {
+		canonicalEndpoint = net.JoinHostPort(cpAddress, "6443")
+	}
 	imageFixtures, err := stageKubernetesImageFixtures(ctx, katlRepoRoot(t), inputs.KubernetesVersion, nodes...)
 	if err == nil && proveUpgrade {
 		var upgradeFixtures map[string][]nodeImageFixture
-		targetVersion := "v1.36.1"
-		if bundle := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")); bundle != "" {
-			targetVersion, err = publishedKubernetesUpgradeVersion(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_VERSION"))
-		}
+		targetVersion, versionErr := upgradeFixtureVersion(katlRepoRoot(t))
+		err = versionErr
 		if err == nil {
 			upgradeFixtures, err = stageKubernetesImageFixtures(ctx, katlRepoRoot(t), targetVersion, nodes...)
 		}
@@ -635,8 +635,10 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	}
 	assertPostBootstrapSelection(t, workerSelection, workerRecord.CandidateGenerationID, bootstrapSources["worker-1"].GetCurrentGenerationId())
 	nodeStatus := collectNodeStatusDiagnostics(ctx, evidenceDir, nodes...)
-	assertNodeAPIProxyAccess(t, ctx, cpNode, canonicalEndpoint, cpAddress+":6443", true)
-	assertNodeAPIProxyAccess(t, ctx, workerNode, canonicalEndpoint, cpAddress+":6443", false)
+	if !proveUpgrade {
+		assertNodeAPIProxyAccess(t, ctx, cpNode, canonicalEndpoint, cpAddress+":6443", true)
+		assertNodeAPIProxyAccess(t, ctx, workerNode, canonicalEndpoint, cpAddress+":6443", false)
+	}
 	evidenceArtifacts := operationBackedArtifacts{
 		Inventory:            inventoryPath,
 		Kubeconfig:           kubeconfigPath,
@@ -754,8 +756,9 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("control-plane dashboard: %v", err)
 	}
-	assertKubeconfigOutput(t, kubeconfigPath, kubeconfigMetadataPath, "https://"+cpAddress+":7445", "api.unpublished.katl.test")
-	assertKubeProxyLocalAPIAccess(t, ctx, kubeconfigPath, "api.unpublished.katl.test")
+	canonicalHost, _, _ := net.SplitHostPort(canonicalEndpoint)
+	assertKubeconfigOutput(t, kubeconfigPath, kubeconfigMetadataPath, "https://"+cpAddress+":7445", canonicalHost)
+	assertKubeProxyLocalAPIAccess(t, ctx, kubeconfigPath, canonicalHost)
 	current, err := readTwoNodeEnrollments(ctx, cpAddress, workerAddress)
 	if err != nil {
 		t.Fatalf("read configured generations before reboot: %v", err)
@@ -812,127 +815,49 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 
 func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir string) error {
 	t.Helper()
-	const targetVersion = "v1.36.1"
 	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-before-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
-		return fmt.Errorf("wait for cluster readiness after bootstrap generation reboot: %w", err)
+		return err
 	}
 	bootIDs, err := captureNodeBootIDs(ctx, cpNode, workerNode)
 	if err != nil {
 		return err
 	}
-	if bundle := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")); bundle != "" {
-		return runPublishedKubernetesUpgradeCLIProof(ctx, katlRepoRoot(t), bundle, smoke.Inputs.KubernetesVersion, cpNode, workerNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir, bootIDs)
-	}
-	if smoke.Inputs.KubernetesVersion != "v1.36.0" {
-		return fmt.Errorf("local artifact upgrade proof requires base v1.36.0, got %s", smoke.Inputs.KubernetesVersion)
-	}
-	targetHost := filepath.Join(katlRepoRoot(t), "_build/mkosi/katl-kubernetes-upgrade.raw")
-	metadataHost := targetHost + ".json"
-	target, err := os.ReadFile(targetHost)
-	if err != nil {
-		return fmt.Errorf("read target Kubernetes sysext: %w", err)
-	}
-	metadata, err := artifact.ReadLocal(metadataHost)
-	if err != nil {
-		return fmt.Errorf("read target Kubernetes sysext metadata: %w", err)
-	}
-	if metadata.PayloadVersion != targetVersion {
-		return fmt.Errorf("target Kubernetes sysext payload is %s, want %s", metadata.PayloadVersion, targetVersion)
-	}
-	targetDigest := sha256.Sum256(target)
-	targetSHA := hex.EncodeToString(targetDigest[:])
-	if targetSHA != metadata.SHA256 {
-		return fmt.Errorf("target Kubernetes sysext digest %s does not match metadata %s", targetSHA, metadata.SHA256)
-	}
-	guestTarget := "/var/lib/katl/artifacts/kubernetes-upgrade-v1.36.1.raw"
-	for _, node := range []vmtest.RunningInstalledRuntimeNode{cpNode, workerNode} {
-		if err := writeNodeFileChunked(ctx, node, guestTarget, target, 0o600); err != nil {
-			return fmt.Errorf("upload target sysext to %s: %w", node.Name, err)
-		}
-	}
-	snapshot, err := createUpgradeSnapshotEvidence(ctx, cpNode)
-	if err != nil {
-		return err
-	}
-	cpStatus, err := submitKubeadmUpgrade(ctx, "cp-1", cpAddress, agentapi.KubernetesSysextUpdateOperationRequest{
-		TargetPayloadVersion: targetVersion, TargetSysextPath: guestTarget, TargetSysextSha256: targetSHA, TargetSysextSizeBytes: uint64(len(target)), CandidateGenerationId: "upgrade-v1361-cp", UpgradeRole: "apply", SourcePayloadVersion: "v1.36.0",
-		SnapshotRef: snapshot.Ref, SnapshotDigest: snapshot.Digest, SnapshotRevision: snapshot.Revision, SnapshotCreatedAt: snapshot.CreatedAt, CapturedMemberListDigest: snapshot.MemberListDigest, SourceEtcdVersion: snapshot.EtcdVersion, SnapshotStorageLocation: snapshot.Location, SnapshotOperatorIdentity: "vmtest:kubeadm-upgrade",
-	})
-	if err != nil {
-		return fmt.Errorf("control-plane upgrade: %w", err)
-	}
-	if err := assertSuccessfulUpgradeStatus(cpStatus, "upgrade-v1361-cp"); err != nil {
-		return err
-	}
-	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-after-control-plane-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
-		return err
-	}
-	workerStatus, err := submitKubeadmUpgrade(ctx, "worker-1", workerAddress, agentapi.KubernetesSysextUpdateOperationRequest{
-		TargetPayloadVersion: targetVersion, TargetSysextPath: guestTarget, TargetSysextSha256: targetSHA, TargetSysextSizeBytes: uint64(len(target)), CandidateGenerationId: "upgrade-v1361-worker", UpgradeRole: "worker", SourcePayloadVersion: "v1.36.0", SnapshotRef: snapshot.Ref, SnapshotDigest: snapshot.Digest,
-	})
-	if err != nil {
-		return fmt.Errorf("worker upgrade: %w", err)
-	}
-	if err := assertSuccessfulUpgradeStatus(workerStatus, "upgrade-v1361-worker"); err != nil {
-		return err
-	}
-	if _, err := waitForKubectlNodes(ctx, kubeconfigPath, filepath.Join(evidenceDir, "kubectl-after-worker-upgrade.txt"), 5*time.Minute, "node/cp-1", "node/worker-1"); err != nil {
-		return err
-	}
-	if err := verifyKubernetesVersions(ctx, kubeconfigPath, evidenceDir, targetVersion); err != nil {
-		return err
-	}
-	if err := assertNodeBootIDsUnchanged(ctx, bootIDs, cpNode, workerNode); err != nil {
-		return err
-	}
-	for _, item := range []struct {
-		node vmtest.RunningInstalledRuntimeNode
-		kind string
-	}{{cpNode, "kubeadm-upgrade"}, {workerNode, "kubeadm-upgrade"}} {
-		dir := filepath.Join(evidenceDir, item.node.Name, "upgrade")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
-		}
-		_, record, err := collectOperationEvidence(ctx, item.node, dir, item.kind)
-		if err != nil {
-			return err
-		}
-		if record.KubernetesSysextUpdate == nil || record.KubernetesSysextUpdate.TargetPayloadVersion != targetVersion || record.KubeadmUpgradeEvidence == nil || record.KubeadmUpgradeEvidence.TargetKubeadmObservedVersion != targetVersion || record.KubeadmUpgradeEvidence.KubeletGateState != "target-observed" {
-			return fmt.Errorf("%s upgrade evidence incomplete: %+v", item.node.Name, record)
-		}
-		drainedAPI := slices.Contains(record.CompletedPhases, "apiserver-drain-complete")
-		if item.node.Name == cpNode.Name && !drainedAPI {
-			return fmt.Errorf("%s upgrade did not drain API connections before kubeadm", item.node.Name)
-		}
-		if item.node.Name == workerNode.Name && drainedAPI {
-			return fmt.Errorf("%s worker upgrade unexpectedly drained API connections", item.node.Name)
-		}
-		_, generationRecord, err := collectGenerationEvidence(ctx, item.node, dir, record.CandidateGenerationID)
-		if err != nil {
-			return err
-		}
-		if generationRecord.Status.CommitState != generation.CommitStateCommitted {
-			return fmt.Errorf("%s upgrade candidate is %s", item.node.Name, generationRecord.Status.CommitState)
-		}
-	}
-	return nil
+	return runKubernetesUpgradeCLIProof(ctx, katlRepoRoot(t), strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")), smoke.Inputs.KubernetesVersion, cpNode, workerNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir, bootIDs)
 }
 
-func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle, sourceVersion string, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir string, bootIDs map[string]string) error {
+func upgradeFixtureVersion(repo string) (string, error) {
+	if strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")) != "" {
+		return publishedKubernetesUpgradeVersion(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_VERSION"))
+	}
+	metadata, err := artifact.ReadLocal(filepath.Join(repo, "_build/mkosi/katl-kubernetes-upgrade.raw.json"))
+	if err != nil {
+		return "", err
+	}
+	return metadata.PayloadVersion, nil
+}
+
+func runKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle, sourceVersion string, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir string, bootIDs map[string]string) error {
 	configPath := filepath.Join(evidenceDir, "cluster-upgrade.yaml")
 	contextPath := filepath.Join(evidenceDir, "katlctl-upgrade-context.yaml")
 	enrollments, err := readTwoNodeEnrollments(ctx, cpAddress, workerAddress)
 	if err != nil {
 		return err
 	}
-	image, err := kubernetesbundle.ParseImageReference(bundle)
+	targetVersion, err := upgradeFixtureVersion(repoRoot)
 	if err != nil {
 		return err
 	}
-	targetVersion, err := publishedKubernetesUpgradeVersion(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_VERSION"))
-	if err != nil {
-		return err
+	artifactArgs := []string{"--bundle", bundle}
+	var localMetadata artifact.LocalMeta
+	if bundle == "" {
+		localArtifact := filepath.Join(repoRoot, "_build/mkosi/katl-kubernetes-upgrade.raw")
+		localMetadata, err = artifact.ReadLocal(localArtifact + ".json")
+		if err != nil {
+			return err
+		}
+		artifactArgs = []string{"--artifact", localArtifact}
 	}
+
 	cpStatus, workerStatus := enrollments["cp-1"], enrollments["worker-1"]
 	contextConfig := fmt.Sprintf("currentContext: vmtest\ncontexts:\n  - name: vmtest\n    cluster: upgrade\nclusters:\n  - name: upgrade\n    controlPlaneEndpoint: %s:6443\n    nodes:\n      - name: cp-1\n        managementEndpoint: %s:9443\n        systemRole: control-plane\n        enrollmentID: %s\n        machineID: %s\n      - name: worker-1\n        managementEndpoint: %s:9443\n        systemRole: worker\n        enrollmentID: %s\n        machineID: %s\n", cpAddress, cpAddress, cpStatus.GetEnrollmentId(), cpStatus.GetMachineId(), workerAddress, workerStatus.GetEnrollmentId(), workerStatus.GetMachineId())
 	management, err := vmtestManagementContextYAML()
@@ -959,7 +884,9 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 	if _, err := kubectlOutput(ctx, kubeconfigPath, "cordon", "worker-1"); err != nil {
 		return err
 	}
-	command := exec.CommandContext(ctx, "go", "run", "./cmd/katlctl", "kubernetes", "upgrade", "--config", configPath, "--context-file", contextPath, "--bundle", bundle, "--cordon", "--kubeconfig", kubeconfigPath, "--timeout", "25m", "--output", "json")
+	args := []string{"run", "./cmd/katlctl", "kubernetes", "upgrade", "--config", configPath, "--context-file", contextPath, "--cordon", "--kubeconfig", kubeconfigPath, "--timeout", "25m", "--output", "json"}
+	args = append(args, artifactArgs...)
+	command := exec.CommandContext(ctx, "go", args...)
 	command.Dir = repoRoot
 	stdout, err := command.Output()
 	if err != nil {
@@ -1026,8 +953,12 @@ func runPublishedKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle
 		if err != nil {
 			return err
 		}
-		if err := verifyUpgradeBundle(image.String(), record.KubernetesSysextUpdate); err != nil {
-			return fmt.Errorf("%s upgrade bundle evidence: %w", item.Name, err)
+		if bundle != "" {
+			if err := verifyUpgradeBundle(bundle, record.KubernetesSysextUpdate); err != nil {
+				return fmt.Errorf("%s upgrade bundle evidence: %w", item.Name, err)
+			}
+		} else if record.KubernetesSysextUpdate == nil || record.KubernetesSysextUpdate.TargetSysextSHA256 != localMetadata.SHA256 || record.KubernetesSysextUpdate.TargetPayloadVersion != targetVersion {
+			return fmt.Errorf("%s did not activate the selected local artifact", item.Name)
 		}
 		if item.Name == cpNode.Name && (record.KubernetesSysextUpdate.SnapshotDigest == "" || record.KubernetesSysextUpdate.SnapshotStorageLocation == "") {
 			return fmt.Errorf("%s upgrade did not capture etcd snapshot evidence", item.Name)
@@ -1167,7 +1098,7 @@ func createUpgradeSnapshotEvidence(ctx context.Context, node vmtest.RunningInsta
 	var lastErr error
 	var id []string
 	for {
-		container, lastErr = runNodeCommandWithRetry(ctx, node, []string{"crictl", "ps", "--state", "Running", "--name", "etcd", "-q"}, 16<<10)
+		container, lastErr = runNodeCommand(ctx, node, []string{"crictl", "ps", "--state", "Running", "--name", "etcd", "-q"}, 16<<10)
 		if lastErr == nil && container.ExitStatus == 0 {
 			id = strings.Fields(string(container.Stdout))
 			if len(id) == 1 {
@@ -1188,11 +1119,11 @@ func createUpgradeSnapshotEvidence(ctx context.Context, node vmtest.RunningInsta
 	}
 	location := "/var/lib/etcd/katl-upgrade-v1361.db"
 	etcdArgs := []string{"crictl", "exec", id[0], "etcdctl", "--endpoints=https://127.0.0.1:2379", "--cacert=/etc/kubernetes/pki/etcd/ca.crt", "--cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt", "--key=/etc/kubernetes/pki/etcd/healthcheck-client.key"}
-	saved, err := runNodeCommandWithRetry(ctx, node, append(append([]string(nil), etcdArgs...), "snapshot", "save", location), 64<<10)
+	saved, err := runNodeCommand(ctx, node, append(append([]string(nil), etcdArgs...), "snapshot", "save", location), 64<<10)
 	if err != nil || saved.ExitStatus != 0 {
 		return upgradeSnapshotEvidence{}, fmt.Errorf("save etcd snapshot: %w", errors.Join(err, commandErrorDetail(saved)))
 	}
-	hashResult, err := runNodeCommandWithRetry(ctx, node, []string{"sha256sum", location}, 4<<10)
+	hashResult, err := runNodeCommand(ctx, node, []string{"sha256sum", location}, 4<<10)
 	if err != nil || hashResult.ExitStatus != 0 {
 		return upgradeSnapshotEvidence{}, fmt.Errorf("hash etcd snapshot: %w", errors.Join(err, commandErrorDetail(hashResult)))
 	}
@@ -1200,7 +1131,7 @@ func createUpgradeSnapshotEvidence(ctx context.Context, node vmtest.RunningInsta
 	if len(digest) == 0 {
 		return upgradeSnapshotEvidence{}, fmt.Errorf("empty etcd snapshot digest")
 	}
-	members, err := runNodeCommandWithRetry(ctx, node, append(append([]string(nil), etcdArgs...), "member", "list"), 64<<10)
+	members, err := runNodeCommand(ctx, node, append(append([]string(nil), etcdArgs...), "member", "list"), 64<<10)
 	if err != nil || members.ExitStatus != 0 {
 		return upgradeSnapshotEvidence{}, fmt.Errorf("list etcd members: %w", errors.Join(err, commandErrorDetail(members)))
 	}
@@ -1280,7 +1211,7 @@ func assertNodeBootIDsUnchanged(ctx context.Context, before map[string]string, n
 }
 
 func nodeBootID(ctx context.Context, node vmtest.RunningInstalledRuntimeNode) (string, error) {
-	health, err := retryDirectAgentOp(ctx, node, 10*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.HealthResponse, error) {
+	health, err := withDirectAgent(ctx, node, 10*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.HealthResponse, error) {
 		return client.Health(opCtx)
 	})
 	if err != nil {
@@ -1309,7 +1240,7 @@ func rebootIntoGeneration(ctx context.Context, node vmtest.RunningInstalledRunti
 	}
 	deadline := time.Now().Add(5 * time.Minute)
 	for time.Now().Before(deadline) {
-		health, healthErr := retryDirectAgentOp(ctx, node, 10*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.HealthResponse, error) {
+		health, healthErr := withDirectAgent(ctx, node, 10*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.HealthResponse, error) {
 			return client.Health(opCtx)
 		})
 		if healthErr == nil && strings.TrimSpace(health.BootId) != "" && strings.TrimSpace(health.BootId) != previousBootID {
@@ -1331,7 +1262,7 @@ func waitForBootstrapRuntimeAfterReboot(ctx context.Context, node vmtest.Running
 	deadline := time.Now().Add(3 * time.Minute)
 	var last string
 	for {
-		result, err := runNodeCommandWithRetry(ctx, node, []string{
+		result, err := runNodeCommand(ctx, node, []string{
 			"systemctl", "is-active", "kubelet.service", "containerd.service", "katlc-agent.service", "sshd.service",
 		}, 16<<10)
 		if err == nil && result.ExitStatus == 0 {
@@ -2402,7 +2333,7 @@ func stageKubernetesImageFixtures(ctx context.Context, repo, kubernetesVersion s
 		if err := writeNodeFileChunked(ctx, node, nodeFixture.GuestPath, data, 0o644); err != nil {
 			return nil, fmt.Errorf("stage Kubernetes %s image fixture on %s: %w", kubernetesVersion, node.Name, err)
 		}
-		result, err := runNodeCommandWithRetry(ctx, node, []string{"ctr", "-n", "k8s.io", "images", "import", nodeFixture.GuestPath}, 128<<10)
+		result, err := runNodeCommand(ctx, node, []string{"ctr", "-n", "k8s.io", "images", "import", nodeFixture.GuestPath}, 128<<10)
 		if err != nil {
 			return nil, fmt.Errorf("import Kubernetes %s image fixture on %s: %w", kubernetesVersion, node.Name, err)
 		}
@@ -2418,7 +2349,7 @@ func stageKubernetesImageFixtures(ctx context.Context, repo, kubernetesVersion s
 }
 
 func ensureKubernetesImageFixture(ctx context.Context, repo, kubernetesVersion string) (nodeImageFixture, error) {
-	images, err := kubernetesImageReferences(kubernetesVersion)
+	images, err := kubernetesImageReferences(ctx, repo, kubernetesVersion)
 	if err != nil {
 		return nodeImageFixture{}, err
 	}
@@ -2448,23 +2379,48 @@ func ensureKubernetesImageFixture(ctx context.Context, repo, kubernetesVersion s
 	return nodeImageFixture{Image: "kubeadm-required-images:" + kubernetesVersion, Source: archivePath}, nil
 }
 
-func kubernetesImageReferences(kubernetesVersion string) ([]string, error) {
-	supported, err := kubernetesrelease.DefaultSupportedVersions()
+func kubernetesImageReferences(ctx context.Context, repo, version string) ([]string, error) {
+	paths, err := filepath.Glob(filepath.Join(repo, "_build/mkosi/katl-kubernetes*.raw.json"))
 	if err != nil {
-		return nil, fmt.Errorf("load supported Kubernetes versions: %w", err)
+		return nil, err
 	}
-	if _, err := supported.Select(kubernetesVersion); err != nil {
-		return nil, fmt.Errorf("Kubernetes VM image fixtures do not define kubeadm images for %s: %w", kubernetesVersion, err)
+	for _, path := range paths {
+		metadata, err := artifact.ReadLocal(path)
+		if err != nil || metadata.PayloadVersion != version {
+			continue
+		}
+		image := strings.TrimSuffix(path, ".json")
+		if err := metadata.VerifyFile(image); err != nil {
+			return nil, err
+		}
+		directory, err := os.MkdirTemp("", "katl-kubeadm-images-")
+		if err != nil {
+			return nil, err
+		}
+		defer os.RemoveAll(directory)
+		kubeadm := filepath.Join(directory, "kubeadm")
+		// Extract read-only instead of mounting a tool view or encoding kubeadm's
+		// etcd/addon version mapping in the fixture builder.
+		command := exec.CommandContext(ctx, "sudo", "systemd-dissect", "--copy-from", image, "/usr/bin/kubeadm", kubeadm)
+		if output, err := command.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("extract %s kubeadm: %w: %s", version, err, output)
+		}
+		return kubeadmImageReferences(ctx, kubeadm, version)
 	}
-	return []string{
-		"registry.k8s.io/kube-apiserver:" + kubernetesVersion,
-		"registry.k8s.io/kube-controller-manager:" + kubernetesVersion,
-		"registry.k8s.io/kube-scheduler:" + kubernetesVersion,
-		"registry.k8s.io/kube-proxy:" + kubernetesVersion,
-		"registry.k8s.io/coredns/coredns:v1.14.2",
-		"registry.k8s.io/pause:3.10.2",
-		"registry.k8s.io/etcd:3.6.8-0",
-	}, nil
+	return nil, fmt.Errorf("no local Kubernetes sysext supplies kubeadm %s; build the source and target artifacts for this VM journey", version)
+}
+
+func kubeadmImageReferences(ctx context.Context, kubeadm, version string) ([]string, error) {
+	command := exec.CommandContext(ctx, kubeadm, "config", "images", "list", "--kubernetes-version", version)
+	output, err := command.Output()
+	if err != nil {
+		return nil, fmt.Errorf("query kubeadm %s images: %w", version, err)
+	}
+	images := strings.Fields(string(output))
+	if len(images) == 0 {
+		return nil, fmt.Errorf("kubeadm %s returned no images", version)
+	}
+	return images, nil
 }
 
 func validKubernetesImageFixture(archivePath, manifestPath, kubernetesVersion string, images []string) (bool, error) {
@@ -2586,7 +2542,7 @@ func stageTwoNodeImageFixtures(ctx context.Context, repo, workDir string, nodes 
 			if err := writeNodeFileChunked(ctx, node, nodeFixture.GuestPath, data, 0o644); err != nil {
 				return nil, fmt.Errorf("stage %s image fixture on %s: %w", fixture.Image, node.Name, err)
 			}
-			if result, err := runNodeCommandWithRetry(ctx, node, []string{"ctr", "-n", "k8s.io", "images", "import", nodeFixture.GuestPath}, 64<<10); err != nil {
+			if result, err := runNodeCommand(ctx, node, []string{"ctr", "-n", "k8s.io", "images", "import", nodeFixture.GuestPath}, 64<<10); err != nil {
 				return nil, fmt.Errorf("import %s image fixture on %s: %w", fixture.Image, node.Name, err)
 			} else if result.ExitStatus != 0 {
 				return nil, fmt.Errorf("import %s image fixture on %s: %w", fixture.Image, node.Name, commandErrorDetail(result))
@@ -3000,7 +2956,7 @@ func readNodeFileWithRetry(ctx context.Context, node vmtest.RunningInstalledRunt
 }
 
 func readNodeFile(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, path string, maxBytes uint32) ([]byte, error) {
-	result, err := retryDirectAgentOp(ctx, node, 10*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.FileResult, error) {
+	result, err := withDirectAgent(ctx, node, 10*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.FileResult, error) {
 		return client.ReadFile(opCtx, &vmtestpb.ReadFileRequest{
 			Path:      path,
 			MaxBytes:  maxBytes,
@@ -3017,7 +2973,7 @@ func readNodeFile(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, 
 }
 
 func writeNodeFile(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, path string, content []byte, mode uint32, sensitive bool) error {
-	_, err := retryDirectAgentOp(ctx, node, 10*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.WriteFileResult, error) {
+	_, err := withDirectAgent(ctx, node, 10*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.WriteFileResult, error) {
 		return client.WriteFile(opCtx, &vmtestpb.WriteFileRequest{
 			Path:      path,
 			Content:   content,
@@ -3028,12 +2984,14 @@ func writeNodeFile(ctx context.Context, node vmtest.RunningInstalledRuntimeNode,
 	return err
 }
 
-func retryDirectAgentOp[T any](ctx context.Context, node vmtest.RunningInstalledRuntimeNode, timeout time.Duration, op func(context.Context, *vmtest.AgentClient) (T, error)) (T, error) {
+var dialNodeAgent = vmtest.DialAgent
+
+func withDirectAgent[T any](ctx context.Context, node vmtest.RunningInstalledRuntimeNode, timeout time.Duration, op func(context.Context, *vmtest.AgentClient) (T, error)) (T, error) {
 	var zero T
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		opCtx, cancel := context.WithTimeout(ctx, timeout)
-		client, err := vmtest.DialAgent(opCtx, node.VSock.GuestCID, node.VSock.Port, node.Result.Artifacts.VSockTranscript)
+		client, err := dialNodeAgent(opCtx, node.VSock.GuestCID, node.VSock.Port, node.Result.Artifacts.VSockTranscript)
 		if err != nil {
 			cancel()
 			lastErr = err
@@ -3041,10 +2999,9 @@ func retryDirectAgentOp[T any](ctx context.Context, node vmtest.RunningInstalled
 			result, err := op(opCtx, client)
 			_ = client.Close()
 			cancel()
-			if err == nil {
-				return result, nil
-			}
-			lastErr = err
+			// Once dispatched, a lost response is uncertainty. Only connection
+			// establishment can retry; commands and writes must never replay.
+			return result, err
 		}
 		if attempt == 2 || !transientAgentTransportError(lastErr) {
 			return zero, lastErr
@@ -3065,7 +3022,7 @@ func writeNodeFileChunked(ctx context.Context, node vmtest.RunningInstalledRunti
 		if end > len(content) {
 			end = len(content)
 		}
-		_, err := retryDirectAgentOp(ctx, node, 10*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.WriteFileResult, error) {
+		_, err := withDirectAgent(ctx, node, 10*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.WriteFileResult, error) {
 			return client.WriteFile(opCtx, &vmtestpb.WriteFileRequest{
 				Path:      path,
 				Content:   content[offset:end],
@@ -3085,28 +3042,13 @@ func writeNodeFileChunked(ctx context.Context, node vmtest.RunningInstalledRunti
 	return nil
 }
 
-func runNodeCommandWithRetry(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, argv []string, stdoutLimit uint32) (*vmtestpb.CommandResult, error) {
-	return retryDirectAgentOp(ctx, node, 30*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.CommandResult, error) {
+func runNodeCommand(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, argv []string, stdoutLimit uint32) (*vmtestpb.CommandResult, error) {
+	return withDirectAgent(ctx, node, 30*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.CommandResult, error) {
 		return client.RunCommand(opCtx, &vmtestpb.RunCommandRequest{
 			Argv:        argv,
 			StdoutLimit: stdoutLimit,
 			StderrLimit: 32 << 10,
 		})
-	})
-}
-
-func runNodeCommand(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, argv []string, stdoutLimit uint32) (*vmtestpb.CommandResult, error) {
-	opCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	client, err := vmtest.DialAgent(opCtx, node.VSock.GuestCID, node.VSock.Port, node.Result.Artifacts.VSockTranscript)
-	if err != nil {
-		return nil, err
-	}
-	defer client.Close()
-	return client.RunCommand(opCtx, &vmtestpb.RunCommandRequest{
-		Argv:        argv,
-		StdoutLimit: stdoutLimit,
-		StderrLimit: 32 << 10,
 	})
 }
 
@@ -4789,23 +4731,35 @@ func TestTwoNodeHostToolPrereqsUseSelectedKubectl(t *testing.T) {
 	}
 }
 
-func TestKubernetesImageReferencesMatchSupportedKubeadmVersions(t *testing.T) {
-	supported, err := kubernetesrelease.DefaultSupportedVersions()
-	if err != nil {
+func TestKubeadmImageReferences(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "kubeadm")
+	content := `#!/bin/sh
+case "$*" in
+  "config images list --kubernetes-version v1.37.0")
+    echo registry.k8s.io/kube-apiserver:v1.37.0
+    echo registry.k8s.io/etcd:3.7.0-0
+    ;;
+  "config images list --kubernetes-version v9.2.0")
+    echo registry.example/control-plane:v9.2.0
+    echo registry.example/etcd:future-image
+    ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(content), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, selected := range supported.Versions {
-		version := selected.PayloadVersion
-		images, err := kubernetesImageReferences(version)
-		if err != nil {
-			t.Fatalf("kubernetesImageReferences(%q) error = %v", version, err)
+	for _, tc := range []struct {
+		version string
+		want    []string
+	}{
+		{"v1.37.0", []string{"registry.k8s.io/kube-apiserver:v1.37.0", "registry.k8s.io/etcd:3.7.0-0"}},
+		{"v9.2.0", []string{"registry.example/control-plane:v9.2.0", "registry.example/etcd:future-image"}},
+	} {
+		got, err := kubeadmImageReferences(context.Background(), binary, tc.version)
+		if err != nil || !slices.Equal(got, tc.want) {
+			t.Fatalf("kubeadm images for %s = %v, %v, want %v", tc.version, got, err, tc.want)
 		}
-		if len(images) != 7 || images[0] != "registry.k8s.io/kube-apiserver:"+version || images[3] != "registry.k8s.io/kube-proxy:"+version {
-			t.Fatalf("kubernetesImageReferences(%q) = %#v", version, images)
-		}
-	}
-	if _, err := kubernetesImageReferences("v1.37.0"); err == nil {
-		t.Fatal("kubernetesImageReferences(v1.37.0) error = nil")
 	}
 }
 
@@ -4813,10 +4767,7 @@ func TestValidKubernetesImageFixtureRejectsChangedArchive(t *testing.T) {
 	dir := t.TempDir()
 	archivePath := filepath.Join(dir, "images.tar")
 	manifestPath := filepath.Join(dir, "manifest.json")
-	images, err := kubernetesImageReferences("v1.36.0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	images := []string{"registry.example/kube-apiserver:v1.36.0", "registry.example/etcd:fixture"}
 	archive := []byte("complete image archive")
 	if err := os.WriteFile(archivePath, archive, 0o644); err != nil {
 		t.Fatal(err)

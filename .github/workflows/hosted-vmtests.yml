@@ -224,6 +224,8 @@ jobs:
             _build/hosted-agent/**/*.txt
             _build/hosted-agent/**/*.stdout
             _build/hosted-agent/**/*.stderr
+            _build/hosted-agent/**/stdout
+            _build/hosted-agent/**/stderr
           retention-days: 3
       - uses: actions/cache/save@v6
         if: always() && steps.runtime.outcome == 'success' && steps.build-cache.outputs.cache-hit != 'true'
@@ -312,4 +314,6 @@ jobs:
             _build/hosted-scenario/**/*.txt
             _build/hosted-scenario/**/*.stdout
             _build/hosted-scenario/**/*.stderr
+            _build/hosted-scenario/**/stdout
+            _build/hosted-scenario/**/stderr
           retention-days: 3

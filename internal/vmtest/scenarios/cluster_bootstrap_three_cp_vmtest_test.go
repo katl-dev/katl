@@ -60,6 +60,31 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 	_ = vmtest.RequireWorld(t)
 }
 
+func TestKubeadmUpgradeEtcdFailure(t *testing.T) {
+	if run, ok := threeControlPlaneWorldSmokeRun(t, "kubeadm-upgrade-etcd-failure", false); ok {
+		run.KubernetesUpgrade = true
+		run.EtcdUpgradeFailure = true
+		runThreeControlPlaneStackedEtcdSmoke(t, run)
+		return
+	}
+	if !vmtest.DefaultOptions().Enabled {
+		t.Skip("run through scripts/vmtest-run to prove failed-voter upgrade isolation")
+	}
+	_ = vmtest.RequireWorld(t)
+}
+
+func TestKubeadmUpgradeThreeControlPlanes(t *testing.T) {
+	if run, ok := threeControlPlaneWorldSmokeRun(t, "kubeadm-upgrade-three-control-planes", false); ok {
+		run.KubernetesUpgrade = true
+		runThreeControlPlaneStackedEtcdSmoke(t, run)
+		return
+	}
+	if !vmtest.DefaultOptions().Enabled {
+		t.Skip("run through scripts/vmtest-run to prove three-voter upgrade progression")
+	}
+	_ = vmtest.RequireWorld(t)
+}
+
 func TestInstalledRuntimeThreeControlPlaneV01WorkloadProof(t *testing.T) {
 	if run, ok := threeControlPlaneWorldSmokeRun(t, "installed-runtime-three-control-plane-v01-workload-proof", true); ok {
 		runThreeControlPlaneStackedEtcdSmoke(t, run)
@@ -88,16 +113,18 @@ func TestInstalledRuntimeThreeControlPlaneReplacementSmoke(t *testing.T) {
 }
 
 type threeControlPlaneSmokeRun struct {
-	WorldScenario    *vmtest.WorldScenario
-	Options          vmtest.Options
-	Runner           vmtest.Runner
-	Scenario         vmtest.Scenario
-	Result           vmtest.Result
-	Inputs           threeControlPlaneSmokeInputs
-	LibvirtURI       string
-	Network          string
-	WorkloadProof    bool
-	ReplacementProof bool
+	WorldScenario      *vmtest.WorldScenario
+	Options            vmtest.Options
+	Runner             vmtest.Runner
+	Scenario           vmtest.Scenario
+	Result             vmtest.Result
+	Inputs             threeControlPlaneSmokeInputs
+	LibvirtURI         string
+	Network            string
+	WorkloadProof      bool
+	ReplacementProof   bool
+	KubernetesUpgrade  bool
+	EtcdUpgradeFailure bool
 }
 
 func threeControlPlaneWorldSmokeRun(t *testing.T, scenarioName string, workloadProof bool) (threeControlPlaneSmokeRun, bool) {
@@ -211,7 +238,7 @@ func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, scenarioName, 
 
 func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneSmokeRun) {
 	t.Helper()
-	const canonicalEndpoint = "api.unpublished.katl.test:6443"
+	canonicalEndpoint := "api.unpublished.katl.test:6443"
 	options := smoke.Options
 	runner := smoke.Runner
 	scenario := smoke.Scenario
@@ -294,6 +321,9 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	cp2Address := firstString(cp2Node.Result.IPAddress, inputs.CP2Address)
 	cp3Address := firstString(cp3Node.Result.IPAddress, inputs.CP3Address)
 	addresses := map[string]string{"cp-1": cp1Address, "cp-2": cp2Address, "cp-3": cp3Address}
+	if smoke.KubernetesUpgrade {
+		canonicalEndpoint = net.JoinHostPort(cp1Address, "6443")
+	}
 	cniFixtures, err := stageThreeControlPlaneCNIFixtures(ctx, katlRepoRoot(t), nodes, addresses)
 	if err != nil {
 		collectTwoNodeDiagnostics("", nodes...)
@@ -301,6 +331,15 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		t.Fatalf("stage test CNI fixtures: %v", err)
 	}
 	imageFixtures, err := stageKubernetesImageFixtures(ctx, katlRepoRoot(t), inputs.KubernetesVersion, nodes...)
+	if err == nil && smoke.KubernetesUpgrade {
+		target, targetErr := upgradeFixtureVersion(katlRepoRoot(t))
+		err = targetErr
+		if err == nil {
+			var targetFixtures map[string][]nodeImageFixture
+			targetFixtures, err = stageKubernetesImageFixtures(ctx, katlRepoRoot(t), target, nodes...)
+			mergeNodeImageFixtures(imageFixtures, targetFixtures)
+		}
+	}
 	if err == nil && smoke.WorkloadProof {
 		var workloadFixtures map[string][]nodeImageFixture
 		workloadFixtures, err = stageTwoNodeImageFixtures(ctx, katlRepoRoot(t), result.RunDir, nodes...)
@@ -385,14 +424,17 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		assertOperationKubernetesBundle(t, record, kubernetesBundle)
 		assertGenerationKubernetesBundle(t, ctx, node, filepath.Join(evidenceDir, node.Name), record, kubernetesBundle)
 	}
-	for _, node := range nodes {
-		assertNodeAPIProxyAccess(t, ctx, node, canonicalEndpoint, cp1Address+":6443", true)
+	if !smoke.KubernetesUpgrade {
+		for _, node := range nodes {
+			assertNodeAPIProxyAccess(t, ctx, node, canonicalEndpoint, cp1Address+":6443", true)
+		}
+		for _, node := range []vmtest.RunningInstalledRuntimeNode{cp2Node, cp3Node} {
+			assertDirectJoinPathCleaned(t, ctx, node)
+		}
+		assertKubeconfigOutput(t, kubeconfigPath, kubeconfigMetadataPath, "https://"+cp1Address+":7445", "api.unpublished.katl.test")
+		assertKubeProxyLocalAPIAccess(t, ctx, kubeconfigPath, "api.unpublished.katl.test")
+
 	}
-	for _, node := range []vmtest.RunningInstalledRuntimeNode{cp2Node, cp3Node} {
-		assertDirectJoinPathCleaned(t, ctx, node)
-	}
-	assertKubeconfigOutput(t, kubeconfigPath, kubeconfigMetadataPath, "https://"+cp1Address+":7445", "api.unpublished.katl.test")
-	assertKubeProxyLocalAPIAccess(t, ctx, kubeconfigPath, "api.unpublished.katl.test")
 
 	output, err := waitForKubectlNodes(ctx, kubeconfigPath, kubectlOut, 5*time.Minute, "node/cp-1", "node/cp-2", "node/cp-3")
 	if err != nil {
@@ -416,13 +458,15 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 			t.Fatalf("collect %s Kubernetes version evidence: %v", node.Name, err)
 		}
 	}
-	if err := proveLocalControlPlaneHealth(t, ctx, nodes, addresses, kubeconfigPath, result.RunDir); err != nil {
-		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
-		collectTwoNodeDiagnostics("", nodes...)
-		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-		t.Fatalf("local control-plane health: %v", err)
+	if !smoke.KubernetesUpgrade {
+		if err := proveLocalControlPlaneHealth(t, ctx, nodes, addresses, kubeconfigPath, result.RunDir); err != nil {
+			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("local control-plane health: %v", err)
+		}
 	}
-	if !smoke.WorkloadProof && !smoke.ReplacementProof {
+	if !smoke.WorkloadProof && !smoke.ReplacementProof && !smoke.KubernetesUpgrade {
 		if err := runPublicClusterApply(t, ctx, smoke, result, nodes, addresses, kubeconfigPath, kubernetesBundle); err != nil {
 			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 			collectTwoNodeDiagnostics("", nodes...)
@@ -443,6 +487,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 			t.Fatal(err)
 		}
 	}
+
 	etcdReport, err := verifyThreeControlPlaneEtcd(ctx, etcdTranscriptDir, nodes)
 	if err != nil {
 		etcdReport.FailureSummary = err.Error()
@@ -456,6 +501,22 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	}
 	if err := writeThreeControlPlaneEtcdReport(etcdReportPath, etcdReport); err != nil {
 		t.Fatalf("write etcd report: %v", err)
+	}
+	if smoke.EtcdUpgradeFailure {
+		if err := runEtcdUpgradeFailureProof(t, ctx, result, nodes, addresses, canonicalEndpoint, kubeconfigPath); err != nil {
+			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("etcd upgrade failure isolation: %v", err)
+		}
+	}
+	if smoke.KubernetesUpgrade && !smoke.EtcdUpgradeFailure {
+		if err := runThreeControlPlaneUpgradeProof(t, ctx, result, nodes, addresses, canonicalEndpoint, kubeconfigPath); err != nil {
+			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("three-voter upgrade: %v", err)
+		}
 	}
 	if smoke.WorkloadProof {
 		if err := runThreeControlPlaneConfigOperationProof(t, ctx, result, nodes, addresses, inventoryPath, kubeconfigPath, kubernetesBundle, etcdReport); err != nil {
@@ -901,7 +962,7 @@ func waitForAgentKubernetesReady(ctx context.Context, nodes []vmtest.RunningInst
 }
 
 func assertIPForwarding(ctx context.Context, node vmtest.RunningInstalledRuntimeNode) error {
-	result, err := runNodeCommandWithRetry(ctx, node, []string{"sysctl", "-n", "net.ipv4.ip_forward"}, 16<<10)
+	result, err := runNodeCommand(ctx, node, []string{"sysctl", "-n", "net.ipv4.ip_forward"}, 16<<10)
 	if err != nil {
 		return err
 	}
@@ -1239,7 +1300,7 @@ func kubectlOutput(ctx context.Context, kubeconfig string, args ...string) ([]by
 }
 
 func nodeFileSHA256(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, path string) (string, error) {
-	result, err := runNodeCommandWithRetry(ctx, node, []string{"sha256sum", path}, 16<<10)
+	result, err := runNodeCommand(ctx, node, []string{"sha256sum", path}, 16<<10)
 	if err != nil {
 		return "", fmt.Errorf("sha256 %s on %s: %w", path, node.Name, err)
 	}
@@ -1322,9 +1383,7 @@ func threeControlPlaneNodeConfigForRun(run threeControlPlaneSmokeRun, name, disk
 
 func stageThreeControlPlaneKubernetesPayloadBundles(repo string, result vmtest.Result, selectedVersion string) (threeControlPlaneKubernetesPayloadBundle, error) {
 	selectedVersion = firstString(strings.TrimSpace(selectedVersion), "v1.36.1")
-	if _, err := kubernetesImageReferences(selectedVersion); err != nil {
-		return threeControlPlaneKubernetesPayloadBundle{}, fmt.Errorf("three-control-plane bundle proof does not support %q: %w", selectedVersion, err)
-	}
+
 	artifactPath := filepath.Join(repo, "_build/mkosi/katl-kubernetes.raw")
 	baseMetadataPath := filepath.Join(repo, "_build/mkosi/katl-kubernetes.raw.json")
 	baseMeta, err := artifact.ReadLocal(baseMetadataPath)
@@ -1604,7 +1663,7 @@ func installKubernetesBundleCA(ctx context.Context, node vmtest.RunningInstalled
 		{name: "check katlc-agent", argv: []string{"systemctl", "is-active", "--quiet", "katlc-agent.service"}},
 	}
 	for _, command := range commands {
-		result, err := runNodeCommandWithRetry(ctx, node, command.argv, 16<<10)
+		result, err := runNodeCommand(ctx, node, command.argv, 16<<10)
 		if err != nil {
 			return fmt.Errorf("%s: %w", command.name, err)
 		}
