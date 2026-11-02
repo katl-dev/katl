@@ -26,7 +26,7 @@
           pname = "katlctl";
           version = "git-${builtins.substring 0 8 revision}";
           src = self;
-          vendorHash = "sha256-bO/5OzFRNre2ntMMKQLdaYX+vdhTuIg5BFc3S8s2Zlg=";
+          vendorHash = "sha256-VIMMzN+wYuYdNw3xpYTYCg0xdkrN5khJ/PmdoVwhFu0=";
           subPackages = [ "cmd/katlctl" ];
           nativeBuildInputs = [ pkgs.installShellFiles ];
           env.CGO_ENABLED = "0";

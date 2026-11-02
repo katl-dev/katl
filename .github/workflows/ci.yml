@@ -72,6 +72,25 @@ jobs:
           -shellcheck=
           -ignore 'input "(app-id|client-id)".*action "actions/create-github-app-token@v3"'
 
+  nix:
+    name: Nix katlctl
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: cachix/install-nix-action@v31
+        with:
+          github_access_token: ${{ github.token }}
+          enable_kvm: false
+      - name: Build katlctl flake package
+        run: nix build .#katlctl --out-link _build/katlctl --print-build-logs
+      - name: Verify packaged CLI and completions
+        run: |
+          _build/katlctl/bin/katlctl --help
+          test -s _build/katlctl/share/bash-completion/completions/katlctl.bash
+          test -s _build/katlctl/share/fish/vendor_completions.d/katlctl.fish
+          test -s _build/katlctl/share/zsh/site-functions/_katlctl
+
   vms:
     name: VM (${{ matrix.flavour }})
     needs: checks
@@ -101,7 +120,7 @@ jobs:
   result:
     name: CI
     if: always()
-    needs: [checks, vms, drivers]
+    needs: [checks, nix, vms, drivers]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -110,7 +129,7 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
         run: |
           jq -e '
-            .checks.result == "success" and
+            .checks.result == "success" and .nix.result == "success" and
             ([{flavours: .checks.outputs["vm-flavours"], result: .vms.result},
               {flavours: .checks.outputs["driver-flavours"], result: .drivers.result}]
              | all(.[];
