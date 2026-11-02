@@ -100,22 +100,26 @@ func TestCIGate(t *testing.T) {
 	}
 	script := workflow.Jobs["result"].Steps[0].Run
 	for _, tc := range []struct {
-		name, checks, vms, drivers, vmFlavours, driverFlavours string
-		pass                                                   bool
+		name, checks, nix, vms, drivers, vmFlavours, driverFlavours string
+		pass                                                        bool
 	}{
-		{"documentation", "success", "skipped", "skipped", `[]`, `[]`, true},
-		{"product", "success", "success", "skipped", `["standard"]`, `[]`, true},
-		{"kernel", "success", "success", "success", `["lts"]`, `["lts"]`, true},
-		{"fast failure", "failure", "skipped", "skipped", `[]`, `[]`, false},
-		{"fast cancelled", "cancelled", "skipped", "skipped", `[]`, `[]`, false},
-		{"VM failure", "success", "failure", "success", `["lts"]`, `["lts"]`, false},
-		{"VM cancelled", "success", "cancelled", "success", `["lts"]`, `["lts"]`, false},
-		{"selected VM skipped", "success", "skipped", "skipped", `["standard"]`, `[]`, false},
-		{"driver failure", "success", "success", "failure", `["lts"]`, `["lts"]`, false},
-		{"selected driver skipped", "success", "success", "skipped", `["lts"]`, `["lts"]`, false},
-		{"missing plan", "success", "skipped", "skipped", ``, ``, false},
-		{"invalid plan", "success", "skipped", "skipped", `false`, `[]`, false},
-		{"unexpected execution", "success", "success", "skipped", `[]`, `[]`, false},
+		{"documentation", "success", "success", "skipped", "skipped", `[]`, `[]`, true},
+		{"product", "success", "success", "success", "skipped", `["standard"]`, `[]`, true},
+		{"kernel", "success", "success", "success", "success", `["lts"]`, `["lts"]`, true},
+		{"Nix failure", "success", "failure", "skipped", "skipped", `[]`, `[]`, false},
+		{"Nix cancelled", "success", "cancelled", "skipped", "skipped", `[]`, `[]`, false},
+		{"Nix skipped", "success", "skipped", "skipped", "skipped", `[]`, `[]`, false},
+		{"missing Nix result", "success", "", "skipped", "skipped", `[]`, `[]`, false},
+		{"fast failure", "failure", "success", "skipped", "skipped", `[]`, `[]`, false},
+		{"fast cancelled", "cancelled", "success", "skipped", "skipped", `[]`, `[]`, false},
+		{"VM failure", "success", "success", "failure", "success", `["lts"]`, `["lts"]`, false},
+		{"VM cancelled", "success", "success", "cancelled", "success", `["lts"]`, `["lts"]`, false},
+		{"selected VM skipped", "success", "success", "skipped", "skipped", `["standard"]`, `[]`, false},
+		{"driver failure", "success", "success", "success", "failure", `["lts"]`, `["lts"]`, false},
+		{"selected driver skipped", "success", "success", "success", "skipped", `["lts"]`, `["lts"]`, false},
+		{"missing plan", "success", "success", "skipped", "skipped", ``, ``, false},
+		{"invalid plan", "success", "success", "skipped", "skipped", `false`, `[]`, false},
+		{"unexpected execution", "success", "success", "success", "skipped", `[]`, `[]`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			needs, err := json.Marshal(map[string]any{
@@ -123,6 +127,7 @@ func TestCIGate(t *testing.T) {
 					"vm-flavours": tc.vmFlavours, "driver-flavours": tc.driverFlavours,
 				}},
 				"vms": map[string]string{"result": tc.vms}, "drivers": map[string]string{"result": tc.drivers},
+				"nix": map[string]string{"result": tc.nix},
 			})
 			if err != nil {
 				t.Fatal(err)
