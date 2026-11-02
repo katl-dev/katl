@@ -73,13 +73,9 @@ jobs:
           -ignore 'input "(app-id|client-id)".*action "actions/create-github-app-token@v3"'
 
   nix:
-    name: Nix katlctl (${{ matrix.runner }})
-    runs-on: ${{ matrix.runner }}
+    name: Nix katlctl
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-24.04, macos-15]
     steps:
       - uses: actions/checkout@v7
       - uses: cachix/install-nix-action@v31
