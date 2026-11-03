@@ -263,8 +263,9 @@ type SystemExtensionPayloadRef struct {
 }
 
 type KubernetesConfig struct {
-	Address string           `json:"address,omitempty" yaml:"address,omitempty"`
-	Kubeadm KubeadmReference `json:"kubeadm,omitempty" yaml:"kubeadm,omitempty"`
+	External bool             `json:"external,omitempty" yaml:"external,omitempty"`
+	Address  string           `json:"address,omitempty" yaml:"address,omitempty"`
+	Kubeadm  KubeadmReference `json:"kubeadm,omitempty" yaml:"kubeadm,omitempty"`
 }
 
 type KubeadmReference struct {
@@ -436,6 +437,9 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 	}
 	if err := validateSystemRole(manifest.Node.SystemRole); err != nil {
 		return err
+	}
+	if manifest.Node.Kubernetes.External && (manifest.Node.SystemRole != "worker" || manifest.Node.Bootstrap == nil || manifest.Node.Bootstrap.ControlPlaneEndpoint == "" || manifest.Node.ControlPlaneEndpoint != nil) {
+		return fmt.Errorf("external Kubernetes requires a worker with an external bootstrap endpoint and no managed endpoint")
 	}
 	if endpoint := manifest.Node.ControlPlaneEndpoint; endpoint != nil {
 		plan, err := controlplaneendpoint.Normalize(*endpoint)

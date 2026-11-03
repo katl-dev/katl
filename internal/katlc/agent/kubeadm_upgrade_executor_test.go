@@ -979,6 +979,10 @@ func TestExecutorRefusesUpgradeBeforeMutationWhenSafetyGateFails(t *testing.T) {
 
 func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, operation.OperationRecord, time.Time) {
 	t.Helper()
+	external := role == "external-worker"
+	if external {
+		role = "worker"
+	}
 	root := t.TempDir()
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
 	if err := os.MkdirAll(filepath.Join(root, "etc"), 0o755); err != nil {
@@ -1074,6 +1078,15 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 		t.Fatal(err)
 	}
 	request := &operation.KubernetesSysextUpdate{TargetPayloadVersion: "v1.36.2", TargetSysextPath: "/var/lib/katl/artifacts/kubernetes.raw", TargetSysextSHA256: targetSHA, TargetSysextSize: uint64(len(target)), CandidateGenerationID: "gen1", UpgradeRole: role, SourcePayloadVersion: "v1.36.1", SnapshotRef: "snapshot-1", SnapshotDigest: snapshotSHA, SnapshotCreatedAt: now.Format(time.RFC3339), CapturedMemberListDigest: strings.Repeat("c", 64), SnapshotStorageLocation: "/var/lib/katl/etcd-snapshots/snapshot-1.db", SnapshotOperatorIdentity: "operator-a"}
+	request.ExternalWorker = external
+	if external {
+		request.APIServerVersion = "v1.36.1"
+		for _, path := range []string{"etc/kubernetes/admin.conf", "etc/kubernetes/manifests/kube-apiserver.yaml", "etc/kubernetes/manifests/etcd.yaml"} {
+			if err := os.Remove(filepath.Join(root, path)); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	if role != "worker" {
 		preparedRequest := *request
 		completedAt := now

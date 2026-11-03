@@ -47,7 +47,7 @@ func TestUpgradeRoleMatchesNode(t *testing.T) {
 			}
 			server := NewServer(root, store)
 			update := record.KubernetesSysextUpdate
-			request := &agentapi.SubmitOperationRequest{OperationKind: OperationKindKubeadmUpgrade, KubernetesSysextUpdate: &agentapi.KubernetesSysextUpdateOperationRequest{
+			request := &agentapi.SubmitOperationRequest{OperationKind: OperationKindKubeadmUpgrade, ExpectedCurrentGenerationId: "gen0", KubernetesSysextUpdate: &agentapi.KubernetesSysextUpdateOperationRequest{
 				SourcePayloadVersion: update.SourcePayloadVersion, TargetPayloadVersion: update.TargetPayloadVersion,
 				TargetSysextPath: update.TargetSysextPath, TargetSysextSha256: update.TargetSysextSHA256,
 				CandidateGenerationId: "role-target", UpgradeRole: tc.role,

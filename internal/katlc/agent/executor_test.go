@@ -1250,6 +1250,36 @@ func TestAuditStartupFailsAcceptedButNotStartedOperation(t *testing.T) {
 	}
 }
 
+func TestAuditStartupCompletesBootstrapWait(t *testing.T) {
+	server := newTestServer(t)
+	record, err := server.Store.Create(operation.OperationRecord{
+		OperationID: "op-interrupted-bootstrap-wait", OperationKind: "bootstrap-init", Scope: "kubeadm-state", Actor: "test", RequestDigest: strings.Repeat("1", 64),
+		BootstrapRequest: &operation.BootstrapRequest{InventoryNodeName: "node-a", SystemRole: "control-plane", KubernetesPayloadVersion: "v1.35.0", KubernetesBundleSource: "https://example.test", KubernetesBundleRef: "example.test/kubernetes:v1.35.0", BootstrapProfileRef: "default", ControlPlaneEndpoint: "api.example.test:6443"},
+		ExecutorPlan:     &operation.ExecutorPlan{Phase: "kubeadm-init", MarkerID: "kubeadm-init", Argv: []string{"/usr/bin/kubeadm", "init"}},
+		Phase:            "post-kubeadm-health", PhasePlan: []string{"accepted", "kubeadm-init", "post-kubeadm-health"}, CompletedPhases: []string{"accepted", "kubeadm-init"}, PhaseIndex: 2, ExternalMutationStarted: true,
+	}, "started", server.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AuditStartup(server.Store, server.Now()); err != nil {
+		t.Fatal(err)
+	}
+	interrupted, err := server.Store.Read(record.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bootstrapContinuationEligible(interrupted) || interrupted.CompletedAt == nil || !interrupted.RecoveryRequired {
+		t.Fatalf("interrupted bootstrap still appears active: %+v", interrupted)
+	}
+	if _, err := AuditStartup(server.Store, server.Now().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := server.Store.Read(record.OperationID)
+	if err != nil || repeated.RecordRevision != interrupted.RecordRevision {
+		t.Fatalf("completed interruption changed on repeated startup: record=%+v err=%v", repeated, err)
+	}
+}
+
 func TestAuditStartupPreservesLiveAgentChild(t *testing.T) {
 	server := newTestServer(t)
 	record := createAgentOperation(t, server.Store, "op-live-child")

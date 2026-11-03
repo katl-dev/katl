@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -69,6 +70,11 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 	if currentRef.PayloadVersion != request.SourcePayloadVersion {
 		return e.failKubeadmUpgrade(record, "staged", fmt.Errorf("current Kubernetes payload %q does not match requested source %q", currentRef.PayloadVersion, request.SourcePayloadVersion), false)
 	}
+	if request.ExternalWorker {
+		if _, err := externalAPIServerVersion(ctx, e.Root, e.toolRunner(), request.TargetPayloadVersion); err != nil {
+			return e.failKubeadmUpgrade(record, "staged", err, false)
+		}
+	}
 	patchesDir, err := e.prepareKubeadmPatches(record.OperationID, currentID)
 	if err != nil {
 		return e.failKubeadmUpgrade(record, "staged", err, false)
@@ -95,13 +101,18 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 		}
 	}()
 	targetKubeadm := filepath.Join(toolRoot, "usr/bin/kubeadm")
-	versionResult := e.toolRunner()(ctx, []string{targetKubeadm, "version", "-o", "short"}, nil)
+	versionArgs := []string{targetKubeadm, "version", "-o", "short"}
+	if request.ExternalWorker {
+		versionArgs = []string{filepath.Join(toolRoot, "usr/bin/kubelet"), "--version"}
+	}
+	versionResult := e.toolRunner()(ctx, versionArgs, nil)
 	if versionResult.Err != nil || versionResult.ExitStatus != 0 {
-		return e.failKubeadmUpgrade(record, "staged", fmt.Errorf("inspect target kubeadm: %s", toolFailure(versionResult)), false)
+		return e.failKubeadmUpgrade(record, "staged", fmt.Errorf("inspect target Kubernetes executable: %s", toolFailure(versionResult)), false)
 	}
 	observedVersion := strings.TrimSpace(string(versionResult.Stdout))
+	observedVersion = strings.TrimPrefix(observedVersion, "Kubernetes ")
 	if observedVersion != request.TargetPayloadVersion {
-		return e.failKubeadmUpgrade(record, "staged", fmt.Errorf("target kubeadm reported %q, want %q", observedVersion, request.TargetPayloadVersion), false)
+		return e.failKubeadmUpgrade(record, "staged", fmt.Errorf("target Kubernetes executable reported %q, want %q", observedVersion, request.TargetPayloadVersion), false)
 	}
 	if request.UpgradeRole != "worker" {
 		if request.PreparedOperationID == "" {
@@ -141,13 +152,18 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 		current.PhaseIndex = len(current.CompletedPhases)
 		current.PreviousGenerationID = currentID
 		current.CandidateGenerationID = request.CandidateGenerationID
-		current.KubeadmUpgradeEvidence.TargetKubeadmArtifactPath = filepath.ToSlash(filepath.Join("/var/lib/katl/operations", record.OperationID, "tools/kubernetes"))
-		current.KubeadmUpgradeEvidence.TargetKubeadmArtifactDigest = request.TargetSysextSHA256
-		current.KubeadmUpgradeEvidence.TargetKubeadmObservedVersion = observedVersion
+		if !request.ExternalWorker {
+			current.KubeadmUpgradeEvidence.TargetKubeadmArtifactPath = filepath.ToSlash(filepath.Join("/var/lib/katl/operations", record.OperationID, "tools/kubernetes"))
+			current.KubeadmUpgradeEvidence.TargetKubeadmArtifactDigest = request.TargetSysextSHA256
+			current.KubeadmUpgradeEvidence.TargetKubeadmObservedVersion = observedVersion
+		}
 		current.KubeadmUpgradeEvidence.KubeletGateTokenPath = gatePath
 		current.KubeadmUpgradeEvidence.KubeletGateEnforcementUnit = gateUnit
 		current.UpdatedAt = e.clock()
 		current.NextAction = "run target kubeadm while source kubelet remains active"
+		if request.ExternalWorker {
+			current.NextAction = "activate the verified worker runtime and validate the target kubelet"
+		}
 		return current, nil
 	})
 	if err != nil {
@@ -226,7 +242,7 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 		if err := e.runKubeadmUpgradeCommand(ctx, record, "kubeadm-apply-running", argv, true); err != nil {
 			return err
 		}
-	} else {
+	} else if !request.ExternalWorker {
 		argv := []string{targetKubeadm, "upgrade", "node"}
 		if patchesDir != "" {
 			argv = append(argv, "--patches", patchesDir)
@@ -243,6 +259,11 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 		current.Phase = "kubelet-stop-running"
 		current.ActivationState = operation.ActivationStateActivating
 		current.KubeadmUpgradeEvidence.KubeletGateState = "released"
+		if request.ExternalWorker {
+			// The native worker upgrade owns only the local runtime transition.
+			current.ExternalMutationStarted = true
+			current.MutationScopes = appendMissing(current.MutationScopes, "kubelet-state", "kubernetes-sysext")
+		}
 		current.UpdatedAt = e.clock()
 		return current, nil
 	}); err != nil {
@@ -1027,6 +1048,14 @@ func (e *Executor) activateKubernetesCandidate(ctx context.Context, candidate ge
 
 func (e *Executor) checkKubeadmUpgradeHealth(ctx context.Context, request operation.KubernetesSysextUpdate) error {
 	commands := [][]string{{"systemctl", "is-active", "--quiet", "containerd.service"}, {"systemctl", "is-active", "--quiet", "kubelet.service"}, {"kubelet", "--version"}}
+	if request.ExternalWorker {
+		node, err := kubernetesNodeName(e.Root)
+		if err != nil {
+			return err
+		}
+		base := []string{"/usr/bin/kubectl", "--kubeconfig", rootedRuntimePath(e.Root, "/etc/kubernetes/kubelet.conf"), "wait", "--timeout=5m", "node/" + node}
+		commands = append(commands, append(slices.Clone(base), "--for=jsonpath={.status.nodeInfo.kubeletVersion}="+request.TargetPayloadVersion), append(slices.Clone(base), "--for=condition=Ready"))
+	}
 	if request.UpgradeRole != "worker" {
 		nodeName, err := kubernetesNodeName(e.Root)
 		if err != nil {
@@ -1144,6 +1173,9 @@ func (e *Executor) failKubeadmUpgrade(record operation.OperationRecord, phase st
 				current.PostMutationRollbackAllowed = true
 				current.HostRollback = current.PreviousGenerationID
 				current.NextAction = "inspect kubeadm diagnostics and repair the worker before retrying; host rollback does not repair Kubernetes state"
+				if current.KubernetesSysextUpdate.ExternalWorker {
+					current.NextAction = "inspect source runtime health and the worker's kubelet diagnostics; correct the failure and retry katlctl kubernetes upgrade"
+				}
 			}
 		}
 		return current, nil

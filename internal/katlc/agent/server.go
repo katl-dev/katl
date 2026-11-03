@@ -24,6 +24,7 @@ import (
 	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/externalworker"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/bootstrapplan"
@@ -578,6 +579,9 @@ func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperat
 		temporaryJoinConfig = temporaryJoinConfigPath(id)
 		bootstrapRequest.JoinMaterialDigest = workerJoinMaterialDigest(req.GetBootstrap().GetWorkerJoinMaterial())
 		bootstrapRequest.JoinMaterialExpiresAt = strings.TrimSpace(req.GetBootstrap().GetWorkerJoinMaterial().GetExpiresAt())
+		if bootstrapRequest.ExternalWorker {
+			bootstrapRequest.JoinMaterialDigest = sha256Bytes(req.GetBootstrap().GetBootstrapKubeconfig())
+		}
 		bootstrapRequest.TemporaryJoinConfigPath = temporaryJoinConfig
 		if bootstrapRequest.JoinMaterialRef == "" {
 			bootstrapRequest.JoinMaterialRef = "request:" + bootstrapRequest.JoinMaterialDigest[:12]
@@ -974,6 +978,18 @@ func (s *Server) validateJoinMaterial(operationKind string, request *agentapi.Bo
 		return nil
 	}
 	material := request.GetWorkerJoinMaterial()
+	if request.GetExternalWorker() {
+		if operationKind != "bootstrap-join-worker" || material != nil {
+			return status.Error(codes.InvalidArgument, "external worker enrollment requires a worker join without kubeadm join material")
+		}
+		if _, err := externalworker.Bootstrap(request.GetBootstrapKubeconfig(), request.GetControlPlaneEndpoint()); err != nil {
+			return status.Error(codes.InvalidArgument, err.Error())
+		}
+		return nil
+	}
+	if len(request.GetBootstrapKubeconfig()) != 0 {
+		return status.Error(codes.InvalidArgument, "bootstrapKubeconfig is only valid for external workers")
+	}
 	if !isJoinOperation(operationKind) {
 		if material != nil {
 			return status.Error(codes.InvalidArgument, "bootstrap request: workerJoinMaterial is only valid for bootstrap join operations")
@@ -1453,6 +1469,9 @@ func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest, operationID str
 	plan := toolPlan{
 		MutationScopes: []string{"etc-kubernetes", "kubelet-state", "etcd-state", "cluster-objects"},
 	}
+	if req.Bootstrap.GetExternalWorker() {
+		return toolPlan{Phase: "start-external-kubelet", MarkerID: "start-external-kubelet", Argv: []string{"/usr/bin/systemctl", "start", "--no-block", "kubelet.service"}, MutationScopes: []string{"etc-kubernetes", "kubelet-state", "cluster-objects"}}, nil
+	}
 	switch req.OperationKind {
 	case "bootstrap-init":
 		plan.Phase = "kubeadm-init"
@@ -1589,6 +1608,7 @@ func bootstrapRequestFromProto(request *agentapi.BootstrapOperationRequest) oper
 		return operation.BootstrapRequest{}
 	}
 	return operation.BootstrapRequest{
+		ExternalWorker:           request.GetExternalWorker(),
 		InventoryNodeName:        strings.TrimSpace(request.InventoryNodeName),
 		SystemRole:               strings.TrimSpace(request.SystemRole),
 		KubernetesPayloadVersion: strings.TrimSpace(request.KubernetesPayloadVersion),
@@ -1611,6 +1631,17 @@ func kubernetesIdentityStagingPath(storeRoot, operationID string) string {
 
 func (s *Server) materializeJoinConfig(req *agentapi.SubmitOperationRequest, operationID string, selected kubeadmconfig.Plan) (workerJoinMetadata, error) {
 	bootstrap := req.GetBootstrap()
+	if bootstrap.GetExternalWorker() {
+		path := temporaryJoinConfigPath(operationID)
+		target := rootedRuntimePath(s.Root, path)
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return workerJoinMetadata{}, err
+		}
+		if err := os.WriteFile(target, bootstrap.GetBootstrapKubeconfig(), 0o600); err != nil {
+			return workerJoinMetadata{}, err
+		}
+		return workerJoinMetadata{digest: sha256Bytes(bootstrap.GetBootstrapKubeconfig()), configPath: path}, nil
+	}
 	material, err := joinMaterial(bootstrap.GetWorkerJoinMaterial())
 	if err != nil {
 		return workerJoinMetadata{}, err

@@ -12,6 +12,17 @@ configuration and normal `katlc apply` do not decide whether a node runs
 `katlctl cluster bootstrap`, may ask `katlc` to prepare kubeadm-ready candidate
 generations and then coordinate kubeadm init/join.
 
+Experimental [external workers](../operations/external-workers.md) use a separate
+enrollment contract: explicit external ownership, native kubelet configuration,
+and a transient CA-pinned bootstrap kubeconfig. Kubelet owns CSR submission and
+client certificate rotation; the external cluster owns approval, renewal policy,
+and add-ons. Katl reuses generation preparation and input persistence, but never
+invokes kubeadm or creates cluster-side kubeadm configuration in this mode.
+Configuration apply renders the selected native kubelet input locally. Kubernetes
+upgrades reuse payload activation and generation promotion while validating the
+external API version and bypassing kubeadm cluster operations. Both paths derive
+control-plane ownership from persisted configuration before selecting execution.
+
 ## Decision
 
 The ordinary path is Katl-owned complete kubeadm configuration selected from a

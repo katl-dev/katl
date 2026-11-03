@@ -188,6 +188,8 @@ func validateOverlay(node *yaml.Node, path string, options Options, result *Resu
 		case "kernel", "generationRetention":
 			// KnownFields decoding and manifest validation enforce the typed
 			// kernel command-line contract after the safety envelope accepts it.
+		case "externalEndpoint":
+			// Planning binds the endpoint to the installed external cluster.
 		case "hostConfiguration":
 			validateHostConfiguration(pair.value, pair.path, result)
 		case "systemExtensions":
@@ -318,6 +320,9 @@ func validateKubernetes(node *yaml.Node, path string, options Options, result *R
 	}
 	for _, pair := range mappingPairsWithPath(node, path) {
 		switch pair.key {
+		case "external":
+			// Typed decoding enforces the boolean; planning binds external
+			// ownership to the installed manifest before any mutation.
 		case "address":
 			if _, err := manifest.NormalizeKubernetesAddress(scalarValue(pair.value)); err != nil {
 				result.add("invalid-kubernetes-address", pair.path, err.Error())

@@ -59,6 +59,9 @@ func presentHost(snapshot *Snapshot) Presentation {
 		switch snapshot.State {
 		case installstatus.StateWaitingForClusterBootstrap:
 			if !snapshot.KubernetesConfigured {
+				if snapshot.ExternalWorker {
+					return Presentation{State: PresentationProgressing, Label: "Waiting to join Kubernetes"}
+				}
 				return Presentation{State: PresentationProgressing, Label: "Waiting for cluster bootstrap"}
 			}
 			return Presentation{State: PresentationHealthy, Label: "Healthy"}
@@ -89,6 +92,9 @@ func presentKubernetes(snapshot *Snapshot) Presentation {
 		return Presentation{State: PresentationFailed, Label: "Unavailable"}
 	}
 	if snapshot.State == installstatus.StateWaitingForClusterBootstrap && !snapshot.KubernetesConfigured {
+		if snapshot.ExternalWorker {
+			return Presentation{State: PresentationProgressing, Label: "Waiting to join Kubernetes", NextAction: "From your workstation: katlctl node join " + snapshot.Hostname + " --config <cluster.yaml> --bootstrap-kubeconfig <worker-bootstrap.conf>"}
+		}
 		return Presentation{
 			State:      PresentationProgressing,
 			Label:      "Waiting for cluster bootstrap",

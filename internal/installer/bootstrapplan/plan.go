@@ -466,6 +466,7 @@ func isJoinOperation(kind string) bool {
 
 func cloneBootstrapRequest(request operation.BootstrapRequest) *operation.BootstrapRequest {
 	return &operation.BootstrapRequest{
+		ExternalWorker:                 request.ExternalWorker,
 		InventoryNodeName:              strings.TrimSpace(request.InventoryNodeName),
 		SystemRole:                     strings.TrimSpace(request.SystemRole),
 		KubernetesPayloadVersion:       strings.TrimSpace(request.KubernetesPayloadVersion),

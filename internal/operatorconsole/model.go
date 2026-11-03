@@ -24,6 +24,7 @@ type Snapshot struct {
 	NextBootSoftware     Software
 	LiveSoftware         Software
 	KubernetesConfigured bool
+	ExternalWorker       bool
 	ControlPlane         bool
 	ControlPlaneEndpoint string
 	ControlPlanePods     ControlPlanePodStatuses

@@ -572,7 +572,7 @@ func connectKubernetesUpgradeTargets(ctx context.Context, topology workstation.R
 			controlPlanes++
 		}
 	}
-	if controlPlanes == 0 {
+	if controlPlanes == 0 && !topology.ExternalControlPlane {
 		return nil, fmt.Errorf("cluster has no control-plane node")
 	}
 	runID := fmt.Sprintf("%d", kubernetesUpgradeNow().Unix())

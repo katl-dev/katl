@@ -1,0 +1,39 @@
+# Talos supplies its own CNI binaries. Install Flannel's CNI plugin only on
+# explicitly selected Katl workers, using their writable CNI directory.
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: katl-flannel-cni
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: katl-flannel-cni
+  template:
+    metadata:
+      labels:
+        app: katl-flannel-cni
+    spec:
+      nodeSelector:
+        katl.dev/cni: flannel
+      hostNetwork: true
+      dnsPolicy: Default
+      tolerations:
+        - operator: Exists
+      initContainers:
+        - name: install
+          image: ghcr.io/flannel-io/flannel-cni-plugin:v1.9.1-flannel3
+          command: [cp, -f, /flannel, /host/flannel]
+          securityContext:
+            privileged: true
+          volumeMounts:
+            - name: cni-bin
+              mountPath: /host
+      containers:
+        - name: installed
+          image: registry.k8s.io/pause:3.10.1
+      volumes:
+        - name: cni-bin
+          hostPath:
+            path: /var/lib/katl/kubernetes/cni/bin
+            type: Directory

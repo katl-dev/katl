@@ -63,13 +63,14 @@ type installSSHReport struct {
 }
 
 type installHandoffReport struct {
-	Skipped      bool                  `json:"skipped,omitempty"`
-	SkipReason   string                `json:"skipReason,omitempty"`
-	APIVersion   string                `json:"apiVersion"`
-	Kind         string                `json:"kind"`
-	Endpoint     string                `json:"endpoint"`
-	SelectedNode string                `json:"selectedNode,omitempty"`
-	Handoff      handoff.HandoffStatus `json:"handoff"`
+	ExternalWorker bool                  `json:"-"`
+	Skipped        bool                  `json:"skipped,omitempty"`
+	SkipReason     string                `json:"skipReason,omitempty"`
+	APIVersion     string                `json:"apiVersion"`
+	Kind           string                `json:"kind"`
+	Endpoint       string                `json:"endpoint"`
+	SelectedNode   string                `json:"selectedNode,omitempty"`
+	Handoff        handoff.HandoffStatus `json:"handoff"`
 }
 
 func newInstallCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
@@ -296,6 +297,7 @@ func applyInstallNode(ctx context.Context, opts installApplyOptions, inventory c
 		return err
 	}
 	report := newInstallHandoffReport(endpoint, selected.Node.Name, accepted)
+	report.ExternalWorker = selected.InstallManifest.Node.Kubernetes.External
 	if opts.noWait {
 		return writeInstallReport(stdout, opts.output, report)
 	}
@@ -802,6 +804,10 @@ func writeInstallReport(stdout io.Writer, output string, report installHandoffRe
 			}
 		}
 		if report.Handoff.InstallStatus.State == installstatus.StateRebootRequested {
+			if report.ExternalWorker {
+				_, err := fmt.Fprintf(stdout, "Installation finished; the node is rebooting. Check 'katlctl node status' with the same config, then run 'katlctl node join %s --config <cluster.yaml> --bootstrap-kubeconfig <worker-bootstrap.conf>'.\n", report.SelectedNode)
+				return err
+			}
 			_, err := fmt.Fprintln(stdout, "Installation finished; the node is rebooting. Check 'katlctl node status' with the same config, then run 'katlctl cluster bootstrap'.")
 			return err
 		}

@@ -18,6 +18,7 @@ Keep both on trusted home-lab networks and off the Internet.
 | Bare or disposable machine | Install generation 0 | [Install KatlOS](../installing.md) |
 | Generation 0 booted | Establish node management access | [Access installed nodes](access.md) |
 | All intended nodes installed | Create the kubeadm cluster | [Bootstrap Kubernetes](bootstrap-kubernetes.md) |
+| External control plane already exists | Provision and join a KatlOS worker (experimental) | [Join an external control plane](external-workers.md) |
 | Cluster may be rebuilt later | Preserve kubeadm trust and signing keys | [Preserve Kubernetes identity](kubernetes-identity.md) |
 | Kubeadm cluster has no CNI | Install Cilium without mutating the host generation | [Run Cilium on KatlOS](cilium.md) |
 | Installed node | Inspect or reboot one host | [Access installed nodes](access.md#routine-host-management) |

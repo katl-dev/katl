@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/katl-dev/katl/internal/installer"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +15,14 @@ import (
 
 const kubernetesStatusProbeTimeout = 5 * time.Second
 
-func nodeKubernetesStatus(ctx context.Context, root string, run ToolRunner) (*agentapi.KubernetesStatus, error) {
+func nodeKubernetesStatus(ctx context.Context, root string, run ToolRunner) (report *agentapi.KubernetesStatus, err error) {
+	defer func() {
+		if report != nil {
+			if intent, _, readErr := installer.ReadClusterIntent(root); readErr == nil && intent.Kubernetes.External {
+				report.ExternalEndpoint = intent.Inventory.ControlPlaneEndpoint
+			}
+		}
+	}()
 	kubeletConfig := rootedRuntimePath(root, "/etc/kubernetes/kubelet.conf")
 	if _, err := os.Stat(kubeletConfig); errors.Is(err, os.ErrNotExist) {
 		return &agentapi.KubernetesStatus{State: "not-configured"}, nil
@@ -26,7 +34,7 @@ func nodeKubernetesStatus(ctx context.Context, root string, run ToolRunner) (*ag
 	if err != nil {
 		return nil, err
 	}
-	report := &agentapi.KubernetesStatus{
+	report = &agentapi.KubernetesStatus{
 		State:    "waiting-for-kubelet",
 		Role:     "worker",
 		NodeName: nodeName,

@@ -32,6 +32,7 @@ type NodeResolution struct {
 }
 
 type ResolvedCluster struct {
+	External             *SourceExternalKubernetes    `json:"external,omitempty" yaml:"external,omitempty"`
 	ControlPlaneEndpoint *controlplaneendpoint.Config `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint,omitempty"`
 	KubernetesVersion    string                       `json:"kubernetesVersion" yaml:"kubernetesVersion"`
 }
@@ -112,6 +113,7 @@ func InspectSelectedNode(selected SelectedNodeMaterial) (NodeResolution, error) 
 		Node:        node.Name,
 		Effective:   effective,
 		Cluster: ResolvedCluster{
+			External:             selected.Source.Spec.Kubernetes.External,
 			ControlPlaneEndpoint: selected.Source.Spec.ControlPlaneEndpoint,
 			KubernetesVersion:    selected.NodeMaterial.KubernetesVersion,
 		},
@@ -489,6 +491,7 @@ func DiffNodeResolutions(before, after NodeResolution) (ConfigDiff, error) {
 	}
 	add("spec.controlPlaneEndpoint", before.Cluster.ControlPlaneEndpoint, after.Cluster.ControlPlaneEndpoint)
 	add("spec.kubernetes.version", before.Cluster.KubernetesVersion, after.Cluster.KubernetesVersion)
+	add("spec.kubernetes.external", before.Cluster.External, after.Cluster.External)
 	add(base+".controlPlane", before.Effective.ControlPlane, after.Effective.ControlPlane)
 	add(base+".access.ssh.authorizedKeys", before.Effective.Access.SSH.AuthorizedKeys.Value(), after.Effective.Access.SSH.AuthorizedKeys.Value())
 	add(base+".generationRetention", before.Effective.GenerationRetention, after.Effective.GenerationRetention)
@@ -563,6 +566,8 @@ func diffStringMaps(diff *ConfigDiff, prefix string, before, after map[string]st
 
 func classifyDiffPath(path string) (string, string, string) {
 	switch {
+	case path == "spec.kubernetes.external":
+		return "operation-only", "wipe-reinstall", "changing external control-plane ownership or endpoint requires explicit reprovisioning"
 	case path == "spec.kubernetes.version":
 		return "operation-only", "kubernetes-upgrade", "Kubernetes payload changes use the Kubernetes upgrade operation"
 	case path == "spec.controlPlaneEndpoint":

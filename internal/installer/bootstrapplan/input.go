@@ -36,6 +36,12 @@ func SelectInput(root, generationID string, installed installer.ClusterIntent, r
 	if configuration.Manifest.Node.SystemRole != request.SystemRole {
 		return InputSelection{}, fmt.Errorf("selected generation systemRole does not match bootstrap request")
 	}
+	if configuration.Manifest.Node.Kubernetes.External != request.ExternalWorker {
+		return InputSelection{}, fmt.Errorf("bootstrap control-plane ownership does not match the selected generation")
+	}
+	if request.ExternalWorker && (request.SystemRole != "worker" || configuration.Manifest.Node.Bootstrap == nil || configuration.Manifest.Node.Bootstrap.ControlPlaneEndpoint != request.ControlPlaneEndpoint || request.APIProxyConfig != "") {
+		return InputSelection{}, fmt.Errorf("external worker bootstrap must use the installed external endpoint and direct API access")
+	}
 	ref := strings.TrimSpace(configuration.Manifest.Node.Kubernetes.Kubeadm.ConfigRef)
 	plan, ok := configuration.KubeadmConfigs[ref]
 	if !ok || ref == "" || plan.Name != ref || plan.Config.RenderPath != filepath.Join("/etc/katl/kubeadm", ref, "config.yaml") {
@@ -59,9 +65,11 @@ func SelectInput(root, generationID string, installed installer.ClusterIntent, r
 	if !allowed {
 		return InputSelection{}, fmt.Errorf("bootstrapProfileRef %q does not select generation kubeadm config %q", profile, ref)
 	}
-	plan, err = kubeadmconfig.WithNodeAddress(plan, configuration.Manifest.Node.Kubernetes.Address)
-	if err != nil {
-		return InputSelection{}, fmt.Errorf("prepare selected bootstrap node address: %w", err)
+	if !request.ExternalWorker {
+		plan, err = kubeadmconfig.WithNodeAddress(plan, configuration.Manifest.Node.Kubernetes.Address)
+		if err != nil {
+			return InputSelection{}, fmt.Errorf("prepare selected bootstrap node address: %w", err)
+		}
 	}
 	digest, err := plan.InputDigest()
 	if err != nil {
