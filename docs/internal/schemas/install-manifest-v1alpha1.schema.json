@@ -382,7 +382,7 @@
       "properties": {
         "external": {
           "type": "boolean",
-          "description": "Experimental worker enrollment into a control plane managed outside Katl."
+          "description": "Worker enrollment into a control plane managed outside Katl."
         },
         "address": {
           "type": "string",

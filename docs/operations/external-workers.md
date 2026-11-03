@@ -1,6 +1,6 @@
 # Join a worker to an external control plane
 
-This experimental workflow provisions a KatlOS worker for an existing Kubernetes
+This workflow provisions a KatlOS worker for an existing Kubernetes
 control plane managed outside Katl, including Talos. Katl manages the worker OS,
 containerd, kubelet, and its persistent generation. Your existing cluster manages
 bootstrap authentication, certificate approval and renewal, CNI, kube-proxy or its
@@ -68,7 +68,7 @@ kubectl -n kube-system get ds kube-flannel -o yaml
 kubectl -n kube-system get cm kubeconfig-in-cluster -o yaml
 ```
 
-In an experimental cluster using these resources, the following changes select
+For a cluster using these resources, the following changes select
 the shared endpoint. Replace the example address and retain equivalent desired
 configuration in your Talos or GitOps workflow; generated manifests can be
 replaced during later control-plane operations.
@@ -163,9 +163,9 @@ clusterDomain: cluster.local
 
 Other native kubelet fields can be added. Katl supplies the systemd cgroup driver,
 containerd socket, client certificate rotation, webhook authentication and
-authorization, and the cluster CA for kubelet client authentication. This
-experiment assumes the API's CA also trusts the control plane's kubelet client
-certificate. Configure serving-certificate approval separately if you enable
+authorization, and the cluster CA for kubelet client authentication. The control
+plane's kubelet client certificate must chain to the API's CA. Configure
+serving-certificate approval separately if you enable
 `serverTLSBootstrap: true`; client certificate approval does not approve serving
 certificates.
 

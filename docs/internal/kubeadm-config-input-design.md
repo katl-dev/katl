@@ -12,7 +12,7 @@ configuration and normal `katlc apply` do not decide whether a node runs
 `katlctl cluster bootstrap`, may ask `katlc` to prepare kubeadm-ready candidate
 generations and then coordinate kubeadm init/join.
 
-Experimental [external workers](../operations/external-workers.md) use a separate
+[External workers](../operations/external-workers.md) use a separate
 enrollment contract: explicit external ownership, native kubelet configuration,
 and a transient CA-pinned bootstrap kubeconfig. Kubelet owns CSR submission and
 client certificate rotation; the external cluster owns approval, renewal policy,

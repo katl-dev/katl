@@ -36,7 +36,7 @@ health checks, rebooting only if the joined generation still needs a trial boot.
 Use 'katlctl cluster bootstrap' to create the first control plane, and
 'katlctl cluster apply' for configuration changes.
 
-Experimental external workers use spec.kubernetes.external and
+External workers use spec.kubernetes.external and
 --bootstrap-kubeconfig FILE instead of a Katl coordinator. The file must contain
 one CA-pinned cluster and a restricted bootstrap token, with a server matching
 the configured external endpoint. The external cluster owns CSR approval and
@@ -53,7 +53,7 @@ networking. Never supply an administrator kubeconfig.`,
 	f.StringVar(&opts.configPath, "config", "", "complete ClusterConfig YAML or Katl config bundle")
 	f.StringVar(&opts.node, "node", "", "node name (alternative to NODE)")
 	f.StringVar(&opts.coordinator, "coordinator", "", "ready control plane to coordinate the join (default: automatic)")
-	f.StringVar(&opts.bootstrapKubeconfig, "bootstrap-kubeconfig", "", "experimental external worker: CA-pinned kubeconfig containing a restricted bootstrap token")
+	f.StringVar(&opts.bootstrapKubeconfig, "bootstrap-kubeconfig", "", "external worker: CA-pinned kubeconfig containing a restricted bootstrap token")
 	f.DurationVar(&opts.timeout, "timeout", opts.timeout, "time to wait for the join and node health")
 	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd

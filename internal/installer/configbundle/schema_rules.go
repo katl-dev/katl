@@ -174,7 +174,7 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 	case "configbundle.SourceKubernetesCluster.kubeadm":
 		return description("Optional native kubeadm configuration and patches.")
 	case "configbundle.SourceKubernetesCluster.external":
-		return description("Experimental: join workers to a control plane managed outside Katl. Requires native kubelet configuration; excludes control-plane nodes, kubeadm input, and controlPlaneEndpoint.")
+		return description("Join workers to a control plane managed outside Katl. Requires native kubelet configuration; excludes control-plane nodes, kubeadm input, and controlPlaneEndpoint.")
 	case "configbundle.SourceExternalKubernetes.endpoint":
 		return schemaFieldRule{Required: true, Description: "Reachable external Kubernetes API URL, including its port.", Pattern: `^https://[^/]+:[0-9]+$`}
 	case "configbundle.SourceKubeadmInput.configFile":
