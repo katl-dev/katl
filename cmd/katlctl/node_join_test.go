@@ -19,12 +19,16 @@ import (
 
 func TestNodeJoin(t *testing.T) {
 	for _, test := range []struct {
-		name                   string
-		role                   inventory.SystemRole
-		resume, source, bundle bool
+		name                           string
+		role                           inventory.SystemRole
+		resume, source, bundle         bool
+		promotion, receipt, superseded bool
 	}{
 		{name: "control plane", role: inventory.RoleControlPlane},
 		{name: "worker", role: inventory.RoleWorker},
+		{name: "promoted worker with interrupted receipt", role: inventory.RoleWorker, receipt: true},
+		{name: "ready worker with pending promotion", role: inventory.RoleWorker, promotion: true},
+		{name: "superseded source with pending promotion", role: inventory.RoleWorker, promotion: true, superseded: true},
 		{name: "resume trial boot", role: inventory.RoleControlPlane, resume: true},
 		{name: "source credentials", role: inventory.RoleWorker, source: true},
 		{name: "compiled bundle", role: inventory.RoleWorker, bundle: true},
@@ -108,6 +112,22 @@ func TestNodeJoin(t *testing.T) {
 				target.nodeStatus.CurrentGenerationId = "bootstrap-join-example-candidate"
 				target.nodeStatus.Kubernetes = &agentapi.KubernetesStatus{State: "ready", Role: string(test.role), NodeName: "node-2", KubeletActive: true, ControlPlaneComponentsReady: true, NodeReady: true}
 				target.generation = &agentapi.Generation{GenerationId: target.nodeStatus.CurrentGenerationId, CommitState: "committed", HealthState: "healthy", BootState: "good"}
+				if target.operations != nil {
+					for _, op := range target.operations.Operations {
+						op.Result, op.RecoveryRequired = "succeeded", false
+					}
+				}
+			}
+			if test.promotion {
+				target.nodeStatus.Kubernetes = &agentapi.KubernetesStatus{State: "ready", Role: "worker", NodeName: "node-2", KubeletActive: true, NodeReady: true}
+				target.operations = &agentapi.ListOperationsResponse{Operations: []*agentapi.OperationStatus{{OperationId: "failed-promotion", OperationKind: "bootstrap-join-worker", PreviousGenerationId: "0", CandidateGenerationId: "bootstrap-join-example-candidate", Terminal: true, Result: "failed-needs-repair", RecoveryRequired: true, ResumeSupported: true}}}
+			}
+			if test.superseded {
+				target.generation.CommitState = "superseded"
+			}
+			if test.receipt {
+				joined()
+				target.operations = &agentapi.ListOperationsResponse{Operations: []*agentapi.OperationStatus{{OperationId: "interrupted-receipt", OperationKind: "bootstrap-join-worker", PreviousGenerationId: "0", CandidateGenerationId: "bootstrap-join-example-candidate", Terminal: true, Result: "failed-needs-repair", RecoveryRequired: true, ResumeSupported: true}}}
 			}
 			if test.resume {
 				joined()

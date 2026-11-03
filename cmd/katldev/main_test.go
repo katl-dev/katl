@@ -725,3 +725,29 @@ func TestRepositoryRootPrefersJJWorkspace(t *testing.T) {
 		t.Fatalf("fallback %s, %v", got, err)
 	}
 }
+
+func TestInstallerRetainsWorkerConfig(t *testing.T) {
+	repo := t.TempDir()
+	path := filepath.Join(repo, "_build", "katldev", "cluster.yaml")
+	writeKatldevClusterConfig(t, path, "192.0.2.42")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := strings.Replace(string(data), "      controlPlane: true\n", "", 1)
+	source = strings.Replace(source, "    version: v1.36.1\n", "    version: v1.36.1\n    external:\n      endpoint: https://api.external.test:6443\n  defaults:\n    kubernetes:\n      kubelet:\n        configFile: kubelet.yaml\n", 1)
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := installerManager{repoRoot: repo, run: func(context.Context, string, string, []string, []string, io.Writer, io.Writer) error {
+		t.Fatal("matching worker configuration was replaced")
+		return nil
+	}}
+	got, created, err := manager.ensureClusterConfig(context.Background(), installerState{IPAddress: "192.0.2.42"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != path || created {
+		t.Fatalf("config=%q created=%t", got, created)
+	}
+}

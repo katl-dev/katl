@@ -173,6 +173,10 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 		return schemaFieldRule{Required: true, Description: "Exact Kubernetes patch version compiled into the cluster.", Pattern: `^v[0-9]+\.[0-9]+\.[0-9]+$`, MinLength: intPointer(1)}
 	case "configbundle.SourceKubernetesCluster.kubeadm":
 		return description("Optional native kubeadm configuration and patches.")
+	case "configbundle.SourceKubernetesCluster.external":
+		return description("Join workers to a control plane managed outside Katl. Requires native kubelet configuration; excludes control-plane nodes, kubeadm input, and controlPlaneEndpoint.")
+	case "configbundle.SourceExternalKubernetes.endpoint":
+		return schemaFieldRule{Required: true, Description: "Reachable external Kubernetes API URL, including its port.", Pattern: `^https://[^/]+:[0-9]+$`}
 	case "configbundle.SourceKubeadmInput.configFile":
 		return schemaFieldRule{Required: true, Description: "Relative path to the multi-document kubeadm configuration file.", MinLength: intPointer(1)}
 	case "configbundle.SourceKubeadmInput.patchesDir":
@@ -238,6 +242,11 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 
 func sourceSchemaTypeRule(t reflect.Type) schemaTypeRule {
 	switch schemaTypeName(t) {
+	case "configbundle.SourceKubernetesCluster":
+		return schemaTypeRule{OneOf: []schemaObject{
+			{Required: []string{"external"}, Not: &schemaObject{Required: []string{"kubeadm"}}},
+			{Not: &schemaObject{Required: []string{"external"}}},
+		}}
 	case "configbundle.SourceVolumeSelector":
 		return schemaTypeRule{OneOf: exactlyOneRequired("disk", "partition")}
 	case "configbundle.SourceDiskSelector":

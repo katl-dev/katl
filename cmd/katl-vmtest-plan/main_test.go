@@ -116,6 +116,7 @@ func testCoverage(t *testing.T, args []string, input string) {
 	want := map[string][]string{
 		"./internal/vmtest/scenarios": {
 			"TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke",
+			"TestExternalWorkerJoin",
 			"TestThreeNodeGeneration0InstallSmoke",
 			"TestInstallerISOFirstInstallStorageAuthority",
 			"TestInstallerISOBootSmoke",

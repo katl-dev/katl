@@ -1407,3 +1407,16 @@ func (files confextFiles) native() []confext.NativeEtcFile {
 	}
 	return out
 }
+
+func TestExternalEndpointChange(t *testing.T) {
+	root := t.TempDir()
+	request := trustedBundleRequest(root, TrustedBundleRequest{GenerationID: "external-endpoint-change", ApplyMode: generation.ApplyModeLive})
+	request.CurrentManifest.Node.Kubernetes.External = true
+	request.CurrentManifest.Node.SystemRole = "worker"
+	request.CurrentManifest.Node.Bootstrap = &manifest.BootstrapIntent{ControlPlaneEndpoint: "api.original.test:6443"}
+	desired := "api.other.test:6443"
+	request.ClusterDefaults.ExternalEndpoint = &desired
+	if _, err := PlanTrustedBundle(request); err == nil || !strings.Contains(err.Error(), "reprovisioning") {
+		t.Fatalf("endpoint change error=%v", err)
+	}
+}

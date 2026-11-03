@@ -48,6 +48,7 @@ type renderedNodeConfigurationChangeSpec struct {
 }
 
 type renderedNodeConfigurationOverlay struct {
+	ExternalEndpoint     *string                      `yaml:"externalEndpoint,omitempty"`
 	GenerationRetention  *generation.Retention        `yaml:"generationRetention"`
 	Identity             *renderedNodeIdentity        `yaml:"identity,omitempty"`
 	SystemRole           string                       `yaml:"systemRole,omitempty"`
@@ -117,6 +118,10 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 	}
 	if request.KubeadmOnly {
 		overlay = renderedNodeConfigurationOverlay{Kubernetes: &node.Kubernetes}
+	}
+	if node.Kubernetes.External && node.Bootstrap != nil {
+		endpoint := node.Bootstrap.ControlPlaneEndpoint
+		overlay.ExternalEndpoint = &endpoint
 	}
 	if request.SystemExtensionSelections != nil {
 		if len(node.SystemExtensions) != 0 || len(request.SystemExtensionPayloads) != 0 {

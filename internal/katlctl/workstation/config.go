@@ -29,6 +29,7 @@ type Context struct {
 }
 
 type Cluster struct {
+	ExternalControlPlane bool                                  `json:"externalControlPlane,omitempty" yaml:"externalControlPlane,omitempty"`
 	Name                 string                                `json:"name" yaml:"name"`
 	ControlPlaneEndpoint string                                `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint"`
 	Nodes                []Node                                `json:"nodes" yaml:"nodes"`
@@ -52,6 +53,7 @@ const (
 )
 
 type Topology struct {
+	ExternalControlPlane bool                                  `json:"externalControlPlane,omitempty"`
 	ContextName          string                                `json:"contextName,omitempty"`
 	ClusterName          string                                `json:"clusterName"`
 	ControlPlaneEndpoint string                                `json:"controlPlaneEndpoint,omitempty"`
@@ -323,6 +325,7 @@ func topologyFromCluster(contextName string, cluster Cluster) (Topology, error) 
 		return Topology{}, err
 	}
 	topology := Topology{
+		ExternalControlPlane: cluster.ExternalControlPlane,
 		ContextName:          strings.TrimSpace(contextName),
 		ClusterName:          strings.TrimSpace(cluster.Name),
 		ControlPlaneEndpoint: strings.TrimSpace(cluster.ControlPlaneEndpoint),
@@ -347,6 +350,7 @@ func topologyFromCluster(contextName string, cluster Cluster) (Topology, error) 
 func topologyFromInventory(inv inventory.Inventory) (Topology, error) {
 	cluster := Cluster{
 		Name:                 "inventory",
+		ExternalControlPlane: inv.ExternalControlPlane,
 		ControlPlaneEndpoint: inv.ControlPlaneEndpoint,
 		Nodes:                make([]Node, 0, len(inv.Nodes)),
 	}
@@ -365,6 +369,7 @@ func topologyFromInventory(inv inventory.Inventory) (Topology, error) {
 func topologyFromPlan(plan inventory.Plan) (Topology, error) {
 	cluster := Cluster{
 		Name:                 "plan",
+		ExternalControlPlane: plan.ExternalControlPlane,
 		ControlPlaneEndpoint: plan.ControlPlaneEndpoint,
 		Nodes:                make([]Node, 0, len(plan.Nodes)),
 	}
@@ -426,7 +431,10 @@ func validateCluster(cluster Cluster) error {
 			return fmt.Errorf("node %q enrollmentID and machineID must be set together", name)
 		}
 	}
-	if controlPlanes == 0 {
+	if cluster.ExternalControlPlane && (controlPlanes != 0 || strings.TrimSpace(cluster.ControlPlaneEndpoint) == "") {
+		return fmt.Errorf("external cluster %q requires an API endpoint and only worker nodes", strings.TrimSpace(cluster.Name))
+	}
+	if controlPlanes == 0 && !cluster.ExternalControlPlane {
 		return fmt.Errorf("cluster %q must contain at least one control-plane node", strings.TrimSpace(cluster.Name))
 	}
 	return nil

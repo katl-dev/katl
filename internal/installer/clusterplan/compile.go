@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/apiproxy"
@@ -127,8 +128,10 @@ func Compile(request CompileRequest) (Plan, error) {
 		materials = append(materials, material)
 		inventoryNodes = append(inventoryNodes, invNode)
 	}
-	if err := attachAPIProxyConfigs(materials, inventoryNodes, endpointPlan); err != nil {
-		return Plan{}, err
+	if config.Spec.Kubernetes.ExternalEndpoint == "" {
+		if err := attachAPIProxyConfigs(materials, inventoryNodes, endpointPlan); err != nil {
+			return Plan{}, err
+		}
 	}
 	if len(unusedAddressOverrides) > 0 {
 		var names []string
@@ -142,6 +145,7 @@ func Compile(request CompileRequest) (Plan, error) {
 		return addressOverrides[i].Node < addressOverrides[j].Node
 	})
 	bootstrapInventory := inventory.Inventory{
+		ExternalControlPlane:        config.Spec.Kubernetes.ExternalEndpoint != "",
 		ControlPlaneEndpoint:        controlPlaneEndpoint,
 		ControlPlaneEndpointManaged: endpointPlan != nil && endpointPlan.Config.Advertisement != nil,
 		KubernetesVersion:           kubernetes.version,
@@ -248,6 +252,18 @@ func directAPIAddress(material NodeMaterial, node inventory.Node) (string, bool,
 }
 
 func resolveControlPlaneEndpoint(config Config, addressOverrides map[string]string) (*controlplaneendpoint.Plan, error) {
+	if external := config.Spec.Kubernetes.ExternalEndpoint; external != "" {
+		host, port, err := net.SplitHostPort(external)
+		if err != nil {
+			return nil, err
+		}
+		portNumber, err := strconv.Atoi(port)
+		if err != nil {
+			return nil, err
+		}
+		plan, err := controlplaneendpoint.Normalize(controlplaneendpoint.Config{Host: host, Port: portNumber})
+		return &plan, err
+	}
 	controlPlanes := 0
 	controlPlaneName := ""
 	controlPlaneAddress := ""
@@ -331,8 +347,9 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 			SystemExtensions:     slices.Clone(layer.SystemExtensions),
 			ControlPlaneEndpoint: managedEndpoint,
 			Kubernetes: manifest.KubernetesConfig{
-				Address: strings.TrimSpace(layer.Kubernetes.Address),
-				Kubeadm: manifest.KubeadmReference{ConfigRef: layer.Kubernetes.KubeadmConfigRef},
+				External: config.Spec.Kubernetes.ExternalEndpoint != "",
+				Address:  strings.TrimSpace(layer.Kubernetes.Address),
+				Kubeadm:  manifest.KubeadmReference{ConfigRef: layer.Kubernetes.KubeadmConfigRef},
 			},
 			Bootstrap: &manifest.BootstrapIntent{
 				ClusterName:          strings.TrimSpace(config.Metadata.Name),

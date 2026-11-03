@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -65,6 +66,23 @@ func (s *Server) dryRunKubernetesSysextUpdateOperation(req *agentapi.SubmitOpera
 
 func (s *Server) planKubernetesSysextUpdateOperation(req *agentapi.SubmitOperationRequest, digest string, id string, locks []string, now time.Time) (operation.OperationRecord, error) {
 	update := kubernetesSysextUpdateFromProto(req.GetKubernetesSysextUpdate())
+	external, err := generationExternalWorker(s.Root, req.GetExpectedCurrentGenerationId())
+	if err != nil {
+		return operation.OperationRecord{}, status.Errorf(codes.FailedPrecondition, "read selected generation control-plane ownership: %v", err)
+	}
+	if external {
+		if update.UpgradeRole != "worker" || req.OperationKind == OperationKindKubeadmUpgradePrepare {
+			return operation.OperationRecord{}, status.Error(codes.FailedPrecondition, "external control planes only permit local worker upgrades; upgrade the control plane through its own management interface")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		version, err := externalAPIServerVersion(ctx, s.Root, s.RunKubernetesStatus, update.TargetPayloadVersion)
+		if err != nil {
+			return operation.OperationRecord{}, status.Errorf(codes.FailedPrecondition, "validate external API version before upgrading worker: %v", err)
+		}
+		update.ExternalWorker = true
+		update.APIServerVersion = version
+	}
 	if update.UpgradeRole != "" {
 		// A caller's topology cannot authorize skipping voter safety checks.
 		controlPlane := false
@@ -164,6 +182,9 @@ func (s *Server) planKubernetesSysextUpdateOperation(req *agentapi.SubmitOperati
 		} else {
 			record.Phase = kubeadmUpgradeAcceptedPhase
 			record.PhasePlan = kubeadmUpgradePhasePlan(update.UpgradeRole)
+			if update.ExternalWorker {
+				record.PhasePlan = []string{"accepted", "staged", "kubelet-stop-running", "sysext-refresh-running", "kubelet-restart-running", "health-check-running", "healthy"}
+			}
 			record.CompletedPhases = []string{"accepted"}
 			record.PhaseIndex = 1
 			record.CandidateGenerationID = update.CandidateGenerationID

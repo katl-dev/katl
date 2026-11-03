@@ -140,6 +140,7 @@ type ExecutorPlan struct {
 }
 
 type BootstrapRequest struct {
+	ExternalWorker                 bool   `json:"externalWorker,omitempty"`
 	ResumeOperationID              string `json:"resumeOperationID,omitempty"`
 	InventoryNodeName              string `json:"inventoryNodeName"`
 	SystemRole                     string `json:"systemRole"`
@@ -155,6 +156,7 @@ type BootstrapRequest struct {
 	KubeadmInputDigest             string `json:"kubeadmInputDigest,omitempty"`
 	JoinMaterialRef                string `json:"joinMaterialRef,omitempty"`
 	JoinMaterialDigest             string `json:"joinMaterialDigest,omitempty"`
+	PreviousJoinMaterialDigest     string `json:"previousJoinMaterialDigest,omitempty"`
 	JoinMaterialExpiresAt          string `json:"joinMaterialExpiresAt,omitempty"`
 	TemporaryJoinConfigPath        string `json:"temporaryJoinConfigPath,omitempty"`
 	ExistingClusterJoin            bool   `json:"existingClusterJoin,omitempty"`
@@ -176,6 +178,7 @@ type ConfigApplyRequest struct {
 }
 
 type KubeadmControlPlaneConfig struct {
+	ExternalWorker            bool              `json:"externalWorker,omitempty"`
 	Component                 string            `json:"component"`
 	RolloutID                 string            `json:"rolloutID"`
 	NodePosition              uint32            `json:"nodePosition"`
@@ -210,6 +213,8 @@ type KubeadmControlPlaneConfig struct {
 }
 
 type KubernetesSysextUpdate struct {
+	ExternalWorker           bool   `json:"externalWorker,omitempty"`
+	APIServerVersion         string `json:"apiServerVersion,omitempty"`
 	PreparedOperationID      string `json:"preparedOperationID,omitempty"`
 	PreviewOnly              bool   `json:"previewOnly,omitempty"`
 	TargetPayloadVersion     string `json:"targetPayloadVersion"`
@@ -859,6 +864,14 @@ func ValidateRecord(record OperationRecord) error {
 		}
 		if strings.TrimSpace(record.BootstrapRequest.JoinMaterialDigest) != "" {
 			if err := validateSHA256Hex("bootstrapRequest joinMaterialDigest", record.BootstrapRequest.JoinMaterialDigest); err != nil {
+				return err
+			}
+		}
+		if previous := record.BootstrapRequest.PreviousJoinMaterialDigest; previous != "" {
+			if !record.BootstrapRequest.ExternalWorker || record.BootstrapRequest.ResumeOperationID == "" {
+				return fmt.Errorf("previousJoinMaterialDigest requires an external worker continuation")
+			}
+			if err := validateSHA256Hex("bootstrapRequest previousJoinMaterialDigest", previous); err != nil {
 				return err
 			}
 		}
@@ -1833,6 +1846,9 @@ func validateArtifactPath(path string) error {
 }
 
 func validateBootstrapRequest(request BootstrapRequest) error {
+	if request.ExternalWorker && request.SystemRole != "worker" {
+		return fmt.Errorf("external bootstrap requires worker systemRole")
+	}
 	if strings.TrimSpace(request.InventoryNodeName) == "" {
 		return fmt.Errorf("bootstrapRequest inventoryNodeName is required")
 	}
@@ -1928,10 +1944,17 @@ func validateKubeadmControlPlaneConfig(request KubeadmControlPlaneConfig) error 
 		return fmt.Errorf("kubeadmControlPlaneConfig readiness requirement is invalid")
 	}
 	required := map[string]string{
-		"rolloutID": request.RolloutID, "coordinatorNode": request.CoordinatorNode,
-		"nodeName": request.NodeName, "desiredGenerationID": request.DesiredGenerationID,
+		"rolloutID": request.RolloutID,
+		"nodeName":  request.NodeName, "desiredGenerationID": request.DesiredGenerationID,
 		"configName": request.ConfigName, "configPath": request.ConfigPath,
 		"kubernetesPayloadVersion": request.KubernetesPayloadVersion,
+	}
+	if request.ExternalWorker {
+		if request.Component != "kubelet" || request.CoordinatorUpload || request.CoordinatorNode != "" {
+			return fmt.Errorf("external worker configuration must remain local to kubelet")
+		}
+	} else {
+		required["coordinatorNode"] = request.CoordinatorNode
 	}
 	for name, value := range required {
 		if strings.TrimSpace(value) == "" {
@@ -1992,6 +2015,9 @@ func validateKubeadmControlPlaneConfig(request KubeadmControlPlaneConfig) error 
 }
 
 func validateKubernetesSysextUpdate(request KubernetesSysextUpdate) error {
+	if request.ExternalWorker && (request.UpgradeRole != "worker" || request.APIServerVersion == "") {
+		return fmt.Errorf("external Kubernetes upgrade requires a worker role and observed API server version")
+	}
 	if strings.TrimSpace(request.TargetPayloadVersion) == "" {
 		return fmt.Errorf("kubernetesSysextUpdate targetPayloadVersion is required")
 	}

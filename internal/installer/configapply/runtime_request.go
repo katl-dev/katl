@@ -75,6 +75,7 @@ type inlineKubeadmConfig struct {
 }
 
 type nodeConfigurationOverlay struct {
+	ExternalEndpoint     *string                      `json:"externalEndpoint,omitempty" yaml:"externalEndpoint,omitempty"`
 	GenerationRetention  *generation.Retention        `json:"generationRetention,omitempty" yaml:"generationRetention,omitempty"`
 	Identity             *IdentityOverlay             `json:"identity,omitempty" yaml:"identity,omitempty"`
 	SystemRole           string                       `json:"systemRole,omitempty" yaml:"systemRole,omitempty"`
@@ -199,6 +200,7 @@ func (overlay nodeConfigurationOverlay) nodeOverlay(changedConfigs map[string]st
 		_, kubeadmChanged = changedConfigs[strings.TrimSpace(overlay.Kubernetes.Kubeadm.ConfigRef)]
 	}
 	nodeOverlay := NodeOverlay{
+		ExternalEndpoint:    overlay.ExternalEndpoint,
 		Identity:            overlay.Identity,
 		SystemRole:          overlay.SystemRole,
 		Kernel:              overlay.Kernel,

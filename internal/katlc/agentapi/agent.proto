@@ -168,6 +168,7 @@ message KubernetesStatus {
   bool node_ready = 5;
   bool control_plane_components_ready = 6;
   string failure_reason = 7;
+  string external_endpoint = 8;
 }
 
 message ControlPlaneEndpointStatus {
@@ -222,6 +223,8 @@ message BootstrapOperationRequest {
   string kubernetes_identity_fingerprint = 15;
   string api_proxy_config = 16;
   string resume_operation_id = 17;
+  bool external_worker = 18;
+  bytes bootstrap_kubeconfig = 19;
 }
 
 message WorkerJoinMaterial {

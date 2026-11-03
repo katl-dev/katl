@@ -20,6 +20,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/kubeadmplan"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
 const OperationKindKubeadmControlPlaneConfig = "kubeadm-control-plane-config"
@@ -49,8 +50,8 @@ func validateKubeadmControlPlaneConfigRequest(kind string, req *agentapi.Kubeadm
 	if req.GetNodeCount() < 1 || req.GetNodePosition() < 1 || req.GetNodePosition() > req.GetNodeCount() {
 		return fmt.Errorf("node position must identify one node in the rollout")
 	}
-	if strings.TrimSpace(req.GetCoordinatorNode()) == "" || strings.TrimSpace(req.GetDesiredGenerationId()) == "" {
-		return fmt.Errorf("coordinatorNode and desiredGenerationID are required")
+	if strings.TrimSpace(req.GetDesiredGenerationId()) == "" {
+		return fmt.Errorf("desiredGenerationID is required")
 	}
 	if strings.TrimSpace(req.GetNodeName()) == "" {
 		return fmt.Errorf("nodeName is required")
@@ -147,6 +148,18 @@ func (s *Server) acceptKubeadmControlPlaneConfigOperation(req *agentapi.SubmitOp
 
 func (s *Server) validateKubeadmControlPlaneConfigState(req *agentapi.SubmitOperationRequest) (operation.KubeadmControlPlaneConfig, error) {
 	body := controlPlaneConfigFromProto(req.GetKubeadmControlPlaneConfig())
+	external, err := generationExternalWorker(s.Root, req.GetExpectedCurrentGenerationId())
+	if err != nil {
+		return body, fmt.Errorf("read selected generation control-plane ownership: %w", err)
+	}
+	if external {
+		if body.Component != "kubelet" || body.CoordinatorUpload || body.CoordinatorNode != "" {
+			return body, fmt.Errorf("external workers only apply local kubelet configuration; control-plane and addon configuration belongs to the external cluster")
+		}
+		body.ExternalWorker = true
+	} else if body.CoordinatorNode == "" {
+		return body, fmt.Errorf("coordinatorNode is required for a Katl-managed cluster")
+	}
 	if strings.TrimSpace(req.ExpectedCurrentGenerationId) != body.DesiredGenerationID {
 		return body, fmt.Errorf("desired generation must equal expected active generation")
 	}
@@ -543,13 +556,16 @@ func (e *Executor) executeKubeletConfig(ctx context.Context, record operation.Op
 	if err != nil {
 		return e.failControlPlaneConfig(record, "preflight", err)
 	}
-	patchesDir, err := e.prepareKubeadmPatches(record.OperationID, request.DesiredGenerationID)
-	if err != nil {
-		return e.failControlPlaneConfig(record, "preflight", err)
-	}
-	previewDir, err := e.prepareKubeletPreview(record.OperationID)
-	if err != nil {
-		return e.failControlPlaneConfig(record, "preflight", err)
+	var patchesDir, previewDir string
+	if !request.ExternalWorker {
+		patchesDir, err = e.prepareKubeadmPatches(record.OperationID, request.DesiredGenerationID)
+		if err != nil {
+			return e.failControlPlaneConfig(record, "preflight", err)
+		}
+		previewDir, err = e.prepareKubeletPreview(record.OperationID)
+		if err != nil {
+			return e.failControlPlaneConfig(record, "preflight", err)
+		}
 	}
 	uploadNeeded := request.CoordinatorUpload
 	if request.CoordinatorUpload {
@@ -598,7 +614,12 @@ func (e *Executor) executeKubeletConfig(ctx context.Context, record operation.Op
 	}
 	// Resolve against the authoritative shared base after a required upload.
 	// A later patch failure retains that valid shared base for a corrected apply.
-	effective, err := e.previewKubeletConfig(ctx, record, previewDir, patchesDir)
+	var effective []byte
+	if request.ExternalWorker {
+		effective, err = externalKubeletConfig(desired)
+	} else {
+		effective, err = e.previewKubeletConfig(ctx, record, previewDir, patchesDir)
+	}
 	if err != nil {
 		return e.failControlPlaneConfig(record, "kubelet-config-preview", err)
 	}
@@ -638,7 +659,21 @@ func (e *Executor) executeKubeletConfig(ctx context.Context, record operation.Op
 		if patchesDir != "" {
 			argv = append(argv, "--patches", patchesDir)
 		}
-		if err := e.runControlPlaneConfigCommand(ctx, record, "kubelet-config-running", argv, true); err != nil {
+		if request.ExternalWorker {
+			// Record the mutation before replacing writable kubelet configuration;
+			// retries retain the existing backup and enrollment identity.
+			if _, err := e.Store.Update(record.OperationID, "kubelet-config-running", "kubelet-config-running", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+				current.Phase = "kubelet-config-running"
+				current.ExternalMutationStarted = true
+				current.MutationScopes = appendMissing(current.MutationScopes, "kubelet-state")
+				return current, nil
+			}); err != nil {
+				return err
+			}
+			if err := persistedrecord.WriteFileAtomic(rootedRuntimePath(e.Root, "/var/lib/kubelet/config.yaml"), effective, 0o600); err != nil {
+				return e.failControlPlaneConfig(record, "kubelet-config-running", err)
+			}
+		} else if err := e.runControlPlaneConfigCommand(ctx, record, "kubelet-config-running", argv, true); err != nil {
 			return err
 		}
 		afterData, err = os.ReadFile(rootedRuntimePath(e.Root, "/var/lib/kubelet/config.yaml"))

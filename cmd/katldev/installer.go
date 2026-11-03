@@ -613,7 +613,7 @@ func matchingKatldevConfig(path string, state installerState) error {
 		return fmt.Errorf("decode config: %w", err)
 	}
 	for _, node := range source.Spec.Nodes {
-		if !node.ControlPlane || node.Management.Address != state.IPAddress {
+		if node.Management.Address != state.IPAddress {
 			continue
 		}
 		layer, err := configbundle.ResolveNodeLayer(source.Spec.Defaults, node)
@@ -624,7 +624,7 @@ func matchingKatldevConfig(path string, state installerState) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("no control-plane node uses address %s and target disk %s", state.IPAddress, katldevTargetDisk)
+	return fmt.Errorf("no node uses address %s and target disk %s", state.IPAddress, katldevTargetDisk)
 }
 
 func (manager installerManager) printReady(state installerState, configPath string, configCreated bool) error {

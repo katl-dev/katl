@@ -3,12 +3,14 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/protobuf/proto"
@@ -201,6 +203,140 @@ func TestBootstrapContinuation(t *testing.T) {
 			if err != nil || string(identity) != "original kubelet identity" {
 				t.Fatalf("identity changed: %q %v", identity, err)
 			}
+		})
+	}
+}
+func TestBootstrapPromotionRecovery(t *testing.T) {
+	for _, scenario := range []struct {
+		kind          string
+		sourceCurrent bool
+	}{
+		{kind: "bootstrap-init"},
+		{kind: "bootstrap-join-worker"},
+		{kind: "external-worker"},
+		{kind: "bootstrap-init", sourceCurrent: true},
+		{kind: "bootstrap-join-worker", sourceCurrent: true},
+		{kind: "external-worker", sourceCurrent: true},
+	} {
+		t.Run(fmt.Sprintf("%s/source-current=%t", scenario.kind, scenario.sourceCurrent), func(t *testing.T) {
+			kind := scenario.kind
+			server := newTestServer(t)
+			executor := NewExecutor(server.Root, server.Store, "before-interruption")
+			executor.Async, executor.Now = false, server.Now
+			var req *agentapi.SubmitOperationRequest
+			if kind == "external-worker" {
+				req = externalWorkerRequest(t, server, executor)
+			} else {
+				role := "control-plane"
+				if kind == "bootstrap-join-worker" {
+					role = "worker"
+				}
+				seedBootstrapRuntimeRootForRole(t, server.Root, role)
+				source, ref := configureExecutorBundle(t, executor, "v1.35.0", "promotion recovery runtime")
+				req = submitRequest("interrupted-bootstrap-promotion")
+				req.OperationKind, req.Bootstrap.SystemRole = kind, role
+				if role == "worker" {
+					req.Bootstrap.WorkerJoinMaterial = validWorkerJoinMaterial()
+				}
+				setSubmitRequestBundle(req, source, ref)
+			}
+			originalSelection, err := generation.ReadBootSelection(server.Root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			executor.RunReadiness = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
+			starts := 0
+			executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+				if kind == "external-worker" && argv[0] == "/usr/bin/kubectl" {
+					return ToolResult{Stdout: []byte("True")}
+				}
+				if kind == "external-worker" && len(argv) > 1 && argv[1] == "is-active" {
+					return ToolResult{}
+				}
+				starts++
+				if kind == "external-worker" {
+					writeExternalWorkerCertificate(t, server.Root, executor.clock())
+				} else {
+					writeTestFile(t, filepath.Join(server.Root, "etc/kubernetes/kubelet.conf"), "original kubelet identity")
+				}
+				return ToolResult{}
+			}
+			executor.ConfigureLocalAPI = func(context.Context, string, operation.BootstrapRequest, ToolRunner) error { return nil }
+			executor.RunPostHealth = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
+			// Interrupt after durable promotion, before updating the EFI default.
+			executor.SetBootDefault = func(context.Context, string, string) error { panic("process lost") }
+			server.Dispatcher = executor
+			func() {
+				defer func() {
+					if recovered := recover(); recovered != "process lost" {
+						t.Fatalf("unexpected interruption: %v", recovered)
+					}
+				}()
+				if _, err := server.SubmitOperation(context.Background(), req); err != nil {
+					t.Fatal(err)
+				}
+			}()
+			if _, err := AuditStartup(server.Store, server.Now()); err != nil {
+				t.Fatal(err)
+			}
+			ids, err := server.Store.OperationIDs()
+			if err != nil || len(ids) != 1 {
+				t.Fatalf("interrupted operations: %v: %v", ids, err)
+			}
+			previous, err := server.Store.Read(ids[0])
+			if err != nil || !bootstrapContinuationEligible(previous) {
+				t.Fatalf("promotion is not resumable: %+v: %v", previous, err)
+			}
+			restarted := NewExecutor(server.Root, server.Store, "after-interruption")
+			restarted.Async, restarted.Now = false, server.Now
+			restarted.RunReadiness = executor.RunReadiness
+			restarted.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+				if kind == "external-worker" && argv[0] == "/usr/bin/kubectl" {
+					return ToolResult{Stdout: []byte("True")}
+				}
+				if kind == "external-worker" && len(argv) > 1 && argv[1] == "is-active" {
+					return ToolResult{}
+				}
+				t.Fatal("repeated native bootstrap")
+				return ToolResult{}
+			}
+			restarted.ConfigureLocalAPI = executor.ConfigureLocalAPI
+			restarted.RunPostHealth = executor.RunPostHealth
+			defaultPath, oneshotPath := filepath.Join(server.Root, "observed-default"), filepath.Join(server.Root, "observed-oneshot")
+			restarted.SetBootDefault = func(_ context.Context, _ string, entry string) error {
+				return os.WriteFile(defaultPath, []byte(entry), 0o600)
+			}
+			restarted.SetBootOneshot = func(_ context.Context, _ string, entry string) error {
+				return os.WriteFile(oneshotPath, []byte(entry), 0o600)
+			}
+			server.Dispatcher = restarted
+			req.ClientRequestId, req.RequestDigest = "recover-promoted-bootstrap", ""
+			req.ExpectedCurrentGenerationId = previous.CandidateGenerationID
+			if scenario.sourceCurrent {
+				// Recreate the earlier boundary after superseding the source but
+				// before publishing boot selection. The candidate is already owned.
+				if err := generation.WriteBootSelection(server.Root, originalSelection); err != nil {
+					t.Fatal(err)
+				}
+				req.ExpectedCurrentGenerationId = previous.ExpectedCurrentGenerationID
+			}
+			req.Bootstrap.ResumeOperationId = previous.OperationID
+			req.Bootstrap.BootstrapKubeconfig, req.Bootstrap.WorkerJoinMaterial = nil, nil
+			accepted, err := server.SubmitOperation(context.Background(), req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			completed, err := server.Store.Read(accepted.OperationId)
+			if err != nil || completed.Result != operation.ResultSucceeded || starts != 1 {
+				t.Fatalf("promotion did not converge without bootstrap: %+v starts=%d err=%v", completed, starts, err)
+			}
+			for _, path := range []string{defaultPath, oneshotPath} {
+				entry, err := os.ReadFile(path)
+				if err != nil || string(entry) != "loader/entries/katl-"+previous.CandidateGenerationID+".conf" {
+					t.Fatalf("boot selection was not recovered: %s=%q: %v", path, entry, err)
+				}
+			}
+			assertBootstrapGenerationLive(t, server.Root, previous.CandidateGenerationID, previous.OperationID)
 		})
 	}
 }

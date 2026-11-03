@@ -278,6 +278,7 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, stderr io.Writ
 		return workstation.Config{}, contextSaveReport{}, err
 	}
 	clusterProfile := workstation.Cluster{
+		ExternalControlPlane: inv.ExternalControlPlane,
 		Name:                 topology.ClusterName,
 		ControlPlaneEndpoint: inv.ControlPlaneEndpoint,
 		Management:           &management,

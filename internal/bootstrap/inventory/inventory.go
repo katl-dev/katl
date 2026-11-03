@@ -37,6 +37,7 @@ const (
 )
 
 type Inventory struct {
+	ExternalControlPlane        bool       `json:"externalControlPlane,omitempty"`
 	ControlPlaneEndpoint        string     `json:"controlPlaneEndpoint"`
 	ControlPlaneEndpointManaged bool       `json:"controlPlaneEndpointManaged,omitempty"`
 	KubernetesVersion           string     `json:"kubernetesVersion"`
@@ -97,6 +98,7 @@ type PlanRequest struct {
 }
 
 type Plan struct {
+	ExternalControlPlane        bool              `json:"externalControlPlane,omitempty"`
 	InitNode                    string            `json:"initNode"`
 	ControlPlaneEndpoint        string            `json:"controlPlaneEndpoint"`
 	ControlPlaneEndpointManaged bool              `json:"controlPlaneEndpointManaged,omitempty"`
@@ -191,15 +193,22 @@ func PlanInventory(request PlanRequest) (Plan, error) {
 			controlPlanes = append(controlPlanes, node.Name)
 		}
 	}
-	if len(controlPlanes) == 0 {
+	if request.Inventory.ExternalControlPlane && (len(controlPlanes) != 0 || request.Inventory.ControlPlaneEndpointManaged || request.InitNode != "") {
+		return Plan{}, fmt.Errorf("external cluster inventory must contain only workers and cannot select an init node or managed endpoint")
+	}
+	if len(controlPlanes) == 0 && !request.Inventory.ExternalControlPlane {
 		return Plan{}, fmt.Errorf("at least one control-plane node is required")
 	}
-	initNode, err := selectInitNode(strings.TrimSpace(request.InitNode), controlPlanes, nodes)
-	if err != nil {
-		return Plan{}, err
+	initNode := ""
+	if !request.Inventory.ExternalControlPlane {
+		var err error
+		initNode, err = selectInitNode(strings.TrimSpace(request.InitNode), controlPlanes, nodes)
+		if err != nil {
+			return Plan{}, err
+		}
 	}
 	controlPlaneEndpoint := strings.TrimSpace(request.Inventory.ControlPlaneEndpoint)
-	if len(nodes) > 1 && controlPlaneEndpoint == "" {
+	if (len(nodes) > 1 || request.Inventory.ExternalControlPlane) && controlPlaneEndpoint == "" {
 		return Plan{}, fmt.Errorf("control-plane endpoint is required for multi-node bootstrap")
 	}
 	if controlPlaneEndpoint != "" {
@@ -242,6 +251,7 @@ func PlanInventory(request PlanRequest) (Plan, error) {
 		}
 	}
 	return Plan{
+		ExternalControlPlane:        request.Inventory.ExternalControlPlane,
 		InitNode:                    initNode,
 		ControlPlaneEndpoint:        controlPlaneEndpoint,
 		ControlPlaneEndpointManaged: request.Inventory.ControlPlaneEndpointManaged,

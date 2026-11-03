@@ -136,6 +136,27 @@ func AuditStartup(store operation.Store, now time.Time) (operation.ReconcileRepo
 	if err != nil {
 		return operation.ReconcileReport{}, err
 	}
+	for _, interrupted := range report.Operations {
+		if interrupted.StaleClass != operation.StalePostMutation && interrupted.StaleClass != operation.StaleAmbiguous {
+			continue
+		}
+		record, err := store.Read(interrupted.OperationID)
+		if err != nil {
+			return operation.ReconcileReport{}, err
+		}
+		if !record.Terminal && bootstrapInvocationComplete(record) {
+			// Startup has proved the executor is gone, and bootstrap already
+			// recorded its native invocation. Finish the attempt so retry can
+			// validate its receipt and continue health checks without reenrollment.
+			_, err := store.Update(record.OperationID, "bootstrap-wait-interrupted", "bootstrap-wait-interrupted", func(next operation.OperationRecord) (operation.OperationRecord, error) {
+				next.Fail(now, "bootstrap health wait interrupted", "retry the unchanged bootstrap or node join command to validate its recorded startup and continue")
+				return next, nil
+			})
+			if err != nil {
+				return operation.ReconcileReport{}, err
+			}
+		}
+	}
 	if err := failAcceptedButNotStarted(store, now); err != nil {
 		return operation.ReconcileReport{}, err
 	}
@@ -270,6 +291,11 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 		return err
 	}
 	record = ready
+	if record.BootstrapRequest != nil && record.BootstrapRequest.ExternalWorker {
+		if err := e.prepareExternalWorker(record); err != nil {
+			return err
+		}
+	}
 	if expired := expiredJoinMaterial(record, e.clock()); expired != "" {
 		_, markErr := e.failRecordPhase(record.OperationID, "join-material-expired", "bootstrap-runtime-ready", "bootstrap-runtime-ready", "submit a new worker join operation with unexpired join material", fmt.Errorf("%s", expired))
 		return markErr
@@ -446,7 +472,7 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 			if len(record.CompletedPhases) > record.PhaseIndex {
 				record.PhaseIndex = len(record.CompletedPhases)
 			}
-			record.NextAction = "run bounded post-kubeadm health checks"
+			record.NextAction = "run bounded Kubernetes health checks"
 			return record, nil
 		}
 		record.CompletedAt = &completedAt
@@ -470,7 +496,25 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 }
 
 func (e *Executor) finishBootstrap(ctx context.Context, record operation.OperationRecord) error {
-	if record.BootstrapRequest != nil {
+	if record.BootstrapRequest != nil && record.BootstrapRequest.ExternalWorker {
+		if record.BootstrapRequest.ResumeOperationID != "" {
+			// A reboot may have selected the pre-enrollment generation. Restore the
+			// prepared runtime without rewriting kubelet's persisted identity.
+			var resumeErr error
+			if result := e.readinessRunner()(ctx, bootstrapReadinessArgs(record, *record.ExecutorPlan), nil); result.Err != nil || result.ExitStatus != 0 {
+				resumeErr = fmt.Errorf("restore external worker runtime: %s", toolFailure(result))
+			} else {
+				resumeErr = e.refreshExternalBootstrap(ctx, record)
+			}
+			if resumeErr != nil {
+				_, markErr := e.failRecordPhase(record.OperationID, "external-worker-resume-failed", "configure-local-api-access", "configure-local-api-access", "inspect kubelet and runtime readiness, then retry node join with valid bootstrap credentials for the same cluster", resumeErr)
+				return errors.Join(resumeErr, markErr)
+			}
+		}
+		if err := e.waitExternalWorkerCertificate(ctx, record); err != nil {
+			return err
+		}
+	} else if record.BootstrapRequest != nil {
 		if err := e.localAPIAccessConfigurator()(ctx, e.Root, *record.BootstrapRequest, e.toolRunner()); err != nil {
 			_, markErr := e.failRecordPhase(record.OperationID, "local-api-access-failed", "local-api-access", "configure-local-api-access", "correct the local API access failure, then rerun the unchanged cluster bootstrap command to finish without rerunning kubeadm", err)
 			return errors.Join(err, markErr)
@@ -508,7 +552,7 @@ func (e *Executor) prepareBootstrapRuntime(ctx context.Context, record operation
 	startedAt := e.clock()
 	if _, err := e.Store.Update(record.OperationID, "prepare-bootstrap-runtime-start", "prepare-bootstrap-runtime", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 		record.Phase = "prepare-bootstrap-runtime"
-		record.NextAction = "prepare operation-scoped Kubernetes runtime before kubeadm"
+		record.NextAction = "prepare operation-scoped Kubernetes runtime"
 		record.UpdatedAt = startedAt
 		return record, nil
 	}); err != nil {
@@ -810,10 +854,16 @@ func (e *Executor) promoteLiveGeneration(ctx context.Context, record operation.O
 			return err
 		}
 	}
+	promotionID := record.OperationID
+	if state.CommitState == generation.CommitStateCommitted && record.BootstrapRequest != nil && record.BootstrapRequest.ResumeOperationID != "" {
+		// Continuation validation proves this committed candidate belongs to the
+		// receipt chain. Keep its owner while replaying incomplete EFI writes.
+		promotionID = state.CommittedByOperation
+	}
 	return generation.PromoteLiveGeneration(generation.LivePromotionRequest{
 		Root:         e.Root,
 		GenerationID: record.CandidateGenerationID,
-		OperationID:  record.OperationID,
+		OperationID:  promotionID,
 		Reason:       reason,
 		Now:          now,
 		SetBootDefault: func(root, entry string) error {
@@ -1200,6 +1250,10 @@ func joinDiscoveryConfigPath(record operation.OperationRecord) string {
 }
 
 func expiredJoinMaterial(record operation.OperationRecord, now time.Time) string {
+	if record.BootstrapRequest != nil && record.BootstrapRequest.ExternalWorker {
+		// The external API authenticates and expires this opaque credential.
+		return ""
+	}
 	if !bootstrapJoinOperation(record.OperationKind) || record.BootstrapRequest == nil {
 		return ""
 	}

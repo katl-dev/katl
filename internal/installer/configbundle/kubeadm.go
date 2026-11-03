@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/externalworker"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"gopkg.in/yaml.v3"
 )
@@ -86,6 +87,21 @@ func resolveNodeKubeletConfigs(sourceRoot string, source SourceConfig, base map[
 		data, err := readHostConfigurationSource(sourceRoot, configFile)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s: %w", field, err)
+		}
+		if source.Spec.Kubernetes.External != nil {
+			content, err := externalworker.KubeletConfig(data)
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", field, err)
+			}
+			ref := nodeKubeadmConfigRef(node.Name)
+			content = append([]byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\nnodeRegistration:\n  criSocket: unix:///run/containerd/containerd.sock\n---\n"), content...)
+			plan, err := kubeadmconfig.PlanFromRenderedFiles(ref, []kubeadmconfig.File{{SourcePath: configFile, RenderPath: "/etc/katl/kubeadm/" + ref + "/config.yaml", Content: content, Mode: 0o644}})
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s: %w", field, err)
+			}
+			configs[ref] = plan
+			inputs = append(inputs, kubeadmSourceInput{Name: "nodes/" + node.Name + "/kubelet/" + configFile, Content: data})
+			continue
 		}
 		patch, err := kubeletConfigurationPatch(data)
 		if err != nil {
