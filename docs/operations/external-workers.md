@@ -398,3 +398,16 @@ Changing an enrolled worker's endpoint, enrollment identity, or control-plane
 ownership requires reprovisioning. Drain and remove a
 worker through your external cluster's maintenance procedure before intentionally
 replacing it; Katl does not coordinate removal with that control plane.
+
+## Run the focused VM test
+
+The focused regression uses one Katl control-plane VM and an independently
+provisioned external worker. It removes kubeadm cluster configuration and stops
+the control plane's Katl management agent before joining the worker, then checks
+readiness, repeat operations, and cross-node Service traffic through the public
+interfaces. Run it on a host with libvirt, KVM, and vsock available:
+
+```sh
+scripts/vmtest-run ./internal/vmtest/scenarios \
+  -run '^TestExternalWorkerJoin$' -count=1 -v -timeout 30m
+```

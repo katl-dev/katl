@@ -230,7 +230,7 @@ func externalAPIServerVersion(ctx context.Context, root string, run ToolRunner, 
 
 func (e *Executor) refreshExternalBootstrap(ctx context.Context, record operation.OperationRecord) error {
 	request := record.BootstrapRequest
-	if externalWorkerCertificate(e.Root, request.InventoryNodeName, e.clock()) {
+	if externalWorkerCertificate(e.Root, request.InventoryNodeName, e.clock()) || request.TemporaryJoinConfigPath == "" {
 		return nil
 	}
 	data, err := os.ReadFile(rootedRuntimePath(e.Root, request.TemporaryJoinConfigPath))

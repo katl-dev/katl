@@ -18,7 +18,7 @@ type group struct {
 }
 
 var groups = []group{
-	{"two-node", "./internal/vmtest/scenarios", "TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke"},
+	{"two-node", "./internal/vmtest/scenarios", "TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke|TestExternalWorkerJoin"},
 	{"three-node-install", "./internal/vmtest/scenarios", "TestThreeNodeGeneration0InstallSmoke"},
 	{"install", "./internal/vmtest", "TestFirstInstallTargetDiskBootSmoke|TestFirstInstallTargetDiskLocalHandoffSmoke"},
 	{"config", "./internal/vmtest", "TestInstalledRuntimeConfigApplyModesSmoke"},

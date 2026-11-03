@@ -33,8 +33,10 @@ func RunAgentExternalWorkerJoin(ctx context.Context, request Request, workerName
 	if deps.Connector == nil {
 		return result, fmt.Errorf("katlc agent connector is required")
 	}
-	if _, err := externalworker.Bootstrap(bootstrap, plan.ControlPlaneEndpoint); err != nil {
-		return result, err
+	if len(bootstrap) > 0 {
+		if _, err := externalworker.Bootstrap(bootstrap, plan.ControlPlaneEndpoint); err != nil {
+			return result, err
+		}
 	}
 	statuses, err := checkAgentReadiness(ctx, plan, deps.Connector)
 	if err != nil {

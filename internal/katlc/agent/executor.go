@@ -854,10 +854,16 @@ func (e *Executor) promoteLiveGeneration(ctx context.Context, record operation.O
 			return err
 		}
 	}
+	promotionID := record.OperationID
+	if state.CommitState == generation.CommitStateCommitted && record.BootstrapRequest != nil && record.BootstrapRequest.ResumeOperationID != "" {
+		// Continuation validation proves this committed candidate belongs to the
+		// receipt chain. Keep its owner while replaying incomplete EFI writes.
+		promotionID = state.CommittedByOperation
+	}
 	return generation.PromoteLiveGeneration(generation.LivePromotionRequest{
 		Root:         e.Root,
 		GenerationID: record.CandidateGenerationID,
-		OperationID:  record.OperationID,
+		OperationID:  promotionID,
 		Reason:       reason,
 		Now:          now,
 		SetBootDefault: func(root, entry string) error {

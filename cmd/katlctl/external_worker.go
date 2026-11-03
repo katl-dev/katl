@@ -29,25 +29,32 @@ func runExternalNodeJoin(ctx context.Context, opts nodeJoinOptions, inv inventor
 	if status.GetKubernetes().GetExternalEndpoint() != inv.ControlPlaneEndpoint {
 		return fmt.Errorf("node %s is not provisioned for external endpoint %s; inspect its installed configuration before joining", target.Name, inv.ControlPlaneEndpoint)
 	}
+	pending, err := unfinishedNodeJoin(ctx, opts.configPath, target, current)
+	if err != nil {
+		return err
+	}
 	result := "unchanged"
 	if isClusterJoinCandidate(current.GetGenerationId()) && status.GetKubernetes().GetState() == "ready" && (current.GetCommitState() != generation.CommitStateCommitted || current.GetHealthState() != generation.HealthStateHealthy) {
 		if err := finishNodeJoin(ctx, opts.configPath, target, stderr); err != nil {
 			return err
 		}
 		result = "joined"
-	} else if status.GetKubernetes().GetState() != "ready" || current.GetCommitState() != generation.CommitStateCommitted || current.GetHealthState() != generation.HealthStateHealthy {
-		if !isClusterJoinCandidate(current.GetGenerationId()) && (current.GetCommitState() != generation.CommitStateCommitted || current.GetHealthState() != generation.HealthStateHealthy) {
+	} else if status.GetKubernetes().GetState() == "not-configured" || pending != nil {
+		if pending == nil && !isClusterJoinCandidate(current.GetGenerationId()) && (current.GetCommitState() != generation.CommitStateCommitted || current.GetHealthState() != generation.HealthStateHealthy) {
 			return fmt.Errorf("node %s must have a healthy committed generation before joining; inspect 'katlctl node status %s --config %s'", target.Name, target.Name, opts.configPath)
 		}
-		if opts.bootstrapKubeconfig == "" {
+		if opts.bootstrapKubeconfig == "" && pending == nil {
 			return fmt.Errorf("external worker join requires --bootstrap-kubeconfig FILE containing a CA-pinned, restricted bootstrap token; do not use an administrator kubeconfig")
 		}
-		if next := status.GetBootTargetGenerationId(); next != "" && next != status.GetCurrentGenerationId() {
+		if next := status.GetBootTargetGenerationId(); next != "" && next != status.GetCurrentGenerationId() && next != pending.GetCandidateGenerationId() {
 			return fmt.Errorf("node %s has configuration staged for next boot; reboot it before joining", target.Name)
 		}
-		bootstrap, err := os.ReadFile(opts.bootstrapKubeconfig)
-		if err != nil {
-			return fmt.Errorf("read bootstrap kubeconfig: %w", err)
+		var bootstrap []byte
+		if opts.bootstrapKubeconfig != "" {
+			bootstrap, err = os.ReadFile(opts.bootstrapKubeconfig)
+			if err != nil {
+				return fmt.Errorf("read bootstrap kubeconfig: %w", err)
+			}
 		}
 		configuration, err := loadNodeConfiguration(ctx, opts.configPath, configbundle.PlanningInputs{Nodes: []string{target.Name}})
 		if err != nil {
@@ -87,6 +94,8 @@ func runExternalNodeJoin(ctx context.Context, opts nodeJoinOptions, inv inventor
 			return err
 		}
 		result = "joined"
+	} else if err := validateJoinedNode(opts.configPath, target, status, current); err != nil {
+		return err
 	}
 	if opts.output == "json" {
 		return json.NewEncoder(stdout).Encode(struct {

@@ -175,6 +175,12 @@ func TestExternalWorkerContinuation(t *testing.T) {
 	if err := server.validateBootstrapContinuation(previous, req); err != nil {
 		t.Fatalf("pending certificate did not resume with original bootstrap identity: %v", err)
 	}
+	originalBootstrap := req.Bootstrap.BootstrapKubeconfig
+	req.Bootstrap.BootstrapKubeconfig = nil
+	if err := server.validateBootstrapContinuation(previous, req); err != nil {
+		t.Fatalf("pending certificate could not reuse its persisted credentials: %v", err)
+	}
+	req.Bootstrap.BootstrapKubeconfig = originalBootstrap
 	writeTestFile(t, filepath.Join(server.Root, "etc/kubernetes/bootstrap-kubelet.conf"), "replaced bootstrap identity\n")
 	if err := server.validateBootstrapContinuation(previous, req); err == nil {
 		t.Fatal("early kubelet.conf bypassed bootstrap identity validation")
@@ -247,6 +253,66 @@ func TestExternalWorkerContinuation(t *testing.T) {
 	if err != nil || refreshed.Result != operation.ResultSucceeded || refreshed.CandidateGenerationID != previous.CandidateGenerationID {
 		t.Fatalf("refresh did not complete existing enrollment: record=%+v err=%v", refreshed, err)
 	}
+}
+
+func TestExternalWorkerFinishesWithoutBootstrap(t *testing.T) {
+	server := newTestServer(t)
+	executor := NewExecutor(server.Root, server.Store, "external-test")
+	executor.Async, executor.Now = false, server.Now
+	req := externalWorkerRequest(t, server, executor)
+	executor.RunReadiness = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
+	starts := 0
+	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		if argv[0] == "/usr/bin/kubectl" {
+			return ToolResult{Stdout: []byte("True")}
+		}
+		if strings.Join(argv, " ") == "/usr/bin/systemctl start --no-block kubelet.service" {
+			starts++
+			writeExternalWorkerCertificate(t, server.Root, executor.clock())
+		}
+		return ToolResult{}
+	}
+	healthy := false
+	executor.RunPostHealth = func(context.Context, []string, func(int)) ToolResult {
+		if healthy {
+			return ToolResult{}
+		}
+		return ToolResult{ExitStatus: 1}
+	}
+	server.Dispatcher = executor
+	accepted, err := server.SubmitOperation(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous, err := server.Store.Read(accepted.OperationId)
+	if err != nil || !bootstrapContinuationEligible(previous) {
+		t.Fatalf("expected a resumable post-enrollment failure: record=%+v err=%v", previous, err)
+	}
+	keyPath := filepath.Join(server.Root, "var/lib/kubelet/pki/kubelet-client-current.pem")
+	before, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(server.Root, "etc/kubernetes/bootstrap-kubelet.conf")); !os.IsNotExist(err) {
+		t.Fatalf("successful certificate enrollment retained bootstrap credentials: %v", err)
+	}
+	healthy = true
+	req.ClientRequestId, req.RequestDigest = "external-worker-health-retry", ""
+	req.Bootstrap.ResumeOperationId = previous.OperationID
+	req.Bootstrap.BootstrapKubeconfig = nil
+	accepted, err = server.SubmitOperation(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := server.Store.Read(accepted.OperationId)
+	if err != nil || completed.Result != operation.ResultSucceeded || completed.CandidateGenerationID != previous.CandidateGenerationID {
+		t.Fatalf("credential-free continuation did not finish enrollment: record=%+v err=%v", completed, err)
+	}
+	after, err := os.ReadFile(keyPath)
+	if err != nil || !bytes.Equal(before, after) || starts != 1 {
+		t.Fatalf("health continuation replaced enrollment: starts=%d err=%v", starts, err)
+	}
+	assertBootstrapGenerationLive(t, server.Root, completed.CandidateGenerationID, completed.OperationID)
 }
 
 func writeExternalWorkerCertificate(t *testing.T, root string, now time.Time) {

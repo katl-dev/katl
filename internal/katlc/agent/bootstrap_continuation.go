@@ -65,7 +65,10 @@ func (s *Server) acceptBootstrapContinuation(req *agentapi.SubmitOperationReques
 		GenerationCommitState: previous.GenerationCommitState, PostKubeadmHealthState: operation.PostKubeadmHealthNotRun,
 		ExternalMutationStarted: true, NextAction: "finish local API configuration and validate the initialized Kubernetes node",
 	}
-	if bootstrap.ExternalWorker && !externalWorkerCertificate(s.Root, bootstrap.InventoryNodeName, s.clock()) {
+	if bootstrap.ExternalWorker {
+		record.BootstrapRequest.TemporaryJoinConfigPath = ""
+	}
+	if bootstrap.ExternalWorker && !externalWorkerCertificate(s.Root, bootstrap.InventoryNodeName, s.clock()) && len(req.GetBootstrap().GetBootstrapKubeconfig()) > 0 {
 		observed, err := os.ReadFile(rootedRuntimePath(s.Root, "/etc/kubernetes/bootstrap-kubelet.conf"))
 		if err != nil {
 			return operation.OperationRecord{}, nil, status.Errorf(codes.FailedPrecondition, "read pending bootstrap credentials: %v", err)
@@ -94,7 +97,7 @@ func (s *Server) validateBootstrapContinuation(previous operation.OperationRecor
 	if !bootstrapContinuationEligible(previous) || previous.OperationKind != req.OperationKind {
 		return fmt.Errorf("operation has no safely resumable completed bootstrap phase")
 	}
-	if previous.ExpectedMachineID != req.ExpectedMachineId || previous.ExpectedCurrentGenerationID != req.ExpectedCurrentGenerationId || previous.ExpectedClusterIntentDigest != req.ExpectedClusterIntentDigest {
+	if previous.ExpectedMachineID != req.ExpectedMachineId || (previous.ExpectedCurrentGenerationID != req.ExpectedCurrentGenerationId && previous.CandidateGenerationID != req.ExpectedCurrentGenerationId) || previous.ExpectedClusterIntentDigest != req.ExpectedClusterIntentDigest {
 		return fmt.Errorf("node identity or generation changed since the failed bootstrap")
 	}
 	got := bootstrapRequestFromProto(req.Bootstrap)
@@ -203,7 +206,11 @@ func (s *Server) validateBootstrapContinuation(previous operation.OperationRecor
 			if err != nil || (observed != previous.BootstrapRequest.JoinMaterialDigest && observed != previous.BootstrapRequest.PreviousJoinMaterialDigest) {
 				return fmt.Errorf("external worker bootstrap identity changed; preserve node state for repair")
 			}
-			if err := externalBootstrapCA(s.Root, req.GetBootstrap().GetBootstrapKubeconfig(), want.ControlPlaneEndpoint); err != nil {
+			credentials := req.GetBootstrap().GetBootstrapKubeconfig()
+			if len(credentials) == 0 {
+				credentials = bootstrap
+			}
+			if err := externalBootstrapCA(s.Root, credentials, want.ControlPlaneEndpoint); err != nil {
 				return err
 			}
 		}
@@ -214,8 +221,17 @@ func (s *Server) validateBootstrapContinuation(previous operation.OperationRecor
 		}
 	}
 	_, candidate, err := generation.ReadGeneration(s.Root, previous.CandidateGenerationID)
-	if err != nil || candidate.CommitState != generation.CommitStateCandidate {
-		return fmt.Errorf("prepared bootstrap generation is unavailable or already committed; inspect generation state before repair")
+	if err != nil {
+		return fmt.Errorf("prepared bootstrap generation is unavailable; inspect generation state before repair")
+	}
+	// Promotion can persist the candidate before its EFI writes or final receipt.
+	// Only this invocation's continuation chain may finish that transaction.
+	promoted := candidate.CommitState == generation.CommitStateCommitted && generation.IsKnownGood(candidate) && seen[candidate.CommittedByOperation]
+	if candidate.CommitState != generation.CommitStateCandidate && !promoted {
+		return fmt.Errorf("prepared bootstrap generation is not an uncommitted candidate or an owned live promotion; inspect generation state before repair")
+	}
+	if req.ExpectedCurrentGenerationId == previous.CandidateGenerationID && !promoted {
+		return fmt.Errorf("current bootstrap candidate has no owned live promotion to recover")
 	}
 	ids, err := s.Store.OperationIDs()
 	if err != nil {

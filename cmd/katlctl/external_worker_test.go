@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,8 +15,18 @@ import (
 )
 
 func TestExternalWorkerJoined(t *testing.T) {
-	for _, trial := range []bool{false, true} {
-		t.Run(fmt.Sprintf("trial=%t", trial), func(t *testing.T) {
+	for _, test := range []struct {
+		name                                             string
+		trial, pending, unavailable, receipt, superseded bool
+	}{
+		{name: "committed"},
+		{name: "promoted with interrupted receipt", receipt: true},
+		{name: "trial", trial: true},
+		{name: "promotion pending", pending: true},
+		{name: "promotion superseded source", pending: true, superseded: true},
+		{name: "API unavailable", unavailable: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			path := writeClusterConfig(t)
 			data, err := os.ReadFile(path)
 			if err != nil {
@@ -41,7 +50,7 @@ func TestExternalWorkerJoined(t *testing.T) {
 			}
 			t.Setenv("KATLCTL_CONFIG", contextPath)
 			client := &fakeKatlcAgentClient{nodeStatus: &agentapi.NodeStatus{MachineId: "machine-worker-1", EnrollmentId: "enrollment-worker-1", InventoryNodeName: "worker-1", CurrentGenerationId: "bootstrap-join-external-candidate", AgentStartId: "before", Kubernetes: &agentapi.KubernetesStatus{State: "ready", Role: "worker", NodeName: "worker-1", KubeletActive: true, NodeReady: true, ExternalEndpoint: "api.external.test:6443"}}, generation: &agentapi.Generation{GenerationId: "bootstrap-join-external-candidate", CommitState: "committed", HealthState: "healthy", BootState: "good"}}
-			if trial {
+			if test.trial {
 				client.generation.CommitState = "trial"
 				client.generation.HealthState = "unknown"
 				client.onReboot = func(*agentapi.RebootRequest) {
@@ -49,6 +58,20 @@ func TestExternalWorkerJoined(t *testing.T) {
 					client.generation.HealthState = "healthy"
 					client.nodeStatus.AgentStartId = "after"
 				}
+			}
+			if test.receipt {
+				client.operations = &agentapi.ListOperationsResponse{Operations: []*agentapi.OperationStatus{{OperationId: "interrupted-receipt", OperationKind: "bootstrap-join-worker", PreviousGenerationId: "0", CandidateGenerationId: "bootstrap-join-external-candidate", Terminal: true, Result: "failed-needs-repair", RecoveryRequired: true, ResumeSupported: true}}}
+			}
+			if test.pending {
+				client.nodeStatus.CurrentGenerationId, client.generation.GenerationId = "0", "0"
+				client.nodeStatus.BootTargetGenerationId = "bootstrap-join-external-candidate"
+				client.operations = &agentapi.ListOperationsResponse{Operations: []*agentapi.OperationStatus{{OperationId: "failed-promotion", OperationKind: "bootstrap-join-worker", PreviousGenerationId: "0", CandidateGenerationId: "bootstrap-join-external-candidate", Terminal: true, Result: "failed-needs-repair", RecoveryRequired: true, ResumeSupported: true}}}
+			}
+			if test.superseded {
+				client.generation.CommitState = "superseded"
+			}
+			if test.unavailable {
+				client.nodeStatus.Kubernetes.State, client.nodeStatus.Kubernetes.NodeReady = "waiting-for-node", false
 			}
 			oldDial, oldJoin := dialKatlcAgent, runAgentExternalWorkerJoin
 			t.Cleanup(func() { dialKatlcAgent = oldDial; runAgentExternalWorkerJoin = oldJoin })
@@ -58,17 +81,33 @@ func TestExternalWorkerJoined(t *testing.T) {
 				}
 				return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 			}
-			runAgentExternalWorkerJoin = func(context.Context, cluster.Request, string, []byte, cluster.AgentBootstrapDependencies) (cluster.Result, error) {
-				t.Fatal("re-enrolled an existing worker")
+			resumed := false
+			runAgentExternalWorkerJoin = func(_ context.Context, _ cluster.Request, _ string, bootstrap []byte, _ cluster.AgentBootstrapDependencies) (cluster.Result, error) {
+				if (!test.pending && !test.receipt) || len(bootstrap) != 0 {
+					t.Fatal("re-enrolled an existing worker or required revoked credentials")
+				}
+				resumed = true
+				client.generation.CommitState = "committed"
+				client.nodeStatus.CurrentGenerationId, client.generation.GenerationId = "bootstrap-join-external-candidate", "bootstrap-join-external-candidate"
+				client.operations.Operations[0].Result, client.operations.Operations[0].RecoveryRequired = "succeeded", false
 				return cluster.Result{}, nil
 			}
 			var stdout, stderr bytes.Buffer
 			err = run(context.Background(), []string{"node", "join", target.Name, "--config", path}, &stdout, &stderr)
+			if test.unavailable {
+				if err == nil || !strings.Contains(err.Error(), "already configured but is not healthy") {
+					t.Fatalf("configured worker requested enrollment instead of reporting readiness: %v", err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !strings.Contains(stdout.String(), "joined") {
 				t.Fatalf("stdout=%s", stdout.String())
+			}
+			if resumed != (test.pending || test.receipt) {
+				t.Fatalf("unfinished promotion resumed=%t", resumed)
 			}
 		})
 	}
