@@ -3,64 +3,64 @@
   "fedoraRelease": "44",
   "architecture": "x86_64",
   "flavour": "standard",
-  "kernelRelease": "7.2.14-200.fc44.x86_64",
+  "kernelRelease": "7.2.15-200.fc44.x86_64",
   "packages": [
     {
       "name": "kernel-core",
-      "nevra": "kernel-core-0:7.2.14-200.fc44.x86_64",
-      "sourceURL": "https://dl.fedoraproject.org/pub/fedora/linux/updates/44/Everything/x86_64/Packages/k/kernel-core-7.2.14-200.fc44.x86_64.rpm",
+      "nevra": "kernel-core-0:7.2.15-200.fc44.x86_64",
+      "sourceURL": "https://dl.fedoraproject.org/pub/fedora/linux/updates/44/Everything/x86_64/Packages/k/kernel-core-7.2.15-200.fc44.x86_64.rpm",
       "role": "runtime",
       "mediaType": "application/x-rpm",
-      "digest": "sha256:18e89f2c13fbf8294f444d4bc0ee1191927f9e03da3f8a974e5afec99ce47dca",
-      "sizeBytes": 21884609,
-      "fileName": "kernel-core-7.2.14-200.fc44.x86_64.rpm",
+      "digest": "sha256:932e652634238c756fc41f7371985706dfb8b9d0b64e502b63476338b557a7aa",
+      "sizeBytes": 21889209,
+      "fileName": "kernel-core-7.2.15-200.fc44.x86_64.rpm",
       "annotations": {
         "dev.katl.bundle.role": "runtime",
-        "org.opencontainers.image.title": "payload/kernel-core-7.2.14-200.fc44.x86_64.rpm"
+        "org.opencontainers.image.title": "payload/kernel-core-7.2.15-200.fc44.x86_64.rpm"
       }
     },
     {
       "name": "kernel-modules",
-      "nevra": "kernel-modules-0:7.2.14-200.fc44.x86_64",
-      "sourceURL": "https://dl.fedoraproject.org/pub/fedora/linux/updates/44/Everything/x86_64/Packages/k/kernel-modules-7.2.14-200.fc44.x86_64.rpm",
+      "nevra": "kernel-modules-0:7.2.15-200.fc44.x86_64",
+      "sourceURL": "https://dl.fedoraproject.org/pub/fedora/linux/updates/44/Everything/x86_64/Packages/k/kernel-modules-7.2.15-200.fc44.x86_64.rpm",
       "role": "runtime",
       "mediaType": "application/x-rpm",
-      "digest": "sha256:1af23788e58bc36f49630e8b95d87fc468c8b7cb514c3e4f2745a53f7dad92ad",
-      "sizeBytes": 78809641,
-      "fileName": "kernel-modules-7.2.14-200.fc44.x86_64.rpm",
+      "digest": "sha256:78c81d2ea88fa0a62915bd74a487c85d213bc1b92611a8ccb8985aecc54def61",
+      "sizeBytes": 78793789,
+      "fileName": "kernel-modules-7.2.15-200.fc44.x86_64.rpm",
       "annotations": {
         "dev.katl.bundle.role": "runtime",
-        "org.opencontainers.image.title": "payload/kernel-modules-7.2.14-200.fc44.x86_64.rpm"
+        "org.opencontainers.image.title": "payload/kernel-modules-7.2.15-200.fc44.x86_64.rpm"
       }
     },
     {
       "name": "kernel-modules-core",
-      "nevra": "kernel-modules-core-0:7.2.14-200.fc44.x86_64",
-      "sourceURL": "https://dl.fedoraproject.org/pub/fedora/linux/updates/44/Everything/x86_64/Packages/k/kernel-modules-core-7.2.14-200.fc44.x86_64.rpm",
+      "nevra": "kernel-modules-core-0:7.2.15-200.fc44.x86_64",
+      "sourceURL": "https://dl.fedoraproject.org/pub/fedora/linux/updates/44/Everything/x86_64/Packages/k/kernel-modules-core-7.2.15-200.fc44.x86_64.rpm",
       "role": "runtime",
       "mediaType": "application/x-rpm",
-      "digest": "sha256:10823bd2a33293054612b450a43f24375eece44d08e6a9392343a23b1868b99a",
-      "sizeBytes": 50846181,
-      "fileName": "kernel-modules-core-7.2.14-200.fc44.x86_64.rpm",
+      "digest": "sha256:08fd329980713880ba9cb4869f29d308f4cff30a6d4adacf055c441c2f2361ae",
+      "sizeBytes": 50836769,
+      "fileName": "kernel-modules-core-7.2.15-200.fc44.x86_64.rpm",
       "annotations": {
         "dev.katl.bundle.role": "runtime",
-        "org.opencontainers.image.title": "payload/kernel-modules-core-7.2.14-200.fc44.x86_64.rpm"
+        "org.opencontainers.image.title": "payload/kernel-modules-core-7.2.15-200.fc44.x86_64.rpm"
       }
     },
     {
       "name": "kernel-devel",
-      "nevra": "kernel-devel-0:7.2.14-200.fc44.x86_64",
-      "sourceURL": "https://dl.fedoraproject.org/pub/fedora/linux/updates/44/Everything/x86_64/Packages/k/kernel-devel-7.2.14-200.fc44.x86_64.rpm",
+      "nevra": "kernel-devel-0:7.2.15-200.fc44.x86_64",
+      "sourceURL": "https://dl.fedoraproject.org/pub/fedora/linux/updates/44/Everything/x86_64/Packages/k/kernel-devel-7.2.15-200.fc44.x86_64.rpm",
       "role": "build",
       "mediaType": "application/x-rpm",
-      "digest": "sha256:5765895cddc798c7c1f141829654eab763fce6d278977bc91755060791fe148f",
-      "sizeBytes": 59865861,
-      "fileName": "kernel-devel-7.2.14-200.fc44.x86_64.rpm",
+      "digest": "sha256:6b34da5dc6da2a0cf002b985d3dd90bcb3c2670a8bebf1d09a8c28a05ccb8f97",
+      "sizeBytes": 59857677,
+      "fileName": "kernel-devel-7.2.15-200.fc44.x86_64.rpm",
       "annotations": {
         "dev.katl.bundle.role": "build",
-        "org.opencontainers.image.title": "payload/kernel-devel-7.2.14-200.fc44.x86_64.rpm"
+        "org.opencontainers.image.title": "payload/kernel-devel-7.2.15-200.fc44.x86_64.rpm"
       }
     }
   ],
-  "reference": "ghcr.io/katl-dev/katl/kernel-inputs@sha256:f1e23dd0f13c12b495e0dc2c094a054d679a116b586605e8818c33e0398ea0bb"
+  "reference": "ghcr.io/katl-dev/katl/kernel-inputs@sha256:594701117cb4a98ebd414c361e52b987f5da3ceea29843b0be22e8dacd1b95c9"
 }
