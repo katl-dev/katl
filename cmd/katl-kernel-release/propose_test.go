@@ -48,10 +48,11 @@ esac
 			if err := run(context.Background(), args, &stdout, io.Discard); err != nil {
 				t.Fatal(err)
 			}
-			var result struct {
+			type proposal struct {
 				Changed        bool
 				Branch, Commit string
 			}
+			var result proposal
 			if err := json.Unmarshal(stdout.Bytes(), &result); err != nil {
 				t.Fatal(err)
 			}
@@ -121,7 +122,11 @@ esac
 			if err := run(context.Background(), args, &repeated, io.Discard); err != nil {
 				t.Fatal(err)
 			}
-			if repeated.String() != stdout.String() {
+			var repeatedResult proposal
+			if err := json.Unmarshal(repeated.Bytes(), &repeatedResult); err != nil {
+				t.Fatal(err)
+			}
+			if repeatedResult != result {
 				t.Fatalf("other flavour changed the proposal: %s", repeated.Bytes())
 			}
 		})
