@@ -1,6 +1,6 @@
-kernel: update retained kernel inputs
+kernel: update retained %s kernel inputs
 
-Select the standard and LTS kernel RPMs resolved by the kernel update
+Select the kernel RPMs resolved for this flavour by the kernel update
 workflow. Qualify the proposed inputs against all release-owned
 extension recipes before reviewing this selection for main.
 

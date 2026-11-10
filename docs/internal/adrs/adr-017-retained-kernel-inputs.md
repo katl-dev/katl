@@ -71,8 +71,9 @@ as well as verification before wrapper cache reuse.
 
 ## Updates and promotion
 
-The scheduled or manually invoked Kernel Updates workflow captures both
-flavours and creates a lock proposal commit. Trusted workflow-source jobs retain
+The scheduled or manually invoked Kernel Updates workflow captures each
+flavour independently and creates a separate lock proposal commit for each
+change. Trusted workflow-source jobs retain
 the signed bytes, verify anonymous retrieval of every RPM, and confirm the
 proposal branch still points to the captured commit before opening a
 ready-for-review PR. Input retention does not constitute qualification or
