@@ -803,7 +803,7 @@ on that branch:
 
 ```sh
 gh workflow run release-artifacts.yml --ref FEDORA_UPGRADE_BRANCH \
-  -f version=2026.11.0-dev.fedora45.1
+  -f version=2026.11.0-dev.45
 ```
 
 Wait for **Release validation**, then use the final Actions bundle for the
