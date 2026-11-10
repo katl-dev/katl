@@ -249,6 +249,8 @@ func renderGenerationActivateService() string {
 		"DefaultDependencies=no",
 		"Requires=var.mount",
 		"After=var.mount",
+		"# Recovery arming checks the fallback entry and UKI on the EFI partition.",
+		"RequiresMountsFor=/efi",
 		"Before=systemd-sysext.service systemd-confext.service",
 		"",
 		"[Service]",
