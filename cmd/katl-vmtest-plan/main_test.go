@@ -176,6 +176,17 @@ func TestCIPlan(t *testing.T) {
 		{name: "release tooling", paths: "cmd/katl-release/main.go"},
 		{name: "capture tooling", paths: "cmd/katl-kernel-release/candidate.go"},
 		{name: "proposal workflow", paths: ".github/workflows/kernel-updates.yml"},
+		{name: "release workflow", paths: ".github/workflows/release-artifacts.yml"},
+		{name: "production qualification workflow", paths: ".github/workflows/production-vmtests.yml"},
+		{name: "release orchestration and docs", paths: ".github/workflows/release-artifacts.yml\x00.github/workflows/production-vmtests.yml\x00docs/developing.md"},
+		{name: "main release orchestration", paths: ".github/workflows/release-artifacts.yml\x00.github/workflows/production-vmtests.yml", main: true},
+		{name: "release and image builder", paths: ".github/workflows/release-artifacts.yml\x00scripts/mkosi", vms: both, drivers: both},
+		{name: "release and standard lock", paths: ".github/workflows/release-artifacts.yml\x00kernels/fedora-44/x86_64/standard.json", vms: []string{"standard"}, drivers: []string{"standard"}},
+		{name: "production and scenario", paths: ".github/workflows/production-vmtests.yml\x00internal/vmtest/release_lifecycle_test.go", vms: both},
+		{name: "production and shared VM action", paths: ".github/workflows/production-vmtests.yml\x00.github/actions/hosted-vmtest/action.yml", vms: both, drivers: both},
+		{name: "release and unknown workflow", paths: ".github/workflows/release-artifacts.yml\x00.github/workflows/new-release.yml", vms: both},
+		{name: "renamed release workflow", paths: ".github/workflows/release-artifacts.yml\x00.github/workflows/release-artifacts-new.yml", vms: both},
+		{name: "driver qualification workflow", paths: ".github/workflows/kernel-qualification.yml", vms: both, drivers: both},
 		{name: "product", paths: "cmd/katlctl/main.go", vms: []string{"standard"}},
 		{name: "main product", paths: "cmd/katlctl/main.go", main: true, vms: both},
 		{name: "main docs", paths: "README.md", main: true},
@@ -222,6 +233,9 @@ func TestCIPlan(t *testing.T) {
 			}
 			if !slices.Equal(got.VMFlavours, tc.vms) || !slices.Equal(got.DriverFlavours, tc.drivers) || strings.Contains(output.String(), "null") {
 				t.Fatalf("CI plan = %s, want VMs %v and drivers %v", &output, tc.vms, tc.drivers)
+			}
+			if (len(got.Groups) == 0) != (len(tc.vms) == 0) {
+				t.Fatalf("CI plan scenarios disagree with selected VM flavours: %s", &output)
 			}
 		})
 	}
