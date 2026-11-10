@@ -122,6 +122,7 @@ func TestProposalUnchanged(t *testing.T) {
 func TestCandidateArguments(t *testing.T) {
 	for _, args := range [][]string{
 		{"candidate", "--fedora-release", "../../44"},
+		{"candidate", "--fedora-release", "45\nmatches-base=true"},
 		{"candidate", "--fedora-release", "44", "--kernel-release", "../../kernel"},
 		{"candidate", "--fedora-release", "44", "--architecture", "aarch64"},
 	} {

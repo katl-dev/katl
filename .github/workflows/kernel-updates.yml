@@ -5,6 +5,9 @@ on:
     - cron: '23 6 * * 1'
   workflow_dispatch:
     inputs:
+      fedora_release:
+        description: Fedora release to prepare; empty uses the selected base
+        type: string
       flavour:
         description: Kernel flavour to update
         type: choice
@@ -30,6 +33,7 @@ jobs:
         flavour: ${{ fromJSON(inputs.flavour == 'standard' && '["standard"]' || inputs.flavour == 'lts' && '["lts"]' || '["standard","lts"]') }}
     uses: ./.github/workflows/kernel-update.yml
     with:
+      fedora-release: ${{ inputs.fedora_release || '' }}
       flavour: ${{ matrix.flavour }}
       kernel-release: ${{ matrix.flavour == 'standard' && inputs.standard_release || matrix.flavour == 'lts' && inputs.lts_release || '' }}
     secrets: inherit

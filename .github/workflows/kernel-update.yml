@@ -3,6 +3,9 @@ name: Update Kernel Flavour
 on:
   workflow_call:
     inputs:
+      fedora-release:
+        type: string
+        default: ''
       flavour:
         required: true
         type: string
@@ -25,10 +28,14 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      fedora-release: ${{ steps.capture.outputs.fedora-release }}
+      matches-base: ${{ steps.capture.outputs.matches-base }}
     env:
       KATL_CONTAINER_RUNTIME: docker
       KATL_MKOSI_IMAGE: localhost/katl-kernel-inputs:builder
       KERNEL_RELEASE: ${{ inputs.kernel-release }}
+      FEDORA_RELEASE: ${{ inputs.fedora-release }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -41,10 +48,21 @@ jobs:
         with:
           image: ${{ env.KATL_MKOSI_IMAGE }}
       - name: Capture signed kernel RPMs once
+        id: capture
         run: |
+          base_release="$(scripts/fedora-release)"
+          fedora_release="${FEDORA_RELEASE:-$base_release}"
           scripts/mkosi box -- go run ./cmd/katl-kernel-release candidate \
-            --fedora-release "$(scripts/fedora-release)" --flavour "$KATL_FLAVOUR" \
+            --fedora-release "$fedora_release" --flavour "$KATL_FLAVOUR" \
             --kernel-release "$KERNEL_RELEASE" --output "_build/kernel-candidates/$KATL_FLAVOUR"
+          {
+            echo "fedora-release=$fedora_release"
+            if [[ "$fedora_release" == "$base_release" ]]; then
+              echo 'matches-base=true'
+            else
+              echo 'matches-base=false'
+            fi
+          } >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
         with:
           name: kernel-candidates-${{ inputs.flavour }}
@@ -53,43 +71,9 @@ jobs:
           compression-level: 0
           if-no-files-found: error
 
-  propose:
-    timeout-minutes: 10
-    needs: capture
-    runs-on: ubuntu-24.04
-    outputs:
-      changed: ${{ steps.propose.outputs.changed }}
-      branch: ${{ steps.propose.outputs.branch }}
-      commit: ${{ steps.propose.outputs.commit }}
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: actions/download-artifact@v8
-        with:
-          name: kernel-candidates-${{ inputs.flavour }}
-          path: _build/kernel-candidates/${{ inputs.flavour }}
-      - uses: actions/create-github-app-token@v3
-        id: app-token
-        with:
-          client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
-          private-key: ${{ secrets.KATL_AUTOMATION_PRIVATE_KEY }}
-          permission-contents: write
-      - id: propose
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          go run ./cmd/katl-kernel-release propose --flavour "$KATL_FLAVOUR" > proposal.json
-          jq -r 'to_entries[] | "\(.key)=\(.value)"' proposal.json >> "$GITHUB_OUTPUT"
-
   publish:
     timeout-minutes: 30
-    if: needs.propose.outputs.changed == 'true'
-    needs: propose
+    needs: capture
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -114,14 +98,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
       - name: Retain the signed RPM bytes
+        # Native OCI idempotence also repairs interrupted publication on reruns.
         run: |
           go run ./cmd/katl-kernel-release publish \
             --lock "_build/kernel-candidates/$KATL_FLAVOUR/lock.json" \
             --layout "_build/kernel-candidates/$KATL_FLAVOUR/layout"
 
-  pull-request:
+  verify:
     timeout-minutes: 15
-    needs: [propose, publish]
+    needs: [capture, publish]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -141,6 +126,78 @@ jobs:
           go run ./cmd/katl-kernel-release verify \
             --lock "_build/kernel-candidates/$KATL_FLAVOUR/lock.json" \
             --cache "_build/public-verification/$KATL_FLAVOUR"
+          mkdir -p _build/kernel-locks
+          cp "_build/kernel-candidates/$KATL_FLAVOUR/lock.json" "_build/kernel-locks/$KATL_FLAVOUR.json"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: kernel-lock-fedora-${{ needs.capture.outputs.fedora-release }}-${{ inputs.flavour }}
+          path: _build/kernel-locks/${{ inputs.flavour }}.json
+          retention-days: 7
+          if-no-files-found: error
+      - name: Record prepared inputs
+        env:
+          FEDORA_RELEASE: ${{ needs.capture.outputs.fedora-release }}
+          MATCHES_BASE: ${{ needs.capture.outputs.matches-base }}
+        run: |
+          jq '{fedoraRelease, flavour, kernelRelease, reference}' \
+            "_build/kernel-locks/$KATL_FLAVOUR.json" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$MATCHES_BASE" != true ]]; then
+            echo 'Inputs are retained and anonymously retrievable. No update PR is created for this base change; kernel qualification still requires builds and tests with the new Fedora base.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          printf '\nDownload lock: `gh run download %s --repo %s --name kernel-lock-fedora-%s-%s --dir kernels/fedora-%s/x86_64`.\n' \
+            "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" "$FEDORA_RELEASE" "$KATL_FLAVOUR" "$FEDORA_RELEASE" >> "$GITHUB_STEP_SUMMARY"
+
+  propose:
+    timeout-minutes: 10
+    if: needs.capture.outputs.matches-base == 'true'
+    needs: [capture, verify]
+    runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.propose.outputs.changed }}
+      branch: ${{ steps.propose.outputs.branch }}
+      commit: ${{ steps.propose.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: kernel-lock-fedora-${{ needs.capture.outputs.fedora-release }}-${{ inputs.flavour }}
+          path: _build/kernel-locks/${{ inputs.flavour }}
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
+          private-key: ${{ secrets.KATL_AUTOMATION_PRIVATE_KEY }}
+          permission-contents: write
+      - id: propose
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          mkdir -p "_build/kernel-candidates/$KATL_FLAVOUR"
+          cp "_build/kernel-locks/$KATL_FLAVOUR/$KATL_FLAVOUR.json" \
+            "_build/kernel-candidates/$KATL_FLAVOUR/lock.json"
+          go run ./cmd/katl-kernel-release propose --flavour "$KATL_FLAVOUR" > proposal.json
+          jq -r 'to_entries[] | "\(.key)=\(.value)"' proposal.json >> "$GITHUB_OUTPUT"
+
+  pull-request:
+    timeout-minutes: 10
+    if: needs.propose.outputs.changed == 'true'
+    needs: [capture, propose]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: kernel-lock-fedora-${{ needs.capture.outputs.fedora-release }}-${{ inputs.flavour }}
+          path: _build/kernel-locks/${{ inputs.flavour }}
       - uses: actions/create-github-app-token@v3
         id: app-token
         with:
@@ -159,7 +216,7 @@ jobs:
           {
             echo 'Select retained kernel RPMs for reproducible runtime, installer, and extension builds.'
             echo
-            jq -r '"- **\(.flavour):** `\(.kernelRelease)`"' "_build/kernel-candidates/$KATL_FLAVOUR/lock.json"
+            jq -r '"- **\(.flavour):** `\(.kernelRelease)`"' "_build/kernel-locks/$KATL_FLAVOUR/$KATL_FLAVOUR.json"
             echo
             printf 'Signed RPMs for `%s` were captured and retained by [Kernel Updates](%s/%s/actions/runs/%s).\n' \
               "$PROPOSED_COMMIT" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
