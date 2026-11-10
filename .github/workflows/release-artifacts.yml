@@ -60,7 +60,7 @@ jobs:
 
   unit:
     name: Release unit tests
-    if: ${{ !inputs.qualify_run }}
+    if: inputs.qualify_run == 0
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -75,7 +75,7 @@ jobs:
 
   vmtests:
     name: VM regression
-    if: ${{ !inputs.qualify_run }}
+    if: inputs.qualify_run == 0
     strategy:
       fail-fast: false
       matrix:
@@ -86,7 +86,7 @@ jobs:
 
   identity:
     name: Resolve Release Identity
-    if: ${{ !inputs.qualify_run }}
+    if: inputs.qualify_run == 0
     runs-on: ubuntu-24.04
     outputs:
       artifact-name: ${{ steps.release.outputs.artifact-name }}
@@ -243,7 +243,7 @@ jobs:
 
   extension-inventory:
     name: Inventory Release Extensions
-    if: ${{ !inputs.qualify_run }}
+    if: inputs.qualify_run == 0
     runs-on: ubuntu-24.04
     outputs:
       extensions: ${{ steps.inventory.outputs.extensions }}
@@ -694,7 +694,7 @@ jobs:
 
   release-validation:
     name: Release validation
-    if: ${{ always() && !inputs.qualify_run }}
+    if: always() && inputs.qualify_run == 0
     needs: [bundle, vmtests, qualification, unit]
     runs-on: ubuntu-24.04
     steps:
