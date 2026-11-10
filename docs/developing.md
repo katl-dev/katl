@@ -750,14 +750,24 @@ package is missing; they do not fall back to a moving kernel repository.
 
 ### Qualify retained kernel inputs
 
-The Kernel Updates workflow captures signed kernel RPM sets and proposes their
-locks after retaining the signed inputs and verifying anonymous retrieval. It runs weekly or on manual
-dispatch. Automatic discovery refuses versions older than the committed lock.
-An explicit release permits a deliberate rollback. To qualify an exact kernel pair instead of discovering newer versions:
+The Kernel Updates workflow captures each flavour's signed kernel RPM set and
+opens a separate PR after retaining the signed inputs and verifying anonymous
+retrieval. Standard and LTS updates run independently, so a failure in one does
+not block the other. The workflow runs weekly or on manual dispatch. Automatic
+discovery refuses versions older than the committed lock. An explicit release
+permits a deliberate rollback. To qualify an exact kernel pair instead of
+discovering newer versions:
 
 ```sh
 gh workflow run kernel-updates.yml --ref main \
   -f standard_release=7.2.10-200.fc44.x86_64 \
+  -f lts_release=6.18.57-200.fc44.x86_64
+```
+
+To update only one flavour, select it with `flavour`:
+
+```sh
+gh workflow run kernel-updates.yml --ref main -f flavour=lts \
   -f lts_release=6.18.57-200.fc44.x86_64
 ```
 
