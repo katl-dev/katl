@@ -744,8 +744,8 @@ builds use the retained RPM bytes identified by that lock. The matching `devel`
 package supplies the runtime's exported headers. Generic `kernel-headers` and
 userspace packages continue to resolve from their existing repositories.
 
-A Fedora release bump requires publishing and qualifying both new kernel sets
-before changing the base release. Builds fail if a selected lock or retained
+A Fedora release bump requires retained locks for both flavours and
+qualification against the target base. Builds fail if a selected lock or retained
 package is missing; they do not fall back to a moving kernel repository.
 
 ### Qualify retained kernel inputs
@@ -762,15 +762,15 @@ discovering newer versions:
 
 ```sh
 gh workflow run kernel-updates.yml --ref main \
-  -f standard_release=7.2.10-200.fc44.x86_64 \
-  -f lts_release=6.18.57-200.fc44.x86_64
+  -f standard_release=7.3.3-300.fc45.x86_64 \
+  -f lts_release=6.18.60-200.fc45.x86_64
 ```
 
 To update only one flavour, select it with `flavour`:
 
 ```sh
 gh workflow run kernel-updates.yml --ref main -f flavour=lts \
-  -f lts_release=6.18.57-200.fc44.x86_64
+  -f lts_release=6.18.60-200.fc45.x86_64
 ```
 
 PR CI qualifies each changed kernel flavour with runtime and installer builds,
@@ -817,7 +817,7 @@ builder and select its retained OCI layout explicitly:
 ```sh
 scripts/mkosi box -- go run ./cmd/katl-kernel-release candidate \
   --fedora-release "$(scripts/fedora-release)" --flavour lts \
-  --kernel-release 6.18.57-200.fc44.x86_64 --output _build/kernel-candidates/lts
+  --kernel-release 6.18.60-200.fc45.x86_64 --output _build/kernel-candidates/lts
 
 export KATL_FLAVOUR=lts
 export KATL_KERNEL_LOCK="$PWD/_build/kernel-candidates/lts/lock.json"

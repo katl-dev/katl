@@ -12,6 +12,8 @@ availability across several hosts.
 - no other mutating node operation is active;
 - the selected upgrade SquashFS is from the intended KatlOS release;
 - the upgrade declares a compatible architecture and runtime interface;
+- the installed CNI supports the target kernel; for Cilium, check the
+  [tested version guidance](cilium.md) before upgrading;
 - the node can fetch release artifacts from GitHub;
 - the installation `ClusterConfig` contains the node and its current management
   address, or `--endpoint` supplies an override;

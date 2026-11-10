@@ -4,11 +4,17 @@ KatlOS prepares kubeadm nodes but does not install or manage a CNI. This
 procedure records the KatlOS-specific Cilium setting needed when Cilium is
 installed through the operator's own Helm, Cilium CLI, or GitOps workflow.
 
-The procedure has been exercised with Cilium 1.19.6 and Cilium CLI 0.19.6.
+The procedure has been exercised with Cilium 1.19.10 and Helm 4.2.4.
 Review Cilium's
 [kubeadm installation guide](https://docs.cilium.io/en/stable/installation/k8s-install-kubeadm/)
 and release notes for the version being installed rather than treating this
 page as a complete Cilium configuration.
+
+Upgrade Cilium before moving a node to a kernel that requires a newer Cilium
+patch release. Cilium 1.19.6 and 1.19.7 fail BPF feature probing on Linux 7.2;
+the [upstream fix](https://github.com/cilium/cilium/releases/tag/v1.19.8) is
+included in 1.19.8 and later patches in the 1.19 branch. The examples below use
+1.19.10.
 
 For kube-proxy replacement, set `proxy.disabled: true` in the native kubeadm
 `ClusterConfiguration` before bootstrapping; see [native kubeadm
@@ -69,7 +75,7 @@ Cilium release with `sysctlfix.enabled=false`. With the Cilium CLI:
 ```sh
 cilium install \
   --kubeconfig ./kubeconfig \
-  --version 1.19.6 \
+  --version 1.19.10 \
   --set sysctlfix.enabled=false
 ```
 
@@ -78,7 +84,7 @@ With Helm:
 ```sh
 helm install cilium oci://quay.io/cilium/charts/cilium \
   --kubeconfig ./kubeconfig \
-  --version 1.19.6 \
+  --version 1.19.10 \
   --namespace kube-system \
   --set sysctlfix.enabled=false
 ```

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -211,6 +212,13 @@ func seedKernelMetadata(t *testing.T, buildDir string, set kernelrelease.Set) {
 
 func seedKernelLocks(t *testing.T, repo string) {
 	t.Helper()
+	// The synthetic RPMs belong to Fedora 44, independently of the production base.
+	configPath := filepath.Join(repo, "mkosi.conf")
+	config := regexp.MustCompile(`(?m)^Release=[0-9]+$`).ReplaceAll(mustReadFile(t, configPath), []byte("Release=44"))
+	if err := os.WriteFile(configPath, config, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	layout := t.TempDir()
 	for _, flavour := range []string{"standard", "lts"} {
 		set := scriptKernelSet(flavour)
