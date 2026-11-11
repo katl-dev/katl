@@ -278,97 +278,53 @@ func (e *Executor) executeKubeadmControlPlaneConfig(ctx context.Context, record 
 	if request.ExpectedLiveConfigSHA256 != "" && liveDigest != request.ExpectedLiveConfigSHA256 {
 		return e.failControlPlaneConfig(record, "preflight", fmt.Errorf("live kubeadm config digest is stale"))
 	}
-	if len(delta) == 0 {
-		manifests, err := e.digestControlPlaneManifests()
-		if err != nil {
-			return e.failControlPlaneConfig(record, "preflight", err)
-		}
-		request.ExpectedLiveConfigSHA256 = liveDigest
-		request.SupportedFieldDelta = []string{}
-		request.BeforeManifestSHA256 = manifests
-		request.AfterManifestSHA256 = maps.Clone(manifests)
-		return e.completeUnchangedKubeadmConfig(ctx, record)
-	}
 	effectivePath, err := e.writeEffectiveControlPlaneConfig(record.OperationID, effective)
 	if err != nil {
 		return e.failControlPlaneConfig(record, "preflight", err)
 	}
-	component := controlPlanePhaseTarget(delta)
-	if err := e.runControlPlaneConfigCommand(ctx, record, "preflight-dry-run", []string{"/usr/bin/kubeadm", "init", "phase", "control-plane", component, "--config", effectivePath, "--dry-run"}, false); err != nil {
+	preview, err := os.MkdirTemp(filepath.Join(e.Store.Root, record.OperationID), "manifest-preview-")
+	if err != nil {
+		return e.failControlPlaneConfig(record, "preflight", err)
+	}
+	defer os.RemoveAll(preview)
+	// Use the same config and generation-projected patches for preview and apply.
+	dryRun := []string{"/usr/bin/env", "KUBEADM_INIT_DRYRUN_DIR=" + preview, "/usr/bin/kubeadm", "init", "phase", "control-plane", "all", "--config", effectivePath, "--dry-run"}
+	if err := e.runControlPlaneConfigCommand(ctx, record, "preflight-dry-run", dryRun, false); err != nil {
 		return err
 	}
-	rebind, err := e.kubeletNeedsRestart(ctx)
+	liveDir := rootedRuntimePath(e.Root, "/etc/kubernetes/manifests")
+	changed, err := differentControlPlaneManifests(liveDir, preview)
 	if err != nil {
 		return e.failControlPlaneConfig(record, "preflight", err)
 	}
-	mirrorsBefore, err := e.controlPlaneMirrors(ctx, request.NodeName)
-	if err != nil {
-		return e.failControlPlaneConfig(record, "preflight", err)
+	upload := request.CoordinatorUpload && len(delta) > 0
+	request.ExpectedLiveConfigSHA256 = liveDigest
+	request.SupportedFieldDelta = delta
+	if len(changed) == 0 {
+		manifests, err := e.digestControlPlaneManifests()
+		if err != nil {
+			return e.failControlPlaneConfig(record, "preflight", err)
+		}
+		request.BeforeManifestSHA256 = manifests
+		request.AfterManifestSHA256 = maps.Clone(manifests)
+		if !upload {
+			return e.completeUnchangedKubeadmConfig(ctx, record)
+		}
 	}
-	schedResult := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "get", "node", request.NodeName, "-o", "jsonpath={.spec.unschedulable}"}, nil)
-	if schedResult.Err != nil || schedResult.ExitStatus != 0 {
-		return e.failControlPlaneConfig(record, "preflight", fmt.Errorf("read node schedulability: %s", toolFailure(schedResult)))
-	}
-	originalUnschedulable := strings.TrimSpace(string(schedResult.Stdout)) == "true"
 	if _, err := e.Store.Update(record.OperationID, "preflight-complete", "preflight-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
-		current.KubeadmControlPlaneConfig.ExpectedLiveConfigSHA256 = liveDigest
-		current.KubeadmControlPlaneConfig.SupportedFieldDelta = append([]string(nil), delta...)
-		current.KubeadmControlPlaneConfig.OriginalNodeUnschedulable = originalUnschedulable
+		current.KubeadmControlPlaneConfig = request
 		current.Phase = "preflight-complete"
 		current.UpdatedAt = e.clock()
 		return current, nil
 	}); err != nil {
 		return err
 	}
-	if err := e.runControlPlaneConfigCommand(ctx, record, "cordon-running", []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "cordon", request.NodeName}, true); err != nil {
-		return err
-	}
-	if _, err := e.Store.Update(record.OperationID, "cordon-complete", "cordon-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
-		current.Phase = "cordon-complete"
-		current.CompletedPhases = appendMissing(current.CompletedPhases, "cordon-complete")
-		current.UpdatedAt = e.clock()
-		return current, nil
-	}); err != nil {
-		return err
-	}
-	before, err := e.backupControlPlaneManifests(record.OperationID)
-	if err != nil {
-		return e.failControlPlaneConfig(record, "manifest-backup", err)
-	}
-	if _, err := e.Store.Update(record.OperationID, "manifest-backup-complete", "manifest-backup-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
-		current.KubeadmControlPlaneConfig.BeforeManifestSHA256 = before
-		current.Phase = "manifest-backup-complete"
-		current.UpdatedAt = e.clock()
-		return current, nil
-	}); err != nil {
-		return err
-	}
-	argv := []string{"/usr/bin/kubeadm", "init", "phase", "control-plane", component, "--config", effectivePath}
-	if err := e.runControlPlaneConfigCommand(ctx, record, "control-plane-manifests-running", argv, true); err != nil {
-		return err
-	}
-	after, err := e.digestControlPlaneManifests()
-	if err != nil {
-		return e.failControlPlaneConfig(record, "post-manifest-digest", err)
-	}
-	if _, err := e.Store.Update(record.OperationID, "control-plane-manifests-complete", "control-plane-manifests-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
-		current.KubeadmControlPlaneConfig.AfterManifestSHA256 = after
-		current.Phase = "control-plane-manifests-complete"
-		current.UpdatedAt = e.clock()
-		return current, nil
-	}); err != nil {
-		return err
-	}
-	if rebind {
-		// Rebind the refreshed /etc tree only after writing the final manifests.
-		// Native startup notification precedes the initial static-pod sync, which
-		// must not race replacement of the manifests it is starting to consume.
-		if err := e.runControlPlaneConfigCommand(ctx, record, "kubelet-watcher-rebind-running", []string{"/usr/bin/systemctl", "restart", "kubelet.service"}, true); err != nil {
+	var uncordon bool
+	if len(changed) > 0 {
+		uncordon, err = e.rolloutControlPlaneManifests(ctx, record, effectivePath, preview, changed)
+		if err != nil {
 			return err
 		}
-	}
-	if err := e.waitControlPlaneManifests(ctx, record, mirrorsBefore); err != nil {
-		return e.failControlPlaneConfig(record, "post-manifest-convergence", err)
 	}
 	if result := e.runControlPlaneConfigHealth(ctx, request.NodeName); result.Err != nil || result.ExitStatus != 0 {
 		return e.failControlPlaneConfig(record, "post-manifest-health", fmt.Errorf("post-manifest health failed: %s", toolFailure(result)))
@@ -381,7 +337,7 @@ func (e *Executor) executeKubeadmControlPlaneConfig(ctx context.Context, record 
 	}); err != nil {
 		return err
 	}
-	if request.CoordinatorUpload {
+	if upload {
 		upload := []string{"/usr/bin/kubeadm", "init", "phase", "upload-config", "kubeadm", "--config", effectivePath}
 		if err := e.runControlPlaneConfigCommand(ctx, record, "kubeadm-config-upload-running", upload, true); err != nil {
 			return err
@@ -405,7 +361,7 @@ func (e *Executor) executeKubeadmControlPlaneConfig(ctx context.Context, record 
 			return err
 		}
 	}
-	if !originalUnschedulable {
+	if uncordon {
 		if err := e.runControlPlaneConfigCommand(ctx, record, "uncordon-running", []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "uncordon", request.NodeName}, true); err != nil {
 			return err
 		}
@@ -438,31 +394,89 @@ func (e *Executor) writeEffectiveControlPlaneConfig(operationID string, data []b
 	return filepath.ToSlash(filepath.Join("/var/lib/katl/operations", operationID, name)), nil
 }
 
-func controlPlanePhaseTarget(delta []string) string {
-	components := map[string]string{}
-	for _, field := range delta {
-		parts := strings.Split(field, ".")
-		if len(parts) < 3 {
-			return "all"
+func (e *Executor) rolloutControlPlaneManifests(ctx context.Context, record operation.OperationRecord, effectivePath, preview string, changed []string) (bool, error) {
+	request := record.KubeadmControlPlaneConfig
+	rebind, err := e.kubeletNeedsRestart(ctx)
+	if err != nil {
+		return false, e.failControlPlaneConfig(record, "preflight", err)
+	}
+	mirrorsBefore, err := e.controlPlaneMirrors(ctx, request.NodeName)
+	if err != nil {
+		return false, e.failControlPlaneConfig(record, "preflight", err)
+	}
+	schedResult := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "get", "node", request.NodeName, "-o", "jsonpath={.spec.unschedulable}"}, nil)
+	if schedResult.Err != nil || schedResult.ExitStatus != 0 {
+		return false, e.failControlPlaneConfig(record, "preflight", fmt.Errorf("read node schedulability: %s", toolFailure(schedResult)))
+	}
+	originalUnschedulable := strings.TrimSpace(string(schedResult.Stdout)) == "true"
+	if _, err := e.Store.Update(record.OperationID, "node-schedulability", "node-schedulability", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.KubeadmControlPlaneConfig.OriginalNodeUnschedulable = originalUnschedulable
+		return current, nil
+	}); err != nil {
+		return false, err
+	}
+	if err := e.runControlPlaneConfigCommand(ctx, record, "cordon-running", []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "cordon", request.NodeName}, true); err != nil {
+		return false, err
+	}
+	if _, err := e.Store.Update(record.OperationID, "cordon-complete", "cordon-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.Phase = "cordon-complete"
+		current.CompletedPhases = appendMissing(current.CompletedPhases, "cordon-complete")
+		current.UpdatedAt = e.clock()
+		return current, nil
+	}); err != nil {
+		return false, err
+	}
+	before, err := e.backupControlPlaneManifests(record.OperationID)
+	if err != nil {
+		return false, e.failControlPlaneConfig(record, "manifest-backup", err)
+	}
+	if _, err := e.Store.Update(record.OperationID, "manifest-backup-complete", "manifest-backup-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.KubeadmControlPlaneConfig.BeforeManifestSHA256 = before
+		current.Phase = "manifest-backup-complete"
+		current.UpdatedAt = e.clock()
+		return current, nil
+	}); err != nil {
+		return false, err
+	}
+	for _, name := range changed {
+		component := strings.TrimSuffix(strings.TrimPrefix(name, "kube-"), ".yaml")
+		argv := []string{"/usr/bin/kubeadm", "init", "phase", "control-plane", component, "--config", effectivePath}
+		if err := e.runControlPlaneConfigCommand(ctx, record, "control-plane-"+component+"-manifest-running", argv, true); err != nil {
+			return false, err
 		}
-		switch parts[1] {
-		case "apiServer":
-			components[parts[1]] = "apiserver"
-		case "controllerManager":
-			components[parts[1]] = "controller-manager"
-		case "scheduler":
-			components[parts[1]] = "scheduler"
-		default:
-			return "all"
+	}
+	liveDir := rootedRuntimePath(e.Root, "/etc/kubernetes/manifests")
+	remaining, err := differentControlPlaneManifests(liveDir, preview)
+	if err != nil {
+		return false, e.failControlPlaneConfig(record, "post-manifest-convergence", err)
+	}
+	if len(remaining) != 0 {
+		return false, e.failControlPlaneConfig(record, "post-manifest-convergence", fmt.Errorf("native manifests differ from the kubeadm preview: %s", strings.Join(remaining, ", ")))
+	}
+	after, err := e.digestControlPlaneManifests()
+	if err != nil {
+		return false, e.failControlPlaneConfig(record, "post-manifest-digest", err)
+	}
+	if _, err := e.Store.Update(record.OperationID, "control-plane-manifests-complete", "control-plane-manifests-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.KubeadmControlPlaneConfig.AfterManifestSHA256 = after
+		current.Phase = "control-plane-manifests-complete"
+		current.UpdatedAt = e.clock()
+		return current, nil
+	}); err != nil {
+		return false, err
+	}
+	if rebind {
+		// Rebind the refreshed /etc tree only after writing the final manifests.
+		// Native startup notification precedes the initial static-pod sync, which
+		// must not race replacement of the manifests it is starting to consume.
+		if err := e.runControlPlaneConfigCommand(ctx, record, "kubelet-watcher-rebind-running", []string{"/usr/bin/systemctl", "restart", "kubelet.service"}, true); err != nil {
+			return false, err
 		}
 	}
-	if len(components) != 1 {
-		return "all"
+	if err := e.waitControlPlaneManifests(ctx, record, mirrorsBefore); err != nil {
+		return false, e.failControlPlaneConfig(record, "post-manifest-convergence", err)
 	}
-	for _, component := range components {
-		return component
-	}
-	return "all"
+	return !originalUnschedulable, nil
 }
 
 func (e *Executor) executeKubeProxyConfig(ctx context.Context, record operation.OperationRecord) error {

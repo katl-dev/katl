@@ -148,41 +148,48 @@ func (e *Executor) controlPlaneMirrors(ctx context.Context, node string, compone
 	return mirrors, nil
 }
 
-func (e *Executor) waitControlPlaneManifests(ctx context.Context, record operation.OperationRecord, before map[string]controlPlaneMirror) error {
-	changed := make(map[string]string)
+func differentControlPlaneManifests(firstDir, secondDir string) ([]string, error) {
+	var changed []string
 	for _, name := range controlPlaneManifestNames {
-		var previous, desired any
+		var first, second map[string]any
 		for _, manifest := range []struct {
-			path  string
-			value *any
-		}{
-			{filepath.Join(e.Store.Root, record.OperationID, "manifest-backup", name), &previous},
-			{rootedRuntimePath(e.Root, "/etc/kubernetes/manifests/"+name), &desired},
-		} {
-			data, err := os.ReadFile(manifest.path)
+			dir   string
+			value *map[string]any
+		}{{firstDir, &first}, {secondDir, &second}} {
+			path := filepath.Join(manifest.dir, name)
+			data, err := os.ReadFile(path)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			if err := yaml.Unmarshal(data, manifest.value); err != nil {
-				return fmt.Errorf("decode native manifest %s: %w", name, err)
+				return nil, fmt.Errorf("decode native manifest %s: %w", path, err)
+			}
+			if (*manifest.value)["kind"] != "Pod" {
+				return nil, fmt.Errorf("native manifest %s must be a Pod", path)
 			}
 		}
 		// Formatting alone does not change kubelet's native configuration hash.
-		if !reflect.DeepEqual(previous, desired) {
-			changed[name] = before[name].hash
+		if !reflect.DeepEqual(first, second) {
+			changed = append(changed, name)
 		}
 	}
-	if len(changed) == 0 {
-		return nil
+	return changed, nil
+}
+
+func (e *Executor) waitControlPlaneManifests(ctx context.Context, record operation.OperationRecord, before map[string]controlPlaneMirror) error {
+	backupDir := filepath.Join(e.Store.Root, record.OperationID, "manifest-backup")
+	liveDir := rootedRuntimePath(e.Root, "/etc/kubernetes/manifests")
+	changed, err := differentControlPlaneManifests(backupDir, liveDir)
+	if err != nil || len(changed) == 0 {
+		return err
 	}
 	healthCtx, cancel := context.WithTimeout(ctx, postKubeadmHealthTimeout)
 	defer cancel()
 	for {
 		mirrors, err := e.controlPlaneMirrors(healthCtx, record.KubeadmControlPlaneConfig.NodeName)
 		if err == nil {
-			for _, name := range controlPlaneManifestNames {
-				oldHash, requiresChange := changed[name]
-				if requiresChange && (mirrors[name].hash == oldHash || !mirrors[name].containersReady) {
+			for _, name := range changed {
+				if mirrors[name].hash == before[name].hash || !mirrors[name].containersReady {
 					err = fmt.Errorf("control-plane pod for %s containers have not become ready with the changed native manifest", name)
 					break
 				}
