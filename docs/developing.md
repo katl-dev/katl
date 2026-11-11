@@ -259,6 +259,15 @@ katldev installer start
 katldev installer reset
 ```
 
+`stop` simulates pressing the power button through ACPI and waits for the guest
+to power off. On an installed Kubernetes node, this lets kubelet use its
+[configured graceful shutdown budgets](operations/maintain-node.md#configure-native-graceful-shutdown).
+Katl does not drain the node or enable those budgets automatically. Use
+`--timeout 5m` when the guest needs more than the default three minutes.
+If shutdown is not confirmed, inspect `status` and `console`; the guest might
+still be shutting down. `stop --force` cuts power immediately and bypasses
+guest shutdown.
+
 `reset` first prepares the current checkout's ISO, then destroys the managed
 domain, replaces its target disk and UEFI variables, and boots a fresh
 installer. It needs no destructive confirmation because it can only address

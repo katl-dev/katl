@@ -132,18 +132,23 @@ func newInstallerStatusCommand(ctx context.Context, stdout, stderr io.Writer) *c
 }
 
 func newInstallerStopCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	return &cobra.Command{
+	var force bool
+	timeout := 3 * time.Minute
+	cmd := &cobra.Command{
 		Use:   "stop",
-		Short: "Power off the managed VM while keeping its disk",
+		Short: "Request guest shutdown and wait for the managed VM to power off",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			manager, err := loadInstallerManager(stdout, stderr)
 			if err != nil {
 				return err
 			}
-			return manager.stop(ctx)
+			return manager.stop(ctx, timeout, force)
 		},
 	}
+	cmd.Flags().DurationVar(&timeout, "timeout", timeout, "guest shutdown timeout")
+	cmd.Flags().BoolVar(&force, "force", false, "cut power immediately, bypassing guest shutdown")
+	return cmd
 }
 
 func newInstallerConsoleCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
@@ -646,7 +651,13 @@ func (manager installerManager) printReady(state installerState, configPath stri
 	return nil
 }
 
-func (manager installerManager) stop(ctx context.Context) error {
+func (manager installerManager) stop(ctx context.Context, timeout time.Duration, force bool) error {
+	if timeout <= 0 {
+		return errors.New("--timeout must be positive")
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
 	state, err := manager.readState()
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -669,8 +680,40 @@ func (manager installerManager) stop(ctx context.Context) error {
 		return err
 	}
 	if domainState != "shut off" && domainState != "crashed" {
-		if _, err := manager.virsh(ctx, state.LibvirtURI, "destroy", state.DomainName); err != nil {
-			return err
+		if force {
+			if _, err := manager.virsh(ctx, state.LibvirtURI, "destroy", state.DomainName); err != nil {
+				return err
+			}
+			fmt.Fprintf(manager.stdout, "Cut power to %s. Resume it with katldev installer start.\n", state.DomainName)
+			return nil
+		}
+		switch domainState {
+		case "running", "idle":
+			// ACPI lets logind honor kubelet's delay inhibitor before service teardown.
+			if _, err := manager.virsh(ctx, state.LibvirtURI, "shutdown", state.DomainName, "--mode", "acpi"); err != nil {
+				return err
+			}
+		case "in shutdown":
+		default:
+			return fmt.Errorf("VM %s is %s; run katldev installer start to resume it before stopping, or use stop --force to cut power", state.DomainName, domainState)
+		}
+
+		fmt.Fprintf(manager.stderr, "katldev installer: waiting up to %s for %s to shut down\n", timeout, state.DomainName)
+		ticker := time.NewTicker(500 * time.Millisecond)
+		defer ticker.Stop()
+		for domainState != "shut off" {
+			select {
+			case <-ctx.Done():
+				err = ctx.Err()
+			case <-ticker.C:
+				domainState, err = manager.domainState(ctx, state.LibvirtURI, state.DomainName)
+			}
+			if err != nil {
+				return fmt.Errorf("shutdown of %s was not confirmed: %w; inspect katldev installer console and status, then retry stop with a longer --timeout or use --force to cut power", state.DomainName, err)
+			}
+			if domainState == "crashed" {
+				return fmt.Errorf("VM %s crashed during shutdown; inspect katldev installer console", state.DomainName)
+			}
 		}
 	}
 	fmt.Fprintf(manager.stdout, "Stopped %s. Resume it with katldev installer start or wipe it with katldev installer reset.\n", state.DomainName)
