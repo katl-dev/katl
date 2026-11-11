@@ -1,9 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -168,12 +170,18 @@ func TestExecuteKubeadmControlPlaneConfigRunsBoundedPhases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	replacement := readControlPlaneTestManifest(t, root, "kube-apiserver.yaml")
+	replacement = strings.Replace(replacement, "    - --secure-port=6443", "    - --secure-port=6443\n    - --audit-log-maxage=7", 1)
+	applied := false
 	var commands [][]string
 	executor := NewExecutor(root, store, "agent-start")
 	executor.Async = false
 	executor.Now = func() time.Time { return now }
 	executor.RunTool = func(_ context.Context, argv []string, started func(int)) ToolResult {
 		if result, ok := controlPlaneMirrorProbe(argv); ok {
+			if applied {
+				result.Stdout = []byte(strings.ReplaceAll(string(result.Stdout), "old-kube-apiserver", "new-kube-apiserver"))
+			}
 			return result
 		}
 		if result, ok := healthyControlPlaneProbe(argv); ok {
@@ -182,7 +190,14 @@ func TestExecuteKubeadmControlPlaneConfigRunsBoundedPhases(t *testing.T) {
 		if result, ok := readyKubeletHealthProbe(argv); ok {
 			return result
 		}
-		commands = append(commands, append([]string(nil), argv...))
+		if previewControlPlaneTestManifests(t, root, argv, map[string]string{"kube-apiserver.yaml": replacement}) {
+			argv = slices.Clone(argv)
+			argv[1] = "KUBEADM_INIT_DRYRUN_DIR=<preview>"
+		} else if argv[0] == "/usr/bin/kubeadm" && slices.Contains(argv, "apiserver") {
+			writeKubernetesStatusFile(t, root, "etc/kubernetes/manifests/kube-apiserver.yaml", replacement)
+			applied = true
+		}
+		commands = append(commands, slices.Clone(argv))
 		if slices.Contains(argv, "jsonpath={.data.ClusterConfiguration}") {
 			return ToolResult{Stdout: []byte(liveConfig)}
 		}
@@ -193,7 +208,7 @@ func TestExecuteKubeadmControlPlaneConfigRunsBoundedPhases(t *testing.T) {
 	}
 	want := [][]string{
 		{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "-n", "kube-system", "get", "configmap", "kubeadm-config", "-o", "jsonpath={.data.ClusterConfiguration}"},
-		{"/usr/bin/kubeadm", "init", "phase", "control-plane", "apiserver", "--config", "/var/lib/katl/operations/cp-config-1/effective-kubeadm.yaml", "--dry-run"},
+		{"/usr/bin/env", "KUBEADM_INIT_DRYRUN_DIR=<preview>", "/usr/bin/kubeadm", "init", "phase", "control-plane", "all", "--config", "/var/lib/katl/operations/cp-config-1/effective-kubeadm.yaml", "--dry-run"},
 		{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "get", "node", "cp-1", "-o", "jsonpath={.spec.unschedulable}"},
 		{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "cordon", "cp-1"},
 		{"/usr/bin/kubeadm", "init", "phase", "control-plane", "apiserver", "--config", "/var/lib/katl/operations/cp-config-1/effective-kubeadm.yaml"},
@@ -269,6 +284,9 @@ func TestControlPlaneRestart(t *testing.T) {
 			executor := NewExecutor(root, store, "agent")
 			executor.Async = false
 			executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+				if previewControlPlaneTestManifests(t, root, argv, map[string]string{"kube-apiserver.yaml": desiredManifest}) {
+					return ToolResult{}
+				}
 				if argv[0] == "/usr/bin/systemctl" && slices.Contains(argv, "restart") {
 					mutations++
 					// Native notify can return before the initial static-pod sync. Its
@@ -392,6 +410,9 @@ func TestExecuteKubeadmControlPlaneConfigNoChangeIsIdempotent(t *testing.T) {
 		if result, ok := readyKubeletHealthProbe(argv); ok {
 			return result
 		}
+		if previewControlPlaneTestManifests(t, root, argv, nil) {
+			return ToolResult{}
+		}
 		commands = append(commands, append([]string(nil), argv...))
 		return ToolResult{Stdout: []byte(liveConfig)}
 	}
@@ -453,8 +474,21 @@ func TestExecuteKubeadmControlPlaneConfigStopsAfterMutationUncertainty(t *testin
 	}
 	executor := NewExecutor(root, store, "agent-start")
 	executor.Async = false
+	replacement := strings.Replace(readControlPlaneTestManifest(t, root, "kube-apiserver.yaml"), "    - --secure-port=6443", "    - --secure-port=6443\n    - --profiling=false", 1)
+	applied := false
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		if previewControlPlaneTestManifests(t, root, argv, map[string]string{"kube-apiserver.yaml": replacement}) {
+			return ToolResult{}
+		}
+		if argv[0] == "/usr/bin/kubeadm" && slices.Contains(argv, "apiserver") {
+			writeKubernetesStatusFile(t, root, "etc/kubernetes/manifests/kube-apiserver.yaml", replacement)
+			applied = true
+			return ToolResult{}
+		}
 		if result, ok := controlPlaneMirrorProbe(argv); ok {
+			if applied {
+				result.Stdout = []byte(strings.ReplaceAll(string(result.Stdout), "old-kube-apiserver", "new-kube-apiserver"))
+			}
 			return result
 		}
 		if slices.Contains(argv, "--raw=/readyz") {
@@ -490,6 +524,163 @@ func TestExecuteKubeadmControlPlaneConfigStopsAfterMutationUncertainty(t *testin
 	if !strings.Contains(failed.FailureReason, "post-manifest health failed") {
 		t.Fatalf("operation failed before the intended native health check: %q", failed.FailureReason)
 	}
+}
+
+func TestControlPlanePatchConvergence(t *testing.T) {
+	root := t.TempDir()
+	writeKubeletStartup(t, root)
+	writeControlPlaneManifests(t, root)
+	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const shared = "apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nkubernetesVersion: v1.36.1\n"
+	const init = "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n"
+	const patches = "patches:\n  directory: /etc/katl/kubeadm/control-plane/patches\n"
+	const patchDir = "etc/katl/kubeadm/control-plane/patches/"
+	baseline := map[string]string{}
+	for _, name := range []string{"kube-apiserver.yaml", "kube-controller-manager.yaml", "kube-scheduler.yaml"} {
+		baseline[name] = readControlPlaneTestManifest(t, root, name)
+	}
+	limits := map[string]string{"kube-apiserver": "3", "kube-scheduler": "1"}
+	for component, cpu := range limits {
+		writeKubernetesStatusFile(t, root, patchDir+component+"+strategic.yaml", "spec:\n  containers:\n  - name: "+component+"\n    resources:\n      limits:\n        cpu: "+cpu+"\n")
+	}
+	executor := NewExecutor(root, store, "agent")
+	executor.Async = false
+	mirrors := map[string]string{"kube-apiserver": "initial", "kube-scheduler": "initial"}
+	for _, tc := range []struct {
+		name    string
+		patched bool
+		want    []string
+	}{
+		{name: "apply", patched: true, want: []string{"apiserver", "scheduler"}},
+		{name: "repeat", patched: true},
+		{name: "remove", want: []string{"apiserver", "scheduler"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := init + "---\n" + shared
+			if tc.patched {
+				config = init + patches + "---\n" + shared
+			}
+			writeKubernetesStatusFile(t, root, "etc/katl/kubeadm/control-plane/config.yaml", config)
+			body := controlPlaneConfigFromProto(validControlPlaneConfigRequest())
+			body.CoordinatorUpload = true
+			body.KubernetesPayloadVersion = "v1.36.1"
+			body.KubernetesPayloadSHA256 = strings.Repeat("c", 64)
+			body.DesiredConfigSHA256, err = kubeadmplan.CanonicalClusterConfigurationSHA256([]byte(config))
+			if err != nil {
+				t.Fatal(err)
+			}
+			record, err := store.Create(operation.OperationRecord{
+				OperationID: tc.name, OperationKind: OperationKindKubeadmControlPlaneConfig,
+				Scope: "kubeadm-state", RequestDigest: strings.Repeat("a", 64), Phase: "accepted", KubeadmControlPlaneConfig: &body,
+			}, "accepted", time.Now().UTC())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var writes []string
+			executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+				if result, ok := controlPlaneMirrorProbe(argv); ok {
+					for component, hash := range mirrors {
+						result.Stdout = bytes.ReplaceAll(result.Stdout, []byte("old-"+component), []byte(hash+"-"+component))
+					}
+					return result
+				}
+				if result, ok := healthyControlPlaneProbe(argv); ok {
+					return result
+				}
+				if result, ok := readyKubeletHealthProbe(argv); ok {
+					return result
+				}
+				switch {
+				case slices.Contains(argv, "jsonpath={.data.ClusterConfiguration}"):
+					return ToolResult{Stdout: []byte(shared)}
+				case slices.Contains(argv, "control-plane"):
+					data, err := os.ReadFile(rootedRuntimePath(root, argv[slices.Index(argv, "--config")+1]))
+					if err != nil {
+						t.Fatal(err)
+					}
+					rendered := maps.Clone(baseline)
+					if strings.Contains(string(data), patches) {
+						for component := range limits {
+							patch, err := os.ReadFile(filepath.Join(root, patchDir, component+"+strategic.yaml"))
+							if err != nil {
+								t.Fatal(err)
+							}
+							_, resources, ok := strings.Cut(string(patch), "    resources:")
+							if !ok {
+								t.Fatalf("patch for %s has no resources", component)
+							}
+							rendered[component+".yaml"] += "    resources:" + resources
+						}
+					}
+					if previewControlPlaneTestManifests(t, root, argv, rendered) {
+						return ToolResult{}
+					}
+					phase := argv[4]
+					name := "kube-" + phase
+					if data, ok := rendered[name+".yaml"]; ok {
+						writes = append(writes, phase)
+						writeKubernetesStatusFile(t, root, "etc/kubernetes/manifests/"+name+".yaml", data)
+						mirrors[name] = tc.name
+						return ToolResult{}
+					}
+				case slices.Contains(argv, "jsonpath={.spec.unschedulable}"), slices.Contains(argv, "cordon"), slices.Contains(argv, "uncordon"):
+					if len(tc.want) != 0 {
+						return ToolResult{}
+					}
+				}
+				t.Fatalf("unexpected command %v", argv)
+				return ToolResult{}
+			}
+
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			if err := executor.Execute(ctx, record); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(writes, tc.want) {
+				t.Fatalf("wrote %v, want %v", writes, tc.want)
+			}
+			for component, cpu := range limits {
+				manifest := readControlPlaneTestManifest(t, root, component+".yaml")
+				if got := strings.Contains(manifest, "        cpu: "+cpu); got != tc.patched {
+					t.Fatalf("CPU limit in %s does not match desired patch presence: %s", component, manifest)
+				}
+			}
+			if got := readControlPlaneTestManifest(t, root, "kube-controller-manager.yaml"); got != baseline["kube-controller-manager.yaml"] {
+				t.Fatal("controller manager manifest was changed by another component's patch")
+			}
+		})
+	}
+}
+
+func readControlPlaneTestManifest(t *testing.T, root, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, "etc/kubernetes/manifests", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}
+
+func previewControlPlaneTestManifests(t *testing.T, root string, argv []string, replacements map[string]string) bool {
+	t.Helper()
+	if len(argv) < 2 || !strings.HasPrefix(argv[1], "KUBEADM_INIT_DRYRUN_DIR=") {
+		return false
+	}
+	dir := strings.TrimPrefix(argv[1], "KUBEADM_INIT_DRYRUN_DIR=")
+	for _, name := range []string{"kube-apiserver.yaml", "kube-controller-manager.yaml", "kube-scheduler.yaml"} {
+		data, ok := replacements[name]
+		if !ok {
+			data = readControlPlaneTestManifest(t, root, name)
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return true
 }
 
 func writeControlPlaneManifests(t *testing.T, root string) {
