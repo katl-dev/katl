@@ -43,25 +43,34 @@ type kubernetesUpgradeOptions struct {
 }
 
 type kubernetesUpgradeNodeReport struct {
-	Name             string `json:"name"`
-	Role             string `json:"role"`
-	SourceVersion    string `json:"sourceVersion"`
-	TargetVersion    string `json:"targetVersion"`
-	Result           string `json:"result"`
-	Phase            string `json:"phase,omitempty"`
-	RecoveryRequired bool   `json:"recoveryRequired,omitempty"`
-	NextAction       string `json:"nextAction,omitempty"`
+	Name              string                        `json:"name"`
+	Role              string                        `json:"role"`
+	SourceVersion     string                        `json:"sourceVersion"`
+	TargetVersion     string                        `json:"targetVersion"`
+	Result            string                        `json:"result"`
+	Phase             string                        `json:"phase,omitempty"`
+	RecoveryRequired  bool                          `json:"recoveryRequired,omitempty"`
+	NextAction        string                        `json:"nextAction,omitempty"`
+	Etcd              *agentapi.EtcdUpgradeEvidence `json:"etcd,omitempty"`
+	RecoveryOperation string                        `json:"recoveryOperation,omitempty"`
 }
 
 type kubernetesUpgradeReport struct {
-	Cluster       string                        `json:"cluster"`
-	SourceVersion string                        `json:"sourceVersion"`
-	TargetVersion string                        `json:"targetVersion"`
-	Bundle        string                        `json:"bundle,omitempty"`
-	Artifact      string                        `json:"artifact,omitempty"`
-	Plan          bool                          `json:"plan"`
-	Nodes         []kubernetesUpgradeNodeReport `json:"nodes"`
-	NextAction    string                        `json:"nextAction,omitempty"`
+	Cluster          string                        `json:"cluster"`
+	SourceVersion    string                        `json:"sourceVersion"`
+	TargetVersion    string                        `json:"targetVersion"`
+	Bundle           string                        `json:"bundle,omitempty"`
+	Artifact         string                        `json:"artifact,omitempty"`
+	Plan             bool                          `json:"plan"`
+	Nodes            []kubernetesUpgradeNodeReport `json:"nodes"`
+	NextAction       string                        `json:"nextAction,omitempty"`
+	Etcd             []kubernetesUpgradeEtcdReport `json:"etcd,omitempty"`
+	RecoveryRequired bool                          `json:"recoveryRequired,omitempty"`
+}
+
+type kubernetesUpgradeEtcdReport struct {
+	Node     string                        `json:"node"`
+	Evidence *agentapi.EtcdUpgradeEvidence `json:"evidence"`
 }
 
 type kubernetesUpgradeArtifact struct {
@@ -73,14 +82,15 @@ type kubernetesUpgradeArtifact struct {
 }
 
 type kubernetesUpgradeTarget struct {
-	node         workstation.TopologyNode
-	upgradeRole  string
-	conn         katlcAgentConnection
-	machineID    string
-	generation   string
-	source       string
-	candidate    string
-	architecture string
+	node                workstation.TopologyNode
+	upgradeRole         string
+	conn                katlcAgentConnection
+	machineID           string
+	generation          string
+	source              string
+	candidate           string
+	architecture        string
+	preparedOperationID string
 }
 
 var (
@@ -217,6 +227,29 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 		}
 		report.Nodes = append(report.Nodes, kubernetesUpgradeNodeReport{Name: target.node.Name, Role: string(target.node.SystemRole), SourceVersion: target.source, TargetVersion: desiredVersion, Result: "planned"})
 	}
+	// Capture every pre-upgrade snapshot before issuing the first mutating
+	// request. Independent snapshots describe revisions of the same keyspace.
+	for i := range targets {
+		target := &targets[i]
+		if target.node.SystemRole != inventory.RoleControlPlane {
+			continue
+		}
+		evidence, preparedID, err := prepareKubernetesUpgradeTarget(ctx, opts, *target, image, desiredVersion, localArtifact, stderr)
+		if evidence != nil {
+			report.Etcd = append(report.Etcd, kubernetesUpgradeEtcdReport{Node: target.node.Name, Evidence: evidence})
+		}
+		if err != nil {
+			_ = writeKubernetesUpgradeReport(stdout, opts.output, report)
+			return err
+		}
+		if len(report.Etcd) > 1 {
+			first := report.Etcd[0].Evidence
+			if evidence.Before.ClusterId != first.Before.ClusterId || evidence.TargetImage != first.TargetImage {
+				return fmt.Errorf("etcd preparations disagree on cluster identity or target image; stop and inspect every control plane")
+			}
+		}
+		target.preparedOperationID = preparedID
+	}
 	if opts.plan {
 		return writeKubernetesUpgradeReport(stdout, opts.output, report)
 	}
@@ -227,6 +260,8 @@ func runKubernetesUpgrade(ctx context.Context, opts kubernetesUpgradeOptions, st
 		nodeReport, err := runKubernetesUpgradeTarget(ctx, topology, opts, *target, image, desiredVersion, localArtifact, stderr)
 		report.Nodes = append(report.Nodes, nodeReport)
 		if err != nil {
+			report.RecoveryRequired = nodeReport.RecoveryRequired
+			report.NextAction = nodeReport.NextAction
 			_ = writeKubernetesUpgradeReport(stdout, opts.output, report)
 			return err
 		}
@@ -261,7 +296,7 @@ func runKubernetesUpgradeTarget(ctx context.Context, topology workstation.Resolv
 		}
 	}
 	body := kubernetesUpgradeBody(target, image, desiredVersion, localArtifact)
-	if localArtifact != nil {
+	if localArtifact != nil && target.preparedOperationID == "" {
 		localRef, err := stageKubernetesUpgradeArtifact(ctx, target.conn.Client, target, *localArtifact, target.node.Name, stderr)
 		if err != nil {
 			nodeReport.Result = "upload-failed"
@@ -279,6 +314,8 @@ func runKubernetesUpgradeTarget(ctx context.Context, topology workstation.Resolv
 	})
 	if err != nil {
 		nodeReport.Result = "submit-failed"
+		nodeReport.RecoveryRequired = true
+		nodeReport.NextAction = "stop the rollout and inspect the node operation before retrying; request delivery is uncertain"
 		return nodeReport, fmt.Errorf("submit node %s: %w", target.node.Name, err)
 	}
 	waitCtx, cancel := context.WithTimeout(ctx, opts.timeout)
@@ -286,27 +323,83 @@ func runKubernetesUpgradeTarget(ctx context.Context, topology workstation.Resolv
 	cancel()
 	if err != nil {
 		nodeReport.Result = "wait-failed"
+		nodeReport.RecoveryOperation = accepted.OperationId
+		nodeReport.RecoveryRequired = true
+		nodeReport.NextAction = "stop the rollout and inspect the node operation and direct etcd state; completion is uncertain"
 		return nodeReport, fmt.Errorf("wait for node %s: %w", target.node.Name, err)
 	}
 	nodeReport.Result = terminal.Result
 	nodeReport.Phase = terminal.Phase
 	nodeReport.RecoveryRequired = terminal.RecoveryRequired
 	nodeReport.NextAction = terminal.NextAction
-	if terminal.Result != operation.ResultSucceeded {
+	nodeReport.Etcd = terminal.EtcdUpgrade
+	if terminal.Result != operation.ResultSucceeded || terminal.RecoveryRequired {
+		nodeReport.RecoveryOperation = accepted.OperationId
 		return nodeReport, fmt.Errorf("Kubernetes upgrade stopped at node %s: %s", target.node.Name, terminal.FailureReason)
 	}
 	if target.node.SystemRole == inventory.RoleControlPlane {
+		if terminal.EtcdUpgrade.GetAfter() == nil || terminal.EtcdUpgrade.GetAfter().GetLocalMemberId() == "" {
+			nodeReport.Result = "etcd-evidence-missing"
+			nodeReport.RecoveryRequired = true
+			nodeReport.RecoveryOperation = accepted.OperationId
+			nodeReport.NextAction = "inspect the returning etcd member before continuing; the agent did not provide rejoin evidence"
+			return nodeReport, fmt.Errorf("Kubernetes upgrade stopped after node %s: missing direct etcd rejoin evidence", target.node.Name)
+		}
 		readyCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 		err := waitKubernetesEndpoint(readyCtx, topology.ControlPlaneEndpoint, target.node.Name, stderr)
 		cancel()
 		if err != nil {
 			nodeReport.Result = "cluster-health-failed"
+			nodeReport.RecoveryRequired = true
+			nodeReport.RecoveryOperation = accepted.OperationId
+			nodeReport.NextAction = "inspect direct etcd and Kubernetes API health before continuing the rollout"
 			return nodeReport, fmt.Errorf("Kubernetes upgrade stopped after node %s: %w", target.node.Name, err)
 		}
 	}
 	nodeReport.Phase = "healthy"
 	nodeReport.NextAction = ""
 	return nodeReport, nil
+}
+
+func prepareKubernetesUpgradeTarget(ctx context.Context, opts kubernetesUpgradeOptions, target kubernetesUpgradeTarget, image reference.Named, desiredVersion string, localArtifact *kubernetesUpgradeArtifact, progress io.Writer) (*agentapi.EtcdUpgradeEvidence, string, error) {
+	body := kubernetesUpgradeBody(target, image, desiredVersion, localArtifact)
+	body.PreviewOnly = opts.plan
+	if localArtifact != nil {
+		localRef, err := stageKubernetesUpgradeArtifact(ctx, target.conn.Client, target, *localArtifact, target.node.Name, progress)
+		if err != nil {
+			return nil, "", err
+		}
+		body.TargetSysextPath = kubernetesUpgradeArtifactLogicalPath(localRef)
+	}
+	requestID := "katlctl-prepare-" + target.candidate
+	if opts.plan {
+		requestID = "katlctl-preview-" + target.candidate
+	}
+	accepted, err := target.conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
+		ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: requestID, OperationKind: "kubeadm-upgrade-prepare",
+		Actor: "katlctl kubernetes upgrade", ExpectedMachineId: target.machineID, ExpectedEnrollmentId: target.node.EnrollmentID, ExpectedInventoryNodeName: target.node.Name,
+		ExpectedCurrentGenerationId: target.generation, OperationTimeout: opts.timeout.String(), KubernetesSysextUpdate: body,
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("prepare etcd on %s: %w", target.node.Name, err)
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, opts.timeout)
+	defer cancel()
+	terminal, err := waitKubernetesUpgrade(waitCtx, target.conn.Client, accepted.OperationId, target.node.Name, progress)
+	if err != nil {
+		return nil, "", fmt.Errorf("wait for etcd preparation on %s: %w", target.node.Name, err)
+	}
+	evidence := terminal.EtcdUpgrade
+	if terminal.Result != operation.ResultSucceeded || terminal.RecoveryRequired {
+		return evidence, "", fmt.Errorf("etcd preparation stopped on %s: %s", target.node.Name, terminal.FailureReason)
+	}
+	if evidence == nil || evidence.SourceImage == "" || evidence.TargetImage == "" || evidence.Before == nil || !opts.plan && evidence.Snapshot == nil {
+		return evidence, "", fmt.Errorf("node %s returned incomplete etcd preparation evidence; update the node agent before upgrading", target.node.Name)
+	}
+	if _, err := fmt.Fprintf(progress, "etcd node=%s image=%s -> %s change=%t\n", target.node.Name, evidence.SourceImage, evidence.TargetImage, evidence.ImageChanges); err != nil {
+		return evidence, "", err
+	}
+	return evidence, accepted.OperationId, nil
 }
 
 func kubernetesNodeUnschedulable(ctx context.Context, kubeconfig, node string) (bool, error) {
@@ -479,7 +572,7 @@ func connectKubernetesUpgradeTargets(ctx context.Context, topology workstation.R
 			controlPlanes++
 		}
 	}
-	if controlPlanes == 0 {
+	if controlPlanes == 0 && !topology.ExternalControlPlane {
 		return nil, fmt.Errorf("cluster has no control-plane node")
 	}
 	runID := fmt.Sprintf("%d", kubernetesUpgradeNow().Unix())
@@ -594,6 +687,7 @@ func kubernetesUpgradeBody(target kubernetesUpgradeTarget, image reference.Named
 	body := &agentapi.KubernetesSysextUpdateOperationRequest{
 		TargetPayloadVersion: desiredVersion, CandidateGenerationId: target.candidate,
 		UpgradeRole: target.upgradeRole, SourcePayloadVersion: target.source,
+		PreparedOperationId: target.preparedOperationID,
 	}
 	if image != nil {
 		body.KubernetesBundleSource = payloadbundle.Source(image)
@@ -662,6 +756,9 @@ func kubernetesUpgradeCandidate(version, node, runID string) string {
 
 func writeKubernetesUpgradeReport(stdout io.Writer, output string, report kubernetesUpgradeReport) error {
 	if output == "text" {
+		for _, entry := range report.Etcd {
+			fmt.Fprintf(stdout, "etcd %s: %s -> %s (image changes: %t)\n", entry.Node, entry.Evidence.SourceImage, entry.Evidence.TargetImage, entry.Evidence.ImageChanges)
+		}
 		action := "Kubernetes upgrade"
 		if report.Plan {
 			action = "Kubernetes upgrade plan"
@@ -678,6 +775,25 @@ func writeKubernetesUpgradeReport(stdout io.Writer, output string, report kubern
 		}
 		if err := w.flush(); err != nil {
 			return err
+		}
+		for _, node := range report.Nodes {
+			if !node.RecoveryRequired {
+				continue
+			}
+			fmt.Fprintf(stdout, "%s: recoveryRequired=true operation=%s\n", node.Name, node.RecoveryOperation)
+			if observed := node.Etcd.GetAfter(); observed != nil {
+				fmt.Fprintf(stdout, "etcd cluster=%s local-member=%s leader=%s committed-index=%d\n", observed.ClusterId, observed.LocalMemberId, observed.LeaderId, observed.BarrierIndex)
+				for _, member := range observed.Members {
+					fmt.Fprintf(stdout, "  %s member=%s healthy=%t server=%s cluster=%s storage=%s applied=%d %s\n", member.Name, member.Id, member.Healthy, member.Version, member.ClusterVersion, member.StorageVersion, member.AppliedIndex, member.Error)
+				}
+			}
+		}
+		if report.RecoveryRequired {
+			for _, entry := range report.Etcd {
+				if snapshot := entry.Evidence.GetSnapshot(); snapshot != nil {
+					fmt.Fprintf(stdout, "Snapshot on %s: %s revision=%d sha256=%s\n", entry.Node, snapshot.Path, snapshot.Revision, snapshot.Sha256)
+				}
+			}
 		}
 		if report.NextAction != "" {
 			_, err := fmt.Fprintf(stdout, "Next action: %s\n", report.NextAction)

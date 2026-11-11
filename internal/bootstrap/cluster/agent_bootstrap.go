@@ -131,6 +131,9 @@ func AgentEndpoint(address, defaultPort string) string {
 }
 
 func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrapDependencies) (Result, error) {
+	if request.Inventory.ExternalControlPlane {
+		return Result{}, fmt.Errorf("external control planes are managed outside Katl; use katlctl node join with --bootstrap-kubeconfig")
+	}
 	inv := request.Inventory
 	if strings.TrimSpace(request.ControlPlaneEndpoint) != "" {
 		inv.ControlPlaneEndpoint = strings.TrimSpace(request.ControlPlaneEndpoint)
@@ -448,8 +451,9 @@ type operationReference struct {
 }
 
 type workerJoinMaterial struct {
-	Ref      string
-	Material *agentapi.WorkerJoinMaterial
+	Bootstrap []byte
+	Ref       string
+	Material  *agentapi.WorkerJoinMaterial
 }
 
 func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode, plan inventory.Plan, status *agentapi.NodeStatus, clusterName string, identity []byte, identityFingerprint string, deps AgentBootstrapDependencies) (bootstrapInitResult, error) {
@@ -690,6 +694,7 @@ func submitAndWaitJoin(ctx context.Context, node inventory.PlannedNode, plan inv
 	}
 	req.Bootstrap.JoinMaterialRef = strings.TrimSpace(material.Ref)
 	req.Bootstrap.WorkerJoinMaterial = material.Material
+	req.Bootstrap.BootstrapKubeconfig = material.Bootstrap
 	accepted, requestID, resumed, err := resumeBootstrapOperation(ctx, conn.Client, req.ClientRequestId, req.OperationKind)
 	if err != nil {
 		return operationReference{}, err
@@ -752,6 +757,7 @@ func bootstrapOperationRequest(node inventory.PlannedNode, plan inventory.Plan, 
 		ExpectedCurrentGenerationId: strings.TrimSpace(status.GetCurrentGenerationId()),
 		DryRun:                      false,
 		Bootstrap: &agentapi.BootstrapOperationRequest{
+			ExternalWorker:           plan.ExternalControlPlane,
 			InventoryNodeName:        node.Name,
 			SystemRole:               string(node.SystemRole),
 			KubernetesPayloadVersion: node.KubernetesVersion,
@@ -766,6 +772,9 @@ func bootstrapOperationRequest(node inventory.PlannedNode, plan inventory.Plan, 
 }
 
 func bootstrapAPIProxyConfig(node inventory.PlannedNode, plan inventory.Plan) (string, error) {
+	if plan.ExternalControlPlane {
+		return "", nil
+	}
 	canonicalEndpoint := strings.TrimSpace(plan.ControlPlaneEndpoint)
 	if canonicalEndpoint == "" {
 		for _, candidate := range plan.Nodes {

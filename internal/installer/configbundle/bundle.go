@@ -24,6 +24,7 @@ import (
 	"github.com/katl-dev/katl/internal/generation"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/externalworker"
 	installer "github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/clusterplan"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
@@ -210,8 +211,13 @@ type SourcePartitionSelector struct {
 }
 
 type SourceKubernetesCluster struct {
-	Version string              `yaml:"version,omitempty" json:"version,omitempty"`
-	Kubeadm *SourceKubeadmInput `yaml:"kubeadm,omitempty" json:"kubeadm,omitempty"`
+	External *SourceExternalKubernetes `yaml:"external,omitempty" json:"external,omitempty"`
+	Version  string                    `yaml:"version,omitempty" json:"version,omitempty"`
+	Kubeadm  *SourceKubeadmInput       `yaml:"kubeadm,omitempty" json:"kubeadm,omitempty"`
+}
+
+type SourceExternalKubernetes struct {
+	Endpoint string `yaml:"endpoint" json:"endpoint"`
 }
 
 type SourceKubeadmInput struct {
@@ -650,7 +656,7 @@ func LowerSource(source SourceConfig, planning PlanningInputs) (clusterplan.Conf
 			Overrides:  layer,
 		})
 	}
-	if !hasControlPlane {
+	if !hasControlPlane && source.Spec.Kubernetes.External == nil {
 		return clusterplan.Config{}, fmt.Errorf("spec.nodes must include at least one node with controlPlane: true")
 	}
 	return clusterplan.Config{
@@ -687,6 +693,9 @@ func validateResolvedSourceNodeIssues(source SourceConfig) []error {
 func lowerKubernetesSelection(source SourceConfig, bundle string) (clusterplan.KubernetesSelection, error) {
 	version := strings.TrimSpace(source.Spec.Kubernetes.Version)
 	out := clusterplan.KubernetesSelection{PayloadVersion: version}
+	if external := source.Spec.Kubernetes.External; external != nil {
+		out.ExternalEndpoint = strings.TrimPrefix(external.Endpoint, "https://")
+	}
 	if bundle = strings.TrimSpace(bundle); bundle != "" {
 		image, err := kubernetesbundle.ParseImageReference(bundle)
 		if err != nil {
@@ -806,8 +815,28 @@ func normalizeSourceIssues(source SourceConfig) (SourceConfig, []error) {
 				break
 			}
 		}
-		if !hasControlPlane {
+		if !hasControlPlane && source.Spec.Kubernetes.External == nil {
 			errs = append(errs, fmt.Errorf("spec.nodes must include at least one node with controlPlane: true"))
+		}
+	}
+	if external := source.Spec.Kubernetes.External; external != nil {
+		if _, err := externalworker.Endpoint(external.Endpoint); err != nil {
+			errs = append(errs, fmt.Errorf("spec.kubernetes.external.endpoint: %w", err))
+		}
+		if source.Spec.Kubernetes.Kubeadm != nil || source.Spec.ControlPlaneEndpoint != nil {
+			errs = append(errs, fmt.Errorf("spec.kubernetes.external cannot be combined with kubernetes.kubeadm or controlPlaneEndpoint"))
+		}
+		for i, node := range source.Spec.Nodes {
+			if node.ControlPlane {
+				errs = append(errs, fmt.Errorf("%s.controlPlane must be false for an external cluster", sourceNodePath(node, i)))
+			}
+			kubelet := node.Kubernetes.Kubelet
+			if kubelet == nil {
+				kubelet = source.Spec.Defaults.Kubernetes.Kubelet
+			}
+			if kubelet == nil {
+				errs = append(errs, fmt.Errorf("%s.kubernetes.kubelet.configFile is required for an external cluster; set its cluster DNS and domain", sourceNodePath(node, i)))
+			}
 		}
 	}
 	if strings.TrimSpace(source.Spec.Defaults.Kubernetes.Address) != "" {
@@ -1045,6 +1074,10 @@ func readHostConfigurationSource(sourceRoot, source string) ([]byte, error) {
 }
 
 func SourceControlPlaneEndpoint(source SourceConfig) string {
+	if external := source.Spec.Kubernetes.External; external != nil {
+		endpoint, _ := externalworker.Endpoint(external.Endpoint)
+		return endpoint
+	}
 	if source.Spec.ControlPlaneEndpoint == nil {
 		return ""
 	}
@@ -1256,9 +1289,12 @@ func addNodeKubeadmInputs(members *[]member, descriptors *[]Descriptor, node clu
 	if !ok {
 		return nil, fmt.Errorf("node %s kubeadm config %q was not resolved", node.Name, ref)
 	}
-	plan, err := kubeadmconfig.WithNodeAddress(plan, node.InstallManifest.Node.Kubernetes.Address)
-	if err != nil {
-		return nil, fmt.Errorf("node %s kubeadm config %q: %w", node.Name, ref, err)
+	if !node.InstallManifest.Node.Kubernetes.External {
+		var err error
+		plan, err = kubeadmconfig.WithNodeAddress(plan, node.InstallManifest.Node.Kubernetes.Address)
+		if err != nil {
+			return nil, fmt.Errorf("node %s kubeadm config %q: %w", node.Name, ref, err)
+		}
 	}
 	var out []Descriptor
 	files := append([]kubeadmconfig.File{plan.Config}, plan.Patches...)

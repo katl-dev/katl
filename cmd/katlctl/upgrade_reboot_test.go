@@ -181,6 +181,56 @@ func TestWaitNodeBootHealthRequiresRollbackRebootAfterRejectedTrial(t *testing.T
 	}
 }
 
+func TestRollbackWaitsForBoot(t *testing.T) {
+	fake := &fakeKatlcAgentClient{
+		nodeStatus: &agentapi.NodeStatus{
+			AgentStartId:           "trial-agent",
+			CurrentGenerationId:    "previous",
+			SelectedGenerationId:   "trial",
+			BootTargetGenerationId: "previous",
+			BootHealthState:        "failed",
+			Kubernetes:             &agentapi.KubernetesStatus{State: "not-configured"},
+		},
+		generation: &agentapi.Generation{GenerationId: "trial", BootState: generation.BootStateFailed, HealthState: generation.HealthStateUnhealthy},
+	}
+	observations := 0
+	fake.onGetNodeStatus = func() {
+		observations++
+		switch observations {
+		case 2:
+			fake.nodeStatus.AgentStartId = "fallback-agent"
+			fake.nodeStatus.SelectedGenerationId = "previous"
+			fake.nodeStatus.BootHealthState = "pending"
+		case 3:
+			fake.nodeStatus.BootHealthState = "healthy"
+		}
+	}
+	installKatlcDial(t, nil, fake)
+	oldInterval := upgradeRebootPollInterval
+	upgradeRebootPollInterval = time.Millisecond
+	t.Cleanup(func() { upgradeRebootPollInterval = oldInterval })
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, observed, err := waitNodeBootHealth(ctx, "cp-1", "10.0.0.11:9443", "before", "trial", nodeRecoveryRequirement{}, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "returned on generation previous") {
+		t.Fatalf("rollback outcome = %v", err)
+	}
+	if observed.Status.GetSelectedGenerationId() != "previous" || observed.Status.GetBootHealthState() != "healthy" {
+		t.Fatalf("reported recovery before a healthy fallback boot: %+v", observed.Status)
+	}
+}
+
+func TestBootHealthUsesRunningGeneration(t *testing.T) {
+	boot := verifiedNodeBoot{
+		Status:     &agentapi.NodeStatus{CurrentGenerationId: "previous", SelectedGenerationId: "trial", BootHealthState: "failed"},
+		Generation: &agentapi.Generation{GenerationId: "previous", CommitState: generation.CommitStateCommitted, BootState: generation.BootStateGood, HealthState: generation.HealthStateHealthy},
+	}
+	if got := observedBootHealth(boot, "previous"); got != "unknown" {
+		t.Fatalf("boot health = %q while trial is running", got)
+	}
+}
+
 func TestCurrentHostUpgradeAcceptsPreservedPreCNIState(t *testing.T) {
 	const generationID = "katlos-2026.7.0-alpha.9"
 	fake := &fakeKatlcAgentClient{

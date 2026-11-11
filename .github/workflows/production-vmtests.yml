@@ -63,7 +63,7 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.artifact-name }}
-          run-id: ${{ inputs.run-id || github.run_id }}
+          run-id: ${{ inputs.run-id > 0 && inputs.run-id || github.run_id }}
           github-token: ${{ github.token }}
           path: dist
       - name: Verify candidate and download the previous stable release
@@ -99,4 +99,6 @@ jobs:
             _build/production-vmtest/**/*.txt
             _build/production-vmtest/**/*.stdout
             _build/production-vmtest/**/*.stderr
+            _build/production-vmtest/**/stdout
+            _build/production-vmtest/**/stderr
           retention-days: 3

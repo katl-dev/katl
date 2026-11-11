@@ -65,6 +65,7 @@ type TrustedBundleRequest struct {
 }
 
 type NodeOverlay struct {
+	ExternalEndpoint        *string
 	GenerationRetention     *generation.Retention `json:"generationRetention,omitempty" yaml:"generationRetention,omitempty"`
 	Identity                *IdentityOverlay
 	SystemRole              string
@@ -573,6 +574,11 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 	}
 	applyOverlay(&merged, roleOverlay, request.KubernetesInitialized, &domains, &unsafeFiles)
 	nodeOverlay := request.NodeOverrides[request.NodeName]
+	for _, overlay := range []NodeOverlay{request.ClusterDefaults, roleOverlay, nodeOverlay} {
+		if overlay.ExternalEndpoint != nil && (request.CurrentManifest.Node.Bootstrap == nil || *overlay.ExternalEndpoint != request.CurrentManifest.Node.Bootstrap.ControlPlaneEndpoint) {
+			return manifest.Manifest{}, nil, nil, fmt.Errorf("changing an external worker endpoint requires reprovisioning the node")
+		}
+	}
 	if request.NodeName != "" {
 		if err := validateOverlay("nodeOverrides."+request.NodeName, nodeOverlay); err != nil {
 			return manifest.Manifest{}, nil, nil, err
@@ -594,6 +600,16 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 		}
 	}
 	proxyConfig := lastAPIProxy(request.ClusterDefaults, roleOverlay, nodeOverlay)
+	if merged.Node.Kubernetes.External != request.CurrentManifest.Node.Kubernetes.External {
+		return manifest.Manifest{}, nil, nil, fmt.Errorf("changing Kubernetes control-plane ownership requires reprovisioning the node")
+	}
+	if merged.Node.Kubernetes.External {
+		for _, domain := range []string{DomainKubeletNodeIdentity, DomainBootstrapNodeMetadata} {
+			if _, changed := domains.seen[domain]; changed {
+				return manifest.Manifest{}, nil, nil, fmt.Errorf("changing external worker enrollment identity requires reprovisioning; kubelet configuration can be applied independently")
+			}
+		}
+	}
 	proxyFiles, proxyChanged, err := apiProxyFiles(request, proxyConfig)
 	if err != nil {
 		return manifest.Manifest{}, nil, nil, err

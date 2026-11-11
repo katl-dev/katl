@@ -36,7 +36,7 @@ func TestKubeadmUpgradePatches(t *testing.T) {
 				writeTestFile(t, filepath.Join(root, "etc/katl/kubeadm/operator-current/patches/kubeletconfiguration999+merge.yaml"), "shutdownGracePeriod: 0s\n")
 				writeTestFile(t, filepath.Join(root, "var/lib/katl/operations", record.OperationID, "tools/kubeadm-patches/kubeletconfiguration000+merge.yaml"), "maxPods: 9\n")
 
-				executor := NewExecutor(root, store, "agent-test")
+				executor := newUpgradeExecutor(root, store)
 				executor.Async = false
 				executor.Now = func() time.Time { return now.Add(time.Minute) }
 				executor.SetBootDefault = func(context.Context, string, string) error { return nil }
@@ -47,6 +47,8 @@ func TestKubeadmUpgradePatches(t *testing.T) {
 					switch {
 					case strings.Contains(joined, "kubeadm version"):
 						return ToolResult{Stdout: []byte("v1.36.2\n")}
+					case strings.Contains(joined, "get configmap kubeadm-config"):
+						return ToolResult{Stdout: []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n")}
 					case strings.Contains(joined, "get endpoints kubernetes"):
 						return ToolResult{Stdout: testKubeAPIServerEndpoints("10.0.0.1")}
 					case strings.Contains(joined, "kubelet --version"):
@@ -85,7 +87,7 @@ func TestKubeadmUpgradeRejectsBrokenInput(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			executor := NewExecutor(root, store, "agent-test")
+			executor := newUpgradeExecutor(root, store)
 			executor.Async = false
 			executor.Now = func() time.Time { return now.Add(time.Minute) }
 			executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {

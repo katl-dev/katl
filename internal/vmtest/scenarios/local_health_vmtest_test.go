@@ -25,7 +25,7 @@ func proveLocalControlPlaneHealth(t *testing.T, ctx context.Context, nodes []vmt
 	}
 	// Freeze only the local API process; a peer remains available through the
 	// managed API proxy while CRI still reports the frozen container as Running.
-	container, err := runNodeCommandWithRetry(ctx, node, []string{"crictl", "ps", "--name", "kube-apiserver", "-q"}, 4096)
+	container, err := runNodeCommand(ctx, node, []string{"crictl", "ps", "--name", "kube-apiserver", "-q"}, 4096)
 	if err != nil {
 		return err
 	}
@@ -33,7 +33,7 @@ func proveLocalControlPlaneHealth(t *testing.T, ctx context.Context, nodes []vmt
 		return fmt.Errorf("identify local API container: %s", commandErrorDetail(container))
 	}
 	id := strings.TrimSpace(string(container.Stdout))
-	stopped, err := runNodeCommandWithRetry(ctx, node, []string{"ctr", "-n", "k8s.io", "tasks", "pause", id}, 4096)
+	stopped, err := runNodeCommand(ctx, node, []string{"ctr", "-n", "k8s.io", "tasks", "pause", id}, 4096)
 	if err != nil {
 		return err
 	}
@@ -47,7 +47,7 @@ func proveLocalControlPlaneHealth(t *testing.T, ctx context.Context, nodes []vmt
 		}
 		recovery, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		resumed, err := runNodeCommandWithRetry(recovery, node, []string{"ctr", "-n", "k8s.io", "tasks", "resume", id}, 4096)
+		resumed, err := runNodeCommand(recovery, node, []string{"ctr", "-n", "k8s.io", "tasks", "resume", id}, 4096)
 		if err != nil || resumed.ExitStatus != 0 {
 			t.Errorf("resume local API: %v", err)
 		}
@@ -69,7 +69,7 @@ func proveLocalControlPlaneHealth(t *testing.T, ctx context.Context, nodes []vmt
 	if err := os.WriteFile(filepath.Join(dir, "local-api-fault.json"), data, 0o600); err != nil {
 		return err
 	}
-	resumed, err := runNodeCommandWithRetry(ctx, node, []string{"ctr", "-n", "k8s.io", "tasks", "resume", id}, 4096)
+	resumed, err := runNodeCommand(ctx, node, []string{"ctr", "-n", "k8s.io", "tasks", "resume", id}, 4096)
 	if err != nil {
 		return err
 	}
@@ -80,12 +80,7 @@ func proveLocalControlPlaneHealth(t *testing.T, ctx context.Context, nodes []vmt
 	if _, err := kubectlOutput(ctx, kubeconfig, "--server=https://"+addresses[node.Name]+":6443", "get", "--raw=/readyz"); err != nil {
 		return fmt.Errorf("local API did not recover: %w", err)
 	}
-	recovered, err := readAgentNodeStatus(ctx, node.Name, addresses[node.Name])
-	if err != nil {
-		return err
-	}
-	if recovered.GetKubernetes().GetState() != "ready" {
-		return fmt.Errorf("local health did not recover: %s", recovered.GetKubernetes())
-	}
-	return nil
+	// API readiness can recover before kubelet publishes current mirror-Pod
+	// status. Require convergence of the complete local health contract.
+	return waitForAgentKubernetesReady(ctx, []vmtest.RunningInstalledRuntimeNode{node}, addresses, time.Minute)
 }

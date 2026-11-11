@@ -95,7 +95,7 @@ vmtest_requests_kubernetes_upgrade() {
 		if [[ "$next_is_run" == 1 ]]; then
 			has_run=1
 			next_is_run=0
-			if [[ "TestKubeadmUpgradeOperationSmoke" =~ $arg ]]; then
+			if [[ "TestKubeadmUpgradeOperationSmoke" =~ $arg || "TestKubeadmUpgradeEtcdFailure" =~ $arg || "TestKubeadmUpgradeThreeControlPlanes" =~ $arg ]]; then
 				return 0
 			fi
 			continue
@@ -107,7 +107,7 @@ vmtest_requests_kubernetes_upgrade() {
 			-run=* | --run=* | -test.run=* | --test.run=*)
 				has_run=1
 				local pattern="${arg#*=}"
-				if [[ "TestKubeadmUpgradeOperationSmoke" =~ $pattern ]]; then
+				if [[ "TestKubeadmUpgradeOperationSmoke" =~ $pattern || "TestKubeadmUpgradeEtcdFailure" =~ $pattern || "TestKubeadmUpgradeThreeControlPlanes" =~ $pattern ]]; then
 					return 0
 				fi
 				;;
@@ -385,6 +385,8 @@ validate_current_artifact_inputs() {
 }
 
 build_default_artifacts() {
+	local upgrade_target_payload="${KATL_KUBERNETES_UPGRADE_PAYLOAD_VERSION:-v1.36.1}"
+	local upgrade_source_payload="${KATL_KUBERNETES_UPGRADE_SOURCE_PAYLOAD_VERSION:-v1.36.0}"
     case "$auto_rebuild" in
         0 | false | no | off)
             return 0
@@ -443,6 +445,7 @@ build_default_artifacts() {
             build-kubernetes-upgrade-sysext)
                 build_command=(
                     env
+                    "KATL_KUBERNETES_MINOR=${upgrade_target_payload%.*}"
                     "KATL_KUBERNETES_PAYLOAD_VERSION=${KATL_KUBERNETES_UPGRADE_PAYLOAD_VERSION:-v1.36.1}"
                     "KATL_KUBERNETES_KUBEADM_VERSION=${KATL_KUBERNETES_UPGRADE_KUBEADM_VERSION:-0:1.36.1-150500.1.1}"
                     "KATL_KUBERNETES_KUBELET_VERSION=${KATL_KUBERNETES_UPGRADE_KUBELET_VERSION:-0:1.36.1-150500.1.1}"
@@ -454,6 +457,7 @@ build_default_artifacts() {
             build-kubernetes-upgrade-source-sysext)
                 build_command=(
                     env
+                    "KATL_KUBERNETES_MINOR=${upgrade_source_payload%.*}"
                     "KATL_KUBERNETES_PAYLOAD_VERSION=${KATL_KUBERNETES_UPGRADE_SOURCE_PAYLOAD_VERSION:-v1.36.0}"
                     "KATL_KUBERNETES_ARTIFACT_REVISION=${KATL_KUBERNETES_UPGRADE_SOURCE_ARTIFACT_REVISION:-3}"
                     "KATL_KUBERNETES_KUBEADM_VERSION=${KATL_KUBERNETES_UPGRADE_SOURCE_KUBEADM_VERSION:-0:1.36.0-150500.1.1}"
@@ -495,14 +499,18 @@ build_default_artifacts() {
 verify_kubernetes_upgrade_artifacts() {
 	local base="$repo_root/_build/mkosi/katl-kubernetes.raw"
 	local target="$repo_root/_build/mkosi/katl-kubernetes-upgrade.raw"
+	local upgrade_source_payload="${KATL_KUBERNETES_UPGRADE_SOURCE_PAYLOAD_VERSION:-v1.36.0}"
+	local upgrade_target_payload="${KATL_KUBERNETES_UPGRADE_PAYLOAD_VERSION:-v1.36.1}"
 	printf 'vmtest verifying source Kubernetes sysext independently: %s\n' "$base" >&2
 	KATL_KUBERNETES_PAYLOAD_VERSION="${KATL_KUBERNETES_UPGRADE_SOURCE_PAYLOAD_VERSION:-v1.36.0}" \
+		KATL_KUBERNETES_MINOR="${upgrade_source_payload%.*}" \
 		KATL_KUBERNETES_KUBEADM_VERSION="${KATL_KUBERNETES_UPGRADE_SOURCE_KUBEADM_VERSION:-0:1.36.0-150500.1.1}" \
 		KATL_KUBERNETES_KUBELET_VERSION="${KATL_KUBERNETES_UPGRADE_SOURCE_KUBELET_VERSION:-0:1.36.0-150500.1.1}" \
 		KATL_KUBERNETES_KUBECTL_VERSION="${KATL_KUBERNETES_UPGRADE_SOURCE_KUBECTL_VERSION:-0:1.36.0-150500.1.1}" \
 		"$repo_root/scripts/check-kubernetes-sysext" "$base"
 	printf 'vmtest verifying target Kubernetes sysext independently: %s\n' "$target" >&2
 	KATL_KUBERNETES_PAYLOAD_VERSION="${KATL_KUBERNETES_UPGRADE_PAYLOAD_VERSION:-v1.36.1}" \
+		KATL_KUBERNETES_MINOR="${upgrade_target_payload%.*}" \
 		KATL_KUBERNETES_KUBEADM_VERSION="${KATL_KUBERNETES_UPGRADE_KUBEADM_VERSION:-0:1.36.1-150500.1.1}" \
 		KATL_KUBERNETES_KUBELET_VERSION="${KATL_KUBERNETES_UPGRADE_KUBELET_VERSION:-0:1.36.1-150500.1.1}" \
 		KATL_KUBERNETES_KUBECTL_VERSION="${KATL_KUBERNETES_UPGRADE_KUBECTL_VERSION:-0:1.36.1-150500.1.1}" \
@@ -1425,7 +1433,7 @@ if [[ "$exit_code" -ne 0 ]]; then
     exit "$exit_code"
 fi
 if [[ "$exit_code" -eq 0 && ( "$require_scenario_result" == 1 || "$require_scenario_result" == true ) ]]; then
-    if ! find "$scenario_dir" -mindepth 2 -maxdepth 4 -name result.json -print -quit | grep -q .; then
+    if ! find "$scenario_dir" -mindepth 2 -maxdepth 8 -name result.json -print -quit | grep -q .; then
         write_run_index "no-scenario-result" "$@"
         printf 'vmtest did not execute any world scenario; no result.json found under %s\n' "$scenario_dir" >&2
         printf 'vmtest run dir: %s\n' "$run_dir" >&2

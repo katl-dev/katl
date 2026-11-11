@@ -7,6 +7,7 @@ RUN dnf5 -y install \
         automake \
         ca-certificates \
         cpio \
+        distribution-gpg-keys \
         dnf5 \
         dosfstools \
         e2fsprogs \

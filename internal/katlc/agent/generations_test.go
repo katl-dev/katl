@@ -11,6 +11,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/configapply"
+	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -25,6 +26,41 @@ func TestGenerationMutationBinding(t *testing.T) {
 	}
 	if _, err := server.RemoveGeneration(context.Background(), req); status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("binding: %v", err)
+	}
+}
+
+func TestGenerationFallbackAfterEtcdMutation(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+	spec, _, err := generation.ReadGeneration(server.Root, "generation-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.GenerationID = "old-kubernetes"
+	spec.Confexts = nil
+	spec.Boot.LoaderEntryPath = "loader/entries/katl-old-kubernetes.conf"
+	spec.Sysexts = []generation.ExtensionRef{{Name: "kubernetes", PayloadVersion: "v1.36.1", Path: "/var/lib/katl/generations/old-kubernetes/sysext/kubernetes.raw", ActivationPath: "/run/extensions/katl-kubernetes.raw", SHA256: strings.Repeat("a", 64), Architecture: "x86_64", Compatibility: generation.ExtensionCompatibility{RuntimeInterfaces: []string{"katl-runtime-1"}}}}
+	state, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, spec.CreatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.WriteGeneration(server.Root, spec, state); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	_, err = server.Store.Create(operation.OperationRecord{
+		OperationID: "failed-etcd-upgrade", OperationKind: OperationKindKubeadmUpgrade, Scope: "kubeadm-state", RequestDigest: strings.Repeat("b", 64), Phase: "etcd-rejoin", Terminal: true, Result: operation.ResultFailedNeedsRepair, CompletedAt: &now, RecoveryRequired: true, ExternalMutationStarted: true,
+		KubernetesSysextUpdate: &operation.KubernetesSysextUpdate{SourcePayloadVersion: "v1.36.1", TargetPayloadVersion: "v1.36.2", TargetSysextPath: "/var/lib/katl/artifacts/target.raw", TargetSysextSHA256: strings.Repeat("c", 64), CandidateGenerationID: "new-kubernetes", UpgradeRole: "apply"},
+		KubeadmUpgradeEvidence: &operation.KubeadmUpgradeEvidence{TargetKubeadmAccessMode: kubeadmAccessOperationPrivate, KubeletActivationGate: kubeletGateOperationReleased, KubeletGateState: "locked", SourceKubeletPolicy: "keep-running"},
+	}, "failed", now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.MountBootRoot = func(context.Context, string) error { t.Fatal("fallback reached boot mutation"); return nil }
+	request := &agentapi.GenerationMutationRequest{GenerationId: spec.GenerationID, ExpectedEnrollmentId: testEnrollmentID, ExpectedInventoryNodeName: testInventoryNodeName, ExpectedMachineId: testMachineID, ExpectedCurrentGenerationId: "generation-0"}
+	_, err = server.SelectGeneration(context.Background(), request)
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "potentially migrated data") {
+		t.Fatalf("fallback after etcd mutation = %v", err)
 	}
 }
 

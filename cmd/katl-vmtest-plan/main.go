@@ -18,7 +18,7 @@ type group struct {
 }
 
 var groups = []group{
-	{"two-node", "./internal/vmtest/scenarios", "TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke"},
+	{"two-node", "./internal/vmtest/scenarios", "TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke|TestExternalWorkerJoin"},
 	{"three-node-install", "./internal/vmtest/scenarios", "TestThreeNodeGeneration0InstallSmoke"},
 	{"install", "./internal/vmtest", "TestFirstInstallTargetDiskBootSmoke|TestFirstInstallTargetDiskLocalHandoffSmoke"},
 	{"config", "./internal/vmtest", "TestInstalledRuntimeConfigApplyModesSmoke"},
@@ -184,6 +184,10 @@ func selectGroups(paths []string) []group {
 		case name == "cmd/katl-kernel-release/candidate.go", name == "cmd/katl-kernel-release/propose.go",
 			name == "cmd/katl-kernel-release/publish.go", name == "cmd/katl-kernel-release/update-commit.txt",
 			name == ".github/workflows/kernel-updates.yml", name == ".github/workflows/kernel-automerge.yml":
+			continue
+		case name == ".github/workflows/release-artifacts.yml", name == ".github/workflows/production-vmtests.yml":
+			// Generic CI does not execute these workflows. Validate their changes
+			// through Release Artifacts and its final-bundle Production VM qualification.
 			continue
 		case name == "cmd/katlctl/config_compatibility.go", name == "cmd/katlctl/config_inspect.go":
 			selected["config"], selected["management"], selected["two-node"] = true, true, true

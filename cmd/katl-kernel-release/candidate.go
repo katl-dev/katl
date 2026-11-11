@@ -54,7 +54,7 @@ func candidate(ctx context.Context, args []string, stdout, stderr io.Writer) err
 	// Candidate resolution is the only place that queries moving repositories.
 	// Every subsequent build consumes the resulting retained byte identity.
 	query := []string{"--quiet", "--releasever=" + *fedora, "--forcearch=" + *architecture}
-	key := "/etc/pki/rpm-gpg/RPM-GPG-KEY-fedora-" + *fedora + "-primary"
+	key := "/usr/share/distribution-gpg-keys/fedora/RPM-GPG-KEY-fedora-" + *fedora + "-primary"
 	if *flavour == "lts" {
 		base := "https://download.copr.fedorainfracloud.org/results/kwizart/kernel-longterm-6.18/"
 		query = append(query, "--repofrompath=katl-kernel-longterm,"+base+"fedora-"+*fedora+"-"+*architecture+"/", "--repo=katl-kernel-longterm")

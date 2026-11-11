@@ -12,6 +12,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -44,9 +45,11 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 			_ = cleanupManagedKubernetesUpgradeArtifact(e.Root, request)
 		}(*record.KubernetesSysextUpdate)
 	}
-	record, err = e.prepareKubeadmUpgradeSnapshot(ctx, record)
-	if err != nil {
-		return e.failKubeadmUpgrade(record, "snapshot", err, false)
+	if record.KubernetesSysextUpdate != nil && record.KubernetesSysextUpdate.PreparedOperationID != "" {
+		record, err = e.usePreparedUpgrade(record)
+		if err != nil {
+			return e.failKubeadmUpgrade(record, "etcd-prepare", err, false)
+		}
 	}
 	request := record.KubernetesSysextUpdate
 	if request == nil || request.UpgradeRole == "" {
@@ -67,17 +70,17 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 	if currentRef.PayloadVersion != request.SourcePayloadVersion {
 		return e.failKubeadmUpgrade(record, "staged", fmt.Errorf("current Kubernetes payload %q does not match requested source %q", currentRef.PayloadVersion, request.SourcePayloadVersion), false)
 	}
+	if request.ExternalWorker {
+		if _, err := externalAPIServerVersion(ctx, e.Root, e.toolRunner(), request.TargetPayloadVersion); err != nil {
+			return e.failKubeadmUpgrade(record, "staged", err, false)
+		}
+	}
 	patchesDir, err := e.prepareKubeadmPatches(record.OperationID, currentID)
 	if err != nil {
 		return e.failKubeadmUpgrade(record, "staged", err, false)
 	}
 	if err := verifyFileDigest(rootedRuntimePath(e.Root, request.TargetSysextPath), request.TargetSysextSHA256, request.TargetSysextSize); err != nil {
 		return e.failKubeadmUpgrade(record, "staged", fmt.Errorf("verify target Kubernetes sysext: %w", err), false)
-	}
-	if request.UpgradeRole != "worker" {
-		if err := verifyFileDigest(rootedRuntimePath(e.Root, request.SnapshotStorageLocation), request.SnapshotDigest, 0); err != nil {
-			return e.failKubeadmUpgrade(record, "staged", fmt.Errorf("verify referenced etcd snapshot: %w", err), false)
-		}
 	}
 
 	candidateRef, err := e.stageKubernetesCandidate(currentSpec, currentRef, *request, record.OperationID)
@@ -98,13 +101,42 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 		}
 	}()
 	targetKubeadm := filepath.Join(toolRoot, "usr/bin/kubeadm")
-	versionResult := e.toolRunner()(ctx, []string{targetKubeadm, "version", "-o", "short"}, nil)
+	versionArgs := []string{targetKubeadm, "version", "-o", "short"}
+	if request.ExternalWorker {
+		versionArgs = []string{filepath.Join(toolRoot, "usr/bin/kubelet"), "--version"}
+	}
+	versionResult := e.toolRunner()(ctx, versionArgs, nil)
 	if versionResult.Err != nil || versionResult.ExitStatus != 0 {
-		return e.failKubeadmUpgrade(record, "staged", fmt.Errorf("inspect target kubeadm: %s", toolFailure(versionResult)), false)
+		return e.failKubeadmUpgrade(record, "staged", fmt.Errorf("inspect target Kubernetes executable: %s", toolFailure(versionResult)), false)
 	}
 	observedVersion := strings.TrimSpace(string(versionResult.Stdout))
+	observedVersion = strings.TrimPrefix(observedVersion, "Kubernetes ")
 	if observedVersion != request.TargetPayloadVersion {
-		return e.failKubeadmUpgrade(record, "staged", fmt.Errorf("target kubeadm reported %q, want %q", observedVersion, request.TargetPayloadVersion), false)
+		return e.failKubeadmUpgrade(record, "staged", fmt.Errorf("target Kubernetes executable reported %q, want %q", observedVersion, request.TargetPayloadVersion), false)
+	}
+	if request.UpgradeRole != "worker" {
+		if request.PreparedOperationID == "" {
+			record, err = e.prepareUpgradeEtcd(ctx, record, targetKubeadm)
+			if err != nil {
+				return e.failKubeadmUpgrade(record, "etcd-prepare", err, false)
+			}
+			request = record.KubernetesSysextUpdate
+		} else {
+			actual, inspectErr := e.inspectEtcdUpgrade(ctx, record, targetKubeadm)
+			evidence := record.KubeadmUpgradeEvidence.Etcd
+			if inspectErr != nil || actual.SourceImage != evidence.SourceImage || actual.TargetImage != evidence.TargetImage {
+				return e.failKubeadmUpgrade(record, "etcd-prepare", errors.Join(inspectErr, fmt.Errorf("etcd image selection changed after preparation; replan")), false)
+			}
+		}
+		if err := verifyFileDigest(rootedRuntimePath(e.Root, request.SnapshotStorageLocation), request.SnapshotDigest, 0); err != nil {
+			return e.failKubeadmUpgrade(record, "snapshot", fmt.Errorf("verify referenced etcd snapshot: %w", err), false)
+		}
+		if err := verifyEtcdSnapshot(rootedRuntimePath(e.Root, request.SnapshotStorageLocation)); err != nil {
+			return e.failKubeadmUpgrade(record, "snapshot", fmt.Errorf("verify referenced etcd snapshot: %w", err), false)
+		}
+		if err := e.checkUpgradeEtcd(ctx, record, false); err != nil {
+			return e.failKubeadmUpgrade(record, "etcd-pre-restart", err, false)
+		}
 	}
 	gatePath := filepath.ToSlash(filepath.Join("/run/katl/operation-gates", record.OperationID, "target-kubelet-released"))
 	gateUnit := "kubelet.service.d/20-katl-upgrade-gate.conf"
@@ -120,21 +152,32 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 		current.PhaseIndex = len(current.CompletedPhases)
 		current.PreviousGenerationID = currentID
 		current.CandidateGenerationID = request.CandidateGenerationID
-		current.KubeadmUpgradeEvidence.TargetKubeadmArtifactPath = filepath.ToSlash(filepath.Join("/var/lib/katl/operations", record.OperationID, "tools/kubernetes"))
-		current.KubeadmUpgradeEvidence.TargetKubeadmArtifactDigest = request.TargetSysextSHA256
-		current.KubeadmUpgradeEvidence.TargetKubeadmObservedVersion = observedVersion
+		if !request.ExternalWorker {
+			current.KubeadmUpgradeEvidence.TargetKubeadmArtifactPath = filepath.ToSlash(filepath.Join("/var/lib/katl/operations", record.OperationID, "tools/kubernetes"))
+			current.KubeadmUpgradeEvidence.TargetKubeadmArtifactDigest = request.TargetSysextSHA256
+			current.KubeadmUpgradeEvidence.TargetKubeadmObservedVersion = observedVersion
+		}
 		current.KubeadmUpgradeEvidence.KubeletGateTokenPath = gatePath
 		current.KubeadmUpgradeEvidence.KubeletGateEnforcementUnit = gateUnit
 		current.UpdatedAt = e.clock()
 		current.NextAction = "run target kubeadm while source kubelet remains active"
+		if request.ExternalWorker {
+			current.NextAction = "activate the verified worker runtime and validate the target kubelet"
+		}
 		return current, nil
 	})
 	if err != nil {
 		return err
 	}
 
+	var preflightArgs []string
 	if request.UpgradeRole == "apply" {
-		if err := e.runKubeadmUpgradeCommand(ctx, record, "kubeadm-plan-running", []string{targetKubeadm, "upgrade", "plan", request.TargetPayloadVersion}, false); err != nil {
+		preflightArgs, err = e.kubeadmUpgradePreflightArgs(ctx)
+		if err != nil {
+			return e.failKubeadmUpgrade(record, "kubeadm-plan-running", err, false)
+		}
+		argv := append([]string{targetKubeadm, "upgrade", "plan", request.TargetPayloadVersion}, preflightArgs...)
+		if err := e.runKubeadmUpgradeCommand(ctx, record, "kubeadm-plan-running", argv, false); err != nil {
 			return err
 		}
 		if _, err := e.Store.Update(record.OperationID, "kubeadm-plan-complete", "kubeadm-plan-complete", func(current operation.OperationRecord) (operation.OperationRecord, error) {
@@ -159,7 +202,10 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 		if endpointPaused {
 			defer func() {
 				if endpointPaused {
-					_ = resumeManagedEndpoint(context.Background(), e.Root, e.toolRunner())
+					latest, err := e.Store.Read(record.OperationID)
+					if err == nil && !latest.ExternalMutationStarted {
+						_ = resumeManagedEndpoint(context.Background(), e.Root, e.toolRunner())
+					}
 				}
 			}()
 		}
@@ -172,7 +218,12 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 			kubeletAPIHandoffActive = true
 			defer func() {
 				if kubeletAPIHandoffActive {
-					_ = e.restoreKubeletAPIHandoff(context.Background(), apiDrain)
+					latest, err := e.Store.Read(record.OperationID)
+					if err == nil && latest.ExternalMutationStarted {
+						_ = e.deactivateKubeletAPIHandoff(context.Background(), apiDrain)
+					} else {
+						_ = e.restoreKubeletAPIHandoff(context.Background(), apiDrain)
+					}
 				}
 			}()
 		}
@@ -181,6 +232,7 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 	retainToolView = true
 	if request.UpgradeRole == "apply" {
 		argv := []string{targetKubeadm, "upgrade", "apply", "--yes", request.TargetPayloadVersion}
+		argv = append(argv, preflightArgs...)
 		if patchesDir != "" {
 			argv = append(argv, "--patches", patchesDir)
 		}
@@ -190,7 +242,7 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 		if err := e.runKubeadmUpgradeCommand(ctx, record, "kubeadm-apply-running", argv, true); err != nil {
 			return err
 		}
-	} else {
+	} else if !request.ExternalWorker {
 		argv := []string{targetKubeadm, "upgrade", "node"}
 		if patchesDir != "" {
 			argv = append(argv, "--patches", patchesDir)
@@ -207,6 +259,11 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 		current.Phase = "kubelet-stop-running"
 		current.ActivationState = operation.ActivationStateActivating
 		current.KubeadmUpgradeEvidence.KubeletGateState = "released"
+		if request.ExternalWorker {
+			// The native worker upgrade owns only the local runtime transition.
+			current.ExternalMutationStarted = true
+			current.MutationScopes = appendMissing(current.MutationScopes, "kubelet-state", "kubernetes-sysext")
+		}
 		current.UpdatedAt = e.clock()
 		return current, nil
 	}); err != nil {
@@ -236,7 +293,7 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 	}); err != nil {
 		return e.failKubeadmUpgrade(record, "sysext-refresh-running", err, true)
 	}
-	if err := e.activateKubernetesCandidate(ctx, currentRef, candidateRef); err != nil {
+	if err := e.activateKubernetesCandidate(ctx, candidateRef); err != nil {
 		return e.failKubeadmUpgrade(record, "sysext-refresh-running", err, true)
 	}
 	if _, err := e.Store.Update(record.OperationID, "restart-target-kubelet", "kubelet-restart-running", func(current operation.OperationRecord) (operation.OperationRecord, error) {
@@ -254,6 +311,11 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 	if err := e.checkKubeadmUpgradeHealth(ctx, *request); err != nil {
 		return e.failKubeadmUpgrade(record, "health-check-running", err, true)
 	}
+	if request.UpgradeRole != "worker" {
+		if err := e.waitUpgradeEtcd(ctx, record); err != nil {
+			return e.failKubeadmUpgrade(record, "etcd-rejoin", err, true)
+		}
+	}
 	if endpointPaused {
 		if err := resumeManagedEndpoint(ctx, e.Root, e.toolRunner()); err != nil {
 			return e.failKubeadmUpgrade(record, "endpoint-resume-running", err, true)
@@ -265,6 +327,32 @@ func (e *Executor) executeKubeadmUpgrade(ctx context.Context, record operation.O
 	}
 	retainToolView = false
 	return nil
+}
+
+func (e *Executor) kubeadmUpgradePreflightArgs(ctx context.Context) ([]string, error) {
+	result := e.toolRunner()(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", "/etc/kubernetes/admin.conf", "--request-timeout=30s", "-n", "kube-system", "get", "configmap", "kubeadm-config", "-o", "jsonpath={.data.ClusterConfiguration}"}, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		return nil, fmt.Errorf("read live kubeadm ClusterConfiguration: %s", toolFailure(result))
+	}
+	var config struct {
+		APIVersion string `yaml:"apiVersion"`
+		Kind       string `yaml:"kind"`
+		DNS        struct {
+			Disabled bool `yaml:"disabled"`
+		} `yaml:"dns"`
+	}
+	if err := yaml.Unmarshal(result.Stdout, &config); err != nil {
+		return nil, fmt.Errorf("decode live kubeadm ClusterConfiguration: %w", err)
+	}
+	if config.APIVersion != "kubeadm.k8s.io/v1beta4" || config.Kind != "ClusterConfiguration" {
+		return nil, fmt.Errorf("live kubeadm config must be a kubeadm.k8s.io/v1beta4 ClusterConfiguration")
+	}
+	// kubeadm runs DNS migration preflights even when its addon phase honors
+	// dns.disabled. Only the live cluster setting establishes addon ownership.
+	if config.DNS.Disabled {
+		return []string{"--ignore-preflight-errors=CoreDNSUnsupportedPlugins,CoreDNSMigration"}, nil
+	}
+	return nil, nil
 }
 
 func cleanupManagedKubernetesUpgradeArtifact(root string, request operation.KubernetesSysextUpdate) error {
@@ -687,48 +775,63 @@ func (e *Executor) resolveKubernetesUpgradePayload(ctx context.Context, record o
 
 func (e *Executor) prepareKubeadmUpgradeSnapshot(ctx context.Context, record operation.OperationRecord) (operation.OperationRecord, error) {
 	request := record.KubernetesSysextUpdate
-	if request == nil || request.UpgradeRole == "worker" || strings.TrimSpace(request.SnapshotStorageLocation) != "" {
+	if request == nil || request.UpgradeRole == "worker" {
 		return record, nil
 	}
-	containerResult := e.toolRunner()(ctx, []string{"crictl", "ps", "--state", "Running", "--name", "etcd", "-q"}, nil)
-	if containerResult.Err != nil || containerResult.ExitStatus != 0 {
-		return record, fmt.Errorf("locate running etcd container: %s", toolFailure(containerResult))
+	if record.KubeadmUpgradeEvidence == nil || record.KubeadmUpgradeEvidence.Etcd == nil || record.KubeadmUpgradeEvidence.Etcd.Before == nil {
+		return record, errors.New("snapshot requires verified pre-upgrade etcd membership")
 	}
-	containers := strings.Fields(string(containerResult.Stdout))
-	if len(containers) != 1 {
-		return record, fmt.Errorf("expected one running etcd container, got %d", len(containers))
+	result := e.toolRunner()(ctx, []string{"crictl", "ps", "--state", "Running", "--name", "etcd", "-q"}, nil)
+	containers := strings.Fields(string(result.Stdout))
+	if result.Err != nil || result.ExitStatus != 0 || len(containers) != 1 {
+		return record, fmt.Errorf("locate unique running etcd container: %s", toolFailure(result))
 	}
-	location := filepath.ToSlash(filepath.Join("/var/lib/etcd", "katl-upgrade-"+record.OperationID+".db"))
-	etcdctl := []string{"crictl", "exec", containers[0], "etcdctl", "--endpoints=https://127.0.0.1:2379", "--cacert=/etc/kubernetes/pki/etcd/ca.crt", "--cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt", "--key=/etc/kubernetes/pki/etcd/healthcheck-client.key"}
-	saveResult := e.toolRunner()(ctx, append(append([]string(nil), etcdctl...), "snapshot", "save", location), nil)
-	if saveResult.Err != nil || saveResult.ExitStatus != 0 {
-		return record, fmt.Errorf("save pre-upgrade etcd snapshot: %s", toolFailure(saveResult))
+	location := request.SnapshotStorageLocation
+	if location == "" {
+		location = filepath.ToSlash(filepath.Join("/var/lib/etcd/katl-snapshots", record.OperationID+".db"))
+		if err := os.MkdirAll(filepath.Dir(rootedRuntimePath(e.Root, location)), 0o700); err != nil {
+			return record, err
+		}
+		endpoint := "https://127.0.0.1:2379"
+		if evidence := record.KubeadmUpgradeEvidence.Etcd; evidence != nil && evidence.Before != nil {
+			for _, m := range evidence.Before.Members {
+				if m.ID == evidence.Before.LeaderID {
+					endpoint = m.Endpoint
+				}
+			}
+		}
+		if _, err := runEtcdctl(ctx, e.toolRunner(), containers[0], endpoint, "snapshot", "save", location); err != nil {
+			return record, fmt.Errorf("save pre-upgrade cluster snapshot: %w", err)
+		}
+		digest, _, err := fileDigest(rootedRuntimePath(e.Root, location))
+		if err != nil {
+			return record, err
+		}
+		record, err = e.Store.Update(record.OperationID, "snapshot-captured", "snapshot-captured", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+			update := current.KubernetesSysextUpdate
+			update.SnapshotRef = "pre-" + record.OperationID
+			update.SnapshotDigest = digest
+			update.SnapshotStorageLocation = location
+			update.SnapshotCreatedAt = e.clock().Format(time.RFC3339)
+			update.SnapshotOperatorIdentity = inventory.Redact(current.Actor)
+			if before := current.KubeadmUpgradeEvidence.Etcd.Before; before != nil {
+				update.CapturedMemberListDigest = snapshotMembershipDigest(before)
+				for _, member := range before.Members {
+					if member.ID == before.LocalMemberID {
+						update.SourceEtcdVersion = member.Version
+					}
+				}
+			}
+			return current, nil
+		})
+		if err != nil {
+			return record, err
+		}
 	}
-	digest, _, err := fileDigest(rootedRuntimePath(e.Root, location))
-	if err != nil {
-		return record, fmt.Errorf("hash pre-upgrade etcd snapshot: %w", err)
+	if err := verifyFileDigest(rootedRuntimePath(e.Root, location), record.KubernetesSysextUpdate.SnapshotDigest, 0); err != nil {
+		return record, err
 	}
-	membersResult := e.toolRunner()(ctx, append(append([]string(nil), etcdctl...), "member", "list"), nil)
-	if membersResult.Err != nil || membersResult.ExitStatus != 0 {
-		return record, fmt.Errorf("capture pre-upgrade etcd member list: %s", toolFailure(membersResult))
-	}
-	membersHash := sha256.Sum256(membersResult.Stdout)
-	now := e.clock()
-	return e.Store.Update(record.OperationID, "kubernetes-upgrade-snapshot-prepared", "snapshot-prepared", func(current operation.OperationRecord) (operation.OperationRecord, error) {
-		update := current.KubernetesSysextUpdate
-		update.SnapshotRef = "pre-" + update.SourcePayloadVersion + "-to-" + update.TargetPayloadVersion
-		update.SnapshotDigest = digest
-		update.SnapshotCreatedAt = now.Format(time.RFC3339)
-		update.CapturedMemberListDigest = hex.EncodeToString(membersHash[:])
-		update.SnapshotStorageLocation = location
-		update.SnapshotOperatorIdentity = inventory.Redact(current.Actor)
-		current.Phase = "snapshot-prepared"
-		current.CompletedPhases = appendMissing(current.CompletedPhases, "snapshot-prepared")
-		current.PhaseIndex = len(current.CompletedPhases)
-		current.UpdatedAt = now
-		current.NextAction = "stage the verified target Kubernetes payload"
-		return current, nil
-	})
+	return e.recordSnapshotStatus(ctx, record, containers[0])
 }
 
 func runtimeLogicalPath(root, hostPath string) (string, error) {
@@ -743,6 +846,11 @@ func (e *Executor) runKubeadmUpgradeCommand(ctx context.Context, record operatio
 	started := e.clock()
 	invocationID := strings.TrimSuffix(phase, "-running")
 	if mutating {
+		if record.KubernetesSysextUpdate != nil && record.KubernetesSysextUpdate.UpgradeRole != "worker" {
+			if err := e.checkUpgradeEtcd(ctx, record, false); err != nil {
+				return e.failKubeadmUpgrade(record, "etcd-pre-restart", err, false)
+			}
+		}
 		scopes := []string{"kubeadm-state", "kubernetes-api"}
 		if record.KubernetesSysextUpdate != nil && record.KubernetesSysextUpdate.UpgradeRole != "worker" {
 			scopes = append(scopes, "stacked-etcd")
@@ -920,7 +1028,7 @@ func (e *Executor) installKubeletGate(gatePath, unit string) error {
 	return os.WriteFile(path, []byte(content), 0o644)
 }
 
-func (e *Executor) activateKubernetesCandidate(ctx context.Context, current, candidate generation.ExtensionRef) error {
+func (e *Executor) activateKubernetesCandidate(ctx context.Context, candidate generation.ExtensionRef) error {
 	activation := rootedRuntimePath(e.Root, candidate.ActivationPath)
 	if err := os.MkdirAll(filepath.Dir(activation), 0o755); err != nil {
 		return err
@@ -932,9 +1040,6 @@ func (e *Executor) activateKubernetesCandidate(ctx context.Context, current, can
 	for _, argv := range [][]string{{"systemd-sysext", "refresh"}, {"systemctl", "daemon-reload"}} {
 		result := e.toolRunner()(ctx, argv, nil)
 		if result.Err != nil || result.ExitStatus != 0 {
-			_ = os.Remove(activation)
-			_ = os.Symlink(current.Path, activation)
-			_ = e.toolRunner()(ctx, []string{"systemd-sysext", "refresh"}, nil)
 			return fmt.Errorf("%s: %s", argv[0], toolFailure(result))
 		}
 	}
@@ -943,6 +1048,14 @@ func (e *Executor) activateKubernetesCandidate(ctx context.Context, current, can
 
 func (e *Executor) checkKubeadmUpgradeHealth(ctx context.Context, request operation.KubernetesSysextUpdate) error {
 	commands := [][]string{{"systemctl", "is-active", "--quiet", "containerd.service"}, {"systemctl", "is-active", "--quiet", "kubelet.service"}, {"kubelet", "--version"}}
+	if request.ExternalWorker {
+		node, err := kubernetesNodeName(e.Root)
+		if err != nil {
+			return err
+		}
+		base := []string{"/usr/bin/kubectl", "--kubeconfig", rootedRuntimePath(e.Root, "/etc/kubernetes/kubelet.conf"), "wait", "--timeout=5m", "node/" + node}
+		commands = append(commands, append(slices.Clone(base), "--for=jsonpath={.status.nodeInfo.kubeletVersion}="+request.TargetPayloadVersion), append(slices.Clone(base), "--for=condition=Ready"))
+	}
 	if request.UpgradeRole != "worker" {
 		nodeName, err := kubernetesNodeName(e.Root)
 		if err != nil {
@@ -1014,8 +1127,16 @@ func (e *Executor) removeKubeletGate(ctx context.Context, record operation.Opera
 func (e *Executor) failKubeadmUpgrade(record operation.OperationRecord, phase string, cause error, postMutation bool) error {
 	now := e.clock()
 	latest, readErr := e.Store.Read(record.OperationID)
-	mutated := postMutation || (readErr == nil && latest.ExternalMutationStarted)
-	cleanupErr := e.restoreSourceKubernetesAfterFailure(latest)
+	mutated := postMutation || readErr != nil || latest.ExternalMutationStarted
+	if mutated && readErr == nil && latest.KubernetesSysextUpdate != nil && latest.KubernetesSysextUpdate.UpgradeRole != "worker" && latest.KubeadmUpgradeEvidence != nil && latest.KubeadmUpgradeEvidence.Etcd != nil {
+		inspectCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_ = e.checkUpgradeEtcd(inspectCtx, latest, true)
+		cancel()
+	}
+	var cleanupErr error
+	if record.OperationKind != OperationKindKubeadmUpgradePrepare && (!mutated || latest.KubernetesSysextUpdate != nil && latest.KubernetesSysextUpdate.UpgradeRole == "worker") {
+		cleanupErr = e.restoreSourceKubernetesAfterFailure(latest)
+	}
 	cause = errors.Join(cause, cleanupErr)
 	var abandonErr error
 	if !mutated {
@@ -1028,6 +1149,9 @@ func (e *Executor) failKubeadmUpgrade(record operation.OperationRecord, phase st
 		current.CompletedAt = &now
 		current.UpdatedAt = now
 		current.FailureReason = inventory.Redact(cause.Error())
+		if current.KubeadmUpgradeEvidence != nil && current.KubeadmUpgradeEvidence.Etcd != nil {
+			current.KubeadmUpgradeEvidence.Etcd.Failure = current.FailureReason
+		}
 		current.Result = "failed"
 		current.GenerationCommitState = operation.GenerationCommitAbandoned
 		current.NextAction = "fix the pre-mutation failure and submit a new explicit upgrade operation"
@@ -1042,9 +1166,17 @@ func (e *Executor) failKubeadmUpgrade(record operation.OperationRecord, phase st
 			current.Result = operation.ResultFailedNeedsRepair
 			current.GenerationCommitState = operation.GenerationCommitCandidate
 			current.ActivationState = operation.ActivationStateFailed
-			current.NextAction = "inspect kubeadm diagnostics and use explicit kubeadm-aware repair; host rollback does not repair Kubernetes or etcd state"
-			current.PostMutationRollbackAllowed = true
-			current.HostRollback = current.PreviousGenerationID
+			current.NextAction = "stop the rollout; preserve serving peers and the snapshot; inspect recorded etcd identities, versions, indexes and kubeadm diagnostics to repair or replace this member; host rollback does not repair Kubernetes or etcd state and must not launch an older etcd against this data"
+			current.PostMutationRollbackAllowed = false
+			current.HostRollback = ""
+			if current.KubernetesSysextUpdate != nil && current.KubernetesSysextUpdate.UpgradeRole == "worker" {
+				current.PostMutationRollbackAllowed = true
+				current.HostRollback = current.PreviousGenerationID
+				current.NextAction = "inspect kubeadm diagnostics and repair the worker before retrying; host rollback does not repair Kubernetes state"
+				if current.KubernetesSysextUpdate.ExternalWorker {
+					current.NextAction = "inspect source runtime health and the worker's kubelet diagnostics; correct the failure and retry katlctl kubernetes upgrade"
+				}
+			}
 		}
 		return current, nil
 	})

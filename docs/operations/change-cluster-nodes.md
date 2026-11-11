@@ -1,5 +1,9 @@
 # Add, replace, or remove cluster nodes
 
+For a control plane managed outside Katl, use the
+[external worker workflow](external-workers.md). The coordinator-based procedure
+below applies to Katl-managed control planes.
+
 Katl changes cluster membership only through explicit bootstrap, join, and wipe
 operations. Editing `spec.nodes` by itself is not authority to drain, delete,
 power off, or erase a machine.

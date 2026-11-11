@@ -974,6 +974,36 @@ func TestResumeBootstrapFinalization(t *testing.T) {
 	}
 }
 
+func TestExternalWorkerResumesWithoutBootstrap(t *testing.T) {
+	inv := validInventory()
+	inv.ExternalControlPlane = true
+	inv.Nodes = inv.Nodes[1:]
+	plan, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: inv})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &fakeAgentClient{
+		status: readyAgentStatusWithKinds("machine-worker-1", "bootstrap-join-worker"),
+		listResponse: &agentapi.ListOperationsResponse{Operations: []*agentapi.OperationStatus{{
+			OperationId: "unfinished", OperationKind: "bootstrap-join-worker",
+			ClientRequestId: clientRequestID(plan.Nodes[0], plan, "bootstrap-join-worker", ""),
+			Terminal:        true, Result: operation.ResultFailedNeedsRepair, ResumeSupported: true,
+		}}},
+	}
+	connector := newFakeAgentConnector(map[string]*fakeAgentClient{"worker-1": client})
+	if _, err := RunAgentExternalWorkerJoin(context.Background(), Request{Inventory: inv}, "worker-1", nil, AgentBootstrapDependencies{Connector: connector}); err != nil {
+		t.Fatal(err)
+	}
+	if len(client.submitRequests) != 1 || client.submitRequests[0].Bootstrap.GetResumeOperationId() != "unfinished" || len(client.submitRequests[0].Bootstrap.GetBootstrapKubeconfig()) != 0 {
+		t.Fatalf("did not resume without new enrollment credentials: %+v", client.submitRequests)
+	}
+	for _, endpoint := range connector.connected {
+		if endpoint != "worker-1@10.0.0.21" {
+			t.Fatalf("contacted a coordinator: %s", endpoint)
+		}
+	}
+}
+
 func TestBootstrapObservesReinstalledNode(t *testing.T) {
 	inv := validSingleNodeInventory()
 	inv.Nodes[0].EnrollmentID = "previous-install"

@@ -30,6 +30,12 @@ func (s *Server) GetEtcdStatus(ctx context.Context, _ *agentapi.GetEtcdStatusReq
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "inspect local stacked etcd: %v", err)
 	}
+	observer := Executor{Root: s.Root, RunTool: s.etcdRunner()}
+	observed, observeErr := observer.observeEtcd(ctx, nil)
+	report.Observation = etcdObservationProto(observed)
+	if observeErr != nil {
+		report.ObservationError = inventory.Redact(observeErr.Error())
+	}
 	return report, nil
 }
 

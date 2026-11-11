@@ -1973,3 +1973,32 @@ func exitCode(err error) int {
 	}
 	return -1
 }
+func TestVMTestRunNestedScenario(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(os.Environ(), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_CHILD_WORLD_SCENARIO=external worker",
+		"KATL_FAKE_CHILD_WORLD_SCENARIO_ID=external-worker/join",
+		"KATL_FAKE_CHILD_WORLD_RESULT_LAYOUT=nested",
+		"KATL_VMTEST_RUN_ID=nested-scenario",
+		"KATL_VMTEST_RUN_DIR="+filepath.Join(tmp, "run"),
+		"TMPDIR="+tmp,
+	)
+
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("nested scenario rejected: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "vmtest passed") {
+		t.Fatalf("missing successful run result:\n%s", output)
+	}
+}

@@ -94,6 +94,7 @@ type volumeStatusReport struct {
 }
 
 type kubernetesStatusReport struct {
+	ExternalEndpoint            string `json:"externalEndpoint,omitempty"`
 	State                       string `json:"state"`
 	Role                        string `json:"role"`
 	NodeName                    string `json:"nodeName"`
@@ -432,6 +433,7 @@ func newKubernetesStatusReport(status *agentapi.KubernetesStatus) *kubernetesSta
 		return nil
 	}
 	return &kubernetesStatusReport{
+		ExternalEndpoint:            status.GetExternalEndpoint(),
 		State:                       status.GetState(),
 		Role:                        status.GetRole(),
 		NodeName:                    status.GetNodeName(),

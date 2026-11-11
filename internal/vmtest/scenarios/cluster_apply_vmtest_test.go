@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -42,7 +44,6 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 		return fmt.Errorf("installed source must describe cp-1 and its API endpoint")
 	}
 	source.Metadata.Name = "three-control-plane"
-	source.Spec.ControlPlaneEndpoint.Host = "api.unpublished.katl.test"
 	source.Spec.Kubernetes.Kubeadm = &configbundle.SourceKubeadmInput{ConfigFile: "kubeadm.yaml"}
 	source.Spec.Defaults.Kubernetes.Kubelet = &configbundle.SourceKubeletConfig{ConfigFile: "kubelet.yaml"}
 	node := source.Spec.Nodes[0]
@@ -52,15 +53,18 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 		node.Management.Address = addresses[name]
 		source.Spec.Nodes = append(source.Spec.Nodes, node)
 	}
+	live, err := kubectlOutput(ctx, kubeconfig, "-n", "kube-system", "get", "configmap", "kubeadm-config", "-o", "jsonpath={.data.ClusterConfiguration}")
+	if err != nil {
+		return err
+	}
+	if err := retainClusterEndpoint(&source, live); err != nil {
+		return err
+	}
 	data, err := yaml.Marshal(source)
 	if err != nil {
 		return err
 	}
 	if err := os.WriteFile(sourcePath, data, 0o600); err != nil {
-		return err
-	}
-	live, err := kubectlOutput(ctx, kubeconfig, "-n", "kube-system", "get", "configmap", "kubeadm-config", "-o", "jsonpath={.data.ClusterConfiguration}")
-	if err != nil {
 		return err
 	}
 	enrollments, err := readThreeControlPlaneEnrollments(ctx, addresses)
@@ -311,4 +315,26 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 	}
 	_, err = stageThreeControlPlaneCNIFixtures(ctx, katlRepoRoot(t), nodes, addresses)
 	return err
+}
+
+// Configuration proofs must retain the endpoint chosen by bootstrap. Fixture
+// producers describe the installed host, not the later cluster API topology.
+func retainClusterEndpoint(source *configbundle.SourceConfig, live []byte) error {
+	var config struct {
+		Endpoint string `yaml:"controlPlaneEndpoint"`
+	}
+	if err := yaml.Unmarshal(live, &config); err != nil {
+		return err
+	}
+	host, port, err := net.SplitHostPort(config.Endpoint)
+	if err != nil {
+		return fmt.Errorf("inspect bootstrapped control-plane endpoint: %w", err)
+	}
+	number, err := strconv.Atoi(port)
+	if err != nil {
+		return err
+	}
+	source.Spec.ControlPlaneEndpoint.Host = host
+	source.Spec.ControlPlaneEndpoint.Port = number
+	return nil
 }

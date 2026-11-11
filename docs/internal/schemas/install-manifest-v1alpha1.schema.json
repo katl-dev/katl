@@ -380,6 +380,10 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "external": {
+          "type": "boolean",
+          "description": "Worker enrollment into a control plane managed outside Katl."
+        },
         "address": {
           "type": "string",
           "anyOf": [

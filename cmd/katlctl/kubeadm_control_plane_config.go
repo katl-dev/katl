@@ -133,6 +133,9 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 	if err != nil {
 		return err
 	}
+	if inv.ExternalControlPlane && opts.coordinator != "" {
+		return fmt.Errorf("external workers do not use a Katl coordinator; omit --coordinator")
+	}
 	selected, err := selectConfigNodes(inv.Nodes, opts.selectedNodes)
 	if err != nil {
 		return err
@@ -166,6 +169,9 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 	}
 
 	results := map[string]any{}
+	if inv.ExternalControlPlane {
+		components = map[string]bool{"kubelet": true}
+	}
 	if opts.plan {
 		return writeClusterApplyReport(stdout, opts.output, clusterApplyReport{Nodes: len(selected), NodePlans: nodePlans, Result: "planned", RebootRequired: len(stagedNodes) > 0, StagedNodes: stagedNodes})
 	}
@@ -306,13 +312,16 @@ func runKubeadmConfigComponent(ctx context.Context, opts kubeadmControlPlaneConf
 			controlPlanes = append(controlPlanes, node)
 		}
 	}
-	if len(controlPlanes) == 0 {
+	if len(controlPlanes) == 0 && !inv.ExternalControlPlane {
 		return nil, fmt.Errorf("at least one control-plane node is required")
+	}
+	if inv.ExternalControlPlane && (opts.component != "kubelet" || opts.coordinator != "") {
+		return nil, fmt.Errorf("external workers apply their local kubelet configuration; control-plane and addon configuration belongs to the external cluster")
 	}
 	if opts.coordinator != "" && !slices.ContainsFunc(controlPlanes, func(node inventory.Node) bool { return node.Name == opts.coordinator }) {
 		return nil, fmt.Errorf("coordinator %q is not a control-plane node", opts.coordinator)
 	}
-	if strings.TrimSpace(opts.coordinator) == "" {
+	if strings.TrimSpace(opts.coordinator) == "" && !inv.ExternalControlPlane {
 		sort.Slice(controlPlanes, func(i, j int) bool { return controlPlanes[i].Name < controlPlanes[j].Name })
 		opts.coordinator = controlPlanes[len(controlPlanes)-1].Name
 		for _, node := range controlPlanes {
@@ -326,7 +335,10 @@ func runKubeadmConfigComponent(ctx context.Context, opts kubeadmControlPlaneConf
 	}
 	var nodes []inventory.Node
 	var err error
-	if opts.component == "kube-proxy" {
+	if inv.ExternalControlPlane {
+		nodes = slices.Clone(inv.Nodes)
+		sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
+	} else if opts.component == "kube-proxy" {
 		ordered, orderErr := orderControlPlanes(controlPlanes, opts.coordinator)
 		if orderErr != nil {
 			return nil, orderErr

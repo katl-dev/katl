@@ -71,14 +71,20 @@ as well as verification before wrapper cache reuse.
 
 ## Updates and promotion
 
-The scheduled or manually invoked Kernel Updates workflow captures both
-flavours and creates a lock proposal commit. Trusted workflow-source jobs retain
-the signed bytes, verify anonymous retrieval of every RPM, and confirm the
-proposal branch still points to the captured commit before opening a
-ready-for-review PR. Input retention does not constitute qualification or
-promotion. Retry incomplete publication; skip only when main selects the same
-dependency identities. Advance proposals by merging main without rewriting
-history.
+The scheduled or manually invoked Kernel Updates workflow captures each
+flavour independently. Trusted workflow-source jobs retain the signed bytes
+and verify anonymous retrieval of every RPM before creating a lock proposal.
+Retention is idempotent and runs for unchanged inputs too. For changed inputs
+belonging to the selected Fedora base, create a separate proposal commit and
+confirm its branch still points to that commit before opening a ready-for-review
+PR. Advance proposals by merging main without rewriting history.
+
+A manual run can prepare another Fedora release while main still selects the
+current base. That run ends with verified lock artifacts, without creating a
+proposal or claiming qualification. Include the prepared locks with the base
+change so CI builds the intended combination. The existing release workflow
+can build and qualify a complete candidate from that branch without publishing
+a KatlOS release. Input retention does not constitute qualification or promotion.
 
 PR CI is the qualification owner. For each changed flavour, build both boot
 artifacts and every release extension, verify their complete composition, and

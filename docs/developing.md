@@ -753,21 +753,33 @@ builds use the retained RPM bytes identified by that lock. The matching `devel`
 package supplies the runtime's exported headers. Generic `kernel-headers` and
 userspace packages continue to resolve from their existing repositories.
 
-A Fedora release bump requires publishing and qualifying both new kernel sets
-before changing the base release. Builds fail if a selected lock or retained
+A Fedora release bump requires retained locks for both flavours and
+qualification against the target base. Builds fail if a selected lock or retained
 package is missing; they do not fall back to a moving kernel repository.
 
 ### Qualify retained kernel inputs
 
-The Kernel Updates workflow captures signed kernel RPM sets and proposes their
-locks after retaining the signed inputs and verifying anonymous retrieval. It runs weekly or on manual
-dispatch. Automatic discovery refuses versions older than the committed lock.
-An explicit release permits a deliberate rollback. To qualify an exact kernel pair instead of discovering newer versions:
+The Kernel Updates workflow captures each flavour's signed kernel RPM set and
+opens a separate PR after retaining the signed inputs and verifying anonymous
+retrieval. Standard and LTS updates run independently, so a failure in one does
+not block the other. Retention and verification also run for unchanged inputs;
+the publisher reuses existing OCI content. The workflow runs weekly or on manual
+dispatch. Automatic
+discovery refuses versions older than the committed lock. An explicit release
+permits a deliberate rollback. To qualify an exact kernel pair instead of
+discovering newer versions:
 
 ```sh
 gh workflow run kernel-updates.yml --ref main \
-  -f standard_release=7.2.10-200.fc44.x86_64 \
-  -f lts_release=6.18.57-200.fc44.x86_64
+  -f standard_release=7.3.3-300.fc45.x86_64 \
+  -f lts_release=6.18.60-200.fc45.x86_64
+```
+
+To update only one flavour, select it with `flavour`:
+
+```sh
+gh workflow run kernel-updates.yml --ref main -f flavour=lts \
+  -f lts_release=6.18.60-200.fc45.x86_64
 ```
 
 PR CI qualifies each changed kernel flavour with runtime and installer builds,
@@ -776,13 +788,45 @@ production-driver DRBD replication. Unchanged App-authored kernel-lock-only
 proposals can merge automatically after CI and branch protection pass. These
 virtual machines do not qualify NVIDIA hardware.
 
+To prepare inputs for a Fedora base upgrade before changing `mkosi.conf`, run
+the trusted-main workflow with the target release:
+
+```sh
+gh workflow run kernel-updates.yml --ref main -f fedora_release=45
+```
+
+The workflow publishes and anonymously verifies the captured RPMs. When the
+target differs from the selected base, it creates no kernel-only proposal:
+that proposal's CI would still build the selected base. After the run succeeds,
+download its verified locks into the migration checkout:
+
+```sh
+gh run download RUN_ID --name kernel-lock-fedora-45-standard --dir kernels/fedora-45/x86_64
+gh run download RUN_ID --name kernel-lock-fedora-45-lts --dir kernels/fedora-45/x86_64
+```
+
+Include both locks with the `mkosi.conf` release change and any required recipe
+updates in the migration branch. Input preparation does not qualify the new
+base. Use the existing release workflow to build and qualify complete artifacts
+on that branch:
+
+```sh
+gh workflow run release-artifacts.yml --ref FEDORA_UPGRADE_BRANCH \
+  -f version=2026.11.0-dev.45
+```
+
+Wait for **Release validation**, then use the final Actions bundle for the
+persistent `katldev` and public `katlctl` journey. This manual branch run does
+not publish a KatlOS release or release-extension OCI artifacts. See
+[GitHub release artifacts](#github-release-artifacts) for the build contract.
+
 For local candidate qualification, capture the selected flavour inside the
 builder and select its retained OCI layout explicitly:
 
 ```sh
 scripts/mkosi box -- go run ./cmd/katl-kernel-release candidate \
   --fedora-release "$(scripts/fedora-release)" --flavour lts \
-  --kernel-release 6.18.57-200.fc44.x86_64 --output _build/kernel-candidates/lts
+  --kernel-release 6.18.60-200.fc45.x86_64 --output _build/kernel-candidates/lts
 
 export KATL_FLAVOUR=lts
 export KATL_KERNEL_LOCK="$PWD/_build/kernel-candidates/lts/lock.json"

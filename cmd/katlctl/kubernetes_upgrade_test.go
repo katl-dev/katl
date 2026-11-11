@@ -45,7 +45,20 @@ func TestKubernetesUpgradePlansAndRunsControlPlanesBeforeWorkers(t *testing.T) {
 			operationStatus: &agentapi.OperationStatus{Terminal: true, Result: operation.ResultSucceeded, Phase: "healthy"},
 		}
 		client.onSubmit = func(req *agentapi.SubmitOperationRequest) {
-			if !req.DryRun {
+			if !req.DryRun && req.OperationKind == "kubeadm-upgrade" {
+				if len(executionOrder) == 0 {
+					for _, controlPlane := range []string{"cp-1", "cp-2"} {
+						prepared := false
+						for _, request := range clients[controlPlane].submitRequests {
+							if request.OperationKind == "kubeadm-upgrade-prepare" {
+								prepared = true
+							}
+						}
+						if !prepared {
+							t.Fatalf("mutating rollout started before %s snapshot preparation", controlPlane)
+						}
+					}
+				}
 				executionOrder = append(executionOrder, name)
 			}
 		}
@@ -134,7 +147,7 @@ func TestKubernetesUpgradePlanDoesNotExecute(t *testing.T) {
 	if err := run(context.Background(), []string{"kubernetes", "upgrade", "--config", clusterConfig, "--context-file", contextPath, "--plan", "--timeout", "1m", "--output", "json"}, &stdout, &bytes.Buffer{}); err != nil {
 		t.Fatal(err)
 	}
-	if len(client.submitRequests) != 1 || !client.submitRequests[0].DryRun || !strings.Contains(stdout.String(), `"role": "control-plane"`) || strings.Contains(stdout.String(), `"role": "apply"`) || !strings.Contains(stdout.String(), `"result": "planned"`) {
+	if len(client.submitRequests) != 2 || !client.submitRequests[0].DryRun || client.submitRequests[1].OperationKind != "kubeadm-upgrade-prepare" || !strings.Contains(stdout.String(), `"role": "control-plane"`) || strings.Contains(stdout.String(), `"role": "apply"`) || !strings.Contains(stdout.String(), `"result": "planned"`) {
 		t.Fatalf("requests=%#v output=%s", client.submitRequests, stdout.String())
 	}
 }
@@ -159,7 +172,7 @@ func TestKubernetesUpgradeConfigVersionChangeProducesPlan(t *testing.T) {
 	if err := run(context.Background(), []string{"kubernetes", "upgrade", "--config", clusterConfig, "--context-file", contextPath, "--plan", "--timeout", "1m", "--output", "json"}, &stdout, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if len(client.submitRequests) != 1 || !client.submitRequests[0].DryRun {
+	if len(client.submitRequests) != 2 || !client.submitRequests[0].DryRun || client.submitRequests[1].OperationKind != "kubeadm-upgrade-prepare" {
 		t.Fatalf("requests = %#v", client.submitRequests)
 	}
 	body := client.submitRequests[0].KubernetesSysextUpdate
@@ -218,7 +231,7 @@ func TestKubernetesUpgradeResumeKeepsConfiguredSourceAndTarget(t *testing.T) {
 	}
 	for _, endpoint := range []string{"192.0.2.2:9443", "192.0.2.3:9443"} {
 		requests := clients[endpoint].submitRequests
-		if len(requests) != 1 || !requests[0].DryRun {
+		if len(requests) == 0 || !requests[0].DryRun {
 			t.Fatalf("%s requests = %#v", endpoint, requests)
 		}
 		body := requests[0].KubernetesSysextUpdate
@@ -228,7 +241,7 @@ func TestKubernetesUpgradeResumeKeepsConfiguredSourceAndTarget(t *testing.T) {
 	}
 }
 
-func TestKubernetesUpgradeLocalArtifactPlanDoesNotUpload(t *testing.T) {
+func TestKubernetesUpgradeLocalArtifactPreview(t *testing.T) {
 	clusterConfig, contextPath := writeKubernetesUpgradeConfig(t, "v1.36.2", workstation.Node{Name: "cp-1", ManagementEndpoint: "192.0.2.1:9443", SystemRole: inventory.RoleControlPlane, EnrollmentID: "enrollment-cp-1", MachineID: "machine"})
 	local := writeKubernetesUpgradeArtifact(t, "v1.36.2")
 	client := healthyKubernetesUpgradeClient()
@@ -242,10 +255,10 @@ func TestKubernetesUpgradeLocalArtifactPlanDoesNotUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(client.stageArtifact) != 0 {
-		t.Fatalf("plan uploaded %d artifact chunks", len(client.stageArtifact))
+	if len(client.stageArtifact) != 1 {
+		t.Fatalf("preview staged %d artifact chunks, want 1", len(client.stageArtifact))
 	}
-	if len(client.submitRequests) != 1 || !client.submitRequests[0].DryRun {
+	if len(client.submitRequests) != 2 || !client.submitRequests[0].DryRun || client.submitRequests[1].OperationKind != "kubeadm-upgrade-prepare" {
 		t.Fatalf("requests = %#v", client.submitRequests)
 	}
 	body := client.submitRequests[0].KubernetesSysextUpdate
@@ -287,10 +300,10 @@ func TestKubernetesUpgradeUploadsLocalArtifactBeforeOnlineOperation(t *testing.T
 	if first.Kind != "StageKubernetesUpgradeArtifactRequest" || first.Actor != "katlctl kubernetes upgrade" || first.ExpectedMachineId != "machine" || first.Sha256 != local.SHA256 || first.SizeBytes != local.SizeBytes || string(first.Chunk) != "local kubernetes upgrade" {
 		t.Fatalf("first staged chunk = %#v", first)
 	}
-	if len(client.submitRequests) != 2 || !client.submitRequests[0].DryRun || client.submitRequests[1].DryRun {
+	if len(client.submitRequests) != 3 || !client.submitRequests[0].DryRun || client.submitRequests[2].DryRun {
 		t.Fatalf("requests = %#v", client.submitRequests)
 	}
-	body := client.submitRequests[1].KubernetesSysextUpdate
+	body := client.submitRequests[len(client.submitRequests)-1].KubernetesSysextUpdate
 	if body.TargetSysextPath != kubernetesUpgradeArtifactLogicalPath(kubernetesUpgradeArtifactLocalRef(local.SHA256)) || body.KubernetesBundleRef != "" {
 		t.Fatalf("operation body = %#v", body)
 	}
@@ -530,4 +543,9 @@ func writeKubernetesUpgradeArtifact(t *testing.T, payloadVersion string) kuberne
 		t.Fatal(err)
 	}
 	return kubernetesUpgradeArtifact{Path: path, PayloadVersion: payloadVersion, Architecture: "x86_64", SHA256: digest, SizeBytes: uint64(len(contents))}
+}
+
+func testKubernetesUpgradeEtcd() *agentapi.EtcdUpgradeEvidence {
+	observed := &agentapi.EtcdObservation{ClusterId: "c1", LocalMemberId: "m1", LeaderId: "m2", BarrierIndex: 100, LocalImage: "registry.k8s.io/etcd:3.6.5-0", LocalContainerId: "etcd-container", Members: []*agentapi.EtcdMemberObservation{{Id: "m1", Name: "cp-1", Healthy: true, Version: "3.6.5", ClusterVersion: "3.6.0", StorageVersion: "3.6.0", AppliedIndex: 100}}}
+	return &agentapi.EtcdUpgradeEvidence{SourceImage: "registry.k8s.io/etcd:3.6.5-0", TargetImage: "registry.k8s.io/etcd:3.6.5-0", Before: observed, After: observed, Snapshot: &agentapi.EtcdSnapshot{Path: "/var/lib/etcd/katl-snapshots/before.db", Sha256: strings.Repeat("e", 64), Revision: 42, Hash: 123, TotalKeys: 7}}
 }

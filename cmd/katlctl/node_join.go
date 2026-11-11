@@ -18,6 +18,7 @@ import (
 )
 
 type nodeJoinOptions struct {
+	bootstrapKubeconfig                   string
 	configPath, node, coordinator, output string
 	timeout                               time.Duration
 }
@@ -33,7 +34,13 @@ worker or control plane. Install the node with this config before joining it.
 Repeating a completed join is a no-op. An interrupted join resumes its generation
 health checks, rebooting only if the joined generation still needs a trial boot.
 Use 'katlctl cluster bootstrap' to create the first control plane, and
-'katlctl cluster apply' for configuration changes.`,
+'katlctl cluster apply' for configuration changes.
+
+External workers use spec.kubernetes.external and
+--bootstrap-kubeconfig FILE instead of a Katl coordinator. The file must contain
+one CA-pinned cluster and a restricted bootstrap token, with a server matching
+the configured external endpoint. The external cluster owns CSR approval and
+networking. Never supply an administrator kubeconfig.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := selectHostNode(command, &opts.node, args); err != nil {
@@ -46,6 +53,7 @@ Use 'katlctl cluster bootstrap' to create the first control plane, and
 	f.StringVar(&opts.configPath, "config", "", "complete ClusterConfig YAML or Katl config bundle")
 	f.StringVar(&opts.node, "node", "", "node name (alternative to NODE)")
 	f.StringVar(&opts.coordinator, "coordinator", "", "ready control plane to coordinate the join (default: automatic)")
+	f.StringVar(&opts.bootstrapKubeconfig, "bootstrap-kubeconfig", "", "external worker: CA-pinned kubeconfig containing a restricted bootstrap token")
 	f.DurationVar(&opts.timeout, "timeout", opts.timeout, "time to wait for the join and node health")
 	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
@@ -80,6 +88,12 @@ func runNodeJoin(ctx context.Context, opts nodeJoinOptions, stdout, stderr io.Wr
 		return err
 	}
 	target := selected[0]
+	if opts.bootstrapKubeconfig != "" && !inv.ExternalControlPlane {
+		return fmt.Errorf("--bootstrap-kubeconfig requires spec.kubernetes.external in --config")
+	}
+	if inv.ExternalControlPlane {
+		return runExternalNodeJoin(ctx, opts, inv, target, stdout, stderr)
+	}
 	if opts.coordinator == target.Name {
 		return fmt.Errorf("node %s cannot coordinate its own join; choose an existing control plane", target.Name)
 	}
@@ -90,6 +104,10 @@ func runNodeJoin(ctx context.Context, opts nodeJoinOptions, stdout, stderr io.Wr
 	if err := validateClusterNodeLifecycle(target, status); err != nil {
 		return err
 	}
+	pending, err := unfinishedNodeJoin(ctx, opts.configPath, target, current)
+	if err != nil {
+		return err
+	}
 	result := "unchanged"
 	switch {
 	case isClusterJoinCandidate(current.GetGenerationId()) && (current.GetCommitState() != generation.CommitStateCommitted || current.GetHealthState() != generation.HealthStateHealthy):
@@ -97,11 +115,11 @@ func runNodeJoin(ctx context.Context, opts nodeJoinOptions, stdout, stderr io.Wr
 			return err
 		}
 		result = "joined"
-	case status.GetKubernetes().GetState() == "not-configured":
-		if current.GetCommitState() != generation.CommitStateCommitted || current.GetHealthState() != generation.HealthStateHealthy {
+	case status.GetKubernetes().GetState() == "not-configured" || pending != nil:
+		if pending == nil && (current.GetCommitState() != generation.CommitStateCommitted || current.GetHealthState() != generation.HealthStateHealthy) {
 			return fmt.Errorf("node %s must have a healthy committed generation before joining; inspect 'katlctl node status %s --config %s'", target.Name, target.Name, opts.configPath)
 		}
-		if next := status.GetBootTargetGenerationId(); next != "" && next != status.GetCurrentGenerationId() {
+		if next := status.GetBootTargetGenerationId(); next != "" && next != status.GetCurrentGenerationId() && next != pending.GetCandidateGenerationId() {
 			return fmt.Errorf("node %s has configuration staged for next boot; reboot it before joining", target.Name)
 		}
 		coordinator, err := joinCoordinator(ctx, opts, inv, stderr)
@@ -149,9 +167,8 @@ func runNodeJoin(ctx context.Context, opts nodeJoinOptions, stdout, stderr io.Wr
 		}
 		result = "joined"
 	default:
-		recovery := nodeUpgradeRecovery(status, nodeRecoveryRequirement{KubernetesConfigured: true})
-		if current.GetCommitState() != generation.CommitStateCommitted || current.GetHealthState() != generation.HealthStateHealthy || !recovery.Ready {
-			return fmt.Errorf("node %s is already configured but is not healthy (%s); inspect 'katlctl node status %s --config %s' before retrying", target.Name, firstNonEmpty(recovery.Reason, recovery.State), target.Name, opts.configPath)
+		if err := validateJoinedNode(opts.configPath, target, status, current); err != nil {
+			return err
 		}
 	}
 	if opts.output == "json" {
@@ -166,6 +183,50 @@ func runNodeJoin(ctx context.Context, opts nodeJoinOptions, stdout, stderr io.Wr
 		_, err = fmt.Fprintf(stdout, "%s joined Kubernetes\n", target.Name)
 	}
 	return err
+}
+
+func unfinishedNodeJoin(ctx context.Context, configPath string, node inventory.Node, current *agentapi.Generation) (*agentapi.OperationStatus, error) {
+	ctx, err := managementContextForNode(ctx, configPath, node.Name)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := dialKatlcAgent(ctx, cluster.AgentEndpoint(node.Address, "9443"))
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	operations, err := conn.Client.ListOperations(ctx, &agentapi.ListOperationsRequest{Limit: 100})
+	if err != nil {
+		return nil, fmt.Errorf("inspect %s join completion: %w", node.Name, err)
+	}
+	kind := "bootstrap-join-worker"
+	if node.SystemRole == inventory.RoleControlPlane {
+		kind = "bootstrap-join-control-plane"
+	}
+	// A Ready kubelet does not prove its generation was promoted. Follow the
+	// latest receipt for this source or candidate before declaring a join complete.
+	for _, op := range operations.GetOperations() {
+		if op.GetOperationKind() != kind || (op.GetPreviousGenerationId() != current.GetGenerationId() && op.GetCandidateGenerationId() != current.GetGenerationId()) {
+			continue
+		}
+		if op.GetTerminal() && op.GetResult() == "succeeded" {
+			return nil, nil
+		}
+		if !op.GetTerminal() || op.GetRecoveryRequired() {
+			return op, nil
+		}
+	}
+	return nil, nil
+}
+
+func validateJoinedNode(configPath string, node inventory.Node, status *agentapi.NodeStatus, current *agentapi.Generation) error {
+	// Managed bootstrap permits a pre-CNI baseline; external enrollment requires
+	// the full Node Ready contract before it is reported healthy.
+	recovery := nodeUpgradeRecovery(status, nodeRecoveryRequirement{KubernetesConfigured: true, NodeReady: status.GetKubernetes().GetExternalEndpoint() != ""})
+	if current.GetCommitState() != generation.CommitStateCommitted || current.GetHealthState() != generation.HealthStateHealthy || !recovery.Ready {
+		return fmt.Errorf("node %s is already configured but is not healthy (%s); inspect 'katlctl node status %s --config %s' before retrying", node.Name, firstNonEmpty(recovery.Reason, recovery.State), node.Name, configPath)
+	}
+	return nil
 }
 
 func readJoinNode(ctx context.Context, configPath string, node inventory.Node) (*agentapi.NodeStatus, *agentapi.Generation, error) {

@@ -168,6 +168,7 @@ message KubernetesStatus {
   bool node_ready = 5;
   bool control_plane_components_ready = 6;
   string failure_reason = 7;
+  string external_endpoint = 8;
 }
 
 message ControlPlaneEndpointStatus {
@@ -222,6 +223,8 @@ message BootstrapOperationRequest {
   string kubernetes_identity_fingerprint = 15;
   string api_proxy_config = 16;
   string resume_operation_id = 17;
+  bool external_worker = 18;
+  bytes bootstrap_kubeconfig = 19;
 }
 
 message WorkerJoinMaterial {
@@ -239,6 +242,8 @@ message EtcdStatus {
   repeated EtcdMember members = 4;
   uint32 quorum = 5;
   uint32 healthy_members = 6;
+  EtcdObservation observation = 7;
+  string observation_error = 8;
 }
 
 message EtcdMember {
@@ -365,6 +370,8 @@ message KubernetesSysextUpdateOperationRequest {
   string kubernetes_bundle_source = 17;
   string kubernetes_bundle_ref = 18;
   string kubernetes_bundle_manifest_digest = 19;
+  string prepared_operation_id = 20;
+  bool preview_only = 21;
 }
 
 message DestructiveResetOperationRequest {
@@ -498,6 +505,56 @@ message OperationStatus {
   string client_request_id = 29;
   ConfigApplyStatus config_apply = 30;
   bool resume_supported = 31;
+  EtcdUpgradeEvidence etcd_upgrade = 32;
+}
+
+message EtcdUpgradeEvidence {
+  string source_image = 1;
+  string target_image = 2;
+  bool image_changes = 3;
+  EtcdSnapshot snapshot = 4;
+  EtcdObservation before = 5;
+  EtcdObservation pre_restart = 6;
+  EtcdObservation after = 7;
+  string failure = 8;
+}
+
+message EtcdSnapshot {
+  string path = 1;
+  string sha256 = 2;
+  uint64 revision = 3;
+  uint64 hash = 4;
+  uint64 total_keys = 5;
+  string created_at = 6;
+}
+
+message EtcdObservation {
+  string observed_at = 1;
+  string cluster_id = 2;
+  string local_member_id = 3;
+  string leader_id = 4;
+  uint64 barrier_index = 5;
+  repeated EtcdMemberObservation members = 6;
+  string local_image = 7;
+  string local_container_id = 8;
+}
+
+message EtcdMemberObservation {
+  string id = 1;
+  string name = 2;
+  string endpoint = 3;
+  repeated string peer_urls = 4;
+  bool learner = 5;
+  bool healthy = 6;
+  string version = 7;
+  string cluster_version = 8;
+  string storage_version = 9;
+  uint64 raft_term = 10;
+  uint64 applied_index = 11;
+  int64 revision = 12;
+  string error = 13;
+  bool downgrade_enabled = 14;
+  string downgrade_target = 15;
 }
 
 message DiagnosticArtifact {

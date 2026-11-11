@@ -232,57 +232,84 @@ out of scope until a separate decision defines credentials, member health,
 backup, restore, upgrade, and disaster recovery gates.
 
 For stacked etcd, Katl owns storage planning, mount ordering, operation records,
-redacted diagnostics, and the health evidence it collects. Kubeadm and etcd own
-member creation, member removal, data contents under `/var/lib/etcd`, static pod
-manifests, and etcd certificates. The default data path is `/var/lib/etcd` on
-the writable state partition. A dedicated `KATL_ETCD` partition may be mounted
+redacted diagnostics, and the health evidence it collects. Kubeadm owns etcd
+image selection, static Pod manifests, certificates, upgrade policy, and its
+local failure handling. Etcd owns replication, membership
+consensus, and data migration under `/var/lib/etcd`. Katl owns the serialized
+rollout, pre-upgrade snapshots, direct quorum gates, evidence, and stop decision.
+The default data path is `/var/lib/etcd` on the writable state partition. A dedicated `KATL_ETCD` partition may be mounted
 there when the install plan explicitly selects it, but it is persistent node
 state and not a generation artifact.
 
-Every mutating Kubernetes upgrade that can affect control-plane or etcd state
-requires snapshot evidence before kubeadm is invoked. The first supported path
-must refuse control-plane upgrade execution unless the operation request names a
-verified etcd snapshot record with at least:
+The Kubernetes rollout has a separate preparation operation,
+`kubeadm-upgrade-prepare`, on every pending control plane. It resolves and
+verifies the target bundle and mounts target kubeadm privately. The selected
+binary renders its etcd Pod through `init phase etcd local --dry-run`, using
+the live ClusterConfiguration and the generation's frozen native patches.
+Kubeadm writes this preview into an operation-private dry-run directory. Katl
+reads the resulting container image; it does not interpret or apply patches. Preview records the actual source/target images and
+direct etcd observations without replacing control-plane manifests or changing
+etcd membership. Kubeadm plan can create temporary health-check API objects.
 
-```text
-snapshotRef
-snapshotDigest
-snapshotRevision, when observable
-createdAt
-capturedMemberListDigest
-sourceKubernetesVersion
-sourceEtcdVersion, when observable
-storageLocation
-operatorIdentityContext
-```
+Execution preparation also saves a leader snapshot on each pending control
+plane before the first mutating upgrade request. Every snapshot must pass its
+embedded SHA-256 checksum, `etcdutl snapshot status`, revision, and file digest
+checks. The evidence includes its protected path, creation time, key count,
+revision, database hash, file digest, source server version, and membership
+digest. Snapshots are cluster keyspace backups, not independent per-member data
+restores. Their revisions may differ as writes continue. A restore must use one
+chosen snapshot consistently across the restored cluster. Snapshot bytes and
+credentials never enter normal operation records.
 
-The snapshot may be operator-managed or produced by a future Katl snapshot
-operation, but the upgrade operation must record what was checked. Katl must not
-write raw snapshots into normal operation records and must redact credentials or
-keys from snapshot metadata. Worker-only `kubeadm upgrade node` operations do
-not require a new snapshot, but they must reference the control-plane snapshot
-record that authorized the rollout.
+The target kubeadm is the authority for image selection and upgrade policy.
+Preparation runs its upgrade plan and retains diagnostics before creating a
+snapshot. This delegates policy to kubeadm; its successful plan is not an
+independent certification of every etcd migration prerequisite. Katl does not
+interpret observed etcd versions as a release allowlist,
+add an etcd version selector, or duplicate kubeadm's version-specific manifest
+and migration policy. Observed server, cluster, and storage versions are
+recovery evidence, including during mixed-version operation.
 
-Upgrade ordering is serialized:
+The mutation boundary is serialized:
 
-```text
-1. verify API health, etcd endpoint health, and member list before the first
-   control-plane mutation
-2. run exactly one kubeadm upgrade apply operation on the selected apply node
-3. verify API health, local etcd health, and member list after the apply node
-4. run additional control-plane kubeadm upgrade node operations one at a time
-5. after each control-plane node, verify API health, local etcd health, member
-   list, and quorum before continuing
-6. upgrade workers only after the control-plane rollout is healthy
-```
+1. Require direct etcd evidence from pinned endpoints: linearizable reads,
+   stable member and cluster identity, no learners, alarms or active downgrade,
+   and every voter applied through a captured leader committed index. Reads
+   must not fail over and masquerade as evidence for an unavailable endpoint.
+2. Require enough surviving voters for the existing quorum, excluding the voter
+   kubeadm can restart. A three-voter cluster requires both peers. A
+   single-voter installation explicitly has no availability guarantee.
+3. Persist mutation intent before target kubeadm runs. Kubeadm owns its etcd
+   manifest generation, image changes, certificate renewal, and local upgrade
+   mechanics. These must evolve with the target kubeadm rather than Katl code.
+4. After kubeadm and target kubelet succeed, observe the same member in the same
+   membership and require it to apply through a fresh committed index. If its
+   selected image changed, require a new container on that exact image. Bracket
+   direct observations with container identity checks so a stopped source
+   process cannot prove the target healthy.
+5. Verify the local Kubernetes API and direct etcd evidence before promoting
+   the generation. Kubernetes readiness alone cannot authorize advancement.
+6. Advance only after success without `recoveryRequired`. Upgrade workers only
+   after all control planes pass.
 
-Katl must reject minor-version skips, downgrades, and Kubernetes or kubeadm
-version-skew violations before staging a mutating operation. A healthy
-three-control-plane cluster may tolerate one unavailable etcd member, but a
-planned upgrade must not intentionally make more than one member unavailable or
-continue when quorum evidence is unknown. Failed control-plane upgrade or join
-operations stop the rollout; Katl must not remove members, restore snapshots, or
-retry on another control-plane automatically.
+The operation retains before, pre-restart, and after observations, including
+server, cluster and storage versions, downgrade state, IDs, endpoints, Raft term,
+committed and applied indexes, Kubernetes revision, running image/container
+identity, and errors. Failure collection uses surviving endpoints even when the
+local member is down. The report carries this evidence and snapshot locations;
+a lost response is uncertainty, never permission to advance.
+
+On failure after any control-plane mutation, stop with `recoveryRequired`, keep
+the managed endpoint withdrawn, preserve the observed state and tool view, and
+leave other voters serving.
+Kubeadm can attempt its own local etcd manifest or data rollback before returning
+a failure; record the actual resulting state rather than infer that it worked.
+Katl must not restore the source sysext, select an older Kubernetes payload
+through host generation fallback, remove a member, restore snapshot data, or try
+the next voter automatically. Recovery is explicit member
+repair or replacement while quorum survives. If the original quorum is
+permanently lost, an operator may choose wipe/reinstall, bootstrap, GitOps, and
+VolSync reconstruction instead of snapshot restore.
 
 Host rollback after etcd or Kubernetes control-plane mutation is not cluster
 rollback. Rolling back the KatlOS root, Kubernetes sysext, or generated config
@@ -505,18 +532,13 @@ report whether host generation rollback was performed
 report that Kubernetes state may require kubeadm-aware repair
 ```
 
-If kubeadm has already mutated node or cluster state but target kubelet has not
-yet been activated, rollback still selects a complete previous host generation.
-The operation status must report that Kubernetes state may now expect the target
-version and that target-version kubeadm repair access may still be required.
-Rollback must not preserve the target sysext as a hidden repair tool. Any
-target-version kubeadm access after rollback remains operation-scoped and must be
-visible in diagnostics.
-
-If host boot fails after staging or after kubelet restart, normal Katl rollback
-selects the previous known-good generation as defined by the generation
-spec/status model. The operation status must still report whether kubeadm
-already mutated node or cluster state before the host rollback occurred.
+After control-plane mutation, failure leaves the operation-private target tools
+available and does not restore the source Kubernetes sysext. Public host
+selection refuses a generation carrying a different Kubernetes payload from
+the latest control-plane upgrade that crossed the mutation boundary. A host
+fallback cannot authorize a downgrade against persistent control-plane data.
+Worker failure may restore its source host selection, with Kubernetes repair
+still reported separately.
 
 Any reboot during `kubeadm-apply-running`, `kubeadm-node-running`, or unknown
 target-kubelet gate state becomes stale-post-mutation or stale-ambiguous during
@@ -624,9 +646,6 @@ Should a later role-specific path stop source kubelet before target kubeadm for
 
 Should target kubeadm eventually be split into a separate signed tool payload
   after operation-private sysext is proven?
-
-What UX should katlctl expose for operator-managed snapshot records before Katl
-  has its own snapshot operation?
 
 When can combined KatlOS root plus Kubernetes sysext upgrades be enabled after
   the independent root-update and Kubernetes-upgrade gates exist?

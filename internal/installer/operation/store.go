@@ -140,6 +140,7 @@ type ExecutorPlan struct {
 }
 
 type BootstrapRequest struct {
+	ExternalWorker                 bool   `json:"externalWorker,omitempty"`
 	ResumeOperationID              string `json:"resumeOperationID,omitempty"`
 	InventoryNodeName              string `json:"inventoryNodeName"`
 	SystemRole                     string `json:"systemRole"`
@@ -155,6 +156,7 @@ type BootstrapRequest struct {
 	KubeadmInputDigest             string `json:"kubeadmInputDigest,omitempty"`
 	JoinMaterialRef                string `json:"joinMaterialRef,omitempty"`
 	JoinMaterialDigest             string `json:"joinMaterialDigest,omitempty"`
+	PreviousJoinMaterialDigest     string `json:"previousJoinMaterialDigest,omitempty"`
 	JoinMaterialExpiresAt          string `json:"joinMaterialExpiresAt,omitempty"`
 	TemporaryJoinConfigPath        string `json:"temporaryJoinConfigPath,omitempty"`
 	ExistingClusterJoin            bool   `json:"existingClusterJoin,omitempty"`
@@ -176,6 +178,7 @@ type ConfigApplyRequest struct {
 }
 
 type KubeadmControlPlaneConfig struct {
+	ExternalWorker            bool              `json:"externalWorker,omitempty"`
 	Component                 string            `json:"component"`
 	RolloutID                 string            `json:"rolloutID"`
 	NodePosition              uint32            `json:"nodePosition"`
@@ -210,6 +213,10 @@ type KubeadmControlPlaneConfig struct {
 }
 
 type KubernetesSysextUpdate struct {
+	ExternalWorker           bool   `json:"externalWorker,omitempty"`
+	APIServerVersion         string `json:"apiServerVersion,omitempty"`
+	PreparedOperationID      string `json:"preparedOperationID,omitempty"`
+	PreviewOnly              bool   `json:"previewOnly,omitempty"`
 	TargetPayloadVersion     string `json:"targetPayloadVersion"`
 	TargetSysextPath         string `json:"targetSysextPath"`
 	TargetSysextSHA256       string `json:"targetSysextSHA256"`
@@ -232,17 +239,67 @@ type KubernetesSysextUpdate struct {
 }
 
 type KubeadmUpgradeEvidence struct {
-	TargetKubeadmAccessMode         string `json:"targetKubeadmAccessMode"`
-	TargetKubeadmArtifactPath       string `json:"targetKubeadmArtifactPath,omitempty"`
-	TargetKubeadmArtifactDigest     string `json:"targetKubeadmArtifactDigest,omitempty"`
-	TargetKubeadmObservedVersion    string `json:"targetKubeadmObservedVersion,omitempty"`
-	KubeletActivationGate           string `json:"kubeletActivationGate"`
-	KubeletGateState                string `json:"kubeletGateState"`
-	KubeletGateTokenPath            string `json:"kubeletGateTokenPath,omitempty"`
-	KubeletGateEnforcementUnit      string `json:"kubeletGateEnforcementUnit,omitempty"`
-	SourceKubeletPolicy             string `json:"sourceKubeletPolicy"`
-	GlobalTargetActiveBeforeKubeadm bool   `json:"globalTargetSysextActiveBeforeKubeadmMutation"`
-	AlternateAPIEndpoint            string `json:"alternateAPIEndpoint,omitempty"`
+	Etcd                            *EtcdUpgradeEvidence `json:"etcd,omitempty"`
+	TargetKubeadmAccessMode         string               `json:"targetKubeadmAccessMode"`
+	TargetKubeadmArtifactPath       string               `json:"targetKubeadmArtifactPath,omitempty"`
+	TargetKubeadmArtifactDigest     string               `json:"targetKubeadmArtifactDigest,omitempty"`
+	TargetKubeadmObservedVersion    string               `json:"targetKubeadmObservedVersion,omitempty"`
+	KubeletActivationGate           string               `json:"kubeletActivationGate"`
+	KubeletGateState                string               `json:"kubeletGateState"`
+	KubeletGateTokenPath            string               `json:"kubeletGateTokenPath,omitempty"`
+	KubeletGateEnforcementUnit      string               `json:"kubeletGateEnforcementUnit,omitempty"`
+	SourceKubeletPolicy             string               `json:"sourceKubeletPolicy"`
+	GlobalTargetActiveBeforeKubeadm bool                 `json:"globalTargetSysextActiveBeforeKubeadmMutation"`
+	AlternateAPIEndpoint            string               `json:"alternateAPIEndpoint,omitempty"`
+}
+
+type EtcdUpgradeEvidence struct {
+	SourceImage  string           `json:"sourceImage"`
+	TargetImage  string           `json:"targetImage"`
+	ImageChanges bool             `json:"imageChanges"`
+	Snapshot     *EtcdSnapshot    `json:"snapshot,omitempty"`
+	Before       *EtcdObservation `json:"before,omitempty"`
+	PreRestart   *EtcdObservation `json:"preRestart,omitempty"`
+	After        *EtcdObservation `json:"after,omitempty"`
+	Failure      string           `json:"failure,omitempty"`
+}
+
+type EtcdSnapshot struct {
+	Path      string `json:"path"`
+	SHA256    string `json:"sha256"`
+	Revision  uint64 `json:"revision"`
+	Hash      uint64 `json:"hash"`
+	TotalKeys uint64 `json:"totalKeys"`
+	CreatedAt string `json:"createdAt"`
+}
+
+type EtcdObservation struct {
+	LocalImage       string                  `json:"localImage"`
+	LocalContainerID string                  `json:"localContainerID"`
+	ObservedAt       string                  `json:"observedAt"`
+	ClusterID        string                  `json:"clusterID"`
+	LocalMemberID    string                  `json:"localMemberID"`
+	LeaderID         string                  `json:"leaderID"`
+	BarrierIndex     uint64                  `json:"barrierIndex"`
+	Members          []EtcdMemberObservation `json:"members"`
+}
+
+type EtcdMemberObservation struct {
+	DowngradeEnabled bool     `json:"downgradeEnabled"`
+	DowngradeTarget  string   `json:"downgradeTarget,omitempty"`
+	ID               string   `json:"id"`
+	Name             string   `json:"name"`
+	Endpoint         string   `json:"endpoint"`
+	PeerURLs         []string `json:"peerURLs"`
+	Learner          bool     `json:"learner"`
+	Healthy          bool     `json:"healthy"`
+	Version          string   `json:"version"`
+	ClusterVersion   string   `json:"clusterVersion"`
+	StorageVersion   string   `json:"storageVersion"`
+	RaftTerm         uint64   `json:"raftTerm"`
+	AppliedIndex     uint64   `json:"appliedIndex"`
+	Revision         int64    `json:"revision"`
+	Error            string   `json:"error,omitempty"`
 }
 
 type DestructiveReset struct {
@@ -810,6 +867,14 @@ func ValidateRecord(record OperationRecord) error {
 				return err
 			}
 		}
+		if previous := record.BootstrapRequest.PreviousJoinMaterialDigest; previous != "" {
+			if !record.BootstrapRequest.ExternalWorker || record.BootstrapRequest.ResumeOperationID == "" {
+				return fmt.Errorf("previousJoinMaterialDigest requires an external worker continuation")
+			}
+			if err := validateSHA256Hex("bootstrapRequest previousJoinMaterialDigest", previous); err != nil {
+				return err
+			}
+		}
 	}
 	if record.ConfigApplyRequest != nil {
 		if err := validateConfigApplyRequest(*record.ConfigApplyRequest); err != nil {
@@ -914,7 +979,7 @@ func validateRequestBodyConsistency(record OperationRecord) error {
 	if bodyCount > 1 {
 		return fmt.Errorf("operation record has multiple request bodies")
 	}
-	if record.KubernetesSysextUpdate != nil && record.OperationKind != "kubeadm-upgrade" {
+	if record.KubernetesSysextUpdate != nil && record.OperationKind != "kubeadm-upgrade" && record.OperationKind != "kubeadm-upgrade-prepare" {
 		return fmt.Errorf("operation kind %q cannot include kubernetesSysextUpdate", record.OperationKind)
 	}
 	if record.OperationKind == "kubeadm-upgrade" && record.KubernetesSysextUpdate == nil {
@@ -1201,6 +1266,25 @@ func cloneRecord(record OperationRecord) OperationRecord {
 	}
 	if record.KubeadmUpgradeEvidence != nil {
 		evidence := *record.KubeadmUpgradeEvidence
+		if evidence.Etcd != nil {
+			etcd := *evidence.Etcd
+			if etcd.Snapshot != nil {
+				snapshot := *etcd.Snapshot
+				etcd.Snapshot = &snapshot
+			}
+			for _, slot := range []**EtcdObservation{&etcd.Before, &etcd.PreRestart, &etcd.After} {
+				if *slot == nil {
+					continue
+				}
+				observed := **slot
+				observed.Members = append([]EtcdMemberObservation(nil), observed.Members...)
+				for i := range observed.Members {
+					observed.Members[i].PeerURLs = cloneStrings(observed.Members[i].PeerURLs)
+				}
+				*slot = &observed
+			}
+			evidence.Etcd = &etcd
+		}
 		record.KubeadmUpgradeEvidence = &evidence
 	}
 	if record.DestructiveResetRequest != nil {
@@ -1762,6 +1846,9 @@ func validateArtifactPath(path string) error {
 }
 
 func validateBootstrapRequest(request BootstrapRequest) error {
+	if request.ExternalWorker && request.SystemRole != "worker" {
+		return fmt.Errorf("external bootstrap requires worker systemRole")
+	}
 	if strings.TrimSpace(request.InventoryNodeName) == "" {
 		return fmt.Errorf("bootstrapRequest inventoryNodeName is required")
 	}
@@ -1857,10 +1944,17 @@ func validateKubeadmControlPlaneConfig(request KubeadmControlPlaneConfig) error 
 		return fmt.Errorf("kubeadmControlPlaneConfig readiness requirement is invalid")
 	}
 	required := map[string]string{
-		"rolloutID": request.RolloutID, "coordinatorNode": request.CoordinatorNode,
-		"nodeName": request.NodeName, "desiredGenerationID": request.DesiredGenerationID,
+		"rolloutID": request.RolloutID,
+		"nodeName":  request.NodeName, "desiredGenerationID": request.DesiredGenerationID,
 		"configName": request.ConfigName, "configPath": request.ConfigPath,
 		"kubernetesPayloadVersion": request.KubernetesPayloadVersion,
+	}
+	if request.ExternalWorker {
+		if request.Component != "kubelet" || request.CoordinatorUpload || request.CoordinatorNode != "" {
+			return fmt.Errorf("external worker configuration must remain local to kubelet")
+		}
+	} else {
+		required["coordinatorNode"] = request.CoordinatorNode
 	}
 	for name, value := range required {
 		if strings.TrimSpace(value) == "" {
@@ -1921,6 +2015,9 @@ func validateKubeadmControlPlaneConfig(request KubeadmControlPlaneConfig) error 
 }
 
 func validateKubernetesSysextUpdate(request KubernetesSysextUpdate) error {
+	if request.ExternalWorker && (request.UpgradeRole != "worker" || request.APIServerVersion == "") {
+		return fmt.Errorf("external Kubernetes upgrade requires a worker role and observed API server version")
+	}
 	if strings.TrimSpace(request.TargetPayloadVersion) == "" {
 		return fmt.Errorf("kubernetesSysextUpdate targetPayloadVersion is required")
 	}

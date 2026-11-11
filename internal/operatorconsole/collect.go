@@ -256,6 +256,7 @@ func (c Collector) collectKubernetes(snapshot *Snapshot, now time.Time) {
 	root := cleanRoot(c.Root)
 	intentAvailable := false
 	if intent, _, err := installer.ReadClusterIntent(root); err == nil {
+		snapshot.ExternalWorker = intent.Kubernetes.External
 		intentAvailable = true
 		snapshot.ControlPlane = strings.TrimSpace(intent.SystemRole) == "control-plane"
 		snapshot.ControlPlaneEndpoint = strings.TrimSpace(intent.Inventory.ControlPlaneEndpoint)

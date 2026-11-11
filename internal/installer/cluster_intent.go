@@ -54,6 +54,7 @@ type ClusterIntentInventory struct {
 }
 
 type ClusterIntentKubernetes struct {
+	External       bool   `json:"external,omitempty"`
 	PayloadVersion string `json:"payloadVersion,omitempty"`
 	Address        string `json:"address,omitempty"`
 	SysextPath     string `json:"sysextPath,omitempty"`
@@ -213,6 +214,7 @@ func BuildClusterIntent(request ClusterIntentRequest) (ClusterIntent, error) {
 			NodeName: inventoryNodeName(request.Manifest),
 		},
 		Kubernetes: ClusterIntentKubernetes{
+			External:       request.Manifest.Node.Kubernetes.External,
 			PayloadVersion: strings.TrimSpace(request.KubernetesVersion),
 			Address:        strings.TrimSpace(request.Manifest.Node.Kubernetes.Address),
 		},
@@ -245,9 +247,12 @@ func BuildClusterIntent(request ClusterIntentRequest) (ClusterIntent, error) {
 	if !ok {
 		return ClusterIntent{}, fmt.Errorf("node.kubernetes.kubeadm.configRef %q was not resolved", ref)
 	}
-	config, err := kubeadmconfig.WithNodeAddress(config, request.Manifest.Node.Kubernetes.Address)
-	if err != nil {
-		return ClusterIntent{}, err
+	if !request.Manifest.Node.Kubernetes.External {
+		var err error
+		config, err = kubeadmconfig.WithNodeAddress(config, request.Manifest.Node.Kubernetes.Address)
+		if err != nil {
+			return ClusterIntent{}, err
+		}
 	}
 	intentValue, err := configdomain.KubeadmIntent(config)
 	if err != nil {
@@ -294,9 +299,12 @@ func writeClusterKubeadmInput(root string, intent ClusterIntent, configs map[str
 	if !ok {
 		return fmt.Errorf("cluster intent kubeadm configRef %q was not resolved", ref)
 	}
-	plan, err := kubeadmconfig.WithNodeAddress(plan, intent.Kubernetes.Address)
-	if err != nil {
-		return err
+	if !intent.Kubernetes.External {
+		var err error
+		plan, err = kubeadmconfig.WithNodeAddress(plan, intent.Kubernetes.Address)
+		if err != nil {
+			return err
+		}
 	}
 	dir, err := StoredKubeadmInputDir(root, ref)
 	if err != nil {

@@ -37,10 +37,11 @@ type Spec struct {
 }
 
 type KubernetesSelection struct {
-	PayloadVersion string `yaml:"payloadVersion,omitempty" json:"payloadVersion,omitempty"`
-	CatalogRef     string `yaml:"catalogRef,omitempty" json:"catalogRef,omitempty"`
-	BundleSource   string `yaml:"bundleSource,omitempty" json:"bundleSource,omitempty"`
-	BundleRef      string `yaml:"bundleRef,omitempty" json:"bundleRef,omitempty"`
+	ExternalEndpoint string `yaml:"externalEndpoint,omitempty" json:"externalEndpoint,omitempty"`
+	PayloadVersion   string `yaml:"payloadVersion,omitempty" json:"payloadVersion,omitempty"`
+	CatalogRef       string `yaml:"catalogRef,omitempty" json:"catalogRef,omitempty"`
+	BundleSource     string `yaml:"bundleSource,omitempty" json:"bundleSource,omitempty"`
+	BundleRef        string `yaml:"bundleRef,omitempty" json:"bundleRef,omitempty"`
 }
 
 type Node struct {

@@ -1,7 +1,9 @@
 [Unit]
 Description=Katl vmtest guest agent
 Documentation=man:systemd.service(5)
-After=basic.target
+# Wait for persistent Kubernetes state, retaining diagnostic access if it fails.
+Wants=etc-kubernetes.mount
+After=basic.target etc-kubernetes.mount
 
 [Service]
 Type=simple
