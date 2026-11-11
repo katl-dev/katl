@@ -416,7 +416,7 @@ func TestExecuteKubeadmControlPlaneConfigNoChangeIsIdempotent(t *testing.T) {
 		commands = append(commands, append([]string(nil), argv...))
 		return ToolResult{Stdout: []byte(liveConfig)}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
 	if err := executor.Execute(ctx, record); err != nil {
 		t.Fatal(err)
@@ -476,6 +476,8 @@ func TestExecuteKubeadmControlPlaneConfigStopsAfterMutationUncertainty(t *testin
 	executor.Async = false
 	replacement := strings.Replace(readControlPlaneTestManifest(t, root, "kube-apiserver.yaml"), "    - --secure-port=6443", "    - --secure-port=6443\n    - --profiling=false", 1)
 	applied := false
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		if previewControlPlaneTestManifests(t, root, argv, map[string]string{"kube-apiserver.yaml": replacement}) {
 			return ToolResult{}
@@ -492,6 +494,7 @@ func TestExecuteKubeadmControlPlaneConfigStopsAfterMutationUncertainty(t *testin
 			return result
 		}
 		if slices.Contains(argv, "--raw=/readyz") {
+			cancel()
 			return ToolResult{ExitStatus: 1, Stderr: []byte("local API is unhealthy")}
 		}
 		if result, ok := healthyControlPlaneProbe(argv); ok {
@@ -505,8 +508,6 @@ func TestExecuteKubeadmControlPlaneConfigStopsAfterMutationUncertainty(t *testin
 		}
 		return ToolResult{}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
 	err = executor.Execute(ctx, record)
 	if err == nil {
 		t.Fatal("Execute() error = nil")
