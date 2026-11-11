@@ -1047,13 +1047,23 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 		return err
 	}
 	const rolloutID = "2026.07.11-vmtest-cluster-config"
-	args := []string{"cluster", "apply", "--inventory", inventoryPath, "--coordinator", "cp-3", "--generation", generationID, "--config-name", configName, "--rollout-id", rolloutID}
+	args := []string{"cluster", "apply", "--inventory", inventoryPath, "--coordinator", "cp-3", "--generation", generationID, "--config-name", configName, "--rollout-id", rolloutID, "--output", "json"}
 	stdout, stderr, err := runProofKatlctl(ctx, katlctl, proofDir, "rollout", args...)
 	if err != nil {
 		return fmt.Errorf("run serial control-plane config rollout: %w: %s", err, stderr)
 	}
-	if !bytes.Contains(stdout, []byte(`"automaticRollback":false`)) || !bytes.Contains(stdout, []byte(`"result":"succeeded"`)) {
-		return fmt.Errorf("rollout summary did not record automaticRollback=false: %s", stdout)
+	var report struct {
+		Result     string `json:"result"`
+		Kubernetes map[string]struct {
+			AutomaticRollback *bool `json:"automaticRollback"`
+		} `json:"kubernetes"`
+	}
+	if err := json.Unmarshal(stdout, &report); err != nil {
+		return fmt.Errorf("decode cluster apply report: %w", err)
+	}
+	rollback := report.Kubernetes["control-plane"].AutomaticRollback
+	if report.Result != operation.ResultSucceeded || rollback == nil || *rollback {
+		return fmt.Errorf("unexpected control-plane rollout report: %s", stdout)
 	}
 	for position, node := range nodes {
 		_, record, err := collectOperationEvidenceForRollout(ctx, node, filepath.Join(proofDir, node.Name), "kubeadm-control-plane-config", rolloutID+"-control-plane")
