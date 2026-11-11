@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "fedoraRelease": "45",
+  "architecture": "x86_64",
+  "flavour": "standard",
+  "kernelRelease": "7.3.3-300.fc45.x86_64",
+  "packages": [
+    {
+      "name": "kernel-core",
+      "nevra": "kernel-core-0:7.3.3-300.fc45.x86_64",
+      "sourceURL": "https://dl.fedoraproject.org/pub/fedora/linux/updates/45/Everything/x86_64/Packages/k/kernel-core-7.3.3-300.fc45.x86_64.rpm",
+      "role": "runtime",
+      "mediaType": "application/x-rpm",
+      "digest": "sha256:62d980c85e847723aa4c8b9298e24488446aa986a0e2a9add76015e44421da76",
+      "sizeBytes": 22143789,
+      "fileName": "kernel-core-7.3.3-300.fc45.x86_64.rpm",
+      "annotations": {
+        "dev.katl.bundle.role": "runtime",
+        "org.opencontainers.image.title": "payload/kernel-core-7.3.3-300.fc45.x86_64.rpm"
+      }
+    },
+    {
+      "name": "kernel-modules",
+      "nevra": "kernel-modules-0:7.3.3-300.fc45.x86_64",
+      "sourceURL": "https://dl.fedoraproject.org/pub/fedora/linux/updates/45/Everything/x86_64/Packages/k/kernel-modules-7.3.3-300.fc45.x86_64.rpm",
+      "role": "runtime",
+      "mediaType": "application/x-rpm",
+      "digest": "sha256:18cd3df1fae0b383bf742791e62b38c09b61c528215c420bb867cdc2df1d2604",
+      "sizeBytes": 86283993,
+      "fileName": "kernel-modules-7.3.3-300.fc45.x86_64.rpm",
+      "annotations": {
+        "dev.katl.bundle.role": "runtime",
+        "org.opencontainers.image.title": "payload/kernel-modules-7.3.3-300.fc45.x86_64.rpm"
+      }
+    },
+    {
+      "name": "kernel-modules-core",
+      "nevra": "kernel-modules-core-0:7.3.3-300.fc45.x86_64",
+      "sourceURL": "https://dl.fedoraproject.org/pub/fedora/linux/updates/45/Everything/x86_64/Packages/k/kernel-modules-core-7.3.3-300.fc45.x86_64.rpm",
+      "role": "runtime",
+      "mediaType": "application/x-rpm",
+      "digest": "sha256:ed15e99ed205711609dd82e46656347cbb8f7dea7f4c7af8d7d7838ab1b69d1b",
+      "sizeBytes": 56577829,
+      "fileName": "kernel-modules-core-7.3.3-300.fc45.x86_64.rpm",
+      "annotations": {
+        "dev.katl.bundle.role": "runtime",
+        "org.opencontainers.image.title": "payload/kernel-modules-core-7.3.3-300.fc45.x86_64.rpm"
+      }
+    },
+    {
+      "name": "kernel-devel",
+      "nevra": "kernel-devel-0:7.3.3-300.fc45.x86_64",
+      "sourceURL": "https://dl.fedoraproject.org/pub/fedora/linux/updates/45/Everything/x86_64/Packages/k/kernel-devel-7.3.3-300.fc45.x86_64.rpm",
+      "role": "build",
+      "mediaType": "application/x-rpm",
+      "digest": "sha256:6f6d1edb7f48850666dc3005fff9487e10c35b3aaf911480b665e85355f78a73",
+      "sizeBytes": 61014465,
+      "fileName": "kernel-devel-7.3.3-300.fc45.x86_64.rpm",
+      "annotations": {
+        "dev.katl.bundle.role": "build",
+        "org.opencontainers.image.title": "payload/kernel-devel-7.3.3-300.fc45.x86_64.rpm"
+      }
+    }
+  ],
+  "reference": "ghcr.io/katl-dev/katl/kernel-inputs@sha256:02fa93ad110cb83b7fe3402caf1752bd8cd9419c62985ac336cca63d9d7d8633"
+}

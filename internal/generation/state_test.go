@@ -172,6 +172,8 @@ Documentation=man:systemd-sysext(8) man:systemd-confext(8)
 DefaultDependencies=no
 Requires=var.mount
 After=var.mount
+# Recovery arming checks the fallback entry and UKI on the EFI partition.
+RequiresMountsFor=/efi
 Before=systemd-sysext.service systemd-confext.service
 
 [Service]
