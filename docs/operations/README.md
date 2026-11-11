@@ -23,6 +23,7 @@ Keep both on trusted home-lab networks and off the Internet.
 | Kubeadm cluster has no CNI | Install Cilium without mutating the host generation | [Run Cilium on KatlOS](cilium.md) |
 | Installed node | Inspect or reboot one host | [Access installed nodes](access.md#routine-host-management) |
 | Kubernetes node | Prepare workloads and storage for host maintenance | [Prepare a node for maintenance](maintain-node.md) |
+| Node using Rook/Ceph storage | Check storage teardown before host maintenance | [Maintain Rook/Ceph nodes](rook-ceph-maintenance.md) |
 | Installed or bootstrapped node | Change supported runtime configuration | [Apply node configuration](configure-nodes.md) |
 | Node list, name, role, or hardware is changing | Add, replace, or remove membership explicitly | [Change cluster membership](change-cluster-nodes.md) |
 | Healthy installed node | Stage a new KatlOS release | [Upgrade a KatlOS host](upgrade-host.md) |
