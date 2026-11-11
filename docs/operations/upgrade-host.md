@@ -20,12 +20,9 @@ availability across several hosts.
 - the command is run during the intended reboot window; and
 - Kubernetes and workload availability have been handled outside Katl.
 
-Host reboot, shutdown, and upgrade can hang with mounted Ceph RBD filesystems.
-Katl does not automatically quiesce storage workloads or guarantee that CSI
-staging mounts and devices are released before their dependencies stop.
-Arrange and verify storage teardown outside Katl before host maintenance.
-Ordinary workload drain and longer shutdown waits are not verified workarounds
-for this limitation.
+For nodes that use Rook/Ceph volumes, follow the
+[Rook/Ceph maintenance guide](rook-ceph-maintenance.md) before the host
+operation. Verify the storage teardown required by your deployment.
 
 See [Prepare a Kubernetes node for host maintenance](maintain-node.md) for
 operator-owned drain and native kubelet shutdown configuration. Host upgrade

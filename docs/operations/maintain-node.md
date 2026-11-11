@@ -72,7 +72,6 @@ or mapped devices have been released. A successful drain alone does not prove
 that teardown is complete. Follow your storage driver's procedure and verify
 the node's actual mounts and devices before maintenance.
 
-Mounted Ceph RBD filesystems can still hang host shutdown if the driver,
-backend, or network stops before teardown finishes. A longer kubelet budget
-does not establish an ordering guarantee for those dependencies. Katl does not
-force unmounts or unmap customer devices to work around that limitation.
+For Rook/Ceph deployments, follow the
+[Rook/Ceph maintenance guide](rook-ceph-maintenance.md) for storage teardown,
+shutdown dependencies, and recovery guidance.

@@ -44,8 +44,20 @@ func TestInstallerISOBootSmoke(t *testing.T) {
 		vmtest.Scenario{Name: "installer-iso-boot"},
 		vmtest.InstallerBootConfig{
 			InstallerISO: iso,
-			Expect:       "katlos-install progress: waiting for configuration at",
+			Expect:       "reboot: Power down",
 			VM: vmtest.VMConfig{
+				SerialHooks: []vmtest.SerialHook{{
+					Name:   "power-button",
+					Signal: "katlos-install progress: waiting for configuration at",
+					Run: func(ctx context.Context, event vmtest.SerialHookEvent) error {
+						command := exec.CommandContext(ctx, event.Plan.VirshPath, "-c", event.Plan.LibvirtURI,
+							"shutdown", event.Plan.DomainName, "--mode", "acpi")
+						if output, err := command.CombinedOutput(); err != nil {
+							return fmt.Errorf("press installer power button: %w: %s", err, output)
+						}
+						return nil
+					},
+				}},
 				KVM:     options.KVM,
 				RAMMiB:  2048,
 				CPUs:    2,
@@ -151,9 +163,9 @@ spec:
 						command = exec.CommandContext(ctx, "ssh", "-F", "/dev/null", "-i", privateKey,
 							"-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=no",
 							"-o", "UserKnownHostsFile=/dev/null", "root@"+endpoint.Hostname(),
-							`systemctl is-active --quiet systemd-networkd-wait-online.service && test "$(systemctl show systemd-networkd-wait-online.service -p Result --value)" = success && test ! -e /run/nologin && test -S /run/dbus/system_bus_socket && busctl --system list >/dev/null`)
+							`systemctl is-active --quiet systemd-logind.service systemd-networkd-wait-online.service && test "$(systemctl show systemd-networkd-wait-online.service -p Result --value)" = success && test ! -e /run/nologin && test -S /run/dbus/system_bus_socket && busctl --system list >/dev/null`)
 						if output, err := command.CombinedOutput(); err != nil {
-							return fmt.Errorf("installer network-online service was not active and successful: %w: %s", err, output)
+							return fmt.Errorf("installer host services were not ready: %w: %s", err, output)
 						}
 						return nil
 					},
