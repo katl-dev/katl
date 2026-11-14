@@ -10,14 +10,19 @@ identity and desired cluster inputs. After those inputs and the loader entry
 are ready, it calls `generation.Initialize`. Initialization publishes the
 immutable specification and initial status, then publishes boot selection last.
 Repeating initialization with the same specification preserves existing health
-and selection; a conflicting specification is rejected.
+and selection; a conflicting specification is rejected. Before requesting reboot,
+the installer verifies that generation 0 has no kubeadm-owned state or active
+Kubernetes payload. Bootstrap verifies this invariant again before mutation.
 
 Initial selection names generation 0 as the default and pending boot target.
 It contains no claim about which generation has booted or is active. Boot
 health validates the actual kernel command line and root partition before
-recording generation 0 as booted and healthy. The host-ready handoff requires
-networking, operator access and management; Kubernetes bootstrap remains an
-explicit subsequent operation.
+recording generation 0 as booted and healthy. Kubernetes bootstrap remains an
+explicit subsequent operation. Boot health requires the Kubernetes configuration
+mount, generation activation, networking, SSH, and the management agent. It does
+not read installation progress or history. The runtime console derives its state
+from the selected generation and current Kubernetes configuration; installer
+progress belongs only to the installer console.
 
 Kubernetes operations own kubeadm mutation and its execution history. A
 validated generation carries its immutable upgrade selection and durable health

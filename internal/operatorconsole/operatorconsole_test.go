@@ -416,6 +416,57 @@ func TestCollectorReadsInstalledVersionsFromBootedGeneration(t *testing.T) {
 	}
 }
 
+func TestCollectorDerivesRuntimeState(t *testing.T) {
+	for _, archive := range []struct{ name, content string }{
+		{name: "no history"},
+		{name: "damaged history", content: "{broken"},
+		{name: "failed history", content: `{"apiVersion":"katl.dev/v1alpha1","kind":"InstallStatus","state":"failed-after-mutation","lastError":"old install failure","updatedAt":"2026-01-01T00:00:00Z"}`},
+	} {
+		t.Run(archive.name, func(t *testing.T) {
+			root := t.TempDir()
+			now := time.Date(2026, 11, 14, 12, 0, 0, 0, time.UTC)
+			testConsoleGeneration(t, root, "0", "2026.11.0", "", now)
+			if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
+				APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind,
+				DefaultGenerationID: "0", BootedGenerationID: "0", UpdatedAt: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if archive.content != "" {
+				path := filepath.Join(root, "var/lib/katl/install/status.json")
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(archive.content), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			collector := Collector{
+				Mode: ModeRuntime, Root: root,
+				Interfaces: func() ([]net.Interface, error) { return nil, nil },
+			}
+			var snapshot Snapshot
+
+			collector.Collect(&snapshot)
+			if snapshot.State != installstatus.StateWaitingForClusterBootstrap || snapshot.GenerationHealth != generation.HealthStateHealthy || snapshot.StatusError != "" {
+				t.Fatalf("pre-bootstrap runtime = %+v", snapshot)
+			}
+
+			path := filepath.Join(root, "etc/kubernetes/kubelet.conf")
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, []byte("configured"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			collector.Collect(&snapshot)
+			if snapshot.State != installstatus.StateKubeadmReady || !snapshot.KubernetesConfigured || snapshot.StatusError != "" {
+				t.Fatalf("configured runtime = %+v", snapshot)
+			}
+		})
+	}
+}
+
 func TestCollectorReportsLiveBootstrapCandidateBeforeReboot(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 7, 18, 12, 0, 0, 0, time.UTC)

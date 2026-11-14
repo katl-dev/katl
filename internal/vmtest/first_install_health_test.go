@@ -2,6 +2,7 @@ package vmtest
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -14,15 +15,11 @@ func TestFirstInstallHealth(t *testing.T) {
 		"defaultGenerationID":"0","bootedGenerationID":"0",
 		"pendingHealthValidation":false,"recoveryRequired":false,
 		"persistentDefaultPromotion":"promoted","updatedAt":"2026-10-21T12:00:00Z"}}`
-	const status = `{"apiVersion":"katl.dev/v1alpha1","kind":"InstallToBootstrapStatus",
-		"finalHandoff":"waiting-for-cluster-bootstrap","updatedAt":"2026-10-21T12:00:00Z"}`
-
 	for _, tc := range []struct {
 		name      string
 		inactive  string
 		health    string
 		selection string
-		status    string
 		wantError string
 	}{
 		{name: "healthy"},
@@ -30,7 +27,6 @@ func TestFirstInstallHealth(t *testing.T) {
 		{name: "SSH unavailable", inactive: "sshd.service", wantError: "sshd.service"},
 		{name: "management unavailable", inactive: "katlc-agent.service", wantError: "katlc-agent.service"},
 		{name: "failed health", health: "exit-code", wantError: "boot-health result"},
-		{name: "handoff not ready", status: strings.ReplaceAll(status, "waiting-for-cluster-bootstrap", "runtime-failed-needs-repair"), wantError: "handoff"},
 		{name: "wrong generation", selection: strings.ReplaceAll(selection, `"defaultGenerationID":"0"`, `"defaultGenerationID":"1"`), wantError: "not healthy and promoted"},
 		{name: "recovery required", selection: strings.ReplaceAll(selection, `"recoveryRequired":false`, `"recoveryRequired":true`), wantError: "not healthy and promoted"},
 		{name: "promotion pending", selection: strings.ReplaceAll(selection, `"persistentDefaultPromotion":"promoted"`, `"persistentDefaultPromotion":"pending"`), wantError: "not healthy and promoted"},
@@ -38,7 +34,7 @@ func TestFirstInstallHealth(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			client := &firstInstallHealthClient{
 				inactive: tc.inactive, health: first(tc.health, "success"),
-				selection: first(tc.selection, selection), status: first(tc.status, status),
+				selection: first(tc.selection, selection),
 			}
 			guest := NewGuestControl(guestResult(t), client)
 
@@ -56,7 +52,7 @@ func TestFirstInstallHealth(t *testing.T) {
 
 type firstInstallHealthClient struct {
 	fakeGuestClient
-	inactive, health, selection, status string
+	inactive, health, selection string
 }
 
 func (c *firstInstallHealthClient) RunCommand(_ context.Context, req *vmtestpb.RunCommandRequest) (*vmtestpb.CommandResult, error) {
@@ -70,9 +66,8 @@ func (c *firstInstallHealthClient) RunCommand(_ context.Context, req *vmtestpb.R
 }
 
 func (c *firstInstallHealthClient) ReadFile(_ context.Context, req *vmtestpb.ReadFileRequest) (*vmtestpb.FileResult, error) {
-	content := c.status
 	if req.Path == "/var/lib/katl/boot/selection.json" {
-		content = c.selection
+		return &vmtestpb.FileResult{Content: []byte(c.selection)}, nil
 	}
-	return &vmtestpb.FileResult{Content: []byte(content)}, nil
+	return nil, fmt.Errorf("unexpected guest file read %q", req.Path)
 }

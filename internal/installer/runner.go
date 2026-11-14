@@ -1045,19 +1045,23 @@ func (verifyTargetStep) Run(ctx context.Context, install *Context) error {
 		return ctx.Err()
 	default:
 	}
-	if install.DiskLayout == nil {
-		return recordStep(ctx, install, VerifyTarget)
+	if install.DiskLayout != nil {
+		if install.Discovery == nil {
+			return fmt.Errorf("discovery source is required to verify target layout")
+		}
+		facts, err := install.Discovery.Discover(ctx)
+		if err != nil {
+			return err
+		}
+		install.HardwareFacts = facts
+		if err := disk.ValidateAppliedLayoutAt(facts, *install.DiskLayout, install.TargetRoot); err != nil {
+			return err
+		}
 	}
-	if install.Discovery == nil {
-		return fmt.Errorf("discovery source is required to verify target layout")
-	}
-	facts, err := install.Discovery.Discover(ctx)
-	if err != nil {
-		return err
-	}
-	install.HardwareFacts = facts
-	if err := disk.ValidateAppliedLayoutAt(facts, *install.DiskLayout, install.TargetRoot); err != nil {
-		return err
+	if install.LoaderRecord != nil {
+		if err := installstatus.ValidateCleanGenerationZero(install.TargetRoot, install.LoaderRecord.GenerationID); err != nil {
+			return fmt.Errorf("verify initial bootstrap state: %w", err)
+		}
 	}
 	return recordStep(ctx, install, VerifyTarget)
 }
@@ -1212,7 +1216,7 @@ func writeTargetStatus(ctx context.Context, install *Context, current StepID, re
 		return ctx.Err()
 	default:
 	}
-	path, err := installstatus.RuntimeStatusPath(install.TargetRoot)
+	path, err := installstatus.TargetStatusPath(install.TargetRoot)
 	if err != nil {
 		return err
 	}

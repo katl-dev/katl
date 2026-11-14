@@ -155,7 +155,7 @@ func kubeadmReadySmokeDiagnostics(plan KubeadmReadySmokePlan) GuestDiagnostics {
 			{Name: "kubeadm-config", Path: plan.ConfigPath},
 		},
 		Journals: []GuestJournalRequest{
-			{Name: "runtime-handoff", Units: []string{"katl-kubeadm-ready.target", "katl-generation-activate.service", "katl-runtime-handoff-status.service", "systemd-sysext.service", "systemd-confext.service", "var.mount", "etc-kubernetes.mount", "containerd.service", "kubelet.service"}},
+			{Name: "runtime-handoff", Units: []string{"katl-kubeadm-ready.target", "katl-generation-activate.service", "katl-boot-health.service", "systemd-sysext.service", "systemd-confext.service", "var.mount", "etc-kubernetes.mount", "containerd.service", "kubelet.service"}},
 		},
 	}
 }

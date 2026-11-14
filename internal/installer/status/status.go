@@ -71,10 +71,12 @@ type Record struct {
 	RefusalReason         string    `json:"refusalReason,omitempty"`
 	RetryHint             string    `json:"retryHint,omitempty"`
 	LastError             string    `json:"lastError,omitempty"`
-	FinalHandoff          string    `json:"finalHandoff,omitempty"`
-	WipeTargetAccepted    bool      `json:"wipeTargetAccepted,omitempty"`
-	DestructiveMutation   bool      `json:"destructiveMutationStarted,omitempty"`
-	UpdatedAt             time.Time `json:"updatedAt"`
+	// FinalHandoff is diagnostic data in archived v1 installation records.
+	// Runtime readiness is derived from generation and service state.
+	FinalHandoff        string    `json:"finalHandoff,omitempty"`
+	WipeTargetAccepted  bool      `json:"wipeTargetAccepted,omitempty"`
+	DestructiveMutation bool      `json:"destructiveMutationStarted,omitempty"`
+	UpdatedAt           time.Time `json:"updatedAt"`
 }
 
 type Progress struct {
@@ -234,87 +236,19 @@ func looksLikeEnvelope(data []byte) bool {
 	return ok
 }
 
-func RuntimeStatusPath(root string) (string, error) {
+func TargetStatusPath(root string) (string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
-		return "", fmt.Errorf("runtime root is required")
+		return "", fmt.Errorf("target root is required")
 	}
 	return filepath.Join(root, "var/lib/katl/install/status.json"), nil
 }
 
-func WriteRuntimeHandoff(root string, record Record) error {
-	path, err := RuntimeStatusPath(root)
-	if err != nil {
-		return err
-	}
-	if err := ValidateRuntimeHandoff(record); err != nil {
-		return err
-	}
-	if record.FinalHandoff == StateWaitingForClusterBootstrap {
+func ValidateCleanGenerationZero(root string, generationID string) error {
+	if strings.TrimSpace(generationID) != "0" {
 		return nil
 	}
-	if err := ValidateCleanGenerationZero(root, record.InstalledGeneration); err != nil {
-		return err
-	}
-	record.APIVersion = APIVersion
-	record.Kind = Kind
-	record.State = StateWaitingForClusterBootstrap
-	record.FinalHandoff = StateWaitingForClusterBootstrap
-	record.UpdatedAt = time.Now().UTC()
-	return WriteFile(path, record)
-}
-
-func WriteRuntimeFailure(root string, record Record, cause error) error {
-	path, err := RuntimeStatusPath(root)
-	if err != nil {
-		return err
-	}
-	record.APIVersion = APIVersion
-	record.Kind = Kind
-	record.State = StateRuntimeFailedNeedsRepair
-	record.FinalHandoff = ""
-	record.LastError = RedactError(cause)
-	record.RefusalReason = record.LastError
-	record.RetryHint = "repair install status before declaring boot-complete"
-	record.UpdatedAt = time.Now().UTC()
-	return WriteFile(path, record)
-}
-
-func ValidateRuntimeHandoff(record Record) error {
-	var missing []string
-	required := []struct {
-		name  string
-		value string
-	}{
-		{name: "inputMode", value: record.InputMode},
-		{name: "inputSource", value: record.InputSource},
-		{name: "requestDigest", value: record.RequestDigest},
-		{name: "katlosImage.sha256", value: record.KatlosImage.SHA256},
-		{name: "katlosImage.version", value: record.KatlosImage.Version},
-		{name: "katlosImage.architecture", value: record.KatlosImage.Architecture},
-		{name: "katlosImage.runtimeInterface", value: record.KatlosImage.RuntimeInterface},
-		{name: "katlosImage.role", value: record.KatlosImage.Role},
-		{name: "targetDiskStableID", value: record.TargetDiskStableID},
-		{name: "selectedRootSlot", value: record.SelectedRootSlot},
-		{name: "installedGeneration", value: record.InstalledGeneration},
-	}
-	for _, field := range required {
-		if strings.TrimSpace(field.value) == "" {
-			missing = append(missing, field.name)
-		}
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("runtime handoff status missing %s", strings.Join(missing, ", "))
-	}
-	return nil
-}
-
-func ValidateCleanGenerationZero(root string, generationID string) error {
-	return validateCleanGenerationZero(root, generationID, "")
-}
-
-func ValidateCleanGenerationZeroForOperation(root string, generationID string, operationID string) error {
-	return validateCleanGenerationZero(root, generationID, operationID)
+	return validateCleanPreBootstrapGeneration(root, generationID, "", true)
 }
 
 func ValidateCleanPreBootstrapGeneration(root string, generationID string) error {
@@ -323,13 +257,6 @@ func ValidateCleanPreBootstrapGeneration(root string, generationID string) error
 
 func ValidateCleanPreBootstrapGenerationForOperation(root string, generationID string, operationID string) error {
 	return validateCleanPreBootstrapGeneration(root, generationID, operationID, false)
-}
-
-func validateCleanGenerationZero(root string, generationID string, allowedOperationID string) error {
-	if strings.TrimSpace(generationID) != "0" {
-		return nil
-	}
-	return validateCleanPreBootstrapGeneration(root, generationID, allowedOperationID, true)
 }
 
 func validateCleanPreBootstrapGeneration(root string, generationID string, allowedOperationID string, rejectAllMutationEvidence bool) error {

@@ -221,7 +221,6 @@ for path in \
     /usr/lib/katl/runtime/katl-boot-health \
     /usr/lib/katl/runtime/katl-api-proxy \
     /usr/lib/katl/runtime/katl-ssh-host-keys \
-    /usr/lib/katl/runtime/katl-runtime-status \
     /usr/lib/katl/runtime/katl-generation-activate \
     /usr/lib/katl/runtime/katl-host-config-activate \
     /usr/lib/systemd/system/var.mount \
@@ -239,7 +238,6 @@ for path in \
     /usr/lib/systemd/system/katl-boot-deadman.service \
     /usr/lib/systemd/system/katl-boot-deadman.timer \
     /usr/lib/systemd/system/katl-state-projection-check.service \
-    /usr/lib/systemd/system/katl-runtime-handoff-status.service \
     /usr/lib/systemd/system/katlc-agent.service \
     /usr/lib/systemd/system/katl-console.service \
     /etc/ssh/sshd_config.d/10-katl.conf \

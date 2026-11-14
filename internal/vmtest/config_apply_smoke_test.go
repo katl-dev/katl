@@ -137,7 +137,9 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	endpoint := katlcEndpoint(t, node, plannedAddress)
 	assertDefaultNetworkdCNIOwnership(t, ctx, guest)
 	assertUnauthenticatedManagementRejected(t, ctx, endpoint)
-	waitGuestFileContains(t, ctx, guest, "/var/lib/katl/install/status.json", `"finalHandoff": "waiting-for-cluster-bootstrap"`)
+	if err := guest.WaitBootComplete(ctx); err != nil {
+		t.Fatal(err)
+	}
 	defer func() {
 		if t.Failed() {
 			collectConfigApplyFailureEvidence(ctx, guest)
@@ -687,6 +689,8 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	}
 
 	previousBootID := guestBootID(t, ctx, client)
+	// Installation history is diagnostic; it cannot veto a valid runtime boot.
+	writeGuestFile(t, ctx, guest, "/var/lib/katl/install/status.json", []byte("{damaged installation history"), 0o600)
 	runKatlctl(
 		t, ctx, result, katlctl, "host-reboot-staged-generation",
 		"node", "reboot", "cp-1",
@@ -698,6 +702,9 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		t.Fatalf("booted generation = %q, want staged networkd generation %q", got, stagedGeneration)
 	}
 	assertInstalledSSHReady(t, ctx, guest)
+	if err := guest.WaitBootComplete(ctx); err != nil {
+		t.Fatal(err)
+	}
 	waitGuestFileContains(t, ctx, guest, "/var/lib/katl/generations/"+stagedGeneration+"/status.json", `"commitState": "committed"`, `"bootState": "good"`, `"healthState": "healthy"`)
 	guestCommand(
 		t, ctx, guest, "effective-networkd-config",

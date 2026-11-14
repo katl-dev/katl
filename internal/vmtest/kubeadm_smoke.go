@@ -333,7 +333,7 @@ func kubeadmSmokeDiagnostics(plan KubeadmAPISmokePlan) GuestDiagnostics {
 			{Name: "networkd-vmtest-dhcp", Path: "/etc/systemd/network/80-katl-vmtest-dhcp.network"},
 		},
 		Journals: []GuestJournalRequest{
-			{Name: "runtime-handoff", Units: []string{"katl-kubeadm-ready.target", "katl-generation-activate.service", "katl-runtime-handoff-status.service", "containerd.service", "kubelet.service"}},
+			{Name: "runtime-handoff", Units: []string{"katl-kubeadm-ready.target", "katl-generation-activate.service", "katl-boot-health.service", "containerd.service", "kubelet.service"}},
 		},
 	}
 }

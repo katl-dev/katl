@@ -92,13 +92,17 @@ func (c Collector) Collect(snapshot *Snapshot) {
 	}
 	snapshot.SSHEnabled = c.Mode == ModeRuntime || fileExists(rooted(c.Root, "/etc/katl/installer-ssh.enabled"))
 
+	if c.Mode == ModeInstaller {
+		c.collectInstaller(snapshot, now)
+	} else {
+		c.collectRuntime(snapshot, now)
+	}
+}
+
+func (c Collector) collectInstaller(snapshot *Snapshot, now time.Time) {
 	statusPath := c.StatusPath
 	if statusPath == "" {
-		if c.Mode == ModeInstaller {
-			statusPath = rooted(c.Root, "/run/katl/state/status.json")
-		} else {
-			statusPath, _ = installstatus.RuntimeStatusPath(cleanRoot(c.Root))
-		}
+		statusPath = rooted(c.Root, "/run/katl/state/status.json")
 	}
 	record, err := installstatus.ReadFile(statusPath)
 	if err == nil {
@@ -107,9 +111,7 @@ func (c Collector) Collect(snapshot *Snapshot) {
 		if record.Progress != nil {
 			snapshot.InstallProgress = record.Progress.Summary(now)
 		}
-		if c.Mode == ModeInstaller {
-			snapshot.Generation = record.InstalledGeneration
-		}
+		snapshot.Generation = record.InstalledGeneration
 		snapshot.DestructiveMutation = record.DestructiveMutation
 		snapshot.LastError = record.LastError
 		snapshot.RetryHint = record.RetryHint
@@ -117,42 +119,40 @@ func (c Collector) Collect(snapshot *Snapshot) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		snapshot.StatusError = err.Error()
 	}
-	if statusCanBecomeStale(snapshot.State) && !snapshot.UpdatedAt.IsZero() && now.Sub(snapshot.UpdatedAt) > 10*time.Minute {
+	if snapshot.State == installstatus.StateRunning && !snapshot.UpdatedAt.IsZero() && now.Sub(snapshot.UpdatedAt) > 10*time.Minute {
 		snapshot.StatusStale = true
 	}
 	if snapshot.State == "" {
-		if c.Mode == ModeInstaller {
-			snapshot.State = "starting-installer"
-		} else {
-			snapshot.State = "starting-runtime"
-		}
+		snapshot.State = "starting-installer"
 	}
-	if c.Mode == ModeInstaller {
-		path := c.HandoffPath
-		if path == "" {
-			path = rooted(c.Root, HandoffPath)
+	path := c.HandoffPath
+	if path == "" {
+		path = rooted(c.Root, HandoffPath)
+	}
+	if handoff, err := ReadHandoff(path); err == nil {
+		snapshot.Handoff = handoff
+		if snapshot.State == "starting-installer" {
+			snapshot.State = installstatus.StateWaitingForConfig
 		}
-		if handoff, err := ReadHandoff(path); err == nil {
-			snapshot.Handoff = handoff
-			if snapshot.State == "starting-installer" {
-				snapshot.State = installstatus.StateWaitingForConfig
-			}
-		} else if !errors.Is(err, os.ErrNotExist) {
-			snapshot.HandoffError = "installer handoff is unreadable; restart the installer handoff service"
-		}
-	} else {
-		snapshot.KubernetesConfigured = fileExists(rooted(c.Root, "/etc/kubernetes/kubelet.conf"))
-		c.collectGeneration(snapshot)
-		c.collectKubernetes(snapshot, now)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		snapshot.HandoffError = "installer handoff is unreadable; restart the installer handoff service"
 	}
 }
 
-func statusCanBecomeStale(state string) bool {
-	switch state {
-	case installstatus.StateRunning, installstatus.StateRuntimeBootedNotReady:
-		return true
-	default:
-		return false
+func (c Collector) collectRuntime(snapshot *Snapshot, now time.Time) {
+	snapshot.KubernetesConfigured = fileExists(rooted(c.Root, "/etc/kubernetes/kubelet.conf"))
+	c.collectGeneration(snapshot)
+	c.collectKubernetes(snapshot, now)
+	snapshot.State = "starting-runtime"
+	switch snapshot.GenerationHealth {
+	case generation.HealthStateHealthy:
+		if snapshot.KubernetesConfigured {
+			snapshot.State = installstatus.StateKubeadmReady
+		} else {
+			snapshot.State = installstatus.StateWaitingForClusterBootstrap
+		}
+	case generation.HealthStateUnhealthy:
+		snapshot.State = installstatus.StateRuntimeFailedNeedsRepair
 	}
 }
 

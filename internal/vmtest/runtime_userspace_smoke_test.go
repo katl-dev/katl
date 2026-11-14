@@ -11,7 +11,6 @@ import (
 
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/confext"
-	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
 func TestRuntimeUserspaceSmoke(t *testing.T) {
@@ -48,31 +47,6 @@ func TestRuntimeUserspaceSmoke(t *testing.T) {
 	}
 	assertSymlinkTarget(t, filepath.Join(work, "run/extensions/kubernetes"), "/var/lib/katl/generations/"+fixture.GenerationID+"/sysext/kubernetes.raw")
 	assertSymlinkTarget(t, filepath.Join(work, "run/confexts/katl-node"), "/var/lib/katl/generations/"+fixture.GenerationID+"/confext")
-
-	status := installstatus.New(installstatus.StateKubeadmReady, time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC))
-	status.InputMode = installstatus.InputModeTest
-	status.InputSource = "runtime-userspace-smoke"
-	status.RequestDigest = strings.Repeat("a", 64)
-	status.KatlosImage = installstatus.Image{
-		SHA256:           strings.Repeat("b", 64),
-		Version:          "0.1.0",
-		Architecture:     "x86_64",
-		RuntimeInterface: "katl-runtime-1",
-		Role:             "install",
-	}
-	status.TargetDiskStableID = "disk/by-id/test"
-	status.SelectedRootSlot = "root-a"
-	status.InstalledGeneration = fixture.GenerationID
-	if err := installstatus.WriteRuntimeHandoff(work, status); err != nil {
-		t.Fatalf("WriteRuntimeHandoff() error = %v", err)
-	}
-	updated, err := installstatus.ReadFile(filepath.Join(work, "var/lib/katl/install/status.json"))
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	if updated.State != installstatus.StateWaitingForClusterBootstrap || updated.FinalHandoff != installstatus.StateWaitingForClusterBootstrap {
-		t.Fatalf("handoff status = %#v", updated)
-	}
 
 	networkPath := filepath.Join(work, "var/lib/katl/generations", fixture.GenerationID, "confext/etc/systemd/network/10-smoke.network")
 	data, err := os.ReadFile(networkPath)

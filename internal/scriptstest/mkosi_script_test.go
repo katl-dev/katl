@@ -106,8 +106,8 @@ printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 		seedRuntimeCacheOutputs(t, buildDir)
 	}
 
-	includedSource := filepath.Join(repo, "cmd", "katl-runtime-status", "cache_identity_probe.go")
-	writeTemporaryFile(t, includedSource, "package main\n\nvar cacheIdentityProbeRuntimeStatus = \"changed\"\n")
+	includedSource := filepath.Join(repo, "cmd", "katl-host-config-activate", "cache_identity_probe.go")
+	writeTemporaryFile(t, includedSource, "package main\n\nvar cacheIdentityProbeHostConfig = \"changed\"\n")
 	third := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
 	third.Dir = repo
 	third.Env = env

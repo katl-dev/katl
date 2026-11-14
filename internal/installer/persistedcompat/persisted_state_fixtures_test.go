@@ -123,17 +123,17 @@ func TestAcceptedRecordFixturesDecodeValidateAndReplay(t *testing.T) {
 		t.Fatalf("boot selection default generation = %q", bootSelection.DefaultGenerationID)
 	}
 
-	statusPath, err := installstatus.RuntimeStatusPath(root)
+	statusPath, err := installstatus.TargetStatusPath(root)
 	if err != nil {
-		t.Fatalf("RuntimeStatusPath() error = %v", err)
+		t.Fatalf("TargetStatusPath() error = %v", err)
 	}
 	writeFixture(t, statusPath, "v1", "katl.install.status.json")
 	installRecord, err := installstatus.ReadFile(statusPath)
 	if err != nil {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
-	if err := installstatus.ValidateRuntimeHandoff(installRecord); err != nil {
-		t.Fatalf("ValidateRuntimeHandoff() error = %v", err)
+	if installRecord.InstalledGeneration != "gen-0" || installRecord.KatlosImage.Version != "0.1.0" {
+		t.Fatalf("archived install identity = %#v", installRecord)
 	}
 
 	clusterPath := filepath.Join(root, "var/lib/katl/cluster/intent.json")

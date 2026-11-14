@@ -29,48 +29,6 @@ func TestRedactErrorRemovesEmbeddedURLSecrets(t *testing.T) {
 	}
 }
 
-func TestWriteRuntimeHandoff(t *testing.T) {
-	root := t.TempDir()
-	writeCleanGenerationZero(t, root)
-	record := New(StateKubeadmReady, time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC))
-	record.InputMode = InputModePXEPreseed
-	record.InputSource = "https://example.invalid/install.json"
-	record.RequestDigest = strings.Repeat("a", 64)
-	record.KatlosImage = Image{
-		URL:              "https://example.invalid/katlos.squashfs",
-		SHA256:           strings.Repeat("b", 64),
-		Version:          "2026.06.04",
-		Architecture:     "x86_64",
-		RuntimeInterface: "katl-runtime-1",
-		Role:             "install",
-	}
-	record.TargetDiskStableID = "/dev/disk/by-id/ata-root"
-	record.SelectedRootSlot = "root-a"
-	record.InstalledGeneration = "0"
-
-	if err := WriteRuntimeHandoff(root, record); err != nil {
-		t.Fatalf("WriteRuntimeHandoff() error = %v", err)
-	}
-
-	data, err := os.ReadFile(filepath.Join(root, "var/lib/katl/install/status.json"))
-	if err != nil {
-		t.Fatalf("read runtime status: %v", err)
-	}
-	if !strings.Contains(string(data), `"recordType": "katl.install.status"`) || !strings.Contains(string(data), `"payload": {`) {
-		t.Fatalf("status is not enveloped:\n%s", data)
-	}
-	decoded, err := ReadFile(filepath.Join(root, "var/lib/katl/install/status.json"))
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	if decoded.State != StateWaitingForClusterBootstrap || decoded.FinalHandoff != StateWaitingForClusterBootstrap {
-		t.Fatalf("handoff state = %#v", decoded)
-	}
-	if decoded.RequestDigest != strings.Repeat("a", 64) || decoded.InstalledGeneration != "0" {
-		t.Fatalf("status did not preserve identity fields: %#v", decoded)
-	}
-}
-
 func TestReadFileRejectsUnsupportedEnvelopeVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "status.json")
 	data, err := persistedrecord.MarshalEnvelope(persistedrecord.Envelope{
@@ -117,7 +75,7 @@ func TestValidateCleanGenerationZeroRejectsOperationMutationEvidence(t *testing.
 	}
 }
 
-func TestValidateCleanGenerationZeroAllowsCurrentAcceptedOperation(t *testing.T) {
+func TestValidateCleanPreBootstrapGenerationAllowsAcceptedOperation(t *testing.T) {
 	root := t.TempDir()
 	writeCleanGenerationZero(t, root)
 	store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
@@ -139,8 +97,8 @@ func TestValidateCleanGenerationZeroAllowsCurrentAcceptedOperation(t *testing.T)
 	if err := ValidateCleanGenerationZero(root, "0"); err == nil || !strings.Contains(err.Error(), "stale mutation evidence") {
 		t.Fatalf("ValidateCleanGenerationZero() error = %v, want generic refusal", err)
 	}
-	if err := ValidateCleanGenerationZeroForOperation(root, "0", "bootstrap-accepted"); err != nil {
-		t.Fatalf("ValidateCleanGenerationZeroForOperation() error = %v", err)
+	if err := ValidateCleanPreBootstrapGenerationForOperation(root, "0", "bootstrap-accepted"); err != nil {
+		t.Fatalf("ValidateCleanPreBootstrapGenerationForOperation() error = %v", err)
 	}
 	if _, err := store.Update("bootstrap-accepted", "marker-start", "pre-exec-mutation", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 		record.ExternalMutationStarted = true
@@ -148,8 +106,8 @@ func TestValidateCleanGenerationZeroAllowsCurrentAcceptedOperation(t *testing.T)
 	}); err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if err := ValidateCleanGenerationZeroForOperation(root, "0", "bootstrap-accepted"); err == nil || !strings.Contains(err.Error(), "mutation evidence") {
-		t.Fatalf("ValidateCleanGenerationZeroForOperation() error = %v, want mutation refusal", err)
+	if err := ValidateCleanPreBootstrapGenerationForOperation(root, "0", "bootstrap-accepted"); err == nil || !strings.Contains(err.Error(), "mutation evidence") {
+		t.Fatalf("ValidateCleanPreBootstrapGenerationForOperation() error = %v, want mutation refusal", err)
 	}
 }
 

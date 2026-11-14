@@ -950,7 +950,6 @@ program /usr/lib/katl/runtime/katl-boot-health
 program /usr/lib/katl/runtime/katl-generation-activate
 program /usr/lib/katl/runtime/katl-host-config-activate
 program /usr/lib/katl/runtime/katl-kubelet-startup
-program /usr/lib/katl/runtime/katl-runtime-status
 program /usr/lib/katl/runtime/katl-ssh-host-keys
 program /usr/lib/systemd/system-generators/rpc-pipefs-generator
 program /usr/lib/systemd/system-generators/systemd-bless-boot-generator
@@ -1199,7 +1198,6 @@ system-unit katl-host-config-verify.service
 system-unit katl-kubeadm-activate.service
 system-unit katl-kubeadm-ready.target
 system-unit katl-runtime-boot-signal.service
-system-unit katl-runtime-handoff-status.service
 system-unit katl-ssh-host-keys.service
 system-unit katl-state-projection-check.service
 system-unit katl-system-extensions-activate.service

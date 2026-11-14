@@ -4228,7 +4228,7 @@ func bootstrapDiagnostics(node string) vmtest.GuestDiagnostics {
 		},
 		Journals: []vmtest.GuestJournalRequest{{
 			Name:     "runtime-handoff",
-			Units:    []string{"katl-kubeadm-ready.target", "katl-generation-activate.service", "katl-runtime-handoff-status.service", "containerd.service", "kubelet.service"},
+			Units:    []string{"katl-kubeadm-ready.target", "katl-generation-activate.service", "katl-boot-health.service", "containerd.service", "kubelet.service"},
 			MaxBytes: 1 << 20,
 		}, {
 			Name:     "container-runtime",
@@ -5324,7 +5324,7 @@ func TestBootstrapDiagnosticsAreNodeAware(t *testing.T) {
 	if !diagnosticFile(cp, "kube-apiserver-manifest", "/etc/kubernetes/manifests/kube-apiserver.yaml") || !diagnosticFile(cp, "etcd-manifest", "/etc/kubernetes/manifests/etcd.yaml") {
 		t.Fatalf("control-plane diagnostics files = %#v, want static pod manifests", cp.Files)
 	}
-	if !diagnosticJournalUnit(cp, "runtime-handoff", "katl-runtime-handoff-status.service") || !diagnosticJournalUnit(cp, "container-runtime", "containerd.service") || !diagnosticJournalUnit(cp, "katlc-agent", "katlc-agent.service") {
+	if !diagnosticJournalUnit(cp, "runtime-handoff", "katl-boot-health.service") || !diagnosticJournalUnit(cp, "container-runtime", "containerd.service") || !diagnosticJournalUnit(cp, "katlc-agent", "katlc-agent.service") {
 		t.Fatalf("control-plane diagnostics journals = %#v", cp.Journals)
 	}
 

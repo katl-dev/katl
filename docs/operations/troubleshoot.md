@@ -28,7 +28,7 @@ at `/run/katl/console/rendered.txt` for collection over SSH.
 | --- | --- |
 | Installer never becomes ready | installer console; `katlos-install.service` journal |
 | Config bundle rejected | bundle command output; selected node; validation error |
-| Installed node does not complete boot | boot console; boot-health and handoff services |
+| Installed node does not complete boot | boot console; boot-health and management services |
 | Agent cannot be reached | saved management identity/context; expected node name; `katlc-agent.service`; network path to TCP 9443 |
 | Bootstrap or join fails | `katlctl` phase output; node operation record; kubelet/containerd/kubeadm journals |
 | Config apply stalls or rolls back | `katlctl node status` and `katlctl operations list`; generation and operation records |
@@ -42,9 +42,8 @@ Run on the affected node and preserve timestamps:
 
 ```sh
 systemctl --failed --no-pager
-systemctl status katl-boot-complete.target katl-boot-health.service --no-pager
+systemctl status katl-boot-complete.target katl-boot-health.service katlc-agent.service --no-pager
 systemctl status katl-boot-recovery.service katl-boot-deadman.timer --no-pager
-systemctl status katl-runtime-handoff-status.service katlc-agent.service --no-pager
 journalctl -b --no-pager
 journalctl -b -u katl-boot-health.service -u katl-boot-recovery.service -u katlc-agent.service --no-pager
 journalctl -b -1 -u katl-boot-health.service -u katl-boot-recovery.service --no-pager

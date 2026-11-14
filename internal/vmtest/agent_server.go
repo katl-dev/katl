@@ -529,6 +529,7 @@ func defaultAgentWritePaths() []string {
 		"/var/lib/katl/artifacts/",
 		"/var/lib/katl/boot/",
 		"/var/lib/katl/generations/",
+		"/var/lib/katl/install/status.json",
 		"/var/lib/katl/test-artifacts/",
 	}
 }
