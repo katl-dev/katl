@@ -1,0 +1,4 @@
+program /usr/bin/ctr
+program /usr/lib/katl/vmtest/katl-vmtest-agent
+system-unit katl-vmtest-agent.service
+system-unit katl-vmtest-debug-shell.service

@@ -149,6 +149,7 @@ target_go_binaries() {
             ;;
         runtime)
             printf '%s\t%s\t%s\n' "build-tool:katl-runtime-rpms" "./cmd/katl-runtime-rpms" "plain"
+            printf '%s\t%s\t%s\n' "build-tool:katl-runtime-components" "./cmd/katl-runtime-components" "plain"
             printf '%s\t%s\t%s\n' "included-binary:/usr/bin/katlc" "./cmd/katlc" "versioned"
             printf '%s\t%s\t%s\n' "included-binary:/usr/bin/katl-console" "./cmd/katl-console" "versioned"
             if [[ "$vmtest_image_support" == 1 ]]; then
@@ -1026,7 +1027,13 @@ set +e
                 if [[ "${KATL_VMTEST_IMAGE_SUPPORT:-0}" == 0 ]]; then
                     rm -f "$root/usr/bin/ctr"
                 fi
-                if ! mksquashfs "$root" "$artifact" \
+                component_args=(--root "$root" --packages "$runtime_packages" --lock /work/mkosi.profiles/runtime/components.lock)
+                if [[ "${KATL_VMTEST_IMAGE_SUPPORT:-0}" == 1 ]]; then
+                    component_args+=(--test-lock /work/internal/vmtest/image/components.lock)
+                fi
+                if ! go run ./cmd/katl-runtime-components verify "${component_args[@]}"; then
+                    status=1
+                elif ! mksquashfs "$root" "$artifact" \
                     -noappend \
                     -all-root \
                     -comp zstd \
