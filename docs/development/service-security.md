@@ -66,6 +66,9 @@ upgrade path uses the sysupdate CLI and owns activation and reboot ordering.
 The CNI DHCP daemon is excluded alongside its unsupported plugin.
 The distribution's generic OS installer and its socket and units are excluded;
 Katl installation belongs to the separate installer image.
+Installed nodes consume prebuilt UKIs through Katl's upgrade workflow. The
+distribution's kernel-install command and package-installation hooks are
+excluded from the runtime.
 
 Base executables do not grant privileges through setuid/setgid bits. Rootless
 UID/GID mapping helpers are excluded. Supported host administration starts

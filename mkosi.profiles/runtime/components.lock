@@ -485,7 +485,6 @@ program /usr/bin/kbd_mode
 program /usr/bin/kbdinfo
 program /usr/bin/kbdrate
 program /usr/bin/kcapi-hasher
-program /usr/bin/kernel-install
 program /usr/bin/kill
 program /usr/bin/killall
 program /usr/bin/kmod
@@ -953,10 +952,6 @@ program /usr/lib/katl/runtime/katl-host-config-activate
 program /usr/lib/katl/runtime/katl-kubelet-startup
 program /usr/lib/katl/runtime/katl-runtime-status
 program /usr/lib/katl/runtime/katl-ssh-host-keys
-program /usr/lib/kernel/install.d/50-depmod.install
-program /usr/lib/kernel/install.d/50-dracut.install
-program /usr/lib/kernel/install.d/90-loaderentry.install
-program /usr/lib/kernel/install.d/90-uki-copy.install
 program /usr/lib/systemd/system-generators/rpc-pipefs-generator
 program /usr/lib/systemd/system-generators/systemd-bless-boot-generator
 program /usr/lib/systemd/system-generators/systemd-clonesetup-generator
