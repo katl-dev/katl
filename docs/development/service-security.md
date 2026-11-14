@@ -64,6 +64,8 @@ and sysupdate D-Bus daemons. It also masks sysupdate's separate socket API,
 automatic update/reboot timers, and post-update notification services. Katl's
 upgrade path uses the sysupdate CLI and owns activation and reboot ordering.
 The CNI DHCP daemon is excluded alongside its unsupported plugin.
+The distribution's generic OS installer and its socket and units are excluded;
+Katl installation belongs to the separate installer image.
 
 Base executables do not grant privileges through setuid/setgid bits. Rootless
 UID/GID mapping helpers are excluded. Supported host administration starts

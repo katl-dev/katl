@@ -774,7 +774,6 @@ program /usr/bin/systemd-run
 program /usr/bin/systemd-socket-activate
 program /usr/bin/systemd-stdio-bridge
 program /usr/bin/systemd-sysext
-program /usr/bin/systemd-sysinstall
 program /usr/bin/systemd-sysusers
 program /usr/bin/systemd-tmpfiles
 program /usr/bin/systemd-tty-ask-password-agent
@@ -1291,7 +1290,6 @@ system-unit sys-kernel-debug.mount
 system-unit sys-kernel-tracing.mount
 system-unit sysinit.target
 system-unit syslog.socket
-system-unit system-install.target
 system-unit system-systemd\x2dcryptsetup.slice
 system-unit system-systemd\x2dmute\x2dconsole.slice
 system-unit system-systemd\x2dveritysetup.slice
@@ -1458,9 +1456,6 @@ system-unit systemd-sysext-sysroot.service
 system-unit systemd-sysext.service
 system-unit systemd-sysext.socket
 system-unit systemd-sysext@.service
-system-unit systemd-sysinstall.service
-system-unit systemd-sysinstall.socket
-system-unit systemd-sysinstall@.service
 system-unit systemd-sysupdate-auto-enable.service
 system-unit systemd-sysupdate-notify-bootctl.socket
 system-unit systemd-sysupdate-notify-bootctl@.service
