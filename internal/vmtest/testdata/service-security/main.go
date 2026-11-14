@@ -1,4 +1,4 @@
-// This probe runs as ExecStartPost under the service's actual execution policy.
+// This probe runs under the service's actual execution policy.
 package main
 
 import (
