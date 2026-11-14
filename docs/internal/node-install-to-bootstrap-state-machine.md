@@ -109,7 +109,7 @@ After reboot, the installed runtime continues the handoff from generation 0:
 
 ```text
 RuntimeFirstBoot
-  boot selected generation, mount writable state, and load install record
+  boot selected generation and mount writable state
 
 ActivateGeneration
   activate selected sysexts and generated confext for the generation
@@ -117,7 +117,7 @@ ActivateGeneration
 InstalledRuntimeReady
   reach local runtime health with writable state, operator access, katlc, and
   katlc agent wiring available; this generation 0 handoff does not activate
-  Kubernetes binaries, require /etc/kubernetes projection, containerd running,
+  Kubernetes binaries, require containerd running,
   kubelet availability, or katl-kubeadm-ready.target
 
 WaitingForClusterBootstrap
@@ -126,6 +126,11 @@ WaitingForClusterBootstrap
   validates stored intent, creates the first Kubernetes-capable candidate
   generation, and runs the appropriate kubeadm workflow
 ```
+
+The installer verifies the clean-state invariant before requesting reboot, and
+bootstrap verifies it again before mutation. Normal boot derives readiness from
+the generation and native services, without reading installation history. The
+Kubernetes configuration mount is required even when its contents are empty.
 
 Generation 0 is valid only while its clean-state invariant holds: no active
 Kubernetes sysext, no enabled kubelet, no kubeadm-owned PKI or kubeconfigs, no
@@ -410,7 +415,8 @@ operation attachments and operator-facing summaries. `state` is the current
 operation phase, and `completedStates[]` is the installer-specific view of
 completed phases.
 `/var/lib/katl/install/status.json` is the operator-facing install status
-summary for the install attempt. The other files under `/var/lib/katl/install/`
+summary for the install attempt. Historical runtime handoff fields remain
+readable for diagnostics; they do not control runtime readiness. The other files under `/var/lib/katl/install/`
 are request, plan, artifact, input, or diagnostic attachments referenced by that
 summary.
 Pre-target discovery and validation remain transient and do not need durable

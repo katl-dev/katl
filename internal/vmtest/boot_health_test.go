@@ -20,6 +20,7 @@ func TestBootComplete(t *testing.T) {
 		{name: "boot never completes", delay: time.Minute, wantError: "deadline exceeded"},
 		{name: "SSH unavailable", inactive: "sshd.service", wantError: "sshd.service"},
 		{name: "management unavailable", inactive: "katlc-agent.service", wantError: "katlc-agent.service"},
+		{name: "Kubernetes projection unavailable", inactive: "etc-kubernetes.mount", wantError: "etc-kubernetes.mount"},
 		{name: "failed health", health: "exit-code", wantError: "boot-health result"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

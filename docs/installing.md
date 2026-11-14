@@ -780,7 +780,7 @@ After install and reboot, a healthy generation 0 node should:
 boot from the installed disk
 start systemd-networkd and sshd when configured
 start the node-local katlc agent
-record runtime handoff status
+validate and record generation boot health
 reach katl-boot-complete.target
 not activate Kubernetes or require katl-kubeadm-ready.target
 remain ready for explicit Kubernetes bootstrap but not bootstrapped
@@ -789,12 +789,11 @@ remain ready for explicit Kubernetes bootstrap but not bootstrapped
 Useful first checks on an installed node:
 
 ```text
-systemctl status katl-runtime-handoff-status.service
 systemctl status katl-boot-health.service
 systemctl status katlc-agent.service
 systemctl status katl-boot-complete.target
 systemctl status katl-kubeadm-ready.target
-journalctl -b -u katlos-install.service -u katl-runtime-handoff-status.service -u katlc-agent.service
+journalctl -b -u katl-boot-health.service -u katlc-agent.service
 ```
 
 ## Bootstrap handoff

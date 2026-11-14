@@ -4,7 +4,12 @@ set -euo pipefail
 repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$repo_root"
 
-mapfile -d '' go_files < <(git ls-files -z '*.go')
+mapfile -d '' go_files < <(
+    git ls-files -z --cached --others --exclude-standard '*.go' |
+        while IFS= read -r -d '' file; do
+            [[ ! -f "$file" ]] || printf '%s\0' "$file"
+        done
+)
 if ((${#go_files[@]} > 0)); then
     unformatted="$(gofmt -l "${go_files[@]}")"
     if [[ -n "$unformatted" ]]; then

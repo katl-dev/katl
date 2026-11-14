@@ -1014,6 +1014,54 @@ func TestRunnerVerifiesAppliedTargetLayout(t *testing.T) {
 	}
 }
 
+func TestRunnerVerifiesBootstrapStateBeforeReboot(t *testing.T) {
+	for _, dirty := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dirty=%t", dirty), func(t *testing.T) {
+			root := t.TempDir()
+			record := minimalRecord("0")
+			spec := generation.SpecFromRecord(*record)
+			status, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStatePending, generation.HealthStateUnknown, record.CreatedAt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := generation.WriteGeneration(root, spec, status); err != nil {
+				t.Fatal(err)
+			}
+			if dirty {
+				path := filepath.Join(root, "var/lib/katl/kubernetes/etc-kubernetes/pki/ca.crt")
+				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte("existing Kubernetes identity"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			store := &MemoryStateStore{}
+			commands := &NoopCommandRunner{}
+			install := &Context{
+				TargetRoot: root, LoaderRecord: record, Store: store, Commands: commands,
+				Completed: []StepID{MountTarget},
+			}
+
+			err = NewRunner(Plan{verifyTargetStep{}, rebootStep{}}, install).Run(context.Background())
+			persisted, readErr := installstatus.ReadFile(filepath.Join(root, "var/lib/katl/install/status.json"))
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if dirty {
+				if err == nil || !strings.Contains(err.Error(), "verify initial bootstrap state: generation 0 is not clean: kubeadm PKI exists") {
+					t.Fatalf("verification error = %v", err)
+				}
+				if len(commands.Calls) != 0 || persisted.State != installstatus.StateFailedAfterMutation || persisted.CurrentStep != string(VerifyTarget) {
+					t.Fatalf("dirty target reached reboot or lost failure: commands=%+v status=%+v", commands.Calls, persisted)
+				}
+			} else if err != nil || persisted.State != installstatus.StateRebootRequested {
+				t.Fatalf("clean target: error=%v status=%+v", err, persisted)
+			}
+		})
+	}
+}
+
 func TestRunnerRejectsMissingAppliedMount(t *testing.T) {
 	store := &MemoryStateStore{}
 	payload := planningPayload()

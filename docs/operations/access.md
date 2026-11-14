@@ -53,15 +53,15 @@ On each node:
 ```sh
 systemctl is-active katl-boot-complete.target
 systemctl is-active katlc-agent.service
-systemctl status katl-runtime-handoff-status.service --no-pager
-journalctl -b -u katl-runtime-handoff-status.service -u katlc-agent.service
+systemctl status katl-boot-health.service --no-pager
+journalctl -b -u katl-boot-health.service -u katlc-agent.service
 ```
 
 Expected state before Kubernetes bootstrap:
 
 - `katl-boot-complete.target` is active;
 - `katlc-agent.service` is active;
-- runtime handoff reports `waiting-for-cluster-bootstrap`; and
+- the console reports `waiting-for-cluster-bootstrap`; and
 - `katl-kubeadm-ready.target` is not active yet.
 
 ## Save a workstation shortcut

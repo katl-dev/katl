@@ -39,12 +39,6 @@ func TestExecutorActivatesSelectedConfextAndRecordsSuccess(t *testing.T) {
 			t.Fatalf("action = %#v, want passed", action)
 		}
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,node-metadata-refresh"; got != want {
-		t.Fatalf("commands = %q, want %q", got, want)
-	}
-	if got, want := runner.commands[2].Argv, []string{"systemctl", "try-reload-or-restart", "katl-runtime-handoff-status.service"}; strings.Join(got, " ") != strings.Join(want, " ") {
-		t.Fatalf("node-metadata-refresh argv = %#v, want %#v", got, want)
-	}
 	persisted, err := generation.ReadConfigApplyStatus(statusPath)
 	if err != nil {
 		t.Fatalf("ReadConfigApplyStatus() error = %v", err)
@@ -130,13 +124,13 @@ func TestExecutorAllowsKubeadmInputBeforeKubeletUnitExists(t *testing.T) {
 }
 
 func TestExecutorFailureRecordsRollbackAndRedactsStatus(t *testing.T) {
-	plan := liveExecutorPlan(t, []Change{{Domain: DomainBootstrapNodeMetadata}})
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainAPIProxy}})
 	statusPath := executorStatusPath(t, plan)
 	activator := &fakeActivator{}
 	secret := "abcdef.0123456789abcdef"
 	runner := &fakeCommandRunner{
 		results: map[string]CommandResult{
-			"node-metadata-refresh": {ExitStatus: 1, Stderr: "failed with token " + secret},
+			"api-proxy-restart": {ExitStatus: 1, Stderr: "failed with token " + secret},
 		},
 	}
 
@@ -161,7 +155,7 @@ func TestExecutorFailureRecordsRollbackAndRedactsStatus(t *testing.T) {
 	if !strings.Contains(status.FailureReason, "[REDACTED BOOTSTRAP TOKEN]") {
 		t.Fatalf("failure reason = %q, want redacted token marker", status.FailureReason)
 	}
-	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,node-metadata-refresh,systemd-confext-refresh,systemd-daemon-reload,node-metadata-refresh"; got != want {
+	if got, want := strings.Join(runner.commandNames(), ","), "systemd-confext-refresh,systemd-daemon-reload,api-proxy-restart,systemd-confext-refresh,systemd-daemon-reload,api-proxy-restart"; got != want {
 		t.Fatalf("commands = %q, want failed apply followed by rollback replay %q", got, want)
 	}
 	data, err := os.ReadFile(statusPath)
@@ -183,11 +177,11 @@ func executorStatusPath(t *testing.T, plan Result) string {
 }
 
 func TestExecutorRecordsRollbackFailure(t *testing.T) {
-	plan := liveExecutorPlan(t, []Change{{Domain: DomainBootstrapNodeMetadata}})
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainAPIProxy}})
 	activator := &fakeActivator{rollbackErr: errors.New("rollback failed with Bearer secret-token")}
 	runner := &fakeCommandRunner{
 		results: map[string]CommandResult{
-			"node-metadata-refresh": {ExitStatus: 1, Stderr: "sysctl failed"},
+			"api-proxy-restart": {ExitStatus: 1, Stderr: "proxy restart failed"},
 		},
 	}
 
@@ -208,10 +202,10 @@ func TestExecutorRecordsRollbackFailure(t *testing.T) {
 }
 
 func TestExecutorRecordsRollbackReplayFailure(t *testing.T) {
-	plan := liveExecutorPlan(t, []Change{{Domain: DomainBootstrapNodeMetadata}})
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainAPIProxy}})
 	runner := &fakeCommandRunner{
 		results: map[string]CommandResult{
-			"node-metadata-refresh": {ExitStatus: 1, Stderr: "sysctl failed"},
+			"api-proxy-restart": {ExitStatus: 1, Stderr: "proxy restart failed"},
 		},
 		errs: map[string]error{
 			"systemd-daemon-reload": errors.New("daemon reload failed with Bearer secret-token"),

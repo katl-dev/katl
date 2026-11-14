@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
-	installstatus "github.com/katl-dev/katl/internal/installer/status"
 	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
@@ -60,22 +59,7 @@ func checkFirstInstallHealth(ctx context.Context, guest *GuestControl) error {
 		return err
 	}
 
-	file, err := guest.ReadFile(ctx, GuestFileRequest{Path: "/var/lib/katl/install/status.json", StoreContent: true})
-	if err != nil {
-		return err
-	}
-	if file.Truncated {
-		return fmt.Errorf("truncated first-install status")
-	}
-	status, err := installstatus.ReadFile(file.Artifact)
-	if err != nil {
-		return err
-	}
-	if status.FinalHandoff != installstatus.StateWaitingForClusterBootstrap || status.LastError != "" {
-		return fmt.Errorf("first-install handoff = %q, last error = %q", status.FinalHandoff, status.LastError)
-	}
-
-	file, err = guest.ReadFile(ctx, GuestFileRequest{Path: "/var/lib/katl/boot/selection.json", StoreContent: true})
+	file, err := guest.ReadFile(ctx, GuestFileRequest{Path: "/var/lib/katl/boot/selection.json", StoreContent: true})
 	if err != nil {
 		return err
 	}

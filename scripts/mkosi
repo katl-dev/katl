@@ -155,7 +155,6 @@ target_go_binaries() {
             if [[ "$vmtest_image_support" == 1 ]]; then
                 printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/vmtest/katl-vmtest-agent" "./cmd/katl-vmtest-agent" "versioned"
             fi
-            printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-runtime-status" "./cmd/katl-runtime-status" "plain"
             printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-generation-activate" "./cmd/katl-generation-activate" "plain"
             printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-host-config-activate" "./cmd/katl-host-config-activate" "plain"
             printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-boot-health" "./cmd/katl-boot-health" "plain"

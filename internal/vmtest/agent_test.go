@@ -167,6 +167,7 @@ func TestAgentWriteFileDefaultAllowlistSupportsKatlMetadata(t *testing.T) {
 	for _, path := range []string{
 		"/var/lib/katl/boot/selection.json",
 		"/var/lib/katl/generations/2026.06.06-001/metadata.json",
+		"/var/lib/katl/install/status.json",
 		"/var/lib/katl/test-artifacts/kubernetes-bundle-ca.pem",
 		"/var/lib/katl/test-artifacts/sysupdate/source/SHA256SUMS",
 	} {
