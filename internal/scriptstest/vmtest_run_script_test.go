@@ -10,6 +10,100 @@ import (
 	"testing"
 )
 
+func TestVMTestArtifactOwnership(t *testing.T) {
+	for _, tc := range []struct {
+		name, directory, override, artifactSet string
+		rejected                               bool
+	}{
+		{name: "default"},
+		{name: "canonical", directory: "canonical"},
+		{name: "relative canonical", directory: "_build/mkosi"},
+		{name: "canonical alias", directory: "alias"},
+		{name: "different build root", directory: "alternate", rejected: true},
+		{name: "runtime build root", directory: "alternate", artifactSet: "runtime", rejected: true},
+		{name: "installer output", override: "KATL_INSTALLER_ISO", rejected: true},
+		{name: "runtime boot output", override: "KATL_RUNTIME_UKI", rejected: true},
+		{name: "runtime index", artifactSet: "runtime", override: "KATL_MKOSI_ARTIFACT_INDEX", rejected: true},
+		{name: "package evidence", override: "KATL_RUNTIME_PACKAGE_SET", rejected: true},
+		{name: "install payload", override: "KATL_KATLOS_IMAGE", rejected: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			canonical := filepath.Join(root, "_build/mkosi")
+			if err := os.MkdirAll(canonical, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(canonical, "katl-runtime-root.squashfs"), []byte("stale"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(filepath.Join(root, "scripts"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeExecutable(t, filepath.Join(root, "scripts/mkosi"), `#!/usr/bin/env bash
+if [[ "$1" == builder-version ]]; then echo 26; exit 0; fi
+printf 'build\n' >> "$KATL_SCRIPTTEST_LOG"
+output="${KATL_MKOSI_BUILD_DIR:-$KATL_REPO_ROOT/_build/mkosi}"
+mkdir -p "$output"
+printf current > "$output/katl-runtime-root.squashfs"
+`)
+			if err := os.Symlink("mkosi", filepath.Join(root, "scripts/build-kubernetes-sysext")); err != nil {
+				t.Fatal(err)
+			}
+			writeExecutable(t, filepath.Join(root, "resource-lock"), `#!/usr/bin/env bash
+printf 'record ' >> "$KATL_SCRIPTTEST_LOG"
+cat "$KATL_REPO_ROOT/_build/mkosi/katl-runtime-root.squashfs" >> "$KATL_SCRIPTTEST_LOG"
+printf '\n' >> "$KATL_SCRIPTTEST_LOG"
+exit 17
+`)
+			directory := tc.directory
+			switch directory {
+			case "canonical":
+				directory = canonical
+			case "alternate":
+				directory = filepath.Join(root, "alternate")
+			case "alias":
+				directory = filepath.Join(root, "alias")
+				if err := os.Symlink(canonical, directory); err != nil {
+					t.Fatal(err)
+				}
+			}
+			artifactSet := tc.artifactSet
+			if artifactSet == "" {
+				artifactSet = "install"
+			}
+			cmd := exec.Command(filepath.Join(repoRoot(t), "scripts/vmtest-run"), "--artifact-set="+artifactSet, "./internal/vmtest", "-run", "TestFixture")
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(),
+				"KATL_REPO_ROOT="+root,
+				"KATL_MKOSI_BUILD_DIR="+directory,
+				"KATL_VMTEST_RESOURCE_LOCK="+filepath.Join(root, "resource-lock"),
+				"KATL_VMTEST_RUN_DIR="+filepath.Join(root, "run"),
+				"KATL_VMTEST_CACHE_DIR="+filepath.Join(root, "cache"),
+				"KATL_SCRIPTTEST_LOG="+filepath.Join(root, "commands.log"),
+			)
+			if tc.override != "" {
+				cmd.Env = append(cmd.Env, tc.override+"="+filepath.Join(root, "alternate-output"))
+			}
+			output, err := cmd.CombinedOutput()
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+				t.Fatalf("exit = %v, want setup failure: %s", err, output)
+			}
+			log, logErr := os.ReadFile(filepath.Join(root, "commands.log"))
+			if tc.rejected {
+				if !os.IsNotExist(logErr) {
+					t.Fatalf("unsupported input reached build or provenance recording: %q, %v", log, logErr)
+				}
+				if !strings.Contains(string(output), "not supported") && !strings.Contains(string(output), "requires the canonical") {
+					t.Fatalf("missing input diagnostic: %s", output)
+				}
+			} else if logErr != nil || !strings.HasSuffix(string(log), "record current\n") {
+				t.Fatalf("canonical build and provenance did not agree: %q, %v: %s", log, logErr, output)
+			}
+		})
+	}
+}
+
 func TestVMTestRunRemovesExistingDomainsBeforeGoTest(t *testing.T) {
 	repo := repoRoot(t)
 	tmp := t.TempDir()

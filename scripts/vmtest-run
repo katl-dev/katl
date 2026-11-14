@@ -331,22 +331,6 @@ parse_runner_args() {
     done
 }
 
-has_explicit_artifact_index() {
-    [[ -n "${KATL_MKOSI_ARTIFACT_INDEX:-}" ]]
-}
-
-has_explicit_installer_artifact() {
-    [[ -n "${KATL_INSTALLER_UKI:-}" || -n "${KATL_INSTALLER_KERNEL:-}" || -n "${KATL_INSTALLER_INITRD:-}" ]]
-}
-
-has_explicit_runtime_artifact() {
-    [[ -n "${KATL_RUNTIME_ARTIFACT:-}" ]]
-}
-
-has_explicit_install_manifest() {
-    [[ -n "${KATL_INSTALL_MANIFEST:-}" ]]
-}
-
 uses_installer_artifacts() {
     case "$artifact_set" in
         default | install)
@@ -367,13 +351,27 @@ validate_stale_artifact_policy() {
 }
 
 validate_current_artifact_inputs() {
-    if ! uses_installer_artifacts; then
+    if [[ "$artifact_set" == none ]]; then
         return 0
     fi
-    if has_explicit_artifact_index || has_explicit_installer_artifact || has_explicit_runtime_artifact || has_explicit_install_manifest; then
-        setup_failures+=("explicit installer artifact inputs are not supported by scripts/vmtest-run; use current repo artifacts recorded by the resource manifest")
+    local build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
+    [[ "$build_dir" == /* ]] || build_dir="$repo_root/$build_dir"
+    if [[ "$(realpath -m -- "$build_dir")" != "$(realpath -m -- "$repo_root/_build/mkosi")" ]]; then
+        setup_failures+=("scripts/vmtest-run requires the canonical _build/mkosi output directory so builds, provenance and VM consumers use the same artifacts; unset KATL_MKOSI_BUILD_DIR")
     fi
-	if vmtest_requests_kubernetes_upgrade; then
+    local override
+    for override in \
+        KATL_MKOSI_ARTIFACT_INDEX KATL_INSTALL_MANIFEST \
+        KATL_INSTALLER_UKI KATL_INSTALLER_KERNEL KATL_INSTALLER_INITRD KATL_INSTALLER_ISO KATL_INSTALLER_PACKAGE_SET \
+        KATL_RUNTIME_ARTIFACT KATL_RUNTIME_UKI KATL_RUNTIME_INITRD KATL_RUNTIME_PACKAGE_SET \
+        KATL_RUNTIME_METADATA KATL_RUNTIME_CHECKSUM KATL_RUNTIME_UKI_METADATA KATL_RUNTIME_UKI_CHECKSUM \
+        KATL_KATLOS_IMAGE KATL_KATLOS_IMAGE_METADATA KATL_KATLOS_IMAGE_CHECKSUM
+    do
+        if [[ -n "${!override:-}" ]]; then
+            setup_failures+=("$override is not supported by scripts/vmtest-run; use current repo artifacts recorded by the resource manifest")
+        fi
+    done
+	if uses_installer_artifacts && vmtest_requests_kubernetes_upgrade; then
 		local published_source_set=0
 		local published_target_set=0
 		[[ -n "${KATL_VMTEST_KUBERNETES_BUNDLE:-}" ]] && published_source_set=1
@@ -393,33 +391,21 @@ build_default_artifacts() {
             ;;
     esac
 
-    if has_explicit_artifact_index; then
-        return 0
-    fi
-
     local -a targets=()
     case "$artifact_set" in
         default | install)
-            if ! has_explicit_install_manifest; then
-                targets+=("build-katlos-install-image")
-                targets+=("build-katlos-upgrade-image")
-                if vmtest_requests_kubernetes_upgrade && ! vmtest_uses_published_kubernetes_upgrade_bundles; then
-                    targets+=("build-kubernetes-upgrade-sysext")
-                    targets+=("build-kubernetes-upgrade-source-sysext")
-                elif ! vmtest_requests_kubernetes_upgrade; then
-                    targets+=("build-kubernetes-sysext")
-                fi
-            elif ! has_explicit_runtime_artifact; then
-                targets+=("build-runtime")
+            targets+=("build-katlos-install-image")
+            targets+=("build-katlos-upgrade-image")
+            if vmtest_requests_kubernetes_upgrade && ! vmtest_uses_published_kubernetes_upgrade_bundles; then
+                targets+=("build-kubernetes-upgrade-sysext")
+                targets+=("build-kubernetes-upgrade-source-sysext")
+            elif ! vmtest_requests_kubernetes_upgrade; then
+                targets+=("build-kubernetes-sysext")
             fi
-            if ! has_explicit_installer_artifact; then
-                targets+=("build-installer-iso")
-            fi
+            targets+=("build-installer-iso")
             ;;
         runtime)
-            if ! has_explicit_runtime_artifact; then
-                targets+=("build-runtime")
-            fi
+            targets+=("build-runtime")
             ;;
         none)
             ;;
@@ -651,7 +637,7 @@ prepare_resource_manifest() {
 }
 
 prepare_runtime_artifact_provenance() {
-    local index="${KATL_MKOSI_ARTIFACT_INDEX:-$repo_root/_build/mkosi/artifacts.json}"
+    local index="$repo_root/_build/mkosi/artifacts.json"
     if [[ ! -f "$index" ]]; then
         setup_failures+=("runtime artifact index is missing after build-runtime: $index")
         return 1
@@ -1318,6 +1304,7 @@ fi
 set -- "${go_test_input_args[@]}"
 
 need jq
+need realpath
 mkdir -p "$cache_dir" "$artifact_dir" "$scenario_dir" "$network_dir"
 if [[ "$run_dir_preexisting" == 0 ]]; then
     printf '%s\n' "$run_id" >"$run_owner_marker"
