@@ -119,7 +119,9 @@ func TestInstalledRuntimeServiceSecuritySmoke(t *testing.T) {
 			unit, directory = "katl-api-proxy.service", "/run/katl/api-proxy"
 			content = "[Unit]\nConditionPathExists=\n\n[Service]\nExecStart=\nExecStart=/usr/lib/katl/runtime/katl-api-proxy --config=" + proxyConfig + "\n"
 		}
-		content += fmt.Sprintf("ExecStartPost=%s %s %s\n", guestProbe, role, directory)
+		// TTY setup and cleanup apply to every Exec command. Probe before the
+		// application owns its terminal so observation cannot hang it up.
+		content += fmt.Sprintf("ExecStartPre=%s %s %s\n", guestProbe, role, directory)
 		source := "/var/lib/katl/test-artifacts/" + role + ".conf"
 		writeGuestFile(t, ctx, guest, source, []byte(content), 0o644)
 		guestCommand(t, ctx, guest, role+"-probe-install", "systemd-run", "--wait", "--pipe", "--collect", "--", "install", "-D", "-m", "0644", source, "/run/systemd/system/"+unit+".d/90-vmtest.conf")
