@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Apply to the assembled image, including distribution packages. Supported
+# host administration starts as root and does not need privilege-gaining helpers.
+find "${BUILDROOT:?}/usr" -xdev -type f -perm /6000 -exec chmod a-s {} +
+
 install -m 0644 "$BUILDDIR/katl-kernel-inputs.tar" "$OUTPUTDIR/katl-kernel-inputs.tar"
 install -m 0644 "$BUILDDIR/katl-kernel-inputs.tar.json" "$OUTPUTDIR/katl-kernel-inputs.tar.json"
 install -m 0644 "$BUILDDIR/katl-kernel-inputs.tar.sha256" "$OUTPUTDIR/katl-kernel-inputs.tar.sha256"

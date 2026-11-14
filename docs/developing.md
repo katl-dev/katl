@@ -87,6 +87,9 @@ go run ./cmd/katl-mkosi-artifacts inventory-release-extensions
 VM lifecycle qualification runs through the same libvirt harness locally and
 in [GitHub Actions](development/ci.md).
 
+See [base service security](development/service-security.md) before changing
+service privileges or applying systemd sandbox restrictions.
+
 ## Run VM tests with libvirt
 
 Use the libvirt-backed vmtest world as the supported automated VM layer:
