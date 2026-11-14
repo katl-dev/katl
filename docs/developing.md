@@ -376,6 +376,9 @@ data files. Removing a component does not fail verification. These boundaries
 keep ordinary updates independent of incidental file and version changes.
 The resolved package list also includes build dependencies removed before
 publishing the image; their additions still require review.
+The unpacked build tree retains package-manager state for mkosi's extension
+package resolution. Published runtime artifacts exclude the RPM database and
+DNF transaction and tool metadata.
 
 Inspect a completed build with:
 
