@@ -355,6 +355,47 @@ bootstrap and workloads, reboot, upgrade, and rollback with the resulting
 images. The runtime remains part of the OS image and follows the ordinary
 KatlOS upgrade path.
 
+### Runtime component review
+
+The runtime image build checks `mkosi.profiles/runtime/components.lock` before
+publishing the root filesystem. Adding a component is an intentional product
+change: review its purpose, dependencies, services, privileges, and supported
+lifecycle before adding its name to the lock. This includes components added by
+distribution updates inside an existing package.
+
+The lock records resolved package names, executable entrypoints, and systemd
+system and user unit names. It does not pin package versions, file contents,
+shared-library filenames, firmware, kernel module paths, translations, or other
+data files. Removing a component does not fail verification. These boundaries
+keep ordinary updates independent of incidental file and version changes.
+The resolved package list also includes build dependencies removed before
+publishing the image; their additions still require review.
+
+Inspect a completed build with:
+
+```sh
+go run ./cmd/katl-runtime-components record \
+  --root _build/mkosi/katl-runtime-root \
+  --packages _build/mkosi/katl-runtime.packages.tsv \
+  > _build/runtime.components
+diff -u mkosi.profiles/runtime/components.lock _build/runtime.components
+```
+
+Review the additions, then edit the lock to approve only the intended names.
+Do not refresh it automatically during builds or dependency updates. The shared
+lock covers both kernel flavours; retain the approved kernel package names for
+both when reviewing one build. When intentionally removing a component, remove
+its approval too so that its reintroduction requires review. Check the edited
+lock with the same command,
+replacing `record` with `verify` and omitting the output redirection.
+
+Instrumented VM images additionally use
+`internal/vmtest/image/components.lock`. This separate lock approves their test
+entrypoints without permitting them in production verification. To inspect an
+instrumented image, pass
+`--test-lock internal/vmtest/image/components.lock` to `verify`. Production image
+checks also enforce the existing boundary against shipping VM-test support.
+
 ### VM host requirements
 
 The development shell includes the complete supported VM test toolchain. It
