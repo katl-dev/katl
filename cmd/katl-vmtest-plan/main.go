@@ -21,7 +21,7 @@ var groups = []group{
 	{"two-node", "./internal/vmtest/scenarios", "TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke|TestExternalWorkerJoin"},
 	{"three-node-install", "./internal/vmtest/scenarios", "TestThreeNodeGeneration0InstallSmoke"},
 	{"install", "./internal/vmtest", "TestFirstInstallTargetDiskBootSmoke|TestFirstInstallTargetDiskLocalHandoffSmoke"},
-	{"config", "./internal/vmtest", "TestInstalledRuntimeConfigApplyModesSmoke"},
+	{"config", "./internal/vmtest", "TestInstalledRuntimeConfigApplyModesSmoke|TestInstalledRuntimeServiceSecuritySmoke"},
 	{"update", "./internal/vmtest", "TestInstalledRuntimeSysupdateRootUKITransfer"},
 	{"management", "./internal/vmtest", "TestInstalledRuntimeManagementRotationSmoke"},
 	{"storage", "./internal/vmtest/scenarios", "TestInstallerISOFirstInstallStorageAuthority"},

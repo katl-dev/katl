@@ -932,6 +932,11 @@ func assertInstalledSSHReady(t *testing.T, ctx context.Context, guest *GuestCont
 		"authorizedkeysfile /etc/ssh/authorized_keys/%u",
 		"hostkey /var/lib/katl/ssh/host-keys/ssh_host_ed25519_key",
 		"permitrootlogin prohibit-password",
+		"authenticationmethods publickey",
+		"passwordauthentication no",
+		"kbdinteractiveauthentication no",
+		"gssapiauthentication no",
+		"gssapikeyexchange no",
 		"allowusers root",
 		"allowusers katl",
 	} {

@@ -100,9 +100,26 @@ for unit in \
     smartd.service \
     systemd-homed-activate.service \
     systemd-homed.service \
+    systemd-importd.service \
+    systemd-importd.socket \
     systemd-oomd.service \
     systemd-oomd.socket \
     systemd-preset-all.service \
+    systemd-portabled.service \
+    systemd-sysupdated.service \
+    systemd-sysupdate.socket \
+    systemd-sysupdate@.service \
+    systemd-sysupdate-auto-enable.service \
+    systemd-sysupdate-update.service \
+    systemd-sysupdate-update.timer \
+    systemd-sysupdate-reboot.service \
+    systemd-sysupdate-reboot.timer \
+    systemd-sysupdate-notify-bootctl.socket \
+    systemd-sysupdate-notify-bootctl@.service \
+    systemd-sysupdate-notify-pcrlock.socket \
+    systemd-sysupdate-notify-pcrlock@.service \
+    systemd-sysupdate-notify-sysext.socket \
+    systemd-sysupdate-notify-sysext@.service \
     systemd-tpm2-clear.service
 do
     ln -sfn /dev/null "$DESTDIR/etc/systemd/system/$unit"

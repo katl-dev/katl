@@ -126,6 +126,7 @@ func testCoverage(t *testing.T, args []string, input string) {
 			"TestFirstInstallTargetDiskBootSmoke",
 			"TestFirstInstallTargetDiskLocalHandoffSmoke",
 			"TestInstalledRuntimeConfigApplyModesSmoke",
+			"TestInstalledRuntimeServiceSecuritySmoke",
 			"TestInstalledRuntimeSysupdateRootUKITransfer",
 			"TestInstalledRuntimeManagementRotationSmoke",
 		},
