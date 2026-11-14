@@ -372,7 +372,8 @@ func TestVMTestRunRejectsExplicitInstallerArtifacts(t *testing.T) {
 			if runIndex.Status != "setup-failed" {
 				t.Fatalf("run index status = %q", runIndex.Status)
 			}
-			if len(runIndex.SetupFailures) != 1 || !strings.Contains(runIndex.SetupFailures[0], "explicit installer artifact inputs") {
+			input, _, _ := strings.Cut(tt.env, "=")
+			if len(runIndex.SetupFailures) != 1 || !strings.Contains(runIndex.SetupFailures[0], input) || !strings.Contains(runIndex.SetupFailures[0], "use current repo artifacts") {
 				t.Fatalf("run index setup failures = %#v", runIndex.SetupFailures)
 			}
 		})

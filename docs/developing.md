@@ -191,6 +191,12 @@ The supported top-level script surface is intentionally small. Use
 wrappers, debug aids, or temporary validators for scaffolding work; do not
 treat the whole `scripts/` directory as the public developer interface.
 
+VM gates build and consume artifacts under the checkout's `_build/mkosi`.
+Unset `KATL_MKOSI_BUILD_DIR` when switching from a separate development or release
+build directory to `scripts/vmtest-run`. The harness rejects alternate output
+directories and explicit artifact-path overrides before building, so its
+builds, recorded provenance, and VM consumers cannot select different roots.
+
 ## Nix dev shell
 
 On NixOS or any host with flakes enabled, enter the default development shell:
