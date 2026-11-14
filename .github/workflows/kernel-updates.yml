@@ -2,7 +2,7 @@ name: Kernel Updates
 
 on:
   schedule:
-    - cron: '23 6 * * 1'
+    - cron: '23 6 * * *'
   workflow_dispatch:
     inputs:
       fedora_release:

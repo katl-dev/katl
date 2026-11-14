@@ -763,7 +763,7 @@ The Kernel Updates workflow captures each flavour's signed kernel RPM set and
 opens a separate PR after retaining the signed inputs and verifying anonymous
 retrieval. Standard and LTS updates run independently, so a failure in one does
 not block the other. Retention and verification also run for unchanged inputs;
-the publisher reuses existing OCI content. The workflow runs weekly or on manual
+the publisher reuses existing OCI content. The workflow runs daily or on manual
 dispatch. Automatic
 discovery refuses versions older than the committed lock. An explicit release
 permits a deliberate rollback. To qualify an exact kernel pair instead of
