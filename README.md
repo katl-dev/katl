@@ -1,4 +1,4 @@
-# Katl
+<h1><img src="docs/images/katl-wordmark.png" alt="Katl" width="224"></h1>
 
 [![CI](https://github.com/katl-dev/katl/actions/workflows/ci.yml/badge.svg)](https://github.com/katl-dev/katl/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/katl-dev/katl?sort=date)](https://github.com/katl-dev/katl/releases)
