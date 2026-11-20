@@ -9,9 +9,11 @@ nodes reporting `Ready`.
 
 - Use two x86-64 UEFI machines with Secure Boot disabled. Give each machine
   one target disk that you can erase. You can use virtual machines.
-- Put both machines and your workstation on the same trusted network. The
-  ISO installer uses DHCP by default. Reserve stable addresses for the
-  nodes so that your workstation can reach them after a reboot.
+- Give your workstation network access to both machines. The ISO installer
+  uses DHCP by default. Reserve stable addresses for the nodes so that your
+  workstation can reach them after a reboot. For static addresses or
+  installation across subnets, see
+  [Advanced installer networking](install-advanced.md).
 - Know the IP address of each target node before running `katlctl` against
   it. If DHCP assigns the address at boot, read it from the installer console
   or match the machine's MAC address to its DHCP lease.

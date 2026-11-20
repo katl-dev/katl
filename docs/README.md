@@ -11,6 +11,8 @@ still choosing an operating system, [check what KatlOS supports](support.md).
 ## Install and provision
 
 - [Install KatlOS](installing.md) for ISO, network boot, and installer options.
+- [Configure advanced installer networking](install-advanced.md) for static
+  addresses, seed media, and routed installation.
 - [Install katlctl](install-katlctl.md) for the release binary, Homebrew, and Nix.
 - [Install with PXE and Matchbox](install-pxe-matchbox.md) to boot machines over
   the network.
