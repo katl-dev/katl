@@ -75,7 +75,6 @@ type installHandoffReport struct {
 
 func newInstallCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{Use: "install", Short: "KatlOS installer handoff operations"}
-	cmd.AddCommand(newInstallDiscoverCommand(ctx, stdout, stderr))
 	cmd.AddCommand(newInstallApplyCommand(ctx, stdout, stderr))
 	cmd.AddCommand(newInstallSSHCommand(ctx, stdout, stderr))
 	cmd.AddCommand(newInstallStatusCommand(ctx, stdout, stderr))
@@ -149,7 +148,7 @@ func newInstallStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cob
 	}
 	cmd.Flags().StringVar(&opts.configPath, "config", "", "ClusterConfig YAML or Katl config bundle")
 	cmd.Flags().StringVar(&opts.nodeName, "node", "", "configured node name (alternative to NODE); optional for one node")
-	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer IP, host, host:port, or HTTP(S) base URL; discovers a unique waiting installer when omitted")
+	cmd.Flags().StringVar(&opts.endpoint, "endpoint", "", "installer IP, host, host:port, or HTTP(S) base URL (defaults to the selected node's management address with --config)")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "status request timeout")
 	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
@@ -226,11 +225,7 @@ func applyInstallNode(ctx context.Context, opts installApplyOptions, inventory c
 	if skipUnavailable && len(inventory.Nodes) > 1 && strings.TrimSpace(bootstrapAddress) == "" {
 		return fmt.Errorf("node %s has no bootstrap address; configure its management address before cluster-wide installation", nodeName)
 	}
-	endpointHint, err := installEndpointHint(opts.endpoint, bootstrapAddress)
-	if err != nil {
-		return err
-	}
-	endpoint, err := resolveInstallerEndpoint(ctx, endpointHint, opts.timeout)
+	endpoint, err := resolveInstallEndpoint(opts.endpoint, bootstrapAddress)
 	if err != nil {
 		return err
 	}
@@ -351,11 +346,7 @@ func runInstallSSH(ctx context.Context, opts installSSHOptions, stdout, stderr i
 	if len(keys) == 0 {
 		return fmt.Errorf("node %s has no SSH authorized keys; add spec.nodes[%q].access.ssh.authorizedKeys before enabling installer SSH", nodeName, nodeName)
 	}
-	endpointHint, err := installEndpointHint(opts.endpoint, bootstrapAddress)
-	if err != nil {
-		return err
-	}
-	endpoint, err := resolveInstallerEndpoint(ctx, endpointHint, opts.timeout)
+	endpoint, err := resolveInstallEndpoint(opts.endpoint, bootstrapAddress)
 	if err != nil {
 		return err
 	}
@@ -433,14 +424,14 @@ func readInstallerSSHKeys(path, selector string) (name, address string, keys []s
 	return name, address, selected.InstallManifest.Node.Identity.SSH.AuthorizedKeys, nil
 }
 
-func installEndpointHint(endpoint, bootstrapAddress string) (string, error) {
-	if endpoint = strings.TrimSpace(endpoint); endpoint != "" {
-		return normalizeInstallerAddress(endpoint)
+func resolveInstallEndpoint(endpoint, address string) (string, error) {
+	if strings.TrimSpace(endpoint) == "" {
+		endpoint = address
 	}
-	if bootstrapAddress = strings.TrimSpace(bootstrapAddress); bootstrapAddress != "" {
-		return normalizeInstallerAddress(bootstrapAddress)
+	if strings.TrimSpace(endpoint) == "" {
+		return "", fmt.Errorf("installer address is required. Pass --endpoint ADDRESS or set management.address for the selected node in --config")
 	}
-	return "", nil
+	return normalizeInstallerAddress(endpoint)
 }
 
 func resolveInstallNode(archive []byte, digest, selector string) (string, error) {
@@ -505,8 +496,7 @@ func runInstallStatus(ctx context.Context, opts installStatusOptions, stdout, st
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
-	defer cancel()
+	address := ""
 	if opts.configPath != "" {
 		inv, err := readManagementInventory(opts.configPath)
 		if err != nil {
@@ -523,19 +513,20 @@ func runInstallStatus(ctx context.Context, opts installStatusOptions, stdout, st
 		opts.nodeName = name
 		for _, node := range inv.Nodes {
 			if node.Name == name {
-				opts.endpoint, err = installEndpointHint(opts.endpoint, node.Address)
-				if err != nil {
-					return err
-				}
+				address = node.Address
+				break
 			}
 		}
 	} else if opts.nodeName != "" {
 		return fmt.Errorf("--config is required to select node %q; use --endpoint ADDRESS to query an installer directly", opts.nodeName)
 	}
-	endpoint, err := resolveInstallerEndpoint(requestCtx, opts.endpoint, opts.timeout)
+	endpoint, err := resolveInstallEndpoint(opts.endpoint, address)
 	if err != nil {
 		return err
 	}
+
+	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
+	defer cancel()
 	status, err := fetchInstallStatus(requestCtx, &http.Client{Timeout: requestTimeout(opts.timeout)}, endpoint)
 	if err != nil {
 		return err

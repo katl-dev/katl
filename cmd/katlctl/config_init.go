@@ -7,9 +7,11 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -81,7 +83,11 @@ func (values *initNodeSpecs) Set(value string) error {
 }
 
 func newConfigInitCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := defaultConfigInitOptions()
+	opts := configInitOptions{
+		clusterName:       "katl-lab",
+		kubernetesVersion: configbundle.DefaultKubernetesVersion,
+		installerTimeout:  15 * time.Second,
+	}
 	cmd := &cobra.Command{
 		Use:   "init [PATH]",
 		Short: "Create an editable starter ClusterConfig",
@@ -93,28 +99,16 @@ func newConfigInitCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.
 			return runConfigInit(ctx, opts, stdout, stderr)
 		},
 	}
-	addConfigInitFlags(cmd, &opts)
-	cmd.Flags().Var(&opts.nodes, "node", "node as name=role,address,/dev/disk/by-id/... (repeatable)")
-	cmd.Flags().Var(&opts.installers, "installer", "waiting installer IP, hostname, host:port, or base URL (repeatable)")
-	cmd.Flags().DurationVar(&opts.installerTimeout, "installer-timeout", opts.installerTimeout, "overall timeout for reading installer status")
-	return cmd
-}
-
-func defaultConfigInitOptions() configInitOptions {
-	return configInitOptions{
-		clusterName:       "katl-lab",
-		kubernetesVersion: configbundle.DefaultKubernetesVersion,
-		installerTimeout:  15 * time.Second,
-	}
-}
-
-func addConfigInitFlags(cmd *cobra.Command, opts *configInitOptions) {
 	cmd.Flags().StringVar(&opts.managementAuthentication, "management-authentication", "", "trusted-network (default) or mtls; --force preserves the existing mode unless specified")
 	cmd.Flags().StringVar(&opts.clusterName, "name", opts.clusterName, "cluster name")
 	cmd.Flags().StringVar(&opts.controlPlane, "control-plane-endpoint", "", "stable Kubernetes API endpoint host:port; defaults to the first control-plane address")
 	cmd.Flags().StringVar(&opts.kubernetesVersion, "kubernetes-version", opts.kubernetesVersion, "override the default Kubernetes payload version")
 	cmd.Flags().StringVar(&opts.sshKeyPath, "ssh-authorized-key", "", "public SSH key file; otherwise uses the active SSH agent or ~/.ssh/id_ed25519.pub")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "replace an existing output file")
+	cmd.Flags().Var(&opts.nodes, "node", "node as name=role,address,/dev/disk/by-id/... (repeatable)")
+	cmd.Flags().Var(&opts.installers, "installer", "waiting installer IP, hostname, host:port, or base URL (repeatable)")
+	cmd.Flags().DurationVar(&opts.installerTimeout, "installer-timeout", opts.installerTimeout, "overall timeout for reading installer status")
+	return cmd
 }
 
 func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr io.Writer) error {
@@ -362,12 +356,16 @@ func initNodesFromInstallers(ctx context.Context, addresses []string, timeout ti
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	client := &http.Client{Timeout: requestTimeout(timeout)}
-	installers := make([]discoveredInstaller, 0, len(addresses))
+	nodes := make(initNodeSpecs, 0, len(addresses))
 	seen := make(map[string]struct{}, len(addresses))
-	for _, address := range addresses {
+	for i, address := range addresses {
 		endpoint, err := normalizeInstallerAddress(address)
 		if err != nil {
 			return nil, fmt.Errorf("--installer %q: %w", address, err)
+		}
+		parsed, err := url.Parse(endpoint)
+		if err != nil || parsed.Hostname() == "" {
+			return nil, fmt.Errorf("installer endpoint %q has no usable address", endpoint)
 		}
 		if _, ok := seen[endpoint]; ok {
 			return nil, fmt.Errorf("duplicate --installer endpoint %s", endpoint)
@@ -380,9 +378,50 @@ func initNodesFromInstallers(ctx context.Context, addresses []string, timeout ti
 		if status.State != handoff.HandoffWaiting {
 			return nil, fmt.Errorf("installer %s is not waiting for config: state=%s", endpoint, status.State)
 		}
-		installers = append(installers, discoveredInstaller{Endpoint: endpoint, Status: status})
+		disk, err := installerTargetDisk(endpoint, status.Disks)
+		if err != nil {
+			return nil, err
+		}
+		name, role := "cp-1", inventory.RoleControlPlane
+		if i > 0 {
+			name, role = fmt.Sprintf("worker-%d", i), inventory.RoleWorker
+		}
+		nodes = append(nodes, initNodeSpec{name: name, role: role, address: parsed.Hostname(), disk: disk})
 	}
-	return discoveredInitNodes(installers)
+	return nodes, nil
+}
+
+func installerTargetDisk(endpoint string, disks []handoff.HandoffDisk) (manifest.DiskSelector, error) {
+	var selectable []handoff.HandoffDisk
+	for _, disk := range disks {
+		if disk.Selectable {
+			selectable = append(selectable, disk)
+		}
+	}
+	if len(selectable) != 1 {
+		var paths []string
+		for _, disk := range selectable {
+			paths = append(paths, disk.Path)
+		}
+		detail := "none"
+		if len(paths) > 0 {
+			detail = strings.Join(paths, ", ")
+		}
+		return manifest.DiskSelector{}, fmt.Errorf("installer %s reports %d selectable disks (%s). Use katlctl config init --node to choose the intended disk", endpoint, len(selectable), detail)
+	}
+	disk := selectable[0]
+	if len(disk.ByID) > 0 {
+		byID := append([]string(nil), disk.ByID...)
+		sort.Strings(byID)
+		return manifest.DiskSelector{ByID: byID[0]}, nil
+	}
+	if strings.TrimSpace(disk.WWN) != "" {
+		return manifest.DiskSelector{WWN: disk.WWN}, nil
+	}
+	if strings.TrimSpace(disk.Serial) != "" {
+		return manifest.DiskSelector{Serial: disk.Serial}, nil
+	}
+	return manifest.DiskSelector{}, fmt.Errorf("installer %s marked %s selectable without a stable disk identity", endpoint, disk.Path)
 }
 
 func configSSHKeys(explicitPath string) ([]string, []string, error) {

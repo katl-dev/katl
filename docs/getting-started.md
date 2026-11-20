@@ -5,13 +5,16 @@ The first node, `cp-1`, runs the Kubernetes API. The second node, `worker-1`,
 runs workloads. This guide uses Cilium to connect workloads and ends with both
 nodes reporting `Ready`.
 
-## Before you begin
+## Prerequisites
 
 - Use two x86-64 UEFI machines with Secure Boot disabled. Give each machine
   one target disk that you can erase. You can use virtual machines.
 - Put both machines and your workstation on the same trusted network. The
-  installer uses DHCP to obtain an address. Reserve stable addresses for the
-  nodes so that the configuration can still reach them after a reboot.
+  ISO installer uses DHCP by default. Reserve stable addresses for the
+  nodes so that your workstation can reach them after a reboot.
+- Know the IP address of each target node before running `katlctl` against
+  it. If DHCP assigns the address at boot, read it from the installer console
+  or match the machine's MAC address to its DHCP lease.
 - Keep installer port `8080` and management port `9443` on trusted networks.
   The default connections use plaintext and grant access without credentials.
   If you need authenticated management, choose
@@ -35,16 +38,9 @@ It leaves the target disk untouched while it waits.
 
 ## 2. Create and review the cluster configuration
 
-From your workstation, find the two waiting installers.
-
-```sh
-katlctl install discover --timeout 10s
-```
-
-Match the addresses to the machines using their consoles. If discovery misses
-a machine, use the address on its console. In the following command, replace
-the example addresses. Put the machine you want to use as `cp-1` first and
-`worker-1` second.
+From your workstation, pass the IP addresses of the two waiting installers.
+Replace the example addresses. Put the machine you want to use as `cp-1`
+first and `worker-1` second.
 
 ```sh
 katlctl config init ./cluster.yaml \

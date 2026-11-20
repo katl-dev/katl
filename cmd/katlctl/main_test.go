@@ -317,7 +317,7 @@ func TestRootWithoutArgumentsPrintsHelp(t *testing.T) {
 	if err := run(context.Background(), nil, &stdout, &stderr); err != nil {
 		t.Fatalf("run() error = %v", err)
 	}
-	if !strings.Contains(stdout.String(), "Usage:") || !strings.Contains(stdout.String(), "katlctl install discover") {
+	if !strings.Contains(stdout.String(), "Usage:") || !strings.Contains(stdout.String(), "katlctl config init cluster.yaml --installer 192.0.2.10") {
 		t.Fatalf("stdout = %q, want useful root help", stdout.String())
 	}
 	if stderr.Len() != 0 {
@@ -351,7 +351,7 @@ func TestNestedCommandTyposFailWithSuggestions(t *testing.T) {
 		{args: []string{"cluster", "bootstra"}, command: "bootstra", suggestion: "bootstrap"},
 		{args: []string{"config", "validae"}, command: "validae", suggestion: "validate"},
 		{args: []string{"context", "shw"}, command: "shw", suggestion: "show"},
-		{args: []string{"install", "discovr"}, command: "discovr", suggestion: "discover"},
+		{args: []string{"install", "stats"}, command: "stats", suggestion: "status"},
 		{args: []string{"node", "upgade"}, command: "upgade", suggestion: "upgrade"},
 		{args: []string{"kubernetes", "upgrde"}, command: "upgrde", suggestion: "upgrade"},
 		{args: []string{"operations", "stats"}, command: "stats", suggestion: "status"},

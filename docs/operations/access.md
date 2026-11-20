@@ -81,11 +81,9 @@ confirms that the answering agent is enrolled under the requested
 inventory node name, and records its immutable enrollment identity and machine
 ID in `katlctl.yaml`. It does not use SSH or alter the node.
 
-`katlctl config init` and `katlctl install discover CLUSTER_CONFIG` also read
-supported public keys from the active SSH agent when creating the initial SSH
-authorization. This works with agent-only keys such as 1Password. An explicit
-`--ssh-authorized-key PATH` remains available when only one key should be
-authorized.
+`katlctl config init` reads supported public keys from the active SSH agent,
+including keys available only through an agent such as 1Password. Use
+`--ssh-authorized-key PATH` to authorize one key explicitly.
 
 ## Durable cluster secrets
 

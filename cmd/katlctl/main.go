@@ -103,8 +103,8 @@ func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Com
 		Short: "Install and manage KatlOS clusters",
 		Long: `katlctl installs and manages KatlOS nodes and their Kubernetes cluster.
 
-Start with config init (prepare configuration), install discover (find installers),
-install apply (install each node), then cluster bootstrap (start Kubernetes).
+Use config init with known node addresses to prepare configuration, install apply
+to install each node, then cluster bootstrap to start Kubernetes.
 Use cluster status to inspect the cluster, cluster apply to change configuration,
 node join to add an installed node, node upgrade to upgrade KatlOS, and
 kubernetes upgrade to apply the Kubernetes version in your configuration.
@@ -234,7 +234,7 @@ func rejectUnknownSubcommand(command *cobra.Command, args []string) error {
 
 func setMinimumInvocationExamples(root *cobra.Command) {
 	examples := map[string]string{
-		"katlctl":                             "katlctl install discover",
+		"katlctl":                             "katlctl config init cluster.yaml --installer 192.0.2.10",
 		"katlctl version":                     "katlctl version",
 		"katlctl cluster":                     "katlctl cluster bootstrap --config cluster.yaml",
 		"katlctl cluster status":              "katlctl cluster status --config cluster.yaml",
@@ -272,11 +272,10 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 		"katlctl context current":             "katlctl context current",
 		"katlctl context use":                 "katlctl context use homelab",
 		"katlctl context show":                "katlctl context show",
-		"katlctl install":                     "katlctl install discover",
-		"katlctl install discover":            "katlctl install discover",
+		"katlctl install":                     "katlctl install status --endpoint 192.0.2.10",
 		"katlctl install apply":               "katlctl install apply --config cluster.yaml",
 		"katlctl install ssh":                 "katlctl install ssh --config cluster.yaml --node cp-1",
-		"katlctl install status":              "katlctl install status",
+		"katlctl install status":              "katlctl install status --endpoint 192.0.2.10",
 		"katlctl operations":                  "katlctl operations list --config cluster.yaml --node cp-1",
 		"katlctl operations status":           "katlctl operations status --config cluster.yaml --node cp-1 --watch",
 		"katlctl operations list":             "katlctl operations list --config cluster.yaml --node cp-1",

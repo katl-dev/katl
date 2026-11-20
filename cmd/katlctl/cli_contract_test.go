@@ -16,7 +16,7 @@ import (
 
 func TestFlagsRejectBeforeEffects(t *testing.T) {
 	for _, args := range [][]string{
-		{"install", "discover", "--output", "invalid"},
+		{"install", "status", "--output", "invalid"},
 		{"cluster", "bootstrap", "--config", "missing.yaml", "--output", "invalid"},
 		{"cluster", "apply", "--config", "missing.yaml", "--mode", "invalid"},
 		{"node", "reboot", "--endpoint", "unreachable", "--timeout", "0s"},

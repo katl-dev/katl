@@ -6,18 +6,29 @@ to use the installed nodes to create a cluster, follow
 Use this page when you need to select the installer address, disk, or SSH key
 yourself.
 
-## Artifacts
+## Prerequisites
 
-Choose the ISO and `katlctl` from the same
-[KatlOS release](https://github.com/katl-dev/katl/releases). See
-[Release artifacts](reference/release-artifacts.md) to find the files for
-your workstation and boot method. If you want to authenticate the downloads,
-follow [Verify release artifacts](operations/verify-release.md).
+- Choose the installer and `katlctl` from the same
+  [KatlOS release](https://github.com/katl-dev/katl/releases). See
+  [Release artifacts](reference/release-artifacts.md) for the files for your
+  workstation and boot method. If you want to authenticate the downloads, see
+  [Verify release artifacts](operations/verify-release.md).
+- Use a trusted provisioning network that lets your workstation reach the
+  installers on TCP port `8080`. The installer accepts handoff requests without
+  authentication.
+- Know the target nodes' IP addresses before running `katlctl`. With the
+  default ISO networking, use DHCP reservations or read each address from the
+  installer console or the DHCP lease table.
 
 ## Author one ClusterConfig
 
 Use the [cluster configuration reference](reference/cluster-config.md) to
 select disks, set node addresses, and supply native host or kubeadm settings.
+
+For a static address on the installed node, put the static
+[systemd-networkd configuration](operations/configure-nodes.md#configure-native-linux-facilities)
+in the ClusterConfig and set `management.address` to that address. When the
+installer has a temporary address, pass it to `install apply --endpoint`.
 
 ## PXE or Matchbox
 
@@ -29,23 +40,16 @@ Matchbox profiles and the Katl boot arguments for other PXE tools.
 
 Boot `katl-installer.iso` in UEFI mode. Keep Secure Boot disabled. The
 installer waits without touching the disks until it receives an install
-request. Use a trusted provisioning network because the install handoff on
-TCP port `8080` accepts requests without authentication.
+request.
 
 The console on `tty1` shows the release, address, handoff URL, disk mutation
 state, and a live journal. Use `Ctrl+Alt+F2` for a local recovery shell. The
 dashboard, serial journal, and installer SSH service operate independently.
 
-From your workstation, use `katlctl install discover --timeout 10s` to list
-installers.
-Run `katlctl install discover ./cluster.yaml` to create a configuration for
-all waiting installers that the command finds. The first becomes `cp-1`,
-and the rest become workers.
+### Create a configuration from waiting installers
 
-### Use known installer addresses
-
-If discovery finds extra machines or misses the ones you intend to install,
-use the addresses shown on their consoles.
+From your workstation, give `katlctl` the address of each installer you intend
+to use.
 
 ```sh
 katlctl config init ./cluster.yaml \
@@ -100,13 +104,15 @@ one valid submission, then closes the handoff path.
 
 If the installer is temporarily at a different address, add
 `--endpoint 192.0.2.42` with the current address. This changes the connection
-target while keeping the selected node and disk from the file. If the
-configuration has no bootstrap address and you omit `--endpoint`, Katl
-looks for a single waiting installer.
+target while keeping the selected node and disk from the file. The command
+requires either the node's `management.address` in the configuration or an
+explicit `--endpoint`.
 
 The command waits until the installer can reboot or reports a failure. If you use
-`--no-wait`, use `katlctl install status` or watch the installer console for
-the result. Once the node boots from its disk,
+`--no-wait`, use `katlctl install status --config ./cluster.yaml --node cp-1`
+or watch the installer console for the result. Pass the same `--endpoint`
+override to `install status` if you used one to install. Once the node boots
+from its disk,
 [check the installed host](operations/access.md#confirm-generation-0).
 
 For separate [data volumes](reference/cluster-config.md#data-volumes),
@@ -118,7 +124,9 @@ formatting.
 
 The installer advertises `/v1/config-bundle` for the standard handoff.
 A separate seed medium with label `KATLSEED` or disk ID `virtio-katl-seed`
-can supply input locally.
+can supply input locally. Put native networkd files under
+`etc/systemd/network/` on the seed medium to configure the live installer
+before networking starts.
 
 The bundle contains one compiled `install.katl.dev/v1alpha1` `InstallManifest`
 per node. The `/v1/install` endpoint and `katl.manifest.*` kernel arguments
