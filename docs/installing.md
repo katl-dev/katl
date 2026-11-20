@@ -1,665 +1,51 @@
-# Installing KatlOS
+# Install KatlOS
 
-KatlOS is intended for home-lab use on trusted networks; read the
-[support boundary](support.md) before installing it.
-
-This document is the complete installation and configuration reference. For a
-linear first install, start with [Build your first KatlOS
-cluster](getting-started.md). For automated network boot, use the focused
-[PXE and Matchbox journey](install-pxe-matchbox.md). After generation 0 boots,
-continue with the task-oriented
-[KatlOS Operator Guide](operations/README.md) for management access, Kubernetes
-bootstrap, configuration, upgrades, recovery, and troubleshooting.
-
-Katl publishes a versioned installer ISO containing the matching KatlOS payload.
-Write or attach that one artifact, then provide node-specific install input at
-boot time. Loose boot and payload artifacts remain available for PXE. Katl does
-not manage DHCP, TFTP, iPXE, matchbox, firmware boot order, USB imaging, GitOps
-repositories, CNI add-ons, Flux, or Kubernetes workloads.
-
-The install boundary is:
-
-```text
-Katl build output
-  one self-contained installer ISO
-  loose installer and KatlOS payload artifacts for PXE
-
-User-managed provisioning
-  PXE, iPXE, matchbox, virtual media, USB, or another boot path
-  one compiled cluster config bundle and a selected node name
-
-katlos-install
-  reads the bundle and selects one node's compiled install plan
-  binds that plan to the embedded or explicitly supplied KatlOS image
-  mutates the selected disk only after validation
-  installs generation 0 and records installed-node handoff state
-
-katlctl cluster bootstrap
-  later asks node-local katlc agents to create generation 1 and run kubeadm
-```
+Use the release ISO to install KatlOS from USB or virtual media. If you want
+to use the installed nodes to create a cluster, follow
+[Build your first KatlOS cluster](getting-started.md) from start to finish.
+Use this page when you need to select the installer address, disk, or SSH key
+yourself.
 
 ## Artifacts
 
-Download the operator CLI for the workstation that will compile configuration
-and bootstrap the cluster:
-
-```text
-katlctl-<version>-linux-amd64
-katlctl-<version>-linux-amd64.sha256
-katlctl-<version>-linux-amd64.json
-katlctl-<version>-darwin-arm64
-katlctl-<version>-darwin-arm64.sha256
-katlctl-<version>-darwin-arm64.json
-```
-
-Install it under the stable command name and confirm that its embedded release
-identity matches the KatlOS release. Replace `RELEASE_VERSION` with the selected
-release:
-
-```sh
-VERSION=RELEASE_VERSION
-PLATFORM=linux-amd64 # Use darwin-arm64 on an Apple Silicon Mac.
-install -m 0755 "katlctl-$VERSION-$PLATFORM" ~/.local/bin/katlctl
-katlctl version
-```
-
-For package-manager installation, see [Install katlctl](install-katlctl.md).
-The Nix-built CLI reports a Git commit rather than a release version; select
-the release tag that matches the KatlOS artifacts.
-
-For USB, optical, or virtual media, use the primary release artifact:
-
-```text
-katl-installer.iso
-katl-installer.iso.sha256
-katl-installer.iso.json
-```
-
-The ISO metadata records the release version and architecture. The ISO contains
-the temporary installer and exactly one matching KatlOS install image. It never
-contains node identity or credentials.
-
-For PXE, publish the loose installer boot artifacts that match your boot path:
-
-```text
-katl-installer.efi
-katl-installer.efi.sha256
-katl-installer.efi.json
-
-katl-installer.vmlinuz
-katl-installer.vmlinuz.sha256
-katl-installer.vmlinuz.json
-
-katl-installer.initrd
-katl-installer.initrd.sha256
-katl-installer.initrd.json
-```
-
-and one KatlOS install payload:
-
-```text
-katlos-install-<version>-<arch>.squashfs
-katlos-install-<version>-<arch>.squashfs.sha256
-katlos-install-<version>-<arch>.squashfs.json
-```
-
-The installer boot artifacts start the temporary installer environment. The
-KatlOS image is the payload that `katlos-install` verifies and writes into the
-installed system. Do not rebuild either artifact for each node. Put node
-identity, disk selection, native host configuration including networkd files,
-SSH authorized keys, system role, and bootstrap intent in one `ClusterConfig`,
-then compile one bundle for all nodes.
-
-### Optional: authenticate release artifacts
-
-The ISO and matching `katlctl` binary are sufficient for the normal trusted
-home-lab path. Each KatlOS tag also includes `SHA256SUMS`, adjacent checksum
-files, `PROVENANCE.md`, resolved package inventories, and a release extension
-inventory for operators who want to authenticate the downloaded bytes. The
-release notes summarize the corresponding package and extension versions.
-Those checks are optional and do not change how KatlOS operates.
-
-To check transport integrity, download the checksum manifest alongside the
-artifacts and run:
-
-```sh
-sha256sum --ignore-missing --check SHA256SUMS
-```
-
-Then authenticate each asset against the keyless GitHub attestation issued to
-the Katl release workflow. Pin the expected tag in the verification policy:
-
-```sh
-TAG=v2026.7.0-beta.1
-gh attestation verify katl-installer.iso \
-  --repo katl-dev/katl \
-  --signer-workflow katl-dev/katl/.github/workflows/release-artifacts.yml \
-  --source-ref "refs/tags/$TAG"
-```
-
-Repeat the attestation check for the KatlOS SquashFS or loose PXE artifact you
-will use. The attestation binds those bytes to the repository, workflow, tag,
-and source commit. It does not make the build vulnerability-free and is not a
-UEFI Secure Boot signature; production boot-key policy and node-side signature
-enforcement remain separate work.
+Choose the ISO and `katlctl` from the same
+[KatlOS release](https://github.com/katl-dev/katl/releases). See
+[Release artifacts](reference/release-artifacts.md) to find the files for
+your workstation and boot method. If you want to authenticate the downloads,
+follow [Verify release artifacts](operations/verify-release.md).
 
 ## Author one ClusterConfig
 
-Normal installation starts from one `config.katl.dev/v1alpha1` `ClusterConfig`.
-It describes operator choices: the Kubernetes version and the desired identity,
-role, networking, and install target of each node. Katl selects release
-artifacts and role-dependent Kubernetes bootstrap state and handles bundle and operation metadata
-internally.
-
-`katlctl config init` generates this minimal form. It uses DHCP and the KatlOS
-image embedded in the release ISO. Replace the SSH key, node addresses, and
-stable disk IDs:
-
-Run `katlctl config validate ./cluster.yaml` while authoring. One run reports
-all independent source-policy and effective per-node errors in stable public
-field-path order, names the affected node, and includes YAML line numbers when
-the source location is available.
-
-```yaml
-apiVersion: config.katl.dev/v1alpha1
-kind: ClusterConfig
-metadata:
-  name: katl-lab
-spec:
-  # Stable Kubernetes API endpoint for multi-control-plane clusters.
-  # controlPlaneEndpoint:
-  #   host: api.home.arpa
-  #   # port: 6443
-  # Set controlPlane: true on nodes that join the Kubernetes control plane.
-  # Omission means worker.
-  # Nodes use DHCP by default; native systemd-networkd files can be set under defaults or a node.
-  kubernetes:
-    version: v1.36.1
-  defaults:
-    access:
-      ssh:
-        authorizedKeys:
-          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example
-    # Optional operator-owned additions to the installed kernel command line.
-    # kernel:
-    #   commandLine:
-    #     - intel_iommu=on
-    #     - iommu=pt
-  nodes:
-    - name: cp-1
-      controlPlane: true
-      install:
-        systemDisk:
-          byID: /dev/disk/by-id/ata-KATL_CP_1_ROOT
-      management:
-        address: 192.0.2.11
-      # Optional on multihomed nodes; this is Kubernetes identity, not the
-      # operator-reachable management address.
-      kubernetes:
-        address: 10.254.1.1
-    - name: worker-1
-      install:
-        systemDisk:
-          byID: /dev/disk/by-id/ata-KATL_WORKER_1_ROOT
-      management:
-        address: 192.0.2.21
-      kubernetes:
-        address: 10.254.1.3
-```
-
-When no native kubeadm file is supplied, Katl's generated kubeadm profile keeps
-kube-proxy enabled, allows workloads on control-plane nodes, and assigns Node
-Pod CIDRs from `10.244.0.0/16` and Service IPs from `10.96.0.0/12`. Supply
-`spec.kubernetes.kubeadm.configFile` to own the native `ClusterConfiguration`,
-including different or intentionally absent Pod and Service subnets.
-
-The release ISO supplies the KatlOS image, and Katl resolves the selected
-Kubernetes payload from the exact required `spec.kubernetes.version`. Keeping
-that version in source makes compilation reproducible across `katlctl`
-versions; `katlctl config init` always writes a concrete compatible version.
-ClusterConfig does not expose KatlOS or Kubernetes
-image URLs, credentials, named kubeadm profiles, node classes, or other
-compiler mechanisms. An advanced `systemExtensions` entry may select an
-operator-owned native software bundle by OCI reference as described below.
-
-On a multihomed node, set the optional exact `nodes[].kubernetes.address`.
-Katl uses it for kubelet `--node-ip` and the kubeadm local API advertise address
-during both init and control-plane join. It is deliberately one literal IP,
-not a subnet-selection policy. Omit it for normal single-uplink nodes. The
-separate `management.address` remains the operator-reachable address used by `katlctl`
-and may be different.
-
-`kernel.commandLine` adds operator-owned arguments to the installed kernel
-command line. It may be set under `spec.defaults` or on a concrete node; a
-node-level `kernel` block replaces the default list, and `commandLine: []`
-clears inherited additions. Each list item is one whitespace-free kernel
-argument, such as `intel_iommu=on` or `iommu=pt`. Katl rejects arguments that
-would override its root, immutable-runtime, generation identity, or recovery
-policy. Image-required and Katl-owned arguments remain internal and are always
-carried alongside the configured additions.
-
-Persistent data disks are configured under a node's `storage.volumes` during
-installation or through normal node configuration. The supported and
-journey-verified filesystems are `ext4`, `xfs`, and `btrfs`. Each entry selects
-exactly one whole disk or one existing partition, and Katl derives both the GPT
-label `u-<name>` and mount path `/var/mnt/<name>`; operators cannot choose
-another location.
-
-Defaults may share non-identifying storage policy such as `minSizeMiB`, the
-filesystem, and `wipe: false`. Stable disk or partition identity and
-`wipe: true` must be set on the concrete node volume; Katl rejects them under
-`spec.defaults` so one inherited value cannot select or erase storage across
-the cluster.
-
-Removing a volume is non-destructive. Set an inherited entry to
-`state: absent`, omit a node-specific entry from the desired collection, or
-use `storage.volumes: []` to clear all inherited volumes for that node. Online
-apply first unmounts `/var/mnt/<name>`, then removes Katl's generated mount
-unit and stops managing the target. It does not format, repartition, run
-`wipefs`, or erase the partition, filesystem, mount-point directory, or data.
-Re-adding a matching selector mounts the preserved filesystem again.
-
-A disk-backed entry with `wipe: true` authorizes reinitialization of the
-selected disk, including any existing contents. Katl uses `systemd-repart`
-to create and format its convention-labeled partition:
-
-```yaml
-install:
-  systemDisk:
-    byID: /dev/disk/by-id/ata-KATL_WORKER_1_ROOT
-storage:
-  volumes:
-    - name: data
-      selector:
-        disk:
-          byID: /dev/disk/by-id/ata-KATL_WORKER_1_DATA
-      filesystem: btrfs
-      wipe: true
-```
-
-To preserve an existing Talos UserVolumeConfig partition, select
-`partition.byVolumeName: true`. Katl derives `u-<name>` and requires it to
-identify exactly one unmounted partition. A stable partition by-id path,
-PARTUUID, or filesystem UUID may be supplied inside `partition` instead:
-
-```yaml
-storage:
-  volumes:
-    - name: local-hostpath
-      selector:
-        partition:
-          byVolumeName: true
-      filesystem: xfs
-```
-
-With `wipe: false`, the selected target must already contain the requested
-filesystem and Katl preserves it. With `wipe: true`, Katl formats the selected
-target; a partition selector never repartitions its parent disk. Live apply
-refuses mounted or otherwise active destructive targets rather than disrupting
-workloads.
-
-Selectors are used only while provisioning or explicitly replacing a volume.
-Once Katl resolves a selector, the resulting PARTUUID (or filesystem UUID when
-no PARTUUID exists) is stored in that node generation and the systemd mount
-uses that exact identity. A second disk carrying the same `u-<name>` label
-therefore cannot redirect an existing mount. If no prior binding exists, an
-ambiguous label blocks planning and must be replaced with a unique `byID`,
-`partUUID`, or `filesystemUUID` selector.
-
-`wipe: true` explicitly authorizes erasing the selected disk or partition,
-including existing filesystems and partition metadata, when provisioning the
-volume. No additional acknowledgement is required for installation or
-configuration apply. With `wipe: false` (the default), Katl reuses a compatible
-existing filesystem and refuses changes that require formatting.
-
-Choose the target with a unique stable selector. Wipe intent does not bypass
-ambiguous selection, active-device checks, or conflicts with the system disk
-and other volumes. Once provisioned, an unchanged generation-bound volume is
-reused on repeated applies and reboot; retaining `wipe: true` does not erase
-its contents again.
-
-Replacing a generation-bound volume is a separate decision from overwriting
-its contents. Change the selector to the replacement's exact stable identity,
-plan the change, inspect the reported target, then authorize that transition:
-
-```console
-katlctl cluster apply --config ./cluster.yaml --node worker-1 \
-  --rebind-volume worker-1/data
-```
-
-`--rebind-volume` is one-shot operation authority and is not persisted in
-ClusterConfig. Set `wipe: true` to authorize formatting the replacement,
-including existing contents. Removing a volume does not rebind
-or erase it: Katl retains an unmounted generation binding for that logical
-name, so re-adding the same exact identity preserves its data and selecting a
-different identity still requires `--rebind-volume`.
-
-For a Katl-managed endpoint, add the VIP. Katl owns that address only on
-healthy control-plane nodes; external endpoints and workers do not run the VIP
-controller:
-
-```yaml
-spec:
-  controlPlaneEndpoint:
-    host: api.home.arpa
-    advertisement:
-      vip: 10.40.0.10
-```
-
-The API port defaults to `6443`. Katl starts with the VIP released and acquires
-it only after that node's kube-apiserver is ready. If the VIP must be routed,
-configure routing separately with native system extensions. For example:
-
-```yaml
-spec:
-  controlPlaneEndpoint:
-    host: api.home.arpa
-    advertisement:
-      vip: 10.40.0.10
-  defaults:
-    systemExtensions:
-      - bundle: registry.example/katl/extensions/bird:v3.3.1-katl.4
-        configuration:
-          files:
-            - path: /etc/bird.conf
-              source: ./bird/bird.conf
-        units:
-          - name: bird.service
-            enable: true
-            requiredForBootHealth: true
-            dropIns:
-              - name: 10-site.conf
-                content: |
-                  [Service]
-                  ExecStartPre=/usr/bin/bird -p -c /etc/bird.conf
-                  AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-                  CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-```
-
-Katl creates the stable `katl-api` dummy interface and adds the VIP only while
-the local kube-apiserver is healthy. It does not interpret BIRD configuration
-or infer that an extension is related to the VIP. The typed
-`systemExtensions` list is generic: Katl resolves the OCI bundle to immutable
-bytes while compiling, carries it in the self-contained config bundle, installs
-its sysext and optional confext in the selected generation, and applies native
-files and unit drop-ins from that same entry. Configuration source paths are
-relative to `cluster.yaml`.
-
-The full OCI repository identifies each list item; there is no separate `name`.
-Defaults merge into nodes by repository, excluding the tag or digest. A node
-item replaces the complete default item for that repository. To remove an
-inherited item, repeat its selector with `state: absent`; Katl does not download
-the artifact for removal.
-
-For a release-owned extension, use `release` instead of `bundle` and provide
-the full repository without a tag or digest. The target KatlOS release selects
-the release-advertised digest. Katl does not infer a registry or organization,
-or select the newest published artifact. For example:
-
-```yaml
-systemExtensions:
-  - release: ghcr.io/katl-dev/katl/extensions/drbd9
-```
-
-To select the beta NVIDIA driver on an x86-64 node, use its release repository:
-
-```yaml
-systemExtensions:
-  - release: ghcr.io/katl-dev/katl/extensions/nvidia
-```
-
-The NVIDIA extension contains open kernel modules, matching host compute
-libraries, and GPU System Processor firmware. It is intended for Turing and
-newer GPUs; the initial hardware validation target is an NVIDIA T4. It does not
-include the NVIDIA Container Toolkit or a Kubernetes device plugin. The node
-must permit unsigned kernel modules; Katl does not disable signature
-enforcement. This beta artifact has not yet been validated with a physical GPU,
-a Kubernetes GPU workload, or a host upgrade and rollback. Verify `nvidia-smi`
-on the node after reboot before placing GPU workloads on it.
-
-Payload changes and removal select a next-boot generation. If the
-payload is unchanged, configuration, unit drop-ins, and enablement changes
-apply live. Katl reloads or restarts running consumers;
-unit definition changes restart them so the new definition takes effect.
-Native `[Install]` metadata controls enablement. `requiredForBootHealth` makes
-the unit an explicit boot prerequisite; ordinary enabled units may start later.
-Use `katlctl system-extension inspect` or `validate` for
-an OCI bundle and `katlctl system-extension status --node NODE [NAME]` after
-apply. Registry credentials, when needed during workstation compilation, come
-from the normal Docker credential store and are never embedded in config or
-node state.
-
-A tag-only `bundle` reference keeps the routine home-lab path convenient, but
-the tag may select different bytes in a later compilation. Katl resolves it
-once, verifies the content, and prints a warning for every affected node with
-the exact digest-pinned replacement:
-
-```text
-registry.example/katl/extensions/bird:v3.3.1-katl.4@sha256:<OCI-manifest-digest>
-```
-
-Commit that value in `cluster.yaml` when repeatable selection matters. A
-digest-pinned reference compiles without the mutable-reference warning.
-
-Advanced users can keep native kubeadm settings without waiting for Katl to add
-a typed field for each upstream option:
-
-```yaml
-spec:
-  kubernetes:
-    version: v1.36.1
-    kubeadm:
-      configFile: ./kubeadm.yaml
-      patchesDir: ./kubeadm-patches
-```
-
-Both paths are relative to `cluster.yaml`. Katl validates the native document
-kinds and API versions, rejects unsafe host paths and filesystem escapes,
-supplies its required role defaults, and embeds the resulting files into the
-compiled `.katlcfg`. It selects control-plane and worker documents internally
-and injects bootstrap tokens and certificate material only when the explicit
-bootstrap operation runs. Omit the entire `kubeadm` block for Katl's complete
-defaults.
-
-Katl reserves `1Gi` of node memory for the operating system by default through
-`KubeletConfiguration.systemReserved.memory`. Kubelet subtracts this reservation
-from node allocatable memory, so the scheduler leaves room for node services.
-To change the shared cluster kubelet configuration, add a native
-`KubeletConfiguration` document to `spec.kubernetes.kubeadm.configFile`:
-
-```yaml
-apiVersion: kubelet.config.k8s.io/v1beta1
-kind: KubeletConfiguration
-systemReserved:
-  memory: 3Gi
-```
-
-Katl retains the `1Gi` default when that native document omits
-`systemReserved.memory`. To keep the policy in Katl's node-local input, set a
-reference in `spec.defaults.kubernetes.kubelet.configFile` or on one node as
-shown below. A resolved node-local value overrides the cluster-wide value. This
-reservation changes scheduling capacity; it does not impose a hard memory limit
-on pods or system services.
-
-This bounded native file is the stable interface for cluster-wide Kubernetes
-networking choices. Set Pod and Service CIDRs in
-`ClusterConfiguration.networking`, and set `ClusterConfiguration.proxy.disabled` when
-the chosen CNI replaces kube-proxy:
-
-```yaml
-apiVersion: kubeadm.k8s.io/v1beta4
-kind: ClusterConfiguration
-proxy:
-  disabled: true
-networking:
-  podSubnet: 172.20.0.0/16
-  serviceSubnet: 172.21.0.0/16
-```
-
-Include a native `KubeProxyConfiguration` document when kube-proxy remains in
-use but needs non-default policy. Katl does not duplicate these upstream
-cluster-wide fields under a second typed ClusterConfig networking surface.
-Katl honors the cluster's disabled setting during bootstrap and control-plane
-joins, and leaves service routing to your chosen CNI. Disabling kube-proxy
-does not install or configure a replacement CNI.
-
-For a kubelet policy that applies to every node, reference one native
-`kubelet.config.k8s.io/v1beta1` `KubeletConfiguration` from the node defaults:
-
-```yaml
-spec:
-  defaults:
-    kubernetes:
-      kubelet:
-        configFile: ./kubelet.yaml
-  nodes:
-    - name: worker-1
-      kubernetes:
-        kubelet:
-          configFile: ./worker-1-kubelet.yaml
-```
-
-Nodes inherit the default reference. A node-level reference, such as the
-`worker-1` value above, replaces it for that node. Use `katlctl config resolve`
-to see the effective reference and whether it came from defaults or the node.
-
-```yaml
-apiVersion: kubelet.config.k8s.io/v1beta1
-kind: KubeletConfiguration
-systemReserved:
-  cpu: 500m
-  memory: 3Gi
-topologyManagerPolicy: restricted
-```
-
-The file is a bounded native overlay, not a Katl-owned host path. Katl applies
-each node's resolved reference as a node-local kubeadm kubelet patch during
-bootstrap and online changes, then verifies the local kubelet configuration and
-node health. It never uploads the overlay to the cluster-wide `kubelet-config`
-ConfigMap. Changing a default changes the desired input for every node that
-inherits it. Katl rejects multiple documents, other API kinds or versions, and
-fields that replace Katl-owned runtime paths.
-
-Kubeadm applies the selected ordinary native patches first, then the explicit
-fields in this overlay. Omitted overlay fields retain their value from the
-patched shared configuration.
-
-The ISO flow consumes this source directly: `katlctl install apply` and
-`katlctl cluster bootstrap` compile the internal bundle automatically. Produce
-an explicit bundle only for PXE or offline provisioning, as shown in the next
-section.
-
-Katl maintains the bundle's internal consistency metadata itself. Operators do
-not need to retain it, pass it on the ISO path, or handle its digests.
-
-Disk installation is destructive. Always inspect each resolved target disk
-before enabling automatic install. Use `byID`, WWN, or serial selectors, never
-`/dev/sda`-style names.
+Use the [cluster configuration reference](reference/cluster-config.md) to
+select disks, set node addresses, and supply native host or kubeadm settings.
 
 ## PXE or Matchbox
 
-The complete, copyable Matchbox machine-profile journey is in
-[Install KatlOS with PXE and Matchbox](install-pxe-matchbox.md). This section
-defines the lower-level Katl handoff contract.
-
-Publish the loose installer kernel and initrd, the KatlOS SquashFS and metadata,
-and the single `.katlcfg` archive through your own HTTP infrastructure. Keep the
-image selection out of ClusterConfig and supply the published release artifact
-when compiling the PXE bundle:
-
-```sh
-katlctl config bundle ./cluster.yaml \
-  --output ./katl-lab.katlcfg \
-  --katlos-image-url https://boot.example.invalid/katl/2026.7.0/katlos-install-2026.7.0-x86_64.squashfs \
-  --katlos-image-metadata ./katlos-install-2026.7.0-x86_64.squashfs.json
-```
-
-For mTLS management, the compiled bundle includes each node's server
-private key. Katl writes bundles mode `0600`. Serve a bundle only on the trusted
-provisioning network, prevent workload networks from reaching it, and remove
-the served copy after installation. Back up the separately reported
-configuration-referenced management secrets file when using mTLS; a `.katlcfg`
-is not an authority backup. Trusted-network management requires no keys.
-
-Bundle-oriented kernel arguments are:
-
-```text
-katl.bundle.url=<config bundle URL>
-katl.bundle.sha256=<optional expected config bundle archive SHA-256>
-katl.bundle=<local config bundle path>
-katl.node=<node name>
-katl.install.mode=auto
-katl.halt-if-installed=1
-katl.wait-for-config=1
-katl.hold-for-debug=1
-console=...
-ip=...
-```
-
-An explicit install request replaces the selected system disk, including a
-previous Katl installation. No separate system-disk wipe acknowledgement is
-required. Data volumes retain their own `wipe` policy.
-
-Optionally set `katl.halt-if-installed=1` to refuse automatic installation when
-the selected disk has Katl partition labels, including an incomplete layout.
-The installer reports the refusal before mutation and keeps its API and SSH
-available. Boot the installed disk, or explicitly reinstall using
-`katlctl install apply --config cluster.yaml --node NODE`. This works directly
-from the installer even when the installed runtime agent is unavailable.
-Remove the guard to authorize automatic reinstallation on the next PXE boot.
-Remove the install profile or select disk boot after installation to avoid
-repeated automatic installation.
-
-After a PXE bundle selects a node, Katl configures the live installer's root
-SSH access from that node's `access.ssh.authorizedKeys` before image validation
-or disk planning. This is ephemeral installer access; the installed runtime
-continues to use the `katl` account with the same configured keys.
-
-The installer calculates the downloaded archive identity and checks the bundle
-structure itself. `katl.bundle.sha256` is an optional expert control when an
-external expected checksum is already available. Without input, or with
-`katl.wait-for-config=1`, the installer waits for handoff. Debug mode never
-starts an install.
-
-Illustrative iPXE entry for `cp-1`:
-
-```ipxe
-#!ipxe
-set base https://boot.example.invalid/katl/2026.7.0
-set node cp-1
-kernel ${base}/katl-installer.vmlinuz initrd=katl-installer.initrd console=ttyS0,115200n8 systemd.getty_auto=no katl.node=${node} katl.bundle.url=${base}/katl-lab.katlcfg katl.install.mode=auto
-initrd ${base}/katl-installer.initrd
-boot
-```
-
-Matchbox profiles carry the same `katl.*` arguments. Groups should select only
-`katl.node`; they do not need a different bundle URL per node. Katl does not
-create or operate DHCP, iPXE, or matchbox configuration.
+If your machines boot over the network, follow
+[Install KatlOS with PXE and Matchbox](install-pxe-matchbox.md). It covers both
+Matchbox profiles and the Katl boot arguments for other PXE tools.
 
 ## ISO or local handoff
 
-Boot the same `katl-installer.iso` on each node without preseed input. The
-installer mounts its embedded KatlOS image read-only and waits without mutating
-disks.
-The VGA console keeps a KatlOS dashboard on `tty1` showing installer media
-version and state, active network addresses, the handoff URL, disk-mutation
-status, and a live tail of the boot journal. Press `Ctrl+Alt+F2` for a local
-recovery shell; the dashboard, serial journal, and SSH service operate
-independently.
+Boot `katl-installer.iso` in UEFI mode. Keep Secure Boot disabled. The
+installer waits without touching the disks until it receives an install
+request. Use a trusted provisioning network because the install handoff on
+TCP port `8080` accepts requests without authentication.
 
-The handoff is intentionally unauthenticated HTTP for the trusted home-lab
-path. Use only the provisioning network and never expose port 8080 to an
-untrusted network. The installer accepts one valid submission and then closes
-the handoff path.
+The console on `tty1` shows the release, address, handoff URL, disk mutation
+state, and a live journal. Use `Ctrl+Alt+F2` for a local recovery shell. The
+dashboard, serial journal, and installer SSH service operate independently.
 
-Discover waiting installers and their disk inventory from the workstation:
+From your workstation, use `katlctl install discover --timeout 10s` to list
+installers.
+Run `katlctl install discover ./cluster.yaml` to create a configuration for
+all waiting installers that the command finds. The first becomes `cp-1`,
+and the rest become workers.
 
-```sh
-katlctl install discover
-```
+### Use known installer addresses
 
-If the installer addresses are already known, query them directly while
-creating the config instead of scanning the local subnet:
+If discovery finds extra machines or misses the ones you intend to install,
+use the addresses shown on their consoles.
 
 ```sh
 katlctl config init ./cluster.yaml \
@@ -667,320 +53,96 @@ katlctl config init ./cluster.yaml \
   --installer 192.0.2.21
 ```
 
-Bare addresses use HTTP port 8080. A hostname, `host:port`, or complete HTTP(S)
-base URL is also accepted. The first supplied installer becomes `cp-1`; later
-installers become workers.
+Replace both addresses with those of your installers. The first address
+becomes `cp-1`. Bare addresses use HTTP port `8080`. The flag also accepts a
+hostname, `host:port`, or HTTP(S) base URL.
 
-The report marks a disk `selectable` only when it is a writable whole disk, is
-not mounted, and has a stable by-id, WWN, or serial selector. To turn all waiting
-installers into an editable cluster source directly, provide an output path:
+### Select the target disk
 
-```sh
-katlctl install discover ./cluster.yaml
-```
-
-Config generation imports supported public keys from the active SSH agent,
-including the 1Password SSH agent, and falls back to
-`~/.ssh/id_ed25519.pub`. Pass `--ssh-authorized-key PATH` to choose a key file
-explicitly. If neither source provides a key, discovery still writes the file
-and warns that an authorized key must be added before `install apply`.
-
-The first discovered endpoint becomes `cp-1`; subsequent endpoints become
-workers. Katl writes a target selector only when an installer reports exactly
-one selectable disk and refuses to guess when multiple disks are eligible.
-Review and adjust the generated node names, roles, addresses, disk identities,
-and Kubernetes selection before applying it. Never substitute a transient
-`/dev/vda` or `/dev/sda` path.
-
-For pre-install debugging, enable the installer's ephemeral key-only SSH
-access from the same reviewed source:
+Configuration generation from live installers requires one selectable disk
+per node. A selectable disk is a writable whole disk with a stable identity
+and no mounted filesystems. If there is more than one, read the disk inventory
+on the installer and identify the target by a stable by-id path, WWN, or
+serial number. Supply the intended disk explicitly when creating the
+configuration.
 
 ```sh
-katlctl install ssh --config ./cluster.yaml --node cp-1
-ssh root@192.0.2.11
+katlctl config init ./cluster.yaml \
+  --node cp-1=control-plane,192.0.2.11,/dev/disk/by-id/ata-KATL_CP_1_ROOT \
+  --node worker-1=worker,192.0.2.21,/dev/disk/by-id/ata-KATL_WORKER_1_ROOT
 ```
 
-This installs only the selected node's configured public keys into the live
-installer and starts OpenSSH; it does not submit an install or mutate a disk.
-The root account is an installer-only recovery surface. The installed KatlOS
-runtime uses the `katl` account and the same configured keys. If the installer
-currently has a different DHCP address, pass the same `--endpoint` override
-described below. Repeating the command replaces the live authorized-key set
-with the current selected-node configuration.
+Replace the sample addresses and disk paths. Use a stable selector in
+`cluster.yaml` so a device name such as `/dev/sda` cannot direct the install
+to a different disk.
 
-Apply the cluster source directly:
+### Select an SSH key
+
+Configuration generation imports supported public keys from the active SSH
+agent, including 1Password, or uses `~/.ssh/id_ed25519.pub`. Pass
+`--ssh-authorized-key PATH` to select a public key explicitly. If Katl found
+no key, add an authorized key to `cluster.yaml` before applying it.
+
+### Apply the configuration
+
+Run `katlctl config validate ./cluster.yaml`. Check that the selected system
+disk matches the intended machine and can be erased. The next command
+replaces the contents of that disk.
 
 ```sh
 katlctl install apply --config ./cluster.yaml --node cp-1
 ```
 
-`--node` selects the logical config entry by its configured name or bootstrap
-address and is optional only for a single-node config. `katlctl` contacts that
-node's bootstrap address by default. If the installer is currently using a
-different address, such as a DHCP lease before the configured static network
-is installed, override only the connection target:
+`--node` selects an entry by name or bootstrap address. You can omit it when
+the configuration contains one node. Katl validates the configuration and
+installer image before authorizing the disk write. The installer accepts
+one valid submission, then closes the handoff path.
 
-```sh
-katlctl install apply --config ./cluster.yaml --node cp-1 --endpoint 192.0.2.42
-```
+If the installer is temporarily at a different address, add
+`--endpoint 192.0.2.42` with the current address. This changes the connection
+target while keeping the selected node and disk from the file. If the
+configuration has no bootstrap address and you omit `--endpoint`, Katl
+looks for a single waiting installer.
 
-The endpoint override accepts a bare IP or hostname, `host:port`, or a complete
-HTTP(S) base URL. If the selected node has no bootstrap address and no override
-is supplied, `katlctl` falls back to discovering one waiting installer.
+The command waits until the installer can reboot or reports a failure. If you use
+`--no-wait`, use `katlctl install status` or watch the installer console for
+the result. Once the node boots from its disk,
+[check the installed host](operations/access.md#confirm-generation-0).
 
-For the worker, boot the same ISO and apply the same source with
-`--node worker-1`. `katlctl install apply` compiles and validates the source and
-selected node before contacting the installer. The installer
-then validates the compiled install material and embedded KatlOS image before
-it can mutate the selected disk. The endpoint refuses later submissions.
+For separate [data volumes](reference/cluster-config.md#data-volumes),
+`wipe: true` authorizes formatting during installation. With `wipe: false`,
+Katl preserves a compatible filesystem and refuses changes that require
+formatting.
 
-The command waits by default and returns structured status when installation is
-reboot-ready or reaches a classified failure. Pass `--no-wait` only when
-another operator process will monitor `katlctl install status` and the console.
+### Advanced local input
 
-The console advertises `/v1/config-bundle` as the preferred endpoint.
-`/v1/install` remains available for advanced compiled-manifest integrations.
-
-Separate seed media with the `KATLSEED` label or `virtio-katl-seed` disk ID is
-only needed when provisioning input without the HTTP handoff.
-
-## Compiled InstallManifest for advanced integrations
+The installer advertises `/v1/config-bundle` for the standard handoff.
+A separate seed medium with label `KATLSEED` or disk ID `virtio-katl-seed`
+can supply input locally.
 
 The bundle contains one compiled `install.katl.dev/v1alpha1` `InstallManifest`
-per node. That schema and the legacy `katl.manifest.*` kernel arguments remain
-an advanced integration boundary for installer tooling and debugging. They are
-not the normal authoring API: a raw manifest omits cluster-wide validation,
-embedded kubeadm sidecars, resolved inventory, and proof that every node was
-compiled from the same source. Author `ClusterConfig` and distribute its bundle
-unless you are deliberately integrating at that lower-level boundary.
-
-## Verify installer safety and status
-
-`katlos-install` validates before destructive disk mutation:
-
-```text
-config bundle archive integrity and content descriptors
-selected node and compiled install manifest schema
-destructive install guard
-target disk selector and size
-KatlOS image SHA-256 and size
-embedded /katlos/image.json
-required runtime root and runtime UKI components
-component digests from the mounted KatlOS image
-architecture and runtime interface compatibility
-```
-
-Failures before validation completes must not repartition or wipe the selected
-disk. Failures after mutation are recorded in installer status and should be
-debugged from the installer console, journal, and `/var/lib/katl/install` state.
-
-After install and reboot, a healthy generation 0 node should:
-
-```text
-boot from the installed disk
-start systemd-networkd and sshd when configured
-start the node-local katlc agent
-validate and record generation boot health
-reach katl-boot-complete.target
-not activate Kubernetes or require katl-kubeadm-ready.target
-remain ready for explicit Kubernetes bootstrap but not bootstrapped
-```
-
-Useful first checks on an installed node:
-
-```text
-systemctl status katl-boot-health.service
-systemctl status katlc-agent.service
-systemctl status katl-boot-complete.target
-systemctl status katl-kubeadm-ready.target
-journalctl -b -u katl-boot-health.service -u katlc-agent.service
-```
+per node. The `/v1/install` endpoint and `katl.manifest.*` kernel arguments
+remain available for advanced compiled-manifest integrations. A standalone
+manifest lacks cluster-wide validation, embedded kubeadm files, and proof
+that all nodes come from the same configuration.
 
 ## Bootstrap handoff
 
-Installation does not run `kubeadm`, fetch Kubernetes payloads, or bundle a
-Kubernetes sysext. It stores the node role and bootstrap intent needed for a
-later explicit operator action.
-
-During explicit bootstrap, Katl resolves `spec.kubernetes.version` through the
-release compatibility catalog to an immutable bundle digest and compatible
-KatlOS runtime interface. It fails before mutation when the version is not
-available for this Katl release. `katlc` then fetches the selected public
-`ghcr.io/katl-dev/kubernetes` artifact, verifies every OCI layer and its runtime
-compatibility, stages the sysext, and selects it for generation 1. Operators do
-not supply a bundle tag or digest on the normal path.
-
-After all nodes are installed and reachable through their node-local `katlc`
-management endpoints, enroll their identities and then bootstrap from the same
-source:
-
-```sh
-katlctl context save --config ./cluster.yaml
-katlctl cluster bootstrap --config ./cluster.yaml \
-  --init-node cp-1
-```
-
-Katl compiles the source internally to obtain the control-plane endpoint, node
-topology, roles, kubeadm references, Kubernetes version, and OCI bundle
-selection. Set `management.address` and, when different, `kubernetes.address` in
-`ClusterConfig` so bootstrap and readiness checks use the intended addresses.
-Bootstrap reports phase changes while it runs and writes `./kubeconfig` by
-default. Rerun the unchanged command to resume observing an interrupted
-bootstrap; add `--verbose` for operation IDs and recovery details. At this
-handoff, nodes normally remain `NotReady` and CoreDNS pending until the user
-installs a CNI. Katl does not choose, install, or manage one.
-
-The management API is intentionally credential-free on Katl's supported
-trusted home-lab network. Enrollment is an identity binding, not an
-authentication token: it prevents operator inventory from targeting the wrong
-installed node when addresses are stale or exchanged.
-
-`katlctl` is a bounded client. Node-local `katlc` validates and records the
-authoritative bootstrap operations, creates generation 1, runs `kubeadm`, and
-records evidence. `katlctl` output and kubeconfig files are operator artifacts,
-not node recovery state.
-
-Katl hands off the cluster layer after kubeadm bootstrap. Users provide and
-operate CNI, CoreDNS policy, Flux or another GitOps tool, workloads, ingress,
-storage classes, and cluster add-ons. Test fixtures may apply a small CNI or
-workload manifest to prove handoff behavior, but Katl is not a Kubernetes
-distribution or add-on manager.
+After all nodes boot from their disks, follow
+[Bootstrap Kubernetes](operations/bootstrap-kubernetes.md). It uses the same
+configuration to set up Kubernetes and write your kubeconfig.
 
 ## Apply runtime configuration
 
-`ClusterConfig` is the user-authored source for installation and supported
-node runtime configuration. `katlctl` compiles and submits the node-agent
-request internally; operators do not maintain a second configuration schema.
-
-Apply the complete retained cluster configuration:
-
-```sh
-katlctl cluster apply --config ./cluster.yaml
-```
-
-`katlctl` derives per-node generations, management endpoints, validation
-requests, Kubernetes component phases, and operation tracking. These are
-internal replay and lifecycle details, not operator inputs. Every node is
-validated before mutation begins.
-
-If the source has already been compiled, use the bundle instead of
-recompiling it:
-
-```sh
-katlctl cluster apply --config ./katl-lab.katlcfg
-```
-
-Katl applies ordinary node domains and all affected kubeadm-produced component
-configuration as one coordinated workflow. Kubernetes configuration changes
-are online-only and never require rebooting a node.
-
-The renderer carries node identity, native host configuration, system role, and
-role-dependent Kubernetes intent. Networkd files are supplied through
-`hostConfiguration.fileSets` and staged for next boot. The planner does not silently discard
-operation-owned differences: cluster apply invokes the required internal
-kubeadm-aware phases and verifies the live result. System-disk install
-selection and Kubernetes version changes keep their dedicated install and
-upgrade workflows; `storage.volumes` remains desired node state.
-The node-agent request envelope remains an internal API documented separately
-from the operator installation flow.
+Follow [Apply cluster configuration](operations/configure-nodes.md) to change
+supported settings on installed nodes.
 
 ## Upgrades
 
-KatlOS upgrades also consume one KatlOS image artifact. The image records
-runtime root, boot assets, versions, architecture, runtime
-interface, and digests. An upgrade operation creates a candidate generation from
-that image and validates component compatibility before selection.
-
-Kubernetes version upgrades remain separate from day-one install. Use
-`katlctl kubernetes upgrade` to plan and execute the kubeadm-aware,
-control-plane-first rollout from a published bundle. Katl resolves the bundle
-identity, captures control-plane etcd snapshot evidence, stages the target
-`kubeadm` privately before releasing the target kubelet, and reports recovery
-requirements without asking operators for digests, artifact paths, snapshot
-metadata, generation IDs, or operation IDs. Follow
-[Upgrade Kubernetes](operations/upgrade-kubernetes.md); activating a published
-sysext manually is not a supported upgrade.
+Use [Upgrade a KatlOS host](operations/upgrade-host.md) for the operating system
+and [Upgrade Kubernetes](operations/upgrade-kubernetes.md) for Kubernetes.
 
 ## Troubleshooting
 
-If local console access is inconvenient, enable the waiting installer's
-key-only SSH recovery surface before submitting the install:
-
-```sh
-katlctl install ssh --config ./cluster.yaml --node cp-1
-ssh root@192.0.2.11
-```
-
-Collect these first:
-
-```text
-installer console output
-journalctl -b
-journalctl -b -u katlos-install.service
-/var/lib/katl/install status and copied manifest files
-the config bundle and selected node name
-the KatlOS image metadata and SHA-256 file
-systemctl status katlc-agent.service
-systemctl status katl-boot-complete.target
-```
-
-Common failures:
-
-```text
-bundle or selected node rejected
-  Run katlctl config validate again. Check the selected node name, SSH
-  authorized keys, system role, kubeadm
-  role, address, and target disk. PXE bundle compilation must receive the
-  published image URL and metadata flags; ISO installs derive the image from
-  the embedded media descriptor.
-
-destructive install refused
-  Confirm boot input selected katl.install.mode=auto. Confirm the URL is
-  reachable and returns the intended .katlcfg archive.
-
-target disk not found
-  Prefer /dev/disk/by-id, WWN, or serial selectors. Confirm firmware and HBA
-  expose the expected device identity in the installer environment.
-
-KatlOS image digest mismatch
-  Re-publish the image and .sha256 together. Do not edit the SquashFS after
-  metadata is generated.
-
-node boots but bootstrap fails
-  Inspect katlc operation records, kubeadm output, kubelet journal, container
-  runtime journal, and the Kubernetes API state. Host rollback does not erase
-  kubeadm or Kubernetes partial state.
-```
-
-## Responsibility outside installation
-
-Installation intentionally does not own:
-
-```text
-Katl-managed DHCP, TFTP, iPXE, or matchbox services
-automatic cluster reconciliation after bootstrap
-hardware extension catalogs or per-node installer artifact rebuilds
-secret distribution beyond protected install input or local handoff
-production signing, revocation, and private artifact distribution policy
-loss-of-quorum etcd recovery or general repair after partial kubeadm mutation
-```
-
-Adding or replacing one fresh worker or control plane in a healthy cluster is a
-supported, operation-backed `cluster apply` workflow; see
-[Change cluster membership](operations/change-cluster-nodes.md). Automatic
-reconciliation and arbitrary post-mutation repair are not implied by that
-bounded operation. The complete production, compatibility, trust, recovery,
-hardware-evidence, and issue-reporting boundary is maintained in
-[`support.md`](support.md).
-
-### Formatting behavior
-
-Katl uses `systemd-repart --discard=no` to partition and format the system disk
-and whole-disk data volumes. This creates fresh filesystems without waiting for
-a full-device discard. The state filesystem retains fs-verity support; immutable
-root images are written to their slots separately.
-
-For an explicitly selected existing partition, Katl formats only that partition
-in place, also with discard disabled. It preserves the parent partition table
-and sibling partitions. A filesystem format is not a secure data sanitization
-operation; unused space can be trimmed separately after installation.
+See [installer diagnostics](operations/troubleshoot.md#installer-evidence) to
+inspect a refused install or collect evidence before retrying.

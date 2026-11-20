@@ -1,9 +1,9 @@
 # What KatlOS owns
 
-KatlOS prepares and manages Kubernetes nodes. It is not a Kubernetes
-distribution and does not take ownership of the platform you run on top of
-kubeadm. This boundary is intentional: a successful Katl bootstrap leaves the
-Kubernetes API and kubeconfig ready for your cluster-management workflow.
+Use this page to decide what to manage through `katlctl` and what to handle
+through your own Kubernetes tools. KatlOS manages host releases and
+configuration. Katl bootstrap sets up the Kubernetes API and gives you a
+kubeconfig. You manage the cluster network, add-ons, workloads, and backups.
 
 ## Responsibility map
 

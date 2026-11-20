@@ -170,8 +170,8 @@ serving-certificate approval separately if you enable
 certificates.
 
 Boot the worker's installer media and follow the
-[installation procedure](../installing.md). Use this same configuration for both
-installation and enrollment:
+[ISO install procedure](../installing.md#apply-the-configuration). Use the same
+configuration for installation and enrollment:
 
 ```sh
 katlctl config validate ./cluster.yaml

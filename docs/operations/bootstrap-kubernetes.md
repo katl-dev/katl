@@ -1,12 +1,14 @@
 # Bootstrap Kubernetes on KatlOS
 
-This procedure turns healthy generation 0 nodes into one kubeadm cluster. It is
-an explicit mutation of node-local kubeadm state and the Kubernetes API.
+Use this procedure when your intended nodes already run KatlOS and you want
+to create Kubernetes from the same configuration. Bootstrap starts the
+Kubernetes API, joins the nodes, and gives you a kubeconfig.
 
 ## Prerequisites
 
 - every intended node completed [generation 0 handoff](access.md);
 - the same `ClusterConfig` source used for installation is available;
+- the workstation has [recorded the installed node identities](access.md#save-a-workstation-shortcut);
 - every intended node is reachable through its host management interface on
   TCP port `9443` from the operator workstation;
 - `spec.kubernetes.version` is available in this Katl release's compatibility
@@ -17,6 +19,9 @@ an explicit mutation of node-local kubeadm state and the Kubernetes API.
 For any cluster you may rebuild, create and independently back up a
 [Kubernetes identity](kubernetes-identity.md) before the first bootstrap. It
 preserves kubeadm trust and signing keys; it is not an etcd or workload backup.
+
+If you plan to use Cilium, make sure that you applied its
+[host settings](cilium.md#configure-cilium-host-settings).
 
 Katl resolves and fetches the immutable Kubernetes bundle during this
 operation. Nodes need registry and CA access to `ghcr.io` unless the bundle is

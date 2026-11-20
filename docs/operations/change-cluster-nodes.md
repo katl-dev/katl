@@ -1,5 +1,8 @@
 # Add, replace, or remove cluster nodes
 
+Use this guide to make a planned membership change while keeping a healthy
+cluster in service.
+
 For a control plane managed outside Katl, use the
 [external worker workflow](external-workers.md). The coordinator-based procedure
 below applies to Katl-managed control planes.

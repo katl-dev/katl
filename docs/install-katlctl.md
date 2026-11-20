@@ -1,31 +1,54 @@
 # Install katlctl
 
-Install `katlctl` on the workstation you use to manage KatlOS. For an install
-or upgrade, select the CLI source from the same Katl release as the KatlOS
-artifacts. Check the installed CLI with `katlctl version`.
+Install `katlctl` on the workstation you use to manage KatlOS. Choose the
+same release as the KatlOS files you use for an install or upgrade.
+
+## Install the release binary
+
+Go to [KatlOS releases](https://github.com/katl-dev/katl/releases).
+Download the file that matches your workstation.
+
+- On Linux x86-64, download `katlctl-<version>-linux-amd64`.
+- On an Apple Silicon Mac, download `katlctl-<version>-darwin-arm64`.
+
+In the download directory, replace `RELEASE_VERSION` with the version from
+the filename. If you use an Apple Silicon Mac, set `PLATFORM=darwin-arm64`.
+
+```sh
+VERSION=RELEASE_VERSION
+PLATFORM=linux-amd64
+mkdir -p "$HOME/.local/bin"
+install -m 0755 "katlctl-$VERSION-$PLATFORM" "$HOME/.local/bin/katlctl"
+export PATH="$HOME/.local/bin:$PATH"
+katlctl version
+```
+
+Make sure that the CLI reports the release you selected. If
+`$HOME/.local/bin` is absent from your usual path, add it to your shell
+configuration for future sessions.
 
 ## Install with Homebrew
 
-On a Linux amd64 workstation with Homebrew, install the beta channel from the
+On a Linux amd64 workstation with Homebrew, install the stable channel from the
 [Katl Homebrew tap](https://github.com/katl-dev/homebrew-katlctl):
 
 ```sh
-brew install katl-dev/katlctl/beta
+brew install katl-dev/katlctl/stable
 katlctl version
 ```
 
-The beta formula follows the newest eligible beta or stable release. To keep a
-specific release, install its versioned formula instead. For example:
+Use the versioned formula when you need the CLI from a specific release.
+For example, to match a KatlOS 2026.11.0 installer:
 
 ```sh
-brew install katl-dev/katlctl/beta@2026.9.0-beta.16
+brew install katl-dev/katlctl/stable@2026.11.0
 katlctl version
 ```
 
-Versioned formulas are available from `2026.9.0-beta.16` onward. When the
-stable channel is published, use `brew install katl-dev/katlctl/stable` to
-follow stable releases. Uninstall the installed formula before switching
-channels or versions because each formula provides the same `katlctl` command.
+The beta channel follows the newest eligible beta or stable release. Check
+the tap for the versioned formulas it publishes. Uninstall the installed
+formula before switching channels or versions because each formula provides
+the same `katlctl` command.
 
 ## Install with Nix
 
@@ -64,4 +87,4 @@ source ~/.config/fish/completions/katlctl.fish
 New Fish sessions load the installed script automatically.
 
 The `v2026.9.0-beta.16` tag does not include this flake package; for that
-release, use Homebrew or the [release binary](installing.md#artifacts).
+release, use Homebrew or the [release binary](#install-the-release-binary).

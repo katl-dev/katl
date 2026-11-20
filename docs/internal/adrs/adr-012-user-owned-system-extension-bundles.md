@@ -6,7 +6,8 @@ Status: accepted.
 supersedes the selection identity and build ownership described here. Config
 entries use the full OCI repository as their identity and have no `name` field.
 Use ADR-015 for release-owned selection and the
-[installation guide](../../installing.md) for configuration examples.
+[cluster configuration reference](../../reference/cluster-config.md#system-extensions)
+for configuration examples.
 
 Date: 2026-07-25.
 

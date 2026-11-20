@@ -1,66 +1,50 @@
 # Build your first KatlOS cluster
 
-This journey installs KatlOS from the release ISO, verifies generation 0,
-bootstraps kubeadm, and hands the cluster to you for CNI installation. It is
-appropriate for one or several x86-64 UEFI machines on a trusted home-lab
-network.
+Install KatlOS on two machines and use them to create a Kubernetes cluster.
+The first node, `cp-1`, runs the Kubernetes API. The second node, `worker-1`,
+runs workloads. This guide uses Cilium to connect workloads and ends with both
+nodes reporting `Ready`.
 
-Installation erases the selected system disk. Use disposable machines or make
-independent backups before continuing. Keep installer TCP `8080` and management
-TCP `9443` on trusted networks; new configurations use unauthenticated management
-access by default. mTLS is available as an explicit configuration choice.
+## Before you begin
 
-## 1. Download one release
+- Use two x86-64 UEFI machines with Secure Boot disabled. Give each machine
+  one target disk that you can erase. You can use virtual machines.
+- Put both machines and your workstation on the same trusted network. The
+  installer uses DHCP to obtain an address. Reserve stable addresses for the
+  nodes so that the configuration can still reach them after a reboot.
+- Keep installer port `8080` and management port `9443` on trusted networks.
+  The default connections use plaintext and grant access without credentials.
+  If you need authenticated management, choose
+  [mTLS](operations/access.md#security-boundary) before you install.
+- Keep an SSH public key available for login to the installed hosts. Install
+  `kubectl` and Helm on your workstation. The nodes need access to the
+  registries for Kubernetes and Cilium.
 
-Download the matching CLI and installer ISO from a single
-[Katl release](https://github.com/katl-dev/katl/releases). Replace
-`RELEASE_VERSION` with the release you selected:
+## 1. Download the installer and boot both machines
 
-```sh
-VERSION=RELEASE_VERSION
-TAG="v$VERSION"
-PLATFORM=linux-amd64 # Use darwin-arm64 on an Apple Silicon Mac.
-gh release download "$TAG" --repo katl-dev/katl \
-  --pattern "katlctl-$VERSION-$PLATFORM" \
-  --pattern 'katl-installer.iso' \
-  --pattern 'katl-installer.iso.sha256'
-install -m 0755 "katlctl-$VERSION-$PLATFORM" ~/.local/bin/katlctl
-katlctl version
-if command -v sha256sum >/dev/null; then
-  sha256sum --check katl-installer.iso.sha256
-else
-  shasum -a 256 --check katl-installer.iso.sha256
-fi
-```
+Download `katl-installer.iso` from a [KatlOS release](https://github.com/katl-dev/katl/releases).
+[Install katlctl](install-katlctl.md#install-the-release-binary) from that
+same release on your workstation. The ISO contains the KatlOS image.
+If you want to authenticate the downloads, see
+[Verify release artifacts](operations/verify-release.md).
 
-You can install the CLI through [Homebrew or Nix](install-katlctl.md) instead of
-the downloaded binary. Keep the CLI source aligned with the ISO release.
+On each machine, attach the ISO as virtual media or write it to a USB drive
+using a tool that copies the image directly. Boot from the media in UEFI mode.
+The installer shows its address and waits for your configuration.
+It leaves the target disk untouched while it waits.
 
-The CLI and KatlOS artifacts must come from the same release. Checksums are a
-quick transport-integrity check; the optional
-[release verification guide](operations/verify-release.md) adds GitHub build
-attestation verification.
+## 2. Create and review the cluster configuration
 
-Attach the ISO as virtual media or write it to removable media with a tool that
-performs a raw image copy. Boot every target in UEFI mode.
-
-## 2. Discover the waiting installers
-
-The installer boots into a non-mutating wait state and shows its address and
-disk inventory on the console. From the operator workstation:
+From your workstation, find the two waiting installers.
 
 ```sh
-katlctl install discover
+katlctl install discover --timeout 10s
 ```
 
-To create a starter config directly from all uniquely discovered installers:
-
-```sh
-katlctl install discover ./cluster.yaml
-```
-
-If discovery cannot cross the local network boundary, use the addresses shown
-on the consoles:
+Match the addresses to the machines using their consoles. If discovery misses
+a machine, use the address on its console. In the following command, replace
+the example addresses. Put the machine you want to use as `cp-1` first and
+`worker-1` second.
 
 ```sh
 katlctl config init ./cluster.yaml \
@@ -68,172 +52,105 @@ katlctl config init ./cluster.yaml \
   --installer 192.0.2.21
 ```
 
-You can also describe nodes explicitly. The generated source is ordinary YAML
-and remains the retained source of truth:
+If a machine has more than one eligible disk,
+[select the disk yourself](installing.md#select-the-target-disk).
 
-```sh
-katlctl config init ./cluster.yaml \
-  --node cp-1=control-plane,192.0.2.11,/dev/disk/by-id/ata-KATL_CP_1_ROOT \
-  --node worker-1=worker,192.0.2.21,/dev/disk/by-id/ata-KATL_WORKER_1_ROOT
-```
+Open `cluster.yaml`. Match each name, role, address, and disk to the machine
+you intend to install. Use a disk ID, WWN, or serial number to identify each
+disk. A name such as `/dev/sda` can change across boots. Make sure that the
+file contains your SSH public key. This example uses Kubernetes `v1.36.1`
+with Cilium `1.20.2`. If you change `spec.kubernetes.version`, check
+[Cilium's Kubernetes compatibility](operations/cilium.md#install-cilium) first.
+If the key is missing, see
+[how to select an SSH key](installing.md#select-an-ssh-key).
 
-## 3. Review the destructive inputs
-
-Open `cluster.yaml` and verify, for every node:
-
-- the node name and `controlPlane` role;
-- the management address reachable from the workstation;
-- the SSH public keys;
-- the concrete Kubernetes version;
-- the stable system-disk selector; and
-- the stable control-plane endpoint for a multi-control-plane cluster.
-
-Use `/dev/disk/by-id`, WWN, or serial identity. Never replace it with a
-transient `/dev/sda` or `/dev/vda` name. Then validate the complete source:
+Add the
+[Cilium host settings](operations/cilium.md#configure-cilium-host-settings)
+to this file now. They configure how the hosts handle traffic from Cilium.
+Then check the complete file.
 
 ```sh
 katlctl config validate ./cluster.yaml
 ```
 
-The [installation reference](installing.md#author-one-clusterconfig) documents
-static networking, managed API VIP ownership, data volumes, native kubeadm
-configuration, kernel arguments, and system extensions.
+Keep `cluster.yaml`. You will use it to install the nodes, create the cluster,
+and apply changes later.
 
-`config init` selects trusted-network management and creates no management
-secrets. Use the same configuration from any workstation, including after a
-reinstall. For authenticated and encrypted management, choose
-`--management-authentication mtls`; see [management access](operations/access.md).
+## 3. Install KatlOS and check both nodes
 
-## 4. Install each node
-
-**Optional:** Enable the selected node's configured SSH keys in the live installer
-without accepting an install or touching the disk:
-
-```sh
-katlctl install ssh --config ./cluster.yaml --node cp-1
-ssh root@192.0.2.11
-```
-
-Submit one selected node and wait for autonomous installation and reboot:
+The next commands erase the selected system disks. Before you run them, make
+sure that each target disk is safe to erase.
 
 ```sh
 katlctl install apply --config ./cluster.yaml --node cp-1
 katlctl install apply --config ./cluster.yaml --node worker-1
 ```
 
-If a waiting installer has a temporary DHCP address different from its retained
-management address, add `--endpoint TEMPORARY_ADDRESS`. Katl still selects the
-logical node and disk from the config.
+The installer reports when it requests a reboot. Make sure that the machines
+boot from the installed disks. If the firmware selects the installer again,
+detach the ISO or remove the USB drive and boot from disk.
 
-For data volumes, `wipe: true` authorizes formatting the selected target even
-when it contains data. No extra acknowledgement is needed. With `wipe: false`,
-Katl preserves compatible filesystems and refuses any required formatting.
-System-disk installation is always destructive once its validated plan proceeds.
-
-## 5. Verify generation 0
-
-Remove or detach ISO media if firmware would otherwise boot it again. For a PXE
-first boot order, use the installed-disk guard in the
-[PXE guide](install-pxe-matchbox.md).
-
-Check all nodes through the public management path:
+Check both nodes from your workstation.
 
 ```sh
 katlctl cluster status --config ./cluster.yaml
-katlctl node status cp-1 --config ./cluster.yaml
-ssh katl@192.0.2.11
 ```
 
-Expected generation 0 state is host health `OK`, an active management agent,
-and Kubernetes `not-configured` or waiting for bootstrap. Kubernetes services
-and Node readiness are not generation 0 requirements.
+If a machine is still rebooting, wait and run the command again. Both hosts
+must report health `OK`, Kubernetes `not-configured`, and generation `0`.
+The first installed version is *generation 0*. The Kubernetes API cannot
+respond until you set it up in the next step. If a host fails to respond, see
+[Troubleshoot KatlOS](operations/troubleshoot.md).
 
-Enroll the installed nodes before bootstrap or any host mutation:
+Record the installed node identities on your workstation before bootstrap.
+This step lets `katlctl` detect when a saved address points to a different
+machine.
 
 ```sh
 katlctl context save --config ./cluster.yaml
-katlctl context show
 ```
 
-This records the observed installation identities in a disposable workstation
-shortcut. The configuration and its referenced secrets remain sufficient for
-management. Reinstalling with the same secrets is recognized automatically; no
-per-node replacement acknowledgments are required.
+## 4. Create the Kubernetes cluster
 
-## 6. Bootstrap kubeadm
-
-For a cluster you may rebuild, first create and independently back up its
-Kubernetes trust identity. The name must match `metadata.name` in
-`cluster.yaml`:
+If you plan to keep this cluster, [create and back up its Kubernetes trust
+keys](operations/kubernetes-identity.md) before bootstrap. Use the resulting
+file with `--identity` when you run the following command. A disposable
+cluster can use keys that Kubernetes generates during bootstrap.
 
 ```sh
-katlctl kubernetes identity create \
-  --cluster-name homelab \
-  --output ./homelab-kubernetes-identity.katlkey
-katlctl kubernetes identity inspect \
-  ./homelab-kubernetes-identity.katlkey
+katlctl cluster bootstrap --config ./cluster.yaml --init-node cp-1
 ```
 
-This mode-`0600` file contains CA private keys. Do not publish it with PXE
-assets or keep its only copy on a cluster node. Read [Preserve Kubernetes
-identity](operations/kubernetes-identity.md) for its exact scope and backup
-requirements.
-
-First inspect the non-mutating plan:
+Katl reports progress as it starts Kubernetes on `cp-1` and joins
+`worker-1`. It writes `./kubeconfig`, the file that lets `kubectl` connect to
+the cluster. Check that the API responds and lists both nodes.
 
 ```sh
-katlctl cluster bootstrap --config ./cluster.yaml \
-  --identity ./homelab-kubernetes-identity.katlkey \
-  --init-node cp-1 --plan
+kubectl --kubeconfig ./kubeconfig get nodes
 ```
 
-Then perform bootstrap:
+The nodes normally report `NotReady` until you install a cluster network.
+If the bootstrap command fails or loses its connection, follow the
+[bootstrap recovery guidance](operations/bootstrap-kubernetes.md#failure-boundary).
+
+## 5. Connect workloads to the cluster network
+
+Use Helm to [install Cilium](operations/cilium.md#install-with-helm) with the
+KatlOS values. Cilium is a CNI plugin. It connects workloads to the cluster
+network. You choose and manage the plugin.
+
+Wait for both nodes to become ready. Then make sure that the cluster DNS
+service starts.
 
 ```sh
-katlctl cluster bootstrap --config ./cluster.yaml \
-  --identity ./homelab-kubernetes-identity.katlkey \
-  --init-node cp-1
+kubectl --kubeconfig ./kubeconfig wait --for=condition=Ready node --all --timeout=5m
+kubectl --kubeconfig ./kubeconfig -n kube-system rollout status deployment/coredns --timeout=5m
 ```
 
-The command stages the release-compatible Kubernetes payload, creates the
-cluster, joins the other listed nodes, activates the resulting generation live,
-checks kubeadm and local control-plane health, and writes a mode-`0600`
-`./kubeconfig`. Repeating the unchanged command observes or resumes the same
-durable work instead of blindly starting over.
+The nodes can now run workloads. Use the
+[Cilium checks](operations/cilium.md#verify-the-handoff) to test connectivity
+before you move workloads to the cluster.
 
-Verify the handoff:
-
-```sh
-kubectl --kubeconfig ./kubeconfig get nodes -o wide
-kubectl --kubeconfig ./kubeconfig get pods -A
-```
-
-At this point the API should answer, but nodes normally remain `NotReady` and
-CoreDNS remains pending. That is expected until you install a CNI.
-
-## 7. Install your cluster network
-
-Choose and manage a CNI through your own Helm, CLI, or GitOps workflow. Katl
-does not install one. If you choose Cilium, follow the tested
-[KatlOS Cilium settings](operations/cilium.md); the immutable host requires
-`sysctlfix.enabled=false`.
-
-After installing networking, verify the platform outcome rather than only the
-host:
-
-```sh
-kubectl --kubeconfig ./kubeconfig wait \
-  --for=condition=Ready node --all --timeout=5m
-kubectl --kubeconfig ./kubeconfig get pods -A
-```
-
-Deploy a small application with your normal workflow and prove DNS, Service
-endpoints, and cross-node traffic before moving real workloads.
-
-## 8. Retain recovery inputs
-
-Keep the release tag and checksums, `cluster.yaml`, any referenced native files,
-the kubeconfig, and independent etcd/application/data backups. Do not commit the
-kubeconfig or private keys. Continue with the
-[operator guide](operations/README.md), especially its lifecycle and recovery
-boundaries.
+Keep `cluster.yaml` and the files it references. Store your kubeconfig and any
+trust keys privately. The [operator guide](operations/README.md) shows how to
+maintain the nodes, update the cluster, and plan for recovery.

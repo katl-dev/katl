@@ -73,15 +73,8 @@ attestation verification passed.
 
 ## Confirm release identity
 
-Install the matching CLI under its stable name and inspect its identity. Replace
-`RELEASE_VERSION` with the selected release:
-
-```sh
-VERSION=RELEASE_VERSION
-PLATFORM=linux-amd64 # Use darwin-arm64 on an Apple Silicon Mac.
-install -m 0755 "katlctl-$VERSION-$PLATFORM" ~/.local/bin/katlctl
-katlctl version
-```
+Follow [Install the release binary](../install-katlctl.md#install-the-release-binary)
+and compare the output of `katlctl version` with the release you checked.
 
 The CLI and KatlOS assets must come from the same release unless release notes
 explicitly declare another combination supported.
