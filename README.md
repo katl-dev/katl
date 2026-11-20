@@ -1,8 +1,12 @@
-<h1><img src="docs/images/katl-wordmark.png" alt="Katl" width="224"></h1>
+<h1 align="center">
+  <img src="docs/images/katl-wordmark.png" alt="Katl" width="360">
+</h1>
 
-[![CI](https://github.com/katl-dev/katl/actions/workflows/ci.yml/badge.svg)](https://github.com/katl-dev/katl/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/katl-dev/katl?sort=date)](https://github.com/katl-dev/katl/releases)
-[![License](https://img.shields.io/github/license/katl-dev/katl)](LICENSE)
+<div align="center">
+
+[![CI](https://github.com/katl-dev/katl/actions/workflows/ci.yml/badge.svg)](https://github.com/katl-dev/katl/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/katl-dev/katl?sort=date)](https://github.com/katl-dev/katl/releases) [![License](https://img.shields.io/github/license/katl-dev/katl)](LICENSE)
+
+</div>
 
 KatlOS is a Linux operating system for Kubernetes nodes in a home lab. Use
 `katlctl` to install, configure, and update your nodes from your workstation.
