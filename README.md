@@ -1,6 +1,10 @@
-<h1 align="center">
+<p align="center">
   <img src="docs/images/katl-wordmark.png" alt="Katl" width="360">
-</h1>
+</p>
+
+---
+
+<p align="center"><strong>An Immutable Kubernetes OS</strong></p>
 
 <div align="center">
 
