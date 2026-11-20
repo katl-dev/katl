@@ -8,7 +8,7 @@ installed release.
 | Command group | Purpose |
 | --- | --- |
 | `katlctl config` | Create, validate, inspect, compare, and compile `ClusterConfig`. |
-| `katlctl install` | Discover a waiting installer, enable installer SSH, submit config, and inspect installation. |
+| `katlctl install` | Inspect a known installer, enable installer SSH, and submit configuration. |
 | `katlctl cluster` | Inspect or apply selected nodes, bootstrap kubeadm, retrieve kubeconfig, inspect etcd, and perform explicit cluster wipes. |
 | `katlctl node` | Inspect status and logs, join, reboot, shut down, upgrade, or explicitly wipe one node. |
 | `katlctl kubernetes` | Create, import, and inspect reusable Kubernetes identity; plan and execute supported Kubernetes upgrades. |
@@ -86,9 +86,7 @@ than parse human progress lines.
 
 `system-extension status` shows extension summaries and unit failures by default.
 Use `--verbose` to include artifact digests, payloads, files, and healthy units.
-JSON output includes the full report regardless of `--verbose`. When
-`install discover PATH --output json` creates a configuration, its JSON result
-contains the saved `path`; creation notices go to standard error.
+JSON output includes the full report regardless of `--verbose`.
 
 `node status` includes API proxy details when a configured cluster has a proxy
 problem. Use `--verbose` to also show healthy proxy details and listener
@@ -140,8 +138,7 @@ Prefix each command below with `katlctl`.
 
 | Task | Command |
 | --- | --- |
-| Prepare and check configuration | `config init ./cluster.yaml`, then `config validate ./cluster.yaml` |
-| Find PXE-booted installers | `install discover` |
+| Prepare and check configuration | `config init ./cluster.yaml --installer 192.0.2.11`, then `config validate ./cluster.yaml` |
 | Install each node | `install apply --config ./cluster.yaml --node cp-1` |
 | Inspect an installer | `install status cp-1 --config ./cluster.yaml` |
 | Start Kubernetes | `cluster bootstrap --config ./cluster.yaml --init-node cp-1` |
@@ -156,8 +153,11 @@ Prefix each command below with `katlctl`.
 | Diagnose a node | `node logs cp-1 --config ./cluster.yaml -u kubelet` |
 | Reprovision | `node wipe cp-1 --config ./cluster.yaml --plan`, then follow the reviewed wipe/reinstall journey |
 
-Install commands talk to the installer on TCP 8080. Once the node boots its
-installed system, use node/cluster commands on TCP 9443. `install apply`
+Install commands use the selected node's `management.address` or the address
+you pass with `--endpoint`. To inspect a waiting installer before creating a
+configuration, run `katlctl install status --endpoint 192.0.2.11`.
+Install commands talk to the installer on TCP 8080 by default. Once the node
+boots its installed system, use node/cluster commands on TCP 9443. `install apply`
 replaces the system disk; it is not a day-two apply. Bootstrap prepares
 Kubernetes. Install your CNI and GitOps/workloads separately, or supply bootstrap
 `--manifest`, `--pre-wait`, and `--wait` inputs.

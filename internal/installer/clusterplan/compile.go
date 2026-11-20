@@ -189,8 +189,8 @@ func attachAPIProxyConfigs(materials []NodeMaterial, nodes []inventory.Node, end
 			return fmt.Errorf("node %q API proxy: %w", node.Name, err)
 		}
 		if !known {
-			// DHCP or discovery may supply addresses only when bootstrap runs. The
-			// bootstrap candidate generation installs the complete proxy config.
+			// When an address is unknown at install time, the bootstrap candidate
+			// generation installs the complete proxy config.
 			return nil
 		}
 		addresses[node.Name] = address

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,170 +23,6 @@ import (
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 	"github.com/katl-dev/katl/internal/kernelmodule"
 )
-
-func TestInstallDiscoverFindsWaitingInstallerAndDisks(t *testing.T) {
-	oldAddrs := installerInterfaceAddrs
-	installerInterfaceAddrs = func() ([]net.Addr, error) {
-		return []net.Addr{&net.IPNet{IP: net.ParseIP("192.0.2.5"), Mask: net.CIDRMask(24, 32)}}, nil
-	}
-	t.Cleanup(func() { installerInterfaceAddrs = oldAddrs })
-	oldProbe := installerDiscoveryProbe
-	installerDiscoveryProbe = func(_ context.Context, endpoint string, _ time.Duration) (handoff.HandoffStatus, error) {
-		if endpoint != "http://192.0.2.42:8080" {
-			return handoff.HandoffStatus{}, fmt.Errorf("not an installer")
-		}
-		return handoff.HandoffStatus{State: handoff.HandoffWaiting, InstallStatus: installstatus.New(installstatus.StateWaitingForConfig, time.Now()), Disks: []handoff.HandoffDisk{{Path: "/dev/vda", ByID: []string{"/dev/disk/by-id/virtio-root"}, Selectable: true}}}, nil
-	}
-	t.Cleanup(func() { installerDiscoveryProbe = oldProbe })
-
-	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"install", "discover", "--output", "json"}, &stdout, &stderr); err != nil {
-		t.Fatalf("run() error = %v", err)
-	}
-	var report installDiscoveryReport
-	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
-		t.Fatal(err)
-	}
-	if len(report.Installers) != 1 || report.Installers[0].Endpoint != "http://192.0.2.42:8080" || !report.Installers[0].Status.Disks[0].Selectable {
-		t.Fatalf("report = %#v", report)
-	}
-	endpoint, err := resolveInstallerEndpoint(context.Background(), "", time.Second)
-	if err != nil || endpoint != "http://192.0.2.42:8080" {
-		t.Fatalf("resolveInstallerEndpoint() = %q, %v", endpoint, err)
-	}
-}
-
-func TestInstallDiscoverWritesClusterConfig(t *testing.T) {
-	oldAddrs := installerInterfaceAddrs
-	installerInterfaceAddrs = func() ([]net.Addr, error) {
-		return []net.Addr{&net.IPNet{IP: net.ParseIP("192.0.2.5"), Mask: net.CIDRMask(24, 32)}}, nil
-	}
-	t.Cleanup(func() { installerInterfaceAddrs = oldAddrs })
-	oldProbe := installerDiscoveryProbe
-	installerDiscoveryProbe = func(_ context.Context, endpoint string, _ time.Duration) (handoff.HandoffStatus, error) {
-		status := handoff.HandoffStatus{State: handoff.HandoffWaiting}
-		switch endpoint {
-		case "http://192.0.2.11:8080":
-			status.Disks = []handoff.HandoffDisk{{
-				Path: "/dev/vda", ByID: []string{"/dev/disk/by-id/virtio-cp-root", "/dev/disk/by-id/ata-cp-root"}, Selectable: true,
-			}}
-		case "http://192.0.2.21:8080":
-			status.Disks = []handoff.HandoffDisk{{Path: "/dev/sda", WWN: "worker-root-wwn", Selectable: true}}
-		default:
-			return handoff.HandoffStatus{}, fmt.Errorf("not an installer")
-		}
-		return status, nil
-	}
-	t.Cleanup(func() { installerDiscoveryProbe = oldProbe })
-
-	dir := t.TempDir()
-	oldAgent := sshAgentPublicKeys
-	sshAgentPublicKeys = func() ([]byte, error) { return []byte(uxTestSSHKey + "\n"), nil }
-	t.Cleanup(func() { sshAgentPublicKeys = oldAgent })
-	t.Setenv("KATLCTL_CONFIG", filepath.Join(dir, "katlctl.yaml"))
-	outputPath := filepath.Join(dir, "cluster.yaml")
-	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{
-		"install", "discover", outputPath,
-		"--name", "homelab",
-	}, &stdout, &stderr)
-	if err != nil {
-		t.Fatalf("run() error = %v\nstderr=%s", err, stderr.String())
-	}
-	data, err := os.ReadFile(outputPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	source, err := configbundle.DecodeSource(bytes.NewReader(data))
-	if err != nil {
-		t.Fatalf("DecodeSource() error = %v\n%s", err, data)
-	}
-	if source.Metadata.Name != "homelab" || configbundle.SourceControlPlaneEndpoint(source) != "" || source.Spec.Kubernetes.Version != configbundle.DefaultKubernetesVersion || len(source.Spec.Nodes) != 2 {
-		t.Fatalf("generated source = %#v", source)
-	}
-	keys, _ := source.Spec.Defaults.Access.SSH.AuthorizedKeys.Get()
-	if len(keys) != 1 || keys[0] != uxTestSSHKey {
-		t.Fatalf("authorized keys = %#v", keys)
-	}
-	cp, worker := source.Spec.Nodes[0], source.Spec.Nodes[1]
-	if cp.Name != "cp-1" || !cp.ControlPlane || cp.Management.Address != "192.0.2.11" || cp.Install.SystemDisk == nil || cp.Install.SystemDisk.ByID.Value() != "/dev/disk/by-id/ata-cp-root" {
-		t.Fatalf("control-plane node = %#v", cp)
-	}
-	if worker.Name != "worker-1" || worker.ControlPlane || worker.Management.Address != "192.0.2.21" || worker.Install.SystemDisk == nil || worker.Install.SystemDisk.WWN.Value() != "worker-root-wwn" {
-		t.Fatalf("worker node = %#v", worker)
-	}
-	if !strings.Contains(stdout.String(), "created "+outputPath) {
-		t.Fatalf("stdout = %q", stdout.String())
-	}
-	stdout.Reset()
-	stderr.Reset()
-	if err := run(context.Background(), []string{"config", "validate", outputPath}, &stdout, &stderr); err != nil {
-		t.Fatalf("validate generated config: %v\nstderr=%s", err, stderr.String())
-	}
-
-	stdout.Reset()
-	jsonPath := filepath.Join(dir, "discovered.yaml")
-	if err := run(context.Background(), []string{"install", "discover", jsonPath, "--output", "json"}, &stdout, &stderr); err != nil {
-		t.Fatal(err)
-	}
-	var report struct {
-		Path string `json:"path"`
-	}
-	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
-		t.Fatalf("discovery emitted non-JSON output: %s: %v", &stdout, err)
-	}
-	if report.Path != jsonPath {
-		t.Fatalf("reported path = %q, want %q", report.Path, jsonPath)
-	}
-	data, err = os.ReadFile(report.Path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := configbundle.DecodeSource(bytes.NewReader(data)); err != nil {
-		t.Fatalf("reported config is invalid: %v", err)
-	}
-}
-
-func TestDiscoveredInitNodesRejectsUnsafeInference(t *testing.T) {
-	tests := []struct {
-		name       string
-		installers []discoveredInstaller
-		want       string
-	}{
-		{
-			name:       "no waiting installer",
-			installers: []discoveredInstaller{{Endpoint: "http://192.0.2.11:8080", Status: handoff.HandoffStatus{State: handoff.HandoffAccepted}}},
-			want:       "no waiting KatlOS installer",
-		},
-		{
-			name: "no selectable disk",
-			installers: []discoveredInstaller{{
-				Endpoint: "http://192.0.2.11:8080",
-				Status:   handoff.HandoffStatus{State: handoff.HandoffWaiting, Disks: []handoff.HandoffDisk{{Path: "/dev/vda"}}},
-			}},
-			want: "0 selectable disks",
-		},
-		{
-			name: "ambiguous disks",
-			installers: []discoveredInstaller{{
-				Endpoint: "http://192.0.2.11:8080",
-				Status: handoff.HandoffStatus{State: handoff.HandoffWaiting, Disks: []handoff.HandoffDisk{
-					{Path: "/dev/vda", ByID: []string{"/dev/disk/by-id/virtio-a"}, Selectable: true},
-					{Path: "/dev/vdb", ByID: []string{"/dev/disk/by-id/virtio-b"}, Selectable: true},
-				}},
-			}},
-			want: "2 selectable disks (/dev/vda, /dev/vdb)",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := discoveredInitNodes(tt.installers)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("discoveredInitNodes() error = %v, want %q", err, tt.want)
-			}
-		})
-	}
-}
 
 func TestConfigInitFromInstallerAddress(t *testing.T) {
 	status := installTestStatus(handoff.HandoffWaiting, installstatus.StateWaitingForConfig, "")
@@ -246,6 +81,69 @@ func TestConfigInitInstallerInputValidation(t *testing.T) {
 	}, &stdout, &stderr)
 	if err == nil || !strings.Contains(err.Error(), "--node and --installer cannot be used together") {
 		t.Fatalf("run() error = %v", err)
+	}
+}
+
+func TestConfigInitRequiresOneSelectableInstallerDisk(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		disks []handoff.HandoffDisk
+		want  string
+	}{
+		{
+			name:  "none",
+			disks: []handoff.HandoffDisk{{Path: "/dev/vda"}},
+			want:  "0 selectable disks",
+		},
+		{
+			name: "multiple",
+			disks: []handoff.HandoffDisk{
+				{Path: "/dev/vda", ByID: []string{"/dev/disk/by-id/root"}, Selectable: true},
+				{Path: "/dev/vdb", ByID: []string{"/dev/disk/by-id/data"}, Selectable: true},
+			},
+			want: "2 selectable disks (/dev/vda, /dev/vdb)",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			status := installTestStatus(handoff.HandoffWaiting, installstatus.StateWaitingForConfig, "")
+			status.Disks = tt.disks
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				_ = json.NewEncoder(w).Encode(status)
+			}))
+			defer server.Close()
+
+			var out bytes.Buffer
+			err := run(context.Background(), []string{"config", "init", "--installer", server.URL}, &out, io.Discard)
+			if err == nil || !strings.Contains(err.Error(), tt.want) || out.Len() != 0 {
+				t.Fatalf("output = %q, error = %v, want %q and no config", &out, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestInstallRequiresAddress(t *testing.T) {
+	path := writeClusterConfig(t)
+	source := strings.Replace(configBundleSource(), "      management:\n        address: 10.0.0.11\n", "", 1)
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tt := range []struct {
+		name string
+		args []string
+	}{
+		{"status without config", []string{"install", "status"}},
+		{"status with config", []string{"install", "status", "--config", path}},
+		{"ssh", []string{"install", "ssh", "--config", path}},
+		{"apply", []string{"install", "apply", "--config", path}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var out bytes.Buffer
+			err := run(context.Background(), tt.args, &out, io.Discard)
+			if err == nil || !strings.Contains(err.Error(), "Pass --endpoint ADDRESS or set management.address") || out.Len() != 0 {
+				t.Fatalf("output = %q, error = %v, want guidance for a missing installer address", &out, err)
+			}
+		})
 	}
 }
 
@@ -503,7 +401,7 @@ func TestSelectInstallNode(t *testing.T) {
 	}
 }
 
-func TestInstallEndpointHint(t *testing.T) {
+func TestInstallEndpoint(t *testing.T) {
 	for _, test := range []struct {
 		name             string
 		endpoint         string
@@ -518,12 +416,11 @@ func TestInstallEndpointHint(t *testing.T) {
 		{name: "explicit host and port overrides configured address", endpoint: "installer.test:9080", bootstrapAddress: "192.0.2.11", want: "http://installer.test:9080"},
 		{name: "explicit complete HTTP URL overrides configured address", endpoint: "http://installer.test:8080", bootstrapAddress: "192.0.2.11", want: "http://installer.test:8080"},
 		{name: "explicit complete HTTPS URL overrides configured address", endpoint: "https://installer.test:8443", bootstrapAddress: "192.0.2.11", want: "https://installer.test:8443"},
-		{name: "missing address discovers"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := installEndpointHint(test.endpoint, test.bootstrapAddress)
+			got, err := resolveInstallEndpoint(test.endpoint, test.bootstrapAddress)
 			if err != nil || got != test.want {
-				t.Fatalf("installEndpointHint() = %q, %v, want %q", got, err, test.want)
+				t.Fatalf("resolveInstallEndpoint() = %q, %v, want %q", got, err, test.want)
 			}
 		})
 	}
