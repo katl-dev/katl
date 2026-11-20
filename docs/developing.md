@@ -4,9 +4,29 @@ This document describes the supported local build, persistent development VM,
 automated VM-test, and release-tooling workflows. Product behavior belongs in
 the public [KatlOS documentation](README.md); this page is for contributors.
 
-Read `docs/internal/north-star.md` for the product direction that grounds the
-local development loop. See [generation ownership](development/generation-ownership.md)
-for the boundary between offline installation, boot health, and node operations.
+## Find project documentation
+
+- [CI and validation](development/ci.md) explains which jobs exercise a change.
+- [Generation ownership](development/generation-ownership.md) explains the
+  boundary between offline installation, boot health, and node operations.
+- [Release KatlOS](development/releases.md) covers preparation, qualification,
+  and the version-specific guidance in `docs/releases`.
+- [Publish Kubernetes bundles](development/kubernetes-releases.md) explains
+  how the producer selects, publishes, and verifies each version.
+- [Base service security](development/service-security.md) identifies the policy
+  owners and explains how to validate a change.
+- [Current product direction](internal/north-star.md) and
+  [architecture decisions](internal/adrs/) explain why Katl works as it does.
+  Design records in `docs/internal` and lab working material in `docs/private`
+  serve contributors.
+
+For operator documentation, use [the docs index](README.md) to place a guide
+where readers first need it. Give each page a goal or question and connect a
+procedure to the next task. Keep examples and links relative to their
+Markdown source. Put prerequisites and destructive effects before the steps
+that depend on them. Use
+[SimpleEnglish Plain mode](https://github.com/AminBlg/SimpleEnglish) for the
+README, docs index, and first-cluster guide.
 
 ## Build release-owned extensions
 
@@ -619,7 +639,7 @@ future node-side trust-root, revocation, and downgrade policy.
 on a schedule. Each upstream patch is published once, using a short version tag
 such as `ghcr.io/katl-dev/kubernetes:v1.37.0`. Katl releases, source changes and
 RPM rebuilds do not create new Kubernetes release identities or replace an
-existing publication. See [Kubernetes release delivery](concepts/kubernetes-releases.md)
+existing publication. See [Kubernetes release delivery](development/kubernetes-releases.md)
 for discovery, interrupted-publication recovery and compatibility selection.
 
 Pull requests validate affected build recipes without publishing. Manual
@@ -662,7 +682,7 @@ vsock. See [VM continuous integration](development/ci.md) for the automated
 journeys, required results, and optional runner configuration. The commands
 below run the same harness on a capable development host.
 
-The [Kubernetes release producer](concepts/kubernetes-releases.md) discovers
+The [Kubernetes release producer](development/kubernetes-releases.md) discovers
 stable upstream versions and publishes verified bundles automatically. Its
 artifact checks do not substitute for the capable-host bootstrap and upgrade
 gates below; VM validation in the unattended producer is explicitly deferred.

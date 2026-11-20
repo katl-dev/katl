@@ -1,94 +1,54 @@
-# KatlOS operator guide
+# Operate and recover KatlOS
 
-These runbooks describe the supported KatlOS home-lab operating surface. Start
-with the task that matches the current node state; do not skip directly to a
-mutating command.
+Use these guides when KatlOS is installed or when an installation needs
+attention. To set up a new lab from the release ISO, start with
+[Build your first KatlOS cluster](../getting-started.md).
 
-Read the [support boundary](../support.md) before using
-these procedures. The installer handoff on port 8080 is unauthenticated; the
-installed-node API on port 9443 defaults to trusted-network access for new
-configurations, with opt-in mTLS. See [management access](access.md).
-Keep both on trusted home-lab networks and off the Internet.
+## Bring installed nodes into service
 
-## Lifecycle map
+- [Access installed nodes](access.md) to check a fresh install, connect through
+  SSH, and manage access from your workstation.
+- [Bootstrap Kubernetes](bootstrap-kubernetes.md) when all the intended hosts
+  are installed and reachable.
+- [Preserve Kubernetes identity](kubernetes-identity.md) before bootstrap if
+  you need to keep the cluster's trust keys across a rebuild.
+- [Run Cilium on KatlOS](cilium.md) to connect workloads, starting with the
+  host settings you need before installation.
 
-| Current state | Operator goal | Runbook |
-| --- | --- | --- |
-| No KatlOS media downloaded | Download a release | [Install KatlOS](../installing.md) |
-| Bare or disposable machine | Install generation 0 | [Install KatlOS](../installing.md) |
-| Generation 0 booted | Establish node management access | [Access installed nodes](access.md) |
-| All intended nodes installed | Create the kubeadm cluster | [Bootstrap Kubernetes](bootstrap-kubernetes.md) |
-| External control plane already exists | Provision and join a KatlOS worker | [Join an external control plane](external-workers.md) |
-| Cluster may be rebuilt later | Preserve kubeadm trust and signing keys | [Preserve Kubernetes identity](kubernetes-identity.md) |
-| Kubeadm cluster has no CNI | Install Cilium without mutating the host generation | [Run Cilium on KatlOS](cilium.md) |
-| Installed node | Inspect or reboot one host | [Access installed nodes](access.md#routine-host-management) |
-| Kubernetes node | Prepare workloads and storage for host maintenance | [Prepare a node for maintenance](maintain-node.md) |
-| Node using Rook/Ceph storage | Check storage teardown before host maintenance | [Maintain Rook/Ceph nodes](rook-ceph-maintenance.md) |
-| Installed or bootstrapped node | Change supported runtime configuration | [Apply node configuration](configure-nodes.md) |
-| Node list, name, role, or hardware is changing | Add, replace, or remove membership explicitly | [Change cluster membership](change-cluster-nodes.md) |
-| Healthy installed node | Stage a new KatlOS release | [Upgrade a KatlOS host](upgrade-host.md) |
-| One control plane is being replaced | Preserve the healthy cluster and rejoin one fresh node | [Wipe and reinstall](wipe-reinstall.md#plan-one-node-replacement) |
-| Cluster is intentionally being discarded | Reset boot state and reinstall | [Wipe and reinstall](wipe-reinstall.md) |
-| A step failed or its state is unclear | Collect evidence and classify the failure | [Troubleshoot KatlOS](troubleshoot.md) |
+## Change or maintain a running cluster
 
-## Operating rules
+- [Apply cluster configuration](configure-nodes.md) to change supported host
+  and kubeadm settings. Use the [configuration reference](../reference/cluster-config.md)
+  when you need to look up a field.
+- [Change cluster membership](change-cluster-nodes.md) to add, replace, or
+  remove a node from a healthy cluster.
+- [Prepare a node for maintenance](maintain-node.md) to protect workloads
+  before a reboot or shutdown.
+- [Maintain a node that uses Rook/Ceph](rook-ceph-maintenance.md) to check
+  storage teardown before taking it offline.
+- [Upgrade a KatlOS host](upgrade-host.md) to change the host OS version.
+- [Upgrade Kubernetes](upgrade-kubernetes.md) to change the Kubernetes version
+  across the cluster.
 
-The operator workstation needs the `katlctl` binary from the matching release,
-`ssh`, `curl`, and `jq`. Optional checksum and provenance inspection uses GNU
-`sha256sum` and GitHub CLI `gh`; cluster handoff checks use a `kubectl` version
-compatible with the selected Kubernetes release. These tools run on the
-workstation, not inside the KatlOS image.
+## Diagnose and recover
 
-Keep these artifacts together for the life of the cluster:
+- [Troubleshoot KatlOS](troubleshoot.md) to identify what failed and what you
+  can safely retry.
+- [Wipe and reinstall](wipe-reinstall.md) to plan a one-node replacement or
+  deliberately start over.
+- [Understand host rollback](../concepts/ownership.md#persistent-state-and-rollback)
+  to see what a previous generation can restore.
 
-- the KatlOS release URL and assets used;
-- the source `ClusterConfig`, any `.katlcfg` produced for PXE or offline use,
-  and any optional workstation context;
-- the configured Kubernetes version and any resolved bundle identity reported
-  in operation evidence;
-- the mode-`0600` Kubernetes identity and its public fingerprint, when used;
-- the kubeconfig, command results, generation IDs, and relevant timestamps; and
-- independent etcd, application, and persistent-data backups.
+## Keep the files you need for recovery
 
-Treat command outcomes precisely:
+Keep `cluster.yaml`, its referenced files, and the release tag. Store copies
+of the kubeconfig, any Kubernetes identity and management secrets, and your
+independent etcd, workload, and data backups away from the nodes. A KatlOS
+host rollback restores a host generation. Use your backups to recover
+cluster state and data.
 
-- **validated/planned** means no operation was accepted;
-- **accepted** means the node persisted an operation, not that it completed;
-- **terminal succeeded** means the operation completed its current-boot work;
-- **boot health passed** means a staged generation survived its trial boot; and
-- **failed-needs-repair** means do not blindly retry or assume host rollback
-  reverted Kubernetes state.
-
-`katlctl` generates mutation idempotency keys and follows durable operations to
-their terminal result. Operators do not need to create request IDs or retain
-operation IDs. Progress is written to stderr and final structured status to
-stdout.
-
-Use `--no-wait` only when intentionally detaching a command. Discover current
-or recent node work later with:
-
-```sh
-katlctl operations list \
-  --config ./cluster.yaml --node cp-1
-```
-
-`katlctl operations status ID` remains an advanced diagnostic
-path for one exact record. Use `--diagnostics verbose` when normal redacted
-status is insufficient.
-
-## Boundaries that matter during operations
-
-KatlOS generations own the immutable root, UKI, selected sysexts, and compiled
-node configuration. They do not own or roll back etcd, kubeadm mutations,
-Kubernetes API objects, CNI state, persistent volumes, or workloads.
-
-Normal configuration apply covers SSH authorized keys and native host
-configuration, including next-boot systemd-networkd files. It also carries
-operation-only system-role and kubeadm profile changes to
-the planner so they produce an explicit lifecycle action instead of being
-silently ignored. Disk policy and Kubernetes version selection use their named
-install or upgrade workflows.
-
-There is no supported workflow for automatic host fleet rollout, loss of
-etcd quorum, snapshot-based etcd disaster recovery, or general cluster
-reconciliation.
+If an operation fails after it begins changing a node, keep its result and
+check the node's recorded operation state before retrying. See
+[operation semantics](../reference/katlctl.md#operation-semantics) for the
+difference between an accepted operation, a completed operation, and a
+generation that has passed its boot checks.

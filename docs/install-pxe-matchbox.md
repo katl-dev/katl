@@ -31,7 +31,8 @@ the selected disk.
 
 ## Compile one cluster configuration bundle
 
-Author and validate the normal `ClusterConfig`. It must contain stable disk
+Author and validate your [cluster configuration](reference/cluster-config.md).
+It must contain stable disk
 selectors, management addresses, node roles, Kubernetes version, and SSH keys
 for every node:
 
@@ -238,6 +239,40 @@ If you want repeated PXE boots to refuse an existing Katl target instead, add
 mutation and retains API and SSH access. Run `katlctl install apply --config
 cluster.yaml --node NODE` to explicitly reinstall from that installer, or remove
 the guard for automatic reinstallation. Runtime-agent access is not required.
+
+## Supply boot arguments from another PXE tool
+
+Serve the same kernel, initial RAM disk, image with its descriptor, and shared
+configuration bundle from your provisioning infrastructure. The installer
+uses the bundle and node name to select the disk and the OS image.
+
+| Boot argument | Effect |
+| --- | --- |
+| `katl.bundle.url=URL` | Fetch the bundle from the provisioning server. |
+| `katl.bundle.sha256=SHA256` | Require this exact downloaded bundle checksum. |
+| `katl.bundle=PATH` | Read a bundle already available to the installer. |
+| `katl.node=NAME` | Select the node's entry in the bundle. |
+| `katl.install.mode=auto` | Install automatically after validation. This can erase an existing system. |
+| `katl.halt-if-installed=1` | Refuse automatic installation if the disk already has Katl partition labels. |
+| `katl.wait-for-config=1` | Wait for a configuration through the installer handoff. |
+| `katl.hold-for-debug=1` | Hold the installer for debugging without starting an install. |
+| `console=...` and `ip=...` | Select console and network settings for the installer. |
+
+When using iPXE directly, replace the base URL with the directory where you
+serve files for the selected release.
+
+```ipxe
+#!ipxe
+set base https://boot.example.invalid/katl/2026.7.0
+set node cp-1
+kernel ${base}/katl-installer.vmlinuz initrd=katl-installer.initrd console=ttyS0,115200n8 systemd.getty_auto=no katl.node=${node} katl.bundle.url=${base}/katl-lab.katlcfg katl.install.mode=auto
+initrd ${base}/katl-installer.initrd
+boot
+```
+
+When a bundle selects a node, Katl configures live installer SSH access for
+`root` before image validation or disk planning. The installed host uses
+the `katl` account and the same public keys.
 
 ## Diagnose the handoff
 

@@ -1,5 +1,8 @@
 # KatlOS support boundary
 
+Use this page to decide whether your hardware, network, and recovery
+requirements fit the supported KatlOS workflows.
+
 KatlOS is stable software for home-lab use and development, beginning with
 2026.9.0. Stable means the maintainer considers Katl ready to use and is
 committed to continued use and fixing issues in subsequent releases. It does
@@ -8,9 +11,7 @@ changes.
 
 It is not supported for production clusters, security-sensitive workloads,
 compliance environments, or systems whose availability depends on KatlOS.
-There is no support SLA or security-response SLA. The network management API
-has a bounded compatibility guarantee beginning with the first stable release;
-see [agent API compatibility](internal/agent-api-compatibility.md).
+There is no support SLA or security-response SLA.
 
 ## Supported home-lab surface
 
@@ -77,10 +78,11 @@ The stable release designation does not freeze every interface or format.
 The `v1alpha1` configuration authoring format may still change incompatibly;
 use the matching release's CLI to validate and compile it. Katl does not
 promise automatic state migration or an upgrade path from every development
-or beta build. Beginning with 2026.9.0, the node's network management
-API follows the [agent API compatibility policy](internal/agent-api-compatibility.md):
-a newer `katlctl` supports the current and two preceding stable release series
-where the node has the required capability. Preserve the source `ClusterConfig`,
+or beta build. Beginning with 2026.9.0, a newer `katlctl` supports management
+operations against nodes from the current stable release series and the two
+preceding stable series. A series is a distinct `YYYY.M` line. Patch releases
+and pre-releases do not advance the window. A feature can require a newer
+node if the installed node lacks that capability. Preserve the source `ClusterConfig`,
 exact release assets, checksums, OCI digests, and recovery data. Reinstall may
 be required after an incompatible change outside that API guarantee.
 

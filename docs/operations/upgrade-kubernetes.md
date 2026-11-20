@@ -31,8 +31,8 @@ with registry discovery can select newly published versions without another
 KatlOS or CLI release, provided the bundle declares the installed runtime
 compatible. Versions in the CLI's embedded snapshot remain resolvable offline;
 new versions require workstation registry access during planning. See
-[Kubernetes release delivery](../concepts/kubernetes-releases.md) for the
-publication policy and the deferred Actions VM-validation boundary.
+[Kubernetes release delivery](../concepts/kubernetes-releases.md) for version
+availability and compatibility.
 
 ## Plan the Kubernetes upgrade
 

@@ -1,75 +1,47 @@
 # KatlOS documentation
 
-KatlOS is an installable, upgradeable, systemd-native operating system for
-kubeadm Kubernetes nodes. These guides cover the supported home-lab journey from a
-blank UEFI machine to a cluster that is ready for you to install a CNI and the
-rest of your platform.
+Install KatlOS on your home-lab machines and use `katlctl` to manage them.
+Katl can set up Kubernetes on those machines. You choose the cluster network
+and manage the applications that run on it.
 
-KatlOS 2026.9.0 is the first stable release. Stable means ready for home-lab
-use with continued maintenance; future releases may still introduce breaking
-changes or regressions. Read the [release notes](releases/2026.9.0.md) and the
-[support and security boundary](support.md). In particular, the installer and
-node-management APIs are designed for a trusted network and must not be exposed
-to the Internet.
+[Build your first KatlOS cluster](getting-started.md). Start with the release
+ISO and finish with two Kubernetes nodes ready to run workloads. If you are
+still choosing an operating system, [check what KatlOS supports](support.md).
 
-## Start here
+## Install and provision
 
-1. [Understand what Katl owns](concepts/ownership.md).
-2. [Build your first cluster](getting-started.md) with the release ISO.
-3. For network boot, use the [PXE and Matchbox journey](install-pxe-matchbox.md)
-   instead of the ISO handoff.
-4. [Bootstrap Kubernetes](operations/bootstrap-kubernetes.md), then install the
-   CNI and add-ons you choose.
-5. Use the [operator guide](operations/README.md) for routine and recovery
-   work.
-
-Use the [installation reference](installing.md) for `ClusterConfig` fields
-and advanced installation options.
-
-## Install and bootstrap
-
-| Goal | Guide |
-| --- | --- |
-| Install the workstation CLI | [Install katlctl](install-katlctl.md) |
-| Install a first ISO-based cluster | [Build your first cluster](getting-started.md) |
-| Author and validate all installation inputs | [Installation reference](installing.md) |
-| Automate UEFI network boot | [Install with PXE and Matchbox](install-pxe-matchbox.md) |
-| Verify downloaded artifacts | [Verify release artifacts](operations/verify-release.md) |
-| Inspect generation 0 and management access | [Access installed nodes](operations/access.md) |
-| Create the kubeadm cluster | [Bootstrap Kubernetes](operations/bootstrap-kubernetes.md) |
-| Preserve trust across a whole-cluster rebuild | [Preserve Kubernetes identity](operations/kubernetes-identity.md) |
-| Install Cilium on the immutable host | [Run Cilium on KatlOS](operations/cilium.md) |
+- [Install KatlOS](installing.md) for ISO, network boot, and installer options.
+- [Install katlctl](install-katlctl.md) for the release binary, Homebrew, and Nix.
+- [Install with PXE and Matchbox](install-pxe-matchbox.md) to boot machines over
+  the network.
+- [Join an existing Kubernetes cluster](operations/external-workers.md) with a
+  KatlOS worker.
+- [Verify release artifacts](operations/verify-release.md) if you want to
+  check the files you downloaded.
 
 ## Operate and recover
 
-| Goal | Guide |
-| --- | --- |
-| Inspect, reboot, shut down, or use SSH | [Access installed nodes](operations/access.md) |
-| Apply host and kubeadm configuration | [Apply cluster configuration](operations/configure-nodes.md) |
-| Add, replace, or remove a node | [Change cluster membership](operations/change-cluster-nodes.md) |
-| Upgrade KatlOS | [Upgrade a KatlOS host](operations/upgrade-host.md) |
-| Upgrade Kubernetes | [Upgrade Kubernetes](operations/upgrade-kubernetes.md) |
-| Wipe and reinstall | [Wipe and reinstall KatlOS](operations/wipe-reinstall.md) |
-| Diagnose a failure | [Troubleshoot KatlOS](operations/troubleshoot.md) |
+- [Operate KatlOS](operations/README.md) to find the task for your node or
+  cluster, including configuration, maintenance, and upgrades.
+- [Troubleshoot KatlOS](operations/troubleshoot.md) to find where an operation
+  failed and collect the information you need for recovery.
 
-For command discovery and automation boundaries, see the
-[`katlctl` command map](reference/katlctl.md). The CLI's `--help` output remains
-the exact reference for flags in the installed release.
+## Understand KatlOS and look up details
 
-## Project documentation
+- [What KatlOS owns](concepts/ownership.md) explains which parts of the system
+  Katl manages and what a host rollback restores.
+- [Cluster configuration](reference/cluster-config.md) explains the fields in
+  `cluster.yaml`.
+- [katlctl command map](reference/katlctl.md) helps you find a command or use
+  it in automation.
+- [Kubernetes release delivery](concepts/kubernetes-releases.md) explains how
+  Katl selects a compatible Kubernetes version for your nodes.
+- [Release artifacts](reference/release-artifacts.md) explains which files you
+  need for each install or upgrade method.
 
-- [2026.10.1 release notes](releases/2026.10.1.md) explain live network
-  configuration and the Fedora 44 base.
-- [Unpublished 2026.10.0 candidate guidance](releases/2026.10.0.md) records the
-  preparation notes for the candidate that failed qualification.
-- [2026.9.1 release notes](releases/2026.9.1.md) explain recovery from failed
-  kubelet configuration applies.
-- [Beta.18 release notes](releases/2026.9.0-beta.18.md) explain upgrade paths
-  from earlier betas and their limits.
-- [Support boundary](support.md) defines the tested evaluation surface,
-  compatibility promise, trust model, and reporting checklist.
-- [Developing Katl](developing.md) covers builds, persistent `katldev` VMs,
-  automated VM tests, and release tooling.
-- `docs/internal` contains design records and project working material. It is
-  not operator guidance or a supported product API and should not be published
-  as part of the user documentation site.
+## Support and releases
+
+- [Support and compatibility](support.md) covers tested environments,
+  management access, upgrade limits, and reporting problems.
+- [Release notes](https://github.com/katl-dev/katl/releases) describe changes
+  and any steps you need to take for a specific release.

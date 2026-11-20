@@ -1,24 +1,28 @@
 # Run Cilium on KatlOS
 
-KatlOS prepares kubeadm nodes but does not install or manage a CNI. This
-procedure records the KatlOS-specific Cilium setting needed when Cilium is
-installed through the operator's own Helm, Cilium CLI, or GitOps workflow.
+Use this guide to prepare KatlOS hosts for Cilium, install Cilium with Helm
+or the Cilium CLI, and check that the cluster network works. If you manage
+Cilium with GitOps, keep the same KatlOS-specific values in that configuration.
 
-The procedure has been exercised with Cilium 1.19.10 and Helm 4.2.4.
+The first-cluster walkthrough uses Cilium 1.20.2 with Kubernetes v1.36.1.
+This procedure was also exercised with Cilium 1.19.10 and Helm 4.2.4.
 Review Cilium's
 [kubeadm installation guide](https://docs.cilium.io/en/stable/installation/k8s-install-kubeadm/)
 and release notes for the version being installed rather than treating this
 page as a complete Cilium configuration.
+Use the [Cilium compatibility matrix](https://docs.cilium.io/en/stable/network/kubernetes/compatibility/)
+for the Cilium release you choose to check the Kubernetes version. Select that
+release in the version menu if it differs from the version on the page.
 
 Upgrade Cilium before moving a node to a kernel that requires a newer Cilium
 patch release. Cilium 1.19.6 and 1.19.7 fail BPF feature probing on Linux 7.2;
 the [upstream fix](https://github.com/cilium/cilium/releases/tag/v1.19.8) is
-included in 1.19.8 and later patches in the 1.19 branch. The examples below use
-1.19.10.
+included in 1.19.8 and later patches in the 1.19 branch.
 
 For kube-proxy replacement, set `proxy.disabled: true` in the native kubeadm
 `ClusterConfiguration` before bootstrapping; see [native kubeadm
-configuration](../installing.md). Katl honors that setting when configuring
+configuration](../reference/cluster-config.md#cluster-networking-and-kube-proxy).
+Katl honors that setting when configuring
 node-local API access. Configure Cilium's replacement mode in your own Cilium
 values; Katl does not select it for you.
 
@@ -70,21 +74,24 @@ host settings above. Do not make `/etc` writable to accommodate it.
 ## Install Cilium
 
 After [bootstrapping Kubernetes](bootstrap-kubernetes.md), install the selected
-Cilium release with `sysctlfix.enabled=false`. With the Cilium CLI:
+Cilium release with `sysctlfix.enabled=false`. Replace the example version
+in your command if you selected another release.
+
+### Install with the Cilium CLI
 
 ```sh
 cilium install \
   --kubeconfig ./kubeconfig \
-  --version 1.19.10 \
+  --version 1.20.2 \
   --set sysctlfix.enabled=false
 ```
 
-With Helm:
+### Install with Helm
 
 ```sh
 helm install cilium oci://quay.io/cilium/charts/cilium \
   --kubeconfig ./kubeconfig \
-  --version 1.19.10 \
+  --version 1.20.2 \
   --namespace kube-system \
   --set sysctlfix.enabled=false
 ```

@@ -1,7 +1,9 @@
 # Access installed KatlOS nodes
 
-Use the cluster configuration for installed node access from any workstation.
-A saved workstation context is optional convenience.
+Use the cluster configuration to check an installed node, read its logs, or
+retrieve a kubeconfig from an existing control plane. For bootstrap and
+management changes, [record the installed node identities](#save-a-workstation-shortcut)
+on the workstation first.
 
 ```sh
 katlctl node status cp-1 --config ./cluster.yaml
@@ -66,7 +68,9 @@ Expected state before Kubernetes bootstrap:
 
 ## Save a workstation shortcut
 
-Use the same source used for installation:
+Use the same source you used for installation. This step enrolls the installed
+nodes on the workstation for bootstrap and management changes. It also saves
+a context you can select to shorten repeated commands.
 
 ```sh
 katlctl context save --config ./cluster.yaml

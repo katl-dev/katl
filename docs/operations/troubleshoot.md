@@ -1,8 +1,7 @@
 # Troubleshoot KatlOS
 
-Troubleshooting starts by identifying the lifecycle boundary that failed. Do
-not retry a mutating command until its durable state and mutation boundary are
-known.
+Use node status, logs, and operation records to find which step failed and
+whether it changed the node. Check the operation state before you retry.
 
 When the management API is reachable, start from your workstation:
 
@@ -99,8 +98,16 @@ find /var/lib/katl/install -maxdepth 2 -type f -print
 ```
 
 Also retain the installer console, exact release filename and SHA-256, config
-bundle, selected node, and disk identity. A failure before validation completes must not repartition the disk;
-record disk state before attempting anything else.
+bundle, selected node, and disk identity. A failure before validation
+completes must leave the partition table intact. Record the state of the disk
+before attempting recovery.
+
+| Symptom | What to inspect |
+| --- | --- |
+| Configuration rejected | Run `katlctl config validate ./cluster.yaml` and review the selected node, SSH key, and disk. For PXE, check that the bundle was compiled with the intended image URL and descriptor. |
+| Disk missing or ambiguous | Compare the installer disk inventory with the stable ID in the configuration. If the disk is absent, check the firmware and storage controller. |
+| Automatic install refused | Check whether the PXE profile enabled automatic install and whether the installed-disk guard refused it. See [Keep PXE first safely](../install-pxe-matchbox.md#keep-pxe-first-safely). |
+| Image digest mismatch | Use the image and its published descriptor from the same release. Replace any altered copy with the published file. |
 
 ## Interpret operation state
 
