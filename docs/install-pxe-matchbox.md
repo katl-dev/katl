@@ -126,7 +126,7 @@ The group binds that profile to one normalized MAC address:
 }
 ```
 
-Create one group and profile per machine, changing only the MAC, profile ID, and
+Create one group and profile per machine, setting the MAC, profile ID, and
 `katl.node`. Every profile can use the same bundle URL and digest. A fixed node
 argument avoids depending on DHCP hostname behavior or template expansion in a
 network-boot program.
@@ -134,6 +134,11 @@ network-boot program.
 `katl.bundle.sha256` is optional because Katl validates the archive and its
 internal descriptors. Supplying it pins the external handoff to the reviewed
 bundle bytes and catches accidental replacement before extraction.
+
+To give each installer a static address at boot, see
+[static Matchbox settings](install-advanced.md#matchbox). If the workstation
+and installer are on different subnets, check
+[the routes required for installation](install-advanced.md#plan-the-addresses-and-routes).
 
 ## Retry a refused installation
 
@@ -259,7 +264,8 @@ uses the bundle and node name to select the disk and the OS image.
 | `console=...` and `ip=...` | Select console and network settings for the installer. |
 
 When using iPXE directly, replace the base URL with the directory where you
-serve files for the selected release.
+serve files for the selected release. For a machine that needs a static
+address, use the [per-machine iPXE example](install-advanced.md#ipxe).
 
 ```ipxe
 #!ipxe
@@ -277,13 +283,14 @@ the `katl` account and the same public keys.
 ## Diagnose the handoff
 
 If the machine does not install, preserve the failed disk and console state.
-Check, in order:
+Check each stage in order.
 
-1. DHCP lease and UEFI iPXE chainload;
-2. Matchbox group selection at `/ipxe?mac=...`;
-3. HTTP access to kernel, initrd, bundle, metadata, and SquashFS;
-4. exact `katl.node`, bundle digest, and stable disk selector;
-5. installer journal and `/var/lib/katl/install` state over console or SSH.
+1. Confirm that UEFI reaches iPXE and that iPXE has a DHCP lease or working
+   static settings.
+2. Verify the Matchbox group selection at `/ipxe?mac=...`.
+3. Check HTTP access to the kernel, initrd, bundle, metadata, and SquashFS.
+4. Check the exact `katl.node` value, bundle digest, and stable disk selector.
+5. Inspect the installer journal and `/var/lib/katl/install` over console or SSH.
 
 A failure before validation completes must not repartition the target. Follow
 the [installer evidence checklist](operations/troubleshoot.md#installer-evidence)

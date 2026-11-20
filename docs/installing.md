@@ -20,6 +20,9 @@ yourself.
   default ISO networking, use DHCP reservations or read each address from the
   installer console or the DHCP lease table.
 
+To boot with a static address or reach the installer from another subnet,
+follow [Advanced installer networking](install-advanced.md).
+
 ## Author one ClusterConfig
 
 Use the [cluster configuration reference](reference/cluster-config.md) to
@@ -124,9 +127,8 @@ formatting.
 
 The installer advertises `/v1/config-bundle` for the standard handoff.
 A separate seed medium with label `KATLSEED` or disk ID `virtio-katl-seed`
-can supply input locally. Put native networkd files under
-`etc/systemd/network/` on the seed medium to configure the live installer
-before networking starts.
+can supply input locally. For static networking, see
+[how to prepare and attach a seed medium](install-advanced.md#boot-the-iso-with-a-seed-medium).
 
 The bundle contains one compiled `install.katl.dev/v1alpha1` `InstallManifest`
 per node. The `/v1/install` endpoint and `katl.manifest.*` kernel arguments
