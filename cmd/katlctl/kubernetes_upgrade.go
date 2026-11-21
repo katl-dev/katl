@@ -601,6 +601,13 @@ func connectKubernetesUpgradeTargets(ctx context.Context, topology workstation.R
 			closeTargets()
 			return nil, err
 		}
+		// kubeadm upgrade would renew most certificates, but its API calls and
+		// Katl's health gates fail first once control-plane credentials expire.
+		if expiry := newCertificateExpiryReport(status.GetKubernetes().GetCertificateExpiry()); expiry != nil && expiry.State == "expired" {
+			_ = conn.Close()
+			closeTargets()
+			return nil, fmt.Errorf("node %s cannot be upgraded: %s", node.Name, expiry.summary())
+		}
 		node.EnrollmentID = status.GetEnrollmentId()
 		node.MachineID = status.GetMachineId()
 		generationID := strings.TrimSpace(status.CurrentGenerationId)

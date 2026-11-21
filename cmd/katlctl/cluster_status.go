@@ -186,6 +186,9 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 		if node.Kubernetes != nil && node.Kubernetes.FailureReason != "" {
 			w.row("", "", "", "", node.Kubernetes.FailureReason)
 		}
+		if node.Kubernetes != nil && node.Kubernetes.CertificateExpiry.needsAttention() {
+			w.row("", "", "", "", node.Kubernetes.CertificateExpiry.summary())
+		}
 		if node.ControlPlaneEndpoint != nil && node.ControlPlaneEndpoint.FailureReason != "" {
 			w.row("", "", "", fmt.Sprintf("control-plane endpoint: %s", node.ControlPlaneEndpoint.FailureReason))
 		}

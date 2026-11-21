@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.6.2
 // - protoc             v7.36.2
-// source: internal/katlc/agentapi/agent.proto
+// source: agent.proto
 
 package agentapi
 
@@ -846,5 +846,5 @@ var KatlcAgent_ServiceDesc = grpc.ServiceDesc{
 			ServerStreams: true,
 		},
 	},
-	Metadata: "internal/katlc/agentapi/agent.proto",
+	Metadata: "agent.proto",
 }
