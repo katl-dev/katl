@@ -1188,6 +1188,7 @@ system-unit katl-api-proxy.service
 system-unit katl-boot-complete.target
 system-unit katl-boot-deadman.service
 system-unit katl-boot-deadman.timer
+system-unit katl-boot-health-settled.target
 system-unit katl-boot-health.service
 system-unit katl-boot-recovery.service
 system-unit katl-console.service

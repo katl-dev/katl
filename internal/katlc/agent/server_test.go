@@ -3497,6 +3497,8 @@ func newTestServer(t *testing.T) *testServer {
 		t.Fatal(err)
 	}
 	server := NewServer(root, store)
+	// Tests opt in to a boot health unit; the host running them has none.
+	server.RunBootHealthStatus = nil
 	server.EnrollmentID = testEnrollmentID
 	server.InventoryNodeName = testInventoryNodeName
 	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)

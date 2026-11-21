@@ -16,6 +16,9 @@ import (
 )
 
 func (s *Server) SelectGeneration(ctx context.Context, req *agentapi.GenerationMutationRequest) (*agentapi.GenerationMutationResult, error) {
+	if err := s.awaitBootHealth(ctx); err != nil {
+		return nil, err
+	}
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
 	if err := s.validateGenerationMutation(ctx, req); err != nil {
@@ -70,6 +73,9 @@ func (s *Server) validateEtcdGeneration(generationID string) error {
 }
 
 func (s *Server) RemoveGeneration(ctx context.Context, req *agentapi.GenerationMutationRequest) (*agentapi.GenerationMutationResult, error) {
+	if err := s.awaitBootHealth(ctx); err != nil {
+		return nil, err
+	}
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
 	if err := s.validateGenerationMutation(ctx, req); err != nil {

@@ -693,6 +693,9 @@ no Kubernetes API, kubeconfig, or cluster identity required before bootstrap
 node-local katlc requires and revalidates enrollment ID, enrolled inventory
   node name, machine ID, current generation, stored intent where relevant,
   request digest, and operation locks before accepting a mutating request
+node-local katlc holds operations and generation selection or removal until
+  boot health settles for the current boot; see
+  boot-health-semantics.md
 ```
 
 This is sufficient for home-ops day one and VM validation. Stronger remote

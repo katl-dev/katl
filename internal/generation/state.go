@@ -48,6 +48,7 @@ type StateAssets struct {
 	KubeadmActivate     string
 	KubeadmReadyTarget  string
 	BootCompleteTarget  string
+	BootHealthSettled   string
 	BootHealthService   string
 	BootRecoveryService string
 	BootDeadmanService  string
@@ -131,6 +132,7 @@ func RenderState(request StateRequest) (StateAssets, error) {
 		KubeadmActivate:     renderKubeadmActivateService(),
 		KubeadmReadyTarget:  renderKubeadmReadyTarget(),
 		BootCompleteTarget:  renderBootCompleteTarget(),
+		BootHealthSettled:   renderBootHealthSettledTarget(),
 		BootHealthService:   renderBootHealthService(),
 		BootRecoveryService: renderBootRecoveryService(),
 		BootDeadmanService:  renderBootDeadmanService(),
@@ -420,6 +422,24 @@ func renderBootCompleteTarget() string {
 	}, "\n")
 }
 
+func renderBootHealthSettledTarget() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Katl boot health settled for this boot",
+		"Documentation=man:systemd.target(5)",
+		"# Reached when boot health finishes with any result, including when a unit it",
+		"# requires fails to start. Management holds node mutations until then.",
+		"Wants=katl-boot-health.service",
+		"After=katl-boot-health.service katl-boot-recovery.service",
+		"# A hung boot-health dependency must not hold management mutations forever.",
+		"JobTimeoutSec=10min",
+		"",
+		"[Install]",
+		"WantedBy=multi-user.target",
+		"",
+	}, "\n")
+}
+
 func renderBootHealthService() string {
 	return strings.Join([]string{
 		"[Unit]",
@@ -638,6 +658,12 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/katl-boot-health.service", assets.BootHealthService, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-boot-health-settled.target", assets.BootHealthSettled, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeSymlink(root, "etc/systemd/system/multi-user.target.wants/katl-boot-health-settled.target", "../katl-boot-health-settled.target"); err != nil {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/katl-boot-recovery.service", assets.BootRecoveryService, 0o644); err != nil {
