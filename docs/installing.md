@@ -6,6 +6,12 @@ to use the installed nodes to create a cluster, follow
 Use this page when you need to select the installer address, disk, or SSH key
 yourself.
 
+| Boot method and network | Procedure |
+| --- | --- |
+| ISO with DHCP on the provisioning network | Continue on this page. |
+| ISO with a static address, or a workstation on another subnet | [Advanced installer networking](install-advanced.md) |
+| Network boot with PXE, iPXE, or Matchbox | [Install KatlOS with PXE and Matchbox](install-pxe-matchbox.md) |
+
 ## Prerequisites
 
 - Choose the installer and `katlctl` from the same
@@ -14,30 +20,11 @@ yourself.
   workstation and boot method. If you want to authenticate the downloads, see
   [Verify release artifacts](operations/verify-release.md).
 - Use a trusted provisioning network that lets your workstation reach the
-  installers on TCP port `8080`. The installer accepts handoff requests without
-  authentication.
+  installers on TCP port `8080`, because the installer accepts handoff
+  requests without authentication; see [Network trust](support.md#network-trust).
 - Know the target nodes' IP addresses before running `katlctl`. With the
   default ISO networking, use DHCP reservations or read each address from the
   installer console or the DHCP lease table.
-
-To boot with a static address or reach the installer from another subnet,
-follow [Advanced installer networking](install-advanced.md).
-
-## Author one ClusterConfig
-
-Use the [cluster configuration reference](reference/cluster-config.md) to
-select disks, set node addresses, and supply native host or kubeadm settings.
-
-For a static address on the installed node, put the static
-[systemd-networkd configuration](operations/configure-nodes.md#configure-native-linux-facilities)
-in the ClusterConfig and set `management.address` to that address. When the
-installer has a temporary address, pass it to `install apply --endpoint`.
-
-## PXE or Matchbox
-
-If your machines boot over the network, follow
-[Install KatlOS with PXE and Matchbox](install-pxe-matchbox.md). It covers both
-Matchbox profiles and the Katl boot arguments for other PXE tools.
 
 ## ISO or local handoff
 
@@ -63,6 +50,13 @@ katlctl config init ./cluster.yaml \
 Replace both addresses with those of your installers. The first address
 becomes `cp-1`. Bare addresses use HTTP port `8080`. The flag also accepts a
 hostname, `host:port`, or HTTP(S) base URL.
+
+The result is one ClusterConfig for every node. Edit `cluster.yaml` with the
+[cluster configuration reference](reference/cluster-config.md) to select
+disks, set node addresses, and supply native host or kubeadm settings. For a
+static address on the installed node, put the static
+[systemd-networkd configuration](operations/configure-nodes.md#configure-native-linux-facilities)
+in `cluster.yaml` and set `management.address` to that address.
 
 ### Select the target disk
 
@@ -96,20 +90,25 @@ Run `katlctl config validate ./cluster.yaml`. Check that the selected system
 disk matches the intended machine and can be erased. The next command
 replaces the contents of that disk.
 
+For separate [data volumes](reference/cluster-config.md#data-volumes),
+[`wipe: true`](reference/cluster-config.md#wipe-authorization) authorizes formatting during installation. With `wipe: false`,
+Katl preserves a compatible filesystem and refuses changes that require
+formatting.
+
 ```sh
 katlctl install apply --config ./cluster.yaml --node cp-1
 ```
 
-`--node` selects an entry by name or bootstrap address. You can omit it when
-the configuration contains one node. Katl validates the configuration and
+`--node` selects an entry by its name or its `management.address`. You can
+omit it when the configuration contains one node. Katl validates the configuration and
 installer image before authorizing the disk write. The installer accepts
 one valid submission, then closes the handoff path.
 
-If the installer is temporarily at a different address, add
-`--endpoint 192.0.2.42` with the current address. This changes the connection
-target while keeping the selected node and disk from the file. The command
-requires either the node's `management.address` in the configuration or an
-explicit `--endpoint`.
+The command connects to the installer at the node's `management.address`. If
+the installer is currently at another address, such as a temporary address
+before the installed node takes its static address, pass that address with
+`--endpoint 192.0.2.42`; the node and disk still come from `cluster.yaml`. If
+the node has no `management.address`, `--endpoint` is required.
 
 The command waits until the installer can reboot or reports a failure. If you use
 `--no-wait`, use `katlctl install status --config ./cluster.yaml --node cp-1`
@@ -118,41 +117,10 @@ override to `install status` if you used one to install. Once the node boots
 from its disk,
 [check the installed host](operations/access.md#confirm-generation-0).
 
-For separate [data volumes](reference/cluster-config.md#data-volumes),
-`wipe: true` authorizes formatting during installation. With `wipe: false`,
-Katl preserves a compatible filesystem and refuses changes that require
-formatting.
-
-### Advanced local input
-
-The installer advertises `/v1/config-bundle` for the standard handoff.
-A separate seed medium with label `KATLSEED` or disk ID `virtio-katl-seed`
-can supply input locally. For static networking, see
-[how to prepare and attach a seed medium](install-advanced.md#boot-the-iso-with-a-seed-medium).
-
-The bundle contains one compiled `install.katl.dev/v1alpha1` `InstallManifest`
-per node. The `/v1/install` endpoint and `katl.manifest.*` kernel arguments
-remain available for advanced compiled-manifest integrations. A standalone
-manifest lacks cluster-wide validation, embedded kubeadm files, and proof
-that all nodes come from the same configuration.
-
-## Bootstrap handoff
+## Next steps
 
 After all nodes boot from their disks, follow
-[Bootstrap Kubernetes](operations/bootstrap-kubernetes.md). It uses the same
-configuration to set up Kubernetes and write your kubeconfig.
-
-## Apply runtime configuration
-
-Follow [Apply cluster configuration](operations/configure-nodes.md) to change
-supported settings on installed nodes.
-
-## Upgrades
-
-Use [Upgrade a KatlOS host](operations/upgrade-host.md) for the operating system
-and [Upgrade Kubernetes](operations/upgrade-kubernetes.md) for Kubernetes.
-
-## Troubleshooting
-
-See [installer diagnostics](operations/troubleshoot.md#installer-evidence) to
-inspect a refused install or collect evidence before retrying.
+[Bootstrap Kubernetes](operations/bootstrap-kubernetes.md) with the same
+`cluster.yaml`. If an install is refused, use the
+[installer diagnostics](operations/troubleshoot.md#installer-evidence) to
+inspect it and collect evidence before retrying.

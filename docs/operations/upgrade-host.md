@@ -1,49 +1,53 @@
 # Upgrade a KatlOS host
 
-KatlOS host upgrades are one-node-at-a-time operations. The normal command
-resolves a release, stages its root and UKI into the inactive slot, reboots into
-a bounded trial, and waits for both boot health and recovery of any existing
-Kubernetes role. It does not upgrade Kubernetes, drain the node, or orchestrate
-availability across several hosts.
+Use `katlctl node upgrade` to move one node to another KatlOS release or kernel
+flavour. The command resolves a release, stages its root and UKI into the
+inactive slot, reboots into a bounded trial, and waits for both boot health and
+recovery of any existing Kubernetes role. It does not upgrade Kubernetes, drain
+the node, or orchestrate availability across several nodes, so upgrade one
+node at a time.
 
-## Preconditions
+## Before you start
 
-- the node is healthy on a known-good generation;
-- no other mutating node operation is active;
-- the selected upgrade SquashFS is from the intended KatlOS release;
-- the upgrade declares a compatible architecture and runtime interface;
-- the installed CNI supports the target kernel; for Cilium, check the
-  [tested version guidance](cilium.md) before upgrading;
-- the node can fetch release artifacts from GitHub;
-- the installation `ClusterConfig` contains the node and its current management
-  address, or `--endpoint` supplies an override;
-- the command is run during the intended reboot window; and
-- Kubernetes and workload availability have been handled outside Katl.
+- Check that the node is running a
+  [healthy generation](../concepts/generations.md#staged-trial-and-committed)
+  and that no other mutating node operation is active.
+- Choose the intended KatlOS release, and use that release's upgrade
+  SquashFS if you supply a local image. The node must be able to fetch release
+  artifacts from GitHub.
+- Check that the installed CNI supports the target kernel. For Cilium, check
+  the [tested version guidance](cilium.md#before-you-start).
+- Check that `cluster.yaml` contains the node and its current management
+  address, or supply an override with `--endpoint`.
+- Handle Kubernetes and workload availability outside Katl; see
+  [Prepare a Kubernetes node for host maintenance](maintain-node.md). Host
+  upgrade does not require a drain or uncordon a node that you left cordoned.
+  For nodes that use Rook-Ceph volumes, follow the
+  [Rook-Ceph guidance](maintain-node.md#rook-ceph) and verify the storage
+  teardown required by your deployment.
+- Keep independent etcd and workload backups and ensure that you have console
+  or out-of-band access. Preserve the source release assets and CLI until you
+  have accepted the target and no longer need its one-step rollback path.
+- Run the upgrade during the intended reboot window.
 
-For nodes that use Rook/Ceph volumes, follow the
-[Rook/Ceph maintenance guide](rook-ceph-maintenance.md) before the host
-operation. Verify the storage teardown required by your deployment.
-
-See [Prepare a Kubernetes node for host maintenance](maintain-node.md) for
-operator-owned drain and native kubelet shutdown configuration. Host upgrade
-does not require a drain or uncordon a node that you left cordoned.
+Katl checks the image itself before it changes the inactive slot, including
+its declared architecture and runtime interface, its boot components, and
+whether it fits on writable state.
 
 ## Plan the host upgrade
 
 Replace the version in this example with the target KatlOS release:
 
 ```sh
-katlctl node upgrade cp-1 --config ./cluster.yaml --version 2026.9.0-beta.18 --plan
+katlctl node upgrade cp-1 --config ./cluster.yaml --version 2026.11.0 --plan
 ```
 
-A plan response has no durable mutation and does not reboot the node.
-
-During staging, the node downloads or opens the image, calculates its SHA-256
-and size, records that resolved identity in the operation, and checks the image's
-boot components before changing the inactive slot. On nodes that support target
-preparation, the target release also prepares the complete candidate generation
-in an isolated state view. A planning failure leaves the active root and boot
-selection untouched.
+A plan makes no durable change and does not reboot the node. The node
+downloads or opens the image, records its SHA-256 and size in the operation,
+and checks its boot components. On nodes that support target preparation, the
+target release also prepares the complete candidate generation in an isolated
+state view. A planning failure leaves the active root and boot selection
+untouched.
 
 The node rejects an upgrade before changing its inactive root slot if writable
 state cannot hold the bounded image, preparation inputs, and transfer copies
@@ -53,6 +57,11 @@ removes completed and abandoned host-upgrade scratch automatically; do not
 manually delete generation directories to make space because a retained
 generation can own rollback assets that another generation references.
 
+After a plan-only call, an uploaded local image remains available for up to
+one hour so you can submit the reviewed plan without another upload. Katl
+removes the other plan-time copies, mounts, and preparation snapshots after the
+call, and keeps the operation record as durable success or failure evidence.
+
 ### Combine supported host configuration
 
 Use `--apply-config` when a target release and a host configuration must become
@@ -61,7 +70,7 @@ active as one generation. For example, an extension selected in
 
 ```sh
 katlctl node upgrade cp-1 --config ./cluster.yaml \
-  --version 2026.9.0-beta.18 --apply-config --plan
+  --version 2026.11.0 --apply-config --plan
 ```
 
 The target release validates and prepares the configuration in isolation. The
@@ -79,36 +88,31 @@ then use the dedicated configuration, Kubernetes, or storage workflow. A
 rejected plan leaves the inactive root, EFI selection, and current generation
 unchanged.
 
-An uploaded local image can remain available for up to one hour after a
-plan-only call so the reviewed plan can be submitted without another upload.
-Remote plan images, private preparation snapshots, image mounts, and root and
-UKI transfer copies are removed after the call. Operation records remain as
-durable success or failure evidence.
-
 ## Upgrade the host
 
 Run the reviewed command without `--plan`:
 
 ```sh
-katlctl node upgrade cp-1 --config ./cluster.yaml --version 2026.9.0-beta.18
+katlctl node upgrade cp-1 --config ./cluster.yaml --version 2026.11.0
 ```
 
-For repeated day-two commands, `katlctl context save --config ./cluster.yaml`
-can save this topology locally. That context is optional; it is not a second
-cluster configuration operators must maintain.
+For repeated day-two commands, `--context NAME` can select the saved context
+instead of `--config`. The context only shortens commands: `cluster.yaml`
+remains the desired state, and `--apply-config` reads it from `--config`.
 
-`katlctl` follows staging progress, asks the node agent to reboot, waits for the
-agent to restart, and requires the selected generation to be committed, booted,
-and healthy. On a bootstrapped node it also waits for kubelet, Node Ready, local
-control-plane components where applicable, and the managed API and route
-exchange paths. The default result is concise text; use `--output json` when
-automation needs the structured `rebooted`, `bootHealth`, and `kubernetes`
-fields. These fields report independently observed outcomes. For example, if
-KatlOS becomes healthy but Kubernetes does not recover before the timeout, the
-command fails overall while reporting `bootHealth` as `healthy` and
-`kubernetes` as its last observed waiting state. An unreachable node reports
-`unknown` health instead of treating an unobserved boot as a failed boot. Check
-workload availability before upgrading another host.
+`katlctl` follows staging progress, asks the `katlc` management agent to reboot
+the node, waits for the agent to restart, and requires the selected generation
+to be committed, booted, and healthy. On a bootstrapped node it also waits
+for kubelet, Node Ready, local control-plane components where applicable,
+and the managed API and route exchange paths. The default result is concise
+text; use `--output json` when automation needs the structured `rebooted`,
+`bootHealth`, and `kubernetes` fields. These fields report independently
+observed outcomes. For example, if KatlOS becomes healthy but Kubernetes does
+not recover before the timeout, the command fails overall while reporting
+`bootHealth` as `healthy` and `kubernetes` as its last observed waiting
+state. An unreachable node reports `unknown` health instead of treating an
+unobserved boot as a failed boot. Check workload availability before upgrading
+another node.
 
 During the reboot, the console may show a containerd stop-job
 countdown after the containerd daemon has exited. Containerd deliberately keeps
@@ -120,75 +124,34 @@ previous-boot journal before retrying the upgrade.
 
 ## Understand rollback retention
 
-KatlOS keeps two root slots. After an upgrade, one slot contains the active
-runtime and the other contains the previous runtime. The generation list can
-retain more metadata and configuration history, but it does not retain more OS
-images. Staging the next host upgrade overwrites the inactive slot and makes any
-older generation that used that slot unavailable for boot.
-
-Both slots use the same writable `/var`, EFI System Partition (ESP), firmware
-boot variables, and usually the same physical disk. A rollback changes the
-selected root, UKI, sysexts, and confexts. It does not restore containerd,
-kubelet, kubeadm, etcd, persistent-volume, workload, or application data to an
-earlier point in time. It also cannot recover a damaged or full `/var`, a lost
-ESP, invalid firmware state, or disk failure.
-
-Before upgrading, keep independent etcd and workload backups and ensure that
-you have console or out-of-band access. Preserve the source release assets and
-CLI until you have accepted the target and no longer need its one-step rollback
-path.
+KatlOS keeps two root slots, so after an upgrade only the previous runtime
+remains bootable as a rollback target. The generation list can retain more
+metadata and configuration history, but staging the next host upgrade
+overwrites the inactive slot and makes any older generation that used it
+unavailable for boot. A host rollback changes the selected root, UKI, and system
+and configuration extensions; it does not restore Kubernetes, etcd, or workload
+data, and it cannot recover a damaged `/var`, ESP, firmware state, or disk. See
+[retention](../concepts/generations.md#retention) and
+[rollback is not a backup](../concepts/generations.md#rollback-is-not-a-backup).
 
 ## Failure boundary
 
-Boot health selects the previous known-good host generation and performs one
-automatic reboot when an armed trial loses management networking, fails required
-activation, or misses the 10-minute boot deadline. Activation arms recovery only
-after proving that the selected boot is the pending trial and its distinct
-fallback remains healthy. The source generation stays the persistent EFI
-default. `katlctl` reports that the candidate was rejected after the node
-reconnects on the source generation.
+Automatic fallback is available only once activation confirms that the node is
+booting the pending trial and that a healthy previous generation remains to fall
+back to. The source generation stays the persistent EFI default throughout the
+trial. See [boot health and fallback](../concepts/generations.md#boot-health-and-fallback)
+for the lifecycle.
 
-Katl does not reboot automatically when no validated fallback exists, the
-fallback also fails, required state or EFI storage is unavailable, or the
-failure occurs before generation activation arms boot recovery. The fallback
-does not re-arm the switch, so a failed fallback stops instead of boot-looping.
-Use the console or out-of-band management to preserve the failed boot's journal
-and inspect boot-selection state. Host rollback does not undo Kubernetes, etcd,
-workload, or external-infrastructure changes. If the operation record says
-`recoveryRequired: true`, or the node fails to return, stop the rollout and
-collect the evidence in [Troubleshoot KatlOS](troubleshoot.md).
-If KatlOS returns but Kubernetes does not recover before the timeout, do not
-schedule workloads on that node. `katlctl node status` reports whether kubelet,
-Node Ready, local control-plane components, or managed routing is still waiting.
+| Failure | What Katl does | What you do |
+| --- | --- | --- |
+| An armed trial loses management networking, fails required activation, or misses the 10-minute boot deadline | Selects the previous healthy generation and performs one automatic reboot. `katlctl` reports that the candidate was rejected after the node reconnects on the source generation. | Read the previous-boot journal to find why boot health failed before retrying. |
+| No healthy fallback exists, required state or EFI storage is unavailable, or the failure occurs before activation arms boot recovery | Does not reboot automatically. | Use the console or out-of-band management to preserve the failed boot's journal and inspect boot-selection state. |
+| The fallback also fails | Stops instead of boot-looping, because the fallback does not re-arm the switch. | Preserve the journal and inspect boot-selection state from the console. |
+| The operation record says `recoveryRequired: true`, or the node fails to return | Stops. | Stop the rollout and collect the evidence in [Troubleshoot KatlOS](troubleshoot.md). |
+| KatlOS returns but Kubernetes does not recover before the timeout | Fails the command while reporting `bootHealth` as `healthy`. | Do not schedule workloads on that node. `katlctl node status` reports whether kubelet, Node Ready, local control-plane components, or managed routing is still waiting. |
 
-## Move a beta.14 node across the image metadata change
-
-The beta.14 agent rejects the `extensionRelease` field in newer upgrade
-artifact metadata. Use the beta.14 `katlctl` binary and a local copy of the
-intended target image for this one-time bridge. Preserve the image bytes and
-their checksum; remove only that field from the adjacent `.json` file. First
-verify the target image and beta.14 CLI against their release checksums.
-
-```sh
-image=./katlos-upgrade-TARGET-x86_64.squashfs
-bridge=./beta14-bridge
-mkdir -p "$bridge"
-cp "$image" "$bridge/$(basename "$image")"
-jq 'del(.extensionRelease)' "$image.json" > "$bridge/$(basename "$image").json"
-sha256sum "$bridge/$(basename "$image")"
-./katlctl-2026.9.0-beta.14-linux-amd64 node upgrade cp-1 \
-  --config ./cluster.yaml --artifact "$bridge/$(basename "$image")" --plan
-./katlctl-2026.9.0-beta.14-linux-amd64 node upgrade cp-1 \
-  --config ./cluster.yaml --artifact "$bridge/$(basename "$image")"
-```
-
-Compare the printed SHA-256 with the published image checksum before running
-either upgrade command. The bridge image must be a regular file because the
-beta.14 client does not accept a symlink as `--artifact`. After the upgrade,
-use the target release's `katlctl` and confirm `katlctl node status cp-1 --config
-./cluster.yaml` reports a healthy node. This procedure is limited to the
-beta.14 metadata incompatibility; do not use it to bypass a failed target
-preparation or compatibility check. Keep the beta.14 CLI for this bridge only.
+Host rollback does not undo Kubernetes, etcd, workload, or
+external-infrastructure changes.
 
 ## Kernel flavours
 
@@ -212,9 +175,9 @@ katlctl node upgrade cp-1 --config cluster.yaml --version VERSION --flavour stan
 
 Changing flavour stages a complete OS image and reboots. Repeating an upgrade
 to the identical active image without `--apply-config` returns unchanged
-without rebooting. Kubernetes extensions remain
-independent of the kernel flavour. `--artifact` must match the selected flavour.
-Pass `--flavour lts` for a local LTS image; omitting the flag selects standard.
+without rebooting. The Kubernetes bundle is independent of the kernel
+flavour. `--artifact` must match the selected flavour. Pass `--flavour lts` for
+a local LTS image; omitting the flag selects standard.
 
 Nodes running a release from before flavour support must first upgrade to the
 standard image of a release with flavour support, then switch to LTS. The CLI

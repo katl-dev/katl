@@ -1,15 +1,49 @@
 # Cluster configuration
 
-Use one `config.katl.dev/v1alpha1` `ClusterConfig` to name the nodes, select their
-roles and disks, and choose a Kubernetes version. Keep the file after installation
-so you can bootstrap Kubernetes and apply later changes from the same source.
+A `config.katl.dev/v1alpha1` `ClusterConfig`, usually kept as `cluster.yaml`, is
+the desired state of a KatlOS cluster: it names the nodes, selects their roles
+and disks, chooses the Kubernetes version, and carries supported host and
+Kubernetes configuration. Keep the file after installation; installation,
+bootstrap, and later changes all read it, and a saved workstation context never
+replaces it.
+
+## Field index
+
+Paths under `spec.defaults` can also be set on a concrete node in `spec.nodes`,
+where they replace the inherited value as described in each section. The
+**Applies** column summarizes how `katlctl cluster apply` activates a change,
+and "—" means the field has no default.
+
+| Path | Purpose | Default | Applies |
+| --- | --- | --- | --- |
+| `spec.managementAuthentication` | `trusted-network` or opt-in `mtls` access to the management API; see [management authentication](../operations/management-auth.md#choose-an-access-mode) | `trusted-network`, or `mtls` when `spec.managementIdentity` is set without a mode | Installation only; changing it requires reprovisioning |
+| `spec.managementIdentity` | mTLS management secrets file, relative to `cluster.yaml` | — | Installation; replace the management authority with `katlctl management identity rotate` |
+| `spec.controlPlaneEndpoint` | [Stable Kubernetes API endpoint](#kubernetes-api-endpoint): `host`, `port`, optional `advertisement.vip` | `port: 6443` | Next boot before bootstrap; host, port, and VIP changes are refused after bootstrap |
+| `spec.kubernetes.version` | Exact Kubernetes version | Written by `config init` | [Kubernetes upgrade](../operations/upgrade-kubernetes.md) workflow |
+| `spec.kubernetes.kubeadm` | [Native kubeadm](#native-kubeadm-configuration) `configFile` and `patchesDir` | Katl's generated kubeadm profile | Live |
+| `spec.kubernetes.external` | API `endpoint` of an existing cluster for [external workers](../operations/external-workers.md) | — (Katl-bootstrapped control plane) | Refused; reprovision the node |
+| `spec.defaults.access.ssh.authorizedKeys` | SSH authorized keys; each node needs at least one | — | Next boot |
+| `spec.defaults.kernel.commandLine` | [Operator kernel arguments](#kernel-arguments) | — | Next boot |
+| `spec.defaults.hostConfiguration.fileSets` | [Native host files](#file-sets) | — | Depends on the [file type](#apply-behavior-by-file-type) |
+| `spec.defaults.hostConfiguration.enabledUnits` | [Units to enable and start](#enabled-units) | — | Live |
+| `spec.defaults.hostConfiguration.maskedUnits` | [Units to mask](#masked-units) | — | Live |
+| `spec.defaults.hostConfiguration.sysfs` | [Typed sysfs values](#sysfs-settings) | — | Next boot |
+| `spec.defaults.systemExtensions` | [System extensions](#system-extensions) by OCI repository | — | Extension change or removal: next boot; configuration and units: live |
+| `spec.defaults.storage.volumes` | [Data volumes](#data-volumes) | `wipe: false` | Live |
+| `spec.defaults.kubernetes.kubelet.configFile` | [Node-local kubelet overlay](#node-local-kubelet-settings) | — | Live |
+| `spec.defaults.generationRetention` | [Automatic generation cleanup](#generation-retention) | `keepLast: 5`, `maxAge: 30d` | Live |
+| `spec.nodes[].name` | Stable node name | — | See the [node lifecycle matrix](../operations/configure-nodes.md#node-lifecycle-matrix) |
+| `spec.nodes[].controlPlane` | Join the Kubernetes control plane | `false` (worker) | Wipe and reinstall |
+| `spec.nodes[].install.systemDisk` | System disk for installation; required | — | Installation only |
+| `spec.nodes[].management.address` | [Operator-reachable address](#node-addresses) used by `katlctl` | — | Workstation targeting only |
+| `spec.nodes[].kubernetes.address` | [Kubernetes node address](#node-addresses) on a multihomed node | — | Refused as an operation-only change |
 
 ## Start with a generated configuration
 
-Run `katlctl config validate ./cluster.yaml` while authoring. One run reports
-all independent source-policy and effective per-node errors in stable public
-field-path order, names the affected node, and includes YAML line numbers when
-the source location is available.
+Run `katlctl config validate ./cluster.yaml` while authoring. It checks both the
+file as written and each node's effective configuration, and one run reports
+every independent error in a stable order by field path, naming the affected
+node and, when available, the YAML line number.
 
 This example shows the structure that `katlctl config init` generates. Replace
 the example key, addresses, and disk IDs with values for your machines.
@@ -68,7 +102,7 @@ Pod CIDRs from `10.244.0.0/16` and Service IPs from `10.96.0.0/12`. Supply
 including different or intentionally absent Pod and Service subnets.
 
 The release ISO supplies the KatlOS image, and Katl resolves the selected
-Kubernetes payload from the exact required `spec.kubernetes.version`. Keeping
+Kubernetes bundle from the exact required `spec.kubernetes.version`. Keeping
 that version in source makes compilation reproducible across `katlctl`
 versions; `katlctl config init` always writes a concrete compatible version.
 ClusterConfig does not expose KatlOS or Kubernetes
@@ -85,13 +119,236 @@ not a subnet-selection policy. Omit it for normal single-uplink nodes. The
 separate `management.address` remains the operator-reachable address used by `katlctl`
 and may be different.
 
-## Host configuration files
+## Host configuration
 
-Use `hostConfiguration.fileSets` for supported native Linux files, including
-systemd-networkd configuration. See
-[the supported file paths and apply modes](../operations/configure-nodes.md#configure-native-linux-facilities)
-to choose the path for a change. For management authentication and secret
-references, see [management access](../operations/access.md#security-boundary).
+`hostConfiguration` carries native Linux and systemd configuration. Katl
+validates ownership and carries the files in the node's generation; the
+operator does not build or activate a confext. For task-oriented examples, see
+[Apply cluster configuration](../operations/configure-nodes.md#configure-native-linux-facilities).
+For management authentication and secret references, see
+[management authentication](../operations/management-auth.md).
+
+### File sets
+
+`hostConfiguration.fileSets` is a map of named sets. Each set lists explicit
+`files`, or includes a `directory` with a `destination`; use one form per set.
+
+```yaml
+spec:
+  defaults:
+    hostConfiguration:
+      fileSets:
+        forwarding:
+          files:
+            - path: /etc/sysctl.d/80-home-lab-forwarding.conf
+              content: |
+                net.ipv4.ip_forward = 1
+        ups-device:
+          files:
+            - path: /etc/udev/rules.d/80-home-lab-ups.rules
+              source: files/80-home-lab-ups.rules
+```
+
+`source` is relative to the ClusterConfig directory and is embedded when
+`katlctl` builds the self-contained configuration bundle. Use `content` or
+`source`, never both. Files default to mode `0644`; `0600` and `0640` are also
+accepted.
+
+Defaults and concrete nodes use the same named-set model: a node set with the
+same name replaces the entire default set. Duplicate destination paths are
+errors, including collisions between inherited and node-specific sets. To
+remove an inherited set on one node, set `state: absent` without a directory
+declaration:
+
+```yaml
+spec:
+  nodes:
+    - name: worker-1
+      hostConfiguration:
+        fileSets:
+          storage-modules:
+            state: absent
+```
+
+Katl rejects protected paths, duplicate path ownership, executable or writable
+modes, and attempts to notify release-critical units before rendering a
+candidate generation. Operator-authored files below `/etc/tmpfiles.d` are
+rejected because Katl owns the generated [sysfs](#sysfs-settings) rule.
+
+### Directory sets
+
+A set with `directory` and `destination` includes a collection of native files
+without listing every source and destination:
+
+```yaml
+spec:
+  defaults:
+    hostConfiguration:
+      fileSets:
+        network:
+          directory: files/network
+          destination: /etc/systemd/network
+  nodes:
+    - name: cp-1
+      hostConfiguration:
+        fileSets:
+          addresses:
+            directory: files/nodes/cp-1/network
+            destination: /etc/systemd/network
+```
+
+Paths inside each directory are preserved below `destination`, including nested
+drop-ins. For example, `files/network/20-bond0.network.d/50-route.conf` becomes
+`/etc/systemd/network/20-bond0.network.d/50-route.conf`. Directory paths are
+relative to the ClusterConfig directory. Katl recursively includes every regular
+file; keep only configuration inputs in the included directory. Symbolic links
+and special files are rejected, and existing destination restrictions still
+apply. Included files use mode `0644` regardless of workstation permissions; use
+explicit `files` entries when a file needs `0600` or `0640`.
+
+Katl expands directories when validating and building the bundle; nodes receive
+the same self-contained files as explicit entries, and `katlctl config resolve`
+shows the expanded configuration. Directories do not introduce overlay
+precedence. Removing a source file removes it from the set's desired
+configuration on the next apply. An empty directory is an error: use
+`state: absent` to remove the complete set. Directory sets do not change how
+network files apply.
+
+### Networkd files
+
+Katl accepts native `.network`, `.netdev`, and `.link` units plus one-level
+`*.network.d/*.conf`, `*.netdev.d/*.conf`, and `*.link.d/*.conf` drop-ins below
+`/etc/systemd/network`. Users select the unit and drop-in names but cannot move
+network configuration outside that Katl-controlled directory.
+
+Without operator network units, Katl generates a DHCP fallback. Any operator
+`.network` unit replaces that fallback; auxiliary `.link`, `.netdev`, and
+drop-in files can compose with it. The fallback offers DHCP only to Ethernet
+links that have no virtual netdev kind and marks those links required and
+routable for boot health. Interfaces created later by a CNI, including veth
+pairs, Cilium host devices, overlays, and CNI bridges, therefore remain
+unmanaged by networkd and cannot make a broken management path appear healthy.
+To make a host bridge, bond, VLAN, or tunnel part of the node's own network,
+declare its native networkd units; the operator units then replace the fallback
+and own that topology explicitly.
+
+Boot health requires every managed link whose effective networkd configuration
+enables `RequiredForOnline` to be online and at least one of those links to be
+routable. Set `RequiredForOnline=no` in a link's `[Link]` section when a managed
+secondary link is intentionally optional at boot.
+
+### Apply behavior by file type
+
+| Files | Activation |
+| --- | --- |
+| Network files | Live: Katl reloads networkd for `.network` and `.netdev` changes and reloads udev for `.link` changes; see the [network caution](../operations/configure-nodes.md#configure-native-linux-facilities) |
+| Sysctl files | Live for a reversible concrete-key change |
+| Udev rules | Live reload; Katl does not retrigger existing devices |
+| Unit definitions and drop-ins under `/etc/systemd/system` | Live; see [enabled units](#enabled-units) |
+| Supported systemd component drop-ins, such as `journald.conf.d` and `timesyncd.conf.d` | Live; Katl reloads or restarts an active consumer as appropriate |
+| Module load, modprobe, and containerd overlays | Next boot |
+| Other permitted files | Next boot, unless Katl can derive their consumer or their set declares an `onChange` notification |
+
+Containerd imports `/etc/containerd/conf.d/*.toml` when it starts.
+
+Application configuration files, template-wide and type-wide drop-ins need
+explicit `onChange.systemd` notifications when their consumer cannot be
+inferred. A set may declare a bounded notification for an unprotected existing
+unit:
+
+```yaml
+files:
+  - path: /etc/example/config.yaml
+    content: |
+      enabled: true
+onChange:
+  systemd:
+    - unit: example.service
+      action: try-reload-or-restart
+```
+
+The accepted actions are `reload`, `try-reload-or-restart`, `try-restart`,
+`reload-or-restart`, and `restart`. The `try-` actions leave stopped units
+stopped. `restart` and `reload-or-restart` may start a stopped consumer during
+live apply; `reload` requires a running unit that supports reload. At boot,
+notifications refresh already running consumers; other units read the new
+configuration when they start. Use `enabledUnits` for persistent activation.
+
+### Sysfs settings
+
+`hostConfiguration.sysfs` sets typed sysfs values at boot:
+
+```yaml
+spec:
+  defaults:
+    hostConfiguration:
+      sysfs:
+        - path: /sys/module/printk/parameters/time
+          value: N
+        - path: /sys/devices/system/cpu/cpu*/cpufreq/energy_performance_preference
+          value: balance_performance
+```
+
+Sysfs settings are next-boot-only. Katl renders them to an internal tmpfiles
+rule, applies each value, and reads it back before boot health succeeds. Each
+`path` must be a unique normalized `/sys/...` path. Paths may use `*`, `?`, and
+bracket ranges such as `[0-9]` to match multiple files. At boot, every matched
+file receives the same value; verification fails if the pattern matches no
+files or any matched file has a different value. Each `value` must be a
+non-empty single-line value without leading or trailing whitespace. A
+node-level `sysfs` list replaces the defaults list; use `sysfs: []` to clear
+inherited settings.
+
+### Enabled units
+
+`hostConfiguration.enabledUnits` declares services, timers, sockets, or
+instantiated template units to enable. `katlctl cluster apply` enables and
+starts newly listed units without a reboot. Katl honors native `[Install]`
+metadata, recreates its enablement at boot, and starts units after
+configuration and system extensions are available. Native `After=`, `Before=`,
+and dependency directives determine ordering; listing units in a particular
+order does not. Ordinary enabled units do not become prerequisites for Katl's
+boot health.
+
+A node's list replaces the defaults; `enabledUnits: []` clears inherited
+enablement. Removing a unit stops it and removes Katl's runtime enablement.
+Vendor enablement and activation through dependencies, sockets, or D-Bus still
+apply. Use [`maskedUnits`](#masked-units) when a unit must remain stopped. A unit
+cannot be both enabled and masked, or managed through both this list and an
+extension's units.
+
+Put native unit definitions and drop-ins in file sets under
+`/etc/systemd/system`. Changes to a concrete unit or its drop-ins automatically
+reload systemd's configuration and restart that unit if it was running or is
+declared enabled. Katl also derives the consumer for supported native systemd
+component drop-ins, including `journald.conf.d` and `timesyncd.conf.d`, and
+reloads or restarts an active consumer as appropriate. Stopped, undeclared
+units stay stopped. Configuration and unit changes in an extension also apply
+live when the extension itself is unchanged; changing the extension still
+requires the next boot.
+
+Live apply groups affected service stops and starts using native systemd
+dependency transactions. On failure it restores the previous configuration,
+runtime enablement, and observed service state. Unit removal stops the service
+before its old files disappear. Native unit dependencies can affect additional
+units; use them with the same care as with ordinary systemd administration.
+
+### Masked units
+
+`hostConfiguration.maskedUnits` stops unwanted services and prevents systemd
+from starting them again, including through dependencies or manual start
+requests. Mask-only changes apply live without rebooting; the masks persist
+across reboot and upgrades. Katl refuses masks for its protected,
+release-critical units. Masking is stronger than disabling: disabling only
+removes enablement links and can still allow activation through sockets,
+dependencies, or D-Bus.
+
+A node's `maskedUnits` list replaces the defaults. Set `maskedUnits: []` on a
+node to clear inherited masks. Removing a mask restores the vendor unit's
+normal activation behavior without starting it as part of the apply. Also mask
+triggering socket, timer, or path units when you want to suppress those
+activation attempts. Use concrete unit names, including an instance name for
+template units.
 
 ## Kernel arguments
 
@@ -99,10 +356,17 @@ references, see [management access](../operations/access.md#security-boundary).
 command line. It may be set under `spec.defaults` or on a concrete node; a
 node-level `kernel` block replaces the default list, and `commandLine: []`
 clears inherited additions. Each list item is one whitespace-free kernel
-argument, such as `intel_iommu=on` or `iommu=pt`. Katl rejects arguments that
-would override its root, immutable-runtime, generation identity, or recovery
-policy. Image-required and Katl-owned arguments remain internal and are always
-carried alongside the configured additions.
+argument, such as `intel_iommu=on` or `iommu=pt`.
+
+Applying a changed list creates a next-boot generation; `katlctl cluster apply`
+reports that a reboot is required, and the new arguments become active after
+that reboot. Reapplying the same list is a no-op.
+
+Katl preserves release-required arguments and owns root selection, immutable
+runtime mounting, generation and machine identity, and recovery targets.
+Arguments that would override that policy fail validation with the offending
+list entry. Image-required and Katl-owned arguments remain internal and are
+always carried alongside the configured additions.
 
 ## Data volumes
 
@@ -127,11 +391,32 @@ unit and stops managing the target. It does not format, repartition, run
 `wipefs`, or erase the partition, filesystem, mount-point directory, or data.
 Re-adding a matching selector mounts the preserved filesystem again.
 
+### Wipe authorization
+
+`wipe: true` explicitly authorizes erasing the selected disk or partition,
+including existing filesystems and partition metadata, when provisioning the
+volume. No additional acknowledgement is required for installation or
+configuration apply; `cluster apply` validates every selected node before
+mutation. With `wipe: false` (the default), Katl reuses a compatible existing
+filesystem and refuses changes that require formatting.
+
+For a disk selector, `wipe: true` lets Katl reinitialize the disk and create
+its convention-labeled partition with `systemd-repart`. For a partition
+selector, Katl formats only the selected partition and never repartitions its
+parent disk. Live apply refuses mounted or otherwise active destructive targets
+rather than disrupting workloads.
+
+Choose the target with a unique stable selector. Wipe authorization does not
+bypass ambiguous selection, active-device checks, or conflicts with the system
+disk and other volumes. Once provisioned, an unchanged generation-bound volume
+is reused on repeated applies and reboot; retaining `wipe: true` does not erase
+its contents again. Replacing a bound volume additionally requires
+[`--rebind-volume`](#replace-a-bound-volume).
+
 ### Select a disk or partition
 
-A disk-backed entry with `wipe: true` authorizes reinitialization of the
-selected disk, including any existing contents. Katl uses `systemd-repart`
-to create and format its convention-labeled partition:
+A disk-backed entry with `wipe: true` uses `systemd-repart` to create and
+format its convention-labeled partition:
 
 ```yaml
 install:
@@ -163,10 +448,7 @@ storage:
 ```
 
 With `wipe: false`, the selected target must already contain the requested
-filesystem and Katl preserves it. With `wipe: true`, Katl formats the selected
-target; a partition selector never repartitions its parent disk. Live apply
-refuses mounted or otherwise active destructive targets rather than disrupting
-workloads.
+filesystem and Katl preserves it.
 
 Selectors are used only while provisioning or explicitly replacing a volume.
 Once Katl resolves a selector, the resulting PARTUUID (or filesystem UUID when
@@ -176,23 +458,15 @@ therefore cannot redirect an existing mount. If no prior binding exists, an
 ambiguous label blocks planning and must be replaced with a unique `byID`,
 `partUUID`, or `filesystemUUID` selector.
 
-`wipe: true` explicitly authorizes erasing the selected disk or partition,
-including existing filesystems and partition metadata, when provisioning the
-volume. No additional acknowledgement is required for installation or
-configuration apply. With `wipe: false` (the default), Katl reuses a compatible
-existing filesystem and refuses changes that require formatting.
-
-Choose the target with a unique stable selector. Wipe intent does not bypass
-ambiguous selection, active-device checks, or conflicts with the system disk
-and other volumes. Once provisioned, an unchanged generation-bound volume is
-reused on repeated applies and reboot; retaining `wipe: true` does not erase
-its contents again.
-
 ### Replace a bound volume
 
 Replacing a generation-bound volume is a separate decision from overwriting
-its contents. Change the selector to the replacement's exact stable identity,
-plan the change, inspect the reported target, then authorize that transition:
+its contents. If a selector changes to a different device, planning fails until
+the operator supplies the reported one-shot `--rebind-volume NODE/VOLUME`
+authority. Change the selector to the replacement's exact `byID`, `partUUID`,
+or `filesystemUUID`, plan the change, inspect the reported target, then
+authorize that transition; an ambiguous `byVolumeName` label remains an error
+even with rebind authority:
 
 ```console
 katlctl cluster apply --config ./cluster.yaml --node worker-1 \
@@ -200,9 +474,8 @@ katlctl cluster apply --config ./cluster.yaml --node worker-1 \
 ```
 
 `--rebind-volume` is one-shot operation authority and is not persisted in
-ClusterConfig. Set `wipe: true` to authorize formatting the replacement,
-including existing contents. Removing a volume does not rebind
-or erase it: Katl retains an unmounted generation binding for that logical
+ClusterConfig. Set `wipe: true` if the replacement must be formatted. Removing
+a volume does not rebind or erase it: Katl retains an unmounted generation binding for that logical
 name, so re-adding the same exact identity preserves its data and selecting a
 different identity still requires `--rebind-volume`.
 
@@ -233,8 +506,30 @@ spec:
 ```
 
 The API port defaults to `6443`. Katl starts with the VIP released and acquires
-it only after that node's kube-apiserver is ready. If the VIP must be routed,
-configure routing separately with native system extensions. For example:
+it only after that node's kube-apiserver is ready, creating the stable
+`katl-api` dummy interface and adding the VIP only while the local
+kube-apiserver is healthy. If the VIP must be routed, configure routing
+separately with a native system extension; see
+[Route the API VIP with BIRD](#route-the-api-vip-with-bird).
+
+## System extensions
+
+The typed `systemExtensions` list is generic: Katl resolves each extension's
+OCI reference to immutable bytes while compiling, carries it in the
+self-contained configuration bundle, installs its sysext and optional confext in
+the selected generation, and applies native files and unit drop-ins from that
+same entry. Configuration source paths are relative to `cluster.yaml`.
+
+The full OCI repository identifies each list item; there is no separate `name`.
+Defaults merge into nodes by repository, excluding the tag or digest. A node
+item replaces the complete default item for that repository. To remove an
+inherited item, repeat its selector with `state: absent`; Katl does not download
+the artifact for removal.
+
+### Route the API VIP with BIRD
+
+This operator-owned extension advertises the
+[Katl-managed API VIP](#kubernetes-api-endpoint):
 
 ```yaml
 spec:
@@ -262,22 +557,10 @@ spec:
                   CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 ```
 
-Katl creates the stable `katl-api` dummy interface and adds the VIP only while
-the local kube-apiserver is healthy. It does not interpret BIRD configuration
-or infer that an extension is related to the VIP. The typed
-`systemExtensions` list is generic: Katl resolves the OCI bundle to immutable
-bytes while compiling, carries it in the self-contained config bundle, installs
-its sysext and optional confext in the selected generation, and applies native
-files and unit drop-ins from that same entry. Configuration source paths are
-relative to `cluster.yaml`.
+Katl does not interpret BIRD configuration or infer that an extension is
+related to the VIP.
 
-## System extensions
-
-The full OCI repository identifies each list item; there is no separate `name`.
-Defaults merge into nodes by repository, excluding the tag or digest. A node
-item replaces the complete default item for that repository. To remove an
-inherited item, repeat its selector with `state: absent`; Katl does not download
-the artifact for removal.
+### Release-owned extensions
 
 For a release-owned extension, use `release` instead of `bundle` and provide
 the full repository without a tag or digest. The target KatlOS release selects
@@ -305,17 +588,21 @@ enforcement. This beta artifact has not yet been validated with a physical GPU,
 a Kubernetes GPU workload, or a host upgrade and rollback. Verify `nvidia-smi`
 on the node after reboot before placing GPU workloads on it.
 
-Payload changes and removal select a next-boot generation. If the
-payload is unchanged, configuration, unit drop-ins, and enablement changes
-apply live. Katl reloads or restarts running consumers;
+### Apply and inspect extensions
+
+Changing or removing an extension selects a next-boot generation. If the
+extension itself is unchanged, configuration, unit drop-ins, and
+enablement changes apply live. Katl reloads or restarts running consumers;
 unit definition changes restart them so the new definition takes effect.
-Native `[Install]` metadata controls enablement. `requiredForBootHealth` makes
-the unit an explicit boot prerequisite; ordinary enabled units may start later.
-Use `katlctl system-extension inspect` or `validate` for
-an OCI bundle and `katlctl system-extension status --node NODE [NAME]` after
-apply. Registry credentials, when needed during workstation compilation, come
-from the normal Docker credential store and are never embedded in config or
-node state.
+Native `[Install]` metadata controls enablement. `requiredForBootHealth`
+makes the unit an explicit boot prerequisite; ordinary enabled units may
+start later. Use `katlctl system-extension inspect` or `validate` for an
+extension bundle and `katlctl system-extension status --node NODE [NAME]`
+after apply. Registry credentials, when needed during workstation compilation,
+come from the normal Docker credential store and are never embedded in config
+or node state.
+
+### Pin bundle references
 
 A tag-only `bundle` reference keeps the routine home-lab path convenient, but
 the tag may select different bytes in a later compilation. Katl resolves it
@@ -346,10 +633,10 @@ spec:
 Both paths are relative to `cluster.yaml`. Katl validates the native document
 kinds and API versions, rejects unsafe host paths and filesystem escapes,
 supplies its required role defaults, and embeds the resulting files into the
-compiled `.katlcfg`. It selects control-plane and worker documents internally
-and injects bootstrap tokens and certificate material only when the explicit
-bootstrap operation runs. Omit the entire `kubeadm` block for Katl's complete
-defaults.
+configuration bundle (`.katlcfg`). It selects control-plane and worker
+documents internally and injects bootstrap tokens and certificate material only
+when the explicit bootstrap operation runs. Omit the entire `kubeadm` block for
+Katl's complete defaults.
 
 ### Memory reserved for the host
 
@@ -440,10 +727,44 @@ Kubeadm applies the selected ordinary native patches first, then the explicit
 fields in this overlay. Omitted overlay fields retain their value from the
 patched shared configuration.
 
+## Generation retention
+
+`generationRetention` configures automatic cleanup of old
+[generations](../concepts/generations.md#retention) in ClusterConfig defaults
+or on an individual node:
+
+```yaml
+spec:
+  defaults:
+    generationRetention:
+      keepLast: 5
+      maxAge: 30d
+```
+
+These are also the defaults when the policy is omitted. A node's
+`generationRetention` replaces the complete defaults policy. `keepLast` must be
+at least one. `maxAge` accepts whole days (`30d`) or a duration (`720h`); `0d`
+disables the age floor.
+
+For each installed OS version, the `katlc` management agent keeps
+its newest `keepLast` generations **and** all generations younger than
+`maxAge`. A generation is eligible for cleanup only when it is outside both
+groups. Protected generations survive regardless of age or count, so these
+settings are retention floors, not a hard space limit. Records invalidated
+by slot replacement are eligible immediately, subject to shared-artifact
+protection.
+
+Policy changes can apply online through `katlctl cluster apply`. `katlc`
+evaluates the active generation's policy at startup and hourly, skipping
+cleanup during active operations or unsettled boot health. Booting an older
+generation also restores its retention configuration. Cleanup removes
+generation-owned files and boot entries; shared slot kernels and root
+partitions are managed by OS upgrades.
+
 ## Use the configuration
 
 Use `cluster.yaml` directly for [ISO installation](../installing.md#iso-or-local-handoff),
 [bootstrap](../operations/bootstrap-kubernetes.md), and
 [configuration changes](../operations/configure-nodes.md). For network boot
 or offline provisioning, use the
-[compiled bundle procedure](../install-pxe-matchbox.md#compile-one-cluster-configuration-bundle).
+[configuration bundle procedure](../install-pxe-matchbox.md#compile-one-cluster-configuration-bundle).

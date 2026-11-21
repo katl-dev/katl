@@ -30,8 +30,16 @@ workflow.
   required ports. The control plane must reach kubelet on TCP `10250` for logs,
   exec, and metrics. Katl's management interface on TCP `9443` remains separate.
 
-For Talos, inspect API server arguments through Kubernetes and manage any
-required changes through your normal Talos machine configuration workflow:
+## If the existing cluster runs Talos
+
+Skip this section if your control plane does not run Talos. A Talos cluster
+may need bootstrap-token authentication enabled, and its generated add-ons
+pointed at a shared API endpoint, before a KatlOS worker can join.
+
+### Enable bootstrap-token authentication
+
+Inspect API server arguments through Kubernetes and manage any required changes
+through your normal Talos machine configuration workflow:
 
 ```sh
 kubectl -n kube-system get pods -l component=kube-apiserver -o yaml
@@ -87,6 +95,8 @@ kubectl -n kube-system patch cm kubeconfig-in-cluster --type merge \
 kubectl -n kube-system rollout restart ds/kube-proxy
 ```
 
+### Install the Flannel plugin on KatlOS workers
+
 Talos also supplies the Flannel CNI binary in its OS. Its default DaemonSet
 installs configuration without copying that binary to other operating systems.
 Install the plugin on Katl workers through your retained CNI deployment. The
@@ -104,6 +114,8 @@ Keep the plugin image version aligned with your Flannel deployment. Do not mount
 or overwrite Talos's packaged CNI binaries with this installer. A
 `FailedCreatePodSandBox` event naming a missing `flannel` plugin indicates that
 this installation is incomplete.
+
+### Other CNIs on Talos
 
 For Cilium or another CNI, make the equivalent API endpoint selection in its
 retained configuration. Keep TLS verification enabled and review its host
@@ -181,7 +193,8 @@ katlctl node status worker-1 --config ./cluster.yaml
 
 The worker must have a healthy committed installed generation before the first
 join. Keep the source configuration and its referenced kubelet file together;
-bootstrap credentials do not belong in either file or in a `.katlcfg` bundle.
+bootstrap credentials do not belong in either file or in a configuration bundle
+(`.katlcfg`).
 
 ## Prepare a bootstrap identity
 
@@ -316,16 +329,30 @@ worker for restart and renewal.
 
 ## Verify the resulting worker
 
-Check the worker through both management and Kubernetes:
+1. Check the worker through both management and Kubernetes:
 
-```sh
-katlctl node status worker-1 --config ./cluster.yaml
-kubectl wait --for=condition=Ready node/worker-1 --timeout=5m
-kubectl get node worker-1 -o wide
-katlctl node join worker-1 --config ./cluster.yaml
-katlctl node reboot worker-1 --config ./cluster.yaml
-kubectl wait --for=condition=Ready node/worker-1 --timeout=5m
-```
+   ```sh
+   katlctl node status worker-1 --config ./cluster.yaml
+   kubectl wait --for=condition=Ready node/worker-1 --timeout=5m
+   kubectl get node worker-1 -o wide
+   ```
+
+2. Repeat the join without the bootstrap file. A completed join is a no-op, so
+   this confirms that the enrollment is recorded and no longer depends on the
+   revoked token:
+
+   ```sh
+   katlctl node join worker-1 --config ./cluster.yaml
+   ```
+
+3. Reboot the worker and wait for it to become Ready again. This confirms that
+   kubelet comes back with its persisted client identity rather than needing a
+   new enrollment:
+
+   ```sh
+   katlctl node reboot worker-1 --config ./cluster.yaml
+   kubectl wait --for=condition=Ready node/worker-1 --timeout=5m
+   ```
 
 Also schedule a representative workload on this worker and verify pod-to-pod
 traffic, service routing, DNS, and `kubectl logs` or `exec`. These checks exercise
@@ -385,7 +412,7 @@ server or more than three minor versions older. With a load-balanced API,
 complete the control-plane upgrade across its backends before upgrading workers;
 one endpoint observation does not inventory every backend.
 
-The upgrade verifies and activates the selected Kubernetes payload, restarts
+The upgrade verifies and activates the selected Kubernetes bundle, restarts
 kubelet, waits for the target version and a Ready Node, and promotes the new
 persistent generation without reboot. It preserves native kubelet configuration
 and enrollment. Katl does not download kubeadm cluster configuration, manage
@@ -398,16 +425,3 @@ Changing an enrolled worker's endpoint, enrollment identity, or control-plane
 ownership requires reprovisioning. Drain and remove a
 worker through your external cluster's maintenance procedure before intentionally
 replacing it; Katl does not coordinate removal with that control plane.
-
-## Run the focused VM test
-
-The focused regression uses one Katl control-plane VM and an independently
-provisioned external worker. It removes kubeadm cluster configuration and stops
-the control plane's Katl management agent before joining the worker, then checks
-readiness, repeat operations, and cross-node Service traffic through the public
-interfaces. Run it on a host with libvirt, KVM, and vsock available:
-
-```sh
-scripts/vmtest-run ./internal/vmtest/scenarios \
-  -run '^TestExternalWorkerJoin$' -count=1 -v -timeout 30m
-```

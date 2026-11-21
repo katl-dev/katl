@@ -3,7 +3,7 @@
 KatlOS restricts each base service according to its host responsibilities.
 The management API and operator SSH access remain administrative interfaces:
 use the trusted management network or opt-in management mTLS described in
-[management access](../operations/access.md).
+[management access](../operations/management-auth.md).
 
 ## Policy ownership
 
