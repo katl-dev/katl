@@ -35,6 +35,7 @@ type installApplyOptions struct {
 	noWait                             bool
 	timeout                            time.Duration
 	output                             string
+	verbose                            bool
 }
 
 type installStatusOptions struct {
@@ -112,8 +113,9 @@ configuration or cluster bootstrap to start Kubernetes.
 Without --node, visit every configured node and skip installers that are not
 waiting for configuration or have no reachable handoff service. Only nodes that
 report a waiting state receive configuration, and the command fails when no
-node was waiting. With multiple nodes, JSON output is an array of reports,
-including skipped nodes and their reasons.
+node was waiting. Use --verbose to log each skipped node and the reason. With
+multiple nodes, JSON output is an array of reports, including skipped nodes and
+their reasons.
 Use --node to select one node before overriding its address with --endpoint.
 
 The command waits for each installation to finish and request its first reboot.
@@ -130,6 +132,7 @@ Use node status after reboot to check the installed system (port 9443).`,
 	_ = cmd.Flags().MarkHidden("acknowledge-storage-wipe")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the installer accepts the bundle")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "per-node handoff and install wait timeout")
+	cmd.Flags().BoolVarP(&opts.verbose, "verbose", "v", false, "log skipped nodes and the reason each was skipped")
 	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
 }
@@ -190,7 +193,7 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 			return err
 		}
 		if skippedAt != "" {
-			return fmt.Errorf("no waiting installer found at %s; boot the node from KatlOS installer media, then check the installer address or pass --endpoint with its current address", skippedAt)
+			return fmt.Errorf("no waiting installer found at %s; boot the node from KatlOS installer media, then check the installer address or pass --endpoint with its current address%s", skippedAt, skipDetailHint(opts))
 		}
 		return nil
 	}
@@ -221,9 +224,29 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 		}
 	}
 	if len(failures) == 0 && installed == 0 {
-		return fmt.Errorf("no waiting installer found for any configured node; boot the nodes from KatlOS installer media, then check their management addresses or select one with --node and pass --endpoint with its installer address")
+		return fmt.Errorf("no waiting installer found for any configured node; boot the nodes from KatlOS installer media, then check their management addresses or select one with --node and pass --endpoint with its installer address%s", skipDetailHint(opts))
 	}
 	return errors.Join(failures...)
+}
+
+// reportSkippedInstall keeps skipped nodes in JSON reports but logs them in text
+// mode only with --verbose, so routine bulk runs show just the nodes installed.
+func reportSkippedInstall(opts installApplyOptions, report installHandoffReport, stdout, stderr io.Writer) error {
+	if opts.output == "json" {
+		return writeInstallReport(stdout, opts.output, report)
+	}
+	if !opts.verbose {
+		return nil
+	}
+	_, err := fmt.Fprintf(stderr, "skipping node %s at %s: %s\n", report.SelectedNode, report.Endpoint, report.SkipReason)
+	return err
+}
+
+func skipDetailHint(opts installApplyOptions) string {
+	if opts.verbose || opts.output == "json" {
+		return ""
+	}
+	return "; rerun with --verbose to see why each node was skipped"
 }
 
 // applyInstallNode installs the selected node. When no installer at the node's
@@ -259,7 +282,7 @@ func applyInstallNode(ctx context.Context, opts installApplyOptions, inventory c
 			report := newInstallHandoffReport(endpoint, nodeName, before)
 			report.Skipped = true
 			report.SkipReason = fmt.Sprintf("handoff unavailable: %v", err)
-			return endpoint, writeInstallReport(stdout, opts.output, report)
+			return endpoint, reportSkippedInstall(opts, report, stdout, stderr)
 		}
 		return "", err
 	}
@@ -267,7 +290,7 @@ func applyInstallNode(ctx context.Context, opts installApplyOptions, inventory c
 		report := newInstallHandoffReport(endpoint, nodeName, before)
 		report.Skipped = true
 		report.SkipReason = fmt.Sprintf("installer state=%s", before.State)
-		return endpoint, writeInstallReport(stdout, opts.output, report)
+		return endpoint, reportSkippedInstall(opts, report, stdout, stderr)
 	}
 	// Prepare only waiting nodes, using each installer's own release target.
 	extensions, err := installExtensionPlanning(opts.configPath, nodeName, endpoint, before)
@@ -795,17 +818,9 @@ func writeInstallReport(stdout io.Writer, output string, report installHandoffRe
 		if state == "" {
 			state = string(report.Handoff.State)
 		}
-		if report.Skipped {
-			state = "skipped"
-		}
 		w.row(node, report.Endpoint, state, step)
 		if err := w.flush(); err != nil {
 			return err
-		}
-		if report.Skipped && report.SkipReason != "" {
-			if _, err := fmt.Fprintf(stdout, "Skipped: %s\n", report.SkipReason); err != nil {
-				return err
-			}
 		}
 		if installFailed(report.Handoff.InstallStatus.State) {
 			if _, err := fmt.Fprintf(stdout, "Failure: %s\n", installFailure(report.Handoff.InstallStatus)); err != nil {
