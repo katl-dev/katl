@@ -33,10 +33,9 @@ The supported release surface is deliberately narrow:
 Each release is qualified by automated install, bootstrap, configuration,
 management, and upgrade journeys in libvirt, KVM, and OVMF virtual machines for
 both kernel flavours; see [release qualification](development/releases.md#qualification-and-promotion).
-A release makes no claim for physical hardware unless its release notes name
-that hardware, and a successful VM run does not establish general hardware
-compatibility. Firmware, storage controllers, network devices, and physical
-machines that a release was not tested on are unverified.
+A release makes no claim for physical hardware, and a successful VM run does
+not establish hardware compatibility. Firmware, storage controllers, network
+devices, and physical machines are unverified.
 
 Katl prepares kubeadm-ready nodes and performs bounded bootstrap operations. It
 does not provide a Kubernetes distribution. Users own DHCP/PXE infrastructure,
