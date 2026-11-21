@@ -742,6 +742,11 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("kubectl nodes did not converge: %v\n%s", err, output)
 	}
+	if err := assertCertificateExpiryStatus(t, ctx, result.RunDir); err != nil {
+		collectTwoNodeDiagnostics("", nodes...)
+		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+		t.Fatalf("certificate expiry status: %v", err)
+	}
 	if err := verifyKubernetesNodeOSImages(ctx, kubeconfigPath, filepath.Join(result.RunDir, "kubectl-node-os-images.json"), inputs.SSHPrivateKey, nodes, map[string]string{
 		"cp-1":     cpGenerationRecord.Spec.RuntimeVersion,
 		"worker-1": workerGenerationRecord.Spec.RuntimeVersion,

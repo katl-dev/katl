@@ -48,6 +48,14 @@ JSON output includes the full report regardless of `--verbose`.
 problem. Use `--verbose` to also show healthy proxy details and listener
 addresses. JSON output always includes those details.
 
+On a control plane, `node status` also shows the kubeadm certificate that
+expires first, named as `kubeadm certs check-expiration` names it. The
+candidates are the certificates that `kubeadm certs renew all` renews; CAs and
+kubelet certificates are excluded. `cluster status` shows the certificate only
+when it expires within 30 days or has expired, and both commands then point to
+[Renew Kubernetes certificates](../operations/renew-certificates.md). JSON output always includes `kubernetes.certificateExpiry`
+with `name`, `notAfter`, and a `state` of `ok`, `expiring`, or `expired`.
+
 ## Operator journey
 
 Prefix each command below with `katlctl`.
@@ -215,6 +223,9 @@ specified. It defaults to the configured API endpoint; `--server` and optionally
 is reachable. Files are mode 0600; different existing content requires `--force`.
 It neither merges into `~/.kube/config` nor switches a kubectl context. Command
 output reports the path and endpoint, never credential contents.
+Each control plane holds its own admin credentials, so retrieval skips a node
+whose credentials have expired and reports the renewal guidance if no node has
+valid ones. It warns when the credentials it writes expire within 30 days.
 
 The management API must be reachable for logs and kubeconfig retrieval. Use SSH
 or the physical/serial console for failed boot, network, or agent recovery.

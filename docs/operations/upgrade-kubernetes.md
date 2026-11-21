@@ -65,6 +65,13 @@ replace control-plane manifests, although kubeadm may create temporary
 health-check objects during its plan. An explicit local artifact is uploaded
 for this inspection.
 
+The plan and the rollout refuse to start while a control plane reports an
+expired kubeadm certificate, because kubeadm and Katl's health checks need valid
+control-plane credentials before the upgrade can renew them. `katlctl node
+status` shows which certificate has expired;
+[renew the certificates](renew-certificates.md) on that node, then run the
+plan again.
+
 ## Execute the rollout
 
 Run the reviewed command without `--plan`:

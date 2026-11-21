@@ -2,8 +2,10 @@
 
 Use this procedure to renew the kubeadm-issued certificates on your control
 planes before they expire. Kubeadm issues its leaf certificates, including the
-credentials in `/etc/kubernetes/admin.conf`, for one year by default. Katl does
-not report certificate expiry or renew certificates on a schedule.
+credentials in `/etc/kubernetes/admin.conf`, for one year by default.
+`katlctl node status` shows the certificate that expires first on each control
+plane, and `katlctl cluster status` warns within 30 days of expiry. Katl does
+not renew certificates on a schedule.
 
 A [Kubernetes upgrade](upgrade-kubernetes.md) renews them for you: Katl runs
 `kubeadm upgrade apply` and `kubeadm upgrade node` with kubeadm's default
@@ -14,7 +16,9 @@ your next upgrade.
 Renew before anything expires. Katl's control-plane health checks and
 `katlctl cluster kubeconfig` use `/etc/kubernetes/admin.conf` on the node, so
 an expired `admin.conf` breaks Katl's health gates and kubeconfig retrieval as
-well as your own access.
+well as your own access. Katl reports the expired certificate in node health,
+skips that control plane when writing a kubeconfig, and refuses to start a
+Kubernetes upgrade until you renew.
 
 ## Before you start
 
