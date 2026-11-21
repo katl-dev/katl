@@ -92,15 +92,14 @@ func TestInstallerESPSameDiskInstall(t *testing.T) {
 		fail(err)
 	}
 	// One disk, one NIC, and one NVRAM store for the whole journey: the
-	// power cycle below reuses all three unchanged. The installer downloads
-	// the image into /run, which systemd sizes at 20% of RAM, so 2 GiB is
-	// too small for the image.
+	// power cycle below reuses all three unchanged. 2 GiB is the documented
+	// minimum installer RAM; the downloaded image is staged in memory.
 	vm := vmtest.VMConfig{
 		Boot:          vmtest.VMBoot{Image: disk, ImageFormat: vmtest.DiskRaw, ImageSerial: installerESPDiskSerial},
 		Network:       vmtest.VMNetworkConfig{MAC: node.MACAddress},
 		PreserveNVRAM: true,
 		KVM:           options.KVM,
-		RAMMiB:        4096,
+		RAMMiB:        2048,
 		CPUs:          2,
 		Timeout:       30 * time.Minute,
 	}

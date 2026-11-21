@@ -21,7 +21,6 @@ import (
 	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/handoff"
-	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
@@ -446,15 +445,15 @@ func TestManifestRunnerContextConfiguresImageResolver(t *testing.T) {
 		t.Fatalf("manifestRunnerContext() error = %v", err)
 	}
 
-	resolver, ok := install.KatlosResolver.(katlosimage.Resolver)
+	resolver, ok := install.KatlosResolver.(memoryStagedResolver)
 	if !ok {
-		t.Fatalf("KatlosResolver = %T, want katlosimage.Resolver", install.KatlosResolver)
+		t.Fatalf("KatlosResolver = %T, want memoryStagedResolver", install.KatlosResolver)
 	}
 	if resolver.MediaRoot != filepath.Dir(manifestPath) {
 		t.Fatalf("MediaRoot = %q, want %q", resolver.MediaRoot, filepath.Dir(manifestPath))
 	}
-	if resolver.WorkDir != filepath.Join(stateDir, "katlos-image") {
-		t.Fatalf("WorkDir = %q, want state-backed image workdir", resolver.WorkDir)
+	if strings.HasPrefix(resolver.WorkDir, "/run/") || strings.HasPrefix(resolver.WorkDir, stateDir) || resolver.AvailableBytes == nil {
+		t.Fatalf("WorkDir = %q, AvailableBytes set = %t; want checked image staging outside /run and the state dir", resolver.WorkDir, resolver.AvailableBytes != nil)
 	}
 	if resolver.Commands == nil || install.Commands == nil {
 		t.Fatalf("command runners are not configured: resolver=%#v install=%#v", resolver.Commands, install.Commands)

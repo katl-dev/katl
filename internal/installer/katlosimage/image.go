@@ -314,6 +314,17 @@ func imageFileIdentity(imagePath string, expectedSHA256 string, expectedSize uin
 	return got, uint64(size), nil
 }
 
+// InsufficientStorageError reports that the download location cannot hold
+// the image together with the caller's reserve.
+type InsufficientStorageError struct {
+	AvailableBytes uint64
+	RequiredBytes  uint64
+}
+
+func (e *InsufficientStorageError) Error() string {
+	return fmt.Sprintf("insufficient storage for KatlOS image download: %d bytes available, need %d bytes", e.AvailableBytes, e.RequiredBytes)
+}
+
 func downloadImage(ctx context.Context, expected manifest.KatlosImage, workDir string, client HTTPClient, maxSize, requiredFree uint64, available func(string) (uint64, error)) (string, string, uint64, error) {
 	expectedSHA256 := strings.TrimSpace(expected.SHA256)
 	if expectedSHA256 != "" {
@@ -370,7 +381,7 @@ func downloadImage(ctx context.Context, expected manifest.KatlosImage, workDir s
 		}
 		need := declared + requiredFree
 		if need < declared || free < need {
-			return "", "", 0, fmt.Errorf("insufficient storage for KatlOS image download: %d bytes available, need %d bytes", free, need)
+			return "", "", 0, &InsufficientStorageError{AvailableBytes: free, RequiredBytes: need}
 		}
 	}
 	file, err := os.CreateTemp(downloadDir, ".katlos-image-*.squashfs")

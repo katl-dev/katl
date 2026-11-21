@@ -98,11 +98,10 @@ func manifestRunnerContext(manifestPath, stateDir, inputMode, inputSource string
 		TargetRoot:   "/mnt/target",
 		Commands:     commands,
 		Store:        installer.NewFileStateStore(stateDir),
-		KatlosResolver: katlosimage.Resolver{
+		KatlosResolver: newMemoryStagedResolver(katlosimage.Resolver{
 			MediaRoot: mediaRoot,
-			WorkDir:   filepath.Join(stateDir, "katlos-image"),
 			Commands:  commands,
-		},
+		}),
 		MediaKatlosResolver: katlosimage.Resolver{
 			MediaRoot: media.Root,
 			WorkDir:   filepath.Join(stateDir, "katlos-image"),
@@ -188,11 +187,10 @@ func bundleRunnerContext(bundlePath, manifestPath, stateDir, inputMode, inputSou
 		TargetRoot:   "/mnt/target",
 		Commands:     commands,
 		Store:        installer.NewFileStateStore(stateDir),
-		KatlosResolver: katlosimage.Resolver{
+		KatlosResolver: newMemoryStagedResolver(katlosimage.Resolver{
 			MediaRoot: mediaRoot,
-			WorkDir:   filepath.Join(stateDir, "katlos-image"),
 			Commands:  commands,
-		},
+		}),
 		MediaKatlosResolver: katlosimage.Resolver{
 			MediaRoot: media.Root,
 			WorkDir:   filepath.Join(stateDir, "katlos-image"),

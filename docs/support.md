@@ -19,7 +19,11 @@ security-response SLA.
 
 The supported release surface is deliberately narrow:
 
-- x86-64 machines booted with UEFI.
+- x86-64 machines booted with UEFI, with at least 2 GiB of RAM. The installer
+  runs from RAM, and when it downloads the KatlOS image from a URL, as in PXE
+  installs, it holds that image in memory until it reboots. An installer
+  that lacks the memory refuses before changing any disk and names the RAM
+  the machine needs.
 - The self-contained installer ISO, or the matching loose UEFI/PXE artifacts.
 - One `config.katl.dev/v1alpha1` ClusterConfig compiled by the matching
   `katlctl` release.
