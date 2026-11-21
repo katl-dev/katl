@@ -3271,6 +3271,9 @@ func bootstrapInventory(ctx context.Context, opts clusterBootstrapOptions, stder
 	}
 	inv := config.Inventory
 	clusterName := config.ClusterName
+	if config.EndpointDerived && inv.ControlPlaneEndpoint != "" {
+		fmt.Fprintf(stderr, "warning: control-plane endpoint %s is derived from the control plane's management address; set spec.controlPlaneEndpoint to a stable VIP or DNS name before bootstrap, because changing the endpoint afterwards is not supported\n", inv.ControlPlaneEndpoint)
+	}
 	for index := range inv.Nodes {
 		enrolled, ok := enrolledTarget(ctx, "", "", clusterName, inv.Nodes[index].Name)
 		if !ok {

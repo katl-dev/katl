@@ -307,7 +307,7 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 
 func annotateStarterConfig(data []byte, missingSSHKeys bool) []byte {
 	comments := "spec:\n" +
-		"    # Stable Kubernetes API endpoint for multi-control-plane clusters.\n" +
+		"    # Stable Kubernetes API VIP or DNS name; without it, the first control plane's address is used and cannot be changed later.\n" +
 		"    # controlPlaneEndpoint:\n" +
 		"    #     host: api.home.arpa\n" +
 		"    #     # port: 6443\n" +

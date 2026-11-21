@@ -56,7 +56,7 @@ kind: ClusterConfig
 metadata:
   name: katl-lab
 spec:
-  # Stable Kubernetes API endpoint for multi-control-plane clusters.
+  # Stable Kubernetes API VIP or DNS name; without it, the first control plane's address is used and cannot be changed later.
   # controlPlaneEndpoint:
   #   host: api.home.arpa
   #   # port: 6443

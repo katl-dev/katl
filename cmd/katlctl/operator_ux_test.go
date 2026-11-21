@@ -57,7 +57,7 @@ func TestConfigInitEmitsStarterClusterConfig(t *testing.T) {
 			t.Fatalf("generated config contains internal default %q:\n%s", internalDefault, rendered)
 		}
 	}
-	for _, guidance := range []string{"# controlPlaneEndpoint:", "# Set controlPlane: true", "# Nodes use DHCP by default"} {
+	for _, guidance := range []string{"# controlPlaneEndpoint:", "the first control plane's address is used", "# Set controlPlane: true", "# Nodes use DHCP by default"} {
 		if !strings.Contains(rendered, guidance) {
 			t.Fatalf("generated config is missing guidance %q:\n%s", guidance, rendered)
 		}
