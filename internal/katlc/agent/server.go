@@ -98,6 +98,7 @@ type Server struct {
 	RunEtcd                  ToolRunner
 	RunReboot                ToolRunner
 	RunShutdown              ToolRunner
+	RunBootHealthStatus      ToolRunner
 	Now                      func() time.Time
 	OperationID              func(string, time.Time) (string, error)
 	AvailableStorage         availableStorageFunc
@@ -125,6 +126,7 @@ func NewServer(root string, store operation.Store) *Server {
 		RunEtcd:                  runChildProcess,
 		RunReboot:                runChildProcess,
 		RunShutdown:              runChildProcess,
+		RunBootHealthStatus:      runChildProcess,
 		Now:                      func() time.Time { return time.Now().UTC() },
 		OperationID:              defaultOperationID,
 		AvailableStorage:         filesystemAvailable,
@@ -231,7 +233,7 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 		return nil, status.Errorf(codes.FailedPrecondition, "read enrollment identity: %v", err)
 	}
 	currentGenerationID, _ := currentGenerationID(s.Root)
-	bootHealth := readNodeBootHealth(s.Root)
+	bootHealth := s.nodeBootHealth(ctx)
 	endpointStatus, err := controlPlaneEndpointStatus(s.Root)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "read control-plane endpoint status: %v", err)
@@ -287,6 +289,11 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 func (s *Server) SubmitOperation(ctx context.Context, req *agentapi.SubmitOperationRequest) (*agentapi.OperationAccepted, error) {
 	if req == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
+	}
+	if !req.DryRun {
+		if err := s.awaitBootHealth(ctx); err != nil {
+			return nil, err
+		}
 	}
 	if err := s.validateSubmit(req); err != nil {
 		return nil, err

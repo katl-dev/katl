@@ -713,6 +713,121 @@ func TestRecordBootedGenerationAfterTrialFallback(t *testing.T) {
 	}
 }
 
+func TestRecordBootedGenerationReplacesPreviousBootActiveGeneration(t *testing.T) {
+	now := time.Date(2026, 10, 4, 15, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name      string
+		selection BootSelectionRecord
+	}{
+		{
+			name: "persistent rollback",
+			selection: BootSelectionRecord{
+				DefaultGenerationID:           "gen0",
+				TargetBootGenerationID:        "gen0",
+				PreviousKnownGoodGenerationID: "gen1",
+				ActiveGenerationID:            "gen1",
+				BootedGenerationID:            "gen1",
+				DefaultBootEntry:              "loader/entries/katl-gen0.conf",
+				TargetBootEntry:               "loader/entries/katl-gen0.conf",
+				PreviousKnownGoodBootEntry:    "loader/entries/katl-gen1.conf",
+				BootedBootEntry:               "loader/entries/katl-gen1.conf",
+			},
+		},
+		{
+			name: "one-shot rollback",
+			selection: BootSelectionRecord{
+				DefaultGenerationID:           "gen1",
+				TargetBootGenerationID:        "gen0",
+				OneShot:                       true,
+				PreviousKnownGoodGenerationID: "gen0",
+				ActiveGenerationID:            "gen1",
+				BootedGenerationID:            "gen1",
+				DefaultBootEntry:              "loader/entries/katl-gen1.conf",
+				TargetBootEntry:               "loader/entries/katl-gen0.conf",
+				PreviousKnownGoodBootEntry:    "loader/entries/katl-gen0.conf",
+				BootedBootEntry:               "loader/entries/katl-gen1.conf",
+			},
+		},
+		{
+			name: "booted generation unchanged after live promotion",
+			selection: BootSelectionRecord{
+				DefaultGenerationID:           "gen1",
+				TargetBootGenerationID:        "gen0",
+				OneShot:                       true,
+				PreviousKnownGoodGenerationID: "gen0",
+				ActiveGenerationID:            "gen1",
+				BootedGenerationID:            "gen0",
+				DefaultBootEntry:              "loader/entries/katl-gen1.conf",
+				TargetBootEntry:               "loader/entries/katl-gen0.conf",
+				PreviousKnownGoodBootEntry:    "loader/entries/katl-gen0.conf",
+				BootedBootEntry:               "loader/entries/katl-gen0.conf",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeBootHealthGeneration(t, root, "gen0", "", CommitStateCommitted, BootStateGood, HealthStateHealthy, now.Add(-2*time.Hour))
+			writeBootHealthGeneration(t, root, "gen1", "gen0", CommitStateCommitted, BootStateGood, HealthStateHealthy, now.Add(-time.Hour))
+			selection := tc.selection
+			selection.APIVersion = APIVersion
+			selection.Kind = BootSelectionKind
+			selection.UpdatedAt = now.Add(-time.Minute)
+			writeBootHealthSelection(t, root, selection)
+
+			if err := RecordBootedGeneration(root, bootHealthCommandLine("gen0")); err != nil {
+				t.Fatal(err)
+			}
+
+			// The management agent starts before boot health and reports the
+			// active generation as the running one.
+			got, err := ReadBootSelection(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.ActiveGenerationID != "gen0" || got.BootedGenerationID != "gen0" {
+				t.Fatalf("selection before boot health = active %q booted %q, want gen0", got.ActiveGenerationID, got.BootedGenerationID)
+			}
+		})
+	}
+}
+
+func TestRecordBootedGenerationKeepsLivePromotionWithinBoot(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 10, 4, 15, 0, 0, 0, time.UTC)
+	writeBootHealthGeneration(t, root, "gen0", "", CommitStateCommitted, BootStateGood, HealthStateHealthy, now.Add(-2*time.Hour))
+	writeBootHealthGeneration(t, root, "gen1", "gen0", CommitStateCandidate, BootStatePending, HealthStateUnknown, now.Add(-time.Hour))
+	writeBootHealthSelection(t, root, BootSelectionRecord{
+		APIVersion:          APIVersion,
+		Kind:                BootSelectionKind,
+		DefaultGenerationID: "gen0",
+		ActiveGenerationID:  "gen0",
+		BootedGenerationID:  "gen0",
+		DefaultBootEntry:    "loader/entries/katl-gen0.conf",
+		BootedBootEntry:     "loader/entries/katl-gen0.conf",
+		UpdatedAt:           now.Add(-time.Minute),
+	})
+	if err := RecordBootedGeneration(root, bootHealthCommandLine("gen0")); err != nil {
+		t.Fatal(err)
+	}
+	setter := func(string, string) error { return nil }
+	if err := PromoteLiveGeneration(LivePromotionRequest{Root: root, GenerationID: "gen1", OperationID: "live", Now: now, SetBootDefault: setter, SetBootOneshot: setter}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Restarting systemd-sysext.service reruns activation in the same boot.
+	if err := RecordBootedGeneration(root, bootHealthCommandLine("gen0")); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ActiveGenerationID != "gen1" || got.BootedGenerationID != "gen0" {
+		t.Fatalf("selection after repeated activation = active %q booted %q, want live gen1 on booted gen0", got.ActiveGenerationID, got.BootedGenerationID)
+	}
+}
+
 func TestRecordBootHealthFailureWithoutPreviousRequiresRecovery(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 13, 0, 0, 0, time.UTC)

@@ -93,6 +93,16 @@ A generation that has not yet passed boot health must also bring its required
 networkd links online, with at least one routable link, so that the node stays
 reachable for management.
 
+Boot health runs on every boot, and the management agent answers before it
+finishes. While `katl-boot-health.service` is queued or running,
+`katlctl node status` reports health `pending`, and the agent holds node
+operations such as upgrades, configuration applies, and generation selection
+until it finishes. A held request is refused with a retry message after five
+minutes or shortly before its own timeout. Status, reboot, and shutdown requests
+are not held. If a unit that boot health requires fails to start, boot health
+does not run, status reports health `failed`, and node operations are
+accepted so that you can repair the node.
+
 When an armed trial loses management networking, fails required activation, or
 misses the 10-minute boot deadline, Katl restores the previous healthy
 generation as the default and performs **one** automatic reboot into it.

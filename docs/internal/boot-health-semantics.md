@@ -171,6 +171,42 @@ deferred
   health policy deliberately skipped for a debug or recovery boot
 ```
 
+## Current Boot Identity
+
+`/var/lib/katl/boot/selection.json` records `bootedGenerationID` and
+`activeGenerationID`. Management reports `activeGenerationID` as the node's
+current generation and checks `expectedCurrentGenerationID` against it, and the
+agent starts before boot health runs. The first `katl-generation-activate` run
+in each boot therefore records the kernel-selected generation as both booted
+and active. Activation runs again whenever `systemd-sysext.service` restarts, so
+the first run writes `/run/katl/boot-health/current`, and later runs in the same
+boot keep the active generation, which a live promotion may have replaced. The
+record relies on `/run` being cleared by every boot; KatlOS does not support
+systemd soft-reboot, which would keep it.
+
+## Management During Boot Health
+
+Boot health resets the default to the booted generation and rejects a boot whose
+pending trial changed underneath it, so the agent holds mutating requests
+(`SubmitOperation` other than dry runs, `SelectGeneration`, `RemoveGeneration`)
+until boot health settles for the current boot. `katl-boot-health-settled.target`
+wants and orders after `katl-boot-health.service` and `katl-boot-recovery.service`,
+so it is reached when boot health succeeds, fails, or cannot run because a unit
+it requires failed to start. Its `JobTimeoutSec=10min` bounds a hung
+dependency. The agent cannot order itself after the target, because boot health
+requires the agent, so it reads the target's start job from systemd at request
+time. systemd state is scoped to the running boot and covers the whole
+boot-health service, including configuration-apply bookkeeping after the
+selection update.
+
+A held request returns `Unavailable` after five minutes, or two seconds before
+the caller's deadline, so clients see the retry guidance within their own
+timeouts. Node status reports `pending` while the target has a start job or
+boot health is still running after the target gave up, and `failed` when boot
+health failed or did not run. A boot whose health cannot run still settles, so
+an operator can push a repair or select another generation. Reads, reboot, and
+shutdown are never held.
+
 ## Promotion Rules
 
 `good` means the node booted with that generation selected and reached

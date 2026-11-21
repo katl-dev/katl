@@ -1,0 +1,12 @@
+[Unit]
+Description=Katl boot health settled for this boot
+Documentation=man:systemd.target(5)
+# Reached when boot health finishes with any result, including when a unit it
+# requires fails to start. Management holds node mutations until then.
+Wants=katl-boot-health.service
+After=katl-boot-health.service katl-boot-recovery.service
+# A hung boot-health dependency must not hold management mutations forever.
+JobTimeoutSec=10min
+
+[Install]
+WantedBy=multi-user.target

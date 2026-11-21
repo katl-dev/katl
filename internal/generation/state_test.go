@@ -256,6 +256,22 @@ WantedBy=multi-user.target
 	if assets.BootCompleteTarget != wantComplete {
 		t.Fatalf("katl-boot-complete.target:\n%s\nwant:\n%s", assets.BootCompleteTarget, wantComplete)
 	}
+	wantSettled := `[Unit]
+Description=Katl boot health settled for this boot
+Documentation=man:systemd.target(5)
+# Reached when boot health finishes with any result, including when a unit it
+# requires fails to start. Management holds node mutations until then.
+Wants=katl-boot-health.service
+After=katl-boot-health.service katl-boot-recovery.service
+# A hung boot-health dependency must not hold management mutations forever.
+JobTimeoutSec=10min
+
+[Install]
+WantedBy=multi-user.target
+`
+	if assets.BootHealthSettled != wantSettled {
+		t.Fatalf("katl-boot-health-settled.target:\n%s\nwant:\n%s", assets.BootHealthSettled, wantSettled)
+	}
 	wantHealth := `[Unit]
 Description=Record successful Katl boot health
 Documentation=man:systemd.service(5)
@@ -401,6 +417,8 @@ func TestWriteState(t *testing.T) {
 	assertMissing(t, filepath.Join(root, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-ready.target"))
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-boot-complete.target"), assets.BootCompleteTarget)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-boot-health.service"), assets.BootHealthService)
+	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-boot-health-settled.target"), assets.BootHealthSettled)
+	assertSymlink(t, filepath.Join(root, "etc/systemd/system/multi-user.target.wants/katl-boot-health-settled.target"), "../katl-boot-health-settled.target")
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-boot-recovery.service"), assets.BootRecoveryService)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-boot-deadman.service"), assets.BootDeadmanService)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-boot-deadman.timer"), assets.BootDeadmanTimer)
@@ -461,6 +479,8 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-kubeadm-ready.target"), assets.KubeadmReadyTarget)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-boot-complete.target"), assets.BootCompleteTarget)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-boot-health.service"), assets.BootHealthService)
+	assertRepoFile(t, filepath.Join(systemdRoot, "katl-boot-health-settled.target"), assets.BootHealthSettled)
+	assertSymlink(t, filepath.Join(systemdRoot, "multi-user.target.wants/katl-boot-health-settled.target"), "../katl-boot-health-settled.target")
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-boot-recovery.service"), assets.BootRecoveryService)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-boot-deadman.service"), assets.BootDeadmanService)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-boot-deadman.timer"), assets.BootDeadmanTimer)

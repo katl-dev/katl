@@ -27,7 +27,7 @@ func (g *GuestControl) WaitBootComplete(ctx context.Context) error {
 }
 
 func checkBootHealth(ctx context.Context, guest *GuestControl) error {
-	for _, unit := range []string{"katl-boot-complete.target", "sshd.service", "katlc-agent.service", "etc-kubernetes.mount"} {
+	for _, unit := range []string{"katl-boot-complete.target", "katl-boot-health-settled.target", "sshd.service", "katlc-agent.service", "etc-kubernetes.mount"} {
 		if _, err := guest.Systemctl(ctx, "is-active", "--quiet", unit); err != nil {
 			return fmt.Errorf("boot access service %s: %w", unit, err)
 		}
