@@ -25,7 +25,7 @@ var groups = []group{
 	{"update", "./internal/vmtest", "TestInstalledRuntimeSysupdateRootUKITransfer"},
 	{"management", "./internal/vmtest", "TestInstalledRuntimeManagementRotationSmoke"},
 	{"storage", "./internal/vmtest/scenarios", "TestInstallerISOFirstInstallStorageAuthority"},
-	{"boot", "./internal/vmtest/scenarios", "TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke"},
+	{"boot", "./internal/vmtest/scenarios", "TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke|TestInstallerESPSameDiskInstall"},
 }
 
 func main() {

@@ -11,6 +11,7 @@ yourself.
 | ISO with DHCP on the provisioning network | Continue on this page. |
 | ISO with a static address, or a workstation on another subnet | [Advanced installer networking](install-advanced.md) |
 | Network boot with PXE, iPXE, or Matchbox | [Install KatlOS with PXE and Matchbox](install-pxe-matchbox.md) |
+| Installer on the system disk's ESP, without USB or network boot | [Boot the installer from the system disk](#boot-the-installer-from-the-system-disk) |
 
 ## Prerequisites
 
@@ -125,6 +126,31 @@ or watch the installer console for the result. Pass the same `--endpoint`
 override to `install status` if you used one to install. Once the node boots
 from its disk,
 [check the installed host](operations/access.md#confirm-generation-0).
+
+## Boot the installer from the system disk
+
+A machine with one disk and no USB or network boot can start the installer
+from that disk. Give the disk a GPT with one FAT32 EFI System Partition, and
+copy the release's `katl-installer.efi` to `/EFI/BOOT/BOOTX64.EFI` on it. UEFI
+firmware boots that removable-media path without a boot entry. Do not label the
+filesystem `KATL_INSTALLER`: the installer mounts a filesystem with that label
+as its install media, which makes the disk ineligible as a target.
+
+The installer runs from RAM. It does not mount the ESP it booted from, and it
+stages the configuration and OS image in memory, so the same disk is
+selectable as the system disk. Because `katl-installer.efi` carries no OS
+image, compile the configuration into a bundle that names a KatlOS image URL
+the installer can reach, as described in
+[Compile one cluster configuration bundle](install-pxe-matchbox.md#compile-one-cluster-configuration-bundle),
+and apply the bundle:
+
+```sh
+katlctl install apply --config ./cluster.katlcfg --node cp-1
+```
+
+Katl then replaces the disk's partition layout, including the ESP that held
+the installer, installs its own boot loader, and reboots into generation 0
+without a firmware boot-order change.
 
 ## Next steps
 
