@@ -7,6 +7,9 @@ option go_package = "github.com/katl-dev/katl/internal/katlc/agentapi;agentapi";
 service KatlcAgent {
   rpc GetNodeStatus(GetNodeStatusRequest) returns (NodeStatus);
   rpc GetEtcdStatus(GetEtcdStatusRequest) returns (EtcdStatus);
+  // SaveEtcdSnapshot takes and verifies a snapshot of the local etcd member,
+  // then streams it: the first message carries only info, later ones only data.
+  rpc SaveEtcdSnapshot(SaveEtcdSnapshotRequest) returns (stream EtcdSnapshotChunk);
   rpc GetKubeconfig(GetKubeconfigRequest) returns (KubeconfigResponse);
   rpc ReadJournal(JournalRequest) returns (stream JournalEntry);
   rpc Reboot(RebootRequest) returns (RebootAccepted);
@@ -234,6 +237,23 @@ message WorkerJoinMaterial {
 }
 
 message GetEtcdStatusRequest {}
+
+message SaveEtcdSnapshotRequest {}
+
+message EtcdSnapshotChunk {
+  EtcdSnapshotInfo info = 1;
+  bytes data = 2;
+}
+
+message EtcdSnapshotInfo {
+  string cluster_id = 1;
+  string member_id = 2;
+  uint64 revision = 3;
+  uint64 total_keys = 4;
+  uint64 hash = 5;
+  string sha256 = 6;
+  uint64 size_bytes = 7;
+}
 
 message EtcdStatus {
   string cluster_id = 1;

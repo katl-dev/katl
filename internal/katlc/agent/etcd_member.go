@@ -50,17 +50,9 @@ func collectEtcdStatus(ctx context.Context, run ToolRunner) (*agentapi.EtcdStatu
 	if run == nil {
 		return nil, errors.New("etcd command runner is required")
 	}
-	containerResult := run(ctx, []string{"crictl", "ps", "--name", "etcd", "--state", "Running", "--quiet"}, nil)
-	if containerResult.Err != nil || containerResult.ExitStatus != 0 {
-		return nil, fmt.Errorf("find running etcd container: %s", toolFailure(containerResult))
-	}
-	containerID := ""
-	for _, field := range strings.Fields(string(containerResult.Stdout)) {
-		containerID = field
-		break
-	}
-	if containerID == "" {
-		return nil, errors.New("running etcd container not found")
+	containerID, err := runningEtcdContainer(ctx, run)
+	if err != nil {
+		return nil, err
 	}
 
 	localStatus, err := runEtcdctl(ctx, run, containerID, "https://127.0.0.1:2379", "endpoint", "status", "--write-out=json")
@@ -153,6 +145,18 @@ func collectEtcdStatus(ctx context.Context, run ToolRunner) (*agentapi.EtcdStatu
 		report.Members = append(report.Members, member)
 	}
 	return report, nil
+}
+
+func runningEtcdContainer(ctx context.Context, run ToolRunner) (string, error) {
+	result := run(ctx, []string{"crictl", "ps", "--name", "etcd", "--state", "Running", "--quiet"}, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		return "", fmt.Errorf("find running etcd container: %s", toolFailure(result))
+	}
+	fields := strings.Fields(string(result.Stdout))
+	if len(fields) == 0 {
+		return "", errors.New("running etcd container not found")
+	}
+	return fields[0], nil
 }
 
 func runEtcdctl(ctx context.Context, run ToolRunner, containerID, endpoint string, argv ...string) (ToolResult, error) {

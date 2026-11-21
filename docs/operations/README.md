@@ -31,8 +31,7 @@ attention. To set up a new lab from the release ISO, start with
 - [Upgrade a KatlOS host](upgrade-host.md) to change the host OS version.
 - [Upgrade Kubernetes](upgrade-kubernetes.md) to change the Kubernetes version
   across the cluster.
-- [Back up etcd](back-up-etcd.md) to save etcd snapshots and copy them off the
-  nodes.
+- [Back up etcd](back-up-etcd.md) to save etcd snapshots on your workstation.
 - [Renew Kubernetes certificates](renew-certificates.md) before the kubeadm
   certificates expire.
 

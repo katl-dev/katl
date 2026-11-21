@@ -47,7 +47,8 @@ KatlOS equivalent of a familiar Talos concept or command.
 | `talosctl rollback` | `katlctl node generations select GENERATION cp-1 --config ./cluster.yaml`, then `katlctl node reboot` | Selection changes only the next boot; `--one-shot` selects a generation for one boot. |
 | `talosctl upgrade-k8s` | `katlctl kubernetes upgrade --config ./cluster.yaml` | The target version comes from `spec.kubernetes.version` in `cluster.yaml`, not a command-line flag. The upgrade saves an etcd snapshot on each control plane first. |
 | `talosctl etcd members` | `katlctl cluster etcd members --config ./cluster.yaml` | Shows stacked etcd members and endpoint health. |
-| `talosctl etcd remove-member` | `katlctl cluster etcd remove` | Removes one explicitly identified stale member. There is no standalone etcd snapshot command. |
+| `talosctl etcd remove-member` | `katlctl cluster etcd remove` | Removes one explicitly identified stale member. |
+| `talosctl etcd snapshot` | `katlctl cluster etcd snapshot --config ./cluster.yaml --output etcd.db` | Downloads a verified snapshot from a healthy control plane; see [Back up etcd](../operations/back-up-etcd.md). |
 | `talosctl reboot` and `talosctl shutdown` | `katlctl node reboot` and `katlctl node shutdown` | Reboot waits for the node to return healthy. |
 | `talosctl reset` | `katlctl node wipe` or `katlctl cluster wipe` | Wipe erases KatlOS boot artifacts and leaves the node powered off; boot installer media or PXE to reinstall. |
 

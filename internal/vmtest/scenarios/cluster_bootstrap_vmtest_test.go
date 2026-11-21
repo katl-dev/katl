@@ -994,6 +994,47 @@ func runKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle, sourceV
 			return fmt.Errorf("%s live-promoted generation is not current and healthy: current=%s candidate=%s bootHealth=%s diagnostic=%q", item.Name, nodeStatus.GetCurrentGenerationId(), record.CandidateGenerationID, nodeStatus.GetBootHealthState(), nodeStatus.GetBootHealthDiagnostic())
 		}
 	}
+	return verifyEtcdSnapshotDownload(ctx, repoRoot, configPath, contextPath, evidenceDir, cpNode)
+}
+
+// verifyEtcdSnapshotDownload saves a snapshot through the public command and
+// checks the downloaded file against its own embedded checksum rather than
+// only the digest the node reported.
+func verifyEtcdSnapshotDownload(ctx context.Context, repoRoot, configPath, contextPath, evidenceDir string, cpNode vmtest.RunningInstalledRuntimeNode) error {
+	output := filepath.Join(evidenceDir, "etcd-snapshot.db")
+	command := exec.CommandContext(ctx, "go", "run", "./cmd/katlctl", "cluster", "etcd", "snapshot", "--config", configPath, "--output", output, "--timeout", "10m")
+	command.Dir = repoRoot
+	command.Env = append(os.Environ(), "KATLCTL_CONFIG="+contextPath)
+	var stderr bytes.Buffer
+	command.Stderr = &stderr
+	stdout, err := command.Output()
+	_ = os.WriteFile(filepath.Join(evidenceDir, "katlctl-etcd-snapshot.stderr"), stderr.Bytes(), 0o600)
+	if err != nil {
+		return fmt.Errorf("katlctl cluster etcd snapshot: %w\n%s", err, stderr.String())
+	}
+	data, err := os.ReadFile(output)
+	if err != nil {
+		return fmt.Errorf("read downloaded etcd snapshot: %w", err)
+	}
+	if info, err := os.Stat(output); err != nil {
+		return err
+	} else if info.Mode().Perm() != 0o600 {
+		return fmt.Errorf("downloaded etcd snapshot mode = %v, want 0600", info.Mode().Perm())
+	}
+	digest := sha256.Sum256(data)
+	if !strings.Contains(string(stdout), " node=cp-1 ") || !strings.Contains(string(stdout), fmt.Sprintf(" size=%d sha256=%s\n", len(data), hex.EncodeToString(digest[:]))) {
+		return fmt.Errorf("etcd snapshot report %q does not describe the %d byte download", stdout, len(data))
+	}
+	if len(data) <= sha256.Size || len(data)%512 != sha256.Size {
+		return fmt.Errorf("downloaded etcd snapshot has no embedded checksum (%d bytes)", len(data))
+	}
+	if embedded := sha256.Sum256(data[:len(data)-sha256.Size]); !bytes.Equal(embedded[:], data[len(data)-sha256.Size:]) {
+		return errors.New("downloaded etcd snapshot embedded checksum mismatch")
+	}
+	leftover, err := runNodeCommand(ctx, cpNode, []string{"test", "!", "-e", "/var/lib/etcd/katl-snapshot-export"}, 4<<10)
+	if err != nil || leftover.ExitStatus != 0 {
+		return fmt.Errorf("etcd snapshot export left node-local files on %s: %w", cpNode.Name, errors.Join(err, commandErrorDetail(leftover)))
+	}
 	return nil
 }
 

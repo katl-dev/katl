@@ -242,6 +242,7 @@ func setMinimumInvocationExamples(root *cobra.Command) {
 		"katlctl cluster etcd":                "katlctl cluster etcd members --config cluster.yaml",
 		"katlctl cluster etcd members":        "katlctl cluster etcd members --config cluster.yaml",
 		"katlctl cluster etcd remove":         "katlctl cluster etcd remove cp-3 --member-id MEMBER_ID --config cluster.yaml",
+		"katlctl cluster etcd snapshot":       "katlctl cluster etcd snapshot --config cluster.yaml --output etcd.db",
 		"katlctl context save":                "katlctl context save --config cluster.yaml",
 		"katlctl context rebind":              "katlctl context rebind --node cp-1 --endpoint 192.0.2.51",
 		"katlctl cluster bootstrap":           "katlctl cluster bootstrap --config cluster.yaml",

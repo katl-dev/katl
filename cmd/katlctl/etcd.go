@@ -43,7 +43,7 @@ type etcdRemovalPlan struct {
 }
 
 func newEtcdCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	cmd := &cobra.Command{Use: "etcd", Short: "Inspect and maintain stacked etcd membership"}
+	cmd := &cobra.Command{Use: "etcd", Short: "Inspect, back up, and maintain stacked etcd"}
 	statusOpts := etcdOptions{output: "text"}
 	members := &cobra.Command{
 		Use:   "members",
@@ -75,7 +75,7 @@ func newEtcdCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comman
 	remove.Flags().DurationVar(&removeOpts.timeout, "timeout", removeOpts.timeout, "operation wait timeout")
 	addOutputFlag(remove, &removeOpts.output, "text", "text", "json")
 	cmd.AddCommand(remove)
-	_ = stderr
+	cmd.AddCommand(newEtcdSnapshotCommand(ctx, stdout, stderr))
 	return cmd
 }
 
