@@ -59,6 +59,7 @@ formats its storage, or wipes KatlOS because you deleted the entry.
 | Change `controlPlane` / node role | Refused as an operation-only change | Explicitly wipe the named node, reinstall it with the desired role, then use `katlctl node join NAME --config ./cluster.yaml` |
 | Change only `management.address` | Changes only where `katlctl` connects; it does not change the node's IP address, which [networkd host configuration](../reference/cluster-config.md#networkd-files) owns | Verify the new address reaches the same node; no node generation or Kubernetes state changes |
 | Change `kubernetes.address` | Refused as an operation-only change | Wipe the node, reinstall it, then run `katlctl node join NAME --config ./cluster.yaml`; see [Change a node's address](change-cluster-nodes.md#change-a-nodes-address) |
+| Change a worker's IP address (its networkd files and `management.address` together) | Cannot reach the worker at the new address before it moves. With `--node NAME --endpoint CURRENT`, connects at the current address and stages the change for the next boot | Follow [Re-address a worker](change-cluster-nodes.md#re-address-a-worker); control planes and workers with `kubernetes.address` are refused |
 
 Removing one entry and adding another is never inferred to be a rename. It is a
 preserved omitted node plus a distinct addition until the operator completes

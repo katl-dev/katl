@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"strings"
 	"time"
 
@@ -115,10 +116,12 @@ type controlPlaneEndpointReport struct {
 }
 
 type hostRebootReport struct {
-	Node       string `json:"node"`
-	Result     string `json:"result"`
-	Generation string `json:"generation"`
-	Health     string `json:"health,omitempty"`
+	Node           string `json:"node"`
+	Result         string `json:"result"`
+	Generation     string `json:"generation"`
+	Health         string `json:"health,omitempty"`
+	Endpoint       string `json:"endpoint,omitempty"`
+	AddressChanged bool   `json:"addressChanged,omitempty"`
 }
 
 type hostShutdownReport struct {
@@ -153,7 +156,12 @@ func newHostRebootCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.
 	cmd := &cobra.Command{
 		Use:   "reboot [NODE]",
 		Short: "Reboot one KatlOS node and wait for it to return healthy",
-		Args:  cobra.MaximumNArgs(1),
+		Long: `Reboot one KatlOS node and wait for it to return healthy.
+
+When cluster apply has staged a worker's move to a new management.address, pass
+its current address with --endpoint. The reboot is scheduled there, and the
+command waits for the same installation at either address.`,
+		Args: cobra.MaximumNArgs(1),
 		RunE: func(command *cobra.Command, args []string) error {
 			if err := selectHostNode(command, &opts.target.nodeName, args); err != nil {
 				return err
@@ -238,6 +246,19 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 	target := session.target
 	node := hostTargetName(target)
 
+	// With --config, --endpoint names where the node answers now and
+	// management.address names where its configuration places it after boot.
+	desiredEndpoint := ""
+	if strings.TrimSpace(opts.target.clusterConfigPath) != "" && strings.TrimSpace(opts.target.endpoint) != "" {
+		configured, err := configuredManagementEndpoint(opts.target.clusterConfigPath, node)
+		if err != nil {
+			return err
+		}
+		if configured != "" && configured != target.endpoint {
+			desiredEndpoint = configured
+		}
+	}
+
 	status, _, err := readHostState(session.ctx, session.client, node)
 	if err != nil {
 		return err
@@ -260,18 +281,40 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 	if opts.noWait {
 		return writeHostReboot(stdout, opts.output, report)
 	}
-	_, _ = fmt.Fprintf(stderr, "Reboot scheduled for %s; waiting for KatlOS to return healthy...\n", node)
+	wait := bootWaitTarget{nodeName: node, endpoints: []string{target.endpoint}, machineID: status.GetMachineId(), enrollmentID: status.GetEnrollmentId()}
+	if desiredEndpoint != "" {
+		wait.endpoints = []string{desiredEndpoint, target.endpoint}
+		_, _ = fmt.Fprintf(stderr, "Reboot scheduled for %s; waiting for KatlOS to return healthy at %s (or %s)...\n", node, desiredEndpoint, target.endpoint)
+	} else {
+		_, _ = fmt.Fprintf(stderr, "Reboot scheduled for %s; waiting for KatlOS to return healthy...\n", node)
+	}
 	waitCtx, cancelWait := context.WithTimeout(ctx, opts.timeout)
 	waitCtx = withManagementTarget(waitCtx, target)
-	verifiedConn, verified, err := waitNodeBootHealth(waitCtx, node, target.endpoint, previousAgentStart, generationID, recoveryRequirement, io.Discard)
+	verifiedConn, verified, err := waitNodeBootHealthAt(waitCtx, wait, previousAgentStart, generationID, recoveryRequirement, "reboot node="+node, io.Discard)
 	cancelWait()
 	if err != nil {
+		if desiredEndpoint != "" {
+			return addressChangeRebootError(node, target.endpoint, desiredEndpoint, verified.Endpoint, opts.target.clusterConfigPath, err)
+		}
 		return err
 	}
 	_ = verifiedConn.Close()
+	if desiredEndpoint != "" && verified.Endpoint != desiredEndpoint {
+		return addressChangeRebootError(node, target.endpoint, desiredEndpoint, verified.Endpoint, opts.target.clusterConfigPath, fmt.Errorf("node %s returned healthy at %s instead of %s", node, verified.Endpoint, desiredEndpoint))
+	}
 	report.Result = "rebooted"
 	report.Health = displayHostHealth(verified.Generation)
+	report.Endpoint = verified.Endpoint
+	report.AddressChanged = desiredEndpoint != ""
 	return writeHostReboot(stdout, opts.output, report)
+}
+
+func addressChangeRebootError(node, currentEndpoint, desiredEndpoint, answered, configPath string, err error) error {
+	current, _, _ := net.SplitHostPort(currentEndpoint)
+	if answered == currentEndpoint {
+		return fmt.Errorf("%w; %s still answers at its previous address %s, so its new network configuration did not take effect. Correct its network configuration in %s, then rerun 'katlctl cluster apply --config %s --node %s --endpoint %s', or restore management.address to %s to keep the previous address", err, node, current, configPath, configPath, node, current, current)
+	}
+	return fmt.Errorf("%w; %s did not answer as the same installation at %s or %s. If its new address is wrong but still routable, the node can accept it and become unreachable: use the node console to inspect its network, or choose the previous generation from the boot menu, then correct %s", err, node, desiredEndpoint, currentEndpoint, configPath)
 }
 
 func runHostShutdown(ctx context.Context, opts hostShutdownOptions, stdout, stderr io.Writer) error {
@@ -573,6 +616,11 @@ func writeHostReboot(stdout io.Writer, output string, report hostRebootReport) e
 	}
 	if report.Result == "scheduled" {
 		_, err := fmt.Fprintf(stdout, "%s reboot scheduled\n", report.Node)
+		return err
+	}
+	if report.AddressChanged {
+		host, _, _ := net.SplitHostPort(report.Endpoint)
+		_, err := fmt.Fprintf(stdout, "%s rebooted successfully at %s; health %s\n", report.Node, host, report.Health)
 		return err
 	}
 	_, err := fmt.Fprintf(stdout, "%s rebooted successfully; health %s\n", report.Node, report.Health)

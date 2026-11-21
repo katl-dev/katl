@@ -166,7 +166,7 @@ its [networkd host configuration](../reference/cluster-config.md#networkd-files)
 | --- | --- |
 | `management.address` | This field only changes where `katlctl` connects. After the node answers at the new address, update `cluster.yaml` and, if you use a saved context, [rebind it](access.md#use-a-context) with `katlctl context rebind`. |
 | `kubernetes.address` | `cluster apply` refuses the change. [Wipe the node](#wipe-one-node), reinstall it with the new address, and join it with `katlctl node join`. |
-| A worker's IP address | Re-addressing a worker in place is not yet a supported single workflow. Wipe, reinstall, and join it. |
+| A worker's IP address | Change its network configuration and `management.address` together, then [re-address the worker](#re-address-a-worker). |
 | A control plane's IP address | Not supported. Katl cannot change a control plane's advertise address, etcd peer URLs, serving certificate SANs, or a control-plane endpoint derived from its address. |
 
 When `spec.controlPlaneEndpoint` is unset, Katl derives the Kubernetes API
@@ -175,6 +175,85 @@ that node's address becomes part of the cluster. If node addresses might
 change, set a stable VIP or DNS name as
 [`spec.controlPlaneEndpoint`](../reference/cluster-config.md#kubernetes-api-endpoint)
 before bootstrap.
+
+### Re-address a worker
+
+Use this procedure to move a joined worker to a new IP address. The worker keeps
+its name, machine, enrollment, and Kubernetes membership. Katl applies the
+change at the next boot and never reloads the network while connected, so the
+management connection is not cut partway through an operation. Katl refuses the
+change for a control plane, and for a worker whose `nodes[].kubernetes.address`
+fixes kubelet's node IP. For those nodes, [wipe the node](#wipe-one-node),
+reinstall it with the new addresses, and join it.
+
+In this example `worker-1` moves from `192.0.2.31` to `192.0.2.41`.
+
+1. In `cluster.yaml`, change the worker's networkd configuration and set its
+   `management.address` to the new address in the same edit:
+
+   ```yaml
+   - name: worker-1
+     management:
+       address: 192.0.2.41
+     hostConfiguration:
+       fileSets:
+         management-network:
+           files:
+             - path: /etc/systemd/network/10-worker-1.network
+               source: host-files/10-worker-1.network
+   ```
+
+   Change the `Address=` line in `host-files/10-worker-1.network` to
+   `192.0.2.41/24`. If the new address comes from a changed DHCP reservation
+   instead, change only `management.address`.
+
+2. Apply the configuration to the worker. Pass the address it answers at now
+   with `--endpoint`:
+
+   ```sh
+   katlctl cluster apply --config ./cluster.yaml --node worker-1 --endpoint 192.0.2.31
+   ```
+
+   Apply connects at `192.0.2.31` and stages the change for the next boot. It
+   also skips the Kubernetes component phases and prints the reboot command.
+   `--endpoint` requires exactly one `--node`, and `--mode live` is refused.
+
+3. Reboot the worker:
+
+   ```sh
+   katlctl node reboot worker-1 --config ./cluster.yaml --endpoint 192.0.2.31
+   ```
+
+   The command schedules the reboot at `192.0.2.31` and waits for the worker
+   at both addresses. It accepts only the same installation after a new boot,
+   and it requires the staged generation to pass boot health. If the
+   Kubernetes Node was Ready before the reboot, it must return Ready. On
+   success it prints `worker-1 rebooted successfully at 192.0.2.41; health OK`.
+
+4. Rerun apply without `--endpoint`. This finishes any Kubernetes
+   configuration at the new address:
+
+   ```sh
+   katlctl cluster apply --config ./cluster.yaml --node worker-1
+   ```
+
+   If you use a saved context, also run
+   `katlctl context rebind --node worker-1 --endpoint 192.0.2.41`.
+
+5. Check the Node's address. Without `kubernetes.address`, kubelet detects the
+   node's address when it starts:
+
+   ```sh
+   kubectl get node worker-1 -o wide
+   ```
+
+If the reboot does not finish at the new address, use the following table:
+
+| Result | Meaning and recovery |
+| --- | --- |
+| The node `still answers at its previous address` | The new network configuration did not take effect. Boot health may have rejected the generation, or DHCP may still assign the old address. Correct the network files and repeat from step 2, or restore `management.address` to the old address. |
+| The address `answered as a different KatlOS installation` | Another host uses the new address. Choose a free address and repeat from step 1. |
+| The node answers at neither address | Boot health checks only that the required links come online and are routable, so a wrong but routable address can pass and become the default. Use the [local console](access.md#use-the-local-console) to inspect the network, or [select the previous generation](../concepts/generations.md#staged-trial-and-committed) from the boot menu. Then correct `cluster.yaml`. |
 
 ## Refused transitions
 

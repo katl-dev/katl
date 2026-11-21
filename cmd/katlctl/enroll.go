@@ -26,6 +26,7 @@ type contextSaveOptions struct {
 	contextName     string
 	replacementNode []string
 	selectedNodes   []string
+	endpoints       map[string]string
 	timeout         time.Duration
 	output          string
 }
@@ -311,6 +312,9 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, stderr io.Writ
 
 	for _, node := range inv.Nodes {
 		endpoint := net.JoinHostPort(strings.TrimSpace(node.Address), "9443")
+		if override, ok := opts.endpoints[node.Name]; ok {
+			endpoint = override
+		}
 		if len(opts.selectedNodes) > 0 && !containsString(opts.selectedNodes, node.Name) {
 			previous := known[node.Name]
 			clusterProfile.Nodes = append(clusterProfile.Nodes, workstation.Node{

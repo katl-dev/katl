@@ -16,6 +16,8 @@ var upgradeRebootPollInterval = 2 * time.Second
 type verifiedNodeBoot struct {
 	Status     *agentapi.NodeStatus
 	Generation *agentapi.Generation
+	// Endpoint is where the rebooted node last answered.
+	Endpoint string
 }
 
 func (boot verifiedNodeBoot) healthyOn(generationID string) bool {
@@ -65,71 +67,116 @@ func waitNodeBootHealth(ctx context.Context, nodeName, endpoint, previousAgentSt
 }
 
 func waitNodeBootHealthWithPrefix(ctx context.Context, nodeName, endpoint, previousAgentStart, targetGeneration string, requirement nodeRecoveryRequirement, progressPrefix string, stderr io.Writer) (katlcAgentConnection, verifiedNodeBoot, error) {
+	return waitNodeBootHealthAt(ctx, bootWaitTarget{nodeName: nodeName, endpoints: []string{endpoint}}, previousAgentStart, targetGeneration, requirement, progressPrefix, stderr)
+}
+
+// bootWaitTarget names where a rebooting node may answer. A node whose
+// configuration moves it to a new address can answer at either endpoint, so an
+// answer counts only when it reports the installation that was rebooted.
+type bootWaitTarget struct {
+	nodeName     string
+	endpoints    []string
+	machineID    string
+	enrollmentID string
+}
+
+func (target bootWaitTarget) verify(endpoint string, status *agentapi.NodeStatus) error {
+	machine := strings.TrimSpace(target.machineID)
+	enrollment := strings.TrimSpace(target.enrollmentID)
+	if (machine != "" && status.GetMachineId() != machine) || (enrollment != "" && status.GetEnrollmentId() != enrollment) {
+		return fmt.Errorf("address %s answered as a different KatlOS installation than node %s; another host may use that address, so correct the node's address in the cluster configuration before retrying", endpoint, target.nodeName)
+	}
+	return nil
+}
+
+func waitNodeBootHealthAt(ctx context.Context, target bootWaitTarget, previousAgentStart, targetGeneration string, requirement nodeRecoveryRequirement, progressPrefix string, stderr io.Writer) (katlcAgentConnection, verifiedNodeBoot, error) {
+	nodeName := target.nodeName
 	lastState := ""
 	lastRecovery := nodeRecovery{}
 	lastRollback := ""
 	observed := verifiedNodeBoot{}
+	// probe reports done once the node answering at endpoint gives a terminal result.
+	probe := func(conn katlcAgentConnection, endpoint string) (verifiedNodeBoot, bool, error) {
+		status, statusErr := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+		if statusErr != nil {
+			return verifiedNodeBoot{}, false, nil
+		}
+		state := fmt.Sprintf("agent=%s generation=%s running-generation=%s boot-health=%s", status.GetAgentStartId(), status.GetCurrentGenerationId(), status.GetSelectedGenerationId(), status.GetBootHealthState())
+		if len(target.endpoints) > 1 {
+			state = "endpoint=" + endpoint + " " + state
+		}
+		if state != lastState {
+			lastState = state
+			_, _ = fmt.Fprintf(stderr, "%s waiting-for-boot-health %s\n", progressPrefix, state)
+		}
+		if strings.TrimSpace(status.GetAgentStartId()) == "" || status.GetAgentStartId() == strings.TrimSpace(previousAgentStart) {
+			return verifiedNodeBoot{}, false, nil
+		}
+		if err := target.verify(endpoint, status); err != nil {
+			return verifiedNodeBoot{}, true, err
+		}
+		observed.Status = status
+		observed.Endpoint = endpoint
+		candidate, generationErr := conn.Client.GetGeneration(ctx, &agentapi.GetGenerationRequest{GenerationId: targetGeneration})
+		if generationErr != nil {
+			return verifiedNodeBoot{}, false, nil
+		}
+		observed.Generation = candidate
+		fallback := ""
+		// Active configuration can already name the fallback while the
+		// rejected trial is still running. Native boot health must
+		// confirm the selected generation before reporting recovery.
+		selected := strings.TrimSpace(status.GetSelectedGenerationId())
+		if candidate.GetHealthState() == generation.HealthStateUnhealthy {
+			rollback := strings.TrimSpace(status.GetBootTargetGenerationId())
+			switch {
+			case selected != "" && selected != targetGeneration && status.GetBootHealthState() == "healthy":
+				fallback = selected
+			case selected != "" && rollback != "" && rollback != targetGeneration:
+				if rollback != lastRollback {
+					lastRollback = rollback
+					_, _ = fmt.Fprintf(stderr, "%s waiting-for-rollback generation=%s\n", progressPrefix, rollback)
+				}
+			case selected == "" && status.GetCurrentGenerationId() != targetGeneration:
+				return verifiedNodeBoot{}, true, fmt.Errorf("node %s rejected generation %s during boot health; running generation is not reported", nodeName, targetGeneration)
+			case rollback != "" && rollback != targetGeneration:
+				return verifiedNodeBoot{}, true, fmt.Errorf("node %s rejected generation %s during boot health; rollback generation %s is selected for next boot, so reboot the node before retrying the upgrade", nodeName, targetGeneration, rollback)
+			default:
+				return verifiedNodeBoot{}, true, fmt.Errorf("node %s reported generation %s unhealthy after reboot", nodeName, targetGeneration)
+			}
+		}
+		if fallback == "" && !observed.healthyOn(targetGeneration) {
+			return verifiedNodeBoot{}, false, nil
+		}
+		recovery := nodeUpgradeRecovery(status, requirement)
+		if recovery != lastRecovery {
+			lastRecovery = recovery
+			if !recovery.Ready {
+				_, _ = fmt.Fprintf(stderr, "%s waiting-for-kubernetes state=%s reason=%s\n", progressPrefix, recovery.State, recovery.Reason)
+			}
+		}
+		if !recovery.Ready {
+			return verifiedNodeBoot{}, false, nil
+		}
+		if fallback != "" {
+			return verifiedNodeBoot{}, true, fmt.Errorf("node %s rejected generation %s during boot health and returned on generation %s", nodeName, targetGeneration, fallback)
+		}
+		return verifiedNodeBoot{Status: status, Generation: candidate, Endpoint: endpoint}, true, nil
+	}
 	for {
-		conn, err := dialKatlcAgent(ctx, endpoint)
-		if err == nil {
-			status, statusErr := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
-			if statusErr == nil {
-				state := fmt.Sprintf("agent=%s generation=%s running-generation=%s boot-health=%s", status.GetAgentStartId(), status.GetCurrentGenerationId(), status.GetSelectedGenerationId(), status.GetBootHealthState())
-				if state != lastState {
-					lastState = state
-					_, _ = fmt.Fprintf(stderr, "%s waiting-for-boot-health %s\n", progressPrefix, state)
-				}
-				if strings.TrimSpace(status.GetAgentStartId()) != "" && status.GetAgentStartId() != strings.TrimSpace(previousAgentStart) {
-					observed.Status = status
-					candidate, generationErr := conn.Client.GetGeneration(ctx, &agentapi.GetGenerationRequest{GenerationId: targetGeneration})
-					if generationErr == nil {
-						observed.Generation = candidate
-						fallback := ""
-						// Active configuration can already name the fallback while the
-						// rejected trial is still running. Native boot health must
-						// confirm the selected generation before reporting recovery.
-						selected := strings.TrimSpace(status.GetSelectedGenerationId())
-						if candidate.GetHealthState() == generation.HealthStateUnhealthy {
-							rollback := strings.TrimSpace(status.GetBootTargetGenerationId())
-							switch {
-							case selected != "" && selected != targetGeneration && status.GetBootHealthState() == "healthy":
-								fallback = selected
-							case selected != "" && rollback != "" && rollback != targetGeneration:
-								if rollback != lastRollback {
-									lastRollback = rollback
-									_, _ = fmt.Fprintf(stderr, "%s waiting-for-rollback generation=%s\n", progressPrefix, rollback)
-								}
-							case selected == "" && status.GetCurrentGenerationId() != targetGeneration:
-								_ = conn.Close()
-								return katlcAgentConnection{}, observed, fmt.Errorf("node %s rejected generation %s during boot health; running generation is not reported", nodeName, targetGeneration)
-							case rollback != "" && rollback != targetGeneration:
-								_ = conn.Close()
-								return katlcAgentConnection{}, observed, fmt.Errorf("node %s rejected generation %s during boot health; rollback generation %s is selected for next boot, so reboot the node before retrying the upgrade", nodeName, targetGeneration, rollback)
-							default:
-								_ = conn.Close()
-								return katlcAgentConnection{}, observed, fmt.Errorf("node %s reported generation %s unhealthy after reboot", nodeName, targetGeneration)
-							}
-						}
-						if fallback != "" || observed.healthyOn(targetGeneration) {
-							recovery := nodeUpgradeRecovery(status, requirement)
-							if recovery != lastRecovery {
-								lastRecovery = recovery
-								if !recovery.Ready {
-									_, _ = fmt.Fprintf(stderr, "%s waiting-for-kubernetes state=%s reason=%s\n", progressPrefix, recovery.State, recovery.Reason)
-								}
-							}
-							if recovery.Ready {
-								if fallback != "" {
-									_ = conn.Close()
-									return katlcAgentConnection{}, observed, fmt.Errorf("node %s rejected generation %s during boot health and returned on generation %s", nodeName, targetGeneration, fallback)
-								}
-								return conn, verifiedNodeBoot{Status: status, Generation: candidate}, nil
-							}
-						}
-					}
-				}
+		for _, endpoint := range target.endpoints {
+			conn, err := dialKatlcAgent(ctx, endpoint)
+			if err != nil {
+				continue
+			}
+			verified, done, err := probe(conn, endpoint)
+			if done && err == nil {
+				return conn, verified, nil
 			}
 			_ = conn.Close()
+			if done {
+				return katlcAgentConnection{}, observed, err
+			}
 		}
 
 		timer := time.NewTimer(upgradeRebootPollInterval)
