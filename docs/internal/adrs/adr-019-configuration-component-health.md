@@ -108,6 +108,16 @@ before component mutation. An interrupted restart can leave kubelet inactive
 and the Node condition Unknown; recomputing the exception from that state
 would either prevent repair or authorize unrelated failures.
 
+Boot health does not cover kubelet, so a request admitted right after boot or
+a kubelet restart can find kubelet still starting, the Kubernetes API not yet
+answering, or a Node report from the previous boot or invocation. These states
+resolve without intervention. A fresh capture therefore waits for an
+observation from the current invocation within the configuration health bound,
+then refuses with guidance to inspect kubelet. Treating a starting kubelet as
+inactive would instead record a Ready requirement for a pre-CNI node, and the
+change would fail only after mutation. A kubelet waiting to restart after a
+failure is observed as inactive, and repair captures do not wait.
+
 A repair can inherit the requirement of the incomplete kubelet mutation it is
 reconciling. A fresh Ready observation tightens that requirement. Earlier
 successful operations confer no exception, and older records without a

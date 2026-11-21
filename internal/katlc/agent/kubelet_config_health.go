@@ -25,6 +25,14 @@ const (
 	missingCNINodeMessage                            = "container runtime network not ready: NetworkReady=false reason:NetworkPluginNotReady message:" + missingCNIMessage
 )
 
+// pendingObservation marks an observation that a kubelet starting in this
+// boot or invocation is expected to resolve without intervention: the service
+// is still starting, the Kubernetes API is not answering yet, or the Node
+// report predates the current invocation.
+type pendingObservation struct{ error }
+
+func (p pendingObservation) Unwrap() error { return p.error }
+
 type kubeletHealthObservation struct {
 	state         kubeletHealthState
 	nodeReady     bool
@@ -52,7 +60,13 @@ func (e *Executor) captureKubeletHealth(ctx context.Context, record operation.Op
 	if repair && previous.KubeadmControlPlaneConfig.ReadinessRequirement == string(kubeletHealthCNIUninitialized) {
 		required = string(kubeletHealthCNIUninitialized)
 	}
-	observed, err := e.observeKubeletHealth(ctx, stored.KubeadmControlPlaneConfig)
+	var observed kubeletHealthObservation
+	if repair {
+		// Repair tolerates an unobservable baseline and restarts kubelet anyway.
+		observed, err = e.observeKubeletHealth(ctx, stored.KubeadmControlPlaneConfig)
+	} else {
+		observed, err = e.awaitKubeletObservation(ctx, stored.KubeadmControlPlaneConfig)
+	}
 	if err != nil && !repair && !observed.nodeReady {
 		return fmt.Errorf("observe configuration health before mutation: %w", err)
 	}
@@ -78,6 +92,32 @@ func (e *Executor) captureKubeletHealth(ctx context.Context, record operation.Op
 		return errors.Join(err, fmt.Errorf("observe configuration health before mutation: %w", observationErr))
 	}
 	return err
+}
+
+// awaitKubeletObservation establishes the pre-mutation baseline from the
+// current kubelet invocation. A request admitted right after boot or a kubelet
+// restart would otherwise observe the previous invocation's Node report and
+// refuse a change that the next report permits.
+func (e *Executor) awaitKubeletObservation(ctx context.Context, request *operation.KubeadmControlPlaneConfig) (kubeletHealthObservation, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, postKubeadmHealthTimeout)
+	defer cancel()
+	var pending error
+	for {
+		observed, err := e.observeKubeletHealth(waitCtx, request)
+		if errors.As(err, new(pendingObservation)) {
+			pending = err
+		} else if err == nil || waitCtx.Err() == nil || pending == nil {
+			return observed, err
+		}
+		select {
+		case <-waitCtx.Done():
+			if errors.Is(waitCtx.Err(), context.Canceled) {
+				return observed, errors.Join(pending, waitCtx.Err())
+			}
+			return observed, fmt.Errorf("kubelet did not report current health for node %s in time: %w; inspect kubelet with katlctl node logs %s --unit kubelet", request.NodeName, pending, request.NodeName)
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 func (e *Executor) runKubeletConfigHealth(ctx context.Context, record operation.OperationRecord) ToolResult {
@@ -124,9 +164,13 @@ func (e *Executor) runKubeletConfigHealth(ctx context.Context, record operation.
 
 func (e *Executor) observeKubeletHealth(ctx context.Context, request *operation.KubeadmControlPlaneConfig) (kubeletHealthObservation, error) {
 	observed := kubeletHealthObservation{state: kubeletHealthUnhealthy}
-	invocation, err := e.kubeletInvocation(ctx)
+	invocation, starting, err := e.kubeletService(ctx)
 	if err != nil {
 		return observed, err
+	}
+	if starting {
+		observed.failureReason = "kubelet is starting"
+		return observed, pendingObservation{errors.New(observed.failureReason)}
 	}
 	if invocation == "" {
 		observed.failureReason = "kubelet is not active"
@@ -154,7 +198,7 @@ func (e *Executor) observeKubeletHealth(ctx context.Context, request *operation.
 	run := boundedHealthRunner(e.toolRunner())
 	result := run(ctx, []string{"/usr/bin/kubectl", "--kubeconfig", kubeconfig, "get", "node", request.NodeName, "-o", "json"}, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
-		return observed, fmt.Errorf("read Kubernetes node %s: %s", request.NodeName, toolFailure(result))
+		return observed, pendingObservation{fmt.Errorf("read Kubernetes node %s: %s", request.NodeName, toolFailure(result))}
 	}
 	var node struct {
 		Metadata struct {
@@ -197,7 +241,9 @@ func (e *Executor) observeKubeletHealth(ctx context.Context, request *operation.
 		observed.nodeReady = false
 		return observed, fmt.Errorf("expected one Kubernetes Ready condition, observed %d", readyConditions)
 	}
-	if err := startup.Verify(e.Root, invocation, node.Status.NodeInfo.BootID, heartbeat, e.clock()); err != nil {
+	if err := startup.Verify(e.Root, invocation, node.Status.NodeInfo.BootID, heartbeat, e.clock()); errors.Is(err, kubeletstartup.ErrReportPending) {
+		return observed, pendingObservation{err}
+	} else if err != nil {
 		return observed, err
 	}
 	observed.startup, observed.controlPlane = startup, controlPlane
@@ -316,36 +362,45 @@ func (e *Executor) verifyKubeletCompletion(ctx context.Context, request *operati
 }
 
 func (e *Executor) kubeletInvocation(ctx context.Context) (string, error) {
-	result := boundedHealthRunner(e.toolRunner())(ctx, []string{"/usr/bin/systemctl", "show", "kubelet.service", "--property=ActiveState", "--property=MainPID", "--property=InvocationID"}, nil)
+	invocation, _, err := e.kubeletService(ctx)
+	return invocation, err
+}
+
+// kubeletService returns the active kubelet invocation, or whether systemd is
+// still starting kubelet. A pending automatic restart is not a start: it is
+// how a failing kubelet waits between attempts.
+func (e *Executor) kubeletService(ctx context.Context) (invocation string, starting bool, err error) {
+	result := boundedHealthRunner(e.toolRunner())(ctx, []string{"/usr/bin/systemctl", "show", "kubelet.service", "--property=ActiveState", "--property=SubState", "--property=Job", "--property=MainPID", "--property=InvocationID"}, nil)
 	if err := kubeletProbeExecutionError(ctx, result); err != nil {
-		return "", fmt.Errorf("observe kubelet service: %w", err)
+		return "", false, fmt.Errorf("observe kubelet service: %w", err)
 	}
 	if result.Err != nil || result.ExitStatus != 0 {
-		return "", fmt.Errorf("read kubelet service properties: %s", toolFailure(result))
+		return "", false, fmt.Errorf("read kubelet service properties: %s", toolFailure(result))
 	}
 	properties := make(map[string]string)
 	for _, line := range strings.Split(strings.TrimSpace(string(result.Stdout)), "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		if !ok {
-			return "", fmt.Errorf("malformed kubelet service property %q", line)
+			return "", false, fmt.Errorf("malformed kubelet service property %q", line)
 		}
 		if _, exists := properties[key]; exists {
-			return "", fmt.Errorf("repeated kubelet service property %q", key)
+			return "", false, fmt.Errorf("repeated kubelet service property %q", key)
 		}
 		properties[key] = value
 	}
 	pid, err := strconv.ParseUint(properties["MainPID"], 10, 64)
 	if err != nil || properties["ActiveState"] == "" {
-		return "", fmt.Errorf("incomplete kubelet service properties")
+		return "", false, fmt.Errorf("incomplete kubelet service properties")
 	}
 	if properties["ActiveState"] != "active" || pid == 0 {
-		return "", nil
+		starting = properties["ActiveState"] == "activating" && !strings.HasPrefix(properties["SubState"], "auto-restart") || properties["ActiveState"] == "inactive" && properties["Job"] != ""
+		return "", starting, nil
 	}
-	invocation := properties["InvocationID"]
+	invocation = properties["InvocationID"]
 	if len(invocation) != 32 || strings.Trim(invocation, "0123456789abcdef") != "" {
-		return "", fmt.Errorf("active kubelet has no valid service invocation identity")
+		return "", false, fmt.Errorf("active kubelet has no valid service invocation identity")
 	}
-	return invocation, nil
+	return invocation, false, nil
 }
 
 func (e *Executor) kubeletNeedsRestart(ctx context.Context) (bool, error) {

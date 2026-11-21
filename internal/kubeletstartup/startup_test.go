@@ -54,13 +54,14 @@ func TestVerify(t *testing.T) {
 		name, invocation, boot string
 		heartbeat, now         time.Time
 		wantError              bool
+		pending                bool
 	}{
 		{name: "first same-second report", invocation: testInvocation, boot: "boot-1", heartbeat: boundary, now: boundary.Add(50 * time.Millisecond)},
 		{name: "later report", invocation: testInvocation, boot: "boot-1", heartbeat: boundary.Add(time.Hour), now: boundary.Add(time.Hour + time.Second)},
-		{name: "previous process report", invocation: testInvocation, boot: "boot-1", heartbeat: boundary.Add(-time.Second), now: boundary.Add(time.Second), wantError: true},
+		{name: "previous process report", invocation: testInvocation, boot: "boot-1", heartbeat: boundary.Add(-time.Second), now: boundary.Add(time.Second), wantError: true, pending: true},
 		{name: "automatic restart", invocation: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", boot: "boot-1", heartbeat: boundary, now: boundary.Add(time.Second), wantError: true},
-		{name: "previous boot", invocation: testInvocation, boot: "boot-0", heartbeat: boundary, now: boundary.Add(time.Second), wantError: true},
-		{name: "missing heartbeat", invocation: testInvocation, boot: "boot-1", now: boundary.Add(time.Second), wantError: true},
+		{name: "previous boot", invocation: testInvocation, boot: "boot-0", heartbeat: boundary, now: boundary.Add(time.Second), wantError: true, pending: true},
+		{name: "missing heartbeat", invocation: testInvocation, boot: "boot-1", now: boundary.Add(time.Second), wantError: true, pending: true},
 		{name: "future heartbeat", invocation: testInvocation, boot: "boot-1", heartbeat: boundary.Add(time.Second), now: boundary, wantError: true},
 		{name: "clock before startup boundary", invocation: testInvocation, boot: "boot-1", heartbeat: boundary, now: boundary.Add(-time.Second), wantError: true},
 	} {
@@ -68,8 +69,13 @@ func TestVerify(t *testing.T) {
 			root := t.TempDir()
 			writeStartupInputs(t, root)
 			record := Record{InvocationID: testInvocation, BootID: "boot-1", ConfextTarget: "/var/lib/katl/generations/1/confext", NotBefore: boundary}
-			if err := record.Verify(root, tc.invocation, tc.boot, tc.heartbeat, tc.now); (err != nil) != tc.wantError {
+			err := record.Verify(root, tc.invocation, tc.boot, tc.heartbeat, tc.now)
+			if (err != nil) != tc.wantError {
 				t.Fatalf("Verify error = %v, want error %v", err, tc.wantError)
+			}
+			// Only a report the current invocation will replace may be awaited.
+			if errors.Is(err, ErrReportPending) != tc.pending {
+				t.Fatalf("Verify error = %v, want pending %v", err, tc.pending)
 			}
 		})
 	}

@@ -268,7 +268,69 @@ func runPreCNIClusterApply(t *testing.T, ctx context.Context, smoke operationBac
 	if !disabled || apiserver != appliedAPIServer {
 		return fmt.Errorf("kubelet failure/repair changed the desired API server pod")
 	}
-	return nil
+	planning := configbundle.PlanningInputs{KubernetesBundle: bundle.Ref, ManagementIdentities: management}
+	return runPreCNIApplyAfterReboot(ctx, katlctl, dir, source, planning, configPath, smoke.Inputs.SSHPrivateKey, addresses["cp-1"], kubeconfig)
+}
+
+// Boot health does not cover kubelet, so management can answer before kubelet
+// has reported this boot's Node status. A live kubelet change submitted as soon
+// as the reboot returns must apply without operator retries.
+func runPreCNIApplyAfterReboot(ctx context.Context, katlctl, dir string, source configbundle.SourceConfig, planning configbundle.PlanningInputs, validConfig, privateKey, address, kubeconfig string) error {
+	rebootSource := source
+	rebootSource.Spec.Nodes = append([]configbundle.SourceNode(nil), source.Spec.Nodes...)
+	for i := range rebootSource.Spec.Nodes {
+		if rebootSource.Spec.Nodes[i].Name == "cp-1" {
+			rebootSource.Spec.Nodes[i].Kubernetes.Kubelet = &configbundle.SourceKubeletConfig{ConfigFile: "after-reboot.yaml"}
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "after-reboot.yaml"), []byte("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nhealthzPort: 0\nmaxPods: 112\n"), 0o600); err != nil {
+		return err
+	}
+	data, err := yaml.Marshal(rebootSource)
+	if err != nil {
+		return err
+	}
+	sourcePath := filepath.Join(dir, "after-reboot-cluster.yaml")
+	if err := os.WriteFile(sourcePath, data, 0o600); err != nil {
+		return err
+	}
+	rebootConfig := filepath.Join(dir, "after-reboot.katlcfg")
+	if _, err := configbundle.WriteArchive(rebootConfig, configbundle.BuildRequest{SourcePath: sourcePath, Planning: planning}); err != nil {
+		return err
+	}
+	before, err := observeConfiguredKubelet(ctx, dir, "before-reboot", privateKey, address, "cp-1", kubeconfig, 111, false)
+	if err != nil {
+		return err
+	}
+
+	if _, stderr, err := runProofKatlctl(ctx, katlctl, dir, "reboot-before-apply", "node", "reboot", "cp-1", "--config", validConfig); err != nil {
+		return fmt.Errorf("reboot cp-1: %w: %s", err, stderr)
+	}
+	stdout, stderr, err := runProofKatlctl(ctx, katlctl, dir, "apply-after-reboot", "cluster", "apply", "--config", rebootConfig, "--node", "cp-1", "-o", "json")
+	if err != nil {
+		return fmt.Errorf("apply right after reboot: %w: %s", err, stderr)
+	}
+	var report struct{ Result string }
+	if err := json.Unmarshal(stdout, &report); err != nil {
+		return err
+	}
+	if report.Result != "succeeded" {
+		return fmt.Errorf("apply right after reboot: unexpected result: %s", stdout)
+	}
+	after, err := observeConfiguredKubelet(ctx, dir, "after-reboot", privateKey, address, "cp-1", kubeconfig, 112, false)
+	if err != nil {
+		return err
+	}
+	if after.BootID == before.BootID {
+		return fmt.Errorf("cp-1 did not reboot before the apply")
+	}
+
+	// Later journeys expect the shared configuration on every node.
+	if _, stderr, err := runProofKatlctl(ctx, katlctl, dir, "restore-after-reboot", "cluster", "apply", "--config", validConfig, "--node", "cp-1", "-o", "json"); err != nil {
+		return fmt.Errorf("restore cp-1 kubelet configuration: %w: %s", err, stderr)
+	}
+	_, err = observeConfiguredKubelet(ctx, dir, "restored-after-reboot", privateKey, address, "cp-1", kubeconfig, 111, false)
+	return err
 }
 
 func runPreCNIKubeletFailure(ctx context.Context, katlctl, dir, name, diagnostic, badConfig, validConfig, privateKey, address, kubeconfig string) error {

@@ -216,7 +216,9 @@ The shared `KubeletConfiguration` stays separate from both patch layers. A
 coordinator uploads changes to that shared base even when it also has a
 node-local overlay. Katl checks the complete native result before restarting
 kubelet and checks health afterward; an unchanged healthy result does not
-restart kubelet.
+restart kubelet. Before it changes anything, apply waits up to two minutes for
+the running kubelet to report the node's health, so you can apply right after a
+reboot or kubelet restart.
 
 You can apply kubelet and control-plane configuration after bootstrap and
 before installing your CNI when the node is otherwise healthy and reports

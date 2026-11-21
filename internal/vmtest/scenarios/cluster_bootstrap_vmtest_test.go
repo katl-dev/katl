@@ -677,6 +677,10 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("public configuration before CNI: %v", err)
 	}
+	// The pre-CNI journey reboots cp-1; later online steps must keep this boot.
+	if bootIDs, err = captureNodeBootIDs(ctx, nodes...); err != nil {
+		t.Fatalf("capture boot IDs after pre-CNI configuration: %v", err)
+	}
 	cniFixtures, err = stageTwoNodeCNIFixtures(ctx, katlRepoRoot(t), cpNode, workerNode, cpAddress, workerAddress)
 	if err != nil {
 		collectTwoNodeDiagnostics("", nodes...)

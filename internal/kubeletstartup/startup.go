@@ -3,6 +3,7 @@ package kubeletstartup
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +14,11 @@ import (
 )
 
 const recordPath = "/run/katl/kubelet-startup.json"
+
+// ErrReportPending means Kubernetes still holds a Node report from before the
+// current kubelet invocation, as it does right after kubelet starts or the node
+// boots. The current invocation resolves it by posting its next Node status.
+var ErrReportPending = errors.New("waiting for a Node health report from the current kubelet invocation")
 
 // Record binds second-precision Node reports to a kubelet service invocation.
 // It is ephemeral: every invocation replaces its predecessor's boundary.
@@ -106,11 +112,11 @@ func (r Record) Verify(root, invocationID, nodeBootID string, heartbeat, now tim
 	if err != nil {
 		return err
 	}
-	if r.InvocationID != invocationID || r.BootID != boot || nodeBootID != boot {
+	if r.InvocationID != invocationID || r.BootID != boot {
 		return fmt.Errorf("kubelet startup evidence belongs to another invocation or boot")
 	}
-	if heartbeat.IsZero() || heartbeat.Before(r.NotBefore) {
-		return fmt.Errorf("waiting for a Node health report from the current kubelet invocation")
+	if nodeBootID != boot || heartbeat.IsZero() || heartbeat.Before(r.NotBefore) {
+		return ErrReportPending
 	}
 	if now.Before(r.NotBefore) || heartbeat.After(now) {
 		return fmt.Errorf("Node health report is future-dated; synchronize the node clock and restart kubelet")
