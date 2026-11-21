@@ -165,11 +165,6 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 	result := Result{Plan: plan, DryRun: request.DryRun}
 	result.addPhase("plan", "", "", "passed")
 	bootstrapInput := mergeBootstrap(planBootstrap(plan.Bootstrap), request.Bootstrap)
-	nodeManifests, err := nodeLabelManifests(plan)
-	if err != nil {
-		return result, err
-	}
-	bootstrapInput.Manifests = append(nodeManifests, bootstrapInput.Manifests...)
 	bootstrap, err := prepareBootstrap(bootstrapInput)
 	if err != nil {
 		return result, err
@@ -445,28 +440,6 @@ func mergeBootstrap(plan, request UserBootstrap) UserBootstrap {
 	result.PreWaits = append(result.PreWaits, request.PreWaits...)
 	result.Waits = append(result.Waits, request.Waits...)
 	return result
-}
-
-func nodeLabelManifests(plan inventory.Plan) ([]BootstrapManifest, error) {
-	manifests := make([]BootstrapManifest, 0, len(plan.Nodes))
-	for _, node := range plan.Nodes {
-		if len(node.Labels) == 0 {
-			continue
-		}
-		content, err := yaml.Marshal(map[string]any{
-			"apiVersion": "v1",
-			"kind":       "Node",
-			"metadata": map[string]any{
-				"name":   node.Name,
-				"labels": node.Labels,
-			},
-		})
-		if err != nil {
-			return nil, fmt.Errorf("render labels for node %s: %w", node.Name, err)
-		}
-		manifests = append(manifests, BootstrapManifest{Content: content})
-	}
-	return manifests, nil
 }
 
 func loadBootstrapManifest(manifest BootstrapManifest) (BootstrapManifest, error) {

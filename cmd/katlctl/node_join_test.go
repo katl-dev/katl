@@ -182,7 +182,7 @@ func TestNodeJoin(t *testing.T) {
 						if test.role == inventory.RoleWorker {
 							intent = inventory.IntentWorker
 						}
-						if planned.Labels["test.example/join"] != "preserved" || !planned.KubeadmConfig.NodeLocalKubelet {
+						if !planned.KubeadmConfig.NodeLocalKubelet {
 							t.Fatalf("join lost per-node native configuration: %+v", planned)
 						}
 					}

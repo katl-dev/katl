@@ -31,8 +31,8 @@ func TestCompileClusterPlan(t *testing.T) {
 	if got := plan.BootstrapInventory.Nodes[0].Name; got != "cp-1" {
 		t.Fatalf("first inventory node = %q", got)
 	}
-	if got := plan.BootstrapInventory.Nodes[0].Labels["katl.dev/zone"]; got != "rack-a" {
-		t.Fatalf("first inventory node zone = %q", got)
+	if got := plan.Nodes[0].NodeLabels["katl.dev/zone"]; got != "rack-a" {
+		t.Fatalf("first node zone = %q", got)
 	}
 	cp := plan.Nodes[0]
 	if cp.Name != "cp-1" || cp.SystemRole != inventory.RoleControlPlane || cp.BootstrapAddress != "10.0.0.11" {
@@ -780,10 +780,10 @@ func validKubeadmConfigs(version string) map[string]kubeadmconfig.Plan {
 			Name: "control-plane",
 			Config: kubeadmconfig.File{
 				RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml",
-				Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n"),
+				Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nkubernetesVersion: " + version + "\n"),
 				Mode:       0o644,
 			},
-			Documents: []kubeadmconfig.Document{{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "InitConfiguration", KubernetesVersion: version}},
+			Documents: []kubeadmconfig.Document{{APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "InitConfiguration"}, {APIVersion: "kubeadm.k8s.io/v1beta4", Kind: "ClusterConfiguration", KubernetesVersion: version}},
 		},
 		"worker": {
 			Name: "worker",

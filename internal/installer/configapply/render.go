@@ -59,6 +59,7 @@ type renderedNodeConfigurationOverlay struct {
 	Kubernetes           *manifest.KubernetesConfig   `yaml:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointOverlay `yaml:"controlPlaneEndpoint,omitempty"`
 	APIProxy             *apiproxy.Config             `yaml:"apiProxy,omitempty"`
+	KubernetesMetadata   *kubernetesMetadata          `yaml:"kubernetesMetadata,omitempty"`
 }
 
 type renderedNodeIdentity struct {
@@ -118,6 +119,9 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 	}
 	if request.KubeadmOnly {
 		overlay = renderedNodeConfigurationOverlay{Kubernetes: &node.Kubernetes}
+	}
+	if node.Bootstrap != nil && (len(node.Bootstrap.Labels) > 0 || len(node.Bootstrap.Taints) > 0) {
+		overlay.KubernetesMetadata = &kubernetesMetadata{Labels: node.Bootstrap.Labels, Taints: node.Bootstrap.Taints}
 	}
 	if node.Kubernetes.External && node.Bootstrap != nil {
 		endpoint := node.Bootstrap.ControlPlaneEndpoint

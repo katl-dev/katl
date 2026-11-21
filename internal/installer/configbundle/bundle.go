@@ -1291,7 +1291,7 @@ func addNodeKubeadmInputs(members *[]member, descriptors *[]Descriptor, node clu
 	}
 	if !node.InstallManifest.Node.Kubernetes.External {
 		var err error
-		plan, err = kubeadmconfig.WithNodeAddress(plan, node.InstallManifest.Node.Kubernetes.Address)
+		plan, err = kubeadmconfig.WithNodeRegistration(plan, kubeadmconfig.RegistrationFor(node.InstallManifest.Node))
 		if err != nil {
 			return nil, fmt.Errorf("node %s kubeadm config %q: %w", node.Name, ref, err)
 		}

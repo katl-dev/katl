@@ -150,11 +150,6 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 	emitAgentProgress(deps, AgentBootstrapProgress{Phase: "planning"})
 	result.addPhase("plan", "", "", "passed")
 	bootstrapInput := mergeBootstrap(planBootstrap(plan.Bootstrap), request.Bootstrap)
-	nodeManifests, err := nodeLabelManifests(plan)
-	if err != nil {
-		return result, err
-	}
-	bootstrapInput.Manifests = append(nodeManifests, bootstrapInput.Manifests...)
 	bootstrap, err := prepareBootstrap(bootstrapInput)
 	if err != nil {
 		return result, err

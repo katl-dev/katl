@@ -21,6 +21,10 @@ import (
 // configapply.DecodeNodeConfigurationChange, also used by agent validation.
 const oldSharedKubeletBaseError = "decode node configuration change: yaml: unmarshal errors:\n  line 12: field sharedKubeletBase not found in type configapply.inlineKubeadmConfig"
 
+// Observed from a runtime predating Kubernetes metadata when katlctl applies a
+// node with labels or taints.
+const oldKubernetesMetadataError = "unsupported-domain: spec.nodeOverrides.node-a.kubernetesMetadata: configuration domain is not supported"
+
 func TestNodeApplyRuntimeCompatibility(t *testing.T) {
 	for _, test := range []struct {
 		name, diagnostic                  string
@@ -30,6 +34,7 @@ func TestNodeApplyRuntimeCompatibility(t *testing.T) {
 		{name: "decoder", diagnostic: oldSharedKubeletBaseError, transportError: true, guidance: true},
 		{name: "other field", diagnostic: strings.ReplaceAll(oldSharedKubeletBaseError, "sharedKubeletBase", "otherField"), transportError: true},
 		{name: "other type", diagnostic: strings.ReplaceAll(oldSharedKubeletBaseError, "inlineKubeadmConfig", "otherConfig"), transportError: true},
+		{name: "Kubernetes metadata", diagnostic: oldKubernetesMetadataError, guidance: true},
 		{name: "rejected", diagnostic: oldSharedKubeletBaseError, guidance: true},
 		{name: "plan text", diagnostic: oldSharedKubeletBaseError, args: []string{"--plan"}, guidance: true},
 		{name: "plan JSON", diagnostic: oldSharedKubeletBaseError, args: []string{"--plan", "--output", "json"}, guidance: true},
@@ -62,7 +67,7 @@ func TestNodeApplyRuntimeCompatibility(t *testing.T) {
 			if err != nil {
 				message += err.Error()
 			}
-			if strings.Contains(message, "upgrade the node runtime") != test.guidance || !strings.Contains(message, "sharedKubeletBase") && test.guidance {
+			if strings.Contains(message, "upgrade the node runtime") != test.guidance || !strings.Contains(message, "sharedKubeletBase") && !strings.Contains(message, "kubernetesMetadata") && test.guidance {
 				t.Fatalf("compatibility diagnostic = %q, error = %v", message, err)
 			}
 			if client.err != nil && !errors.Is(err, client.err) {

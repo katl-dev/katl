@@ -80,7 +80,7 @@ func NativeEtcFiles(request RenderRequest) ([]confext.NativeEtcFile, error) {
 			return nil, fmt.Errorf("node.kubernetes.kubeadm.configRef %q was not resolved", ref)
 		}
 		if !request.Manifest.Node.Kubernetes.External {
-			config, err = kubeadmconfig.WithNodeAddress(config, request.Manifest.Node.Kubernetes.Address)
+			config, err = kubeadmconfig.WithNodeRegistration(config, kubeadmconfig.RegistrationFor(request.Manifest.Node))
 			if err != nil {
 				return nil, err
 			}

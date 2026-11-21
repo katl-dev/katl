@@ -1029,10 +1029,18 @@ func configApplyBase(root string, nodeName string, generationID string, now func
 		RuntimeKubernetesVersion:        kubernetesVersion,
 		RuntimeKubernetesActivationPath: kubernetesActivationPath,
 		KubernetesInitialized:           controlPlaneKubernetesInitialized(root),
+		KubeletRegistered:               kubeletRegistered(root),
 		EndpointAdvertiserSysext:        endpointAdvertiserSysext,
 		Chown:                           func(string, int, int) error { return nil },
 		Now:                             now,
 	}, nil
+}
+
+// kubeletRegistered reports whether kubelet holds credentials for an existing
+// Node object, after which kubeadm registration input no longer applies.
+func kubeletRegistered(root string) bool {
+	info, err := os.Stat(rootedRuntimePath(root, "/etc/kubernetes/kubelet.conf"))
+	return err == nil && info.Mode().IsRegular()
 }
 
 func controlPlaneKubernetesInitialized(root string) bool {

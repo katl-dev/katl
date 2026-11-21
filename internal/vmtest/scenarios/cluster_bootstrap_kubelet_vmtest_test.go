@@ -8,10 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/vmtest"
 	"gopkg.in/yaml.v3"
 )
@@ -69,6 +72,9 @@ func stageBootstrapKubeletInput(t *testing.T, ctx context.Context, smoke operati
 	source.Spec.Defaults.Kubernetes.Kubelet = nil
 	for i := range source.Spec.Nodes {
 		source.Spec.Nodes[i].Kubernetes.Kubelet = nil
+		metadata := bootstrapNodeMetadata[source.Spec.Nodes[i].Name]
+		source.Spec.Nodes[i].Kubernetes.Labels = configbundle.Some(metadata.labels)
+		source.Spec.Nodes[i].Kubernetes.Taints = configbundle.Some(metadata.taints)
 		if source.Spec.Nodes[i].Name == "cp-1" {
 			source.Spec.Nodes[i].Kubernetes.Kubelet = &configbundle.SourceKubeletConfig{ConfigFile: "kubelet.yaml"}
 		}
@@ -127,8 +133,71 @@ func stageBootstrapKubeletInput(t *testing.T, ctx context.Context, smoke operati
 	return nil
 }
 
+// bootstrapNodeMetadata reaches the nodes through pre-bootstrap cluster apply;
+// kubeadm init registers cp-1 with it and kubeadm join registers worker-1.
+var bootstrapNodeMetadata = map[string]struct {
+	labels map[string]string
+	taints []manifest.NodeTaint
+}{
+	"cp-1": {
+		labels: map[string]string{"katl.dev/vmtest-pool": "control", "topology.kubernetes.io/zone": "rack-a"},
+		taints: []manifest.NodeTaint{{Key: "katl.dev/vmtest-init", Effect: "PreferNoSchedule"}},
+	},
+	"worker-1": {
+		labels: map[string]string{"katl.dev/vmtest-pool": "workers", "katl.dev/vmtest-empty": ""},
+		taints: []manifest.NodeTaint{{Key: "katl.dev/vmtest-join", Value: "worker", Effect: "PreferNoSchedule"}},
+	},
+}
+
+// assertBootstrapNodeMetadata observes the registered Nodes through the
+// Kubernetes API rather than the kubeadm input Katl rendered.
+func assertBootstrapNodeMetadata(ctx context.Context, dir, kubeconfig string) error {
+	for name, want := range bootstrapNodeMetadata {
+		// Bootstrap returns once kubeadm join succeeds; kubelet registers the
+		// Node asynchronously, and the pre-CNI Node is not yet Ready.
+		var data []byte
+		var err error
+		for deadline := time.Now().Add(3 * time.Minute); ; time.Sleep(2 * time.Second) {
+			if data, err = kubectlOutput(ctx, kubeconfig, "get", "node", name, "-o", "json"); err == nil || time.Now().After(deadline) {
+				break
+			}
+		}
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(dir, name+"-node.json"), data, 0o600); err != nil {
+			return err
+		}
+		var node struct {
+			Metadata struct {
+				Labels map[string]string `json:"labels"`
+			} `json:"metadata"`
+			Spec struct {
+				Taints []manifest.NodeTaint `json:"taints"`
+			} `json:"spec"`
+		}
+		if err := json.Unmarshal(data, &node); err != nil {
+			return fmt.Errorf("decode %s Node: %w", name, err)
+		}
+		for key, value := range want.labels {
+			if got, ok := node.Metadata.Labels[key]; !ok || got != value {
+				return fmt.Errorf("%s Node label %s = %q (present %t), want %q", name, key, got, ok, value)
+			}
+		}
+		for _, taint := range want.taints {
+			if !slices.Contains(node.Spec.Taints, taint) {
+				return fmt.Errorf("%s Node taints = %+v, want %+v", name, node.Spec.Taints, taint)
+			}
+		}
+	}
+	return nil
+}
+
 func assertBootstrapKubeletConfig(ctx context.Context, smoke operationBackedSmokeRun, addresses map[string]string, kubeconfig string) error {
 	dir := filepath.Join(smoke.Result.RunDir, "bootstrap-kubelet")
+	if err := assertBootstrapNodeMetadata(ctx, dir, kubeconfig); err != nil {
+		return err
+	}
 	for _, name := range []string{"cp-1", "worker-1"} {
 		persisted, err := readKubeletNode(ctx, smoke.Inputs.SSHPrivateKey, addresses[name], name, "cat /var/lib/kubelet/config.yaml")
 		if err != nil {

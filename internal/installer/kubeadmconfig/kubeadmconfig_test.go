@@ -438,7 +438,7 @@ func assertFile(t *testing.T, path string, want string) {
 	}
 }
 
-func TestWithNodeAddressPreservesNodeLocalKubeletMode(t *testing.T) {
+func TestWithNodeRegistrationPreservesNodeLocalKubeletMode(t *testing.T) {
 	plan, err := PlanFromRenderedFiles("control-plane", []File{{
 		RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml",
 		Content:    []byte(initConfig()),
@@ -448,12 +448,12 @@ func TestWithNodeAddressPreservesNodeLocalKubeletMode(t *testing.T) {
 	}
 	plan.NodeLocalKubelet = true
 	plan.SharedKubeletBase = true
-	got, err := WithNodeAddress(plan, "192.0.2.10")
+	got, err := WithNodeRegistration(plan, NodeRegistration{Address: "192.0.2.10"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !got.NodeLocalKubelet || !got.SharedKubeletBase {
-		t.Fatal("WithNodeAddress() dropped kubelet input ownership")
+		t.Fatal("WithNodeRegistration() dropped kubelet input ownership")
 	}
 }
 

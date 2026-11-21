@@ -66,7 +66,7 @@ func SelectInput(root, generationID string, installed installer.ClusterIntent, r
 		return InputSelection{}, fmt.Errorf("bootstrapProfileRef %q does not select generation kubeadm config %q", profile, ref)
 	}
 	if !request.ExternalWorker {
-		plan, err = kubeadmconfig.WithNodeAddress(plan, configuration.Manifest.Node.Kubernetes.Address)
+		plan, err = kubeadmconfig.WithNodeRegistration(plan, kubeadmconfig.RegistrationFor(configuration.Manifest.Node))
 		if err != nil {
 			return InputSelection{}, fmt.Errorf("prepare selected bootstrap node address: %w", err)
 		}

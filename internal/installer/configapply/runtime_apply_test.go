@@ -1139,6 +1139,7 @@ func trustedBundleRequest(root string, override TrustedBundleRequest) TrustedBun
 	request.KubernetesVersion = override.KubernetesVersion
 	request.KubernetesActivationPath = override.KubernetesActivationPath
 	request.KubernetesInitialized = override.KubernetesInitialized
+	request.KubeletRegistered = override.KubeletRegistered
 	request.EndpointAdvertiserSysext = override.EndpointAdvertiserSysext
 	request.Executor = override.Executor
 	if override.Chown != nil {

@@ -54,6 +54,7 @@ type TrustedBundleRequest struct {
 	RuntimeKubernetesVersion        string
 	RuntimeKubernetesActivationPath string
 	KubernetesInitialized           bool
+	KubeletRegistered               bool
 	EndpointAdvertiserSysext        *generation.ExtensionRef
 	SystemExtensionPayloads         []SystemExtensionPayload
 	Executor                        *Executor
@@ -80,6 +81,8 @@ type NodeOverlay struct {
 	APIProxy                *apiproxy.Config
 	KubeadmChanged          bool
 	LivePreflight           map[string]bool
+	NodeLabels              map[string]string
+	NodeTaints              []manifest.NodeTaint
 }
 
 type IdentityOverlay struct {
@@ -584,6 +587,7 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 			return manifest.Manifest{}, nil, nil, err
 		}
 		applyOverlay(&merged, nodeOverlay, request.KubernetesInitialized, &domains, &unsafeFiles)
+		applyKubernetesMetadata(&merged, nodeOverlay, request.KubeletRegistered, &domains)
 	}
 	if len(domains.domains) == 0 {
 		if request.VolumeBindingsSet && !volumeBindingsEqual(request.CurrentRecord.VolumeBindings, request.VolumeBindings) {
@@ -913,10 +917,11 @@ func classifyControlPlaneEndpointChange(current, desired *controlplaneendpoint.C
 }
 
 type domainAccumulator struct {
-	domains           []string
-	seen              map[string]struct{}
-	endpointVIPImpact *EndpointVIPImpact
-	hostConfiguration *HostConfigurationChangePlan
+	domains                    []string
+	seen                       map[string]struct{}
+	endpointVIPImpact          *EndpointVIPImpact
+	hostConfiguration          *HostConfigurationChangePlan
+	kubernetesMetadataGuidance string
 }
 
 func (a *domainAccumulator) add(domain string) {
@@ -954,6 +959,9 @@ func (a *domainAccumulator) changes(overlays ...NodeOverlay) []Change {
 		change := Change{Domain: domain, LivePreflightOK: preflight[domain]}
 		if domain == DomainControlPlaneEndpointVIP {
 			change.EndpointVIPImpact = a.endpointVIPImpact
+		}
+		if domain == DomainKubernetesNodeMetadata && a.kubernetesMetadataGuidance != "" {
+			change.Warnings = []string{a.kubernetesMetadataGuidance}
 		}
 		if domain == DomainHostConfiguration && a.hostConfiguration != nil {
 			change.LivePreflightOK = a.hostConfiguration.Live
@@ -1350,6 +1358,7 @@ func requestDigest(request TrustedBundleRequest) string {
 		RuntimeVersion          string
 		RuntimeActivation       string
 		KubernetesInitialized   bool
+		KubeletRegistered       bool
 		EndpointAdvertiser      *generation.ExtensionRef
 		SystemExtensionPayloads []SystemExtensionPayload
 	}
@@ -1369,6 +1378,7 @@ func requestDigest(request TrustedBundleRequest) string {
 		RuntimeVersion:          request.RuntimeKubernetesVersion,
 		RuntimeActivation:       request.RuntimeKubernetesActivationPath,
 		KubernetesInitialized:   request.KubernetesInitialized,
+		KubeletRegistered:       request.KubeletRegistered,
 		EndpointAdvertiser:      request.EndpointAdvertiserSysext,
 		SystemExtensionPayloads: request.SystemExtensionPayloads,
 	})

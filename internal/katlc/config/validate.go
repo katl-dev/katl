@@ -207,6 +207,9 @@ func validateOverlay(node *yaml.Node, path string, options Options, result *Resu
 			// listener, backend, and TLS identity contract.
 		case "livePreflight":
 			// The apply matrix validates the domain names and requested mode.
+		case "kubernetesMetadata":
+			// KnownFields decoding and manifest validation enforce the typed
+			// label and taint contract; decoding accepts it only per node.
 		default:
 			result.add(unsupportedCode(pair.key), pair.path, "configuration domain is not supported")
 		}

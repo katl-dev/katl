@@ -18,6 +18,7 @@ const (
 	DomainVolumes                       = "volumes"
 	DomainKubeadmConfig                 = "kubeadm-config"
 	DomainBootstrapNodeMetadata         = "bootstrap-node-metadata"
+	DomainKubernetesNodeMetadata        = "kubernetes-node-metadata"
 	DomainSSHOperatorAccess             = "ssh-operator-access"
 	DomainSystemRole                    = "system-role"
 	DomainSelectedKubeadmConfig         = "selected-kubeadm-config"
@@ -316,6 +317,10 @@ var domainPolicies = map[string]domainPolicy{
 		NextBootAllowed: true,
 	},
 	DomainBootstrapNodeMetadata: {
+		Classification:  ClassificationOnlineApplicable,
+		NextBootAllowed: true,
+	},
+	DomainKubernetesNodeMetadata: {
 		Classification:  ClassificationOnlineApplicable,
 		NextBootAllowed: true,
 	},

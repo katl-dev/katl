@@ -121,7 +121,7 @@ func (s *Server) validateBootstrapContinuation(previous operation.OperationRecor
 		if !ok || ref != selected.Input.ConfigRef || input.Config.RenderPath != selected.Input.Path {
 			return fmt.Errorf("failed bootstrap candidate does not own the recorded source input; preserve node state for repair")
 		}
-		input, err = kubeadmconfig.WithNodeAddress(input, candidate.Manifest.Node.Kubernetes.Address)
+		input, err = kubeadmconfig.WithNodeRegistration(input, kubeadmconfig.RegistrationFor(candidate.Manifest.Node))
 		if err != nil {
 			return fmt.Errorf("normalize failed bootstrap candidate input: %w", err)
 		}

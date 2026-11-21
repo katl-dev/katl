@@ -593,7 +593,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 				t.Fatal(err)
 			}
 			ref := material.InstallManifest.Node.Kubernetes.Kubeadm.ConfigRef
-			selected, err := kubeadmconfig.WithNodeAddress(material.KubeadmConfigs[ref], material.InstallManifest.Node.Kubernetes.Address)
+			selected, err := kubeadmconfig.WithNodeRegistration(material.KubeadmConfigs[ref], kubeadmconfig.RegistrationFor(material.InstallManifest.Node))
 			if err != nil {
 				t.Fatal(err)
 			}
