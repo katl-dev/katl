@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -38,6 +39,13 @@ func loadManagementContext(ctx context.Context, path string) (workstation.Config
 }
 
 func refreshConfiguredManagement(ctx context.Context, sourcePath, contextPath, contextName string, stderr io.Writer, selectedNodes ...string) (context.Context, error) {
+	return refreshConfiguredManagementAt(ctx, sourcePath, contextPath, contextName, nil, stderr, selectedNodes...)
+}
+
+// refreshConfiguredManagementAt observes nodes as refreshConfiguredManagement
+// does, except that each node named in endpoints is observed at that endpoint
+// instead of its configured management address.
+func refreshConfiguredManagementAt(ctx context.Context, sourcePath, contextPath, contextName string, endpoints map[string]string, stderr io.Writer, selectedNodes ...string) (context.Context, error) {
 	if strings.TrimSpace(sourcePath) == "" {
 		return ctx, nil
 	}
@@ -49,21 +57,56 @@ func refreshConfiguredManagement(ctx context.Context, sourcePath, contextPath, c
 	if err != nil {
 		bundle, bundleErr := configbundle.ReadBundle(bytes.NewReader(data), "")
 		if bundleErr != nil || bundle.Authentication != managementidentity.TrustedNetwork {
+			if bundleErr == nil {
+				return withSavedEndpoints(ctx, bundle.Manifest.ClusterName, endpoints)
+			}
 			return ctx, nil
 		}
 	} else if source.ManagementAuthentication() == managementidentity.MutualTLS && source.Spec.ManagementIdentity == "" {
-		return ctx, nil
+		return withSavedEndpoints(ctx, source.Metadata.Name, endpoints)
 	}
 	// Instance IDs bind this operation to the observed installations. Only an
 	// explicit context save persists observations or changes the current cluster.
 	if ctx.Value(observedManagementKey{}) == nil {
 		ctx = context.WithValue(ctx, observedManagementKey{}, workstation.Config{})
 	}
-	observed, _, err := prepareContext(ctx, contextSaveOptions{configInput: sourcePath, contextPath: contextPath, contextName: contextName, timeout: 15 * time.Second, output: "text", selectedNodes: selectedNodes}, stderr)
+	observed, _, err := prepareContext(ctx, contextSaveOptions{configInput: sourcePath, contextPath: contextPath, contextName: contextName, timeout: 15 * time.Second, output: "text", selectedNodes: selectedNodes, endpoints: endpoints}, stderr)
 	if err != nil {
 		return ctx, err
 	}
 	return context.WithValue(ctx, observedManagementKey{}, observed), nil
+}
+
+// withSavedEndpoints overlays endpoints on the saved context for clusterName
+// for this command only; the saved file is unchanged.
+func withSavedEndpoints(ctx context.Context, clusterName string, endpoints map[string]string) (context.Context, error) {
+	if len(endpoints) == 0 {
+		return ctx, nil
+	}
+	path, err := workstation.ConfigPath()
+	if err != nil {
+		return ctx, err
+	}
+	saved, err := loadManagementContext(ctx, path)
+	if errors.Is(err, os.ErrNotExist) {
+		return ctx, nil
+	}
+	if err != nil {
+		return ctx, err
+	}
+	for i := range saved.Clusters {
+		if strings.TrimSpace(saved.Clusters[i].Name) != strings.TrimSpace(clusterName) {
+			continue
+		}
+		nodes := slices.Clone(saved.Clusters[i].Nodes)
+		for j := range nodes {
+			if endpoint, ok := endpoints[nodes[j].Name]; ok {
+				nodes[j].ManagementEndpoint = endpoint
+			}
+		}
+		saved.Clusters[i].Nodes = nodes
+	}
+	return context.WithValue(ctx, observedManagementKey{}, saved), nil
 }
 
 func managementIdentityForSource(sourcePath string, source configbundle.SourceConfig) (managementidentity.Bundle, error) {

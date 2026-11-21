@@ -390,3 +390,18 @@ func managementContextForCluster(ctx context.Context, configPath, contextPath, c
 	}
 	return ctx, nil
 }
+
+// configuredManagementEndpoint returns the endpoint that the cluster
+// configuration names for nodeName, or "" when it names none.
+func configuredManagementEndpoint(configPath, nodeName string) (string, error) {
+	inv, err := readManagementInventory(configPath)
+	if err != nil {
+		return "", err
+	}
+	for _, node := range inv.Nodes {
+		if node.Name == strings.TrimSpace(nodeName) {
+			return normalizeManagementAddress(node.Address)
+		}
+	}
+	return "", nil
+}

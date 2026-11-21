@@ -33,6 +33,10 @@ type kubeadmControlPlaneConfigOptions struct {
 	progress                                                         io.Writer
 	destructiveStorageAcknowledgements                               []string
 	volumeRebinds                                                    []string
+	// endpoint is where the single selected node answers before its
+	// configuration moves it to management.address.
+	endpoint      string
+	addressChange *clusterApplyAddressChange
 }
 
 var kubeadmConfigNow = func() time.Time { return time.Now().UTC() }
@@ -57,6 +61,10 @@ Use --plan to validate the selected nodes and preview host changes without
 accepting operations. Kubernetes component readiness is checked during apply.
 --mode live refuses changes that need reboot; --mode next-boot stages host changes.
 
+To move a worker to a new address, change its networkd files and
+management.address together, then select it with --node and pass its current
+address with --endpoint. Apply stages the change for the next boot.
+
 Apply does not remove nodes omitted from the config or change an enrolled node's
 name or role. See docs/operations/configure-nodes.md for configuration workflows.`,
 		Args: cobra.NoArgs,
@@ -78,6 +86,7 @@ name or role. See docs/operations/configure-nodes.md for configuration workflows
 	f.StringVar(&opts.rolloutID, "rollout-id", "", "rollout identity")
 	f.StringArrayVar(&opts.destructiveStorageAcknowledgements, "acknowledge-storage-wipe", nil, "deprecated: wipe intent is configured by wipe: true")
 	_ = f.MarkHidden("acknowledge-storage-wipe")
+	f.StringVar(&opts.endpoint, "endpoint", "", "address where the selected node answers now, when cluster.yaml moves it to a new management.address (requires one --node)")
 	f.StringArrayVar(&opts.volumeRebinds, "rebind-volume", nil, "authorize replacing one generation-bound volume identity as NODE/VOLUME (repeatable)")
 	for _, name := range []string{"inventory", "generation", "config-name", "rollout-id"} {
 		cmd.Flags().Lookup(name).Hidden = true
@@ -113,7 +122,21 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 	if len(opts.selectedNodes) > 0 && opts.coordinator != "" && !slices.Contains(opts.selectedNodes, opts.coordinator) {
 		return fmt.Errorf("coordinator %q is not selected; include it with --node or omit --coordinator", opts.coordinator)
 	}
-	refreshed, err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr, opts.selectedNodes...)
+	var endpoints map[string]string
+	if strings.TrimSpace(opts.endpoint) != "" {
+		change, current, err := planClusterAddressChange(opts)
+		if err != nil {
+			return err
+		}
+		endpoints = map[string]string{opts.selectedNodes[0]: current}
+		if change != nil {
+			// A worker moves only through a staged generation and reboot, so
+			// the management session is never cut by a live network reload.
+			opts.addressChange = change
+			opts.mode = generation.ApplyModeNextBoot
+		}
+	}
+	refreshed, err := refreshConfiguredManagementAt(ctx, opts.configPath, "", "", endpoints, stderr, opts.selectedNodes...)
 	if err != nil {
 		return err
 	}
@@ -173,7 +196,7 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 		components = map[string]bool{"kubelet": true}
 	}
 	if opts.plan {
-		return writeClusterApplyReport(stdout, opts.output, clusterApplyReport{Nodes: len(selected), NodePlans: nodePlans, Result: "planned", RebootRequired: len(stagedNodes) > 0, StagedNodes: stagedNodes})
+		return writeClusterApplyReport(stdout, opts.output, clusterApplyReport{Nodes: len(selected), NodePlans: nodePlans, Result: "planned", RebootRequired: len(stagedNodes) > 0, StagedNodes: stagedNodes, AddressChange: opts.addressChange, configPath: opts.configPath})
 	}
 	for _, component := range []string{"control-plane", "kubelet", "kube-proxy"} {
 		if !components[component] {
@@ -220,7 +243,7 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 			return err
 		}
 	}
-	return writeClusterApplyReport(stdout, opts.output, clusterApplyReport{Nodes: len(selected), NodePlans: nodePlans, Kubernetes: results, Result: "succeeded", RebootRequired: len(stagedNodes) > 0, StagedNodes: stagedNodes})
+	return writeClusterApplyReport(stdout, opts.output, clusterApplyReport{Nodes: len(selected), NodePlans: nodePlans, Kubernetes: results, Result: "succeeded", RebootRequired: len(stagedNodes) > 0, StagedNodes: stagedNodes, AddressChange: opts.addressChange, configPath: opts.configPath})
 }
 
 type clusterConfigNodePlan struct {
@@ -232,13 +255,15 @@ type clusterConfigNodePlan struct {
 }
 
 type clusterApplyReport struct {
-	Nodes          int                     `json:"nodes"`
-	NodePlans      []clusterConfigNodePlan `json:"nodePlans"`
-	Kubernetes     map[string]any          `json:"kubernetes,omitempty"`
-	Result         string                  `json:"result"`
-	RebootRequired bool                    `json:"rebootRequired,omitempty"`
-	StagedNodes    []string                `json:"stagedNodes,omitempty"`
-	NextAction     string                  `json:"nextAction,omitempty"`
+	Nodes          int                        `json:"nodes"`
+	NodePlans      []clusterConfigNodePlan    `json:"nodePlans"`
+	Kubernetes     map[string]any             `json:"kubernetes,omitempty"`
+	Result         string                     `json:"result"`
+	RebootRequired bool                       `json:"rebootRequired,omitempty"`
+	StagedNodes    []string                   `json:"stagedNodes,omitempty"`
+	NextAction     string                     `json:"nextAction,omitempty"`
+	AddressChange  *clusterApplyAddressChange `json:"addressChange,omitempty"`
+	configPath     string
 }
 
 func writeClusterApplyReport(stdout io.Writer, format string, report clusterApplyReport) error {
@@ -266,6 +291,14 @@ func writeClusterApplyReport(stdout io.Writer, format string, report clusterAppl
 	}
 	if report.Result == "partial" {
 		_, err := fmt.Fprintln(stdout, "Kubernetes configuration is incomplete. "+report.NextAction)
+		return err
+	}
+	if change := report.AddressChange; change != nil {
+		verb := "is unchanged"
+		if report.RebootRequired {
+			verb = "is staged"
+		}
+		_, err := fmt.Fprintf(stdout, "The address change for %s %s; it still answers at %s. Reboot it with 'katlctl node reboot %s --config %s --endpoint %s', which waits for it at %s, then rerun 'katlctl cluster apply --config %s' without --endpoint.\n", change.Node, verb, change.Current, change.Node, report.configPath, change.Current, change.Desired, report.configPath)
 		return err
 	}
 	if report.RebootRequired {
@@ -537,6 +570,12 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 	loaded, err := loadNodeConfiguration(ctx, opts.configPath, configbundle.PlanningInputs{Nodes: opts.selectedNodes})
 	if err != nil {
 		return activatedClusterConfig{}, err
+	}
+	if change := opts.addressChange; change != nil {
+		// Kubeadm keeps a pinned kubelet node IP in kubelet flags written at join.
+		if pinned := strings.TrimSpace(loaded.Nodes[change.Node].Manifest.Node.Kubernetes.Address); pinned != "" {
+			return activatedClusterConfig{}, fmt.Errorf("refusing to move worker %s from %s to %s: nodes[].kubernetes.address pins its kubelet node IP to %s, and cluster apply cannot change it; restore management.address to %s, or plan 'katlctl node wipe %s --config %s --plan', reinstall it with the new addresses, and join it with 'katlctl node join %s --config %s'; no node was changed", change.Node, change.Current, change.Desired, pinned, change.Current, change.Node, opts.configPath, change.Node, opts.configPath)
+		}
 	}
 	for index := range nodes {
 		for _, compiled := range loaded.Inventory.Nodes {
@@ -951,4 +990,58 @@ func waitKubeadmControlPlaneConfig(ctx context.Context, client agentapi.KatlcAge
 		case <-ticker.C:
 		}
 	}
+}
+
+// clusterApplyAddressChange records a worker that answers at Current and whose
+// configuration places it at Desired after its next boot.
+type clusterApplyAddressChange struct {
+	Node    string `json:"node"`
+	Current string `json:"current"`
+	Desired string `json:"desired"`
+}
+
+// planClusterAddressChange validates --endpoint for one selected node and
+// returns its current management endpoint. The change is nil when the node
+// already answers at its configured address.
+func planClusterAddressChange(opts kubeadmControlPlaneConfigOptions) (*clusterApplyAddressChange, string, error) {
+	if strings.TrimSpace(opts.configPath) == "" {
+		return nil, "", fmt.Errorf("--endpoint requires --config")
+	}
+	selected := slices.Compact(slices.Sorted(slices.Values(opts.selectedNodes)))
+	if len(selected) != 1 {
+		return nil, "", fmt.Errorf("--endpoint names one node's current address; select that node with exactly one --node NAME")
+	}
+	name := selected[0]
+	current, err := normalizeManagementAddress(opts.endpoint)
+	if err != nil {
+		return nil, "", err
+	}
+	inv, err := readManagementInventory(opts.configPath)
+	if err != nil {
+		return nil, "", err
+	}
+	index := slices.IndexFunc(inv.Nodes, func(node inventory.Node) bool { return node.Name == name })
+	if index < 0 {
+		return nil, "", fmt.Errorf("node %q is not in the config; use a node name from the complete ClusterConfig", name)
+	}
+	node := inv.Nodes[index]
+	desired, err := normalizeManagementAddress(node.Address)
+	if err != nil {
+		return nil, "", err
+	}
+	if desired == "" {
+		return nil, "", fmt.Errorf("node %s has no management.address in %s; set it to the node's new address", name, opts.configPath)
+	}
+	if desired == current {
+		return nil, current, nil
+	}
+	currentHost, _, _ := net.SplitHostPort(current)
+	desiredHost, _, _ := net.SplitHostPort(desired)
+	if node.SystemRole == inventory.RoleControlPlane {
+		return nil, "", fmt.Errorf("refusing to move control-plane node %s from %s to %s: Katl cannot change a control plane's advertise address, etcd peer URLs, serving certificate SANs, or a control-plane endpoint derived from its address; restore management.address to %s, or plan 'katlctl node wipe %s --config %s --plan', reinstall it with the new address, and join it with 'katlctl node join %s --config %s'; no node was changed", name, currentHost, desiredHost, currentHost, name, opts.configPath, name, opts.configPath)
+	}
+	if opts.mode == generation.ApplyModeLive {
+		return nil, "", fmt.Errorf("moving %s from %s to %s requires a reboot; omit --mode live so apply stages the change for the next boot", name, currentHost, desiredHost)
+	}
+	return &clusterApplyAddressChange{Node: name, Current: currentHost, Desired: desiredHost}, current, nil
 }

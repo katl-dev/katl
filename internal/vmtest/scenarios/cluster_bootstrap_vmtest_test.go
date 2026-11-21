@@ -315,7 +315,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
 	cpNode, err := vmtest.StartInstalledRuntimeNode(ctx, result, vmtest.InstalledRuntimeNodeConfig{
 		Name: "cp-1",
@@ -796,6 +796,14 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		cancel()
 		if err != nil {
 			t.Fatalf("%s kubelet configuration after reboot: %v", node.Name, err)
+		}
+	}
+	if !proveUpgrade {
+		if err := runWorkerReaddress(t, ctx, smoke, nodes, addresses, kubeconfigPath, kubernetesBundle, cniFixtures); err != nil {
+			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("worker re-address: %v", err)
 		}
 	}
 	if proveUpgrade {

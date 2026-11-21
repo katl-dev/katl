@@ -110,6 +110,13 @@ Kubernetes configuration online. Apply never implicitly joins nodes or upgrades
 Kubernetes. See [Apply cluster configuration](../operations/configure-nodes.md)
 for the full workflow.
 
+When `cluster.yaml` moves a worker to a new `management.address`, pass the
+address it answers at now. `cluster apply --node NAME --endpoint CURRENT`
+stages the move for the next boot, and
+`node reboot NAME --config ./cluster.yaml --endpoint CURRENT` waits for the same
+installation at either address. See
+[Re-address a worker](../operations/change-cluster-nodes.md#re-address-a-worker).
+
 Timeout flags use Go durations, such as `90s` or `15m`, and must be positive.
 Bootstrap and apply default to a 30-minute overall deadline; wipe is capped at
 25 minutes. Other commands describe their deadline or wait scope in `--help`.
