@@ -577,7 +577,7 @@ func classifyDiffPath(path string) (string, string, string) {
 	case strings.Contains(path, ".install.systemDisk"):
 		return "operation-only", "wipe-reinstall", "changing the system disk requires an explicit reinstall and never wipes implicitly"
 	case strings.Contains(path, ".kubernetes.address"):
-		return "operation-only", "kubeadm-aware operation", "changing kubelet node identity requires a kubeadm-aware operation"
+		return "operation-only", "wipe, reinstall, and node join", "changing the Kubernetes address changes kubelet node identity; wipe the node with katlctl node wipe, reinstall it under the same name, then run katlctl node join"
 	case strings.Contains(path, ".kubernetes.kubelet"):
 		return "operation-only", "kubeadm-aware operation", "per-node kubelet configuration changes require kubeadm-aware reconciliation on this node"
 	case strings.Contains(path, ".kubernetes.labels"), strings.Contains(path, ".kubernetes.taints"):
