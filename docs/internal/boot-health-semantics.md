@@ -99,8 +99,9 @@ For the first Kubernetes-capable generation, local kubeadm-ready health is not
 enough to commit the generation. The bootstrap or join operation commits the
 candidate only after kubeadm succeeds and post-kubeadm health checks pass.
 Those post-kubeadm checks are operation health checks, not
-`katl-boot-complete.target` boot health. The generation is not known-good until a
-later boot reaches `katl-boot-complete.target`.
+`katl-boot-complete.target` boot health. When they pass, the operation promotes
+the live-activated generation as good and healthy and makes it the persistent
+EFI default without a trial reboot.
 
 Kubelet is only started before boot health when the selected generation
 explicitly enables that policy.
@@ -173,13 +174,16 @@ deferred
 ## Promotion Rules
 
 `good` means the node booted with that generation selected and reached
-`katl-boot-complete.target`. `healthy` in generation status is set only by the
-boot health path or explicit repair tooling that records why boot health was
-accepted.
+`katl-boot-complete.target`, or that live promotion accepted it. `healthy` in
+generation status is set only by the boot health path, live promotion, or
+explicit repair tooling that records why boot health was accepted.
 
-A generation is not known-good when only live apply checks passed. A live-applied
-generation selected for a later boot must still pass the normal boot health gate
-before it becomes a rollback target.
+Live promotion applies to a generation whose complete runtime was activated in
+the current boot and passed its operation's live health checks: live
+configuration apply, Kubernetes bootstrap and join, and Kubernetes-only
+upgrades. It marks the generation good and healthy and makes it the persistent
+EFI default immediately. Only next-boot apply and host upgrade arm a one-shot
+trial that must pass the boot health gate.
 
 ## Attempt Count
 

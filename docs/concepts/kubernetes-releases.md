@@ -31,6 +31,6 @@ The `katlctl` from your KatlOS release resolves the selected version and checks
 that its Kubernetes bundle fits the KatlOS runtime; the nodes then fetch and
 verify the bundle. The CLI can resolve the versions in its built-in catalog
 without contacting the registry. To resolve a newer published version, the
-workstation needs access to `ghcr.io` while it plans the operation. Nodes need
-access to fetch the Kubernetes bundle unless you supply it through a supported
-local mechanism.
+workstation needs access to `ghcr.io` while it plans the operation. The nodes
+fetch the Kubernetes bundle from `ghcr.io` themselves, so they need registry and CA
+access to it; air-gapped or registry-mirrored delivery is not supported.

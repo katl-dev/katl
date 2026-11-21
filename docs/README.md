@@ -27,7 +27,9 @@ maps the concepts you know to their KatlOS equivalents.
 ## Operate and recover
 
 - [Operate KatlOS](operations/README.md) to find the task for your node or
-  cluster, including configuration, maintenance, and upgrades.
+  cluster, including configuration, maintenance, upgrades,
+  [etcd backups](operations/back-up-etcd.md), and
+  [certificate renewal](operations/renew-certificates.md).
 - [Secure the management API](operations/management-auth.md) to choose between
   trusted-network and mTLS management and to manage mTLS management secrets.
 - [Troubleshoot KatlOS](operations/troubleshoot.md) to find where an operation

@@ -19,7 +19,8 @@ kubeconfig. You manage the cluster network, add-ons, workloads, and backups.
 | Stable DNS and external routing | Operator | Katl can health-gate and advertise a configured VIP, but the surrounding DNS, routers, peers, and network policy remain yours. |
 | CNI | Operator | Choose, install, upgrade, diagnose, and remove cluster networking yourself. |
 | Workloads and cluster add-ons | Operator | GitOps, ingress, storage classes, CSI, monitoring, policy, secrets, and applications are outside Katl. |
-| Backups and disaster recovery | Operator | Keep independent etcd, workload, and persistent-data backups. Host generation fallback is not a cluster backup. |
+| Backups and disaster recovery | Operator | Keep independent [etcd](../operations/back-up-etcd.md), workload, and persistent-data backups. Host generation fallback is not a cluster backup. |
+| Kubernetes certificate renewal | Operator | Kubernetes upgrades renew kubeadm certificates; between upgrades, [renew them](../operations/renew-certificates.md) before they expire. Katl does not rotate CAs. |
 
 ## What install and bootstrap leave ready
 

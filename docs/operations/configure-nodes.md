@@ -57,7 +57,8 @@ formats its storage, or wipes KatlOS because you deleted the entry.
 | Rename an unenrolled installed node | Stages the hostname through normal next-boot configuration | Apply, reboot, verify the new hostname, and only then bootstrap Kubernetes |
 | Rename an enrolled node | Refused before any node mutation | Keep the old name, or explicitly wipe it under the old config and reinstall it as a new node |
 | Change `controlPlane` / node role | Refused as an operation-only change | Explicitly wipe the named node, reinstall it with the desired role, then use `katlctl node join NAME --config ./cluster.yaml` |
-| Change only `management.address` | Changes workstation targeting only | Verify the new address reaches the same node; no node generation or Kubernetes state changes |
+| Change only `management.address` | Changes only where `katlctl` connects; it does not change the node's IP address, which [networkd host configuration](../reference/cluster-config.md#networkd-files) owns | Verify the new address reaches the same node; no node generation or Kubernetes state changes |
+| Change `kubernetes.address` | Refused as an operation-only change | Wipe the node, reinstall it, then run `katlctl node join NAME --config ./cluster.yaml`; see [Change a node's address](change-cluster-nodes.md#change-a-nodes-address) |
 
 Removing one entry and adding another is never inferred to be a rename. It is a
 preserved omitted node plus a distinct addition until the operator completes

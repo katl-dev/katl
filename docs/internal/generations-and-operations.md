@@ -771,8 +771,9 @@ katlc apply
 accepted live
   -> activate the candidate confext in the current boot
   -> run only bounded domain live actions
-  -> commit the generation after live checks pass
-  -> leave boot health and persistent default promotion pending until a later boot
+  -> after live checks pass, promote the generation live: commit it, mark it
+     good and healthy, and make it the persistent EFI default without a trial
+     reboot
 
 accepted next-boot
   -> arm bounded trial boot selection for the candidate
@@ -810,14 +811,14 @@ katlctl cluster bootstrap
   -> katlc verifies containerd, kubelet wiring, kubeadm tools, and local readiness
   -> katlc runs kubeadm init or kubeadm join through the agent executor
   -> katlc runs post-kubeadm health checks
-  -> katlc commits generation 1 only after kubeadm and operation health checks succeed
+  -> katlc promotes generation 1 live only after kubeadm and operation health checks succeed
 ```
 
 The Kubernetes-capable generation is host state, but its first commit is gated by
 the bootstrap or join operation because kubeadm mutates persistent node or
-cluster state. That commit records the accepted desired host state. It does not
-move the persistent boot default or make the generation known-good. Known-good
-promotion requires a later boot to reach `katl-boot-complete.target`.
+cluster state. The operation promotes the live-activated generation: it commits
+it, marks it good and healthy, and makes it the persistent EFI default without a
+trial reboot.
 
 Cluster bootstrap and node join use the same operation model:
 
@@ -913,10 +914,10 @@ failed boot
 live apply
   record live phases in the katlc-owned OperationRecord; an optional
   generation-local config-apply-status.json may mirror the latest summary, but
-  it is not authoritative. Live activation does not by itself prove boot health
-  or known-good eligibility. A successful live apply may commit the generation
-  as accepted desired host state, but persistent default promotion still waits
-  for a later boot to become good and healthy
+  it is not authoritative. Live activation alone does not prove boot health.
+  When the operation's live checks pass, live promotion commits the generation,
+  marks it good and healthy, and makes it the persistent EFI default
+  immediately; only next-boot apply and host upgrade arm a one-shot trial
 ```
 
 ## Failure And Rollback

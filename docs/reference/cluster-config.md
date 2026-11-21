@@ -30,6 +30,8 @@ and "—" means the field has no default.
 | `spec.defaults.hostConfiguration.sysfs` | [Typed sysfs values](#sysfs-settings) | — | Next boot |
 | `spec.defaults.systemExtensions` | [System extensions](#system-extensions) by OCI repository | — | Extension change or removal: next boot; configuration and units: live |
 | `spec.defaults.storage.volumes` | [Data volumes](#data-volumes) | `wipe: false` | Live |
+| `spec.defaults.kubernetes.labels` | [Kubernetes node labels](#node-labels-and-taints) | — | Applied once at cluster bootstrap |
+| `spec.defaults.kubernetes.taints` | [Kubernetes node taints](#node-labels-and-taints) | — | External workers only, at join |
 | `spec.defaults.kubernetes.kubelet.configFile` | [Node-local kubelet overlay](#node-local-kubelet-settings) | — | Live |
 | `spec.defaults.generationRetention` | [Automatic generation cleanup](#generation-retention) | `keepLast: 5`, `maxAge: 30d` | Live |
 | `spec.nodes[].name` | Stable node name | — | See the [node lifecycle matrix](../operations/configure-nodes.md#node-lifecycle-matrix) |
@@ -117,7 +119,48 @@ Katl uses it for kubelet `--node-ip` and the kubeadm local API advertise address
 during both init and control-plane join. It is deliberately one literal IP,
 not a subnet-selection policy. Omit it for normal single-uplink nodes. The
 separate `management.address` remains the operator-reachable address used by `katlctl`
-and may be different.
+and may be different. For what each address change means after installation,
+see [Change a node's address](../operations/change-cluster-nodes.md#change-a-nodes-address).
+
+## Node labels and taints
+
+Set Kubernetes node labels and taints under `kubernetes` in `spec.defaults` or
+on a node:
+
+```yaml
+spec:
+  defaults:
+    kubernetes:
+      labels:
+        topology.kubernetes.io/region: home
+  nodes:
+    - name: worker-1
+      kubernetes:
+        labels:
+          topology.kubernetes.io/zone: rack-a
+        taints:
+          - key: dedicated
+            value: storage
+            effect: NoSchedule
+```
+
+Labels compose by key, with node values replacing default values, and an
+explicitly empty `labels: {}` clears inherited labels. A node `taints` list
+replaces the default list wholesale, and `taints: []` clears it. Keys and
+values must be valid Kubernetes label keys and values, and a taint `effect`
+must be `NoSchedule`, `PreferNoSchedule`, or `NoExecute`.
+
+Katl currently applies this metadata only at the following points, and it does
+not reconcile later changes:
+
+- `katlctl cluster bootstrap` applies the labels to every node in the plan.
+  It does not apply taints to Katl-managed nodes.
+- `katlctl node join` does not apply labels or taints to a Katl-managed node.
+- An [external worker](../operations/external-workers.md) registers with its
+  labels and taints when it joins.
+
+Use `kubectl label` and `kubectl taint` for taints on Katl-managed nodes, for
+nodes that join after bootstrap, and for any later change.
 
 ## Host configuration
 
@@ -562,10 +605,16 @@ related to the VIP.
 
 ### Release-owned extensions
 
+KatlOS releases build and publish two release-owned extensions, DRBD9
+(`drbd9`) and NVIDIA (`nvidia`); the Extensions table in each release's notes
+lists the versions that release provides. BIRD is not release-owned: select it
+with a `bundle` entry as [shown above](#route-the-api-vip-with-bird).
+
 For a release-owned extension, use `release` instead of `bundle` and provide
 the full repository without a tag or digest. The target KatlOS release selects
-the release-advertised digest. Katl does not infer a registry or organization,
-or select the newest published artifact. For example:
+the release-advertised digest, for either kernel flavour, without an extra
+field. Katl does not infer a registry or organization, or select the newest
+published artifact. For example:
 
 ```yaml
 systemExtensions:
@@ -587,6 +636,11 @@ must permit unsigned kernel modules; Katl does not disable signature
 enforcement. This beta artifact has not yet been validated with a physical GPU,
 a Kubernetes GPU workload, or a host upgrade and rollback. Verify `nvidia-smi`
 on the node after reboot before placing GPU workloads on it.
+
+A host upgrade resolves each `release` selection again against the target
+release, so the node moves to the extension build for that release. If the
+target release does not provide the extension, the upgrade plan fails before
+the node changes; choose a release that includes it.
 
 ### Apply and inspect extensions
 
