@@ -217,6 +217,9 @@ In this example `worker-1` moves from `192.0.2.31` to `192.0.2.41`.
    Apply connects at `192.0.2.31` and stages the change for the next boot. It
    also skips the Kubernetes component phases and prints the reboot command.
    `--endpoint` requires exactly one `--node`, and `--mode live` is refused.
+   If you omit `--endpoint`, apply cannot reach the worker at its new address
+   and prints this command, with the current address filled in when a saved
+   context records it.
 
 3. Reboot the worker:
 
