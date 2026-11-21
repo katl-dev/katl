@@ -20,7 +20,7 @@ disruption budgets or retry evictions on your behalf. DaemonSets and static
 control-plane pods remain on the node.
 
 Run the intended [host upgrade](upgrade-host.md) or
-[reboot or shutdown](access.md#routine-host-management) when you are ready.
+[reboot or shutdown](access.md#reboot-or-shut-down-a-node) when you are ready.
 After the node returns, verify workload and storage health before restoring
 scheduling:
 
@@ -60,7 +60,7 @@ spec:
 ```
 
 Merge this reference into your complete configuration, then follow
-[Apply node configuration](configure-nodes.md). Kubelet owns the shutdown
+[Apply cluster configuration](configure-nodes.md). Kubelet owns the shutdown
 budget and logind delay inhibitor; KatlOS provides the writable runtime file
 that kubelet needs while keeping `/etc` immutable. Native priority-based
 shutdown configuration is also available through the same kubelet input.
@@ -72,6 +72,46 @@ or mapped devices have been released. A successful drain alone does not prove
 that teardown is complete. Follow your storage driver's procedure and verify
 the node's actual mounts and devices before maintenance.
 
-For Rook/Ceph deployments, follow the
-[Rook/Ceph maintenance guide](rook-ceph-maintenance.md) for storage teardown,
-shutdown dependencies, and recovery guidance.
+## Rook-Ceph
+
+A mounted Ceph RBD filesystem can block shutdown if its storage backend,
+driver, or network goes away before the unmount finishes, because pod
+termination, CSI staging cleanup, device unmapping, and host service shutdown
+are separate steps. Follow the maintenance procedure for your deployed Rook,
+Ceph, and Ceph-CSI versions; Rook documents shutdown and restart ordering in its
+[node maintenance guide](https://rook.io/docs/rook/latest/Upgrade/node-maintenance/).
+
+### Before reboot, shutdown, or host upgrade
+
+1. Check Ceph health and workload availability, determine whether the node
+   hosts storage clients, Ceph daemons, or both, and follow the application and
+   storage maintenance procedures for that role.
+2. Quiesce or move workloads as those procedures require. A drain evicts pods,
+   but verify that CSI has also completed volume teardown before stopping the
+   dependencies needed to release those volumes.
+3. On the node, check for remaining RBD devices and CSI mounts with these
+   read-only commands:
+
+   ```sh
+   findmnt -rn -o SOURCE,TARGET,FSTYPE
+   lsblk -o NAME,TYPE,FSTYPE,MOUNTPOINTS
+   ```
+
+   Correlate what remains with the volumes involved in the maintenance, and use
+   Ceph-CSI and kubelet diagnostics to investigate incomplete teardown. Ceph
+   describes RBD mappings in the
+   [RBD command reference](https://docs.ceph.com/en/latest/man/8/rbd/).
+4. Perform the [host upgrade](upgrade-host.md), reboot, or shutdown only after
+   the required storage teardown completes. After the node returns, verify Ceph
+   health, application access to volumes, and Kubernetes readiness before
+   restoring scheduling.
+
+### If shutdown stalls
+
+Preserve the shutdown journal and console output. Check kubelet and Ceph-CSI
+logs, remaining mounts and mappings, and connectivity to the Ceph cluster, then
+follow the storage driver's recovery procedure for the observed state. Leave
+CSI volume cleanup under the driver's control: a longer kubelet
+[shutdown budget](#configure-native-graceful-shutdown) gives pods more
+termination time, but storage teardown still needs its dependencies until it
+completes.

@@ -19,7 +19,7 @@ installer, which writes the OS image to the selected disk. Use the same
 release files for every node and supply the node's configuration when it boots.
 
 - [Install katlctl](../install-katlctl.md#install-the-release-binary)
-- [Install from the ISO](../getting-started.md)
+- [Install from the ISO](../installing.md)
 - [Install with PXE and Matchbox](../install-pxe-matchbox.md)
 - [Upgrade a KatlOS host](../operations/upgrade-host.md)
 
@@ -28,3 +28,10 @@ The release also contains adjacent `.json` descriptors and `.sha256` files,
 extension inventory. Use [Verify release artifacts](../operations/verify-release.md)
 if you want to check the bytes against the release manifest and verify their
 build provenance.
+
+Release notes compare the standard and LTS kernels, list shared runtime package
+versions, and list extensions built for the release. Package versions come from
+the published `katl-*.packages.tsv` inventories, including RPM release and
+architecture. Zero RPM epochs are omitted; nonzero epochs are preserved.
+Kubernetes bundles are distributed separately; see
+[Kubernetes release delivery](../concepts/kubernetes-releases.md).

@@ -736,6 +736,17 @@ Use delete-on-success retention for routine gates. While debugging, use
 evidence, and clean retained domains with `scripts/vmtest-clean` when inspection
 is done.
 
+The focused external-worker regression uses one Katl control-plane VM and an
+independently provisioned [external worker](operations/external-workers.md). It
+removes kubeadm cluster configuration and stops the control plane's Katl
+management agent before joining the worker, then checks readiness, repeat
+operations, and cross-node Service traffic through the public interfaces:
+
+```sh
+scripts/vmtest-run ./internal/vmtest/scenarios \
+  -run '^TestExternalWorkerJoin$' -count=1 -v -timeout 30m
+```
+
 ### Prove host capabilities
 
 Run the full enabled world suite from the Nix development shell on a host with

@@ -3,6 +3,22 @@
 Use node status, logs, and operation records to find which step failed and
 whether it changed the node. Check the operation state before you retry.
 
+## First classification
+
+| Symptom | Primary evidence |
+| --- | --- |
+| Installer never becomes ready | installer console; `katlos-install.service` journal |
+| Configuration bundle rejected | `katlctl config bundle` output; selected node; validation error |
+| Installed node does not complete boot | boot console; boot-health and management services |
+| Agent cannot be reached | saved context or mTLS management secrets; expected node name; `katlc-agent.service`; network path to TCP 9443 |
+| Bootstrap or join fails | `katlctl` phase output; node operation record; kubelet/containerd/kubeadm journals |
+| Config apply stalls or rolls back | `katlctl node status` and `katlctl operations list`; generation and operation records |
+| Routed API endpoint is unavailable | `katlctl cluster status`; per-node local API, route, peer, and exchange state |
+| Host upgrade does not stage or boot | host-upgrade operation; boot selection; boot-health journal |
+| Wipe is refused | wipe JSON refusals; selected nodes; Kubernetes cleanup diagnostics |
+
+## Check status from your workstation
+
 When the management API is reachable, start from your workstation:
 
 ```sh
@@ -21,23 +37,19 @@ includes current network addresses plus a live journal tail. Use
 `Ctrl+Alt+F2` for a local shell. The last rendered dashboard is also available
 at `/run/katl/console/rendered.txt` for collection over SSH.
 
-## First classification
-
-| Symptom | Primary evidence |
-| --- | --- |
-| Installer never becomes ready | installer console; `katlos-install.service` journal |
-| Config bundle rejected | bundle command output; selected node; validation error |
-| Installed node does not complete boot | boot console; boot-health and management services |
-| Agent cannot be reached | saved management identity/context; expected node name; `katlc-agent.service`; network path to TCP 9443 |
-| Bootstrap or join fails | `katlctl` phase output; node operation record; kubelet/containerd/kubeadm journals |
-| Config apply stalls or rolls back | `katlctl node status` and `katlctl operations list`; generation and operation records |
-| Routed API endpoint is unavailable | `katlctl cluster status`; per-node local API, route, peer, and exchange state |
-| Host upgrade does not stage or boot | host-upgrade operation; boot selection; boot-health journal |
-| Wipe is refused | wipe JSON refusals; selected topology; Kubernetes cleanup diagnostics |
-
 ## Collect installed-node evidence
 
-Run on the affected node and preserve timestamps:
+First discover current and recent durable operations through the agent:
+
+```sh
+katlctl operations list --config ./cluster.yaml --node cp-1
+```
+
+Add `--endpoint ADDRESS` to override the node's address from `cluster.yaml`.
+Use `katlctl operations status ID --diagnostics verbose` when an exact record
+needs deeper inspection.
+
+Then run these commands on the affected node and preserve timestamps:
 
 ```sh
 systemctl --failed --no-pager
@@ -50,16 +62,6 @@ cat /var/lib/katl/boot/selection.json
 find /var/lib/katl/generations -maxdepth 2 -type f -print
 find /var/lib/katl/operations -maxdepth 3 -type f -print
 ```
-
-First discover current and recent durable operations through the agent:
-
-```sh
-katlctl operations list \
-  --endpoint affected-node.example.test:9443
-```
-
-Use `katlctl operations status ID --diagnostics verbose` when an
-exact record needs deeper inspection.
 
 If the agent is unavailable, use SSH as a break-glass evidence path and read
 the record without editing it. The journal directory is authoritative when a
@@ -76,7 +78,7 @@ After a failed trial, the previous-boot journal shows why boot health failed and
 whether `katl-boot-recovery.service` requested the single automatic fallback
 reboot. If the fallback also failed, or `recoveryRequired` is true, Katl does not
 reboot again. Preserve the journal and use the console to select or repair a
-validated generation. If no validated generation remains, reinstall the host
+healthy generation. If no healthy generation remains, reinstall the node
 without treating host rollback as a Kubernetes or data backup.
 
 ## Installer evidence
@@ -97,32 +99,31 @@ journalctl -b -u katlos-install.service --no-pager
 find /var/lib/katl/install -maxdepth 2 -type f -print
 ```
 
-Also retain the installer console, exact release filename and SHA-256, config
-bundle, selected node, and disk identity. A failure before validation
-completes must leave the partition table intact. Record the state of the disk
-before attempting recovery.
+Also retain the installer console, exact release filename and SHA-256,
+configuration bundle, selected node, and disk identity. A failure before
+validation completes must leave the partition table intact. Record the state of
+the disk before attempting recovery.
 
 | Symptom | What to inspect |
 | --- | --- |
-| Configuration rejected | Run `katlctl config validate ./cluster.yaml` and review the selected node, SSH key, and disk. For PXE, check that the bundle was compiled with the intended image URL and descriptor. |
+| Configuration rejected | Run `katlctl config validate ./cluster.yaml` and review the selected node, SSH key, and disk. For PXE, check that the configuration bundle was compiled with the intended image URL and descriptor. |
 | Disk missing or ambiguous | Compare the installer disk inventory with the stable ID in the configuration. If the disk is absent, check the firmware and storage controller. |
 | Automatic install refused | Check whether the PXE profile enabled automatic install and whether the installed-disk guard refused it. See [Keep PXE first safely](../install-pxe-matchbox.md#keep-pxe-first-safely). |
 | Image digest mismatch | Use the image and its published descriptor from the same release. Replace any altered copy with the published file. |
 
 ## Interpret operation state
 
-- `terminal: false`: the operation may still be running or interrupted. Check
-  the latest journal event and agent service before acting.
-- `result: succeeded`: the operation completed its current phase; a staged
-  generation may still need reboot and boot-health promotion.
-- `result: failed-needs-repair` or `recoveryRequired: true`: preserve evidence
-  and stop automatic retry.
-- `externalMutationStarted: true`: assume the named mutation scopes may have
-  changed even if the command returned an error.
-- lost client connection: does not cancel the node-local operation.
+| State | Meaning and action |
+| --- | --- |
+| `terminal: false` | The operation may still be running or interrupted. Check the latest journal event and agent service before acting. |
+| `result: succeeded` | The operation completed its current phase; a staged generation may still need reboot and boot-health promotion. |
+| `result: failed-needs-repair` or `recoveryRequired: true` | Preserve evidence and stop automatic retry. |
+| `externalMutationStarted: true` | Assume the named mutation scopes may have changed even if the command returned an error. |
+| Lost client connection | Does not cancel the node-local operation. |
 
-Host rollback changes KatlOS artifacts around persistent state. It does not
-prove kubeadm, etcd, Kubernetes API, CNI, or workload mutations were reverted.
+A successful host rollback does not prove that kubeadm, etcd, Kubernetes API,
+CNI, or workload mutations were reverted; see
+[rollback is not a backup](../concepts/generations.md#rollback-is-not-a-backup).
 
 ## Agent access failures
 
@@ -137,9 +138,9 @@ For missing mTLS management secrets, restore the original file at
 `spec.managementIdentity` (relative to the cluster configuration), including
 access to its SOPS decryption key if encrypted. Do not generate new secrets for
 already-installed nodes: a new authority does not restore their trust.
-Deleting workstation context cannot reset the nodes and is unnecessary; rebuild
+Deleting the workstation context cannot reset the nodes and is unnecessary; rebuild
 it with `katlctl context save --config PATH_TO_YOUR_CONFIG`. See
-[durable cluster secrets](access.md#durable-cluster-secrets) for legacy migration
+[Recover lost secrets](management-auth.md#recover-lost-secrets) for legacy migration
 and the limits of lost-key recovery.
 
 A trusted reinstall using the same secrets is accepted automatically. Katl
