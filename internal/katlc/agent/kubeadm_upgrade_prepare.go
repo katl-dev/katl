@@ -254,6 +254,33 @@ func verifyEtcdSnapshot(path string) error {
 	return nil
 }
 
+type etcdSnapshotStatus struct {
+	Hash      uint64
+	Revision  uint64
+	TotalKeys uint64
+}
+
+// readEtcdSnapshotStatus opens the snapshot database with etcdutl inside the
+// etcd container, so path is the snapshot's location as seen there.
+func readEtcdSnapshotStatus(ctx context.Context, run ToolRunner, containerID, path string) (etcdSnapshotStatus, error) {
+	result := run(ctx, []string{"crictl", "exec", containerID, "etcdutl", "snapshot", "status", path, "--write-out=json"}, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		return etcdSnapshotStatus{}, fmt.Errorf("verify etcd snapshot database: %s", toolFailure(result))
+	}
+	var status struct {
+		Hash      *uint64 `json:"hash"`
+		Revision  uint64  `json:"revision"`
+		TotalKeys uint64  `json:"totalKey"`
+	}
+	if err := json.Unmarshal(result.Stdout, &status); err != nil {
+		return etcdSnapshotStatus{}, err
+	}
+	if status.Hash == nil || status.Revision == 0 || status.TotalKeys == 0 {
+		return etcdSnapshotStatus{}, errors.New("etcd snapshot database status is incomplete")
+	}
+	return etcdSnapshotStatus{Hash: *status.Hash, Revision: status.Revision, TotalKeys: status.TotalKeys}, nil
+}
+
 func (e *Executor) recordSnapshotStatus(ctx context.Context, record operation.OperationRecord, containerID string) (operation.OperationRecord, error) {
 	request := record.KubernetesSysextUpdate
 	path := rootedRuntimePath(e.Root, request.SnapshotStorageLocation)
@@ -263,20 +290,9 @@ func (e *Executor) recordSnapshotStatus(ctx context.Context, record operation.Op
 	if err := os.Chmod(path, 0o600); err != nil {
 		return record, err
 	}
-	result := e.toolRunner()(ctx, []string{"crictl", "exec", containerID, "etcdutl", "snapshot", "status", request.SnapshotStorageLocation, "--write-out=json"}, nil)
-	if result.Err != nil || result.ExitStatus != 0 {
-		return record, fmt.Errorf("verify etcd snapshot database: %s", toolFailure(result))
-	}
-	var status struct {
-		Hash      *uint64 `json:"hash"`
-		Revision  uint64  `json:"revision"`
-		TotalKeys uint64  `json:"totalKey"`
-	}
-	if err := json.Unmarshal(result.Stdout, &status); err != nil {
+	status, err := readEtcdSnapshotStatus(ctx, e.toolRunner(), containerID, request.SnapshotStorageLocation)
+	if err != nil {
 		return record, err
-	}
-	if status.Hash == nil || status.Revision == 0 || status.TotalKeys == 0 {
-		return record, errors.New("etcd snapshot database status is incomplete")
 	}
 	if record.KubeadmUpgradeEvidence.Etcd != nil {
 		if record.KubeadmUpgradeEvidence.Etcd.Before == nil {
@@ -296,7 +312,7 @@ func (e *Executor) recordSnapshotStatus(ctx context.Context, record operation.Op
 		if current.KubeadmUpgradeEvidence.Etcd == nil {
 			current.KubeadmUpgradeEvidence.Etcd = &operation.EtcdUpgradeEvidence{}
 		}
-		current.KubeadmUpgradeEvidence.Etcd.Snapshot = &operation.EtcdSnapshot{Path: request.SnapshotStorageLocation, SHA256: digest, Hash: *status.Hash, Revision: status.Revision, TotalKeys: status.TotalKeys, CreatedAt: e.clock().Format(time.RFC3339)}
+		current.KubeadmUpgradeEvidence.Etcd.Snapshot = &operation.EtcdSnapshot{Path: request.SnapshotStorageLocation, SHA256: digest, Hash: status.Hash, Revision: status.Revision, TotalKeys: status.TotalKeys, CreatedAt: e.clock().Format(time.RFC3339)}
 		current.KubernetesSysextUpdate.SnapshotRevision = strconv.FormatUint(status.Revision, 10)
 		return current, nil
 	})

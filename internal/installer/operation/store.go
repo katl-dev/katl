@@ -262,6 +262,9 @@ type EtcdUpgradeEvidence struct {
 	PreRestart   *EtcdObservation `json:"preRestart,omitempty"`
 	After        *EtcdObservation `json:"after,omitempty"`
 	Failure      string           `json:"failure,omitempty"`
+	// RetainedSnapshots lists, newest first, the pre-upgrade snapshots left on
+	// the node after a successful upgrade pruned older ones.
+	RetainedSnapshots []string `json:"retainedSnapshots,omitempty"`
 }
 
 type EtcdSnapshot struct {
@@ -1268,6 +1271,7 @@ func cloneRecord(record OperationRecord) OperationRecord {
 		evidence := *record.KubeadmUpgradeEvidence
 		if evidence.Etcd != nil {
 			etcd := *evidence.Etcd
+			etcd.RetainedSnapshots = cloneStrings(etcd.RetainedSnapshots)
 			if etcd.Snapshot != nil {
 				snapshot := *etcd.Snapshot
 				etcd.Snapshot = &snapshot

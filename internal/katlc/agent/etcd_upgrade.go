@@ -210,7 +210,7 @@ func etcdEvidenceProto(evidence *operation.EtcdUpgradeEvidence) *agentapi.EtcdUp
 	if evidence == nil {
 		return nil
 	}
-	out := &agentapi.EtcdUpgradeEvidence{SourceImage: evidence.SourceImage, TargetImage: evidence.TargetImage, ImageChanges: evidence.ImageChanges, Before: etcdObservationProto(evidence.Before), PreRestart: etcdObservationProto(evidence.PreRestart), After: etcdObservationProto(evidence.After), Failure: evidence.Failure}
+	out := &agentapi.EtcdUpgradeEvidence{SourceImage: evidence.SourceImage, TargetImage: evidence.TargetImage, ImageChanges: evidence.ImageChanges, Before: etcdObservationProto(evidence.Before), PreRestart: etcdObservationProto(evidence.PreRestart), After: etcdObservationProto(evidence.After), Failure: evidence.Failure, RetainedSnapshots: slices.Clone(evidence.RetainedSnapshots)}
 	if s := evidence.Snapshot; s != nil {
 		out.Snapshot = &agentapi.EtcdSnapshot{Path: s.Path, Sha256: s.SHA256, Revision: s.Revision, Hash: s.Hash, TotalKeys: s.TotalKeys, CreatedAt: s.CreatedAt}
 	}

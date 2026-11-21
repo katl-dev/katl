@@ -45,24 +45,7 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 		}
 		return nil
 	}
-	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
-		commands = append(commands, append([]string(nil), argv...))
-		joined := strings.Join(argv, " ")
-		switch {
-		case strings.Contains(joined, "/usr/bin/kubeadm version"):
-			return ToolResult{Stdout: []byte("v1.36.2\n")}
-		case strings.Contains(joined, "get configmap kubeadm-config"):
-			return ToolResult{Stdout: []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n")}
-		case strings.Contains(joined, "get endpoints kubernetes"):
-			return ToolResult{Stdout: testKubeAPIServerEndpoints("10.0.0.1", "10.0.0.2")}
-		case joined == "systemctl show --property=Environment --value kubelet.service":
-			return ToolResult{Stdout: []byte("KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/var/lib/katl/operations/kubeadm-upgrade-1/kubelet-peer.conf\n")}
-		case strings.Contains(joined, "kubelet --version"):
-			return ToolResult{Stdout: []byte("Kubernetes v1.36.2\n")}
-		default:
-			return ToolResult{}
-		}
-	}
+	executor.RunTool = successfulUpgradeTool(&commands)
 	if err := executor.Execute(context.Background(), record); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
@@ -1143,6 +1126,29 @@ func testUpgradeEtcdEvidence() *operation.EtcdUpgradeEvidence {
 		before.Members = append(before.Members, operation.EtcdMemberObservation{ID: fmt.Sprintf("member-%d", i+1), Name: name, Endpoint: fmt.Sprintf("https://10.0.0.%d:2379", i+1), PeerURLs: []string{fmt.Sprintf("https://10.0.0.%d:2380", i+1)}, Healthy: true, Version: "3.6.5", ClusterVersion: "3.6.0", StorageVersion: "3.6.0", RaftTerm: 9, AppliedIndex: 100, Revision: 42})
 	}
 	return &operation.EtcdUpgradeEvidence{SourceImage: "registry.k8s.io/etcd:3.6.5-0", TargetImage: "registry.k8s.io/etcd:3.6.5-0", Before: before}
+}
+
+// successfulUpgradeTool answers the tool calls of a healthy control-plane
+// upgrade from v1.36.1 to v1.36.2 and records each command.
+func successfulUpgradeTool(commands *[][]string) ToolRunner {
+	return func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		*commands = append(*commands, append([]string(nil), argv...))
+		joined := strings.Join(argv, " ")
+		switch {
+		case strings.Contains(joined, "/usr/bin/kubeadm version"):
+			return ToolResult{Stdout: []byte("v1.36.2\n")}
+		case strings.Contains(joined, "get configmap kubeadm-config"):
+			return ToolResult{Stdout: []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n")}
+		case strings.Contains(joined, "get endpoints kubernetes"):
+			return ToolResult{Stdout: testKubeAPIServerEndpoints("10.0.0.1", "10.0.0.2")}
+		case joined == "systemctl show --property=Environment --value kubelet.service":
+			return ToolResult{Stdout: []byte("KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/var/lib/katl/operations/kubeadm-upgrade-1/kubelet-peer.conf\n")}
+		case strings.Contains(joined, "kubelet --version"):
+			return ToolResult{Stdout: []byte("Kubernetes v1.36.2\n")}
+		default:
+			return ToolResult{}
+		}
+	}
 }
 
 func newUpgradeExecutor(root string, store operation.Store) *Executor {

@@ -449,6 +449,31 @@ func TestKubernetesUpgradeCordon(t *testing.T) {
 	}
 }
 
+func TestKubernetesUpgradeReportsRetainedSnapshots(t *testing.T) {
+	clusterConfig, contextPath := writeKubernetesUpgradeConfig(t, "v1.36.1", workstation.Node{Name: "cp-1", ManagementEndpoint: "192.0.2.1:9443", SystemRole: inventory.RoleControlPlane, EnrollmentID: "enrollment-cp-1", MachineID: "machine"})
+	client := healthyKubernetesUpgradeClient()
+	client.generation.Sysexts[0].PayloadVersion = "v1.36.0"
+	evidence := testKubernetesUpgradeEtcd()
+	evidence.RetainedSnapshots = []string{"/var/lib/etcd/katl-snapshots/new.db", "/var/lib/etcd/katl-snapshots/old.db"}
+	client.operationStatus.EtcdUpgrade = evidence
+	previousDial := dialKatlcAgent
+	previousEndpointDial := dialKubernetesEndpoint
+	t.Cleanup(func() { dialKatlcAgent = previousDial; dialKubernetesEndpoint = previousEndpointDial })
+	dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
+		return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
+	}
+	dialKubernetesEndpoint = func(context.Context, string) error { return nil }
+
+	var stdout bytes.Buffer
+	if err := run(context.Background(), []string{"kubernetes", "upgrade", "--config", clusterConfig, "--context-file", contextPath, "--timeout", "1m"}, &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	want := "Retained etcd snapshots on cp-1: /var/lib/etcd/katl-snapshots/new.db, /var/lib/etcd/katl-snapshots/old.db\n"
+	if !strings.Contains(stdout.String(), want) {
+		t.Fatalf("output missing %q:\n%s", want, stdout.String())
+	}
+}
+
 func TestKubernetesUpgradeStopsAfterNodeFailure(t *testing.T) {
 	nodes := []workstation.Node{
 		{Name: "cp-1", ManagementEndpoint: "192.0.2.1:9443", SystemRole: inventory.RoleControlPlane, EnrollmentID: "enrollment-cp-1", MachineID: "machine-cp-1"},
