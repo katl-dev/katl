@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -733,8 +734,9 @@ func TestRemoteResolverPreservesStorageReserve(t *testing.T) {
 		MaxDownloadSize: 20, RequiredFreeBytes: 100,
 		AvailableBytes: func(string) (uint64, error) { return 110, nil },
 	}).ResolveKatlosImage(context.Background(), expected)
-	if err == nil || !strings.Contains(err.Error(), "insufficient storage") {
-		t.Fatalf("ResolveKatlosImage() error = %v, want headroom refusal", err)
+	var short *InsufficientStorageError
+	if !errors.As(err, &short) || short.AvailableBytes != 110 || short.RequiredBytes != 111 {
+		t.Fatalf("ResolveKatlosImage() error = %v, want headroom refusal for 110 of 111 bytes", err)
 	}
 }
 

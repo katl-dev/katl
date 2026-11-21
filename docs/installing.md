@@ -20,6 +20,8 @@ yourself.
   [Release artifacts](reference/release-artifacts.md) for the files for your
   workstation and boot method. If you want to authenticate the downloads, see
   [Verify release artifacts](operations/verify-release.md).
+- Give each machine at least 2 GiB of RAM; see the
+  [supported surface](support.md#supported-home-lab-surface).
 - Use a trusted provisioning network that lets your workstation reach the
   installers on TCP port `8080`, because the installer accepts handoff
   requests without authentication; see [Network trust](support.md#network-trust).
