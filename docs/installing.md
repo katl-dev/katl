@@ -99,10 +99,17 @@ formatting.
 katlctl install apply --config ./cluster.yaml --node cp-1
 ```
 
-`--node` selects an entry by its name or its `management.address`. You can
-omit it when the configuration contains one node. Katl validates the configuration and
-installer image before authorizing the disk write. The installer accepts
-one valid submission, then closes the handoff path.
+`--node` selects an entry by its name or its `management.address`. Katl
+validates the configuration and installer image before authorizing the disk
+write. The installer accepts one valid submission, then closes the handoff path.
+
+Without `--node` or `--endpoint`, `install apply` installs every configured
+node, one at a time in `cluster.yaml` order, without prompting. Each node gets
+its own `--timeout`. Katl reports a node as skipped when its installer is
+unreachable or not waiting for configuration, then continues with the next
+node. With `--output json`, a skipped node's report has `skipped: true` and a
+`skipReason`; a configuration with several nodes produces an array of reports.
+In this mode, every node needs a `management.address`.
 
 The command connects to the installer at the node's `management.address`. If
 the installer is currently at another address, such as a temporary address

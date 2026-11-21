@@ -85,6 +85,11 @@ not create or change a saved context. Only explicit context commands persist
 that record. `context delete NAME` removes it without changing any node or
 external secrets. Deleting the current selection never selects another cluster.
 
+`install apply` without `--node` or `--endpoint` installs every configured
+node in `cluster.yaml` order, skipping and reporting nodes whose installer is
+unreachable or not waiting; see
+[Install KatlOS](../installing.md#apply-the-configuration).
+
 Installed-node commands accept `NODE` or `--node NAME`, not both. Selection is
 optional when the configuration has one node. `cluster apply --node NAME` is
 repeatable and defaults to all configured nodes. Bootstrap's `--init-node`

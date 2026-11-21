@@ -156,6 +156,26 @@ Kubernetes Node through the Kubernetes API, then reinstall and join the machine
 with `node join`. Loss of etcd quorum and snapshot-based disaster recovery
 remain outside the supported workflow.
 
+## Change a node's address
+
+A node has two addresses in `cluster.yaml`, and neither field changes the IP
+address that the node configures. The node's own addressing comes from DHCP or
+its [networkd host configuration](../reference/cluster-config.md#networkd-files).
+
+| Change | Supported path |
+| --- | --- |
+| `management.address` | This field only changes where `katlctl` connects. After the node answers at the new address, update `cluster.yaml` and, if you use a saved context, [rebind it](access.md#use-a-context) with `katlctl context rebind`. |
+| `kubernetes.address` | `cluster apply` refuses the change. [Wipe the node](#wipe-one-node), reinstall it with the new address, and join it with `katlctl node join`. |
+| A worker's IP address | Re-addressing a worker in place is not yet a supported single workflow. Wipe, reinstall, and join it. |
+| A control plane's IP address | Not supported. Katl cannot change a control plane's advertise address, etcd peer URLs, serving certificate SANs, or a control-plane endpoint derived from its address. |
+
+When `spec.controlPlaneEndpoint` is unset, Katl derives the Kubernetes API
+endpoint from the first control plane's `management.address` and port 6443, so
+that node's address becomes part of the cluster. If node addresses might
+change, set a stable VIP or DNS name as
+[`spec.controlPlaneEndpoint`](../reference/cluster-config.md#kubernetes-api-endpoint)
+before bootstrap.
+
 ## Refused transitions
 
 Katl refuses enrolled-node rename and role change during `cluster apply`.

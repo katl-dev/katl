@@ -12,9 +12,9 @@ node at a time.
 - Check that the node is running a
   [healthy generation](../concepts/generations.md#staged-trial-and-committed)
   and that no other mutating node operation is active.
-- Choose the intended KatlOS release, and use that release's upgrade
-  SquashFS if you supply a local image. The node must be able to fetch release
-  artifacts from GitHub.
+- Choose the intended KatlOS release. With `--version`, the node must be able
+  to fetch release artifacts from GitHub; otherwise
+  [upgrade from a local image](#upgrade-from-a-local-image).
 - Check that the installed CNI supports the target kernel. For Cilium, check
   the [tested version guidance](cilium.md#before-you-start).
 - Check that `cluster.yaml` contains the node and its current management
@@ -25,14 +25,15 @@ node at a time.
   For nodes that use Rook-Ceph volumes, follow the
   [Rook-Ceph guidance](maintain-node.md#rook-ceph) and verify the storage
   teardown required by your deployment.
-- Keep independent etcd and workload backups and ensure that you have console
-  or out-of-band access. Preserve the source release assets and CLI until you
-  have accepted the target and no longer need its one-step rollback path.
+- Keep independent [etcd](back-up-etcd.md) and workload backups and ensure
+  that you have console or out-of-band access. Preserve the source release
+  assets and CLI until you have accepted the target and no longer need its
+  one-step rollback path.
 - Run the upgrade during the intended reboot window.
 
-Katl checks the image itself before it changes the inactive slot, including
-its declared architecture and runtime interface, its boot components, and
-whether it fits on writable state.
+Before it changes the inactive slot, Katl checks the image's boot components
+and whether it fits on writable state, and it refuses a target that does not
+declare the same architecture and runtime interface as the running node.
 
 ## Plan the host upgrade
 
@@ -121,6 +122,32 @@ systemd finish the remaining workload and shim cleanup. Allow that shutdown to
 complete rather than forcing power off, which can increase the risk of
 workload data loss. If it repeatedly reaches the systemd timeout, preserve the
 previous-boot journal before retrying the upgrade.
+
+## Upgrade from a local image
+
+Use `--artifact` instead of `--version` when the node cannot reach GitHub or
+you want to upload a release image that you already have. Download the
+release's `katlos-upgrade-VERSION-ARCH.squashfs` (for the LTS flavour,
+`katlos-lts-upgrade-VERSION-ARCH.squashfs`) together with its adjacent `.json`
+metadata file, and keep both in the same directory under their original
+filenames. `katlctl` reads the version from the metadata, so `--artifact` and
+`--version` are mutually exclusive.
+
+`katlctl` checks the image only against that adjacent metadata: its role,
+format, size, SHA-256, and exact filename. [Verify the release
+artifacts](verify-release.md) against `SHA256SUMS` and the release attestation
+before you use them. A symbolic link or a renamed image is rejected, and so is
+an image whose architecture does not match the node.
+
+Plan the upgrade, then run the same command without `--plan`. Pass
+`--flavour lts` for an LTS image:
+
+```sh
+katlctl node upgrade cp-1 --config ./cluster.yaml \
+  --artifact ./katlos-upgrade-2026.11.0-x86_64.squashfs --plan
+katlctl node upgrade cp-1 --config ./cluster.yaml \
+  --artifact ./katlos-upgrade-2026.11.0-x86_64.squashfs
+```
 
 ## Understand rollback retention
 

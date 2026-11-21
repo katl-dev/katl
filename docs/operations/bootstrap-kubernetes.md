@@ -26,8 +26,8 @@ If you plan to use Cilium, its
 `katlctl cluster apply` and the reboot that it reports.
 
 Katl resolves and fetches the immutable Kubernetes bundle during this
-operation. Nodes need registry and CA access to `ghcr.io` unless the Kubernetes
-bundle is supplied through an explicitly supported local mechanism.
+operation, so the nodes need registry and CA access to `ghcr.io`. Katl does not
+support air-gapped or registry-mirrored delivery of the Kubernetes bundle.
 
 ## Review ClusterConfig changes
 

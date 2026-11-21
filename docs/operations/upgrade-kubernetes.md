@@ -89,11 +89,20 @@ then proceeds in this order:
    to the next node without rebooting.
 
 Katl verifies each snapshot's embedded checksum, database status, revision, and
-file digest, and records its location and the observed membership. Snapshots
+file digest, and records its location and the observed membership. Each
+control plane keeps its snapshot at
+`/var/lib/etcd/katl-snapshots/OPERATION_ID.db`, and Katl never deletes these
+files; see [pre-upgrade snapshots](back-up-etcd.md#pre-upgrade-snapshots) for
+when you can remove them. Snapshots
 taken on different nodes can have different revisions while writes continue,
 so keeping several protects against losing the first upgraded node's copy; a
 cluster restore uses one chosen snapshot rather than combining them. See
 [etcd disaster recovery](https://etcd.io/docs/v3.6/op-guide/recovery/).
+
+Kubeadm renews its control-plane certificates during the upgrade, because Katl
+runs `kubeadm upgrade` with kubeadm's default certificate renewal. Refresh your
+workstation kubeconfig afterward as described in
+[Renew Kubernetes certificates](renew-certificates.md#refresh-your-kubeconfig).
 
 Before restarting each voter, Katl checks every etcd endpoint directly with
 authenticated, linearizable reads, verifies cluster and member identities,

@@ -59,7 +59,8 @@ katlctl kubernetes identity inspect \
 Record the overall fingerprint with the backup. `katlctl` refuses an identity
 whose cluster name differs from `ClusterConfig`, whose key pairs do not match,
 whose CAs are not currently valid, or whose file permissions allow group or
-other access.
+other access. Generated CAs are valid for ten years, and Katl does not rotate
+them; see [certificate authorities](renew-certificates.md#certificate-authorities).
 
 ## Import an existing kubeadm identity
 
@@ -121,7 +122,7 @@ bootstrap.
 
 Keep these independently:
 
-- etcd snapshots or another Kubernetes API-state backup
+- [etcd snapshots](back-up-etcd.md) or another Kubernetes API-state backup
 - workload and persistent-volume backups
 - encryption-at-rest provider keys, if configured by your platform
 - `cluster.yaml` and release information

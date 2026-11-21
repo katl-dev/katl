@@ -30,9 +30,11 @@ The supported release surface is deliberately narrow:
 - Node-local runtime configuration for the supported domains described in
   [Apply cluster configuration](operations/configure-nodes.md).
 
-A release claims to work only on the exact VM and physical-hardware
-configurations it was tested on. Automated testing uses libvirt, KVM, and OVMF
-virtual machines, and a successful VM run does not establish general hardware
+Each release is qualified by automated install, bootstrap, configuration,
+management, and upgrade journeys in libvirt, KVM, and OVMF virtual machines for
+both kernel flavours; see [release qualification](development/releases.md#qualification-and-promotion).
+A release makes no claim for physical hardware unless its release notes name
+that hardware, and a successful VM run does not establish general hardware
 compatibility. Firmware, storage controllers, network devices, and physical
 machines that a release was not tested on are unverified.
 
@@ -70,6 +72,17 @@ handshake never falls back to trusted-network access. Kubernetes kubeconfigs
 and SSH keys are separate from this setting. See
 [Secure the management API](operations/management-auth.md#choose-an-access-mode)
 for mode selection, management secrets, and existing-node upgrade behavior.
+
+KatlOS ships no host packet filter. The nftables, conntrack, and `iptables-nft`
+tools are installed, but `nftables.service` is removed from the image, so no
+ruleset restricts which networks reach a node. By default an installed node
+listens on SSH port `22`, which accepts public keys only, and on the
+management API port `9443`; control planes also serve Katl's API proxy on
+`7445`. The installer environment serves port `8080`. After bootstrap, kubelet
+listens on `10250` and kube-proxy reports health on `10256`; control planes
+add the API server on `6443` and etcd on `2379`–`2380`, and your CNI adds its
+own ports. Other Kubernetes components listen on loopback only. If your threat
+model needs tighter access, restrict it in the network in front of the nodes.
 
 ## Artifact trust
 
@@ -124,7 +137,8 @@ cluster supports replacing one control plane at a time, including explicit
 stale etcd member removal when quorum remains. This is not etcd disaster
 recovery, automatic post-mutation repair, or general cluster reconciliation.
 Wipe/reinstall is destructive recovery, not backup, so keep independent etcd,
-workload, and data backups.
+workload, and data backups; see [Back up etcd](operations/back-up-etcd.md),
+which also states the restore limitations.
 
 ## Explicitly unsupported
 

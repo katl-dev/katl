@@ -31,6 +31,10 @@ attention. To set up a new lab from the release ISO, start with
 - [Upgrade a KatlOS host](upgrade-host.md) to change the host OS version.
 - [Upgrade Kubernetes](upgrade-kubernetes.md) to change the Kubernetes version
   across the cluster.
+- [Back up etcd](back-up-etcd.md) to save etcd snapshots and copy them off the
+  nodes.
+- [Renew Kubernetes certificates](renew-certificates.md) before the kubeadm
+  certificates expire.
 
 ## Diagnose and recover
 
@@ -48,7 +52,7 @@ Keep these away from the nodes:
 - `cluster.yaml`, its referenced files, and the release tag
 - the kubeconfig
 - any Kubernetes identity and management secrets
-- independent etcd, workload, and data backups
+- independent [etcd](back-up-etcd.md), workload, and data backups
 
 A host rollback restores only a generation, so cluster state and data come back
 from your backups; see
