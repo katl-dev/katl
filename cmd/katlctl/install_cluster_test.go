@@ -72,8 +72,10 @@ func TestInstallApplyCluster(t *testing.T) {
 					if err == nil || !strings.Contains(err.Error(), "node worker-1:") || !strings.Contains(err.Error(), "installation refused") {
 						t.Fatalf("apply error = %v", err)
 					}
-				} else if err != nil {
-					t.Fatalf("apply: %v\n%s", err, stderr.String())
+				} else if attempt == 0 && err != nil {
+					t.Fatalf("partial apply: %v\n%s", err, stderr.String())
+				} else if attempt == 1 && (err == nil || !strings.Contains(err.Error(), "no waiting installer found")) {
+					t.Fatalf("apply with every node skipped: error = %v", err)
 				}
 				var reports []struct {
 					Skipped    bool   `json:"skipped"`
