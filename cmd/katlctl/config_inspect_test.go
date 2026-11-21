@@ -131,6 +131,41 @@ func TestConfigDiffClassifiesManagementAddressOnlyAsTargetOnly(t *testing.T) {
 	}
 }
 
+func TestConfigDiffNamesKubernetesAddressWorkflow(t *testing.T) {
+	dir := t.TempDir()
+	beforePath := filepath.Join(dir, "before.yaml")
+	afterPath := filepath.Join(dir, "after.yaml")
+	before := strings.Replace(configInspectionSource(), "      management:\n", "      kubernetes:\n        address: 192.0.2.11\n      management:\n", 1)
+	after := strings.Replace(before, "address: 192.0.2.11", "address: 192.0.2.12", 1)
+	if err := os.WriteFile(beforePath, []byte(before), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(afterPath, []byte(after), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{"config", "diff", beforePath, afterPath, "--node", "cp-1", "--output", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+	}
+	var report configbundle.ConfigDiff
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode output: %v\n%s", err, stdout.String())
+	}
+	if len(report.Changes) != 1 {
+		t.Fatalf("diff = %#v", report)
+	}
+	change := report.Changes[0]
+	if change.Path != `spec.nodes["cp-1"].kubernetes.address` || change.Classification != "operation-only" {
+		t.Fatalf("kubernetes address change = %#v", change)
+	}
+	for _, step := range []string{"katlctl node wipe", "reinstall", "katlctl node join"} {
+		if !strings.Contains(change.Message, step) {
+			t.Fatalf("message %q does not name %q", change.Message, step)
+		}
+	}
+}
+
 func TestConfigResolveRequiresSelectionForMultipleNodes(t *testing.T) {
 	path := writeMultiControlPlaneClusterConfig(t)
 	var stdout, stderr bytes.Buffer

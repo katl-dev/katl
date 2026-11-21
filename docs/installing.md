@@ -105,9 +105,11 @@ write. The installer accepts one valid submission, then closes the handoff path.
 
 Without `--node` or `--endpoint`, `install apply` installs every configured
 node, one at a time in `cluster.yaml` order, without prompting. Each node gets
-its own `--timeout`. Katl reports a node as skipped when its installer is
-unreachable or not waiting for configuration, then continues with the next
-node. With `--output json`, a skipped node's report has `skipped: true` and a
+its own `--timeout`. Katl skips a node whose installer is unreachable or not
+waiting for configuration and continues with the next node; if no node was
+waiting, the command exits with status 1. Skipped nodes are not listed in text
+output; add `--verbose` to log each skipped node and the reason. With
+`--output json`, a skipped node's report has `skipped: true` and a
 `skipReason`; a configuration with several nodes produces an array of reports.
 In this mode, every node needs a `management.address`.
 

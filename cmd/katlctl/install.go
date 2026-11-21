@@ -35,6 +35,7 @@ type installApplyOptions struct {
 	noWait                             bool
 	timeout                            time.Duration
 	output                             string
+	verbose                            bool
 }
 
 type installStatusOptions struct {
@@ -111,8 +112,10 @@ configuration or cluster bootstrap to start Kubernetes.
 
 Without --node, visit every configured node and skip installers that are not
 waiting for configuration or have no reachable handoff service. Only nodes that
-report a waiting state receive configuration. With multiple nodes, JSON output
-is an array of reports, including skipped nodes and their reasons.
+report a waiting state receive configuration, and the command fails when no
+node was waiting. Use --verbose to log each skipped node and the reason. With
+multiple nodes, JSON output is an array of reports, including skipped nodes and
+their reasons.
 Use --node to select one node before overriding its address with --endpoint.
 
 The command waits for each installation to finish and request its first reboot.
@@ -129,6 +132,7 @@ Use node status after reboot to check the installed system (port 9443).`,
 	_ = cmd.Flags().MarkHidden("acknowledge-storage-wipe")
 	cmd.Flags().BoolVar(&opts.noWait, "no-wait", false, "return after the installer accepts the bundle")
 	cmd.Flags().DurationVar(&opts.timeout, "timeout", opts.timeout, "per-node handoff and install wait timeout")
+	cmd.Flags().BoolVarP(&opts.verbose, "verbose", "v", false, "log skipped nodes and the reason each was skipped")
 	addOutputFlag(cmd, &opts.output, opts.output, "text", "json")
 	return cmd
 }
@@ -184,9 +188,17 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 	nodes := inventory.Nodes
 	allNodes := strings.TrimSpace(opts.nodeName) == "" && strings.TrimSpace(opts.endpoint) == ""
 	if !allNodes || len(nodes) == 1 {
-		return applyInstallNode(ctx, opts, inventory, planning, acknowledgements, allNodes, stdout, stderr)
+		skippedAt, err := applyInstallNode(ctx, opts, inventory, planning, acknowledgements, allNodes, stdout, stderr)
+		if err != nil {
+			return err
+		}
+		if skippedAt != "" {
+			return fmt.Errorf("no waiting installer found at %s; boot the node from KatlOS installer media, then check the installer address or pass --endpoint with its current address%s", skippedAt, skipDetailHint(opts))
+		}
+		return nil
 	}
 	var failures []error
+	installed := 0
 	reports := []json.RawMessage{}
 	for _, node := range nodes {
 		nodeOpts := opts
@@ -196,8 +208,11 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 		if opts.output == "json" {
 			writer = &output
 		}
-		if err := applyInstallNode(ctx, nodeOpts, inventory, planning, acknowledgements, true, writer, stderr); err != nil {
+		skippedAt, err := applyInstallNode(ctx, nodeOpts, inventory, planning, acknowledgements, true, writer, stderr)
+		if err != nil {
 			failures = append(failures, fmt.Errorf("node %s: %w", node.Name, err))
+		} else if skippedAt == "" {
+			installed++
 		}
 		if output.Len() > 0 {
 			reports = append(reports, json.RawMessage(output.Bytes()))
@@ -208,13 +223,39 @@ func runInstallApply(ctx context.Context, opts installApplyOptions, stdout, stde
 			failures = append(failures, err)
 		}
 	}
+	if len(failures) == 0 && installed == 0 {
+		return fmt.Errorf("no waiting installer found for any configured node; boot the nodes from KatlOS installer media, then check their management addresses or select one with --node and pass --endpoint with its installer address%s", skipDetailHint(opts))
+	}
 	return errors.Join(failures...)
 }
 
-func applyInstallNode(ctx context.Context, opts installApplyOptions, inventory configbundle.BundleManifest, planning configbundle.PlanningInputs, acknowledgements []string, skipUnavailable bool, stdout, stderr io.Writer) error {
+// reportSkippedInstall keeps skipped nodes in JSON reports but logs them in text
+// mode only with --verbose, so routine bulk runs show just the nodes installed.
+func reportSkippedInstall(opts installApplyOptions, report installHandoffReport, stdout, stderr io.Writer) error {
+	if opts.output == "json" {
+		return writeInstallReport(stdout, opts.output, report)
+	}
+	if !opts.verbose {
+		return nil
+	}
+	_, err := fmt.Fprintf(stderr, "skipping node %s at %s: %s\n", report.SelectedNode, report.Endpoint, report.SkipReason)
+	return err
+}
+
+func skipDetailHint(opts installApplyOptions) string {
+	if opts.verbose || opts.output == "json" {
+		return ""
+	}
+	return "; rerun with --verbose to see why each node was skipped"
+}
+
+// applyInstallNode installs the selected node. When no installer at the node's
+// endpoint is waiting for configuration, it reports the node as skipped and
+// returns that endpoint.
+func applyInstallNode(ctx context.Context, opts installApplyOptions, inventory configbundle.BundleManifest, planning configbundle.PlanningInputs, acknowledgements []string, skipUnavailable bool, stdout, stderr io.Writer) (string, error) {
 	nodeName, err := selectInstallNode(inventory, opts.nodeName)
 	if err != nil {
-		return err
+		return "", err
 	}
 	bootstrapAddress := ""
 	for _, node := range inventory.Cluster.BootstrapInventory.Nodes {
@@ -223,11 +264,11 @@ func applyInstallNode(ctx context.Context, opts installApplyOptions, inventory c
 		}
 	}
 	if skipUnavailable && len(inventory.Nodes) > 1 && strings.TrimSpace(bootstrapAddress) == "" {
-		return fmt.Errorf("node %s has no bootstrap address; configure its management address before cluster-wide installation", nodeName)
+		return "", fmt.Errorf("node %s has no bootstrap address; configure its management address before cluster-wide installation", nodeName)
 	}
 	endpoint, err := resolveInstallEndpoint(opts.endpoint, bootstrapAddress)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	waitCtx, cancel := context.WithTimeout(ctx, opts.timeout)
@@ -241,29 +282,29 @@ func applyInstallNode(ctx context.Context, opts installApplyOptions, inventory c
 			report := newInstallHandoffReport(endpoint, nodeName, before)
 			report.Skipped = true
 			report.SkipReason = fmt.Sprintf("handoff unavailable: %v", err)
-			return writeInstallReport(stdout, opts.output, report)
+			return endpoint, reportSkippedInstall(opts, report, stdout, stderr)
 		}
-		return err
+		return "", err
 	}
 	if before.State != handoff.HandoffWaiting {
 		report := newInstallHandoffReport(endpoint, nodeName, before)
 		report.Skipped = true
 		report.SkipReason = fmt.Sprintf("installer state=%s", before.State)
-		return writeInstallReport(stdout, opts.output, report)
+		return endpoint, reportSkippedInstall(opts, report, stdout, stderr)
 	}
 	// Prepare only waiting nodes, using each installer's own release target.
 	extensions, err := installExtensionPlanning(opts.configPath, nodeName, endpoint, before)
 	if err != nil {
-		return err
+		return "", err
 	}
 	extensions.ManagementIdentities = planning.ManagementIdentities
 	config, err := loadKatlConfig(opts.configPath, installApplyCreator, extensions, stderr)
 	if err != nil {
-		return err
+		return "", err
 	}
 	archive := config.Archive
 	if len(archive) > maxInstallBundleSize {
-		return fmt.Errorf("compiled config bundle size %d exceeds %d bytes", len(archive), maxInstallBundleSize)
+		return "", fmt.Errorf("compiled config bundle size %d exceeds %d bytes", len(archive), maxInstallBundleSize)
 	}
 	selected, err := configbundle.ReadSelectedNode(bytes.NewReader(archive), configbundle.ReadOptions{
 		ExpectedDigest:          config.Bundle.Digest,
@@ -271,43 +312,43 @@ func applyInstallNode(ctx context.Context, opts installApplyOptions, inventory c
 		AllowMissingKatlosImage: true,
 	})
 	if err != nil {
-		return fmt.Errorf("select node from compiled cluster config: %w", err)
+		return "", fmt.Errorf("select node from compiled cluster config: %w", err)
 	}
 	if selected.InstallManifest.Node.Identity.Management.Empty() {
-		return fmt.Errorf("selected install bundle has no management identity; rebuild it with this katlctl release before installing")
+		return "", fmt.Errorf("selected install bundle has no management identity; rebuild it with this katlctl release before installing")
 	}
 	if extensions.KatlosImage.SHA256 != "" {
 		current, err := fetchInstallStatus(waitCtx, client, endpoint)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if before.Image.SHA256 != current.Image.SHA256 {
-			return fmt.Errorf("installer release changed while preparing extensions; rerun install apply")
+			return "", fmt.Errorf("installer release changed while preparing extensions; rerun install apply")
 		}
 	}
 
 	fmt.Fprintf(stderr, "installing node %s via %s\n", nodeName, endpoint)
 	accepted, err := submitInstallBundle(waitCtx, client, endpoint, archive, selected.BundleDigest, selected.Node.Name, acknowledgements)
 	if err != nil {
-		return err
+		return "", err
 	}
 	report := newInstallHandoffReport(endpoint, selected.Node.Name, accepted)
 	report.ExternalWorker = selected.InstallManifest.Node.Kubernetes.External
 	if opts.noWait {
-		return writeInstallReport(stdout, opts.output, report)
+		return "", writeInstallReport(stdout, opts.output, report)
 	}
 	status, err := waitForInstall(waitCtx, client, endpoint, accepted, stderr)
 	if err != nil {
-		return err
+		return "", err
 	}
 	report.Handoff = status
 	if err := writeInstallReport(stdout, opts.output, report); err != nil {
-		return err
+		return "", err
 	}
 	if installFailed(status.InstallStatus.State) {
-		return fmt.Errorf("installer finished in %s: %s", status.InstallStatus.State, installFailure(status.InstallStatus))
+		return "", fmt.Errorf("installer finished in %s: %s", status.InstallStatus.State, installFailure(status.InstallStatus))
 	}
-	return nil
+	return "", nil
 }
 
 func installExtensionPlanning(path, name, endpoint string, status handoff.HandoffStatus) (configbundle.PlanningInputs, error) {
@@ -777,17 +818,9 @@ func writeInstallReport(stdout io.Writer, output string, report installHandoffRe
 		if state == "" {
 			state = string(report.Handoff.State)
 		}
-		if report.Skipped {
-			state = "skipped"
-		}
 		w.row(node, report.Endpoint, state, step)
 		if err := w.flush(); err != nil {
 			return err
-		}
-		if report.Skipped && report.SkipReason != "" {
-			if _, err := fmt.Fprintf(stdout, "Skipped: %s\n", report.SkipReason); err != nil {
-				return err
-			}
 		}
 		if installFailed(report.Handoff.InstallStatus.State) {
 			if _, err := fmt.Fprintf(stdout, "Failure: %s\n", installFailure(report.Handoff.InstallStatus)); err != nil {

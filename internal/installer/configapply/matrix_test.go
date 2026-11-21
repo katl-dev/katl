@@ -177,7 +177,7 @@ func TestPlanRejectsOperationOnlyAndUnsupportedMutations(t *testing.T) {
 	operationOnly := map[string]string{
 		DomainSystemRole:                   "wipe-reinstall",
 		DomainSelectedKubernetesSysext:     "kubernetes-upgrade",
-		DomainKubeletNodeIdentity:          "kubeadm-aware operation",
+		DomainKubeletNodeIdentity:          "wipe, reinstall, and node join",
 		DomainRootSelection:                "host-upgrade",
 		DomainSysextSelection:              "host-upgrade",
 		DomainControlPlaneEndpointIdentity: "control-plane-endpoint-migration (not yet supported)",

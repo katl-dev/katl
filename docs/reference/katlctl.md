@@ -86,8 +86,9 @@ that record. `context delete NAME` removes it without changing any node or
 external secrets. Deleting the current selection never selects another cluster.
 
 `install apply` without `--node` or `--endpoint` installs every configured
-node in `cluster.yaml` order, skipping and reporting nodes whose installer is
-unreachable or not waiting; see
+node in `cluster.yaml` order. It skips nodes whose installer is unreachable or
+not waiting, logs them with `--verbose`, and exits with status 1 when no node
+was waiting; see
 [Install KatlOS](../installing.md#apply-the-configuration).
 
 Installed-node commands accept `NODE` or `--node NAME`, not both. Selection is

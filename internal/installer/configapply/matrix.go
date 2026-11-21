@@ -363,7 +363,7 @@ var domainPolicies = map[string]domainPolicy{
 	DomainKubeletNodeIdentity: {
 		Classification:      ClassificationOperationOnly,
 		LiveRejectionReason: "kubelet node identity changes are not live-applicable",
-		RequiredOperation:   "kubeadm-aware operation",
+		RequiredOperation:   "wipe, reinstall, and node join",
 	},
 	DomainHostAccountPolicy: {
 		Classification:      ClassificationRejected,

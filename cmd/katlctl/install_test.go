@@ -695,3 +695,52 @@ func TestInstallReportIncludesFailure(t *testing.T) {
 		}
 	}
 }
+
+func TestInstallApplyNoWaitingInstaller(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		status  int
+		state   handoff.HandoffState
+		args    []string
+		verbose bool
+	}{
+		{name: "selected node busy", status: http.StatusOK, state: handoff.HandoffAccepted, args: []string{"--node", "cp-1"}},
+		{name: "only node unavailable", status: http.StatusServiceUnavailable},
+		{name: "verbose logs the skip", status: http.StatusServiceUnavailable, args: []string{"--verbose"}, verbose: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet {
+					t.Error("submitted config to a non-waiting installer")
+				}
+				if test.status != http.StatusOK {
+					http.Error(w, "unavailable", test.status)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(installTestStatus(test.state, installstatus.StateRunning, "Install"))
+			}))
+			defer ts.Close()
+			address := strings.TrimPrefix(ts.URL, "http://")
+			sourcePath := writeClusterConfig(t)
+			source := strings.Replace(configBundleSource(), "10.0.0.11", address, 1)
+			if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			var stdout, stderr bytes.Buffer
+			args := append([]string{"install", "apply", "--config", sourcePath, "--no-wait"}, test.args...)
+			err := run(context.Background(), args, &stdout, &stderr)
+			if err == nil || !strings.Contains(err.Error(), "no waiting installer found at "+ts.URL) || !strings.Contains(err.Error(), "--endpoint") {
+				t.Fatalf("run() error = %v", err)
+			}
+			if strings.Contains(stdout.String(), "cp-1") {
+				t.Fatalf("text output reported a skipped node:\n%s", stdout.String())
+			}
+			logged := strings.Contains(stderr.String(), "skipping node cp-1 at "+ts.URL)
+			hinted := strings.Contains(err.Error(), "rerun with --verbose")
+			if logged != test.verbose || hinted == test.verbose {
+				t.Fatalf("verbose=%v: skip logged=%v, hint=%v\nstderr: %s\nerror: %v", test.verbose, logged, hinted, stderr.String(), err)
+			}
+		})
+	}
+}

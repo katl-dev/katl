@@ -3808,3 +3808,36 @@ func writeMultiControlPlaneClusterConfig(t *testing.T) string {
 	}
 	return sourcePath
 }
+
+func TestClusterBootstrapWarnsDerivedEndpoint(t *testing.T) {
+	derivedSource := strings.Replace(configBundleSource(), "  controlPlaneEndpoint:\n    host: api.katl.test\n    port: 6443\n", "", 1)
+	for _, test := range []struct {
+		name   string
+		source string
+		want   bool
+	}{
+		{name: "configured", source: configBundleSource()},
+		{name: "derived", source: derivedSource, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			old := runAgentBootstrap
+			runAgentBootstrap = func(_ context.Context, request cluster.Request, _ cluster.AgentBootstrapDependencies) (cluster.Result, error) {
+				return cluster.Result{DryRun: true, Plan: inventory.Plan{InitNode: request.InitNode}}, nil
+			}
+			t.Cleanup(func() { runAgentBootstrap = old })
+			configPath := writeClusterConfig(t)
+			if err := os.WriteFile(configPath, []byte(test.source), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			var stdout, stderr bytes.Buffer
+			if err := run(context.Background(), []string{"cluster", "bootstrap", "--config", configPath, "--plan"}, &stdout, &stderr); err != nil {
+				t.Fatalf("bootstrap error = %v, stderr=%s", err, stderr.String())
+			}
+			warned := strings.Contains(stderr.String(), "control-plane endpoint 10.0.0.11:6443 is derived") && strings.Contains(stderr.String(), "set spec.controlPlaneEndpoint to a stable VIP or DNS name")
+			if warned != test.want {
+				t.Fatalf("derived endpoint warning = %t, want %t; stderr:\n%s", warned, test.want, stderr.String())
+			}
+		})
+	}
+}

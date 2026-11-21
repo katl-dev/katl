@@ -72,8 +72,10 @@ func TestInstallApplyCluster(t *testing.T) {
 					if err == nil || !strings.Contains(err.Error(), "node worker-1:") || !strings.Contains(err.Error(), "installation refused") {
 						t.Fatalf("apply error = %v", err)
 					}
-				} else if err != nil {
-					t.Fatalf("apply: %v\n%s", err, stderr.String())
+				} else if attempt == 0 && err != nil {
+					t.Fatalf("partial apply: %v\n%s", err, stderr.String())
+				} else if attempt == 1 && (err == nil || !strings.Contains(err.Error(), "no waiting installer found")) {
+					t.Fatalf("apply with every node skipped: error = %v", err)
 				}
 				var reports []struct {
 					Skipped    bool   `json:"skipped"`
@@ -160,13 +162,13 @@ func TestInstallClusterExtensionTargets(t *testing.T) {
 	}
 
 	var stdout, stderr bytes.Buffer
-	err := run(context.Background(), []string{"install", "apply", "--config", sourcePath, "--no-wait"}, &stdout, &stderr)
+	err := run(context.Background(), []string{"install", "apply", "--config", sourcePath, "--no-wait", "--verbose"}, &stdout, &stderr)
 	for _, version := range []string{"2026.9.1", "2026.9.2"} {
 		if err == nil || !strings.Contains(err.Error(), "unavailable for KatlOS "+version) {
 			t.Fatalf("missing installer-specific target %s: %v\n%s", version, err, stderr.String())
 		}
 	}
-	if strings.Contains(err.Error(), "node worker-2:") || !strings.Contains(stdout.String(), "worker-2") || !strings.Contains(stdout.String(), "Skipped: installer state=") {
-		t.Fatalf("busy node was not skipped before extension preparation: %v\n%s", err, stdout.String())
+	if strings.Contains(err.Error(), "node worker-2:") || !strings.Contains(stderr.String(), "skipping node worker-2 at ") || !strings.Contains(stderr.String(), "installer state=") {
+		t.Fatalf("busy node was not skipped before extension preparation: %v\n%s", err, stderr.String())
 	}
 }

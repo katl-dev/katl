@@ -252,7 +252,7 @@ func TestKubernetesAddressApplyClassification(t *testing.T) {
 		t.Fatalf("changes = %#v, want %q", changes, DomainKubeletNodeIdentity)
 	}
 	decision, err := Plan(request.ApplyMode, changes)
-	if err == nil || len(decision.Diagnostics) != 1 || decision.Diagnostics[0].RequiredOperation != "kubeadm-aware operation" {
+	if err == nil || len(decision.Diagnostics) != 1 || decision.Diagnostics[0].RequiredOperation != "wipe, reinstall, and node join" {
 		t.Fatalf("Plan() error = %v, decision = %#v", err, decision)
 	}
 }

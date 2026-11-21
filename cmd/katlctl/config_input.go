@@ -24,6 +24,9 @@ type nodeConfigurationInput struct {
 	ClusterName string
 	Inventory   inventory.Inventory
 	Nodes       map[string]configapply.RenderNodeRequest
+	// EndpointDerived reports that the source omits spec.controlPlaneEndpoint,
+	// so Kubernetes uses the first control plane's address.
+	EndpointDerived bool
 }
 
 func loadNodeConfiguration(ctx context.Context, path string, planning configbundle.PlanningInputs) (nodeConfigurationInput, error) {
@@ -32,7 +35,8 @@ func loadNodeConfiguration(ctx context.Context, path string, planning configbund
 		return nodeConfigurationInput{}, err
 	}
 	result := nodeConfigurationInput{Nodes: make(map[string]configapply.RenderNodeRequest)}
-	if _, err := configbundle.DecodeSource(bytes.NewReader(data)); err == nil {
+	if source, err := configbundle.DecodeSource(bytes.NewReader(data)); err == nil {
+		result.EndpointDerived = source.Spec.ControlPlaneEndpoint == nil && source.Spec.Kubernetes.External == nil
 		compiled, err := configbundle.PlanConfiguration(configbundle.BuildRequest{
 			Context:    ctx,
 			SourcePath: path,
