@@ -122,7 +122,9 @@ selected generation
 
 active generation
   the generation whose selected root, UKI, sysext, confext, and state projections
-  are currently realized by the running system
+  are currently realized by the running system; recorded as activeGenerationID,
+  set to the kernel-selected generation by the first activation of each boot and
+  replaced by live promotion within that boot
 
 live-active generation
   a generation whose sysext/confext/state projections are realized in the current

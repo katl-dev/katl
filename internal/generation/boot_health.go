@@ -1,6 +1,7 @@
 package generation
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -41,8 +42,9 @@ type BootHealthResult struct {
 
 type BootDefaultSetter func(root string, bootEntry string) error
 
-// RecordBootedGeneration records the kernel's selected generation before
-// services can report boot state. Health validation still decides promotion.
+// RecordBootedGeneration records the kernel's selected generation as booted
+// and active before services can report boot state. Health validation still
+// decides promotion.
 func RecordBootedGeneration(root, commandLine string) error {
 	root = cleanRoot(root)
 	return withStateLock(filepath.Join(root, "var/lib/katl/boot"), func() error {
@@ -65,12 +67,62 @@ func RecordBootedGeneration(root, commandLine string) error {
 		if err := validateBootedSelection(observed, spec, generationID, commandLine); err != nil {
 			return err
 		}
-		if observed.BootedGenerationID == selection.BootedGenerationID && observed.BootedBootEntry == selection.BootedBootEntry {
+		// Activation reruns when systemd-sysext.service restarts. Only its
+		// first run in a boot replaces an active generation left by the
+		// previous boot; later runs must keep a live promotion from this boot.
+		_, recorded, err := readCurrentBoot(root)
+		if err != nil {
+			return err
+		}
+		if !recorded {
+			observed.ActiveGenerationID = generationID
+		}
+		if observed.BootedGenerationID != selection.BootedGenerationID || observed.BootedBootEntry != selection.BootedBootEntry || observed.ActiveGenerationID != selection.ActiveGenerationID {
+			observed.UpdatedAt = time.Now().UTC()
+			if err := WriteBootSelection(root, observed); err != nil {
+				return err
+			}
+		}
+		if recorded {
 			return nil
 		}
-		observed.UpdatedAt = time.Now().UTC()
-		return WriteBootSelection(root, observed)
+		return writeCurrentBoot(root, currentBoot{GenerationID: generationID})
 	})
+}
+
+// currentBootPath records that activation has run since the kernel started.
+// It lives on /run, so a missing record means this boot has not been
+// activated yet. A systemd soft-reboot would keep /run; KatlOS does not use it.
+const currentBootPath = "/run/katl/boot-health/current"
+
+type currentBoot struct {
+	GenerationID string `json:"generationID"`
+}
+
+func readCurrentBoot(root string) (currentBoot, bool, error) {
+	data, err := os.ReadFile(rootedPathUnchecked(root, currentBootPath))
+	if errors.Is(err, os.ErrNotExist) {
+		return currentBoot{}, false, nil
+	}
+	if err != nil {
+		return currentBoot{}, false, fmt.Errorf("read current boot record: %w", err)
+	}
+	var boot currentBoot
+	if err := json.Unmarshal(data, &boot); err != nil {
+		return currentBoot{}, false, fmt.Errorf("decode current boot record: %w", err)
+	}
+	return boot, true, nil
+}
+
+func writeCurrentBoot(root string, boot currentBoot) error {
+	data, err := json.Marshal(boot)
+	if err != nil {
+		return fmt.Errorf("marshal current boot record: %w", err)
+	}
+	if err := writeFileAtomic(rootedPathUnchecked(root, currentBootPath), append(data, '\n'), 0o644); err != nil {
+		return fmt.Errorf("write current boot record: %w", err)
+	}
+	return nil
 }
 
 type LivePromotionRequest struct {

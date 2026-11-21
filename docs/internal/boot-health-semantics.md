@@ -171,6 +171,19 @@ deferred
   health policy deliberately skipped for a debug or recovery boot
 ```
 
+## Current Boot Identity
+
+`/var/lib/katl/boot/selection.json` records `bootedGenerationID` and
+`activeGenerationID`. Management reports `activeGenerationID` as the node's
+current generation and checks `expectedCurrentGenerationID` against it, and the
+agent starts before boot health runs. The first `katl-generation-activate` run
+in each boot therefore records the kernel-selected generation as both booted
+and active. Activation runs again whenever `systemd-sysext.service` restarts, so
+the first run writes `/run/katl/boot-health/current`, and later runs in the same
+boot keep the active generation, which a live promotion may have replaced. The
+record relies on `/run` being cleared by every boot; KatlOS does not support
+systemd soft-reboot, which would keep it.
+
 ## Promotion Rules
 
 `good` means the node booted with that generation selected and reached
