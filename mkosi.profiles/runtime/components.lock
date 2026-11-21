@@ -1222,6 +1222,7 @@ system-unit network-online.target
 system-unit network-pre.target
 system-unit network.target
 system-unit nfs-client.target
+system-unit nftables.service
 system-unit nss-lookup.target
 system-unit nss-user-lookup.target
 system-unit nvmefc-boot-connections.service

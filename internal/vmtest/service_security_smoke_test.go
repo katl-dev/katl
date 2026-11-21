@@ -140,6 +140,8 @@ func TestInstalledRuntimeServiceSecuritySmoke(t *testing.T) {
 		t.Fatalf("base executables grant file capabilities:\n%s", capabilities)
 	}
 
+	assertNftablesServiceScoped(t, ctx, guest)
+
 	node.Result.finish(StatusPassed, "", world.Runner.time())
 	if err := world.Runner.Write(scenario, node.Result); err != nil {
 		t.Fatal(err)
@@ -147,4 +149,24 @@ func TestInstalledRuntimeServiceSecuritySmoke(t *testing.T) {
 	if err := world.Scenario.WriteResult(WorldStatusPassed, ""); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// The shipped nftables.service is opt-in and must never remove tables that
+// Kubernetes networking owns, such as kube-proxy's or a CNI's.
+func assertNftablesServiceScoped(t *testing.T, ctx context.Context, guest *GuestControl) {
+	t.Helper()
+	for property, want := range map[string]string{"UnitFileState": "disabled", "ActiveState": "inactive"} {
+		got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "nftables-"+property, "systemctl", "show", "--property="+property, "--value", "nftables.service"))
+		if got != want {
+			t.Fatalf("nftables.service %s = %q, want %q", property, got, want)
+		}
+	}
+
+	const foreign = "katl_vmtest_foreign"
+	guestCommand(t, ctx, guest, "nftables-foreign-table", "systemd-run", "--quiet", "--wait", "--pipe", "--collect", "--", "/usr/bin/nft", "add", "table", "ip", foreign)
+	for _, action := range []string{"start", "reload", "restart", "stop"} {
+		guestCommand(t, ctx, guest, "nftables-"+action, "systemctl", action, "nftables.service")
+		guestCommand(t, ctx, guest, "nftables-foreign-after-"+action, "systemd-run", "--quiet", "--wait", "--pipe", "--collect", "--", "/usr/bin/nft", "list", "table", "ip", foreign)
+	}
+	guestCommand(t, ctx, guest, "nftables-foreign-cleanup", "systemd-run", "--quiet", "--wait", "--pipe", "--collect", "--", "/usr/bin/nft", "delete", "table", "ip", foreign)
 }

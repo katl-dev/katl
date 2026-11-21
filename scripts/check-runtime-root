@@ -320,6 +320,14 @@ file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/kubernetes/cni/bin
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/kubernetes/cni/net.d 0755 root root -"
 links_to /opt/cni/bin /var/lib/katl/kubernetes/cni/bin
 links_to /etc/systemd/system/smartd.service /dev/null
+# nftables.service is available but opt-in, and its operator ruleset owns only
+# its own tables: reload and stop must not flush Kubernetes networking rules.
+file_has_line /usr/lib/systemd/system/nftables.service "ExecStart=/sbin/nft -f /etc/sysconfig/nftables.conf"
+file_has_line /usr/lib/systemd/system/nftables.service.d/10-katl-scoped-ruleset.conf "ExecReload=/usr/bin/nft -f /etc/sysconfig/nftables.conf"
+file_has_line /usr/lib/systemd/system/nftables.service.d/10-katl-scoped-ruleset.conf "ExecStop="
+has_path /etc/sysconfig/nftables.conf
+misses_path /etc/systemd/system/multi-user.target.wants/nftables.service
+misses_path /usr/lib/systemd/system/multi-user.target.wants/nftables.service
 links_to /etc/cni/net.d /var/lib/katl/kubernetes/cni/net.d
 check_kernel_support
 require_firmware_family intel-ucode "Intel CPU microcode"

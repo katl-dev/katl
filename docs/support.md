@@ -72,16 +72,21 @@ and SSH keys are separate from this setting. See
 [Secure the management API](operations/management-auth.md#choose-an-access-mode)
 for mode selection, management secrets, and existing-node upgrade behavior.
 
-KatlOS ships no host packet filter. The nftables, conntrack, and `iptables-nft`
-tools are installed, but `nftables.service` is removed from the image, so no
-ruleset restricts which networks reach a node. By default an installed node
-listens on SSH port `22`, which accepts public keys only, and on the
+KatlOS enables no host packet filter. The nftables, conntrack, and
+`iptables-nft` tools are installed, and `nftables.service` ships disabled, so
+no ruleset restricts which networks reach a node. By default an installed
+node listens on SSH port `22`, which accepts public keys only, and on the
 management API port `9443`; control planes also serve Katl's API proxy on
 `7445`. The installer environment serves port `8080`. After bootstrap, kubelet
 listens on `10250` and kube-proxy reports health on `10256`; control planes
 add the API server on `6443` and etcd on `2379`–`2380`, and your CNI adds its
 own ports. Other Kubernetes components listen on loopback only. If your threat
 model needs tighter access, restrict it in the network in front of the nodes.
+To filter on the node instead, list `nftables.service` in
+[`enabledUnits`](reference/cluster-config.md#enabled-units) and supply
+`/etc/sysconfig/nftables.conf` in a file set; because kube-proxy and your CNI
+own their own tables, that ruleset must create, flush, and replace only its own
+tables, and stopping or reloading the service leaves other tables untouched.
 
 ## Artifact trust
 
