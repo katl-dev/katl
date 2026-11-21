@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/spf13/cobra"
@@ -310,6 +311,17 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, stderr io.Writ
 		}
 	}
 
+	verificationFailure := func(node inventory.Node, endpoint string, err error) error {
+		var hint string
+		if _, overridden := opts.endpoints[node.Name]; !overridden && node.SystemRole == inventory.RoleWorker && managementUnreachable(err) {
+			hint = "; " + readdressHint(node.Name, endpoint, opts.configInput, savedEndpoint(configPath, topology.ClusterName, node.Name))
+		}
+		if managementVerificationTimedOut(err) {
+			return fmt.Errorf("verify node %s management endpoint %s: timed out after %s; check the address and node reachability or increase --timeout%s", node.Name, endpoint, opts.timeout, hint)
+		}
+		return fmt.Errorf("verify node %s management endpoint: %w%s", node.Name, err, hint)
+	}
+
 	for _, node := range inv.Nodes {
 		endpoint := net.JoinHostPort(strings.TrimSpace(node.Address), "9443")
 		if override, ok := opts.endpoints[node.Name]; ok {
@@ -328,19 +340,13 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, stderr io.Writ
 		conn, err := dialKatlcAgent(nodeCtx, endpoint)
 		if err != nil {
 			cancel()
-			if managementVerificationTimedOut(err) {
-				return workstation.Config{}, contextSaveReport{}, fmt.Errorf("verify node %s management endpoint %s: timed out after %s; check the address and node reachability or increase --timeout", node.Name, endpoint, opts.timeout)
-			}
-			return workstation.Config{}, contextSaveReport{}, fmt.Errorf("verify node %s management endpoint: %w", node.Name, err)
+			return workstation.Config{}, contextSaveReport{}, verificationFailure(node, endpoint, err)
 		}
 		status, statusErr := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
 		closeErr := conn.Close()
 		cancel()
 		if statusErr != nil {
-			if managementVerificationTimedOut(statusErr) {
-				return workstation.Config{}, contextSaveReport{}, fmt.Errorf("verify node %s management endpoint %s: timed out after %s; check the address and node reachability or increase --timeout", node.Name, endpoint, opts.timeout)
-			}
-			return workstation.Config{}, contextSaveReport{}, fmt.Errorf("verify node %s management endpoint: %w", node.Name, statusErr)
+			return workstation.Config{}, contextSaveReport{}, verificationFailure(node, endpoint, statusErr)
 		}
 		if closeErr != nil {
 			return workstation.Config{}, contextSaveReport{}, fmt.Errorf("close node %s management endpoint: %w", node.Name, closeErr)
@@ -404,6 +410,58 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 
 func managementVerificationTimedOut(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded) || grpcstatus.Code(err) == codes.DeadlineExceeded
+}
+
+func managementUnreachable(err error) bool {
+	return managementVerificationTimedOut(err) || grpcstatus.Code(err) == codes.Unavailable
+}
+
+// readdressHint names the re-address workflow for a worker that does not
+// answer at its configured endpoint. A worker whose address is being changed
+// keeps answering at its previous address until it reboots. The saved context
+// is the only local record of that address, so without it the operator must
+// supply the address.
+func readdressHint(nodeName, endpoint, configInput, saved string) string {
+	const guide = "see docs/operations/change-cluster-nodes.md#re-address-a-worker"
+	if configured, err := normalizeManagementAddress(endpoint); err == nil && saved != "" && saved != configured {
+		return fmt.Sprintf("%s is not answering at %s, and the saved context last reached it at %s; if you are changing its address, run 'katlctl cluster apply --config %s --node %s --endpoint %s' (%s)", nodeName, endpoint, saved, configInput, nodeName, managementHost(saved), guide)
+	}
+	return fmt.Sprintf("if you are changing %s's address, run 'katlctl cluster apply --config %s --node %s --endpoint CURRENT_ADDRESS' with the address it answers at now (%s)", nodeName, configInput, nodeName, guide)
+}
+
+// savedEndpoint returns the management endpoint the saved context records for
+// a node, or "" when there is none. It reads the file directly because
+// commands that observe nodes replace the saved context in memory with their
+// own observations.
+func savedEndpoint(path, clusterName, nodeName string) string {
+	saved, err := workstation.Load(path)
+	if err != nil {
+		return ""
+	}
+	for _, cluster := range saved.Clusters {
+		if cluster.Name != clusterName {
+			continue
+		}
+		for _, node := range cluster.Nodes {
+			if node.Name == nodeName {
+				endpoint, err := normalizeManagementAddress(node.ManagementEndpoint)
+				if err != nil {
+					return ""
+				}
+				return endpoint
+			}
+		}
+	}
+	return ""
+}
+
+// managementHost drops the default agent port so a suggested command matches
+// the documented form.
+func managementHost(endpoint string) string {
+	if host, port, err := net.SplitHostPort(endpoint); err == nil && port == "9443" {
+		return host
+	}
+	return endpoint
 }
 
 type contextRebindOptions struct {

@@ -10,10 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/katlctl/workstation"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 const (
@@ -124,6 +128,61 @@ func TestClusterApplyRefusesAddressChange(t *testing.T) {
 			}
 			if worker.validateRequest != nil || len(worker.submitRequests) != 0 {
 				t.Fatal("refused change reached node validation or mutation")
+			}
+		})
+	}
+}
+
+func TestClusterApplyGuidesUnansweredWorkerAddress(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		saved      string
+		desiredErr error
+		answeredAs string
+		want       string
+		notWant    string
+	}{
+		{name: "saved previous address", saved: workerCurrentEndpoint, desiredErr: context.DeadlineExceeded, want: "worker-1 is not answering at 10.0.0.23:9443, and the saved context last reached it at 10.0.0.13:9443; if you are changing its address, run 'katlctl cluster apply --config CONFIG --node worker-1 --endpoint 10.0.0.13'"},
+		{name: "refused at desired address", saved: workerCurrentEndpoint, desiredErr: grpcstatus.Error(codes.Unavailable, "connection refused"), want: "--node worker-1 --endpoint 10.0.0.13'"},
+		{name: "no saved context", desiredErr: context.DeadlineExceeded, want: "run 'katlctl cluster apply --config CONFIG --node worker-1 --endpoint CURRENT_ADDRESS' with the address it answers at now"},
+		{name: "saved address is configured", saved: workerDesiredEndpoint, desiredErr: context.DeadlineExceeded, want: "--endpoint CURRENT_ADDRESS", notWant: "saved context last reached"},
+		{name: "answers at desired address", answeredAs: "worker-2", want: `answered as enrolled node "worker-2"`, notWant: "--endpoint"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeMovedWorkerConfig(t, "")
+			if test.saved != "" {
+				saved := workstation.Config{}.UpsertCluster("lab", workstation.Cluster{Name: "lab", Nodes: []workstation.Node{
+					{Name: "cp-1", ManagementEndpoint: "10.0.0.11:9443", SystemRole: inventory.RoleControlPlane},
+					{Name: "worker-1", ManagementEndpoint: test.saved, SystemRole: inventory.RoleWorker},
+				}})
+				if err := workstation.Save(os.Getenv("KATLCTL_CONFIG"), saved); err != nil {
+					t.Fatal(err)
+				}
+			}
+			worker := movedWorkerClient("agent-1")
+			if test.answeredAs != "" {
+				worker.nodeStatus.InventoryNodeName = test.answeredAs
+			}
+			oldDial := dialKatlcAgent
+			t.Cleanup(func() { dialKatlcAgent = oldDial })
+			dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
+				if endpoint == workerDesiredEndpoint && test.desiredErr != nil {
+					return katlcAgentConnection{}, test.desiredErr
+				}
+				return katlcAgentConnection{Client: worker, Close: func() error { return nil }}, nil
+			}
+
+			err := run(context.Background(), []string{"cluster", "apply", "--config", path, "--node", "worker-1"}, &bytes.Buffer{}, &bytes.Buffer{})
+
+			want := strings.ReplaceAll(test.want, "CONFIG", path)
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %v, want %q", err, want)
+			}
+			if test.notWant != "" && strings.Contains(err.Error(), test.notWant) {
+				t.Fatalf("error = %v, want no %q", err, test.notWant)
+			}
+			if worker.validateRequest != nil || len(worker.submitRequests) != 0 {
+				t.Fatal("unverified worker reached node validation or mutation")
 			}
 		})
 	}
