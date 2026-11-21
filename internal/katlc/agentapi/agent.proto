@@ -517,6 +517,7 @@ message EtcdUpgradeEvidence {
   EtcdObservation pre_restart = 6;
   EtcdObservation after = 7;
   string failure = 8;
+  repeated string retained_snapshots = 9;
 }
 
 message EtcdSnapshot {

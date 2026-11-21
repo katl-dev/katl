@@ -2,8 +2,8 @@
 
 Use this procedure to keep copies of the cluster's etcd data away from the
 nodes. Katl takes etcd snapshots only during `katlctl kubernetes upgrade` and
-does not schedule backups, copy snapshots off a node, prune them, or restore
-them, so regular etcd backups are yours to run and store.
+does not schedule backups, copy snapshots off a node, or restore them, so
+regular etcd backups are yours to run and store.
 
 An etcd snapshot contains every Kubernetes API object, including Secrets
 unless your platform encrypts them at rest. Protect each copy as you protect the
@@ -87,14 +87,21 @@ report records each snapshot's path, revision, and SHA-256 digest: the
 `--output json` report includes them, and the text output prints them when the
 rollout stops with recovery required. These files
 are kept on the node's writable state storage, or on the dedicated etcd
-partition when one was installed, and each upgrade adds another file about the
-size of the etcd database. Katl never deletes them.
+partition when one was installed, and each is about the size of the etcd
+database.
 
-Delete a pre-upgrade snapshot only after the rollout that created it has
-completed and you have checked the cluster. While its upgrade operation is
-still active or needs recovery, Katl re-verifies the file's digest, and the
-snapshot is the recovery point for that upgrade. Copy it off the node first if
-you want to keep it.
+When a control plane's upgrade succeeds, Katl keeps the two newest pre-upgrade
+snapshots on that node and deletes older ones. It never deletes a snapshot
+whose upgrade operation is still active or needs recovery, because Katl
+re-verifies that file's digest and it is the recovery point for that upgrade;
+such a snapshot is kept in addition to the newest two. The upgrade report lists
+the paths kept on each control plane: the text output prints a
+`Retained etcd snapshots on NODE:` line, and the `--output json` report
+includes them as `retained_snapshots` in each node's `etcd` evidence. Pruning
+considers only files that Katl named after upgrade operations, so other files
+in the directory, such as `manual-` snapshots, are left alone. Copy a
+pre-upgrade snapshot off the node if you want to keep it beyond two later
+upgrades.
 
 ## Restore limitations
 

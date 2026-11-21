@@ -884,6 +884,12 @@ func runKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle, sourceV
 	if _, err := kubectlOutput(ctx, kubeconfigPath, "cordon", "worker-1"); err != nil {
 		return err
 	}
+	// Older upgrade snapshots and an operator file let the rollout prove that
+	// retention prunes by age and leaves files it did not create.
+	planted, err := runNodeCommand(ctx, cpNode, []string{"systemd-run", "--quiet", "--collect", "--wait", "--unit=katl-vmtest-plant-etcd-snapshots", "/bin/sh", "-c", "install -d -m 0700 /var/lib/etcd/katl-snapshots && cd /var/lib/etcd/katl-snapshots && touch -d '-3 hours' kubeadm-upgrade-vmtest-oldest.db manual-vmtest.db && touch -d '-2 hours' kubeadm-upgrade-vmtest-older.db"}, 4<<10)
+	if err != nil || planted.ExitStatus != 0 {
+		return fmt.Errorf("plant earlier etcd snapshots: %w", errors.Join(err, commandErrorDetail(planted)))
+	}
 	args := []string{"run", "./cmd/katlctl", "kubernetes", "upgrade", "--config", configPath, "--context-file", contextPath, "--cordon", "--kubeconfig", kubeconfigPath, "--timeout", "25m", "--output", "json"}
 	args = append(args, artifactArgs...)
 	command := exec.CommandContext(ctx, "go", args...)
@@ -906,6 +912,9 @@ func runKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle, sourceV
 			Name   string `json:"name"`
 			Result string `json:"result"`
 			Phase  string `json:"phase"`
+			Etcd   struct {
+				RetainedSnapshots []string `json:"retained_snapshots"`
+			} `json:"etcd"`
 		} `json:"nodes"`
 	}
 	if err := json.Unmarshal(stdout, &report); err != nil {
@@ -962,6 +971,23 @@ func runKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle, sourceV
 		}
 		if item.Name == cpNode.Name && (record.KubernetesSysextUpdate.SnapshotDigest == "" || record.KubernetesSysextUpdate.SnapshotStorageLocation == "") {
 			return fmt.Errorf("%s upgrade did not capture etcd snapshot evidence", item.Name)
+		}
+		if item.Name == cpNode.Name {
+			want := []string{record.KubernetesSysextUpdate.SnapshotStorageLocation, "/var/lib/etcd/katl-snapshots/kubeadm-upgrade-vmtest-older.db"}
+			if got := report.Nodes[0].Etcd.RetainedSnapshots; !slices.Equal(got, want) {
+				return fmt.Errorf("%s reported retained etcd snapshots %v, want %v", item.Name, got, want)
+			}
+			listing, err := runNodeCommand(ctx, item, []string{"find", "/var/lib/etcd/katl-snapshots", "-mindepth", "1", "-maxdepth", "1", "-printf", "%f\n"}, 16<<10)
+			if err != nil || listing.ExitStatus != 0 {
+				return fmt.Errorf("list %s etcd snapshots: %w", item.Name, errors.Join(err, commandErrorDetail(listing)))
+			}
+			files := strings.Fields(string(listing.Stdout))
+			wantFiles := []string{filepath.Base(record.KubernetesSysextUpdate.SnapshotStorageLocation), "kubeadm-upgrade-vmtest-older.db", "manual-vmtest.db"}
+			slices.Sort(files)
+			slices.Sort(wantFiles)
+			if !slices.Equal(files, wantFiles) {
+				return fmt.Errorf("%s etcd snapshot directory holds %v after upgrade, want %v", item.Name, files, wantFiles)
+			}
 		}
 		nodeStatus := postUpgradeStatus[item.Name]
 		if nodeStatus.GetCurrentGenerationId() != record.CandidateGenerationID || nodeStatus.GetBootHealthState() != "healthy" || nodeStatus.GetBootHealthDiagnostic() != "" {
