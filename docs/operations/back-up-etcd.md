@@ -1,9 +1,9 @@
 # Back up etcd
 
 Use this procedure to keep copies of the cluster's etcd data away from the
-nodes. Katl takes etcd snapshots only during `katlctl kubernetes upgrade` and
-does not schedule backups, copy snapshots off a node, prune them, or restore
-them, so regular etcd backups are yours to run and store.
+nodes. `katlctl cluster etcd snapshot` saves a verified snapshot on your
+workstation; Katl does not schedule backups or restore them, so running and
+storing regular etcd backups is up to you.
 
 An etcd snapshot contains every Kubernetes API object, including Secrets
 unless your platform encrypts them at rest. Protect each copy as you protect the
@@ -12,70 +12,41 @@ kubeconfig and the [Kubernetes identity](kubernetes-identity.md).
 ## Before you start
 
 - The cluster was bootstrapped by Katl with stacked etcd on its control planes.
-- You can log in to a control plane as `root` over SSH; see
-  [Access installed nodes](access.md).
-
-KatlOS does not install `etcdctl` or `etcdutl` on the host. The procedure runs
-them inside the running etcd static-pod container with `crictl exec`, as Katl
-does. The container shares `/var/lib/etcd` with the host, so the snapshot must
-be written under that directory to be readable from the host.
+- Your workstation can reach the control planes' management API with the same
+  `--config` you use for other `katlctl cluster` commands.
 
 ## Save a snapshot
 
-Take the snapshot on one healthy control plane. The snapshot covers the whole
-cluster, so you do not need one from every control plane.
-
-1. Log in to the control plane:
-
-   ```sh
-   ssh root@192.0.2.11
-   ```
-
-2. Find the etcd container and create the snapshot directory:
-
-   ```sh
-   id=$(crictl ps --name etcd --state Running -q)
-   install -d -m 0700 /var/lib/etcd/katl-snapshots
-   ```
-
-   `crictl ps` must print exactly one container ID. If it prints none, etcd is
-   not running on this node; use another control plane.
-
-3. Save the snapshot. The `manual-` prefix keeps your files apart from the
-   snapshots that Kubernetes upgrades write to the same directory:
-
-   ```sh
-   snapshot=/var/lib/etcd/katl-snapshots/manual-$(date -u +%Y%m%dT%H%M%SZ).db
-   crictl exec "$id" etcdctl \
-     --endpoints=https://127.0.0.1:2379 \
-     --cacert=/etc/kubernetes/pki/etcd/ca.crt \
-     --cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt \
-     --key=/etc/kubernetes/pki/etcd/healthcheck-client.key \
-     snapshot save "$snapshot"
-   chmod 0600 "$snapshot"
-   echo "$snapshot"
-   ```
-
-4. Check that the snapshot is readable and record its revision and size:
-
-   ```sh
-   crictl exec "$id" etcdutl snapshot status "$snapshot" -w table
-   sha256sum "$snapshot"
-   ```
-
-## Copy the snapshot off the node
-
-From your workstation, copy the file printed in step 3 and compare its
-digest with the one recorded on the node:
+One snapshot covers the whole cluster, so you need it from only one control
+plane. Name a new file for it:
 
 ```sh
-scp root@192.0.2.11:/var/lib/etcd/katl-snapshots/manual-20261121T120000Z.db .
-sha256sum manual-20261121T120000Z.db
+katlctl cluster etcd snapshot --config ./cluster.yaml \
+  --output etcd-20261121.db
 ```
 
-Store the copy somewhere that survives the loss of every node, such as your
-existing backup system. Then delete the node-local file, or keep a small
-number of recent ones; nothing on the node removes `manual-` files for you.
+Katl tries the control planes in name order, or only the one you name with
+`--node`. The first one whose local etcd member is healthy, and whose cluster
+has quorum, saves the snapshot with `etcdctl` inside its etcd container and
+checks it with the file's embedded checksum and `etcdutl snapshot status`. The
+file then streams to your workstation, where `katlctl` writes it with mode
+`0600` only after its size and SHA-256 digest match what the node computed. On
+success, the command prints the file path, the node, the etcd cluster and
+member IDs, and the snapshot revision, key count, size, and SHA-256 digest.
+
+A control plane that is unreachable, unhealthy, out of space for the
+snapshot, or running a KatlOS release without this command is reported on
+stderr and skipped. With `--node`, the command stops at that node instead.
+
+The node keeps its copy only while the transfer runs. Katl never overwrites an
+existing `--output` file, and a failed transfer leaves no partial file, so you
+can rerun the same command. The node needs free space for one database copy
+plus a 512 MiB reserve beside its etcd data, and the command refuses databases
+larger than 8 GiB. `--timeout` (default 15 minutes) bounds the snapshot and
+the transfer together.
+
+Store the file somewhere that survives the loss of every node, such as your
+existing backup system.
 
 ## Pre-upgrade snapshots
 
@@ -87,14 +58,21 @@ report records each snapshot's path, revision, and SHA-256 digest: the
 `--output json` report includes them, and the text output prints them when the
 rollout stops with recovery required. These files
 are kept on the node's writable state storage, or on the dedicated etcd
-partition when one was installed, and each upgrade adds another file about the
-size of the etcd database. Katl never deletes them.
+partition when one was installed, and each is about the size of the etcd
+database.
 
-Delete a pre-upgrade snapshot only after the rollout that created it has
-completed and you have checked the cluster. While its upgrade operation is
-still active or needs recovery, Katl re-verifies the file's digest, and the
-snapshot is the recovery point for that upgrade. Copy it off the node first if
-you want to keep it.
+When a control plane's upgrade succeeds, Katl keeps the two newest pre-upgrade
+snapshots on that node and deletes older ones. It never deletes a snapshot
+whose upgrade operation is still active or needs recovery, because Katl
+re-verifies that file's digest and it is the recovery point for that upgrade;
+such a snapshot is kept in addition to the newest two. The upgrade report lists
+the paths kept on each control plane: the text output prints a
+`Retained etcd snapshots on NODE:` line, and the `--output json` report
+includes them as `retained_snapshots` in each node's `etcd` evidence. Pruning
+considers only files that Katl named after upgrade operations, so other files
+in the directory, such as snapshots you saved there by hand, are left alone. Copy a
+pre-upgrade snapshot off the node if you want to keep it beyond two later
+upgrades.
 
 ## Restore limitations
 

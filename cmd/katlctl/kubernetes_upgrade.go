@@ -795,6 +795,11 @@ func writeKubernetesUpgradeReport(stdout io.Writer, output string, report kubern
 				}
 			}
 		}
+		for _, node := range report.Nodes {
+			if retained := node.Etcd.GetRetainedSnapshots(); len(retained) > 0 {
+				fmt.Fprintf(stdout, "Retained etcd snapshots on %s: %s\n", node.Name, strings.Join(retained, ", "))
+			}
+		}
 		if report.RecoveryRequired {
 			for _, entry := range report.Etcd {
 				if snapshot := entry.Evidence.GetSnapshot(); snapshot != nil {

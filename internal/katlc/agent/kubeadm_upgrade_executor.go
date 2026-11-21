@@ -8,9 +8,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/netip"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -788,7 +790,7 @@ func (e *Executor) prepareKubeadmUpgradeSnapshot(ctx context.Context, record ope
 	}
 	location := request.SnapshotStorageLocation
 	if location == "" {
-		location = filepath.ToSlash(filepath.Join("/var/lib/etcd/katl-snapshots", record.OperationID+".db"))
+		location = path.Join(upgradeSnapshotDirectory, record.OperationID+".db")
 		if err := os.MkdirAll(filepath.Dir(rootedRuntimePath(e.Root, location)), 0o700); err != nil {
 			return record, err
 		}
@@ -1097,7 +1099,27 @@ func (e *Executor) completeKubeadmUpgrade(ctx context.Context, record operation.
 }
 
 func (e *Executor) recordHealthyKubeadmUpgrade(operationID string, now time.Time) error {
-	_, err := e.Store.Update(operationID, "kubeadm-upgrade-healthy", "healthy", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+	record, err := e.Store.Read(operationID)
+	if err != nil {
+		return err
+	}
+	// Pruning runs while this operation is still non-terminal, so its own
+	// snapshot is protected. A healthy upgrade never fails on cleanup.
+	var retained []string
+	pruneSnapshots := record.KubernetesSysextUpdate != nil && record.KubernetesSysextUpdate.UpgradeRole != "worker"
+	if pruneSnapshots {
+		retained, err = e.pruneUpgradeSnapshots()
+		if err != nil {
+			log.Printf("prune pre-upgrade etcd snapshots: %v", err)
+		}
+	}
+	_, err = e.Store.Update(operationID, "kubeadm-upgrade-healthy", "healthy", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		if pruneSnapshots {
+			if current.KubeadmUpgradeEvidence.Etcd == nil {
+				current.KubeadmUpgradeEvidence.Etcd = &operation.EtcdUpgradeEvidence{}
+			}
+			current.KubeadmUpgradeEvidence.Etcd.RetainedSnapshots = retained
+		}
 		current.Phase = "healthy"
 		current.CompletedPhases = appendMissing(current.CompletedPhases, "kubelet-stop-running", "sysext-refresh-running", "kubelet-restart-running", "health-check-running", "healthy")
 		current.KubeadmUpgradeEvidence.KubeletGateState = "target-observed"

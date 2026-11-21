@@ -102,6 +102,7 @@ type Server struct {
 	OperationID              func(string, time.Time) (string, error)
 	AvailableStorage         availableStorageFunc
 	submitMu                 sync.Mutex
+	etcdSnapshotMu           sync.Mutex
 }
 
 func NewServer(root string, store operation.Store) *Server {

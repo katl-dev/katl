@@ -9,7 +9,7 @@ installed release.
 | --- | --- |
 | `katlctl config` | Create, validate, inspect, compare, and compile `ClusterConfig`. |
 | `katlctl install` | Inspect a known installer, enable installer SSH, and submit configuration. |
-| `katlctl cluster` | Inspect or apply selected nodes, bootstrap kubeadm, retrieve kubeconfig, inspect etcd, and perform explicit cluster wipes. |
+| `katlctl cluster` | Inspect or apply selected nodes, bootstrap kubeadm, retrieve kubeconfig, inspect and snapshot etcd, and perform explicit cluster wipes. |
 | `katlctl node` | Inspect status and logs, join, reboot, shut down, upgrade, or explicitly wipe one node. |
 | `katlctl kubernetes` | Create, import, and inspect reusable Kubernetes identity; plan and execute supported Kubernetes upgrades. |
 | `katlctl operations` | Inspect current and recent durable node operations. |
@@ -226,6 +226,10 @@ output reports the path and endpoint, never credential contents.
 Each control plane holds its own admin credentials, so retrieval skips a node
 whose credentials have expired and reports the renewal guidance if no node has
 valid ones. It warns when the credentials it writes expire within 30 days.
+
+`cluster etcd snapshot` likewise tries configured control planes, or uses
+`--node`, and downloads a verified snapshot to a new `--output` file with mode
+0600; see [Back up etcd](../operations/back-up-etcd.md).
 
 The management API must be reachable for logs and kubeconfig retrieval. Use SSH
 or the physical/serial console for failed boot, network, or agent recovery.
