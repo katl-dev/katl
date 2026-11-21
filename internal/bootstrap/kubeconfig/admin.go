@@ -1,6 +1,9 @@
 package kubeconfig
 
 import (
+	"crypto/x509"
+	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"strings"
 
@@ -56,4 +59,21 @@ func ParseCredentials(data []byte) (Credentials, error) {
 		return Credentials{}, fmt.Errorf("admin kubeconfig is missing unambiguous embedded credential data")
 	}
 	return result, nil
+}
+
+// ClientCertificate decodes the leaf of the embedded client certificate.
+func (c Credentials) ClientCertificate() (*x509.Certificate, error) {
+	data, err := base64.StdEncoding.DecodeString(c.ClientCertificateData)
+	if err != nil {
+		return nil, fmt.Errorf("decode client certificate: %w", err)
+	}
+	block, _ := pem.Decode(data)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return nil, fmt.Errorf("decode client certificate: no PEM certificate")
+	}
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("parse client certificate: %w", err)
+	}
+	return certificate, nil
 }

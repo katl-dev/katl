@@ -45,6 +45,17 @@ func nodeKubernetesStatus(ctx context.Context, root string, run ToolRunner) (rep
 	} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
 		return nil, fmt.Errorf("inspect control-plane configuration: %w", statErr)
 	}
+	certificate, hasCertificate := soonestKubeadmCertificate(root)
+	if hasCertificate {
+		report.CertificateExpiry = certificate.report()
+	}
+	// The node clock is the one TLS peers on this node validate against.
+	kubectlFailure := func(reason string) string {
+		if hasCertificate && !time.Now().Before(certificate.notAfter) {
+			return fmt.Sprintf("certificate %s expired at %s; %s", certificate.name, certificate.notAfter.UTC().Format(time.RFC3339), certificateRenewalHint)
+		}
+		return reason
+	}
 
 	if run == nil {
 		return nil, fmt.Errorf("Kubernetes status runner is not configured")
@@ -65,7 +76,7 @@ func nodeKubernetesStatus(ctx context.Context, root string, run ToolRunner) (rep
 		for _, command := range commands {
 			if _, ok := kubernetesStatusCommand(ctx, run, command, false); !ok {
 				report.State = "waiting-for-control-plane"
-				report.FailureReason = "local Kubernetes API or control-plane pods are not ready"
+				report.FailureReason = kubectlFailure("local Kubernetes API or control-plane pods are not ready")
 				return report, nil
 			}
 		}
@@ -84,6 +95,9 @@ func nodeKubernetesStatus(ctx context.Context, root string, run ToolRunner) (rep
 	if !ok || !strings.EqualFold(strings.TrimSpace(readyState), "true") {
 		report.State = "waiting-for-node"
 		report.FailureReason = "Kubernetes node " + nodeName + " is not Ready"
+		if !ok {
+			report.FailureReason = kubectlFailure(report.FailureReason)
+		}
 		return report, nil
 	}
 	report.NodeReady = true

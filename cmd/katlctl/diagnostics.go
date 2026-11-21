@@ -122,6 +122,13 @@ func newClusterKubeconfigCommand(ctx context.Context, stdout io.Writer) *cobra.C
 					failures = append(failures, fmt.Errorf("%s: %w", candidate.Name, err))
 					continue
 				}
+				// Each control plane holds its own admin.conf, so another node may still
+				// have valid credentials.
+				expiry := adminCredentialExpiry(credentials)
+				if expiry != nil && expiry.State == "expired" {
+					failures = append(failures, fmt.Errorf("%s: %s", candidate.Name, expiry.summary()))
+					continue
+				}
 				result, err := kubeconfig.Write(kubeconfig.Request{
 					Path: path, Overwrite: force, Endpoint: selection,
 					ClusterName: resolved.ClusterName, ContextName: resolved.ClusterName,
@@ -142,6 +149,9 @@ func newClusterKubeconfigCommand(ctx context.Context, stdout io.Writer) *cobra.C
 					}{result.Path, result.Server, candidate.Name})
 				}
 				_, err = fmt.Fprintf(stdout, "Kubeconfig saved to %s (server %s).\n%s\n", result.Path, result.Server, result.NextStep())
+				if err == nil && expiry.needsAttention() {
+					_, err = fmt.Fprintf(stdout, "Warning: %s\n", expiry.summary())
+				}
 				return err
 			}
 			if len(failures) == 0 {
@@ -189,4 +199,12 @@ func diagnosticError(action string, err error) error {
 		return fmt.Errorf("%s: this KatlOS version does not support the command; upgrade the node", action)
 	}
 	return fmt.Errorf("%s: %w", action, err)
+}
+
+func adminCredentialExpiry(credentials kubeconfig.Credentials) *certificateExpiryReport {
+	certificate, err := credentials.ClientCertificate()
+	if err != nil {
+		return nil
+	}
+	return newCertificateExpiryReport(&agentapi.CertificateExpiry{Name: "admin.conf", NotAfter: certificate.NotAfter.UTC().Format(time.RFC3339)})
 }

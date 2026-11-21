@@ -172,6 +172,17 @@ message KubernetesStatus {
   bool control_plane_components_ready = 6;
   string failure_reason = 7;
   string external_endpoint = 8;
+  // The kubeadm-renewable certificate that expires first; unset on nodes
+  // without kubeadm control-plane certificates.
+  CertificateExpiry certificate_expiry = 9;
+}
+
+message CertificateExpiry {
+  // The name kubeadm certs check-expiration uses, such as admin.conf or
+  // apiserver.
+  string name = 1;
+  // RFC 3339 UTC.
+  string not_after = 2;
 }
 
 message ControlPlaneEndpointStatus {

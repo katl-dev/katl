@@ -95,14 +95,15 @@ type volumeStatusReport struct {
 }
 
 type kubernetesStatusReport struct {
-	ExternalEndpoint            string `json:"externalEndpoint,omitempty"`
-	State                       string `json:"state"`
-	Role                        string `json:"role"`
-	NodeName                    string `json:"nodeName"`
-	KubeletActive               bool   `json:"kubeletActive"`
-	NodeReady                   bool   `json:"nodeReady"`
-	ControlPlaneComponentsReady bool   `json:"controlPlaneComponentsReady,omitempty"`
-	FailureReason               string `json:"failureReason,omitempty"`
+	ExternalEndpoint            string                   `json:"externalEndpoint,omitempty"`
+	State                       string                   `json:"state"`
+	Role                        string                   `json:"role"`
+	NodeName                    string                   `json:"nodeName"`
+	KubeletActive               bool                     `json:"kubeletActive"`
+	NodeReady                   bool                     `json:"nodeReady"`
+	ControlPlaneComponentsReady bool                     `json:"controlPlaneComponentsReady,omitempty"`
+	FailureReason               string                   `json:"failureReason,omitempty"`
+	CertificateExpiry           *certificateExpiryReport `json:"certificateExpiry,omitempty"`
 }
 
 type controlPlaneEndpointReport struct {
@@ -484,6 +485,7 @@ func newKubernetesStatusReport(status *agentapi.KubernetesStatus) *kubernetesSta
 		NodeReady:                   status.GetNodeReady(),
 		ControlPlaneComponentsReady: status.GetControlPlaneComponentsReady(),
 		FailureReason:               status.GetFailureReason(),
+		CertificateExpiry:           newCertificateExpiryReport(status.GetCertificateExpiry()),
 	}
 }
 
@@ -540,6 +542,9 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport, v
 	}
 	if report.Kubernetes != nil && report.Kubernetes.FailureReason != "" {
 		w.row("", "", report.Kubernetes.FailureReason)
+	}
+	if report.Kubernetes != nil && report.Kubernetes.CertificateExpiry != nil {
+		w.row("", "", report.Kubernetes.CertificateExpiry.summary())
 	}
 	if err := w.flush(); err != nil {
 		return err
