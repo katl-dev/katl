@@ -49,7 +49,7 @@ func TestUpgradeFlavourConflict(t *testing.T) {
 	}
 }
 
-func TestUpgradeLocalLTSRequiresFlavour(t *testing.T) {
+func TestUpgradeLocalImageFlavour(t *testing.T) {
 	artifact, _, _ := writeHostUpgradeArtifact(t, "2026.9.0", "x86_64", 10)
 	data, err := os.ReadFile(artifact + ".json")
 	if err != nil {
@@ -68,10 +68,30 @@ func TestUpgradeLocalLTSRequiresFlavour(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	for _, flag := range []string{"", "lts"} {
+		t.Run("flavour="+flag, func(t *testing.T) {
+			fake := readyHostUpgradeClient()
+			fake.generation.RuntimeFlavour = "standard"
+			installKatlcDial(t, func(string) {}, fake)
+			args := []string{"node", "upgrade", "cp-1", "--artifact", artifact, "--config", writeClusterConfig(t), "--plan"}
+			if flag != "" {
+				args = append(args, "--flavour", flag)
+			}
+
+			var out, errs bytes.Buffer
+			if err := run(context.Background(), args, &out, &errs); err != nil {
+				t.Fatalf("run() error = %v, stderr = %s", err, errs.String())
+			}
+			if got := fake.submitRequest.GetHostUpgrade().GetCandidateGenerationId(); !strings.HasPrefix(got, "katlos-lts-2026.9.0-") {
+				t.Fatalf("generation = %s", got)
+			}
+		})
+	}
+
 	var out, errs bytes.Buffer
-	err = run(context.Background(), []string{"node", "upgrade", "cp-1", "--artifact", artifact}, &out, &errs)
-	if err == nil || !strings.Contains(err.Error(), "conflicts with local image flavour lts") {
-		t.Fatalf("error = %v", err)
+	err = run(context.Background(), []string{"node", "upgrade", "cp-1", "--artifact", artifact, "--flavour", "standard"}, &out, &errs)
+	if err == nil || !strings.Contains(err.Error(), "--flavour standard conflicts with local image flavour lts") {
+		t.Fatalf("explicit standard flavour error = %v", err)
 	}
 }
 

@@ -380,7 +380,7 @@ Use --version VERSION for a published release, or --artifact for an upgrade imag
 		},
 	}
 	addManagementTargetFlags(cmd, &opts.target)
-	cmd.Flags().StringVar(&opts.flavour, "flavour", "", "kernel flavour: standard or lts (default: standard)")
+	cmd.Flags().StringVar(&opts.flavour, "flavour", "", "kernel flavour: standard or lts (default: standard, or the --artifact image's flavour)")
 	cmd.Flags().StringVar(&opts.version, "version", "", "published KatlOS release to install")
 	cmd.Flags().StringVar(&opts.artifact, "artifact", "", "locally built KatlOS upgrade image (uses PATH.json metadata)")
 	cmd.MarkFlagsMutuallyExclusive("version", "artifact")
@@ -399,6 +399,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if opts.applyConfig && strings.TrimSpace(opts.target.clusterConfigPath) == "" {
 		return fmt.Errorf("--apply-config requires --config cluster.yaml")
 	}
+	requestedFlavour := opts.flavour
 	selectedFlavour, err := flavour.Normalize(opts.flavour)
 	if err != nil {
 		return err
@@ -420,8 +421,9 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		}
 		localArtifact = &artifact
 		opts.version = artifact.Version
-		if opts.flavour != artifact.Flavour {
-			return fmt.Errorf("--flavour %s conflicts with local image flavour %s", opts.flavour, artifact.Flavour)
+		// A local image declares its flavour; --flavour only asserts it.
+		if requestedFlavour != "" && opts.flavour != artifact.Flavour {
+			return fmt.Errorf("--flavour %s conflicts with local image flavour %s; omit --flavour to use the image's flavour", opts.flavour, artifact.Flavour)
 		}
 		opts.flavour = artifact.Flavour
 	} else {

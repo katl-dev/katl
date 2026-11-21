@@ -139,8 +139,8 @@ artifacts](verify-release.md) against `SHA256SUMS` and the release attestation
 before you use them. A symbolic link or a renamed image is rejected, and so is
 an image whose architecture does not match the node.
 
-Plan the upgrade, then run the same command without `--plan`. Pass
-`--flavour lts` for an LTS image:
+Plan the upgrade, then run the same command without `--plan`. Katl takes the
+flavour from the image metadata, so an LTS image needs no `--flavour`:
 
 ```sh
 katlctl node upgrade cp-1 --config ./cluster.yaml \
@@ -203,8 +203,8 @@ katlctl node upgrade cp-1 --config cluster.yaml --version VERSION --flavour stan
 Changing flavour stages a complete OS image and reboots. Repeating an upgrade
 to the identical active image without `--apply-config` returns unchanged
 without rebooting. The Kubernetes bundle is independent of the kernel
-flavour. `--artifact` must match the selected flavour. Pass `--flavour lts` for
-a local LTS image; omitting the flag selects standard.
+flavour. With `--artifact`, Katl uses the flavour declared in the image
+metadata; a `--flavour` that disagrees is refused.
 
 Nodes running a release from before flavour support must first upgrade to the
 standard image of a release with flavour support, then switch to LTS. The CLI
