@@ -80,9 +80,9 @@ After every selected wipe operation succeeds and powers off its node:
 3. Inspect the target disk again before authorizing installer wipe.
 4. Wait for the installed node to boot
    [generation 0](access.md#confirm-generation-0).
-5. Save the reinstalled nodes with
-   `katlctl context save --config ./cluster.yaml`; bootstrap refuses nodes
-   that have not been saved on this workstation.
+5. If you use a saved context, refresh it with
+   `katlctl context save --config ./cluster.yaml` to record the new node
+   identities.
 6. Run `katlctl cluster bootstrap --config ./cluster.yaml` for the newly
    installed cluster. A replacement in an existing cluster instead joins
    through [`katlctl node join`](change-cluster-nodes.md#replace-one-node-without-renaming-it).

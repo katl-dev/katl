@@ -34,6 +34,9 @@ trusted-network access.
 Older mTLS configurations and nodes keep mTLS: an
 existing configuration with a secrets reference and no explicit mode uses
 mTLS, and installed nodes without a mode record keep mTLS after an OS upgrade.
+An mTLS configuration without `spec.managementIdentity` takes its credentials
+from a saved context, so run `katlctl context save --config ./cluster.yaml`
+before other commands.
 A new trusted-network installation requires a release that supports this
 setting on both the installer and the installed runtime.
 

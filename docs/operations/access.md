@@ -51,9 +51,10 @@ boot health decides whether a generation is kept.
 
 A context is a workstation record, kept in `katlctl.yaml`, of the installed
 nodes' identities and management addresses. It never holds desired state;
-`cluster.yaml` does. Saving the nodes is required before bootstrap and other
-identity-checked management changes, so run it once after installation with
-the same `cluster.yaml` you installed from:
+`cluster.yaml` does. Commands given `--config` confirm each node's identity
+directly, so a context is optional. Save one when you want shorter commands or
+want later commands to detect that an address now points to a different
+machine. Use the same `cluster.yaml` you installed from:
 
 ```sh
 katlctl context save --config ./cluster.yaml

@@ -138,17 +138,17 @@ because the first installed version is
 respond until you set it up in the next step. If a node fails to respond, see
 [Troubleshoot KatlOS](operations/troubleshoot.md).
 
-Save a context for the cluster on your workstation. A context records each
-installed node's identity and address, which lets `katlctl` detect when a
-saved address points to a different machine. Bootstrap requires this record,
-so run the command before you continue.
+Optionally, save a context for the cluster on your workstation. A context
+records each installed node's identity and address so that later commands can
+use `--context` instead of `--config`, and `katlctl` can detect when a saved
+address points to a different machine.
 
 ```sh
 katlctl context save --config ./cluster.yaml
 ```
 
-This guide keeps passing `--config ./cluster.yaml`; selecting the context to
-shorten later commands is optional.
+This guide keeps passing `--config ./cluster.yaml`. Commands given `--config`
+confirm each node's identity directly, so they do not need a saved context.
 
 ## 4. Create the Kubernetes cluster
 

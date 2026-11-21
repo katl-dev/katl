@@ -18,9 +18,7 @@ node at a time.
 - Check that the installed CNI supports the target kernel. For Cilium, check
   the [tested version guidance](cilium.md#before-you-start).
 - Check that `cluster.yaml` contains the node and its current management
-  address, or supply an override with `--endpoint`. The node must also have been
-  saved with `katlctl context save --config ./cluster.yaml`, because the
-  upgrade checks the node's saved identity.
+  address, or supply an override with `--endpoint`.
 - Handle Kubernetes and workload availability outside Katl; see
   [Prepare a Kubernetes node for host maintenance](maintain-node.md). Host
   upgrade does not require a drain or uncordon a node that you left cordoned.

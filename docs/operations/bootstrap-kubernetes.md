@@ -8,9 +8,6 @@ Kubernetes API, joins the nodes, and gives you a kubeconfig.
 
 - Every intended node has reached [generation 0](access.md#confirm-generation-0).
 - The `cluster.yaml` used for installation is available.
-- The workstation has [saved the installed nodes in a context](access.md#save-a-context)
-  with `katlctl context save --config ./cluster.yaml`. Bootstrap refuses nodes
-  that have not been saved.
 - Every intended node is reachable through its host management interface on
   TCP port `9443` from the operator workstation.
 - `spec.kubernetes.version` is available in this Katl release's compatibility
