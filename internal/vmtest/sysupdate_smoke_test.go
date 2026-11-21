@@ -326,26 +326,10 @@ func assertGuestFileDigests(t *testing.T, ctx context.Context, guest *GuestContr
 
 func assertHostUpgradeRuntimeReady(t *testing.T, ctx context.Context, guest *GuestControl, phase string) {
 	t.Helper()
-	units := []string{"katlc-agent.service", "sshd.service", "katl-boot-complete.target"}
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		active, err := guest.RunCommand(ctx, GuestCommandRequest{
-			Name:         phase + "-runtime-ready",
-			Argv:         append([]string{"systemctl", "is-active", "--quiet"}, units...),
-			AllowFailure: true,
-		})
-		if err == nil && active.ExitStatus == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			states := guestCommandOutput(t, ctx, guest, phase+"-runtime-states", append([]string{"systemctl", "show", "--property=Id,ActiveState,SubState"}, units...)...)
-			t.Fatalf("runtime did not become ready after %s: %v %#v\n%s", phase, err, active, states)
-		}
-		select {
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		case <-time.After(250 * time.Millisecond):
-		}
+	readyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := guest.WaitBootComplete(readyCtx); err != nil {
+		t.Fatalf("runtime did not become ready after %s: %v", phase, err)
 	}
 	guestCommand(t, ctx, guest, phase+"-sshd-config", "sshd", "-t")
 }
@@ -641,6 +625,13 @@ func assertBootedGenerationIdentity(t *testing.T, ctx context.Context, guest *Gu
 func waitGenerationPromotion(t *testing.T, ctx context.Context, guest *GuestControl, generationID string) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
+	// Persisted selection can already name the generation before this boot's
+	// health runs, as after a persistent rollback.
+	bootCtx, cancel := context.WithDeadline(ctx, deadline)
+	defer cancel()
+	if err := guest.WaitBootComplete(bootCtx); err != nil {
+		t.Fatalf("generation %s boot did not complete: %v", generationID, err)
+	}
 	var lastStatus generation.GenerationStatus
 	var lastSelection generation.BootSelectionRecord
 	for time.Now().Before(deadline) {
