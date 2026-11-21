@@ -5,10 +5,12 @@ import (
 	"regexp"
 )
 
-var unsupportedSharedKubeletBase = regexp.MustCompile(`(?m)^[ \t]*line [0-9]+: field sharedKubeletBase not found in type configapply\.inlineKubeadmConfig[ \t]*(?:$|;)`)
+// Older node runtimes reject NodeConfigurationChange fields introduced after
+// them; these are the fields katlctl renders that such runtimes cannot decode.
+var unsupportedConfigurationFields = regexp.MustCompile(`(?m)(?:^[ \t]*line [0-9]+: field sharedKubeletBase not found in type configapply\.inlineKubeadmConfig[ \t]*(?:$|;)|unsupported-domain: spec\.nodeOverrides\.[a-z0-9-]+\.kubernetesMetadata: configuration domain is not supported)`)
 
 func configCompatibilityDiagnostic(message string) string {
-	if !unsupportedSharedKubeletBase.MatchString(message) {
+	if !unsupportedConfigurationFields.MatchString(message) {
 		return message
 	}
 	return message + "; upgrade the node runtime to the KatlOS release matching this katlctl, then repeat the configuration apply"

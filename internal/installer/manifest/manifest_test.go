@@ -788,3 +788,30 @@ func objectField(extra string) string {
 	extra = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(extra), ","))
 	return "\n\t\t\t" + extra + ","
 }
+
+func TestValidateKubernetesMetadataLimitsLabelsToKubeletRegistration(t *testing.T) {
+	for _, key := range []string{
+		"tier",
+		"example.com/pool",
+		"topology.kubernetes.io/zone",
+		"node.kubernetes.io/pool",
+		"storage.node.kubernetes.io/class",
+		"kubelet.kubernetes.io/role",
+		"kubernetes.io/arch",
+	} {
+		if err := ValidateKubernetesMetadata(map[string]string{key: "a"}, nil); err != nil {
+			t.Errorf("ValidateKubernetesMetadata(%q) error = %v, want accepted", key, err)
+		}
+	}
+	for _, key := range []string{
+		"node-role.kubernetes.io/worker",
+		"node-restriction.kubernetes.io/pool",
+		"kubernetes.io/role",
+		"example.k8s.io/pool",
+	} {
+		err := ValidateKubernetesMetadata(map[string]string{key: ""}, nil)
+		if err == nil || !strings.Contains(err.Error(), "kubectl label node NODE "+key+"=VALUE") {
+			t.Errorf("ValidateKubernetesMetadata(%q) error = %v, want kubectl guidance", key, err)
+		}
+	}
+}

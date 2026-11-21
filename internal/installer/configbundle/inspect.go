@@ -581,7 +581,7 @@ func classifyDiffPath(path string) (string, string, string) {
 	case strings.Contains(path, ".kubernetes.kubelet"):
 		return "operation-only", "kubeadm-aware operation", "per-node kubelet configuration changes require kubeadm-aware reconciliation on this node"
 	case strings.Contains(path, ".kubernetes.labels"), strings.Contains(path, ".kubernetes.taints"):
-		return "operation-only", "kubeadm-aware operation", "Kubernetes node metadata changes require Kubernetes-aware reconciliation"
+		return "online-applicable", "", "labels and taints apply when the node joins Kubernetes; for a joined node, cluster apply records the change and prints the kubectl commands that update its Node"
 	case strings.Contains(path, ".management.address"):
 		return "target-only", "", "changes only the workstation management target; no node generation or mutation is planned"
 	case strings.Contains(path, ".storage.volumes"):

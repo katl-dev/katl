@@ -86,6 +86,7 @@ type nodeConfigurationOverlay struct {
 	Kubernetes           *manifest.KubernetesConfig   `json:"kubernetes,omitempty" yaml:"kubernetes,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointOverlay `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint,omitempty"`
 	APIProxy             *apiproxy.Config             `json:"apiProxy,omitempty" yaml:"apiProxy,omitempty"`
+	KubernetesMetadata   *kubernetesMetadata          `json:"kubernetesMetadata,omitempty" yaml:"kubernetesMetadata,omitempty"`
 	LivePreflight        map[string]bool              `json:"livePreflight,omitempty" yaml:"livePreflight,omitempty"`
 }
 
@@ -147,6 +148,9 @@ func (document nodeConfigurationChangeDocument) request(base TrustedBundleReques
 
 func validateEndpointOverlays(spec nodeConfigurationChangeSpec) error {
 	validate := func(path string, overlay nodeConfigurationOverlay) error {
+		if overlay.KubernetesMetadata != nil && !strings.HasPrefix(path, "spec.nodeOverrides.") {
+			return fmt.Errorf("%s.kubernetesMetadata is supported only in nodeOverrides", path)
+		}
 		endpoint := overlay.ControlPlaneEndpoint
 		if endpoint == nil {
 			return nil
@@ -212,6 +216,10 @@ func (overlay nodeConfigurationOverlay) nodeOverlay(changedConfigs map[string]st
 		KubeadmChanged:      kubeadmChanged,
 		LivePreflight:       overlay.LivePreflight,
 		APIProxy:            overlay.APIProxy,
+	}
+	if overlay.KubernetesMetadata != nil {
+		nodeOverlay.NodeLabels = overlay.KubernetesMetadata.Labels
+		nodeOverlay.NodeTaints = overlay.KubernetesMetadata.Taints
 	}
 	if overlay.ControlPlaneEndpoint != nil {
 		nodeOverlay.ControlPlaneEndpointSet = true

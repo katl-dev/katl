@@ -553,7 +553,7 @@ shutdownGracePeriod: 45s
 	}
 	cp := controlPlane.KubeadmConfigs["control-plane"]
 	cpConfig := string(cp.Config.Content)
-	for _, want := range []string{"kind: InitConfiguration", "criSocket: unix:///run/containerd/containerd.sock", "taints: []", "kind: ClusterConfiguration", "kubernetesVersion: v1.36.1", "name: profiling", "kind: KubeletConfiguration", "volumePluginDir: /var/lib/kubelet/plugins/volume/exec", "directory: /etc/katl/kubeadm/control-plane/patches"} {
+	for _, want := range []string{"kind: InitConfiguration", "criSocket: unix:///run/containerd/containerd.sock", "value: katl.dev/zone=rack-a", "key: node-role.kubernetes.io/control-plane", "kind: ClusterConfiguration", "kubernetesVersion: v1.36.1", "name: profiling", "kind: KubeletConfiguration", "volumePluginDir: /var/lib/kubelet/plugins/volume/exec", "directory: /etc/katl/kubeadm/control-plane/patches"} {
 		if !strings.Contains(cpConfig, want) {
 			t.Fatalf("control-plane kubeadm input missing %q:\n%s", want, cpConfig)
 		}
@@ -864,6 +864,28 @@ nodeRegistration:
       value: 10.254.1.1
 `,
 			want: "node-ip is supplied from nodes[].kubernetes.address",
+		},
+		{
+			name: "kubelet node labels",
+			config: `apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+nodeRegistration:
+  kubeletExtraArgs:
+    - name: node-labels
+      value: example.com/pool=a
+`,
+			want: "node-labels is supplied from nodes[].kubernetes.labels",
+		},
+		{
+			name: "join taints",
+			config: `apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+nodeRegistration:
+  taints:
+    - key: dedicated
+      effect: NoSchedule
+`,
+			want: "configure node taints in nodes[].kubernetes.taints",
 		},
 		{
 			name: "local API advertise address",

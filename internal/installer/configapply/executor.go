@@ -310,7 +310,7 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 		Argv: []string{"systemctl", "daemon-reload"},
 	}}
 	switch domain {
-	case DomainGenerationRetention, DomainBootstrapNodeMetadata:
+	case DomainGenerationRetention, DomainBootstrapNodeMetadata, DomainKubernetesNodeMetadata:
 		// Consumers read these files directly after confext activation.
 		return nil, nil
 	case DomainKubeadmConfig, DomainSelectedKubeadmConfig:

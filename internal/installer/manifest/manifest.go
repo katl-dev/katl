@@ -665,9 +665,63 @@ func validateBootstrapIntent(intent BootstrapIntent) error {
 }
 
 // ValidateKubernetesMetadata validates operator-authored node labels and
-// taints without requiring the rest of a compiled bootstrap intent.
+// taints without requiring the rest of a compiled bootstrap intent. Nodes
+// register with their labels through kubelet, so labels are limited to those
+// kubelet may set on its own Node.
 func ValidateKubernetesMetadata(labels map[string]string, taints []NodeTaint) error {
-	return validateBootstrapIntent(BootstrapIntent{Labels: labels, Taints: taints})
+	if err := validateBootstrapIntent(BootstrapIntent{Labels: labels, Taints: taints}); err != nil {
+		return err
+	}
+	keys := make([]string, 0, len(labels))
+	for key := range labels {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if !kubeletSettableLabel(key) {
+			return fmt.Errorf("node.bootstrap.labels key %q is reserved by Kubernetes and cannot be set when kubelet registers the node; remove it and run 'kubectl label node NODE %s=VALUE' after the node joins", key, key)
+		}
+	}
+	return nil
+}
+
+// kubeletLabels and kubeletLabelNamespaces mirror the labels kubelet accepts
+// in --node-labels; any other kubernetes.io or k8s.io label stops kubelet
+// from starting, and NodeRestriction forbids kubelet from setting it.
+var kubeletLabels = map[string]struct{}{
+	"kubernetes.io/hostname":                   {},
+	"kubernetes.io/os":                         {},
+	"kubernetes.io/arch":                       {},
+	"beta.kubernetes.io/os":                    {},
+	"beta.kubernetes.io/arch":                  {},
+	"beta.kubernetes.io/instance-type":         {},
+	"node.kubernetes.io/instance-type":         {},
+	"topology.kubernetes.io/region":            {},
+	"topology.kubernetes.io/zone":              {},
+	"failure-domain.beta.kubernetes.io/region": {},
+	"failure-domain.beta.kubernetes.io/zone":   {},
+}
+
+var kubeletLabelNamespaces = []string{"kubelet.kubernetes.io", "node.kubernetes.io"}
+
+func kubeletSettableLabel(key string) bool {
+	namespace, _, prefixed := strings.Cut(key, "/")
+	if !prefixed || !(inLabelNamespace(namespace, "kubernetes.io") || inLabelNamespace(namespace, "k8s.io")) {
+		return true
+	}
+	if _, ok := kubeletLabels[key]; ok {
+		return true
+	}
+	for _, allowed := range kubeletLabelNamespaces {
+		if inLabelNamespace(namespace, allowed) {
+			return true
+		}
+	}
+	return false
+}
+
+func inLabelNamespace(namespace, domain string) bool {
+	return namespace == domain || strings.HasSuffix(namespace, "."+domain)
 }
 
 func validateBootstrapAccess(access BootstrapAccess) error {

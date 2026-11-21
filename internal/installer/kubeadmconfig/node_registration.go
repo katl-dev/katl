@@ -6,32 +6,72 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"sort"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/installer/manifest"
 	"gopkg.in/yaml.v3"
 )
 
-const kubeletNodeIPArgument = "node-ip"
+const (
+	kubeletNodeIPArgument     = "node-ip"
+	kubeletNodeLabelsArgument = "node-labels"
+)
 
-// WithNodeAddress returns a node-specific kubeadm plan. Kubeadm persists
+// NodeRegistration is the node identity and Kubernetes metadata that kubeadm
+// registers a node with.
+type NodeRegistration struct {
+	Address string
+	Labels  map[string]string
+	Taints  []manifest.NodeTaint
+}
+
+// RegistrationFor returns the registration declared by a node's desired
+// configuration.
+func RegistrationFor(node manifest.NodeConfig) NodeRegistration {
+	registration := NodeRegistration{Address: node.Kubernetes.Address}
+	if node.Bootstrap != nil {
+		registration.Labels = node.Bootstrap.Labels
+		registration.Taints = node.Bootstrap.Taints
+	}
+	return registration
+}
+
+// WithNodeRegistration returns a node-specific kubeadm plan. Kubeadm persists
 // nodeRegistration.kubeletExtraArgs into kubeadm-flags.env, so one source of
-// node identity configures both kubelet and the local API endpoint.
-func WithNodeAddress(plan Plan, address string) (Plan, error) {
-	address = strings.TrimSpace(address)
-	if address == "" {
+// node identity configures both kubelet and the local API endpoint. Labels and
+// taints take effect only when the Node is first registered: kubelet creates
+// it with its labels, kubeadm join registers it with its taints, and kubeadm
+// init marks the first control plane with them.
+func WithNodeRegistration(plan Plan, registration NodeRegistration) (Plan, error) {
+	address := strings.TrimSpace(registration.Address)
+	if address == "" && len(registration.Labels) == 0 && len(registration.Taints) == 0 {
 		return clonePlan(plan), nil
 	}
 	documents, err := decodeDocuments(plan.Config.Content)
 	if err != nil {
-		return Plan{}, fmt.Errorf("decode KubeadmConfig %q for node address: %w", plan.Name, err)
+		return Plan{}, fmt.Errorf("decode KubeadmConfig %q for node registration: %w", plan.Name, err)
 	}
 	for _, document := range documents {
 		kind, _ := document["kind"].(string)
-		switch kind {
-		case "InitConfiguration", "JoinConfiguration":
+		if kind != "InitConfiguration" && kind != "JoinConfiguration" {
+			continue
+		}
+		if address != "" {
 			if err := setKubeletNodeIP(document, address); err != nil {
 				return Plan{}, fmt.Errorf("KubeadmConfig %q %s: %w", plan.Name, kind, err)
 			}
+		}
+		if len(registration.Labels) > 0 {
+			if err := replaceKubeletArgument(document, kubeletNodeLabelsArgument, nodeLabelsArgument(registration.Labels)); err != nil {
+				return Plan{}, fmt.Errorf("KubeadmConfig %q %s: %w", plan.Name, kind, err)
+			}
+		}
+		if len(registration.Taints) > 0 {
+			childMapping(document, "nodeRegistration")["taints"] = kubeadmTaints(registration.Taints)
+		}
+		if address == "" {
+			continue
 		}
 		switch kind {
 		case "InitConfiguration":
@@ -50,7 +90,7 @@ func WithNodeAddress(plan Plan, address string) (Plan, error) {
 	}
 	content, err := encodeDocuments(documents)
 	if err != nil {
-		return Plan{}, fmt.Errorf("encode KubeadmConfig %q for node address: %w", plan.Name, err)
+		return Plan{}, fmt.Errorf("encode KubeadmConfig %q for node registration: %w", plan.Name, err)
 	}
 	files := []File{{
 		SourcePath: plan.Config.SourcePath,
@@ -65,11 +105,32 @@ func WithNodeAddress(plan Plan, address string) (Plan, error) {
 	}
 	rendered, err := PlanFromRenderedFiles(plan.Name, files)
 	if err != nil {
-		return Plan{}, fmt.Errorf("validate KubeadmConfig %q with node address: %w", plan.Name, err)
+		return Plan{}, fmt.Errorf("validate KubeadmConfig %q with node registration: %w", plan.Name, err)
 	}
 	rendered.NodeLocalKubelet = plan.NodeLocalKubelet
 	rendered.SharedKubeletBase = plan.SharedKubeletBase
 	return rendered, nil
+}
+
+func nodeLabelsArgument(labels map[string]string) string {
+	pairs := make([]string, 0, len(labels))
+	for key, value := range labels {
+		pairs = append(pairs, key+"="+value)
+	}
+	sort.Strings(pairs)
+	return strings.Join(pairs, ",")
+}
+
+func kubeadmTaints(taints []manifest.NodeTaint) []any {
+	out := make([]any, 0, len(taints))
+	for _, taint := range taints {
+		entry := map[string]any{"key": taint.Key, "effect": taint.Effect}
+		if taint.Value != "" {
+			entry["value"] = taint.Value
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func clonePlan(plan Plan) Plan {
@@ -143,6 +204,28 @@ func setKubeletNodeIP(document map[string]any, address string) error {
 		"value": address,
 	})
 	document["nodeRegistration"] = nodeRegistration
+	return nil
+}
+
+// replaceKubeletArgument makes value the only kubelet argument called name.
+// Source validation reserves the argument for Katl, so replacing keeps
+// already node-specific input, such as a stored plan, stable.
+func replaceKubeletArgument(document map[string]any, name, value string) error {
+	nodeRegistration := childMapping(document, "nodeRegistration")
+	extraArgs, ok := nodeRegistration["kubeletExtraArgs"].([]any)
+	if nodeRegistration["kubeletExtraArgs"] != nil && !ok {
+		return fmt.Errorf("nodeRegistration.kubeletExtraArgs must use the kubeadm v1beta4 argument list")
+	}
+	kept := make([]any, 0, len(extraArgs)+1)
+	for _, raw := range extraArgs {
+		if argument, ok := raw.(map[string]any); ok {
+			if argumentName, _ := argument["name"].(string); strings.TrimSpace(argumentName) == name {
+				continue
+			}
+		}
+		kept = append(kept, raw)
+	}
+	nodeRegistration["kubeletExtraArgs"] = append(kept, map[string]any{"name": name, "value": value})
 	return nil
 }
 

@@ -1726,7 +1726,7 @@ patches:
 	}
 }
 
-func TestRenderControlPlaneJoinCarriesLocalAPIEndpoint(t *testing.T) {
+func TestRenderControlPlaneJoinCarriesNodeRegistration(t *testing.T) {
 	base := []byte(`apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration
 localAPIEndpoint:
@@ -1735,6 +1735,11 @@ nodeRegistration:
   kubeletExtraArgs:
     - name: node-ip
       value: 10.254.1.3
+    - name: node-labels
+      value: example.com/pool=a
+  taints:
+    - key: dedicated
+      effect: NoSchedule
 `)
 	material := JoinMaterial{Argv: []string{
 		"kubeadm", "join", "api.katl.test:6443",
@@ -1748,7 +1753,7 @@ nodeRegistration:
 		t.Fatalf("RenderControlPlaneJoinConfig() error = %v", err)
 	}
 	text := string(rendered)
-	for _, want := range []string{"advertiseAddress: 10.254.1.3", "name: node-ip", "value: 10.254.1.3"} {
+	for _, want := range []string{"advertiseAddress: 10.254.1.3", "name: node-ip", "value: 10.254.1.3", "value: example.com/pool=a", "key: dedicated"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("rendered join config missing %q:\n%s", want, rendered)
 		}

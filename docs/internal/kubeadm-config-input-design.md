@@ -92,8 +92,11 @@ Operator-authored kubeadm YAML omits values already owned by Katl:
   are rejected.
 - `InitConfiguration` and `JoinConfiguration`
   `nodeRegistration.criSocket` default to containerd.
-- `InitConfiguration.nodeRegistration.taints` defaults to `[]`; node taints
-  belong in ClusterConfig.
+- `InitConfiguration.nodeRegistration.taints` defaults to `[]`, so control
+  planes stay schedulable. Node taints and labels belong in ClusterConfig:
+  Katl renders `nodes[].kubernetes.taints` into `nodeRegistration.taints` and
+  `nodes[].kubernetes.labels` into the kubelet `node-labels` argument for each
+  node, and rejects native values for either.
 - `KubeletConfiguration.volumePluginDir` is enforced as
   `/var/lib/kubelet/plugins/volume/exec`.
 - `KubeletConfiguration.systemReserved.memory` defaults to `1Gi` when omitted
@@ -237,8 +240,10 @@ catalog references or sentinel values are written into it.
 
 The CRI socket defaults to containerd's socket and any different value is
 rejected until Katl intentionally supports another runtime. Control-plane
-registration taints are defaulted empty; users configure node taints through
-ClusterConfig rather than duplicating that intent in native kubeadm YAML.
+registration taints are defaulted empty; users configure node labels and taints
+through ClusterConfig rather than duplicating that intent in native kubeadm
+YAML. They take effect when the node registers with Kubernetes at init or join;
+Katl records later changes but does not update an existing Node.
 
 ## Rendered Files
 

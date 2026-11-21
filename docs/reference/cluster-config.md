@@ -30,8 +30,8 @@ and "—" means the field has no default.
 | `spec.defaults.hostConfiguration.sysfs` | [Typed sysfs values](#sysfs-settings) | — | Next boot |
 | `spec.defaults.systemExtensions` | [System extensions](#system-extensions) by OCI repository | — | Extension change or removal: next boot; configuration and units: live |
 | `spec.defaults.storage.volumes` | [Data volumes](#data-volumes) | `wipe: false` | Live |
-| `spec.defaults.kubernetes.labels` | [Kubernetes node labels](#node-labels-and-taints) | — | Applied once at cluster bootstrap |
-| `spec.defaults.kubernetes.taints` | [Kubernetes node taints](#node-labels-and-taints) | — | External workers only, at join |
+| `spec.defaults.kubernetes.labels` | [Kubernetes node labels](#node-labels-and-taints) | — | Applied when the node joins; later changes print kubectl commands |
+| `spec.defaults.kubernetes.taints` | [Kubernetes node taints](#node-labels-and-taints) | — | Applied when the node joins; later changes print kubectl commands |
 | `spec.defaults.kubernetes.kubelet.configFile` | [Node-local kubelet overlay](#node-local-kubelet-settings) | — | Live |
 | `spec.defaults.generationRetention` | [Automatic generation cleanup](#generation-retention) | `keepLast: 5`, `maxAge: 30d` | Live |
 | `spec.nodes[].name` | Stable node name | — | See the [node lifecycle matrix](../operations/configure-nodes.md#node-lifecycle-matrix) |
@@ -150,17 +150,21 @@ replaces the default list wholesale, and `taints: []` clears it. Keys and
 values must be valid Kubernetes label keys and values, and a taint `effect`
 must be `NoSchedule`, `PreferNoSchedule`, or `NoExecute`.
 
-Katl currently applies this metadata only at the following points, and it does
-not reconcile later changes:
+Each node registers with Kubernetes using its labels and taints when it is
+initialized or joins, through `katlctl cluster bootstrap`, `katlctl node join`,
+or [external-worker](../operations/external-workers.md) enrollment. Bootstrap
+and join use the configuration the node already holds, so apply changes made
+before then with `katlctl cluster apply`.
 
-- `katlctl cluster bootstrap` applies the labels to every node in the plan.
-  It does not apply taints to Katl-managed nodes.
-- `katlctl node join` does not apply labels or taints to a Katl-managed node.
-- An [external worker](../operations/external-workers.md) registers with its
-  labels and taints when it joins.
+Kubernetes applies registration metadata only once, so Katl does not change an
+existing Node. After a node has joined, `katlctl cluster apply` records a label
+or taint change and prints the `kubectl label` and `kubectl taint` commands that
+update the Node.
 
-Use `kubectl label` and `kubectl taint` for taints on Katl-managed nodes, for
-nodes that join after bootstrap, and for any later change.
+Labels in the `kubernetes.io` and `k8s.io` namespaces must be ones kubelet may
+set on its own Node, such as `topology.kubernetes.io/zone` or keys under
+`node.kubernetes.io/`. Set others, such as `node-role.kubernetes.io/worker`,
+with `kubectl label node` after the node joins.
 
 ## Host configuration
 

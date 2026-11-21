@@ -417,7 +417,6 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 		Access:            layer.Bootstrap.Access,
 		KubeadmConfig:     kubeadmConfig,
 		KubernetesVersion: kubernetes.version,
-		Labels:            copyLabels(layer.Kubernetes.NodeLabels),
 	}
 	return NodeMaterial{
 		Name:                   name,

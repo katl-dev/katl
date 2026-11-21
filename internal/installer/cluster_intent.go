@@ -249,7 +249,7 @@ func BuildClusterIntent(request ClusterIntentRequest) (ClusterIntent, error) {
 	}
 	if !request.Manifest.Node.Kubernetes.External {
 		var err error
-		config, err = kubeadmconfig.WithNodeAddress(config, request.Manifest.Node.Kubernetes.Address)
+		config, err = kubeadmconfig.WithNodeRegistration(config, kubeadmconfig.RegistrationFor(request.Manifest.Node))
 		if err != nil {
 			return ClusterIntent{}, err
 		}
@@ -301,7 +301,7 @@ func writeClusterKubeadmInput(root string, intent ClusterIntent, configs map[str
 	}
 	if !intent.Kubernetes.External {
 		var err error
-		plan, err = kubeadmconfig.WithNodeAddress(plan, intent.Kubernetes.Address)
+		plan, err = kubeadmconfig.WithNodeRegistration(plan, kubeadmconfig.NodeRegistration{Address: intent.Kubernetes.Address, Labels: intent.Inventory.Labels, Taints: intent.Inventory.Taints})
 		if err != nil {
 			return err
 		}

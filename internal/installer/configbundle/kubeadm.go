@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/externalworker"
@@ -13,10 +14,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const (
-	kubeadmCRISocket      = "unix:///run/containerd/containerd.sock"
-	kubeletNodeIPArgument = "node-ip"
-)
+const kubeadmCRISocket = "unix:///run/containerd/containerd.sock"
+
+// managedKubeletArguments are rendered for each node from its ClusterConfig
+// fields, so native kubeadm input must not supply them.
+var managedKubeletArguments = map[string]string{
+	"node-ip":     "nodes[].kubernetes.address",
+	"node-labels": "nodes[].kubernetes.labels",
+}
 
 type kubeadmSourceInput struct {
 	Name    string
@@ -223,7 +228,7 @@ func splitKubeadmPlans(input kubeadmconfig.Plan, kubernetesVersion string) (map[
 		if _, exists := byKind[kind]; exists {
 			return nil, fmt.Errorf("spec.kubernetes.kubeadm.configFile contains duplicate %s documents", kind)
 		}
-		if err := rejectManagedNodeAddress(document); err != nil {
+		if err := rejectManagedNodeRegistration(document); err != nil {
 			return nil, fmt.Errorf("spec.kubernetes.kubeadm.configFile document %d: %w", index+1, err)
 		}
 		if kind == "JoinConfiguration" {
@@ -293,25 +298,34 @@ func splitKubeadmPlans(input kubeadmconfig.Plan, kubernetesVersion string) (map[
 	return plans, nil
 }
 
-func rejectManagedNodeAddress(document map[string]any) error {
+func rejectManagedNodeRegistration(document map[string]any) error {
 	kind, _ := document["kind"].(string)
 	if kind != "InitConfiguration" && kind != "JoinConfiguration" {
 		return nil
 	}
 	if nodeRegistration, ok := document["nodeRegistration"].(map[string]any); ok {
+		var names []string
 		switch extraArgs := nodeRegistration["kubeletExtraArgs"].(type) {
 		case map[string]any:
-			if _, exists := extraArgs[kubeletNodeIPArgument]; exists {
-				return fmt.Errorf("%s nodeRegistration.kubeletExtraArgs node-ip is supplied from nodes[].kubernetes.address", kind)
+			for name := range extraArgs {
+				names = append(names, name)
 			}
 		case []any:
 			for _, raw := range extraArgs {
 				argument, _ := raw.(map[string]any)
 				name, _ := argument["name"].(string)
-				if strings.TrimSpace(name) == kubeletNodeIPArgument {
-					return fmt.Errorf("%s nodeRegistration.kubeletExtraArgs node-ip is supplied from nodes[].kubernetes.address", kind)
-				}
+				names = append(names, name)
 			}
+		}
+		slices.Sort(names)
+		for _, name := range names {
+			name = strings.TrimSpace(name)
+			if field, managed := managedKubeletArguments[name]; managed {
+				return fmt.Errorf("%s nodeRegistration.kubeletExtraArgs %s is supplied from %s", kind, name, field)
+			}
+		}
+		if taints, exists := nodeRegistration["taints"]; exists && !emptyKubeadmSequence(taints) {
+			return fmt.Errorf("%s nodeRegistration.taints must be empty; configure node taints in nodes[].kubernetes.taints", kind)
 		}
 	}
 	if kind == "InitConfiguration" {
@@ -364,9 +378,7 @@ func provideKubeadmDefaults(documents map[string]map[string]any, kubernetesVersi
 		}
 		nodeRegistration["criSocket"] = kubeadmCRISocket
 		if kind == "InitConfiguration" {
-			if taints, exists := nodeRegistration["taints"]; exists && !emptyKubeadmSequence(taints) {
-				return fmt.Errorf("spec.kubernetes.kubeadm.configFile InitConfiguration nodeRegistration.taints must be empty; configure node taints in ClusterConfig")
-			}
+			// Control planes stay schedulable unless ClusterConfig taints them.
 			nodeRegistration["taints"] = []any{}
 		}
 		document["nodeRegistration"] = nodeRegistration
