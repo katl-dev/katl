@@ -4,7 +4,9 @@ A Kubernetes identity is an operator-held secret that lets kubeadm build a
 newly provisioned cluster with the same trust roots and signing identity as a
 previous installation. Create or import it before the first bootstrap, store it
 away from the nodes, and supply it explicitly whenever the whole cluster is
-rebuilt.
+rebuilt. It is separate from the [management secrets](management-auth.md),
+the mTLS authority and keys that authenticate `katlctl` to the management
+API.
 
 This is identity continuity, not a cluster backup. Reusing it does not restore
 etcd data, Kubernetes API objects, workload secrets, persistent volumes, CNI
@@ -105,7 +107,8 @@ join mechanism.
 
 The node-management API on TCP `9443` uses the configured authentication mode.
 Trusted-network mode sends this material without transport encryption; keep
-it on the trusted management LAN. Select mTLS when the transfer requires
+it on the trusted management LAN. Select
+[mTLS](management-auth.md#choose-an-access-mode) when the transfer requires
 authentication and encryption.
 
 If shared PKI already exists on the init node, Katl proceeds only when every
@@ -118,13 +121,13 @@ bootstrap.
 
 Keep these independently:
 
-- etcd snapshots or another Kubernetes API-state backup;
-- workload and persistent-volume backups;
-- encryption-at-rest provider keys, if configured by your platform;
-- the source `ClusterConfig` and release information; and
-- operator kubeconfigs or other client credentials that you intend to retain.
+- etcd snapshots or another Kubernetes API-state backup
+- workload and persistent-volume backups
+- encryption-at-rest provider keys, if configured by your platform
+- `cluster.yaml` and release information
+- operator kubeconfigs or other client credentials that you intend to retain
 
 Reusing the identity makes the new control plane use the same trust anchors. It
 does not recreate the old cluster's object UIDs, RBAC changes, data, or running
 workloads. Follow [Bootstrap Kubernetes](bootstrap-kubernetes.md) for the normal
-handoff and install your chosen CNI afterward.
+procedure; after bootstrap, install your chosen CNI.

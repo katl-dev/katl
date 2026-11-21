@@ -1,9 +1,10 @@
 # Install KatlOS with PXE and Matchbox
 
 Matchbox selects a machine by MAC address and boots the KatlOS release
-kernel and initrd. One compiled `.katlcfg` supplies installation and Kubernetes
-intent for every node. The selected node installs automatically and reaches generation 0, ready
-for `katlctl cluster bootstrap`.
+kernel and initrd. One compiled configuration bundle (`.katlcfg`) supplies the
+installation and Kubernetes configuration for every node. The selected node
+installs automatically and reaches generation 0, ready for
+`katlctl cluster bootstrap`.
 
 Katl does not run DHCP, TFTP, iPXE, or Matchbox. Those services are
 operator-owned and must be isolated from networks where they are not intended
@@ -25,9 +26,17 @@ katlctl-<version>-linux-amd64
 On an Apple Silicon Mac, use `katlctl-<version>-darwin-arm64` in place of the
 Linux CLI.
 
-Verify their adjacent checksums before publishing. The kernel and initrd boot
-the temporary installer. The SquashFS is the verified KatlOS payload written to
-the selected disk.
+The kernel and initrd boot the temporary installer. The SquashFS is the
+verified KatlOS image written to the selected disk.
+
+Verify the checksums before publishing. Download the release's `SHA256SUMS`
+beside the files and run this from that directory; every file must report
+`OK`. See [Verify release artifacts](operations/verify-release.md#verify-integrity)
+for macOS and for build provenance.
+
+```sh
+sha256sum --ignore-missing --check SHA256SUMS
+```
 
 ## Compile one cluster configuration bundle
 
@@ -40,11 +49,11 @@ for every node:
 katlctl config validate ./cluster.yaml
 ```
 
-Compile one bundle while naming the URL from which installed machines can
-fetch the matching KatlOS payload:
+Compile one configuration bundle while naming the URL from which installed
+machines can fetch the matching KatlOS image:
 
 ```sh
-VERSION=2026.7.0-beta.1
+VERSION=2026.11.0
 BASE_URL="http://192.168.254.1:8080/assets/katl/$VERSION"
 katlctl config bundle ./cluster.yaml \
   --output ./cluster.katlcfg \
@@ -57,12 +66,12 @@ The URL becomes part of the compiled install plan, so it must remain reachable
 from the live installer. The bundle carries all node plans and the native
 kubeadm inputs needed later; no separate per-node configuration file is required.
 
-When mTLS management is configured, the bundle contains each node's
-server private key. Katl writes the bundle mode `0600`. Publish it only on the
+When mTLS management is configured, the bundle contains each node's server
+private key, and Katl writes it with mode `0600`. Publish it only on the
 trusted provisioning network, restrict access from workload networks, and
-remove the published copy after installation. Back up the file referenced by
-`spec.managementIdentity` separately; the bundle cannot replace that authority.
-Trusted-network management uses no management keys.
+remove the published copy after installation. The bundle cannot replace the
+authority in `spec.managementIdentity`, so
+[back up that file separately](operations/management-auth.md#durable-cluster-secrets).
 
 ## Lay out Matchbox data
 
@@ -72,12 +81,12 @@ Use Matchbox's normal file store:
 matchbox/
 ├── assets/
 │   └── katl/
-│       └── 2026.7.0-beta.1/
+│       └── 2026.11.0/
 │           ├── cluster.katlcfg
 │           ├── katl-installer.initrd
 │           ├── katl-installer.vmlinuz
-│           ├── katlos-install-2026.7.0-beta.1-x86_64.squashfs
-│           └── katlos-install-2026.7.0-beta.1-x86_64.squashfs.json
+│           ├── katlos-install-2026.11.0-x86_64.squashfs
+│           └── katlos-install-2026.11.0-x86_64.squashfs.json
 ├── groups/
 │   ├── cp-1.json
 │   └── worker-1.json
@@ -87,16 +96,20 @@ matchbox/
 ```
 
 Matchbox profiles are ordinary JSON. This `cp-1` profile uses one fixed node
-selection and the shared bundle:
+selection and the shared bundle. Its `katl.install.mode=auto` argument
+authorizes replacement of the selected system disk, including an existing
+Katl installation, every time the machine boots this profile. Before booting,
+check the disk selector and plan how to
+[keep PXE first safely](#keep-pxe-first-safely).
 
 ```json
 {
   "id": "katl-cp-1",
   "name": "Install KatlOS cp-1",
   "boot": {
-    "kernel": "/assets/katl/2026.7.0-beta.1/katl-installer.vmlinuz",
+    "kernel": "/assets/katl/2026.11.0/katl-installer.vmlinuz",
     "initrd": [
-      "/assets/katl/2026.7.0-beta.1/katl-installer.initrd"
+      "/assets/katl/2026.11.0/katl-installer.initrd"
     ],
     "args": [
       "initrd=katl-installer.initrd",
@@ -105,7 +118,7 @@ selection and the shared bundle:
       "ip=dhcp",
       "console=tty3",
       "console=ttyS0,115200n8",
-      "katl.bundle.url=http://192.168.254.1:8080/assets/katl/2026.7.0-beta.1/cluster.katlcfg",
+      "katl.bundle.url=http://192.168.254.1:8080/assets/katl/2026.11.0/cluster.katlcfg",
       "katl.bundle.sha256=REPLACE_WITH_CLUSTER_KATLCFG_SHA256",
       "katl.node=cp-1",
       "katl.install.mode=auto"
@@ -148,7 +161,7 @@ Use the displayed installer address, which may differ from the installed node's
 management address. Correct the configuration or environment, then submit the
 configuration again with `katlctl install apply`.
 
-Set `wipe: true` on a volume when its selected disk or partition should be
+Set [`wipe: true`](reference/cluster-config.md#wipe-authorization) on a volume when its selected disk or partition should be
 formatted, including when it contains existing data. This is sufficient for
 automatic PXE installation; no separate wipe acknowledgement is needed. With
 `wipe: false`, incompatible contents are preserved and installation refuses
@@ -179,7 +192,7 @@ Confirm the service, profile match, and asset paths before starting a VM:
 curl http://192.168.254.1:8080/
 curl 'http://192.168.254.1:8080/ipxe?mac=52:54:00:aa:bb:15'
 curl --fail --output /dev/null \
-  http://192.168.254.1:8080/assets/katl/2026.7.0-beta.1/cluster.katlcfg
+  http://192.168.254.1:8080/assets/katl/2026.11.0/cluster.katlcfg
 ```
 
 For a dedicated libvirt bridge named `katl-pxe0`, Poseidon's dnsmasq container
@@ -227,7 +240,8 @@ katlctl node status cp-1 --config ./cluster.yaml
 ssh katl@192.168.254.110
 ```
 
-Generation 0 should report healthy with Kubernetes not configured. When every
+Each node should report generation `0`, health `OK`, and Kubernetes
+`not-configured`. When every
 intended node reaches this state, follow
 [Bootstrap Kubernetes](operations/bootstrap-kubernetes.md). The same retained
 `cluster.yaml` or published `.katlcfg` drives bootstrap; the result is ready for
@@ -269,7 +283,7 @@ address, use the [per-machine iPXE example](install-advanced.md#ipxe).
 
 ```ipxe
 #!ipxe
-set base https://boot.example.invalid/katl/2026.7.0
+set base https://boot.example.invalid/katl/2026.11.0
 set node cp-1
 kernel ${base}/katl-installer.vmlinuz initrd=katl-installer.initrd console=ttyS0,115200n8 systemd.getty_auto=no katl.node=${node} katl.bundle.url=${base}/katl-lab.katlcfg katl.install.mode=auto
 initrd ${base}/katl-installer.initrd
@@ -277,8 +291,8 @@ boot
 ```
 
 When a bundle selects a node, Katl configures live installer SSH access for
-`root` before image validation or disk planning. The installed host uses
-the `katl` account and the same public keys.
+`root` before image validation or disk planning. On the installed node, the
+same public keys authorize both the `katl` and `root` accounts.
 
 ## Diagnose the handoff
 

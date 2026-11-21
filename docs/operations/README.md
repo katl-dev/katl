@@ -6,9 +6,11 @@ attention. To set up a new lab from the release ISO, start with
 
 ## Bring installed nodes into service
 
-- [Access installed nodes](access.md) to check a fresh install, connect through
-  SSH, and manage access from your workstation.
-- [Bootstrap Kubernetes](bootstrap-kubernetes.md) when all the intended hosts
+- [Access installed nodes](access.md) to check a fresh install, save the nodes
+  in a context, and reach them through SSH, the console, and `katlctl`.
+- [Secure the management API](management-auth.md) to choose trusted-network or
+  mTLS access before installation and to keep, rotate, or recover mTLS secrets.
+- [Bootstrap Kubernetes](bootstrap-kubernetes.md) when all the intended nodes
   are installed and reachable.
 - [Preserve Kubernetes identity](kubernetes-identity.md) before bootstrap if
   you need to keep the cluster's trust keys across a rebuild.
@@ -24,7 +26,7 @@ attention. To set up a new lab from the release ISO, start with
   remove a node from a healthy cluster.
 - [Prepare a node for maintenance](maintain-node.md) to protect workloads
   before a reboot or shutdown.
-- [Maintain a node that uses Rook/Ceph](rook-ceph-maintenance.md) to check
+- [Maintain a node that uses Rook-Ceph](maintain-node.md#rook-ceph) to check
   storage teardown before taking it offline.
 - [Upgrade a KatlOS host](upgrade-host.md) to change the host OS version.
 - [Upgrade Kubernetes](upgrade-kubernetes.md) to change the Kubernetes version
@@ -34,21 +36,26 @@ attention. To set up a new lab from the release ISO, start with
 
 - [Troubleshoot KatlOS](troubleshoot.md) to identify what failed and what you
   can safely retry.
-- [Wipe and reinstall](wipe-reinstall.md) to plan a one-node replacement or
-  deliberately start over.
-- [Understand host rollback](../concepts/ownership.md#persistent-state-and-rollback)
-  to see what a previous generation can restore.
+- [Wipe and reinstall](wipe-reinstall.md) to reinstall before bootstrap or
+  deliberately discard a whole cluster.
+- [Understand generations](../concepts/generations.md) to see what a host
+  rollback to a previous generation can restore.
 
 ## Keep the files you need for recovery
 
-Keep `cluster.yaml`, its referenced files, and the release tag. Store copies
-of the kubeconfig, any Kubernetes identity and management secrets, and your
-independent etcd, workload, and data backups away from the nodes. A KatlOS
-host rollback restores a host generation. Use your backups to recover
-cluster state and data.
+Keep these away from the nodes:
+
+- `cluster.yaml`, its referenced files, and the release tag
+- the kubeconfig
+- any Kubernetes identity and management secrets
+- independent etcd, workload, and data backups
+
+A host rollback restores only a generation, so cluster state and data come back
+from your backups; see
+[rollback is not a backup](../concepts/generations.md#rollback-is-not-a-backup).
 
 If an operation fails after it begins changing a node, keep its result and
 check the node's recorded operation state before retrying. See
 [operation semantics](../reference/katlctl.md#operation-semantics) for the
 difference between an accepted operation, a completed operation, and a
-generation that has passed its boot checks.
+generation that has passed boot health.

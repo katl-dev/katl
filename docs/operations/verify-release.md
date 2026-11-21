@@ -9,9 +9,9 @@ release; never mix files from different tags.
 
 ## Inputs
 
-- exact KatlOS tag, such as `v2026.7.0-beta.1`;
-- assets required for the chosen operation;
-- `SHA256SUMS`; and
+- The exact KatlOS tag, such as `v2026.11.0`.
+- The assets required for the chosen operation.
+- `SHA256SUMS`.
 - `PROVENANCE.md`.
 
 For an ISO install, the minimum payload set is:
@@ -47,9 +47,15 @@ checksum can verify one file, but it does not replace the release-wide manifest:
 sha256sum --check katl-installer.iso.sha256
 ```
 
-On macOS, use `shasum -a 256 --check katl-installer.iso.sha256` for the adjacent
-checksum. To verify each downloaded file against `SHA256SUMS`, select its exact
-filename and pipe the matching line to `shasum -a 256 --check -`.
+On macOS, use `shasum -a 256` in place of `sha256sum`. To verify each
+downloaded file against `SHA256SUMS`, select the line for its exact filename
+and pipe it to `shasum`. Repeat for each file, then check any adjacent
+checksum the same way as on Linux:
+
+```sh
+grep '  katl-installer.iso$' SHA256SUMS | shasum -a 256 --check -
+shasum -a 256 --check katl-installer.iso.sha256
+```
 
 Stop if a digest fails. Delete the mismatched file and fetch it again from the
 same release. Do not edit a release artifact or its metadata.
@@ -60,7 +66,7 @@ Authenticate each executable or image asset against the exact tag and Katl
 release workflow:
 
 ```sh
-TAG=v2026.7.0-beta.1
+TAG=v2026.11.0
 gh attestation verify katl-installer.iso \
   --repo katl-dev/katl \
   --signer-workflow katl-dev/katl/.github/workflows/release-artifacts.yml \
@@ -93,9 +99,3 @@ tag and immutable manifest digest:
 ```text
 ghcr.io/katl-dev/kubernetes:<version>@sha256:<oci-manifest-digest>
 ```
-
-Release notes compare the standard and LTS kernels, list shared runtime package
-versions, and list extensions built for the release. Package versions come from
-the published `katl-*.packages.tsv` inventories, including RPM release and
-architecture. Zero RPM epochs are omitted; nonzero epochs are preserved.
-Kubernetes extensions are distributed separately.

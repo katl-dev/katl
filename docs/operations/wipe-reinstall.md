@@ -1,7 +1,14 @@
 # Wipe and reinstall KatlOS
 
-This is destructive cluster-discard or node-replacement preparation. It is not
-backup, etcd recovery, same-cluster repair, or rollback.
+Use this guide to reinstall nodes before Kubernetes bootstrap or to
+deliberately discard a whole cluster. It is not backup, etcd recovery,
+same-cluster repair, or rollback.
+
+| Situation | Use |
+| --- | --- |
+| Before Kubernetes bootstrap | [Reinstall from the installer](#reinstall-from-the-installer) with `katlctl install apply`. |
+| One node in a running cluster | [Change cluster membership](change-cluster-nodes.md), which wipes, reinstalls, and rejoins the node. |
+| The whole cluster | [Plan a whole-cluster wipe](#plan-a-whole-cluster-wipe) with `katlctl cluster wipe`, then [reinstall](#reinstall). |
 
 The wipe operation removes KatlOS disk boot artifacts so the next boot must use
 installer media or PXE. Existing on-disk Kubernetes and Katl state remain until
@@ -21,34 +28,23 @@ installed agent or a separate wipe operation. Data-volume `wipe` settings still
 apply. A PXE auto-install profile also authorizes system-disk replacement unless
 its optional `katl.halt-if-installed=1` guard refuses it.
 
-Firmware selects disk boot versus PXE. Installed entries are named
-`KatlOS VERSION (Sep 20 10:41:11)`, with the configuration creation time in UTC
-to distinguish configurations of the same OS version. Internal generation IDs
-remain in entry filenames and kernel arguments, not menu labels. Existing entries
-keep the names written by their original release, such as `Katl 0` or a generation
-ID. Selecting a configuration boots the
-installed OS. For nodes already in a cluster, use the membership-aware wipe
-workflow below before reinstalling.
-
-New installations and upgrades keep their runtime images outside automatic
-UKI discovery, so each generated entry includes its required root and generation
-arguments. Existing generations retain their original image paths for rollback;
-an older installation can therefore still show its legacy raw-runtime entry
-until it is reinstalled. Select the explicitly named configuration entry.
+For nodes already in a cluster, use the membership-aware
+[node wipe](change-cluster-nodes.md#wipe-one-node) before reinstalling.
 
 ## Before planning
 
-- preserve any required external backups and recovery material;
-- confirm which cluster identity is being discarded;
-- save the inventory, release assets, config source, any PXE bundle,
-  kubeconfig, and operation evidence;
-- ensure all selected nodes can boot the intended installer path; and
-- stop if a control-plane or etcd member is expected to remain part of the same
+- Preserve any required external backups and recovery material.
+- Confirm which cluster identity is being discarded.
+- Save `cluster.yaml`, release assets, any PXE configuration bundle, the
+  kubeconfig, and the operation results.
+- Ensure all selected nodes can boot the intended installer path.
+- Stop if a control-plane or etcd member is expected to remain part of the same
   cluster.
 
-The retained `ClusterConfig` or PXE/offline config bundle is the normal topology
-source. A saved workstation context is optional shorthand for repeated work;
-the lower-level inventory input is reserved for recovery tooling.
+`cluster.yaml` or the PXE/offline configuration bundle is the normal topology
+input. A saved context is the workstation record of the installed nodes'
+identities and addresses, not a second topology source; the hidden
+`--inventory` input is reserved for recovery tooling.
 
 ## Plan a whole-cluster wipe
 
@@ -75,69 +71,37 @@ Do not proceed to reinstall until every intended reset reports `terminal: true`
 and `result: succeeded`, then confirm the nodes are off. Treat
 `recoveryRequired: true` as a stop condition.
 
-## Plan one node replacement
-
-For an enrolled worker, single-node wipe coordinates Kubernetes Node cleanup
-before the node-local reset:
-
-```sh
-katlctl node wipe worker-1 --config ./cluster.yaml --plan
-```
-
-After reviewing the plan, run the wipe with a kubeconfig so Katl can
-remove the enrolled Kubernetes Node:
-
-```sh
-katlctl node wipe worker-1 --config ./cluster.yaml --kubeconfig ./kubeconfig
-```
-
-Execution requires `--kubeconfig` for an enrolled node so Katl can remove the
-Kubernetes Node first. If Kubernetes cleanup fails, Katl reports recovery
-required and refuses the node-local wipe.
-
-A control-plane node that has not joined Kubernetes can be reset without a
-kubeconfig. For an enrolled control plane, Katl first drains the node, validates
-its exact stacked-etcd member against a healthy surviving control plane, proves
-that removal preserves quorum, removes and verifies the member, then deletes
-the Kubernetes Node before the node-local reset:
-
-```sh
-katlctl node wipe cp-3 --config ./cluster.yaml --plan
-katlctl node wipe cp-3 --config ./cluster.yaml \
-  --kubeconfig ./kubeconfig
-```
-
-The plan reports the coordinator and observed member ID. Katl refuses a missing
-or ambiguous member, a coordinator that would remove itself, changed cluster or
-member identity, or insufficient healthy quorum.
-
-If the node failed before a clean wipe, inspect membership from a survivor and
-explicitly confirm the stale member ID:
-
-```sh
-katlctl cluster etcd members --config ./cluster.yaml
-katlctl cluster etcd remove cp-3 --member-id MEMBER_ID \
-  --config ./cluster.yaml
-```
-
-This recovery command only removes etcd membership. Delete a remaining
-Kubernetes Node object if necessary, then reinstall the failed machine.
-
 ## Reinstall
 
 After every selected wipe operation succeeds and powers off its node:
 
 1. Select the verified installer ISO or PXE path and start the node.
-2. Apply the intended `ClusterConfig` source and node selection.
+2. Apply `cluster.yaml` and the intended node selection.
 3. Inspect the target disk again before authorizing installer wipe.
-4. Wait for generation 0 handoff.
-5. Run `katlctl node join NODE --config ./cluster.yaml` for a replacement in an
-   existing cluster, or `katlctl cluster bootstrap --config ./cluster.yaml` for a
-   newly installed cluster.
+4. Wait for the installed node to boot
+   [generation 0](access.md#confirm-generation-0).
+5. Save the reinstalled nodes with
+   `katlctl context save --config ./cluster.yaml`; bootstrap refuses nodes
+   that have not been saved on this workstation.
+6. Run `katlctl cluster bootstrap --config ./cluster.yaml` for the newly
+   installed cluster. A replacement in an existing cluster instead joins
+   through [`katlctl node join`](change-cluster-nodes.md#replace-one-node-without-renaming-it).
 
-For a replacement in a healthy existing cluster, `node join` uses a ready
-surviving control plane to mint short-lived join material and joins the named
-replacement without rerunning `kubeadm init`. Repeating the join after success
-is a no-op. Use `cluster apply` for subsequent configuration changes; it never
-joins nodes. Do not run `cluster bootstrap` again
-on the provisioned cluster.
+Do not run `cluster bootstrap` again on a cluster that is already provisioned.
+
+## Boot menu entries
+
+Firmware selects disk boot versus PXE. Installed entries are named
+`KatlOS VERSION (Sep 20 10:41:11)`, with the configuration creation time in UTC
+to distinguish configurations of the same OS version. The
+[generation ID](../concepts/generations.md#generation-ids) shown by
+`katlctl node generations list` remains in entry filenames and kernel
+arguments, not menu labels. Existing entries keep the names written by their
+original release, such as `Katl 0` or a generation ID. Selecting a
+configuration boots the installed OS.
+
+New installations and upgrades keep their runtime images outside automatic
+UKI discovery, so each generated entry includes its required root and generation
+arguments. Existing generations retain their original image paths for rollback;
+an older installation can therefore still show its legacy raw-runtime entry
+until it is reinstalled. Select the explicitly named configuration entry.

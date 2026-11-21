@@ -16,15 +16,18 @@ KatlOS is a Linux operating system for Kubernetes nodes in a home lab. Use
 `katlctl` to install, configure, and update your nodes from your workstation.
 
 KatlOS keeps the operating system and its configuration together as a bootable
-version. If a host update fails its boot checks, the node can return to the
-previous working version. Use the same cluster configuration to install the
-nodes and set up Kubernetes. You manage the cluster network, backups, and
-applications.
+[generation](docs/concepts/generations.md). If a host update fails
+[boot health](docs/concepts/generations.md#boot-health-and-fallback), the node
+can return to the previous healthy generation. Use the same `cluster.yaml` to
+install the nodes and set up Kubernetes. You manage the cluster network,
+backups, and applications.
 
 KatlOS supports x86-64 machines with UEFI on a trusted network.
 [Check whether KatlOS fits your lab](docs/support.md).
 
 - [Build your first KatlOS cluster](docs/getting-started.md) from the release ISO.
+- [Coming from Talos Linux?](docs/concepts/talos.md) See how its concepts map
+  to KatlOS.
 - [Browse the docs](docs/README.md) for other install methods, daily operations,
   and recovery.
 - [Download a release](https://github.com/katl-dev/katl/releases) for the

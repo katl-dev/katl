@@ -13,71 +13,27 @@ installed release.
 | `katlctl node` | Inspect status and logs, join, reboot, shut down, upgrade, or explicitly wipe one node. |
 | `katlctl kubernetes` | Create, import, and inspect reusable Kubernetes identity; plan and execute supported Kubernetes upgrades. |
 | `katlctl operations` | Inspect current and recent durable node operations. |
-| `katlctl context` | Save, select, inspect, and delete optional workstation topology shortcuts. |
+| `katlctl context` | Save, select, inspect, and delete workstation records of installed nodes. |
 | `katlctl management` | Create, export, inspect, and recover durable cluster management secrets. |
 | `katlctl system-extension` | Inspect, validate, publish, and query operator-owned system extensions. |
 
 ## Input conventions
 
 The normal cluster input is always `--config ./cluster.yaml`. Commands that
-accept config also accept a compiled `.katlcfg` bundle through the same flag.
-An optional saved `--context` can shorten repeated day-two commands, but it is
-not a second desired-state source.
+accept config also accept a configuration bundle (`.katlcfg`) through the same
+flag. An optional saved `--context` can shorten repeated day-two commands, but
+it is not a second desired-state source.
 
 `--endpoint` overrides only the address used to contact one selected installer
 or node. It does not change node identity or bypass the selected authentication
 mode. An address-only connection without a selected context uses trusted-network
 mode and cannot access an mTLS node.
 
-## Cluster management secrets
+`KATLCTL_NODE` supplies a default node. A positional `NODE` or explicit `--node`
+overrides that default. Passing both positional `NODE` and `--node`, or passing
+an empty node argument, is an error.
 
-New configurations default to `managementAuthentication: trusted-network` and
-need no management keys. The following credential commands apply to opt-in
-`managementAuthentication: mtls`. See [management access](../operations/access.md)
-for mode selection and existing-installation behavior.
-
-`katlctl config init --management-authentication mtls` creates a secrets file beside the configuration and
-references it in `spec.managementIdentity`. Hand-written new cluster configs
-use `management identity create --config CONFIG`; existing clusters use
-`management identity export --config CONFIG` to preserve their original trust.
-The file supports SOPS encryption. Routine bundle and install commands read it
-and never generate a missing authority. There are no routine TLS flags.
-
-Legacy workstation-store recovery and inspection commands are:
-
-```sh
-katlctl management identity path homelab
-katlctl management identity inspect ./homelab.katlkey
-katlctl management identity import ./homelab.katlkey
-```
-
-Import is idempotent for the same identity and refuses to replace a different
-identity for that cluster. The saved context contains only the operator client
-leaf and never exposes it through `katlctl context show`.
-
-`config init --management-authentication mtls` creates a configuration-referenced `management-secrets.yaml`;
-this may be SOPS encrypted. Existing clusters can migrate their original
-authority with `katlctl management identity export --config ./cluster.yaml`.
-Keep that file across reinstalls. Workstation context is a disposable shortcut.
-
-To replace an installed mTLS authority, first upgrade the nodes to a release
-with `katlc agent rotate-management`, then use
-`katlctl management identity rotate --config ./cluster.yaml --output
-./management-secrets-next.sops.yaml`. The output path must differ from the old
-secrets path. The command uses host-key-verified root SSH, stores or reuses the
-replacement file, checks all nodes, rotates them serially, and changes the
-configuration reference only after verifying new access and old-authority
-rejection. Repeat the same command and output path after a partial failure.
-Use `--ssh-key` and `--ssh-known-hosts` when the trusted root SSH identity and
-host keys are outside your default SSH configuration.
-Refresh a saved context with `katlctl context save --config ./cluster.yaml`.
-See [management authority rotation](../operations/access.md#rotate-a-management-authority)
-for prerequisites and recovery.
-
-A reinstall under the same authority is accepted after TLS and node-name
-verification. Commands observe the current installation and reject a change
-during an operation. `context save --config ./cluster.yaml` refreshes saved
-bindings automatically; no replacement flag is required.
+## Output conventions
 
 Text output is designed for interactive use. Commands that expose `--output
 json` provide the bounded automation surface. Progress is written separately
@@ -92,46 +48,6 @@ JSON output includes the full report regardless of `--verbose`.
 problem. Use `--verbose` to also show healthy proxy details and listener
 addresses. JSON output always includes those details.
 
-`KATLCTL_NODE` supplies a default node. A positional `NODE` or explicit `--node`
-overrides that default. Passing both positional `NODE` and `--node`, or passing
-an empty node argument, is an error.
-
-## Operation semantics
-
-Mutating commands submit idempotent, durable node operations and normally wait
-for a terminal result. A lost workstation connection does not cancel accepted
-node-local work. Use `--no-wait` only when intentionally detaching, then inspect
-the result with:
-
-```sh
-katlctl operations list --config ./cluster.yaml --node cp-1
-katlctl operations status --config ./cluster.yaml --node cp-1 --watch
-```
-
-Supply an operation ID only when selecting a particular historical record.
-Use `--diagnostics verbose` when the normal redacted status does not contain
-enough recovery evidence.
-
-Planning and dry-run flags do not authorize mutation. For node volumes,
-`wipe: true` authorizes erasing existing contents during provisioning, without
-an additional acknowledgement. Replacing a generation-bound volume still
-requires the operation-specific `--rebind-volume NODE/VOLUME` flag.
-
-## Kubernetes identity
-
-```sh
-katlctl kubernetes identity create \
-  --cluster-name homelab --output ./homelab-kubernetes-identity.katlkey
-katlctl kubernetes identity inspect ./homelab-kubernetes-identity.katlkey
-katlctl cluster bootstrap --config ./cluster.yaml \
-  --identity ./homelab-kubernetes-identity.katlkey --init-node cp-1
-```
-
-The identity is a mode-`0600` operator secret, not a config field or publishable
-install artifact. See [Preserve Kubernetes
-identity](../operations/kubernetes-identity.md) for import, rebuild, security,
-and backup semantics.
-
 ## Operator journey
 
 Prefix each command below with `katlctl`.
@@ -140,7 +56,7 @@ Prefix each command below with `katlctl`.
 | --- | --- |
 | Prepare and check configuration | `config init ./cluster.yaml --installer 192.0.2.11`, then `config validate ./cluster.yaml` |
 | Install each node | `install apply --config ./cluster.yaml --node cp-1` |
-| Inspect an installer | `install status cp-1 --config ./cluster.yaml` |
+| Inspect an installer | `install status --config ./cluster.yaml --node cp-1` |
 | Start Kubernetes | `cluster bootstrap --config ./cluster.yaml --init-node cp-1` |
 | Join another installed node | `node join worker-1 --config ./cluster.yaml` |
 | Preview configuration changes | `cluster apply --config ./cluster.yaml --node cp-1 --plan` |
@@ -159,29 +75,34 @@ configuration, run `katlctl install status --endpoint 192.0.2.11`.
 Install commands talk to the installer on TCP 8080 by default. Once the node
 boots its installed system, use node/cluster commands on TCP 9443. `install apply`
 replaces the system disk; it is not a day-two apply. Bootstrap prepares
-Kubernetes. Install your CNI and GitOps/workloads separately, or supply bootstrap
-`--manifest`, `--pre-wait`, and `--wait` inputs.
+Kubernetes. Install your CNI and GitOps/workloads separately, or have bootstrap
+apply them with repeatable `--manifest` files; `--pre-wait` conditions are
+checked before those manifests are applied and `--wait` conditions afterwards.
+Run `katlctl cluster bootstrap --help` for the condition syntax.
 
 Commands using `--config` observe the current installation in memory. They do
 not create or change a saved context. Only explicit context commands persist
-that shortcut. `context delete NAME` removes it without changing any node or
+that record. `context delete NAME` removes it without changing any node or
 external secrets. Deleting the current selection never selects another cluster.
 
 Installed-node commands accept `NODE` or `--node NAME`, not both. Selection is
-optional when the source has one node. `cluster apply --node NAME` is repeatable
-and defaults to all configured nodes. Bootstrap's `--init-node` selects the
-initial control plane rather than limiting cluster membership.
+optional when the configuration has one node. `cluster apply --node NAME` is
+repeatable and defaults to all configured nodes. Bootstrap's `--init-node`
+selects the initial control plane rather than limiting cluster membership.
 
 Use `--plan` for bootstrap, apply, upgrade, and wipe previews. Apply plans
-validate host configuration on selected nodes without accepting
-operations. Kubernetes component readiness is checked during execution. A plan does not reserve the observed state.
+validate host configuration on selected nodes without accepting operations.
+Kubernetes component readiness is checked during execution. A plan does not
+reserve the observed state.
 
 `cluster apply --mode auto` applies safe live changes and stages changes needing
 a reboot. `--mode live` refuses reboot-requiring changes; `--mode next-boot`
-stages host changes. Reboot staged nodes, then repeat apply to finish deferred
-Kubernetes configuration. Apply never implicitly joins nodes or upgrades
-Kubernetes. The hidden rendered-node interface is for development fixtures and
-does not accept ClusterConfig or bundles.
+stages host changes. When any selected node stages host changes for the next
+boot, apply skips its Kubernetes component phases and names the staged nodes;
+reboot them with `node reboot`, then rerun the same apply to reconcile
+Kubernetes configuration online. Apply never implicitly joins nodes or upgrades
+Kubernetes. See [Apply cluster configuration](../operations/configure-nodes.md)
+for the full workflow.
 
 Timeout flags use Go durations, such as `90s` or `15m`, and must be positive.
 Bootstrap and apply default to a 30-minute overall deadline; wipe is capped at
@@ -189,6 +110,85 @@ Bootstrap and apply default to a 30-minute overall deadline; wipe is capped at
 Ctrl+C stops the workstation wait. Accepted node operations remain durable:
 inspect `operations status --watch` and resume the original command where
 supported instead of assuming nothing happened or immediately wiping the node.
+
+## Cluster management secrets
+
+New configurations default to `managementAuthentication: trusted-network` and
+need no management keys. The `katlctl management identity` commands apply only
+to opt-in `managementAuthentication: mtls`; see
+[management authentication](../operations/management-auth.md) for choosing a
+mode, the secrets file, SOPS encryption, rotation, and recovery.
+
+| Command | Use |
+| --- | --- |
+| `config init --management-authentication mtls` | Create `management-secrets.yaml` beside a new configuration and reference it in `spec.managementIdentity` |
+| `management identity create --config CONFIG` | Create the secrets file for a hand-written new configuration |
+| `management identity export --config CONFIG` | Migrate an existing cluster's original management authority from the legacy workstation store |
+| `management identity rotate --config CONFIG --output NEW` | Replace an installed management authority through host-key-verified root SSH |
+| `management identity path`, `inspect`, `import` | Legacy workstation-store recovery and inspection |
+
+Keep the secrets file across reinstalls. A workstation context is only a
+workstation record that `katlctl context save` can recreate from `cluster.yaml`.
+Routine configuration bundle and install commands read the file and never
+generate a missing management authority; there are no routine TLS flags. The
+saved context contains only the operator client leaf and never exposes it
+through `katlctl context show`.
+
+The rotate output path must differ from the old secrets path; after a partial
+failure, repeat the same command and output path. Use `--ssh-key` and
+`--ssh-known-hosts` when the trusted root SSH identity and host keys are outside
+your default SSH configuration.
+
+The legacy recovery commands operate on workstation-store management identity
+backups:
+
+```sh
+katlctl management identity path homelab
+katlctl management identity inspect ./homelab.katlkey
+katlctl management identity import ./homelab.katlkey
+```
+
+These backups use the same `.katlkey` extension as a Kubernetes identity file
+but hold the management identity, not the kubeadm CA and signing keys. Import is
+idempotent for the same identity and refuses to replace a different identity
+for that cluster.
+
+## Operation semantics
+
+Mutating commands submit idempotent, durable node operations and normally wait
+for a terminal result. A lost workstation connection does not cancel accepted
+node-local work. Use `--no-wait` only when intentionally detaching, then inspect
+the result with:
+
+```sh
+katlctl operations list --config ./cluster.yaml --node cp-1
+katlctl operations status --config ./cluster.yaml --node cp-1 --watch
+```
+
+Supply an operation ID only when selecting a particular historical record.
+Use `--diagnostics verbose` when the normal redacted status does not contain
+enough recovery evidence.
+
+Planning and dry-run flags do not authorize mutation. For node volumes,
+[`wipe: true`](cluster-config.md#wipe-authorization) authorizes erasing
+existing contents during provisioning, without an additional acknowledgement.
+Replacing a generation-bound volume still requires the operation-specific
+`--rebind-volume NODE/VOLUME` flag.
+
+## Kubernetes identity
+
+```sh
+katlctl kubernetes identity create \
+  --cluster-name homelab --output ./homelab-kubernetes-identity.katlkey
+katlctl kubernetes identity inspect ./homelab-kubernetes-identity.katlkey
+katlctl cluster bootstrap --config ./cluster.yaml \
+  --identity ./homelab-kubernetes-identity.katlkey --init-node cp-1
+```
+
+The identity is a mode-`0600` operator secret, not a config field or publishable
+install artifact. See [Preserve Kubernetes
+identity](../operations/kubernetes-identity.md) for import, rebuild, security,
+and backup semantics.
 
 ## Diagnostics and access
 
@@ -213,8 +213,8 @@ output reports the path and endpoint, never credential contents.
 The management API must be reachable for logs and kubeconfig retrieval. Use SSH
 or the physical/serial console for failed boot, network, or agent recovery.
 `kubectl`, your CNI installer, and GitOps remain the interfaces for Kubernetes
-workloads. Katlctl does not provide an arbitrary remote shell, an automatic fleet
-rollout scheduler, or a complete etcd backup/restore system.
+workloads. `katlctl` does not provide an arbitrary remote shell, an automatic
+fleet rollout scheduler, or a complete etcd backup/restore system.
 
 The Nix flake package installs Bash, Fish, and Zsh completion scripts. For
 other installations, generate a script with `katlctl completion bash`, `fish`,
@@ -222,22 +222,18 @@ other installations, generate a script with `katlctl completion bash`, `fish`,
 
 Bootstrap reads management and Kubernetes addresses from ClusterConfig. Set
 `management.address` and, when distinct, `kubernetes.address` there so every
-readiness and bootstrap phase uses consistent targets. The
-`--node-address` override is restricted to advanced inventory input. The older
-`node upgrade VERSION NODE` invocation remains accepted; use the explicit
-`--version` form shown above for new scripts.
+readiness and bootstrap phase uses consistent targets. The `--node-address`
+override is a hidden flag, and bootstrap rejects it together with `--config`.
+The older `node upgrade VERSION NODE` invocation remains accepted; use the
+explicit `--version` form shown above for new scripts.
 
 ### Boot generation management
 
-```sh
-katlctl node generations list cp-1 --config cluster.yaml
-katlctl node generations select GENERATION cp-1 --config cluster.yaml
-katlctl node generations select GENERATION cp-1 --one-shot --config cluster.yaml
-katlctl node generations remove GENERATION cp-1 --config cluster.yaml
-```
-
-Selection changes the next boot without rebooting immediately. Permanent
-selection is the default; `--one-shot` returns to the persistent default on the
-following boot. Removal refuses protected generations. Use `--output json` for
-automation. See [boot generations and retention](../operations/configure-nodes.md#boot-generations-and-retention)
-for the two-slot model and `generationRetention` configuration.
+`katlctl node generations list`, `select`, and `remove` inspect and manage a
+node's [generations](../concepts/generations.md). Selection changes the next
+boot without rebooting immediately; `--one-shot` returns to the persistent
+default on the following boot. See
+[Boot generations and retention](../operations/configure-nodes.md#boot-generations-and-retention)
+for the commands and
+[`generationRetention`](cluster-config.md#generation-retention) for automatic
+cleanup.

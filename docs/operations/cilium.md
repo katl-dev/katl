@@ -4,27 +4,28 @@ Use this guide to prepare KatlOS hosts for Cilium, install Cilium with Helm
 or the Cilium CLI, and check that the cluster network works. If you manage
 Cilium with GitOps, keep the same KatlOS-specific values in that configuration.
 
-The first-cluster walkthrough uses Cilium 1.20.2 with Kubernetes v1.36.1.
-This procedure was also exercised with Cilium 1.19.10 and Helm 4.2.4.
-Review Cilium's
-[kubeadm installation guide](https://docs.cilium.io/en/stable/installation/k8s-install-kubeadm/)
-and release notes for the version being installed rather than treating this
-page as a complete Cilium configuration.
-Use the [Cilium compatibility matrix](https://docs.cilium.io/en/stable/network/kubernetes/compatibility/)
-for the Cilium release you choose to check the Kubernetes version. Select that
-release in the version menu if it differs from the version on the page.
+## Before you start
 
-Upgrade Cilium before moving a node to a kernel that requires a newer Cilium
-patch release. Cilium 1.19.6 and 1.19.7 fail BPF feature probing on Linux 7.2;
-the [upstream fix](https://github.com/cilium/cilium/releases/tag/v1.19.8) is
-included in 1.19.8 and later patches in the 1.19 branch.
-
-For kube-proxy replacement, set `proxy.disabled: true` in the native kubeadm
-`ClusterConfiguration` before bootstrapping; see [native kubeadm
-configuration](../reference/cluster-config.md#cluster-networking-and-kube-proxy).
-Katl honors that setting when configuring
-node-local API access. Configure Cilium's replacement mode in your own Cilium
-values; Katl does not select it for you.
+- Choose a Cilium release that supports your Kubernetes version. The
+  first-cluster walkthrough uses Cilium 1.20.2 with Kubernetes v1.36.1, and
+  this procedure was also exercised with Cilium 1.19.10 and Helm 4.2.4. Check
+  the [Cilium compatibility matrix](https://docs.cilium.io/en/stable/network/kubernetes/compatibility/)
+  for the release you choose, selecting that release in the version menu if
+  it differs from the version on the page.
+- Review Cilium's
+  [kubeadm installation guide](https://docs.cilium.io/en/stable/installation/k8s-install-kubeadm/)
+  and release notes for the version being installed. This page covers only the
+  KatlOS-specific settings, not a complete Cilium configuration.
+- Upgrade Cilium before moving a node to a kernel that requires a newer Cilium
+  patch release. Cilium 1.19.6 and 1.19.7 fail BPF feature probing on Linux 7.2;
+  the [upstream fix](https://github.com/cilium/cilium/releases/tag/v1.19.8) is
+  included in 1.19.8 and later patches in the 1.19 branch.
+- For kube-proxy replacement, set `proxy.disabled: true` in the native kubeadm
+  `ClusterConfiguration` before bootstrapping; see [native kubeadm
+  configuration](../reference/cluster-config.md#cluster-networking-and-kube-proxy).
+  Katl honors that setting when configuring node-local API access. Configure
+  Cilium's replacement mode in your own Cilium values; Katl does not select it
+  for you.
 
 ## Preserve the immutable host boundary
 
@@ -36,12 +37,12 @@ privileged Kubernetes workload may change live kernel state through
 KatlOS enables Kubernetes IP forwarding. Reverse-path filtering depends on the
 CNI datapath and routing topology, so Katl does not override the distribution's
 filtering policy. Cilium-specific filtering settings belong in the cluster's
-retained host configuration.
+host configuration in `cluster.yaml`.
 
 ## Configure Cilium host settings
 
-Copy the [example sysctl file](../examples/cilium/90-cilium.conf) next to your
-ClusterConfig and include it in the existing defaults:
+Copy the [example sysctl file](../examples/cilium/90-cilium.conf) next to
+`cluster.yaml` and include it in the existing defaults:
 
 ```yaml
 spec:
@@ -66,16 +67,36 @@ reported reboot requirement: wildcard interface rules are staged for next boot.
 Verify the effective settings below after the reboot and after Cilium creates
 its interfaces.
 
+### Disable Cilium's sysctl writer
+
 Cilium's default `apply-sysctl-overwrites` init container tries to write
 `/etc/sysctl.d/99-zzz-override_cilium.conf`, but Katl owns immutable `/etc`.
-Disable that writer with `sysctlfix.enabled=false` after declaring the retained
-host settings above. Do not make `/etc` writable to accommodate it.
+After declaring the host settings above, disable that writer with the public
+[Helm value](https://docs.cilium.io/en/stable/helm-reference/#sysctlfix-enabled)
+`sysctlfix.enabled=false`. Do not make `/etc` writable to accommodate it. When
+the value is disabled, the chart omits the `apply-sysctl-overwrites` init
+container; Cilium can still program live sysctls for interfaces it creates.
+Carry the same value in the Helm values or GitOps source used for later Cilium
+upgrades.
+
+An installation that omitted `sysctlfix.enabled=false` may log:
+
+```text
+unable to create cilium sysctl overwrites config:
+open /etc/sysctl.d/99-zzz-override_cilium.conf: read-only file system
+```
+
+Cilium 1.19.6 and 1.20.2 treat that write failure as non-fatal, but relying on
+the warning is not the supported KatlOS procedure. Add the Helm value to the
+installation's desired state and perform the normal Cilium upgrade or
+reconciliation. Do not edit the active node filesystem.
 
 ## Install Cilium
 
 After [bootstrapping Kubernetes](bootstrap-kubernetes.md), install the selected
-Cilium release with `sysctlfix.enabled=false`. Replace the example version
-in your command if you selected another release.
+Cilium release with
+[`sysctlfix.enabled=false`](#disable-ciliums-sysctl-writer). Replace the
+example version in your command if you selected another release.
 
 ### Install with the Cilium CLI
 
@@ -96,22 +117,17 @@ helm install cilium oci://quay.io/cilium/charts/cilium \
   --set sysctlfix.enabled=false
 ```
 
-Carry the same value in the retained Helm values or GitOps source used for
-later Cilium upgrades. Other Cilium settings remain cluster-specific and
-operator-owned.
+Other Cilium settings remain cluster-specific and operator-owned.
 
 For node-local API access, set `k8sServiceHost=127.0.0.1` and
 `k8sServicePort=7445`. Katl's proxy forwards TLS to a healthy control-plane
-backend, and new clusters include `127.0.0.1` in the API serving certificate.
+backend, and new clusters include `127.0.0.1` in the API serving certificate;
+for an older cluster, first
+[repair the API certificate](#repair-the-api-certificate-on-clusters-bootstrapped-before-202690).
 Keep certificate verification enabled. These settings have also been exercised
 with Cilium 1.20.2.
 
-The setting is part of Cilium's public
-[Helm values](https://docs.cilium.io/en/stable/helm-reference/#sysctlfix-enabled).
-When disabled, the chart omits the `apply-sysctl-overwrites` init container;
-Cilium can still program live sysctls for interfaces it creates.
-
-## Verify the handoff
+## Verify Cilium
 
 Wait for the Cilium components, nodes, and cluster DNS:
 
@@ -174,11 +190,12 @@ A CNI that requires a writable `/etc` and does not provide a supported
 disable or redirect setting is not compatible with KatlOS until that behavior
 can be changed.
 
-## Repair an existing API certificate
+## Repair the API certificate on clusters bootstrapped before 2026.9.0
 
-An older cluster may lack the loopback certificate address. On a control-plane
-node, test the actual TLS identity rather than the canonical-name override in
-the admin kubeconfig:
+Clusters bootstrapped with a Katl release earlier than 2026.9.0-beta.1 may lack
+`127.0.0.1` in the API serving certificate. On a control-plane node, test the
+loopback TLS identity directly, overriding the canonical name in the admin
+kubeconfig:
 
 ```sh
 kubectl --kubeconfig /etc/kubernetes/admin.conf \
@@ -186,56 +203,42 @@ kubectl --kubeconfig /etc/kubernetes/admin.conf \
   get --raw=/readyz
 ```
 
-A certificate-address error requires replacing the API serving certificate;
-an OS or Cilium upgrade does not rewrite existing cluster PKI. Until repaired,
-Cilium can use a reachable node management address already in the certificate
-with port `7445`.
+A certificate-address error means the serving certificate must be reissued; an
+OS or Cilium upgrade does not rewrite existing cluster PKI, and
+`kubeadm certs renew apiserver` keeps the old SANs. Until it is repaired,
+Cilium can use a reachable node management address that the certificate
+already contains, with port `7445`.
 
-Use kubeadm's native certificate procedure, one control-plane node at a time:
+Reissue the certificate with kubeadm, one control-plane node at a time, keeping
+the cluster CA unchanged:
 
-1. Back up `apiserver.crt`, `apiserver.key`, and the `ClusterConfiguration` from
-   the `kube-system/kubeadm-config` ConfigMap in a root-only writable recovery
-   directory. Record every current certificate SAN and the node's advertised
-   API address. Keep the cluster CA unchanged.
-2. Add `127.0.0.1` to `apiServer.certSANs` in a copy of that configuration,
-   preserving existing SANs. Create a separate staging directory with references
-   to the existing `ca.crt` and `ca.key`. Set `certificatesDir` to that staging
-   directory and include an `InitConfiguration` with this node's existing
-   name, API advertise address, and bind port.
-3. Run `kubeadm init phase certs apiserver --config staged-config.yaml`.
-   Independently verify the generated certificate against the existing CA and
-   check that it includes every old SAN plus `127.0.0.1` before replacing
-   anything live. With an external CA, have that CA issue the replacement.
-4. Upload the updated cluster configuration using
+1. In a root-only recovery directory, back up `apiserver.crt`, `apiserver.key`,
+   and the `ClusterConfiguration` from the `kube-system/kubeadm-config`
+   ConfigMap. Record the current SANs and the node's advertised API address.
+2. In a copy of that configuration, add `127.0.0.1` to `apiServer.certSANs`
+   alongside the existing SANs. Set `certificatesDir` to a separate staging
+   directory that references the existing `ca.crt` and `ca.key`, and include an
+   `InitConfiguration` with this node's name, API advertise address, and bind
+   port.
+3. Run `kubeadm init phase certs apiserver --config staged-config.yaml`. Before
+   replacing anything live, verify the new certificate against the existing CA
+   and confirm it has every old SAN plus `127.0.0.1`. With an external CA, have
+   that CA issue the replacement instead.
+4. With `certificatesDir` restored to `/etc/kubernetes/pki`, upload the
+   configuration so future control-plane joins keep the SAN:
    `kubeadm init phase upload-config kubeadm --config cluster.yaml --kubeconfig
-   /etc/kubernetes/admin.conf`, with `certificatesDir` restored to
-   `/etc/kubernetes/pki`. This retains the SAN for future control-plane joins.
-5. Install the staged serving certificate and key into the existing PKI
-   directory, retaining root ownership and private-key mode `0600`. Restart
-   the API-server container using `crictl stop` with its running container ID;
-   kubelet recreates it. Allow for a brief API interruption on a single-node
-   control plane. If it fails to recover, restore the saved pair and restart
-   that container again before proceeding.
-6. Repeat the TLS readiness check above, then verify node readiness, Cilium,
-   cluster DNS, and service traffic. Set Cilium's retained API host to loopback
-   only after all control-plane certificates pass. Repeat verification after
-   a public `katlctl node reboot`.
+   /etc/kubernetes/admin.conf`.
+5. Install the staged certificate and key into the existing PKI directory with
+   root ownership and private-key mode `0600`, then restart the API-server
+   container with `crictl stop` and its running container ID; kubelet recreates
+   it. A single-node control plane has a brief API interruption. If the API
+   server does not recover, restore the saved pair and restart the container
+   again before going further.
+6. Repeat the TLS check above, then verify node readiness, Cilium, cluster DNS,
+   and service traffic. Switch Cilium's API host to loopback in its Helm values
+   only after every control-plane certificate passes, and verify again after a
+   `katlctl node reboot`.
 
-`kubeadm certs renew apiserver` preserves SANs from the old certificate, so it
-does not add the missing address. See Kubernetes'
+See Kubernetes'
 [certificate management](https://kubernetes.io/docs/tasks/administer-cluster/kubeadm/kubeadm-certs/)
 and [API certificate phase](https://kubernetes.io/docs/reference/setup-tools/kubeadm/generated/kubeadm_init/kubeadm_init_phase_certs_apiserver/).
-
-## Diagnose the default Cilium setting
-
-An installation that omitted `sysctlfix.enabled=false` may log:
-
-```text
-unable to create cilium sysctl overwrites config:
-open /etc/sysctl.d/99-zzz-override_cilium.conf: read-only file system
-```
-
-Cilium 1.19.6 treats that write failure as non-fatal, but relying on the warning
-is not the supported KatlOS procedure. Add the Helm value to the installation's
-retained desired state and perform the normal Cilium upgrade or reconciliation.
-Do not edit the active node filesystem.
