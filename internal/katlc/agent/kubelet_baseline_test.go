@@ -70,7 +70,14 @@ func TestKubeletBaseline(t *testing.T) {
 				}
 			}
 
-			err := executor.captureKubeletHealth(context.Background(), record)
+			captureCtx := context.Background()
+			if tc.nodeUnavailable {
+				// Capture waits for an unavailable API; bound that wait.
+				var cancel context.CancelFunc
+				captureCtx, cancel = context.WithTimeout(captureCtx, 30*time.Millisecond)
+				defer cancel()
+			}
+			err := executor.captureKubeletHealth(captureCtx, record)
 			persisted, readErr := store.Read(record.OperationID)
 			if readErr != nil {
 				t.Fatal(readErr)

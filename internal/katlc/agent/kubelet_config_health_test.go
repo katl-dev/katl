@@ -2,15 +2,18 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/kubeletstartup"
 )
 
 const (
@@ -516,5 +519,92 @@ func TestKubeletConfigHealthRequiresPersistence(t *testing.T) {
 	}
 	if result := executor.runKubeletConfigHealth(context.Background(), record); result.Err == nil && result.ExitStatus == 0 {
 		t.Fatal("health succeeded without saving its tightened readiness requirement")
+	}
+}
+
+func TestKubeletBaselineAwaitsCurrentKubelet(t *testing.T) {
+	const (
+		starting    = "ActiveState=activating\nSubState=start\nJob=\nMainPID=123\nInvocationID=0123456789abcdef0123456789abcdef\n"
+		queued      = "ActiveState=inactive\nSubState=dead\nJob=42\nMainPID=0\nInvocationID=\n"
+		crashLoop   = "ActiveState=activating\nSubState=auto-restart-queued\nJob=43\nMainPID=0\nInvocationID=0123456789abcdef0123456789abcdef\n"
+		earlierBoot = "boot-0"
+	)
+	for _, tc := range []struct {
+		name      string
+		service   string
+		node      ToolResult
+		settles   bool
+		want      string
+		wantError bool
+	}{
+		{name: "Node report from the previous boot", node: ToolResult{Stdout: []byte(strings.Replace(configPendingNode, "boot-1", earlierBoot, 1))}, settles: true, want: "cni-uninitialized"},
+		{name: "Node report from the previous invocation", node: ToolResult{Stdout: []byte(strings.Replace(configPendingNode, "00:00:01Z", "00:00:00Z", 1))}, settles: true, want: "cni-uninitialized"},
+		{name: "Kubernetes API not answering yet", node: ToolResult{Err: fmt.Errorf("connection refused"), ExitStatus: 1}, settles: true, want: "cni-uninitialized"},
+		{name: "kubelet starting", service: starting, settles: true, want: "cni-uninitialized"},
+		{name: "kubelet start queued", service: queued, settles: true, want: "cni-uninitialized"},
+		// A failing kubelet is the state a strict-repair baseline records.
+		{name: "kubelet restarting after failure", service: crashLoop, want: "ready"},
+		{name: "report never arrives", node: ToolResult{Stdout: []byte(strings.Replace(configPendingNode, "boot-1", earlierBoot, 1))}, wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			writeKubernetesStatusFile(t, root, "etc/kubernetes/kubelet.conf", "kubelet\n")
+			writeKubeletStartup(t, root)
+			store, record := kubeletHealthOperation(t, root, &operation.KubeadmControlPlaneConfig{Component: "kubelet", NodeName: "worker-1"})
+			executor := NewExecutor(root, store, "agent")
+			var mu sync.Mutex
+			settled := false
+			executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+				mu.Lock()
+				defer mu.Unlock()
+				// The first observation sees the transient state; a settling
+				// kubelet then reports CNI-pending health from this invocation.
+				if !settled && argv[0] == "/usr/bin/systemctl" && tc.service != "" {
+					settled = tc.settles
+					return ToolResult{Stdout: []byte(tc.service)}
+				}
+				if !settled && argv[0] == "/usr/bin/kubectl" && tc.service == "" {
+					settled = tc.settles
+					return tc.node
+				}
+				switch argv[0] {
+				case "/usr/bin/kubectl":
+					return ToolResult{Stdout: []byte(configPendingNode)}
+				case "/usr/bin/crictl":
+					return ToolResult{Stdout: []byte(configPendingCRI)}
+				}
+				result, ok := readyKubeletHealthProbe(argv)
+				if !ok {
+					t.Fatalf("unexpected command %v", argv)
+				}
+				return result
+			}
+
+			// Bound the wait well below the agent's own so an unresolved
+			// observation fails here instead of waiting minutes.
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			err := executor.captureKubeletHealth(ctx, record)
+			persisted, readErr := store.Read(record.OperationID)
+			if readErr != nil {
+				t.Fatal(readErr)
+			}
+			if tc.wantError {
+				if err == nil || !errors.Is(err, kubeletstartup.ErrReportPending) || !strings.Contains(err.Error(), "katlctl node logs worker-1 --unit kubelet") {
+					t.Fatalf("capture error = %v, want actionable pending report", err)
+				}
+				if persisted.KubeadmControlPlaneConfig.ReadinessRequirement != "" {
+					t.Fatalf("unobserved kubelet established baseline %q", persisted.KubeadmControlPlaneConfig.ReadinessRequirement)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("capture error = %v", err)
+			}
+			if got := persisted.KubeadmControlPlaneConfig.ReadinessRequirement; got != tc.want {
+				t.Fatalf("readiness requirement = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
