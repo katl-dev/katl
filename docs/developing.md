@@ -291,9 +291,10 @@ katldev world add-node            # the next worker-N
 ```
 
 A new world's config lists every VM that was waiting when it was created. A VM
-added later is not written into `cluster.yaml`; katldev prints the node entry
-to add, then the `katlctl config validate`, `katlctl install apply`, and
-`katlctl node join` commands from
+added later is not written into `cluster.yaml`; katldev prints the
+`katlctl config add-node` command for it, with the VM's installer address, name,
+and role. That command prints the `katlctl install apply` and `katlctl node
+join` steps from
 [Add one node](operations/change-cluster-nodes.md#add-one-node). This keeps
 multi-node journeys on the operator's path.
 

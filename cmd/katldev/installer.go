@@ -563,21 +563,12 @@ func (manager installerManager) printWorld(world katldevWorld, observations []no
 
 func (manager installerManager) printAddNode(observation nodeObservation) {
 	node := observation.Node
-	address := firstNonEmpty(observation.State.IPAddress, node.Address)
-	fmt.Fprintf(manager.stdout, "Add %s to cluster.yaml (docs/operations/change-cluster-nodes.md), for example:\n", node.Name)
-	fmt.Fprintf(manager.stdout, "  - name: %s\n", node.Name)
+	role := "worker"
 	if node.Role == vmtest.ControlPlane {
-		fmt.Fprintln(manager.stdout, "    controlPlane: true")
+		role = "control-plane"
 	}
-	fmt.Fprintln(manager.stdout, "    install:")
-	fmt.Fprintln(manager.stdout, "      systemDisk:")
-	fmt.Fprintf(manager.stdout, "        byID: %s\n", katldevTargetDisk)
-	fmt.Fprintln(manager.stdout, "    management:")
-	fmt.Fprintf(manager.stdout, "      address: %s\n", address)
-	fmt.Fprintln(manager.stdout, "Then validate, install, and join it to the bootstrapped cluster:")
-	fmt.Fprintf(manager.stdout, "  katlctl config validate %s\n", manager.clusterConfigPath())
-	fmt.Fprintf(manager.stdout, "  katlctl install apply --config %s --node %s\n", manager.clusterConfigPath(), node.Name)
-	fmt.Fprintf(manager.stdout, "  katlctl node join %s --config %s\n", node.Name, manager.clusterConfigPath())
+	fmt.Fprintf(manager.stdout, "Add %s to the cluster config; the command prints the install and join steps:\n", node.Name)
+	fmt.Fprintf(manager.stdout, "  katlctl config add-node %s --installer %s --name %s --role %s\n", manager.clusterConfigPath(), firstNonEmpty(observation.State.IPAddress, node.Address), node.Name, role)
 }
 
 func (manager installerManager) printFooter() {

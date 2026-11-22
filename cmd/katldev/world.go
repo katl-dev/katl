@@ -595,7 +595,7 @@ func newWorldAddNodeCommand(ctx context.Context, stdout, stderr io.Writer) *cobr
 		},
 	}
 	addInstallerFlags(cmd, &opts)
-	cmd.Flags().BoolVar(&controlPlane, "control-plane", false, "name the VM cp-N and suggest a control-plane cluster.yaml entry")
+	cmd.Flags().BoolVar(&controlPlane, "control-plane", false, "name the VM cp-N and add it as a control plane")
 	return cmd
 }
 
