@@ -586,7 +586,8 @@ func TestNetdevGuard(t *testing.T) {
 		}, refused: "api.home.arpa cannot be resolved"},
 		{name: "tunnel with unknown underlay", deletes: []string{"katl0"}, protected: protectedEndpoints{addresses: map[netip.Addr]string{netip.MustParseAddr("203.0.113.5"): "management endpoint"}}, refused: "tunnel wg0 carries"},
 		{name: "tunnel underlay", deletes: []string{"uplink0"}, protected: protectedEndpoints{addresses: map[netip.Addr]string{netip.MustParseAddr("203.0.113.6"): "management endpoint"}}, refused: "refusing to delete netdev uplink0 "},
-		{name: "lower device of a retained netdev", deletes: []string{"bond0"}, retained: []string{"bond0.30"}, protected: protectedEndpoints{}, refused: "netdev bond0.30 stays configured and depends on it"},
+		{name: "lower device of a retained netdev", deletes: []string{"bond0"}, retained: []string{"bond0.30", "eth0"}, protected: protectedEndpoints{}, refused: "netdev bond0.30 stays configured and depends on it"},
+		{name: "bond whose retained ports are only released", deletes: []string{"bond0"}, retained: []string{"eth0", "eth1"}, protected: protectedEndpoints{}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			host := HostConfigurationChangePlan{netdevs: netdevPlan{deletes: tt.deletes, retained: tt.retained, protected: tt.protected}}

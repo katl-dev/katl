@@ -356,13 +356,14 @@ func (e Executor) guardNetdevs(ctx context.Context, links map[string]kernelLink,
 		return nil
 	}
 	var refusals []string
-	// A deleted lower device takes its stacked devices and ports with it.
+	// A deleted lower device takes its stacked devices with it; ports are only
+	// released.
 	for _, name := range targets {
 		if !slices.Contains(netdevs.deletes, name) {
 			continue
 		}
 		for _, link := range links {
-			if (link.Parent == name || link.Master == name) && slices.Contains(netdevs.retained, link.Name) {
+			if link.Parent == name && slices.Contains(netdevs.retained, link.Name) {
 				refusals = append(refusals, fmt.Sprintf("refusing to delete netdev %s because netdev %s stays configured and depends on it; remove %s as well or keep %s", name, link.Name, link.Name, name))
 			}
 		}
@@ -531,7 +532,7 @@ func (e Executor) reconcileNetdevs(ctx context.Context) error {
 	if err := e.deleteNetdevs(ctx, deletes, true); err != nil {
 		return err
 	}
-	return e.awaitNetdevs(ctx, host.netdevs.forwardDrift, "kernel link state does not match the configuration")
+	return e.awaitNetdevs(ctx, host.netdevs.forwardDrift, "kernel link state does not match the configuration", "inspect 'networkctl status' and 'journalctl -u systemd-networkd'")
 }
 
 // networkdNetdevFile returns the .netdev unit networkd has loaded for a link.
@@ -574,7 +575,7 @@ func (e Executor) restoreNetdevs(ctx context.Context) error {
 	if host == nil || !host.netdevs.started {
 		return nil
 	}
-	return e.awaitNetdevs(ctx, host.netdevs.rollbackDrift, "after rollback, kernel link state does not match the restored generation")
+	return e.awaitNetdevs(ctx, host.netdevs.rollbackDrift, "after rollback, kernel link state does not match the restored generation", "reboot the node to rebuild the devices from the selected generation")
 }
 
 func (e Executor) deleteNetdevs(ctx context.Context, names []string, guarded bool) error {
@@ -725,7 +726,7 @@ func kernelKind(kind string) string {
 
 // awaitNetdevs reads kernel link state independently of networkd and waits
 // briefly for networkd's asynchronous device creation.
-func (e Executor) awaitNetdevs(ctx context.Context, driftOf func(map[string]kernelLink) []string, summary string) error {
+func (e Executor) awaitNetdevs(ctx context.Context, driftOf func(map[string]kernelLink) []string, summary, guidance string) error {
 	deadline := time.Now().Add(e.netdevSettleTimeout())
 	for {
 		links, err := e.readKernelLinks(ctx)
@@ -736,7 +737,7 @@ func (e Executor) awaitNetdevs(ctx context.Context, driftOf func(map[string]kern
 		if len(drift) == 0 {
 			return nil
 		}
-		err = fmt.Errorf("%s: %s; inspect 'networkctl status' and 'journalctl -u systemd-networkd', and reboot to rebuild the devices from the selected generation", summary, strings.Join(drift, "; "))
+		err = fmt.Errorf("%s: %s; %s", summary, strings.Join(drift, "; "), guidance)
 		if time.Now().After(deadline) {
 			return err
 		}

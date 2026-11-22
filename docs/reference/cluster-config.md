@@ -331,7 +331,8 @@ stays reachable at the same address, for example when a bridge and its port
 share a MAC address and DHCP reservation. When the address moves, follow
 [Re-address a worker](../operations/change-cluster-nodes.md#re-address-a-worker).
 Katl also refuses to delete a device that a retained netdev, such as a VLAN that
-stays configured, is stacked on or enslaved to.
+stays configured, is stacked on. Deleting a bond or bridge only releases its
+ports.
 
 After a live apply, Katl reads kernel link state and fails the apply when it
 does not match the configuration:
