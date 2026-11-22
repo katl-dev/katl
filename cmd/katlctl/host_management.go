@@ -262,6 +262,9 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 
 	status, _, err := readHostState(session.ctx, session.client, node)
 	if err != nil {
+		if desiredEndpoint != "" && managementUnreachable(err) {
+			return fmt.Errorf("%w; %s", err, movedHint(node, desiredEndpoint, opts.target.clusterConfigPath))
+		}
 		return err
 	}
 	if err := bindManagementStatus(&target, status); err != nil {

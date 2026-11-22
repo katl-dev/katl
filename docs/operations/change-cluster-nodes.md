@@ -280,6 +280,7 @@ If the reboot does not finish at the new address, use the following table:
 | The node `still answers at its previous address` | The new network configuration did not take effect. Boot health may have rejected the generation, or DHCP may still assign the old address. Correct the network files and repeat from step 2, or restore `management.address` to the old address. |
 | The address `answered as a different KatlOS installation` | Another host uses the new address. Choose a free address and repeat from step 1. |
 | The node answers at neither address | Boot health checks only that the required links come online and are routable, so a wrong but routable address can pass and become the default. Use the [local console](access.md#use-the-local-console) to inspect the network, or [select the previous generation](../concepts/generations.md#staged-trial-and-committed) from the boot menu. Then correct `cluster.yaml`. |
+| A rerun of step 2 or 3 cannot reach the worker at the address passed with `--endpoint` | The worker may already answer at its new `management.address`, for example after an interrupted reboot wait. The error names that address. Continue with step 4, which runs apply without `--endpoint`. |
 
 ## Refused transitions
 
