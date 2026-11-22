@@ -10,4 +10,7 @@ Before=katl-boot-health.service
 Type=oneshot
 StandardOutput=journal+console
 SyslogIdentifier=katl-host-config-verify
+# Boot reaches sysinit.target only after this unit; a stall must fail
+# so networking and management start and boot health can recover.
+TimeoutStartSec=3min
 ExecStart=/usr/lib/katl/runtime/katl-host-config-activate --root=/ --phase=verify

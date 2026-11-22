@@ -10,11 +10,24 @@ spec:
     hostConfiguration:
       enabledUnits:
         - vmtest-optional-failure.service
+        - vmtest-optional-early-failure.service
         - vmtest-before-network.service
       sets:
         vmtest-optional-failure:
           files:
             - path: /etc/systemd/system/vmtest-optional-failure.service
+              content: |
+                [Unit]
+                Description=Fail an optional service before Katl boot health
+                Before=katl-boot-health.service
+
+                [Service]
+                Type=oneshot
+                ExecStart=/usr/bin/false
+
+                [Install]
+                WantedBy=multi-user.target
+            - path: /etc/systemd/system/vmtest-optional-early-failure.service
               content: |
                 [Unit]
                 Description=Fail an optional service before networking and Katl boot health

@@ -65,24 +65,15 @@ func PrepareSystemdActivation(ctx context.Context, root string, node manifest.No
 		plan.addCommandWithOutput(command.Name, "reconfigure", "running systemd units", command.ExpectedStdout, command.Argv...)
 		plan.Commands[len(plan.Commands)-1].Timeout = 2 * time.Minute
 	}
-	// Older installed generations do not carry the target in their confext.
-	// Derive an ephemeral fallback without rewriting those rollback artifacts.
-	// The boot-health check requires the target even when it is empty.
-	fallback := false
+	// Generations rendered since v2026.10.0 carry the target in their confext.
+	// katl-configured-units-check.service requires it even when it is empty.
 	if _, err := os.Stat(filepath.Join(root, "etc/systemd/system", systemdunit.TargetName)); os.IsNotExist(err) {
-		dir := filepath.Join(root, "run/systemd/system")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return plan, fmt.Errorf("prepare configured unit target: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, systemdunit.TargetName), []byte(activation.Target()), 0o644); err != nil {
-			return plan, fmt.Errorf("write configured unit target: %w", err)
-		}
-		fallback = true
+		return plan, fmt.Errorf("the booted generation has no /etc/systemd/system/%s because a KatlOS release older than v2026.10.0 rendered it; boot a generation rendered by v2026.10.0 or later, or upgrade the node through a v2026.10 release first", systemdunit.TargetName)
 	} else if err != nil {
 		return plan, fmt.Errorf("inspect configured unit target: %w", err)
 	}
 	plan.addUnitEnablement(activation.Enabled)
-	if fallback || len(activation.Enabled) > 0 {
+	if len(activation.Enabled) > 0 {
 		plan.addCommand("systemd-daemon-reload", "reload", "systemd manager", "systemctl", "daemon-reload")
 	}
 	// Waiting here would deadlock any unit ordered after networking or

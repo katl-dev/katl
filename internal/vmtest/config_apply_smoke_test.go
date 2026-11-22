@@ -65,7 +65,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 		KVM:     runner.options().KVM,
 	})
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)
 	defer cancel()
 	if err := CreateDisks(ctx, diskExec(nil), result.Disks); err != nil {
 		t.Fatalf("create config apply data disk: %v", err)
@@ -75,7 +75,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	vm.KVM = runner.options().KVM
 	vm.RAMMiB = 2048
 	vm.CPUs = 2
-	vm.Timeout = 20 * time.Minute
+	vm.Timeout = 35 * time.Minute
 	vm.Network.MAC = first(vm.Network.MAC, plannedMAC)
 	vm.VSock.Enabled = true
 	vm.Agent.RequireHealth = true
@@ -758,6 +758,15 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	optionalGeneration := currentGenerationFromGuest(t, ctx, guest)
 	guest, client = runManagementNetworkFailureSmoke(t, ctx, node, guest, client, result, katlctl, endpoint, optionalGeneration)
 	guest, client = runFailedTrialRecoverySmoke(t, ctx, node, guest, client, result, katlctl, endpoint, optionalGeneration)
+	guest, client = runExtensionBootHealthSmoke(t, ctx, node, guest, client, result, katlctl, endpoint, optionalGeneration, "vmtest-required", "27",
+		map[string]string{"usr/lib/systemd/system/vmtest-required.service": "[Unit]\nDescription=Fail a unit required for boot health\n[Service]\nType=oneshot\nExecStart=/usr/bin/false\n[Install]\nWantedBy=multi-user.target\n"},
+		"      units:\n        - name: vmtest-required.service\n          enable: true\n          requiredForBootHealth: true\n",
+		"Failed to start katl-configured-units-check.service")
+	// A stall before sysinit.target must time out so that networking,
+	// management, and boot health still run and reject the trial.
+	guest, client = runExtensionBootHealthSmoke(t, ctx, node, guest, client, result, katlctl, endpoint, optionalGeneration, "vmtest-stall", "28",
+		map[string]string{"usr/lib/systemd/system/katl-system-extensions-activate.service.d/50-vmtest-stall.conf": "[Service]\nExecStartPre=/usr/bin/sleep infinity\n"}, "",
+		"katl-system-extensions-activate.service: Failed with result 'timeout'")
 	assertBootstrappedKubernetesSysextChangeRejected(t, ctx, guest, endpoint)
 	shutdownGuestThroughKatlctl(t, ctx, result, katlctl, endpoint, node, client)
 	return guest, nil
@@ -781,8 +790,10 @@ func runOptionalUnitFailureSmoke(t *testing.T, ctx context.Context, node *Runnin
 	if !generation.IsKnownGood(candidateStatus) {
 		t.Fatalf("optional-unit generation status = %#v, want good/healthy", candidateStatus)
 	}
-	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "optional-unit-result", "systemctl", "show", "--property=Result", "--value", "vmtest-optional-failure.service")); got != "exit-code" {
-		t.Fatalf("optional unit result = %q, want exit-code", got)
+	for _, unit := range []string{"vmtest-optional-failure.service", "vmtest-optional-early-failure.service"} {
+		if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "optional-unit-result-"+unit, "systemctl", "show", "--property=Result", "--value", unit)); got != "exit-code" {
+			t.Fatalf("optional unit %s result = %q, want exit-code", unit, got)
+		}
 	}
 	// A configured unit's native Before=network-pre.target holds at boot: it
 	// starts while networking and management services are still waiting.

@@ -373,7 +373,10 @@ Ordinary enabled units do not become prerequisites for Katl's boot health. A
 unit that fails at boot releases the units ordered after it, as in any systemd
 boot, but a unit that never finishes starting holds them back. Oneshot services
 have no start timeout by default, so set `TimeoutStartSec=` on a oneshot that
-orders itself before networking or management services.
+orders itself before networking or management services, and on any unit with
+`DefaultDependencies=no` that orders itself before `sysinit.target`. Until such
+a unit finishes, the node has no SSH or management API, and Katl's
+10-minute boot deadline, which arms after `sysinit.target`, cannot recover it.
 
 To start an enabled unit later in boot, add native ordering in a drop-in. For
 example, `After=network-online.target` with `Wants=network-online.target`
