@@ -2,6 +2,7 @@ package vmtest
 
 import (
 	"net"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -146,9 +147,6 @@ func TestWorldScenarioReassignAddress(t *testing.T) {
 	if moved.Address == worker.Address || moved.Address == cp.Address || moved.MACAddress != worker.MACAddress {
 		t.Fatalf("moved = %#v from %s", moved, worker.Address)
 	}
-	if got := leaseAddresses(readLeaseFileForTest(t, world.Network.LeaseFile)); !reflect.DeepEqual(got, []string{cp.Address, moved.Address}) {
-		t.Fatalf("leases = %v", got)
-	}
 	loaded, err := world.LoadScenario("katldev")
 	if err != nil {
 		t.Fatal(err)
@@ -167,6 +165,104 @@ func TestWorldScenarioReassignAddress(t *testing.T) {
 	}
 	if _, err := scenario.ReassignAddress("worker-9", ""); err == nil {
 		t.Fatal("reassigned an unknown node")
+	}
+}
+
+func TestReassignedNodeKeepsLiveAddressUntilConfirmed(t *testing.T) {
+	world := testWorld(t)
+	planned := world.NewScenario(t, "katldev")
+	planned.NewNode(t, NodeSpec{Name: "cp-1", Role: ControlPlane})
+	worker := planned.NewNode(t, NodeSpec{Name: "worker-1", Role: Worker})
+	scenario, err := world.LoadScenario("katldev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := world.LoadScenario("katldev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved, err := scenario.ReassignAddress("worker-1", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved.Address != "10.77.0.4" || moved.PreviousAddress != worker.Address {
+		t.Fatalf("moved = %s from %s, want 10.77.0.4 from %s", moved.Address, moved.PreviousAddress, worker.Address)
+	}
+
+	// Another process adds a node while worker-1's VM still holds .3.
+	if added := other.NewNode(t, NodeSpec{Name: "worker-2", Role: Worker}); added.Address != "10.77.0.5" {
+		t.Fatalf("worker-2 address = %s, want 10.77.0.5", added.Address)
+	}
+
+	// Answering at the old address does not release it; answering at the
+	// reservation does, and the stale process keeps the other's node.
+	if err := scenario.ConfirmAddress("worker-1", worker.Address); err != nil {
+		t.Fatal(err)
+	}
+	if added := other.NewNode(t, NodeSpec{Name: "worker-3", Role: Worker}); added.Address != "10.77.0.6" {
+		t.Fatalf("worker-3 address = %s, want 10.77.0.6", added.Address)
+	}
+	if err := scenario.ConfirmAddress("worker-1", moved.Address); err != nil {
+		t.Fatal(err)
+	}
+	if added := other.NewNode(t, NodeSpec{Name: "worker-4", Role: Worker}); added.Address != worker.Address {
+		t.Fatalf("worker-4 address = %s, want released %s", added.Address, worker.Address)
+	}
+	loaded, err := world.LoadScenario("katldev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, node := range loaded.Nodes {
+		names = append(names, node.Name+"@"+node.Address+"/"+node.PreviousAddress)
+	}
+	want := []string{"cp-1@10.77.0.2/", "worker-1@10.77.0.4/", "worker-2@10.77.0.5/", "worker-3@10.77.0.6/", "worker-4@10.77.0.3/"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("nodes = %v, want %v", names, want)
+	}
+}
+
+func TestReassignBeforeRebootTracksLiveAddress(t *testing.T) {
+	world := testWorld(t)
+	scenario := world.NewScenario(t, "katldev")
+	worker := scenario.NewNode(t, NodeSpec{Name: "worker-1", Role: Worker})
+	if _, err := scenario.ReassignAddress("worker-1", "10.77.0.10"); err != nil {
+		t.Fatal(err)
+	}
+
+	// A second move before the VM reboots releases the unused reservation
+	// but still reserves the address the VM holds.
+	again, err := scenario.ReassignAddress("worker-1", "10.77.0.11")
+	if err != nil || again.PreviousAddress != worker.Address {
+		t.Fatalf("second move = %#v, %v; want previous %s", again, err, worker.Address)
+	}
+	if added := scenario.NewNode(t, NodeSpec{Name: "cp-1", Role: ControlPlane, Address: "10.77.0.10"}); added.Address != "10.77.0.10" {
+		t.Fatalf("cp-1 address = %s", added.Address)
+	}
+	if _, err := scenario.AddNode(NodeSpec{Name: "cp-2", Role: ControlPlane, Address: worker.Address}); err == nil {
+		t.Fatalf("cp-2 took %s, which worker-1 still holds", worker.Address)
+	}
+
+	// Moving back to the live address needs no reboot.
+	back, err := scenario.ReassignAddress("worker-1", worker.Address)
+	if err != nil || back.Address != worker.Address || back.PreviousAddress != "" {
+		t.Fatalf("move back = %#v, %v", back, err)
+	}
+}
+
+func TestScenarioAddressesFollowManifest(t *testing.T) {
+	world := testWorld(t)
+	scenario := world.NewScenario(t, "katldev")
+	scenario.NewNode(t, NodeSpec{Name: "cp-1", Role: ControlPlane})
+	scenario.NewNode(t, NodeSpec{Name: "worker-1", Role: Worker})
+
+	// A lease file that lost this scenario's entries, as after an
+	// interrupted write, does not free the manifest's addresses.
+	if err := os.WriteFile(world.Network.LeaseFile, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if added := scenario.NewNode(t, NodeSpec{Name: "worker-2", Role: Worker}); added.Address != "10.77.0.4" {
+		t.Fatalf("worker-2 address = %s, want 10.77.0.4", added.Address)
 	}
 }
 

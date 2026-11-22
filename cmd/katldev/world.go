@@ -2,7 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
+	"crypto/rand"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -59,19 +60,67 @@ func (manager installerManager) worldManifestPath() string {
 	return filepath.Join(manager.worldDir(), "world.json")
 }
 
-// worldRunID is derived from the checkout so that cleanup can find the
-// world's libvirt objects even when its manifest is gone.
-func worldRunID(repoRoot string) string {
-	digest := sha256.Sum256([]byte(repoRoot))
-	return "dev-world-" + hex.EncodeToString(digest[:4])
+func (manager installerManager) worldIDPath() string {
+	return filepath.Join(manager.repoRoot, "_build", "katldev", "world-id")
+}
+
+var worldIDPattern = regexp.MustCompile(`^dev-world-[0-9a-f]{8}$`)
+
+// worldID returns the checkout's world ID, which names and owns the world's
+// libvirt objects. It is random, not derived from the checkout path, so
+// checkouts at the same path in different containers sharing one libvirt
+// never own each other's worlds. It is kept beside cluster.yaml rather than
+// in the world directory, so a reset or remove keeps the world's names, MACs,
+// and preferred subnet. A world recorded before the ID file existed keeps its
+// recorded ID. When create is false and no ID exists, worldID returns "".
+func (manager installerManager) worldID(create bool) (string, error) {
+	path := manager.worldIDPath()
+	data, err := os.ReadFile(path)
+	if err == nil {
+		id := strings.TrimSpace(string(data))
+		if !worldIDPattern.MatchString(id) {
+			return "", fmt.Errorf("%s holds %q, not a katldev world ID; run katldev world remove, delete the file, and start again", path, id)
+		}
+		return id, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
+	id := ""
+	if world, err := vmtest.LoadWorld(manager.worldManifestPath()); err == nil && worldIDPattern.MatchString(world.RunID) {
+		id = world.RunID
+	} else if !create {
+		return "", nil
+	} else {
+		random := make([]byte, 4)
+		if _, err := rand.Read(random); err != nil {
+			return "", err
+		}
+		id = "dev-world-" + hex.EncodeToString(random)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", err
+	}
+	// O_EXCL lets a concurrent first start win; the loser adopts its ID.
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+	if errors.Is(err, os.ErrExist) {
+		return manager.worldID(create)
+	}
+	if err != nil {
+		return "", err
+	}
+	if _, err := file.WriteString(id + "\n"); err != nil {
+		_ = file.Close()
+		return "", err
+	}
+	return id, file.Close()
 }
 
 func (manager installerManager) libvirtURI() string {
 	return firstNonEmpty(os.Getenv("KATL_VMTEST_LIBVIRT_URI"), "qemu:///system")
 }
 
-func (manager installerManager) planWorld(cidr, gateway string) vmtest.World {
-	runID := worldRunID(manager.repoRoot)
+func (manager installerManager) planWorld(runID, cidr, gateway string) vmtest.World {
 	dir := manager.worldDir()
 	return vmtest.World{
 		APIVersion:  vmtest.WorldAPIVersion,
@@ -106,7 +155,11 @@ func (manager installerManager) loadWorld() (katldevWorld, error) {
 	if err != nil {
 		return katldevWorld{}, err
 	}
-	if world.RunID != worldRunID(manager.repoRoot) || world.RunDir != manager.worldDir() {
+	id, err := manager.worldID(false)
+	if err != nil {
+		return katldevWorld{}, err
+	}
+	if world.RunID != id || world.RunDir != manager.worldDir() {
 		return katldevWorld{}, fmt.Errorf("%s describes another checkout's world; run katldev world remove", manager.worldManifestPath())
 	}
 	scenario, err := world.LoadScenario(worldScenario)
@@ -119,15 +172,19 @@ func (manager installerManager) loadWorld() (katldevWorld, error) {
 // createWorld records a new world on a subnet that no libvirt network or host
 // interface uses. It does not create libvirt objects.
 func (manager installerManager) createWorld(ctx context.Context) (katldevWorld, error) {
+	id, err := manager.worldID(true)
+	if err != nil {
+		return katldevWorld{}, err
+	}
 	inUse, err := manager.networksInUse(ctx, manager.libvirtURI())
 	if err != nil {
 		return katldevWorld{}, err
 	}
-	cidr, gateway, err := vmtest.ChooseNetworkCIDR(worldRunID(manager.repoRoot), inUse)
+	cidr, gateway, err := vmtest.ChooseNetworkCIDR(id, inUse)
 	if err != nil {
 		return katldevWorld{}, err
 	}
-	world := manager.planWorld(cidr, gateway)
+	world := manager.planWorld(id, cidr, gateway)
 	if err := vmtest.ValidateWorld(world); err != nil {
 		return katldevWorld{}, fmt.Errorf("plan katldev world: %w", err)
 	}
@@ -142,6 +199,10 @@ func (manager installerManager) createWorld(ctx context.Context) (katldevWorld, 
 		return katldevWorld{}, err
 	}
 	if err := writeJSONFile(manager.worldManifestPath(), world); err != nil {
+		return katldevWorld{}, err
+	}
+	// Reopen the scenario so that it reloads nodes other katldev processes add.
+	if scenario, err = world.LoadScenario(worldScenario); err != nil {
 		return katldevWorld{}, err
 	}
 	return katldevWorld{World: world, Scenario: scenario}, nil
@@ -173,7 +234,37 @@ func (manager installerManager) networksInUse(ctx context.Context, uri string) (
 			inUse = append(inUse, &net.IPNet{IP: subnet.IP.Mask(subnet.Mask), Mask: subnet.Mask})
 		}
 	}
+	// Routes cover networks without a local address, such as VPN routes.
+	if data, err := os.ReadFile("/proc/net/route"); err == nil {
+		inUse = append(inUse, routedSubnets(data)...)
+	}
 	return inUse, nil
+}
+
+// routedSubnets returns the IPv4 destinations of /proc/net/route, except the
+// default route, which overlaps every subnet.
+func routedSubnets(data []byte) []*net.IPNet {
+	var subnets []*net.IPNet
+	for _, line := range strings.Split(string(data), "\n")[1:] {
+		fields := strings.Fields(line)
+		if len(fields) < 8 {
+			continue
+		}
+		destination, err := strconv.ParseUint(fields[1], 16, 32)
+		if err != nil {
+			continue
+		}
+		mask, err := strconv.ParseUint(fields[7], 16, 32)
+		if err != nil || mask == 0 {
+			continue
+		}
+		// The kernel prints the network-order address as a host-order word.
+		ip, netmask := make(net.IP, 4), make(net.IPMask, 4)
+		binary.NativeEndian.PutUint32(ip, uint32(destination))
+		binary.NativeEndian.PutUint32(netmask, uint32(mask))
+		subnets = append(subnets, &net.IPNet{IP: ip.Mask(netmask), Mask: netmask})
+	}
+	return subnets
 }
 
 // addWorldNode reserves the next address and MAC for a node. The name defaults
@@ -213,6 +304,7 @@ func (manager installerManager) syncNetwork(ctx context.Context, world katldevWo
 	if err != nil {
 		return err
 	}
+	defined := false
 	if !exists {
 		definition, err := desired.XML()
 		if err != nil {
@@ -228,9 +320,19 @@ func (manager installerManager) syncNetwork(ctx context.Context, world katldevWo
 		if _, err := manager.virsh(ctx, uri, "net-define", path); err != nil {
 			return err
 		}
+		defined = true
 	}
 	if err := manager.requireOwnedNetwork(ctx, uri, desired.Name, desired.Owner); err != nil {
-		return err
+		if !defined {
+			return err
+		}
+		// A libvirt without network metadata accepts the definition but drops
+		// the ownership marker, which would leave a network katldev refuses to
+		// manage or remove.
+		if _, undefineErr := manager.virsh(ctx, uri, "net-undefine", desired.Name); undefineErr != nil {
+			return fmt.Errorf("libvirt network %s lost its ownership metadata and could not be undefined: %w; remove it with virsh net-undefine %s", desired.Name, undefineErr, desired.Name)
+		}
+		return fmt.Errorf("libvirt did not keep the ownership metadata of network %s, so it was undefined again; katldev world needs libvirt 9.7 or newer for network metadata: %w", desired.Name, err)
 	}
 	active, err := manager.networkActive(ctx, uri, desired.Name)
 	if err != nil {
@@ -238,7 +340,7 @@ func (manager installerManager) syncNetwork(ctx context.Context, world katldevWo
 	}
 	if !active {
 		if _, err := manager.virsh(ctx, uri, "net-start", desired.Name); err != nil {
-			return err
+			return fmt.Errorf("start libvirt network %s on %s: %w; if another network, VPN, or route now uses that subnet, run katldev world reset to recreate the world on a free subnet", desired.Name, desired.CIDR, err)
 		}
 	}
 
@@ -331,8 +433,32 @@ func (manager installerManager) requireOwnedNetwork(ctx context.Context, uri, na
 // installer is removed the same way under its own ownership marker.
 // _build/katldev/cluster.yaml is operator input and is kept.
 func (manager installerManager) removeWorld(ctx context.Context) error {
+	runID, err := manager.worldID(false)
+	if err != nil {
+		return err
+	}
+	if runID != "" {
+		if err := manager.removeWorldObjects(ctx, runID); err != nil {
+			return err
+		}
+	}
+
+	if legacy, err := manager.readLegacyState(); err == nil {
+		if err := manager.removeDomainIfPresent(ctx, legacy.LibvirtURI, legacy.DomainName, legacyDomainMetadata); err != nil {
+			return err
+		}
+		fmt.Fprintf(manager.stderr, "katldev world: removed earlier single installer VM %s\n", legacy.DomainName)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.RemoveAll(manager.legacyStateRoot()); err != nil {
+		return err
+	}
+	return os.RemoveAll(manager.worldDir())
+}
+
+func (manager installerManager) removeWorldObjects(ctx context.Context, runID string) error {
 	uri := manager.libvirtURI()
-	runID := worldRunID(manager.repoRoot)
 	owner := worldOwnerPrefix + runID
 	prefix := "katl-" + runID + "-"
 	output, err := manager.virsh(ctx, uri, "list", "--all", "--name")
@@ -372,19 +498,7 @@ func (manager installerManager) removeWorld(ctx context.Context) error {
 		}
 		fmt.Fprintf(manager.stderr, "katldev world: removed network %s\n", network)
 	}
-
-	if legacy, err := manager.readLegacyState(); err == nil {
-		if err := manager.removeDomainIfPresent(ctx, legacy.LibvirtURI, legacy.DomainName, legacyDomainMetadata); err != nil {
-			return err
-		}
-		fmt.Fprintf(manager.stderr, "katldev world: removed earlier single installer VM %s\n", legacy.DomainName)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := os.RemoveAll(manager.legacyStateRoot()); err != nil {
-		return err
-	}
-	return os.RemoveAll(manager.worldDir())
+	return nil
 }
 
 type worldStartOptions struct {
@@ -649,7 +763,7 @@ func (manager installerManager) resumeWorld(ctx context.Context, world katldevWo
 	}
 	var iso, digest string
 	for _, node := range world.Scenario.Nodes {
-		state, err := manager.readState(node)
+		state, err := manager.readState(world, node)
 		exists := false
 		if err == nil {
 			exists, err = manager.domainExists(ctx, state.LibvirtURI, state.DomainName)
@@ -731,9 +845,10 @@ func (manager installerManager) readdress(ctx context.Context, name, address str
 	if err != nil {
 		return err
 	}
-	previous := node.Address
-	if state, err := manager.readState(node); err == nil && state.IPAddress != "" {
-		previous = state.IPAddress
+	// Observe first so that a VM that already rebooted onto an earlier
+	// readdress is recorded at that address before it moves again.
+	if _, err := manager.observe(ctx, world, node); err != nil {
+		return err
 	}
 	node, err = world.Scenario.ReassignAddress(node.Name, address)
 	if err != nil {
@@ -742,8 +857,13 @@ func (manager installerManager) readdress(ctx context.Context, name, address str
 	if err := manager.syncNetwork(ctx, world); err != nil {
 		return fmt.Errorf("reserved %s for %s but could not update libvirt network %s: %w; rerun katldev world start to apply the reservation", node.Address, node.Name, world.World.Network.Name, err)
 	}
+	if node.PreviousAddress == "" {
+		fmt.Fprintf(manager.stdout, "Reserved %s for %s, the address its VM already holds.\n", node.Address, node.Name)
+		return nil
+	}
+	previous := node.PreviousAddress
 	fmt.Fprintf(manager.stdout, "Reserved %s for %s (currently %s).\n", node.Address, node.Name, previous)
-	fmt.Fprintln(manager.stdout, "The VM keeps its current address until it next boots.")
+	fmt.Fprintf(manager.stdout, "The VM keeps %s, which stays reserved for it, until it next boots.\n", previous)
 	configName, err := matchingKatldevConfig(manager.clusterConfigPath(), previous)
 	if err != nil {
 		return nil

@@ -37,17 +37,24 @@ type WorldScenario struct {
 	NodeDir      string
 	Nodes        []Node
 	Fixtures     []FixtureRecord
+	// loaded marks a scenario reopened from its manifest. Other processes
+	// may share it, so allocations reload its nodes first.
+	loaded bool
 }
 
 type Node struct {
-	Name        string   `json:"name"`
-	Role        NodeRole `json:"role"`
-	Address     string   `json:"address"`
-	MACAddress  string   `json:"macAddress"`
-	ArtifactDir string   `json:"artifactDir"`
-	ManifestDir string   `json:"manifestDir"`
-	DiskDir     string   `json:"diskDir"`
-	VMDir       string   `json:"vmDir"`
+	Name    string   `json:"name"`
+	Role    NodeRole `json:"role"`
+	Address string   `json:"address"`
+	// PreviousAddress is the address a reassigned node held before
+	// ReassignAddress. The VM keeps it until it next boots, so it stays
+	// reserved until ConfirmAddress observes the node at Address.
+	PreviousAddress string `json:"previousAddress,omitempty"`
+	MACAddress      string `json:"macAddress"`
+	ArtifactDir     string `json:"artifactDir"`
+	ManifestDir     string `json:"manifestDir"`
+	DiskDir         string `json:"diskDir"`
+	VMDir           string `json:"vmDir"`
 }
 
 type scenarioManifest struct {
@@ -147,15 +154,10 @@ func (scenario *WorldScenario) AddNode(spec NodeSpec) (Node, error) {
 	if nodeID == "" {
 		return Node{}, fmt.Errorf("node %q has no usable artifact path", spec.Name)
 	}
-	address, err := scenario.allocateAddress(spec)
-	if err != nil {
-		return Node{}, err
-	}
 	artifactDir := filepath.Join(scenario.NodeDir, nodeID)
 	node := Node{
 		Name:        spec.Name,
 		Role:        spec.Role,
-		Address:     address,
 		MACAddress:  nodeMACAddress(scenario.World.RunID, scenario.ID, spec.Name),
 		ArtifactDir: artifactDir,
 		ManifestDir: filepath.Join(artifactDir, "manifests"),
@@ -167,8 +169,25 @@ func (scenario *WorldScenario) AddNode(spec NodeSpec) (Node, error) {
 			return Node{}, err
 		}
 	}
-	scenario.Nodes = append(scenario.Nodes, node)
-	if err := scenario.WriteManifest(); err != nil {
+	err := scenario.allocate(func(reserved map[string]bool) (*leaseEntry, error) {
+		if scenario.nodeIndex(spec.Name) >= 0 {
+			return nil, fmt.Errorf("scenario %q already has node %q", scenario.Name, spec.Name)
+		}
+		address := strings.TrimSpace(spec.Address)
+		var err error
+		if address == "" {
+			address, err = firstAvailableAddress(scenario.World, reserved)
+		} else {
+			err = validateRequestedAddress(scenario.World, reserved, address)
+		}
+		if err != nil {
+			return nil, err
+		}
+		node.Address = address
+		scenario.Nodes = append(scenario.Nodes, node)
+		return &leaseEntry{Address: address, MACAddress: node.MACAddress, Scenario: scenario.ID, Node: node.Name}, nil
+	})
+	if err != nil {
 		return Node{}, err
 	}
 	return node, nil
@@ -223,32 +242,70 @@ func (scenario *WorldScenario) WriteResult(status WorldStatus, failure string) e
 	})
 }
 
-func (scenario *WorldScenario) allocateAddress(spec NodeSpec) (string, error) {
+// allocate applies change to the scenario's nodes under the world lease lock
+// and records the result. The scenario manifest is the record of this
+// scenario's addresses: change sees every address its nodes hold, including
+// the previous addresses of reassigned nodes, plus other scenarios' leases.
+// The lease file only claims addresses against other scenarios, so its
+// entries for this scenario are ignored here and may over-claim after a
+// reassignment. The lease is written before the manifest, so an interruption
+// between them can only over-claim. A loaded scenario's nodes are reloaded
+// from the manifest first so that processes sharing it do not overwrite each
+// other's nodes.
+func (scenario *WorldScenario) allocate(change func(reserved map[string]bool) (*leaseEntry, error)) error {
 	unlock, err := lockLeaseFile(scenario.World.Network.LeaseFile)
 	if err != nil {
-		return "", err
+		return err
 	}
 	defer unlock()
+	if scenario.loaded {
+		if err := scenario.reloadNodes(); err != nil {
+			return err
+		}
+	}
 	leases, err := readLeases(scenario.World.Network.LeaseFile)
 	if err != nil {
-		return "", err
+		return err
 	}
-	address := strings.TrimSpace(spec.Address)
-	if address == "" {
-		address, err = firstAvailableAddress(scenario.World, leases)
-		if err != nil {
-			return "", err
+	reserved := map[string]bool{}
+	for _, lease := range leases.Leases {
+		if lease.Scenario != scenario.ID {
+			reserved[lease.Address] = true
 		}
-	} else if err := validateRequestedAddress(scenario.World, leases, address); err != nil {
-		return "", err
 	}
-	leases.Leases = append(leases.Leases, leaseEntry{
-		Address:    address,
-		MACAddress: nodeMACAddress(scenario.World.RunID, scenario.ID, spec.Name),
-		Scenario:   scenario.ID,
-		Node:       spec.Name,
-	})
-	return address, writeLeases(scenario.World.Network.LeaseFile, leases)
+	for _, node := range scenario.Nodes {
+		for _, address := range []string{node.Address, node.PreviousAddress} {
+			if address != "" {
+				reserved[address] = true
+			}
+		}
+	}
+
+	lease, err := change(reserved)
+	if err != nil {
+		return err
+	}
+	if lease != nil {
+		leases.Leases = append(leases.Leases, *lease)
+		if err := writeLeases(scenario.World.Network.LeaseFile, leases); err != nil {
+			return err
+		}
+	}
+	return scenario.WriteManifest()
+}
+
+// reloadNodes replaces the scenario's nodes with those of its manifest.
+func (scenario *WorldScenario) reloadNodes() error {
+	data, err := os.ReadFile(scenario.ManifestPath)
+	if err != nil {
+		return err
+	}
+	var manifest scenarioManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return fmt.Errorf("decode %s: %w", scenario.ManifestPath, err)
+	}
+	scenario.Nodes = manifest.Nodes
+	return nil
 }
 
 func nodeMACAddress(parts ...string) string {
@@ -314,13 +371,12 @@ func lockLeaseFile(path string) (func(), error) {
 	return nil, fmt.Errorf("timed out waiting for lease lock %s", lockPath)
 }
 
-func firstAvailableAddress(world World, leases leaseFile) (string, error) {
+func firstAvailableAddress(world World, leased map[string]bool) (string, error) {
 	networkIP, network, err := parseWorldNetwork(world)
 	if err != nil {
 		return "", err
 	}
 	gateway := net.ParseIP(world.Network.Gateway).To4()
-	leased := leasedAddresses(leases)
 	networkStart := ipToUint32(networkIP)
 	networkEnd := broadcast(network)
 	if networkEnd <= networkStart+1 {
@@ -341,7 +397,7 @@ func firstAvailableAddress(world World, leases leaseFile) (string, error) {
 	return "", fmt.Errorf("no free addresses in %s", world.Network.CIDR)
 }
 
-func validateRequestedAddress(world World, leases leaseFile, address string) error {
+func validateRequestedAddress(world World, leased map[string]bool, address string) error {
 	ip := net.ParseIP(address).To4()
 	if ip == nil {
 		return fmt.Errorf("node address %q is invalid", address)
@@ -366,7 +422,7 @@ func validateRequestedAddress(world World, leases leaseFile, address string) err
 	if address == uint32ToIP(broadcast(network)).String() {
 		return fmt.Errorf("node address %q is reserved as broadcast address", address)
 	}
-	if leasedAddresses(leases)[address] {
+	if leased[address] {
 		return fmt.Errorf("node address %q is already leased", address)
 	}
 	return nil
@@ -383,14 +439,6 @@ func parseWorldNetwork(world World) (net.IP, *net.IPNet, error) {
 	}
 	network.IP = ip
 	return ip, network, nil
-}
-
-func leasedAddresses(leases leaseFile) map[string]bool {
-	leased := make(map[string]bool, len(leases.Leases))
-	for _, lease := range leases.Leases {
-		leased[lease.Address] = true
-	}
-	return leased
 }
 
 func ipToUint32(ip net.IP) uint32 {
@@ -431,6 +479,7 @@ func (world World) LoadScenario(name string) (*WorldScenario, error) {
 	}
 	scenario.Nodes = manifest.Nodes
 	scenario.Fixtures = manifest.Fixtures
+	scenario.loaded = true
 	return scenario, nil
 }
 
@@ -444,64 +493,65 @@ func (scenario *WorldScenario) Node(name string) (Node, bool) {
 	return Node{}, false
 }
 
-// ReassignAddress moves a node's lease to address, or to the first free
-// address when address is empty, and records it in the scenario manifest.
+// ReassignAddress moves a node's reservation to address, or to the first free
+// address when address is empty. The address the VM holds until its next boot
+// stays reserved as its PreviousAddress until ConfirmAddress releases it.
 func (scenario *WorldScenario) ReassignAddress(name, address string) (Node, error) {
-	index := -1
+	var moved Node
+	err := scenario.allocate(func(reserved map[string]bool) (*leaseEntry, error) {
+		index := scenario.nodeIndex(name)
+		if index < 0 {
+			return nil, fmt.Errorf("node %q is not in scenario %q", name, scenario.Name)
+		}
+		node := scenario.Nodes[index]
+		live := first(node.PreviousAddress, node.Address)
+		// The node may move back to the address its VM still holds, but a
+		// reassignment always moves its reservation.
+		delete(reserved, live)
+		reserved[node.Address] = true
+		requested := strings.TrimSpace(address)
+		var err error
+		if requested == "" {
+			requested, err = firstAvailableAddress(scenario.World, reserved)
+		} else {
+			err = validateRequestedAddress(scenario.World, reserved, requested)
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		node.Address, node.PreviousAddress = requested, live
+		if requested == live {
+			node.PreviousAddress = ""
+		}
+		scenario.Nodes[index] = node
+		moved = node
+		return &leaseEntry{Address: requested, MACAddress: node.MACAddress, Scenario: scenario.ID, Node: name}, nil
+	})
+	if err != nil {
+		return Node{}, err
+	}
+	return moved, nil
+}
+
+// ConfirmAddress records that the node answered at address. When that is its
+// reservation, its PreviousAddress is released for other nodes.
+func (scenario *WorldScenario) ConfirmAddress(name, address string) error {
+	return scenario.allocate(func(map[string]bool) (*leaseEntry, error) {
+		if index := scenario.nodeIndex(name); index >= 0 && scenario.Nodes[index].Address == address {
+			scenario.Nodes[index].PreviousAddress = ""
+		}
+		return nil, nil
+	})
+}
+
+func (scenario *WorldScenario) nodeIndex(name string) int {
 	for i, node := range scenario.Nodes {
 		if node.Name == name {
-			index = i
+			return i
 		}
 	}
-	if index < 0 {
-		return Node{}, fmt.Errorf("node %q is not in scenario %q", name, scenario.Name)
-	}
-	unlock, err := lockLeaseFile(scenario.World.Network.LeaseFile)
-	if err != nil {
-		return Node{}, err
-	}
-	defer unlock()
-	leases, err := readLeases(scenario.World.Network.LeaseFile)
-	if err != nil {
-		return Node{}, err
-	}
-	// The node's own lease must not block the search, but its current address
-	// stays reserved so a reassignment always moves the node.
-	others := leaseFile{APIVersion: leases.APIVersion, Kind: leases.Kind}
-	for _, lease := range leases.Leases {
-		if lease.Scenario == scenario.ID && lease.Node == name {
-			continue
-		}
-		others.Leases = append(others.Leases, lease)
-	}
-	current := scenario.Nodes[index].Address
-	reserved := others
-	reserved.Leases = append(append([]leaseEntry(nil), others.Leases...), leaseEntry{Address: current})
-	address = strings.TrimSpace(address)
-	if address == "" {
-		address, err = firstAvailableAddress(scenario.World, reserved)
-	} else {
-		err = validateRequestedAddress(scenario.World, reserved, address)
-	}
-	if err != nil {
-		return Node{}, err
-	}
-	node := scenario.Nodes[index]
-	node.Address = address
-	others.Leases = append(others.Leases, leaseEntry{
-		Address:    address,
-		MACAddress: node.MACAddress,
-		Scenario:   scenario.ID,
-		Node:       name,
-	})
-	if err := writeLeases(scenario.World.Network.LeaseFile, others); err != nil {
-		return Node{}, err
-	}
-	scenario.Nodes[index] = node
-	if err := scenario.WriteManifest(); err != nil {
-		return Node{}, err
-	}
-	return node, nil
+	return -1
 }
 
 // PlanNodeVM plans a libvirt VM whose disks and artifacts live in the node's

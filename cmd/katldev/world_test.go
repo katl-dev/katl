@@ -24,6 +24,10 @@ type fakeLibvirt struct {
 	states    map[string]string
 	networks  map[string]*fakeNetwork
 	mutations [][]string
+	// dropNetworkMetadata mimics a libvirt without network metadata support.
+	dropNetworkMetadata bool
+	// startErr fails net-start.
+	startErr error
 }
 
 type fakeNetwork struct {
@@ -99,12 +103,18 @@ func (fake *fakeLibvirt) virsh(_ context.Context, _ string, args ...string) ([]b
 			owner = rest[:strings.Index(rest, "<")]
 		}
 		name := string(data)[strings.Index(string(data), "<name>")+6 : strings.Index(string(data), "</name>")]
+		if fake.dropNetworkMetadata {
+			owner = ""
+		}
 		fake.networks[name] = &fakeNetwork{owner: owner, xml: string(data)}
 		return nil, nil
 	case "net-start", "net-destroy", "net-undefine":
 		fake.mutations = append(fake.mutations, args)
 		switch args[0] {
 		case "net-start":
+			if fake.startErr != nil {
+				return nil, fake.startErr
+			}
 			fake.networks[args[1]].active = true
 		case "net-destroy":
 			fake.networks[args[1]].active = false
@@ -133,12 +143,69 @@ func testManager(t *testing.T, fake *fakeLibvirt) installerManager {
 	}
 }
 
-func TestWorldRunIDIsStableAndCheckoutScoped(t *testing.T) {
-	if worldRunID("/work/katl-a") != worldRunID("/work/katl-a") {
-		t.Fatal("world run ID is not stable")
+func TestWorldIDIsRandomAndSurvivesRemoval(t *testing.T) {
+	fake := newFakeLibvirt(t)
+	first := testManager(t, fake)
+	second := testManager(t, fake)
+	world, err := first.createWorld(context.Background())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if worldRunID("/work/katl-a") == worldRunID("/work/katl-b") {
-		t.Fatal("checkouts share a world run ID")
+	other, err := second.createWorld(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if world.World.RunID == other.World.RunID {
+		t.Fatalf("two checkouts share world ID %s", world.World.RunID)
+	}
+
+	if err := first.removeWorld(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	recreated, err := first.createWorld(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recreated.World.RunID != world.World.RunID {
+		t.Fatalf("recreated world ID = %s, want %s", recreated.World.RunID, world.World.RunID)
+	}
+}
+
+func TestWorldIDAdoptsRecordedWorld(t *testing.T) {
+	fake := newFakeLibvirt(t)
+	manager := testManager(t, fake)
+	world, err := manager.createWorld(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A world recorded before the ID file existed keeps its ID.
+	if err := os.Remove(manager.worldIDPath()); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := manager.loadWorld()
+	if err != nil || loaded.World.RunID != world.World.RunID {
+		t.Fatalf("loaded world = %v, %v; want ID %s", loaded.World.RunID, err, world.World.RunID)
+	}
+	id, err := manager.worldID(false)
+	if err != nil || id != world.World.RunID {
+		t.Fatalf("world ID = %q, %v; want %s", id, err, world.World.RunID)
+	}
+}
+
+func TestRoutedSubnets(t *testing.T) {
+	// /proc/net/route: default via 192.168.1.1, 10.8.0.0/16 over a VPN,
+	// and 192.168.1.0/24 on the LAN.
+	data := []byte(`Iface	Destination	Gateway 	Flags	RefCnt	Use	Metric	Mask		MTU	Window	IRTT
+eth0	00000000	0101A8C0	0003	0	0	100	00000000	0	0	0
+tun0	0000080A	00000000	0001	0	0	0	0000FFFF	0	0	0
+eth0	0001A8C0	00000000	0001	0	0	100	00FFFFFF	0	0	0
+`)
+	var got []string
+	for _, subnet := range routedSubnets(data) {
+		got = append(got, subnet.String())
+	}
+	if want := []string{"10.8.0.0/16", "192.168.1.0/24"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("subnets = %v, want %v", got, want)
 	}
 }
 
@@ -239,10 +306,10 @@ func TestWorldNodeStateIsNodeScoped(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.readState(cp1); err != nil {
+	if _, err := manager.readState(world, cp1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.readState(worker1); !errors.Is(err, os.ErrNotExist) {
+	if _, err := manager.readState(world, worker1); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("worker-1 state error = %v, want not exist", err)
 	}
 
@@ -253,8 +320,35 @@ func TestWorldNodeStateIsNodeScoped(t *testing.T) {
 	if err := os.WriteFile(manager.statePath(worker1), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.readState(worker1); err == nil {
+	if _, err := manager.readState(world, worker1); err == nil {
 		t.Fatal("worker-1 adopted cp-1's VM state")
+	}
+}
+
+func TestWaitReachableReportsStoppedVM(t *testing.T) {
+	fake := newFakeLibvirt(t)
+	manager := testManager(t, fake)
+	world, err := manager.createWorld(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := mustAddWorldNode(t, world, false)
+	domain := world.World.Libvirt.DomainPrefix + node.Name
+	fake.domains[domain], fake.states[domain] = world.owner(), "shut off"
+	if err := manager.writeState(node, installerState{
+		APIVersion: installerStateAPIVersion,
+		Kind:       installerStateKind,
+		RepoRoot:   manager.repoRoot,
+		World:      world.World.RunID,
+		Node:       node.Name,
+		DomainName: domain,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	observation, err := manager.waitReachable(context.Background(), world, node, time.Minute)
+	if err != nil || observation.summary() != "shut off" {
+		t.Fatalf("observation = %q, %v; want shut off", observation.summary(), err)
 	}
 }
 
@@ -326,6 +420,37 @@ func TestSyncNetworkRefusesForeignNetwork(t *testing.T) {
 	}
 	if len(fake.mutations) != 0 {
 		t.Fatalf("mutated a foreign network: %v", fake.mutations)
+	}
+}
+
+func TestSyncNetworkUndefinesNetworkWithoutMetadata(t *testing.T) {
+	fake := newFakeLibvirt(t)
+	fake.dropNetworkMetadata = true
+	manager := testManager(t, fake)
+	world, err := manager.createWorld(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = manager.syncNetwork(context.Background(), world)
+	if err == nil || !strings.Contains(err.Error(), "libvirt 9.7") {
+		t.Fatalf("sync error = %v, want libvirt version guidance", err)
+	}
+	if _, ok := fake.networks[world.World.Network.Name]; ok {
+		t.Fatal("network without ownership metadata was left defined")
+	}
+}
+
+func TestSyncNetworkStartFailureNamesRecovery(t *testing.T) {
+	fake := newFakeLibvirt(t)
+	fake.startErr = errors.New("internal error: Network is already in use by interface tun0")
+	manager := testManager(t, fake)
+	world, err := manager.createWorld(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = manager.syncNetwork(context.Background(), world)
+	if err == nil || !strings.Contains(err.Error(), world.World.Network.CIDR) || !strings.Contains(err.Error(), "katldev world reset") || !strings.Contains(err.Error(), "tun0") {
+		t.Fatalf("sync error = %v, want subnet, cause, and reset guidance", err)
 	}
 }
 

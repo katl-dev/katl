@@ -314,7 +314,7 @@ func (observation nodeObservation) summary() string {
 // a new address, the recorded state follows it.
 func (manager installerManager) observe(ctx context.Context, world katldevWorld, node vmtest.Node) (nodeObservation, error) {
 	observation := nodeObservation{Node: node}
-	state, err := manager.readState(node)
+	state, err := manager.readState(world, node)
 	if errors.Is(err, os.ErrNotExist) {
 		return observation, nil
 	}
@@ -336,12 +336,10 @@ func (manager installerManager) observe(ctx context.Context, world katldevWorld,
 		return observation, nil
 	}
 
-	addresses := []string{}
-	if lease, err := vmtest.DiscoverLibvirtLease(ctx, firstNonEmpty(os.Getenv("KATL_VMTEST_VIRSH"), "virsh"), state.LibvirtURI, state.Network, state.MACAddress); err == nil {
-		addresses = append(addresses, lease.IPAddress)
-	}
-	addresses = append(addresses, state.IPAddress, node.Address)
-	for _, address := range addresses {
+	// Probe only addresses the world reserves for this node: its reservation
+	// and, after a readdress, the address its VM holds until it reboots. No
+	// other node can hold either, so an answer there is this VM's.
+	for _, address := range []string{node.Address, node.PreviousAddress} {
 		if address == "" {
 			continue
 		}
@@ -360,18 +358,27 @@ func (manager installerManager) observe(ctx context.Context, world katldevWorld,
 			}
 		}
 		observation.State = state
+		if address == node.Address && node.PreviousAddress != "" {
+			if err := world.Scenario.ConfirmAddress(node.Name, address); err != nil {
+				return observation, fmt.Errorf("record %s at its new address %s: %w", node.Name, address, err)
+			}
+			if confirmed, ok := world.Scenario.Node(node.Name); ok {
+				observation.Node = confirmed
+			}
+		}
 		break
 	}
 	return observation, nil
 }
 
 // waitReachable waits for a running VM to answer as an installer or KatlOS.
+// A missing or stopped VM is reported as it is.
 func (manager installerManager) waitReachable(ctx context.Context, world katldevWorld, node vmtest.Node, timeout time.Duration) (nodeObservation, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	for {
 		observation, err := manager.observe(waitCtx, world, node)
-		if err == nil && (observation.reachable() || !observation.Exists) {
+		if err == nil && (observation.reachable() || !observation.Exists || observation.DomainState != "running") {
 			return observation, nil
 		}
 		if err != nil && waitCtx.Err() == nil {
@@ -677,7 +684,7 @@ func (manager installerManager) stop(ctx context.Context, names []string, timeou
 		}
 	}
 	for _, node := range nodes {
-		state, err := manager.readState(node)
+		state, err := manager.readState(world, node)
 		if errors.Is(err, os.ErrNotExist) {
 			fmt.Fprintf(manager.stdout, "%s has no VM.\n", node.Name)
 			continue
@@ -761,7 +768,7 @@ func (manager installerManager) console(ctx context.Context, name string) error 
 	if err != nil {
 		return err
 	}
-	state, err := manager.readState(node)
+	state, err := manager.readState(world, node)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("%s has no VM; run katldev world start", node.Name)
@@ -892,7 +899,7 @@ func (manager installerManager) statePath(node vmtest.Node) string {
 	return filepath.Join(node.ArtifactDir, "state.json")
 }
 
-func (manager installerManager) readState(node vmtest.Node) (installerState, error) {
+func (manager installerManager) readState(world katldevWorld, node vmtest.Node) (installerState, error) {
 	path := manager.statePath(node)
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -903,7 +910,7 @@ func (manager installerManager) readState(node vmtest.Node) (installerState, err
 		return installerState{}, fmt.Errorf("decode %s: %w", path, err)
 	}
 	if state.APIVersion != installerStateAPIVersion || state.Kind != installerStateKind || state.RepoRoot != manager.repoRoot ||
-		state.World != worldRunID(manager.repoRoot) || state.Node != node.Name || state.DomainName == "" {
+		state.World != world.World.RunID || state.Node != node.Name || state.DomainName == "" {
 		return installerState{}, fmt.Errorf("%s is not valid state for VM %s of this checkout's world", path, node.Name)
 	}
 	return state, nil
