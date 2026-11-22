@@ -55,7 +55,7 @@ func TestSystemdFilesApplyLive(t *testing.T) {
 			desired := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
 				"unit": {Files: []manifest.HostConfigurationFile{{Path: "/etc/systemd/system/" + file, Content: &content}}},
 			}}
-			plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired)
+			plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired, false)
 			if !plan.Live || !strings.Contains(plan.Message, "try-restart systemd unit") {
 				t.Fatalf("plan = %#v", plan)
 			}
@@ -72,7 +72,7 @@ func TestLiveUnitsShareStartTransaction(t *testing.T) {
 			{Path: "/etc/systemd/system/stopped.service.d/env.conf", Content: &content},
 		}}},
 	}
-	host := planHostConfigurationChange(manifest.HostConfiguration{}, desired)
+	host := planHostConfigurationChange(manifest.HostConfiguration{}, desired, false)
 	plan := liveExecutorPlan(t, []Change{{Domain: DomainHostConfiguration, LivePreflightOK: true}})
 	runner := &fakeCommandRunner{results: map[string]CommandResult{
 		"systemd-state-a-new.service":      {Stdout: "inactive"},
@@ -98,7 +98,7 @@ func TestLiveUnitsShareStartTransaction(t *testing.T) {
 }
 
 func TestFailedEnablementRestoresStoppedUnit(t *testing.T) {
-	host := planHostConfigurationChange(manifest.HostConfiguration{}, manifest.HostConfiguration{EnabledUnits: []string{"example.service"}})
+	host := planHostConfigurationChange(manifest.HostConfiguration{}, manifest.HostConfiguration{EnabledUnits: []string{"example.service"}}, false)
 	plan := liveExecutorPlan(t, []Change{{Domain: DomainHostConfiguration, LivePreflightOK: true}})
 	runner := &fakeCommandRunner{results: map[string]CommandResult{
 		"systemd-state-example.service":     {Stdout: "inactive"},
@@ -133,7 +133,7 @@ func TestCancelledApplyStillRollsBack(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	plan := liveExecutorPlan(t, []Change{{Domain: DomainHostConfiguration, LivePreflightOK: true}})
-	host := planHostConfigurationChange(manifest.HostConfiguration{}, manifest.HostConfiguration{EnabledUnits: []string{"example.service"}})
+	host := planHostConfigurationChange(manifest.HostConfiguration{}, manifest.HostConfiguration{EnabledUnits: []string{"example.service"}}, false)
 	runner := &fakeCommandRunner{results: map[string]CommandResult{
 		"systemd-state-example.service":     {Stdout: "inactive"},
 		"systemd-unit-load-example.service": {Stdout: "loaded"},
@@ -210,7 +210,7 @@ func TestDerivedSystemdComponentNotificationLeavesInactiveUnitStopped(t *testing
 	content := "[Time]\nNTP=192.0.2.123\n"
 	host := planHostConfigurationChange(manifest.HostConfiguration{}, testHostConfiguration(
 		"time", "/etc/systemd/timesyncd.conf.d/80-site.conf", content,
-	))
+	), false)
 	runner := commandRunnerFunc(func(_ context.Context, command Command) (CommandResult, error) {
 		if command.Name == "systemd-state-systemd-timesyncd.service" {
 			return CommandResult{Stdout: "inactive"}, nil
@@ -245,7 +245,7 @@ func TestExtensionConfigurationSharesUnitLifecycle(t *testing.T) {
 	if !extensionPayloadsEqual(before.SystemExtensions, after.SystemExtensions) {
 		t.Fatal("configuration change classified as payload change")
 	}
-	plan := planHostConfigurationChange(effectiveHostConfiguration(before), effectiveHostConfiguration(after))
+	plan := planHostConfigurationChange(effectiveHostConfiguration(before), effectiveHostConfiguration(after), false)
 	if !plan.Live || plan.unitNotifications["tools.service"] != "try-reload-or-restart" {
 		t.Fatalf("extension plan = %#v", plan)
 	}
@@ -256,7 +256,7 @@ func TestExtensionConfigurationSharesUnitLifecycle(t *testing.T) {
 }
 
 func TestDependencyFailureRollsBack(t *testing.T) {
-	host := planHostConfigurationChange(manifest.HostConfiguration{}, manifest.HostConfiguration{EnabledUnits: []string{"one.service", "two.service"}})
+	host := planHostConfigurationChange(manifest.HostConfiguration{}, manifest.HostConfiguration{EnabledUnits: []string{"one.service", "two.service"}}, false)
 	plan := liveExecutorPlan(t, []Change{{Domain: DomainHostConfiguration, LivePreflightOK: true}})
 	runner := &fakeCommandRunner{results: map[string]CommandResult{
 		"systemd-state-one.service":      {Stdout: "inactive"},
@@ -295,7 +295,7 @@ func TestExplicitUnitActions(t *testing.T) {
 			if tc.masked {
 				desired.MaskedUnits = []string{"example.service"}
 			}
-			plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired)
+			plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired, false)
 			if got := plan.unitNotifications["example.service"]; got != tc.want {
 				t.Fatalf("notification = %q, want %q", got, tc.want)
 			}

@@ -22,6 +22,7 @@ type RenderNodeRequest struct {
 	SourceID                  string
 	DesiredVersion            string
 	ApplyMode                 string
+	RecreateNetdevs           bool
 	KubeadmOnly               bool
 	SystemExtensionPayloads   []SystemExtensionPayload
 	APIProxy                  apiproxy.Config
@@ -146,7 +147,7 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 			SourceID:       sourceID,
 			DesiredVersion: desiredVersion,
 		},
-		Apply: Apply{Mode: applyMode},
+		Apply: Apply{Mode: applyMode, RecreateNetdevs: request.RecreateNetdevs},
 		Spec: renderedNodeConfigurationChangeSpec{
 			SystemExtensionSelections: request.SystemExtensionSelections,
 			KubeadmConfigs:            kubeadmConfigs,
@@ -193,4 +194,39 @@ func renderKubeadmConfigs(ref string, configs map[string]kubeadmconfig.Plan) (ma
 	return map[string]inlineKubeadmConfig{
 		ref: {Config: string(plan.Config.Content), Patches: patches, NodeLocalKubelet: plan.NodeLocalKubelet, SharedKubeletBase: plan.SharedKubeletBase},
 	}, nil
+}
+
+// SetRecreateNetdevs requests live netdev recreation in a rendered
+// NodeConfigurationChange.
+func SetRecreateNetdevs(document []byte) ([]byte, error) {
+	var decoded nodeConfigurationChangeDocument
+	if err := yaml.Unmarshal(document, &decoded); err != nil {
+		return nil, fmt.Errorf("decode node configuration change: %w", err)
+	}
+	var root yaml.Node
+	if err := yaml.Unmarshal(document, &root); err != nil || len(root.Content) != 1 || root.Content[0].Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("node configuration change must be a YAML mapping")
+	}
+	mapping := root.Content[0]
+	var apply *yaml.Node
+	for i := 0; i+1 < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == "apply" {
+			apply = mapping.Content[i+1]
+		}
+	}
+	if apply == nil {
+		apply = &yaml.Node{Kind: yaml.MappingNode}
+		mapping.Content = append(mapping.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "apply"}, apply)
+	}
+	if apply.Kind != yaml.MappingNode {
+		return nil, fmt.Errorf("node configuration change apply must be a mapping")
+	}
+	for i := 0; i+1 < len(apply.Content); i += 2 {
+		if apply.Content[i].Value == "recreateNetdevs" {
+			apply.Content[i+1] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"}
+			return yaml.Marshal(&root)
+		}
+	}
+	apply.Content = append(apply.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "recreateNetdevs"}, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!bool", Value: "true"})
+	return yaml.Marshal(&root)
 }

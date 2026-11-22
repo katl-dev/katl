@@ -118,6 +118,11 @@ Kubernetes configuration online. Apply never implicitly joins nodes or upgrades
 Kubernetes. See [Apply cluster configuration](../operations/configure-nodes.md)
 for the full workflow.
 
+A changed `.netdev` unit takes effect when networkd next creates the device, so
+auto mode stages it for the next boot. `cluster apply --recreate-netdevs` (and
+`node apply --recreate-netdevs`) recreates those devices live instead; see
+[Virtual network devices](cluster-config.md#virtual-network-devices).
+
 When `cluster.yaml` moves a worker to a new `management.address`, pass the
 address it answers at now. `cluster apply --node NAME --endpoint CURRENT`
 stages the move for the next boot, and

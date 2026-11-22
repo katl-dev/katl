@@ -61,6 +61,10 @@ type Change struct {
 	Effects           []generation.ConfigApplyEffect
 	Message           string
 	Warnings          []string
+	// Notices describe planned effects in the accepted mode; Warnings apply
+	// only to live activation.
+	LiveNotices     []string
+	NextBootNotices []string
 }
 
 type EndpointVIPImpact struct {
@@ -168,6 +172,17 @@ func Plan(requestedMode string, changes []Change) (Decision, error) {
 				if !slices.Contains(decision.Warnings, warning) {
 					decision.Warnings = append(decision.Warnings, warning)
 				}
+			}
+		}
+	}
+	for _, change := range changes {
+		notices := change.NextBootNotices
+		if decision.AcceptedMode == generation.ApplyModeLive {
+			notices = change.LiveNotices
+		}
+		for _, notice := range notices {
+			if !slices.Contains(decision.Warnings, notice) {
+				decision.Warnings = append(decision.Warnings, notice)
 			}
 		}
 	}

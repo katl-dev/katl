@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -29,6 +30,7 @@ import (
 	"github.com/katl-dev/katl/internal/kernelcmdline"
 	"github.com/katl-dev/katl/internal/persistedrecord"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
 
@@ -211,6 +213,11 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 	}
 	if err := volumePlan.validateApplyMode(plan.Plan.Decision.AcceptedMode); err != nil {
 		return rejected(err, []string{err.Error()}), nil
+	}
+	if plan.Plan.Decision.AcceptedMode == generation.ApplyModeLive && filepath.Clean(s.Root) == "/" {
+		if err := configapply.CheckLiveNetdevChanges(ctx, decoded, desiredManifest, managementAddress(ctx), commandRunnerFunc(runConfigApplyCommand)); err != nil {
+			return rejected(err, nil), nil
+		}
 	}
 	operationKind, err := configApplyOperationKind(plan.Plan.Decision.AcceptedMode)
 	if err != nil {
@@ -470,6 +477,9 @@ func (s *Server) acceptConfigApplyOperation(ctx context.Context, req *agentapi.S
 		return operation.OperationRecord{}, nil, status.Errorf(codes.FailedPrecondition, "config apply base state: %v", err)
 	}
 	configReq.NodeName = storageAuthorityNodeName(configReq.NodeName, base.CurrentManifest)
+	if address := managementAddress(ctx); address.IsValid() {
+		configReq.ManagementAddress = address.String()
+	}
 	if diagnostics := validateConfigApplyDocument(configReq.ConfigYAML, base.KubeadmConfigs); !diagnostics.Accepted() {
 		return operation.OperationRecord{}, nil, status.Error(codes.InvalidArgument, configValidationError(diagnostics.Strings()).Error())
 	}
@@ -641,10 +651,11 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 			activator = generationActivator{root: e.Root}
 		}
 		decoded.Executor = &configapply.Executor{
-			Root:      e.Root,
-			Runner:    runner,
-			Activator: activator,
-			Now:       e.clock,
+			Root:              e.Root,
+			Runner:            runner,
+			Activator:         activator,
+			Now:               e.clock,
+			ManagementAddress: parseManagementAddress(record.ConfigApplyRequest.ManagementAddress),
 		}
 	}
 	result, err := configapply.ApplyTrustedBundle(ctx, decoded)
@@ -1282,4 +1293,25 @@ func errorsJoin(errs ...error) error {
 		}
 	}
 	return out
+}
+
+// managementAddress returns the node-local address of the management session.
+func managementAddress(ctx context.Context) netip.Addr {
+	client, ok := peer.FromContext(ctx)
+	if !ok || client.LocalAddr == nil {
+		return netip.Addr{}
+	}
+	address, err := netip.ParseAddrPort(client.LocalAddr.String())
+	if err != nil {
+		return netip.Addr{}
+	}
+	return address.Addr().Unmap()
+}
+
+func parseManagementAddress(value string) netip.Addr {
+	address, err := netip.ParseAddr(value)
+	if err != nil {
+		return netip.Addr{}
+	}
+	return address
 }

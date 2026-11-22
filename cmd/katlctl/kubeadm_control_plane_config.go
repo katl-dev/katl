@@ -33,6 +33,7 @@ type kubeadmControlPlaneConfigOptions struct {
 	progress                                                         io.Writer
 	destructiveStorageAcknowledgements                               []string
 	volumeRebinds                                                    []string
+	recreateNetdevs                                                  bool
 	// endpoint is where the single selected node answers before its
 	// configuration moves it to management.address.
 	endpoint      string
@@ -88,6 +89,7 @@ name or role. See docs/operations/configure-nodes.md for configuration workflows
 	_ = f.MarkHidden("acknowledge-storage-wipe")
 	f.StringVar(&opts.endpoint, "endpoint", "", "address where the selected node answers now, when cluster.yaml moves it to a new management.address (requires one --node)")
 	f.StringArrayVar(&opts.volumeRebinds, "rebind-volume", nil, "authorize replacing one generation-bound volume identity as NODE/VOLUME (repeatable)")
+	f.BoolVar(&opts.recreateNetdevs, "recreate-netdevs", false, "recreate netdevs whose settings changed now instead of on next boot; briefly interrupts traffic through them")
 	for _, name := range []string{"inventory", "generation", "config-name", "rollout-id"} {
 		cmd.Flags().Lookup(name).Hidden = true
 	}
@@ -646,6 +648,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		}
 		render.DesiredVersion = desiredVersion
 		render.ApplyMode = opts.mode
+		render.RecreateNetdevs = opts.recreateNetdevs
 		configYAML, err := configapply.RenderNodeConfigurationChange(render)
 		if err != nil {
 			return activatedClusterConfig{}, fmt.Errorf("render cluster config for %s: %w", node.Name, err)

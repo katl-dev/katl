@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -48,8 +49,12 @@ type Executor struct {
 	StatusPath        string
 	ActionCommands    map[string][]Command
 	HostConfiguration *HostConfigurationChangePlan
-	Timeout           time.Duration
-	Now               func() time.Time
+	// ManagementAddress is the local address of the management session that
+	// requested the apply; netdev changes must not remove it.
+	ManagementAddress   netip.Addr
+	NetdevSettleTimeout time.Duration
+	Timeout             time.Duration
+	Now                 func() time.Time
 }
 
 func (e Executor) ExecuteLive(ctx context.Context, plan Result) (generation.ConfigApplyStatus, error) {
@@ -86,6 +91,9 @@ func (e Executor) ExecuteLive(ctx context.Context, plan Result) (generation.Conf
 		host.rollbackCommands = append([]Command(nil), host.rollbackCommands...)
 		e.HostConfiguration = &host
 		if err := e.prepareHostSystemd(ctx); err != nil {
+			return e.failBeforeActivation(status, err)
+		}
+		if err := e.prepareNetdevs(ctx); err != nil {
 			return e.failBeforeActivation(status, err)
 		}
 	}
@@ -207,6 +215,15 @@ func (e Executor) runActions(ctx context.Context, status *generation.ConfigApply
 			if e.HostConfiguration != nil && command.Name == "systemd-units-enable" {
 				e.HostConfiguration.enablementStarted = true
 			}
+			if action.Domain == DomainHostConfiguration && command.Name == "networkd-reload" {
+				if err := e.prepareNetdevReload(ctx); err != nil {
+					markNetdevEffects(action, e.HostConfiguration.netdevs, err)
+					action.Status = generation.ConfigApplyActionFailed
+					action.Diagnostic = generation.RedactConfigApplyMessage(err.Error())
+					_ = e.writeStatus(*status)
+					return err
+				}
+			}
 			result, err := e.Runner.Run(ctx, command)
 			if err != nil {
 				markHostEffect(action, command, generation.ConfigApplyActionFailed, err)
@@ -228,6 +245,16 @@ func (e Executor) runActions(ctx context.Context, status *generation.ConfigApply
 				if err := e.writeStatus(*status); err != nil {
 					return err
 				}
+			}
+		}
+		if action.Domain == DomainHostConfiguration && e.HostConfiguration != nil {
+			err := e.reconcileNetdevs(ctx)
+			markNetdevEffects(action, e.HostConfiguration.netdevs, err)
+			if err != nil {
+				action.Status = generation.ConfigApplyActionFailed
+				action.Diagnostic = generation.RedactConfigApplyMessage(err.Error())
+				_ = e.writeStatus(*status)
+				return err
 			}
 		}
 		action.Status = generation.ConfigApplyActionPassed
@@ -485,6 +512,11 @@ func (e Executor) failAndRollback(ctx context.Context, status generation.ConfigA
 	if writeErr := e.writeStatus(status); writeErr != nil {
 		return status, writeErr
 	}
+	if replayActions {
+		if err := e.rollbackNetdevs(ctx); err != nil {
+			return e.markRollbackFailed(status, target, cause, err)
+		}
+	}
 	if replayActions && e.HostConfiguration != nil {
 		commands := slices.Clone(e.HostConfiguration.beforeRollbackCommands)
 		if e.HostConfiguration.enablementStarted {
@@ -526,6 +558,9 @@ func (e Executor) failAndRollback(ctx context.Context, status generation.ConfigA
 	if replayActions {
 		if replayErr := e.replayRollbackActions(ctx, status.DomainActions, sysctlSnapshot); replayErr != nil {
 			return e.markRollbackFailed(status, target, cause, replayErr)
+		}
+		if restoreErr := e.restoreNetdevs(ctx); restoreErr != nil {
+			return e.markRollbackFailed(status, target, cause, restoreErr)
 		}
 	}
 	status, err = generation.MarkConfigApplyRollback(status, target, generation.ConfigApplyActionPassed, cause.Error(), e.now())

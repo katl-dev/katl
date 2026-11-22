@@ -33,6 +33,9 @@ type NodeConfigurationChange struct {
 
 type Apply struct {
 	Mode string
+	// RecreateNetdevs recreates netdevs with changed settings during a live
+	// apply instead of on next boot.
+	RecreateNetdevs bool `json:"recreateNetdevs,omitempty" yaml:"recreateNetdevs,omitempty"`
 }
 
 type Result struct {

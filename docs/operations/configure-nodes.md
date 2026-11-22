@@ -366,10 +366,13 @@ Whether a file applies live or at the next boot depends on its type; see
 > saved configuration. A failed apply can restore the previous saved generation
 > while leaving runtime network changes in place; follow the operation's
 > recovery guidance to inspect the network and recreate affected interfaces or
-> reboot. Some settings require recreating an interface; removing a `.netdev`
-> file does not remove the existing device, and existing interfaces are not
-> retriggered for `.link` changes. Use `--mode next-boot` when you prefer to
-> defer network changes until a reboot.
+> reboot. Removing a `.netdev` file deletes the device it defined. A changed
+> `.netdev` waits for the next boot unless you pass `--recreate-netdevs`, and Katl
+> refuses to delete or recreate a device that carries the node's management,
+> Kubernetes, or control-plane address; see
+> [Virtual network devices](../reference/cluster-config.md#virtual-network-devices).
+> Existing interfaces are not retriggered for `.link` changes. Use
+> `--mode next-boot` when you prefer to defer network changes until a reboot.
 
 ```yaml
 spec:

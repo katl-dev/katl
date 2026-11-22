@@ -3982,6 +3982,9 @@ type fakeConfigApplyRunner struct {
 
 func (r *fakeConfigApplyRunner) Run(ctx context.Context, command configapply.Command) (configapply.CommandResult, error) {
 	r.calls++
+	if len(command.Argv) > 1 && command.Argv[0] == "ip" && command.Argv[1] == "-j" {
+		return configapply.CommandResult{Stdout: "[]"}, nil
+	}
 	shouldFail := (r.exitStatus != 0 || r.err != nil || r.stderr != "") && (r.failName == "" || r.failName == command.Name)
 	if len(command.Argv) >= 3 && command.Argv[0] == "/usr/sbin/sysctl" && !shouldFail {
 		if r.sysctls == nil {

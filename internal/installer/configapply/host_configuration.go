@@ -35,6 +35,7 @@ type HostConfigurationChangePlan struct {
 	inactiveNotifications  []string
 	resetFailures          []string
 	SysctlAssignments      []HostSysctlAssignment
+	netdevs                netdevPlan
 }
 
 type HostSysctlAssignment struct {
@@ -52,7 +53,7 @@ func sortedStringUnion[A any](left, right map[string]A) []string {
 	return keys
 }
 
-func planHostConfigurationChange(current, desired manifest.HostConfiguration) HostConfigurationChangePlan {
+func planHostConfigurationChange(current, desired manifest.HostConfiguration, recreateNetdevs bool) HostConfigurationChangePlan {
 	currentSets := current.Sets
 	desiredSets := desired.Sets
 	names := sortedStringUnion(hostSetNames(currentSets), hostSetNames(desiredSets))
@@ -223,6 +224,16 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 		if strings.HasPrefix(filePath, "/etc/systemd/system/") {
 			systemdReload = true
 		}
+	}
+	plan.netdevs = planNetdevs(currentFiles, desiredFiles, desired.PreservedNetdevs, recreateNetdevs)
+	for _, name := range plan.netdevs.deletes {
+		plan.Effects = append(plan.Effects, plannedEffect("delete", "netdev "+name))
+	}
+	for _, name := range slices.Concat(plan.netdevs.recreates, plan.netdevs.deferred) {
+		plan.Effects = append(plan.Effects, plannedEffect("recreate", "netdev "+name))
+	}
+	if len(plan.netdevs.deferred) > 0 && stagedReason == "" {
+		stagedReason = fmt.Sprintf("netdev %s settings apply only when networkd creates the device; recreate on next boot, or rerun with %s to recreate live", strings.Join(plan.netdevs.deferred, ", "), RecreateNetdevsFlag)
 	}
 	for unit := range notifications {
 		if slices.Contains(desired.MaskedUnits, unit) || slices.Contains(plan.unitsToDisable, unit) {
