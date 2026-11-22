@@ -232,8 +232,13 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration, re
 	for _, name := range slices.Concat(plan.netdevs.recreates, plan.netdevs.deferred) {
 		plan.Effects = append(plan.Effects, plannedEffect("recreate", "netdev "+name))
 	}
-	if len(plan.netdevs.deferred) > 0 && stagedReason == "" {
-		stagedReason = fmt.Sprintf("netdev %s settings apply only when networkd creates the device; recreate on next boot, or rerun with %s to recreate live", strings.Join(plan.netdevs.deferred, ", "), RecreateNetdevsFlag)
+	if len(plan.netdevs.deferred) > 0 {
+		reason := fmt.Sprintf("netdev %s settings apply only when networkd creates the device; recreate on next boot, or rerun with %s to recreate live", strings.Join(plan.netdevs.deferred, ", "), RecreateNetdevsFlag)
+		if stagedReason == "" {
+			stagedReason = reason
+		} else {
+			stagedReason += "; " + reason
+		}
 	}
 	for unit := range notifications {
 		if slices.Contains(desired.MaskedUnits, unit) || slices.Contains(plan.unitsToDisable, unit) {

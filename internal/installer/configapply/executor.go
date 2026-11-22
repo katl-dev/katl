@@ -53,8 +53,10 @@ type Executor struct {
 	// requested the apply; netdev changes must not remove it.
 	ManagementAddress   netip.Addr
 	NetdevSettleTimeout time.Duration
-	Timeout             time.Duration
-	Now                 func() time.Time
+	// ResolveHost resolves control-plane endpoint names; nil uses the system resolver.
+	ResolveHost func(ctx context.Context, host string) ([]netip.Addr, error)
+	Timeout     time.Duration
+	Now         func() time.Time
 }
 
 func (e Executor) ExecuteLive(ctx context.Context, plan Result) (generation.ConfigApplyStatus, error) {
@@ -191,10 +193,19 @@ func (e Executor) endpointOwnershipEnabled(record generation.Record) (bool, erro
 }
 
 func (e Executor) runActions(ctx context.Context, status *generation.ConfigApplyStatus) error {
+	if e.HostConfiguration != nil {
+		defer func() { e.HostConfiguration.netdevs.onDelete = nil }()
+	}
 	for i := range status.DomainActions {
 		action := &status.DomainActions[i]
 		if action.Status == generation.ConfigApplyActionSkipped {
 			continue
+		}
+		if action.Domain == DomainHostConfiguration && e.HostConfiguration != nil {
+			e.HostConfiguration.netdevs.onDelete = func(name string) {
+				markNetdevDeleting(action, name)
+				_ = e.writeStatus(*status)
+			}
 		}
 		if action.Domain == DomainHostConfiguration {
 			if err := e.applyHostSysctls(ctx, action, status); err != nil {

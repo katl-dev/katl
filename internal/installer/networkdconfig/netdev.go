@@ -2,8 +2,6 @@ package networkdconfig
 
 import (
 	"bufio"
-	"path"
-	"sort"
 	"strings"
 )
 
@@ -15,38 +13,20 @@ type Netdev struct {
 	// blank lines, or cosmetic settings. networkd applies it only when it
 	// creates the device, so any difference requires recreation.
 	Definition string
+	// VLANID is the [VLAN] Id of a VLAN device.
+	VLANID string
+	// Conditional reports a [Match] section, which can keep networkd from
+	// creating the device on this host.
+	Conditional bool
 }
 
 // Netdevs returns the virtual devices declared by .netdev units and their
 // drop-ins, keyed by device name. files maps absolute paths to content; paths
 // outside Directory are ignored.
 func Netdevs(files map[string]string) map[string]Netdev {
-	var units []string
-	dropIns := map[string][]string{}
-	for filePath := range files {
-		if !IsPath(filePath) {
-			continue
-		}
-		relative := strings.TrimPrefix(filePath, Directory+"/")
-		directory, name, nested := strings.Cut(relative, "/")
-		switch {
-		case !nested && strings.HasSuffix(relative, ".netdev"):
-			units = append(units, filePath)
-		case nested && strings.HasSuffix(directory, ".netdev.d") && strings.HasSuffix(name, ".conf"):
-			unit := strings.TrimSuffix(directory, ".d")
-			dropIns[unit] = append(dropIns[unit], filePath)
-		}
-	}
-	// networkd orders units by file name; the first unit naming a device wins.
-	sort.Slice(units, func(i, j int) bool { return path.Base(units[i]) < path.Base(units[j]) })
 	netdevs := map[string]Netdev{}
-	for _, unit := range units {
-		paths := dropIns[path.Base(unit)]
-		sort.Slice(paths, func(i, j int) bool { return path.Base(paths[i]) < path.Base(paths[j]) })
-		var settings []string
-		for _, filePath := range append([]string{unit}, paths...) {
-			settings = append(settings, unitSettings(files[filePath])...)
-		}
+	// networkd orders units by file name; the first unit naming a device wins.
+	for _, settings := range mergedUnits(files, ".netdev") {
 		netdev := Netdev{Definition: strings.Join(settings, "\n")}
 		for _, setting := range settings {
 			switch {
@@ -54,6 +34,10 @@ func Netdevs(files map[string]string) map[string]Netdev {
 				netdev.Name = strings.TrimPrefix(setting, "[NetDev]Name=")
 			case strings.HasPrefix(setting, "[NetDev]Kind="):
 				netdev.Kind = strings.TrimPrefix(setting, "[NetDev]Kind=")
+			case strings.HasPrefix(setting, "[VLAN]Id="):
+				netdev.VLANID = strings.TrimPrefix(setting, "[VLAN]Id=")
+			case strings.HasPrefix(setting, "[Match]"):
+				netdev.Conditional = true
 			}
 		}
 		if netdev.Name == "" {

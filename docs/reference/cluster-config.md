@@ -311,19 +311,50 @@ recreation interrupts traffic through that device, and through devices stacked
 on it, until networkd configures it again. It does not reconfigure the
 device's parent link.
 
-Katl refuses a live deletion or recreation when the device carries the address
-`katlctl` used for the apply, the node's Kubernetes address (or, without
-`kubernetes.address`, the default-route link that kubelet uses), or the
-control-plane endpoint or VIP. It also refuses when such a device depends on
-the target, as when the target is the bond below a management VLAN or a port of
-a management bridge. Stage such a change with `--mode next-boot` when the node
+Katl refuses a live deletion or recreation when the device carries one of these
+addresses:
+
+- the address `katlctl` used for the apply, or the node's recorded management
+  address;
+- the node's Kubernetes address or, without `kubernetes.address`, a link that
+  carries a default route, which kubelet uses;
+- the control-plane endpoint or VIP. Katl resolves an endpoint name without a
+  VIP when it checks, and refuses when the name does not resolve.
+
+It also refuses when such a device depends on the target. For example, the
+target might be the bond below a management VLAN, a port of a management
+bridge, or the link that carries a management tunnel. Katl also refuses when it
+cannot tell which link carries a tunnel that holds one of these addresses, such
+as a WireGuard interface. Katl repeats the check immediately before each
+deletion. Stage such a change with `--mode next-boot` when the node
 stays reachable at the same address, for example when a bridge and its port
 share a MAC address and DHCP reservation. When the address moves, follow
 [Re-address a worker](../operations/change-cluster-nodes.md#re-address-a-worker).
+Katl also refuses to delete a device that a retained netdev, such as a VLAN that
+stays configured, is stacked on or enslaved to.
 
-After a live apply, Katl reads kernel link state and fails the apply when a
-device that it added or recreated is missing or a device that it deleted is
-still present. The failed apply rolls back to the previous generation.
+After a live apply, Katl reads kernel link state and fails the apply when it
+does not match the configuration:
+
+- a device that it deleted is still present;
+- a device that it added or recreated is missing or has the wrong kind, VLAN id,
+  parent link, or ports;
+- an unchanged device is missing or lost its parent or ports.
+
+Katl reports, but does not verify, a `.netdev` whose `[Match]` conditions may
+not apply to the host and a stacked device such as a VLAN that no `.network`
+unit references, because networkd does not create those. It leaves a removed
+device in place when networkd still loads another unit for it, such as one under
+`/run/systemd/network`.
+
+A failed apply rolls back to the previous generation. Katl then checks that the
+previous devices came back as they were before the apply. It does not
+reconfigure links to force them back, because that can drop the addresses of a
+management link. When a device did not come back, the rollback is reported as
+failed and names the device; reboot the node to rebuild it from the selected
+generation. If the agent stops while deleting a device, the generation's apply
+status names that device.
+
 Devices follow the booted or live-activated generation. After a rollback or a
 reboot into another generation, the next live apply compares against the
 generation that is actually running.
