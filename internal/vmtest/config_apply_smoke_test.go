@@ -784,6 +784,11 @@ func runOptionalUnitFailureSmoke(t *testing.T, ctx context.Context, node *Runnin
 	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "optional-unit-result", "systemctl", "show", "--property=Result", "--value", "vmtest-optional-failure.service")); got != "exit-code" {
 		t.Fatalf("optional unit result = %q, want exit-code", got)
 	}
+	// A configured unit's native Before=network-pre.target holds at boot: it
+	// starts while networking and management services are still waiting.
+	if got := strings.Fields(guestCommandOutput(t, ctx, guest, "before-network-states", "systemd-run", "--quiet", "--wait", "--collect", "--pipe", "/usr/bin/cat", "/run/vmtest-before-network")); !slices.Equal(got, []string{"inactive", "inactive", "inactive"}) {
+		t.Fatalf("networkd, sshd, and katlc-agent states when a pre-network unit started = %q, want inactive", got)
+	}
 	statusOutput := runKatlctl(t, ctx, result, katlctl, "status-after-optional-unit-failure", "node", "status", "cp-1")
 	if !strings.Contains(string(statusOutput), candidate) {
 		t.Fatalf("katlctl status does not show promoted generation %s:\n%s", candidate, statusOutput)

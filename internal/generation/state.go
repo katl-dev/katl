@@ -35,32 +35,33 @@ type KubernetesProjectionRequest struct {
 }
 
 type StateAssets struct {
-	VarMount            string
-	EFIMount            string
-	EtcKubernetesMount  string
-	GenerationActivate  string
-	HostConfigPrepare   string
-	HostConfigVerify    string
-	ExtensionReload     string
-	ExtensionActivate   string
-	VolumesTarget       string
-	VolumesActivate     string
-	KubeadmActivate     string
-	KubeadmReadyTarget  string
-	BootCompleteTarget  string
-	BootHealthSettled   string
-	BootHealthService   string
-	BootRecoveryService string
-	BootDeadmanService  string
-	BootDeadmanTimer    string
-	ContainerdDropIn    string
-	KubeletDropIn       string
-	StateCheckService   string
-	AgentService        string
-	Tmpfiles            string
-	ExtraMounts         []ExtraMountUnit
-	Dirs                []StateDir
-	MountPoints         []StateDir
+	VarMount             string
+	EFIMount             string
+	EtcKubernetesMount   string
+	GenerationActivate   string
+	HostConfigPrepare    string
+	HostConfigVerify     string
+	ExtensionReload      string
+	ExtensionActivate    string
+	ConfiguredUnitsCheck string
+	VolumesTarget        string
+	VolumesActivate      string
+	KubeadmActivate      string
+	KubeadmReadyTarget   string
+	BootCompleteTarget   string
+	BootHealthSettled    string
+	BootHealthService    string
+	BootRecoveryService  string
+	BootDeadmanService   string
+	BootDeadmanTimer     string
+	ContainerdDropIn     string
+	KubeletDropIn        string
+	StateCheckService    string
+	AgentService         string
+	Tmpfiles             string
+	ExtraMounts          []ExtraMountUnit
+	Dirs                 []StateDir
+	MountPoints          []StateDir
 }
 
 type StateDir struct {
@@ -121,30 +122,31 @@ func RenderState(request StateRequest) (StateAssets, error) {
 			"WantedBy=local-fs.target",
 			"",
 		}, "\n"),
-		EtcKubernetesMount:  kubernetesMount,
-		GenerationActivate:  renderGenerationActivateService(),
-		HostConfigPrepare:   renderHostConfigPrepareService(),
-		HostConfigVerify:    renderHostConfigVerifyService(),
-		ExtensionReload:     renderSystemExtensionReloadService(),
-		ExtensionActivate:   renderSystemExtensionActivateService(),
-		VolumesTarget:       renderVolumesTarget(),
-		VolumesActivate:     renderVolumesActivateService(),
-		KubeadmActivate:     renderKubeadmActivateService(),
-		KubeadmReadyTarget:  renderKubeadmReadyTarget(),
-		BootCompleteTarget:  renderBootCompleteTarget(),
-		BootHealthSettled:   renderBootHealthSettledTarget(),
-		BootHealthService:   renderBootHealthService(),
-		BootRecoveryService: renderBootRecoveryService(),
-		BootDeadmanService:  renderBootDeadmanService(),
-		BootDeadmanTimer:    renderBootDeadmanTimer(),
-		ContainerdDropIn:    renderContainerdDropIn(),
-		KubeletDropIn:       renderKubeletDropIn(),
-		StateCheckService:   renderStateCheckService(),
-		AgentService:        renderAgentService(),
-		Tmpfiles:            renderTmpfiles(dirs),
-		ExtraMounts:         extraMounts,
-		Dirs:                dirs,
-		MountPoints:         append([]StateDir{{Path: KubernetesTarget, Mode: 0o755}}, extraMountPoints...),
+		EtcKubernetesMount:   kubernetesMount,
+		GenerationActivate:   renderGenerationActivateService(),
+		HostConfigPrepare:    renderHostConfigPrepareService(),
+		HostConfigVerify:     renderHostConfigVerifyService(),
+		ExtensionReload:      renderSystemExtensionReloadService(),
+		ExtensionActivate:    renderSystemExtensionActivateService(),
+		ConfiguredUnitsCheck: renderConfiguredUnitsCheckService(),
+		VolumesTarget:        renderVolumesTarget(),
+		VolumesActivate:      renderVolumesActivateService(),
+		KubeadmActivate:      renderKubeadmActivateService(),
+		KubeadmReadyTarget:   renderKubeadmReadyTarget(),
+		BootCompleteTarget:   renderBootCompleteTarget(),
+		BootHealthSettled:    renderBootHealthSettledTarget(),
+		BootHealthService:    renderBootHealthService(),
+		BootRecoveryService:  renderBootRecoveryService(),
+		BootDeadmanService:   renderBootDeadmanService(),
+		BootDeadmanTimer:     renderBootDeadmanTimer(),
+		ContainerdDropIn:     renderContainerdDropIn(),
+		KubeletDropIn:        renderKubeletDropIn(),
+		StateCheckService:    renderStateCheckService(),
+		AgentService:         renderAgentService(),
+		Tmpfiles:             renderTmpfiles(dirs),
+		ExtraMounts:          extraMounts,
+		Dirs:                 dirs,
+		MountPoints:          append([]StateDir{{Path: KubernetesTarget, Mode: 0o755}}, extraMountPoints...),
 	}
 	return assets, nil
 }
@@ -310,6 +312,7 @@ func renderSystemExtensionReloadService() string {
 		"[Unit]",
 		"Description=Reload systemd after merging system extension configuration",
 		"Documentation=man:systemd-sysext(8) man:systemd-confext(8)",
+		"DefaultDependencies=no",
 		"Requires=systemd-sysext.service systemd-confext.service",
 		"# Host preparation may reload unit definitions before applying notifications.",
 		"After=systemd-sysext.service systemd-confext.service katl-host-config-prepare.service",
@@ -330,9 +333,12 @@ func renderSystemExtensionActivateService() string {
 		"[Unit]",
 		"Description=Activate configured systemd units",
 		"Documentation=man:systemd.service(5)",
+		"DefaultDependencies=no",
 		"Requires=katl-system-extensions-reload.service katl-host-config-verify.service",
 		"After=katl-system-extensions-reload.service katl-host-config-verify.service",
-		"Before=katl-boot-health.service",
+		"# Queue configured units while the services they may order themselves",
+		"# before are still waiting, so native Before= ordering holds.",
+		"Before=sysinit.target network-pre.target systemd-networkd.service katl-boot-health.service",
 		"",
 		"[Service]",
 		"Type=oneshot",
@@ -340,6 +346,27 @@ func renderSystemExtensionActivateService() string {
 		"StandardOutput=journal+console",
 		"SyslogIdentifier=katl-system-extensions-activate",
 		"ExecStart=/usr/lib/katl/runtime/katl-host-config-activate --root=/ --phase=units",
+		"",
+	}, "\n")
+}
+
+func renderConfiguredUnitsCheckService() string {
+	return strings.Join([]string{
+		"[Unit]",
+		"Description=Check configured systemd units required for boot health",
+		"Documentation=man:systemd.target(5)",
+		"Requires=katl-system-extensions-activate.service",
+		"# Activation queues the target without waiting for it. Its job holds this",
+		"# check until units required for boot health have started or failed.",
+		"After=katl-system-extensions-activate.service katl-configured-units.target",
+		"Before=katl-boot-health.service",
+		"",
+		"[Service]",
+		"Type=oneshot",
+		"RemainAfterExit=yes",
+		"StandardOutput=journal+console",
+		"SyslogIdentifier=katl-configured-units-check",
+		"ExecStart=/usr/bin/systemctl is-active --quiet katl-configured-units.target",
 		"",
 	}, "\n")
 }
@@ -445,8 +472,8 @@ func renderBootHealthService() string {
 		"[Unit]",
 		"Description=Record successful Katl boot health",
 		"Documentation=man:systemd.service(5)",
-		"Requires=etc-kubernetes.mount katl-system-extensions-activate.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service",
-		"After=etc-kubernetes.mount katl-system-extensions-activate.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service",
+		"Requires=etc-kubernetes.mount katl-system-extensions-activate.service katl-configured-units-check.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service",
+		"After=etc-kubernetes.mount katl-system-extensions-activate.service katl-configured-units-check.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service",
 		"Before=katl-boot-complete.target",
 		"OnFailure=katl-boot-recovery.service",
 		"RequiresMountsFor=/efi /var/lib/katl",
@@ -637,6 +664,9 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/katl-system-extensions-activate.service", assets.ExtensionActivate, 0o644); err != nil {
+		return StateAssets{}, err
+	}
+	if err := writeFile(root, "etc/systemd/system/katl-configured-units-check.service", assets.ConfiguredUnitsCheck, 0o644); err != nil {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/katl-volumes.target", assets.VolumesTarget, 0o644); err != nil {

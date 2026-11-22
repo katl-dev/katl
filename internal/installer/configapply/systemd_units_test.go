@@ -38,13 +38,52 @@ func TestSystemdBootTransaction(t *testing.T) {
 	for _, command := range plan.Commands {
 		if len(command.Argv) > 1 && command.Argv[1] == "start" {
 			starts++
-			if strings.Join(command.Argv, " ") != "systemctl start katl-configured-units.target" {
+			if strings.Join(command.Argv, " ") != "systemctl start --no-block katl-configured-units.target" {
 				t.Fatalf("start transaction = %v", command.Argv)
 			}
 		}
 	}
 	if starts != 1 {
 		t.Fatalf("got %d start transactions, want native dependency ordering in one", starts)
+	}
+}
+
+// Boot health checks the configured target, so activation must start it even
+// when no unit is configured and an older generation has no target to merge.
+func TestEmptyBootActivationStartsTarget(t *testing.T) {
+	for _, merged := range []bool{false, true} {
+		t.Run(map[bool]string{false: "fallback", true: "merged"}[merged], func(t *testing.T) {
+			root := t.TempDir()
+			if merged {
+				dir := filepath.Join(root, "etc/systemd/system")
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "katl-configured-units.target"), []byte("[Unit]\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			plan, err := PrepareSystemdActivation(t.Context(), root, manifest.NodeConfig{}, &fakeCommandRunner{})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var got []string
+			for _, command := range plan.Commands {
+				got = append(got, strings.Join(command.Argv, " "))
+			}
+			want := []string{"systemctl start --no-block katl-configured-units.target"}
+			if !merged {
+				want = append([]string{"systemctl daemon-reload"}, want...)
+				if _, err := os.Stat(filepath.Join(root, "run/systemd/system/katl-configured-units.target")); err != nil {
+					t.Fatalf("fallback target: %v", err)
+				}
+			}
+			if !slices.Equal(got, want) {
+				t.Fatalf("commands = %q, want %q", got, want)
+			}
+		})
 	}
 }
 
@@ -177,7 +216,7 @@ func TestBootNotificationsWaitForExtensions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Commands) != 1 || strings.Join(plan.Commands[0].Argv, " ") != "systemctl restart early.service" {
+	if len(plan.Commands) != 3 || strings.Join(plan.Commands[0].Argv, " ") != "systemctl restart early.service" {
 		t.Fatalf("boot notification commands = %#v", plan.Commands)
 	}
 }
@@ -201,7 +240,7 @@ func TestBootDerivesSystemdComponentNotification(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Commands) != 1 || strings.Join(plan.Commands[0].Argv, " ") != "systemctl reload systemd-journald.service" {
+	if len(plan.Commands) != 3 || strings.Join(plan.Commands[0].Argv, " ") != "systemctl reload systemd-journald.service" {
 		t.Fatalf("boot component commands = %#v", plan.Commands)
 	}
 }

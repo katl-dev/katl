@@ -1,9 +1,12 @@
 [Unit]
 Description=Activate configured systemd units
 Documentation=man:systemd.service(5)
+DefaultDependencies=no
 Requires=katl-system-extensions-reload.service katl-host-config-verify.service
 After=katl-system-extensions-reload.service katl-host-config-verify.service
-Before=katl-boot-health.service
+# Queue configured units while the services they may order themselves
+# before are still waiting, so native Before= ordering holds.
+Before=sysinit.target network-pre.target systemd-networkd.service katl-boot-health.service
 
 [Service]
 Type=oneshot

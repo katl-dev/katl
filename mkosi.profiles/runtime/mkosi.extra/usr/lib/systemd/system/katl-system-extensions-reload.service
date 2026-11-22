@@ -1,6 +1,7 @@
 [Unit]
 Description=Reload systemd after merging system extension configuration
 Documentation=man:systemd-sysext(8) man:systemd-confext(8)
+DefaultDependencies=no
 Requires=systemd-sysext.service systemd-confext.service
 # Host preparation may reload unit definitions before applying notifications.
 After=systemd-sysext.service systemd-confext.service katl-host-config-prepare.service

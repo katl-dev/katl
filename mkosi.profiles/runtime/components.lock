@@ -1191,6 +1191,7 @@ system-unit katl-boot-deadman.timer
 system-unit katl-boot-health-settled.target
 system-unit katl-boot-health.service
 system-unit katl-boot-recovery.service
+system-unit katl-configured-units-check.service
 system-unit katl-console.service
 system-unit katl-endpoint-activate.service
 system-unit katl-generation-activate.service
