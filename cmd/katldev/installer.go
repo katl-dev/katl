@@ -24,8 +24,9 @@ import (
 
 const (
 	installerStateAPIVersion = "katl.dev/v1alpha1"
-	installerStateKind       = "KatlDevInstallerVM"
-	installerDomainMetadata  = "katl/katldev-installer"
+	installerStateKind       = "KatlDevWorldNode"
+	legacyStateKind          = "KatlDevInstallerVM"
+	legacyDomainMetadata     = "katl/katldev-installer"
 	vmtestMetadataURI        = "https://katlos.io/xmlns/vmtest/1"
 	katldevTargetDisk        = "/dev/disk/by-id/virtio-katl-root"
 )
@@ -39,10 +40,15 @@ type installerOptions struct {
 	ForceConfig bool
 }
 
+// installerState records one world VM so later sessions can find and resume
+// it. IPAddress and Endpoint are the last observed address, which differs
+// from the node's reservation after readdress until the VM reboots.
 type installerState struct {
 	APIVersion   string    `json:"apiVersion"`
 	Kind         string    `json:"kind"`
 	RepoRoot     string    `json:"repoRoot"`
+	World        string    `json:"world,omitempty"`
+	Node         string    `json:"node,omitempty"`
 	Revision     string    `json:"revision,omitempty"`
 	Dirty        bool      `json:"dirty,omitempty"`
 	DomainName   string    `json:"domainName"`
@@ -69,101 +75,25 @@ type installerManager struct {
 	client   *http.Client
 	run      buildCommandRunner
 	runVirsh func(context.Context, string, ...string) ([]byte, error)
+	// guestsConfig reads libvirt-guests.service settings; nil uses systemctl.
+	guestsConfig func() (libvirtGuestsConfig, error)
 }
 
+// newInstallerCommand keeps the single-VM workflow as a one-node world.
 func newInstallerCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "installer",
-		Short: "Manage a persistent KatlOS installer VM for manual UX testing",
+		Short: "Manage a one-node katldev world (see katldev world for more VMs)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
 	}
-	cmd.AddCommand(newInstallerStartCommand(ctx, stdout, stderr, false))
-	cmd.AddCommand(newInstallerStartCommand(ctx, stdout, stderr, true))
-	cmd.AddCommand(newInstallerStatusCommand(ctx, stdout, stderr))
-	cmd.AddCommand(newInstallerStopCommand(ctx, stdout, stderr))
-	cmd.AddCommand(newInstallerConsoleCommand(ctx, stdout, stderr))
+	cmd.AddCommand(newWorldStartCommand(ctx, stdout, stderr, "start", "Start or resume the persistent installer VM"))
+	cmd.AddCommand(newWorldStartCommand(ctx, stdout, stderr, "reset", "Wipe the world and boot a fresh installer"))
+	cmd.AddCommand(newWorldStatusCommand(ctx, stdout, stderr))
+	cmd.AddCommand(newWorldStopCommand(ctx, stdout, stderr, "stop"))
+	cmd.AddCommand(newWorldConsoleCommand(ctx, stdout, stderr, "console"))
 	return cmd
-}
-
-func newInstallerStartCommand(ctx context.Context, stdout, stderr io.Writer, reset bool) *cobra.Command {
-	opts := installerOptions{MemoryMiB: 4096, CPUs: 2, DiskSize: "32G", Timeout: 3 * time.Minute}
-	name := "start"
-	short := "Start or resume the persistent installer VM"
-	if reset {
-		name = "reset"
-		short = "Wipe the managed VM and boot a fresh installer"
-	}
-	cmd := &cobra.Command{
-		Use:   name,
-		Short: short,
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			manager, err := loadInstallerManager(stdout, stderr)
-			if err != nil {
-				return err
-			}
-			return manager.start(ctx, opts, reset)
-		},
-	}
-	cmd.Flags().IntVar(&opts.MemoryMiB, "memory", opts.MemoryMiB, "guest memory in MiB")
-	cmd.Flags().IntVar(&opts.CPUs, "cpus", opts.CPUs, "guest virtual CPUs")
-	cmd.Flags().StringVar(&opts.DiskSize, "disk-size", opts.DiskSize, "fresh target disk size")
-	cmd.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "installer DHCP and readiness timeout")
-	cmd.Flags().BoolVar(&opts.NoBuild, "no-build", false, "use the existing installer ISO without checking the current checkout")
-	cmd.Flags().BoolVar(&opts.ForceConfig, "force-config", false, "replace the generated katldev ClusterConfig")
-	return cmd
-}
-
-func newInstallerStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	return &cobra.Command{
-		Use:   "status",
-		Short: "Show the managed VM, network endpoint, and installer state",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			manager, err := loadInstallerManager(stdout, stderr)
-			if err != nil {
-				return err
-			}
-			return manager.status(ctx)
-		},
-	}
-}
-
-func newInstallerStopCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	var force bool
-	timeout := 3 * time.Minute
-	cmd := &cobra.Command{
-		Use:   "stop",
-		Short: "Request guest shutdown and wait for the managed VM to power off",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			manager, err := loadInstallerManager(stdout, stderr)
-			if err != nil {
-				return err
-			}
-			return manager.stop(ctx, timeout, force)
-		},
-	}
-	cmd.Flags().DurationVar(&timeout, "timeout", timeout, "guest shutdown timeout")
-	cmd.Flags().BoolVar(&force, "force", false, "cut power immediately, bypassing guest shutdown")
-	return cmd
-}
-
-func newInstallerConsoleCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	return &cobra.Command{
-		Use:   "console",
-		Short: "Attach to the managed VM serial console",
-		Args:  cobra.NoArgs,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			manager, err := loadInstallerManager(stdout, stderr)
-			if err != nil {
-				return err
-			}
-			return manager.console(ctx)
-		},
-	}
 }
 
 func loadInstallerManager(stdout, stderr io.Writer) (installerManager, error) {
@@ -199,50 +129,6 @@ func repositoryRoot() (string, error) {
 	return filepath.Abs(root)
 }
 
-func (manager installerManager) start(ctx context.Context, opts installerOptions, reset bool) error {
-	if err := validateInstallerOptions(opts); err != nil {
-		return err
-	}
-	state, stateErr := manager.readState()
-	if stateErr != nil && !errors.Is(stateErr, os.ErrNotExist) {
-		return stateErr
-	}
-	if !reset && stateErr == nil {
-		exists, err := manager.domainExists(ctx, state.LibvirtURI, state.DomainName)
-		if err != nil {
-			return err
-		}
-		if exists {
-			if err := manager.requireOwnedDomain(ctx, state.LibvirtURI, state.DomainName); err != nil {
-				return err
-			}
-			return manager.resume(ctx, state, opts)
-		}
-		fmt.Fprintln(manager.stderr, "katldev installer: recorded domain is missing; recreating it")
-	}
-
-	iso, digest, err := manager.prepareInstaller(ctx, opts.NoBuild)
-	if err != nil {
-		return err
-	}
-	if err := manager.removeManagedVM(ctx, state); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(manager.stateRoot()); err != nil {
-		return fmt.Errorf("remove previous installer VM state: %w", err)
-	}
-
-	state, err = manager.create(ctx, opts, iso, digest)
-	if err != nil {
-		return err
-	}
-	state, err = manager.waitReady(ctx, state, opts.Timeout)
-	if err != nil {
-		return err
-	}
-	return manager.ready(ctx, state, opts.ForceConfig)
-}
-
 func validateInstallerOptions(opts installerOptions) error {
 	if opts.MemoryMiB < 1024 {
 		return errors.New("--memory must be at least 1024 MiB")
@@ -261,7 +147,7 @@ func validateInstallerOptions(opts installerOptions) error {
 
 func (manager installerManager) prepareInstaller(ctx context.Context, noBuild bool) (string, string, error) {
 	if !noBuild {
-		fmt.Fprintln(manager.stderr, "katldev installer: checking current checkout installer artifacts")
+		fmt.Fprintln(manager.stderr, "katldev world: checking current checkout installer artifacts")
 		command := exec.CommandContext(ctx, filepath.Join(manager.repoRoot, "scripts", "mkosi"), "build-installer-iso")
 		command.Dir = manager.repoRoot
 		command.Stdout = manager.stderr
@@ -281,33 +167,20 @@ func (manager installerManager) prepareInstaller(ctx context.Context, noBuild bo
 	return iso, digest, nil
 }
 
-func (manager installerManager) create(ctx context.Context, opts installerOptions, iso, digest string) (installerState, error) {
-	runID, mac := installerIdentity(manager.repoRoot)
-	stateRoot := manager.stateRoot()
-	scenario := vmtest.Scenario{
-		Name:      "katldev installer",
-		RunID:     runID,
-		StateRoot: stateRoot,
-		Keep:      vmtest.KeepAlways,
-		KVM:       vmtest.KVMAuto,
-		Disks:     []vmtest.DiskFixture{vmtest.TargetDisk("root", string(vmtest.DiskQCOW2), opts.DiskSize)},
-	}
-	runner := vmtest.NewRunner(vmtest.Options{StateRoot: stateRoot, Keep: vmtest.KeepAlways, KVM: vmtest.KVMAuto, RunID: runID})
-	result, err := runner.Plan(scenario)
+// createNode defines and boots a fresh installer VM for node, replacing any
+// domain of the same name that this world owns.
+func (manager installerManager) createNode(ctx context.Context, world katldevWorld, node vmtest.Node, opts installerOptions, iso, digest string) (installerState, error) {
+	result, err := world.Scenario.PlanNodeVM(node, []vmtest.DiskFixture{vmtest.TargetDisk("root", string(vmtest.DiskQCOW2), opts.DiskSize)}, vmtest.KVMAuto)
 	if err != nil {
-		return installerState{}, fmt.Errorf("plan installer VM: %w", err)
+		return installerState{}, fmt.Errorf("plan VM %s: %w", node.Name, err)
 	}
-	if err := vmtest.CreateDisks(ctx, vmtest.ExecDiskRunner{}, result.Disks); err != nil {
-		return installerState{}, fmt.Errorf("create installer VM disk: %w", err)
-	}
-	uri := firstNonEmpty(os.Getenv("KATL_VMTEST_LIBVIRT_URI"), "qemu:///system")
-	network := firstNonEmpty(os.Getenv("KATL_VMTEST_LIBVIRT_NETWORK"), "default")
+	uri := world.World.Libvirt.URI
 	config := vmtest.VMConfig{
 		Boot:             vmtest.VMBoot{ISO: iso, DiskFirst: true},
 		VirshPath:        firstNonEmpty(os.Getenv("KATL_VMTEST_VIRSH"), "virsh"),
 		ImageTool:        firstNonEmpty(os.Getenv("KATL_VMTEST_IMAGE_TOOL"), "qemu-img"),
 		LibvirtURI:       uri,
-		LibvirtNetwork:   network,
+		LibvirtNetwork:   world.World.Network.Name,
 		OVMFCode:         os.Getenv("KATL_OVMF_CODE"),
 		OVMFVars:         os.Getenv("KATL_OVMF_VARS"),
 		PreserveNVRAM:    true,
@@ -315,17 +188,29 @@ func (manager installerManager) create(ctx context.Context, opts installerOption
 		RAMMiB:           opts.MemoryMiB,
 		CPUs:             opts.CPUs,
 		Phase:            "installer",
-		Network:          vmtest.VMNetworkConfig{Mode: vmtest.VMNetworkUser, MAC: mac},
-		DomainMetadata:   installerDomainMetadata,
+		Network:          vmtest.VMNetworkConfig{Mode: vmtest.VMNetworkUser, MAC: node.MACAddress},
+		DomainMetadata:   world.owner(),
 		PersistentSerial: true,
 		HotplugPCISlots:  3,
 	}
 	plan, err := vmtest.PlanVM(result, config)
 	if err != nil {
-		return installerState{}, fmt.Errorf("plan libvirt installer VM: %w", err)
+		return installerState{}, fmt.Errorf("plan libvirt VM %s: %w", node.Name, err)
+	}
+	if err := manager.removeDomainIfPresent(ctx, uri, plan.DomainName, world.owner()); err != nil {
+		return installerState{}, err
+	}
+	if err := os.RemoveAll(node.DiskDir); err != nil {
+		return installerState{}, err
+	}
+	if err := os.MkdirAll(node.DiskDir, 0o755); err != nil {
+		return installerState{}, err
+	}
+	if err := vmtest.CreateDisks(ctx, vmtest.ExecDiskRunner{}, result.Disks); err != nil {
+		return installerState{}, fmt.Errorf("create VM %s disk: %w", node.Name, err)
 	}
 	if err := vmtest.PrepareVM(plan, config); err != nil {
-		return installerState{}, fmt.Errorf("prepare libvirt installer VM: %w", err)
+		return installerState{}, fmt.Errorf("prepare libvirt VM %s: %w", node.Name, err)
 	}
 	serial, err := os.OpenFile(plan.SerialLog, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -345,12 +230,14 @@ func (manager installerManager) create(ctx context.Context, opts installerOption
 		APIVersion:   installerStateAPIVersion,
 		Kind:         installerStateKind,
 		RepoRoot:     manager.repoRoot,
+		World:        world.World.RunID,
+		Node:         node.Name,
 		Revision:     revision,
 		Dirty:        dirty,
 		DomainName:   plan.DomainName,
 		LibvirtURI:   uri,
-		Network:      network,
-		MACAddress:   mac,
+		Network:      world.World.Network.Name,
+		MACAddress:   node.MACAddress,
 		InstallerISO: iso,
 		ISOSHA256:    digest,
 		TargetDisk:   result.Disks[0].HostPath,
@@ -361,118 +248,141 @@ func (manager installerManager) create(ctx context.Context, opts installerOption
 		DiskSize:     opts.DiskSize,
 		StartedAt:    time.Now().UTC(),
 	}
-	if err := manager.writeState(state); err != nil {
+	if err := manager.writeState(node, state); err != nil {
 		return installerState{}, err
 	}
 	return state, nil
 }
 
-func (manager installerManager) resume(ctx context.Context, state installerState, opts installerOptions) error {
+// resume powers on a recorded VM; report waits for it to answer.
+func (manager installerManager) resume(ctx context.Context, state installerState) error {
 	domainState, err := manager.domainState(ctx, state.LibvirtURI, state.DomainName)
 	if err != nil {
 		return err
 	}
 	switch domainState {
 	case "running", "idle", "in shutdown":
-		if status, statusErr := manager.installerStatus(ctx, state.Endpoint); statusErr == nil {
-			if installerAcceptingConfig(status) {
-				return manager.ready(ctx, state, opts.ForceConfig)
-			}
-			return manager.printCurrent(ctx, state, domainState)
-		}
-		if state.IPAddress != "" && tcpReachable(ctx, net.JoinHostPort(state.IPAddress, "9443"), 500*time.Millisecond) {
-			return manager.printCurrent(ctx, state, domainState)
-		}
-		return manager.waitResumed(ctx, state, opts)
+		return nil
 	case "paused":
-		if _, err := manager.virsh(ctx, state.LibvirtURI, "resume", state.DomainName); err != nil {
-			return err
-		}
+		_, err = manager.virsh(ctx, state.LibvirtURI, "resume", state.DomainName)
 	case "shut off", "crashed", "pmsuspended":
-		if _, err := manager.virsh(ctx, state.LibvirtURI, "start", state.DomainName); err != nil {
-			return err
-		}
+		_, err = manager.virsh(ctx, state.LibvirtURI, "start", state.DomainName)
 	default:
-		return fmt.Errorf("installer VM %s is in unsupported state %q", state.DomainName, domainState)
+		return fmt.Errorf("VM %s is in unsupported state %q", state.DomainName, domainState)
 	}
-	return manager.waitResumed(ctx, state, opts)
+	return err
 }
 
-func (manager installerManager) waitResumed(ctx context.Context, state installerState, opts installerOptions) error {
-	readyCtx, cancel := context.WithTimeout(ctx, opts.Timeout)
-	defer cancel()
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	lastAddress := state.IPAddress
-	for {
-		lease, leaseErr := manager.discoverLease(readyCtx, state)
-		if leaseErr == nil {
-			lastAddress = lease.IPAddress
-			endpoint := "http://" + net.JoinHostPort(lease.IPAddress, "8080")
-			if status, err := manager.installerStatus(readyCtx, endpoint); err == nil {
-				state.IPAddress = lease.IPAddress
-				state.Endpoint = endpoint
-				if err := manager.writeState(state); err != nil {
-					return err
-				}
-				if installerAcceptingConfig(status) {
-					return manager.ready(ctx, state, opts.ForceConfig)
-				}
-				return manager.printCurrent(readyCtx, state, "running")
-			}
-			if tcpReachable(readyCtx, net.JoinHostPort(lease.IPAddress, "9443"), 500*time.Millisecond) {
-				state.IPAddress = lease.IPAddress
-				state.Endpoint = endpoint
-				if err := manager.writeState(state); err != nil {
-					return err
-				}
-				return manager.printCurrent(readyCtx, state, "running")
-			}
-		}
-		select {
-		case <-readyCtx.Done():
-			return fmt.Errorf("VM is running%s but neither the installer nor KatlOS management API became reachable within %s; inspect %s or run katldev installer console", addressDetail(lastAddress), opts.Timeout, state.SerialLog)
-		case <-ticker.C:
-		}
+// nodeObservation is one read-only look at a world VM.
+type nodeObservation struct {
+	Node        vmtest.Node
+	State       installerState
+	Exists      bool
+	DomainState string
+	// Installer is the installer API state, empty when it does not answer.
+	Installer string
+	// KatlOS reports that the KatlOS management API answers instead.
+	KatlOS bool
+	// ConfigNode names the cluster.yaml node at the observed address.
+	ConfigNode string
+}
+
+func (observation nodeObservation) waiting() bool {
+	return installerAcceptingConfig(observation.Installer)
+}
+
+func (observation nodeObservation) reachable() bool {
+	return observation.Installer != "" || observation.KatlOS
+}
+
+func (observation nodeObservation) summary() string {
+	switch {
+	case !observation.Exists:
+		return "missing"
+	case observation.Installer != "":
+		return "installer " + observation.Installer
+	case observation.KatlOS:
+		return "KatlOS management API reachable"
+	case observation.DomainState == "running":
+		return "unreachable"
+	default:
+		return observation.DomainState
 	}
 }
 
-func (manager installerManager) waitReady(ctx context.Context, state installerState, timeout time.Duration) (installerState, error) {
-	readyCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	var lastErr error
-	lastAddress := ""
-	for {
-		lease, leaseErr := manager.discoverLease(readyCtx, state)
-		if leaseErr == nil {
-			lastAddress = lease.IPAddress
-			endpoint := "http://" + net.JoinHostPort(lease.IPAddress, "8080")
-			status, statusErr := manager.installerStatus(readyCtx, endpoint)
-			if statusErr == nil {
-				if !installerAcceptingConfig(status) {
-					return state, fmt.Errorf("installer API is reachable but is not waiting for config: state=%s", status)
-				}
-				state.IPAddress = lease.IPAddress
-				state.Endpoint = endpoint
-				if err := manager.writeState(state); err != nil {
-					return state, err
-				}
-				return state, nil
-			}
-			lastErr = statusErr
+// observe reads the VM's domain, DHCP lease, and APIs. When the VM answers at
+// a new address, the recorded state follows it.
+func (manager installerManager) observe(ctx context.Context, world katldevWorld, node vmtest.Node) (nodeObservation, error) {
+	observation := nodeObservation{Node: node}
+	state, err := manager.readState(node)
+	if errors.Is(err, os.ErrNotExist) {
+		return observation, nil
+	}
+	if err != nil {
+		return observation, err
+	}
+	observation.State = state
+	observation.Exists, err = manager.domainExists(ctx, state.LibvirtURI, state.DomainName)
+	if err != nil || !observation.Exists {
+		return observation, err
+	}
+	if err := manager.requireOwnedDomain(ctx, state.LibvirtURI, state.DomainName, world.owner()); err != nil {
+		return observation, err
+	}
+	if observation.DomainState, err = manager.domainState(ctx, state.LibvirtURI, state.DomainName); err != nil {
+		return observation, err
+	}
+	if observation.DomainState != "running" {
+		return observation, nil
+	}
+
+	addresses := []string{}
+	if lease, err := vmtest.DiscoverLibvirtLease(ctx, firstNonEmpty(os.Getenv("KATL_VMTEST_VIRSH"), "virsh"), state.LibvirtURI, state.Network, state.MACAddress); err == nil {
+		addresses = append(addresses, lease.IPAddress)
+	}
+	addresses = append(addresses, state.IPAddress, node.Address)
+	for _, address := range addresses {
+		if address == "" {
+			continue
+		}
+		endpoint := "http://" + net.JoinHostPort(address, "8080")
+		if current, err := manager.installerStatus(ctx, endpoint); err == nil {
+			observation.Installer = current
+		} else if tcpReachable(ctx, net.JoinHostPort(address, "9443"), 500*time.Millisecond) {
+			observation.KatlOS = true
 		} else {
-			lastErr = leaseErr
+			continue
+		}
+		if state.IPAddress != address || state.Endpoint != endpoint {
+			state.IPAddress, state.Endpoint = address, endpoint
+			if err := manager.writeState(node, state); err != nil {
+				return observation, err
+			}
+		}
+		observation.State = state
+		break
+	}
+	return observation, nil
+}
+
+// waitReachable waits for a running VM to answer as an installer or KatlOS.
+func (manager installerManager) waitReachable(ctx context.Context, world katldevWorld, node vmtest.Node, timeout time.Duration) (nodeObservation, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	for {
+		observation, err := manager.observe(waitCtx, world, node)
+		if err == nil && (observation.reachable() || !observation.Exists) {
+			return observation, nil
+		}
+		if err != nil && waitCtx.Err() == nil {
+			return observation, err
 		}
 		select {
-		case <-readyCtx.Done():
-			return state, fmt.Errorf("VM is running%s but the installer API did not become ready within %s: %w; inspect %s or run katldev installer console", addressDetail(lastAddress), timeout, lastErr, state.SerialLog)
+		case <-waitCtx.Done():
+			return observation, fmt.Errorf("VM %s is running%s but neither the installer nor KatlOS management API became reachable within %s; inspect %s or run katldev world console %s", node.Name, addressDetail(firstNonEmpty(observation.State.IPAddress, node.Address)), timeout, observation.State.SerialLog, node.Name)
 		case <-time.After(500 * time.Millisecond):
 		}
 	}
-}
-
-func (manager installerManager) discoverLease(ctx context.Context, state installerState) (vmtest.LibvirtLease, error) {
-	return vmtest.DiscoverLibvirtLease(ctx, firstNonEmpty(os.Getenv("KATL_VMTEST_VIRSH"), "virsh"), state.LibvirtURI, state.Network, state.MACAddress)
 }
 
 func addressDetail(address string) string {
@@ -506,7 +416,11 @@ func (manager installerManager) installerStatus(ctx context.Context, endpoint st
 	if err != nil {
 		return "", err
 	}
-	response, err := manager.client.Do(request)
+	client := manager.client
+	if client == nil {
+		client = &http.Client{Timeout: 2 * time.Second}
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return "", err
 	}
@@ -520,159 +434,277 @@ func (manager installerManager) installerStatus(ctx context.Context, endpoint st
 	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&status); err != nil {
 		return "", err
 	}
+	if strings.TrimSpace(status.State) == "" {
+		return "", errors.New("installer status has no state")
+	}
 	return strings.TrimSpace(status.State), nil
 }
 
 func (manager installerManager) status(ctx context.Context) error {
-	state, err := manager.readState()
+	manager.warnHostShutdown()
+	world, err := manager.requireWorld()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return errors.New("installer VM does not exist; run katldev installer start")
+		return err
+	}
+	observations := make([]nodeObservation, 0, len(world.Scenario.Nodes))
+	for _, node := range world.Scenario.Nodes {
+		observation, err := manager.observe(ctx, world, node)
+		if err != nil {
+			return err
 		}
-		return err
+		observations = append(observations, observation)
 	}
-	exists, err := manager.domainExists(ctx, state.LibvirtURI, state.DomainName)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("installer VM %s is missing; run katldev installer reset", state.DomainName)
-	}
-	if err := manager.requireOwnedDomain(ctx, state.LibvirtURI, state.DomainName); err != nil {
-		return err
-	}
-	domainState, err := manager.domainState(ctx, state.LibvirtURI, state.DomainName)
-	if err != nil {
-		return err
-	}
-	return manager.printCurrent(ctx, state, domainState)
-}
-
-func (manager installerManager) printCurrent(ctx context.Context, state installerState, domainState string) error {
-	installerState := "unreachable"
-	if state.Endpoint != "" && domainState == "running" {
-		if current, err := manager.installerStatus(ctx, state.Endpoint); err == nil {
-			installerState = current
-		} else if state.IPAddress != "" && tcpReachable(ctx, net.JoinHostPort(state.IPAddress, "9443"), 500*time.Millisecond) {
-			installerState = "not active (KatlOS management API is reachable)"
-		}
-	}
-	fmt.Fprintf(manager.stdout, "VM: %s (%s)\n", state.DomainName, domainState)
-	fmt.Fprintf(manager.stdout, "Address: %s\n", firstNonEmpty(state.IPAddress, "not assigned"))
-	fmt.Fprintf(manager.stdout, "Endpoint: %s\n", firstNonEmpty(state.Endpoint, "not assigned"))
-	fmt.Fprintf(manager.stdout, "Installer: %s\n", installerState)
-	fmt.Fprintf(manager.stdout, "Checkout: %s%s\n", firstNonEmpty(state.Revision, "unknown"), dirtySuffix(state.Dirty))
-	fmt.Fprintf(manager.stdout, "Serial log: %s\n", state.SerialLog)
-	if domainState == "running" {
-		fmt.Fprintln(manager.stdout, "Console: katldev installer console")
-	}
-	fmt.Fprintln(manager.stdout, "Fresh installer: katldev installer reset")
+	manager.labelConfigNodes(observations)
+	manager.printWorld(world, observations)
+	fmt.Fprintln(manager.stdout)
+	manager.printFooter()
 	return nil
 }
 
-func (manager installerManager) ready(ctx context.Context, state installerState, forceConfig bool) error {
-	configPath, created, err := manager.ensureClusterConfig(ctx, state, forceConfig)
+func (manager installerManager) clusterConfigPath() string {
+	return filepath.Join(manager.repoRoot, "_build", "katldev", "cluster.yaml")
+}
+
+func (manager installerManager) labelConfigNodes(observations []nodeObservation) {
+	for i := range observations {
+		address := firstNonEmpty(observations[i].State.IPAddress, observations[i].Node.Address)
+		if name, err := matchingKatldevConfig(manager.clusterConfigPath(), address); err == nil {
+			observations[i].ConfigNode = name
+		}
+	}
+}
+
+// report waits for every VM to answer, keeps one cluster.yaml for the world,
+// and prints how to install waiting VMs. Only a new or forced config is
+// generated; nodes added later go through the operator's add-node procedure.
+func (manager installerManager) report(ctx context.Context, world katldevWorld, opts installerOptions, added []string) error {
+	manager.warnHostShutdown()
+	observations := make([]nodeObservation, 0, len(world.Scenario.Nodes))
+	for _, node := range world.Scenario.Nodes {
+		observation, err := manager.waitReachable(ctx, world, node, opts.Timeout)
+		if err != nil {
+			return err
+		}
+		observations = append(observations, observation)
+	}
+	configStatus, err := manager.ensureClusterConfig(ctx, observations, opts.ForceConfig)
 	if err != nil {
 		return err
 	}
-	return manager.printReady(state, configPath, created)
+	manager.labelConfigNodes(observations)
+
+	fmt.Fprintln(manager.stdout, "KatlOS world is ready.")
+	manager.printWorld(world, observations)
+	fmt.Fprintf(manager.stdout, "\nCluster config: %s (%s)\n", manager.clusterConfigPath(), configStatus)
+	for _, observation := range observations {
+		if !observation.waiting() {
+			continue
+		}
+		fmt.Fprintln(manager.stdout)
+		if observation.ConfigNode != "" {
+			fmt.Fprintf(manager.stdout, "Install %s:\n", observation.Node.Name)
+			fmt.Fprintf(manager.stdout, "  katlctl install apply --config %s --node %s\n", manager.clusterConfigPath(), observation.ConfigNode)
+			continue
+		}
+		manager.printAddNode(observation)
+	}
+	for _, name := range added {
+		if observation := findObservation(observations, name); observation != nil && !observation.waiting() {
+			fmt.Fprintf(manager.stdout, "\n%s is %s rather than waiting for configuration.\n", name, observation.summary())
+		}
+	}
+	fmt.Fprintln(manager.stdout)
+	manager.printFooter()
+	return nil
 }
 
-func (manager installerManager) ensureClusterConfig(ctx context.Context, state installerState, force bool) (string, bool, error) {
-	configPath := filepath.Join(manager.repoRoot, "_build", "katldev", "cluster.yaml")
-	if !force {
-		err := matchingKatldevConfig(configPath, state)
-		switch {
-		case err == nil:
-			return configPath, false, nil
-		case errors.Is(err, os.ErrNotExist):
-		default:
-			return "", false, fmt.Errorf("waiting installer is ready, but existing ClusterConfig %s does not match it: %w; rerun with --force-config to replace the generated config", configPath, err)
+func findObservation(observations []nodeObservation, name string) *nodeObservation {
+	for i := range observations {
+		if observations[i].Node.Name == name {
+			return &observations[i]
 		}
+	}
+	return nil
+}
+
+func (manager installerManager) printWorld(world katldevWorld, observations []nodeObservation) {
+	fmt.Fprintf(manager.stdout, "World: %s\n", world.World.RunID)
+	fmt.Fprintf(manager.stdout, "Network: %s (%s)\n", world.World.Network.Name, world.World.Network.CIDR)
+	for _, observation := range observations {
+		node := observation.Node
+		fmt.Fprintf(manager.stdout, "\n%s: %s\n", node.Name, observation.summary())
+		if observation.State.DomainName != "" {
+			fmt.Fprintf(manager.stdout, "  VM: %s (%s)\n", observation.State.DomainName, firstNonEmpty(observation.DomainState, "absent"))
+		}
+		address := firstNonEmpty(observation.State.IPAddress, "not observed")
+		if node.Address != observation.State.IPAddress {
+			address += ", reserved " + node.Address + " for its next boot"
+		}
+		fmt.Fprintf(manager.stdout, "  Address: %s\n", address)
+		if observation.Installer != "" {
+			fmt.Fprintf(manager.stdout, "  Endpoint: %s\n", observation.State.Endpoint)
+		}
+		fmt.Fprintf(manager.stdout, "  Cluster node: %s\n", firstNonEmpty(observation.ConfigNode, "not in cluster.yaml"))
+		if observation.State.Revision != "" {
+			fmt.Fprintf(manager.stdout, "  Installer checkout: %s%s\n", observation.State.Revision, dirtySuffix(observation.State.Dirty))
+		}
+		if observation.State.SerialLog != "" {
+			fmt.Fprintf(manager.stdout, "  Serial log: %s\n", observation.State.SerialLog)
+		}
+	}
+}
+
+func (manager installerManager) printAddNode(observation nodeObservation) {
+	node := observation.Node
+	address := firstNonEmpty(observation.State.IPAddress, node.Address)
+	fmt.Fprintf(manager.stdout, "Add %s to cluster.yaml (docs/operations/change-cluster-nodes.md), for example:\n", node.Name)
+	fmt.Fprintf(manager.stdout, "  - name: %s\n", node.Name)
+	if node.Role == vmtest.ControlPlane {
+		fmt.Fprintln(manager.stdout, "    controlPlane: true")
+	}
+	fmt.Fprintln(manager.stdout, "    install:")
+	fmt.Fprintln(manager.stdout, "      systemDisk:")
+	fmt.Fprintf(manager.stdout, "        byID: %s\n", katldevTargetDisk)
+	fmt.Fprintln(manager.stdout, "    management:")
+	fmt.Fprintf(manager.stdout, "      address: %s\n", address)
+	fmt.Fprintln(manager.stdout, "Then validate, install, and join it to the bootstrapped cluster:")
+	fmt.Fprintf(manager.stdout, "  katlctl config validate %s\n", manager.clusterConfigPath())
+	fmt.Fprintf(manager.stdout, "  katlctl install apply --config %s --node %s\n", manager.clusterConfigPath(), node.Name)
+	fmt.Fprintf(manager.stdout, "  katlctl node join %s --config %s\n", node.Name, manager.clusterConfigPath())
+}
+
+func (manager installerManager) printFooter() {
+	fmt.Fprintln(manager.stdout, "Console: katldev world console NODE")
+	fmt.Fprintln(manager.stdout, "Add VM:  katldev world add-node [--control-plane]")
+	fmt.Fprintln(manager.stdout, "Reset:   katldev world reset")
+}
+
+func (manager installerManager) ensureClusterConfig(ctx context.Context, observations []nodeObservation, force bool) (string, error) {
+	configPath := manager.clusterConfigPath()
+	var waiting []string
+	listed := false
+	for _, observation := range observations {
+		address := firstNonEmpty(observation.State.IPAddress, observation.Node.Address)
+		if observation.waiting() {
+			waiting = append(waiting, observation.State.Endpoint)
+		}
+		if _, err := matchingKatldevConfig(configPath, address); err == nil {
+			listed = true
+		} else if !errors.Is(err, os.ErrNotExist) && !errors.Is(err, errNodeUnlisted) {
+			return "", fmt.Errorf("read ClusterConfig %s: %w", configPath, err)
+		}
+	}
+	_, statErr := os.Stat(configPath)
+	switch {
+	case statErr != nil && !errors.Is(statErr, os.ErrNotExist):
+		return "", statErr
+	case !force && statErr == nil && listed:
+		return "existing", nil
+	case !force && statErr == nil && len(waiting) > 0:
+		return "", fmt.Errorf("the world's installers are ready, but existing ClusterConfig %s lists none of its VMs; rerun with --force-config to replace it", configPath)
+	case !force && statErr == nil:
+		return "existing", nil
+	case len(waiting) == 0:
+		return "not created: no VM is waiting for configuration", nil
+	}
+
+	args := []string{"run", "./cmd/katlctl", "config", "init", configPath}
+	for _, endpoint := range waiting {
+		args = append(args, "--installer", endpoint)
+	}
+	if force {
+		args = append(args, "--force")
 	}
 	run := manager.run
 	if run == nil {
 		run = runBuildCommand
 	}
-	args := []string{"config", "init", configPath, "--installer", state.Endpoint}
-	if force {
-		args = append(args, "--force")
-	}
-	if err := run(ctx, manager.repoRoot, "go", append([]string{"run", "./cmd/katlctl"}, args...), nil, manager.stdout, manager.stderr); err != nil {
-		return "", false, fmt.Errorf("generate ClusterConfig for waiting installer: %w", err)
+	if err := run(ctx, manager.repoRoot, "go", args, nil, manager.stdout, manager.stderr); err != nil {
+		return "", fmt.Errorf("generate ClusterConfig for waiting installers: %w", err)
 	}
 	if _, err := os.Stat(configPath); err != nil {
-		return "", false, fmt.Errorf("katlctl did not create ClusterConfig %s: %w", configPath, err)
+		return "", fmt.Errorf("katlctl did not create ClusterConfig %s: %w", configPath, err)
 	}
-	return configPath, true, nil
+	return "created", nil
 }
 
-func matchingKatldevConfig(path string, state installerState) error {
+var errNodeUnlisted = errors.New("no node uses this address and the katldev target disk")
+
+// matchingKatldevConfig returns the config node that uses address and the
+// katldev target disk.
+func matchingKatldevConfig(path, address string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer file.Close()
 	source, err := configbundle.DecodeSource(file)
 	if err != nil {
-		return fmt.Errorf("decode config: %w", err)
+		return "", fmt.Errorf("decode config: %w", err)
 	}
 	for _, node := range source.Spec.Nodes {
-		if node.Management.Address != state.IPAddress {
+		if node.Management.Address != address {
 			continue
 		}
 		layer, err := configbundle.ResolveNodeLayer(source.Spec.Defaults, node)
 		if err != nil {
-			return fmt.Errorf("resolve node %s: %w", node.Name, err)
+			return "", fmt.Errorf("resolve node %s: %w", node.Name, err)
 		}
 		if layer.Install.TargetDisk != nil && layer.Install.TargetDisk.ByID == katldevTargetDisk {
-			return nil
+			return node.Name, nil
 		}
 	}
-	return fmt.Errorf("no node uses address %s and target disk %s", state.IPAddress, katldevTargetDisk)
+	return "", fmt.Errorf("%w: %s", errNodeUnlisted, address)
 }
 
-func (manager installerManager) printReady(state installerState, configPath string, configCreated bool) error {
-	configState := "existing"
-	if configCreated {
-		configState = "created"
-	}
-	fmt.Fprintln(manager.stdout, "KatlOS installer VM is ready.")
-	fmt.Fprintf(manager.stdout, "VM: %s\n", state.DomainName)
-	fmt.Fprintf(manager.stdout, "Endpoint: %s\n", state.Endpoint)
-	fmt.Fprintf(manager.stdout, "Target disk: %s\n", katldevTargetDisk)
-	fmt.Fprintf(manager.stdout, "Cluster config: %s (%s)\n", configPath, configState)
-	fmt.Fprintln(manager.stdout)
-	fmt.Fprintln(manager.stdout, "Install the VM:")
-	fmt.Fprintf(manager.stdout, "  katlctl install apply --config %s --endpoint %s\n", configPath, state.Endpoint)
-	fmt.Fprintln(manager.stdout)
-	fmt.Fprintln(manager.stdout, "Console: katldev installer console")
-	fmt.Fprintln(manager.stdout, "Reset:   katldev installer reset")
-	return nil
-}
-
-func (manager installerManager) stop(ctx context.Context, timeout time.Duration, force bool) error {
+func (manager installerManager) stop(ctx context.Context, names []string, timeout time.Duration, force bool) error {
 	if timeout <= 0 {
 		return errors.New("--timeout must be positive")
 	}
+	world, err := manager.requireWorld()
+	if err != nil {
+		return err
+	}
+	nodes := world.Scenario.Nodes
+	if len(names) > 0 {
+		nodes = nil
+		for _, name := range names {
+			node, err := manager.worldNode(world, name)
+			if err != nil {
+				return err
+			}
+			nodes = append(nodes, node)
+		}
+	}
+	for _, node := range nodes {
+		state, err := manager.readState(node)
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(manager.stdout, "%s has no VM.\n", node.Name)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := manager.stopDomain(ctx, state, world.owner(), timeout, force); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (manager installerManager) stopDomain(ctx context.Context, state installerState, owner string, timeout time.Duration, force bool) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	state, err := manager.readState()
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return errors.New("installer VM does not exist; run katldev installer start")
-		}
-		return err
-	}
 	exists, err := manager.domainExists(ctx, state.LibvirtURI, state.DomainName)
 	if err != nil {
 		return err
 	}
 	if !exists {
-		return fmt.Errorf("installer VM %s is already absent", state.DomainName)
+		fmt.Fprintf(manager.stdout, "VM %s is already absent.\n", state.DomainName)
+		return nil
 	}
-	if err := manager.requireOwnedDomain(ctx, state.LibvirtURI, state.DomainName); err != nil {
+	if err := manager.requireOwnedDomain(ctx, state.LibvirtURI, state.DomainName, owner); err != nil {
 		return err
 	}
 	domainState, err := manager.domainState(ctx, state.LibvirtURI, state.DomainName)
@@ -684,7 +716,7 @@ func (manager installerManager) stop(ctx context.Context, timeout time.Duration,
 			if _, err := manager.virsh(ctx, state.LibvirtURI, "destroy", state.DomainName); err != nil {
 				return err
 			}
-			fmt.Fprintf(manager.stdout, "Cut power to %s. Resume it with katldev installer start.\n", state.DomainName)
+			fmt.Fprintf(manager.stdout, "Cut power to %s. Resume it with katldev world start.\n", state.DomainName)
 			return nil
 		}
 		switch domainState {
@@ -695,10 +727,10 @@ func (manager installerManager) stop(ctx context.Context, timeout time.Duration,
 			}
 		case "in shutdown":
 		default:
-			return fmt.Errorf("VM %s is %s; run katldev installer start to resume it before stopping, or use stop --force to cut power", state.DomainName, domainState)
+			return fmt.Errorf("VM %s is %s; run katldev world start to resume it before stopping, or use stop --force to cut power", state.DomainName, domainState)
 		}
 
-		fmt.Fprintf(manager.stderr, "katldev installer: waiting up to %s for %s to shut down\n", timeout, state.DomainName)
+		fmt.Fprintf(manager.stderr, "katldev world: waiting up to %s for %s to shut down\n", timeout, state.DomainName)
 		ticker := time.NewTicker(500 * time.Millisecond)
 		defer ticker.Stop()
 		for domainState != "shut off" {
@@ -709,49 +741,55 @@ func (manager installerManager) stop(ctx context.Context, timeout time.Duration,
 				domainState, err = manager.domainState(ctx, state.LibvirtURI, state.DomainName)
 			}
 			if err != nil {
-				return fmt.Errorf("shutdown of %s was not confirmed: %w; inspect katldev installer console and status, then retry stop with a longer --timeout or use --force to cut power", state.DomainName, err)
+				return fmt.Errorf("shutdown of %s was not confirmed: %w; inspect katldev world console %s and status, then retry stop with a longer --timeout or use --force to cut power", state.DomainName, err, state.Node)
 			}
 			if domainState == "crashed" {
-				return fmt.Errorf("VM %s crashed during shutdown; inspect katldev installer console", state.DomainName)
+				return fmt.Errorf("VM %s crashed during shutdown; inspect katldev world console %s", state.DomainName, state.Node)
 			}
 		}
 	}
-	fmt.Fprintf(manager.stdout, "Stopped %s. Resume it with katldev installer start or wipe it with katldev installer reset.\n", state.DomainName)
+	fmt.Fprintf(manager.stdout, "Stopped %s. Resume it with katldev world start or wipe the world with katldev world reset.\n", state.DomainName)
 	return nil
 }
 
-func (manager installerManager) console(ctx context.Context) error {
-	state, err := manager.readState()
+func (manager installerManager) console(ctx context.Context, name string) error {
+	world, err := manager.requireWorld()
+	if err != nil {
+		return err
+	}
+	node, err := manager.worldNode(world, name)
+	if err != nil {
+		return err
+	}
+	state, err := manager.readState(node)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return errors.New("installer VM does not exist; run katldev installer start")
+			return fmt.Errorf("%s has no VM; run katldev world start", node.Name)
 		}
 		return err
 	}
+	if err := manager.requireOwnedDomain(ctx, state.LibvirtURI, state.DomainName, world.owner()); err != nil {
+		return err
+	}
 	virsh := firstNonEmpty(os.Getenv("KATL_VMTEST_VIRSH"), "virsh")
-	args := []string{"-c", state.LibvirtURI, "console", state.DomainName, "--force"}
-	command := exec.CommandContext(ctx, virsh, args...)
+	command := exec.CommandContext(ctx, virsh, "-c", state.LibvirtURI, "console", state.DomainName, "--force")
 	command.Stdin = os.Stdin
 	command.Stdout = manager.stdout
 	command.Stderr = manager.stderr
 	return command.Run()
 }
 
-func (manager installerManager) removeManagedVM(ctx context.Context, state installerState) error {
-	uri := firstNonEmpty(state.LibvirtURI, os.Getenv("KATL_VMTEST_LIBVIRT_URI"), "qemu:///system")
-	domain := state.DomainName
-	if domain == "" {
-		runID, _ := installerIdentity(manager.repoRoot)
-		domain = "katl-" + runID
-	}
+func (manager installerManager) removeDomainIfPresent(ctx context.Context, uri, domain, owner string) error {
 	exists, err := manager.domainExists(ctx, uri, domain)
-	if err != nil {
+	if err != nil || !exists {
 		return err
 	}
-	if !exists {
-		return nil
-	}
-	if err := manager.requireOwnedDomain(ctx, uri, domain); err != nil {
+	return manager.removeDomain(ctx, uri, domain, owner)
+}
+
+// removeDomain destroys and undefines a domain only after confirming owner.
+func (manager installerManager) removeDomain(ctx context.Context, uri, domain, owner string) error {
+	if err := manager.requireOwnedDomain(ctx, uri, domain, owner); err != nil {
 		return err
 	}
 	domainState, err := manager.domainState(ctx, uri, domain)
@@ -772,10 +810,8 @@ func (manager installerManager) removeManagedVM(ctx context.Context, state insta
 			return err
 		}
 	}
-	if _, err := manager.virsh(ctx, uri, "undefine", domain, "--nvram"); err != nil {
-		return err
-	}
-	return nil
+	_, err = manager.virsh(ctx, uri, "undefine", domain, "--nvram")
+	return err
 }
 
 func (manager installerManager) domainHasManagedSave(ctx context.Context, uri, domain string) (bool, error) {
@@ -813,17 +849,17 @@ func (manager installerManager) domainState(ctx context.Context, uri, domain str
 	return strings.TrimSpace(string(output)), nil
 }
 
-func (manager installerManager) requireOwnedDomain(ctx context.Context, uri, domain string) error {
+func (manager installerManager) requireOwnedDomain(ctx context.Context, uri, domain, owner string) error {
 	output, err := manager.virsh(ctx, uri, "metadata", domain, "--uri", vmtestMetadataURI)
 	if err != nil {
-		return fmt.Errorf("refusing to manage libvirt domain %s without Katl developer ownership metadata: %w", domain, err)
+		return fmt.Errorf("refusing to manage libvirt domain %s without katldev ownership metadata: %w", domain, err)
 	}
-	owner, err := domainOwner(output)
+	got, err := domainOwner(output)
 	if err != nil {
 		return fmt.Errorf("decode libvirt domain %s ownership metadata: %w", domain, err)
 	}
-	if owner != installerDomainMetadata {
-		return fmt.Errorf("refusing to manage libvirt domain %s owned by %q", domain, owner)
+	if got != owner {
+		return fmt.Errorf("refusing to manage libvirt domain %s owned by %q", domain, got)
 	}
 	return nil
 }
@@ -852,53 +888,66 @@ func (manager installerManager) virsh(ctx context.Context, uri string, args ...s
 	return output, nil
 }
 
-func (manager installerManager) stateRoot() string {
-	return filepath.Join(manager.repoRoot, "_build", "katldev", "installer")
+func (manager installerManager) statePath(node vmtest.Node) string {
+	return filepath.Join(node.ArtifactDir, "state.json")
 }
 
-func (manager installerManager) statePath() string {
-	return filepath.Join(manager.stateRoot(), "state.json")
-}
-
-func (manager installerManager) readState() (installerState, error) {
-	data, err := os.ReadFile(manager.statePath())
+func (manager installerManager) readState(node vmtest.Node) (installerState, error) {
+	path := manager.statePath(node)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return installerState{}, err
 	}
 	var state installerState
 	if err := json.Unmarshal(data, &state); err != nil {
-		return installerState{}, fmt.Errorf("decode %s: %w", manager.statePath(), err)
+		return installerState{}, fmt.Errorf("decode %s: %w", path, err)
 	}
-	if state.APIVersion != installerStateAPIVersion || state.Kind != installerStateKind || state.RepoRoot != manager.repoRoot || state.DomainName == "" {
-		return installerState{}, fmt.Errorf("%s is not valid state for this checkout", manager.statePath())
+	if state.APIVersion != installerStateAPIVersion || state.Kind != installerStateKind || state.RepoRoot != manager.repoRoot ||
+		state.World != worldRunID(manager.repoRoot) || state.Node != node.Name || state.DomainName == "" {
+		return installerState{}, fmt.Errorf("%s is not valid state for VM %s of this checkout's world", path, node.Name)
 	}
 	return state, nil
 }
 
-func (manager installerManager) writeState(state installerState) error {
-	if err := os.MkdirAll(manager.stateRoot(), 0o755); err != nil {
+func (manager installerManager) writeState(node vmtest.Node, state installerState) error {
+	return writeJSONFile(manager.statePath(node), state)
+}
+
+func (manager installerManager) legacyStateRoot() string {
+	return filepath.Join(manager.repoRoot, "_build", "katldev", "installer")
+}
+
+// readLegacyState reads the single-VM state that katldev wrote before worlds.
+func (manager installerManager) readLegacyState() (installerState, error) {
+	path := filepath.Join(manager.legacyStateRoot(), "state.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return installerState{}, err
+	}
+	var state installerState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return installerState{}, fmt.Errorf("decode %s: %w", path, err)
+	}
+	if state.Kind != legacyStateKind || state.RepoRoot != manager.repoRoot || state.DomainName == "" {
+		return installerState{}, fmt.Errorf("%s is not valid state for this checkout", path)
+	}
+	return state, nil
+}
+
+func writeJSONFile(path string, value any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(state, "", "  ")
+	data, err := json.MarshalIndent(value, "", "  ")
 	if err != nil {
 		return err
 	}
 	data = append(data, '\n')
-	temporary := manager.statePath() + ".tmp"
+	temporary := path + ".tmp"
 	if err := os.WriteFile(temporary, data, 0o600); err != nil {
 		return err
 	}
-	if err := os.Rename(temporary, manager.statePath()); err != nil {
-		return err
-	}
-	return nil
-}
-
-func installerIdentity(repoRoot string) (string, string) {
-	digest := sha256.Sum256([]byte(repoRoot))
-	runID := "dev-installer-" + hex.EncodeToString(digest[:4])
-	mac := fmt.Sprintf("52:54:00:%02x:%02x:%02x", digest[4], digest[5], digest[6])
-	return runID, mac
+	return os.Rename(temporary, path)
 }
 
 func sha256File(path string) (string, error) {

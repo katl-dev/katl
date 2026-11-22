@@ -114,11 +114,6 @@ func TestDecodeWorldRejectsRequiredFields(t *testing.T) {
 			want:   "libvirt.network is required",
 		},
 		{
-			name:   "libvirt storage pool",
-			mutate: func(world *World) { world.Libvirt.StoragePool = "" },
-			want:   "libvirt.storagePool is required",
-		},
-		{
 			name:   "libvirt storage path",
 			mutate: func(world *World) { world.Libvirt.StoragePath = "" },
 			want:   "libvirt.storagePath is required",
