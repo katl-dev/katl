@@ -273,3 +273,62 @@ func TestHostRebootFollowsAddressChange(t *testing.T) {
 		})
 	}
 }
+
+// TestAddressChangeRetryAfterMove covers rerunning a re-address step at the
+// previous address once the worker answers only at its management.address.
+func TestAddressChangeRetryAfterMove(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		args []string
+		// mtls selects a configuration whose nodes are reached through the
+		// saved context instead of being observed at management.address.
+		mtls bool
+	}{
+		{name: "apply", args: []string{"cluster", "apply", "--node", "worker-1", "--endpoint", "10.0.0.13"}},
+		{name: "apply with saved context", args: []string{"cluster", "apply", "--node", "worker-1", "--endpoint", "10.0.0.13"}, mtls: true},
+		{name: "reboot", args: []string{"node", "reboot", "worker-1", "--endpoint", "10.0.0.13", "--timeout", "1s"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			path := writeMovedWorkerConfig(t, "")
+			if test.mtls {
+				data, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(strings.Replace(string(data), "managementAuthentication: trusted-network", "managementAuthentication: mtls", 1)), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				saved := workstation.Config{}.UpsertCluster("lab", workstation.Cluster{Name: "lab", Nodes: []workstation.Node{
+					{Name: "cp-1", ManagementEndpoint: "10.0.0.11:9443", SystemRole: inventory.RoleControlPlane},
+					{Name: "worker-1", ManagementEndpoint: workerCurrentEndpoint, SystemRole: inventory.RoleWorker, EnrollmentID: "enrollment-worker-1", MachineID: "machine-worker-1"},
+				}})
+				if err := workstation.Save(os.Getenv("KATLCTL_CONFIG"), saved); err != nil {
+					t.Fatal(err)
+				}
+			}
+			moved := movedWorkerClient("agent-2")
+			gone := movedWorkerClient("agent-1")
+			gone.nodeStatusErr = grpcstatus.Error(codes.Unavailable, "dial tcp 10.0.0.13:9443: connect: no route to host")
+			oldDial := dialKatlcAgent
+			t.Cleanup(func() { dialKatlcAgent = oldDial })
+			// Like gRPC, the dial succeeds and the first request fails.
+			dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
+				client := moved
+				if endpoint == workerCurrentEndpoint {
+					client = gone
+				}
+				return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
+			}
+
+			err := run(context.Background(), append(test.args, "--config", path), &bytes.Buffer{}, &bytes.Buffer{})
+
+			want := "if worker-1 already moved to its management.address 10.0.0.23, finish with 'katlctl cluster apply --config " + path + " --node worker-1' without --endpoint"
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Fatalf("error = %v, want %q", err, want)
+			}
+			if len(moved.submitRequests) != 0 || len(moved.rebootRequests) != 0 || len(gone.rebootRequests) != 0 {
+				t.Fatal("a retry at the previous address changed a node")
+			}
+		})
+	}
+}

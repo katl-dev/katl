@@ -313,8 +313,14 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, stderr io.Writ
 
 	verificationFailure := func(node inventory.Node, endpoint string, err error) error {
 		var hint string
-		if _, overridden := opts.endpoints[node.Name]; !overridden && node.SystemRole == inventory.RoleWorker && managementUnreachable(err) {
+		_, overridden := opts.endpoints[node.Name]
+		configured, _ := normalizeManagementAddress(node.Address)
+		switch {
+		case !managementUnreachable(err):
+		case !overridden && node.SystemRole == inventory.RoleWorker:
 			hint = "; " + readdressHint(node.Name, endpoint, opts.configInput, savedEndpoint(configPath, topology.ClusterName, node.Name))
+		case overridden && configured != "" && configured != endpoint:
+			hint = "; " + movedHint(node.Name, configured, opts.configInput)
 		}
 		if managementVerificationTimedOut(err) {
 			return fmt.Errorf("verify node %s management endpoint %s: timed out after %s; check the address and node reachability or increase --timeout%s", node.Name, endpoint, opts.timeout, hint)
@@ -427,6 +433,14 @@ func readdressHint(nodeName, endpoint, configInput, saved string) string {
 		return fmt.Sprintf("%s is not answering at %s, and the saved context last reached it at %s; if you are changing its address, run 'katlctl cluster apply --config %s --node %s --endpoint %s' (%s)", nodeName, endpoint, saved, configInput, nodeName, managementHost(saved), guide)
 	}
 	return fmt.Sprintf("if you are changing %s's address, run 'katlctl cluster apply --config %s --node %s --endpoint CURRENT_ADDRESS' with the address it answers at now (%s)", nodeName, configInput, nodeName, guide)
+}
+
+// movedHint names the step after a re-address reboot for a node that does not
+// answer at the --endpoint address while its configuration places it at
+// configured: a moved node answers there, so apply no longer needs --endpoint.
+func movedHint(nodeName, configured, configInput string) string {
+	host := managementHost(configured)
+	return fmt.Sprintf("if %s already moved to its management.address %s, finish with 'katlctl cluster apply --config %s --node %s' without --endpoint, after 'katlctl context rebind --node %s --endpoint %s' if you use a saved context (see docs/operations/change-cluster-nodes.md#re-address-a-worker)", nodeName, host, configInput, nodeName, nodeName, host)
 }
 
 // savedEndpoint returns the management endpoint the saved context records for
