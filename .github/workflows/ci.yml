@@ -2,6 +2,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, labeled]
   merge_group:
   push:
     branches: [main]
@@ -39,10 +40,20 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           BEFORE_SHA: ${{ github.event.before }}
+          VMTEST_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'vmtest') }}
         run: |
           mkdir -p _build
           options=(--ci)
-          if [[ "$GITHUB_EVENT_NAME" == push ]]; then options+=(--main); fi
+          # VM suites run in the merge queue and on pull requests labelled vmtest.
+          # Driver qualification runs wherever the planner selects it, except on main.
+          no_vms=false
+          no_drivers=false
+          case "$GITHUB_EVENT_NAME" in
+            pull_request)
+              if [[ "${VMTEST_LABEL:-false}" == true ]]; then options+=(--regression); else no_vms=true; fi ;;
+            merge_group) options+=(--regression) ;;
+            push) no_vms=true; no_drivers=true ;;
+          esac
           if [[ "$GITHUB_EVENT_NAME" == pull_request || "$GITHUB_EVENT_NAME" == merge_group ]]; then
             base="$BASE_SHA"
           elif [[ "$GITHUB_EVENT_NAME" == push && "$BEFORE_SHA" != 0000000000000000000000000000000000000000 ]]; then
@@ -52,7 +63,11 @@ jobs:
           fi
           # Include deletions as well as additions when a file is renamed.
           git diff --name-only --no-renames -z "$base" HEAD > _build/ci-changes
-          go run ./cmd/katl-vmtest-plan "${options[@]}" < _build/ci-changes > _build/ci-plan.json
+          go run ./cmd/katl-vmtest-plan "${options[@]}" < _build/ci-changes > _build/ci-candidates.json
+          jq -c --argjson noVMs "$no_vms" --argjson noDrivers "$no_drivers" '
+            (if $noVMs then .vmFlavours = [] | .groups = [] else . end) |
+            (if $noDrivers then .driverFlavours = [] else . end)
+          ' _build/ci-candidates.json > _build/ci-plan.json
           go run ./cmd/katl-kubernetes-release presubmit --base "$base" > _build/kubernetes-plan.json
           {
             echo "vm-flavours=$(jq -c .vmFlavours _build/ci-plan.json)"

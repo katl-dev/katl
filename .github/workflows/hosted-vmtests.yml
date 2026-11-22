@@ -30,6 +30,10 @@ on:
       scenarios:
         description: Planned include matrix; empty runs the complete suite
         type: string
+      cache-only:
+        description: Build the shared images to refresh build caches without running scenarios
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -228,7 +232,7 @@ jobs:
             _build/hosted-agent/**/stderr
           retention-days: 3
       - uses: actions/cache/save@v6
-        if: always() && steps.runtime.outcome == 'success' && steps.build-cache.outputs.cache-hit != 'true'
+        if: always() && github.event_name != 'merge_group' && steps.runtime.outcome == 'success' && steps.build-cache.outputs.cache-hit != 'true'
         with:
           path: |
             _build/go-mod
@@ -239,6 +243,7 @@ jobs:
   scenarios:
     name: VM / ${{ matrix.name }}
     needs: [plan, images]
+    if: ${{ !inputs.cache-only }}
     runs-on: ${{ needs.plan.outputs.runner }}
     timeout-minutes: 90
     strategy:

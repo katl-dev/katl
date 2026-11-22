@@ -116,8 +116,8 @@ func TestInvalidChanges(t *testing.T) {
 
 func TestCoverage(t *testing.T) {
 	t.Run("default", func(t *testing.T) { testCoverage(t, nil, "") })
-	t.Run("main", func(t *testing.T) {
-		testCoverage(t, []string{"--ci", "--main"}, "cmd/katlctl/management_rotation.go\x00")
+	t.Run("regression", func(t *testing.T) {
+		testCoverage(t, []string{"--ci", "--regression"}, "cmd/katlctl/management_rotation.go\x00")
 	})
 }
 
@@ -191,7 +191,7 @@ func TestCIPlan(t *testing.T) {
 	both := []string{"standard", "lts"}
 	for _, tc := range []struct {
 		name, paths  string
-		main         bool
+		regression   bool
 		vms, drivers []string
 	}{
 		{name: "empty"},
@@ -201,12 +201,12 @@ func TestCIPlan(t *testing.T) {
 		{name: "capture tooling", paths: "cmd/katl-kernel-release/candidate.go"},
 		{name: "proposal workflow", paths: ".github/workflows/kernel-updates.yml"},
 		{name: "kernel schedule and docs", paths: ".github/workflows/kernel-updates.yml\x00docs/developing.md"},
-		{name: "main kernel schedule and docs", paths: ".github/workflows/kernel-updates.yml\x00docs/developing.md", main: true},
+		{name: "regression kernel schedule and docs", paths: ".github/workflows/kernel-updates.yml\x00docs/developing.md", regression: true},
 		{name: "kernel schedule and lock", paths: ".github/workflows/kernel-updates.yml\x00kernels/fedora-45/x86_64/standard.json", vms: []string{"standard"}, drivers: []string{"standard"}},
 		{name: "release workflow", paths: ".github/workflows/release-artifacts.yml"},
 		{name: "production qualification workflow", paths: ".github/workflows/production-vmtests.yml"},
 		{name: "release orchestration and docs", paths: ".github/workflows/release-artifacts.yml\x00.github/workflows/production-vmtests.yml\x00docs/developing.md"},
-		{name: "main release orchestration", paths: ".github/workflows/release-artifacts.yml\x00.github/workflows/production-vmtests.yml", main: true},
+		{name: "regression release orchestration", paths: ".github/workflows/release-artifacts.yml\x00.github/workflows/production-vmtests.yml", regression: true},
 		{name: "release and image builder", paths: ".github/workflows/release-artifacts.yml\x00scripts/mkosi", vms: both, drivers: both},
 		{name: "release and standard lock", paths: ".github/workflows/release-artifacts.yml\x00kernels/fedora-44/x86_64/standard.json", vms: []string{"standard"}, drivers: []string{"standard"}},
 		{name: "production and scenario", paths: ".github/workflows/production-vmtests.yml\x00internal/vmtest/release_lifecycle_test.go", vms: both},
@@ -215,12 +215,12 @@ func TestCIPlan(t *testing.T) {
 		{name: "renamed release workflow", paths: ".github/workflows/release-artifacts.yml\x00.github/workflows/release-artifacts-new.yml", vms: both},
 		{name: "driver qualification workflow", paths: ".github/workflows/kernel-qualification.yml", vms: both, drivers: both},
 		{name: "product", paths: "cmd/katlctl/main.go", vms: []string{"standard"}},
-		{name: "main product", paths: "cmd/katlctl/main.go", main: true, vms: both},
-		{name: "main docs", paths: "README.md", main: true},
+		{name: "regression product", paths: "cmd/katlctl/main.go", regression: true, vms: both},
+		{name: "regression docs", paths: "README.md", regression: true},
 		{name: "standard lock", paths: "kernels/fedora-44/x86_64/standard.json", vms: []string{"standard"}, drivers: []string{"standard"}},
 		{name: "LTS lock", paths: "kernels/fedora-44/x86_64/lts.json", vms: []string{"lts"}, drivers: []string{"lts"}},
-		{name: "main LTS lock", paths: "kernels/fedora-44/x86_64/lts.json", main: true, vms: both},
-		{name: "main shared ABI", paths: "extensions/drbd9/build.sh", main: true, vms: both},
+		{name: "regression LTS lock", paths: "kernels/fedora-44/x86_64/lts.json", regression: true, vms: both, drivers: []string{"lts"}},
+		{name: "regression shared ABI", paths: "extensions/drbd9/build.sh", regression: true, vms: both, drivers: both},
 		{name: "both locks", paths: "kernels/fedora-44/x86_64/standard.json\x00kernels/fedora-44/x86_64/lts.json", vms: both, drivers: both},
 		{name: "DRBD recipe", paths: "extensions/drbd9/build.sh", vms: both, drivers: both},
 		{name: "driver builder", paths: "scripts/build-kernel-extension", vms: both, drivers: both},
@@ -247,8 +247,8 @@ func TestCIPlan(t *testing.T) {
 				input += "\x00"
 			}
 			args := []string{"--ci"}
-			if tc.main {
-				args = append(args, "--main")
+			if tc.regression {
+				args = append(args, "--regression")
 			}
 			var output bytes.Buffer
 			if err := run(args, strings.NewReader(input), &output); err != nil {

@@ -35,4 +35,5 @@ runs:
         # Refresh the Fedora base; unchanged layers reuse the cached tools.
         pull: true
         cache-from: type=gha,scope=mkosi-builder
-        cache-to: type=gha,scope=mkosi-builder,mode=max
+        # Merge queue refs are never restored by other runs, so they only consume cache quota.
+        cache-to: ${{ github.event_name != 'merge_group' && 'type=gha,scope=mkosi-builder,mode=max' || '' }}

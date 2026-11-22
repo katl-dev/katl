@@ -40,11 +40,11 @@ func run(args []string, input io.Reader, output io.Writer) error {
 	flags := flag.NewFlagSet("katl-vmtest-plan", flag.ContinueOnError)
 	changed := flags.Bool("changed", false, "select groups from NUL-delimited changed paths on stdin; default: all groups")
 	ci := flags.Bool("ci", false, "plan VM and driver flavours from NUL-delimited changed paths")
-	main := flags.Bool("main", false, "run both regression flavours after merge; driver qualification belongs to PRs")
+	regression := flags.Bool("regression", false, "with --ci, run both regression flavours for the merge gate when any VM suite is selected")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || (*main && !*ci) || (*changed && *ci) {
+	if flags.NArg() != 0 || (*regression && !*ci) || (*changed && *ci) {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
 	}
 	selected := groups
@@ -66,7 +66,7 @@ func run(args []string, input io.Reader, output io.Writer) error {
 			}
 		}
 		if *ci {
-			return json.NewEncoder(output).Encode(planCI(paths, *main))
+			return json.NewEncoder(output).Encode(planCI(paths, *regression))
 		}
 		selected = selectGroups(paths)
 	}
@@ -103,7 +103,7 @@ type ciPlan struct {
 	Groups         []group  `json:"groups"`
 }
 
-func planCI(paths []string, main bool) ciPlan {
+func planCI(paths []string, regression bool) ciPlan {
 	vms, drivers := map[string]bool{}, map[string]bool{}
 	for _, name := range paths {
 		if len(selectGroups([]string{name})) == 0 {
@@ -129,15 +129,11 @@ func planCI(paths []string, main bool) ciPlan {
 			vms["standard"] = true
 		}
 	}
-	if main && len(vms) != 0 {
+	if regression && len(vms) != 0 {
 		vms["standard"], vms["lts"] = true, true
 	}
-	if main {
-		// Strict branch protection already requires driver qualification before merge.
-		drivers = map[string]bool{}
-	}
 	selected := selectGroups(paths)
-	if main && len(vms) != 0 {
+	if regression && len(vms) != 0 {
 		selected = groups
 	}
 	plan := ciPlan{VMFlavours: []string{}, DriverFlavours: []string{}, Groups: batchGroups(selected)}
