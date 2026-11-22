@@ -40,8 +40,8 @@ import (
 )
 
 func TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke(t *testing.T) {
-	if run, ok := operationBackedWorldSmokeRun(t); ok {
-		runOperationBackedBootstrapSmoke(t, run, false)
+	if run, ok := operationBackedWorldSmokeRun(t, "installed-runtime-two-node-operation-backed-bootstrap"); ok {
+		runOperationBackedBootstrapSmoke(t, run, bootstrapProof)
 		return
 	}
 
@@ -53,8 +53,8 @@ func TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke(t *testing.T) {
 }
 
 func TestKubeadmUpgradeOperationSmoke(t *testing.T) {
-	if run, ok := operationBackedWorldSmokeRun(t); ok {
-		runOperationBackedBootstrapSmoke(t, run, true)
+	if run, ok := operationBackedWorldSmokeRun(t, "installed-runtime-two-node-operation-backed-bootstrap"); ok {
+		runOperationBackedBootstrapSmoke(t, run, upgradeProof)
 		return
 	}
 	options := vmtest.DefaultOptions()
@@ -107,7 +107,7 @@ type firstInstallProvenance struct {
 	FirstInstallMode     string
 }
 
-func operationBackedWorldSmokeRun(t *testing.T) (operationBackedSmokeRun, bool) {
+func operationBackedWorldSmokeRun(t *testing.T, scenarioName string) (operationBackedSmokeRun, bool) {
 	t.Helper()
 	if strings.TrimSpace(os.Getenv(vmtest.WorldManifestEnv)) == "" {
 		return operationBackedSmokeRun{}, false
@@ -118,9 +118,9 @@ func operationBackedWorldSmokeRun(t *testing.T) (operationBackedSmokeRun, bool) 
 	kvm := vmtest.DefaultOptions().KVM
 	specs := twoNodeWorldRuntimeSpecs()
 	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, specs, kvm); err != nil {
-		failWorldFixtureSetup(t, world, "installed-runtime-two-node-operation-backed-bootstrap", err)
+		failWorldFixtureSetup(t, world, scenarioName, err)
 	}
-	run, err := planOperationBackedWorldSmokeRun(world, repo, operationBackedKubernetesVersion(t, repo), kvm)
+	run, err := planOperationBackedWorldSmokeRunNamed(world, repo, operationBackedKubernetesVersion(t, repo), kvm, scenarioName)
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
@@ -165,10 +165,6 @@ func operationBackedKubernetesVersion(t *testing.T, repo string) string {
 		}
 	}
 	return "v1.36.1"
-}
-
-func planOperationBackedWorldSmokeRun(world vmtest.World, repo, kubernetesVersion string, kvm vmtest.KVMPolicy) (operationBackedSmokeRun, error) {
-	return planOperationBackedWorldSmokeRunNamed(world, repo, kubernetesVersion, kvm, "installed-runtime-two-node-operation-backed-bootstrap")
 }
 
 func planOperationBackedWorldSmokeRunNamed(world vmtest.World, repo, kubernetesVersion string, kvm vmtest.KVMPolicy, scenarioName string) (operationBackedSmokeRun, error) {
@@ -257,8 +253,19 @@ func firstInstallProvenanceFromPublished(published vmtest.PublishedFirstInstallR
 	}
 }
 
-func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRun, proveUpgrade bool) {
+// operationBackedProof selects the journey that follows the shared two-node
+// bootstrap.
+type operationBackedProof int
+
+const (
+	bootstrapProof operationBackedProof = iota
+	upgradeProof
+	readdressProof
+)
+
+func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRun, proof operationBackedProof) {
 	t.Helper()
+	proveUpgrade := proof == upgradeProof
 	canonicalEndpoint := "api.unpublished.katl.test:6443"
 	options := smoke.Options
 	runner := smoke.Runner
@@ -315,7 +322,12 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		t.Fatal(err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	timeout := 45 * time.Minute
+	if proof == readdressProof {
+		// Each re-address reboots the worker.
+		timeout += 20 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cpNode, err := vmtest.StartInstalledRuntimeNode(ctx, result, vmtest.InstalledRuntimeNodeConfig{
 		Name: "cp-1",
@@ -807,12 +819,18 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 			t.Fatalf("%s kubelet configuration after reboot: %v", node.Name, err)
 		}
 	}
-	if !proveUpgrade {
+	if proof == readdressProof {
+		if err := runWorkerDHCPReaddress(t, ctx, smoke, nodes, addresses, kubeconfigPath, kubernetesBundle, cniFixtures); err != nil {
+			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
+			collectTwoNodeDiagnostics("", nodes...)
+			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
+			t.Fatalf("worker DHCP re-address: %v", err)
+		}
 		if err := runWorkerReaddress(t, ctx, smoke, nodes, addresses, kubeconfigPath, kubernetesBundle, cniFixtures); err != nil {
 			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 			collectTwoNodeDiagnostics("", nodes...)
 			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-			t.Fatalf("worker re-address: %v", err)
+			t.Fatalf("worker static re-address: %v", err)
 		}
 	}
 	if proveUpgrade {
