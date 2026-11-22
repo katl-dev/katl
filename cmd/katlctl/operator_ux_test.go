@@ -225,6 +225,9 @@ func TestContextSaveCreatesReachableContext(t *testing.T) {
 	if len(topology.Nodes) != 1 || topology.Nodes[0].ManagementEndpoint != "10.0.0.11:9443" {
 		t.Fatalf("topology = %#v", topology)
 	}
+	if got := cfg.Clusters[0].Nodes[0].ConfiguredEndpoint; got != "10.0.0.11:9443" {
+		t.Fatalf("saved configured endpoint = %q, want the configuration's management.address", got)
+	}
 	if topology.Management == nil {
 		t.Fatal("saved context has no automatic management credentials")
 	}

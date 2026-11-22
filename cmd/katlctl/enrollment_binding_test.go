@@ -80,6 +80,9 @@ func TestContextRebindVerifiesIdentityBeforeSavingAddress(t *testing.T) {
 	if got := topology.Nodes[0].ManagementEndpoint; got != "10.0.0.91:9443" {
 		t.Fatalf("rebound endpoint = %q", got)
 	}
+	if got := cfg.Clusters[0].Nodes[0].ConfiguredEndpoint; got != "10.0.0.11:9443" {
+		t.Fatalf("rebind changed the configured endpoint to %q", got)
+	}
 	if !strings.Contains(stdout.String(), "after verifying enrollment and machine identity") {
 		t.Fatalf("stdout = %q", stdout.String())
 	}
@@ -136,6 +139,7 @@ clusters:
   nodes:
   - name: cp-1
     managementEndpoint: 10.0.0.11:9443
+    configuredEndpoint: 10.0.0.11:9443
     systemRole: control-plane
     enrollmentID: enrollment-cp-1
     machineID: machine-cp-1

@@ -255,6 +255,11 @@ In this example `worker-1` moves from `192.0.2.31` to `192.0.2.41`.
    and prints this command, with the current address filled in when a saved
    context records it.
 
+   A cluster reached through a saved context or an mTLS `.katlcfg` bundle uses
+   the saved address instead. If you omit `--endpoint` there, apply still
+   connects at the saved address and prints a warning that names both addresses
+   and these steps, so the move is not mistaken for a finished change.
+
 3. Reboot the worker:
 
    ```sh
@@ -302,6 +307,7 @@ If the reboot does not finish at the new address, use the following table:
 | The node `still answers at its previous address` | The new network configuration did not take effect. Boot health may have rejected the generation, or DHCP may still assign the old address. Correct the network files and repeat from step 2, or restore `management.address` to the old address. |
 | The address `answered as a different KatlOS installation` | Another host uses the new address. Choose a free address and repeat from step 1. |
 | The node answers at neither address | Boot health checks only that the required links come online and are routable, so a wrong but routable address can pass and become the default. Use the [local console](access.md#use-the-local-console) to inspect the network, or [select the previous generation](../concepts/generations.md#staged-trial-and-committed) from the boot menu. Then correct `cluster.yaml`. |
+| Apply warns that a node `is configured at management.address` another address than the saved context reaches it at | The configuration names a new address, but the saved context still reaches the node at its previous one. To complete a planned move, stage it and reboot with `--endpoint` at the previous address (steps 2 and 3). If the node already answers at the new address, run `katlctl context rebind` (step 4). The warning does not appear after you rebind without editing `cluster.yaml`. If it appears because `cluster.yaml` still names an address the node has since left, update `management.address` and run `katlctl context save --config ./cluster.yaml`. |
 | A rerun of step 2 or 3 cannot reach the worker at the address passed with `--endpoint` | The worker may already answer at its new `management.address`, for example after an interrupted reboot wait. The error names that address. Continue with step 4. |
 
 ## Refused transitions
