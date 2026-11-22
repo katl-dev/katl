@@ -667,6 +667,9 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		status, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 		if err != nil {
 			_ = conn.Close()
+			if change := opts.addressChange; change != nil && change.Node == node.Name && managementUnreachable(err) {
+				return activatedClusterConfig{}, fmt.Errorf("status %s before cluster config apply: %w; %s", node.Name, err, movedHint(node.Name, change.Desired, opts.configPath))
+			}
 			return activatedClusterConfig{}, fmt.Errorf("status %s before cluster config apply: %w", node.Name, err)
 		}
 		if err := verifyPlannedStatus(managementTarget{nodeName: node.Name, endpoint: cluster.AgentEndpoint(node.Address, "9443"), enrollmentID: node.EnrollmentID, machineID: node.MachineID}, status); err != nil {

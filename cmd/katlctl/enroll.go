@@ -439,7 +439,8 @@ func readdressHint(nodeName, endpoint, configInput, saved string) string {
 // answer at the --endpoint address while its configuration places it at
 // configured: a moved node answers there, so apply no longer needs --endpoint.
 func movedHint(nodeName, configured, configInput string) string {
-	return fmt.Sprintf("if %s already moved to its management.address %s, run 'katlctl cluster apply --config %s --node %s' without --endpoint (see docs/operations/change-cluster-nodes.md#re-address-a-worker)", nodeName, managementHost(configured), configInput, nodeName)
+	host := managementHost(configured)
+	return fmt.Sprintf("if %s already moved to its management.address %s, finish with 'katlctl cluster apply --config %s --node %s' without --endpoint, after 'katlctl context rebind --node %s --endpoint %s' if you use a saved context (see docs/operations/change-cluster-nodes.md#re-address-a-worker)", nodeName, host, configInput, nodeName, nodeName, host)
 }
 
 // savedEndpoint returns the management endpoint the saved context records for
