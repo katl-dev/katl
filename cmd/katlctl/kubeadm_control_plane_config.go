@@ -294,7 +294,7 @@ func writeClusterApplyReport(stdout io.Writer, format string, report clusterAppl
 		return err
 	}
 	if change := report.AddressChange; change != nil {
-		verb := "is unchanged"
+		verb := "needs no new node configuration"
 		if report.RebootRequired {
 			verb = "is staged"
 		}
