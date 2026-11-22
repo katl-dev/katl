@@ -164,6 +164,20 @@ func TestCompileResolvesKernelCommandLinePerNode(t *testing.T) {
 	}
 }
 
+func TestCompileNamesEndpointForAddedControlPlane(t *testing.T) {
+	config := validConfig()
+	config.Spec.ControlPlaneEndpoint = nil
+	second := config.Spec.Nodes[0]
+	second.Name = "cp-2"
+	second.Overrides.Bootstrap.Address = "10.0.0.12"
+	config.Spec.Nodes = append(config.Spec.Nodes, second)
+
+	_, err := Compile(CompileRequest{Config: config, KubeadmConfigs: validKubeadmConfigs("v1.36.1")})
+	if err == nil || !strings.Contains(err.Error(), "spec.controlPlaneEndpoint.host") || !strings.Contains(err.Error(), "10.0.0.11 for cp-1") {
+		t.Fatalf("Compile() error = %v, want the first control plane's address as the endpoint", err)
+	}
+}
+
 func TestCompileRejectsNativeKubeadmConflictWithManagedEndpoint(t *testing.T) {
 	config := validConfig()
 	config.Spec.ControlPlaneEndpoint = &controlplaneendpoint.Config{

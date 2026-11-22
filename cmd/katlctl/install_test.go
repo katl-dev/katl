@@ -676,7 +676,7 @@ func TestInstallReportShowsInstallationProgress(t *testing.T) {
 	if err := writeInstallReport(&out, "text", report); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "reboot-requested") || strings.Contains(out.String(), "install-starting") || !strings.Contains(out.String(), "cluster bootstrap") {
+	if !strings.Contains(out.String(), "reboot-requested") || strings.Contains(out.String(), "install-starting") || !strings.Contains(out.String(), "cluster bootstrap") || !strings.Contains(out.String(), "katlctl node join cp-1 --config") {
 		t.Fatalf("misleading final report: %s", &out)
 	}
 }

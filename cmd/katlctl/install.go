@@ -832,7 +832,7 @@ func writeInstallReport(stdout io.Writer, output string, report installHandoffRe
 				_, err := fmt.Fprintf(stdout, "Installation finished; the node is rebooting. Check 'katlctl node status' with the same config, then run 'katlctl node join %s --config <cluster.yaml> --bootstrap-kubeconfig <worker-bootstrap.conf>'.\n", report.SelectedNode)
 				return err
 			}
-			_, err := fmt.Fprintln(stdout, "Installation finished; the node is rebooting. Check 'katlctl node status' with the same config, then run 'katlctl cluster bootstrap'.")
+			_, err := fmt.Fprintf(stdout, "Installation finished; the node is rebooting. Check 'katlctl node status' with the same config, then run 'katlctl cluster bootstrap' for a new cluster or 'katlctl node join %s --config <cluster.yaml>' to add it to a running one.\n", report.SelectedNode)
 			return err
 		}
 		return nil

@@ -2,6 +2,7 @@ package clusterplan
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net"
@@ -267,6 +268,7 @@ func resolveControlPlaneEndpoint(config Config, addressOverrides map[string]stri
 	controlPlanes := 0
 	controlPlaneName := ""
 	controlPlaneAddress := ""
+	firstName, firstAddress := "", ""
 	for _, node := range config.Spec.Nodes {
 		if inventory.SystemRole(strings.TrimSpace(string(node.SystemRole))) != inventory.RoleControlPlane {
 			continue
@@ -281,6 +283,9 @@ func resolveControlPlaneEndpoint(config Config, addressOverrides map[string]stri
 		if override, ok := addressOverrides[controlPlaneName]; ok {
 			controlPlaneAddress = strings.TrimSpace(override)
 		}
+		if controlPlanes == 1 {
+			firstName, firstAddress = controlPlaneName, controlPlaneAddress
+		}
 	}
 	if controlPlanes == 0 {
 		if config.Spec.ControlPlaneEndpoint != nil && controlplaneendpoint.Managed(*config.Spec.ControlPlaneEndpoint) {
@@ -291,7 +296,14 @@ func resolveControlPlaneEndpoint(config Config, addressOverrides map[string]stri
 	endpoint := config.Spec.ControlPlaneEndpoint
 	if endpoint == nil {
 		if controlPlanes > 1 {
-			return nil, fmt.Errorf("spec.controlPlaneEndpoint is required for a cluster with more than one control-plane node")
+			// A cluster bootstrapped with one control plane already serves
+			// the API at that node's address, so naming it keeps the
+			// cluster's endpoint unchanged.
+			err := errors.New("spec.controlPlaneEndpoint is required for a cluster with more than one control-plane node")
+			if firstAddress != "" {
+				err = fmt.Errorf("%w; a cluster bootstrapped with one control plane serves its API at that node's address, so to add control planes to it set spec.controlPlaneEndpoint.host to that address, such as %s for %s", err, firstAddress, firstName)
+			}
+			return nil, err
 		}
 		if controlPlaneAddress == "" {
 			return nil, fmt.Errorf("spec.controlPlaneEndpoint is required when control-plane node %q has no bootstrap address", controlPlaneName)
