@@ -27,12 +27,27 @@ cluster change.
 
 ## Add one node
 
-Add one uniquely named node with its final role, stable disk selector,
-management address, and SSH access to `cluster.yaml`. Validate the whole file:
+Boot the new machine from the installer ISO or PXE so that it waits for
+configuration, then add it to `cluster.yaml` from its installer:
 
 ```sh
-katlctl config validate ./cluster.yaml
+katlctl config add-node ./cluster.yaml --installer 192.0.2.22
 ```
+
+The command reads the installer's address and its selectable system disk and
+appends a worker entry named after the next free `worker-N`. Pass `--name` to
+choose the name and `--role control-plane` to add a control plane. When the
+installer reports more than one selectable disk, choose one with
+`--disk /dev/disk/by-id/...`. The entry inherits `spec.defaults`, such as SSH
+keys, and the rest of `cluster.yaml`, including comments, is left as written.
+
+The command validates the result as `katlctl config validate` does. It leaves
+`cluster.yaml` unchanged and explains the refusal when the result would be
+invalid, the name is taken, or the address is already listed under another
+name or role. Running it again for an installer that is already listed reports
+the entry unchanged. Add per-node settings, such as
+[networkd files](../reference/cluster-config.md#networkd-files), by editing
+the entry, then run `katlctl config validate ./cluster.yaml`.
 
 A cluster with more than one control plane needs `spec.controlPlaneEndpoint`.
 If the cluster was bootstrapped with one control plane and without that field,
@@ -50,11 +65,11 @@ apply updates only node-local API access. Any other host or port is refused
 after bootstrap. The endpoint stays tied to that node's address; see
 [Change a node's address](#change-a-nodes-address).
 
-Install that node through the normal ISO or PXE flow and verify healthy
-generation 0. Do not rerun cluster bootstrap on an existing cluster. Join the
-one fresh node with:
+Install the node and wait for healthy generation 0. Do not rerun cluster
+bootstrap on an existing cluster. Join the one fresh node with:
 
 ```sh
+katlctl install apply --config ./cluster.yaml --node worker-1
 katlctl node join worker-1 --config ./cluster.yaml
 ```
 

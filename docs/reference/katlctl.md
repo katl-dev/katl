@@ -66,6 +66,7 @@ Prefix each command below with `katlctl`.
 | Install each node | `install apply --config ./cluster.yaml --node cp-1` |
 | Inspect an installer | `install status --config ./cluster.yaml --node cp-1` |
 | Start Kubernetes | `cluster bootstrap --config ./cluster.yaml --init-node cp-1` |
+| Add a node to the configuration | `config add-node ./cluster.yaml --installer 192.0.2.22` |
 | Join another installed node | `node join worker-1 --config ./cluster.yaml` |
 | Preview configuration changes | `cluster apply --config ./cluster.yaml --node cp-1 --plan` |
 | Apply configuration | Repeat without `--plan` |
