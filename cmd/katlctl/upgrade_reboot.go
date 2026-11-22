@@ -21,13 +21,44 @@ type verifiedNodeBoot struct {
 }
 
 func (boot verifiedNodeBoot) healthyOn(generationID string) bool {
-	selected := strings.TrimSpace(boot.Status.GetSelectedGenerationId())
-	return boot.Status.GetCurrentGenerationId() == generationID &&
-		(selected == "" || selected == generationID) &&
-		(boot.Status.GetBootHealthState() == "" || boot.Status.GetBootHealthState() == "healthy") &&
+	return runningGeneration(boot.Status) == generationID &&
+		boot.Status.GetCurrentGenerationId() == generationID &&
+		boot.Status.GetBootHealthState() == bootHealthHealthy &&
 		boot.Generation.GetCommitState() == generation.CommitStateCommitted &&
 		boot.Generation.GetBootState() == generation.BootStateGood &&
 		boot.Generation.GetHealthState() == generation.HealthStateHealthy
+}
+
+// Boot health states reported by the node agent for its running boot.
+const (
+	bootHealthHealthy = "healthy"
+	bootHealthPending = "pending"
+	bootHealthFailed  = "failed"
+)
+
+// runningGeneration is the generation the node booted. Active configuration
+// can already name another generation while a rejected trial is running.
+func runningGeneration(status *agentapi.NodeStatus) string {
+	return firstNonEmpty(strings.TrimSpace(status.GetSelectedGenerationId()), strings.TrimSpace(status.GetCurrentGenerationId()))
+}
+
+// bootHealthFailure explains a boot that finished boot health unsuccessfully.
+// The agent reports pending while boot recovery runs, so a failed boot is
+// final: no automatic reboot follows it.
+func bootHealthFailure(target bootWaitTarget, targetGeneration string, status *agentapi.NodeStatus) error {
+	nodeName := target.nodeName
+	running := runningGeneration(status)
+	reason := firstNonEmpty(strings.TrimSpace(status.GetBootHealthDiagnostic()), "boot health is "+firstNonEmpty(strings.TrimSpace(status.GetBootHealthState()), "not reported"))
+	message := fmt.Sprintf("node %s failed boot health on generation %s: %s", nodeName, running, reason)
+	if running != targetGeneration {
+		message = fmt.Sprintf("node %s booted generation %s instead of %s, and it failed boot health: %s", nodeName, running, targetGeneration, reason)
+	}
+	if next := strings.TrimSpace(status.GetBootTargetGenerationId()); next != "" && next != running {
+		message += fmt.Sprintf("; generation %s is selected for next boot, so run %s to return to it", next, target.command("reboot"))
+	} else {
+		message += fmt.Sprintf("; the node will boot generation %s again, so correct the failure or select a known-good generation with %s before rebooting", running, target.command("generations select GENERATION"))
+	}
+	return fmt.Errorf("%s. Find the failed unit with %s and %s", message, target.command("logs"), target.command("status"))
 }
 
 type nodeRecovery struct {
@@ -62,14 +93,6 @@ func requestNodeReboot(ctx context.Context, client agentapi.KatlcAgentClient, ac
 	return nil
 }
 
-func waitNodeBootHealth(ctx context.Context, nodeName, endpoint, previousAgentStart, targetGeneration string, requirement nodeRecoveryRequirement, stderr io.Writer) (katlcAgentConnection, verifiedNodeBoot, error) {
-	return waitNodeBootHealthWithPrefix(ctx, nodeName, endpoint, previousAgentStart, targetGeneration, requirement, "upgrade node="+nodeName, stderr)
-}
-
-func waitNodeBootHealthWithPrefix(ctx context.Context, nodeName, endpoint, previousAgentStart, targetGeneration string, requirement nodeRecoveryRequirement, progressPrefix string, stderr io.Writer) (katlcAgentConnection, verifiedNodeBoot, error) {
-	return waitNodeBootHealthAt(ctx, bootWaitTarget{nodeName: nodeName, endpoints: []string{endpoint}}, previousAgentStart, targetGeneration, requirement, progressPrefix, stderr)
-}
-
 // bootWaitTarget names where a rebooting node may answer. A node whose
 // configuration moves it to a new address can answer at either endpoint, so an
 // answer counts only when it reports the installation that was rebooted.
@@ -78,6 +101,13 @@ type bootWaitTarget struct {
 	endpoints    []string
 	machineID    string
 	enrollmentID string
+	// flags address the node in recovery commands, such as " --config cluster.yaml".
+	flags string
+}
+
+// command renders a katlctl node subcommand that addresses the waited node.
+func (target bootWaitTarget) command(subcommand string) string {
+	return "'katlctl node " + subcommand + " " + target.nodeName + target.flags + "'"
 }
 
 func (target bootWaitTarget) verify(endpoint string, status *agentapi.NodeStatus) error {
@@ -89,11 +119,15 @@ func (target bootWaitTarget) verify(endpoint string, status *agentapi.NodeStatus
 	return nil
 }
 
-func waitNodeBootHealthAt(ctx context.Context, target bootWaitTarget, previousAgentStart, targetGeneration string, requirement nodeRecoveryRequirement, progressPrefix string, stderr io.Writer) (katlcAgentConnection, verifiedNodeBoot, error) {
+// waitNodeBootHealth waits for the boot that follows previousAgentStart to
+// settle boot health and, when it runs targetGeneration healthily, to recover
+// Kubernetes. Only boot health the agent reports for its running boot counts:
+// persisted generation health can describe an earlier boot of the same
+// generation.
+func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgentStart, targetGeneration string, requirement nodeRecoveryRequirement, progressPrefix string, stderr io.Writer) (katlcAgentConnection, verifiedNodeBoot, error) {
 	nodeName := target.nodeName
 	lastState := ""
 	lastRecovery := nodeRecovery{}
-	lastRollback := ""
 	observed := verifiedNodeBoot{}
 	// probe reports done once the node answering at endpoint gives a terminal result.
 	probe := func(conn katlcAgentConnection, endpoint string) (verifiedNodeBoot, bool, error) {
@@ -122,32 +156,19 @@ func waitNodeBootHealthAt(ctx context.Context, target bootWaitTarget, previousAg
 			return verifiedNodeBoot{}, false, nil
 		}
 		observed.Generation = candidate
-		fallback := ""
-		// Active configuration can already name the fallback while the
-		// rejected trial is still running. Native boot health must
-		// confirm the selected generation before reporting recovery.
-		selected := strings.TrimSpace(status.GetSelectedGenerationId())
-		if candidate.GetHealthState() == generation.HealthStateUnhealthy {
-			rollback := strings.TrimSpace(status.GetBootTargetGenerationId())
-			switch {
-			case selected != "" && selected != targetGeneration && status.GetBootHealthState() == "healthy":
-				fallback = selected
-			case selected != "" && rollback != "" && rollback != targetGeneration:
-				if rollback != lastRollback {
-					lastRollback = rollback
-					_, _ = fmt.Fprintf(stderr, "%s waiting-for-rollback generation=%s\n", progressPrefix, rollback)
-				}
-			case selected == "" && status.GetCurrentGenerationId() != targetGeneration:
-				return verifiedNodeBoot{}, true, fmt.Errorf("node %s rejected generation %s during boot health; running generation is not reported", nodeName, targetGeneration)
-			case rollback != "" && rollback != targetGeneration:
-				return verifiedNodeBoot{}, true, fmt.Errorf("node %s rejected generation %s during boot health; rollback generation %s is selected for next boot, so reboot the node before retrying the upgrade", nodeName, targetGeneration, rollback)
-			default:
-				return verifiedNodeBoot{}, true, fmt.Errorf("node %s reported generation %s unhealthy after reboot", nodeName, targetGeneration)
-			}
+
+		switch status.GetBootHealthState() {
+		case bootHealthHealthy:
+		case bootHealthPending, "":
+			return verifiedNodeBoot{}, false, nil
+		default:
+			return verifiedNodeBoot{}, true, bootHealthFailure(target, targetGeneration, status)
 		}
-		if fallback == "" && !observed.healthyOn(targetGeneration) {
+		running := runningGeneration(status)
+		if running == targetGeneration && !observed.healthyOn(targetGeneration) {
 			return verifiedNodeBoot{}, false, nil
 		}
+
 		recovery := nodeUpgradeRecovery(status, requirement)
 		if recovery != lastRecovery {
 			lastRecovery = recovery
@@ -158,8 +179,11 @@ func waitNodeBootHealthAt(ctx context.Context, target bootWaitTarget, previousAg
 		if !recovery.Ready {
 			return verifiedNodeBoot{}, false, nil
 		}
-		if fallback != "" {
-			return verifiedNodeBoot{}, true, fmt.Errorf("node %s rejected generation %s during boot health and returned on generation %s", nodeName, targetGeneration, fallback)
+		if running != targetGeneration {
+			if candidate.GetHealthState() == generation.HealthStateUnhealthy {
+				return verifiedNodeBoot{}, true, fmt.Errorf("node %s rejected generation %s during boot health and returned on generation %s", nodeName, targetGeneration, running)
+			}
+			return verifiedNodeBoot{}, true, fmt.Errorf("node %s booted generation %s instead of %s; inspect %s, select the intended generation with %s, then reboot again", nodeName, running, targetGeneration, target.command("generations list"), target.command("generations select GENERATION"))
 		}
 		return verifiedNodeBoot{Status: status, Generation: candidate, Endpoint: endpoint}, true, nil
 	}
@@ -186,10 +210,11 @@ func waitNodeBootHealthAt(ctx context.Context, target bootWaitTarget, previousAg
 			if lastRecovery.Reason != "" {
 				return katlcAgentConnection{}, observed, nodeKubernetesRecoveryTimeoutError(nodeName, targetGeneration, lastRecovery.Reason, ctx.Err())
 			}
-			if lastRollback != "" {
-				return katlcAgentConnection{}, observed, fmt.Errorf("node %s rejected generation %s during boot health; rollback generation %s is selected but has not returned healthy, so reboot the node before retrying: %w", nodeName, targetGeneration, lastRollback, ctx.Err())
+			if observed.Status != nil {
+				reason := firstNonEmpty(strings.TrimSpace(observed.Status.GetBootHealthDiagnostic()), "boot health is "+firstNonEmpty(strings.TrimSpace(observed.Status.GetBootHealthState()), "not reported"))
+				return katlcAgentConnection{}, observed, fmt.Errorf("node %s did not finish boot health on generation %s: %s: %w; inspect it with %s and %s", nodeName, runningGeneration(observed.Status), reason, ctx.Err(), target.command("status"), target.command("logs"))
 			}
-			return katlcAgentConnection{}, observed, fmt.Errorf("node %s did not return healthy on generation %s: %w", nodeName, targetGeneration, ctx.Err())
+			return katlcAgentConnection{}, observed, fmt.Errorf("node %s did not return healthy on generation %s: %w; it has not answered from a new boot, so check its console, then inspect it with %s", nodeName, targetGeneration, ctx.Err(), target.command("status"))
 		case <-timer.C:
 		}
 	}

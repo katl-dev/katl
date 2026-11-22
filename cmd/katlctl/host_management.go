@@ -282,7 +282,7 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 	if opts.noWait {
 		return writeHostReboot(stdout, opts.output, report)
 	}
-	wait := bootWaitTarget{nodeName: node, endpoints: []string{target.endpoint}, machineID: status.GetMachineId(), enrollmentID: status.GetEnrollmentId()}
+	wait := bootWaitTarget{nodeName: node, endpoints: []string{target.endpoint}, machineID: status.GetMachineId(), enrollmentID: status.GetEnrollmentId(), flags: opts.target.guidanceFlags()}
 	if desiredEndpoint != "" {
 		wait.endpoints = []string{desiredEndpoint, target.endpoint}
 		_, _ = fmt.Fprintf(stderr, "Reboot scheduled for %s; waiting for KatlOS to return healthy at %s (or %s)...\n", node, desiredEndpoint, target.endpoint)
@@ -291,7 +291,7 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 	}
 	waitCtx, cancelWait := context.WithTimeout(ctx, opts.timeout)
 	waitCtx = withManagementTarget(waitCtx, target)
-	verifiedConn, verified, err := waitNodeBootHealthAt(waitCtx, wait, previousAgentStart, generationID, recoveryRequirement, "reboot node="+node, io.Discard)
+	verifiedConn, verified, err := waitNodeBootHealth(waitCtx, wait, previousAgentStart, generationID, recoveryRequirement, "reboot node="+node, io.Discard)
 	cancelWait()
 	if err != nil {
 		if desiredEndpoint != "" {

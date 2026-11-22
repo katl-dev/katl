@@ -630,7 +630,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	}
 	_ = conn.Close()
 	bootCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
-	verifiedConn, verified, err := waitNodeBootHealth(bootCtx, report.Node, target.endpoint, agentStart, request.CandidateGenerationID, recoveryRequirement, stderr)
+	verifiedConn, verified, err := waitNodeBootHealth(bootCtx, bootWaitTarget{nodeName: report.Node, endpoints: []string{target.endpoint}, flags: opts.target.guidanceFlags()}, agentStart, request.CandidateGenerationID, recoveryRequirement, "upgrade node="+report.Node, stderr)
 	cancel()
 	report.Rebooted = true
 	report.BootHealth = observedBootHealth(verified, request.CandidateGenerationID)
@@ -653,6 +653,9 @@ func observedBootHealth(verified verifiedNodeBoot, targetGeneration string) stri
 		return "unknown"
 	}
 	if verified.Generation.GetHealthState() == generation.HealthStateUnhealthy {
+		return "failed"
+	}
+	if runningGeneration(verified.Status) == targetGeneration && verified.Status.GetBootHealthState() == bootHealthFailed {
 		return "failed"
 	}
 	if verified.healthyOn(targetGeneration) {

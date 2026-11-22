@@ -176,12 +176,13 @@ func TestHostRebootReportsUnhealthyReturn(t *testing.T) {
 	fake := healthyHostClient("machine-a", "before", "generation-0")
 	fake.onReboot = func(*agentapi.RebootRequest) {
 		fake.nodeStatus.AgentStartId = "after"
-		fake.generation.HealthState = generation.HealthStateUnhealthy
+		fake.nodeStatus.BootHealthState = "failed"
+		fake.nodeStatus.BootHealthDiagnostic = "katl-boot-health.service failed in this boot; inspect the boot journal"
 	}
 	installKatlcDial(t, nil, fake)
 
 	err := run(context.Background(), []string{"node", "reboot", "node-a", "--context-file", configPath, "--timeout", "1s"}, &bytes.Buffer{}, &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "reported generation generation-0 unhealthy after reboot") {
+	if err == nil || !strings.Contains(err.Error(), "node-a failed boot health on generation generation-0: katl-boot-health.service failed in this boot") {
 		t.Fatalf("run() error = %v, want unhealthy boot error", err)
 	}
 }
@@ -284,6 +285,7 @@ func healthyHostClient(machineID, agentStartID, generationID string) *fakeKatlcA
 			InventoryNodeName:   "node-a",
 			AgentStartId:        agentStartID,
 			CurrentGenerationId: generationID,
+			BootHealthState:     "healthy",
 			Kubernetes:          &agentapi.KubernetesStatus{State: "not-configured"},
 		},
 		generation: &agentapi.Generation{

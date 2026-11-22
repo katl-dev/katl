@@ -324,7 +324,7 @@ func finishNodeJoin(ctx context.Context, configPath string, node inventory.Node,
 		return fmt.Errorf("reboot joined node %s: %w", node.Name, err)
 	}
 	_, _ = fmt.Fprintf(progress, "node join node=%s step=reboot status=scheduled\n", node.Name)
-	verified, _, err := waitNodeBootHealthWithPrefix(ctx, node.Name, endpoint, previousStart, current.GetGenerationId(), requirement, "node join node="+node.Name, progress)
+	verified, _, err := waitNodeBootHealth(ctx, bootWaitTarget{nodeName: node.Name, endpoints: []string{endpoint}, flags: " --config " + configPath}, previousStart, current.GetGenerationId(), requirement, "node join node="+node.Name, progress)
 	if err != nil {
 		return err
 	}

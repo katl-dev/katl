@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -91,8 +92,10 @@ func TestNodeUpgradeRecoveryRequiresKubernetesAndManagedRouting(t *testing.T) {
 func TestWaitNodeBootHealthWaitsForKubernetesRecovery(t *testing.T) {
 	fake := &fakeKatlcAgentClient{
 		nodeStatus: &agentapi.NodeStatus{
-			AgentStartId:        "after",
-			CurrentGenerationId: "katlos-next",
+			AgentStartId:         "after",
+			CurrentGenerationId:  "katlos-next",
+			SelectedGenerationId: "katlos-next",
+			BootHealthState:      "healthy",
 			Kubernetes: &agentapi.KubernetesStatus{
 				State:         "waiting-for-node",
 				Role:          "control-plane",
@@ -131,15 +134,13 @@ func TestWaitNodeBootHealthWaitsForKubernetesRecovery(t *testing.T) {
 			t.Fatalf("endpoint = %q", endpoint)
 		}
 	}, fake)
-	previousPollInterval := upgradeRebootPollInterval
-	upgradeRebootPollInterval = time.Millisecond
-	t.Cleanup(func() { upgradeRebootPollInterval = previousPollInterval })
+	fastBootHealthPolls(t)
 
 	var progress bytes.Buffer
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	requirement := nodeRecoveryRequirement{KubernetesConfigured: true, NodeReady: true}
-	conn, verified, err := waitNodeBootHealth(ctx, "cp-1", "10.0.0.11:9443", "before", "katlos-next", requirement, &progress)
+	conn, verified, err := waitNodeBootHealth(ctx, bootWaitTarget{nodeName: "cp-1", endpoints: []string{"10.0.0.11:9443"}}, "before", "katlos-next", requirement, "upgrade node=cp-1", &progress)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,82 +153,176 @@ func TestWaitNodeBootHealthWaitsForKubernetesRecovery(t *testing.T) {
 	}
 }
 
-func TestWaitNodeBootHealthRequiresRollbackRebootAfterRejectedTrial(t *testing.T) {
-	fake := &fakeKatlcAgentClient{
-		nodeStatus: &agentapi.NodeStatus{
-			AgentStartId:           "after",
-			CurrentGenerationId:    "katlos-next",
-			BootTargetGenerationId: "katlos-previous",
-		},
-		generation: &agentapi.Generation{
-			GenerationId: "katlos-next",
-			CommitState:  generation.CommitStateCommitted,
-			BootState:    generation.BootStateFailed,
-			HealthState:  generation.HealthStateUnhealthy,
-		},
-	}
-	installKatlcDial(t, nil, fake)
+// bootObservation is what the node reports at one poll after a reboot request.
+type bootObservation struct {
+	agentStart string
+	running    string
+	health     string
+	diagnostic string
+	nextBoot   string
+	candidate  string
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	_, observed, err := waitNodeBootHealth(ctx, "cp-1", "10.0.0.11:9443", "before", "katlos-next", nodeRecoveryRequirement{}, io.Discard)
-	if err == nil ||
-		!strings.Contains(err.Error(), "rollback generation katlos-previous is selected for next boot") ||
-		!strings.Contains(err.Error(), "reboot the node before retrying") {
-		t.Fatalf("waitNodeBootHealth() error = %v, want actionable rollback reboot", err)
-	}
-	if observed.Status != fake.nodeStatus || observed.Generation != fake.generation {
-		t.Fatalf("observed boot = %#v, want rejected generation evidence", observed)
+func (o bootObservation) status() *agentapi.NodeStatus {
+	return &agentapi.NodeStatus{
+		AgentStartId:           o.agentStart,
+		CurrentGenerationId:    o.running,
+		SelectedGenerationId:   o.running,
+		BootTargetGenerationId: firstNonEmpty(o.nextBoot, o.running),
+		BootHealthState:        o.health,
+		BootHealthDiagnostic:   o.diagnostic,
+		Kubernetes:             &agentapi.KubernetesStatus{State: "not-configured"},
 	}
 }
 
-func TestRollbackWaitsForBoot(t *testing.T) {
-	fake := &fakeKatlcAgentClient{
-		nodeStatus: &agentapi.NodeStatus{
-			AgentStartId:           "trial-agent",
-			CurrentGenerationId:    "previous",
-			SelectedGenerationId:   "trial",
-			BootTargetGenerationId: "previous",
-			BootHealthState:        "failed",
-			Kubernetes:             &agentapi.KubernetesStatus{State: "not-configured"},
+func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
+	const skipped = "katl-boot-health.service did not run in this boot because a unit it requires did not start; inspect the boot journal"
+	healthy, unhealthy := generation.HealthStateHealthy, generation.HealthStateUnhealthy
+	tests := []struct {
+		name string
+		// observations are reported in order; the last repeats.
+		observations []bootObservation
+		// settled is the observation the wait must end on.
+		settled int
+		err     []string
+	}{
+		{
+			name: "same generation waits for its own boot",
+			observations: []bootObservation{
+				{agentStart: "before", running: "gen-a", health: "healthy", candidate: healthy},
+				{agentStart: "after", running: "gen-a", health: "pending", candidate: healthy},
+				{agentStart: "after", running: "gen-a", health: "healthy", candidate: healthy},
+			},
+			settled: 2,
 		},
-		generation: &agentapi.Generation{GenerationId: "trial", BootState: generation.BootStateFailed, HealthState: generation.HealthStateUnhealthy},
+		{
+			name: "failed boot of a previously healthy generation",
+			observations: []bootObservation{
+				{agentStart: "before", running: "gen-a", health: "healthy", candidate: healthy},
+				{agentStart: "after", running: "gen-a", health: "pending", candidate: healthy},
+				{agentStart: "after", running: "gen-a", health: "failed", diagnostic: skipped, nextBoot: "gen-old", candidate: healthy},
+				{agentStart: "after", running: "gen-a", health: "failed", diagnostic: skipped, nextBoot: "gen-old", candidate: healthy},
+			},
+			settled: 2,
+			err:     []string{"node cp-1 failed boot health on generation gen-a: " + skipped, "generation gen-old is selected for next boot", "'katlctl node reboot cp-1 --config cluster.yaml'", "'katlctl node logs cp-1 --config cluster.yaml'"},
+		},
+		{
+			name: "failed boot without another generation",
+			observations: []bootObservation{
+				{agentStart: "after", running: "gen-a", health: "failed", diagnostic: skipped, candidate: unhealthy},
+			},
+			err: []string{"failed boot health on generation gen-a", "'katlctl node generations select GENERATION cp-1 --config cluster.yaml'"},
+		},
+		{
+			name: "rejected trial waits for its fallback boot",
+			observations: []bootObservation{
+				{agentStart: "trial", running: "gen-a", health: "pending", nextBoot: "gen-old", candidate: unhealthy},
+				{agentStart: "fallback", running: "gen-old", health: "pending", candidate: unhealthy},
+				{agentStart: "fallback", running: "gen-old", health: "healthy", candidate: unhealthy},
+			},
+			settled: 2,
+			err:     []string{"rejected generation gen-a during boot health and returned on generation gen-old"},
+		},
+		{
+			name: "failed fallback boot",
+			observations: []bootObservation{
+				{agentStart: "fallback", running: "gen-old", health: "failed", diagnostic: skipped, candidate: unhealthy},
+			},
+			err: []string{"booted generation gen-old instead of gen-a, and it failed boot health"},
+		},
+		{
+			name: "another generation booted",
+			observations: []bootObservation{
+				{agentStart: "after", running: "gen-old", health: "healthy", candidate: healthy},
+			},
+			err: []string{"booted generation gen-old instead of gen-a", "'katlctl node generations list cp-1 --config cluster.yaml'"},
+		},
 	}
-	observations := 0
-	fake.onGetNodeStatus = func() {
-		observations++
-		switch observations {
-		case 2:
-			fake.nodeStatus.AgentStartId = "fallback-agent"
-			fake.nodeStatus.SelectedGenerationId = "previous"
-			fake.nodeStatus.BootHealthState = "pending"
-		case 3:
-			fake.nodeStatus.BootHealthState = "healthy"
-		}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &fakeKatlcAgentClient{}
+			observed := -1
+			fake.onGetNodeStatus = func() {
+				observed = min(observed+1, len(test.observations)-1)
+				current := test.observations[observed]
+				fake.nodeStatus = current.status()
+				fake.generation = &agentapi.Generation{GenerationId: "gen-a", CommitState: generation.CommitStateCommitted, BootState: generation.BootStateGood, HealthState: current.candidate}
+				if current.candidate == unhealthy {
+					fake.generation.BootState = generation.BootStateFailed
+				}
+			}
+			installKatlcDial(t, nil, fake)
+			fastBootHealthPolls(t)
+
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_, verified, err := waitNodeBootHealth(ctx, bootWaitTarget{nodeName: "cp-1", endpoints: []string{"10.0.0.11:9443"}, flags: " --config cluster.yaml"}, "before", "gen-a", nodeRecoveryRequirement{}, "reboot node=cp-1", io.Discard)
+
+			if errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("wait timed out: %v", err)
+			}
+			if observed != test.settled {
+				t.Fatalf("wait ended on observation %d, want %d (err = %v)", observed, test.settled, err)
+			}
+			if len(test.err) == 0 {
+				if err != nil || verified.Status.GetBootHealthState() != "healthy" {
+					t.Fatalf("wait = %+v, %v; want healthy boot", verified.Status, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("wait succeeded, want error containing %q", test.err)
+			}
+			for _, want := range test.err {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %v, want %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestWaitNodeBootHealthTimeoutExplainsPendingBoot(t *testing.T) {
+	fake := &fakeKatlcAgentClient{
+		nodeStatus: bootObservation{agentStart: "after", running: "gen-a", health: "pending", diagnostic: "katl-boot-health.service has not finished for this boot; inspect the units it requires"}.status(),
+		generation: &agentapi.Generation{GenerationId: "gen-a"},
 	}
 	installKatlcDial(t, nil, fake)
-	oldInterval := upgradeRebootPollInterval
+	fastBootHealthPolls(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, _, err := waitNodeBootHealth(ctx, bootWaitTarget{nodeName: "cp-1", endpoints: []string{"10.0.0.11:9443"}}, "before", "gen-a", nodeRecoveryRequirement{}, "reboot node=cp-1", io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "did not finish boot health on generation gen-a: katl-boot-health.service has not finished") || !strings.Contains(err.Error(), "katlctl node status cp-1") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func fastBootHealthPolls(t *testing.T) {
+	t.Helper()
+	previous := upgradeRebootPollInterval
 	upgradeRebootPollInterval = time.Millisecond
-	t.Cleanup(func() { upgradeRebootPollInterval = oldInterval })
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	_, observed, err := waitNodeBootHealth(ctx, "cp-1", "10.0.0.11:9443", "before", "trial", nodeRecoveryRequirement{}, io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "returned on generation previous") {
-		t.Fatalf("rollback outcome = %v", err)
-	}
-	if observed.Status.GetSelectedGenerationId() != "previous" || observed.Status.GetBootHealthState() != "healthy" {
-		t.Fatalf("reported recovery before a healthy fallback boot: %+v", observed.Status)
-	}
+	t.Cleanup(func() { upgradeRebootPollInterval = previous })
 }
 
-func TestBootHealthUsesRunningGeneration(t *testing.T) {
-	boot := verifiedNodeBoot{
-		Status:     &agentapi.NodeStatus{CurrentGenerationId: "previous", SelectedGenerationId: "trial", BootHealthState: "failed"},
-		Generation: &agentapi.Generation{GenerationId: "previous", CommitState: generation.CommitStateCommitted, BootState: generation.BootStateGood, HealthState: generation.HealthStateHealthy},
+func TestObservedBootHealth(t *testing.T) {
+	good := &agentapi.Generation{GenerationId: "gen-a", CommitState: generation.CommitStateCommitted, BootState: generation.BootStateGood, HealthState: generation.HealthStateHealthy}
+	tests := []struct {
+		name   string
+		status *agentapi.NodeStatus
+		want   string
+	}{
+		{name: "another generation is running", status: &agentapi.NodeStatus{CurrentGenerationId: "gen-a", SelectedGenerationId: "trial", BootHealthState: "failed"}, want: "unknown"},
+		{name: "running boot failed", status: &agentapi.NodeStatus{CurrentGenerationId: "gen-a", SelectedGenerationId: "gen-a", BootHealthState: "failed"}, want: "failed"},
+		{name: "running boot pending", status: &agentapi.NodeStatus{CurrentGenerationId: "gen-a", SelectedGenerationId: "gen-a", BootHealthState: "pending"}, want: "unknown"},
+		{name: "running boot healthy", status: &agentapi.NodeStatus{CurrentGenerationId: "gen-a", SelectedGenerationId: "gen-a", BootHealthState: "healthy"}, want: "healthy"},
 	}
-	if got := observedBootHealth(boot, "previous"); got != "unknown" {
-		t.Fatalf("boot health = %q while trial is running", got)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := observedBootHealth(verifiedNodeBoot{Status: test.status, Generation: good}, "gen-a"); got != test.want {
+				t.Fatalf("boot health = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 
