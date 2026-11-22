@@ -82,7 +82,7 @@ type WorldPackageSetInput struct {
 type WorldLibvirt struct {
 	URI          string `json:"uri"`
 	Network      string `json:"network"`
-	StoragePool  string `json:"storagePool"`
+	StoragePool  string `json:"storagePool,omitempty"`
 	StoragePath  string `json:"storagePath"`
 	DomainPrefix string `json:"domainPrefix"`
 }
@@ -299,7 +299,6 @@ func validateWorldLibvirt(libvirt WorldLibvirt) error {
 	for name, value := range map[string]string{
 		"libvirt.uri":          libvirt.URI,
 		"libvirt.network":      libvirt.Network,
-		"libvirt.storagePool":  libvirt.StoragePool,
 		"libvirt.storagePath":  libvirt.StoragePath,
 		"libvirt.domainPrefix": libvirt.DomainPrefix,
 	} {

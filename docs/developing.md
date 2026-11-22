@@ -262,8 +262,10 @@ packages = [ katl.packages.${system}.katlctl ];
 The source-built CLI reports the pinned Git commit in `katlctl version`. The
 development-shell command above continues to run the checkout source directly.
 
-`katldev` owns persistent developer workflows. To boot the current checkout's
-installer ISO in a reusable libvirt VM:
+`katldev` owns persistent developer workflows. It keeps one persistent VM
+world per checkout: a set of installer VMs on a libvirt NAT network that the
+world creates for itself, with one shared `_build/katldev/cluster.yaml`. To boot
+the current checkout's installer ISO in a one-node world:
 
 ```sh
 katldev installer start
@@ -271,37 +273,83 @@ katldev installer start
 
 The command cache-checks and builds the self-contained installer ISO, waits for
 the installer API, and creates `_build/katldev/cluster.yaml` from the waiting
-VM's discovered address and target disk. Its output leads directly to
-`katlctl install apply`. A matching existing config is retained so it can be
-edited for repeated user journeys. If it describes a different VM, Katldev
-fails with recovery guidance; pass `--force-config` only when replacing it is
-intentional. The VM and its 32 GiB target disk live under `_build/katldev`;
-they are not owned or cleaned up by automated vmtest runs.
+VM's reserved address and target disk. Its output leads directly to
+`katlctl install apply`. A config that lists any of the world's VMs is retained
+so it can be edited for repeated user journeys. If it lists none of them,
+katldev fails with recovery guidance; pass `--force-config` only when replacing
+it is intentional. The world's VMs, 32 GiB target disks, and network state live
+under `_build/katldev/world`; they are not owned or cleaned up by automated
+vmtest runs.
 
-Use the same VM for repeated manual install and management checks:
+`katldev installer` is the one-node form of `katldev world`. Start a multi-node
+world, or add VMs to an existing one, with:
 
 ```sh
-katldev installer status
-katldev installer console
-katldev installer stop
-katldev installer start
-katldev installer reset
+katldev world start --nodes 2     # cp-1 and worker-1
+katldev world add-node --control-plane   # cp-2
+katldev world add-node            # the next worker-N
 ```
 
-`stop` simulates pressing the power button through ACPI and waits for the guest
-to power off. On an installed Kubernetes node, this lets kubelet use its
+A new world's config lists every VM that was waiting when it was created. A VM
+added later is not written into `cluster.yaml`; katldev prints the node entry
+to add, then the `katlctl config validate`, `katlctl install apply`, and
+`katlctl node join` commands from
+[Add one node](operations/change-cluster-nodes.md#add-one-node). This keeps
+multi-node journeys on the operator's path.
+
+Use the same world for repeated manual install and management checks:
+
+```sh
+katldev world status
+katldev world console cp-1
+katldev world stop                # or: stop worker-1
+katldev world start
+katldev world reset
+katldev world remove
+```
+
+`start` resumes stopped VMs and recreates a missing VM with a fresh disk.
+`status` reports each VM's libvirt state, observed address, installer or KatlOS
+management state, and the `cluster.yaml` node at that address. Both warn when
+the host's `libvirt-guests.service` is disabled or suspends guests at host
+shutdown. A KatlOS node resumed from suspend finds its clock past DHCP leases
+and certificate checks, so set `ON_SHUTDOWN=shutdown`.
+
+`stop` simulates pressing the power button through ACPI and waits for each
+guest to power off. On an installed Kubernetes node, this lets kubelet use its
 [configured graceful shutdown budgets](operations/maintain-node.md#configure-native-graceful-shutdown).
 Katl does not drain the node or enable those budgets automatically. Use
-`--timeout 5m` when the guest needs more than the default three minutes.
+`--timeout 5m` when a guest needs more than the default three minutes.
 If shutdown is not confirmed, inspect `status` and `console`; the guest might
 still be shutting down. `stop --force` cuts power immediately and bypasses
 guest shutdown.
 
-`reset` first prepares the current checkout's ISO, then destroys the managed
-domain, replaces its target disk and UEFI variables, and boots a fresh
-installer. It needs no destructive confirmation because it can only address
-the checkout-scoped development VM. Pass `--no-build` only when deliberately
-reusing the existing `_build/mkosi/katl-installer.iso`.
+Each VM has a DHCP reservation in the world network, with an infinite lease.
+To test [worker re-addressing](operations/change-cluster-nodes.md#re-address-a-worker),
+move the reservation:
+
+```sh
+katldev world readdress worker-1               # first free address
+katldev world readdress worker-1 --address 10.200.4.40
+```
+
+The VM keeps its current address until it next requests one, which normally
+happens when it boots. katldev prints the `cluster.yaml` change and the
+`katlctl cluster apply --endpoint` and `katlctl node reboot --endpoint`
+commands that complete the re-address.
+
+`reset` first prepares the current checkout's ISO, then removes the world and
+boots fresh installers, keeping the VM count unless `--nodes` changes it.
+`remove` deletes the world without recreating it. Both remove only libvirt
+domains and the network carrying this checkout's world ownership metadata,
+plus the world's disks and state; `cluster.yaml` is kept. They need no
+destructive confirmation because they can only address the checkout-scoped
+development world. A world is usually recreated on the same subnet with the
+same addresses, so a retained `cluster.yaml` keeps matching. Pass `--no-build`
+only when deliberately reusing the existing `_build/mkosi/katl-installer.iso`.
+
+A checkout that still has the single VM from an earlier katldev refuses
+`start`; run `katldev world reset` to remove that VM and boot a world.
 
 Build and verify the current checkout's self-contained installer ISO through
 the discoverable development command:

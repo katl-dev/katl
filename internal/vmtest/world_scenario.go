@@ -408,5 +408,121 @@ func broadcast(network *net.IPNet) uint32 {
 		return ipToUint32(network.IP)
 	}
 	hostBits := 32 - ones
-	return ipToUint32(network.IP) | (1 << hostBits) - 1
+	return ipToUint32(network.IP) | (1<<hostBits - 1)
+}
+
+// LoadScenario reopens a scenario whose manifest an earlier process wrote, so
+// a persistent world can keep adding to and managing its nodes.
+func (world World) LoadScenario(name string) (*WorldScenario, error) {
+	scenario, err := world.PlanScenario(name)
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(scenario.ManifestPath)
+	if err != nil {
+		return nil, err
+	}
+	var manifest scenarioManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return nil, fmt.Errorf("decode %s: %w", scenario.ManifestPath, err)
+	}
+	if manifest.WorldRunID != world.RunID || manifest.ID != scenario.ID {
+		return nil, fmt.Errorf("%s belongs to world %q scenario %q, not %q %q", scenario.ManifestPath, manifest.WorldRunID, manifest.ID, world.RunID, scenario.ID)
+	}
+	scenario.Nodes = manifest.Nodes
+	scenario.Fixtures = manifest.Fixtures
+	return scenario, nil
+}
+
+// Node returns the named node.
+func (scenario *WorldScenario) Node(name string) (Node, bool) {
+	for _, node := range scenario.Nodes {
+		if node.Name == name {
+			return node, true
+		}
+	}
+	return Node{}, false
+}
+
+// ReassignAddress moves a node's lease to address, or to the first free
+// address when address is empty, and records it in the scenario manifest.
+func (scenario *WorldScenario) ReassignAddress(name, address string) (Node, error) {
+	index := -1
+	for i, node := range scenario.Nodes {
+		if node.Name == name {
+			index = i
+		}
+	}
+	if index < 0 {
+		return Node{}, fmt.Errorf("node %q is not in scenario %q", name, scenario.Name)
+	}
+	unlock, err := lockLeaseFile(scenario.World.Network.LeaseFile)
+	if err != nil {
+		return Node{}, err
+	}
+	defer unlock()
+	leases, err := readLeases(scenario.World.Network.LeaseFile)
+	if err != nil {
+		return Node{}, err
+	}
+	// The node's own lease must not block the search, but its current address
+	// stays reserved so a reassignment always moves the node.
+	others := leaseFile{APIVersion: leases.APIVersion, Kind: leases.Kind}
+	for _, lease := range leases.Leases {
+		if lease.Scenario == scenario.ID && lease.Node == name {
+			continue
+		}
+		others.Leases = append(others.Leases, lease)
+	}
+	current := scenario.Nodes[index].Address
+	reserved := others
+	reserved.Leases = append(append([]leaseEntry(nil), others.Leases...), leaseEntry{Address: current})
+	address = strings.TrimSpace(address)
+	if address == "" {
+		address, err = firstAvailableAddress(scenario.World, reserved)
+	} else {
+		err = validateRequestedAddress(scenario.World, reserved, address)
+	}
+	if err != nil {
+		return Node{}, err
+	}
+	node := scenario.Nodes[index]
+	node.Address = address
+	others.Leases = append(others.Leases, leaseEntry{
+		Address:    address,
+		MACAddress: node.MACAddress,
+		Scenario:   scenario.ID,
+		Node:       name,
+	})
+	if err := writeLeases(scenario.World.Network.LeaseFile, others); err != nil {
+		return Node{}, err
+	}
+	scenario.Nodes[index] = node
+	if err := scenario.WriteManifest(); err != nil {
+		return Node{}, err
+	}
+	return node, nil
+}
+
+// PlanNodeVM plans a libvirt VM whose disks and artifacts live in the node's
+// world directories rather than a per-run directory, so the VM can outlive the
+// process that created it. Its domain name carries the world's run ID.
+func (scenario *WorldScenario) PlanNodeVM(node Node, disks []DiskFixture, kvm KVMPolicy) (Result, error) {
+	plans, err := planDisks(node.DiskDir, disks)
+	if err != nil {
+		return Result{}, err
+	}
+	return Result{
+		ScenarioName: nodeScenarioName(scenario.Name, node.Name),
+		Status:       StatusPlanned,
+		RunID:        scenario.World.RunID + "-" + clean(node.Name),
+		RunDir:       node.ArtifactDir,
+		VMDir:        node.VMDir,
+		DiskDir:      node.DiskDir,
+		ManifestDir:  node.ManifestDir,
+		Keep:         KeepAlways,
+		KVM:          kvm,
+		Artifacts:    pathsFor(node.ArtifactDir),
+		Disks:        plans,
+	}, nil
 }
