@@ -18,7 +18,7 @@ func TestSelectGroups(t *testing.T) {
 		{"unit tests", []string{"internal/installer/operation/run_test.go"}, []string{}},
 		{"CLI unit tests", []string{"cmd/katlctl/main_test.go"}, []string{}},
 		{"maintainer tooling", []string{"cmd/katl-release/main.go", "scripts/katl-release"}, []string{}},
-		{"CLI configuration", []string{"cmd/katlctl/config_compatibility.go"}, []string{"config", "management", "two-node"}},
+		{"CLI configuration", []string{"cmd/katlctl/config_compatibility.go"}, []string{"config", "management", "two-node", "readdress"}},
 		{"CLI rotation", []string{"cmd/katlctl/management_rotation.go"}, []string{"management"}},
 		{"CLI rotation and docs", []string{"cmd/katlctl/management_rotation.go", "docs/operations/install.md"}, []string{"management"}},
 		{"shared CLI", []string{"cmd/katlctl/main.go"}, allNames()},
@@ -47,8 +47,29 @@ func TestSelectGroups(t *testing.T) {
 	}
 }
 
+// TestReaddressSelection keeps the worker re-address journey selected by
+// changes to the code it exercises.
+func TestReaddressSelection(t *testing.T) {
+	for _, name := range []string{
+		"cmd/katlctl/kubeadm_control_plane_config.go", // cluster apply --endpoint
+		"cmd/katlctl/host_management.go",              // node reboot --endpoint
+		"cmd/katlctl/enroll.go",                       // context rebind
+		"cmd/katlctl/config_compatibility.go",
+		"internal/vmtest/world_scenario.go", // address reassignment
+		"internal/installer/networkdconfig/networkd.go",
+		"internal/installer/configapply/host_configuration.go",
+		"internal/vmtest/scenarios/worker_readdress_vmtest_test.go",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !slices.ContainsFunc(selectGroups([]string{name}), func(selected group) bool { return selected.Tests == "TestWorkerReaddress" }) {
+				t.Fatalf("%s does not select TestWorkerReaddress", name)
+			}
+		})
+	}
+}
+
 func allNames() []string {
-	return []string{"boot", "install", "storage", "config", "management", "update", "two-node", "three-node-install"}
+	return []string{"boot", "install", "storage", "config", "management", "update", "two-node", "readdress", "three-node-install"}
 }
 
 func TestPlan(t *testing.T) {
@@ -117,6 +138,7 @@ func testCoverage(t *testing.T, args []string, input string) {
 		"./internal/vmtest/scenarios": {
 			"TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke",
 			"TestExternalWorkerJoin",
+			"TestWorkerReaddress",
 			"TestThreeNodeGeneration0InstallSmoke",
 			"TestInstallerISOFirstInstallStorageAuthority",
 			"TestInstallerISOBootSmoke",

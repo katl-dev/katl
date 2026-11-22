@@ -19,6 +19,7 @@ type group struct {
 
 var groups = []group{
 	{"two-node", "./internal/vmtest/scenarios", "TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke|TestExternalWorkerJoin"},
+	{"readdress", "./internal/vmtest/scenarios", "TestWorkerReaddress"},
 	{"three-node-install", "./internal/vmtest/scenarios", "TestThreeNodeGeneration0InstallSmoke"},
 	{"install", "./internal/vmtest", "TestFirstInstallTargetDiskBootSmoke|TestFirstInstallTargetDiskLocalHandoffSmoke"},
 	{"config", "./internal/vmtest", "TestInstalledRuntimeConfigApplyModesSmoke|TestInstalledRuntimeServiceSecuritySmoke"},
@@ -190,7 +191,7 @@ func selectGroups(paths []string) []group {
 			// through Release Artifacts and its final-bundle Production VM qualification.
 			continue
 		case name == "cmd/katlctl/config_compatibility.go", name == "cmd/katlctl/config_inspect.go":
-			selected["config"], selected["management"], selected["two-node"] = true, true, true
+			selected["config"], selected["management"], selected["two-node"], selected["readdress"] = true, true, true, true
 		case name == "cmd/katlctl/management_rotation.go":
 			selected["management"] = true
 		default:
