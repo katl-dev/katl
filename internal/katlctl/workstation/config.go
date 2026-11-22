@@ -37,8 +37,13 @@ type Cluster struct {
 }
 
 type Node struct {
-	Name               string               `json:"name" yaml:"name"`
-	ManagementEndpoint string               `json:"managementEndpoint" yaml:"managementEndpoint"`
+	Name               string `json:"name" yaml:"name"`
+	ManagementEndpoint string `json:"managementEndpoint" yaml:"managementEndpoint"`
+	// ConfiguredEndpoint is the cluster configuration's management.address
+	// when the context was saved. Rebinding changes ManagementEndpoint but not
+	// this field, so a difference from the current configuration shows that
+	// the configuration was edited since.
+	ConfiguredEndpoint string               `json:"configuredEndpoint,omitempty" yaml:"configuredEndpoint,omitempty"`
 	SystemRole         inventory.SystemRole `json:"systemRole" yaml:"systemRole"`
 	EnrollmentID       string               `json:"enrollmentID,omitempty" yaml:"enrollmentID,omitempty"`
 	MachineID          string               `json:"machineID,omitempty" yaml:"machineID,omitempty"`

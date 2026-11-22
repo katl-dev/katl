@@ -336,7 +336,7 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, stderr io.Writ
 		if len(opts.selectedNodes) > 0 && !containsString(opts.selectedNodes, node.Name) {
 			previous := known[node.Name]
 			clusterProfile.Nodes = append(clusterProfile.Nodes, workstation.Node{
-				Name: node.Name, ManagementEndpoint: endpoint, SystemRole: node.SystemRole,
+				Name: node.Name, ManagementEndpoint: endpoint, ConfiguredEndpoint: configuredEndpoint(node), SystemRole: node.SystemRole,
 				EnrollmentID: previous.EnrollmentID, MachineID: previous.MachineID,
 			})
 			continue
@@ -373,7 +373,7 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, stderr io.Writ
 			replaced = true
 		}
 		clusterProfile.Nodes = append(clusterProfile.Nodes, workstation.Node{
-			Name: node.Name, ManagementEndpoint: endpoint, SystemRole: node.SystemRole,
+			Name: node.Name, ManagementEndpoint: endpoint, ConfiguredEndpoint: configuredEndpoint(node), SystemRole: node.SystemRole,
 			EnrollmentID: status.GetEnrollmentId(), MachineID: status.GetMachineId(),
 		})
 		report.Nodes = append(report.Nodes, contextSaveNodeReport{Name: node.Name, ManagementEndpoint: endpoint, Connected: true, EnrollmentID: status.GetEnrollmentId(), MachineID: status.GetMachineId(), Replaced: replaced})
@@ -567,4 +567,72 @@ func runContextRebind(ctx context.Context, opts contextRebindOptions, stdout io.
 	}
 	_, err = fmt.Fprintf(stdout, "Rebound %s from %s to %s after verifying enrollment and machine identity\n", expected.Name, expected.ManagementEndpoint, endpoint)
 	return err
+}
+
+// configuredEndpoint returns the management endpoint the node's cluster
+// configuration names, or "" when it names none.
+func configuredEndpoint(node inventory.Node) string {
+	endpoint, err := normalizeManagementAddress(node.Address)
+	if err != nil {
+		return ""
+	}
+	return endpoint
+}
+
+// warnPendingReaddress warns, once per selected node, that the saved context
+// reaches the node at an address other than the one its configuration now
+// names. Such a node is either awaiting a planned move or has been moved by
+// DHCP. The saved context's configuredEndpoint separates these from a
+// configuration that was never edited: after 'context rebind' alone, the
+// configuration still names the address recorded when the context was saved
+// and is not a pending change. A node passed in endpoints is reached at that
+// address by the operator's choice.
+func warnPendingReaddress(ctx context.Context, configInput string, endpoints map[string]string, selectedNodes []string, stderr io.Writer) {
+	inv, err := readManagementInventory(configInput)
+	if err != nil {
+		return
+	}
+	topology, err := resolveClusterConfigTopology(ctx, configInput)
+	if err != nil {
+		return
+	}
+	contextPath, err := workstation.ConfigPath()
+	if err != nil {
+		return
+	}
+	saved, err := loadManagementContext(ctx, contextPath)
+	if err != nil {
+		return
+	}
+	baselines := map[string]string{}
+	for _, cluster := range saved.Clusters {
+		if cluster.Name == topology.ClusterName {
+			for _, node := range cluster.Nodes {
+				baselines[node.Name] = node.ConfiguredEndpoint
+			}
+		}
+	}
+	used := map[string]string{}
+	for _, node := range topology.Nodes {
+		used[node.Name] = node.ManagementEndpoint
+	}
+	for _, node := range inv.Nodes {
+		if _, overridden := endpoints[node.Name]; overridden {
+			continue
+		}
+		if len(selectedNodes) > 0 && !containsString(selectedNodes, node.Name) {
+			continue
+		}
+		configured := configuredEndpoint(node)
+		reached, err := normalizeManagementAddress(used[node.Name])
+		if err != nil || configured == "" || reached == "" || configured == reached || baselines[node.Name] == "" || baselines[node.Name] == configured {
+			continue
+		}
+		fmt.Fprintf(stderr, "warning: %s is configured at management.address %s, but the saved context reaches it at %s, so this command uses %s; "+
+			"to complete a planned move, stage it with 'katlctl cluster apply --config %s --node %s --endpoint %s' and run 'katlctl node reboot %s --config %s --endpoint %s'; "+
+			"if it already answers at %s, run 'katlctl context rebind --node %s --endpoint %s' (see docs/operations/change-cluster-nodes.md#re-address-a-worker)\n",
+			node.Name, managementHost(configured), managementHost(reached), managementHost(reached),
+			configInput, node.Name, managementHost(reached), node.Name, configInput, managementHost(reached),
+			managementHost(configured), node.Name, managementHost(configured))
+	}
 }

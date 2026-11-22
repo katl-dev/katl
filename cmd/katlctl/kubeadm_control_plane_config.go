@@ -141,6 +141,7 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 		return err
 	}
 	ctx = refreshed
+	warnPendingReaddress(ctx, opts.configPath, endpoints, opts.selectedNodes, stderr)
 	opts.progress = stderr
 	acknowledgements, err := normalizeDestructiveStorageAcknowledgements(opts.destructiveStorageAcknowledgements)
 	if err != nil {
