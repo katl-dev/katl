@@ -578,28 +578,26 @@ func TestEnsureClusterConfig(t *testing.T) {
 	}
 }
 
-func TestAddNodeGuidanceFollowsOperatorPath(t *testing.T) {
-	var stdout bytes.Buffer
-	manager := installerManager{repoRoot: "/repo", stdout: &stdout}
-	manager.printAddNode(waitingObservation("cp-2", "192.0.2.43", vmtest.ControlPlane))
-	for _, want := range []string{
-		"change-cluster-nodes.md",
-		"  - name: cp-2\n    controlPlane: true\n",
-		"        byID: " + katldevTargetDisk + "\n",
-		"      address: 192.0.2.43\n",
-		"katlctl config validate /repo/_build/katldev/cluster.yaml",
-		"katlctl install apply --config /repo/_build/katldev/cluster.yaml --node cp-2",
-		"katlctl node join cp-2 --config /repo/_build/katldev/cluster.yaml",
+func TestAddNodeGuidanceNamesConfigAddNode(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		obs  nodeObservation
+		want string
+	}{
+		{"control plane", waitingObservation("cp-2", "192.0.2.43", vmtest.ControlPlane), "katlctl config add-node /repo/_build/katldev/cluster.yaml --installer 192.0.2.43 --name cp-2 --role control-plane\n"},
+		{"worker", waitingObservation("worker-2", "192.0.2.44", vmtest.Worker), "katlctl config add-node /repo/_build/katldev/cluster.yaml --installer 192.0.2.44 --name worker-2 --role worker\n"},
 	} {
-		if !strings.Contains(stdout.String(), want) {
-			t.Fatalf("guidance missing %q:\n%s", want, stdout.String())
-		}
-	}
-
-	stdout.Reset()
-	manager.printAddNode(waitingObservation("worker-2", "192.0.2.44", vmtest.Worker))
-	if strings.Contains(stdout.String(), "controlPlane") {
-		t.Fatalf("worker guidance suggests a control plane:\n%s", stdout.String())
+		t.Run(test.name, func(t *testing.T) {
+			var stdout bytes.Buffer
+			manager := installerManager{repoRoot: "/repo", stdout: &stdout}
+			manager.printAddNode(test.obs)
+			if !strings.Contains(stdout.String(), test.want) {
+				t.Fatalf("guidance missing %q:\n%s", test.want, stdout.String())
+			}
+			if strings.Contains(stdout.String(), "byID") {
+				t.Fatalf("guidance asks for a hand-written node entry:\n%s", stdout.String())
+			}
+		})
 	}
 }
 
