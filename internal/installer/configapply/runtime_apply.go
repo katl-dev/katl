@@ -366,6 +366,7 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		executor.StatusPath = statusPath
 		if containsChangeDomain(changes, DomainHostConfiguration) {
 			hostPlan := planHostConfigurationChange(effectiveHostConfiguration(request.CurrentManifest.Node), effectiveHostConfiguration(merged.Node))
+			hostPlan.netdevs.protected = protectedNetworkEndpoints(request.CurrentManifest.Node, merged.Node, executor.ManagementAddress)
 			executor.HostConfiguration = &hostPlan
 		}
 		status, err = executor.ExecuteLive(ctx, plan)
@@ -970,6 +971,8 @@ func (a *domainAccumulator) changes(overlays ...NodeOverlay) []Change {
 			change.Message = a.hostConfiguration.Message
 			change.Warnings = slices.Clone(a.hostConfiguration.warnings)
 			change.Effects = slices.Clone(a.hostConfiguration.Effects)
+			change.LiveNotices = a.hostConfiguration.netdevs.notices(true)
+			change.NextBootNotices = a.hostConfiguration.netdevs.notices(false)
 		}
 		changes = append(changes, change)
 	}

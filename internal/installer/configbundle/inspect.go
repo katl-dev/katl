@@ -197,12 +197,16 @@ func nodeProvenance(node SourceNode, resolved SourceNodeLayer, base string) []Fi
 	}
 	_, sysfsSet := node.HostConfiguration.Sysfs.Get()
 	_, maskedUnitsSet := node.HostConfiguration.MaskedUnits.Get()
+	_, preservedNetdevsSet := node.HostConfiguration.PreservedNetdevs.Get()
 	_, enabledUnitsSet := node.HostConfiguration.EnabledUnits.Get()
 	if _, set := resolved.HostConfiguration.EnabledUnits.Get(); set {
 		choose("hostConfiguration.enabledUnits", enabledUnitsSet)
 	}
 	if _, set := resolved.HostConfiguration.MaskedUnits.Get(); set {
 		choose("hostConfiguration.maskedUnits", maskedUnitsSet)
+	}
+	if _, set := resolved.HostConfiguration.PreservedNetdevs.Get(); set {
+		choose("hostConfiguration.preservedNetdevs", preservedNetdevsSet)
 	}
 	if _, set := resolved.HostConfiguration.Sysfs.Get(); set {
 		choose("hostConfiguration.sysfs", sysfsSet)
@@ -498,6 +502,7 @@ func DiffNodeResolutions(before, after NodeResolution) (ConfigDiff, error) {
 	add(base+".kernel", before.Effective.Kernel, after.Effective.Kernel)
 	add(base+".hostConfiguration.sysfs", before.Effective.HostConfiguration.Sysfs.Value(), after.Effective.HostConfiguration.Sysfs.Value())
 	add(base+".hostConfiguration.maskedUnits", before.Effective.HostConfiguration.MaskedUnits.Value(), after.Effective.HostConfiguration.MaskedUnits.Value())
+	add(base+".hostConfiguration.preservedNetdevs", before.Effective.HostConfiguration.PreservedNetdevs.Value(), after.Effective.HostConfiguration.PreservedNetdevs.Value())
 	add(base+".hostConfiguration.enabledUnits", before.Effective.HostConfiguration.EnabledUnits.Value(), after.Effective.HostConfiguration.EnabledUnits.Value())
 	diffNamedMaps(&diff, base+".hostConfiguration.fileSets", before.Effective.HostConfiguration.FileSets.Value(), after.Effective.HostConfiguration.FileSets.Value())
 	diffRepositoryExtensions(&diff, base+".systemExtensions", before.Effective.SystemExtensions.Value(), after.Effective.SystemExtensions.Value())
@@ -590,6 +595,8 @@ func classifyDiffPath(path string) (string, string, string) {
 		return "online-applicable", "", "systemd masks apply live; removing a mask does not start the unit"
 	case strings.HasSuffix(path, ".hostConfiguration.enabledUnits"):
 		return "online-applicable", "", "systemd enablement and activation apply live after configuration is visible"
+	case strings.HasSuffix(path, ".hostConfiguration.preservedNetdevs"):
+		return "online-applicable", "", "preserved netdevs change only how later netdev changes apply"
 	case strings.Contains(path, ".hostConfiguration"):
 		return "online-or-next-boot", "", "the concrete file or sysfs change determines whether live preflight succeeds"
 	case strings.Contains(path, ".systemExtensions"):

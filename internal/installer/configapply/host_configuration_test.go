@@ -138,8 +138,7 @@ func TestPlanHostConfigurationStagesSysfsSettings(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			plan := planHostConfigurationChange(
 				manifest.HostConfiguration{Sysfs: tt.current},
-				manifest.HostConfiguration{Sysfs: tt.desired},
-			)
+				manifest.HostConfiguration{Sysfs: tt.desired})
 			if plan.Live || !strings.Contains(plan.Message, "sysfs configuration applies and verifies on next boot") {
 				t.Fatalf("plan = %#v, want staged sysfs change", plan)
 			}

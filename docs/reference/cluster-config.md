@@ -27,6 +27,7 @@ and "—" means the field has no default.
 | `spec.defaults.hostConfiguration.fileSets` | [Native host files](#file-sets) | — | Depends on the [file type](#apply-behavior-by-file-type) |
 | `spec.defaults.hostConfiguration.enabledUnits` | [Units to enable and start](#enabled-units) | — | Live |
 | `spec.defaults.hostConfiguration.maskedUnits` | [Units to mask](#masked-units) | — | Live |
+| `spec.defaults.hostConfiguration.preservedNetdevs` | [Netdevs left to plain networkd behavior](#virtual-network-devices) | — | Live |
 | `spec.defaults.hostConfiguration.sysfs` | [Typed sysfs values](#sysfs-settings) | — | Next boot |
 | `spec.defaults.systemExtensions` | [System extensions](#system-extensions) by OCI repository | — | Extension change or removal: next boot; configuration and units: live |
 | `spec.defaults.storage.volumes` | [Data volumes](#data-volumes) | `wipe: false` | Live |
@@ -284,11 +285,103 @@ enables `RequiredForOnline` to be online and at least one of those links to be
 routable. Set `RequiredForOnline=no` in a link's `[Link]` section when a managed
 secondary link is intentionally optional at boot.
 
+### Virtual network devices
+
+networkd creates a bond, bridge, VLAN, dummy, or other virtual device from its
+`.netdev` unit, but it never deletes a device whose unit was removed and never
+applies changed `.netdev` settings to a device that already exists. Katl closes
+that gap for the devices its own configuration defines: a device is
+Katl-managed when the running generation's `.netdev` units under
+`/etc/systemd/network` name it with `[NetDev] Name=`. Devices created by a CNI,
+kube-proxy, or any other software, such as `cilium_host`, `lxc*`, `cni0`,
+`flannel.1`, or `kube-ipvs0`, are never Katl-managed.
+
+`katlctl cluster apply` handles a Katl-managed device as follows:
+
+| Change | Live apply | Next-boot apply |
+| --- | --- | --- |
+| `.netdev` added | networkd creates the device when it reloads | The device is created at boot |
+| `.netdev` removed | Katl deletes the device with `networkctl delete` after networkd reloads | The device is not created at boot |
+| Any setting in the `.netdev` or its drop-ins changed, such as a VLAN `Id`, bond `Mode`, or `Kind` | Staged for the next boot; `--mode live` refuses the change | The device is created with the new settings at boot |
+
+Comments, blank lines, `[NetDev] Description=`, and renaming the unit file do
+not count as changes. Katl treats every other difference as one that needs a
+new device. Plans name each device that apply deletes and each device that is
+recreated with new settings after the reboot.
+
+Katl refuses a live deletion when the device carries one of these
+addresses:
+
+- the address `katlctl` used for the apply, or the node's recorded management
+  address;
+- the node's Kubernetes address or, without `kubernetes.address`, a link that
+  carries a default route, which kubelet uses;
+- the control-plane endpoint or VIP. Katl resolves an endpoint name without a
+  VIP when it checks, and refuses when the name does not resolve.
+
+It also refuses when such a device depends on the target. For example, the
+target might be the bond below a management VLAN, a port of a management
+bridge, or the link that carries a management tunnel. Katl also refuses when it
+cannot tell which link carries a tunnel that holds one of these addresses, such
+as a WireGuard interface. Katl repeats the check immediately before each
+deletion. Stage such a change with `--mode next-boot` when the node
+stays reachable at the same address, for example when a bridge and its port
+share a MAC address and DHCP reservation. When the address moves, follow
+[Re-address a worker](../operations/change-cluster-nodes.md#re-address-a-worker).
+Katl also refuses to delete a device that a retained netdev, such as a VLAN that
+stays configured, is stacked on. Deleting a bond or bridge only releases its
+ports.
+
+After a live apply, Katl reads kernel link state and fails the apply when it
+does not match the configuration:
+
+- a device that it deleted is still present;
+- a device that it added is missing or has the wrong kind, VLAN id,
+  parent link, or ports;
+- an unchanged device is missing or lost its parent or ports.
+
+Katl reports, but does not verify, a `.netdev` whose `[Match]` conditions may
+not apply to the host and a stacked device such as a VLAN that no `.network`
+unit references, because networkd does not create those. It leaves a removed
+device in place when networkd still loads another unit for it, such as one under
+`/run/systemd/network`.
+
+A failed apply rolls back to the previous generation. Katl then checks that the
+previous devices came back as they were before the apply. It does not
+reconfigure links to force them back, because that can drop the addresses of a
+management link. When a device did not come back, the rollback is reported as
+failed and names the device; reboot the node to rebuild it from the selected
+generation. If the agent stops while deleting a device, the generation's apply
+status names that device.
+
+Devices follow the booted or live-activated generation. After a rollback or a
+reboot into another generation, the next live apply compares against the
+generation that is actually running.
+
+List a device in `hostConfiguration.preservedNetdevs` to keep plain networkd
+behavior for it: Katl never deletes it, and a changed definition
+takes effect when the device is next created, normally at boot. A node list
+replaces the defaults. Native `.netdev.d` drop-ins compose as usual.
+
+```yaml
+spec:
+  defaults:
+    hostConfiguration:
+      preservedNetdevs:
+        - br-vms
+```
+
+Removing the `.network` unit of a physical link makes networkd stop managing
+that link. On the systemd version that KatlOS ships, networkd then removes the
+addresses and routes that it configured on the link, leaving only the kernel's
+IPv6 link-local address, so no stale configuration remains. Katl never deletes
+physical links.
+
 ### Apply behavior by file type
 
 | Files | Activation |
 | --- | --- |
-| Network files | Live: Katl reloads networkd for `.network` and `.netdev` changes and reloads udev for `.link` changes; see the [network caution](../operations/configure-nodes.md#configure-native-linux-facilities) |
+| Network files | Live: Katl reloads networkd for `.network` and `.netdev` changes and reloads udev for `.link` changes. A changed `.netdev` waits for the next boot; see [virtual network devices](#virtual-network-devices) and the [network caution](../operations/configure-nodes.md#configure-native-linux-facilities) |
 | Sysctl files | Live for a reversible concrete-key change |
 | Udev rules | Live reload; Katl does not retrigger existing devices |
 | Unit definitions and drop-ins under `/etc/systemd/system` | Live; see [enabled units](#enabled-units) |

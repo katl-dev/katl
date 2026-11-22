@@ -641,8 +641,13 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	if output := guestCommandOutput(t, ctx, guest, "live-netdev", "ip", "-d", "link", "show", "katllive0"); !strings.Contains(output, "alias katl-live-netdev") {
 		t.Fatalf("live netdev did not use its .link file: %s", output)
 	}
+	runNetdevLifecycleSmoke(t, ctx, guest, result, katlctl, endpoint)
 
+	// The systemd smoke replaces the network sets, so Katl deletes katllive0.
 	runSystemdUnitSmoke(t, ctx, guest, client, result, katlctl, endpoint)
+	if removed, err := guest.RunCommand(ctx, GuestCommandRequest{Name: "removed-netdev", Argv: []string{"ip", "link", "show", "katllive0"}, AllowFailure: true}); err != nil || removed.ExitStatus == 0 {
+		t.Fatalf("removed netdev katllive0 is still present: result=%+v err=%v", removed, err)
+	}
 	activeGeneration := runVolumeRemovalSmoke(t, ctx, guest, result, katlctl, endpoint)
 
 	assertGuestNonLoopbackLink(t, ctx, guest)

@@ -35,6 +35,7 @@ type HostConfigurationChangePlan struct {
 	inactiveNotifications  []string
 	resetFailures          []string
 	SysctlAssignments      []HostSysctlAssignment
+	netdevs                netdevPlan
 }
 
 type HostSysctlAssignment struct {
@@ -222,6 +223,21 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 		}
 		if strings.HasPrefix(filePath, "/etc/systemd/system/") {
 			systemdReload = true
+		}
+	}
+	plan.netdevs = planNetdevs(currentFiles, desiredFiles, desired.PreservedNetdevs)
+	for _, name := range plan.netdevs.deletes {
+		plan.Effects = append(plan.Effects, plannedEffect("delete", "netdev "+name))
+	}
+	for _, name := range plan.netdevs.changed {
+		plan.Effects = append(plan.Effects, plannedEffect("recreate", "netdev "+name))
+	}
+	if len(plan.netdevs.changed) > 0 {
+		reason := fmt.Sprintf("netdev %s settings apply only when networkd creates the device, so they take effect after the next boot; apply with --mode auto or --mode next-boot", strings.Join(plan.netdevs.changed, ", "))
+		if stagedReason == "" {
+			stagedReason = reason
+		} else {
+			stagedReason += "; " + reason
 		}
 	}
 	for unit := range notifications {

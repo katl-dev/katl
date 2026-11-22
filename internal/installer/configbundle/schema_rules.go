@@ -113,6 +113,8 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 		return description("Systemd units to stop and prevent from starting. A node list replaces defaults; an empty list clears inherited masks.")
 	case "configbundle.SourceHostConfiguration.enabledUnits":
 		return description("Native systemd units to enable and start after configuration is visible. Removing a unit stops and disables it. A node list replaces defaults; an empty list clears inherited enablement.")
+	case "configbundle.SourceHostConfiguration.preservedNetdevs":
+		return description("Netdevs that keep plain networkd behaviour: Katl does not delete them when their .netdev is removed. A node list replaces defaults; an empty list clears inherited entries.")
 	case "configbundle.SourceHostConfiguration.fileSets":
 		return mapRule("Named native /etc file sets; an empty node map clears inherited sets.", dnsLabelPattern)
 	case "configbundle.SourceHostConfigurationSysfsSetting.path":

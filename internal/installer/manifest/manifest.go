@@ -105,18 +105,21 @@ const (
 )
 
 type HostConfiguration struct {
-	EnabledUnits []string                        `json:"enabledUnits,omitempty" yaml:"enabledUnits,omitempty"`
-	MaskedUnits  []string                        `json:"maskedUnits,omitempty" yaml:"maskedUnits,omitempty"`
-	Sysfs        []HostConfigurationSysfsSetting `json:"sysfs,omitempty" yaml:"sysfs,omitempty"`
-	Sets         map[string]HostConfigurationSet `json:"sets,omitempty" yaml:"sets,omitempty"`
+	EnabledUnits []string `json:"enabledUnits,omitempty" yaml:"enabledUnits,omitempty"`
+	MaskedUnits  []string `json:"maskedUnits,omitempty" yaml:"maskedUnits,omitempty"`
+	// PreservedNetdevs names netdevs that keep plain networkd behaviour: Katl
+	// never deletes them when their .netdev is removed.
+	PreservedNetdevs []string                        `json:"preservedNetdevs,omitempty" yaml:"preservedNetdevs,omitempty"`
+	Sysfs            []HostConfigurationSysfsSetting `json:"sysfs,omitempty" yaml:"sysfs,omitempty"`
+	Sets             map[string]HostConfigurationSet `json:"sets,omitempty" yaml:"sets,omitempty"`
 }
 
 func (config HostConfiguration) IsZero() bool {
-	return len(config.EnabledUnits) == 0 && len(config.MaskedUnits) == 0 && len(config.Sysfs) == 0 && len(config.Sets) == 0
+	return len(config.EnabledUnits) == 0 && len(config.MaskedUnits) == 0 && len(config.PreservedNetdevs) == 0 && len(config.Sysfs) == 0 && len(config.Sets) == 0
 }
 
 func NormalizeHostConfiguration(config HostConfiguration) HostConfiguration {
-	if len(config.EnabledUnits) == 0 && len(config.MaskedUnits) == 0 && config.Sysfs == nil && len(config.Sets) == 0 {
+	if len(config.EnabledUnits) == 0 && len(config.MaskedUnits) == 0 && len(config.PreservedNetdevs) == 0 && config.Sysfs == nil && len(config.Sets) == 0 {
 		return HostConfiguration{}
 	}
 	sysfs := slices.Clone(config.Sysfs)
@@ -156,7 +159,9 @@ func NormalizeHostConfiguration(config HostConfiguration) HostConfiguration {
 	slices.Sort(maskedUnits)
 	enabledUnits := append([]string(nil), config.EnabledUnits...)
 	slices.Sort(enabledUnits)
-	return HostConfiguration{EnabledUnits: enabledUnits, MaskedUnits: maskedUnits, Sysfs: sysfs, Sets: sets}
+	preservedNetdevs := append([]string(nil), config.PreservedNetdevs...)
+	slices.Sort(preservedNetdevs)
+	return HostConfiguration{EnabledUnits: enabledUnits, MaskedUnits: maskedUnits, PreservedNetdevs: preservedNetdevs, Sysfs: sysfs, Sets: sets}
 }
 
 type HostConfigurationSysfsSetting struct {
@@ -919,6 +924,16 @@ func ValidateHostConfiguration(config HostConfiguration, allowSource bool) error
 		}
 		maskedUnits[unit] = struct{}{}
 	}
+	preservedNetdevs := make(map[string]struct{}, len(config.PreservedNetdevs))
+	for i, name := range config.PreservedNetdevs {
+		if !validInterfaceName(name) {
+			return fmt.Errorf("preservedNetdevs[%d] %q must be a network interface name", i, name)
+		}
+		if _, exists := preservedNetdevs[name]; exists {
+			return fmt.Errorf("preservedNetdevs[%d] %q duplicates another netdev", i, name)
+		}
+		preservedNetdevs[name] = struct{}{}
+	}
 	sysfsNames := make(map[string]struct{}, len(config.Sysfs))
 	for i, setting := range config.Sysfs {
 		field := fmt.Sprintf("sysfs[%d]", i)
@@ -1517,4 +1532,12 @@ func diskSelector(selector DiskSelector) disk.TargetDiskSelector {
 		Serial:     selector.Serial,
 		MinSizeMiB: selector.MinSizeMiB,
 	}
+}
+
+// validInterfaceName follows the kernel's interface name rules.
+func validInterfaceName(name string) bool {
+	if name == "" || len(name) > 15 || name == "." || name == ".." {
+		return false
+	}
+	return !strings.ContainsAny(name, "/: \t\n\x00")
 }

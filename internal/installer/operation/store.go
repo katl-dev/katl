@@ -175,6 +175,9 @@ type ConfigApplyRequest struct {
 	ConfigYAMLSHA256                   string   `json:"configYAMLSHA256,omitempty"`
 	DestructiveStorageAcknowledgements []string `json:"destructiveStorageAcknowledgements,omitempty"`
 	VolumeRebinds                      []string `json:"volumeRebinds,omitempty"`
+	// ManagementAddress is the node-local address of the management session
+	// that submitted the request. Live network changes must keep it.
+	ManagementAddress string `json:"managementAddress,omitempty"`
 }
 
 type KubeadmControlPlaneConfig struct {
