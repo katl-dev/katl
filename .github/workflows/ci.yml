@@ -11,16 +11,13 @@ on:
 permissions:
   contents: read
 
-# Labels other than vmtest do not change what runs, so they get a private group
-# instead of cancelling the pull request's run in progress.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}${{ github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'vmtest' && format('-{0}', github.run_id) || '' }}
+  group: ci-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
   checks:
     name: Fast checks
-    if: github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'vmtest'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     outputs:
@@ -48,13 +45,13 @@ jobs:
           mkdir -p _build
           options=(--ci)
           # VM suites run in the merge queue and on pull requests labelled vmtest.
-          # Driver qualification runs on pull requests and manual dispatch only.
+          # Driver qualification runs wherever the planner selects it, except on main.
           no_vms=false
           no_drivers=false
           case "$GITHUB_EVENT_NAME" in
             pull_request)
               if [[ "${VMTEST_LABEL:-false}" == true ]]; then options+=(--regression); else no_vms=true; fi ;;
-            merge_group) options+=(--regression); no_drivers=true ;;
+            merge_group) options+=(--regression) ;;
             push) no_vms=true; no_drivers=true ;;
           esac
           if [[ "$GITHUB_EVENT_NAME" == pull_request || "$GITHUB_EVENT_NAME" == merge_group ]]; then
@@ -93,7 +90,6 @@ jobs:
 
   nix:
     name: Nix katlctl
-    if: github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'vmtest'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -139,7 +135,7 @@ jobs:
 
   result:
     name: CI
-    if: always() && (github.event_name != 'pull_request' || github.event.action != 'labeled' || github.event.label.name == 'vmtest')
+    if: always()
     needs: [checks, nix, vms, drivers]
     runs-on: ubuntu-24.04
     timeout-minutes: 5

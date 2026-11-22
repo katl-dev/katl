@@ -584,13 +584,14 @@ The command checks all tracked Go formatting, patch whitespace, and runs the
 complete Go suite with `-count=1` so cached test results cannot hide failures.
 Changes reach `main` through pull requests and the merge queue after
 [CI](development/ci.md) passes. Pull requests run fast checks, the Nix build, and
-kernel driver gates. The VM suites run in the merge queue against the merged
-result, covering both kernel flavours, and not again after the merge. To run them
-on a pull request before queueing it, add the `vmtest` label; later pushes to
-the branch keep running them while the label is present. Agents still run the
-relevant local `scripts/vmtest-run` gates before opening a pull request, as
-`AGENTS.md` requires. Kubernetes producer validation shares the VM image build
-and cluster lane. Direct pushes are not part of the supported development
+kernel driver gates. The merge queue repeats them against the merged result and
+also runs the VM suites for both kernel flavours; none of this runs again after
+the merge. To run the VM suites on a pull request before queueing it, add the
+`vmtest` label; later pushes to the branch keep running them while the label is
+present. Adding any label restarts the pull request run. Agents still
+run the relevant local `scripts/vmtest-run` gates before opening a pull request,
+as `AGENTS.md` requires. Kubernetes producer validation shares the VM image
+build and cluster lane. Direct pushes are not part of the supported development
 loop.
 
 Fast checks skip mkosi builds, libvirt/KVM setup, VM scenarios, and publishing.
@@ -638,11 +639,10 @@ Manual builds qualify the source and packaging but produce separate bytes from
 a later tag run. Rebuilding or rerunning producer jobs invalidates the recorded
 artifact qualification and requires repeating the affected journeys.
 
-Pushes to `main` run only the fast checks and the Nix build. They no longer build
-images, so `main` stops refreshing the caches that release tags restore, and a
-release run after a long quiet period may build with cold caches.
-Release-artifact builds run only for release branches, tags, or explicit manual
-candidates. Release runs are not cancelled by later runs.
+Pushes to `main` run only the fast checks and the Nix build. Release-artifact
+builds restore caches that only Release Artifacts saves, so they do not depend on
+CI caches. They run only for release branches, tags, or explicit manual
+candidates, and later runs do not cancel them.
 
 Release production uses a dependency-aware job graph. Runtime, installer, and
 `katlctl` builds start concurrently. The install and upgrade images are then

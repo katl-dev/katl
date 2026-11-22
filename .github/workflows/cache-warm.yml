@@ -1,0 +1,24 @@
+name: Cache warm
+
+# Pull request and merge queue runs restore build caches from main but do not
+# refresh them there. This keeps main's copies current and inside the seven-day
+# cache retention window.
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  images:
+    name: Images (${{ matrix.flavour }})
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: [standard, lts]
+    uses: ./.github/workflows/hosted-vmtests.yml
+    with:
+      flavour: ${{ matrix.flavour }}
+      cache-only: true
