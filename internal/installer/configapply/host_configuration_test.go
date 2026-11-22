@@ -11,7 +11,7 @@ import (
 func TestPlanHostConfigurationSysctlRequiresReversibleConcreteDiff(t *testing.T) {
 	current := testHostConfiguration("forwarding", "/etc/sysctl.d/80-forwarding.conf", "net.ipv4.ip_forward = 0\n")
 	desired := testHostConfiguration("forwarding", "/etc/sysctl.d/80-forwarding.conf", "net.ipv4.ip_forward = 1\n")
-	plan := planHostConfigurationChange(current, desired, false)
+	plan := planHostConfigurationChange(current, desired)
 	if !plan.Live || len(plan.SysctlAssignments) != 1 {
 		t.Fatalf("plan = %#v, want one live sysctl assignment", plan)
 	}
@@ -19,13 +19,13 @@ func TestPlanHostConfigurationSysctlRequiresReversibleConcreteDiff(t *testing.T)
 		t.Fatalf("assignments = %#v", plan.SysctlAssignments)
 	}
 
-	addition := planHostConfigurationChange(manifest.HostConfiguration{}, desired, false)
+	addition := planHostConfigurationChange(manifest.HostConfiguration{}, desired)
 	if addition.Live || !strings.Contains(addition.Message, "additions") {
 		t.Fatalf("addition plan = %#v, want next boot", addition)
 	}
 
 	ambiguous := testHostConfiguration("forwarding", "/etc/sysctl.d/80-forwarding.conf", "net.ipv4.conf.*.forwarding = 1\n")
-	ambiguousPlan := planHostConfigurationChange(current, ambiguous, false)
+	ambiguousPlan := planHostConfigurationChange(current, ambiguous)
 	if ambiguousPlan.Live {
 		t.Fatalf("ambiguous plan = %#v, want next boot", ambiguousPlan)
 	}
@@ -33,7 +33,7 @@ func TestPlanHostConfigurationSysctlRequiresReversibleConcreteDiff(t *testing.T)
 
 func TestPlanHostConfigurationReloadsUdevWithoutTrigger(t *testing.T) {
 	desired := testHostConfiguration("ups-device", "/etc/udev/rules.d/80-ups.rules", `SUBSYSTEM=="usb"`+"\n")
-	plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired, false)
+	plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired)
 	if !plan.Live || !strings.Contains(plan.Message, "will not be retriggered") {
 		t.Fatalf("plan = %#v", plan)
 	}
@@ -44,7 +44,7 @@ func TestPlanHostConfigurationReloadsUdevWithoutTrigger(t *testing.T) {
 
 func TestPlanHostConfigurationStagesKernelModuleFiles(t *testing.T) {
 	desired := testHostConfiguration("storage-modules", "/etc/modules-load.d/80-storage.conf", "br_netfilter\n")
-	plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired, false)
+	plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired)
 	if plan.Live || !strings.Contains(plan.Message, "next-boot-only") {
 		t.Fatalf("plan = %#v, want staged module configuration", plan)
 	}
@@ -69,7 +69,7 @@ func TestPlanHostConfigurationStagesBootOwnedOverlays(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			desired := testHostConfiguration("example", tt.path, tt.content)
-			plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired, false)
+			plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired)
 			if plan.Live || !strings.Contains(plan.Message, tt.want) {
 				t.Fatalf("plan = %#v, want staged change", plan)
 			}
@@ -108,7 +108,7 @@ func TestPlanHostConfigurationReloadsNetworking(t *testing.T) {
 				{"remove", before, manifest.HostConfiguration{}},
 			} {
 				t.Run(transition.name, func(t *testing.T) {
-					plan := planHostConfigurationChange(transition.before, transition.after, false)
+					plan := planHostConfigurationChange(transition.before, transition.after)
 					if !plan.Live || len(plan.warnings) == 0 || !strings.Contains(plan.warnings[0], "different from the saved configuration") {
 						t.Fatalf("plan = %#v, want live networking with convergence warning", plan)
 					}
@@ -138,7 +138,7 @@ func TestPlanHostConfigurationStagesSysfsSettings(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			plan := planHostConfigurationChange(
 				manifest.HostConfiguration{Sysfs: tt.current},
-				manifest.HostConfiguration{Sysfs: tt.desired}, false)
+				manifest.HostConfiguration{Sysfs: tt.desired})
 			if plan.Live || !strings.Contains(plan.Message, "sysfs configuration applies and verifies on next boot") {
 				t.Fatalf("plan = %#v, want staged sysfs change", plan)
 			}
@@ -159,7 +159,7 @@ func TestPlanHostConfigurationDerivesSystemdComponentNotification(t *testing.T) 
 		t.Run(tt.unit, func(t *testing.T) {
 			content := "[Service]\nSetting=value\n"
 			desired := testHostConfiguration("component", tt.path, content)
-			plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired, false)
+			plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired)
 			if !plan.Live {
 				t.Fatalf("plan = %#v", plan)
 			}
@@ -170,7 +170,7 @@ func TestPlanHostConfigurationDerivesSystemdComponentNotification(t *testing.T) 
 	}
 
 	unsupported := testHostConfiguration("manager", "/etc/systemd/system.conf.d/80-home-lab.conf", "[Manager]\nShowStatus=yes\n")
-	if plan := planHostConfigurationChange(manifest.HostConfiguration{}, unsupported, false); plan.Live || !strings.Contains(plan.Message, "no proven live adapter") {
+	if plan := planHostConfigurationChange(manifest.HostConfiguration{}, unsupported); plan.Live || !strings.Contains(plan.Message, "no proven live adapter") {
 		t.Fatalf("unsupported component plan = %#v", plan)
 	}
 }
@@ -223,7 +223,7 @@ func TestPlanHostConfigurationRegrouping(t *testing.T) {
 			desired := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
 				"journald": tt.destination,
 			}}
-			plan := planHostConfigurationChange(current, desired, false)
+			plan := planHostConfigurationChange(current, desired)
 			if plan.Live != tt.wantLive {
 				t.Fatalf("plan = %#v, want live = %t", plan, tt.wantLive)
 			}
@@ -255,7 +255,7 @@ func TestPlanHostConfigurationExposesEveryBoundedEffect(t *testing.T) {
 			Files: []manifest.HostConfigurationFile{{Path: "/etc/systemd/journald.conf.d/80-home-lab.conf", Content: &journal}},
 		},
 	}}
-	plan := planHostConfigurationChange(current, desired, false)
+	plan := planHostConfigurationChange(current, desired)
 	if !plan.Live {
 		t.Fatalf("plan = %#v", plan)
 	}
@@ -289,7 +289,7 @@ func testHostConfiguration(setName, filePath, content string) manifest.HostConfi
 }
 
 func TestUnmaskDoesNotStartUnit(t *testing.T) {
-	plan := planHostConfigurationChange(manifest.HostConfiguration{MaskedUnits: []string{"bluetooth.service"}}, manifest.HostConfiguration{}, false)
+	plan := planHostConfigurationChange(manifest.HostConfiguration{MaskedUnits: []string{"bluetooth.service"}}, manifest.HostConfiguration{})
 	if !plan.Live {
 		t.Fatalf("unmask requires reboot: %s", plan.Message)
 	}

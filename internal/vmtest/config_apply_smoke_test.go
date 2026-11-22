@@ -641,18 +641,6 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	if output := guestCommandOutput(t, ctx, guest, "live-netdev", "ip", "-d", "link", "show", "katllive0"); !strings.Contains(output, "alias katl-live-netdev") {
 		t.Fatalf("live netdev did not use its .link file: %s", output)
 	}
-	beforeRecreate := strings.SplitN(guestCommandOutput(t, ctx, guest, "netdev-index", "ip", "-o", "link", "show", "katllive0"), ":", 2)[0]
-	recreateAccepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-netdev-recreate", "live", "2026.06.06-vmtest-netdev-recreate", configApplyFixture(t, "live-network-recreate.yaml"), false)
-	if status := waitKatlcOperationTerminal(t, ctx, endpoint, recreateAccepted.OperationId); status.Result != operation.ResultSucceeded || status.ConfigApplyPhase != "active" {
-		t.Fatalf("netdev recreate status = %+v", status)
-	}
-	guestCommand(t, ctx, guest, "recreated-netdev-initialized", "udevadm", "wait", "--timeout=30", "--initialized=yes", "/sys/class/net/katllive0")
-	if output := guestCommandOutput(t, ctx, guest, "recreated-netdev", "ip", "-d", "link", "show", "katllive0"); !strings.Contains(output, "mtu 1400") || !strings.Contains(output, "alias katl-live-netdev") {
-		t.Fatalf("recreated netdev did not use its changed .netdev and .link files: %s", output)
-	}
-	if after := strings.SplitN(guestCommandOutput(t, ctx, guest, "netdev-index", "ip", "-o", "link", "show", "katllive0"), ":", 2)[0]; after == beforeRecreate {
-		t.Fatalf("katllive0 kept ifindex %s; want a recreated device", after)
-	}
 	runNetdevLifecycleSmoke(t, ctx, guest, result, katlctl, endpoint)
 
 	// The systemd smoke replaces the network sets, so Katl deletes katllive0.

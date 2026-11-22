@@ -42,7 +42,6 @@ type TrustedBundleRequest struct {
 	DesiredVersion                  string
 	NodeName                        string
 	ApplyMode                       string
-	RecreateNetdevs                 bool
 	GenerationID                    string
 	CurrentManifest                 manifest.Manifest
 	CurrentRecord                   generation.Record
@@ -298,7 +297,7 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		Kind:            NodeConfigurationChangeKind,
 		GenerationID:    request.GenerationID,
 		SourceDigest:    requestDigest(request),
-		Apply:           Apply{Mode: request.ApplyMode, RecreateNetdevs: request.RecreateNetdevs},
+		Apply:           Apply{Mode: request.ApplyMode},
 		Changes:         changes,
 		Sysexts:         sysexts,
 		BundledConfexts: bundledConfexts,
@@ -366,7 +365,7 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		}
 		executor.StatusPath = statusPath
 		if containsChangeDomain(changes, DomainHostConfiguration) {
-			hostPlan := planHostConfigurationChange(effectiveHostConfiguration(request.CurrentManifest.Node), effectiveHostConfiguration(merged.Node), request.RecreateNetdevs)
+			hostPlan := planHostConfigurationChange(effectiveHostConfiguration(request.CurrentManifest.Node), effectiveHostConfiguration(merged.Node))
 			hostPlan.netdevs.protected = protectedNetworkEndpoints(request.CurrentManifest.Node, merged.Node, executor.ManagementAddress)
 			executor.HostConfiguration = &hostPlan
 		}
@@ -627,7 +626,7 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 		return merged, nil, nil, ErrNoChanges
 	}
 	if _, changed := domains.seen[DomainHostConfiguration]; changed {
-		hostPlan := planHostConfigurationChange(currentHostConfiguration, effectiveHostConfiguration(merged.Node), request.RecreateNetdevs)
+		hostPlan := planHostConfigurationChange(currentHostConfiguration, effectiveHostConfiguration(merged.Node))
 		domains.hostConfiguration = &hostPlan
 	}
 	return merged, domains.changes(request.ClusterDefaults, roleOverlay, nodeOverlay), slices.Concat(unsafeFiles, proxyFiles), nil
@@ -831,7 +830,7 @@ func applyOverlay(installManifest *manifest.Manifest, overlay NodeOverlay, kuber
 		changed := !hostConfigurationsEqual(current, desired)
 		node.HostConfiguration = desired
 		if changed {
-			domains.addHostConfiguration(planHostConfigurationChange(current, desired, false))
+			domains.addHostConfiguration(planHostConfigurationChange(current, desired))
 		}
 	}
 	if overlay.SystemExtensions != nil {
@@ -1351,7 +1350,6 @@ func requestDigest(request TrustedBundleRequest) string {
 		DesiredVersion          string
 		NodeName                string
 		ApplyMode               string
-		RecreateNetdevs         bool `json:",omitempty"`
 		GenerationID            string
 		CurrentManifest         manifest.Manifest
 		ClusterDefaults         NodeOverlay
@@ -1372,7 +1370,6 @@ func requestDigest(request TrustedBundleRequest) string {
 		DesiredVersion:          request.DesiredVersion,
 		NodeName:                request.NodeName,
 		ApplyMode:               request.ApplyMode,
-		RecreateNetdevs:         request.RecreateNetdevs,
 		GenerationID:            request.GenerationID,
 		CurrentManifest:         request.CurrentManifest,
 		ClusterDefaults:         request.ClusterDefaults,

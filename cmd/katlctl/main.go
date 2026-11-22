@@ -2423,7 +2423,6 @@ type configApplyOptions struct {
 	output                             string
 	destructiveStorageAcknowledgements []string
 	volumeRebinds                      []string
-	recreateNetdevs                    bool
 }
 
 var configApplyNow = func() time.Time { return time.Now().UTC() }
@@ -2496,7 +2495,6 @@ func addConfigApplyFlags(cmd *cobra.Command, opts *configApplyOptions) {
 	cmd.Flags().StringArrayVar(&opts.destructiveStorageAcknowledgements, "acknowledge-storage-wipe", nil, "deprecated: wipe intent is configured by wipe: true")
 	_ = cmd.Flags().MarkHidden("acknowledge-storage-wipe")
 	cmd.Flags().StringArrayVar(&opts.volumeRebinds, "rebind-volume", nil, "authorize replacing one generation-bound volume identity as NODE/VOLUME (repeatable)")
-	cmd.Flags().BoolVar(&opts.recreateNetdevs, "recreate-netdevs", false, "recreate netdevs whose settings changed now instead of on next boot; briefly interrupts traffic through them")
 }
 
 func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr io.Writer) error {
@@ -2543,11 +2541,6 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 	configYAML, rendered, err := nodeConfigYAML(opts.nodeConfig, opts.mode, stderr)
 	if err != nil {
 		return err
-	}
-	if opts.recreateNetdevs {
-		if configYAML, err = configapply.SetRecreateNetdevs(configYAML); err != nil {
-			return err
-		}
 	}
 	if !rendered {
 		if strings.TrimSpace(opts.nodeConfig.sourceID) != "" || strings.TrimSpace(opts.nodeConfig.desiredVersion) != "" {

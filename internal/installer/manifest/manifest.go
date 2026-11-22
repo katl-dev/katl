@@ -108,7 +108,7 @@ type HostConfiguration struct {
 	EnabledUnits []string `json:"enabledUnits,omitempty" yaml:"enabledUnits,omitempty"`
 	MaskedUnits  []string `json:"maskedUnits,omitempty" yaml:"maskedUnits,omitempty"`
 	// PreservedNetdevs names netdevs that keep plain networkd behaviour: Katl
-	// never deletes or recreates them when their .netdev changes.
+	// never deletes them when their .netdev is removed.
 	PreservedNetdevs []string                        `json:"preservedNetdevs,omitempty" yaml:"preservedNetdevs,omitempty"`
 	Sysfs            []HostConfigurationSysfsSetting `json:"sysfs,omitempty" yaml:"sysfs,omitempty"`
 	Sets             map[string]HostConfigurationSet `json:"sets,omitempty" yaml:"sets,omitempty"`

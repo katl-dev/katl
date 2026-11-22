@@ -18,22 +18,20 @@ import (
 	"github.com/katl-dev/katl/internal/installer/networkdconfig"
 )
 
-// RecreateNetdevsFlag names the operator opt-in for live netdev recreation.
-const RecreateNetdevsFlag = "--recreate-netdevs"
-
 const readdressGuidance = "stage the change with --mode next-boot when the node stays reachable at the same address, follow the re-address workflow (docs/operations/change-cluster-nodes.md#re-address-a-worker) when its address moves, or list the device in hostConfiguration.preservedNetdevs to leave it to networkd"
 
 // netdevPlan carries the virtual devices a host configuration change owns.
 // Ownership comes only from .netdev units in Katl's host configuration, so
 // devices created by a CNI or kube-proxy are never selected.
 type netdevPlan struct {
-	deletes   []string
-	recreates []string
-	creates   []string
-	// retained are unchanged devices; deleting or recreating a lower device
-	// also removes devices stacked on it, so they are verified as well.
+	deletes []string
+	creates []string
+	// changed devices keep their old settings until the next boot, because
+	// networkd applies .netdev settings only when it creates a device.
+	changed []string
+	// retained are unchanged devices; deleting a lower device also removes
+	// devices stacked on it, so they are verified as well.
 	retained  []string
-	deferred  []string
 	preserved []string
 	abandoned []string
 	// unverified names configured devices that networkd may legitimately
@@ -42,16 +40,13 @@ type netdevPlan struct {
 	expected   map[string]netdevExpectation
 	// stalePreserved are preservedNetdevs entries naming no netdev.
 	stalePreserved []string
-	// recreateRequested records --recreate-netdevs for no-op notices.
-	recreateRequested bool
-	protected         protectedEndpoints
+	protected      protectedEndpoints
 
 	// Execution state. before is the kernel link state observed before
 	// activation; it is the reference for retained devices and rollback.
 	before      map[string]kernelLink
 	preexisting []string
 	kept        map[string]string
-	started     bool
 	// onDelete records a deletion before it runs, so an interrupted apply
 	// leaves the affected device name in the persisted status.
 	onDelete func(name string)
@@ -79,15 +74,15 @@ var stackedKinds = map[string]bool{
 }
 
 func (p netdevPlan) live() bool {
-	return len(p.deletes) > 0 || len(p.recreates) > 0 || len(p.creates) > 0
+	return len(p.deletes) > 0 || len(p.creates) > 0
 }
 
-func planNetdevs(current, desired map[string]ownedHostFile, preserved []string, recreate bool) netdevPlan {
+func planNetdevs(current, desired map[string]ownedHostFile, preserved []string) netdevPlan {
 	desiredFiles := hostFileContents(desired)
 	before := networkdconfig.Netdevs(hostFileContents(current))
 	after := networkdconfig.Netdevs(desiredFiles)
 	references := networkdconfig.References(desiredFiles)
-	plan := netdevPlan{unverified: map[string]string{}, expected: map[string]netdevExpectation{}, recreateRequested: recreate}
+	plan := netdevPlan{unverified: map[string]string{}, expected: map[string]netdevExpectation{}}
 	for _, name := range sortedStringUnion(before, after) {
 		old, existed := before[name]
 		next, exists := after[name]
@@ -105,10 +100,8 @@ func planNetdevs(current, desired map[string]ownedHostFile, preserved []string, 
 			plan.preserved = append(plan.preserved, name)
 		case !exists:
 			plan.deletes = append(plan.deletes, name)
-		case recreate:
-			plan.recreates = append(plan.recreates, name)
 		default:
-			plan.deferred = append(plan.deferred, name)
+			plan.changed = append(plan.changed, name)
 		}
 	}
 	for _, name := range preserved {
@@ -173,18 +166,8 @@ func (p netdevPlan) notices(live bool) []string {
 			notices = append(notices, fmt.Sprintf("netdev %s is no longer configured; it is not created after the reboot", name))
 		}
 	}
-	for _, name := range p.recreates {
-		if live {
-			notices = append(notices, fmt.Sprintf("netdev %s settings changed; Katl recreates it now, briefly interrupting traffic through it", name))
-		} else {
-			notices = append(notices, fmt.Sprintf("netdev %s settings changed; it is recreated after the reboot, so %s has no effect for this apply", name, RecreateNetdevsFlag))
-		}
-	}
-	if p.recreateRequested && len(p.recreates) == 0 {
-		notices = append(notices, fmt.Sprintf("%s has no effect: no Katl-managed netdev settings changed", RecreateNetdevsFlag))
-	}
-	for _, name := range p.deferred {
-		notices = append(notices, fmt.Sprintf("netdev %s settings changed; networkd applies them only when it creates the device, so the device is recreated after the reboot; rerun with %s to recreate it live", name, RecreateNetdevsFlag))
+	for _, name := range p.changed {
+		notices = append(notices, fmt.Sprintf("netdev %s settings changed; networkd applies them only when it creates the device, so the device is created with the new settings after the reboot", name))
 	}
 	for _, name := range p.preserved {
 		notices = append(notices, fmt.Sprintf("netdev %s is listed in preservedNetdevs; Katl leaves the existing device as networkd does, and the change takes effect when the device is next created", name))
@@ -197,7 +180,7 @@ func (p netdevPlan) notices(live bool) []string {
 	}
 	for _, name := range slices.Sorted(func(yield func(string) bool) {
 		for name := range p.unverified {
-			if (slices.Contains(p.creates, name) || slices.Contains(p.recreates, name)) && !yield(name) {
+			if slices.Contains(p.creates, name) && !yield(name) {
 				return
 			}
 		}
@@ -327,7 +310,7 @@ func (e Executor) readJSON(ctx context.Context, name string, target any, argv ..
 	return nil
 }
 
-// prepareNetdevs refuses unsafe changes and records the kernel link state
+// prepareNetdevs refuses unsafe deletions and records the kernel link state
 // that retained devices and rollback are verified against.
 func (e Executor) prepareNetdevs(ctx context.Context) error {
 	host := e.HostConfiguration
@@ -338,7 +321,7 @@ func (e Executor) prepareNetdevs(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := e.guardNetdevs(ctx, links, slices.Concat(host.netdevs.deletes, host.netdevs.recreates)); err != nil {
+	if err := e.guardNetdevs(ctx, links, host.netdevs.deletes); err != nil {
 		return err
 	}
 	host.netdevs.before = links
@@ -380,7 +363,7 @@ func (e Executor) guardNetdevs(ctx context.Context, links map[string]kernelLink,
 	for _, host := range netdevs.protected.hostnames {
 		resolved, err := e.resolveHost(ctx, host)
 		if err != nil || len(resolved) == 0 {
-			return fmt.Errorf("refusing to delete or recreate netdevs live because the control-plane endpoint %s cannot be resolved to check which link carries it (%v); %s", host, err, readdressGuidance)
+			return fmt.Errorf("refusing to delete netdevs live because the control-plane endpoint %s cannot be resolved to check which link carries it (%v); %s", host, err, readdressGuidance)
 		}
 		addresses = maps.Clone(addresses)
 		for _, address := range resolved {
@@ -457,16 +440,12 @@ func (e Executor) guardNetdevs(ctx context.Context, links map[string]kernelLink,
 		}
 	}
 	for _, name := range unknownUnderlay {
-		refusals = append(refusals, fmt.Sprintf("refusing to delete or recreate netdevs live because tunnel %s carries the %s and Katl cannot tell which link carries the tunnel; %s", name, reasons[name], readdressGuidance))
+		refusals = append(refusals, fmt.Sprintf("refusing to delete netdevs live because tunnel %s carries the %s and Katl cannot tell which link carries the tunnel; %s", name, reasons[name], readdressGuidance))
 	}
 	var protectedRefusals []string
 	for _, name := range targets {
 		if reason, ok := reasons[name]; ok {
-			verb := "delete"
-			if slices.Contains(netdevs.recreates, name) {
-				verb = "recreate"
-			}
-			protectedRefusals = append(protectedRefusals, fmt.Sprintf("refusing to %s netdev %s because it carries or provides the %s", verb, name, reason))
+			protectedRefusals = append(protectedRefusals, fmt.Sprintf("refusing to delete netdev %s because it carries or provides the %s", name, reason))
 		}
 	}
 	if len(protectedRefusals) > 0 {
@@ -494,21 +473,6 @@ func (e Executor) resolveHost(ctx context.Context, host string) ([]netip.Addr, e
 	return addresses, err
 }
 
-// networkd creates a missing device when a reload loads a changed definition
-// for it, but it never deletes a device or applies new settings to an
-// existing one. Katl therefore deletes recreated devices after the new
-// configuration is visible and before networkd reloads it; deleting them after
-// the reload would leave stacked devices such as VLANs missing until their
-// parent link is reconfigured, which interrupts the parent's addresses.
-func (e Executor) prepareNetdevReload(ctx context.Context) error {
-	host := e.HostConfiguration
-	if host == nil || !host.netdevs.live() {
-		return nil
-	}
-	host.netdevs.started = true
-	return e.deleteNetdevs(ctx, host.netdevs.recreates, true)
-}
-
 // reconcileNetdevs runs after networkd has reloaded the new configuration:
 // it deletes devices whose .netdev was removed and verifies kernel state.
 func (e Executor) reconcileNetdevs(ctx context.Context) error {
@@ -516,7 +480,6 @@ func (e Executor) reconcileNetdevs(ctx context.Context) error {
 	if host == nil || !host.netdevs.live() {
 		return nil
 	}
-	host.netdevs.started = true
 	var deletes []string
 	for _, name := range host.netdevs.deletes {
 		// A unit outside Katl's configuration can still define the device.
@@ -552,10 +515,11 @@ func (e Executor) networkdNetdevFile(ctx context.Context, name string) string {
 }
 
 // rollbackNetdevs removes devices created by the failed generation before the
-// restored generation is reloaded, so the reload recreates its definitions.
+// restored generation is reloaded; that reload creates the devices the failed
+// generation deleted.
 func (e Executor) rollbackNetdevs(ctx context.Context) error {
 	host := e.HostConfiguration
-	if host == nil || !host.netdevs.started {
+	if host == nil || host.netdevs.before == nil {
 		return nil
 	}
 	var names []string
@@ -564,7 +528,7 @@ func (e Executor) rollbackNetdevs(ctx context.Context) error {
 			names = append(names, name)
 		}
 	}
-	return e.deleteNetdevs(ctx, slices.Concat(names, host.netdevs.recreates), false)
+	return e.deleteNetdevs(ctx, names, false)
 }
 
 // restoreNetdevs verifies that the restored generation's devices came back
@@ -572,7 +536,7 @@ func (e Executor) rollbackNetdevs(ctx context.Context) error {
 // them back, because that can drop the addresses of a protected link.
 func (e Executor) restoreNetdevs(ctx context.Context) error {
 	host := e.HostConfiguration
-	if host == nil || !host.netdevs.started {
+	if host == nil || host.netdevs.before == nil {
 		return nil
 	}
 	return e.awaitNetdevs(ctx, host.netdevs.rollbackDrift, "after rollback, kernel link state does not match the restored generation", "reboot the node to rebuild the devices from the selected generation")
@@ -636,7 +600,7 @@ func (p netdevPlan) forwardDrift(links map[string]kernelLink) []string {
 			drift = append(drift, "removed netdev "+name+" is still present")
 		}
 	}
-	for _, name := range slices.Concat(p.creates, p.recreates) {
+	for _, name := range p.creates {
 		if _, skip := p.unverified[name]; skip {
 			continue
 		}
@@ -656,7 +620,7 @@ func (p netdevPlan) rollbackDrift(links map[string]kernelLink) []string {
 			drift = append(drift, "netdev "+name+" from the failed generation is still present")
 		}
 	}
-	for _, name := range slices.Concat(p.deletes, p.recreates, p.retained) {
+	for _, name := range slices.Concat(p.deletes, p.retained) {
 		drift = append(drift, p.unchangedDrift(name, links)...)
 	}
 	return drift
@@ -756,12 +720,11 @@ func (e Executor) netdevSettleTimeout() time.Duration {
 	return 20 * time.Second
 }
 
-// CheckLiveNetdevChanges refuses a live apply whose netdev deletions or
-// recreations would remove the node's management, Kubernetes, or
+// CheckLiveNetdevChanges refuses a live apply whose netdev deletions would remove the node's management, Kubernetes, or
 // control-plane address, before any operation is accepted.
 func CheckLiveNetdevChanges(ctx context.Context, request TrustedBundleRequest, desired manifest.Manifest, management netip.Addr, runner CommandRunner) error {
-	host := planHostConfigurationChange(effectiveHostConfiguration(request.CurrentManifest.Node), effectiveHostConfiguration(desired.Node), request.RecreateNetdevs)
-	targets := slices.Concat(host.netdevs.deletes, host.netdevs.recreates)
+	host := planHostConfigurationChange(effectiveHostConfiguration(request.CurrentManifest.Node), effectiveHostConfiguration(desired.Node))
+	targets := host.netdevs.deletes
 	if !host.Live || len(targets) == 0 {
 		return nil
 	}
@@ -785,9 +748,6 @@ func markNetdevEffects(action *generation.ConfigApplyDomainAction, plan netdevPl
 			continue
 		}
 		markEffect(action, "delete", "netdev "+name, result, cause)
-	}
-	for _, name := range plan.recreates {
-		markEffect(action, "recreate", "netdev "+name, result, cause)
 	}
 }
 

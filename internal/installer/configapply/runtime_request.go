@@ -134,7 +134,6 @@ func (document nodeConfigurationChangeDocument) request(base TrustedBundleReques
 	request.SourceID = document.Metadata.SourceID
 	request.DesiredVersion = document.Metadata.DesiredVersion
 	request.ApplyMode = document.Apply.Mode
-	request.RecreateNetdevs = document.Apply.RecreateNetdevs
 	kubeadmConfigs, changedKubeadmConfigs, err := mergeInlineKubeadmConfigs(base.KubeadmConfigs, document.Spec.KubeadmConfigs)
 	if err != nil {
 		return TrustedBundleRequest{}, err

@@ -226,15 +226,6 @@ func (e Executor) runActions(ctx context.Context, status *generation.ConfigApply
 			if e.HostConfiguration != nil && command.Name == "systemd-units-enable" {
 				e.HostConfiguration.enablementStarted = true
 			}
-			if action.Domain == DomainHostConfiguration && command.Name == "networkd-reload" {
-				if err := e.prepareNetdevReload(ctx); err != nil {
-					markNetdevEffects(action, e.HostConfiguration.netdevs, err)
-					action.Status = generation.ConfigApplyActionFailed
-					action.Diagnostic = generation.RedactConfigApplyMessage(err.Error())
-					_ = e.writeStatus(*status)
-					return err
-				}
-			}
 			result, err := e.Runner.Run(ctx, command)
 			if err != nil {
 				markHostEffect(action, command, generation.ConfigApplyActionFailed, err)
