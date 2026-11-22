@@ -4205,3 +4205,52 @@ func TestLiveApplyPromotionFailure(t *testing.T) {
 		t.Fatalf("failed promotion changed boot selection: %+v", selection)
 	}
 }
+
+func TestApplyGenerationRefusedBeforeActivationAbandonsCandidate(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	var acceptedRecord operation.OperationRecord
+	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
+		acceptedRecord = record
+		return nil
+	})
+	accepted, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
+		ApiVersion:            APIVersion,
+		Kind:                  "GenerationApplyRequest",
+		ClientRequestId:       "req-live-generation-refused",
+		Actor:                 "test-actor",
+		CandidateGenerationId: "generation-live-refused",
+		ConfigYaml:            configApplyLiveYAML(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reading the current sysctl value happens before activation.
+	runner := &fakeConfigApplyRunner{exitStatus: 1, stderr: "sysctl read failed", failName: "sysctl-snapshot-net.ipv4.ip_forward"}
+	activator := &fakeConfigApplyActivator{}
+	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor.Async = false
+	executor.ConfigApplyRunner = runner
+	executor.ConfigApplyActivator = activator
+	if err := executor.Execute(context.Background(), acceptedRecord); err == nil {
+		t.Fatal("Execute() error = nil, want refusal")
+	}
+
+	record, err := server.Store.Read(accepted.OperationId)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !record.Terminal || record.Result != "failed" || record.RecoveryRequired || record.GenerationCommitState != operation.GenerationCommitAbandoned || !strings.Contains(record.NextAction, "before changing the running system") {
+		t.Fatalf("record = %+v, want a terminal refusal with an abandoned candidate", record)
+	}
+	if activator.activated != "" {
+		t.Fatalf("activated %q, want no activation", activator.activated)
+	}
+	_, candidateStatus, err := generation.ReadGeneration(server.Root, "generation-live-refused")
+	if err != nil || candidateStatus.CommitState != generation.CommitStateAbandoned {
+		t.Fatalf("candidate status = %+v err = %v, want abandoned", candidateStatus, err)
+	}
+	if err := server.validateCandidateGenerationAvailable("generation-next"); err != nil {
+		t.Fatalf("next apply is blocked: %v", err)
+	}
+}

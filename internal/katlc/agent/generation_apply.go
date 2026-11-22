@@ -859,6 +859,16 @@ func (e *Executor) failConfigApplyRecord(operationID string, result configapply.
 			rolledBack = false
 		}
 	}
+	// A live apply refused before activation changed nothing outside the
+	// candidate, unless volumes were prepared first.
+	refused := !rolledBack && result.Status.Phase == generation.ConfigApplyPhaseFailed && result.Status.Rollback == nil &&
+		result.Plan.GenerationRecord.GenerationID != "" && !slices.Contains(result.Status.ChangedDomains, configapply.DomainVolumes)
+	if refused {
+		if err := abandonCandidateGeneration(e.Root, result.Plan.GenerationRecord.GenerationID, operationID, "configuration apply refused before activation", now); err != nil {
+			cause = errorsJoin(cause, fmt.Errorf("abandon refused candidate: %w", err))
+			refused = false
+		}
+	}
 	networkChanged := false
 	for _, diagnostic := range result.Plan.Decision.Diagnostics {
 		for _, path := range diagnostic.Paths {
@@ -893,6 +903,12 @@ func (e *Executor) failConfigApplyRecord(operationID string, result configapply.
 				record.RecoveryRequired = true
 				record.NextAction = fmt.Sprintf("previous generation %s was restored, but running networking may differ; inspect the network and recreate affected interfaces or reboot before retrying", result.Status.Rollback.TargetGenerationID)
 			}
+		}
+		if refused {
+			record.Result = "failed"
+			record.RecoveryRequired = false
+			record.GenerationCommitState = operation.GenerationCommitAbandoned
+			record.NextAction = "the apply stopped before changing the running system; correct the configuration and retry"
 		}
 		completeConfigApplyInvocation(record.Invocations, liveConfigApplyInvocationID(operationID), now, record.Result)
 		record.Terminal = true
