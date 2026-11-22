@@ -653,6 +653,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	if after := strings.SplitN(guestCommandOutput(t, ctx, guest, "netdev-index", "ip", "-o", "link", "show", "katllive0"), ":", 2)[0]; after == beforeRecreate {
 		t.Fatalf("katllive0 kept ifindex %s; want a recreated device", after)
 	}
+	runNetdevLifecycleSmoke(t, ctx, guest, result, katlctl, endpoint)
 
 	// The systemd smoke replaces the network sets, so Katl deletes katllive0.
 	runSystemdUnitSmoke(t, ctx, guest, client, result, katlctl, endpoint)
