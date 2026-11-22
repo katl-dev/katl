@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -175,25 +176,7 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 			return fmt.Errorf("duplicate node name %q", node.name)
 		}
 		seen[node.name] = struct{}{}
-		targetDisk := configbundle.SourceDiskSelector{}
-		if node.disk.ByID != "" {
-			targetDisk.ByID = configbundle.Some(node.disk.ByID)
-		}
-		if node.disk.WWN != "" {
-			targetDisk.WWN = configbundle.Some(node.disk.WWN)
-		}
-		if node.disk.Serial != "" {
-			targetDisk.Serial = configbundle.Some(node.disk.Serial)
-		}
-		if node.disk.MinSizeMiB != 0 {
-			targetDisk.MinSizeMiB = configbundle.Some(node.disk.MinSizeMiB)
-		}
-		source.Spec.Nodes = append(source.Spec.Nodes, configbundle.SourceNode{
-			Name:         node.name,
-			ControlPlane: node.role == inventory.RoleControlPlane,
-			Install:      configbundle.SourceInstallLayer{SystemDisk: &targetDisk},
-			Management:   configbundle.SourceManagementLayer{Address: node.address},
-		})
+		source.Spec.Nodes = append(source.Spec.Nodes, sourceNode(node))
 	}
 	if source.Spec.ManagementAuthentication == "" {
 		source.Spec.ManagementAuthentication = managementidentity.TrustedNetwork
@@ -305,6 +288,28 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 	return nil
 }
 
+func sourceNode(node initNodeSpec) configbundle.SourceNode {
+	targetDisk := configbundle.SourceDiskSelector{}
+	if node.disk.ByID != "" {
+		targetDisk.ByID = configbundle.Some(node.disk.ByID)
+	}
+	if node.disk.WWN != "" {
+		targetDisk.WWN = configbundle.Some(node.disk.WWN)
+	}
+	if node.disk.Serial != "" {
+		targetDisk.Serial = configbundle.Some(node.disk.Serial)
+	}
+	if node.disk.MinSizeMiB != 0 {
+		targetDisk.MinSizeMiB = configbundle.Some(node.disk.MinSizeMiB)
+	}
+	return configbundle.SourceNode{
+		Name:         node.name,
+		ControlPlane: node.role == inventory.RoleControlPlane,
+		Install:      configbundle.SourceInstallLayer{SystemDisk: &targetDisk},
+		Management:   configbundle.SourceManagementLayer{Address: node.address},
+	}
+}
+
 func annotateStarterConfig(data []byte, missingSSHKeys bool) []byte {
 	comments := "spec:\n" +
 		"    # Stable Kubernetes API VIP or DNS name; without it, the first control plane's address is used and cannot be changed later.\n" +
@@ -359,26 +364,15 @@ func initNodesFromInstallers(ctx context.Context, addresses []string, timeout ti
 	nodes := make(initNodeSpecs, 0, len(addresses))
 	seen := make(map[string]struct{}, len(addresses))
 	for i, address := range addresses {
-		endpoint, err := normalizeInstallerAddress(address)
+		endpoint, host, disks, err := readWaitingInstaller(requestCtx, client, address)
 		if err != nil {
-			return nil, fmt.Errorf("--installer %q: %w", address, err)
-		}
-		parsed, err := url.Parse(endpoint)
-		if err != nil || parsed.Hostname() == "" {
-			return nil, fmt.Errorf("installer endpoint %q has no usable address", endpoint)
+			return nil, err
 		}
 		if _, ok := seen[endpoint]; ok {
 			return nil, fmt.Errorf("duplicate --installer endpoint %s", endpoint)
 		}
 		seen[endpoint] = struct{}{}
-		status, err := fetchInstallStatus(requestCtx, client, endpoint)
-		if err != nil {
-			return nil, fmt.Errorf("read installer %s: %w", endpoint, err)
-		}
-		if status.State != handoff.HandoffWaiting {
-			return nil, fmt.Errorf("installer %s is not waiting for config: state=%s", endpoint, status.State)
-		}
-		disk, err := installerTargetDisk(endpoint, status.Disks)
+		disk, err := installerTargetDisk(endpoint, disks, "", "Use katlctl config init --node to choose the intended disk")
 		if err != nil {
 			return nil, err
 		}
@@ -386,17 +380,47 @@ func initNodesFromInstallers(ctx context.Context, addresses []string, timeout ti
 		if i > 0 {
 			name, role = fmt.Sprintf("worker-%d", i), inventory.RoleWorker
 		}
-		nodes = append(nodes, initNodeSpec{name: name, role: role, address: parsed.Hostname(), disk: disk})
+		nodes = append(nodes, initNodeSpec{name: name, role: role, address: host, disk: disk})
 	}
 	return nodes, nil
 }
 
-func installerTargetDisk(endpoint string, disks []handoff.HandoffDisk) (manifest.DiskSelector, error) {
+// readWaitingInstaller returns the installer's normalized endpoint, the host
+// it answers at, and the disks it reports while waiting for configuration.
+func readWaitingInstaller(ctx context.Context, client *http.Client, address string) (string, string, []handoff.HandoffDisk, error) {
+	endpoint, err := normalizeInstallerAddress(address)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("--installer %q: %w", address, err)
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Hostname() == "" {
+		return "", "", nil, fmt.Errorf("installer endpoint %q has no usable address", endpoint)
+	}
+	status, err := fetchInstallStatus(ctx, client, endpoint)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("read installer %s: %w", endpoint, err)
+	}
+	if status.State != handoff.HandoffWaiting {
+		return "", "", nil, fmt.Errorf("installer %s is not waiting for config: state=%s", endpoint, status.State)
+	}
+	return endpoint, parsed.Hostname(), status.Disks, nil
+}
+
+// installerTargetDisk selects the installer's only selectable disk, or the
+// selectable disk with the chosen by-id path. hint tells the operator how to
+// choose when the selection fails.
+func installerTargetDisk(endpoint string, disks []handoff.HandoffDisk, chosen, hint string) (manifest.DiskSelector, error) {
 	var selectable []handoff.HandoffDisk
 	for _, disk := range disks {
-		if disk.Selectable {
+		if disk.Selectable && (chosen == "" || slices.Contains(disk.ByID, chosen)) {
 			selectable = append(selectable, disk)
 		}
+	}
+	if chosen != "" {
+		if len(selectable) == 0 {
+			return manifest.DiskSelector{}, fmt.Errorf("installer %s reports no selectable disk %s. %s", endpoint, chosen, hint)
+		}
+		return manifest.DiskSelector{ByID: chosen}, nil
 	}
 	if len(selectable) != 1 {
 		var paths []string
@@ -407,7 +431,7 @@ func installerTargetDisk(endpoint string, disks []handoff.HandoffDisk) (manifest
 		if len(paths) > 0 {
 			detail = strings.Join(paths, ", ")
 		}
-		return manifest.DiskSelector{}, fmt.Errorf("installer %s reports %d selectable disks (%s). Use katlctl config init --node to choose the intended disk", endpoint, len(selectable), detail)
+		return manifest.DiskSelector{}, fmt.Errorf("installer %s reports %d selectable disks (%s). %s", endpoint, len(selectable), detail, hint)
 	}
 	disk := selectable[0]
 	if len(disk.ByID) > 0 {

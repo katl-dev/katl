@@ -52,7 +52,9 @@ katlctl config init ./cluster.yaml \
 
 Replace both addresses with those of your installers. The first address
 becomes `cp-1`. Bare addresses use HTTP port `8080`. The flag also accepts a
-hostname, `host:port`, or HTTP(S) base URL.
+hostname, `host:port`, or HTTP(S) base URL. To add a machine to an existing
+`cluster.yaml` later, use `katlctl config add-node` as described in
+[Add one node](operations/change-cluster-nodes.md#add-one-node).
 
 The result is one ClusterConfig for every node. Edit `cluster.yaml` with the
 [cluster configuration reference](reference/cluster-config.md) to select

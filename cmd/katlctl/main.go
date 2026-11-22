@@ -154,6 +154,7 @@ management; mTLS is opt-in. Run any command with --help for examples and flags.`
 
 	configCmd := &cobra.Command{Use: "config", Short: "Prepare, validate, and compare cluster configuration"}
 	configCmd.AddCommand(newConfigInitCommand(ctx, stdout, stderr))
+	configCmd.AddCommand(newConfigAddNodeCommand(ctx, stdout))
 	configCmd.AddCommand(newConfigValidateCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigSchemaCommand(stdout, stderr))
 	configCmd.AddCommand(newConfigBundleCommand(stdout, stderr))
@@ -2169,19 +2170,24 @@ func newConfigValidateCommand(stdout, stderr io.Writer) *cobra.Command {
 	return cmd
 }
 
-func runConfigValidate(sourcePath, output string, stdout, stderr io.Writer) error {
-	if output != "text" && output != "json" {
-		return fmt.Errorf("--output = %q, want text or json", output)
-	}
+// planConfigFile applies the validation that config validate reports.
+func planConfigFile(sourcePath string) (configbundle.ConfigurationPlan, error) {
 	if err := configbundle.ValidateSourceFile(sourcePath); err != nil {
-		return err
+		return configbundle.ConfigurationPlan{}, err
 	}
-	result, err := configbundle.PlanConfiguration(configbundle.BuildRequest{
+	return configbundle.PlanConfiguration(configbundle.BuildRequest{
 		SourcePath:     sourcePath,
 		KatlctlVersion: version,
 		KatlctlCommit:  commit,
 		CreatedBy:      configBundleCreator,
 	})
+}
+
+func runConfigValidate(sourcePath, output string, stdout, stderr io.Writer) error {
+	if output != "text" && output != "json" {
+		return fmt.Errorf("--output = %q, want text or json", output)
+	}
+	result, err := planConfigFile(sourcePath)
 	if err != nil {
 		return err
 	}
