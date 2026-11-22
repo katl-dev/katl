@@ -34,6 +34,22 @@ management address, and SSH access to `cluster.yaml`. Validate the whole file:
 katlctl config validate ./cluster.yaml
 ```
 
+A cluster with more than one control plane needs `spec.controlPlaneEndpoint`.
+If the cluster was bootstrapped with one control plane and without that field,
+its API endpoint is that node's `management.address` and port 6443. Set
+`spec.controlPlaneEndpoint.host` to that address before adding a control plane,
+then apply it to the existing nodes:
+
+```sh
+katlctl cluster apply --config ./cluster.yaml --plan
+katlctl cluster apply --config ./cluster.yaml
+```
+
+Naming the address the cluster already uses does not change the endpoint, so
+apply updates only node-local API access. Any other host or port is refused
+after bootstrap. The endpoint stays tied to that node's address; see
+[Change a node's address](#change-a-nodes-address).
+
 Install that node through the normal ISO or PXE flow and verify healthy
 generation 0. Do not rerun cluster bootstrap on an existing cluster. Join the
 one fresh node with:
@@ -249,6 +265,13 @@ In this example `worker-1` moves from `192.0.2.31` to `192.0.2.41`.
    ```sh
    kubectl get node worker-1 -o wide
    ```
+
+6. Check that your CNI has picked up the new address. A short reboot can leave
+   the Node Ready while the CNI agent on the worker is still restarting, so
+   wait for the agent and the worker's pods before moving workloads back. With
+   Cilium's default VXLAN tunnelling, for example, `cilium status --wait`
+   reports every agent ready and `cilium-health status` in another node's agent
+   lists the worker at its new address. No Cilium-specific step is needed.
 
 If the reboot does not finish at the new address, use the following table:
 
