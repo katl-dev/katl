@@ -334,7 +334,9 @@ katldev world readdress worker-1 --address 10.200.4.40
 ```
 
 The VM keeps its current address until it next requests one, which normally
-happens when it boots. katldev prints the `cluster.yaml` change and the
+happens when it boots. That address stays reserved for the VM until `status`
+or another katldev command sees it answer at the new one, so a VM added in the
+meantime never receives it. katldev prints the `cluster.yaml` change and the
 `katlctl cluster apply --endpoint` and `katlctl node reboot --endpoint`
 commands that complete the re-address.
 
@@ -344,8 +346,11 @@ boots fresh installers, keeping the VM count unless `--nodes` changes it.
 domains and the network carrying this checkout's world ownership metadata,
 plus the world's disks and state; `cluster.yaml` is kept. They need no
 destructive confirmation because they can only address the checkout-scoped
-development world. A world is usually recreated on the same subnet with the
-same addresses, so a retained `cluster.yaml` keeps matching. Pass `--no-build`
+development world. The world's identity is a random ID in
+`_build/katldev/world-id`, which both keep, so a world is usually recreated on
+the same subnet with the same addresses and a retained `cluster.yaml` keeps
+matching. If `start` cannot start the world network because another network,
+VPN, or route now uses its subnet, `reset` chooses a free one. Pass `--no-build`
 only when deliberately reusing the existing `_build/mkosi/katl-installer.iso`.
 
 A checkout that still has the single VM from an earlier katldev refuses
