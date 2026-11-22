@@ -221,7 +221,7 @@ jobs:
             printf 'Signed RPMs for `%s` were captured and retained by [Kernel Updates](%s/%s/actions/runs/%s).\n' \
               "$PROPOSED_COMMIT" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
             echo
-            echo 'CI requires boot, lifecycle, cluster, extension composition, and production DRBD tests for each changed kernel flavour before auto-merge. NVIDIA hardware behavior requires separate hardware qualification.'
+            echo 'CI requires driver qualification on this pull request and boot, lifecycle, cluster, extension composition, and production DRBD tests in the merge queue before merge. NVIDIA hardware behavior requires separate hardware qualification.'
           } > body.md
           number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
           if [[ -n "$number" ]]; then

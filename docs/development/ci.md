@@ -1,9 +1,9 @@
 # Continuous integration
 
-**CI** is the required pull-request check and also runs on main. It runs fast
-checks, selects VM and driver coverage from changed paths, and fails if any
-selected job fails, is cancelled, or is skipped. Documentation, maintainer
-release tooling, and unit-only changes need only fast checks.
+**CI** is the required check for pull requests and the merge queue, and it also
+runs fast checks on main. It selects VM and driver coverage from changed paths
+and fails if any selected job fails, is cancelled, or is skipped. Documentation,
+maintainer release tooling, and unit-only changes need only fast checks.
 
 ## VM coverage
 
@@ -15,15 +15,19 @@ selected kernel flavour builds immutable test inputs once and runs two lanes:
 - **Cluster:** ISO/PXE boot, storage authority, two-node bootstrap, and three-node
   installation.
 
-Every selected test must emit a Go JSON pass event. Ordinary product PRs use
-standard; kernel lock changes use the affected flavour. Shared boot, builder,
-module, runtime package, and VM infrastructure changes use both standard and
-LTS. Main product changes and release regression always use both flavours.
-Main relies on the driver qualification required before merge instead of
-rebuilding the same driver closure again. Manual CI dispatch includes driver
-qualification for both flavours.
-Recognized CLI changes select only the affected scenarios within those lanes;
-unknown product changes receive the complete suite.
+VM suites run in the merge queue, and on a pull request only while it carries the
+`vmtest` label. A pull request without the label runs fast checks, the Nix build,
+and any selected driver qualification. Adding the label starts a run; other labels
+leave the current run alone. Pushes to main run no VM or driver jobs, because the
+merge queue already tested the same tree.
+
+Every selected test must emit a Go JSON pass event. A labelled pull request and
+the merge queue run the complete suite for both standard and LTS whenever any
+VM suite is selected. Driver qualification belongs to pull requests; the merge
+queue does not repeat it. Kernel lock changes select the affected driver
+flavour, and shared boot, builder, module, runtime package, and VM
+infrastructure changes select both. Manual CI dispatch treats every path as
+changed, so it runs both flavours with driver qualification for both.
 
 Kubernetes producer changes select the newest supported Kubernetes candidate.
 The shared image job verifies and stages that bundle, and the cluster lane
@@ -44,10 +48,10 @@ inputs, verifies anonymous retrieval, and opens a ready-for-review PR. Retention
 stores inputs; it does not promote a kernel. PR CI owns qualification: for each
 changed flavour it builds both boot artifacts and every release extension,
 verifies module composition, and exercises the production DRBD driver through
-upgrade, replication, and removal, alongside the regression lanes. Shared ABI
+upgrade, replication, and removal, alongside the regression lanes that the merge queue runs. Shared ABI
 and extension recipe changes require driver qualification for both flavours.
 
-After CI succeeds, **Merge Qualified Kernels** enables native auto-merge only
+After pull-request CI succeeds, **Merge Qualified Kernels** enables native auto-merge only
 for the unchanged, same-repository, App-authored, kernel-lock-only revision.
 Branch protection controls the merge. These virtual machines do not qualify
 NVIDIA hardware.
