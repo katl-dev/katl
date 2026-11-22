@@ -1,0 +1,15 @@
+[Unit]
+Description=Check configured systemd units required for boot health
+Documentation=man:systemd.target(5)
+Requires=katl-system-extensions-activate.service
+# Activation queues the target without waiting for it. Its job holds this
+# check until units required for boot health have started or failed.
+After=katl-system-extensions-activate.service katl-configured-units.target
+Before=katl-boot-health.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StandardOutput=journal+console
+SyslogIdentifier=katl-configured-units-check
+ExecStart=/usr/bin/systemctl is-active --quiet katl-configured-units.target

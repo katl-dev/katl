@@ -15,10 +15,13 @@ import (
 	"github.com/katl-dev/katl/internal/systemdunit"
 )
 
-// PrepareSystemdActivation runs after confext and sysext merging. Runtime
-// enablement honours native [Install] metadata without writing immutable /etc.
-// The target lets systemd order all starts in one transaction, including
-// optional extension units and oneshots which do not remain active.
+// PrepareSystemdActivation runs after confext and sysext merging, before
+// sysinit.target and networking. Runtime enablement honours native [Install]
+// metadata without writing immutable /etc. The target lets systemd order all
+// starts in one transaction, including optional extension units and oneshots
+// which do not remain active. Activation only queues that transaction: units
+// may order themselves after services that boot reaches later, and
+// katl-configured-units-check.service waits for boot-health requirements.
 func PrepareSystemdActivation(ctx context.Context, root string, node manifest.NodeConfig, runner CommandRunner) (HostConfigurationActivationPlan, error) {
 	activation := node.UnitActivation()
 	var plan HostConfigurationActivationPlan
@@ -62,25 +65,20 @@ func PrepareSystemdActivation(ctx context.Context, root string, node manifest.No
 		plan.addCommandWithOutput(command.Name, "reconfigure", "running systemd units", command.ExpectedStdout, command.Argv...)
 		plan.Commands[len(plan.Commands)-1].Timeout = 2 * time.Minute
 	}
-	if len(activation.Enabled) == 0 && len(activation.Required) == 0 {
-		return plan, nil
-	}
-	// Older installed generations do not carry the target in their confext.
-	// Derive an ephemeral fallback without rewriting those rollback artifacts.
+	// Generations rendered since v2026.10.0 carry the target in their confext.
+	// katl-configured-units-check.service requires it even when it is empty.
 	if _, err := os.Stat(filepath.Join(root, "etc/systemd/system", systemdunit.TargetName)); os.IsNotExist(err) {
-		dir := filepath.Join(root, "run/systemd/system")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return plan, fmt.Errorf("prepare configured unit target: %w", err)
-		}
-		if err := os.WriteFile(filepath.Join(dir, systemdunit.TargetName), []byte(activation.Target()), 0o644); err != nil {
-			return plan, fmt.Errorf("write configured unit target: %w", err)
-		}
+		return plan, fmt.Errorf("the booted generation has no /etc/systemd/system/%s because a KatlOS release older than v2026.10.0 rendered it; boot a generation rendered by v2026.10.0 or later, or upgrade the node through a v2026.10 release first", systemdunit.TargetName)
 	} else if err != nil {
 		return plan, fmt.Errorf("inspect configured unit target: %w", err)
 	}
 	plan.addUnitEnablement(activation.Enabled)
-	plan.addCommand("systemd-daemon-reload", "reload", "systemd manager", "systemctl", "daemon-reload")
-	plan.addCommand("systemd-units-start", "start", "configured systemd units", "systemctl", "start", systemdunit.TargetName)
+	if len(activation.Enabled) > 0 {
+		plan.addCommand("systemd-daemon-reload", "reload", "systemd manager", "systemctl", "daemon-reload")
+	}
+	// Waiting here would deadlock any unit ordered after networking or
+	// sysinit.target, both of which wait for this activation.
+	plan.addCommand("systemd-units-start", "start", "configured systemd units", "systemctl", "start", "--no-block", systemdunit.TargetName)
 	for i := range plan.Commands {
 		plan.Commands[i].Timeout = 2 * time.Minute
 	}

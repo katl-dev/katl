@@ -351,11 +351,38 @@ inherited settings.
 `hostConfiguration.enabledUnits` declares services, timers, sockets, or
 instantiated template units to enable. `katlctl cluster apply` enables and
 starts newly listed units without a reboot. Katl honors native `[Install]`
-metadata, recreates its enablement at boot, and starts units after
-configuration and system extensions are available. Native `After=`, `Before=`,
-and dependency directives determine ordering; listing units in a particular
-order does not. Ordinary enabled units do not become prerequisites for Katl's
-boot health.
+metadata and recreates the booted generation's enablement on every boot, so
+enablement follows the generation that boots, including after a fallback.
+Native `After=`, `Before=`, and dependency directives determine ordering;
+listing units in a particular order does not.
+
+At boot, Katl starts enabled units as soon as the booted generation's
+configuration and system extensions are merged. That happens after the state
+partition mounts and before `sysinit.target`, `network-pre.target`, and
+`systemd-networkd.service`, so each unit starts with its configuration in place
+and its native ordering holds against everything that starts later, including
+networking, SSH, the `katlc` management agent, and Kubernetes. For example,
+the shipped `nftables.service` declares `Before=network-pre.target`, so its
+ruleset is loaded before networkd configures links and before SSH or the
+management API accept connections. Ordering against units that run before the
+merge, such as local file system mounts, cannot hold. Units that a
+[system extension](#system-extensions) provides become visible in the same
+merge and start the same way.
+
+Ordinary enabled units do not become prerequisites for Katl's boot health. A
+unit that fails at boot releases the units ordered after it, as in any systemd
+boot, but a unit that never finishes starting holds them back. Oneshot services
+have no start timeout by default, so set `TimeoutStartSec=` on a oneshot that
+orders itself before networking or management services, and on any unit with
+`DefaultDependencies=no` that orders itself before `sysinit.target`. Until such
+a unit finishes, the node has no SSH or management API, and Katl's
+10-minute boot deadline, which arms after `sysinit.target`, cannot recover it.
+
+To start an enabled unit later in boot, add native ordering in a drop-in. For
+example, `After=network-online.target` with `Wants=network-online.target`
+waits until networkd reports the network online, and
+`After=katl-boot-complete.target` waits until boot health has passed. Omit a
+unit from the list when it should not start at boot at all.
 
 A node's list replaces the defaults; `enabledUnits: []` clears inherited
 enablement. Removing a unit stops it and removes Katl's runtime enablement.
@@ -652,9 +679,9 @@ Changing or removing an extension selects a next-boot generation. If the
 extension itself is unchanged, configuration, unit drop-ins, and
 enablement changes apply live. Katl reloads or restarts running consumers;
 unit definition changes restart them so the new definition takes effect.
-Native `[Install]` metadata controls enablement. `requiredForBootHealth`
-makes the unit an explicit boot prerequisite; ordinary enabled units may
-start later. Use `katlctl system-extension inspect` or `validate` for an
+Native `[Install]` metadata controls enablement, and enabled extension units
+start at boot like [enabled units](#enabled-units). `requiredForBootHealth`
+also makes the unit a boot health prerequisite; ordinary enabled units are not. Use `katlctl system-extension inspect` or `validate` for an
 extension bundle and `katlctl system-extension status --node NODE [NAME]`
 after apply. Registry credentials, when needed during workstation compilation,
 come from the normal Docker credential store and are never embedded in config

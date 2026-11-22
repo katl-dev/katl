@@ -10,6 +10,8 @@ spec:
     hostConfiguration:
       enabledUnits:
         - vmtest-optional-failure.service
+        - vmtest-optional-early-failure.service
+        - vmtest-before-network.service
       sets:
         vmtest-optional-failure:
           files:
@@ -22,6 +24,35 @@ spec:
                 [Service]
                 Type=oneshot
                 ExecStart=/usr/bin/false
+
+                [Install]
+                WantedBy=multi-user.target
+            - path: /etc/systemd/system/vmtest-optional-early-failure.service
+              content: |
+                [Unit]
+                Description=Fail an optional service before networking and Katl boot health
+                DefaultDependencies=no
+                Wants=network-pre.target
+                Before=network-pre.target katl-boot-health.service
+
+                [Service]
+                Type=oneshot
+                ExecStart=/usr/bin/false
+
+                [Install]
+                WantedBy=multi-user.target
+            - path: /etc/systemd/system/vmtest-before-network.service
+              content: |
+                [Unit]
+                Description=Record management services when a pre-network unit starts
+                DefaultDependencies=no
+                Wants=network-pre.target
+                Before=network-pre.target
+
+                [Service]
+                Type=oneshot
+                RemainAfterExit=yes
+                ExecStart=/usr/bin/sh -c 'systemctl show --property=ActiveState --value systemd-networkd.service sshd.service katlc-agent.service > /run/vmtest-before-network'
 
                 [Install]
                 WantedBy=multi-user.target

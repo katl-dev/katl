@@ -91,6 +91,10 @@ To filter on the node instead, list `nftables.service` in
 `/etc/sysconfig/nftables.conf` in a file set; because kube-proxy and your CNI
 own their own tables, that ruleset must create, flush, and replace only its own
 tables, and stopping or reloading the service leaves other tables untouched.
+At boot the ruleset loads before networking starts and before SSH and the
+management API accept connections. If it fails to load, the node boots
+unfiltered; a ruleset that blocks ports `22` or `9443` from your workstation
+locks out SSH and `katlctl` as well.
 
 ## Artifact trust
 

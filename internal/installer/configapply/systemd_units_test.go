@@ -13,8 +13,21 @@ import (
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
-func TestSystemdBootTransaction(t *testing.T) {
+// mergedGenerationRoot is a root whose confext supplied the configured target.
+func mergedGenerationRoot(t *testing.T) string {
+	t.Helper()
 	root := t.TempDir()
+	dir := filepath.Join(root, "etc/systemd/system")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "katl-configured-units.target"), []byte("[Unit]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+func TestSystemdBootTransaction(t *testing.T) {
 	node := manifest.NodeConfig{
 		HostConfiguration: manifest.HostConfiguration{EnabledUnits: []string{"systemd-timesyncd.service"}},
 		SystemExtensions: []manifest.SystemExtension{{Units: []manifest.SystemExtensionUnit{
@@ -22,29 +35,57 @@ func TestSystemdBootTransaction(t *testing.T) {
 			{Name: "required.service", Enable: true, RequiredForBootHealth: true},
 		}}},
 	}
-	plan, err := PrepareSystemdActivation(context.Background(), root, node, &fakeCommandRunner{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(root, "run/systemd/system/katl-configured-units.target"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	target := effectiveHostConfiguration(node).Sets["systemd activation"].Files
 	want := "[Unit]\nDescription=Configured Katl systemd units\nDefaultDependencies=no\nWants=optional.service required.service systemd-timesyncd.service\nRequires=required.service\nAfter=required.service\n"
-	if string(data) != want {
-		t.Fatalf("target:\n%s\nwant:\n%s", data, want)
+	if len(target) != 1 || target[0].Path != "/etc/systemd/system/katl-configured-units.target" || *target[0].Content != want {
+		t.Fatalf("configured target files = %#v, want:\n%s", target, want)
+	}
+
+	plan, err := PrepareSystemdActivation(context.Background(), mergedGenerationRoot(t), node, &fakeCommandRunner{})
+	if err != nil {
+		t.Fatal(err)
 	}
 	var starts int
 	for _, command := range plan.Commands {
 		if len(command.Argv) > 1 && command.Argv[1] == "start" {
 			starts++
-			if strings.Join(command.Argv, " ") != "systemctl start katl-configured-units.target" {
+			if strings.Join(command.Argv, " ") != "systemctl start --no-block katl-configured-units.target" {
 				t.Fatalf("start transaction = %v", command.Argv)
 			}
 		}
 	}
 	if starts != 1 {
 		t.Fatalf("got %d start transactions, want native dependency ordering in one", starts)
+	}
+}
+
+// Boot health checks the configured target, so activation must start it even
+// when no unit is configured.
+func TestEmptyBootActivationStartsTarget(t *testing.T) {
+	plan, err := PrepareSystemdActivation(t.Context(), mergedGenerationRoot(t), manifest.NodeConfig{}, &fakeCommandRunner{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var got []string
+	for _, command := range plan.Commands {
+		got = append(got, strings.Join(command.Argv, " "))
+	}
+	if want := []string{"systemctl start --no-block katl-configured-units.target"}; !slices.Equal(got, want) {
+		t.Fatalf("commands = %q, want %q", got, want)
+	}
+}
+
+func TestBootActivationRejectsGenerationWithoutTarget(t *testing.T) {
+	root := t.TempDir()
+	node := manifest.NodeConfig{HostConfiguration: manifest.HostConfiguration{EnabledUnits: []string{"systemd-timesyncd.service"}}}
+
+	_, err := PrepareSystemdActivation(t.Context(), root, node, &fakeCommandRunner{})
+	if err == nil || !strings.Contains(err.Error(), "older than v2026.10.0") {
+		t.Fatalf("error = %v, want unsupported generation guidance", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, "run")); !os.IsNotExist(statErr) {
+		t.Fatalf("activation wrote runtime state for an unsupported generation: %v", statErr)
 	}
 }
 
@@ -173,11 +214,11 @@ func TestBootNotificationsWaitForExtensions(t *testing.T) {
 		}
 		return CommandResult{Stdout: state}, nil
 	})
-	plan, err := PrepareSystemdActivation(t.Context(), t.TempDir(), node, runner)
+	plan, err := PrepareSystemdActivation(t.Context(), mergedGenerationRoot(t), node, runner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Commands) != 1 || strings.Join(plan.Commands[0].Argv, " ") != "systemctl restart early.service" {
+	if len(plan.Commands) != 2 || strings.Join(plan.Commands[0].Argv, " ") != "systemctl restart early.service" {
 		t.Fatalf("boot notification commands = %#v", plan.Commands)
 	}
 }
@@ -197,11 +238,11 @@ func TestBootDerivesSystemdComponentNotification(t *testing.T) {
 			return CommandResult{}, nil
 		}
 	})
-	plan, err := PrepareSystemdActivation(t.Context(), t.TempDir(), node, runner)
+	plan, err := PrepareSystemdActivation(t.Context(), mergedGenerationRoot(t), node, runner)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Commands) != 1 || strings.Join(plan.Commands[0].Argv, " ") != "systemctl reload systemd-journald.service" {
+	if len(plan.Commands) != 2 || strings.Join(plan.Commands[0].Argv, " ") != "systemctl reload systemd-journald.service" {
 		t.Fatalf("boot component commands = %#v", plan.Commands)
 	}
 }

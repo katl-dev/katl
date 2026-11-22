@@ -1,14 +1,20 @@
 [Unit]
 Description=Reload systemd after merging system extension configuration
 Documentation=man:systemd-sysext(8) man:systemd-confext(8)
+DefaultDependencies=no
 Requires=systemd-sysext.service systemd-confext.service
 # Host preparation may reload unit definitions before applying notifications.
 After=systemd-sysext.service systemd-confext.service katl-host-config-prepare.service
 Before=katl-system-extensions-activate.service
+Conflicts=shutdown.target
+Before=shutdown.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 StandardOutput=journal+console
 SyslogIdentifier=katl-system-extensions-reload
+# Boot reaches sysinit.target only after this unit; a stall must fail
+# so networking and management start and boot health can recover.
+TimeoutStartSec=90s
 ExecStart=/usr/bin/systemctl daemon-reload

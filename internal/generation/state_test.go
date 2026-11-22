@@ -275,8 +275,8 @@ WantedBy=multi-user.target
 	wantHealth := `[Unit]
 Description=Record successful Katl boot health
 Documentation=man:systemd.service(5)
-Requires=etc-kubernetes.mount katl-system-extensions-activate.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service
-After=etc-kubernetes.mount katl-system-extensions-activate.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service
+Requires=etc-kubernetes.mount katl-system-extensions-activate.service katl-configured-units-check.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service
+After=etc-kubernetes.mount katl-system-extensions-activate.service katl-configured-units-check.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service
 Before=katl-boot-complete.target
 OnFailure=katl-boot-recovery.service
 RequiresMountsFor=/efi /var/lib/katl
@@ -411,6 +411,7 @@ func TestWriteState(t *testing.T) {
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-host-config-verify.service"), assets.HostConfigVerify)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-system-extensions-reload.service"), assets.ExtensionReload)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-system-extensions-activate.service"), assets.ExtensionActivate)
+	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-configured-units-check.service"), assets.ConfiguredUnitsCheck)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-activate.service"), assets.KubeadmActivate)
 	assertSymlink(t, filepath.Join(root, "etc/systemd/system/multi-user.target.wants/katl-kubeadm-activate.service"), "../katl-kubeadm-activate.service")
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-kubeadm-ready.target"), assets.KubeadmReadyTarget)
@@ -473,6 +474,7 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-host-config-verify.service"), assets.HostConfigVerify)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-system-extensions-reload.service"), assets.ExtensionReload)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-system-extensions-activate.service"), assets.ExtensionActivate)
+	assertRepoFile(t, filepath.Join(systemdRoot, "katl-configured-units-check.service"), assets.ConfiguredUnitsCheck)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-volumes.target"), assets.VolumesTarget)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-volumes-activate.service"), assets.VolumesActivate)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-kubeadm-activate.service"), assets.KubeadmActivate)
@@ -563,17 +565,18 @@ func writeStateVerifyFixture(t *testing.T, root string) {
 	writeUnit(t, root, "usr/lib/systemd/system/timers.target", "[Unit]\nDescription=Timers\n")
 	writeUnit(t, root, "usr/lib/systemd/system/umount.target", "[Unit]\nDescription=Unmount All Filesystems\n")
 	writeUnit(t, root, "usr/lib/systemd/system/sysinit.target", "[Unit]\nDescription=System Initialization\n")
-	writeUnit(t, root, "usr/lib/systemd/system/systemd-sysext.service", "[Unit]\nDescription=System Extension Images\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
-	writeUnit(t, root, "usr/lib/systemd/system/systemd-confext.service", "[Unit]\nDescription=System Configuration Extension Images\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
+	writeUnit(t, root, "usr/lib/systemd/system/systemd-sysext.service", "[Unit]\nDescription=System Extension Images\nDefaultDependencies=no\nAfter=local-fs.target\nBefore=sysinit.target systemd-tmpfiles-setup.service\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
+	writeUnit(t, root, "usr/lib/systemd/system/systemd-confext.service", "[Unit]\nDescription=System Configuration Extension Images\nDefaultDependencies=no\nAfter=local-fs.target\nBefore=sysinit.target systemd-tmpfiles-setup.service\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/systemd-modules-load.service", "[Unit]\nDescription=Load Kernel Modules\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/systemd-sysctl.service", "[Unit]\nDescription=Apply Kernel Variables\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/systemd-udev-trigger.service", "[Unit]\nDescription=Coldplug Devices\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/systemd-logind.service", "[Unit]\nDescription=Login Management\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
-	writeUnit(t, root, "usr/lib/systemd/system/systemd-tmpfiles-setup.service", "[Unit]\nDescription=Create Volatile Files\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
+	writeUnit(t, root, "usr/lib/systemd/system/systemd-tmpfiles-setup.service", "[Unit]\nDescription=Create Volatile Files\nDefaultDependencies=no\nAfter=local-fs.target\nBefore=sysinit.target\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/containerd.service", "[Unit]\nDescription=Containerd\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/kubelet.service", "[Unit]\nDescription=Kubelet\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/network-online.target", "[Unit]\nDescription=Network Online\n")
-	writeUnit(t, root, "usr/lib/systemd/system/systemd-networkd.service", "[Unit]\nDescription=Network Configuration\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
+	writeUnit(t, root, "usr/lib/systemd/system/network-pre.target", "[Unit]\nDescription=Preparation for Network\n")
+	writeUnit(t, root, "usr/lib/systemd/system/systemd-networkd.service", "[Unit]\nDescription=Network Configuration\nDefaultDependencies=no\nAfter=network-pre.target\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/systemd/system/sshd.service", "[Unit]\nDescription=OpenSSH server daemon\n[Service]\nType=oneshot\nExecStart=/usr/bin/true\n")
 	writeUnit(t, root, "usr/lib/katl/runtime/katl-generation-activate", "#!/bin/sh\nexit 0\n")
 	writeUnit(t, root, "usr/lib/katl/runtime/katl-host-config-activate", "#!/bin/sh\nexit 0\n")
@@ -608,6 +611,7 @@ func stateVerifyUnits() []string {
 		"/etc/systemd/system/katl-host-config-verify.service",
 		"/etc/systemd/system/katl-system-extensions-reload.service",
 		"/etc/systemd/system/katl-system-extensions-activate.service",
+		"/etc/systemd/system/katl-configured-units-check.service",
 		"/etc/systemd/system/katl-kubeadm-ready.target",
 		"/etc/systemd/system/katl-boot-complete.target",
 		"/etc/systemd/system/katl-boot-health.service",
