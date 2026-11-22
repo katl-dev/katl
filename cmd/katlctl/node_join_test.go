@@ -101,7 +101,7 @@ func TestNodeJoin(t *testing.T) {
 				generation: &agentapi.Generation{GenerationId: "current", CommitState: "committed", HealthState: "healthy", BootState: "good"},
 			}
 			target := &fakeKatlcAgentClient{
-				nodeStatus: &agentapi.NodeStatus{MachineId: "machine-node-2", CurrentGenerationId: "0", AgentStartId: "before", Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
+				nodeStatus: &agentapi.NodeStatus{MachineId: "machine-node-2", CurrentGenerationId: "0", AgentStartId: "before", BootHealthState: "healthy", Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"}},
 				generation: &agentapi.Generation{GenerationId: "0", CommitState: "committed", HealthState: "healthy", BootState: "good"},
 			}
 			if test.source {

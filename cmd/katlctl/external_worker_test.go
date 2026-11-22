@@ -57,6 +57,7 @@ func TestExternalWorkerJoined(t *testing.T) {
 					client.generation.CommitState = "committed"
 					client.generation.HealthState = "healthy"
 					client.nodeStatus.AgentStartId = "after"
+					client.nodeStatus.BootHealthState = "healthy"
 				}
 			}
 			if test.receipt {

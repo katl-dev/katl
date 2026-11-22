@@ -28,6 +28,20 @@ type managementTargetOptions struct {
 	endpoint          string
 }
 
+// guidanceFlags are the flags that address the same node in a suggested
+// command. A saved context file is found through KATLCTL_CONFIG.
+func (opts managementTargetOptions) guidanceFlags() string {
+	switch {
+	case strings.TrimSpace(opts.clusterConfigPath) != "":
+		return " --config " + strings.TrimSpace(opts.clusterConfigPath)
+	case strings.TrimSpace(opts.contextName) != "":
+		return " --context " + strings.TrimSpace(opts.contextName)
+	case strings.TrimSpace(opts.endpoint) != "":
+		return " --endpoint " + strings.TrimSpace(opts.endpoint)
+	}
+	return ""
+}
+
 type managementTarget struct {
 	nodeName     string
 	endpoint     string
