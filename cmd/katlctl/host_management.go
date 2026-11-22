@@ -294,7 +294,7 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 	}
 	waitCtx, cancelWait := context.WithTimeout(ctx, opts.timeout)
 	waitCtx = withManagementTarget(waitCtx, target)
-	verifiedConn, verified, err := waitNodeBootHealth(waitCtx, wait, previousAgentStart, generationID, recoveryRequirement, "reboot node="+node, io.Discard)
+	verifiedConn, verified, err := waitNodeBootHealth(waitCtx, wait, previousAgentStart, generationID, recoveryRequirement, "reboot node="+node, stderr)
 	cancelWait()
 	if err != nil {
 		if desiredEndpoint != "" {

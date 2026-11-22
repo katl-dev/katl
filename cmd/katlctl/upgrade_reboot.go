@@ -126,7 +126,16 @@ func (target bootWaitTarget) verify(endpoint string, status *agentapi.NodeStatus
 // generation.
 func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgentStart, targetGeneration string, requirement nodeRecoveryRequirement, progressPrefix string, stderr io.Writer) (katlcAgentConnection, verifiedNodeBoot, error) {
 	nodeName := target.nodeName
-	lastState := ""
+	lastPhase := ""
+	// phase reports each change of where the reboot stands, never each poll.
+	phase := func(name string) {
+		if name != lastPhase {
+			lastPhase = name
+			_, _ = fmt.Fprintf(stderr, "%s %s\n", progressPrefix, name)
+		}
+	}
+	restarted := false
+	answered := false
 	lastRecovery := nodeRecovery{}
 	observed := verifiedNodeBoot{}
 	// probe reports done once the node answering at endpoint gives a terminal result.
@@ -135,19 +144,26 @@ func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgen
 		if statusErr != nil {
 			return verifiedNodeBoot{}, false, nil
 		}
-		state := fmt.Sprintf("agent=%s generation=%s running-generation=%s boot-health=%s", status.GetAgentStartId(), status.GetCurrentGenerationId(), status.GetSelectedGenerationId(), status.GetBootHealthState())
-		if len(target.endpoints) > 1 {
-			state = "endpoint=" + endpoint + " " + state
-		}
-		if state != lastState {
-			lastState = state
-			_, _ = fmt.Fprintf(stderr, "%s waiting-for-boot-health %s\n", progressPrefix, state)
-		}
+		answered = true
 		if strings.TrimSpace(status.GetAgentStartId()) == "" || status.GetAgentStartId() == strings.TrimSpace(previousAgentStart) {
 			return verifiedNodeBoot{}, false, nil
 		}
 		if err := target.verify(endpoint, status); err != nil {
 			return verifiedNodeBoot{}, true, err
+		}
+		if !restarted {
+			restarted = true
+			restart := "agent-restarted"
+			if len(target.endpoints) > 1 {
+				restart += " endpoint=" + endpoint
+			}
+			phase(restart)
+		}
+		switch status.GetBootHealthState() {
+		case bootHealthHealthy:
+			phase("boot-health-healthy")
+		case bootHealthPending, "":
+			phase("boot-health-pending")
 		}
 		observed.Status = status
 		observed.Endpoint = endpoint
@@ -188,6 +204,7 @@ func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgen
 		return verifiedNodeBoot{Status: status, Generation: candidate, Endpoint: endpoint}, true, nil
 	}
 	for {
+		answered = false
 		for _, endpoint := range target.endpoints {
 			conn, err := dialKatlcAgent(ctx, endpoint)
 			if err != nil {
@@ -201,6 +218,10 @@ func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgen
 			if done {
 				return katlcAgentConnection{}, observed, err
 			}
+		}
+		// Before the node answers from a new boot, no answer at any endpoint means it is down.
+		if !answered && !restarted {
+			phase("node-down")
 		}
 
 		timer := time.NewTimer(upgradeRebootPollInterval)

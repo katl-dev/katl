@@ -385,3 +385,113 @@ func TestWaitNodeKubernetesRecoveryTimeoutIsActionable(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestWaitNodeBootHealthReportsPhaseChanges(t *testing.T) {
+	healthy := generation.HealthStateHealthy
+	const down = "down"
+	tests := []struct {
+		name string
+		// observations are reported in order; the last repeats. An agent start of down means no answer.
+		observations []bootObservation
+		want         string
+		wantErr      bool
+	}{
+		{
+			name: "reboot through a down period",
+			observations: []bootObservation{
+				{agentStart: "before", running: "gen-a", health: "healthy", candidate: healthy},
+				{agentStart: "before", running: "gen-a", health: "healthy", candidate: healthy},
+				{agentStart: down},
+				{agentStart: down},
+				{agentStart: "after", running: "gen-a", health: "pending", candidate: healthy},
+				{agentStart: "after", running: "gen-a", health: "pending", candidate: healthy},
+				{agentStart: "after", running: "gen-a", health: "healthy", candidate: healthy},
+			},
+			want: "reboot node=cp-1 node-down\nreboot node=cp-1 agent-restarted\nreboot node=cp-1 boot-health-pending\nreboot node=cp-1 boot-health-healthy\n",
+		},
+		{
+			name: "reboot faster than a poll",
+			observations: []bootObservation{
+				{agentStart: "before", running: "gen-a", health: "healthy", candidate: healthy},
+				{agentStart: "after", running: "gen-a", health: "healthy", candidate: healthy},
+			},
+			want: "reboot node=cp-1 agent-restarted\nreboot node=cp-1 boot-health-healthy\n",
+		},
+		{
+			name: "failing boot health",
+			observations: []bootObservation{
+				{agentStart: "before", running: "gen-a", health: "healthy", candidate: healthy},
+				{agentStart: down},
+				{agentStart: "after", running: "gen-a", health: "pending", candidate: healthy},
+				{agentStart: "after", running: "gen-a", health: "failed", diagnostic: "katl-boot-health.service failed", candidate: healthy},
+			},
+			want:    "reboot node=cp-1 node-down\nreboot node=cp-1 agent-restarted\nreboot node=cp-1 boot-health-pending\n",
+			wantErr: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &fakeKatlcAgentClient{}
+			observed := -1
+			fake.onGetNodeStatus = func() {
+				observed = min(observed+1, len(test.observations)-1)
+				current := test.observations[observed]
+				if current.agentStart == down {
+					fake.nodeStatus, fake.nodeStatusErr = nil, errors.New("connection refused")
+					return
+				}
+				fake.nodeStatus, fake.nodeStatusErr = current.status(), nil
+				fake.generation = &agentapi.Generation{GenerationId: "gen-a", CommitState: generation.CommitStateCommitted, BootState: generation.BootStateGood, HealthState: current.candidate}
+			}
+			installKatlcDial(t, nil, fake)
+			fastBootHealthPolls(t)
+
+			var stderr bytes.Buffer
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			_, _, err := waitNodeBootHealth(ctx, bootWaitTarget{nodeName: "cp-1", endpoints: []string{"10.0.0.11:9443"}}, "before", "gen-a", nodeRecoveryRequirement{}, "reboot node=cp-1", &stderr)
+
+			if (err != nil) != test.wantErr || errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("wait error = %v, want error %v", err, test.wantErr)
+			}
+			if got := stderr.String(); got != test.want {
+				t.Fatalf("progress:\n%s\nwant:\n%s", got, test.want)
+			}
+		})
+	}
+}
+
+func TestWaitNodeBootHealthStaysQuietWhileOldAddressAnswers(t *testing.T) {
+	fake := &fakeKatlcAgentClient{}
+	polls := 0
+	fake.onGetNodeStatus = func() {
+		polls++
+		if polls < 4 {
+			fake.nodeStatus = bootObservation{agentStart: "before", running: "gen-a", health: "healthy"}.status()
+			return
+		}
+		fake.nodeStatus = bootObservation{agentStart: "after", running: "gen-a", health: "healthy"}.status()
+	}
+	fake.generation = &agentapi.Generation{GenerationId: "gen-a", CommitState: generation.CommitStateCommitted, BootState: generation.BootStateGood, HealthState: generation.HealthStateHealthy}
+	oldDial := dialKatlcAgent
+	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
+		if endpoint == "10.0.0.12:9443" && polls < 4 {
+			return katlcAgentConnection{}, errors.New("no route to host")
+		}
+		return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
+	}
+	t.Cleanup(func() { dialKatlcAgent = oldDial })
+	fastBootHealthPolls(t)
+
+	var stderr bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	target := bootWaitTarget{nodeName: "cp-1", endpoints: []string{"10.0.0.12:9443", "10.0.0.11:9443"}}
+	if _, _, err := waitNodeBootHealth(ctx, target, "before", "gen-a", nodeRecoveryRequirement{}, "reboot node=cp-1", &stderr); err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Contains(stderr.String(), "node-down") {
+		t.Fatalf("progress reports the node down while its previous address still answers:\n%s", stderr.String())
+	}
+}

@@ -630,6 +630,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		return fmt.Errorf("reboot node %s: %w", report.Node, err)
 	}
 	_ = conn.Close()
+	_, _ = fmt.Fprintf(stderr, "upgrade node=%s reboot-scheduled\n", report.Node)
 	bootCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
 	verifiedConn, verified, err := waitNodeBootHealth(bootCtx, bootWaitTarget{nodeName: report.Node, endpoints: []string{target.endpoint}, flags: opts.target.guidanceFlags()}, agentStart, request.CandidateGenerationID, recoveryRequirement, "upgrade node="+report.Node, stderr)
 	cancel()
