@@ -413,6 +413,11 @@ func (m *systemdModel) Run(_ context.Context, command Command) (CommandResult, e
 		}
 	case "stop":
 		for _, unit := range argv[2:] {
+			// Stopping a running unit after its definition left the active
+			// generation would run without the ExecStop files it shipped.
+			if m.active[unit] && !slices.Contains(m.definitions[m.current], unit) {
+				return CommandResult{ExitStatus: 1, Stderr: "ExecStop for " + unit + " is missing."}, nil
+			}
 			m.active[unit] = false
 		}
 	case "restart", "try-restart", "start":
@@ -459,8 +464,8 @@ func TestUnitFileRemovalPlansRemove(t *testing.T) {
 			actions = append(actions, effect.Action)
 		}
 	}
-	if !slices.Equal(actions, []string{"remove"}) {
-		t.Fatalf("app.service effects = %q, want only remove", actions)
+	if !slices.Equal(actions, []string{"stop-and-remove"}) {
+		t.Fatalf("app.service effects = %q, want only stop-and-remove", actions)
 	}
 }
 
@@ -480,11 +485,12 @@ func TestLiveUnitFileRemoval(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		// vendor is a definition the removed file overrode.
-		vendor, failOther bool
-		wantActive        bool
+		vendor, failOther, inactive bool
+		wantActive                  bool
 	}{
 		{name: "stops and unloads"},
 		{name: "runs remaining vendor definition", vendor: true, wantActive: true},
+		{name: "leaves stopped vendor definition stopped", vendor: true, inactive: true},
 		{name: "rolls back after a later failure", failOther: true, wantActive: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -500,6 +506,9 @@ func TestLiveUnitFileRemoval(t *testing.T) {
 			}
 			if test.vendor {
 				model.definitions[candidate] = append(model.definitions[candidate], "app.service")
+			}
+			if test.inactive {
+				model.active["app.service"] = false
 			}
 			if test.failOther {
 				model.broken, model.brokenIn = "other.service", candidate

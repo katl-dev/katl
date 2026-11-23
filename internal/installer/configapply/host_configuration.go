@@ -158,7 +158,7 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration, ro
 			// longer load, so stop it while its definition still exists.
 			plan.unitsToStop = append(plan.unitsToStop, unit)
 			plan.unitsToRemove = append(plan.unitsToRemove, unit)
-			plan.Effects = append(plan.Effects, plannedEffect("remove", "systemd unit "+unit))
+			plan.Effects = append(plan.Effects, plannedEffect("stop-and-remove", "systemd unit "+unit))
 		case unit != "":
 			deriveSystemdNotification(notifications, filePath)
 			if slices.Contains(desired.EnabledUnits, unit) && !slices.Contains(plan.unitsToEnable, unit) {
