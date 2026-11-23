@@ -40,8 +40,7 @@ type HandoffServer struct {
 	nodeName                           string
 	destructiveStorageAcknowledgements []string
 	status                             installstatus.Record
-	disks                              []HandoffDisk
-	hardwareFacts                      discovery.HardwareFacts
+	discovery                          discovery.DiscoverySource
 	sshAccess                          SSHAccessStatus
 	configureSSH                       func(context.Context, []string) error
 }
@@ -138,6 +137,11 @@ func (s *HandoffServer) Bundle() BundlePayload {
 }
 
 func (s *HandoffServer) Status() HandoffStatus {
+	return s.statusAt(context.Background())
+}
+
+func (s *HandoffServer) statusAt(ctx context.Context) HandoffStatus {
+	disks := s.inventory(ctx)
 	s.mu.Lock()
 	status := HandoffStatus{
 		Image:            s.defaultKatlosImage,
@@ -146,7 +150,7 @@ func (s *HandoffServer) Status() HandoffStatus {
 		BundleAccepted:   len(s.bundle) > 0,
 		SelectedNode:     s.nodeName,
 		InstallStatus:    s.status,
-		Disks:            append([]HandoffDisk(nil), s.disks...),
+		Disks:            disks,
 		SSHAccess:        s.sshAccess,
 	}
 	reader := s.statusReader
@@ -200,7 +204,38 @@ func (s *HandoffServer) PrepareRetry(status installstatus.Record) bool {
 	return true
 }
 
-func (s *HandoffServer) SetHardwareFacts(facts discovery.HardwareFacts) {
+// SetDiscovery sets the source of the disk inventory. Each status and
+// validation request rediscovers, so disks attached or removed while the
+// installer waits are reflected without a reboot.
+func (s *HandoffServer) SetDiscovery(source discovery.DiscoverySource) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.discovery = source
+}
+
+// discover returns the current hardware facts, or none when the installer
+// has no discovery source.
+func (s *HandoffServer) discover(ctx context.Context) (discovery.HardwareFacts, error) {
+	s.mu.Lock()
+	source := s.discovery
+	s.mu.Unlock()
+	if source == nil {
+		return discovery.HardwareFacts{}, nil
+	}
+	return source.Discover(ctx)
+}
+
+// inventory reports the whole disks present now. A failed discovery reports
+// none, as for an installer that could not discover hardware.
+func (s *HandoffServer) inventory(ctx context.Context) []HandoffDisk {
+	facts, err := s.discover(ctx)
+	if err != nil {
+		return nil
+	}
+	return handoffDisks(facts)
+}
+
+func handoffDisks(facts discovery.HardwareFacts) []HandoffDisk {
 	disks := make([]HandoffDisk, 0, len(facts.BlockDevices))
 	for _, device := range facts.BlockDevices {
 		if device.Type != discovery.DeviceDisk {
@@ -238,10 +273,7 @@ func (s *HandoffServer) SetHardwareFacts(facts discovery.HardwareFacts) {
 		})
 	}
 	sort.Slice(disks, func(i, j int) bool { return disks[i].Path < disks[j].Path })
-	s.mu.Lock()
-	s.disks = disks
-	s.hardwareFacts = facts
-	s.mu.Unlock()
+	return disks
 }
 
 func (s *HandoffServer) SetStatusReader(reader func() (installstatus.Record, error)) {
@@ -296,6 +328,7 @@ func (s *HandoffServer) handleSSHAccess(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
+	disks := s.inventory(r.Context())
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.state != HandoffWaiting {
@@ -318,7 +351,7 @@ func (s *HandoffServer) handleSSHAccess(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, HandoffStatus{
 		State:         s.state,
 		InstallStatus: s.status,
-		Disks:         append([]HandoffDisk(nil), s.disks...),
+		Disks:         disks,
 		SSHAccess:     s.sshAccess,
 	})
 }
@@ -328,8 +361,8 @@ func (s *HandoffServer) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("ok\n"))
 }
 
-func (s *HandoffServer) handleStatus(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, s.Status())
+func (s *HandoffServer) handleStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.statusAt(r.Context()))
 }
 
 func (s *HandoffServer) handleInstall(w http.ResponseWriter, r *http.Request) {
@@ -352,7 +385,7 @@ func (s *HandoffServer) handleInstall(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid destructive storage acknowledgement: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := s.validateStorage(decoded); err != nil {
+	if err := s.validateStorage(r.Context(), decoded); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -412,7 +445,7 @@ func (s *HandoffServer) handleConfigBundle(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "invalid destructive storage acknowledgement: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if err := s.validateStorage(selected.InstallManifest); err != nil {
+	if err := s.validateStorage(r.Context(), selected.InstallManifest); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -469,10 +502,14 @@ func destructiveStorageAcknowledgements(r *http.Request) ([]string, error) {
 	return acknowledgements, nil
 }
 
-func (s *HandoffServer) validateStorage(installManifest manifest.Manifest) error {
-	s.mu.Lock()
-	facts := s.hardwareFacts
-	s.mu.Unlock()
+// validateStorage checks storage selectors against the disks present now.
+// Planning rediscovers and revalidates after acceptance, so a disk that
+// changes in between is still caught before any mutation.
+func (s *HandoffServer) validateStorage(ctx context.Context, installManifest manifest.Manifest) error {
+	facts, err := s.discover(ctx)
+	if err != nil {
+		return fmt.Errorf("plan storage targets: discover disks: %w", err)
+	}
 	if len(facts.BlockDevices) == 0 {
 		return nil
 	}

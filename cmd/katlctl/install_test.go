@@ -178,10 +178,10 @@ func TestInstallStatusReportsWaitingInstaller(t *testing.T) {
 
 func TestInstallStatusListsWaitingInstallerDisks(t *testing.T) {
 	server := handoff.NewHandoffServer(nil)
-	server.SetHardwareFacts(discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
+	server.SetDiscovery(discovery.StaticDiscoverySource{Facts: discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
 		{Path: "/dev/vda", Type: discovery.DeviceDisk, SizeBytes: 64 << 30, Rotational: true, ByPath: []string{"/dev/disk/by-path/pci-0000:00:04.0"}},
 		{Path: "/dev/sda", Type: discovery.DeviceDisk, SizeBytes: 16 << 30, Model: "USB", Mountpoints: []string{"/run/media"}, ByID: []string{"/dev/disk/by-id/usb-stick"}},
-	}})
+	}}})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 

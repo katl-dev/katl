@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -59,12 +60,12 @@ func TestHandoffServerHealthStatusAndAnnouncement(t *testing.T) {
 
 func TestHandoffStatusReportsStableSelectableDisks(t *testing.T) {
 	server := newTestHandoffServer(t)
-	server.SetHardwareFacts(discovery.HardwareFacts{
+	server.SetDiscovery(discovery.StaticDiscoverySource{Facts: discovery.HardwareFacts{
 		BlockDevices: []discovery.BlockDevice{
 			{Path: "/dev/vda", Type: discovery.DeviceDisk, ByID: []string{"/dev/disk/by-id/virtio-root"}, Model: "Virtual Disk", SizeBytes: 64 << 30},
 			{Path: "/dev/vdb", Type: discovery.DeviceDisk, Serial: "data", SizeBytes: 128 << 30, Partitions: []discovery.BlockDevice{{Path: "/dev/vdb1", Mountpoints: []string{"/mnt"}}}},
 		},
-	})
+	}})
 	status := server.Status()
 	if len(status.Disks) != 2 || !status.Disks[0].Selectable || status.Disks[0].ByID[0] != "/dev/disk/by-id/virtio-root" {
 		t.Fatalf("disks = %#v", status.Disks)
@@ -349,10 +350,10 @@ func TestHandoffServerAcceptsConfigBundleWithSelectedNode(t *testing.T) {
 
 func TestHandoffServerHonorsWipeForNonBlankStorage(t *testing.T) {
 	server := newTestHandoffServer(t)
-	server.SetHardwareFacts(discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
+	server.SetDiscovery(discovery.StaticDiscoverySource{Facts: discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
 		{Path: "/dev/vda", Type: discovery.DeviceDisk, ByID: []string{"/dev/disk/by-id/ata-root"}, SizeBytes: 64 << 30},
 		{Path: "/dev/vdb", Type: discovery.DeviceDisk, DiskSeq: 2, ByDiskSeq: "/dev/disk/by-diskseq/2", ByID: []string{"/dev/disk/by-id/ata-data"}, SizeBytes: 64 << 30, PartitionSignature: "gpt"},
-	}})
+	}}})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 	source := strings.Replace(validBundleSourceConfig(), "      install:\n        systemDisk:\n          byID: /dev/disk/by-id/ata-root\n", `      install:
@@ -379,10 +380,10 @@ func TestHandoffServerHonorsWipeForNonBlankStorage(t *testing.T) {
 
 func TestHandoffServerHonorsWipeForRawManifestStorage(t *testing.T) {
 	server := newTestHandoffServer(t)
-	server.SetHardwareFacts(discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
+	server.SetDiscovery(discovery.StaticDiscoverySource{Facts: discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
 		{Path: "/dev/vda", Type: discovery.DeviceDisk, ByID: []string{"/dev/disk/by-id/ata-root"}, SizeBytes: 64 << 30},
 		{Path: "/dev/vdb", Type: discovery.DeviceDisk, DiskSeq: 2, ByDiskSeq: "/dev/disk/by-diskseq/2", ByID: []string{"/dev/disk/by-id/ata-data"}, SizeBytes: 64 << 30, PartitionSignature: "gpt"},
-	}})
+	}}})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 	install := []byte(`"targetDisk": {"byID": "/dev/disk/by-id/ata-root"},
@@ -613,11 +614,11 @@ spec:
 
 func TestHandoffStatusReportsDisksWithoutHardwareIdentity(t *testing.T) {
 	server := newTestHandoffServer(t)
-	server.SetHardwareFacts(discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{{
+	server.SetDiscovery(discovery.StaticDiscoverySource{Facts: discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{{
 		Path: "/dev/vda", Type: discovery.DeviceDisk, SizeBytes: 64 << 30, Rotational: true,
 		ByPath:             []string{"/dev/disk/by-path/pci-0000:00:04.0"},
 		PartitionSignature: "gpt", PartitionTableUUID: "6f1e3c2a-8d4b-4f5e-9a7c-1b2d3e4f5a6b",
-	}}})
+	}}}})
 
 	got := server.Status().Disks
 	want := []HandoffDisk{{
@@ -647,7 +648,7 @@ func TestHandoffServerResolvesSystemDiskSelectors(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			server := newTestHandoffServer(t)
-			server.SetHardwareFacts(facts)
+			server.SetDiscovery(discovery.StaticDiscoverySource{Facts: facts})
 			ts := httptest.NewServer(server.Handler())
 			defer ts.Close()
 			source := strings.Replace(validBundleSourceConfig(), "          byID: /dev/disk/by-id/ata-root\n", "          "+tt.selector+"\n", 1)
@@ -659,6 +660,119 @@ func TestHandoffServerResolvesSystemDiskSelectors(t *testing.T) {
 
 			if resp.StatusCode != tt.status || !strings.Contains(string(body), tt.want) {
 				t.Fatalf("status=%d body=%s, want %d containing %q", resp.StatusCode, body, tt.status, tt.want)
+			}
+		})
+	}
+}
+
+// changingDisks is a discovery source whose disks a test changes between
+// requests, as hot-attaching or detaching a disk does.
+type changingDisks struct {
+	mu    sync.Mutex
+	disks []discovery.BlockDevice
+}
+
+func (c *changingDisks) set(disks ...discovery.BlockDevice) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.disks = disks
+}
+
+func (c *changingDisks) Discover(context.Context) (discovery.HardwareFacts, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return discovery.HardwareFacts{BlockDevices: append([]discovery.BlockDevice(nil), c.disks...)}, nil
+}
+
+var (
+	rootDisk = discovery.BlockDevice{Path: "/dev/vda", Type: discovery.DeviceDisk, ByID: []string{"/dev/disk/by-id/ata-root"}, SizeBytes: 64 << 30}
+	dataDisk = discovery.BlockDevice{Path: "/dev/vdb", Type: discovery.DeviceDisk, DiskSeq: 2, ByDiskSeq: "/dev/disk/by-diskseq/2", ByID: []string{"/dev/disk/by-id/ata-data"}, SizeBytes: 64 << 30}
+)
+
+func TestHandoffStatusReflectsCurrentDisks(t *testing.T) {
+	disks := &changingDisks{}
+	disks.set(rootDisk)
+	server := newTestHandoffServer(t)
+	server.SetDiscovery(disks)
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	paths := func() []string {
+		t.Helper()
+		resp, err := http.Get(ts.URL + "/v1/status")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var status HandoffStatus
+		if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+			t.Fatal(err)
+		}
+		var paths []string
+		for _, disk := range status.Disks {
+			paths = append(paths, disk.Path)
+		}
+		return paths
+	}
+
+	if got := paths(); !reflect.DeepEqual(got, []string{"/dev/vda"}) {
+		t.Fatalf("initial disks = %v, want [/dev/vda]", got)
+	}
+
+	disks.set(rootDisk, dataDisk)
+	if got := paths(); !reflect.DeepEqual(got, []string{"/dev/vda", "/dev/vdb"}) {
+		t.Fatalf("disks after attach = %v, want [/dev/vda /dev/vdb]", got)
+	}
+
+	disks.set(rootDisk)
+	if got := paths(); !reflect.DeepEqual(got, []string{"/dev/vda"}) {
+		t.Fatalf("disks after detach = %v, want [/dev/vda]", got)
+	}
+}
+
+func TestHandoffServerValidatesAgainstCurrentDisks(t *testing.T) {
+	source := strings.Replace(validBundleSourceConfig(), "      install:\n        systemDisk:\n          byID: /dev/disk/by-id/ata-root\n", `      install:
+        systemDisk:
+          byID: /dev/disk/by-id/ata-root
+      storage:
+        volumes:
+          - name: data
+            selector:
+              disk:
+                byID: /dev/disk/by-id/ata-data
+            filesystem: xfs
+            wipe: true
+`, 1)
+	bundle, result := configBundleFromSource(t, source)
+
+	for _, tt := range []struct {
+		name   string
+		before []discovery.BlockDevice
+		after  []discovery.BlockDevice
+		status int
+		want   string
+	}{
+		{"attached", []discovery.BlockDevice{rootDisk}, []discovery.BlockDevice{rootDisk, dataDisk}, http.StatusOK, ""},
+		{"detached", []discovery.BlockDevice{rootDisk, dataDisk}, []discovery.BlockDevice{rootDisk}, http.StatusBadRequest, `volume "data"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			disks := &changingDisks{}
+			disks.set(tt.before...)
+			server := newTestHandoffServer(t)
+			server.SetDiscovery(disks)
+			ts := httptest.NewServer(server.Handler())
+			defer ts.Close()
+			if got := len(server.Status().Disks); got != len(tt.before) {
+				t.Fatalf("initial inventory has %d disks, want %d", got, len(tt.before))
+			}
+
+			disks.set(tt.after...)
+			resp := postBundle(t, ts.URL, "cp-1", result.Digest, bundle)
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			if resp.StatusCode != tt.status || !strings.Contains(string(body), tt.want) {
+				t.Fatalf("POST status=%d body=%s, want %d containing %q", resp.StatusCode, body, tt.status, tt.want)
 			}
 		})
 	}
