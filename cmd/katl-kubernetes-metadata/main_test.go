@@ -15,6 +15,7 @@ import (
 
 func TestWriteFromLog(t *testing.T) {
 	root := t.TempDir()
+	isolateGit(t, root)
 	runGit(t, root, "init", "--quiet")
 	previous, err := os.Getwd()
 	if err != nil {
@@ -85,6 +86,7 @@ func TestWriteFromLog(t *testing.T) {
 
 func TestWriteFromLogRejectsWrongRepository(t *testing.T) {
 	root := t.TempDir()
+	isolateGit(t, root)
 	runGit(t, root, "init", "--quiet")
 	previous, err := os.Getwd()
 	if err != nil {

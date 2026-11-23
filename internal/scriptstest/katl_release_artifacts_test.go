@@ -69,8 +69,6 @@ func TestKatlReleaseArtifactNotesFollowReleaseHistory(t *testing.T) {
 	repo := repoRoot(t)
 	gitDir := t.TempDir()
 	runGit(t, gitDir, "init", "--quiet")
-	runGit(t, gitDir, "config", "user.name", "Katl Test")
-	runGit(t, gitDir, "config", "user.email", "test@katl.dev")
 
 	for index, release := range []struct {
 		tag     string
@@ -91,6 +89,7 @@ func TestKatlReleaseArtifactNotesFollowReleaseHistory(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.7.0-beta.1")
 	cmd.Dir = gitDir
+	cmd.Env = hermeticGitEnv(os.Environ(), gitDir)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("notes failed: %v\n%s", err, output)
@@ -116,8 +115,6 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 	repo := repoRoot(t)
 	gitDir := t.TempDir()
 	runGit(t, gitDir, "init", "--quiet")
-	runGit(t, gitDir, "config", "user.name", "Katl Test")
-	runGit(t, gitDir, "config", "user.email", "test@katl.dev")
 
 	commits := []string{
 		"runtime: establish KatlOS root",
@@ -152,7 +149,7 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.7.0-dev.4")
 	cmd.Dir = gitDir
 	cmd.Env = append(
-		environmentWithout("KATL_RELEASE_TARGET"),
+		hermeticGitEnv(environmentWithout("KATL_RELEASE_TARGET"), gitDir),
 		"GITHUB_REF_TYPE=branch",
 		"GITHUB_SHA=not-a-commit-in-the-test-repository",
 		"KATL_RELEASE_REPOSITORY_URL=https://github.example/katl-dev/katl",
@@ -191,8 +188,6 @@ func TestKatlReleaseArtifactNotesIncludeVersionedUpgradeGuide(t *testing.T) {
 	repo := repoRoot(t)
 	gitDir := t.TempDir()
 	runGit(t, gitDir, "init", "--quiet")
-	runGit(t, gitDir, "config", "user.name", "Katl Test")
-	runGit(t, gitDir, "config", "user.email", "test@katl.dev")
 	if err := os.WriteFile(filepath.Join(gitDir, "change"), []byte("release candidate\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -201,6 +196,7 @@ func TestKatlReleaseArtifactNotesIncludeVersionedUpgradeGuide(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.9.0-beta.18")
 	cmd.Dir = gitDir
+	cmd.Env = hermeticGitEnv(os.Environ(), gitDir)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("notes failed: %v\n%s", err, output)
@@ -386,17 +382,6 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 	if strings.Contains(string(checksums), "  SHA256SUMS\n") {
 		t.Fatalf("SHA256SUMS must not contain its own digest: %q", checksums)
 	}
-}
-
-func runGit(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %s failed: %v\n%s", strings.Join(args, " "), err, output)
-	}
-	return string(output)
 }
 
 func TestKatlReleaseArtifactStageRejectsDigestMismatch(t *testing.T) {
