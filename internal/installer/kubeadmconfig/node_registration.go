@@ -92,8 +92,10 @@ func WithNodeRegistration(plan Plan, registration NodeRegistration) (Plan, error
 }
 
 // WithoutNodeRegistration returns plan without the fields WithNodeRegistration
-// owns. Source validation keeps them out of shared input, so two inputs that
-// differ only there carry the same kubeadm configuration.
+// owns: node-ip, node-labels, nodeRegistration.taints and advertiseAddress.
+// ClusterConfig validation reserves them for Katl. Kubeadm reads them only when
+// it registers the node, so after registration they describe node identity and
+// metadata, which their own domains plan, rather than kubeadm configuration.
 func WithoutNodeRegistration(plan Plan) (Plan, error) {
 	documents, err := decodeDocuments(plan.Config.Content)
 	if err != nil {

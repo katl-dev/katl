@@ -299,9 +299,14 @@ func mergeInlineKubeadmConfigs(installed map[string]kubeadmconfig.Plan, inline m
 	return configs, changed, nil
 }
 
-// equivalentKubeadmInputs compares inputs ignoring the node registration Katl
-// owns. Registration belongs to the node's identity and metadata domains, and
-// a stored input may carry the current, an earlier, or no registration.
+// equivalentKubeadmInputs compares inputs ignoring node registration, which
+// the identity and metadata domains plan; it does not own registration. It
+// reconciles the forms generations already hold: v2026.11.0 and v2026.11.1
+// applies stored the shared input, bootstrap and join stored it registered,
+// and a label or taint edit leaves an earlier registration. Hand-written
+// inline input is not validated against the reserved fields, so a change only
+// there, such as dropping InitConfiguration taints before bootstrap, is stored
+// but not reported as a kubeadm change.
 func equivalentKubeadmInputs(previous, desired kubeadmconfig.Plan) bool {
 	previous, err := kubeadmconfig.WithoutNodeRegistration(previous)
 	if err != nil {
