@@ -628,11 +628,14 @@ func warnPendingReaddress(ctx context.Context, configInput string, endpoints map
 	if err != nil {
 		return
 	}
-	baselines := map[string]string{}
+	// Parse each saved baseline once, where it is read from the file.
+	baselines := map[string]inventory.HostPort{}
 	for _, cluster := range saved.Clusters {
 		if cluster.Name == topology.ClusterName {
 			for _, node := range cluster.Nodes {
-				baselines[node.Name] = node.ConfiguredEndpoint
+				if baseline, err := inventory.ParseHostPort(node.ConfiguredEndpoint); err == nil {
+					baselines[node.Name] = baseline
+				}
 			}
 		}
 	}
@@ -649,7 +652,7 @@ func warnPendingReaddress(ctx context.Context, configInput string, endpoints map
 		}
 		configured := configuredEndpoint(node)
 		reached := used[node.Name]
-		if configured.IsZero() || reached.IsZero() || configured == reached || baselines[node.Name] == "" || baselines[node.Name] == configured.String() {
+		if configured.IsZero() || reached.IsZero() || configured == reached || baselines[node.Name].IsZero() || baselines[node.Name] == configured {
 			continue
 		}
 		fmt.Fprintf(stderr, "warning: %s is configured at management.address %s, but the saved context reaches it at %s, so this command uses %s; "+

@@ -7,7 +7,6 @@ import (
 	"net/netip"
 	"reflect"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/apiproxy"
@@ -73,13 +72,14 @@ func Compile(request CompileRequest) (Plan, error) {
 		}
 	}
 
-	nodes := slices.Clone(config.Spec.Nodes)
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
-	materials := make([]NodeMaterial, 0, len(nodes))
-	inventoryNodes := make([]inventory.Node, 0, len(nodes))
-	for i, node := range nodes {
-		located := topology.Inventory.Nodes[i]
-		layer, err := mergedLayer(config.Spec.Defaults, node.Overrides)
+	overrides := make(map[string]NodeLayer, len(config.Spec.Nodes))
+	for _, node := range config.Spec.Nodes {
+		overrides[strings.TrimSpace(node.Name)] = node.Overrides
+	}
+	materials := make([]NodeMaterial, 0, len(topology.Inventory.Nodes))
+	inventoryNodes := make([]inventory.Node, 0, len(topology.Inventory.Nodes))
+	for _, located := range topology.Inventory.Nodes {
+		layer, err := mergedLayer(config.Spec.Defaults, overrides[located.Name])
 		if err != nil {
 			return Plan{}, fmt.Errorf("node %q: %w", located.Name, err)
 		}

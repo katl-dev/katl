@@ -16,6 +16,8 @@ const (
 	KubernetesPort = apiproxy.DefaultBackendPort
 	// EtcdPeerPort is the stacked etcd member's peer port.
 	EtcdPeerPort = 2380
+	// InstallerPort is where installer media serve the handoff API.
+	InstallerPort = 8080
 )
 
 // TLSEndpoint is an address to dial and the name its serving certificate is
@@ -33,6 +35,21 @@ func (e TLSEndpoint) URL() string {
 // ManagementEndpoint returns where the workstation reaches the node's agent.
 func (n Node) ManagementEndpoint() HostPort {
 	return n.Address.Endpoint()
+}
+
+// InstallerEndpoint returns where the workstation reaches the node's
+// installer: its management host at InstallerPort, whatever agent port the
+// management address names.
+func (n Node) InstallerEndpoint() HostPort {
+	return n.Address.InstallerEndpoint()
+}
+
+// InstallerEndpoint returns the installer at this management address's host.
+func (a ManagementAddress) InstallerEndpoint() HostPort {
+	if a.IsZero() {
+		return HostPort{}
+	}
+	return HostPort{Host: a.Host, Port: InstallerPort}
 }
 
 // ManagementEndpoint returns where the workstation reaches the node's agent.
@@ -79,9 +96,18 @@ func (p Plan) WorkstationKubernetesEndpoint(node PlannedNode) TLSEndpoint {
 // unchanged, so it is verified like WorkstationKubernetesEndpoint.
 func (p Plan) WorkstationProxyEndpoint(node PlannedNode) TLSEndpoint {
 	return TLSEndpoint{
-		Address:    HostPort{Host: node.Address.Host, Port: apiproxy.DefaultPort},
+		Address:    node.Address.ProxyEndpoint(),
 		ServerName: kubernetesServerName(p.ControlPlaneEndpoint, node.KubernetesHost()),
 	}
+}
+
+// ProxyEndpoint returns where the workstation reaches a control plane's API
+// proxy at this management address: its host, whatever agent port it names.
+func (a ManagementAddress) ProxyEndpoint() HostPort {
+	if a.IsZero() {
+		return HostPort{}
+	}
+	return HostPort{Host: a.Host, Port: apiproxy.DefaultPort}
 }
 
 // kubernetesServerName returns the name every kube-apiserver certificate in

@@ -10,13 +10,16 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"gopkg.in/yaml.v3"
 )
 
-const localAPIProxyServer = "https://127.0.0.1:7445"
+// localAPIProxyServer is the API proxy's node-local listener.
+var localAPIProxyServer = "https://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(apiproxy.DefaultPort))
 
 func configureLocalAPIAccess(ctx context.Context, root string, request operation.BootstrapRequest, run ToolRunner) error {
 	tlsName, err := endpointHost(request.ControlPlaneEndpoint)

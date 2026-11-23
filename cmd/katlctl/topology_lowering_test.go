@@ -26,21 +26,30 @@ func TestManagementInventoryMatchesCompile(t *testing.T) {
 		name     string
 		endpoint string
 		nodes    string
+		served   string
 		refused  string
 	}{
 		{
-			name:  "single control plane derives its endpoint",
-			nodes: node("cp-1", true, management("10.0.0.11")) + node("worker-1", false, management("10.0.0.21")),
+			name:   "single control plane derives its endpoint",
+			nodes:  node("cp-1", true, management("10.0.0.11")) + node("worker-1", false, management("10.0.0.21")),
+			served: "10.0.0.11:6443",
 		},
 		{
 			name: "NAT control plane with an agent port and a Kubernetes address",
 			nodes: node("cp-1", true, management("198.18.0.11:19443")+kubernetes("10.0.0.11")) +
 				node("worker-1", false, management("198.18.0.21:19443")+kubernetes("::ffff:10.0.0.21")),
+			served: "198.18.0.11:6443",
 		},
 		{
 			name:     "several control planes with an endpoint",
 			endpoint: endpoint,
 			nodes:    node("cp-2", true, management("10.0.0.12")) + node("cp-1", true, management("10.0.0.11")) + node("worker-1", false, management("node-21.lab.example")),
+			served:   "api.katl.test:6443",
+		},
+		{
+			name:    "no nodes",
+			nodes:   "    []\n",
+			refused: "spec.nodes must not be empty",
 		},
 		{
 			name:    "several control planes without an endpoint",
@@ -71,6 +80,9 @@ func TestManagementInventoryMatchesCompile(t *testing.T) {
 				t.Fatalf("katlctl error = %v, Compile error = %v", workstationErr, compileErr)
 			}
 
+			if got := workstation.ControlPlaneEndpoint.String(); got != tc.served {
+				t.Errorf("control-plane endpoint = %q, want %q", got, tc.served)
+			}
 			if got, want := topologyOf(workstation), topologyOf(compiled.Manifest.Cluster.BootstrapInventory); !reflect.DeepEqual(got, want) {
 				t.Fatalf("katlctl inventory = %+v\nCompile inventory = %+v", got, want)
 			}
@@ -94,7 +106,7 @@ func topologyOf(inv inventory.Inventory) loweredTopology {
 		if node.KubernetesAddress.IsValid() {
 			kubernetes = node.KubernetesAddress.String()
 		}
-		out.Nodes = append(out.Nodes, strings.Join([]string{node.Name, string(node.SystemRole), node.ManagementEndpoint().String(), kubernetes}, " "))
+		out.Nodes = append(out.Nodes, strings.Join([]string{node.Name, string(node.SystemRole), node.Address.String(), node.ManagementEndpoint().String(), kubernetes}, " "))
 	}
 	return out
 }

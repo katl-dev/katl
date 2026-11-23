@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"strings"
 	"time"
@@ -323,13 +322,13 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 	cancelWait()
 	if err != nil {
 		if !desiredEndpoint.IsZero() {
-			return addressChangeRebootError(node, target.endpoint.String(), desiredEndpoint.String(), verified.Endpoint, opts.target.clusterConfigPath, err)
+			return addressChangeRebootError(node, target.endpoint, desiredEndpoint, verified.Endpoint, opts.target.clusterConfigPath, err)
 		}
 		return err
 	}
 	_ = verifiedConn.Close()
 	if !desiredEndpoint.IsZero() && verified.Endpoint != desiredEndpoint.String() {
-		return addressChangeRebootError(node, target.endpoint.String(), desiredEndpoint.String(), verified.Endpoint, opts.target.clusterConfigPath, fmt.Errorf("node %s returned healthy at %s instead of %s", node, verified.Endpoint, desiredEndpoint))
+		return addressChangeRebootError(node, target.endpoint, desiredEndpoint, verified.Endpoint, opts.target.clusterConfigPath, fmt.Errorf("node %s returned healthy at %s instead of %s", node, verified.Endpoint, desiredEndpoint))
 	}
 	report.Result = "rebooted"
 	report.Health = displayHostHealth(verified.Generation)
@@ -338,9 +337,9 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 	return writeHostReboot(stdout, opts.output, report)
 }
 
-func addressChangeRebootError(node, currentEndpoint, desiredEndpoint, answered, configPath string, err error) error {
-	current, _, _ := net.SplitHostPort(currentEndpoint)
-	if answered == currentEndpoint {
+func addressChangeRebootError(node string, currentEndpoint, desiredEndpoint inventory.HostPort, answered, configPath string, err error) error {
+	current := managementHost(currentEndpoint)
+	if answered == currentEndpoint.String() {
 		return fmt.Errorf("%w; %s still answers at its previous address %s, so its new network configuration did not take effect. Correct its network configuration in %s, then rerun 'katlctl cluster apply --config %s --node %s --endpoint %s', or restore management.address to %s to keep the previous address", err, node, current, configPath, configPath, node, current, current)
 	}
 	return fmt.Errorf("%w; %s did not answer as the same installation at %s or %s. If its new address is wrong but still routable, the node can accept it and become unreachable: use the node console to inspect its network, or choose the previous generation from the boot menu, then correct %s", err, node, desiredEndpoint, currentEndpoint, configPath)
@@ -717,7 +716,10 @@ func writeHostReboot(stdout io.Writer, output string, report hostRebootReport) e
 		return err
 	}
 	if report.AddressChanged {
-		host, _, _ := net.SplitHostPort(report.Endpoint)
+		host := report.Endpoint
+		if endpoint, err := inventory.ParseHostPort(report.Endpoint); err == nil {
+			host = managementHost(endpoint)
+		}
 		_, err := fmt.Fprintf(stdout, "%s rebooted successfully at %s; health %s\n", report.Node, host, report.Health)
 		return err
 	}

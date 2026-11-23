@@ -122,27 +122,28 @@ func TestWorkstationEndpoints(t *testing.T) {
 		management, kubernetes string
 		controlPlaneEndpoint   string
 		agent, apiServer       string
+		installer              string
 		proxy, serverName      string
 		peer                   string
 	}{
 		{
 			name: "nat", management: "198.18.0.11:19443", kubernetes: "10.0.0.11", controlPlaneEndpoint: "10.0.0.11:6443",
-			agent: "198.18.0.11:19443", apiServer: "198.18.0.11:6443", proxy: "198.18.0.11:7445", serverName: "10.0.0.11",
+			agent: "198.18.0.11:19443", installer: "198.18.0.11:8080", apiServer: "198.18.0.11:6443", proxy: "198.18.0.11:7445", serverName: "10.0.0.11",
 			peer: "https://10.0.0.11:2380",
 		},
 		{
 			name: "multihomed with a DNS endpoint", management: "192.168.1.11", kubernetes: "10.0.0.11", controlPlaneEndpoint: "api.lab.example:6443",
-			agent: "192.168.1.11:9443", apiServer: "192.168.1.11:6443", proxy: "192.168.1.11:7445", serverName: "api.lab.example",
+			agent: "192.168.1.11:9443", installer: "192.168.1.11:8080", apiServer: "192.168.1.11:6443", proxy: "192.168.1.11:7445", serverName: "api.lab.example",
 			peer: "https://10.0.0.11:2380",
 		},
 		{
 			name: "single address without an endpoint", management: "10.0.0.11",
-			agent: "10.0.0.11:9443", apiServer: "10.0.0.11:6443", proxy: "10.0.0.11:7445", serverName: "10.0.0.11",
+			agent: "10.0.0.11:9443", installer: "10.0.0.11:8080", apiServer: "10.0.0.11:6443", proxy: "10.0.0.11:7445", serverName: "10.0.0.11",
 			peer: "https://10.0.0.11:2380",
 		},
 		{
 			name: "NAT without an endpoint", management: "198.18.0.11", kubernetes: "10.0.0.11",
-			agent: "198.18.0.11:9443", apiServer: "198.18.0.11:6443", proxy: "198.18.0.11:7445", serverName: "10.0.0.11",
+			agent: "198.18.0.11:9443", installer: "198.18.0.11:8080", apiServer: "198.18.0.11:6443", proxy: "198.18.0.11:7445", serverName: "10.0.0.11",
 			peer: "https://10.0.0.11:2380",
 		},
 	} {
@@ -176,6 +177,9 @@ func TestWorkstationEndpoints(t *testing.T) {
 
 			if got := planned.ManagementEndpoint().String(); got != tc.agent {
 				t.Errorf("management endpoint = %q, want %q", got, tc.agent)
+			}
+			if got := node.InstallerEndpoint().String(); got != tc.installer {
+				t.Errorf("installer endpoint = %q, want %q", got, tc.installer)
 			}
 			apiServer := plan.WorkstationKubernetesEndpoint(planned)
 			if got := apiServer.Address.String(); got != tc.apiServer {

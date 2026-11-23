@@ -662,8 +662,7 @@ func LowerSource(source SourceConfig, planning PlanningInputs) (clusterplan.Conf
 		if err != nil {
 			return clusterplan.Config{}, fmt.Errorf("%s: %w", sourceNodePath(node, i), err)
 		}
-		layer := lowerNodeLayer(resolved)
-		layer.Bootstrap.Address = strings.TrimSpace(node.Management.Address)
+		layer := topologyLayer(node, lowerNodeLayer(resolved))
 		if access, ok := planning.BootstrapAccess[node.Name]; ok {
 			layer.Bootstrap.Access = access
 		}

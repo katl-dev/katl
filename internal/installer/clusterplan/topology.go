@@ -4,11 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"net"
 	"net/netip"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
@@ -32,6 +30,9 @@ type Topology struct {
 // addressOverrides replaces nodes' management addresses, as an operator does
 // while a node moves.
 func LowerTopology(config Config, addressOverrides map[string]string) (Topology, error) {
+	if len(config.Spec.Nodes) == 0 {
+		return Topology{}, fmt.Errorf("spec.nodes must not be empty")
+	}
 	nodes := slices.Clone(config.Spec.Nodes)
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
 	unused := maps.Clone(addressOverrides)
@@ -109,16 +110,15 @@ func kubernetesAddressText(addr netip.Addr) string {
 // single control plane without one, that node's management host.
 func resolveControlPlaneEndpoint(config Config, nodes []inventory.Node) (*controlplaneendpoint.Plan, error) {
 	if external := config.Spec.Kubernetes.ExternalEndpoint; external != "" {
-		host, port, err := net.SplitHostPort(external)
+		endpoint, err := inventory.ParseHostPort(external)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("spec.kubernetes.external.endpoint: %w", err)
 		}
-		portNumber, err := strconv.Atoi(port)
+		plan, err := controlplaneendpoint.Normalize(controlplaneendpoint.Config{Host: endpoint.Host.String(), Port: int(endpoint.Port)})
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("spec.kubernetes.external.endpoint: %w", err)
 		}
-		plan, err := controlplaneendpoint.Normalize(controlplaneendpoint.Config{Host: host, Port: portNumber})
-		return &plan, err
+		return &plan, nil
 	}
 	var controlPlanes []inventory.Node
 	for _, node := range nodes {

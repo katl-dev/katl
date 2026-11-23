@@ -25,7 +25,7 @@ func SourceTopology(source SourceConfig) (inventory.Inventory, error) {
 		config.Spec.Nodes = append(config.Spec.Nodes, clusterplan.Node{
 			Name:       node.Name,
 			SystemRole: sourceNodeRole(node),
-			Overrides:  topologyLayer(node),
+			Overrides:  topologyLayer(node, clusterplan.NodeLayer{}),
 		})
 	}
 	topology, err := clusterplan.LowerTopology(config, nil)
@@ -35,10 +35,9 @@ func SourceTopology(source SourceConfig) (inventory.Inventory, error) {
 	return topology.Inventory, nil
 }
 
-// topologyLayer is the part of a node's lowered layer that says where it is;
-// LowerSource sets the same fields.
-func topologyLayer(node SourceNode) clusterplan.NodeLayer {
-	var layer clusterplan.NodeLayer
+// topologyLayer sets the fields of a node's lowered layer that say where it is.
+// LowerSource and SourceTopology both take them from here.
+func topologyLayer(node SourceNode, layer clusterplan.NodeLayer) clusterplan.NodeLayer {
 	layer.Bootstrap.Address = strings.TrimSpace(node.Management.Address)
 	layer.Kubernetes.Address = strings.TrimSpace(node.Kubernetes.Address)
 	return layer

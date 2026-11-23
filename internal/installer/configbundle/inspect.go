@@ -5,13 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"net"
 	"slices"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/apiproxy"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 )
@@ -168,11 +167,8 @@ func InspectSelectedNode(selected SelectedNodeMaterial) (NodeResolution, error) 
 	}
 	if node.Management.Address != "" {
 		message := "management.address selects the workstation target and does not change generated node state"
-		host := strings.TrimSpace(node.Management.Address)
-		if split, _, err := net.SplitHostPort(host); err == nil {
-			host = split
-		}
-		if slices.Contains(report.Derived.APIProxyListeners, net.JoinHostPort(host, strconv.Itoa(apiproxy.DefaultPort))) {
+		address, err := inventory.ParseManagementAddress(node.Management.Address)
+		if err == nil && slices.Contains(report.Derived.APIProxyListeners, address.ProxyEndpoint().String()) {
 			message = "management.address selects the workstation target, and the control plane's API proxy listens there for katlctl"
 		}
 		report.Warnings = append(report.Warnings, ResolutionWarning{Path: base + ".management.address", Message: message})

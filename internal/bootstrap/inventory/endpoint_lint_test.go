@@ -25,28 +25,37 @@ var endpointOwners = []string{
 	"internal/installer/controlplaneendpoint",
 }
 
-// endpointAllowance is a literal outside the owners that is not a derivation
-// of a node endpoint: a finding in path whose text contains fragment.
+// endpointAllowance excuses one finding outside the owners that is not a
+// derivation of a node endpoint: a finding in path whose text contains
+// fragment.
 type endpointAllowance struct {
 	path, fragment string
 }
 
-// endpointLiteralAllowlist lists the literals that genuinely need a port, each
-// with the reason it is not a node endpoint derivation.
+// endpointLiteralAllowlist lists the findings that genuinely need a port,
+// each with the reason it is not a node endpoint derivation.
 var endpointLiteralAllowlist = []endpointAllowance{
-	// The agent's own listen default. ManagementPort is the workstation's view
-	// of the same port; the agent sits below inventory and cannot import it.
-	{"internal/katlc/agent/server.go", `"tcp://0.0.0.0:9443"`},
+	// The agent's own listener: every local address at the management port
+	// that workstations dial.
+	{"internal/katlc/agent/server.go", "inventory.ManagementPort"},
 	// The generated agent unit passes that listen address explicitly, and the
 	// unit text is a versioned generation artifact.
 	{"internal/generation/state.go", "--listen tcp://0.0.0.0:9443"},
 	// Node-side loopback: the agent and the console reach the node's own API
 	// proxy or kube-apiserver, not another node.
-	{"internal/katlc/agent/api_proxy_access.go", `"https://127.0.0.1:7445"`},
+	{"internal/katlc/agent/api_proxy_access.go", "apiproxy.DefaultPort"},
 	{"internal/operatorconsole/kubernetes.go", `"https://127.0.0.1:6443"`},
-	// The agent rebuilds the local kube-apiserver endpoint from its own static
-	// pod's --advertise-address, which is not an inventory address.
+	// The agent rebuilds its own kube-apiserver endpoint from its static pod's
+	// --advertise-address and --secure-port, defaulting the port as
+	// kube-apiserver does; neither is an inventory address.
 	{"internal/katlc/agent/kubeadm_upgrade_executor.go", "net.JoinHostPort(e.Address, ...)"},
+	{"internal/katlc/agent/kubeadm_upgrade_executor.go", "inventory.KubernetesPort"},
+	// Display only: a suggested command omits the default agent port, as the
+	// documented form of management.address does.
+	{"cmd/katlctl/enroll.go", "inventory.ManagementPort"},
+	// katldev probes a world VM's reserved address, which is not yet in any
+	// inventory, to tell an installed node from a waiting installer.
+	{"cmd/katldev/installer.go", "inventory.ManagementPort"},
 	// Help, error and template text that shows an operator the default.
 	{"cmd/katlc/main.go", "such as tcp://0.0.0.0:9443"},
 	{"cmd/katlctl/install.go", "check the installed system (port 9443)"},
@@ -66,6 +75,13 @@ var endpointFieldAllowlist = map[string]string{
 	"Bootstrap.StableEndpoint": "kubectl server",
 }
 
+// endpointPortConstants are the owners' exported ports. Code elsewhere that
+// reads one is usually assembling an endpoint the owner should return.
+var endpointPortConstants = map[string][]string{
+	"inventory": {"ManagementPort", "KubernetesPort", "EtcdPeerPort", "InstallerPort"},
+	"apiproxy":  {"DefaultPort", "DefaultBackendPort"},
+}
+
 var (
 	endpointPortPattern = regexp.MustCompile(`(^|[^0-9])(9443|6443|7445|2380)([^0-9]|$)`)
 	endpointFieldSuffix = regexp.MustCompile(`(Address|Endpoint|CIDR|Prefix)$`)
@@ -74,7 +90,7 @@ var (
 func TestEndpointsHaveOneOwner(t *testing.T) {
 	root := repositoryRoot(t)
 	var problems []string
-	used := map[int]bool{}
+	used := map[int]int{}
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -102,7 +118,7 @@ func TestEndpointsHaveOneOwner(t *testing.T) {
 				return allowed.path == rel && strings.Contains(finding.literal, allowed.fragment)
 			})
 			if index >= 0 {
-				used[index] = true
+				used[index]++
 				continue
 			}
 			problems = append(problems, fmt.Sprintf("%s: %s: %s", rel, finding.literal, finding.reason))
@@ -113,8 +129,13 @@ func TestEndpointsHaveOneOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	for index, allowed := range endpointLiteralAllowlist {
-		if !used[index] {
+		switch used[index] {
+		case 0:
 			problems = append(problems, fmt.Sprintf("%s: %q is allowlisted but no longer present; remove the entry", allowed.path, allowed.fragment))
+		case 1:
+		default:
+			// An entry excuses one literal, so a new one beside it is reported.
+			problems = append(problems, fmt.Sprintf("%s: %q allowlists %d findings; it may excuse only one", allowed.path, allowed.fragment, used[index]))
 		}
 	}
 	slices.Sort(problems)
@@ -140,6 +161,10 @@ func endpointFindings(file *ast.File) []endpointFinding {
 		case *ast.BasicLit:
 			if (node.Kind == token.STRING || node.Kind == token.INT) && endpointPortPattern.MatchString(node.Value) {
 				findings = append(findings, endpointFinding{literal: node.Value, reason: "names a node endpoint port"})
+			}
+		case *ast.SelectorExpr:
+			if pkg, ok := node.X.(*ast.Ident); ok && slices.Contains(endpointPortConstants[pkg.Name], node.Sel.Name) {
+				findings = append(findings, endpointFinding{literal: pkg.Name + "." + node.Sel.Name, reason: "builds an endpoint from a port outside the owner"})
 			}
 		case *ast.CallExpr:
 			selector, ok := node.Fun.(*ast.SelectorExpr)
