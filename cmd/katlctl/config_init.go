@@ -11,8 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -56,7 +54,7 @@ type initNodeSpecs []initNodeSpec
 func (values *initNodeSpecs) String() string {
 	var entries []string
 	for _, node := range *values {
-		entries = append(entries, node.name+"="+string(node.role)+","+node.address+","+node.disk.ByID)
+		entries = append(entries, node.name+"="+string(node.role)+","+node.address+","+systemDiskArgumentString(node.disk))
 	}
 	return strings.Join(entries, "; ")
 }
@@ -75,11 +73,11 @@ func (values *initNodeSpecs) Set(value string) error {
 	if net.ParseIP(address) == nil && !validHostname(address) {
 		return fmt.Errorf("node %q address %q is not an IP address or hostname", name, address)
 	}
-	disk := strings.TrimSpace(parts[2])
-	if !strings.HasPrefix(disk, "/dev/disk/by-id/") {
-		return fmt.Errorf("node %q disk must be a stable /dev/disk/by-id path", name)
+	disk, err := systemDiskArgument(strings.TrimSpace(parts[2]))
+	if err != nil {
+		return fmt.Errorf("node %q %w", name, err)
 	}
-	*values = append(*values, initNodeSpec{name: strings.TrimSpace(name), role: role, address: address, disk: manifest.DiskSelector{ByID: disk}})
+	*values = append(*values, initNodeSpec{name: strings.TrimSpace(name), role: role, address: address, disk: disk})
 	return nil
 }
 
@@ -106,7 +104,7 @@ func newConfigInitCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.
 	cmd.Flags().StringVar(&opts.kubernetesVersion, "kubernetes-version", opts.kubernetesVersion, "override the default Kubernetes payload version")
 	cmd.Flags().StringVar(&opts.sshKeyPath, "ssh-authorized-key", "", "public SSH key file; otherwise uses the active SSH agent or ~/.ssh/id_ed25519.pub")
 	cmd.Flags().BoolVar(&opts.force, "force", false, "replace an existing output file")
-	cmd.Flags().Var(&opts.nodes, "node", "node as name=role,address,/dev/disk/by-id/... (repeatable)")
+	cmd.Flags().Var(&opts.nodes, "node", "node as name=role,address,DISK where DISK is a /dev/disk/by-id path (recommended), /dev/disk/by-path path, or /dev/NAME (repeatable)")
 	cmd.Flags().Var(&opts.installers, "installer", "waiting installer IP, hostname, host:port, or base URL (repeatable)")
 	cmd.Flags().DurationVar(&opts.installerTimeout, "installer-timeout", opts.installerTimeout, "overall timeout for reading installer status")
 	return cmd
@@ -177,6 +175,9 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 		}
 		seen[node.name] = struct{}{}
 		source.Spec.Nodes = append(source.Spec.Nodes, sourceNode(node))
+		if warning := weakSystemDiskWarning(node.name, node.disk); warning != "" {
+			fmt.Fprintln(stderr, warning)
+		}
 	}
 	if source.Spec.ManagementAuthentication == "" {
 		source.Spec.ManagementAuthentication = managementidentity.TrustedNetwork
@@ -289,15 +290,18 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 }
 
 func sourceNode(node initNodeSpec) configbundle.SourceNode {
-	targetDisk := configbundle.SourceDiskSelector{}
-	if node.disk.ByID != "" {
-		targetDisk.ByID = configbundle.Some(node.disk.ByID)
-	}
-	if node.disk.WWN != "" {
-		targetDisk.WWN = configbundle.Some(node.disk.WWN)
-	}
-	if node.disk.Serial != "" {
-		targetDisk.Serial = configbundle.Some(node.disk.Serial)
+	targetDisk := configbundle.SourceSystemDiskSelector{}
+	for _, field := range []struct {
+		target *configbundle.Optional[string]
+		value  string
+	}{
+		{&targetDisk.ByID, node.disk.ByID}, {&targetDisk.WWN, node.disk.WWN}, {&targetDisk.Serial, node.disk.Serial},
+		{&targetDisk.ByPath, node.disk.ByPath}, {&targetDisk.GPTGUID, node.disk.GPTGUID}, {&targetDisk.Name, node.disk.Name},
+		{&targetDisk.Model, node.disk.Model}, {&targetDisk.Size, node.disk.Size}, {&targetDisk.Type, node.disk.Type},
+	} {
+		if field.value != "" {
+			*field.target = configbundle.Some(field.value)
+		}
 	}
 	if node.disk.MinSizeMiB != 0 {
 		targetDisk.MinSizeMiB = configbundle.Some(node.disk.MinSizeMiB)
@@ -372,7 +376,7 @@ func initNodesFromInstallers(ctx context.Context, addresses []string, timeout ti
 			return nil, fmt.Errorf("duplicate --installer endpoint %s", endpoint)
 		}
 		seen[endpoint] = struct{}{}
-		disk, err := installerTargetDisk(endpoint, disks, "", "Use katlctl config init --node to choose the intended disk")
+		disk, err := installerTargetDisk(endpoint, disks, "", "Use katlctl config init --node NAME=ROLE,ADDRESS,DISK to choose the intended disk")
 		if err != nil {
 			return nil, err
 		}
@@ -407,45 +411,50 @@ func readWaitingInstaller(ctx context.Context, client *http.Client, address stri
 }
 
 // installerTargetDisk selects the installer's only selectable disk, or the
-// selectable disk with the chosen by-id path. hint tells the operator how to
-// choose when the selection fails.
+// selectable disk named by chosen. hint tells the operator how to choose when
+// the selection fails.
 func installerTargetDisk(endpoint string, disks []handoff.HandoffDisk, chosen, hint string) (manifest.DiskSelector, error) {
+	var named manifest.DiskSelector
+	if chosen != "" {
+		var err error
+		if named, err = systemDiskArgument(chosen); err != nil {
+			return manifest.DiskSelector{}, err
+		}
+	}
 	var selectable []handoff.HandoffDisk
 	for _, disk := range disks {
-		if disk.Selectable && (chosen == "" || slices.Contains(disk.ByID, chosen)) {
+		if disk.Selectable && (chosen == "" || handoffDiskNames(disk, chosen)) {
 			selectable = append(selectable, disk)
 		}
 	}
-	if chosen != "" {
-		if len(selectable) == 0 {
-			return manifest.DiskSelector{}, fmt.Errorf("installer %s reports no selectable disk %s. %s", endpoint, chosen, hint)
+	if len(selectable) == 1 {
+		// Record the strongest identity of the chosen disk. Without a choice,
+		// only a hardware identity may stand in for one: an attachment path or
+		// kernel name must be named by the operator.
+		strongest := installerSystemDisk(selectable[0])
+		switch {
+		case named.Target().Stable():
+			return named, nil
+		case strongest.Target().Stable():
+			return strongest, nil
+		case chosen != "":
+			return named, nil
+		default:
+			return manifest.DiskSelector{}, fmt.Errorf("installer %s reports one selectable disk, %s, but it has no by-id path, WWN, or serial, so Katl will not choose it implicitly. %s", endpoint, describeHandoffDisk(selectable[0]), hint)
 		}
-		return manifest.DiskSelector{ByID: chosen}, nil
 	}
-	if len(selectable) != 1 {
-		var paths []string
+	if chosen != "" && len(selectable) == 0 {
+		return manifest.DiskSelector{}, fmt.Errorf("installer %s reports no selectable disk %s. %s", endpoint, chosen, hint)
+	}
+	detail := "none"
+	if len(selectable) > 0 {
+		descriptions := make([]string, 0, len(selectable))
 		for _, disk := range selectable {
-			paths = append(paths, disk.Path)
+			descriptions = append(descriptions, describeHandoffDisk(disk))
 		}
-		detail := "none"
-		if len(paths) > 0 {
-			detail = strings.Join(paths, ", ")
-		}
-		return manifest.DiskSelector{}, fmt.Errorf("installer %s reports %d selectable disks (%s). %s", endpoint, len(selectable), detail, hint)
+		detail = strings.Join(descriptions, "; ")
 	}
-	disk := selectable[0]
-	if len(disk.ByID) > 0 {
-		byID := append([]string(nil), disk.ByID...)
-		sort.Strings(byID)
-		return manifest.DiskSelector{ByID: byID[0]}, nil
-	}
-	if strings.TrimSpace(disk.WWN) != "" {
-		return manifest.DiskSelector{WWN: disk.WWN}, nil
-	}
-	if strings.TrimSpace(disk.Serial) != "" {
-		return manifest.DiskSelector{Serial: disk.Serial}, nil
-	}
-	return manifest.DiskSelector{}, fmt.Errorf("installer %s marked %s selectable without a stable disk identity", endpoint, disk.Path)
+	return manifest.DiskSelector{}, fmt.Errorf("installer %s reports %d selectable disks: %s. %s", endpoint, len(selectable), detail, hint)
 }
 
 func configSSHKeys(explicitPath string) ([]string, []string, error) {

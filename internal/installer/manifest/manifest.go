@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/netip"
@@ -310,11 +311,35 @@ type InstallConfig struct {
 	Volumes    []Volume     `json:"volumes,omitempty" yaml:"volumes,omitempty"`
 }
 
+// DiskSelector selects a whole disk. Volume disks accept only one of byID, wwn,
+// or serial; the system disk accepts any combination of criteria.
 type DiskSelector struct {
 	ByID       string `json:"byID,omitempty" yaml:"byID,omitempty"`
 	WWN        string `json:"wwn,omitempty" yaml:"wwn,omitempty"`
 	Serial     string `json:"serial,omitempty" yaml:"serial,omitempty"`
+	ByPath     string `json:"byPath,omitempty" yaml:"byPath,omitempty"`
+	GPTGUID    string `json:"gptGUID,omitempty" yaml:"gptGUID,omitempty"`
+	Name       string `json:"name,omitempty" yaml:"name,omitempty"`
+	Model      string `json:"model,omitempty" yaml:"model,omitempty"`
+	Size       string `json:"size,omitempty" yaml:"size,omitempty"`
+	Type       string `json:"type,omitempty" yaml:"type,omitempty"`
 	MinSizeMiB uint64 `json:"minSizeMiB,omitempty" yaml:"minSizeMiB,omitempty"`
+}
+
+// Target returns the discovery selector with the same criteria.
+func (s DiskSelector) Target() discovery.TargetDiskSelector {
+	return discovery.TargetDiskSelector{
+		ByID:       s.ByID,
+		WWN:        s.WWN,
+		Serial:     s.Serial,
+		ByPath:     s.ByPath,
+		GPTGUID:    s.GPTGUID,
+		Name:       s.Name,
+		Model:      s.Model,
+		Size:       s.Size,
+		Type:       s.Type,
+		MinSizeMiB: s.MinSizeMiB,
+	}
 }
 
 type PartitionSelector struct {
@@ -515,8 +540,8 @@ func ValidateWithOptions(manifest Manifest, options ValidateOptions) error {
 			return err
 		}
 	}
-	if err := validateDiskSelector("install.targetDisk", manifest.Install.TargetDisk); err != nil {
-		return err
+	if err := validateTargetDisk(manifest.Install.TargetDisk); err != nil {
+		return fmt.Errorf("install.targetDisk: %w", err)
 	}
 	if !(options.AllowMissingKatlosImage && KatlosImageEmpty(manifest.KatlosImage)) {
 		if err := validateKatlosImage(manifest.KatlosImage); err != nil {
@@ -1369,7 +1394,24 @@ func isLowercaseLetterOrDigit(r rune) bool {
 	return r >= 'a' && r <= 'z' || r >= '0' && r <= '9'
 }
 
+// validateTargetDisk checks the system disk selector. byID, wwn, and serial keep
+// the presence-only validation persisted manifests were accepted with; the
+// installer still matches them exactly.
+func validateTargetDisk(selector DiskSelector) error {
+	target := selector.Target()
+	stable := target.Stable()
+	target.ByID, target.WWN, target.Serial = "", "", ""
+	err := target.Validate()
+	if stable && errors.Is(err, discovery.ErrMissingTargetDiskSelector) {
+		return nil
+	}
+	return err
+}
+
 func validateDiskSelector(field string, selector DiskSelector) error {
+	if selector.ByPath != "" || selector.GPTGUID != "" || selector.Name != "" || selector.Model != "" || selector.Size != "" || selector.Type != "" {
+		return fmt.Errorf("%s supports only byID, wwn, or serial; byPath, gptGUID, name, model, size, and type select only the system disk", field)
+	}
 	selected := 0
 	for _, value := range []string{selector.ByID, selector.WWN, selector.Serial} {
 		if strings.TrimSpace(value) != "" {
@@ -1481,7 +1523,7 @@ func BuildDiskLayoutRequest(manifest Manifest, profile RootDiskProfile, runtimeR
 	volumes := BuildVolumeRequests(manifest.Install.Volumes)
 
 	return disk.DiskLayoutRequest{
-		TargetDisk:         diskSelector(manifest.Install.TargetDisk),
+		TargetDisk:         manifest.Install.TargetDisk.Target(),
 		ESPSizeMiB:         profile.ESPSizeMiB,
 		XBOOTLDRSizeMiB:    profile.XBOOTLDRSizeMiB,
 		RootA:              disk.RootSlotRequest{SizeMiB: profile.RootSlotSizeMiB},
@@ -1502,7 +1544,7 @@ func BuildVolumeRequests(volumes []Volume) []disk.VolumeRequest {
 			Wipe:       volume.Wipe,
 		}
 		if volume.Selector.Disk != nil {
-			selector := diskSelector(*volume.Selector.Disk)
+			selector := volume.Selector.Disk.Target()
 			request.Disk = &selector
 		} else {
 			selector := partitionSelector(volume.Name, *volume.Selector.Partition)
@@ -1523,15 +1565,6 @@ func partitionSelector(name string, selector PartitionSelector) discovery.Partit
 		out.PartLabel = "u-" + name
 	}
 	return out
-}
-
-func diskSelector(selector DiskSelector) disk.TargetDiskSelector {
-	return disk.TargetDiskSelector{
-		ByID:       selector.ByID,
-		WWN:        selector.WWN,
-		Serial:     selector.Serial,
-		MinSizeMiB: selector.MinSizeMiB,
-	}
 }
 
 // validInterfaceName follows the kernel's interface name rules.

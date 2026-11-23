@@ -67,12 +67,16 @@ type SSHAccessRequest struct {
 	AuthorizedKeys []string `json:"authorizedKeys"`
 }
 
+// HandoffDisk reports a whole disk and the identities that can select it.
 type HandoffDisk struct {
 	Path       string   `json:"path"`
 	ByID       []string `json:"byID,omitempty"`
 	WWN        string   `json:"wwn,omitempty"`
 	Serial     string   `json:"serial,omitempty"`
+	ByPath     []string `json:"byPath,omitempty"`
+	GPTGUID    string   `json:"gptGUID,omitempty"`
 	Model      string   `json:"model,omitempty"`
+	Type       string   `json:"type"`
 	SizeBytes  uint64   `json:"sizeBytes"`
 	ReadOnly   bool     `json:"readOnly,omitempty"`
 	Mounted    bool     `json:"mounted,omitempty"`
@@ -218,10 +222,19 @@ func (s *HandoffServer) SetHardwareFacts(facts discovery.HardwareFacts) {
 		}
 		byID := append([]string(nil), device.ByID...)
 		sort.Strings(byID)
+		byPath := append([]string(nil), device.ByPath...)
+		sort.Strings(byPath)
+		gptGUID := ""
+		if device.PartitionSignature == "gpt" {
+			gptGUID = device.PartitionTableUUID
+		}
+		// Every writable, unmounted whole disk can be selected: by name and
+		// size if it reports no stronger identity.
 		disks = append(disks, HandoffDisk{
 			Path: device.Path, ByID: byID, WWN: device.WWN, Serial: device.Serial,
-			Model: device.Model, SizeBytes: device.SizeBytes, ReadOnly: device.ReadOnly,
-			Mounted: mounted, Selectable: !device.ReadOnly && !mounted && (len(byID) > 0 || device.WWN != "" || device.Serial != ""),
+			ByPath: byPath, GPTGUID: gptGUID, Model: device.Model, Type: discovery.DiskType(device),
+			SizeBytes: device.SizeBytes, ReadOnly: device.ReadOnly,
+			Mounted: mounted, Selectable: !device.ReadOnly && !mounted,
 		})
 	}
 	sort.Slice(disks, func(i, j int) bool { return disks[i].Path < disks[j].Path })
@@ -463,14 +476,11 @@ func (s *HandoffServer) validateStorage(installManifest manifest.Manifest) error
 	if len(facts.BlockDevices) == 0 {
 		return nil
 	}
-	rootDisk, err := discovery.MatchDiskIdentity(facts, discovery.TargetDiskSelector{
-		ByID: installManifest.Install.TargetDisk.ByID, WWN: installManifest.Install.TargetDisk.WWN,
-		Serial: installManifest.Install.TargetDisk.Serial, MinSizeMiB: installManifest.Install.TargetDisk.MinSizeMiB,
-	})
+	root, err := discovery.MatchTargetDisk(facts, installManifest.Install.TargetDisk.Target())
 	if err != nil {
 		return fmt.Errorf("plan storage targets: resolve install root disk: %w", err)
 	}
-	_, err = disk.PlanVolumes(facts, rootDisk, manifest.BuildVolumeRequests(installManifest.Install.Volumes))
+	_, err = disk.PlanVolumes(facts, root.Device, manifest.BuildVolumeRequests(installManifest.Install.Volumes))
 	if err != nil {
 		return fmt.Errorf("plan storage targets: %w", err)
 	}

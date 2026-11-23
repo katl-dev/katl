@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -15,8 +16,10 @@ type OutputCommandRunner interface {
 }
 
 type CommandDiscoverySource struct {
-	Commands OutputCommandRunner
-	ByIDDir  string
+	Commands    OutputCommandRunner
+	ByIDDir     string
+	ByPathDir   string
+	SysBlockDir string
 }
 
 func NewCommandDiscoverySource(commands OutputCommandRunner) CommandDiscoverySource {
@@ -28,7 +31,7 @@ func (s CommandDiscoverySource) Discover(ctx context.Context) (HardwareFacts, er
 		return HardwareFacts{}, fmt.Errorf("discovery command runner is required")
 	}
 
-	lsblk, err := s.Commands.Output(ctx, "lsblk", "--json", "--bytes", "--output", "NAME,PATH,TYPE,SIZE,RO,MODEL,SERIAL,WWN,FSTYPE,UUID,PTTYPE,PARTTYPE,PARTUUID,PARTLABEL,MOUNTPOINTS")
+	lsblk, err := s.Commands.Output(ctx, "lsblk", "--json", "--bytes", "--output", "NAME,PATH,TYPE,SIZE,RO,ROTA,TRAN,MODEL,SERIAL,WWN,FSTYPE,UUID,PTTYPE,PTUUID,PARTTYPE,PARTUUID,PARTLABEL,MOUNTPOINTS")
 	if err != nil {
 		return HardwareFacts{}, fmt.Errorf("lsblk discovery: %w", err)
 	}
@@ -36,11 +39,18 @@ func (s CommandDiscoverySource) Discover(ctx context.Context) (HardwareFacts, er
 	if err != nil {
 		return HardwareFacts{}, err
 	}
-	aliases, err := readByIDAliases(firstNonEmpty(s.ByIDDir, "/dev/disk/by-id"))
+	byID, err := readAliases(firstNonEmpty(s.ByIDDir, "/dev/disk/by-id"))
 	if err != nil {
 		return HardwareFacts{}, err
 	}
-	attachByIDAliases(facts.BlockDevices, aliases)
+	byPath, err := readAliases(firstNonEmpty(s.ByPathDir, "/dev/disk/by-path"))
+	if err != nil {
+		return HardwareFacts{}, err
+	}
+	attachAliases(facts.BlockDevices, byID, byPath)
+	if err := attachDiskSeq(facts.BlockDevices, firstNonEmpty(s.SysBlockDir, "/sys/class/block")); err != nil {
+		return HardwareFacts{}, err
+	}
 
 	findmnt, err := s.Commands.Output(ctx, "findmnt", "--json", "--real", "--output", "SOURCE,TARGET,FSTYPE,OPTIONS")
 	if err != nil {
@@ -65,13 +75,13 @@ func (s CommandDiscoverySource) Discover(ctx context.Context) (HardwareFacts, er
 	return facts, nil
 }
 
-func readByIDAliases(dir string) (map[string][]string, error) {
+func readAliases(dir string) (map[string][]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("read disk by-id aliases: %w", err)
+		return nil, fmt.Errorf("read disk aliases in %s: %w", dir, err)
 	}
 	aliases := make(map[string][]string)
 	for _, entry := range entries {
@@ -81,7 +91,7 @@ func readByIDAliases(dir string) (map[string][]string, error) {
 		alias := filepath.Join(dir, entry.Name())
 		target, err := os.Readlink(alias)
 		if err != nil {
-			return nil, fmt.Errorf("read disk by-id alias %s: %w", alias, err)
+			return nil, fmt.Errorf("read disk alias %s: %w", alias, err)
 		}
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(dir, target)
@@ -95,14 +105,41 @@ func readByIDAliases(dir string) (map[string][]string, error) {
 	return aliases, nil
 }
 
-func attachByIDAliases(devices []BlockDevice, aliases map[string][]string) {
+func attachAliases(devices []BlockDevice, byID, byPath map[string][]string) {
 	for i := range devices {
-		if byID := aliases[devices[i].Path]; len(byID) > 0 {
-			devices[i].ByID = append(devices[i].ByID, byID...)
+		if aliases := byID[devices[i].Path]; len(aliases) > 0 {
+			devices[i].ByID = append(devices[i].ByID, aliases...)
 			sort.Strings(devices[i].ByID)
 		}
-		attachByIDAliases(devices[i].Partitions, aliases)
+		if aliases := byPath[devices[i].Path]; len(aliases) > 0 {
+			devices[i].ByPath = append(devices[i].ByPath, aliases...)
+			sort.Strings(devices[i].ByPath)
+		}
+		attachAliases(devices[i].Partitions, byID, byPath)
 	}
+}
+
+// attachDiskSeq reads each disk's kernel attachment sequence number. Kernels
+// without diskseq leave it zero.
+func attachDiskSeq(devices []BlockDevice, sysBlockDir string) error {
+	for i := range devices {
+		if devices[i].Type != DeviceDisk || devices[i].Name == "" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(sysBlockDir, devices[i].Name, "diskseq"))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("read diskseq for %s: %w", devices[i].Path, err)
+		}
+		seq, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+		if err != nil {
+			return fmt.Errorf("parse diskseq for %s: %w", devices[i].Path, err)
+		}
+		devices[i].DiskSeq = seq
+	}
+	return nil
 }
 
 func firstNonEmpty(values ...string) string {
@@ -137,12 +174,15 @@ type lsblkDevice struct {
 	Type        string        `json:"type"`
 	Size        uint64        `json:"size"`
 	ReadOnly    bool          `json:"ro"`
+	Rotational  bool          `json:"rota"`
+	Transport   *string       `json:"tran"`
 	Model       *string       `json:"model"`
 	Serial      *string       `json:"serial"`
 	WWN         *string       `json:"wwn"`
 	FSType      *string       `json:"fstype"`
 	UUID        *string       `json:"uuid"`
 	PTType      *string       `json:"pttype"`
+	PTUUID      *string       `json:"ptuuid"`
 	PartType    *string       `json:"parttype"`
 	PartUUID    *string       `json:"partuuid"`
 	PartLabel   *string       `json:"partlabel"`
@@ -165,9 +205,12 @@ func convertLSBLKDevice(raw lsblkDevice) BlockDevice {
 		Model:               stringValue(raw.Model),
 		GPTLabel:            stringValue(raw.PartLabel),
 		PartitionUUID:       stringValue(raw.PartUUID),
+		PartitionTableUUID:  stringValue(raw.PTUUID),
 		FilesystemUUID:      stringValue(raw.UUID),
 		SizeBytes:           raw.Size,
 		ReadOnly:            raw.ReadOnly,
+		Rotational:          raw.Rotational,
+		Transport:           stringValue(raw.Transport),
 		FilesystemSignature: stringValue(raw.FSType),
 		PartitionSignature:  stringValue(raw.PTType),
 		Mountpoints:         compactStrings(raw.Mountpoints),

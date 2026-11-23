@@ -815,3 +815,28 @@ func TestValidateKubernetesMetadataLimitsLabelsToKubeletRegistration(t *testing.
 		}
 	}
 }
+
+func TestDecodeDiskSelectorCriteria(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		manifest string
+		want     string
+	}{
+		{"system disk combines weak criteria", manifestWithTarget(`{"name": "/dev/vda", "size": ">= 32GiB", "type": "hdd"}`), ""},
+		{"system disk by GPT GUID", manifestWithTarget(`{"gptGUID": "6f1e3c2a-8d4b-4f5e-9a7c-1b2d3e4f5a6b"}`), ""},
+		{"system disk requires a criterion", manifestWithTarget(`{"minSizeMiB": 32768}`), "install.targetDisk: target disk selector must set at least one"},
+		{"system disk rejects malformed size", manifestWithTarget(`{"size": "lots"}`), "install.targetDisk: size"},
+		{"volume disk rejects system-only criteria", manifestWithInstall(`,
+			"volumes": [{"name": "data", "selector": {"disk": {"name": "/dev/vdb"}}, "filesystem": "xfs", "wipe": true}]`), "select only the system disk"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Decode(strings.NewReader(tt.manifest))
+			if tt.want == "" && err != nil {
+				t.Fatalf("Decode() error = %v", err)
+			}
+			if tt.want != "" && (err == nil || !strings.Contains(err.Error(), tt.want)) {
+				t.Fatalf("Decode() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}

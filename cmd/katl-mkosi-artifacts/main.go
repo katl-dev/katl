@@ -1172,9 +1172,8 @@ func runBindInstallManifestImage(args []string, stdout, stderr io.Writer, cfg co
 		Role:             metadata.ImageRole,
 	}
 	if strings.TrimSpace(*targetDiskByID) != "" {
-		install.Install.TargetDisk.ByID = strings.TrimSpace(*targetDiskByID)
-		install.Install.TargetDisk.WWN = ""
-		install.Install.TargetDisk.Serial = ""
+		// The override replaces every criterion; only the size floor carries over.
+		install.Install.TargetDisk = manifest.DiskSelector{ByID: strings.TrimSpace(*targetDiskByID), MinSizeMiB: install.Install.TargetDisk.MinSizeMiB}
 	}
 	if err := manifest.Validate(install); err != nil {
 		return fmt.Errorf("bound install manifest is invalid: %w", err)

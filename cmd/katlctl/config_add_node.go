@@ -36,21 +36,21 @@ func newConfigAddNodeCommand(ctx context.Context, stdout io.Writer) *cobra.Comma
 		Example: "katlctl config add-node cluster.yaml --installer 192.0.2.22\n" +
 			"katlctl config add-node cluster.yaml --installer 192.0.2.13 --role control-plane",
 		Args: cobra.ExactArgs(1),
-		RunE: func(_ *cobra.Command, args []string) error {
+		RunE: func(command *cobra.Command, args []string) error {
 			opts.configPath = args[0]
-			return runConfigAddNode(ctx, opts, stdout)
+			return runConfigAddNode(ctx, opts, stdout, command.ErrOrStderr())
 		},
 	}
 	cmd.Flags().StringVar(&opts.installer, "installer", "", "waiting installer IP, hostname, host:port, or base URL")
 	cmd.Flags().StringVar(&opts.name, "name", "", "node name; defaults to the next free worker-N or cp-N")
 	cmd.Flags().StringVar(&opts.role, "role", "", "worker (default) or control-plane")
-	cmd.Flags().StringVar(&opts.disk, "disk", "", "stable /dev/disk/by-id path to install to when the installer reports several disks")
+	cmd.Flags().StringVar(&opts.disk, "disk", "", "disk to install to when the installer reports several: a /dev/disk/by-id path (recommended), /dev/disk/by-path path, or /dev/NAME")
 	cmd.Flags().DurationVar(&opts.installerTimeout, "installer-timeout", opts.installerTimeout, "overall timeout for reading installer status")
 	_ = cmd.MarkFlagRequired("installer")
 	return cmd
 }
 
-func runConfigAddNode(ctx context.Context, opts configAddNodeOptions, stdout io.Writer) error {
+func runConfigAddNode(ctx context.Context, opts configAddNodeOptions, stdout, stderr io.Writer) error {
 	role := inventory.SystemRole(strings.TrimSpace(opts.role))
 	if role != "" && role != inventory.RoleControlPlane && role != inventory.RoleWorker {
 		return fmt.Errorf("--role must be %q or %q", inventory.RoleWorker, inventory.RoleControlPlane)
@@ -118,11 +118,14 @@ func runConfigAddNode(ctx context.Context, opts configAddNodeOptions, stdout io.
 	if err != nil {
 		return err
 	}
-	disk, err := installerTargetDisk(endpoint, disks, strings.TrimSpace(opts.disk), "Choose the intended disk with --disk /dev/disk/by-id/...")
+	disk, err := installerTargetDisk(endpoint, disks, strings.TrimSpace(opts.disk), "Choose the intended disk with --disk, giving its /dev/disk/by-id path when it has one, otherwise its /dev/disk/by-path path or kernel name")
 	if err != nil {
 		return err
 	}
 	node := sourceNode(initNodeSpec{name: name, role: role, address: address, disk: disk})
+	if warning := weakSystemDiskWarning(name, disk); warning != "" {
+		fmt.Fprintln(stderr, warning)
+	}
 
 	updated, err := appendNodeEntry(original, node)
 	if err != nil {

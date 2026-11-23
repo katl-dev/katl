@@ -29,14 +29,19 @@ type BlockDevice struct {
 	Path                string
 	Type                DeviceType
 	ByID                []string
+	ByPath              []string
 	WWN                 string
 	Serial              string
 	Model               string
 	GPTLabel            string
 	PartitionUUID       string
+	PartitionTableUUID  string
 	FilesystemUUID      string
 	SizeBytes           uint64
 	ReadOnly            bool
+	Rotational          bool
+	Transport           string
+	DiskSeq             uint64
 	FilesystemSignature string
 	PartitionSignature  string
 	Mountpoints         []string
@@ -78,13 +83,6 @@ func (s StaticDiscoverySource) Discover(ctx context.Context) (HardwareFacts, err
 	return s.Facts, nil
 }
 
-type TargetDiskSelector struct {
-	ByID       string
-	WWN        string
-	Serial     string
-	MinSizeMiB uint64
-}
-
 type TargetDiskMatch struct {
 	Device     BlockDevice
 	Signatures []SignatureReport
@@ -110,51 +108,10 @@ type SignatureReport struct {
 }
 
 var (
-	ErrMissingTargetDiskSelector = errors.New("target disk selector is required")
+	ErrMissingTargetDiskSelector = errors.New("target disk selector must set at least one of byID, wwn, serial, byPath, gptGUID, name, model, size, or type")
 	ErrUnsafeTargetDisk          = errors.New("unsafe target disk match")
+	ErrTargetDiskChanged         = errors.New("selected target disk changed")
 )
-
-func MatchTargetDisk(facts HardwareFacts, selector TargetDiskSelector) (TargetDiskMatch, error) {
-	device, err := MatchDiskIdentity(facts, selector)
-	if err != nil {
-		return TargetDiskMatch{}, err
-	}
-	if err := validateTargetDiskSafety(facts, device, selector); err != nil {
-		return TargetDiskMatch{}, err
-	}
-
-	return TargetDiskMatch{
-		Device:     device,
-		Signatures: collectSignatures(device),
-	}, nil
-}
-
-func MatchDiskIdentity(facts HardwareFacts, selector TargetDiskSelector) (BlockDevice, error) {
-	if err := selector.validate(); err != nil {
-		return BlockDevice{}, err
-	}
-
-	var matches []BlockDevice
-	for _, device := range facts.BlockDevices {
-		if selector.matches(device) {
-			matches = append(matches, device)
-		}
-	}
-
-	switch len(matches) {
-	case 0:
-		return BlockDevice{}, fmt.Errorf("target disk selector matched no disks")
-	case 1:
-	default:
-		return BlockDevice{}, fmt.Errorf("target disk selector matched %d disks", len(matches))
-	}
-
-	device := matches[0]
-	if device.Type != DeviceDisk {
-		return BlockDevice{}, fmt.Errorf("%w: %s is %s, not a whole disk", ErrUnsafeTargetDisk, device.Path, device.Type)
-	}
-	return device, nil
-}
 
 func MatchPartition(facts HardwareFacts, selector PartitionSelector) (PartitionMatch, error) {
 	if err := selector.validate(); err != nil {
@@ -187,49 +144,6 @@ func MatchPartition(facts HardwareFacts, selector PartitionSelector) (PartitionM
 		return PartitionMatch{}, err
 	}
 	return match, nil
-}
-
-func (s TargetDiskSelector) validate() error {
-	hasSelector := 0
-	if strings.TrimSpace(s.ByID) != "" {
-		hasSelector++
-		if !strings.HasPrefix(s.ByID, "/dev/disk/by-id/") || path.Clean(s.ByID) != s.ByID {
-			return fmt.Errorf("%w: by-id selector must be an absolute /dev/disk/by-id path", ErrMissingTargetDiskSelector)
-		}
-	}
-	if strings.TrimSpace(s.WWN) != "" {
-		hasSelector++
-	}
-	if strings.TrimSpace(s.Serial) != "" {
-		hasSelector++
-	}
-
-	if hasSelector == 0 {
-		return ErrMissingTargetDiskSelector
-	}
-	if hasSelector > 1 {
-		return fmt.Errorf("target disk selector must use exactly one stable identity")
-	}
-
-	return nil
-}
-
-func (s TargetDiskSelector) matches(device BlockDevice) bool {
-	switch {
-	case s.ByID != "":
-		for _, alias := range device.ByID {
-			if alias == s.ByID {
-				return true
-			}
-		}
-		return device.Path == s.ByID
-	case s.WWN != "":
-		return device.WWN == s.WWN
-	case s.Serial != "":
-		return device.Serial == s.Serial
-	default:
-		return false
-	}
 }
 
 func (s PartitionSelector) validate() error {
@@ -274,23 +188,6 @@ func (s PartitionSelector) matches(device BlockDevice) bool {
 	default:
 		return false
 	}
-}
-
-func validateTargetDiskSafety(facts HardwareFacts, device BlockDevice, selector TargetDiskSelector) error {
-	if device.Type != DeviceDisk {
-		return fmt.Errorf("%w: %s is %s, not a whole disk", ErrUnsafeTargetDisk, device.Path, device.Type)
-	}
-	if device.ReadOnly {
-		return fmt.Errorf("%w: %s is read-only", ErrUnsafeTargetDisk, device.Path)
-	}
-	if selector.MinSizeMiB > 0 && device.SizeBytes < selector.MinSizeMiB*1024*1024 {
-		return fmt.Errorf("%w: %s is smaller than %d MiB", ErrUnsafeTargetDisk, device.Path, selector.MinSizeMiB)
-	}
-	if diskHasMounts(facts, device) {
-		return fmt.Errorf("%w: %s or one of its partitions is mounted", ErrUnsafeTargetDisk, device.Path)
-	}
-
-	return nil
 }
 
 func validatePartitionSafety(facts HardwareFacts, device BlockDevice) error {

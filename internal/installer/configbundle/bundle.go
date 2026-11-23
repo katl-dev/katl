@@ -177,7 +177,7 @@ type SourceSystemExtension struct {
 }
 
 type SourceInstallLayer struct {
-	SystemDisk *SourceDiskSelector `yaml:"systemDisk,omitempty" json:"systemDisk,omitempty"`
+	SystemDisk *SourceSystemDiskSelector `yaml:"systemDisk,omitempty" json:"systemDisk,omitempty"`
 }
 
 type SourceStorageLayer struct {
@@ -201,6 +201,21 @@ type SourceDiskSelector struct {
 	ByID       Optional[string] `yaml:"byID,omitempty" json:"byID,omitzero"`
 	WWN        Optional[string] `yaml:"wwn,omitempty" json:"wwn,omitzero"`
 	Serial     Optional[string] `yaml:"serial,omitempty" json:"serial,omitzero"`
+	MinSizeMiB Optional[uint64] `yaml:"minSizeMiB,omitempty" json:"minSizeMiB,omitzero"`
+}
+
+// SourceSystemDiskSelector selects the system disk. Every set criterion must
+// match, and together they must match exactly one whole disk.
+type SourceSystemDiskSelector struct {
+	ByID       Optional[string] `yaml:"byID,omitempty" json:"byID,omitzero"`
+	WWN        Optional[string] `yaml:"wwn,omitempty" json:"wwn,omitzero"`
+	Serial     Optional[string] `yaml:"serial,omitempty" json:"serial,omitzero"`
+	ByPath     Optional[string] `yaml:"byPath,omitempty" json:"byPath,omitzero"`
+	GPTGUID    Optional[string] `yaml:"gptGUID,omitempty" json:"gptGUID,omitzero"`
+	Name       Optional[string] `yaml:"name,omitempty" json:"name,omitzero"`
+	Model      Optional[string] `yaml:"model,omitempty" json:"model,omitzero"`
+	Size       Optional[string] `yaml:"size,omitempty" json:"size,omitzero"`
+	Type       Optional[string] `yaml:"type,omitempty" json:"type,omitzero"`
 	MinSizeMiB Optional[uint64] `yaml:"minSizeMiB,omitempty" json:"minSizeMiB,omitzero"`
 }
 
@@ -686,6 +701,11 @@ func validateResolvedSourceNodeIssues(source SourceConfig) []error {
 			errs = append(errs, fmt.Errorf("%s: %w", sourceNodePath(node, i), err))
 			continue
 		}
+		// Defaults may narrow a node's system disk but never choose it.
+		if resolved.Install.SystemDisk != nil && !node.Install.SystemDisk.hasCriterion() {
+			errs = append(errs, fmt.Errorf("%s.install.systemDisk must set at least one criterion of its own; spec.defaults.install.systemDisk only narrows each node's selection", sourceNodePath(node, i)))
+			continue
+		}
 		errs = append(errs, validateResolvedSourceNodeLayerIssues(sourceNodePath(node, i), resolved)...)
 	}
 	return errs
@@ -716,7 +736,7 @@ func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
 		HostConfiguration:   lowerHostConfiguration(layer.HostConfiguration),
 		SystemExtensions:    lowerSystemExtensions(layer.SystemExtensions),
 		Install: clusterplan.InstallLayer{
-			TargetDisk: lowerDiskSelector(layer.Install.SystemDisk),
+			TargetDisk: lowerSystemDiskSelector(layer.Install.SystemDisk),
 			Volumes:    lowerStorageVolumes(layer.Storage.Volumes),
 		},
 		Kubernetes: clusterplan.KubernetesLayer{

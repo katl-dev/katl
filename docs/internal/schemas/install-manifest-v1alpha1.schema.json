@@ -86,7 +86,7 @@
           "const": true
         },
         "targetDisk": {
-          "$ref": "#/$defs/diskSelector"
+          "$ref": "#/$defs/systemDiskSelector"
         },
         "volumes": {
           "type": "array",
@@ -197,6 +197,102 @@
         {
           "required": [
             "serial"
+          ]
+        }
+      ]
+    },
+    "systemDiskSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "byID": {
+          "type": "string",
+          "pattern": "^/dev/disk/by-id/[^/]+$"
+        },
+        "wwn": {
+          "type": "string",
+          "minLength": 1
+        },
+        "serial": {
+          "type": "string",
+          "minLength": 1
+        },
+        "byPath": {
+          "type": "string",
+          "pattern": "^/dev/disk/by-path/[^/]+$"
+        },
+        "gptGUID": {
+          "type": "string",
+          "pattern": "^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^/dev/[^/]+$"
+        },
+        "model": {
+          "type": "string",
+          "minLength": 1
+        },
+        "size": {
+          "type": "string",
+          "pattern": "^(>=|<=|==|>|<)?\\s*[0-9]+(\\.[0-9]+)?\\s*[A-Za-z]*$"
+        },
+        "type": {
+          "enum": [
+            "nvme",
+            "ssd",
+            "hdd"
+          ]
+        },
+        "minSizeMiB": {
+          "type": "integer",
+          "minimum": 8192
+        }
+      },
+      "anyOf": [
+        {
+          "required": [
+            "byID"
+          ]
+        },
+        {
+          "required": [
+            "wwn"
+          ]
+        },
+        {
+          "required": [
+            "serial"
+          ]
+        },
+        {
+          "required": [
+            "byPath"
+          ]
+        },
+        {
+          "required": [
+            "gptGUID"
+          ]
+        },
+        {
+          "required": [
+            "name"
+          ]
+        },
+        {
+          "required": [
+            "model"
+          ]
+        },
+        {
+          "required": [
+            "size"
+          ]
+        },
+        {
+          "required": [
+            "type"
           ]
         }
       ]

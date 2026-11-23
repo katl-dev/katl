@@ -160,3 +160,64 @@ func (repartRunner) Run(ctx context.Context, name string, args ...string) error 
 	}
 	return nil
 }
+
+// TestSystemRepartIdentitiesAreFresh installs the system layout twice on the
+// same host. Repeated installs must not reuse the disk GUID or any PARTUUID,
+// which systemd-repart otherwise derives from the machine ID.
+func TestSystemRepartIdentitiesAreFresh(t *testing.T) {
+	if os.Getenv("KATL_VERIFY_REPART") != "1" {
+		t.Skip("set KATL_VERIFY_REPART=1 to run systemd-repart")
+	}
+	install := func(name string) (string, []string) {
+		image := filepath.Join(t.TempDir(), name)
+		file, err := os.Create(image)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Truncate(4 << 30); err != nil {
+			t.Fatal(err)
+		}
+		file.Close()
+		plan := executorPlan()
+		plan.TargetDiskPath = image
+		operation := findOp(BuildDiskOperations(plan, ""), "create-gpt")
+		operation.Args = append([]string{"--offline=yes"}, operation.Args...)
+		if err := runRepartOperation(context.Background(), repartRunner{}, operation); err != nil {
+			t.Fatal(err)
+		}
+		output, err := exec.Command("sfdisk", "--json", image).Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		var table struct {
+			PartitionTable struct {
+				ID         string `json:"id"`
+				Partitions []struct {
+					UUID string `json:"uuid"`
+				} `json:"partitions"`
+			} `json:"partitiontable"`
+		}
+		if err := json.Unmarshal(output, &table); err != nil {
+			t.Fatal(err)
+		}
+		var partUUIDs []string
+		for _, partition := range table.PartitionTable.Partitions {
+			partUUIDs = append(partUUIDs, strings.ToLower(partition.UUID))
+		}
+		return strings.ToLower(table.PartitionTable.ID), partUUIDs
+	}
+
+	firstGUID, firstParts := install("first.raw")
+	secondGUID, secondParts := install("second.raw")
+
+	if firstGUID == "" || firstGUID == secondGUID {
+		t.Errorf("disk GUIDs = %q and %q, want distinct", firstGUID, secondGUID)
+	}
+	seen := map[string]bool{}
+	for _, uuid := range append(firstParts, secondParts...) {
+		if uuid == "" || seen[uuid] {
+			t.Errorf("PARTUUID %q is empty or repeated across installs: %v %v", uuid, firstParts, secondParts)
+		}
+		seen[uuid] = true
+	}
+}

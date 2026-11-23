@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"github.com/katl-dev/katl/internal/installer/discovery"
 	"reflect"
 	"slices"
 	"strings"
@@ -494,5 +495,18 @@ func TestPartitionFormatting(t *testing.T) {
 				t.Fatalf("partition formatting must wipe only the selected partition then format without discard: %+v", commands.Calls)
 			}
 		})
+	}
+}
+
+func TestDestructiveTargetOperationsUseDiskSequence(t *testing.T) {
+	plan := executorPlan()
+	plan.TargetDisk = discovery.DiskIdentity{Path: plan.TargetDiskPath, DiskSeq: 12}
+	operations := BuildDiskOperations(plan, "")
+
+	for _, name := range []string{"wipe-target-signatures", "create-gpt", "reread-partitions"} {
+		args := findOp(operations, name).Args
+		if got := args[len(args)-1]; got != "/dev/disk/by-diskseq/12" {
+			t.Errorf("%s targets %s, want /dev/disk/by-diskseq/12", name, got)
+		}
 	}
 }

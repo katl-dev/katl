@@ -1264,7 +1264,7 @@ func TestBuildArchiveDefersKatlosImageToInstallMedia(t *testing.T) {
 
 func TestBuildArchiveRejectsUnsafeDiskDefaults(t *testing.T) {
 	_, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, strings.Replace(validSourceConfig(), "minSizeMiB: 65536", "serial: shared-root", 1))})
-	if err == nil || !strings.Contains(err.Error(), "identifying selectors byID, wwn, and serial must be set per node") {
+	if err == nil || !strings.Contains(err.Error(), "identifying selectors byID, wwn, serial, byPath, gptGUID, and name must be set per node") {
 		t.Fatalf("BuildArchive() error = %v, want unsafe disk defaults", err)
 	}
 }
@@ -1932,5 +1932,48 @@ func TestBundleExcludesWorkstationSecretsPath(t *testing.T) {
 	normalized := files["blobs/sha256/"+strings.TrimPrefix(result.Manifest.Source.NormalizedConfig.Digest, "sha256:")]
 	if bytes.Contains(normalized, []byte("managementIdentity")) || bytes.Contains(normalized, []byte("project-secrets")) {
 		t.Fatal("bundle carried workstation credential configuration to the node")
+	}
+}
+
+func TestLowerSourceLayersSystemDiskCriteria(t *testing.T) {
+	source := strings.Replace(validSourceConfig(), "        minSizeMiB: 65536\n", "        minSizeMiB: 65536\n        type: nvme\n        size: \">= 500GB\"\n", 1)
+	source = strings.Replace(source, "          byID: /dev/disk/by-id/ata-cp-root\n", "          name: /dev/nvme0n1\n          size: \"\"\n", 1)
+	config, err := DecodeSource(strings.NewReader(source))
+	if err != nil {
+		t.Fatalf("DecodeSource() error = %v", err)
+	}
+
+	plan, err := LowerSource(config, PlanningInputs{})
+	if err != nil {
+		t.Fatalf("LowerSource() error = %v", err)
+	}
+
+	want := manifest.DiskSelector{Name: "/dev/nvme0n1", Type: "nvme", MinSizeMiB: 65536}
+	if got := plan.Spec.Nodes[0].Overrides.Install.TargetDisk; got == nil || *got != want {
+		t.Fatalf("target disk = %#v, want defaults layered field by field with size cleared: %#v", got, want)
+	}
+}
+
+func TestBuildArchiveRejectsVolumeDiskSystemCriteria(t *testing.T) {
+	source := strings.Replace(validSourceConfig(), "                byID: /dev/disk/by-id/ata-cp-data\n", "                byID: /dev/disk/by-id/ata-cp-data\n                size: \">= 1TB\"\n", 1)
+	if source == validSourceConfig() {
+		t.Fatal("fixture has no volume disk selector to extend")
+	}
+	if _, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, source)}); err == nil || !strings.Contains(err.Error(), "size") {
+		t.Fatalf("BuildArchive() error = %v, want volume disk size criterion rejected", err)
+	}
+}
+
+func TestBuildArchiveRejectsSystemDiskChosenByDefaults(t *testing.T) {
+	source := strings.Replace(validSourceConfig(), "        minSizeMiB: 65536\n", "        minSizeMiB: 65536\n        type: nvme\n", 1)
+	source = strings.Replace(source, "      install:\n        systemDisk:\n          byID: /dev/disk/by-id/ata-cp-root\n", "", 1)
+	if !strings.Contains(source, "type: nvme") || strings.Contains(source, "ata-cp-root") {
+		t.Fatal("fixture did not move the node's system disk choice into defaults")
+	}
+
+	_, _, err := BuildArchive(BuildRequest{SourcePath: writeSource(t, source)})
+
+	if err == nil || !strings.Contains(err.Error(), "install.systemDisk must set at least one criterion of its own") {
+		t.Fatalf("BuildArchive() error = %v, want refusal of a defaults-only system disk", err)
 	}
 }

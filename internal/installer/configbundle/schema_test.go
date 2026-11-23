@@ -85,9 +85,9 @@ func TestSourceSchemaRejectsSemanticErrors(t *testing.T) {
 `, 1),
 		},
 		{
-			name: "multiple disk identities",
+			name: "unknown disk type",
 			source: strings.Replace(validSourceConfig(), "          byID: /dev/disk/by-id/ata-cp-root\n", `          byID: /dev/disk/by-id/ata-cp-root
-          serial: duplicate-identity
+          type: floppy
 `, 1),
 		},
 		{

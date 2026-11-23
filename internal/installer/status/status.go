@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/persistedrecord"
@@ -65,12 +66,14 @@ type Record struct {
 	InstallMaterialDigest string    `json:"installMaterialDigest,omitempty"`
 	KatlosImage           Image     `json:"katlosImage,omitempty"`
 	TargetDiskStableID    string    `json:"targetDiskStableID,omitempty"`
-	SelectedRootSlot      string    `json:"selectedRootSlot,omitempty"`
-	InstalledGeneration   string    `json:"installedGeneration,omitempty"`
-	BootArtifactVersion   string    `json:"bootArtifactVersion,omitempty"`
-	RefusalReason         string    `json:"refusalReason,omitempty"`
-	RetryHint             string    `json:"retryHint,omitempty"`
-	LastError             string    `json:"lastError,omitempty"`
+	// TargetDisk is the disk this install resolved and is bound to.
+	TargetDisk          *discovery.DiskIdentity `json:"targetDisk,omitempty"`
+	SelectedRootSlot    string                  `json:"selectedRootSlot,omitempty"`
+	InstalledGeneration string                  `json:"installedGeneration,omitempty"`
+	BootArtifactVersion string                  `json:"bootArtifactVersion,omitempty"`
+	RefusalReason       string                  `json:"refusalReason,omitempty"`
+	RetryHint           string                  `json:"retryHint,omitempty"`
+	LastError           string                  `json:"lastError,omitempty"`
 	// FinalHandoff is diagnostic data in archived v1 installation records.
 	// Runtime readiness is derived from generation and service state.
 	FinalHandoff        string    `json:"finalHandoff,omitempty"`
