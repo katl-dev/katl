@@ -134,7 +134,7 @@ func (document nodeConfigurationChangeDocument) request(base TrustedBundleReques
 	request.SourceID = document.Metadata.SourceID
 	request.DesiredVersion = document.Metadata.DesiredVersion
 	request.ApplyMode = document.Apply.Mode
-	kubeadmConfigs, changedKubeadmConfigs, err := mergeInlineKubeadmConfigs(base.KubeadmConfigs, document.Spec.KubeadmConfigs, document.desiredRegistration(base))
+	kubeadmConfigs, changedKubeadmConfigs, err := mergeInlineKubeadmConfigs(base.KubeadmConfigs, document.Spec.KubeadmConfigs)
 	if err != nil {
 		return TrustedBundleRequest{}, err
 	}
@@ -240,11 +240,11 @@ func ValidateInlineKubeadmConfig(name string, reader io.Reader) error {
 	if err := decoder.Decode(&extra); err != io.EOF {
 		return fmt.Errorf("inline kubeadm config must contain one YAML document")
 	}
-	_, _, err := mergeInlineKubeadmConfigs(nil, map[string]inlineKubeadmConfig{name: input}, nil)
+	_, _, err := mergeInlineKubeadmConfigs(nil, map[string]inlineKubeadmConfig{name: input})
 	return err
 }
 
-func mergeInlineKubeadmConfigs(installed map[string]kubeadmconfig.Plan, inline map[string]inlineKubeadmConfig, registration *kubeadmconfig.NodeRegistration) (map[string]kubeadmconfig.Plan, map[string]struct{}, error) {
+func mergeInlineKubeadmConfigs(installed map[string]kubeadmconfig.Plan, inline map[string]inlineKubeadmConfig) (map[string]kubeadmconfig.Plan, map[string]struct{}, error) {
 	if len(inline) == 0 {
 		return installed, nil, nil
 	}
@@ -291,7 +291,7 @@ func mergeInlineKubeadmConfigs(installed map[string]kubeadmconfig.Plan, inline m
 		plan.NodeLocalKubelet = input.NodeLocalKubelet
 		plan.SharedKubeletBase = input.SharedKubeletBase
 		previous, exists := installed[name]
-		if !exists || !equivalentKubeadmInputs(previous, plan, registration) {
+		if !exists || !equivalentKubeadmInputs(previous, plan) {
 			changed[name] = struct{}{}
 		}
 		configs[name] = plan
@@ -299,47 +299,17 @@ func mergeInlineKubeadmConfigs(installed map[string]kubeadmconfig.Plan, inline m
 	return configs, changed, nil
 }
 
-// desiredRegistration returns the registration the change leaves the selected
-// node with, or nil when Katl does not register it.
-func (document nodeConfigurationChangeDocument) desiredRegistration(base TrustedBundleRequest) *kubeadmconfig.NodeRegistration {
-	node := base.CurrentManifest.Node
-	overlays := []nodeConfigurationOverlay{document.Spec.ClusterDefaults, document.Spec.SystemRoleOverrides[node.SystemRole]}
-	selected, ok := document.Spec.NodeOverrides[base.NodeName]
-	if ok {
-		overlays = append(overlays, selected)
+// equivalentKubeadmInputs compares inputs ignoring the node registration Katl
+// owns. Registration belongs to the node's identity and metadata domains, and
+// a stored input may carry the current, an earlier, or no registration.
+func equivalentKubeadmInputs(previous, desired kubeadmconfig.Plan) bool {
+	previous, err := kubeadmconfig.WithoutNodeRegistration(previous)
+	if err != nil {
+		return false
 	}
-	for _, overlay := range overlays {
-		if overlay.Kubernetes != nil {
-			node.Kubernetes = *overlay.Kubernetes
-		}
-	}
-	if node.Kubernetes.External {
-		return nil
-	}
-	registration := kubeadmconfig.RegistrationFor(node)
-	if ok {
-		// Node overrides replace labels and taints; omitting them clears both.
-		registration.Labels, registration.Taints = nil, nil
-		if selected.KubernetesMetadata != nil {
-			registration.Labels, registration.Taints = selected.KubernetesMetadata.Labels, selected.KubernetesMetadata.Taints
-		}
-	}
-	return &registration
-}
-
-// equivalentKubeadmInputs compares inputs as the node renders them. The
-// registration Katl applies belongs to the node's identity and metadata
-// domains, so a stored input that carries it, or carries an earlier
-// registration, still matches an unedited shared config.
-func equivalentKubeadmInputs(previous, desired kubeadmconfig.Plan, registration *kubeadmconfig.NodeRegistration) bool {
-	if registration != nil {
-		var err error
-		if previous, err = kubeadmconfig.WithNodeRegistration(previous, *registration); err != nil {
-			return false
-		}
-		if desired, err = kubeadmconfig.WithNodeRegistration(desired, *registration); err != nil {
-			return false
-		}
+	desired, err = kubeadmconfig.WithoutNodeRegistration(desired)
+	if err != nil {
+		return false
 	}
 	return equivalentKubeadmPlans(previous, desired)
 }

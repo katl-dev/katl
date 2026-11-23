@@ -84,7 +84,9 @@ func TestClusterApplyAfterBootstrapKeepsKubeadmConfig(t *testing.T) {
 		{name: "init", node: "cp-1", role: "control-plane"},
 		{name: "worker join", node: "worker-1", role: "worker"},
 		{name: "label edit", node: "cp-1", role: "control-plane", edit: [2]string{"tier: control", "tier: edited"}},
-		{name: "taint removal", node: "cp-1", role: "control-plane", edit: [2]string{"            value: control\n", ""}},
+		{name: "taint value edit", node: "cp-1", role: "control-plane", edit: [2]string{"            value: control\n", ""}},
+		{name: "labels cleared", node: "worker-1", role: "worker", edit: [2]string{"        labels:\n          example.test/tier: worker\n", ""}},
+		{name: "taints cleared", node: "cp-1", role: "control-plane", edit: [2]string{"        taints:\n          - key: dedicated\n            value: control\n            effect: NoSchedule\n", ""}},
 		{name: "stored shared input", node: "worker-1", role: "worker", shared: true},
 		{name: "kubeadm drift", node: "cp-1", role: "control-plane", drift: true, want: true},
 	} {

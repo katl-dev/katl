@@ -125,3 +125,70 @@ func nodeRegistrationOf(t *testing.T, plan Plan, kind string) any {
 	t.Fatalf("rendered input has no %s:\n%s", kind, plan.Config.Content)
 	return nil
 }
+
+func TestWithoutNodeRegistration(t *testing.T) {
+	config := `apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: 10.0.0.21
+nodeRegistration:
+  criSocket: unix:///run/containerd/containerd.sock
+  kubeletExtraArgs:
+    - name: node-ip
+      value: 10.0.0.21
+    - name: v
+      value: "2"
+    - name: node-labels
+      value: example.com/a=1
+  taints:
+    - key: dedicated
+      effect: NoSchedule
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: JoinConfiguration
+controlPlane:
+  localAPIEndpoint:
+    advertiseAddress: 10.0.0.21
+nodeRegistration:
+  kubeletExtraArgs:
+    - name: node-ip
+      value: 10.0.0.21
+  taints: []
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+apiServer:
+  certSANs:
+    - 10.0.0.21
+`
+	want := `apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+nodeRegistration:
+  criSocket: unix:///run/containerd/containerd.sock
+  kubeletExtraArgs:
+    - name: v
+      value: "2"
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+controlPlane: {}
+kind: JoinConfiguration
+---
+apiServer:
+  certSANs:
+    - 10.0.0.21
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+`
+	plan, err := PlanFromRenderedFiles("control-plane", []File{{RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml", Content: []byte(config), Mode: 0o644}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := WithoutNodeRegistration(plan)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got.Config.Content) != want {
+		t.Fatalf("config:\n%s\nwant:\n%s", got.Config.Content, want)
+	}
+}
