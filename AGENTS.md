@@ -74,6 +74,7 @@ Close a Bead only after this sequence:
 
 ## Code and Documentation
 
+- Pass addresses and prefixes as `net/netip` values (`netip.Addr`, `netip.AddrPort`, `netip.Prefix`). Parse them once where they enter the program, from configuration, flags, or API input, and lower them to strings only at the edge: rendered files, command arguments, wire formats, and human output. A value that may be a hostname uses a typed host that holds either an address or a validated DNS name, never a bare string.
 - Keep names concise, readable, and locally meaningful. Name functions for their action or result, and keep test names focused on behavior; put scenario detail in table cases.
 - Keep examples consistent with Katl naming and supported operator workflows.
 - Put durable architecture decisions in focused design documents, stable operator procedures in operational docs, and transient findings or command output in Bead notes.
