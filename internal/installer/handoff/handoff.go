@@ -516,7 +516,7 @@ func destructiveStorageAcknowledgements(r *http.Request) ([]string, error) {
 func (s *HandoffServer) validateStorage(ctx context.Context, installManifest manifest.Manifest) error {
 	facts, err := s.discover(ctx)
 	if err != nil {
-		return fmt.Errorf("plan storage targets: discover disks: %w; retry the request", err)
+		return fmt.Errorf("discover installer disks: %w; retry install apply", err)
 	}
 	if len(facts.BlockDevices) == 0 {
 		return nil

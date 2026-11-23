@@ -801,3 +801,14 @@ func TestHandoffServerReportsDiscoveryFailure(t *testing.T) {
 		t.Fatal("installer accepted a bundle it could not validate")
 	}
 }
+
+func TestHandoffStatusOmitsDisksOnceAccepted(t *testing.T) {
+	server := newTestHandoffServer(t)
+	server.SetDiscovery(discovery.StaticDiscoverySource{Err: errors.New("lsblk discovery: exit status 1")})
+	server.BeginAutomatic("cp-1")
+
+	status := server.Status()
+	if len(status.Disks) != 0 || status.DiskInventoryError != "" {
+		t.Fatalf("accepted install reports disks=%v error=%q, want no inventory", status.Disks, status.DiskInventoryError)
+	}
+}
