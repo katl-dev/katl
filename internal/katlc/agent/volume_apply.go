@@ -58,7 +58,7 @@ func (e *Executor) applyVolumes(ctx context.Context, current, desired manifest.M
 		return nil, err
 	}
 
-	recovery := volumeRecovery{run: run}
+	recovery := volumeRecovery{run: run, source: source, bindings: volumeBindingsByName(currentBindings), prepared: plan.prepare}
 	for _, name := range plan.stopNames {
 		unit, err := generation.MountUnitName("/var/mnt/" + name)
 		if err != nil {
@@ -194,7 +194,15 @@ func planVolumeTransition(ctx context.Context, source discovery.DiscoverySource,
 	if err != nil {
 		return volumeTransitionPlan{}, err
 	}
-	plans, err := disk.PlanVolumes(facts, rootDisk, manifest.BuildVolumeRequests(resolve), kept)
+	// Every volume the apply stops is changed or removed, and its current
+	// storage is held until the apply succeeds.
+	var released []disk.VolumeBinding
+	for _, name := range stopNames {
+		if binding, ok := currentByName[name]; ok {
+			released = append(released, diskVolumeBinding(binding))
+		}
+	}
+	plans, err := disk.PlanVolumeChanges(facts, rootDisk, manifest.BuildVolumeRequests(resolve), kept, released)
 	if err != nil {
 		return volumeTransitionPlan{}, err
 	}
@@ -454,23 +462,103 @@ func (d volumeDevices) source(run ToolRunner) discovery.CommandDiscoverySource {
 // volumeRecovery records what a live volume apply has done to the node's
 // storage so that, when it fails, it can restore what is still intact.
 type volumeRecovery struct {
-	run ToolRunner
+	run    ToolRunner
+	source discovery.DiscoverySource
+	// bindings are the current generation's volume bindings, which the
+	// stopped volumes' mount units mount.
+	bindings map[string]generation.VolumeBinding
+	// prepared are the plans of the volumes the apply prepares.
+	prepared []disk.VolumePlan
 	// stopped are the volumes whose mount units the apply stopped.
 	stopped []string
 	// rewritten are the volumes a destructive command was started on.
 	rewritten []string
 }
 
+// volumeStorage is a disk, by kernel attachment sequence, or one partition on
+// it; partition 0 is the whole disk.
+type volumeStorage struct {
+	diskSeq   uint64
+	partition uint64
+}
+
+// touched lists the storage the rewritten volumes' commands write.
+func (r volumeRecovery) touched() map[volumeStorage]string {
+	out := map[volumeStorage]string{}
+	for _, plan := range r.prepared {
+		if !slices.Contains(r.rewritten, plan.Name) {
+			continue
+		}
+		storage := volumeStorage{diskSeq: plan.Disk.DiskSeq}
+		if !plan.Repartition {
+			storage.partition = plan.Partition.Number
+		}
+		out[storage] = plan.Name
+	}
+	return out
+}
+
+// rewrittenBy names the rewritten volume whose commands wrote the storage the
+// named volume's current binding resolves to, or returns "" when its storage
+// was not written.
+func (r volumeRecovery) rewrittenBy(facts discovery.HardwareFacts, touched map[volumeStorage]string, name string) string {
+	binding, ok := r.bindings[name]
+	if !ok {
+		return ""
+	}
+	partition, err := disk.MatchVolumeBinding(facts, diskVolumeBinding(binding))
+	if err != nil {
+		return ""
+	}
+	for _, device := range facts.BlockDevices {
+		if !slices.ContainsFunc(device.Partitions, func(candidate discovery.BlockDevice) bool { return candidate.Path == partition.Path }) {
+			continue
+		}
+		for _, storage := range []volumeStorage{{diskSeq: device.DiskSeq}, {diskSeq: device.DiskSeq, partition: partition.PartitionNumber}} {
+			if owner, ok := touched[storage]; ok {
+				return owner
+			}
+		}
+	}
+	return ""
+}
+
 // fail starts the mount units of the stopped volumes whose storage was not
 // rewritten, so a refused change leaves their workloads' storage mounted. A
-// rewritten volume stays unmounted, since its unit could mount the new empty
+// volume stays unmounted when its own storage, or the storage its current
+// binding resolves to, was rewritten, since its unit could mount the new empty
 // filesystem as if it held the old data. The error names each volume left
 // unmounted and what to do next.
 func (r volumeRecovery) fail(ctx context.Context, cause error) error {
-	var restarted, failed []string
+	touched := r.touched()
+	var facts discovery.HardwareFacts
+	var checkErr error
+	if len(touched) > 0 {
+		// udev settles so partitions a failed command left behind are
+		// visible before the stopped volumes are resolved.
+		checkErr = runVolumeTool(ctx, r.run, "settle udev", "udevadm", "settle")
+		if checkErr == nil {
+			facts, checkErr = discoverVolumeFacts(ctx, r.source)
+		}
+	}
+
+	var restarted, failed, overwritten, unchecked, writers []string
 	for _, name := range r.stopped {
 		if slices.Contains(r.rewritten, name) {
 			continue
+		}
+		if len(touched) > 0 {
+			if checkErr != nil {
+				unchecked = append(unchecked, name)
+				continue
+			}
+			if owner := r.rewrittenBy(facts, touched, name); owner != "" {
+				overwritten = append(overwritten, name)
+				if !slices.Contains(writers, owner) {
+					writers = append(writers, owner)
+				}
+				continue
+			}
 		}
 		unit, err := generation.MountUnitName("/var/mnt/" + name)
 		if err == nil {
@@ -495,8 +583,14 @@ func (r volumeRecovery) fail(ctx context.Context, cause error) error {
 		}
 		err = fmt.Errorf("%w; volumes %s were stopped for this apply and could not be mounted again; once their disks are attached, run systemctl start %s on the node", err, strings.Join(failed, ", "), strings.Join(units, " "))
 	}
+	if len(overwritten) > 0 {
+		err = fmt.Errorf("%w; volumes %s were stopped for this apply and left unmounted, because the storage they are bound to was repartitioned or formatted for volumes %s, so the data they held may be gone; check that storage before mounting them again", err, strings.Join(overwritten, ", "), strings.Join(writers, ", "))
+	}
+	if len(unchecked) > 0 {
+		err = fmt.Errorf("%w; volumes %s were stopped for this apply and left unmounted, because their storage could not be checked against the volumes being rewritten: %v; check their disks, then retry the apply", err, strings.Join(unchecked, ", "), checkErr)
+	}
 	if len(r.rewritten) > 0 {
-		err = fmt.Errorf("%w; volumes %s were already being repartitioned or formatted, so their earlier contents are gone and they were left unmounted; once the cause is fixed, retry the apply to finish preparing them", err, strings.Join(r.rewritten, ", "))
+		err = fmt.Errorf("%w; volumes %s were being repartitioned or formatted when the apply stopped, so they may hold incomplete filesystems; a rewritten volume stays unmounted until the apply is retried, which finishes preparing it once the cause is fixed", err, strings.Join(r.rewritten, ", "))
 	}
 	return err
 }

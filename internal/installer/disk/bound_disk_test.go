@@ -408,6 +408,48 @@ func TestPlanVolumesRefusesSharedTargets(t *testing.T) {
 	if _, err := PlanVolumes(facts, root, []VolumeRequest{partition("b", "/dev/disk/by-id/ata-data-part2")}, kept); err != nil {
 		t.Fatalf("PlanVolumes() beside a kept volume on the same disk error = %v", err)
 	}
+
+	t.Run("released storage", func(t *testing.T) {
+		// a is moved or removed by the apply, and is still bound to part-1.
+		released := []VolumeBinding{{Name: "a", PartitionUUID: "part-1"}}
+		formatted := func(name, byID string) VolumeRequest {
+			request := partition(name, byID)
+			request.Wipe = true
+			return request
+		}
+
+		for _, test := range []struct {
+			name    string
+			request VolumeRequest
+			want    []string
+		}{
+			{"repartitioned by another volume", wholeDisk("b"), []string{`"a"`, `"b"`, "repartition disk /dev/sdb"}},
+			{"formatted by another volume", formatted("b", "/dev/disk/by-id/ata-data-part1"), []string{`"a"`, `"b"`, "format partition 1 of /dev/sdb"}},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				_, err := PlanVolumeChanges(facts, root, []VolumeRequest{test.request}, nil, released)
+
+				if !mentions(err, append(test.want, "in a later apply")...) {
+					t.Fatalf("PlanVolumeChanges() error = %v, want refusal naming %q", err, test.want)
+				}
+			})
+		}
+
+		for _, test := range []struct {
+			name    string
+			request VolumeRequest
+		}{
+			{"preserved by another volume", partition("b", "/dev/disk/by-id/ata-data-part1")},
+			{"formatted by the released volume itself", formatted("a", "/dev/disk/by-id/ata-data-part1")},
+			{"sibling partition formatted", formatted("b", "/dev/disk/by-id/ata-data-part2")},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				if _, err := PlanVolumeChanges(facts, root, []VolumeRequest{test.request}, nil, released); err != nil {
+					t.Fatalf("PlanVolumeChanges() error = %v", err)
+				}
+			})
+		}
+	})
 }
 
 func TestPlanningRefusesDiskWithoutDiskSeqLink(t *testing.T) {

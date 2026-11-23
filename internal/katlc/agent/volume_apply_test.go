@@ -559,6 +559,7 @@ func TestApplyVolumesRefusesSharedStorage(t *testing.T) {
 		bindings    []generation.VolumeBinding
 		desired     manifest.Manifest
 		keepMounted bool
+		rebinds     []string
 		names       []string
 	}{
 		{
@@ -591,11 +592,32 @@ func TestApplyVolumesRefusesSharedStorage(t *testing.T) {
 			desired: volumesManifest(partition("a", manifest.PartitionSelector{PartUUID: "spare-part"}, false), partition("b", manifest.PartitionSelector{FilesystemUUID: "spare-fs"}, false)),
 			names:   []string{"a", "b"},
 		},
+		{
+			// keep moves to vdc1 with rebind authority; its data is still on
+			// vdb1, which a failed apply would mount again.
+			name:    "format the old partition of a moved volume",
+			current: volumesManifest(keepVolume), bindings: []generation.VolumeBinding{keepBinding},
+			desired: volumesManifest(partition("keep", manifest.PartitionSelector{PartUUID: "spare-part"}, false), partition("data", manifest.PartitionSelector{PartUUID: "keep-part"}, true)),
+			rebinds: []string{"cp-1/keep"},
+			names:   []string{"keep", "data"},
+		},
+		{
+			name:    "format the partition of a removed volume",
+			current: volumesManifest(keepVolume), bindings: []generation.VolumeBinding{keepBinding},
+			desired: volumesManifest(partition("data", manifest.PartitionSelector{PartUUID: "keep-part"}, true)),
+			names:   []string{"keep", "data"},
+		},
+		{
+			name:    "repartition the disk of a removed volume",
+			current: volumesManifest(keepVolume), bindings: []generation.VolumeBinding{keepBinding},
+			desired: volumesManifest(wipeDisk("data", "data")),
+			names:   []string{"keep", "data"},
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runner := &storageRunner{keepMounted: test.keepMounted}
 
-			_, err := (&Executor{Root: t.TempDir(), RunTool: runner.run, volumeDevices: hermeticVolumeDevices(t)}).applyVolumes(context.Background(), test.current, test.desired, test.bindings, "cp-1", nil, nil)
+			_, err := (&Executor{Root: t.TempDir(), RunTool: runner.run, volumeDevices: hermeticVolumeDevices(t)}).applyVolumes(context.Background(), test.current, test.desired, test.bindings, "cp-1", nil, test.rebinds)
 
 			if err == nil {
 				t.Fatal("applyVolumes() error = nil, want refusal of volumes sharing storage")
@@ -645,7 +667,9 @@ func TestApplyVolumesLeavesRewrittenVolumesUnmounted(t *testing.T) {
 		{Name: "a", PartitionUUID: "spare-part", FilesystemUUID: "spare-fs"},
 		{Name: "b", PartitionUUID: "data-part", FilesystemUUID: "data-fs"},
 	}
-	runner := &storageRunner{fail: func(argv []string) bool { return strings.HasPrefix(argv[0], "mkfs.") }}
+	// The first destructive command fails, so a counts as rewritten before
+	// any of its commands has completed.
+	runner := &storageRunner{fail: func(argv []string) bool { return argv[0] == "wipefs" }}
 
 	_, err := (&Executor{Root: t.TempDir(), RunTool: runner.run, volumeDevices: hermeticVolumeDevices(t)}).applyVolumes(context.Background(), current, desired, bindings, "cp-1", nil, nil)
 
@@ -658,6 +682,55 @@ func TestApplyVolumesLeavesRewrittenVolumesUnmounted(t *testing.T) {
 	if !slices.Contains(runner.commands, "systemctl start var-mnt-b.mount") {
 		t.Fatalf("commands = %q, want b, whose storage is intact, mounted again", runner.commands)
 	}
+}
+
+func TestVolumeRecoveryLeavesVolumesOnRewrittenStorageUnmounted(t *testing.T) {
+	// Planning refuses a volume that rewrites another's storage, so this
+	// recovery path is reached only if storage moves between planning and
+	// execution; it is driven directly. keep is bound to vdb1 (disk sequence
+	// 2, partition 1) and spare to vdc1; data was being written.
+	bindings := map[string]generation.VolumeBinding{
+		"keep":  keepBinding,
+		"spare": {Name: "spare", PartitionUUID: "spare-part", FilesystemUUID: "spare-fs"},
+	}
+	vdb := discovery.DiskIdentity{Path: "/dev/vdb", DiskSeq: 2, SizeBytes: 68719476736}
+
+	for _, test := range []struct {
+		name string
+		data disk.VolumePlan
+	}{
+		{"partition formatted", disk.VolumePlan{Name: "data", TargetKind: "partition", Disk: vdb, Partition: disk.PartitionIdentity{Number: 1}, Wipe: true}},
+		{"disk repartitioned", disk.VolumePlan{Name: "data", TargetKind: "disk", Disk: vdb, Wipe: true, Repartition: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &storageRunner{}
+			recovery := volumeRecovery{
+				run: runner.run, source: hermeticVolumeDevices(t).source(runner.run), bindings: bindings,
+				prepared: []disk.VolumePlan{test.data}, stopped: []string{"keep", "spare"}, rewritten: []string{"data"},
+			}
+
+			err := recovery.fail(context.Background(), errors.New("mkfs.xfs failed"))
+
+			if slices.Contains(runner.commands, "systemctl start var-mnt-keep.mount") {
+				t.Fatalf("commands = %q, want keep, whose storage data rewrote, left unmounted", runner.commands)
+			}
+			if !slices.Contains(runner.commands, "systemctl start var-mnt-spare.mount") {
+				t.Fatalf("commands = %q, want spare, whose storage is intact, mounted again", runner.commands)
+			}
+			if !mentionsAll(err.Error(), "volumes keep were stopped for this apply and left unmounted", "formatted for volumes data", "volumes spare were stopped for this apply and have been mounted again") {
+				t.Fatalf("fail() error = %v, want keep named as left unmounted because of data, and spare as mounted again", err)
+			}
+		})
+	}
+}
+
+func mentionsAll(message string, parts ...string) bool {
+	for _, part := range parts {
+		if !strings.Contains(message, part) {
+			return false
+		}
+	}
+	return true
 }
 
 func TestApplyVolumesRestartsStoppedVolumesAfterRefusal(t *testing.T) {

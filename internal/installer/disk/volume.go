@@ -3,7 +3,9 @@ package disk
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"path"
+	"slices"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/installer/discovery"
@@ -49,8 +51,24 @@ func (p PartitionIdentity) String() string {
 // volume claims its disk or partition, so no request can share one with
 // another request or with a kept volume.
 func PlanVolumes(facts HardwareFacts, target BlockDevice, requests []VolumeRequest, kept []VolumeBinding) ([]VolumePlan, error) {
+	return PlanVolumeChanges(facts, target, requests, kept, nil)
+}
+
+// PlanVolumeChanges plans requests as PlanVolumes does, beside the volumes an
+// apply moves or removes, which are released and found by their current
+// bindings. A released volume's storage still holds its data while the apply
+// runs, and a failed apply mounts the volume there again, so no other volume
+// may repartition or format it in the same apply.
+func PlanVolumeChanges(facts HardwareFacts, target BlockDevice, requests []VolumeRequest, kept, released []VolumeBinding) ([]VolumePlan, error) {
 	seenNames := make(map[string]struct{}, len(requests)+len(kept))
 	claims := volumeClaims{}
+	for _, binding := range released {
+		// A binding that no longer matches one partition names no storage
+		// a restart could mount.
+		if plan, err := keptVolume(facts, binding); err == nil {
+			claims.release(plan)
+		}
+	}
 	for _, binding := range kept {
 		seenNames[binding.Name] = struct{}{}
 		plan, err := keptVolume(facts, binding)
@@ -176,11 +194,26 @@ func existingPartitionVolume(request VolumeRequest, kind string, disk, partition
 	}
 }
 
-// volumeClaims refuses two volumes on the same partition, or a volume on a
-// disk that another volume repartitions.
+// volumeClaims refuses two volumes on the same partition, a volume on a disk
+// that another volume repartitions, and a volume that repartitions or formats
+// the storage of a released volume.
 type volumeClaims struct {
 	wholeDisks map[string]string
 	partitions map[string]map[uint64]string
+	// released maps each disk to its partitions that released volumes are
+	// bound to, and those volumes' names.
+	released map[string]map[uint64]string
+}
+
+// release records the storage a released volume is bound to.
+func (c *volumeClaims) release(plan VolumePlan) {
+	if c.released == nil {
+		c.released = map[string]map[uint64]string{}
+	}
+	if c.released[plan.Disk.Path] == nil {
+		c.released[plan.Disk.Path] = map[uint64]string{}
+	}
+	c.released[plan.Disk.Path][plan.Partition.Number] = plan.Name
 }
 
 func (c *volumeClaims) add(plan VolumePlan) error {
@@ -189,6 +222,9 @@ func (c *volumeClaims) add(plan VolumePlan) error {
 		c.partitions = map[string]map[uint64]string{}
 	}
 	disk := plan.Disk.Path
+	if err := c.checkReleased(plan); err != nil {
+		return err
+	}
 	if other, ok := c.wholeDisks[disk]; ok {
 		return wholeDiskConflict(other, plan.Name, disk, other)
 	}
@@ -207,6 +243,30 @@ func (c *volumeClaims) add(plan VolumePlan) error {
 	}
 	c.partitions[disk][plan.Partition.Number] = plan.Name
 	return nil
+}
+
+// checkReleased refuses a plan that would rewrite the storage of another,
+// released volume. A volume may rewrite its own earlier storage, and may
+// preserve another's, since neither destroys data a restart could mount.
+func (c *volumeClaims) checkReleased(plan VolumePlan) error {
+	disk := plan.Disk.Path
+	switch {
+	case plan.Repartition:
+		for _, number := range slices.Sorted(maps.Keys(c.released[disk])) {
+			if owner := c.released[disk][number]; owner != plan.Name {
+				return releasedConflict(plan.Name, "repartition disk "+disk, owner)
+			}
+		}
+	case plan.Wipe:
+		if owner, ok := c.released[disk][plan.Partition.Number]; ok && owner != plan.Name {
+			return releasedConflict(plan.Name, fmt.Sprintf("format partition %d of %s", plan.Partition.Number, disk), owner)
+		}
+	}
+	return nil
+}
+
+func releasedConflict(name, action, owner string) error {
+	return fmt.Errorf("volume %q would %s, which holds the current storage of volume %q that this apply moves or removes; apply the change to %q first, then reuse its storage in a later apply", name, action, owner, owner)
 }
 
 func wholeDiskConflict(first, second, disk, repartitioned string) error {

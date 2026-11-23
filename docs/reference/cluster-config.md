@@ -701,7 +701,10 @@ in the error; fix the cause and apply again to finish preparing it.
 Choose the target with a unique stable selector. Wipe authorization does not
 bypass ambiguous selection, active-device checks, or conflicts with the system
 disk and other volumes, including volumes already provisioned on the node,
-mounted or not. Once provisioned, an unchanged generation-bound volume
+mounted or not. The storage a volume uses before an apply moves or removes it
+is also protected: another volume cannot repartition or format it in that same
+apply. Make the move or removal in one apply and reuse the storage in a later
+one. Once provisioned, an unchanged generation-bound volume
 is reused on repeated applies and reboot; retaining `wipe: true` does not erase
 its contents again. Replacing a bound volume additionally requires
 [`--rebind-volume`](#replace-a-bound-volume).
