@@ -81,13 +81,17 @@ func (h *hostDisks) run(_ context.Context, argv []string, _ func(int)) ToolResul
 			if device != "/dev/"+disk.name && device != fmt.Sprintf("/dev/disk/by-diskseq/%d", disk.seq) {
 				continue
 			}
-			// lsblk lists the disk and its partitions as one flat array when
-			// no tree column is selected, as util-linux 2.42 prints for
-			// lsblk --json --output PARTN,PARTUUID,PARTTYPE DISK.
-			rows := []string{`{"partn": null, "partuuid": null, "parttype": null}`}
+			// lsblk lists the disk, its partitions and the devices stacked on
+			// them as one flat array when no tree column is selected, as
+			// util-linux 2.42 prints for
+			// lsblk --json --output PARTN,PKNAME,PARTUUID,PARTTYPE DISK.
+			rows := []string{`{"partn": null, "pkname": null, "partuuid": null, "parttype": null}`}
 			for _, partition := range disk.partitions {
-				rows = append(rows, fmt.Sprintf(`{"partn": %d, "partuuid": %q, "parttype": %q}`, partition.number, partition.uuid, partition.t))
+				rows = append(rows, fmt.Sprintf(`{"partn": %d, "pkname": %q, "partuuid": %q, "parttype": %q}`, partition.number, disk.name, partition.uuid, partition.t))
 			}
+			// A partitioned array assembled on the disk's partitions.
+			rows = append(rows, `{"partn": null, "pkname": "`+disk.name+`1", "partuuid": null, "parttype": null}`,
+				`{"partn": 1, "pkname": "md0", "partuuid": "stacked-part", "parttype": "`+rootType+`"}`)
 			return ToolResult{Stdout: []byte("{\n   \"blockdevices\": [\n      " + strings.Join(rows, ",") + "\n   ]\n}\n")}
 		}
 		return ToolResult{ExitStatus: 32, Stderr: []byte(device + ": not a block device")}

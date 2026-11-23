@@ -99,15 +99,17 @@ func (e *Executor) findRootSlots(ctx context.Context, activePartUUID string) (ro
 // so lsblk reads them; each partition must have the PARTUUID sysfs reported,
 // or the partition table changed in between.
 func (e *Executor) partitionTypes(ctx context.Context, diskPath string, system systemdisk.Disk) (map[int]string, error) {
-	output, err := e.toolOutput(ctx, "lsblk", "--json", "--output", "PARTN,PARTUUID,PARTTYPE", diskPath)
+	output, err := e.toolOutput(ctx, "lsblk", "--json", "--output", "PARTN,PKNAME,PARTUUID,PARTTYPE", diskPath)
 	if err != nil {
 		return nil, fmt.Errorf("read root partition types on %s: %w", diskPath, err)
 	}
-	// Without a tree column lsblk lists the disk and its partitions as one
-	// flat array; the disk's row has no partition number.
+	// Without a tree column lsblk lists the disk, its partitions and any devices
+	// stacked on them as one flat array. Only rows whose parent is the disk are
+	// its partitions.
 	var table struct {
 		BlockDevices []struct {
 			Number   *int   `json:"partn"`
+			Parent   string `json:"pkname"`
 			UUID     string `json:"partuuid"`
 			TypeGUID string `json:"parttype"`
 		} `json:"blockdevices"`
@@ -121,7 +123,7 @@ func (e *Executor) partitionTypes(ctx context.Context, diskPath string, system s
 	}
 	types := map[int]string{}
 	for _, row := range table.BlockDevices {
-		if row.Number == nil {
+		if row.Number == nil || row.Parent != system.Name {
 			continue
 		}
 		number := *row.Number
