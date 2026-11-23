@@ -6,8 +6,10 @@ usage() {
 usage: git commit-wrapped <title> [git commit options] < body
 
 Commits with the message "<title>", a blank line, and the body read from
-standard input. Prose is wrapped at 72 columns; existing line breaks are kept.
-Both a non-empty title and a non-empty body are required.
+standard input. Body prose is wrapped at 72 columns; existing line breaks are
+kept. The title (at most 72 characters) and a final block of "Key: value"
+trailer lines are never wrapped. Both a non-empty title and a non-empty body
+are required.
 EOF
 }
 
@@ -35,7 +37,43 @@ if [[ -z "${body//[[:space:]]/}" ]]; then
     exit 2
 fi
 
-# fmt -s only splits lines longer than the width, so trailers stay on their own lines.
+if ((${#title} > 72)); then
+    printf 'error: title is %d characters; shorten it to 72 or fewer\n' "${#title}" >&2
+    exit 2
+fi
+
+# The final paragraph is a trailer block when every line has git's trailer
+# shape. Trailers are never wrapped, because a split line is no longer a trailer.
+mapfile -t lines <<<"$body"
+last=$((${#lines[@]} - 1))
+while ((last >= 0)) && [[ -z "${lines[last]//[[:space:]]/}" ]]; do
+    last=$((last - 1))
+done
+start=$last
+while ((start > 0)) && [[ -n "${lines[start - 1]//[[:space:]]/}" ]]; do
+    start=$((start - 1))
+done
+trailers=()
+for ((i = start; i <= last; i++)); do
+    if [[ ! "${lines[i]}" =~ ^[A-Za-z][A-Za-z0-9-]*:\  ]]; then
+        trailers=()
+        break
+    fi
+    trailers+=("${lines[i]}")
+done
+prose_end=$last
+if ((${#trailers[@]} > 0)); then
+    prose_end=$((start - 1))
+fi
+
 {
-    printf '%s\n\n%s\n' "$title" "$body"
-} | fmt -s -w 72 | git commit "$@" -F -
+    printf '%s\n' "$title"
+    if ((prose_end >= 0)); then
+        printf '\n'
+        printf '%s\n' "${lines[@]:0:prose_end + 1}" | fmt -s -w 72
+    fi
+    if ((${#trailers[@]} > 0)); then
+        printf '\n'
+        printf '%s\n' "${trailers[@]}"
+    fi
+} | git commit "$@" -F -
