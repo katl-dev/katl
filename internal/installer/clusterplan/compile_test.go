@@ -204,6 +204,68 @@ func nativeFile(files []confext.NativeEtcFile, path string) *confext.NativeEtcFi
 	return nil
 }
 
+func TestCompileAPIProxyUsesKubernetesAddress(t *testing.T) {
+	// cp-1 is reached through NAT at 192.0.2.11, which it does not hold.
+	config := validConfig()
+	config.Spec.ControlPlaneEndpoint = &controlplaneendpoint.Config{Host: "10.0.1.11", Port: 6443}
+	config.Spec.Nodes[0].Overrides.Bootstrap.Address = "192.0.2.11"
+	config.Spec.Nodes[0].Overrides.Kubernetes.Address = "10.0.1.11"
+	plan, err := Compile(CompileRequest{Config: config, KubeadmConfigs: validKubeadmConfigs("v1.36.1")})
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+
+	installed := nativeFile(plan.Nodes[0].NativeEtcFiles, apiproxy.ConfigPath)
+	want := `{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "APIProxyConfig",
+  "tlsServerName": "10.0.1.11",
+  "canonicalEndpoint": "10.0.1.11:6443",
+  "caFile": "/etc/kubernetes/pki/ca.crt",
+  "checkInterval": "2s",
+  "checkTimeout": "2s",
+  "listeners": [
+    {
+      "address": "10.0.1.11:7445",
+      "exposure": "workstation"
+    },
+    {
+      "address": "127.0.0.1:7445",
+      "exposure": "node-local"
+    }
+  ],
+  "backends": [
+    {
+      "name": "cp-1",
+      "address": "10.0.1.11:6443",
+      "local": true
+    }
+  ]
+}
+`
+	if installed == nil || installed.Content != want {
+		t.Fatalf("installed API proxy config = %#v, want:\n%s", installed, want)
+	}
+
+	// The bootstrap generation renders from the bootstrap inventory, so it
+	// must carry the Kubernetes address to reproduce the installed config.
+	bootstrapPlan, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: plan.BootstrapInventory, InitNode: "cp-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bootstrapConfig, err := bootstrapPlan.APIProxyConfig("cp-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rendered, err := apiproxy.Render(bootstrapConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rendered != want {
+		t.Fatalf("bootstrap API proxy config:\n%s\nwant:\n%s", rendered, want)
+	}
+}
+
 func TestCompileRemovesManagementCredentialReference(t *testing.T) {
 	config := validConfig()
 	config.Spec.Nodes[0].Overrides.Bootstrap.Access = inventory.Access{

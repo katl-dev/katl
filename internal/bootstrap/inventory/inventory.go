@@ -66,9 +66,13 @@ type BootstrapWait struct {
 	Selector  string `json:"selector,omitempty" yaml:"selector"`
 }
 
+// Node is one inventory member. Address is where the workstation reaches the
+// node and may be translated by NAT. KubernetesAddress, when set, is assigned
+// to the node itself; see kubernetesHost for which one node-side consumers use.
 type Node struct {
 	Name              string        `json:"name"`
 	Address           string        `json:"address,omitempty"`
+	KubernetesAddress string        `json:"kubernetesAddress,omitempty" yaml:"kubernetesAddress,omitempty"`
 	SystemRole        SystemRole    `json:"systemRole"`
 	Access            Access        `json:"access"`
 	KubeadmConfig     KubeadmConfig `json:"kubeadmConfig"`
@@ -112,6 +116,7 @@ type Plan struct {
 type PlannedNode struct {
 	Name              string          `json:"name"`
 	Address           string          `json:"address"`
+	KubernetesAddress string          `json:"kubernetesAddress,omitempty"`
 	SystemRole        SystemRole      `json:"systemRole"`
 	Action            BootstrapAction `json:"action"`
 	Access            Access          `json:"access"`
@@ -332,9 +337,16 @@ func normalizeNode(node Node, inventoryVersion string) (PlannedNode, error) {
 	if inventoryVersion != "" && version != inventoryVersion {
 		return PlannedNode{}, fmt.Errorf("node %q Kubernetes version %q does not match inventory version %q", name, version, inventoryVersion)
 	}
+	kubernetesAddress := strings.TrimSpace(node.KubernetesAddress)
+	if kubernetesAddress != "" {
+		if _, _, err := kubernetesHost(kubernetesAddress, address); err != nil {
+			return PlannedNode{}, fmt.Errorf("node %q: %w", name, err)
+		}
+	}
 	return PlannedNode{
 		Name:              name,
 		Address:           address,
+		KubernetesAddress: kubernetesAddress,
 		SystemRole:        role,
 		Access:            access,
 		KubeadmConfig:     config,

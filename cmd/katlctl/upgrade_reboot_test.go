@@ -69,6 +69,36 @@ func TestNodeUpgradeRecoveryRequiresKubernetesAndManagedRouting(t *testing.T) {
 			state:       "waiting-for-managed-endpoint", reason: "managed API endpoint is waiting-for-apiserver",
 		},
 		{
+			// Node Ready lags kubelet losing the API, so the proxy decides.
+			name: "API proxy has no eligible backend",
+			status: &agentapi.NodeStatus{
+				Kubernetes: readyKubernetes,
+				ApiProxy:   &agentapi.APIProxyStatus{State: "no-eligible-backends", FailureReason: "no eligible Kubernetes API backend"},
+			},
+			requirement: nodeRecoveryRequirement{KubernetesConfigured: true, NodeReady: true, APIProxyReady: true, LocalAPIEligible: true},
+			state:       "waiting-for-api-proxy", reason: "Kubernetes API proxy: no eligible Kubernetes API backend",
+		},
+		{
+			name: "API proxy lost its local backend",
+			status: &agentapi.NodeStatus{
+				Kubernetes: readyKubernetes,
+				ApiProxy: &agentapi.APIProxyStatus{State: "ready", Backends: []*agentapi.APIProxyBackendStatus{
+					{Name: "cp-1", Address: "192.0.2.10:6443", Local: true, Reason: "dial timeout"},
+					{Name: "cp-2", Address: "10.0.1.11:6443", Eligible: true},
+				}},
+			},
+			requirement: nodeRecoveryRequirement{APIProxyReady: true, LocalAPIEligible: true},
+			state:       "waiting-for-api-proxy", reason: "Kubernetes API proxy does not reach the local API server at 192.0.2.10:6443: dial timeout",
+		},
+		{
+			name: "API proxy was not serving before the reboot",
+			status: &agentapi.NodeStatus{
+				Kubernetes: readyKubernetes,
+				ApiProxy:   &agentapi.APIProxyStatus{State: "no-eligible-backends"},
+			},
+			state: "ready", ready: true,
+		},
+		{
 			name: "ready",
 			status: &agentapi.NodeStatus{
 				Kubernetes: readyKubernetes,
@@ -86,6 +116,17 @@ func TestNodeUpgradeRecoveryRequiresKubernetesAndManagedRouting(t *testing.T) {
 				t.Fatalf("recovery = %#v", got)
 			}
 		})
+	}
+}
+
+func TestNodeRecoveryRequirementRecordsServingAPIProxy(t *testing.T) {
+	serving := &agentapi.NodeStatus{ApiProxy: &agentapi.APIProxyStatus{State: "ready", LocalApiEligible: true}}
+	if got := nodeRecoveryRequirementFor(serving); !got.APIProxyReady || !got.LocalAPIEligible {
+		t.Fatalf("requirement for serving proxy = %#v", got)
+	}
+	failing := &agentapi.NodeStatus{ApiProxy: &agentapi.APIProxyStatus{State: "no-eligible-backends"}}
+	if got := nodeRecoveryRequirementFor(failing); got.APIProxyReady || got.LocalAPIEligible {
+		t.Fatalf("requirement for failing proxy = %#v", got)
 	}
 }
 

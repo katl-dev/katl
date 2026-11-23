@@ -78,6 +78,8 @@ type installerManager struct {
 	client   *http.Client
 	run      buildCommandRunner
 	runVirsh func(context.Context, string, ...string) ([]byte, error)
+	// runIptables edits the host nat table; nil runs sudo -n iptables.
+	runIptables func(context.Context, ...string) ([]byte, error)
 	// guestsConfig reads libvirt-guests.service settings; nil uses systemctl.
 	guestsConfig func() (libvirtGuestsConfig, error)
 }
@@ -605,6 +607,9 @@ func (manager installerManager) printWorld(world katldevWorld, observations []no
 			address += ", reserved " + node.Address + " for its next boot"
 		}
 		fmt.Fprintf(manager.stdout, "  Address: %s\n", address)
+		if nat, err := manager.readNAT(); err == nil && nat[node.Name] != "" {
+			fmt.Fprintf(manager.stdout, "  NAT address: %s\n", nat[node.Name])
+		}
 		if observation.Installer != "" {
 			fmt.Fprintf(manager.stdout, "  Endpoint: %s\n", observation.State.Endpoint)
 		}
@@ -698,7 +703,9 @@ func matchingKatldevConfig(path, address string) (string, error) {
 		return "", fmt.Errorf("decode config: %w", err)
 	}
 	for _, node := range source.Spec.Nodes {
-		if node.Management.Address != address {
+		// A node behind NAT holds its kubernetes.address, not its
+		// management.address.
+		if node.Management.Address != address && node.Kubernetes.Address != address {
 			continue
 		}
 		layer, err := configbundle.ResolveNodeLayer(source.Spec.Defaults, node)

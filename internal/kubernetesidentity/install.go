@@ -110,14 +110,26 @@ func Install(root string, bundle Bundle) error {
 	}
 	for _, file := range identityFiles {
 		path := filepath.Join(pkiDir, filepath.FromSlash(file.path))
+		// The PKI directories keep kubeadm's 0755 so that unprivileged
+		// readers such as the API proxy reach the public CA certificates;
+		// the private keys stay 0600. Repairing the mode lets a rerun recover
+		// a node whose directories an earlier Install created 0700.
+		for dir := filepath.Dir(path); ; dir = filepath.Dir(dir) {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return fmt.Errorf("create kubeadm PKI directory for %s: %w", file.path, err)
+			}
+			if err := os.Chmod(dir, 0o755); err != nil {
+				return fmt.Errorf("open kubeadm PKI directory for %s: %w", file.path, err)
+			}
+			if dir == pkiDir {
+				break
+			}
+		}
 		if _, err := os.Stat(path); err == nil {
 			if err := os.Chmod(path, file.mode); err != nil {
 				return fmt.Errorf("secure kubeadm PKI file /etc/kubernetes/pki/%s: %w", file.path, err)
 			}
 			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-			return fmt.Errorf("create kubeadm PKI directory for %s: %w", file.path, err)
 		}
 		if err := writeAtomic(path, files[file.path], file.mode); err != nil {
 			return fmt.Errorf("install kubeadm PKI file /etc/kubernetes/pki/%s: %w", file.path, err)

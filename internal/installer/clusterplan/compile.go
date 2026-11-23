@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"maps"
 	"net"
-	"net/netip"
 	"reflect"
 	"slices"
 	"sort"
@@ -179,45 +178,15 @@ func attachAPIProxyConfigs(materials []NodeMaterial, nodes []inventory.Node, end
 	if len(materials) != len(nodes) {
 		return fmt.Errorf("API proxy node materials do not match bootstrap inventory")
 	}
-	backends := make([]apiproxy.Backend, 0, len(nodes))
-	addresses := make(map[string]string, len(nodes))
-	for i, node := range nodes {
-		if node.SystemRole != inventory.RoleControlPlane {
-			continue
-		}
-		address, known, err := directAPIAddress(materials[i], node)
+	for i := range materials {
+		config, known, err := inventory.APIProxyConfig(nodes, nodes[i].Name, endpoint.Endpoint)
 		if err != nil {
-			return fmt.Errorf("node %q API proxy: %w", node.Name, err)
+			return err
 		}
 		if !known {
 			// When an address is unknown at install time, the bootstrap candidate
 			// generation installs the complete proxy config.
 			return nil
-		}
-		addresses[node.Name] = address
-		backends = append(backends, apiproxy.Backend{
-			Name:    node.Name,
-			Address: net.JoinHostPort(address, "6443"),
-		})
-	}
-	for i := range materials {
-		listeners := []apiproxy.Listener{{
-			Address: net.JoinHostPort("127.0.0.1", "7445"), Exposure: apiproxy.ExposureNodeLocal,
-		}}
-		if nodes[i].SystemRole == inventory.RoleControlPlane {
-			listeners = append(listeners, apiproxy.Listener{
-				Address: net.JoinHostPort(addresses[nodes[i].Name], "7445"), Exposure: apiproxy.ExposureWorkstation,
-			})
-		}
-		nodeBackends := slices.Clone(backends)
-		for j := range nodeBackends {
-			nodeBackends[j].Local = nodeBackends[j].Name == nodes[i].Name
-		}
-		config, err := apiproxy.Normalize(apiproxy.Config{
-			TLSName: endpoint.Config.Host, CanonicalEndpoint: endpoint.Endpoint, Listeners: listeners, Backends: nodeBackends,
-		})
-		if err != nil {
-			return fmt.Errorf("node %q API proxy: %w", nodes[i].Name, err)
 		}
 		content, err := apiproxy.Render(config)
 		if err != nil {
@@ -232,24 +201,6 @@ func attachAPIProxyConfigs(materials []NodeMaterial, nodes []inventory.Node, end
 		}
 	}
 	return nil
-}
-
-func directAPIAddress(material NodeMaterial, node inventory.Node) (string, bool, error) {
-	value := strings.TrimSpace(material.InstallManifest.Node.Kubernetes.Address)
-	if value == "" {
-		value = strings.TrimSpace(node.Address)
-		if host, _, err := net.SplitHostPort(value); err == nil {
-			value = host
-		}
-	}
-	if value == "" {
-		return "", false, nil
-	}
-	address, err := netip.ParseAddr(value)
-	if err != nil || address.Zone() != "" || !address.IsGlobalUnicast() {
-		return "", false, fmt.Errorf("direct Kubernetes address %q must be a literal unicast IP; set nodes[].kubernetes.address when the bootstrap address is not one", value)
-	}
-	return address.String(), true, nil
 }
 
 func resolveControlPlaneEndpoint(config Config, addressOverrides map[string]string) (*controlplaneendpoint.Plan, error) {
@@ -425,6 +376,7 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 	invNode := inventory.Node{
 		Name:              name,
 		Address:           strings.TrimSpace(layer.Bootstrap.Address),
+		KubernetesAddress: installManifest.Node.Kubernetes.Address,
 		SystemRole:        role,
 		Access:            layer.Bootstrap.Access,
 		KubeadmConfig:     kubeadmConfig,

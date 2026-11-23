@@ -1609,12 +1609,13 @@ func planWipeInventory(inv inventory.Inventory) (inventory.Plan, error) {
 			return inventory.Plan{}, fmt.Errorf("node %q has unsupported role %q", node.Name, node.SystemRole)
 		}
 		plan.Nodes = append(plan.Nodes, inventory.PlannedNode{
-			Name:         node.Name,
-			Address:      node.Address,
-			SystemRole:   node.SystemRole,
-			Access:       inventory.Access{Method: "agent"},
-			EnrollmentID: node.EnrollmentID,
-			MachineID:    node.MachineID,
+			Name:              node.Name,
+			Address:           node.Address,
+			KubernetesAddress: node.KubernetesAddress,
+			SystemRole:        node.SystemRole,
+			Access:            inventory.Access{Method: "agent"},
+			EnrollmentID:      node.EnrollmentID,
+			MachineID:         node.MachineID,
 		})
 	}
 	return plan, nil
@@ -3447,6 +3448,7 @@ type inventoryDocument struct {
 type nodeDocument struct {
 	Name              string                `yaml:"name"`
 	Address           string                `yaml:"address"`
+	KubernetesAddress string                `yaml:"kubernetesAddress"`
 	SystemRole        inventory.SystemRole  `yaml:"systemRole"`
 	Access            accessDocument        `yaml:"access"`
 	KubeadmConfig     kubeadmConfigDocument `yaml:"kubeadmConfig"`
@@ -3471,9 +3473,10 @@ func (d inventoryDocument) inventory() inventory.Inventory {
 	nodes := make([]inventory.Node, 0, len(d.Nodes))
 	for _, node := range d.Nodes {
 		nodes = append(nodes, inventory.Node{
-			Name:       node.Name,
-			Address:    node.Address,
-			SystemRole: node.SystemRole,
+			Name:              node.Name,
+			Address:           node.Address,
+			KubernetesAddress: node.KubernetesAddress,
+			SystemRole:        node.SystemRole,
 			Access: inventory.Access{
 				Method:        node.Access.Method,
 				User:          node.Access.User,

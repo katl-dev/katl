@@ -193,7 +193,7 @@ func planEtcdRemovalState(ctx context.Context, inv inventory.Inventory, targetNa
 	if err != nil {
 		return etcdRemovalPlan{}, err
 	}
-	expectedPeer := etcdPeerURL(target.Address)
+	expectedPeer := etcdPeerURL(target.KubernetesHost())
 	var member *agentapi.EtcdMember
 	for _, candidate := range status.GetMembers() {
 		if candidate.GetName() == target.Name && containsString(candidate.GetPeerUrls(), expectedPeer) {
@@ -319,7 +319,7 @@ func submitEtcdRemoval(ctx context.Context, plan etcdRemovalPlan, timeout time.D
 		EtcdMemberRemove: &agentapi.EtcdMemberRemoveOperationRequest{
 			TargetNodeName:      plan.Target.Name,
 			TargetMemberId:      plan.Member.GetId(),
-			TargetPeerUrl:       etcdPeerURL(plan.Target.Address),
+			TargetPeerUrl:       etcdPeerURL(plan.Target.KubernetesHost()),
 			ExpectedClusterId:   plan.Status.GetClusterId(),
 			ExpectedMemberCount: uint32(len(plan.Status.GetMembers())),
 		},

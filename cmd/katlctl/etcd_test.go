@@ -44,6 +44,41 @@ func TestWipeNodePlansSafeControlPlaneMembershipRemoval(t *testing.T) {
 	}
 }
 
+func TestWipeNodeMatchesEtcdMemberAtKubernetesAddress(t *testing.T) {
+	// cp-3 is managed through NAT at 192.0.2.13; etcd advertises its own address.
+	inventoryPath := writeThreeControlPlaneInventory(t)
+	data, err := os.ReadFile(inventoryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data = bytes.Replace(data, []byte("address: 10.0.0.13\n"), []byte("address: 192.0.2.13\n  kubernetesAddress: 10.0.0.13\n"), 1)
+	if err := os.WriteFile(inventoryPath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cp3 := readyWipeClusterClient("machine-cp-3")
+	cp3.nodeStatus.Kubernetes = &agentapi.KubernetesStatus{State: "ready", Role: "control-plane"}
+	cp1 := readyWipeClusterClient("machine-cp-1")
+	cp1.etcdStatus = healthyThreeMemberEtcdStatus()
+	connector := newFakeWipeClusterConnector(map[string]*fakeKatlcAgentClient{"cp-1": cp1, "cp-3": cp3})
+	oldConnector := newWipeClusterConnector
+	newWipeClusterConnector = func() cluster.AgentConnector { return connector }
+	t.Cleanup(func() { newWipeClusterConnector = oldConnector })
+
+	var stdout, stderr bytes.Buffer
+	if err := run(context.Background(), []string{
+		"node", "wipe", "cp-3", "--inventory", inventoryPath, "--plan", "--output", "json",
+	}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	var report wipeNodeReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.EtcdCleanup != "planned" || report.EtcdMemberID != "3" {
+		t.Fatalf("etcd plan = %+v", report)
+	}
+}
+
 func TestWipeNodeResumesAfterEtcdMemberWasRemoved(t *testing.T) {
 	inventoryPath := writeThreeControlPlaneInventory(t)
 	cp3 := readyWipeClusterClient("machine-cp-3")

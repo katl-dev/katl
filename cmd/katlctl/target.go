@@ -142,7 +142,7 @@ func readManagementInventory(path string) (inventory.Inventory, error) {
 			if sourceNode.ControlPlane {
 				role = inventory.RoleControlPlane
 			}
-			inv.Nodes = append(inv.Nodes, inventory.Node{Name: name, Address: strings.TrimSpace(sourceNode.Management.Address), SystemRole: role})
+			inv.Nodes = append(inv.Nodes, inventory.Node{Name: name, Address: strings.TrimSpace(sourceNode.Management.Address), KubernetesAddress: strings.TrimSpace(sourceNode.Kubernetes.Address), SystemRole: role})
 		}
 		if inv.ControlPlaneEndpoint == "" {
 			for _, node := range inv.Nodes {
