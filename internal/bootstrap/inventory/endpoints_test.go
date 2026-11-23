@@ -57,6 +57,9 @@ func TestDecodeRecordedAddresses(t *testing.T) {
 		{input: "cp_1.home.arpa", endpoint: "cp_1.home.arpa:9443"},
 		{input: "worker_1.home.arpa:19443", endpoint: "worker_1.home.arpa:19443"},
 		{input: "fe80::1%eth0", endpoint: "[fe80::1%eth0]:9443"},
+		// v2026.11.1 recorded management.address unvalidated.
+		{input: "http://10.0.0.11", endpoint: "[http://10.0.0.11]:9443"},
+		{input: "node-1:agent", endpoint: "[node-1:agent]:9443"},
 	} {
 		t.Run(tc.input, func(t *testing.T) {
 			if _, err := ParseManagementAddress(tc.input); err == nil {
@@ -150,7 +153,7 @@ nodes:
 		}
 	}
 
-	for _, bad := range []string{`{"nodes":[{"address":"http://10.0.0.11"}]}`, `{"controlPlaneEndpoint":"api.lab.example"}`} {
+	for _, bad := range []string{`{"controlPlaneEndpoint":"api.lab.example"}`} {
 		if err := json.Unmarshal([]byte(bad), &Inventory{}); err == nil {
 			t.Errorf("decoding %s succeeded, want error", bad)
 		}

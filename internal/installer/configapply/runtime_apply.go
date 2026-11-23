@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/apiproxy"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/apivip"
 	"github.com/katl-dev/katl/internal/installer/confext"
@@ -806,6 +807,18 @@ func validateOverlay(path string, overlay NodeOverlay) error {
 	return nil
 }
 
+// sameKubernetesAddress reports whether two kubernetes.address values name the
+// same address, so the same address written another way, such as v4-mapped,
+// is not a node identity change.
+func sameKubernetesAddress(current, desired string) bool {
+	if current == desired {
+		return true
+	}
+	a, errA := inventory.ParseKubernetesAddress(current)
+	b, errB := inventory.ParseKubernetesAddress(desired)
+	return errA == nil && errB == nil && a == b
+}
+
 func applyOverlay(installManifest *manifest.Manifest, overlay NodeOverlay, kubernetesInitialized bool, domains *domainAccumulator, unsafeFiles *[]confext.NativeEtcFile) {
 	node := &installManifest.Node
 	if overlay.Identity != nil {
@@ -883,7 +896,7 @@ func applyOverlay(installManifest *manifest.Manifest, overlay NodeOverlay, kuber
 		}
 	}
 	if overlay.Kubernetes != nil {
-		addressChanged := node.Kubernetes.Address != overlay.Kubernetes.Address
+		addressChanged := !sameKubernetesAddress(node.Kubernetes.Address, overlay.Kubernetes.Address)
 		configChanged := node.Kubernetes.Kubeadm != overlay.Kubernetes.Kubeadm
 		node.Kubernetes = *overlay.Kubernetes
 		if configChanged {

@@ -444,26 +444,36 @@ func TestSelectInstallNode(t *testing.T) {
 	if _, err := selectInstallNode(manifest, "192.0.2.11"); err == nil || !strings.Contains(err.Error(), "matches multiple nodes") {
 		t.Fatalf("ambiguous address error = %v", err)
 	}
+
+	// Behind one NAT host, nodes differ only by agent port.
+	manifest.Cluster.BootstrapInventory.Nodes[0].Address = mustManagement(t, "198.18.0.10:19443")
+	manifest.Cluster.BootstrapInventory.Nodes[1].Address = mustManagement(t, "198.18.0.10:29443")
+	if got, err := selectInstallNode(manifest, "198.18.0.10:29443"); err != nil || got != "worker-1" {
+		t.Fatalf("NAT address with port = %q, %v, want worker-1", got, err)
+	}
+	if _, err := selectInstallNode(manifest, "198.18.0.10"); err == nil || !strings.Contains(err.Error(), "matches multiple nodes") {
+		t.Fatalf("NAT host without port error = %v", err)
+	}
 }
 
 func TestInstallEndpoint(t *testing.T) {
 	for _, test := range []struct {
-		name             string
-		endpoint         string
-		bootstrapAddress string
-		want             string
+		name       string
+		endpoint   string
+		configured string
+		want       string
 	}{
-		{name: "configured IPv4", bootstrapAddress: "192.0.2.11", want: "http://192.0.2.11:8080"},
-		{name: "configured IPv6", bootstrapAddress: "2001:db8::11", want: "http://[2001:db8::11]:8080"},
-		{name: "configured hostname", bootstrapAddress: "installer.home.arpa", want: "http://installer.home.arpa:8080"},
-		{name: "configured address with port", bootstrapAddress: "192.0.2.11:9080", want: "http://192.0.2.11:9080"},
-		{name: "explicit bare IP overrides configured address", endpoint: "192.0.2.42", bootstrapAddress: "192.0.2.11", want: "http://192.0.2.42:8080"},
-		{name: "explicit host and port overrides configured address", endpoint: "installer.test:9080", bootstrapAddress: "192.0.2.11", want: "http://installer.test:9080"},
-		{name: "explicit complete HTTP URL overrides configured address", endpoint: "http://installer.test:8080", bootstrapAddress: "192.0.2.11", want: "http://installer.test:8080"},
-		{name: "explicit complete HTTPS URL overrides configured address", endpoint: "https://installer.test:8443", bootstrapAddress: "192.0.2.11", want: "https://installer.test:8443"},
+		{name: "configured IPv4", configured: "192.0.2.11", want: "http://192.0.2.11:8080"},
+		{name: "configured IPv6", configured: "2001:db8::11", want: "http://[2001:db8::11]:8080"},
+		{name: "configured hostname", configured: "installer.home.arpa", want: "http://installer.home.arpa:8080"},
+		{name: "configured address with an agent port", configured: "192.0.2.11:19443", want: "http://192.0.2.11:8080"},
+		{name: "explicit bare IP overrides configured address", endpoint: "192.0.2.42", configured: "192.0.2.11", want: "http://192.0.2.42:8080"},
+		{name: "explicit host and port overrides configured address", endpoint: "installer.test:9080", configured: "192.0.2.11", want: "http://installer.test:9080"},
+		{name: "explicit complete HTTP URL overrides configured address", endpoint: "http://installer.test:8080", configured: "192.0.2.11", want: "http://installer.test:8080"},
+		{name: "explicit complete HTTPS URL overrides configured address", endpoint: "https://installer.test:8443", configured: "192.0.2.11", want: "https://installer.test:8443"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := resolveInstallEndpoint(test.endpoint, test.bootstrapAddress)
+			got, err := resolveInstallEndpoint(test.endpoint, mustManagement(t, test.configured).InstallerEndpoint())
 			if err != nil || got != test.want {
 				t.Fatalf("resolveInstallEndpoint() = %q, %v, want %q", got, err, test.want)
 			}

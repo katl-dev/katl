@@ -59,5 +59,17 @@ func TestReadsDataSavedByV2026_11_1(t *testing.T) {
 		if want := []string{"cp-1 cp_1.home.arpa:9443", "worker-1 worker_1.home.arpa:19443"}; !slices.Equal(endpoints, want) {
 			t.Errorf("management endpoints = %q, want %q", endpoints, want)
 		}
+
+		var installers []string
+		for _, node := range inv.Nodes {
+			installer, err := resolveInstallEndpoint("", node.InstallerEndpoint())
+			if err != nil {
+				t.Fatalf("node %s installer endpoint: %v", node.Name, err)
+			}
+			installers = append(installers, installer)
+		}
+		if want := []string{"http://cp_1.home.arpa:8080", "http://worker_1.home.arpa:8080"}; !slices.Equal(installers, want) {
+			t.Errorf("installer endpoints = %q, want %q", installers, want)
+		}
 	})
 }

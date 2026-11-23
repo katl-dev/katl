@@ -166,10 +166,19 @@ func ParseManagementAddress(value string) (ManagementAddress, error) {
 	return parseManagementAddress(value, true)
 }
 
-// DecodeManagementAddress parses a recorded management address, accepting
-// any host an earlier release recorded.
+// DecodeManagementAddress parses a recorded management address. Earlier
+// releases recorded management.address without validating it, so a value
+// that does not parse is kept verbatim as its host: it loads, and the node
+// is unreachable until the address is corrected, as it was before.
 func DecodeManagementAddress(value string) (ManagementAddress, error) {
-	return parseManagementAddress(value, false)
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ManagementAddress{}, fmt.Errorf("management address is required")
+	}
+	if address, err := parseManagementAddress(value, false); err == nil {
+		return address, nil
+	}
+	return ManagementAddress{Host: Host{name: value}}, nil
 }
 
 func parseManagementAddress(value string, strict bool) (ManagementAddress, error) {

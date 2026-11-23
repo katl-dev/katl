@@ -465,7 +465,7 @@ func (manager installerManager) observe(ctx context.Context, world katldevWorld,
 		if address == "" {
 			continue
 		}
-		endpoint := "http://" + net.JoinHostPort(address, "8080")
+		endpoint := "http://" + net.JoinHostPort(address, strconv.Itoa(inventory.InstallerPort))
 		if current, err := manager.installerStatus(ctx, endpoint); err == nil {
 			observation.Installer = current
 		} else if tcpReachable(ctx, net.JoinHostPort(address, strconv.Itoa(inventory.ManagementPort)), 500*time.Millisecond) {

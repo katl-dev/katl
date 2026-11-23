@@ -56,6 +56,7 @@ var endpointLiteralAllowlist = []endpointAllowance{
 	// katldev probes a world VM's reserved address, which is not yet in any
 	// inventory, to tell an installed node from a waiting installer.
 	{"cmd/katldev/installer.go", "inventory.ManagementPort"},
+	{"cmd/katldev/installer.go", "inventory.InstallerPort"},
 	// Help, error and template text that shows an operator the default.
 	{"cmd/katlc/main.go", "such as tcp://0.0.0.0:9443"},
 	{"cmd/katlctl/install.go", "check the installed system (port 9443)"},
