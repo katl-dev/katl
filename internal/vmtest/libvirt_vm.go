@@ -31,6 +31,9 @@ type VMBoot struct {
 	ImageFormat   DiskFormat
 	ImageSnapshot bool
 	ImageSerial   string
+	// ImageWithoutSerial attaches the image with no serial, like a virtual disk
+	// that reports no hardware identity.
+	ImageWithoutSerial bool
 }
 
 type VMConfig struct {
@@ -1353,6 +1356,9 @@ type domainVSockCID struct {
 func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, string, string, string, error) {
 	boot := config.Boot
 	bootImageSerial := first(boot.ImageSerial, "katl-boot")
+	if boot.ImageWithoutSerial {
+		bootImageSerial = ""
+	}
 	var disks []libvirtDisk
 	efiTree := filepath.Join(result.VMDir, "efi")
 	efiImage := ""

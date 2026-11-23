@@ -98,7 +98,7 @@ func TestApplyVolumesPreflightsBeforeStoppingExistingMount(t *testing.T) {
 		case "lsblk":
 			return ToolResult{Stdout: []byte(`{
   "blockdevices": [
-    {"name":"vda","path":"/dev/vda","type":"disk","serial":"root","size":68719476736,"ro":false,"mountpoints":[]},
+    {"name":"vda","path":"/dev/vda","type":"disk","serial":"root","size":68719476736,"ro":false,"mountpoints":[],"children":[{"name":"vda5","path":"/dev/vda5","type":"part","size":1073741824,"ro":false,"partlabel":"KATL_STATE","mountpoints":["/var"]}]},
     {"name":"vdb","path":"/dev/vdb","type":"disk","serial":"data","size":68719476736,"ro":false,"mountpoints":[],"children":[
       {"name":"vdb1","path":"/dev/vdb1","type":"part","size":68702699520,"ro":false,"fstype":"xfs","partuuid":"current","partlabel":"u-data","mountpoints":["/var/mnt/data"]}
     ]}
@@ -245,7 +245,7 @@ func duplicateLabelVolumeRunner() ToolRunner {
 		switch argv[0] {
 		case "lsblk":
 			return ToolResult{Stdout: []byte(`{"blockdevices":[
-{"name":"vda","path":"/dev/vda","type":"disk","serial":"root","size":68719476736,"ro":false,"mountpoints":[]},
+{"name":"vda","path":"/dev/vda","type":"disk","serial":"root","size":68719476736,"ro":false,"mountpoints":[],"children":[{"name":"vda5","path":"/dev/vda5","type":"part","size":1073741824,"ro":false,"partlabel":"KATL_STATE","mountpoints":["/var"]}]},
 {"name":"vdb","path":"/dev/vdb","type":"disk","serial":"old","size":68719476736,"ro":false,"mountpoints":[],"children":[{"name":"vdb1","path":"/dev/vdb1","type":"part","size":68702699520,"ro":false,"fstype":"xfs","uuid":"old-fs","partuuid":"old-part","partlabel":"u-data","mountpoints":["/var/mnt/data"]}]},
 {"name":"vdc","path":"/dev/vdc","type":"disk","serial":"new","size":68719476736,"ro":false,"mountpoints":[],"children":[{"name":"vdc1","path":"/dev/vdc1","type":"part","size":68702699520,"ro":false,"fstype":"xfs","uuid":"new-fs","partuuid":"new-part","partlabel":"u-data","mountpoints":[]}]}
 ]}`)}
@@ -273,7 +273,7 @@ func volumeAuthorityRunner(partitionTable string, mutations *[][]string) ToolRun
 				children = `,"children":[{"name":"vdb1","path":"/dev/vdb1","type":"part","size":68702699520,"ro":false,"fstype":"xfs","uuid":"fs-data","partuuid":"part-data","partlabel":"u-data","mountpoints":[]}]`
 			}
 			return ToolResult{Stdout: []byte(`{"blockdevices":[` +
-				`{"name":"vda","path":"/dev/vda","type":"disk","serial":"root","size":68719476736,"ro":false,"mountpoints":[]},` +
+				`{"name":"vda","path":"/dev/vda","type":"disk","serial":"root","size":68719476736,"ro":false,"mountpoints":[],"children":[{"name":"vda5","path":"/dev/vda5","type":"part","size":1073741824,"ro":false,"partlabel":"KATL_STATE","mountpoints":["/var"]}]},` +
 				`{"name":"vdb","path":"/dev/vdb","type":"disk","serial":"data","size":68719476736,"ro":false,"mountpoints":[]` + pttype + children + `}` +
 				`]}`)}
 		case "findmnt":
@@ -342,5 +342,25 @@ func TestVolumeTransitionPlanRetainsTombstonesWithoutDesiredVolumes(t *testing.T
 	}
 	if !reflect.DeepEqual(plan.bindings, bindings) {
 		t.Fatalf("bindings = %#v, want retained tombstone %#v", plan.bindings, bindings)
+	}
+}
+
+func TestRunningSystemDiskUsesMountedState(t *testing.T) {
+	facts := discovery.HardwareFacts{
+		BlockDevices: []discovery.BlockDevice{
+			{Path: "/dev/sda", Type: discovery.DeviceDisk, Partitions: []discovery.BlockDevice{{Path: "/dev/sda5", Type: discovery.DevicePartition, GPTLabel: "KATL_STATE"}}},
+			{Path: "/dev/sdb", Type: discovery.DeviceDisk, Partitions: []discovery.BlockDevice{{Path: "/dev/sdb5", Type: discovery.DevicePartition, GPTLabel: "KATL_STATE"}}},
+		},
+		Mounts: []discovery.MountFact{{Source: "/dev/sdb5", Target: "/var"}},
+	}
+
+	got, err := runningSystemDisk(facts)
+	if err != nil || got.Path != "/dev/sdb" {
+		t.Fatalf("runningSystemDisk() = %s, %v; want /dev/sdb, the disk whose state is mounted", got.Path, err)
+	}
+
+	facts.Mounts = nil
+	if _, err := runningSystemDisk(facts); err == nil {
+		t.Fatal("runningSystemDisk() error = nil without a mounted /var, want failure")
 	}
 }

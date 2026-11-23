@@ -37,7 +37,7 @@ and "—" means the field has no default.
 | `spec.defaults.generationRetention` | [Automatic generation cleanup](#generation-retention) | `keepLast: 5`, `maxAge: 30d` | Live |
 | `spec.nodes[].name` | Stable node name | — | See the [node lifecycle matrix](../operations/configure-nodes.md#node-lifecycle-matrix) |
 | `spec.nodes[].controlPlane` | Join the Kubernetes control plane | `false` (worker) | Wipe and reinstall |
-| `spec.nodes[].install.systemDisk` | System disk for installation; required | — | Installation only |
+| `spec.nodes[].install.systemDisk` | [System disk](#system-disk) for installation; required | — | Installation only |
 | `spec.nodes[].management.address` | [Operator-reachable address](#node-addresses) used by `katlctl` | — | Workstation targeting only |
 | `spec.nodes[].kubernetes.address` | [Kubernetes node address](#node-addresses) on a multihomed node | — | Refused as an operation-only change |
 
@@ -534,6 +534,98 @@ runtime mounting, generation and machine identity, and recovery targets.
 Arguments that would override that policy fail validation with the offending
 list entry. Image-required and Katl-owned arguments remain internal and are
 always carried alongside the configured additions.
+
+## System disk
+
+`install.systemDisk` selects the whole disk that installation erases. Every
+criterion you set must match, and together they must match exactly one whole
+disk, which must be writable, unmounted, and at least `minSizeMiB` if you set
+it. Mounted and read-only disks still count toward that match, so a selector
+never resolves differently because another disk happens to be in use. When no
+disk or several disks match, installation stops before touching any disk and
+lists each candidate with the identities it reports. Katl never falls back to
+the first match, a device name, or the only disk present.
+
+```yaml
+install:
+  systemDisk:
+    byID: /dev/disk/by-id/nvme-Samsung_SSD_990_PRO_2TB_S7KHNJ0X123456
+```
+
+Use `byID`, `wwn`, or `serial` whenever the installer reports one. These name
+the disk hardware itself, so they keep selecting the same disk however it is
+attached or enumerated, and `katlctl config init` and `config add-node` record
+one of them for every disk that has it. Neither command chooses a disk without
+a hardware identity on its own; name such a disk with `--node` or `--disk`.
+Other criteria select disks that report no hardware identity, such as many
+virtual disks, or narrow a class of disks, and each gives a weaker guarantee:
+
+| Field | Matches | Guarantee |
+| --- | --- | --- |
+| `byID` | A `/dev/disk/by-id/` alias of the disk | Stable hardware identity; recommended |
+| `wwn` | The device world-wide name | Stable hardware identity; recommended |
+| `serial` | The device serial number | Stable hardware identity; recommended |
+| `byPath` | A `/dev/disk/by-path/` alias, such as `/dev/disk/by-path/pci-0000:00:04.0` | Identifies the attachment slot: a replacement disk in the same slot matches, and moving the disk or changing the controller or VM topology stops it matching |
+| `gptGUID` | The GPT disk GUID of the current partition table | Identifies disk contents: cloned disks share it, and installation replaces it |
+| `name` | A kernel device path such as `/dev/sda` or `/dev/nvme0n1` | Enumeration order can change between boots or when disks are added |
+| `model` | The device model, case-sensitively; `*` matches any run of characters and `?` one character | Often shared by every disk of a model |
+| `size` | The device size, such as `">= 500GB"`, `"<= 2TiB"`, or `"64GiB"` | Ambiguous whenever several disks fit |
+| `type` | `nvme`, `ssd`, or `hdd` | Ambiguous whenever several disks fit |
+
+`size` accepts `>=`, `<=`, `>`, `<`, or `==` followed by a number and a
+decimal (`KB`, `MB`, `GB`, `TB`) or binary (`KiB`, `MiB`, `GiB`, `TiB`) unit.
+Without a comparison the size must match exactly in bytes. The installer
+inventory reports each disk's `sizeBytes`.
+
+Combine weak criteria so they identify one disk. For example, a machine whose
+only NVMe disk is the system disk can use:
+
+```yaml
+install:
+  systemDisk:
+    type: nvme
+    size: ">= 500GB"
+```
+
+`katlctl config init`, `config add-node`, and `install apply` print a warning
+for a node whose system disk is selected without `byID`, `wwn`, or `serial`.
+`spec.defaults.install.systemDisk` may set `model`, `size`, `type`, and
+`minSizeMiB` to narrow every node's selection. Each node must still set at
+least one criterion of its own, so defaults never choose a disk; its fields
+layer over the defaults, and an empty string clears an inherited criterion.
+Selectors that identify one disk, namely `byID`, `wwn`, `serial`, `byPath`,
+`gptGUID`, and `name`, must be set per node. [Data volume](#data-volumes) disks accept only
+`byID`, `wwn`, or `serial`.
+
+### Selection during and after installation
+
+The installer resolves the selector once, against the disks present
+immediately before it changes anything, and binds the install to that disk.
+Immediately before wiping, and again before partitioning, it checks that the
+same disk is still attached, unchanged, still matches the selector, and is
+still unmounted, and it addresses the destructive commands to that disk's
+kernel attachment sequence rather than its name. If the check fails before
+wiping, the installer refuses the request without touching the disk and waits
+for another `katlctl install apply`; if it fails after wiping, it stops before
+partitioning and the installer must be booted again. The GPT disk GUID is the
+one criterion not rechecked, because wiping the disk removes it.
+
+After installation Katl does not use `install.systemDisk` again. The installed
+system finds its disk through the partitions Katl created, which receive fresh
+random partition and disk GUIDs on every install, and live volume changes
+treat the disk holding the mounted state partition as the system disk. Editing
+`install.systemDisk` on an installed node therefore has no effect until the
+node is reinstalled.
+
+On a reinstall the installer resolves the selector again from scratch. A
+`gptGUID` selector is then stale: the previous install replaced the partition
+table, so the selector matches no disk and the installer stops, listing the
+disks and their current identities. A `name`, `byPath`, `model`, `size`, or
+`type` selector matches whichever disk fits it at that moment, which need not
+be the disk installed before. Check the installer inventory with
+`katlctl install status --endpoint ADDRESS`, which lists each disk with the
+selector configuration generation would choose, and update
+`install.systemDisk`, preferably to a stable identity, before reinstalling.
 
 ## Data volumes
 

@@ -190,7 +190,7 @@ func TestRunPrepareMkosiRefreshAndStrict(t *testing.T) {
 	writeKubernetesMetadata(t, filepath.Join(mkosiDir, "katl-kubernetes.raw.json"), "0:1.36.0-150500.1.1")
 	writeInstallerPackages(t, filepath.Join(mkosiDir, "katl-installer.packages.tsv"), "systemd-0:259.6-1.fc44.x86_64")
 	writeInstallerPackages(t, filepath.Join(mkosiDir, "katl-runtime.packages.tsv"), "systemd-0:259.6-1.fc44.x86_64")
-	writeFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos")
+	writeBuiltKatlOSImage(t, mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs")
 
 	manifestPath := filepath.Join(dir, "resource-manifest.json")
 	lockPath := filepath.Join(dir, "resource-package-lock.json")
@@ -616,7 +616,7 @@ func TestRunPrepareMkosiStrictIgnoresKatlOSComponentChecksumDrift(t *testing.T) 
 		t.Fatalf("mkdir runtime root: %v", err)
 	}
 	writeFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
-	writeFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos")
+	writeBuiltKatlOSImage(t, mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs")
 	readKatlOSIndex = func(path string) (katlosIndex, error) {
 		return katlosTestIndex(strings.Repeat("d", 64)), nil
 	}
@@ -675,7 +675,7 @@ func TestRunPrepareMkosiStrictRejectsKatlOSPackageVersionDrift(t *testing.T) {
 		t.Fatalf("mkdir runtime root: %v", err)
 	}
 	writeFile(t, filepath.Join(mkosiDir, "katl-runtime-root.squashfs"), "runtime")
-	writeFile(t, filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"), "katlos")
+	writeBuiltKatlOSImage(t, mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs")
 	readKatlOSIndex = func(path string) (katlosIndex, error) {
 		return katlosTestIndex(strings.Repeat("d", 64)), nil
 	}
@@ -926,5 +926,25 @@ func katlosTestIndex(runtimeSHA string) katlosIndex {
 			Version:      "test",
 			Architecture: "x86_64",
 		}},
+	}
+}
+
+// writeBuiltKatlOSImage writes an install image and records it in the mkosi
+// artifact index the way a build does.
+func writeBuiltKatlOSImage(t *testing.T, mkosiDir, name string) {
+	t.Helper()
+	writeFile(t, filepath.Join(mkosiDir, name), "katlos")
+	writeFile(t, filepath.Join(mkosiDir, "artifacts.json"), `{"artifacts":[{"kind":"runtime-root","path":"_build/mkosi/katl-runtime-root.squashfs"},{"kind":"katlos-install-image","path":"_build/mkosi/`+name+`"}]}`)
+}
+
+func TestFindKatlOSImageUsesBuildIndex(t *testing.T) {
+	mkosiDir := t.TempDir()
+	writeFile(t, filepath.Join(mkosiDir, "katlos-install-2026.11.0-local.old-x86_64.squashfs"), "stale")
+	writeBuiltKatlOSImage(t, mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs")
+
+	got, err := findKatlOSImage(mkosiDir)
+
+	if want := filepath.Join(mkosiDir, "katlos-install-0.0.0-dev-x86_64.squashfs"); err != nil || got != want {
+		t.Fatalf("findKatlOSImage() = %q, %v; want the indexed %q, not the lexically last image", got, err, want)
 	}
 }

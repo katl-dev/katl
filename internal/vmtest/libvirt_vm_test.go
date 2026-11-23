@@ -133,6 +133,18 @@ func TestVMDomainDisksUsesConfiguredBootImageSerial(t *testing.T) {
 	}
 }
 
+func TestVMDomainDisksOmitsSerialForIdentitylessBootImage(t *testing.T) {
+	disks, _, _, _, _, err := vmDomainDisks(Result{VMDir: t.TempDir()}, VMConfig{
+		Boot: VMBoot{Image: "/tmp/root.raw", ImageFormat: DiskRaw, ImageWithoutSerial: true},
+	})
+	if err != nil {
+		t.Fatalf("vmDomainDisks() error = %v", err)
+	}
+	if len(disks) != 1 || disks[0].Serial != "" {
+		t.Fatalf("disks = %#v, want one boot disk without a serial", disks)
+	}
+}
+
 func TestVMPlanReservesHotplugPCISlots(t *testing.T) {
 	result, config := vmFixture(t)
 	probe := probe{

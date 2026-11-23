@@ -223,19 +223,29 @@ func nodeProvenance(node SourceNode, resolved SourceNodeLayer, base string) []Fi
 		choose(fmt.Sprintf("systemExtensions[repository=%q]", extension.repository()), nodeExtensionsSet && hasExtension(nodeExtensions, extension.repository()))
 	}
 	resolvedSystemDisk := resolved.Install.SystemDisk
-	diskFields := []struct {
+	systemDiskFields := []struct {
 		name string
-		used bool
-		set  bool
+		get  func(*SourceSystemDiskSelector) Optional[string]
 	}{
-		{"byID", optionalStringSet(resolvedSystemDisk, func(v *SourceDiskSelector) Optional[string] { return v.ByID }), optionalStringSet(node.Install.SystemDisk, func(v *SourceDiskSelector) Optional[string] { return v.ByID })},
-		{"wwn", optionalStringSet(resolvedSystemDisk, func(v *SourceDiskSelector) Optional[string] { return v.WWN }), optionalStringSet(node.Install.SystemDisk, func(v *SourceDiskSelector) Optional[string] { return v.WWN })},
-		{"serial", optionalStringSet(resolvedSystemDisk, func(v *SourceDiskSelector) Optional[string] { return v.Serial }), optionalStringSet(node.Install.SystemDisk, func(v *SourceDiskSelector) Optional[string] { return v.Serial })},
-		{"minSizeMiB", optionalUintSet(resolvedSystemDisk), optionalUintSet(node.Install.SystemDisk)},
+		{"byID", func(v *SourceSystemDiskSelector) Optional[string] { return v.ByID }},
+		{"wwn", func(v *SourceSystemDiskSelector) Optional[string] { return v.WWN }},
+		{"serial", func(v *SourceSystemDiskSelector) Optional[string] { return v.Serial }},
+		{"byPath", func(v *SourceSystemDiskSelector) Optional[string] { return v.ByPath }},
+		{"gptGUID", func(v *SourceSystemDiskSelector) Optional[string] { return v.GPTGUID }},
+		{"name", func(v *SourceSystemDiskSelector) Optional[string] { return v.Name }},
+		{"model", func(v *SourceSystemDiskSelector) Optional[string] { return v.Model }},
+		{"size", func(v *SourceSystemDiskSelector) Optional[string] { return v.Size }},
+		{"type", func(v *SourceSystemDiskSelector) Optional[string] { return v.Type }},
 	}
-	for _, field := range diskFields {
-		if field.used {
-			choose("install.systemDisk."+field.name, field.set)
+	for _, field := range systemDiskFields {
+		if optionalStringSet(resolvedSystemDisk, field.get) {
+			choose("install.systemDisk."+field.name, optionalStringSet(node.Install.SystemDisk, field.get))
+		}
+	}
+	if resolvedSystemDisk != nil {
+		if _, ok := resolvedSystemDisk.MinSizeMiB.Get(); ok {
+			_, fromNode := node.Install.SystemDisk.minSizeMiB()
+			choose("install.systemDisk.minSizeMiB", fromNode)
 		}
 	}
 	resolvedDisks, _ := resolved.Storage.Volumes.Get()
@@ -400,7 +410,7 @@ func storageVolume(values []SourceStorageVolume, name string) (SourceStorageVolu
 	return SourceStorageVolume{}, false
 }
 
-func optionalStringSet(selector *SourceDiskSelector, get func(*SourceDiskSelector) Optional[string]) bool {
+func optionalStringSet[S any](selector *S, get func(*S) Optional[string]) bool {
 	if selector == nil {
 		return false
 	}

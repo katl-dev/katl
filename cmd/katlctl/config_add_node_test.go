@@ -206,7 +206,7 @@ func TestConfigAddNodeRefusals(t *testing.T) {
 				{Path: "/dev/vda", ByID: []string{"/dev/disk/by-id/virtio-new"}, Selectable: true},
 				{Path: "/dev/vdb", ByID: []string{"/dev/disk/by-id/virtio-data"}, Selectable: true},
 			},
-			want: []string{"2 selectable disks (/dev/vda, /dev/vdb)", "--disk"},
+			want: []string{"2 selectable disks: /dev/vda (", "--disk"},
 		},
 		{
 			name: "unknown disk", config: addNodeIndentedConfig,
@@ -304,4 +304,79 @@ func readAddNodeConfig(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+func TestConfigAddNodeWithoutHardwareIdentity(t *testing.T) {
+	identityless := handoff.HandoffDisk{Path: "/dev/vda", ByPath: []string{"/dev/disk/by-path/virtio-pci-0000:00:04.0", "/dev/disk/by-path/pci-0000:00:04.0"}, GPTGUID: "6f1e3c2a-8d4b-4f5e-9a7c-1b2d3e4f5a6b", Selectable: true}
+
+	t.Run("not chosen implicitly", func(t *testing.T) {
+		installer := addNodeInstaller(t, handoff.HandoffWaiting, identityless)
+		path := writeAddNodeConfig(t, addNodeIndentedConfig)
+
+		err := run(context.Background(), []string{"config", "add-node", path, "--installer", installer}, io.Discard, io.Discard)
+
+		if err == nil || !strings.Contains(err.Error(), "will not choose it implicitly") || !strings.Contains(err.Error(), "byPath=/dev/disk/by-path/pci-0000:00:04.0") || !strings.Contains(err.Error(), "--disk") {
+			t.Fatalf("error = %v, want refusal naming the disk's identities and --disk", err)
+		}
+		if got := readAddNodeConfig(t, path); got != addNodeIndentedConfig {
+			t.Fatalf("refusal changed config:\n%s", got)
+		}
+	})
+
+	for _, tt := range []struct {
+		name     string
+		disks    []handoff.HandoffDisk
+		disk     string
+		selector string
+		warning  string
+	}{
+		{
+			name:     "attachment path",
+			disks:    []handoff.HandoffDisk{identityless},
+			disk:     "/dev/disk/by-path/pci-0000:00:04.0",
+			selector: "byPath: /dev/disk/by-path/pci-0000:00:04.0\n",
+			warning:  "attachment slot",
+		},
+		{
+			name: "kernel name among several disks",
+			disks: []handoff.HandoffDisk{
+				{Path: "/dev/sda", Selectable: true},
+				{Path: "/dev/sdb", ByID: []string{"/dev/disk/by-id/ata-data"}, Selectable: true},
+			},
+			disk:     "/dev/sda",
+			selector: "name: /dev/sda\n",
+			warning:  "enumeration order",
+		},
+		{
+			name: "kernel name of a disk with a hardware identity",
+			disks: []handoff.HandoffDisk{
+				{Path: "/dev/sda", Selectable: true},
+				{Path: "/dev/sdb", ByID: []string{"/dev/disk/by-id/ata-data"}, Selectable: true},
+			},
+			disk:     "/dev/sdb",
+			selector: "byID: /dev/disk/by-id/ata-data\n",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			installer := addNodeInstaller(t, handoff.HandoffWaiting, tt.disks...)
+			path := writeAddNodeConfig(t, addNodeIndentedConfig)
+			var stderr bytes.Buffer
+
+			args := []string{"config", "add-node", path, "--installer", installer, "--disk", tt.disk}
+			if err := run(context.Background(), args, io.Discard, &stderr); err != nil {
+				t.Fatal(err)
+			}
+
+			if got := readAddNodeConfig(t, path); !strings.Contains(got, "systemDisk:\n                "+tt.selector) {
+				t.Errorf("config does not select %q:\n%s", tt.selector, got)
+			}
+			warned := strings.Contains(stderr.String(), "warning: node worker-1")
+			if tt.warning == "" && warned {
+				t.Errorf("stderr = %q, want no weak-selector warning", stderr.String())
+			}
+			if tt.warning != "" && (!warned || !strings.Contains(stderr.String(), tt.warning)) {
+				t.Errorf("stderr = %q, want a weak-selector warning mentioning %q", stderr.String(), tt.warning)
+			}
+		})
+	}
 }

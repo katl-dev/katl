@@ -989,16 +989,32 @@ func artifactFromPath(name, kind, path string) (resourcetest.Artifact, bool, err
 	}, true, nil
 }
 
+// findKatlOSImage returns the install image the last mkosi build recorded in
+// its artifact index. Images from earlier builds stay in the directory under
+// other version names, so the newest name is not the newest build.
 func findKatlOSImage(mkosiDir string) (string, error) {
-	matches, err := filepath.Glob(filepath.Join(mkosiDir, "katlos-install-*.squashfs"))
-	if err != nil {
-		return "", err
-	}
-	if len(matches) == 0 {
+	data, err := os.ReadFile(filepath.Join(mkosiDir, "artifacts.json"))
+	if errors.Is(err, fs.ErrNotExist) {
 		return "", nil
 	}
-	slices.Sort(matches)
-	return matches[len(matches)-1], nil
+	if err != nil {
+		return "", fmt.Errorf("read mkosi artifact index: %w", err)
+	}
+	var index struct {
+		Artifacts []struct {
+			Kind string `json:"kind"`
+			Path string `json:"path"`
+		} `json:"artifacts"`
+	}
+	if err := json.Unmarshal(data, &index); err != nil {
+		return "", fmt.Errorf("decode mkosi artifact index: %w", err)
+	}
+	for _, artifact := range index.Artifacts {
+		if artifact.Kind == "katlos-install-image" {
+			return filepath.Join(mkosiDir, filepath.Base(artifact.Path)), nil
+		}
+	}
+	return "", nil
 }
 
 func setLockDigest(sets []resourcetest.PackageSet, digest string) []resourcetest.PackageSet {
