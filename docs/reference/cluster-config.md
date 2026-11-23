@@ -629,12 +629,14 @@ write the inactive root slot on the same disk, and live volume changes treat
 the disk holding the mounted state partition as the system disk. Other disks
 that carry Katl partitions may stay attached. [Data volume](#data-volumes)
 disks are bound the same way while Katl provisions them: install and live
-apply recheck each selected disk immediately before writing it, address the
-disk, or the selected partition on it, by the disk's kernel attachment
+apply recheck every selected volume disk before the first write and each one
+again immediately before writing it, address the disk, or the selected partition on it, by the disk's kernel attachment
 sequence, and record the volume's PARTUUID or filesystem UUID only when it is
 found on that disk and shared with no other disk. At boot a volume mounts by
 that recorded identity without rechecking its disk, so a copy of a data disk
-attached later could be mounted in its place. The node stops in emergency mode
+attached later could be mounted in its place. A disk for which udev creates no
+`/dev/disk/by-diskseq` link, such as a `nullb` or AoE device, is refused at
+planning, as a system disk or a volume disk to write. The node stops in emergency mode
 before mounting `/var` when the system disk does not hold exactly one ESP and
 one state partition, when another disk shares its partition GUIDs, as a cloned
 disk does, or when the firmware booted the ESP of another disk. The console
@@ -692,11 +694,14 @@ For a disk selector, `wipe: true` lets Katl reinitialize the disk and create
 its convention-labeled partition with `systemd-repart`. For a partition
 selector, Katl formats only the selected partition and never repartitions its
 parent disk. Live apply refuses mounted or otherwise active destructive targets
-rather than disrupting workloads.
+rather than disrupting workloads. If a live apply fails after it started
+repartitioning or formatting a volume, that volume is left unmounted and named
+in the error; fix the cause and apply again to finish preparing it.
 
 Choose the target with a unique stable selector. Wipe authorization does not
 bypass ambiguous selection, active-device checks, or conflicts with the system
-disk and other volumes. Once provisioned, an unchanged generation-bound volume
+disk and other volumes, including volumes already provisioned on the node,
+mounted or not. Once provisioned, an unchanged generation-bound volume
 is reused on repeated applies and reboot; retaining `wipe: true` does not erase
 its contents again. Replacing a bound volume additionally requires
 [`--rebind-volume`](#replace-a-bound-volume).
