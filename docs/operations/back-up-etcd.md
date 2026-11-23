@@ -57,9 +57,8 @@ snapshot on each pending control plane at
 report records each snapshot's path, revision, and SHA-256 digest: the
 `--output json` report includes them, and the text output prints them when the
 rollout stops with recovery required. These files
-are kept on the node's writable state storage, or on the dedicated etcd
-partition when one was installed, and each is about the size of the etcd
-database.
+are kept on the node's writable state storage, and each is about the size of
+the etcd database.
 
 When a control plane's upgrade succeeds, Katl keeps the two newest pre-upgrade
 snapshots on that node and deletes older ones. It never deletes a snapshot

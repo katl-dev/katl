@@ -258,7 +258,7 @@ inherit their versioning rules.
 | `/var/lib/katl/kubernetes/etc-kubernetes` | kubeadm, kubelet | Persistent backing store for kubeadm-owned `/etc/kubernetes` | Native `/var`; bind-mounted to `/etc/kubernetes` before kubelet/kubeadm automation |
 | `/var/lib/kubelet` | kubelet, with kubeadm-written bootstrap/config files | Mutable pod state, plugin state, checkpoints, kubelet config, and `kubeadm-flags.env` | Native `/var`; persistent across root updates |
 | `/var/lib/containerd` | containerd, kubelet | Mutable image/content/snapshot/container state | Native `/var`; persistent across root updates |
-| `/var/lib/etcd` | etcd static pod, kubeadm | Mutable control-plane database | Native `/var` by default or optional dedicated partition mounted at `/var/lib/etcd` |
+| `/var/lib/etcd` | etcd static pod, kubeadm | Mutable control-plane database | Native directory on `/var` |
 | `/var/log/journal` | systemd-journald | Optional persistent logs | Native `/var`; may be absent when persistent journald is disabled |
 | `/run` | systemd, Katl runtime selector, services | Ephemeral boot state only | Never persistent; `katl-generation-activate.service` regenerates selected extension links, app live status roots, locks, and operation gates each boot |
 | `/tmp` | applications | Ephemeral | Never persistent |
@@ -350,7 +350,7 @@ The concrete first implementation rules are:
 | `/var` | `KATL_STATE` on the disk holding the running root, mounted by the generated `var.mount` | All persistent node services |
 | `/var/lib/containerd` | Native directory on `/var`, no bind mount | `containerd.service` orders after `var.mount` and uses `RequiresMountsFor=/var/lib/containerd` |
 | `/var/lib/kubelet` | Native directory on `/var`, no bind mount | `kubelet.service` orders after `var.mount`, `containerd.service`, and `etc-kubernetes.mount` |
-| `/var/lib/etcd` | Native directory on `/var` by default; optional `var-lib-etcd.mount` for a Katl-owned `KATL_ETCD` partition | Kubelet, kubeadm automation, and `katl-kubeadm-ready.target` order after the optional mount when present |
+| `/var/lib/etcd` | Native directory on `/var` | Kubelet, kubeadm automation, and `katl-kubeadm-ready.target` order after `var.mount` |
 | `/etc/kubernetes` | Bind mount from `/var/lib/katl/kubernetes/etc-kubernetes` with `etc-kubernetes.mount` | Kubelet, kubeadm automation, and `katl-kubeadm-ready.target` order after the projection |
 
 The detailed mount rules are recorded in

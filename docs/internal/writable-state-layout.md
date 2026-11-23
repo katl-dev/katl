@@ -47,31 +47,7 @@ control-plane services need the path. This keeps worker nodes, single-node
 experiments, and control-plane nodes on the same base install layout until the
 installer has role-aware storage policy.
 
-A dedicated etcd data partition is a future Katl-owned root-disk partition, not
-an `install.volumes` mount. When exposed in the install manifest, it should be a
-first-class field under install storage, for example:
-
-```json
-{
-  "install": {
-    "storage": {
-      "etcd": {
-        "dedicatedPartition": {
-          "sizeMiB": 16384,
-          "filesystem": "ext4"
-        }
-      }
-    }
-  }
-}
-```
-
-That request means: carve a `KATL_ETCD` partition from the selected target root
-disk, format it with the requested filesystem, and mount it at `/var/lib/etcd`.
-It must reduce the remaining `KATL_STATE` size and fail planning if the target
-disk cannot still satisfy both root slots and the minimum state partition size.
-The initial filesystem should be `ext4`; adding `xfs` support needs explicit
-validation and mount-unit coverage.
+Katl does not plan, create, or mount a dedicated etcd partition.
 
 Unsafe cases must be rejected rather than interpreted as etcd storage:
 
@@ -79,9 +55,6 @@ Unsafe cases must be rejected rather than interpreted as etcd storage:
   its partitions.
 - Duplicate or invalid extra-disk names, which would collide below
   `/var/lib/katl/mnt`.
-- Dedicated etcd partition requests without a positive size, with a filesystem
-  outside the supported allowlist, or that leave less than the minimum state
-  partition size.
 - Any attempt to store etcd under `/run`, `/etc`, `/usr`, `/tmp`, kubelet state,
   containerd state, or Katl generation state.
 
@@ -94,7 +67,6 @@ paths for services:
 | --- | --- | --- | --- |
 | `var.mount` | `KATL_STATE` partition on the disk holding the running root, generated at boot by `katl-system-disk-generator` | `/var` | Required local filesystem; no `nofail`; must be active before any persistent node service starts |
 | `etc-kubernetes.mount` | `/var/lib/katl/kubernetes/etc-kubernetes` bind source | `/etc/kubernetes` | Only writable `/etc` projection in the first implementation; active after confext and before kubelet or kubeadm automation |
-| `var-lib-etcd.mount` | optional installed `KATL_ETCD` partition by PARTUUID | `/var/lib/etcd` | Generated only when a dedicated etcd partition was planned; active before kubelet, kubeadm automation, and the kubeadm-ready target |
 | `var-mnt-<name>.mount` | generation-owned PARTUUID or filesystem UUID | `/var/mnt/<name>` | Generated for each configured volume; labels and selectors are discovery inputs only, the resolved identity is persisted in generation metadata, replacement requires one-shot rebind authority, and all mounts are required before boot health succeeds |
 
 No mount units are generated for `/var/lib/kubelet` or
@@ -120,11 +92,8 @@ katl-kubeadm-ready.target
   After=containerd.service etc-kubernetes.mount
 ```
 
-When `var-lib-etcd.mount` exists, kubelet, kubeadm automation units, and
-`katl-kubeadm-ready.target` must also order after it and require
-`/var/lib/etcd` with `RequiresMountsFor=`. When it does not exist,
-`/var/lib/etcd` is just a native directory on `/var`, and the `/var` dependency
-is sufficient.
+`/var/lib/etcd` is a native directory on `/var`, so the `/var` dependency is
+sufficient for kubelet, kubeadm automation units, and `katl-kubeadm-ready.target`.
 
 The ordering rule is intentionally about local prerequisites only. Katl may
 require containerd and projected Kubernetes state before declaring the runtime
@@ -163,7 +132,7 @@ exist on the state partition:
 | `/var/lib/katl/ssh/host-keys` | `root:root` | `0700` | Backing store for persistent SSH host keys |
 | `/var/lib/kubelet` | `root:root` | created by package/tmpfiles | Kubelet native persistent state |
 | `/var/lib/containerd` | `root:root` | created by package/tmpfiles | Containerd native persistent state |
-| `/var/lib/etcd` | `root:root` | created by kubeadm/etcd or mount | Etcd data when not using a dedicated etcd partition |
+| `/var/lib/etcd` | `root:root` | created by kubeadm/etcd | Etcd data on `KATL_STATE` |
 | `/var/log/journal` | `root:systemd-journal` | created by systemd-journald | Persistent journal, only when enabled |
 
 Generation content and `spec.json` are immutable after creation. Only

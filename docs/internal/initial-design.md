@@ -376,9 +376,6 @@ root-b
 
 state
   ext4 initially, mounted at /var, consumes remaining root disk space
-
-optional etcd
-  later profile option, mounted at /var/lib/etcd when used
 ```
 
 Root slots are immutable and versioned. The state partition is the durable
