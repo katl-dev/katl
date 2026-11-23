@@ -376,7 +376,6 @@ type SizeMatch struct {
 }
 
 var sizeUnits = map[string]float64{
-	"":    1,
 	"b":   1,
 	"kb":  1e3,
 	"mb":  1e6,
@@ -393,12 +392,18 @@ var sizeUnits = map[string]float64{
 var sizePattern = regexp.MustCompile(`^(>=|<=|==|>|<)?\s*([0-9]+(?:\.[0-9]+)?)\s*([A-Za-z]*)$`)
 
 // ParseSizeMatch parses an optional comparison (>=, <=, >, <, ==) followed by
-// a size with an optional decimal (KB, MB, GB, TB, PB) or binary (KiB, MiB,
-// GiB, TiB, PiB) unit. Without a comparison the size must match exactly.
+// a size with a byte (B), decimal (KB, MB, GB, TB, PB), or binary (KiB, MiB,
+// GiB, TiB, PiB) unit. Without a comparison the size must match exactly. The
+// unit is required: read as bytes, a bare number such as ">= 500" would match
+// every disk.
 func ParseSizeMatch(value string) (SizeMatch, error) {
-	parts := sizePattern.FindStringSubmatch(strings.TrimSpace(value))
+	trimmed := strings.TrimSpace(value)
+	parts := sizePattern.FindStringSubmatch(trimmed)
 	if parts == nil {
 		return SizeMatch{}, fmt.Errorf("size %q must be a size such as \">= 500GB\" or \"<= 2TiB\"", value)
+	}
+	if parts[3] == "" {
+		return SizeMatch{}, fmt.Errorf("size %q has no unit; write it with one, such as %q or %q, or %q for bytes", value, trimmed+"GB", trimmed+"GiB", trimmed+"B")
 	}
 	unit, ok := sizeUnits[strings.ToLower(parts[3])]
 	if !ok {

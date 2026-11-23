@@ -96,7 +96,7 @@ type Context struct {
 	InstallMaterialDigest              string
 	DestructiveStorageAcknowledgements []string
 	HaltIfInstalled                    bool
-	PreviousStatus                     *installstatus.Record
+	binding                            *DiskBinding
 	ReportStep                         func(StepID)
 	progress                           *installProgress
 	moduleIndexes                      configapply.PreparedModuleIndexes
@@ -203,7 +203,7 @@ func (r Runner) Run(ctx context.Context) (resultErr error) {
 	if r.ctx.Store == nil {
 		return fmt.Errorf("state store is required")
 	}
-	if err := loadPreviousStatus(ctx, r.ctx); err != nil {
+	if err := loadDiskBinding(ctx, r.ctx); err != nil {
 		return err
 	}
 
@@ -324,7 +324,7 @@ func (verifyKatlosImageStep) Run(ctx context.Context, install *Context) error {
 		install.imageReleaseAttempted = false
 	}
 	if err := verifyRuntimeConfiguration(ctx, install); err != nil {
-		return fmt.Errorf("runtime configuration compatibility: %w; use installer media and a target runtime from the KatlOS release matching this katlctl, then retry 'katlctl install apply'; no disk changes were made", err)
+		return fmt.Errorf("runtime configuration compatibility: %w; use installer media and a target runtime from the KatlOS release matching this katlctl, then retry 'katlctl install apply'; %s", err, diskChangeNote(install))
 	}
 	if install.KatlosImage != nil {
 		payload := install.KatlosImage
@@ -426,8 +426,9 @@ func planInstall(install *Context) error {
 	// A rerun after destructive mutation must reuse the disk the first attempt
 	// resolved: its GPT GUID is gone, and a weak selector could now match
 	// another disk.
-	if previous := install.PreviousStatus; previous != nil && previous.DestructiveMutation && previous.TargetDisk != nil {
-		layoutRequest.RetainedTarget = previous.TargetDisk
+	if install.binding != nil {
+		retained := install.binding.TargetDisk
+		layoutRequest.RetainedTarget = &retained
 	}
 	layout, err := disk.PlanDiskLayout(install.HardwareFacts, layoutRequest)
 	if err != nil {
@@ -507,7 +508,10 @@ func (prepareDiskStep) ID() StepID {
 
 func (prepareDiskStep) Run(ctx context.Context, install *Context) error {
 	if err := revalidateTargetDisk(ctx, install); err != nil {
-		return fmt.Errorf("%w: before wiping, %w; no disk changes were made. Check the disks attached to the node, then rerun katlctl install apply", ErrInstallRefused, err)
+		return fmt.Errorf("%w: before wiping, %w; %s. Check the disks attached to the node, then rerun katlctl install apply", ErrInstallRefused, err, diskChangeNote(install))
+	}
+	if err := bindDisk(ctx, install); err != nil {
+		return err
 	}
 	if err := executeDiskGroup(ctx, install, disk.PrepareOperations); err != nil {
 		return err
@@ -1197,13 +1201,18 @@ func statusFromContext(install *Context, state string, current StepID, err error
 	record.InstallMaterialDigest = install.InstallMaterialDigest
 	record.KatlosImage = installstatus.ImageFromManifest(install.Manifest)
 	record.TargetDiskStableID = targetDiskStableID(install.Manifest.Install.TargetDisk)
-	if install.DiskLayout != nil {
+	switch {
+	case install.binding != nil:
+		target := install.binding.TargetDisk
+		record.TargetDisk = &target
+	case install.DiskLayout != nil:
 		target := install.DiskLayout.TargetDisk
 		record.TargetDisk = &target
 	}
 	record.WipeTargetAccepted = install.Manifest.Install.WipeTarget
-	// A refusal stops an attempt before it changes the disk, even at PrepareDisk.
-	record.DestructiveMutation = mutationStarted(install.Completed, current) && !errors.Is(err, ErrInstallRefused)
+	// A refusal stops an attempt before it changes the disk, even at
+	// PrepareDisk, but cannot undo what an earlier attempt changed.
+	record.DestructiveMutation = install.binding != nil || (install.diskChanged(current) && !errors.Is(err, ErrInstallRefused))
 	if install.LoaderRecord != nil {
 		record.SelectedRootSlot = install.LoaderRecord.Root.Slot
 		record.InstalledGeneration = install.LoaderRecord.GenerationID
@@ -1212,7 +1221,7 @@ func statusFromContext(install *Context, state string, current StepID, err error
 	if err != nil {
 		record.LastError = installstatus.RedactError(err)
 		record.RefusalReason = record.LastError
-		if state == installstatus.StateFailedBeforeMutation || state == installstatus.StateInstallRefused {
+		if !record.DestructiveMutation && (state == installstatus.StateFailedBeforeMutation || state == installstatus.StateInstallRefused) {
 			record.RetryHint = "fix input or environment and rerun before disk mutation"
 		} else {
 			record.RetryHint = "inspect target state before rerun or repair"
@@ -1239,17 +1248,20 @@ func failureState(install *Context, id StepID, err error) string {
 	if errors.Is(err, ErrInstallRefused) || errors.Is(err, ErrInstalledTarget) {
 		return installstatus.StateInstallRefused
 	}
-	if !mutationStarted(install.Completed, id) {
+	if !install.diskChanged(id) {
 		return installstatus.StateFailedBeforeMutation
 	}
 	return installstatus.StateFailedAfterMutation
 }
 
-func mutationStarted(completed []StepID, current StepID) bool {
-	if current == PrepareDisk {
+// diskChanged reports whether this installer boot has changed, or is about to
+// change, the target disk. A binding from an earlier attempt keeps it true for
+// the rest of the boot.
+func (install *Context) diskChanged(current StepID) bool {
+	if install.binding != nil || current == PrepareDisk {
 		return true
 	}
-	for _, step := range completed {
+	for _, step := range install.Completed {
 		if step == PrepareDisk || step == CreatePartitions || step == FormatFilesystems || step == MountTarget || step == InstallRootSlot {
 			return true
 		}
@@ -1288,30 +1300,47 @@ func targetStatusReady(install *Context, current StepID) bool {
 	return false
 }
 
-func loadPreviousStatus(ctx context.Context, install *Context) error {
-	if install.PreviousStatus != nil {
-		return nil
-	}
-	record, err := install.Store.LoadStatus(ctx)
+func loadDiskBinding(ctx context.Context, install *Context) error {
+	binding, err := install.Store.LoadDiskBinding(ctx)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		return fmt.Errorf("load previous install status: %w", err)
+		return fmt.Errorf("load disk binding: %w", err)
 	}
-	install.PreviousStatus = &record
+	install.binding = &binding
 	return nil
 }
 
+// bindDisk records the planned disk before the first destructive command of
+// the installer boot. Later attempts plan against this disk and refuse to
+// proceed without it.
+func bindDisk(ctx context.Context, install *Context) error {
+	if install.binding != nil || install.DiskLayout == nil {
+		return nil
+	}
+	binding := DiskBinding{RequestDigest: install.RequestDigest, TargetDisk: install.DiskLayout.TargetDisk}
+	if err := install.Store.SaveDiskBinding(ctx, binding); err != nil {
+		return fmt.Errorf("%w: record the target disk before wiping: %w; no disk changes were made", ErrInstallRefused, err)
+	}
+	install.binding = &binding
+	return nil
+}
+
+// diskChangeNote tells the operator what an attempt that stopped before
+// wiping has left on disk.
+func diskChangeNote(install *Context) string {
+	if install.binding == nil {
+		return "no disk changes were made"
+	}
+	return fmt.Sprintf("an earlier attempt in this installer boot already changed %s, so boot the installer again before retrying", install.binding.TargetDisk.Path)
+}
+
 func refuseChangedInterruptedRequest(install *Context) error {
-	if install.PreviousStatus == nil || !install.PreviousStatus.DestructiveMutation {
+	if install.binding == nil || install.binding.RequestDigest == install.RequestDigest {
 		return nil
 	}
-	previousDigest := install.PreviousStatus.RequestDigest
-	if previousDigest == "" || previousDigest == install.RequestDigest {
-		return nil
-	}
-	return fmt.Errorf("%w: previous destructive install request digest %s does not match current request digest %s", ErrInstallRefused, previousDigest, install.RequestDigest)
+	return fmt.Errorf("%w: an earlier attempt in this installer boot changed %s for a different configuration (request digest %s, now %s); boot the installer again to install with this configuration", ErrInstallRefused, install.binding.TargetDisk.Path, install.binding.RequestDigest, install.RequestDigest)
 }
 
 func stepStrings(steps []StepID) []string {

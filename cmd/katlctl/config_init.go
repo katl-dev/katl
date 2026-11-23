@@ -440,7 +440,7 @@ func installerTargetDisk(endpoint string, disks []handoff.HandoffDisk, chosen, h
 		case chosen != "":
 			return named, nil
 		default:
-			return manifest.DiskSelector{}, fmt.Errorf("installer %s reports one selectable disk, %s, but it has no by-id path, WWN, or serial, so Katl will not choose it implicitly. %s", endpoint, describeHandoffDisk(selectable[0]), hint)
+			return manifest.DiskSelector{}, fmt.Errorf("installer %s reports one selectable disk, %s, but it has no hardware by-id path, WWN, or serial, so Katl will not choose it implicitly. %s", endpoint, describeHandoffDisk(selectable[0]), hint)
 		}
 	}
 	if chosen != "" && len(selectable) == 0 {

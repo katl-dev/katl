@@ -268,6 +268,69 @@ func TestConfigAddNodeSelectsDisk(t *testing.T) {
 	}
 }
 
+// By-id aliases udev derives from on-disk metadata sort before hardware ones
+// such as nvme-, and installation erases them, so recording one would break a
+// reinstall.
+func TestConfigAddNodeIgnoresContentDerivedByID(t *testing.T) {
+	const pv = "/dev/disk/by-id/lvm-pv-uuid-Xb3kTq-0000-0000-0000-0000-0000-000000"
+	for _, tt := range []struct {
+		name   string
+		disk   handoff.HandoffDisk
+		args   []string
+		record string
+		refuse []string
+	}{
+		{
+			name:   "hardware alias present",
+			disk:   handoff.HandoffDisk{Path: "/dev/nvme0n1", ByID: []string{pv, "/dev/disk/by-id/nvme-Samsung_SSD_970_S1"}, Selectable: true},
+			record: "byID: /dev/disk/by-id/nvme-Samsung_SSD_970_S1\n",
+		},
+		{
+			name:   "only content aliases and a WWN",
+			disk:   handoff.HandoffDisk{Path: "/dev/sda", ByID: []string{pv, "/dev/disk/by-id/dm-name-vg-root"}, WWN: "0x5000c500a1b2c3d4", Selectable: true},
+			record: "wwn: \"0x5000c500a1b2c3d4\"\n",
+		},
+		{
+			name:   "only content aliases",
+			disk:   handoff.HandoffDisk{Path: "/dev/vda", ByID: []string{pv}, Selectable: true},
+			refuse: []string{"no hardware by-id path, WWN, or serial"},
+		},
+		{
+			name:   "content alias named",
+			disk:   handoff.HandoffDisk{Path: "/dev/nvme0n1", ByID: []string{pv, "/dev/disk/by-id/nvme-Samsung_SSD_970_S1"}, Selectable: true},
+			args:   []string{"--disk", pv},
+			refuse: []string{"metadata stored on it, which installation erases", "hardware /dev/disk/by-id path"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			installer := addNodeInstaller(t, handoff.HandoffWaiting, tt.disk)
+			path := writeAddNodeConfig(t, addNodeIndentedConfig)
+
+			args := append([]string{"config", "add-node", path, "--installer", installer}, tt.args...)
+			err := run(context.Background(), args, io.Discard, io.Discard)
+
+			got := readAddNodeConfig(t, path)
+			if tt.refuse != nil {
+				if err == nil {
+					t.Fatalf("run() succeeded, want refusal; config:\n%s", got)
+				}
+				for _, want := range tt.refuse {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("error = %v, want %q", err, want)
+					}
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(got, "lvm-pv-uuid-") || strings.Contains(got, "dm-name-") || !strings.Contains(got, tt.record) {
+				t.Fatalf("config does not record only %q:\n%s", tt.record, got)
+			}
+		})
+	}
+}
+
 // addNodeInstaller serves installer status and returns its host:port. With no
 // disks it reports one selectable disk, /dev/disk/by-id/virtio-new.
 func addNodeInstaller(t *testing.T, state handoff.HandoffState, disks ...handoff.HandoffDisk) string {
