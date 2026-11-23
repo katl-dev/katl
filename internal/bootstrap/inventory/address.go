@@ -169,16 +169,17 @@ func ParseManagementAddress(value string) (ManagementAddress, error) {
 // DecodeManagementAddress parses a recorded management address. Earlier
 // releases recorded management.address without validating it, so a value
 // that does not parse is kept verbatim as its host: it loads, and the node
-// is unreachable until the address is corrected, as it was before.
-func DecodeManagementAddress(value string) (ManagementAddress, error) {
+// is unreachable until the address is corrected, as it was before. An empty
+// value is unset.
+func DecodeManagementAddress(value string) ManagementAddress {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return ManagementAddress{}, fmt.Errorf("management address is required")
+		return ManagementAddress{}
 	}
 	if address, err := parseManagementAddress(value, false); err == nil {
-		return address, nil
+		return address
 	}
-	return ManagementAddress{Host: Host{name: value}}, nil
+	return ManagementAddress{Host: Host{name: value}}
 }
 
 func parseManagementAddress(value string, strict bool) (ManagementAddress, error) {
@@ -256,15 +257,7 @@ func (a ManagementAddress) MarshalText() ([]byte, error) {
 }
 
 func (a *ManagementAddress) UnmarshalText(text []byte) error {
-	if strings.TrimSpace(string(text)) == "" {
-		*a = ManagementAddress{}
-		return nil
-	}
-	parsed, err := DecodeManagementAddress(string(text))
-	if err != nil {
-		return err
-	}
-	*a = parsed
+	*a = DecodeManagementAddress(string(text))
 	return nil
 }
 

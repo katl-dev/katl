@@ -484,7 +484,11 @@ func resolveInstallEndpoint(endpoint string, configured inventory.HostPort) (str
 	if configured.IsZero() {
 		return "", fmt.Errorf("installer address is required. Pass --endpoint ADDRESS or set management.address for the selected node in --config")
 	}
-	return normalizeInstallerEndpoint("http://" + configured.String())
+	endpoint, err := normalizeInstallerEndpoint("http://" + configured.String())
+	if err != nil {
+		return "", fmt.Errorf("installer address %s from the selected node's management.address is unusable; correct management.address in --config or pass --endpoint ADDRESS: %w", configured, err)
+	}
+	return endpoint, nil
 }
 
 func resolveInstallNode(archive []byte, digest, selector string) (string, error) {
@@ -513,10 +517,10 @@ func selectInstallNode(manifest configbundle.BundleManifest, selector string) (s
 	// node first, since the port is all that tells apart nodes behind one NAT
 	// host. The selector is read as the bundle records hosts, so it matches any
 	// host an earlier release recorded.
-	selected, parseErr := inventory.DecodeManagementAddress(selector)
+	selected := inventory.DecodeManagementAddress(selector)
 	var matches, exact []string
 	for _, node := range manifest.Cluster.BootstrapInventory.Nodes {
-		if parseErr != nil || node.Address.Host != selected.Host {
+		if node.Address.Host != selected.Host {
 			continue
 		}
 		matches = append(matches, node.Name)

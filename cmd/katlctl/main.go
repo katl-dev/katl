@@ -3508,14 +3508,7 @@ func (d inventoryDocument) inventory() (inventory.Inventory, error) {
 	}
 	nodes := make([]inventory.Node, 0, len(d.Nodes))
 	for _, node := range d.Nodes {
-		var address inventory.ManagementAddress
-		if strings.TrimSpace(node.Address) != "" {
-			parsed, err := inventory.DecodeManagementAddress(node.Address)
-			if err != nil {
-				return inventory.Inventory{}, fmt.Errorf("decode inventory node %q address: %w", node.Name, err)
-			}
-			address = parsed
-		}
+		address := inventory.DecodeManagementAddress(node.Address)
 		kubernetesAddress, err := inventory.ParseKubernetesAddress(node.KubernetesAddress)
 		if err != nil {
 			return inventory.Inventory{}, fmt.Errorf("decode inventory node %q kubernetesAddress: %w", node.Name, err)
