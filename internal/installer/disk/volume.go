@@ -44,9 +44,23 @@ func (p PartitionIdentity) String() string {
 	return "(" + strings.Join(fields, ", ") + ")"
 }
 
-func PlanVolumes(facts HardwareFacts, target BlockDevice, requests []VolumeRequest) ([]VolumePlan, error) {
-	seenNames := make(map[string]struct{}, len(requests))
+// PlanVolumes plans requests beside the volumes a running node keeps
+// unchanged, which are found by their bindings; install keeps none. Every
+// volume claims its disk or partition, so no request can share one with
+// another request or with a kept volume.
+func PlanVolumes(facts HardwareFacts, target BlockDevice, requests []VolumeRequest, kept []VolumeBinding) ([]VolumePlan, error) {
+	seenNames := make(map[string]struct{}, len(requests)+len(kept))
 	claims := volumeClaims{}
+	for _, binding := range kept {
+		seenNames[binding.Name] = struct{}{}
+		plan, err := keptVolume(facts, binding)
+		if err != nil {
+			return nil, err
+		}
+		if err := claims.add(plan); err != nil {
+			return nil, err
+		}
+	}
 	plans := make([]VolumePlan, 0, len(requests))
 	for _, request := range requests {
 		if err := validateMountName("volume", request.Name); err != nil {
@@ -64,14 +78,14 @@ func PlanVolumes(facts HardwareFacts, target BlockDevice, requests []VolumeReque
 			return nil, fmt.Errorf("volume %q filesystem %q is unsupported", request.Name, request.Filesystem)
 		}
 
-		plan, partition, err := planVolume(facts, target, request)
+		plan, disk, partition, err := planVolume(facts, target, request)
 		if err != nil {
 			return nil, err
 		}
 		if err := claims.add(plan); err != nil {
 			return nil, err
 		}
-		if err := validateAddressableVolume(plan, partition); err != nil {
+		if err := validateAddressableVolume(plan, disk, partition); err != nil {
 			return nil, err
 		}
 		if !plan.Repartition && !plan.Wipe {
@@ -86,23 +100,33 @@ func PlanVolumes(facts HardwareFacts, target BlockDevice, requests []VolumeReque
 	return plans, nil
 }
 
+// keptVolume describes the partition a kept volume is bound to, so requests
+// are claimed around it.
+func keptVolume(facts HardwareFacts, binding VolumeBinding) (VolumePlan, error) {
+	disk, partition, err := matchVolumeBinding(facts, binding)
+	if err != nil {
+		return VolumePlan{}, err
+	}
+	return VolumePlan{Name: binding.Name, Disk: discovery.IdentityOf(disk), Partition: partitionIdentityOf(partition)}, nil
+}
+
 // planVolume resolves one request to its disk and, for an existing partition,
 // returns that partition too.
-func planVolume(facts HardwareFacts, target BlockDevice, request VolumeRequest) (VolumePlan, BlockDevice, error) {
+func planVolume(facts HardwareFacts, target BlockDevice, request VolumeRequest) (VolumePlan, BlockDevice, BlockDevice, error) {
 	if request.Disk != nil {
 		match, err := discovery.MatchTargetDisk(facts, *request.Disk)
 		if err != nil {
-			return VolumePlan{}, BlockDevice{}, fmt.Errorf("volume %q disk: %w", request.Name, err)
+			return VolumePlan{}, BlockDevice{}, BlockDevice{}, fmt.Errorf("volume %q disk: %w", request.Name, err)
 		}
 		if match.Device.Path == target.Path {
-			return VolumePlan{}, BlockDevice{}, fmt.Errorf("volume %q resolves to target root disk %s", request.Name, target.Path)
+			return VolumePlan{}, BlockDevice{}, BlockDevice{}, fmt.Errorf("volume %q resolves to target root disk %s", request.Name, target.Path)
 		}
 		if request.Wipe {
 			return VolumePlan{
 				Name: request.Name, TargetKind: "disk", Disk: discovery.IdentityOf(match.Device),
 				Filesystem: request.Filesystem, MountPath: VolumeMountRoot + "/" + request.Name, Wipe: true, Repartition: true,
 				TypeUUID: volumePartitionTypeUUID(request.Name), Signatures: match.Signatures,
-			}, BlockDevice{}, nil
+			}, match.Device, BlockDevice{}, nil
 		}
 		label := volumePartitionLabel(request.Name)
 		var matches []BlockDevice
@@ -113,36 +137,36 @@ func planVolume(facts HardwareFacts, target BlockDevice, request VolumeRequest) 
 		}
 		switch len(matches) {
 		case 0:
-			return VolumePlan{}, BlockDevice{}, fmt.Errorf("volume %q disk: partition label %s was not found on %s; set wipe to true to initialize this disk", request.Name, label, match.Device.Path)
+			return VolumePlan{}, BlockDevice{}, BlockDevice{}, fmt.Errorf("volume %q disk: partition label %s was not found on %s; set wipe to true to initialize this disk", request.Name, label, match.Device.Path)
 		case 1:
 		default:
-			return VolumePlan{}, BlockDevice{}, fmt.Errorf("volume %q disk: %s has %d partitions labelled %s; relabel or remove the extra partitions, or select one with a partition selector", request.Name, match.Device.Path, len(matches), label)
+			return VolumePlan{}, BlockDevice{}, BlockDevice{}, fmt.Errorf("volume %q disk: %s has %d partitions labelled %s; relabel or remove the extra partitions, or select one with a partition selector", request.Name, match.Device.Path, len(matches), label)
 		}
 		plan := existingPartitionVolume(request, "disk", match.Device, matches[0])
 		plan.Signatures = collectVolumeSignatures(matches[0])
 		if err := validateReusableVolume(plan, matches[0].FilesystemSignature); err != nil {
-			return VolumePlan{}, BlockDevice{}, err
+			return VolumePlan{}, BlockDevice{}, BlockDevice{}, err
 		}
-		return plan, matches[0], nil
+		return plan, match.Device, matches[0], nil
 	}
 
 	match, err := discovery.MatchPartition(facts, *request.Partition)
 	if err != nil {
-		return VolumePlan{}, BlockDevice{}, fmt.Errorf("volume %q partition: %w", request.Name, err)
+		return VolumePlan{}, BlockDevice{}, BlockDevice{}, fmt.Errorf("volume %q partition: %w", request.Name, err)
 	}
 	if match.ParentDisk.Path == target.Path {
-		return VolumePlan{}, BlockDevice{}, fmt.Errorf("volume %q partition is on target root disk %s", request.Name, target.Path)
+		return VolumePlan{}, BlockDevice{}, BlockDevice{}, fmt.Errorf("volume %q partition is on target root disk %s", request.Name, target.Path)
 	}
 	if isKatlPartitionLabel(match.Device.GPTLabel) {
-		return VolumePlan{}, BlockDevice{}, fmt.Errorf("volume %q resolves to Katl-managed partition %s", request.Name, match.Device.GPTLabel)
+		return VolumePlan{}, BlockDevice{}, BlockDevice{}, fmt.Errorf("volume %q resolves to Katl-managed partition %s", request.Name, match.Device.GPTLabel)
 	}
 	plan := existingPartitionVolume(request, "partition", match.ParentDisk, match.Device)
 	plan.Wipe = request.Wipe
 	plan.Signatures = match.Signatures
 	if err := validateReusableVolume(plan, match.Device.FilesystemSignature); err != nil {
-		return VolumePlan{}, BlockDevice{}, err
+		return VolumePlan{}, BlockDevice{}, BlockDevice{}, err
 	}
-	return plan, match.Device, nil
+	return plan, match.ParentDisk, match.Device, nil
 }
 
 func existingPartitionVolume(request VolumeRequest, kind string, disk, partition BlockDevice) VolumePlan {
@@ -187,14 +211,14 @@ func (c *volumeClaims) add(plan VolumePlan) error {
 
 // validateAddressableVolume refuses a volume Katl could not address without a
 // kernel name or find again on its disk after preparation.
-func validateAddressableVolume(plan VolumePlan, partition BlockDevice) error {
+func validateAddressableVolume(plan VolumePlan, disk, partition BlockDevice) error {
 	if !plan.Repartition && plan.Partition.Number == 0 {
 		return fmt.Errorf("volume %q: the kernel did not report the partition number of %s; check that /sys/class/block/%s/partition exists, then retry", plan.Name, partition.Path, path.Base(partition.Path))
 	}
 	if !plan.Repartition && !plan.Wipe {
 		return nil
 	}
-	if _, err := volumeDevice(plan); err != nil {
+	if err := checkAddressable(disk); err != nil {
 		return fmt.Errorf("volume %q: %w", plan.Name, err)
 	}
 	return nil

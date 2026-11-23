@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/installer/discovery"
@@ -314,18 +315,30 @@ func repartArgs(device string) []string {
 	return []string{"--dry-run=no", "--empty=force", "--discard=no", "--seed=random", "--definitions={definitions}", device}
 }
 
-// PrepareVolume executes the provisioning plan shared by install and live
-// apply. Before each destructive command it rediscovers hardware through
-// source and refuses unless the volume is still the planned target.
-func PrepareVolume(ctx context.Context, commands CommandRunner, source discovery.DiscoverySource, plan VolumePlan) error {
-	operations, err := volumeOperations(plan)
-	if err != nil {
-		return err
+// PrepareVolumes executes the volume provisioning plans of a live apply, as
+// install does: every volume is rechecked against hardware rediscovered
+// through source before the first destructive command, and its own volume
+// again before each one. It returns the volumes a destructive command was
+// started on, even on failure, since their earlier storage may be gone.
+func PrepareVolumes(ctx context.Context, commands CommandRunner, source discovery.DiscoverySource, plans []VolumePlan) ([]string, error) {
+	var operations []DiskOperation
+	for _, plan := range plans {
+		prepare, err := volumeOperations(plan)
+		if err != nil {
+			return nil, err
+		}
+		operations = append(operations, prepare...)
 	}
-	executor := DiskExecutor{Commands: commands, Discovery: source}
-	request := DiskExecutionRequest{Plan: DiskLayoutPlan{VolumeMounts: []VolumePlan{plan}}, AllowDestructive: true}
-	_, err = executor.executeOperations(ctx, request, operations)
-	return err
+	var changed []string
+	executor := DiskExecutor{Commands: commands, Discovery: source, BeforeOperation: func(operation DiskOperation) error {
+		if operation.Destructive && !slices.Contains(changed, operation.Volume) {
+			changed = append(changed, operation.Volume)
+		}
+		return nil
+	}}
+	request := DiskExecutionRequest{Plan: DiskLayoutPlan{VolumeMounts: plans}, AllowDestructive: true}
+	_, err := executor.executeOperations(ctx, request, operations)
+	return changed, err
 }
 
 // volumeChecker rechecks volume targets against discovered hardware. Facts

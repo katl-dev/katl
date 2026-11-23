@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -49,13 +50,13 @@ func TestPrepareLiveVolumeUsesBoundedSystemdRepartDefinition(t *testing.T) {
 	}
 	devices := hermeticVolumeDevices(t)
 
-	err := prepareLiveVolume(context.Background(), runner, devices.source(runner), root, disk.VolumePlan{
+	_, err := prepareLiveVolumes(context.Background(), runner, devices.source(runner), root, []disk.VolumePlan{{
 		Name: "data", Disk: discovery.DiskIdentity{Path: "/dev/vdb", DiskSeq: 2, SizeBytes: 68719476736, Serial: "data"}, Filesystem: "xfs", MountPath: "/var/mnt/data",
 		Wipe: true, Repartition: true, TypeUUID: "11111111-2222-5333-8444-555555555555",
-	})
+	}})
 
 	if err != nil {
-		t.Fatalf("prepareLiveVolume() error = %v", err)
+		t.Fatalf("prepareLiveVolumes() error = %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "var/mnt/data")); err != nil {
 		t.Fatalf("volume mount point: %v", err)
@@ -76,8 +77,8 @@ func TestPrepareLiveVolumePreservesExistingPartition(t *testing.T) {
 		Filesystem: "xfs", MountPath: "/var/mnt/data",
 	}
 
-	if err := prepareLiveVolume(context.Background(), runner, hermeticVolumeDevices(t).source(runner), t.TempDir(), plan); err != nil {
-		t.Fatalf("prepareLiveVolume() error = %v", err)
+	if _, err := prepareLiveVolumes(context.Background(), runner, hermeticVolumeDevices(t).source(runner), t.TempDir(), []disk.VolumePlan{plan}); err != nil {
+		t.Fatalf("prepareLiveVolumes() error = %v", err)
 	}
 	if called {
 		t.Fatal("preserved partition ran a tool")
@@ -421,8 +422,9 @@ func TestRunningSystemDiskUsesMountedState(t *testing.T) {
 }
 
 // hermeticVolumeDevices points volume discovery at a fixture sysfs that gives
-// the disks and partitions used by these tests fixed diskseqs and partition
-// numbers, so the host's block devices never leak into a test.
+// the disks and partitions used by these tests fixed diskseqs, by-diskseq
+// links, and partition numbers, so the host's block devices never leak into a
+// test.
 func hermeticVolumeDevices(t *testing.T) volumeDevices {
 	t.Helper()
 	sysBlock := filepath.Join(t.TempDir(), "class", "block")
@@ -439,84 +441,223 @@ func hermeticVolumeDevices(t *testing.T) volumeDevices {
 			t.Fatal(err)
 		}
 	}
+	byDiskSeq := t.TempDir()
+	for seq, disk := range map[string]string{"1": "/dev/vda", "2": "/dev/vdb", "3": "/dev/vdc"} {
+		if err := os.Symlink(disk, filepath.Join(byDiskSeq, seq)); err != nil {
+			t.Fatal(err)
+		}
+	}
 	missing := filepath.Join(t.TempDir(), "missing")
-	return volumeDevices{sysBlockDir: sysBlock, byIDDir: missing, byPathDir: missing}
+	return volumeDevices{sysBlockDir: sysBlock, byIDDir: missing, byPathDir: missing, byDiskSeqDir: byDiskSeq}
 }
 
-// sharedDiskRunner reports data disk vdb holding the mounted, unchanged
-// volume keep on vdb1 and a free partition vdb2.
-func sharedDiskRunner(mutations *[][]string) ToolRunner {
-	return func(_ context.Context, argv []string, _ func(int)) ToolResult {
-		switch argv[0] {
-		case "lsblk":
-			return ToolResult{Stdout: []byte(`{"blockdevices":[` +
-				`{"name":"vda","path":"/dev/vda","type":"disk","serial":"root","size":68719476736,"ro":false,"mountpoints":[],"children":[{"name":"vda5","path":"/dev/vda5","type":"part","size":1073741824,"ro":false,"partlabel":"KATL_STATE","mountpoints":["/var"]}]},` +
-				`{"name":"vdb","path":"/dev/vdb","type":"disk","serial":"data","size":68719476736,"ro":false,"pttype":"gpt","mountpoints":[],"children":[` +
-				`{"name":"vdb1","path":"/dev/vdb1","type":"part","size":1073741824,"ro":false,"fstype":"xfs","uuid":"keep-fs","partuuid":"keep-part","mountpoints":["/var/mnt/keep"]},` +
-				`{"name":"vdb2","path":"/dev/vdb2","type":"part","size":1073741824,"ro":false,"fstype":"ext4","uuid":"data-fs","partuuid":"data-part","mountpoints":[]}` +
-				`]}]}`)}
-		case "findmnt":
-			return ToolResult{Stdout: []byte(`{"filesystems":[{"source":"/dev/vdb1","target":"/var/mnt/keep","fstype":"xfs","options":"rw"}]}`)}
-		case "ip":
-			return ToolResult{Stdout: []byte(`[]`)}
-		default:
-			*mutations = append(*mutations, append([]string(nil), argv...))
-			return ToolResult{}
+// storageRunner reports data disk vdb holding volume keep on vdb1, mounted
+// when keepMounted, beside a free partition vdb2, and spare disk vdc with one
+// free partition vdc1. Every other command is recorded and succeeds unless
+// fail reports it failed. lsblk calls are counted so a fixture can change
+// what later discoveries see.
+type storageRunner struct {
+	keepMounted bool
+	// dataSerial, when set, replaces vdb's serial from the second discovery
+	// on, as if another disk had taken its kernel name.
+	dataSerial  string
+	fail        func(argv []string) bool
+	commands    []string
+	discoveries int
+}
+
+func (r *storageRunner) run(_ context.Context, argv []string, _ func(int)) ToolResult {
+	switch argv[0] {
+	case "lsblk":
+		r.discoveries++
+		serial := "data"
+		if r.dataSerial != "" && r.discoveries > 1 {
+			serial = r.dataSerial
 		}
+		keepMounts := `[]`
+		if r.keepMounted {
+			keepMounts = `["/var/mnt/keep"]`
+		}
+		return ToolResult{Stdout: []byte(`{"blockdevices":[` +
+			`{"name":"vda","path":"/dev/vda","type":"disk","serial":"root","size":68719476736,"ro":false,"mountpoints":[],"children":[{"name":"vda5","path":"/dev/vda5","type":"part","size":1073741824,"ro":false,"partlabel":"KATL_STATE","mountpoints":["/var"]}]},` +
+			`{"name":"vdb","path":"/dev/vdb","type":"disk","serial":"` + serial + `","size":68719476736,"ro":false,"pttype":"gpt","mountpoints":[],"children":[` +
+			`{"name":"vdb1","path":"/dev/vdb1","type":"part","size":1073741824,"ro":false,"fstype":"xfs","uuid":"keep-fs","partuuid":"keep-part","mountpoints":` + keepMounts + `},` +
+			`{"name":"vdb2","path":"/dev/vdb2","type":"part","size":1073741824,"ro":false,"fstype":"ext4","uuid":"data-fs","partuuid":"data-part","mountpoints":[]}` +
+			`]},` +
+			`{"name":"vdc","path":"/dev/vdc","type":"disk","serial":"spare","size":68719476736,"ro":false,"pttype":"gpt","mountpoints":[],"children":[` +
+			`{"name":"vdc1","path":"/dev/vdc1","type":"part","size":1073741824,"ro":false,"fstype":"xfs","uuid":"spare-fs","partuuid":"spare-part","mountpoints":[]}` +
+			`]}]}`)}
+	case "findmnt":
+		if r.keepMounted {
+			return ToolResult{Stdout: []byte(`{"filesystems":[{"source":"/dev/vdb1","target":"/var/mnt/keep","fstype":"xfs","options":"rw"}]}`)}
+		}
+		return ToolResult{Stdout: []byte(`{"filesystems":[]}`)}
+	case "ip":
+		return ToolResult{Stdout: []byte(`[]`)}
+	default:
+		r.commands = append(r.commands, strings.Join(argv, " "))
+		if r.fail != nil && r.fail(argv) {
+			return ToolResult{ExitStatus: 1, Stderr: []byte(argv[0] + " failed")}
+		}
+		return ToolResult{}
 	}
 }
 
-func TestApplyVolumesBesideMountedVolumeOnSameDisk(t *testing.T) {
-	keep := manifest.Volume{Name: "keep", Selector: manifest.VolumeSelector{Partition: &manifest.PartitionSelector{PartUUID: "keep-part"}}, Filesystem: "xfs"}
-	current := manifest.Manifest{Install: manifest.InstallConfig{TargetDisk: manifest.DiskSelector{Serial: "root"}, Volumes: []manifest.Volume{keep}}}
-	bindings := []generation.VolumeBinding{{Name: "keep", PartitionUUID: "keep-part", FilesystemUUID: "keep-fs"}}
+// writes lists the recorded commands other than udev settling.
+func (r *storageRunner) writes() []string {
+	var writes []string
+	for _, command := range r.commands {
+		if command != "udevadm settle" {
+			writes = append(writes, command)
+		}
+	}
+	return writes
+}
 
-	t.Run("format a sibling partition", func(t *testing.T) {
-		desired := current
-		desired.Install.Volumes = []manifest.Volume{keep, {
-			Name: "data", Selector: manifest.VolumeSelector{Partition: &manifest.PartitionSelector{PartUUID: "data-part"}}, Filesystem: "xfs", Wipe: true,
-		}}
-		var mutations [][]string
+var (
+	keepVolume  = manifest.Volume{Name: "keep", Selector: manifest.VolumeSelector{Partition: &manifest.PartitionSelector{PartUUID: "keep-part"}}, Filesystem: "xfs"}
+	keepBinding = generation.VolumeBinding{Name: "keep", PartitionUUID: "keep-part", FilesystemUUID: "keep-fs"}
+)
 
-		got, err := (&Executor{Root: t.TempDir(), RunTool: sharedDiskRunner(&mutations), volumeDevices: hermeticVolumeDevices(t)}).applyVolumes(context.Background(), current, desired, bindings, "cp-1", nil, nil)
+func volumesManifest(volumes ...manifest.Volume) manifest.Manifest {
+	return manifest.Manifest{Install: manifest.InstallConfig{TargetDisk: manifest.DiskSelector{Serial: "root"}, Volumes: volumes}}
+}
 
-		if err != nil {
-			t.Fatalf("applyVolumes() error = %v", err)
-		}
-		var writes []string
-		for _, argv := range mutations {
-			if argv[0] != "udevadm" {
-				writes = append(writes, strings.Join(argv, " "))
-			}
-		}
-		want := []string{"wipefs --all /dev/disk/by-diskseq/2-part2", "mkfs.xfs -K /dev/disk/by-diskseq/2-part2"}
-		if !reflect.DeepEqual(writes, want) {
-			t.Fatalf("commands = %q, want only the sibling partition formatted and keep left mounted", writes)
-		}
-		wantBindings := []generation.VolumeBinding{{Name: "data", PartitionUUID: "data-part", FilesystemUUID: "data-fs"}, bindings[0]}
-		if !reflect.DeepEqual(got, wantBindings) {
-			t.Fatalf("bindings = %#v, want %#v", got, wantBindings)
-		}
+func TestApplyVolumesFormatsPartitionBesideMountedVolume(t *testing.T) {
+	current := volumesManifest(keepVolume)
+	desired := volumesManifest(keepVolume, manifest.Volume{
+		Name: "data", Selector: manifest.VolumeSelector{Partition: &manifest.PartitionSelector{PartUUID: "data-part"}}, Filesystem: "xfs", Wipe: true,
 	})
+	runner := &storageRunner{keepMounted: true}
 
-	t.Run("repartition the shared disk", func(t *testing.T) {
-		desired := current
-		desired.Install.Volumes = []manifest.Volume{keep, {
-			Name: "data", Selector: manifest.VolumeSelector{Disk: &manifest.DiskSelector{Serial: "data"}}, Filesystem: "xfs", Wipe: true,
-		}}
-		var mutations [][]string
+	got, err := (&Executor{Root: t.TempDir(), RunTool: runner.run, volumeDevices: hermeticVolumeDevices(t)}).applyVolumes(context.Background(), current, desired, []generation.VolumeBinding{keepBinding}, "cp-1", nil, nil)
 
-		_, err := (&Executor{Root: t.TempDir(), RunTool: sharedDiskRunner(&mutations), volumeDevices: hermeticVolumeDevices(t)}).applyVolumes(context.Background(), current, desired, bindings, "cp-1", nil, nil)
+	if err != nil {
+		t.Fatalf("applyVolumes() error = %v", err)
+	}
+	want := []string{"wipefs --all /dev/disk/by-diskseq/2-part2", "mkfs.xfs -K /dev/disk/by-diskseq/2-part2"}
+	if !reflect.DeepEqual(runner.writes(), want) {
+		t.Fatalf("commands = %q, want only the sibling partition formatted and keep left mounted", runner.writes())
+	}
+	wantBindings := []generation.VolumeBinding{{Name: "data", PartitionUUID: "data-part", FilesystemUUID: "data-fs"}, keepBinding}
+	if !reflect.DeepEqual(got, wantBindings) {
+		t.Fatalf("bindings = %#v, want %#v", got, wantBindings)
+	}
+}
 
-		if !errors.Is(err, disk.ErrVolumeRefused) || !strings.Contains(err.Error(), "is mounted") {
-			t.Fatalf("applyVolumes() error = %v, want refusal of the disk holding mounted volume keep", err)
-		}
-		for _, argv := range mutations {
-			if argv[0] != "udevadm" {
-				t.Fatalf("mounted volume's disk was touched: %v", mutations)
+func TestApplyVolumesRefusesSharedStorage(t *testing.T) {
+	wipeDisk := func(name, serial string) manifest.Volume {
+		return manifest.Volume{Name: name, Selector: manifest.VolumeSelector{Disk: &manifest.DiskSelector{Serial: serial}}, Filesystem: "xfs", Wipe: true}
+	}
+	partition := func(name string, selector manifest.PartitionSelector, wipe bool) manifest.Volume {
+		return manifest.Volume{Name: name, Selector: manifest.VolumeSelector{Partition: &selector}, Filesystem: "xfs", Wipe: wipe}
+	}
+
+	for _, test := range []struct {
+		name        string
+		current     manifest.Manifest
+		bindings    []generation.VolumeBinding
+		desired     manifest.Manifest
+		keepMounted bool
+		names       []string
+	}{
+		{
+			name:    "repartition the disk of a mounted kept volume",
+			current: volumesManifest(keepVolume), bindings: []generation.VolumeBinding{keepBinding},
+			desired: volumesManifest(keepVolume, wipeDisk("data", "data")), keepMounted: true,
+			names: []string{"keep", "data"},
+		},
+		{
+			name:    "repartition the disk of an unmounted kept volume",
+			current: volumesManifest(keepVolume), bindings: []generation.VolumeBinding{keepBinding},
+			desired: volumesManifest(keepVolume, wipeDisk("data", "data")),
+			names:   []string{"keep", "data"},
+		},
+		{
+			name:    "format the partition of an unmounted kept volume",
+			current: volumesManifest(keepVolume), bindings: []generation.VolumeBinding{keepBinding},
+			desired: volumesManifest(keepVolume, partition("data", manifest.PartitionSelector{PartUUID: "keep-part"}, true)),
+			names:   []string{"keep", "data"},
+		},
+		{
+			name:    "repartition the disk of a new preserved volume",
+			current: volumesManifest(),
+			desired: volumesManifest(wipeDisk("b", "spare"), partition("c", manifest.PartitionSelector{PartUUID: "spare-part"}, false)),
+			names:   []string{"b", "c"},
+		},
+		{
+			name:    "preserve one partition as two volumes",
+			current: volumesManifest(),
+			desired: volumesManifest(partition("a", manifest.PartitionSelector{PartUUID: "spare-part"}, false), partition("b", manifest.PartitionSelector{FilesystemUUID: "spare-fs"}, false)),
+			names:   []string{"a", "b"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &storageRunner{keepMounted: test.keepMounted}
+
+			_, err := (&Executor{Root: t.TempDir(), RunTool: runner.run, volumeDevices: hermeticVolumeDevices(t)}).applyVolumes(context.Background(), test.current, test.desired, test.bindings, "cp-1", nil, nil)
+
+			if err == nil {
+				t.Fatal("applyVolumes() error = nil, want refusal of volumes sharing storage")
 			}
-		}
-	})
+			for _, name := range test.names {
+				if !strings.Contains(err.Error(), fmt.Sprintf("%q", name)) {
+					t.Fatalf("applyVolumes() error = %v, want refusal naming volume %q", err, name)
+				}
+			}
+			if len(runner.commands) != 0 {
+				t.Fatalf("commands = %q, want none before the refusal", runner.commands)
+			}
+		})
+	}
+}
+
+func TestApplyVolumesChecksEveryVolumeBeforeRewritingAny(t *testing.T) {
+	desired := volumesManifest(
+		manifest.Volume{Name: "a", Selector: manifest.VolumeSelector{Disk: &manifest.DiskSelector{Serial: "spare"}}, Filesystem: "xfs", Wipe: true},
+		manifest.Volume{Name: "b", Selector: manifest.VolumeSelector{Partition: &manifest.PartitionSelector{PartUUID: "data-part"}}, Filesystem: "xfs", Wipe: true},
+	)
+	// After planning, another disk takes b's disk's kernel name, so b's
+	// recheck refuses while a's disk is still the planned one.
+	runner := &storageRunner{dataSerial: "replaced"}
+
+	_, err := (&Executor{Root: t.TempDir(), RunTool: runner.run, volumeDevices: hermeticVolumeDevices(t)}).applyVolumes(context.Background(), volumesManifest(), desired, nil, "cp-1", nil, nil)
+
+	if !errors.Is(err, discovery.ErrTargetDiskChanged) {
+		t.Fatalf("applyVolumes() error = %v, want ErrTargetDiskChanged", err)
+	}
+	if writes := runner.writes(); len(writes) != 0 {
+		t.Fatalf("commands = %q, want no volume rewritten before every volume is checked", writes)
+	}
+}
+
+func TestApplyVolumesLeavesRewrittenVolumesUnmounted(t *testing.T) {
+	// a is reformatted in place; b only changes how it selects its partition.
+	current := volumesManifest(
+		manifest.Volume{Name: "a", Selector: manifest.VolumeSelector{Partition: &manifest.PartitionSelector{PartUUID: "spare-part"}}, Filesystem: "xfs"},
+		manifest.Volume{Name: "b", Selector: manifest.VolumeSelector{Partition: &manifest.PartitionSelector{PartUUID: "data-part"}}, Filesystem: "ext4"},
+	)
+	desired := volumesManifest(
+		manifest.Volume{Name: "a", Selector: manifest.VolumeSelector{Partition: &manifest.PartitionSelector{PartUUID: "spare-part"}}, Filesystem: "xfs", Wipe: true},
+		manifest.Volume{Name: "b", Selector: manifest.VolumeSelector{Partition: &manifest.PartitionSelector{FilesystemUUID: "data-fs"}}, Filesystem: "ext4"},
+	)
+	bindings := []generation.VolumeBinding{
+		{Name: "a", PartitionUUID: "spare-part", FilesystemUUID: "spare-fs"},
+		{Name: "b", PartitionUUID: "data-part", FilesystemUUID: "data-fs"},
+	}
+	runner := &storageRunner{fail: func(argv []string) bool { return strings.HasPrefix(argv[0], "mkfs.") }}
+
+	_, err := (&Executor{Root: t.TempDir(), RunTool: runner.run, volumeDevices: hermeticVolumeDevices(t)}).applyVolumes(context.Background(), current, desired, bindings, "cp-1", nil, nil)
+
+	if err == nil || !strings.Contains(err.Error(), "volumes a ") || !strings.Contains(err.Error(), "unmounted") {
+		t.Fatalf("applyVolumes() error = %v, want failure naming a as left unmounted", err)
+	}
+	if slices.Contains(runner.commands, "systemctl start var-mnt-a.mount") {
+		t.Fatalf("commands = %q, want a, whose storage was rewritten, left unmounted", runner.commands)
+	}
+	if !slices.Contains(runner.commands, "systemctl start var-mnt-b.mount") {
+		t.Fatalf("commands = %q, want b, whose storage is intact, mounted again", runner.commands)
+	}
 }
 
 func TestApplyVolumesRestartsStoppedVolumesAfterRefusal(t *testing.T) {
@@ -525,40 +666,60 @@ func TestApplyVolumesRestartsStoppedVolumesAfterRefusal(t *testing.T) {
 	desired.Install.Volumes = []manifest.Volume{{
 		Name: "data", Selector: manifest.VolumeSelector{Disk: &manifest.DiskSelector{Serial: "new"}}, Filesystem: "xfs", Wipe: true,
 	}}
-	// Planning sees disk vdc; by preparation another disk has its name.
-	discoveries := 0
-	var commands []string
-	runner := func(_ context.Context, argv []string, _ func(int)) ToolResult {
-		switch argv[0] {
-		case "lsblk":
-			discoveries++
-			serial := "new"
-			if discoveries > 1 {
-				serial = "other"
-			}
-			return ToolResult{Stdout: []byte(`{"blockdevices":[` +
-				`{"name":"vda","path":"/dev/vda","type":"disk","serial":"root","size":68719476736,"ro":false,"mountpoints":[],"children":[{"name":"vda5","path":"/dev/vda5","type":"part","size":1073741824,"ro":false,"partlabel":"KATL_STATE","mountpoints":["/var"]}]},` +
-				`{"name":"vdb","path":"/dev/vdb","type":"disk","serial":"old","size":68719476736,"ro":false,"mountpoints":[],"children":[{"name":"vdb1","path":"/dev/vdb1","type":"part","size":68702699520,"ro":false,"fstype":"xfs","uuid":"old-fs","partuuid":"old-part","mountpoints":["/var/mnt/data"]}]},` +
-				`{"name":"vdc","path":"/dev/vdc","type":"disk","serial":"` + serial + `","size":68719476736,"ro":false,"mountpoints":[]}` +
-				`]}`)}
-		case "findmnt":
-			return ToolResult{Stdout: []byte(`{"filesystems":[{"source":"/dev/vdb1","target":"/var/mnt/data","fstype":"xfs","options":"rw"}]}`)}
-		case "ip":
-			return ToolResult{Stdout: []byte(`[]`)}
-		default:
-			commands = append(commands, strings.Join(argv, " "))
-			return ToolResult{}
-		}
-	}
 	bindings := []generation.VolumeBinding{{Name: "data", PartitionUUID: "old-part", FilesystemUUID: "old-fs"}}
 
-	_, err := (&Executor{Root: t.TempDir(), RunTool: runner, volumeDevices: hermeticVolumeDevices(t)}).applyVolumes(context.Background(), current, desired, bindings, "cp-1", nil, []string{"cp-1/data"})
+	for _, test := range []struct {
+		name string
+		// stopStatus is the exit status of systemctl stop; 5 means the
+		// mount unit is not loaded.
+		stopStatus int
+		want       []string
+		mounted    bool
+	}{
+		{"loaded unit", 0, []string{"systemctl stop var-mnt-data.mount", "udevadm settle", "systemctl start var-mnt-data.mount"}, true},
+		{"unloaded unit", 5, []string{"systemctl stop var-mnt-data.mount", "udevadm settle"}, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			// Planning sees disk vdc; by preparation another disk has its name.
+			discoveries := 0
+			var commands []string
+			runner := func(_ context.Context, argv []string, _ func(int)) ToolResult {
+				switch argv[0] {
+				case "lsblk":
+					discoveries++
+					serial := "new"
+					if discoveries > 1 {
+						serial = "other"
+					}
+					return ToolResult{Stdout: []byte(`{"blockdevices":[` +
+						`{"name":"vda","path":"/dev/vda","type":"disk","serial":"root","size":68719476736,"ro":false,"mountpoints":[],"children":[{"name":"vda5","path":"/dev/vda5","type":"part","size":1073741824,"ro":false,"partlabel":"KATL_STATE","mountpoints":["/var"]}]},` +
+						`{"name":"vdb","path":"/dev/vdb","type":"disk","serial":"old","size":68719476736,"ro":false,"mountpoints":[],"children":[{"name":"vdb1","path":"/dev/vdb1","type":"part","size":68702699520,"ro":false,"fstype":"xfs","uuid":"old-fs","partuuid":"old-part","mountpoints":["/var/mnt/data"]}]},` +
+						`{"name":"vdc","path":"/dev/vdc","type":"disk","serial":"` + serial + `","size":68719476736,"ro":false,"mountpoints":[]}` +
+						`]}`)}
+				case "findmnt":
+					return ToolResult{Stdout: []byte(`{"filesystems":[{"source":"/dev/vdb1","target":"/var/mnt/data","fstype":"xfs","options":"rw"}]}`)}
+				case "ip":
+					return ToolResult{Stdout: []byte(`[]`)}
+				default:
+					commands = append(commands, strings.Join(argv, " "))
+					if argv[0] == "systemctl" && argv[1] == "stop" {
+						return ToolResult{ExitStatus: test.stopStatus}
+					}
+					return ToolResult{}
+				}
+			}
 
-	if !errors.Is(err, discovery.ErrTargetDiskChanged) || !strings.Contains(err.Error(), "volumes data were stopped for this apply and have been mounted again") {
-		t.Fatalf("applyVolumes() error = %v, want refusal that reports data mounted again", err)
-	}
-	want := []string{"systemctl stop var-mnt-data.mount", "udevadm settle", "systemctl start var-mnt-data.mount"}
-	if !reflect.DeepEqual(commands, want) {
-		t.Fatalf("commands = %q, want %q", commands, want)
+			_, err := (&Executor{Root: t.TempDir(), RunTool: runner, volumeDevices: hermeticVolumeDevices(t)}).applyVolumes(context.Background(), current, desired, bindings, "cp-1", nil, []string{"cp-1/data"})
+
+			if !errors.Is(err, discovery.ErrTargetDiskChanged) {
+				t.Fatalf("applyVolumes() error = %v, want ErrTargetDiskChanged", err)
+			}
+			if mounted := strings.Contains(err.Error(), "mounted again"); mounted != test.mounted {
+				t.Fatalf("applyVolumes() error = %v; reports data mounted again = %v, want %v", err, mounted, test.mounted)
+			}
+			if !reflect.DeepEqual(commands, test.want) {
+				t.Fatalf("commands = %q, want %q", commands, test.want)
+			}
+		})
 	}
 }

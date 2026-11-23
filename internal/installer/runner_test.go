@@ -732,8 +732,8 @@ func TestPlanInstallHonorsVolumeWipe(t *testing.T) {
 		Manifest:    installManifest,
 		KatlosImage: &payload,
 		HardwareFacts: discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
-			{Path: "/dev/vda", Type: discovery.DeviceDisk, ByID: []string{"/dev/disk/by-id/ata-root"}, SizeBytes: 64 << 30},
-			{Path: "/dev/vdb", Type: discovery.DeviceDisk, DiskSeq: 2, Serial: "data", SizeBytes: 64 << 30, PartitionSignature: "gpt"},
+			{Path: "/dev/vda", Type: discovery.DeviceDisk, DiskSeq: 1, ByDiskSeq: "/dev/disk/by-diskseq/1", ByID: []string{"/dev/disk/by-id/ata-root"}, SizeBytes: 64 << 30},
+			{Path: "/dev/vdb", Type: discovery.DeviceDisk, DiskSeq: 2, ByDiskSeq: "/dev/disk/by-diskseq/2", Serial: "data", SizeBytes: 64 << 30, PartitionSignature: "gpt"},
 		}},
 	}
 	if err := planInstall(install); err != nil {
@@ -1404,7 +1404,7 @@ func TestRunnerRefusesChangedVolumeDisk(t *testing.T) {
 	// Another disk has taken the volume disk's kernel name since planning.
 	facts := discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
 		target,
-		{Path: "/dev/vdb", Type: discovery.DeviceDisk, DiskSeq: 5, SizeBytes: 64 << 30, Partitions: []discovery.BlockDevice{
+		{Path: "/dev/vdb", Type: discovery.DeviceDisk, DiskSeq: 5, ByDiskSeq: "/dev/disk/by-diskseq/5", SizeBytes: 64 << 30, Partitions: []discovery.BlockDevice{
 			{Path: "/dev/vdb1", Type: discovery.DevicePartition, PartitionNumber: 1, PartitionUUID: "data-part"},
 		}},
 	}}
@@ -1474,12 +1474,12 @@ func TestFormatFilesystemsBindsVolumeToDiscoveredIdentity(t *testing.T) {
 	install := &Context{
 		Commands: &NoopCommandRunner{}, Store: &MemoryStateStore{},
 		Discovery: discovery.StaticDiscoverySource{Facts: discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{{
-			Path: "/dev/vda", Type: discovery.DeviceDisk, DiskSeq: 1, Partitions: []discovery.BlockDevice{{
+			Path: "/dev/vda", Type: discovery.DeviceDisk, DiskSeq: 1, ByDiskSeq: "/dev/disk/by-diskseq/1", Partitions: []discovery.BlockDevice{{
 				Path: "/dev/vda1", Type: discovery.DevicePartition, GPTLabel: "u-data",
 				PartitionUUID: "old-data", FilesystemUUID: "old-fs", FilesystemSignature: "xfs",
 			}},
 		}, {
-			Path: "/dev/vdb", Type: discovery.DeviceDisk, DiskSeq: 2, Partitions: []discovery.BlockDevice{{
+			Path: "/dev/vdb", Type: discovery.DeviceDisk, DiskSeq: 2, ByDiskSeq: "/dev/disk/by-diskseq/2", Partitions: []discovery.BlockDevice{{
 				Path: "/dev/vdb1", Type: discovery.DevicePartition, GPTLabel: "u-data",
 				PartitionUUID: "part-data", FilesystemUUID: "fs-data", FilesystemSignature: "xfs",
 			}},
@@ -1844,6 +1844,7 @@ func planningFacts() discovery.HardwareFacts {
 				Path:      "/dev/nvme0n1",
 				Type:      discovery.DeviceDisk,
 				DiskSeq:   1,
+				ByDiskSeq: "/dev/disk/by-diskseq/1",
 				ByID:      []string{"/dev/disk/by-id/ata-root"},
 				SizeBytes: 64 * 1024 * 1024 * 1024,
 			},
@@ -1877,6 +1878,7 @@ func appliedLayoutFacts(targetRoot string) discovery.HardwareFacts {
 				Path:      "/dev/nvme0n1",
 				Type:      discovery.DeviceDisk,
 				DiskSeq:   1,
+				ByDiskSeq: "/dev/disk/by-diskseq/1",
 				ByID:      []string{"/dev/disk/by-id/ata-root"},
 				SizeBytes: 64 * 1024 * 1024 * 1024,
 				Partitions: []discovery.BlockDevice{
@@ -2331,8 +2333,8 @@ func TestRunnerRerunAfterMutationBindsToRetainedDisk(t *testing.T) {
 	// that partition table; /dev/sda now carries the GUID the selector names.
 	const guid = "6f1e3c2a-8d4b-4f5e-9a7c-1b2d3e4f5a6b"
 	facts := discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
-		{Name: "sda", Path: "/dev/sda", Type: discovery.DeviceDisk, DiskSeq: 1, SizeBytes: 64 << 30, PartitionSignature: "gpt", PartitionTableUUID: guid},
-		{Name: "sdb", Path: "/dev/sdb", Type: discovery.DeviceDisk, DiskSeq: 2, SizeBytes: 64 << 30},
+		{Name: "sda", Path: "/dev/sda", Type: discovery.DeviceDisk, DiskSeq: 1, ByDiskSeq: "/dev/disk/by-diskseq/1", SizeBytes: 64 << 30, PartitionSignature: "gpt", PartitionTableUUID: guid},
+		{Name: "sdb", Path: "/dev/sdb", Type: discovery.DeviceDisk, DiskSeq: 2, ByDiskSeq: "/dev/disk/by-diskseq/2", SizeBytes: 64 << 30},
 	}}
 	path := writeManifestWithTarget(t, `{"gptGUID": "`+guid+`"}`)
 	install := &Context{
@@ -2360,8 +2362,8 @@ func TestRunnerRerunAfterMutationBindsToRetainedDisk(t *testing.T) {
 func TestRunnerStaysBoundToWipedDiskAcrossAttempts(t *testing.T) {
 	stateDir := t.TempDir()
 	manifestPath := writeManifestWithTarget(t, `{"name": "/dev/sda"}`)
-	diskA := discovery.BlockDevice{Name: "sda", Path: "/dev/sda", Type: discovery.DeviceDisk, DiskSeq: 1, SizeBytes: 64 << 30}
-	diskB := discovery.BlockDevice{Name: "sdb", Path: "/dev/sdb", Type: discovery.DeviceDisk, DiskSeq: 2, SizeBytes: 64 << 30}
+	diskA := discovery.BlockDevice{Name: "sda", Path: "/dev/sda", Type: discovery.DeviceDisk, DiskSeq: 1, ByDiskSeq: "/dev/disk/by-diskseq/1", SizeBytes: 64 << 30}
+	diskB := discovery.BlockDevice{Name: "sdb", Path: "/dev/sdb", Type: discovery.DeviceDisk, DiskSeq: 2, ByDiskSeq: "/dev/disk/by-diskseq/2", SizeBytes: 64 << 30}
 	attempt := func(facts discovery.HardwareFacts, commands CommandRunner, resolver KatlosImageResolver) error {
 		install := &Context{
 			ManifestPath:   manifestPath,

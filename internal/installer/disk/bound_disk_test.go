@@ -24,7 +24,7 @@ func formatVolume() VolumePlan {
 }
 
 func volumeDiskWith(partitions ...BlockDevice) BlockDevice {
-	return BlockDevice{Path: "/dev/vdb", Type: DeviceDisk, DiskSeq: 3, SizeBytes: 8 << 30, Partitions: partitions}
+	return BlockDevice{Path: "/dev/vdb", Type: DeviceDisk, DiskSeq: 3, ByDiskSeq: "/dev/disk/by-diskseq/3", SizeBytes: 8 << 30, Partitions: partitions}
 }
 
 func dataPartition() BlockDevice {
@@ -42,12 +42,26 @@ func destructiveCalls(calls []CommandCall) []string {
 	return names
 }
 
+// mentions reports whether err names every identifying part, such as a device
+// path or identity, without depending on how the message is worded.
+func mentions(err error, parts ...string) bool {
+	if err == nil {
+		return false
+	}
+	for _, part := range parts {
+		if !strings.Contains(err.Error(), part) {
+			return false
+		}
+	}
+	return true
+}
+
 func TestPrepareVolumeRefusesChangedTarget(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		plan  VolumePlan
 		disks []BlockDevice
-		want  string
+		want  []string
 	}{
 		{
 			// The planned disk is now vdc; the disk that took its kernel name
@@ -55,27 +69,27 @@ func TestPrepareVolumeRefusesChangedTarget(t *testing.T) {
 			name: "disk renamed before repartitioning",
 			plan: repartitionVolume(),
 			disks: []BlockDevice{
-				{Path: "/dev/vdb", Type: DeviceDisk, DiskSeq: 4, SizeBytes: 8 << 30},
-				{Path: "/dev/vdc", Type: DeviceDisk, DiskSeq: 3, SizeBytes: 8 << 30},
+				{Path: "/dev/vdb", Type: DeviceDisk, DiskSeq: 4, ByDiskSeq: "/dev/disk/by-diskseq/4", SizeBytes: 8 << 30},
+				{Path: "/dev/vdc", Type: DeviceDisk, DiskSeq: 3, ByDiskSeq: "/dev/disk/by-diskseq/3", SizeBytes: 8 << 30},
 			},
-			want: "/dev/vdb is now (size=8.0GiB, diskseq=4), not the selected (size=8.0GiB, diskseq=3)",
+			want: []string{"/dev/vdb", "diskseq=4", "diskseq=3"},
 		},
 		{
 			name: "disk detached before repartitioning",
 			plan: repartitionVolume(),
-			want: "selected disk /dev/vdb is no longer present",
+			want: []string{"/dev/vdb", "no longer present"},
 		},
 		{
 			name:  "disk mounted before repartitioning",
 			plan:  repartitionVolume(),
 			disks: []BlockDevice{volumeDiskWith(BlockDevice{Path: "/dev/vdb1", Type: DevicePartition, Mountpoints: []string{"/srv"}})},
-			want:  "is mounted",
+			want:  []string{"/dev/vdb", "mounted"},
 		},
 		{
 			name:  "disk renamed before formatting a partition",
 			plan:  formatVolume(),
-			disks: []BlockDevice{{Path: "/dev/vdb", Type: DeviceDisk, DiskSeq: 4, SizeBytes: 8 << 30, Partitions: []BlockDevice{dataPartition()}}},
-			want:  "not the selected",
+			disks: []BlockDevice{{Path: "/dev/vdb", Type: DeviceDisk, DiskSeq: 4, ByDiskSeq: "/dev/disk/by-diskseq/4", SizeBytes: 8 << 30, Partitions: []BlockDevice{dataPartition()}}},
+			want:  []string{"/dev/vdb", "diskseq=4"},
 		},
 		{
 			// A clone shares the PARTUUID, so the partition's identity is
@@ -84,11 +98,11 @@ func TestPrepareVolumeRefusesChangedTarget(t *testing.T) {
 			plan: formatVolume(),
 			disks: []BlockDevice{
 				volumeDiskWith(dataPartition()),
-				{Path: "/dev/vdc", Type: DeviceDisk, DiskSeq: 5, SizeBytes: 8 << 30, Partitions: []BlockDevice{
+				{Path: "/dev/vdc", Type: DeviceDisk, DiskSeq: 5, ByDiskSeq: "/dev/disk/by-diskseq/5", SizeBytes: 8 << 30, Partitions: []BlockDevice{
 					{Path: "/dev/vdc1", Type: DevicePartition, PartitionNumber: 1, PartitionUUID: "data-part"},
 				}},
 			},
-			want: "PARTUUID data-part of /dev/vdb1 is also used by /dev/vdc1",
+			want: []string{"data-part", "/dev/vdb1", "/dev/vdc1"},
 		},
 		{
 			name: "partition mounted before formatting",
@@ -96,7 +110,7 @@ func TestPrepareVolumeRefusesChangedTarget(t *testing.T) {
 			disks: []BlockDevice{volumeDiskWith(BlockDevice{
 				Path: "/dev/vdb1", Type: DevicePartition, PartitionNumber: 1, PartitionUUID: "data-part", SizeBytes: 1 << 30, Mountpoints: []string{"/srv"},
 			})},
-			want: "partition /dev/vdb1 is mounted",
+			want: []string{"/dev/vdb1", "mounted"},
 		},
 		{
 			// The partition table was rewritten and partition 1 is now a
@@ -106,7 +120,7 @@ func TestPrepareVolumeRefusesChangedTarget(t *testing.T) {
 			disks: []BlockDevice{volumeDiskWith(BlockDevice{
 				Path: "/dev/vdb1", Type: DevicePartition, PartitionNumber: 1, PartitionUUID: "data-part", SizeBytes: 1 << 30, GPTLabel: GPTLabelState,
 			})},
-			want: "/dev/vdb1 is now Katl-managed partition KATL_STATE",
+			want: []string{"/dev/vdb1", "KATL_STATE"},
 		},
 		{
 			name: "partition number now holds a different partition",
@@ -114,17 +128,17 @@ func TestPrepareVolumeRefusesChangedTarget(t *testing.T) {
 			disks: []BlockDevice{volumeDiskWith(BlockDevice{
 				Path: "/dev/vdb1", Type: DevicePartition, PartitionNumber: 1, PartitionUUID: "data-part", SizeBytes: 2 << 30,
 			})},
-			want: "partition 1 of /dev/vdb is now (size=2147483648, partuuid=data-part), not the selected (size=1073741824, partuuid=data-part)",
+			want: []string{"partition 1", "/dev/vdb", "size=2147483648"},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			commands := &NoopCommandRunner{}
 			source := discovery.StaticDiscoverySource{Facts: HardwareFacts{BlockDevices: test.disks}}
 
-			err := PrepareVolume(context.Background(), commands, source, test.plan)
+			_, err := PrepareVolumes(context.Background(), commands, source, []VolumePlan{test.plan})
 
-			if !errors.Is(err, ErrVolumeRefused) || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("PrepareVolume() error = %v, want ErrVolumeRefused containing %q", err, test.want)
+			if !errors.Is(err, ErrVolumeRefused) || !mentions(err, test.want...) {
+				t.Fatalf("PrepareVolumes() error = %v, want ErrVolumeRefused naming %q", err, test.want)
 			}
 			if got := destructiveCalls(commands.Calls); len(got) != 0 {
 				t.Fatalf("destructive commands = %v, want none", got)
@@ -141,7 +155,7 @@ type changingDiscovery struct {
 
 func (d changingDiscovery) Discover(context.Context) (HardwareFacts, error) {
 	if countCalls(d.commands.Calls, "wipefs") > 0 {
-		return HardwareFacts{BlockDevices: []BlockDevice{{Path: "/dev/vdb", Type: DeviceDisk, DiskSeq: 9, SizeBytes: 8 << 30}}}, nil
+		return HardwareFacts{BlockDevices: []BlockDevice{{Path: "/dev/vdb", Type: DeviceDisk, DiskSeq: 9, ByDiskSeq: "/dev/disk/by-diskseq/9", SizeBytes: 8 << 30}}}, nil
 	}
 	return HardwareFacts{BlockDevices: []BlockDevice{volumeDiskWith(dataPartition())}}, nil
 }
@@ -149,10 +163,10 @@ func (d changingDiscovery) Discover(context.Context) (HardwareFacts, error) {
 func TestPrepareVolumeRechecksBeforeEachCommand(t *testing.T) {
 	commands := &NoopCommandRunner{}
 
-	err := PrepareVolume(context.Background(), commands, changingDiscovery{commands: commands}, formatVolume())
+	_, err := PrepareVolumes(context.Background(), commands, changingDiscovery{commands: commands}, []VolumePlan{formatVolume()})
 
 	if !errors.Is(err, discovery.ErrTargetDiskChanged) {
-		t.Fatalf("PrepareVolume() error = %v, want ErrTargetDiskChanged", err)
+		t.Fatalf("PrepareVolumes() error = %v, want ErrTargetDiskChanged", err)
 	}
 	if got := destructiveCalls(commands.Calls); !reflect.DeepEqual(got, []string{"wipefs"}) {
 		t.Fatalf("destructive commands = %v, want wipefs only: mkfs must recheck the disk after wipefs", got)
@@ -178,8 +192,8 @@ func TestPrepareVolumeAddressesByDiskSequence(t *testing.T) {
 			}
 			commands := &NoopCommandRunner{}
 
-			if err := PrepareVolume(context.Background(), commands, source, test.plan); err != nil {
-				t.Fatalf("PrepareVolume() error = %v", err)
+			if _, err := PrepareVolumes(context.Background(), commands, source, []VolumePlan{test.plan}); err != nil {
+				t.Fatalf("PrepareVolumes() error = %v", err)
 			}
 
 			call := findCall(commands.Calls, test.command)
@@ -192,17 +206,17 @@ func TestPrepareVolumeAddressesByDiskSequence(t *testing.T) {
 
 func TestDiskWithoutDiskSequenceIsRefused(t *testing.T) {
 	unsequenced := discovery.DiskIdentity{Path: "/dev/vdb", SizeBytes: 8 << 30}
-	want := "disk /dev/vdb has no kernel attachment sequence"
+	want := []string{"/dev/vdb", "diskseq"}
 
 	t.Run("volume", func(t *testing.T) {
 		plan := formatVolume()
 		plan.Disk = unsequenced
 		commands := &NoopCommandRunner{}
 
-		err := PrepareVolume(context.Background(), commands, discovery.StaticDiscoverySource{}, plan)
+		_, err := PrepareVolumes(context.Background(), commands, discovery.StaticDiscoverySource{}, []VolumePlan{plan})
 
-		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Fatalf("PrepareVolume() error = %v, want %q", err, want)
+		if !mentions(err, want...) {
+			t.Fatalf("PrepareVolumes() error = %v, want %q", err, want)
 		}
 		if len(commands.Calls) != 0 {
 			t.Fatalf("commands = %+v, want none", commands.Calls)
@@ -214,7 +228,7 @@ func TestDiskWithoutDiskSequenceIsRefused(t *testing.T) {
 
 		_, err := BuildDiskOperations(plan, "")
 
-		if err == nil || !strings.Contains(err.Error(), want) {
+		if !mentions(err, want...) {
 			t.Fatalf("BuildDiskOperations() error = %v, want %q", err, want)
 		}
 	})
@@ -226,11 +240,11 @@ func TestBindVolumePlans(t *testing.T) {
 	selected := VolumePlan{Name: "data", Disk: dataDisk, Partition: PartitionIdentity{Number: 3, SizeBytes: 1 << 30}}
 	// An earlier install's volume disk is enumerated before the bound disk
 	// and carries the same u-data label.
-	oldDisk := BlockDevice{Path: "/dev/vda", Type: DeviceDisk, DiskSeq: 1, Partitions: []BlockDevice{
+	oldDisk := BlockDevice{Path: "/dev/vda", Type: DeviceDisk, DiskSeq: 1, ByDiskSeq: "/dev/disk/by-diskseq/1", Partitions: []BlockDevice{
 		{Path: "/dev/vda1", Type: DevicePartition, PartitionNumber: 1, GPTLabel: "u-data", PartitionUUID: "old-part", FilesystemUUID: "old-fs"},
 	}}
 	boundDisk := func(partitions ...BlockDevice) BlockDevice {
-		return BlockDevice{Path: "/dev/vdb", Type: DeviceDisk, DiskSeq: 2, Partitions: partitions}
+		return BlockDevice{Path: "/dev/vdb", Type: DeviceDisk, DiskSeq: 2, ByDiskSeq: "/dev/disk/by-diskseq/2", Partitions: partitions}
 	}
 
 	for _, test := range []struct {
@@ -239,7 +253,7 @@ func TestBindVolumePlans(t *testing.T) {
 		disks   []BlockDevice
 		source  string
 		binding VolumeBinding
-		err     string
+		err     []string
 	}{
 		{
 			name:    "repartitioned disk ignores label on another disk",
@@ -252,21 +266,21 @@ func TestBindVolumePlans(t *testing.T) {
 			name:  "repartitioned disk without its partition does not fall back",
 			plan:  repartitioned,
 			disks: []BlockDevice{oldDisk, boundDisk()},
-			err:   "disk /dev/vdb has 0 partitions labelled u-data",
+			err:   []string{"/dev/vdb", "u-data"},
 		},
 		{
 			name: "disk renamed before binding",
 			plan: repartitioned,
-			disks: []BlockDevice{{Path: "/dev/vdb", Type: DeviceDisk, DiskSeq: 7, Partitions: []BlockDevice{
+			disks: []BlockDevice{{Path: "/dev/vdb", Type: DeviceDisk, DiskSeq: 7, ByDiskSeq: "/dev/disk/by-diskseq/7", Partitions: []BlockDevice{
 				{Path: "/dev/vdb1", Type: DevicePartition, GPTLabel: "u-data", PartitionUUID: "other-part"},
 			}}},
-			err: "not the selected",
+			err: []string{"/dev/vdb", "diskseq=7"},
 		},
 		{
 			name:  "PARTUUID shared with another disk",
 			plan:  repartitioned,
 			disks: []BlockDevice{oldDisk, boundDisk(BlockDevice{Path: "/dev/vdb1", Type: DevicePartition, GPTLabel: "u-data", PartitionUUID: "old-part"})},
-			err:   "PARTUUID old-part of /dev/vdb1 is also used by /dev/vda1",
+			err:   []string{"old-part", "/dev/vdb1", "/dev/vda1"},
 		},
 		{
 			name:    "selected partition without PARTUUID binds by filesystem UUID",
@@ -279,7 +293,7 @@ func TestBindVolumePlans(t *testing.T) {
 			name:  "filesystem UUID shared with another disk",
 			plan:  selected,
 			disks: []BlockDevice{oldDisk, boundDisk(BlockDevice{Path: "/dev/vdb3", Type: DevicePartition, PartitionNumber: 3, SizeBytes: 1 << 30, FilesystemUUID: "old-fs"})},
-			err:   "filesystem UUID old-fs of /dev/vdb3 is also used by /dev/vda1",
+			err:   []string{"old-fs", "/dev/vdb3", "/dev/vda1"},
 		},
 		{
 			// Without a PARTUUID the partition is found by number, so a
@@ -287,7 +301,7 @@ func TestBindVolumePlans(t *testing.T) {
 			name:  "selected partition number reused by another partition",
 			plan:  selected,
 			disks: []BlockDevice{boundDisk(BlockDevice{Path: "/dev/vdb3", Type: DevicePartition, PartitionNumber: 3, SizeBytes: 4 << 30, FilesystemUUID: "data-fs"})},
-			err:   "partition 3 of /dev/vdb is now (size=4294967296), not the selected (size=1073741824)",
+			err:   []string{"partition 3", "/dev/vdb", "size=4294967296"},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -295,8 +309,8 @@ func TestBindVolumePlans(t *testing.T) {
 
 			plans, bindings, err := BindVolumePlans(facts, []VolumePlan{test.plan})
 
-			if test.err != "" {
-				if err == nil || !strings.Contains(err.Error(), test.err) {
+			if test.err != nil {
+				if !mentions(err, test.err...) {
 					t.Fatalf("BindVolumePlans() error = %v, want %q", err, test.err)
 				}
 				return
@@ -334,7 +348,7 @@ func TestDiskExecutorRefusesUnboundVolumeMount(t *testing.T) {
 func TestDiskExecutorRechecksVolumeDisksBeforeWipingSystemDisk(t *testing.T) {
 	plan := executorPlan()
 	source := discovery.StaticDiscoverySource{Facts: HardwareFacts{BlockDevices: []BlockDevice{
-		{Path: "/dev/sdb", Type: DeviceDisk, DiskSeq: 9, SizeBytes: 16 << 30},
+		{Path: "/dev/sdb", Type: DeviceDisk, DiskSeq: 9, ByDiskSeq: "/dev/disk/by-diskseq/9", SizeBytes: 16 << 30},
 	}}}
 	commands := &NoopCommandRunner{}
 
@@ -363,27 +377,134 @@ func TestPlanVolumesRefusesSharedTargets(t *testing.T) {
 		return VolumeRequest{Name: name, Partition: &PartitionSelector{ByID: byID}, Filesystem: "xfs"}
 	}
 
+	// A kept volume is found by its binding; its partition is not mounted
+	// here, so only its claim can protect it.
+	kept := []VolumeBinding{{Name: "a", PartitionUUID: "part-1"}}
+
 	for _, test := range []struct {
 		name     string
 		requests []VolumeRequest
-		want     string
+		kept     []VolumeBinding
+		want     []string
 	}{
-		{"same disk twice", []VolumeRequest{wholeDisk("a"), wholeDisk("b")}, `volumes "a" and "b" both select disk /dev/sdb`},
-		{"partition on a repartitioned disk", []VolumeRequest{partition("a", "/dev/disk/by-id/ata-data-part1"), wholeDisk("b")}, `volumes "a" and "b" both select disk /dev/sdb`},
-		{"same partition twice", []VolumeRequest{partition("a", "/dev/disk/by-id/ata-data-part1"), partition("b", "/dev/disk/by-id/ata-data-part1")}, `volumes "a" and "b" both select partition 1 of /dev/sdb`},
+		{"same disk twice", []VolumeRequest{wholeDisk("a"), wholeDisk("b")}, nil, []string{`"a"`, `"b"`, "/dev/sdb"}},
+		{"partition on a repartitioned disk", []VolumeRequest{partition("a", "/dev/disk/by-id/ata-data-part1"), wholeDisk("b")}, nil, []string{`"a"`, `"b"`, "/dev/sdb"}},
+		{"same partition twice", []VolumeRequest{partition("a", "/dev/disk/by-id/ata-data-part1"), partition("b", "/dev/disk/by-id/ata-data-part1")}, nil, []string{`"a"`, `"b"`, "partition 1", "/dev/sdb"}},
+		{"repartitioned disk holding a kept volume", []VolumeRequest{wholeDisk("b")}, kept, []string{`"a"`, `"b"`, "/dev/sdb"}},
+		{"partition of a kept volume", []VolumeRequest{partition("b", "/dev/disk/by-id/ata-data-part1")}, kept, []string{`"a"`, `"b"`, "partition 1", "/dev/sdb"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := PlanVolumes(facts, root, test.requests)
+			_, err := PlanVolumes(facts, root, test.requests, test.kept)
 
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("PlanVolumes() error = %v, want %q", err, test.want)
+			if !mentions(err, test.want...) {
+				t.Fatalf("PlanVolumes() error = %v, want refusal naming %q", err, test.want)
 			}
 		})
 	}
 
-	if _, err := PlanVolumes(facts, root, []VolumeRequest{partition("a", "/dev/disk/by-id/ata-data-part1"), partition("b", "/dev/disk/by-id/ata-data-part2")}); err != nil {
+	if _, err := PlanVolumes(facts, root, []VolumeRequest{partition("a", "/dev/disk/by-id/ata-data-part1"), partition("b", "/dev/disk/by-id/ata-data-part2")}, nil); err != nil {
 		t.Fatalf("PlanVolumes() for two partitions of one disk error = %v", err)
 	}
+	if _, err := PlanVolumes(facts, root, []VolumeRequest{partition("b", "/dev/disk/by-id/ata-data-part2")}, kept); err != nil {
+		t.Fatalf("PlanVolumes() beside a kept volume on the same disk error = %v", err)
+	}
+}
+
+func TestPlanningRefusesDiskWithoutDiskSeqLink(t *testing.T) {
+	root := diskForLayout("/dev/nvme0n1", "/dev/disk/by-id/nvme-root", 32768)
+	// A null_blk disk reports a diskseq, but udev links no nullb device by it.
+	data := diskForLayout("/dev/nullb0", "/dev/disk/by-id/nullb-data", 16384)
+	data.ByDiskSeq = ""
+	data.Partitions = []BlockDevice{{Path: "/dev/nullb0p1", Type: DevicePartition, PartitionNumber: 1, PartitionUUID: "data-part", FilesystemSignature: "xfs"}}
+	facts := layoutFacts(root, data)
+
+	for _, test := range []struct {
+		name    string
+		request VolumeRequest
+	}{
+		{"repartitioned disk", VolumeRequest{Name: "data", Disk: &TargetDiskSelector{ByID: "/dev/disk/by-id/nullb-data"}, Filesystem: "xfs", Wipe: true}},
+		{"formatted partition", VolumeRequest{Name: "data", Partition: &PartitionSelector{PartUUID: "data-part"}, Filesystem: "xfs", Wipe: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := PlanVolumes(facts, root, []VolumeRequest{test.request}, nil)
+
+			if !mentions(err, "/dev/nullb0", "by-diskseq") {
+				t.Fatalf("PlanVolumes() error = %v, want refusal naming /dev/nullb0 and its missing by-diskseq link", err)
+			}
+		})
+	}
+
+	// A preserved partition is never written, so it needs no link.
+	preserved := VolumeRequest{Name: "data", Partition: &PartitionSelector{PartUUID: "data-part"}, Filesystem: "xfs"}
+	if _, err := PlanVolumes(facts, root, []VolumeRequest{preserved}, nil); err != nil {
+		t.Fatalf("PlanVolumes() for a preserved partition error = %v", err)
+	}
+
+	t.Run("system disk", func(t *testing.T) {
+		unlinked := root
+		unlinked.ByDiskSeq = ""
+
+		_, err := PlanDiskLayout(layoutFacts(unlinked), DiskLayoutRequest{
+			TargetDisk: TargetDiskSelector{ByID: "/dev/disk/by-id/nvme-root"},
+			RootA:      RootSlotRequest{SizeMiB: 4096},
+			RootB:      RootSlotRequest{SizeMiB: 4096},
+			State:      StatePartitionRequest{MinSizeMiB: 8192},
+		})
+
+		if !mentions(err, "/dev/nvme0n1", "by-diskseq") {
+			t.Fatalf("PlanDiskLayout() error = %v, want refusal naming /dev/nvme0n1 and its missing by-diskseq link", err)
+		}
+	})
+}
+
+func TestPrepareVolumesChecksEveryVolumeFirst(t *testing.T) {
+	other := discovery.DiskIdentity{Path: "/dev/vdc", DiskSeq: 4, SizeBytes: 8 << 30}
+	first := VolumePlan{Name: "first", TargetKind: "disk", Disk: other, Filesystem: "xfs", MountPath: "/var/mnt/first", Wipe: true, Repartition: true}
+	otherDisk := BlockDevice{Path: "/dev/vdc", Type: DeviceDisk, DiskSeq: 4, ByDiskSeq: "/dev/disk/by-diskseq/4", SizeBytes: 8 << 30}
+
+	t.Run("refusal of a later volume", func(t *testing.T) {
+		// The second volume's disk was replaced, so its recheck refuses.
+		replaced := BlockDevice{Path: "/dev/vdb", Type: DeviceDisk, DiskSeq: 9, SizeBytes: 8 << 30, Partitions: []BlockDevice{dataPartition()}}
+		source := discovery.StaticDiscoverySource{Facts: HardwareFacts{BlockDevices: []BlockDevice{otherDisk, replaced}}}
+		commands := &NoopCommandRunner{}
+
+		changed, err := PrepareVolumes(context.Background(), commands, source, []VolumePlan{first, formatVolume()})
+
+		if !errors.Is(err, discovery.ErrTargetDiskChanged) {
+			t.Fatalf("PrepareVolumes() error = %v, want ErrTargetDiskChanged", err)
+		}
+		if got := destructiveCalls(commands.Calls); len(got) != 0 || len(changed) != 0 {
+			t.Fatalf("destructive commands = %v, changed = %v; want none before every volume is checked", got, changed)
+		}
+	})
+
+	t.Run("command failure", func(t *testing.T) {
+		source := discovery.StaticDiscoverySource{Facts: HardwareFacts{BlockDevices: []BlockDevice{otherDisk, volumeDiskWith(dataPartition())}}}
+		commands := &failingCommandRunner{fail: "wipefs"}
+
+		changed, err := PrepareVolumes(context.Background(), commands, source, []VolumePlan{first, formatVolume()})
+
+		if err == nil {
+			t.Fatal("PrepareVolumes() error = nil, want the wipefs failure")
+		}
+		if !reflect.DeepEqual(changed, []string{"first", "data"}) {
+			t.Fatalf("changed = %v, want first, repartitioned, and data, whose wipefs had started", changed)
+		}
+	})
+}
+
+// failingCommandRunner fails every run of one command.
+type failingCommandRunner struct {
+	NoopCommandRunner
+	fail string
+}
+
+func (r *failingCommandRunner) Run(ctx context.Context, name string, args ...string) error {
+	_ = r.NoopCommandRunner.Run(ctx, name, args...)
+	if name == r.fail {
+		return errors.New(name + " failed")
+	}
+	return nil
 }
 
 func TestPlanVolumesRefusesPreservedPartitionWithSharedIdentity(t *testing.T) {
@@ -397,9 +518,9 @@ func TestPlanVolumesRefusesPreservedPartitionWithSharedIdentity(t *testing.T) {
 
 	_, err := PlanVolumes(layoutFacts(root, data, clone), root, []VolumeRequest{{
 		Name: "data", Partition: &PartitionSelector{ByID: "/dev/disk/by-id/ata-data-part1"}, Filesystem: "xfs",
-	}})
+	}}, nil)
 
-	if err == nil || !strings.Contains(err.Error(), "PARTUUID data-part of /dev/sdb1 is also used by /dev/sdc1") {
+	if !mentions(err, "data-part", "/dev/sdb1", "/dev/sdc1") {
 		t.Fatalf("PlanVolumes() error = %v, want shared PARTUUID refusal", err)
 	}
 }
@@ -409,7 +530,7 @@ func TestPlanVolumesSuggestsWipeOnlyWhenPartitionIsMissing(t *testing.T) {
 	root := diskForLayout("/dev/nvme0n1", "/dev/disk/by-id/nvme-root", 32768)
 	request := []VolumeRequest{{Name: "data", Disk: &TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data"}, Filesystem: "xfs"}}
 
-	_, err := PlanVolumes(layoutFacts(root, data), root, request)
+	_, err := PlanVolumes(layoutFacts(root, data), root, request, nil)
 	if err == nil || !strings.Contains(err.Error(), "set wipe to true") {
 		t.Fatalf("PlanVolumes() with no u-data partition error = %v, want wipe advice", err)
 	}
@@ -418,8 +539,8 @@ func TestPlanVolumesSuggestsWipeOnlyWhenPartitionIsMissing(t *testing.T) {
 		{Path: "/dev/sdb1", Type: DevicePartition, PartitionNumber: 1, GPTLabel: "u-data", PartitionUUID: "a", FilesystemSignature: "xfs"},
 		{Path: "/dev/sdb2", Type: DevicePartition, PartitionNumber: 2, GPTLabel: "u-data", PartitionUUID: "b", FilesystemSignature: "xfs"},
 	}
-	_, err = PlanVolumes(layoutFacts(root, data), root, request)
-	if err == nil || !strings.Contains(err.Error(), "has 2 partitions labelled u-data") || strings.Contains(err.Error(), "wipe") {
+	_, err = PlanVolumes(layoutFacts(root, data), root, request, nil)
+	if !mentions(err, "/dev/sdb", "u-data") || strings.Contains(err.Error(), "wipe") {
 		t.Fatalf("PlanVolumes() with two u-data partitions error = %v, want ambiguity without wipe advice", err)
 	}
 }

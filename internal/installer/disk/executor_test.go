@@ -329,7 +329,7 @@ func TestDiskExecutorStopsOnRootSlotFailure(t *testing.T) {
 func TestValidateAppliedLayout(t *testing.T) {
 	plan := executorPlan()
 	// An earlier install's disk carries the same Katl and u-data labels.
-	oldDisk := BlockDevice{Path: "/dev/sda", Type: DeviceDisk, DiskSeq: 7, Partitions: []BlockDevice{
+	oldDisk := BlockDevice{Path: "/dev/sda", Type: DeviceDisk, DiskSeq: 7, ByDiskSeq: "/dev/disk/by-diskseq/7", Partitions: []BlockDevice{
 		{Path: "/dev/sda1", Type: DevicePartition, GPTLabel: "u-data", PartitionUUID: "old-data"},
 	}}
 	installed := func() HardwareFacts {
@@ -337,7 +337,7 @@ func TestValidateAppliedLayout(t *testing.T) {
 			BlockDevices: []BlockDevice{
 				oldDisk,
 				{
-					Path: "/dev/nvme0n1", Type: DeviceDisk, DiskSeq: 1,
+					Path: "/dev/nvme0n1", Type: DeviceDisk, DiskSeq: 1, ByDiskSeq: "/dev/disk/by-diskseq/1",
 					Partitions: []BlockDevice{
 						{Path: "/dev/nvme0n1p1", GPTLabel: GPTLabelESP, PartitionUUID: "uuid-katl_esp"},
 						{Path: "/dev/nvme0n1p2", GPTLabel: GPTLabelRootA, PartitionUUID: "uuid-katl_root_a"},
@@ -345,7 +345,7 @@ func TestValidateAppliedLayout(t *testing.T) {
 						{Path: "/dev/nvme0n1p4", GPTLabel: GPTLabelState, PartitionUUID: "uuid-katl_state"},
 					},
 				},
-				{Path: "/dev/sdb", Type: DeviceDisk, DiskSeq: 3, SizeBytes: 16 << 30, Partitions: []BlockDevice{
+				{Path: "/dev/sdb", Type: DeviceDisk, DiskSeq: 3, ByDiskSeq: "/dev/disk/by-diskseq/3", SizeBytes: 16 << 30, Partitions: []BlockDevice{
 					{Path: "/dev/sdb1", Type: DevicePartition, PartitionNumber: 1, GPTLabel: "u-data", PartitionUUID: "data-part"},
 				}},
 			},
@@ -390,7 +390,7 @@ var executorVolumeDisk = discovery.DiskIdentity{Path: "/dev/sdb", DiskSeq: 3, Si
 // executorDiscovery reports the volume disk of executorPlan unchanged.
 func executorDiscovery() discovery.StaticDiscoverySource {
 	return discovery.StaticDiscoverySource{Facts: HardwareFacts{BlockDevices: []BlockDevice{
-		{Path: "/dev/sdb", Type: DeviceDisk, DiskSeq: 3, SizeBytes: 16 << 30},
+		{Path: "/dev/sdb", Type: DeviceDisk, DiskSeq: 3, ByDiskSeq: "/dev/disk/by-diskseq/3", SizeBytes: 16 << 30},
 	}}}
 }
 
@@ -523,7 +523,7 @@ func TestPartitionFormatting(t *testing.T) {
 			// A mounted sibling partition does not block formatting the
 			// selected one.
 			source := discovery.StaticDiscoverySource{Facts: HardwareFacts{BlockDevices: []BlockDevice{{
-				Path: "/dev/vdb", Type: DeviceDisk, DiskSeq: 8, SizeBytes: 8 << 30,
+				Path: "/dev/vdb", Type: DeviceDisk, DiskSeq: 8, ByDiskSeq: "/dev/disk/by-diskseq/8", SizeBytes: 8 << 30,
 				Partitions: []BlockDevice{
 					{Path: "/dev/vdb1", Type: DevicePartition, PartitionNumber: 1, PartitionUUID: "other-part", Mountpoints: []string{"/srv"}},
 					{Path: "/dev/vdb2", Type: DevicePartition, PartitionNumber: 2, PartitionUUID: "data-part"},

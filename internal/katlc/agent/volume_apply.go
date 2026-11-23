@@ -58,40 +58,44 @@ func (e *Executor) applyVolumes(ctx context.Context, current, desired manifest.M
 		return nil, err
 	}
 
-	var stopped []string
+	recovery := volumeRecovery{run: run}
 	for _, name := range plan.stopNames {
 		unit, err := generation.MountUnitName("/var/mnt/" + name)
 		if err != nil {
-			return nil, restartStoppedVolumes(ctx, run, stopped, err)
+			return nil, recovery.fail(ctx, err)
 		}
 		result := run(ctx, []string{"systemctl", "stop", unit}, nil)
-		if result.Err != nil || result.ExitStatus != 0 && result.ExitStatus != 5 {
-			err := fmt.Errorf("stop volume %s: %s; stop workloads using /var/mnt/%s and retry", name, toolFailure(result), name)
-			return nil, restartStoppedVolumes(ctx, run, stopped, err)
+		// Exit status 5 means the unit is not loaded, so nothing was mounted
+		// and there is nothing to start again.
+		if result.Err == nil && result.ExitStatus == 5 {
+			continue
 		}
-		stopped = append(stopped, name)
+		if result.Err != nil || result.ExitStatus != 0 {
+			err := fmt.Errorf("stop volume %s: %s; stop workloads using /var/mnt/%s and retry", name, toolFailure(result), name)
+			return nil, recovery.fail(ctx, err)
+		}
+		recovery.stopped = append(recovery.stopped, name)
 	}
 	if len(plan.prepare) == 0 {
 		return plan.bindings, nil
 	}
 
-	for _, volume := range plan.prepare {
-		if err := prepareLiveVolume(ctx, run, source, e.Root, volume); err != nil {
-			return nil, restartStoppedVolumes(ctx, run, stopped, fmt.Errorf("%w; check the disks attached to the node, then retry the apply", err))
-		}
+	recovery.rewritten, err = prepareLiveVolumes(ctx, run, source, e.Root, plan.prepare)
+	if err != nil {
+		return nil, recovery.fail(ctx, fmt.Errorf("%w; check the disks attached to the node, then retry the apply", err))
 	}
 	// udev settles so the partitions just created or formatted are visible
 	// before they are bound.
 	if err := runVolumeTool(ctx, run, "settle udev", "udevadm", "settle"); err != nil {
-		return nil, restartStoppedVolumes(ctx, run, stopped, err)
+		return nil, recovery.fail(ctx, err)
 	}
 	facts, err := discoverVolumeFacts(ctx, source)
 	if err != nil {
-		return nil, restartStoppedVolumes(ctx, run, stopped, err)
+		return nil, recovery.fail(ctx, err)
 	}
 	_, diskBindings, err := disk.BindVolumePlans(facts, plan.prepare)
 	if err != nil {
-		return nil, restartStoppedVolumes(ctx, run, stopped, fmt.Errorf("bind prepared volumes: %w; check the disks attached to the node, then retry the apply", err))
+		return nil, recovery.fail(ctx, fmt.Errorf("bind prepared volumes: %w; check the disks attached to the node, then retry the apply", err))
 	}
 	byName := volumeBindingsByName(plan.bindings)
 	for _, binding := range diskBindings {
@@ -161,6 +165,12 @@ func planVolumeTransition(ctx context.Context, source discovery.DiscoverySource,
 	var rebindTransitions []string
 	nodeName = storageAuthorityNodeName(nodeName, current)
 
+	// Unchanged volumes still found by their bindings are kept as they are;
+	// every other desired volume is resolved again. All of them are planned
+	// together, so no volume can claim storage another one holds.
+	var kept []disk.VolumeBinding
+	var resolve []manifest.Volume
+	var changed []bool
 	for _, desiredVolume := range desired.Install.Volumes {
 		before, existed := currentVolumes[desiredVolume.Name]
 		configChanged := !existed || !reflect.DeepEqual(before, desiredVolume)
@@ -168,38 +178,46 @@ func planVolumeTransition(ctx context.Context, source discovery.DiscoverySource,
 		if wasBound && !configChanged {
 			if _, matchErr := disk.MatchVolumeBinding(facts, diskVolumeBinding(binding)); matchErr == nil {
 				desiredBindings[binding.Name] = binding
+				kept = append(kept, diskVolumeBinding(binding))
 				continue
 			}
 		}
-
-		resolve := desiredVolume
 		if !configChanged {
 			// Wipe is desired provisioning state, not permission to repeat a
 			// destructive action merely to migrate a legacy generation binding.
-			resolve.Wipe = false
+			desiredVolume.Wipe = false
 		}
-		plans, planErr := planLiveVolumes(facts, desired, []manifest.Volume{resolve})
-		if planErr != nil {
-			return volumeTransitionPlan{}, planErr
-		}
-		candidate := plans[0]
+		resolve = append(resolve, desiredVolume)
+		changed = append(changed, configChanged)
+	}
+	rootDisk, err := runningSystemDisk(facts)
+	if err != nil {
+		return volumeTransitionPlan{}, err
+	}
+	plans, err := disk.PlanVolumes(facts, rootDisk, manifest.BuildVolumeRequests(resolve), kept)
+	if err != nil {
+		return volumeTransitionPlan{}, err
+	}
+
+	for i, candidate := range plans {
+		binding, wasBound := currentByName[candidate.Name]
 		var candidateBinding generation.VolumeBinding
 		if !candidate.Repartition {
-			_, bound, bindErr := disk.BindVolumePlans(facts, plans)
+			_, bound, bindErr := disk.BindVolumePlans(facts, []disk.VolumePlan{candidate})
 			if bindErr != nil {
 				return volumeTransitionPlan{}, bindErr
 			}
 			candidateBinding = generationVolumeBinding(bound[0])
 		}
 		if wasBound && (candidate.Repartition || !sameVolumeDevice(binding, candidateBinding)) {
-			key := nodeName + "/" + desiredVolume.Name
+			key := nodeName + "/" + candidate.Name
 			requiredRebinds = append(requiredRebinds, key)
 			rebindTransitions = append(rebindTransitions, fmt.Sprintf("%s: %s -> %s", key, volumeBindingDescription(binding), candidateVolumeDescription(candidate, candidateBinding)))
 		}
-		if configChanged {
+		if changed[i] {
 			prepare = append(prepare, candidate)
 		} else {
-			desiredBindings[desiredVolume.Name] = candidateBinding
+			desiredBindings[candidate.Name] = candidateBinding
 		}
 	}
 
@@ -315,18 +333,6 @@ func discoverVolumeFacts(ctx context.Context, source discovery.DiscoverySource) 
 	return facts, nil
 }
 
-func planLiveVolumes(facts discovery.HardwareFacts, desired manifest.Manifest, changed []manifest.Volume) ([]disk.VolumePlan, error) {
-	rootDisk, err := runningSystemDisk(facts)
-	if err != nil {
-		return nil, err
-	}
-	plans, err := disk.PlanVolumes(facts, rootDisk, manifest.BuildVolumeRequests(changed))
-	if err != nil {
-		return nil, err
-	}
-	return plans, nil
-}
-
 // runningSystemDisk finds the disk whose state partition is mounted at /var.
 // An installed node is identified by its own partitions rather than the
 // install selector, whose GPT GUID or kernel name need not match after install.
@@ -402,12 +408,16 @@ func (r volumeDiscoveryRunner) Output(ctx context.Context, name string, args ...
 	return result.Stdout, nil
 }
 
-func prepareLiveVolume(ctx context.Context, run ToolRunner, source discovery.DiscoverySource, root string, plan disk.VolumePlan) error {
-	mountPath := filepath.Join(filepath.Clean(root), plan.MountPath[1:])
-	if err := os.MkdirAll(mountPath, 0o755); err != nil {
-		return fmt.Errorf("create volume %q mount point: %w", plan.Name, err)
+// prepareLiveVolumes creates the volumes' mount points, then provisions them
+// through disk.PrepareVolumes and returns the volumes it rewrote.
+func prepareLiveVolumes(ctx context.Context, run ToolRunner, source discovery.DiscoverySource, root string, plans []disk.VolumePlan) ([]string, error) {
+	for _, plan := range plans {
+		mountPath := filepath.Join(filepath.Clean(root), plan.MountPath[1:])
+		if err := os.MkdirAll(mountPath, 0o755); err != nil {
+			return nil, fmt.Errorf("create volume %q mount point: %w", plan.Name, err)
+		}
 	}
-	return disk.PrepareVolume(ctx, volumeDiscoveryRunner{run: run}, source, plan)
+	return disk.PrepareVolumes(ctx, volumeDiscoveryRunner{run: run}, source, plans)
 }
 
 func (r volumeDiscoveryRunner) Run(ctx context.Context, name string, args ...string) error {
@@ -425,44 +435,68 @@ func runVolumeTool(ctx context.Context, run ToolRunner, action string, argv ...s
 // volumeDevices names the host directories volume discovery reads. The zero
 // value reads the running host.
 type volumeDevices struct {
-	sysBlockDir string
-	byIDDir     string
-	byPathDir   string
+	sysBlockDir  string
+	byIDDir      string
+	byPathDir    string
+	byDiskSeqDir string
 }
 
 func (d volumeDevices) source(run ToolRunner) discovery.CommandDiscoverySource {
 	return discovery.CommandDiscoverySource{
-		Commands:    volumeDiscoveryRunner{run: run},
-		SysBlockDir: d.sysBlockDir,
-		ByIDDir:     d.byIDDir,
-		ByPathDir:   d.byPathDir,
+		Commands:     volumeDiscoveryRunner{run: run},
+		SysBlockDir:  d.sysBlockDir,
+		ByIDDir:      d.byIDDir,
+		ByPathDir:    d.byPathDir,
+		ByDiskSeqDir: d.byDiskSeqDir,
 	}
 }
 
-// restartStoppedVolumes starts the mount units of volumes an apply stopped
-// before it failed, so a refused change leaves their workloads' storage
-// mounted, and says which could not be restored.
-func restartStoppedVolumes(ctx context.Context, run ToolRunner, names []string, cause error) error {
-	if len(names) == 0 {
-		return cause
-	}
-	var failed []string
-	for _, name := range names {
+// volumeRecovery records what a live volume apply has done to the node's
+// storage so that, when it fails, it can restore what is still intact.
+type volumeRecovery struct {
+	run ToolRunner
+	// stopped are the volumes whose mount units the apply stopped.
+	stopped []string
+	// rewritten are the volumes a destructive command was started on.
+	rewritten []string
+}
+
+// fail starts the mount units of the stopped volumes whose storage was not
+// rewritten, so a refused change leaves their workloads' storage mounted. A
+// rewritten volume stays unmounted, since its unit could mount the new empty
+// filesystem as if it held the old data. The error names each volume left
+// unmounted and what to do next.
+func (r volumeRecovery) fail(ctx context.Context, cause error) error {
+	var restarted, failed []string
+	for _, name := range r.stopped {
+		if slices.Contains(r.rewritten, name) {
+			continue
+		}
 		unit, err := generation.MountUnitName("/var/mnt/" + name)
 		if err == nil {
-			err = runVolumeTool(ctx, run, "start "+unit, "systemctl", "start", unit)
+			err = runVolumeTool(ctx, r.run, "start "+unit, "systemctl", "start", unit)
 		}
 		if err != nil {
 			failed = append(failed, name)
+		} else {
+			restarted = append(restarted, name)
 		}
 	}
-	if len(failed) == 0 {
-		return fmt.Errorf("%w; volumes %s were stopped for this apply and have been mounted again", cause, strings.Join(names, ", "))
+
+	err := cause
+	if len(restarted) > 0 {
+		err = fmt.Errorf("%w; volumes %s were stopped for this apply and have been mounted again", err, strings.Join(restarted, ", "))
 	}
-	units := make([]string, 0, len(failed))
-	for _, name := range failed {
-		unit, _ := generation.MountUnitName("/var/mnt/" + name)
-		units = append(units, unit)
+	if len(failed) > 0 {
+		units := make([]string, 0, len(failed))
+		for _, name := range failed {
+			unit, _ := generation.MountUnitName("/var/mnt/" + name)
+			units = append(units, unit)
+		}
+		err = fmt.Errorf("%w; volumes %s were stopped for this apply and could not be mounted again; once their disks are attached, run systemctl start %s on the node", err, strings.Join(failed, ", "), strings.Join(units, " "))
 	}
-	return fmt.Errorf("%w; volumes %s were stopped for this apply and could not be mounted again; once their disks are attached, run systemctl start %s on the node", cause, strings.Join(failed, ", "), strings.Join(units, " "))
+	if len(r.rewritten) > 0 {
+		err = fmt.Errorf("%w; volumes %s were already being repartitioned or formatted, so their earlier contents are gone and they were left unmounted; once the cause is fixed, retry the apply to finish preparing them", err, strings.Join(r.rewritten, ", "))
+	}
+	return err
 }

@@ -480,7 +480,7 @@ func (s *HandoffServer) validateStorage(installManifest manifest.Manifest) error
 	if err != nil {
 		return fmt.Errorf("plan storage targets: resolve install root disk: %w", err)
 	}
-	_, err = disk.PlanVolumes(facts, root.Device, manifest.BuildVolumeRequests(installManifest.Install.Volumes))
+	_, err = disk.PlanVolumes(facts, root.Device, manifest.BuildVolumeRequests(installManifest.Install.Volumes), nil)
 	if err != nil {
 		return fmt.Errorf("plan storage targets: %w", err)
 	}

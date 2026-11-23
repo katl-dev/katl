@@ -351,7 +351,7 @@ func TestHandoffServerHonorsWipeForNonBlankStorage(t *testing.T) {
 	server := newTestHandoffServer(t)
 	server.SetHardwareFacts(discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
 		{Path: "/dev/vda", Type: discovery.DeviceDisk, ByID: []string{"/dev/disk/by-id/ata-root"}, SizeBytes: 64 << 30},
-		{Path: "/dev/vdb", Type: discovery.DeviceDisk, DiskSeq: 2, ByID: []string{"/dev/disk/by-id/ata-data"}, SizeBytes: 64 << 30, PartitionSignature: "gpt"},
+		{Path: "/dev/vdb", Type: discovery.DeviceDisk, DiskSeq: 2, ByDiskSeq: "/dev/disk/by-diskseq/2", ByID: []string{"/dev/disk/by-id/ata-data"}, SizeBytes: 64 << 30, PartitionSignature: "gpt"},
 	}})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
@@ -381,7 +381,7 @@ func TestHandoffServerHonorsWipeForRawManifestStorage(t *testing.T) {
 	server := newTestHandoffServer(t)
 	server.SetHardwareFacts(discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
 		{Path: "/dev/vda", Type: discovery.DeviceDisk, ByID: []string{"/dev/disk/by-id/ata-root"}, SizeBytes: 64 << 30},
-		{Path: "/dev/vdb", Type: discovery.DeviceDisk, DiskSeq: 2, ByID: []string{"/dev/disk/by-id/ata-data"}, SizeBytes: 64 << 30, PartitionSignature: "gpt"},
+		{Path: "/dev/vdb", Type: discovery.DeviceDisk, DiskSeq: 2, ByDiskSeq: "/dev/disk/by-diskseq/2", ByID: []string{"/dev/disk/by-id/ata-data"}, SizeBytes: 64 << 30, PartitionSignature: "gpt"},
 	}})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()

@@ -1,6 +1,7 @@
 package disk
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -108,6 +109,7 @@ func TestPlanDiskLayoutInitializesDiskBackedVolumeWithRepart(t *testing.T) {
 			Path:               "/dev/sdb",
 			Type:               DeviceDisk,
 			DiskSeq:            2,
+			ByDiskSeq:          "/dev/disk/by-diskseq/2",
 			ByID:               []string{"/dev/disk/by-id/ata-data"},
 			SizeBytes:          128 * 1024 * 1024 * 1024,
 			PartitionSignature: "gpt",
@@ -332,6 +334,7 @@ func diskForLayout(devicePath, byID string, sizeMiB uint64) BlockDevice {
 	return BlockDevice{
 		Path:      devicePath,
 		DiskSeq:   uint64(devicePath[len(devicePath)-1]),
+		ByDiskSeq: fmt.Sprintf("/dev/disk/by-diskseq/%d", devicePath[len(devicePath)-1]),
 		Type:      DeviceDisk,
 		ByID:      []string{byID},
 		SizeBytes: sizeMiB * 1024 * 1024,

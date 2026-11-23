@@ -26,6 +26,19 @@ func diskDevice(disk discovery.DiskIdentity) (string, error) {
 	return "/dev/disk/by-diskseq/" + strconv.FormatUint(disk.DiskSeq, 10), nil
 }
 
+// checkAddressable refuses at planning a disk whose destructive commands
+// could not reach it through diskDevice: one without a diskseq, or one udev
+// gave no by-diskseq link because it does not link that kind of device.
+func checkAddressable(disk BlockDevice) error {
+	if _, err := diskDevice(discovery.IdentityOf(disk)); err != nil {
+		return err
+	}
+	if disk.ByDiskSeq == "" {
+		return fmt.Errorf("udev created no /dev/disk/by-diskseq/%d link for disk %s, so Katl cannot address it safely; select a disk udev links by diskseq, such as an sd, vd, nvme, xvd, or mmcblk device", disk.DiskSeq, disk.Path)
+	}
+	return nil
+}
+
 // partitionOnDisk returns the one partition of a bound disk that matches.
 // Partitions on other disks are never considered, so a matching partition
 // left elsewhere, such as by an earlier install, cannot be chosen.

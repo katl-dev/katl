@@ -153,12 +153,15 @@ func PlanDiskLayout(facts HardwareFacts, request DiskLayoutRequest) (DiskLayoutP
 		return DiskLayoutPlan{}, fmt.Errorf("match target disk: %w", err)
 	}
 
+	if err := checkAddressable(target.Device); err != nil {
+		return DiskLayoutPlan{}, fmt.Errorf("target disk: %w", err)
+	}
 	partitions, err := planTargetPartitions(target.Device, normalized)
 	if err != nil {
 		return DiskLayoutPlan{}, err
 	}
 
-	volumeMounts, err := PlanVolumes(facts, target.Device, normalized.Volumes)
+	volumeMounts, err := PlanVolumes(facts, target.Device, normalized.Volumes, nil)
 	if err != nil {
 		return DiskLayoutPlan{}, err
 	}
@@ -190,7 +193,14 @@ func VolumeBindingMountSource(binding VolumeBinding) (string, error) {
 }
 
 func MatchVolumeBinding(facts HardwareFacts, binding VolumeBinding) (BlockDevice, error) {
-	var matches []BlockDevice
+	_, partition, err := matchVolumeBinding(facts, binding)
+	return partition, err
+}
+
+// matchVolumeBinding returns the one partition a binding identifies and the
+// disk holding it.
+func matchVolumeBinding(facts HardwareFacts, binding VolumeBinding) (BlockDevice, BlockDevice, error) {
+	var disks, matches []BlockDevice
 	for _, candidate := range facts.BlockDevices {
 		for _, partition := range candidate.Partitions {
 			switch {
@@ -203,18 +213,19 @@ func MatchVolumeBinding(facts HardwareFacts, binding VolumeBinding) (BlockDevice
 					continue
 				}
 			default:
-				return BlockDevice{}, fmt.Errorf("bound identity for volume %q is empty", binding.Name)
+				return BlockDevice{}, BlockDevice{}, fmt.Errorf("bound identity for volume %q is empty", binding.Name)
 			}
+			disks = append(disks, candidate)
 			matches = append(matches, partition)
 		}
 	}
 	switch len(matches) {
 	case 0:
-		return BlockDevice{}, fmt.Errorf("bound identity for volume %q matched no partitions", binding.Name)
+		return BlockDevice{}, BlockDevice{}, fmt.Errorf("bound identity for volume %q matched no partitions", binding.Name)
 	case 1:
-		return matches[0], nil
+		return disks[0], matches[0], nil
 	default:
-		return BlockDevice{}, fmt.Errorf("bound identity for volume %q matched %d partitions", binding.Name, len(matches))
+		return BlockDevice{}, BlockDevice{}, fmt.Errorf("bound identity for volume %q matched %d partitions", binding.Name, len(matches))
 	}
 }
 

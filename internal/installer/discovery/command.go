@@ -16,10 +16,11 @@ type OutputCommandRunner interface {
 }
 
 type CommandDiscoverySource struct {
-	Commands    OutputCommandRunner
-	ByIDDir     string
-	ByPathDir   string
-	SysBlockDir string
+	Commands     OutputCommandRunner
+	ByIDDir      string
+	ByPathDir    string
+	ByDiskSeqDir string
+	SysBlockDir  string
 }
 
 func NewCommandDiscoverySource(commands OutputCommandRunner) CommandDiscoverySource {
@@ -48,6 +49,11 @@ func (s CommandDiscoverySource) Discover(ctx context.Context) (HardwareFacts, er
 		return HardwareFacts{}, err
 	}
 	attachAliases(facts.BlockDevices, byID, byPath)
+	byDiskSeq, err := readAliases(firstNonEmpty(s.ByDiskSeqDir, "/dev/disk/by-diskseq"))
+	if err != nil {
+		return HardwareFacts{}, err
+	}
+	attachDiskSeqLinks(facts.BlockDevices, byDiskSeq)
 	if err := attachSysfsIdentity(facts.BlockDevices, firstNonEmpty(s.SysBlockDir, "/sys/class/block")); err != nil {
 		return HardwareFacts{}, err
 	}
@@ -116,6 +122,15 @@ func attachAliases(devices []BlockDevice, byID, byPath map[string][]string) {
 			sort.Strings(devices[i].ByPath)
 		}
 		attachAliases(devices[i].Partitions, byID, byPath)
+	}
+}
+
+func attachDiskSeqLinks(devices []BlockDevice, links map[string][]string) {
+	for i := range devices {
+		if aliases := links[devices[i].Path]; len(aliases) > 0 {
+			devices[i].ByDiskSeq = aliases[0]
+		}
+		attachDiskSeqLinks(devices[i].Partitions, links)
 	}
 }
 
@@ -269,7 +284,7 @@ type findmntFilesystem struct {
 
 func appendFindmntFilesystem(mounts []MountFact, filesystem findmntFilesystem) []MountFact {
 	mounts = append(mounts, MountFact{
-		Source:     filesystem.Source,
+		Source:     mountedDevice(filesystem.Source),
 		Target:     filesystem.Target,
 		Filesystem: filesystem.FSType,
 		Options:    splitOptions(filesystem.Options),
@@ -278,6 +293,16 @@ func appendFindmntFilesystem(mounts []MountFact, filesystem findmntFilesystem) [
 		mounts = appendFindmntFilesystem(mounts, child)
 	}
 	return mounts
+}
+
+// mountedDevice drops the "[/path]" suffix findmnt appends to a source when
+// only a subtree of its filesystem is mounted, as for a bind mount or a btrfs
+// subvolume, so the source names the device.
+func mountedDevice(source string) string {
+	if device, _, ok := strings.Cut(source, "["); ok && strings.HasPrefix(source, "/") && strings.HasSuffix(source, "]") {
+		return device
+	}
+	return source
 }
 
 func parseIPLinks(data []byte) ([]NICFact, error) {
