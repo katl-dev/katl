@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
+	"slices"
 	"strings"
+
+	"github.com/katl-dev/katl/internal/installer/discovery"
 )
 
 type CommandRunner interface {
@@ -23,6 +25,9 @@ type DiskExecutor struct {
 	RootSlotState      SlotStore
 	RecordStateMounted func(context.Context) error
 	BeforeOperation    func(DiskOperation) error
+	// Discovery rediscovers hardware to revalidate a volume disk before each
+	// destructive command on it.
+	Discovery discovery.DiscoverySource
 }
 
 type DiskExecutionRequest struct {
@@ -50,6 +55,10 @@ type DiskOperation struct {
 	// Partition names the Katl GPT label of the target-disk partition this
 	// operation addresses; it runs only once that partition is bound.
 	Partition string
+	// Volume names the data volume this operation addresses. A destructive
+	// volume operation runs only after the volume disk is revalidated, and any
+	// other runs only once the volume is bound.
+	Volume string
 }
 
 type DiskOperationGroup string
@@ -67,7 +76,10 @@ func (e DiskExecutor) Execute(ctx context.Context, request DiskExecutionRequest)
 	if err := checkBootPlan(request.Plan); err != nil {
 		return DiskExecutionResult{}, err
 	}
-	operations := BuildDiskOperations(request.Plan, request.TargetMountPrefix)
+	operations, err := BuildDiskOperations(request.Plan, request.TargetMountPrefix)
+	if err != nil {
+		return DiskExecutionResult{}, err
+	}
 	return e.executeOperations(ctx, request, operations)
 }
 
@@ -75,8 +87,11 @@ func (e DiskExecutor) ExecuteGroup(ctx context.Context, request DiskExecutionReq
 	if err := checkBootPlan(request.Plan); err != nil {
 		return DiskExecutionResult{}, err
 	}
-	operations := filterOperations(BuildDiskOperations(request.Plan, request.TargetMountPrefix), group)
-	return e.executeOperations(ctx, request, operations)
+	operations, err := BuildDiskOperations(request.Plan, request.TargetMountPrefix)
+	if err != nil {
+		return DiskExecutionResult{}, err
+	}
+	return e.executeOperations(ctx, request, filterOperations(operations, group))
 }
 
 func (e DiskExecutor) executeOperations(ctx context.Context, request DiskExecutionRequest, operations []DiskOperation) (DiskExecutionResult, error) {
@@ -98,12 +113,25 @@ func (e DiskExecutor) executeOperations(ctx context.Context, request DiskExecuti
 			return WriteRootSlot(request)
 		}
 	}
+	volumes := volumeChecker{executor: e, plan: request.Plan}
+	if hasDestructiveOperations(operations) {
+		if err := volumes.checkAll(ctx); err != nil {
+			return DiskExecutionResult{}, err
+		}
+	}
 	for _, operation := range operations {
 		if operation.Partition != "" {
 			if _, err := SystemPartitionDevice(request.Plan, operation.Partition); err != nil {
 				return DiskExecutionResult{}, fmt.Errorf("%s: %w", operation.Name, err)
 			}
 		}
+		if operation.Volume != "" {
+			if err := volumes.check(ctx, operation); err != nil {
+				return DiskExecutionResult{}, fmt.Errorf("%s: %w", operation.Name, err)
+			}
+		}
+		// Any command may change the disks, so the next check rediscovers.
+		volumes.facts = nil
 		if e.BeforeOperation != nil {
 			if err := e.BeforeOperation(operation); err != nil {
 				return DiskExecutionResult{}, err
@@ -191,7 +219,7 @@ func operationInGroup(operation DiskOperation, group DiskOperationGroup) bool {
 	case PrepareOperations:
 		return operation.Name == "wipe-target-signatures"
 	case PartitionOperations:
-		return operation.Name == "create-gpt" || operation.Name == "reread-partitions" || operation.Name == "settle-partitions" || strings.HasPrefix(operation.Name, "repart-volume-") || strings.HasPrefix(operation.Name, "settle-volume-")
+		return operation.Name == "create-gpt" || operation.Name == "reread-partitions" || operation.Name == "settle-partitions" || strings.HasPrefix(operation.Name, "wipe-volume-") || strings.HasPrefix(operation.Name, "settle-wipe-volume-") || strings.HasPrefix(operation.Name, "repart-volume-") || strings.HasPrefix(operation.Name, "settle-volume-")
 	case FormatOperations:
 		return strings.HasPrefix(operation.Name, "format-")
 	case MountOperations:
@@ -201,15 +229,19 @@ func operationInGroup(operation DiskOperation, group DiskOperationGroup) bool {
 	}
 }
 
-func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOperation {
+func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) ([]DiskOperation, error) {
 	if targetMountPrefix == "" {
 		targetMountPrefix = "/mnt/target"
 	}
+	target, err := diskDevice(plan.TargetDisk)
+	if err != nil {
+		return nil, fmt.Errorf("target disk: %w", err)
+	}
 
 	operations := []DiskOperation{
-		{Name: "wipe-target-signatures", Command: "wipefs", Args: []string{"--all", targetDevice(plan)}, Destructive: true},
-		{Name: "create-gpt", Command: "systemd-repart", Args: repartArgs(targetDevice(plan)), Definitions: systemDefinitions(plan), Env: []string{"SYSTEMD_REPART_MKFS_OPTIONS_EXT4=-O verity"}, Destructive: true},
-		{Name: "reread-partitions", Command: "partprobe", Args: []string{targetDevice(plan)}},
+		{Name: "wipe-target-signatures", Command: "wipefs", Args: []string{"--all", target}, Destructive: true},
+		{Name: "create-gpt", Command: "systemd-repart", Args: repartArgs(target), Definitions: systemDefinitions(plan), Env: []string{"SYSTEMD_REPART_MKFS_OPTIONS_EXT4=-O verity"}, Destructive: true},
+		{Name: "reread-partitions", Command: "partprobe", Args: []string{target}},
 		{Name: "settle-partitions", Command: "udevadm", Args: []string{"settle"}},
 	}
 
@@ -236,12 +268,16 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 	}
 
 	for _, volume := range plan.VolumeMounts {
-		operations = append(operations, volumeOperations(volume)...)
+		prepare, err := volumeOperations(volume)
+		if err != nil {
+			return nil, err
+		}
+		operations = append(operations, prepare...)
 		operations = append(operations, DiskOperation{Name: "create-mountpoint-volume-" + volume.Name, Command: "mkdir", Args: []string{"-p", targetMountPrefix + volume.MountPath}})
-		operations = append(operations, DiskOperation{Name: "mount-volume-" + volume.Name, Command: "mount", Args: []string{volume.MountSource, targetMountPrefix + volume.MountPath}})
+		operations = append(operations, DiskOperation{Name: "mount-volume-" + volume.Name, Command: "mount", Args: []string{volume.MountSource, targetMountPrefix + volume.MountPath}, Volume: volume.Name})
 	}
 
-	return operations
+	return operations, nil
 }
 
 func volumeDefinition(volume VolumePlan) string {
@@ -272,16 +308,6 @@ func systemDefinitions(plan DiskLayoutPlan) []string {
 	return definitions
 }
 
-// targetDevice names the target by its kernel attachment sequence when known,
-// so destructive commands cannot reach a different disk that has since taken
-// the same kernel name.
-func targetDevice(plan DiskLayoutPlan) string {
-	if plan.TargetDisk.DiskSeq != 0 {
-		return "/dev/disk/by-diskseq/" + strconv.FormatUint(plan.TargetDisk.DiskSeq, 10)
-	}
-	return plan.TargetDiskPath
-}
-
 // repartArgs seeds partition and disk GUIDs randomly so every install gets
 // fresh identities; the default machine-id seed would repeat them across
 // installs that share an installer machine-id.
@@ -289,22 +315,130 @@ func repartArgs(device string) []string {
 	return []string{"--dry-run=no", "--empty=force", "--discard=no", "--seed=random", "--definitions={definitions}", device}
 }
 
-// PrepareVolume executes the provisioning plan shared by install and live apply.
-// The caller must validate current device ownership before invoking it.
-func PrepareVolume(ctx context.Context, commands CommandRunner, plan VolumePlan) error {
-	_, err := (DiskExecutor{Commands: commands}).executeOperations(ctx, DiskExecutionRequest{AllowDestructive: true}, volumeOperations(plan))
-	return err
+// PrepareVolumes executes the volume provisioning plans of a live apply, as
+// install does: every volume is rechecked against hardware rediscovered
+// through source before the first destructive command, and its own volume
+// again before each one. It returns the volumes a destructive command was
+// started on, even on failure, since their earlier storage may be gone.
+func PrepareVolumes(ctx context.Context, commands CommandRunner, source discovery.DiscoverySource, plans []VolumePlan) ([]string, error) {
+	var operations []DiskOperation
+	for _, plan := range plans {
+		prepare, err := volumeOperations(plan)
+		if err != nil {
+			return nil, err
+		}
+		operations = append(operations, prepare...)
+	}
+	var changed []string
+	executor := DiskExecutor{Commands: commands, Discovery: source, BeforeOperation: func(operation DiskOperation) error {
+		if operation.Destructive && !slices.Contains(changed, operation.Volume) {
+			changed = append(changed, operation.Volume)
+		}
+		return nil
+	}}
+	request := DiskExecutionRequest{Plan: DiskLayoutPlan{VolumeMounts: plans}, AllowDestructive: true}
+	_, err := executor.executeOperations(ctx, request, operations)
+	return changed, err
 }
 
-func volumeOperations(volume VolumePlan) []DiskOperation {
-	if volume.Repartition {
-		return []DiskOperation{
-			{Name: "repart-volume-" + volume.Name, Command: "systemd-repart", Args: repartArgs(volume.DevicePath), Definitions: []string{volumeDefinition(volume)}, Destructive: true},
-			{Name: "settle-volume-" + volume.Name, Command: "udevadm", Args: []string{"settle"}},
+// volumeChecker rechecks volume targets against discovered hardware. Facts
+// stay current until the next command runs, so the check before the first
+// destructive command and the check of that command share one discovery.
+type volumeChecker struct {
+	executor DiskExecutor
+	plan     DiskLayoutPlan
+	facts    *HardwareFacts
+}
+
+func (c *volumeChecker) current(ctx context.Context) (HardwareFacts, error) {
+	if c.facts != nil {
+		return *c.facts, nil
+	}
+	if c.executor.Discovery == nil {
+		return HardwareFacts{}, fmt.Errorf("%w: hardware discovery is required to recheck volume disks", ErrVolumeRefused)
+	}
+	// udev settles first so aliases dropped while the kernel rereads a
+	// partition table are back before the disks are compared.
+	if err := c.executor.Commands.Run(ctx, "udevadm", "settle"); err != nil {
+		return HardwareFacts{}, fmt.Errorf("settle udev before rechecking volume disks: %w", err)
+	}
+	facts, err := c.executor.Discovery.Discover(ctx)
+	if err != nil {
+		return HardwareFacts{}, fmt.Errorf("rediscover volume disks: %w", err)
+	}
+	c.facts = &facts
+	return facts, nil
+}
+
+// checkAll rechecks every planned volume, so a changed volume disk is refused
+// before any destructive command, including those on the system disk.
+func (c *volumeChecker) checkAll(ctx context.Context) error {
+	if len(c.plan.VolumeMounts) == 0 {
+		return nil
+	}
+	facts, err := c.current(ctx)
+	if err != nil {
+		return err
+	}
+	for _, volume := range c.plan.VolumeMounts {
+		if err := checkVolume(facts, volume); err != nil {
+			return fmt.Errorf("%w: volume %q: %w", ErrVolumeRefused, volume.Name, err)
 		}
 	}
-	if !volume.Wipe {
+	return nil
+}
+
+// check enforces the bound-disk rule for one volume operation: a destructive
+// command runs only on a rechecked target, and any other only once the volume
+// is bound.
+func (c *volumeChecker) check(ctx context.Context, operation DiskOperation) error {
+	volume, ok := findVolume(c.plan.VolumeMounts, operation.Volume)
+	if !ok {
+		return fmt.Errorf("volume %q is not in the disk plan", operation.Volume)
+	}
+	if !operation.Destructive {
+		if volume.MountSource == "" {
+			return fmt.Errorf("volume %q is not bound to a partition on disk %s", volume.Name, volume.Disk.Path)
+		}
 		return nil
+	}
+	facts, err := c.current(ctx)
+	if err != nil {
+		return err
+	}
+	if err := checkVolume(facts, volume); err != nil {
+		return fmt.Errorf("%w: volume %q: %w", ErrVolumeRefused, volume.Name, err)
+	}
+	return nil
+}
+
+func findVolume(volumes []VolumePlan, name string) (VolumePlan, bool) {
+	for _, volume := range volumes {
+		if volume.Name == name {
+			return volume, true
+		}
+	}
+	return VolumePlan{}, false
+}
+
+func volumeOperations(volume VolumePlan) ([]DiskOperation, error) {
+	if !volume.Repartition && !volume.Wipe {
+		return nil, nil
+	}
+	device, err := volumeDevice(volume)
+	if err != nil {
+		return nil, fmt.Errorf("volume %q: %w", volume.Name, err)
+	}
+	if volume.Repartition {
+		return []DiskOperation{
+			// systemd-repart cannot add a partition where the kernel still
+			// lists an old one, so wipefs, which rereads the partition table,
+			// clears the disk first, as it does for the system disk.
+			{Name: "wipe-volume-" + volume.Name, Command: "wipefs", Args: []string{"--all", device}, Destructive: true, Volume: volume.Name},
+			{Name: "settle-wipe-volume-" + volume.Name, Command: "udevadm", Args: []string{"settle"}},
+			{Name: "repart-volume-" + volume.Name, Command: "systemd-repart", Args: repartArgs(device), Definitions: []string{volumeDefinition(volume)}, Destructive: true, Volume: volume.Name},
+			{Name: "settle-volume-" + volume.Name, Command: "udevadm", Args: []string{"settle"}},
+		}, nil
 	}
 	// A selected existing partition grants no authority over its parent disk.
 	// Format it in place; repart here would create a nested partition table.
@@ -317,11 +451,11 @@ func volumeOperations(volume VolumePlan) []DiskOperation {
 	case "btrfs":
 		args = append(args, "--nodiscard")
 	}
-	args = append(args, volume.DevicePath)
+	args = append(args, device)
 	return []DiskOperation{
-		{Name: "format-wipe-volume-" + volume.Name, Command: "wipefs", Args: []string{"--all", volume.DevicePath}, Destructive: true},
-		{Name: "format-volume-" + volume.Name, Command: "mkfs." + volume.Filesystem, Args: args, Destructive: true},
-	}
+		{Name: "format-wipe-volume-" + volume.Name, Command: "wipefs", Args: []string{"--all", device}, Destructive: true, Volume: volume.Name},
+		{Name: "format-volume-" + volume.Name, Command: "mkfs." + volume.Filesystem, Args: args, Destructive: true, Volume: volume.Name},
+	}, nil
 }
 
 func partitionTypeGUID(kind string) string {
@@ -343,13 +477,16 @@ func ValidateAppliedLayout(facts HardwareFacts, plan DiskLayoutPlan) error {
 	return ValidateAppliedLayoutAt(facts, plan, "")
 }
 
+// ValidateAppliedLayoutAt checks the installed layout through discovered
+// hardware: the Katl partitions are on the bound target disk and mounted from
+// it, and each volume is mounted from its bound partition.
 func ValidateAppliedLayoutAt(facts HardwareFacts, plan DiskLayoutPlan, targetMountPrefix string) error {
 	if targetMountPrefix == "" {
 		targetMountPrefix = "/"
 	}
-	target := findDevice(facts.BlockDevices, plan.TargetDiskPath)
-	if target == nil {
-		return fmt.Errorf("target disk %s not found", plan.TargetDiskPath)
+	target, err := discovery.MatchBoundDisk(facts, plan.TargetDisk)
+	if err != nil {
+		return fmt.Errorf("target disk: %w", err)
 	}
 
 	partitionsByLabel := make(map[string]BlockDevice)
@@ -357,8 +494,12 @@ func ValidateAppliedLayoutAt(facts HardwareFacts, plan DiskLayoutPlan, targetMou
 		partitionsByLabel[partition.GPTLabel] = partition
 	}
 	for _, expected := range plan.Partitions {
-		if _, ok := partitionsByLabel[expected.GPTLabel]; !ok {
+		partition, ok := partitionsByLabel[expected.GPTLabel]
+		if !ok {
 			return fmt.Errorf("partition label %s not found", expected.GPTLabel)
+		}
+		if bound := plan.PartitionUUIDs[expected.GPTLabel]; bound != "" && !strings.EqualFold(strings.TrimSpace(partition.PartitionUUID), bound) {
+			return fmt.Errorf("%s on %s has PARTUUID %s, not the bound %s", expected.GPTLabel, target.Path, partition.PartitionUUID, bound)
 		}
 	}
 	if _, ok := partitionsByLabel[plan.Boot.RootPartitionLabel]; !ok {
@@ -380,8 +521,23 @@ func ValidateAppliedLayoutAt(facts HardwareFacts, plan DiskLayoutPlan, targetMou
 
 	for _, volume := range plan.VolumeMounts {
 		target := targetPath(targetMountPrefix, volume.MountPath)
-		if !mountExists(facts.Mounts, target) {
+		source, ok := mountSource(facts.Mounts, target)
+		if !ok {
 			return fmt.Errorf("volume %q is not mounted at %s", volume.Name, target)
+		}
+		partition, err := boundVolumePartition(facts, volume)
+		if err != nil {
+			return fmt.Errorf("volume %q: %w", volume.Name, err)
+		}
+		binding, err := bindVolume(facts, volume)
+		if err != nil {
+			return fmt.Errorf("volume %q: %w", volume.Name, err)
+		}
+		if bound, _ := VolumeBindingMountSource(binding); volume.MountSource == "" || bound != volume.MountSource {
+			return fmt.Errorf("volume %q partition %s is %s, not the bound %q", volume.Name, partition.Path, bound, volume.MountSource)
+		}
+		if source != partition.Path {
+			return fmt.Errorf("%s is mounted from %s, not volume %q partition %s", target, source, volume.Name, partition.Path)
 		}
 	}
 
@@ -408,15 +564,6 @@ func hasDestructiveOperations(operations []DiskOperation) bool {
 	return false
 }
 
-func findDevice(devices []BlockDevice, devicePath string) *BlockDevice {
-	for i := range devices {
-		if devices[i].Path == devicePath {
-			return &devices[i]
-		}
-	}
-	return nil
-}
-
 func mountSource(mounts []MountFact, target string) (string, bool) {
 	for _, mount := range mounts {
 		if mount.Target == target {
@@ -424,13 +571,4 @@ func mountSource(mounts []MountFact, target string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-func mountExists(mounts []MountFact, target string) bool {
-	for _, mount := range mounts {
-		if mount.Target == target {
-			return true
-		}
-	}
-	return false
 }

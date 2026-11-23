@@ -78,6 +78,7 @@ type Executor struct {
 	ResolveSystemExtension func(context.Context, systemextensionbundle.ResolveRequest) (systemextensionbundle.Resolved, error)
 	WaitBeforeKubeadm      ContextWaiter
 	ConfigureLocalAPI      LocalAPIAccessConfigurator
+	volumeDevices          volumeDevices
 	Async                  bool
 	workerMu               sync.Mutex
 	workerWG               sync.WaitGroup

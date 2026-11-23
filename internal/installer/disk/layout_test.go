@@ -1,8 +1,11 @@
 package disk
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/installer/discovery"
 )
 
 func TestPlanDiskLayoutDefaultRootSlotsStateRemainingLabelsAndBootMetadata(t *testing.T) {
@@ -103,6 +106,8 @@ func TestPlanDiskLayoutInitializesDiskBackedVolumeWithRepart(t *testing.T) {
 		BlockDevice{
 			Path:               "/dev/sdb",
 			Type:               DeviceDisk,
+			DiskSeq:            2,
+			ByDiskSeq:          "/dev/disk/by-diskseq/2",
 			ByID:               []string{"/dev/disk/by-id/ata-data"},
 			SizeBytes:          128 * 1024 * 1024 * 1024,
 			PartitionSignature: "gpt",
@@ -131,7 +136,7 @@ func TestPlanDiskLayoutInitializesDiskBackedVolumeWithRepart(t *testing.T) {
 		t.Fatalf("volume mount count = %d, want 1", len(plan.VolumeMounts))
 	}
 	volume := plan.VolumeMounts[0]
-	if volume.DevicePath != "/dev/sdb" || volume.MountSource != "/dev/disk/by-partlabel/u-data" || volume.MountPath != "/var/mnt/data" || volume.Filesystem != "xfs" || !volume.Wipe || !volume.Repartition {
+	if volume.Disk.Path != "/dev/sdb" || volume.MountSource != "" || volume.MountPath != "/var/mnt/data" || volume.Filesystem != "xfs" || !volume.Wipe || !volume.Repartition {
 		t.Fatalf("volume mount = %#v", volume)
 	}
 	if len(volume.Signatures) != 1 || volume.Signatures[0].Value != "gpt" {
@@ -165,7 +170,7 @@ func TestPlanDiskLayoutReusesOnlyMatchingDiskVolumePartition(t *testing.T) {
 	extra := diskForLayout("/dev/sdb", "/dev/disk/by-id/ata-data", 16384)
 	extra.PartitionSignature = "gpt"
 	extra.Partitions = []BlockDevice{{
-		Path: "/dev/sdb1", Type: DevicePartition, GPTLabel: "u-data", PartitionUUID: "data-partuuid", FilesystemSignature: "ext4",
+		Path: "/dev/sdb1", Type: DevicePartition, PartitionNumber: 1, GPTLabel: "u-data", PartitionUUID: "data-partuuid", FilesystemSignature: "ext4",
 	}}
 	facts := layoutFacts(
 		diskForLayout("/dev/nvme0n1", "/dev/disk/by-id/nvme-root", 32768),
@@ -205,6 +210,7 @@ func TestPlanDiskLayoutAdoptsExistingPartitionByConventionWithoutDestructiveInte
 	dataDisk.Partitions = []BlockDevice{{
 		Path:                "/dev/nvme1n1p1",
 		Type:                DevicePartition,
+		PartitionNumber:     1,
 		ByID:                []string{"/dev/disk/by-id/nvme-data-part1"},
 		GPTLabel:            "u-local-hostpath",
 		PartitionUUID:       "part-uuid",
@@ -234,7 +240,7 @@ func TestPlanDiskLayoutAdoptsExistingPartitionByConventionWithoutDestructiveInte
 		t.Fatalf("volume mount count = %d, want 1", len(plan.VolumeMounts))
 	}
 	volume := plan.VolumeMounts[0]
-	if volume.DevicePath != "/dev/nvme1n1p1" || volume.MountSource != "PARTUUID=part-uuid" || volume.MountPath != "/var/mnt/local-hostpath" || volume.Filesystem != "xfs" || volume.TargetKind != "partition" {
+	if volume.Disk.Path != "/dev/nvme1n1" || volume.Partition != (PartitionIdentity{Number: 1, UUID: "part-uuid", Label: "u-local-hostpath"}) || volume.MountSource != "" || volume.MountPath != "/var/mnt/local-hostpath" || volume.Filesystem != "xfs" || volume.TargetKind != "partition" {
 		t.Fatalf("volume mount = %#v", volume)
 	}
 }
@@ -249,9 +255,9 @@ func TestBindVolumePlansDoesNotFallBackToLogicalLabelWhenSelectedPartitionDisapp
 	})
 
 	_, _, err := BindVolumePlans(facts, []VolumePlan{{
-		Name: "data", DevicePath: "/dev/sdb1", MountSource: "PARTUUID=selected-partuuid",
+		Name: "data", Disk: discovery.IdentityOf(facts.BlockDevices[0]), Partition: PartitionIdentity{Number: 2, UUID: "selected-partuuid"},
 	}})
-	if err == nil || !strings.Contains(err.Error(), "selected partition /dev/sdb1 was not found") {
+	if err == nil || !strings.Contains(err.Error(), "0 partitions numbered 2") {
 		t.Fatalf("BindVolumePlans() error = %v, want exact selected-partition failure", err)
 	}
 }
@@ -325,6 +331,8 @@ func assertPartition(t *testing.T, plan DiskLayoutPlan, name, label string, size
 func diskForLayout(devicePath, byID string, sizeMiB uint64) BlockDevice {
 	return BlockDevice{
 		Path:      devicePath,
+		DiskSeq:   uint64(devicePath[len(devicePath)-1]),
+		ByDiskSeq: fmt.Sprintf("/dev/disk/by-diskseq/%d", devicePath[len(devicePath)-1]),
 		Type:      DeviceDisk,
 		ByID:      []string{byID},
 		SizeBytes: sizeMiB * 1024 * 1024,

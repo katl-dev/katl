@@ -169,8 +169,9 @@ func TestCommandDiscoverySourceCollectsDiskIdentities(t *testing.T) {
 	devDir := filepath.Join(root, "dev")
 	byIDDir := filepath.Join(devDir, "disk", "by-id")
 	byPathDir := filepath.Join(devDir, "disk", "by-path")
+	byDiskSeqDir := filepath.Join(devDir, "disk", "by-diskseq")
 	sysBlockDir := filepath.Join(root, "sys", "class", "block")
-	for _, dir := range []string{byIDDir, byPathDir, filepath.Join(sysBlockDir, "vda"), filepath.Join(sysBlockDir, "vdb")} {
+	for _, dir := range []string{byIDDir, byPathDir, byDiskSeqDir, filepath.Join(sysBlockDir, "vda"), filepath.Join(sysBlockDir, "vda1"), filepath.Join(sysBlockDir, "vdb")} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("MkdirAll() error = %v", err)
 		}
@@ -181,6 +182,8 @@ func TestCommandDiscoverySourceCollectsDiskIdentities(t *testing.T) {
 		filepath.Join(byPathDir, "virtio-pci-0000:00:04.0"):      "../../vda",
 		filepath.Join(byPathDir, "pci-0000:00:04.0-part1"):       "../../vda1",
 		filepath.Join(byPathDir, "pci-0000:00:05.0"):             "../../vdb",
+		filepath.Join(byDiskSeqDir, "7"):                         "../../vda",
+		filepath.Join(byDiskSeqDir, "7-part1"):                   "../../vda1",
 		filepath.Join(byPathDir, "not-a-symlink-is-ignored.tmp"): "",
 	}
 	for link, target := range links {
@@ -195,6 +198,9 @@ func TestCommandDiscoverySourceCollectsDiskIdentities(t *testing.T) {
 		}
 	}
 	if err := os.WriteFile(filepath.Join(sysBlockDir, "vda", "diskseq"), []byte("7\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sysBlockDir, "vda1", "partition"), []byte("1\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	runner := &fixtureOutputRunner{
@@ -212,10 +218,11 @@ func TestCommandDiscoverySourceCollectsDiskIdentities(t *testing.T) {
 	}
 
 	facts, err := (CommandDiscoverySource{
-		Commands:    runner,
-		ByIDDir:     byIDDir,
-		ByPathDir:   byPathDir,
-		SysBlockDir: sysBlockDir,
+		Commands:     runner,
+		ByIDDir:      byIDDir,
+		ByPathDir:    byPathDir,
+		ByDiskSeqDir: byDiskSeqDir,
+		SysBlockDir:  sysBlockDir,
 	}).Discover(context.Background())
 	if err != nil {
 		t.Fatalf("Discover() error = %v", err)
@@ -232,10 +239,45 @@ func TestCommandDiscoverySourceCollectsDiskIdentities(t *testing.T) {
 	if vda.PartitionTableUUID != "6f1e3c2a-8d4b-4f5e-9a7c-1b2d3e4f5a6b" || vda.DiskSeq != 7 || !vda.Rotational {
 		t.Errorf("vda = %#v, want GPT GUID, diskseq 7, rotational", vda)
 	}
+	if got := vda.Partitions[0].PartitionNumber; got != 1 {
+		t.Errorf("vda1 partition number = %d, want 1", got)
+	}
 	if want := []string{filepath.Join(byPathDir, "pci-0000:00:04.0-part1")}; !reflect.DeepEqual(vda.Partitions[0].ByPath, want) {
 		t.Errorf("vda1 byPath = %q, want %q", vda.Partitions[0].ByPath, want)
 	}
 	if vdb.Transport != "nvme" || vdb.DiskSeq != 0 || !reflect.DeepEqual(vdb.ByID, []string{filepath.Join(byIDDir, "virtio-katl-data")}) {
 		t.Errorf("vdb = %#v, want nvme transport, no diskseq, by-id alias", vdb)
+	}
+	if vda.ByDiskSeq != filepath.Join(byDiskSeqDir, "7") || vda.Partitions[0].ByDiskSeq != filepath.Join(byDiskSeqDir, "7-part1") || vdb.ByDiskSeq != "" {
+		t.Errorf("by-diskseq links vda=%q vda1=%q vdb=%q, want vda's and vda1's links and none for vdb", vda.ByDiskSeq, vda.Partitions[0].ByDiskSeq, vdb.ByDiskSeq)
+	}
+}
+
+func TestCommandDiscoverySourceReportsMountedDevice(t *testing.T) {
+	runner := &fixtureOutputRunner{outputs: map[string][]byte{
+		"lsblk": []byte(`{"blockdevices":[]}`),
+		// findmnt names the mounted subtree after the device for a btrfs
+		// subvolume or a bind mount.
+		"findmnt": []byte(`{"filesystems":[
+  {"source":"/dev/vdb1[/@data]","target":"/var/mnt/data","fstype":"btrfs","options":"rw"},
+  {"source":"/dev/vda5[/lib/kubelet]","target":"/var/lib/kubelet","fstype":"ext4","options":"rw"},
+  {"source":"/dev/vda4","target":"/var","fstype":"ext4","options":"rw"},
+  {"source":"tmpfs","target":"/run","fstype":"tmpfs","options":"rw"}
+]}`),
+		"ip": []byte(`[]`),
+	}}
+	missing := filepath.Join(t.TempDir(), "missing")
+
+	facts, err := (CommandDiscoverySource{Commands: runner, ByIDDir: missing, ByPathDir: missing, ByDiskSeqDir: missing, SysBlockDir: missing}).Discover(context.Background())
+
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+	var sources []string
+	for _, mount := range facts.Mounts {
+		sources = append(sources, mount.Source)
+	}
+	if want := []string{"/dev/vdb1", "/dev/vda5", "/dev/vda4", "tmpfs"}; !reflect.DeepEqual(sources, want) {
+		t.Fatalf("mount sources = %q, want %q", sources, want)
 	}
 }

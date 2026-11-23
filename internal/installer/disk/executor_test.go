@@ -87,7 +87,8 @@ func TestDiskExecutorPartitionVolumeOnlyCreatesAndMounts(t *testing.T) {
 	plan.VolumeMounts = []VolumePlan{{
 		Name:        "local-hostpath",
 		TargetKind:  "partition",
-		DevicePath:  "/dev/nvme1n1p1",
+		Disk:        discovery.DiskIdentity{Path: "/dev/nvme1n1", DiskSeq: 4},
+		Partition:   PartitionIdentity{Number: 1, UUID: "data-part"},
 		MountSource: "PARTUUID=data-part",
 		Filesystem:  "xfs",
 		MountPath:   "/var/mnt/local-hostpath",
@@ -120,7 +121,7 @@ func TestDiskExecutorExecutesOperationGroups(t *testing.T) {
 	t.Setenv("TMPDIR", t.TempDir())
 	plan := executorPlan()
 	commands := &NoopCommandRunner{}
-	if _, err := (DiskExecutor{Commands: commands}).ExecuteGroup(context.Background(), DiskExecutionRequest{
+	if _, err := (DiskExecutor{Commands: commands, Discovery: executorDiscovery()}).ExecuteGroup(context.Background(), DiskExecutionRequest{
 		Plan:             plan,
 		AllowDestructive: true,
 	}, PartitionOperations); err != nil {
@@ -144,7 +145,7 @@ func TestDiskExecutorExecutesOperationGroups(t *testing.T) {
 	}
 
 	commands = &NoopCommandRunner{}
-	result, err := (DiskExecutor{Commands: commands}).ExecuteGroup(context.Background(), DiskExecutionRequest{
+	result, err := (DiskExecutor{Commands: commands, Discovery: executorDiscovery()}).ExecuteGroup(context.Background(), DiskExecutionRequest{
 		Plan:             plan,
 		AllowDestructive: true,
 	}, MountOperations)
@@ -159,12 +160,44 @@ func TestDiskExecutorExecutesOperationGroups(t *testing.T) {
 	}
 }
 
+func TestDiskExecutorClearsVolumeDiskBeforeRepartitioning(t *testing.T) {
+	// systemd-repart fails to add a partition while the kernel still lists an
+	// old one, so a reused volume disk must be cleared first.
+	t.Setenv("TMPDIR", t.TempDir())
+	commands := &NoopCommandRunner{}
+
+	if _, err := (DiskExecutor{Commands: commands, Discovery: executorDiscovery()}).ExecuteGroup(context.Background(), DiskExecutionRequest{
+		Plan:             executorPlan(),
+		AllowDestructive: true,
+	}, PartitionOperations); err != nil {
+		t.Fatalf("ExecuteGroup(partition) error = %v", err)
+	}
+
+	var volumeCalls []string
+	var wipe CommandCall
+	for _, call := range commands.Calls {
+		if slices.Contains(call.Args, "/dev/disk/by-diskseq/3") {
+			volumeCalls = append(volumeCalls, call.Name)
+			if call.Name == "wipefs" {
+				wipe = call
+			}
+		}
+	}
+	if !reflect.DeepEqual(volumeCalls, []string{"wipefs", "systemd-repart"}) {
+		t.Fatalf("commands on the volume disk = %q, want wipefs, then systemd-repart", volumeCalls)
+	}
+	if !slices.Contains(wipe.Args, "--all") {
+		t.Fatalf("wipefs args = %q, want --all so every signature is erased", wipe.Args)
+	}
+}
+
 func TestDiskExecutorRecordsCheckpointAfterStateMount(t *testing.T) {
 	artifact := []byte("runtime-root")
 	commands := &NoopCommandRunner{}
 	recorded := 0
 	_, err := (DiskExecutor{
-		Commands: commands,
+		Commands:  commands,
+		Discovery: executorDiscovery(),
 		RecordStateMounted: func(context.Context) error {
 			recorded++
 			return nil
@@ -191,7 +224,7 @@ func TestDiskExecutorRecordsCheckpointAfterStateMount(t *testing.T) {
 func TestDiskExecutorRequiresRootSlotInstall(t *testing.T) {
 	commands := &NoopCommandRunner{}
 
-	_, err := (DiskExecutor{Commands: commands}).Execute(context.Background(), DiskExecutionRequest{
+	_, err := (DiskExecutor{Commands: commands, Discovery: executorDiscovery()}).Execute(context.Background(), DiskExecutionRequest{
 		Plan:             executorPlan(),
 		AllowDestructive: true,
 	})
@@ -211,7 +244,8 @@ func TestDiskExecutorWritesRootSlot(t *testing.T) {
 	recorded := 0
 
 	_, err := (DiskExecutor{
-		Commands: commands,
+		Commands:  commands,
+		Discovery: executorDiscovery(),
 		InstallRootSlot: func(ctx context.Context, request RootSlotInstallRequest) (RootSlotInstallResult, error) {
 			installed++
 			if request.Plan.Slot != RootSlotA || request.Plan.TargetPartition.GPTLabel != GPTLabelRootA {
@@ -252,7 +286,7 @@ func TestDiskExecutorInstallsBoot(t *testing.T) {
 	artifact := []byte("runtime-root")
 	commands := &NoopCommandRunner{}
 
-	result, err := (DiskExecutor{Commands: commands}).Execute(context.Background(), DiskExecutionRequest{
+	result, err := (DiskExecutor{Commands: commands, Discovery: executorDiscovery()}).Execute(context.Background(), DiskExecutionRequest{
 		Plan:             executorPlan(),
 		RootSlotInstall:  rootInstall(artifact, newMemSlot(len(artifact))),
 		AllowDestructive: true,
@@ -278,7 +312,7 @@ func TestDiskExecutorRejectsXBOOTLDR(t *testing.T) {
 	}, plan.Partitions[1:]...)...)
 	commands := &NoopCommandRunner{}
 
-	_, err := (DiskExecutor{Commands: commands}).Execute(context.Background(), DiskExecutionRequest{
+	_, err := (DiskExecutor{Commands: commands, Discovery: executorDiscovery()}).Execute(context.Background(), DiskExecutionRequest{
 		Plan:             plan,
 		RootSlotInstall:  rootInstall([]byte("runtime-root"), newMemSlot(len("runtime-root"))),
 		AllowDestructive: true,
@@ -297,7 +331,8 @@ func TestDiskExecutorStopsOnRootSlotFailure(t *testing.T) {
 	recorded := 0
 
 	_, err := (DiskExecutor{
-		Commands: &NoopCommandRunner{},
+		Commands:  &NoopCommandRunner{},
+		Discovery: executorDiscovery(),
 		RecordStateMounted: func(context.Context) error {
 			recorded++
 			return nil
@@ -324,47 +359,76 @@ func TestDiskExecutorStopsOnRootSlotFailure(t *testing.T) {
 
 func TestValidateAppliedLayout(t *testing.T) {
 	plan := executorPlan()
-	facts := HardwareFacts{
-		BlockDevices: []BlockDevice{
-			{
-				Path: "/dev/nvme0n1",
-				Type: DeviceDisk,
-				Partitions: []BlockDevice{
-					{Path: "/dev/nvme0n1p1", GPTLabel: GPTLabelESP},
-					{Path: "/dev/nvme0n1p2", GPTLabel: GPTLabelRootA},
-					{Path: "/dev/nvme0n1p3", GPTLabel: GPTLabelRootB},
-					{Path: "/dev/nvme0n1p4", GPTLabel: GPTLabelState},
+	// An earlier install's disk carries the same Katl and u-data labels.
+	oldDisk := BlockDevice{Path: "/dev/sda", Type: DeviceDisk, DiskSeq: 7, ByDiskSeq: "/dev/disk/by-diskseq/7", Partitions: []BlockDevice{
+		{Path: "/dev/sda1", Type: DevicePartition, GPTLabel: "u-data", PartitionUUID: "old-data"},
+	}}
+	installed := func() HardwareFacts {
+		return HardwareFacts{
+			BlockDevices: []BlockDevice{
+				oldDisk,
+				{
+					Path: "/dev/nvme0n1", Type: DeviceDisk, DiskSeq: 1, ByDiskSeq: "/dev/disk/by-diskseq/1",
+					Partitions: []BlockDevice{
+						{Path: "/dev/nvme0n1p1", GPTLabel: GPTLabelESP, PartitionUUID: "uuid-katl_esp"},
+						{Path: "/dev/nvme0n1p2", GPTLabel: GPTLabelRootA, PartitionUUID: "uuid-katl_root_a"},
+						{Path: "/dev/nvme0n1p3", GPTLabel: GPTLabelRootB, PartitionUUID: "uuid-katl_root_b"},
+						{Path: "/dev/nvme0n1p4", GPTLabel: GPTLabelState, PartitionUUID: "uuid-katl_state"},
+					},
 				},
+				{Path: "/dev/sdb", Type: DeviceDisk, DiskSeq: 3, ByDiskSeq: "/dev/disk/by-diskseq/3", SizeBytes: 16 << 30, Partitions: []BlockDevice{
+					{Path: "/dev/sdb1", Type: DevicePartition, PartitionNumber: 1, GPTLabel: "u-data", PartitionUUID: "data-part"},
+				}},
 			},
-		},
-		Mounts: []MountFact{
-			{Source: "/dev/nvme0n1p1", Target: "/efi", Filesystem: "vfat"},
-			{Source: "/dev/nvme0n1p4", Target: "/var", Filesystem: "ext4"},
-			{Source: "/dev/disk/by-partlabel/u-data", Target: "/var/mnt/data", Filesystem: "xfs"},
-		},
+			Mounts: []MountFact{
+				{Source: "/dev/nvme0n1p1", Target: "/target/efi", Filesystem: "vfat"},
+				{Source: "/dev/nvme0n1p4", Target: "/target/var", Filesystem: "ext4"},
+				{Source: "/dev/sdb1", Target: "/target/var/mnt/data", Filesystem: "xfs"},
+			},
+		}
 	}
-	if err := ValidateAppliedLayout(facts, plan); err != nil {
-		t.Fatalf("ValidateAppliedLayout() error = %v", err)
-	}
-	prefixed := facts
-	prefixed.Mounts = []MountFact{
-		{Source: "/dev/nvme0n1p1", Target: "/target/efi", Filesystem: "vfat"},
-		{Source: "/dev/nvme0n1p4", Target: "/target/var", Filesystem: "ext4"},
-		{Source: "/dev/disk/by-partlabel/u-data", Target: "/target/var/mnt/data", Filesystem: "xfs"},
-	}
-	if err := ValidateAppliedLayoutAt(prefixed, plan, "/target"); err != nil {
+
+	if err := ValidateAppliedLayoutAt(installed(), plan, "/target"); err != nil {
 		t.Fatalf("ValidateAppliedLayoutAt() error = %v", err)
 	}
 
-	facts.Mounts = facts.Mounts[:1]
-	if err := ValidateAppliedLayout(facts, plan); err == nil {
-		t.Fatalf("ValidateAppliedLayout() error = nil, want missing extra mount failure")
+	for _, test := range []struct {
+		name   string
+		change func(*HardwareFacts)
+		want   string
+	}{
+		{"volume not mounted", func(f *HardwareFacts) { f.Mounts = f.Mounts[:2] }, `volume "data" is not mounted at /target/var/mnt/data`},
+		{"volume mounted from an earlier install's disk", func(f *HardwareFacts) { f.Mounts[2].Source = "/dev/sda1" }, `/target/var/mnt/data is mounted from /dev/sda1, not volume "data" partition /dev/sdb1`},
+		{"volume partition no longer the bound one", func(f *HardwareFacts) { f.BlockDevices[2].Partitions[0].PartitionUUID = "other" }, `not the bound "PARTUUID=data-part"`},
+		{"system partition no longer the bound one", func(f *HardwareFacts) { f.BlockDevices[1].Partitions[3].PartitionUUID = "other" }, "KATL_STATE on /dev/nvme0n1 has PARTUUID other, not the bound uuid-katl_state"},
+		{"target disk renamed", func(f *HardwareFacts) { f.BlockDevices[1].DiskSeq = 2 }, "not the selected"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			facts := installed()
+			test.change(&facts)
+
+			err := ValidateAppliedLayoutAt(facts, plan, "/target")
+
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("ValidateAppliedLayoutAt() error = %v, want %q", err, test.want)
+			}
+		})
 	}
+}
+
+var executorVolumeDisk = discovery.DiskIdentity{Path: "/dev/sdb", DiskSeq: 3, SizeBytes: 16 << 30}
+
+// executorDiscovery reports the volume disk of executorPlan unchanged.
+func executorDiscovery() discovery.StaticDiscoverySource {
+	return discovery.StaticDiscoverySource{Facts: HardwareFacts{BlockDevices: []BlockDevice{
+		{Path: "/dev/sdb", Type: DeviceDisk, DiskSeq: 3, ByDiskSeq: "/dev/disk/by-diskseq/3", SizeBytes: 16 << 30},
+	}}}
 }
 
 func executorPlan() DiskLayoutPlan {
 	return DiskLayoutPlan{
 		TargetDiskPath: "/dev/nvme0n1",
+		TargetDisk:     discovery.DiskIdentity{Path: "/dev/nvme0n1", DiskSeq: 1},
 		Partitions: []PartitionPlan{
 			{Name: "esp", GPTLabel: GPTLabelESP, Type: "esp", Filesystem: "vfat", MountPath: "/efi", SizeMiB: 512},
 			{Name: "root-a", GPTLabel: GPTLabelRootA, Type: "root-x86-64", Filesystem: "squashfs", MountPath: "/", SizeMiB: 1024},
@@ -373,8 +437,8 @@ func executorPlan() DiskLayoutPlan {
 		},
 		VolumeMounts: []VolumePlan{
 			{
-				Name: "data", TargetKind: "disk", DevicePath: "/dev/sdb",
-				MountSource: "/dev/disk/by-partlabel/u-data", Filesystem: "xfs",
+				Name: "data", TargetKind: "disk", Disk: executorVolumeDisk,
+				MountSource: "PARTUUID=data-part", Filesystem: "xfs",
 				MountPath: "/var/mnt/data", Wipe: true, Repartition: true,
 				TypeUUID: volumePartitionTypeUUID("data"),
 			},
@@ -474,23 +538,43 @@ func (r *NoopCommandRunner) Output(_ context.Context, name string, args ...strin
 }
 
 func TestPartitionFormatting(t *testing.T) {
+	disk := discovery.DiskIdentity{Path: "/dev/vdb", DiskSeq: 8, SizeBytes: 8 << 30}
+	const device = "/dev/disk/by-diskseq/8-part2"
 	for _, test := range []struct {
 		filesystem string
 		args       []string
 	}{
-		{"xfs", []string{"-K", "/dev/vdb2"}},
-		{"ext4", []string{"-E", "nodiscard", "/dev/vdb2"}},
-		{"btrfs", []string{"--nodiscard", "/dev/vdb2"}},
+		{"xfs", []string{"-K", device}},
+		{"ext4", []string{"-E", "nodiscard", device}},
+		{"btrfs", []string{"--nodiscard", device}},
 	} {
 		t.Run(test.filesystem, func(t *testing.T) {
 			plan := executorPlan()
-			plan.VolumeMounts = []VolumePlan{{Name: "data", TargetKind: "partition", DevicePath: "/dev/vdb2", Filesystem: test.filesystem, Wipe: true}}
+			plan.VolumeMounts = []VolumePlan{{Name: "data", TargetKind: "partition", Disk: disk, Partition: PartitionIdentity{Number: 2, UUID: "data-part"}, Filesystem: test.filesystem, Wipe: true}}
+			// A mounted sibling partition does not block formatting the
+			// selected one.
+			source := discovery.StaticDiscoverySource{Facts: HardwareFacts{BlockDevices: []BlockDevice{{
+				Path: "/dev/vdb", Type: DeviceDisk, DiskSeq: 8, ByDiskSeq: "/dev/disk/by-diskseq/8", SizeBytes: 8 << 30,
+				Partitions: []BlockDevice{
+					{Path: "/dev/vdb1", Type: DevicePartition, PartitionNumber: 1, PartitionUUID: "other-part", Mountpoints: []string{"/srv"}},
+					{Path: "/dev/vdb2", Type: DevicePartition, PartitionNumber: 2, PartitionUUID: "data-part"},
+				},
+			}}}}
 			commands := &NoopCommandRunner{}
-			_, err := (DiskExecutor{Commands: commands}).ExecuteGroup(context.Background(), DiskExecutionRequest{Plan: plan, AllowDestructive: true}, FormatOperations)
+
+			_, err := (DiskExecutor{Commands: commands, Discovery: source}).ExecuteGroup(context.Background(), DiskExecutionRequest{Plan: plan, AllowDestructive: true}, FormatOperations)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(commands.Calls) != 2 || commands.Calls[0].Name != "wipefs" || !reflect.DeepEqual(commands.Calls[0].Args, []string{"--all", "/dev/vdb2"}) || commands.Calls[1].Name != "mkfs."+test.filesystem || !reflect.DeepEqual(commands.Calls[1].Args, test.args) {
+
+			var writes []CommandCall
+			for _, call := range commands.Calls {
+				if call.Name != "udevadm" {
+					writes = append(writes, call)
+				}
+			}
+			want := []CommandCall{{Name: "wipefs", Args: []string{"--all", device}}, {Name: "mkfs." + test.filesystem, Args: test.args}}
+			if !reflect.DeepEqual(writes, want) {
 				t.Fatalf("partition formatting must wipe only the selected partition then format without discard: %+v", commands.Calls)
 			}
 		})
@@ -500,7 +584,10 @@ func TestPartitionFormatting(t *testing.T) {
 func TestDestructiveTargetOperationsUseDiskSequence(t *testing.T) {
 	plan := executorPlan()
 	plan.TargetDisk = discovery.DiskIdentity{Path: plan.TargetDiskPath, DiskSeq: 12}
-	operations := BuildDiskOperations(plan, "")
+	operations, err := BuildDiskOperations(plan, "")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	for _, name := range []string{"wipe-target-signatures", "create-gpt", "reread-partitions"} {
 		args := findOp(operations, name).Args

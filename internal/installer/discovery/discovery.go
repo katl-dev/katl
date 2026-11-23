@@ -25,23 +25,28 @@ type HardwareFacts struct {
 }
 
 type BlockDevice struct {
-	Name                string
-	Path                string
-	Type                DeviceType
-	ByID                []string
-	ByPath              []string
-	WWN                 string
-	Serial              string
-	Model               string
-	GPTLabel            string
-	PartitionUUID       string
-	PartitionTableUUID  string
-	FilesystemUUID      string
-	SizeBytes           uint64
-	ReadOnly            bool
-	Rotational          bool
-	Transport           string
-	DiskSeq             uint64
+	Name               string
+	Path               string
+	Type               DeviceType
+	ByID               []string
+	ByPath             []string
+	WWN                string
+	Serial             string
+	Model              string
+	GPTLabel           string
+	PartitionUUID      string
+	PartitionTableUUID string
+	FilesystemUUID     string
+	SizeBytes          uint64
+	ReadOnly           bool
+	Rotational         bool
+	Transport          string
+	DiskSeq            uint64
+	// ByDiskSeq is the /dev/disk/by-diskseq link udev created for this
+	// device. udev links only some kernel device names by diskseq, so a disk
+	// can report a DiskSeq and still have no link.
+	ByDiskSeq           string
+	PartitionNumber     uint64
 	FilesystemSignature string
 	PartitionSignature  string
 	Mountpoints         []string
@@ -140,7 +145,7 @@ func MatchPartition(facts HardwareFacts, selector PartitionSelector) (PartitionM
 	}
 
 	match := matches[0]
-	if err := validatePartitionSafety(facts, match.Device); err != nil {
+	if err := ValidatePartitionSafety(facts, match.Device); err != nil {
 		return PartitionMatch{}, err
 	}
 	return match, nil
@@ -190,7 +195,8 @@ func (s PartitionSelector) matches(device BlockDevice) bool {
 	}
 }
 
-func validatePartitionSafety(facts HardwareFacts, device BlockDevice) error {
+// ValidatePartitionSafety checks that a partition is writable and unmounted.
+func ValidatePartitionSafety(facts HardwareFacts, device BlockDevice) error {
 	if device.Type != DevicePartition {
 		return fmt.Errorf("%w: %s is %s, not a partition", ErrUnsafeTargetDisk, device.Path, device.Type)
 	}

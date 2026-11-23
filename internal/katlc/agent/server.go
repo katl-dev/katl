@@ -95,6 +95,7 @@ type Server struct {
 	RunKubernetesStatus      ToolRunner
 	RunSystemExtensionStatus ToolRunner
 	RunVolumeDiscovery       ToolRunner
+	volumeDevices            volumeDevices
 	RunEtcd                  ToolRunner
 	RunReboot                ToolRunner
 	RunShutdown              ToolRunner

@@ -514,6 +514,9 @@ func (prepareDiskStep) Run(ctx context.Context, install *Context) error {
 		return err
 	}
 	if err := executeDiskGroup(ctx, install, disk.PrepareOperations); err != nil {
+		if errors.Is(err, disk.ErrVolumeRefused) {
+			return fmt.Errorf("%w: before wiping, %w; no disk changes were made. Check the disks attached to the node, then rerun katlctl install apply", ErrInstallRefused, err)
+		}
 		return err
 	}
 	return recordStep(ctx, install, PrepareDisk)
@@ -554,7 +557,7 @@ func (createPartitionsStep) Run(ctx context.Context, install *Context) error {
 		return fmt.Errorf("before partitioning, %w; the disk was wiped but not repartitioned. Check the disks attached to the node, then boot the installer again and rerun katlctl install apply", err)
 	}
 	if err := executeDiskGroup(ctx, install, disk.PartitionOperations); err != nil {
-		return err
+		return volumeRefusedAfterWipe(err)
 	}
 	if err := bindSystemPartitions(ctx, install); err != nil {
 		return fmt.Errorf("after partitioning, %w; nothing was mounted and no root image or boot files were written. Check the disks attached to the node, then boot the installer again and rerun katlctl install apply", err)
@@ -583,6 +586,15 @@ func bindSystemPartitions(ctx context.Context, install *Context) error {
 	return nil
 }
 
+// volumeRefusedAfterWipe adds the recovery an operator needs when a volume
+// disk check fails after the system disk was wiped.
+func volumeRefusedAfterWipe(err error) error {
+	if errors.Is(err, disk.ErrVolumeRefused) {
+		return fmt.Errorf("%w; the system disk was wiped. Check the disks attached to the node, then boot the installer again and rerun katlctl install apply", err)
+	}
+	return err
+}
+
 type formatFilesystemsStep struct{}
 
 func (formatFilesystemsStep) ID() StepID {
@@ -591,10 +603,10 @@ func (formatFilesystemsStep) ID() StepID {
 
 func (formatFilesystemsStep) Run(ctx context.Context, install *Context) error {
 	if err := executeDiskGroup(ctx, install, disk.FormatOperations); err != nil {
-		return err
+		return volumeRefusedAfterWipe(err)
 	}
 	if err := bindInstalledVolumes(ctx, install); err != nil {
-		return err
+		return fmt.Errorf("after formatting, %w; no volume was mounted. Check the disks attached to the node, then boot the installer again and rerun katlctl install apply", err)
 	}
 	return recordStep(ctx, install, FormatFilesystems)
 }
@@ -603,6 +615,9 @@ func bindInstalledVolumes(ctx context.Context, install *Context) error {
 	if install.DiskLayout != nil && len(install.DiskLayout.VolumeMounts) > 0 {
 		if install.Discovery == nil {
 			return fmt.Errorf("hardware discovery is required to bind installed volumes")
+		}
+		if err := install.Commands.Run(ctx, "udevadm", "settle"); err != nil {
+			return fmt.Errorf("settle udev before binding installed volumes: %w", err)
 		}
 		facts, err := install.Discovery.Discover(ctx)
 		if err != nil {
@@ -639,7 +654,7 @@ func (mountTargetStep) Run(ctx context.Context, install *Context) error {
 	}
 	result, err := executeDiskGroupResult(ctx, install, disk.MountOperations)
 	if err != nil {
-		return err
+		return volumeRefusedAfterWipe(err)
 	}
 	if result.Boot != nil && strings.TrimSpace(result.Boot.RootPartitionUUID) != "" {
 		install.RootPartitionUUID = result.Boot.RootPartitionUUID
@@ -679,7 +694,7 @@ func executeDiskGroupResult(ctx context.Context, install *Context, group disk.Di
 	if install.DiskLayout == nil {
 		return disk.DiskExecutionResult{}, nil
 	}
-	executor := disk.DiskExecutor{Commands: install.Commands, BeforeOperation: install.reportDiskOperation}
+	executor := disk.DiskExecutor{Commands: install.Commands, BeforeOperation: install.reportDiskOperation, Discovery: install.Discovery}
 	result, err := executor.ExecuteGroup(ctx, diskExecutionRequest(install), group)
 	if err != nil {
 		return disk.DiskExecutionResult{}, err
@@ -1019,8 +1034,12 @@ func (installMountUnitsStep) Run(ctx context.Context, install *Context) error {
 	if install.LoaderRecord == nil {
 		return fmt.Errorf("loader generation record is required to install mount units")
 	}
+	extraMounts, err := installedExtraMounts(install)
+	if err != nil {
+		return err
+	}
 	if _, err := generation.WriteState(install.TargetRoot, generation.StateRequest{
-		ExtraMounts: installedExtraMounts(install),
+		ExtraMounts: extraMounts,
 	}); err != nil {
 		return err
 	}
@@ -1042,10 +1061,14 @@ func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
 	if install.LoaderRecord == nil {
 		return fmt.Errorf("loader generation record is required to materialize generated confext")
 	}
+	extraMounts, err := installedExtraMounts(install)
+	if err != nil {
+		return err
+	}
 	result, err := renderInstallGeneration(installGenerationRequest{
 		TargetRoot:        install.TargetRoot,
 		Manifest:          install.Manifest,
-		ExtraMounts:       installedExtraMounts(install),
+		ExtraMounts:       extraMounts,
 		KubeadmConfigs:    install.KubeadmConfigs,
 		NativeEtcFiles:    install.NativeEtcFiles,
 		KubernetesVersion: installedKubernetesPayloadVersion(install),
@@ -1077,19 +1100,24 @@ func (writeInstallRecordStep) Run(ctx context.Context, install *Context) error {
 	return recordStep(ctx, install, WriteInstallRecord)
 }
 
-func installedExtraMounts(install *Context) []generation.ExtraMountRequest {
+// installedExtraMounts persists each volume by the source BindVolumePlans
+// assigned, and refuses a volume that was never bound.
+func installedExtraMounts(install *Context) ([]generation.ExtraMountRequest, error) {
 	if install.DiskLayout == nil {
-		return nil
+		return nil, nil
 	}
 	extraMounts := make([]generation.ExtraMountRequest, 0, len(install.DiskLayout.VolumeMounts))
 	for _, mount := range install.DiskLayout.VolumeMounts {
+		if mount.MountSource == "" {
+			return nil, fmt.Errorf("volume %q is not bound to a partition on disk %s", mount.Name, mount.Disk.Path)
+		}
 		extraMounts = append(extraMounts, generation.ExtraMountRequest{
 			Source:     mount.MountSource,
 			Path:       mount.MountPath,
 			Filesystem: mount.Filesystem,
 		})
 	}
-	return extraMounts
+	return extraMounts, nil
 }
 
 func writeInstalledManifest(targetRoot, generationID string, installManifest manifest.Manifest) error {

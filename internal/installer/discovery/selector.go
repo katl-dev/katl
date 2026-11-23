@@ -270,30 +270,41 @@ func IdentityOf(device BlockDevice) DiskIdentity {
 // overwrite. The GPT disk GUID is not rechecked because installation replaces
 // the partition table.
 func MatchRetainedDisk(facts HardwareFacts, retained DiskIdentity, selector TargetDiskSelector) (TargetDiskMatch, error) {
+	device, err := MatchBoundDisk(facts, retained)
+	if err != nil {
+		return TargetDiskMatch{}, err
+	}
+	unchanging := selector
+	unchanging.GPTGUID = ""
+	if len(unchanging.criteria()) > 0 && !unchanging.matches(device) {
+		return TargetDiskMatch{}, fmt.Errorf("%w: %s no longer matches the target disk selector (%s)", ErrTargetDiskChanged, device.Path, unchanging)
+	}
+	if err := validateTargetDiskSafety(facts, device, selector.MinSizeMiB); err != nil {
+		return TargetDiskMatch{}, err
+	}
+	return TargetDiskMatch{Device: device, Signatures: collectSignatures(device)}, nil
+}
+
+// MatchBoundDisk finds the whole disk a plan is bound to and checks that it is
+// still the same disk. Another disk that has since taken its kernel name has a
+// different diskseq or hardware identity and is refused.
+func MatchBoundDisk(facts HardwareFacts, bound DiskIdentity) (BlockDevice, error) {
 	var device *BlockDevice
 	for i := range facts.BlockDevices {
-		if facts.BlockDevices[i].Path == retained.Path {
+		if facts.BlockDevices[i].Path == bound.Path {
 			device = &facts.BlockDevices[i]
 		}
 	}
 	if device == nil {
-		return TargetDiskMatch{}, fmt.Errorf("%w: selected disk %s is no longer present", ErrTargetDiskChanged, retained.Path)
+		return BlockDevice{}, fmt.Errorf("%w: selected disk %s is no longer present", ErrTargetDiskChanged, bound.Path)
 	}
-	if current := IdentityOf(*device); current != retained {
-		return TargetDiskMatch{}, fmt.Errorf("%w: %s is now %s, not the selected %s", ErrTargetDiskChanged, retained.Path, describeIdentity(current), describeIdentity(retained))
+	if current := IdentityOf(*device); current != bound {
+		return BlockDevice{}, fmt.Errorf("%w: %s is now %s, not the selected %s", ErrTargetDiskChanged, bound.Path, describeIdentity(current), describeIdentity(bound))
 	}
 	if device.Type != DeviceDisk {
-		return TargetDiskMatch{}, fmt.Errorf("%w: %s is %s, not a whole disk", ErrUnsafeTargetDisk, device.Path, device.Type)
+		return BlockDevice{}, fmt.Errorf("%w: %s is %s, not a whole disk", ErrUnsafeTargetDisk, device.Path, device.Type)
 	}
-	unchanging := selector
-	unchanging.GPTGUID = ""
-	if len(unchanging.criteria()) > 0 && !unchanging.matches(*device) {
-		return TargetDiskMatch{}, fmt.Errorf("%w: %s no longer matches the target disk selector (%s)", ErrTargetDiskChanged, device.Path, unchanging)
-	}
-	if err := validateTargetDiskSafety(facts, *device, selector.MinSizeMiB); err != nil {
-		return TargetDiskMatch{}, err
-	}
-	return TargetDiskMatch{Device: *device, Signatures: collectSignatures(*device)}, nil
+	return *device, nil
 }
 
 func validateTargetDiskSafety(facts HardwareFacts, device BlockDevice, minSizeMiB uint64) error {

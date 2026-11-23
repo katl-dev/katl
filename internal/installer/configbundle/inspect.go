@@ -45,9 +45,12 @@ type ResolvedDerived struct {
 }
 
 type DerivedVolume struct {
-	Name           string `json:"name" yaml:"name"`
-	MountPath      string `json:"mountPath" yaml:"mountPath"`
-	MountSource    string `json:"mountSource" yaml:"mountSource"`
+	Name      string `json:"name" yaml:"name"`
+	MountPath string `json:"mountPath" yaml:"mountPath"`
+	// MountSource previews the identity a partition selector names. It is empty
+	// for label-selected volumes, which provisioning binds to the PARTUUID it
+	// finds on the selected disk.
+	MountSource    string `json:"mountSource,omitempty" yaml:"mountSource,omitempty"`
 	PartitionLabel string `json:"partitionLabel,omitempty" yaml:"partitionLabel,omitempty"`
 }
 
@@ -345,7 +348,6 @@ func derivedVolumesAndWarnings(storage SourceStorageLayer, base string) ([]Deriv
 		switch {
 		case disk.Selector != nil && disk.Selector.Disk != nil:
 			derived.PartitionLabel = "u-" + disk.Name
-			derived.MountSource = "/dev/disk/by-partlabel/" + derived.PartitionLabel
 		case disk.Selector != nil && disk.Selector.Partition != nil:
 			selector := disk.Selector.Partition
 			switch {
@@ -357,7 +359,6 @@ func derivedVolumesAndWarnings(storage SourceStorageLayer, base string) ([]Deriv
 				derived.MountSource = "UUID=" + selector.FilesystemUUID.Value()
 			case selector.ByVolumeName.Value():
 				derived.PartitionLabel = "u-" + disk.Name
-				derived.MountSource = "/dev/disk/by-partlabel/" + derived.PartitionLabel
 			}
 		}
 		if wipe, set := disk.Wipe.Get(); set && wipe {

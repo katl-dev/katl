@@ -874,7 +874,7 @@ func clusterConfigRejection(node string, validation *agentapi.ConfigValidationRe
 	if diagnostics == "" {
 		return configCompatibilityDiagnostic(firstNonEmpty(failure, "configuration was rejected without a diagnostic"))
 	}
-	if failure == "" || (strings.HasPrefix(failure, "config apply ") && strings.Contains(failure, " request rejected for ")) {
+	if failure == "" || failure == diagnostics || (strings.HasPrefix(failure, "config apply ") && strings.Contains(failure, " request rejected for ")) {
 		return configCompatibilityDiagnostic(diagnostics)
 	}
 	return configCompatibilityDiagnostic(failure + "; " + diagnostics)

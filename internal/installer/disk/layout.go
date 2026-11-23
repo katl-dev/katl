@@ -3,6 +3,7 @@ package disk
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -98,9 +99,16 @@ type PartitionPlan struct {
 }
 
 type VolumePlan struct {
-	Name        string
-	TargetKind  string
-	DevicePath  string
+	Name       string
+	TargetKind string
+	// Disk is the disk holding the volume. It is revalidated before every
+	// destructive command, and the volume's partition is looked up only on it.
+	Disk discovery.DiskIdentity
+	// Partition identifies the selected existing partition on Disk. It is
+	// zero when Repartition creates the partition.
+	Partition PartitionIdentity
+	// MountSource is the PARTUUID= or UUID= source BindVolumePlans assigns
+	// once the volume's partition is bound; it is empty until then.
 	MountSource string
 	Filesystem  string
 	MountPath   string
@@ -139,12 +147,15 @@ func PlanDiskLayout(facts HardwareFacts, request DiskLayoutRequest) (DiskLayoutP
 		return DiskLayoutPlan{}, fmt.Errorf("match target disk: %w", err)
 	}
 
+	if err := checkAddressable(target.Device); err != nil {
+		return DiskLayoutPlan{}, fmt.Errorf("target disk: %w", err)
+	}
 	partitions, err := planTargetPartitions(target.Device, normalized)
 	if err != nil {
 		return DiskLayoutPlan{}, err
 	}
 
-	volumeMounts, err := PlanVolumes(facts, target.Device, normalized.Volumes)
+	volumeMounts, err := PlanVolumes(facts, target.Device, normalized.Volumes, nil)
 	if err != nil {
 		return DiskLayoutPlan{}, err
 	}
@@ -164,107 +175,6 @@ func PlanDiskLayout(facts HardwareFacts, request DiskLayoutRequest) (DiskLayoutP
 	}, nil
 }
 
-func PlanVolumes(facts HardwareFacts, target BlockDevice, requests []VolumeRequest) ([]VolumePlan, error) {
-	seenNames := make(map[string]struct{}, len(requests))
-	plans := make([]VolumePlan, 0, len(requests))
-	for _, request := range requests {
-		if err := validateMountName("volume", request.Name); err != nil {
-			return nil, err
-		}
-		if _, exists := seenNames[request.Name]; exists {
-			return nil, fmt.Errorf("volume name %q is duplicated", request.Name)
-		}
-		seenNames[request.Name] = struct{}{}
-
-		if (request.Disk == nil) == (request.Partition == nil) {
-			return nil, fmt.Errorf("volume %q must select exactly one of disk or partition", request.Name)
-		}
-		if !IsSupportedVolumeFilesystem(request.Filesystem) {
-			return nil, fmt.Errorf("volume %q filesystem %q is unsupported", request.Name, request.Filesystem)
-		}
-
-		var plan VolumePlan
-		if request.Disk != nil {
-			match, err := discovery.MatchTargetDisk(facts, *request.Disk)
-			if err != nil {
-				return nil, fmt.Errorf("volume %q disk: %w", request.Name, err)
-			}
-			if match.Device.Path == target.Path {
-				return nil, fmt.Errorf("volume %q resolves to target root disk %s", request.Name, target.Path)
-			}
-			label := volumePartitionLabel(request.Name)
-			if request.Wipe {
-				plan = VolumePlan{
-					Name: request.Name, TargetKind: "disk", DevicePath: match.Device.Path,
-					MountSource: "/dev/disk/by-partlabel/" + label, Filesystem: request.Filesystem,
-					MountPath: VolumeMountRoot + "/" + request.Name, Wipe: true, Repartition: true,
-					TypeUUID: volumePartitionTypeUUID(request.Name), Signatures: match.Signatures,
-				}
-			} else {
-				partition, err := volumePartitionOnDisk(match.Device, label)
-				if err != nil {
-					return nil, fmt.Errorf("volume %q disk: %w", request.Name, err)
-				}
-				plan = VolumePlan{
-					Name: request.Name, TargetKind: "disk", DevicePath: partition.Path,
-					MountSource: volumeIdentityMountSource(partition), Filesystem: request.Filesystem,
-					MountPath: VolumeMountRoot + "/" + request.Name, Signatures: collectVolumeSignatures(partition),
-				}
-				if err := validateReusableVolume(plan, partition.FilesystemSignature); err != nil {
-					return nil, err
-				}
-			}
-		} else {
-			match, err := discovery.MatchPartition(facts, *request.Partition)
-			if err != nil {
-				return nil, fmt.Errorf("volume %q partition: %w", request.Name, err)
-			}
-			if match.ParentDisk.Path == target.Path {
-				return nil, fmt.Errorf("volume %q partition is on target root disk %s", request.Name, target.Path)
-			}
-			if isKatlPartitionLabel(match.Device.GPTLabel) {
-				return nil, fmt.Errorf("volume %q resolves to Katl-managed partition %s", request.Name, match.Device.GPTLabel)
-			}
-			plan = VolumePlan{
-				Name: request.Name, TargetKind: "partition", DevicePath: match.Device.Path, MountSource: volumeIdentityMountSource(match.Device),
-				Filesystem: request.Filesystem, MountPath: VolumeMountRoot + "/" + request.Name, Wipe: request.Wipe, Signatures: match.Signatures,
-			}
-			if err := validateReusableVolume(plan, match.Device.FilesystemSignature); err != nil {
-				return nil, err
-			}
-		}
-		if !plan.Repartition && strings.TrimSpace(plan.MountSource) == "" {
-			return nil, fmt.Errorf("volume %q partition has no discoverable PARTUUID or filesystem UUID", request.Name)
-		}
-		plans = append(plans, plan)
-	}
-	return plans, nil
-}
-
-func BindVolumePlans(facts HardwareFacts, plans []VolumePlan) ([]VolumePlan, []VolumeBinding, error) {
-	bound := append([]VolumePlan(nil), plans...)
-	bindings := make([]VolumeBinding, 0, len(plans))
-	for i := range bound {
-		device, err := volumePlanPartition(facts, bound[i])
-		if err != nil {
-			return nil, nil, fmt.Errorf("volume %q: %w", bound[i].Name, err)
-		}
-		binding := VolumeBinding{
-			Name:           bound[i].Name,
-			PartitionUUID:  strings.TrimSpace(device.PartitionUUID),
-			FilesystemUUID: strings.TrimSpace(device.FilesystemUUID),
-		}
-		source, err := VolumeBindingMountSource(binding)
-		if err != nil {
-			return nil, nil, err
-		}
-		bound[i].DevicePath = device.Path
-		bound[i].MountSource = source
-		bindings = append(bindings, binding)
-	}
-	return bound, bindings, nil
-}
-
 func VolumeBindingMountSource(binding VolumeBinding) (string, error) {
 	switch {
 	case strings.TrimSpace(binding.PartitionUUID) != "":
@@ -276,97 +186,48 @@ func VolumeBindingMountSource(binding VolumeBinding) (string, error) {
 	}
 }
 
+// errAmbiguousBinding marks a binding that identifies more than one partition.
+var errAmbiguousBinding = errors.New("ambiguous volume binding")
+
 func MatchVolumeBinding(facts HardwareFacts, binding VolumeBinding) (BlockDevice, error) {
-	var matches []BlockDevice
+	_, partition, err := matchVolumeBinding(facts, binding)
+	return partition, err
+}
+
+// matchVolumeBinding returns the one partition a binding identifies and the
+// disk holding it.
+func matchVolumeBinding(facts HardwareFacts, binding VolumeBinding) (BlockDevice, BlockDevice, error) {
+	var disks, matches []BlockDevice
 	for _, candidate := range facts.BlockDevices {
 		for _, partition := range candidate.Partitions {
 			switch {
 			case strings.TrimSpace(binding.PartitionUUID) != "":
-				if partition.PartitionUUID != strings.TrimSpace(binding.PartitionUUID) {
+				if !strings.EqualFold(strings.TrimSpace(partition.PartitionUUID), strings.TrimSpace(binding.PartitionUUID)) {
 					continue
 				}
 			case strings.TrimSpace(binding.FilesystemUUID) != "":
-				if partition.FilesystemUUID != strings.TrimSpace(binding.FilesystemUUID) {
+				if !strings.EqualFold(strings.TrimSpace(partition.FilesystemUUID), strings.TrimSpace(binding.FilesystemUUID)) {
 					continue
 				}
 			default:
-				return BlockDevice{}, fmt.Errorf("bound identity for volume %q is empty", binding.Name)
+				return BlockDevice{}, BlockDevice{}, fmt.Errorf("bound identity for volume %q is empty", binding.Name)
 			}
+			disks = append(disks, candidate)
 			matches = append(matches, partition)
 		}
 	}
 	switch len(matches) {
 	case 0:
-		return BlockDevice{}, fmt.Errorf("bound identity for volume %q matched no partitions", binding.Name)
+		return BlockDevice{}, BlockDevice{}, fmt.Errorf("bound identity for volume %q matched no partitions", binding.Name)
 	case 1:
-		return matches[0], nil
+		return disks[0], matches[0], nil
 	default:
-		return BlockDevice{}, fmt.Errorf("bound identity for volume %q matched %d partitions", binding.Name, len(matches))
+		return BlockDevice{}, BlockDevice{}, fmt.Errorf("%w: bound identity for volume %q matched %d partitions", errAmbiguousBinding, binding.Name, len(matches))
 	}
-}
-
-func volumePlanPartition(facts HardwareFacts, plan VolumePlan) (BlockDevice, error) {
-	if !plan.Repartition {
-		for _, disk := range facts.BlockDevices {
-			for _, partition := range disk.Partitions {
-				if partition.Path == plan.DevicePath {
-					return partition, nil
-				}
-			}
-		}
-		return BlockDevice{}, fmt.Errorf("selected partition %s was not found after preparation", plan.DevicePath)
-	}
-	var matches []BlockDevice
-	label := volumePartitionLabel(plan.Name)
-	for _, candidate := range facts.BlockDevices {
-		if candidate.Path != plan.DevicePath && plan.Repartition {
-			continue
-		}
-		for _, partition := range candidate.Partitions {
-			if partition.GPTLabel == label {
-				matches = append(matches, partition)
-			}
-		}
-	}
-	switch len(matches) {
-	case 0:
-		return BlockDevice{}, fmt.Errorf("discovered partition label %s matched no partitions on selected disk", label)
-	case 1:
-		return matches[0], nil
-	default:
-		return BlockDevice{}, fmt.Errorf("discovered partition label %s matched %d partitions on selected disk", label, len(matches))
-	}
-}
-
-func volumeIdentityMountSource(device BlockDevice) string {
-	if value := strings.TrimSpace(device.PartitionUUID); value != "" {
-		return "PARTUUID=" + value
-	}
-	if value := strings.TrimSpace(device.FilesystemUUID); value != "" {
-		return "UUID=" + value
-	}
-	return ""
 }
 
 func volumePartitionLabel(name string) string {
 	return "u-" + name
-}
-
-func volumePartitionOnDisk(disk BlockDevice, label string) (BlockDevice, error) {
-	var matches []BlockDevice
-	for _, partition := range disk.Partitions {
-		if partition.GPTLabel == label {
-			matches = append(matches, partition)
-		}
-	}
-	switch len(matches) {
-	case 0:
-		return BlockDevice{}, fmt.Errorf("partition label %s was not found; set wipe to true to initialize this disk", label)
-	case 1:
-		return matches[0], nil
-	default:
-		return BlockDevice{}, fmt.Errorf("partition label %s matched %d partitions", label, len(matches))
-	}
 }
 
 func volumePartitionTypeUUID(name string) string {

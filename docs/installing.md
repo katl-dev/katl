@@ -85,8 +85,10 @@ kernel enumerates disks in another order. The
 [system disk reference](reference/cluster-config.md#system-disk) describes
 every selector, including size and model, and how each behaves on a
 reinstall. A reinstall onto a different disk may leave the previous Katl disk
-attached: the installer and the installed node use only the system partitions on the
-disk the install bound. Detach the data volume disks of the previous install.
+attached: the installer and the installed node use only the partitions on the disks
+the install bound. Still detach the data volume disks of the previous install that
+the new install does not select, because a volume mounts at boot by its recorded
+partition or filesystem UUID.
 
 ### Select an SSH key
 

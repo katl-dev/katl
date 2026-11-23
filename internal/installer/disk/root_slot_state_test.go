@@ -136,6 +136,7 @@ func TestDiskExecutorRejectsPartialSlot(t *testing.T) {
 
 	_, err := (DiskExecutor{
 		Commands:      &NoopCommandRunner{},
+		Discovery:     executorDiscovery(),
 		RootSlotState: store,
 	}).Execute(context.Background(), DiskExecutionRequest{
 		Plan:             executorPlan(),
