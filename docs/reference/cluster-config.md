@@ -529,7 +529,9 @@ reload systemd's configuration and restart that unit if it was running or is
 declared enabled. Katl also derives the consumer for supported native systemd
 component drop-ins, including `journald.conf.d` and `timesyncd.conf.d`, and
 reloads or restarts an active consumer as appropriate. Stopped, undeclared
-units stay stopped. Configuration and unit changes in an extension also apply
+units stay stopped. Removing a concrete unit's definition file stops the unit
+before the file disappears; if a vendor or template definition remains, Katl
+starts the unit again under it only when it was running. Configuration and unit changes in an extension also apply
 live when the extension itself is unchanged; changing the extension still
 requires the next boot.
 

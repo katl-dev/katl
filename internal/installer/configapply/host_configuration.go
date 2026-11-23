@@ -29,6 +29,7 @@ type HostConfigurationChangePlan struct {
 	Commands               []Command
 	rollbackCommands       []Command
 	unitsToStop            []string
+	unitsToRemove          []string
 	unitsToEnable          []string
 	unitsToDisable         []string
 	unitNotifications      map[string]string
@@ -151,6 +152,13 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration, ro
 		switch {
 		case filePath == "/etc/systemd/system/"+systemdunit.TargetName:
 			systemdReload = true
+		case unit != "" && beforeExists && !afterExists && filePath == "/etc/systemd/system/"+unit &&
+			!slices.Contains(desired.EnabledUnits, unit) && !slices.Contains(plan.unitsToDisable, unit):
+			// A restart after daemon-reload would target a unit systemd can no
+			// longer load, so stop it while its definition still exists.
+			plan.unitsToStop = append(plan.unitsToStop, unit)
+			plan.unitsToRemove = append(plan.unitsToRemove, unit)
+			plan.Effects = append(plan.Effects, plannedEffect("stop-and-remove", "systemd unit "+unit))
 		case unit != "":
 			deriveSystemdNotification(notifications, filePath)
 			if slices.Contains(desired.EnabledUnits, unit) && !slices.Contains(plan.unitsToEnable, unit) {
@@ -248,7 +256,7 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration, ro
 		}
 	}
 	for unit := range notifications {
-		if slices.Contains(desired.MaskedUnits, unit) || slices.Contains(plan.unitsToDisable, unit) {
+		if slices.Contains(desired.MaskedUnits, unit) || slices.Contains(plan.unitsToDisable, unit) || slices.Contains(plan.unitsToRemove, unit) {
 			delete(notifications, unit)
 		}
 	}
