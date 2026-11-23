@@ -22,6 +22,7 @@ KATL_KUBERNETES_ARTIFACT_REVISION_DEFAULT=4
 
 func TestRefreshRebuildsRescopesWithoutAdvancingArtifacts(t *testing.T) {
 	root := t.TempDir()
+	isolateGit(t, root)
 	if output, err := exec.Command("git", "init", "--quiet", root).CombinedOutput(); err != nil {
 		t.Fatalf("initialize recipe fixture: %v: %s", err, output)
 	}

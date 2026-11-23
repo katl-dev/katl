@@ -79,8 +79,6 @@ func TestSystemExtensionPublication(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			runGit(t, dir, "init", "--quiet")
-			runGit(t, dir, "config", "user.name", "Katl Test")
-			runGit(t, dir, "config", "user.email", "test@katl.dev")
 			if err := os.MkdirAll(filepath.Join(dir, "extensions/bird"), 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -113,7 +111,7 @@ func TestSystemExtensionPublication(t *testing.T) {
 			}
 			head := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
 			outputPath := filepath.Join(dir, "output")
-			env := append(os.Environ(),
+			env := append(hermeticGitEnv(os.Environ(), dir),
 				"KATL_BIRD_RECIPE_PATTERN="+bird.Env["KATL_BIRD_RECIPE_PATTERN"],
 				"BASE_SHA="+base, "GITHUB_SHA="+head, "GITHUB_OUTPUT="+outputPath,
 				"EVENT_NAME="+tc.event, "MANUAL_PUBLISH="+tc.manual,

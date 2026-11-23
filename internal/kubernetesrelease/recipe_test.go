@@ -287,6 +287,7 @@ func testSupportedVersion(payload string, revision int) SupportedVersion {
 func writeRecipeFixture(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
+	isolateGit(t, root)
 	directories := map[string]bool{
 		"cmd/katl-kubernetes-metadata":       true,
 		"cmd/katl-publish-kubernetes-sysext": true,
