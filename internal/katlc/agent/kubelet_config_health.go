@@ -104,9 +104,14 @@ func (e *Executor) awaitKubeletObservation(ctx context.Context, request *operati
 	var pending error
 	for {
 		observed, err := e.observeKubeletHealth(waitCtx, request)
-		if errors.As(err, new(pendingObservation)) {
+		switch {
+		case err == nil:
+			return observed, nil
+		case waitCtx.Err() != nil && pending != nil:
+			// An observation cut short by the deadline carries no new evidence; report the last complete one.
+		case errors.As(err, new(pendingObservation)):
 			pending = err
-		} else if err == nil || waitCtx.Err() == nil || pending == nil {
+		default:
 			return observed, err
 		}
 		select {
@@ -128,6 +133,7 @@ func (e *Executor) runKubeletConfigHealth(ctx context.Context, record operation.
 	record.KubeadmControlPlaneConfig.ReadinessRequirement = stored.KubeadmControlPlaneConfig.ReadinessRequirement
 	healthCtx, cancel := context.WithTimeout(ctx, postKubeadmHealthTimeout)
 	defer cancel()
+	var lastErr error
 	for {
 		observed, err := e.observeKubeletHealth(healthCtx, record.KubeadmControlPlaneConfig)
 		if observed.nodeReady {
@@ -154,6 +160,11 @@ func (e *Executor) runKubeletConfigHealth(ctx context.Context, record operation.
 		if err == nil {
 			err = errors.New(observed.failureReason)
 		}
+		if healthCtx.Err() != nil && lastErr != nil {
+			// An attempt cut short by the deadline carries no new evidence; report the last complete one.
+			err = lastErr
+		}
+		lastErr = err
 		select {
 		case <-healthCtx.Done():
 			return ToolResult{Err: errors.Join(err, healthCtx.Err()), ExitStatus: 1}
