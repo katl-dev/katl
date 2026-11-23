@@ -149,6 +149,34 @@ func TestInstallIsIdempotentAndRefusesConflictingStateBeforeWrites(t *testing.T)
 	}
 }
 
+// The API proxy runs as an unprivileged dynamic user and reads ca.crt, so
+// the PKI directories must be traversable while keys stay private.
+func TestInstallKeepsPublicCertificatesReachable(t *testing.T) {
+	bundle := generatedBundle(t)
+	root := t.TempDir()
+	pkiDir := filepath.Join(root, "etc/kubernetes/pki")
+	// An earlier Install created the directories 0700.
+	if err := os.MkdirAll(filepath.Join(pkiDir, "etcd"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(pkiDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Install(root, bundle); err != nil {
+		t.Fatalf("Install() error = %v", err)
+	}
+	for _, dir := range []string{pkiDir, filepath.Join(pkiDir, "etcd")} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o755 {
+			t.Errorf("%s mode = %04o, want 0755", dir, info.Mode().Perm())
+		}
+	}
+}
+
 func TestInstallRefusesIncompleteSharedIdentityBesideLeafCertificates(t *testing.T) {
 	bundle := generatedBundle(t)
 	root := t.TempDir()
