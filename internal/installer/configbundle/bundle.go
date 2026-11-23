@@ -878,11 +878,8 @@ func normalizeSourceIssues(source SourceConfig) (SourceConfig, []error) {
 	}
 	for i := range source.Spec.Nodes {
 		path := sourceNodePath(source.Spec.Nodes[i], i)
-		address, err := manifest.NormalizeKubernetesAddress(source.Spec.Nodes[i].Kubernetes.Address)
-		if err != nil {
+		if _, err := inventory.ParseKubernetesAddress(source.Spec.Nodes[i].Kubernetes.Address); err != nil {
 			errs = append(errs, fmt.Errorf("%s.kubernetes.address: %w", path, err))
-		} else {
-			source.Spec.Nodes[i].Kubernetes.Address = address
 		}
 		if kubelet := source.Spec.Nodes[i].Kubernetes.Kubelet; kubelet != nil && strings.TrimSpace(kubelet.ConfigFile) == "" {
 			errs = append(errs, fmt.Errorf("%s.kubernetes.kubelet.configFile is required", path))
@@ -1097,21 +1094,6 @@ func readHostConfigurationSource(sourceRoot, source string) ([]byte, error) {
 		return nil, fmt.Errorf("read %q: %w", source, err)
 	}
 	return data, nil
-}
-
-func SourceControlPlaneEndpoint(source SourceConfig) string {
-	if external := source.Spec.Kubernetes.External; external != nil {
-		endpoint, _ := externalworker.Endpoint(external.Endpoint)
-		return endpoint
-	}
-	if source.Spec.ControlPlaneEndpoint == nil {
-		return ""
-	}
-	plan, err := controlplaneendpoint.Normalize(*source.Spec.ControlPlaneEndpoint)
-	if err != nil {
-		return ""
-	}
-	return plan.Endpoint
 }
 
 func defaultKubeadmInitConfig() string {

@@ -289,7 +289,7 @@ func TestCompileAllowsMissingAddressAndAppliesOverride(t *testing.T) {
 	if got := plan.Nodes[1].BootstrapAddress; got != "" {
 		t.Fatalf("worker bootstrap address = %q, want empty", got)
 	}
-	if got := plan.BootstrapInventory.Nodes[1].Address; got != "" {
+	if got := plan.BootstrapInventory.Nodes[1].Address; !got.IsZero() {
 		t.Fatalf("worker inventory address = %q, want empty", got)
 	}
 
@@ -307,7 +307,7 @@ func TestCompileAllowsMissingAddressAndAppliesOverride(t *testing.T) {
 	if got := plan.Nodes[1].InstallManifest.Node.Bootstrap.NodeAddress; got != "10.0.0.99" {
 		t.Fatalf("worker install manifest bootstrap address = %q", got)
 	}
-	if len(plan.AddressOverrides) != 1 || plan.AddressOverrides[0].Node != "worker-1" || plan.AddressOverrides[0].Address != "10.0.0.99" {
+	if len(plan.AddressOverrides) != 1 || plan.AddressOverrides[0].Node != "worker-1" || plan.AddressOverrides[0].Address.String() != "10.0.0.99" {
 		t.Fatalf("address overrides = %#v", plan.AddressOverrides)
 	}
 }

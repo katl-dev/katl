@@ -52,7 +52,11 @@ func TestWarnPendingReaddress(t *testing.T) {
 			}
 
 			var stderr bytes.Buffer
-			warnPendingReaddress(context.Background(), path, test.endpoints, test.selected, &stderr)
+			endpoints := map[string]inventory.HostPort{}
+			for name, endpoint := range test.endpoints {
+				endpoints[name] = mustHostPort(t, endpoint)
+			}
+			warnPendingReaddress(context.Background(), path, endpoints, test.selected, &stderr)
 
 			got := stderr.String()
 			if !test.wantWarning {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlc/transport"
@@ -98,11 +99,9 @@ func TestManagementJourney(t *testing.T) {
 			dialKatlcAgent = func(ctx context.Context, _ string) (katlcAgentConnection, error) {
 				return dialKatlcAgentTCP(ctx, listener.Addr().String())
 			}
-			_, port, _ := net.SplitHostPort(listener.Addr().String())
+			listenerAddress := mustManagement(t, listener.Addr().String())
 			newWipeClusterConnector = func() cluster.AgentConnector {
-				connector := managementAgentConnector("")
-				connector.DefaultPort = port
-				return connector
+				return listenerConnector{AgentConnector: managementAgentConnector(""), address: listenerAddress}
 			}
 			bundle := filepath.Join(dir, "cluster.katlcfg")
 			if err := run(context.Background(), []string{"config", "bundle", config, "--output", bundle}, io.Discard, io.Discard); err != nil {
@@ -234,4 +233,15 @@ func (*managementJourneyServer) ReadJournal(request *agentapi.JournalRequest, st
 
 func (*managementJourneyServer) GetEtcdStatus(context.Context, *agentapi.GetEtcdStatusRequest) (*agentapi.EtcdStatus, error) {
 	return &agentapi.EtcdStatus{ClusterId: "123", Members: []*agentapi.EtcdMember{{Id: "1", Name: "cp-1"}}}, nil
+}
+
+// listenerConnector reaches every node at the test listener's address.
+type listenerConnector struct {
+	cluster.AgentConnector
+	address inventory.ManagementAddress
+}
+
+func (c listenerConnector) Connect(ctx context.Context, node inventory.PlannedNode) (cluster.AgentConnection, error) {
+	node.Address = c.address
+	return c.AgentConnector.Connect(ctx, node)
 }

@@ -77,7 +77,7 @@ func TestContextRebindVerifiesIdentityBeforeSavingAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := topology.Nodes[0].ManagementEndpoint; got != "10.0.0.91:9443" {
+	if got := topology.Nodes[0].ManagementEndpoint; got.String() != "10.0.0.91:9443" {
 		t.Fatalf("rebound endpoint = %q", got)
 	}
 	if got := cfg.Clusters[0].Nodes[0].ConfiguredEndpoint; got != "10.0.0.11:9443" {
@@ -104,7 +104,7 @@ func TestContextRebindRefusesDifferentEnrollment(t *testing.T) {
 	if selectErr != nil {
 		t.Fatal(selectErr)
 	}
-	if got := topology.Nodes[0].ManagementEndpoint; got != "10.0.0.11:9443" {
+	if got := topology.Nodes[0].ManagementEndpoint; got.String() != "10.0.0.11:9443" {
 		t.Fatalf("refused rebind changed endpoint to %q", got)
 	}
 }

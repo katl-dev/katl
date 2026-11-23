@@ -266,13 +266,13 @@ func TestManagementIdentityRecoverReplacesLostAuthority(t *testing.T) {
 	if err != nil || oldInfo.Fingerprint == nextInfo.Fingerprint {
 		t.Fatalf("authority was not replaced: %v", err)
 	}
-	if err := checkManagementCredential(context.Background(), managementRotationNode{name: "cp-1", endpoint: w.node.endpoint}, mustManagementClient(t, next), 3*time.Second); err != nil {
+	if err := checkManagementCredential(context.Background(), managementRotationNode{name: "cp-1", endpoint: mustHostPort(t, w.node.endpoint)}, mustManagementClient(t, next), 3*time.Second); err != nil {
 		t.Fatalf("recovered credentials cannot manage the node: %v", err)
 	}
 
 	// Recovery must not widen access: the lost authority and an anonymous
 	// client are both refused, and the node stays mTLS.
-	node := managementRotationNode{name: "cp-1", endpoint: w.node.endpoint}
+	node := managementRotationNode{name: "cp-1", endpoint: mustHostPort(t, w.node.endpoint)}
 	if err := verifyOldManagementAuthorityRejected(context.Background(), node, next.CertificateAuthority.Certificate, w.old.Operator, 2*time.Second); err != nil {
 		t.Fatalf("lost authority was not verifiably rejected: %v", err)
 	}
@@ -600,7 +600,7 @@ func fakeSSH(t *testing.T, output string) string {
 
 func TestRootSSHPinsHostKeys(t *testing.T) {
 	argvPath := fakeSSH(t, `{"nodeName":"cp-1","machineID":"m","authority":"a"}`)
-	node := managementRotationNode{name: "cp-1", host: "192.0.2.10"}
+	node := managementRotationNode{name: "cp-1", endpoint: mustManagement(t, "192.0.2.10").Endpoint()}
 
 	_, err := sshManagementAuthority(context.Background(), node, managementRotationOptions{sshPort: 22, timeout: 5 * time.Second, knownHosts: "/keys/known_hosts"})
 	if err != nil {
@@ -627,7 +627,7 @@ func TestRootSSHPinsHostKeys(t *testing.T) {
 func TestSSHManagementAuthorityRefusesOtherNode(t *testing.T) {
 	fakeSSH(t, `{"nodeName":"cp-9","machineID":"m","authority":"a"}`)
 
-	_, err := sshManagementAuthority(context.Background(), managementRotationNode{name: "cp-1", host: "192.0.2.10"}, managementRotationOptions{sshPort: 22, timeout: 5 * time.Second})
+	_, err := sshManagementAuthority(context.Background(), managementRotationNode{name: "cp-1", endpoint: mustManagement(t, "192.0.2.10").Endpoint()}, managementRotationOptions{sshPort: 22, timeout: 5 * time.Second})
 	if err == nil || !strings.Contains(err.Error(), `SSH endpoint is node "cp-9", not cp-1`) {
 		t.Fatalf("error = %v", err)
 	}

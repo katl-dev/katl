@@ -13,9 +13,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/katl-dev/katl/internal/vmtest"
@@ -466,7 +468,7 @@ func (manager installerManager) observe(ctx context.Context, world katldevWorld,
 		endpoint := "http://" + net.JoinHostPort(address, "8080")
 		if current, err := manager.installerStatus(ctx, endpoint); err == nil {
 			observation.Installer = current
-		} else if tcpReachable(ctx, net.JoinHostPort(address, "9443"), 500*time.Millisecond) {
+		} else if tcpReachable(ctx, net.JoinHostPort(address, strconv.Itoa(inventory.ManagementPort)), 500*time.Millisecond) {
 			observation.KatlOS = true
 		} else {
 			continue

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,7 +25,6 @@ import (
 )
 
 const (
-	defaultAgentPort         = "9443"
 	agentAPIVersion          = operation.APIVersion
 	agentSubmitOperationKind = "SubmitOperationRequest"
 	agentJoinMaterialKind    = "CreateWorkerJoinMaterialRequest"
@@ -74,7 +72,6 @@ type AgentClient interface {
 }
 
 type TCPAgentConnector struct {
-	DefaultPort        string
 	DialTimeout        time.Duration
 	Credentials        *managementidentity.ClientCredentials
 	CredentialsForNode func(inventory.PlannedNode) (managementidentity.ClientCredentials, error)
@@ -84,7 +81,7 @@ func (c TCPAgentConnector) Connect(ctx context.Context, node inventory.PlannedNo
 	if node.Access.Method != "agent" {
 		return AgentConnection{}, fmt.Errorf("node %q access method %q is not supported by katlc agent transport", node.Name, node.Access.Method)
 	}
-	endpoint := AgentEndpoint(node.Address, valueOrDefault(c.DefaultPort, defaultAgentPort))
+	endpoint := node.ManagementEndpoint().String()
 	clientCredentials := c.Credentials
 	if clientCredentials == nil {
 		clientCredentials = transport.ClientCredentialsFromContext(ctx)
@@ -122,21 +119,13 @@ func (c TCPAgentConnector) Connect(ctx context.Context, node inventory.PlannedNo
 	}, nil
 }
 
-func AgentEndpoint(address, defaultPort string) string {
-	address = strings.TrimSpace(address)
-	if hasPort(address) {
-		return address
-	}
-	return net.JoinHostPort(address, valueOrDefault(defaultPort, defaultAgentPort))
-}
-
 func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrapDependencies) (Result, error) {
 	if request.Inventory.ExternalControlPlane {
 		return Result{}, fmt.Errorf("external control planes are managed outside Katl; use katlctl node join with --bootstrap-kubeconfig")
 	}
 	inv := request.Inventory
-	if strings.TrimSpace(request.ControlPlaneEndpoint) != "" {
-		inv.ControlPlaneEndpoint = strings.TrimSpace(request.ControlPlaneEndpoint)
+	if !request.ControlPlaneEndpoint.IsZero() {
+		inv.ControlPlaneEndpoint = request.ControlPlaneEndpoint
 	}
 	plan, err := inventory.PlanInventory(inventory.PlanRequest{
 		Inventory:       inv,
@@ -238,8 +227,8 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 	if bootstrap.enabled() {
 		emitAgentProgress(deps, AgentBootstrapProgress{Phase: "applying-bootstrap-manifests"})
 		bootstrapResult, err := deps.BootstrapRunner.RunUserBootstrap(ctx, BootstrapRequest{
-			Server:         bootstrapServer(initNode, plan),
-			TLSServerName:  controlPlaneEndpointHost(plan.ControlPlaneEndpoint),
+			Server:         plan.WorkstationProxyEndpoint(initNode).Address.String(),
+			TLSServerName:  plan.WorkstationProxyEndpoint(initNode).ServerName.String(),
 			StableEndpoint: bootstrap.StableEndpoint,
 			Credentials:    initResult.Credentials,
 			PreWaits:       bootstrap.preWaits(),
@@ -271,8 +260,8 @@ func RunAgentBootstrap(ctx context.Context, request Request, deps AgentBootstrap
 func RunAgentNodeJoin(ctx context.Context, request Request, nodeName string, deps AgentBootstrapDependencies) (Result, error) {
 	deps.ExistingClusterJoin = true
 	inv := request.Inventory
-	if strings.TrimSpace(request.ControlPlaneEndpoint) != "" {
-		inv.ControlPlaneEndpoint = strings.TrimSpace(request.ControlPlaneEndpoint)
+	if !request.ControlPlaneEndpoint.IsZero() {
+		inv.ControlPlaneEndpoint = request.ControlPlaneEndpoint
 	}
 	plan, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: inv, InitNode: request.InitNode, AddressOverride: request.AddressOverrides})
 	if err != nil {
@@ -520,7 +509,7 @@ func createWorkerJoinMaterial(ctx context.Context, initNode, worker inventory.Pl
 }
 
 type joinDiscoveryOverride struct {
-	Endpoint                 string
+	Endpoint                 inventory.HostPort
 	CertificateAuthorityData string
 }
 
@@ -561,8 +550,8 @@ func createJoinMaterial(ctx context.Context, initNode, joinNode inventory.Planne
 	if strings.TrimSpace(material.GetExpiresAt()) == "" {
 		return workerJoinMaterial{}, fmt.Errorf("agent returned %s join material without expiry", role)
 	}
-	if strings.TrimSpace(discovery.Endpoint) != "" {
-		material, err = joinMaterialWithDiscoveryEndpoint(material, discovery.Endpoint, discovery.CertificateAuthorityData)
+	if !discovery.Endpoint.IsZero() {
+		material, err = joinMaterialWithDiscoveryEndpoint(material, discovery.Endpoint.String(), discovery.CertificateAuthorityData)
 		if err != nil {
 			return workerJoinMaterial{}, fmt.Errorf("prepare %s join material: %w", role, err)
 		}
@@ -759,7 +748,7 @@ func bootstrapOperationRequest(node inventory.PlannedNode, plan inventory.Plan, 
 			KubernetesBundleSource:   plan.KubernetesBundleSource,
 			KubernetesBundleRef:      plan.KubernetesBundleRef,
 			BootstrapProfileRef:      bootstrapProfileRef(node),
-			ControlPlaneEndpoint:     plan.ControlPlaneEndpoint,
+			ControlPlaneEndpoint:     plan.ControlPlaneEndpoint.String(),
 			ExistingClusterJoin:      deps.ExistingClusterJoin,
 			ApiProxyConfig:           proxyConfig,
 		},
@@ -901,7 +890,7 @@ func clientRequestID(node inventory.PlannedNode, plan inventory.Plan, kind strin
 		node.KubernetesVersion,
 		node.KubeadmConfig.Ref,
 		node.KubeadmConfig.Path,
-		plan.ControlPlaneEndpoint,
+		plan.ControlPlaneEndpoint.String(),
 		plan.KubernetesBundleSource,
 		plan.KubernetesBundleRef,
 		strings.TrimSpace(identityFingerprint),

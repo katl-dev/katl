@@ -404,8 +404,8 @@ func TestSelectInstallNode(t *testing.T) {
 	manifest := configbundle.BundleManifest{
 		Nodes: []configbundle.NodeRecord{{Name: "cp-1"}, {Name: "worker-1"}},
 		Cluster: configbundle.ClusterRecord{BootstrapInventory: inventory.Inventory{Nodes: []inventory.Node{
-			{Name: "cp-1", Address: "192.0.2.11"},
-			{Name: "worker-1", Address: "192.0.2.21"},
+			{Name: "cp-1", Address: mustManagement(t, "192.0.2.11")},
+			{Name: "worker-1", Address: mustManagement(t, "192.0.2.21")},
 		}}},
 	}
 	for _, test := range []struct {
@@ -438,7 +438,7 @@ func TestSelectInstallNode(t *testing.T) {
 	if got, err := selectInstallNode(single, ""); err != nil || got != "cp-1" {
 		t.Fatalf("single-node selection = %q, %v", got, err)
 	}
-	manifest.Cluster.BootstrapInventory.Nodes[1].Address = "192.0.2.11"
+	manifest.Cluster.BootstrapInventory.Nodes[1].Address = mustManagement(t, "192.0.2.11")
 	if _, err := selectInstallNode(manifest, "192.0.2.11"); err == nil || !strings.Contains(err.Error(), "matches multiple nodes") {
 		t.Fatalf("ambiguous address error = %v", err)
 	}

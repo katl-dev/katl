@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -61,14 +59,14 @@ type Topology struct {
 	ExternalControlPlane bool                                  `json:"externalControlPlane,omitempty"`
 	ContextName          string                                `json:"contextName,omitempty"`
 	ClusterName          string                                `json:"clusterName"`
-	ControlPlaneEndpoint string                                `json:"controlPlaneEndpoint,omitempty"`
+	ControlPlaneEndpoint inventory.HostPort                    `json:"controlPlaneEndpoint,omitzero"`
 	Nodes                []TopologyNode                        `json:"nodes"`
 	Management           *managementidentity.ClientCredentials `json:"-"`
 }
 
 type TopologyNode struct {
 	Name               string               `json:"name"`
-	ManagementEndpoint string               `json:"managementEndpoint"`
+	ManagementEndpoint inventory.HostPort   `json:"managementEndpoint"`
 	SystemRole         inventory.SystemRole `json:"systemRole"`
 	EnrollmentID       string               `json:"enrollmentID,omitempty"`
 	MachineID          string               `json:"machineID,omitempty"`
@@ -345,122 +343,156 @@ func (t Topology) ControlPlaneNodes() []TopologyNode {
 	return nodes
 }
 
+// topologyFromCluster parses a saved cluster's endpoints, which the file
+// keeps as strings.
 func topologyFromCluster(contextName string, cluster Cluster) (Topology, error) {
-	if err := validateCluster(cluster); err != nil {
-		return Topology{}, err
-	}
+	clusterName := strings.TrimSpace(cluster.Name)
 	topology := Topology{
 		ExternalControlPlane: cluster.ExternalControlPlane,
 		ContextName:          strings.TrimSpace(contextName),
-		ClusterName:          strings.TrimSpace(cluster.Name),
-		ControlPlaneEndpoint: strings.TrimSpace(cluster.ControlPlaneEndpoint),
+		ClusterName:          clusterName,
 		Nodes:                make([]TopologyNode, 0, len(cluster.Nodes)),
 	}
 	if cluster.Management != nil {
+		if err := managementidentity.ValidateClient(*cluster.Management, time.Now().UTC()); err != nil {
+			return Topology{}, fmt.Errorf("cluster %q management access: %w", clusterName, err)
+		}
 		credentials := *cluster.Management
 		topology.Management = &credentials
 	}
+	if value := strings.TrimSpace(cluster.ControlPlaneEndpoint); value != "" {
+		endpoint, err := inventory.ParseHostPort(value)
+		if err != nil {
+			return Topology{}, fmt.Errorf("cluster %s controlPlaneEndpoint: %w", clusterName, err)
+		}
+		topology.ControlPlaneEndpoint = endpoint
+	}
 	for _, node := range cluster.Nodes {
+		name := strings.TrimSpace(node.Name)
+		value := strings.TrimSpace(node.ManagementEndpoint)
+		if value == "" {
+			return Topology{}, fmt.Errorf("node %q managementEndpoint is required", name)
+		}
+		endpoint, err := inventory.ParseHostPort(value)
+		if err != nil {
+			return Topology{}, fmt.Errorf("node %s managementEndpoint: %w", name, err)
+		}
 		topology.Nodes = append(topology.Nodes, TopologyNode{
-			Name:               strings.TrimSpace(node.Name),
-			ManagementEndpoint: strings.TrimSpace(node.ManagementEndpoint),
+			Name:               name,
+			ManagementEndpoint: endpoint,
 			SystemRole:         inventory.SystemRole(strings.TrimSpace(string(node.SystemRole))),
 			EnrollmentID:       strings.TrimSpace(node.EnrollmentID),
 			MachineID:          strings.TrimSpace(node.MachineID),
 		})
 	}
+	if err := topology.validate(); err != nil {
+		return Topology{}, err
+	}
 	return topology, nil
 }
 
 func topologyFromInventory(inv inventory.Inventory) (Topology, error) {
-	cluster := Cluster{
-		Name:                 "inventory",
+	topology := Topology{
+		ClusterName:          "inventory",
 		ExternalControlPlane: inv.ExternalControlPlane,
 		ControlPlaneEndpoint: inv.ControlPlaneEndpoint,
-		Nodes:                make([]Node, 0, len(inv.Nodes)),
+		Nodes:                make([]TopologyNode, 0, len(inv.Nodes)),
 	}
 	for _, node := range inv.Nodes {
-		cluster.Nodes = append(cluster.Nodes, Node{
-			Name:               node.Name,
-			ManagementEndpoint: managementEndpoint(node.Address),
-			SystemRole:         node.SystemRole,
-			EnrollmentID:       node.EnrollmentID,
-			MachineID:          node.MachineID,
+		topology.Nodes = append(topology.Nodes, TopologyNode{
+			Name:               strings.TrimSpace(node.Name),
+			ManagementEndpoint: node.ManagementEndpoint(),
+			SystemRole:         inventory.SystemRole(strings.TrimSpace(string(node.SystemRole))),
+			EnrollmentID:       strings.TrimSpace(node.EnrollmentID),
+			MachineID:          strings.TrimSpace(node.MachineID),
 		})
 	}
-	return topologyFromCluster("", cluster)
+	return topology, topology.validate()
 }
 
 func topologyFromPlan(plan inventory.Plan) (Topology, error) {
-	cluster := Cluster{
-		Name:                 "plan",
+	topology := Topology{
+		ClusterName:          "plan",
 		ExternalControlPlane: plan.ExternalControlPlane,
 		ControlPlaneEndpoint: plan.ControlPlaneEndpoint,
-		Nodes:                make([]Node, 0, len(plan.Nodes)),
+		Nodes:                make([]TopologyNode, 0, len(plan.Nodes)),
 	}
 	for _, node := range plan.Nodes {
-		cluster.Nodes = append(cluster.Nodes, Node{
+		topology.Nodes = append(topology.Nodes, TopologyNode{
 			Name:               node.Name,
-			ManagementEndpoint: managementEndpoint(node.Address),
+			ManagementEndpoint: node.ManagementEndpoint(),
 			SystemRole:         node.SystemRole,
 			EnrollmentID:       node.EnrollmentID,
 			MachineID:          node.MachineID,
 		})
 	}
-	return topologyFromCluster("", cluster)
+	return topology, topology.validate()
+}
+
+// Inventory returns the topology as agent-managed inventory. Each node's
+// management address is its saved endpoint, port included.
+func (t Topology) Inventory() inventory.Inventory {
+	inv := inventory.Inventory{
+		ExternalControlPlane: t.ExternalControlPlane,
+		ControlPlaneEndpoint: t.ControlPlaneEndpoint,
+		Nodes:                make([]inventory.Node, 0, len(t.Nodes)),
+	}
+	for _, node := range t.Nodes {
+		inv.Nodes = append(inv.Nodes, node.InventoryNode())
+	}
+	return inv
+}
+
+// InventoryNode returns the node as an agent-managed inventory node.
+func (n TopologyNode) InventoryNode() inventory.Node {
+	return inventory.Node{
+		Name:         n.Name,
+		Address:      n.ManagementEndpoint.ManagementAddress(),
+		SystemRole:   n.SystemRole,
+		Access:       inventory.Access{Method: "agent"},
+		EnrollmentID: n.EnrollmentID,
+		MachineID:    n.MachineID,
+	}
 }
 
 func validateCluster(cluster Cluster) error {
-	if cluster.Management != nil {
-		if err := managementidentity.ValidateClient(*cluster.Management, time.Now().UTC()); err != nil {
-			return fmt.Errorf("cluster %q management access: %w", strings.TrimSpace(cluster.Name), err)
-		}
+	_, err := topologyFromCluster("", cluster)
+	return err
+}
+
+func (t Topology) validate() error {
+	if len(t.Nodes) == 0 {
+		return fmt.Errorf("cluster %q must contain at least one node", t.ClusterName)
 	}
-	if strings.TrimSpace(cluster.ControlPlaneEndpoint) != "" {
-		if err := validateEndpoint("cluster "+strings.TrimSpace(cluster.Name)+" controlPlaneEndpoint", cluster.ControlPlaneEndpoint); err != nil {
-			return err
-		}
-	}
-	if len(cluster.Nodes) == 0 {
-		return fmt.Errorf("cluster %q must contain at least one node", strings.TrimSpace(cluster.Name))
-	}
-	seen := make(map[string]struct{}, len(cluster.Nodes))
+	seen := make(map[string]struct{}, len(t.Nodes))
 	controlPlanes := 0
-	for _, node := range cluster.Nodes {
-		name := strings.TrimSpace(node.Name)
-		if err := validateName("node", name); err != nil {
+	for _, node := range t.Nodes {
+		if err := validateName("node", node.Name); err != nil {
 			return err
 		}
-		if _, ok := seen[name]; ok {
-			return fmt.Errorf("cluster %q has duplicate node name %q", strings.TrimSpace(cluster.Name), name)
+		if _, ok := seen[node.Name]; ok {
+			return fmt.Errorf("cluster %q has duplicate node name %q", t.ClusterName, node.Name)
 		}
-		seen[name] = struct{}{}
-		endpoint := strings.TrimSpace(node.ManagementEndpoint)
-		if endpoint == "" {
-			return fmt.Errorf("node %q managementEndpoint is required", name)
+		seen[node.Name] = struct{}{}
+		if node.ManagementEndpoint.IsZero() {
+			return fmt.Errorf("node %q managementEndpoint is required", node.Name)
 		}
-		if err := validateEndpoint("node "+name+" managementEndpoint", endpoint); err != nil {
-			return err
-		}
-		role := inventory.SystemRole(strings.TrimSpace(string(node.SystemRole)))
-		switch role {
+		switch node.SystemRole {
 		case inventory.RoleControlPlane:
 			controlPlanes++
 		case inventory.RoleWorker:
 		default:
-			return fmt.Errorf("node %q systemRole %q is unsupported", name, node.SystemRole)
+			return fmt.Errorf("node %q systemRole %q is unsupported", node.Name, node.SystemRole)
 		}
-		enrollmentID := strings.TrimSpace(node.EnrollmentID)
-		machineID := strings.TrimSpace(node.MachineID)
-		if (enrollmentID == "") != (machineID == "") {
-			return fmt.Errorf("node %q enrollmentID and machineID must be set together", name)
+		if (node.EnrollmentID == "") != (node.MachineID == "") {
+			return fmt.Errorf("node %q enrollmentID and machineID must be set together", node.Name)
 		}
 	}
-	if cluster.ExternalControlPlane && (controlPlanes != 0 || strings.TrimSpace(cluster.ControlPlaneEndpoint) == "") {
-		return fmt.Errorf("external cluster %q requires an API endpoint and only worker nodes", strings.TrimSpace(cluster.Name))
+	if t.ExternalControlPlane && (controlPlanes != 0 || t.ControlPlaneEndpoint.IsZero()) {
+		return fmt.Errorf("external cluster %q requires an API endpoint and only worker nodes", t.ClusterName)
 	}
-	if controlPlanes == 0 && !cluster.ExternalControlPlane {
-		return fmt.Errorf("cluster %q must contain at least one control-plane node", strings.TrimSpace(cluster.Name))
+	if controlPlanes == 0 && !t.ExternalControlPlane {
+		return fmt.Errorf("cluster %q must contain at least one control-plane node", t.ClusterName)
 	}
 	return nil
 }
@@ -476,33 +508,4 @@ func validateName(kind, value string) error {
 	return nil
 }
 
-func validateEndpoint(field, endpoint string) error {
-	endpoint = strings.TrimSpace(endpoint)
-	if strings.Contains(endpoint, "://") {
-		return fmt.Errorf("%s must be host:port", field)
-	}
-	host, portText, err := net.SplitHostPort(endpoint)
-	if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(portText) == "" {
-		return fmt.Errorf("%s must be host:port", field)
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil || port < 1 || port > 65535 {
-		return fmt.Errorf("%s port must be a number from 1 to 65535", field)
-	}
-	return nil
-}
-
-func managementEndpoint(address string) string {
-	address = strings.TrimSpace(address)
-	if address == "" {
-		return address
-	}
-	if _, _, err := net.SplitHostPort(address); err == nil {
-		return address
-	}
-	return net.JoinHostPort(address, defaultAgentPort)
-}
-
 var namePattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
-
-const defaultAgentPort = "9443"

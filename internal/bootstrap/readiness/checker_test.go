@@ -3,6 +3,7 @@ package readiness
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 
@@ -224,7 +225,7 @@ func TestCheckerRedactsCommandDiagnostics(t *testing.T) {
 func readyNode() inventory.PlannedNode {
 	return inventory.PlannedNode{
 		Name:              "cp-1",
-		Address:           "10.0.0.11",
+		Address:           inventory.ManagementAddress{Host: inventory.HostFromAddr(netip.MustParseAddr("10.0.0.11"))},
 		SystemRole:        inventory.RoleControlPlane,
 		Access:            inventory.Access{Method: "agent", CredentialRef: "vmtest/cp-1"},
 		KubeadmConfig:     inventory.KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: inventory.IntentControlPlane},

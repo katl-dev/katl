@@ -43,9 +43,9 @@ func TestExternalWorkerJoined(t *testing.T) {
 			if err := os.WriteFile(path, data, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			target := inventory.Node{Name: "worker-1", Address: "10.0.0.21", SystemRole: inventory.RoleWorker, EnrollmentID: "enrollment-worker-1", MachineID: "machine-worker-1"}
+			target := inventory.Node{Name: "worker-1", Address: mustManagement(t, "10.0.0.21"), SystemRole: inventory.RoleWorker, EnrollmentID: "enrollment-worker-1", MachineID: "machine-worker-1"}
 			contextPath := filepath.Join(t.TempDir(), "katlctl.yaml")
-			if err := workstation.Save(contextPath, workstation.Config{CurrentContext: "external", Contexts: []workstation.Context{{Name: "external", Cluster: "lab"}}, Clusters: []workstation.Cluster{{Name: "lab", ExternalControlPlane: true, ControlPlaneEndpoint: "api.external.test:6443", Nodes: []workstation.Node{{Name: target.Name, ManagementEndpoint: target.Address + ":9443", SystemRole: inventory.RoleWorker, EnrollmentID: "enrollment-worker-1", MachineID: "machine-worker-1"}}}}}); err != nil {
+			if err := workstation.Save(contextPath, workstation.Config{CurrentContext: "external", Contexts: []workstation.Context{{Name: "external", Cluster: "lab"}}, Clusters: []workstation.Cluster{{Name: "lab", ExternalControlPlane: true, ControlPlaneEndpoint: "api.external.test:6443", Nodes: []workstation.Node{{Name: target.Name, ManagementEndpoint: target.ManagementEndpoint().String(), SystemRole: inventory.RoleWorker, EnrollmentID: "enrollment-worker-1", MachineID: "machine-worker-1"}}}}}); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("KATLCTL_CONFIG", contextPath)

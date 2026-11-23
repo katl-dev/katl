@@ -6,14 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/configapply"
@@ -122,13 +120,13 @@ func runClusterApply(ctx context.Context, opts kubeadmControlPlaneConfigOptions,
 	if len(opts.selectedNodes) > 0 && opts.coordinator != "" && !slices.Contains(opts.selectedNodes, opts.coordinator) {
 		return fmt.Errorf("coordinator %q is not selected; include it with --node or omit --coordinator", opts.coordinator)
 	}
-	var endpoints map[string]string
+	var endpoints map[string]inventory.HostPort
 	if strings.TrimSpace(opts.endpoint) != "" {
 		change, current, err := planClusterAddressChange(opts)
 		if err != nil {
 			return err
 		}
-		endpoints = map[string]string{opts.selectedNodes[0]: current}
+		endpoints = map[string]inventory.HostPort{opts.selectedNodes[0]: current}
 		if change != nil {
 			// A worker moves only through a staged generation and reboot, so
 			// the management session is never cut by a live network reload.
@@ -409,7 +407,7 @@ func runKubeadmConfigComponent(ctx context.Context, opts kubeadmControlPlaneConf
 		if err != nil {
 			return nil, err
 		}
-		conn, err := dialKatlcAgent(nodeCtx, cluster.AgentEndpoint(node.Address, "9443"))
+		conn, err := dialKatlcAgent(nodeCtx, node.ManagementEndpoint().String())
 		if err != nil {
 			return nil, fmt.Errorf("connect %s: %w", node.Name, err)
 		}
@@ -417,7 +415,7 @@ func runKubeadmConfigComponent(ctx context.Context, opts kubeadmControlPlaneConf
 		if err != nil {
 			return nil, fmt.Errorf("status %s: %w", node.Name, err)
 		}
-		if err := verifyPlannedStatus(managementTarget{nodeName: node.Name, endpoint: cluster.AgentEndpoint(node.Address, "9443"), enrollmentID: node.EnrollmentID, machineID: node.MachineID}, status); err != nil {
+		if err := verifyPlannedStatus(managementTarget{nodeName: node.Name, endpoint: node.ManagementEndpoint(), enrollmentID: node.EnrollmentID, machineID: node.MachineID}, status); err != nil {
 			return nil, err
 		}
 		generationID := strings.TrimSpace(opts.generationID)
@@ -590,11 +588,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		if !ok {
 			continue
 		}
-		host, _, splitErr := net.SplitHostPort(target.endpoint)
-		if splitErr != nil {
-			return activatedClusterConfig{}, fmt.Errorf("node %q enrolled management endpoint: %w", nodes[index].Name, splitErr)
-		}
-		nodes[index].Address = host
+		nodes[index].Address = target.endpoint.ManagementAddress()
 		nodes[index].EnrollmentID = target.enrollmentID
 		nodes[index].MachineID = target.machineID
 	}
@@ -661,7 +655,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		if err != nil {
 			return activatedClusterConfig{}, err
 		}
-		conn, err := dialKatlcAgent(nodeCtx, cluster.AgentEndpoint(node.Address, "9443"))
+		conn, err := dialKatlcAgent(nodeCtx, node.ManagementEndpoint().String())
 		if err != nil {
 			return activatedClusterConfig{}, fmt.Errorf("connect %s to apply cluster config: %w", node.Name, err)
 		}
@@ -669,11 +663,11 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		if err != nil {
 			_ = conn.Close()
 			if change := opts.addressChange; change != nil && change.Node == node.Name && managementUnreachable(err) {
-				return activatedClusterConfig{}, fmt.Errorf("status %s before cluster config apply: %w; %s", node.Name, err, movedHint(node.Name, change.Desired, opts.configPath))
+				return activatedClusterConfig{}, fmt.Errorf("status %s before cluster config apply: %w; %s", node.Name, err, movedHint(node.Name, change.desiredEndpoint, opts.configPath))
 			}
 			return activatedClusterConfig{}, fmt.Errorf("status %s before cluster config apply: %w", node.Name, err)
 		}
-		if err := verifyPlannedStatus(managementTarget{nodeName: node.Name, endpoint: cluster.AgentEndpoint(node.Address, "9443"), enrollmentID: node.EnrollmentID, machineID: node.MachineID}, status); err != nil {
+		if err := verifyPlannedStatus(managementTarget{nodeName: node.Name, endpoint: node.ManagementEndpoint(), enrollmentID: node.EnrollmentID, machineID: node.MachineID}, status); err != nil {
 			_ = conn.Close()
 			return activatedClusterConfig{}, err
 		}
@@ -778,7 +772,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		if err != nil {
 			return activatedClusterConfig{}, err
 		}
-		conn, err := dialKatlcAgent(nodeCtx, cluster.AgentEndpoint(node.Address, "9443"))
+		conn, err := dialKatlcAgent(nodeCtx, node.ManagementEndpoint().String())
 		if err != nil {
 			return activatedClusterConfig{}, fmt.Errorf("connect %s to apply cluster config: %w", node.Name, err)
 		}
@@ -1008,50 +1002,49 @@ type clusterApplyAddressChange struct {
 	Node    string `json:"node"`
 	Current string `json:"current"`
 	Desired string `json:"desired"`
+
+	desiredEndpoint inventory.HostPort
 }
 
 // planClusterAddressChange validates --endpoint for one selected node and
 // returns its current management endpoint. The change is nil when the node
 // already answers at its configured address.
-func planClusterAddressChange(opts kubeadmControlPlaneConfigOptions) (*clusterApplyAddressChange, string, error) {
+func planClusterAddressChange(opts kubeadmControlPlaneConfigOptions) (*clusterApplyAddressChange, inventory.HostPort, error) {
 	if strings.TrimSpace(opts.configPath) == "" {
-		return nil, "", fmt.Errorf("--endpoint requires --config")
+		return nil, inventory.HostPort{}, fmt.Errorf("--endpoint requires --config")
 	}
 	selected := slices.Compact(slices.Sorted(slices.Values(opts.selectedNodes)))
 	if len(selected) != 1 {
-		return nil, "", fmt.Errorf("--endpoint names one node's current address; select that node with exactly one --node NAME")
+		return nil, inventory.HostPort{}, fmt.Errorf("--endpoint names one node's current address; select that node with exactly one --node NAME")
 	}
 	name := selected[0]
-	current, err := normalizeManagementAddress(opts.endpoint)
+	current, err := parseEndpointFlag(opts.endpoint)
 	if err != nil {
-		return nil, "", err
+		return nil, inventory.HostPort{}, err
 	}
 	inv, err := readManagementInventory(opts.configPath)
 	if err != nil {
-		return nil, "", err
+		return nil, inventory.HostPort{}, err
 	}
 	index := slices.IndexFunc(inv.Nodes, func(node inventory.Node) bool { return node.Name == name })
 	if index < 0 {
-		return nil, "", fmt.Errorf("node %q is not in the config; use a node name from the complete ClusterConfig", name)
+		return nil, inventory.HostPort{}, fmt.Errorf("node %q is not in the config; use a node name from the complete ClusterConfig", name)
 	}
 	node := inv.Nodes[index]
-	desired, err := normalizeManagementAddress(node.Address)
-	if err != nil {
-		return nil, "", err
-	}
-	if desired == "" {
-		return nil, "", fmt.Errorf("node %s has no management.address in %s; set it to the node's new address", name, opts.configPath)
+	desired := node.ManagementEndpoint()
+	if desired.IsZero() {
+		return nil, inventory.HostPort{}, fmt.Errorf("node %s has no management.address in %s; set it to the node's new address", name, opts.configPath)
 	}
 	if desired == current {
 		return nil, current, nil
 	}
-	currentHost, _, _ := net.SplitHostPort(current)
-	desiredHost, _, _ := net.SplitHostPort(desired)
+	currentHost := current.Host.String()
+	desiredHost := desired.Host.String()
 	if node.SystemRole == inventory.RoleControlPlane {
-		return nil, "", fmt.Errorf("refusing to move control-plane node %s from %s to %s: Katl cannot change a control plane's advertise address, etcd peer URLs, serving certificate SANs, or a control-plane endpoint derived from its address; restore management.address to %s, or plan 'katlctl node wipe %s --config %s --plan', reinstall it with the new address, and join it with 'katlctl node join %s --config %s'; no node was changed", name, currentHost, desiredHost, currentHost, name, opts.configPath, name, opts.configPath)
+		return nil, inventory.HostPort{}, fmt.Errorf("refusing to move control-plane node %s from %s to %s: Katl cannot change a control plane's advertise address, etcd peer URLs, serving certificate SANs, or a control-plane endpoint derived from its address; restore management.address to %s, or plan 'katlctl node wipe %s --config %s --plan', reinstall it with the new address, and join it with 'katlctl node join %s --config %s'; no node was changed", name, currentHost, desiredHost, currentHost, name, opts.configPath, name, opts.configPath)
 	}
 	if opts.mode == generation.ApplyModeLive {
-		return nil, "", fmt.Errorf("moving %s from %s to %s requires a reboot; omit --mode live so apply stages the change for the next boot", name, currentHost, desiredHost)
+		return nil, inventory.HostPort{}, fmt.Errorf("moving %s from %s to %s requires a reboot; omit --mode live so apply stages the change for the next boot", name, currentHost, desiredHost)
 	}
-	return &clusterApplyAddressChange{Node: name, Current: currentHost, Desired: desiredHost}, current, nil
+	return &clusterApplyAddressChange{Node: name, Current: currentHost, Desired: desiredHost, desiredEndpoint: desired}, current, nil
 }

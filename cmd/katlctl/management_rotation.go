@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlc/transport"
@@ -37,8 +37,7 @@ type managementRotationOptions struct {
 
 type managementRotationNode struct {
 	name      string
-	host      string
-	endpoint  string
+	endpoint  inventory.HostPort
 	machineID string
 	request   nodeidentity.ManagementRotation
 }
@@ -316,19 +315,15 @@ func managementRotationTargets(ctx context.Context, configPath string, source co
 	}
 	nodes := make([]managementRotationNode, 0, len(inv.Nodes))
 	for _, node := range inv.Nodes {
-		endpoint, err := normalizeManagementAddress(node.Address)
-		if err != nil || endpoint == "" {
-			return nil, fmt.Errorf("node %q needs a valid management.address before credential rotation: %v", node.Name, err)
-		}
-		host, _, err := net.SplitHostPort(endpoint)
-		if err != nil {
-			return nil, err
+		endpoint := node.ManagementEndpoint()
+		if endpoint.IsZero() {
+			return nil, fmt.Errorf("node %q needs a management.address before credential rotation", node.Name)
 		}
 		machineID := ""
 		if saved, ok := enrolledTarget(ctx, "", "", source.Metadata.Name, node.Name); ok {
 			machineID = saved.machineID
 		}
-		nodes = append(nodes, managementRotationNode{name: node.Name, host: host, endpoint: endpoint, machineID: machineID})
+		nodes = append(nodes, managementRotationNode{name: node.Name, endpoint: endpoint, machineID: machineID})
 	}
 	return nodes, nil
 }
@@ -385,7 +380,7 @@ func runKatlcAgentSSH(ctx context.Context, node managementRotationNode, opts man
 		// list must not widen what the operator pinned.
 		args = append(args, "-o", "UserKnownHostsFile="+opts.knownHosts, "-o", "GlobalKnownHostsFile=/dev/null")
 	}
-	args = append(args, "root@"+node.host, "/usr/bin/katlc", "agent")
+	args = append(args, "root@"+node.endpoint.Host.String(), "/usr/bin/katlc", "agent")
 	args = append(args, agentArgs...)
 	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 	defer cancel()
@@ -431,7 +426,7 @@ func verifyOldManagementAuthorityRejected(ctx context.Context, node managementRo
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	creds, unknownAuthority := transport.ObserveUnknownClientAuthority(requestCtx, config, certificate)
-	conn, err := dialKatlcAgentWithTransport(transport.WithoutManagementWait(requestCtx), node.name, node.endpoint, creds)
+	conn, err := dialKatlcAgentWithTransport(transport.WithoutManagementWait(requestCtx), node.name, node.endpoint.String(), creds)
 	if err != nil {
 		return managementConfirmationError("the node stopped trusting the old authority", "the old authority", err)
 	}
@@ -470,7 +465,7 @@ func checkManagementCredential(ctx context.Context, node managementRotationNode,
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	requestCtx = transport.WithoutManagementAdvice(withManagementDial(requestCtx, node.name, &credentials))
-	conn, err := dialKatlcAgent(transport.WithoutManagementWait(requestCtx), node.endpoint)
+	conn, err := dialKatlcAgent(transport.WithoutManagementWait(requestCtx), node.endpoint.String())
 	if err != nil {
 		return err
 	}

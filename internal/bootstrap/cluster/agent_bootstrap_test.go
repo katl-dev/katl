@@ -25,9 +25,9 @@ func TestRunAgentBootstrapDryRunContactsAgentAndPropagatesOverride(t *testing.T)
 		"cp-1": {status: readyAgentStatus("machine-cp-1")},
 	})
 	result, err := RunAgentBootstrap(context.Background(), Request{
-		Inventory:            validSingleNodeInventory(),
-		AddressOverrides:     map[string]string{"cp-1": "cp-1.override.test"},
-		ControlPlaneEndpoint: "api.override.test:6443",
+		Inventory:            validSingleNodeInventory(t),
+		AddressOverrides:     map[string]inventory.ManagementAddress{"cp-1": mustManagementAddress(t, "cp-1.override.test")},
+		ControlPlaneEndpoint: mustHostPort(t, "api.override.test:6443"),
 		DryRun:               true,
 	}, AgentBootstrapDependencies{Connector: connector})
 	if err != nil {
@@ -39,7 +39,7 @@ func TestRunAgentBootstrapDryRunContactsAgentAndPropagatesOverride(t *testing.T)
 	if len(connector.clients["cp-1"].submitRequests) != 0 {
 		t.Fatalf("SubmitOperation requests = %#v, want none", connector.clients["cp-1"].submitRequests)
 	}
-	if result.Plan.AddressOverrides[0].Address != "cp-1.override.test" {
+	if result.Plan.AddressOverrides[0].Address != mustManagementAddress(t, "cp-1.override.test") {
 		t.Fatalf("address overrides = %#v", result.Plan.AddressOverrides)
 	}
 	if got := phaseNames(result.Phases); !reflect.DeepEqual(got, []string{"plan", "readiness", "dry-run"}) {
@@ -62,10 +62,10 @@ func TestBootstrapAPIProxyConfigTopologies(t *testing.T) {
 	} {
 		t.Run(topology.name, func(t *testing.T) {
 			plan := inventory.Plan{
-				ControlPlaneEndpoint: "10.0.0.11:6443",
+				ControlPlaneEndpoint: mustHostPort(t, "10.0.0.11:6443"),
 				Nodes: []inventory.PlannedNode{
-					{Name: "cp-1", SystemRole: inventory.RoleControlPlane, Address: topology.cpManagement, KubernetesAddress: topology.cpKubernetes},
-					{Name: "worker-1", SystemRole: inventory.RoleWorker, Address: topology.workerManagement, KubernetesAddress: topology.workerKubernetes},
+					{Name: "cp-1", SystemRole: inventory.RoleControlPlane, Address: mustManagementAddress(t, topology.cpManagement), KubernetesAddress: mustKubernetesAddr(t, topology.cpKubernetes)},
+					{Name: "worker-1", SystemRole: inventory.RoleWorker, Address: mustManagementAddress(t, topology.workerManagement), KubernetesAddress: mustKubernetesAddr(t, topology.workerKubernetes)},
 				},
 			}
 			for _, node := range plan.Nodes {
@@ -86,12 +86,12 @@ func TestBootstrapAPIProxyConfigTopologies(t *testing.T) {
 }
 
 func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
-	inv := validSingleNodeInventory()
-	inv.ControlPlaneEndpoint = "api.katl.test:6443"
+	inv := validSingleNodeInventory(t)
+	inv.ControlPlaneEndpoint = mustHostPort(t, "api.katl.test:6443")
 	inv.ControlPlaneEndpointManaged = true
 	inv.Nodes = append(inv.Nodes, inventory.Node{
 		Name:              "cp-2",
-		Address:           "10.0.0.12",
+		Address:           mustManagementAddress(t, "10.0.0.12"),
 		SystemRole:        inventory.RoleControlPlane,
 		Access:            inventory.Access{Method: "agent"},
 		KubeadmConfig:     inventory.KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: inventory.IntentControlPlane},
@@ -206,13 +206,13 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 func TestRunAgentNodeJoinAddsControlPlaneWithoutRerunningInit(t *testing.T) {
 	// The workstation reaches both nodes through NAT at 10.0.0.0/24, while
 	// the nodes reach each other at their own 10.1.0.0/24 addresses.
-	inv := validSingleNodeInventory()
-	inv.ControlPlaneEndpoint = "api.katl.test:6443"
-	inv.Nodes[0].KubernetesAddress = "10.1.0.11"
+	inv := validSingleNodeInventory(t)
+	inv.ControlPlaneEndpoint = mustHostPort(t, "api.katl.test:6443")
+	inv.Nodes[0].KubernetesAddress = mustKubernetesAddr(t, "10.1.0.11")
 	inv.Nodes = append(inv.Nodes, inventory.Node{
 		Name:              "cp-2",
-		Address:           "10.0.0.12",
-		KubernetesAddress: "10.1.0.12",
+		Address:           mustManagementAddress(t, "10.0.0.12"),
+		KubernetesAddress: mustKubernetesAddr(t, "10.1.0.12"),
 		SystemRole:        inventory.RoleControlPlane,
 		Access:            inventory.Access{Method: "agent"},
 		KubeadmConfig:     inventory.KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: inventory.IntentControlPlane},
@@ -330,7 +330,7 @@ func TestRunAgentBootstrapPreservesFailedOperationReference(t *testing.T) {
 			InitialStatus: &agentapi.OperationStatus{OperationId: "bootstrap-init-failed", Terminal: true, Result: "failed", FailureReason: "kubeadm refused input"},
 		},
 	}
-	result, err := RunAgentBootstrap(context.Background(), Request{Inventory: validSingleNodeInventory()}, AgentBootstrapDependencies{Connector: newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client})})
+	result, err := RunAgentBootstrap(context.Background(), Request{Inventory: validSingleNodeInventory(t)}, AgentBootstrapDependencies{Connector: newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client})})
 	if err == nil || !strings.Contains(err.Error(), "kubeadm refused input") {
 		t.Fatalf("RunAgentBootstrap() error = %v", err)
 	}
@@ -344,7 +344,7 @@ func TestRunAgentBootstrapReportsDaemonStatusFailureBeforeSubmit(t *testing.T) {
 	connector := newFakeAgentConnector(map[string]*fakeAgentClient{
 		"cp-1": {statusErr: errors.New("rpc failed with Bearer secret-token")},
 	})
-	result, err := RunAgentBootstrap(context.Background(), Request{Inventory: validSingleNodeInventory()}, AgentBootstrapDependencies{Connector: connector})
+	result, err := RunAgentBootstrap(context.Background(), Request{Inventory: validSingleNodeInventory(t)}, AgentBootstrapDependencies{Connector: connector})
 	if err == nil || strings.Contains(err.Error(), "secret-token") || !strings.Contains(err.Error(), "[REDACTED]") {
 		t.Fatalf("RunAgentBootstrap() error = %v, want redacted daemon failure", err)
 	}
@@ -357,7 +357,7 @@ func TestRunAgentBootstrapReportsDaemonStatusFailureBeforeSubmit(t *testing.T) {
 }
 
 func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
-	inv := validSingleNodeInventory()
+	inv := validSingleNodeInventory(t)
 	bundleRef := "v1.36.1@sha256:" + strings.Repeat("b", 64)
 	inv.KubernetesBundleSource = "https://artifacts.example.test/kubernetes"
 	inv.KubernetesBundleRef = bundleRef
@@ -395,7 +395,7 @@ func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "operator.conf")
 	result, err := RunAgentBootstrap(context.Background(), Request{
 		Inventory:                     inv,
-		ControlPlaneEndpoint:          "api.katl.test:6443",
+		ControlPlaneEndpoint:          mustHostPort(t, "api.katl.test:6443"),
 		KubeconfigOut:                 out,
 		OverwriteKubeconfig:           true,
 		KubernetesIdentity:            []byte("operator-secret"),
@@ -434,7 +434,7 @@ func TestRunAgentBootstrapSubmitsInitOperationAndWaits(t *testing.T) {
 }
 
 func TestRunAgentBootstrapResumesInterruptedInit(t *testing.T) {
-	inv := validSingleNodeInventory()
+	inv := validSingleNodeInventory(t)
 	plan, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: inv})
 	if err != nil {
 		t.Fatal(err)
@@ -487,7 +487,7 @@ func TestBootstrapRejectsNewInitOnConfiguredNode(t *testing.T) {
 			client.status.Kubernetes = &agentapi.KubernetesStatus{State: state}
 
 			_, err := RunAgentBootstrap(context.Background(), Request{
-				Inventory: validSingleNodeInventory(),
+				Inventory: validSingleNodeInventory(t),
 			}, AgentBootstrapDependencies{Connector: newFakeAgentConnector(map[string]*fakeAgentClient{"cp-1": client})})
 			if err == nil || !strings.Contains(err.Error(), "original bootstrap configuration and identity") || !strings.Contains(err.Error(), "katlctl kubernetes upgrade") {
 				t.Fatalf("bootstrap error = %v", err)
@@ -536,12 +536,12 @@ func TestResumeBootstrapOperationResumesLatestRetry(t *testing.T) {
 }
 
 func TestBootstrapRequestIdentityIgnoresTransportAddressOverride(t *testing.T) {
-	inv := validSingleNodeInventory()
+	inv := validSingleNodeInventory(t)
 	before, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: inv})
 	if err != nil {
 		t.Fatal(err)
 	}
-	after, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: inv, AddressOverride: map[string]string{"cp-1": "192.0.2.99"}})
+	after, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: inv, AddressOverride: map[string]inventory.ManagementAddress{"cp-1": mustManagementAddress(t, "192.0.2.99")}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -575,7 +575,7 @@ func TestRunAgentBootstrapRunsUserBootstrapWithReturnedKubeconfig(t *testing.T) 
 	bootstrapRunner := &fakeBootstrapRunner{result: BootstrapResult{StableEndpointReady: true}}
 	out := filepath.Join(t.TempDir(), "operator.conf")
 	result, err := RunAgentBootstrap(context.Background(), Request{
-		Inventory:           validSingleNodeInventory(),
+		Inventory:           validSingleNodeInventory(t),
 		KubeconfigOut:       out,
 		OverwriteKubeconfig: true,
 		Bootstrap: UserBootstrap{
@@ -624,8 +624,8 @@ func TestRunAgentBootstrapUsesProxyWithoutWaitingForManagedEndpoint(t *testing.T
 			AdminKubeconfig: adminKubeconfig(),
 		},
 	}
-	inv := validSingleNodeInventory()
-	inv.ControlPlaneEndpoint = "api.katl.test:6443"
+	inv := validSingleNodeInventory(t)
+	inv.ControlPlaneEndpoint = mustHostPort(t, "api.katl.test:6443")
 	inv.ControlPlaneEndpointManaged = true
 	bootstrapRunner := &fakeBootstrapRunner{result: BootstrapResult{StableEndpointReady: true}}
 	result, err := RunAgentBootstrap(context.Background(), Request{
@@ -675,7 +675,7 @@ func TestRunAgentBootstrapStopsAfterUserBootstrapFailure(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "operator.conf")
 	bootstrapRunner := &fakeBootstrapRunner{err: errors.New("rollout timed out"), errAfter: 2}
 	result, err := RunAgentBootstrap(context.Background(), Request{
-		Inventory:           validSingleNodeInventory(),
+		Inventory:           validSingleNodeInventory(t),
 		KubeconfigOut:       out,
 		OverwriteKubeconfig: true,
 		Bootstrap: UserBootstrap{Waits: []BootstrapWait{{
@@ -753,7 +753,7 @@ func TestRunAgentBootstrapMintsWorkerJoinMaterialAndSubmitsWorkerJoin(t *testing
 	})
 	out := filepath.Join(t.TempDir(), "operator.conf")
 	result, err := RunAgentBootstrap(context.Background(), Request{
-		Inventory:           validInventory(),
+		Inventory:           validInventory(t),
 		KubeconfigOut:       out,
 		OverwriteKubeconfig: true,
 	}, AgentBootstrapDependencies{
@@ -811,7 +811,7 @@ func TestRunAgentBootstrapRedactsWorkerJoinMaterialFailure(t *testing.T) {
 		"cp-1":     cpClient,
 		"worker-1": {status: readyAgentStatusWithKinds("machine-worker-1", "bootstrap-join-worker")},
 	})
-	_, err := RunAgentBootstrap(context.Background(), Request{Inventory: validInventory()}, AgentBootstrapDependencies{Connector: connector})
+	_, err := RunAgentBootstrap(context.Background(), Request{Inventory: validInventory(t)}, AgentBootstrapDependencies{Connector: connector})
 	if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
 		t.Fatalf("RunAgentBootstrap() error = %v, want redacted join material failure", err)
 	}
@@ -825,7 +825,7 @@ func TestRunAgentBootstrapRedactsSubmitFailure(t *testing.T) {
 			submitErr: errors.New("kubeadm token " + secret),
 		},
 	})
-	_, err := RunAgentBootstrap(context.Background(), Request{Inventory: validSingleNodeInventory()}, AgentBootstrapDependencies{Connector: connector})
+	_, err := RunAgentBootstrap(context.Background(), Request{Inventory: validSingleNodeInventory(t)}, AgentBootstrapDependencies{Connector: connector})
 	if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
 		t.Fatalf("RunAgentBootstrap() error = %v, want redacted submit failure", err)
 	}
@@ -844,7 +844,7 @@ func newFakeAgentConnector(clients map[string]*fakeAgentClient) *fakeAgentConnec
 }
 
 func (c *fakeAgentConnector) Connect(_ context.Context, node inventory.PlannedNode) (AgentConnection, error) {
-	c.connected = append(c.connected, node.Name+"@"+node.Address)
+	c.connected = append(c.connected, node.Name+"@"+node.Address.String())
 	client := c.clients[node.Name]
 	if client == nil {
 		client = &fakeAgentClient{status: readyAgentStatus("machine-" + node.Name)}
@@ -857,7 +857,7 @@ func (c *fakeAgentConnector) Connect(_ context.Context, node inventory.PlannedNo
 			node.MachineID = client.status.MachineId
 		}
 	}
-	return AgentConnection{Endpoint: node.Address, Client: client}, nil
+	return AgentConnection{Endpoint: node.ManagementEndpoint().String(), Client: client}, nil
 }
 
 type fakeAgentClient struct {
@@ -998,7 +998,7 @@ func TestResumeBootstrapFinalization(t *testing.T) {
 }
 
 func TestExternalWorkerResumesWithoutBootstrap(t *testing.T) {
-	inv := validInventory()
+	inv := validInventory(t)
 	inv.ExternalControlPlane = true
 	inv.Nodes = inv.Nodes[1:]
 	plan, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: inv})
@@ -1028,7 +1028,7 @@ func TestExternalWorkerResumesWithoutBootstrap(t *testing.T) {
 }
 
 func TestBootstrapObservesReinstalledNode(t *testing.T) {
-	inv := validSingleNodeInventory()
+	inv := validSingleNodeInventory(t)
 	inv.Nodes[0].EnrollmentID = "previous-install"
 	inv.Nodes[0].MachineID = "previous-machine"
 	client := &fakeAgentClient{status: readyAgentStatus("fresh-machine")}

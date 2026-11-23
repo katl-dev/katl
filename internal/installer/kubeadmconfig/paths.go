@@ -1,12 +1,9 @@
 package kubeadmconfig
 
-import (
-	"path"
-	"strings"
-)
+import "github.com/katl-dev/katl/internal/installer/kubeadmconfig/inputpath"
 
 const (
-	inputRoot = "/etc/katl/kubeadm"
+	inputRoot = inputpath.Root
 
 	// BootstrapInitConfigPath holds the config that bootstrap passes to
 	// kubeadm init. It is a bootstrap artifact: the input path always holds the
@@ -27,9 +24,4 @@ func ConfigPath(ref string) string {
 // PatchesDir is where a node holds the kubeadm patches of input ref.
 func PatchesDir(ref string) string {
 	return inputRoot + "/" + ref + "/patches"
-}
-
-// IsInputPath reports whether p lies within the kubeadm input tree.
-func IsInputPath(p string) bool {
-	return strings.HasPrefix(path.Clean(p), inputRoot+"/")
 }

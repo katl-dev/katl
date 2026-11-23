@@ -13,7 +13,6 @@ import (
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
-	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlc/transport"
@@ -56,7 +55,7 @@ const (
 
 type enableMTLSNode struct {
 	name         string
-	endpoint     string
+	endpoint     inventory.HostPort
 	savedMachine string
 	controlPlane bool
 	externalAPI  bool
@@ -156,7 +155,7 @@ func runManagementEnableMTLS(ctx context.Context, opts enableMTLSOptions, stdout
 		}
 	}
 
-	nodes, err := enableMTLSNodes(ctx, configPath, source)
+	nodes, err := enableMTLSNodes(ctx, source)
 	if err != nil {
 		return err
 	}
@@ -290,8 +289,8 @@ func enableMTLSClient(bundle managementidentity.Bundle) (string, *managementiden
 	return info.Fingerprint, &client, nil
 }
 
-func enableMTLSNodes(ctx context.Context, configPath string, source configbundle.SourceConfig) ([]enableMTLSNode, error) {
-	inv, err := readManagementInventory(configPath)
+func enableMTLSNodes(ctx context.Context, source configbundle.SourceConfig) ([]enableMTLSNode, error) {
+	inv, err := configbundle.SourceTopology(source)
 	if err != nil {
 		return nil, err
 	}
@@ -299,11 +298,9 @@ func enableMTLSNodes(ctx context.Context, configPath string, source configbundle
 	if err != nil {
 		return nil, err
 	}
-	configuredEndpoint := source.Spec.ControlPlaneEndpoint
-	managedVIP := configuredEndpoint != nil && controlplaneendpoint.Managed(*configuredEndpoint)
 	nodes := make([]enableMTLSNode, 0, len(topology.Nodes))
 	for _, node := range topology.Nodes {
-		if node.ManagementEndpoint == "" {
+		if node.ManagementEndpoint.IsZero() {
 			return nil, fmt.Errorf("node %q needs management.address before moving to mTLS", node.Name)
 		}
 		// The config names each node's address; a saved context only adds the
@@ -315,7 +312,7 @@ func enableMTLSNodes(ctx context.Context, configPath string, source configbundle
 		nodes = append(nodes, enableMTLSNode{
 			name: node.Name, endpoint: node.ManagementEndpoint, savedMachine: saved,
 			controlPlane: node.SystemRole == inventory.RoleControlPlane,
-			externalAPI:  topology.ExternalControlPlane, managedVIP: managedVIP,
+			externalAPI:  topology.ExternalControlPlane, managedVIP: inv.ControlPlaneEndpointManaged,
 		})
 	}
 	return nodes, nil
@@ -660,7 +657,7 @@ func enableMTLSCall(ctx context.Context, node enableMTLSNode, credentials manage
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	requestCtx = transport.WithoutManagementAdvice(requestCtx)
-	conn, err := dialKatlcAgent(transport.WithoutManagementWait(withManagementDial(requestCtx, node.name, &credentials)), node.endpoint)
+	conn, err := dialKatlcAgent(transport.WithoutManagementWait(withManagementDial(requestCtx, node.name, &credentials)), node.endpoint.String())
 	if err != nil {
 		return err
 	}

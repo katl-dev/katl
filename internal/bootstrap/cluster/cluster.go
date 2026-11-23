@@ -26,7 +26,6 @@ import (
 
 const (
 	adminKubeconfigPath = "/etc/kubernetes/admin.conf"
-	defaultAPIPort      = "6443"
 	kubectlWaitTimeout  = "2m"
 )
 
@@ -39,8 +38,8 @@ var (
 type Request struct {
 	Inventory                     inventory.Inventory
 	InitNode                      string
-	AddressOverrides              map[string]string
-	ControlPlaneEndpoint          string
+	AddressOverrides              map[string]inventory.ManagementAddress
+	ControlPlaneEndpoint          inventory.HostPort
 	KubeconfigOut                 string
 	OverwriteKubeconfig           bool
 	DryRun                        bool
@@ -152,8 +151,8 @@ const (
 
 func Run(ctx context.Context, request Request, deps Dependencies) (Result, error) {
 	inv := request.Inventory
-	if strings.TrimSpace(request.ControlPlaneEndpoint) != "" {
-		inv.ControlPlaneEndpoint = strings.TrimSpace(request.ControlPlaneEndpoint)
+	if !request.ControlPlaneEndpoint.IsZero() {
+		inv.ControlPlaneEndpoint = request.ControlPlaneEndpoint
 	}
 	plan, err := inventory.PlanInventory(inventory.PlanRequest{
 		Inventory:       inv,
@@ -195,7 +194,7 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 	if err != nil {
 		return result, err
 	}
-	credentials, err := deps.NodeRunner.RunKubeadmInit(ctx, initNode, plan.ControlPlaneEndpoint)
+	credentials, err := deps.NodeRunner.RunKubeadmInit(ctx, initNode, plan.ControlPlaneEndpoint.String())
 	if err != nil {
 		result.addPhase("kubeadm-init", initNode.Name, inventory.ActionInit, "failed")
 		return result, fmt.Errorf("kubeadm init on %s: %s", initNode.Name, inventory.Redact(err.Error()))
@@ -287,8 +286,8 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 			return result, errors.New("bootstrap handoff runner is required")
 		}
 		bootstrapResult, err := deps.BootstrapRunner.RunUserBootstrap(ctx, BootstrapRequest{
-			Server:         bootstrapServer(initNode, plan),
-			TLSServerName:  controlPlaneEndpointHost(plan.ControlPlaneEndpoint),
+			Server:         plan.WorkstationProxyEndpoint(initNode).Address.String(),
+			TLSServerName:  plan.WorkstationProxyEndpoint(initNode).ServerName.String(),
 			StableEndpoint: bootstrap.StableEndpoint,
 			Credentials:    credentials,
 			PreWaits:       bootstrap.preWaits(),
@@ -316,17 +315,19 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 }
 
 func writeOperatorKubeconfig(request Request, initNode inventory.PlannedNode, plan inventory.Plan, bootstrap UserBootstrap, credentials AdminCredentials, stableEndpointReady, proxyEndpointReady, overwrite bool) (kubeconfig.Result, error) {
+	direct := plan.WorkstationKubernetesEndpoint(initNode)
+	proxy := plan.WorkstationProxyEndpoint(initNode)
 	return kubeconfig.Write(kubeconfig.Request{
 		Path:      request.KubeconfigOut,
 		Overwrite: overwrite,
 		Endpoint: kubeconfig.EndpointSelection{
-			InitialEndpoint:      endpointForNode(initNode),
-			ControlPlaneEndpoint: plan.ControlPlaneEndpoint,
+			InitialEndpoint:      direct.Address.String(),
+			ControlPlaneEndpoint: plan.ControlPlaneEndpoint.String(),
 			StableEndpoint:       bootstrap.StableEndpoint,
 			StableEndpointReady:  stableEndpointReady,
-			ProxyEndpoint:        proxyEndpointForNode(initNode),
+			ProxyEndpoint:        proxy.Address.String(),
 			ProxyEndpointReady:   proxyEndpointReady,
-			TLSServerName:        controlPlaneEndpointHost(plan.ControlPlaneEndpoint),
+			TLSServerName:        proxy.ServerName.String(),
 		},
 		ClusterName:              valueOrDefault(request.ClusterName, "katl"),
 		ContextName:              valueOrDefault(request.ContextName, "katl"),
@@ -341,9 +342,10 @@ func verifyProxyAccess(ctx context.Context, runner BootstrapRunner, initNode inv
 	if runner == nil {
 		return errors.New("Kubernetes API proxy reachability checker is required")
 	}
+	proxy := plan.WorkstationProxyEndpoint(initNode)
 	_, err := runner.RunUserBootstrap(ctx, BootstrapRequest{
-		Server:        proxyEndpointForNode(initNode),
-		TLSServerName: controlPlaneEndpointHost(plan.ControlPlaneEndpoint),
+		Server:        proxy.Address.String(),
+		TLSServerName: proxy.ServerName.String(),
 		Credentials:   credentials,
 		PreWaits:      []BootstrapWait{{Kind: BootstrapWaitAPIReady}},
 	})
@@ -351,12 +353,14 @@ func verifyProxyAccess(ctx context.Context, runner BootstrapRunner, initNode inv
 }
 
 func verifyManagedControlPlaneEndpoint(ctx context.Context, runner BootstrapRunner, initNode inventory.PlannedNode, plan inventory.Plan, credentials AdminCredentials) (BootstrapResult, error) {
-	endpoint := strings.TrimSpace(plan.ControlPlaneEndpoint)
-	if endpoint == "" {
+	endpoint := plan.ControlPlaneEndpoint.String()
+	if plan.ControlPlaneEndpoint.IsZero() {
 		return BootstrapResult{}, errors.New("managed control-plane endpoint is empty")
 	}
+	direct := plan.WorkstationKubernetesEndpoint(initNode)
 	return runner.RunUserBootstrap(ctx, BootstrapRequest{
-		Server:         endpointForNode(initNode),
+		Server:         direct.Address.String(),
+		TLSServerName:  direct.ServerName.String(),
 		StableEndpoint: endpoint,
 		Credentials:    credentials,
 		PreWaits:       []BootstrapWait{{Kind: BootstrapWaitStableEndpoint, Name: endpoint}},
@@ -664,10 +668,6 @@ func validLabelName(value string) bool {
 	return labelNamePattern.MatchString(value)
 }
 
-func bootstrapServer(initNode inventory.PlannedNode, plan inventory.Plan) string {
-	return proxyEndpointForNode(initNode)
-}
-
 func validateEndpointLike(endpoint string) error {
 	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" {
@@ -724,34 +724,6 @@ func workerNodes(plan inventory.Plan) []inventory.PlannedNode {
 		}
 	}
 	return nodes
-}
-
-func endpointForNode(node inventory.PlannedNode) string {
-	if hasPort(node.Address) {
-		return node.Address
-	}
-	return net.JoinHostPort(node.Address, defaultAPIPort)
-}
-
-func proxyEndpointForNode(node inventory.PlannedNode) string {
-	address := strings.TrimSpace(node.Address)
-	if host, _, err := net.SplitHostPort(address); err == nil {
-		address = host
-	}
-	return net.JoinHostPort(address, "7445")
-}
-
-func controlPlaneEndpointHost(endpoint string) string {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(endpoint))
-	if err != nil {
-		return ""
-	}
-	return host
-}
-
-func hasPort(value string) bool {
-	_, _, err := net.SplitHostPort(value)
-	return err == nil
 }
 
 func valueOrDefault(value, fallback string) string {

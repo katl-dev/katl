@@ -109,7 +109,7 @@ func TestClusterApplyRuntimeCompatibility(t *testing.T) {
 			dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
 				return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 			}
-			_, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: path, rolloutID: "compatibility"}, []inventory.Node{{Name: "cp-1", Address: "10.0.0.11", SystemRole: inventory.RoleControlPlane}})
+			_, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{configPath: path, rolloutID: "compatibility"}, []inventory.Node{{Name: "cp-1", Address: mustManagement(t, "10.0.0.11"), SystemRole: inventory.RoleControlPlane}})
 			if err == nil || !strings.Contains(err.Error(), "upgrade the node runtime") || !strings.Contains(err.Error(), oldSharedKubeletBaseError) {
 				t.Fatalf("cluster compatibility rejection = %v", err)
 			}

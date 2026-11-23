@@ -1,6 +1,7 @@
 package inventory
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
 	"slices"
@@ -13,21 +14,21 @@ import (
 // natInventory places every node behind NAT: the workstation reaches each one
 // at a 192.0.2.0/24 management address that no node has assigned, while the
 // nodes themselves hold 10.0.1.0/24 Kubernetes addresses.
-func natInventory() Inventory {
+func natInventory(t *testing.T) Inventory {
 	node := func(name string, role SystemRole, management, kubernetes string) Node {
 		intent, ref := IntentControlPlane, "control-plane"
 		if role == RoleWorker {
 			intent, ref = IntentWorker, "worker"
 		}
 		return Node{
-			Name: name, Address: management, KubernetesAddress: kubernetes, SystemRole: role,
+			Name: name, Address: mustManagementAddress(t, management), KubernetesAddress: mustKubernetesAddr(t, kubernetes), SystemRole: role,
 			Access:            Access{Method: "agent"},
 			KubeadmConfig:     KubeadmConfig{Ref: ref, Path: "/etc/katl/kubeadm/" + ref + "/config.yaml", Intent: intent},
 			KubernetesVersion: "v1.36.1",
 		}
 	}
 	return Inventory{
-		ControlPlaneEndpoint: "10.0.1.10:6443",
+		ControlPlaneEndpoint: mustHostPort(t, "10.0.1.10:6443"),
 		Nodes: []Node{
 			node("cp-1", RoleControlPlane, "192.0.2.10", "10.0.1.10"),
 			node("cp-2", RoleControlPlane, "192.0.2.11", "10.0.1.11"),
@@ -65,14 +66,14 @@ func readProxyGolden(t *testing.T, topology, node string) string {
 func TestAPIProxyConfigTopologies(t *testing.T) {
 	for _, topology := range proxyTopologies {
 		nodes := []Node{
-			{Name: "cp-1", Address: topology.cpManagement, KubernetesAddress: topology.cpKubernetes, SystemRole: RoleControlPlane},
-			{Name: "worker-1", Address: topology.workerManagement, KubernetesAddress: topology.workerKubernetes, SystemRole: RoleWorker},
+			{Name: "cp-1", Address: mustManagementAddress(t, topology.cpManagement), KubernetesAddress: mustKubernetesAddr(t, topology.cpKubernetes), SystemRole: RoleControlPlane},
+			{Name: "worker-1", Address: mustManagementAddress(t, topology.workerManagement), KubernetesAddress: mustKubernetesAddr(t, topology.workerKubernetes), SystemRole: RoleWorker},
 		}
 		for _, node := range nodes {
 			t.Run(topology.name+"/"+node.Name, func(t *testing.T) {
 				want := readProxyGolden(t, topology.name, node.Name)
 
-				config, known, err := APIProxyConfig(nodes, node.Name, "10.0.0.11:6443")
+				config, known, err := APIProxyConfig(nodes, node.Name, mustHostPort(t, "10.0.0.11:6443"))
 				if err != nil || !known {
 					t.Fatalf("APIProxyConfig() = known %v, error %v", known, err)
 				}
@@ -80,7 +81,7 @@ func TestAPIProxyConfigTopologies(t *testing.T) {
 					t.Fatalf("install-time config (error %v):\n%s\nwant:\n%s", err, got, want)
 				}
 
-				plan := Plan{ControlPlaneEndpoint: "10.0.0.11:6443"}
+				plan := Plan{ControlPlaneEndpoint: mustHostPort(t, "10.0.0.11:6443")}
 				for _, n := range nodes {
 					plan.Nodes = append(plan.Nodes, PlannedNode{Name: n.Name, Address: n.Address, KubernetesAddress: n.KubernetesAddress, SystemRole: n.SystemRole})
 				}
@@ -113,8 +114,8 @@ func TestAPIProxyConfigManagementListener(t *testing.T) {
 		{management: "::ffff:10.0.0.11", want: []apiproxy.Listener{kubernetes, local}},
 		{management: "::ffff:192.168.1.11", want: []apiproxy.Listener{kubernetes, local, second}},
 	} {
-		nodes := []Node{{Name: "cp-1", Address: tc.management, KubernetesAddress: "10.0.0.11", SystemRole: RoleControlPlane}}
-		config, _, err := APIProxyConfig(nodes, "cp-1", "10.0.0.11:6443")
+		nodes := []Node{{Name: "cp-1", Address: mustManagementAddress(t, tc.management), KubernetesAddress: mustKubernetesAddr(t, "10.0.0.11"), SystemRole: RoleControlPlane}}
+		config, _, err := APIProxyConfig(nodes, "cp-1", mustHostPort(t, "10.0.0.11:6443"))
 		if err != nil {
 			t.Fatalf("%s: %v", tc.management, err)
 		}
@@ -125,9 +126,9 @@ func TestAPIProxyConfigManagementListener(t *testing.T) {
 }
 
 func TestAPIProxyConfigAddressFallback(t *testing.T) {
-	nodes := []Node{{Name: "cp-1", Address: "192.0.2.10:9443", SystemRole: RoleControlPlane}}
+	nodes := []Node{{Name: "cp-1", Address: mustManagementAddress(t, "192.0.2.10:9443"), SystemRole: RoleControlPlane}}
 
-	config, known, err := APIProxyConfig(nodes, "cp-1", "api.katl.test:6443")
+	config, known, err := APIProxyConfig(nodes, "cp-1", mustHostPort(t, "api.katl.test:6443"))
 	if err != nil || !known {
 		t.Fatalf("APIProxyConfig() = known %v, error %v", known, err)
 	}
@@ -135,20 +136,20 @@ func TestAPIProxyConfigAddressFallback(t *testing.T) {
 		t.Fatalf("backend without a Kubernetes address = %s, want the management host", got)
 	}
 
-	nodes[0].Address = ""
-	if _, known, err := APIProxyConfig(nodes, "cp-1", "api.katl.test:6443"); err != nil || known {
+	nodes[0].Address = ManagementAddress{}
+	if _, known, err := APIProxyConfig(nodes, "cp-1", mustHostPort(t, "api.katl.test:6443")); err != nil || known {
 		t.Fatalf("APIProxyConfig() without addresses = known %v, error %v; want unknown", known, err)
 	}
 
-	nodes[0].Address = "cp-1.katl.test"
-	if _, _, err := APIProxyConfig(nodes, "cp-1", "api.katl.test:6443"); err == nil || !strings.Contains(err.Error(), "nodes[].kubernetes.address") {
+	nodes[0].Address = mustManagementAddress(t, "cp-1.katl.test")
+	if _, _, err := APIProxyConfig(nodes, "cp-1", mustHostPort(t, "api.katl.test:6443")); err == nil || !strings.Contains(err.Error(), "nodes[].kubernetes.address") {
 		t.Fatalf("APIProxyConfig() with a DNS management address error = %v", err)
 	}
 }
 
 func TestPlanInventoryRejectsInvalidKubernetesAddress(t *testing.T) {
-	inv := natInventory()
-	inv.Nodes[1].KubernetesAddress = "cp-2.katl.test"
+	inv := natInventory(t)
+	inv.Nodes[1].KubernetesAddress = netip.MustParseAddr("224.0.0.1")
 	if _, err := PlanInventory(PlanRequest{Inventory: inv, InitNode: "cp-1"}); err == nil || !strings.Contains(err.Error(), `node "cp-2"`) {
 		t.Fatalf("PlanInventory() error = %v", err)
 	}

@@ -594,7 +594,7 @@ func TestEnableMTLSRefusesUnclassifiedTransport(t *testing.T) {
 	dialKatlcAgent = func(ctx context.Context, _ string) (katlcAgentConnection, error) {
 		return dialKatlcAgentTCP(ctx, listener.Addr().String())
 	}
-	if _, err := enableMTLSStatus(t.Context(), enableMTLSNode{name: node.name, endpoint: listener.Addr().String()}, trustedNetworkClient, time.Second); err != nil {
+	if _, err := enableMTLSStatus(t.Context(), enableMTLSNode{name: node.name, endpoint: mustHostPort(t, listener.Addr().String())}, trustedNetworkClient, time.Second); err != nil {
 		t.Fatalf("plaintext listener did not answer status: %v", err)
 	}
 
@@ -1291,7 +1291,7 @@ func TestEnableMTLSRejectsReplyAfterDeadline(t *testing.T) {
 			}
 			return nil
 		}
-		node := enableMTLSNode{name: "cp-1", endpoint: "192.0.2.11:9443"}
+		node := enableMTLSNode{name: "cp-1", endpoint: mustManagement(t, "192.0.2.11").Endpoint()}
 		_, err := enableMTLSStatus(ctx, node, trustedNetworkClient, time.Minute)
 		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, transport.ErrManagementRPCInconclusive) {
 			t.Fatalf("late RPC reply = %v, want deadline exceeded", err)

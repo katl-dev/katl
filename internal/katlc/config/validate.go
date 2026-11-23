@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"io"
 	"sort"
 	"strings"
@@ -327,7 +328,7 @@ func validateKubernetes(node *yaml.Node, path string, options Options, result *R
 			// Typed decoding enforces the boolean; planning binds external
 			// ownership to the installed manifest before any mutation.
 		case "address":
-			if _, err := manifest.NormalizeKubernetesAddress(scalarValue(pair.value)); err != nil {
+			if _, err := inventory.ParseKubernetesAddress(scalarValue(pair.value)); err != nil {
 				result.add("invalid-kubernetes-address", pair.path, err.Error())
 			}
 		case "kubeadm":

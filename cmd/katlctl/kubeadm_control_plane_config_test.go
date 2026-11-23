@@ -442,9 +442,9 @@ func TestActivateClusterConfigRequiresExplicitJoin(t *testing.T) {
 	}
 
 	_, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath, rolloutID: "rollout-1", coordinator: "cp-3"}, []inventory.Node{
-		{Name: "cp-1", Address: "10.0.0.11", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
-		{Name: "cp-2", Address: "10.0.0.12", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
-		{Name: "cp-3", Address: "10.0.0.13", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
+		{Name: "cp-1", Address: mustManagement(t, "10.0.0.11"), SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
+		{Name: "cp-2", Address: mustManagement(t, "10.0.0.12"), SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
+		{Name: "cp-3", Address: mustManagement(t, "10.0.0.13"), SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "katlctl node join cp-1") {
 		t.Fatalf("error = %v, want explicit join guidance", err)
@@ -491,7 +491,7 @@ func TestActivateClusterConfigRefusesEnrolledNameAndRoleChangesBeforeValidation(
 			}
 
 			_, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath, rolloutID: "rollout-1"}, []inventory.Node{{
-				Name: "cp-1", Address: "10.0.0.11", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"},
+				Name: "cp-1", Address: mustManagement(t, "10.0.0.11"), SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"},
 			}})
 			if err == nil {
 				t.Fatal("activateClusterConfig() accepted an enrolled lifecycle change")
@@ -509,7 +509,7 @@ func TestActivateClusterConfigRefusesEnrolledNameAndRoleChangesBeforeValidation(
 }
 
 func TestValidateClusterNodeLifecycleAllowsFreshReplacement(t *testing.T) {
-	err := validateClusterNodeLifecycle(inventory.Node{Name: "cp-1", Address: "10.0.0.11", SystemRole: inventory.RoleControlPlane}, &agentapi.NodeStatus{
+	err := validateClusterNodeLifecycle(inventory.Node{Name: "cp-1", Address: mustManagement(t, "10.0.0.11"), SystemRole: inventory.RoleControlPlane}, &agentapi.NodeStatus{
 		Kubernetes: &agentapi.KubernetesStatus{State: "not-configured"},
 	})
 	if err != nil {
@@ -583,8 +583,8 @@ func TestActivateClusterConfigRequiresJoinRecovery(t *testing.T) {
 	}
 
 	_, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath, rolloutID: "rollout-resume"}, []inventory.Node{
-		{Name: "cp-1", Address: "10.0.0.11", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
-		{Name: "cp-2", Address: "10.0.0.12", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
+		{Name: "cp-1", Address: mustManagement(t, "10.0.0.11"), SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
+		{Name: "cp-2", Address: mustManagement(t, "10.0.0.12"), SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "katlctl node join cp-2") {
 		t.Fatalf("error = %v, want join recovery guidance", err)
@@ -625,8 +625,8 @@ func TestActivateClusterConfigValidatesEveryNodeBeforeMutation(t *testing.T) {
 	}
 
 	_, err := activateClusterConfig(context.Background(), kubeadmControlPlaneConfigOptions{output: "json", configPath: configPath, rolloutID: "rollout-1"}, []inventory.Node{
-		{Name: "cp-1", Address: "10.0.0.11", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
-		{Name: "cp-2", Address: "10.0.0.12", SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
+		{Name: "cp-1", Address: mustManagement(t, "10.0.0.11"), SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
+		{Name: "cp-2", Address: mustManagement(t, "10.0.0.12"), SystemRole: inventory.RoleControlPlane, KubeadmConfig: inventory.KubeadmConfig{Ref: "control-plane"}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "unsupported online Kubernetes field") {
 		t.Fatalf("activateClusterConfig() error = %v", err)

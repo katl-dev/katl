@@ -190,7 +190,7 @@ func unfinishedNodeJoin(ctx context.Context, configPath string, node inventory.N
 	if err != nil {
 		return nil, err
 	}
-	conn, err := dialKatlcAgent(ctx, cluster.AgentEndpoint(node.Address, "9443"))
+	conn, err := dialKatlcAgent(ctx, node.ManagementEndpoint().String())
 	if err != nil {
 		return nil, err
 	}
@@ -234,7 +234,7 @@ func readJoinNode(ctx context.Context, configPath string, node inventory.Node) (
 	if err != nil {
 		return nil, nil, err
 	}
-	conn, err := dialKatlcAgent(ctx, cluster.AgentEndpoint(node.Address, "9443"))
+	conn, err := dialKatlcAgent(ctx, node.ManagementEndpoint().String())
 	if err != nil {
 		return nil, nil, fmt.Errorf("connect %s: %w", node.Name, err)
 	}
@@ -243,7 +243,7 @@ func readJoinNode(ctx context.Context, configPath string, node inventory.Node) (
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := verifyPlannedStatus(managementTarget{nodeName: node.Name, endpoint: cluster.AgentEndpoint(node.Address, "9443"), enrollmentID: node.EnrollmentID, machineID: node.MachineID}, status); err != nil {
+	if err := verifyPlannedStatus(managementTarget{nodeName: node.Name, endpoint: node.ManagementEndpoint(), enrollmentID: node.EnrollmentID, machineID: node.MachineID}, status); err != nil {
 		return nil, nil, err
 	}
 	return status, current, nil
@@ -297,7 +297,7 @@ func finishNodeJoin(ctx context.Context, configPath string, node inventory.Node,
 	if err != nil {
 		return err
 	}
-	endpoint := cluster.AgentEndpoint(node.Address, "9443")
+	endpoint := node.ManagementEndpoint().String()
 	requirement := nodeRecoveryRequirement{KubernetesConfigured: true}
 	if current.GetCommitState() == generation.CommitStateCommitted && current.GetHealthState() == generation.HealthStateHealthy {
 		conn, _, err := waitNodeKubernetesRecovery(ctx, node.Name, endpoint, requirement, "node join node="+node.Name, progress)

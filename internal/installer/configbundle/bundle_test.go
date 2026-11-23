@@ -1006,7 +1006,7 @@ spec:
 	if err != nil {
 		t.Fatalf("BuildArchive() error = %v", err)
 	}
-	if result.Manifest.Cluster.BootstrapInventory.ControlPlaneEndpoint != "192.0.2.11:6443" {
+	if result.Manifest.Cluster.BootstrapInventory.ControlPlaneEndpoint.String() != "192.0.2.11:6443" {
 		t.Fatalf("bootstrap inventory = %#v", result.Manifest.Cluster.BootstrapInventory)
 	}
 	assertReleaseKubernetesPayload(t, result.Manifest.Cluster.KubernetesPayloads, "v1.36.1")
@@ -1610,7 +1610,7 @@ func TestReadBundleReturnsVerifiedBootstrapInventory(t *testing.T) {
 		t.Fatalf("ReadBundle() error = %v", err)
 	}
 	inv := bundle.Manifest.Cluster.BootstrapInventory
-	if bundle.Digest != result.Digest || inv.ControlPlaneEndpoint != "api.katl.test:6443" || len(inv.Nodes) != 2 {
+	if bundle.Digest != result.Digest || inv.ControlPlaneEndpoint.String() != "api.katl.test:6443" || len(inv.Nodes) != 2 {
 		t.Fatalf("verified bundle = %#v inventory = %#v", bundle, inv)
 	}
 	if _, err := ReadBundle(bytes.NewReader(archive), "sha256:"+strings.Repeat("f", 64)); err == nil || !strings.Contains(err.Error(), "config bundle digest mismatch") {

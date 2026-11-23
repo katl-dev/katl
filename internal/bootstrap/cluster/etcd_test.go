@@ -25,7 +25,7 @@ func TestEtcdCheckerReportsHealthyCluster(t *testing.T) {
 		Stdout:     `{"members":[{"ID":"a1","name":"cp-1","peerURLs":["https://cp-1:2380"],"clientURLs":["https://cp-1:2379"]},{"ID":"b2","name":"cp-2","peerURLs":["https://cp-2:2380"],"clientURLs":["https://cp-2:2379"]},{"ID":"c3","name":"cp-3","peerURLs":["https://cp-3:2380"],"clientURLs":["https://cp-3:2379"]}]}`,
 	}
 
-	report, err := EtcdChecker{Transport: transport}.Check(context.Background(), plannedControlPlane())
+	report, err := EtcdChecker{Transport: transport}.Check(context.Background(), plannedControlPlane(t))
 	if err != nil {
 		t.Fatalf("Check() error = %v", err)
 	}
@@ -60,7 +60,7 @@ func TestEtcdCheckerReportsUnhealthyMemberWithRedaction(t *testing.T) {
 		Stdout:     `{"members":[{"ID":"a1","name":"cp-1"},{"ID":"b2","name":"cp-2"},{"ID":"c3","name":"cp-3"}]}`,
 	}
 
-	report, err := EtcdChecker{Transport: transport}.Check(context.Background(), plannedControlPlane())
+	report, err := EtcdChecker{Transport: transport}.Check(context.Background(), plannedControlPlane(t))
 	if err != nil {
 		t.Fatalf("Check() error = %v", err)
 	}
@@ -90,7 +90,7 @@ func TestEtcdCheckerReportsMissingCredentials(t *testing.T) {
 		Stderr:     "missing key Bearer secret-token",
 	}
 
-	report, err := EtcdChecker{Transport: transport}.Check(context.Background(), plannedControlPlane())
+	report, err := EtcdChecker{Transport: transport}.Check(context.Background(), plannedControlPlane(t))
 	if err != nil {
 		t.Fatalf("Check() error = %v", err)
 	}
@@ -119,7 +119,7 @@ func TestEtcdCheckerReportsEmptyHealthOutput(t *testing.T) {
 		Stdout:     `{"members":[{"ID":"a1","name":"cp-1"}]}`,
 	}
 
-	report, err := EtcdChecker{Transport: transport}.Check(context.Background(), plannedControlPlane())
+	report, err := EtcdChecker{Transport: transport}.Check(context.Background(), plannedControlPlane(t))
 	if err != nil {
 		t.Fatalf("Check() error = %v", err)
 	}
@@ -133,7 +133,7 @@ func TestEtcdCheckerReportsEmptyHealthOutput(t *testing.T) {
 
 func TestEtcdCheckerRejectsWorkerNode(t *testing.T) {
 	transport := newFakeTransport()
-	node := plannedControlPlane()
+	node := plannedControlPlane(t)
 	node.SystemRole = inventory.RoleWorker
 
 	report, err := EtcdChecker{Transport: transport}.Check(context.Background(), node)
@@ -160,7 +160,7 @@ func TestEtcdCheckerCreatesSnapshotAndReadsStatus(t *testing.T) {
 		Stdout:     `[{"hash":"abcd","revision":42,"totalKey":123,"totalSize":4567}]`,
 	}
 
-	report, err := EtcdChecker{Transport: transport}.CreateSnapshot(context.Background(), plannedControlPlane(), snapshotPath)
+	report, err := EtcdChecker{Transport: transport}.CreateSnapshot(context.Background(), plannedControlPlane(t), snapshotPath)
 	if err != nil {
 		t.Fatalf("CreateSnapshot() error = %v", err)
 	}
@@ -174,7 +174,7 @@ func TestEtcdCheckerCreatesSnapshotAndReadsStatus(t *testing.T) {
 
 func TestEtcdCheckerRejectsSnapshotOutsideRestrictedDirectory(t *testing.T) {
 	transport := newFakeTransport()
-	report, err := EtcdChecker{Transport: transport}.CreateSnapshot(context.Background(), plannedControlPlane(), "/tmp/etcd.db")
+	report, err := EtcdChecker{Transport: transport}.CreateSnapshot(context.Background(), plannedControlPlane(t), "/tmp/etcd.db")
 	if err != nil {
 		t.Fatalf("CreateSnapshot() error = %v", err)
 	}
@@ -202,10 +202,10 @@ func etcdutlArgs(containerID string, argv ...string) []string {
 	return append(base, argv...)
 }
 
-func plannedControlPlane() inventory.PlannedNode {
+func plannedControlPlane(t *testing.T) inventory.PlannedNode {
 	return inventory.PlannedNode{
 		Name:       "cp-1",
-		Address:    "10.0.0.11",
+		Address:    mustManagementAddress(t, "10.0.0.11"),
 		SystemRole: inventory.RoleControlPlane,
 		Action:     inventory.ActionInit,
 	}

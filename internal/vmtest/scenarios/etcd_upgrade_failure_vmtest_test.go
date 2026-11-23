@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/distribution/reference"
-	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/vmtest"
@@ -195,7 +194,7 @@ func runEtcdUpgradeFailureProof(t *testing.T, ctx context.Context, result vmtest
 		if err != nil {
 			return err
 		}
-		connection, err := connector.Connect(ctx, inventory.PlannedNode{Name: peer, Address: addresses[peer], Access: inventory.Access{Method: "agent"}})
+		connection, err := connector.Connect(ctx, agentNode(peer, addresses[peer]))
 		if err != nil {
 			return err
 		}

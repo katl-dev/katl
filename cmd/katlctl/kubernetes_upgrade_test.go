@@ -354,7 +354,7 @@ func TestKubernetesUpgradeResolvesClusterConfigWithoutContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(topology.Nodes) != 1 || topology.Nodes[0].Name != "cp-1" || topology.Nodes[0].ManagementEndpoint != "10.0.0.11:9443" || topology.ControlPlaneEndpoint != "10.0.0.11:6443" {
+	if len(topology.Nodes) != 1 || topology.Nodes[0].Name != "cp-1" || topology.Nodes[0].ManagementEndpoint.String() != "10.0.0.11:9443" || topology.ControlPlaneEndpoint.String() != "10.0.0.11:6443" {
 		t.Fatalf("topology = %#v", topology)
 	}
 	if version != "v1.36.1" {

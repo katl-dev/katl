@@ -9,9 +9,9 @@ import (
 
 func TestPlanInventorySelectsInitAndClassifiesNodes(t *testing.T) {
 	plan, err := PlanInventory(PlanRequest{
-		Inventory:       validInventory(),
+		Inventory:       validInventory(t),
 		InitNode:        "cp-1",
-		AddressOverride: map[string]string{"worker-1": "10.0.0.22"},
+		AddressOverride: map[string]ManagementAddress{"worker-1": mustManagementAddress(t, "10.0.0.22")},
 	})
 	if err != nil {
 		t.Fatalf("PlanInventory() error = %v", err)
@@ -19,7 +19,7 @@ func TestPlanInventorySelectsInitAndClassifiesNodes(t *testing.T) {
 	if plan.InitNode != "cp-1" {
 		t.Fatalf("init node = %q", plan.InitNode)
 	}
-	if plan.ControlPlaneEndpoint != "api.katl.test:6443" {
+	if plan.ControlPlaneEndpoint != mustHostPort(t, "api.katl.test:6443") {
 		t.Fatalf("control-plane endpoint = %q", plan.ControlPlaneEndpoint)
 	}
 	if len(plan.Nodes) != 2 {
@@ -27,13 +27,13 @@ func TestPlanInventorySelectsInitAndClassifiesNodes(t *testing.T) {
 	}
 	assertNode(t, plan.Nodes[0], "cp-1", "10.0.0.11", RoleControlPlane, ActionInit)
 	assertNode(t, plan.Nodes[1], "worker-1", "10.0.0.22", RoleWorker, ActionWorkerJoin)
-	if len(plan.AddressOverrides) != 1 || plan.AddressOverrides[0].Node != "worker-1" || plan.AddressOverrides[0].Before != "10.0.0.21" {
+	if len(plan.AddressOverrides) != 1 || plan.AddressOverrides[0].Node != "worker-1" || plan.AddressOverrides[0].Before != mustManagementAddress(t, "10.0.0.21") {
 		t.Fatalf("address overrides = %#v", plan.AddressOverrides)
 	}
 }
 
 func TestPlanInventoryDefaultsSingleControlPlaneInit(t *testing.T) {
-	plan, err := PlanInventory(PlanRequest{Inventory: validInventory()})
+	plan, err := PlanInventory(PlanRequest{Inventory: validInventory(t)})
 	if err != nil {
 		t.Fatalf("PlanInventory() error = %v", err)
 	}
@@ -43,10 +43,10 @@ func TestPlanInventoryDefaultsSingleControlPlaneInit(t *testing.T) {
 }
 
 func TestValidateInventoryAcceptsMultipleControlPlanesWithoutInitNode(t *testing.T) {
-	inv := validInventory()
+	inv := validInventory(t)
 	inv.Nodes = append(inv.Nodes, Node{
 		Name:              "cp-2",
-		Address:           "10.0.0.12",
+		Address:           mustManagementAddress(t, "10.0.0.12"),
 		SystemRole:        RoleControlPlane,
 		Access:            Access{Method: "ssh", User: "core", CredentialRef: "ssh/cp-2"},
 		KubeadmConfig:     KubeadmConfig{Ref: "control-plane", Intent: IntentControlPlane},
@@ -58,10 +58,10 @@ func TestValidateInventoryAcceptsMultipleControlPlanesWithoutInitNode(t *testing
 }
 
 func TestPlanInventoryClassifiesAdditionalControlPlaneJoin(t *testing.T) {
-	inv := validInventory()
+	inv := validInventory(t)
 	inv.Nodes = append(inv.Nodes, Node{
 		Name:              "cp-2",
-		Address:           "10.0.0.12",
+		Address:           mustManagementAddress(t, "10.0.0.12"),
 		SystemRole:        RoleControlPlane,
 		Access:            Access{Method: "ssh", User: "core", CredentialRef: "ssh/cp-2"},
 		KubeadmConfig:     KubeadmConfig{Ref: "control-plane", Intent: IntentControlPlane},
@@ -75,7 +75,7 @@ func TestPlanInventoryClassifiesAdditionalControlPlaneJoin(t *testing.T) {
 }
 
 func TestPlanInventoryResolvesNodeKubernetesVersion(t *testing.T) {
-	inv := validInventory()
+	inv := validInventory(t)
 	inv.KubernetesVersion = ""
 
 	plan, err := PlanInventory(PlanRequest{Inventory: inv})
@@ -88,19 +88,19 @@ func TestPlanInventoryResolvesNodeKubernetesVersion(t *testing.T) {
 }
 
 func TestPlanInventoryAppliesAddressOverrideBeforeValidation(t *testing.T) {
-	inv := validInventory()
-	inv.Nodes[1].Address = ""
+	inv := validInventory(t)
+	inv.Nodes[1].Address = ManagementAddress{}
 	plan, err := PlanInventory(PlanRequest{
 		Inventory:       inv,
-		AddressOverride: map[string]string{"worker-1": "10.0.0.99"},
+		AddressOverride: map[string]ManagementAddress{"worker-1": mustManagementAddress(t, "10.0.0.99")},
 	})
 	if err != nil {
 		t.Fatalf("PlanInventory() error = %v", err)
 	}
-	if got := plan.Nodes[1].Address; got != "10.0.0.99" {
+	if got := plan.Nodes[1].Address; got != mustManagementAddress(t, "10.0.0.99") {
 		t.Fatalf("worker address = %q", got)
 	}
-	if len(plan.AddressOverrides) != 1 || plan.AddressOverrides[0].Before != "" || plan.AddressOverrides[0].Address != "10.0.0.99" {
+	if len(plan.AddressOverrides) != 1 || plan.AddressOverrides[0].Before != (ManagementAddress{}) || plan.AddressOverrides[0].Address != mustManagementAddress(t, "10.0.0.99") {
 		t.Fatalf("address overrides = %#v", plan.AddressOverrides)
 	}
 }
@@ -122,7 +122,7 @@ func TestPlanInventoryRejectsInvalidInput(t *testing.T) {
 		{
 			name: "missing address",
 			mut: func(inv Inventory) PlanRequest {
-				inv.Nodes[0].Address = ""
+				inv.Nodes[0].Address = ManagementAddress{}
 				return PlanRequest{Inventory: inv}
 			},
 			want: "address is required",
@@ -148,7 +148,7 @@ func TestPlanInventoryRejectsInvalidInput(t *testing.T) {
 			mut: func(inv Inventory) PlanRequest {
 				inv.Nodes = append(inv.Nodes, Node{
 					Name:              "cp-2",
-					Address:           "10.0.0.12",
+					Address:           mustManagementAddress(t, "10.0.0.12"),
 					SystemRole:        RoleControlPlane,
 					Access:            Access{Method: "ssh", User: "core", CredentialRef: "ssh/cp-2"},
 					KubeadmConfig:     KubeadmConfig{Ref: "control-plane", Intent: IntentControlPlane},
@@ -176,7 +176,7 @@ func TestPlanInventoryRejectsInvalidInput(t *testing.T) {
 		{
 			name: "missing endpoint for multi-node",
 			mut: func(inv Inventory) PlanRequest {
-				inv.ControlPlaneEndpoint = ""
+				inv.ControlPlaneEndpoint = HostPort{}
 				return PlanRequest{Inventory: inv}
 			},
 			want: "control-plane endpoint is required",
@@ -231,24 +231,16 @@ func TestPlanInventoryRejectsInvalidInput(t *testing.T) {
 			want: "must be under /etc/katl/kubeadm",
 		},
 		{
-			name: "endpoint URL rejected",
-			mut: func(inv Inventory) PlanRequest {
-				inv.ControlPlaneEndpoint = "https://api.katl.test:6443/path"
-				return PlanRequest{Inventory: inv}
-			},
-			want: "host:port",
-		},
-		{
 			name: "unknown override",
 			mut: func(inv Inventory) PlanRequest {
-				return PlanRequest{Inventory: inv, AddressOverride: map[string]string{"missing": "10.0.0.99"}}
+				return PlanRequest{Inventory: inv, AddressOverride: map[string]ManagementAddress{"missing": mustManagementAddress(t, "10.0.0.99")}}
 			},
 			want: "unknown node",
 		},
 		{
 			name: "empty override",
 			mut: func(inv Inventory) PlanRequest {
-				return PlanRequest{Inventory: inv, AddressOverride: map[string]string{"worker-1": " "}}
+				return PlanRequest{Inventory: inv, AddressOverride: map[string]ManagementAddress{"worker-1": {}}}
 			},
 			want: "address override",
 		},
@@ -290,7 +282,7 @@ func TestPlanInventoryRejectsInvalidInput(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := PlanInventory(tt.mut(validInventory()))
+			_, err := PlanInventory(tt.mut(validInventory(t)))
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("PlanInventory() error = %v, want %q", err, tt.want)
 			}
@@ -299,7 +291,7 @@ func TestPlanInventoryRejectsInvalidInput(t *testing.T) {
 }
 
 func TestVerifyReadinessAcceptsReadyNodes(t *testing.T) {
-	plan, err := PlanInventory(PlanRequest{Inventory: validInventory()})
+	plan, err := PlanInventory(PlanRequest{Inventory: validInventory(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,7 +308,7 @@ func TestVerifyReadinessAcceptsReadyNodes(t *testing.T) {
 }
 
 func TestVerifyReadinessReportsNotReadyNodes(t *testing.T) {
-	plan, err := PlanInventory(PlanRequest{Inventory: validInventory()})
+	plan, err := PlanInventory(PlanRequest{Inventory: validInventory(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +343,7 @@ func TestVerifyReadinessReportsNotReadyNodes(t *testing.T) {
 }
 
 func TestVerifyReadinessReportsAccessFailure(t *testing.T) {
-	plan, err := PlanInventory(PlanRequest{Inventory: validInventory()})
+	plan, err := PlanInventory(PlanRequest{Inventory: validInventory(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -408,14 +400,14 @@ func TestRedactRemovesBootstrapSecretMaterial(t *testing.T) {
 	}
 }
 
-func validInventory() Inventory {
+func validInventory(t *testing.T) Inventory {
 	return Inventory{
-		ControlPlaneEndpoint: "api.katl.test:6443",
+		ControlPlaneEndpoint: mustHostPort(t, "api.katl.test:6443"),
 		KubernetesVersion:    "v1.36.1",
 		Nodes: []Node{
 			{
 				Name:              "cp-1",
-				Address:           "10.0.0.11",
+				Address:           mustManagementAddress(t, "10.0.0.11"),
 				SystemRole:        RoleControlPlane,
 				Access:            Access{Method: "ssh", User: "core", CredentialRef: "ssh/cp-1"},
 				KubeadmConfig:     KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: IntentControlPlane},
@@ -423,7 +415,7 @@ func validInventory() Inventory {
 			},
 			{
 				Name:              "worker-1",
-				Address:           "10.0.0.21",
+				Address:           mustManagementAddress(t, "10.0.0.21"),
 				SystemRole:        RoleWorker,
 				Access:            Access{Method: "ssh", User: "core", CredentialRef: "ssh/worker-1"},
 				KubeadmConfig:     KubeadmConfig{Ref: "worker", Path: "/etc/katl/kubeadm/worker/config.yaml", Intent: IntentWorker},
@@ -435,7 +427,7 @@ func validInventory() Inventory {
 
 func assertNode(t *testing.T, node PlannedNode, name, address string, role SystemRole, action BootstrapAction) {
 	t.Helper()
-	if node.Name != name || node.Address != address || node.SystemRole != role || node.Action != action {
+	if node.Name != name || node.Address.String() != address || node.SystemRole != role || node.Action != action {
 		t.Fatalf("node = %#v, want name=%s address=%s role=%s action=%s", node, name, address, role, action)
 	}
 }
@@ -470,4 +462,10 @@ func (f fakeChecker) CheckReadiness(_ context.Context, node PlannedNode) (Readin
 		return ReadinessSnapshot{}, f.err
 	}
 	return f.snapshots[node.Name], nil
+}
+
+func TestParseHostPortRejectsURL(t *testing.T) {
+	if _, err := ParseHostPort("https://api.katl.test:6443/path"); err == nil || !strings.Contains(err.Error(), "host:port") {
+		t.Fatalf("ParseHostPort() error = %v", err)
+	}
 }

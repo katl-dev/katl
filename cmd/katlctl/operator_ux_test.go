@@ -43,7 +43,7 @@ func TestConfigInitEmitsStarterClusterConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeSource() error = %v\n%s", err, stdout.String())
 	}
-	if source.Metadata.Name != "homelab" || configbundle.SourceControlPlaneEndpoint(source) != "" || source.Spec.Kubernetes.Version != configbundle.DefaultKubernetesVersion || len(source.Spec.Nodes) != 2 {
+	if source.Metadata.Name != "homelab" || source.Spec.ControlPlaneEndpoint != nil || source.Spec.Kubernetes.Version != configbundle.DefaultKubernetesVersion || len(source.Spec.Nodes) != 2 {
 		t.Fatalf("generated source = %#v", source)
 	}
 	if got := source.Spec.Nodes[0].Management.Address; got != "192.0.2.11" {
@@ -87,8 +87,9 @@ func TestConfigInitRendersExplicitIntent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if configbundle.SourceControlPlaneEndpoint(source) != "api.home.arpa:6443" || source.Spec.Kubernetes.Version != "v1.36.2" {
-		t.Fatalf("explicit intent = %#v", source.Spec)
+	topology, err := configbundle.SourceTopology(source)
+	if err != nil || topology.ControlPlaneEndpoint.String() != "api.home.arpa:6443" || source.Spec.Kubernetes.Version != "v1.36.2" {
+		t.Fatalf("explicit intent = %#v, %v", source.Spec, err)
 	}
 }
 
@@ -225,7 +226,7 @@ func TestContextSaveCreatesReachableContext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(topology.Nodes) != 1 || topology.Nodes[0].ManagementEndpoint != "10.0.0.11:9443" {
+	if len(topology.Nodes) != 1 || topology.Nodes[0].ManagementEndpoint.String() != "10.0.0.11:9443" {
 		t.Fatalf("topology = %#v", topology)
 	}
 	if got := cfg.Clusters[0].Nodes[0].ConfiguredEndpoint; got != "10.0.0.11:9443" {

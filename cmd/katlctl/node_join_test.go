@@ -166,7 +166,7 @@ func TestNodeJoin(t *testing.T) {
 				if err != nil {
 					return cluster.Result{}, fmt.Errorf("plan node join: %w", err)
 				}
-				if request.ClusterName != "lab" || plan.ControlPlaneEndpoint != "api.katl.test:6443" || plan.KubernetesVersion != "v1.36.1" || plan.KubernetesBundleRef == "" || plan.KubernetesBundleSource == "" {
+				if request.ClusterName != "lab" || plan.ControlPlaneEndpoint.String() != "api.katl.test:6443" || plan.KubernetesVersion != "v1.36.1" || plan.KubernetesBundleRef == "" || plan.KubernetesBundleSource == "" {
 					t.Fatalf("join lost complete cluster configuration: %+v", request)
 				}
 				if len(plan.Nodes) != 2 {
@@ -186,7 +186,7 @@ func TestNodeJoin(t *testing.T) {
 							t.Fatalf("join lost per-node native configuration: %+v", planned)
 						}
 					}
-					if planned.Address != address || planned.EnrollmentID != observed.EnrollmentId || planned.MachineID != observed.MachineId || planned.KubernetesVersion != "v1.36.1" || planned.KubeadmConfig.Ref != ref || planned.KubeadmConfig.Path != "/etc/katl/kubeadm/"+ref+"/config.yaml" || planned.KubeadmConfig.Intent != intent || planned.Access.Method != "agent" {
+					if planned.ManagementEndpoint().String() != address+":9443" || planned.EnrollmentID != observed.EnrollmentId || planned.MachineID != observed.MachineId || planned.KubernetesVersion != "v1.36.1" || planned.KubeadmConfig.Ref != ref || planned.KubeadmConfig.Path != "/etc/katl/kubeadm/"+ref+"/config.yaml" || planned.KubeadmConfig.Intent != intent || planned.Access.Method != "agent" {
 						t.Fatalf("join input differs from desired configuration or current enrollment: %+v", planned)
 					}
 				}

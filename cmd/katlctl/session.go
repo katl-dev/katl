@@ -26,7 +26,7 @@ func openManagementSession(ctx context.Context, opts managementTargetOptions, ti
 	}
 
 	requestCtx, cancel := context.WithTimeout(withManagementTarget(ctx, target), timeout)
-	conn, err := dialKatlcAgent(requestCtx, target.endpoint)
+	conn, err := dialKatlcAgent(requestCtx, target.endpoint.String())
 	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("connect to %s at %s: %w", hostTargetName(target), target.endpoint, err)

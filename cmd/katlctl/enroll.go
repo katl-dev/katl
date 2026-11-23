@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"slices"
 	"sort"
@@ -29,7 +28,7 @@ type contextSaveOptions struct {
 	contextName     string
 	replacementNode []string
 	selectedNodes   []string
-	endpoints       map[string]string
+	endpoints       map[string]inventory.HostPort
 	timeout         time.Duration
 	output          string
 }
@@ -291,7 +290,7 @@ func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions,
 	clusterProfile := workstation.Cluster{
 		ExternalControlPlane: inv.ExternalControlPlane,
 		Name:                 clusterName,
-		ControlPlaneEndpoint: inv.ControlPlaneEndpoint,
+		ControlPlaneEndpoint: inv.ControlPlaneEndpoint.String(),
 		Management:           &management,
 	}
 	report := contextSaveReport{APIVersion: "katl.dev/v1alpha1", Kind: "ContextSaveReport", Context: contextName, ConfigPath: configPath}
@@ -320,15 +319,15 @@ func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions,
 		}
 	}
 
-	verificationFailure := func(node inventory.Node, endpoint string, err error) error {
+	verificationFailure := func(node inventory.Node, endpoint inventory.HostPort, err error) error {
 		var hint string
 		_, overridden := opts.endpoints[node.Name]
-		configured, _ := normalizeManagementAddress(node.Address)
+		configured := node.ManagementEndpoint()
 		switch {
 		case !managementUnreachable(err):
 		case !overridden && node.SystemRole == inventory.RoleWorker:
 			hint = "; " + readdressHint(node.Name, endpoint, opts.configInput, savedEndpoint(configPath, clusterName, node.Name))
-		case overridden && configured != "" && configured != endpoint:
+		case overridden && !configured.IsZero() && configured != endpoint:
 			hint = "; " + movedHint(node.Name, configured, opts.configInput)
 		}
 		if managementVerificationTimedOut(err) {
@@ -338,14 +337,14 @@ func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions,
 	}
 
 	for _, node := range inv.Nodes {
-		endpoint := net.JoinHostPort(strings.TrimSpace(node.Address), "9443")
+		endpoint := node.ManagementEndpoint()
 		if override, ok := opts.endpoints[node.Name]; ok {
 			endpoint = override
 		}
 		if len(opts.selectedNodes) > 0 && !containsString(opts.selectedNodes, node.Name) {
 			previous := known[node.Name]
 			clusterProfile.Nodes = append(clusterProfile.Nodes, workstation.Node{
-				Name: node.Name, ManagementEndpoint: endpoint, ConfiguredEndpoint: configuredEndpoint(node), SystemRole: node.SystemRole,
+				Name: node.Name, ManagementEndpoint: endpoint.String(), ConfiguredEndpoint: configuredEndpoint(node).String(), SystemRole: node.SystemRole,
 				EnrollmentID: previous.EnrollmentID, MachineID: previous.MachineID,
 			})
 			continue
@@ -372,10 +371,10 @@ func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions,
 			replaced = true
 		}
 		clusterProfile.Nodes = append(clusterProfile.Nodes, workstation.Node{
-			Name: node.Name, ManagementEndpoint: endpoint, ConfiguredEndpoint: configuredEndpoint(node), SystemRole: node.SystemRole,
+			Name: node.Name, ManagementEndpoint: endpoint.String(), ConfiguredEndpoint: configuredEndpoint(node).String(), SystemRole: node.SystemRole,
 			EnrollmentID: status.GetEnrollmentId(), MachineID: status.GetMachineId(),
 		})
-		report.Nodes = append(report.Nodes, contextSaveNodeReport{Name: node.Name, ManagementEndpoint: endpoint, Connected: true, EnrollmentID: status.GetEnrollmentId(), MachineID: status.GetMachineId(), Replaced: replaced})
+		report.Nodes = append(report.Nodes, contextSaveNodeReport{Name: node.Name, ManagementEndpoint: endpoint.String(), Connected: true, EnrollmentID: status.GetEnrollmentId(), MachineID: status.GetMachineId(), Replaced: replaced})
 	}
 
 	cfg = cfg.UpsertCluster(contextName, clusterProfile)
@@ -424,8 +423,8 @@ func managementVerificationTimedOut(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded) || grpcstatus.Code(err) == codes.DeadlineExceeded
 }
 
-func contextEndpointStatus(ctx context.Context, endpoint string) (*agentapi.NodeStatus, error) {
-	conn, err := dialKatlcAgent(transport.WithoutManagementAdvice(ctx), endpoint)
+func contextEndpointStatus(ctx context.Context, endpoint inventory.HostPort) (*agentapi.NodeStatus, error) {
+	conn, err := dialKatlcAgent(transport.WithoutManagementAdvice(ctx), endpoint.String())
 	if err != nil {
 		return nil, err
 	}
@@ -453,9 +452,9 @@ func managementUnreachable(err error) bool {
 // keeps answering at its previous address until it reboots. The saved context
 // is the only local record of that address, so without it the operator must
 // supply the address.
-func readdressHint(nodeName, endpoint, configInput, saved string) string {
+func readdressHint(nodeName string, endpoint inventory.HostPort, configInput string, saved inventory.HostPort) string {
 	const guide = "see docs/operations/change-cluster-nodes.md#re-address-a-worker"
-	if configured, err := normalizeManagementAddress(endpoint); err == nil && saved != "" && saved != configured {
+	if !saved.IsZero() && saved != endpoint {
 		return fmt.Sprintf("%s is not answering at %s, and the saved context last reached it at %s; if you are changing its address, run 'katlctl cluster apply --config %s --node %s --endpoint %s' (%s)", nodeName, endpoint, saved, configInput, nodeName, managementHost(saved), guide)
 	}
 	return fmt.Sprintf("if you are changing %s's address, run 'katlctl cluster apply --config %s --node %s --endpoint CURRENT_ADDRESS' with the address it answers at now (%s)", nodeName, configInput, nodeName, guide)
@@ -464,19 +463,19 @@ func readdressHint(nodeName, endpoint, configInput, saved string) string {
 // movedHint names the step after a re-address reboot for a node that does not
 // answer at the --endpoint address while its configuration places it at
 // configured: a moved node answers there, so apply no longer needs --endpoint.
-func movedHint(nodeName, configured, configInput string) string {
+func movedHint(nodeName string, configured inventory.HostPort, configInput string) string {
 	host := managementHost(configured)
 	return fmt.Sprintf("if %s already moved to its management.address %s, finish with 'katlctl cluster apply --config %s --node %s' without --endpoint, after 'katlctl context rebind --node %s --endpoint %s' if you use a saved context (see docs/operations/change-cluster-nodes.md#re-address-a-worker)", nodeName, host, configInput, nodeName, nodeName, host)
 }
 
 // savedEndpoint returns the management endpoint the saved context records for
-// a node, or "" when there is none. It reads the file directly because
+// a node, or the zero endpoint when there is none. It reads the file directly because
 // commands that observe nodes replace the saved context in memory with their
 // own observations.
-func savedEndpoint(path, clusterName, nodeName string) string {
+func savedEndpoint(path, clusterName, nodeName string) inventory.HostPort {
 	saved, err := workstation.Load(path)
 	if err != nil {
-		return ""
+		return inventory.HostPort{}
 	}
 	for _, cluster := range saved.Clusters {
 		if cluster.Name != clusterName {
@@ -484,24 +483,24 @@ func savedEndpoint(path, clusterName, nodeName string) string {
 		}
 		for _, node := range cluster.Nodes {
 			if node.Name == nodeName {
-				endpoint, err := normalizeManagementAddress(node.ManagementEndpoint)
+				endpoint, err := inventory.ParseHostPort(node.ManagementEndpoint)
 				if err != nil {
-					return ""
+					return inventory.HostPort{}
 				}
 				return endpoint
 			}
 		}
 	}
-	return ""
+	return inventory.HostPort{}
 }
 
 // managementHost drops the default agent port so a suggested command matches
 // the documented form.
-func managementHost(endpoint string) string {
-	if host, port, err := net.SplitHostPort(endpoint); err == nil && port == "9443" {
-		return host
+func managementHost(endpoint inventory.HostPort) string {
+	if endpoint.Port == inventory.ManagementPort {
+		return endpoint.Host.String()
 	}
-	return endpoint
+	return endpoint.String()
 }
 
 type contextRebindOptions struct {
@@ -559,13 +558,13 @@ func runContextRebind(ctx context.Context, opts contextRebindOptions, stdout io.
 	if err := requireEnrolledTarget(target); err != nil {
 		return err
 	}
-	endpoint, err := normalizeManagementAddress(opts.endpoint)
+	endpoint, err := parseEndpointFlag(opts.endpoint)
 	if err != nil {
 		return err
 	}
 	status, err := contextEndpointStatus(withManagementTarget(requestCtx, target), endpoint)
 	if err != nil {
-		rerun := "katlctl context rebind --node " + shellQuote(target.nodeName) + " --endpoint " + shellQuote(endpoint)
+		rerun := "katlctl context rebind --node " + shellQuote(target.nodeName) + " --endpoint " + shellQuote(endpoint.String())
 		if name := strings.TrimSpace(opts.contextName); name != "" {
 			rerun += " --context " + shellQuote(name)
 		}
@@ -587,7 +586,7 @@ func runContextRebind(ctx context.Context, opts contextRebindOptions, stdout io.
 		}
 		for nodeIndex := range cfg.Clusters[clusterIndex].Nodes {
 			if cfg.Clusters[clusterIndex].Nodes[nodeIndex].Name == expected.Name {
-				cfg.Clusters[clusterIndex].Nodes[nodeIndex].ManagementEndpoint = endpoint
+				cfg.Clusters[clusterIndex].Nodes[nodeIndex].ManagementEndpoint = endpoint.String()
 			}
 		}
 	}
@@ -599,13 +598,9 @@ func runContextRebind(ctx context.Context, opts contextRebindOptions, stdout io.
 }
 
 // configuredEndpoint returns the management endpoint the node's cluster
-// configuration names, or "" when it names none.
-func configuredEndpoint(node inventory.Node) string {
-	endpoint, err := normalizeManagementAddress(node.Address)
-	if err != nil {
-		return ""
-	}
-	return endpoint
+// configuration names, or the zero endpoint when it names none.
+func configuredEndpoint(node inventory.Node) inventory.HostPort {
+	return node.ManagementEndpoint()
 }
 
 // warnPendingReaddress warns, once per selected node, that the saved context
@@ -616,7 +611,7 @@ func configuredEndpoint(node inventory.Node) string {
 // configuration still names the address recorded when the context was saved
 // and is not a pending change. A node passed in endpoints is reached at that
 // address by the operator's choice.
-func warnPendingReaddress(ctx context.Context, configInput string, endpoints map[string]string, selectedNodes []string, stderr io.Writer) {
+func warnPendingReaddress(ctx context.Context, configInput string, endpoints map[string]inventory.HostPort, selectedNodes []string, stderr io.Writer) {
 	inv, err := readManagementInventory(configInput)
 	if err != nil {
 		return
@@ -641,7 +636,7 @@ func warnPendingReaddress(ctx context.Context, configInput string, endpoints map
 			}
 		}
 	}
-	used := map[string]string{}
+	used := map[string]inventory.HostPort{}
 	for _, node := range topology.Nodes {
 		used[node.Name] = node.ManagementEndpoint
 	}
@@ -653,8 +648,8 @@ func warnPendingReaddress(ctx context.Context, configInput string, endpoints map
 			continue
 		}
 		configured := configuredEndpoint(node)
-		reached, err := normalizeManagementAddress(used[node.Name])
-		if err != nil || configured == "" || reached == "" || configured == reached || baselines[node.Name] == "" || baselines[node.Name] == configured {
+		reached := used[node.Name]
+		if configured.IsZero() || reached.IsZero() || configured == reached || baselines[node.Name] == "" || baselines[node.Name] == configured.String() {
 			continue
 		}
 		fmt.Fprintf(stderr, "warning: %s is configured at management.address %s, but the saved context reaches it at %s, so this command uses %s; "+

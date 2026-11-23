@@ -261,7 +261,7 @@ func applyInstallNode(ctx context.Context, opts installApplyOptions, inventory c
 	bootstrapAddress := ""
 	for _, node := range inventory.Cluster.BootstrapInventory.Nodes {
 		if node.Name == nodeName {
-			bootstrapAddress = node.Address
+			bootstrapAddress = node.Address.String()
 		}
 	}
 	if skipUnavailable && len(inventory.Nodes) > 1 && strings.TrimSpace(bootstrapAddress) == "" {
@@ -445,7 +445,7 @@ func readInstallerSSHKeys(path, selector string) (name, address string, keys []s
 	}
 	for _, node := range inv.Nodes {
 		if node.Name == name {
-			address = node.Address
+			address = node.Address.String()
 		}
 	}
 	data, err := os.ReadFile(path)
@@ -507,7 +507,7 @@ func selectInstallNode(manifest configbundle.BundleManifest, selector string) (s
 	}
 	var matches []string
 	for _, node := range manifest.Cluster.BootstrapInventory.Nodes {
-		if strings.TrimSpace(node.Address) == selector {
+		if node.Address.String() == selector {
 			matches = append(matches, node.Name)
 		}
 	}
@@ -524,7 +524,7 @@ func selectInstallNode(manifest configbundle.BundleManifest, selector string) (s
 func installNodeChoices(manifest configbundle.BundleManifest) string {
 	addresses := make(map[string]string, len(manifest.Cluster.BootstrapInventory.Nodes))
 	for _, node := range manifest.Cluster.BootstrapInventory.Nodes {
-		addresses[node.Name] = strings.TrimSpace(node.Address)
+		addresses[node.Name] = node.Address.String()
 	}
 	choices := make([]string, 0, len(manifest.Nodes))
 	for _, node := range manifest.Nodes {
@@ -563,7 +563,7 @@ func runInstallStatus(ctx context.Context, opts installStatusOptions, stdout, st
 		opts.nodeName = name
 		for _, node := range inv.Nodes {
 			if node.Name == name {
-				address = node.Address
+				address = node.Address.String()
 				break
 			}
 		}
