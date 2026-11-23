@@ -47,6 +47,42 @@ func TestParseManagementAddress(t *testing.T) {
 	}
 }
 
+// A configured management.address may be a host name that is not a DNS name,
+// which the caller warns about, but it must still name a host.
+func TestParseConfiguredManagementAddress(t *testing.T) {
+	for _, tc := range []struct {
+		input      string
+		endpoint   string
+		notDNSName bool
+	}{
+		{input: "cp_1.home.arpa", endpoint: "cp_1.home.arpa:9443", notDNSName: true},
+		{input: "tcp://cp_1.home.arpa:19443", endpoint: "cp_1.home.arpa:19443", notDNSName: true},
+		{input: "-cp-1.home.arpa", endpoint: "-cp-1.home.arpa:9443", notDNSName: true},
+		{input: "cp-1.home.arpa", endpoint: "cp-1.home.arpa:9443"},
+		{input: "10.0.0.11:19443", endpoint: "10.0.0.11:19443"},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			address, err := ParseConfiguredManagementAddress(tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := address.Endpoint().String(); got != tc.endpoint {
+				t.Errorf("endpoint = %q, want %q", got, tc.endpoint)
+			}
+			if got := address.Host.NotDNSName(); got != tc.notDNSName {
+				t.Errorf("NotDNSName() = %t, want %t", got, tc.notDNSName)
+			}
+		})
+	}
+	for _, input := range []string{"", "  ", "cp 1.home.arpa", "cp/1.home.arpa", "cp..home.arpa", "cp:1:2", "https://cp-1.home.arpa", "fe80::1%eth0", "cp_1.home.arpa:0"} {
+		t.Run("rejects "+input, func(t *testing.T) {
+			if address, err := ParseConfiguredManagementAddress(input); err == nil {
+				t.Fatalf("ParseConfiguredManagementAddress(%q) = %v, want error", input, address)
+			}
+		})
+	}
+}
+
 // Recorded values keep every host an earlier release accepted, which
 // ParseManagementAddress refuses for new input, and re-encode unchanged.
 func TestDecodeRecordedAddresses(t *testing.T) {

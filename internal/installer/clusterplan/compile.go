@@ -120,6 +120,7 @@ func Compile(request CompileRequest) (Plan, error) {
 		Nodes:                  materials,
 		BootstrapInventory:     bootstrapInventory,
 		AddressOverrides:       topology.AddressOverrides,
+		Warnings:               topology.Warnings,
 	}, nil
 }
 

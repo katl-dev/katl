@@ -167,7 +167,7 @@ func InspectSelectedNode(selected SelectedNodeMaterial) (NodeResolution, error) 
 	}
 	if node.Management.Address != "" {
 		message := "management.address selects the workstation target and does not change generated node state"
-		address, err := inventory.ParseManagementAddress(node.Management.Address)
+		address, err := inventory.ParseConfiguredManagementAddress(node.Management.Address)
 		if err == nil && slices.Contains(report.Derived.APIProxyListeners, address.ProxyEndpoint().String()) {
 			message = "management.address selects the workstation target, and the control plane's API proxy listens there for katlctl"
 		}

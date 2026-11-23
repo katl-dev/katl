@@ -21,6 +21,17 @@ type Topology struct {
 	Inventory        inventory.Inventory
 	Endpoint         *controlplaneendpoint.Plan
 	AddressOverrides []inventory.AddressOverride
+	// Warnings describe configuration that the lowering accepts but that the
+	// operator should correct.
+	Warnings []Warning
+}
+
+// Warning describes accepted configuration that the operator should correct.
+type Warning struct {
+	Code    string
+	Node    string
+	Path    string
+	Message string
 }
 
 // LowerTopology lowers a cluster configuration's topology to inventory. It
@@ -54,8 +65,16 @@ func LowerTopology(config Config, addressOverrides map[string]string) (Topology,
 		}
 		invNode := inventory.Node{Name: name, SystemRole: role}
 		if value := strings.TrimSpace(layer.Bootstrap.Address); value != "" {
-			if invNode.Address, err = inventory.ParseManagementAddress(value); err != nil {
+			if invNode.Address, err = inventory.ParseConfiguredManagementAddress(value); err != nil {
 				return Topology{}, fmt.Errorf("node %q management.address: %w", name, err)
+			}
+			if invNode.Address.Host.NotDNSName() {
+				topology.Warnings = append(topology.Warnings, Warning{
+					Code:    "management-address-not-dns-name",
+					Node:    name,
+					Path:    fmt.Sprintf("spec.nodes[%q].management.address", name),
+					Message: fmt.Sprintf("%q is not a valid DNS hostname, because a DNS label holds only letters, digits and hyphens; katlctl uses it as written, which works where the resolver accepts it, but other tools can refuse it", invNode.Address.Host),
+				})
 			}
 		}
 		if invNode.KubernetesAddress, err = inventory.ParseKubernetesAddress(layer.Kubernetes.Address); err != nil {

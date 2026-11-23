@@ -466,6 +466,10 @@ func compileSource(request BuildRequest, deferExtensions bool) (compiledSource, 
 	if err != nil {
 		return compiledSource{}, publicClusterPlanError(source, err)
 	}
+	for _, warning := range plan.Warnings {
+		warnings = append(warnings, CompilationWarning{Code: warning.Code, Path: warning.Path, Node: warning.Node, Message: warning.Message})
+	}
+	sort.Slice(warnings, func(i, j int) bool { return warnings[i].Path < warnings[j].Path })
 	if len(planning.Nodes) > 0 {
 		for _, name := range planning.Nodes {
 			if !slices.ContainsFunc(plan.Nodes, func(node clusterplan.NodeMaterial) bool { return node.Name == name }) {

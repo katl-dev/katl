@@ -13,10 +13,12 @@ import (
 // Host is a literal IP address or a host name. The zero Host is unset.
 //
 // The Parse functions validate new operator input: a host name must be a DNS
-// name and an IPv6 address must not carry a zone. The Decode functions, and
-// UnmarshalText, read values a release has already recorded, such as a saved
-// context, a config bundle or an agent's report, and accept every host that
-// earlier releases recorded, so upgrading never makes saved data unreadable.
+// name and an IPv6 address must not carry a zone. ParseConfiguredManagementAddress
+// also accepts a host name that is not a DNS name but can still name a host.
+// The Decode functions, and UnmarshalText, read values a release has already
+// recorded, such as a saved context, a config bundle or an agent's report, and
+// accept every host that earlier releases recorded, so upgrading never makes
+// saved data unreadable.
 type Host struct {
 	addr netip.Addr
 	name string
@@ -25,10 +27,25 @@ type Host struct {
 // ParseHost parses a literal IP address or a DNS name. A v4-mapped IPv6
 // address is unmapped.
 func ParseHost(value string) (Host, error) {
-	return parseHost(value, true)
+	return parseHost(value, hostDNSName)
 }
 
-func parseHost(value string, strict bool) (Host, error) {
+// hostRule says which host names a parse accepts. Every rule accepts a
+// literal IP address.
+type hostRule int
+
+const (
+	// hostDNSName accepts a DNS name, and no IPv6 zone.
+	hostDNSName hostRule = iota
+	// hostAnyName also accepts a name that is not a DNS name but that
+	// resolvers commonly resolve, such as cp_1.home.arpa, and no IPv6 zone.
+	hostAnyName
+	// hostRecorded accepts any value, as earlier releases recorded hosts
+	// without validating them.
+	hostRecorded
+)
+
+func parseHost(value string, rule hostRule) (Host, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return Host{}, fmt.Errorf("host is required")
@@ -37,10 +54,12 @@ func parseHost(value string, strict bool) (Host, error) {
 	switch {
 	case err == nil && addr.Zone() == "":
 		return Host{addr: addr.Unmap()}, nil
-	case err == nil && strict:
+	case err == nil && rule != hostRecorded:
 		return Host{}, fmt.Errorf("host %q must not carry an IPv6 zone", value)
-	case strict && !validDNSName(value):
+	case rule == hostDNSName && !validDNSName(value):
 		return Host{}, fmt.Errorf("host %q must be an IP address or a DNS name", value)
+	case rule == hostAnyName && !validHostName(value):
+		return Host{}, fmt.Errorf("host %q must be an IP address or a host name", value)
 	}
 	return Host{name: value}, nil
 }
@@ -54,6 +73,12 @@ func HostFromAddr(addr netip.Addr) Host {
 // unset host.
 func (h Host) Addr() (netip.Addr, bool) {
 	return h.addr, h.addr.IsValid()
+}
+
+// NotDNSName reports whether the host is a name that is not a valid DNS name,
+// such as cp_1.home.arpa.
+func (h Host) NotDNSName() bool {
+	return h.name != "" && !validDNSName(h.name)
 }
 
 func (h Host) IsZero() bool {
@@ -76,7 +101,7 @@ func (h *Host) UnmarshalText(text []byte) error {
 		*h = Host{}
 		return nil
 	}
-	parsed, err := parseHost(string(text), false)
+	parsed, err := parseHost(string(text), hostRecorded)
 	if err != nil {
 		return err
 	}
@@ -92,22 +117,22 @@ type HostPort struct {
 
 // ParseHostPort parses host:port, with an IPv6 host in brackets.
 func ParseHostPort(value string) (HostPort, error) {
-	return parseHostPort(value, true)
+	return parseHostPort(value, hostDNSName)
 }
 
 // DecodeHostPort parses a recorded host:port, accepting any host an earlier
 // release recorded.
 func DecodeHostPort(value string) (HostPort, error) {
-	return parseHostPort(value, false)
+	return parseHostPort(value, hostRecorded)
 }
 
-func parseHostPort(value string, strict bool) (HostPort, error) {
+func parseHostPort(value string, rule hostRule) (HostPort, error) {
 	value = strings.TrimSpace(value)
 	hostText, portText, err := net.SplitHostPort(value)
 	if err != nil || strings.Contains(value, "://") {
 		return HostPort{}, fmt.Errorf("%q must be host:port", value)
 	}
-	host, err := parseHost(hostText, strict)
+	host, err := parseHost(hostText, rule)
 	if err != nil {
 		return HostPort{}, err
 	}
@@ -163,7 +188,16 @@ type ManagementAddress struct {
 
 // ParseManagementAddress parses a host, host:port, or tcp://host[:port].
 func ParseManagementAddress(value string) (ManagementAddress, error) {
-	return parseManagementAddress(value, true)
+	return parseManagementAddress(value, hostDNSName)
+}
+
+// ParseConfiguredManagementAddress parses a cluster configuration's
+// management.address. Besides what ParseManagementAddress accepts, it accepts
+// a host name that is not a DNS name, such as cp_1.home.arpa, which earlier
+// releases accepted and resolvers commonly resolve. Host.NotDNSName reports
+// such a host, so that the caller can warn about it.
+func ParseConfiguredManagementAddress(value string) (ManagementAddress, error) {
+	return parseManagementAddress(value, hostAnyName)
 }
 
 // DecodeManagementAddress parses a recorded management address. Earlier
@@ -176,13 +210,13 @@ func DecodeManagementAddress(value string) ManagementAddress {
 	if value == "" {
 		return ManagementAddress{}
 	}
-	if address, err := parseManagementAddress(value, false); err == nil {
+	if address, err := parseManagementAddress(value, hostRecorded); err == nil {
 		return address
 	}
 	return ManagementAddress{Host: Host{name: value}}
 }
 
-func parseManagementAddress(value string, strict bool) (ManagementAddress, error) {
+func parseManagementAddress(value string, rule hostRule) (ManagementAddress, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return ManagementAddress{}, fmt.Errorf("management address is required")
@@ -205,7 +239,7 @@ func parseManagementAddress(value string, strict bool) (ManagementAddress, error
 		bare = bare[1 : len(bare)-1]
 	}
 	if _, err := netip.ParseAddr(bare); err == nil || !strings.Contains(value, ":") {
-		host, err := parseHost(bare, strict)
+		host, err := parseHost(bare, rule)
 		if err != nil {
 			return ManagementAddress{}, fmt.Errorf("management address %q: %w", value, err)
 		}
@@ -215,7 +249,7 @@ func parseManagementAddress(value string, strict bool) (ManagementAddress, error
 	if err != nil {
 		return ManagementAddress{}, fmt.Errorf("management address %q must be an IP, hostname, host:port, or tcp:// URL", value)
 	}
-	host, err := parseHost(hostText, strict)
+	host, err := parseHost(hostText, rule)
 	if err != nil {
 		return ManagementAddress{}, fmt.Errorf("management address %q: %w", value, err)
 	}
@@ -303,6 +337,23 @@ func validDNSName(value string) bool {
 	}
 	for _, label := range strings.Split(value, ".") {
 		if !dnsNameLabelPattern.MatchString(label) {
+			return false
+		}
+	}
+	return true
+}
+
+var hostNameLabelPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,63}$`)
+
+// validHostName accepts a DNS name, or a name whose labels also contain
+// underscores or begin or end with a hyphen.
+func validHostName(value string) bool {
+	value = strings.TrimSuffix(value, ".")
+	if value == "" || len(value) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(value, ".") {
+		if !hostNameLabelPattern.MatchString(label) {
 			return false
 		}
 	}

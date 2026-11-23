@@ -118,7 +118,9 @@ operator-owned native software bundle by OCI reference as described below.
 ## Node addresses
 
 `management.address` is an IP address or DNS name, optionally with the
-`katlc` agent port as `host:port`; without a port `katlctl` uses 9443. The
+`katlc` agent port as `host:port`; without a port `katlctl` uses 9443. A host
+name that is not a valid DNS name, such as `cp_1.home.arpa`, is accepted with
+a warning, because resolvers commonly resolve such names. The
 workstation reaches the node's kube-apiserver (6443) and API proxy (7445) at
 the same host, and `katlctl context save` records the agent endpoint with its
 port.
