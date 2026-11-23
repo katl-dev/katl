@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -70,7 +69,7 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	if err := CreateDisks(ctx, diskExec(nil), result.Disks); err != nil {
 		t.Fatalf("create config apply data disk: %v", err)
 	}
-	katlctl := buildKatlctlForConfigApplySmoke(t, ctx)
+	katlctl := configApplyKatlctl(BuildKatlctl(t, ctx, repoRoot(t)), result)
 	vm := runtime.VM
 	vm.KVM = runner.options().KVM
 	vm.RAMMiB = 2048
@@ -445,17 +444,15 @@ func TestRequirePlannedVMHostWritesFailedResult(t *testing.T) {
 	}
 }
 
-func buildKatlctlForConfigApplySmoke(t *testing.T, ctx context.Context) string {
-	t.Helper()
-	root := t.TempDir()
-	path := filepath.Join(root, "katlctl")
-	cmd := exec.CommandContext(ctx, "go", "build", "-buildvcs=false", "-o", path, "./cmd/katlctl")
-	cmd.Dir = repoRoot(t)
-	cmd.Env = os.Environ()
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build katlctl: %v\n%s", err, output)
-	}
-	return path
+// katlctlRunner is a katlctl binary together with the workstation config that
+// every command it runs uses.
+type katlctlRunner struct {
+	bin    Katlctl
+	config string
+}
+
+func configApplyKatlctl(bin Katlctl, result Result) katlctlRunner {
+	return katlctlRunner{bin: bin, config: filepath.Join(result.RunDir, "katlctl", "enrollment", "katlctl.yaml")}
 }
 
 func katlcEndpoint(t *testing.T, node RunningInstalledRuntimeNode, plannedAddress string) string {
@@ -467,18 +464,17 @@ func katlcEndpoint(t *testing.T, node RunningInstalledRuntimeNode, plannedAddres
 	return net.JoinHostPort(address, "9443")
 }
 
-func enrollConfigApplyNode(t *testing.T, ctx context.Context, result Result, katlctl, endpoint string, sshAuthorizedKey ...string) {
+func enrollConfigApplyNode(t *testing.T, ctx context.Context, result Result, katlctl katlctlRunner, endpoint string, sshAuthorizedKey ...string) {
 	t.Helper()
 	host, _, err := net.SplitHostPort(endpoint)
 	if err != nil {
 		t.Fatalf("split config apply management endpoint %q: %v", endpoint, err)
 	}
-	directory := filepath.Join(result.RunDir, "katlctl", "enrollment")
+	directory := filepath.Dir(katlctl.config)
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		t.Fatalf("create config apply enrollment directory: %v", err)
 	}
 	configPath := filepath.Join(directory, "cluster.yaml")
-	contextPath := filepath.Join(directory, "katlctl.yaml")
 	key := first(sshAuthorizedKey...)
 	if key == "" {
 		key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example"
@@ -511,8 +507,6 @@ spec:
 	if err := os.WriteFile(configPath, []byte(source), 0o600); err != nil {
 		t.Fatalf("write config apply enrollment ClusterConfig: %v", err)
 	}
-	t.Setenv("KATLCTL_CONFIG", contextPath)
-	t.Setenv("KATLCTL_CONFIG_DIR", "")
 	identity, err := VMTestManagementIdentity(VMTestManagementClusterName)
 	if err != nil {
 		t.Fatal(err)
@@ -523,7 +517,7 @@ spec:
 	runKatlctl(t, ctx, result, katlctl, "context-save", "context", "save", "--config", configPath)
 }
 
-func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl, endpoint, currentGeneration string) (*GuestControl, *AgentClient) {
+func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl katlctlRunner, endpoint, currentGeneration string) (*GuestControl, *AgentClient) {
 	t.Helper()
 	beforeLiveBootID := guestBootID(t, ctx, client)
 	beforeSysext := readlinkOptional(t, ctx, guest, "/run/extensions/katl-kubernetes.raw")
@@ -777,7 +771,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	return guest, nil
 }
 
-func runOptionalUnitFailureSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl, endpoint string) (*GuestControl, *AgentClient) {
+func runOptionalUnitFailureSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl katlctlRunner, endpoint string) (*GuestControl, *AgentClient) {
 	t.Helper()
 	candidate := "2026.06.06-vmtest-optional-unit"
 	accepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-optional-unit", "next-boot", candidate, configApplyFixture(t, "next-boot-optional-unit-failure.yaml"), false)
@@ -812,7 +806,7 @@ func runOptionalUnitFailureSmoke(t *testing.T, ctx context.Context, node *Runnin
 	return guest, client
 }
 
-func runManagementNetworkFailureSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl, endpoint, fallbackGeneration string) (*GuestControl, *AgentClient) {
+func runManagementNetworkFailureSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl katlctlRunner, endpoint, fallbackGeneration string) (*GuestControl, *AgentClient) {
 	t.Helper()
 	candidate := "2026.06.06-vmtest-management-network"
 	accepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-management-network", "next-boot", candidate, configApplyFixture(t, "next-boot-management-network-failure.yaml"), false)
@@ -840,7 +834,7 @@ func runManagementNetworkFailureSmoke(t *testing.T, ctx context.Context, node *R
 	return guest, client
 }
 
-func runFailedTrialRecoverySmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl, endpoint, fallbackGeneration string) (*GuestControl, *AgentClient) {
+func runFailedTrialRecoverySmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl katlctlRunner, endpoint, fallbackGeneration string) (*GuestControl, *AgentClient) {
 	t.Helper()
 	candidate := "2026.06.06-vmtest-failed-trial"
 	accepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-failed-trial", "next-boot", candidate, configApplyFixture(t, "next-boot-required-unit-failure.yaml"), false)
@@ -901,7 +895,7 @@ func runFailedTrialRecoverySmoke(t *testing.T, ctx context.Context, node *Runnin
 	return guest, client
 }
 
-func runVolumeRemovalSmoke(t *testing.T, ctx context.Context, guest *GuestControl, result Result, katlctl, endpoint string) string {
+func runVolumeRemovalSmoke(t *testing.T, ctx context.Context, guest *GuestControl, result Result, katlctl katlctlRunner, endpoint string) string {
 	t.Helper()
 	addGeneration := "2026.06.06-vmtest-volume-add"
 	removeGeneration := "2026.06.06-vmtest-volume-remove"
@@ -974,7 +968,7 @@ func assertInstalledSSHReady(t *testing.T, ctx context.Context, guest *GuestCont
 	}
 }
 
-func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, name, mode, generationID, fixture string, wantFailure bool) agentapi.OperationAccepted {
+func submitKatlctlConfigApply(t *testing.T, ctx context.Context, result Result, katlctl katlctlRunner, endpoint, name, mode, generationID, fixture string, wantFailure bool) agentapi.OperationAccepted {
 	t.Helper()
 	args := []string{
 		"node", "apply",
@@ -1023,7 +1017,7 @@ func configApplyConfigArgs(path string) []string {
 	return []string{"--config", path}
 }
 
-func katlctlGenerationStatus(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, name, generationID string) agentapi.Generation {
+func katlctlGenerationStatus(t *testing.T, ctx context.Context, result Result, katlctl katlctlRunner, endpoint, name, generationID string) agentapi.Generation {
 	t.Helper()
 	output := runKatlctl(
 		t, ctx, result, katlctl, name,
@@ -1133,7 +1127,7 @@ func powerOffGuestForCleanSuccess(t *testing.T, ctx context.Context, node *Runni
 	}
 }
 
-func shutdownGuestThroughKatlctl(t *testing.T, ctx context.Context, result Result, katlctl, endpoint string, node *RunningInstalledRuntimeNode, client *AgentClient) {
+func shutdownGuestThroughKatlctl(t *testing.T, ctx context.Context, result Result, katlctl katlctlRunner, endpoint string, node *RunningInstalledRuntimeNode, client *AgentClient) {
 	t.Helper()
 	if node == nil || node.handle == nil {
 		t.Fatal("running installed runtime node handle is required")
@@ -1202,7 +1196,7 @@ func failIfRestartExited(t *testing.T, handle *VMHandle) {
 	}
 }
 
-func runKatlctl(t *testing.T, ctx context.Context, result Result, katlctl, name string, args ...string) []byte {
+func runKatlctl(t *testing.T, ctx context.Context, result Result, katlctl katlctlRunner, name string, args ...string) []byte {
 	t.Helper()
 	stdout, err := runKatlctlOutcome(t, ctx, result, katlctl, name, args...)
 	if err != nil {
@@ -1211,7 +1205,7 @@ func runKatlctl(t *testing.T, ctx context.Context, result Result, katlctl, name 
 	return stdout
 }
 
-func runKatlctlOutcome(t *testing.T, ctx context.Context, result Result, katlctl, name string, args ...string) ([]byte, error) {
+func runKatlctlOutcome(t *testing.T, ctx context.Context, result Result, katlctl katlctlRunner, name string, args ...string) ([]byte, error) {
 	t.Helper()
 	dir := filepath.Join(result.RunDir, "katlctl", name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -1223,15 +1217,17 @@ func runKatlctlOutcome(t *testing.T, ctx context.Context, result Result, katlctl
 		Error string   `json:"error,omitempty"`
 	}{
 		Name: name,
-		Argv: append([]string{katlctl}, args...),
+		Argv: append([]string{"katlctl"}, args...),
 	}
 	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, katlctl, args...)
+	cmd, err := katlctl.bin.Command(ctx, katlctl.config, args...)
+	if err != nil {
+		t.Fatalf("%s: %v", name, err)
+	}
 	cmd.Dir = repoRoot(t)
-	cmd.Env = os.Environ()
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	if err != nil {
 		record.Error = err.Error()
 	}
@@ -1614,7 +1610,7 @@ func assertMaskedUnits(t *testing.T, ctx context.Context, guest *GuestControl, p
 
 // The consumer sorts before its producer. Only systemd ordering, rather than
 // invocation order, can make both first activation and subsequent changes work.
-func runSystemdUnitSmoke(t *testing.T, ctx context.Context, guest *GuestControl, client *AgentClient, result Result, katlctl, endpoint string) {
+func runSystemdUnitSmoke(t *testing.T, ctx context.Context, guest *GuestControl, client *AgentClient, result Result, katlctl katlctlRunner, endpoint string) {
 	t.Helper()
 	base, err := os.ReadFile(configApplyFixture(t, "live-udev.yaml"))
 	if err != nil {

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -554,10 +555,11 @@ func TestEnsureClusterConfig(t *testing.T) {
 		{name: "forced", existing: "192.0.2.99", force: true, want: "created", wantArgs: []string{"--installer", cp1.State.Endpoint, "--installer", worker1.State.Endpoint, "--force"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			var gotArgs []string
+			var gotArgs, gotEnv []string
 			manager := installerManager{repoRoot: t.TempDir(), stdout: io.Discard, stderr: io.Discard}
-			manager.run = func(_ context.Context, _, _ string, args, _ []string, _, _ io.Writer) error {
+			manager.run = func(_ context.Context, _, _ string, args, env []string, _, _ io.Writer) error {
 				gotArgs = args[5:]
+				gotEnv = env
 				writeKatldevClusterConfig(t, manager.clusterConfigPath(), cp1.Node.Address)
 				return nil
 			}
@@ -573,6 +575,36 @@ func TestEnsureClusterConfig(t *testing.T) {
 			}
 			if err != nil || got != test.want || !reflect.DeepEqual(gotArgs, test.wantArgs) {
 				t.Fatalf("status=%q err=%v args=%v, want %q %v", got, err, gotArgs, test.want, test.wantArgs)
+			}
+			if gotArgs != nil && !slices.Contains(gotEnv, "KATLCTL_CONFIG="+filepath.Join(manager.repoRoot, "_build", "katldev", "katlctl.yaml")) {
+				t.Fatalf("katlctl env = %v, want the world katlctl config", gotEnv)
+			}
+		})
+	}
+}
+
+func TestKatlctlConfigGuidance(t *testing.T) {
+	const world = "/repo/_build/katldev/katlctl.yaml"
+	for _, test := range []struct {
+		name       string
+		env        string
+		wantExport bool
+	}{
+		{name: "dev shell", env: world},
+		{name: "operator config", env: "/home/operator/.config/katl/katlctl.yaml", wantExport: true},
+		{name: "unset", wantExport: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("KATLCTL_CONFIG", test.env)
+			var stdout bytes.Buffer
+			manager := installerManager{repoRoot: "/repo", stdout: &stdout}
+			manager.printKatlctlConfig()
+
+			if !strings.Contains(stdout.String(), "katlctl contexts: "+world+"\n") {
+				t.Fatalf("guidance does not name the world katlctl config:\n%s", stdout.String())
+			}
+			if got := strings.Contains(stdout.String(), "export KATLCTL_CONFIG="+world+"\n"); got != test.wantExport {
+				t.Fatalf("export guidance = %t, want %t:\n%s", got, test.wantExport, stdout.String())
 			}
 		})
 	}

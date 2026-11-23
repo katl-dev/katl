@@ -56,6 +56,9 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 		"KATL_VMTEST_RUN_ID=run-1",
 		"KATL_VMTEST_RUN_DIR="+relativeRunDir,
 		"TMPDIR="+tmp,
+		"KATLCTL_CONFIG="+filepath.Join(tmp, "operator", "katlctl.yaml"),
+		"KATLCTL_CONFIG_DIR="+filepath.Join(tmp, "operator"),
+		"KATLCTL_CONTEXT=operator-homelab",
 	)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -138,6 +141,9 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	}
 	if childEnv["KATL_VMTEST_RESOURCE_MANIFEST"] != filepath.Join(runDir, "resource-test-manifest.json") {
 		t.Fatalf("child resource manifest env = %q", childEnv["KATL_VMTEST_RESOURCE_MANIFEST"])
+	}
+	if childEnv["KATLCTL_CONFIG"] != filepath.Join(runDir, "katlctl.yaml") || childEnv["KATLCTL_CONFIG_DIR"] != "unset" || childEnv["KATLCTL_CONTEXT"] != "unset" {
+		t.Fatalf("child katlctl env = %#v, want the operator's katlctl settings replaced by the run directory", childEnv)
 	}
 
 	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
@@ -1563,6 +1569,9 @@ printf '%s\n' "$@" > "$KATL_FAKE_CHILD_ARGS"
     printf 'KATL_VMTEST_WORLD_STRICT=%s\n' "${KATL_VMTEST_WORLD_STRICT:-}"
     printf 'KATL_VMTEST_DEBUG_ON_FAILURE=%s\n' "${KATL_VMTEST_DEBUG_ON_FAILURE:-}"
     printf 'KATL_VMTEST_RESOURCE_MANIFEST=%s\n' "${KATL_VMTEST_RESOURCE_MANIFEST:-}"
+    printf 'KATLCTL_CONFIG=%s\n' "${KATLCTL_CONFIG-unset}"
+    printf 'KATLCTL_CONFIG_DIR=%s\n' "${KATLCTL_CONFIG_DIR-unset}"
+    printf 'KATLCTL_CONTEXT=%s\n' "${KATLCTL_CONTEXT-unset}"
 } > "$KATL_FAKE_CHILD_ENV"
 [[ -f "${KATL_VMTEST_WORLD_MANIFEST:-}" ]] || exit 41
 if [[ -n "${KATL_FAKE_CHILD_WORLD_SCENARIO:-}" ]]; then

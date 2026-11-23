@@ -200,8 +200,6 @@ func runExternalWorkerJoin(t *testing.T, smoke operationBackedSmokeRun) {
 	if err := writeTwoNodeWorkstationContext(contextPath, addresses, enrollments); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("KATLCTL_CONFIG", contextPath)
-	t.Setenv("KATLCTL_CONFIG_DIR", "")
 	if _, err := stageTwoNodeCNIFixtures(ctx, repo, cp, worker, addresses["cp-1"], addresses["worker-1"]); err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +250,7 @@ func runExternalWorkerJoin(t *testing.T, smoke operationBackedSmokeRun) {
 			t.Fatal(err)
 		}
 	}
-	katlctl := buildKatlctlCommand(t, ctx, repo)
+	katlctl := buildKatlctlCommand(t, ctx, repo, contextPath)
 	command := func(name string, args ...string) []byte {
 		t.Helper()
 		output, stderr, err := runProofKatlctl(ctx, katlctl, result.RunDir, name, args...)

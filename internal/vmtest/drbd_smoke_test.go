@@ -74,7 +74,7 @@ func TestInstalledRuntimeDRBDReplication(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	katlctl := buildKatlctlForConfigApplySmoke(t, ctx)
+	katlctlBin := BuildKatlctl(t, ctx, repoRoot(t))
 	agentPath := filepath.Join(t.TempDir(), "katl-vmtest-agent")
 	build := exec.CommandContext(ctx, "go", "build", "-buildvcs=false", "-o", agentPath, "./cmd/katl-vmtest-agent")
 	build.Dir = repoRoot(t)
@@ -197,8 +197,7 @@ func TestInstalledRuntimeDRBDReplication(t *testing.T) {
 	if err := managementidentity.Write(filepath.Join(directory, "management", VMTestManagementClusterName+".katlkey"), identity); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("KATLCTL_CONFIG", filepath.Join(directory, "katlctl.yaml"))
-	t.Setenv("KATLCTL_CONFIG_DIR", "")
+	katlctl := katlctlRunner{bin: katlctlBin, config: filepath.Join(directory, "katlctl.yaml")}
 	configPath := filepath.Join(directory, "cluster.yaml")
 	config := drbdConfiguration(nodes[0].Result.IPAddress, nodes[1].Result.IPAddress, kubernetesVersion, kernelCommandLine)
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {

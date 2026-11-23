@@ -107,7 +107,7 @@ func runEtcdUpgradeFailureProof(t *testing.T, ctx context.Context, result vmtest
 	if err != nil {
 		return err
 	}
-	katlctl := buildKatlctlCommand(t, ctx, repo)
+	katlctl := buildKatlctlCommand(t, ctx, repo, contextPath)
 	input, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
