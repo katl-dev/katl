@@ -89,6 +89,9 @@ type DiskLayoutPlan struct {
 	VolumeMounts   []VolumePlan
 	Boot           BootTargetMetadata
 	Signatures     []SignatureReport
+	// PartitionUUIDs maps each Katl GPT label to its PARTUUID on the target
+	// disk once BindSystemPartitions has run after partitioning.
+	PartitionUUIDs map[string]string
 }
 
 type PartitionPlan struct {

@@ -14,8 +14,7 @@ const (
 )
 
 type StateRequest struct {
-	PartitionUUID string
-	ExtraMounts   []ExtraMountRequest
+	ExtraMounts []ExtraMountRequest
 }
 
 type ExtraMountRequest struct {
@@ -35,8 +34,6 @@ type KubernetesProjectionRequest struct {
 }
 
 type StateAssets struct {
-	VarMount             string
-	EFIMount             string
 	EtcKubernetesMount   string
 	GenerationActivate   string
 	HostConfigPrepare    string
@@ -70,10 +67,6 @@ type StateDir struct {
 }
 
 func RenderState(request StateRequest) (StateAssets, error) {
-	uuid, err := stateUUID(request.PartitionUUID)
-	if err != nil {
-		return StateAssets{}, err
-	}
 	kubernetesMount, err := RenderKubernetesProjection(KubernetesProjectionRequest{})
 	if err != nil {
 		return StateAssets{}, err
@@ -84,44 +77,6 @@ func RenderState(request StateRequest) (StateAssets, error) {
 	}
 	dirs := stateDirs()
 	assets := StateAssets{
-		VarMount: strings.Join([]string{
-			"[Unit]",
-			"Description=Katl writable state partition",
-			"Documentation=man:systemd.mount(5)",
-			"DefaultDependencies=no",
-			"Before=local-fs.target",
-			"Conflicts=umount.target",
-			"Before=umount.target",
-			"",
-			"[Mount]",
-			"What=PARTUUID=" + uuid,
-			"Where=/var",
-			"Type=auto",
-			"Options=rw",
-			"",
-			"[Install]",
-			"WantedBy=local-fs.target",
-			"",
-		}, "\n"),
-		EFIMount: strings.Join([]string{
-			"[Unit]",
-			"Description=Katl EFI system partition",
-			"Documentation=man:systemd.mount(5)",
-			"DefaultDependencies=no",
-			"Before=local-fs.target",
-			"Conflicts=umount.target",
-			"Before=umount.target",
-			"",
-			"[Mount]",
-			"What=/dev/disk/by-partlabel/KATL_ESP",
-			"Where=/efi",
-			"Type=vfat",
-			"Options=rw,umask=0077",
-			"",
-			"[Install]",
-			"WantedBy=local-fs.target",
-			"",
-		}, "\n"),
 		EtcKubernetesMount:   kubernetesMount,
 		GenerationActivate:   renderGenerationActivateService(),
 		HostConfigPrepare:    renderHostConfigPrepareService(),
@@ -645,15 +600,6 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 	if err != nil {
 		return StateAssets{}, err
 	}
-	if err := writeFile(root, "etc/systemd/system/var.mount", assets.VarMount, 0o644); err != nil {
-		return StateAssets{}, err
-	}
-	if err := writeFile(root, "etc/systemd/system/efi.mount", assets.EFIMount, 0o644); err != nil {
-		return StateAssets{}, err
-	}
-	if err := writeSymlink(root, "etc/systemd/system/local-fs.target.wants/efi.mount", "../efi.mount"); err != nil {
-		return StateAssets{}, err
-	}
 	if err := writeFile(root, "etc/systemd/system/etc-kubernetes.mount", assets.EtcKubernetesMount, 0o644); err != nil {
 		return StateAssets{}, err
 	}
@@ -833,17 +779,6 @@ func renderTmpfiles(dirs []StateDir) string {
 		lines = append(lines, fmt.Sprintf("d %s %04o %s %s -", dir.Path, dir.Mode, owner, group))
 	}
 	return strings.Join(append(lines, ""), "\n")
-}
-
-func stateUUID(value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "", fmt.Errorf("state partition UUID is required")
-	}
-	if strings.ContainsAny(value, " \t\n\r") {
-		return "", fmt.Errorf("state partition UUID must not contain whitespace")
-	}
-	return value, nil
 }
 
 func kubernetesProjectionPaths(request KubernetesProjectionRequest) (string, string, error) {

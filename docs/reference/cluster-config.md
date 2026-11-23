@@ -613,12 +613,34 @@ attempt has wiped a disk, every later attempt in the same installer boot stays
 bound to that disk and configuration, however it fails, and refuses to change
 any other disk; booting the installer again clears the binding.
 
+Once it has partitioned the bound disk, the installer records the partition
+GUIDs it finds there and mounts, writes, and boots only those partitions. Each
+install receives fresh random partition and disk GUIDs, so another disk that
+carries Katl partitions, such as the disk of an earlier install left attached
+during a reinstall, is never mounted or written. If the bound disk does not
+hold exactly one of each Katl partition, or another disk reuses one of its
+partition GUIDs, the install stops before mounting anything and the installer
+must be booted again.
+
 After installation Katl does not use `install.systemDisk` again. The installed
-system finds its disk through the partitions Katl created, which receive fresh
-random partition and disk GUIDs on every install, and live volume changes
-treat the disk holding the mounted state partition as the system disk. Editing
-`install.systemDisk` on an installed node therefore has no effect until the
-node is reinstalled.
+system treats the disk holding its running root partition as the system disk
+and mounts `/efi` and `/var` only from that disk, on every boot. Host upgrades
+write the inactive root slot on the same disk, and live volume changes treat
+the disk holding the mounted state partition as the system disk. Other disks
+that carry Katl system partitions may stay attached. This guarantee does not
+yet cover [data volumes](#data-volumes): a volume disk still finds its
+partition by the `u-<name>` label, so detach the volume disks of an earlier
+install before installing or applying volumes. The node stops in emergency mode
+before mounting `/var` when the system disk does not hold exactly one ESP and
+one state partition, when another disk shares its partition GUIDs, as a cloned
+disk does, or when the firmware booted the ESP of another disk. The console
+and `systemctl status katl-system-disk.service` report the cause and the
+recovery. A disk that shares partition GUIDs with the system disk may be the
+original, so detach it rather than wiping it. Generations from KatlOS
+releases before this guarantee still mount by partition label, so roll back to
+one only while no other Katl disk is attached. Editing
+`install.systemDisk` on an installed node has no effect until the node is
+reinstalled.
 
 On a reinstall the installer resolves the selector again from scratch. A
 `gptGUID` selector is then stale: the previous install replaced the partition

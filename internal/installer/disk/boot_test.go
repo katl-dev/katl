@@ -51,22 +51,13 @@ func TestInstallBootRejectsXBOOTLDR(t *testing.T) {
 	}
 }
 
-func TestInstallBootNeedsUUID(t *testing.T) {
-	_, err := InstallBoot(context.Background(), BootRequest{
-		Commands: emptyUUIDRunner{},
-		Plan:     executorPlan(),
-	})
-	if err == nil || !strings.Contains(err.Error(), "empty blkid output") {
-		t.Fatalf("InstallBoot() error = %v, want empty UUID failure", err)
+func TestInstallBootNeedsBoundPartitions(t *testing.T) {
+	plan := executorPlan()
+	plan.PartitionUUIDs = nil
+
+	_, err := InstallBoot(context.Background(), BootRequest{Commands: &NoopCommandRunner{}, Plan: plan})
+
+	if err == nil || !strings.Contains(err.Error(), "KATL_ESP is not bound to target disk") {
+		t.Fatalf("InstallBoot() error = %v, want unbound ESP failure", err)
 	}
-}
-
-type emptyUUIDRunner struct{}
-
-func (emptyUUIDRunner) Run(context.Context, string, ...string) error {
-	return nil
-}
-
-func (emptyUUIDRunner) Output(context.Context, string, ...string) ([]byte, error) {
-	return nil, nil
 }

@@ -77,7 +77,7 @@ func Prepare(root string, plan bootstrapplan.Plan, now time.Time) (Result, error
 	}
 	// Installed runtimes already carry the baseline units in /usr/lib; live
 	// operation preparation may run with immutable /etc.
-	if _, err := generation.WriteState(root, generation.StateRequest{PartitionUUID: plan.Previous.Root.PartitionUUID}); err != nil && !errors.Is(err, syscall.EROFS) {
+	if _, err := generation.WriteState(root, generation.StateRequest{}); err != nil && !errors.Is(err, syscall.EROFS) {
 		return Result{}, fmt.Errorf("write bootstrap runtime systemd state: %w", err)
 	}
 	tree, err := confext.RenderGenerationTree(confext.GenerationTreeRequest{

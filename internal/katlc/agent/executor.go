@@ -23,7 +23,6 @@ import (
 	"github.com/katl-dev/katl/internal/installer/bootstrapplan"
 	"github.com/katl-dev/katl/internal/installer/bootstrapruntime"
 	"github.com/katl-dev/katl/internal/installer/configapply"
-	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/installer/systemextensionbundle"
@@ -1276,6 +1275,27 @@ func bootstrapJoinOperation(kind string) bool {
 }
 
 func mountRuntimeBootRoot(ctx context.Context, bootRoot string) error {
+	cmdline, err := os.ReadFile("/proc/cmdline")
+	if err != nil {
+		return fmt.Errorf("read kernel command line: %w", err)
+	}
+	return bootRootMounter{installed: installedCommandLine(string(cmdline)), run: func(ctx context.Context, argv []string) ToolResult {
+		return runChildProcess(ctx, argv, nil)
+	}}.mount(ctx, bootRoot)
+}
+
+// installedCommandLine reports whether the kernel booted an installed root
+// slot, which selects its root by PARTUUID.
+func installedCommandLine(cmdline string) bool {
+	return strings.Contains(" "+cmdline, " root=PARTUUID=")
+}
+
+type bootRootMounter struct {
+	installed bool
+	run       func(context.Context, []string) ToolResult
+}
+
+func (m bootRootMounter) mount(ctx context.Context, bootRoot string) error {
 	bootRoot = strings.TrimSpace(bootRoot)
 	if bootRoot == "" {
 		return fmt.Errorf("boot root is required")
@@ -1283,16 +1303,26 @@ func mountRuntimeBootRoot(ctx context.Context, bootRoot string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if mounted, err := bootRootIsMountpoint(ctx, bootRoot); err != nil {
+	if mounted, err := m.isMountpoint(ctx, bootRoot); err != nil {
 		return err
 	} else if mounted {
 		return nil
 	}
+	// An installed node mounts its ESP only through the generated efi.mount,
+	// which is bound to the disk holding the running root.
+	if m.installed {
+		if bootRoot != "/efi" {
+			return fmt.Errorf("boot root %s is not the installed ESP mount /efi", bootRoot)
+		}
+		result := m.runBounded(ctx, []string{"/usr/bin/systemctl", "start", "efi.mount"})
+		if result.Err == nil && result.ExitStatus == 0 {
+			return nil
+		}
+		return fmt.Errorf("start efi.mount: %s; check systemctl status efi.mount katl-system-disk.service", toolFailure(result))
+	}
 	var errs []error
 	for _, source := range runtimeBootRootSources() {
-		mountCtx, cancel := context.WithTimeout(ctx, bootRootMountTimeout)
-		result := runChildProcess(mountCtx, []string{"/usr/bin/mount", source, bootRoot}, nil)
-		cancel()
+		result := m.runBounded(ctx, []string{"/usr/bin/mount", source, bootRoot})
 		if result.Err == nil && result.ExitStatus == 0 {
 			return nil
 		}
@@ -1301,19 +1331,24 @@ func mountRuntimeBootRoot(ctx context.Context, bootRoot string) error {
 	return errors.Join(errs...)
 }
 
+// runtimeBootRootSources are the ESP images of directly booted development
+// runtimes, which have no installed system disk.
 func runtimeBootRootSources() []string {
 	return []string{
 		"/dev/disk/by-label/KATLEFI",
 		"/dev/disk/by-id/virtio-katl-efi",
 		"/dev/disk/by-id/virtio-katl-efi-part1",
-		"/dev/disk/by-partlabel/" + disk.GPTLabelESP,
 	}
 }
 
-func bootRootIsMountpoint(ctx context.Context, bootRoot string) (bool, error) {
-	mountCtx, cancel := context.WithTimeout(ctx, bootRootMountTimeout)
-	result := runChildProcess(mountCtx, []string{"/usr/bin/mountpoint", "-q", bootRoot}, nil)
-	cancel()
+func (m bootRootMounter) runBounded(ctx context.Context, argv []string) ToolResult {
+	ctx, cancel := context.WithTimeout(ctx, bootRootMountTimeout)
+	defer cancel()
+	return m.run(ctx, argv)
+}
+
+func (m bootRootMounter) isMountpoint(ctx context.Context, bootRoot string) (bool, error) {
+	result := m.runBounded(ctx, []string{"/usr/bin/mountpoint", "-q", bootRoot})
 	if result.Err == nil && result.ExitStatus == 0 {
 		return true, nil
 	}

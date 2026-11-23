@@ -84,7 +84,9 @@ by-id path: a device name can direct the install to a different disk after the
 kernel enumerates disks in another order. The
 [system disk reference](reference/cluster-config.md#system-disk) describes
 every selector, including size and model, and how each behaves on a
-reinstall.
+reinstall. A reinstall onto a different disk may leave the previous Katl disk
+attached: the installer and the installed node use only the system partitions on the
+disk the install bound. Detach the data volume disks of the previous install.
 
 ### Select an SSH key
 

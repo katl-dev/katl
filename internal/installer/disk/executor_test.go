@@ -380,6 +380,13 @@ func executorPlan() DiskLayoutPlan {
 			},
 		},
 		Boot: BootTargetMetadata{RootSlot: RootSlotA, RootPartitionLabel: GPTLabelRootA},
+		PartitionUUIDs: map[string]string{
+			GPTLabelESP:      "uuid-katl_esp",
+			GPTLabelXBOOTLDR: "uuid-katl_xbootldr",
+			GPTLabelRootA:    "uuid-katl_root_a",
+			GPTLabelRootB:    "uuid-katl_root_b",
+			GPTLabelState:    "uuid-katl_state",
+		},
 	}
 }
 
@@ -463,14 +470,6 @@ func (r *NoopCommandRunner) RunInput(_ context.Context, input string, name strin
 
 func (r *NoopCommandRunner) Output(_ context.Context, name string, args ...string) ([]byte, error) {
 	r.Calls = append(r.Calls, CommandCall{Name: name, Args: append([]string(nil), args...)})
-	if name == "blkid" {
-		for _, arg := range args {
-			if strings.HasPrefix(arg, "PARTLABEL=") {
-				label := strings.TrimPrefix(arg, "PARTLABEL=")
-				return []byte("uuid-" + strings.ToLower(label) + "\n"), nil
-			}
-		}
-	}
 	return []byte(""), nil
 }
 

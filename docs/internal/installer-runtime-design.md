@@ -1161,8 +1161,10 @@ normal `/var` paths unless a separate partition or special projection is needed.
 Systemd mount units and tmpfiles rules should provide the stable storage view:
 
 ```text
-var.mount
-  mounts KATL_STATE at /var
+var.mount, efi.mount
+  generated at boot by katl-system-disk-generator; mount KATL_STATE at /var and
+  KATL_ESP at /efi from the disk holding the running root partition, and stop
+  the boot when that disk is ambiguous
 
 optional var-lib-etcd.mount
   mounts a dedicated control-plane etcd partition at /var/lib/etcd
