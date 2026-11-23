@@ -76,7 +76,7 @@ func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOpe
 		if err != nil {
 			return nil, err
 		}
-		slots, err := executor.inspectRootSlots(ctx, previous.Root.PartitionUUID)
+		slots, err := executor.findRootSlots(ctx, previous.Root.PartitionUUID)
 		if err != nil {
 			return nil, err
 		}

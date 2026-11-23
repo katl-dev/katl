@@ -14,6 +14,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/systemdisk"
 )
 
 type volumeTransitionPlan struct {
@@ -53,7 +54,7 @@ func (e *Executor) applyVolumes(ctx context.Context, current, desired manifest.M
 		run = runChildProcess
 	}
 	source := e.volumeDevices.source(run)
-	plan, err := planVolumeTransition(ctx, source, current, desired, currentBindings, nodeName, acknowledgements, rebinds)
+	plan, err := planVolumeTransition(ctx, e.volumeDevices, run, current, desired, currentBindings, nodeName, acknowledgements, rebinds)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +131,7 @@ func changedVolumes(current, desired manifest.Manifest) ([]string, []manifest.Vo
 	return stopNames, changed
 }
 
-func planVolumeTransition(ctx context.Context, source discovery.DiscoverySource, current, desired manifest.Manifest, currentBindings []generation.VolumeBinding, nodeName string, acknowledgements, rebinds []string) (volumeTransitionPlan, error) {
+func planVolumeTransition(ctx context.Context, devices volumeDevices, run ToolRunner, current, desired manifest.Manifest, currentBindings []generation.VolumeBinding, nodeName string, acknowledgements, rebinds []string) (volumeTransitionPlan, error) {
 	if err := disk.ValidateDestructiveVolumeAcknowledgementKeys(acknowledgements); err != nil {
 		return volumeTransitionPlan{}, err
 	}
@@ -144,7 +145,7 @@ func planVolumeTransition(ctx context.Context, source discovery.DiscoverySource,
 	if len(desired.Install.Volumes) == 0 {
 		return volumeTransitionPlan{stopNames: stopNames, bindings: sortedVolumeBindings(volumeBindingsByName(currentBindings))}, nil
 	}
-	facts, err := discoverVolumeFacts(ctx, source)
+	facts, err := discoverVolumeFacts(ctx, devices.source(run))
 	if err != nil {
 		return volumeTransitionPlan{}, err
 	}
@@ -190,7 +191,7 @@ func planVolumeTransition(ctx context.Context, source discovery.DiscoverySource,
 		resolve = append(resolve, desiredVolume)
 		changed = append(changed, configChanged)
 	}
-	rootDisk, err := runningSystemDisk(facts)
+	rootDisk, err := systemDiskDevice(facts, devices.systemDisk)
 	if err != nil {
 		return volumeTransitionPlan{}, err
 	}
@@ -244,7 +245,7 @@ func (s *Server) validateVolumeTransition(ctx context.Context, nodeName string, 
 	if run == nil {
 		run = runChildProcess
 	}
-	return planVolumeTransition(ctx, s.volumeDevices.source(run), current, desired, currentBindings, nodeName, acknowledgements, rebinds)
+	return planVolumeTransition(ctx, s.volumeDevices, run, current, desired, currentBindings, nodeName, acknowledgements, rebinds)
 }
 
 func diskVolumeBinding(binding generation.VolumeBinding) disk.VolumeBinding {
@@ -341,26 +342,22 @@ func discoverVolumeFacts(ctx context.Context, source discovery.DiscoverySource) 
 	return facts, nil
 }
 
-// runningSystemDisk finds the disk whose state partition is mounted at /var.
-// An installed node is identified by its own partitions rather than the
-// install selector, whose GPT GUID or kernel name need not match after install.
-func runningSystemDisk(facts discovery.HardwareFacts) (discovery.BlockDevice, error) {
-	sources := map[string]bool{}
-	for _, mount := range facts.Mounts {
-		if mount.Target == "/var" {
-			sources[mount.Source] = true
-		}
+// systemDiskDevice finds the resolved system disk among the discovered block
+// devices. Both the kernel name and the diskseq must match, so a disk that
+// took the name after resolution is not mistaken for it.
+func systemDiskDevice(facts discovery.HardwareFacts, resolve func() (systemdisk.Layout, error)) (discovery.BlockDevice, error) {
+	layout, err := resolve()
+	if err != nil {
+		return discovery.BlockDevice{}, err
 	}
 	var disks []discovery.BlockDevice
 	for _, device := range facts.BlockDevices {
-		if slices.ContainsFunc(device.Partitions, func(partition discovery.BlockDevice) bool {
-			return sources[partition.Path] || slices.Contains(partition.Mountpoints, "/var")
-		}) {
+		if device.Name == layout.Disk.Name && device.DiskSeq == layout.Disk.Seq {
 			disks = append(disks, device)
 		}
 	}
 	if len(disks) != 1 {
-		return discovery.BlockDevice{}, fmt.Errorf("identify the running system disk: %d disks hold a partition mounted at /var, want 1", len(disks))
+		return discovery.BlockDevice{}, fmt.Errorf("identify the system disk: %d discovered disks are %s with diskseq %d, which holds the running root; want 1", len(disks), layout.Disk.Name, layout.Disk.Seq)
 	}
 	return disks[0], nil
 }
@@ -440,13 +437,22 @@ func runVolumeTool(ctx context.Context, run ToolRunner, action string, argv ...s
 	return nil
 }
 
-// volumeDevices names the host directories volume discovery reads. The zero
-// value reads the running host.
+// volumeDevices names the host directories volume discovery reads and how the
+// system disk is resolved. The zero value reads the running host.
 type volumeDevices struct {
 	sysBlockDir  string
 	byIDDir      string
 	byPathDir    string
 	byDiskSeqDir string
+	bootedDisk   func() (systemdisk.Layout, error)
+}
+
+// systemDisk resolves the disk holding the partition backing /.
+func (d volumeDevices) systemDisk() (systemdisk.Layout, error) {
+	if d.bootedDisk != nil {
+		return d.bootedDisk()
+	}
+	return bootedSystemDisk()
 }
 
 func (d volumeDevices) source(run ToolRunner) discovery.CommandDiscoverySource {
