@@ -386,7 +386,7 @@ physical links.
 | Files | Activation |
 | --- | --- |
 | Network files | Live: Katl reloads networkd for `.network` and `.netdev` changes and reloads udev for `.link` changes. A changed `.netdev` waits for the next boot; see [virtual network devices](#virtual-network-devices) and the [network caution](../operations/configure-nodes.md#configure-native-linux-facilities) |
-| Sysctl files | Live for a reversible concrete-key change |
+| Sysctl files directly under `/etc/sysctl.d` | Live when every changed key is an existing kernel parameter that Katl can restore and that no later file overrides; see [sysctl files](#sysctl-files). Otherwise next boot |
 | Udev rules | Live reload; Katl does not retrigger existing devices |
 | Unit definitions and drop-ins under `/etc/systemd/system` | Live; see [enabled units](#enabled-units) |
 | Supported systemd component drop-ins, such as `journald.conf.d` and `timesyncd.conf.d` | Live; Katl reloads or restarts an active consumer as appropriate |
@@ -394,6 +394,41 @@ physical links.
 | Other permitted files | Next boot, unless Katl can derive their consumer or their set declares an `onChange` notification |
 
 Containerd imports `/etc/containerd/conf.d/*.toml` when it starts.
+
+### Sysctl files
+
+Katl applies a sysctl file change live by writing each changed key with
+`sysctl -w` and reading it back. A key changes when a file adds, changes, or
+removes its assignment, including the first time any file sets it. Katl
+resolves the value from every file `systemd-sysctl` reads, including KatlOS
+files in `/usr/lib/sysctl.d`. Files are applied in file-name order, and the
+last explicit assignment wins. A later `-key` line without a value excludes
+the key, so it stays unset. The live value is therefore the value the next
+boot applies.
+
+The whole request waits for the next boot when any changed key:
+
+- comes from a changed file that uses globs, `-` prefixes, or lines Katl cannot
+  parse;
+- is not present in `/proc/sys` on the running kernel, such as a setting for a
+  network link that does not exist yet;
+- is set by a managed file but overridden by a different value or an exclusion
+  in a later file, such as two sets assigning the same key or a file named to
+  sort before a KatlOS file. The next boot keeps the overriding setting too,
+  so Katl warns and names the file to rename or remove;
+- loses its last assignment, which would leave the kernel default;
+- cannot be restored after it is written, such as `kernel.modules_disabled`
+  or `net.ipv6.conf.*.disable_ipv6`, or cannot be both read and written at
+  runtime;
+- has a value with several fields, such as `net.ipv4.ip_local_port_range`.
+
+With `--mode live`, Katl refuses such a request and names the key and the
+reason. Removing an assignment that exposes another file's value applies that
+value live. If any step of a live apply fails, Katl restores the previous
+files and writes back the kernel values it read before the change.
+
+Name files so that they sort after the KatlOS files they override, for
+example `80-*.conf` or later.
 
 Application configuration files, template-wide and type-wide drop-ins need
 explicit `onChange.systemd` notifications when their consumer cannot be

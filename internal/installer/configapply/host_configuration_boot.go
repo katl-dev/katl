@@ -23,9 +23,14 @@ const (
 	HostConfigurationPhaseReconcile = "reconcile"
 )
 
-func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase string) HostConfigurationActivationPlan {
+// PlanHostConfigurationActivation plans one boot activation phase. Sysctl
+// verification expects the value systemd-sysctl applies from every sysctl.d
+// file below root, so an overridden managed assignment is not verified.
+func PlanHostConfigurationActivation(root string, config manifest.HostConfiguration, phase string) HostConfigurationActivationPlan {
 	var plan HostConfigurationActivationPlan
-	sysctls := map[string]string{}
+	sysctlKeys := map[string]struct{}{}
+	sysctlFiles := map[string]string{}
+	ownedPaths := map[string]struct{}{}
 	hasSysctlFiles := false
 	modules := map[string]struct{}{}
 	sysfs := map[string]string{}
@@ -43,12 +48,17 @@ func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase st
 		}
 		for _, file := range set.Files {
 			linkConfiguration = linkConfiguration || isLinkConfigurationPath(file.Path)
+			// Files without inline content are read from the active confext.
+			if file.Content != nil {
+				ownedPaths[file.Path] = struct{}{}
+			}
 			switch {
-			case strings.HasPrefix(file.Path, "/etc/sysctl.d/") && strings.HasSuffix(file.Path, ".conf") && file.Content != nil:
+			case isSysctlPath(file.Path) && file.Content != nil:
 				hasSysctlFiles = true
+				sysctlFiles[file.Path] = *file.Content
 				if values, ok := parseConcreteSysctl(*file.Content); ok {
-					for key, value := range values {
-						sysctls[key] = value
+					for key := range values {
+						sysctlKeys[key] = struct{}{}
 					}
 				}
 			case strings.HasPrefix(file.Path, "/etc/modules-load.d/") && file.Content != nil:
@@ -88,9 +98,16 @@ func PlanHostConfigurationActivation(config manifest.HostConfiguration, phase st
 	if prepare && hasSysctlFiles {
 		plan.addCommand("systemd-sysctl", "restart", "systemd-sysctl.service", "systemctl", "restart", "systemd-sysctl.service")
 	}
-	if verify {
-		for _, key := range sortedKeys(sysctls) {
-			plan.addCommandWithOutput("sysctl-verify-"+key, "apply-and-verify", "sysctl "+key, sysctls[key], "/usr/sbin/sysctl", "-n", key)
+	if verify && len(sysctlKeys) > 0 {
+		// Unreadable host files leave the managed files to decide the
+		// expected values; a wrong expectation fails verification visibly.
+		files, _ := effectiveSysctlFiles(root, sysctlFiles, ownedPaths)
+		for _, key := range sortedKeys(sysctlKeys) {
+			effective, ok := effectiveSysctl(files, key)
+			if !ok || effective.Excluded || effective.Value == "" || strings.ContainsAny(effective.Value, "\t ") {
+				continue
+			}
+			plan.addCommandWithOutput("sysctl-verify-"+key, "apply-and-verify", "sysctl "+key, effective.Value, "/usr/sbin/sysctl", "-n", key)
 		}
 	}
 	if prepare && len(sysfs) > 0 {
@@ -155,8 +172,8 @@ func ExecuteHostConfigurationActivation(ctx context.Context, plan HostConfigurat
 	return nil
 }
 
-func InspectHostConfiguration(ctx context.Context, config manifest.HostConfiguration, runner CommandRunner) []generation.ConfigApplyEffect {
-	plan := PlanHostConfigurationActivation(config, HostConfigurationPhaseVerify)
+func InspectHostConfiguration(ctx context.Context, root string, config manifest.HostConfiguration, runner CommandRunner) []generation.ConfigApplyEffect {
+	plan := PlanHostConfigurationActivation(root, config, HostConfigurationPhaseVerify)
 	var drift []generation.ConfigApplyEffect
 	for index, command := range plan.Commands {
 		result, err := runHostConfigurationCommand(ctx, runner, command)
@@ -213,8 +230,8 @@ func HostConfigurationDriftIsLive(drift []generation.ConfigApplyEffect) bool {
 	return true
 }
 
-func PlanHostSysctlReconciliation(config manifest.HostConfiguration) HostConfigurationActivationPlan {
-	verify := PlanHostConfigurationActivation(config, HostConfigurationPhaseVerify)
+func PlanHostSysctlReconciliation(root string, config manifest.HostConfiguration) HostConfigurationActivationPlan {
+	verify := PlanHostConfigurationActivation(root, config, HostConfigurationPhaseVerify)
 	plan := HostConfigurationActivationPlan{}
 	var sysctlCommands []Command
 	var sysctlEffects []generation.ConfigApplyEffect

@@ -163,7 +163,7 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 	if err != nil {
 		if errors.Is(err, configapply.ErrNoChanges) {
 			if filepath.Clean(s.Root) == "/" {
-				drift := configapply.InspectHostConfiguration(ctx, base.CurrentManifest.Node.HostConfiguration, commandRunnerFunc(runConfigApplyCommand))
+				drift := configapply.InspectHostConfiguration(ctx, s.Root, base.CurrentManifest.Node.HostConfiguration, commandRunnerFunc(runConfigApplyCommand))
 				if len(drift) > 0 {
 					diagnostics := configApplyEffectDiagnostics(drift)
 					if configapply.HostConfigurationDriftIsLive(drift) {
@@ -763,7 +763,7 @@ func (e *Executor) reconcileConfigApplyNoop(ctx context.Context, record operatio
 	if runner == nil {
 		runner = commandRunnerFunc(runConfigApplyCommand)
 	}
-	drift := configapply.InspectHostConfiguration(ctx, config, runner)
+	drift := configapply.InspectHostConfiguration(ctx, e.Root, config, runner)
 	if len(drift) == 0 {
 		return e.completeConfigApplyNoop(record, now)
 	}
@@ -782,7 +782,7 @@ func (e *Executor) reconcileConfigApplyNoop(ctx context.Context, record operatio
 	}); err != nil {
 		return err
 	}
-	plan := configapply.PlanHostSysctlReconciliation(config)
+	plan := configapply.PlanHostSysctlReconciliation(e.Root, config)
 	if err := configapply.ExecuteHostConfigurationActivation(ctx, plan, runner, nil); err != nil {
 		_, markErr := e.failRecordPhase(record.OperationID, "config-reconcile-failed", "config-reconcile", "config-reconcile", "inspect host configuration runtime state and retry", err)
 		return errorsJoin(err, markErr)

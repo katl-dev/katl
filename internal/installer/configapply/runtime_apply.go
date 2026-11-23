@@ -365,7 +365,7 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		}
 		executor.StatusPath = statusPath
 		if containsChangeDomain(changes, DomainHostConfiguration) {
-			hostPlan := planHostConfigurationChange(effectiveHostConfiguration(request.CurrentManifest.Node), effectiveHostConfiguration(merged.Node))
+			hostPlan := planHostConfigurationChange(effectiveHostConfiguration(request.CurrentManifest.Node), effectiveHostConfiguration(merged.Node), request.Root)
 			hostPlan.netdevs.protected = protectedNetworkEndpoints(request.CurrentManifest.Node, merged.Node, executor.ManagementAddress)
 			executor.HostConfiguration = &hostPlan
 		}
@@ -626,7 +626,7 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 		return merged, nil, nil, ErrNoChanges
 	}
 	if _, changed := domains.seen[DomainHostConfiguration]; changed {
-		hostPlan := planHostConfigurationChange(currentHostConfiguration, effectiveHostConfiguration(merged.Node))
+		hostPlan := planHostConfigurationChange(currentHostConfiguration, effectiveHostConfiguration(merged.Node), request.Root)
 		domains.hostConfiguration = &hostPlan
 	}
 	return merged, domains.changes(request.ClusterDefaults, roleOverlay, nodeOverlay), slices.Concat(unsafeFiles, proxyFiles), nil
@@ -830,7 +830,7 @@ func applyOverlay(installManifest *manifest.Manifest, overlay NodeOverlay, kuber
 		changed := !hostConfigurationsEqual(current, desired)
 		node.HostConfiguration = desired
 		if changed {
-			domains.addHostConfiguration(planHostConfigurationChange(current, desired))
+			domains.add(DomainHostConfiguration)
 		}
 	}
 	if overlay.SystemExtensions != nil {
@@ -972,7 +972,7 @@ func (a *domainAccumulator) changes(overlays ...NodeOverlay) []Change {
 			change.Warnings = slices.Clone(a.hostConfiguration.warnings)
 			change.Effects = slices.Clone(a.hostConfiguration.Effects)
 			change.LiveNotices = a.hostConfiguration.netdevs.notices(true)
-			change.NextBootNotices = a.hostConfiguration.netdevs.notices(false)
+			change.NextBootNotices = append(a.hostConfiguration.netdevs.notices(false), a.hostConfiguration.nextBootNotices...)
 		}
 		changes = append(changes, change)
 	}

@@ -384,11 +384,48 @@ verify the requested runtime values
 restore the snapshot after any partial or later apply failure
 ```
 
-Globs, exclusions, conditional failures, ambiguous precedence, deletions whose
-effective previous value cannot be determined, or parameters that do not yet
-exist are staged for next boot in the initial implementation. Katl must not
-claim rollback merely because it restored the old file; live kernel values also
-have to be restored.
+Katl resolves each changed key against every file systemd-sysctl reads, not
+only its own files. It follows sysctl.d precedence: files from `/etc`, `/run`,
+`/usr/local/lib`, and `/usr/lib` are ordered by file name, a file replaces a
+same-named file in a lower-priority directory, the last explicit assignment or
+exclusion (`-key` without a value) of a key wins, an exclusion leaves the key
+unset, and globs never override an explicit entry. Hidden files are ignored.
+A key changes when a managed file adds, changes, or removes its assignment.
+Whether Katl assigned the key before does not matter. The live value is the
+key's effective desired assignment, which is the value the next boot applies.
+
+A changed key applies live only when all of these hold:
+
+```text
+every changed managed sysctl file contains only concrete key = value lines
+the key still has an explicit effective assignment after the change
+no managed assignment of the key is overridden by a later value or exclusion
+the running kernel exposes the key as a readable and writable /proc/sys file
+the key is not one whose writes cannot be undone, such as kernel.modules_disabled
+  or net.ipv6.conf.*.disable_ipv6, which flushes addresses
+the effective value is a single field that sysctl -n reports back unchanged
+```
+
+Any other changed key stages the request for next boot. This covers globs and
+exclusions in a changed file, parameters that do not exist yet (such as those
+of a network link that has not appeared), assignments overridden by another
+file, and removing the last assignment of a key. That last case would leave
+the kernel default, which Katl cannot determine. An overridden assignment
+would not apply at the next boot either, so the plan also warns that the
+overriding setting stays in effect and names the file. Removing a managed
+assignment that exposes a vendor or other managed value applies that value
+live.
+
+The executor snapshots each assigned key with `sysctl -n` before activating
+the candidate confext. After activation it writes and reads back each key. If
+any later step fails, it restores the previous confext, which also restores a
+managed file's earlier absence, and then rewrites the snapshot values. Katl
+must not claim rollback merely because it restored the old file; live kernel
+values also have to be restored.
+
+Boot verification uses the same resolution. It expects the effective value of
+each managed key, so an overridden managed assignment does not fail boot
+health.
 
 This adapter replaces the need for a typed public `sysctl.settings` domain.
 

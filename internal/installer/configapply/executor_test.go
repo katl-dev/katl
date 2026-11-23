@@ -451,7 +451,7 @@ func TestMaskRollbackRestoresRunningState(t *testing.T) {
 	for _, initial := range []string{"active", "inactive"} {
 		t.Run(initial, func(t *testing.T) {
 			plan := liveExecutorPlan(t, []Change{{Domain: DomainHostConfiguration, LivePreflightOK: true}})
-			host := planHostConfigurationChange(manifest.HostConfiguration{}, manifest.HostConfiguration{MaskedUnits: []string{"bluetooth.service"}})
+			host := planHostConfigurationChange(manifest.HostConfiguration{}, manifest.HostConfiguration{MaskedUnits: []string{"bluetooth.service"}}, t.TempDir())
 			activator := &fakeActivator{}
 			runner := &fakeCommandRunner{results: map[string]CommandResult{
 				"systemd-state-bluetooth.service":       {Stdout: initial},
@@ -485,7 +485,7 @@ func TestMasksRequireInactiveState(t *testing.T) {
 	for _, observed := range []string{"inactive", "active"} {
 		t.Run(observed, func(t *testing.T) {
 			plan := liveExecutorPlan(t, []Change{{Domain: DomainHostConfiguration, LivePreflightOK: true}})
-			host := planHostConfigurationChange(manifest.HostConfiguration{}, manifest.HostConfiguration{MaskedUnits: []string{"bluetooth.service"}})
+			host := planHostConfigurationChange(manifest.HostConfiguration{}, manifest.HostConfiguration{MaskedUnits: []string{"bluetooth.service"}}, t.TempDir())
 			runner := &fakeCommandRunner{results: map[string]CommandResult{
 				"systemd-state-bluetooth.service":       {Stdout: "inactive"},
 				"systemd-mask-verify-bluetooth.service": {Stdout: "masked"},

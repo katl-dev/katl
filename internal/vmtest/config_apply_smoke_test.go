@@ -584,6 +584,10 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		t.Fatalf("live apply rebooted the node: boot ID %s became %s", beforeLiveBootID, got)
 	}
 	assertMaskedUnits(t, ctx, guest, "live")
+	// vm.swappiness is a first-time assignment of an existing kernel parameter.
+	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "live-swappiness", "sysctl", "-n", "vm.swappiness")); got != "20" {
+		t.Fatalf("live vm.swappiness = %q, want 20", got)
+	}
 
 	if liveGenerationStatus.GetConfigApply().GetPhase() != "active" || liveGenerationStatus.GetConfigApply().GetRequestedApplyMode() != "auto" || liveGenerationStatus.GetConfigApply().GetAcceptedApplyMode() != "live" {
 		t.Fatalf("live katlctl generation status = %+v, want active auto->live config apply", liveGenerationStatus.GetConfigApply())
@@ -607,6 +611,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		`"domain": "host-configuration"`,
 		`"sets": [`,
 		`"vmtest-udev"`,
+		`"target": "sysctl vm.swappiness"`,
 		`existing devices will not be retriggered`,
 	)
 	guestCommand(
@@ -717,6 +722,9 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	}
 	assertGuestFileContains(t, ctx, guest, "/proc/cmdline", "katl.vmtest.config_apply_kernel=1")
 	assertMaskedUnits(t, ctx, guest, "reboot")
+	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "reboot-swappiness", "sysctl", "-n", "vm.swappiness")); got != "20" {
+		t.Fatalf("vm.swappiness after reboot = %q, want 20", got)
+	}
 	assertGuestFileContains(t, ctx, guest, "/proc/cmdline", "module_blacklist=bluetooth,btusb,btmtk", "modprobe.blacklist=bluetooth,btusb,btmtk")
 	blocked, err := guest.RunCommand(ctx, GuestCommandRequest{Name: "bluetooth-load-blocked", Argv: []string{"modprobe", "bluetooth"}, AllowFailure: true})
 	if err != nil || blocked.ExitStatus == 0 {
