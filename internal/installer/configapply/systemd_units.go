@@ -101,7 +101,7 @@ func (e Executor) prepareHostSystemd(ctx context.Context) error {
 	}
 	slices.Sort(units)
 	units = slices.Compact(units)
-	var restart, reload, restoreStart, restoreReload, restoreStop, restoreEnable, clearStoppedFailures []string
+	var restart, reload, startRemoved, restoreStart, restoreReload, restoreStop, restoreEnable, clearStoppedFailures []string
 	for _, unit := range units {
 		state, err := e.systemdProperty(ctx, unit, "ActiveState")
 		if err != nil {
@@ -144,6 +144,9 @@ func (e Executor) prepareHostSystemd(ctx context.Context) error {
 				host.inactiveNotifications = append(host.inactiveNotifications, unit)
 			}
 		}
+		if state == "active" && slices.Contains(host.unitsToRemove, unit) {
+			startRemoved = append(startRemoved, unit)
+		}
 		if slices.Contains(host.unitsToEnable, unit) || action == "restart" || (state != "active" && forceStart) || (state == "active" && action == "try-restart") {
 			restart = append(restart, unit)
 		} else if state == "active" && action == "reload" {
@@ -184,6 +187,15 @@ func (e Executor) prepareHostSystemd(ctx context.Context) error {
 	}
 	host.Commands = append(host.Commands, unitCommands("restart", restart)...)
 	host.Commands = append(host.Commands, unitCommands("reload", reload)...)
+	// A removed /etc unit may have overridden a vendor or template definition
+	// that systemd loads in its place; run that definition as a changed one
+	// would be. Exit status 5 means no definition remains.
+	for _, unit := range startRemoved {
+		host.Commands = append(host.Commands, Command{
+			Name: "systemd-removed-unit-start-" + unit, Argv: []string{"systemctl", "start", unit},
+			SuccessExitStatuses: []int{0, 5},
+		})
+	}
 
 	var rollback HostConfigurationActivationPlan
 	rollback.addUnitEnablement(restoreEnable)

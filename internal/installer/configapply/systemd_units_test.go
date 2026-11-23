@@ -343,3 +343,192 @@ func TestExplicitUnitActions(t *testing.T) {
 		})
 	}
 }
+
+// systemdModel answers systemctl the way the manager does for units whose
+// definitions the active generation supplies: daemon-reload loads exactly
+// those units, and jobs for a unit that is not loaded fail with exit status 5.
+type systemdModel struct {
+	definitions map[string][]string
+	current     string
+	active      map[string]bool
+	loaded      map[string]bool
+	// broken fails to start while brokenIn is active.
+	broken, brokenIn string
+	commands         []string
+}
+
+func (m *systemdModel) Activate(_ context.Context, record generation.Record) error {
+	m.current = record.GenerationID
+	return nil
+}
+
+func (m *systemdModel) Rollback(_ context.Context, target string) error {
+	m.current = target
+	return nil
+}
+
+func (m *systemdModel) Run(_ context.Context, command Command) (CommandResult, error) {
+	argv := command.Argv
+	m.commands = append(m.commands, strings.Join(argv, " "))
+	if argv[0] == "systemd-run" {
+		for _, arg := range argv {
+			if units, ok := strings.CutPrefix(arg, "--property=Conflicts="); ok {
+				for _, unit := range strings.Fields(units) {
+					m.active[unit] = false
+				}
+			}
+			if units, ok := strings.CutPrefix(arg, "--property=Requires="); ok {
+				for _, unit := range strings.Fields(units) {
+					if result, ok := m.start(unit); !ok {
+						return result, nil
+					}
+				}
+			}
+		}
+		return CommandResult{Stdout: "katl-systemd-transaction-complete"}, nil
+	}
+	if argv[0] != "systemctl" {
+		return CommandResult{}, nil
+	}
+	switch argv[1] {
+	case "show":
+		unit := argv[len(argv)-1]
+		switch argv[2] {
+		case "--property=ActiveState":
+			if m.active[unit] {
+				return CommandResult{Stdout: "active\n"}, nil
+			}
+			return CommandResult{Stdout: "inactive\n"}, nil
+		case "--property=LoadState":
+			if m.loaded[unit] {
+				return CommandResult{Stdout: "loaded\n"}, nil
+			}
+			return CommandResult{Stdout: "not-found\n"}, nil
+		}
+		return CommandResult{Stdout: "no\n"}, nil
+	case "daemon-reload":
+		m.loaded = map[string]bool{}
+		for _, unit := range m.definitions[m.current] {
+			m.loaded[unit] = true
+		}
+	case "stop":
+		for _, unit := range argv[2:] {
+			m.active[unit] = false
+		}
+	case "restart", "try-restart", "start":
+		for _, unit := range argv[2:] {
+			if argv[1] == "try-restart" && !m.active[unit] {
+				continue
+			}
+			if result, ok := m.start(unit); !ok {
+				return result, nil
+			}
+		}
+	}
+	return CommandResult{}, nil
+}
+
+func (m *systemdModel) start(unit string) (CommandResult, bool) {
+	if !m.loaded[unit] {
+		return CommandResult{ExitStatus: 5, Stderr: "Unit " + unit + " not found."}, false
+	}
+	if unit == m.broken && m.current == m.brokenIn {
+		return CommandResult{ExitStatus: 1, Stderr: "Job for " + unit + " failed."}, false
+	}
+	m.active[unit] = true
+	return CommandResult{}, true
+}
+
+func testUnitFile(path, content string) manifest.HostConfigurationFile {
+	return manifest.HostConfigurationFile{Path: path, Content: &content}
+}
+
+func TestUnitFileRemovalPlansRemove(t *testing.T) {
+	current := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+		"app": {Files: []manifest.HostConfigurationFile{testUnitFile("/etc/systemd/system/app.service", "[Service]\nExecStart=/usr/bin/sleep infinity\n")}},
+	}}
+
+	plan := planHostConfigurationChange(current, manifest.HostConfiguration{})
+
+	if !plan.Live {
+		t.Fatalf("plan staged removal: %s", plan.Message)
+	}
+	var actions []string
+	for _, effect := range plan.Effects {
+		if effect.Target == "systemd unit app.service" {
+			actions = append(actions, effect.Action)
+		}
+	}
+	if !slices.Equal(actions, []string{"remove"}) {
+		t.Fatalf("app.service effects = %q, want only remove", actions)
+	}
+}
+
+func TestLiveUnitFileRemoval(t *testing.T) {
+	plan := liveExecutorPlan(t, []Change{{Domain: DomainHostConfiguration, LivePreflightOK: true}})
+	previous := plan.GenerationRecord.ConfigApply.PreviousGeneration
+	candidate := plan.GenerationRecord.GenerationID
+	other := "/etc/systemd/system/other.service.d/env.conf"
+	current := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+		"app":   {Files: []manifest.HostConfigurationFile{testUnitFile("/etc/systemd/system/app.service", "[Service]\nExecStart=/usr/bin/sleep infinity\n")}},
+		"other": {Files: []manifest.HostConfigurationFile{testUnitFile(other, "[Service]\nEnvironment=VALUE=old\n")}},
+	}}
+	desired := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
+		"other": {Files: []manifest.HostConfigurationFile{testUnitFile(other, "[Service]\nEnvironment=VALUE=new\n")}},
+	}}
+
+	for _, test := range []struct {
+		name string
+		// vendor is a definition the removed file overrode.
+		vendor, failOther bool
+		wantActive        bool
+	}{
+		{name: "stops and unloads"},
+		{name: "runs remaining vendor definition", vendor: true, wantActive: true},
+		{name: "rolls back after a later failure", failOther: true, wantActive: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			host := planHostConfigurationChange(current, desired)
+			model := &systemdModel{
+				definitions: map[string][]string{
+					previous:  {"app.service", "other.service"},
+					candidate: {"other.service"},
+				},
+				current: previous,
+				active:  map[string]bool{"app.service": true, "other.service": true},
+				loaded:  map[string]bool{"app.service": true, "other.service": true},
+			}
+			if test.vendor {
+				model.definitions[candidate] = append(model.definitions[candidate], "app.service")
+			}
+			if test.failOther {
+				model.broken, model.brokenIn = "other.service", candidate
+			}
+
+			status, err := (Executor{Runner: model, Activator: model, HostConfiguration: &host, Now: fixedNow}).ExecuteLive(t.Context(), plan)
+
+			if test.failOther {
+				if err == nil || !strings.Contains(err.Error(), "other.service failed") {
+					t.Fatalf("error = %v, want the later other.service failure\ncommands: %q", err, model.commands)
+				}
+				if status.Rollback == nil || status.Rollback.Result != generation.ConfigApplyActionPassed {
+					t.Fatalf("rollback = %#v", status.Rollback)
+				}
+				if model.current != previous || !model.loaded["app.service"] {
+					t.Fatalf("after rollback generation=%s app.service loaded=%t, want previous definition restored", model.current, model.loaded["app.service"])
+				}
+			} else if err != nil {
+				t.Fatalf("apply: %v\ncommands: %q", err, model.commands)
+			}
+			if model.active["app.service"] != test.wantActive {
+				t.Fatalf("app.service active=%t loaded=%t, want active=%t\ncommands: %q", model.active["app.service"], model.loaded["app.service"], test.wantActive, model.commands)
+			}
+			if !test.vendor && !test.failOther && model.loaded["app.service"] {
+				t.Fatal("app.service is still loaded after its only definition was removed")
+			}
+			if !model.active["other.service"] {
+				t.Fatal("other.service is not running")
+			}
+		})
+	}
+}
