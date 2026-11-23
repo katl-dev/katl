@@ -341,6 +341,21 @@ meantime never receives it. katldev prints the `cluster.yaml` change and the
 `katlctl cluster apply --endpoint` and `katlctl node reboot --endpoint`
 commands that complete the re-address.
 
+To test a node behind NAT, whose `management.address` no VM holds, give it a
+host-translated address outside the world network:
+
+```sh
+katldev world nat cp-1 --address 198.18.0.10
+katldev world nat cp-1 --remove
+```
+
+The host then translates connections from this machine to that address to the
+VM's reserved address, and katldev prints the `management.address` and
+`kubernetes.address` to set in `cluster.yaml`. The rule is an iptables DNAT in
+the world's own nat-table chain, so `nat` needs `sudo` that does not prompt.
+Later world commands rewrite it after a readdress or a host firewall reload, and
+`reset` and `remove` delete it.
+
 `reset` first prepares the current checkout's ISO, then removes the world and
 boots fresh installers, keeping the VM count unless `--nodes` changes it.
 `remove` deletes the world without recreating it. Both remove only libvirt

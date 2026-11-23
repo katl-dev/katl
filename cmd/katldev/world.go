@@ -383,7 +383,7 @@ func (manager installerManager) syncNetwork(ctx context.Context, world katldevWo
 			return err
 		}
 	}
-	return nil
+	return manager.syncNAT(ctx, world, false)
 }
 
 func (manager installerManager) networkExists(ctx context.Context, uri, name string) (bool, error) {
@@ -461,6 +461,16 @@ func (manager installerManager) removeWorldObjects(ctx context.Context, runID st
 	uri := manager.libvirtURI()
 	owner := worldOwnerPrefix + runID
 	prefix := "katl-" + runID + "-"
+	if nat, err := manager.readNAT(); err != nil {
+		return err
+	} else if len(nat) > 0 {
+		if err := manager.removeNATChain(ctx, natChain(runID)); err != nil {
+			return err
+		}
+		if err := manager.writeNAT(nil); err != nil {
+			return err
+		}
+	}
 	output, err := manager.virsh(ctx, uri, "list", "--all", "--name")
 	if err != nil {
 		return err
@@ -521,6 +531,7 @@ func newWorldCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comma
 	cmd.AddCommand(newWorldStopCommand(ctx, stdout, stderr, "stop [NODE...]"))
 	cmd.AddCommand(newWorldConsoleCommand(ctx, stdout, stderr, "console [NODE]"))
 	cmd.AddCommand(newWorldReaddressCommand(ctx, stdout, stderr))
+	cmd.AddCommand(newWorldNATCommand(ctx, stdout, stderr))
 	cmd.AddCommand(&cobra.Command{
 		Use:   "remove",
 		Short: "Delete the world's VMs, disks, and network",
