@@ -111,22 +111,43 @@ func loadInstallerManager(stdout, stderr io.Writer) (installerManager, error) {
 }
 
 func repositoryRoot() (string, error) {
-	// jj workspaces can be nested beneath a different Git checkout.
-	// Resolve the nearest workspace before falling back to plain Git.
+	// jj workspaces and Git worktrees can each be nested beneath the other's
+	// checkout, so the nearest of the two roots is the working checkout.
+	var roots []string
 	if output, err := exec.Command("jj", "root").Output(); err == nil {
 		if root := strings.TrimSpace(string(output)); root != "" {
-			return filepath.Abs(root)
+			roots = append(roots, root)
 		}
 	}
-	output, err := exec.Command("git", "rev-parse", "--show-toplevel").CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("find Katl checkout: %w: %s", err, strings.TrimSpace(string(output)))
+	output, gitErr := exec.Command("git", "rev-parse", "--show-toplevel").CombinedOutput()
+	if gitErr == nil {
+		if root := strings.TrimSpace(string(output)); root != "" {
+			roots = append(roots, root)
+		}
 	}
-	root := strings.TrimSpace(string(output))
-	if root == "" {
+	if len(roots) == 0 {
+		if gitErr != nil {
+			return "", fmt.Errorf("find Katl checkout: %w: %s", gitErr, strings.TrimSpace(string(output)))
+		}
 		return "", errors.New("find Katl checkout: git returned an empty path")
 	}
-	return filepath.Abs(root)
+	return nearestRoot(roots)
+}
+
+// nearestRoot returns the most deeply nested of the checkout roots that
+// contain the working directory.
+func nearestRoot(roots []string) (string, error) {
+	nearest := ""
+	for _, root := range roots {
+		abs, err := filepath.Abs(root)
+		if err != nil {
+			return "", err
+		}
+		if len(abs) > len(nearest) {
+			nearest = abs
+		}
+	}
+	return nearest, nil
 }
 
 func validateInstallerOptions(opts installerOptions) error {
