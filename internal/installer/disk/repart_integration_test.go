@@ -99,8 +99,12 @@ func TestSystemRepartLayout(t *testing.T) {
 	}
 	file.Close()
 	plan := executorPlan()
-	plan.TargetDiskPath = image
-	operation := findOp(BuildDiskOperations(plan, ""), "create-gpt")
+	operations, err := BuildDiskOperations(plan, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation := findOp(operations, "create-gpt")
+	operation.Args[len(operation.Args)-1] = image
 	operation.Args = append([]string{"--offline=yes"}, operation.Args...)
 	if err := runRepartOperation(context.Background(), repartRunner{}, operation); err != nil {
 		t.Fatal(err)
@@ -179,8 +183,12 @@ func TestSystemRepartIdentitiesAreFresh(t *testing.T) {
 		}
 		file.Close()
 		plan := executorPlan()
-		plan.TargetDiskPath = image
-		operation := findOp(BuildDiskOperations(plan, ""), "create-gpt")
+		operations, err := BuildDiskOperations(plan, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		operation := findOp(operations, "create-gpt")
+		operation.Args[len(operation.Args)-1] = image
 		operation.Args = append([]string{"--offline=yes"}, operation.Args...)
 		if err := runRepartOperation(context.Background(), repartRunner{}, operation); err != nil {
 			t.Fatal(err)

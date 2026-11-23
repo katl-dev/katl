@@ -38,7 +38,7 @@ func TestDerivedVolumesExposeVolumeNamePartitionConvention(t *testing.T) {
 		}},
 	}})}
 	volumes, warnings := derivedVolumesAndWarnings(storage, `spec.nodes["cp-1"]`)
-	if len(volumes) != 1 || volumes[0].PartitionLabel != "u-local-hostpath" || volumes[0].MountSource != "/dev/disk/by-partlabel/u-local-hostpath" {
+	if len(volumes) != 1 || volumes[0].PartitionLabel != "u-local-hostpath" || volumes[0].MountSource != "" {
 		t.Fatalf("derived volumes = %#v", volumes)
 	}
 	if len(warnings) != 0 {

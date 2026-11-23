@@ -52,7 +52,11 @@ func TestBindSystemPartitions(t *testing.T) {
 
 	plan.PartitionUUIDs = bound
 	operations := map[string]DiskOperation{}
-	for _, operation := range BuildDiskOperations(plan, "/mnt/target") {
+	built, err := BuildDiskOperations(plan, "/mnt/target")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, operation := range built {
 		operations[operation.Name] = operation
 	}
 	if got := operations["mount-state"].Args; len(got) != 2 || got[0] != "/dev/disk/by-partuuid/new-state" {
@@ -88,7 +92,7 @@ func TestBindSystemPartitionsRefuses(t *testing.T) {
 			change: func(facts *HardwareFacts, _ *DiskLayoutPlan) {
 				facts.BlockDevices[1].DiskSeq++
 			},
-			want: "no longer the selected target disk",
+			want: "/dev/vdb is now (size=32.0GiB, diskseq=4), not the selected (size=32.0GiB, diskseq=3)",
 		},
 	}
 	for _, test := range tests {

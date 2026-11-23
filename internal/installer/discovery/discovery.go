@@ -42,6 +42,7 @@ type BlockDevice struct {
 	Rotational          bool
 	Transport           string
 	DiskSeq             uint64
+	PartitionNumber     uint64
 	FilesystemSignature string
 	PartitionSignature  string
 	Mountpoints         []string
@@ -140,7 +141,7 @@ func MatchPartition(facts HardwareFacts, selector PartitionSelector) (PartitionM
 	}
 
 	match := matches[0]
-	if err := validatePartitionSafety(facts, match.Device); err != nil {
+	if err := ValidatePartitionSafety(facts, match.Device); err != nil {
 		return PartitionMatch{}, err
 	}
 	return match, nil
@@ -190,7 +191,8 @@ func (s PartitionSelector) matches(device BlockDevice) bool {
 	}
 }
 
-func validatePartitionSafety(facts HardwareFacts, device BlockDevice) error {
+// ValidatePartitionSafety checks that a partition is writable and unmounted.
+func ValidatePartitionSafety(facts HardwareFacts, device BlockDevice) error {
 	if device.Type != DevicePartition {
 		return fmt.Errorf("%w: %s is %s, not a partition", ErrUnsafeTargetDisk, device.Path, device.Type)
 	}

@@ -627,10 +627,14 @@ system treats the disk holding its running root partition as the system disk
 and mounts `/efi` and `/var` only from that disk, on every boot. Host upgrades
 write the inactive root slot on the same disk, and live volume changes treat
 the disk holding the mounted state partition as the system disk. Other disks
-that carry Katl system partitions may stay attached. This guarantee does not
-yet cover [data volumes](#data-volumes): a volume disk still finds its
-partition by the `u-<name>` label, so detach the volume disks of an earlier
-install before installing or applying volumes. The node stops in emergency mode
+that carry Katl partitions may stay attached. [Data volume](#data-volumes)
+disks are bound the same way while Katl provisions them: install and live
+apply recheck each selected disk immediately before writing it, address the
+disk, or the selected partition on it, by the disk's kernel attachment
+sequence, and record the volume's PARTUUID or filesystem UUID only when it is
+found on that disk and shared with no other disk. At boot a volume mounts by
+that recorded identity without rechecking its disk, so a copy of a data disk
+attached later could be mounted in its place. The node stops in emergency mode
 before mounting `/var` when the system disk does not hold exactly one ESP and
 one state partition, when another disk shares its partition GUIDs, as a cloned
 disk does, or when the firmware booted the ESP of another disk. The console

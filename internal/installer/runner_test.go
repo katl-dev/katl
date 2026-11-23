@@ -733,7 +733,7 @@ func TestPlanInstallHonorsVolumeWipe(t *testing.T) {
 		KatlosImage: &payload,
 		HardwareFacts: discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
 			{Path: "/dev/vda", Type: discovery.DeviceDisk, ByID: []string{"/dev/disk/by-id/ata-root"}, SizeBytes: 64 << 30},
-			{Path: "/dev/vdb", Type: discovery.DeviceDisk, Serial: "data", SizeBytes: 64 << 30, PartitionSignature: "gpt"},
+			{Path: "/dev/vdb", Type: discovery.DeviceDisk, DiskSeq: 2, Serial: "data", SizeBytes: 64 << 30, PartitionSignature: "gpt"},
 		}},
 	}
 	if err := planInstall(install); err != nil {
@@ -1398,17 +1398,94 @@ func TestRunnerInstallsMountUnits(t *testing.T) {
 	}
 }
 
+func TestRunnerRefusesChangedVolumeDisk(t *testing.T) {
+	target := planningFacts().BlockDevices[0]
+	volumeDisk := discovery.DiskIdentity{Path: "/dev/vdb", DiskSeq: 2, SizeBytes: 64 << 30}
+	// Another disk has taken the volume disk's kernel name since planning.
+	facts := discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
+		target,
+		{Path: "/dev/vdb", Type: discovery.DeviceDisk, DiskSeq: 5, SizeBytes: 64 << 30, Partitions: []discovery.BlockDevice{
+			{Path: "/dev/vdb1", Type: discovery.DevicePartition, PartitionNumber: 1, PartitionUUID: "data-part"},
+		}},
+	}}
+	for _, tt := range []struct {
+		name     string
+		step     Step
+		want     string
+		refused  bool
+		noRunsOf string
+	}{
+		{"before wiping the system disk", prepareDiskStep{}, "before wiping", true, "wipefs"},
+		{"after wiping the system disk", formatFilesystemsStep{}, "boot the installer again and rerun katlctl install apply", false, "mkfs.xfs"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			commands := &NoopCommandRunner{}
+			install := &Context{
+				Commands: commands, Store: &MemoryStateStore{}, Discovery: discovery.StaticDiscoverySource{Facts: facts},
+				Manifest: manifest.Manifest{Install: manifest.InstallConfig{WipeTarget: true}},
+				DiskLayout: &disk.DiskLayoutPlan{
+					TargetDiskPath: target.Path, TargetDisk: discovery.IdentityOf(target),
+					Partitions: []disk.PartitionPlan{{Name: "esp", GPTLabel: disk.GPTLabelESP, Type: "esp", Filesystem: "vfat", MountPath: "/efi", SizeMiB: 512}},
+					VolumeMounts: []disk.VolumePlan{{
+						Name: "data", TargetKind: "partition", Disk: volumeDisk, Partition: disk.PartitionIdentity{Number: 1, UUID: "data-part"},
+						Filesystem: "xfs", MountPath: "/var/mnt/data", Wipe: true,
+					}},
+				},
+			}
+
+			err := tt.step.Run(context.Background(), install)
+
+			if !errors.Is(err, disk.ErrVolumeRefused) || !strings.Contains(err.Error(), tt.want) || errors.Is(err, ErrInstallRefused) != tt.refused {
+				t.Fatalf("Run() error = %v, want volume refusal with %q (install refused=%v)", err, tt.want, tt.refused)
+			}
+			for _, call := range commands.Calls {
+				if call.Name == tt.noRunsOf {
+					t.Fatalf("%s ran while a volume disk changed: %v", tt.noRunsOf, commands.Calls)
+				}
+			}
+		})
+	}
+}
+
+func TestRunnerRefusesMountUnitForUnboundVolume(t *testing.T) {
+	targetRoot := t.TempDir()
+	install := &Context{
+		TargetRoot:   targetRoot,
+		LoaderRecord: &generation.Record{GenerationID: "2026.06.06-001"},
+		DiskLayout: &disk.DiskLayoutPlan{VolumeMounts: []disk.VolumePlan{{
+			Name: "data", Disk: discovery.DiskIdentity{Path: "/dev/vdb"}, Repartition: true,
+			Filesystem: "ext4", MountPath: "/var/mnt/data",
+		}}},
+		Commands: &NoopCommandRunner{},
+		Store:    &MemoryStateStore{},
+	}
+
+	err := NewRunner(Plan{installMountUnitsStep{}}, install).Run(context.Background())
+
+	if err == nil || !strings.Contains(err.Error(), `volume "data" is not bound`) {
+		t.Fatalf("Run() error = %v, want unbound volume refusal", err)
+	}
+	assertMissing(t, filepath.Join(targetRoot, "etc/systemd/system/var-mnt-data.mount"))
+}
+
 func TestFormatFilesystemsBindsVolumeToDiscoveredIdentity(t *testing.T) {
+	// An earlier install's volume disk, enumerated first, carries the same
+	// u-data label and must not be bound.
 	install := &Context{
 		Commands: &NoopCommandRunner{}, Store: &MemoryStateStore{},
 		Discovery: discovery.StaticDiscoverySource{Facts: discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{{
-			Path: "/dev/vdb", Type: discovery.DeviceDisk, Partitions: []discovery.BlockDevice{{
+			Path: "/dev/vda", Type: discovery.DeviceDisk, DiskSeq: 1, Partitions: []discovery.BlockDevice{{
+				Path: "/dev/vda1", Type: discovery.DevicePartition, GPTLabel: "u-data",
+				PartitionUUID: "old-data", FilesystemUUID: "old-fs", FilesystemSignature: "xfs",
+			}},
+		}, {
+			Path: "/dev/vdb", Type: discovery.DeviceDisk, DiskSeq: 2, Partitions: []discovery.BlockDevice{{
 				Path: "/dev/vdb1", Type: discovery.DevicePartition, GPTLabel: "u-data",
 				PartitionUUID: "part-data", FilesystemUUID: "fs-data", FilesystemSignature: "xfs",
 			}},
 		}}}},
 		DiskLayout: &disk.DiskLayoutPlan{VolumeMounts: []disk.VolumePlan{{
-			Name: "data", DevicePath: "/dev/vdb1", MountSource: "/dev/disk/by-partlabel/u-data",
+			Name: "data", Disk: discovery.DiskIdentity{Path: "/dev/vdb", DiskSeq: 2}, Repartition: true, Wipe: true,
 			Filesystem: "xfs", MountPath: "/var/mnt/data",
 		}}},
 	}
@@ -1766,6 +1843,7 @@ func planningFacts() discovery.HardwareFacts {
 				Name:      "nvme0n1",
 				Path:      "/dev/nvme0n1",
 				Type:      discovery.DeviceDisk,
+				DiskSeq:   1,
 				ByID:      []string{"/dev/disk/by-id/ata-root"},
 				SizeBytes: 64 * 1024 * 1024 * 1024,
 			},
@@ -1798,13 +1876,14 @@ func appliedLayoutFacts(targetRoot string) discovery.HardwareFacts {
 				Name:      "nvme0n1",
 				Path:      "/dev/nvme0n1",
 				Type:      discovery.DeviceDisk,
+				DiskSeq:   1,
 				ByID:      []string{"/dev/disk/by-id/ata-root"},
 				SizeBytes: 64 * 1024 * 1024 * 1024,
 				Partitions: []discovery.BlockDevice{
-					{Path: "/dev/nvme0n1p1", GPTLabel: disk.GPTLabelESP},
-					{Path: "/dev/nvme0n1p2", GPTLabel: disk.GPTLabelRootA},
-					{Path: "/dev/nvme0n1p3", GPTLabel: disk.GPTLabelRootB},
-					{Path: "/dev/nvme0n1p4", GPTLabel: disk.GPTLabelState},
+					{Path: "/dev/nvme0n1p1", GPTLabel: disk.GPTLabelESP, PartitionUUID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},
+					{Path: "/dev/nvme0n1p2", GPTLabel: disk.GPTLabelRootA, PartitionUUID: "11111111-2222-3333-4444-555555555555"},
+					{Path: "/dev/nvme0n1p3", GPTLabel: disk.GPTLabelRootB, PartitionUUID: "66666666-7777-8888-9999-000000000000"},
+					{Path: "/dev/nvme0n1p4", GPTLabel: disk.GPTLabelState, PartitionUUID: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"},
 				},
 			},
 		},

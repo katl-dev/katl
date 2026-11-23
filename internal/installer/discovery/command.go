@@ -48,7 +48,7 @@ func (s CommandDiscoverySource) Discover(ctx context.Context) (HardwareFacts, er
 		return HardwareFacts{}, err
 	}
 	attachAliases(facts.BlockDevices, byID, byPath)
-	if err := attachDiskSeq(facts.BlockDevices, firstNonEmpty(s.SysBlockDir, "/sys/class/block")); err != nil {
+	if err := attachSysfsIdentity(facts.BlockDevices, firstNonEmpty(s.SysBlockDir, "/sys/class/block")); err != nil {
 		return HardwareFacts{}, err
 	}
 
@@ -119,25 +119,35 @@ func attachAliases(devices []BlockDevice, byID, byPath map[string][]string) {
 	}
 }
 
-// attachDiskSeq reads each disk's kernel attachment sequence number. Kernels
-// without diskseq leave it zero.
-func attachDiskSeq(devices []BlockDevice, sysBlockDir string) error {
+// attachSysfsIdentity reads each disk's kernel attachment sequence number and
+// each partition's number on its disk. Kernels without diskseq leave it zero.
+func attachSysfsIdentity(devices []BlockDevice, sysBlockDir string) error {
 	for i := range devices {
-		if devices[i].Type != DeviceDisk || devices[i].Name == "" {
-			continue
+		device := &devices[i]
+		var attribute string
+		var value *uint64
+		switch device.Type {
+		case DeviceDisk:
+			attribute, value = "diskseq", &device.DiskSeq
+		case DevicePartition:
+			attribute, value = "partition", &device.PartitionNumber
 		}
-		data, err := os.ReadFile(filepath.Join(sysBlockDir, devices[i].Name, "diskseq"))
-		if os.IsNotExist(err) {
-			continue
+		if attribute != "" && device.Name != "" {
+			data, err := os.ReadFile(filepath.Join(sysBlockDir, device.Name, attribute))
+			if err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("read %s for %s: %w", attribute, device.Path, err)
+			}
+			if err == nil {
+				parsed, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
+				if err != nil {
+					return fmt.Errorf("parse %s for %s: %w", attribute, device.Path, err)
+				}
+				*value = parsed
+			}
 		}
-		if err != nil {
-			return fmt.Errorf("read diskseq for %s: %w", devices[i].Path, err)
+		if err := attachSysfsIdentity(device.Partitions, sysBlockDir); err != nil {
+			return err
 		}
-		seq, err := strconv.ParseUint(strings.TrimSpace(string(data)), 10, 64)
-		if err != nil {
-			return fmt.Errorf("parse diskseq for %s: %w", devices[i].Path, err)
-		}
-		devices[i].DiskSeq = seq
 	}
 	return nil
 }

@@ -1578,6 +1578,7 @@ func TestValidateConfigHonorsWipe(t *testing.T) {
 	server := newTestServer(t)
 	writeConfigApplyBaseState(t, server.Root)
 	server.RunVolumeDiscovery = volumeAuthorityRunner("gpt", nil)
+	server.volumeDevices = hermeticVolumeDevices(t)
 	request := &agentapi.ValidateConfigRequest{
 		ApiVersion: APIVersion, Kind: "ValidateConfigRequest", ClientRequestId: "req-storage-authority",
 		Actor: "test-actor", ApplyMode: generation.ApplyModeAuto, CandidateGenerationId: "generation-storage-authority", NodeName: "node-a",
