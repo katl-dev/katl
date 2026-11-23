@@ -562,7 +562,7 @@ virtual disks, or narrow a class of disks, and each gives a weaker guarantee:
 
 | Field | Matches | Guarantee |
 | --- | --- | --- |
-| `byID` | A `/dev/disk/by-id/` alias of the disk | Stable hardware identity; recommended |
+| `byID` | A `/dev/disk/by-id/` alias of the disk | Stable hardware identity; recommended. Aliases udev derives from LVM, MD RAID, or device-mapper metadata, such as `lvm-pv-uuid-`, `md-uuid-`, or `dm-name-`, name disk contents that installation erases, so Katl never records them and refuses them in `--node` and `--disk` |
 | `wwn` | The device world-wide name | Stable hardware identity; recommended |
 | `serial` | The device serial number | Stable hardware identity; recommended |
 | `byPath` | A `/dev/disk/by-path/` alias, such as `/dev/disk/by-path/pci-0000:00:04.0` | Identifies the attachment slot: a replacement disk in the same slot matches, and moving the disk or changing the controller or VM topology stops it matching |
@@ -573,9 +573,9 @@ virtual disks, or narrow a class of disks, and each gives a weaker guarantee:
 | `type` | `nvme`, `ssd`, or `hdd` | Ambiguous whenever several disks fit |
 
 `size` accepts `>=`, `<=`, `>`, `<`, or `==` followed by a number and a
-decimal (`KB`, `MB`, `GB`, `TB`) or binary (`KiB`, `MiB`, `GiB`, `TiB`) unit.
-Without a comparison the size must match exactly in bytes. The installer
-inventory reports each disk's `sizeBytes`.
+required unit: `B` for bytes, a decimal unit (`KB`, `MB`, `GB`, `TB`), or a
+binary unit (`KiB`, `MiB`, `GiB`, `TiB`). Without a comparison the size must
+match exactly. The installer inventory reports each disk's `sizeBytes`.
 
 Combine weak criteria so they identify one disk. For example, a machine whose
 only NVMe disk is the system disk can use:
@@ -608,7 +608,10 @@ kernel attachment sequence rather than its name. If the check fails before
 wiping, the installer refuses the request without touching the disk and waits
 for another `katlctl install apply`; if it fails after wiping, it stops before
 partitioning and the installer must be booted again. The GPT disk GUID is the
-one criterion not rechecked, because wiping the disk removes it.
+one criterion not rechecked, because wiping the disk removes it. Once an
+attempt has wiped a disk, every later attempt in the same installer boot stays
+bound to that disk and configuration, however it fails, and refuses to change
+any other disk; booting the installer again clears the binding.
 
 After installation Katl does not use `install.systemDisk` again. The installed
 system finds its disk through the partitions Katl created, which receive fresh

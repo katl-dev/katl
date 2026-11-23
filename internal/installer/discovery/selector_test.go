@@ -167,7 +167,7 @@ func TestParseSizeMatch(t *testing.T) {
 		{"<=2TiB", SizeMatch{Op: "<=", Bytes: 2 << 40}},
 		{"> 1.5tb", SizeMatch{Op: ">", Bytes: 1_500_000_000_000}},
 		{"64GiB", SizeMatch{Op: "==", Bytes: 64 << 30}},
-		{"== 4096", SizeMatch{Op: "==", Bytes: 4096}},
+		{"== 4096B", SizeMatch{Op: "==", Bytes: 4096}},
 	}
 	for _, tt := range tests {
 		got, err := ParseSizeMatch(tt.value)
@@ -182,6 +182,17 @@ func TestParseSizeMatch(t *testing.T) {
 	for _, value := range []string{"", ">=", "500 parsecs", "=> 1GB", "-1GB"} {
 		if _, err := ParseSizeMatch(value); err == nil {
 			t.Errorf("ParseSizeMatch(%q) error = nil, want failure", value)
+		}
+	}
+}
+
+// A bare number would otherwise be read as bytes, so ">= 500" would match
+// every disk.
+func TestParseSizeMatchRequiresUnit(t *testing.T) {
+	for _, value := range []string{">= 500", "64", " < 2.5 "} {
+		_, err := ParseSizeMatch(value)
+		if err == nil || !strings.Contains(err.Error(), "has no unit") || !strings.Contains(err.Error(), strings.TrimSpace(value)+`GB"`) {
+			t.Errorf("ParseSizeMatch(%q) error = %v, want a missing-unit error suggesting a unit", value, err)
 		}
 	}
 }

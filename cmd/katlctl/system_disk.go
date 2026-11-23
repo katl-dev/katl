@@ -17,6 +17,8 @@ import (
 func systemDiskArgument(value string) (manifest.DiskSelector, error) {
 	var selector manifest.DiskSelector
 	switch {
+	case contentDerivedByID(value):
+		return manifest.DiskSelector{}, fmt.Errorf("disk %q is named by metadata stored on it, which installation erases; use the disk's hardware /dev/disk/by-id path (such as ata-, nvme-, scsi-, or wwn-), a /dev/disk/by-path path, or a kernel device path such as /dev/sda", value)
 	case strings.HasPrefix(value, "/dev/disk/by-id/"):
 		selector.ByID = value
 	case strings.HasPrefix(value, "/dev/disk/by-path/"):
@@ -39,13 +41,33 @@ func systemDiskArgumentString(selector manifest.DiskSelector) string {
 	return selector.Target().String()
 }
 
+// contentDerivedByIDPrefixes name the /dev/disk/by-id aliases udev derives
+// from LVM, MD RAID, or device-mapper metadata on a device rather than from
+// its hardware.
+var contentDerivedByIDPrefixes = []string{"lvm-pv-uuid-", "md-uuid-", "md-name-", "dm-uuid-", "dm-name-"}
+
+func contentDerivedByID(alias string) bool {
+	name, ok := strings.CutPrefix(alias, "/dev/disk/by-id/")
+	if !ok {
+		return false
+	}
+	for _, prefix := range contentDerivedByIDPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 // installerSystemDisk chooses the strongest identity the installer reports for
-// a disk. The GPT disk GUID is never chosen because installation replaces it,
-// which would leave the configuration stale for a reinstall.
+// a disk. Identities that installation replaces are never chosen, because they
+// would leave the configuration stale for a reinstall: the GPT disk GUID and
+// by-id aliases derived from the disk's contents.
 func installerSystemDisk(disk handoff.HandoffDisk) manifest.DiskSelector {
+	hardwareByID := slices.DeleteFunc(slices.Clone(disk.ByID), contentDerivedByID)
 	switch {
-	case len(disk.ByID) > 0:
-		return manifest.DiskSelector{ByID: slices.Min(disk.ByID)}
+	case len(hardwareByID) > 0:
+		return manifest.DiskSelector{ByID: slices.Min(hardwareByID)}
 	case disk.WWN != "":
 		return manifest.DiskSelector{WWN: disk.WWN}
 	case disk.Serial != "":

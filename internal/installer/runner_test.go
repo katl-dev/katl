@@ -1236,35 +1236,39 @@ func TestRunnerRecordsRefusalBeforeMutationStatus(t *testing.T) {
 func TestRunnerRefusesChangedInterruptedRequest(t *testing.T) {
 	dir := t.TempDir()
 	store := NewFileStateStore(dir)
-	previous := installstatus.New(installstatus.StateFailedAfterMutation, time.Time{})
-	previous.RequestDigest = strings.Repeat("b", 64)
-	previous.DestructiveMutation = true
-	if err := store.SaveStatus(context.Background(), previous); err != nil {
-		t.Fatalf("SaveStatus() error = %v", err)
+	bound := DiskBinding{RequestDigest: strings.Repeat("b", 64), TargetDisk: discovery.DiskIdentity{Path: "/dev/nvme0n1", SizeBytes: 64 << 30}}
+	if err := store.SaveDiskBinding(context.Background(), bound); err != nil {
+		t.Fatalf("SaveDiskBinding() error = %v", err)
 	}
-	install := &Context{
-		ManifestPath: writeManifest(t),
-		StateDir:     dir,
-		TargetRoot:   t.TempDir(),
-		Commands:     &NoopCommandRunner{},
-		Store:        store,
-		InputMode:    installstatus.InputModeTest,
-		InputSource:  "https://example.invalid/install.json",
-	}
+	manifestPath := writeManifest(t)
 
-	err := NewRunner(Plan{loadManifestStep{}}, install).Run(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "install refused") {
-		t.Fatalf("Run() error = %v, want install refused", err)
-	}
-	status, err := store.LoadStatus(context.Background())
-	if err != nil {
-		t.Fatalf("LoadStatus() error = %v", err)
-	}
-	if status.State != installstatus.StateInstallRefused || status.DestructiveMutation {
-		t.Fatalf("rerun status = %#v", status)
-	}
-	if status.RequestDigest == previous.RequestDigest || status.RequestDigest == "" {
-		t.Fatalf("rerun digest = %q, previous %q", status.RequestDigest, previous.RequestDigest)
+	// The refusal must not release the binding, so repeating the changed
+	// request is refused again.
+	for attempt := 1; attempt <= 2; attempt++ {
+		install := &Context{
+			ManifestPath: manifestPath,
+			StateDir:     dir,
+			TargetRoot:   t.TempDir(),
+			Commands:     &NoopCommandRunner{},
+			Store:        NewFileStateStore(dir),
+			InputMode:    installstatus.InputModeTest,
+			InputSource:  "https://example.invalid/install.json",
+		}
+
+		err := NewRunner(Plan{loadManifestStep{}}, install).Run(context.Background())
+		if !errors.Is(err, ErrInstallRefused) {
+			t.Fatalf("attempt %d: Run() error = %v, want install refused", attempt, err)
+		}
+		status, err := store.LoadStatus(context.Background())
+		if err != nil {
+			t.Fatalf("LoadStatus() error = %v", err)
+		}
+		if status.State != installstatus.StateInstallRefused || !status.DestructiveMutation {
+			t.Fatalf("attempt %d: status = %s destructive=%v, want %s with the earlier mutation reported", attempt, status.State, status.DestructiveMutation, installstatus.StateInstallRefused)
+		}
+		if status.TargetDisk == nil || *status.TargetDisk != bound.TargetDisk {
+			t.Fatalf("attempt %d: status target disk = %#v, want the bound %#v", attempt, status.TargetDisk, bound.TargetDisk)
+		}
 	}
 }
 
@@ -2041,8 +2045,12 @@ func (failingStatusStore) SaveStatus(_ context.Context, record installstatus.Rec
 	return nil
 }
 
-func (failingStatusStore) LoadStatus(context.Context) (installstatus.Record, error) {
-	return installstatus.Record{}, os.ErrNotExist
+func (failingStatusStore) SaveDiskBinding(context.Context, DiskBinding) error {
+	return nil
+}
+
+func (failingStatusStore) LoadDiskBinding(context.Context) (DiskBinding, error) {
+	return DiskBinding{}, os.ErrNotExist
 }
 
 func assertText(t *testing.T, path string, want string) {
@@ -2153,17 +2161,14 @@ func TestInstalledTargetPolicy(t *testing.T) {
 func TestRunnerRerunAfterMutationKeepsResolvedDisk(t *testing.T) {
 	// The selector would match /dev/nvme0n1, but the interrupted attempt
 	// resolved a different disk that has since disappeared.
+	path := writeManifest(t)
 	install := &Context{
-		ManifestPath:   writeManifest(t),
+		ManifestPath:   path,
 		TargetRoot:     t.TempDir(),
 		Commands:       &NoopCommandRunner{},
-		Store:          &MemoryStateStore{},
+		Store:          &MemoryStateStore{Binding: &DiskBinding{RequestDigest: manifestDigest(t, path), TargetDisk: discovery.DiskIdentity{Path: "/dev/sdb", DiskSeq: 4, SizeBytes: 64 << 30}}},
 		KatlosResolver: &recordingKatlosResolver{payload: planningPayload()},
 		Discovery:      discovery.StaticDiscoverySource{Facts: planningFacts()},
-		PreviousStatus: &installstatus.Record{
-			DestructiveMutation: true,
-			TargetDisk:          &discovery.DiskIdentity{Path: "/dev/sdb", DiskSeq: 4, SizeBytes: 64 << 30},
-		},
 	}
 	plan := Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}}
 
@@ -2246,17 +2251,14 @@ func TestRunnerRerunAfterMutationBindsToRetainedDisk(t *testing.T) {
 		{Name: "sda", Path: "/dev/sda", Type: discovery.DeviceDisk, DiskSeq: 1, SizeBytes: 64 << 30, PartitionSignature: "gpt", PartitionTableUUID: guid},
 		{Name: "sdb", Path: "/dev/sdb", Type: discovery.DeviceDisk, DiskSeq: 2, SizeBytes: 64 << 30},
 	}}
+	path := writeManifestWithTarget(t, `{"gptGUID": "`+guid+`"}`)
 	install := &Context{
-		ManifestPath:   writeManifestWithTarget(t, `{"gptGUID": "`+guid+`"}`),
+		ManifestPath:   path,
 		TargetRoot:     t.TempDir(),
 		Commands:       &NoopCommandRunner{},
-		Store:          &MemoryStateStore{},
+		Store:          &MemoryStateStore{Binding: &DiskBinding{RequestDigest: manifestDigest(t, path), TargetDisk: discovery.DiskIdentity{Path: "/dev/sdb", DiskSeq: 2, SizeBytes: 64 << 30}}},
 		KatlosResolver: &recordingKatlosResolver{payload: planningPayload()},
 		Discovery:      discovery.StaticDiscoverySource{Facts: facts},
-		PreviousStatus: &installstatus.Record{
-			DestructiveMutation: true,
-			TargetDisk:          &discovery.DiskIdentity{Path: "/dev/sdb", DiskSeq: 2, SizeBytes: 64 << 30},
-		},
 	}
 	plan := Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}}
 
@@ -2267,6 +2269,85 @@ func TestRunnerRerunAfterMutationBindsToRetainedDisk(t *testing.T) {
 	if got := install.DiskLayout.TargetDiskPath; got != "/dev/sdb" {
 		t.Fatalf("rerun planned %s, want the retained /dev/sdb", got)
 	}
+}
+
+// A failure before planning on a rerun must not release the disk an earlier
+// attempt in the same installer boot wiped. Each attempt is a fresh process
+// sharing only the state directory.
+func TestRunnerStaysBoundToWipedDiskAcrossAttempts(t *testing.T) {
+	stateDir := t.TempDir()
+	manifestPath := writeManifestWithTarget(t, `{"name": "/dev/sda"}`)
+	diskA := discovery.BlockDevice{Name: "sda", Path: "/dev/sda", Type: discovery.DeviceDisk, DiskSeq: 1, SizeBytes: 64 << 30}
+	diskB := discovery.BlockDevice{Name: "sdb", Path: "/dev/sdb", Type: discovery.DeviceDisk, DiskSeq: 2, SizeBytes: 64 << 30}
+	attempt := func(facts discovery.HardwareFacts, commands CommandRunner, resolver KatlosImageResolver) error {
+		install := &Context{
+			ManifestPath:   manifestPath,
+			StateDir:       stateDir,
+			TargetRoot:     t.TempDir(),
+			Commands:       commands,
+			Store:          NewFileStateStore(stateDir),
+			KatlosResolver: resolver,
+			Discovery:      discovery.StaticDiscoverySource{Facts: facts},
+		}
+		plan := Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}, prepareDiskStep{}, createPartitionsStep{}}
+		return NewRunner(plan, install).Run(context.Background())
+	}
+	original := discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{diskA, diskB}}
+
+	first := &failingCommandRunner{fail: "systemd-repart"}
+	if err := attempt(original, first, &recordingKatlosResolver{payload: planningPayload()}); err == nil || !first.ran("wipefs") {
+		t.Fatalf("attempt 1: error = %v, wipefs ran = %v; want a failure after wiping", err, first.ran("wipefs"))
+	}
+
+	second := &failingCommandRunner{}
+	if err := attempt(original, second, &recordingKatlosResolver{err: errString("image unavailable")}); err == nil || second.ran("wipefs") {
+		t.Fatalf("attempt 2: error = %v, wipefs ran = %v; want a failure before planning", err, second.ran("wipefs"))
+	}
+	status, err := installstatus.ReadFile(filepath.Join(stateDir, "status.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.State != installstatus.StateFailedAfterMutation || !status.DestructiveMutation || status.TargetDisk == nil || status.TargetDisk.Path != "/dev/sda" {
+		t.Fatalf("attempt 2: status = %s destructive=%v target=%#v, want %s on the wiped /dev/sda", status.State, status.DestructiveMutation, status.TargetDisk, installstatus.StateFailedAfterMutation)
+	}
+
+	// The kernel names swap, so the name selector now matches disk B.
+	renamedA, renamedB := diskA, diskB
+	renamedA.Name, renamedA.Path = "sdb", "/dev/sdb"
+	renamedB.Name, renamedB.Path = "sda", "/dev/sda"
+	third := &failingCommandRunner{}
+	err = attempt(discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{renamedB, renamedA}}, third, &recordingKatlosResolver{payload: planningPayload()})
+	if !errors.Is(err, discovery.ErrTargetDiskChanged) {
+		t.Fatalf("attempt 3: error = %v, want ErrTargetDiskChanged", err)
+	}
+	if third.ran("wipefs") {
+		t.Fatalf("attempt 3 wiped a disk the boot was not bound to: %v", third.calls)
+	}
+}
+
+type failingCommandRunner struct {
+	fail  string
+	calls []CommandCall
+}
+
+func (r *failingCommandRunner) Run(_ context.Context, name string, args ...string) error {
+	r.calls = append(r.calls, CommandCall{Name: name, Args: append([]string(nil), args...)})
+	// Some commands run through env, so the failing program may be an argument.
+	for _, word := range append([]string{name}, args...) {
+		if r.fail != "" && word == r.fail {
+			return errString(r.fail + " failed")
+		}
+	}
+	return nil
+}
+
+func (r *failingCommandRunner) ran(name string) bool {
+	for _, call := range r.calls {
+		if call.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func writeManifestWithTarget(t *testing.T, targetDisk string) string {
@@ -2284,4 +2365,23 @@ func writeManifestWithTarget(t *testing.T, targetDisk string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// manifestDigest is the request digest an install of the manifest at path
+// records when it binds a disk.
+func manifestDigest(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, _, err := manifest.DecodeWithDefaultImage(bytes.NewReader(data), manifest.KatlosImage{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := installstatus.DigestManifest(decoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return digest
 }
