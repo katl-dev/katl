@@ -453,7 +453,7 @@ func TestUnitFileRemovalPlansRemove(t *testing.T) {
 		"app": {Files: []manifest.HostConfigurationFile{testUnitFile("/etc/systemd/system/app.service", "[Service]\nExecStart=/usr/bin/sleep infinity\n")}},
 	}}
 
-	plan := planHostConfigurationChange(current, manifest.HostConfiguration{})
+	plan := planHostConfigurationChange(current, manifest.HostConfiguration{}, t.TempDir())
 
 	if !plan.Live {
 		t.Fatalf("plan staged removal: %s", plan.Message)
@@ -494,7 +494,7 @@ func TestLiveUnitFileRemoval(t *testing.T) {
 		{name: "rolls back after a later failure", failOther: true, wantActive: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			host := planHostConfigurationChange(current, desired)
+			host := planHostConfigurationChange(current, desired, t.TempDir())
 			model := &systemdModel{
 				definitions: map[string][]string{
 					previous:  {"app.service", "other.service"},
