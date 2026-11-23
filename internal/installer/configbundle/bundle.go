@@ -1306,16 +1306,9 @@ func addNodeKubeadmInputs(members *[]member, descriptors *[]Descriptor, node clu
 	if ref == "" {
 		return nil, nil
 	}
-	plan, ok := configs[ref]
-	if !ok {
-		return nil, fmt.Errorf("node %s kubeadm config %q was not resolved", node.Name, ref)
-	}
-	if !node.InstallManifest.Node.Kubernetes.External {
-		var err error
-		plan, err = kubeadmconfig.WithNodeRegistration(plan, kubeadmconfig.RegistrationFor(node.InstallManifest.Node))
-		if err != nil {
-			return nil, fmt.Errorf("node %s kubeadm config %q: %w", node.Name, ref, err)
-		}
+	plan, err := nodeKubeadmConfig(node, configs)
+	if err != nil {
+		return nil, err
 	}
 	var out []Descriptor
 	files := append([]kubeadmconfig.File{plan.Config}, plan.Patches...)
@@ -1623,4 +1616,24 @@ func (source SourceConfig) ManagementAuthentication() managementidentity.Authent
 		return managementidentity.MutualTLS
 	}
 	return managementidentity.TrustedNetwork
+}
+
+// nodeKubeadmConfig returns the kubeadm input that node installs and that its
+// generations store: the shared config with the node's registration. Every
+// workstation path that renders node configuration must use it, so an
+// unedited config compares equal to the input a node already holds.
+func nodeKubeadmConfig(node clusterplan.NodeMaterial, configs map[string]kubeadmconfig.Plan) (kubeadmconfig.Plan, error) {
+	ref := strings.TrimSpace(node.KubeadmConfig.Ref)
+	plan, ok := configs[ref]
+	if !ok {
+		return kubeadmconfig.Plan{}, fmt.Errorf("node %s kubeadm config %q was not resolved", node.Name, ref)
+	}
+	if node.InstallManifest.Node.Kubernetes.External {
+		return plan, nil
+	}
+	plan, err := kubeadmconfig.WithNodeRegistration(plan, kubeadmconfig.RegistrationFor(node.InstallManifest.Node))
+	if err != nil {
+		return kubeadmconfig.Plan{}, fmt.Errorf("node %s kubeadm config %q: %w", node.Name, ref, err)
+	}
+	return plan, nil
 }
