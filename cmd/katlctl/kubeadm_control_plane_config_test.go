@@ -526,6 +526,18 @@ func TestClusterConfigRejectionExplainsRoleChangeRecovery(t *testing.T) {
 	}
 }
 
+func TestClusterConfigRejectionStatesReasonOnce(t *testing.T) {
+	// The agent reports a volume planning refusal as both its failure reason
+	// and its only diagnostic.
+	reason := `volumes "b" and "c" both select disk /dev/vde, which volume "b" repartitions as a whole; select a different disk for one of them`
+
+	message := clusterConfigRejection("cp-1", &agentapi.ConfigValidationResult{FailureReason: reason, Diagnostics: []string{reason}})
+
+	if strings.Count(message, `both select disk`) != 1 || !strings.Contains(message, "select a different disk") {
+		t.Fatalf("clusterConfigRejection() = %q, want the reason exactly once", message)
+	}
+}
+
 func TestActivateClusterConfigRequiresJoinRecovery(t *testing.T) {
 	writeControlPlaneEnrollmentContext(t, "cp-1", "cp-2")
 	root := t.TempDir()
