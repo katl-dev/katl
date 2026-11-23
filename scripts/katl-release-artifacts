@@ -26,6 +26,28 @@ is_katlos_tag() {
     [[ "$tag" =~ ^v[0-9]{4}\.([1-9]|1[0-2])\.(0|[1-9][0-9]*)(-(dev|alpha|beta|rc)\.(0|[1-9][0-9]*))?$ ]]
 }
 
+# Prints the Release-Note values of a commit, one per line. A final trailer
+# block is authoritative. Otherwise the body is scanned for lines beginning
+# with the trailer, which is where a squash-merged PR keeps the trailers of its
+# commits. GitHub lists those commits oldest first, so the last note belongs to
+# the PR tip and is the only one printed.
+commit_release_note() {
+    local message trailers
+    message="$(git show -s --format=%B "$1")"
+    trailers="$(git interpret-trailers --parse <<<"$message" | sed -n 's/^Release-Note: //p')"
+    if [[ -n "$trailers" ]]; then
+        printf '%s\n' "$trailers"
+        return 0
+    fi
+    awk '
+        function flush() { if (note != "") last = note; note = "" }
+        /^Release-Note:/ { flush(); note = $0; sub(/^Release-Note:[ \t]*/, "", note); inside = 1; next }
+        inside && NF { note = note " " $0; next }
+        { inside = 0; flush() }
+        END { flush(); if (last != "") print last }
+    ' <<<"$message"
+}
+
 previous_katlos_tag() {
     local target="$1"
     local current_tag="$2"
@@ -70,7 +92,7 @@ generate_release_notes() {
     for commit in "${commits[@]}"; do
         IFS=$'\t' read -r hash subject <<<"$commit"
         [[ -n "$hash" ]] || continue
-        note="$(git show -s --format=%B "$hash" | git interpret-trailers --parse | sed -n 's/^Release-Note: //p')"
+        note="$(commit_release_note "$hash")"
         [[ "$note" != skip ]] || continue
         short_hash="${hash:0:7}"
         if [[ -n "$note" ]]; then

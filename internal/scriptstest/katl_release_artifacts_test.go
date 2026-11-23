@@ -605,3 +605,97 @@ func TestKatlReleaseLTSStage(t *testing.T) {
 		t.Fatalf("manifest: %v\n%s", err, out)
 	}
 }
+
+func TestKatlReleaseArtifactNotesReleaseNoteTrailers(t *testing.T) {
+	repo := repoRoot(t)
+	gitDir := t.TempDir()
+	runGit(t, gitDir, "init", "--quiet")
+
+	// GitHub squash bodies list the PR's commits oldest first and end with
+	// co-author lines after a separator.
+	const coAuthors = "\n---------\n\nCo-authored-by: Someone <someone@example.com>\n"
+	cases := []struct {
+		name    string
+		subject string
+		body    string
+		want    string // exact entry text before the commit link; empty means omitted
+	}{
+		{
+			name:    "ordinary trailer",
+			subject: "area: ordinary change",
+			body:    "Why.\n\nRelease-Note: Ordinary note\n",
+			want:    "- Ordinary note",
+		},
+		{
+			name:    "squash mid-body note",
+			subject: "area: mid-body change",
+			body:    "* area: first\n\nDetails.\n\nRelease-Note: Reader summary\n\n* area: second\n\nMore details.\n" + coAuthors,
+			want:    "- Reader summary",
+		},
+		{
+			name:    "squash skip",
+			subject: "area: skipped change",
+			body:    "* area: first\n\nRelease-Note: skip\n" + coAuthors,
+		},
+		{
+			name:    "squash skip then note",
+			subject: "area: skip then note",
+			body: "* vmtest: first\n\nRelease-Note: skip\n\n* install: second\n\nDetails.\n\n" +
+				"Release-Note: install: wrapped summary\nacross lines\n" + coAuthors,
+			want: "- install: wrapped summary across lines",
+		},
+		{
+			name:    "squash note then skip",
+			subject: "area: note then skip",
+			body:    "* area: first\n\nRelease-Note: Superseded summary\n\n* area: second\n\nRelease-Note: skip\n" + coAuthors,
+		},
+		{
+			name:    "squash without trailer",
+			subject: "area: plain subject",
+			body:    "* area: first\n\nDetails.\n" + coAuthors,
+			want:    "- **area:** plain subject",
+		},
+	}
+
+	runGit(t, gitDir, "commit", "--quiet", "--allow-empty", "-m", "release: base")
+	runGit(t, gitDir, "tag", "v2026.7.0-dev.3")
+	for index, tc := range cases {
+		path := filepath.Join(t.TempDir(), fmt.Sprintf("message-%d", index))
+		if err := os.WriteFile(path, []byte(tc.subject+"\n\n"+tc.body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, gitDir, "commit", "--quiet", "--allow-empty", "-F", path)
+	}
+	runGit(t, gitDir, "tag", "v2026.7.0-dev.4")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.7.0-dev.4")
+	cmd.Dir = gitDir
+	cmd.Env = append(
+		hermeticGitEnv(environmentWithout("KATL_RELEASE_TARGET"), gitDir),
+		"GITHUB_REF_TYPE=branch",
+		"KATL_RELEASE_REPOSITORY_URL=https://github.example/katl-dev/katl",
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("notes failed: %v\n%s", err, output)
+	}
+	notes := string(output)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.want == "" {
+				summary := strings.TrimPrefix(tc.subject, "area: ")
+				if strings.Contains(notes, summary) {
+					t.Fatalf("entry %q should be omitted:\n%s", summary, notes)
+				}
+				return
+			}
+			if !strings.Contains(notes, "\n"+tc.want+" ([`") {
+				t.Fatalf("notes missing entry %q:\n%s", tc.want, notes)
+			}
+		})
+	}
+	if strings.Contains(notes, "Superseded summary") {
+		t.Fatalf("notes contain a note superseded by a later skip:\n%s", notes)
+	}
+}
