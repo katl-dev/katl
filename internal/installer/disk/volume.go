@@ -190,23 +190,27 @@ func (c *volumeClaims) add(plan VolumePlan) error {
 	}
 	disk := plan.Disk.Path
 	if other, ok := c.wholeDisks[disk]; ok {
-		return fmt.Errorf("volumes %q and %q both select disk %s; volume %q repartitions the whole disk", other, plan.Name, disk, other)
+		return wholeDiskConflict(other, plan.Name, disk, other)
 	}
 	if plan.Repartition {
 		for _, other := range c.partitions[disk] {
-			return fmt.Errorf("volumes %q and %q both select disk %s; volume %q repartitions the whole disk", other, plan.Name, disk, plan.Name)
+			return wholeDiskConflict(other, plan.Name, disk, plan.Name)
 		}
 		c.wholeDisks[disk] = plan.Name
 		return nil
 	}
 	if other, ok := c.partitions[disk][plan.Partition.Number]; ok {
-		return fmt.Errorf("volumes %q and %q both select partition %d of %s", other, plan.Name, plan.Partition.Number, disk)
+		return fmt.Errorf("volumes %q and %q both select partition %d of %s; select a different partition for one of them", other, plan.Name, plan.Partition.Number, disk)
 	}
 	if c.partitions[disk] == nil {
 		c.partitions[disk] = map[uint64]string{}
 	}
 	c.partitions[disk][plan.Partition.Number] = plan.Name
 	return nil
+}
+
+func wholeDiskConflict(first, second, disk, repartitioned string) error {
+	return fmt.Errorf("volumes %q and %q both select disk %s, which volume %q repartitions as a whole; select a different disk for one of them", first, second, disk, repartitioned)
 }
 
 // validateAddressableVolume refuses a volume Katl could not address without a

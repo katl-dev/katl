@@ -387,11 +387,11 @@ func TestPlanVolumesRefusesSharedTargets(t *testing.T) {
 		kept     []VolumeBinding
 		want     []string
 	}{
-		{"same disk twice", []VolumeRequest{wholeDisk("a"), wholeDisk("b")}, nil, []string{`"a"`, `"b"`, "/dev/sdb"}},
-		{"partition on a repartitioned disk", []VolumeRequest{partition("a", "/dev/disk/by-id/ata-data-part1"), wholeDisk("b")}, nil, []string{`"a"`, `"b"`, "/dev/sdb"}},
-		{"same partition twice", []VolumeRequest{partition("a", "/dev/disk/by-id/ata-data-part1"), partition("b", "/dev/disk/by-id/ata-data-part1")}, nil, []string{`"a"`, `"b"`, "partition 1", "/dev/sdb"}},
-		{"repartitioned disk holding a kept volume", []VolumeRequest{wholeDisk("b")}, kept, []string{`"a"`, `"b"`, "/dev/sdb"}},
-		{"partition of a kept volume", []VolumeRequest{partition("b", "/dev/disk/by-id/ata-data-part1")}, kept, []string{`"a"`, `"b"`, "partition 1", "/dev/sdb"}},
+		{"same disk twice", []VolumeRequest{wholeDisk("a"), wholeDisk("b")}, nil, []string{`"a"`, `"b"`, "/dev/sdb", "select a different disk"}},
+		{"partition on a repartitioned disk", []VolumeRequest{partition("a", "/dev/disk/by-id/ata-data-part1"), wholeDisk("b")}, nil, []string{`"a"`, `"b"`, "/dev/sdb", "select a different disk"}},
+		{"same partition twice", []VolumeRequest{partition("a", "/dev/disk/by-id/ata-data-part1"), partition("b", "/dev/disk/by-id/ata-data-part1")}, nil, []string{`"a"`, `"b"`, "partition 1", "/dev/sdb", "select a different partition"}},
+		{"repartitioned disk holding a kept volume", []VolumeRequest{wholeDisk("b")}, kept, []string{`"a"`, `"b"`, "/dev/sdb", "select a different disk"}},
+		{"partition of a kept volume", []VolumeRequest{partition("b", "/dev/disk/by-id/ata-data-part1")}, kept, []string{`"a"`, `"b"`, "partition 1", "/dev/sdb", "select a different partition"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			_, err := PlanVolumes(facts, root, test.requests, test.kept)
