@@ -66,6 +66,16 @@
           }
           exec ${pkgs.go}/bin/go run "$repo_root/cmd/katldev" "$@"
         '';
+      gitCommitWrappedFor =
+        pkgs:
+        pkgs.writeShellApplication {
+          name = "git-commit-wrapped";
+          runtimeInputs = [
+            pkgs.coreutils
+            pkgs.git
+          ];
+          text = builtins.readFile ./scripts/git-commit-wrapped;
+        };
       shellFor =
         pkgs:
         pkgs.mkShell {
@@ -103,6 +113,7 @@
             ++ [
               (katlctlFor pkgs)
               (katldevFor pkgs)
+              (gitCommitWrappedFor pkgs)
             ];
 
           shellHook = ''

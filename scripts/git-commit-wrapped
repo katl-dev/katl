@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    cat <<'EOF'
+usage: git commit-wrapped <title> [git commit options] < body
+
+Commits with the message "<title>", a blank line, and the body read from
+standard input. Prose is wrapped at 72 columns; existing line breaks are kept.
+Both a non-empty title and a non-empty body are required.
+EOF
+}
+
+case "${1:-}" in
+-h | --help)
+    usage
+    exit 0
+    ;;
+esac
+
+if (($# == 0)) || [[ -z "$1" || "$1" == -* ]]; then
+    usage >&2
+    exit 2
+fi
+title="$1"
+shift
+
+if [[ -t 0 ]]; then
+    printf 'error: provide the commit body on standard input\n' >&2
+    exit 2
+fi
+body="$(cat)"
+if [[ -z "${body//[[:space:]]/}" ]]; then
+    printf 'error: commit body is empty\n' >&2
+    exit 2
+fi
+
+# fmt -s only splits lines longer than the width, so trailers stay on their own lines.
+{
+    printf '%s\n\n%s\n' "$title" "$body"
+} | fmt -s -w 72 | git commit "$@" -F -

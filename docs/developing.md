@@ -202,7 +202,7 @@ terminal switching, and reboot in the persistent VM journey.
   domains.
 - KVM access: the VM test runner should see `/dev/kvm`.
 - UEFI firmware for libvirt VM pflash boot, such as edk2/OVMF images.
-- `git commit-wrapped`: required for agent-authored commits.
+- `git commit-wrapped`: provided by the development shell (`scripts/git-commit-wrapped`); takes the title as its argument and the body on standard input.
 
 The supported top-level script surface is intentionally small. Use
 `scripts/mkosi` for KatlOS image artifacts,
