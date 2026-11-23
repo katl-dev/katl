@@ -148,7 +148,7 @@ state on those disks:
 ```text
 wiped and recreated
   Katl GPT partitions on the selected target disk, including ESP/XBOOTLDR when
-  present, root slots, writable state, optional Katl-owned etcd partition, boot
+  present, root slots, writable state, boot
   entries, generation specs/status, selected sysext/confext links, cached
   Kubernetes and app payloads, operation records, /etc/kubernetes backing
   state, /var/lib/kubelet, /var/lib/containerd, /var/lib/etcd, CNI state, node

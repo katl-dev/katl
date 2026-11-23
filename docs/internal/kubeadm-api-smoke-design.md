@@ -62,7 +62,7 @@ node hostname stable
 network address selected for the VM control-plane endpoint
 /var/lib/kubelet persistent on KATL_STATE
 /var/lib/containerd persistent on KATL_STATE
-/var/lib/etcd persistent on KATL_STATE or on a future dedicated KATL_ETCD mount
+/var/lib/etcd persistent on KATL_STATE
 ```
 
 The Kubernetes sysext must provide the artifact set currently checked by

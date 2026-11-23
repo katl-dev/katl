@@ -237,9 +237,8 @@ image selection, static Pod manifests, certificates, upgrade policy, and its
 local failure handling. Etcd owns replication, membership
 consensus, and data migration under `/var/lib/etcd`. Katl owns the serialized
 rollout, pre-upgrade snapshots, direct quorum gates, evidence, and stop decision.
-The default data path is `/var/lib/etcd` on the writable state partition. A dedicated `KATL_ETCD` partition may be mounted
-there when the install plan explicitly selects it, but it is persistent node
-state and not a generation artifact.
+The data path is `/var/lib/etcd` on the writable state partition. It is
+persistent node state and not a generation artifact.
 
 The Kubernetes rollout has a separate preparation operation,
 `kubeadm-upgrade-prepare`, on every pending control plane. It resolves and

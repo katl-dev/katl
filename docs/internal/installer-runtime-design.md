@@ -400,7 +400,7 @@ destructive guard
 root slots
   Katl's selected root-a and root-b sizes must both fit the runtime root
   artifact, must be large enough for update headroom, and must leave enough room
-  for ESP, optional XBOOTLDR, optional etcd, and minimum state partition size
+  for ESP, optional XBOOTLDR, and minimum state partition size
 
 state partition
   Katl's state partition policy consumes remaining disk after fixed partitions;
@@ -1135,12 +1135,6 @@ state
   mount: /var
   size: remaining disk after boot and root slots
   mutable persistent node state
-
-etcd, optional
-  type: linux-generic
-  filesystem: ext4 initially
-  mount: /var/lib/etcd
-  mutable persistent control-plane state
 ```
 
 The default storage model is intentionally simple:
@@ -1165,9 +1159,6 @@ var.mount, efi.mount
   generated at boot by katl-system-disk-generator; mount KATL_STATE at /var and
   KATL_ESP at /efi from the disk holding the running root partition, and stop
   the boot when that disk is ambiguous
-
-optional var-lib-etcd.mount
-  mounts a dedicated control-plane etcd partition at /var/lib/etcd
 
 etc-kubernetes.mount
   bind mounts persistent kubeadm-owned state from /var/lib/katl/kubernetes
@@ -1194,7 +1185,6 @@ KATL_XBOOTLDR
 KATL_ROOT_A
 KATL_ROOT_B
 KATL_STATE
-KATL_ETCD
 ```
 
 Because there are two root slots, boot entries should point at the selected root
@@ -1420,7 +1410,6 @@ activation in this shape:
 ```text
 root slot mounted read-only
 /var mounted from KATL_STATE
-optional /var/lib/etcd mounted
 stable machine-id established by the generation loader entry
   systemd.machine_id= mechanism
 baseline systemd-sysext activated, when selected
@@ -1457,10 +1446,9 @@ Kubernetes API availability, add-ons, workload scheduling, or GitOps convergence
 
 2. Should `etcd` always get a separate partition on control-plane nodes?
 
-   Current decision: no. The default stacked-etcd data path is `/var/lib/etcd`
-   on the writable state partition. A dedicated Katl-owned `KATL_ETCD`
-   partition may be selected by an explicit install storage profile, but it is
-   persistent node state and not a generation artifact. See
+   Decision: no. The stacked-etcd data path is `/var/lib/etcd` on the writable
+   state partition, which is persistent node state and not a generation
+   artifact. See
    `docs/internal/stacked-etcd-bootstrap-data-policy.md` and
    `docs/internal/kubernetes-upgrade-operations.md`.
 

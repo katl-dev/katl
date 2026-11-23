@@ -57,14 +57,8 @@ confext activation.
 
 ## Data Placement
 
-The default etcd data path is `/var/lib/etcd` on the Katl writable state
-partition mounted at `/var`.
-
-An optional Katl-owned `KATL_ETCD` partition may be mounted at `/var/lib/etcd`
-when the install storage plan explicitly requests it. That partition is still
-persistent node state, not a generation artifact. It is not an `install.volumes`
-mount and must be planned as part of the root-disk storage layout so the
-installer can reject ambiguous or unsafe placement.
+The etcd data path is `/var/lib/etcd` on the Katl writable state partition
+mounted at `/var`. It is persistent node state, not a generation artifact.
 
 Etcd data is outside Katl generation rollback:
 
@@ -245,8 +239,8 @@ single-node kubeadm API smoke
   the API server work on one control-plane node
 
 storage and ordering checks
-  prove /var/lib/etcd is persistent state and any optional dedicated partition
-  is mounted before kubeadm-ready handoff
+  prove /var/lib/etcd is persistent state on /var, mounted before kubeadm-ready
+  handoff
 
 three-control-plane bootstrap smoke
   runs serial init, second control-plane join, third control-plane join, and

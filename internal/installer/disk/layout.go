@@ -20,7 +20,6 @@ const (
 	GPTLabelRootA    = "KATL_ROOT_A"
 	GPTLabelRootB    = "KATL_ROOT_B"
 	GPTLabelState    = "KATL_STATE"
-	GPTLabelEtcd     = "KATL_ETCD"
 )
 
 type (
@@ -47,7 +46,6 @@ type DiskLayoutRequest struct {
 	RootA              RootSlotRequest
 	RootB              RootSlotRequest
 	State              StatePartitionRequest
-	Etcd               *FixedPartitionRequest
 	Volumes            []VolumeRequest
 	InitialRootSlot    RootSlot
 	RuntimeRootSizeMiB uint64
@@ -60,11 +58,6 @@ type RootSlotRequest struct {
 type StatePartitionRequest struct {
 	Filesystem string
 	MinSizeMiB uint64
-}
-
-type FixedPartitionRequest struct {
-	Filesystem string
-	SizeMiB    uint64
 }
 
 type VolumeRequest struct {
@@ -416,7 +409,6 @@ func isKatlPartitionLabel(label string) bool {
 		GPTLabelRootA,
 		GPTLabelRootB,
 		GPTLabelState,
-		GPTLabelEtcd,
 	}, label)
 }
 
@@ -440,9 +432,6 @@ func normalizeLayoutRequest(request DiskLayoutRequest) (DiskLayoutRequest, error
 	if request.State.MinSizeMiB == 0 {
 		return DiskLayoutRequest{}, fmt.Errorf("state partition minimum size is required")
 	}
-	if request.Etcd != nil && request.Etcd.SizeMiB == 0 {
-		return DiskLayoutRequest{}, fmt.Errorf("etcd partition size is required when enabled")
-	}
 
 	return request, nil
 }
@@ -460,9 +449,6 @@ func validateRootSlot(name string, slot RootSlotRequest, runtimeRootSizeMiB uint
 func planTargetPartitions(target BlockDevice, request DiskLayoutRequest) ([]PartitionPlan, error) {
 	targetMiB := target.SizeBytes / 1024 / 1024
 	fixedMiB := request.ESPSizeMiB + request.XBOOTLDRSizeMiB + request.RootA.SizeMiB + request.RootB.SizeMiB
-	if request.Etcd != nil {
-		fixedMiB += request.Etcd.SizeMiB
-	}
 	if targetMiB < fixedMiB+request.State.MinSizeMiB {
 		return nil, fmt.Errorf("target disk %s is too small: %d MiB available, %d MiB required", target.Path, targetMiB, fixedMiB+request.State.MinSizeMiB)
 	}
@@ -480,10 +466,6 @@ func planTargetPartitions(target BlockDevice, request DiskLayoutRequest) ([]Part
 		PartitionPlan{Name: "root-a", GPTLabel: GPTLabelRootA, Type: "root-x86-64", Filesystem: "squashfs", MountPath: "/", SizeMiB: request.RootA.SizeMiB},
 		PartitionPlan{Name: "root-b", GPTLabel: GPTLabelRootB, Type: "root-x86-64", Filesystem: "squashfs", SizeMiB: request.RootB.SizeMiB},
 	)
-
-	if request.Etcd != nil {
-		partitions = append(partitions, PartitionPlan{Name: "etcd", GPTLabel: GPTLabelEtcd, Type: "linux-generic", Filesystem: request.Etcd.Filesystem, MountPath: "/var/lib/etcd", SizeMiB: request.Etcd.SizeMiB})
-	}
 
 	partitions = append(partitions, PartitionPlan{Name: "state", GPTLabel: GPTLabelState, Type: "var", Filesystem: request.State.Filesystem, MountPath: "/var", SizeMiB: stateSizeMiB, Remaining: true})
 

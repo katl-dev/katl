@@ -40,7 +40,7 @@ func TestPlanDiskLayoutDefaultRootSlotsStateRemainingLabelsAndBootMetadata(t *te
 	}
 }
 
-func TestPlanDiskLayoutOptionalXBOOTLDREtcdAndRootBInitialBoot(t *testing.T) {
+func TestPlanDiskLayoutOptionalXBOOTLDRAndRootBInitialBoot(t *testing.T) {
 	facts := layoutFacts(
 		diskForLayout("/dev/nvme0n1", "/dev/disk/by-id/nvme-root", 65536),
 	)
@@ -51,7 +51,6 @@ func TestPlanDiskLayoutOptionalXBOOTLDREtcdAndRootBInitialBoot(t *testing.T) {
 		RootA:           RootSlotRequest{SizeMiB: 8192},
 		RootB:           RootSlotRequest{SizeMiB: 8192},
 		State:           StatePartitionRequest{Filesystem: "xfs", MinSizeMiB: 8192},
-		Etcd:            &FixedPartitionRequest{Filesystem: "ext4", SizeMiB: 16384},
 		InitialRootSlot: RootSlotB,
 	})
 	if err != nil {
@@ -59,8 +58,7 @@ func TestPlanDiskLayoutOptionalXBOOTLDREtcdAndRootBInitialBoot(t *testing.T) {
 	}
 
 	assertPartition(t, plan, "xbootldr", GPTLabelXBOOTLDR, 1024, false)
-	assertPartition(t, plan, "etcd", GPTLabelEtcd, 16384, false)
-	state := assertPartition(t, plan, "state", GPTLabelState, 31232, true)
+	state := assertPartition(t, plan, "state", GPTLabelState, 47616, true)
 	if state.Filesystem != "xfs" {
 		t.Fatalf("state filesystem = %q, want xfs", state.Filesystem)
 	}

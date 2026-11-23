@@ -241,7 +241,7 @@ no selected Kubernetes sysext
 no Kubernetes PKI in /var/lib/katl/kubernetes/etc-kubernetes
 no kubeadm static pod manifests
 no kubeadm kubeconfigs
-no stacked-etcd data in /var/lib/etcd or a dedicated KATL_ETCD partition
+no stacked-etcd data in /var/lib/etcd
 no kubelet join/bootstrap state in /var/lib/kubelet
 no operation record proving kubeadm crossed a mutation boundary for this node
 ```

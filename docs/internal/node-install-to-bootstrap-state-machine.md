@@ -304,7 +304,7 @@ enabled or active kubelet membership
 /var/lib/kubelet/kubeconfig
 /var/lib/kubelet/config.yaml
 /var/lib/kubelet/pki/*
-/var/lib/etcd/* or Katl-managed stacked-etcd partition contents
+/var/lib/etcd/*
 OperationRecord evidence that kubeadm init, join, or upgrade crossed or may have
   crossed a mutation boundary for this node, including pre-exec mutation markers,
   externalMutationStarted, mutatingToolRan, or non-empty mutationScopes[]
