@@ -71,6 +71,11 @@ type nodeRecoveryRequirement struct {
 	KubernetesConfigured bool
 	NodeReady            bool
 	ManagedEndpointReady bool
+	// APIProxyReady and LocalAPIEligible record the API proxy before the
+	// reboot; kubelet reaches the API through it, so a node is not recovered
+	// until the proxy serves again.
+	APIProxyReady    bool
+	LocalAPIEligible bool
 }
 
 func requestNodeReboot(ctx context.Context, client agentapi.KatlcAgentClient, actor string, status *agentapi.NodeStatus, targetGeneration string) error {
@@ -292,6 +297,10 @@ func nodeRecoveryRequirementFor(status *agentapi.NodeStatus) nodeRecoveryRequire
 	if endpoint := status.GetControlPlaneEndpoint(); endpoint != nil {
 		requirement.ManagedEndpointReady = managedEndpointReady(endpoint)
 	}
+	if proxy := status.GetApiProxy(); proxy != nil && proxy.GetState() == "ready" {
+		requirement.APIProxyReady = true
+		requirement.LocalAPIEligible = proxy.GetLocalApiEligible()
+	}
 	return requirement
 }
 
@@ -338,6 +347,24 @@ func nodeUpgradeRecovery(status *agentapi.NodeStatus, requirement nodeRecoveryRe
 		if !managedEndpointReady(endpoint) {
 			recovery.State = "waiting-for-managed-endpoint"
 			recovery.Reason = "managed API endpoint is " + firstNonEmpty(strings.TrimSpace(endpoint.GetState()), "not ready")
+			return recovery
+		}
+	}
+	if requirement.APIProxyReady {
+		proxy := status.GetApiProxy()
+		switch {
+		case proxy.GetState() != "ready":
+			recovery.State = "waiting-for-api-proxy"
+			recovery.Reason = "Kubernetes API proxy: " + firstNonEmpty(proxy.GetFailureReason(), proxy.GetState(), "status not reported")
+			return recovery
+		case requirement.LocalAPIEligible && !proxy.GetLocalApiEligible():
+			recovery.State = "waiting-for-api-proxy"
+			recovery.Reason = "Kubernetes API proxy does not reach the local API server"
+			for _, backend := range proxy.GetBackends() {
+				if backend.GetLocal() {
+					recovery.Reason += fmt.Sprintf(" at %s: %s", backend.GetAddress(), firstNonEmpty(backend.GetReason(), "not eligible"))
+				}
+			}
 			return recovery
 		}
 	}
