@@ -72,6 +72,9 @@ func Compile(request CompileRequest) (Plan, error) {
 		}
 	}
 
+	// Node materials and the bootstrap inventory are ordered by name, so a
+	// bundle does not depend on the order nodes are listed in.
+	slices.SortFunc(topology.Inventory.Nodes, func(a, b inventory.Node) int { return strings.Compare(a.Name, b.Name) })
 	overrides := make(map[string]NodeLayer, len(config.Spec.Nodes))
 	for _, node := range config.Spec.Nodes {
 		overrides[strings.TrimSpace(node.Name)] = node.Overrides

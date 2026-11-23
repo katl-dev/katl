@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -13,6 +14,8 @@ import (
 
 // Workstation commands and the compiled bundle that nodes install must agree
 // on where each node is and which endpoint the cluster serves its API at.
+// Workstation commands list nodes in configuration order, and a bundle in
+// name order.
 func TestManagementInventoryMatchesCompile(t *testing.T) {
 	node := func(name string, controlPlane bool, extra string) string {
 		return "    - name: " + name + "\n      controlPlane: " + map[bool]string{true: "true", false: "false"}[controlPlane] + "\n" + extra +
@@ -27,6 +30,7 @@ func TestManagementInventoryMatchesCompile(t *testing.T) {
 		endpoint string
 		nodes    string
 		served   string
+		order    []string
 		refused  string
 	}{
 		{
@@ -45,6 +49,7 @@ func TestManagementInventoryMatchesCompile(t *testing.T) {
 			endpoint: endpoint,
 			nodes:    node("cp-2", true, management("10.0.0.12")) + node("cp-1", true, management("10.0.0.11")) + node("worker-1", false, management("node-21.lab.example")),
 			served:   "api.katl.test:6443",
+			order:    []string{"cp-2", "cp-1", "worker-1"},
 		},
 		{
 			name:    "no nodes",
@@ -83,7 +88,19 @@ func TestManagementInventoryMatchesCompile(t *testing.T) {
 			if got := workstation.ControlPlaneEndpoint.String(); got != tc.served {
 				t.Errorf("control-plane endpoint = %q, want %q", got, tc.served)
 			}
-			if got, want := topologyOf(workstation), topologyOf(compiled.Manifest.Cluster.BootstrapInventory); !reflect.DeepEqual(got, want) {
+			got, want := topologyOf(workstation), topologyOf(compiled.Manifest.Cluster.BootstrapInventory)
+			if tc.order != nil {
+				var names []string
+				for _, node := range workstation.Nodes {
+					names = append(names, node.Name)
+				}
+				if !slices.Equal(names, tc.order) {
+					t.Errorf("katlctl node order = %q, want configuration order %q", names, tc.order)
+				}
+			}
+			slices.Sort(got.Nodes)
+			slices.Sort(want.Nodes)
+			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("katlctl inventory = %+v\nCompile inventory = %+v", got, want)
 			}
 		})

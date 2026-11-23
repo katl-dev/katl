@@ -3,11 +3,11 @@ package config
 import (
 	"bytes"
 	"fmt"
-	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"io"
 	"sort"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"gopkg.in/yaml.v3"

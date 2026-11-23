@@ -507,7 +507,9 @@ func selectInstallNode(manifest configbundle.BundleManifest, selector string) (s
 		}
 	}
 	// A node is addressed by its management host; the port belongs to the agent.
-	selected, parseErr := inventory.ParseManagementAddress(selector)
+	// The selector is read as the bundle records hosts, so it matches any host
+	// an earlier release recorded.
+	selected, parseErr := inventory.DecodeManagementAddress(selector)
 	var matches []string
 	for _, node := range manifest.Cluster.BootstrapInventory.Nodes {
 		if parseErr == nil && node.Address.Host == selected.Host {

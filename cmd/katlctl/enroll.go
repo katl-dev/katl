@@ -483,7 +483,7 @@ func savedEndpoint(path, clusterName, nodeName string) inventory.HostPort {
 		}
 		for _, node := range cluster.Nodes {
 			if node.Name == nodeName {
-				endpoint, err := inventory.ParseHostPort(node.ManagementEndpoint)
+				endpoint, err := inventory.DecodeHostPort(node.ManagementEndpoint)
 				if err != nil {
 					return inventory.HostPort{}
 				}
@@ -633,7 +633,7 @@ func warnPendingReaddress(ctx context.Context, configInput string, endpoints map
 	for _, cluster := range saved.Clusters {
 		if cluster.Name == topology.ClusterName {
 			for _, node := range cluster.Nodes {
-				if baseline, err := inventory.ParseHostPort(node.ConfiguredEndpoint); err == nil {
+				if baseline, err := inventory.DecodeHostPort(node.ConfiguredEndpoint); err == nil {
 					baselines[node.Name] = baseline
 				}
 			}

@@ -6,7 +6,6 @@ import (
 	"maps"
 	"net/netip"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
@@ -17,8 +16,8 @@ import (
 // are: names, roles, addresses and the control-plane endpoint.
 type Topology struct {
 	// Inventory holds each node's name, role, management address and
-	// Kubernetes address, sorted by name, and the cluster's control-plane
-	// endpoint. Address overrides are applied.
+	// Kubernetes address, in configuration order, and the cluster's
+	// control-plane endpoint. Address overrides are applied.
 	Inventory        inventory.Inventory
 	Endpoint         *controlplaneendpoint.Plan
 	AddressOverrides []inventory.AddressOverride
@@ -33,12 +32,10 @@ func LowerTopology(config Config, addressOverrides map[string]string) (Topology,
 	if len(config.Spec.Nodes) == 0 {
 		return Topology{}, fmt.Errorf("spec.nodes must not be empty")
 	}
-	nodes := slices.Clone(config.Spec.Nodes)
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
 	unused := maps.Clone(addressOverrides)
 	topology := Topology{Inventory: inventory.Inventory{ExternalControlPlane: config.Spec.Kubernetes.ExternalEndpoint != ""}}
-	seen := make(map[string]struct{}, len(nodes))
-	for _, node := range nodes {
+	seen := make(map[string]struct{}, len(config.Spec.Nodes))
+	for _, node := range config.Spec.Nodes {
 		name := strings.TrimSpace(node.Name)
 		if name == "" {
 			return Topology{}, fmt.Errorf("node name is required")
@@ -82,6 +79,7 @@ func LowerTopology(config Config, addressOverrides map[string]string) (Topology,
 		names := slices.Sorted(maps.Keys(unused))
 		return Topology{}, fmt.Errorf("address override references unknown node %q", names[0])
 	}
+	slices.SortFunc(topology.AddressOverrides, func(a, b inventory.AddressOverride) int { return strings.Compare(a.Node, b.Node) })
 
 	endpoint, err := resolveControlPlaneEndpoint(config, topology.Inventory.Nodes)
 	if err != nil {

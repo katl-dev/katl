@@ -717,7 +717,7 @@ func writeHostReboot(stdout io.Writer, output string, report hostRebootReport) e
 	}
 	if report.AddressChanged {
 		host := report.Endpoint
-		if endpoint, err := inventory.ParseHostPort(report.Endpoint); err == nil {
+		if endpoint, err := inventory.DecodeHostPort(report.Endpoint); err == nil {
 			host = managementHost(endpoint)
 		}
 		_, err := fmt.Fprintf(stdout, "%s rebooted successfully at %s; health %s\n", report.Node, host, report.Health)

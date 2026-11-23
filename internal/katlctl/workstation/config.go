@@ -361,7 +361,7 @@ func topologyFromCluster(contextName string, cluster Cluster) (Topology, error) 
 		topology.Management = &credentials
 	}
 	if value := strings.TrimSpace(cluster.ControlPlaneEndpoint); value != "" {
-		endpoint, err := inventory.ParseHostPort(value)
+		endpoint, err := inventory.DecodeHostPort(value)
 		if err != nil {
 			return Topology{}, fmt.Errorf("cluster %s controlPlaneEndpoint: %w", clusterName, err)
 		}
@@ -373,7 +373,7 @@ func topologyFromCluster(contextName string, cluster Cluster) (Topology, error) 
 		if value == "" {
 			return Topology{}, fmt.Errorf("node %q managementEndpoint is required", name)
 		}
-		endpoint, err := inventory.ParseHostPort(value)
+		endpoint, err := inventory.DecodeHostPort(value)
 		if err != nil {
 			return Topology{}, fmt.Errorf("node %s managementEndpoint: %w", name, err)
 		}

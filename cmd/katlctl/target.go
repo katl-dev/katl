@@ -262,7 +262,7 @@ func enrolledTarget(ctx context.Context, configPath, contextName, clusterName, n
 		for _, node := range cluster.Nodes {
 			if strings.TrimSpace(node.Name) == nodeName && strings.TrimSpace(node.EnrollmentID) != "" {
 				// The saved context file is the boundary for stored endpoints.
-				endpoint, err := inventory.ParseHostPort(node.ManagementEndpoint)
+				endpoint, err := inventory.DecodeHostPort(node.ManagementEndpoint)
 				if err != nil {
 					continue
 				}

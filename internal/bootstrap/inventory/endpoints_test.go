@@ -47,6 +47,50 @@ func TestParseManagementAddress(t *testing.T) {
 	}
 }
 
+// Recorded values keep every host an earlier release accepted, which
+// ParseManagementAddress refuses for new input, and re-encode unchanged.
+func TestDecodeRecordedAddresses(t *testing.T) {
+	for _, tc := range []struct {
+		input    string
+		endpoint string
+	}{
+		{input: "cp_1.home.arpa", endpoint: "cp_1.home.arpa:9443"},
+		{input: "worker_1.home.arpa:19443", endpoint: "worker_1.home.arpa:19443"},
+		{input: "fe80::1%eth0", endpoint: "[fe80::1%eth0]:9443"},
+	} {
+		t.Run(tc.input, func(t *testing.T) {
+			if _, err := ParseManagementAddress(tc.input); err == nil {
+				t.Fatalf("ParseManagementAddress(%q) succeeded; the case no longer covers a host only decoding accepts", tc.input)
+			}
+			var address ManagementAddress
+			if err := address.UnmarshalText([]byte(tc.input)); err != nil {
+				t.Fatal(err)
+			}
+			if got := address.Endpoint().String(); got != tc.endpoint {
+				t.Errorf("endpoint = %q, want %q", got, tc.endpoint)
+			}
+			if got, _ := address.MarshalText(); string(got) != tc.input {
+				t.Errorf("re-encoded = %q, want %q", got, tc.input)
+			}
+		})
+	}
+
+	// v2026.11.1 saved this endpoint for a management.address naming a port.
+	endpoint, err := DecodeHostPort("[worker_1.home.arpa:19443]:9443")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := endpoint.String(); got != "[worker_1.home.arpa:19443]:9443" {
+		t.Errorf("endpoint = %q, want it unchanged", got)
+	}
+
+	for _, input := range []string{"cp_1.home.arpa", "http://10.0.0.11:9443", "10.0.0.11:0"} {
+		if endpoint, err := DecodeHostPort(input); err == nil {
+			t.Errorf("DecodeHostPort(%q) = %v, want error", input, endpoint)
+		}
+	}
+}
+
 func TestParseKubernetesAddress(t *testing.T) {
 	got, err := ParseKubernetesAddress("::ffff:10.0.0.11")
 	if err != nil || got.String() != "10.0.0.11" {

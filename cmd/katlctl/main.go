@@ -3495,11 +3495,12 @@ type kubeadmConfigDocument struct {
 }
 
 // inventory parses the document, the boundary for the addresses it carries
-// as text.
+// as text. It decodes them as recorded values, so an inventory file that an
+// earlier release accepted still loads.
 func (d inventoryDocument) inventory() (inventory.Inventory, error) {
 	var controlPlaneEndpoint inventory.HostPort
 	if strings.TrimSpace(d.ControlPlaneEndpoint) != "" {
-		parsed, err := inventory.ParseHostPort(d.ControlPlaneEndpoint)
+		parsed, err := inventory.DecodeHostPort(d.ControlPlaneEndpoint)
 		if err != nil {
 			return inventory.Inventory{}, fmt.Errorf("decode inventory controlPlaneEndpoint: %w", err)
 		}
@@ -3509,7 +3510,7 @@ func (d inventoryDocument) inventory() (inventory.Inventory, error) {
 	for _, node := range d.Nodes {
 		var address inventory.ManagementAddress
 		if strings.TrimSpace(node.Address) != "" {
-			parsed, err := inventory.ParseManagementAddress(node.Address)
+			parsed, err := inventory.DecodeManagementAddress(node.Address)
 			if err != nil {
 				return inventory.Inventory{}, fmt.Errorf("decode inventory node %q address: %w", node.Name, err)
 			}

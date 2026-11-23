@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"io"
 	"net/url"
 	"path"
@@ -20,6 +19,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/extensionrelease"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
