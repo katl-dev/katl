@@ -28,7 +28,7 @@ func mergeSourceNodeLayer(base, next SourceNodeLayer) (SourceNodeLayer, error) {
 	if err != nil {
 		return SourceNodeLayer{}, err
 	}
-	out.Install.SystemDisk = mergeSourceDiskSelector(out.Install.SystemDisk, next.Install.SystemDisk)
+	out.Install.SystemDisk = mergeSourceSystemDiskSelector(out.Install.SystemDisk, next.Install.SystemDisk)
 	out.Storage.Volumes, err = mergeSourceStorageVolumes(out.Storage.Volumes, next.Storage.Volumes)
 	if err != nil {
 		return SourceNodeLayer{}, err
@@ -52,7 +52,7 @@ func cloneSourceNodeLayer(layer SourceNodeLayer) SourceNodeLayer {
 	out.Kernel = cloneSourceKernelConfig(layer.Kernel)
 	out.HostConfiguration = cloneSourceHostConfiguration(layer.HostConfiguration)
 	out.SystemExtensions = cloneOptionalSourceSystemExtensions(layer.SystemExtensions)
-	out.Install.SystemDisk = cloneSourceDiskSelector(layer.Install.SystemDisk)
+	out.Install.SystemDisk = cloneSourceSystemDiskSelector(layer.Install.SystemDisk)
 	out.Storage.Volumes = cloneOptionalStorageVolumes(layer.Storage.Volumes)
 	out.Kubernetes.Labels = cloneOptionalMap(layer.Kubernetes.Labels)
 	out.Kubernetes.Taints = cloneOptionalSlice(layer.Kubernetes.Taints)
@@ -256,6 +256,29 @@ func mergeSourceDiskSelector(base, next *SourceDiskSelector) *SourceDiskSelector
 	return out
 }
 
+func mergeSourceSystemDiskSelector(base, next *SourceSystemDiskSelector) *SourceSystemDiskSelector {
+	if next == nil {
+		return cloneSourceSystemDiskSelector(base)
+	}
+	out := cloneSourceSystemDiskSelector(base)
+	if out == nil {
+		out = &SourceSystemDiskSelector{}
+	}
+	for _, field := range []struct{ out, next *Optional[string] }{
+		{&out.ByID, &next.ByID}, {&out.WWN, &next.WWN}, {&out.Serial, &next.Serial},
+		{&out.ByPath, &next.ByPath}, {&out.GPTGUID, &next.GPTGUID}, {&out.Name, &next.Name},
+		{&out.Model, &next.Model}, {&out.Size, &next.Size}, {&out.Type, &next.Type},
+	} {
+		if value, ok := field.next.Get(); ok {
+			*field.out = supplied(value)
+		}
+	}
+	if value, ok := next.MinSizeMiB.Get(); ok {
+		out.MinSizeMiB = supplied(value)
+	}
+	return out
+}
+
 func mergeSourcePartitionSelector(base, next *SourcePartitionSelector) *SourcePartitionSelector {
 	if next == nil {
 		return cloneSourcePartitionSelector(base)
@@ -347,6 +370,24 @@ func lowerDiskSelector(selector *SourceDiskSelector) *manifest.DiskSelector {
 	}
 }
 
+func lowerSystemDiskSelector(selector *SourceSystemDiskSelector) *manifest.DiskSelector {
+	if selector == nil {
+		return nil
+	}
+	return &manifest.DiskSelector{
+		ByID:       selector.ByID.Value(),
+		WWN:        selector.WWN.Value(),
+		Serial:     selector.Serial.Value(),
+		ByPath:     selector.ByPath.Value(),
+		GPTGUID:    selector.GPTGUID.Value(),
+		Name:       selector.Name.Value(),
+		Model:      selector.Model.Value(),
+		Size:       selector.Size.Value(),
+		Type:       selector.Type.Value(),
+		MinSizeMiB: selector.MinSizeMiB.Value(),
+	}
+}
+
 func lowerStorageVolumes(disks Optional[[]SourceStorageVolume]) []manifest.Volume {
 	values, ok := disks.Get()
 	if !ok {
@@ -398,13 +439,13 @@ func lowerTaints(taints Optional[[]manifest.NodeTaint]) []manifest.NodeTaint {
 	return slices.Clone(values)
 }
 
-func validateDefaultSystemDisk(selector *SourceDiskSelector) error {
+func validateDefaultSystemDisk(selector *SourceSystemDiskSelector) error {
 	if selector == nil {
 		return nil
 	}
-	for _, value := range []Optional[string]{selector.ByID, selector.WWN, selector.Serial} {
+	for _, value := range []Optional[string]{selector.ByID, selector.WWN, selector.Serial, selector.ByPath, selector.GPTGUID, selector.Name} {
 		if configured, ok := value.Get(); ok && strings.TrimSpace(configured) != "" {
-			return fmt.Errorf("identifying selectors byID, wwn, and serial must be set per node")
+			return fmt.Errorf("identifying selectors byID, wwn, serial, byPath, gptGUID, and name must be set per node; defaults may set model, size, type, and minSizeMiB")
 		}
 	}
 	return nil
@@ -521,14 +562,8 @@ func validateResolvedSourceNodeLayerIssues(path string, layer SourceNodeLayer) [
 	if layer.Install.SystemDisk == nil {
 		errs = append(errs, fmt.Errorf("%s.install.systemDisk is required", path))
 	} else {
-		selected := 0
-		for _, value := range []Optional[string]{layer.Install.SystemDisk.ByID, layer.Install.SystemDisk.WWN, layer.Install.SystemDisk.Serial} {
-			if configured, ok := value.Get(); ok && strings.TrimSpace(configured) != "" {
-				selected++
-			}
-		}
-		if selected != 1 {
-			errs = append(errs, fmt.Errorf("%s.install.systemDisk must set exactly one of byID, wwn, or serial", path))
+		if err := lowerSystemDiskSelector(layer.Install.SystemDisk).Target().Validate(); err != nil {
+			errs = append(errs, fmt.Errorf("%s.install.systemDisk: %w", path, err))
 		}
 	}
 	if err := validateSourceStorageVolumes(path+".storage.volumes", layer.Storage.Volumes, true); err != nil {
@@ -768,6 +803,14 @@ func cloneSourceDiskSelector(selector *SourceDiskSelector) *SourceDiskSelector {
 	return &out
 }
 
+func cloneSourceSystemDiskSelector(selector *SourceSystemDiskSelector) *SourceSystemDiskSelector {
+	if selector == nil {
+		return nil
+	}
+	out := *selector
+	return &out
+}
+
 func cloneSourceVolumeSelector(selector *SourceVolumeSelector) *SourceVolumeSelector {
 	if selector == nil {
 		return nil
@@ -800,4 +843,23 @@ func cloneOptionalMap[K comparable, V any](optional Optional[map[K]V]) Optional[
 		return Optional[map[K]V]{}
 	}
 	return supplied(maps.Clone(values))
+}
+
+func (s *SourceSystemDiskSelector) minSizeMiB() (uint64, bool) {
+	if s == nil {
+		return 0, false
+	}
+	return s.MinSizeMiB.Get()
+}
+
+func (s *SourceSystemDiskSelector) hasCriterion() bool {
+	if s == nil {
+		return false
+	}
+	for _, value := range []Optional[string]{s.ByID, s.WWN, s.Serial, s.ByPath, s.GPTGUID, s.Name, s.Model, s.Size, s.Type} {
+		if configured, ok := value.Get(); ok && configured != "" {
+			return true
+		}
+	}
+	return false
 }

@@ -327,6 +327,9 @@ func applyInstallNode(ctx context.Context, opts installApplyOptions, inventory c
 		}
 	}
 
+	if warning := weakSystemDiskWarning(nodeName, selected.InstallManifest.Install.TargetDisk); warning != "" {
+		fmt.Fprintln(stderr, warning)
+	}
 	fmt.Fprintf(stderr, "installing node %s via %s\n", nodeName, endpoint)
 	accepted, err := submitInstallBundle(waitCtx, client, endpoint, archive, selected.BundleDigest, selected.Node.Name, acknowledgements)
 	if err != nil {
@@ -821,6 +824,11 @@ func writeInstallReport(stdout io.Writer, output string, report installHandoffRe
 		w.row(node, report.Endpoint, state, step)
 		if err := w.flush(); err != nil {
 			return err
+		}
+		if report.Handoff.State == handoff.HandoffWaiting && len(report.Handoff.Disks) > 0 {
+			if err := writeInstallerDisks(stdout, report.Handoff.Disks); err != nil {
+				return err
+			}
 		}
 		if installFailed(report.Handoff.InstallStatus.State) {
 			if _, err := fmt.Fprintf(stdout, "Failure: %s\n", installFailure(report.Handoff.InstallStatus)); err != nil {

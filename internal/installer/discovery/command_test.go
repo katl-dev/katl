@@ -86,8 +86,10 @@ func TestCommandDiscoverySourceCollectsReadOnlyFacts(t *testing.T) {
 	}
 
 	facts, err := (CommandDiscoverySource{
-		Commands: runner,
-		ByIDDir:  filepath.Join(t.TempDir(), "missing-by-id"),
+		Commands:    runner,
+		ByIDDir:     filepath.Join(t.TempDir(), "missing-by-id"),
+		ByPathDir:   filepath.Join(t.TempDir(), "missing-by-path"),
+		SysBlockDir: filepath.Join(t.TempDir(), "missing-sys"),
 	}).Discover(context.Background())
 	if err != nil {
 		t.Fatalf("Discover() error = %v", err)
@@ -137,42 +139,6 @@ func TestCommandDiscoverySourceCollectsReadOnlyFacts(t *testing.T) {
 	}
 }
 
-func TestCommandDiscoverySourceCollectsByIDAliases(t *testing.T) {
-	root := t.TempDir()
-	devDir := filepath.Join(root, "dev")
-	byIDDir := filepath.Join(devDir, "disk", "by-id")
-	if err := os.MkdirAll(byIDDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll() error = %v", err)
-	}
-	if err := os.Symlink(filepath.Join("..", "..", "vda"), filepath.Join(byIDDir, "virtio-katl-root")); err != nil {
-		t.Fatalf("Symlink() error = %v", err)
-	}
-	runner := &fixtureOutputRunner{
-		outputs: map[string][]byte{
-			"lsblk": []byte(`{
-  "blockdevices": [
-    {"name":"vda","path":"` + filepath.Join(devDir, "vda") + `","type":"disk","size":68719476736,"ro":false,"mountpoints":[]}
-  ]
-}`),
-			"findmnt": []byte(`{"filesystems":[]}`),
-			"ip":      []byte(`[]`),
-		},
-	}
-
-	facts, err := (CommandDiscoverySource{
-		Commands: runner,
-		ByIDDir:  byIDDir,
-	}).Discover(context.Background())
-	if err != nil {
-		t.Fatalf("Discover() error = %v", err)
-	}
-
-	want := filepath.Join(byIDDir, "virtio-katl-root")
-	if len(facts.BlockDevices) != 1 || !reflect.DeepEqual(facts.BlockDevices[0].ByID, []string{want}) {
-		t.Fatalf("block devices = %#v, want by-id alias %q", facts.BlockDevices, want)
-	}
-}
-
 type fixtureOutputRunner struct {
 	outputs map[string][]byte
 	calls   []string
@@ -196,4 +162,80 @@ func (r *fixtureOutputRunner) Output(_ context.Context, name string, args ...str
 		return nil, fmt.Errorf("missing fixture for %q", name)
 	}
 	return output, nil
+}
+
+func TestCommandDiscoverySourceCollectsDiskIdentities(t *testing.T) {
+	root := t.TempDir()
+	devDir := filepath.Join(root, "dev")
+	byIDDir := filepath.Join(devDir, "disk", "by-id")
+	byPathDir := filepath.Join(devDir, "disk", "by-path")
+	sysBlockDir := filepath.Join(root, "sys", "class", "block")
+	for _, dir := range []string{byIDDir, byPathDir, filepath.Join(sysBlockDir, "vda"), filepath.Join(sysBlockDir, "vdb")} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll() error = %v", err)
+		}
+	}
+	links := map[string]string{
+		filepath.Join(byIDDir, "virtio-katl-data"):               "../../vdb",
+		filepath.Join(byPathDir, "pci-0000:00:04.0"):             "../../vda",
+		filepath.Join(byPathDir, "virtio-pci-0000:00:04.0"):      "../../vda",
+		filepath.Join(byPathDir, "pci-0000:00:04.0-part1"):       "../../vda1",
+		filepath.Join(byPathDir, "pci-0000:00:05.0"):             "../../vdb",
+		filepath.Join(byPathDir, "not-a-symlink-is-ignored.tmp"): "",
+	}
+	for link, target := range links {
+		if target == "" {
+			if err := os.WriteFile(link, nil, 0o644); err != nil {
+				t.Fatalf("WriteFile() error = %v", err)
+			}
+			continue
+		}
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatalf("Symlink() error = %v", err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(sysBlockDir, "vda", "diskseq"), []byte("7\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	runner := &fixtureOutputRunner{
+		outputs: map[string][]byte{
+			"lsblk": []byte(`{
+  "blockdevices": [
+    {"name":"vda","path":"` + filepath.Join(devDir, "vda") + `","type":"disk","size":68719476736,"ro":false,"rota":true,"tran":null,"serial":null,"wwn":null,"pttype":"gpt","ptuuid":"6f1e3c2a-8d4b-4f5e-9a7c-1b2d3e4f5a6b","mountpoints":[],
+     "children":[{"name":"vda1","path":"` + filepath.Join(devDir, "vda1") + `","type":"part","size":536870912,"ro":false,"rota":true,"pttype":"gpt","ptuuid":"6f1e3c2a-8d4b-4f5e-9a7c-1b2d3e4f5a6b","parttype":"c12a7328-f81f-11d2-ba4b-00a0c93ec93b","mountpoints":[]}]},
+    {"name":"vdb","path":"` + filepath.Join(devDir, "vdb") + `","type":"disk","size":1073741824,"ro":false,"rota":false,"tran":"nvme","mountpoints":[]}
+  ]
+}`),
+			"findmnt": []byte(`{"filesystems":[]}`),
+			"ip":      []byte(`[]`),
+		},
+	}
+
+	facts, err := (CommandDiscoverySource{
+		Commands:    runner,
+		ByIDDir:     byIDDir,
+		ByPathDir:   byPathDir,
+		SysBlockDir: sysBlockDir,
+	}).Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover() error = %v", err)
+	}
+
+	if len(facts.BlockDevices) != 2 {
+		t.Fatalf("block devices = %#v, want vda and vdb", facts.BlockDevices)
+	}
+	vda, vdb := facts.BlockDevices[0], facts.BlockDevices[1]
+	wantVDAPaths := []string{filepath.Join(byPathDir, "pci-0000:00:04.0"), filepath.Join(byPathDir, "virtio-pci-0000:00:04.0")}
+	if !reflect.DeepEqual(vda.ByPath, wantVDAPaths) || len(vda.ByID) != 0 {
+		t.Errorf("vda aliases byPath=%q byID=%q, want byPath %q and no byID", vda.ByPath, vda.ByID, wantVDAPaths)
+	}
+	if vda.PartitionTableUUID != "6f1e3c2a-8d4b-4f5e-9a7c-1b2d3e4f5a6b" || vda.DiskSeq != 7 || !vda.Rotational {
+		t.Errorf("vda = %#v, want GPT GUID, diskseq 7, rotational", vda)
+	}
+	if want := []string{filepath.Join(byPathDir, "pci-0000:00:04.0-part1")}; !reflect.DeepEqual(vda.Partitions[0].ByPath, want) {
+		t.Errorf("vda1 byPath = %q, want %q", vda.Partitions[0].ByPath, want)
+	}
+	if vdb.Transport != "nvme" || vdb.DiskSeq != 0 || !reflect.DeepEqual(vdb.ByID, []string{filepath.Join(byIDDir, "virtio-katl-data")}) {
+		t.Errorf("vdb = %#v, want nvme transport, no diskseq, by-id alias", vdb)
+	}
 }

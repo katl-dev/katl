@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -608,4 +609,57 @@ spec:
         systemDisk:
           byID: /dev/disk/by-id/ata-root
 `
+}
+
+func TestHandoffStatusReportsDisksWithoutHardwareIdentity(t *testing.T) {
+	server := newTestHandoffServer(t)
+	server.SetHardwareFacts(discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{{
+		Path: "/dev/vda", Type: discovery.DeviceDisk, SizeBytes: 64 << 30, Rotational: true,
+		ByPath:             []string{"/dev/disk/by-path/pci-0000:00:04.0"},
+		PartitionSignature: "gpt", PartitionTableUUID: "6f1e3c2a-8d4b-4f5e-9a7c-1b2d3e4f5a6b",
+	}}})
+
+	got := server.Status().Disks
+	want := []HandoffDisk{{
+		Path: "/dev/vda", ByPath: []string{"/dev/disk/by-path/pci-0000:00:04.0"}, GPTGUID: "6f1e3c2a-8d4b-4f5e-9a7c-1b2d3e4f5a6b",
+		Type: discovery.DiskTypeHDD, SizeBytes: 64 << 30, Selectable: true,
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("disks = %#v, want %#v", got, want)
+	}
+}
+
+func TestHandoffServerResolvesSystemDiskSelectors(t *testing.T) {
+	facts := discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
+		{Path: "/dev/vda", Type: discovery.DeviceDisk, SizeBytes: 64 << 30, ByPath: []string{"/dev/disk/by-path/pci-0000:00:04.0"}},
+		{Path: "/dev/vdb", Type: discovery.DeviceDisk, SizeBytes: 64 << 30, ByPath: []string{"/dev/disk/by-path/pci-0000:00:05.0"}},
+	}}
+	for _, tt := range []struct {
+		name     string
+		selector string
+		status   int
+		want     string
+	}{
+		{"kernel name", "name: /dev/vda", http.StatusOK, ""},
+		{"attachment path and size", "byPath: /dev/disk/by-path/pci-0000:00:05.0\n          size: \">= 32GiB\"", http.StatusOK, ""},
+		{"ambiguous size", "size: 64GiB", http.StatusBadRequest, "matched 2 whole disks"},
+		{"no match", "name: /dev/sda", http.StatusBadRequest, "byPath=/dev/disk/by-path/pci-0000:00:05.0"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server := newTestHandoffServer(t)
+			server.SetHardwareFacts(facts)
+			ts := httptest.NewServer(server.Handler())
+			defer ts.Close()
+			source := strings.Replace(validBundleSourceConfig(), "          byID: /dev/disk/by-id/ata-root\n", "          "+tt.selector+"\n", 1)
+			bundle, result := configBundleFromSource(t, source)
+
+			resp := postBundle(t, ts.URL, "cp-1", result.Digest, bundle)
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+
+			if resp.StatusCode != tt.status || !strings.Contains(string(body), tt.want) {
+				t.Fatalf("status=%d body=%s, want %d containing %q", resp.StatusCode, body, tt.status, tt.want)
+			}
+		})
+	}
 }

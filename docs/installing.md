@@ -65,12 +65,12 @@ in `cluster.yaml` and set `management.address` to that address.
 
 ### Select the target disk
 
-Configuration generation from live installers requires one selectable disk
-per node. A selectable disk is a writable whole disk with a stable identity
-and no mounted filesystems. If there is more than one, read the disk inventory
-on the installer and identify the target by a stable by-id path, WWN, or
-serial number. Supply the intended disk explicitly when creating the
-configuration.
+Configuration generation from a live installer chooses the disk on its own
+only when the installer reports exactly one selectable disk, a writable whole
+disk with no mounted filesystems, and that disk has a by-id path, WWN, or
+serial number, which Katl records as its selector. Otherwise read the disk
+inventory with `katlctl install status --endpoint ADDRESS` and name the
+intended disk explicitly when creating the configuration.
 
 ```sh
 katlctl config init ./cluster.yaml \
@@ -78,9 +78,13 @@ katlctl config init ./cluster.yaml \
   --node worker-1=worker,192.0.2.21,/dev/disk/by-id/ata-KATL_WORKER_1_ROOT
 ```
 
-Replace the sample addresses and disk paths. Use a stable selector in
-`cluster.yaml` so a device name such as `/dev/sda` cannot direct the install
-to a different disk.
+Replace the sample addresses and disk paths. The disk may also be a
+`/dev/disk/by-path` path or a kernel name such as `/dev/sda`, but prefer a
+by-id path: a device name can direct the install to a different disk after the
+kernel enumerates disks in another order. The
+[system disk reference](reference/cluster-config.md#system-disk) describes
+every selector, including size and model, and how each behaves on a
+reinstall.
 
 ### Select an SSH key
 
@@ -142,7 +146,10 @@ as its install media, which makes the disk ineligible as a target.
 
 The installer runs from RAM. It does not mount the ESP it booted from, and it
 stages the configuration and OS image in memory, so the same disk is
-selectable as the system disk. Because `katl-installer.efi` carries no OS
+selectable as the system disk. A virtual disk often reports no by-id path,
+WWN, or serial; select it by its attachment path, such as
+`byPath: /dev/disk/by-path/pci-0000:00:04.0`, or, as the only disk, by its
+kernel name, such as `name: /dev/vda`. Because `katl-installer.efi` carries no OS
 image, compile the configuration into a bundle that names a KatlOS image URL
 the installer can reach, as described in
 [Compile one cluster configuration bundle](install-pxe-matchbox.md#compile-one-cluster-configuration-bundle),

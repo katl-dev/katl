@@ -383,6 +383,15 @@ func (planInstallStep) Run(ctx context.Context, install *Context) error {
 	default:
 	}
 	if install.KatlosImage != nil && len(install.HardwareFacts.BlockDevices) > 0 {
+		// Plan against disks as they are now, not as they were before the
+		// image download, so nothing slow separates planning from mutation.
+		if install.Discovery != nil {
+			facts, err := install.Discovery.Discover(ctx)
+			if err != nil {
+				return fmt.Errorf("rediscover hardware before planning: %w", err)
+			}
+			install.HardwareFacts = facts
+		}
 		if err := planInstall(install); err != nil {
 			return err
 		}
@@ -413,6 +422,12 @@ func planInstall(install *Context) error {
 	layoutRequest, err := manifest.BuildDiskLayoutRequest(install.Manifest, profile, runtimeRootSizeMiB(install.KatlosImage.Runtime.SizeBytes))
 	if err != nil {
 		return err
+	}
+	// A rerun after destructive mutation must reuse the disk the first attempt
+	// resolved: its GPT GUID is gone, and a weak selector could now match
+	// another disk.
+	if previous := install.PreviousStatus; previous != nil && previous.DestructiveMutation && previous.TargetDisk != nil {
+		layoutRequest.RetainedTarget = previous.TargetDisk
 	}
 	layout, err := disk.PlanDiskLayout(install.HardwareFacts, layoutRequest)
 	if err != nil {
@@ -491,10 +506,37 @@ func (prepareDiskStep) ID() StepID {
 }
 
 func (prepareDiskStep) Run(ctx context.Context, install *Context) error {
+	if err := revalidateTargetDisk(ctx, install); err != nil {
+		return fmt.Errorf("%w: before wiping, %w; no disk changes were made. Check the disks attached to the node, then rerun katlctl install apply", ErrInstallRefused, err)
+	}
 	if err := executeDiskGroup(ctx, install, disk.PrepareOperations); err != nil {
 		return err
 	}
 	return recordStep(ctx, install, PrepareDisk)
+}
+
+// revalidateTargetDisk rediscovers hardware immediately before a destructive
+// disk group and fails unless the planned disk is still the same, still
+// matches the selector, and is still safe to overwrite. udev settles first so
+// aliases dropped while the kernel rereads partitions are back.
+func revalidateTargetDisk(ctx context.Context, install *Context) error {
+	if install.DiskLayout == nil {
+		return nil
+	}
+	if install.Discovery == nil {
+		return fmt.Errorf("hardware discovery is required to revalidate target disk %s", install.DiskLayout.TargetDiskPath)
+	}
+	if err := install.Commands.Run(ctx, "udevadm", "settle"); err != nil {
+		return fmt.Errorf("settle udev before revalidating target disk: %w", err)
+	}
+	facts, err := install.Discovery.Discover(ctx)
+	if err != nil {
+		return fmt.Errorf("rediscover target disk: %w", err)
+	}
+	if _, err := discovery.MatchRetainedDisk(facts, install.DiskLayout.TargetDisk, install.Manifest.Install.TargetDisk.Target()); err != nil {
+		return fmt.Errorf("revalidate target disk: %w", err)
+	}
+	return nil
 }
 
 type createPartitionsStep struct{}
@@ -504,6 +546,9 @@ func (createPartitionsStep) ID() StepID {
 }
 
 func (createPartitionsStep) Run(ctx context.Context, install *Context) error {
+	if err := revalidateTargetDisk(ctx, install); err != nil {
+		return fmt.Errorf("before partitioning, %w; the disk was wiped but not repartitioned. Check the disks attached to the node, then boot the installer again and rerun katlctl install apply", err)
+	}
 	if err := executeDiskGroup(ctx, install, disk.PartitionOperations); err != nil {
 		return err
 	}
@@ -1152,8 +1197,13 @@ func statusFromContext(install *Context, state string, current StepID, err error
 	record.InstallMaterialDigest = install.InstallMaterialDigest
 	record.KatlosImage = installstatus.ImageFromManifest(install.Manifest)
 	record.TargetDiskStableID = targetDiskStableID(install.Manifest.Install.TargetDisk)
+	if install.DiskLayout != nil {
+		target := install.DiskLayout.TargetDisk
+		record.TargetDisk = &target
+	}
 	record.WipeTargetAccepted = install.Manifest.Install.WipeTarget
-	record.DestructiveMutation = mutationStarted(install.Completed, current)
+	// A refusal stops an attempt before it changes the disk, even at PrepareDisk.
+	record.DestructiveMutation = mutationStarted(install.Completed, current) && !errors.Is(err, ErrInstallRefused)
 	if install.LoaderRecord != nil {
 		record.SelectedRootSlot = install.LoaderRecord.Root.Slot
 		record.InstalledGeneration = install.LoaderRecord.GenerationID

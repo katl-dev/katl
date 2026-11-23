@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -203,9 +204,9 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 	}
 
 	operations := []DiskOperation{
-		{Name: "wipe-target-signatures", Command: "wipefs", Args: []string{"--all", plan.TargetDiskPath}, Destructive: true},
-		{Name: "create-gpt", Command: "systemd-repart", Args: repartArgs(plan.TargetDiskPath), Definitions: systemDefinitions(plan), Env: []string{"SYSTEMD_REPART_MKFS_OPTIONS_EXT4=-O verity"}, Destructive: true},
-		{Name: "reread-partitions", Command: "partprobe", Args: []string{plan.TargetDiskPath}},
+		{Name: "wipe-target-signatures", Command: "wipefs", Args: []string{"--all", targetDevice(plan)}, Destructive: true},
+		{Name: "create-gpt", Command: "systemd-repart", Args: repartArgs(targetDevice(plan)), Definitions: systemDefinitions(plan), Env: []string{"SYSTEMD_REPART_MKFS_OPTIONS_EXT4=-O verity"}, Destructive: true},
+		{Name: "reread-partitions", Command: "partprobe", Args: []string{targetDevice(plan)}},
 		{Name: "settle-partitions", Command: "udevadm", Args: []string{"settle"}},
 	}
 
@@ -267,8 +268,21 @@ func systemDefinitions(plan DiskLayoutPlan) []string {
 	return definitions
 }
 
+// targetDevice names the target by its kernel attachment sequence when known,
+// so destructive commands cannot reach a different disk that has since taken
+// the same kernel name.
+func targetDevice(plan DiskLayoutPlan) string {
+	if plan.TargetDisk.DiskSeq != 0 {
+		return "/dev/disk/by-diskseq/" + strconv.FormatUint(plan.TargetDisk.DiskSeq, 10)
+	}
+	return plan.TargetDiskPath
+}
+
+// repartArgs seeds partition and disk GUIDs randomly so every install gets
+// fresh identities; the default machine-id seed would repeat them across
+// installs that share an installer machine-id.
 func repartArgs(device string) []string {
-	return []string{"--dry-run=no", "--empty=force", "--discard=no", "--definitions={definitions}", device}
+	return []string{"--dry-run=no", "--empty=force", "--discard=no", "--seed=random", "--definitions={definitions}", device}
 }
 
 // PrepareVolume executes the provisioning plan shared by install and live apply.

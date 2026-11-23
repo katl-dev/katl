@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/extensionrelease"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/handoff"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
@@ -101,7 +103,7 @@ func TestConfigInitRequiresOneSelectableInstallerDisk(t *testing.T) {
 				{Path: "/dev/vda", ByID: []string{"/dev/disk/by-id/root"}, Selectable: true},
 				{Path: "/dev/vdb", ByID: []string{"/dev/disk/by-id/data"}, Selectable: true},
 			},
-			want: "2 selectable disks (/dev/vda, /dev/vdb)",
+			want: "2 selectable disks: /dev/vda (",
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -171,6 +173,30 @@ func TestInstallStatusReportsWaitingInstaller(t *testing.T) {
 	}
 	if report.Kind != "InstallHandoffReport" || report.Endpoint != ts.URL || report.Handoff.State != handoff.HandoffWaiting || report.Handoff.InstallStatus.State != installstatus.StateWaitingForConfig {
 		t.Fatalf("report = %#v", report)
+	}
+}
+
+func TestInstallStatusListsWaitingInstallerDisks(t *testing.T) {
+	server := handoff.NewHandoffServer(nil)
+	server.SetHardwareFacts(discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
+		{Path: "/dev/vda", Type: discovery.DeviceDisk, SizeBytes: 64 << 30, Rotational: true, ByPath: []string{"/dev/disk/by-path/pci-0000:00:04.0"}},
+		{Path: "/dev/sda", Type: discovery.DeviceDisk, SizeBytes: 16 << 30, Model: "USB", Mountpoints: []string{"/run/media"}, ByID: []string{"/dev/disk/by-id/usb-stick"}},
+	}})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	var stdout bytes.Buffer
+	if err := run(context.Background(), []string{"install", "status", "--endpoint", strings.TrimPrefix(ts.URL, "http://")}, &stdout, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, want := range []string{
+		`/dev/vda\s+64.0GiB\s+hdd\s+-\s+yes\s+byPath="/dev/disk/by-path/pci-0000:00:04.0"`,
+		`/dev/sda\s+16.0GiB\s+ssd\s+USB\s+no \(mounted\)`,
+	} {
+		if !regexp.MustCompile(want).MatchString(stdout.String()) {
+			t.Errorf("status output missing %q:\n%s", want, stdout.String())
+		}
 	}
 }
 

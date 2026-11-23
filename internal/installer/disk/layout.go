@@ -38,7 +38,10 @@ const (
 )
 
 type DiskLayoutRequest struct {
-	TargetDisk         TargetDiskSelector
+	TargetDisk TargetDiskSelector
+	// RetainedTarget binds planning to a disk an interrupted install already
+	// resolved, instead of resolving TargetDisk again.
+	RetainedTarget     *discovery.DiskIdentity
 	ESPSizeMiB         uint64
 	XBOOTLDRSizeMiB    uint64
 	RootA              RootSlotRequest
@@ -81,6 +84,7 @@ const (
 
 type DiskLayoutPlan struct {
 	TargetDiskPath string
+	TargetDisk     discovery.DiskIdentity
 	Partitions     []PartitionPlan
 	VolumeMounts   []VolumePlan
 	Boot           BootTargetMetadata
@@ -129,7 +133,12 @@ func PlanDiskLayout(facts HardwareFacts, request DiskLayoutRequest) (DiskLayoutP
 		return DiskLayoutPlan{}, err
 	}
 
-	target, err := discovery.MatchTargetDisk(facts, normalized.TargetDisk)
+	var target discovery.TargetDiskMatch
+	if normalized.RetainedTarget != nil {
+		target, err = discovery.MatchRetainedDisk(facts, *normalized.RetainedTarget, normalized.TargetDisk)
+	} else {
+		target, err = discovery.MatchTargetDisk(facts, normalized.TargetDisk)
+	}
 	if err != nil {
 		return DiskLayoutPlan{}, fmt.Errorf("match target disk: %w", err)
 	}
@@ -151,6 +160,7 @@ func PlanDiskLayout(facts HardwareFacts, request DiskLayoutRequest) (DiskLayoutP
 
 	return DiskLayoutPlan{
 		TargetDiskPath: target.Device.Path,
+		TargetDisk:     discovery.IdentityOf(target.Device),
 		Partitions:     partitions,
 		VolumeMounts:   volumeMounts,
 		Boot:           boot,

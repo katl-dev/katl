@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 
@@ -307,20 +308,39 @@ func discoverVolumeFacts(ctx context.Context, run ToolRunner) (discovery.Hardwar
 }
 
 func planLiveVolumes(facts discovery.HardwareFacts, desired manifest.Manifest, changed []manifest.Volume) ([]disk.VolumePlan, error) {
-	rootDisk, err := discovery.MatchDiskIdentity(facts, discovery.TargetDiskSelector{
-		ByID:       desired.Install.TargetDisk.ByID,
-		WWN:        desired.Install.TargetDisk.WWN,
-		Serial:     desired.Install.TargetDisk.Serial,
-		MinSizeMiB: desired.Install.TargetDisk.MinSizeMiB,
-	})
+	rootDisk, err := runningSystemDisk(facts)
 	if err != nil {
-		return nil, fmt.Errorf("resolve installed root disk: %w", err)
+		return nil, err
 	}
 	plans, err := disk.PlanVolumes(facts, rootDisk, manifest.BuildVolumeRequests(changed))
 	if err != nil {
 		return nil, err
 	}
 	return plans, nil
+}
+
+// runningSystemDisk finds the disk whose state partition is mounted at /var.
+// An installed node is identified by its own partitions rather than the
+// install selector, whose GPT GUID or kernel name need not match after install.
+func runningSystemDisk(facts discovery.HardwareFacts) (discovery.BlockDevice, error) {
+	sources := map[string]bool{}
+	for _, mount := range facts.Mounts {
+		if mount.Target == "/var" {
+			sources[mount.Source] = true
+		}
+	}
+	var disks []discovery.BlockDevice
+	for _, device := range facts.BlockDevices {
+		if slices.ContainsFunc(device.Partitions, func(partition discovery.BlockDevice) bool {
+			return sources[partition.Path] || slices.Contains(partition.Mountpoints, "/var")
+		}) {
+			disks = append(disks, device)
+		}
+	}
+	if len(disks) != 1 {
+		return discovery.BlockDevice{}, fmt.Errorf("identify the running system disk: %d disks hold a partition mounted at /var, want 1", len(disks))
+	}
+	return disks[0], nil
 }
 
 func factsWithoutManagedVolumeMounts(facts discovery.HardwareFacts, names []string) discovery.HardwareFacts {

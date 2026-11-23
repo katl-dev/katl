@@ -227,14 +227,23 @@ wholesale; `taints: []` clears it.
 
 ## Install Selection
 
-Each node chooses its own install target. Prefer durable `byID`, `wwn`, or
-`serial` selectors; short kernel names such as `/dev/sda` are not valid
-destructive selectors.
+Each node chooses its own install target. Every set `install.systemDisk`
+criterion must match, and together they must match exactly one whole disk;
+zero or several matches stop installation with a candidate list, and Katl
+never falls back to a first match, device name, or size. Prefer durable
+`byID`, `wwn`, or `serial` selectors. `byPath` (attachment topology),
+`gptGUID` (current contents), `name` (kernel enumeration), and `model`,
+`size`, and `type` (disk class) select disks without a hardware identity and
+carry the weaker guarantees described in the
+[system disk reference](../reference/cluster-config.md#system-disk).
 
-`defaults.install.systemDisk` may contain only non-identifying constraints such
-as minimum size. It cannot select a disk for several nodes. A node's
-`install.systemDisk` supplies the durable identity and may override common
-constraints. `storage.volumes` describes persistent desired data-disk state
+`defaults.install.systemDisk` may contain only class criteria and constraints:
+`model`, `size`, `type`, and `minSizeMiB`. It cannot identify a disk for
+several nodes. A node's `install.systemDisk` supplies the identifying
+criteria and may override common ones. The installer binds an install to the
+disk it resolved and revalidates that binding before partitioning; after
+installation the node is tracked by its Katl-owned partitions, not by the
+selector. `storage.volumes` describes persistent desired data-disk state
 rather than a one-time installation input.
 
 The decision to execute a destructive install belongs to the install operation,

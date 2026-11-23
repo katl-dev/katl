@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -25,8 +26,6 @@ import (
 )
 
 const (
-	installerESPDiskSerial = "katl-root"
-	installerESPDiskByID   = "/dev/disk/by-id/virtio-" + installerESPDiskSerial
 	// Fixed GPT identities let the test tell the operator-prepared layout from
 	// the layout Katl writes.
 	installerESPDiskGUID      = "6b6b7f0e-2c4e-4b55-9c3a-6b61746c6573"
@@ -34,9 +33,10 @@ const (
 )
 
 // An operator copies the release installer UKI to the removable-media path of
-// the only disk's ESP. The installer then repartitions that same disk from a
-// remote image, and the machine boots the installed system without anyone
-// changing firmware settings or disks.
+// the only disk's ESP. The disk reports no serial, WWN, or by-id alias, as many
+// virtual disks do, so Katl selects it by its attachment path. The installer
+// then repartitions that same disk from a remote image, and the machine boots
+// the installed system without anyone changing firmware settings or disks.
 func TestInstallerESPSameDiskInstall(t *testing.T) {
 	options := vmtest.DefaultOptions()
 	if !options.Enabled {
@@ -95,7 +95,7 @@ func TestInstallerESPSameDiskInstall(t *testing.T) {
 	// power cycle below reuses all three unchanged. 2 GiB is the documented
 	// minimum installer RAM; the downloaded image is staged in memory.
 	vm := vmtest.VMConfig{
-		Boot:          vmtest.VMBoot{Image: disk, ImageFormat: vmtest.DiskRaw, ImageSerial: installerESPDiskSerial},
+		Boot:          vmtest.VMBoot{Image: disk, ImageFormat: vmtest.DiskRaw, ImageWithoutSerial: true},
 		Network:       vmtest.VMNetworkConfig{MAC: node.MACAddress},
 		PreserveNVRAM: true,
 		KVM:           options.KVM,
@@ -147,6 +147,8 @@ type installerESPJourney struct {
 	imageJSON  string
 
 	address string
+	// byPath is the attachment path the installer reports for the disk.
+	byPath string
 }
 
 func (j *installerESPJourney) installAndPowerOff(ctx context.Context, handle *vmtest.VMHandle) error {
@@ -168,14 +170,19 @@ func (j *installerESPJourney) installAndPowerOff(ctx context.Context, handle *vm
 	}
 	j.address = endpoint.Hostname()
 
-	if err := requireSelectableTargetDisk(ctx, endpoint.String()); err != nil {
+	if j.byPath, err = requireSelectableTargetDisk(ctx, endpoint.String()); err != nil {
 		return err
 	}
 	config := filepath.Join(j.dir, "cluster.yaml")
-	if _, err := j.cli(ctx, "config", "init", config, "--installer", j.address, "--ssh-authorized-key", j.publicKey); err != nil {
+	// Katl does not choose a disk without a hardware identity implicitly, so
+	// the operator names it by the attachment path the installer reports.
+	if _, err := j.cli(ctx, "config", "init", config, "--installer", j.address, "--ssh-authorized-key", j.publicKey); err == nil || !strings.Contains(err.Error(), "will not choose it implicitly") {
+		return fmt.Errorf("config init chose an identity-less disk implicitly: %v", err)
+	}
+	if _, err := j.cli(ctx, "config", "init", config, "--node", "cp-1=control-plane,"+j.address+","+j.byPath, "--ssh-authorized-key", j.publicKey); err != nil {
 		return err
 	}
-	if err := requireConfiguredSystemDisk(config); err != nil {
+	if err := requireConfiguredSystemDisk(config, j.byPath); err != nil {
 		return err
 	}
 	if _, err := j.cli(ctx, "install", "ssh", "--config", config, "--node", "cp-1"); err != nil {
@@ -236,30 +243,36 @@ func (j *installerESPJourney) verifyColdBoot(ctx context.Context, _ *vmtest.VMHa
 	return j.requireRootOnNewLayout(ctx)
 }
 
-func requireSelectableTargetDisk(ctx context.Context, endpoint string) error {
+// requireSelectableTargetDisk checks that the installer offers the boot disk
+// despite it reporting no hardware identity, and returns its attachment path.
+func requireSelectableTargetDisk(ctx context.Context, endpoint string) (string, error) {
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint+"/v1/status", nil)
 	if err != nil {
-		return err
+		return "", err
 	}
 	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer response.Body.Close()
 	var status handoff.HandoffStatus
 	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
-		return fmt.Errorf("decode installer status: %w", err)
+		return "", fmt.Errorf("decode installer status: %w", err)
 	}
 	if len(status.Disks) != 1 {
-		return fmt.Errorf("installer reports %d disks, want the single boot disk: %+v", len(status.Disks), status.Disks)
+		return "", fmt.Errorf("installer reports %d disks, want the single boot disk: %+v", len(status.Disks), status.Disks)
 	}
-	if disk := status.Disks[0]; disk.Serial != installerESPDiskSerial || !disk.Selectable || disk.Mounted {
-		return fmt.Errorf("boot disk is not selectable: %+v", disk)
+	disk := status.Disks[0]
+	if len(disk.ByID) != 0 || disk.WWN != "" || disk.Serial != "" {
+		return "", fmt.Errorf("boot disk reports a hardware identity, want none: %+v", disk)
 	}
-	return nil
+	if !disk.Selectable || disk.Mounted || len(disk.ByPath) == 0 || !strings.EqualFold(disk.GPTGUID, installerESPDiskGUID) {
+		return "", fmt.Errorf("boot disk is not selectable by attachment path and GPT GUID %s: %+v", installerESPDiskGUID, disk)
+	}
+	return slices.Min(disk.ByPath), nil
 }
 
-func requireConfiguredSystemDisk(path string) error {
+func requireConfiguredSystemDisk(path, byPath string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -269,7 +282,7 @@ func requireConfiguredSystemDisk(path string) error {
 			Nodes []struct {
 				Install struct {
 					SystemDisk struct {
-						ByID string `yaml:"byID"`
+						ByPath string `yaml:"byPath"`
 					} `yaml:"systemDisk"`
 				} `yaml:"install"`
 			} `yaml:"nodes"`
@@ -278,8 +291,8 @@ func requireConfiguredSystemDisk(path string) error {
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return err
 	}
-	if len(config.Spec.Nodes) != 1 || config.Spec.Nodes[0].Install.SystemDisk.ByID != installerESPDiskByID {
-		return fmt.Errorf("generated configuration does not select %s:\n%s", installerESPDiskByID, data)
+	if len(config.Spec.Nodes) != 1 || config.Spec.Nodes[0].Install.SystemDisk.ByPath != byPath {
+		return fmt.Errorf("generated configuration does not select %s:\n%s", byPath, data)
 	}
 	return nil
 }
@@ -287,7 +300,7 @@ func requireConfiguredSystemDisk(path string) error {
 // The installer must not hold the disk it is about to erase, so neither the
 // ESP it booted from nor the bundle and image staging may live on that disk.
 func (j *installerESPJourney) requireTargetDiskUnused(ctx context.Context) error {
-	disk, err := j.ssh(ctx, "readlink -f "+installerESPDiskByID)
+	disk, err := j.ssh(ctx, "readlink -f "+j.byPath)
 	if err != nil {
 		return err
 	}
@@ -371,7 +384,11 @@ func (j *installerESPJourney) requireGeneration0(ctx context.Context, config str
 }
 
 func (j *installerESPJourney) requireRootOnNewLayout(ctx context.Context) error {
-	chain, err := j.ssh(ctx, `lsblk --noheadings --raw --paths --inverse --output NAME,TYPE,SERIAL,PTUUID,PARTUUID "$(findmnt --noheadings --output SOURCE --target /)"`)
+	disk, err := j.ssh(ctx, "readlink -f "+j.byPath)
+	if err != nil {
+		return err
+	}
+	chain, err := j.ssh(ctx, `lsblk --noheadings --raw --paths --inverse --output NAME,TYPE,PTUUID,PARTUUID "$(findmnt --noheadings --output SOURCE --target /)"`)
 	if err != nil {
 		return err
 	}
@@ -380,10 +397,10 @@ func (j *installerESPJourney) requireRootOnNewLayout(ctx context.Context) error 
 		if len(fields) < 2 || fields[1] != "disk" {
 			continue
 		}
-		if len(fields) < 4 || fields[2] != installerESPDiskSerial {
-			return fmt.Errorf("running root is not on the boot disk:\n%s", chain)
+		if len(fields) < 3 || fields[0] != disk {
+			return fmt.Errorf("running root is not on the boot disk %s:\n%s", disk, chain)
 		}
-		if strings.EqualFold(fields[3], installerESPDiskGUID) {
+		if strings.EqualFold(fields[2], installerESPDiskGUID) {
 			return fmt.Errorf("boot disk still carries the operator-prepared partition table:\n%s", chain)
 		}
 		return nil

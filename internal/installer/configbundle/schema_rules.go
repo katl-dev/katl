@@ -138,7 +138,7 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 	case "configbundle.SourceSystemExtension.units":
 		return description("Systemd units and drop-ins activated with the extension.")
 	case "configbundle.SourceInstallLayer.systemDisk":
-		return description("System disk selector. Defaults may provide only non-identifying size policy; each effective node requires one stable identity.")
+		return description("System disk selector. Every set criterion must match and together they must match exactly one whole disk. Prefer byID, wwn, or serial. Defaults may set only model, size, type, and minSizeMiB.")
 	case "configbundle.SourceStorageLayer.volumes":
 		return description("Named whole-disk or partition-backed volumes.")
 	case "configbundle.SourceStorageVolume.name":
@@ -163,6 +163,26 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 		return description("Stable device serial number; an empty value clears an inherited identity.")
 	case "configbundle.SourceDiskSelector.minSizeMiB":
 		return integerRule("Minimum acceptable device size in MiB.", 0, 0)
+	case "configbundle.SourceSystemDiskSelector.byID":
+		return stringRule("Stable /dev/disk/by-id path of the disk hardware. Recommended.", `^(?:|/dev/disk/by-id/[^/]+)$`, 0, 0)
+	case "configbundle.SourceSystemDiskSelector.wwn":
+		return description("Device world-wide name. Recommended.")
+	case "configbundle.SourceSystemDiskSelector.serial":
+		return description("Device serial number. Recommended.")
+	case "configbundle.SourceSystemDiskSelector.byPath":
+		return stringRule("/dev/disk/by-path attachment path. Identifies the slot, not the disk: a replacement disk in the same slot matches, and topology changes break it.", `^(?:|/dev/disk/by-path/[^/]+)$`, 0, 0)
+	case "configbundle.SourceSystemDiskSelector.gptGUID":
+		return schemaFieldRule{Description: "GPT disk GUID of the current partition table. Identifies contents: cloned disks share it, and installation replaces it.", Pattern: `^(?:|[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$`}
+	case "configbundle.SourceSystemDiskSelector.name":
+		return stringRule("Kernel device path such as /dev/sda. Enumeration order can change between boots.", `^(?:|/dev/[^/]+)$`, 0, 0)
+	case "configbundle.SourceSystemDiskSelector.model":
+		return description("Device model; * and ? match any characters. Often shared by several disks.")
+	case "configbundle.SourceSystemDiskSelector.size":
+		return stringRule("Device size such as \">= 500GB\" or \"64GiB\"; without a comparison the size must match exactly.", `^(?:|(?:>=|<=|==|>|<)?\s*[0-9]+(?:\.[0-9]+)?\s*[A-Za-z]*)$`, 0, 0)
+	case "configbundle.SourceSystemDiskSelector.type":
+		return enumRule("Device class.", nil, "", "nvme", "ssd", "hdd")
+	case "configbundle.SourceSystemDiskSelector.minSizeMiB":
+		return integerRule("Minimum acceptable size in MiB of the selected disk. A safety check, not a selection criterion.", 0, 0)
 	case "configbundle.SourcePartitionSelector.byID":
 		return stringRule("Absolute stable partition /dev/disk/by-id path; an empty value clears an inherited identity.", `^(?:|/dev/disk/by-id/[^/]+)$`, 0, 0)
 	case "configbundle.SourcePartitionSelector.partUUID":

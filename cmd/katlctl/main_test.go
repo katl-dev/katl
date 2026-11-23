@@ -784,7 +784,7 @@ spec:
       install:
         systemDisk:
           byID: /dev/disk/by-id/node-b-root
-          serial: duplicate
+          size: "5XB"
       unsupported: true
     - name: node-a
       controlPlane: true
@@ -826,7 +826,7 @@ spec:
 		`spec.nodes["node-a"].install.systemDisk is required (line 29)`,
 		`spec.nodes["node-a"].kubernetes.taints[0].effect "Sometimes" is unsupported (line 33)`,
 		`spec.nodes["node-b"].access.ssh.authorizedKeys must not be empty (line 14)`,
-		`spec.nodes["node-b"].install.systemDisk must set exactly one of byID, wwn, or serial (line 20)`,
+		`spec.nodes["node-b"].install.systemDisk: size "5XB" has unknown unit "XB"; use B, KB, MB, GB, TB, PB, KiB, MiB, GiB, TiB, or PiB (line 20)`,
 		`spec.nodes["node-b"].kubernetes.address: "10.0.0.0/24" must be a literal unicast IP address (line 16)`,
 		`spec.nodes["node-b"].kubernetes.kubelet.configFile is required (line 17)`,
 		`spec.nodes["node-b"].unsupported: field is not supported (line 22)`,
@@ -895,8 +895,8 @@ func TestConfigValidateReportsOnlyPublicNodePaths(t *testing.T) {
 			name: "system disk selector",
 			source: strings.Replace(base,
 				"          byID: /dev/disk/by-id/ata-cp-root",
-				"          byID: /dev/disk/by-id/ata-cp-root\n          serial: duplicate-identity", 1),
-			want: `spec.nodes["cp-1"].install.systemDisk must set exactly one of byID, wwn, or serial`,
+				"          byID: /dev/disk/by-id/ata-cp-root\n          size: \"5XB\"", 1),
+			want: `spec.nodes["cp-1"].install.systemDisk: size "5XB" has unknown unit "XB"`,
 		},
 		{
 			name: "storage selector",

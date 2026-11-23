@@ -877,6 +877,9 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 	}
 	discovery := &sequenceDiscoverySource{facts: []discovery.HardwareFacts{
 		planningFacts(),
+		planningFacts(),
+		planningFacts(),
+		planningFacts(),
 		appliedLayoutFacts(targetRoot),
 	}}
 	install := &Context{
@@ -897,8 +900,8 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	if discovery.calls != 2 {
-		t.Fatalf("discovery calls = %d, want planning and verification", discovery.calls)
+	if discovery.calls != 5 {
+		t.Fatalf("discovery calls = %d, want collection, planning, revalidation before wiping and partitioning, and verification", discovery.calls)
 	}
 	if got := string(rootTarget.data[:len(contents.runtime)]); got != string(contents.runtime) {
 		t.Fatalf("root slot bytes = %q, want runtime payload", got)
@@ -990,6 +993,7 @@ func TestRunnerVerifiesAppliedTargetLayout(t *testing.T) {
 	targetRoot := t.TempDir()
 	discovery := &sequenceDiscoverySource{facts: []discovery.HardwareFacts{
 		planningFacts(),
+		planningFacts(),
 		appliedLayoutFacts(targetRoot),
 	}}
 	install := &Context{
@@ -1006,8 +1010,8 @@ func TestRunnerVerifiesAppliedTargetLayout(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	if discovery.calls != 2 {
-		t.Fatalf("discovery calls = %d, want 2", discovery.calls)
+	if discovery.calls != 3 {
+		t.Fatalf("discovery calls = %d, want collection, planning, and verification", discovery.calls)
 	}
 	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest, CollectHardwareFacts, VerifyTrust, PlanInstall, VerifyTarget}) {
 		t.Fatalf("completed steps = %#v", got)
@@ -1075,6 +1079,7 @@ func TestRunnerRejectsMissingAppliedMount(t *testing.T) {
 		Store:          store,
 		KatlosResolver: &recordingKatlosResolver{payload: payload},
 		Discovery: &sequenceDiscoverySource{facts: []discovery.HardwareFacts{
+			planningFacts(),
 			planningFacts(),
 			applied,
 		}},
@@ -2143,4 +2148,140 @@ func TestInstalledTargetPolicy(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestRunnerRerunAfterMutationKeepsResolvedDisk(t *testing.T) {
+	// The selector would match /dev/nvme0n1, but the interrupted attempt
+	// resolved a different disk that has since disappeared.
+	install := &Context{
+		ManifestPath:   writeManifest(t),
+		TargetRoot:     t.TempDir(),
+		Commands:       &NoopCommandRunner{},
+		Store:          &MemoryStateStore{},
+		KatlosResolver: &recordingKatlosResolver{payload: planningPayload()},
+		Discovery:      discovery.StaticDiscoverySource{Facts: planningFacts()},
+		PreviousStatus: &installstatus.Record{
+			DestructiveMutation: true,
+			TargetDisk:          &discovery.DiskIdentity{Path: "/dev/sdb", DiskSeq: 4, SizeBytes: 64 << 30},
+		},
+	}
+	plan := Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}}
+
+	err := NewRunner(plan, install).Run(context.Background())
+
+	if !errors.Is(err, discovery.ErrTargetDiskChanged) || !strings.Contains(err.Error(), "/dev/sdb") {
+		t.Fatalf("Run() error = %v, want refusal naming the previously selected /dev/sdb", err)
+	}
+}
+
+func TestRunnerRevalidatesTargetDiskBeforeEachDestructiveGroup(t *testing.T) {
+	replaced := planningFacts()
+	replaced.BlockDevices[0].DiskSeq = 9
+	for _, tt := range []struct {
+		name        string
+		facts       []discovery.HardwareFacts
+		ran         []string
+		notRan      string
+		state       string
+		destructive bool
+	}{
+		{
+			name:   "disk replaced before wiping",
+			facts:  []discovery.HardwareFacts{planningFacts(), planningFacts(), replaced},
+			notRan: "wipefs", state: installstatus.StateInstallRefused, destructive: false,
+		},
+		{
+			name:   "disk replaced between wiping and partitioning",
+			facts:  []discovery.HardwareFacts{planningFacts(), planningFacts(), planningFacts(), replaced},
+			ran:    []string{"wipefs"},
+			notRan: "systemd-repart", state: installstatus.StateFailedAfterMutation, destructive: true,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			commands := &NoopCommandRunner{}
+			store := &MemoryStateStore{}
+			install := &Context{
+				ManifestPath:   writeManifest(t),
+				TargetRoot:     t.TempDir(),
+				Commands:       commands,
+				Store:          store,
+				KatlosResolver: &recordingKatlosResolver{payload: planningPayload()},
+				Discovery:      &sequenceDiscoverySource{facts: tt.facts},
+			}
+			plan := Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}, prepareDiskStep{}, createPartitionsStep{}}
+
+			err := NewRunner(plan, install).Run(context.Background())
+
+			if !errors.Is(err, discovery.ErrTargetDiskChanged) {
+				t.Fatalf("Run() error = %v, want ErrTargetDiskChanged", err)
+			}
+			ran := map[string]bool{}
+			for _, call := range commands.Calls {
+				ran[call.Name] = true
+			}
+			for _, name := range tt.ran {
+				if !ran[name] {
+					t.Errorf("%s did not run: %v", name, commands.Calls)
+				}
+			}
+			if ran[tt.notRan] {
+				t.Errorf("%s ran on a changed disk: %v", tt.notRan, commands.Calls)
+			}
+			status := store.Statuses[len(store.Statuses)-1]
+			if status.State != tt.state || status.DestructiveMutation != tt.destructive {
+				t.Errorf("status = %s destructive=%v, want %s destructive=%v", status.State, status.DestructiveMutation, tt.state, tt.destructive)
+			}
+			if status.TargetDisk == nil || status.TargetDisk.Path != "/dev/nvme0n1" {
+				t.Errorf("status target disk = %#v, want the planned /dev/nvme0n1", status.TargetDisk)
+			}
+		})
+	}
+}
+
+func TestRunnerRerunAfterMutationBindsToRetainedDisk(t *testing.T) {
+	// The interrupted attempt selected /dev/sdb by its GPT GUID and replaced
+	// that partition table; /dev/sda now carries the GUID the selector names.
+	const guid = "6f1e3c2a-8d4b-4f5e-9a7c-1b2d3e4f5a6b"
+	facts := discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
+		{Name: "sda", Path: "/dev/sda", Type: discovery.DeviceDisk, DiskSeq: 1, SizeBytes: 64 << 30, PartitionSignature: "gpt", PartitionTableUUID: guid},
+		{Name: "sdb", Path: "/dev/sdb", Type: discovery.DeviceDisk, DiskSeq: 2, SizeBytes: 64 << 30},
+	}}
+	install := &Context{
+		ManifestPath:   writeManifestWithTarget(t, `{"gptGUID": "`+guid+`"}`),
+		TargetRoot:     t.TempDir(),
+		Commands:       &NoopCommandRunner{},
+		Store:          &MemoryStateStore{},
+		KatlosResolver: &recordingKatlosResolver{payload: planningPayload()},
+		Discovery:      discovery.StaticDiscoverySource{Facts: facts},
+		PreviousStatus: &installstatus.Record{
+			DestructiveMutation: true,
+			TargetDisk:          &discovery.DiskIdentity{Path: "/dev/sdb", DiskSeq: 2, SizeBytes: 64 << 30},
+		},
+	}
+	plan := Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}}
+
+	if err := NewRunner(plan, install).Run(context.Background()); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if got := install.DiskLayout.TargetDiskPath; got != "/dev/sdb" {
+		t.Fatalf("rerun planned %s, want the retained /dev/sdb", got)
+	}
+}
+
+func writeManifestWithTarget(t *testing.T, targetDisk string) string {
+	t.Helper()
+	path := writeManifest(t)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replaced := strings.Replace(string(data), `"targetDisk": {"byID": "/dev/disk/by-id/ata-root", "minSizeMiB": 32768}`, `"targetDisk": `+targetDisk, 1)
+	if replaced == string(data) {
+		t.Fatal("manifest fixture has no target disk to replace")
+	}
+	if err := os.WriteFile(path, []byte(replaced), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
