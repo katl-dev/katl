@@ -53,7 +53,9 @@ type HandoffStatus struct {
 	SelectedNode     string               `json:"selectedNode,omitempty"`
 	InstallStatus    installstatus.Record `json:"installStatus"`
 	Disks            []HandoffDisk        `json:"disks,omitempty"`
-	SSHAccess        SSHAccessStatus      `json:"sshAccess,omitzero"`
+	// DiskInventoryError reports why the disks could not be discovered.
+	DiskInventoryError string          `json:"diskInventoryError,omitempty"`
+	SSHAccess          SSHAccessStatus `json:"sshAccess,omitzero"`
 }
 
 type SSHAccessStatus struct {
@@ -140,8 +142,10 @@ func (s *HandoffServer) Status() HandoffStatus {
 	return s.statusAt(context.Background())
 }
 
+// statusAt reports the inventory only while the installer waits for
+// config: once a request is accepted, planning owns disk discovery and the
+// selected disks are bound.
 func (s *HandoffServer) statusAt(ctx context.Context) HandoffStatus {
-	disks := s.inventory(ctx)
 	s.mu.Lock()
 	status := HandoffStatus{
 		Image:            s.defaultKatlosImage,
@@ -150,11 +154,14 @@ func (s *HandoffServer) statusAt(ctx context.Context) HandoffStatus {
 		BundleAccepted:   len(s.bundle) > 0,
 		SelectedNode:     s.nodeName,
 		InstallStatus:    s.status,
-		Disks:            disks,
 		SSHAccess:        s.sshAccess,
 	}
 	reader := s.statusReader
 	s.mu.Unlock()
+
+	if status.State == HandoffWaiting {
+		status.Disks, status.DiskInventoryError = s.inventory(ctx)
+	}
 
 	if reader != nil {
 		if durable, err := reader(); err == nil {
@@ -225,14 +232,14 @@ func (s *HandoffServer) discover(ctx context.Context) (discovery.HardwareFacts, 
 	return source.Discover(ctx)
 }
 
-// inventory reports the whole disks present now. A failed discovery reports
-// none, as for an installer that could not discover hardware.
-func (s *HandoffServer) inventory(ctx context.Context) []HandoffDisk {
+// inventory reports the whole disks present now, or why they could not be
+// discovered.
+func (s *HandoffServer) inventory(ctx context.Context) ([]HandoffDisk, string) {
 	facts, err := s.discover(ctx)
 	if err != nil {
-		return nil
+		return nil, err.Error()
 	}
-	return handoffDisks(facts)
+	return handoffDisks(facts), ""
 }
 
 func handoffDisks(facts discovery.HardwareFacts) []HandoffDisk {
@@ -328,7 +335,7 @@ func (s *HandoffServer) handleSSHAccess(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	disks := s.inventory(r.Context())
+	disks, inventoryErr := s.inventory(r.Context())
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.state != HandoffWaiting {
@@ -349,10 +356,11 @@ func (s *HandoffServer) handleSSHAccess(w http.ResponseWriter, r *http.Request) 
 		AuthorizedKeyCount: len(keys),
 	}
 	writeJSON(w, HandoffStatus{
-		State:         s.state,
-		InstallStatus: s.status,
-		Disks:         disks,
-		SSHAccess:     s.sshAccess,
+		State:              s.state,
+		InstallStatus:      s.status,
+		Disks:              disks,
+		DiskInventoryError: inventoryErr,
+		SSHAccess:          s.sshAccess,
 	})
 }
 
@@ -508,7 +516,7 @@ func destructiveStorageAcknowledgements(r *http.Request) ([]string, error) {
 func (s *HandoffServer) validateStorage(ctx context.Context, installManifest manifest.Manifest) error {
 	facts, err := s.discover(ctx)
 	if err != nil {
-		return fmt.Errorf("plan storage targets: discover disks: %w", err)
+		return fmt.Errorf("plan storage targets: discover disks: %w; retry the request", err)
 	}
 	if len(facts.BlockDevices) == 0 {
 		return nil

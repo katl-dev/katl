@@ -830,6 +830,11 @@ func writeInstallReport(stdout io.Writer, output string, report installHandoffRe
 				return err
 			}
 		}
+		if report.Handoff.State == handoff.HandoffWaiting && report.Handoff.DiskInventoryError != "" {
+			if _, err := fmt.Fprintf(stdout, "Disks: discovery failed: %s; run 'katlctl install status' again, and check the installer console if it persists.\n", report.Handoff.DiskInventoryError); err != nil {
+				return err
+			}
+		}
 		if installFailed(report.Handoff.InstallStatus.State) {
 			if _, err := fmt.Fprintf(stdout, "Failure: %s\n", installFailure(report.Handoff.InstallStatus)); err != nil {
 				return err

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -775,5 +776,28 @@ func TestHandoffServerValidatesAgainstCurrentDisks(t *testing.T) {
 				t.Fatalf("POST status=%d body=%s, want %d containing %q", resp.StatusCode, body, tt.status, tt.want)
 			}
 		})
+	}
+}
+
+func TestHandoffServerReportsDiscoveryFailure(t *testing.T) {
+	server := newTestHandoffServer(t)
+	server.SetDiscovery(discovery.StaticDiscoverySource{Err: errors.New("lsblk discovery: exit status 1")})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	status := server.Status()
+	if len(status.Disks) != 0 || !strings.Contains(status.DiskInventoryError, "lsblk discovery") {
+		t.Fatalf("status disks=%v error=%q, want no disks and the discovery error", status.Disks, status.DiskInventoryError)
+	}
+
+	bundle, result := validConfigBundle(t)
+	resp := postBundle(t, ts.URL, "cp-1", result.Digest, bundle)
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest || !strings.Contains(string(body), "lsblk discovery") {
+		t.Fatalf("POST status=%d body=%s, want 400 naming the discovery error", resp.StatusCode, body)
+	}
+	if server.Status().State != HandoffWaiting {
+		t.Fatal("installer accepted a bundle it could not validate")
 	}
 }
