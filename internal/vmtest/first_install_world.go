@@ -44,6 +44,9 @@ type FirstInstallWorldInput struct {
 	Mode              FirstInstallWorldMode
 	UseInstalledESP   bool
 	TargetDiskSize    string
+	// DataVolumeDiskID, when set, gives the node a data volume named data on
+	// the disk with this by-id path.
+	DataVolumeDiskID string
 }
 
 type FirstInstallWorldMode string
@@ -868,7 +871,7 @@ func ResolveFirstInstallWorldInput(scenario *WorldScenario, repo string, spec No
 	input.UseInstalledESP = true
 	if input.InstallManifest == "" {
 		if input.ConfigBundle == "" {
-			bundlePath, manifestPath, err := writeFirstInstallWorldBundleSource(scenario, repo, spec, index, input.Mode == FirstInstallWorldGuestHandoff, input.KubernetesVersion, input.SSHAuthorizedKey)
+			bundlePath, manifestPath, err := writeFirstInstallWorldBundleSource(scenario, repo, spec, index, input.Mode == FirstInstallWorldGuestHandoff, input.KubernetesVersion, input.SSHAuthorizedKey, input.DataVolumeDiskID)
 			if err != nil {
 				return input, err
 			}
@@ -1008,7 +1011,7 @@ func (index mkosiArtifactIndex) artifact(kind string) (mkosiArtifact, bool) {
 	return mkosiArtifact{}, false
 }
 
-func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, spec NodeSpec, index mkosiArtifactIndex, bindInstallMedia bool, requestedKubernetesVersion, sshAuthorizedKey string) (string, string, error) {
+func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, spec NodeSpec, index mkosiArtifactIndex, bindInstallMedia bool, requestedKubernetesVersion, sshAuthorizedKey, dataVolumeDiskID string) (string, string, error) {
 	image, ok := index.artifact("katlos-install-image")
 	if !ok {
 		var err error
@@ -1055,7 +1058,13 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 	if spec.Role != ControlPlane {
 		nodes = append(nodes, firstInstallWorldSourceNode(firstControlPlaneName(spec), ControlPlane, "/dev/disk/by-id/virtio-katl-control-plane-root"))
 	}
-	nodes = append(nodes, firstInstallWorldSourceNode(spec.Name, spec.Role, "/dev/disk/by-id/virtio-katl-root"))
+	node := firstInstallWorldSourceNode(spec.Name, spec.Role, "/dev/disk/by-id/virtio-katl-root")
+	if dataVolumeDiskID != "" {
+		node["storage"] = jsonObject{"volumes": []jsonObject{{
+			"name": "data", "selector": jsonObject{"disk": jsonObject{"byID": dataVolumeDiskID}}, "filesystem": "xfs", "wipe": true,
+		}}}
+	}
+	nodes = append(nodes, node)
 
 	sshAuthorizedKey = strings.TrimSpace(sshAuthorizedKey)
 	if sshAuthorizedKey == "" {

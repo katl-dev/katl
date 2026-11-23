@@ -10,4 +10,7 @@ Type=oneshot
 RemainAfterExit=yes
 StandardOutput=journal+console
 SyslogIdentifier=katl-volumes-activate
+# The check waits for udev and for volume disks that attach late.
+TimeoutStartSec=3min
+ExecStartPre=/usr/bin/katlc volumes check --root=/
 ExecStart=/usr/bin/systemctl start katl-volumes.target

@@ -259,7 +259,11 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "read system extension status: %v", err)
 	}
-	volumes, err := nodeVolumeStatus(ctx, s.Root, currentGenerationID, s.RunSystemExtensionStatus)
+	volumeRun := s.RunVolumeDiscovery
+	if volumeRun == nil {
+		volumeRun = runChildProcess
+	}
+	volumes, err := nodeVolumeStatus(ctx, s.Root, currentGenerationID, s.RunSystemExtensionStatus, s.volumeDevices, volumeRun)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "read volume status: %v", err)
 	}

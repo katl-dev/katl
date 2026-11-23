@@ -59,7 +59,7 @@ func (e *Executor) applyVolumes(ctx context.Context, current, desired manifest.M
 		return nil, err
 	}
 
-	recovery := volumeRecovery{run: run, source: source, bindings: volumeBindingsByName(currentBindings), prepared: plan.prepare}
+	recovery := volumeRecovery{run: run, devices: e.volumeDevices, bindings: volumeBindingsByName(currentBindings), prepared: plan.prepare}
 	for _, name := range plan.stopNames {
 		unit, err := generation.MountUnitName("/var/mnt/" + name)
 		if err != nil {
@@ -154,6 +154,10 @@ func planVolumeTransition(ctx context.Context, devices volumeDevices, run ToolRu
 		currentNames = append(currentNames, volume.Name)
 	}
 	facts = factsWithoutManagedVolumeMounts(facts, currentNames)
+	rootDisk, err := systemDiskDevice(facts, devices.systemDisk)
+	if err != nil {
+		return volumeTransitionPlan{}, err
+	}
 
 	currentVolumes := volumesByName(current.Install.Volumes)
 	currentByName := volumeBindingsByName(currentBindings)
@@ -177,7 +181,7 @@ func planVolumeTransition(ctx context.Context, devices volumeDevices, run ToolRu
 		configChanged := !existed || !reflect.DeepEqual(before, desiredVolume)
 		binding, wasBound := currentByName[desiredVolume.Name]
 		if wasBound && !configChanged {
-			if _, matchErr := disk.MatchVolumeBinding(facts, diskVolumeBinding(binding)); matchErr == nil {
+			if _, matchErr := disk.MatchVolumeBinding(facts, rootDisk, diskVolumeBinding(binding)); matchErr == nil {
 				desiredBindings[binding.Name] = binding
 				kept = append(kept, diskVolumeBinding(binding))
 				continue
@@ -190,10 +194,6 @@ func planVolumeTransition(ctx context.Context, devices volumeDevices, run ToolRu
 		}
 		resolve = append(resolve, desiredVolume)
 		changed = append(changed, configChanged)
-	}
-	rootDisk, err := systemDiskDevice(facts, devices.systemDisk)
-	if err != nil {
-		return volumeTransitionPlan{}, err
 	}
 	// Every volume the apply stops is changed or removed, and its current
 	// storage is held until the apply succeeds.
@@ -273,9 +273,16 @@ func sortedVolumeBindings(bindings map[string]generation.VolumeBinding) []genera
 	return out
 }
 
+// sameVolumeDevice reports whether two bindings name the same storage. A
+// partition whose filesystem was recreated keeps its PARTUUID but is no
+// longer the bound volume, so recorded filesystem UUIDs must also agree.
 func sameVolumeDevice(left, right generation.VolumeBinding) bool {
 	if strings.TrimSpace(left.PartitionUUID) != "" && strings.TrimSpace(right.PartitionUUID) != "" {
-		return strings.EqualFold(strings.TrimSpace(left.PartitionUUID), strings.TrimSpace(right.PartitionUUID))
+		if !strings.EqualFold(strings.TrimSpace(left.PartitionUUID), strings.TrimSpace(right.PartitionUUID)) {
+			return false
+		}
+		leftFS, rightFS := strings.TrimSpace(left.FilesystemUUID), strings.TrimSpace(right.FilesystemUUID)
+		return leftFS == "" || rightFS == "" || strings.EqualFold(leftFS, rightFS)
 	}
 	return strings.TrimSpace(left.FilesystemUUID) != "" && strings.EqualFold(strings.TrimSpace(left.FilesystemUUID), strings.TrimSpace(right.FilesystemUUID))
 }
@@ -468,8 +475,8 @@ func (d volumeDevices) source(run ToolRunner) discovery.CommandDiscoverySource {
 // volumeRecovery records what a live volume apply has done to the node's
 // storage so that, when it fails, it can restore what is still intact.
 type volumeRecovery struct {
-	run    ToolRunner
-	source discovery.DiscoverySource
+	run     ToolRunner
+	devices volumeDevices
 	// bindings are the current generation's volume bindings, which the
 	// stopped volumes' mount units mount.
 	bindings map[string]generation.VolumeBinding
@@ -513,7 +520,11 @@ func (r volumeRecovery) rewrittenBy(facts discovery.HardwareFacts, touched map[v
 	if !ok {
 		return "", nil
 	}
-	partition, err := disk.MatchVolumeBinding(facts, diskVolumeBinding(binding))
+	system, err := systemDiskDevice(facts, r.devices.systemDisk)
+	if err != nil {
+		return "", err
+	}
+	partition, err := disk.MatchVolumeBinding(facts, system, diskVolumeBinding(binding))
 	if err != nil {
 		return "", err
 	}
@@ -545,7 +556,7 @@ func (r volumeRecovery) fail(ctx context.Context, cause error) error {
 		// visible before the stopped volumes are resolved.
 		checkErr = runVolumeTool(ctx, r.run, "settle udev", "udevadm", "settle")
 		if checkErr == nil {
-			facts, checkErr = discoverVolumeFacts(ctx, r.source)
+			facts, checkErr = discoverVolumeFacts(ctx, r.devices.source(r.run))
 		}
 	}
 

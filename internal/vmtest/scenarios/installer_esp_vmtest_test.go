@@ -337,7 +337,7 @@ func (j *installerESPJourney) waitInstalledBoot(ctx context.Context, previousBoo
 	defer cancel()
 	var last error
 	for {
-		boot, err := j.ssh(deadline, "systemctl is-active --quiet katl-boot-complete.target katlc-agent.service && cat /proc/sys/kernel/random/boot_id")
+		boot, err := j.ssh(deadline, "systemctl is-active --quiet katl-boot-complete.target && systemctl is-active --quiet katlc-agent.service && cat /proc/sys/kernel/random/boot_id")
 		if err == nil && boot != previousBoot {
 			return boot, nil
 		}

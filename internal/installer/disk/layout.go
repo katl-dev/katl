@@ -3,7 +3,6 @@ package disk
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -189,44 +188,88 @@ func VolumeBindingMountSource(binding VolumeBinding) (string, error) {
 	}
 }
 
-// errAmbiguousBinding marks a binding that identifies more than one partition.
-var errAmbiguousBinding = errors.New("ambiguous volume binding")
+// BindingFault names the part of the binding rule a recorded volume binding
+// fails.
+type BindingFault string
 
-func MatchVolumeBinding(facts HardwareFacts, binding VolumeBinding) (BlockDevice, error) {
-	_, partition, err := matchVolumeBinding(facts, binding)
+const (
+	// BindingUnrecorded is a binding without a PARTUUID.
+	BindingUnrecorded BindingFault = "unrecorded"
+	// BindingAbsent is a PARTUUID that no attached partition carries.
+	BindingAbsent BindingFault = "absent"
+	// BindingDuplicated is a PARTUUID that more than one partition carries,
+	// as a cloned disk does.
+	BindingDuplicated BindingFault = "duplicated"
+	// BindingOnSystemDisk is a PARTUUID carried by a partition of the system
+	// disk.
+	BindingOnSystemDisk BindingFault = "system-disk"
+	// BindingStale is a partition whose filesystem UUID is not the recorded
+	// one, because the filesystem was recreated after the binding was made.
+	BindingStale BindingFault = "stale"
+)
+
+// VolumeBindingError reports a recorded volume binding that does not resolve
+// by the binding rule.
+type VolumeBindingError struct {
+	Volume string
+	Fault  BindingFault
+	Cause  string
+}
+
+func (e *VolumeBindingError) Error() string {
+	return fmt.Sprintf("volume %q %s", e.Volume, e.Cause)
+}
+
+// MatchVolumeBinding returns the partition a recorded binding resolves to by
+// the binding rule. system is the disk holding the node's root.
+func MatchVolumeBinding(facts HardwareFacts, system BlockDevice, binding VolumeBinding) (BlockDevice, error) {
+	_, partition, err := matchVolumeBinding(facts, system, binding)
 	return partition, err
 }
 
-// matchVolumeBinding returns the one partition a binding identifies and the
-// disk holding it.
-func matchVolumeBinding(facts HardwareFacts, binding VolumeBinding) (BlockDevice, BlockDevice, error) {
+// matchVolumeBinding applies the binding rule and returns the partition a
+// binding resolves to and the disk holding it. Exactly one attached partition
+// must carry the recorded PARTUUID, it must not be on the system disk, and,
+// where a filesystem UUID is recorded, the partition's filesystem UUID must
+// match it. Every destructive volume step changes one of the two identifiers,
+// so a stale binding is visible on the disk itself.
+func matchVolumeBinding(facts HardwareFacts, system BlockDevice, binding VolumeBinding) (BlockDevice, BlockDevice, error) {
+	partUUID := strings.TrimSpace(binding.PartitionUUID)
+	if partUUID == "" {
+		return BlockDevice{}, BlockDevice{}, &VolumeBindingError{Volume: binding.Name, Fault: BindingUnrecorded, Cause: "has no recorded PARTUUID"}
+	}
 	var disks, matches []BlockDevice
 	for _, candidate := range facts.BlockDevices {
 		for _, partition := range candidate.Partitions {
-			switch {
-			case strings.TrimSpace(binding.PartitionUUID) != "":
-				if !strings.EqualFold(strings.TrimSpace(partition.PartitionUUID), strings.TrimSpace(binding.PartitionUUID)) {
-					continue
-				}
-			case strings.TrimSpace(binding.FilesystemUUID) != "":
-				if !strings.EqualFold(strings.TrimSpace(partition.FilesystemUUID), strings.TrimSpace(binding.FilesystemUUID)) {
-					continue
-				}
-			default:
-				return BlockDevice{}, BlockDevice{}, fmt.Errorf("bound identity for volume %q is empty", binding.Name)
+			if strings.EqualFold(strings.TrimSpace(partition.PartitionUUID), partUUID) {
+				disks = append(disks, candidate)
+				matches = append(matches, partition)
 			}
-			disks = append(disks, candidate)
-			matches = append(matches, partition)
 		}
 	}
 	switch len(matches) {
 	case 0:
-		return BlockDevice{}, BlockDevice{}, fmt.Errorf("bound identity for volume %q matched no partitions", binding.Name)
+		return BlockDevice{}, BlockDevice{}, &VolumeBindingError{Volume: binding.Name, Fault: BindingAbsent, Cause: fmt.Sprintf("is bound to PARTUUID %s, which no attached partition carries", partUUID)}
 	case 1:
-		return disks[0], matches[0], nil
 	default:
-		return BlockDevice{}, BlockDevice{}, fmt.Errorf("%w: bound identity for volume %q matched %d partitions", errAmbiguousBinding, binding.Name, len(matches))
+		paths := make([]string, 0, len(matches))
+		for _, match := range matches {
+			paths = append(paths, match.Path)
+		}
+		return BlockDevice{}, BlockDevice{}, &VolumeBindingError{Volume: binding.Name, Fault: BindingDuplicated, Cause: fmt.Sprintf("is bound to PARTUUID %s, which %d partitions carry: %s", partUUID, len(matches), strings.Join(paths, ", "))}
 	}
+	disk, partition := disks[0], matches[0]
+	if disk.Path == system.Path {
+		return BlockDevice{}, BlockDevice{}, &VolumeBindingError{Volume: binding.Name, Fault: BindingOnSystemDisk, Cause: fmt.Sprintf("is bound to PARTUUID %s, which is %s on the system disk %s", partUUID, partition.Path, disk.Path)}
+	}
+	recorded := strings.TrimSpace(binding.FilesystemUUID)
+	if current := strings.TrimSpace(partition.FilesystemUUID); recorded != "" && !strings.EqualFold(current, recorded) {
+		if current == "" {
+			current = "none"
+		}
+		return BlockDevice{}, BlockDevice{}, &VolumeBindingError{Volume: binding.Name, Fault: BindingStale, Cause: fmt.Sprintf("is bound to filesystem UUID %s on %s (PARTUUID %s), but that partition now has filesystem UUID %s", recorded, partition.Path, partUUID, current)}
+	}
+	return disk, partition, nil
 }
 
 func volumePartitionLabel(name string) string {

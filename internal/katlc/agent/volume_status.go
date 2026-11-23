@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"sort"
+	"strings"
 
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/disk"
@@ -12,7 +14,7 @@ import (
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 )
 
-func nodeVolumeStatus(ctx context.Context, root, currentGeneration string, runner ToolRunner) ([]*agentapi.VolumeStatus, error) {
+func nodeVolumeStatus(ctx context.Context, root, currentGeneration string, runner ToolRunner, devices volumeDevices, discoveryRun ToolRunner) ([]*agentapi.VolumeStatus, error) {
 	installManifest, err := generationManifest(root, currentGeneration)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -53,6 +55,23 @@ func nodeVolumeStatus(ctx context.Context, root, currentGeneration string, runne
 			FailureDiagnostic:    unit.FailureDiagnostic,
 			MountSource:          mountSource,
 		})
+	}
+
+	// Activation mounts no volume while any binding does not resolve. Devices
+	// are discovered only when a volume is unmounted, so a healthy node pays
+	// nothing for the explanation.
+	if !slices.ContainsFunc(out, func(volume *agentapi.VolumeStatus) bool { return volume.ActiveState != "active" }) {
+		return out, nil
+	}
+	names := make([]string, 0, len(out))
+	for _, volume := range out {
+		names = append(names, volume.Name)
+	}
+	faults := volumeFaultDiagnostics(ctx, devices, discoveryRun, root, currentGeneration, names)
+	for _, volume := range out {
+		if fault, ok := faults[volume.Name]; ok && volume.ActiveState != "active" {
+			volume.FailureDiagnostic = strings.TrimSpace(fault + "\n" + volume.FailureDiagnostic)
+		}
 	}
 	return out, nil
 }

@@ -25,7 +25,7 @@ var groups = []group{
 	{"config", "./internal/vmtest", "TestInstalledRuntimeConfigApplyModesSmoke|TestInstalledRuntimeServiceSecuritySmoke"},
 	{"update", "./internal/vmtest", "TestInstalledRuntimeSysupdateRootUKITransfer"},
 	{"management", "./internal/vmtest", "TestInstalledRuntimeManagementRotationSmoke"},
-	{"storage", "./internal/vmtest/scenarios", "TestInstallerISOFirstInstallStorageAuthority"},
+	{"storage", "./internal/vmtest/scenarios", "TestInstallerISOFirstInstallStorageAuthority|TestVolumeBindingGate"},
 	{"boot", "./internal/vmtest/scenarios", "TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke|TestInstallerESPSameDiskInstall|TestInstallerReinstallBesideOldKatlDisk"},
 }
 

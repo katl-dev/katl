@@ -27,6 +27,21 @@ func (s *Server) SelectGeneration(ctx context.Context, req *agentapi.GenerationM
 	if err := s.validateEtcdGeneration(req.GenerationId); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "select generation: %v", err)
 	}
+	// Selecting the running generation, as when cancelling a pending trial,
+	// changes neither its runtime nor its mounts, so only another generation
+	// is checked against the attached disks.
+	if current, err := currentGenerationID(s.Root); err != nil || current != req.GenerationId {
+		run := s.RunVolumeDiscovery
+		if run == nil {
+			run = runChildProcess
+		}
+		if err := refuseLabelMountedSystemDisk(ctx, s.volumeDevices, run, s.Root, req.GenerationId); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "select generation: %v", err)
+		}
+		if err := refuseUnresolvedVolumes(ctx, s.volumeDevices, run, s.Root, req.GenerationId); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "select generation: %v", err)
+		}
+	}
 	if err := s.mountGenerationBootRoot(ctx); err != nil {
 		return nil, err
 	}

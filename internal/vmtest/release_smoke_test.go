@@ -90,6 +90,7 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 	run, err := PlanFirstInstallWorldRun(world, name, repoRoot(t), NodeSpec{Name: "cp-1", Role: ControlPlane}, FirstInstallWorldInput{
 		Installer: InstallerBootConfig{InstallerISO: releaseFile(t, source, "katl-installer"+suffix+".iso")},
 		Mode:      FirstInstallWorldPreseed, SSHAuthorizedKey: strings.TrimSpace(string(public)), UseInstalledESP: true, TargetDiskSize: "32G",
+		DataVolumeDiskID: "/dev/disk/by-id/virtio-katl-data",
 	}, KVMOn)
 	if err != nil {
 		t.Fatal(err)
@@ -116,7 +117,7 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 			defer stop()
 			var last error
 			for {
-				text, err := releaseSSH(deadline, key, lease.IPAddress, "systemctl is-active --quiet katl-boot-complete.target sshd.service katlc-agent.service && test \"$(systemctl show katl-boot-health.service -p Result --value)\" = success && test ! -e /usr/lib/katl/vmtest/katl-vmtest-agent && . /usr/lib/os-release && printf '%s\\n' \"$VERSION_ID\" && uname -r")
+				text, err := releaseSSH(deadline, key, lease.IPAddress, "systemctl is-active --quiet katl-boot-complete.target && systemctl is-active --quiet sshd.service && systemctl is-active --quiet katlc-agent.service && test \"$(systemctl show katl-boot-health.service -p Result --value)\" = success && test ! -e /usr/lib/katl/vmtest/katl-vmtest-agent && . /usr/lib/os-release && printf '%s\\n' \"$VERSION_ID\" && uname -r")
 				if err == nil && text == want {
 					return nil
 				}
@@ -129,6 +130,22 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 			}
 		}
 		if err := healthy(metadata); err != nil {
+			return err
+		}
+		// The data volume mounts, through the runtime's own activation unit
+		// rather than a copy installed into /etc that would shadow later
+		// runtimes' units.
+		volumeMounted := func(stage string) error {
+			text, err := observe("findmnt --noheadings --output SOURCE --mountpoint /var/mnt/data >/dev/null && cat /var/mnt/data/marker && test ! -e /etc/systemd/system/katl-volumes-activate.service && systemctl show katl-volumes-activate.service -p FragmentPath --value")
+			if err != nil || text != "release\n/usr/lib/systemd/system/katl-volumes-activate.service" {
+				return fmt.Errorf("%s: data volume and activation unit = %q: %v", stage, text, err)
+			}
+			return nil
+		}
+		if _, err := observe("echo release > /var/mnt/data/marker && sync"); err != nil {
+			return fmt.Errorf("write data volume marker: %w", err)
+		}
+		if err := volumeMounted("installed"); err != nil {
 			return err
 		}
 		// Reuse the installation's management identity through the public CLI.
@@ -203,6 +220,9 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 			if targetMetadata.ExtensionRelease == nil || kernel != targetMetadata.ExtensionRelease.Target.Kernel.Release {
 				return fmt.Errorf("booted kernel %q does not match release metadata", kernel)
 			}
+			if err := volumeMounted("upgraded"); err != nil {
+				return err
+			}
 			cli("rollback-select", "node", "generations", "select", original.BootedGenerationID, "cp-1")
 			cli("rollback-reboot", "node", "reboot", "cp-1", "--timeout", "5m")
 			if err := healthy(metadata); err != nil {
@@ -211,6 +231,9 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 			rolledBack, err := selection()
 			if err != nil || rolledBack.BootedGenerationID != original.BootedGenerationID {
 				return fmt.Errorf("rollback did not restore source generation: %v", err)
+			}
+			if err := volumeMounted("rolled back"); err != nil {
+				return err
 			}
 		}
 		finalSelection, err := selection()
@@ -227,7 +250,7 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 	run.Config.Installer.VM = vm
 	run.Config.Runtime.VM = vm
 	run.Config.RebootIntoInstalled = true
-	result, err := RunFirstInstall(ctx, run.Runner, Scenario{Name: name}, run.Config)
+	result, err := RunFirstInstall(ctx, run.Runner, Scenario{Name: name, Disks: []DiskFixture{ExtraDisk("data", string(DiskRaw), "4G")}}, run.Config)
 	if err != nil {
 		t.Fatal(err)
 	}

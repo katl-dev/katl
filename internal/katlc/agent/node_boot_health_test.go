@@ -84,6 +84,9 @@ func TestNodeStatusBootHealthFollowsCurrentBoot(t *testing.T) {
 		{name: "succeeded", unit: healthSucceeded, want: nodeBootHealthHealthy},
 		{name: "failed", unit: healthFailed, want: nodeBootHealthFailed},
 		{name: "dependency failed", unit: healthDependencyFailed, want: nodeBootHealthFailed},
+		// Boot health passes because the generation is sound, but the node
+		// still reports the volumes the activation check left unmounted.
+		{name: "volumes refused", unit: healthSucceeded + "\n\nId=katl-volumes-activate.service\nLoadState=loaded\nActiveState=failed\nJob=\n", want: nodeBootHealthFailed},
 		{name: "settle timed out", unit: healthStalled, want: nodeBootHealthPending},
 		{name: "units unavailable", unit: healthUnitsMissing, want: nodeBootHealthHealthy},
 	} {

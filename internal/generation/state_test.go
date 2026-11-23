@@ -233,7 +233,10 @@ WantedBy=multi-user.target
 	wantHealth := `[Unit]
 Description=Record successful Katl boot health
 Documentation=man:systemd.service(5)
-Requires=etc-kubernetes.mount katl-system-extensions-activate.service katl-configured-units-check.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service
+Requires=etc-kubernetes.mount katl-system-extensions-activate.service katl-configured-units-check.service katlc-agent.service systemd-networkd.service sshd.service
+# Volume identity is disk state, not generation health: a refused volume is
+# reported in node status without failing or rolling back the generation.
+Wants=katl-volumes-activate.service
 After=etc-kubernetes.mount katl-system-extensions-activate.service katl-configured-units-check.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service
 Before=katl-boot-complete.target
 OnFailure=katl-boot-recovery.service
@@ -510,6 +513,8 @@ func writeStateVerifyFixture(t *testing.T, root string) {
 	if _, err := WriteState(root, StateRequest{}); err != nil {
 		t.Fatalf("WriteState() error = %v", err)
 	}
+	// katl-system-disk-generator supplies var.mount at boot.
+	writeUnit(t, root, "usr/lib/systemd/system/var.mount", "[Unit]\nDescription=Katl state\n[Mount]\nWhat=/dev/disk/by-diskseq/1-part5\nWhere=/var\nType=ext4\n")
 	writeUnit(t, root, "usr/lib/systemd/system/local-fs.target", "[Unit]\nDescription=Local File Systems\n")
 	writeUnit(t, root, "usr/lib/systemd/system/multi-user.target", "[Unit]\nDescription=Multi-User System\n")
 	writeUnit(t, root, "usr/lib/systemd/system/timers.target", "[Unit]\nDescription=Timers\n")
@@ -541,6 +546,20 @@ func writeStateVerifyFixture(t *testing.T, root string) {
 			t.Fatalf("chmod %s fixture: %v", fixture, err)
 		}
 	}
+	// The activation gate runs under the shipped sandbox, so verify it with
+	// the drop-ins the image installs.
+	dropIns := filepath.Join(repoRoot(t), "mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system/katl-volumes-activate.service.d")
+	entries, err := os.ReadDir(dropIns)
+	if err != nil {
+		t.Fatalf("read volume activation drop-ins: %v", err)
+	}
+	for _, entry := range entries {
+		data, err := os.ReadFile(filepath.Join(dropIns, entry.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeUnit(t, root, "usr/lib/systemd/system/katl-volumes-activate.service.d/"+entry.Name(), string(data))
+	}
 }
 
 func repoRoot(t *testing.T) string {
@@ -554,7 +573,6 @@ func repoRoot(t *testing.T) string {
 
 func stateVerifyUnits() []string {
 	return []string{
-		"/etc/systemd/system/var.mount",
 		"/etc/systemd/system/etc-kubernetes.mount",
 		"/etc/systemd/system/katl-generation-activate.service",
 		"/etc/systemd/system/katl-host-config-prepare.service",
@@ -562,6 +580,7 @@ func stateVerifyUnits() []string {
 		"/etc/systemd/system/katl-system-extensions-reload.service",
 		"/etc/systemd/system/katl-system-extensions-activate.service",
 		"/etc/systemd/system/katl-configured-units-check.service",
+		"/etc/systemd/system/katl-volumes-activate.service",
 		"/etc/systemd/system/katl-kubeadm-ready.target",
 		"/etc/systemd/system/katl-boot-complete.target",
 		"/etc/systemd/system/katl-boot-health.service",

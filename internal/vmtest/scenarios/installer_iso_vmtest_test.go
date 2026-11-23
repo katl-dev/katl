@@ -166,7 +166,7 @@ spec:
 						command = exec.CommandContext(ctx, "ssh", "-F", "/dev/null", "-i", privateKey,
 							"-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=no",
 							"-o", "UserKnownHostsFile=/dev/null", "root@"+endpoint.Hostname(),
-							`systemctl is-active --quiet systemd-logind.service systemd-networkd-wait-online.service && test "$(systemctl show systemd-networkd-wait-online.service -p Result --value)" = success && test ! -e /run/nologin && test -S /run/dbus/system_bus_socket && busctl --system list >/dev/null`)
+							`systemctl is-active --quiet systemd-logind.service && systemctl is-active --quiet systemd-networkd-wait-online.service && test "$(systemctl show systemd-networkd-wait-online.service -p Result --value)" = success && test ! -e /run/nologin && test -S /run/dbus/system_bus_socket && busctl --system list >/dev/null`)
 						if output, err := command.CombinedOutput(); err != nil {
 							return fmt.Errorf("installer host services were not ready: %w: %s", err, output)
 						}

@@ -76,28 +76,3 @@ func uniquePartitionUUID(facts HardwareFacts, partition BlockDevice) (string, er
 	}
 	return uuid, nil
 }
-
-// uniqueFilesystemUUID returns the partition's filesystem UUID and refuses
-// one that another disk or partition shares, since UUID= could then resolve
-// to either.
-func uniqueFilesystemUUID(facts HardwareFacts, partition BlockDevice) (string, error) {
-	uuid := strings.TrimSpace(partition.FilesystemUUID)
-	if uuid == "" {
-		return "", fmt.Errorf("%s has no PARTUUID or filesystem UUID", partition.Path)
-	}
-	var others []string
-	var visit func([]BlockDevice)
-	visit = func(devices []BlockDevice) {
-		for _, device := range devices {
-			if device.Path != partition.Path && strings.EqualFold(strings.TrimSpace(device.FilesystemUUID), uuid) {
-				others = append(others, device.Path)
-			}
-			visit(device.Partitions)
-		}
-	}
-	visit(facts.BlockDevices)
-	if len(others) > 0 {
-		return "", fmt.Errorf("filesystem UUID %s of %s is also used by %s; detach the other disk or give its filesystem a new UUID", uuid, partition.Path, strings.Join(others, ", "))
-	}
-	return uuid, nil
-}

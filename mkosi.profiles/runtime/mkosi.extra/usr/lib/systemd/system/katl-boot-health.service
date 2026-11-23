@@ -1,7 +1,10 @@
 [Unit]
 Description=Record successful Katl boot health
 Documentation=man:systemd.service(5)
-Requires=etc-kubernetes.mount katl-system-extensions-activate.service katl-configured-units-check.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service
+Requires=etc-kubernetes.mount katl-system-extensions-activate.service katl-configured-units-check.service katlc-agent.service systemd-networkd.service sshd.service
+# Volume identity is disk state, not generation health: a refused volume is
+# reported in node status without failing or rolling back the generation.
+Wants=katl-volumes-activate.service
 After=etc-kubernetes.mount katl-system-extensions-activate.service katl-configured-units-check.service katl-volumes-activate.service katlc-agent.service systemd-networkd.service sshd.service
 Before=katl-boot-complete.target
 OnFailure=katl-boot-recovery.service

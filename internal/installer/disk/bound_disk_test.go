@@ -283,17 +283,12 @@ func TestBindVolumePlans(t *testing.T) {
 			err:   []string{"old-part", "/dev/vdb1", "/dev/vda1"},
 		},
 		{
-			name:    "selected partition without PARTUUID binds by filesystem UUID",
-			plan:    selected,
-			disks:   []BlockDevice{oldDisk, boundDisk(BlockDevice{Path: "/dev/vdb3", Type: DevicePartition, PartitionNumber: 3, SizeBytes: 1 << 30, FilesystemUUID: "data-fs"})},
-			source:  "UUID=data-fs",
-			binding: VolumeBinding{Name: "data", FilesystemUUID: "data-fs"},
-		},
-		{
-			name:  "filesystem UUID shared with another disk",
+			// The binding rule finds volumes by PARTUUID, so a filesystem UUID
+			// alone would bind a volume that never mounts.
+			name:  "selected partition without PARTUUID",
 			plan:  selected,
-			disks: []BlockDevice{oldDisk, boundDisk(BlockDevice{Path: "/dev/vdb3", Type: DevicePartition, PartitionNumber: 3, SizeBytes: 1 << 30, FilesystemUUID: "old-fs"})},
-			err:   []string{"old-fs", "/dev/vdb3", "/dev/vda1"},
+			disks: []BlockDevice{oldDisk, boundDisk(BlockDevice{Path: "/dev/vdb3", Type: DevicePartition, PartitionNumber: 3, SizeBytes: 1 << 30, FilesystemUUID: "data-fs"})},
+			err:   []string{"/dev/vdb3", "no PARTUUID"},
 		},
 		{
 			// Without a PARTUUID the partition is found by number, so a
@@ -654,7 +649,7 @@ func TestVolumePlanningRefusesAmbiguousReleasedBinding(t *testing.T) {
 
 		_, err := PlanVolumeChanges(layoutFacts(root, data, clone), root, []VolumeRequest{repartition}, nil, released)
 
-		if !mentions(err, `"a"`, "ambiguous", "matched 2 partitions") {
+		if !mentions(err, `"a"`, "ambiguous", "2 partitions carry") {
 			t.Fatalf("PlanVolumeChanges() error = %v, want refusal naming a and its ambiguous binding", err)
 		}
 	})
