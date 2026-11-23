@@ -32,11 +32,14 @@ const (
 )
 
 type installerOptions struct {
-	MemoryMiB   int
-	CPUs        int
-	DiskSize    string
-	Timeout     time.Duration
-	NoBuild     bool
+	MemoryMiB int
+	CPUs      int
+	DiskSize  string
+	Timeout   time.Duration
+	NoBuild   bool
+	// ISO boots this installer ISO, such as a published release, instead of
+	// the current checkout's.
+	ISO         string
 	ForceConfig bool
 }
 
@@ -137,17 +140,33 @@ func repositoryRoot() (string, error) {
 // nearestRoot returns the most deeply nested of the checkout roots that
 // contain the working directory.
 func nearestRoot(roots []string) (string, error) {
-	nearest := ""
+	resolved := make([]string, 0, len(roots))
 	for _, root := range roots {
 		abs, err := filepath.Abs(root)
 		if err != nil {
 			return "", err
 		}
-		if len(abs) > len(nearest) {
-			nearest = abs
+		if real, err := filepath.EvalSymlinks(abs); err == nil {
+			abs = real
+		}
+		resolved = append(resolved, abs)
+	}
+	nearest := resolved[0]
+	for _, root := range resolved[1:] {
+		switch {
+		case within(root, nearest):
+			nearest = root
+		case !within(nearest, root):
+			return "", fmt.Errorf("find Katl checkout: %s and %s are unrelated checkouts", nearest, root)
 		}
 	}
 	return nearest, nil
+}
+
+// within reports whether path is dir or lies beneath it.
+func within(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func validateInstallerOptions(opts installerOptions) error {
@@ -166,7 +185,19 @@ func validateInstallerOptions(opts installerOptions) error {
 	return nil
 }
 
-func (manager installerManager) prepareInstaller(ctx context.Context, noBuild bool) (string, string, error) {
+func (manager installerManager) prepareInstaller(ctx context.Context, opts installerOptions) (string, string, error) {
+	if opts.ISO != "" {
+		iso, err := filepath.Abs(opts.ISO)
+		if err != nil {
+			return "", "", err
+		}
+		digest, err := sha256File(iso)
+		if err != nil {
+			return "", "", fmt.Errorf("read installer ISO: %w", err)
+		}
+		return iso, digest, nil
+	}
+	noBuild := opts.NoBuild
 	if !noBuild {
 		fmt.Fprintln(manager.stderr, "katldev world: checking current checkout installer artifacts")
 		command := exec.CommandContext(ctx, filepath.Join(manager.repoRoot, "scripts", "mkosi"), "build-installer-iso")
@@ -246,7 +277,12 @@ func (manager installerManager) createNode(ctx context.Context, world katldevWor
 	if _, err := manager.virsh(ctx, uri, "start", plan.DomainName); err != nil {
 		return installerState{}, err
 	}
-	revision, dirty := checkoutRevision(manager.repoRoot)
+	// Only the checkout's own ISO was built from the checkout revision.
+	var revision string
+	var dirty bool
+	if iso == filepath.Join(manager.repoRoot, "_build", "mkosi", "katl-installer.iso") {
+		revision, dirty = checkoutRevision(manager.repoRoot)
+	}
 	state := installerState{
 		APIVersion:   installerStateAPIVersion,
 		Kind:         installerStateKind,
