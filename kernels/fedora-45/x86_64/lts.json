@@ -3,64 +3,64 @@
   "fedoraRelease": "45",
   "architecture": "x86_64",
   "flavour": "lts",
-  "kernelRelease": "6.18.64-200.fc45.x86_64",
+  "kernelRelease": "6.18.65-200.fc45.x86_64",
   "packages": [
     {
       "name": "kernel-longterm-core",
-      "nevra": "kernel-longterm-core-0:6.18.64-200.fc45.x86_64",
-      "sourceURL": "https://download.copr.fedorainfracloud.org/results/kwizart/kernel-longterm-6.18/fedora-45-x86_64/Packages/k/kernel-longterm-core-6.18.64-200.fc45.x86_64.rpm",
+      "nevra": "kernel-longterm-core-0:6.18.65-200.fc45.x86_64",
+      "sourceURL": "https://download.copr.fedorainfracloud.org/results/kwizart/kernel-longterm-6.18/fedora-45-x86_64/Packages/k/kernel-longterm-core-6.18.65-200.fc45.x86_64.rpm",
       "role": "runtime",
       "mediaType": "application/x-rpm",
-      "digest": "sha256:a31591814b52c9b2dff09387412f938169c7413710f2fad9e59a27e724ecdfeb",
-      "sizeBytes": 21003653,
-      "fileName": "kernel-longterm-core-6.18.64-200.fc45.x86_64.rpm",
+      "digest": "sha256:dd8ede6307507e7b7b8b0d3a235e3e380a9e6c99f3101e5796a2fa2617590692",
+      "sizeBytes": 21001221,
+      "fileName": "kernel-longterm-core-6.18.65-200.fc45.x86_64.rpm",
       "annotations": {
         "dev.katl.bundle.role": "runtime",
-        "org.opencontainers.image.title": "payload/kernel-longterm-core-6.18.64-200.fc45.x86_64.rpm"
+        "org.opencontainers.image.title": "payload/kernel-longterm-core-6.18.65-200.fc45.x86_64.rpm"
       }
     },
     {
       "name": "kernel-longterm-modules",
-      "nevra": "kernel-longterm-modules-0:6.18.64-200.fc45.x86_64",
-      "sourceURL": "https://download.copr.fedorainfracloud.org/results/kwizart/kernel-longterm-6.18/fedora-45-x86_64/Packages/k/kernel-longterm-modules-6.18.64-200.fc45.x86_64.rpm",
+      "nevra": "kernel-longterm-modules-0:6.18.65-200.fc45.x86_64",
+      "sourceURL": "https://download.copr.fedorainfracloud.org/results/kwizart/kernel-longterm-6.18/fedora-45-x86_64/Packages/k/kernel-longterm-modules-6.18.65-200.fc45.x86_64.rpm",
       "role": "runtime",
       "mediaType": "application/x-rpm",
-      "digest": "sha256:b07d2bb718215691ef796316f1c7a734c7e2f65a7bd0d5fb3921640d961878ae",
-      "sizeBytes": 76929421,
-      "fileName": "kernel-longterm-modules-6.18.64-200.fc45.x86_64.rpm",
+      "digest": "sha256:b17e11eb870df84874555816d787a0af06cb18627f7969235965418d97fd1d91",
+      "sizeBytes": 76907549,
+      "fileName": "kernel-longterm-modules-6.18.65-200.fc45.x86_64.rpm",
       "annotations": {
         "dev.katl.bundle.role": "runtime",
-        "org.opencontainers.image.title": "payload/kernel-longterm-modules-6.18.64-200.fc45.x86_64.rpm"
+        "org.opencontainers.image.title": "payload/kernel-longterm-modules-6.18.65-200.fc45.x86_64.rpm"
       }
     },
     {
       "name": "kernel-longterm-modules-core",
-      "nevra": "kernel-longterm-modules-core-0:6.18.64-200.fc45.x86_64",
-      "sourceURL": "https://download.copr.fedorainfracloud.org/results/kwizart/kernel-longterm-6.18/fedora-45-x86_64/Packages/k/kernel-longterm-modules-core-6.18.64-200.fc45.x86_64.rpm",
+      "nevra": "kernel-longterm-modules-core-0:6.18.65-200.fc45.x86_64",
+      "sourceURL": "https://download.copr.fedorainfracloud.org/results/kwizart/kernel-longterm-6.18/fedora-45-x86_64/Packages/k/kernel-longterm-modules-core-6.18.65-200.fc45.x86_64.rpm",
       "role": "runtime",
       "mediaType": "application/x-rpm",
-      "digest": "sha256:b78198f6939d555dc841ff9aa9f679e1b6508978bbadc56deca78d3908e6812b",
-      "sizeBytes": 46887833,
-      "fileName": "kernel-longterm-modules-core-6.18.64-200.fc45.x86_64.rpm",
+      "digest": "sha256:5effbd3cdba889440ff58e85c8a99194e3d5009f814ddb6c55f2130df23b7f9c",
+      "sizeBytes": 46846573,
+      "fileName": "kernel-longterm-modules-core-6.18.65-200.fc45.x86_64.rpm",
       "annotations": {
         "dev.katl.bundle.role": "runtime",
-        "org.opencontainers.image.title": "payload/kernel-longterm-modules-core-6.18.64-200.fc45.x86_64.rpm"
+        "org.opencontainers.image.title": "payload/kernel-longterm-modules-core-6.18.65-200.fc45.x86_64.rpm"
       }
     },
     {
       "name": "kernel-longterm-devel",
-      "nevra": "kernel-longterm-devel-0:6.18.64-200.fc45.x86_64",
-      "sourceURL": "https://download.copr.fedorainfracloud.org/results/kwizart/kernel-longterm-6.18/fedora-45-x86_64/Packages/k/kernel-longterm-devel-6.18.64-200.fc45.x86_64.rpm",
+      "nevra": "kernel-longterm-devel-0:6.18.65-200.fc45.x86_64",
+      "sourceURL": "https://download.copr.fedorainfracloud.org/results/kwizart/kernel-longterm-6.18/fedora-45-x86_64/Packages/k/kernel-longterm-devel-6.18.65-200.fc45.x86_64.rpm",
       "role": "build",
       "mediaType": "application/x-rpm",
-      "digest": "sha256:3452e956289a5d36458179139094afdc599f3135c4aeb60abc8bdaf40ca72548",
-      "sizeBytes": 47813981,
-      "fileName": "kernel-longterm-devel-6.18.64-200.fc45.x86_64.rpm",
+      "digest": "sha256:ad3c9b1e31af540c7934a71478232f919fd4ecb192766a911bf73e21e0a155d3",
+      "sizeBytes": 47852209,
+      "fileName": "kernel-longterm-devel-6.18.65-200.fc45.x86_64.rpm",
       "annotations": {
         "dev.katl.bundle.role": "build",
-        "org.opencontainers.image.title": "payload/kernel-longterm-devel-6.18.64-200.fc45.x86_64.rpm"
+        "org.opencontainers.image.title": "payload/kernel-longterm-devel-6.18.65-200.fc45.x86_64.rpm"
       }
     }
   ],
-  "reference": "ghcr.io/katl-dev/katl/kernel-inputs@sha256:e9e8b02825ba7126b7dfa7c6399f28b18727c9700c5e3202bb2c2333ba3a124f"
+  "reference": "ghcr.io/katl-dev/katl/kernel-inputs@sha256:70910da42c995636049c5b01074eb6a08fa62f91e4d09c5c054d3490424937eb"
 }
