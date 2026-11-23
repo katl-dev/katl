@@ -160,6 +160,30 @@ func TestDiskExecutorExecutesOperationGroups(t *testing.T) {
 	}
 }
 
+func TestDiskExecutorClearsVolumeDiskBeforeRepartitioning(t *testing.T) {
+	// systemd-repart fails to add a partition while the kernel still lists an
+	// old one, so a reused volume disk must be cleared first.
+	t.Setenv("TMPDIR", t.TempDir())
+	commands := &NoopCommandRunner{}
+
+	if _, err := (DiskExecutor{Commands: commands, Discovery: executorDiscovery()}).ExecuteGroup(context.Background(), DiskExecutionRequest{
+		Plan:             executorPlan(),
+		AllowDestructive: true,
+	}, PartitionOperations); err != nil {
+		t.Fatalf("ExecuteGroup(partition) error = %v", err)
+	}
+
+	var volumeCalls []string
+	for _, call := range commands.Calls {
+		if slices.Contains(call.Args, "/dev/disk/by-diskseq/3") {
+			volumeCalls = append(volumeCalls, call.Name)
+		}
+	}
+	if !reflect.DeepEqual(volumeCalls, []string{"wipefs", "systemd-repart"}) {
+		t.Fatalf("commands on the volume disk = %q, want wipefs, then systemd-repart", volumeCalls)
+	}
+}
+
 func TestDiskExecutorRecordsCheckpointAfterStateMount(t *testing.T) {
 	artifact := []byte("runtime-root")
 	commands := &NoopCommandRunner{}

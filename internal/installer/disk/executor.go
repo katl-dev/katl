@@ -219,7 +219,7 @@ func operationInGroup(operation DiskOperation, group DiskOperationGroup) bool {
 	case PrepareOperations:
 		return operation.Name == "wipe-target-signatures"
 	case PartitionOperations:
-		return operation.Name == "create-gpt" || operation.Name == "reread-partitions" || operation.Name == "settle-partitions" || strings.HasPrefix(operation.Name, "repart-volume-") || strings.HasPrefix(operation.Name, "settle-volume-")
+		return operation.Name == "create-gpt" || operation.Name == "reread-partitions" || operation.Name == "settle-partitions" || strings.HasPrefix(operation.Name, "wipe-volume-") || strings.HasPrefix(operation.Name, "settle-wipe-volume-") || strings.HasPrefix(operation.Name, "repart-volume-") || strings.HasPrefix(operation.Name, "settle-volume-")
 	case FormatOperations:
 		return strings.HasPrefix(operation.Name, "format-")
 	case MountOperations:
@@ -431,6 +431,11 @@ func volumeOperations(volume VolumePlan) ([]DiskOperation, error) {
 	}
 	if volume.Repartition {
 		return []DiskOperation{
+			// systemd-repart cannot add a partition where the kernel still
+			// lists an old one, so wipefs, which rereads the partition table,
+			// clears the disk first, as it does for the system disk.
+			{Name: "wipe-volume-" + volume.Name, Command: "wipefs", Args: []string{"--all", device}, Destructive: true, Volume: volume.Name},
+			{Name: "settle-wipe-volume-" + volume.Name, Command: "udevadm", Args: []string{"settle"}},
 			{Name: "repart-volume-" + volume.Name, Command: "systemd-repart", Args: repartArgs(device), Definitions: []string{volumeDefinition(volume)}, Destructive: true, Volume: volume.Name},
 			{Name: "settle-volume-" + volume.Name, Command: "udevadm", Args: []string{"settle"}},
 		}, nil

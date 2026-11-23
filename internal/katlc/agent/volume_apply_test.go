@@ -194,8 +194,10 @@ func TestApplyVolumesHonorsWipe(t *testing.T) {
 			writes = append(writes, argv)
 		}
 	}
-	if len(writes) != 1 || writes[0][0] != "systemd-repart" || writes[0][len(writes[0])-1] != "/dev/disk/by-diskseq/2" {
-		t.Fatalf("acknowledged volume mutations = %v, want one repart of /dev/disk/by-diskseq/2", mutations)
+	// The disk is cleared first, so the kernel lists none of its old
+	// partitions when repart adds the new one.
+	if len(writes) != 2 || strings.Join(writes[0], " ") != "wipefs --all /dev/disk/by-diskseq/2" || writes[1][0] != "systemd-repart" || writes[1][len(writes[1])-1] != "/dev/disk/by-diskseq/2" {
+		t.Fatalf("acknowledged volume mutations = %v, want a wipefs, then one repart, of /dev/disk/by-diskseq/2", mutations)
 	}
 }
 

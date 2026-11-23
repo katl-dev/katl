@@ -522,15 +522,15 @@ func TestPrepareVolumesChecksEveryVolumeFirst(t *testing.T) {
 
 	t.Run("command failure", func(t *testing.T) {
 		source := discovery.StaticDiscoverySource{Facts: HardwareFacts{BlockDevices: []BlockDevice{otherDisk, volumeDiskWith(dataPartition())}}}
-		commands := &failingCommandRunner{fail: "wipefs"}
+		commands := &failingCommandRunner{fail: "mkfs.xfs"}
 
 		changed, err := PrepareVolumes(context.Background(), commands, source, []VolumePlan{first, formatVolume()})
 
 		if err == nil {
-			t.Fatal("PrepareVolumes() error = nil, want the wipefs failure")
+			t.Fatal("PrepareVolumes() error = nil, want the mkfs.xfs failure")
 		}
 		if !reflect.DeepEqual(changed, []string{"first", "data"}) {
-			t.Fatalf("changed = %v, want first, repartitioned, and data, whose wipefs had started", changed)
+			t.Fatalf("changed = %v, want first, repartitioned, and data, whose format had started", changed)
 		}
 	})
 }
