@@ -1,0 +1,12 @@
+# Sourced by the development shell with the checkout root as $1.
+#
+# katlctl in a Katl checkout manages that checkout's katldev world. Point its
+# workstation config at the world so a dev journey's 'katlctl context save'
+# never changes the operator's own contexts, and drop inherited katlctl
+# settings that could select one of the operator's clusters or nodes.
+
+while IFS= read -r katlctl_var; do
+    unset "$katlctl_var"
+done < <(compgen -v KATLCTL_ || true)
+unset katlctl_var
+export KATLCTL_CONFIG="$1/_build/katldev/katlctl.yaml"

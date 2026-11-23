@@ -25,7 +25,7 @@ import (
 // static address through the public cluster apply and node reboot workflow.
 // It observes the result through SSH, the vmtest agent, and Kubernetes rather
 // than through katlctl's own report.
-func runWorkerReaddress(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string, kubeconfig string, bundle threeControlPlaneKubernetesPayloadBundle, cniFixtures map[string]nodeCNIFixture) error {
+func runWorkerReaddress(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, contextPath string, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string, kubeconfig string, bundle threeControlPlaneKubernetesPayloadBundle, cniFixtures map[string]nodeCNIFixture) error {
 	t.Helper()
 	dir := filepath.Join(smoke.Result.RunDir, "worker-readdress")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -61,7 +61,7 @@ func runWorkerReaddress(t *testing.T, ctx context.Context, smoke operationBacked
 	if err != nil {
 		return err
 	}
-	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t))
+	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t), contextPath)
 	run := func(name string, args ...string) ([]byte, error) {
 		stdout, stderr, err := runProofKatlctl(ctx, katlctl, dir, name, args...)
 		if err != nil {
@@ -333,7 +333,7 @@ func TestWorkerReaddress(t *testing.T) {
 // follows the documented re-address procedure, in which only management.address
 // changes in cluster.yaml. It observes the result through the vmtest agent, a
 // direct management client, and Kubernetes rather than katlctl's own report.
-func runWorkerDHCPReaddress(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string, kubeconfig string, bundle threeControlPlaneKubernetesPayloadBundle, cniFixtures map[string]nodeCNIFixture) error {
+func runWorkerDHCPReaddress(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, contextPath string, nodes []vmtest.RunningInstalledRuntimeNode, addresses map[string]string, kubeconfig string, bundle threeControlPlaneKubernetesPayloadBundle, cniFixtures map[string]nodeCNIFixture) error {
 	t.Helper()
 	dir := filepath.Join(smoke.Result.RunDir, "worker-dhcp-readdress")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -369,7 +369,7 @@ func runWorkerDHCPReaddress(t *testing.T, ctx context.Context, smoke operationBa
 	if err != nil {
 		return err
 	}
-	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t))
+	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t), contextPath)
 	run := func(name string, args ...string) ([]byte, error) {
 		stdout, stderr, err := runProofKatlctl(ctx, katlctl, dir, name, args...)
 		if err != nil {

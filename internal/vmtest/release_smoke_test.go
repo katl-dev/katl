@@ -66,8 +66,8 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	katlctl := releaseFile(t, candidate, "katlctl-*-linux-amd64")
-	if err := os.Chmod(katlctl, 0o755); err != nil {
+	katlctlBin := NewKatlctl(releaseFile(t, candidate, "katlctl-*-linux-amd64"))
+	if err := os.Chmod(katlctlBin.path, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	key := filepath.Join(t.TempDir(), "id_ed25519")
@@ -105,6 +105,7 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 		}
 		result := event.Result
 		result.IPAddress = lease.IPAddress
+		katlctl := configApplyKatlctl(katlctlBin, result)
 		observe := func(command string) (string, error) { return releaseSSH(ctx, key, lease.IPAddress, command) }
 		healthy := func(expected katlosimage.ArtifactMetadata) error {
 			if expected.ExtensionRelease == nil {

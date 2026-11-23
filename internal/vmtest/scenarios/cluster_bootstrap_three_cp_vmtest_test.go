@@ -363,7 +363,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	if err := writeThreeControlPlaneWorkstationContext(contextPath, "three-control-plane", addresses, enrollments); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("KATLCTL_CONFIG", contextPath)
+	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t), contextPath)
 	if err := writeThreeControlPlaneSmokeArtifactManifest(result, inputs, "", etcdTranscriptDir, nodes, bootstrapFixture, kubernetesBundle, cniFixtures, imageFixtures, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -375,7 +375,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 		t.Fatalf("read boot IDs before bootstrap: %v", err)
 	}
 	var stdout, stderr bytes.Buffer
-	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), appendBootstrapFixtureArgs([]string{
+	err = runKatlctlCommand(t, ctx, katlctl, katlRepoRoot(t), appendBootstrapFixtureArgs([]string{
 		"cluster", "bootstrap",
 		"--inventory", inventoryPath,
 		"--init-node", "cp-1",
@@ -570,8 +570,7 @@ func runThreeControlPlaneReplacementProof(t *testing.T, ctx context.Context, smo
 	if err := writeThreeControlPlaneWorkstationContext(contextPath, "replacement-vmtest", addresses, enrollments); err != nil {
 		return nodes, err
 	}
-	t.Setenv("KATLCTL_CONFIG", contextPath)
-	t.Setenv("KATLCTL_CONFIG_DIR", "")
+	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t), contextPath)
 	cp1 := nodeByName(nodes, "cp-1")
 	cp2 := nodeByName(nodes, "cp-2")
 	cp3 := nodeByName(nodes, "cp-3")
@@ -596,7 +595,7 @@ func runThreeControlPlaneReplacementProof(t *testing.T, ctx context.Context, smo
 	}
 
 	var wipeStdout, wipeStderr bytes.Buffer
-	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{
+	err = runKatlctlCommand(t, ctx, katlctl, katlRepoRoot(t), []string{
 		"node", "wipe", "cp-3",
 		"--config", configPath,
 		"--kubeconfig", kubeconfigPath,
@@ -720,7 +719,7 @@ func runThreeControlPlaneReplacementProof(t *testing.T, ctx context.Context, smo
 	}
 
 	var refusedStdout, refusedStderr bytes.Buffer
-	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"cluster", "apply", "--config", configPath}, &refusedStdout, &refusedStderr)
+	err = runKatlctlCommand(t, ctx, katlctl, katlRepoRoot(t), []string{"cluster", "apply", "--config", configPath}, &refusedStdout, &refusedStderr)
 	if err == nil || !strings.Contains(refusedStderr.String(), "node join cp-3") {
 		return nodes, fmt.Errorf("apply with a fresh replacement must require explicit join: %v: %s", err, refusedStderr.String())
 	}
@@ -733,7 +732,7 @@ func runThreeControlPlaneReplacementProof(t *testing.T, ctx context.Context, smo
 	}
 
 	var joinStdout, joinStderr bytes.Buffer
-	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"node", "join", "cp-3", "--config", configPath, "--output", "json"}, &joinStdout, &joinStderr)
+	err = runKatlctlCommand(t, ctx, katlctl, katlRepoRoot(t), []string{"node", "join", "cp-3", "--config", configPath, "--output", "json"}, &joinStdout, &joinStderr)
 	_ = os.WriteFile(filepath.Join(dir, "katlctl-node-join.stdout"), joinStdout.Bytes(), 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "katlctl-node-join.stderr"), joinStderr.Bytes(), 0o600)
 	if err != nil {
@@ -781,7 +780,7 @@ func runThreeControlPlaneReplacementProof(t *testing.T, ctx context.Context, smo
 	}
 
 	var repeatStdout, repeatStderr bytes.Buffer
-	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"node", "join", "cp-3", "--config", configPath, "--output", "json"}, &repeatStdout, &repeatStderr)
+	err = runKatlctlCommand(t, ctx, katlctl, katlRepoRoot(t), []string{"node", "join", "cp-3", "--config", configPath, "--output", "json"}, &repeatStdout, &repeatStderr)
 	_ = os.WriteFile(filepath.Join(dir, "katlctl-node-join-repeat.stdout"), repeatStdout.Bytes(), 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "katlctl-node-join-repeat.stderr"), repeatStderr.Bytes(), 0o600)
 	if err != nil {
@@ -1029,7 +1028,7 @@ func runThreeControlPlaneConfigOperationProof(t *testing.T, ctx context.Context,
 	if err := writeThreeControlPlaneWorkstationContext(contextPath, "three-control-plane", addresses, enrollments); err != nil {
 		return err
 	}
-	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t))
+	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t), contextPath)
 	for _, node := range nodes {
 		stdout, stderr, err := runProofKatlctl(ctx, katlctl, proofDir, "stage-"+node.Name,
 			"node", "apply", "--context-file", contextPath, "--node", node.Name, "--config", requestPath, "--mode", "live", "--candidate-generation", generationID, "--client-request-id", "vmtest-control-plane-config-stage-"+node.Name, "--actor", "three-control-plane release proof", "--output", "json")
@@ -1248,13 +1247,15 @@ func yamlMappingValue(mapping *yaml.Node, key string) *yaml.Node {
 	return nil
 }
 
-func runProofKatlctl(ctx context.Context, binary, dir, name string, args ...string) ([]byte, string, error) {
+func runProofKatlctl(ctx context.Context, katlctl katlctlRunner, dir, name string, args ...string) ([]byte, string, error) {
 	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, binary, args...)
-	cmd.Env = os.Environ()
+	cmd, err := katlctl.command(ctx, args...)
+	if err != nil {
+		return nil, "", err
+	}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
+	err = cmd.Run()
 	_ = os.WriteFile(filepath.Join(dir, name+".stdout"), stdout.Bytes(), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, name+".stderr"), stderr.Bytes(), 0o644)
 	return stdout.Bytes(), stderr.String(), err
@@ -1271,7 +1272,7 @@ func decodeGenerationApplyResult(data []byte, generationID string) error {
 	return nil
 }
 
-func waitForConfigGeneration(ctx context.Context, katlctl, dir string, node vmtest.RunningInstalledRuntimeNode, address, generationID, configName string, healthy bool) error {
+func waitForConfigGeneration(ctx context.Context, katlctl katlctlRunner, dir string, node vmtest.RunningInstalledRuntimeNode, address, generationID, configName string, healthy bool) error {
 	deadline := time.Now().Add(5 * time.Minute)
 	var last string
 	for time.Now().Before(deadline) {

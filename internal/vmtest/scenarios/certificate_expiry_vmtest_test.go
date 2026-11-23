@@ -15,10 +15,10 @@ import (
 // assertCertificateExpiryStatus checks that a freshly bootstrapped control
 // plane reports kubeadm's one-year leaf certificates through the public status
 // commands, and that workers report none.
-func assertCertificateExpiryStatus(t *testing.T, ctx context.Context, runDir string) error {
+func assertCertificateExpiryStatus(t *testing.T, ctx context.Context, katlctl katlctlRunner, runDir string) error {
 	t.Helper()
 	var stdout, stderr bytes.Buffer
-	if err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"cluster", "status", "--output", "json"}, &stdout, &stderr); err != nil {
+	if err := runKatlctlCommand(t, ctx, katlctl, katlRepoRoot(t), []string{"cluster", "status", "--output", "json"}, &stdout, &stderr); err != nil {
 		return fmt.Errorf("katlctl cluster status: %w\n%s", err, stderr.String())
 	}
 	_ = os.WriteFile(filepath.Join(runDir, "katlctl-cluster-status.json"), stdout.Bytes(), 0o644)
@@ -71,7 +71,7 @@ func assertCertificateExpiryStatus(t *testing.T, ctx context.Context, runDir str
 
 	stdout.Reset()
 	stderr.Reset()
-	if err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"node", "status", "cp-1"}, &stdout, &stderr); err != nil {
+	if err := runKatlctlCommand(t, ctx, katlctl, katlRepoRoot(t), []string{"node", "status", "cp-1"}, &stdout, &stderr); err != nil {
 		return fmt.Errorf("katlctl node status cp-1: %w\n%s", err, stderr.String())
 	}
 	if want := "certificate " + controlPlane + " expires on "; !strings.Contains(stdout.String(), want) {

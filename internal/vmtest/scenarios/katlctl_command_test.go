@@ -3,34 +3,38 @@ package scenarios
 import (
 	"context"
 	"io"
-	"os"
 	"os/exec"
-	"path/filepath"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/vmtest"
 )
 
-func runKatlctlCommand(t *testing.T, ctx context.Context, repo string, args []string, stdout, stderr io.Writer) error {
+// katlctlRunner is a katlctl binary together with the workstation config that
+// every command it runs uses.
+type katlctlRunner struct {
+	bin    vmtest.Katlctl
+	config string
+}
+
+func buildKatlctlCommand(t *testing.T, ctx context.Context, repo, config string) katlctlRunner {
 	t.Helper()
-	katlctl := buildKatlctlCommand(t, ctx, repo)
-	cmd := exec.CommandContext(ctx, katlctl, args...)
+	return katlctlRunner{bin: vmtest.BuildKatlctl(t, ctx, repo), config: config}
+}
+
+func (k katlctlRunner) command(ctx context.Context, args ...string) (*exec.Cmd, error) {
+	return k.bin.Command(ctx, k.config, args...)
+}
+
+func runKatlctlCommand(t *testing.T, ctx context.Context, katlctl katlctlRunner, repo string, args []string, stdout, stderr io.Writer) error {
+	t.Helper()
+	cmd, err := katlctl.command(ctx, args...)
+	if err != nil {
+		return err
+	}
 	cmd.Dir = repo
-	cmd.Env = os.Environ()
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	return cmd.Run()
-}
-
-func buildKatlctlCommand(t *testing.T, ctx context.Context, repo string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "katlctl")
-	cmd := exec.CommandContext(ctx, "go", "build", "-buildvcs=false", "-o", path, "./cmd/katlctl")
-	cmd.Dir = repo
-	cmd.Env = os.Environ()
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("build katlctl: %v\n%s", err, output)
-	}
-	return path
 }
 
 type transcriptEntry struct {

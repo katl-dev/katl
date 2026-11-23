@@ -91,7 +91,7 @@ func TestInstallerPXEBootSmoke(t *testing.T) {
 	options.StateRoot = filepath.Join(worldScenario.Dir, "vm-runs")
 	options.Keep = vmtest.KeepFailed
 	repo := katlRepoRoot(t)
-	katlctl := buildKatlctlCommand(t, context.Background(), repo)
+	katlctl := buildKatlctlCommand(t, context.Background(), repo, filepath.Join(worldScenario.Dir, "katlctl.yaml"))
 	privateKey, publicKey, err := ensureWorldSSHKey(world)
 	if err != nil {
 		t.Fatal(err)
@@ -156,7 +156,10 @@ spec:
 						if err != nil {
 							return err
 						}
-						command := exec.CommandContext(ctx, katlctl, "install", "ssh", "--config", config, "--node", "pxe-node", "--endpoint", endpoint.String())
+						command, err := katlctl.command(ctx, "install", "ssh", "--config", config, "--node", "pxe-node", "--endpoint", endpoint.String())
+						if err != nil {
+							return err
+						}
 						if output, err := command.CombinedOutput(); err != nil {
 							return fmt.Errorf("enable installer SSH: %w: %s", err, output)
 						}

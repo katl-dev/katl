@@ -160,7 +160,7 @@ func assertNetdevAbsent(t *testing.T, ctx context.Context, guest *GuestControl, 
 	}
 }
 
-func applyNetdevFixture(t *testing.T, ctx context.Context, result Result, katlctl, endpoint, name, fixture string, wantFailure bool) *agentapi.OperationStatus {
+func applyNetdevFixture(t *testing.T, ctx context.Context, result Result, katlctl katlctlRunner, endpoint, name, fixture string, wantFailure bool) *agentapi.OperationStatus {
 	t.Helper()
 	accepted := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-"+name, "live", "2026.06.06-vmtest-"+name, fixture, wantFailure)
 	status := waitKatlcOperationTerminal(t, ctx, endpoint, accepted.OperationId)
@@ -179,7 +179,7 @@ func applyNetdevFixture(t *testing.T, ctx context.Context, result Result, katlct
 // runNetdevLifecycleSmoke exercises live netdev reconciliation on a VLAN and
 // a bond with a stacked VLAN: refused changes, a failed verification with
 // rollback, the guard, and deletion.
-func runNetdevLifecycleSmoke(t *testing.T, ctx context.Context, guest *GuestControl, result Result, katlctl, endpoint string) {
+func runNetdevLifecycleSmoke(t *testing.T, ctx context.Context, guest *GuestControl, result Result, katlctl katlctlRunner, endpoint string) {
 	t.Helper()
 	applyNetdevFixture(t, ctx, result, katlctl, endpoint, "netdev-create", netdevFixture(t, 3, netdevSets(20, "active-backup", ""), ""), false)
 	if details := netdevDetails(t, ctx, guest, "katlv20"); !strings.Contains(details, "katlv20@enp1s0") || !strings.Contains(details, "vlan protocol 802.1Q id 20 ") {

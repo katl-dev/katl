@@ -58,7 +58,7 @@ func twoNodeInstalledSource(smoke operationBackedSmokeRun, addresses map[string]
 	return source, nil
 }
 
-func stageBootstrapKubeletInput(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, addresses map[string]string, bundle threeControlPlaneKubernetesPayloadBundle) error {
+func stageBootstrapKubeletInput(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, contextPath string, addresses map[string]string, bundle threeControlPlaneKubernetesPayloadBundle) error {
 	t.Helper()
 	dir := filepath.Join(smoke.Result.RunDir, "bootstrap-kubelet")
 	if err := os.MkdirAll(filepath.Join(dir, "patches"), 0o700); err != nil {
@@ -103,7 +103,7 @@ func stageBootstrapKubeletInput(t *testing.T, ctx context.Context, smoke operati
 	if _, err := configbundle.WriteArchive(configPath, configbundle.BuildRequest{SourcePath: filepath.Join(dir, "cluster.yaml"), Planning: configbundle.PlanningInputs{KubernetesBundle: bundle.Ref, ManagementIdentities: management}}); err != nil {
 		return err
 	}
-	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t))
+	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t), contextPath)
 	stdout, stderr, err := runProofKatlctl(ctx, katlctl, dir, "stage", "cluster", "apply", "--config", configPath, "-o", "json")
 	if err != nil {
 		return fmt.Errorf("stage fresh-bootstrap kubelet input: %w: %s", err, stderr)

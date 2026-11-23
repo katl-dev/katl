@@ -467,9 +467,8 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	if err := writeTwoNodeWorkstationContext(contextPath, map[string]string{"cp-1": cpAddress, "worker-1": workerAddress}, enrollments); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("KATLCTL_CONFIG", contextPath)
-	t.Setenv("KATLCTL_CONFIG_DIR", "")
-	assertSwappedEnrollmentRefused(t, ctx, result.RunDir, inputs.KubernetesVersion, kubernetesBundle, cpAddress, workerAddress, enrollments)
+	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t), contextPath)
+	assertSwappedEnrollmentRefused(t, ctx, katlctl, result.RunDir, inputs.KubernetesVersion, kubernetesBundle, cpAddress, workerAddress, enrollments)
 	for _, node := range nodes {
 		if err := assertOperatorSSH(ctx, inputs.SSHPrivateKey, node.Result.IPAddress); err != nil {
 			collectTwoNodeDiagnostics("", nodes...)
@@ -501,7 +500,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	}
 	addresses := map[string]string{"cp-1": cpAddress, "worker-1": workerAddress}
 	if !proveUpgrade {
-		if err := stageBootstrapKubeletInput(t, ctx, smoke, addresses, kubernetesBundle); err != nil {
+		if err := stageBootstrapKubeletInput(t, ctx, smoke, contextPath, addresses, kubernetesBundle); err != nil {
 			collectTwoNodeDiagnostics("", nodes...)
 			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 			t.Fatalf("prepare fresh-bootstrap native kubelet input: %v", err)
@@ -539,7 +538,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	} else {
 		bootstrapArgs = append(bootstrapArgs, "--config", filepath.Join(result.RunDir, "bootstrap-kubelet/cluster.katlcfg"))
 	}
-	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), bootstrapArgs, &stdout, &stderr)
+	err = runKatlctlCommand(t, ctx, katlctl, katlRepoRoot(t), bootstrapArgs, &stdout, &stderr)
 	if err == nil {
 		err = assertNodeBootIDsUnchanged(ctx, bootIDs, nodes...)
 	}
@@ -683,7 +682,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 			t.Fatalf("fresh-bootstrap native kubelet input: %v", err)
 		}
 	}
-	if err := runPreCNIClusterApply(t, ctx, smoke, addresses, kubeconfigPath, kubernetesBundle); err != nil {
+	if err := runPreCNIClusterApply(t, ctx, smoke, contextPath, addresses, kubeconfigPath, kubernetesBundle); err != nil {
 		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -710,7 +709,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		t.Fatalf("read configured generations before bootstrap resume: %v", err)
 	}
 	var resumedStdout, resumedStderr bytes.Buffer
-	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), appendBootstrapFixtureArgs(slices.Clone(bootstrapArgs), bootstrapFixture), &resumedStdout, &resumedStderr)
+	err = runKatlctlCommand(t, ctx, katlctl, katlRepoRoot(t), appendBootstrapFixtureArgs(slices.Clone(bootstrapArgs), bootstrapFixture), &resumedStdout, &resumedStderr)
 	_ = os.WriteFile(filepath.Join(result.RunDir, "katlctl-bootstrap-workloads.stdout"), resumedStdout.Bytes(), 0o644)
 	_ = os.WriteFile(filepath.Join(result.RunDir, "katlctl-bootstrap-workloads.stderr"), resumedStderr.Bytes(), 0o644)
 	if err != nil {
@@ -758,7 +757,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("kubectl nodes did not converge: %v\n%s", err, output)
 	}
-	if err := assertCertificateExpiryStatus(t, ctx, result.RunDir); err != nil {
+	if err := assertCertificateExpiryStatus(t, ctx, katlctl, result.RunDir); err != nil {
 		collectTwoNodeDiagnostics("", nodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("certificate expiry status: %v", err)
@@ -820,13 +819,13 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 		}
 	}
 	if proof == readdressProof {
-		if err := runWorkerDHCPReaddress(t, ctx, smoke, nodes, addresses, kubeconfigPath, kubernetesBundle, cniFixtures); err != nil {
+		if err := runWorkerDHCPReaddress(t, ctx, smoke, contextPath, nodes, addresses, kubeconfigPath, kubernetesBundle, cniFixtures); err != nil {
 			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 			collectTwoNodeDiagnostics("", nodes...)
 			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 			t.Fatalf("worker DHCP re-address: %v", err)
 		}
-		if err := runWorkerReaddress(t, ctx, smoke, nodes, addresses, kubeconfigPath, kubernetesBundle, cniFixtures); err != nil {
+		if err := runWorkerReaddress(t, ctx, smoke, contextPath, nodes, addresses, kubeconfigPath, kubernetesBundle, cniFixtures); err != nil {
 			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
 			collectTwoNodeDiagnostics("", nodes...)
 			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -857,7 +856,7 @@ func runTwoNodeKubeadmUpgradeProof(t *testing.T, ctx context.Context, smoke oper
 	if err != nil {
 		return err
 	}
-	return runKubernetesUpgradeCLIProof(ctx, katlRepoRoot(t), strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")), smoke.Inputs.KubernetesVersion, cpNode, workerNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir, bootIDs)
+	return runKubernetesUpgradeCLIProof(t, ctx, katlRepoRoot(t), strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")), smoke.Inputs.KubernetesVersion, cpNode, workerNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir, bootIDs)
 }
 
 func upgradeFixtureVersion(repo string) (string, error) {
@@ -871,7 +870,7 @@ func upgradeFixtureVersion(repo string) (string, error) {
 	return metadata.PayloadVersion, nil
 }
 
-func runKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle, sourceVersion string, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir string, bootIDs map[string]string) error {
+func runKubernetesUpgradeCLIProof(t *testing.T, ctx context.Context, repoRoot, bundle, sourceVersion string, cpNode, workerNode vmtest.RunningInstalledRuntimeNode, cpAddress, workerAddress, kubeconfigPath, evidenceDir string, bootIDs map[string]string) error {
 	configPath := filepath.Join(evidenceDir, "cluster-upgrade.yaml")
 	contextPath := filepath.Join(evidenceDir, "katlctl-upgrade-context.yaml")
 	enrollments, err := readTwoNodeEnrollments(ctx, cpAddress, workerAddress)
@@ -925,9 +924,13 @@ func runKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle, sourceV
 	if err != nil || planted.ExitStatus != 0 {
 		return fmt.Errorf("plant earlier etcd snapshots: %w", errors.Join(err, commandErrorDetail(planted)))
 	}
-	args := []string{"run", "./cmd/katlctl", "kubernetes", "upgrade", "--config", configPath, "--context-file", contextPath, "--cordon", "--kubeconfig", kubeconfigPath, "--timeout", "25m", "--output", "json"}
+	katlctl := buildKatlctlCommand(t, ctx, repoRoot, contextPath)
+	args := []string{"kubernetes", "upgrade", "--config", configPath, "--context-file", contextPath, "--cordon", "--kubeconfig", kubeconfigPath, "--timeout", "25m", "--output", "json"}
 	args = append(args, artifactArgs...)
-	command := exec.CommandContext(ctx, "go", args...)
+	command, err := katlctl.command(ctx, args...)
+	if err != nil {
+		return err
+	}
 	command.Dir = repoRoot
 	stdout, err := command.Output()
 	if err != nil {
@@ -1029,17 +1032,19 @@ func runKubernetesUpgradeCLIProof(ctx context.Context, repoRoot, bundle, sourceV
 			return fmt.Errorf("%s live-promoted generation is not current and healthy: current=%s candidate=%s bootHealth=%s diagnostic=%q", item.Name, nodeStatus.GetCurrentGenerationId(), record.CandidateGenerationID, nodeStatus.GetBootHealthState(), nodeStatus.GetBootHealthDiagnostic())
 		}
 	}
-	return verifyEtcdSnapshotDownload(ctx, repoRoot, configPath, contextPath, evidenceDir, cpNode)
+	return verifyEtcdSnapshotDownload(ctx, katlctl, repoRoot, configPath, evidenceDir, cpNode)
 }
 
 // verifyEtcdSnapshotDownload saves a snapshot through the public command and
 // checks the downloaded file against its own embedded checksum rather than
 // only the digest the node reported.
-func verifyEtcdSnapshotDownload(ctx context.Context, repoRoot, configPath, contextPath, evidenceDir string, cpNode vmtest.RunningInstalledRuntimeNode) error {
+func verifyEtcdSnapshotDownload(ctx context.Context, katlctl katlctlRunner, repoRoot, configPath, evidenceDir string, cpNode vmtest.RunningInstalledRuntimeNode) error {
 	output := filepath.Join(evidenceDir, "etcd-snapshot.db")
-	command := exec.CommandContext(ctx, "go", "run", "./cmd/katlctl", "cluster", "etcd", "snapshot", "--config", configPath, "--output", output, "--timeout", "10m")
+	command, err := katlctl.command(ctx, "cluster", "etcd", "snapshot", "--config", configPath, "--output", output, "--timeout", "10m")
+	if err != nil {
+		return err
+	}
 	command.Dir = repoRoot
-	command.Env = append(os.Environ(), "KATLCTL_CONFIG="+contextPath)
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	stdout, err := command.Output()
@@ -1574,156 +1579,6 @@ func failTwoNodeWorldSetup(t *testing.T, scenario *vmtest.WorldScenario, err err
 	t.Fatalf("%v\nworld scenario dir: %s", err, scenario.Dir)
 }
 
-func runTwoNodeKubeadmJoinSmoke(t *testing.T, smoke twoNodeSmokeRun) {
-	t.Helper()
-	options := smoke.Options
-	runner := smoke.Runner
-	scenario := smoke.Scenario
-	result := smoke.Result
-	inputs := smoke.Inputs
-	requireVMHost(t, runner, scenario, result, vmtest.HostRequirements{
-		Libvirt: true,
-		OVMF:    true,
-		KVM:     options.KVM,
-	})
-	transcriptDir := filepath.Join(result.RunDir, "agent-transcripts")
-	inventoryPath := filepath.Join(result.ManifestDir, "bootstrap-inventory.yaml")
-	kubeconfigPath := filepath.Join(result.RunDir, "operator-kubeconfig.yaml")
-	kubeconfigMetadataPath := filepath.Join(result.RunDir, "operator-kubeconfig-metadata.json")
-	stdoutPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stdout")
-	stderrPath := filepath.Join(result.RunDir, "katlctl-bootstrap.stderr")
-	kubectlOut := filepath.Join(result.RunDir, "kubectl-get-nodes.txt")
-	bootstrapFixture, err := stageBootstrapFixtureInputs(result.ManifestDir, bootstrapFixtureInputsForRun(katlRepoRoot(t)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cpResult, err := vmtest.PlannedInstalledRuntimeNodeResult(result, "cp-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	workerResult, err := vmtest.PlannedInstalledRuntimeNodeResult(result, "worker-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	plannedNodes := []vmtest.RunningInstalledRuntimeNode{
-		{Name: "cp-1", Result: cpResult},
-		{Name: "worker-1", Result: workerResult},
-	}
-	if err := writeTwoNodeSmokeArtifactManifest(result, inputs, transcriptDir, plannedNodes, bootstrapFixture, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-	cpNode, err := vmtest.StartInstalledRuntimeNode(ctx, result, vmtest.InstalledRuntimeNodeConfig{
-		Name: "cp-1",
-		Runtime: vmtest.InstalledRuntimeConfig{
-			Disk:            inputs.ControlPlaneDisk,
-			DiskFormat:      vmtest.DiskFormat(inputs.ControlPlaneDiskFormat),
-			ESPArtifacts:    inputs.ControlPlaneESP,
-			FixtureManifest: inputs.ControlPlaneFixture,
-			NodeMetadata:    inputs.ControlPlaneMetadata,
-			VM:              twoNodeVMConfigForRun(smoke, inputs.ControlPlaneMAC, 0),
-		},
-	}, vmtest.VMRunner{})
-	if err != nil {
-		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-		t.Fatalf("start control-plane VM: %v", err)
-	}
-	defer stopNode(t, cpNode)
-
-	workerNode, err := vmtest.StartInstalledRuntimeNode(ctx, result, vmtest.InstalledRuntimeNodeConfig{
-		Name: "worker-1",
-		Runtime: vmtest.InstalledRuntimeConfig{
-			Disk:            inputs.WorkerDisk,
-			DiskFormat:      vmtest.DiskFormat(inputs.WorkerDiskFormat),
-			ESPArtifacts:    inputs.WorkerESP,
-			FixtureManifest: inputs.WorkerFixture,
-			NodeMetadata:    inputs.WorkerMetadata,
-			VM:              twoNodeVMConfigForRun(smoke, inputs.WorkerMAC, 0),
-		},
-	}, vmtest.VMRunner{})
-	if err != nil {
-		collectTwoNodeDiagnostics(transcriptDir, cpNode)
-		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-		t.Fatalf("start worker VM: %v", err)
-	}
-	defer stopNode(t, workerNode)
-
-	nodes := []vmtest.RunningInstalledRuntimeNode{cpNode, workerNode}
-	controlPlaneAddress := firstString(cpNode.Result.IPAddress, inputs.ControlPlaneAddress)
-	workerAddress := firstString(workerNode.Result.IPAddress, inputs.WorkerAddress)
-	cniFixtures, err := stageTwoNodeCNIFixtures(ctx, katlRepoRoot(t), cpNode, workerNode, controlPlaneAddress, workerAddress)
-	if err != nil {
-		collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
-		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-		t.Fatalf("stage test CNI fixtures: %v", err)
-	}
-	imageFixtures, err := stageKubernetesImageFixtures(ctx, katlRepoRoot(t), inputs.KubernetesVersion, nodes...)
-	if err == nil {
-		var workloadFixtures map[string][]nodeImageFixture
-		workloadFixtures, err = stageTwoNodeImageFixtures(ctx, katlRepoRoot(t), result.RunDir, nodes...)
-		mergeNodeImageFixtures(imageFixtures, workloadFixtures)
-	}
-	if err != nil {
-		collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
-		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-		t.Fatalf("stage bootstrap images: %v", err)
-	}
-	if err := writeTwoNodeInventory(inventoryPath, inputs.KubernetesVersion, cpNode, workerNode); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeTwoNodeSmokeArtifactManifest(result, inputs, transcriptDir, nodes, bootstrapFixture, cniFixtures, imageFixtures); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), appendBootstrapFixtureArgs([]string{
-		"cluster", "bootstrap",
-		"--inventory", inventoryPath,
-		"--init-node", "cp-1",
-		"--control-plane-endpoint", controlPlaneAddress + ":6443",
-		"--node-address", "cp-1=" + controlPlaneAddress,
-		"--node-address", "worker-1=" + workerAddress,
-		"--kubeconfig-out", kubeconfigPath,
-		"--overwrite-kubeconfig",
-		"--vmtest-transcript-dir", transcriptDir,
-	}, bootstrapFixture), &stdout, &stderr)
-	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
-	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
-	_ = writeKubeconfigMetadata(kubeconfigPath, kubeconfigMetadataPath)
-	err = bootstrapCommandError(err, stdout.String())
-	if err != nil {
-		collectKubectlDiagnosticsForFailure(ctx, cpNode, kubeconfigPath, result.RunDir)
-		collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
-		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-		t.Fatalf("katlctl cluster bootstrap failed: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
-	}
-	assertBootstrapPhases(t, stdout.String())
-	if err := verifyTwoNodeBootstrapTranscripts(transcriptDir); err != nil {
-		collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
-		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-		t.Fatalf("bootstrap transcripts: %v", err)
-	}
-
-	output, err := waitForKubectlNodes(ctx, kubeconfigPath, kubectlOut, 3*time.Minute, "node/cp-1", "node/worker-1")
-	if err != nil {
-		collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
-		collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
-		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
-		t.Fatalf("kubectl nodes did not converge: %v\n%s", err, output)
-	}
-	for _, want := range []string{"node/cp-1", "node/worker-1"} {
-		if !strings.Contains(string(output), want) {
-			collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
-			collectTwoNodeDiagnostics(transcriptDir, cpNode, workerNode)
-			finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, "kubectl output missing "+want)
-			t.Fatalf("kubectl output missing %q:\n%s", want, output)
-		}
-	}
-	collectKubectlDiagnostics(kubeconfigPath, result.RunDir)
-	finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusPassed, "")
-}
-
 func twoNodeVMConfig(kvm vmtest.KVMPolicy, cid uint32) vmtest.VMConfig {
 	return vmtest.VMConfig{
 		KVM:     kvm,
@@ -2010,14 +1865,14 @@ func writeTwoNodeWorkstationContext(path string, addresses map[string]string, en
 	return os.WriteFile(path, []byte(data), 0o600)
 }
 
-func assertSwappedEnrollmentRefused(t *testing.T, ctx context.Context, runDir, kubernetesVersion string, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, cpAddress, workerAddress string, enrollments map[string]*agentapi.NodeStatus) {
+func assertSwappedEnrollmentRefused(t *testing.T, ctx context.Context, katlctl katlctlRunner, runDir, kubernetesVersion string, kubernetesBundle threeControlPlaneKubernetesPayloadBundle, cpAddress, workerAddress string, enrollments map[string]*agentapi.NodeStatus) {
 	t.Helper()
 	path := filepath.Join(runDir, "swapped-bootstrap-inventory.yaml")
 	if err := writeOperationBackedInventory(path, kubernetesVersion, kubernetesBundle, workerAddress, cpAddress, enrollments); err != nil {
 		t.Fatal(err)
 	}
 	var stdout, stderr bytes.Buffer
-	err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"cluster", "bootstrap", "--inventory", path, "--init-node", "cp-1", "--dry-run"}, &stdout, &stderr)
+	err := runKatlctlCommand(t, ctx, katlctl, katlRepoRoot(t), []string{"cluster", "bootstrap", "--inventory", path, "--init-node", "cp-1", "--dry-run"}, &stdout, &stderr)
 	if err == nil || !strings.Contains(stderr.String(), "certificate for another node") {
 		t.Fatalf("swapped enrollment bootstrap plan error = %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
 	}

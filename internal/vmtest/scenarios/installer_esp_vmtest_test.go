@@ -55,9 +55,7 @@ func TestInstallerESPSameDiskInstall(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
 	repo := katlRepoRoot(t)
-	katlctl := buildKatlctlCommand(t, ctx, repo)
-	t.Setenv("KATLCTL_CONFIG", filepath.Join(worldScenario.Dir, "katlctl.yaml"))
-	t.Setenv("KATLCTL_CONFIG_DIR", "")
+	katlctl := buildKatlctlCommand(t, ctx, repo, filepath.Join(worldScenario.Dir, "katlctl.yaml"))
 	privateKey, _, err := ensureWorldSSHKey(world)
 	if err != nil {
 		fail(err)
@@ -139,7 +137,7 @@ func TestInstallerESPSameDiskInstall(t *testing.T) {
 }
 
 type installerESPJourney struct {
-	katlctl    string
+	katlctl    katlctlRunner
 	privateKey string
 	publicKey  string
 	dir        string
@@ -409,8 +407,10 @@ func (j *installerESPJourney) requireRootOnNewLayout(ctx context.Context) error 
 }
 
 func (j *installerESPJourney) cli(ctx context.Context, args ...string) ([]byte, error) {
-	command := exec.CommandContext(ctx, j.katlctl, args...)
-	command.Env = os.Environ()
+	command, err := j.katlctl.command(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
 	var stderr strings.Builder
 	command.Stderr = &stderr
 	output, err := command.Output()

@@ -117,6 +117,10 @@
             ];
 
           shellHook = ''
+            if katl_repo_root="$(${pkgs.git}/bin/git rev-parse --show-toplevel 2>/dev/null)"; then
+              source ${./scripts/dev-shell-env} "$katl_repo_root"
+            fi
+            unset katl_repo_root
             source ${katlctlPackageFor pkgs}/share/bash-completion/completions/katlctl.bash
             export XDG_DATA_DIRS="${katlctlPackageFor pkgs}/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
             # FPATH replaces Zsh's built-in search path, so retain its stock functions.

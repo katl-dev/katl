@@ -281,6 +281,23 @@ it is intentional. The world's VMs, 32 GiB target disks, and network state live
 under `_build/katldev/world`; they are not owned or cleaned up by automated
 vmtest runs.
 
+The world's `katlctl` contexts live in `_build/katldev/katlctl.yaml`, so a dev
+journey's `katlctl context save` cannot change or replace the contexts for
+your own clusters. The development shell, entered with `nix develop` or
+direnv, exports `KATLCTL_CONFIG` with that path and clears any other inherited
+`KATLCTL_*` settings. Inside the shell, `katlctl` therefore manages only the
+dev world. Your own config stays in effect in every other shell. katldev
+prints the world's config path, and from a shell outside the development
+shell it also prints the `export KATLCTL_CONFIG=...` line that selects it. To
+manage a real cluster from inside the development shell, set `KATLCTL_CONFIG`
+to your own config for that command.
+
+VM tests are isolated in the same way. `scripts/vmtest-run` points
+`KATLCTL_CONFIG` at the run directory, and every test runs `katlctl` through
+`vmtest.Katlctl.Command`, which gives the command a config, `HOME`, and
+`XDG_CONFIG_HOME` inside the test's own directory. A unit test rejects VM test
+code that builds, runs, or configures `katlctl` any other way.
+
 `katldev installer` is the one-node form of `katldev world`. Start a multi-node
 world, or add VMs to an existing one, with:
 

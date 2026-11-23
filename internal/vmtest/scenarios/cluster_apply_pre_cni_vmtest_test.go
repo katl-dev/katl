@@ -19,7 +19,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func runPreCNIClusterApply(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, addresses map[string]string, kubeconfig string, bundle threeControlPlaneKubernetesPayloadBundle) error {
+func runPreCNIClusterApply(t *testing.T, ctx context.Context, smoke operationBackedSmokeRun, contextPath string, addresses map[string]string, kubeconfig string, bundle threeControlPlaneKubernetesPayloadBundle) error {
 	t.Helper()
 	dir := filepath.Join(smoke.Result.RunDir, "pre-cni-apply")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -135,7 +135,7 @@ func runPreCNIClusterApply(t *testing.T, ctx context.Context, smoke operationBac
 		}
 		before[name] = observed
 	}
-	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t))
+	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t), contextPath)
 	var appliedGenerations map[string]string
 	for _, label := range []string{"apply", "repeat"} {
 		stdout, stderr, err := runProofKatlctl(ctx, katlctl, dir, label, "cluster", "apply", "--config", configPath, "-o", "json")
@@ -275,7 +275,7 @@ func runPreCNIClusterApply(t *testing.T, ctx context.Context, smoke operationBac
 // Boot health does not cover kubelet, so management can answer before kubelet
 // has reported this boot's Node status. A live kubelet change submitted as soon
 // as the reboot returns must apply without operator retries.
-func runPreCNIApplyAfterReboot(ctx context.Context, katlctl, dir string, source configbundle.SourceConfig, planning configbundle.PlanningInputs, validConfig, privateKey, address, kubeconfig string) error {
+func runPreCNIApplyAfterReboot(ctx context.Context, katlctl katlctlRunner, dir string, source configbundle.SourceConfig, planning configbundle.PlanningInputs, validConfig, privateKey, address, kubeconfig string) error {
 	rebootSource := source
 	rebootSource.Spec.Nodes = append([]configbundle.SourceNode(nil), source.Spec.Nodes...)
 	for i := range rebootSource.Spec.Nodes {
@@ -333,7 +333,7 @@ func runPreCNIApplyAfterReboot(ctx context.Context, katlctl, dir string, source 
 	return err
 }
 
-func runPreCNIKubeletFailure(ctx context.Context, katlctl, dir, name, diagnostic, badConfig, validConfig, privateKey, address, kubeconfig string) error {
+func runPreCNIKubeletFailure(ctx context.Context, katlctl katlctlRunner, dir, name, diagnostic, badConfig, validConfig, privateKey, address, kubeconfig string) error {
 	read := func(command string) ([]byte, error) {
 		return readKubeletNode(ctx, privateKey, address, "cp-1", command)
 	}

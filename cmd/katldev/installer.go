@@ -531,6 +531,21 @@ func (manager installerManager) clusterConfigPath() string {
 	return filepath.Join(manager.repoRoot, "_build", "katldev", "cluster.yaml")
 }
 
+// katlctlConfigPath holds the world's katlctl contexts. The development shell
+// exports it as KATLCTL_CONFIG so dev journeys never touch the operator's
+// own katlctl config.
+func (manager installerManager) katlctlConfigPath() string {
+	return filepath.Join(manager.repoRoot, "_build", "katldev", "katlctl.yaml")
+}
+
+func (manager installerManager) printKatlctlConfig() {
+	path := manager.katlctlConfigPath()
+	fmt.Fprintf(manager.stdout, "katlctl contexts: %s\n", path)
+	if os.Getenv("KATLCTL_CONFIG") != path {
+		fmt.Fprintf(manager.stdout, "  The Katl dev shell selects this config. Elsewhere, run: export KATLCTL_CONFIG=%s\n", path)
+	}
+}
+
 func (manager installerManager) labelConfigNodes(observations []nodeObservation) {
 	for i := range observations {
 		address := firstNonEmpty(observations[i].State.IPAddress, observations[i].Node.Address)
@@ -562,6 +577,7 @@ func (manager installerManager) report(ctx context.Context, world katldevWorld, 
 	fmt.Fprintln(manager.stdout, "KatlOS world is ready.")
 	manager.printWorld(world, observations)
 	fmt.Fprintf(manager.stdout, "\nCluster config: %s (%s)\n", manager.clusterConfigPath(), configStatus)
+	manager.printKatlctlConfig()
 	for _, observation := range observations {
 		if !observation.waiting() {
 			continue
@@ -679,7 +695,8 @@ func (manager installerManager) ensureClusterConfig(ctx context.Context, observa
 	if run == nil {
 		run = runBuildCommand
 	}
-	if err := run(ctx, manager.repoRoot, "go", args, nil, manager.stdout, manager.stderr); err != nil {
+	env := []string{"KATLCTL_CONFIG=" + manager.katlctlConfigPath()}
+	if err := run(ctx, manager.repoRoot, "go", args, env, manager.stdout, manager.stderr); err != nil {
 		return "", fmt.Errorf("generate ClusterConfig for waiting installers: %w", err)
 	}
 	if _, err := os.Stat(configPath); err != nil {

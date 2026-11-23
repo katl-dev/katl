@@ -138,6 +138,7 @@ type wipeReinstallArtifactManifest struct {
 
 type wipeReinstallBootstrapEvidence struct {
 	Inventory               string                                    `json:"inventory,omitempty"`
+	Context                 string                                    `json:"context,omitempty"`
 	Kubeconfig              string                                    `json:"kubeconfig,omitempty"`
 	KubeconfigMetadata      string                                    `json:"kubeconfigMetadata,omitempty"`
 	BootstrapStdout         string                                    `json:"bootstrapStdout,omitempty"`
@@ -207,7 +208,8 @@ func runWipeReinstallBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 	}()
 	identityPath := filepath.Join(result.RunDir, "homelab-kubernetes-identity.katlkey")
 	var identityStdout, identityStderr bytes.Buffer
-	if err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{
+	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t), filepath.Join(result.RunDir, "katlctl.yaml"))
+	if err := runKatlctlCommand(t, ctx, katlctl, katlRepoRoot(t), []string{
 		"kubernetes", "identity", "create",
 		"--cluster-name", "homelab",
 		"--output", identityPath,
@@ -228,7 +230,7 @@ func runWipeReinstallBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatal(err)
 	}
-	wipeEvidence, err := runWipeClusterHandoff(t, ctx, run, result, initialEvidence.Inventory, initialNodes)
+	wipeEvidence, err := runWipeClusterHandoff(t, ctx, run, result, initialEvidence.Context, initialEvidence.Inventory, initialNodes)
 	if err != nil {
 		collectTwoNodeDiagnostics("", initialNodes...)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -409,6 +411,10 @@ func runWipePreBootstrapControlPlaneSmoke(t *testing.T, run operationBackedSmoke
 	if err := writePreBootstrapControlPlaneWipeInventory(inventoryPath, inputs.KubernetesVersion, cpAddress, otherAddress, enrollments); err != nil {
 		t.Fatal(err)
 	}
+	contextPath := filepath.Join(filepath.Dir(inventoryPath), "katlctl.yaml")
+	if err := writeTwoNodeWorkstationContext(contextPath, map[string]string{"cp-1": cpAddress, "worker-1": otherAddress}, enrollments); err != nil {
+		t.Fatal(err)
+	}
 	oldMachineID, err := readNodeFileWithRetry(ctx, cpNode, "/var/lib/katl/identity/machine-id", 4<<10, time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -417,7 +423,7 @@ func runWipePreBootstrapControlPlaneSmoke(t *testing.T, run operationBackedSmoke
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := runPreBootstrapControlPlaneWipeHandoff(t, ctx, result, inventoryPath, cpNode); err != nil {
+	if err := runPreBootstrapControlPlaneWipeHandoff(t, ctx, result, contextPath, inventoryPath, cpNode); err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatal(err)
 	}
@@ -498,14 +504,15 @@ nodes:
 	return os.WriteFile(path, []byte(data), 0o644)
 }
 
-func runPreBootstrapControlPlaneWipeHandoff(t *testing.T, ctx context.Context, result vmtest.Result, inventoryPath string, cpNode vmtest.RunningInstalledRuntimeNode) error {
+func runPreBootstrapControlPlaneWipeHandoff(t *testing.T, ctx context.Context, result vmtest.Result, contextPath, inventoryPath string, cpNode vmtest.RunningInstalledRuntimeNode) error {
 	t.Helper()
 	dir := filepath.Join(result.RunDir, "pre-bootstrap-control-plane-wipe")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t), contextPath)
 	var stdout, stderr bytes.Buffer
-	err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"node", "wipe", "cp-1", "--inventory", inventoryPath, "--timeout", "10m", "--output", "json"}, &stdout, &stderr)
+	err := runKatlctlCommand(t, ctx, katlctl, katlRepoRoot(t), []string{"node", "wipe", "cp-1", "--inventory", inventoryPath, "--timeout", "10m", "--output", "json"}, &stdout, &stderr)
 	_ = os.WriteFile(filepath.Join(dir, "katlctl-wipe-node.stdout"), stdout.Bytes(), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "katlctl-wipe-node.stderr"), stderr.Bytes(), 0o644)
 	if err != nil {
@@ -571,8 +578,13 @@ func runReinstalledWorkerJoin(t *testing.T, ctx context.Context, run operationBa
 	if err := writeOperationBackedInventory(inventoryPath, run.Inputs.KubernetesVersion, bundle, cpAddress, workerAddress, enrollments); err != nil {
 		return err
 	}
+	contextPath := filepath.Join(dir, "katlctl.yaml")
+	if err := writeTwoNodeWorkstationContext(contextPath, map[string]string{"cp-1": cpAddress, "worker-1": workerAddress}, enrollments); err != nil {
+		return err
+	}
+	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t), contextPath)
 	var stdout, stderr bytes.Buffer
-	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"cluster", "bootstrap", "--inventory", inventoryPath, "--init-node", "cp-1", "--join-worker", "worker-1"}, &stdout, &stderr)
+	err = runKatlctlCommand(t, ctx, katlctl, katlRepoRoot(t), []string{"cluster", "bootstrap", "--inventory", inventoryPath, "--init-node", "cp-1", "--join-worker", "worker-1"}, &stdout, &stderr)
 	_ = os.WriteFile(filepath.Join(dir, "worker-join.stdout"), stdout.Bytes(), 0o600)
 	_ = os.WriteFile(filepath.Join(dir, "worker-join.stderr"), stderr.Bytes(), 0o600)
 	if err != nil {
@@ -590,8 +602,9 @@ func runWipeNodeHandoff(t *testing.T, ctx context.Context, result vmtest.Result,
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
+	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t), initial.Context)
 	var stdout, stderr bytes.Buffer
-	err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{"node", "wipe", "worker-1", "--inventory", initial.Inventory, "--kubeconfig", initial.Kubeconfig, "--timeout", "10m", "--output", "json"}, &stdout, &stderr)
+	err := runKatlctlCommand(t, ctx, katlctl, katlRepoRoot(t), []string{"node", "wipe", "worker-1", "--inventory", initial.Inventory, "--kubeconfig", initial.Kubeconfig, "--timeout", "10m", "--output", "json"}, &stdout, &stderr)
 	_ = os.WriteFile(filepath.Join(dir, "katlctl-wipe-node.stdout"), stdout.Bytes(), 0o644)
 	_ = os.WriteFile(filepath.Join(dir, "katlctl-wipe-node.stderr"), stderr.Bytes(), 0o644)
 	if err != nil {
@@ -628,7 +641,7 @@ func runWipeNodeHandoff(t *testing.T, ctx context.Context, result vmtest.Result,
 	return nil
 }
 
-func runWipeClusterHandoff(t *testing.T, ctx context.Context, run operationBackedSmokeRun, result vmtest.Result, inventoryPath string, nodes []vmtest.RunningInstalledRuntimeNode) (wipeClusterEvidence, error) {
+func runWipeClusterHandoff(t *testing.T, ctx context.Context, run operationBackedSmokeRun, result vmtest.Result, contextPath, inventoryPath string, nodes []vmtest.RunningInstalledRuntimeNode) (wipeClusterEvidence, error) {
 	t.Helper()
 	wipeDir := filepath.Join(result.RunDir, "wipe-cluster")
 	evidenceDir := filepath.Join(wipeDir, "evidence")
@@ -638,8 +651,9 @@ func runWipeClusterHandoff(t *testing.T, ctx context.Context, run operationBacke
 	stdoutPath := filepath.Join(wipeDir, "katlctl-wipe-cluster.stdout")
 	stderrPath := filepath.Join(wipeDir, "katlctl-wipe-cluster.stderr")
 	reportPath := filepath.Join(result.ManifestDir, "wipe-cluster-report.json")
+	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t), contextPath)
 	var stdout, stderr bytes.Buffer
-	err := runKatlctlCommand(t, ctx, katlRepoRoot(t), []string{
+	err := runKatlctlCommand(t, ctx, katlctl, katlRepoRoot(t), []string{
 		"cluster", "wipe",
 		"--inventory", inventoryPath,
 		"--all",
@@ -856,6 +870,11 @@ func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run opera
 	if err := writeOperationBackedInventory(inventoryPath, run.Inputs.KubernetesVersion, kubernetesBundle, cpAddress, workerAddress, enrollments); err != nil {
 		return wipeReinstallBootstrapEvidence{}, err
 	}
+	contextPath := filepath.Join(roundDir, "katlctl.yaml")
+	if err := writeTwoNodeWorkstationContext(contextPath, map[string]string{"cp-1": cpAddress, "worker-1": workerAddress}, enrollments); err != nil {
+		return wipeReinstallBootstrapEvidence{}, err
+	}
+	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t), contextPath)
 	var stdout, stderr bytes.Buffer
 	bootstrapArgs := []string{
 		"cluster", "bootstrap",
@@ -875,7 +894,7 @@ func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run opera
 			bootstrapArgs = append(bootstrapArgs, "--identity", identityPath)
 		}
 	}
-	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), bootstrapArgs, &stdout, &stderr)
+	err = runKatlctlCommand(t, ctx, katlctl, katlRepoRoot(t), bootstrapArgs, &stdout, &stderr)
 	_ = os.WriteFile(stdoutPath, stdout.Bytes(), 0o644)
 	_ = os.WriteFile(stderrPath, stderr.Bytes(), 0o644)
 	_ = writeKubeconfigMetadata(kubeconfigPath, kubeconfigMetadataPath)
@@ -892,7 +911,7 @@ func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run opera
 		return wipeReinstallBootstrapEvidence{}, fmt.Errorf("stage test CNI fixtures after %s generation activation: %w", name, err)
 	}
 	var userBootstrapStdout, userBootstrapStderr bytes.Buffer
-	err = runKatlctlCommand(t, ctx, katlRepoRoot(t), appendBootstrapFixtureArgs(bootstrapArgs, bootstrapFixture), &userBootstrapStdout, &userBootstrapStderr)
+	err = runKatlctlCommand(t, ctx, katlctl, katlRepoRoot(t), appendBootstrapFixtureArgs(bootstrapArgs, bootstrapFixture), &userBootstrapStdout, &userBootstrapStderr)
 	_ = os.WriteFile(userBootstrapStdoutPath, userBootstrapStdout.Bytes(), 0o644)
 	_ = os.WriteFile(userBootstrapStderrPath, userBootstrapStderr.Bytes(), 0o644)
 	if err := bootstrapCommandError(err, userBootstrapStdout.String()); err != nil {
@@ -915,6 +934,7 @@ func runWipeReinstallBootstrapRound(t *testing.T, ctx context.Context, run opera
 	}
 	return wipeReinstallBootstrapEvidence{
 		Inventory:               inventoryPath,
+		Context:                 contextPath,
 		Kubeconfig:              kubeconfigPath,
 		KubeconfigMetadata:      kubeconfigMetadataPath,
 		BootstrapStdout:         stdoutPath,

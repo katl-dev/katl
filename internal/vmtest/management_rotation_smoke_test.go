@@ -47,7 +47,7 @@ func TestInstalledRuntimeManagementRotationSmoke(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
-	katlctl := buildKatlctlForConfigApplySmoke(t, ctx)
+	katlctl := configApplyKatlctl(BuildKatlctl(t, ctx, repoRoot(t)), result)
 	vm := runtime.VM
 	vm.KVM = runner.options().KVM
 	vm.RAMMiB, vm.CPUs = 2048, 2

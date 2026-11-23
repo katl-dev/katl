@@ -38,7 +38,7 @@ func runThreeControlPlaneUpgradeProof(t *testing.T, ctx context.Context, result 
 	if _, err := kubectlOutput(ctx, kubeconfig, "create", "configmap", "katl-rollout-evidence", "--from-literal=value=acknowledged"); err != nil {
 		return err
 	}
-	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t))
+	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t), contextPath)
 	args := []string{"kubernetes", "upgrade", "--config", configPath, "--context-file", contextPath, "--artifact", localArtifact, "--output", "json"}
 	stdout, stderr, err := runProofKatlctl(ctx, katlctl, dir, "upgrade", args...)
 	if err != nil {

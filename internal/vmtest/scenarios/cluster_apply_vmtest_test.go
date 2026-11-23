@@ -75,9 +75,7 @@ func runPublicClusterApply(t *testing.T, ctx context.Context, smoke threeControl
 	if err := writeThreeControlPlaneWorkstationContext(contextPath, "three-control-plane", addresses, enrollments); err != nil {
 		return err
 	}
-	t.Setenv("KATLCTL_CONFIG", contextPath)
-	t.Setenv("KATLCTL_CONFIG_DIR", "")
-	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t))
+	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t), contextPath)
 	live = append(live, []byte("\n---\napiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 120\n")...)
 	if err := os.WriteFile(filepath.Join(dir, "kubeadm.yaml"), live, 0o600); err != nil {
 		return err

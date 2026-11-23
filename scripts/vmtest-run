@@ -1383,6 +1383,12 @@ export KATL_VMTEST_LIBVIRT_STORAGE_PATH="$libvirt_storage_path"
 export KATL_VMTEST_LIBVIRT_DOMAIN_PREFIX="$libvirt_domain_prefix"
 export KATL_VMTEST_DEBUG_ON_FAILURE="$debug_on_failure_effective"
 export KATL_VMTEST_RESOURCE_MANIFEST="$resource_manifest"
+# The operator's katlctl config may select a real cluster. Replace any
+# inherited katlctl settings so nothing in the run can fall back to it.
+while IFS= read -r katlctl_var; do
+    unset "$katlctl_var"
+done < <(compgen -v KATLCTL_ || true)
+export KATLCTL_CONFIG="$run_dir/katlctl.yaml"
 
 final_status="go-test"
 write_run_index "$final_status" "$@"

@@ -42,9 +42,7 @@ func TestInstallerReinstallBesideOldKatlDisk(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
 	repo := katlRepoRoot(t)
-	katlctl := buildKatlctlCommand(t, ctx, repo)
-	t.Setenv("KATLCTL_CONFIG", filepath.Join(worldScenario.Dir, "katlctl.yaml"))
-	t.Setenv("KATLCTL_CONFIG_DIR", "")
+	katlctl := buildKatlctlCommand(t, ctx, repo, filepath.Join(worldScenario.Dir, "katlctl.yaml"))
 	privateKey, _, err := ensureWorldSSHKey(world)
 	if err != nil {
 		fail(err)

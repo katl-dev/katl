@@ -160,7 +160,7 @@ func extensionRegistryCertificate(t *testing.T, gateway string) (tls.Certificate
 // breaks configured-unit activation at boot, then requires that boot health
 // rejects it and Katl returns to the fallback generation with management
 // access.
-func runExtensionBootHealthSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl, endpoint, fallbackGeneration, scenario, version string, files map[string]string, units string, wantJournal ...string) (*GuestControl, *AgentClient) {
+func runExtensionBootHealthSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl katlctlRunner, endpoint, fallbackGeneration, scenario, version string, files map[string]string, units string, wantJournal ...string) (*GuestControl, *AgentClient) {
 	t.Helper()
 	ref := serveGuestSystemExtension(t, ctx, guest, scenario, files)
 	// The restarted agent is active before it accepts management connections.
