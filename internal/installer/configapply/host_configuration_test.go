@@ -8,32 +8,152 @@ import (
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
-func TestPlanHostConfigurationSysctlRequiresReversibleConcreteDiff(t *testing.T) {
-	current := testHostConfiguration("forwarding", "/etc/sysctl.d/80-forwarding.conf", "net.ipv4.ip_forward = 0\n")
-	desired := testHostConfiguration("forwarding", "/etc/sysctl.d/80-forwarding.conf", "net.ipv4.ip_forward = 1\n")
-	plan := planHostConfigurationChange(current, desired)
-	if !plan.Live || len(plan.SysctlAssignments) != 1 {
-		t.Fatalf("plan = %#v, want one live sysctl assignment", plan)
+// A sysctl change applies live only when every changed key's effective value
+// at next boot is known, comes from the file that set it, and the running
+// kernel can snapshot, write, verify, and restore it.
+func TestPlanHostConfigurationSysctlRequiresReversibleEffectiveAssignment(t *testing.T) {
+	const (
+		forwarding = "/etc/sysctl.d/80-forwarding.conf"
+		demo       = "/etc/sysctl.d/95-demo.conf"
+	)
+	tests := []struct {
+		name    string
+		current map[string]string
+		desired map[string]string
+		want    []HostSysctlAssignment
+		staged  string
+	}{
+		{
+			name:    "value change",
+			current: map[string]string{forwarding: "net.ipv4.ip_forward = 0\n"},
+			desired: map[string]string{forwarding: "net.ipv4.ip_forward = 1\n"},
+			want:    []HostSysctlAssignment{{Key: "net.ipv4.ip_forward", Value: "1"}},
+		},
+		{
+			name:    "first assignment of an existing key",
+			desired: map[string]string{demo: "vm.swappiness = 20\n"},
+			want:    []HostSysctlAssignment{{Key: "vm.swappiness", Value: "20"}},
+		},
+		{
+			name:    "key added to a managed file",
+			current: map[string]string{forwarding: "net.ipv4.ip_forward = 1\n"},
+			desired: map[string]string{forwarding: "net.ipv4.ip_forward = 1\nvm.swappiness = 20\n"},
+			want:    []HostSysctlAssignment{{Key: "vm.swappiness", Value: "20"}},
+		},
+		{
+			name:    "override of an earlier vendor file",
+			desired: map[string]string{"/etc/sysctl.d/80-sysrq.conf": "kernel.sysrq = 1\n"},
+			want:    []HostSysctlAssignment{{Key: "kernel.sysrq", Value: "1"}},
+		},
+		{
+			name:    "replacement of a vendor file by name",
+			desired: map[string]string{"/etc/sysctl.d/99-vendor.conf": "net.core.somaxconn = 1024\n"},
+			want:    []HostSysctlAssignment{{Key: "net.core.somaxconn", Value: "1024"}},
+		},
+		{
+			name:    "removal exposing a vendor value",
+			current: map[string]string{forwarding: "net.ipv4.ip_forward = 0\n"},
+			want:    []HostSysctlAssignment{{Key: "net.ipv4.ip_forward", Value: "1"}},
+		},
+		{
+			name:    "addition shadowed by a later vendor file",
+			desired: map[string]string{"/etc/sysctl.d/50-somaxconn.conf": "net.core.somaxconn = 1024\n"},
+			staged:  "sysctl net.core.somaxconn in /etc/sysctl.d/50-somaxconn.conf is overridden by /usr/lib/sysctl.d/99-vendor.conf",
+		},
+		{
+			name:    "conflicting managed duplicate",
+			current: map[string]string{"/etc/sysctl.d/90-memory.conf": "vm.swappiness = 10\n"},
+			desired: map[string]string{"/etc/sysctl.d/90-memory.conf": "vm.swappiness = 10\n", demo: "vm.swappiness = 20\n"},
+			staged:  "sysctl vm.swappiness in /etc/sysctl.d/90-memory.conf is overridden by " + demo,
+		},
+		{
+			name:    "assignment cancelled by a later exclusion",
+			desired: map[string]string{"/etc/sysctl.d/10-rpf.conf": "net.ipv4.conf.all.rp_filter = 1\n"},
+			staged:  "sysctl net.ipv4.conf.all.rp_filter in /etc/sysctl.d/10-rpf.conf is overridden by /usr/lib/sysctl.d/50-default.conf",
+		},
+		{
+			name:    "assignment after an exclusion",
+			desired: map[string]string{"/etc/sysctl.d/80-rpf.conf": "net.ipv4.conf.all.rp_filter = 1\n"},
+			want:    []HostSysctlAssignment{{Key: "net.ipv4.conf.all.rp_filter", Value: "1"}},
+		},
+		{
+			name:    "line without an assignment",
+			desired: map[string]string{demo: "vm.swappiness 20\n"},
+			staged:  "assignments Katl cannot parse",
+		},
+		{
+			name:    "IPv6 disable",
+			desired: map[string]string{demo: "net.ipv6.conf.all.disable_ipv6 = 1\n"},
+			staged:  "removes IPv6 addresses",
+		},
+		{
+			name:    "removal of the last assignment",
+			current: map[string]string{demo: "vm.swappiness = 20\n"},
+			staged:  "removing the last assignment of sysctl vm.swappiness",
+		},
+		{
+			name:    "nonexistent key",
+			desired: map[string]string{demo: "net.ipv4.conf.eth9.forwarding = 1\n"},
+			staged:  "sysctl net.ipv4.conf.eth9.forwarding does not exist in the running kernel",
+		},
+		{
+			name:    "glob",
+			desired: map[string]string{demo: "net.ipv4.conf.*.forwarding = 1\n"},
+			staged:  "sysctl globs",
+		},
+		{
+			name:    "irreversible key",
+			desired: map[string]string{demo: "kernel.modules_disabled = 1\n"},
+			staged:  "sysctl kernel.modules_disabled cannot be restored",
+		},
+		{
+			name:    "write-only key",
+			desired: map[string]string{demo: "vm.drop_caches = 3\n"},
+			staged:  "sysctl vm.drop_caches cannot be both read and written",
+		},
+		{
+			name:    "one ineligible key stages the whole file",
+			desired: map[string]string{demo: "vm.swappiness = 20\nnet.ipv4.conf.eth9.forwarding = 1\n"},
+			staged:  "does not exist in the running kernel",
+		},
 	}
-	if plan.SysctlAssignments[0] != (HostSysctlAssignment{Key: "net.ipv4.ip_forward", Value: "1"}) {
-		t.Fatalf("assignments = %#v", plan.SysctlAssignments)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := sysctlHostRoot(t)
 
-	addition := planHostConfigurationChange(manifest.HostConfiguration{}, desired)
-	if addition.Live || !strings.Contains(addition.Message, "additions") {
-		t.Fatalf("addition plan = %#v, want next boot", addition)
-	}
+			plan := planHostConfigurationChange(sysctlConfiguration(tt.current), sysctlConfiguration(tt.desired), root)
 
-	ambiguous := testHostConfiguration("forwarding", "/etc/sysctl.d/80-forwarding.conf", "net.ipv4.conf.*.forwarding = 1\n")
-	ambiguousPlan := planHostConfigurationChange(current, ambiguous)
-	if ambiguousPlan.Live {
-		t.Fatalf("ambiguous plan = %#v, want next boot", ambiguousPlan)
+			if tt.staged == "" {
+				if !plan.Live || !slices.Equal(plan.SysctlAssignments, tt.want) {
+					t.Fatalf("plan live=%t assignments=%#v message=%q, want live %#v", plan.Live, plan.SysctlAssignments, plan.Message, tt.want)
+				}
+				return
+			}
+			if plan.Live || !strings.Contains(plan.Message, tt.staged) {
+				t.Fatalf("plan live=%t message=%q, want next boot because %q", plan.Live, plan.Message, tt.staged)
+			}
+		})
+	}
+}
+
+func TestPlanHostConfigurationOmitsShadowedSysctlEffect(t *testing.T) {
+	desired := sysctlConfiguration(map[string]string{"/etc/sysctl.d/50-somaxconn.conf": "net.core.somaxconn = 1024\n"})
+
+	plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired, sysctlHostRoot(t))
+
+	for _, effect := range plan.Effects {
+		if effect.Target == "sysctl net.core.somaxconn" {
+			t.Fatalf("effects = %#v, want no effect for an overridden assignment", plan.Effects)
+		}
+	}
+	if len(plan.nextBootNotices) != 1 || !strings.Contains(plan.nextBootNotices[0], "/usr/lib/sysctl.d/99-vendor.conf") {
+		t.Fatalf("next-boot notices = %q, want the overriding file named", plan.nextBootNotices)
 	}
 }
 
 func TestPlanHostConfigurationReloadsUdevWithoutTrigger(t *testing.T) {
 	desired := testHostConfiguration("ups-device", "/etc/udev/rules.d/80-ups.rules", `SUBSYSTEM=="usb"`+"\n")
-	plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired)
+	plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired, t.TempDir())
 	if !plan.Live || !strings.Contains(plan.Message, "will not be retriggered") {
 		t.Fatalf("plan = %#v", plan)
 	}
@@ -44,7 +164,7 @@ func TestPlanHostConfigurationReloadsUdevWithoutTrigger(t *testing.T) {
 
 func TestPlanHostConfigurationStagesKernelModuleFiles(t *testing.T) {
 	desired := testHostConfiguration("storage-modules", "/etc/modules-load.d/80-storage.conf", "br_netfilter\n")
-	plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired)
+	plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired, t.TempDir())
 	if plan.Live || !strings.Contains(plan.Message, "next-boot-only") {
 		t.Fatalf("plan = %#v, want staged module configuration", plan)
 	}
@@ -69,7 +189,7 @@ func TestPlanHostConfigurationStagesBootOwnedOverlays(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			desired := testHostConfiguration("example", tt.path, tt.content)
-			plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired)
+			plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired, t.TempDir())
 			if plan.Live || !strings.Contains(plan.Message, tt.want) {
 				t.Fatalf("plan = %#v, want staged change", plan)
 			}
@@ -108,7 +228,7 @@ func TestPlanHostConfigurationReloadsNetworking(t *testing.T) {
 				{"remove", before, manifest.HostConfiguration{}},
 			} {
 				t.Run(transition.name, func(t *testing.T) {
-					plan := planHostConfigurationChange(transition.before, transition.after)
+					plan := planHostConfigurationChange(transition.before, transition.after, t.TempDir())
 					if !plan.Live || len(plan.warnings) == 0 || !strings.Contains(plan.warnings[0], "different from the saved configuration") {
 						t.Fatalf("plan = %#v, want live networking with convergence warning", plan)
 					}
@@ -138,7 +258,7 @@ func TestPlanHostConfigurationStagesSysfsSettings(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			plan := planHostConfigurationChange(
 				manifest.HostConfiguration{Sysfs: tt.current},
-				manifest.HostConfiguration{Sysfs: tt.desired})
+				manifest.HostConfiguration{Sysfs: tt.desired}, t.TempDir())
 			if plan.Live || !strings.Contains(plan.Message, "sysfs configuration applies and verifies on next boot") {
 				t.Fatalf("plan = %#v, want staged sysfs change", plan)
 			}
@@ -159,7 +279,7 @@ func TestPlanHostConfigurationDerivesSystemdComponentNotification(t *testing.T) 
 		t.Run(tt.unit, func(t *testing.T) {
 			content := "[Service]\nSetting=value\n"
 			desired := testHostConfiguration("component", tt.path, content)
-			plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired)
+			plan := planHostConfigurationChange(manifest.HostConfiguration{}, desired, t.TempDir())
 			if !plan.Live {
 				t.Fatalf("plan = %#v", plan)
 			}
@@ -170,7 +290,7 @@ func TestPlanHostConfigurationDerivesSystemdComponentNotification(t *testing.T) 
 	}
 
 	unsupported := testHostConfiguration("manager", "/etc/systemd/system.conf.d/80-home-lab.conf", "[Manager]\nShowStatus=yes\n")
-	if plan := planHostConfigurationChange(manifest.HostConfiguration{}, unsupported); plan.Live || !strings.Contains(plan.Message, "no proven live adapter") {
+	if plan := planHostConfigurationChange(manifest.HostConfiguration{}, unsupported, t.TempDir()); plan.Live || !strings.Contains(plan.Message, "no proven live adapter") {
 		t.Fatalf("unsupported component plan = %#v", plan)
 	}
 }
@@ -223,7 +343,7 @@ func TestPlanHostConfigurationRegrouping(t *testing.T) {
 			desired := manifest.HostConfiguration{Sets: map[string]manifest.HostConfigurationSet{
 				"journald": tt.destination,
 			}}
-			plan := planHostConfigurationChange(current, desired)
+			plan := planHostConfigurationChange(current, desired, t.TempDir())
 			if plan.Live != tt.wantLive {
 				t.Fatalf("plan = %#v, want live = %t", plan, tt.wantLive)
 			}
@@ -255,7 +375,7 @@ func TestPlanHostConfigurationExposesEveryBoundedEffect(t *testing.T) {
 			Files: []manifest.HostConfigurationFile{{Path: "/etc/systemd/journald.conf.d/80-home-lab.conf", Content: &journal}},
 		},
 	}}
-	plan := planHostConfigurationChange(current, desired)
+	plan := planHostConfigurationChange(current, desired, sysctlHostRoot(t))
 	if !plan.Live {
 		t.Fatalf("plan = %#v", plan)
 	}
@@ -289,7 +409,7 @@ func testHostConfiguration(setName, filePath, content string) manifest.HostConfi
 }
 
 func TestUnmaskDoesNotStartUnit(t *testing.T) {
-	plan := planHostConfigurationChange(manifest.HostConfiguration{MaskedUnits: []string{"bluetooth.service"}}, manifest.HostConfiguration{})
+	plan := planHostConfigurationChange(manifest.HostConfiguration{MaskedUnits: []string{"bluetooth.service"}}, manifest.HostConfiguration{}, t.TempDir())
 	if !plan.Live {
 		t.Fatalf("unmask requires reboot: %s", plan.Message)
 	}

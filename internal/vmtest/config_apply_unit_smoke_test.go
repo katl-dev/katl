@@ -92,6 +92,14 @@ func TestConfigApplySmokeRejectsLiveAndStagesNextBoot(t *testing.T) {
 
 func TestConfigApplyNetworkFixtures(t *testing.T) {
 	fixture := runtimeUserspaceFixture(t)
+	// The fixtures assign vm.swappiness, which the running kernel exposes.
+	swappiness := filepath.Join(fixture.Root, "proc/sys/vm/swappiness")
+	if err := os.MkdirAll(filepath.Dir(swappiness), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(swappiness, []byte("60\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	currentManifest, err := manifest.Decode(strings.NewReader(configApplyCurrentManifest))
 	if err != nil {
 		t.Fatal(err)

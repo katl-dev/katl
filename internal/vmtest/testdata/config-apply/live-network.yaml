@@ -9,6 +9,11 @@ spec:
   clusterDefaults:
     hostConfiguration:
       sets:
+        vmtest-sysctl:
+          files:
+            - path: /etc/sysctl.d/95-katl-vmtest.conf
+              content: |
+                vm.swappiness = 20
         vmtest-network:
           files:
             - path: /etc/systemd/network/80-katl-vmtest-dhcp.network

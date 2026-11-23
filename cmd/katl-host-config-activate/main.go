@@ -70,7 +70,7 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 	}
-	plan := configapply.PlanHostConfigurationActivation(value.Node.HostConfiguration, *phase)
+	plan := configapply.PlanHostConfigurationActivation(*root, value.Node.HostConfiguration, *phase)
 	if *phase == "units" {
 		plan, err = configapply.PrepareSystemdActivation(ctx, *root, value.Node, hostConfigRunner)
 		if err != nil {

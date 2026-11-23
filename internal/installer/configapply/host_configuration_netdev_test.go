@@ -107,7 +107,7 @@ func TestPlanNetdevChanges(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			desired := networkdFiles(tt.desired)
 			desired.PreservedNetdevs = tt.preserved
-			plan := planHostConfigurationChange(networkdFiles(base), desired)
+			plan := planHostConfigurationChange(networkdFiles(base), desired, t.TempDir())
 			if plan.Live != tt.live {
 				t.Fatalf("live = %t, want %t; message %q", plan.Live, tt.live, plan.Message)
 			}
@@ -146,7 +146,7 @@ func TestNetdevNoticesFollowAcceptedMode(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			domains := domainAccumulator{}
-			domains.addHostConfiguration(planHostConfigurationChange(current, tt.desired))
+			domains.addHostConfiguration(planHostConfigurationChange(current, tt.desired, t.TempDir()))
 			decision, err := Plan(generation.ApplyModeAuto, domains.changes())
 			if err != nil {
 				t.Fatal(err)
@@ -288,7 +288,7 @@ func withAddress(l kernelLink, address string) kernelLink {
 
 func runNetdevApply(t *testing.T, network *fakeNetwork, activator switchingActivator, current, desired map[string]string) (generation.ConfigApplyStatus, error) {
 	t.Helper()
-	host := planHostConfigurationChange(networkdFiles(current), networkdFiles(desired))
+	host := planHostConfigurationChange(networkdFiles(current), networkdFiles(desired), t.TempDir())
 	host.netdevs.protected = protectedEndpoints{addresses: map[netip.Addr]string{}}
 	plan := liveExecutorPlan(t, []Change{{Domain: DomainHostConfiguration, LivePreflightOK: true, Effects: host.Effects}})
 	return Executor{Runner: network, Activator: activator, HostConfiguration: &host, Now: fixedNow, NetdevSettleTimeout: time.Millisecond}.ExecuteLive(t.Context(), plan)
@@ -521,7 +521,7 @@ func TestNetdevDeletionIsRecordedBeforeItRuns(t *testing.T) {
 	current := map[string]string{"/etc/systemd/network/40-katl0.netdev": dummyNetdev}
 	network := &fakeNetwork{links: map[string]kernelLink{"katl0": link("katl0", "dummy", "", "")}, loaded: map[string]string{"katl0": "x"}}
 	activator := switchingActivator{network: network, desired: map[string]string{}, current: map[string]string{"katl0": "x"}}
-	host := planHostConfigurationChange(networkdFiles(current), networkdFiles(map[string]string{"/etc/systemd/network/10-lan.network": "[Match]\nName=eth0\n"}))
+	host := planHostConfigurationChange(networkdFiles(current), networkdFiles(map[string]string{"/etc/systemd/network/10-lan.network": "[Match]\nName=eth0\n"}), t.TempDir())
 	host.netdevs.protected = protectedEndpoints{addresses: map[netip.Addr]string{}}
 	plan := liveExecutorPlan(t, []Change{{Domain: DomainHostConfiguration, LivePreflightOK: true, Effects: host.Effects}})
 	statusPath := executorStatusPath(t, plan)
@@ -620,7 +620,7 @@ func TestNetdevGuardRechecksBeforeEachDeletion(t *testing.T) {
 	network := &fakeNetwork{links: map[string]kernelLink{"katl0": link("katl0", "dummy", "", "")}, loaded: map[string]string{"katl0": "x"}}
 	// The management address moves onto katl0 after preflight.
 	activator := switchingActivator{network: network, desired: map[string]string{}, current: map[string]string{"katl0": "x"}}
-	host := planHostConfigurationChange(networkdFiles(current), networkdFiles(map[string]string{"/etc/systemd/network/10-lan.network": "[Match]\nName=eth0\n"}))
+	host := planHostConfigurationChange(networkdFiles(current), networkdFiles(map[string]string{"/etc/systemd/network/10-lan.network": "[Match]\nName=eth0\n"}), t.TempDir())
 	host.netdevs.protected = protectedEndpoints{addresses: map[netip.Addr]string{netip.MustParseAddr("192.0.2.10"): "management endpoint"}}
 	plan := liveExecutorPlan(t, []Change{{Domain: DomainHostConfiguration, LivePreflightOK: true, Effects: host.Effects}})
 	executor := Executor{Runner: network, Activator: movingActivator{switchingActivator: activator, address: "192.0.2.10"}, HostConfiguration: &host, Now: fixedNow, NetdevSettleTimeout: time.Millisecond}
@@ -647,7 +647,7 @@ func TestNetdevNotices(t *testing.T) {
 	current := networkdFiles(map[string]string{"/etc/systemd/network/40-katl0.netdev": dummyNetdev})
 	desired := networkdFiles(map[string]string{"/etc/systemd/network/40-katl0.netdev": dummyNetdev})
 	desired.PreservedNetdevs = []string{"gone0"}
-	notices := planHostConfigurationChange(current, desired).netdevs.notices(true)
+	notices := planHostConfigurationChange(current, desired, t.TempDir()).netdevs.notices(true)
 	if !slices.ContainsFunc(notices, func(notice string) bool {
 		return strings.Contains(notice, "preservedNetdevs entry gone0 names no netdev")
 	}) {
@@ -655,7 +655,7 @@ func TestNetdevNotices(t *testing.T) {
 	}
 
 	changed := networkdFiles(map[string]string{"/etc/systemd/network/40-katl0.netdev": dummyNetdev + "MTUBytes=1400\n", "/etc/modules-load.d/80-x.conf": "dummy\n"})
-	staged := planHostConfigurationChange(current, changed)
+	staged := planHostConfigurationChange(current, changed, t.TempDir())
 	if staged.Live || !strings.Contains(staged.Message, "kernel module configuration") || !strings.Contains(staged.Message, "netdev katl0") {
 		t.Fatalf("staged message = %q, want both reasons", staged.Message)
 	}
@@ -669,7 +669,7 @@ func TestChangedNetdevRefusesLiveMode(t *testing.T) {
 	current := networkdFiles(map[string]string{"/etc/systemd/network/30-bond0.20.netdev": vlan20Netdev})
 	changed := networkdFiles(map[string]string{"/etc/systemd/network/30-bond0.20.netdev": vlan21Netdev})
 	domains := domainAccumulator{}
-	domains.addHostConfiguration(planHostConfigurationChange(current, changed))
+	domains.addHostConfiguration(planHostConfigurationChange(current, changed, t.TempDir()))
 
 	decision, err := Plan(generation.ApplyModeLive, domains.changes())
 	if err == nil {

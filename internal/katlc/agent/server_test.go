@@ -2288,6 +2288,7 @@ func TestSubmitOperationAutoConfigApplyRunsAcceptedLivePath(t *testing.T) {
 func TestApplyGenerationLiveLoadsInstalledKubeadmInputs(t *testing.T) {
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)
+	writeKernelParameter(t, server.Root, "net.ipv4.ip_forward", "0")
 	writeConfigApplyManifestWithKubeadmRef(t, server.Root, "control-plane")
 	writeStoredKubeadmConfig(t, server.Root, "control-plane")
 	writeInstalledClusterIntent(t, server.Root, "v1.35.0", "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw")
@@ -3697,8 +3698,20 @@ func writeCleanGenerationZeroState(t *testing.T, root string) {
 	writeBootSelection(t, root, "generation-0")
 }
 
+func writeKernelParameter(t *testing.T, root, key, value string) {
+	t.Helper()
+	path := filepath.Join(root, "proc/sys", strings.ReplaceAll(key, ".", "/"))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(value+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeConfigApplyBaseState(t *testing.T, root string) {
 	t.Helper()
+	writeKernelParameter(t, root, "net.ipv4.ip_forward", "0")
 	sysext := []byte("current kubernetes sysext\n")
 	sysextPath := filepath.Join(root, "var/lib/katl/generations/generation-0/sysext/kubernetes.raw")
 	if err := os.MkdirAll(filepath.Dir(sysextPath), 0o755); err != nil {

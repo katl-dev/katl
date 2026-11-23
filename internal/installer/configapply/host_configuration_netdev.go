@@ -723,7 +723,7 @@ func (e Executor) netdevSettleTimeout() time.Duration {
 // CheckLiveNetdevChanges refuses a live apply whose netdev deletions would remove the node's management, Kubernetes, or
 // control-plane address, before any operation is accepted.
 func CheckLiveNetdevChanges(ctx context.Context, request TrustedBundleRequest, desired manifest.Manifest, management netip.Addr, runner CommandRunner) error {
-	host := planHostConfigurationChange(effectiveHostConfiguration(request.CurrentManifest.Node), effectiveHostConfiguration(desired.Node))
+	host := planHostConfigurationChange(effectiveHostConfiguration(request.CurrentManifest.Node), effectiveHostConfiguration(desired.Node), request.Root)
 	targets := host.netdevs.deletes
 	if !host.Live || len(targets) == 0 {
 		return nil

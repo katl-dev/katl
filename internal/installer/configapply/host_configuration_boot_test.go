@@ -2,6 +2,7 @@ package configapply
 
 import (
 	"context"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,11 +25,11 @@ func TestPlanHostConfigurationActivationOrdersPrepareAndVerifyEffects(t *testing
 			Files: []manifest.HostConfigurationFile{{Path: "/etc/systemd/journald.conf.d/80-home-lab.conf", Content: &journal}},
 		},
 	}}
-	prepare := PlanHostConfigurationActivation(config, HostConfigurationPhasePrepare)
+	prepare := PlanHostConfigurationActivation(t.TempDir(), config, HostConfigurationPhasePrepare)
 	if got := commandNames(prepare.Commands); strings.Join(got, ",") != "systemd-modules-load,systemd-sysctl,udev-rules-verify,udev-rules-reload,udev-devices-trigger,udev-events-settle" {
 		t.Fatalf("prepare commands = %v", got)
 	}
-	verify := PlanHostConfigurationActivation(config, HostConfigurationPhaseVerify)
+	verify := PlanHostConfigurationActivation(t.TempDir(), config, HostConfigurationPhaseVerify)
 	if got := commandNames(verify.Commands); strings.Join(got, ",") != "module-verify-dummy,sysctl-verify-net.ipv4.ip_forward" {
 		t.Fatalf("verify commands = %v", got)
 	}
@@ -43,7 +44,7 @@ func TestPlanHostConfigurationActivationReplaysWildcardSysctls(t *testing.T) {
 		"sysctl": {Files: []manifest.HostConfigurationFile{{Path: "/etc/sysctl.d/90-cilium.conf", Content: &sysctl}}},
 	}}
 
-	prepare := PlanHostConfigurationActivation(config, HostConfigurationPhasePrepare)
+	prepare := PlanHostConfigurationActivation(t.TempDir(), config, HostConfigurationPhasePrepare)
 	if got := commandNames(prepare.Commands); strings.Join(got, ",") != "systemd-sysctl" {
 		t.Fatalf("prepare commands = %v", got)
 	}
@@ -53,7 +54,7 @@ func TestPlanHostConfigurationReloadsLinksBeforeBootActivation(t *testing.T) {
 	for _, filePath := range []string{"/etc/systemd/network/10-uplink.link", "/etc/systemd/network/10-uplink.link.d/50-alias.conf"} {
 		t.Run(filePath, func(t *testing.T) {
 			config := testHostConfiguration("link", filePath, "[Link]\nAlias=lab\n")
-			plan := PlanHostConfigurationActivation(config, HostConfigurationPhasePrepare)
+			plan := PlanHostConfigurationActivation(t.TempDir(), config, HostConfigurationPhasePrepare)
 			if len(plan.Commands) != 1 || strings.Join(plan.Commands[0].Argv, " ") != "/usr/bin/udevadm control --reload" {
 				t.Fatalf("prepare commands = %#v, want reload without retrigger", plan.Commands)
 			}
@@ -69,13 +70,36 @@ func TestInspectHostConfigurationClassifiesLiveSysctlDrift(t *testing.T) {
 	runner := &fakeCommandRunner{results: map[string]CommandResult{
 		"sysctl-verify-net.ipv4.ip_forward": {Stdout: "0\n"},
 	}}
-	drift := InspectHostConfiguration(context.Background(), config, runner)
+	drift := InspectHostConfiguration(context.Background(), t.TempDir(), config, runner)
 	if len(drift) != 1 || drift[0].Target != "sysctl net.ipv4.ip_forward" || !HostConfigurationDriftIsLive(drift) {
 		t.Fatalf("drift = %#v", drift)
 	}
-	reconcile := PlanHostSysctlReconciliation(config)
+	reconcile := PlanHostSysctlReconciliation(t.TempDir(), config)
 	if got := commandNames(reconcile.Commands); strings.Join(got, ",") != "systemd-sysctl,sysctl-verify-net.ipv4.ip_forward" {
 		t.Fatalf("reconcile commands = %v", got)
+	}
+}
+
+// Boot verification expects the value systemd-sysctl applies, so a managed
+// assignment overridden by a later file does not fail boot health.
+func TestPlanHostConfigurationActivationVerifiesEffectiveSysctl(t *testing.T) {
+	config := sysctlConfiguration(map[string]string{
+		"/etc/sysctl.d/50-somaxconn.conf": "net.core.somaxconn = 1024\n",
+		"/etc/sysctl.d/90-memory.conf":    "vm.swappiness = 10\n",
+		"/etc/sysctl.d/95-demo.conf":      "vm.swappiness = 20\nkernel.sysrq = 1\n",
+		// A later vendor exclusion leaves the key unset at boot.
+		"/etc/sysctl.d/10-rpf.conf": "net.ipv4.conf.all.rp_filter = 1\n",
+	})
+
+	verify := PlanHostConfigurationActivation(sysctlHostRoot(t), config, HostConfigurationPhaseVerify)
+
+	got := map[string]string{}
+	for _, command := range verify.Commands {
+		got[strings.TrimPrefix(command.Name, "sysctl-verify-")] = command.ExpectedStdout
+	}
+	want := map[string]string{"kernel.sysrq": "1", "net.core.somaxconn": "4096", "vm.swappiness": "20"}
+	if !maps.Equal(got, want) {
+		t.Fatalf("verified values = %v, want %v", got, want)
 	}
 }
 
@@ -83,12 +107,12 @@ func TestPlanHostConfigurationActivationAppliesAndVerifiesSysfsWrites(t *testing
 	config := manifest.HostConfiguration{Sysfs: []manifest.HostConfigurationSysfsSetting{
 		{Name: "/sys/module/printk/parameters/time", Value: "N"},
 	}}
-	prepare := PlanHostConfigurationActivation(config, HostConfigurationPhasePrepare)
+	prepare := PlanHostConfigurationActivation(t.TempDir(), config, HostConfigurationPhasePrepare)
 	if len(prepare.Commands) != 1 || len(prepare.Effects) != 1 ||
 		prepare.Effects[0].Action != "apply" || prepare.Effects[0].Target != "sysfs configuration" {
 		t.Fatalf("prepare plan = %#v", prepare)
 	}
-	verify := PlanHostConfigurationActivation(config, HostConfigurationPhaseVerify)
+	verify := PlanHostConfigurationActivation(t.TempDir(), config, HostConfigurationPhaseVerify)
 	if len(verify.Commands) != 1 || len(verify.Effects) != 1 ||
 		verify.Commands[0].ExpectedStdout != "N" ||
 		verify.Effects[0].Action != "apply-and-verify" ||
@@ -110,14 +134,14 @@ func TestHostConfigurationVerifiesEverySysfsGlobMatch(t *testing.T) {
 	config := manifest.HostConfiguration{Sysfs: []manifest.HostConfigurationSysfsSetting{{
 		Name: filepath.Join(dir, "cpu*"), Value: "balance_performance",
 	}}}
-	plan := PlanHostConfigurationActivation(config, HostConfigurationPhaseVerify)
+	plan := PlanHostConfigurationActivation(t.TempDir(), config, HostConfigurationPhaseVerify)
 	if err := ExecuteHostConfigurationActivation(context.Background(), plan, nil, nil); err != nil {
 		t.Fatalf("verify matching paths: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "cpu1"), []byte("power\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	drift := InspectHostConfiguration(context.Background(), config, nil)
+	drift := InspectHostConfiguration(context.Background(), t.TempDir(), config, nil)
 	if len(drift) != 1 || !strings.Contains(drift[0].Diagnostic, "cpu1") {
 		t.Fatalf("drift = %#v, want mismatched cpu1", drift)
 	}
@@ -127,7 +151,7 @@ func TestHostConfigurationVerifiesEverySysfsGlobMatch(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, "cpu1")); err != nil {
 		t.Fatal(err)
 	}
-	drift = InspectHostConfiguration(context.Background(), config, nil)
+	drift = InspectHostConfiguration(context.Background(), t.TempDir(), config, nil)
 	if len(drift) != 1 || !strings.Contains(drift[0].Diagnostic, "matched no files") {
 		t.Fatalf("drift = %#v, want missing matches", drift)
 	}

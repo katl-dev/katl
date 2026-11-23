@@ -17,12 +17,15 @@ import (
 )
 
 type HostConfigurationChangePlan struct {
-	Live                   bool
-	Sets                   []string
-	Paths                  []string
-	Effects                []generation.ConfigApplyEffect
-	Message                string
-	warnings               []string
+	Live     bool
+	Sets     []string
+	Paths    []string
+	Effects  []generation.ConfigApplyEffect
+	Message  string
+	warnings []string
+	// nextBootNotices explain staged changes that the next boot will not
+	// apply as written.
+	nextBootNotices        []string
 	Commands               []Command
 	rollbackCommands       []Command
 	unitsToStop            []string
@@ -53,7 +56,10 @@ func sortedStringUnion[A any](left, right map[string]A) []string {
 	return keys
 }
 
-func planHostConfigurationChange(current, desired manifest.HostConfiguration) HostConfigurationChangePlan {
+// planHostConfigurationChange classifies a host configuration change. Sysctl
+// eligibility also depends on the sysctl.d files and kernel parameters below
+// root, the running host's root directory.
+func planHostConfigurationChange(current, desired manifest.HostConfiguration, root string) HostConfigurationChangePlan {
 	currentSets := current.Sets
 	desiredSets := desired.Sets
 	names := sortedStringUnion(hostSetNames(currentSets), hostSetNames(desiredSets))
@@ -131,6 +137,7 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 	desiredFiles := hostFilesByPath(desiredSets)
 	changedPaths := sortedStringUnion(hostFilePaths(currentFiles), hostFilePaths(desiredFiles))
 	runtimeFilesChanged := false
+	changedSysctls := make(map[string]struct{})
 	for _, filePath := range changedPaths {
 		before, beforeExists := currentFiles[filePath]
 		after, afterExists := desiredFiles[filePath]
@@ -175,24 +182,24 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 					}
 				}
 			}
-		case strings.HasPrefix(filePath, "/etc/sysctl.d/") && strings.HasSuffix(filePath, ".conf"):
-			assignments, ok := liveSysctlDiff(before.File, after.File)
-			if !ok {
-				if afterExists && after.File.Content != nil {
-					if values, concrete := parseConcreteSysctl(*after.File.Content); concrete {
-						for key := range values {
-							plan.Effects = append(plan.Effects, plannedEffect("apply-and-verify", "sysctl "+key))
-						}
-					}
+		case isSysctlPath(filePath):
+			beforeValues, beforeConcrete := sysctlFileValues(before.File, beforeExists)
+			afterValues, afterConcrete := sysctlFileValues(after.File, afterExists)
+			if !beforeConcrete || !afterConcrete {
+				for _, key := range sortedKeys(afterValues) {
+					plan.Effects = append(plan.Effects, plannedEffect("apply-and-verify", "sysctl "+key))
 				}
 				if stagedReason == "" {
-					stagedReason = "sysctl additions, removals, ambiguous assignments, and key-set changes require next boot"
+					stagedReason = "sysctl globs, exclusions, and assignments Katl cannot parse require next boot"
 				}
 				continue
 			}
-			plan.SysctlAssignments = append(plan.SysctlAssignments, assignments...)
-			for _, assignment := range assignments {
-				plan.Effects = append(plan.Effects, plannedEffect("apply-and-verify", "sysctl "+assignment.Key))
+			for _, key := range sortedStringUnion(beforeValues, afterValues) {
+				previous, hadPrevious := beforeValues[key]
+				next, hasNext := afterValues[key]
+				if hadPrevious != hasNext || previous != next {
+					changedSysctls[key] = struct{}{}
+				}
 			}
 		case strings.HasPrefix(filePath, "/etc/containerd/conf.d/") && strings.HasSuffix(filePath, ".toml"):
 			if stagedReason == "" {
@@ -249,16 +256,14 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 
 	sort.Strings(plan.Paths)
 	plan.Paths = compactStrings(plan.Paths)
-	seenSysctls := make(map[string]struct{}, len(plan.SysctlAssignments))
-	for _, assignment := range plan.SysctlAssignments {
-		if _, exists := seenSysctls[assignment.Key]; exists && stagedReason == "" {
-			stagedReason = "duplicate sysctl assignments across changed files have ambiguous precedence"
+	if len(changedSysctls) > 0 {
+		var reasons, notices []string
+		plan.SysctlAssignments, plan.Effects, reasons, notices = planSysctlAssignments(root, currentFiles, desiredFiles, changedSysctls, plan.Effects)
+		plan.nextBootNotices = append(plan.nextBootNotices, notices...)
+		if len(reasons) > 0 && stagedReason == "" {
+			stagedReason = strings.Join(reasons, "; ")
 		}
-		seenSysctls[assignment.Key] = struct{}{}
 	}
-	sort.Slice(plan.SysctlAssignments, func(i, j int) bool {
-		return plan.SysctlAssignments[i].Key < plan.SysctlAssignments[j].Key
-	})
 	if udevReload {
 		plan.Effects = append(plan.Effects, plannedEffect("reload", "udev rules"))
 	}
@@ -322,8 +327,12 @@ func planHostConfigurationChange(current, desired manifest.HostConfiguration) Ho
 	if linkReload {
 		plan.warnings = append(plan.warnings, "Changed .link settings are loaded for future device events; existing interfaces are not retriggered. Recreate the affected interface or reboot when needed to apply them.")
 	}
-	// Rollback reloads the restored generation, then enforces its masks.
-	plan.rollbackCommands = slices.Clone(plan.Commands)
+	// Rollback reloads the restored generation, then enforces its masks. The
+	// candidate's rule verification is not replayed: an added rules file does
+	// not exist in the restored generation.
+	plan.rollbackCommands = slices.DeleteFunc(slices.Clone(plan.Commands), func(command Command) bool {
+		return command.Name == "udev-rules-verify"
+	})
 	if systemdReload && len(current.MaskedUnits) > 0 {
 		var previous HostConfigurationActivationPlan
 		previous.addUnitMasks(current.MaskedUnits, true, true)
@@ -398,36 +407,97 @@ func parseModulesLoad(content string) []string {
 	return compactStrings(modules)
 }
 
-func liveSysctlDiff(before manifest.HostConfigurationFile, after manifest.HostConfigurationFile) ([]HostSysctlAssignment, bool) {
-	if before.Content == nil || after.Content == nil {
-		return nil, false
+// planSysctlAssignments selects the live writes for changed sysctl keys. A key
+// applies live only when its effective desired assignment comes from a value
+// that no later file overrides with another value and the running kernel can
+// snapshot, write, verify, and restore it. Otherwise it returns why the change
+// must wait for the next boot, and notices for managed assignments that the
+// next boot would not apply either.
+func planSysctlAssignments(root string, currentFiles, desiredFiles map[string]ownedHostFile, keys map[string]struct{}, effects []generation.ConfigApplyEffect) (assignments []HostSysctlAssignment, _ []generation.ConfigApplyEffect, reasons, notices []string) {
+	owned := make(map[string]struct{})
+	for filePath := range currentFiles {
+		owned[filePath] = struct{}{}
 	}
-	oldValues, ok := parseConcreteSysctl(*before.Content)
-	if !ok {
-		return nil, false
-	}
-	newValues, ok := parseConcreteSysctl(*after.Content)
-	if !ok || len(oldValues) != len(newValues) {
-		return nil, false
-	}
-	keys := make([]string, 0, len(newValues))
-	for key := range newValues {
-		if _, exists := oldValues[key]; !exists {
-			return nil, false
+	managed := make(map[string]string)
+	for filePath, file := range desiredFiles {
+		owned[filePath] = struct{}{}
+		if !isSysctlPath(filePath) {
+			continue
 		}
-		if oldValues[key] != newValues[key] {
-			keys = append(keys, key)
+		if file.File.Content == nil {
+			// Without inline content, the active file is current: a changed
+			// one has already staged the request.
+			delete(owned, filePath)
+			continue
+		}
+		managed[filePath] = *file.File.Content
+	}
+	files, err := effectiveSysctlFiles(root, managed, owned)
+	if err != nil {
+		for _, key := range sortedKeys(keys) {
+			effects = append(effects, plannedEffect("apply-and-verify", "sysctl "+key))
+		}
+		return nil, effects, []string{err.Error()}, nil
+	}
+
+	for _, key := range sortedKeys(keys) {
+		winner, assigned := effectiveSysctl(files, key)
+		if !assigned || winner.Excluded && shadowedSysctl(managed, key, winner) == "" {
+			reasons = append(reasons, fmt.Sprintf("removing the last assignment of sysctl %s leaves it to the kernel default at next boot", key))
+			continue
+		}
+		// An overridden managed value never reaches the kernel, so it is
+		// neither applied nor reported as an effect.
+		if shadowed := shadowedSysctl(managed, key, winner); shadowed != "" {
+			override := fmt.Sprintf("sysctl %s in %s is overridden by %s", key, shadowed, winner.Path)
+			reasons = append(reasons, override)
+			notices = append(notices, override+"; the next boot keeps the overriding setting. Rename or remove one of the files.")
+			continue
+		}
+		effects = append(effects, plannedEffect("apply-and-verify", "sysctl "+key))
+		if restriction := sysctlRuntimeRestriction(root, key); restriction != "" {
+			reasons = append(reasons, restriction)
+			continue
+		}
+		if winner.Value == "" || strings.ContainsAny(winner.Value, "\x00\r\n\t ") {
+			reasons = append(reasons, fmt.Sprintf("sysctl %s value from %s cannot be verified at runtime", key, winner.Path))
+			continue
+		}
+		assignments = append(assignments, HostSysctlAssignment{Key: key, Value: winner.Value})
+	}
+	return assignments, effects, reasons, notices
+}
+
+// shadowedSysctl returns a managed file whose assignment of key differs from
+// the effective entry, or is cancelled by an exclusion.
+func shadowedSysctl(managed map[string]string, key string, winner sysctlAssignment) string {
+	for _, filePath := range sortedKeys(managed) {
+		for _, line := range sysctlAssignmentLines(managed[filePath]) {
+			if line.key == key && !line.excluded && (winner.Excluded || line.value != winner.Value) {
+				return filePath
+			}
 		}
 	}
-	if len(keys) == 0 {
-		return nil, true
+	return ""
+}
+
+// isSysctlPath reports whether systemd-sysctl reads a host file; it does not
+// read subdirectories of sysctl.d.
+func isSysctlPath(filePath string) bool {
+	return path.Dir(filePath) == "/etc/sysctl.d" && strings.HasSuffix(filePath, ".conf")
+}
+
+// sysctlFileValues returns a managed file's concrete assignments; an absent
+// file has none. It reports false when Katl cannot resolve every assignment
+// to a concrete key and value.
+func sysctlFileValues(file manifest.HostConfigurationFile, exists bool) (map[string]string, bool) {
+	if !exists {
+		return map[string]string{}, true
 	}
-	sort.Strings(keys)
-	out := make([]HostSysctlAssignment, 0, len(keys))
-	for _, key := range keys {
-		out = append(out, HostSysctlAssignment{Key: key, Value: newValues[key]})
+	if file.Content == nil {
+		return nil, false
 	}
-	return out, true
+	return parseConcreteSysctl(*file.Content)
 }
 
 func parseConcreteSysctl(content string) (map[string]string, bool) {
@@ -441,14 +511,10 @@ func parseConcreteSysctl(content string) (map[string]string, bool) {
 		if strings.HasPrefix(line, "-") {
 			return nil, false
 		}
+		// systemd-sysctl ignores a line without "=".
 		key, value, found := strings.Cut(line, "=")
 		if !found {
-			fields := strings.Fields(line)
-			if len(fields) < 2 {
-				return nil, false
-			}
-			key = fields[0]
-			value = strings.Join(fields[1:], " ")
+			return nil, false
 		}
 		key = strings.TrimSpace(key)
 		value = strings.TrimSpace(value)
@@ -460,7 +526,7 @@ func parseConcreteSysctl(content string) (map[string]string, bool) {
 		}
 		values[key] = value
 	}
-	return values, scanner.Err() == nil && len(values) > 0
+	return values, scanner.Err() == nil
 }
 
 func concreteSysctlKey(key string) bool {

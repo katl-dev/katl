@@ -385,6 +385,7 @@ func TestApplyTrustedBundleExplainsMissingPreBootstrapEndpointArtifact(t *testin
 
 func TestApplyTrustedBundleRendersAndExecutesLiveSysctl(t *testing.T) {
 	root := t.TempDir()
+	writeKernelParameter(t, root, "net.ipv4.ip_forward", "0")
 	activator := &fakeActivator{}
 	runner := &fakeCommandRunner{}
 	current := baseManifest()
@@ -437,6 +438,7 @@ func TestApplyTrustedBundleRendersAndExecutesLiveSysctl(t *testing.T) {
 
 func TestApplyTrustedBundleDefaultsAutoToLiveForSysctl(t *testing.T) {
 	root := t.TempDir()
+	writeKernelParameter(t, root, "net.ipv4.ip_forward", "0")
 	runner := &fakeCommandRunner{}
 	current := baseManifest()
 	current.Node.HostConfiguration = hostSysctlConfiguration("0")
@@ -1068,6 +1070,7 @@ func TestApplyTrustedBundleRejectsUnsafeEtcPathsBeforeRender(t *testing.T) {
 
 func TestApplyTrustedBundleRecordsRollbackStatusOnActivationFailure(t *testing.T) {
 	root := t.TempDir()
+	writeKernelParameter(t, root, "net.ipv4.ip_forward", "0")
 	activator := &fakeActivator{activateErr: os.ErrPermission}
 	current := baseManifest()
 	current.Node.HostConfiguration = hostSysctlConfiguration("0")
@@ -1095,6 +1098,17 @@ func TestApplyTrustedBundleRecordsRollbackStatusOnActivationFailure(t *testing.T
 	}
 	if persisted.Phase != generation.ConfigApplyPhaseRolledBack {
 		t.Fatalf("persisted phase = %q", persisted.Phase)
+	}
+}
+
+func writeKernelParameter(t *testing.T, root, key, value string) {
+	t.Helper()
+	path := filepath.Join(root, "proc/sys", strings.ReplaceAll(key, ".", "/"))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(value+"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
