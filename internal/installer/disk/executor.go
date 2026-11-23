@@ -422,7 +422,7 @@ func findVolume(volumes []VolumePlan, name string) (VolumePlan, bool) {
 }
 
 func volumeOperations(volume VolumePlan) ([]DiskOperation, error) {
-	if !volume.Repartition && !volume.Wipe {
+	if !volume.Destructive() {
 		return nil, nil
 	}
 	device, err := volumeDevice(volume)

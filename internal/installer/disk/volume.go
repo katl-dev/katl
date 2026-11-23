@@ -20,10 +20,18 @@ var ErrVolumeRefused = errors.New("volume target check failed")
 // found again on its bound disk by Number and must still match every other
 // field, so a partition table rewritten since planning is refused.
 type PartitionIdentity struct {
-	Number    uint64
-	UUID      string
-	Label     string
-	SizeBytes uint64
+	Number    uint64 `json:"number,omitempty"`
+	UUID      string `json:"uuid,omitempty"`
+	Label     string `json:"label,omitempty"`
+	SizeBytes uint64 `json:"sizeBytes,omitempty"`
+}
+
+// VolumeTarget is the disk, and for a selected partition the partition, that a
+// volume was bound to before a destructive command changed it. A request
+// carrying one is planned against it and its selector is not resolved again.
+type VolumeTarget struct {
+	Disk      discovery.DiskIdentity `json:"disk"`
+	Partition PartitionIdentity      `json:"partition"`
 }
 
 func partitionIdentityOf(partition BlockDevice) PartitionIdentity {
@@ -112,7 +120,7 @@ func PlanVolumeChanges(facts HardwareFacts, target BlockDevice, requests []Volum
 		if err := validateAddressableVolume(plan, disk, partition); err != nil {
 			return nil, err
 		}
-		if !plan.Repartition && !plan.Wipe {
+		if !plan.Destructive() {
 			// A preserved volume is mounted by its current identity, so a clone
 			// sharing it must block planning rather than surface after install.
 			if _, err := bindVolume(facts, plan); err != nil {
@@ -122,6 +130,17 @@ func PlanVolumeChanges(facts HardwareFacts, target BlockDevice, requests []Volum
 		plans = append(plans, plan)
 	}
 	return plans, nil
+}
+
+// Destructive reports whether preparing the volume runs a destructive command.
+func (p VolumePlan) Destructive() bool {
+	return p.Wipe || p.Repartition
+}
+
+// Target is what a retry must stay bound to once a destructive command has
+// changed the volume.
+func (p VolumePlan) Target() VolumeTarget {
+	return VolumeTarget{Disk: p.Disk, Partition: p.Partition}
 }
 
 // keptVolume describes the partition a kept volume is bound to, so requests
@@ -138,7 +157,7 @@ func keptVolume(facts HardwareFacts, binding VolumeBinding) (VolumePlan, error) 
 // returns that partition too.
 func planVolume(facts HardwareFacts, target BlockDevice, request VolumeRequest) (VolumePlan, BlockDevice, BlockDevice, error) {
 	if request.Disk != nil {
-		match, err := discovery.MatchTargetDisk(facts, *request.Disk)
+		match, err := matchVolumeDisk(facts, request)
 		if err != nil {
 			return VolumePlan{}, BlockDevice{}, BlockDevice{}, fmt.Errorf("volume %q disk: %w", request.Name, err)
 		}
@@ -174,7 +193,7 @@ func planVolume(facts HardwareFacts, target BlockDevice, request VolumeRequest) 
 		return plan, match.Device, matches[0], nil
 	}
 
-	match, err := discovery.MatchPartition(facts, *request.Partition)
+	match, err := matchVolumePartition(facts, request)
 	if err != nil {
 		return VolumePlan{}, BlockDevice{}, BlockDevice{}, fmt.Errorf("volume %q partition: %w", request.Name, err)
 	}
@@ -191,6 +210,42 @@ func planVolume(facts HardwareFacts, target BlockDevice, request VolumeRequest) 
 		return VolumePlan{}, BlockDevice{}, BlockDevice{}, err
 	}
 	return plan, match.ParentDisk, match.Device, nil
+}
+
+// matchVolumeDisk resolves a disk volume's selector, unless an earlier attempt
+// bound the volume, in which case only that disk qualifies.
+func matchVolumeDisk(facts HardwareFacts, request VolumeRequest) (discovery.TargetDiskMatch, error) {
+	if request.Retained == nil {
+		return discovery.MatchTargetDisk(facts, *request.Disk)
+	}
+	return discovery.MatchRetainedDisk(facts, request.Retained.Disk, discovery.TargetDiskSelector{})
+}
+
+// matchVolumePartition resolves a partition volume's selector, unless an
+// earlier attempt bound the volume, in which case only that partition of that
+// disk qualifies.
+func matchVolumePartition(facts HardwareFacts, request VolumeRequest) (discovery.PartitionMatch, error) {
+	retained := request.Retained
+	if retained == nil {
+		return discovery.MatchPartition(facts, *request.Partition)
+	}
+	parent, err := discovery.MatchBoundDisk(facts, retained.Disk)
+	if err != nil {
+		return discovery.PartitionMatch{}, err
+	}
+	for _, partition := range parent.Partitions {
+		if partition.PartitionNumber != retained.Partition.Number {
+			continue
+		}
+		if current := partitionIdentityOf(partition); current != retained.Partition {
+			return discovery.PartitionMatch{}, fmt.Errorf("%w: partition %d of %s is now %s, not the selected %s", discovery.ErrTargetDiskChanged, retained.Partition.Number, parent.Path, current, retained.Partition)
+		}
+		if err := discovery.ValidatePartitionSafety(facts, partition); err != nil {
+			return discovery.PartitionMatch{}, err
+		}
+		return discovery.PartitionMatch{Device: partition, ParentDisk: parent, Signatures: collectVolumeSignatures(partition)}, nil
+	}
+	return discovery.PartitionMatch{}, fmt.Errorf("%w: partition %d is no longer on %s", discovery.ErrTargetDiskChanged, retained.Partition.Number, parent.Path)
 }
 
 func existingPartitionVolume(request VolumeRequest, kind string, disk, partition BlockDevice) VolumePlan {
@@ -285,7 +340,7 @@ func validateAddressableVolume(plan VolumePlan, disk, partition BlockDevice) err
 	if !plan.Repartition && plan.Partition.Number == 0 {
 		return fmt.Errorf("volume %q: the kernel did not report the partition number of %s; check that /sys/class/block/%s/partition exists, then retry", plan.Name, partition.Path, path.Base(partition.Path))
 	}
-	if !plan.Repartition && !plan.Wipe {
+	if !plan.Destructive() {
 		return nil
 	}
 	if err := checkAddressable(disk); err != nil {

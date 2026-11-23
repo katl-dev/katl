@@ -667,3 +667,74 @@ func TestVolumePlanningRefusesAmbiguousReleasedBinding(t *testing.T) {
 		}
 	})
 }
+
+func TestPlanVolumesStaysOnRetainedPartition(t *testing.T) {
+	root := diskForLayout("/dev/nvme0n1", "/dev/disk/by-id/nvme-root", 32768)
+	first := diskForLayout("/dev/sdb", "/dev/disk/by-id/ata-first", 16384)
+	first.Partitions = []BlockDevice{{Path: "/dev/sdb1", Type: DevicePartition, PartitionNumber: 1, PartitionUUID: "data-part", FilesystemSignature: "xfs", SizeBytes: 1 << 30}}
+	request := VolumeRequest{Name: "data", Partition: &PartitionSelector{PartUUID: "data-part"}, Filesystem: "xfs", Wipe: true}
+
+	plans, err := PlanVolumes(layoutFacts(root, first), root, []VolumeRequest{request}, nil)
+	if err != nil {
+		t.Fatalf("PlanVolumes() error = %v", err)
+	}
+	retained := plans[0].Target()
+	request.Retained = &retained
+
+	// The selector now also names a partition of another disk.
+	other := diskForLayout("/dev/sdc", "/dev/disk/by-id/ata-other", 16384)
+	other.Partitions = []BlockDevice{{Path: "/dev/sdc1", Type: DevicePartition, PartitionNumber: 1, PartitionUUID: "data-part", FilesystemSignature: "xfs", SizeBytes: 1 << 30}}
+	changed := first
+	changed.Partitions = []BlockDevice{{Path: "/dev/sdb1", Type: DevicePartition, PartitionNumber: 1, PartitionUUID: "renamed", SizeBytes: 1 << 30}}
+	moved := first
+	moved.Partitions = []BlockDevice{{Path: "/dev/sdb2", Type: DevicePartition, PartitionNumber: 2, PartitionUUID: "data-part", SizeBytes: 1 << 30}}
+
+	for _, test := range []struct {
+		name  string
+		facts HardwareFacts
+		want  string
+	}{
+		{"recorded partition changed identity", layoutFacts(root, changed, other), "partition 1 of /dev/sdb"},
+		{"recorded partition moved", layoutFacts(root, moved, other), "partition 1 is no longer on /dev/sdb"},
+		{"recorded disk gone", layoutFacts(root, other), "no longer present"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := PlanVolumes(test.facts, root, []VolumeRequest{request}, nil)
+
+			if !errors.Is(err, discovery.ErrTargetDiskChanged) || !mentions(err, test.want) {
+				t.Fatalf("PlanVolumes() error = %v, want ErrTargetDiskChanged naming %q", err, test.want)
+			}
+		})
+	}
+
+	// The partition keeps its identity through wipefs and mkfs, so the
+	// retained disk is planned again although another disk now matches too.
+	plans, err = PlanVolumes(layoutFacts(root, first, other), root, []VolumeRequest{request}, nil)
+	if err != nil || plans[0].Disk.Path != "/dev/sdb" {
+		t.Fatalf("PlanVolumes() = %+v, %v; want the retained disk /dev/sdb", plans, err)
+	}
+}
+
+func TestVolumePlanDestructiveAndTarget(t *testing.T) {
+	diskID := discovery.DiskIdentity{Path: "/dev/sdb", DiskSeq: 3, SizeBytes: 16 << 30}
+	partition := PartitionIdentity{Number: 2, UUID: "data-part", SizeBytes: 1 << 30}
+
+	for _, test := range []struct {
+		name        string
+		plan        VolumePlan
+		destructive bool
+	}{
+		{"reused partition", VolumePlan{}, false},
+		{"formatted partition", VolumePlan{Wipe: true}, true},
+		{"repartitioned disk", VolumePlan{Wipe: true, Repartition: true}, true},
+	} {
+		if got := test.plan.Destructive(); got != test.destructive {
+			t.Errorf("%s: Destructive() = %v, want %v", test.name, got, test.destructive)
+		}
+	}
+
+	got := VolumePlan{Name: "data", Disk: diskID, Partition: partition, MountSource: "PARTUUID=x", Wipe: true}.Target()
+	if want := (VolumeTarget{Disk: diskID, Partition: partition}); got != want {
+		t.Fatalf("Target() = %+v, want only the disk and partition %+v", got, want)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -2469,4 +2470,146 @@ func manifestDigest(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return digest
+}
+
+// A volume disk an attempt wiped stays bound for the rest of the installer
+// boot, as the system disk does. Each attempt is a fresh process sharing only
+// the state directory.
+func TestRunnerStaysBoundToWipedVolumeDiskAcrossAttempts(t *testing.T) {
+	const alias = "/dev/disk/by-id/ata-data"
+	root := planningFacts().BlockDevices[0]
+	volumeDisk := func(name string, seq uint64, byID ...string) discovery.BlockDevice {
+		return discovery.BlockDevice{
+			Name: name, Path: "/dev/" + name, Type: discovery.DeviceDisk, DiskSeq: seq, ByDiskSeq: fmt.Sprintf("/dev/disk/by-diskseq/%d", seq),
+			ByID: byID, SizeBytes: 64 << 30,
+		}
+	}
+	facts := func(devices ...discovery.BlockDevice) discovery.HardwareFacts {
+		return discovery.HardwareFacts{BlockDevices: append([]discovery.BlockDevice{root}, devices...)}
+	}
+	resized := volumeDisk("vdb", 2)
+	resized.SizeBytes = 128 << 30
+
+	tests := []struct {
+		name string
+		// later is what the disks look like when attempt 3 runs.
+		later   discovery.HardwareFacts
+		wantErr error
+	}{
+		{
+			// Disk X lost the alias the selector names, and disk Y now carries
+			// it.
+			name:  "selector now matches another disk",
+			later: facts(volumeDisk("vdb", 2), volumeDisk("vdc", 3, alias)),
+		},
+		{
+			name:    "kernel names swapped",
+			later:   facts(volumeDisk("vdc", 2), volumeDisk("vdb", 3, alias)),
+			wantErr: discovery.ErrTargetDiskChanged,
+		},
+		{
+			name:    "recorded disk changed identity",
+			later:   facts(resized, volumeDisk("vdc", 3, alias)),
+			wantErr: discovery.ErrTargetDiskChanged,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			path := writeManifestWithTarget(t, `{"byID": "/dev/disk/by-id/ata-root", "minSizeMiB": 32768}, "volumes": [{"name": "data", "selector": {"disk": {"byID": "`+alias+`"}}, "filesystem": "xfs", "wipe": true}]`)
+			attempt := func(facts discovery.HardwareFacts, commands CommandRunner, resolver KatlosImageResolver) error {
+				install := &Context{
+					ManifestPath:   path,
+					StateDir:       stateDir,
+					TargetRoot:     t.TempDir(),
+					Commands:       commands,
+					Store:          NewFileStateStore(stateDir),
+					KatlosResolver: resolver,
+					Discovery:      discovery.StaticDiscoverySource{Facts: facts},
+				}
+				plan := Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}, prepareDiskStep{}, createPartitionsStep{}}
+				return NewRunner(plan, install).Run(context.Background())
+			}
+			const diskX, diskY = "/dev/disk/by-diskseq/2", "/dev/disk/by-diskseq/3"
+
+			original := facts(volumeDisk("vdb", 2, alias), volumeDisk("vdc", 3))
+			first := &failingCommandRunner{fail: diskX}
+			if err := attempt(original, first, &recordingKatlosResolver{payload: planningPayload()}); err == nil || !first.touched(diskX) {
+				t.Fatalf("attempt 1: error = %v, touched volume disk = %v; want a failure after wiping it", err, first.touched(diskX))
+			}
+
+			second := &failingCommandRunner{}
+			if err := attempt(original, second, &recordingKatlosResolver{err: errString("image unavailable")}); err == nil || second.ran("wipefs") {
+				t.Fatalf("attempt 2: error = %v, wipefs ran = %v; want a failure before planning", err, second.ran("wipefs"))
+			}
+
+			third := &failingCommandRunner{}
+			err := attempt(tt.later, third, &recordingKatlosResolver{payload: planningPayload()})
+			if tt.wantErr != nil {
+				if !errors.Is(err, tt.wantErr) || !strings.Contains(err.Error(), "boot the installer again") {
+					t.Fatalf("attempt 3: error = %v, want %v and advice to boot the installer again", err, tt.wantErr)
+				}
+			} else if !third.touched(diskX) {
+				// The static facts cannot show the repartitioned disk, so the rerun fails after it.
+				t.Fatalf("attempt 3: error = %v, want a rerun on the bound volume disk", err)
+			}
+			if third.touched(diskY) || third.touched("/dev/vdc") {
+				t.Fatalf("attempt 3 changed a disk the boot was not bound to: %v", third.calls)
+			}
+		})
+	}
+}
+
+func (r *failingCommandRunner) touched(device string) bool {
+	for _, call := range r.calls {
+		if slices.Contains(call.Args, device) {
+			return true
+		}
+	}
+	return false
+}
+
+func TestBindDiskAccumulates(t *testing.T) {
+	store := &MemoryStateStore{}
+	system := discovery.DiskIdentity{Path: "/dev/vda", DiskSeq: 1, SizeBytes: 64 << 30}
+	dataDisk := discovery.DiskIdentity{Path: "/dev/vdb", DiskSeq: 2, SizeBytes: 64 << 30}
+	logsDisk := discovery.DiskIdentity{Path: "/dev/vdc", DiskSeq: 3, SizeBytes: 64 << 30}
+	keptDisk := discovery.DiskIdentity{Path: "/dev/vdd", DiskSeq: 4, SizeBytes: 64 << 30}
+	attempt := func(digest string, volumes ...disk.VolumePlan) *Context {
+		install := &Context{Store: store, RequestDigest: digest, DiskLayout: &disk.DiskLayoutPlan{TargetDisk: system, VolumeMounts: volumes}}
+		if err := loadDiskBinding(context.Background(), install); err != nil {
+			t.Fatalf("loadDiskBinding() error = %v", err)
+		}
+		if err := bindDisk(context.Background(), install); err != nil {
+			t.Fatalf("bindDisk() error = %v", err)
+		}
+		return install
+	}
+
+	attempt(strings.Repeat("a", 64),
+		disk.VolumePlan{Name: "data", Disk: dataDisk, Wipe: true, Repartition: true},
+		disk.VolumePlan{Name: "kept", Disk: keptDisk, Partition: disk.PartitionIdentity{Number: 1}},
+	)
+	// A later attempt of the same request plans another volume, and the
+	// layout it resolved now places "data" elsewhere.
+	attempt(strings.Repeat("b", 64),
+		disk.VolumePlan{Name: "data", Disk: logsDisk, Wipe: true, Repartition: true},
+		disk.VolumePlan{Name: "logs", Disk: logsDisk, Partition: disk.PartitionIdentity{Number: 2, UUID: "logs"}, Wipe: true},
+	)
+
+	got, err := store.LoadDiskBinding(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := DiskBinding{
+		RequestDigest: strings.Repeat("a", 64),
+		TargetDisk:    system,
+		Volumes: map[string]disk.VolumeTarget{
+			"data": {Disk: dataDisk},
+			"logs": {Disk: logsDisk, Partition: disk.PartitionIdentity{Number: 2, UUID: "logs"}},
+		},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("binding = %+v, want %+v: earlier entries and the first digest are kept, and only changed volumes are added", got, want)
+	}
 }

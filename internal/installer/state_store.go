@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/discovery"
+	"github.com/katl-dev/katl/internal/installer/disk"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 	"github.com/katl-dev/katl/internal/persistedrecord"
 )
@@ -31,6 +32,9 @@ type StateStore interface {
 type DiskBinding struct {
 	RequestDigest string                 `json:"requestDigest"`
 	TargetDisk    discovery.DiskIdentity `json:"targetDisk"`
+	// Volumes holds each volume an attempt changed, by name. It only gains
+	// entries.
+	Volumes map[string]disk.VolumeTarget `json:"volumes,omitempty"`
 }
 
 type Checkpoint struct {

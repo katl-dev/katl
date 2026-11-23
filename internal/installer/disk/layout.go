@@ -67,6 +67,9 @@ type VolumeRequest struct {
 	Partition  *PartitionSelector
 	Filesystem string
 	Wipe       bool
+	// Retained binds planning to the disk an earlier attempt already resolved
+	// and changed, instead of resolving the selector again.
+	Retained *VolumeTarget
 }
 
 type RootSlot string
