@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -794,6 +795,101 @@ func TestApplyVolumesRestartsStoppedVolumesAfterRefusal(t *testing.T) {
 			}
 			if !reflect.DeepEqual(commands, test.want) {
 				t.Fatalf("commands = %q, want %q", commands, test.want)
+			}
+		})
+	}
+}
+
+func TestVolumeRecoveryLeavesVolumesUnverifiableUnmounted(t *testing.T) {
+	// data was being formatted on vdc1 (disk sequence 3, partition 1). keep is
+	// bound to vdb1 and other to vdb2, both outside the storage data wrote.
+	bindings := map[string]generation.VolumeBinding{
+		"keep":  keepBinding,
+		"other": {Name: "other", PartitionUUID: "data-part", FilesystemUUID: "data-fs"},
+	}
+	data := disk.VolumePlan{Name: "data", TargetKind: "partition", Disk: discovery.DiskIdentity{Path: "/dev/vdc", DiskSeq: 3, SizeBytes: 68719476736}, Partition: disk.PartitionIdentity{Number: 1}, Wipe: true}
+
+	for _, test := range []struct {
+		name string
+		// run wraps the storage fixture's runner.
+		run       func(storage *storageRunner) ToolRunner
+		stopped   []string
+		unmounted []string
+		started   []string
+		want      []string
+	}{
+		{
+			name: "rediscovery fails",
+			run: func(storage *storageRunner) ToolRunner {
+				return func(ctx context.Context, argv []string, progress func(int)) ToolResult {
+					if argv[0] == "lsblk" {
+						return ToolResult{ExitStatus: 1, Stderr: []byte("lsblk failed")}
+					}
+					return storage.run(ctx, argv, progress)
+				}
+			},
+			stopped:   []string{"keep", "other"},
+			unmounted: []string{"keep", "other"},
+			want:      []string{"volumes keep, other were stopped for this apply and left unmounted", "could not be checked"},
+		},
+		{
+			// A cloned disk carries keep's PARTUUID, so the binding resolves
+			// to two partitions and cannot show that keep's storage is intact.
+			name: "binding ambiguous",
+			run: func(storage *storageRunner) ToolRunner {
+				return func(ctx context.Context, argv []string, progress func(int)) ToolResult {
+					result := storage.run(ctx, argv, progress)
+					if argv[0] == "lsblk" {
+						result.Stdout = bytes.ReplaceAll(result.Stdout, []byte(`"partuuid":"spare-part"`), []byte(`"partuuid":"keep-part"`))
+					}
+					return result
+				}
+			},
+			stopped:   []string{"keep", "other"},
+			unmounted: []string{"keep"},
+			started:   []string{"other"},
+			want:      []string{"volumes keep were stopped for this apply and left unmounted", "ambiguous", "matched 2 partitions"},
+		},
+		{
+			// The binding resolves nowhere, so its unit has no device to mount.
+			name: "binding resolves nowhere",
+			run: func(storage *storageRunner) ToolRunner {
+				return func(ctx context.Context, argv []string, progress func(int)) ToolResult {
+					result := storage.run(ctx, argv, progress)
+					if argv[0] == "lsblk" {
+						result.Stdout = bytes.ReplaceAll(result.Stdout, []byte(`"partuuid":"keep-part"`), []byte(`"partuuid":"moved-part"`))
+					}
+					return result
+				}
+			},
+			stopped:   []string{"keep", "other"},
+			unmounted: []string{"keep"},
+			started:   []string{"other"},
+			want:      []string{"volumes keep were stopped for this apply and left unmounted", "matched no partitions"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			storage := &storageRunner{}
+			run := test.run(storage)
+			recovery := volumeRecovery{
+				run: run, source: hermeticVolumeDevices(t).source(run), bindings: bindings,
+				prepared: []disk.VolumePlan{data}, stopped: test.stopped, rewritten: []string{"data"},
+			}
+
+			err := recovery.fail(context.Background(), errors.New("mkfs.xfs failed"))
+
+			for _, name := range test.unmounted {
+				if slices.Contains(storage.commands, "systemctl start var-mnt-"+name+".mount") {
+					t.Fatalf("commands = %q, want %s left unmounted", storage.commands, name)
+				}
+			}
+			for _, name := range test.started {
+				if !slices.Contains(storage.commands, "systemctl start var-mnt-"+name+".mount") {
+					t.Fatalf("commands = %q, want %s, whose storage is verified intact, mounted again", storage.commands, name)
+				}
+			}
+			if !mentionsAll(err.Error(), test.want...) {
+				t.Fatalf("fail() error = %v, want it to contain %q", err, test.want)
 			}
 		})
 	}

@@ -586,3 +586,84 @@ func TestPlanVolumesSuggestsWipeOnlyWhenPartitionIsMissing(t *testing.T) {
 		t.Fatalf("PlanVolumes() with two u-data partitions error = %v, want ambiguity without wipe advice", err)
 	}
 }
+
+// replacedAfterWipe reports the first volume disk unchanged and the second
+// volume's disk replaced by another once a wipefs has run.
+type replacedAfterWipe struct {
+	commands *NoopCommandRunner
+}
+
+func (d replacedAfterWipe) Discover(context.Context) (HardwareFacts, error) {
+	first := BlockDevice{Path: "/dev/vdc", Type: DeviceDisk, DiskSeq: 4, ByDiskSeq: "/dev/disk/by-diskseq/4", SizeBytes: 8 << 30}
+	second := volumeDiskWith()
+	if countCalls(d.commands.Calls, "wipefs") > 0 {
+		second.DiskSeq = 9
+		second.ByDiskSeq = "/dev/disk/by-diskseq/9"
+	}
+	return HardwareFacts{BlockDevices: []BlockDevice{first, second}}, nil
+}
+
+func TestPrepareVolumesWipeOfRepartitionedDisk(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
+
+	t.Run("rechecks the disk before wiping it", func(t *testing.T) {
+		first := VolumePlan{Name: "first", TargetKind: "disk", Disk: discovery.DiskIdentity{Path: "/dev/vdc", DiskSeq: 4, SizeBytes: 8 << 30}, Filesystem: "xfs", MountPath: "/var/mnt/first", Wipe: true, Repartition: true}
+		commands := &NoopCommandRunner{}
+
+		_, err := PrepareVolumes(context.Background(), commands, replacedAfterWipe{commands: commands}, []VolumePlan{first, repartitionVolume()})
+
+		if !errors.Is(err, discovery.ErrTargetDiskChanged) {
+			t.Fatalf("PrepareVolumes() error = %v, want ErrTargetDiskChanged", err)
+		}
+		var wiped []string
+		for _, call := range commands.Calls {
+			if call.Name == "wipefs" {
+				wiped = append(wiped, call.Args[len(call.Args)-1])
+			}
+		}
+		if !reflect.DeepEqual(wiped, []string{"/dev/disk/by-diskseq/4"}) {
+			t.Fatalf("wipefs targets = %q, want only the first volume's unchanged disk", wiped)
+		}
+	})
+
+	t.Run("reports the volume as rewritten when the wipe fails", func(t *testing.T) {
+		source := discovery.StaticDiscoverySource{Facts: HardwareFacts{BlockDevices: []BlockDevice{volumeDiskWith()}}}
+		commands := &failingCommandRunner{fail: "wipefs"}
+
+		changed, err := PrepareVolumes(context.Background(), commands, source, []VolumePlan{repartitionVolume()})
+
+		if err == nil {
+			t.Fatal("PrepareVolumes() error = nil, want the wipefs failure")
+		}
+		if !reflect.DeepEqual(changed, []string{"data"}) {
+			t.Fatalf("changed = %v, want data, whose wipe had started", changed)
+		}
+	})
+}
+
+func TestVolumePlanningRefusesAmbiguousReleasedBinding(t *testing.T) {
+	data := diskForLayout("/dev/sdb", "/dev/disk/by-id/ata-data", 16384)
+	data.Partitions = []BlockDevice{{Path: "/dev/sdb1", Type: DevicePartition, PartitionNumber: 1, ByID: []string{"/dev/disk/by-id/ata-data-part1"}, PartitionUUID: "part-1", FilesystemSignature: "xfs"}}
+	clone := diskForLayout("/dev/sdc", "/dev/disk/by-id/ata-clone", 16384)
+	clone.Partitions = []BlockDevice{{Path: "/dev/sdc1", Type: DevicePartition, PartitionNumber: 1, PartitionUUID: "part-1", FilesystemSignature: "xfs"}}
+	root := diskForLayout("/dev/nvme0n1", "/dev/disk/by-id/nvme-root", 32768)
+	repartition := VolumeRequest{Name: "b", Disk: &TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data"}, Filesystem: "xfs", Wipe: true}
+
+	t.Run("ambiguous", func(t *testing.T) {
+		released := []VolumeBinding{{Name: "a", PartitionUUID: "part-1"}}
+
+		_, err := PlanVolumeChanges(layoutFacts(root, data, clone), root, []VolumeRequest{repartition}, nil, released)
+
+		if !mentions(err, `"a"`, "ambiguous", "matched 2 partitions") {
+			t.Fatalf("PlanVolumeChanges() error = %v, want refusal naming a and its ambiguous binding", err)
+		}
+	})
+
+	t.Run("matching nothing", func(t *testing.T) {
+		released := []VolumeBinding{{Name: "a", PartitionUUID: "gone"}}
+
+		if _, err := PlanVolumeChanges(layoutFacts(root, data), root, []VolumeRequest{repartition}, nil, released); err != nil {
+			t.Fatalf("PlanVolumeChanges() error = %v, want a binding that matches nothing to be skipped", err)
+		}
+	})
+}

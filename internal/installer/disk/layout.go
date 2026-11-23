@@ -3,6 +3,7 @@ package disk
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -192,6 +193,9 @@ func VolumeBindingMountSource(binding VolumeBinding) (string, error) {
 	}
 }
 
+// errAmbiguousBinding marks a binding that identifies more than one partition.
+var errAmbiguousBinding = errors.New("ambiguous volume binding")
+
 func MatchVolumeBinding(facts HardwareFacts, binding VolumeBinding) (BlockDevice, error) {
 	_, partition, err := matchVolumeBinding(facts, binding)
 	return partition, err
@@ -225,7 +229,7 @@ func matchVolumeBinding(facts HardwareFacts, binding VolumeBinding) (BlockDevice
 	case 1:
 		return disks[0], matches[0], nil
 	default:
-		return BlockDevice{}, BlockDevice{}, fmt.Errorf("bound identity for volume %q matched %d partitions", binding.Name, len(matches))
+		return BlockDevice{}, BlockDevice{}, fmt.Errorf("%w: bound identity for volume %q matched %d partitions", errAmbiguousBinding, binding.Name, len(matches))
 	}
 }
 

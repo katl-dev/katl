@@ -500,15 +500,16 @@ func (r volumeRecovery) touched() map[volumeStorage]string {
 
 // rewrittenBy names the rewritten volume whose commands wrote the storage the
 // named volume's current binding resolves to, or returns "" when its storage
-// was not written.
-func (r volumeRecovery) rewrittenBy(facts discovery.HardwareFacts, touched map[volumeStorage]string, name string) string {
+// was not written. A binding that cannot be matched to one partition is an
+// error: its storage cannot be shown to be intact.
+func (r volumeRecovery) rewrittenBy(facts discovery.HardwareFacts, touched map[volumeStorage]string, name string) (string, error) {
 	binding, ok := r.bindings[name]
 	if !ok {
-		return ""
+		return "", nil
 	}
 	partition, err := disk.MatchVolumeBinding(facts, diskVolumeBinding(binding))
 	if err != nil {
-		return ""
+		return "", err
 	}
 	for _, device := range facts.BlockDevices {
 		if !slices.ContainsFunc(device.Partitions, func(candidate discovery.BlockDevice) bool { return candidate.Path == partition.Path }) {
@@ -516,11 +517,11 @@ func (r volumeRecovery) rewrittenBy(facts discovery.HardwareFacts, touched map[v
 		}
 		for _, storage := range []volumeStorage{{diskSeq: device.DiskSeq}, {diskSeq: device.DiskSeq, partition: partition.PartitionNumber}} {
 			if owner, ok := touched[storage]; ok {
-				return owner
+				return owner, nil
 			}
 		}
 	}
-	return ""
+	return "", nil
 }
 
 // fail starts the mount units of the stopped volumes whose storage was not
@@ -543,6 +544,7 @@ func (r volumeRecovery) fail(ctx context.Context, cause error) error {
 	}
 
 	var restarted, failed, overwritten, unchecked, writers []string
+	causes := map[string]error{}
 	for _, name := range r.stopped {
 		if slices.Contains(r.rewritten, name) {
 			continue
@@ -550,9 +552,18 @@ func (r volumeRecovery) fail(ctx context.Context, cause error) error {
 		if len(touched) > 0 {
 			if checkErr != nil {
 				unchecked = append(unchecked, name)
+				causes[name] = checkErr
 				continue
 			}
-			if owner := r.rewrittenBy(facts, touched, name); owner != "" {
+			owner, err := r.rewrittenBy(facts, touched, name)
+			if err != nil {
+				// A binding that resolves to no single partition leaves no
+				// device for its unit to mount, or an unknown one.
+				unchecked = append(unchecked, name)
+				causes[name] = err
+				continue
+			}
+			if owner != "" {
 				overwritten = append(overwritten, name)
 				if !slices.Contains(writers, owner) {
 					writers = append(writers, owner)
@@ -587,7 +598,11 @@ func (r volumeRecovery) fail(ctx context.Context, cause error) error {
 		err = fmt.Errorf("%w; volumes %s were stopped for this apply and left unmounted, because the storage they are bound to was repartitioned or formatted for volumes %s, so the data they held may be gone; check that storage before mounting them again", err, strings.Join(overwritten, ", "), strings.Join(writers, ", "))
 	}
 	if len(unchecked) > 0 {
-		err = fmt.Errorf("%w; volumes %s were stopped for this apply and left unmounted, because their storage could not be checked against the volumes being rewritten: %v; check their disks, then retry the apply", err, strings.Join(unchecked, ", "), checkErr)
+		details := make([]string, 0, len(unchecked))
+		for _, name := range unchecked {
+			details = append(details, fmt.Sprintf("%s (%v)", name, causes[name]))
+		}
+		err = fmt.Errorf("%w; volumes %s were stopped for this apply and left unmounted, because their storage could not be checked against the volumes being rewritten: %s; check their disks, then retry the apply", err, strings.Join(unchecked, ", "), strings.Join(details, "; "))
 	}
 	if len(r.rewritten) > 0 {
 		err = fmt.Errorf("%w; volumes %s were being repartitioned or formatted when the apply stopped, so they may hold incomplete filesystems; a rewritten volume stays unmounted until the apply is retried, which finishes preparing it once the cause is fixed", err, strings.Join(r.rewritten, ", "))

@@ -63,9 +63,15 @@ func PlanVolumeChanges(facts HardwareFacts, target BlockDevice, requests []Volum
 	seenNames := make(map[string]struct{}, len(requests)+len(kept))
 	claims := volumeClaims{}
 	for _, binding := range released {
-		// A binding that no longer matches one partition names no storage
-		// a restart could mount.
-		if plan, err := keptVolume(facts, binding); err == nil {
+		plan, err := keptVolume(facts, binding)
+		if errors.Is(err, errAmbiguousBinding) {
+			// A restart could mount any of the matching partitions, so storage
+			// that cannot be identified cannot be planned around.
+			return nil, fmt.Errorf("volume %q is released by this change but its binding is ambiguous: %w; remove the duplicate identity before applying", binding.Name, err)
+		}
+		// A binding that matches no partition names no storage a restart
+		// could mount.
+		if err == nil {
 			claims.release(plan)
 		}
 	}

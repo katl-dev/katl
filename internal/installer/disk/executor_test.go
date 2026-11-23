@@ -174,13 +174,20 @@ func TestDiskExecutorClearsVolumeDiskBeforeRepartitioning(t *testing.T) {
 	}
 
 	var volumeCalls []string
+	var wipe CommandCall
 	for _, call := range commands.Calls {
 		if slices.Contains(call.Args, "/dev/disk/by-diskseq/3") {
 			volumeCalls = append(volumeCalls, call.Name)
+			if call.Name == "wipefs" {
+				wipe = call
+			}
 		}
 	}
 	if !reflect.DeepEqual(volumeCalls, []string{"wipefs", "systemd-repart"}) {
 		t.Fatalf("commands on the volume disk = %q, want wipefs, then systemd-repart", volumeCalls)
+	}
+	if !slices.Contains(wipe.Args, "--all") {
+		t.Fatalf("wipefs args = %q, want --all so every signature is erased", wipe.Args)
 	}
 }
 
