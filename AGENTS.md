@@ -24,16 +24,29 @@ Katl produces KatlOS, an installable, upgradeable, systemd-native Kubernetes nod
 - Do not commit host-specific paths such as user home directories, `/nix/store`, `/run/current-system`, or `/etc/profiles`. Use `PATH`, repository-relative paths, containerized tooling, or explicit local overrides.
 - Published images and release artifacts must not contain VM test agents, fixtures, or other test-only support code.
 
+## Single Ownership
+
+- Give every decision one owner. Node address roles, storage selection and identity, rendered configuration such as kubeadm, kubelet, API proxy and mount units, validation rules, and health definitions each have one implementation that every path calls. Install, live apply, bootstrap, join, upgrade, and rollback differ in their inputs, not in their rules.
+- Before writing code that computes, renders, validates, or derives something, find the code that already owns it and use that, or move both behind one shared owner. A second implementation of the same responsibility needs a reason recorded in a design document; similar code with a genuinely different contract is not a duplicate.
+- Bind a selected target once and carry the binding. After a disk, partition, or node address is selected, later steps use the bound identity and never resolve it again by label, kernel name, selector, or the current attempt's state. `docs/internal/storage-identity.md` defines this for storage.
+- Treat a defect caused by two implementations disagreeing as a missing owner. Fix it by consolidating them, and search for other pairs that own the same responsibility before considering the fix complete.
+
 ## Testing and Release Confidence
 
 - Test operator-visible outcomes and durable contracts, not incidental formatting, timing, generated ordering, or implementation details. Fix systemic test design when failures reveal overspecification; do not mask flakes with retries or looser assertions.
+- Treat a check that fails on an unrelated change as a defect to root-cause and fix immediately, not as noise to rerun. Rerun such a check only while its root cause is understood and a fix is in progress.
+- Keep tests and development worlds hermetic with respect to the operator's environment. Tests must not read or write the operator's git configuration, `katlctl` contexts, or home directory: give each test's git and `katlctl` invocations configuration inside the test's own directory, and keep `katldev` contexts in the world's own `KATLCTL_CONFIG`.
+- Do not run a `katldev` image build while a `scripts/vmtest-run` gate uses the same checkout's `_build/mkosi`; the gate would test whatever the build leaves behind.
 - Design install and lifecycle behavior as typed, idempotent, testable transitions. Use unit tests for policy and planning, golden tests for generated assets, and VM tests for integrated boot and lifecycle journeys.
 - Release-critical services must participate in health semantics and be asserted directly in the relevant VM journey. A successful boot marker is not proof that operator access or management paths work.
 - `go test ./...` is the baseline unit and golden gate, not evidence that VM, boot, install, update, or kubeadm flows ran.
 - Changes affecting VM infrastructure, fixtures, boot, installation, updates, disk layout, or kubeadm state must run the relevant `scripts/vmtest-run ... -count=1` gate on a capable host. If unavailable, record the exact capability gap and command still required.
-- Verify generated systemd units with `systemd-analyze verify` where practical. Risky boot, disk, update, security, or kubeadm changes also require focused review.
+- Verify generated systemd units with `systemd-analyze verify` where practical. Risky boot, disk, update, security, or kubeadm changes also require focused review, which should check whether the change adds or keeps a second implementation of a responsibility that another path already owns.
 - Use delete-on-success retention for routine VM gates. Keep large run output only while debugging and remove it afterwards.
 - A release should exercise the same artifacts and supported journeys users receive. Do not infer release readiness solely from unit tests or a successful artifact build.
+
+## User-Journey Validation
+
 - Every user-facing change must pass hands-on user-journey validation in a persistent `katldev` VM through the public `katlctl` interface before it is landed. Automated `vmtest` coverage, unit tests, direct inspection of internal state, and a journey run for an earlier change do not substitute for this gate. Documentation-only changes are exempt unless they describe behavior that cannot be confirmed from the code, tests, or an earlier recorded journey; in that case, validate the specific claim in a `katldev` VM rather than the whole journey.
 - Exercise the parts of the journey affected by the change, including representative happy paths, repeat operations or applies, online changes, next-boot or reboot behavior, and safe failure or recovery paths where applicable. Verify actual Linux, systemd, Kubernetes, and persisted-state outcomes from an operator-accessible surface without relying on internal shortcuts.
 - Judge the journey as a user would: require useful progress, actionable errors, the expected end state, idempotence, and no surprising disruption. Record the exact commands and outcomes in the Bead. Treat a discovered product gap as a failed gate that must be fixed and rerun before landing; if the host cannot provide the required VM capability, record the exact capability gap and outstanding journey, and do not claim the user-facing change is validated.
@@ -41,11 +54,11 @@ Katl produces KatlOS, an installable, upgradeable, systemd-native Kubernetes nod
 
 ## Task and Delivery Workflow
 
-- Use Beads through `bd`. Check `bd ready` or `bd list` before starting; create or claim a Bead for non-trivial work with concrete acceptance criteria, and keep its notes current when scope or gates change. Keep Beads operational data local unless explicitly directed otherwise.
+- Use Beads through `bd`. Check `bd ready` or `bd list` before starting; create or claim a Bead for non-trivial work with concrete acceptance criteria, and keep its notes current when scope or gates change. Add to notes with `bd update --append-notes`; `--notes` replaces the existing notes. Keep Beads operational data local unless explicitly directed otherwise.
 - Review `git status --short` before editing, staging, and committing. Preserve unrelated user changes and stage only explicit task paths.
 - Deliver changes through ready-for-review pull requests. Use drafts only when explicitly requested. Keep PR descriptions concise: state what changed, why, and the root cause when fixing a defect; omit routine local-check inventories.
 - Enable auto-merge after required checks when authorized, then monitor the PR through merge. Do not treat opening a PR as completion.
-- Commit with `git commit-wrapped` and provide both title and body. Titles use `area: summary`, where the summary completes “When merged, this change will …”. Bodies should concisely explain the durable change and its reason.
+- Commit with `git commit-wrapped`, which the development shell provides, and give both title and body. Commits are authored and committed under the operator's own identity. Titles use `area: summary`, where the summary completes “When merged, this change will …”. Bodies should concisely explain the durable change and its reason.
 - Release notes use commit subjects by default. For commits that should appear under a different name, add one `Release-Note: <reader-facing summary>` trailer to the commit body. Use `Release-Note: skip` to omit internal changes. A squash-merged PR keeps its commits' trailers in the body, and the last `Release-Note:` in the body is used. Keep the summary on one line; it replaces the full displayed entry, including the area label. Use these trailers only when the default subject would mislead release readers or add noise.
 - Use `docs/releases/<version>.md` when a release needs operator guidance beyond one-line change entries, such as upgrade paths, required actions, compatibility or deprecation notices, known limitations, and recovery guidance. Add it while preparing that release, after verifying the behavior and commands it describes. The release generator appends this file after the generated changes; review the resulting `RELEASE_NOTES.md` for the exact release before publishing. Link to durable operational procedures instead of duplicating them, and keep transient test evidence in Bead notes.
 - Do not rewrite history, reset, discard changes, publish releases, or mutate unrelated external state without explicit authority.
