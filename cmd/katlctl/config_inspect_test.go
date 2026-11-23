@@ -97,37 +97,69 @@ func TestConfigDiffClassifiesLifecycleAndTargetChanges(t *testing.T) {
 	if report.Classification.Overall != "operation-only" || len(report.Changes) != 2 {
 		t.Fatalf("diff = %#v", report)
 	}
-	if report.Changes[0].RequiredOperation != "wipe-reinstall" || report.Changes[1].Classification != "target-only" {
+	if report.Changes[0].RequiredOperation != "wipe-reinstall" || report.Changes[1].Classification != "online-applicable" {
 		t.Fatalf("changes = %#v", report.Changes)
 	}
 }
 
-func TestConfigDiffClassifiesManagementAddressOnlyAsTargetOnly(t *testing.T) {
-	dir := t.TempDir()
-	beforePath := filepath.Join(dir, "before.yaml")
-	afterPath := filepath.Join(dir, "after.yaml")
-	before := configInspectionSource()
-	after := strings.Replace(before, "address: 10.0.0.11", "address: 10.0.0.12", 1)
-	if err := os.WriteFile(beforePath, []byte(before), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(afterPath, []byte(after), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"config", "diff", beforePath, afterPath, "--node", "cp-1", "--output", "json"}, &stdout, &stderr); err != nil {
-		t.Fatalf("run() error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
-	}
-	var report configbundle.ConfigDiff
-	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
-		t.Fatalf("decode output: %v\n%s", err, stdout.String())
-	}
-	if report.Classification.Overall != "target-only" || len(report.Changes) != 1 {
-		t.Fatalf("diff = %#v", report)
-	}
-	change := report.Changes[0]
-	if change.Path != `spec.nodes["cp-1"].management.address` || change.Classification != "target-only" || change.RequiredOperation != "" || !strings.Contains(change.Message, "no node generation or mutation") {
-		t.Fatalf("management address change = %#v", change)
+func TestConfigDiffClassifiesManagementAddress(t *testing.T) {
+	worker := `    - name: worker-1
+      management:
+        address: 10.0.0.21
+      install:
+        systemDisk:
+          byID: /dev/disk/by-id/ata-worker-root
+`
+	for _, tc := range []struct {
+		name, node, before, after string
+		classification, message   string
+	}{
+		{
+			// Nothing on a worker listens at its management address.
+			name: "worker", node: "worker-1",
+			before: "address: 10.0.0.21", after: "address: 10.0.0.22",
+			classification: "target-only", message: "no node generation or mutation",
+		},
+		{
+			// The proxy keeps serving kubernetes.address and moves its second
+			// workstation listener with the management address.
+			name: "multihomed control plane", node: "cp-1",
+			before: "address: 10.0.0.11\n", after: "address: 192.168.1.12\n",
+			classification: "online-applicable", message: "restarts the API proxy",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			beforePath := filepath.Join(dir, "before.yaml")
+			afterPath := filepath.Join(dir, "after.yaml")
+			before := configBundleSource() + worker
+			before = strings.Replace(before, "      install:\n", "      kubernetes:\n        address: 10.0.0.11\n      install:\n", 1)
+			after := strings.Replace(before, tc.before, tc.after, 1)
+			if after == before {
+				t.Fatal("fixture has no address to change")
+			}
+			if err := os.WriteFile(beforePath, []byte(before), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(afterPath, []byte(after), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var stdout, stderr bytes.Buffer
+			if err := run(context.Background(), []string{"config", "diff", beforePath, afterPath, "--node", tc.node, "--output", "json"}, &stdout, &stderr); err != nil {
+				t.Fatalf("run() error = %v\nstdout=%s\nstderr=%s", err, stdout.String(), stderr.String())
+			}
+			var report configbundle.ConfigDiff
+			if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+				t.Fatalf("decode output: %v\n%s", err, stdout.String())
+			}
+			if report.Classification.Overall != tc.classification || len(report.Changes) != 1 {
+				t.Fatalf("diff = %#v", report)
+			}
+			change := report.Changes[0]
+			if change.Path != `spec.nodes["`+tc.node+`"].management.address` || change.Classification != tc.classification || change.RequiredOperation != "" || !strings.Contains(change.Message, tc.message) {
+				t.Fatalf("management address change = %#v", change)
+			}
+		})
 	}
 }
 

@@ -38,7 +38,7 @@ and "—" means the field has no default.
 | `spec.nodes[].name` | Stable node name | — | See the [node lifecycle matrix](../operations/configure-nodes.md#node-lifecycle-matrix) |
 | `spec.nodes[].controlPlane` | Join the Kubernetes control plane | `false` (worker) | Wipe and reinstall |
 | `spec.nodes[].install.systemDisk` | [System disk](#system-disk) for installation; required | — | Installation only |
-| `spec.nodes[].management.address` | [Operator-reachable address](#node-addresses) used by `katlctl` | — | Workstation targeting only |
+| `spec.nodes[].management.address` | [Operator-reachable address](#node-addresses) used by `katlctl` | — | Workstation targeting; a control plane's API proxy listener restarts live |
 | `spec.nodes[].kubernetes.address` | [Kubernetes node address](#node-addresses) on a multihomed node | — | Refused as an operation-only change |
 
 ## Start with a generated configuration
@@ -121,10 +121,17 @@ during both init and control-plane join. It is deliberately one literal IP,
 not a subnet-selection policy. Omit it for normal single-uplink nodes. The
 separate `management.address` remains the operator-reachable address used by `katlctl`
 and may be different, including a NAT address that no node interface holds.
-When the two differ, nodes never bind or dial the management address: the
-Kubernetes API proxy listens on `kubernetes.address`, joins and etcd membership
-use it, and `katlctl` reaches the proxy through the management address with TLS
-verified against the control-plane endpoint name. For what each address change means after installation,
+When the two differ, nodes reach each other only at `kubernetes.address`: API
+proxy backends, joins and etcd membership use it, and nodes never dial the
+management address. `katlctl` reaches a control plane's API proxy through the
+management address with TLS verified against the control-plane endpoint name,
+so when `management.address` is a literal IP the proxy listens there as well
+as on `kubernetes.address`. That serves a second interface on a multihomed node
+directly and is harmless behind NAT, where translated connections arrive at
+`kubernetes.address`. A DNS name in `management.address` gets no listener of its
+own, so on a control plane it must reach the node at `kubernetes.address`,
+directly or through NAT. For what
+each address change means after installation,
 see [Change a node's address](../operations/change-cluster-nodes.md#change-a-nodes-address).
 
 ## Node labels and taints

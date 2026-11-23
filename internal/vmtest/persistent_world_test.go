@@ -50,6 +50,16 @@ func TestOwnedNetworkXML(t *testing.T) {
 	if _, err := network.HostXML(DHCPHost{Name: "far", MACAddress: "52:54:00:00:00:03", Address: "10.201.4.9"}); err == nil {
 		t.Fatal("HostXML accepted an address outside the network")
 	}
+
+	// libvirt isolates a network without a forward element.
+	network.Isolated = true
+	isolated, err := network.XML()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := strings.Replace(want, "  <forward mode=\"nat\"></forward>\n", "", 1); isolated != want {
+		t.Fatalf("isolated XML =\n%s\nwant\n%s", isolated, want)
+	}
 }
 
 func TestLibvirtNetworkParsing(t *testing.T) {

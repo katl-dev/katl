@@ -1210,6 +1210,7 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 		if err != nil {
 			return err
 		}
+		observeKubernetesAddress(fullInventory, target.Name, statuses[target.Name])
 		etcdPlan, err = planWipeEtcdRemoval(ctx, fullInventory, target.Name, "")
 		if err != nil {
 			report.EtcdCleanup = "refused"
@@ -1299,6 +1300,27 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 		return printErr
 	}
 	return submitErr
+}
+
+// observeKubernetesAddress fills in the node's Kubernetes address from its own
+// status when the wipe input does not declare one, as a saved context or a
+// bundle from before kubernetes.address was recorded does not. The API proxy
+// renderer gives a control plane's local backend that address, which is also
+// the host of its etcd peer URL, so a different member still fails to match.
+func observeKubernetesAddress(inv inventory.Inventory, name string, status *agentapi.NodeStatus) {
+	for i := range inv.Nodes {
+		if inv.Nodes[i].Name != name || strings.TrimSpace(inv.Nodes[i].KubernetesAddress) != "" {
+			continue
+		}
+		for _, backend := range status.GetApiProxy().GetBackends() {
+			if !backend.GetLocal() {
+				continue
+			}
+			if host, _, err := net.SplitHostPort(backend.GetAddress()); err == nil {
+				inv.Nodes[i].KubernetesAddress = host
+			}
+		}
+	}
 }
 
 func wipeNodeInventory(ctx context.Context, opts wipeNodeOptions, stderr io.Writer) (inventory.Inventory, error) {

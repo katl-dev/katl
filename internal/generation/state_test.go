@@ -24,6 +24,8 @@ func TestRenderState(t *testing.T) {
 		"d /var/lib/katl/cluster 0750 root root -",
 		"d /var/lib/katl/config-requests 0750 root root -",
 		"d /var/lib/katl/kubernetes/etc-kubernetes 0755 root root -",
+		"z /var/lib/katl/kubernetes/etc-kubernetes/pki 0755 root root -",
+		"z /var/lib/katl/kubernetes/etc-kubernetes/pki/etcd 0755 root root -",
 		"d /var/lib/katl/kubernetes/cni/bin 0755 root root -",
 		"d /var/lib/katl/kubernetes/cni/net.d 0755 root root -",
 		"d /var/lib/katl/home 0755 root root -",

@@ -196,12 +196,33 @@ func (manager installerManager) setNAT(ctx context.Context, name, address string
 	if _, network, err := net.ParseCIDR(world.World.Network.CIDR); err == nil && network.Contains(parsed.AsSlice()) {
 		return fmt.Errorf("--address %s is inside the world network %s, where a VM could hold it; choose an address outside it, such as 198.18.0.10", parsed, world.World.Network.CIDR)
 	}
+	if multihome, err := manager.readMultihome(); err != nil {
+		return err
+	} else if prefix, err := netip.ParsePrefix(multihome.Network.CIDR); err == nil && prefix.Contains(parsed) {
+		return fmt.Errorf("--address %s is inside the world's second network %s, where a VM's second NIC could hold it; choose an address outside it, such as 198.18.0.10", parsed, multihome.Network.CIDR)
+	}
 	if hostHoldsAddress(parsed) {
 		return fmt.Errorf("--address %s is assigned to a host interface; choose an address no host interface holds", parsed)
 	}
 	for other, existing := range nat {
 		if other != node.Name && existing == parsed.String() {
 			return fmt.Errorf("--address %s already translates to %s", parsed, other)
+		}
+	}
+	// Another world's rule for the address would win or lose by OUTPUT order,
+	// so this host could reach a different VM there.
+	rules, err := manager.iptables(ctx, "-S")
+	if err != nil {
+		return err
+	}
+	own := natChain(world.World.RunID)
+	for _, line := range strings.Split(string(rules), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] != "-A" || fields[1] == own {
+			continue
+		}
+		if strings.Contains(line, " -d "+parsed.String()+"/32 ") && strings.Contains(line, " -j DNAT") {
+			return fmt.Errorf("--address %s is already translated by host nat chain %s, such as another katldev world's; choose another address", parsed, fields[1])
 		}
 	}
 

@@ -276,6 +276,13 @@ func (manager installerManager) createNode(ctx context.Context, world katldevWor
 	if _, err := manager.virsh(ctx, uri, "define", plan.DomainXMLFile); err != nil {
 		return installerState{}, err
 	}
+	if multihome, err := manager.readMultihome(); err != nil {
+		return installerState{}, err
+	} else if nic, ok := multihome.Nodes[node.Name]; ok {
+		if err := manager.attachMultihome(ctx, uri, plan.DomainName, multihome.Network.Name, nic); err != nil {
+			return installerState{}, err
+		}
+	}
 	if _, err := manager.virsh(ctx, uri, "start", plan.DomainName); err != nil {
 		return installerState{}, err
 	}
@@ -625,6 +632,9 @@ func (manager installerManager) printWorld(world katldevWorld, observations []no
 		fmt.Fprintf(manager.stdout, "  Address: %s\n", address)
 		if nat, err := manager.readNAT(); err == nil && nat[node.Name] != "" {
 			fmt.Fprintf(manager.stdout, "  NAT address: %s\n", nat[node.Name])
+		}
+		if multihome, err := manager.readMultihome(); err == nil && multihome.Nodes[node.Name].Address != "" {
+			fmt.Fprintf(manager.stdout, "  Second NIC address: %s\n", multihome.Nodes[node.Name].Address)
 		}
 		if observation.Installer != "" {
 			fmt.Fprintf(manager.stdout, "  Endpoint: %s\n", observation.State.Endpoint)

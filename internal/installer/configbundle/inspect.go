@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/installer/confext"
 	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 )
@@ -42,6 +46,9 @@ type ResolvedDerived struct {
 	SystemRole     string          `json:"systemRole" yaml:"systemRole"`
 	KubeadmConfig  string          `json:"kubeadmConfig,omitempty" yaml:"kubeadmConfig,omitempty"`
 	StorageVolumes []DerivedVolume `json:"storageVolumes,omitempty" yaml:"storageVolumes,omitempty"`
+	// APIProxyListeners are the addresses where the node's API proxy serves
+	// katlctl, as rendered from the node addresses.
+	APIProxyListeners []string `json:"apiProxyListeners,omitempty" yaml:"apiProxyListeners,omitempty"`
 }
 
 type DerivedVolume struct {
@@ -121,9 +128,10 @@ func InspectSelectedNode(selected SelectedNodeMaterial) (NodeResolution, error) 
 			KubernetesVersion:    selected.NodeMaterial.KubernetesVersion,
 		},
 		Derived: ResolvedDerived{
-			Hostname:      selected.InstallManifest.Node.Identity.Hostname,
-			SystemRole:    selected.InstallManifest.Node.SystemRole,
-			KubeadmConfig: selected.NodeMaterial.KubeadmConfig.Ref,
+			Hostname:          selected.InstallManifest.Node.Identity.Hostname,
+			SystemRole:        selected.InstallManifest.Node.SystemRole,
+			KubeadmConfig:     selected.NodeMaterial.KubeadmConfig.Ref,
+			APIProxyListeners: workstationListeners(selected.NodeMaterial.APIProxy),
 		},
 		Classification: ResolutionClassification{
 			Install:   "supported for unenrolled or explicitly reinstalled nodes",
@@ -159,10 +167,15 @@ func InspectSelectedNode(selected SelectedNodeMaterial) (NodeResolution, error) 
 		}
 	}
 	if node.Management.Address != "" {
-		report.Warnings = append(report.Warnings, ResolutionWarning{
-			Path:    base + ".management.address",
-			Message: "management.address selects the workstation target and does not change generated node state",
-		})
+		message := "management.address selects the workstation target and does not change generated node state"
+		host := strings.TrimSpace(node.Management.Address)
+		if split, _, err := net.SplitHostPort(host); err == nil {
+			host = split
+		}
+		if slices.Contains(report.Derived.APIProxyListeners, net.JoinHostPort(host, strconv.Itoa(apiproxy.DefaultPort))) {
+			message = "management.address selects the workstation target, and the control plane's API proxy listens there for katlctl"
+		}
+		report.Warnings = append(report.Warnings, ResolutionWarning{Path: base + ".management.address", Message: message})
 	}
 	owned := append([]confext.NativeEtcFile(nil), selected.NodeMaterial.NativeEtcFiles...)
 	if plan, ok := selected.KubeadmConfigs[selected.NodeMaterial.KubeadmConfig.Ref]; ok {
@@ -524,6 +537,14 @@ func DiffNodeResolutions(before, after NodeResolution) (ConfigDiff, error) {
 	diffStringMaps(&diff, base+".kubernetes.labels", before.Effective.Kubernetes.Labels.Value(), after.Effective.Kubernetes.Labels.Value())
 	add(base+".kubernetes.taints", before.Effective.Kubernetes.Taints.Value(), after.Effective.Kubernetes.Taints.Value())
 	add(base+".management.address", before.Effective.Management.Address, after.Effective.Management.Address)
+	if !slices.Equal(before.Derived.APIProxyListeners, after.Derived.APIProxyListeners) {
+		for i := range diff.Changes {
+			if diff.Changes[i].Path == base+".management.address" {
+				diff.Changes[i].Classification = "online-applicable"
+				diff.Changes[i].Message = "moves the control plane's API proxy listener for katlctl; cluster apply restarts the API proxy and plans no other node change"
+			}
+		}
+	}
 	sort.Slice(diff.Changes, func(i, j int) bool { return diff.Changes[i].Path < diff.Changes[j].Path })
 	diff.Classification = summarizeDiff(diff.Changes)
 	return diff, nil
@@ -659,4 +680,14 @@ func sortedUnionKeys[V any](left, right map[string]V) []string {
 		keys[key] = struct{}{}
 	}
 	return sortedMapKeys(keys)
+}
+
+func workstationListeners(config apiproxy.Config) []string {
+	var addresses []string
+	for _, listener := range config.Listeners {
+		if listener.Exposure == apiproxy.ExposureWorkstation {
+			addresses = append(addresses, listener.Address)
+		}
+	}
+	return addresses
 }

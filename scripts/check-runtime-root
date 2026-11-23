@@ -320,6 +320,8 @@ file_has /etc/containerd/config.toml 'bin_dirs = ["/var/lib/katl/kubernetes/cni/
 file_has /etc/containerd/config.toml 'conf_dir = "/var/lib/katl/kubernetes/cni/net.d"'
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/kubernetes/cni/bin 0755 root root -"
 file_has /usr/lib/tmpfiles.d/katl-state.conf "d /var/lib/katl/kubernetes/cni/net.d 0755 root root -"
+file_has /usr/lib/tmpfiles.d/katl-state.conf "z /var/lib/katl/kubernetes/etc-kubernetes/pki 0755 root root -"
+file_has /usr/lib/tmpfiles.d/katl-state.conf "z /var/lib/katl/kubernetes/etc-kubernetes/pki/etcd 0755 root root -"
 links_to /opt/cni/bin /var/lib/katl/kubernetes/cni/bin
 links_to /etc/systemd/system/smartd.service /dev/null
 # nftables.service is available but opt-in, and its operator ruleset owns only

@@ -204,65 +204,57 @@ func nativeFile(files []confext.NativeEtcFile, path string) *confext.NativeEtcFi
 	return nil
 }
 
-func TestCompileAPIProxyUsesKubernetesAddress(t *testing.T) {
-	// cp-1 is reached through NAT at 192.0.2.11, which it does not hold.
-	config := validConfig()
-	config.Spec.ControlPlaneEndpoint = &controlplaneendpoint.Config{Host: "10.0.1.11", Port: 6443}
-	config.Spec.Nodes[0].Overrides.Bootstrap.Address = "192.0.2.11"
-	config.Spec.Nodes[0].Overrides.Kubernetes.Address = "10.0.1.11"
-	plan, err := Compile(CompileRequest{Config: config, KubeadmConfigs: validKubeadmConfigs("v1.36.1")})
-	if err != nil {
-		t.Fatalf("Compile() error = %v", err)
-	}
+func TestCompileAPIProxyTopologies(t *testing.T) {
+	for _, topology := range []struct {
+		name                               string
+		cpManagement, cpKubernetes         string
+		workerManagement, workerKubernetes string
+	}{
+		{name: "single-address", cpManagement: "10.0.0.11", workerManagement: "10.0.0.21"},
+		{name: "single-address", cpManagement: "10.0.0.11", cpKubernetes: "10.0.0.11", workerManagement: "10.0.0.21", workerKubernetes: "10.0.0.21"},
+		// The workstation reaches the nodes through DNAT at 198.18.0.0/24.
+		{name: "nat", cpManagement: "198.18.0.11", cpKubernetes: "10.0.0.11", workerManagement: "198.18.0.21", workerKubernetes: "10.0.0.21"},
+		// The nodes hold both addresses on separate NICs.
+		{name: "multihomed", cpManagement: "192.168.1.11", cpKubernetes: "10.0.0.11", workerManagement: "192.168.1.21", workerKubernetes: "10.0.0.21"},
+	} {
+		t.Run(topology.name, func(t *testing.T) {
+			config := validConfig()
+			config.Spec.ControlPlaneEndpoint = &controlplaneendpoint.Config{Host: "10.0.0.11", Port: 6443}
+			config.Spec.Nodes[0].Overrides.Bootstrap.Address = topology.cpManagement
+			config.Spec.Nodes[0].Overrides.Kubernetes.Address = topology.cpKubernetes
+			config.Spec.Nodes[1].Overrides.Bootstrap.Address = topology.workerManagement
+			config.Spec.Nodes[1].Overrides.Kubernetes.Address = topology.workerKubernetes
+			plan, err := Compile(CompileRequest{Config: config, KubeadmConfigs: validKubeadmConfigs("v1.36.1")})
+			if err != nil {
+				t.Fatalf("Compile() error = %v", err)
+			}
+			// The bootstrap generation renders from the bootstrap inventory and
+			// replaces the installed configuration, so both must match.
+			bootstrapPlan, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: plan.BootstrapInventory, InitNode: "cp-1"})
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	installed := nativeFile(plan.Nodes[0].NativeEtcFiles, apiproxy.ConfigPath)
-	want := `{
-  "apiVersion": "katl.dev/v1alpha1",
-  "kind": "APIProxyConfig",
-  "tlsServerName": "10.0.1.11",
-  "canonicalEndpoint": "10.0.1.11:6443",
-  "caFile": "/etc/kubernetes/pki/ca.crt",
-  "checkInterval": "2s",
-  "checkTimeout": "2s",
-  "listeners": [
-    {
-      "address": "10.0.1.11:7445",
-      "exposure": "workstation"
-    },
-    {
-      "address": "127.0.0.1:7445",
-      "exposure": "node-local"
-    }
-  ],
-  "backends": [
-    {
-      "name": "cp-1",
-      "address": "10.0.1.11:6443",
-      "local": true
-    }
-  ]
-}
-`
-	if installed == nil || installed.Content != want {
-		t.Fatalf("installed API proxy config = %#v, want:\n%s", installed, want)
-	}
+			for i, node := range config.Spec.Nodes {
+				data, err := os.ReadFile(filepath.Join("..", "..", "bootstrap", "inventory", "testdata", "api-proxy", topology.name, node.Name+".json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				want := string(data)
 
-	// The bootstrap generation renders from the bootstrap inventory, so it
-	// must carry the Kubernetes address to reproduce the installed config.
-	bootstrapPlan, err := inventory.PlanInventory(inventory.PlanRequest{Inventory: plan.BootstrapInventory, InitNode: "cp-1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	bootstrapConfig, err := bootstrapPlan.APIProxyConfig("cp-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	rendered, err := apiproxy.Render(bootstrapConfig)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if rendered != want {
-		t.Fatalf("bootstrap API proxy config:\n%s\nwant:\n%s", rendered, want)
+				installed := nativeFile(plan.Nodes[i].NativeEtcFiles, apiproxy.ConfigPath)
+				if installed == nil || installed.Content != want {
+					t.Fatalf("%s installed API proxy config = %#v, want:\n%s", node.Name, installed, want)
+				}
+				bootstrapConfig, err := bootstrapPlan.APIProxyConfig(node.Name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if rendered, err := apiproxy.Render(bootstrapConfig); err != nil || rendered != want {
+					t.Fatalf("%s bootstrap API proxy config (error %v):\n%s\nwant:\n%s", node.Name, err, rendered, want)
+				}
+			}
+		})
 	}
 }
 
