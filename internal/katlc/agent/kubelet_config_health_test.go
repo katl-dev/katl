@@ -536,6 +536,8 @@ func TestKubeletBaselineAwaitsCurrentKubelet(t *testing.T) {
 		settles   bool
 		want      string
 		wantError bool
+		// cutShort blocks every Node read after the first until its context ends.
+		cutShort bool
 	}{
 		{name: "Node report from the previous boot", node: ToolResult{Stdout: []byte(strings.Replace(configPendingNode, "boot-1", earlierBoot, 1))}, settles: true, want: "cni-uninitialized"},
 		{name: "Node report from the previous invocation", node: ToolResult{Stdout: []byte(strings.Replace(configPendingNode, "00:00:01Z", "00:00:00Z", 1))}, settles: true, want: "cni-uninitialized"},
@@ -545,6 +547,7 @@ func TestKubeletBaselineAwaitsCurrentKubelet(t *testing.T) {
 		// A failing kubelet is the state a strict-repair baseline records.
 		{name: "kubelet restarting after failure", service: crashLoop, want: "ready"},
 		{name: "report never arrives", node: ToolResult{Stdout: []byte(strings.Replace(configPendingNode, "boot-1", earlierBoot, 1))}, wantError: true},
+		{name: "deadline ends a Node read", node: ToolResult{Stdout: []byte(strings.Replace(configPendingNode, "boot-1", earlierBoot, 1))}, wantError: true, cutShort: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -555,7 +558,18 @@ func TestKubeletBaselineAwaitsCurrentKubelet(t *testing.T) {
 			executor := NewExecutor(root, store, "agent")
 			var mu sync.Mutex
 			settled := false
-			executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+			kubectlCalls := 0
+			executor.RunTool = func(ctx context.Context, argv []string, _ func(int)) ToolResult {
+				if tc.cutShort && argv[0] == "/usr/bin/kubectl" {
+					mu.Lock()
+					kubectlCalls++
+					first := kubectlCalls == 1
+					mu.Unlock()
+					if !first {
+						<-ctx.Done()
+						return ToolResult{Err: ctx.Err(), ExitStatus: 1}
+					}
+				}
 				mu.Lock()
 				defer mu.Unlock()
 				// The first observation sees the transient state; a settling

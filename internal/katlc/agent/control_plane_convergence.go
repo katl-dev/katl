@@ -60,11 +60,18 @@ func (e *Executor) runControlPlaneConfigHealth(ctx context.Context, node string)
 		}
 		return result
 	}
+	var last ToolResult
+	attempted := false
 	for {
 		result := probe()
 		if result.Err == nil && result.ExitStatus == 0 {
 			return result
 		}
+		if healthCtx.Err() != nil && attempted {
+			// An attempt cut short by the deadline carries no new evidence; report the last complete one.
+			result = last
+		}
+		last, attempted = result, true
 		select {
 		case <-healthCtx.Done():
 			result.Err = errors.Join(result.Err, healthCtx.Err())
@@ -185,6 +192,7 @@ func (e *Executor) waitControlPlaneManifests(ctx context.Context, record operati
 	}
 	healthCtx, cancel := context.WithTimeout(ctx, postKubeadmHealthTimeout)
 	defer cancel()
+	var lastErr error
 	for {
 		mirrors, err := e.controlPlaneMirrors(healthCtx, record.KubeadmControlPlaneConfig.NodeName)
 		if err == nil {
@@ -198,6 +206,11 @@ func (e *Executor) waitControlPlaneManifests(ctx context.Context, record operati
 		if err == nil {
 			return nil
 		}
+		if healthCtx.Err() != nil && lastErr != nil {
+			// An attempt cut short by the deadline carries no new evidence; report the last complete one.
+			err = lastErr
+		}
+		lastErr = err
 		select {
 		case <-healthCtx.Done():
 			return errors.Join(err, healthCtx.Err())
