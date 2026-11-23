@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -429,9 +430,17 @@ func planInstall(install *Context) error {
 	if install.binding != nil {
 		retained := install.binding.TargetDisk
 		layoutRequest.RetainedTarget = &retained
+		for i, volume := range layoutRequest.Volumes {
+			if target, ok := install.binding.Volumes[volume.Name]; ok {
+				layoutRequest.Volumes[i].Retained = &target
+			}
+		}
 	}
 	layout, err := disk.PlanDiskLayout(install.HardwareFacts, layoutRequest)
 	if err != nil {
+		if install.binding != nil {
+			return fmt.Errorf("%w; %s", err, diskChangeNote(install))
+		}
 		return err
 	}
 	rootPlan, err := disk.PlanRootSlotWrite(layout, disk.RootSlotWriteRequest{
@@ -515,7 +524,7 @@ func (prepareDiskStep) Run(ctx context.Context, install *Context) error {
 	}
 	if err := executeDiskGroup(ctx, install, disk.PrepareOperations); err != nil {
 		if errors.Is(err, disk.ErrVolumeRefused) {
-			return fmt.Errorf("%w: before wiping, %w; no disk changes were made. Check the disks attached to the node, then rerun katlctl install apply", ErrInstallRefused, err)
+			return fmt.Errorf("%w: before wiping, %w; no disk changes were made, but this installer boot is now bound to the disks it planned. Reattach the disks as they were and rerun katlctl install apply, or boot the installer again to plan from the current disks", ErrInstallRefused, err)
 		}
 		return err
 	}
@@ -1370,16 +1379,36 @@ func loadDiskBinding(ctx context.Context, install *Context) error {
 	return nil
 }
 
-// bindDisk records the planned disk before the first destructive command of
-// the installer boot. Later attempts plan against this disk and refuse to
-// proceed without it.
+// bindDisk records the system disk and every volume disk the attempt may
+// change before its first destructive command. Later attempts plan against
+// these disks and refuse to proceed without them. Earlier bindings are kept,
+// so the record only accumulates.
 func bindDisk(ctx context.Context, install *Context) error {
-	if install.binding != nil || install.DiskLayout == nil {
+	if install.DiskLayout == nil {
 		return nil
 	}
 	binding := DiskBinding{RequestDigest: install.RequestDigest, TargetDisk: install.DiskLayout.TargetDisk}
+	changed := install.binding == nil
+	if install.binding != nil {
+		binding = *install.binding
+	}
+	volumes := maps.Clone(binding.Volumes)
+	for _, volume := range install.DiskLayout.VolumeMounts {
+		if _, bound := volumes[volume.Name]; bound || !volume.Destructive() {
+			continue
+		}
+		if volumes == nil {
+			volumes = map[string]disk.VolumeTarget{}
+		}
+		volumes[volume.Name] = volume.Target()
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	binding.Volumes = volumes
 	if err := install.Store.SaveDiskBinding(ctx, binding); err != nil {
-		return fmt.Errorf("%w: record the target disk before wiping: %w; no disk changes were made", ErrInstallRefused, err)
+		return fmt.Errorf("%w: record the disks before wiping: %w; no disk changes were made", ErrInstallRefused, err)
 	}
 	install.binding = &binding
 	return nil
