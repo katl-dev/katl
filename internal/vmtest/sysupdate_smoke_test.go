@@ -44,7 +44,13 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	} else {
 		_ = RequireWorld(t)
 	}
-	scenario := Scenario{Name: "installed-runtime-sysupdate-root-uki"}
+	// The disk of an earlier Katl install stays attached through the upgrade
+	// and rollbacks; every boot must keep using the installed disk.
+	oldDisk := filepath.Join(t.TempDir(), "old-katl.raw")
+	if err := WriteOldKatlDisk(context.Background(), filepath.Dir(oldDisk), oldDisk); err != nil {
+		t.Fatalf("WriteOldKatlDisk() error = %v", err)
+	}
+	scenario := Scenario{Name: "installed-runtime-sysupdate-root-uki", Disks: []DiskFixture{SnapshotDisk("old", oldDisk, DiskRaw)}}
 	result, err := runner.Plan(scenario)
 	if err != nil {
 		t.Fatalf("Plan() error = %v", err)
@@ -57,6 +63,9 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
+	if err := CreateDisks(ctx, diskExec(nil), result.Disks); err != nil {
+		t.Fatalf("CreateDisks() error = %v", err)
+	}
 	vm := runtime.VM
 	vm.KVM = runner.options().KVM
 	vm.RAMMiB = 2048
@@ -332,6 +341,36 @@ func assertHostUpgradeRuntimeReady(t *testing.T, ctx context.Context, guest *Gue
 		t.Fatalf("runtime did not become ready after %s: %v", phase, err)
 	}
 	guestCommand(t, ctx, guest, phase+"-sshd-config", "sshd", "-t")
+	assertSystemDiskMounts(t, ctx, guest, phase)
+}
+
+// assertSystemDiskMounts checks through the kernel mount table that /, /efi and
+// /var come from one disk and that the old Katl disk is neither mounted nor
+// repartitioned.
+func assertSystemDiskMounts(t *testing.T, ctx context.Context, guest *GuestControl, phase string) {
+	t.Helper()
+	disks := map[string]string{}
+	for _, target := range []string{"/", "/efi", "/var"} {
+		source := strings.TrimSpace(guestCommandOutput(t, ctx, guest, phase+"-mount-source", "findmnt", "--noheadings", "--output", "SOURCE", "--mountpoint", target))
+		sysfs := strings.TrimSpace(guestCommandOutput(t, ctx, guest, phase+"-mount-sysfs", "readlink", "-f", "/sys/class/block/"+filepath.Base(source)))
+		disks[target] = "/dev/" + filepath.Base(filepath.Dir(sysfs))
+	}
+	if disks["/efi"] != disks["/"] || disks["/var"] != disks["/"] {
+		t.Fatalf("%s: system mounts span disks %v, want /efi and /var on the root disk", phase, disks)
+	}
+	old := strings.TrimSpace(guestCommandOutput(t, ctx, guest, phase+"-old-disk", "readlink", "-f", "/dev/disk/by-id/virtio-katl-old"))
+	if disks["/"] == old {
+		t.Fatalf("%s: running root is on the old Katl disk %s", phase, old)
+	}
+	if mounts := guestCommandOutput(t, ctx, guest, phase+"-mounts", "findmnt", "--noheadings", "--list", "--output", "SOURCE"); strings.Contains(mounts, old) {
+		t.Fatalf("%s: old Katl disk %s is mounted:\n%s", phase, old, mounts)
+	}
+	table := guestCommandOutput(t, ctx, guest, phase+"-old-disk-table", "sfdisk", "--dump", old)
+	for _, label := range strings.Fields(OldKatlDiskLabels) {
+		if !strings.Contains(table, `name="`+label+`"`) {
+			t.Fatalf("%s: old Katl disk lost partition %s:\n%s", phase, label, table)
+		}
+	}
 }
 
 func submitHostUpgradeAndWait(t *testing.T, ctx context.Context, endpoint, nodeName, machineID, currentGeneration, candidateGeneration, localRef string, upgrade builtUpgradeImage, kind, configYAML string) (string, *agentapi.OperationStatus) {

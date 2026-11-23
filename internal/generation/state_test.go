@@ -8,52 +8,10 @@ import (
 	"testing"
 )
 
-const statePartUUID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-
 func TestRenderState(t *testing.T) {
-	assets, err := RenderState(StateRequest{PartitionUUID: statePartUUID})
+	assets, err := RenderState(StateRequest{})
 	if err != nil {
 		t.Fatalf("RenderState() error = %v", err)
-	}
-	wantMount := `[Unit]
-Description=Katl writable state partition
-Documentation=man:systemd.mount(5)
-DefaultDependencies=no
-Before=local-fs.target
-Conflicts=umount.target
-Before=umount.target
-
-[Mount]
-What=PARTUUID=aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee
-Where=/var
-Type=auto
-Options=rw
-
-[Install]
-WantedBy=local-fs.target
-`
-	if assets.VarMount != wantMount {
-		t.Fatalf("var.mount:\n%s\nwant:\n%s", assets.VarMount, wantMount)
-	}
-	wantEFIMount := `[Unit]
-Description=Katl EFI system partition
-Documentation=man:systemd.mount(5)
-DefaultDependencies=no
-Before=local-fs.target
-Conflicts=umount.target
-Before=umount.target
-
-[Mount]
-What=/dev/disk/by-partlabel/KATL_ESP
-Where=/efi
-Type=vfat
-Options=rw,umask=0077
-
-[Install]
-WantedBy=local-fs.target
-`
-	if assets.EFIMount != wantEFIMount {
-		t.Fatalf("efi.mount:\n%s\nwant:\n%s", assets.EFIMount, wantEFIMount)
 	}
 	for _, want := range []string{
 		"d /run/systemd/logind.conf.d 0755 root root -",
@@ -111,7 +69,7 @@ Options=bind,rw
 }
 
 func TestStateCheckService(t *testing.T) {
-	assets, err := RenderState(StateRequest{PartitionUUID: statePartUUID})
+	assets, err := RenderState(StateRequest{})
 	if err != nil {
 		t.Fatalf("RenderState() error = %v", err)
 	}
@@ -135,7 +93,7 @@ ExecStart=/usr/bin/printf 'Katl state projection ready\n'
 }
 
 func TestGenerationActivationService(t *testing.T) {
-	assets, err := RenderState(StateRequest{PartitionUUID: statePartUUID})
+	assets, err := RenderState(StateRequest{})
 	if err != nil {
 		t.Fatalf("RenderState() error = %v", err)
 	}
@@ -175,7 +133,7 @@ RequiredBy=systemd-confext.service
 }
 
 func TestKubeadmReadyRuntimeUnits(t *testing.T) {
-	assets, err := RenderState(StateRequest{PartitionUUID: statePartUUID})
+	assets, err := RenderState(StateRequest{})
 	if err != nil {
 		t.Fatalf("RenderState() error = %v", err)
 	}
@@ -240,7 +198,7 @@ Environment=KUBELET_EXTRA_ARGS=
 }
 
 func TestBootHealthRuntimeUnits(t *testing.T) {
-	assets, err := RenderState(StateRequest{PartitionUUID: statePartUUID})
+	assets, err := RenderState(StateRequest{})
 	if err != nil {
 		t.Fatalf("RenderState() error = %v", err)
 	}
@@ -345,7 +303,7 @@ WantedBy=timers.target
 }
 
 func TestAgentRuntimeUnit(t *testing.T) {
-	assets, err := RenderState(StateRequest{PartitionUUID: statePartUUID})
+	assets, err := RenderState(StateRequest{})
 	if err != nil {
 		t.Fatalf("RenderState() error = %v", err)
 	}
@@ -398,13 +356,12 @@ func TestWriteState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assets, err := WriteState(root, StateRequest{PartitionUUID: statePartUUID})
+	assets, err := WriteState(root, StateRequest{})
 	if err != nil {
 		t.Fatalf("WriteState() error = %v", err)
 	}
-	assertFile(t, filepath.Join(root, "etc/systemd/system/var.mount"), assets.VarMount)
-	assertFile(t, filepath.Join(root, "etc/systemd/system/efi.mount"), assets.EFIMount)
-	assertSymlink(t, filepath.Join(root, "etc/systemd/system/local-fs.target.wants/efi.mount"), "../efi.mount")
+	assertMissing(t, filepath.Join(root, "etc/systemd/system/var.mount"))
+	assertMissing(t, filepath.Join(root, "etc/systemd/system/efi.mount"))
 	assertFile(t, filepath.Join(root, "etc/systemd/system/etc-kubernetes.mount"), assets.EtcKubernetesMount)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-generation-activate.service"), assets.GenerationActivate)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-host-config-prepare.service"), assets.HostConfigPrepare)
@@ -459,15 +416,17 @@ func TestWriteState(t *testing.T) {
 }
 
 func TestRuntimeStaticStateUnits(t *testing.T) {
-	assets, err := RenderState(StateRequest{PartitionUUID: statePartUUID})
+	assets, err := RenderState(StateRequest{})
 	if err != nil {
 		t.Fatalf("RenderState() error = %v", err)
 	}
 	root := repoRoot(t)
 	systemdRoot := filepath.Join(root, "mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system")
 
-	assertRepoFile(t, filepath.Join(systemdRoot, "var.mount"), strings.ReplaceAll(assets.VarMount, "PARTUUID="+statePartUUID, "/dev/disk/by-partlabel/KATL_STATE"))
-	assertRepoFile(t, filepath.Join(systemdRoot, "efi.mount"), assets.EFIMount)
+	// The system disk generator owns /efi and /var; static units would mount
+	// partitions by label from whichever disk carries it.
+	assertMissing(t, filepath.Join(systemdRoot, "var.mount"))
+	assertMissing(t, filepath.Join(systemdRoot, "efi.mount"))
 	assertRepoFile(t, filepath.Join(systemdRoot, "etc-kubernetes.mount"), assets.EtcKubernetesMount)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-generation-activate.service"), assets.GenerationActivate)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-host-config-prepare.service"), assets.HostConfigPrepare)
@@ -493,8 +452,6 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	assertRepoFile(t, filepath.Join(systemdRoot, "katlc-agent.service"), assets.AgentService)
 	assertRepoFile(t, filepath.Join(root, "mkosi.profiles/runtime/mkosi.extra/usr/lib/tmpfiles.d/katl-state.conf"), assets.Tmpfiles)
 
-	assertSymlink(t, filepath.Join(systemdRoot, "local-fs.target.wants/var.mount"), "../var.mount")
-	assertSymlink(t, filepath.Join(systemdRoot, "local-fs.target.wants/efi.mount"), "../efi.mount")
 	assertMissing(t, filepath.Join(systemdRoot, "local-fs.target.wants/etc-kubernetes.mount"))
 	assertMissing(t, filepath.Join(systemdRoot, "multi-user.target.wants/katl-kubeadm-ready.target"))
 	assertSymlink(t, filepath.Join(systemdRoot, "multi-user.target.wants/katl-kubeadm-activate.service"), "../katl-kubeadm-activate.service")
@@ -508,13 +465,6 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	assertMissing(t, filepath.Join(systemdRoot, "katl-operation@.service"))
 	assertMissing(t, filepath.Join(systemdRoot, "katl-operation-reconcile.service"))
 	assertMissing(t, filepath.Join(systemdRoot, "katl-kubeadm-ready.target.requires/katl-operation-reconcile.service"))
-}
-
-func TestRenderStateRejectsUUID(t *testing.T) {
-	_, err := RenderState(StateRequest{PartitionUUID: "abc rw"})
-	if err == nil || !strings.Contains(err.Error(), "must not contain whitespace") {
-		t.Fatalf("RenderState() error = %v, want UUID validation failure", err)
-	}
 }
 
 func TestKubernetesProjectionRejectsPath(t *testing.T) {
@@ -557,7 +507,7 @@ func TestStateUnitsVerify(t *testing.T) {
 
 func writeStateVerifyFixture(t *testing.T, root string) {
 	t.Helper()
-	if _, err := WriteState(root, StateRequest{PartitionUUID: statePartUUID}); err != nil {
+	if _, err := WriteState(root, StateRequest{}); err != nil {
 		t.Fatalf("WriteState() error = %v", err)
 	}
 	writeUnit(t, root, "usr/lib/systemd/system/local-fs.target", "[Unit]\nDescription=Local File Systems\n")

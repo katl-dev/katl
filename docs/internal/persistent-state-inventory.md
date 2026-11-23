@@ -347,7 +347,7 @@ The concrete first implementation rules are:
 
 | Path | Mount behavior | Dependent services |
 | --- | --- | --- |
-| `/var` | `KATL_STATE` mounted by `var.mount` using the installed PARTUUID | All persistent node services |
+| `/var` | `KATL_STATE` on the disk holding the running root, mounted by the generated `var.mount` | All persistent node services |
 | `/var/lib/containerd` | Native directory on `/var`, no bind mount | `containerd.service` orders after `var.mount` and uses `RequiresMountsFor=/var/lib/containerd` |
 | `/var/lib/kubelet` | Native directory on `/var`, no bind mount | `kubelet.service` orders after `var.mount`, `containerd.service`, and `etc-kubernetes.mount` |
 | `/var/lib/etcd` | Native directory on `/var` by default; optional `var-lib-etcd.mount` for a Katl-owned `KATL_ETCD` partition | Kubelet, kubeadm automation, and `katl-kubeadm-ready.target` order after the optional mount when present |

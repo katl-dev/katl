@@ -174,6 +174,19 @@ go build \
     -o "$DESTDIR/usr/lib/katl/runtime/katl-generation-activate" \
     ./cmd/katl-generation-activate
 
+mkdir -p "$DESTDIR/usr/lib/systemd/system-generators"
+CGO_ENABLED=0 \
+GOOS=linux \
+GOARCH=amd64 \
+GOCACHE="$builddir/go-build" \
+GOMODCACHE="$gomodcache" \
+go build \
+    -trimpath \
+    -buildvcs=false \
+    -ldflags="-s -w" \
+    -o "$DESTDIR/usr/lib/systemd/system-generators/katl-system-disk-generator" \
+    ./cmd/katl-system-disk-generator
+
 CGO_ENABLED=0 \
 GOOS=linux \
 GOARCH=amd64 \

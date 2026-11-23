@@ -7,24 +7,18 @@ import (
 	"strings"
 )
 
-type OutputCommandRunner interface {
-	CommandRunner
-	Output(ctx context.Context, name string, args ...string) ([]byte, error)
-}
-
 type BootInstaller func(context.Context, BootRequest) (BootResult, error)
 
 type BootRequest struct {
-	Commands          OutputCommandRunner
+	Commands          CommandRunner
 	Plan              DiskLayoutPlan
 	TargetMountPrefix string
 }
 
 type BootResult struct {
-	ESP                   BootRef
-	XBOOTLDR              *BootRef
-	RootPartitionUUID     string
-	PartitionUUIDsByLabel map[string]string
+	ESP               BootRef
+	XBOOTLDR          *BootRef
+	RootPartitionUUID string
 }
 
 type BootRef struct {
@@ -46,42 +40,38 @@ func InstallBoot(ctx context.Context, request BootRequest) (BootResult, error) {
 	}
 
 	esp, _ := findPartitionByName(request.Plan.Partitions, "esp")
-
-	espMount := targetPath(prefix, esp.MountPath)
-	bootctlArgs := []string{"--esp-path=" + espMount}
-	result := BootResult{
-		ESP: BootRef{
-			Label:     esp.GPTLabel,
-			MountPath: espMount,
-		},
-		PartitionUUIDsByLabel: make(map[string]string),
+	espRef, err := bootRef(request.Plan, esp, prefix)
+	if err != nil {
+		return BootResult{}, err
 	}
+	result := BootResult{ESP: espRef}
+	bootctlArgs := []string{"--esp-path=" + espRef.MountPath}
 	if xbootldr, ok := findPartitionByName(request.Plan.Partitions, "xbootldr"); ok {
-		ref := BootRef{
-			Label:     xbootldr.GPTLabel,
-			MountPath: targetPath(prefix, xbootldr.MountPath),
+		ref, err := bootRef(request.Plan, xbootldr, prefix)
+		if err != nil {
+			return BootResult{}, err
 		}
 		result.XBOOTLDR = &ref
 		bootctlArgs = append(bootctlArgs, "--boot-path="+ref.MountPath)
 	}
+	result.RootPartitionUUID = request.Plan.PartitionUUIDs[request.Plan.Boot.RootPartitionLabel]
+	if result.RootPartitionUUID == "" {
+		return BootResult{}, fmt.Errorf("root partition %s is not bound to target disk %s", request.Plan.Boot.RootPartitionLabel, request.Plan.TargetDiskPath)
+	}
+
 	bootctlArgs = append(bootctlArgs, "install")
 	if err := request.Commands.Run(ctx, "bootctl", bootctlArgs...); err != nil {
 		return BootResult{}, fmt.Errorf("install systemd-boot: %w", err)
 	}
-
-	if err := recordPartUUID(ctx, request.Commands, esp.GPTLabel, &result.ESP.PartitionUUID, result.PartitionUUIDsByLabel); err != nil {
-		return BootResult{}, err
-	}
-	if result.XBOOTLDR != nil {
-		if err := recordPartUUID(ctx, request.Commands, result.XBOOTLDR.Label, &result.XBOOTLDR.PartitionUUID, result.PartitionUUIDsByLabel); err != nil {
-			return BootResult{}, err
-		}
-	}
-	if err := recordPartUUID(ctx, request.Commands, request.Plan.Boot.RootPartitionLabel, &result.RootPartitionUUID, result.PartitionUUIDsByLabel); err != nil {
-		return BootResult{}, err
-	}
-
 	return result, nil
+}
+
+func bootRef(plan DiskLayoutPlan, partition PartitionPlan, prefix string) (BootRef, error) {
+	uuid := plan.PartitionUUIDs[partition.GPTLabel]
+	if uuid == "" {
+		return BootRef{}, fmt.Errorf("partition %s is not bound to target disk %s", partition.GPTLabel, plan.TargetDiskPath)
+	}
+	return BootRef{Label: partition.GPTLabel, MountPath: targetPath(prefix, partition.MountPath), PartitionUUID: uuid}, nil
 }
 
 func checkBootPlan(plan DiskLayoutPlan) error {
@@ -96,29 +86,6 @@ func checkBootPlan(plan DiskLayoutPlan) error {
 		return fmt.Errorf("XBOOTLDR filesystem %q is unsupported", xbootldr.Filesystem)
 	}
 	return nil
-}
-
-func recordPartUUID(ctx context.Context, commands OutputCommandRunner, label string, target *string, labels map[string]string) error {
-	uuid, err := ReadPartUUID(ctx, commands, label)
-	if err != nil {
-		return err
-	}
-	*target = uuid
-	labels[label] = uuid
-	return nil
-}
-
-// ReadPartUUID returns the PARTUUID for the partition with the given GPT label.
-func ReadPartUUID(ctx context.Context, commands OutputCommandRunner, label string) (string, error) {
-	output, err := commands.Output(ctx, "blkid", "-t", "PARTLABEL="+label, "-s", "PARTUUID", "-o", "value")
-	if err != nil {
-		return "", fmt.Errorf("read %s PARTUUID: %w", label, err)
-	}
-	uuid := strings.TrimSpace(string(output))
-	if uuid == "" {
-		return "", fmt.Errorf("read %s PARTUUID: empty blkid output", label)
-	}
-	return uuid, nil
 }
 
 func targetPath(prefix, mountPath string) string {

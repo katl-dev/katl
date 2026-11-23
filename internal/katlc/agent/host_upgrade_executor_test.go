@@ -408,11 +408,21 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 
 func TestInspectRootSlotsRejectsAmbiguousPartitionLayout(t *testing.T) {
 	const rootType = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
+	const peers = "/dev/vda2 " + rootType + "\n/dev/vda3 " + rootType + "\n"
 	for _, test := range []struct {
 		name      string
+		active    string
 		partition string
 		want      string
 	}{
+		{
+			// A clone carries the running root's PARTUUID, so the slot to
+			// overwrite cannot be identified.
+			name:      "root PARTUUID on two disks",
+			active:    "/dev/vda2\n/dev/vdb2\n",
+			partition: peers,
+			want:      "is on 2 partitions (/dev/vda2, /dev/vdb2)",
+		},
 		{
 			name:      "missing peer",
 			partition: "/dev/vda2 " + rootType + "\n",
@@ -432,7 +442,10 @@ func TestInspectRootSlotsRejectsAmbiguousPartitionLayout(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			executor := &Executor{RunTool: func(_ context.Context, argv []string, _ func(int)) ToolResult {
 				switch strings.Join(argv, " ") {
-				case "blkid -t PARTUUID=active-partuuid -o device":
+				case "blkid -c /dev/null -t PARTUUID=active-partuuid -o device":
+					if test.active != "" {
+						return ToolResult{Stdout: []byte(test.active)}
+					}
 					return ToolResult{Stdout: []byte("/dev/vda2\n")}
 				case "lsblk -no PKNAME,PARTN /dev/vda2":
 					return ToolResult{Stdout: []byte("vda 2\n")}

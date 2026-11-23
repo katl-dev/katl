@@ -486,7 +486,7 @@ func TestRuntimeBootRootSourcesPreferActiveVMESP(t *testing.T) {
 		"/dev/disk/by-id/virtio-katl-efi",
 		"/dev/disk/by-id/virtio-katl-efi-part1",
 	}
-	if len(got) < len(wantPrefix)+1 {
+	if len(got) < len(wantPrefix) {
 		t.Fatalf("runtime boot root sources = %#v", got)
 	}
 	for i, want := range wantPrefix {
@@ -494,8 +494,10 @@ func TestRuntimeBootRootSourcesPreferActiveVMESP(t *testing.T) {
 			t.Fatalf("runtime boot root sources = %#v, want active EFI source %q at index %d", got, want, i)
 		}
 	}
-	if got[len(got)-1] != "/dev/disk/by-partlabel/KATL_ESP" {
-		t.Fatalf("runtime boot root fallback = %q, want installed disk ESP last", got[len(got)-1])
+	for _, source := range got {
+		if strings.Contains(source, "by-partlabel") {
+			t.Fatalf("runtime boot root sources = %#v; an installed ESP must come from efi.mount, not a label lookup", got)
+		}
 	}
 }
 

@@ -546,6 +546,7 @@ func addInstallerFlags(cmd *cobra.Command, opts *installerOptions) {
 	cmd.Flags().StringVar(&opts.DiskSize, "disk-size", opts.DiskSize, "fresh target disk size")
 	cmd.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "installer DHCP and readiness timeout")
 	cmd.Flags().BoolVar(&opts.NoBuild, "no-build", false, "use the existing installer ISO without checking the current checkout")
+	cmd.Flags().StringVar(&opts.ISO, "iso", "", "boot this installer ISO, such as a published release, instead of building the current checkout's")
 	cmd.Flags().BoolVar(&opts.ForceConfig, "force-config", false, "replace the generated katldev ClusterConfig")
 }
 
@@ -706,7 +707,7 @@ func (manager installerManager) startWorld(ctx context.Context, opts worldStartO
 	}
 
 	specs := worldNodeSpecs(world, exists, opts.Nodes)
-	iso, digest, err := manager.prepareInstaller(ctx, opts.NoBuild)
+	iso, digest, err := manager.prepareInstaller(ctx, opts.installerOptions)
 	if err != nil {
 		return err
 	}
@@ -782,7 +783,7 @@ func (manager installerManager) resumeWorld(ctx context.Context, world katldevWo
 		}
 		fmt.Fprintf(manager.stderr, "katldev world: VM for %s is missing; recreating it with a fresh disk\n", node.Name)
 		if iso == "" {
-			if iso, digest, err = manager.prepareInstaller(ctx, opts.NoBuild); err != nil {
+			if iso, digest, err = manager.prepareInstaller(ctx, opts); err != nil {
 				return err
 			}
 		}
@@ -801,7 +802,7 @@ func (manager installerManager) addNode(ctx context.Context, opts installerOptio
 	if err != nil {
 		return err
 	}
-	iso, digest, err := manager.prepareInstaller(ctx, opts.NoBuild)
+	iso, digest, err := manager.prepareInstaller(ctx, opts)
 	if err != nil {
 		return err
 	}

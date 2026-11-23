@@ -532,7 +532,7 @@ func TestDomainOwner(t *testing.T) {
 func TestRepositoryRootPrefersJJWorkspace(t *testing.T) {
 	dir := t.TempDir()
 	for name, body := range map[string]string{
-		"jj":  "#!/bin/sh\nprintf '%s\\n' /workspace/katl\n",
+		"jj":  "#!/bin/sh\nprintf '%s\\n' /parent/katl/workspace\n",
 		"git": "#!/bin/sh\nprintf '%s\\n' /parent/katl\n",
 	} {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o700); err != nil {
@@ -541,7 +541,7 @@ func TestRepositoryRootPrefersJJWorkspace(t *testing.T) {
 	}
 	t.Setenv("PATH", dir)
 	got, err := repositoryRoot()
-	if err != nil || got != "/workspace/katl" {
+	if err != nil || got != "/parent/katl/workspace" {
 		t.Fatalf("root %s, %v", got, err)
 	}
 	if err := os.Remove(filepath.Join(dir, "jj")); err != nil {

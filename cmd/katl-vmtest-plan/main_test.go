@@ -144,6 +144,7 @@ func testCoverage(t *testing.T, args []string, input string) {
 			"TestInstallerISOBootSmoke",
 			"TestInstallerPXEBootSmoke",
 			"TestInstallerESPSameDiskInstall",
+			"TestInstallerReinstallBesideOldKatlDisk",
 		},
 		"./internal/vmtest": {
 			"TestFirstInstallTargetDiskBootSmoke",

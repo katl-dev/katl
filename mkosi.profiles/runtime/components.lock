@@ -951,6 +951,7 @@ program /usr/lib/katl/runtime/katl-generation-activate
 program /usr/lib/katl/runtime/katl-host-config-activate
 program /usr/lib/katl/runtime/katl-kubelet-startup
 program /usr/lib/katl/runtime/katl-ssh-host-keys
+program /usr/lib/systemd/system-generators/katl-system-disk-generator
 program /usr/lib/systemd/system-generators/rpc-pipefs-generator
 program /usr/lib/systemd/system-generators/systemd-bless-boot-generator
 program /usr/lib/systemd/system-generators/systemd-clonesetup-generator
@@ -1148,7 +1149,6 @@ system-unit dev-hugepages.mount
 system-unit dev-mqueue.mount
 system-unit dm-event.service
 system-unit dm-event.socket
-system-unit efi.mount
 system-unit emergency.service
 system-unit emergency.target
 system-unit etc-kubernetes.mount
@@ -1509,7 +1509,6 @@ system-unit user-runtime-dir@.service
 system-unit user.slice
 system-unit user@.service
 system-unit var-lib-nfs-rpc_pipefs.mount
-system-unit var.mount
 system-unit veritysetup-pre.target
 system-unit veritysetup.target
 system-unit xfs_healer@.service

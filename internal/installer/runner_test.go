@@ -744,22 +744,17 @@ func TestPlanInstallHonorsVolumeWipe(t *testing.T) {
 func TestRunnerCapturesRootUUIDAfterMountTarget(t *testing.T) {
 	store := &MemoryStateStore{}
 	payload := planningPayload()
-	commands := &recordingOutputRunner{
-		outputs: map[string][]byte{
-			"blkid -t PARTLABEL=KATL_ESP -s PARTUUID -o value":    []byte("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n"),
-			"blkid -t PARTLABEL=KATL_ROOT_A -s PARTUUID -o value": []byte("11111111-2222-3333-4444-555555555555\n"),
-		},
-	}
+	commands := &recordingOutputRunner{}
 	install := &Context{
 		ManifestPath:   writeManifest(t),
 		Commands:       commands,
 		Store:          store,
 		KatlosResolver: &recordingKatlosResolver{payload: payload},
-		Discovery:      discovery.StaticDiscoverySource{Facts: planningFacts()},
+		Discovery:      discovery.StaticDiscoverySource{Facts: partitionedFacts()},
 		GenerationID:   "2026.06.06-001",
 	}
 
-	plan := Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}, mountTargetStep{}}
+	plan := Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}, createPartitionsStep{}, mountTargetStep{}}
 	if err := NewRunner(plan, install).Run(context.Background()); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
@@ -773,15 +768,12 @@ func TestRunnerCapturesRootUUIDAfterMountTarget(t *testing.T) {
 	if install.LoaderRecord.Root.PartitionUUID != install.RootPartitionUUID || install.LoaderRecord.Root.Slot != string(disk.RootSlotA) {
 		t.Fatalf("loader root = %#v", install.LoaderRecord.Root)
 	}
-	if got := strings.Join(commands.OutputCalls, ";"); got != "blkid -t PARTLABEL=KATL_ESP -s PARTUUID -o value;blkid -t PARTLABEL=KATL_ROOT_A -s PARTUUID -o value" {
-		t.Fatalf("output calls = %#v", commands.OutputCalls)
-	}
-	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest, CollectHardwareFacts, VerifyTrust, PlanInstall, MountTarget}) {
+	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest, CollectHardwareFacts, VerifyTrust, PlanInstall, CreatePartitions, MountTarget}) {
 		t.Fatalf("completed steps = %#v", got)
 	}
 }
 
-func TestRunnerMountTargetRequiresOutputForRootUUID(t *testing.T) {
+func TestRunnerMountTargetRequiresBoundPartitions(t *testing.T) {
 	store := &MemoryStateStore{}
 	payload := planningPayload()
 	install := &Context{
@@ -794,8 +786,8 @@ func TestRunnerMountTargetRequiresOutputForRootUUID(t *testing.T) {
 
 	plan := Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}, mountTargetStep{}}
 	err := NewRunner(plan, install).Run(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "support output") {
-		t.Fatalf("Run() error = %v, want output command runner failure", err)
+	if err == nil || !strings.Contains(err.Error(), "is not bound to target disk") {
+		t.Fatalf("Run() error = %v, want unbound partition failure", err)
 	}
 	if install.LoaderRecord != nil {
 		t.Fatalf("loader record = %#v, want nil", install.LoaderRecord)
@@ -808,19 +800,14 @@ func TestRunnerMountTargetRequiresOutputForRootUUID(t *testing.T) {
 func TestRunnerExecutesDiskOperationSteps(t *testing.T) {
 	store := &MemoryStateStore{}
 	payload := planningPayload()
-	commands := &recordingOutputRunner{
-		outputs: map[string][]byte{
-			"blkid -t PARTLABEL=KATL_ESP -s PARTUUID -o value":    []byte("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n"),
-			"blkid -t PARTLABEL=KATL_ROOT_A -s PARTUUID -o value": []byte("11111111-2222-3333-4444-555555555555\n"),
-		},
-	}
+	commands := &recordingOutputRunner{}
 	install := &Context{
 		ManifestPath:   writeManifest(t),
 		TargetRoot:     t.TempDir(),
 		Commands:       commands,
 		Store:          store,
 		KatlosResolver: &recordingKatlosResolver{payload: payload},
-		Discovery:      discovery.StaticDiscoverySource{Facts: planningFacts()},
+		Discovery:      discovery.StaticDiscoverySource{Facts: partitionedFacts()},
 	}
 
 	plan := Plan{
@@ -869,17 +856,13 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 	store := &MemoryStateStore{}
 	targetRoot := t.TempDir()
 	rootTarget := newRunnerRootSlot(len(contents.runtime) + 4096)
-	commands := &recordingOutputRunner{
-		outputs: map[string][]byte{
-			"blkid -t PARTLABEL=KATL_ESP -s PARTUUID -o value":    []byte("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee\n"),
-			"blkid -t PARTLABEL=KATL_ROOT_A -s PARTUUID -o value": []byte("11111111-2222-3333-4444-555555555555\n"),
-		},
-	}
+	commands := &recordingOutputRunner{}
 	discovery := &sequenceDiscoverySource{facts: []discovery.HardwareFacts{
 		planningFacts(),
 		planningFacts(),
 		planningFacts(),
 		planningFacts(),
+		partitionedFacts(),
 		appliedLayoutFacts(targetRoot),
 	}}
 	install := &Context{
@@ -900,8 +883,8 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	if discovery.calls != 5 {
-		t.Fatalf("discovery calls = %d, want collection, planning, revalidation before wiping and partitioning, and verification", discovery.calls)
+	if discovery.calls != 6 {
+		t.Fatalf("discovery calls = %d, want collection, planning, revalidation before wiping and partitioning, partition binding, and verification", discovery.calls)
 	}
 	if got := string(rootTarget.data[:len(contents.runtime)]); got != string(contents.runtime) {
 		t.Fatalf("root slot bytes = %q, want runtime payload", got)
@@ -933,9 +916,8 @@ func TestRunnerInstallsSingleKatlosImageThroughTargetVerification(t *testing.T) 
 		t.Fatalf("retained endpoint advertiser artifact = %#v", artifact)
 	}
 	assertText(t, filepath.Join(targetRoot, "var/lib/katl/identity/machine-id"), "30313233343536373839616263646566\n")
-	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var.mount"), "What=PARTUUID=11111111-2222-3333-4444-555555555555")
-	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/efi.mount"), "What=/dev/disk/by-partlabel/KATL_ESP")
-	assertSymlink(t, filepath.Join(targetRoot, "etc/systemd/system/local-fs.target.wants/efi.mount"), "../efi.mount")
+	assertMissing(t, filepath.Join(targetRoot, "etc/systemd/system/var.mount"))
+	assertMissing(t, filepath.Join(targetRoot, "etc/systemd/system/efi.mount"))
 	assertContains(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/confext/etc/katl/node.json"), `"configRef": "control-plane"`)
 	assertMissing(t, filepath.Join(targetRoot, "var/lib/katl/generations/0/confext/etc/katl/kubeadm/control-plane/config.yaml"))
 	assertText(t, filepath.Join(targetRoot, "var/lib/katl/cluster/kubeadm/control-plane/config.yaml"), "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n")
@@ -1087,7 +1069,7 @@ func TestRunnerRejectsMissingAppliedMount(t *testing.T) {
 
 	plan := Plan{loadManifestStep{}, collectHardwareFactsStep{}, verifyKatlosImageStep{}, planInstallStep{}, verifyTargetStep{}}
 	err := NewRunner(plan, install).Run(context.Background())
-	if err == nil || !strings.Contains(err.Error(), "state partition is not mounted") {
+	if err == nil || !strings.Contains(err.Error(), "KATL_STATE partition is not mounted") {
 		t.Fatalf("Run() error = %v, want missing state mount", err)
 	}
 	if got := install.Completed; !reflect.DeepEqual(got, []StepID{LoadManifest, CollectHardwareFacts, VerifyTrust, PlanInstall}) {
@@ -1178,14 +1160,18 @@ func TestRunnerOpensRootSlotTarget(t *testing.T) {
 			ExpectedSizeBytes: payload.Runtime.SizeBytes,
 		},
 		RootSlotOpener: opener,
+		DiskLayout: &disk.DiskLayoutPlan{
+			TargetDiskPath: "/dev/vdb",
+			PartitionUUIDs: map[string]string{disk.GPTLabelRootA: "11111111-2222-3333-4444-555555555555"},
+		},
 	}
 
 	if err := NewRunner(Plan{installRootSlotStep{}}, install).Run(context.Background()); err != nil {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	if opener.targetLabel != disk.GPTLabelRootA {
-		t.Fatalf("opened label = %q, want %s", opener.targetLabel, disk.GPTLabelRootA)
+	if want := "/dev/disk/by-partuuid/11111111-2222-3333-4444-555555555555"; opener.devicePath != want {
+		t.Fatalf("opened %q, want the bound root slot %s", opener.devicePath, want)
 	}
 	if !rootTarget.closed {
 		t.Fatal("opened root slot target was not closed")
@@ -1397,7 +1383,7 @@ func TestRunnerInstallsMountUnits(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var.mount"), "What=PARTUUID=11111111-2222-3333-4444-555555555555")
+	assertMissing(t, filepath.Join(targetRoot, "etc/systemd/system/var.mount"))
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/etc-kubernetes.mount"), "Where=/etc/kubernetes")
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var-mnt-data.mount"), "What=PARTUUID=data-partuuid")
 	assertContains(t, filepath.Join(targetRoot, "etc/systemd/system/var-mnt-data.mount"), "Where=/var/mnt/data")
@@ -1787,6 +1773,24 @@ func planningFacts() discovery.HardwareFacts {
 	}
 }
 
+// partitionedFacts is the planning disk after the installer created the Katl
+// partitions, with an earlier Katl install on a second disk listed first.
+func partitionedFacts() discovery.HardwareFacts {
+	facts := planningFacts()
+	facts.BlockDevices[0].Partitions = []discovery.BlockDevice{
+		{Path: "/dev/nvme0n1p1", Type: discovery.DevicePartition, GPTLabel: disk.GPTLabelESP, PartitionUUID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"},
+		{Path: "/dev/nvme0n1p2", Type: discovery.DevicePartition, GPTLabel: disk.GPTLabelRootA, PartitionUUID: "11111111-2222-3333-4444-555555555555"},
+		{Path: "/dev/nvme0n1p3", Type: discovery.DevicePartition, GPTLabel: disk.GPTLabelRootB, PartitionUUID: "66666666-7777-8888-9999-000000000000"},
+		{Path: "/dev/nvme0n1p4", Type: discovery.DevicePartition, GPTLabel: disk.GPTLabelState, PartitionUUID: "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"},
+	}
+	old := discovery.BlockDevice{Name: "sda", Path: "/dev/sda", Type: discovery.DeviceDisk, SizeBytes: 64 << 30, Partitions: []discovery.BlockDevice{
+		{Path: "/dev/sda1", Type: discovery.DevicePartition, GPTLabel: disk.GPTLabelESP, PartitionUUID: "0ld00000-0000-0000-0000-00000000e5b0"},
+		{Path: "/dev/sda2", Type: discovery.DevicePartition, GPTLabel: disk.GPTLabelRootA, PartitionUUID: "0ld00000-0000-0000-0000-0000000000a0"},
+	}}
+	facts.BlockDevices = append([]discovery.BlockDevice{old}, facts.BlockDevices...)
+	return facts
+}
+
 func appliedLayoutFacts(targetRoot string) discovery.HardwareFacts {
 	return discovery.HardwareFacts{
 		BlockDevices: []discovery.BlockDevice{
@@ -1931,12 +1935,12 @@ func (s *runnerRootSlot) Close() error {
 }
 
 type recordingRootSlotOpener struct {
-	target      *runnerRootSlot
-	targetLabel string
+	target     *runnerRootSlot
+	devicePath string
 }
 
-func (o *recordingRootSlotOpener) OpenRootSlotDevice(_ context.Context, target disk.RootSlotTarget) (disk.RootSlotDevice, error) {
-	o.targetLabel = target.GPTLabel
+func (o *recordingRootSlotOpener) OpenRootSlotDevice(_ context.Context, devicePath string) (disk.RootSlotDevice, error) {
+	o.devicePath = devicePath
 	return o.target, nil
 }
 

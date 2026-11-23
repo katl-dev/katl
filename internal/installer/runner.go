@@ -556,7 +556,31 @@ func (createPartitionsStep) Run(ctx context.Context, install *Context) error {
 	if err := executeDiskGroup(ctx, install, disk.PartitionOperations); err != nil {
 		return err
 	}
+	if err := bindSystemPartitions(ctx, install); err != nil {
+		return fmt.Errorf("after partitioning, %w; nothing was mounted and no root image or boot files were written. Check the disks attached to the node, then boot the installer again and rerun katlctl install apply", err)
+	}
 	return recordStep(ctx, install, CreatePartitions)
+}
+
+// bindSystemPartitions pins every later install step to the PARTUUIDs of the
+// partitions just created on the target disk.
+func bindSystemPartitions(ctx context.Context, install *Context) error {
+	if install.DiskLayout == nil {
+		return nil
+	}
+	if install.Discovery == nil {
+		return fmt.Errorf("hardware discovery is required to bind the partitions on target disk %s", install.DiskLayout.TargetDiskPath)
+	}
+	facts, err := install.Discovery.Discover(ctx)
+	if err != nil {
+		return fmt.Errorf("rediscover target disk partitions: %w", err)
+	}
+	bound, err := disk.BindSystemPartitions(facts, *install.DiskLayout)
+	if err != nil {
+		return err
+	}
+	install.DiskLayout.PartitionUUIDs = bound
+	return nil
 }
 
 type formatFilesystemsStep struct{}
@@ -622,13 +646,13 @@ func (mountTargetStep) Run(ctx context.Context, install *Context) error {
 	}
 	if install.KatlosImage != nil && install.RootSlotPlan != nil && install.LoaderRecord == nil {
 		if strings.TrimSpace(install.RootPartitionUUID) == "" {
-			commands, ok := install.Commands.(disk.OutputCommandRunner)
-			if !ok {
-				return fmt.Errorf("command runner must support output to read root partition UUID")
+			label := install.RootSlotPlan.TargetPartition.GPTLabel
+			var uuid string
+			if install.DiskLayout != nil {
+				uuid = install.DiskLayout.PartitionUUIDs[label]
 			}
-			uuid, err := disk.ReadPartUUID(ctx, commands, install.RootSlotPlan.TargetPartition.GPTLabel)
-			if err != nil {
-				return err
+			if uuid == "" {
+				return fmt.Errorf("root partition %s is not bound to the target disk", label)
 			}
 			install.RootPartitionUUID = uuid
 		}
@@ -695,7 +719,14 @@ func (installRootSlotStep) Run(ctx context.Context, install *Context) error {
 	target := install.RootSlotTarget
 	var closeTarget func() error
 	if target == nil && install.RootSlotOpener != nil {
-		opened, err := install.RootSlotOpener.OpenRootSlotDevice(ctx, install.RootSlotPlan.TargetPartition)
+		if install.DiskLayout == nil {
+			return fmt.Errorf("disk layout is required to locate root slot %s", install.RootSlotPlan.TargetPartition.GPTLabel)
+		}
+		device, err := disk.SystemPartitionDevice(*install.DiskLayout, install.RootSlotPlan.TargetPartition.GPTLabel)
+		if err != nil {
+			return err
+		}
+		opened, err := install.RootSlotOpener.OpenRootSlotDevice(ctx, device)
 		if err != nil {
 			return err
 		}
@@ -989,8 +1020,7 @@ func (installMountUnitsStep) Run(ctx context.Context, install *Context) error {
 		return fmt.Errorf("loader generation record is required to install mount units")
 	}
 	if _, err := generation.WriteState(install.TargetRoot, generation.StateRequest{
-		PartitionUUID: install.LoaderRecord.Root.PartitionUUID,
-		ExtraMounts:   installedExtraMounts(install),
+		ExtraMounts: installedExtraMounts(install),
 	}); err != nil {
 		return err
 	}

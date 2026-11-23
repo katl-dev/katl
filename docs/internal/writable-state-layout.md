@@ -92,7 +92,7 @@ paths for services:
 
 | Unit | What | Where | Rule |
 | --- | --- | --- | --- |
-| `var.mount` | installed `KATL_STATE` partition by PARTUUID | `/var` | Required local filesystem; no `nofail`; must be active before any persistent node service starts |
+| `var.mount` | `KATL_STATE` partition on the disk holding the running root, generated at boot by `katl-system-disk-generator` | `/var` | Required local filesystem; no `nofail`; must be active before any persistent node service starts |
 | `etc-kubernetes.mount` | `/var/lib/katl/kubernetes/etc-kubernetes` bind source | `/etc/kubernetes` | Only writable `/etc` projection in the first implementation; active after confext and before kubelet or kubeadm automation |
 | `var-lib-etcd.mount` | optional installed `KATL_ETCD` partition by PARTUUID | `/var/lib/etcd` | Generated only when a dedicated etcd partition was planned; active before kubelet, kubeadm automation, and the kubeadm-ready target |
 | `var-mnt-<name>.mount` | generation-owned PARTUUID or filesystem UUID | `/var/mnt/<name>` | Generated for each configured volume; labels and selectors are discovery inputs only, the resolved identity is persisted in generation metadata, replacement requires one-shot rebind authority, and all mounts are required before boot health succeeds |

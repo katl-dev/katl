@@ -408,9 +408,12 @@ type rootSlots struct {
 }
 
 func (e *Executor) inspectRootSlots(ctx context.Context, activePartUUID string) (rootSlots, error) {
-	active, err := e.toolOutput(ctx, "blkid", "-t", "PARTUUID="+activePartUUID, "-o", "device")
+	active, err := e.toolOutput(ctx, "blkid", "-c", "/dev/null", "-t", "PARTUUID="+activePartUUID, "-o", "device")
 	if err != nil {
 		return rootSlots{}, fmt.Errorf("find active root slot: %w", err)
+	}
+	if devices := strings.Fields(active); len(devices) != 1 {
+		return rootSlots{}, fmt.Errorf("find active root slot: PARTUUID %s is on %d partitions (%s); detach the disk cloned from the system disk before upgrading", activePartUUID, len(devices), strings.Join(devices, ", "))
 	}
 	activeDisk, activePart, err := e.partitionIdentity(ctx, active)
 	if err != nil {

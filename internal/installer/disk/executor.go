@@ -47,6 +47,9 @@ type DiskOperation struct {
 	Definitions []string
 	Env         []string
 	Destructive bool
+	// Partition names the Katl GPT label of the target-disk partition this
+	// operation addresses; it runs only once that partition is bound.
+	Partition string
 }
 
 type DiskOperationGroup string
@@ -96,6 +99,11 @@ func (e DiskExecutor) executeOperations(ctx context.Context, request DiskExecuti
 		}
 	}
 	for _, operation := range operations {
+		if operation.Partition != "" {
+			if _, err := SystemPartitionDevice(request.Plan, operation.Partition); err != nil {
+				return DiskExecutionResult{}, fmt.Errorf("%s: %w", operation.Name, err)
+			}
+		}
 		if e.BeforeOperation != nil {
 			if err := e.BeforeOperation(operation); err != nil {
 				return DiskExecutionResult{}, err
@@ -115,19 +123,14 @@ func (e DiskExecutor) executeOperations(ctx context.Context, request DiskExecuti
 		}
 		if operation.Name == "install-systemd-boot" {
 			installBoot := e.InstallBoot
-			bootRequest := BootRequest{
-				Plan:              request.Plan,
-				TargetMountPrefix: request.TargetMountPrefix,
-			}
 			if installBoot == nil {
-				commands, ok := e.Commands.(OutputCommandRunner)
-				if !ok {
-					return DiskExecutionResult{}, fmt.Errorf("%s: boot command runner must support output", operation.Name)
-				}
-				bootRequest.Commands = commands
 				installBoot = InstallBoot
 			}
-			boot, err := installBoot(ctx, bootRequest)
+			boot, err := installBoot(ctx, BootRequest{
+				Commands:          e.Commands,
+				Plan:              request.Plan,
+				TargetMountPrefix: request.TargetMountPrefix,
+			})
 			if err != nil {
 				return DiskExecutionResult{}, fmt.Errorf("%s: %w", operation.Name, err)
 			}
@@ -214,7 +217,7 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 		switch partition.Name {
 		case "root-a", "root-b":
 			if RootSlot(partition.Name) == plan.Boot.RootSlot {
-				operations = append(operations, DiskOperation{Name: "write-" + partition.Name, Command: "katlos-write-root-slot", Args: []string{partition.GPTLabel}, Destructive: true})
+				operations = append(operations, DiskOperation{Name: "write-" + partition.Name, Command: "katlos-write-root-slot", Args: []string{partition.GPTLabel}, Destructive: true, Partition: partition.GPTLabel})
 			}
 		}
 		if partition.MountPath != "" && partition.Name != "root-a" {
@@ -223,7 +226,8 @@ func BuildDiskOperations(plan DiskLayoutPlan, targetMountPrefix string) []DiskOp
 				name = "mount-state"
 			}
 			operations = append(operations, DiskOperation{Name: "create-mountpoint-" + partition.Name, Command: "mkdir", Args: []string{"-p", targetMountPrefix + partition.MountPath}})
-			operations = append(operations, DiskOperation{Name: name, Command: "mount", Args: []string{"LABEL=" + partition.GPTLabel, targetMountPrefix + partition.MountPath}})
+			source, _ := SystemPartitionDevice(plan, partition.GPTLabel)
+			operations = append(operations, DiskOperation{Name: name, Command: "mount", Args: []string{source, targetMountPrefix + partition.MountPath}, Partition: partition.GPTLabel})
 		}
 	}
 
@@ -335,10 +339,6 @@ func partitionTypeGUID(kind string) string {
 	}
 }
 
-func partLabelDevice(label string) string {
-	return "/dev/disk/by-partlabel/" + label
-}
-
 func ValidateAppliedLayout(facts HardwareFacts, plan DiskLayoutPlan) error {
 	return ValidateAppliedLayoutAt(facts, plan, "")
 }
@@ -364,14 +364,18 @@ func ValidateAppliedLayoutAt(facts HardwareFacts, plan DiskLayoutPlan, targetMou
 	if _, ok := partitionsByLabel[plan.Boot.RootPartitionLabel]; !ok {
 		return fmt.Errorf("boot root label %s not found", plan.Boot.RootPartitionLabel)
 	}
-	if !mountExists(facts.Mounts, targetPath(targetMountPrefix, "/var")) {
-		return fmt.Errorf("state partition is not mounted at %s", targetPath(targetMountPrefix, "/var"))
-	}
-	if !mountExists(facts.Mounts, targetPath(targetMountPrefix, "/efi")) {
-		return fmt.Errorf("ESP partition is not mounted at %s", targetPath(targetMountPrefix, "/efi"))
-	}
-	if _, ok := findPartitionByName(plan.Partitions, "xbootldr"); ok && !mountExists(facts.Mounts, targetPath(targetMountPrefix, "/boot")) {
-		return fmt.Errorf("XBOOTLDR partition is not mounted at %s", targetPath(targetMountPrefix, "/boot"))
+	for _, expected := range plan.Partitions {
+		if expected.MountPath == "" || expected.Name == "root-a" {
+			continue
+		}
+		target := targetPath(targetMountPrefix, expected.MountPath)
+		source, ok := mountSource(facts.Mounts, target)
+		if !ok {
+			return fmt.Errorf("%s partition is not mounted at %s", expected.GPTLabel, target)
+		}
+		if want := partitionsByLabel[expected.GPTLabel].Path; source != want {
+			return fmt.Errorf("%s is mounted from %s, not the target disk partition %s", target, source, want)
+		}
 	}
 
 	for _, volume := range plan.VolumeMounts {
@@ -411,6 +415,15 @@ func findDevice(devices []BlockDevice, devicePath string) *BlockDevice {
 		}
 	}
 	return nil
+}
+
+func mountSource(mounts []MountFact, target string) (string, bool) {
+	for _, mount := range mounts {
+		if mount.Target == target {
+			return mount.Source, true
+		}
+	}
+	return "", false
 }
 
 func mountExists(mounts []MountFact, target string) bool {
