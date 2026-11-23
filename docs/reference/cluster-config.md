@@ -120,7 +120,11 @@ Katl uses it for kubelet `--node-ip` and the kubeadm local API advertise address
 during both init and control-plane join. It is deliberately one literal IP,
 not a subnet-selection policy. Omit it for normal single-uplink nodes. The
 separate `management.address` remains the operator-reachable address used by `katlctl`
-and may be different. For what each address change means after installation,
+and may be different, including a NAT address that no node interface holds.
+When the two differ, nodes never bind or dial the management address: the
+Kubernetes API proxy listens on `kubernetes.address`, joins and etcd membership
+use it, and `katlctl` reaches the proxy through the management address with TLS
+verified against the control-plane endpoint name. For what each address change means after installation,
 see [Change a node's address](../operations/change-cluster-nodes.md#change-a-nodes-address).
 
 ## Node labels and taints

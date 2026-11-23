@@ -320,7 +320,7 @@ func RunAgentNodeJoin(ctx context.Context, request Request, nodeName string, dep
 	switch target.Action {
 	case inventory.ActionControlPlaneJoin:
 		material, err := createJoinMaterial(ctx, initNode, target, "existing-cluster", deps, "control-plane", joinDiscoveryOverride{
-			Endpoint: endpointForNode(initNode),
+			Endpoint: initNode.KubernetesEndpoint(),
 		})
 		if err != nil {
 			result.addPhase("control-plane-join", target.Name, target.Action, "failed")
@@ -334,7 +334,7 @@ func RunAgentNodeJoin(ctx context.Context, request Request, nodeName string, dep
 		result.addOperationPhase("control-plane-join", target.Name, target.Action, "passed", operationRef)
 	case inventory.ActionWorkerJoin:
 		material, err := createJoinMaterial(ctx, initNode, target, "existing-cluster", deps, "worker", joinDiscoveryOverride{
-			Endpoint: endpointForNode(initNode),
+			Endpoint: initNode.KubernetesEndpoint(),
 		})
 		if err != nil {
 			result.addPhase("worker-join", target.Name, target.Action, "failed")
@@ -509,13 +509,13 @@ func submitAndWaitBootstrapInit(ctx context.Context, node inventory.PlannedNode,
 
 func createControlPlaneJoinMaterial(ctx context.Context, initNode, controlPlane inventory.PlannedNode, initOperationID string, credentials AdminCredentials, deps AgentBootstrapDependencies) (workerJoinMaterial, error) {
 	return createJoinMaterial(ctx, initNode, controlPlane, initOperationID, deps, "control-plane", joinDiscoveryOverride{
-		Endpoint: endpointForNode(initNode), CertificateAuthorityData: credentials.CertificateAuthorityData,
+		Endpoint: initNode.KubernetesEndpoint(), CertificateAuthorityData: credentials.CertificateAuthorityData,
 	})
 }
 
 func createWorkerJoinMaterial(ctx context.Context, initNode, worker inventory.PlannedNode, initOperationID string, credentials AdminCredentials, deps AgentBootstrapDependencies) (workerJoinMaterial, error) {
 	return createJoinMaterial(ctx, initNode, worker, initOperationID, deps, "worker", joinDiscoveryOverride{
-		Endpoint: endpointForNode(initNode), CertificateAuthorityData: credentials.CertificateAuthorityData,
+		Endpoint: initNode.KubernetesEndpoint(), CertificateAuthorityData: credentials.CertificateAuthorityData,
 	})
 }
 
@@ -770,48 +770,11 @@ func bootstrapAPIProxyConfig(node inventory.PlannedNode, plan inventory.Plan) (s
 	if plan.ExternalControlPlane {
 		return "", nil
 	}
-	canonicalEndpoint := strings.TrimSpace(plan.ControlPlaneEndpoint)
-	if canonicalEndpoint == "" {
-		for _, candidate := range plan.Nodes {
-			if candidate.SystemRole == inventory.RoleControlPlane {
-				canonicalEndpoint = net.JoinHostPort(nodeHost(candidate.Address), "6443")
-				break
-			}
-		}
-	}
-	listeners := []apiproxy.Listener{{
-		Address: net.JoinHostPort("127.0.0.1", "7445"), Exposure: apiproxy.ExposureNodeLocal,
-	}}
-	if node.SystemRole == inventory.RoleControlPlane {
-		listeners = append(listeners, apiproxy.Listener{
-			Address: net.JoinHostPort(nodeHost(node.Address), "7445"), Exposure: apiproxy.ExposureWorkstation,
-		})
-	}
-	backends := make([]apiproxy.Backend, 0, len(plan.Nodes))
-	for _, candidate := range plan.Nodes {
-		if candidate.SystemRole != inventory.RoleControlPlane {
-			continue
-		}
-		backends = append(backends, apiproxy.Backend{
-			Name: candidate.Name, Address: net.JoinHostPort(nodeHost(candidate.Address), "6443"), Local: candidate.Name == node.Name,
-		})
-	}
-	config, err := apiproxy.Normalize(apiproxy.Config{
-		TLSName: controlPlaneEndpointHost(canonicalEndpoint), CanonicalEndpoint: canonicalEndpoint,
-		Listeners: listeners, Backends: backends,
-	})
+	config, err := plan.APIProxyConfig(node.Name)
 	if err != nil {
-		return "", fmt.Errorf("node %s API proxy: %w", node.Name, err)
+		return "", err
 	}
 	return apiproxy.Render(config)
-}
-
-func nodeHost(address string) string {
-	address = strings.TrimSpace(address)
-	if host, _, err := net.SplitHostPort(address); err == nil {
-		return host
-	}
-	return address
 }
 
 func requiredAgentOperationKind(action inventory.BootstrapAction) string {

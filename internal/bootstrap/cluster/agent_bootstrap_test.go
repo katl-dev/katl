@@ -47,13 +47,14 @@ func TestRunAgentBootstrapDryRunContactsAgentAndPropagatesOverride(t *testing.T)
 	}
 }
 
-func TestBootstrapAPIProxyConfigUsesDirectInventoryAddresses(t *testing.T) {
+func TestBootstrapAPIProxyConfigUsesKubernetesAddresses(t *testing.T) {
+	// Management addresses are NAT addresses that the nodes do not hold.
 	plan := inventory.Plan{
 		ControlPlaneEndpoint: "api.unpublished.katl.test:6443",
 		Nodes: []inventory.PlannedNode{
-			{Name: "cp-1", SystemRole: inventory.RoleControlPlane, Address: "192.0.2.11"},
-			{Name: "cp-2", SystemRole: inventory.RoleControlPlane, Address: "192.0.2.12"},
-			{Name: "worker-1", SystemRole: inventory.RoleWorker, Address: "192.0.2.21"},
+			{Name: "cp-1", SystemRole: inventory.RoleControlPlane, Address: "192.0.2.11", KubernetesAddress: "10.0.1.11"},
+			{Name: "cp-2", SystemRole: inventory.RoleControlPlane, Address: "192.0.2.12", KubernetesAddress: "10.0.1.12"},
+			{Name: "worker-1", SystemRole: inventory.RoleWorker, Address: "192.0.2.21", KubernetesAddress: "10.0.1.21"},
 		},
 	}
 	rendered, err := bootstrapAPIProxyConfig(plan.Nodes[1], plan)
@@ -67,8 +68,16 @@ func TestBootstrapAPIProxyConfigUsesDirectInventoryAddresses(t *testing.T) {
 	if config.CanonicalEndpoint != plan.ControlPlaneEndpoint || config.TLSName != "api.unpublished.katl.test" {
 		t.Fatalf("proxy identity = %#v", config)
 	}
-	if len(config.Listeners) != 2 || len(config.Backends) != 2 || !config.Backends[1].Local {
-		t.Fatalf("proxy topology = %#v", config)
+	wantListeners := []apiproxy.Listener{
+		{Address: "10.0.1.12:7445", Exposure: apiproxy.ExposureWorkstation},
+		{Address: "127.0.0.1:7445", Exposure: apiproxy.ExposureNodeLocal},
+	}
+	wantBackends := []apiproxy.Backend{
+		{Name: "cp-1", Address: "10.0.1.11:6443"},
+		{Name: "cp-2", Address: "10.0.1.12:6443", Local: true},
+	}
+	if !reflect.DeepEqual(config.Listeners, wantListeners) || !reflect.DeepEqual(config.Backends, wantBackends) {
+		t.Fatalf("proxy listeners = %#v backends = %#v, want %#v and %#v", config.Listeners, config.Backends, wantListeners, wantBackends)
 	}
 }
 
@@ -191,11 +200,15 @@ func TestRunAgentBootstrapSubmitsControlPlaneJoin(t *testing.T) {
 }
 
 func TestRunAgentNodeJoinAddsControlPlaneWithoutRerunningInit(t *testing.T) {
+	// The workstation reaches both nodes through NAT at 10.0.0.0/24, while
+	// the nodes reach each other at their own 10.1.0.0/24 addresses.
 	inv := validSingleNodeInventory()
 	inv.ControlPlaneEndpoint = "api.katl.test:6443"
+	inv.Nodes[0].KubernetesAddress = "10.1.0.11"
 	inv.Nodes = append(inv.Nodes, inventory.Node{
 		Name:              "cp-2",
 		Address:           "10.0.0.12",
+		KubernetesAddress: "10.1.0.12",
 		SystemRole:        inventory.RoleControlPlane,
 		Access:            inventory.Access{Method: "agent"},
 		KubeadmConfig:     inventory.KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: inventory.IntentControlPlane},
@@ -267,14 +280,29 @@ users:
 		t.Fatalf("replacement submit requests = %#v", cp2.submitRequests)
 	}
 	replacement := cp2.submitRequests[0].Bootstrap
-	if got := replacement.WorkerJoinMaterial.GetJoinArgv()[2]; got != "10.0.0.11:6443" {
-		t.Fatalf("replacement discovery endpoint = %q, want coordinator endpoint", got)
+	if got := replacement.WorkerJoinMaterial.GetJoinArgv()[2]; got != "10.1.0.11:6443" {
+		t.Fatalf("replacement discovery endpoint = %q, want coordinator Kubernetes address", got)
 	}
 	discovery := string(replacement.WorkerJoinMaterial.GetDiscoveryKubeconfig())
-	for _, want := range []string{"server: https://10.0.0.11:6443", "certificate-authority-data: ca-data", "token: abcdef.0123456789abcdef"} {
+	for _, want := range []string{"server: https://10.1.0.11:6443", "certificate-authority-data: ca-data", "token: abcdef.0123456789abcdef"} {
 		if !strings.Contains(discovery, want) {
 			t.Fatalf("replacement discovery kubeconfig = %q, want %q", discovery, want)
 		}
+	}
+	var proxy apiproxy.Config
+	if err := json.Unmarshal([]byte(replacement.GetApiProxyConfig()), &proxy); err != nil {
+		t.Fatal(err)
+	}
+	wantListeners := []apiproxy.Listener{
+		{Address: "10.1.0.12:7445", Exposure: apiproxy.ExposureWorkstation},
+		{Address: "127.0.0.1:7445", Exposure: apiproxy.ExposureNodeLocal},
+	}
+	wantBackends := []apiproxy.Backend{
+		{Name: "cp-1", Address: "10.1.0.11:6443"},
+		{Name: "cp-2", Address: "10.1.0.12:6443", Local: true},
+	}
+	if !reflect.DeepEqual(proxy.Listeners, wantListeners) || !reflect.DeepEqual(proxy.Backends, wantBackends) {
+		t.Fatalf("replacement API proxy listeners = %#v backends = %#v", proxy.Listeners, proxy.Backends)
 	}
 	if got := replacement.ControlPlaneEndpoint; got != "api.katl.test:6443" {
 		t.Fatalf("replacement control-plane endpoint = %q, want stable cluster endpoint", got)
