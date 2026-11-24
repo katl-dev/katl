@@ -383,6 +383,18 @@ func finishAutomaticInstall(ctx context.Context, err error, stdout io.Writer) er
 	return err
 }
 
+// waitForAnnouncementAddress reports a failed automatic install before
+// waiting, so an operator watching the console learns why the installer is
+// waiting for a handoff instead of installing.
+func waitForAnnouncementAddress(stdout io.Writer, initialErr error, wait func() (string, error)) (string, error) {
+	if initialErr != nil {
+		fmt.Fprintf(stdout, "katlos-install: automatic install failed: %v\n", initialErr)
+	}
+	fmt.Fprintln(stdout, "katlos-install waiting for handoff announcement address")
+	reportInstallerProgress(stdout, "waiting for a network address to announce", false)
+	return wait()
+}
+
 func waitForInstallerReboot(ctx context.Context, stdout io.Writer) error {
 	reportInstallerProgress(stdout, "installation complete; waiting for scheduled reboot", false)
 	return holdInstaller(ctx)
@@ -700,17 +712,25 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer, init
 
 	// Offline media can install without a network address. Only a handoff or
 	// retry needs an address to announce; the API is already reserved and serving.
+	wait := func() (string, error) {
+		return waitHandoffAnnouncementBaseURL(ctx, listener.Addr(), stdout)
+	}
 	var initialErr error
 	if initial != nil {
+		// An automatic install that fetches its input by URL needs an address
+		// first; the waiter reports progress while it waits.
+		if initial.BundleURL != "" || initial.ManifestURL != "" {
+			if _, err := wait(); err != nil {
+				return err
+			}
+		}
 		initialErr = runAutomaticInstall(ctx, *initial, runDir, stdout)
 		if ctx.Err() != nil {
 			return initialErr
 		}
 	}
 
-	fmt.Fprintln(stdout, "katlos-install waiting for handoff announcement address")
-	reportInstallerProgress(stdout, "waiting for a network address to announce", false)
-	baseURL, err := waitHandoffAnnouncementBaseURL(ctx, listener.Addr(), stdout)
+	baseURL, err := waitForAnnouncementAddress(stdout, initialErr, wait)
 	if err != nil {
 		return errors.Join(initialErr, err)
 	}

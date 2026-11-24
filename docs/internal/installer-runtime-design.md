@@ -203,13 +203,16 @@ path. It accepts exactly one structurally valid submission and stops accepting
 configuration when installation begins. Operators must keep the listener on an
 isolated provisioning network.
 
-Before announcing, the installer waits for a network address. While any
-interface has carrier it waits without a deadline, printing the interface and
-elapsed time at the start and every 30 seconds, because DHCP can lag behind
-link-up by more than a minute, for example behind spanning-tree forwarding
-delay. If no
-interface has carrier for 5 minutes it exits with an error asking the operator
-to check the cable and switch port.
+Before announcing, the installer waits for a network address without a
+deadline, printing progress at the start and every 30 seconds. With carrier it
+names the interface waiting for DHCP, because DHCP can lag behind link-up by
+more than a minute, for example behind spanning-tree forwarding delay. Without
+carrier it asks the operator to connect a cable or check the switch port and
+keeps waiting, so plugging in the cable recovers without a reboot. The
+installer service does not restart, so giving up would close the handoff API.
+The service is not ordered after `network-online.target`: this waiter is the
+only wait, and an automatic install that fetches its input by URL waits with
+it before fetching.
 
 This mode is only for supplying initial installer input. It is not a long-lived
 runtime management API and it must not continue running after install begins.

@@ -12,11 +12,6 @@ import (
 
 const (
 	handoffAddressPollInterval = 250 * time.Millisecond
-	// A link that has carrier is given as long as DHCP needs, because switch
-	// spanning-tree forwarding delay and slow servers can exceed any fixed limit
-	// and the installer has nothing else to do. Without carrier no address can
-	// arrive until a cable is attached, so the wait ends after this grace.
-	handoffNoCarrierGrace      = 5 * time.Minute
 	handoffAddressProgressEach = 30 * time.Second
 )
 
@@ -48,19 +43,20 @@ func waitHandoffAnnouncementBaseURL(ctx context.Context, addr net.Addr, out io.W
 	return w.wait(ctx, addr)
 }
 
-// wait returns the handoff base URL once a host address exists. It reports
-// progress at the start, whenever the set of waiting interfaces changes, and
-// periodically with the elapsed time.
+// wait returns the handoff base URL once a host address exists. It has no
+// deadline: katlos-install.service does not restart, so giving up would close
+// the handoff API and force a reboot, while waiting recovers by itself when a
+// cable or DHCP server returns. It reports progress at the start, whenever the
+// waiting state changes, and periodically with the elapsed time.
 func (w handoffWaiter) wait(ctx context.Context, addr net.Addr) (string, error) {
 	start := w.now()
-	var noCarrierSince time.Time
 	var lastReport time.Time
 	var lastState string
 	for {
 		baseURL, err := handoffAnnouncementBaseURLWithHost(addr, w.detectHost)
 		if err == nil {
 			if !lastReport.IsZero() {
-				fmt.Fprintf(w.out, "katlos-install: network address acquired after %s\n", w.now().Sub(start).Round(time.Second))
+				reportInstallerProgress(w.out, fmt.Sprintf("network address acquired after %s", w.now().Sub(start).Round(time.Second)), false)
 			}
 			return baseURL, nil
 		}
@@ -75,18 +71,13 @@ func (w handoffWaiter) wait(ctx context.Context, addr net.Addr) (string, error) 
 		}
 
 		var state string
-		if len(carrier) > 0 {
-			noCarrierSince = time.Time{}
+		switch {
+		case linkErr != nil:
+			state = "waiting for a network address; " + linkErr.Error()
+		case len(carrier) > 0:
 			state = "waiting for a DHCP address on " + strings.Join(carrier, ", ")
-		} else {
-			if noCarrierSince.IsZero() {
-				noCarrierSince = now
-			}
-			if linkErr == nil && now.Sub(noCarrierSince) >= handoffNoCarrierGrace {
-				return "", fmt.Errorf("no network link has carrier after %s: connect a network cable or check the switch port and the DHCP server, then reboot the installer: %w",
-					now.Sub(noCarrierSince).Round(time.Second), err)
-			}
-			state = "waiting for a network link; no interface has carrier, check the cable and switch port"
+		default:
+			state = "waiting for a network link; no interface has carrier, connect a cable or check the switch port"
 		}
 
 		if state != lastState || now.Sub(lastReport) >= handoffAddressProgressEach {
@@ -116,7 +107,8 @@ func sleepContext(ctx context.Context, d time.Duration) error {
 }
 
 // handoffLinks reports carrier for non-loopback interfaces from the kernel's
-// RUNNING flag, which is the carrier state systemd-networkd also reports.
+// RUNNING flag, which reflects the interface's operational state and is a
+// close but not exact match for the carrier state systemd-networkd reports.
 func handoffLinks() ([]handoffLink, error) {
 	ifaces, err := net.Interfaces()
 	if err != nil {
