@@ -365,13 +365,17 @@ func TestEquivalent(t *testing.T) {
 		standard string
 		lts      string
 		omitLTS  bool
+		extra    string // an additional NAME=standard-evidence argument
 		want     string
 	}{
 		{name: "identical", standard: abc + "  payload\n", lts: abc + "  payload\n"},
 		{name: "rendered notes differ", standard: abc + "  payload\n" + strings.Repeat("b", 64) + "  RELEASE_NOTES.md\n", lts: abc + "  payload\n"},
 		{name: "differing file", standard: abc + "  payload\n", lts: strings.Repeat("a", 64) + "  payload\n", want: "payload (lts) differs from qualified bytes"},
 		{name: "unqualified bundle file", bundle: map[string]string{"extra": ""}, standard: abc + "  payload\n", lts: abc + "  payload\n", want: "published file was not qualified: extra"},
-		{name: "unpublished evidence file", standard: abc + "  payload\n" + empty + "  other\n", lts: abc + "  payload\n", want: "other (standard) differs from qualified bytes"},
+		{name: "qualified file missing from bundle", standard: abc + "  payload\n" + empty + "  other\n", lts: abc + "  payload\n", want: "other (standard) was qualified but is missing from the bundle"},
+		{name: "unqualified provenance", bundle: map[string]string{"PROVENANCE.md": ""}, standard: abc + "  payload\n", lts: abc + "  payload\n", want: "published file was not qualified: PROVENANCE.md"},
+		{name: "unknown flavour", standard: abc + "  payload\n", lts: abc + "  payload\n", extra: "beta", want: `unknown flavour "beta"`},
+		{name: "duplicate flavour", standard: abc + "  payload\n", lts: abc + "  payload\n", extra: "standard", want: "duplicate qualified checksums for standard"},
 		{name: "missing flavour", standard: abc + "  payload\n", omitLTS: true, want: "no qualified checksums for lts"},
 		{name: "malformed evidence", standard: abc + "  payload\n", lts: "not a checksum\n", want: "qualified checksums for lts: invalid SHA256SUMS entry"},
 		{name: "unreadable evidence", standard: abc + "  payload\n", lts: "-", want: "qualified checksums for lts"},
@@ -391,8 +395,9 @@ func TestEquivalent(t *testing.T) {
 			}
 
 			evidence := t.TempDir()
-			args := []string{}
-			for name, content := range map[string]string{"standard": tc.standard, "lts": tc.lts} {
+			var args []string
+			for _, flavour := range []struct{ name, content string }{{"standard", tc.standard}, {"lts", tc.lts}} {
+				name, content := flavour.name, flavour.content
 				path := filepath.Join(evidence, name)
 				if name == "lts" && tc.omitLTS {
 					continue
@@ -403,6 +408,9 @@ func TestEquivalent(t *testing.T) {
 					}
 				}
 				args = append(args, name+"="+path)
+			}
+			if tc.extra != "" {
+				args = append(args, tc.extra+"="+filepath.Join(evidence, "standard"))
 			}
 
 			err := run(append([]string{"equivalent", bundle}, args...), io.Discard, io.Discard, nil)

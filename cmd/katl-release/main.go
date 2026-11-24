@@ -16,6 +16,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/katl-dev/katl/internal/flavour"
 )
 
 const repository = "katl-dev/katl"
@@ -370,10 +372,16 @@ func requireQualified(dir string, flavours []string) error {
 	}
 	qualified := make(map[string]bool)
 	seen := make(map[string]bool)
-	for _, flavour := range flavours {
-		name, path, ok := strings.Cut(flavour, "=")
+	for _, argument := range flavours {
+		name, path, ok := strings.Cut(argument, "=")
 		if !ok || name == "" || path == "" {
-			return fmt.Errorf("expected FLAVOUR=SHA256SUMS, got %q", flavour)
+			return fmt.Errorf("expected FLAVOUR=SHA256SUMS, got %q", argument)
+		}
+		if _, err := flavour.Normalize(name); err != nil {
+			return fmt.Errorf("unknown flavour %q; choose %s or %s", name, flavour.Standard, flavour.LTS)
+		}
+		if seen[name] {
+			return fmt.Errorf("duplicate qualified checksums for %s", name)
 		}
 		seen[name] = true
 		evidence, err := parseChecksums(path)
@@ -384,13 +392,17 @@ func requireQualified(dir string, flavours []string) error {
 			if file == renderedNotes {
 				continue
 			}
-			if bundle[file] != digest {
+			published, ok := bundle[file]
+			if !ok {
+				return fmt.Errorf("%s (%s) was qualified but is missing from the bundle", file, name)
+			}
+			if published != digest {
 				return fmt.Errorf("%s (%s) differs from qualified bytes", file, name)
 			}
 			qualified[file] = true
 		}
 	}
-	for _, name := range []string{"standard", "lts"} {
+	for _, name := range []string{flavour.Standard, flavour.LTS} {
 		if !seen[name] {
 			return fmt.Errorf("no qualified checksums for %s", name)
 		}

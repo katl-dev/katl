@@ -282,14 +282,14 @@ func TestReleaseValidation(t *testing.T) {
 	for _, step := range workflow.Jobs["release-validation"].Steps {
 		scripts = append(scripts, step.Run)
 	}
-	for _, dependency := range []string{"UNIT", "BUNDLE", "REGRESSION", "PRODUCTION"} {
+	for _, dependency := range []string{"UNIT", "BUNDLE", "REGRESSION", "PRODUCTION", "QUALIFIED"} {
 		for _, tc := range []struct {
 			state string
 			pass  bool
 		}{{"success", true}, {"failure", false}, {"skipped", false}, {"cancelled", false}} {
 			t.Run(dependency+"/"+tc.state, func(t *testing.T) {
 				command := exec.Command("bash", "-euo", "pipefail", "-c", strings.Join(scripts, "\n"))
-				command.Env = append(os.Environ(), "UNIT=success", "BUNDLE=success", "REGRESSION=success", "PRODUCTION=success", dependency+"="+tc.state)
+				command.Env = append(os.Environ(), "UNIT=success", "BUNDLE=success", "REGRESSION=success", "PRODUCTION=success", "QUALIFIED=success", dependency+"="+tc.state)
 				output, err := command.CombinedOutput()
 				if (err == nil) != tc.pass {
 					t.Fatalf("validation result = %v, want pass=%v: %s", err, tc.pass, output)

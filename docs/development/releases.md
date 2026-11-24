@@ -82,10 +82,11 @@ rerunning. To exercise the production journeys against the same built bundle
 with the selected workflow revision, run:
 
 ```sh
-gh workflow run release-artifacts.yml --ref main -f qualify_run=RUN_ID
+gh workflow run release-artifacts.yml --ref main -f version=VERSION -f qualify_run=RUN_ID
 ```
 
-This diagnostic run reuses the immutable bundle and has no publication path.
+This diagnostic run reuses the immutable bundle and ignores VERSION, which
+the dispatch form requires. It has no publication path.
 Tag promotion still requires all gates in the tag's own build run.
 
 Guest disks are excluded from retained artifacts. Fix the defect and

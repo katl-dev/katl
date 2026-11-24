@@ -74,7 +74,7 @@ jobs:
         run: |
           scripts/katl-release checksums dist
           gh release download "$PREVIOUS_TAG" --repo "$GITHUB_REPOSITORY" --dir previous
-          (cd previous && sha256sum --check SHA256SUMS)
+          scripts/katl-release checksums previous
           printf 'Upgrade source: %s\n' "$PREVIOUS_TAG" >> "$GITHUB_STEP_SUMMARY"
       - name: Qualify production installation, reboot, upgrade, and rollback
         run: |
@@ -86,9 +86,10 @@ jobs:
               _build/hosted-evidence/go-test.jsonl
           done
       - uses: actions/upload-artifact@v7
-        if: success()
+        if: success() && inputs.run-id == 0
         with:
           name: katl-qualified-${{ matrix.flavour }}-${{ github.sha }}
+          overwrite: true
           path: dist/SHA256SUMS
           if-no-files-found: error
           retention-days: 30
