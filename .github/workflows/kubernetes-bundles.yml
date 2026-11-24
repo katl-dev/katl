@@ -16,6 +16,7 @@ on:
 permissions:
   contents: read
 
+# Serialises bundle publication per ref; queued runs are never cancelled.
 concurrency:
   group: kubernetes-bundles-${{ github.ref }}
   cancel-in-progress: false

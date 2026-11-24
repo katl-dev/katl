@@ -16,6 +16,7 @@ on:
 permissions:
   contents: read
 
+# Serialises updates to a flavour's committed kernel inputs; never cancelled.
 concurrency:
   group: kernel-inputs-${{ inputs.flavour }}-${{ github.ref }}
   cancel-in-progress: false
