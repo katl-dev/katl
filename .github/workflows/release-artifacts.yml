@@ -573,6 +573,7 @@ jobs:
       KATL_ARCHITECTURE: x86_64
       KATL_BUILD_COMMIT: ${{ github.sha }}
       KATL_VERSION: ${{ needs.identity.outputs.version }}
+      KATL_RELEASE_PREVIOUS_TAG: ${{ needs.identity.outputs.previous-tag }}
 
     steps:
       - name: Check out repository

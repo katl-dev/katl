@@ -12,7 +12,14 @@ separate publication approval is required.
 2. Add `docs/releases/VERSION.md` when operators need upgrade instructions,
    required actions, compatibility notices, known limitations, or recovery
    guidance. Otherwise commit subjects supply the release notes.
-3. Resolve the source and print the tag commands:
+3. Dispatch a candidate from `main` and wait for it to pass. Production-image
+   checks run only in this workflow, so a tag must not be the first run:
+
+   ```sh
+   gh workflow run release-artifacts.yml --ref main -f version=2026.10.2
+   ```
+
+4. Resolve the source and print the tag commands:
 
    ```sh
    scripts/katl-release prepare 2026.10.2
@@ -21,7 +28,7 @@ separate publication approval is required.
    Preparation reads GitHub's `main`, rejects an existing tag, and prints the
    exact source SHA and commands for the checkout's version-control system. Use
    `--ref REF` before the version to select another published source.
-4. Review the source and run the printed commands. Do not move or reuse a
+5. Review the source and run the printed commands. Do not move or reuse a
    release tag. Follow the tag run in
    [Katl Release Artifacts](https://github.com/katl-dev/katl/actions/workflows/release-artifacts.yml).
 
