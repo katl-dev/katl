@@ -1,7 +1,8 @@
 package scriptstest
 
 import (
-	"context"
+	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -18,7 +20,7 @@ func TestMkosiDirectRejectsRuntimePackaging(t *testing.T) {
 	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(), "KATL_CONTAINER_RUNTIME=direct")
-	output, err := cmd.CombinedOutput()
+	output, err := runInGroup(t, cmd, scriptTimeout)
 	if err == nil {
 		t.Fatalf("scripts/mkosi direct build-runtime unexpectedly passed:\n%s", output)
 	}
@@ -61,7 +63,7 @@ printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 	first := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
 	first.Dir = repo
 	first.Env = env
-	output, err := first.CombinedOutput()
+	output, err := runInGroup(t, first, scriptTimeout)
 	if err != nil {
 		t.Fatalf("initial scripts/mkosi build-runtime failed: %v\n%s", err, output)
 	}
@@ -80,7 +82,7 @@ printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 	second := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
 	second.Dir = repo
 	second.Env = env
-	output, err = second.CombinedOutput()
+	output, err = runInGroup(t, second, scriptTimeout)
 	if err != nil {
 		t.Fatalf("cached scripts/mkosi build-runtime failed: %v\n%s", err, output)
 	}
@@ -98,7 +100,7 @@ printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 		corrupt := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
 		corrupt.Dir = repo
 		corrupt.Env = env
-		output, err = corrupt.CombinedOutput()
+		output, err = runInGroup(t, corrupt, scriptTimeout)
 		if err != nil {
 			t.Fatalf("scripts/mkosi with corrupt cached artifact failed: %v\n%s", err, output)
 		}
@@ -116,7 +118,7 @@ printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 	third := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
 	third.Dir = repo
 	third.Env = env
-	output, err = third.CombinedOutput()
+	output, err = runInGroup(t, third, scriptTimeout)
 	if err != nil {
 		t.Fatalf("changed-binary scripts/mkosi build-runtime failed: %v\n%s", err, output)
 	}
@@ -178,7 +180,7 @@ exit 42
 	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
 	cmd.Dir = repo
 	cmd.Env = env
-	output, err := cmd.CombinedOutput()
+	output, err := runInGroup(t, cmd, scriptTimeout)
 	if err != nil {
 		t.Fatalf("scripts/mkosi build-runtime with failing identity probe failed: %v\n%s", err, output)
 	}
@@ -278,7 +280,7 @@ exit 1
 	} {
 		cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-katlos-install-image")
 		cmd.Env = append(env, "KATL_EXTENSION_RELEASE="+step.selection)
-		if output, err := cmd.CombinedOutput(); err != nil {
+		if output, err := runInGroup(t, cmd, scriptTimeout); err != nil {
 			t.Fatalf("build: %v\n%s", err, output)
 		}
 		if got := len(readLinesForScripts(t, log)); got != step.builds {
@@ -424,7 +426,7 @@ printf '%s\n' "$@" >> "$KATL_FAKE_PODMAN_ARGS.detail"
 		seedKernelMetadata(t, buildDir, scriptKernelSet(step.flavour))
 		cmd := exec.Command(filepath.Join(repo, "scripts/mkosi"), "build-runtime")
 		cmd.Dir, cmd.Env = repo, append(append([]string(nil), env...), "KATL_FLAVOUR="+step.flavour)
-		if out, err := cmd.CombinedOutput(); err != nil {
+		if out, err := runInGroup(t, cmd, scriptTimeout); err != nil {
 			t.Fatalf("%s: %v\n%s", step.flavour, err, out)
 		}
 		if got := len(readLinesForScripts(t, calls)); got != step.builds {
@@ -434,7 +436,7 @@ printf '%s\n' "$@" >> "$KATL_FAKE_PODMAN_ARGS.detail"
 	writeTemporaryFile(t, filepath.Join(repo, "mkosi.conf.d", "cache-probe.conf"), "[Build]\nEnvironment=CACHE_PROBE=changed\n")
 	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
 	cmd.Dir, cmd.Env = repo, append(append([]string(nil), env...), "KATL_FLAVOUR=standard")
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := runInGroup(t, cmd, scriptTimeout); err != nil {
 		t.Fatalf("changed mkosi input: %v\n%s", err, out)
 	}
 	if got := len(readLinesForScripts(t, calls)); got != 4 {
@@ -513,7 +515,7 @@ cp -a "$tree" "$build/katl-runtime-root"
 		builds.Add(1)
 		go func() {
 			defer builds.Done()
-			outputs[i], errs[i] = cmd.CombinedOutput()
+			outputs[i], errs[i] = runInGroup(t, cmd, scriptTimeout)
 		}()
 	}
 	builds.Wait()
@@ -563,7 +565,7 @@ exit 0
 			for attempt := 1; attempt <= 2; attempt++ {
 				cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
 				cmd.Dir, cmd.Env = repo, env
-				output, err := cmd.CombinedOutput()
+				output, err := runInGroup(t, cmd, scriptTimeout)
 				if err == nil {
 					t.Fatalf("attempt %d: build-runtime passed without %s:\n%s", attempt, missing, output)
 				}
@@ -597,12 +599,10 @@ exit 0
 	env := append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "KATL_CONTAINER_RUNTIME=podman", "KATL_MKOSI_BUILD_DIR="+buildDir, "KATL_MKOSI_LOCK_FD=", "KATL_VERSION=0.0.0-dev", "KATL_ARCHITECTURE=x86_64", "TMPDIR="+tmp)
 	env = append(env, activeGoCacheEnv(t)...)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, filepath.Join(repo, "scripts", "mkosi"), "build-katlos-install-image")
-	cmd.Dir, cmd.Env, cmd.WaitDelay = repo, env, 5*time.Second
-	output, err := cmd.CombinedOutput()
-	if ctx.Err() != nil {
+	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-katlos-install-image")
+	cmd.Dir, cmd.Env = repo, env
+	output, err := runInGroup(t, cmd, 2*time.Minute)
+	if errors.Is(err, errScriptTimeout) {
 		t.Fatalf("nested scripts/mkosi waited on its parent's lock:\n%s", output)
 	}
 	if err != nil {
@@ -610,5 +610,37 @@ exit 0
 	}
 	if strings.Contains(string(output), "mkosi build lock: waiting") {
 		t.Fatalf("nested scripts/mkosi waited for the lock:\n%s", output)
+	}
+}
+
+const scriptTimeout = 10 * time.Minute
+
+var errScriptTimeout = errors.New("script timed out")
+
+// runInGroup runs cmd in its own process group and returns its combined
+// output. The whole group is killed on timeout and when the test ends, so no
+// descendant of cmd, such as a flock waiter, outlives the test.
+func runInGroup(t *testing.T, cmd *exec.Cmd, timeout time.Duration) ([]byte, error) {
+	t.Helper()
+	var out bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &out
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = 5 * time.Second
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	pgid := cmd.Process.Pid
+	killGroup := func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) }
+	t.Cleanup(killGroup)
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return out.Bytes(), err
+	case <-time.After(timeout):
+		killGroup()
+		<-done
+		return out.Bytes(), errScriptTimeout
 	}
 }
