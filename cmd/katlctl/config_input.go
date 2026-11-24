@@ -53,7 +53,7 @@ func loadNodeConfiguration(ctx context.Context, path string, planning configbund
 			result.Nodes[node.Name] = configapply.RenderNodeRequest{
 				NodeName:                  node.Name,
 				Manifest:                  node.InstallManifest,
-				KubeadmConfigs:            compiled.KubeadmConfigs,
+				KubeadmConfigs:            compiled.NodeKubeadmConfigs[node.Name],
 				SourceID:                  compiled.ClusterName,
 				SystemExtensionSelections: &selections,
 				APIProxy:                  node.APIProxy,

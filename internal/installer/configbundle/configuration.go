@@ -2,6 +2,7 @@ package configbundle
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/katl-dev/katl/internal/installer/clusterplan"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
@@ -12,9 +13,11 @@ import (
 // ConfigurationPlan renders host intent without selecting extension artifacts.
 // The node resolves selections against its current or upgrade-target runtime.
 type ConfigurationPlan struct {
-	ClusterName               string
-	Plan                      clusterplan.Plan
-	KubeadmConfigs            map[string]kubeadmconfig.Plan
+	ClusterName string
+	Plan        clusterplan.Plan
+	// NodeKubeadmConfigs holds, by node name, the kubeadm input that node
+	// installs, keyed by config ref.
+	NodeKubeadmConfigs        map[string]map[string]kubeadmconfig.Plan
 	SystemExtensionSelections map[string][]systemextensionbundle.Selection
 }
 
@@ -23,10 +26,22 @@ func PlanConfiguration(request BuildRequest) (ConfigurationPlan, error) {
 	if err != nil {
 		return ConfigurationPlan{}, err
 	}
+	nodeConfigs := make(map[string]map[string]kubeadmconfig.Plan, len(compiled.plan.Nodes))
+	for _, node := range compiled.plan.Nodes {
+		ref := strings.TrimSpace(node.KubeadmConfig.Ref)
+		if ref == "" {
+			continue
+		}
+		plan, err := nodeKubeadmConfig(node, compiled.kubeadmConfigs)
+		if err != nil {
+			return ConfigurationPlan{}, err
+		}
+		nodeConfigs[node.Name] = map[string]kubeadmconfig.Plan{ref: plan}
+	}
 	return ConfigurationPlan{
 		ClusterName:               compiled.source.Metadata.Name,
 		Plan:                      compiled.plan,
-		KubeadmConfigs:            compiled.kubeadmConfigs,
+		NodeKubeadmConfigs:        nodeConfigs,
 		SystemExtensionSelections: compiled.selections,
 	}, nil
 }

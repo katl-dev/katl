@@ -291,12 +291,32 @@ func mergeInlineKubeadmConfigs(installed map[string]kubeadmconfig.Plan, inline m
 		plan.NodeLocalKubelet = input.NodeLocalKubelet
 		plan.SharedKubeletBase = input.SharedKubeletBase
 		previous, exists := installed[name]
-		if !exists || !equivalentKubeadmPlans(previous, plan) {
+		if !exists || !equivalentKubeadmInputs(previous, plan) {
 			changed[name] = struct{}{}
 		}
 		configs[name] = plan
 	}
 	return configs, changed, nil
+}
+
+// equivalentKubeadmInputs compares inputs ignoring node registration, which
+// the identity and metadata domains plan; it does not own registration. It
+// reconciles the forms generations already hold: v2026.11.0 and v2026.11.1
+// applies stored the shared input, bootstrap and join stored it registered,
+// and a label or taint edit leaves an earlier registration. Hand-written
+// inline input is not validated against the reserved fields, so a change only
+// there, such as dropping InitConfiguration taints before bootstrap, is stored
+// but not reported as a kubeadm change.
+func equivalentKubeadmInputs(previous, desired kubeadmconfig.Plan) bool {
+	previous, err := kubeadmconfig.WithoutNodeRegistration(previous)
+	if err != nil {
+		return false
+	}
+	desired, err = kubeadmconfig.WithoutNodeRegistration(desired)
+	if err != nil {
+		return false
+	}
+	return equivalentKubeadmPlans(previous, desired)
 }
 
 func equivalentKubeadmPlans(previous, desired kubeadmconfig.Plan) bool {

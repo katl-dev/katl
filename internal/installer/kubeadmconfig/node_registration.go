@@ -88,9 +88,59 @@ func WithNodeRegistration(plan Plan, registration NodeRegistration) (Plan, error
 			}
 		}
 	}
+	return withDocuments(plan, documents, "for node registration")
+}
+
+// WithoutNodeRegistration returns plan without the fields WithNodeRegistration
+// owns: node-ip, node-labels, nodeRegistration.taints and advertiseAddress.
+// ClusterConfig validation reserves them for Katl. Kubeadm reads them only when
+// it registers the node, so after registration they describe node identity and
+// metadata, which their own domains plan, rather than kubeadm configuration.
+func WithoutNodeRegistration(plan Plan) (Plan, error) {
+	documents, err := decodeDocuments(plan.Config.Content)
+	if err != nil {
+		return Plan{}, fmt.Errorf("decode KubeadmConfig %q without node registration: %w", plan.Name, err)
+	}
+	for _, document := range documents {
+		kind, _ := document["kind"].(string)
+		if kind != "InitConfiguration" && kind != "JoinConfiguration" {
+			continue
+		}
+		if nodeRegistration, ok := document["nodeRegistration"].(map[string]any); ok {
+			delete(nodeRegistration, "taints")
+			if extraArgs, ok := nodeRegistration["kubeletExtraArgs"].([]any); ok {
+				nodeRegistration["kubeletExtraArgs"] = slices.DeleteFunc(slices.Clone(extraArgs), func(raw any) bool {
+					argument, _ := raw.(map[string]any)
+					name, _ := argument["name"].(string)
+					name = strings.TrimSpace(name)
+					return name == kubeletNodeIPArgument || name == kubeletNodeLabelsArgument
+				})
+				if len(nodeRegistration["kubeletExtraArgs"].([]any)) == 0 {
+					delete(nodeRegistration, "kubeletExtraArgs")
+				}
+			}
+			if len(nodeRegistration) == 0 {
+				delete(document, "nodeRegistration")
+			}
+		}
+		endpoint := document
+		if kind == "JoinConfiguration" {
+			endpoint, _ = document["controlPlane"].(map[string]any)
+		}
+		if local, ok := endpoint["localAPIEndpoint"].(map[string]any); ok {
+			delete(local, "advertiseAddress")
+			if len(local) == 0 {
+				delete(endpoint, "localAPIEndpoint")
+			}
+		}
+	}
+	return withDocuments(plan, documents, "without node registration")
+}
+
+func withDocuments(plan Plan, documents []map[string]any, purpose string) (Plan, error) {
 	content, err := encodeDocuments(documents)
 	if err != nil {
-		return Plan{}, fmt.Errorf("encode KubeadmConfig %q for node registration: %w", plan.Name, err)
+		return Plan{}, fmt.Errorf("encode KubeadmConfig %q %s: %w", plan.Name, purpose, err)
 	}
 	files := []File{{
 		SourcePath: plan.Config.SourcePath,
@@ -105,7 +155,7 @@ func WithNodeRegistration(plan Plan, registration NodeRegistration) (Plan, error
 	}
 	rendered, err := PlanFromRenderedFiles(plan.Name, files)
 	if err != nil {
-		return Plan{}, fmt.Errorf("validate KubeadmConfig %q with node registration: %w", plan.Name, err)
+		return Plan{}, fmt.Errorf("validate KubeadmConfig %q %s: %w", plan.Name, purpose, err)
 	}
 	rendered.NodeLocalKubelet = plan.NodeLocalKubelet
 	rendered.SharedKubeletBase = plan.SharedKubeletBase
