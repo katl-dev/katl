@@ -256,3 +256,23 @@ func writeFile(t *testing.T, root string, path string, data string) {
 		t.Fatal(err)
 	}
 }
+
+func TestFailureSummary(t *testing.T) {
+	for name, tc := range map[string]struct {
+		record Record
+		want   string
+	}{
+		"reason and hint":  {Record{LastError: "disk missing", RetryHint: "fix and rerun"}, "disk missing; fix and rerun"},
+		"refusal first":    {Record{RefusalReason: "refused", LastError: "other", RetryHint: "fix"}, "refused; fix"},
+		"hint repeats":     {Record{LastError: "same", RetryHint: "same"}, "same"},
+		"reason only":      {Record{LastError: "disk missing"}, "disk missing"},
+		"hint only":        {Record{RetryHint: "fix"}, "fix"},
+		"nothing recorded": {Record{}, "inspect installer status and console"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := tc.record.FailureSummary(); got != tc.want {
+				t.Fatalf("FailureSummary() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

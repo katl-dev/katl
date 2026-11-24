@@ -821,6 +821,7 @@ func prepareHandoffRetry(server *handoff.HandoffServer, runDir, endpoint string,
 	}
 	status.RetryHint = "correct the failure, then run " + command
 	writeConsoleInstallStatus(runDir, status, stdout)
+	fmt.Fprintf(stdout, "katlos-install install failed: %s\n", status.FailureSummary())
 	reportInstallerProgress(stdout, "install failed before disk mutation; waiting for corrected configuration", false)
 	return true
 }

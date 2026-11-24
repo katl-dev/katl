@@ -349,7 +349,7 @@ func applyInstallNode(ctx context.Context, opts installApplyOptions, inventory c
 		return "", err
 	}
 	if installFailed(status.InstallStatus.State) {
-		return "", fmt.Errorf("installer finished in %s: %s", status.InstallStatus.State, installFailure(status.InstallStatus))
+		return "", fmt.Errorf("installer finished in %s: %s", status.InstallStatus.State, status.InstallStatus.FailureSummary())
 	}
 	return "", nil
 }
@@ -768,21 +768,6 @@ func installFailed(state string) bool {
 	return installTerminal(state) && state != installstatus.StateRebootRequested
 }
 
-func installFailure(status installstatus.Record) string {
-	primary := firstNonEmpty(status.RefusalReason, status.LastError)
-	hint := strings.TrimSpace(status.RetryHint)
-	if primary != "" && hint != "" && hint != primary {
-		return primary + "; " + hint
-	}
-	if primary != "" {
-		return primary
-	}
-	if hint != "" {
-		return hint
-	}
-	return "inspect installer status and console"
-}
-
 func requestTimeout(overall time.Duration) time.Duration {
 	const maximum = 15 * time.Second
 	if overall < maximum {
@@ -836,7 +821,7 @@ func writeInstallReport(stdout io.Writer, output string, report installHandoffRe
 			}
 		}
 		if installFailed(report.Handoff.InstallStatus.State) {
-			if _, err := fmt.Fprintf(stdout, "Failure: %s\n", installFailure(report.Handoff.InstallStatus)); err != nil {
+			if _, err := fmt.Fprintf(stdout, "Failure: %s\n", report.Handoff.InstallStatus.FailureSummary()); err != nil {
 				return err
 			}
 		}
