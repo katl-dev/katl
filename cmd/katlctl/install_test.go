@@ -176,12 +176,28 @@ func TestInstallStatusReportsWaitingInstaller(t *testing.T) {
 	}
 }
 
+func TestInstallStatusReportsDiskDiscoveryFailure(t *testing.T) {
+	server := handoff.NewHandoffServer(nil)
+	server.SetDiscovery(discovery.StaticDiscoverySource{Err: fmt.Errorf("lsblk discovery: exit status 1")})
+	ts := httptest.NewServer(server.Handler())
+	defer ts.Close()
+
+	var stdout bytes.Buffer
+	if err := run(context.Background(), []string{"install", "status", "--endpoint", strings.TrimPrefix(ts.URL, "http://")}, &stdout, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(stdout.String(), "lsblk discovery: exit status 1") || !strings.Contains(stdout.String(), "katlctl install status") {
+		t.Fatalf("status output does not explain the discovery failure:\n%s", stdout.String())
+	}
+}
+
 func TestInstallStatusListsWaitingInstallerDisks(t *testing.T) {
 	server := handoff.NewHandoffServer(nil)
-	server.SetHardwareFacts(discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
+	server.SetDiscovery(discovery.StaticDiscoverySource{Facts: discovery.HardwareFacts{BlockDevices: []discovery.BlockDevice{
 		{Path: "/dev/vda", Type: discovery.DeviceDisk, SizeBytes: 64 << 30, Rotational: true, ByPath: []string{"/dev/disk/by-path/pci-0000:00:04.0"}},
 		{Path: "/dev/sda", Type: discovery.DeviceDisk, SizeBytes: 16 << 30, Model: "USB", Mountpoints: []string{"/run/media"}, ByID: []string{"/dev/disk/by-id/usb-stick"}},
-	}})
+	}}})
 	ts := httptest.NewServer(server.Handler())
 	defer ts.Close()
 
