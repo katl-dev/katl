@@ -1,0 +1,30 @@
+{
+  "apiVersion": "katl.dev/v1alpha1",
+  "kind": "APIProxyConfig",
+  "tlsServerName": "10.0.0.11",
+  "canonicalEndpoint": "10.0.0.11:6443",
+  "caFile": "/etc/kubernetes/pki/ca.crt",
+  "checkInterval": "2s",
+  "checkTimeout": "2s",
+  "listeners": [
+    {
+      "address": "10.0.0.11:7445",
+      "exposure": "workstation"
+    },
+    {
+      "address": "127.0.0.1:7445",
+      "exposure": "node-local"
+    },
+    {
+      "address": "192.168.1.11:7445",
+      "exposure": "workstation"
+    }
+  ],
+  "backends": [
+    {
+      "name": "cp-1",
+      "address": "10.0.0.11:6443",
+      "local": true
+    }
+  ]
+}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -236,7 +237,9 @@ func TestRunClusterApplySkipsKubernetesComponentsBeforeBootstrap(t *testing.T) {
 	}
 }
 
-func TestRunClusterApplyManagementAddressOnlyTargetsWithoutMutation(t *testing.T) {
+// A control plane's management address change keeps the enrolled target and
+// every node setting except the API proxy listener that katlctl dials.
+func TestRunClusterApplyManagementAddressMovesOnlyProxyListener(t *testing.T) {
 	beforePath := writeClusterConfig(t)
 	baseSource := strings.Replace(configBundleSource(), "      install:\n", "      kubernetes:\n        address: 10.0.0.11\n      install:\n", 1)
 	if err := os.WriteFile(beforePath, []byte(baseSource), 0o600); err != nil {
@@ -304,11 +307,14 @@ func TestRunClusterApplyManagementAddressOnlyTargetsWithoutMutation(t *testing.T
 			t.Fatalf("management-only apply changed host configuration: %#v", request)
 		}
 	}
-	if !strings.Contains(stderr.String(), "phase=node-config node=cp-1 status=unchanged") {
-		t.Fatalf("apply progress = %q, want unchanged node", stderr.String())
+	// The node never dials its management address; only the API proxy's
+	// workstation listener follows it, so katlctl reaches the proxy there.
+	if client.validateRequest == nil {
+		t.Fatal("cluster apply did not validate node config")
 	}
-	if client.validateRequest == nil || strings.Contains(client.validateRequest.ConfigYaml, "10.0.0.12") {
-		t.Fatalf("validated node config contains workstation management target: %#v", client.validateRequest)
+	config := client.validateRequest.ConfigYaml
+	if strings.Count(config, "10.0.0.12") != 1 || !regexp.MustCompile(`address: 10\.0\.0\.12:7445\s+exposure: workstation`).MatchString(config) {
+		t.Fatalf("validated node config uses the management address beyond the API proxy workstation listener:\n%s", config)
 	}
 }
 

@@ -10,15 +10,18 @@ import (
 	"strings"
 )
 
-// OwnedNetwork is a libvirt NAT network that one world creates, reserves
+// OwnedNetwork is a libvirt network that one world creates, reserves
 // addresses in, and removes. Its metadata names the owning world so cleanup
-// never touches networks it did not create.
+// never touches networks it did not create. It forwards through host NAT
+// unless Isolated, which leaves only the host and guests on it and gives the
+// guests no default route.
 type OwnedNetwork struct {
-	Name    string
-	Owner   string
-	CIDR    string
-	Gateway string
-	Hosts   []DHCPHost
+	Name     string
+	Owner    string
+	CIDR     string
+	Gateway  string
+	Isolated bool
+	Hosts    []DHCPHost
 }
 
 // DHCPHost reserves Address for MACAddress. Reservations use infinite leases,
@@ -34,7 +37,7 @@ type networkXML struct {
 	XMLName  xml.Name         `xml:"network"`
 	Name     string           `xml:"name"`
 	Metadata domainMetadata   `xml:"metadata"`
-	Forward  networkForward   `xml:"forward"`
+	Forward  *networkForward  `xml:"forward"`
 	IP       networkIPElement `xml:"ip"`
 }
 
@@ -98,7 +101,6 @@ func (network OwnedNetwork) XML() (string, error) {
 	doc := networkXML{
 		Name:     network.Name,
 		Metadata: domainMetadata{VMTest: domainVMTest{Value: network.Owner}},
-		Forward:  networkForward{Mode: "nat"},
 		IP: networkIPElement{
 			Address: gateway.String(),
 			Prefix:  prefix,
@@ -107,6 +109,9 @@ func (network OwnedNetwork) XML() (string, error) {
 				End:   uint32ToIP(end).String(),
 			}}},
 		},
+	}
+	if !network.Isolated {
+		doc.Forward = &networkForward{Mode: "nat"}
 	}
 	for _, host := range network.Hosts {
 		element, err := host.element(cidr)

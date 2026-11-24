@@ -298,8 +298,19 @@ func addWorldNode(world katldevWorld, name string, controlPlane bool) (vmtest.No
 // exactly the scenario's node addresses. The scenario is the source of truth,
 // so an interrupted readdress or add-node converges on the next command.
 func (manager installerManager) syncNetwork(ctx context.Context, world katldevWorld) error {
-	uri := world.World.Libvirt.URI
-	desired := world.network()
+	if err := manager.syncOwnedNetwork(ctx, world.World.Libvirt.URI, world.network(), filepath.Join(world.World.RunDir, "network", "network.xml")); err != nil {
+		return err
+	}
+	if err := manager.syncMultihome(ctx, world, false); err != nil {
+		return err
+	}
+	return manager.syncNAT(ctx, world, false)
+}
+
+// syncOwnedNetwork defines and starts desired if needed, refuses a network
+// of the same name that the world does not own, and converges its DHCP
+// reservations on desired.Hosts.
+func (manager installerManager) syncOwnedNetwork(ctx context.Context, uri string, desired vmtest.OwnedNetwork, path string) error {
 	exists, err := manager.networkExists(ctx, uri, desired.Name)
 	if err != nil {
 		return err
@@ -310,7 +321,6 @@ func (manager installerManager) syncNetwork(ctx context.Context, world katldevWo
 		if err != nil {
 			return err
 		}
-		path := filepath.Join(world.World.RunDir, "network", "network.xml")
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			return err
 		}
@@ -383,7 +393,7 @@ func (manager installerManager) syncNetwork(ctx context.Context, world katldevWo
 			return err
 		}
 	}
-	return manager.syncNAT(ctx, world, false)
+	return nil
 }
 
 func (manager installerManager) networkExists(ctx context.Context, uri, name string) (bool, error) {
@@ -485,7 +495,15 @@ func (manager installerManager) removeWorldObjects(ctx context.Context, runID st
 		fmt.Fprintf(manager.stderr, "katldev world: removed VM %s\n", domain)
 	}
 
-	network := "katl-" + runID
+	for _, network := range []string{multihomeNetworkName(runID), "katl-" + runID} {
+		if err := manager.removeOwnedNetwork(ctx, uri, network, owner); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (manager installerManager) removeOwnedNetwork(ctx context.Context, uri, network, owner string) error {
 	exists, err := manager.networkExists(ctx, uri, network)
 	if err != nil {
 		return err
@@ -532,6 +550,7 @@ func newWorldCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comma
 	cmd.AddCommand(newWorldConsoleCommand(ctx, stdout, stderr, "console [NODE]"))
 	cmd.AddCommand(newWorldReaddressCommand(ctx, stdout, stderr))
 	cmd.AddCommand(newWorldNATCommand(ctx, stdout, stderr))
+	cmd.AddCommand(newWorldMultihomeCommand(ctx, stdout, stderr))
 	cmd.AddCommand(&cobra.Command{
 		Use:   "remove",
 		Short: "Delete the world's VMs, disks, and network",

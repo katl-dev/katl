@@ -777,6 +777,15 @@ func renderTmpfiles(dirs []StateDir) string {
 			group = "systemd-journal"
 		}
 		lines = append(lines, fmt.Sprintf("d %s %04o %s %s -", dir.Path, dir.Mode, owner, group))
+		if dir.Path == KubernetesSource {
+			lines = append(lines,
+				"# The unprivileged API proxy reads pki/ca.crt. Earlier releases created these",
+				"# directories 0700; z repairs an existing directory without creating one or",
+				"# touching the files inside, whose keys stay 0600.",
+				"z "+KubernetesSource+"/pki 0755 root root -",
+				"z "+KubernetesSource+"/pki/etcd 0755 root root -",
+			)
+		}
 	}
 	return strings.Join(append(lines, ""), "\n")
 }

@@ -20,6 +20,15 @@ func (table *fakeNATTable) run(_ context.Context, args ...string) ([]byte, error
 	if len(args) < 4 || args[0] != "-w" || args[1] != "-t" || args[2] != "nat" {
 		return nil, errors.New("unexpected iptables invocation " + strings.Join(args, " "))
 	}
+	if len(args) == 4 && args[3] == "-S" {
+		var listing strings.Builder
+		for chain, rules := range table.chains {
+			for _, rule := range rules {
+				listing.WriteString("-A " + chain + " " + rule + "\n")
+			}
+		}
+		return []byte(listing.String()), nil
+	}
 	op, chain, rule := args[3], args[4], strings.Join(args[5:], " ")
 	rules, exists := table.chains[chain]
 	if chain == "OUTPUT" {
@@ -126,6 +135,32 @@ func TestWorldNATRejectsAddressesAVMCouldHold(t *testing.T) {
 		if err := manager.setNAT(context.Background(), "cp-1", address); err == nil {
 			t.Errorf("setNAT(%s) succeeded", address)
 		}
+	}
+}
+
+func TestWorldNATRejectsAddressAnotherWorldTranslates(t *testing.T) {
+	fake := newFakeLibvirt(t)
+	manager := testManager(t, fake)
+	table := &fakeNATTable{chains: map[string][]string{
+		"KATLDEV-other": {"-d 198.18.0.10/32 -j DNAT --to-destination 10.205.108.2"},
+		"OUTPUT":        {"-j KATLDEV-other"},
+	}}
+	manager.runIptables = table.run
+	world, err := manager.createWorld(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustAddWorldNode(t, world, true)
+
+	if err := manager.setNAT(context.Background(), "cp-1", "198.18.0.10"); err == nil || !strings.Contains(err.Error(), "KATLDEV-other") {
+		t.Fatalf("setNAT() with another world's address error = %v", err)
+	}
+	if err := manager.setNAT(context.Background(), "cp-1", "198.18.0.11"); err != nil {
+		t.Fatalf("setNAT() with a free address: %v", err)
+	}
+	// Repeating the world's own address is not a conflict.
+	if err := manager.setNAT(context.Background(), "cp-1", "198.18.0.11"); err != nil {
+		t.Fatalf("setNAT() repeated: %v", err)
 	}
 }
 

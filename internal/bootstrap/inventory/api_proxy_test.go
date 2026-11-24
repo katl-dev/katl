@@ -1,6 +1,9 @@
 package inventory
 
 import (
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -33,111 +36,90 @@ func natInventory() Inventory {
 	}
 }
 
-func TestPlanAPIProxyConfig(t *testing.T) {
-	plan, err := PlanInventory(PlanRequest{Inventory: natInventory(), InitNode: "cp-1"})
+// proxyTopologies are the address layouts the API proxy goldens in
+// testdata/api-proxy cover. The single-address goldens are the v2026.11.1
+// output; NAT and multihomed nodes differ only in whether the management
+// address is assigned to the node, which the renderer cannot observe.
+var proxyTopologies = []struct {
+	name                               string
+	cpManagement, cpKubernetes         string
+	workerManagement, workerKubernetes string
+}{
+	{name: "single-address", cpManagement: "10.0.0.11", workerManagement: "10.0.0.21"},
+	{name: "single-address", cpManagement: "10.0.0.11", cpKubernetes: "10.0.0.11", workerManagement: "10.0.0.21", workerKubernetes: "10.0.0.21"},
+	// The workstation reaches the nodes through DNAT at 198.18.0.0/24.
+	{name: "nat", cpManagement: "198.18.0.11", cpKubernetes: "10.0.0.11", workerManagement: "198.18.0.21", workerKubernetes: "10.0.0.21"},
+	// The nodes hold both addresses on separate NICs.
+	{name: "multihomed", cpManagement: "192.168.1.11", cpKubernetes: "10.0.0.11", workerManagement: "192.168.1.21", workerKubernetes: "10.0.0.21"},
+}
+
+func readProxyGolden(t *testing.T, topology, node string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "api-proxy", topology, node+".json"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	return string(data)
+}
 
+func TestAPIProxyConfigTopologies(t *testing.T) {
+	for _, topology := range proxyTopologies {
+		nodes := []Node{
+			{Name: "cp-1", Address: topology.cpManagement, KubernetesAddress: topology.cpKubernetes, SystemRole: RoleControlPlane},
+			{Name: "worker-1", Address: topology.workerManagement, KubernetesAddress: topology.workerKubernetes, SystemRole: RoleWorker},
+		}
+		for _, node := range nodes {
+			t.Run(topology.name+"/"+node.Name, func(t *testing.T) {
+				want := readProxyGolden(t, topology.name, node.Name)
+
+				config, known, err := APIProxyConfig(nodes, node.Name, "10.0.0.11:6443")
+				if err != nil || !known {
+					t.Fatalf("APIProxyConfig() = known %v, error %v", known, err)
+				}
+				if got, err := apiproxy.Render(config); err != nil || got != want {
+					t.Fatalf("install-time config (error %v):\n%s\nwant:\n%s", err, got, want)
+				}
+
+				plan := Plan{ControlPlaneEndpoint: "10.0.0.11:6443"}
+				for _, n := range nodes {
+					plan.Nodes = append(plan.Nodes, PlannedNode{Name: n.Name, Address: n.Address, KubernetesAddress: n.KubernetesAddress, SystemRole: n.SystemRole})
+				}
+				planned, err := plan.APIProxyConfig(node.Name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got, err := apiproxy.Render(planned); err != nil || got != want {
+					t.Fatalf("bootstrap config (error %v):\n%s\nwant:\n%s", err, got, want)
+				}
+			})
+		}
+	}
+}
+
+func TestAPIProxyConfigManagementListener(t *testing.T) {
+	kubernetes := apiproxy.Listener{Address: "10.0.0.11:7445", Exposure: apiproxy.ExposureWorkstation}
+	local := apiproxy.Listener{Address: "127.0.0.1:7445", Exposure: apiproxy.ExposureNodeLocal}
+	second := apiproxy.Listener{Address: "192.168.1.11:7445", Exposure: apiproxy.ExposureWorkstation}
 	for _, tc := range []struct {
-		node string
-		want string
+		management string
+		want       []apiproxy.Listener
 	}{
-		{node: "cp-2", want: `{
-  "apiVersion": "katl.dev/v1alpha1",
-  "kind": "APIProxyConfig",
-  "tlsServerName": "10.0.1.10",
-  "canonicalEndpoint": "10.0.1.10:6443",
-  "caFile": "/etc/kubernetes/pki/ca.crt",
-  "checkInterval": "2s",
-  "checkTimeout": "2s",
-  "listeners": [
-    {
-      "address": "10.0.1.11:7445",
-      "exposure": "workstation"
-    },
-    {
-      "address": "127.0.0.1:7445",
-      "exposure": "node-local"
-    }
-  ],
-  "backends": [
-    {
-      "name": "cp-1",
-      "address": "10.0.1.10:6443"
-    },
-    {
-      "name": "cp-2",
-      "address": "10.0.1.11:6443",
-      "local": true
-    }
-  ]
-}
-`},
-		{node: "worker-1", want: `{
-  "apiVersion": "katl.dev/v1alpha1",
-  "kind": "APIProxyConfig",
-  "tlsServerName": "10.0.1.10",
-  "canonicalEndpoint": "10.0.1.10:6443",
-  "caFile": "/etc/kubernetes/pki/ca.crt",
-  "checkInterval": "2s",
-  "checkTimeout": "2s",
-  "listeners": [
-    {
-      "address": "127.0.0.1:7445",
-      "exposure": "node-local"
-    }
-  ],
-  "backends": [
-    {
-      "name": "cp-1",
-      "address": "10.0.1.10:6443"
-    },
-    {
-      "name": "cp-2",
-      "address": "10.0.1.11:6443"
-    }
-  ]
-}
-`},
+		// A DNS name has no single address to bind.
+		{management: "cp-1.katl.test", want: []apiproxy.Listener{kubernetes, local}},
+		{management: "cp-1.katl.test:9443", want: []apiproxy.Listener{kubernetes, local}},
+		// The agent port is not the proxy's; only the host counts.
+		{management: "10.0.0.11:9443", want: []apiproxy.Listener{kubernetes, local}},
+		{management: "192.168.1.11:9443", want: []apiproxy.Listener{kubernetes, local, second}},
+		{management: "::ffff:10.0.0.11", want: []apiproxy.Listener{kubernetes, local}},
+		{management: "::ffff:192.168.1.11", want: []apiproxy.Listener{kubernetes, local, second}},
 	} {
-		t.Run(tc.node, func(t *testing.T) {
-			config, err := plan.APIProxyConfig(tc.node)
-			if err != nil {
-				t.Fatal(err)
-			}
-			got, err := apiproxy.Render(config)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got != tc.want {
-				t.Fatalf("API proxy config:\n%s\nwant:\n%s", got, tc.want)
-			}
-		})
-	}
-}
-
-// Install-time rendering and the bootstrap generation must agree, since the
-// bootstrap generation replaces the installed configuration.
-func TestAPIProxyConfigMatchesPlan(t *testing.T) {
-	inv := natInventory()
-	plan, err := PlanInventory(PlanRequest{Inventory: inv, InitNode: "cp-1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, node := range inv.Nodes {
-		installed, known, err := APIProxyConfig(inv.Nodes, node.Name, inv.ControlPlaneEndpoint)
-		if err != nil || !known {
-			t.Fatalf("APIProxyConfig(%s) = known %v, error %v", node.Name, known, err)
-		}
-		planned, err := plan.APIProxyConfig(node.Name)
+		nodes := []Node{{Name: "cp-1", Address: tc.management, KubernetesAddress: "10.0.0.11", SystemRole: RoleControlPlane}}
+		config, _, err := APIProxyConfig(nodes, "cp-1", "10.0.0.11:6443")
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("%s: %v", tc.management, err)
 		}
-		installedJSON, _ := apiproxy.Render(installed)
-		plannedJSON, _ := apiproxy.Render(planned)
-		if installedJSON != plannedJSON {
-			t.Fatalf("%s install-time config:\n%s\nbootstrap config:\n%s", node.Name, installedJSON, plannedJSON)
+		if !slices.Equal(config.Listeners, tc.want) {
+			t.Errorf("%s listeners = %#v, want %#v", tc.management, config.Listeners, tc.want)
 		}
 	}
 }

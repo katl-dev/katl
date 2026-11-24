@@ -201,7 +201,7 @@ func planEtcdRemovalState(ctx context.Context, inv inventory.Inventory, targetNa
 			break
 		}
 		if candidate.GetName() == target.Name || containsString(candidate.GetPeerUrls(), expectedPeer) {
-			return etcdRemovalPlan{}, fmt.Errorf("etcd member identity for %s does not match expected name and peer URL %s", target.Name, expectedPeer)
+			return etcdRemovalPlan{}, fmt.Errorf("etcd member identity for %s does not match expected name and peer URL %s; if etcd advertises the node at another address, pass --config with nodes[].kubernetes.address set to it", target.Name, expectedPeer)
 		}
 	}
 	if member == nil {

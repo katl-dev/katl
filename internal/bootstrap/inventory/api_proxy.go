@@ -48,9 +48,12 @@ type proxyMember struct {
 	address           string
 }
 
-// apiProxyConfig derives every listener and backend from Kubernetes
-// addresses. The workstation listener binds the node's own address, and a
-// workstation that reaches the node through NAT connects to it there.
+// apiProxyConfig derives backends and the node-side listeners from Kubernetes
+// addresses, which the nodes hold themselves. The workstation dials the
+// management address, so a control plane also listens there when it is a
+// different literal IP: on a multihomed node that address is local, and
+// behind NAT the listener is free-bound and idle while translated
+// connections arrive at the Kubernetes address.
 func apiProxyConfig(members []proxyMember, self, canonicalEndpoint string) (apiproxy.Config, bool, error) {
 	var selfMember *proxyMember
 	var selfHost netip.Addr
@@ -92,6 +95,9 @@ func apiProxyConfig(members []proxyMember, self, canonicalEndpoint string) (apip
 	listeners := []apiproxy.Listener{{Address: endpoint(netip.MustParseAddr("127.0.0.1"), apiproxy.DefaultPort), Exposure: apiproxy.ExposureNodeLocal}}
 	if selfMember.role == RoleControlPlane {
 		listeners = append(listeners, apiproxy.Listener{Address: endpoint(selfHost, apiproxy.DefaultPort), Exposure: apiproxy.ExposureWorkstation})
+		if management, ok := managementHost(selfMember.address); ok && management != selfHost {
+			listeners = append(listeners, apiproxy.Listener{Address: endpoint(management, apiproxy.DefaultPort), Exposure: apiproxy.ExposureWorkstation})
+		}
 	}
 	config, err := apiproxy.Normalize(apiproxy.Config{
 		TLSName: tlsName, CanonicalEndpoint: canonicalEndpoint, Listeners: listeners, Backends: backends,
@@ -127,6 +133,20 @@ func kubernetesHost(kubernetesAddress, address string) (host netip.Addr, known b
 		return netip.Addr{}, false, fmt.Errorf("%s %q must be a literal unicast IP", source, value)
 	}
 	return parsed.Unmap(), true, nil
+}
+
+// managementHost returns the management address when it is a literal
+// unicast IP that a listener can bind; a DNS name has no single address.
+func managementHost(address string) (netip.Addr, bool) {
+	value := strings.TrimSpace(address)
+	if host, _, err := net.SplitHostPort(value); err == nil {
+		value = host
+	}
+	parsed, err := netip.ParseAddr(value)
+	if err != nil || parsed.Zone() != "" || !parsed.IsGlobalUnicast() {
+		return netip.Addr{}, false
+	}
+	return parsed.Unmap(), true
 }
 
 // KubernetesHost returns the host other nodes use to reach this node's

@@ -195,7 +195,7 @@ its [networkd host configuration](../reference/cluster-config.md#networkd-files)
 
 | Change | Supported path |
 | --- | --- |
-| `management.address` | This field only changes where `katlctl` connects. After the node answers at the new address, update `cluster.yaml` and, if you use a saved context, [rebind it](access.md#use-a-context) with `katlctl context rebind`. |
+| `management.address` | This field changes where `katlctl` connects and, on a control plane, where its Kubernetes API proxy listens for `katlctl`. When `kubernetes.address` is set, nodes never use the management address to reach each other; without it, the management address is also the node's Kubernetes address. After the node answers at the new address, update `cluster.yaml` and, if you use a saved context, [rebind it](access.md#use-a-context) with `katlctl context rebind`. On a control plane, `cluster apply` then moves the proxy listener by restarting the proxy; if your kubeconfig used the proxy at the old address, run `katlctl cluster kubeconfig ./kubeconfig --config ./cluster.yaml --force` to select a reachable endpoint again. |
 | `kubernetes.address` | `cluster apply` refuses the change. [Wipe the node](#wipe-one-node), reinstall it with the new address, and join it with `katlctl node join`. |
 | A worker's IP address | Change its network configuration and `management.address` together, then [re-address the worker](#re-address-a-worker). |
 | A control plane's IP address | Not supported. Katl cannot change a control plane's advertise address, etcd peer URLs, serving certificate SANs, or a control-plane endpoint derived from its address. |

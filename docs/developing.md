@@ -373,6 +373,21 @@ the world's own nat-table chain, so `nat` needs `sudo` that does not prompt.
 Later world commands rewrite it after a readdress or a host firewall reload, and
 `reset` and `remove` delete it.
 
+To test a multihomed node, whose `management.address` is on a second interface
+that the node holds, give its VM a second NIC:
+
+```sh
+katldev world multihome cp-1
+katldev world multihome cp-1 --remove
+```
+
+The second NIC joins an isolated libvirt network that the world owns on a free
+subnet; the host reaches the VM there, and the VM's primary network keeps the
+default route. katldev prints the `management.address` for the second NIC and
+the `kubernetes.address` for the primary one to set in `cluster.yaml`. A running
+VM gets the NIC live, `reset` drops it with the VM, and `remove` deletes the
+network.
+
 `reset` first prepares the current checkout's ISO, then removes the world and
 boots fresh installers, keeping the VM count unless `--nodes` changes it.
 `remove` deletes the world without recreating it. Both remove only libvirt

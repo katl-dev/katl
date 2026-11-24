@@ -29,6 +29,9 @@ type fakeLibvirt struct {
 	dropNetworkMetadata bool
 	// startErr fails net-start.
 	startErr error
+	// persistentNICs and liveNICs hold extra interface MACs by domain.
+	persistentNICs map[string][]string
+	liveNICs       map[string][]string
 }
 
 type fakeNetwork struct {
@@ -39,9 +42,11 @@ type fakeNetwork struct {
 
 func newFakeLibvirt(t *testing.T) *fakeLibvirt {
 	return &fakeLibvirt{
-		t:       t,
-		domains: map[string]string{},
-		states:  map[string]string{},
+		t:              t,
+		domains:        map[string]string{},
+		states:         map[string]string{},
+		persistentNICs: map[string][]string{},
+		liveNICs:       map[string][]string{},
 		networks: map[string]*fakeNetwork{"default": {
 			owner:  "",
 			active: true,
@@ -125,6 +130,26 @@ func (fake *fakeLibvirt) virsh(_ context.Context, _ string, args ...string) ([]b
 		return nil, nil
 	case "net-update":
 		fake.mutations = append(fake.mutations, args[:3])
+		return nil, nil
+	case "domiflist":
+		nics := fake.liveNICs[args[1]]
+		if slices.Contains(args, "--inactive") {
+			nics = fake.persistentNICs[args[1]]
+		}
+		return []byte(strings.Join(nics, "\n") + "\n"), nil
+	case "attach-interface", "detach-interface":
+		fake.mutations = append(fake.mutations, args)
+		mac := args[slices.Index(args, "--mac")+1]
+		for flag, nics := range map[string]map[string][]string{"--config": fake.persistentNICs, "--live": fake.liveNICs} {
+			if !slices.Contains(args, flag) {
+				continue
+			}
+			if args[0] == "attach-interface" {
+				nics[args[1]] = append(nics[args[1]], mac)
+			} else {
+				nics[args[1]] = slices.DeleteFunc(nics[args[1]], func(existing string) bool { return existing == mac })
+			}
+		}
 		return nil, nil
 	}
 	fake.t.Fatalf("unexpected virsh %v", args)

@@ -175,6 +175,22 @@ func TestInstallKeepsPublicCertificatesReachable(t *testing.T) {
 			t.Errorf("%s mode = %04o, want 0755", dir, info.Mode().Perm())
 		}
 	}
+
+	// Opening the directories must not expose the private keys.
+	for path, want := range map[string]os.FileMode{
+		"ca.crt": 0o644, "ca.key": 0o600,
+		"front-proxy-ca.crt": 0o644, "front-proxy-ca.key": 0o600,
+		"etcd/ca.crt": 0o644, "etcd/ca.key": 0o600,
+		"sa.pub": 0o644, "sa.key": 0o600,
+	} {
+		info, err := os.Stat(filepath.Join(pkiDir, path))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != want {
+			t.Errorf("%s mode = %04o, want %04o", path, info.Mode().Perm(), want)
+		}
+	}
 }
 
 func TestInstallRefusesIncompleteSharedIdentityBesideLeafCertificates(t *testing.T) {

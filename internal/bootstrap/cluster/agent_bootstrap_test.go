@@ -47,37 +47,41 @@ func TestRunAgentBootstrapDryRunContactsAgentAndPropagatesOverride(t *testing.T)
 	}
 }
 
-func TestBootstrapAPIProxyConfigUsesKubernetesAddresses(t *testing.T) {
-	// Management addresses are NAT addresses that the nodes do not hold.
-	plan := inventory.Plan{
-		ControlPlaneEndpoint: "api.unpublished.katl.test:6443",
-		Nodes: []inventory.PlannedNode{
-			{Name: "cp-1", SystemRole: inventory.RoleControlPlane, Address: "192.0.2.11", KubernetesAddress: "10.0.1.11"},
-			{Name: "cp-2", SystemRole: inventory.RoleControlPlane, Address: "192.0.2.12", KubernetesAddress: "10.0.1.12"},
-			{Name: "worker-1", SystemRole: inventory.RoleWorker, Address: "192.0.2.21", KubernetesAddress: "10.0.1.21"},
-		},
-	}
-	rendered, err := bootstrapAPIProxyConfig(plan.Nodes[1], plan)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var config apiproxy.Config
-	if err := json.Unmarshal([]byte(rendered), &config); err != nil {
-		t.Fatal(err)
-	}
-	if config.CanonicalEndpoint != plan.ControlPlaneEndpoint || config.TLSName != "api.unpublished.katl.test" {
-		t.Fatalf("proxy identity = %#v", config)
-	}
-	wantListeners := []apiproxy.Listener{
-		{Address: "10.0.1.12:7445", Exposure: apiproxy.ExposureWorkstation},
-		{Address: "127.0.0.1:7445", Exposure: apiproxy.ExposureNodeLocal},
-	}
-	wantBackends := []apiproxy.Backend{
-		{Name: "cp-1", Address: "10.0.1.11:6443"},
-		{Name: "cp-2", Address: "10.0.1.12:6443", Local: true},
-	}
-	if !reflect.DeepEqual(config.Listeners, wantListeners) || !reflect.DeepEqual(config.Backends, wantBackends) {
-		t.Fatalf("proxy listeners = %#v backends = %#v, want %#v and %#v", config.Listeners, config.Backends, wantListeners, wantBackends)
+func TestBootstrapAPIProxyConfigTopologies(t *testing.T) {
+	for _, topology := range []struct {
+		name                               string
+		cpManagement, cpKubernetes         string
+		workerManagement, workerKubernetes string
+	}{
+		{name: "single-address", cpManagement: "10.0.0.11", workerManagement: "10.0.0.21"},
+		{name: "single-address", cpManagement: "10.0.0.11", cpKubernetes: "10.0.0.11", workerManagement: "10.0.0.21", workerKubernetes: "10.0.0.21"},
+		// The workstation reaches the nodes through DNAT at 198.18.0.0/24.
+		{name: "nat", cpManagement: "198.18.0.11", cpKubernetes: "10.0.0.11", workerManagement: "198.18.0.21", workerKubernetes: "10.0.0.21"},
+		// The nodes hold both addresses on separate NICs.
+		{name: "multihomed", cpManagement: "192.168.1.11", cpKubernetes: "10.0.0.11", workerManagement: "192.168.1.21", workerKubernetes: "10.0.0.21"},
+	} {
+		t.Run(topology.name, func(t *testing.T) {
+			plan := inventory.Plan{
+				ControlPlaneEndpoint: "10.0.0.11:6443",
+				Nodes: []inventory.PlannedNode{
+					{Name: "cp-1", SystemRole: inventory.RoleControlPlane, Address: topology.cpManagement, KubernetesAddress: topology.cpKubernetes},
+					{Name: "worker-1", SystemRole: inventory.RoleWorker, Address: topology.workerManagement, KubernetesAddress: topology.workerKubernetes},
+				},
+			}
+			for _, node := range plan.Nodes {
+				data, err := os.ReadFile(filepath.Join("..", "inventory", "testdata", "api-proxy", topology.name, node.Name+".json"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				rendered, err := bootstrapAPIProxyConfig(node, plan)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if rendered != string(data) {
+					t.Fatalf("%s API proxy config:\n%s\nwant:\n%s", node.Name, rendered, data)
+				}
+			}
+		})
 	}
 }
 
@@ -294,6 +298,8 @@ users:
 		t.Fatal(err)
 	}
 	wantListeners := []apiproxy.Listener{
+		// katlctl dials the management address; behind NAT this listener is idle.
+		{Address: "10.0.0.12:7445", Exposure: apiproxy.ExposureWorkstation},
 		{Address: "10.1.0.12:7445", Exposure: apiproxy.ExposureWorkstation},
 		{Address: "127.0.0.1:7445", Exposure: apiproxy.ExposureNodeLocal},
 	}
