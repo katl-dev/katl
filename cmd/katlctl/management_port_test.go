@@ -19,9 +19,9 @@ import (
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 )
 
-// A management.address may name the agent port, as it does when NAT forwards
-// a different public port. Enrollment saves that endpoint, and bootstrap and
-// wipe from the saved context dial it.
+// A management.address may name the agent port explicitly. Enrollment saves
+// that endpoint as written, rather than appending the default port to it, and
+// bootstrap and wipe from the saved context dial it.
 func TestManagementPortSurvivesSavedContext(t *testing.T) {
 	contextPath := filepath.Join(t.TempDir(), "katlctl.yaml")
 	t.Setenv("KATLCTL_CONFIG", contextPath)
@@ -30,7 +30,7 @@ func TestManagementPortSurvivesSavedContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	sourcePath := filepath.Join(t.TempDir(), "cluster.yaml")
-	source := strings.Replace(configBundleSource(), "address: 10.0.0.11\n", "address: 198.18.0.11:19443\n", 1)
+	source := strings.Replace(configBundleSource(), "address: 10.0.0.11\n", "address: 198.18.0.11:9443\n", 1)
 	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -48,15 +48,15 @@ func TestManagementPortSurvivesSavedContext(t *testing.T) {
 	if err := run(context.Background(), []string{"context", "save", "--config", sourcePath, "--context-file", contextPath}, &bytes.Buffer{}, &stderr); err != nil {
 		t.Fatalf("context save: %v\n%s", err, stderr.String())
 	}
-	if !reflect.DeepEqual(dialed, []string{"198.18.0.11:19443"}) {
+	if !reflect.DeepEqual(dialed, []string{"198.18.0.11:9443"}) {
 		t.Fatalf("context save dialed %q, want the configured agent port", dialed)
 	}
 	saved, err := workstation.Load(contextPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := saved.Clusters[0].Nodes[0].ManagementEndpoint; got != "198.18.0.11:19443" {
-		t.Fatalf("saved management endpoint = %q, want 198.18.0.11:19443", got)
+	if got := saved.Clusters[0].Nodes[0].ManagementEndpoint; got != "198.18.0.11:9443" {
+		t.Fatalf("saved management endpoint = %q, want 198.18.0.11:9443", got)
 	}
 
 	var request cluster.Request
@@ -69,7 +69,7 @@ func TestManagementPortSurvivesSavedContext(t *testing.T) {
 	if err := run(context.Background(), []string{"cluster", "bootstrap", "--config", sourcePath, "--dry-run"}, &bytes.Buffer{}, &stderr); err != nil {
 		t.Fatalf("cluster bootstrap: %v\n%s", err, stderr.String())
 	}
-	if len(request.Inventory.Nodes) != 1 || fmt.Sprint(request.Inventory.Nodes[0].Address) != "198.18.0.11:19443" {
+	if len(request.Inventory.Nodes) != 1 || fmt.Sprint(request.Inventory.Nodes[0].Address) != "198.18.0.11:9443" {
 		t.Fatalf("bootstrap inventory = %+v, want cp-1 at its saved endpoint", request.Inventory.Nodes)
 	}
 }
@@ -88,17 +88,17 @@ clusters:
   controlPlaneEndpoint: 10.0.0.11:6443
   nodes:
   - name: cp-1
-    managementEndpoint: 198.18.0.11:19443
+    managementEndpoint: 198.18.0.11:9443
     systemRole: control-plane
     enrollmentID: enrollment-cp-1
     machineID: machine-cp-1
   - name: cp-2
-    managementEndpoint: 198.18.0.12:19443
+    managementEndpoint: 198.18.0.12:9443
     systemRole: control-plane
     enrollmentID: enrollment-cp-2
     machineID: machine-cp-2
   - name: cp-3
-    managementEndpoint: 198.18.0.13:19443
+    managementEndpoint: 198.18.0.13:9443
     systemRole: control-plane
     enrollmentID: enrollment-cp-3
     machineID: machine-cp-3
@@ -137,7 +137,7 @@ clusters:
 	}
 
 	for name, address := range connector.addresses() {
-		if !strings.HasSuffix(address, ":19443") {
+		if !strings.HasSuffix(address, ":9443") {
 			t.Errorf("wipe dialed %s at %s, want its saved agent port", name, address)
 		}
 	}
