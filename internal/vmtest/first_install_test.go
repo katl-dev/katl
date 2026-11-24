@@ -281,7 +281,7 @@ func TestFirstInstallGuestHandoffPostsConfigBundle(t *testing.T) {
 	vmConfig.HostForwards = nil
 	posted := make(chan struct{})
 	installerSerial := stagedVMExec{
-		first: guestHandoffSignal + "http://10.0.2.15:8080\n",
+		first: guestHandoffSignal + "http://10.0.2.15:8080/v1/config-bundle\n",
 		wait:  posted,
 		then:  guestHandoffAcceptedSignal + "/run/katl/config.katlcfg\n" + bundleCompletedSignal + "/run/katl/config.katlcfg\n",
 	}
@@ -303,7 +303,7 @@ func TestFirstInstallGuestHandoffPostsConfigBundle(t *testing.T) {
 		SelectedNode: "cp-1",
 		GuestHandoff: true,
 		HandoffPoster: func(_ context.Context, url string, payload []byte) (int, string, error) {
-			if url != "http://10.0.2.15:8080/config-bundle?node=cp-1" {
+			if url != "http://10.0.2.15:8080/v1/config-bundle?node=cp-1" {
 				t.Fatalf("handoff post URL = %q", url)
 			}
 			if string(payload) != "bundle" {
@@ -325,7 +325,7 @@ func TestFirstInstallGuestHandoffPostsConfigBundle(t *testing.T) {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
 	}
 	request := readLog(t, result.Artifacts.HandoffRequest)
-	if request.PostURL != "http://10.0.2.15:8080/config-bundle?node=cp-1" || request.GuestAddress != "10.0.2.15" {
+	if request.PostURL != "http://10.0.2.15:8080/v1/config-bundle?node=cp-1" || request.GuestAddress != "10.0.2.15" {
 		t.Fatalf("handoff request = %#v", request)
 	}
 	if _, err := os.Stat(filepath.Join(result.Artifacts.ManifestsDir, "handoff-seed", "install-input.json")); !os.IsNotExist(err) {

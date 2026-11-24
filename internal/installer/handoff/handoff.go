@@ -296,7 +296,7 @@ func (s *HandoffServer) SetSSHConfigurer(configure func(context.Context, []strin
 }
 
 func (s *HandoffServer) Announcement(baseURL string) string {
-	return "katlos-install waiting for config at " + strings.TrimRight(baseURL, "/") + "/v1/config-bundle"
+	return AnnouncementPrefix + strings.TrimRight(baseURL, "/") + configBundlePath
 }
 
 func (s *HandoffServer) Handler() http.Handler {
