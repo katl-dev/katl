@@ -9,6 +9,7 @@ on:
 permissions:
   contents: read
 
+# Serialises promotion per kernel update branch; never cancelled.
 concurrency:
   group: kernel-promotion-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: false

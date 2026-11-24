@@ -11,9 +11,12 @@ on:
 permissions:
   contents: read
 
+# Only a newer push to the same pull request supersedes a run. Merge-group
+# entries have unique refs, and every other trigger (push, dispatch) is
+# independent, so two dispatches on one ref both complete.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event.pull_request.number || (github.event_name == 'merge_group' && github.ref) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   checks:

@@ -246,8 +246,7 @@ func TestCIGatesPlannedJobs(t *testing.T) {
 		On struct {
 			PullRequest struct{ Types []string } `yaml:"pull_request"`
 		} `yaml:"on"`
-		Concurrency struct{ Group string }
-		Jobs        map[string]struct {
+		Jobs map[string]struct {
 			If    string `yaml:"if"`
 			Steps []struct{ ID, Run string }
 		}
@@ -270,9 +269,6 @@ func TestCIGatesPlannedJobs(t *testing.T) {
 		if got := strings.TrimSpace(workflow.Jobs[name].If); got != want {
 			t.Errorf("%s condition = %q, want %q", name, got, want)
 		}
-	}
-	if strings.Contains(workflow.Concurrency.Group, "run_id") {
-		t.Errorf("concurrency group %q lets a run escape cancellation by a newer run", workflow.Concurrency.Group)
 	}
 	if !slices.Contains(workflow.On.PullRequest.Types, "labeled") {
 		t.Errorf("pull request types %v must include labeled to start VM runs", workflow.On.PullRequest.Types)

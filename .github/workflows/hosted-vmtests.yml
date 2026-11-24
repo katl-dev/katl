@@ -38,9 +38,12 @@ on:
 permissions:
   contents: read
 
+# Evaluated in the caller's context when called, so github.workflow carries the
+# caller's name and keeps this group distinct from the caller's own group.
+# Same scoping policy as ci.yml: supersede only within a pull request.
 concurrency:
-  group: ${{ github.workflow }}-vmtests-${{ inputs.flavour || 'standard' }}-${{ inputs.ref || github.event.pull_request.number || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.ref == 'refs/heads/main' }}
+  group: ${{ github.workflow }}-vmtests-${{ inputs.flavour || 'standard' }}-${{ github.event.pull_request.number || (github.event_name == 'merge_group' && github.ref) || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   KATL_FLAVOUR: ${{ inputs.flavour || 'standard' }}
