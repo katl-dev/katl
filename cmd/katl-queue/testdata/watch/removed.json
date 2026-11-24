@@ -1,0 +1,140 @@
+{
+  "data": {
+    "repository": {
+      "pr488": {
+        "number": 488,
+        "title": "katlctl: plan an unedited config as unchanged after bootstrap or join",
+        "state": "OPEN",
+        "headRefOid": "52acd0a3f00efc888cab6dcf520b870c75611d86",
+        "merged": false,
+        "mergeCommit": null,
+        "autoMergeRequest": null,
+        "mergeQueueEntry": null,
+        "timelineItems": {
+          "nodes": [
+            {
+              "createdAt": "2026-11-24T00:39:53Z",
+              "reason": "failed_checks",
+              "beforeCommit": {
+                "oid": "1622dd8b78c5d48b2823c65dc8579af726b27978",
+                "checkSuites": {
+                  "nodes": [
+                    {
+                      "workflowRun": null,
+                      "checkRuns": {
+                        "nodes": []
+                      }
+                    },
+                    {
+                      "workflowRun": {
+                        "databaseId": 45290515227,
+                        "url": "https://github.com/katl-dev/katl/actions/runs/45290515227"
+                      },
+                      "checkRuns": {
+                        "nodes": [
+                          {
+                            "name": "VM (standard) / VM / lifecycle",
+                            "conclusion": "FAILURE",
+                            "detailsUrl": "https://github.com/katl-dev/katl/actions/runs/45290515227/job/138105380290"
+                          },
+                          {
+                            "name": "CI",
+                            "conclusion": "FAILURE",
+                            "detailsUrl": "https://github.com/katl-dev/katl/actions/runs/45290515227/job/138126269689"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      },
+      "pr457": {
+        "number": 457,
+        "title": "disk: bind data volumes by identity and plan them with one shared planner",
+        "state": "MERGED",
+        "headRefOid": "df302a2e06e712761faf7caa81330b66fea4e9ea",
+        "merged": true,
+        "mergeCommit": {
+          "oid": "b8c94940df9e23c58616cb698df0215277ea326d"
+        },
+        "autoMergeRequest": null,
+        "mergeQueueEntry": null,
+        "timelineItems": {
+          "nodes": [
+            {
+              "createdAt": "2026-11-23T23:27:01Z",
+              "reason": "merged",
+              "beforeCommit": {
+                "oid": "b8c94940df9e23c58616cb698df0215277ea326d",
+                "checkSuites": {
+                  "nodes": [
+                    {
+                      "workflowRun": null,
+                      "checkRuns": {
+                        "nodes": []
+                      }
+                    },
+                    {
+                      "workflowRun": {
+                        "databaseId": 45279342084,
+                        "url": "https://github.com/katl-dev/katl/actions/runs/45279342084"
+                      },
+                      "checkRuns": {
+                        "nodes": []
+                      }
+                    },
+                    {
+                      "workflowRun": {
+                        "databaseId": 45288910285,
+                        "url": "https://github.com/katl-dev/katl/actions/runs/45288910285"
+                      },
+                      "checkRuns": {
+                        "nodes": []
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      },
+      "pr486": {
+        "number": 486,
+        "title": "agent: derive the system disk from the running root",
+        "state": "OPEN",
+        "headRefOid": "07311ed3606c95abc522a57a7323eb70389399fc",
+        "merged": false,
+        "mergeCommit": null,
+        "autoMergeRequest": null,
+        "mergeQueueEntry": {
+          "position": 6,
+          "state": "QUEUED"
+        },
+        "timelineItems": {
+          "nodes": []
+        }
+      },
+      "pr499": {
+        "number": 499,
+        "title": "installer: refresh the disk inventory on each request",
+        "state": "OPEN",
+        "headRefOid": "92a59f02999e6e8cbbed8eb006f9df725720d28f",
+        "merged": false,
+        "mergeCommit": null,
+        "autoMergeRequest": null,
+        "mergeQueueEntry": {
+          "position": 3,
+          "state": "UNMERGEABLE"
+        },
+        "timelineItems": {
+          "nodes": []
+        }
+      }
+    }
+  }
+}

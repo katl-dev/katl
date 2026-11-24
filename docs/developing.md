@@ -627,6 +627,27 @@ as `AGENTS.md` requires. Kubernetes producer validation shares the VM image
 build and cluster lane. Direct pushes are not part of the supported development
 loop.
 
+The merge queue marks an entry `UNMERGEABLE` when it conflicts with one ahead
+of it, but evicts it only when it reaches that entry, so a doomed PR can wait in
+the queue and hold up the PRs behind it. `katl-queue`, which the development
+shell provides (or `scripts/katl-queue` outside it), checks for this before a
+PR joins and follows the queue afterwards. It needs an authenticated `gh`:
+
+```sh
+katl-queue status            # queued entries in order, and PRs waiting to join
+katl-queue check 123         # merge 123 over origin/main and the queue ahead of it
+katl-queue enqueue 123       # check, then enable auto-merge; refuses on conflict
+katl-queue watch 123         # one line per state change until 123 merges or leaves
+katl-queue why 123           # removal reason, failing jobs and their first errors
+```
+
+`check` merges with `git merge-tree` in a throwaway object directory, so it
+does not change any branch, ref or working tree; it exits 1 and names the
+conflicting PR and paths when the merge conflicts. `watch` with no arguments
+follows everything queued or waiting with auto-merge, polls every minute
+(`-interval` changes this), keeps going through transient `gh` failures, and
+exits 1 when a watched PR leaves the queue without merging.
+
 Fast checks skip mkosi builds, libvirt/KVM setup, VM scenarios, and publishing.
 Run focused VM gates locally with `scripts/vmtest-run` on a capable host and
 record the result with the change or release evidence.
