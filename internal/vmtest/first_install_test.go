@@ -3,6 +3,7 @@ package vmtest
 import (
 	"context"
 	"encoding/json"
+	"encoding/xml"
 	"fmt"
 	"io"
 	"os"
@@ -109,6 +110,71 @@ func TestFirstInstallObservesInstalledReboot(t *testing.T) {
 	}
 	if serial, err := os.ReadFile(result.Artifacts.RuntimeSerial); err != nil || !strings.Contains(string(serial), installedGenerationSignal) {
 		t.Fatalf("runtime serial = %q, err = %v", serial, err)
+	}
+}
+
+// A scenario's extra disks attach beside the install target rather than
+// replacing it, and the installed reboot boots the target, not a data disk.
+func TestFirstInstallAttachesTargetBesideExtraDisks(t *testing.T) {
+	root := t.TempDir()
+	iso := writeFixture(t, root, "katl-installer.iso", "iso")
+	_, vmConfig := vmFixture(t)
+	const installedGenerationSignal = "katl.generation=0 katl.root-slot=root-a"
+	serial := preseedInstallerEvidence() + installerCompletedSignal + "/run/katl/preseed/install-manifest.json\n" + installedGenerationSignal + "\n"
+	result, err := RunFirstInstall(context.Background(), NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-1",
+	}), Scenario{Name: "release-install", Disks: []DiskFixture{ExtraDisk("data", string(DiskRaw), "4G")}}, FirstInstallConfig{
+		Installer: InstallerBootConfig{
+			InstallerISO: iso,
+			VM:           vmConfig,
+		},
+		Runtime: InstalledRuntimeConfig{
+			Expect: installedGenerationSignal,
+			VM:     vmConfig,
+		},
+		Manifest:            []byte(firstManifest()),
+		PreseedManifest:     true,
+		RebootIntoInstalled: true,
+		TargetDisk:          TargetDisk("root", string(DiskQCOW2), "32G"),
+		DiskRunner:          fileDiskRunner{},
+		PreseedRunner:       fakePreseedRunner{},
+		InstallerRunner:     fakeVM(serial),
+	})
+	if err != nil {
+		t.Fatalf("RunFirstInstall() error = %v", err)
+	}
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+
+	var domain struct {
+		Disks []struct {
+			Device string `xml:"device,attr"`
+			Serial string `xml:"serial"`
+			Boot   *struct {
+				Order int `xml:"order,attr"`
+			} `xml:"boot"`
+		} `xml:"devices>disk"`
+	}
+	if err := xml.Unmarshal([]byte(readDomainXML(t, result)), &domain); err != nil {
+		t.Fatalf("parse domain XML: %v", err)
+	}
+	boot := map[string]int{}
+	for _, disk := range domain.Disks {
+		if disk.Device != "disk" || disk.Serial == "" {
+			continue
+		}
+		boot[disk.Serial] = 0
+		if disk.Boot != nil {
+			boot[disk.Serial] = disk.Boot.Order
+		}
+	}
+	if order, ok := boot["katl-root"]; !ok || order != 1 {
+		t.Errorf("target disk katl-root attached = %v, boot order = %d; want attached with boot order 1 (disks %v)", ok, order, boot)
+	}
+	if order, ok := boot["katl-data"]; !ok || order == 1 {
+		t.Errorf("data disk katl-data attached = %v, boot order = %d; want attached and not booted first (disks %v)", ok, order, boot)
 	}
 }
 

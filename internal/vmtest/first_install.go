@@ -239,15 +239,26 @@ func firstInstallFailureHooks() []SerialHook {
 	}
 }
 
+// withTarget attaches the install target first, ahead of the scenario's extra
+// disks, unless the scenario supplies its own target or snapshot root. The
+// installed reboot boots the first attached disk.
 func withTarget(scenario Scenario, target DiskFixture) Scenario {
-	if len(scenario.Disks) > 0 {
-		return scenario
+	for _, disk := range scenario.Disks {
+		if isTargetKind(disk.Kind) {
+			return scenario
+		}
 	}
 	if target.Name == "" {
 		target = TargetDisk("root", string(DiskQCOW2), "32G")
 	}
-	scenario.Disks = []DiskFixture{target}
+	scenario.Disks = append([]DiskFixture{target}, scenario.Disks...)
 	return scenario
+}
+
+// isTargetKind reports whether a disk of this kind can be the install target.
+// An empty kind plans as a target.
+func isTargetKind(kind DiskKind) bool {
+	return kind == "" || kind == DiskTarget || kind == DiskSnapshot
 }
 
 func diskExec(runner DiskRunner) DiskRunner {
@@ -567,7 +578,7 @@ func extractInstalledESP(ctx context.Context, result Result, config FirstInstall
 
 func firstTargetDisk(result Result) (DiskPlan, error) {
 	for _, disk := range result.Disks {
-		if disk.Kind == DiskTarget || disk.Kind == DiskSnapshot {
+		if isTargetKind(disk.Kind) {
 			return disk, nil
 		}
 	}
