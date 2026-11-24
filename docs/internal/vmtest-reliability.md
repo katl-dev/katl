@@ -89,7 +89,7 @@ Every run keeps `_build/vmtest/runs/<run-id>/`, containing:
 - per-scenario results;
 - compressed serial logs.
 
-Disks and VM directories are deleted on success, and retention is bounded by age. `scripts/vmtest-run` prints the run ID and each test's outcome. A gate result is cited by run ID.
+Disks and VM directories are deleted on success, and retention is bounded by age. `scripts/vmtest-run` prints the run ID and each test's outcome. When `-run` names tests as an anchored alternation of plain names, the run fails unless each reported a pass, and any `-run` that selects no test fails. Go exits 0 in both cases. A gate result is cited by run ID.
 
 ## Contract tests
 

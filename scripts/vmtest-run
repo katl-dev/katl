@@ -1503,6 +1503,18 @@ if [[ "$exit_code" -ne 0 ]]; then
     fi
     exit "$exit_code"
 fi
+# go test exits 0 when -run matches nothing, so confirm the requested tests
+# reported a pass.
+if ! (cd "$repo_root" && "$resource_go_bin" run ./cmd/katl-vmtest-ran -log "$go_test_log" -- "$@") >&2; then
+    write_run_index "tests-not-run" "$@"
+    write_test_summary
+    print_evidence
+    printf 'vmtest failed: go test exited 0 but requested tests did not run\n' >&2
+    if ! cleanup_run_dir "tests-not-run"; then
+        printf 'vmtest run dir cleanup failed: %s\n' "$run_dir" >&2
+    fi
+    exit 5
+fi
 if [[ "$exit_code" -eq 0 && ( "$require_scenario_result" == 1 || "$require_scenario_result" == true ) ]]; then
     if ! find "$scenario_dir" -mindepth 2 -maxdepth 8 -name result.json -print -quit | grep -q .; then
         write_run_index "no-scenario-result" "$@"
