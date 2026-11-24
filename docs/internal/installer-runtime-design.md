@@ -203,6 +203,14 @@ path. It accepts exactly one structurally valid submission and stops accepting
 configuration when installation begins. Operators must keep the listener on an
 isolated provisioning network.
 
+Before announcing, the installer waits for a network address. While any
+interface has carrier it waits without a deadline, printing the interface and
+elapsed time at the start and every 30 seconds, because DHCP can lag behind
+link-up by more than a minute, for example behind spanning-tree forwarding
+delay. If no
+interface has carrier for 5 minutes it exits with an error asking the operator
+to check the cable and switch port.
+
 This mode is only for supplying initial installer input. It is not a long-lived
 runtime management API and it must not continue running after install begins.
 

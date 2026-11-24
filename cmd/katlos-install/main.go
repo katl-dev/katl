@@ -710,7 +710,7 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer, init
 
 	fmt.Fprintln(stdout, "katlos-install waiting for handoff announcement address")
 	reportInstallerProgress(stdout, "waiting for a network address to announce", false)
-	baseURL, err := waitHandoffAnnouncementBaseURL(ctx, listener.Addr())
+	baseURL, err := waitHandoffAnnouncementBaseURL(ctx, listener.Addr(), stdout)
 	if err != nil {
 		return errors.Join(initialErr, err)
 	}
@@ -848,39 +848,6 @@ func waitForHandoffStatusObservation(ctx context.Context) {
 
 func handoffAnnouncementBaseURL(addr net.Addr) (string, error) {
 	return handoffAnnouncementBaseURLWithHost(addr, handoffAnnouncementHost)
-}
-
-func waitHandoffAnnouncementBaseURL(ctx context.Context, addr net.Addr) (string, error) {
-	return waitHandoffAnnouncementBaseURLWithHost(ctx, addr, 30*time.Second, 250*time.Millisecond, handoffAnnouncementHost)
-}
-
-func waitHandoffAnnouncementBaseURLWithHost(ctx context.Context, addr net.Addr, timeout, interval time.Duration, detectHost func() (string, error)) (string, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if interval <= 0 {
-		interval = 250 * time.Millisecond
-	}
-	deadline, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	var lastErr error
-	for {
-		baseURL, err := handoffAnnouncementBaseURLWithHost(addr, detectHost)
-		if err == nil {
-			return baseURL, nil
-		}
-		lastErr = err
-		timer := time.NewTimer(interval)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return "", ctx.Err()
-		case <-deadline.Done():
-			timer.Stop()
-			return "", fmt.Errorf("wait for handoff announcement address: %w", lastErr)
-		case <-timer.C:
-		}
-	}
 }
 
 func handoffAnnouncementBaseURLWithHost(addr net.Addr, detectHost func() (string, error)) (string, error) {
