@@ -792,6 +792,8 @@ func serialTail(path string, maxLines int, maxBytes int) string {
 }
 
 func (r VMRunner) runSerialHooks(ctx context.Context, result Result, config VMConfig, plan VMPlan, serialText string, hooksRun []bool) error {
+	// Hooks see only complete lines; the unterminated tail may be mid-write.
+	serialText = completeLines(serialText)
 	for i, hook := range config.SerialHooks {
 		if hooksRun[i] || hook.Signal == "" || !strings.Contains(serialText, hook.Signal) {
 			continue

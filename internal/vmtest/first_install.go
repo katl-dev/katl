@@ -47,7 +47,7 @@ type FirstInstallConfig struct {
 type InstalledESPExtractor func(context.Context, DiskPlan, string) (string, error)
 
 const (
-	guestHandoffSignal         = "katlos-install waiting for config at "
+	guestHandoffSignal         = handoff.AnnouncementPrefix
 	guestHandoffAcceptedSignal = "katlos-install handoff accepted manifest="
 	installerCompletedSignal   = "katlos-install completed manifest="
 	bundleCompletedSignal      = "katlos-install completed bundle="
@@ -692,10 +692,14 @@ func runToolOutput(ctx context.Context, name string, args ...string) ([]byte, er
 }
 
 func deliverGuestHandoff(ctx context.Context, result Result, config FirstInstallConfig, manifest []byte, event SerialHookEvent, serialText string) error {
-	announcement, url, err := parseHandoffAnnouncement(serialText)
+	parsed, ok, err := LastHandoffAnnouncement(serialText)
 	if err != nil {
 		return err
 	}
+	if !ok {
+		return errors.New("handoff announcement not found in installer serial log")
+	}
+	announcement, url := parsed.Line, parsed.URL
 	postURL := strings.TrimSpace(config.HandoffURL)
 	if postURL == "" {
 		postURL = url
@@ -746,27 +750,6 @@ func handoffContext(log handoffLog) string {
 		parts = append(parts, "serial tail:\n"+log.SerialTail)
 	}
 	return strings.Join(parts, "; ")
-}
-
-func parseHandoffAnnouncement(serialText string) (announcement string, url string, err error) {
-	for _, line := range strings.Split(serialText, "\n") {
-		line = strings.TrimSpace(line)
-		if strings.Contains(line, guestHandoffSignal) {
-			announcement = line
-		}
-	}
-	if announcement == "" {
-		return "", "", errors.New("handoff announcement not found in installer serial log")
-	}
-	start := strings.Index(announcement, guestHandoffSignal)
-	if start < 0 {
-		return "", "", fmt.Errorf("could not parse handoff announcement: %s", announcement)
-	}
-	url = strings.TrimSpace(announcement[start+len(guestHandoffSignal):])
-	if url == "" {
-		return "", "", fmt.Errorf("could not parse handoff URL from announcement: %s", announcement)
-	}
-	return announcement, url, nil
 }
 
 func deliverHandoff(ctx context.Context, result Result, config FirstInstallConfig, manifest []byte) error {

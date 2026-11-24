@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -148,11 +147,14 @@ spec:
 					Signal: "katlos-install progress: waiting for configuration at",
 					Run: func(ctx context.Context, event vmtest.SerialHookEvent) error {
 						// Handoff can start after wait-online fails, so readiness alone is insufficient.
-						match := regexp.MustCompile(`katlos-install waiting for config at (http://\S+)/v1/config-bundle`).FindStringSubmatch(event.SerialText)
-						if len(match) != 2 {
+						announcement, ok, err := vmtest.LastHandoffAnnouncement(event.SerialText)
+						if err != nil {
+							return err
+						}
+						if !ok {
 							return fmt.Errorf("installer did not announce its handoff endpoint")
 						}
-						endpoint, err := url.Parse(match[1])
+						endpoint, err := url.Parse(announcement.Base)
 						if err != nil {
 							return err
 						}

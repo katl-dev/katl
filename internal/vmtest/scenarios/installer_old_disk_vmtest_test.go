@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -203,19 +202,11 @@ type oldDiskJourney struct {
 }
 
 func (j *oldDiskJourney) installAndPowerOff(ctx context.Context, handle *vmtest.VMHandle) error {
-	const announcement = "katlos-install waiting for config at "
-	if _, err := handle.WaitForSerialSignal(announcement, time.Second); err != nil {
-		return err
-	}
-	serial, err := os.ReadFile(handle.Plan.SerialLog)
+	announcement, err := handle.WaitForHandoffAnnouncement(time.Second)
 	if err != nil {
 		return err
 	}
-	match := regexp.MustCompile(`katlos-install waiting for config at (http://\S+)/v1/config-bundle`).FindSubmatch(serial)
-	if match == nil {
-		return errors.New("installer did not announce its handoff endpoint")
-	}
-	endpoint, err := url.Parse(string(match[1]))
+	endpoint, err := url.Parse(announcement.Base)
 	if err != nil {
 		return err
 	}
