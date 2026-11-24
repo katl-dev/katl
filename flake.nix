@@ -66,6 +66,15 @@
           }
           exec ${pkgs.go}/bin/go run "$repo_root/cmd/katldev" "$@"
         '';
+      katlQueueFor =
+        pkgs:
+        pkgs.writeShellScriptBin "katl-queue" ''
+          repo_root="$(${pkgs.git}/bin/git rev-parse --show-toplevel 2>/dev/null)" || {
+            echo "error: katl-queue must be run from the Katl checkout" >&2
+            exit 1
+          }
+          exec "$repo_root/scripts/katl-queue" "$@"
+        '';
       gitCommitWrappedFor =
         pkgs:
         pkgs.writeShellApplication {
@@ -88,6 +97,7 @@
               dosfstools
               erofs-utils
               fish
+              gh
               git
               go
               gofumpt
@@ -113,6 +123,7 @@
             ++ [
               (katlctlFor pkgs)
               (katldevFor pkgs)
+              (katlQueueFor pkgs)
               (gitCommitWrappedFor pkgs)
             ];
 

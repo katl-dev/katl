@@ -1,0 +1,70 @@
+{
+  "data": {
+    "repository": {
+      "pr488": {
+        "number": 488,
+        "title": "katlctl: plan an unedited config as unchanged after bootstrap or join",
+        "state": "OPEN",
+        "headRefOid": "52acd0a3f00efc888cab6dcf520b870c75611d86",
+        "merged": false,
+        "mergeCommit": null,
+        "autoMergeRequest": null,
+        "mergeQueueEntry": {
+          "position": 2,
+          "state": "AWAITING_CHECKS"
+        },
+        "timelineItems": {
+          "nodes": []
+        }
+      },
+      "pr457": {
+        "number": 457,
+        "title": "disk: bind data volumes by identity and plan them with one shared planner",
+        "state": "OPEN",
+        "headRefOid": "df302a2e06e712761faf7caa81330b66fea4e9ea",
+        "merged": false,
+        "mergeCommit": null,
+        "autoMergeRequest": null,
+        "mergeQueueEntry": {
+          "position": 1,
+          "state": "MERGEABLE"
+        },
+        "timelineItems": {
+          "nodes": []
+        }
+      },
+      "pr486": {
+        "number": 486,
+        "title": "agent: derive the system disk from the running root",
+        "state": "OPEN",
+        "headRefOid": "07311ed3606c95abc522a57a7323eb70389399fc",
+        "merged": false,
+        "mergeCommit": null,
+        "autoMergeRequest": null,
+        "mergeQueueEntry": {
+          "position": 6,
+          "state": "QUEUED"
+        },
+        "timelineItems": {
+          "nodes": []
+        }
+      },
+      "pr499": {
+        "number": 499,
+        "title": "installer: refresh the disk inventory on each request",
+        "state": "OPEN",
+        "headRefOid": "92a59f02999e6e8cbbed8eb006f9df725720d28f",
+        "merged": false,
+        "mergeCommit": null,
+        "autoMergeRequest": null,
+        "mergeQueueEntry": {
+          "position": 4,
+          "state": "AWAITING_CHECKS"
+        },
+        "timelineItems": {
+          "nodes": []
+        }
+      }
+    }
+  }
+}
