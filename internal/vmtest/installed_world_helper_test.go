@@ -372,6 +372,68 @@ func TestEnsurePublishedFirstInstallRuntimeFixturesRestagesChangedScenarioInput(
 	}
 }
 
+func TestEnsurePublishedFirstInstallRuntimeFixturesRestageKeepsFailedAttempts(t *testing.T) {
+	t.Setenv("KATL_VMTEST_KEEP", string(KeepFailed))
+	world := testWorld(t)
+	repo := t.TempDir()
+	input := firstInstallFixtureInputForTest(t)
+	spec := NodeSpec{Name: "cp-1", Role: ControlPlane}
+	attempt := func(runID string, status Status) func(context.Context, FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
+		return func(_ context.Context, contract FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
+			scenario := Scenario{Name: "attempt", RunID: runID}
+			result, err := contract.Runner.Plan(scenario)
+			if err != nil {
+				return ProducedInstalledRuntimeFixture{}, err
+			}
+			result.Status = status
+			if err := contract.Runner.Write(scenario, result); err != nil {
+				return ProducedInstalledRuntimeFixture{}, err
+			}
+			if err := os.WriteFile(result.Artifacts.InstallerSerial, []byte("enp1s0: Lost carrier\n"), 0o644); err != nil {
+				return ProducedInstalledRuntimeFixture{}, err
+			}
+			if status != StatusPassed {
+				return ProducedInstalledRuntimeFixture{}, errors.New("serial idle timeout")
+			}
+			manifest := writePublishedInstalledRuntimeFixtureForContract(t, contract, "world-cp", time.Unix(10, 0))
+			return ProducedInstalledRuntimeFixture{ManifestPath: manifest}, nil
+		}
+	}
+	ensure := func(installer string, produce func(context.Context, FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error)) error {
+		t.Helper()
+		// Changing a staged input makes the next contract reset the scenario.
+		if err := os.WriteFile(input.Installer.InstallerUKI, []byte(installer), 0o644); err != nil {
+			t.Fatalf("WriteFile(%s) error = %v", input.Installer.InstallerUKI, err)
+		}
+		return EnsurePublishedFirstInstallRuntimeFixtures(context.Background(), world, repo, []NodeSpec{spec}, FirstInstallRuntimeFixtureOptions{
+			Input:   input,
+			KVM:     KVMOff,
+			Produce: produce,
+		})
+	}
+
+	if err := ensure("installer-1", attempt("failed-1", StatusFailed)); err == nil {
+		t.Fatal("first EnsurePublishedFirstInstallRuntimeFixtures() error = nil, want attempt failure")
+	}
+	if err := ensure("installer-2", attempt("passed-2", StatusPassed)); err != nil {
+		t.Fatalf("second EnsurePublishedFirstInstallRuntimeFixtures() error = %v", err)
+	}
+	if err := ensure("installer-3", attempt("passed-3", StatusPassed)); err != nil {
+		t.Fatalf("third EnsurePublishedFirstInstallRuntimeFixtures() error = %v", err)
+	}
+
+	runs := filepath.Join(world.ScenarioDir, clean(FirstInstallRuntimeFixtureScenarioName(spec)), "vm-runs")
+	if _, err := os.Stat(filepath.Join(runs, "failed-1", "vm", "installer-serial.log")); err != nil {
+		t.Fatalf("failed attempt serial log after restage: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(runs, "passed-2")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("passed attempt before restage: stat error = %v, want removed", err)
+	}
+	if _, err := os.Stat(filepath.Join(runs, "passed-3", "result.json")); err != nil {
+		t.Fatalf("current passed attempt: %v", err)
+	}
+}
+
 func TestFirstInstallRuntimeFixtureInputDigestIncludesMode(t *testing.T) {
 	world := testWorld(t)
 	repo := t.TempDir()

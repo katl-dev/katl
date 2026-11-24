@@ -85,7 +85,7 @@ func CreateDisks(ctx context.Context, runner DiskRunner, plans []DiskPlan) error
 }
 
 func CleanupDisks(result Result) error {
-	if keepDisks(result.Keep, result.Status) {
+	if keepArtifacts(result.Keep, result.Status) {
 		return nil
 	}
 	var errs []error
@@ -97,7 +97,7 @@ func CleanupDisks(result Result) error {
 	return errors.Join(errs...)
 }
 
-func keepDisks(keep KeepPolicy, status Status) bool {
+func keepArtifacts(keep KeepPolicy, status Status) bool {
 	switch keep {
 	case KeepAlways:
 		return true
