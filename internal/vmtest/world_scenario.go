@@ -122,14 +122,14 @@ func (world World) NewScenario(t interface {
 	return scenario
 }
 
-// PlanScenario plans a scenario. In a world that a run lease owns, it also
-// creates the scenario's own libvirt network, which Release removes.
+// PlanScenario plans a scenario. In a world with libvirt that a run lease owns,
+// it also creates the scenario's own libvirt network, which Release removes.
 func (world World) PlanScenario(name string) (*WorldScenario, error) {
 	scenario, err := world.planScenario(name)
 	if err != nil {
 		return nil, err
 	}
-	if world.Lease != "" {
+	if world.Lease != "" && world.Capabilities["libvirt"] == WorldStatusPassed {
 		if err := scenario.createNetwork(context.Background()); err != nil {
 			return nil, fmt.Errorf("create scenario network: %w", err)
 		}
