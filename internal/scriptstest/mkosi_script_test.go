@@ -1,11 +1,16 @@
 package scriptstest
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestMkosiDirectRejectsRuntimePackaging(t *testing.T) {
@@ -438,5 +443,172 @@ printf '%s\n' "$@" >> "$KATL_FAKE_PODMAN_ARGS.detail"
 	invocations := string(mustReadFile(t, calls+".detail"))
 	if !strings.Contains(invocations, "KATL_FLAVOUR=lts") || !strings.Contains(invocations, "cache-lts:/mkosi-cache") {
 		t.Fatalf("LTS kernel selection/cache was not passed to builder: %s", invocations)
+	}
+}
+
+// Linked worktrees share the main checkout's mkosi image cache, which mkosi
+// replaces in place without locking. The fake builder rewrites that shared
+// cache slowly, as mkosi does, and copies it back as the image root.
+func TestMkosiWorktreeBuildsShareCacheSafely(t *testing.T) {
+	root, tmp := t.TempDir(), t.TempDir()
+	checkout := filepath.Join(root, "main")
+	if err := os.MkdirAll(checkout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, checkout, "init", "--quiet")
+	runGit(t, checkout, "commit", "--quiet", "--allow-empty", "-m", "fixture")
+	worktrees := []string{filepath.Join(root, "first"), filepath.Join(root, "second")}
+	for _, worktree := range worktrees {
+		runGit(t, checkout, "worktree", "add", "--quiet", "--detach", worktree)
+		copyRepo := exec.Command("bash", "-euo", "pipefail", "-c", `tar -C "$1" --exclude=./.git --exclude=./.jj --exclude=./.beads --exclude=./_build --exclude=./build -cf - . | tar -C "$2" -xf -`, "bash", repoRoot(t), worktree)
+		if output, err := copyRepo.CombinedOutput(); err != nil {
+			t.Fatalf("copy script test repository: %v\n%s", err, output)
+		}
+		seedKernelLocks(t, worktree)
+	}
+
+	bin := filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFakeExecutable(t, bin, "podman", `if [[ "$1" == image ]]; then
+  [[ "$2" != inspect ]] || echo fake-image
+  exit 0
+fi
+cache="" build="" previous=""
+for arg in "$@"; do
+  if [[ "$previous" == --volume ]]; then
+    case "$arg" in
+      *:/mkosi-cache) cache="${arg%:/mkosi-cache}" ;;
+      *:/mkosi-build) build="${arg%:/mkosi-build}" ;;
+    esac
+  fi
+  previous="$arg"
+done
+tree="$cache/fake.cache"
+rm -rf "$tree"
+mkdir -p "$tree"
+for package in $KATL_FAKE_PACKAGES; do
+  printf '%s\n' "$package" >"$tree/$package"
+  sleep 0.2
+done
+rm -rf "$build/katl-runtime-root"
+cp -a "$tree" "$build/katl-runtime-root"
+`)
+	packageSets := [][]string{{}, {}}
+	for i := 1; i <= 10; i++ {
+		packageSets[0] = append(packageSets[0], fmt.Sprintf("alpha-%d", i))
+		packageSets[1] = append(packageSets[1], fmt.Sprintf("beta-%d", i))
+	}
+
+	errs := make([]error, len(worktrees))
+	outputs := make([][]byte, len(worktrees))
+	var builds sync.WaitGroup
+	for i, worktree := range worktrees {
+		env := hermeticGitEnv(os.Environ(), worktree)
+		env = append(env, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "KATL_CONTAINER_RUNTIME=podman", "KATL_MKOSI_BUILD_DIR=", "KATL_MKOSI_CACHE_DIR=", "KATL_MKOSI_LOCK_FD=", "KATL_FAKE_PACKAGES="+strings.Join(packageSets[i], " "), "TMPDIR="+tmp)
+		env = append(env, activeGoCacheEnv(t)...)
+		cmd := exec.Command(filepath.Join(worktree, "scripts", "mkosi"), "runtime")
+		cmd.Dir, cmd.Env = worktree, env
+		builds.Add(1)
+		go func() {
+			defer builds.Done()
+			outputs[i], errs[i] = cmd.CombinedOutput()
+		}()
+	}
+	builds.Wait()
+
+	for i, worktree := range worktrees {
+		if errs[i] != nil {
+			t.Fatalf("scripts/mkosi runtime in %s failed: %v\n%s", worktree, errs[i], outputs[i])
+		}
+		entries, err := os.ReadDir(filepath.Join(worktree, "_build", "mkosi", "katl-runtime-root"))
+		if err != nil {
+			t.Fatalf("read %s image root: %v", worktree, err)
+		}
+		var got []string
+		for _, entry := range entries {
+			got = append(got, entry.Name())
+		}
+		want := append([]string(nil), packageSets[i]...)
+		sort.Strings(want)
+		if strings.Join(got, " ") != strings.Join(want, " ") {
+			t.Fatalf("%s image root holds %v, want its own package set %v", worktree, got, want)
+		}
+	}
+}
+
+func TestMkosiBuildRequiresEveryArtifact(t *testing.T) {
+	repo := scriptRepoFixture(t)
+	for _, missing := range []string{"katl-runtime-root.vmlinuz", "katl-runtime-root"} {
+		t.Run(missing, func(t *testing.T) {
+			tmp := t.TempDir()
+			buildDir, bin := filepath.Join(tmp, "build"), filepath.Join(tmp, "bin")
+			if err := os.MkdirAll(bin, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// The builder reports success without restoring the artifact.
+			writeFakeExecutable(t, bin, "podman", `if [[ "$1" == image ]]; then
+  [[ "$2" != inspect ]] || echo fake-image
+fi
+exit 0
+`)
+			seedRuntimeCacheOutputs(t, buildDir)
+			if err := os.RemoveAll(filepath.Join(buildDir, missing)); err != nil {
+				t.Fatal(err)
+			}
+			env := append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "KATL_CONTAINER_RUNTIME=podman", "KATL_MKOSI_BUILD_DIR="+buildDir, "KATL_MKOSI_LOCK_FD=", "KATL_BUILD_COMMIT=artifact-test", "KATL_VERSION=0.0.0-artifact-test", "TMPDIR="+tmp)
+			env = append(env, activeGoCacheEnv(t)...)
+
+			for attempt := 1; attempt <= 2; attempt++ {
+				cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
+				cmd.Dir, cmd.Env = repo, env
+				output, err := cmd.CombinedOutput()
+				if err == nil {
+					t.Fatalf("attempt %d: build-runtime passed without %s:\n%s", attempt, missing, output)
+				}
+				if want := "build finished without expected artifact: " + filepath.Join(buildDir, missing); !strings.Contains(string(output), want) {
+					t.Fatalf("attempt %d: error does not name the missing artifact %q:\n%s", attempt, want, output)
+				}
+			}
+		})
+	}
+}
+
+// The install image build runs the runtime and sysext builds through nested
+// scripts/mkosi invocations, which must reuse the lock their parent holds.
+func TestMkosiNestedBuildsReuseLock(t *testing.T) {
+	repo, tmp := scriptRepoFixture(t), t.TempDir()
+	buildDir, bin := filepath.Join(tmp, "build"), filepath.Join(tmp, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFakeExecutable(t, bin, "podman", `if [[ "$1" == image ]]; then
+  [[ "$2" != inspect ]] || echo fake-image
+fi
+exit 0
+`)
+	writeFakeExecutable(t, filepath.Join(repo, "scripts"), "build-endpoint-advertiser-sysext", `exec "$(dirname "$0")/mkosi" --profile endpoint-advertiser-sysext -f build
+`)
+	writeFakeExecutable(t, filepath.Join(repo, "scripts"), "build-katlos-install-image", "exit 0\n")
+	seedRuntimeCacheOutputs(t, buildDir)
+	writeReleaseArtifact(t, buildDir, "katlos-install-0.0.0-dev-x86_64.squashfs")
+	writeReleaseArtifact(t, buildDir, "katl-endpoint-advertiser.raw")
+	env := append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "KATL_CONTAINER_RUNTIME=podman", "KATL_MKOSI_BUILD_DIR="+buildDir, "KATL_MKOSI_LOCK_FD=", "KATL_VERSION=0.0.0-dev", "KATL_ARCHITECTURE=x86_64", "TMPDIR="+tmp)
+	env = append(env, activeGoCacheEnv(t)...)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, filepath.Join(repo, "scripts", "mkosi"), "build-katlos-install-image")
+	cmd.Dir, cmd.Env, cmd.WaitDelay = repo, env, 5*time.Second
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("nested scripts/mkosi waited on its parent's lock:\n%s", output)
+	}
+	if err != nil {
+		t.Fatalf("build-katlos-install-image failed: %v\n%s", err, output)
+	}
+	if strings.Contains(string(output), "mkosi build lock: waiting") {
+		t.Fatalf("nested scripts/mkosi waited for the lock:\n%s", output)
 	}
 }

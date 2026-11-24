@@ -35,6 +35,10 @@ else
     package_cache_dir="$shared_repo_root/_build/mkosi/package-cache"
 fi
 stamp_dir="$build_dir/.katl-stamps"
+# One lock guards the image cache, which checkouts share, and every build
+# directory that uses it. mkosi replaces its cache in place without locking.
+build_lock="$(dirname "$cache_dir")/.katl-mkosi.lock"
+build_lock_timeout=5400
 go_mod_cache="${KATL_GO_MOD_CACHE:-$repo_root/_build/go-mod}"
 go_build_cache="${KATL_GO_BUILD_CACHE:-$repo_root/_build/go-cache}"
 mkosi_env=(--environment "KATL_FLAVOUR=$flavour" --environment "KATL_BUILD_COMMIT=$build_commit")
@@ -410,9 +414,11 @@ target_cache_hit() {
     [[ "$recorded" == "$current" ]]
 }
 
+# A stamp records a complete build, so a target missing any output fails here.
 store_target_cache() {
     local target="$1"
     local current
+    require_target_outputs "$target" || return 1
     [[ "$runtime" != direct ]] || return 0
     current="$(cache_fingerprint "$target")" || return 0
     mkdir -p "$stamp_dir"
@@ -461,7 +467,8 @@ clear_installer_iso() {
 write_installer_package_set() {
     local output="$repo_root/_build/mkosi/katl-installer.packages.tsv"
     local manifest="$build_dir/katl-installer.manifest"
-    local cache_root="$repo_root/_build/mkosi/cache/fedora~${fedora_release}~x86-64~main.cache"
+    # Matches the CacheKey that prepare_kernel_inputs includes.
+    local cache_root="$cache_dir/katl-installer-image-kernel-v1-$kernel_set_sha256.cache"
     if [[ -f "$manifest" ]]; then
         mkdir -p "$(dirname "$output")"
         jq -r '
@@ -486,6 +493,37 @@ write_installer_package_set() {
         -qa \
         --queryformat "%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n" \
         | sort >"$output"
+}
+
+acquire_build_lock() {
+    # A nested invocation inherits the open lock description and already holds it.
+    if [[ -n "${KATL_MKOSI_LOCK_FD:-}" && "/proc/self/fd/$KATL_MKOSI_LOCK_FD" -ef "$build_lock" ]]; then
+        return 0
+    fi
+    mkdir -p "$(dirname "$build_lock")"
+    local fd
+    exec {fd}>>"$build_lock"
+    if ! flock --nonblock "$fd"; then
+        printf 'mkosi build lock: waiting for %s (held by %s)\n' "$build_lock" "$(cat "$build_lock" 2>/dev/null || printf 'unknown')" >&2
+        if ! flock --wait "$build_lock_timeout" "$fd"; then
+            echo "error: timed out after ${build_lock_timeout}s waiting for another mkosi build to release $build_lock; wait for it to finish, or stop it if it is stuck" >&2
+            exit 1
+        fi
+    fi
+    printf 'pid %s in %s: scripts/mkosi %s\n' "$$" "$repo_root" "$*" >"$build_lock"
+    export KATL_MKOSI_LOCK_FD="$fd"
+}
+
+require_target_outputs() {
+    local target="$1"
+    local output complete=1
+    while IFS= read -r output; do
+        if [[ ! -e "$output" ]]; then
+            printf 'error: %s build finished without expected artifact: %s\n' "$target" "$output" >&2
+            complete=0
+        fi
+    done < <(target_outputs "$target")
+    [[ "$complete" == 1 ]]
 }
 
 if [[ -z "$runtime" ]]; then
@@ -586,11 +624,12 @@ for ((argument_index=1; argument_index<=$#; argument_index++)); do
             ;;
     esac
 done
+if [[ "$runtime" == direct && "$kernel_profile" == runtime ]]; then
+    echo 'error: KATL_CONTAINER_RUNTIME=direct currently supports installer-image builds only' >&2
+    exit 1
+fi
+acquire_build_lock "$@"
 if [[ -n "$kernel_profile" ]]; then
-    if [[ "$runtime" == direct && "$kernel_profile" == runtime ]]; then
-        echo 'error: KATL_CONTAINER_RUNTIME=direct currently supports installer-image builds only' >&2
-        exit 1
-    fi
     prepare_kernel_inputs "$kernel_profile"
 fi
 
@@ -656,7 +695,7 @@ else
             "$repo_root/scripts/build-katlos-install-image" "$@"
             status=$?
             if [[ "$status" -eq 0 && $# -eq 0 ]]; then
-                store_target_cache katlos-install-image
+                store_target_cache katlos-install-image || status=1
             fi
             exit "$status"
             ;;
@@ -786,7 +825,7 @@ if [[ "$runtime" == direct ]]; then
             go run ./cmd/katl-mkosi-artifacts write-installer-artifacts >/dev/null || status=1
     fi
     if [[ "$status" -eq 0 && -n "$cache_target" ]]; then
-        store_target_cache "$cache_target"
+        store_target_cache "$cache_target" || status=1
     fi
     exit "$status"
 fi
@@ -862,7 +901,7 @@ set +e
     }
     if [[ "$status" -eq 0 && -n "${KATL_INSTALLER_PACKAGE_SET:-}" ]]; then
         installer_manifest=/mkosi-build/katl-installer.manifest
-        installer_cache_root=/mkosi-cache/fedora~$(/work/scripts/fedora-release)~x86-64~main.cache
+        installer_cache_root=/mkosi-cache/katl-installer-image-kernel-v1-$(basename "${KATL_KERNEL_LOCK:-}" .json).cache
         if [[ -f "$installer_manifest" ]]; then
             if ! jq -r '\''
                 .packages[]
@@ -1101,6 +1140,6 @@ set +e
 status=$?
 set -e
 if [[ "$status" -eq 0 && -n "$cache_target" ]]; then
-    store_target_cache "$cache_target"
+    store_target_cache "$cache_target" || status=1
 fi
 exit "$status"
