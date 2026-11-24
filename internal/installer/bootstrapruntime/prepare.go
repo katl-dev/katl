@@ -1,7 +1,6 @@
 package bootstrapruntime
 
 import (
-	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,10 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/katl-dev/katl/internal/apiproxy"
-	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/bootstrapplan"
 	"github.com/katl-dev/katl/internal/installer/confext"
@@ -326,12 +322,13 @@ func runtimeFiles(root string, plan bootstrapplan.Plan) ([]confext.NativeEtcFile
 	if err != nil {
 		return nil, err
 	}
-	inputPlan := plan.SelectedInput.Configuration.KubeadmConfigs[plan.SelectedInput.Input.ConfigRef]
+	input := plan.SelectedInput.Configuration.Kubeadm
 	ref := plan.SelectedInput.Configuration.Manifest.Node.Kubernetes.Kubeadm.ConfigRef
-	if ref == "" || ref != plan.RuntimeInputs.KubeadmInput.ConfigRef || inputPlan.Name != ref || inputPlan.Config.RenderPath != plan.RuntimeInputs.KubeadmInput.Path {
+	if ref == "" || ref != plan.RuntimeInputs.KubeadmInput.ConfigRef || input.Name() != ref || kubeadmconfig.ConfigPath(ref) != plan.RuntimeInputs.KubeadmInput.Path {
 		return nil, fmt.Errorf("selected bootstrap snapshot does not match requested kubeadm input")
 	}
-	digest, err := inputPlan.InputDigest()
+	inputPlan := input.Plan()
+	digest, err := input.InputDigest()
 	if err != nil {
 		return nil, err
 	}
@@ -345,28 +342,23 @@ func runtimeFiles(root string, plan bootstrapplan.Plan) ([]confext.NativeEtcFile
 	}
 	// The selected input owns its whole subtree, including patches removed from
 	// the desired configuration. Keep other configuration references intact.
-	selectedRoot := filepath.Join("/etc/katl/kubeadm", strings.TrimSpace(plan.RuntimeInputs.KubeadmInput.ConfigRef)) + "/"
+	selectedRoot := kubeadmconfig.InputDir(ref) + "/"
 	files = slices.DeleteFunc(files, func(file confext.NativeEtcFile) bool {
-		return strings.HasPrefix(file.Path, selectedRoot)
+		// An inherited init config belongs to its own bootstrap, not this one.
+		return strings.HasPrefix(file.Path, selectedRoot) || file.Path == kubeadmconfig.BootstrapInitConfigPath
 	})
 
-	for _, input := range append([]kubeadmconfig.File{inputPlan.Config}, inputPlan.Patches...) {
-		content := input.Content
-		if plan.Operation.OperationKind == bootstrapplan.OperationKindInit && input.RenderPath == plan.RuntimeInputs.KubeadmInput.Path {
-			rendered, err := cluster.RenderInitConfig(input.Content, plan.RuntimeInputs.HostConfig.ControlPlaneEndpoint, plan.RuntimeInputs.HostConfig.ControlPlaneEndpointVIP)
-			if err != nil {
-				return nil, err
-			}
-			content, err = delegateInitHealth(rendered)
-			if err != nil {
-				return nil, err
-			}
+	// The input path holds the node's input verbatim for every operation kind;
+	// only init adds its rendered config, as a separate artifact.
+	for _, file := range input.NativeEtcFiles() {
+		files = replaceNativeEtcFile(files, file)
+	}
+	if plan.Operation.OperationKind == bootstrapplan.OperationKindInit {
+		initConfig, err := input.BootstrapInitConfig(plan.RuntimeInputs.HostConfig.ControlPlaneEndpoint, plan.RuntimeInputs.HostConfig.ControlPlaneEndpointVIP)
+		if err != nil {
+			return nil, err
 		}
-		files = replaceNativeEtcFile(files, confext.NativeEtcFile{
-			Path:    input.RenderPath,
-			Content: string(content),
-			Mode:    input.Mode,
-		})
+		files = replaceNativeEtcFile(files, initConfig)
 	}
 	metadata, err := nodeMetadata(plan)
 	if err != nil {
@@ -430,63 +422,6 @@ func validateInitSharedBase(plan kubeadmconfig.Plan, input bootstrapplan.Kubeadm
 		plan.NodeLocalKubelet = plan.NodeLocalKubelet || ownership.NodeLocalKubelet
 	}
 	return plan.ValidateSharedKubeletBase()
-}
-
-func delegateInitHealth(content []byte) ([]byte, error) {
-	decoder := yaml.NewDecoder(bytes.NewReader(content))
-	var documents []map[string]any
-	found := false
-	for {
-		var document map[string]any
-		if err := decoder.Decode(&document); errors.Is(err, io.EOF) {
-			break
-		} else if err != nil {
-			return nil, fmt.Errorf("decode managed kubeadm init config: %w", err)
-		}
-		if len(document) == 0 {
-			continue
-		}
-		if document["kind"] == "InitConfiguration" {
-			found = true
-			phases, ok := document["skipPhases"].([]any)
-			if document["skipPhases"] != nil && !ok {
-				return nil, fmt.Errorf("InitConfiguration.skipPhases must be a list of strings")
-			}
-			for _, phase := range phases {
-				if _, ok := phase.(string); !ok {
-					return nil, fmt.Errorf("InitConfiguration.skipPhases must be a list of strings")
-				}
-			}
-			// Katl verifies local API, kubelet, and static-pod health before
-			// promotion. Kubeadm's wait reads the unpatched shared kubelet base.
-			if !slices.Contains(phases, "wait-control-plane") {
-				phases = append(phases, "wait-control-plane")
-			}
-			document["skipPhases"] = phases
-		}
-		documents = append(documents, document)
-	}
-	if !found {
-		documents = append(documents, map[string]any{
-			"apiVersion": "kubeadm.k8s.io/v1beta4",
-			"kind":       "InitConfiguration",
-			"skipPhases": []string{"wait-control-plane"},
-		})
-	}
-
-	var out bytes.Buffer
-	encoder := yaml.NewEncoder(&out)
-	encoder.SetIndent(2)
-	for _, document := range documents {
-		if err := encoder.Encode(document); err != nil {
-			_ = encoder.Close()
-			return nil, fmt.Errorf("encode managed kubeadm init config: %w", err)
-		}
-	}
-	if err := encoder.Close(); err != nil {
-		return nil, fmt.Errorf("encode managed kubeadm init config: %w", err)
-	}
-	return out.Bytes(), nil
 }
 
 func inheritedConfextFiles(root string, previous generation.GenerationSpec) ([]confext.NativeEtcFile, error) {
@@ -562,6 +497,10 @@ func replaceNativeEtcFile(files []confext.NativeEtcFile, replacement confext.Nat
 }
 
 func nodeMetadata(plan bootstrapplan.Plan) (confext.NativeEtcFile, error) {
+	kubeadm := plan.RuntimeInputs.KubeadmInput
+	if plan.Operation.OperationKind == bootstrapplan.OperationKindInit {
+		kubeadm.InitConfigPath = kubeadmconfig.BootstrapInitConfigPath
+	}
 	data, err := json.MarshalIndent(struct {
 		APIVersion string                             `json:"apiVersion"`
 		Kind       string                             `json:"kind"`
@@ -572,7 +511,7 @@ func nodeMetadata(plan bootstrapplan.Plan) (confext.NativeEtcFile, error) {
 		APIVersion: "katl.dev/v1alpha1",
 		Kind:       "BootstrapRuntime",
 		Host:       plan.RuntimeInputs.HostConfig,
-		Kubeadm:    plan.RuntimeInputs.KubeadmInput,
+		Kubeadm:    kubeadm,
 		Kubernetes: plan.RuntimeInputs.KubernetesProjection,
 	}, "", "  ")
 	if err != nil {

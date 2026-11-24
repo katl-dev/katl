@@ -116,7 +116,7 @@ func (e *Executor) planHostUpgradeWithHandoff(ctx context.Context, record operat
 	if err != nil {
 		return preparedHostUpgrade{}, err
 	}
-	extensions.kubeadmConfigs = configuration.KubeadmConfigs
+	extensions.kubeadm = configuration.Kubeadm
 	ukiPath := generation.UKIDirectory + "/katl-" + inactiveSlot + "-1.efi"
 	if ukiPath == previous.Boot.UKIPath {
 		return preparedHostUpgrade{}, fmt.Errorf("inactive root slot UKI path is still used by the active generation")

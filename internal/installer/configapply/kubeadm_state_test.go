@@ -24,16 +24,16 @@ func TestGenerationKubeadmConfigFollowsGenerationAncestry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := WriteGenerationKubeadmConfig(root, "generation-bootstrap", "control-plane", plan); err != nil {
+	if err := WriteGenerationKubeadmConfig(root, "generation-bootstrap", nodeInput(t, plan)); err != nil {
 		t.Fatal(err)
 	}
 
-	got, source, err := ReadEffectiveGenerationKubeadmConfig(root, "generation-host-config", "control-plane")
+	got, source, err := ReadEffectiveGenerationKubeadmConfig(root, "generation-host-config", "control-plane", manifestWithKubeadm().Node)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if source != "generation-bootstrap" || string(got.Config.Content) != want {
-		t.Fatalf("effective kubeadm input = source %q content %q", source, got.Config.Content)
+	if source != "generation-bootstrap" || string(got.Plan().Config.Content) != want {
+		t.Fatalf("effective kubeadm input = source %q content %q", source, got.Plan().Config.Content)
 	}
 }
 
@@ -42,14 +42,14 @@ func TestGenerationKubeadmConfigRejectsAncestryCycle(t *testing.T) {
 	writeKubeadmStateGeneration(t, root, "generation-a", "generation-b")
 	writeKubeadmStateGeneration(t, root, "generation-b", "generation-a")
 
-	_, _, err := ReadEffectiveGenerationKubeadmConfig(root, "generation-a", "control-plane")
+	_, _, err := ReadEffectiveGenerationKubeadmConfig(root, "generation-a", "control-plane", manifestWithKubeadm().Node)
 	if err == nil || !strings.Contains(err.Error(), "cycle") {
 		t.Fatalf("ReadEffectiveGenerationKubeadmConfig() error = %v, want cycle", err)
 	}
 }
 
 func TestGenerationKubeadmConfigRejectsUnsafeRef(t *testing.T) {
-	_, _, err := ReadEffectiveGenerationKubeadmConfig(t.TempDir(), "generation-a", "../control-plane")
+	_, _, err := ReadEffectiveGenerationKubeadmConfig(t.TempDir(), "generation-a", "../control-plane", manifestWithKubeadm().Node)
 	if err == nil || !strings.Contains(err.Error(), "single path segment") {
 		t.Fatalf("ReadEffectiveGenerationKubeadmConfig() error = %v, want unsafe ref", err)
 	}
@@ -87,10 +87,24 @@ func TestKubeadmInputOwnership(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan.NodeLocalKubelet, plan.SharedKubeletBase = true, true
-	if err := WriteGenerationKubeadmConfig(root, "gen0", "node-cp", plan); err != nil {
+	node := manifestWithKubeadm().Node
+	node.Kubernetes.Kubeadm.ConfigRef = "node-cp"
+	input, err := kubeadmconfig.ForNode(plan, node)
+	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := readGenerationKubeadmConfig(root, "gen0", "node-cp")
+	if err := WriteGenerationKubeadmConfig(root, "gen0", input); err != nil {
+		t.Fatal(err)
+	}
+	read := func() (kubeadmconfig.Plan, error) {
+		files, err := readGenerationKubeadmFiles(root, "gen0", "node-cp")
+		if err != nil {
+			return kubeadmconfig.Plan{}, err
+		}
+		got, err := kubeadmconfig.ReadNodeInput("node-cp", files, node)
+		return got.Plan(), err
+	}
+	got, err := read()
 	if err != nil || !got.NodeLocalKubelet || !got.SharedKubeletBase || len(got.Patches) != 0 {
 		t.Fatalf("owned input = %#v, %v", got, err)
 	}
@@ -98,13 +112,13 @@ func TestKubeadmInputOwnership(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"sharedKubeletBase":"yes"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readGenerationKubeadmConfig(root, "gen0", "node-cp"); err == nil {
+	if _, err := read(); err == nil {
 		t.Fatal("malformed ownership metadata accepted")
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	got, err = readGenerationKubeadmConfig(root, "gen0", "node-cp")
+	got, err = read()
 	if err != nil || got.SharedKubeletBase {
 		t.Fatalf("legacy input gained shared-base proof: %#v, %v", got, err)
 	}

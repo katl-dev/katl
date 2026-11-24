@@ -17,6 +17,8 @@ import (
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/installer/configapply"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/kubeadmplan"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -111,7 +113,7 @@ func controlPlaneConfigFromProto(req *agentapi.KubeadmControlPlaneConfigOperatio
 		}
 	}
 	return operation.KubeadmControlPlaneConfig{
-		Component: component, RolloutID: req.GetRolloutId(), NodePosition: req.GetNodePosition(), NodeCount: req.GetNodeCount(), CoordinatorNode: req.GetCoordinatorNode(), NodeName: req.GetNodeName(), CoordinatorUpload: req.GetCoordinatorUpload(), NodeLocalKubelet: req.GetNodeLocalKubelet(), DesiredGenerationID: req.GetDesiredGenerationId(), ConfigName: req.GetConfigName(), ConfigPath: "/etc/katl/kubeadm/" + req.GetConfigName() + "/config.yaml", DesiredConfigSHA256: req.GetDesiredConfigSha256(), ExpectedLiveConfigSHA256: req.GetExpectedLiveConfigSha256(), KubernetesPayloadVersion: req.GetKubernetesPayloadVersion(), KubernetesPayloadSHA256: req.GetKubernetesPayloadSha256(), SupportedFieldDelta: fields, SnapshotRef: req.GetSnapshotRef(), SnapshotDigest: req.GetSnapshotDigest(), SnapshotRevision: req.GetSnapshotRevision(), CapturedMemberListDigest: req.GetCapturedMemberListDigest(), SourceEtcdVersion: req.GetSourceEtcdVersion(), SnapshotCreatedAt: req.GetSnapshotCreatedAt(), SnapshotStorageLocation: req.GetSnapshotStorageLocation(), SnapshotOperatorIdentity: req.GetSnapshotOperatorIdentity(),
+		Component: component, RolloutID: req.GetRolloutId(), NodePosition: req.GetNodePosition(), NodeCount: req.GetNodeCount(), CoordinatorNode: req.GetCoordinatorNode(), NodeName: req.GetNodeName(), CoordinatorUpload: req.GetCoordinatorUpload(), NodeLocalKubelet: req.GetNodeLocalKubelet(), DesiredGenerationID: req.GetDesiredGenerationId(), ConfigName: req.GetConfigName(), ConfigPath: kubeadmconfig.ConfigPath(req.GetConfigName()), DesiredConfigSHA256: req.GetDesiredConfigSha256(), ExpectedLiveConfigSHA256: req.GetExpectedLiveConfigSha256(), KubernetesPayloadVersion: req.GetKubernetesPayloadVersion(), KubernetesPayloadSHA256: req.GetKubernetesPayloadSha256(), SupportedFieldDelta: fields, SnapshotRef: req.GetSnapshotRef(), SnapshotDigest: req.GetSnapshotDigest(), SnapshotRevision: req.GetSnapshotRevision(), CapturedMemberListDigest: req.GetCapturedMemberListDigest(), SourceEtcdVersion: req.GetSourceEtcdVersion(), SnapshotCreatedAt: req.GetSnapshotCreatedAt(), SnapshotStorageLocation: req.GetSnapshotStorageLocation(), SnapshotOperatorIdentity: req.GetSnapshotOperatorIdentity(),
 	}
 }
 
@@ -237,6 +239,18 @@ func (s *Server) validateKubeadmControlPlaneConfigState(req *agentapi.SubmitOper
 	return body, nil
 }
 
+// desiredEndpointVIP returns the VIP that the desired generation advertises
+// for the control-plane endpoint, which bootstrap adds to the API server
+// certificate.
+func (e *Executor) desiredEndpointVIP(generationID string) (string, error) {
+	configuration, err := configapply.ReadGenerationConfiguration(e.Root, generationID)
+	if err != nil {
+		return "", fmt.Errorf("read desired control-plane endpoint: %w", err)
+	}
+	_, vip, err := kubeadmconfig.ControlPlaneEndpoint(configuration.Manifest.Node)
+	return vip, err
+}
+
 func (e *Executor) executeKubeadmControlPlaneConfig(ctx context.Context, record operation.OperationRecord) error {
 	request := record.KubeadmControlPlaneConfig
 	if request.Component == "kube-proxy" {
@@ -257,7 +271,11 @@ func (e *Executor) executeKubeadmControlPlaneConfig(ctx context.Context, record 
 	if liveResult.Err != nil || liveResult.ExitStatus != 0 {
 		return e.failControlPlaneConfig(record, "preflight", fmt.Errorf("collect live kubeadm config: %s", toolFailure(liveResult)))
 	}
-	effective, delta, err := kubeadmplan.EffectiveControlPlaneConfiguration(desired, liveResult.Stdout)
+	vip, err := e.desiredEndpointVIP(request.DesiredGenerationID)
+	if err != nil {
+		return e.failControlPlaneConfig(record, "preflight", err)
+	}
+	effective, delta, err := kubeadmplan.EffectiveControlPlaneConfiguration(desired, liveResult.Stdout, vip)
 	if err != nil {
 		return e.failControlPlaneConfig(record, "preflight", err)
 	}

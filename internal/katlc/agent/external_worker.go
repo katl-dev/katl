@@ -52,7 +52,7 @@ func (e *Executor) prepareExternalWorker(record operation.OperationRecord) error
 		return fail(err)
 	}
 	node := configuration.Manifest.Node
-	input := configuration.KubeadmConfigs[node.Kubernetes.Kubeadm.ConfigRef]
+	input := configuration.Kubeadm.Plan()
 	kubelet, err := externalKubeletConfig(input.Config.Content)
 	if err != nil {
 		return fail(err)

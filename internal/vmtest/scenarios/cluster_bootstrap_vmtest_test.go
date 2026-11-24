@@ -604,7 +604,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 				t.Fatal(err)
 			}
 			ref := material.InstallManifest.Node.Kubernetes.Kubeadm.ConfigRef
-			selected, err := kubeadmconfig.WithNodeRegistration(material.KubeadmConfigs[ref], kubeadmconfig.RegistrationFor(material.InstallManifest.Node))
+			selected, err := kubeadmconfig.ForNode(material.KubeadmConfigs[ref], material.InstallManifest.Node)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -3288,7 +3288,7 @@ func assertOperationBackedInitRecord(t *testing.T, record operation.OperationRec
 	}
 	if record.ExecutorPlan == nil ||
 		record.ExecutorPlan.Phase != "kubeadm-init" ||
-		!stringSliceEqual(record.ExecutorPlan.Argv, []string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/kubeadm/" + configRef + "/config.yaml"}) {
+		!stringSliceEqual(record.ExecutorPlan.Argv, []string{"/usr/bin/kubeadm", "init", "--config", kubeadmconfig.BootstrapInitConfigPath}) {
 		t.Fatalf("executor plan = %#v, want kubeadm init through katlc agent executor", record.ExecutorPlan)
 	}
 	if !record.ExternalMutationStarted || !record.MutatingToolRan || len(record.PreExecMutationMarkers) == 0 {

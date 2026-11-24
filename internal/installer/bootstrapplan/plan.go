@@ -15,7 +15,7 @@ import (
 	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer"
-	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
@@ -86,6 +86,9 @@ type KubeadmInput struct {
 	Intent    string `json:"intent"`
 	Path      string `json:"path"`
 	Digest    string `json:"digest"`
+	// InitConfigPath is the config kubeadm init reads, set in the metadata of
+	// an init generation only.
+	InitConfigPath string `json:"initConfigPath,omitempty"`
 }
 
 type KubernetesProjection struct {
@@ -334,18 +337,9 @@ func runtimeInputs(root string, previous generation.GenerationSpec, request oper
 	if err != nil {
 		return RuntimeInputs{}, err
 	}
-	endpoint, vip := "", ""
-	if configured := selection.Configuration.Manifest.Node.ControlPlaneEndpoint; configured != nil {
-		plan, err := controlplaneendpoint.Normalize(*configured)
-		if err != nil {
-			return RuntimeInputs{}, err
-		}
-		endpoint = plan.Endpoint
-		if plan.Config.Advertisement != nil {
-			vip = plan.Config.Advertisement.VIP
-		}
-	} else if bootstrap := selection.Configuration.Manifest.Node.Bootstrap; bootstrap != nil {
-		endpoint = bootstrap.ControlPlaneEndpoint
+	endpoint, vip, err := kubeadmconfig.ControlPlaneEndpoint(selection.Configuration.Manifest.Node)
+	if err != nil {
+		return RuntimeInputs{}, err
 	}
 	return RuntimeInputs{
 		SelectedKubernetesSysext: selected,

@@ -18,10 +18,15 @@ func TestCompiledKubeletConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan.NodeLocalKubelet = true
+	node := manifest.NodeConfig{Kubernetes: manifest.KubernetesConfig{Kubeadm: manifest.KubeadmReference{ConfigRef: "node-cp-1"}}}
+	input, err := kubeadmconfig.ForNode(plan, node)
+	if err != nil {
+		t.Fatal(err)
+	}
 	data, err := configapply.RenderNodeConfigurationChange(configapply.RenderNodeRequest{
 		NodeName: "cp-1", SourceID: "lab", DesiredVersion: "2", ApplyMode: "live", KubeadmOnly: true,
-		Manifest:       manifest.Manifest{Node: manifest.NodeConfig{Kubernetes: manifest.KubernetesConfig{Kubeadm: manifest.KubeadmReference{ConfigRef: "node-cp-1"}}}},
-		KubeadmConfigs: map[string]kubeadmconfig.Plan{"node-cp-1": plan},
+		Manifest: manifest.Manifest{Node: node},
+		Kubeadm:  input,
 	})
 	if err != nil {
 		t.Fatal(err)

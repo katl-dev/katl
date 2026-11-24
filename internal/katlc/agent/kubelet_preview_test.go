@@ -325,10 +325,10 @@ func TestSharedKubeletBaseProof(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			plan := configuration.KubeadmConfigs[body.ConfigName]
+			plan := configuration.Kubeadm.Plan()
 			plan.NodeLocalKubelet = true
 			plan.SharedKubeletBase = tc.marked
-			configuration.KubeadmConfigs[body.ConfigName] = plan
+			configuration.Kubeadm = testNodeInput(t, plan)
 			if err := configapply.WriteGenerationConfiguration(root, body.DesiredGenerationID, configuration); err != nil {
 				t.Fatal(err)
 			}

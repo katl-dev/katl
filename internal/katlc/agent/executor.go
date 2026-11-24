@@ -24,6 +24,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/bootstrapruntime"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/installer/systemextensionbundle"
 	"github.com/katl-dev/katl/internal/kubernetesidentity"
@@ -266,6 +267,10 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 	}
 	if err := validateToolPlan(plan); err != nil {
 		_, markErr := e.failRecord(record.OperationID, "executor-plan-invalid", "executor-plan-invalid", "agent executor rejected operation tool plan", err)
+		return errors.Join(err, markErr)
+	}
+	if err := validateBootstrapInitPlan(record, plan); err != nil {
+		_, markErr := e.failRecord(record.OperationID, "executor-plan-refused", "executor-plan-invalid", "agent executor rejected bootstrap init plan", err)
 		return errors.Join(err, markErr)
 	}
 	timeout := defaultToolTimeout
@@ -1076,6 +1081,20 @@ func postKubeadmHealthArgs(record operation.OperationRecord) []string {
 
 func bootstrapReadinessArgs(record operation.OperationRecord, plan toolPlan) []string {
 	return []string{record.CandidateGenerationID, kubeadmConfigPath(plan.Argv)}
+}
+
+// validateBootstrapInitPlan refuses an init record that predates the separate
+// init config: its --config names the kubeadm input path, which no longer
+// holds the rendered init config, so kubeadm would initialise the wrong
+// cluster. Nothing has been prepared or run when it is refused.
+func validateBootstrapInitPlan(record operation.OperationRecord, plan toolPlan) error {
+	if record.BootstrapRequest == nil || record.OperationKind != bootstrapplan.OperationKindInit || record.BootstrapRequest.ExternalWorker {
+		return nil
+	}
+	if got := kubeadmConfigPath(plan.Argv); got != kubeadmconfig.BootstrapInitConfigPath {
+		return fmt.Errorf("bootstrap init plan reads kubeadm config %q instead of %s; resubmit the bootstrap so the node renders its init config", got, kubeadmconfig.BootstrapInitConfigPath)
+	}
+	return nil
 }
 
 func kubeadmConfigPath(argv []string) string {

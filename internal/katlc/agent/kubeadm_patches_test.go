@@ -121,10 +121,20 @@ func writeKubeadmConfigFixture(t *testing.T, root, generationID, ref, config str
 	value := validVolumeStatusManifest()
 	value.Node.Kubernetes.Kubeadm.ConfigRef = ref
 	if err := configapply.WriteGenerationConfiguration(root, generationID, configapply.GenerationConfiguration{
-		Manifest: value, KubeadmConfigs: map[string]kubeadmconfig.Plan{ref: plan},
+		Manifest: value, Kubeadm: testNodeInput(t, plan),
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// testNodeInput returns plan as the input of validVolumeStatusManifest's node.
+func testNodeInput(t *testing.T, plan kubeadmconfig.Plan) kubeadmconfig.NodeInput {
+	t.Helper()
+	input, err := kubeadmconfig.ForNode(plan, validVolumeStatusManifest().Node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return input
 }
 
 func assertKubeadmPatches(t *testing.T, root string, argv []string, patches map[string]string) {

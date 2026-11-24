@@ -16,8 +16,8 @@ type ConfigurationPlan struct {
 	ClusterName string
 	Plan        clusterplan.Plan
 	// NodeKubeadmConfigs holds, by node name, the kubeadm input that node
-	// installs, keyed by config ref.
-	NodeKubeadmConfigs        map[string]map[string]kubeadmconfig.Plan
+	// installs.
+	NodeKubeadmConfigs        map[string]kubeadmconfig.NodeInput
 	SystemExtensionSelections map[string][]systemextensionbundle.Selection
 }
 
@@ -26,17 +26,17 @@ func PlanConfiguration(request BuildRequest) (ConfigurationPlan, error) {
 	if err != nil {
 		return ConfigurationPlan{}, err
 	}
-	nodeConfigs := make(map[string]map[string]kubeadmconfig.Plan, len(compiled.plan.Nodes))
+	nodeConfigs := make(map[string]kubeadmconfig.NodeInput, len(compiled.plan.Nodes))
 	for _, node := range compiled.plan.Nodes {
 		ref := strings.TrimSpace(node.KubeadmConfig.Ref)
 		if ref == "" {
 			continue
 		}
-		plan, err := nodeKubeadmConfig(node, compiled.kubeadmConfigs)
+		input, err := nodeKubeadmConfig(node, compiled.kubeadmConfigs)
 		if err != nil {
 			return ConfigurationPlan{}, err
 		}
-		nodeConfigs[node.Name] = map[string]kubeadmconfig.Plan{ref: plan}
+		nodeConfigs[node.Name] = input
 	}
 	return ConfigurationPlan{
 		ClusterName:               compiled.source.Metadata.Name,

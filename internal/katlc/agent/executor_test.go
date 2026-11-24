@@ -117,7 +117,7 @@ func TestExecutorRemovesStagedKubernetesIdentityAfterPreparationFailure(t *testi
 			Phase:          "kubeadm-init",
 			MarkerID:       "kubeadm-init",
 			MutationScopes: []string{"kubeadm-state", "etc-kubernetes"},
-			Argv:           []string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/kubeadm/default/config.yaml"},
+			Argv:           []string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/bootstrap/kubeadm-init.yaml"},
 		},
 		BootstrapRequest: &operation.BootstrapRequest{
 			InventoryNodeName:             "node-a",
@@ -186,7 +186,7 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	ready := false
 	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
 		assertBootstrapRuntimePrepared(t, server.Root, "bootstrap-init-01-candidate")
-		if strings.Join(argv, " ") != "bootstrap-init-01-candidate /etc/katl/kubeadm/default/config.yaml" {
+		if strings.Join(argv, " ") != "bootstrap-init-01-candidate /etc/katl/bootstrap/kubeadm-init.yaml" {
 			t.Fatalf("readiness argv = %v, want candidate generation and kubeadm config path", argv)
 		}
 		ready = true
@@ -196,7 +196,7 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 		if !ready {
 			t.Fatal("kubeadm ran before katl-kubeadm-ready.target gate")
 		}
-		if strings.Join(argv, " ") != "/usr/bin/kubeadm init --config /etc/katl/kubeadm/default/config.yaml" {
+		if strings.Join(argv, " ") != "/usr/bin/kubeadm init --config /etc/katl/bootstrap/kubeadm-init.yaml" {
 			t.Fatalf("argv = %v, want operation-scoped kubeadm config", argv)
 		}
 		started(123)
@@ -257,7 +257,7 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	if invocation.AgentStartID != "agent-test" || invocation.ExecutorAttemptID == "" || invocation.PID != 123 || invocation.ExitStatus != 0 {
 		t.Fatalf("invocation missing agent executor metadata: %+v", invocation)
 	}
-	if strings.Join(invocation.ChildProcess, "\x00") != strings.Join([]string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/kubeadm/default/config.yaml"}, "\x00") {
+	if strings.Join(invocation.ChildProcess, "\x00") != strings.Join([]string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/bootstrap/kubeadm-init.yaml"}, "\x00") {
 		t.Fatalf("invocation child process = %#v, want kubeadm argv", invocation.ChildProcess)
 	}
 	for _, scope := range []string{"etc-kubernetes", "kubelet-state", "etcd-state", "cluster-objects"} {
@@ -641,6 +641,46 @@ func TestExecutorRejectsMissingPlanBeforeBootstrapRuntimePrep(t *testing.T) {
 	}
 }
 
+func TestExecutorRefusesInitRecordThatReadsInputPath(t *testing.T) {
+	server := newTestServer(t)
+	seedBootstrapRuntimeRoot(t, server.Root)
+	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor.Async = false
+	executor.Now = server.Now
+	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "legacy init argv")
+	// An init record accepted before the init config became its own file reads
+	// the input path, which no longer holds the rendered init config.
+	record := createAcceptedBootstrapOperation(t, server.Store, "op-legacy-init", "candidate-legacy-init", source, ref, &operation.ExecutorPlan{
+		Phase:          "kubeadm-init",
+		MarkerID:       "kubeadm-init",
+		MutationScopes: []string{"kubeadm-state", "etc-kubernetes"},
+		Argv:           []string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/kubeadm/default/config.yaml"},
+	})
+	executor.RunReadiness = func(context.Context, []string, func(int)) ToolResult {
+		t.Fatal("readiness gate ran for a legacy init plan")
+		return ToolResult{}
+	}
+	executor.RunTool = func(context.Context, []string, func(int)) ToolResult {
+		t.Fatal("kubeadm ran for a legacy init plan")
+		return ToolResult{}
+	}
+
+	err := executor.Execute(context.Background(), record)
+	if err == nil || !strings.Contains(err.Error(), "resubmit the bootstrap") {
+		t.Fatalf("Execute() error = %v, want an actionable refusal", err)
+	}
+	read, err := server.Store.Read(record.OperationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !read.Terminal || read.ExternalMutationStarted || read.MutatingToolRan || len(read.PreExecMutationMarkers) != 0 {
+		t.Fatalf("record = %+v, want a terminal refusal before any mutation", read)
+	}
+	if _, _, err := generation.ReadGeneration(server.Root, "candidate-legacy-init"); err == nil {
+		t.Fatal("candidate generation was prepared for a refused init plan")
+	}
+}
+
 func TestExecutorStopsBeforeKubeadmWhenReadinessFails(t *testing.T) {
 	server := newTestServer(t)
 	seedBootstrapRuntimeRoot(t, server.Root)
@@ -652,7 +692,7 @@ func TestExecutorStopsBeforeKubeadmWhenReadinessFails(t *testing.T) {
 		Phase:          "kubeadm-init",
 		MarkerID:       "kubeadm-init",
 		MutationScopes: []string{"kubeadm-state", "etc-kubernetes"},
-		Argv:           []string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/kubeadm/default/config.yaml"},
+		Argv:           []string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/bootstrap/kubeadm-init.yaml"},
 	})
 	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
 		return ToolResult{
@@ -686,7 +726,7 @@ func TestExecutorStopsBeforeKubeadmWhenReadinessFails(t *testing.T) {
 }
 
 func TestBootstrapReadinessReloadsSystemdAfterExtensionRefresh(t *testing.T) {
-	commands := bootstrapReadinessCommands("candidate-1", "/etc/katl/kubeadm/default/config.yaml")
+	commands := bootstrapReadinessCommands("candidate-1", "/etc/katl/bootstrap/kubeadm-init.yaml")
 	assertCommandOrder(
 		t, commands,
 		"katl-generation-activate --root=/ --generation candidate-1",
@@ -695,7 +735,7 @@ func TestBootstrapReadinessReloadsSystemdAfterExtensionRefresh(t *testing.T) {
 		"systemctl daemon-reload",
 		"test -x /usr/bin/kubelet",
 		"systemctl start katl-kubeadm-ready.target",
-		"test -s /etc/katl/kubeadm/default/config.yaml",
+		"test -s /etc/katl/bootstrap/kubeadm-init.yaml",
 	)
 }
 
@@ -724,7 +764,7 @@ func TestExecutorPostKubeadmHealthFailureRequiresRepair(t *testing.T) {
 		Phase:          "kubeadm-init",
 		MarkerID:       "kubeadm-init",
 		MutationScopes: []string{"etc-kubernetes", "kubelet-state", "etcd-state", "cluster-objects"},
-		Argv:           []string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/kubeadm/default/config.yaml"},
+		Argv:           []string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/bootstrap/kubeadm-init.yaml"},
 	})
 	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
 		return ToolResult{ExitStatus: 0}
@@ -799,7 +839,7 @@ func TestBootstrapPromotionFailure(t *testing.T) {
 		Phase:          "kubeadm-init",
 		MarkerID:       "kubeadm-init",
 		MutationScopes: []string{"etc-kubernetes", "kubelet-state", "etcd-state", "cluster-objects"},
-		Argv:           []string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/kubeadm/default/config.yaml"},
+		Argv:           []string{"/usr/bin/kubeadm", "init", "--config", "/etc/katl/bootstrap/kubeadm-init.yaml"},
 	})
 	executor.RunReadiness = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
 	executor.RunTool = func(_ context.Context, _ []string, started func(int)) ToolResult {
@@ -1398,7 +1438,7 @@ func bootstrapInputDigest(t *testing.T, root string) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selected := configuration.KubeadmConfigs[configuration.Manifest.Node.Kubernetes.Kubeadm.ConfigRef]
+	selected := configuration.Kubeadm
 	inputDigest, err := selected.InputDigest()
 	if err != nil {
 		t.Fatal(err)

@@ -327,6 +327,8 @@ message ConfigValidationResult {
   bool no_changes = 11;
   repeated string required_destructive_storage_acknowledgements = 12;
   repeated string required_volume_rebinds = 13;
+  // Warnings on a no-change result; accepted changes carry theirs in diagnostics.
+  repeated string warnings = 14;
 }
 
 message GenerationApplyRequest {

@@ -20,6 +20,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/bootstrap/kubeconfig"
 	"github.com/katl-dev/katl/internal/bootstrap/readiness"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1065,7 +1066,7 @@ func (r TransportRunner) initConfigPath(ctx context.Context, node inventory.Plan
 	if err != nil {
 		return "", fmt.Errorf("read kubeadm init config %s: %w", source, err)
 	}
-	content, err := renderInitConfig(file.Content, endpoint)
+	content, err := kubeadmconfig.RenderInitConfig(file.Content, endpoint, "")
 	if err != nil {
 		return "", err
 	}
@@ -1244,53 +1245,6 @@ func (r TransportRunner) writeJoinConfig(ctx context.Context, node inventory.Pla
 	return target, nil
 }
 
-func RenderInitConfig(base []byte, controlPlaneEndpoint string, additionalSANs ...string) ([]byte, error) {
-	endpoint := strings.TrimSpace(controlPlaneEndpoint)
-	if endpoint == "" {
-		return base, nil
-	}
-	host, _, err := net.SplitHostPort(endpoint)
-	if err != nil || strings.TrimSpace(host) == "" {
-		return nil, fmt.Errorf("control-plane endpoint must be host:port")
-	}
-	docs, err := decodeYAMLDocuments(base)
-	if err != nil {
-		return nil, fmt.Errorf("decode kubeadm init config: %w", err)
-	}
-	found := false
-	for _, doc := range docs {
-		if docKind(doc) != "ClusterConfiguration" {
-			continue
-		}
-		found = true
-		if configured := strings.TrimSpace(fmt.Sprint(doc["controlPlaneEndpoint"])); configured != "" && configured != "<nil>" && configured != endpoint {
-			return nil, fmt.Errorf("kubeadm ClusterConfiguration controlPlaneEndpoint %q conflicts with cluster endpoint %q", configured, endpoint)
-		}
-		doc["controlPlaneEndpoint"] = endpoint
-		apiServer, _ := doc["apiServer"].(map[string]any)
-		if apiServer == nil {
-			apiServer = map[string]any{}
-		}
-		apiServer["certSANs"] = appendUniqueString(apiServer["certSANs"], host)
-		// The node-local proxy forwards TLS to the API server unchanged.
-		apiServer["certSANs"] = appendUniqueString(apiServer["certSANs"], "127.0.0.1")
-		for _, san := range additionalSANs {
-			if san = strings.TrimSpace(san); san != "" {
-				apiServer["certSANs"] = appendUniqueString(apiServer["certSANs"], san)
-			}
-		}
-		doc["apiServer"] = apiServer
-	}
-	if !found {
-		return nil, errors.New("kubeadm init config did not contain ClusterConfiguration")
-	}
-	return encodeYAMLDocuments(docs)
-}
-
-func renderInitConfig(base []byte, controlPlaneEndpoint string) ([]byte, error) {
-	return RenderInitConfig(base, controlPlaneEndpoint)
-}
-
 func renderJoinConfig(base []byte, material JoinMaterial, controlPlane bool, discoveryKubeconfigPath ...string) ([]byte, error) {
 	endpoint, token, hashes, err := joinDiscovery(material)
 	if err != nil {
@@ -1394,25 +1348,6 @@ func ControlPlaneJoinMaterial(output string, certificateKey string) (JoinMateria
 
 func CertificateKey(output string) string {
 	return certificateKey(output)
-}
-
-func appendUniqueString(value any, item string) []any {
-	item = strings.TrimSpace(item)
-	var items []any
-	switch typed := value.(type) {
-	case []any:
-		items = append(items, typed...)
-	case []string:
-		for _, existing := range typed {
-			items = append(items, existing)
-		}
-	}
-	for _, existing := range items {
-		if text, ok := existing.(string); ok && strings.TrimSpace(text) == item {
-			return items
-		}
-	}
-	return append(items, item)
 }
 
 func synthesizeJoinConfig(initDoc map[string]any) map[string]any {
@@ -1801,7 +1736,7 @@ func kubeadmConfigPath(node inventory.PlannedNode) string {
 	if strings.TrimSpace(node.KubeadmConfig.Path) != "" {
 		return node.KubeadmConfig.Path
 	}
-	return "/etc/katl/kubeadm/" + node.KubeadmConfig.Ref + "/config.yaml"
+	return kubeadmconfig.ConfigPath(node.KubeadmConfig.Ref)
 }
 
 func generatedInitConfigPath(node inventory.PlannedNode) string {

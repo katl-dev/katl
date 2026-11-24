@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/distribution/reference"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 )
 
 type SystemRole string
@@ -421,8 +422,8 @@ func validateKubeadmConfigPath(value string) error {
 	if clean != value {
 		return fmt.Errorf("%q must be a clean absolute path", value)
 	}
-	if !strings.HasPrefix(clean, "/etc/katl/kubeadm/") {
-		return fmt.Errorf("%q must be under /etc/katl/kubeadm", value)
+	if !kubeadmconfig.IsInputPath(clean) {
+		return fmt.Errorf("%q must be under %s", value, kubeadmconfig.InputDir(""))
 	}
 	if path.Base(clean) != "config.yaml" {
 		return fmt.Errorf("%q must end with config.yaml", value)

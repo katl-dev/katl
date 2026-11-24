@@ -18,7 +18,7 @@ type RenderNodeRequest struct {
 	SystemExtensionSelections *[]systemextensionbundle.Selection
 	NodeName                  string
 	Manifest                  manifest.Manifest
-	KubeadmConfigs            map[string]kubeadmconfig.Plan
+	Kubeadm                   kubeadmconfig.NodeInput
 	SourceID                  string
 	DesiredVersion            string
 	ApplyMode                 string
@@ -92,7 +92,7 @@ func RenderNodeConfigurationChange(request RenderNodeRequest) ([]byte, error) {
 	systemExtensions := slices.Clone(node.SystemExtensions)
 	volumes := slices.Clone(request.Manifest.Install.Volumes)
 	kernel := manifest.KernelConfig{CommandLine: slices.Clone(node.Kernel.CommandLine)}
-	kubeadmConfigs, err := renderKubeadmConfigs(node.Kubernetes.Kubeadm.ConfigRef, request.KubeadmConfigs)
+	kubeadmConfigs, err := renderKubeadmConfigs(node.Kubernetes.Kubeadm.ConfigRef, request.Kubeadm)
 	if err != nil {
 		return nil, err
 	}
@@ -167,15 +167,15 @@ func renderedControlPlaneEndpoint(config *controlplaneendpoint.Config) *controlP
 	return &controlPlaneEndpointOverlay{Managed: config != nil, Config: config}
 }
 
-func renderKubeadmConfigs(ref string, configs map[string]kubeadmconfig.Plan) (map[string]inlineKubeadmConfig, error) {
+func renderKubeadmConfigs(ref string, input kubeadmconfig.NodeInput) (map[string]inlineKubeadmConfig, error) {
 	ref = strings.TrimSpace(ref)
-	if ref == "" || len(configs) == 0 {
+	if ref == "" || input.IsZero() {
 		return nil, nil
 	}
-	plan, ok := configs[ref]
-	if !ok {
+	if input.Name() != ref {
 		return nil, fmt.Errorf("selected kubeadm config %q was not resolved", ref)
 	}
+	plan := input.Plan()
 	patches := make(map[string]string, len(plan.Patches))
 	for _, patch := range plan.Patches {
 		name, err := plan.PatchRelativePath(patch)

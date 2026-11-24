@@ -169,7 +169,7 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	if err := configapply.WriteGenerationManifest(root, previous.GenerationID, previousManifest); err != nil {
 		t.Fatal(err)
 	}
-	if err := configapply.WriteGenerationKubeadmConfig(root, previous.GenerationID, "default", bootstrapRuntimeKubeadmConfigs("control-plane")["default"]); err != nil {
+	if err := configapply.WriteGenerationKubeadmConfig(root, previous.GenerationID, testNodeInput(t, bootstrapRuntimeKubeadmConfigs("control-plane")["default"])); err != nil {
 		t.Fatal(err)
 	}
 	endpointAdvertiserPath := filepath.Join(root, "var/lib/katl/generations/gen0/sysext/katl-endpoint-advertiser.raw")

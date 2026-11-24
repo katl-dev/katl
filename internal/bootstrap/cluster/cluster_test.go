@@ -1,7 +1,6 @@
 package cluster
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -15,7 +14,6 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/bootstrap/kubeconfig"
 	"github.com/katl-dev/katl/internal/bootstrap/readiness"
-	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -734,84 +732,6 @@ func TestTransportRunnerContinuesWhenInitAlreadyCompleted(t *testing.T) {
 	}
 	if credentials.ClientCertificateData != testCert {
 		t.Fatalf("credentials = %#v", credentials)
-	}
-}
-
-func TestTransportRunnerRunKubeadmInitWritesEndpointConfig(t *testing.T) {
-	transport := newFakeTransport()
-	node := validPlannedNode("cp-1", inventory.ActionInit)
-	initConfigPath := generatedInitConfigPath(node)
-	transport.files["/etc/katl/kubeadm/control-plane/config.yaml"] = []byte(testControlPlaneInitConfig())
-	transport.files[adminKubeconfigPath] = []byte(adminKubeconfig())
-	transport.commands[commandKey("kubeadm", "init", "--config", initConfigPath)] = readiness.CommandResult{ExitStatus: 0}
-
-	base := transport.files["/etc/katl/kubeadm/control-plane/config.yaml"]
-	rendered, err := RenderInitConfig(base, "api.katl.test:6443", "192.0.2.10")
-	if err != nil {
-		t.Fatalf("RenderInitConfig() error = %v", err)
-	}
-	uploaded := string(rendered)
-	for _, want := range []string{
-		"kind: InitConfiguration",
-		"kind: ClusterConfiguration",
-		"controlPlaneEndpoint: api.katl.test:6443",
-		"- api.katl.test",
-		"- 192.0.2.10",
-	} {
-		if !strings.Contains(uploaded, want) {
-			t.Fatalf("uploaded init config = %q, want %q", uploaded, want)
-		}
-	}
-}
-
-func TestInitCertificateAddresses(t *testing.T) {
-	base := []byte(`apiVersion: kubeadm.k8s.io/v1beta4
-kind: ClusterConfiguration
-apiServer:
-  certSANs: [user-api.example]
-`)
-	rendered, err := RenderInitConfig(base, "api.katl.test:6443", "192.0.2.10")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var config struct {
-		APIServer struct {
-			CertSANs []string `yaml:"certSANs"`
-		} `yaml:"apiServer"`
-	}
-	if err := yaml.Unmarshal(rendered, &config); err != nil {
-		t.Fatal(err)
-	}
-
-	want := []string{"user-api.example", "127.0.0.1", "api.katl.test", "192.0.2.10"}
-	if len(config.APIServer.CertSANs) != len(want) {
-		t.Fatalf("certificate addresses = %v", config.APIServer.CertSANs)
-	}
-	for _, address := range want {
-		if !slices.Contains(config.APIServer.CertSANs, address) {
-			t.Errorf("certificate lacks %s: %v", address, config.APIServer.CertSANs)
-		}
-	}
-}
-
-func TestRenderInitConfigRejectsConflictingEndpointAndDeduplicatesSAN(t *testing.T) {
-	base := []byte(`apiVersion: kubeadm.k8s.io/v1beta4
-kind: ClusterConfiguration
-controlPlaneEndpoint: old-api.katl.test:6443
-apiServer:
-  certSANs:
-    - api.katl.test
-`)
-	if _, err := RenderInitConfig(base, "api.katl.test:6443"); err == nil || !strings.Contains(err.Error(), "conflicts with cluster endpoint") {
-		t.Fatalf("RenderInitConfig() error = %v, want endpoint conflict", err)
-	}
-
-	rendered, err := RenderInitConfig(bytes.ReplaceAll(base, []byte("old-api.katl.test:6443"), []byte("api.katl.test:6443")), "api.katl.test:6443")
-	if err != nil {
-		t.Fatalf("RenderInitConfig() error = %v", err)
-	}
-	if strings.Count(string(rendered), "- api.katl.test") != 1 {
-		t.Fatalf("rendered config duplicated endpoint SAN:\n%s", rendered)
 	}
 }
 

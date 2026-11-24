@@ -605,7 +605,7 @@ func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperat
 		return operation.OperationRecord{}, nil, status.Errorf(codes.FailedPrecondition, "select bootstrap input: %v", err)
 	}
 	bootstrapRequest.KubeadmInputDigest = selection.Input.Digest
-	plan, err := kubeadmPlanFromSubmit(req, id, temporaryJoinConfig, selection.Input.Path)
+	plan, err := kubeadmPlanFromSubmit(req, id, temporaryJoinConfig)
 	if err != nil {
 		return operation.OperationRecord{}, nil, status.Errorf(codes.InvalidArgument, "operation request: %v", err)
 	}
@@ -648,7 +648,7 @@ func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperat
 		}
 	}
 	if isJoinOperation(req.OperationKind) {
-		metadata, err := s.materializeJoinConfig(req, id, selection.Configuration.KubeadmConfigs[selection.Input.ConfigRef])
+		metadata, err := s.materializeJoinConfig(req, id, selection.Configuration.Kubeadm.Plan())
 		if err != nil {
 			updated, updateErr := s.markMaterializationFailed(id, err)
 			if updateErr != nil {
@@ -1464,7 +1464,7 @@ func operationScope(kind string) string {
 	}
 }
 
-func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest, operationID string, temporaryJoinConfigPath, configPath string) (toolPlan, error) {
+func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest, operationID string, temporaryJoinConfigPath string) (toolPlan, error) {
 	if req == nil || req.Bootstrap == nil {
 		return toolPlan{}, fmt.Errorf("bootstrap request is required")
 	}
@@ -1485,9 +1485,9 @@ func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest, operationID str
 	case "bootstrap-init":
 		plan.Phase = "kubeadm-init"
 		plan.MarkerID = "kubeadm-init"
-		plan.Argv = []string{"/usr/bin/kubeadm", "init", "--config", configPath}
+		plan.Argv = []string{"/usr/bin/kubeadm", "init", "--config", kubeadmconfig.BootstrapInitConfigPath}
 	case "bootstrap-join-worker":
-		configPath = strings.TrimSpace(temporaryJoinConfigPath)
+		configPath := strings.TrimSpace(temporaryJoinConfigPath)
 		if configPath == "" {
 			return toolPlan{}, fmt.Errorf("temporary join config path is required")
 		}
@@ -1495,7 +1495,7 @@ func kubeadmPlanFromSubmit(req *agentapi.SubmitOperationRequest, operationID str
 		plan.MarkerID = "kubeadm-join-worker"
 		plan.Argv = []string{"/usr/bin/kubeadm", "join", "--config", configPath}
 	case "bootstrap-join-control-plane":
-		configPath = strings.TrimSpace(temporaryJoinConfigPath)
+		configPath := strings.TrimSpace(temporaryJoinConfigPath)
 		if configPath == "" {
 			return toolPlan{}, fmt.Errorf("temporary join config path is required")
 		}

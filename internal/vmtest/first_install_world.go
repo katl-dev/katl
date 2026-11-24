@@ -937,7 +937,7 @@ func writeSelectedKubeadmSidecars(dir string, configs map[string]kubeadmconfig.P
 			return err
 		}
 		for _, patch := range plan.Patches {
-			rel := strings.TrimPrefix(filepath.ToSlash(patch.RenderPath), "/etc/katl/kubeadm/"+name+"/")
+			rel := strings.TrimPrefix(filepath.ToSlash(patch.RenderPath), kubeadmconfig.InputDir(name)+"/")
 			if rel == "" || strings.HasPrefix(rel, "../") {
 				return fmt.Errorf("kubeadm patch path %q is outside selected config %q", patch.RenderPath, name)
 			}

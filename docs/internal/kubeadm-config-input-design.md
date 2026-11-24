@@ -83,8 +83,9 @@ Operator-authored kubeadm YAML omits values already owned by Katl:
   `spec.kubernetes.version`.
 - `ClusterConfiguration.controlPlaneEndpoint` is injected for bootstrap; a
   conflicting authored value is rejected.
-- The selected endpoint hostname is added once to
-  `ClusterConfiguration.apiServer.certSANs`.
+- The selected endpoint hostname, `127.0.0.1` and the advertised VIP are added
+  once to `ClusterConfiguration.apiServer.certSANs` in the rendered init config.
+  A later control-plane config apply compares only the operator's SANs.
 - kubelet `node-ip`, `InitConfiguration.localAPIEndpoint.advertiseAddress`,
   and control-plane join
   `JoinConfiguration.controlPlane.localAPIEndpoint.advertiseAddress` come from
@@ -96,17 +97,19 @@ Operator-authored kubeadm YAML omits values already owned by Katl:
   planes stay schedulable. Node taints and labels belong in ClusterConfig:
   Katl renders `nodes[].kubernetes.taints` into `nodeRegistration.taints` and
   `nodes[].kubernetes.labels` into the kubelet `node-labels` argument for each
-  node, and rejects native values for either.
+  node, and rejects native values for either. Inline kubeadm input that sets
+  any of these fields is accepted, Katl replaces the values, and planning warns
+  which fields it replaced.
 - `KubeletConfiguration.volumePluginDir` is enforced as
   `/var/lib/kubelet/plugins/volume/exec`.
 - `KubeletConfiguration.systemReserved.memory` defaults to `1Gi` when omitted
   and remains operator-overridable in the common or per-node native kubelet
   input.
 
-The rendered path is stable for node-local `katlc` operation wrappers:
+The input path always holds the node's kubeadm input, whatever the operation. Bootstrap renders the config that `kubeadm init` reads, with the cluster endpoint, its SANs and the delegated health phase, as a separate file in the bootstrap generation. A join reads its temporary join config. Node-local `katlc` operation wrappers run:
 
 ```text
-kubeadm init --config /etc/katl/kubeadm/control-plane/config.yaml
+kubeadm init --config /etc/katl/bootstrap/kubeadm-init.yaml
 ```
 
 or:

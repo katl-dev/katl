@@ -260,7 +260,7 @@ func TestRunClusterApplyManagementAddressOnlyTargetsWithoutMutation(t *testing.T
 		data, err := configapply.RenderNodeConfigurationChange(configapply.RenderNodeRequest{
 			NodeName:       "cp-1",
 			Manifest:       selected.InstallManifest,
-			KubeadmConfigs: selected.KubeadmConfigs,
+			Kubeadm:        kubeadmInput(t, selected),
 			SourceID:       selected.BundleManifest.ClusterName,
 			DesiredVersion: "1",
 			ApplyMode:      generation.ApplyModeAuto,

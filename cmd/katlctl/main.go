@@ -2599,6 +2599,9 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 			}
 		}
 	}
+	for _, warning := range result.GetWarnings() {
+		fmt.Fprintf(stderr, "warning: %s: %s\n", opts.nodeConfig.nodeName, warning)
+	}
 	if opts.plan {
 		if opts.output == "text" {
 			if !result.Accepted {
