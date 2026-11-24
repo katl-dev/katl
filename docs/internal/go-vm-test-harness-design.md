@@ -141,11 +141,40 @@ The default executor:
 Cleanup must run even when assertions fail or contexts are cancelled. Tests must
 not leave domains running after the test returns.
 
+## Ownership
+
+`scripts/vmtest-run` holds an exclusive flock on `<run dir>/lease` for the
+whole run and records the path in the world manifest as `lease`. The kernel
+releases it however the runner ends. Libvirt domains and networks that the run
+creates carry the run ID and the lease path in their `katl/vmtest` metadata, as
+`run` and `lease` attributes.
+
+The first scenario of each test process removes the vmtest domains and networks
+whose lease nobody holds: they belong to runs that have ended, including domains
+preserved for debugging. It never touches objects with other metadata, such as
+katldev worlds. The runner still holds the host lock for the whole run, so
+domains without a lease, which only runners that hold that lock create, are
+removed too; that rule has to change before runs stop serialising on the host
+lock.
+
+vsock guest CIDs are allocated by libvirt (`cid auto='yes'`) and read back from
+the running domain.
+
 ## Networking
 
-VM tests use libvirt networks. The world manifest records the libvirt network
-name, CIDR, gateway, and lease artifact path. Scenarios allocate node identities
-inside the world and discover guest addresses from libvirt DHCP leases.
+Each scenario of a leased world creates its own libvirt NAT network, named
+`katl-<run ID>-<scenario ID>`, on a /24 that no libvirt network, host interface,
+or route uses. Choosing the subnet and starting the network happen under a host
+lock, and a subnet that libvirt refuses is skipped. The scenario's copy of the
+world network describes that network, and the network is removed when the
+scenario ends unless a preserved domain still uses it.
+
+The network splits its addresses into a reservable range and a short dynamic
+DHCP tail. Every planned node gets a DHCP reservation for its MAC at its planned
+address, so the planned address is the address the guest receives, and an
+unreserved guest only ever receives a tail address. dnsmasq logs DHCP
+transactions (`log-dhcp`). VMs that belong to no scenario node use the world's
+network, `default` unless `KATL_VMTEST_LIBVIRT_NETWORK` names another.
 
 Katl does not support ad hoc host networking as a current path.
 

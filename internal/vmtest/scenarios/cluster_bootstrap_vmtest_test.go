@@ -126,6 +126,7 @@ func operationBackedWorldSmokeRun(t *testing.T, scenarioName string) (operationB
 	}
 	missing := twoNodeHostToolPrereqs(exec.LookPath)
 	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node operation-backed bootstrap smoke prerequisites missing", missing)
+	t.Cleanup(run.WorldScenario.Release)
 	return run, true
 }
 
@@ -216,7 +217,7 @@ func planOperationBackedWorldSmokeRunNamed(world vmtest.World, repo, kubernetesV
 		Scenario:      vmtest.Scenario{Name: scenarioName},
 		Result:        result,
 		LibvirtURI:    world.Libvirt.URI,
-		Network:       world.Libvirt.Network,
+		Network:       scenario.World.Network.Name,
 		Inputs: operationBackedSmokeInputs{
 			ControlPlaneDisk:       cp.Config.Disk,
 			ControlPlaneDiskFormat: string(cp.Config.DiskFormat),
@@ -1497,6 +1498,7 @@ func twoNodeWorldSmokeRun(t *testing.T) (twoNodeSmokeRun, bool) {
 	}
 	missing := twoNodeHostToolPrereqs(exec.LookPath)
 	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node kubeadm join smoke prerequisites missing", missing)
+	t.Cleanup(run.WorldScenario.Release)
 	return run, true
 }
 
@@ -1546,7 +1548,7 @@ func planTwoNodeWorldSmokeRun(world vmtest.World, repo, kubernetesVersion string
 		Scenario:      vmScenario,
 		Result:        result,
 		LibvirtURI:    world.Libvirt.URI,
-		Network:       world.Libvirt.Network,
+		Network:       scenario.World.Network.Name,
 		Inputs: twoNodeSmokeInputs{
 			ControlPlaneDisk:       cp.Config.Disk,
 			ControlPlaneDiskFormat: string(cp.Config.DiskFormat),

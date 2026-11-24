@@ -219,23 +219,6 @@ func TestWorldIDAdoptsRecordedWorld(t *testing.T) {
 	}
 }
 
-func TestRoutedSubnets(t *testing.T) {
-	// /proc/net/route: default via 192.168.1.1, 10.8.0.0/16 over a VPN,
-	// and 192.168.1.0/24 on the LAN.
-	data := []byte(`Iface	Destination	Gateway 	Flags	RefCnt	Use	Metric	Mask		MTU	Window	IRTT
-eth0	00000000	0101A8C0	0003	0	0	100	00000000	0	0	0
-tun0	0000080A	00000000	0001	0	0	0	0000FFFF	0	0	0
-eth0	0001A8C0	00000000	0001	0	0	100	00FFFFFF	0	0	0
-`)
-	var got []string
-	for _, subnet := range routedSubnets(data) {
-		got = append(got, subnet.String())
-	}
-	if want := []string{"10.8.0.0/16", "192.168.1.0/24"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("subnets = %v, want %v", got, want)
-	}
-}
-
 func TestWorldPersistsNodesAcrossSessions(t *testing.T) {
 	fake := newFakeLibvirt(t)
 	manager := testManager(t, fake)

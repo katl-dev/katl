@@ -8,7 +8,6 @@ import (
 	"net"
 	"net/netip"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -33,10 +32,18 @@ func runWorkerReaddress(t *testing.T, ctx context.Context, smoke operationBacked
 	}
 	oldAddress := addresses["worker-1"]
 	network := smoke.WorldScenario.World.Network
-	newAddress, prefix, err := freeAddress(ctx, smoke.WorldScenario.World.Libvirt, network, addresses)
+	// The scenario picks an address nothing else holds and records it, so the
+	// network reserves it for the worker's MAC.
+	moved, err := smoke.WorldScenario.ReassignAddress("worker-1", "")
 	if err != nil {
 		return err
 	}
+	newAddress := moved.Address
+	subnet, err := netip.ParsePrefix(network.CIDR)
+	if err != nil {
+		return fmt.Errorf("test network CIDR %q: %w", network.CIDR, err)
+	}
+	prefix := subnet.Bits()
 	if err := os.WriteFile(filepath.Join(dir, "addresses.txt"), []byte(fmt.Sprintf("old=%s\nnew=%s/%d\ngateway=%s\n", oldAddress, newAddress, prefix, network.Gateway)), 0o600); err != nil {
 		return err
 	}
@@ -110,6 +117,10 @@ func runWorkerReaddress(t *testing.T, ctx context.Context, smoke operationBacked
 	}
 	if rebooted.Result != "rebooted" || !rebooted.AddressChanged || rebooted.Endpoint != net.JoinHostPort(newAddress, "9443") {
 		return fmt.Errorf("unexpected re-address reboot report: %s", stdout)
+	}
+
+	if err := smoke.WorldScenario.ConfirmAddress("worker-1", newAddress); err != nil {
+		return err
 	}
 
 	// Independent observations: the host network, the old endpoint, the
@@ -228,47 +239,6 @@ func writeWorkerReaddressConfig(smoke operationBackedSmokeRun, dir string, bundl
 	return configPath, nil
 }
 
-// freeAddress chooses an address in the test network that no lease or host
-// currently uses, for a static address or a DHCP reservation. Libvirt's
-// dnsmasq probes an address before leasing it, so a configured static
-// address is not handed out later.
-func freeAddress(ctx context.Context, libvirt vmtest.WorldLibvirt, network vmtest.WorldNetwork, used map[string]string) (string, int, error) {
-	prefix, err := netip.ParsePrefix(strings.TrimSpace(network.CIDR))
-	if err != nil {
-		return "", 0, fmt.Errorf("test network CIDR %q: %w", network.CIDR, err)
-	}
-	prefix = prefix.Masked()
-	args := []string{"net-dhcp-leases", network.Name}
-	if uri := strings.TrimSpace(libvirt.URI); uri != "" {
-		args = append([]string{"-c", uri}, args...)
-	}
-	leases, err := exec.CommandContext(ctx, "virsh", args...).CombinedOutput()
-	if err != nil {
-		return "", 0, fmt.Errorf("virsh %s: %w: %s", strings.Join(args, " "), err, leases)
-	}
-	taken := map[string]bool{network.Gateway: true}
-	for _, address := range used {
-		taken[address] = true
-	}
-	last := prefix.Addr()
-	for i := 0; i < 1<<(prefix.Addr().BitLen()-prefix.Bits())-2; i++ {
-		last = last.Next()
-	}
-	for candidate := last; prefix.Contains(candidate) && candidate != prefix.Addr(); candidate = candidate.Prev() {
-		address := candidate.String()
-		if taken[address] || strings.Contains(string(leases), " "+address+"/") {
-			continue
-		}
-		probe, cancel := context.WithTimeout(ctx, 3*time.Second)
-		err := exec.CommandContext(probe, "ping", "-c", "1", "-W", "1", address).Run()
-		cancel()
-		if err != nil {
-			return address, prefix.Bits(), nil
-		}
-	}
-	return "", 0, fmt.Errorf("no free static address in %s", prefix)
-}
-
 func waitForNodeInternalIP(ctx context.Context, kubeconfig, dir, node, address string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	var last []byte
@@ -339,21 +309,14 @@ func runWorkerDHCPReaddress(t *testing.T, ctx context.Context, smoke operationBa
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	world := smoke.WorldScenario.World
 	oldAddress := addresses["worker-1"]
-	newAddress, _, err := freeAddress(ctx, world.Libvirt, world.Network, addresses)
+	// Reassigning also reserves the address for the worker's MAC in the
+	// scenario's network.
+	moved, err := smoke.WorldScenario.ReassignAddress("worker-1", "")
 	if err != nil {
 		return err
 	}
-	moved, err := smoke.WorldScenario.ReassignAddress("worker-1", newAddress)
-	if err != nil {
-		return err
-	}
-	release, err := reserveDHCPAddress(ctx, world, moved)
-	if err != nil {
-		return err
-	}
-	t.Cleanup(release)
+	newAddress := moved.Address
 	if err := os.WriteFile(filepath.Join(dir, "addresses.txt"), []byte(fmt.Sprintf("old=%s\nreserved=%s\nmac=%s\n", oldAddress, moved.Address, moved.MACAddress)), 0o600); err != nil {
 		return err
 	}
@@ -562,25 +525,4 @@ func runWorkerDHCPReaddress(t *testing.T, ctx context.Context, smoke operationBa
 	}
 	addresses["worker-1"] = newAddress
 	return nil
-}
-
-// reserveDHCPAddress adds node's reservation to the live test network, so
-// its next DHCP request receives node.Address. The network is shared with
-// other runs, so the reservation is not persisted and release removes it.
-func reserveDHCPAddress(ctx context.Context, world vmtest.World, node vmtest.Node) (func(), error) {
-	host := fmt.Sprintf("<host mac='%s' ip='%s'/>", node.MACAddress, node.Address)
-	virsh := func(ctx context.Context, command string) error {
-		args := []string{"net-update", world.Network.Name, command, "ip-dhcp-host", host, "--live"}
-		if uri := strings.TrimSpace(world.Libvirt.URI); uri != "" {
-			args = append([]string{"-c", uri}, args...)
-		}
-		if output, err := exec.CommandContext(ctx, "virsh", args...).CombinedOutput(); err != nil {
-			return fmt.Errorf("virsh %s: %w: %s", strings.Join(args, " "), err, output)
-		}
-		return nil
-	}
-	if err := virsh(ctx, "add-last"); err != nil {
-		return nil, err
-	}
-	return func() { _ = virsh(context.Background(), "delete") }, nil
 }

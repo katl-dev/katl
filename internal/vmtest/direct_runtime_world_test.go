@@ -30,6 +30,7 @@ func directRuntimeWorldRunFor(t *testing.T, name string) (directRuntimeWorldRun,
 	if err != nil {
 		failWorldSetup(t, run.Scenario, err)
 	}
+	t.Cleanup(run.Scenario.Release)
 	return run, true
 }
 

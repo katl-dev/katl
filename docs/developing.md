@@ -540,6 +540,9 @@ The host must provide:
   polkit policy, or an explicit privileged manual session.
 - An active libvirt network named `default`, or
   `KATL_VMTEST_LIBVIRT_NETWORK` set to the active test network.
+- Permission to define NAT networks in that daemon, which must be libvirt 9.7 or
+  newer so networks keep their metadata. Each VM test scenario creates and
+  removes its own network on a free /24 in 10.200.0.0/13.
 - An active libvirt storage pool named `default`, or
   `KATL_VMTEST_LIBVIRT_STORAGE_POOL` set to the active test pool.
 

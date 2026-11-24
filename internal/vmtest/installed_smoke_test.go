@@ -116,6 +116,7 @@ func firstInstallFixtureContractRunForWorld(t *testing.T, world World, repo stri
 	if err != nil {
 		failWorldSetup(t, worldRun.Scenario, err)
 	}
+	t.Cleanup(worldRun.Scenario.Release)
 	return firstInstallFixtureContractRun{
 		Runner:          worldRun.Runner,
 		WorldScenario:   worldRun.Scenario,

@@ -84,6 +84,9 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if world.CacheDir != filepath.Join(repo, "_build", "vmtest") {
 		t.Fatalf("world cache dir = %q", world.CacheDir)
 	}
+	if world.Lease != filepath.Join(runDir, "lease") {
+		t.Fatalf("world lease = %q", world.Lease)
+	}
 	if world.RunIndex != filepath.Join(runDir, "run.json") {
 		t.Fatalf("world run index = %q", world.RunIndex)
 	}

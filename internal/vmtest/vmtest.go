@@ -305,7 +305,9 @@ func (r Runner) Plan(scenario Scenario) (Result, error) {
 	}
 	runID := first(scenario.RunID, options.RunID)
 	if runID == "" {
-		runID = fmt.Sprintf("%s-%d", clean(scenario.Name), time.Now().UTC().Unix())
+		// The run ID names a host-wide libvirt domain. The process ID keeps
+		// runs of one scenario that start in the same second apart.
+		runID = fmt.Sprintf("%s-%d-%d", clean(scenario.Name), time.Now().UTC().Unix(), os.Getpid())
 	}
 	runDir := filepath.Join(scenario.StateRoot, runID)
 	paths := pathsFor(runDir)

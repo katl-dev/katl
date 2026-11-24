@@ -84,6 +84,7 @@ func addPublishedInstalledRuntimeNodeFromBuildRoots(scenario *WorldScenario, bui
 			ESPArtifacts:    fixture.ESPArtifacts,
 			FixtureManifest: fixture.ManifestPath,
 			NodeMetadata:    fixture.NodeMetadata,
+			VM:              VMConfig{Network: node.VMNetwork()},
 		},
 	}, nil
 }

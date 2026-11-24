@@ -20,8 +20,19 @@ type installedRuntimeWorldRun struct {
 
 func installedRuntimeWorldRunFor(t *testing.T, name string, spec NodeSpec, sshAuthorizedKey ...string) (installedRuntimeWorldRun, bool) {
 	t.Helper()
-	if strings.TrimSpace(os.Getenv(WorldManifestEnv)) == "" {
+	runs, ok := installedRuntimeWorldRunsFor(t, name, []NodeSpec{spec}, sshAuthorizedKey...)
+	if !ok {
 		return installedRuntimeWorldRun{}, false
+	}
+	return runs[0], true
+}
+
+// installedRuntimeWorldRunsFor plans one installed-runtime node per spec in a
+// single scenario, so the nodes share the scenario's network.
+func installedRuntimeWorldRunsFor(t *testing.T, name string, specs []NodeSpec, sshAuthorizedKey ...string) ([]installedRuntimeWorldRun, bool) {
+	t.Helper()
+	if strings.TrimSpace(os.Getenv(WorldManifestEnv)) == "" {
+		return nil, false
 	}
 	world := RequireWorld(t)
 	if err := validateInstalledRuntimeArtifactSet(world); err != nil {
@@ -33,18 +44,30 @@ func installedRuntimeWorldRunFor(t *testing.T, name string, spec NodeSpec, sshAu
 	input.SSHAuthorizedKey = first(sshAuthorizedKey...)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
-	inputDigest, err := ensurePublishedFirstInstallRuntimeFixture(ctx, world, repo, spec, FirstInstallRuntimeFixtureOptions{
-		Input: input,
-		KVM:   options.KVM,
-	}, ProduceFirstInstallRuntimeFixture)
-	if err != nil {
-		failInstalledRuntimeWorldFixtureSetup(t, world, name, err)
+	digests := make([]string, len(specs))
+	for i, spec := range specs {
+		inputDigest, err := ensurePublishedFirstInstallRuntimeFixture(ctx, world, repo, spec, FirstInstallRuntimeFixtureOptions{
+			Input: input,
+			KVM:   options.KVM,
+		}, ProduceFirstInstallRuntimeFixture)
+		if err != nil {
+			failInstalledRuntimeWorldFixtureSetup(t, world, name, err)
+		}
+		digests[i] = inputDigest
 	}
-	run, err := planInstalledRuntimeWorldRun(world, name, repo, spec, options.KVM, inputDigest)
+	scenario, err := world.PlanScenario(name)
 	if err != nil {
-		failWorldSetup(t, run.Scenario, err)
+		t.Fatalf("plan VM test scenario: %v", err)
 	}
-	return run, true
+	t.Cleanup(scenario.Release)
+	runs := make([]installedRuntimeWorldRun, len(specs))
+	for i, spec := range specs {
+		runs[i], err = addInstalledRuntimeWorldRun(scenario, spec, options.KVM, digests[i])
+		if err != nil {
+			failWorldSetup(t, scenario, err)
+		}
+	}
+	return runs, true
 }
 
 func TestInstalledRuntimeArtifactSetRejectsRuntimeOnly(t *testing.T) {
@@ -67,7 +90,7 @@ func failInstalledRuntimeWorldFixtureSetup(t *testing.T, world World, name strin
 }
 
 func writeInstalledRuntimeWorldFixtureSetupFailure(world World, name string, err error) (*WorldScenario, error) {
-	scenario, scenarioErr := world.PlanScenario(name)
+	scenario, scenarioErr := world.planScenario(name)
 	if scenarioErr != nil {
 		return nil, scenarioErr
 	}
@@ -96,9 +119,13 @@ func planInstalledRuntimeWorldRun(world World, name, repo string, spec NodeSpec,
 	if err != nil {
 		return installedRuntimeWorldRun{}, err
 	}
+	return addInstalledRuntimeWorldRun(scenario, spec, kvm, inputDigest...)
+}
+
+func addInstalledRuntimeWorldRun(scenario *WorldScenario, spec NodeSpec, kvm KVMPolicy, inputDigest ...string) (installedRuntimeWorldRun, error) {
 	run := installedRuntimeWorldRun{Scenario: scenario}
 	node, err := addPublishedInstalledRuntimeNodeFromBuildRoots(scenario, []string{
-		WorldFixtureCacheDir(world),
+		WorldFixtureCacheDir(scenario.World),
 	}, spec, first(inputDigest...))
 	if err != nil {
 		_ = scenario.WriteSetupFailure(err)

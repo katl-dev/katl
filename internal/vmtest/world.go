@@ -18,10 +18,13 @@ const (
 )
 
 type World struct {
-	APIVersion       string                 `json:"apiVersion"`
-	Kind             string                 `json:"kind"`
-	RunID            string                 `json:"runID"`
-	RunDir           string                 `json:"runDir"`
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+	RunID      string `json:"runID"`
+	RunDir     string `json:"runDir"`
+	// Lease is the run lease of the scripts/vmtest-run invocation that owns the
+	// libvirt objects of this world, if one does.
+	Lease            string                 `json:"lease,omitempty"`
 	CacheDir         string                 `json:"cacheDir"`
 	ArtifactDir      string                 `json:"artifactDir"`
 	ScenarioDir      string                 `json:"scenarioDir"`
@@ -185,6 +188,9 @@ func ValidateWorld(world World) error {
 		if !filepath.IsAbs(path) {
 			return fmt.Errorf("%s must be an absolute path: %s", name, path)
 		}
+	}
+	if world.Lease != "" && !filepath.IsAbs(world.Lease) {
+		return fmt.Errorf("lease must be an absolute path: %s", world.Lease)
 	}
 	if strings.TrimSpace(world.RunIndex) != "" && !filepath.IsAbs(world.RunIndex) {
 		return fmt.Errorf("runIndex must be an absolute path: %s", world.RunIndex)

@@ -92,11 +92,17 @@ func planFirstInstallWorldRun(world World, name, repo string, spec NodeSpec, inp
 	return PlanFirstInstallWorldRun(world, name, repo, spec, input, kvm)
 }
 
+// PlanFirstInstallWorldRun plans the run in a scenario that owns a libvirt
+// network where the world provides one; the caller releases the scenario.
 func PlanFirstInstallWorldRun(world World, name, repo string, spec NodeSpec, input FirstInstallWorldInput, kvm KVMPolicy) (FirstInstallWorldRun, error) {
 	scenario, err := world.PlanScenario(name)
 	if err != nil {
 		return FirstInstallWorldRun{}, err
 	}
+	return planFirstInstallScenarioRun(scenario, repo, spec, input, kvm)
+}
+
+func planFirstInstallScenarioRun(scenario *WorldScenario, repo string, spec NodeSpec, input FirstInstallWorldInput, kvm KVMPolicy) (FirstInstallWorldRun, error) {
 	run := FirstInstallWorldRun{Scenario: scenario, Repo: repo}
 	node, err := scenario.AddNode(spec)
 	if err != nil {

@@ -115,6 +115,7 @@ func wipeReinstallWorldSmokeRunNamed(t *testing.T, scenarioName string) (operati
 	}
 	missing := twoNodeHostToolPrereqs(exec.LookPath)
 	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node cluster wipe bootstrap smoke prerequisites missing", missing)
+	t.Cleanup(run.WorldScenario.Release)
 	return run, true
 }
 
