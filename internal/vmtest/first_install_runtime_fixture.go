@@ -130,12 +130,62 @@ func ensurePublishedFirstInstallRuntimeFixture(ctx context.Context, world World,
 	return inputDigest, nil
 }
 
+// resetFirstInstallRuntimeFixtureScenario clears the scenario's staged inputs
+// so changed inputs can be restaged. Earlier attempts' run directories are
+// evidence, so they follow the keep policy rather than the restage.
 func resetFirstInstallRuntimeFixtureScenario(world World, spec NodeSpec) error {
 	scenarioDir := strings.TrimSpace(world.ScenarioDir)
 	if scenarioDir == "" {
 		return nil
 	}
-	return os.RemoveAll(filepath.Join(scenarioDir, clean(FirstInstallRuntimeFixtureScenarioName(spec))))
+	dir := filepath.Join(scenarioDir, clean(FirstInstallRuntimeFixtureScenarioName(spec)))
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	keep := normalizeOptions(DefaultOptions()).Keep
+	var errs []error
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if entry.Name() == "vm-runs" && entry.IsDir() {
+			errs = append(errs, removeUnkeptRuns(path, keep))
+			continue
+		}
+		errs = append(errs, os.RemoveAll(path))
+	}
+	return errors.Join(errs...)
+}
+
+// removeUnkeptRuns removes finished run directories whose recorded result the
+// keep policy does not retain. A run without a readable or finished result is
+// kept, because it may be the only record of an interrupted attempt.
+func removeUnkeptRuns(root string, keep KeepPolicy) error {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(root, entry.Name())
+		data, err := os.ReadFile(pathsFor(dir).Result)
+		if err != nil {
+			continue
+		}
+		var result Result
+		if err := json.Unmarshal(data, &result); err != nil || result.Status == StatusPlanned {
+			continue
+		}
+		if !keepArtifacts(keep, result.Status) {
+			errs = append(errs, os.RemoveAll(dir))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func firstInstallRuntimeFixtureInputDigest(contract FirstInstallRuntimeFixtureContract) (string, error) {
