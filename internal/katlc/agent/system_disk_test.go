@@ -141,9 +141,11 @@ func TestFindRootSlots(t *testing.T) {
 			if err != nil {
 				t.Fatalf("findRootSlots() error = %v", err)
 			}
-			want := rootSlots{Disk: "/dev/disk/by-diskseq/7", ActivePart: 3, InactivePart: 2, InactiveDevice: "/dev/disk/by-diskseq/7-part2", InactivePartUUID: "new-root-a"}
-			if slots != want {
-				t.Fatalf("findRootSlots() = %+v, want %+v", slots, want)
+			if slots.Disk != "/dev/disk/by-diskseq/7" || slots.ActivePart != 3 || slots.InactivePart != 2 || slots.InactivePartUUID != "new-root-a" {
+				t.Fatalf("findRootSlots() = %+v, want slots 3 and 2 of /dev/disk/by-diskseq/7", slots)
+			}
+			if node, err := slots.Inactive.Node(); err != nil || node != "/dev/vdb2" {
+				t.Fatalf("inactive slot node = %q, %v; want /dev/vdb2", node, err)
 			}
 		}
 	})

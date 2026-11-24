@@ -220,6 +220,47 @@ func TestResolveWholeDiskRoot(t *testing.T) {
 	}
 }
 
+func TestPartitionNode(t *testing.T) {
+	// The decoy vda sorts first and also has a partition 3.
+	sysfs := newFakeSysfs(t)
+	sysfs.addDisk(t, "vda", "katl-old", 7, 0, katlDisk("old")...)
+	sysfs.addDisk(t, "vdb", "katl-new", 9, 16, katlDisk("new")...)
+	layout, err := Resolve(sysfs.root, sysfs.major, runningRootMinor, false)
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	var inactive Partition
+	for _, partition := range layout.Disk.Partitions {
+		if partition.Number == 3 {
+			inactive = partition
+		}
+	}
+
+	// partx --update removes the partition and adds it again through BLKPG,
+	// after which the kernel reports neither its PARTUUID nor its label, and
+	// udev has not yet linked it under /dev/disk/by-diskseq.
+	mustWrite(t, filepath.Join(sysfs.root, "devices/pci0000:00/vdb-ctrl/block/vdb/vdb3/uevent"), "MAJOR=259\nMINOR=19\nDEVNAME=vdb3\nDEVTYPE=partition\nDISKSEQ=9\nPARTN=3\n")
+
+	t.Run("re-added partition", func(t *testing.T) {
+		node, err := inactive.Node()
+		if err != nil || node != "/dev/vdb3" {
+			t.Fatalf("Node() = %q, %v; want /dev/vdb3", node, err)
+		}
+	})
+
+	t.Run("removed partition", func(t *testing.T) {
+		if err := os.Remove(filepath.Join(sysfs.root, "class/block/vdb3")); err != nil {
+			t.Fatal(err)
+		}
+
+		_, err := inactive.Node()
+
+		if err == nil || !strings.Contains(err.Error(), "no partition 3 on the disk with diskseq 9") {
+			t.Fatalf("Node() error = %v, want the missing partition named", err)
+		}
+	})
+}
+
 func TestGenerate(t *testing.T) {
 	installed := "BOOT_IMAGE=/x root=PARTUUID=new-root-a rootfstype=squashfs ro"
 	tests := []struct {

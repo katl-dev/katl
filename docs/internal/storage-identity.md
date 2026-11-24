@@ -95,7 +95,12 @@ summary of the targets.
   disk holding the running root, by diskseq. It stops the boot before `/var`
   is mounted when that disk is ambiguous, shares its PARTUUIDs with another
   disk, or is not the disk firmware booted from. The agent and host upgrade
-  use `storage.Booted` and no other derivation.
+  use `storage.Booted` and no other derivation. Units name system-disk
+  partitions by their `by-diskseq` link, because their device dependency
+  waits for udev. A running process opens one through its kernel node, which
+  it finds in sysfs by diskseq and partition number just before the open.
+  When a partition table is rewritten, the kernel may remove and re-add a
+  partition, and udev recreates its link only after a delay.
 - **Volumes.** Generations keep their `VolumeBindings` and render static
   `PARTUUID=`/`UUID=` mount units into the confext. Before
   `katl-volumes-activate.service` starts `katl-volumes.target`, its

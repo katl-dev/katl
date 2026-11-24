@@ -33,12 +33,13 @@ func bootedSystemDisk() (systemdisk.Layout, error) {
 
 // rootSlots are the two root partitions on the system disk. Disk addresses
 // the system disk by diskseq, so the relabel cannot reach a disk that later
-// takes its kernel name.
+// takes its kernel name. Inactive is the bound inactive slot, opened through
+// Inactive.Node when it is written.
 type rootSlots struct {
 	Disk             string
 	ActivePart       int
 	InactivePart     int
-	InactiveDevice   string
+	Inactive         systemdisk.Partition
 	InactivePartUUID string
 }
 
@@ -89,7 +90,7 @@ func (e *Executor) findRootSlots(ctx context.Context, activePartUUID string) (ro
 		Disk:             diskPath,
 		ActivePart:       root.Number,
 		InactivePart:     inactive.Number,
-		InactiveDevice:   rootedRuntimePath(e.Root, inactive.DevicePath()),
+		Inactive:         inactive,
 		InactivePartUUID: inactive.UUID,
 	}, nil
 }

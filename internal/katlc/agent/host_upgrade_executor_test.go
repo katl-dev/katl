@@ -244,7 +244,10 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 		{3, "KATL_ROOT_B", "bbbbbbbb-1111-2222-3333-444444444444", rootType},
 		{4, "KATL_STATE", "state-partuuid", stateType},
 	}})
-	inactiveDevice := filepath.Join(root, "dev/disk/by-diskseq/1-part3")
+	// Refreshing the slot with partx makes the kernel add the inactive
+	// partition again, and udev has not yet recreated its by-diskseq link:
+	// only the kernel node exists.
+	inactiveDevice := filepath.Join(root, "dev/vda3")
 	writeTestFile(t, inactiveDevice, string(make([]byte, len(runtimeBytes)+32)))
 	executor := NewExecutor(root, store, "agent-test")
 	executor.volumeDevices.bootedDisk = host.booted(0, 2)
@@ -293,8 +296,14 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 			}
 			return ToolResult{}
 		case "blockdev":
-			if strings.Join(argv, " ") != "blockdev --flushbufs "+inactiveDevice {
+			if len(argv) != 3 || argv[1] != "--flushbufs" {
 				return ToolResult{Err: errors.New("unexpected blockdev arguments"), ExitStatus: 1}
+			}
+			if _, err := os.Stat(argv[2]); err != nil {
+				return ToolResult{Stderr: []byte("blockdev: cannot open " + argv[2] + ": No such file or directory"), ExitStatus: 1}
+			}
+			if argv[2] != inactiveDevice {
+				return ToolResult{Err: errors.New("flushed " + argv[2] + ", not the inactive slot"), ExitStatus: 1}
 			}
 			if err := os.WriteFile(inactiveDevice, stagedRoot, 0o600); err != nil {
 				return ToolResult{Err: err, ExitStatus: -1}
