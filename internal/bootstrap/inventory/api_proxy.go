@@ -137,3 +137,18 @@ func managementHost(address ManagementAddress) (netip.Addr, bool) {
 	}
 	return addr, true
 }
+
+// BackendKubernetesAddress returns the Kubernetes address of the control plane
+// an API proxy backend reaches, the inverse of how APIProxyConfig renders that
+// backend, or false when backend is not one it renders.
+func BackendKubernetesAddress(backend string) (netip.Addr, bool) {
+	endpoint, err := netip.ParseAddrPort(backend)
+	if err != nil || endpoint.Port() != KubernetesPort {
+		return netip.Addr{}, false
+	}
+	addr := endpoint.Addr().Unmap()
+	if validKubernetesAddr(addr) != nil {
+		return netip.Addr{}, false
+	}
+	return addr, true
+}

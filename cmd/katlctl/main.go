@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/netip"
 	"net/url"
 	"os"
 	"os/exec"
@@ -1328,8 +1327,8 @@ func observeKubernetesAddress(inv inventory.Inventory, name string, status *agen
 			if !backend.GetLocal() {
 				continue
 			}
-			if endpoint, err := netip.ParseAddrPort(backend.GetAddress()); err == nil {
-				inv.Nodes[i].KubernetesAddress = endpoint.Addr().Unmap()
+			if addr, ok := inventory.BackendKubernetesAddress(backend.GetAddress()); ok {
+				inv.Nodes[i].KubernetesAddress = addr
 			}
 		}
 	}

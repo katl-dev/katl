@@ -154,3 +154,31 @@ func TestPlanInventoryRejectsInvalidKubernetesAddress(t *testing.T) {
 		t.Fatalf("PlanInventory() error = %v", err)
 	}
 }
+
+func TestBackendKubernetesAddress(t *testing.T) {
+	tests := []struct {
+		backend string
+		want    string
+	}{
+		{backend: "10.0.0.13:6443", want: "10.0.0.13"},
+		{backend: "[2001:db8::13]:6443", want: "2001:db8::13"},
+		{backend: "[::ffff:10.0.0.13]:6443", want: "10.0.0.13"},
+		{backend: "10.0.0.13:7445"},
+		{backend: "127.0.0.1:6443"},
+		{backend: "[fe80::13%eth0]:6443"},
+		{backend: "cp-1.katl.test:6443"},
+		{backend: "10.0.0.13"},
+	}
+	for _, tc := range tests {
+		got, ok := BackendKubernetesAddress(tc.backend)
+		if tc.want == "" {
+			if ok {
+				t.Errorf("BackendKubernetesAddress(%q) = %s, want none", tc.backend, got)
+			}
+			continue
+		}
+		if !ok || got != netip.MustParseAddr(tc.want) {
+			t.Errorf("BackendKubernetesAddress(%q) = %s, %t, want %s", tc.backend, got, ok, tc.want)
+		}
+	}
+}
