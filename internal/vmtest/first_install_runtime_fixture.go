@@ -102,7 +102,9 @@ func ensurePublishedFirstInstallRuntimeFixture(ctx context.Context, world World,
 	} else if !isMissingPublishedFirstInstallRuntimeFixture(err) {
 		return "", err
 	}
-	unlock, err := lockLeaseFile(filepath.Join(cacheDir, "locks", FirstInstallRuntimeFixtureScenarioName(spec)))
+	// Another run in this checkout may be producing the fixture; wait for it
+	// and reuse its result.
+	unlock, err := lockFile(ctx, filepath.Join(cacheDir, "locks", FirstInstallRuntimeFixtureScenarioName(spec)))
 	if err != nil {
 		return "", err
 	}

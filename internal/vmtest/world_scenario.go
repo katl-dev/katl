@@ -1,6 +1,7 @@
 package vmtest
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -345,6 +346,13 @@ func writeLeases(path string, leases leaseFile) error {
 }
 
 func lockLeaseFile(path string) (func(), error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	return lockFile(ctx, path)
+}
+
+// lockFile takes an exclusive flock on path+".lock", waiting until ctx ends.
+func lockFile(ctx context.Context, path string) (func(), error) {
 	lockPath := path + ".lock"
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return nil, err
@@ -353,7 +361,7 @@ func lockLeaseFile(path string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := 0; i < 100; i++ {
+	for {
 		err = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 		if err == nil {
 			return func() {
@@ -365,10 +373,13 @@ func lockLeaseFile(path string) (func(), error) {
 			_ = lock.Close()
 			return nil, err
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			_ = lock.Close()
+			return nil, fmt.Errorf("timed out waiting for lock %s: %w", lockPath, ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
-	_ = lock.Close()
-	return nil, fmt.Errorf("timed out waiting for lease lock %s", lockPath)
 }
 
 func firstAvailableAddress(world World, leased map[string]bool) (string, error) {

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -209,62 +208,9 @@ func (manager installerManager) createWorld(ctx context.Context) (katldevWorld, 
 }
 
 func (manager installerManager) networksInUse(ctx context.Context, uri string) ([]*net.IPNet, error) {
-	var inUse []*net.IPNet
-	output, err := manager.virsh(ctx, uri, "net-list", "--all", "--name")
-	if err != nil {
-		return nil, err
-	}
-	for _, name := range strings.Fields(string(output)) {
-		data, err := manager.virsh(ctx, uri, "net-dumpxml", name)
-		if err != nil {
-			return nil, err
-		}
-		subnet, err := vmtest.LibvirtNetworkIPv4(data)
-		if err != nil {
-			return nil, fmt.Errorf("read libvirt network %s: %w", name, err)
-		}
-		inUse = append(inUse, subnet)
-	}
-	addresses, err := net.InterfaceAddrs()
-	if err != nil {
-		return nil, err
-	}
-	for _, address := range addresses {
-		if subnet, ok := address.(*net.IPNet); ok && subnet.IP.To4() != nil {
-			inUse = append(inUse, &net.IPNet{IP: subnet.IP.Mask(subnet.Mask), Mask: subnet.Mask})
-		}
-	}
-	// Routes cover networks without a local address, such as VPN routes.
-	if data, err := os.ReadFile("/proc/net/route"); err == nil {
-		inUse = append(inUse, routedSubnets(data)...)
-	}
-	return inUse, nil
-}
-
-// routedSubnets returns the IPv4 destinations of /proc/net/route, except the
-// default route, which overlaps every subnet.
-func routedSubnets(data []byte) []*net.IPNet {
-	var subnets []*net.IPNet
-	for _, line := range strings.Split(string(data), "\n")[1:] {
-		fields := strings.Fields(line)
-		if len(fields) < 8 {
-			continue
-		}
-		destination, err := strconv.ParseUint(fields[1], 16, 32)
-		if err != nil {
-			continue
-		}
-		mask, err := strconv.ParseUint(fields[7], 16, 32)
-		if err != nil || mask == 0 {
-			continue
-		}
-		// The kernel prints the network-order address as a host-order word.
-		ip, netmask := make(net.IP, 4), make(net.IPMask, 4)
-		binary.NativeEndian.PutUint32(ip, uint32(destination))
-		binary.NativeEndian.PutUint32(netmask, uint32(mask))
-		subnets = append(subnets, &net.IPNet{IP: ip.Mask(netmask), Mask: netmask})
-	}
-	return subnets
+	return vmtest.SubnetsInUse(ctx, func(ctx context.Context, args ...string) ([]byte, error) {
+		return manager.virsh(ctx, uri, args...)
+	})
 }
 
 // addWorldNode reserves the next address and MAC for a node. The name defaults

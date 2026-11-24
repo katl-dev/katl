@@ -1,12 +1,15 @@
 package vmtest
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/xml"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"net"
+	"os"
+	"strconv"
 	"strings"
 )
 
@@ -14,8 +17,11 @@ import (
 // addresses in, and removes. Its metadata names the owning world so cleanup
 // never touches networks it did not create.
 type OwnedNetwork struct {
-	Name    string
-	Owner   string
+	Name  string
+	Owner string
+	// Lease is the run lease of the scripts/vmtest-run invocation that owns
+	// the network, if one does.
+	Lease   string
 	CIDR    string
 	Gateway string
 	Hosts   []DHCPHost
@@ -97,7 +103,7 @@ func (network OwnedNetwork) XML() (string, error) {
 	}
 	doc := networkXML{
 		Name:     network.Name,
-		Metadata: domainMetadata{VMTest: domainVMTest{Value: network.Owner}},
+		Metadata: domainMetadata{VMTest: domainVMTest{Lease: network.Lease, Value: network.Owner}},
 		Forward:  networkForward{Mode: "nat"},
 		IP: networkIPElement{
 			Address: gateway.String(),
@@ -226,4 +232,86 @@ func LibvirtNetworkHosts(data []byte) ([]DHCPHost, error) {
 		}
 	}
 	return hosts, nil
+}
+
+// SubnetsInUse returns the IPv4 subnets that a new libvirt network must not
+// overlap: those of every libvirt network, host interface and route. virsh
+// runs a virsh command on the libvirt connection that will own the network.
+func SubnetsInUse(ctx context.Context, virsh func(ctx context.Context, args ...string) ([]byte, error)) ([]*net.IPNet, error) {
+	var inUse []*net.IPNet
+	output, err := virsh(ctx, "net-list", "--all", "--name")
+	if err != nil {
+		return nil, err
+	}
+	for _, name := range strings.Fields(string(output)) {
+		data, err := virsh(ctx, "net-dumpxml", name)
+		if err != nil {
+			return nil, err
+		}
+		subnet, err := LibvirtNetworkIPv4(data)
+		if err != nil {
+			return nil, fmt.Errorf("read libvirt network %s: %w", name, err)
+		}
+		inUse = append(inUse, subnet)
+	}
+	addresses, err := net.InterfaceAddrs()
+	if err != nil {
+		return nil, err
+	}
+	for _, address := range addresses {
+		if subnet, ok := address.(*net.IPNet); ok && subnet.IP.To4() != nil {
+			inUse = append(inUse, &net.IPNet{IP: subnet.IP.Mask(subnet.Mask), Mask: subnet.Mask})
+		}
+	}
+	// Routes cover networks without a local address, such as VPN routes.
+	if data, err := os.ReadFile("/proc/net/route"); err == nil {
+		inUse = append(inUse, routedSubnets(data)...)
+	}
+	return inUse, nil
+}
+
+// routedSubnets returns the IPv4 destinations of /proc/net/route, except the
+// default route, which overlaps every subnet.
+func routedSubnets(data []byte) []*net.IPNet {
+	var subnets []*net.IPNet
+	for _, line := range strings.Split(string(data), "\n")[1:] {
+		fields := strings.Fields(line)
+		if len(fields) < 8 {
+			continue
+		}
+		destination, err := strconv.ParseUint(fields[1], 16, 32)
+		if err != nil {
+			continue
+		}
+		mask, err := strconv.ParseUint(fields[7], 16, 32)
+		if err != nil || mask == 0 {
+			continue
+		}
+		// The kernel prints the network-order address as a host-order word.
+		ip, netmask := make(net.IP, 4), make(net.IPMask, 4)
+		binary.NativeEndian.PutUint32(ip, uint32(destination))
+		binary.NativeEndian.PutUint32(netmask, uint32(mask))
+		subnets = append(subnets, &net.IPNet{IP: ip.Mask(netmask), Mask: netmask})
+	}
+	return subnets
+}
+
+// LibvirtMetadata is the Katl metadata element of a libvirt domain or
+// network, as virsh metadata and virsh net-metadata print it.
+type LibvirtMetadata struct {
+	// Value is "katl/vmtest" for objects of scripts/vmtest-run, or the owner
+	// of a katldev world.
+	Value string
+	// Lease is the run lease of the scripts/vmtest-run invocation that owns
+	// the object, if it has one.
+	Lease string
+}
+
+// ParseLibvirtMetadata decodes the Katl metadata element in data.
+func ParseLibvirtMetadata(data []byte) (LibvirtMetadata, error) {
+	var element domainVMTest
+	if err := xml.Unmarshal(data, &element); err != nil {
+		return LibvirtMetadata{}, err
+	}
+	return LibvirtMetadata{Value: strings.TrimSpace(element.Value), Lease: element.Lease}, nil
 }

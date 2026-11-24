@@ -14,8 +14,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 )
 
 type VMBoot struct {
@@ -971,6 +973,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		Disks:             disks,
 		VSock:             vsock,
 		Metadata:          first(config.DomainMetadata, "katl/vmtest"),
+		MetadataLease:     firstPath(config.DomainMetadata == "", probe.env("KATL_VMTEST_RUN_LEASE")),
 		PersistentSerial:  config.PersistentSerial,
 		HotplugPCISlots:   config.HotplugPCISlots,
 	})
@@ -1177,6 +1180,7 @@ type libvirtDomain struct {
 	Disks             []libvirtDisk
 	VSock             VSockPlan
 	Metadata          string
+	MetadataLease     string
 	PersistentSerial  bool
 	HotplugPCISlots   int
 }
@@ -1197,7 +1201,11 @@ type domainMetadata struct {
 	VMTest domainVMTest `xml:"https://katlos.io/xmlns/vmtest/1 vmtest"`
 }
 
+// domainVMTest marks a libvirt object as created by Katl. Lease names the run
+// lease of the scripts/vmtest-run invocation that owns the object, which other
+// runs leave alone while that lease is held.
 type domainVMTest struct {
+	Lease string `xml:"lease,attr,omitempty"`
 	Value string `xml:",chardata"`
 }
 
@@ -1483,7 +1491,7 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 	doc := domainXML{
 		Type:     domain.Accel,
 		Name:     domain.Name,
-		Metadata: domainMetadata{VMTest: domainVMTest{Value: domain.Metadata}},
+		Metadata: domainMetadata{VMTest: domainVMTest{Lease: domain.MetadataLease, Value: domain.Metadata}},
 		Memory:   domainMemory{Unit: "MiB", Value: domain.RAMMiB},
 		VCPU:     domain.CPUs,
 		OS: domainOS{
@@ -1640,9 +1648,17 @@ func reserveCID(runID string, requested uint32) (uint32, error) {
 		if cid < 1024 {
 			continue
 		}
-		if reserved, err := reserveExactCID(runID, cid); err == nil {
-			return reserved, nil
+		reserved, err := reserveExactCID(runID, cid)
+		if err != nil {
+			continue
 		}
+		// The reservations above cover this process only; VMs of other runs
+		// on the host hold their CIDs in the kernel.
+		if hostCIDInUse(cid) {
+			releaseCID(runID, cid)
+			continue
+		}
+		return reserved, nil
 	}
 	return 0, fmt.Errorf("no free vmtest vsock guest CID for run %q", runID)
 }
@@ -1676,6 +1692,26 @@ func releaseCID(runID string, cid uint32) {
 	if owner, ok := cidReservations.used[cid]; ok && owner == runID {
 		delete(cidReservations.used, cid)
 	}
+}
+
+var hostCIDInUse = vhostCIDInUse
+
+// vhostVSockSetGuestCID is VHOST_VSOCK_SET_GUEST_CID, _IOW(VHOST_VIRTIO, 0x60, __u64).
+const vhostVSockSetGuestCID = 0x4008af60
+
+// vhostCIDInUse reports whether a running guest on this host holds cid. The
+// kernel refuses to assign a CID that another vhost-vsock device holds, and
+// closing the probe device releases it again. A host where the probe cannot
+// run reports the CID as free, leaving libvirt to refuse a conflict at start.
+func vhostCIDInUse(cid uint32) bool {
+	device, err := os.OpenFile("/dev/vhost-vsock", os.O_RDWR, 0)
+	if err != nil {
+		return false
+	}
+	defer device.Close()
+	value := uint64(cid)
+	_, _, errno := unix.Syscall(unix.SYS_IOCTL, device.Fd(), vhostVSockSetGuestCID, uintptr(unsafe.Pointer(&value)))
+	return errno == unix.EADDRINUSE
 }
 
 func cidForRun(runID string) uint32 {
@@ -1715,7 +1751,25 @@ func copyFile(src, dst string, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, mode)
+	// Replace dst by rename, so a VM of another run still reading the
+	// previous file, for example as a qcow2 backing file, keeps its contents.
+	tmp, err := os.CreateTemp(filepath.Dir(dst), "."+filepath.Base(dst)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), dst)
 }
 
 func sameFilePath(a, b string) bool {

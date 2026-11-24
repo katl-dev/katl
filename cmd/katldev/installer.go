@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -944,13 +943,11 @@ func (manager installerManager) requireOwnedDomain(ctx context.Context, uri, dom
 }
 
 func domainOwner(data []byte) (string, error) {
-	var metadata struct {
-		Value string `xml:",chardata"`
-	}
-	if err := xml.Unmarshal(data, &metadata); err != nil {
+	metadata, err := vmtest.ParseLibvirtMetadata(data)
+	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(metadata.Value), nil
+	return metadata.Value, nil
 }
 
 func (manager installerManager) virsh(ctx context.Context, uri string, args ...string) ([]byte, error) {
