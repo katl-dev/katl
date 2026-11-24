@@ -19,15 +19,16 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  checks:
-    name: Fast checks
+  plan:
+    name: Plan
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 10
     outputs:
       vm-flavours: ${{ steps.plan.outputs.vm-flavours }}
       driver-flavours: ${{ steps.plan.outputs.driver-flavours }}
       kubernetes-version: ${{ steps.plan.outputs.kubernetes-version }}
       scenarios: ${{ steps.plan.outputs.scenarios }}
+      range: ${{ steps.plan.outputs.range }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -37,7 +38,6 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - run: .github/scripts/hosted-apt-install dosfstools mtools xorriso squashfs-tools
       - name: Select validation
         id: plan
         env:
@@ -80,9 +80,25 @@ jobs:
             echo "range=$base..HEAD"
           } >> "$GITHUB_OUTPUT"
           cat _build/ci-plan.json >> "$GITHUB_STEP_SUMMARY"
+
+  checks:
+    name: Fast checks
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: .github/scripts/hosted-apt-install dosfstools mtools xorriso squashfs-tools
       - name: Run fast checks
         env:
-          COMPARISON: ${{ steps.plan.outputs.range }}
+          COMPARISON: ${{ needs.plan.outputs.range }}
         run: scripts/check-fast "$COMPARISON"
       - name: Validate workflows
         # This actionlint release predates the App action's client-id input.
@@ -112,26 +128,26 @@ jobs:
 
   vms:
     name: VM (${{ matrix.flavour }})
-    needs: checks
-    if: needs.checks.outputs.vm-flavours != '[]'
+    needs: plan
+    if: needs.plan.outputs.vm-flavours != '[]'
     strategy:
       fail-fast: false
       matrix:
-        flavour: ${{ fromJSON(needs.checks.outputs.vm-flavours) }}
+        flavour: ${{ fromJSON(needs.plan.outputs.vm-flavours) }}
     uses: ./.github/workflows/hosted-vmtests.yml
     with:
       flavour: ${{ matrix.flavour }}
-      kubernetes-version: ${{ needs.checks.outputs.kubernetes-version }}
-      scenarios: ${{ needs.checks.outputs.scenarios }}
+      kubernetes-version: ${{ needs.plan.outputs.kubernetes-version }}
+      scenarios: ${{ needs.plan.outputs.scenarios }}
 
   drivers:
     name: Drivers (${{ matrix.flavour }})
-    needs: checks
-    if: needs.checks.outputs.driver-flavours != '[]'
+    needs: plan
+    if: needs.plan.outputs.driver-flavours != '[]'
     strategy:
       fail-fast: false
       matrix:
-        flavour: ${{ fromJSON(needs.checks.outputs.driver-flavours) }}
+        flavour: ${{ fromJSON(needs.plan.outputs.driver-flavours) }}
     uses: ./.github/workflows/kernel-qualification.yml
     with:
       flavour: ${{ matrix.flavour }}
@@ -139,7 +155,7 @@ jobs:
   result:
     name: CI
     if: always()
-    needs: [checks, nix, vms, drivers]
+    needs: [plan, checks, nix, vms, drivers]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -148,9 +164,9 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
         run: |
           jq -e '
-            .checks.result == "success" and .nix.result == "success" and
-            ([{flavours: .checks.outputs["vm-flavours"], result: .vms.result},
-              {flavours: .checks.outputs["driver-flavours"], result: .drivers.result}]
+            .plan.result == "success" and .checks.result == "success" and .nix.result == "success" and
+            ([{flavours: .plan.outputs["vm-flavours"], result: .vms.result},
+              {flavours: .plan.outputs["driver-flavours"], result: .drivers.result}]
              | all(.[];
                  (.flavours | fromjson) as $flavours |
                  ($flavours | type == "array") and

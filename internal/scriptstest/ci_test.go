@@ -24,7 +24,7 @@ func TestCIChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	var script string
-	for _, step := range workflow.Jobs["checks"].Steps {
+	for _, step := range workflow.Jobs["plan"].Steps {
 		if step.ID == "plan" {
 			script = step.Run
 		}
@@ -116,16 +116,17 @@ func TestCIGate(t *testing.T) {
 		{"selected VM skipped", "success", "success", "skipped", "skipped", `["standard"]`, `[]`, false},
 		{"driver failure", "success", "success", "success", "failure", `["lts"]`, `["lts"]`, false},
 		{"selected driver skipped", "success", "success", "success", "skipped", `["lts"]`, `["lts"]`, false},
-		{"missing plan", "success", "success", "skipped", "skipped", ``, ``, false},
+		{"missing plan outputs", "success", "success", "skipped", "skipped", ``, ``, false},
 		{"invalid plan", "success", "success", "skipped", "skipped", `false`, `[]`, false},
 		{"unexpected execution", "success", "success", "success", "skipped", `[]`, `[]`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			needs, err := json.Marshal(map[string]any{
-				"checks": map[string]any{"result": tc.checks, "outputs": map[string]string{
+				"plan": map[string]any{"result": "success", "outputs": map[string]string{
 					"vm-flavours": tc.vmFlavours, "driver-flavours": tc.driverFlavours,
 				}},
-				"vms": map[string]string{"result": tc.vms}, "drivers": map[string]string{"result": tc.drivers},
+				"checks": map[string]string{"result": tc.checks},
+				"vms":    map[string]string{"result": tc.vms}, "drivers": map[string]string{"result": tc.drivers},
 				"nix": map[string]string{"result": tc.nix},
 			})
 			if err != nil {
@@ -154,7 +155,7 @@ func TestCIEventSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	var script string
-	for _, step := range workflow.Jobs["checks"].Steps {
+	for _, step := range workflow.Jobs["plan"].Steps {
 		if step.ID == "plan" {
 			script = step.Run
 		}
@@ -247,7 +248,8 @@ func TestCIGatesPlannedJobs(t *testing.T) {
 			PullRequest struct{ Types []string } `yaml:"pull_request"`
 		} `yaml:"on"`
 		Jobs map[string]struct {
-			If    string `yaml:"if"`
+			If    string    `yaml:"if"`
+			Needs yaml.Node `yaml:"needs"`
 			Steps []struct{ ID, Run string }
 		}
 	}
@@ -255,19 +257,52 @@ func TestCIGatesPlannedJobs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The model below depends on these job conditions: every event runs the
+	// The model below depends on these job conditions: every event runs the plan,
 	// checks, Nix and result jobs, and the VM and driver jobs run exactly when
 	// the plan selects them. Any other condition can skip a job without the plan
 	// knowing, and a skipped job counts as passing for a required check.
 	for name, want := range map[string]string{
+		"plan":    "",
 		"checks":  "",
 		"nix":     "",
 		"result":  "always()",
-		"vms":     "needs.checks.outputs.vm-flavours != '[]'",
-		"drivers": "needs.checks.outputs.driver-flavours != '[]'",
+		"vms":     "needs.plan.outputs.vm-flavours != '[]'",
+		"drivers": "needs.plan.outputs.driver-flavours != '[]'",
 	} {
 		if got := strings.TrimSpace(workflow.Jobs[name].If); got != want {
 			t.Errorf("%s condition = %q, want %q", name, got, want)
+		}
+	}
+	// The result job gates on every other job, so none can be skipped unnoticed.
+	needsOf := func(job string) []string {
+		t.Helper()
+		var list []string
+		node := workflow.Jobs[job].Needs
+		switch node.Kind {
+		case 0:
+		case yaml.ScalarNode:
+			list = []string{node.Value}
+		default:
+			if err := node.Decode(&list); err != nil {
+				t.Fatal(err)
+			}
+		}
+		slices.Sort(list)
+		return list
+	}
+	var gating []string
+	for name := range workflow.Jobs {
+		if name != "result" {
+			gating = append(gating, name)
+		}
+	}
+	slices.Sort(gating)
+	if got := needsOf("result"); !slices.Equal(got, gating) {
+		t.Errorf("result needs %v, want every other job %v", got, gating)
+	}
+	for _, name := range []string{"vms", "drivers"} {
+		if got := needsOf(name); !slices.Equal(got, []string{"plan"}) {
+			t.Errorf("%s needs %v, want only plan", name, got)
 		}
 	}
 	if !slices.Contains(workflow.On.PullRequest.Types, "labeled") {
@@ -275,7 +310,7 @@ func TestCIGatesPlannedJobs(t *testing.T) {
 	}
 
 	var plan string
-	for _, step := range workflow.Jobs["checks"].Steps {
+	for _, step := range workflow.Jobs["plan"].Steps {
 		if step.ID == "plan" {
 			plan = step.Run
 		}
@@ -327,7 +362,7 @@ esac
 			if err != nil {
 				t.Fatal(err)
 			}
-			planned := map[string]bool{"checks": true, "nix": true}
+			planned := map[string]bool{"plan": true, "checks": true, "nix": true}
 			for _, line := range strings.Split(string(outputs), "\n") {
 				switch {
 				case strings.HasPrefix(line, "vm-flavours="):
@@ -340,7 +375,8 @@ esac
 			needs := func(results map[string]string) bool {
 				t.Helper()
 				body, err := json.Marshal(map[string]any{
-					"checks": map[string]any{"result": results["checks"], "outputs": map[string]string{
+					"checks": map[string]string{"result": results["checks"]},
+					"plan": map[string]any{"result": results["plan"], "outputs": map[string]string{
 						"vm-flavours":     map[bool]string{true: `["standard"]`, false: `[]`}[planned["vms"]],
 						"driver-flavours": map[bool]string{true: `["standard"]`, false: `[]`}[planned["drivers"]],
 					}},
@@ -357,7 +393,7 @@ esac
 			// A job runs when planned and is skipped otherwise.
 			healthy := func() map[string]string {
 				results := map[string]string{}
-				for _, job := range []string{"checks", "nix", "vms", "drivers"} {
+				for _, job := range []string{"plan", "checks", "nix", "vms", "drivers"} {
 					results[job] = "skipped"
 					if planned[job] {
 						results[job] = "success"
