@@ -998,6 +998,7 @@ func TestVMTestRunDoesNotDefaultFlagOnlyArgs(t *testing.T) {
 		filepath.Join(repo, "scripts", "vmtest-exec"),
 		"-p",
 		"1",
+		"-v",
 		"-run",
 		"^TestDoesNotNeedLibvirt$",
 		"-timeout",
@@ -1067,11 +1068,11 @@ func TestVMTestRunRemovesPassedRunDirByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
 	}
-	if !strings.Contains(string(output), "vmtest run dir removed: "+runDir) {
+	if !strings.Contains(string(output), "vmtest run dir compacted: "+runDir) {
 		t.Fatalf("output missing cleanup message:\n%s", output)
 	}
-	if _, err := os.Stat(runDir); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("run dir exists after passed cleanup: %v", err)
+	if _, err := os.Stat(filepath.Join(runDir, "go-test.log")); err != nil {
+		t.Fatalf("passed run lost go-test.log: %v", err)
 	}
 }
 

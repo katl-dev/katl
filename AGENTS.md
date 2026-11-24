@@ -42,7 +42,7 @@ Katl produces KatlOS, an installable, upgradeable, systemd-native Kubernetes nod
 - `go test ./...` is the baseline unit and golden gate, not evidence that VM, boot, install, update, or kubeadm flows ran.
 - Changes affecting VM infrastructure, fixtures, boot, installation, updates, disk layout, or kubeadm state must run the relevant `scripts/vmtest-run ... -count=1` gate on a capable host. If unavailable, record the exact capability gap and command still required.
 - Verify generated systemd units with `systemd-analyze verify` where practical. Risky boot, disk, update, security, or kubeadm changes also require focused review, which should check whether the change adds or keeps a second implementation of a responsibility that another path already owns.
-- Use delete-on-success retention for routine VM gates. Keep large run output only while debugging and remove it afterwards.
+- Every VM gate keeps a compact evidence record (go-test.log, test summary, run manifests, scenario results) under the printed run ID and deletes heavy artifacts (disks, VM directories, images) on success. Cite the run ID and read that run's record; keep full failed-run output only while debugging and remove it afterwards.
 - A release should exercise the same artifacts and supported journeys users receive. Do not infer release readiness solely from unit tests or a successful artifact build.
 
 ## User-Journey Validation

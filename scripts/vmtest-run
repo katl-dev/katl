@@ -74,6 +74,8 @@ require_scenario_result="${KATL_VMTEST_REQUIRE_SCENARIO_RESULT:-1}"
 auto_rebuild="${KATL_VMTEST_AUTO_REBUILD:-1}"
 artifact_set="${KATL_VMTEST_ARTIFACT_SET:-default}"
 keep_policy="${KATL_VMTEST_KEEP:-failed}"
+evidence_days="${KATL_VMTEST_EVIDENCE_DAYS:-14}"
+test_summary="$run_dir/test-summary.txt"
 debug_on_failure_policy="${KATL_VMTEST_DEBUG_ON_FAILURE:-auto}"
 debug_on_failure_effective=""
 go_test_input_args=()
@@ -229,6 +231,23 @@ print_missing_capabilities() {
         printf '  - %s: %s\n' "$capability" "$hint" >&2
     done
     printf 'vmtest run dir: %s\n' "$run_dir" >&2
+}
+
+has_go_test_verbosity() {
+    local arg
+    while (($# > 0)); do
+        arg="$1"
+        case "$arg" in
+            -args)
+                return 1
+                ;;
+            -v | --v | -v=* | -test.v | -test.v=* | -json | --json)
+                return 0
+                ;;
+        esac
+        shift
+    done
+    return 1
 }
 
 has_go_test_timeout() {
@@ -1204,16 +1223,63 @@ validate_debug_on_failure_policy() {
     esac
 }
 
+# Passing runs keep only the compact evidence record: logs, manifests and
+# per-scenario results. Disks, VM directories and images are deleted.
+compact_run_dir() {
+    local file
+    find "$run_dir" -type f -name '*serial.log' -print0 | while IFS= read -r -d '' file; do
+        gzip -f -- "$file" || true
+    done
+    find "$run_dir" -type f \
+        ! -name go-test.log ! -name test-summary.txt ! -name run.json ! -name world.json \
+        ! -name host-capabilities.json ! -name resource-test-manifest.json \
+        ! -name result.json ! -name scenario.json ! -name '*serial.log.gz' \
+        ! -name "$(basename "$run_owner_marker")" -delete
+    find "$run_dir" -mindepth 1 -depth -type d -empty -delete
+}
+
+write_test_summary() {
+    {
+        grep -E '^[[:space:]]*--- (PASS|FAIL|SKIP):' "$go_test_log" || true
+        # Callers that pass -json get the same lines from test events.
+        jq -rR 'fromjson? | select(.Test != null and (.Action | IN("pass", "fail", "skip"))) | "--- \(.Action | ascii_upcase): \(.Test)"' "$go_test_log" 2>/dev/null || true
+    } >"$test_summary"
+}
+
+print_evidence() {
+    printf 'vmtest run id: %s\n' "$run_id"
+    printf 'vmtest evidence: %s\n' "$run_dir"
+    if [[ -s "$test_summary" ]]; then
+        printf 'vmtest test summary:\n'
+        sed 's/^/  /' "$test_summary"
+    else
+        printf 'vmtest test summary: no test results in %s\n' "$go_test_log"
+    fi
+}
+
+# Evidence is bounded by age; the ownership marker identifies run directories
+# this script created.
+prune_old_runs() {
+    local marker
+    if [[ ! "$evidence_days" =~ ^[0-9]+$ || ! -d "$tmp_parent" ]]; then
+        return 0
+    fi
+    while IFS= read -r -d '' marker; do
+        if [[ "$(dirname "$marker")" != "$run_dir" ]]; then
+            rm -rf -- "$(dirname "$marker")"
+        fi
+    done < <(find "$tmp_parent" -mindepth 2 -maxdepth 2 -name .katl-vmtest-run-dir -type f -mtime "+$evidence_days" -print0)
+}
+
 cleanup_run_dir() {
     local status="$1"
-    local remove=0
+    local remove=0 compact=0
     case "$keep_policy" in
         always)
-            remove=0
             ;;
         failed)
             if [[ "$status" == "passed" ]]; then
-                remove=1
+                compact=1
             fi
             ;;
         never)
@@ -1223,7 +1289,7 @@ cleanup_run_dir() {
             return 1
             ;;
     esac
-    if [[ "$remove" != 1 ]]; then
+    if [[ "$remove" != 1 && "$compact" != 1 ]]; then
         return 0
     fi
     if [[ ! -f "$run_owner_marker" ]]; then
@@ -1237,6 +1303,11 @@ cleanup_run_dir() {
     if [[ -z "$run_dir" || "$run_dir" == "/" || "$run_dir" == "." ]]; then
         printf 'vmtest run dir cleanup refused unsafe path: %s\n' "$run_dir" >&2
         return 1
+    fi
+    if [[ "$compact" == 1 ]]; then
+        compact_run_dir
+        printf 'vmtest run dir compacted: %s\n' "$run_dir" >&2
+        return 0
     fi
     rm -rf -- "$run_dir"
     printf 'vmtest run dir removed: %s\n' "$run_dir" >&2
@@ -1309,6 +1380,7 @@ mkdir -p "$cache_dir" "$artifact_dir" "$scenario_dir" "$network_dir"
 if [[ "$run_dir_preexisting" == 0 ]]; then
     printf '%s\n' "$run_id" >"$run_owner_marker"
 fi
+prune_old_runs
 : >"$go_test_log"
 validate_debug_on_failure_policy
 jq -n '{}' >"$lease_file"
@@ -1412,13 +1484,19 @@ fi
 if [[ -n "$go_test_timeout" ]] && ! has_go_test_timeout "$@"; then
     go_test_args+=("-timeout" "$go_test_timeout")
 fi
+if ! has_go_test_verbosity "$@"; then
+    # Per-test results in go-test.log are the run's evidence.
+    go_test_args+=("-v")
+fi
 set +e
 "$go_bin" test -exec "$repo_root/scripts/vmtest-exec" "${go_test_args[@]}" "$@" >"$go_test_log" 2>&1
 exit_code=$?
 set -e
 if [[ "$exit_code" -ne 0 ]]; then
     write_run_index "failed" "$@"
+    write_test_summary
     printf 'vmtest failed: go test exited %d\n' "$exit_code" >&2
+    print_evidence
     print_preserved_debug_targets
     if ! cleanup_run_dir "failed"; then
         printf 'vmtest run dir cleanup failed: %s\n' "$run_dir" >&2
@@ -1428,6 +1506,8 @@ fi
 if [[ "$exit_code" -eq 0 && ( "$require_scenario_result" == 1 || "$require_scenario_result" == true ) ]]; then
     if ! find "$scenario_dir" -mindepth 2 -maxdepth 8 -name result.json -print -quit | grep -q .; then
         write_run_index "no-scenario-result" "$@"
+        write_test_summary
+        print_evidence
         printf 'vmtest did not execute any world scenario; no result.json found under %s\n' "$scenario_dir" >&2
         printf 'vmtest run dir: %s\n' "$run_dir" >&2
         printf 'vmtest go test log: %s\n' "$go_test_log" >&2
@@ -1439,6 +1519,8 @@ if [[ "$exit_code" -eq 0 && ( "$require_scenario_result" == 1 || "$require_scena
     fi
 fi
 write_run_index "passed" "$@"
+write_test_summary
+print_evidence
 if ! cleanup_run_dir "passed"; then
     printf 'vmtest run dir cleanup failed: %s\n' "$run_dir" >&2
     exit 4
