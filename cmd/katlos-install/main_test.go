@@ -50,6 +50,35 @@ func TestAutomaticRetryGuidance(t *testing.T) {
 	}
 }
 
+func TestRetryGuidanceOnConsole(t *testing.T) {
+	runDir := t.TempDir()
+	server := handoff.NewHandoffServer(nil)
+	failure := installstatus.New(installstatus.StateFailedBeforeMutation, time.Now())
+	failure.LastError = "selected system disk not attached"
+	failure.RetryHint = "fix input or environment and rerun before disk mutation"
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		server.BeginAutomatic("cp-1")
+		writeConsoleInstallStatus(runDir, failure, io.Discard)
+
+		var console bytes.Buffer
+		if !prepareHandoffRetry(server, runDir, "http://192.0.2.1:8080", errors.New("plan failed"), &console) {
+			t.Fatalf("attempt %d: refusal was not retryable", attempt)
+		}
+		out := console.String()
+		for _, want := range []string{"selected system disk not attached", "katlctl install apply --config CLUSTER_CONFIG --endpoint http://192.0.2.1:8080 --node cp-1"} {
+			if got := strings.Count(out, want); got != 1 {
+				t.Fatalf("attempt %d: console shows %q %d times, want once:\n%s", attempt, want, got, out)
+			}
+		}
+	}
+
+	var quiet bytes.Buffer
+	if prepareHandoffRetry(server, runDir, "http://192.0.2.1:8080", nil, &quiet) || quiet.Len() != 0 {
+		t.Fatalf("success wrote to console: %q", quiet.String())
+	}
+}
+
 func TestVersion(t *testing.T) {
 	oldVersion, oldCommit, oldDate := version, commit, date
 	version, commit, date = "dev", "abc123", "2026-06-01T00:00:00Z"

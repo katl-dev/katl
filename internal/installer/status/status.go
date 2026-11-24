@@ -425,3 +425,23 @@ func dirtyPath(root string, absolutePath string, nonEmpty bool) (bool, error) {
 	}
 	return len(entries) > 0, nil
 }
+
+// FailureSummary is the operator-facing explanation of a failed install: the
+// reason followed by what to do next. katlctl and the installer console both
+// present it so they cannot diverge.
+func (r Record) FailureSummary() string {
+	primary := strings.TrimSpace(r.RefusalReason)
+	if primary == "" {
+		primary = strings.TrimSpace(r.LastError)
+	}
+	hint := strings.TrimSpace(r.RetryHint)
+	switch {
+	case primary != "" && hint != "" && hint != primary:
+		return primary + "; " + hint
+	case primary != "":
+		return primary
+	case hint != "":
+		return hint
+	}
+	return "inspect installer status and console"
+}
