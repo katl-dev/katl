@@ -16,6 +16,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/systemdisk"
 )
 
 func TestPrepareLiveVolumeUsesBoundedSystemdRepartDefinition(t *testing.T) {
@@ -248,7 +249,7 @@ func TestApplyVolumesRefusesDiskReplacedBeforePreparation(t *testing.T) {
 
 func TestVolumeTransitionPreservesBoundDeviceWhenLabelBecomesAmbiguous(t *testing.T) {
 	current := volumeManifest(manifest.PartitionSelector{})
-	plan, err := planVolumeTransition(context.Background(), hermeticVolumeDevices(t).source(duplicateLabelVolumeRunner()), current, current,
+	plan, err := planVolumeTransition(context.Background(), hermeticVolumeDevices(t), duplicateLabelVolumeRunner(), current, current,
 		[]generation.VolumeBinding{{Name: "data", PartitionUUID: "old-part", FilesystemUUID: "old-fs"}}, "cp-1", nil, nil)
 	if err != nil {
 		t.Fatalf("planVolumeTransition() error = %v", err)
@@ -261,7 +262,7 @@ func TestVolumeTransitionPreservesBoundDeviceWhenLabelBecomesAmbiguous(t *testin
 
 func TestVolumeTransitionBlocksAmbiguousLabelWithoutPriorBinding(t *testing.T) {
 	current := volumeManifest(manifest.PartitionSelector{})
-	_, err := planVolumeTransition(context.Background(), hermeticVolumeDevices(t).source(duplicateLabelVolumeRunner()), current, current, nil, "cp-1", nil, nil)
+	_, err := planVolumeTransition(context.Background(), hermeticVolumeDevices(t), duplicateLabelVolumeRunner(), current, current, nil, "cp-1", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "partition selector matched 2 partitions") {
 		t.Fatalf("planVolumeTransition() error = %v, want ambiguous selector", err)
 	}
@@ -272,12 +273,12 @@ func TestVolumeTransitionRequiresExplicitRebindForReplacement(t *testing.T) {
 	desired := volumeManifest(manifest.PartitionSelector{PartUUID: "new-part"})
 	currentBinding := []generation.VolumeBinding{{Name: "data", PartitionUUID: "old-part", FilesystemUUID: "old-fs"}}
 
-	plan, err := planVolumeTransition(context.Background(), hermeticVolumeDevices(t).source(duplicateLabelVolumeRunner()), current, desired, currentBinding, "cp-1", nil, nil)
+	plan, err := planVolumeTransition(context.Background(), hermeticVolumeDevices(t), duplicateLabelVolumeRunner(), current, desired, currentBinding, "cp-1", nil, nil)
 	var authority *VolumeRebindAuthorityError
 	if !errors.As(err, &authority) || !reflect.DeepEqual(plan.requiredRebinds, []string{"cp-1/data"}) {
 		t.Fatalf("unapproved replacement plan = %#v error = %v", plan, err)
 	}
-	plan, err = planVolumeTransition(context.Background(), hermeticVolumeDevices(t).source(duplicateLabelVolumeRunner()), current, desired, currentBinding, "cp-1", nil, []string{"cp-1/data"})
+	plan, err = planVolumeTransition(context.Background(), hermeticVolumeDevices(t), duplicateLabelVolumeRunner(), current, desired, currentBinding, "cp-1", nil, []string{"cp-1/data"})
 	if err != nil {
 		t.Fatalf("approved plan error = %v", err)
 	}
@@ -392,10 +393,10 @@ func TestVolumeTransitionPlanRejectsDeferredDeviceMutation(t *testing.T) {
 
 func TestVolumeTransitionPlanRetainsTombstonesWithoutDesiredVolumes(t *testing.T) {
 	bindings := []generation.VolumeBinding{{Name: "data", PartitionUUID: "part-data", FilesystemUUID: "fs-data"}}
-	plan, err := planVolumeTransition(context.Background(), hermeticVolumeDevices(t).source(func(context.Context, []string, func(int)) ToolResult {
+	plan, err := planVolumeTransition(context.Background(), hermeticVolumeDevices(t), func(context.Context, []string, func(int)) ToolResult {
 		t.Fatal("zero-volume tombstone retention must not inspect hardware")
 		return ToolResult{}
-	}), manifest.Manifest{}, manifest.Manifest{}, bindings, "cp-1", nil, nil)
+	}, manifest.Manifest{}, manifest.Manifest{}, bindings, "cp-1", nil, nil)
 	if err != nil {
 		t.Fatalf("planVolumeTransition() error = %v", err)
 	}
@@ -404,23 +405,27 @@ func TestVolumeTransitionPlanRetainsTombstonesWithoutDesiredVolumes(t *testing.T
 	}
 }
 
-func TestRunningSystemDiskUsesMountedState(t *testing.T) {
-	facts := discovery.HardwareFacts{
-		BlockDevices: []discovery.BlockDevice{
-			{Path: "/dev/sda", Type: discovery.DeviceDisk, Partitions: []discovery.BlockDevice{{Path: "/dev/sda5", Type: discovery.DevicePartition, GPTLabel: "KATL_STATE"}}},
-			{Path: "/dev/sdb", Type: discovery.DeviceDisk, Partitions: []discovery.BlockDevice{{Path: "/dev/sdb5", Type: discovery.DevicePartition, GPTLabel: "KATL_STATE"}}},
-		},
-		Mounts: []discovery.MountFact{{Source: "/dev/sdb5", Target: "/var"}},
+// The system disk holds /, wherever /var appears to be mounted from. The
+// storage runner reports /var on vda, so a planner deriving the system disk
+// from /var would accept a volume on vdc while / is on vdc.
+func TestVolumeTransitionUsesRootSystemDisk(t *testing.T) {
+	spare := volumesManifest(manifest.Volume{Name: "spare", Selector: manifest.VolumeSelector{Partition: &manifest.PartitionSelector{PartUUID: "spare-part"}}, Filesystem: "xfs"})
+	plan := func(layout systemdisk.Layout) error {
+		devices := hermeticVolumeDevices(t)
+		devices.bootedDisk = func() (systemdisk.Layout, error) { return layout, nil }
+		_, err := planVolumeTransition(context.Background(), devices, (&storageRunner{}).run, manifest.Manifest{}, spare, nil, "cp-1", nil, nil)
+		return err
 	}
 
-	got, err := runningSystemDisk(facts)
-	if err != nil || got.Path != "/dev/sdb" {
-		t.Fatalf("runningSystemDisk() = %s, %v; want /dev/sdb, the disk whose state is mounted", got.Path, err)
+	if err := plan(systemdisk.Layout{Disk: systemdisk.Disk{Name: "vda", Seq: 1}}); err != nil {
+		t.Fatalf("planVolumeTransition() with / on vda error = %v", err)
 	}
-
-	facts.Mounts = nil
-	if _, err := runningSystemDisk(facts); err == nil {
-		t.Fatal("runningSystemDisk() error = nil without a mounted /var, want failure")
+	if err := plan(systemdisk.Layout{Disk: systemdisk.Disk{Name: "vdc", Seq: 3}}); err == nil || !strings.Contains(err.Error(), "on target root disk /dev/vdc") {
+		t.Fatalf("planVolumeTransition() with / on vdc error = %v, want the volume refused on the system disk", err)
+	}
+	// A disk that took the system disk's kernel name has another diskseq.
+	if err := plan(systemdisk.Layout{Disk: systemdisk.Disk{Name: "vdc", Seq: 9}}); err == nil || !strings.Contains(err.Error(), "identify the system disk") {
+		t.Fatalf("planVolumeTransition() with / on a reattached vdc error = %v, want the system disk unidentified", err)
 	}
 }
 
@@ -451,7 +456,11 @@ func hermeticVolumeDevices(t *testing.T) volumeDevices {
 		}
 	}
 	missing := filepath.Join(t.TempDir(), "missing")
-	return volumeDevices{sysBlockDir: sysBlock, byIDDir: missing, byPathDir: missing, byDiskSeqDir: byDiskSeq}
+	// / is on vda, which holds the state partition at /var.
+	booted := func() (systemdisk.Layout, error) {
+		return systemdisk.Layout{Disk: systemdisk.Disk{Name: "vda", Seq: 1}}, nil
+	}
+	return volumeDevices{sysBlockDir: sysBlock, byIDDir: missing, byPathDir: missing, byDiskSeqDir: byDiskSeq, bootedDisk: booted}
 }
 
 // storageRunner reports data disk vdb holding volume keep on vdb1, mounted

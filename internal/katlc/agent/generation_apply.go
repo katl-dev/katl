@@ -600,7 +600,7 @@ func (e *Executor) executeConfigApply(ctx context.Context, record operation.Oper
 	if run == nil {
 		run = runChildProcess
 	}
-	volumePlan, err := planVolumeTransition(ctx, e.volumeDevices.source(run), base.CurrentManifest, desiredManifest, base.CurrentRecord.VolumeBindings, record.ConfigApplyRequest.NodeName, record.ConfigApplyRequest.DestructiveStorageAcknowledgements, record.ConfigApplyRequest.VolumeRebinds)
+	volumePlan, err := planVolumeTransition(ctx, e.volumeDevices, run, base.CurrentManifest, desiredManifest, base.CurrentRecord.VolumeBindings, record.ConfigApplyRequest.NodeName, record.ConfigApplyRequest.DestructiveStorageAcknowledgements, record.ConfigApplyRequest.VolumeRebinds)
 	if err != nil {
 		_, markErr := e.failRecordPhase(record.OperationID, "render-generation-refused", "render-generation", "render-generation", "volume transition preflight failed", err)
 		return errorsJoin(err, markErr)

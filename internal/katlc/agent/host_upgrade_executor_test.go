@@ -238,15 +238,16 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 		t.Fatal(err)
 	}
 	oneshoot := ""
-	activeDevice := filepath.Join(root, "dev/vda2")
-	inactiveDevice := filepath.Join(root, "dev/vda3")
-	if err := os.WriteFile(activeDevice, []byte("current root"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(inactiveDevice, make([]byte, len(runtimeBytes)+32), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	host := newHostDisks(t, hostDisk{name: "vda", seq: 1, partitions: []hostPartition{
+		{1, "KATL_ESP", "esp-partuuid", espType},
+		{2, "KATL_ROOT_A", "aaaaaaaa-1111-2222-3333-444444444444", rootType},
+		{3, "KATL_ROOT_B", "bbbbbbbb-1111-2222-3333-444444444444", rootType},
+		{4, "KATL_STATE", "state-partuuid", stateType},
+	}})
+	inactiveDevice := filepath.Join(root, "dev/disk/by-diskseq/1-part3")
+	writeTestFile(t, inactiveDevice, string(make([]byte, len(runtimeBytes)+32)))
 	executor := NewExecutor(root, store, "agent-test")
+	executor.volumeDevices.bootedDisk = host.booted(0, 2)
 	executor.Async = false
 	executor.Now = func() time.Time { return now.Add(time.Minute) }
 	executor.ResolveHostUpgrade = func(context.Context, operation.HostUpgrade) (katlosimage.Payload, error) { return payload, nil }
@@ -270,31 +271,8 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		toolCalls = append(toolCalls, strings.Join(argv, " "))
 		switch filepath.Base(argv[0]) {
-		case "blkid":
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.Contains(joined, "PARTUUID=aaaaaaaa-1111-2222-3333-444444444444"):
-				return ToolResult{Stdout: []byte(activeDevice + "\n")}
-			case argv[len(argv)-1] == inactiveDevice:
-				return ToolResult{Stdout: []byte("bbbbbbbb-1111-2222-3333-444444444444\n")}
-			default:
-				return ToolResult{Err: os.ErrNotExist, ExitStatus: 2}
-			}
 		case "lsblk":
-			joined := strings.Join(argv, " ")
-			switch {
-			case strings.Contains(joined, "-no PARTTYPE "):
-				return ToolResult{Stdout: []byte("4f68bce3-e8cd-4db1-96e7-fbcaf984b709\n")}
-			case strings.Contains(joined, "-rno PATH,PARTTYPE "):
-				return ToolResult{Stdout: []byte("/dev/vda\n/dev/vda1 c12a7328-f81f-11d2-ba4b-00a0c93ec93b\n" + activeDevice + " 4f68bce3-e8cd-4db1-96e7-fbcaf984b709\n" + inactiveDevice + " 4f68bce3-e8cd-4db1-96e7-fbcaf984b709\n/dev/vda4 0fc63daf-8483-4772-8e79-3d69d8477de4\n")}
-			}
-			if argv[len(argv)-1] == activeDevice {
-				return ToolResult{Stdout: []byte("vda 2\n")}
-			}
-			if argv[len(argv)-1] == inactiveDevice {
-				return ToolResult{Stdout: []byte("vda 3\n")}
-			}
-			return ToolResult{Err: os.ErrNotExist, ExitStatus: 1}
+			return host.run(context.Background(), argv, nil)
 		case "sfdisk":
 			if len(argv[len(argv)-1]) > 36 {
 				return ToolResult{Err: errors.New("GPT label exceeds 36 characters"), ExitStatus: 1}
@@ -403,65 +381,6 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	}
 	if !completed.Terminal || completed.Result != operation.ResultSucceeded || !completed.BootHealthPending {
 		t.Fatalf("completed operation = %+v", completed)
-	}
-}
-
-func TestInspectRootSlotsRejectsAmbiguousPartitionLayout(t *testing.T) {
-	const rootType = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
-	const peers = "/dev/vda2 " + rootType + "\n/dev/vda3 " + rootType + "\n"
-	for _, test := range []struct {
-		name      string
-		active    string
-		partition string
-		want      string
-	}{
-		{
-			// A clone carries the running root's PARTUUID, so the slot to
-			// overwrite cannot be identified.
-			name:      "root PARTUUID on two disks",
-			active:    "/dev/vda2\n/dev/vdb2\n",
-			partition: peers,
-			want:      "is on 2 partitions (/dev/vda2, /dev/vdb2)",
-		},
-		{
-			name:      "missing peer",
-			partition: "/dev/vda2 " + rootType + "\n",
-			want:      "found 1 root partitions",
-		},
-		{
-			name:      "extra peer",
-			partition: "/dev/vda2 " + rootType + "\n/dev/vda3 " + rootType + "\n/dev/vda4 " + rootType + "\n",
-			want:      "found 3 root partitions",
-		},
-		{
-			name:      "active absent",
-			partition: "/dev/vda3 " + rootType + "\n/dev/vda4 " + rootType + "\n",
-			want:      "active device /dev/vda2 is not one of",
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			executor := &Executor{RunTool: func(_ context.Context, argv []string, _ func(int)) ToolResult {
-				switch strings.Join(argv, " ") {
-				case "blkid -c /dev/null -t PARTUUID=active-partuuid -o device":
-					if test.active != "" {
-						return ToolResult{Stdout: []byte(test.active)}
-					}
-					return ToolResult{Stdout: []byte("/dev/vda2\n")}
-				case "lsblk -no PKNAME,PARTN /dev/vda2":
-					return ToolResult{Stdout: []byte("vda 2\n")}
-				case "lsblk -no PARTTYPE /dev/vda2":
-					return ToolResult{Stdout: []byte(rootType + "\n")}
-				case "lsblk -rno PATH,PARTTYPE /dev/vda":
-					return ToolResult{Stdout: []byte(test.partition)}
-				default:
-					return ToolResult{Err: os.ErrNotExist, ExitStatus: 1}
-				}
-			}}
-			_, err := executor.inspectRootSlots(context.Background(), "active-partuuid")
-			if err == nil || !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("inspectRootSlots() error = %v, want %q", err, test.want)
-			}
-		})
 	}
 }
 

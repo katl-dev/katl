@@ -88,7 +88,7 @@ func (e *Executor) executeHostUpgradeHandoff(ctx context.Context, record operati
 	if err != nil {
 		return fail("verify-katlos-image", err)
 	}
-	slots, err := e.inspectRootSlots(ctx, previous.Root.PartitionUUID)
+	slots, err := e.findRootSlots(ctx, previous.Root.PartitionUUID)
 	if err != nil {
 		return fail("verify-katlos-image", err)
 	}

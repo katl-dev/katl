@@ -83,7 +83,7 @@ func (e *Executor) planHostUpgradeWithHandoff(ctx context.Context, record operat
 		}
 		slots.InactivePartUUID = staged.RootPartitionUUID
 	} else {
-		slots, err = e.inspectRootSlots(ctx, previous.Root.PartitionUUID)
+		slots, err = e.findRootSlots(ctx, previous.Root.PartitionUUID)
 		if err != nil {
 			return preparedHostUpgrade{}, err
 		}
