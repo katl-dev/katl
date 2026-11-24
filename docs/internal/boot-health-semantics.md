@@ -44,6 +44,17 @@ the boot-health command from running successfully. An unrelated failed unit is
 reported through ordinary systemd and Katl status but does not invalidate the
 generation.
 
+Volume activation is the exception. `katl-volumes-activate.service` refuses to
+mount a volume whose recorded binding no longer matches the attached disks, as
+described in `docs/internal/storage-identity.md`. That refusal reflects what is
+attached, not the generation: failing boot health for it would mark a sound
+generation failed, could move the boot default to an older generation that
+cannot mount the volume either, and would block the configuration apply that
+rebinds a replaced volume. Boot health therefore orders after the unit with
+`Wants=` instead of requiring it. Node status reports boot health `failed`
+while the unit is failed in the running boot, and the volume status names each
+unmounted volume, the cause and the remedy.
+
 A generation already recorded as `good` and `healthy` does not repeat network
 qualification during an ordinary boot. This preserves a known-good local
 fallback during a transient network outage; required-service dependencies still

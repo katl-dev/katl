@@ -49,6 +49,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	if args[0] == "kubeadm" {
 		return runKubeadm(ctx, args[1:], stdout, stderr)
 	}
+	if args[0] == "volumes" {
+		return runVolumes(ctx, args[1:], stderr)
+	}
 	return fmt.Errorf("unsupported command %q", strings.Join(args, " "))
 }
 
@@ -60,6 +63,7 @@ Commands:
   agent serve             Run the KatlOS node management agent.
   agent rotate-management Replace installed mTLS credentials through root SSH.
   kubeadm plan            Compare selected desired kubeadm input with read-only live state.
+  volumes check           Refuse when an active volume binding does not match the attached disks.
 
 `
 }
@@ -76,6 +80,22 @@ func runAgent(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 	default:
 		return fmt.Errorf("unsupported agent command %q", args[0])
 	}
+}
+
+func runVolumes(ctx context.Context, args []string, stderr io.Writer) error {
+	if len(args) == 0 || args[0] != "check" {
+		return fmt.Errorf("volumes command must be check")
+	}
+	flags := flag.NewFlagSet("katlc volumes check", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	root := flags.String("root", "/", "runtime root containing /var/lib/katl")
+	if err := flags.Parse(args[1:]); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	return agent.CheckActiveVolumes(ctx, *root)
 }
 
 func runAgentServe(ctx context.Context, args []string, stdout, stderr io.Writer) error {

@@ -71,8 +71,9 @@ func PlanVolumeChanges(facts HardwareFacts, target BlockDevice, requests []Volum
 	seenNames := make(map[string]struct{}, len(requests)+len(kept))
 	claims := volumeClaims{}
 	for _, binding := range released {
-		plan, err := keptVolume(facts, binding)
-		if errors.Is(err, errAmbiguousBinding) {
+		plan, err := keptVolume(facts, target, binding)
+		var bindingErr *VolumeBindingError
+		if errors.As(err, &bindingErr) && bindingErr.Fault == BindingDuplicated {
 			// A restart could mount any of the matching partitions, so storage
 			// that cannot be identified cannot be planned around.
 			return nil, fmt.Errorf("volume %q is released by this change but its binding is ambiguous: %w; remove the duplicate identity before applying", binding.Name, err)
@@ -85,7 +86,7 @@ func PlanVolumeChanges(facts HardwareFacts, target BlockDevice, requests []Volum
 	}
 	for _, binding := range kept {
 		seenNames[binding.Name] = struct{}{}
-		plan, err := keptVolume(facts, binding)
+		plan, err := keptVolume(facts, target, binding)
 		if err != nil {
 			return nil, err
 		}
@@ -145,8 +146,8 @@ func (p VolumePlan) Target() VolumeTarget {
 
 // keptVolume describes the partition a kept volume is bound to, so requests
 // are claimed around it.
-func keptVolume(facts HardwareFacts, binding VolumeBinding) (VolumePlan, error) {
-	disk, partition, err := matchVolumeBinding(facts, binding)
+func keptVolume(facts HardwareFacts, system BlockDevice, binding VolumeBinding) (VolumePlan, error) {
+	disk, partition, err := matchVolumeBinding(facts, system, binding)
 	if err != nil {
 		return VolumePlan{}, err
 	}
@@ -444,13 +445,10 @@ func bindVolume(facts HardwareFacts, plan VolumePlan) (VolumeBinding, error) {
 	if err != nil {
 		return VolumeBinding{}, err
 	}
+	// The binding rule finds a volume by its PARTUUID, so a partition without
+	// one is refused rather than bound by filesystem UUID alone.
 	binding := VolumeBinding{Name: plan.Name, FilesystemUUID: strings.TrimSpace(partition.FilesystemUUID)}
-	if strings.TrimSpace(partition.PartitionUUID) != "" {
-		binding.PartitionUUID, err = uniquePartitionUUID(facts, partition)
-	} else {
-		binding.FilesystemUUID, err = uniqueFilesystemUUID(facts, partition)
-	}
-	if err != nil {
+	if binding.PartitionUUID, err = uniquePartitionUUID(facts, partition); err != nil {
 		return VolumeBinding{}, err
 	}
 	return binding, nil

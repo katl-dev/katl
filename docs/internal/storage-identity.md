@@ -99,16 +99,20 @@ summary of the targets.
 - **Volumes.** Generations keep their `VolumeBindings` and render static
   `PARTUUID=`/`UUID=` mount units into the confext. Before
   `katl-volumes-activate.service` starts `katl-volumes.target`, its
-  `ExecStartPre=` runs a Go check that resolves every binding of the booted
-  generation by the binding rule. On failure the check names the volume, the
-  cause and the remedy. Boot, live apply and rollback all pass through this
+  `ExecStartPre=` runs a Go check that resolves every binding of the active
+  generation, the one the generated confext links, by the binding rule. On
+  failure the check names the volume, the cause and the remedy. Boot, live apply and rollback all pass through this
   unit. Katl accepts the residual risk of a clone being hot-plugged between
-  the check and the mount within one start of the unit.
+  the check and the mount within one start of the unit. Boot health orders
+  after the unit with `Wants=`: a refused volume is reported as failed boot
+  health in node status without marking the generation failed, since rolling
+  back cannot change which disks are attached; see
+  `docs/internal/boot-health-semantics.md`.
 - **Rollback.** Preflight runs `Locate` on the target generation's bindings
   and refuses before switching when any of them does not resolve. If an
   automatic fallback reaches such a generation anyway, the activation gate
-  leaves that volume unmounted, boot health fails and the node stays
-  reachable through `katlctl`.
+  leaves that volume unmounted, node status reports boot health failed, and
+  the node stays reachable through `katlctl`.
 - **gpt-auto.** Every loader entry carries `systemd.gpt_auto=no`
   (`internal/generation/loader.go`), so systemd's gpt-auto generator takes no
   part.

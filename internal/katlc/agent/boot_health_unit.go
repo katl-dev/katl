@@ -15,6 +15,7 @@ const (
 	bootHealthUnit          = "katl-boot-health.service"
 	bootCompleteTarget      = "katl-boot-complete.target"
 	bootHealthSettledTarget = "katl-boot-health-settled.target"
+	volumesActivateUnit     = "katl-volumes-activate.service"
 )
 
 // bootHealthRun is boot health's progress in the running boot. systemd unit
@@ -34,6 +35,11 @@ const (
 	// running it, typically because a required unit failed.
 	bootHealthRunSkipped
 	bootHealthRunFailed
+	// bootHealthRunVolumesFailed means volume activation failed, typically
+	// because the binding check refused a volume. Boot health does not require
+	// it: a volume refused for what is attached says nothing about the
+	// generation, and rolling back cannot change what is attached.
+	bootHealthRunVolumesFailed
 	bootHealthRunSucceeded
 )
 
@@ -41,7 +47,7 @@ func (s *Server) readBootHealthRun(ctx context.Context) bootHealthRun {
 	if s.RunBootHealthStatus == nil {
 		return bootHealthRunUnknown
 	}
-	result := s.RunBootHealthStatus(ctx, []string{"/usr/bin/systemctl", "show", bootHealthSettledTarget, bootHealthUnit, bootCompleteTarget, "--property=Id,LoadState,ActiveState,Job"}, nil)
+	result := s.RunBootHealthStatus(ctx, []string{"/usr/bin/systemctl", "show", bootHealthSettledTarget, bootHealthUnit, bootCompleteTarget, volumesActivateUnit, "--property=Id,LoadState,ActiveState,Job"}, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
 		return bootHealthRunUnknown
 	}
@@ -62,7 +68,7 @@ func (s *Server) readBootHealthRun(ctx context.Context) bootHealthRun {
 			units[current[key]] = current
 		}
 	}
-	settled, health, complete := units[bootHealthSettledTarget], units[bootHealthUnit], units[bootCompleteTarget]
+	settled, health, complete, volumes := units[bootHealthSettledTarget], units[bootHealthUnit], units[bootCompleteTarget], units[volumesActivateUnit]
 	switch {
 	case settled["LoadState"] != "loaded":
 		return bootHealthRunUnknown
@@ -70,6 +76,8 @@ func (s *Server) readBootHealthRun(ctx context.Context) bootHealthRun {
 		return bootHealthRunSettling
 	case health["ActiveState"] == "failed":
 		return bootHealthRunFailed
+	case volumes["ActiveState"] == "failed":
+		return bootHealthRunVolumesFailed
 	// An inactive oneshot does not show whether it ran; the target it orders
 	// before becomes active only after it succeeds.
 	case complete["ActiveState"] == "active":
@@ -98,6 +106,9 @@ func (s *Server) nodeBootHealth(ctx context.Context) nodeBootHealth {
 	case bootHealthRunSkipped:
 		health.State = nodeBootHealthFailed
 		health.Diagnostic = bootHealthUnit + " did not run in this boot because a unit it requires did not start; inspect the boot journal"
+	case bootHealthRunVolumesFailed:
+		health.State = nodeBootHealthFailed
+		health.Diagnostic = volumesActivateUnit + " failed in this boot, so volumes are unmounted; the volume status explains each one, and the boot journal has the unit's output"
 	case bootHealthRunFailed:
 		if health.State == nodeBootHealthHealthy {
 			health.State = nodeBootHealthFailed

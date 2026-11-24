@@ -823,6 +823,43 @@ a volume does not rebind or erase it: Katl retains an unmounted generation bindi
 name, so re-adding the same exact identity preserves its data and selecting a
 different identity still requires `--rebind-volume`.
 
+### Volume identity checks
+
+Each generation records the PARTUUID and filesystem UUID of every volume it
+mounts. Before mounting volumes at boot or after a live apply, and before
+`katlctl node generations select`, Katl checks that exactly one attached
+partition carries the recorded PARTUUID, that the partition is not on the
+system disk, and that its filesystem UUID still matches. At boot it waits up
+to a minute for a recorded partition that has not appeared yet. Volumes
+recorded before this check keep their bindings and keep mounting.
+
+When a check fails at boot, Katl mounts none of the node's volumes; during a
+live apply, volumes that are already mounted stay mounted. Node status
+reports boot health failed, while the node stays reachable and manageable
+through `katlctl`. The generation itself is not marked failed and the boot
+default does not change, because rolling back cannot change which disks are
+attached. `katlctl node status` names the volume, the cause, and what to do
+next, and marks the other volumes as held back. The common causes are:
+
+- Another disk carries the same PARTUUID, such as a `dd` clone attached beside
+  the original. Do not wipe either disk; detach the copy, or give it new
+  partition GUIDs with `sgdisk --randomize-guids`, then reboot.
+- The filesystem was recreated after the generation recorded it. If it is now
+  the volume's storage, apply the node's configuration with
+  `--rebind-volume NODE/VOLUME`. KatlOS 2026.11.1 and earlier could record
+  the previous filesystem's UUID when formatting an existing partition in
+  place, so such a volume can be refused this way after an upgrade even though
+  it holds the expected data; the same rebind records the current filesystem.
+- The disk is detached. Attach it and reboot.
+
+A disk replaced by a `dd` clone, with the original detached, carries the same
+identity and mounts as before. Selecting an older generation whose volume was
+since replaced or reformatted is refused before the boot selection changes;
+select a generation recorded after that change instead. Selecting a generation
+of KatlOS 2026.11.1 or earlier is also refused while a disk other than the
+system disk carries a `KATL_ESP` or `KATL_STATE` partition, because those
+runtimes mount `/efi` and `/var` by partition label; detach that disk first.
+
 ### Formatting behavior
 
 Katl uses `systemd-repart --discard=no` to partition and format the system disk

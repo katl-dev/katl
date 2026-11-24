@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -29,7 +30,10 @@ func TestNodeVolumeStatusReportsMountHealthAndDiagnostic(t *testing.T) {
 			return ToolResult{}
 		}
 	}
-	status, err := nodeVolumeStatus(context.Background(), root, "generation-1", runner)
+	noDiscovery := func(context.Context, []string, func(int)) ToolResult {
+		return ToolResult{Err: errors.New("discovery unavailable")}
+	}
+	status, err := nodeVolumeStatus(context.Background(), root, "generation-1", runner, hermeticVolumeDevices(t), noDiscovery)
 	if err != nil {
 		t.Fatalf("nodeVolumeStatus() error = %v", err)
 	}

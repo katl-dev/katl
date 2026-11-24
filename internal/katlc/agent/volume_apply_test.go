@@ -717,7 +717,7 @@ func TestVolumeRecoveryLeavesVolumesOnRewrittenStorageUnmounted(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			runner := &storageRunner{}
 			recovery := volumeRecovery{
-				run: runner.run, source: hermeticVolumeDevices(t).source(runner.run), bindings: bindings,
+				run: runner.run, devices: hermeticVolumeDevices(t), bindings: bindings,
 				prepared: []disk.VolumePlan{test.data}, stopped: []string{"keep", "spare"}, rewritten: []string{"data"},
 			}
 
@@ -857,7 +857,7 @@ func TestVolumeRecoveryLeavesVolumesUnverifiableUnmounted(t *testing.T) {
 			stopped:   []string{"keep", "other"},
 			unmounted: []string{"keep"},
 			started:   []string{"other"},
-			want:      []string{"volumes keep were stopped for this apply and left unmounted", "ambiguous", "matched 2 partitions"},
+			want:      []string{"volumes keep were stopped for this apply and left unmounted", "2 partitions carry"},
 		},
 		{
 			// The binding resolves nowhere, so its unit has no device to mount.
@@ -874,14 +874,14 @@ func TestVolumeRecoveryLeavesVolumesUnverifiableUnmounted(t *testing.T) {
 			stopped:   []string{"keep", "other"},
 			unmounted: []string{"keep"},
 			started:   []string{"other"},
-			want:      []string{"volumes keep were stopped for this apply and left unmounted", "matched no partitions"},
+			want:      []string{"volumes keep were stopped for this apply and left unmounted", "no attached partition carries"},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			storage := &storageRunner{}
 			run := test.run(storage)
 			recovery := volumeRecovery{
-				run: run, source: hermeticVolumeDevices(t).source(run), bindings: bindings,
+				run: run, devices: hermeticVolumeDevices(t), bindings: bindings,
 				prepared: []disk.VolumePlan{data}, stopped: test.stopped, rewritten: []string{"data"},
 			}
 

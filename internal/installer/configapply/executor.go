@@ -351,7 +351,9 @@ func (e Executor) commandsForDomain(domain string) ([]Command, error) {
 	case DomainTmpfiles:
 		commands = append(commands, Command{Name: "systemd-tmpfiles", Argv: []string{"systemd-tmpfiles", "--create", "--remove"}})
 	case DomainVolumes:
-		commands = append(commands, Command{Name: "volume-mount-activate", Argv: []string{"systemctl", "restart", "katl-volumes.target"}})
+		// The activation unit checks every binding by the binding rule before it
+		// starts the mounts, as it does at boot.
+		commands = append(commands, Command{Name: "volume-mount-activate", Argv: []string{"systemctl", "restart", "katl-volumes-activate.service"}})
 	case DomainAPIProxy:
 		commands = append(commands, Command{Name: "api-proxy-restart", Argv: []string{"systemctl", "restart", "katl-api-proxy.service"}})
 	case DomainControlPlaneEndpointVIP:
