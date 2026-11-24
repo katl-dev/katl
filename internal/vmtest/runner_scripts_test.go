@@ -396,6 +396,7 @@ func TestVMTestRunBuildsDefaultArtifacts(t *testing.T) {
 		t.Fatalf("MkdirAll(scripts) error = %v", err)
 	}
 	copyScript(t, filepath.Join(realRepo, "scripts", "vmtest-run"), filepath.Join(repo, "scripts", "vmtest-run"))
+	copyRunCheck(t, realRepo, repo)
 	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
@@ -474,6 +475,7 @@ func TestVMTestRunRecordsCacheResolvedArtifacts(t *testing.T) {
 		t.Fatalf("MkdirAll(scripts) error = %v", err)
 	}
 	copyScript(t, filepath.Join(realRepo, "scripts", "vmtest-run"), filepath.Join(repo, "scripts", "vmtest-run"))
+	copyRunCheck(t, realRepo, repo)
 	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
@@ -554,6 +556,7 @@ func TestVMTestRunRecordsRuntimeOnlyCacheProvenance(t *testing.T) {
 		t.Fatalf("MkdirAll(scripts) error = %v", err)
 	}
 	copyScript(t, filepath.Join(realRepo, "scripts", "vmtest-run"), filepath.Join(repo, "scripts", "vmtest-run"))
+	copyRunCheck(t, realRepo, repo)
 	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
@@ -660,6 +663,7 @@ func TestVMTestRunCanDisableDefaultArtifactBuilds(t *testing.T) {
 		t.Fatalf("MkdirAll(scripts) error = %v", err)
 	}
 	copyScript(t, filepath.Join(realRepo, "scripts", "vmtest-run"), filepath.Join(repo, "scripts", "vmtest-run"))
+	copyRunCheck(t, realRepo, repo)
 	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
@@ -1538,6 +1542,18 @@ set +e
 "$exec_wrapper" "$KATL_FAKE_CHILD" "-test.run=^Forwarded$" "-test.v" "child-extra"
 exit_code=$?
 set -e
+# Report each test named by -run as passed, as go test -v does.
+for ((i = 0; i < ${#args[@]}; i++)); do
+    if [[ "${args[$i]}" == "-run" ]]; then
+        names="${args[$((i + 1))]}"
+        names="${names#^}"
+        names="${names#(}"
+        names="${names%\$}"
+        names="${names%)}"
+        IFS='|' read -ra requested <<<"$names"
+        printf -- '--- PASS: %s (0.00s)\n' "${requested[@]}"
+    fi
+done
 if [[ "$json_output" == 1 ]]; then
     if [[ "${KATL_FAKE_GO_JSON_MALFORMED:-0}" == "1" ]]; then
         printf '{not json\n'
@@ -1803,6 +1819,10 @@ printf 'manifest: %s\nmode: record\nartifacts: 1\npackageSets: 1\n' "$manifest"
 }
 
 func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string {
+	realGo, err := exec.LookPath("go")
+	if err != nil {
+		realGo = "go"
+	}
 	// Runner tests must not silently inherit artifact selection from a parent
 	// vmtest-run invocation. Tests that need published bundles can add them back
 	// explicitly through extra.
@@ -1825,6 +1845,7 @@ func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string 
 		"KATL_VMTEST_VSOCK_DEVICE="+tools.vsock,
 		"KATL_VMTEST_KUBECTL="+tools.kubectl,
 		"KATL_VMTEST_RESOURCE_LOCK="+tools.resourceLock,
+		"KATL_VMTEST_RESOURCE_GO="+realGo,
 		"KATL_VMTEST_HOST_LOCK="+filepath.Join(filepath.Dir(tools.imageTool), "vmtest-host.lock"),
 		"KATL_VMTEST_MKOSI_VERSION=26",
 		"KATL_VMTEST_AUTO_REBUILD=0",
@@ -2012,4 +2033,15 @@ func TestVMTestRunNestedScenario(t *testing.T) {
 	if !strings.Contains(string(output), "vmtest passed") {
 		t.Fatalf("missing successful run result:\n%s", output)
 	}
+}
+
+// copyRunCheck gives a stand-in repo the helper vmtest-run runs after go test.
+func copyRunCheck(t *testing.T, realRepo, repo string) {
+	t.Helper()
+	dir := filepath.Join(repo, "cmd", "katl-vmtest-ran")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	copyScript(t, filepath.Join(realRepo, "go.mod"), filepath.Join(repo, "go.mod"))
+	copyScript(t, filepath.Join(realRepo, "cmd", "katl-vmtest-ran", "main.go"), filepath.Join(dir, "main.go"))
 }

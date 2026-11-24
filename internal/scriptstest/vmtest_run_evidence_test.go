@@ -15,6 +15,10 @@ mkdir -p "$node/disks" "$node/vm"
 printf '{}\n' >"$KATL_VMTEST_RUN_DIR/scenarios/smoke/result.json"
 printf 'disk\n' >"$node/disks/root.qcow2"
 printf 'serial\n' >"$node/vm/runtime-serial.log"
+if [[ -n "$KATL_SCRIPTTEST_NO_TESTS" ]]; then
+  printf 'testing: warning: no tests to run\nok  \texample/pkg\t0.0s [no tests to run]\n'
+  exit 0
+fi
 printf '=== RUN   TestAlpha\n--- PASS: TestAlpha (1.00s)\n--- SKIP: TestBeta (0.00s)\n'
 if [[ -n "$KATL_SCRIPTTEST_FAIL" ]]; then
   printf -- '--- FAIL: TestGamma (2.00s)\nFAIL\n'
@@ -26,6 +30,11 @@ printf 'ok  \texample/pkg\t3.0s\n'
 // runEvidenceVMTest runs scripts/vmtest-run against fakes and returns the run
 // directory, the combined output and whether the run succeeded.
 func runEvidenceVMTest(t *testing.T, tmpDir, runID string, fail bool) (string, string, bool) {
+	t.Helper()
+	return runEvidenceVMTestPattern(t, tmpDir, runID, "^TestAlpha$", fail)
+}
+
+func runEvidenceVMTestPattern(t *testing.T, tmpDir, runID, pattern string, fail bool) (string, string, bool) {
 	t.Helper()
 	repo := repoRoot(t)
 	work := t.TempDir()
@@ -43,7 +52,7 @@ case "$1" in
 esac
 `)
 	runDir := filepath.Join(tmpDir, "katl-vmtest", runID)
-	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "--artifact-set=none", "./internal/vmtest", "-run", "^TestAlpha$", "-count=1")
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "--artifact-set=none", "./internal/vmtest", "-run", pattern, "-count=1")
 	cmd.Dir = repo
 	cmd.Env = append(os.Environ(),
 		"TMPDIR="+tmpDir,
@@ -58,6 +67,9 @@ esac
 	)
 	if fail {
 		cmd.Env = append(cmd.Env, "KATL_SCRIPTTEST_FAIL=1")
+	}
+	if strings.Contains(pattern, "Gone$") && !strings.Contains(pattern, "|") {
+		cmd.Env = append(cmd.Env, "KATL_SCRIPTTEST_NO_TESTS=1")
 	}
 	output, err := cmd.CombinedOutput()
 	return runDir, string(output), err == nil
@@ -163,5 +175,38 @@ func TestVMTestRunPrunesOnlyOldRecords(t *testing.T) {
 		if !exists(filepath.Join(parent, kept)) {
 			t.Errorf("pruning removed %s", kept)
 		}
+	}
+}
+
+func TestVMTestRunFailsWhenRequestedTestsDidNotRun(t *testing.T) {
+	tests := []struct {
+		name    string
+		pattern string
+		wantOK  bool
+		missing []string
+	}{
+		{"every requested test ran", "^(TestAlpha)$", true, nil},
+		{"requested test absent", "^(TestAlpha|TestGone|TestAlsoGone)$", false, []string{"TestGone", "TestAlsoGone"}},
+		{"requested test skipped", "^(TestAlpha|TestBeta)$", false, []string{"TestBeta"}},
+		{"pattern matches nothing", "^TestGone$", false, []string{"matched no tests"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runDir, output, ok := runEvidenceVMTestPattern(t, t.TempDir(), "unmatched-run", tc.pattern, false)
+			if ok != tc.wantOK {
+				t.Fatalf("vmtest-run success = %v, want %v:\n%s", ok, tc.wantOK, output)
+			}
+			if tc.wantOK != strings.Contains(output, "vmtest passed") {
+				t.Errorf("vmtest passed in output = %v, want %v:\n%s", !tc.wantOK, tc.wantOK, output)
+			}
+			for _, want := range tc.missing {
+				if !strings.Contains(output, want) {
+					t.Errorf("output does not name %q:\n%s", want, output)
+				}
+			}
+			if !exists(filepath.Join(runDir, "go-test.log")) {
+				t.Errorf("run lost its go test log:\n%s", output)
+			}
+		})
 	}
 }

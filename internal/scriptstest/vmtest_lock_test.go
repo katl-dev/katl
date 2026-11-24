@@ -54,6 +54,7 @@ func TestVMTestLockProcess(t *testing.T) {
 			panic(err)
 		}
 		barrier("work")
+		fmt.Println("--- PASS: NoVM")
 		code, _ := strconv.Atoi(os.Getenv("KATL_LOCK_EXIT"))
 		os.Exit(code)
 	case "virsh":
@@ -104,6 +105,10 @@ type lockFixture struct {
 }
 
 func newLockFixture(t *testing.T) lockFixture {
+	realGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Helper()
 	root := t.TempDir()
 	binary, err := os.Executable()
@@ -121,7 +126,7 @@ func newLockFixture(t *testing.T) lockFixture {
 	writeExecutable(t, filepath.Join(root, "tool"), "#!/usr/bin/env bash\nexit 0\n")
 	return lockFixture{root: root, env: append(os.Environ(),
 		"KATL_LOCK_FIXTURE="+root, "KATL_LOCK_TEST_BINARY="+binary,
-		"KATL_VMTEST_GO="+filepath.Join(root, "go"), "KATL_VMTEST_VIRSH="+filepath.Join(root, "virsh"),
+		"KATL_VMTEST_RESOURCE_GO="+realGo, "KATL_VMTEST_GO="+filepath.Join(root, "go"), "KATL_VMTEST_VIRSH="+filepath.Join(root, "virsh"),
 		"KATL_VMTEST_IMAGE_TOOL="+filepath.Join(root, "tool"), "KATL_VMTEST_KUBECTL="+filepath.Join(root, "tool"),
 		"KATL_VMTEST_RUN_DIR="+filepath.Join(root, "run"), "KATL_VMTEST_CACHE_DIR="+filepath.Join(root, "cache"),
 		"KATL_VMTEST_HOST_LOCK="+filepath.Join(root, "host.lock"), "KATL_VMTEST_HOST_LOCK_TIMEOUT=5",
