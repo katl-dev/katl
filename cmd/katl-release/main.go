@@ -37,7 +37,7 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer, call command) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify TAG COMMIT DIRECTORY\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
+		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify TAG COMMIT DIRECTORY\n       scripts/katl-release checksums DIRECTORY\n       scripts/katl-release equivalent BUNDLE FLAVOUR=SHA256SUMS...\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
 		return nil
 	}
 	if args[0] == "prepare" {
@@ -46,8 +46,15 @@ func run(args []string, stdout, stderr io.Writer, call command) error {
 	if args[0] == "verify" {
 		return verify(args[1:], stderr, call)
 	}
+	if args[0] == "checksums" && len(args) == 2 {
+		_, err := verifyChecksums(args[1])
+		return err
+	}
+	if args[0] == "equivalent" && len(args) >= 3 {
+		return requireQualified(args[1], args[2:])
+	}
 	if (args[0] != "inspect" || len(args) != 2) && (args[0] != "download" || len(args) != 3) {
-		return errors.New("expected prepare, inspect RUN_ID, download RUN_ID DIRECTORY, or verify TAG COMMIT DIRECTORY; use --help")
+		return errors.New("expected prepare, inspect RUN_ID, download RUN_ID DIRECTORY, verify TAG COMMIT DIRECTORY, checksums DIRECTORY, or equivalent BUNDLE FLAVOUR=SHA256SUMS...; use --help")
 	}
 	id, err := strconv.ParseInt(args[1], 10, 64)
 	if err != nil || id <= 0 {
@@ -277,12 +284,13 @@ func verifyBundle(dir, tag, commit string, stderr io.Writer, call command) error
 	return nil
 }
 
-func verifyChecksums(dir string) ([]string, error) {
-	data, err := os.ReadFile(filepath.Join(dir, "SHA256SUMS"))
+// parseChecksums reads the SHA256SUMS file at path into a name-to-digest map.
+func parseChecksums(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
-	expected := make(map[string]string)
+	sums := make(map[string]string)
 	for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
 		if len(line) < 67 || line[64:66] != "  " {
 			return nil, errors.New("invalid SHA256SUMS entry")
@@ -291,10 +299,18 @@ func verifyChecksums(dir string) ([]string, error) {
 		if _, err := hex.DecodeString(digest); err != nil {
 			return nil, errors.New("invalid SHA256SUMS digest")
 		}
-		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\r\n") || name == "SHA256SUMS" || expected[name] != "" {
+		if name == "" || name == "." || name == ".." || strings.ContainsAny(name, "/\\\r\n") || name == "SHA256SUMS" || sums[name] != "" {
 			return nil, fmt.Errorf("unsafe or duplicate SHA256SUMS filename %q", name)
 		}
-		expected[name] = digest
+		sums[name] = digest
+	}
+	return sums, nil
+}
+
+func verifyChecksums(dir string) ([]string, error) {
+	expected, err := parseChecksums(filepath.Join(dir, "SHA256SUMS"))
+	if err != nil {
+		return nil, err
 	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -335,4 +351,54 @@ func verifyChecksums(dir string) ([]string, error) {
 	}
 	sort.Strings(names)
 	return names, nil
+}
+
+// renderedNotes is the one release file that differs between the assembled
+// flavours and the bundle, because the bundle renders it.
+const renderedNotes = "RELEASE_NOTES.md"
+
+// requireQualified checks that the bundle in dir consists of the bytes that
+// production VM qualification verified. Each flavour is a NAME=SHA256SUMS
+// argument naming the checksums the qualification run verified.
+func requireQualified(dir string, flavours []string) error {
+	if _, err := verifyChecksums(dir); err != nil {
+		return err
+	}
+	bundle, err := parseChecksums(filepath.Join(dir, "SHA256SUMS"))
+	if err != nil {
+		return err
+	}
+	qualified := make(map[string]bool)
+	seen := make(map[string]bool)
+	for _, flavour := range flavours {
+		name, path, ok := strings.Cut(flavour, "=")
+		if !ok || name == "" || path == "" {
+			return fmt.Errorf("expected FLAVOUR=SHA256SUMS, got %q", flavour)
+		}
+		seen[name] = true
+		evidence, err := parseChecksums(path)
+		if err != nil {
+			return fmt.Errorf("qualified checksums for %s: %w", name, err)
+		}
+		for file, digest := range evidence {
+			if file == renderedNotes {
+				continue
+			}
+			if bundle[file] != digest {
+				return fmt.Errorf("%s (%s) differs from qualified bytes", file, name)
+			}
+			qualified[file] = true
+		}
+	}
+	for _, name := range []string{"standard", "lts"} {
+		if !seen[name] {
+			return fmt.Errorf("no qualified checksums for %s", name)
+		}
+	}
+	for file := range bundle {
+		if file != renderedNotes && !qualified[file] {
+			return fmt.Errorf("published file was not qualified: %s", file)
+		}
+	}
+	return nil
 }

@@ -353,3 +353,99 @@ func TestChecksums(t *testing.T) {
 		})
 	}
 }
+
+func TestEquivalent(t *testing.T) {
+	const (
+		abc   = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+		empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	)
+	for _, tc := range []struct {
+		name     string
+		bundle   map[string]string
+		standard string
+		lts      string
+		omitLTS  bool
+		want     string
+	}{
+		{name: "identical", standard: abc + "  payload\n", lts: abc + "  payload\n"},
+		{name: "rendered notes differ", standard: abc + "  payload\n" + strings.Repeat("b", 64) + "  RELEASE_NOTES.md\n", lts: abc + "  payload\n"},
+		{name: "differing file", standard: abc + "  payload\n", lts: strings.Repeat("a", 64) + "  payload\n", want: "payload (lts) differs from qualified bytes"},
+		{name: "unqualified bundle file", bundle: map[string]string{"extra": ""}, standard: abc + "  payload\n", lts: abc + "  payload\n", want: "published file was not qualified: extra"},
+		{name: "unpublished evidence file", standard: abc + "  payload\n" + empty + "  other\n", lts: abc + "  payload\n", want: "other (standard) differs from qualified bytes"},
+		{name: "missing flavour", standard: abc + "  payload\n", omitLTS: true, want: "no qualified checksums for lts"},
+		{name: "malformed evidence", standard: abc + "  payload\n", lts: "not a checksum\n", want: "qualified checksums for lts: invalid SHA256SUMS entry"},
+		{name: "unreadable evidence", standard: abc + "  payload\n", lts: "-", want: "qualified checksums for lts"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			bundle := t.TempDir()
+			writeBundle(t, bundle)
+			sums := "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  payload\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  RELEASE_NOTES.md\n"
+			for name := range tc.bundle {
+				if err := os.WriteFile(filepath.Join(bundle, name), nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+				sums += empty + "  " + name + "\n"
+			}
+			if err := os.WriteFile(filepath.Join(bundle, "SHA256SUMS"), []byte(sums), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			evidence := t.TempDir()
+			args := []string{}
+			for name, content := range map[string]string{"standard": tc.standard, "lts": tc.lts} {
+				path := filepath.Join(evidence, name)
+				if name == "lts" && tc.omitLTS {
+					continue
+				}
+				if content != "-" {
+					if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				args = append(args, name+"="+path)
+			}
+
+			err := run(append([]string{"equivalent", bundle}, args...), io.Discard, io.Discard, nil)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("equivalent = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestEquivalentRequiresValidBundle(t *testing.T) {
+	bundle := t.TempDir()
+	writeBundle(t, bundle)
+	if err := os.WriteFile(filepath.Join(bundle, "payload"), []byte("xyz"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	evidence := filepath.Join(t.TempDir(), "SHA256SUMS")
+	if err := os.WriteFile(evidence, []byte("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad  payload\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := run([]string{"equivalent", bundle, "standard=" + evidence, "lts=" + evidence}, io.Discard, io.Discard, nil)
+	if err == nil || !strings.Contains(err.Error(), "checksum mismatch: payload") {
+		t.Fatalf("equivalent = %v", err)
+	}
+}
+
+func TestChecksumsCommand(t *testing.T) {
+	dir := t.TempDir()
+	writeBundle(t, dir)
+	if err := run([]string{"checksums", dir}, io.Discard, io.Discard, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "payload"), []byte("xyz"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"checksums", dir}, io.Discard, io.Discard, nil); err == nil {
+		t.Fatal("accepted tampered bundle")
+	}
+}

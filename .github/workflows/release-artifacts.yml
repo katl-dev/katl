@@ -665,12 +665,7 @@ jobs:
       - name: Combine flavours
         shell: bash
         run: |
-          mkdir dist
-          for flavour in standard lts; do
-            cp flavours/katl-assembled-${flavour}-${GITHUB_SHA}/* dist/
-          done
-          go run ./cmd/katl-mkosi-artifacts release-components dist standard lts
-          (cd dist && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' | sort -z | xargs -0 sha256sum > SHA256SUMS && sha256sum -c SHA256SUMS)
+          scripts/katl-release-artifacts combine dist "standard=flavours/katl-assembled-standard-$GITHUB_SHA" "lts=flavours/katl-assembled-lts-$GITHUB_SHA"
       - name: Attest staged release artifacts
         if: github.event_name == 'push' && github.ref_type == 'tag'
         uses: actions/attest@v4
@@ -687,16 +682,44 @@ jobs:
 
   qualification:
     name: Production VM
-    needs: [identity, bundle]
+    needs: [identity, assemble]
     uses: ./.github/workflows/production-vmtests.yml
     with:
-      artifact-name: ${{ needs.identity.outputs.artifact-name }}
+      artifact-name: katl-assembled-{0}-${{ github.sha }}
       previous-tag: ${{ needs.identity.outputs.previous-tag }}
+
+  qualified-bytes:
+    name: Verify Qualified Bytes
+    needs: [identity, bundle, qualification]
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.identity.outputs.artifact-name }}
+          path: dist
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: katl-qualified-*-${{ github.sha }}
+          path: evidence
+      - run: |
+          scripts/katl-release equivalent dist \
+            "standard=evidence/katl-qualified-standard-$GITHUB_SHA/SHA256SUMS" \
+            "lts=evidence/katl-qualified-lts-$GITHUB_SHA/SHA256SUMS"
 
   release-validation:
     name: Release validation
     if: always() && inputs.qualify_run == 0
-    needs: [bundle, vmtests, qualification, unit]
+    needs: [bundle, vmtests, qualification, qualified-bytes, unit]
     runs-on: ubuntu-24.04
     steps:
       - env:
@@ -704,11 +727,13 @@ jobs:
           BUNDLE: ${{ needs.bundle.result }}
           REGRESSION: ${{ needs.vmtests.result }}
           PRODUCTION: ${{ needs.qualification.result }}
+          QUALIFIED: ${{ needs.qualified-bytes.result }}
         run: |
           test "$UNIT" = success
           test "$BUNDLE" = success
           test "$REGRESSION" = success
           test "$PRODUCTION" = success
+          test "$QUALIFIED" = success
 
   publish-extensions:
     name: Publish Kernel Extensions
