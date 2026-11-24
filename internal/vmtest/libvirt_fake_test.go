@@ -24,13 +24,18 @@ printf '%s\n' "$*" >>"$root/calls.log"
 command="$1"
 shift
 network_name() { sed -n 's:.*<name>\(.*\)</name>.*:\1:p' "$1" | head -n1; }
+# A name in $root/vanish disappears once its metadata has been read, as when
+# another process removes it between a listing and the removal.
+vanish() { if [[ -f "$root/vanish" ]] && grep -qx "$1" "$root/vanish"; then rm -f "$root/domains/$1".* "$root/networks/$1".*; fi; }
+missing_domain() { [[ -f "$root/domains/$1.meta" ]] || { echo "error: failed to get domain '$1'" >&2; exit 1; }; }
+missing_network() { [[ -f "$root/networks/$1.xml" ]] || { echo "error: failed to get network '$1'" >&2; exit 1; }; }
 case "$command" in
   list) for f in "$root"/domains/*.meta; do [[ -e $f ]] && basename "$f" .meta; done || true ;;
-  metadata) [[ -f "$root/domains/$1.meta" ]] || exit 1; cat "$root/domains/$1.meta" ;;
+  metadata) [[ -f "$root/domains/$1.meta" ]] || exit 1; cat "$root/domains/$1.meta"; vanish "$1" ;;
   dumpxml) cat "$root/domains/$1.xml" ;;
-  domstate) printf 'running\n' ;;
-  destroy) ;;
-  undefine) rm -f "$root/domains/$1.meta" "$root/domains/$1.xml" ;;
+  domstate) missing_domain "$1"; printf 'running\n' ;;
+  destroy) missing_domain "$1" ;;
+  undefine) missing_domain "$1"; rm -f "$root/domains/$1.meta" "$root/domains/$1.xml" ;;
   net-list) for f in "$root"/networks/*.xml; do [[ -e $f ]] && basename "$f" .xml; done || true ;;
   net-define)
     sleep "${FAKE_DEFINE_DELAY:-0}"
@@ -38,10 +43,14 @@ case "$command" in
     cp "$1" "$root/networks/$name.xml"
     ;;
   net-dumpxml)
+    missing_network "$1"
     read -r gateway prefix < <(sed -n 's:.*<ip address="\([^"]*\)" prefix="\([0-9]*\)".*:\1 \2:p' "$root/networks/$1.xml")
     printf "<network><ip address='%s' prefix='%s'><dhcp>" "$gateway" "$prefix"
-    if [[ -f "$root/networks/$1.hosts" ]]; then
-      while read -r mac ip name; do printf "<host mac='%s' name='%s' ip='%s'/>" "$mac" "$name" "$ip"; done <"$root/networks/$1.hosts"
+    # Reservations are live, or persistent with --inactive.
+    hosts="$root/networks/$1.hosts"
+    [[ "${2:-}" == --inactive ]] && hosts="$root/networks/$1.config-hosts"
+    if [[ -f "$hosts" ]]; then
+      while read -r mac ip name; do printf "<host mac='%s' name='%s' ip='%s'/>" "$mac" "$name" "$ip"; done <"$hosts"
     fi
     printf '</dhcp></ip></network>\n'
     ;;
@@ -49,8 +58,10 @@ case "$command" in
     [[ -f "$root/networks/$1.xml" ]] || exit 1
     # Real libvirt prints the element without its namespace declaration.
     grep -o '<vmtest[^>]*>[^<]*</vmtest>' "$root/networks/$1.xml" | sed 's: xmlns="[^"]*"::' || exit 1
+    vanish "$1"
     ;;
   net-info)
+    missing_network "$1"
     if [[ -f "$root/networks/$1.active" ]]; then printf 'Active: yes\n'; else printf 'Active: no\n'; fi
     ;;
   net-start)
@@ -61,22 +72,29 @@ case "$command" in
     fi
     touch "$root/networks/$1.active"
     ;;
-  net-destroy) rm -f "$root/networks/$1.active" ;;
-  net-undefine) rm -f "$root/networks/$1.xml" "$root/networks/$1.hosts" "$root/networks/$1.active" ;;
+  net-destroy) missing_network "$1"; rm -f "$root/networks/$1.active" ;;
+  net-undefine) missing_network "$1"; rm -f "$root/networks/$1.xml" "$root/networks/$1.hosts" "$root/networks/$1.config-hosts" "$root/networks/$1.active" ;;
   net-update)
     name="$1"; action="$2"; element="$4"
     mac="$(sed -n "s:.*mac=[\"']\([^\"']*\)[\"'].*:\1:p" <<<"$element")"
     ip="$(sed -n "s:.* ip=[\"']\([^\"']*\)[\"'].*:\1:p" <<<"$element")"
     host="$(sed -n "s:.* name=[\"']\([^\"']*\)[\"'].*:\1:p" <<<"$element")"
-    hosts="$root/networks/$name.hosts"
-    touch "$hosts"
-    grep -v "^$mac " "$hosts" >"$hosts.new" || true
-    case "$action" in
-      add-last | modify) printf '%s %s %s\n' "$mac" "$ip" "$host" >>"$hosts.new" ;;
-      delete) ;;
-      *) exit 2 ;;
-    esac
-    mv "$hosts.new" "$hosts"
+    # --live and --config update separate reservation sets.
+    for flag in "${@:5}"; do
+      case "$flag" in
+        --live) hosts="$root/networks/$name.hosts" ;;
+        --config) hosts="$root/networks/$name.config-hosts" ;;
+        *) exit 2 ;;
+      esac
+      touch "$hosts"
+      grep -v "^$mac " "$hosts" >"$hosts.new" || true
+      case "$action" in
+        add-last | modify) printf '%s %s %s\n' "$mac" "$ip" "$host" >>"$hosts.new" ;;
+        delete) ;;
+        *) exit 2 ;;
+      esac
+      mv "$hosts.new" "$hosts"
+    done
     ;;
   *) exit 2 ;;
 esac
@@ -150,11 +168,32 @@ func (f fakeLibvirt) objects(t *testing.T, kind string) []string {
 	return names
 }
 
-// reservations returns the MAC to address reservations of a network, as the
-// fake's net-update calls left them.
+// reservations returns the MAC to address reservations of a running network,
+// as the fake's net-update --live calls left them.
 func (f fakeLibvirt) reservations(t *testing.T, network string) map[string]string {
 	t.Helper()
-	file, err := os.Open(filepath.Join(f.root, "networks", network+".hosts"))
+	return f.reservationsIn(t, network+".hosts")
+}
+
+// configReservations returns the reservations of the persistent definition,
+// as net-update --config calls left them.
+func (f fakeLibvirt) configReservations(t *testing.T, network string) map[string]string {
+	t.Helper()
+	return f.reservationsIn(t, network+".config-hosts")
+}
+
+// vanishAfterMetadata makes the named objects disappear once their metadata
+// has been read, as when another sweeper removes them first.
+func (f fakeLibvirt) vanishAfterMetadata(t *testing.T, names ...string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(f.root, "vanish"), []byte(strings.Join(names, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (f fakeLibvirt) reservationsIn(t *testing.T, name string) map[string]string {
+	t.Helper()
+	file, err := os.Open(filepath.Join(f.root, "networks", name))
 	if os.IsNotExist(err) {
 		return map[string]string{}
 	}

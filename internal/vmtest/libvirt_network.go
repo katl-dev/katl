@@ -255,6 +255,10 @@ func SubnetsInUse(ctx context.Context, virsh func(ctx context.Context, args ...s
 	}
 	for _, name := range strings.Fields(string(output)) {
 		data, err := virsh(ctx, "net-dumpxml", name)
+		if notFound(err) {
+			// Removed since net-list, so it no longer uses a subnet.
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}

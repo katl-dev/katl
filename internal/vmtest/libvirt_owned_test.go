@@ -3,8 +3,10 @@ package vmtest
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"os"
 	"path/filepath"
@@ -12,6 +14,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 const katldevMetadata = `<vmtest xmlns="https://katlos.io/xmlns/vmtest/1">katl/katldev-world/dev-world-1</vmtest>`
@@ -69,6 +74,95 @@ func TestSweepIgnoresMissingLease(t *testing.T) {
 
 	if got := fake.objects(t, "domains"); len(got) != 0 {
 		t.Fatalf("domains = %v, want none", got)
+	}
+}
+
+func TestSweepToleratesObjectsRemovedMidSweep(t *testing.T) {
+	// A second sweeper removes objects between this sweep's listing and its
+	// removal, which must neither fail the sweep nor the scenario.
+	fake := newFakeLibvirt(t)
+	gone := filepath.Join(t.TempDir(), "removed", "lease")
+	fake.addDomain(t, "vanishing", vmtestMetadataFor(gone), "net-vanishing")
+	fake.addNetwork(t, OwnedNetwork{Name: "net-vanishing", Owner: vmtestMetadata, Lease: gone, CIDR: "10.200.1.0/24", Gateway: "10.200.1.1"})
+	fake.addDomain(t, "stays", vmtestMetadataFor(gone), "net-stays")
+	fake.vanishAfterMetadata(t, "vanishing", "net-vanishing")
+	var stderr strings.Builder
+
+	if err := sweep(context.Background(), fake.virsh(), &stderr); err != nil {
+		t.Fatalf("sweep() error = %v", err)
+	}
+
+	if strings.Contains(stderr.String(), "failed") {
+		t.Fatalf("sweep reported a failure for an object that was already gone: %s", stderr.String())
+	}
+	if got := fake.objects(t, "domains"); len(got) != 0 {
+		t.Fatalf("domains = %v, want none: the other domain is still swept", got)
+	}
+	if got := fake.objects(t, "networks"); len(got) != 0 {
+		t.Fatalf("networks = %v, want none", got)
+	}
+}
+
+func TestSweepContinuesAfterRemovalFailure(t *testing.T) {
+	fake := newFakeLibvirt(t)
+	gone := filepath.Join(t.TempDir(), "removed", "lease")
+	fake.addDomain(t, "first", vmtestMetadataFor(gone), "default")
+	fake.addDomain(t, "second", vmtestMetadataFor(gone), "default")
+	// Undefining the first fails for a reason other than being gone.
+	virsh := func(ctx context.Context, args ...string) ([]byte, error) {
+		if args[0] == "undefine" && args[1] == "first" {
+			return nil, errors.New("error: operation failed")
+		}
+		return fake.virsh()(ctx, args...)
+	}
+	var stderr strings.Builder
+
+	if err := sweep(context.Background(), virsh, &stderr); err != nil {
+		t.Fatalf("sweep() error = %v, want removal failures only logged", err)
+	}
+
+	if got := fake.objects(t, "domains"); !slices.Equal(got, []string{"first"}) {
+		t.Fatalf("domains = %v, want only the one that failed to remove", got)
+	}
+	if !strings.Contains(stderr.String(), "first") {
+		t.Fatalf("sweep did not report the failure: %q", stderr.String())
+	}
+}
+
+func TestLeaseHeldDoesNotReapOddLeasePaths(t *testing.T) {
+	dir := t.TempDir()
+	fifo := filepath.Join(dir, "fifo")
+	if err := unix.Mkfifo(fifo, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "target")
+	if err := os.WriteFile(target, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	for name, path := range map[string]string{"fifo": fifo, "symlink": link} {
+		t.Run(name, func(t *testing.T) {
+			fake := newFakeLibvirt(t)
+			fake.addDomain(t, "odd", vmtestMetadataFor(path), "default")
+			done := make(chan error, 1)
+			go func() { done <- sweep(context.Background(), fake.virsh(), io.Discard) }()
+
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("sweep hung on the lease path")
+			}
+
+			if got := fake.objects(t, "domains"); !slices.Equal(got, []string{"odd"}) {
+				t.Fatalf("domains = %v, want the domain kept: a lease path that is not a regular file is not a free lease", got)
+			}
+		})
 	}
 }
 
@@ -134,16 +228,19 @@ func TestScenarioReservesPlannedAddresses(t *testing.T) {
 	}
 }
 
+// assertReservations checks the running network and its persistent definition,
+// which libvirt updates separately.
 func assertReservations(t *testing.T, fake fakeLibvirt, network string, want map[string]string) {
 	t.Helper()
-	got := fake.reservations(t, network)
-	if len(got) != len(want) {
-		t.Fatalf("reservations = %v, want %v", got, want)
-	}
+	lower := map[string]string{}
 	for mac, address := range want {
-		if got[strings.ToLower(mac)] != address {
-			t.Fatalf("reservations = %v, want %v", got, want)
-		}
+		lower[strings.ToLower(mac)] = address
+	}
+	if got := fake.reservations(t, network); !maps.Equal(got, lower) {
+		t.Fatalf("live reservations = %v, want %v", got, lower)
+	}
+	if got := fake.configReservations(t, network); !maps.Equal(got, lower) {
+		t.Fatalf("persistent reservations = %v, want %v", got, lower)
 	}
 }
 
@@ -167,10 +264,45 @@ func TestScenarioNetworkRejectsForeignOwner(t *testing.T) {
 	name := "katl-" + world.RunID + "-foreign"
 	fake.addNetwork(t, OwnedNetwork{Name: name, Owner: vmtestMetadata, Lease: filepath.Join(t.TempDir(), "other"), CIDR: "10.200.9.0/24", Gateway: "10.200.9.1"})
 
+	before := fake.reservations(t, name)
+
 	scenario, err := world.PlanScenario("foreign")
+
 	if err == nil {
 		t.Fatalf("PlanScenario() reused a network of another lease: %+v", scenario.World.Network)
 	}
+	if !strings.Contains(err.Error(), "refusing to manage libvirt network "+name) {
+		t.Fatalf("PlanScenario() error = %v, want the ownership refusal", err)
+	}
+	if got := fake.objects(t, "networks"); !slices.Equal(got, []string{name}) {
+		t.Fatalf("networks = %v, want the foreign network untouched", got)
+	}
+	if fake.active(name) {
+		t.Fatalf("foreign network %s was started", name)
+	}
+	if got := fake.reservations(t, name); !maps.Equal(got, before) || len(fake.configReservations(t, name)) != 0 {
+		t.Fatalf("foreign network reservations changed: live %v, config %v", got, fake.configReservations(t, name))
+	}
+}
+
+func TestScenarioNetworkReuseKeepsOtherReservations(t *testing.T) {
+	// A second planner of the same scenario in one run finds the network of
+	// the first and must not delete the reservations it did not make.
+	world, fake := ownedScenarioWorld(t)
+	first := world.NewScenario(t, "shared")
+	node := first.NewNode(t, NodeSpec{Name: "cp-1", Role: ControlPlane})
+	want := map[string]string{node.MACAddress: node.Address}
+	assertReservations(t, fake, first.World.Network.Name, want)
+
+	second, err := world.PlanScenario("shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if second.World.Network.Name != first.World.Network.Name || second.World.Network.CIDR != first.World.Network.CIDR {
+		t.Fatalf("reused network = %+v, want %+v", second.World.Network, first.World.Network)
+	}
+	assertReservations(t, fake, first.World.Network.Name, want)
 }
 
 func TestCreateNetworkConcurrentPicksDistinctSubnets(t *testing.T) {
@@ -290,6 +422,9 @@ func TestPlannedAddressesAvoidDynamicRange(t *testing.T) {
 				if (value >= start && value <= end) || address == gateway || !subnet.Contains(net.ParseIP(address)) {
 					t.Fatalf("planned address %s collides with the dynamic range %s-%s, the gateway, or leaves %s", address, doc.Ranges[0].Start, doc.Ranges[0].End, cidr)
 				}
+				if value == ipToUint32(subnet.IP) || value == broadcast(subnet) {
+					t.Fatalf("planned address %s is the network or broadcast address of %s", address, cidr)
+				}
 				leased[address] = true
 				planned++
 			}
@@ -305,6 +440,38 @@ func TestPlannedAddressesAvoidDynamicRange(t *testing.T) {
 				t.Fatalf("address just below the dynamic range was rejected: %v", err)
 			}
 		})
+	}
+}
+
+func TestPlannedAddressesSplitOfSlash24(t *testing.T) {
+	world := World{Network: WorldNetwork{CIDR: "10.200.4.0/24", Gateway: "10.200.4.1"}}
+	leased := map[string]bool{}
+
+	first, err := firstAvailableAddress(world, leased)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reservable .2 through .191, with the gateway .1 excluded, so 190 nodes.
+	count, last := 0, ""
+	for {
+		address, err := firstAvailableAddress(world, leased)
+		if err != nil {
+			break
+		}
+		leased[address] = true
+		count, last = count+1, address
+	}
+
+	if first != "10.200.4.2" || last != "10.200.4.191" || count != 190 {
+		t.Fatalf("planned %d addresses from %s to %s, want 190 from 10.200.4.2 to 10.200.4.191", count, first, last)
+	}
+	for _, address := range []string{"10.200.4.0", "10.200.4.1", "10.200.4.192", "10.200.4.254", "10.200.4.255"} {
+		if err := validateRequestedAddress(world, nil, address); err == nil {
+			t.Fatalf("requested address %s was accepted", address)
+		}
+	}
+	if err := validateRequestedAddress(world, nil, "10.200.4.191"); err != nil {
+		t.Fatalf("last reservable address was rejected: %v", err)
 	}
 }
 

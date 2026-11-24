@@ -282,7 +282,19 @@ func (scenario *WorldScenario) WriteResult(status WorldStatus, failure string) e
 // between them can only over-claim. A loaded scenario's nodes are reloaded
 // from the manifest first so that processes sharing it do not overwrite each
 // other's nodes.
+//
+// The scenario's network is synced after the lock is released: virsh may be
+// slow, and the lock's other waiters give up quickly. Each scenario owns its
+// network and a sync reconciles every reservation of its nodes, so a later
+// sync repairs an earlier failed one.
 func (scenario *WorldScenario) allocate(change func(reserved map[string]bool) (*leaseEntry, error)) error {
+	if err := scenario.allocateLocked(change); err != nil {
+		return err
+	}
+	return scenario.syncNetwork(context.Background())
+}
+
+func (scenario *WorldScenario) allocateLocked(change func(reserved map[string]bool) (*leaseEntry, error)) error {
 	unlock, err := lockLeaseFile(scenario.World.Network.LeaseFile)
 	if err != nil {
 		return err
@@ -321,10 +333,7 @@ func (scenario *WorldScenario) allocate(change func(reserved map[string]bool) (*
 			return err
 		}
 	}
-	if err := scenario.WriteManifest(); err != nil {
-		return err
-	}
-	return scenario.syncNetwork(context.Background())
+	return scenario.WriteManifest()
 }
 
 // reloadNodes replaces the scenario's nodes with those of its manifest.
@@ -458,24 +467,19 @@ func validateRequestedAddress(world World, leased map[string]bool, address strin
 	if !network.Contains(ip) {
 		return fmt.Errorf("node address %q is outside %s", address, world.Network.CIDR)
 	}
-	if address == network.IP.String() {
-		return fmt.Errorf("node address %q is reserved as network address", address)
-	}
-	gateway := net.ParseIP(world.Network.Gateway).To4()
-	if gateway == nil {
-		return fmt.Errorf("world gateway %q is invalid", world.Network.Gateway)
-	}
-	if address == gateway.String() {
-		return fmt.Errorf("node address %q is reserved as gateway", address)
-	}
-	if address == uint32ToIP(broadcast(network)).String() {
-		return fmt.Errorf("node address %q is reserved as broadcast address", address)
-	}
-	plan, err := planAddresses(network, gateway)
+	plan, err := worldAddressPlan(world)
 	if err != nil {
 		return err
 	}
 	if !plan.reservable(ipToUint32(ip)) {
+		switch value := ipToUint32(ip); {
+		case value == ipToUint32(network.IP):
+			return fmt.Errorf("node address %q is reserved as network address", address)
+		case value == broadcast(network):
+			return fmt.Errorf("node address %q is reserved as broadcast address", address)
+		case value == plan.gateway:
+			return fmt.Errorf("node address %q is reserved as gateway", address)
+		}
 		return fmt.Errorf("node address %q is in the dynamic DHCP range %s-%s of %s", address, uint32ToIP(plan.dynamicStart), uint32ToIP(plan.dynamicEnd), world.Network.CIDR)
 	}
 	if leased[address] {

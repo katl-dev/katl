@@ -623,3 +623,43 @@ func firstInstallFixtureInputForTest(t *testing.T) FirstInstallWorldInput {
 		TargetDiskSize:  "20G",
 	}
 }
+
+func TestFirstInstallRuntimeFixtureContractDefinesNoNetwork(t *testing.T) {
+	world, fake := ownedScenarioWorld(t)
+	spec := NodeSpec{Name: "cp-1", Role: ControlPlane}
+
+	for range 2 {
+		if _, err := FirstInstallRuntimeFixtureContractForWorld(world, t.TempDir(), spec, firstInstallFixtureInputForTest(t), KVMOff); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := fake.objects(t, "networks"); len(got) != 0 {
+		t.Fatalf("computing the contract defined networks %v", got)
+	}
+}
+
+func TestEnsurePublishedFirstInstallRuntimeFixtureReleasesProducerNetwork(t *testing.T) {
+	world, fake := ownedScenarioWorld(t)
+	spec := NodeSpec{Name: "cp-1", Role: ControlPlane}
+	var during []string
+
+	_, err := ensurePublishedFirstInstallRuntimeFixture(context.Background(), world, t.TempDir(), spec, FirstInstallRuntimeFixtureOptions{
+		Input: firstInstallFixtureInputForTest(t),
+		KVM:   KVMOff,
+	}, func(_ context.Context, contract FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error) {
+		during = fake.objects(t, "networks")
+		manifest := writePublishedInstalledRuntimeFixtureForContract(t, contract, "world-cp", time.Unix(10, 0))
+		return ProducedInstalledRuntimeFixture{ManifestPath: manifest}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(during) != 1 {
+		t.Fatalf("networks while producing = %v, want the producer's own network", during)
+	}
+	if got := fake.objects(t, "networks"); len(got) != 0 {
+		t.Fatalf("networks after producing = %v, want none", got)
+	}
+}

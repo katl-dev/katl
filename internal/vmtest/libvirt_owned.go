@@ -195,26 +195,36 @@ func runVirsh(uri string) virshFunc {
 // be read belongs to another user's run and counts as held, so a sweep never
 // removes what it cannot judge.
 func leaseHeld(path string) (bool, error) {
-	// A separate open file description, so the probe conflicts with the
-	// holder even inside the holder's own process.
-	file, err := os.Open(path)
+	// O_NONBLOCK keeps a FIFO from blocking the open and O_NOFOLLOW keeps a
+	// symlink from redirecting the probe. The descriptor is a separate open
+	// file description, so the probe conflicts with the holder even inside the
+	// holder's own process.
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	switch {
 	case errors.Is(err, fs.ErrNotExist):
 		return false, nil
-	case errors.Is(err, fs.ErrPermission):
+	case errors.Is(err, fs.ErrPermission), errors.Is(err, unix.ELOOP):
 		return true, nil
 	case err != nil:
 		return false, err
 	}
-	defer file.Close()
-	err = unix.Flock(int(file.Fd()), unix.LOCK_SH|unix.LOCK_NB)
+	defer unix.Close(fd)
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		return false, fmt.Errorf("probe lease %s: %w", path, err)
+	}
+	if stat.Mode&unix.S_IFMT != unix.S_IFREG {
+		// Not a lease file a run created, so it is not ours to judge.
+		return true, nil
+	}
+	err = unix.Flock(fd, unix.LOCK_SH|unix.LOCK_NB)
 	if errors.Is(err, unix.EWOULDBLOCK) {
 		return true, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("probe lease %s: %w", path, err)
 	}
-	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+	_ = unix.Flock(fd, unix.LOCK_UN)
 	return false, nil
 }
 
@@ -250,6 +260,11 @@ func vmtestMetadataOf(ctx context.Context, virsh virshFunc, args ...string) (Lib
 // can belong to a live run and every one is removed. This depends on the host
 // lock: it must change when the host lock is removed.
 func sweep(ctx context.Context, virsh virshFunc, stderr io.Writer) error {
+	// Removal is best effort: a finished run's leftovers must not fail the
+	// scenario that sweeps them, and the next sweep retries them.
+	fail := func(kind, name string, err error) {
+		fmt.Fprintf(stderr, "vmtest cleanup: remove libvirt %s %s failed; a later run retries: %v\n", kind, name, err)
+	}
 	output, err := virsh(ctx, "list", "--all", "--name")
 	if err != nil {
 		return err
@@ -262,15 +277,16 @@ func sweep(ctx context.Context, virsh virshFunc, stderr io.Writer) error {
 		if metadata.Lease != "" {
 			held, err := leaseHeld(metadata.Lease)
 			if err != nil {
-				return err
+				fail("domain", domain, err)
+				continue
 			}
 			if held {
 				continue
 			}
 		}
 		fmt.Fprintf(stderr, "vmtest cleanup: removing libvirt domain %s left by a finished run\n", domain)
-		if err := removeDomain(ctx, virsh, domain); err != nil {
-			return err
+		if err := RemoveDomain(ctx, virsh, domain); err != nil {
+			fail("domain", domain, err)
 		}
 	}
 
@@ -285,46 +301,74 @@ func sweep(ctx context.Context, virsh virshFunc, stderr io.Writer) error {
 		}
 		held, err := leaseHeld(metadata.Lease)
 		if err != nil {
-			return err
+			fail("network", network, err)
+			continue
 		}
 		if held {
 			continue
 		}
 		fmt.Fprintf(stderr, "vmtest cleanup: removing libvirt network %s left by a finished run\n", network)
 		if err := removeNetwork(ctx, virsh, network); err != nil {
-			return err
+			fail("network", network, err)
 		}
 	}
 	return nil
 }
 
-func removeDomain(ctx context.Context, virsh virshFunc, domain string) error {
-	state, _ := virsh(ctx, "domstate", domain)
+// notFound reports whether a virsh error says the domain or network is gone.
+func notFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := err.Error()
+	for _, text := range []string{"failed to get domain", "Domain not found", "failed to get network", "Network not found", "no domain with matching", "no network with matching"} {
+		if strings.Contains(message, text) {
+			return true
+		}
+	}
+	return false
+}
+
+// RemoveDomain stops and undefines a domain, including its managed save image
+// and NVRAM. A domain that is already gone counts as removed, so concurrent
+// removers do not fail each other. Callers confirm ownership first.
+func RemoveDomain(ctx context.Context, virsh func(ctx context.Context, args ...string) ([]byte, error), domain string) error {
+	state, err := virsh(ctx, "domstate", domain)
+	if notFound(err) {
+		return nil
+	}
 	switch strings.TrimSpace(string(state)) {
-	case "shut off", "", "no state":
+	case "shut off", "crashed", "", "no state":
 	default:
-		if _, err := virsh(ctx, "destroy", domain); err != nil {
-			return fmt.Errorf("destroy vmtest domain %s: %w", domain, err)
+		if _, err := virsh(ctx, "destroy", domain); err != nil && !notFound(err) {
+			return fmt.Errorf("destroy domain %s: %w", domain, err)
 		}
 	}
-	if _, err := virsh(ctx, "undefine", domain, "--nvram"); err != nil {
-		return fmt.Errorf("undefine vmtest domain %s: %w", domain, err)
+	if _, err := virsh(ctx, "undefine", domain, "--managed-save", "--nvram"); err != nil && !notFound(err) {
+		return fmt.Errorf("undefine domain %s: %w", domain, err)
 	}
 	return nil
 }
 
+// removeNetwork stops and undefines a network; one that is already gone
+// counts as removed.
 func removeNetwork(ctx context.Context, virsh virshFunc, network string) error {
 	active, err := networkActive(ctx, virsh, network)
+	if notFound(err) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
 	if active {
-		if _, err := virsh(ctx, "net-destroy", network); err != nil {
+		if _, err := virsh(ctx, "net-destroy", network); err != nil && !notFound(err) {
 			return err
 		}
 	}
-	_, err = virsh(ctx, "net-undefine", network)
-	return err
+	if _, err := virsh(ctx, "net-undefine", network); err != nil && !notFound(err) {
+		return err
+	}
+	return nil
 }
 
 // networkCreationAttempts bounds how often createNetwork retries on another
@@ -366,7 +410,18 @@ func createNetwork(ctx context.Context, virsh virshFunc, lockPath string, networ
 			return OwnedNetwork{}, fmt.Errorf("read libvirt network %s gateway: %w", network.Name, err)
 		}
 		network.CIDR, network.Gateway = subnet.String(), gateway.String()
-		return network, network.Ensure(ctx, virsh, definition)
+		// The reservations belong to whoever made them: a reused network keeps
+		// them, and the scenario's own syncs reconcile its nodes.
+		active, err := networkActive(ctx, virsh, network.Name)
+		if err != nil {
+			return OwnedNetwork{}, err
+		}
+		if !active {
+			if _, err := virsh(ctx, "net-start", network.Name); err != nil {
+				return OwnedNetwork{}, fmt.Errorf("%w %s on %s: %w", ErrNetworkStart, network.Name, network.CIDR, err)
+			}
+		}
+		return network, nil
 	}
 
 	var refused []*net.IPNet

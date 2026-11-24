@@ -23,13 +23,14 @@ func (node Node) VMNetwork() VMNetworkConfig {
 var swept sync.Once
 
 // sweepOnce removes the libvirt objects of finished runs at the first
-// scenario of the process.
-func sweepOnce(ctx context.Context, virsh virshFunc) error {
-	var err error
+// scenario of the process. Cleanup is best effort, so a failure is reported and
+// the scenario goes on; the next process sweeps again.
+func sweepOnce(ctx context.Context, virsh virshFunc) {
 	swept.Do(func() {
-		err = sweep(ctx, virsh, os.Stderr)
+		if err := sweep(ctx, virsh, os.Stderr); err != nil {
+			fmt.Fprintf(os.Stderr, "vmtest cleanup: remove libvirt objects left by finished runs failed: %v\n", err)
+		}
 	})
-	return err
 }
 
 func networkCreationLock() string {
@@ -44,9 +45,7 @@ func (scenario *WorldScenario) createNetwork(ctx context.Context) error {
 	defer cancel()
 	world := scenario.World
 	virsh := runVirsh(world.Libvirt.URI)
-	if err := sweepOnce(ctx, virsh); err != nil {
-		return fmt.Errorf("remove libvirt objects left by finished runs: %w", err)
-	}
+	sweepOnce(ctx, virsh)
 	network, err := createNetwork(ctx, virsh, networkCreationLock(), OwnedNetwork{
 		Name:  "katl-" + world.RunID + "-" + scenario.ID,
 		Owner: vmtestMetadata,
@@ -103,9 +102,11 @@ func (scenario *WorldScenario) syncNetwork(ctx context.Context) error {
 	if !scenario.owned {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
 	virsh := runVirsh(scenario.World.Libvirt.URI)
 	if err := scenario.ownedNetwork().Ensure(ctx, virsh, filepath.Join(scenario.Dir, "network.xml")); err != nil {
-		return fmt.Errorf("reserve node addresses in libvirt network %s: %w", scenario.World.Network.Name, err)
+		return fmt.Errorf("sync address reservations of libvirt network %s failed; the node is recorded, and the next change to this scenario syncs all reservations again: %w", scenario.World.Network.Name, err)
 	}
 	return nil
 }

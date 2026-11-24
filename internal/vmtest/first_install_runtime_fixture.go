@@ -116,10 +116,7 @@ func ensurePublishedFirstInstallRuntimeFixture(ctx context.Context, world World,
 	} else if !isMissingPublishedFirstInstallRuntimeFixture(err) {
 		return "", err
 	}
-	if _, err := produce(ctx, contract); err != nil {
-		if contract.WorldScenario != nil {
-			_ = contract.WorldScenario.WriteSetupFailure(err)
-		}
+	if err := produceFirstInstallRuntimeFixtureOwned(ctx, world, repo, spec, options, produce); err != nil {
 		return "", err
 	}
 	published, err := findPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec, inputDigest)
@@ -261,11 +258,23 @@ func firstInstallModeForContract(contract FirstInstallRuntimeFixtureContract) Fi
 	return FirstInstallWorldPreseed
 }
 
+// FirstInstallRuntimeFixtureContractForWorld plans the fixture's inputs
+// without creating a libvirt network, so computing a contract has no host side
+// effects beyond the scenario directory. The producer plans its own run with a
+// network.
 func FirstInstallRuntimeFixtureContractForWorld(world World, repo string, spec NodeSpec, input FirstInstallWorldInput, kvm KVMPolicy) (FirstInstallRuntimeFixtureContract, error) {
-	run, err := PlanFirstInstallWorldRun(world, FirstInstallRuntimeFixtureScenarioName(spec), repo, spec, input, kvm)
+	scenario, err := world.planScenario(FirstInstallRuntimeFixtureScenarioName(spec))
 	if err != nil {
 		return FirstInstallRuntimeFixtureContract{}, err
 	}
+	run, err := planFirstInstallScenarioRun(scenario, repo, spec, input, kvm)
+	if err != nil {
+		return FirstInstallRuntimeFixtureContract{}, err
+	}
+	return firstInstallRuntimeFixtureContractOf(run, spec), nil
+}
+
+func firstInstallRuntimeFixtureContractOf(run FirstInstallWorldRun, spec NodeSpec) FirstInstallRuntimeFixtureContract {
 	return FirstInstallRuntimeFixtureContract{
 		Runner:          run.Runner,
 		WorldScenario:   run.Scenario,
@@ -280,7 +289,24 @@ func FirstInstallRuntimeFixtureContractForWorld(world World, repo string, spec N
 		UseInstalledESP: run.Config.UseInstalledESP,
 		Node:            spec,
 		Mode:            run.Mode,
-	}, nil
+	}
+}
+
+// produceFirstInstallRuntimeFixtureOwned plans the producing run in a scenario
+// with its own libvirt network, which it releases when production ends.
+func produceFirstInstallRuntimeFixtureOwned(ctx context.Context, world World, repo string, spec NodeSpec, options FirstInstallRuntimeFixtureOptions, produce func(context.Context, FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error)) error {
+	run, err := PlanFirstInstallWorldRun(world, FirstInstallRuntimeFixtureScenarioName(spec), repo, spec, options.Input, options.KVM)
+	if run.Scenario != nil {
+		defer run.Scenario.Release()
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := produce(ctx, firstInstallRuntimeFixtureContractOf(run, spec)); err != nil {
+		_ = run.Scenario.WriteSetupFailure(err)
+		return err
+	}
+	return nil
 }
 
 func FirstInstallRuntimeFixtureScenarioName(spec NodeSpec) string {

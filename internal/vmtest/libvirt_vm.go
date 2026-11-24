@@ -1028,7 +1028,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		MACAddress:        macAddress,
 		Disks:             disks,
 		VSock:             vsock,
-		Metadata:          first(config.DomainMetadata, "katl/vmtest"),
+		Metadata:          first(config.DomainMetadata, vmtestMetadata),
 		MetadataLease:     firstPath(config.DomainMetadata == "", probe.env("KATL_VMTEST_RUN_LEASE")),
 		MetadataRun:       firstPath(config.DomainMetadata == "", probe.env("KATL_VMTEST_RUN_ID")),
 		PersistentSerial:  config.PersistentSerial,
