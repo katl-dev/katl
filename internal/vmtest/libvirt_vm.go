@@ -66,6 +66,10 @@ type VMConfig struct {
 	DomainMetadata    string
 	PersistentSerial  bool
 	HotplugPCISlots   int
+
+	// notifyPort is the host vsock port of the runner's notify listener. Zero
+	// leaves the guest without the vmm.notify_socket credential.
+	notifyPort uint32
 }
 
 type SerialHook struct {
@@ -142,6 +146,8 @@ type VMPlan struct {
 	PreseedDir     string
 	DomainDisks    []libvirtDisk
 	VSock          VSockPlan
+	NotifyPort     uint32
+	NotifyLog      string
 }
 
 type VMExecutor interface {
@@ -405,6 +411,8 @@ type VMRunner struct {
 	Executor       VMExecutor
 	AgentConnector func(ctx context.Context, plan VSockPlan, transcript string) (AgentHealthClient, error)
 	probe          probe
+	// notifyListen replaces the host vsock notify listener in tests.
+	notifyListen func() (notifySocket, uint32, error)
 }
 
 type VMHandle struct {
@@ -465,31 +473,58 @@ func (r VMRunner) RunWithVM(ctx context.Context, result Result, config VMConfig,
 
 func (r VMRunner) startVM(ctx context.Context, result Result, config VMConfig) (*VMHandle, Result, bool) {
 	started := time.Now().UTC()
+	// The listener must exist before planning because the domain XML carries
+	// its port. It is closed whenever startup fails or the domain exits, so a
+	// guest never blocks on a socket nobody reads.
+	var notify notifySocket
+	if listen := r.notifyListener(); listen != nil {
+		socket, port, err := listen()
+		if err == nil {
+			notify = socket
+			config.notifyPort = port
+		}
+	}
+	fail := func(plan VMPlan, err error) (*VMHandle, Result, bool) {
+		if notify != nil {
+			_ = notify.Close()
+		}
+		releaseVSock(result, plan, nil)
+		return nil, finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC()), false
+	}
 	plan, err := planVM(result, config, r.probe)
 	if err != nil {
-		return nil, finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC()), false
+		return fail(VMPlan{}, err)
 	}
 	result.DomainName = plan.DomainName
 	result.MACAddress = plan.MACAddress
 	result.VSock = plan.VSock
 	if err := prepareVM(plan, config); err != nil {
-		releaseVSock(result, plan, nil)
-		return nil, finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC()), false
+		return fail(plan, err)
+	}
+	file, err := os.OpenFile(plan.SerialLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return fail(plan, err)
+	}
+	notifyDone := make(chan struct{})
+	if notify != nil {
+		notifyLog, err := os.OpenFile(plan.NotifyLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			_ = file.Close()
+			return fail(plan, err)
+		}
+		go func() {
+			defer close(notifyDone)
+			defer notifyLog.Close()
+			serveNotify(notify, notifyLog, func() time.Time { return time.Now().UTC() })
+		}()
+	} else {
+		close(notifyDone)
 	}
 	var timeoutCancel context.CancelFunc
 	if config.Timeout > 0 {
 		ctx, timeoutCancel = context.WithTimeout(ctx, config.Timeout)
 	}
 	runCtx, cancel := context.WithCancelCause(ctx)
-	file, err := os.OpenFile(plan.SerialLog, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
-	if err != nil {
-		cancel(errVMRunFailed)
-		if timeoutCancel != nil {
-			timeoutCancel()
-		}
-		releaseVSock(result, plan, nil)
-		return nil, finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC()), false
-	}
 	executor := r.Executor
 	defaultExecutor := executor == nil
 	var preservation *DomainPreservation
@@ -518,12 +553,32 @@ func (r VMRunner) startVM(ctx context.Context, result Result, config VMConfig) (
 	go func() {
 		defer file.Close()
 		err := executor.Run(runCtx, first(plan.VirshPath, plan.CommandPath), plan.Args, io.Writer(file))
+		if notify != nil {
+			_ = notify.Close()
+		}
+		<-notifyDone
 		handle.waitMu.Lock()
 		handle.waitErr = err
 		handle.waitMu.Unlock()
 		close(done)
 	}()
 	return handle, result, true
+}
+
+// notifyListener selects how the runner hears from the guest's PID 1. Only
+// the default libvirt executor runs a real guest, and a host without vsock
+// runs without the listener.
+func (r VMRunner) notifyListener() func() (notifySocket, uint32, error) {
+	if r.notifyListen != nil {
+		return r.notifyListen
+	}
+	if r.Executor != nil {
+		return nil
+	}
+	if err := r.probe.withDefaults().access("/dev/vhost-vsock"); err != nil {
+		return nil
+	}
+	return listenVSockNotify
 }
 
 func (h *VMHandle) Wait() error {
@@ -941,8 +996,13 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		return VMPlan{}, errors.New("host forwards are not supported by libvirt VM execution")
 	}
 	serial := result.Artifacts.InstallerSerial
+	notifyLog := result.Artifacts.InstallerNotify
 	if runtimeSerialPhase(config.Phase) {
 		serial = result.Artifacts.RuntimeSerial
+		notifyLog = result.Artifacts.RuntimeNotify
+	}
+	if config.notifyPort == 0 {
+		notifyLog = ""
 	}
 	disks, efiTree, efiImage, preseedImage, preseedDir, err := vmDomainDisks(result, config)
 	if err != nil {
@@ -970,6 +1030,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		MACAddress:        macAddress,
 		Disks:             disks,
 		VSock:             vsock,
+		NotifyPort:        config.notifyPort,
 		Metadata:          first(config.DomainMetadata, "katl/vmtest"),
 		PersistentSerial:  config.PersistentSerial,
 		HotplugPCISlots:   config.HotplugPCISlots,
@@ -1000,6 +1061,8 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		PreseedDir:     preseedDir,
 		DomainDisks:    disks,
 		VSock:          vsock,
+		NotifyPort:     config.notifyPort,
+		NotifyLog:      notifyLog,
 	}, nil
 }
 
@@ -1176,6 +1239,7 @@ type libvirtDomain struct {
 	MACAddress        string
 	Disks             []libvirtDisk
 	VSock             VSockPlan
+	NotifyPort        uint32
 	Metadata          string
 	PersistentSerial  bool
 	HotplugPCISlots   int
@@ -1189,8 +1253,20 @@ type domainXML struct {
 	Memory   domainMemory   `xml:"memory"`
 	VCPU     int            `xml:"vcpu"`
 	OS       domainOS       `xml:"os"`
+	Sysinfo  *domainSysinfo `xml:"sysinfo,omitempty"`
 	Features domainFeatures `xml:"features"`
 	Devices  domainDevices  `xml:"devices"`
+}
+
+// domainSysinfo carries SMBIOS type 11 OEM strings, which systemd imports as
+// system credentials.
+type domainSysinfo struct {
+	Type       string   `xml:"type,attr"`
+	OEMStrings []string `xml:"oemStrings>entry"`
+}
+
+type domainSMBIOS struct {
+	Mode string `xml:"mode,attr"`
 }
 
 type domainMetadata struct {
@@ -1213,6 +1289,7 @@ type domainOS struct {
 	Kernel  string        `xml:"kernel,omitempty"`
 	Initrd  string        `xml:"initrd,omitempty"`
 	Cmdline string        `xml:"cmdline,omitempty"`
+	SMBIOS  *domainSMBIOS `xml:"smbios,omitempty"`
 }
 
 type domainOSType struct {
@@ -1350,7 +1427,7 @@ type domainVSock struct {
 
 type domainVSockCID struct {
 	Auto    string `xml:"auto,attr"`
-	Address uint32 `xml:"address,attr"`
+	Address uint32 `xml:"address,attr,omitempty"`
 }
 
 func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, string, string, string, error) {
@@ -1543,7 +1620,7 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 				rootPorts++
 			}
 		}
-		if domain.VSock.Enabled {
+		if domain.VSock.Enabled || domain.NotifyPort != 0 {
 			rootPorts++
 		}
 		for index := 1; index <= rootPorts; index++ {
@@ -1587,6 +1664,14 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 			Model: "virtio",
 			CID:   domainVSockCID{Auto: "no", Address: domain.VSock.GuestCID},
 		}
+	} else if domain.NotifyPort != 0 {
+		// Notify alone needs no fixed guest address: the guest connects to
+		// the host, so libvirt may pick any free CID.
+		doc.Devices.VSock = &domainVSock{Model: "virtio", CID: domainVSockCID{Auto: "yes"}}
+	}
+	if domain.NotifyPort != 0 {
+		doc.OS.SMBIOS = &domainSMBIOS{Mode: "sysinfo"}
+		doc.Sysinfo = &domainSysinfo{Type: "smbios", OEMStrings: []string{notifySocketCredential(domain.NotifyPort)}}
 	}
 	data, err := xml.MarshalIndent(doc, "", "  ")
 	if err != nil {
