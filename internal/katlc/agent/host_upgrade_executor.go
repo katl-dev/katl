@@ -20,6 +20,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/systemdisk"
 )
 
 func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.OperationRecord) (resultErr error) {
@@ -146,7 +147,7 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if err := e.prepareSysupdateSlots(ctx, slots); err != nil {
 		return fail("stage-sysupdate-components", err)
 	}
-	if err := e.stageHostUpgrade(ctx, record, payload, slots.InactiveDevice, inactiveSlot, ukiPath); err != nil {
+	if err := e.stageHostUpgrade(ctx, record, payload, slots.Inactive, inactiveSlot, ukiPath); err != nil {
 		return fail("stage-sysupdate-components", err)
 	}
 	if err := katlosimage.StagePreservedAssets(runtimeRoot(e.Root), plan); err != nil {
@@ -343,7 +344,7 @@ func (e hostUpgradeCommandError) Error() string { return e.name + ": " + toolFai
 func (e hostUpgradeCommandError) Unwrap() error { return e.result.Err }
 func (e hostUpgradeCommandError) ExitCode() int { return e.result.ExitStatus }
 
-func (e *Executor) stageHostUpgrade(ctx context.Context, record operation.OperationRecord, payload katlosimage.Payload, inactiveDevice, inactiveSlot, ukiPath string) error {
+func (e *Executor) stageHostUpgrade(ctx context.Context, record operation.OperationRecord, payload katlosimage.Payload, inactive systemdisk.Partition, inactiveSlot, ukiPath string) error {
 	root := runtimeRoot(e.Root)
 	work := filepath.Join(root, "var/lib/katl/artifacts/host-upgrade", record.OperationID)
 	defer os.RemoveAll(work)
@@ -385,6 +386,14 @@ func (e *Executor) stageHostUpgrade(ctx context.Context, record operation.Operat
 	if result.Err != nil || result.ExitStatus != 0 {
 		return fmt.Errorf("systemd-sysupdate: %s", toolFailure(result))
 	}
+	// prepareSysupdateSlots refreshes the inactive slot with partx, which makes
+	// the kernel remove and add that partition again. Its by-diskseq link then
+	// waits for udev, but its kernel node already exists.
+	node, err := inactive.Node()
+	if err != nil {
+		return fmt.Errorf("find staged runtime root: %w", err)
+	}
+	inactiveDevice := rootedRuntimePath(e.Root, node)
 	if err := flushUpgradeDevice(ctx, e.toolRunner(), inactiveDevice); err != nil {
 		return fmt.Errorf("flush staged runtime root: %w", err)
 	}

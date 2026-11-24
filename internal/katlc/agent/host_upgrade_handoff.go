@@ -169,7 +169,7 @@ func (e *Executor) executeHostUpgradeHandoff(ctx context.Context, record operati
 	if err := e.prepareSysupdateSlots(ctx, slots); err != nil {
 		return fail("stage-sysupdate-components", err)
 	}
-	if err := e.stageHostUpgrade(ctx, record, payload, slots.InactiveDevice, slot, ukiPath); err != nil {
+	if err := e.stageHostUpgrade(ctx, record, payload, slots.Inactive, slot, ukiPath); err != nil {
 		return fail("stage-sysupdate-components", err)
 	}
 	written, err := generation.WriteEntry(bootRoot, generation.LoaderRequest{Record: bootRecord, MachineID: strings.TrimSpace(string(machineID))})

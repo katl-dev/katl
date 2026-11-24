@@ -40,6 +40,9 @@ type Partition struct {
 	Label   string
 	UUID    string
 	DiskSeq uint64
+
+	// sysfs is the sysfs root the partition was read from.
+	sysfs string
 }
 
 type Disk struct {
@@ -57,11 +60,44 @@ type Layout struct {
 
 // DevicePath addresses a partition by its disk's attachment sequence, so the
 // mount cannot reach a different disk that later takes the same kernel name.
+// The path is a udev link, so it suits units, whose device dependency waits
+// for udev; a running process opens the partition through Node instead.
 func (p Partition) DevicePath() string {
 	if p.DiskSeq != 0 {
 		return fmt.Sprintf("/dev/disk/by-diskseq/%d-part%d", p.DiskSeq, p.Number)
 	}
 	return "/dev/" + p.Name
+}
+
+// Node returns the kernel device node of the partition, found afresh in sysfs
+// by its disk's diskseq and its partition number. Rewriting a partition table
+// can make the kernel remove and add the partition again, and udev then
+// recreates its by-diskseq link some time later, while the kernel node exists
+// as soon as the kernel has added the partition. Only diskseq and the
+// partition number identify it: a partition the kernel adds again reports no
+// PARTUUID or label until the next scan.
+func (p Partition) Node() (string, error) {
+	if p.DiskSeq == 0 {
+		return "", fmt.Errorf("partition %s has no disk sequence number, so Katl cannot address it safely", p.Name)
+	}
+	entries, err := os.ReadDir(filepath.Join(p.sysfs, "class/block"))
+	if err != nil {
+		return "", fmt.Errorf("list block devices: %w", err)
+	}
+	for _, entry := range entries {
+		dir, err := filepath.EvalSymlinks(filepath.Join(p.sysfs, "class/block", entry.Name()))
+		if err != nil || !isPartition(dir) {
+			continue
+		}
+		candidate, err := readPartition(p.sysfs, dir)
+		if err != nil {
+			continue
+		}
+		if candidate.DiskSeq == p.DiskSeq && candidate.Number == p.Number {
+			return "/dev/" + candidate.Name, nil
+		}
+	}
+	return "", fmt.Errorf("the kernel reports no partition %d on the disk with diskseq %d; the disk was detached or its partition table changed, so reboot the node and check its disks", p.Number, p.DiskSeq)
 }
 
 // partitionOf describes the partition with the given device number.
@@ -70,7 +106,7 @@ func partitionOf(sysfs string, device Device) (Partition, error) {
 	if err != nil || !isPartition(dir) {
 		return Partition{}, fmt.Errorf("%d:%d is not a disk partition", device.Major, device.Minor)
 	}
-	return readPartition(dir)
+	return readPartition(sysfs, dir)
 }
 
 // Resolve finds the system disk from the device number major:minor backing /
@@ -103,7 +139,7 @@ func Resolve(sysfs string, major, minor uint32, checkBoot bool) (Layout, error) 
 		if !isPartition(dir) {
 			continue
 		}
-		partition, err := readPartition(dir)
+		partition, err := readPartition(sysfs, dir)
 		if err != nil {
 			return Layout{}, err
 		}
@@ -167,7 +203,7 @@ func checkNoClones(sysfs, diskDir string, layout Layout) error {
 		if err != nil || filepath.Dir(dir) == diskDir || !isPartition(dir) {
 			continue
 		}
-		other, err := readPartition(dir)
+		other, err := readPartition(sysfs, dir)
 		if err != nil {
 			continue
 		}
@@ -232,12 +268,12 @@ func isPartition(dir string) bool {
 	return err == nil
 }
 
-func readPartition(dir string) (Partition, error) {
+func readPartition(sysfs, dir string) (Partition, error) {
 	content, err := os.ReadFile(filepath.Join(dir, "uevent"))
 	if err != nil {
 		return Partition{}, fmt.Errorf("read partition %s: %w", filepath.Base(dir), err)
 	}
-	partition := Partition{Name: filepath.Base(dir)}
+	partition := Partition{Name: filepath.Base(dir), sysfs: sysfs}
 	if value, err := os.ReadFile(filepath.Join(filepath.Dir(dir), "diskseq")); err == nil {
 		partition.DiskSeq, _ = strconv.ParseUint(strings.TrimSpace(string(value)), 10, 64)
 	}
