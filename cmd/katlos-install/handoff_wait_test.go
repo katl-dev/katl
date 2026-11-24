@@ -5,9 +5,13 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/installmedia"
 )
 
 type fakeHandoffWorld struct {
@@ -125,5 +129,99 @@ func TestWaitForAnnouncementAddressReportsInitialFailureFirst(t *testing.T) {
 	})
 	if !strings.Contains(atWait, "automatic install failed: download manifest: connection refused") {
 		t.Fatalf("initial failure not printed before waiting:\n%q", atWait)
+	}
+}
+
+func TestWaitForRemoteInputs(t *testing.T) {
+	dir := t.TempDir()
+	remote := dir + "/remote.yaml"
+	local := dir + "/local.yaml"
+	if err := os.WriteFile(remote, []byte("katlosImage:\n  url: https://example.test/katlos.raw\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(local, []byte("katlosImage:\n  localRef: katlos.raw\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name      string
+		input     installer.BootInput
+		wantWaits bool
+	}{
+		{"bundle URL", installer.BootInput{BundleURL: "https://example.test/c.katlcfg"}, true},
+		{"manifest URL", installer.BootInput{ManifestURL: "https://example.test/m.yaml"}, true},
+		{"local manifest with remote image", installer.BootInput{ManifestPath: remote}, true},
+		{"local manifest with local image", installer.BootInput{ManifestPath: local}, false},
+		{"unreadable local manifest", installer.BootInput{ManifestPath: dir + "/missing.yaml"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			waits := 0
+			err := waitForRemoteInputs(tt.input, installmedia.Media{}, func() (string, error) {
+				waits++
+				return "http://192.0.2.44:8080", nil
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (waits > 0) != tt.wantWaits {
+				t.Fatalf("waited %d times, want wait=%v", waits, tt.wantWaits)
+			}
+		})
+	}
+}
+
+// All-local inputs must not reach the real waiter even with no address and no
+// carrier, since it has no deadline.
+func TestWaitForRemoteInputsOfflineDoesNotBlock(t *testing.T) {
+	path := t.TempDir() + "/m.yaml"
+	if err := os.WriteFile(path, []byte("katlosImage:\n  localRef: katlos.raw\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeHandoffWorld{addrAt: -1, links: []handoffLink{{"enp1s0", false}}, maxWait: time.Hour}
+	w := f.waiter()
+
+	err := waitForRemoteInputs(installer.BootInput{ManifestPath: path}, installmedia.Media{}, func() (string, error) {
+		return w.wait(context.Background(), wildcard)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.out.Len() != 0 {
+		t.Fatalf("unexpected address-wait progress:\n%s", f.out.String())
+	}
+}
+
+func TestWaitForRemoteInputsWaitsBeforeFetch(t *testing.T) {
+	path := t.TempDir() + "/m.yaml"
+	if err := os.WriteFile(path, []byte("katlosImage:\n  url: https://example.test/k.raw\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeHandoffWorld{addrAt: 90 * time.Second, links: []handoffLink{{"enp1s0", true}}, maxWait: time.Hour}
+	w := f.waiter()
+
+	err := waitForRemoteInputs(installer.BootInput{ManifestPath: path}, installmedia.Media{}, func() (string, error) {
+		return w.wait(context.Background(), wildcard)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(f.out.String(), "waiting for a DHCP address on enp1s0") || f.t.Sub(f.start) < 90*time.Second {
+		t.Fatalf("did not wait for an address (elapsed %s):\n%s", f.t.Sub(f.start), f.out.String())
+	}
+}
+
+func TestWaitForRemoteInputsAddressPresent(t *testing.T) {
+	f := &fakeHandoffWorld{addrAt: 0, maxWait: time.Hour}
+	w := f.waiter()
+
+	err := waitForRemoteInputs(installer.BootInput{BundleURL: "https://example.test/c.katlcfg"}, installmedia.Media{}, func() (string, error) {
+		return w.wait(context.Background(), wildcard)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.t != f.start || f.out.Len() != 0 {
+		t.Fatalf("waited with an address present: elapsed %s, output %q", f.t.Sub(f.start), f.out.String())
 	}
 }

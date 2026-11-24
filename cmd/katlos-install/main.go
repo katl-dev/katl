@@ -717,12 +717,8 @@ func runHandoff(ctx context.Context, runDir, addr string, stdout io.Writer, init
 	}
 	var initialErr error
 	if initial != nil {
-		// An automatic install that fetches its input by URL needs an address
-		// first; the waiter reports progress while it waits.
-		if initial.BundleURL != "" || initial.ManifestURL != "" {
-			if _, err := wait(); err != nil {
-				return err
-			}
+		if err := waitForRemoteInputs(*initial, media, wait); err != nil {
+			return err
 		}
 		initialErr = runAutomaticInstall(ctx, *initial, runDir, stdout)
 		if ctx.Err() != nil {

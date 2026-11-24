@@ -6,8 +6,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/installer"
+	"github.com/katl-dev/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/installer/installmedia"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -125,4 +131,51 @@ func handoffLinks() ([]handoffLink, error) {
 		})
 	}
 	return links, nil
+}
+
+// waitForRemoteInputs blocks until an address exists when the automatic
+// install must fetch anything over the network, and returns immediately for
+// all-local inputs so offline media installs never wait.
+func waitForRemoteInputs(input installer.BootInput, media installmedia.Media, wait func() (string, error)) error {
+	if !automaticInstallNeedsNetwork(input, media) {
+		return nil
+	}
+	_, err := wait()
+	return err
+}
+
+// automaticInstallNeedsNetwork reports whether the install reads a remote
+// source: a bundle or manifest URL, or a KatlOS image URL in the manifest the
+// install will run. An unreadable local input reports false so the install
+// itself reports the error instead of hanging on the network.
+func automaticInstallNeedsNetwork(input installer.BootInput, media installmedia.Media) bool {
+	switch {
+	case input.BundleURL != "" || input.ManifestURL != "":
+		return true
+	case input.BundlePath != "":
+		selected, err := configbundle.ReadSelectedNodeFile(input.BundlePath, configbundle.ReadOptions{
+			ExpectedDigest:     input.BundleDigest,
+			NodeName:           input.NodeName,
+			DefaultKatlosImage: media.Image,
+		})
+		if err != nil {
+			return false
+		}
+		return !selected.KatlosImageFromMedia && selected.InstallManifest.KatlosImage.URL != ""
+	case input.ManifestPath != "":
+		data, err := os.ReadFile(input.ManifestPath)
+		if err != nil {
+			return false
+		}
+		var m struct {
+			KatlosImage struct {
+				URL string `yaml:"url"`
+			} `yaml:"katlosImage"`
+		}
+		if err := yaml.Unmarshal(data, &m); err != nil {
+			return false
+		}
+		return strings.TrimSpace(m.KatlosImage.URL) != ""
+	}
+	return false
 }
