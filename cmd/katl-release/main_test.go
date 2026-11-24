@@ -279,6 +279,7 @@ func TestVerify(t *testing.T) {
 		{"root unavailable", "v2026.10.2", testCommit, func(f *githubFixture) { f.rootOffline = true }, "fetch Sigstore trusted root"},
 		{"untrusted", "v2026.10.2", testCommit, func(f *githubFixture) { f.provenance = true }, "provenance verification failed for RELEASE_NOTES.md"},
 		{"branch", "main", testCommit, func(f *githubFixture) {}, "release tag"},
+		{"noncanonical tag", "v2026.13.0", testCommit, func(f *githubFixture) {}, "not a KatlOS release"},
 		{"short commit", "v2026.10.2", testCommit[:12], func(f *githubFixture) {}, "full source commit"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
