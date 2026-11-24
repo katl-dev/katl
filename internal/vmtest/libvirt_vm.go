@@ -1122,12 +1122,18 @@ func serialHas(path, text string) bool {
 	return strings.Contains(readSerial(path), text)
 }
 
+// SerialText returns the console text in the serial log at path, as serial
+// signals and hooks match it. The log file itself stays raw evidence.
+func SerialText(path string) string {
+	return readSerial(path)
+}
+
 func readSerial(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
-	return string(data)
+	return consoleText(string(data))
 }
 
 func libvirtAccel(policy KVMPolicy, probe probe) (string, error) {

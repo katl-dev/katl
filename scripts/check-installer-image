@@ -146,6 +146,9 @@ do
     has_path "$path"
 done
 
+grep -Fxq 'Audit=keep' "$initrd_root/etc/systemd/journald.conf.d/10-katl-installer-console.conf" ||
+    fail "installer journald turns on kernel auditing, whose records split console lines"
+
 installer_unit="$initrd_root/usr/lib/systemd/system/katlos-install.service"
 grep -Fxq 'Type=oneshot' "$installer_unit" ||
     fail "installer service does not block initrd completion as a oneshot"

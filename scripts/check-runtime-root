@@ -290,6 +290,7 @@ file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "StandardOutpu
 file_has /usr/lib/systemd/system/katl-runtime-boot-signal.service "SyslogIdentifier=katl-runtime-boot"
 file_has /etc/systemd/journald.conf.d/10-katl-runtime-console.conf "ForwardToConsole=yes"
 file_has /etc/systemd/journald.conf.d/10-katl-runtime-console.conf "TTYPath=/dev/ttyS0"
+file_has /etc/systemd/journald.conf.d/10-katl-runtime-console.conf "Audit=keep"
 file_has /usr/lib/systemd/system/katl-console.service "ExecStart=/usr/bin/katl-console --mode=runtime --tty=/dev/tty1"
 file_has /usr/lib/systemd/system/katl-console.service "TTYPath=/dev/tty1"
 file_has /usr/lib/systemd/system/getty@tty1.service.d/10-katl-console.conf "ConditionPathExists=!/usr/bin/katl-console"

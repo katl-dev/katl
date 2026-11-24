@@ -402,9 +402,7 @@ func runThreeNodeGeneration0RerunProof(ctx context.Context, runner vmtest.Runner
 
 func installerRerunRefused(result vmtest.Result) bool {
 	text := strings.ToLower(result.FailureSummary)
-	if data, err := os.ReadFile(result.Artifacts.InstallerSerial); err == nil {
-		text += "\n" + strings.ToLower(string(data))
-	}
+	text += "\n" + strings.ToLower(vmtest.SerialText(result.Artifacts.InstallerSerial))
 	for _, signal := range []string{
 		"install refused",
 		"install-refused",
