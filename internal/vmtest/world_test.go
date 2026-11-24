@@ -219,6 +219,11 @@ func TestDecodeWorldRejectsInvalidNetwork(t *testing.T) {
 			want:   "network.gateway",
 		},
 		{
+			name:   "relative lease",
+			mutate: func(world *World) { world.Lease = "run/lease" },
+			want:   "lease must be an absolute path",
+		},
+		{
 			name:   "gateway outside cidr",
 			mutate: func(world *World) { world.Network.Gateway = "10.78.0.1" },
 			want:   "outside network.cidr",

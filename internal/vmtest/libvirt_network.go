@@ -21,7 +21,9 @@ type OwnedNetwork struct {
 	Owner string
 	// Lease is the run lease of the scripts/vmtest-run invocation that owns
 	// the network, if one does.
-	Lease   string
+	Lease string
+	// Run is the run ID of that invocation.
+	Run     string
 	CIDR    string
 	Gateway string
 	Hosts   []DHCPHost
@@ -42,6 +44,17 @@ type networkXML struct {
 	Metadata domainMetadata   `xml:"metadata"`
 	Forward  networkForward   `xml:"forward"`
 	IP       networkIPElement `xml:"ip"`
+	// Dnsmasq logs DHCP exchanges, so a guest that holds an unplanned address
+	// can be traced to the server that gave it.
+	Dnsmasq networkDnsmasq `xml:"http://libvirt.org/schemas/network/dnsmasq/1.0 options"`
+}
+
+type networkDnsmasq struct {
+	Options []networkDnsmasqOption `xml:"option"`
+}
+
+type networkDnsmasqOption struct {
+	Value string `xml:"value,attr"`
 }
 
 type networkForward struct {
@@ -93,26 +106,23 @@ func (network OwnedNetwork) XML() (string, error) {
 		return "", fmt.Errorf("network gateway %q is outside %s", network.Gateway, network.CIDR)
 	}
 	prefix, _ := cidr.Mask.Size()
-	start := ipToUint32(cidr.IP) + 1
-	end := broadcast(cidr) - 1
-	if ipToUint32(gateway) == start {
-		start++
-	}
-	if end <= start {
-		return "", fmt.Errorf("network CIDR %q has no DHCP range", network.CIDR)
+	plan, err := planAddresses(cidr, gateway)
+	if err != nil {
+		return "", err
 	}
 	doc := networkXML{
 		Name:     network.Name,
-		Metadata: domainMetadata{VMTest: domainVMTest{Lease: network.Lease, Value: network.Owner}},
+		Metadata: domainMetadata{VMTest: domainVMTest{Lease: network.Lease, Run: network.Run, Value: network.Owner}},
 		Forward:  networkForward{Mode: "nat"},
 		IP: networkIPElement{
 			Address: gateway.String(),
 			Prefix:  prefix,
 			DHCP: networkDHCP{Ranges: []networkDHCPRange{{
-				Start: uint32ToIP(start).String(),
-				End:   uint32ToIP(end).String(),
+				Start: uint32ToIP(plan.dynamicStart).String(),
+				End:   uint32ToIP(plan.dynamicEnd).String(),
 			}}},
 		},
+		Dnsmasq: networkDnsmasq{Options: []networkDnsmasqOption{{Value: "log-dhcp"}}},
 	}
 	for _, host := range network.Hosts {
 		element, err := host.element(cidr)
@@ -305,6 +315,8 @@ type LibvirtMetadata struct {
 	// Lease is the run lease of the scripts/vmtest-run invocation that owns
 	// the object, if it has one.
 	Lease string
+	// Run is the run ID of that invocation.
+	Run string
 }
 
 // ParseLibvirtMetadata decodes the Katl metadata element in data.
@@ -313,5 +325,5 @@ func ParseLibvirtMetadata(data []byte) (LibvirtMetadata, error) {
 	if err := xml.Unmarshal(data, &element); err != nil {
 		return LibvirtMetadata{}, err
 	}
-	return LibvirtMetadata{Value: strings.TrimSpace(element.Value), Lease: element.Lease}, nil
+	return LibvirtMetadata{Value: strings.TrimSpace(element.Value), Lease: element.Lease, Run: element.Run}, nil
 }

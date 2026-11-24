@@ -1,0 +1,451 @@
+package vmtest
+
+import (
+	"bytes"
+	"context"
+	"encoding/xml"
+	"errors"
+	"fmt"
+	"io"
+	"io/fs"
+	"net"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+
+	"golang.org/x/sys/unix"
+)
+
+// vmtestMetadata is the metadata value of the libvirt objects that
+// scripts/vmtest-run worlds create. katldev objects carry other values and are
+// never swept.
+const vmtestMetadata = "katl/vmtest"
+
+const vmtestMetadataURI = "https://katlos.io/xmlns/vmtest/1"
+
+// virshFunc runs a virsh command on the libvirt connection that owns the
+// objects it manages.
+type virshFunc = func(ctx context.Context, args ...string) ([]byte, error)
+
+// ErrNetworkStart marks a failure to start a libvirt network, which usually
+// means another network, interface or route already uses its subnet.
+var ErrNetworkStart = errors.New("start libvirt network")
+
+// Ensure makes the network exist, run and reserve exactly Hosts. A network
+// that exists must carry this network's ownership metadata, so Ensure never
+// manages one it did not create. definition is where the network's XML is
+// written before it is defined.
+func (network OwnedNetwork) Ensure(ctx context.Context, virsh virshFunc, definition string) error {
+	exists, err := networkExists(ctx, virsh, network.Name)
+	if err != nil {
+		return err
+	}
+	defined := false
+	if !exists {
+		data, err := network.XML()
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(definition), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(definition, []byte(data), 0o644); err != nil {
+			return err
+		}
+		if _, err := virsh(ctx, "net-define", definition); err != nil {
+			return err
+		}
+		defined = true
+	}
+	if err := network.requireOwned(ctx, virsh); err != nil {
+		if !defined {
+			return err
+		}
+		// A libvirt without network metadata accepts the definition but drops
+		// the ownership marker, which would leave a network nothing may manage
+		// or remove.
+		if _, undefineErr := virsh(ctx, "net-undefine", network.Name); undefineErr != nil {
+			return fmt.Errorf("libvirt network %s lost its ownership metadata and could not be undefined: %w; remove it with virsh net-undefine %s", network.Name, undefineErr, network.Name)
+		}
+		return fmt.Errorf("libvirt did not keep the ownership metadata of network %s, so it was undefined again; vmtest needs libvirt 9.7 or newer for network metadata: %w", network.Name, err)
+	}
+	active, err := networkActive(ctx, virsh, network.Name)
+	if err != nil {
+		return err
+	}
+	if !active {
+		if _, err := virsh(ctx, "net-start", network.Name); err != nil {
+			return fmt.Errorf("%w %s on %s: %w", ErrNetworkStart, network.Name, network.CIDR, err)
+		}
+	}
+	return network.reconcileHosts(ctx, virsh)
+}
+
+// reconcileHosts makes the network's DHCP reservations exactly Hosts, live and
+// in the persistent definition.
+func (network OwnedNetwork) reconcileHosts(ctx context.Context, virsh virshFunc) error {
+	data, err := virsh(ctx, "net-dumpxml", network.Name, "--inactive")
+	if err != nil {
+		return err
+	}
+	current, err := LibvirtNetworkHosts(data)
+	if err != nil {
+		return fmt.Errorf("read libvirt network %s reservations: %w", network.Name, err)
+	}
+	byMAC := map[string]DHCPHost{}
+	for _, host := range current {
+		byMAC[strings.ToLower(host.MACAddress)] = host
+	}
+	update := func(command string, host DHCPHost) error {
+		element, err := network.HostXML(host)
+		if err != nil {
+			return err
+		}
+		_, err = virsh(ctx, "net-update", network.Name, command, "ip-dhcp-host", element, "--live", "--config")
+		return err
+	}
+	for _, host := range network.Hosts {
+		mac := strings.ToLower(host.MACAddress)
+		existing, ok := byMAC[mac]
+		delete(byMAC, mac)
+		switch {
+		case !ok:
+			err = update("add-last", host)
+		case existing.Address != host.Address || existing.Name != host.Name:
+			err = update("modify", host)
+		default:
+			continue
+		}
+		if err != nil {
+			return err
+		}
+	}
+	for _, stale := range byMAC {
+		if err := update("delete", stale); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// requireOwned fails unless the existing network carries this network's owner
+// and, when it has one, its lease.
+func (network OwnedNetwork) requireOwned(ctx context.Context, virsh virshFunc) error {
+	output, err := virsh(ctx, "net-metadata", network.Name, vmtestMetadataURI)
+	if err != nil {
+		return fmt.Errorf("refusing to manage libvirt network %s without ownership metadata: %w", network.Name, err)
+	}
+	metadata, err := ParseLibvirtMetadata(output)
+	if err != nil {
+		return fmt.Errorf("decode libvirt network %s ownership metadata: %w", network.Name, err)
+	}
+	if metadata.Value != network.Owner || (network.Lease != "" && metadata.Lease != network.Lease) {
+		return fmt.Errorf("refusing to manage libvirt network %s owned by %q with lease %q", network.Name, metadata.Value, metadata.Lease)
+	}
+	return nil
+}
+
+func networkExists(ctx context.Context, virsh virshFunc, name string) (bool, error) {
+	output, err := virsh(ctx, "net-list", "--all", "--name")
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Fields(string(output)) {
+		if line == name {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func networkActive(ctx context.Context, virsh virshFunc, name string) (bool, error) {
+	output, err := virsh(ctx, "net-info", name)
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if ok && strings.EqualFold(strings.TrimSpace(key), "Active") {
+			return strings.EqualFold(strings.TrimSpace(value), "yes"), nil
+		}
+	}
+	return false, fmt.Errorf("virsh net-info %s did not report whether it is active", name)
+}
+
+// runVirsh returns a virshFunc for the libvirt connection uri, using
+// KATL_VMTEST_VIRSH as the virsh command.
+func runVirsh(uri string) virshFunc {
+	virsh := first(os.Getenv("KATL_VMTEST_VIRSH"), "virsh")
+	return func(ctx context.Context, args ...string) ([]byte, error) {
+		args = append([]string{"-c", uri}, args...)
+		cmd := exec.CommandContext(ctx, virsh, args...)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+		output, err := cmd.Output()
+		if err != nil {
+			return output, fmt.Errorf("virsh %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		}
+		return output, nil
+	}
+}
+
+// leaseHeld reports whether a live run holds the lease at path. A missing
+// lease is free: runs delete theirs, or never created it. A lease that cannot
+// be read belongs to another user's run and counts as held, so a sweep never
+// removes what it cannot judge.
+func leaseHeld(path string) (bool, error) {
+	// A separate open file description, so the probe conflicts with the
+	// holder even inside the holder's own process.
+	file, err := os.Open(path)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return false, nil
+	case errors.Is(err, fs.ErrPermission):
+		return true, nil
+	case err != nil:
+		return false, err
+	}
+	defer file.Close()
+	err = unix.Flock(int(file.Fd()), unix.LOCK_SH|unix.LOCK_NB)
+	if errors.Is(err, unix.EWOULDBLOCK) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("probe lease %s: %w", path, err)
+	}
+	_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
+	return false, nil
+}
+
+func domainMetadataOf(ctx context.Context, virsh virshFunc, domain string) (LibvirtMetadata, bool) {
+	return vmtestMetadataOf(ctx, virsh, "metadata", domain, "--uri", vmtestMetadataURI)
+}
+
+func networkMetadataOf(ctx context.Context, virsh virshFunc, network string) (LibvirtMetadata, bool) {
+	return vmtestMetadataOf(ctx, virsh, "net-metadata", network, vmtestMetadataURI)
+}
+
+// vmtestMetadataOf returns the metadata of an object that scripts/vmtest-run
+// worlds created, and false for any other object.
+func vmtestMetadataOf(ctx context.Context, virsh virshFunc, args ...string) (LibvirtMetadata, bool) {
+	output, err := virsh(ctx, args...)
+	if err != nil {
+		return LibvirtMetadata{}, false
+	}
+	metadata, err := ParseLibvirtMetadata(output)
+	if err != nil || metadata.Value != vmtestMetadata {
+		return LibvirtMetadata{}, false
+	}
+	return metadata, true
+}
+
+// sweep removes the vmtest domains and networks whose run has ended. An object
+// belongs to the run whose lease its metadata names, and is removed once that
+// lease is free.
+//
+// A domain without a lease comes from a runner that predates run leases. Such
+// a runner holds the host lock of scripts/vmtest-run for its whole run, and so
+// does the runner whose lease this process runs under, so no lease-less domain
+// can belong to a live run and every one is removed. This depends on the host
+// lock: it must change when the host lock is removed.
+func sweep(ctx context.Context, virsh virshFunc, stderr io.Writer) error {
+	output, err := virsh(ctx, "list", "--all", "--name")
+	if err != nil {
+		return err
+	}
+	for _, domain := range strings.Fields(string(output)) {
+		metadata, ok := domainMetadataOf(ctx, virsh, domain)
+		if !ok {
+			continue
+		}
+		if metadata.Lease != "" {
+			held, err := leaseHeld(metadata.Lease)
+			if err != nil {
+				return err
+			}
+			if held {
+				continue
+			}
+		}
+		fmt.Fprintf(stderr, "vmtest cleanup: removing libvirt domain %s left by a finished run\n", domain)
+		if err := removeDomain(ctx, virsh, domain); err != nil {
+			return err
+		}
+	}
+
+	output, err = virsh(ctx, "net-list", "--all", "--name")
+	if err != nil {
+		return err
+	}
+	for _, network := range strings.Fields(string(output)) {
+		metadata, ok := networkMetadataOf(ctx, virsh, network)
+		if !ok || metadata.Lease == "" {
+			continue
+		}
+		held, err := leaseHeld(metadata.Lease)
+		if err != nil {
+			return err
+		}
+		if held {
+			continue
+		}
+		fmt.Fprintf(stderr, "vmtest cleanup: removing libvirt network %s left by a finished run\n", network)
+		if err := removeNetwork(ctx, virsh, network); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeDomain(ctx context.Context, virsh virshFunc, domain string) error {
+	state, _ := virsh(ctx, "domstate", domain)
+	switch strings.TrimSpace(string(state)) {
+	case "shut off", "", "no state":
+	default:
+		if _, err := virsh(ctx, "destroy", domain); err != nil {
+			return fmt.Errorf("destroy vmtest domain %s: %w", domain, err)
+		}
+	}
+	if _, err := virsh(ctx, "undefine", domain, "--nvram"); err != nil {
+		return fmt.Errorf("undefine vmtest domain %s: %w", domain, err)
+	}
+	return nil
+}
+
+func removeNetwork(ctx context.Context, virsh virshFunc, network string) error {
+	active, err := networkActive(ctx, virsh, network)
+	if err != nil {
+		return err
+	}
+	if active {
+		if _, err := virsh(ctx, "net-destroy", network); err != nil {
+			return err
+		}
+	}
+	_, err = virsh(ctx, "net-undefine", network)
+	return err
+}
+
+// networkCreationAttempts bounds how often createNetwork retries on another
+// subnet after libvirt refuses to start the network on one.
+const networkCreationAttempts = 4
+
+// createNetwork defines and starts network on a /24 that nothing else on the
+// host uses, or reuses the network of that name when it carries network's
+// lease. Choosing the subnet and starting the network happen under one lock,
+// so concurrent processes cannot choose the same subnet; a subnet that libvirt
+// still refuses, for example because a network outside libvirt's view uses it,
+// is skipped on the next attempt. The returned network has its CIDR and
+// gateway set.
+func createNetwork(ctx context.Context, virsh virshFunc, lockPath string, network OwnedNetwork, definition string) (OwnedNetwork, error) {
+	unlock, err := lockFile(ctx, lockPath)
+	if err != nil {
+		return OwnedNetwork{}, err
+	}
+	defer unlock()
+
+	exists, err := networkExists(ctx, virsh, network.Name)
+	if err != nil {
+		return OwnedNetwork{}, err
+	}
+	if exists {
+		if err := network.requireOwned(ctx, virsh); err != nil {
+			return OwnedNetwork{}, err
+		}
+		data, err := virsh(ctx, "net-dumpxml", network.Name)
+		if err != nil {
+			return OwnedNetwork{}, err
+		}
+		subnet, err := LibvirtNetworkIPv4(data)
+		if err != nil || subnet == nil {
+			return OwnedNetwork{}, fmt.Errorf("read libvirt network %s subnet: %v", network.Name, err)
+		}
+		gateway, err := libvirtNetworkGateway(data)
+		if err != nil {
+			return OwnedNetwork{}, fmt.Errorf("read libvirt network %s gateway: %w", network.Name, err)
+		}
+		network.CIDR, network.Gateway = subnet.String(), gateway.String()
+		return network, network.Ensure(ctx, virsh, definition)
+	}
+
+	var refused []*net.IPNet
+	var startErr error
+	for range networkCreationAttempts {
+		inUse, err := SubnetsInUse(ctx, virsh)
+		if err != nil {
+			return OwnedNetwork{}, err
+		}
+		cidr, gateway, err := ChooseNetworkCIDR(network.Name, append(inUse, refused...))
+		if err != nil {
+			return OwnedNetwork{}, err
+		}
+		network.CIDR, network.Gateway = cidr, gateway
+		err = network.Ensure(ctx, virsh, definition)
+		if err == nil {
+			return network, nil
+		}
+		if !errors.Is(err, ErrNetworkStart) {
+			return OwnedNetwork{}, err
+		}
+		startErr = err
+		if _, undefineErr := virsh(ctx, "net-undefine", network.Name); undefineErr != nil {
+			return OwnedNetwork{}, fmt.Errorf("%w; undefine it with virsh net-undefine %s: %v", err, network.Name, undefineErr)
+		}
+		_, subnet, _ := net.ParseCIDR(cidr)
+		refused = append(refused, subnet)
+	}
+	return OwnedNetwork{}, fmt.Errorf("no subnet accepted after %d attempts: %w", networkCreationAttempts, startErr)
+}
+
+// releaseNetwork removes the network unless a domain that this lease owns
+// still attaches to it, as a domain preserved for debugging does. A later
+// sweep removes such a network once the lease is free.
+func releaseNetwork(ctx context.Context, virsh virshFunc, name, lease string, stderr io.Writer) error {
+	if metadata, ok := networkMetadataOf(ctx, virsh, name); !ok || metadata.Lease != lease {
+		return nil
+	}
+	output, err := virsh(ctx, "list", "--all", "--name")
+	if err != nil {
+		return err
+	}
+	for _, domain := range strings.Fields(string(output)) {
+		if metadata, ok := domainMetadataOf(ctx, virsh, domain); !ok || metadata.Lease != lease {
+			continue
+		}
+		data, err := virsh(ctx, "dumpxml", domain)
+		if err != nil {
+			return err
+		}
+		attached, err := attachesToNetwork(data, name)
+		if err != nil {
+			return fmt.Errorf("read libvirt domain %s: %w", domain, err)
+		}
+		if attached {
+			fmt.Fprintf(stderr, "vmtest cleanup: keeping libvirt network %s for preserved domain %s\n", name, domain)
+			return nil
+		}
+	}
+	return removeNetwork(ctx, virsh, name)
+}
+
+// attachesToNetwork reports whether a domain definition has an interface on
+// the libvirt network.
+func attachesToNetwork(domain []byte, network string) (bool, error) {
+	var doc struct {
+		Interfaces []struct {
+			Source struct {
+				Network string `xml:"network,attr"`
+			} `xml:"source"`
+		} `xml:"devices>interface"`
+	}
+	if err := xml.Unmarshal(domain, &doc); err != nil {
+		return false, err
+	}
+	for _, iface := range doc.Interfaces {
+		if iface.Source.Network == network {
+			return true, nil
+		}
+	}
+	return false, nil
+}

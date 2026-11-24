@@ -48,7 +48,7 @@ func TestExternalWorkerJoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	result.Started = time.Now().UTC()
-	smoke := operationBackedSmokeRun{WorldScenario: scenario, Options: options, Runner: runner, Scenario: vmScenario, Result: result, LibvirtURI: world.Libvirt.URI, Network: world.Libvirt.Network, Inputs: operationBackedSmokeInputs{KubernetesVersion: version}}
+	smoke := operationBackedSmokeRun{WorldScenario: scenario, Options: options, Runner: runner, Scenario: vmScenario, Result: result, LibvirtURI: world.Libvirt.URI, Network: scenario.World.Network.Name, Inputs: operationBackedSmokeInputs{KubernetesVersion: version}}
 	runExternalWorkerJoin(t, smoke)
 }
 

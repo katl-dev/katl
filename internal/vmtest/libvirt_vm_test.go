@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -966,7 +967,6 @@ func TestVMPreseedImage(t *testing.T) {
 }
 
 func TestVMVSock(t *testing.T) {
-	clearCIDReservationsForTest(t)
 	result, config := vmFixture(t)
 	config.VSock.Enabled = true
 	config.VSock.GuestCID = 2048
@@ -1007,35 +1007,76 @@ func TestVMVSock(t *testing.T) {
 	}
 }
 
-func TestCID(t *testing.T) {
-	clearCIDReservationsForTest(t)
-	first := cidForRun("run-a")
-	second := cidForRun("run-a")
-	other := cidForRun("run-b")
-	if first != second {
-		t.Fatalf("cid not deterministic: %d != %d", first, second)
+func TestVMVSockAutoCID(t *testing.T) {
+	result, config := vmFixture(t)
+	config.VSock.Enabled = true
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+		output: func(string, ...string) ([]byte, error) {
+			return []byte("vhost-vsock-pci guest-cid=<uint32>"), nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
 	}
-	if first == other {
-		t.Fatalf("cid collision for distinct run ids: %d", first)
+	if plan.VSock.GuestCID != 0 {
+		t.Fatalf("planned CID = %d, want libvirt to allocate it", plan.VSock.GuestCID)
 	}
-	if first < 1024 {
-		t.Fatalf("cid = %d", first)
-	}
-	if _, err := reserveExactCID("owner-a", 55000); err != nil {
-		t.Fatalf("reserve owner-a: %v", err)
-	}
-	if _, err := reserveExactCID("owner-b", 55000); err == nil {
-		t.Fatal("reserve owner-b succeeded")
+	if !strings.Contains(plan.DomainXML, `<cid auto="yes"></cid>`) {
+		t.Fatalf("auto CID missing from XML:\n%s", plan.DomainXML)
 	}
 }
 
-func TestVSockReservationReleasedAfterPassedRun(t *testing.T) {
-	clearCIDReservationsForTest(t)
+func TestVMVSockLiveCID(t *testing.T) {
+	tmp := t.TempDir()
+	virsh := filepath.Join(tmp, "virsh")
+	writeExecutable(t, virsh, `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-c" ]]; then
+    shift 2
+fi
+case "${1:-}" in
+    define|start|destroy|undefine|console)
+        exit 0
+        ;;
+    dumpxml)
+        printf "<domain><devices><vsock model='virtio'><cid auto='yes' address='4321'/></vsock></devices></domain>\n"
+        exit 0
+        ;;
+    domstate)
+        printf 'running\n'
+        exit 0
+        ;;
+    *)
+        echo "unexpected virsh args: $*" >&2
+        exit 40
+        ;;
+esac
+`)
+	xmlPath := filepath.Join(tmp, "domain.xml")
+	if err := os.WriteFile(xmlPath, []byte("<domain/>"), 0o644); err != nil {
+		t.Fatalf("write domain XML: %v", err)
+	}
 	result, config := vmFixture(t)
 	config.VSock.Enabled = true
-	config.VSock.GuestCID = 4096
+	config.Agent.RequireHealth = true
+	dialed := 0
 	runner := VMRunner{
-		Executor: vmExec{write: "serial ready"},
+		Executor: LibvirtVMExecutor{
+			VirshPath:     virsh,
+			DomainName:    "katl-run-1",
+			DomainXMLFile: xmlPath,
+			PollInterval:  time.Millisecond,
+		},
+		AgentConnector: func(_ context.Context, plan VSockPlan, _ string) (AgentHealthClient, error) {
+			dialed++
+			if plan.GuestCID != 4321 {
+				return nil, fmt.Errorf("dialed CID %d, want the live CID", plan.GuestCID)
+			}
+			return fakeAgentHealth{}, nil
+		},
 		probe: probe{
 			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
@@ -1046,57 +1087,28 @@ func TestVSockReservationReleasedAfterPassedRun(t *testing.T) {
 		},
 	}
 
-	result = runner.Run(context.Background(), result, config)
+	var handleCID, planCID uint32
+	result = runner.RunWithVM(context.Background(), result, config, func(vm *VMHandle) error {
+		handleCID = vm.Result.VSock.GuestCID
+		planCID = vm.Plan.VSock.GuestCID
+		return vm.CheckAgent()
+	})
+
 	if result.Status != StatusPassed {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
 	}
-	if _, err := reserveExactCID("next-run", result.VSock.GuestCID); err != nil {
-		t.Fatalf("reserve released CID: %v", err)
+	if handleCID != 4321 || planCID != 4321 || result.VSock.GuestCID != 4321 {
+		t.Fatalf("CIDs handle=%d plan=%d result=%d, want live CID 4321", handleCID, planCID, result.VSock.GuestCID)
+	}
+	if dialed == 0 {
+		t.Fatal("agent was never dialed")
 	}
 }
 
-func TestVSockReservationReleasedAfterFailedUnpreservedRun(t *testing.T) {
-	clearCIDReservationsForTest(t)
-	result, config := vmFixture(t)
-	config.VSock.Enabled = true
-	config.VSock.GuestCID = 4097
-	runner := VMRunner{
-		Executor: vmExec{err: errors.New("boot failed")},
-		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
-			stat:     os.Stat,
-			access:   func(string) error { return nil },
-			output: func(string, ...string) ([]byte, error) {
-				return []byte("vhost-vsock-pci guest-cid=<uint32>"), nil
-			},
-		},
-	}
+type fakeAgentHealth struct{}
 
-	result = runner.Run(context.Background(), result, config)
-	if result.Status != StatusFailed {
-		t.Fatalf("Status = %q, want failed", result.Status)
-	}
-	if _, err := reserveExactCID("next-run", result.VSock.GuestCID); err != nil {
-		t.Fatalf("reserve released CID: %v", err)
-	}
-}
-
-func TestVSockReservationKeptForPreservedDomain(t *testing.T) {
-	clearCIDReservationsForTest(t)
-	if _, err := reserveExactCID("preserved-run", 4098); err != nil {
-		t.Fatalf("reserve preserved CID: %v", err)
-	}
-
-	releaseVSock(
-		Result{RunID: "preserved-run"},
-		VMPlan{VSock: VSockPlan{Enabled: true, GuestCID: 4098}},
-		&DomainPreservation{Preserved: true},
-	)
-
-	if _, err := reserveExactCID("next-run", 4098); err == nil {
-		t.Fatal("preserved CID was released")
-	}
-}
+func (fakeAgentHealth) Health(context.Context) error { return nil }
+func (fakeAgentHealth) Close() error                 { return nil }
 
 func TestVSockHostCheck(t *testing.T) {
 	result, config := vmFixture(t)
@@ -1335,18 +1347,6 @@ func hasArgPrefix(args []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func clearCIDReservationsForTest(t *testing.T) {
-	t.Helper()
-	clearCIDReservations()
-	t.Cleanup(clearCIDReservations)
-}
-
-func clearCIDReservations() {
-	cidReservations.Lock()
-	defer cidReservations.Unlock()
-	cidReservations.used = map[uint32]string{}
 }
 
 func readDomainXML(t *testing.T, result Result) string {

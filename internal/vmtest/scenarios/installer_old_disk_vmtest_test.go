@@ -68,7 +68,7 @@ func TestInstallerReinstallBesideOldKatlDisk(t *testing.T) {
 	if err := vmtest.WriteOldKatlDisk(ctx, worldScenario.Dir, oldDisk); err != nil {
 		fail(err)
 	}
-	imageURL, _, stopImageServer, err := serveInstallImage(world.Network.Gateway, image)
+	imageURL, _, stopImageServer, err := serveInstallImage(worldScenario.World.Network.Gateway, image)
 	if err != nil {
 		fail(err)
 	}
@@ -88,7 +88,7 @@ func TestInstallerReinstallBesideOldKatlDisk(t *testing.T) {
 	}
 	vm := vmtest.VMConfig{
 		Boot:          vmtest.VMBoot{Image: disk, ImageFormat: vmtest.DiskRaw, ImageWithoutSerial: true},
-		Network:       vmtest.VMNetworkConfig{MAC: node.MACAddress},
+		Network:       node.VMNetwork(),
 		PreserveNVRAM: true,
 		KVM:           options.KVM,
 		RAMMiB:        2048,

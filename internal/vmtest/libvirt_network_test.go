@@ -34,6 +34,12 @@ func TestParseLibvirtMetadata(t *testing.T) {
 			want: LibvirtMetadata{Value: "katl/vmtest", Lease: "/tmp/runs/a.lease"},
 		},
 		{
+			// virsh net-metadata prints the element without its namespace.
+			name: "run-owned-without-namespace",
+			data: `<vmtest lease="/tmp/runs/a.lease" run="a">katl/vmtest</vmtest>`,
+			want: LibvirtMetadata{Value: "katl/vmtest", Lease: "/tmp/runs/a.lease", Run: "a"},
+		},
+		{
 			name: "ownerless",
 			data: `<vmtest xmlns:vmtest="https://katlos.io/xmlns/vmtest/1">katl/vmtest</vmtest>` + "\n",
 			want: LibvirtMetadata{Value: "katl/vmtest"},

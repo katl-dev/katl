@@ -2,8 +2,6 @@ package vmtest
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/binary"
 	"encoding/xml"
 	"errors"
 	"fmt"
@@ -14,10 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unsafe"
 
 	"github.com/creack/pty"
-	"golang.org/x/sys/unix"
 )
 
 type VMBoot struct {
@@ -90,8 +86,13 @@ const (
 )
 
 type VMNetworkConfig struct {
-	Mode              VMNetworkMode
-	MAC               string
+	Mode VMNetworkMode
+	MAC  string
+	// Name is the libvirt network the VM attaches to.
+	Name string
+	// Address is the address the network's DHCP reservation gives the VM.
+	// When set, a VM that starts on another address fails.
+	Address           string
 	ExtraDisconnected bool
 }
 
@@ -226,6 +227,13 @@ func (e LibvirtVMExecutor) Run(ctx context.Context, _ string, _ []string, serial
 			_ = e.cleanupVirsh("destroy", e.DomainName)
 		}
 	}()
+	if report := cidReporter(ctx); report != nil {
+		cid, err := e.liveGuestCID(ctx)
+		if err != nil {
+			return err
+		}
+		report(cid)
+	}
 	consoleCtx, stopConsole := context.WithCancel(ctx)
 	consoleDone, err := e.startConsoleCapture(consoleCtx, serial)
 	if err != nil {
@@ -282,6 +290,39 @@ func (e LibvirtVMExecutor) Run(ctx context.Context, _ string, _ []string, serial
 		case <-ticker.C:
 		}
 	}
+}
+
+// reportsGuestCID marks executors that report the libvirt-allocated vsock CID
+// through the callback carried by the Run context.
+func (LibvirtVMExecutor) reportsGuestCID() {}
+
+type cidReporterKey struct{}
+
+func withCIDReporter(ctx context.Context, report func(cid uint32)) context.Context {
+	return context.WithValue(ctx, cidReporterKey{}, report)
+}
+
+func cidReporter(ctx context.Context) func(cid uint32) {
+	report, _ := ctx.Value(cidReporterKey{}).(func(cid uint32))
+	return report
+}
+
+// liveGuestCID reads the vsock CID libvirt assigned to the started domain.
+func (e LibvirtVMExecutor) liveGuestCID(ctx context.Context) (uint32, error) {
+	output, err := e.virshOutput(ctx, "dumpxml", e.DomainName)
+	if err != nil {
+		return 0, fmt.Errorf("read vsock CID of libvirt domain %q: %w", e.DomainName, err)
+	}
+	var doc struct {
+		VSock *domainVSock `xml:"devices>vsock"`
+	}
+	if err := xml.Unmarshal([]byte(output), &doc); err != nil {
+		return 0, fmt.Errorf("parse libvirt domain %q XML: %w", e.DomainName, err)
+	}
+	if doc.VSock == nil || doc.VSock.CID.Address == 0 {
+		return 0, fmt.Errorf("libvirt domain %q has no vsock CID", e.DomainName)
+	}
+	return doc.VSock.CID.Address, nil
 }
 
 func (e LibvirtVMExecutor) preserveDomain(ctx context.Context, runErr error, started bool) bool {
@@ -475,7 +516,6 @@ func (r VMRunner) startVM(ctx context.Context, result Result, config VMConfig) (
 	result.MACAddress = plan.MACAddress
 	result.VSock = plan.VSock
 	if err := prepareVM(plan, config); err != nil {
-		releaseVSock(result, plan, nil)
 		return nil, finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC()), false
 	}
 	var timeoutCancel context.CancelFunc
@@ -489,7 +529,6 @@ func (r VMRunner) startVM(ctx context.Context, result Result, config VMConfig) (
 		if timeoutCancel != nil {
 			timeoutCancel()
 		}
-		releaseVSock(result, plan, nil)
 		return nil, finishVM(result, phaseName(config), StatusFailed, err.Error(), started, time.Now().UTC()), false
 	}
 	executor := r.Executor
@@ -517,14 +556,33 @@ func (r VMRunner) startVM(ctx context.Context, result Result, config VMConfig) (
 		runner:        r,
 		preservation:  preservation,
 	}
+	// libvirt assigns auto CIDs when the domain starts. Consumers read the CID
+	// from the handle, so it must be known before the handle is returned.
+	_, reportsCID := executor.(interface{ reportsGuestCID() })
+	awaitCID := plan.VSock.Enabled && plan.VSock.GuestCID == 0 && reportsCID
+	liveCID := make(chan uint32, 1)
+	execCtx := runCtx
+	if awaitCID {
+		execCtx = withCIDReporter(runCtx, func(cid uint32) { liveCID <- cid })
+	}
 	go func() {
 		defer file.Close()
-		err := executor.Run(runCtx, first(plan.VirshPath, plan.CommandPath), plan.Args, io.Writer(file))
+		err := executor.Run(execCtx, first(plan.VirshPath, plan.CommandPath), plan.Args, io.Writer(file))
 		handle.waitMu.Lock()
 		handle.waitErr = err
 		handle.waitMu.Unlock()
 		close(done)
 	}()
+	if awaitCID {
+		select {
+		case cid := <-liveCID:
+			handle.Plan.VSock.GuestCID = cid
+			handle.Plan.VSock.Device = fmt.Sprintf("virtio-vsock,cid=%d", cid)
+			handle.Result.VSock = handle.Plan.VSock
+		case <-done:
+			// The executor failed before reporting a CID; Wait returns why.
+		}
+	}
 	return handle, result, true
 }
 
@@ -566,12 +624,10 @@ func (h *VMHandle) CheckAgent() error {
 func (h *VMHandle) Fail(failure string) Result {
 	result := finishVM(h.Result, phaseName(h.Config), StatusFailed, failure, h.Started, time.Now().UTC())
 	result = h.DebugResult(result)
-	releaseVSock(h.Result, h.Plan, h.preservation)
 	return result
 }
 
 func (h *VMHandle) Pass() Result {
-	releaseVSock(h.Result, h.Plan, h.preservation)
 	return finishVM(h.Result, phaseName(h.Config), StatusPassed, "", h.Started, time.Now().UTC())
 }
 
@@ -902,7 +958,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		virsh = found
 	}
 	libvirtURI := first(config.LibvirtURI, probe.env("KATL_VMTEST_LIBVIRT_URI"), "qemu:///system")
-	libvirtNetwork := first(config.LibvirtNetwork, probe.env("KATL_VMTEST_LIBVIRT_NETWORK"), "default")
+	libvirtNetwork := first(config.LibvirtNetwork, config.Network.Name, probe.env("KATL_VMTEST_LIBVIRT_NETWORK"), "default")
 	directKernel := config.Boot.Kernel != ""
 	if directKernel {
 		if _, err := probe.stat(config.Boot.Kernel); err != nil {
@@ -950,7 +1006,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 	if err != nil {
 		return VMPlan{}, err
 	}
-	vsock, err := planVSock(result.RunID, config.VSock, probe)
+	vsock, err := planVSock(config.VSock, probe)
 	if err != nil {
 		return VMPlan{}, err
 	}
@@ -974,6 +1030,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		VSock:             vsock,
 		Metadata:          first(config.DomainMetadata, "katl/vmtest"),
 		MetadataLease:     firstPath(config.DomainMetadata == "", probe.env("KATL_VMTEST_RUN_LEASE")),
+		MetadataRun:       firstPath(config.DomainMetadata == "", probe.env("KATL_VMTEST_RUN_ID")),
 		PersistentSerial:  config.PersistentSerial,
 		HotplugPCISlots:   config.HotplugPCISlots,
 	})
@@ -1181,6 +1238,7 @@ type libvirtDomain struct {
 	VSock             VSockPlan
 	Metadata          string
 	MetadataLease     string
+	MetadataRun       string
 	PersistentSerial  bool
 	HotplugPCISlots   int
 }
@@ -1203,9 +1261,10 @@ type domainMetadata struct {
 
 // domainVMTest marks a libvirt object as created by Katl. Lease names the run
 // lease of the scripts/vmtest-run invocation that owns the object, which other
-// runs leave alone while that lease is held.
+// runs leave alone while that lease is held; Run is the run ID of that run.
 type domainVMTest struct {
 	Lease string `xml:"lease,attr,omitempty"`
+	Run   string `xml:"run,attr,omitempty"`
 	Value string `xml:",chardata"`
 }
 
@@ -1358,7 +1417,7 @@ type domainVSock struct {
 
 type domainVSockCID struct {
 	Auto    string `xml:"auto,attr"`
-	Address uint32 `xml:"address,attr"`
+	Address uint32 `xml:"address,attr,omitempty"`
 }
 
 func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, string, string, string, error) {
@@ -1491,7 +1550,7 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 	doc := domainXML{
 		Type:     domain.Accel,
 		Name:     domain.Name,
-		Metadata: domainMetadata{VMTest: domainVMTest{Lease: domain.MetadataLease, Value: domain.Metadata}},
+		Metadata: domainMetadata{VMTest: domainVMTest{Lease: domain.MetadataLease, Run: domain.MetadataRun, Value: domain.Metadata}},
 		Memory:   domainMemory{Unit: "MiB", Value: domain.RAMMiB},
 		VCPU:     domain.CPUs,
 		OS: domainOS{
@@ -1591,10 +1650,11 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 		doc.Devices.Disks = append(doc.Devices.Disks, xmlDisk)
 	}
 	if domain.VSock.Enabled {
-		doc.Devices.VSock = &domainVSock{
-			Model: "virtio",
-			CID:   domainVSockCID{Auto: "no", Address: domain.VSock.GuestCID},
+		cid := domainVSockCID{Auto: "yes"}
+		if domain.VSock.GuestCID != 0 {
+			cid = domainVSockCID{Auto: "no", Address: domain.VSock.GuestCID}
 		}
+		doc.Devices.VSock = &domainVSock{Model: "virtio", CID: cid}
 	}
 	data, err := xml.MarshalIndent(doc, "", "  ")
 	if err != nil {
@@ -1610,114 +1670,32 @@ func firstPath(ok bool, path string) string {
 	return path
 }
 
-var cidReservations = struct {
-	sync.Mutex
-	used map[uint32]string
-}{used: map[uint32]string{}}
-
-func planVSock(runID string, config VSockConfig, probe probe) (VSockPlan, error) {
+// planVSock leaves the CID unset unless the config requests one. Otherwise
+// libvirt allocates it when the domain starts and the executor reports it.
+func planVSock(config VSockConfig, probe probe) (VSockPlan, error) {
 	if !config.Enabled {
 		return VSockPlan{}, nil
 	}
 	if err := probe.access("/dev/vhost-vsock"); err != nil {
 		return VSockPlan{}, fmt.Errorf("/dev/vhost-vsock required for vmtest vsock: %w", err)
 	}
-	cid, err := reserveCID(runID, config.GuestCID)
-	if err != nil {
-		return VSockPlan{}, err
+	if config.GuestCID != 0 && config.GuestCID < 3 {
+		return VSockPlan{}, fmt.Errorf("vsock guest CID %d is reserved", config.GuestCID)
 	}
 	port := config.Port
 	if port == 0 {
 		port = 10240
 	}
+	device := "virtio-vsock,cid=auto"
+	if config.GuestCID != 0 {
+		device = fmt.Sprintf("virtio-vsock,cid=%d", config.GuestCID)
+	}
 	return VSockPlan{
 		Enabled:  true,
-		GuestCID: cid,
+		GuestCID: config.GuestCID,
 		Port:     port,
-		Device:   fmt.Sprintf("virtio-vsock,cid=%d", cid),
+		Device:   device,
 	}, nil
-}
-
-func reserveCID(runID string, requested uint32) (uint32, error) {
-	if requested != 0 {
-		return reserveExactCID(runID, requested)
-	}
-	base := cidForRun(runID)
-	for offset := uint32(0); offset < 256; offset++ {
-		cid := base + offset
-		if cid < 1024 {
-			continue
-		}
-		reserved, err := reserveExactCID(runID, cid)
-		if err != nil {
-			continue
-		}
-		// The reservations above cover this process only; VMs of other runs
-		// on the host hold their CIDs in the kernel.
-		if hostCIDInUse(cid) {
-			releaseCID(runID, cid)
-			continue
-		}
-		return reserved, nil
-	}
-	return 0, fmt.Errorf("no free vmtest vsock guest CID for run %q", runID)
-}
-
-func reserveExactCID(runID string, cid uint32) (uint32, error) {
-	if cid < 3 {
-		return 0, fmt.Errorf("vsock guest CID %d is reserved", cid)
-	}
-	cidReservations.Lock()
-	defer cidReservations.Unlock()
-	if owner, ok := cidReservations.used[cid]; ok && owner != runID {
-		return 0, fmt.Errorf("vsock guest CID %d already reserved by %s", cid, owner)
-	}
-	cidReservations.used[cid] = runID
-	return cid, nil
-}
-
-func releaseVSock(result Result, plan VMPlan, preservation *DomainPreservation) {
-	if !plan.VSock.Enabled {
-		return
-	}
-	if preservation != nil && preservation.Preserved {
-		return
-	}
-	releaseCID(result.RunID, plan.VSock.GuestCID)
-}
-
-func releaseCID(runID string, cid uint32) {
-	cidReservations.Lock()
-	defer cidReservations.Unlock()
-	if owner, ok := cidReservations.used[cid]; ok && owner == runID {
-		delete(cidReservations.used, cid)
-	}
-}
-
-var hostCIDInUse = vhostCIDInUse
-
-// vhostVSockSetGuestCID is VHOST_VSOCK_SET_GUEST_CID, _IOW(VHOST_VIRTIO, 0x60, __u64).
-const vhostVSockSetGuestCID = 0x4008af60
-
-// vhostCIDInUse reports whether a running guest on this host holds cid. The
-// kernel refuses to assign a CID that another vhost-vsock device holds, and
-// closing the probe device releases it again. A host where the probe cannot
-// run reports the CID as free, leaving libvirt to refuse a conflict at start.
-func vhostCIDInUse(cid uint32) bool {
-	device, err := os.OpenFile("/dev/vhost-vsock", os.O_RDWR, 0)
-	if err != nil {
-		return false
-	}
-	defer device.Close()
-	value := uint64(cid)
-	_, _, errno := unix.Syscall(unix.SYS_IOCTL, device.Fd(), vhostVSockSetGuestCID, uintptr(unsafe.Pointer(&value)))
-	return errno == unix.EADDRINUSE
-}
-
-func cidForRun(runID string) uint32 {
-	hash := sha256.Sum256([]byte(runID))
-	value := binary.BigEndian.Uint32(hash[:4])
-	return 1024 + value%60000
 }
 
 func finishVM(result Result, phase string, status Status, failure string, started, finished time.Time) Result {

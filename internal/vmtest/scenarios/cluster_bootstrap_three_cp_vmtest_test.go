@@ -144,6 +144,7 @@ func threeControlPlaneWorldSmokeRun(t *testing.T, scenarioName string, workloadP
 	}
 	missing := twoNodeHostToolPrereqs(exec.LookPath)
 	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "three-control-plane stacked-etcd smoke prerequisites missing", missing)
+	t.Cleanup(run.WorldScenario.Release)
 	return run, true
 }
 
@@ -203,7 +204,7 @@ func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, scenarioName, 
 		Scenario:      vmScenario,
 		Result:        result,
 		LibvirtURI:    world.Libvirt.URI,
-		Network:       world.Libvirt.Network,
+		Network:       scenario.World.Network.Name,
 		WorkloadProof: workloadProof,
 		Inputs: threeControlPlaneSmokeInputs{
 			CP1Disk:           nodes["cp-1"].Config.Disk,

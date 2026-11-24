@@ -44,6 +44,7 @@ func installedRuntimeWorldRunFor(t *testing.T, name string, spec NodeSpec, sshAu
 	if err != nil {
 		failWorldSetup(t, run.Scenario, err)
 	}
+	t.Cleanup(run.Scenario.Release)
 	return run, true
 }
 

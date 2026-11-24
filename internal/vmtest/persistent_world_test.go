@@ -29,7 +29,7 @@ func TestOwnedNetworkXML(t *testing.T) {
   <forward mode="nat"></forward>
   <ip address="10.201.3.1" prefix="24">
     <dhcp>
-      <range start="10.201.3.2" end="10.201.3.254">
+      <range start="10.201.3.192" end="10.201.3.254">
         <lease expiry="0"></lease>
       </range>
       <host mac="52:54:aa:bb:cc:dd" name="cp-1" ip="10.201.3.2">
@@ -37,6 +37,9 @@ func TestOwnedNetworkXML(t *testing.T) {
       </host>
     </dhcp>
   </ip>
+  <options xmlns="http://libvirt.org/schemas/network/dnsmasq/1.0">
+    <option value="log-dhcp"></option>
+  </options>
 </network>
 `
 	if got != want {

@@ -39,13 +39,11 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	runner := NewRunner(options)
 	runtime := InstalledRuntimeConfig{}
 	var plannedAddress string
-	var plannedMAC string
 	var worldScenario *WorldScenario
 	if worldRun, ok := installedRuntimeWorldRunFor(t, "installed-runtime-config-apply-modes", NodeSpec{Name: "cp-1", Role: ControlPlane}); ok {
 		runner = worldRun.Runner
 		runtime = worldRun.Config
 		plannedAddress = worldRun.Node.Address
-		plannedMAC = worldRun.Node.MACAddress
 		worldScenario = worldRun.Scenario
 	} else {
 		_ = RequireWorld(t)
@@ -75,7 +73,6 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	vm.RAMMiB = 2048
 	vm.CPUs = 2
 	vm.Timeout = 35 * time.Minute
-	vm.Network.MAC = first(vm.Network.MAC, plannedMAC)
 	vm.VSock.Enabled = true
 	vm.Agent.RequireHealth = true
 	vm.Agent.Timeout = 30 * time.Second

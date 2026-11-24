@@ -134,7 +134,6 @@ func TestInstalledRuntimeDRBDReplication(t *testing.T) {
 		runtime.VM.CPUs = 2
 		runtime.VM.Timeout = 25 * time.Minute
 		runtime.VM.PreserveNVRAM = true
-		runtime.VM.Network.MAC = world.Node.MACAddress
 		nodes[i], err = StartInstalledRuntimeNode(ctx, result, InstalledRuntimeNodeConfig{
 			Name:    name,
 			Runtime: runtime,

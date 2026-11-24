@@ -29,11 +29,11 @@ func TestInstalledRuntimeManagementRotationSmoke(t *testing.T) {
 	sshAuthorizedKey := strings.TrimSpace(string(publicKey))
 	runner := NewRunner(options)
 	runtime := InstalledRuntimeConfig{}
-	var plannedAddress, plannedMAC string
+	var plannedAddress string
 	var worldScenario *WorldScenario
 	if worldRun, ok := installedRuntimeWorldRunFor(t, "installed-runtime-management-rotation", NodeSpec{Name: "cp-1", Role: ControlPlane}, sshAuthorizedKey); ok {
 		runner, runtime = worldRun.Runner, worldRun.Config
-		plannedAddress, plannedMAC = worldRun.Node.Address, worldRun.Node.MACAddress
+		plannedAddress = worldRun.Node.Address
 		worldScenario = worldRun.Scenario
 	} else {
 		_ = RequireWorld(t)
@@ -52,7 +52,6 @@ func TestInstalledRuntimeManagementRotationSmoke(t *testing.T) {
 	vm.KVM = runner.options().KVM
 	vm.RAMMiB, vm.CPUs = 2048, 2
 	vm.Timeout = 10 * time.Minute
-	vm.Network.MAC = first(vm.Network.MAC, plannedMAC)
 	vm.VSock.Enabled = true
 	vm.Agent.RequireHealth = true
 	vm.Agent.Timeout = 30 * time.Second

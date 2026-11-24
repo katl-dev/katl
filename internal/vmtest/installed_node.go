@@ -86,6 +86,11 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 		if err != nil {
 			return failWithDebug(err)
 		}
+		// The network reserves the planned address for the MAC, so another
+		// address means the reservation did not reach the guest.
+		if planned := vm.Network.Address; planned != "" && lease.IPAddress != planned {
+			return failWithDebug(fmt.Errorf("installed runtime node %q was given %s by libvirt network %s, not its planned address %s", name, lease.IPAddress, handle.Plan.LibvirtNetwork, planned))
+		}
 		result.IPAddress = lease.IPAddress
 		if err := writeJSON(result.Artifacts.LibvirtLease, lease); err != nil {
 			return failWithDebug(fmt.Errorf("write libvirt lease artifact: %w", err))

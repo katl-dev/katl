@@ -8,14 +8,11 @@ virsh_bin="${KATL_VMTEST_VIRSH:-virsh}"
 kubectl_bin="${KATL_VMTEST_KUBECTL:-kubectl}"
 resource_lock_bin="${KATL_VMTEST_RESOURCE_LOCK:-}"
 resource_go_bin="${KATL_VMTEST_RESOURCE_GO:-go}"
-host_tool_bin="${KATL_VMTEST_HOST_TOOL:-}"
-# Runners that create domains without a lease hold this lock for their whole run.
+flock_bin="${KATL_VMTEST_FLOCK:-flock}"
 host_lock_path="${KATL_VMTEST_HOST_LOCK:-/tmp/katl-vmtest-${UID}.lock}"
-admission_dir="${KATL_VMTEST_ADMISSION_DIR:-/tmp/katl-vmtest-${UID}-runs}"
-admission_timeout="${KATL_VMTEST_ADMISSION_TIMEOUT:-5400}"
-max_concurrent="${KATL_VMTEST_MAX_CONCURRENT:-0}"
+host_lock_timeout="${KATL_VMTEST_HOST_LOCK_TIMEOUT:-5400}"
+host_lock_fd=""
 run_lease_fd=""
-run_network_created=0
 go_test_timeout="90m"
 tmp_parent="${TMPDIR:-/tmp}/katl-vmtest"
 run_id="${KATL_VMTEST_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
@@ -45,11 +42,11 @@ vmtest_artifacts_json="[]"
 vmtest_artifact_inputs_json="{}"
 debug_targets_artifact="$run_dir/preserved-vm-debug.txt"
 lease_file="$network_dir/leases.json"
+# Held for the whole run: libvirt objects name it as their owner, and the kernel
+# frees it however the runner ends.
+run_lease="$run_dir/lease"
 libvirt_uri="${KATL_VMTEST_LIBVIRT_URI:-qemu:///system}"
-run_lease="$admission_dir/$run_id.lease"
-# Without an explicit network, each run creates and owns its own.
-libvirt_network="${KATL_VMTEST_LIBVIRT_NETWORK:-}"
-libvirt_run_network="katl-vmtest-${run_id}"
+libvirt_network="${KATL_VMTEST_LIBVIRT_NETWORK:-default}"
 libvirt_storage_pool="${KATL_VMTEST_LIBVIRT_STORAGE_POOL:-default}"
 libvirt_storage_path="${KATL_VMTEST_LIBVIRT_STORAGE_PATH:-/var/lib/libvirt/images}"
 libvirt_domain_prefix="${KATL_VMTEST_LIBVIRT_DOMAIN_PREFIX:-katl-${run_id}}"
@@ -717,10 +714,7 @@ probe_vm_capabilities() {
 
     if [[ "$cap_libvirt" == "passed" ]]; then
         local network_info=""
-        if [[ -z "$libvirt_network" ]]; then
-            # The run creates its own network once it is admitted.
-            cap_libvirt_network="passed"
-        elif network_info="$("$virsh_bin" -c "$libvirt_uri" net-info "$libvirt_network" 2>/dev/null)" &&
+        if network_info="$("$virsh_bin" -c "$libvirt_uri" net-info "$libvirt_network" 2>/dev/null)" &&
             grep -Eq '^Active:[[:space:]]+yes' <<<"$network_info" &&
             discover_libvirt_network; then
             cap_libvirt_network="passed"
@@ -811,75 +805,31 @@ probe_capabilities() {
     probe_fixture_tool_capabilities
 }
 
-build_host_tool() {
-    if [[ -n "$host_tool_bin" ]]; then
-        return 0
-    fi
-    host_tool_bin="$run_dir/bin/katl-vmtest-host"
-    if ! (cd "$repo_root" && "$resource_go_bin" build -o "$host_tool_bin" ./cmd/katl-vmtest-host); then
-        setup_failures+=("build cmd/katl-vmtest-host failed")
+acquire_vmtest_host_lock() {
+    if ! have_command "$flock_bin"; then
+        setup_failures+=("flock is required to serialize libvirt-backed VM runs")
         return 1
     fi
-}
+    if ! mkdir -p "$(dirname "$host_lock_path")"; then
+        setup_failures+=("create VM test host lock directory failed: $(dirname "$host_lock_path")")
+        return 1
+    fi
+    if ! exec {host_lock_fd}>"$host_lock_path"; then
+        setup_failures+=("open VM test host lock failed: $host_lock_path")
+        return 1
+    fi
 
-# The lease descriptor stays open in this shell for the whole run. admit locks
-# it, and the lock lasts until the shell exits, whatever ends it.
-admit_vmtest_run() {
-    if ! mkdir -p "$admission_dir" || ! exec {run_lease_fd}>>"$run_lease"; then
-        setup_failures+=("open vmtest run lease failed: $run_lease")
+    printf 'vmtest host lock: waiting for %s (timeout %ss)\n' "$host_lock_path" "$host_lock_timeout" >&2
+    if ! "$flock_bin" --wait "$host_lock_timeout" "$host_lock_fd"; then
+        setup_failures+=("timed out waiting for another libvirt-backed VM run to release $host_lock_path; wait for it to finish or set KATL_VMTEST_HOST_LOCK to a lock shared by this host")
         return 1
     fi
-    if ! "$host_tool_bin" admit \
-        -lease "$run_lease" \
-        -fd "$run_lease_fd" \
-        -max "$max_concurrent" \
-        -timeout "${admission_timeout}s"; then
-        setup_failures+=("this host did not admit the vmtest run")
-        return 1
-    fi
-    # Only the holder removes a lease. Owner-only signals are deferred to
-    # traps that exit, so this runs unless the shell is killed outright.
-    trap 'rm -f -- "$run_lease"' EXIT
-}
+    printf 'vmtest host lock: acquired %s\n' "$host_lock_path" >&2
 
-sweep_finished_vmtest_runs() {
-    if [[ "$cap_libvirt" != "passed" ]]; then
-        return 0
-    fi
-    if ! "$host_tool_bin" sweep -virsh "$virsh_bin" -uri "$libvirt_uri" -host-lock "$host_lock_path"; then
-        setup_failures+=("remove libvirt objects left by finished vmtest runs failed")
+    if ! exec {run_lease_fd}>>"$run_lease" || ! "$flock_bin" -n "$run_lease_fd"; then
+        setup_failures+=("lock vmtest run lease failed: $run_lease")
         return 1
     fi
-}
-
-create_run_network() {
-    if [[ -n "$libvirt_network" ]]; then
-        return 0
-    fi
-    libvirt_network="$libvirt_run_network"
-    if [[ "$cap_libvirt" != "passed" ]]; then
-        return 0
-    fi
-    local network
-    if ! network="$("$host_tool_bin" network \
-        -virsh "$virsh_bin" \
-        -uri "$libvirt_uri" \
-        -name "$libvirt_run_network" \
-        -lease "$run_lease" \
-        -xml "$network_dir/network.xml")"; then
-        setup_failures+=("create vmtest libvirt network $libvirt_run_network failed")
-        return 1
-    fi
-    run_network_created=1
-    read -r libvirt_network network_cidr network_gateway <<<"$network"
-    validate_network
-}
-
-release_run_network() {
-    if [[ "$run_network_created" != 1 ]]; then
-        return 0
-    fi
-    "$host_tool_bin" release -virsh "$virsh_bin" -uri "$libvirt_uri" -name "$libvirt_run_network" -lease "$run_lease"
 }
 
 ipv4_to_int() {
@@ -1039,6 +989,7 @@ write_world() {
     jq -n \
         --arg runID "$run_id" \
         --arg runDir "$run_dir" \
+        --arg lease "$run_lease" \
         --arg cacheDir "$cache_dir" \
         --arg artifactDir "$artifact_dir" \
         --arg scenarioDir "$scenario_dir" \
@@ -1077,6 +1028,7 @@ write_world() {
           kind: "VMTestWorld",
           runID: $runID,
           runDir: $runDir,
+          lease: $lease,
           cacheDir: $cacheDir,
           artifactDir: $artifactDir,
           scenarioDir: $scenarioDir,
@@ -1216,9 +1168,6 @@ validate_debug_on_failure_policy() {
 cleanup_run_dir() {
     local status="$1"
     local remove=0
-    if ! release_run_network; then
-        printf 'vmtest cleanup: remove libvirt network %s failed; the next run removes it\n' "$libvirt_run_network" >&2
-    fi
     case "$keep_policy" in
         always)
             remove=0
@@ -1357,10 +1306,11 @@ if ! prepare_resource_manifest; then
 fi
 probe_capabilities
 write_host_capabilities
+write_world
 if [[ "${#missing_capabilities[@]}" -gt 0 ]]; then
     print_missing_capabilities "vmtest world has missing host capabilities"
 fi
-if ! build_host_tool || ! admit_vmtest_run; then
+if ! acquire_vmtest_host_lock; then
     write_run_index "setup-failed" "$@"
     printf 'setup failed: %s\n' "${setup_failures[@]}" >&2
     if ! cleanup_run_dir "setup-failed"; then
@@ -1371,21 +1321,13 @@ fi
 trap 'exit 143' TERM
 trap 'exit 130' INT
 printf 'vmtest interruption: owner-only signals wait for active work to finish; Ctrl-C stops the run\n' >&2
-# Only this shell holds the run lease. Foreground work cannot pass it to
+# Only this shell owns the host lock and run lease. Foreground work cannot pass them to
 # auxiliary processes, and deferred signal traps retain it until work exits.
 (
+exec {host_lock_fd}>&-
 exec {run_lease_fd}>&-
-if ! sweep_finished_vmtest_runs || ! create_run_network; then
-    write_run_index "setup-failed" "$@"
-    printf 'setup failed: %s\n' "${setup_failures[@]}" >&2
-    if ! cleanup_run_dir "setup-failed"; then
-        printf 'vmtest run dir cleanup failed: %s\n' "$run_dir" >&2
-    fi
-    exit 2
-fi
-write_host_capabilities
-write_world
 
+export KATL_VMTEST_RUN_ID="$run_id"
 export KATL_VMTEST_RUN_LEASE="$run_lease"
 export KATL_VMTEST_RUN_DIR="$run_dir"
 export KATL_VMTEST_CACHE_DIR="$cache_dir"
