@@ -184,7 +184,7 @@ func selectGroups(paths []string) []group {
 			continue
 		case name == ".github/workflows/release-artifacts.yml", name == ".github/workflows/production-vmtests.yml":
 			// Generic CI does not execute these workflows. Validate their changes
-			// through Release Artifacts and its final-bundle Production VM qualification.
+			// through Release Artifacts and its assembled-bytes Production VM qualification.
 			continue
 		case name == "cmd/katlctl/config_compatibility.go", name == "cmd/katlctl/config_inspect.go":
 			selected["config"], selected["management"], selected["two-node"], selected["readdress"] = true, true, true, true

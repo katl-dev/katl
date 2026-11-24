@@ -89,7 +89,8 @@ setting `KATL_VMTEST_MAIN_RUNNER=katl-vmtest`.
 
 **Katl Release Artifacts** runs on release branches, tags, or manual dispatch.
 Merged revisions are qualified by the merge queue without a second release-artifact build. Releases run
-regression for both flavours and qualify the exact final production bundle,
+regression for both flavours and qualify each flavour's assembled production bytes,
 including installation, reboot, upgrade from the previous release, and rollback
-without a test agent. Publication consumes those validated bytes. See
+without a test agent. Release validation requires the published bundle to equal
+those qualified bytes, and publication consumes them. See
 [Release KatlOS](releases.md) for the promotion contract and failure handling.

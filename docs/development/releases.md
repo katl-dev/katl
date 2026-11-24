@@ -49,8 +49,11 @@ Both standard and LTS flavours must pass:
   the source generation, preserving machine identity. These tests use the
   production images without a VM test agent.
 
-Qualification downloads the final publication bundle from the same run and
-verifies its checksums. Publication consumes those artifacts without rebuilding.
+Production VM qualifies each flavour's assembled bytes while the publication
+bundle is built, and uploads the checksums it verified. Release validation
+additionally requires those qualified checksums to equal the bundle's; only
+`RELEASE_NOTES.md`, which the bundle renders, is exempt. Publication consumes
+those artifacts without rebuilding.
 Skipped, failed, or cancelled required VM tests prevent promotion. Successful
 tag runs publish the extension OCI bytes and GitHub release assets. Asset
 attestations must match the source commit and tag before GitHub release
@@ -79,10 +82,11 @@ rerunning. To exercise the production journeys against the same built bundle
 with the selected workflow revision, run:
 
 ```sh
-gh workflow run release-artifacts.yml --ref main -f qualify_run=RUN_ID
+gh workflow run release-artifacts.yml --ref main -f version=VERSION -f qualify_run=RUN_ID
 ```
 
-This diagnostic run reuses the immutable bundle and has no publication path.
+This diagnostic run reuses the immutable bundle and ignores VERSION, which
+the dispatch form requires. It has no publication path.
 Tag promotion still requires all gates in the tag's own build run.
 
 Guest disks are excluded from retained artifacts. Fix the defect and

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       artifact-name:
-        description: Final release bundle artifact
+        description: Artifact to qualify; {0} is replaced by the flavour
         type: string
         required: true
       run-id:
@@ -18,6 +18,7 @@ on:
   workflow_call:
     inputs:
       artifact-name:
+        description: Artifact to qualify; {0} is replaced by the flavour
         type: string
         required: true
       run-id:
@@ -62,7 +63,7 @@ jobs:
       - uses: ./.github/actions/hosted-vmtest
       - uses: actions/download-artifact@v8
         with:
-          name: ${{ inputs.artifact-name }}
+          name: ${{ format(inputs.artifact-name, matrix.flavour) }}
           run-id: ${{ inputs.run-id > 0 && inputs.run-id || github.run_id }}
           github-token: ${{ github.token }}
           path: dist
@@ -71,9 +72,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PREVIOUS_TAG: ${{ inputs.previous-tag }}
         run: |
-          (cd dist && sha256sum --check SHA256SUMS)
+          scripts/katl-release checksums dist
           gh release download "$PREVIOUS_TAG" --repo "$GITHUB_REPOSITORY" --dir previous
-          (cd previous && sha256sum --check SHA256SUMS)
+          scripts/katl-release checksums previous
           printf 'Upgrade source: %s\n' "$PREVIOUS_TAG" >> "$GITHUB_STEP_SUMMARY"
       - name: Qualify production installation, reboot, upgrade, and rollback
         run: |
@@ -84,6 +85,14 @@ jobs:
             jq -se --arg test "$test_name" 'any(.[]; .Action == "pass" and .Test == $test)' \
               _build/hosted-evidence/go-test.jsonl
           done
+      - uses: actions/upload-artifact@v7
+        if: success() && inputs.run-id == 0
+        with:
+          name: katl-qualified-${{ matrix.flavour }}-${{ github.sha }}
+          overwrite: true
+          path: dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
       - name: Collect diagnostics
         if: always()
         run: .github/scripts/hosted-vmtest-diagnostics

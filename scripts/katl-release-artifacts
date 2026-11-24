@@ -17,6 +17,7 @@ usage: scripts/katl-release-artifacts version EVENT REF_TYPE REF_NAME [MANUAL_VE
        scripts/katl-release-artifacts notes VERSION
        scripts/katl-release-artifacts build-katlctl VERSION
        scripts/katl-release-artifacts stage VERSION OUTPUT_DIR
+       scripts/katl-release-artifacts combine OUTPUT_DIR FLAVOUR=DIR...
 EOF
     exit 2
 }
@@ -270,6 +271,49 @@ version_for_ref() {
     printf '%s\n' "$version"
 }
 
+write_checksums() {
+    local dir="$1"
+    (
+        cd "$dir"
+        mapfile -d '' checksum_files < <(
+            find . -mindepth 1 -maxdepth 1 -type f \
+                ! -name SHA256SUMS -printf '%f\0' | sort -z
+        )
+        ((${#checksum_files[@]} > 0)) || fail "release output has no files to checksum"
+        sha256sum "${checksum_files[@]}" >SHA256SUMS
+        sha256sum --check SHA256SUMS
+    )
+}
+
+# Merges the assembled flavours into one publication directory. Files shared
+# between flavours must be byte-identical; each flavour renders its own
+# RELEASE_NOTES.md, so the first flavour's copy is kept.
+combine_flavours() {
+    local output="$1"
+    shift
+    [[ -z "$(ls -A "$output" 2>/dev/null)" ]] || fail "combine output is not empty: $output"
+    mkdir -p "$output"
+    local names=() spec name dir file
+    for spec in "$@"; do
+        [[ "$spec" == ?*=?* ]] || fail "expected FLAVOUR=DIR, got: $spec"
+        name="${spec%%=*}"
+        dir="${spec#*=}"
+        [[ -d "$dir" ]] || fail "flavour directory is missing: $dir"
+        names+=("$name")
+        for file in "$dir"/*; do
+            [[ -f "$file" && "${file##*/}" != SHA256SUMS ]] || continue
+            if [[ ! -e "$output/${file##*/}" ]]; then
+                cp -- "$file" "$output/"
+            elif [[ "${file##*/}" != RELEASE_NOTES.md ]]; then
+                cmp -s -- "$file" "$output/${file##*/}" ||
+                    fail "${file##*/} differs between flavours (at $name)"
+            fi
+        done
+    done
+    (cd "$repo_root" && "$go_command" run ./cmd/katl-mkosi-artifacts release-components "$(realpath "$output")" "${names[@]}")
+    write_checksums "$output"
+}
+
 stage_artifacts() {
     local version="$1"
     local output="$2"
@@ -359,16 +403,7 @@ EOF
     generate_release_notes "$version" >"$output/RELEASE_NOTES.md"
     (cd "$repo_root" && "$go_command" run ./cmd/katl-mkosi-artifacts publish-flavour "$(realpath "$output")")
     (cd "$repo_root" && "$go_command" run ./cmd/katl-mkosi-artifacts release-components "$(realpath "$output")" "${KATL_FLAVOUR:-standard}")
-    (
-        cd "$output"
-        mapfile -d '' checksum_files < <(
-            find . -mindepth 1 -maxdepth 1 -type f \
-                ! -name SHA256SUMS -printf '%f\0' | sort -z
-        )
-        ((${#checksum_files[@]} > 0)) || fail "release output has no files to checksum"
-        sha256sum "${checksum_files[@]}" >SHA256SUMS
-        sha256sum --check SHA256SUMS
-    )
+    write_checksums "$output"
 }
 
 case "${1:-}" in
@@ -387,6 +422,10 @@ case "${1:-}" in
     stage)
         [[ $# -eq 3 ]] || usage
         stage_artifacts "$2" "$3"
+        ;;
+    combine)
+        [[ $# -ge 3 ]] || usage
+        combine_flavours "${@:2}"
         ;;
     *)
         usage
