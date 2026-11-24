@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -24,9 +25,14 @@ type githubFixture struct {
 	replaced    bool
 	corrupt     bool
 	provenance  bool
+	rootOffline bool
+	rootFetches int
 	verified    []string
 	artifactAPI int
 }
+
+// testTrustedRoot stands in for gh attestation trusted-root output.
+const testTrustedRoot = `{"mediaType":"application/vnd.dev.sigstore.trustedroot+json;version=0.1"}` + "\n"
 
 func newFixture(t *testing.T) *githubFixture {
 	return &githubFixture{
@@ -93,8 +99,24 @@ func (f *githubFixture) call(name string, args ...string) ([]byte, error) {
 		}
 		return nil, nil
 	}
+	if reflect.DeepEqual(args, []string{"attestation", "trusted-root"}) {
+		f.rootFetches++
+		if f.rootOffline {
+			return nil, fmt.Errorf("tuf refresh failed")
+		}
+		return []byte(testTrustedRoot), nil
+	}
 	if args[0] == "attestation" {
 		joined := strings.Join(args, " ")
+		// Every verification must use the root already fetched for this
+		// bundle rather than initializing one of its own.
+		flag := slices.Index(args, "--custom-trusted-root")
+		if flag < 0 || flag+1 >= len(args) {
+			f.t.Fatalf("verified without a fetched trusted root: %s", joined)
+		}
+		if data, err := os.ReadFile(args[flag+1]); err != nil || string(data) != testTrustedRoot || f.rootFetches != 1 {
+			f.t.Fatalf("verified against %s after %d trusted-root fetches: %v", args[flag+1], f.rootFetches, err)
+		}
 		for _, constraint := range []string{"--repo " + repository, "--signer-workflow " + repository + "/" + workflow, "--source-ref refs/tags/v2026.10.2", "--source-digest " + testCommit} {
 			if !strings.Contains(joined, constraint) {
 				f.t.Fatalf("missing provenance constraint %s: %s", constraint, joined)
@@ -224,8 +246,8 @@ func TestDownload(t *testing.T) {
 				if err != nil || !strings.Contains(receipt.String(), `"id": 123`) {
 					t.Fatalf("download = %s, %v", receipt.String(), err)
 				}
-				if !reflect.DeepEqual(fixture.verified, []string{"RELEASE_NOTES.md", "payload", "SHA256SUMS"}) {
-					t.Fatalf("verified assets = %v", fixture.verified)
+				if !reflect.DeepEqual(fixture.verified, []string{"RELEASE_NOTES.md", "payload", "SHA256SUMS"}) || fixture.rootFetches != 1 {
+					t.Fatalf("verified assets = %v after %d trusted-root fetches", fixture.verified, fixture.rootFetches)
 				}
 				return
 			}
@@ -240,6 +262,47 @@ func TestDownload(t *testing.T) {
 				if _, err := os.Stat(filepath.Join(dir, "payload")); err != nil {
 					t.Fatal("failed download did not retain diagnostic evidence:", err)
 				}
+			}
+		})
+	}
+}
+
+func TestVerify(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		tag    string
+		commit string
+		edit   func(*githubFixture)
+		want   string
+	}{
+		{"verified", "v2026.10.2", testCommit, func(f *githubFixture) {}, ""},
+		{"root unavailable", "v2026.10.2", testCommit, func(f *githubFixture) { f.rootOffline = true }, "fetch Sigstore trusted root"},
+		{"untrusted", "v2026.10.2", testCommit, func(f *githubFixture) { f.provenance = true }, "provenance verification failed for RELEASE_NOTES.md"},
+		{"branch", "main", testCommit, func(f *githubFixture) {}, "release tag"},
+		{"short commit", "v2026.10.2", testCommit[:12], func(f *githubFixture) {}, "full source commit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newFixture(t)
+			tc.edit(fixture)
+			dir := t.TempDir()
+			writeBundle(t, dir)
+
+			err := run([]string{"verify", tc.tag, tc.commit, dir}, io.Discard, io.Discard, fixture.call)
+			if tc.want != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Fatalf("error = %v; want %s", err, tc.want)
+				}
+				if len(fixture.verified) != 0 {
+					t.Fatalf("accepted assets despite failure: %v", fixture.verified)
+				}
+				return
+			}
+			if err != nil || !reflect.DeepEqual(fixture.verified, []string{"RELEASE_NOTES.md", "payload", "SHA256SUMS"}) || fixture.rootFetches != 1 {
+				t.Fatalf("verify = %v; assets %v after %d trusted-root fetches", err, fixture.verified, fixture.rootFetches)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil || len(entries) != 3 {
+				t.Fatalf("verification changed the bundle: %v, %v", entries, err)
 			}
 		})
 	}

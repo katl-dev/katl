@@ -37,14 +37,17 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer, call command) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
+		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify TAG COMMIT DIRECTORY\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
 		return nil
 	}
 	if args[0] == "prepare" {
 		return prepare(args[1:], stdout, stderr, call)
 	}
+	if args[0] == "verify" {
+		return verify(args[1:], stderr, call)
+	}
 	if (args[0] != "inspect" || len(args) != 2) && (args[0] != "download" || len(args) != 3) {
-		return errors.New("expected prepare, inspect RUN_ID, or download RUN_ID DIRECTORY; use --help")
+		return errors.New("expected prepare, inspect RUN_ID, download RUN_ID DIRECTORY, or verify TAG COMMIT DIRECTORY; use --help")
 	}
 	id, err := strconv.ParseInt(args[1], 10, 64)
 	if err != nil || id <= 0 {
@@ -62,6 +65,30 @@ func run(args []string, stdout, stderr io.Writer, call command) error {
 	encoder := json.NewEncoder(stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(candidate)
+}
+
+// verify checks a release bundle that is already on disk, such as the bundle
+// the tag workflow is about to publish.
+func verify(args []string, stderr io.Writer, call command) error {
+	if len(args) != 3 {
+		return errors.New("usage: scripts/katl-release verify TAG COMMIT DIRECTORY")
+	}
+	tag, commit, dir := args[0], args[1], args[2]
+	if !strings.HasPrefix(tag, "v") {
+		return errors.New("TAG must be a KatlOS release tag such as v2026.10.2")
+	}
+	if err := validateVersion(tag[1:], call); err != nil {
+		return fmt.Errorf("TAG is not a KatlOS release: %w", err)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(commit) {
+		return errors.New("COMMIT must be the tag's full source commit SHA")
+	}
+
+	if err := verifyBundle(dir, tag, commit, stderr, call); err != nil {
+		return err
+	}
+	fmt.Fprintln(stderr, "Integrity and provenance verified.")
+	return nil
 }
 
 func api(call command, endpoint string, value any) error {
@@ -198,17 +225,8 @@ func download(release candidate, dir string, stderr io.Writer, call command) err
 	if _, err := call("gh", "run", "download", strconv.FormatInt(release.Run.ID, 10), "--repo", repository, "--name", release.Artifact.Name, "--dir", dir); err != nil {
 		return fmt.Errorf("download failed; retained %s for inspection: %w", dir, err)
 	}
-	names, err := verifyChecksums(dir)
-	if err != nil {
+	if err := verifyBundle(dir, release.Run.Tag, release.Run.Commit, stderr, call); err != nil {
 		return err
-	}
-	for _, name := range append(names, "SHA256SUMS") {
-		fmt.Fprintln(stderr, "Verifying provenance:", name)
-		if _, err := call("gh", "attestation", "verify", filepath.Join(dir, name), "--repo", repository,
-			"--signer-workflow", repository+"/"+workflow, "--source-ref", "refs/tags/"+release.Run.Tag,
-			"--source-digest", release.Run.Commit); err != nil {
-			return fmt.Errorf("provenance verification failed for %s; check gh attestation verify, network access, and a writable gh cache: %w", name, err)
-		}
 	}
 	// Reruns can replace artifacts under the same name. Qualification belongs to one attempt and artifact ID.
 	current, err := inspect(release.Run.ID, call)
@@ -219,6 +237,43 @@ func download(release candidate, dir string, stderr io.Writer, call command) err
 		return errors.New("candidate changed during verification; download into a fresh directory and qualify again")
 	}
 	fmt.Fprintln(stderr, "Integrity and provenance verified. Release validation must pass before publication.")
+	return nil
+}
+
+// verifyBundle checks every file in dir against SHA256SUMS and against the
+// release workflow's attestation for tag and commit.
+func verifyBundle(dir, tag, commit string, stderr io.Writer, call command) error {
+	names, err := verifyChecksums(dir)
+	if err != nil {
+		return err
+	}
+
+	// Without a trusted root, every gh attestation verify initializes the
+	// Sigstore TUF trust root on its own, and any one of those initializations
+	// can fail. Fetch the TUF-verified root once and verify every file against
+	// it. The file stays outside dir so it cannot join the published bundle.
+	root, err := call("gh", "attestation", "trusted-root")
+	if err != nil {
+		return fmt.Errorf("fetch Sigstore trusted root; check network access to tuf-repo-cdn.sigstore.dev and tuf-repo.github.com: %w", err)
+	}
+	scratch, err := os.MkdirTemp("", "katl-release-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(scratch)
+	trustedRoot := filepath.Join(scratch, "trusted_root.jsonl")
+	if err := os.WriteFile(trustedRoot, root, 0o600); err != nil {
+		return err
+	}
+
+	for _, name := range append(names, "SHA256SUMS") {
+		fmt.Fprintln(stderr, "Verifying provenance:", name)
+		if _, err := call("gh", "attestation", "verify", filepath.Join(dir, name), "--repo", repository,
+			"--signer-workflow", repository+"/"+workflow, "--source-ref", "refs/tags/"+tag,
+			"--source-digest", commit, "--custom-trusted-root", trustedRoot); err != nil {
+			return fmt.Errorf("provenance verification failed for %s; check gh attestation verify and network access: %w", name, err)
+		}
+	}
 	return nil
 }
 
