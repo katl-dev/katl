@@ -81,16 +81,17 @@ func EnsurePublishedFirstInstallRuntimeFixtures(ctx context.Context, world World
 
 func ensurePublishedFirstInstallRuntimeFixture(ctx context.Context, world World, repo string, spec NodeSpec, options FirstInstallRuntimeFixtureOptions, produce func(context.Context, FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error)) (string, error) {
 	cacheDir := WorldFixtureCacheDir(world)
-	contract, err := FirstInstallRuntimeFixtureContractForWorld(world, repo, spec, options.Input, options.KVM)
+	contract, err := producerFixtureContract(world, repo, spec, options.Input, options.KVM)
 	if err != nil {
 		if resetErr := resetFirstInstallRuntimeFixtureScenario(world, spec); resetErr != nil {
 			return "", errors.Join(err, resetErr)
 		}
-		contract, err = FirstInstallRuntimeFixtureContractForWorld(world, repo, spec, options.Input, options.KVM)
+		contract, err = producerFixtureContract(world, repo, spec, options.Input, options.KVM)
 		if err != nil {
 			return "", err
 		}
 	}
+	defer contract.WorldScenario.Release()
 	inputDigest, err := firstInstallRuntimeFixtureInputDigest(contract)
 	if err != nil {
 		return "", err
@@ -116,7 +117,8 @@ func ensurePublishedFirstInstallRuntimeFixture(ctx context.Context, world World,
 	} else if !isMissingPublishedFirstInstallRuntimeFixture(err) {
 		return "", err
 	}
-	if err := produceFirstInstallRuntimeFixtureOwned(ctx, world, repo, spec, options, produce); err != nil {
+	if _, err := produce(ctx, contract); err != nil {
+		_ = contract.WorldScenario.WriteSetupFailure(err)
 		return "", err
 	}
 	published, err := findPublishedFirstInstallRuntimeFixtureInBuildRoots([]string{cacheDir}, spec, inputDigest)
@@ -292,21 +294,20 @@ func firstInstallRuntimeFixtureContractOf(run FirstInstallWorldRun, spec NodeSpe
 	}
 }
 
-// produceFirstInstallRuntimeFixtureOwned plans the producing run in a scenario
-// with its own libvirt network, which it releases when production ends.
-func produceFirstInstallRuntimeFixtureOwned(ctx context.Context, world World, repo string, spec NodeSpec, options FirstInstallRuntimeFixtureOptions, produce func(context.Context, FirstInstallRuntimeFixtureContract) (ProducedInstalledRuntimeFixture, error)) error {
-	run, err := PlanFirstInstallWorldRun(world, FirstInstallRuntimeFixtureScenarioName(spec), repo, spec, options.Input, options.KVM)
-	if run.Scenario != nil {
-		defer run.Scenario.Release()
-	}
+// producerFixtureContract plans the fixture's scenario with its own libvirt
+// network, so the producer's node is reserved at its planned address. The
+// node's planned address is part of the staged inputs, so the producer must
+// use this contract rather than one planned without the network. The caller
+// releases the scenario.
+func producerFixtureContract(world World, repo string, spec NodeSpec, input FirstInstallWorldInput, kvm KVMPolicy) (FirstInstallRuntimeFixtureContract, error) {
+	run, err := PlanFirstInstallWorldRun(world, FirstInstallRuntimeFixtureScenarioName(spec), repo, spec, input, kvm)
 	if err != nil {
-		return err
+		if run.Scenario != nil {
+			run.Scenario.Release()
+		}
+		return FirstInstallRuntimeFixtureContract{}, err
 	}
-	if _, err := produce(ctx, firstInstallRuntimeFixtureContractOf(run, spec)); err != nil {
-		_ = run.Scenario.WriteSetupFailure(err)
-		return err
-	}
-	return nil
+	return firstInstallRuntimeFixtureContractOf(run, spec), nil
 }
 
 func FirstInstallRuntimeFixtureScenarioName(spec NodeSpec) string {
