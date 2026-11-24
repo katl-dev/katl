@@ -75,7 +75,15 @@ generate_release_notes() {
     git rev-parse --verify --quiet "$target^{commit}" >/dev/null ||
         fail "release notes target is not a commit: $target"
 
-    previous_tag="$(previous_katlos_tag "$target" "$current_tag" || true)"
+    if [[ -n "${KATL_RELEASE_PREVIOUS_TAG:-}" ]]; then
+        previous_tag="$KATL_RELEASE_PREVIOUS_TAG"
+        git rev-parse --verify --quiet "refs/tags/$previous_tag^{commit}" >/dev/null ||
+            fail "previous release tag does not exist: $previous_tag"
+        git merge-base --is-ancestor "refs/tags/$previous_tag^{commit}" "$target" ||
+            fail "previous release tag $previous_tag is not an ancestor of $target"
+    else
+        previous_tag="$(previous_katlos_tag "$target" "$current_tag" || true)"
+    fi
 
     if [[ -n "$previous_tag" ]]; then
         range="$previous_tag..$target"
