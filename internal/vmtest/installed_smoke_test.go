@@ -410,3 +410,83 @@ func repoRoot(t *testing.T) string {
 	}
 	return root
 }
+
+// TestFirstInstallOfflinePreseedWithoutLink installs from all-local preseed
+// media on a guest whose link is down from the first instant: no carrier and
+// no DHCP. The install must complete without waiting for an address. An
+// installer ordered after network-online.target (the pre-#521 unit) stalls
+// until wait-online gives up or never starts, so the installer completion and
+// the installed runtime's agent health would not arrive within the deadline;
+// an installer that waits for an address for local inputs would print the wait
+// lines checked below.
+func TestFirstInstallOfflinePreseedWithoutLink(t *testing.T) {
+	options := DefaultOptions()
+	if !options.Enabled {
+		t.Skip("set -katl.vmtest.run or KATL_VMTEST_RUN=1 to run the offline first-install smoke")
+	}
+	useInstalledESP := envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP")
+	worldRun, ok := firstInstallWorldRunFor(t, "first-install-offline-no-link", NodeSpec{Name: "cp-1", Role: ControlPlane}, useInstalledESP)
+	if !ok {
+		_ = RequireWorld(t)
+	}
+	runner := worldRun.Runner
+	scenario := withTarget(Scenario{Name: "first-install-offline-no-link"}, worldRun.Config.TargetDisk)
+	result, err := runner.Plan(scenario)
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+
+	result = requirePlannedVMHost(t, runner, scenario, result, HostRequirements{
+		Libvirt:   true,
+		ImageTool: true,
+		OVMF:      true,
+		KVM:       runner.options().KVM,
+		MTools:    true,
+	})
+	scenario.RunID = result.RunID
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+
+	vm := VMConfig{
+		KVM:     runner.options().KVM,
+		RAMMiB:  2048,
+		CPUs:    2,
+		Timeout: 12 * time.Minute,
+	}
+	installerVM := vm
+	installerVM.Network.LinkDown = true
+	result, err = RunFirstInstall(ctx, runner, scenario, FirstInstallConfig{
+		Installer: InstallerBootConfig{
+			InstallerUKI:    worldRun.Config.Installer.InstallerUKI,
+			InstallerISO:    worldRun.Config.Installer.InstallerISO,
+			InstallerKernel: worldRun.Config.Installer.InstallerKernel,
+			InstallerInitrd: worldRun.Config.Installer.InstallerInitrd,
+			CommandLine:     worldRun.Config.Installer.CommandLine,
+			RuntimeArtifact: worldRun.Config.Installer.RuntimeArtifact,
+			VM:              installerVM,
+		},
+		Runtime: InstalledRuntimeConfig{
+			ESPArtifacts: worldRun.Config.Runtime.ESPArtifacts,
+			VM:           FirstInstallRuntimeVMConfig(vm),
+		},
+		UseInstalledESP: worldRun.Config.UseInstalledESP,
+		ManifestPath:    worldRun.Config.ManifestPath,
+		PreseedManifest: true,
+		TargetDisk:      worldRun.Config.TargetDisk,
+	})
+	if err != nil {
+		t.Fatalf("RunFirstInstall() error = %v", err)
+	}
+	if result.Status != StatusPassed {
+		t.Fatalf("offline first install status = %q, failure = %q, run dir = %s", result.Status, result.FailureSummary, result.RunDir)
+	}
+
+	// Serial output is post-hoc evidence here; completion above was observed
+	// through the installer signal and the runtime agent over vsock.
+	serial := strings.ToLower(SerialText(result.Artifacts.InstallerSerial))
+	for _, line := range []string{"waiting for a dhcp address", "waiting for a network link"} {
+		if strings.Contains(serial, line) {
+			t.Errorf("offline install printed %q; run dir = %s", line, result.RunDir)
+		}
+	}
+}
