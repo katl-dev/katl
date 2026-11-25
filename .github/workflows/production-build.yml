@@ -72,7 +72,8 @@ jobs:
           cache: true
 
       - name: Restore Katl Go build caches
-        uses: actions/cache@v6
+        id: go-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             _build/go-mod
@@ -100,7 +101,8 @@ jobs:
           echo "key=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Restore mkosi package cache
-        uses: actions/cache@v6
+        id: package-cache
+        uses: actions/cache/restore@v6
         with:
           path: _build/mkosi/package-cache
           key: katl-mkosi-packages-runtime-${{ inputs.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ steps.mkosi-cache.outputs.key }}-${{ github.sha }}
@@ -167,6 +169,25 @@ jobs:
           inventory="$(go run ./cmd/katl-mkosi-artifacts inventory-release-extensions)"
           echo "extensions=$(jq -c .extension <<<"$inventory")" >> "$GITHUB_OUTPUT"
 
+      # Merge queue refs are never restored by other runs, so saving there only
+      # evicts the caches that default-branch and pull request runs use.
+      - name: Save Katl Go build caches
+        if: github.event_name != 'merge_group' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            _build/go-mod
+            _build/go-cache
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
+
+      - name: Save mkosi package cache
+        if: github.event_name != 'merge_group' && steps.package-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: _build/mkosi/package-cache
+          key: ${{ steps.package-cache.outputs.cache-primary-key }}
+
+
   installer:
     name: Build And Verify Installer
     runs-on: ubuntu-24.04
@@ -194,7 +215,8 @@ jobs:
           cache: true
 
       - name: Restore Katl Go build caches
-        uses: actions/cache@v6
+        id: go-cache
+        uses: actions/cache/restore@v6
         with:
           path: |
             _build/go-mod
@@ -222,7 +244,8 @@ jobs:
           echo "key=$digest" >> "$GITHUB_OUTPUT"
 
       - name: Restore mkosi package cache
-        uses: actions/cache@v6
+        id: package-cache
+        uses: actions/cache/restore@v6
         with:
           path: _build/mkosi/package-cache
           key: katl-mkosi-packages-installer-${{ inputs.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ steps.mkosi-cache.outputs.key }}-${{ github.sha }}
@@ -265,6 +288,25 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
+
+      # Merge queue refs are never restored by other runs, so saving there only
+      # evicts the caches that default-branch and pull request runs use.
+      - name: Save Katl Go build caches
+        if: github.event_name != 'merge_group' && steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            _build/go-mod
+            _build/go-cache
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
+
+      - name: Save mkosi package cache
+        if: github.event_name != 'merge_group' && steps.package-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: _build/mkosi/package-cache
+          key: ${{ steps.package-cache.outputs.cache-primary-key }}
+
 
 
   extensions:
@@ -463,7 +505,7 @@ jobs:
           name: katl-assembled-${{ inputs.flavour }}-${{ github.sha }}
           path: dist/
           if-no-files-found: error
-          retention-days: ${{ inputs.publication && 30 || 3 }}
+          retention-days: ${{ inputs.publication && 30 || 1 }}
           compression-level: 0
 
       - name: Upload extension publication inputs

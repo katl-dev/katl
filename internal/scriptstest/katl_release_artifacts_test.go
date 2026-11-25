@@ -64,6 +64,40 @@ func TestKatlReleaseArtifactVersion(t *testing.T) {
 	}
 }
 
+func TestKatlReleaseArtifactDevVersion(t *testing.T) {
+	repo := repoRoot(t)
+	script := filepath.Join(repo, "scripts", "katl-release-artifacts")
+	tests := []struct{ name, tag, want, wantErr string }{
+		{name: "stable tag", tag: "v2026.11.4", want: "2026.11.5-dev.0"},
+		{name: "first release of a month", tag: "v2026.12.0", want: "2026.12.1-dev.0"},
+		{name: "two-digit patch", tag: "v2026.11.9", want: "2026.11.10-dev.0"},
+		{name: "prerelease", tag: "v2026.11.4-rc.1", wantErr: "not a stable"},
+		{name: "not CalVer", tag: "v1.2.3", wantErr: "not a stable"},
+		{name: "development", tag: "v2026.11.5-dev.0", wantErr: "not a stable"},
+		{name: "unprefixed", tag: "2026.11.4", wantErr: "not a stable"},
+		{name: "empty", tag: "", wantErr: "not a stable"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command(script, "dev-version", tt.tag)
+			cmd.Dir = repo
+			output, err := cmd.CombinedOutput()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(string(output), tt.wantErr) {
+					t.Fatalf("error = %v, output = %q, want %q", err, output, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("dev-version failed: %v\n%s", err, output)
+			}
+			if got := strings.TrimSpace(string(output)); got != tt.want {
+				t.Fatalf("dev-version = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestKatlReleaseArtifactNotesFollowReleaseHistory(t *testing.T) {
 	repo := repoRoot(t)
 	gitDir := t.TempDir()
@@ -834,4 +868,132 @@ func TestMkosiBuilderActionOutputIsIgnored(t *testing.T) {
 	if output, err := exec.Command("git", "-C", repo, "check-ignore", "-q", "mkosi.conf.d/ci-downloads.conf").CombinedOutput(); err != nil {
 		t.Fatalf("mkosi.conf.d/ci-downloads.conf is not ignored: %v\n%s", err, output)
 	}
+}
+
+func TestKatlReleaseArtifactPreviousTag(t *testing.T) {
+	repo := repoRoot(t)
+	script := filepath.Join(repo, "scripts", "katl-release-artifacts")
+	tests := []struct {
+		name, tag string
+		ghFails   bool
+		want      string
+		wantErr   string
+	}{
+		{name: "stable", tag: "v2026.11.4", want: "v2026.11.4"},
+		{name: "release candidate", tag: "v2026.11.5-rc.1", wantErr: "not a stable"},
+		{name: "development", tag: "v2026.11.5-dev.0", wantErr: "not a stable"},
+		{name: "foreign tag", tag: "v1.2.3", wantErr: "not a stable"},
+		{name: "no release", tag: "", wantErr: "not a stable"},
+		{name: "lookup failure", ghFails: true, wantErr: "cannot resolve"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tools := t.TempDir()
+			argsPath := filepath.Join(t.TempDir(), "args")
+			body := `echo "$*" > "$GH_ARGS"` + "\n"
+			if tt.ghFails {
+				body += "exit 1\n"
+			} else {
+				body += "printf '%s\\n' \"$GH_TAG\"\n"
+			}
+			writeFakeExecutable(t, tools, "gh", body)
+
+			cmd := exec.Command(script, "previous-tag")
+			cmd.Dir = repo
+			cmd.Env = append(os.Environ(), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"GH_ARGS="+argsPath, "GH_TAG="+tt.tag, "GITHUB_REPOSITORY=katl-dev/katl")
+			output, err := cmd.CombinedOutput()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(string(output), tt.wantErr) {
+					t.Fatalf("error = %v, output = %q, want %q", err, output, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("previous-tag failed: %v\n%s", err, output)
+			}
+			if got := strings.TrimSpace(string(output)); got != tt.want {
+				t.Fatalf("previous-tag = %q, want %q", got, tt.want)
+			}
+			args, err := os.ReadFile(argsPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(args), "katl-dev/katl") {
+				t.Fatalf("gh was not scoped to the repository: %q", args)
+			}
+		})
+	}
+}
+
+func TestKatlReleaseArtifactPreviousTagInSeries(t *testing.T) {
+	script := filepath.Join(repoRoot(t), "scripts", "katl-release-artifacts")
+	gitDir := t.TempDir()
+	runGit(t, gitDir, "init", "--quiet", "--initial-branch=main")
+	commit := func(tag string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(gitDir, "file"), []byte(tag+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		runGit(t, gitDir, "add", "file")
+		runGit(t, gitDir, "commit", "--quiet", "-m", tag)
+		runGit(t, gitDir, "tag", tag)
+	}
+
+	// release/2026.10.x branches from 2026.10.2 before main reaches 2026.11.x, and
+	// carries prerelease tags that sort above its stable tag.
+	commit("v2026.10.2")
+	runGit(t, gitDir, "branch", "release/2026.10.x")
+	commit("v2026.11.4")
+	commit("v2026.11.9")
+	commit("v2026.11.10")
+	commit("v2026.12.0-rc.1")
+	runGit(t, gitDir, "switch", "--quiet", "release/2026.10.x")
+	commit("v2026.10.3-rc.1")
+	commit("v2026.10.3-dev.0")
+	runGit(t, gitDir, "switch", "--quiet", "main")
+
+	tools := t.TempDir()
+	// A base lookup must not consult the latest release, which belongs to main.
+	writeFakeExecutable(t, tools, "gh", "echo gh must not be called >&2\nexit 1\n")
+
+	for _, tt := range []struct{ name, base, want, wantErr string }{
+		{name: "main ignores later prerelease and sorts numerically", base: "main", want: "v2026.11.10"},
+		{name: "release series gets its own stable tag", base: "release/2026.10.x", want: "v2026.10.2"},
+		{name: "commit of a base", base: "v2026.11.4^{commit}", want: "v2026.11.4"},
+		{name: "unknown base", base: "release/none", wantErr: "base ref does not exist"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command(script, "previous-tag", tt.base)
+			cmd.Dir = gitDir
+			cmd.Env = append(gittest.Env(os.Environ(), gitDir), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"))
+			output, err := cmd.CombinedOutput()
+			if tt.wantErr != "" {
+				if err == nil || !strings.Contains(string(output), tt.wantErr) {
+					t.Fatalf("error = %v, output = %q, want %q", err, output, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("previous-tag failed: %v\n%s", err, output)
+			}
+			if got := strings.TrimSpace(string(output)); got != tt.want {
+				t.Fatalf("previous-tag = %q, want %q", got, tt.want)
+			}
+		})
+	}
+
+	t.Run("only prereleases", func(t *testing.T) {
+		empty := t.TempDir()
+		runGit(t, empty, "init", "--quiet")
+		runGit(t, empty, "commit", "--quiet", "--allow-empty", "-m", "x")
+		runGit(t, empty, "tag", "v2026.11.5-rc.1")
+		cmd := exec.Command(script, "previous-tag", "HEAD")
+		cmd.Dir = empty
+		cmd.Env = gittest.Env(os.Environ(), empty)
+		output, err := cmd.CombinedOutput()
+		if err == nil || !strings.Contains(string(output), "no stable release tag") {
+			t.Fatalf("error = %v, output = %q", err, output)
+		}
+	})
 }

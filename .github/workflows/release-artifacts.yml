@@ -34,6 +34,9 @@ jobs:
       artifact: ${{ steps.bundle.outputs.artifact }}
       previous-tag: ${{ steps.bundle.outputs.previous-tag }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - id: bundle
         env:
           GH_TOKEN: ${{ github.token }}
@@ -48,7 +51,7 @@ jobs:
           artifact="$(jq -r '.[0].name' <<< "$bundles")"
           [[ "$artifact" == *-"${commit:0:12}" ]]
           echo "artifact=$artifact" >> "$GITHUB_OUTPUT"
-          echo "previous-tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)" >> "$GITHUB_OUTPUT"
+          echo "previous-tag=$(scripts/katl-release-artifacts previous-tag)" >> "$GITHUB_OUTPUT"
 
   requalify:
     name: Requalify production VM (${{ matrix.flavour }})
@@ -124,7 +127,7 @@ jobs:
         id: previous
         env:
           GH_TOKEN: ${{ github.token }}
-        run: echo "tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)" >> "$GITHUB_OUTPUT"
+        run: echo "tag=$(scripts/katl-release-artifacts previous-tag)" >> "$GITHUB_OUTPUT"
 
   build-standard:
     name: Build standard
@@ -164,14 +167,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: katl-assembled-*-${{ github.sha }}
-          path: flavours
-      - name: Combine flavours
-        shell: bash
-        run: |
-          scripts/katl-release-artifacts combine dist "standard=flavours/katl-assembled-standard-$GITHUB_SHA" "lts=flavours/katl-assembled-lts-$GITHUB_SHA"
+      - uses: ./.github/actions/combine-flavours
       - name: Attest staged release artifacts
         if: github.event_name == 'push' && github.ref_type == 'tag'
         uses: actions/attest@v4

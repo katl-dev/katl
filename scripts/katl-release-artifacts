@@ -14,6 +14,8 @@ fail() {
 usage() {
     cat >&2 <<'EOF'
 usage: scripts/katl-release-artifacts version EVENT REF_TYPE REF_NAME [MANUAL_VERSION]
+       scripts/katl-release-artifacts previous-tag [BASE_REF]
+       scripts/katl-release-artifacts dev-version STABLE_TAG
        scripts/katl-release-artifacts notes VERSION
        scripts/katl-release-artifacts build-katlctl VERSION
        scripts/katl-release-artifacts verify-katlctl VERSION
@@ -267,6 +269,47 @@ version_for_ref() {
     printf '%s\n' "$version"
 }
 
+# Succeeds for a final release tag, such as v2026.11.4, and fails for the
+# development, alpha, beta and release-candidate tags.
+is_stable_tag() {
+    is_katlos_tag "$1" && [[ "$1" != *-* ]]
+}
+
+# Prints the stable release tag a build upgrades from. Without a base it is the
+# latest stable release. With a base ref it is the newest stable tag reachable
+# from that ref, so a release series upgrades from its own history and release
+# notes find the tag as an ancestor. The lookup lives here so every workflow
+# resolves the supported upgrade source the same way.
+previous_stable_tag() {
+    local base="${1:-}" tag candidate
+    if [[ -n "$base" ]]; then
+        git rev-parse --verify --quiet "$base^{commit}" >/dev/null ||
+            fail "base ref does not exist: $base"
+        while IFS= read -r candidate; do
+            is_stable_tag "$candidate" && tag="$candidate"
+        done < <(git tag --merged "$base" --list 'v[0-9]*' --sort=version:refname)
+        [[ -n "${tag:-}" ]] || fail "no stable release tag is reachable from $base"
+        printf '%s\n' "$tag"
+        return
+    fi
+    local -a repo=()
+    [[ -z "${GITHUB_REPOSITORY:-}" ]] || repo=(--repo "$GITHUB_REPOSITORY")
+    tag="$(gh release view "${repo[@]}" --json tagName --jq .tagName)" ||
+        fail "cannot resolve the latest release"
+    is_stable_tag "$tag" || fail "latest release is not a stable KatlOS release tag: $tag"
+    printf '%s\n' "$tag"
+}
+
+# Prints the development version that sorts directly above a stable release, for
+# builds that qualify production bytes without publishing them.
+dev_version_above() {
+    is_stable_tag "$1" || fail "not a stable KatlOS release tag: $1"
+    local release="${1#v}"
+    local version="${release%.*}.$((${release##*.} + 1))-dev.0"
+    validate_version "$version"
+    printf '%s\n' "$version"
+}
+
 write_checksums() {
     local dir="$1"
     (
@@ -423,6 +466,14 @@ case "${1:-}" in
     version)
         [[ $# -ge 4 && $# -le 5 ]] || usage
         version_for_ref "$2" "$3" "$4" "${5:-}"
+        ;;
+    previous-tag)
+        [[ $# -le 2 ]] || usage
+        previous_stable_tag "${2:-}"
+        ;;
+    dev-version)
+        [[ $# -eq 2 ]] || usage
+        dev_version_above "$2"
         ;;
     notes)
         [[ $# -eq 2 ]] || usage
