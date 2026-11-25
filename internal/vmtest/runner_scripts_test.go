@@ -1818,7 +1818,7 @@ jq -n \
       tools: [{name: "mkosi", version: "fake"}],
       mkosiProfiles: [{name: "installer-image", path: "mkosi.profiles/installer-image", configSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", packageSetRef: "installer-image"}],
       packageSets: [{name: "installer-image", source: "mkosi.profiles/installer-image", packages: [{name: "systemd", nevra: "systemd-1.x86_64"}]}],
-      artifacts: [{name: "installer-uki", kind: "uki", path: (if $pinDir != "" and env.KATL_FAKE_PIN == "1" then $pinDir + "/katl-installer.efi" else "/tmp/katl-installer.efi" end), sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", sizeBytes: 1}] + (if $pinDir != "" and env.KATL_FAKE_PIN == "1" then [{name: "installer-iso", kind: "iso", path: ($pinDir + "/katl-installer.iso"), sha256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", sizeBytes: 2}] else [] end)
+      artifacts: ([{name: "installer-uki", kind: "uki", path: (if $pinDir != "" and env.KATL_FAKE_PIN == "1" then $pinDir + "/katl-installer.efi" else "/tmp/katl-installer.efi" end), sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", sizeBytes: 1}] + (if $pinDir != "" and env.KATL_FAKE_PIN == "1" then [{name: "installer-iso", kind: "iso", path: ($pinDir + "/katl-installer.iso"), sha256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", sizeBytes: 2}] else [] end))
     }' > "$manifest"
 printf 'manifest: %s\nmode: record\nartifacts: 1\npackageSets: 1\n' "$manifest"
 `)
