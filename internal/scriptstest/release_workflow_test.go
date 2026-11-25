@@ -302,6 +302,7 @@ func TestReleasePublishesKernelExtensions(t *testing.T) {
 		{"release-validation", "qualification-standard"},
 		{"release-validation", "qualification-lts"},
 		{"release-validation", "unit"},
+		{"release-validation", "qualified-bytes"},
 		{"bundle", "build-standard"},
 		{"bundle", "build-lts"},
 		{"qualified-bytes", "qualification-standard"},
@@ -381,6 +382,21 @@ func TestReleaseValidation(t *testing.T) {
 	var scripts []string
 	for _, step := range workflow.Jobs["release-validation"].Steps {
 		scripts = append(scripts, step.Run)
+	}
+	wiring := map[string]string{
+		"UNIT":                "unit",
+		"BUNDLE":              "bundle",
+		"REGRESSION":          "vmtests",
+		"PRODUCTION_STANDARD": "qualification-standard",
+		"PRODUCTION_LTS":      "qualification-lts",
+		"QUALIFIED":           "qualified-bytes",
+	}
+	for _, step := range workflow.Jobs["release-validation"].Steps {
+		for name, job := range wiring {
+			if want := "${{ needs." + job + ".result }}"; step.Env[name] != want {
+				t.Errorf("%s = %q, want %q", name, step.Env[name], want)
+			}
+		}
 	}
 	for _, dependency := range []string{"UNIT", "BUNDLE", "REGRESSION", "PRODUCTION_STANDARD", "PRODUCTION_LTS", "QUALIFIED"} {
 		for _, tc := range []struct {

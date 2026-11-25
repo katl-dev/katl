@@ -762,3 +762,77 @@ func TestKatlReleaseArtifactNotesPreviousTag(t *testing.T) {
 		}
 	})
 }
+
+func TestKatlReleaseArtifactVerifyKatlctl(t *testing.T) {
+	repo := repoRoot(t)
+	source := t.TempDir()
+	buildDir := t.TempDir()
+	version := "2026.7.0-rc.1"
+	write := func(name, content string) {
+		t.Helper()
+		path := filepath.Join(source, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	git := func(args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=test", "-c", "user.email=test@example.invalid"}, args...)...)
+		cmd.Dir = source
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, output)
+		}
+	}
+	write("go.mod", "module example.invalid/katl\n\ngo 1.21\n")
+	write("cmd/katlctl/main.go", "package main\n\nfunc main() {}\n")
+	git("init", "-q")
+	git("add", ".")
+	git("commit", "-q", "-m", "fixture")
+
+	run := func(command string) ([]byte, error) {
+		cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), command, version)
+		cmd.Env = append(os.Environ(),
+			"KATL_REPO_ROOT="+source,
+			"KATL_MKOSI_BUILD_DIR="+buildDir,
+			"KATL_ARCHITECTURE=x86_64",
+		)
+		return cmd.CombinedOutput()
+	}
+
+	for _, tc := range []struct {
+		name  string
+		dirty bool
+		pass  bool
+	}{
+		{"clean tree", false, true},
+		{"untracked file", true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.dirty {
+				write("mkosi.conf.d/ci-downloads.conf", "[Build]\n")
+			}
+			if output, err := run("build-katlctl"); err != nil {
+				t.Fatalf("build katlctl: %v\n%s", err, output)
+			}
+			output, err := run("verify-katlctl")
+			if (err == nil) != tc.pass {
+				t.Fatalf("verify katlctl = %v, want pass=%v\n%s", err, tc.pass, output)
+			}
+		})
+	}
+}
+
+func TestMkosiBuilderActionOutputIsIgnored(t *testing.T) {
+	repo := repoRoot(t)
+	action := string(mustReadFile(t, filepath.Join(repo, ".github", "actions", "mkosi-builder", "action.yml")))
+	if !strings.Contains(action, "mkosi.conf.d/ci-downloads.conf") {
+		t.Fatal("mkosi-builder no longer writes mkosi.conf.d/ci-downloads.conf; update this test")
+	}
+	// An untracked file in the checkout stamps every later Go build vcs.modified=true.
+	if output, err := exec.Command("git", "-C", repo, "check-ignore", "-q", "mkosi.conf.d/ci-downloads.conf").CombinedOutput(); err != nil {
+		t.Fatalf("mkosi.conf.d/ci-downloads.conf is not ignored: %v\n%s", err, output)
+	}
+}

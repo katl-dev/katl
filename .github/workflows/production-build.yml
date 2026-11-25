@@ -414,7 +414,9 @@ jobs:
 
       - name: Build katlctl
         shell: bash
-        run: scripts/katl-release-artifacts build-katlctl "$KATL_VERSION"
+        run: |
+          scripts/katl-release-artifacts build-katlctl "$KATL_VERSION"
+          scripts/katl-release-artifacts verify-katlctl "$KATL_VERSION"
 
       - name: Assemble and verify installer ISO
         shell: bash
@@ -475,3 +477,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
+
+      - name: Record disk margin
+        if: always()
+        run: df -h /

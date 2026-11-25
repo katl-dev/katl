@@ -28,6 +28,8 @@ coverage.out
 
 # mkosi
 mkosi.local.conf
+# Written by .github/actions/mkosi-builder; untracked files would stamp Go builds vcs.modified=true.
+/mkosi.conf.d/ci-downloads.conf
 mkosi.local/
 mkosi.output/
 mkosi.cache/
