@@ -54,7 +54,7 @@ func TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke(t *testing.T) {
 }
 
 func TestKubeadmUpgradeOperationSmoke(t *testing.T) {
-	if run, ok := operationBackedWorldSmokeRun(t, "installed-runtime-two-node-operation-backed-bootstrap", true); ok {
+	if run, ok := operationBackedWorldSmokeRun(t, "kubeadm-upgrade-operation", true); ok {
 		runOperationBackedBootstrapSmoke(t, run, upgradeProof)
 		return
 	}

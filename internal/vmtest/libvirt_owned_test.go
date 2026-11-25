@@ -285,24 +285,33 @@ func TestScenarioNetworkRejectsForeignOwner(t *testing.T) {
 	}
 }
 
-func TestScenarioNetworkReuseKeepsOtherReservations(t *testing.T) {
-	// A second planner of the same scenario in one run finds the network of
-	// the first and must not delete the reservations it did not make.
+func TestPlanScenarioRefusesPlannedID(t *testing.T) {
 	world, fake := ownedScenarioWorld(t)
 	first := world.NewScenario(t, "shared")
 	node := first.NewNode(t, NodeSpec{Name: "cp-1", Role: ControlPlane})
 	want := map[string]string{node.MACAddress: node.Address}
-	assertReservations(t, fake, first.World.Network.Name, want)
 
 	second, err := world.PlanScenario("shared")
-	if err != nil {
-		t.Fatal(err)
-	}
 
-	if second.World.Network.Name != first.World.Network.Name || second.World.Network.CIDR != first.World.Network.CIDR {
-		t.Fatalf("reused network = %+v, want %+v", second.World.Network, first.World.Network)
+	if !errors.Is(err, ErrScenarioPlanned) {
+		t.Fatalf("PlanScenario() = %+v, %v, want ErrScenarioPlanned", second, err)
 	}
+	// The refused planner leaves the first scenario's reservations alone.
 	assertReservations(t, fake, first.World.Network.Name, want)
+}
+
+func TestPlanScenarioRefusesIDOfPreservedDomain(t *testing.T) {
+	world, fake := ownedScenarioWorld(t)
+	first := world.NewScenario(t, "preserved-id")
+	first.NewNode(t, NodeSpec{Name: "cp-1", Role: ControlPlane})
+	fake.addDomain(t, "cp-1", vmtestMetadataFor(world.Lease), first.World.Network.Name)
+	first.Release()
+
+	second, err := world.PlanScenario("preserved-id")
+
+	if !errors.Is(err, ErrScenarioPlanned) {
+		t.Fatalf("PlanScenario() = %+v, %v, want a refusal while a preserved domain holds the network", second, err)
+	}
 }
 
 func TestCreateNetworkConcurrentPicksDistinctSubnets(t *testing.T) {
