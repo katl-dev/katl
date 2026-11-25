@@ -177,6 +177,9 @@ const (
 	planFields = `id body isDraft isCrossRepository headRefName baseRefName createdAt
   milestone { title }
   labels(first: 30) { nodes { name } }
+  pushes: timelineItems(last: 30, itemTypes: [HEAD_REF_FORCE_PUSHED_EVENT, PULL_REQUEST_COMMIT]) {
+    nodes { __typename ... on HeadRefForcePushedEvent { createdAt } ... on PullRequestCommit { commit { pushedDate committedDate } } }
+  }
   closingIssuesReferences(first: 20) { nodes { number } }`
 )
 
@@ -263,6 +266,10 @@ type prResponse struct {
 	TimelineItems struct {
 		Nodes []removalEvent `json:"nodes"`
 	} `json:"timelineItems"`
+	// Pushes lists recent force-pushes and pushed commits.
+	Pushes struct {
+		Nodes []pushEvent `json:"nodes"`
+	} `json:"pushes"`
 
 	ID                      string      `json:"id"`
 	Body                    string      `json:"body"`
@@ -485,7 +492,7 @@ func (g *gh) pullRequestChecks(ctx context.Context, numbers []int) (map[int]chec
 	for _, n := range numbers {
 		fmt.Fprintf(&query, `    pr%[1]d: pullRequest(number: %[1]d) { commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
       __typename
-      ... on CheckRun { name conclusion isRequired(pullRequestNumber: %[1]d) }
+      ... on CheckRun { name conclusion startedAt completedAt isRequired(pullRequestNumber: %[1]d) }
       ... on StatusContext { context state isRequired(pullRequestNumber: %[1]d) }
     } } } } } } }
 `, n)
@@ -507,14 +514,7 @@ func decodeCheckFailures(raw []byte, numbers []int) (map[int]checkFailures, erro
 					Commit struct {
 						StatusCheckRollup *struct {
 							Contexts struct {
-								Nodes []struct {
-									Type       string `json:"__typename"`
-									Name       string `json:"name"`
-									Conclusion string `json:"conclusion"`
-									Context    string `json:"context"`
-									State      string `json:"state"`
-									IsRequired bool   `json:"isRequired"`
-								} `json:"nodes"`
+								Nodes []checkContext `json:"nodes"`
 							} `json:"contexts"`
 						} `json:"statusCheckRollup"`
 					} `json:"commit"`
@@ -533,7 +533,7 @@ func decodeCheckFailures(raw []byte, numbers []int) (map[int]checkFailures, erro
 			continue
 		}
 		var failures checkFailures
-		for _, c := range pr.Commits.Nodes[0].Commit.StatusCheckRollup.Contexts.Nodes {
+		for _, c := range latestContexts(pr.Commits.Nodes[0].Commit.StatusCheckRollup.Contexts.Nodes) {
 			name, failed := c.Name, slices.Contains([]string{"FAILURE", "TIMED_OUT", "STARTUP_FAILURE"}, c.Conclusion)
 			if c.Type == "StatusContext" {
 				name, failed = c.Context, c.State == "FAILURE" || c.State == "ERROR"
@@ -549,4 +549,69 @@ func decodeCheckFailures(raw []byte, numbers []int) (map[int]checkFailures, erro
 		out[n] = failures
 	}
 	return out, nil
+}
+
+// pushEvent is a force-push, or a commit added to the branch.
+type pushEvent struct {
+	Type      string    `json:"__typename"`
+	CreatedAt time.Time `json:"createdAt"`
+	Commit    *struct {
+		PushedDate    *time.Time `json:"pushedDate"`
+		CommittedDate time.Time  `json:"committedDate"`
+	} `json:"commit"`
+}
+
+// pushedAfter reports whether the push provably happened after t. A commit
+// cannot be pushed before it exists, so a commit committed after t was pushed
+// after t; a commit committed earlier says nothing, because it may have been
+// pushed late. GitHub often omits the push date.
+func (e pushEvent) pushedAfter(t time.Time) bool {
+	switch {
+	case e.Type == "HeadRefForcePushedEvent":
+		return e.CreatedAt.After(t)
+	case e.Commit != nil:
+		return e.Commit.CommittedDate.After(t) || (e.Commit.PushedDate != nil && e.Commit.PushedDate.After(t))
+	}
+	return false
+}
+
+// checkContext is a check run or commit status on a head.
+type checkContext struct {
+	Type        string    `json:"__typename"`
+	Name        string    `json:"name"`
+	Conclusion  string    `json:"conclusion"`
+	StartedAt   time.Time `json:"startedAt"`
+	CompletedAt time.Time `json:"completedAt"`
+	Context     string    `json:"context"`
+	State       string    `json:"state"`
+	IsRequired  bool      `json:"isRequired"`
+}
+
+// latestContexts keeps the latest check run of each name. Reruns and
+// superseded workflow runs leave older runs of the same name on the commit,
+// and GitHub gates on the latest, so older failures must not count.
+func latestContexts(all []checkContext) []checkContext {
+	latest := func(c checkContext) time.Time {
+		if c.StartedAt.After(c.CompletedAt) {
+			return c.StartedAt
+		}
+		return c.CompletedAt
+	}
+	var out []checkContext
+	index := map[string]int{}
+	for _, c := range all {
+		if c.Type == "StatusContext" {
+			out = append(out, c)
+			continue
+		}
+		i, seen := index[c.Name]
+		switch {
+		case !seen:
+			index[c.Name] = len(out)
+			out = append(out, c)
+		case latest(c).After(latest(out[i])):
+			out[i] = c
+		}
+	}
+	return out
 }

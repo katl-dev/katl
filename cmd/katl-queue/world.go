@@ -28,6 +28,9 @@ type openPR struct {
 	// RemovalHead is the head katl-queue recorded when it first observed
 	// Removal, or empty when it has not yet.
 	RemovalHead string
+	// PushedAfterRemoval is set when GitHub records a push to the branch
+	// after Removal.
+	PushedAfterRemoval bool
 	// OptionalReported is set when katl-queue already reported the failing
 	// optional checks of this head.
 	OptionalReported bool
@@ -128,9 +131,9 @@ func optionalMarker(head string) marker {
 
 // settle reads the markers katl-queue left on the pull request to decide
 // whether its latest removal still holds it and which reports were made.
-// A removal that katl-queue has not recorded holds the pull request at its
-// current head, which is the safe reading when it cannot tell whether the
-// author already pushed.
+// A removal that katl-queue has not recorded holds the pull request unless
+// GitHub records a push after it; without that record katl-queue cannot tell
+// whether the head changed, so it holds.
 func (pr *openPR) settle(marks []marker, viewer string) {
 	for _, m := range marks {
 		switch m.Kind {
@@ -144,7 +147,10 @@ func (pr *openPR) settle(marks []marker, viewer string) {
 			}
 		}
 	}
-	held := pr.RemovalHead == "" || pr.RemovalHead == pr.Head
+	held := !pr.PushedAfterRemoval
+	if pr.RemovalHead != "" {
+		held = pr.RemovalHead == pr.Head
+	}
 	kind := pr.removalKind(viewer)
 	pr.Ejected = kind == removalEjected && held
 	pr.Dequeued = kind == removalDequeued && held
@@ -153,7 +159,7 @@ func (pr *openPR) settle(marks []marker, viewer string) {
 // unrecorded reports whether the latest removal is one katl-queue holds the
 // pull request for but has not yet recorded.
 func (pr openPR) unrecorded(viewer string) bool {
-	return pr.removalKind(viewer) != removalOther && pr.RemovalHead == ""
+	return pr.removalKind(viewer) != removalOther && pr.RemovalHead == "" && !pr.PushedAfterRemoval
 }
 
 // worldFrom derives the world from a snapshot. A non-empty milestone limits
@@ -191,6 +197,11 @@ func worldFrom(snap queueSnapshot, milestone string) world {
 		pr.NeedsLabel = slices.Contains(pr.Labels, needsRebaseLabel)
 		if obs.Removal != nil && !obs.Removal.mergeRecord() {
 			pr.Removal = obs.Removal
+			for _, p := range n.Pushes.Nodes {
+				if p.pushedAfter(obs.Removal.CreatedAt) {
+					pr.PushedAfterRemoval = true
+				}
+			}
 		}
 		pr.Deps = declaredDeps(n.Body)
 		w.PRs = append(w.PRs, pr)

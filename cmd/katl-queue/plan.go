@@ -274,7 +274,7 @@ func planQueue(ctx context.Context, objects *scratchObjects, in planInput) (plan
 		}
 
 		if c.Ejected {
-			hold(heldPR{Reason: "was removed from the merge queue for failed checks and its head has not changed; fix it and push (katl-queue never retries)"})
+			hold(heldPR{Reason: "was removed from the merge queue for failed checks and no push since is recorded; fix it and push (katl-queue never retries)"})
 			continue
 		}
 		if c.Dequeued {

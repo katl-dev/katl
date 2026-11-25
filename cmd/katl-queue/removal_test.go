@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"slices"
 	"testing"
 	"time"
@@ -33,7 +34,7 @@ func TestSettleRemoval(t *testing.T) {
 		{name: "author push then rebase", removal: failed, head: "C", marks: []marker{removalMarker("r2", "A")}},
 		{name: "author push", removal: failed, head: "B", marks: []marker{removalMarker("r2", "A")}},
 		// Without a record, whether the author already pushed is unknowable,
-		// so the removal holds the head it was first seen at.
+		// so the removal holds unless a push after it is recorded.
 		{name: "push before the record existed", removal: failed, head: "B", wantEjected: true},
 		{
 			name: "latest of several removals recorded", removal: failed, head: "B",
@@ -263,5 +264,66 @@ func TestMarkersNeedViewer(t *testing.T) {
 
 	if _, err := g.markers(context.Background(), 1); err == nil {
 		t.Error("markers read comments without knowing which user is katl-queue")
+	}
+}
+
+func TestWorldRemovalWithoutMarker(t *testing.T) {
+	const removedAt = "2026-11-25T01:52:33Z"
+	tests := []struct {
+		name        string
+		pushes      string
+		wantEjected bool
+	}{
+		{name: "force-push after removal", pushes: `{"__typename": "HeadRefForcePushedEvent", "createdAt": "2026-11-25T03:00:00Z"}`},
+		{name: "commit made after removal", pushes: `{"__typename": "PullRequestCommit", "commit": {"pushedDate": null, "committedDate": "2026-11-25T03:00:00Z"}}`},
+		{name: "commit pushed after removal", pushes: `{"__typename": "PullRequestCommit", "commit": {"pushedDate": "2026-11-25T03:00:00Z", "committedDate": "2026-11-24T00:00:00Z"}}`},
+		{name: "force-push before removal", pushes: `{"__typename": "HeadRefForcePushedEvent", "createdAt": "2026-11-25T01:00:00Z"}`, wantEjected: true},
+		{name: "commit made before removal, push time unknown", pushes: `{"__typename": "PullRequestCommit", "commit": {"pushedDate": null, "committedDate": "2026-11-24T00:00:00Z"}}`, wantEjected: true},
+		{name: "no pushes", wantEjected: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var pr prResponse
+			raw := `{"number": 535, "headRefOid": "4287c936", "baseRefName": "main",
+			  "timelineItems": {"nodes": [{"id": "r1", "createdAt": "` + removedAt + `", "reason": "failed_checks", "actor": {"login": "github-merge-queue"}}]},
+			  "pushes": {"nodes": [` + tt.pushes + `]}}`
+			if err := json.Unmarshal([]byte(raw), &pr); err != nil {
+				t.Fatal(err)
+			}
+
+			w := worldFrom(queueSnapshot{Viewer: viewer, PRs: []prResponse{pr}}, "")
+			got := w.PRs[0]
+			got.settle(nil, viewer)
+
+			if got.Ejected != tt.wantEjected {
+				t.Errorf("Ejected = %v, want %v", got.Ejected, tt.wantEjected)
+			}
+			if got.unrecorded(viewer) != tt.wantEjected {
+				t.Errorf("unrecorded = %v, want %v", got.unrecorded(viewer), tt.wantEjected)
+			}
+		})
+	}
+}
+
+func TestCheckFailuresLatestRunPerName(t *testing.T) {
+	raw := []byte(`{"data": {"repository": {
+	  "pr1": {"commits": {"nodes": [{"commit": {"statusCheckRollup": {"contexts": {"nodes": [
+	    {"__typename": "CheckRun", "name": "CI", "conclusion": "FAILURE", "startedAt": "2026-11-25T00:22:00Z", "completedAt": "2026-11-25T00:30:00Z", "isRequired": true},
+	    {"__typename": "CheckRun", "name": "CI", "conclusion": "SUCCESS", "startedAt": "2026-11-25T00:59:00Z", "completedAt": "2026-11-25T00:59:57Z", "isRequired": true},
+	    {"__typename": "CheckRun", "name": "lint", "conclusion": "SUCCESS", "startedAt": "2026-11-25T00:10:00Z", "completedAt": "2026-11-25T00:11:00Z", "isRequired": false},
+	    {"__typename": "CheckRun", "name": "lint", "conclusion": "FAILURE", "startedAt": "2026-11-25T00:50:00Z", "completedAt": "2026-11-25T00:51:00Z", "isRequired": false}
+	  ]}}}}]}}
+	}}}`)
+
+	got, err := decodeCheckFailures(raw, []int{1})
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got[1].Required) != 0 {
+		t.Errorf("required failures = %v, want none: the latest CI run succeeded", got[1].Required)
+	}
+	if !slices.Equal(got[1].Optional, []string{"lint"}) {
+		t.Errorf("optional failures = %v, want [lint]: the latest lint run failed", got[1].Optional)
 	}
 }
