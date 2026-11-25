@@ -744,8 +744,8 @@ the ref listing is empty but the merge queue is not.
 
 A `Hold: <reason>` line in a PR body, outside a code fence, holds the PR with
 that reason before any other check, and autopilot disables its auto-merge. The
-orchestrator adds `Hold:` while a PR awaits VM gates or a journey, and deletes
-it when they pass. Editing the body does not trigger `ci.yml`, which runs on
+orchestrator adds `Hold:` while a PR awaits VM gates, and deletes it when they
+pass. Editing the body does not trigger `ci.yml`, which runs on
 opened, synchronize, reopened and labeled, so the hold lifts on the next pass.
 
 `autopilot` rebases only a PR that the plan would otherwise enqueue and that
