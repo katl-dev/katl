@@ -37,7 +37,7 @@ printf 'final message\n'
 		taskArgs                              []string
 	}{
 		{"delivery", "Delivery", "workspace-write", "gpt-6.2-sol", "medium", []string{task}},
-		{"reviewer", "Reviewer", "read-only", "gpt-6.2-astra", "high", []string{task}},
+		{"reviewer", "Reviewer", "read-only", "gpt-6.2-astra", "medium", []string{task}},
 		{"debugger", "Debugger", "read-only", "gpt-6.2-astra", "high", []string{task}},
 		{"debugger", "Debugger", "read-only", "gpt-6.2-astra", "low", []string{"--effort", "low", "@task with spaces.md"}},
 	} {
