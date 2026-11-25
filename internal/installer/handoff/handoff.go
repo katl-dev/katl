@@ -20,6 +20,16 @@ import (
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
+// DefaultPort is the port the installer's handoff API listens on.
+const DefaultPort = "8080"
+
+const (
+	// announcementPrefix starts the console line on which the installer tells
+	// an operator where to send configuration.
+	announcementPrefix = "katlos-install waiting for config at "
+	configBundlePath   = "/v1/config-bundle"
+)
+
 type HandoffState string
 
 const (
@@ -296,7 +306,7 @@ func (s *HandoffServer) SetSSHConfigurer(configure func(context.Context, []strin
 }
 
 func (s *HandoffServer) Announcement(baseURL string) string {
-	return AnnouncementPrefix + strings.TrimRight(baseURL, "/") + configBundlePath
+	return announcementPrefix + strings.TrimRight(baseURL, "/") + configBundlePath
 }
 
 func (s *HandoffServer) Handler() http.Handler {

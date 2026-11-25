@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -202,16 +201,12 @@ type oldDiskJourney struct {
 }
 
 func (j *oldDiskJourney) installAndPowerOff(ctx context.Context, handle *vmtest.VMHandle) error {
-	announcement, err := handle.WaitForHandoffAnnouncement(time.Second)
+	base, err := handle.WaitForHandoffAPI(time.Second)
 	if err != nil {
 		return err
 	}
-	endpoint, err := url.Parse(announcement.Base)
-	if err != nil {
-		return err
-	}
-	j.address = endpoint.Hostname()
-	if j.byPath, err = bootDiskPath(ctx, endpoint.String()); err != nil {
+	j.address = handle.Config.Network.Address
+	if j.byPath, err = bootDiskPath(ctx, base); err != nil {
 		return err
 	}
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -264,17 +265,17 @@ func TestFirstInstallFailsFastOnInstallerServiceFailure(t *testing.T) {
 	}
 }
 
-func TestFirstInstallGuestHandoffUsesAnnouncementURL(t *testing.T) {
+func TestFirstInstallGuestHandoffUsesReservedAddress(t *testing.T) {
 	root := t.TempDir()
 	uki := writeFixture(t, root, "katl-installer.efi", "uki")
 	runtime := writeFixture(t, root, "runtime.squashfs", "runtime")
 	_, vmConfig := vmFixture(t)
 	vmConfig.HostForwards = nil
+	vmConfig.Network.Address = "10.0.2.15"
 	server := handoff.NewHandoffServer(nil)
 	handoffPosted := make(chan struct{})
 	installerSerial := stagedVMExec{
-		first: server.Announcement("http://10.0.2.15:8080") + "\n",
-		wait:  handoffPosted,
+		wait: handoffPosted,
 		then: guestHandoffAcceptedSignal + "/run/katl/install-manifest.json\n" +
 			installerCompletedSignal + "/run/katl/install-manifest.json\n",
 	}
@@ -306,7 +307,7 @@ func TestFirstInstallGuestHandoffUsesAnnouncementURL(t *testing.T) {
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
 		PreseedRunner:   fakePreseedRunner{},
-		InstallerRunner: fakeVMWithExecutor(installerSerial),
+		InstallerRunner: fakeHandoffVM(installerSerial, "http://10.0.2.15:8080"),
 		RuntimeRunner:   fakeVM(runtimeBootSignal),
 	})
 	if err != nil {
@@ -316,7 +317,7 @@ func TestFirstInstallGuestHandoffUsesAnnouncementURL(t *testing.T) {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
 	}
 	request := readLog(t, result.Artifacts.HandoffRequest)
-	if request.URL != "http://10.0.2.15:8080/v1/config-bundle" || request.PostURL != "http://10.0.2.15:8080/v1/install" || request.GuestAddress != "10.0.2.15" || request.DomainName == "" || request.SerialLog == "" || !strings.Contains(request.SerialTail, "10.0.2.15") {
+	if request.URL != "http://10.0.2.15:8080" || request.PostURL != "http://10.0.2.15:8080/v1/install" || request.GuestAddress != "10.0.2.15" || request.DomainName == "" || request.SerialLog == "" {
 		t.Fatalf("handoff request = %#v", request)
 	}
 	response := readLog(t, result.Artifacts.HandoffResponse)
@@ -345,11 +346,11 @@ func TestFirstInstallGuestHandoffPostsConfigBundle(t *testing.T) {
 	bundle := writeFixture(t, root, "config.katlcfg", "bundle")
 	_, vmConfig := vmFixture(t)
 	vmConfig.HostForwards = nil
+	vmConfig.Network.Address = "10.0.2.15"
 	posted := make(chan struct{})
 	installerSerial := stagedVMExec{
-		first: guestHandoffSignal + "http://10.0.2.15:8080/v1/config-bundle\n",
-		wait:  posted,
-		then:  guestHandoffAcceptedSignal + "/run/katl/config.katlcfg\n" + bundleCompletedSignal + "/run/katl/config.katlcfg\n",
+		wait: posted,
+		then: guestHandoffAcceptedSignal + "/run/katl/config.katlcfg\n" + bundleCompletedSignal + "/run/katl/config.katlcfg\n",
 	}
 	result, err := RunFirstInstall(context.Background(), NewRunner(Options{
 		StateRoot: root,
@@ -381,7 +382,7 @@ func TestFirstInstallGuestHandoffPostsConfigBundle(t *testing.T) {
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
 		PreseedRunner:   fakePreseedRunner{},
-		InstallerRunner: fakeVMWithExecutor(installerSerial),
+		InstallerRunner: fakeHandoffVM(installerSerial, "http://10.0.2.15:8080"),
 		RuntimeRunner:   fakeVM(runtimeBootSignal),
 	})
 	if err != nil {
@@ -405,7 +406,7 @@ func TestFirstInstallGuestHandoffFailureIncludesDebugContext(t *testing.T) {
 	runtime := writeFixture(t, root, "runtime.squashfs", "runtime")
 	_, vmConfig := vmFixture(t)
 	vmConfig.HostForwards = nil
-	server := handoff.NewHandoffServer(nil)
+	vmConfig.Network.Address = "10.0.2.15"
 	result, err := RunFirstInstall(context.Background(), NewRunner(Options{
 		StateRoot: root,
 		RunID:     "run-1",
@@ -427,7 +428,7 @@ func TestFirstInstallGuestHandoffFailureIncludesDebugContext(t *testing.T) {
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
 		PreseedRunner:   fakePreseedRunner{},
-		InstallerRunner: fakeVM(server.Announcement("http://10.0.2.15:8080") + "\n"),
+		InstallerRunner: fakeHandoffVM(vmExec{}, "http://10.0.2.15:8080"),
 		RuntimeRunner:   fakeVM(runtimeBootSignal),
 	})
 	if err != nil {
@@ -436,13 +437,13 @@ func TestFirstInstallGuestHandoffFailureIncludesDebugContext(t *testing.T) {
 	if result.Status != StatusFailed {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
 	}
-	for _, want := range []string{"guest handoff post failed", "network unreachable", "guest=10.0.2.15", "domain=katl-run-1", "serial=", "serial tail:"} {
+	for _, want := range []string{"guest handoff post failed", "network unreachable", "guest=10.0.2.15", "domain=katl-run-1", "serial="} {
 		if !strings.Contains(result.FailureSummary, want) {
 			t.Fatalf("failure summary missing %q: %s", want, result.FailureSummary)
 		}
 	}
 	request := readLog(t, result.Artifacts.HandoffRequest)
-	if request.GuestAddress != "10.0.2.15" || request.DomainName != "katl-run-1" || request.SerialLog == "" || !strings.Contains(request.SerialTail, "10.0.2.15") {
+	if request.GuestAddress != "10.0.2.15" || request.DomainName != "katl-run-1" || request.SerialLog == "" {
 		t.Fatalf("handoff request = %#v", request)
 	}
 }
@@ -809,12 +810,13 @@ func TestFirstInstallIgnoresSwitchRootFailureAfterCompletion(t *testing.T) {
 	}
 }
 
-func TestFirstInstallGuestHandoffRequiresHook(t *testing.T) {
+func TestFirstInstallGuestHandoffRequiresAPI(t *testing.T) {
 	root := t.TempDir()
 	uki := writeFixture(t, root, "katl-installer.efi", "uki")
 	runtime := writeFixture(t, root, "runtime.squashfs", "runtime")
 	_, vmConfig := vmFixture(t)
 	vmConfig.HostForwards = nil
+	vmConfig.Network.Address = "10.0.2.15"
 	result, err := RunFirstInstall(context.Background(), NewRunner(Options{
 		StateRoot: root,
 		RunID:     "run-1",
@@ -833,13 +835,13 @@ func TestFirstInstallGuestHandoffRequiresHook(t *testing.T) {
 		GuestHandoff:    true,
 		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
 		DiskRunner:      fileDiskRunner{},
-		InstallerRunner: fakeVM("Katl installer ready"),
+		InstallerRunner: fakeHandoffVM(vmExec{write: "Katl installer ready"}, ""),
 		RuntimeRunner:   fakeVM(runtimeBootSignal),
 	})
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
 	}
-	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "guest handoff response artifact is missing") {
+	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "installer handoff API answered") {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
 	}
 }
@@ -885,6 +887,19 @@ func preseedConfigBundleEvidence() string {
 	}, "\n")
 }
 
+// fakeHandoffVM answers the handoff API probe only at answeringBase; an empty
+// answeringBase never answers.
+func fakeHandoffVM(executor VMExecutor, answeringBase string) VMRunner {
+	runner := fakeVMWithExecutor(executor)
+	runner.handoffProbe = func(_ context.Context, base string) error {
+		if answeringBase != "" && base == answeringBase {
+			return nil
+		}
+		return errors.New("handoff API is not answering at " + base)
+	}
+	return runner
+}
+
 func fakeVMWithExecutor(executor VMExecutor) VMRunner {
 	return VMRunner{
 		Executor: executor,
@@ -914,15 +929,11 @@ func (fakePreseedRunner) Run(_ context.Context, name string, args ...string) err
 }
 
 type stagedVMExec struct {
-	first string
-	wait  <-chan struct{}
-	then  string
+	wait <-chan struct{}
+	then string
 }
 
 func (e stagedVMExec) Run(ctx context.Context, _ string, _ []string, serial io.Writer) error {
-	if e.first != "" {
-		_, _ = io.WriteString(serial, e.first)
-	}
 	if syncer, ok := serial.(interface{ Sync() error }); ok {
 		_ = syncer.Sync()
 	}

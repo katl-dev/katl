@@ -50,7 +50,6 @@ type FirstInstallConfig struct {
 type InstalledESPExtractor func(context.Context, DiskPlan, string) (string, error)
 
 const (
-	guestHandoffSignal         = handoff.AnnouncementPrefix
 	guestHandoffAcceptedSignal = "katlos-install handoff accepted manifest="
 	installerCompletedSignal   = "katlos-install completed manifest="
 	bundleCompletedSignal      = "katlos-install completed bundle="
@@ -290,14 +289,16 @@ func loadManifest(config FirstInstallConfig) ([]byte, error) {
 }
 
 func configureGuestHandoff(result Result, config FirstInstallConfig, manifest []byte) (FirstInstallConfig, error) {
+	if _, err := handoffBase(config.Installer.VM); err != nil {
+		return config, err
+	}
 	if config.Installer.Expect == "" && config.Installer.VM.Expect == "" {
 		config.Installer.Expect = firstInstallCompletedSignal(config)
 	}
-	config.Installer.VM.SerialHooks = append(config.Installer.VM.SerialHooks, SerialHook{
-		Name:   "installer-guest-handoff",
-		Signal: guestHandoffSignal,
-		Run: func(ctx context.Context, event SerialHookEvent) error {
-			return deliverGuestHandoff(ctx, result, config, manifest, event, event.SerialText)
+	config.Installer.VM.HandoffHooks = append(config.Installer.VM.HandoffHooks, HandoffHook{
+		Name: "installer-guest-handoff",
+		Run: func(ctx context.Context, event HandoffEvent) error {
+			return deliverGuestHandoff(ctx, result, config, manifest, event)
 		},
 	})
 	return config, nil
@@ -730,25 +731,17 @@ func runToolOutput(ctx context.Context, name string, args ...string) ([]byte, er
 	return cmd.CombinedOutput()
 }
 
-func deliverGuestHandoff(ctx context.Context, result Result, config FirstInstallConfig, manifest []byte, event SerialHookEvent, serialText string) error {
-	parsed, ok, err := LastHandoffAnnouncement(serialText)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return errors.New("handoff announcement not found in installer serial log")
-	}
-	announcement, url := parsed.Line, parsed.URL
+func deliverGuestHandoff(ctx context.Context, result Result, config FirstInstallConfig, manifest []byte, event HandoffEvent) error {
+	url := event.Base
 	postURL := strings.TrimSpace(config.HandoffURL)
 	if postURL == "" {
-		postURL = url
+		postURL = url + "/v1/install"
 	}
 	postURL = handoffPostURL(postURL, config)
 	request := handoffLog{
 		URL:          url,
 		PostURL:      postURL,
 		ManifestPath: result.Artifacts.InstallManifest,
-		Announcement: announcement,
 		GuestAddress: handoffGuestAddress(url),
 		DomainName:   event.Plan.DomainName,
 		SerialLog:    event.Plan.SerialLog,

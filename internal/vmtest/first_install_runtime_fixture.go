@@ -425,6 +425,8 @@ func ProduceFirstInstallRuntimeFixture(ctx context.Context, contract FirstInstal
 		config.PreseedManifest = true
 	case FirstInstallWorldGuestHandoff:
 		config.GuestHandoff = true
+		// The installer's handoff API is reached at the node's reserved address.
+		config.Installer.VM.Network = contract.WorldNode.VMNetwork()
 	default:
 		return ProducedInstalledRuntimeFixture{}, fmt.Errorf("unsupported first-install fixture mode: %s", contract.Mode)
 	}

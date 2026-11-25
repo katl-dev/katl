@@ -956,7 +956,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	seedWait := flags.Duration("seed-wait", 15*time.Second, "time to wait for installer seed devices")
 	runDir := flags.String("run-dir", "/run/katl", "runtime installer input directory")
 	etcDir := flags.String("etc-dir", "/etc/katl", "persistent installer input directory")
-	handoffAddr := flags.String("handoff-addr", "0.0.0.0:8080", "installer handoff listen address")
+	handoffAddr := flags.String("handoff-addr", net.JoinHostPort("0.0.0.0", handoff.DefaultPort), "installer handoff listen address")
 
 	if err := flags.Parse(args); err != nil {
 		return err

@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -215,24 +213,12 @@ type volumeJourney struct {
 // install configures the node with a data volume on the disk with serial
 // katl-data and installs it through the public CLI.
 func (j *volumeJourney) install(ctx context.Context, handle *vmtest.VMHandle) error {
-	const announcement = "katlos-install waiting for config at "
-	if _, err := handle.WaitForSerialSignal(announcement, time.Second); err != nil {
-		return err
-	}
-	serial, err := os.ReadFile(handle.Plan.SerialLog)
+	base, err := handle.WaitForHandoffAPI(time.Second)
 	if err != nil {
 		return err
 	}
-	match := regexp.MustCompile(`katlos-install waiting for config at (http://\S+)/v1/config-bundle`).FindSubmatch(serial)
-	if match == nil {
-		return errors.New("installer did not announce its handoff endpoint")
-	}
-	endpoint, err := url.Parse(string(match[1]))
-	if err != nil {
-		return err
-	}
-	j.address = endpoint.Hostname()
-	if j.byPath, err = bootDiskPath(ctx, endpoint.String()); err != nil {
+	j.address = handle.Config.Network.Address
+	if j.byPath, err = bootDiskPath(ctx, base); err != nil {
 		return err
 	}
 	j.config = filepath.Join(j.dir, "cluster.yaml")

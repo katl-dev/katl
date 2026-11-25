@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -149,17 +148,19 @@ type installerESPJourney struct {
 }
 
 func (j *installerESPJourney) installAndPowerOff(ctx context.Context, handle *vmtest.VMHandle) error {
-	announcement, err := handle.WaitForHandoffAnnouncement(time.Second)
+	base, err := handle.WaitForHandoffAPI(time.Second)
 	if err != nil {
 		return err
 	}
-	endpoint, err := url.Parse(announcement.Base)
-	if err != nil {
-		return err
-	}
-	j.address = endpoint.Hostname()
+	j.address = handle.Config.Network.Address
 
-	if j.byPath, err = requireSelectableTargetDisk(ctx, endpoint.String()); err != nil {
+	// Operators read this line on the console to learn where to send configuration.
+	consoleLine := fmt.Sprintf("katlos-install waiting for config at http://%s:8080/v1/config-bundle", j.address)
+	if _, err := handle.WaitForSerialSignal(consoleLine, time.Second); err != nil {
+		return fmt.Errorf("installer console never announced %q: %w", consoleLine, err)
+	}
+
+	if j.byPath, err = requireSelectableTargetDisk(ctx, base); err != nil {
 		return err
 	}
 	config := filepath.Join(j.dir, "cluster.yaml")
