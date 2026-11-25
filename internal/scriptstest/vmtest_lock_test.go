@@ -54,7 +54,7 @@ func TestVMTestLockProcess(t *testing.T) {
 			panic(err)
 		}
 		barrier("work")
-		fmt.Println("--- PASS: NoVM")
+		fmt.Println("--- PASS: NoVM (0.00s)")
 		code, _ := strconv.Atoi(os.Getenv("KATL_LOCK_EXIT"))
 		os.Exit(code)
 	case "virsh":

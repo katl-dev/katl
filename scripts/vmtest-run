@@ -1240,7 +1240,9 @@ compact_run_dir() {
 
 write_test_summary() {
     {
-        grep -E '^[[:space:]]*--- (PASS|FAIL|SKIP):' "$go_test_log" || true
+        # Results are matched anywhere in the line, as in cmd/katl-vmtest-ran, so
+        # unterminated output from another writer cannot hide them.
+        sed -nE 's/^([[:space:]]*)([^[:space:]].*)?(--- (PASS|FAIL|SKIP): [^[:space:]]+ \([0-9.]+s\).*)$/\1\3/p' "$go_test_log" || true
         # Callers that pass -json get the same lines from test events.
         jq -rR 'fromjson? | select(.Test != null and (.Action | IN("pass", "fail", "skip"))) | "--- \(.Action | ascii_upcase): \(.Test)"' "$go_test_log" 2>/dev/null || true
     } >"$test_summary"

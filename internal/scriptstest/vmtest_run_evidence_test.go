@@ -19,7 +19,11 @@ if [[ -n "$KATL_SCRIPTTEST_NO_TESTS" ]]; then
   printf 'testing: warning: no tests to run\nok  \texample/pkg\t0.0s [no tests to run]\n'
   exit 0
 fi
-printf '=== RUN   TestAlpha\n--- PASS: TestAlpha (1.00s)\n--- SKIP: TestBeta (0.00s)\n'
+printf '=== RUN   TestAlpha\n'
+if [[ -n "$KATL_SCRIPTTEST_JOINED" ]]; then
+  printf 'sshd-session[335]: Recei'
+fi
+printf -- '--- PASS: TestAlpha (1.00s)\n--- SKIP: TestBeta (0.00s)\n'
 if [[ -n "$KATL_SCRIPTTEST_FAIL" ]]; then
   printf -- '--- FAIL: TestGamma (2.00s)\nFAIL\n'
   exit 1
@@ -208,5 +212,22 @@ func TestVMTestRunFailsWhenRequestedTestsDidNotRun(t *testing.T) {
 				t.Errorf("run lost its go test log:\n%s", output)
 			}
 		})
+	}
+}
+
+func TestVMTestRunCountsResultAfterUnterminatedOutput(t *testing.T) {
+	t.Setenv("KATL_SCRIPTTEST_JOINED", "1")
+
+	runDir, output, ok := runEvidenceVMTest(t, t.TempDir(), "joined-run", false)
+	if !ok {
+		t.Fatalf("vmtest-run failed on a passing test whose result follows an unterminated line:\n%s", output)
+	}
+
+	summary, err := os.ReadFile(filepath.Join(runDir, "test-summary.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(summary), "--- PASS: TestAlpha") {
+		t.Errorf("test summary = %q, want the test listed", summary)
 	}
 }
