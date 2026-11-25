@@ -414,3 +414,134 @@ func TestReleaseValidation(t *testing.T) {
 		}
 	}
 }
+
+func workflowNames(t *testing.T) []string {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(repoRoot(t), ".github", "workflows", "*.yml"))
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("no workflows found: %v", err)
+	}
+	names := make([]string, len(paths))
+	for i, path := range paths {
+		names[i] = filepath.Base(path)
+	}
+	return names
+}
+
+// readWorkflowSteps reads only the steps of each job, which every workflow
+// shares regardless of how its jobs are otherwise configured.
+func readWorkflowSteps(t *testing.T, name string) map[string]struct{ Steps []workflowStep } {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "workflows", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct{ Steps []workflowStep } `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatalf("parse %s: %v", name, err)
+	}
+	return workflow.Jobs
+}
+
+// No workflow pushes with git, so a checkout leaves its token on disk for every
+// later step to read without any benefit.
+func TestWorkflowCheckoutsDropCredentials(t *testing.T) {
+	for _, name := range workflowNames(t) {
+		for jobName, job := range readWorkflowSteps(t, name) {
+			for _, step := range job.Steps {
+				if strings.HasPrefix(step.Uses, "actions/checkout@") && step.With["persist-credentials"] != "false" {
+					t.Errorf("%s job %s: checkout must set persist-credentials: false", name, jobName)
+				}
+			}
+		}
+	}
+}
+
+// scripts/vmtest-run fails a run whose requested tests did not pass, so a
+// workflow that re-derives that from the go test log owns a second, weaker copy.
+func TestWorkflowsLeaveTestOutcomesToVMTestRun(t *testing.T) {
+	for _, name := range workflowNames(t) {
+		for jobName, job := range readWorkflowSteps(t, name) {
+			for _, step := range job.Steps {
+				if strings.Contains(step.Run, "go-test.jsonl") && strings.Contains(step.Run, "jq") {
+					t.Errorf("%s job %s checks test outcomes with jq; scripts/vmtest-run owns that", name, jobName)
+				}
+			}
+		}
+	}
+}
+
+var hostedRunPattern = regexp.MustCompile(`-run\s+(?:'([^']*)'|"([^"]*)")`)
+
+// katl-vmtest-ran can only hold a run to the tests it can read from -run, and
+// a pattern it cannot parse names no tests, so the run passes unchecked.
+func TestWorkflowsRunPatternsAreCheckable(t *testing.T) {
+	root := repoRoot(t)
+	checker := filepath.Join(t.TempDir(), "katl-vmtest-ran")
+	build := exec.Command("go", "build", "-o", checker, "./cmd/katl-vmtest-ran")
+	build.Dir = root
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build katl-vmtest-ran: %v\n%s", err, out)
+	}
+
+	// The log passes only an unrelated test, so every requested test is missing.
+	log := filepath.Join(t.TempDir(), "go-test.log")
+	if err := os.WriteFile(log, []byte("--- PASS: TestUnrelated (0.01s)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var patterns int
+	for _, name := range workflowNames(t) {
+		for jobName, job := range readWorkflowSteps(t, name) {
+			for _, step := range job.Steps {
+				if !strings.Contains(step.Run, "hosted-vmtest-run") {
+					continue
+				}
+				for _, match := range hostedRunPattern.FindAllStringSubmatch(step.Run, -1) {
+					pattern := strings.ReplaceAll(match[1]+match[2], "$TEST_NAMES", "TestAlpha|TestBeta")
+					patterns++
+					cmd := exec.Command(checker, "-log", log, "-run", pattern)
+					if err := cmd.Run(); err == nil {
+						t.Errorf("%s job %s: -run %q selects no test katl-vmtest-ran can require", name, jobName, pattern)
+					}
+				}
+			}
+		}
+	}
+	if patterns == 0 {
+		t.Fatal("no hosted-vmtest-run -run patterns found")
+	}
+}
+
+// Re-running every job of a tag rebuilds its artifacts, which are not
+// byte-identical, so replacing the assets of a published release would change
+// what operators already downloaded. The upload may replace assets only after
+// the published checksums are shown to match the rebuilt ones.
+func TestReleaseUploadGuardsPublishedAssets(t *testing.T) {
+	workflow, _ := readWorkflow(t, "release-artifacts.yml")
+
+	var found bool
+	for _, job := range workflow.Jobs {
+		for _, step := range job.Steps {
+			if !strings.Contains(step.Run, "gh release upload") {
+				continue
+			}
+			found = true
+			upload := strings.Index(step.Run, "gh release upload")
+			download := strings.Index(step.Run, "gh release download")
+			compare := strings.Index(step.Run, "cmp -s")
+			fail := strings.Index(step.Run, "exit 1")
+			if download < 0 || compare < download || fail < compare || upload < fail {
+				t.Errorf("replacing release assets must follow a failing comparison with the published SHA256SUMS: %q", step.Run)
+			}
+			if !strings.Contains(step.Run, "SHA256SUMS") || !strings.Contains(step.Run, "dist/SHA256SUMS") {
+				t.Errorf("published checksums must be compared with dist/SHA256SUMS: %q", step.Run)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no step uploads to an existing release")
+	}
+}

@@ -88,10 +88,6 @@ jobs:
           .github/scripts/hosted-vmtest-measure production .github/scripts/hosted-vmtest-run \
             --artifact-set=none --no-rebuild ./internal/vmtest \
             -run '^TestReleaseLifecycle$' -count=1 -json -timeout 75m
-          for test_name in TestReleaseLifecycle/install TestReleaseLifecycle/upgrade TestReleaseLifecycle; do
-            jq -se --arg test "$test_name" 'any(.[]; .Action == "pass" and .Test == $test)' \
-              _build/hosted-evidence/go-test.jsonl
-          done
       - uses: actions/upload-artifact@v7
         if: success() && inputs.run-id == 0
         with:
