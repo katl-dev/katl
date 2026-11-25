@@ -1248,7 +1248,7 @@ func createUpgradeSnapshotEvidence(ctx context.Context, node vmtest.RunningInsta
 	return upgradeSnapshotEvidence{Ref: "vmtest-cp1-v1360-before-v1361", Digest: digest[0], CreatedAt: time.Now().UTC().Format(time.RFC3339), MemberListDigest: hex.EncodeToString(memberDigest[:]), Location: location}, nil
 }
 
-func submitKubeadmUpgrade(ctx context.Context, nodeName, address string, request agentapi.KubernetesSysextUpdateOperationRequest) (*agentapi.OperationStatus, error) {
+func submitKubeadmUpgrade(ctx context.Context, nodeName, address string, request *agentapi.KubernetesSysextUpdateOperationRequest) (*agentapi.OperationStatus, error) {
 	connector, err := vmtest.VMTestAgentConnector(vmtest.VMTestManagementClusterName)
 	if err != nil {
 		return nil, err
@@ -1263,7 +1263,7 @@ func submitKubeadmUpgrade(ctx context.Context, nodeName, address string, request
 	if err != nil {
 		return nil, err
 	}
-	accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: "vmtest-" + request.CandidateGenerationId, OperationKind: "kubeadm-upgrade", Actor: "vmtest:kubeadm-upgrade", ExpectedEnrollmentId: nodeStatus.EnrollmentId, ExpectedInventoryNodeName: nodeStatus.InventoryNodeName, ExpectedMachineId: nodeStatus.MachineId, ExpectedCurrentGenerationId: nodeStatus.CurrentGenerationId, KubernetesSysextUpdate: &request})
+	accepted, err := conn.Client.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{ApiVersion: operation.APIVersion, Kind: "SubmitOperationRequest", ClientRequestId: "vmtest-" + request.CandidateGenerationId, OperationKind: "kubeadm-upgrade", Actor: "vmtest:kubeadm-upgrade", ExpectedEnrollmentId: nodeStatus.EnrollmentId, ExpectedInventoryNodeName: nodeStatus.InventoryNodeName, ExpectedMachineId: nodeStatus.MachineId, ExpectedCurrentGenerationId: nodeStatus.CurrentGenerationId, KubernetesSysextUpdate: request})
 	if err != nil {
 		return nil, err
 	}
