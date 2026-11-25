@@ -350,8 +350,13 @@ func TestKatlReleaseArtifactBuildKatlctl(t *testing.T) {
 	commit := strings.Repeat("a", 40)
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "build-katlctl", version)
 	cmd.Dir = repo
+	// Release builds are stamped from a clone, which
+	// TestKatlReleaseArtifactVerifyKatlctl covers with a fixture repository.
+	// This build is from the developer's checkout, where a linked worktree
+	// would be stamped from whatever .git directory lies above it.
 	cmd.Env = append(
 		os.Environ(),
+		"GOFLAGS=-buildvcs=false",
 		"KATL_MKOSI_BUILD_DIR="+buildDir,
 		"KATL_ARCHITECTURE=x86_64",
 		"KATL_BUILD_COMMIT="+commit,

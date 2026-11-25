@@ -14,12 +14,7 @@ import (
 func TestWorktreeClean(t *testing.T) {
 	root := repoRoot(t)
 	script := filepath.Join(root, "scripts", "worktree-clean")
-	devclean := filepath.Join(t.TempDir(), "katl-devclean")
-	build := exec.Command("go", "build", "-o", devclean, "./cmd/katl-devclean")
-	build.Dir = root
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("building katl-devclean: %v\n%s", err, out)
-	}
+	devclean := buildCommand(t, t.TempDir(), "katl-devclean")
 
 	type fixture struct {
 		repo, wt string
@@ -213,15 +208,21 @@ func TestWorktreeCleanKeepsDevcleanExitStatus(t *testing.T) {
 	}
 }
 
-func TestCleanScriptsFailWhenBuildFails(t *testing.T) {
-	root := repoRoot(t)
-	// The scripts use an installed katl-devclean when there is one.
+// pathWithoutDevclean is PATH without the directories holding an installed
+// katl-devclean, which the scripts would use instead of building one.
+func pathWithoutDevclean() string {
 	var path []string
 	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
 		if _, err := os.Stat(filepath.Join(dir, "katl-devclean")); err != nil {
 			path = append(path, dir)
 		}
 	}
+	return strings.Join(path, string(os.PathListSeparator))
+}
+
+func TestCleanScriptsFailWhenBuildFails(t *testing.T) {
+	root := repoRoot(t)
+	path := pathWithoutDevclean()
 	tmp := t.TempDir()
 	for _, c := range []struct {
 		script string
@@ -233,7 +234,7 @@ func TestCleanScriptsFailWhenBuildFails(t *testing.T) {
 	} {
 		t.Run(c.script, func(t *testing.T) {
 			cmd := exec.Command(filepath.Join(root, "scripts", c.script), c.args...)
-			cmd.Env = append(os.Environ(), "PATH="+strings.Join(path, ":"), c.env+"=false")
+			cmd.Env = append(os.Environ(), "PATH="+path, c.env+"=false")
 			out, err := cmd.CombinedOutput()
 			var exit *exec.ExitError
 			if !errors.As(err, &exit) || exit.ExitCode() != 2 {
@@ -241,6 +242,78 @@ func TestCleanScriptsFailWhenBuildFails(t *testing.T) {
 			}
 			if !strings.Contains(string(out), "could not build katl-devclean") {
 				t.Fatalf("%s output does not say the build failed:\n%s", c.script, out)
+			}
+		})
+	}
+}
+
+// Go recognises a repository only by a .git directory, so in a linked
+// worktree, whose .git is a file, it stamps builds from whatever .git
+// directory lies above the checkout. The scripts must build katl-devclean
+// regardless of what that directory holds; here it is not a repository at
+// all, which makes git exit 128.
+func TestCleanScriptsBuildBelowUnrelatedGitDir(t *testing.T) {
+	root := repoRoot(t)
+	path := pathWithoutDevclean()
+
+	enclosing := t.TempDir()
+	if err := os.Mkdir(filepath.Join(enclosing, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	checkout := filepath.Join(enclosing, "checkout")
+	for name, content := range map[string]string{
+		"go.mod": "module example.invalid/katl\n\ngo 1.21\n",
+		// The stub records that it ran and refuses, so the scripts stop there.
+		"cmd/katl-devclean/main.go": `package main
+
+import (
+	"os"
+	"strings"
+)
+
+func main() {
+	_ = os.WriteFile(os.Getenv("KATL_TEST_DEVCLEAN_LOG"), []byte(strings.Join(os.Args[1:], " ")), 0o644)
+	os.Exit(2)
+}
+`,
+	} {
+		file := filepath.Join(checkout, name)
+		if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(file, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, c := range []struct {
+		script  string
+		command string
+	}{
+		{"worktree-clean", "remove worktree"},
+		{"vmtest-clean", "run-dir"},
+	} {
+		t.Run(c.script, func(t *testing.T) {
+			log := filepath.Join(t.TempDir(), "devclean.log")
+			cmd := exec.Command(filepath.Join(root, "scripts", c.script), t.TempDir())
+			cmd.Env = append(os.Environ(),
+				"PATH="+path,
+				"KATL_REPO_ROOT="+checkout,
+				"KATL_DEVCLEAN=",
+				"KATL_TEST_DEVCLEAN_LOG="+log,
+				"GIT_CEILING_DIRECTORIES="+filepath.Dir(enclosing),
+				"GOFLAGS=",
+				"GOWORK=off",
+			)
+
+			out, _ := cmd.CombinedOutput()
+
+			ran, err := os.ReadFile(log)
+			if err != nil {
+				t.Fatalf("%s did not run the katl-devclean it built: %v\n%s", c.script, err, out)
+			}
+			if !strings.HasPrefix(string(ran), c.command+" ") {
+				t.Fatalf("katl-devclean ran with %q, want %s", ran, c.command)
 			}
 		})
 	}

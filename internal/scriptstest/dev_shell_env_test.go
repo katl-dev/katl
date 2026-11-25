@@ -28,11 +28,7 @@ func devShellWorkstationConfig(current string, contexts ...string) string {
 func TestDevShellKeepsKatlctlContextsInWorld(t *testing.T) {
 	repo := repoRoot(t)
 	bin := t.TempDir()
-	build := exec.Command("go", "build", "-buildvcs=false", "-o", filepath.Join(bin, "katlctl"), "./cmd/katlctl")
-	build.Dir = repo
-	if output, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build katlctl: %v\n%s", err, output)
-	}
+	buildCommand(t, bin, "katlctl")
 
 	operatorHome := t.TempDir()
 	operatorConfig := filepath.Join(operatorHome, ".config", "katl", "katlctl.yaml")
