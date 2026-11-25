@@ -1818,7 +1818,7 @@ jq -n \
       tools: [{name: "mkosi", version: "fake"}],
       mkosiProfiles: [{name: "installer-image", path: "mkosi.profiles/installer-image", configSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", packageSetRef: "installer-image"}],
       packageSets: [{name: "installer-image", source: "mkosi.profiles/installer-image", packages: [{name: "systemd", nevra: "systemd-1.x86_64"}]}],
-      artifacts: [{name: "installer-uki", kind: "uki", path: (if $pinDir != "" and env.KATL_FAKE_PIN == "1" then $pinDir + "/katl-installer.efi" else "/tmp/katl-installer.efi" end), sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", sizeBytes: 1}]
+      artifacts: [{name: "installer-uki", kind: "uki", path: (if $pinDir != "" and env.KATL_FAKE_PIN == "1" then $pinDir + "/katl-installer.efi" else "/tmp/katl-installer.efi" end), sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", sizeBytes: 1}] + (if $pinDir != "" and env.KATL_FAKE_PIN == "1" then [{name: "installer-iso", kind: "iso", path: ($pinDir + "/katl-installer.iso"), sha256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", sizeBytes: 2}] else [] end)
     }' > "$manifest"
 printf 'manifest: %s\nmode: record\nartifacts: 1\npackageSets: 1\n' "$manifest"
 `)
@@ -2333,11 +2333,22 @@ func TestVMTestRunRecordsPinnedArtifacts(t *testing.T) {
 		t.Fatalf("world pinned = %v, mkosi dir = %q", world.ArtifactsPinned, world.MkosiDir(repo))
 	}
 	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
-	if len(runIndex.Artifacts) != 1 {
-		t.Fatalf("run artifacts = %#v", runIndex.Artifacts)
+	// The record names every file the run pinned, including the installer ISO
+	// the ISO scenarios boot.
+	digests := map[string]string{}
+	for _, artifact := range runIndex.Artifacts {
+		if !artifact.Pinned {
+			t.Errorf("run artifact %s is not pinned: %#v", artifact.Name, artifact)
+		}
+		digests[artifact.Path] = artifact.Digest
 	}
-	if artifact := runIndex.Artifacts[0]; !artifact.Pinned || artifact.Path != filepath.Join(runDir, "artifacts", "katl-installer.efi") || artifact.Digest != strings.Repeat("c", 64) {
-		t.Fatalf("run artifact = %#v", artifact)
+	for file, digest := range map[string]string{"katl-installer.efi": strings.Repeat("c", 64), "katl-installer.iso": strings.Repeat("d", 64)} {
+		if got := digests[filepath.Join(runDir, "artifacts", file)]; got != digest {
+			t.Errorf("run record digest for %s = %q, want %q; artifacts = %#v", file, got, digest, runIndex.Artifacts)
+		}
+	}
+	if len(world.Artifacts) != len(runIndex.Artifacts) || len(digests) != len(runIndex.Artifacts) {
+		t.Errorf("world records %d artifacts, run record %d (%d distinct paths)", len(world.Artifacts), len(runIndex.Artifacts), len(digests))
 	}
 }
 

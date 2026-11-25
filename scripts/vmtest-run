@@ -624,7 +624,8 @@ prepare_resource_manifest() {
           def abs_path($repo):
             if (.path | startswith("/")) then .path else ($repo + "/" + .path) end;
           def action_for($actions):
-            if (.name | startswith("installer-")) then ($actions["build-installer"] // "validated")
+            if (.name == "installer-iso") then ($actions["build-installer-iso"] // "validated")
+            elif (.name | startswith("installer-")) then ($actions["build-installer"] // "validated")
             elif (.name == "kubernetes-sysext") then ($actions["build-kubernetes-sysext"] // "validated")
             elif (.name == "runtime-uki" or .name == "runtime-root" or .name == "katlos-install-image") then ($actions["build-katlos-install-image"] // $actions["build-runtime"] // "validated")
             else "validated"

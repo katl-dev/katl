@@ -571,6 +571,7 @@ func addMkosiArtifacts(manifest *resourcetest.Manifest, mkosiDir string) error {
 		{Name: "installer-uki", Kind: "uki", Path: filepath.Join(mkosiDir, "katl-installer.efi")},
 		{Name: "installer-kernel", Kind: "linux-kernel", Path: filepath.Join(mkosiDir, "katl-installer.vmlinuz")},
 		{Name: "installer-initrd", Kind: "initrd", Path: filepath.Join(mkosiDir, "katl-installer.initrd")},
+		{Name: "installer-iso", Kind: "iso", Path: filepath.Join(mkosiDir, "katl-installer.iso")},
 		{Name: "runtime-uki", Kind: "uki", Path: filepath.Join(mkosiDir, "katl-runtime.efi")},
 		{Name: "runtime-root", Kind: "squashfs", Path: filepath.Join(mkosiDir, "katl-runtime-root.squashfs")},
 		{Name: "kubernetes-sysext", Kind: "sysext", Path: filepath.Join(mkosiDir, "katl-kubernetes.raw")},

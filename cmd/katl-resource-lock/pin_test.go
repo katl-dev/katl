@@ -100,6 +100,29 @@ func TestPrepareMkosiPinsOutputs(t *testing.T) {
 			t.Errorf("artifact %s recorded at %s, want a path under the pin directory", artifact.Name, artifact.Path)
 		}
 	}
+	// Every pinned build output is a recorded artifact, so the run record
+	// names each file a scenario can boot together with its digest.
+	recorded := map[string]bool{}
+	for _, artifact := range manifest.Artifacts {
+		recorded[filepath.Base(artifact.Path)] = true
+	}
+	pinned, err := os.ReadDir(pinDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range pinned {
+		name := entry.Name()
+		if strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".sha256") || strings.HasSuffix(name, ".tsv") {
+			continue
+		}
+		if !recorded[name] {
+			t.Errorf("pinned %s has no manifest artifact entry", name)
+		}
+	}
+	iso := artifactNamed(t, manifest, "installer-iso")
+	if iso.Path != filepath.Join(pinDir, "katl-installer.iso") || iso.Digest != sha256Hex("iso-v1") {
+		t.Errorf("installer-iso = %s %s, want the pinned ISO and its digest", iso.Path, iso.Digest)
+	}
 	root := artifactNamed(t, manifest, "runtime-root")
 	got, err := os.ReadFile(root.Path)
 	if err != nil || string(got) != "runtime-v1" || root.Digest != sha256Hex("runtime-v1") {
