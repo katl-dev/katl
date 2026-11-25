@@ -544,6 +544,8 @@ func TestReleaseUploadGuardsPublishedAssets(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no step uploads to an existing release")
+	}
+}
 
 func TestReleaseRegressionFollowsDecision(t *testing.T) {
 	workflow, _ := readWorkflow(t, "release-artifacts.yml")

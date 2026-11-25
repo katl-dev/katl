@@ -46,7 +46,10 @@ The release workflow repeats the VM regression suite for a release candidate
 or final version only when CI has not already passed it at the tagged commit.
 `scripts/katl-release regression VERSION COMMIT` decides, and prints `skip`
 only when a successful `CI` run of the merge queue produced the exact commit on
-`main`, which plans the full regression suite and the Production VM jobs.
+`main` and ran every VM job of both flavours to success on the default
+Kubernetes payload. A merge-queue run for a change that selects no VM suite,
+such as documentation, or that tested a presubmit Kubernetes candidate, does
+not qualify.
 Pushes, pull requests, other versions, and any lookup that fails run the suite.
 Release validation accepts skipped regression lanes only on that decision.
 Only tag pushes may skip; scheduled and dispatched runs always repeat the
@@ -55,6 +58,9 @@ version. A final version also requires a successful release run of one of its
 `-rc.N` tags at the same commit; without one the run
 fails before building, so
 tag a candidate first and tag the final version once it publishes.
+Do not re-run the whole workflow run of a published `-rc.N` tag: it fails at
+the upload guard and makes that candidate ineligible for promotion. Tag a new
+`-rc.N` at the same commit instead.
 
 ## Qualification and promotion
 

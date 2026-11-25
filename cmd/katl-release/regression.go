@@ -23,7 +23,7 @@ var (
 
 // regression decides whether a release run repeats the VM regression lanes.
 // Only the rc and final versions can skip them, and only when CI has already
-// run the full plan to success on the exact commit. Every other outcome, an
+// run the VM regression to success on the exact commit. Every other outcome, an
 // unreadable API included, runs them. A final version also requires a
 // successful rc release run at the same commit and fails without one. Only
 // tag pushes call it; other triggers always run the lanes.
@@ -83,14 +83,16 @@ func candidateRun(version, commit string, call command) (workflowRun, error) {
 			return run, nil
 		}
 	}
-	return workflowRun{}, fmt.Errorf("no successful release candidate run of v%[1]s-rc.N exists at %[2]s; tag a candidate at this commit and wait for its release run to succeed, then tag v%[1]s again", version, commit)
+	return workflowRun{}, fmt.Errorf("no successful release candidate run of v%[1]s-rc.N exists at %[2]s; tag a candidate at this commit, wait for the candidate run to succeed, then re-run this workflow run, or tag a new -rc.N at this commit", version, commit)
 }
 
 // mergedCIRun returns the successful merge-queue CI run that built the commit
-// as it landed on main, or nil. The merge queue always plans the full VM
-// regression and the production qualification, and a run succeeds only when
-// the required result job does. Pushes and pull requests plan less, and a pull
-// request tested a different merge commit, so neither is accepted.
+// as it landed on main, or nil. A merge-queue run plans no VM suite for a
+// change that selects none, such as documentation, and still succeeds, so the
+// run counts only when its jobs show both flavours ran the VM regression to
+// success on the default Kubernetes payload. Pushes and pull requests plan
+// less, and a pull request tested a different merge commit, so neither is
+// accepted.
 func mergedCIRun(commit string, call command) (*workflowRun, error) {
 	runs, err := workflowRuns(ciWorkflow, commit, "merge_group", call)
 	if err != nil {
@@ -106,6 +108,9 @@ func mergedCIRun(commit string, call command) (*workflowRun, error) {
 	if found == nil {
 		return nil, nil
 	}
+	if err := requireVMRegression(*found, call); err != nil {
+		return nil, err
+	}
 	// A group that never merged leaves a successful run for a commit that is not on main.
 	var comparison struct{ Status string }
 	if err := api(call, "compare/main..."+commit, &comparison); err != nil {
@@ -115,6 +120,78 @@ func mergedCIRun(commit string, call command) (*workflowRun, error) {
 		return nil, fmt.Errorf("%s is not reachable from main", commit)
 	}
 	return found, nil
+}
+
+const (
+	// Job names of the reusable hosted-vmtests.yml as listed under the CI run:
+	// the caller job "VM (<flavour>)", then "/", then the called job's name.
+	vmJobPrefix        = "VM (%s) / "
+	vmScenarioPrefix   = "VM / "
+	kubernetesCandStep = "Resolve Kubernetes candidate"
+	kubernetesCandJob  = "images"
+)
+
+var vmFlavours = []string{"standard", "lts"}
+
+type runJobs struct {
+	Total int `json:"total_count"`
+	Jobs  []struct {
+		Name       string `json:"name"`
+		Conclusion string `json:"conclusion"`
+		Steps      []struct {
+			Name       string `json:"name"`
+			Conclusion string `json:"conclusion"`
+		} `json:"steps"`
+	} `json:"jobs"`
+}
+
+// requireVMRegression fails unless every VM job of both flavours in the latest
+// attempt of the run succeeded, at least one scenario ran per flavour, and no
+// presubmit Kubernetes candidate replaced the default payload that the release
+// lanes build. A skipped, missing or unlisted job is not evidence.
+func requireVMRegression(run workflowRun, call command) error {
+	var jobs runJobs
+	endpoint := fmt.Sprintf("actions/runs/%d/jobs?filter=latest&per_page=100", run.ID)
+	if err := api(call, endpoint, &jobs); err != nil {
+		return err
+	}
+	if jobs.Total > len(jobs.Jobs) {
+		return fmt.Errorf("CI run %d lists %d jobs, more than one page", run.ID, jobs.Total)
+	}
+	for _, flavour := range vmFlavours {
+		prefix := fmt.Sprintf(vmJobPrefix, flavour)
+		scenarios, images := 0, 0
+		for _, job := range jobs.Jobs {
+			if !strings.HasPrefix(job.Name, prefix) {
+				continue
+			}
+			if job.Conclusion != "success" {
+				return fmt.Errorf("CI job %q concluded %q", job.Name, job.Conclusion)
+			}
+			called := strings.TrimPrefix(job.Name, prefix)
+			if strings.HasPrefix(called, vmScenarioPrefix) {
+				scenarios++
+			}
+			if called != kubernetesCandJob {
+				continue
+			}
+			images++
+			skipped := false
+			for _, step := range job.Steps {
+				if step.Name == kubernetesCandStep {
+					skipped = step.Conclusion == "skipped"
+					break
+				}
+			}
+			if !skipped {
+				return fmt.Errorf("CI job %q tested a Kubernetes candidate, not the default payload", job.Name)
+			}
+		}
+		if scenarios == 0 || images == 0 {
+			return fmt.Errorf("CI run %d did not run the %s VM images and scenarios", run.ID, flavour)
+		}
+	}
+	return nil
 }
 
 // workflowRuns lists the successful runs of a workflow for one event at the

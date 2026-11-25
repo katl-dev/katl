@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -53,14 +54,65 @@ func rcRun(tag string, overrides map[string]any) map[string]any {
 	return run
 }
 
+func vmJob(flavour, called, conclusion string, candidate bool) map[string]any {
+	step := "skipped"
+	if candidate {
+		step = "success"
+	}
+	return map[string]any{
+		"name": "VM (" + flavour + ") / " + called, "conclusion": conclusion,
+		"steps": []map[string]any{{"name": "Resolve Kubernetes candidate", "conclusion": step}},
+	}
+}
+
+// vmJobs lists a passing plan, images and scenario job per flavour, then
+// applies the override to the job list.
+func vmJobs(change func([]map[string]any) []map[string]any) map[string]any {
+	var jobs []map[string]any
+	for _, flavour := range []string{"standard", "lts"} {
+		jobs = append(jobs,
+			vmJob(flavour, "plan", "success", false),
+			vmJob(flavour, "images", "success", false),
+			vmJob(flavour, "VM / install", "success", false))
+	}
+	if change != nil {
+		jobs = change(jobs)
+	}
+	return map[string]any{"total_count": len(jobs), "jobs": jobs}
+}
+
+func without(prefix string) func([]map[string]any) []map[string]any {
+	return func(jobs []map[string]any) []map[string]any {
+		var kept []map[string]any
+		for _, job := range jobs {
+			if !strings.HasPrefix(job["name"].(string), prefix) {
+				kept = append(kept, job)
+			}
+		}
+		return kept
+	}
+}
+
+func replaced(name string, job map[string]any) func([]map[string]any) []map[string]any {
+	return func(jobs []map[string]any) []map[string]any {
+		for i := range jobs {
+			if jobs[i]["name"] == name {
+				jobs[i] = job
+			}
+		}
+		return jobs
+	}
+}
+
 const (
 	ciRuns      = "repos/" + repository + "/actions/workflows/ci.yml/runs?head_sha=" + testCommit + "&event=merge_group&status=success&per_page=100"
 	releaseRuns = "repos/" + repository + "/actions/workflows/release-artifacts.yml/runs?head_sha=" + testCommit + "&event=push&status=success&per_page=100"
 	mainCompare = "repos/" + repository + "/compare/main..." + testCommit
+	ciJobs      = "repos/" + repository + "/actions/runs/7/jobs?filter=latest&per_page=100"
 )
 
 func TestRegression(t *testing.T) {
-	merged := regressionAPI{ciRuns: runList(ciRun(nil)), mainCompare: map[string]string{"status": "behind"}}
+	merged := regressionAPI{ciRuns: runList(ciRun(nil)), ciJobs: vmJobs(nil), mainCompare: map[string]string{"status": "behind"}}
 	withCandidate := func(api regressionAPI, runs ...map[string]any) regressionAPI {
 		out := regressionAPI{releaseRuns: runList(runs...)}
 		for key, value := range api {
@@ -83,9 +135,20 @@ func TestRegression(t *testing.T) {
 		{"rc with a push run only", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(map[string]any{"event": "push"}))}, "run", ""},
 		{"rc with another commit's run", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(map[string]any{"head_sha": strings.Repeat("a", 40)}))}, "run", ""},
 		{"rc with another workflow's run", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(map[string]any{"path": ".github/workflows/other.yml"}))}, "run", ""},
-		{"rc with a release-branch group", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(map[string]any{"head_branch": "gh-readonly-queue/release/2026.11/pr-9"})), mainCompare: map[string]string{"status": "behind"}}, "run", ""},
+		{"rc with a release-branch group", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(map[string]any{"head_branch": "gh-readonly-queue/release/2026.11/pr-9"})), ciJobs: vmJobs(nil), mainCompare: map[string]string{"status": "behind"}}, "run", ""},
 		{"rc with an unfinished run", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(map[string]any{"status": "in_progress", "conclusion": nil}))}, "run", ""},
-		{"rc whose group never merged", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(nil)), mainCompare: map[string]string{"status": "ahead"}}, "run", ""},
+		{"rc whose group never merged", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(nil)), ciJobs: vmJobs(nil), mainCompare: map[string]string{"status": "ahead"}}, "run", ""},
+		{"rc after docs-only merge-queue CI", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(nil)), ciJobs: map[string]any{"total_count": 2, "jobs": []map[string]any{{"name": "Plan", "conclusion": "success"}, {"name": "VM (standard)", "conclusion": "skipped"}}}, mainCompare: map[string]string{"status": "behind"}}, "run", ""},
+		{"rc with a skipped flavour", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(nil)), ciJobs: vmJobs(without("VM (lts)")), mainCompare: map[string]string{"status": "behind"}}, "run", ""},
+		{"rc with a failed scenario", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(nil)), ciJobs: vmJobs(replaced("VM (lts) / VM / install", vmJob("lts", "VM / install", "failure", false))), mainCompare: map[string]string{"status": "behind"}}, "run", ""},
+		{"rc with a skipped scenario", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(nil)), ciJobs: vmJobs(replaced("VM (standard) / VM / install", vmJob("standard", "VM / install", "skipped", false))), mainCompare: map[string]string{"status": "behind"}}, "run", ""},
+		{"rc with a presubmit Kubernetes candidate", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(nil)), ciJobs: vmJobs(replaced("VM (standard) / images", vmJob("standard", "images", "success", true))), mainCompare: map[string]string{"status": "behind"}}, "run", ""},
+		{"rc without the candidate step recorded", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(nil)), ciJobs: vmJobs(replaced("VM (standard) / images", map[string]any{"name": "VM (standard) / images", "conclusion": "success"})), mainCompare: map[string]string{"status": "behind"}}, "run", ""},
+		{"rc with an unreadable job list", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(nil)), ciJobs: fmt.Errorf("rate limited"), mainCompare: map[string]string{"status": "behind"}}, "run", ""},
+		{"rc with a truncated job list", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(nil)), ciJobs: map[string]any{"total_count": 150, "jobs": vmJobs(nil)["jobs"]}, mainCompare: map[string]string{"status": "behind"}}, "run", ""},
+		{"rc at main itself", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(nil)), ciJobs: vmJobs(nil), mainCompare: map[string]string{"status": "identical"}}, "skip", ""},
+		{"rc diverged from main", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(nil)), ciJobs: vmJobs(nil), mainCompare: map[string]string{"status": "diverged"}}, "run", ""},
+		{"rc with a failed compare", "2026.11.0-rc.1", regressionAPI{ciRuns: runList(ciRun(nil)), ciJobs: vmJobs(nil), mainCompare: fmt.Errorf("not found")}, "run", ""},
 		{"beta never skips", "2026.11.0-beta.1", merged, "run", ""},
 		{"dev never skips", "2026.11.1-dev.0", merged, "run", ""},
 		{"final after rc and CI", "2026.11.0", withCandidate(merged, rcRun("v2026.11.0-rc.2", nil)), "skip", ""},
@@ -124,5 +187,27 @@ func TestRegressionRequiresFullCommit(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	if err := run([]string{"regression", "2026.11.0-rc.1", "main"}, &stdout, &stderr, regressionAPI{}.call); err == nil {
 		t.Fatal("a branch name was accepted as the commit")
+	}
+}
+
+// The job and step names the decision reads must still exist in the workflows.
+func TestRegressionJobNamesMatchWorkflows(t *testing.T) {
+	read := func(name string) string {
+		data, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	ci, hosted := read("ci.yml"), read("hosted-vmtests.yml")
+	for _, want := range []string{"name: VM (${{ matrix.flavour }})", "needs.plan.outputs.kubernetes-version"} {
+		if !strings.Contains(ci, want) {
+			t.Errorf("ci.yml lacks %q", want)
+		}
+	}
+	for _, want := range []string{"\n  " + kubernetesCandJob + ":\n", "name: " + kubernetesCandStep, "name: VM / ${{ matrix.name }}"} {
+		if !strings.Contains(hosted, want) {
+			t.Errorf("hosted-vmtests.yml lacks %q", want)
+		}
 	}
 }
