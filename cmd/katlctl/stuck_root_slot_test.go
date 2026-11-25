@@ -3,7 +3,9 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -79,11 +81,9 @@ const euclean = "operation host-upgrade-handoff-20261125T014748Z-5adb5c34ac54 fi
 
 func TestStuckSlotRecovery(t *testing.T) {
 	const (
-		find      = "find /efi/EFI/katl -maxdepth 1 -name '.sysupdate.*' -print -delete"
-		dumpSlot  = `sfdisk --dump "$DISK" | awk '`
-		slotMatch = `if ($0 ~ /name="katl_1"/ && (type == "64362E66-88A7-463B-B325-7AF60C81BE06" || type == "7A01D3C6-92AC-43E9-BD77-5726B602AD9D")) {`
-		rootMatch = `} else if (type == "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709" || type == "B921B045-1DF0-41C3-AF44-4C6F280D3FAE") {`
-		setType   = `sfdisk --no-reread --no-tell-kernel --part-type "$DISK" PARTNUMBER ROOTTYPE`
+		find     = "find /efi/EFI/katl -maxdepth 1 -name '.sysupdate.*' -print -delete"
+		dumpSlot = `sfdisk --dump "$DISK" | {`
+		setType  = `sfdisk --no-reread --no-tell-kernel --part-type "$DISK" PARTNUMBER ROOTTYPE`
 	)
 
 	tests := []struct {
@@ -120,7 +120,7 @@ func TestStuckSlotRecovery(t *testing.T) {
 				t.Fatalf("explained error no longer wraps the original")
 			}
 			guide := strings.TrimPrefix(got.Error(), tt.err.Error())
-			for _, want := range []string{find, "df -h /efi", "at least 100 MiB", "DISK=" + tt.disk + "\n", dumpSlot, slotMatch, rootMatch, setType, "Reboot the node, then run the upgrade again."} {
+			for _, want := range []string{find, "df -h /efi", "at least 100 MiB", "DISK=" + tt.disk + "\n", dumpSlot, setType, "Reboot the node, then run the upgrade again."} {
 				if !strings.Contains(guide, want) {
 					t.Errorf("guidance lacks %q:\n%s", want, guide)
 				}
@@ -155,20 +155,74 @@ func TestStuckSlotRecovery(t *testing.T) {
 	})
 }
 
-// TestStuckSlotSelection runs the awk program the guidance prints against
-// partition tables, since the operator pipes a real dump into it.
-func TestStuckSlotSelection(t *testing.T) {
-	if _, err := exec.LookPath("awk"); err != nil {
-		t.Skip("awk not installed")
+// runtimeComponents is the list of programs every KatlOS runtime ships.
+const runtimeComponents = "../../mkosi.profiles/runtime/components.lock"
+
+// runtimePath returns a directory that resolves only commands the KatlOS
+// runtime ships, according to the committed component list. Each command is a
+// symlink to the host's copy, except sfdisk, which the caller supplies.
+func runtimePath(t *testing.T) string {
+	t.Helper()
+
+	lock, err := os.ReadFile(runtimeComponents)
+	if err != nil {
+		t.Fatalf("read runtime component list: %v", err)
+	}
+	shipped := map[string]bool{}
+	for _, line := range strings.Split(string(lock), "\n") {
+		if p, ok := strings.CutPrefix(line, "program /usr/bin/"); ok && !strings.Contains(p, "/") {
+			shipped[p] = true
+		}
+	}
+	for _, need := range []string{"bash", "sfdisk", "find", "df"} {
+		if !shipped[need] {
+			t.Fatalf("runtime component list no longer ships %s, which the recovery steps use", need)
+		}
+	}
+	for _, absent := range []string{"awk", "gawk", "mawk", "busybox", "perl", "python3"} {
+		if shipped[absent] {
+			t.Fatalf("runtime ships %s; the recovery steps may use it, but this test needs updating", absent)
+		}
 	}
 
-	guide := stuckRootSlotGuidance("/dev/vda")
-	start := strings.Index(guide, "awk '") + len("awk '")
-	end := strings.Index(guide[start:], "}'")
-	if start < len("awk '") || end < 0 {
-		t.Fatalf("guidance has no awk program:\n%s", guide)
+	dir := t.TempDir()
+	for name := range shipped {
+		if name == "sfdisk" {
+			continue
+		}
+		if host, err := exec.LookPath(name); err == nil {
+			if err := os.Symlink(host, filepath.Join(dir, name)); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
-	program := guide[start : start+end+1]
+	if _, err := os.Stat(filepath.Join(dir, "bash")); err != nil {
+		t.Fatalf("host has no bash to run the recovery script: %v", err)
+	}
+	return dir
+}
+
+// TestStuckSlotSelection runs the printed step 3 where only commands the
+// KatlOS runtime ships can be found, against partition tables that a fake
+// sfdisk dumps. The operator pipes a real dump into it on a node with no awk.
+func TestStuckSlotSelection(t *testing.T) {
+	guide := stuckRootSlotGuidance("/dev/vda")
+	var script []string
+	in := false
+	for _, line := range strings.Split(guide, "\n") {
+		if line == "     DISK=/dev/vda" {
+			in = true
+		}
+		if in {
+			if !strings.HasPrefix(line, "     ") {
+				break
+			}
+			script = append(script, strings.TrimPrefix(line, "     "))
+		}
+	}
+	if len(script) == 0 {
+		t.Fatalf("guidance has no step 3 commands:\n%s", guide)
+	}
 
 	const (
 		esp     = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
@@ -205,6 +259,12 @@ func TestStuckSlotSelection(t *testing.T) {
 			wantOK: true,
 		},
 		{
+			name:   "lowercase types",
+			dump:   strings.ToLower(dump([3]string{"/dev/vda2", root, "katl_0"}, [3]string{"/dev/vda3", pending, "katl_1"})),
+			want:   "half-installed root slot: partition 3\nother root slot type: " + root + "\n",
+			wantOK: true,
+		},
+		{
 			name:   "extra data partition",
 			dump:   dump([3]string{"/dev/vda2", root, "katl_0"}, [3]string{"/dev/vda3", pending, "katl_1"}, [3]string{"/dev/vda4", data, "scratch"}),
 			want:   "half-installed root slot: partition 3\nother root slot type: " + root + "\n",
@@ -213,6 +273,14 @@ func TestStuckSlotSelection(t *testing.T) {
 		{
 			name: "no half-installed slot",
 			dump: dump([3]string{"/dev/vda2", root, "katl_0"}, [3]string{"/dev/vda3", root, "_empty"}),
+		},
+		{
+			name: "pending type without the staged label",
+			dump: dump([3]string{"/dev/vda2", root, "katl_0"}, [3]string{"/dev/vda3", pending, "other"}),
+		},
+		{
+			name: "two half-installed slots",
+			dump: dump([3]string{"/dev/vda2", root, "katl_0"}, [3]string{"/dev/vda3", pending, "katl_1"}, [3]string{"/dev/vda4", partial, "katl_1"}),
 		},
 		{
 			name: "two other root slots",
@@ -225,16 +293,95 @@ func TestStuckSlotSelection(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cmd := exec.Command("awk", program)
-			cmd.Stdin = strings.NewReader(tt.dump)
+			bin := runtimePath(t)
+			// The fake accepts only the invocation the script should make.
+			fake := "#!" + filepath.Join(bin, "bash") + "\n[[ \"$*\" == '--dump /dev/vda' ]] || exit 2\nprintf %s \"$DUMP\"\n"
+			if err := os.WriteFile(filepath.Join(bin, "sfdisk"), []byte(fake), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			cmd := exec.Command(filepath.Join(bin, "bash"), "-c", strings.Join(script, "\n"))
+			cmd.Env = []string{"PATH=" + bin, "DUMP=" + tt.dump}
+			var stderr strings.Builder
+			cmd.Stderr = &stderr
 			out, err := cmd.Output()
 
+			if strings.Contains(stderr.String(), "command not found") {
+				t.Fatalf("script uses a command the runtime does not ship: %s", stderr.String())
+			}
 			if (err == nil) != tt.wantOK {
-				t.Fatalf("awk error = %v, want success %v", err, tt.wantOK)
+				t.Fatalf("error = %v, want success %v; stderr: %s", err, tt.wantOK, stderr.String())
 			}
 			if string(out) != tt.want {
 				t.Errorf("output = %q, want %q", out, tt.want)
 			}
+			if !tt.wantOK && !strings.Contains(stderr.String(), "do not change any partition type") {
+				t.Errorf("refusal does not tell the operator to leave the partition types alone: %q", stderr.String())
+			}
 		})
+	}
+}
+
+// TestStuckSlotStepsMatchReleaseNotes keeps the commands of steps 3 and 4 that
+// katlctl prints identical to those in docs/releases/next.md. The notes exist
+// only until the release that carries them, so the comparison runs while they
+// do.
+func TestStuckSlotStepsMatchReleaseNotes(t *testing.T) {
+	notes, err := os.ReadFile("../../docs/releases/next.md")
+	if errors.Is(err, os.ErrNotExist) {
+		t.Skip("no release notes in this tree")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var fenced [][]string
+	var cur []string
+	in := false
+	for _, line := range strings.Split(string(notes), "\n") {
+		switch {
+		case strings.HasPrefix(strings.TrimSpace(line), "```"):
+			if in {
+				fenced = append(fenced, cur)
+			}
+			in, cur = !in, nil
+		case in:
+			cur = append(cur, strings.TrimPrefix(line, "   "))
+		}
+	}
+	var noted []string
+	for _, b := range fenced {
+		text := strings.Join(b, "\n")
+		if strings.Contains(text, "DISK=") || strings.Contains(text, "--part-type") {
+			noted = append(noted, text)
+		}
+	}
+
+	guide := stuckRootSlotGuidance("/dev/DISK")
+	var printed []string
+	var cur2 []string
+	for _, line := range strings.Split(guide, "\n") {
+		if strings.HasPrefix(line, "     ") {
+			cur2 = append(cur2, strings.TrimPrefix(line, "     "))
+			continue
+		}
+		if len(cur2) > 0 && line == "" {
+			if t := strings.Join(cur2, "\n"); strings.Contains(t, "DISK=") || strings.Contains(t, "--part-type") {
+				printed = append(printed, t)
+			}
+			cur2 = nil
+		}
+	}
+	if len(cur2) > 0 {
+		printed = append(printed, strings.Join(cur2, "\n"))
+	}
+
+	if len(noted) != 2 || len(printed) != 2 {
+		t.Fatalf("found %d noted and %d printed command blocks for steps 3 and 4, want 2 each", len(noted), len(printed))
+	}
+	for i := range noted {
+		if noted[i] != printed[i] {
+			t.Errorf("step %d differs\nrelease notes:\n%s\nkatlctl:\n%s", i+3, noted[i], printed[i])
+		}
 	}
 }
