@@ -42,7 +42,8 @@ func TestSweepReapsKilledRun(t *testing.T) {
 		fake.addDomain(t, "domain-"+run.name, vmtestMetadataFor(run.lease), "net-"+run.name)
 		fake.addNetwork(t, OwnedNetwork{Name: "net-" + run.name, Owner: vmtestMetadata, Lease: run.lease, CIDR: "10.200.1.0/24", Gateway: "10.200.1.1"})
 	}
-	// A runner that predates run leases, and objects another tool owns.
+	// A domain that names no lease has no owner to ask, and objects another tool
+	// owns.
 	fake.addDomain(t, "domain-leaseless", vmtestMetadataFor(""), "default")
 	fake.addDomain(t, "domain-katldev", katldevMetadata, "default")
 	fake.addNetwork(t, OwnedNetwork{Name: "net-katldev", Owner: "katl/katldev-world/dev-world-1", CIDR: "10.200.3.0/24", Gateway: "10.200.3.1"})
@@ -55,7 +56,7 @@ func TestSweepReapsKilledRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got, want := fake.objects(t, "domains"), []string{"domain-katldev", "domain-live"}; !slices.Equal(got, want) {
+	if got, want := fake.objects(t, "domains"), []string{"domain-katldev", "domain-leaseless", "domain-live"}; !slices.Equal(got, want) {
 		t.Fatalf("domains = %v, want %v", got, want)
 	}
 	if got, want := fake.objects(t, "networks"), []string{"net-katldev", "net-live"}; !slices.Equal(got, want) {
@@ -177,6 +178,7 @@ func mkdirForFile(t *testing.T, path string) {
 // libvirt is the fake.
 func ownedScenarioWorld(t *testing.T) (World, fakeLibvirt) {
 	t.Helper()
+	t.Setenv(admissionDirEnv, t.TempDir())
 	fake := newFakeLibvirt(t)
 	world := testWorld(t)
 	world.Lease = filepath.Join(t.TempDir(), "lease")
@@ -187,7 +189,7 @@ func ownedScenarioWorld(t *testing.T) (World, fakeLibvirt) {
 
 func TestScenarioReservesPlannedAddresses(t *testing.T) {
 	world, fake := ownedScenarioWorld(t)
-	scenario := world.NewScenario(t, "reserve")
+	scenario := world.NewScenario(t, "reserve", Nodes(2))
 	network := scenario.World.Network.Name
 	if network == world.Network.Name {
 		t.Fatalf("scenario shares the world network %q", network)

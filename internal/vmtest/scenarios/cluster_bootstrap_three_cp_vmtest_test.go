@@ -157,7 +157,7 @@ func threeControlPlaneWorldRuntimeSpecs() []vmtest.NodeSpec {
 }
 
 func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, scenarioName, kubernetesVersion string, kvm vmtest.KVMPolicy, workloadProof bool) (threeControlPlaneSmokeRun, error) {
-	scenario, err := world.PlanScenario(scenarioName)
+	scenario, err := world.PlanScenario(scenarioName, vmtest.Nodes(3))
 	if err != nil {
 		return threeControlPlaneSmokeRun{}, err
 	}

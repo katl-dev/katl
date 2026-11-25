@@ -1859,7 +1859,6 @@ func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string 
 		"KATL_VMTEST_KUBECTL="+tools.kubectl,
 		"KATL_VMTEST_RESOURCE_LOCK="+tools.resourceLock,
 		"KATL_VMTEST_RESOURCE_GO="+realGo,
-		"KATL_VMTEST_HOST_LOCK="+filepath.Join(filepath.Dir(tools.imageTool), "vmtest-host.lock"),
 		"KATL_VMTEST_MKOSI_VERSION=26",
 		"KATL_VMTEST_AUTO_REBUILD=0",
 		"KATL_FAKE_CHILD_WORLD_SCENARIO=fake vm scenario",

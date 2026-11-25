@@ -44,6 +44,10 @@ type WorldScenario struct {
 	// owned marks a scenario that created its own libvirt network, which it
 	// keeps reserving its nodes' addresses in.
 	owned bool
+	// admission is the scenario's reservation of host capacity, held for the
+	// nodes it declared until Release. Nil outside runs that a lease owns.
+	admission     *Reservation
+	declaredNodes int
 }
 
 type Node struct {
@@ -102,16 +106,29 @@ type leaseEntry struct {
 	Node       string `json:"node"`
 }
 
+// ScenarioOption adjusts how a scenario is planned.
+type ScenarioOption func(*scenarioOptions)
+
+type scenarioOptions struct{ nodes int }
+
+// Nodes declares how many nodes the scenario adds. A scenario in a run that a
+// lease owns reserves host capacity for that many VMs before it starts any, and
+// adding more nodes fails. A scenario that declares nothing has one node.
+func Nodes(n int) ScenarioOption {
+	return func(o *scenarioOptions) { o.nodes = n }
+}
+
 // NewScenario plans and records a scenario. In a world that a run lease owns,
-// the scenario gets its own libvirt network, which t's cleanup removes.
+// the scenario waits for host capacity and gets its own libvirt network, both
+// released by t's cleanup.
 func (world World) NewScenario(t interface {
 	Helper()
 	Fatalf(format string, args ...any)
 	Cleanup(func())
-}, name string,
+}, name string, options ...ScenarioOption,
 ) *WorldScenario {
 	t.Helper()
-	scenario, err := world.PlanScenario(name)
+	scenario, err := world.PlanScenario(name, options...)
 	if err != nil {
 		t.Fatalf("plan VM test scenario: %v", err)
 	}
@@ -123,14 +140,19 @@ func (world World) NewScenario(t interface {
 }
 
 // PlanScenario plans a scenario. In a world with libvirt that a run lease owns,
-// it also creates the scenario's own libvirt network, which Release removes.
-func (world World) PlanScenario(name string) (*WorldScenario, error) {
+// it waits until the host has capacity for the scenario's declared nodes and
+// creates the scenario's own libvirt network. Release gives both back.
+func (world World) PlanScenario(name string, options ...ScenarioOption) (*WorldScenario, error) {
 	scenario, err := world.planScenario(name)
 	if err != nil {
 		return nil, err
 	}
 	if world.Lease != "" && world.Capabilities["libvirt"] == WorldStatusPassed {
+		if err := scenario.admit(context.Background(), options...); err != nil {
+			return nil, err
+		}
 		if err := scenario.createNetwork(context.Background()); err != nil {
+			scenario.Release()
 			return nil, fmt.Errorf("create scenario network: %w", err)
 		}
 	}
@@ -202,6 +224,9 @@ func (scenario *WorldScenario) AddNode(spec NodeSpec) (Node, error) {
 	err := scenario.allocate(func(reserved map[string]bool) (*leaseEntry, error) {
 		if scenario.nodeIndex(spec.Name) >= 0 {
 			return nil, fmt.Errorf("scenario %q already has node %q", scenario.Name, spec.Name)
+		}
+		if scenario.admission != nil && len(scenario.Nodes) >= scenario.declaredNodes {
+			return nil, fmt.Errorf("scenario %q reserved host capacity for %d nodes; declare more with vmtest.Nodes", scenario.Name, scenario.declaredNodes)
 		}
 		address := strings.TrimSpace(spec.Address)
 		var err error

@@ -72,7 +72,6 @@ esac
 		"KATL_VMTEST_VIRSH="+filepath.Join(work, "fake-virsh"),
 		"KATL_VMTEST_RUN_ID="+runID,
 		"KATL_VMTEST_CACHE_DIR="+filepath.Join(work, "cache"),
-		"KATL_VMTEST_HOST_LOCK="+filepath.Join(work, "host.lock"),
 	)
 	if fail {
 		cmd.Env = append(cmd.Env, "KATL_SCRIPTTEST_FAIL=1")

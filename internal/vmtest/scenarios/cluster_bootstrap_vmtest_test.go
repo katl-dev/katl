@@ -172,7 +172,7 @@ func operationBackedKubernetesVersion(t *testing.T, repo string, upgrade bool) s
 }
 
 func planOperationBackedWorldSmokeRunNamed(world vmtest.World, repo, kubernetesVersion string, kvm vmtest.KVMPolicy, scenarioName string) (operationBackedSmokeRun, error) {
-	scenario, err := world.PlanScenario(scenarioName)
+	scenario, err := world.PlanScenario(scenarioName, vmtest.Nodes(2))
 	if err != nil {
 		return operationBackedSmokeRun{}, err
 	}
@@ -1512,7 +1512,7 @@ func twoNodeWorldRuntimeSpecs() []vmtest.NodeSpec {
 }
 
 func planTwoNodeWorldSmokeRun(world vmtest.World, repo, kubernetesVersion string, kvm vmtest.KVMPolicy) (twoNodeSmokeRun, error) {
-	scenario, err := world.PlanScenario("installed-runtime-two-node-kubeadm-join")
+	scenario, err := world.PlanScenario("installed-runtime-two-node-kubeadm-join", vmtest.Nodes(2))
 	if err != nil {
 		return twoNodeSmokeRun{}, err
 	}

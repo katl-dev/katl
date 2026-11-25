@@ -140,7 +140,7 @@ func threeNodeGeneration0InstallWorldRun(t *testing.T) (threeNodeGeneration0Inst
 }
 
 func planThreeNodeGeneration0InstallRun(world vmtest.World, repo string, specs []vmtest.NodeSpec, kvm vmtest.KVMPolicy) (threeNodeGeneration0InstallRun, error) {
-	scenario, err := world.PlanScenario("three-node-generation-0-install")
+	scenario, err := world.PlanScenario("three-node-generation-0-install", vmtest.Nodes(len(specs)))
 	if err != nil {
 		return threeNodeGeneration0InstallRun{}, err
 	}

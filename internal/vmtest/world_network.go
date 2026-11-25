@@ -68,10 +68,35 @@ func (scenario *WorldScenario) createNetwork(ctx context.Context) error {
 	return nil
 }
 
-// Release removes the scenario's libvirt network at the end of the scenario,
-// unless a domain preserved for debugging still uses it. A scenario without its
-// own network has nothing to release.
+// admit reserves host capacity for the scenario's declared nodes, waiting until
+// the host has it.
+func (scenario *WorldScenario) admit(ctx context.Context, options ...ScenarioOption) error {
+	settings := scenarioOptions{nodes: 1}
+	for _, option := range options {
+		option(&settings)
+	}
+	capacity, err := HostCapacity()
+	if err != nil {
+		return err
+	}
+	reservation, err := Admission{Dir: AdmissionDir(), Capacity: capacity, Progress: os.Stderr}.Admit(ctx, scenario.World.RunID, scenario.ID, nodesDemand(settings.nodes))
+	if err != nil {
+		return err
+	}
+	scenario.admission, scenario.declaredNodes = reservation, settings.nodes
+	return nil
+}
+
+// Release gives back the scenario's host capacity and removes its libvirt
+// network, unless a domain preserved for debugging still uses the network. A
+// scenario without a reservation or network has nothing to release.
 func (scenario *WorldScenario) Release() {
+	// The reservation outlives the network, so capacity frees only once the
+	// scenario's VMs and network are gone.
+	defer func() {
+		scenario.admission.Release()
+		scenario.admission = nil
+	}()
 	if !scenario.owned {
 		return
 	}

@@ -125,7 +125,6 @@ func newLockFixture(t *testing.T) lockFixture {
 		"KATL_VMTEST_RESOURCE_GO="+realGo, "KATL_VMTEST_GO="+filepath.Join(root, "go"), "KATL_VMTEST_VIRSH="+filepath.Join(root, "virsh"),
 		"KATL_VMTEST_IMAGE_TOOL="+filepath.Join(root, "tool"), "KATL_VMTEST_KUBECTL="+filepath.Join(root, "tool"),
 		"KATL_VMTEST_RUN_DIR="+filepath.Join(root, "run"), "KATL_VMTEST_CACHE_DIR="+filepath.Join(root, "cache"),
-		"KATL_VMTEST_HOST_LOCK="+filepath.Join(root, "host.lock"), "KATL_VMTEST_HOST_LOCK_TIMEOUT=5",
 		"KATL_VMTEST_KEEP=always", "KATL_VMTEST_REQUIRE_SCENARIO_RESULT=0")}
 }
 
@@ -192,16 +191,10 @@ func (f lockFixture) release(t *testing.T, name string) {
 	}
 }
 
-func (f lockFixture) locked(t *testing.T, want bool) {
-	t.Helper()
-	contended(t, filepath.Join(f.root, "host.lock"), want)
-}
-
-// held checks the host lock and the run lease together, which a runner holds
-// from the moment it is admitted until it exits.
+// held checks the run lease, which a runner holds from the moment it starts
+// until it exits.
 func (f lockFixture) held(t *testing.T, want bool) {
 	t.Helper()
-	f.locked(t, want)
 	contended(t, filepath.Join(f.root, "run", "lease"), want)
 }
 
@@ -367,44 +360,16 @@ func TestVMTestRetentionLease(t *testing.T) {
 	}
 }
 
-func TestVMTestCancelledWaiter(t *testing.T) {
-	f := newLockFixture(t)
-	lock, err := os.OpenFile(filepath.Join(f.root, "host.lock"), os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		t.Fatal(err)
-	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-	r := f.start(t, 0)
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		b, _ := os.ReadFile(r.log)
-		if strings.Contains(string(b), "vmtest host lock: waiting") {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("waiter did not reach lease: %s", b)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if err := syscall.Kill(-r.cmd.Process.Pid, syscall.SIGINT); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case err := <-r.done:
-		if err == nil {
-			t.Fatal("cancelled waiter succeeded")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("waiter did not cancel")
-	}
-	for _, name := range []string{"work.ready"} {
-		if _, err := os.Stat(filepath.Join(f.root, name)); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("cancelled waiter entered %s", name)
-		}
-	}
-	f.locked(t, true)
+// Independent runs on one host hold their leases at the same time: nothing
+// host-wide makes the second runner wait for the first.
+func TestVMTestRunsConcurrently(t *testing.T) {
+	first, second := newLockFixture(t), newLockFixture(t)
+
+	first.start(t, 0)
+	second.start(t, 0)
+
+	first.wait(t, "work.ready")
+	second.wait(t, "work.ready")
+	first.held(t, true)
+	second.held(t, true)
 }

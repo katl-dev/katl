@@ -152,10 +152,28 @@ creates carry the run ID and the lease path in their `katl/vmtest` metadata, as
 The first scenario of each test process removes the vmtest domains and networks
 whose lease nobody holds: they belong to runs that have ended, including domains
 preserved for debugging. It never touches objects with other metadata, such as
-katldev worlds. The runner still holds the host lock for the whole run, so
-domains without a lease, which only runners that hold that lock create, are
-removed too; that rule has to change before runs stop serialising on the host
-lock.
+katldev worlds, or vmtest objects that name no lease and so have no owner to
+ask.
+
+## Admission
+
+Runs share the host without a host-wide lock. A scenario in a leased libvirt
+world reserves vCPUs and memory for the nodes it declares (`vmtest.Nodes`,
+one by default, each at the default guest size) when it is planned, and
+`WorldScenario.Release` gives them back after its network is removed. Adding
+more nodes than the scenario declared fails.
+
+The ledger is a directory of reservation files shared by the user's runs
+(`KATL_VMTEST_ADMISSION_DIR`, `/tmp/katl-vmtest-admission-<uid>` by default). A
+reservation counts while a process holds a flock on its file; the kernel drops
+that lock when the holder dies, so a killed run frees its capacity and the next
+admission deletes the leftover file. Counting and creating a reservation happen
+under one ledger lock. Capacity is the host's CPUs and its memory minus a
+reserve of the larger of 2 GiB and an eighth, and
+`KATL_VMTEST_ADMISSION_VCPUS` and `KATL_VMTEST_ADMISSION_MEMORY_MIB` override
+it. A scenario that does not fit waits and prints `waiting for N vCPU / M MiB;
+held by run X`. A demand above capacity, or one that its own run's earlier
+scenario makes impossible, fails at once.
 
 vsock guest CIDs are allocated by libvirt (`cid auto='yes'`) and read back from
 the running domain.
