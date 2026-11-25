@@ -3,4 +3,13 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
-exec go run ./cmd/katl-queue "$@"
+
+# Run the binary directly so the shell sees katl-queue's exit status and PID.
+mkdir -p _build
+build=$(mktemp -d _build/katl-queue.XXXXXXXX)
+trap 'rm -rf -- "$build"' EXIT
+go build -buildvcs=false -o "$build/katl-queue" ./cmd/katl-queue
+mv -f -- "$build/katl-queue" _build/katl-queue
+rmdir -- "$build"
+trap - EXIT
+exec _build/katl-queue "$@"

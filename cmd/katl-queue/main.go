@@ -12,12 +12,14 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"os"
 	"os/signal"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 )
@@ -30,7 +32,14 @@ Commands:
   enqueue PR        check PR, then enable auto-merge so it joins the queue
   watch [PR...]     report queue state changes until the PRs merge or leave
                     (default: everything queued or with auto-merge enabled)
-  why PR            explain why PR was removed from the queue
+  watchd [--interval 60s] [--notify]
+                    poll GitHub for registered watches and save their results
+  wait PR [--timeout D]
+                    wait for a merge through watchd
+  wait --resume ID [--timeout D]
+                    resume a registered wait or retrieve its result (kept 7 days)
+  watches           list registered watches and recent results from watchd
+  why PR            explain why a Katl PR was removed from the queue
   plan [--milestone M] [--apply | --next]
                     order ready PRs for the queue, holding conflicting ones;
                     --apply makes an autopilot pass, --next lists startable issues
@@ -49,6 +58,8 @@ when they pass.
 
 Exit status is 1 when check finds a conflict, enqueue refuses, or a watched PR
 leaves the queue without merging, and 2 on any other error.
+wait exits 0 when the PR merges, 1 when it needs action, and 2 when there
+is no verdict. A timeout only ends the client invocation.
 `
 
 // errConflict marks an outcome that has already been reported to the
@@ -56,19 +67,25 @@ leaves the queue without merging, and 2 on any other error.
 var errConflict = errors.New("conflict")
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
+	signals := []os.Signal{os.Interrupt}
+	if len(os.Args) > 1 && (os.Args[1] == "watchd" || os.Args[1] == "wait") {
+		signals = append(signals, syscall.SIGTERM)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), signals...)
+	code := commandStatus(run(ctx, os.Args[1:], os.Stdout, os.Stderr), os.Stderr)
+	stop()
+	os.Exit(code)
+}
 
-	err := run(ctx, os.Args[1:], os.Stdout, os.Stderr)
+func commandStatus(err error, stderr io.Writer) int {
 	switch {
-	case err == nil:
+	case err == nil, errors.Is(err, flag.ErrHelp):
+		return 0
 	case errors.Is(err, errConflict):
-		os.Exit(1)
-	case errors.Is(err, flag.ErrHelp):
-		os.Exit(0)
+		return 1
 	default:
-		fmt.Fprintln(os.Stderr, "katl-queue:", err)
-		os.Exit(2)
+		fmt.Fprintln(stderr, "katl-queue:", err)
+		return 2
 	}
 }
 
@@ -89,10 +106,23 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	var (
 		milestone                string
 		applyChanges, next, once bool
+		notify                   bool
+		resume                   string
+		timeout                  time.Duration
 	)
 	switch command {
-	case "watch":
+	case "watch", "watchd":
 		flags.DurationVar(&interval, "interval", interval, "time between polls")
+		if command == "watchd" {
+			flags.BoolVar(&notify, "notify", false, "send desktop notifications for merges and failures")
+		}
+	case "wait":
+		flags.StringVar(&resume, "resume", "", "resume an existing watch ID")
+		flags.DurationVar(&timeout, "timeout", 0, "maximum wait time (0 waits indefinitely)")
+		// flag stops at the first positional argument. Accept PR before flags.
+		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+			args = append(slices.Clone(args[1:]), args[0])
+		}
 	case "plan":
 		flags.StringVar(&milestone, "milestone", "", "limit to this milestone")
 		flags.BoolVar(&applyChanges, "apply", false, "make the changes an autopilot pass would")
@@ -138,10 +168,45 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		if err := applyScope(command, milestone, applyChanges); err != nil {
 			return err
 		}
-	case "check", "enqueue", "why":
+	case "check", "enqueue":
 		if err := needOne(); err != nil {
 			return err
 		}
+	case "why":
+		if err := needOne(); err != nil {
+			return err
+		}
+		return why(ctx, &gh{host: katlHost, owner: katlOwner, name: katlRepo}, numbers[0], stdout)
+	case "watchd":
+		if len(numbers) > 0 {
+			return errors.New("watchd takes no arguments")
+		}
+		if interval <= 0 {
+			return errors.New("--interval must be positive")
+		}
+		return watchd(ctx, interval, notify, stdout)
+	case "wait":
+		if timeout < 0 {
+			return errors.New("--timeout cannot be negative")
+		}
+		if flagWasSet(flags, "resume") {
+			if resume == "" || len(numbers) != 0 {
+				return errors.New("--resume takes a watch ID and cannot be combined with a PR")
+			}
+			return waitForWatch(ctx, dialWatch, watchRequest{Resume: resume}, timeout, stdout, stderr)
+		}
+		if err := needOne(); err != nil {
+			return err
+		}
+		if !validPRNumber(numbers[0]) {
+			return errors.New("pull request number must be between 1 and 2147483647")
+		}
+		return waitForWatch(ctx, dialWatch, watchRequest{PR: numbers[0]}, timeout, stdout, stderr)
+	case "watches":
+		if len(numbers) > 0 {
+			return errors.New("watches takes no arguments")
+		}
+		return listWatches(ctx, stdout)
 	default:
 		fmt.Fprint(stderr, usage)
 		return fmt.Errorf("unknown command %q", command)
@@ -168,12 +233,18 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return planCommand(ctx, g, milestone, applyChanges, stdout)
 	case "prune-runs":
 		return pruneRuns(ctx, g, time.Now(), applyChanges, stdout)
-	case "autopilot":
-		return autopilot(ctx, g, milestone, !applyChanges, once, interval, stdout)
 	default:
-		return why(ctx, g, numbers[0], stdout)
+		return autopilot(ctx, g, milestone, !applyChanges, once, interval, stdout)
 	}
 }
+
+func flagWasSet(flags *flag.FlagSet, name string) bool {
+	set := false
+	flags.Visit(func(f *flag.Flag) { set = set || f.Name == name })
+	return set
+}
+
+func validPRNumber(n int) bool { return n >= 1 && n <= math.MaxInt32 }
 
 func parseNumbers(args []string) ([]int, error) {
 	var numbers []int

@@ -20,16 +20,19 @@
       forPackageSystems = nixpkgs.lib.genAttrs packageSystems;
       pkgsFor = system: import nixpkgs { inherit system; };
       revision = self.rev or self.dirtyRev or "unknown";
+      goPackage = {
+        version = "git-${builtins.substring 0 8 revision}";
+        src = self;
+        vendorHash = "sha256-VIMMzN+wYuYdNw3xpYTYCg0xdkrN5khJ/PmdoVwhFu0=";
+        env.CGO_ENABLED = "0";
+      };
+      buildKatlGo = pkgs: args: pkgs.buildGoModule (goPackage // args);
       katlctlPackageFor =
         pkgs:
-        pkgs.buildGoModule {
+        buildKatlGo pkgs {
           pname = "katlctl";
-          version = "git-${builtins.substring 0 8 revision}";
-          src = self;
-          vendorHash = "sha256-VIMMzN+wYuYdNw3xpYTYCg0xdkrN5khJ/PmdoVwhFu0=";
           subPackages = [ "cmd/katlctl" ];
           nativeBuildInputs = [ pkgs.installShellFiles ];
-          env.CGO_ENABLED = "0";
           ldflags = [
             "-s"
             "-w"
@@ -47,6 +50,24 @@
               --zsh katlctl.zsh
           '';
           meta.mainProgram = "katlctl";
+        };
+      katlQueuePackageFor =
+        pkgs:
+        let
+          runtimePath = nixpkgs.lib.makeBinPath [
+            pkgs.gh
+            pkgs.git
+          ];
+        in
+        buildKatlGo pkgs {
+          pname = "katl-queue";
+          subPackages = [ "cmd/katl-queue" ];
+          nativeBuildInputs = [ pkgs.makeBinaryWrapper ];
+          nativeCheckInputs = [ pkgs.git ];
+          postInstall = ''
+            wrapProgram "$out/bin/katl-queue" --prefix PATH : "${runtimePath}"
+          '';
+          meta.mainProgram = "katl-queue";
         };
       katlctlFor =
         pkgs:
@@ -148,16 +169,23 @@
         };
     in
     {
-      packages = forPackageSystems (
-        system:
-        let
-          katlctl = katlctlPackageFor (pkgsFor system);
-        in
-        {
-          inherit katlctl;
-          default = katlctl;
-        }
-      );
+      packages =
+        forPackageSystems (
+          system:
+          let
+            pkgs = pkgsFor system;
+            katlctl = katlctlPackageFor pkgs;
+          in
+          {
+            inherit katlctl;
+            katl-queue = katlQueuePackageFor pkgs;
+            default = katlctl;
+          }
+        )
+        // {
+          aarch64-linux.katl-queue = katlQueuePackageFor (pkgsFor "aarch64-linux");
+        };
+      homeManagerModules.katl-queue-watch = import ./contrib/home-manager/katl-queue-watch.nix self;
       devShells = forDevSystems (
         system:
         let

@@ -15,6 +15,12 @@ import (
 	"time"
 )
 
+const (
+	katlHost  = "github.com"
+	katlOwner = "katl-dev"
+	katlRepo  = "katl"
+)
+
 // gh runs the GitHub CLI for one repository. Every GitHub read and write the
 // tool makes goes through it, so the repository is resolved once.
 type gh struct {
@@ -22,6 +28,7 @@ type gh struct {
 	// read. It identifies the comments and dequeues katl-queue itself made.
 	viewer      string
 	owner, name string
+	host        string
 }
 
 func runGH(ctx context.Context, args ...string) ([]byte, error) {
@@ -49,6 +56,20 @@ func newGH(ctx context.Context) (*gh, error) {
 	return &gh{owner: owner, name: name}, nil
 }
 
+func (g *gh) api(ctx context.Context, args ...string) ([]byte, error) {
+	if g.host != "" {
+		args = append(args, "--hostname", g.host)
+	}
+	return runGH(ctx, append([]string{"api"}, args...)...)
+}
+
+func (g *gh) repo() string {
+	if g.host != "" {
+		return g.host + "/" + g.owner + "/" + g.name
+	}
+	return g.owner + "/" + g.name
+}
+
 func (g *gh) graphql(ctx context.Context, query string, out any) error {
 	raw, err := g.queryRaw(ctx, query)
 	if err != nil {
@@ -61,7 +82,7 @@ func (g *gh) graphql(ctx context.Context, query string, out any) error {
 // carries errors, and that response still has a body, so only a failure
 // without one is an error here.
 func (g *gh) queryRaw(ctx context.Context, query string) ([]byte, error) {
-	raw, err := runGH(ctx, "api", "graphql", "-f", "query="+query, "-F", "owner="+g.owner, "-F", "name="+g.name)
+	raw, err := g.api(ctx, "graphql", "-f", "query="+query, "-F", "owner="+g.owner, "-F", "name="+g.name)
 	if err != nil && !json.Valid(raw) {
 		return nil, err
 	}
@@ -399,14 +420,14 @@ func (g *gh) enableAutoMerge(ctx context.Context, number int) error {
 }
 
 func (g *gh) failedRunLog(ctx context.Context, runID int64) ([]byte, error) {
-	return runGH(ctx, "run", "view", fmt.Sprint(runID), "--log-failed", "--repo", g.owner+"/"+g.name)
+	return runGH(ctx, "run", "view", fmt.Sprint(runID), "--log-failed", "--repo", g.repo())
 }
 
 // runArtifactLogs downloads the diagnostics artifacts of a run and returns the
 // contents of their go test logs by artifact name. Artifacts are untrusted:
 // each is extracted into its own new directory and only read as data.
 func (g *gh) runArtifactLogs(ctx context.Context, runID int64) (map[string][]byte, error) {
-	raw, err := runGH(ctx, "api", "--paginate", fmt.Sprintf("repos/%s/%s/actions/runs/%d/artifacts", g.owner, g.name, runID),
+	raw, err := g.api(ctx, "--paginate", fmt.Sprintf("repos/%s/%s/actions/runs/%d/artifacts", g.owner, g.name, runID),
 		"--jq", `.artifacts[] | select(.expired | not) | .name`)
 	if err != nil {
 		return nil, err
@@ -430,7 +451,7 @@ func (g *gh) runArtifactLogs(ctx context.Context, runID int64) (map[string][]byt
 }
 
 func (g *gh) downloadTestLog(ctx context.Context, runID int64, name, dir string) ([]byte, error) {
-	if _, err := runGH(ctx, "run", "download", fmt.Sprint(runID), "--repo", g.owner+"/"+g.name, "--name", name, "--dir", dir); err != nil {
+	if _, err := runGH(ctx, "run", "download", fmt.Sprint(runID), "--repo", g.repo(), "--name", name, "--dir", dir); err != nil {
 		return nil, err
 	}
 	var log []byte
