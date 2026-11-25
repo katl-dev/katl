@@ -101,7 +101,7 @@ func runManagementIdentityRotate(ctx context.Context, opts managementRotationOpt
 		return err
 	}
 	if authentication != managementidentity.MutualTLS {
-		return fmt.Errorf("management identity rotation requires an mTLS cluster")
+		return fmt.Errorf("management identity rotation requires an mTLS cluster; run `katlctl management enable-mtls --config %s` to move this trusted-network cluster to mTLS first", opts.configPath)
 	}
 	oldPath := strings.TrimSpace(source.Spec.ManagementIdentity)
 	if oldPath == "" {

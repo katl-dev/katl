@@ -25,6 +25,13 @@ func missingManagementIdentity(clusterName, path string) error {
 	return fmt.Errorf("management credentials for cluster %q are missing; restore the original secrets file at %s. A newly generated key cannot access installed nodes. If no backup remains, node trust must be recovered through SSH or console access; deleting workstation context does not reset it", clusterName, path)
 }
 
+// trustedNetworkNodes refuses to give a trusted-network cluster a new mTLS
+// authority in its configuration alone. Its installed nodes keep serving
+// plaintext management, so every later call with the new authority would fail.
+func trustedNetworkNodes(configPath string) error {
+	return fmt.Errorf("%s says managementAuthentication: trusted-network, so its installed nodes serve plaintext management and would refuse a new mTLS authority; run `katlctl management enable-mtls --config %s` to move them to mTLS. For a cluster whose nodes were never installed, set `managementAuthentication: mtls` first", configPath, configPath)
+}
+
 func contextSaveInvocation(path string) string {
 	return "katlctl context save --config '" + strings.ReplaceAll(path, "'", "'\"'\"'") + "'"
 }
@@ -189,6 +196,16 @@ func managementSecretsCommand(action, short string, stdout io.Writer, export boo
 			source, err := configbundle.DecodeSource(bytes.NewReader(data))
 			if err != nil {
 				return err
+			}
+			// Both commands rewrite the config to mTLS. A new authority also needs
+			// the mode stated, because the nodes of a config without one may be
+			// installed with trusted-network management.
+			authentication, modeErr := source.ManagementAuthentication()
+			if authentication == managementidentity.TrustedNetwork {
+				return trustedNetworkNodes(configPath)
+			}
+			if modeErr != nil && !export {
+				return modeErr
 			}
 			if outputPath == "" {
 				name := source.Spec.ManagementIdentity

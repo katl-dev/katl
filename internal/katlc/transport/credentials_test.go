@@ -86,9 +86,12 @@ func TestClientHandshakeReportsNonTLSHTTPServer(t *testing.T) {
 	if err == nil || !errors.As(err, &header) {
 		t.Fatalf("handshake error = %v, want wrapped tls.RecordHeaderError", err)
 	}
-	for _, want := range []string{"answered without TLS", "managementAuthentication: trusted-network", "katlc agent on 9443"} {
+	for _, want := range []string{"answered without TLS", "katlctl management enable-mtls", "managementAuthentication: trusted-network", "katlc agent on 9443"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("handshake error = %v, missing %q", err, want)
 		}
+	}
+	if strings.Contains(err.Error(), "reprovision") {
+		t.Fatalf("handshake error = %v, still requires reprovisioning", err)
 	}
 }
