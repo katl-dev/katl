@@ -110,12 +110,14 @@ func wipeReinstallWorldSmokeRunNamed(t *testing.T, scenarioName string) (operati
 		failWorldFixtureSetup(t, world, scenarioName, err)
 	}
 	run, err := planOperationBackedWorldSmokeRunNamed(world, repo, operationBackedKubernetesVersion(t, repo, false), kvm, scenarioName)
+	if run.WorldScenario != nil {
+		t.Cleanup(run.WorldScenario.Release)
+	}
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
 	missing := twoNodeHostToolPrereqs(exec.LookPath)
 	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node cluster wipe bootstrap smoke prerequisites missing", missing)
-	t.Cleanup(run.WorldScenario.Release)
 	return run, true
 }
 

@@ -152,10 +152,36 @@ creates carry the run ID and the lease path in their `katl/vmtest` metadata, as
 The first scenario of each test process removes the vmtest domains and networks
 whose lease nobody holds: they belong to runs that have ended, including domains
 preserved for debugging. It never touches objects with other metadata, such as
-katldev worlds. The runner still holds the host lock for the whole run, so
-domains without a lease, which only runners that hold that lock create, are
-removed too; that rule has to change before runs stop serialising on the host
-lock.
+katldev worlds, or vmtest objects that name no lease and so have no owner to
+ask.
+
+## Admission
+
+Runs share the host without a host-wide lock. A scenario in a leased libvirt
+world reserves vCPUs and memory for the nodes it declares (`vmtest.Nodes`,
+one by default, each at the default guest size) when it is planned, and
+`WorldScenario.Release` gives them back after its network is removed. Adding
+more nodes than the scenario declared fails.
+
+The ledger is a directory of reservation files shared by the user's runs
+(`KATL_VMTEST_ADMISSION_DIR`, `/tmp/katl-vmtest-admission-<uid>` by default). A
+reservation counts while a process holds a flock on its file; the kernel drops
+that lock when the holder dies, so a killed run frees its capacity and the next
+admission deletes the leftover file. Counting and creating a reservation happen
+under one ledger lock.
+
+The host's CPU count sets the vCPU budget for concurrent runs. A run can exceed
+that budget when it holds the only reservations, including when it adds nodes
+through a nested scenario. While multiple runs hold reservations, their
+combined demand must fit within the vCPU budget.
+
+The memory budget defaults to the host's total memory minus the larger of 2 GiB
+and one eighth of total memory. If a run's combined memory demand exceeds that
+budget, admission fails immediately. A scenario waits if the other runs'
+reservations leave too little capacity or the host has too little memory
+available beyond its reserve. While a scenario waits, it reports its demand
+and what is holding capacity. `KATL_VMTEST_ADMISSION_VCPUS` and
+`KATL_VMTEST_ADMISSION_MEMORY_MIB` override the respective budgets.
 
 vsock guest CIDs are allocated by libvirt (`cid auto='yes'`) and read back from
 the running domain.

@@ -36,7 +36,7 @@ func TestExternalWorkerJoin(t *testing.T) {
 	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, []vmtest.NodeSpec{{Name: "cp-1", Role: vmtest.ControlPlane}}, kvm, ""); err != nil {
 		failWorldFixtureSetup(t, world, name, err)
 	}
-	scenario := world.NewScenario(t, name)
+	scenario := world.NewScenario(t, name, vmtest.Nodes(2))
 	options := vmtest.Options{Enabled: true, StateRoot: filepath.Join(scenario.Dir, "vm-runs"), Keep: vmtest.KeepFailed, KVM: kvm, Missing: vmtest.MissingFails}
 	runner := vmtest.NewRunner(options)
 	vmScenario := vmtest.Scenario{Name: name}
@@ -51,7 +51,7 @@ func TestExternalWorkerJoin(t *testing.T) {
 
 func installExternalWorkerFixture(world vmtest.World, repo, cpAddress, version string, kvm vmtest.KVMPolicy) error {
 	input := vmtest.DefaultFirstInstallWorldInputFromEnv(vmtest.FirstInstallWorldPreseed, katlctlEnvBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP"))
-	_, key, err := ensureWorldSSHKey(world)
+	_, key, err := vmtest.EnsureWorldSSHKey(world)
 	if err != nil {
 		return err
 	}

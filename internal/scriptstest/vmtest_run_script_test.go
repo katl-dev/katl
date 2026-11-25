@@ -6,7 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 )
 
@@ -170,7 +169,6 @@ case "$1" in
 esac
 `)
 
-	hostLock := filepath.Join(tmp, "host.lock")
 	command := func(runID string) *exec.Cmd {
 		cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "--artifact-set=none", "./internal/vmtest", "-run", "^TestDoesNotMatter$", "-count=1")
 		cmd.Dir = repo
@@ -185,43 +183,12 @@ esac
 			"KATL_VMTEST_RUN_ID="+runID,
 			"KATL_VMTEST_RUN_DIR="+filepath.Join(tmp, runID),
 			"KATL_VMTEST_CACHE_DIR="+filepath.Join(tmp, "cache"),
-			"KATL_VMTEST_HOST_LOCK="+hostLock,
 			"KATL_VMTEST_KEEP=always",
 			"KATL_VMTEST_REQUIRE_SCENARIO_RESULT=0",
 		)
 		return cmd
 	}
 
-	lockFile, err := os.OpenFile(hostLock, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
-		t.Fatal(err)
-	}
-	blocked := command("scripttest-blocked")
-	blocked.Env = append(blocked.Env, "KATL_VMTEST_HOST_LOCK_TIMEOUT=0")
-	blockedOutput, blockedErr := blocked.CombinedOutput()
-	var exitErr *exec.ExitError
-	if !errors.As(blockedErr, &exitErr) || exitErr.ExitCode() != 2 {
-		t.Fatalf("scripts/vmtest-run under host lock exit = %v, want 2\n%s", blockedErr, blockedOutput)
-	}
-	if !strings.Contains(string(blockedOutput), "timed out waiting for another libvirt-backed VM run") {
-		t.Fatalf("host lock failure missing actionable diagnostic:\n%s", blockedOutput)
-	}
-	blockedLog, err := os.ReadFile(logPath)
-	if err != nil {
-		t.Fatalf("read blocked command log: %v", err)
-	}
-	if strings.Contains(string(blockedLog), " list --all --name") || strings.Contains(string(blockedLog), "go test ") {
-		t.Fatalf("go test ran without the host lock:\n%s", blockedLog)
-	}
-	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
-		t.Fatal(err)
-	}
-	if err := lockFile.Close(); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.WriteFile(logPath, nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -345,6 +312,56 @@ printf '%s\n' "${1#"$KATL_REPO_ROOT/"}" >> "$KATL_SCRIPTTEST_CHECKED"
 			}
 			if err != nil || strings.Join(strings.Fields(string(got)), " ") != strings.Join(tc.wantChecked, " ") {
 				t.Fatalf("verified artifacts = %q, %v; want %q", got, err, tc.wantChecked)
+			}
+		})
+	}
+}
+
+func TestVMTestRunRefusesPackageParallelism(t *testing.T) {
+	repo := repoRoot(t)
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		rejected bool
+	}{
+		{name: "separate value", args: []string{"-p", "2"}, rejected: true},
+		{name: "equals value", args: []string{"-p=4"}, rejected: true},
+		{name: "double dash", args: []string{"--p", "3"}, rejected: true},
+		{name: "one", args: []string{"-p", "1"}},
+		{name: "after args", args: []string{"-args", "-p", "8"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			logPath := filepath.Join(tmp, "commands.log")
+			if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			fakeGo := filepath.Join(tmp, "fake-go")
+			writeExecutable(t, fakeGo, "#!/usr/bin/env bash\nprintf 'go %s\\n' \"$*\" >>\"$KATL_SCRIPTTEST_LOG\"\nexit 0\n")
+			args := append([]string{"--artifact-set=none", "./internal/vmtest", "-run", "^TestDoesNotMatter$", "-count=1"}, tc.args...)
+			cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), args...)
+			cmd.Dir = repo
+			cmd.Env = append(os.Environ(),
+				"KATL_SCRIPTTEST_LOG="+logPath,
+				"KATL_VMTEST_GO="+fakeGo,
+				"KATL_VMTEST_RUN_ID=scripttest-p",
+				"KATL_VMTEST_RUN_DIR="+filepath.Join(tmp, "run"),
+				"KATL_VMTEST_CACHE_DIR="+filepath.Join(tmp, "cache"),
+				"KATL_VMTEST_REQUIRE_SCENARIO_RESULT=0",
+			)
+
+			output, err := cmd.CombinedOutput()
+
+			logData, _ := os.ReadFile(logPath)
+			ran := strings.Contains(string(logData), "go test")
+			if tc.rejected {
+				if err == nil || ran || !strings.Contains(string(output), "-p") || !strings.Contains(string(output), "one at a time") {
+					t.Fatalf("vmtest-run %v: err = %v, go ran = %v, want a refusal that explains sequential packages\n%s", tc.args, err, ran, output)
+				}
+				return
+			}
+			if strings.Contains(string(output), "one at a time") {
+				t.Fatalf("vmtest-run %v was refused:\n%s", tc.args, output)
 			}
 		})
 	}

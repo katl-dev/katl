@@ -194,7 +194,7 @@ func TestVMTestRunHonorsPackageParallelismOverride(t *testing.T) {
 	runDir := filepath.Join(tmp, "run")
 	goArgsPath := filepath.Join(tmp, "go-args.txt")
 
-	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestWorldScenario$", "-p=3")
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestWorldScenario$", "-p=1")
 	cmd.Dir = repo
 	cmd.Env = appendHostEnv(
 		os.Environ(), host,
@@ -217,7 +217,7 @@ func TestVMTestRunHonorsPackageParallelismOverride(t *testing.T) {
 		if arg == "-p" || strings.HasPrefix(arg, "-p=") {
 			parallelismArgs++
 		}
-		if arg == "-p=3" {
+		if arg == "-p=1" {
 			foundOverride = true
 		}
 	}
@@ -1865,7 +1865,6 @@ func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string 
 		"KATL_VMTEST_KUBECTL="+tools.kubectl,
 		"KATL_VMTEST_RESOURCE_LOCK="+tools.resourceLock,
 		"KATL_VMTEST_RESOURCE_GO="+realGo,
-		"KATL_VMTEST_HOST_LOCK="+filepath.Join(filepath.Dir(tools.imageTool), "vmtest-host.lock"),
 		"KATL_VMTEST_MKOSI_VERSION=26",
 		"KATL_VMTEST_AUTO_REBUILD=0",
 		"KATL_FAKE_CHILD_WORLD_SCENARIO=fake vm scenario",

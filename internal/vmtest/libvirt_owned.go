@@ -252,13 +252,7 @@ func vmtestMetadataOf(ctx context.Context, virsh virshFunc, args ...string) (Lib
 
 // sweep removes the vmtest domains and networks whose run has ended. An object
 // belongs to the run whose lease its metadata names, and is removed once that
-// lease is free.
-//
-// A domain without a lease comes from a runner that predates run leases. Such
-// a runner holds the host lock of scripts/vmtest-run for its whole run, and so
-// does the runner whose lease this process runs under, so no lease-less domain
-// can belong to a live run and every one is removed. This depends on the host
-// lock: it must change when the host lock is removed.
+// lease is free. An object without a lease has no owner to ask, so it stays.
 func sweep(ctx context.Context, virsh virshFunc, stderr io.Writer) error {
 	// Removal is best effort: a finished run's leftovers must not fail the
 	// scenario that sweeps them, and the next sweep retries them.
@@ -274,15 +268,16 @@ func sweep(ctx context.Context, virsh virshFunc, stderr io.Writer) error {
 		if !ok {
 			continue
 		}
-		if metadata.Lease != "" {
-			held, err := leaseHeld(metadata.Lease)
-			if err != nil {
-				fail("domain", domain, err)
-				continue
-			}
-			if held {
-				continue
-			}
+		if metadata.Lease == "" {
+			continue
+		}
+		held, err := leaseHeld(metadata.Lease)
+		if err != nil {
+			fail("domain", domain, err)
+			continue
+		}
+		if held {
+			continue
 		}
 		fmt.Fprintf(stderr, "vmtest cleanup: removing libvirt domain %s left by a finished run\n", domain)
 		if err := RemoveDomain(ctx, virsh, domain); err != nil {

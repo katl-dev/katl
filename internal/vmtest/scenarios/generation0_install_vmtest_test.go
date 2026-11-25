@@ -132,15 +132,17 @@ func threeNodeGeneration0InstallWorldRun(t *testing.T) (threeNodeGeneration0Inst
 		failWorldFixtureSetup(t, world, "three-node-generation-0-install", err)
 	}
 	run, err := planThreeNodeGeneration0InstallRun(world, repo, specs, kvm)
+	if run.WorldScenario != nil {
+		t.Cleanup(run.WorldScenario.Release)
+	}
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
-	t.Cleanup(run.WorldScenario.Release)
 	return run, true
 }
 
 func planThreeNodeGeneration0InstallRun(world vmtest.World, repo string, specs []vmtest.NodeSpec, kvm vmtest.KVMPolicy) (threeNodeGeneration0InstallRun, error) {
-	scenario, err := world.PlanScenario("three-node-generation-0-install")
+	scenario, err := world.PlanScenario("three-node-generation-0-install", vmtest.Nodes(len(specs)))
 	if err != nil {
 		return threeNodeGeneration0InstallRun{}, err
 	}

@@ -59,7 +59,11 @@ Product journeys keep exercising IPv4 DHCP, the common home-lab path, so a gate 
 
 `scripts/vmtest-run` holds a lock on `<run>/lease` for the whole run. Domains, networks and volumes carry the run ID and lease path in libvirt metadata, read by one metadata parser. The sweep at run start reaps only resources whose lease is free. vsock CIDs are assigned by libvirt with `cid auto='yes'` and read back after the domain starts.
 
-Admission replaces the host lock. A scenario reserves its nodes' total vCPU and memory at once against the host's CPUs and available memory, minus a reserve. Each reservation is a file held under a lock, so a killed process frees its reservation and the ledger is derived from the files that remain. A demand the host can never meet ends immediately as inconclusive rather than waiting.
+Admission replaces the host lock. A scenario reserves its declared nodes' total vCPU and memory at once against the host's CPUs and memory, minus a reserve. Each reservation is a file held under a lock, so a killed process frees its reservation and the ledger is derived from the files that remain. A demand the host can never meet ends immediately as inconclusive rather than waiting.
+
+Admission also caps a scenario by the memory the host reports as available, minus the same reserve, so VMs that no admission accounts for, such as persistent `katldev` worlds, are not oversubscribed. Each attempt first sweeps the libvirt objects of finished runs, so capacity freed by a killed run is reused only after its domains are gone. A scenario that cannot be admitted within `KATL_VMTEST_ADMISSION_TIMEOUT` (45 minutes by default, below the `go test` timeout) fails with the list of holders. Package parallelism (`-p` above 1) is refused for leased runs, because admission treats scenarios of one run as nested rather than concurrent.
+
+Libvirt objects created before leases existed carry no lease metadata, and no sweep reaps them. Remove them once by hand: list them with `virsh -c qemu:///system list --all`, `net-list --all` and `vol-list` for the vmtest pool, then `destroy` and `undefine --nvram` each stale `katl-` domain and `net-destroy`/`net-undefine` each stale network. Tracked in [#683](https://github.com/katl-dev/katl/issues/683).
 
 ## Progress and timeouts
 
@@ -128,7 +132,7 @@ These steps follow the release, as separate pull requests:
 5. Build the environment from an allowlist, and add `go test -json` and `run.json` (done).
 6. Pin artifacts per run. Then remove the AGENTS.md rule against building while a gate runs.
 7. Add ownership: run leases, per-scenario owned networks with MAC reservations and DHCP logging, run-scoped names, libvirt-assigned CIDs, and an owner-scoped sweep. The host lock stays.
-8. Add demand-based admission, then remove the host lock.
+8. Add demand-based admission, then remove the host lock (done; the host lock protected only the capacity that admission now accounts for, since builds run under the `scripts/mkosi` lock and libvirt network names and subnets under the network creation lock).
 9. Obtain the installer endpoint at the reserved address through an API probe. Remove serial scraping and the announcement parser, and add the literal console test.
 10. Add owed-event deadlines, and remove the serial idle timer and serial control hooks.
 11. Record host health, then classify outcomes, then enable the single rerun of inconclusive merge groups.

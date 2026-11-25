@@ -9,9 +9,6 @@ kubectl_bin="${KATL_VMTEST_KUBECTL:-kubectl}"
 resource_lock_bin="${KATL_VMTEST_RESOURCE_LOCK:-}"
 resource_go_bin="${KATL_VMTEST_RESOURCE_GO:-go}"
 flock_bin="${KATL_VMTEST_FLOCK:-flock}"
-host_lock_path="${KATL_VMTEST_HOST_LOCK:-/tmp/katl-vmtest-${UID}.lock}"
-host_lock_timeout="${KATL_VMTEST_HOST_LOCK_TIMEOUT:-5400}"
-host_lock_fd=""
 run_lease_fd=""
 go_test_timeout="90m"
 tmp_parent="${TMPDIR:-/tmp}/katl-vmtest"
@@ -289,6 +286,32 @@ has_go_test_package_parallelism() {
 		shift
 	done
 	return 1
+}
+
+# Admission treats a scenario that starts while another of its run is live as
+# nested in it, which holds only when the run's packages execute one after another.
+reject_package_parallelism() {
+	local arg value
+	while (($# > 0)); do
+		arg="$1"
+		value=""
+		case "$arg" in
+			-args)
+				return 0
+				;;
+			-p | --p)
+				value="${2:-}"
+				;;
+			-p=* | --p=*)
+				value="${arg#*=}"
+				;;
+		esac
+		if [[ -n "$value" ]] && { ! [[ "$value" =~ ^[0-9]+$ ]] || ((value > 1)); }; then
+			printf 'vmtest-run: -p %s is not supported: a run executes its packages one at a time so that admission can tell nested scenarios from concurrent ones; drop -p, or start separate vmtest-run invocations to run packages concurrently\n' "$value" >&2
+			exit 2
+		fi
+		shift
+	done
 }
 
 parse_runner_args() {
@@ -829,27 +852,11 @@ probe_capabilities() {
     probe_fixture_tool_capabilities
 }
 
-acquire_vmtest_host_lock() {
+acquire_vmtest_run_lease() {
     if ! have_command "$flock_bin"; then
-        setup_failures+=("flock is required to serialize libvirt-backed VM runs")
+        setup_failures+=("flock is required to hold the run lease")
         return 1
     fi
-    if ! mkdir -p "$(dirname "$host_lock_path")"; then
-        setup_failures+=("create VM test host lock directory failed: $(dirname "$host_lock_path")")
-        return 1
-    fi
-    if ! exec {host_lock_fd}>"$host_lock_path"; then
-        setup_failures+=("open VM test host lock failed: $host_lock_path")
-        return 1
-    fi
-
-    printf 'vmtest host lock: waiting for %s (timeout %ss)\n' "$host_lock_path" "$host_lock_timeout" >&2
-    if ! "$flock_bin" --wait "$host_lock_timeout" "$host_lock_fd"; then
-        setup_failures+=("timed out waiting for another libvirt-backed VM run to release $host_lock_path; wait for it to finish or set KATL_VMTEST_HOST_LOCK to a lock shared by this host")
-        return 1
-    fi
-    printf 'vmtest host lock: acquired %s\n' "$host_lock_path" >&2
-
     if ! exec {run_lease_fd}>>"$run_lease" || ! "$flock_bin" -n "$run_lease_fd"; then
         setup_failures+=("lock vmtest run lease failed: $run_lease")
         return 1
@@ -1386,6 +1393,7 @@ if [[ "$help_requested" == 1 ]]; then
     exit 0
 fi
 set -- "${go_test_input_args[@]}"
+reject_package_parallelism "$@"
 
 need jq
 need realpath
@@ -1434,7 +1442,7 @@ write_world
 if [[ "${#missing_capabilities[@]}" -gt 0 ]]; then
     print_missing_capabilities "vmtest world has missing host capabilities"
 fi
-if ! acquire_vmtest_host_lock; then
+if ! acquire_vmtest_run_lease; then
     write_run_index "setup-failed" "$@"
     printf 'setup failed: %s\n' "${setup_failures[@]}" >&2
     if ! cleanup_run_dir "setup-failed"; then
@@ -1445,10 +1453,9 @@ fi
 trap 'exit 143' TERM
 trap 'exit 130' INT
 printf 'vmtest interruption: owner-only signals wait for active work to finish; Ctrl-C stops the run\n' >&2
-# Only this shell owns the host lock and run lease. Foreground work cannot pass them to
+# Only this shell owns the run lease. Foreground work cannot pass it to
 # auxiliary processes, and deferred signal traps retain it until work exits.
 (
-exec {host_lock_fd}>&-
 exec {run_lease_fd}>&-
 
 export KATL_VMTEST_RUN_ID="$run_id"
