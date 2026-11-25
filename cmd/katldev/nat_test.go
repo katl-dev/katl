@@ -14,14 +14,25 @@ import (
 // rules katldev leaves behind, rather than the commands it ran.
 type fakeNATTable struct {
 	chains map[string][]string
+	// denied makes every call fail as sudo does without a password.
+	denied bool
 }
 
 func (table *fakeNATTable) run(_ context.Context, args ...string) ([]byte, error) {
 	if len(args) < 4 || args[0] != "-w" || args[1] != "-t" || args[2] != "nat" {
 		return nil, errors.New("unexpected iptables invocation " + strings.Join(args, " "))
 	}
+	if table.denied {
+		return nil, errors.New("sudo: a password is required")
+	}
 	if len(args) == 4 && args[3] == "-S" {
 		var listing strings.Builder
+		listing.WriteString("-P OUTPUT ACCEPT\n")
+		for chain := range table.chains {
+			if chain != "OUTPUT" {
+				listing.WriteString("-N " + chain + "\n")
+			}
+		}
 		for chain, rules := range table.chains {
 			for _, rule := range rules {
 				listing.WriteString("-A " + chain + " " + rule + "\n")
@@ -30,15 +41,8 @@ func (table *fakeNATTable) run(_ context.Context, args ...string) ([]byte, error
 		return []byte(listing.String()), nil
 	}
 	op, chain, rule := args[3], args[4], strings.Join(args[5:], " ")
-	rules, exists := table.chains[chain]
-	if chain == "OUTPUT" {
-		exists = true
-	}
+	rules := table.chains[chain]
 	switch op {
-	case "-S":
-		if !exists {
-			return nil, errors.New("no chain")
-		}
 	case "-N":
 		table.chains[chain] = nil
 	case "-F":
@@ -138,32 +142,6 @@ func TestWorldNATRejectsAddressesAVMCouldHold(t *testing.T) {
 	}
 }
 
-func TestWorldNATRejectsAddressAnotherWorldTranslates(t *testing.T) {
-	fake := newFakeLibvirt(t)
-	manager := testManager(t, fake)
-	table := &fakeNATTable{chains: map[string][]string{
-		"KATLDEV-other": {"-d 198.18.0.10/32 -j DNAT --to-destination 10.205.108.2"},
-		"OUTPUT":        {"-j KATLDEV-other"},
-	}}
-	manager.runIptables = table.run
-	world, err := manager.createWorld(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	mustAddWorldNode(t, world, true)
-
-	if err := manager.setNAT(context.Background(), "cp-1", "198.18.0.10"); err == nil || !strings.Contains(err.Error(), "KATLDEV-other") {
-		t.Fatalf("setNAT() with another world's address error = %v", err)
-	}
-	if err := manager.setNAT(context.Background(), "cp-1", "198.18.0.11"); err != nil {
-		t.Fatalf("setNAT() with a free address: %v", err)
-	}
-	// Repeating the world's own address is not a conflict.
-	if err := manager.setNAT(context.Background(), "cp-1", "198.18.0.11"); err != nil {
-		t.Fatalf("setNAT() repeated: %v", err)
-	}
-}
-
 func TestMatchingConfigAcceptsNATNode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cluster.yaml")
 	writeKatldevClusterConfig(t, path, "198.18.0.10")
@@ -180,5 +158,169 @@ func TestMatchingConfigAcceptsNATNode(t *testing.T) {
 	}
 	if name, err := matchingKatldevConfig(path, "10.200.0.2"); err != nil || name != "cp-1" {
 		t.Fatalf("match = %q, %v", name, err)
+	}
+}
+
+func natFixture(t *testing.T) (installerManager, *fakeNATTable, katldevWorld) {
+	t.Helper()
+	manager := testManager(t, newFakeLibvirt(t))
+	table := &fakeNATTable{chains: map[string][]string{}}
+	manager.runIptables = table.run
+	world, err := manager.createWorld(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustAddWorldNode(t, world, true)
+	return manager, table, world
+}
+
+func TestWorldNATRemovalKeepsRecordWhenHostRuleStays(t *testing.T) {
+	manager, table, world := natFixture(t)
+	ctx := context.Background()
+	if err := manager.setNAT(ctx, "cp-1", "198.18.0.10"); err != nil {
+		t.Fatal(err)
+	}
+	table.denied = true
+
+	if err := manager.removeNAT(ctx, "cp-1"); err == nil {
+		t.Fatal("removeNAT() succeeded though iptables was unusable")
+	}
+	if nat, err := manager.readNAT(); err != nil || nat["cp-1"] != "198.18.0.10" {
+		t.Fatalf("nat record after failed removal = %v, %v", nat, err)
+	}
+	table.denied = false
+	if len(table.chains[natChain(world.World.RunID)]) != 1 {
+		t.Fatalf("host rule changed by a failed removal: %v", table.chains)
+	}
+
+	if err := manager.removeNAT(ctx, "cp-1"); err != nil {
+		t.Fatalf("retried removeNAT(): %v", err)
+	}
+	if len(table.chains) != 1 || len(table.chains["OUTPUT"]) != 0 {
+		t.Fatalf("nat table after retried removal = %v", table.chains)
+	}
+}
+
+func TestWorldDestroyKeepsNATRecordWhenChainStays(t *testing.T) {
+	manager, table, world := natFixture(t)
+	ctx := context.Background()
+	if err := manager.setNAT(ctx, "cp-1", "198.18.0.10"); err != nil {
+		t.Fatal(err)
+	}
+	table.denied = true
+
+	if err := manager.removeWorldObjects(ctx, world.World.RunID); err == nil {
+		t.Fatal("removeWorldObjects() succeeded though the chain could not be read")
+	}
+	if _, err := os.Stat(manager.natPath()); err != nil {
+		t.Fatalf("nat record dropped while the host rule stays: %v", err)
+	}
+
+	table.denied = false
+	if err := manager.removeWorldObjects(ctx, world.World.RunID); err != nil {
+		t.Fatal(err)
+	}
+	if len(table.chains) != 1 || len(table.chains["OUTPUT"]) != 0 {
+		t.Fatalf("nat table after destroy = %v", table.chains)
+	}
+	if _, err := os.Stat(manager.natPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("nat record after destroy: %v", err)
+	}
+}
+
+func TestWorldNATRemovesChainsOfEarlierWorlds(t *testing.T) {
+	manager, table, world := natFixture(t)
+	// No libvirt network belongs to the earlier world, so its chain is
+	// leaked, and it still translates the address to a VM that is gone.
+	table.chains = map[string][]string{
+		natChain("dev-world-deadbeef"): {"-d 198.18.0.10/32 -j DNAT --to-destination 10.205.108.2"},
+		"OUTPUT":                       {"-j " + natChain("dev-world-deadbeef"), "-j KATL-OTHER"},
+		"KATL-OTHER":                   nil,
+	}
+
+	if err := manager.setNAT(context.Background(), "cp-1", "198.18.0.10"); err != nil {
+		t.Fatalf("setNAT() with an address only a leaked chain holds: %v", err)
+	}
+	own := natChain(world.World.RunID)
+	want := map[string][]string{
+		own:          {"-d 198.18.0.10/32 -j DNAT --to-destination " + world.Scenario.Nodes[0].Address},
+		"OUTPUT":     {"-j KATL-OTHER", "-j " + own},
+		"KATL-OTHER": nil,
+	}
+	if !reflect.DeepEqual(table.chains, want) {
+		t.Fatalf("nat table = %v, want %v", table.chains, want)
+	}
+}
+
+func TestWorldNATKeepsChainsOfLiveWorlds(t *testing.T) {
+	fake := newFakeLibvirt(t)
+	manager := testManager(t, fake)
+	other := testManager(t, fake)
+	table := &fakeNATTable{chains: map[string][]string{}}
+	manager.runIptables = table.run
+	other.runIptables = table.run
+	world, err := manager.createWorld(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherWorld, err := other.createWorld(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustAddWorldNode(t, world, true)
+	mustAddWorldNode(t, otherWorld, true)
+	if err := other.syncNetwork(context.Background(), otherWorld); err != nil {
+		t.Fatal(err)
+	}
+	if err := other.setNAT(context.Background(), "cp-1", "198.18.0.10"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := manager.setNAT(context.Background(), "cp-1", "198.18.0.11"); err != nil {
+		t.Fatal(err)
+	}
+	if len(table.chains[natChain(otherWorld.World.RunID)]) != 1 {
+		t.Fatalf("another live world's chain was removed: %v", table.chains)
+	}
+	err = manager.setNAT(context.Background(), "cp-1", "198.18.0.10")
+	if err == nil || !strings.Contains(err.Error(), natChain(otherWorld.World.RunID)) {
+		t.Fatalf("setNAT() with another world's address error = %v", err)
+	}
+	// Repeating the world's own address is not a conflict.
+	if err := manager.setNAT(context.Background(), "cp-1", "198.18.0.11"); err != nil {
+		t.Fatalf("setNAT() repeated: %v", err)
+	}
+}
+
+func TestWorldNATRefusesAddressWhenHostRulesUnreadable(t *testing.T) {
+	manager, table, _ := natFixture(t)
+	table.denied = true
+
+	if err := manager.setNAT(context.Background(), "cp-1", "198.18.0.10"); err == nil {
+		t.Fatal("setNAT() claimed an address it could not check against other worlds")
+	}
+	if _, err := os.Stat(manager.natPath()); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("nat record written for an unchecked address: %v", err)
+	}
+}
+
+func TestSyncNetworkDoesNotRequireIptables(t *testing.T) {
+	var stderr strings.Builder
+	manager, table, world := natFixture(t)
+	manager.stderr = &stderr
+	ctx := context.Background()
+	if err := manager.setNAT(ctx, "cp-1", "198.18.0.10"); err != nil {
+		t.Fatal(err)
+	}
+	table.denied = true
+
+	if err := manager.syncNetwork(ctx, world); err != nil {
+		t.Fatalf("syncNetwork() failed on unusable iptables: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "NAT") {
+		t.Fatalf("no warning that the NAT rules were not refreshed: %q", stderr.String())
+	}
+	if _, err := os.Stat(manager.natPath()); err != nil {
+		t.Fatalf("nat record lost: %v", err)
 	}
 }
