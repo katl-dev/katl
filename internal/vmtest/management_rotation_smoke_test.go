@@ -85,9 +85,6 @@ func TestInstalledRuntimeManagementRotationSmoke(t *testing.T) {
 	guest := NewGuestControl(node.Result, client)
 	assertInstalledSSHReady(t, ctx, guest)
 	endpoint := katlcEndpoint(t, node, plannedAddress)
-	if err := guest.WaitBootComplete(ctx); err != nil {
-		t.Fatal(err)
-	}
 	enrollConfigApplyNode(t, ctx, result, katlctl, endpoint, sshAuthorizedKey)
 	configPath := filepath.Join(result.RunDir, "katlctl", "enrollment", "cluster.yaml")
 	runKatlctl(t, ctx, result, katlctl, "rotation-before", "node", "status", "cp-1")

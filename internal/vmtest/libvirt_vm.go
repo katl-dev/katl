@@ -452,6 +452,15 @@ type VMRunner struct {
 	Executor       VMExecutor
 	AgentConnector func(ctx context.Context, plan VSockPlan, transcript string) (AgentHealthClient, error)
 	probe          probe
+
+	// guestConnector opens the guest control channel used to observe boot
+	// completion; nil dials the vmtest agent.
+	guestConnector func(ctx context.Context, plan VSockPlan, transcript string) (guestConn, error)
+}
+
+type guestConn interface {
+	GuestAgentClient
+	Close() error
 }
 
 type VMHandle struct {

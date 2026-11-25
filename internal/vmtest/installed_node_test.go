@@ -9,8 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 )
 
 func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) {
@@ -41,6 +44,7 @@ func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) 
 		AgentConnector: func(context.Context, VSockPlan, string) (AgentHealthClient, error) {
 			return fakeHealthClient{}, nil
 		},
+		guestConnector: settledGuest,
 		probe: probe{
 			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
@@ -156,6 +160,7 @@ done
 		AgentConnector: func(context.Context, VSockPlan, string) (AgentHealthClient, error) {
 			return fakeHealthClient{}, nil
 		},
+		guestConnector: settledGuest,
 		probe: probe{
 			lookPath: func(string) (string, error) { return virsh, nil },
 			stat:     os.Stat,
@@ -244,6 +249,7 @@ func TestInstalledRuntimeNodeStopFailureRewritesDebugResult(t *testing.T) {
 		AgentConnector: func(context.Context, VSockPlan, string) (AgentHealthClient, error) {
 			return fakeHealthClient{}, nil
 		},
+		guestConnector: settledGuest,
 		probe: probe{
 			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
@@ -438,4 +444,100 @@ func readNodeResult(t *testing.T, path string) Result {
 		t.Fatalf("decode result %s: %v", path, err)
 	}
 	return result
+}
+
+type fakeGuestConn struct{ GuestAgentClient }
+
+func (fakeGuestConn) Close() error { return nil }
+
+func settledGuest(context.Context, VSockPlan, string) (guestConn, error) {
+	return fakeGuestConn{&firstInstallHealthClient{health: "success"}}, nil
+}
+
+// A node is returned only after the boot has settled, so tests never act on a
+// guest that is still starting.
+func TestStartInstalledRuntimeNodeWaitsForBootComplete(t *testing.T) {
+	root := t.TempDir()
+	disk := filepath.Join(root, "installed.raw")
+	if err := os.WriteFile(disk, []byte("disk"), 0o644); err != nil {
+		t.Fatalf("write disk: %v", err)
+	}
+	esp := espFixture(t)
+	nodeMetadata := filepath.Join(root, "node.json")
+	if err := os.WriteFile(nodeMetadata, []byte(`{"kind":"NodeMetadata"}`), 0o644); err != nil {
+		t.Fatalf("write node metadata: %v", err)
+	}
+	fixtureManifest := writeInstalledFixtureManifest(t, root, disk, esp, nodeMetadata)
+	parent, err := NewRunner(Options{StateRoot: root, RunID: "run-1"}).Plan(Scenario{Name: "two-node"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	_, vmConfig := vmFixture(t)
+	vmConfig.Expect = runtimeBootSignal
+	vmConfig.Timeout = time.Minute
+	vmConfig.VSock = VSockConfig{Enabled: true, GuestCID: 62003}
+	var settled atomic.Bool
+	runner := VMRunner{
+		Executor: longRunningVMExec{ready: runtimeBootSignal},
+		AgentConnector: func(context.Context, VSockPlan, string) (AgentHealthClient, error) {
+			return fakeHealthClient{}, nil
+		},
+		guestConnector: func(context.Context, VSockPlan, string) (guestConn, error) {
+			client := &gatedBootClient{firstInstallHealthClient{health: "success"}, &settled}
+			return fakeGuestConn{client}, nil
+		},
+		probe: probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+			output: func(string, ...string) ([]byte, error) {
+				return []byte("vhost-vsock-pci guest-cid=<uint32>"), nil
+			},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	type started struct {
+		node RunningInstalledRuntimeNode
+		err  error
+	}
+	done := make(chan started, 1)
+	go func() {
+		node, err := StartInstalledRuntimeNode(ctx, parent, InstalledRuntimeNodeConfig{
+			Name: "cp-1",
+			Runtime: InstalledRuntimeConfig{
+				Disk: disk, DiskFormat: DiskRaw, ESPArtifacts: esp,
+				FixtureManifest: fixtureManifest, NodeMetadata: nodeMetadata, VM: vmConfig,
+			},
+		}, runner)
+		done <- started{node, err}
+	}()
+	select {
+	case got := <-done:
+		_ = got.node.Stop()
+		t.Fatalf("StartInstalledRuntimeNode() returned before the boot completed: %v", got.err)
+	case <-time.After(time.Second):
+	}
+
+	settled.Store(true)
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("StartInstalledRuntimeNode() error = %v", got.err)
+	}
+	if err := got.node.Stop(); err != context.Canceled {
+		t.Fatalf("Stop() error = %v, want context.Canceled", err)
+	}
+}
+
+type gatedBootClient struct {
+	firstInstallHealthClient
+	settled *atomic.Bool
+}
+
+func (c *gatedBootClient) RunCommand(ctx context.Context, req *vmtestpb.RunCommandRequest) (*vmtestpb.CommandResult, error) {
+	if req.Argv[1] == "is-active" && req.Argv[len(req.Argv)-1] == "katl-boot-complete.target" && !c.settled.Load() {
+		return &vmtestpb.CommandResult{ExitStatus: 3}, nil
+	}
+	return c.firstInstallHealthClient.RunCommand(ctx, req)
 }

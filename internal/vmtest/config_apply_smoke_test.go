@@ -112,12 +112,6 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 		}
 	}()
 	guest := NewGuestControl(node.Result, client)
-	// StartInstalledRuntimeNode returns once management listens, which can
-	// precede sshd and the rest of the boot; the assertions below describe a
-	// settled boot.
-	if err := guest.WaitBootComplete(ctx); err != nil {
-		t.Fatal(err)
-	}
 	defer func() {
 		if t.Failed() {
 			collectConfigApplyFailureEvidence(ctx, guest)

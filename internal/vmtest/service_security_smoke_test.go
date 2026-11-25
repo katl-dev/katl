@@ -56,9 +56,6 @@ func TestInstalledRuntimeServiceSecuritySmoke(t *testing.T) {
 	}
 	defer client.Close()
 	guest := NewGuestControl(node.Result, client)
-	if err := guest.WaitBootComplete(ctx); err != nil {
-		t.Fatal(err)
-	}
 
 	// Host orchestration and container mounts must remain visible to PID 1.
 	hostNamespace := guestCommandOutput(t, ctx, guest, "host-mount-namespace", "readlink", "/proc/1/ns/mnt")

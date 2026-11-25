@@ -107,13 +107,6 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 			collectSysupdateFailureEvidence(ctx, guest)
 		}
 	}()
-	// The test corrupts the SSH host key and plans an upgrade, so the boot
-	// must have settled first: sshd loads the key during boot, and the agent
-	// refuses plans while the boot trial is pending. StartInstalledRuntimeNode
-	// returns once management listens, which can precede both.
-	if err := guest.WaitBootComplete(ctx); err != nil {
-		t.Fatal(err)
-	}
 
 	previousGeneration := currentGenerationFromGuest(t, ctx, guest)
 	previousSpec, _ := generationRecordsFromGuest(t, ctx, guest, previousGeneration)

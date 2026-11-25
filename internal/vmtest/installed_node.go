@@ -109,6 +109,11 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 			return failWithDebug(err)
 		}
 	}
+	// The node is returned only after the boot has settled, so callers never
+	// act on a guest that is still starting sshd, mounts or the boot trial.
+	if err := runner.waitBootComplete(handle.ctx, result, handle.Plan.VSock); err != nil {
+		return failWithDebug(err)
+	}
 	if err := writeInstalledRuntimeNodeResult(result, StatusPassed, "", started); err != nil {
 		handle.StopSuccess()
 		_ = handle.Wait()
@@ -125,7 +130,25 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 const (
 	katlcAgentPort           = 9443
 	managementStartupTimeout = time.Minute
+	bootSettleTimeout        = 2 * time.Minute
 )
+
+func (r VMRunner) waitBootComplete(ctx context.Context, result Result, plan VSockPlan) error {
+	connect := r.guestConnector
+	if connect == nil {
+		connect = func(ctx context.Context, plan VSockPlan, transcript string) (guestConn, error) {
+			return DialAgent(ctx, plan.GuestCID, plan.Port, transcript)
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, bootSettleTimeout)
+	defer cancel()
+	client, err := connect(ctx, plan, result.Artifacts.VSockTranscript)
+	if err != nil {
+		return fmt.Errorf("connect guest control to wait for boot completion: %w", err)
+	}
+	defer client.Close()
+	return NewGuestControl(result, client).WaitBootComplete(ctx)
+}
 
 // WaitManagementEndpoint waits until the node's katlc agent accepts TCP
 // connections at endpoint, as katlctl first observes it.
