@@ -972,12 +972,15 @@ scripts/worktree-clean <worktree-path>
 releases the networks the run owns, confirms with libvirt that every domain is
 gone, and then deletes the run directory, including read-only files left by
 mkosi and libvirt. It refuses any directory that is not a direct child of a
-`katl-vmtest` directory containing a `result.json`, and repeating it on a
-removed run succeeds. Given a single `result.json` it removes that node's
+`katl-vmtest` directory holding the `.katl-vmtest-run-dir` marker that
+`vmtest-run` writes (a directory it did not create, such as a pre-existing
+`KATL_VMTEST_RUN_DIR`, is refused and must be checked and removed by hand), and
+repeating it on a removed run succeeds. Given a single `result.json` it removes that node's
 domains and leaves the directory.
 
-`scripts/worktree-clean` removes a linked git worktree and its untracked build
-output, such as subuid-owned `_build/` trees. It refuses the main worktree, a
+`scripts/worktree-clean` removes a linked git worktree of the repository it runs
+from. It refuses the main worktree, the checkout it runs from, a worktree whose
+`.git` does not belong to that repository and to that path (a copied `.git`), a
 worktree with tracked modifications or staged changes, and one whose HEAD
 commit is on no remote branch after fetching `origin`, unless GitHub reports a
 merged pull request whose head commit is exactly HEAD (squash merges and
@@ -986,6 +989,24 @@ or unpushed, and says so when GitHub could not be asked, which is never treated
 as safe. It then deletes the local branch only when that branch is merged into
 `origin/main`, contained in a remote branch of the same name, or at the head of
 that merged pull request, and otherwise keeps it and says so.
+
+`katl-devclean` decides whether a removal is allowed; git does the removal of a
+worktree. It first clears untracked build output that git could not delete,
+such as subuid-owned `_build/` trees, from inside the rootless podman user
+namespace, and then runs `git worktree remove --force` from the main checkout,
+which deletes the directory and its registration and keeps the branch if it is
+checked out in another worktree. `vmtest-clean` run directories are deleted by
+`katl-devclean` itself: it removes files owned by the calling user first and
+then what remains from inside the namespace, so subuid-owned output needs no
+manual step. It never follows symbolic links out of the verified directory, and it refuses, with
+nothing deleted, a directory that holds a mount point, bind mounts included,
+listing the mounts from the host and from the rootless user namespace so that
+you can `umount` or `podman unshare umount` them first. It accepts a worktree whose tracked files were already deleted by an earlier
+attempt, and judges success by looking at the directory. A run directory's
+identity marker is removed last, so a removal that stopped part way can be
+repeated. A refusal removes nothing and exits 2; when something
+could not be removed, it lists the remaining paths and exits 1. `vmtest-run`
+removes its own run directories the same way.
 
 Run each command on its own, without a leading `cd … &&` and without a pipe, so
 that an allow rule for the command matches it. Do not clean up with `rm -rf`,
