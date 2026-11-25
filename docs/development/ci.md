@@ -17,11 +17,14 @@ selected kernel flavour builds immutable test inputs once and runs two lanes:
 - **Cluster:** ISO/PXE boot, storage authority, two-node bootstrap, and three-node
   installation.
 
-VM suites run in the merge queue, and on a pull request only while it carries the
-`vmtest` label. A pull request without the label runs fast checks, the Nix build,
+VM suites run in the merge queue, on a pull request into a `release/[0-9]*` branch,
+and on any other pull request only while it carries the `vmtest` label. Pushes to
+`release/[0-9]*` branches run fast checks. A pull request without either runs fast checks, the Nix build,
 and any selected driver qualification. Adding `vmtest` reruns the head commit's CI with
 the VM suites, cancelling a run
-still in progress; other labels do not affect CI. Pull requests from forks
+still in progress. Retargeting a pull request to another base reruns it the same
+way, so a pull request moved from main onto a release branch gets the full plan;
+other labels and edits do not affect CI. Pull requests from forks
 cannot be restarted this way, so push a commit instead. Add `vmtest` early in
 the life of a branch. Pushes to main run no VM or driver jobs, because the merge queue already
 tested the same tree.
@@ -91,7 +94,7 @@ setting `KATL_VMTEST_MAIN_RUNNER=katl-vmtest`.
 
 ## Release promotion
 
-**Katl Release Artifacts** runs on release branches, tags, or manual dispatch.
+**Katl Release Artifacts** runs on tags or manual dispatch.
 Merged revisions are qualified by the merge queue without a second release-artifact build.
 Each flavour is built by the reusable `production-build.yml` workflow (inputs `flavour`,
 `version`, `previous-tag`, `publication`), and its Production VM qualification starts

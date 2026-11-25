@@ -2,8 +2,6 @@ name: Katl Release Artifacts
 
 on:
   push:
-    branches:
-      - "release/**"
     tags:
       - "v*"
   workflow_dispatch:
@@ -21,7 +19,7 @@ permissions:
   contents: read
   actions: read
 
-# Branch and tag pushes queue per ref so publication is serialised and never
+# Tag pushes queue per ref so publication is serialised and never
 # cancelled. Dispatches publish nothing, so each gets its own group.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}

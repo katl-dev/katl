@@ -1,25 +1,30 @@
-name: Restart CI for vmtest
+name: Restart CI
 
-# Adding the vmtest label reruns the pull request's CI run so that it selects
-# the VM suites. This workflow publishes no check named CI, and CI does not
-# trigger on label events, so no other label can cancel, skip or replace the
-# required CI result for the head SHA.
+# Adding the vmtest label, or retargeting a pull request to another base, reruns
+# the pull request's CI run so that it plans for the new situation: the VM suites
+# for vmtest, and the full plan for a release-branch base. Retargeting fires only
+# `edited`, which CI does not handle, so a stale fast-only result could otherwise
+# satisfy the release ruleset. This workflow publishes no check named CI, and CI
+# does not trigger on label or edit events, so no other label or edit can cancel,
+# skip or replace the required CI result for the head SHA.
 on:
   pull_request:
-    types: [labeled]
+    types: [labeled, edited]
 
 permissions:
   actions: write
   contents: read
 
 concurrency:
-  group: vmtest-label-${{ github.event.pull_request.number }}
+  group: ci-restart-${{ github.event.pull_request.number }}
   cancel-in-progress: false
 
 jobs:
   restart:
     name: Restart CI
-    if: github.event.label.name == 'vmtest'
+    if: >-
+      (github.event.action == 'labeled' && github.event.label.name == 'vmtest') ||
+      (github.event.action == 'edited' && github.event.changes.base != null)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -28,6 +33,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
           EVENT_SHA: ${{ github.event.pull_request.head.sha }}
+          ACTION: ${{ github.event.action }}
         run: |
           # The event payload can be stale, so the head and labels are read live.
           # A rerun of a superseded head would cancel the new head's CI through
@@ -36,7 +42,9 @@ jobs:
             local state
             state="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid,labels \
               --jq '.headRefOid + " " + (any(.labels[]; .name == "vmtest") | tostring)')"
-            [[ "$state" == "$EVENT_SHA true" ]]
+            [[ "${state%% *}" == "$EVENT_SHA" ]] || return 1
+            # A retarget restarts CI whatever the labels are.
+            [[ "$ACTION" != labeled || "${state##* }" == true ]]
           }
           if ! current; then
             echo "::notice::The head moved from $EVENT_SHA or vmtest was removed; nothing to restart."

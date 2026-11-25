@@ -5,15 +5,15 @@ on:
     types: [opened, synchronize, reopened]
   merge_group:
   push:
-    branches: [main]
+    branches: [main, 'release/[0-9]*']
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# Label events do not trigger this workflow, because a cancelled or skipped run
-# would publish a CI result for the head SHA. vmtest-label.yml reruns the pull
-# request's run when vmtest is added.
+# Label and edit events do not trigger this workflow, because a cancelled or
+# skipped run would publish a CI result for the head SHA. ci-restart.yml reruns
+# the pull request's run when vmtest is added or the base changes.
 #
 # Only a newer push to the same pull request supersedes a run. Merge-group
 # entries have unique refs, and every other trigger (push, dispatch) is
@@ -36,6 +36,7 @@ jobs:
       kubernetes-version: ${{ steps.plan.outputs.kubernetes-version }}
       scenarios: ${{ steps.plan.outputs.scenarios }}
       range: ${{ steps.plan.outputs.range }}
+      full-plan: ${{ steps.plan.outputs.full-plan }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -45,36 +46,45 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      # Read the labels now rather than from the event payload, which a rerun
-      # repeats unchanged.
-      - name: Read vmtest label
-        id: label
+      # Read the labels and base now rather than from the event payload, which a
+      # rerun repeats unchanged. A pull request retargeted onto a release branch
+      # is rerun to pick up the new base.
+      - name: Read pull request state
+        id: pr
         if: github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          echo "vmtest=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels \
-            --jq 'any(.labels[]; .name == "vmtest")')" >> "$GITHUB_OUTPUT"
+          gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels,baseRefName --jq '
+            "vmtest=\(any(.labels[]; .name == "vmtest"))\nbase=\(.baseRefName)"' >> "$GITHUB_OUTPUT"
       - name: Select validation
         id: plan
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           BEFORE_SHA: ${{ github.event.before }}
-          VMTEST_LABEL: ${{ steps.label.outputs.vmtest }}
+          BASE_REF: ${{ steps.pr.outputs.base }}
+          VMTEST_LABEL: ${{ steps.pr.outputs.vmtest }}
         run: |
           mkdir -p _build
           options=(--ci)
-          # VM suites run in the merge queue and on pull requests labelled vmtest.
-          # Driver qualification runs wherever the planner selects it, except on main.
-          no_vms=false
+          # The full plan runs the VM suites for both flavours. It applies in the merge
+          # queue, on pull requests labelled vmtest, and on pull requests into a release
+          # branch, which has no merge queue; BASE_REF is read live, as for the label.
+          # Driver qualification runs wherever the planner selects it, except on pushes.
+          full_plan=false
           no_drivers=false
           case "$GITHUB_EVENT_NAME" in
             pull_request)
-              if [[ "${VMTEST_LABEL:-false}" == true ]]; then options+=(--regression); else no_vms=true; fi ;;
-            merge_group) options+=(--regression) ;;
-            push) no_vms=true; no_drivers=true ;;
+              if [[ "${VMTEST_LABEL:-false}" == true || "${BASE_REF:-}" == release/[0-9]* ]]; then full_plan=true; fi ;;
+            merge_group) full_plan=true ;;
+            push) no_drivers=true ;;
           esac
+          no_vms=false
+          if [[ "$full_plan" == false && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then no_vms=true; fi
+          if [[ "$full_plan" == true ]]; then options+=(--regression); fi
+          # BASE_SHA stays the payload value: a rerun checks out the same merge commit
+          # as the payload describes, so the range matches the tree under test.
           if [[ "$GITHUB_EVENT_NAME" == pull_request || "$GITHUB_EVENT_NAME" == merge_group ]]; then
             base="$BASE_SHA"
           elif [[ "$GITHUB_EVENT_NAME" == push && "$BEFORE_SHA" != 0000000000000000000000000000000000000000 ]]; then
@@ -96,6 +106,7 @@ jobs:
             echo "scenarios=$(jq -c '{include: .groups}' _build/ci-plan.json)"
             echo "kubernetes-version=$(jq -r '.include[0].payloadVersion // empty' _build/kubernetes-plan.json)"
             echo "range=$base..HEAD"
+            echo "full-plan=$full_plan"
           } >> "$GITHUB_OUTPUT"
           cat _build/ci-plan.json >> "$GITHUB_STEP_SUMMARY"
 
