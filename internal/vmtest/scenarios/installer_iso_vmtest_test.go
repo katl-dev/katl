@@ -143,10 +143,13 @@ spec:
 			VM: vmtest.VMConfig{
 				Network: vmtest.VMNetworkConfig{ExtraDisconnected: true},
 				SerialHooks: []vmtest.SerialHook{{
-					Name:   "network-online",
+					Name:   "handoff-ready",
 					Signal: "katlos-install progress: waiting for configuration at",
 					Run: func(ctx context.Context, event vmtest.SerialHookEvent) error {
-						// Handoff can start after wait-online fails, so readiness alone is insufficient.
+						// Nothing in the installer pulls network-online.target, so
+						// katlos-install's own address wait is the network gate.
+						// Reaching katlctl and sshd at the announced address shows
+						// the guest holds it despite the disconnected second NIC.
 						announcement, ok, err := vmtest.LastHandoffAnnouncement(event.SerialText)
 						if err != nil {
 							return err
@@ -168,7 +171,7 @@ spec:
 						command = exec.CommandContext(ctx, "ssh", "-F", "/dev/null", "-i", privateKey,
 							"-o", "BatchMode=yes", "-o", "ConnectTimeout=10", "-o", "StrictHostKeyChecking=no",
 							"-o", "UserKnownHostsFile=/dev/null", "root@"+endpoint.Hostname(),
-							`systemctl is-active --quiet systemd-logind.service && systemctl is-active --quiet systemd-networkd-wait-online.service && test "$(systemctl show systemd-networkd-wait-online.service -p Result --value)" = success && test ! -e /run/nologin && test -S /run/dbus/system_bus_socket && busctl --system list >/dev/null`)
+							`systemctl is-active --quiet systemd-logind.service && test ! -e /run/nologin && test -S /run/dbus/system_bus_socket && busctl --system list >/dev/null`)
 						if output, err := command.CombinedOutput(); err != nil {
 							return fmt.Errorf("installer host services were not ready: %w: %s", err, output)
 						}

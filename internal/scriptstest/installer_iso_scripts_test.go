@@ -86,7 +86,7 @@ func TestBuildInstallerISO(t *testing.T) {
 	}
 }
 
-func TestInstallerWaitsForNetworkBeforeURLHandoff(t *testing.T) {
+func TestInstallerOwnsNetworkWait(t *testing.T) {
 	unit, err := os.ReadFile(filepath.Join(repoRoot(t), "mkosi.profiles", "installer-image", "mkosi.extra", "usr", "lib", "systemd", "system", "katlos-install.service"))
 	if err != nil {
 		t.Fatal(err)
@@ -98,17 +98,8 @@ func TestInstallerWaitsForNetworkBeforeURLHandoff(t *testing.T) {
 	if !strings.Contains(text, "\nTimeoutStartSec=infinity\n") {
 		t.Fatal("installer handoff and safety holds must not expire")
 	}
-	for _, directive := range []string{"Wants=", "After="} {
-		line := ""
-		for _, candidate := range strings.Split(text, "\n") {
-			if strings.HasPrefix(candidate, directive) {
-				line = candidate
-				break
-			}
-		}
-		if !strings.Contains(" "+line+" ", " network-online.target ") {
-			t.Fatalf("installer unit %s does not include network-online.target", directive)
-		}
+	if strings.Contains(text, "network-online.target") {
+		t.Fatal("installer unit must not wait for network-online.target before katlos-install reports address progress")
 	}
 }
 

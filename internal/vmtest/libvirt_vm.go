@@ -92,6 +92,9 @@ type VMNetworkConfig struct {
 	Mode              VMNetworkMode
 	MAC               string
 	ExtraDisconnected bool
+	// LinkDown holds the primary interface down from domain definition, so
+	// the guest never sees a carrier.
+	LinkDown bool
 }
 
 type HostForward struct {
@@ -986,6 +989,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		SerialLog:         serial,
 		Network:           libvirtNetwork,
 		ExtraDisconnected: config.Network.ExtraDisconnected,
+		LinkDown:          config.Network.LinkDown,
 		MACAddress:        macAddress,
 		Disks:             disks,
 		VSock:             vsock,
@@ -1198,6 +1202,7 @@ type libvirtDomain struct {
 	SerialLog         string
 	Network           string
 	ExtraDisconnected bool
+	LinkDown          bool
 	MACAddress        string
 	Disks             []libvirtDisk
 	VSock             VSockPlan
@@ -1545,6 +1550,9 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 	}
 	if strings.TrimSpace(domain.MACAddress) != "" {
 		doc.Devices.Interfaces[0].MAC = &domainInterfaceMAC{Address: strings.TrimSpace(domain.MACAddress)}
+	}
+	if domain.LinkDown {
+		doc.Devices.Interfaces[0].Link = &domainInterfaceLink{State: "down"}
 	}
 	if domain.ExtraDisconnected {
 		doc.Devices.Interfaces = append(doc.Devices.Interfaces, domainInterface{

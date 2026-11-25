@@ -1,10 +1,10 @@
 [Unit]
 Description=Run Katl installer entrypoint
 DefaultDependencies=no
-Wants=katl-input-apply.service systemd-modules-load.service systemd-networkd.service systemd-resolved.service network-online.target
+Wants=katl-input-apply.service systemd-modules-load.service systemd-networkd.service systemd-resolved.service
 # Remote KatlOS images are staged on /tmp, which is larger than /run.
 RequiresMountsFor=/tmp
-After=katl-input-apply.service systemd-modules-load.service systemd-networkd.service systemd-resolved.service network-online.target
+After=katl-input-apply.service systemd-modules-load.service systemd-networkd.service systemd-resolved.service
 Before=initrd.target
 
 [Service]

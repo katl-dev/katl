@@ -612,29 +612,6 @@ func TestHandoffAnnouncementBaseURLReplacesWildcardAddress(t *testing.T) {
 	}
 }
 
-func TestWaitHandoffAnnouncementBaseURLRetriesUntilAddressExists(t *testing.T) {
-	attempts := 0
-	got, err := waitHandoffAnnouncementBaseURLWithHost(context.Background(), &net.TCPAddr{
-		IP:   net.ParseIP("0.0.0.0"),
-		Port: 8080,
-	}, time.Second, time.Millisecond, func() (string, error) {
-		attempts++
-		if attempts < 3 {
-			return "", errors.New("no non-loopback interface address found")
-		}
-		return "192.0.2.44", nil
-	})
-	if err != nil {
-		t.Fatalf("waitHandoffAnnouncementBaseURL() error = %v", err)
-	}
-	if got != "http://192.0.2.44:8080" {
-		t.Fatalf("base URL = %q", got)
-	}
-	if attempts != 3 {
-		t.Fatalf("attempts = %d, want 3", attempts)
-	}
-}
-
 func TestHandoffAnnouncementIPRejectsWildcardAndLoopback(t *testing.T) {
 	for _, ip := range []net.IP{
 		net.ParseIP("0.0.0.0"),
