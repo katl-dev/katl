@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -80,9 +81,9 @@ func TestStuckSlotRecovery(t *testing.T) {
 	const (
 		find      = "find /efi/EFI/katl -maxdepth 1 -name '.sysupdate.*' -print -delete"
 		dumpSlot  = `sfdisk --dump "$DISK" | awk '`
-		slotMatch = `/name="katl_1"/ && toupper($0) ~ /TYPE=(64362E66-88A7-463B-B325-7AF60C81BE06|7A01D3C6-92AC-43E9-BD77-5726B602AD9D),/ {`
-		readType  = `ROOT_TYPE=$(sfdisk --part-type "$DISK" "$(lsblk -no PARTN "/dev/block/$(findmnt -no MAJ:MIN /)")")`
-		setType   = `sfdisk --no-reread --no-tell-kernel --part-type "$DISK" PARTNUMBER "$ROOT_TYPE"`
+		slotMatch = `if ($0 ~ /name="katl_1"/ && (type == "64362E66-88A7-463B-B325-7AF60C81BE06" || type == "7A01D3C6-92AC-43E9-BD77-5726B602AD9D")) {`
+		rootMatch = `} else if (type == "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709" || type == "B921B045-1DF0-41C3-AF44-4C6F280D3FAE") {`
+		setType   = `sfdisk --no-reread --no-tell-kernel --part-type "$DISK" PARTNUMBER ROOTTYPE`
 	)
 
 	tests := []struct {
@@ -119,14 +120,16 @@ func TestStuckSlotRecovery(t *testing.T) {
 				t.Fatalf("explained error no longer wraps the original")
 			}
 			guide := strings.TrimPrefix(got.Error(), tt.err.Error())
-			for _, want := range []string{find, "df -h /efi", "at least 100 MiB", "DISK=" + tt.disk + "\n", dumpSlot, slotMatch, readType, setType, "Reboot the node, then run the upgrade again."} {
+			for _, want := range []string{find, "df -h /efi", "at least 100 MiB", "DISK=" + tt.disk + "\n", dumpSlot, slotMatch, rootMatch, setType, "Reboot the node, then run the upgrade again."} {
 				if !strings.Contains(guide, want) {
 					t.Errorf("guidance lacks %q:\n%s", want, guide)
 				}
 			}
 
-			if strings.Contains(strings.ToLower(guide), "4f68bce3") {
-				t.Errorf("guidance hard-codes the root type instead of reading it from the running slot:\n%s", guide)
+			for _, banned := range []string{"findmnt", "lsblk"} {
+				if strings.Contains(guide, banned) {
+					t.Errorf("guidance depends on mount topology via %q:\n%s", banned, guide)
+				}
 			}
 
 			// Deleting the UKI files comes first and the type is restored
@@ -150,4 +153,88 @@ func TestStuckSlotRecovery(t *testing.T) {
 			t.Errorf("reboot-only refusal prints the sfdisk repair: %s", got)
 		}
 	})
+}
+
+// TestStuckSlotSelection runs the awk program the guidance prints against
+// partition tables, since the operator pipes a real dump into it.
+func TestStuckSlotSelection(t *testing.T) {
+	if _, err := exec.LookPath("awk"); err != nil {
+		t.Skip("awk not installed")
+	}
+
+	guide := stuckRootSlotGuidance("/dev/vda")
+	start := strings.Index(guide, "awk '") + len("awk '")
+	end := strings.Index(guide[start:], "}'")
+	if start < len("awk '") || end < 0 {
+		t.Fatalf("guidance has no awk program:\n%s", guide)
+	}
+	program := guide[start : start+end+1]
+
+	const (
+		esp     = "C12A7328-F81F-11D2-BA4B-00A0C93EC93B"
+		root    = "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709"
+		pending = "64362E66-88A7-463B-B325-7AF60C81BE06"
+		partial = "7A01D3C6-92AC-43E9-BD77-5726B602AD9D"
+		state   = "4D21B016-B534-45C2-A9FB-5C16E091FD2D"
+		data    = "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
+	)
+	dump := func(rows ...[3]string) string {
+		out := "label: gpt\ndevice: /dev/x\nunit: sectors\n\n"
+		for _, r := range rows {
+			out += fmt.Sprintf("%s : start=        2048, size=    16777216, type=%s, uuid=AAAA, name=%q\n", r[0], r[1], r[2])
+		}
+		return out
+	}
+
+	tests := []struct {
+		name   string
+		dump   string
+		want   string
+		wantOK bool
+	}{
+		{
+			name:   "observed disk",
+			dump:   dump([3]string{"/dev/vda1", esp, "KATL_ESP"}, [3]string{"/dev/vda2", root, "katl_0"}, [3]string{"/dev/vda3", pending, "katl_1"}, [3]string{"/dev/vda4", state, "KATL_STATE"}),
+			want:   "half-installed root slot: partition 3\nother root slot type: " + root + "\n",
+			wantOK: true,
+		},
+		{
+			name:   "nvme naming and partial type",
+			dump:   dump([3]string{"/dev/nvme0n1p1", esp, "KATL_ESP"}, [3]string{"/dev/nvme0n1p2", root, "katl_0"}, [3]string{"/dev/nvme0n1p12", partial, "katl_1"}),
+			want:   "half-installed root slot: partition 12\nother root slot type: " + root + "\n",
+			wantOK: true,
+		},
+		{
+			name:   "extra data partition",
+			dump:   dump([3]string{"/dev/vda2", root, "katl_0"}, [3]string{"/dev/vda3", pending, "katl_1"}, [3]string{"/dev/vda4", data, "scratch"}),
+			want:   "half-installed root slot: partition 3\nother root slot type: " + root + "\n",
+			wantOK: true,
+		},
+		{
+			name: "no half-installed slot",
+			dump: dump([3]string{"/dev/vda2", root, "katl_0"}, [3]string{"/dev/vda3", root, "_empty"}),
+		},
+		{
+			name: "two other root slots",
+			dump: dump([3]string{"/dev/vda2", root, "katl_0"}, [3]string{"/dev/vda3", pending, "katl_1"}, [3]string{"/dev/vda4", root, "other"}),
+		},
+		{
+			name: "no other root slot",
+			dump: dump([3]string{"/dev/vda2", pending, "katl_1"}, [3]string{"/dev/vda3", state, "KATL_STATE"}),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := exec.Command("awk", program)
+			cmd.Stdin = strings.NewReader(tt.dump)
+			out, err := cmd.Output()
+
+			if (err == nil) != tt.wantOK {
+				t.Fatalf("awk error = %v, want success %v", err, tt.wantOK)
+			}
+			if string(out) != tt.want {
+				t.Errorf("output = %q, want %q", out, tt.want)
+			}
+		})
+	}
 }
