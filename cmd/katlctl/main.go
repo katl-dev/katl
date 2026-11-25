@@ -556,7 +556,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		prepared, err = conn.Client.SubmitOperation(ctx, submit)
 	}
 	if err != nil {
-		return err
+		return explainHostUpgradeError(err)
 	}
 	if (useV2Kind || useHandoff || submit.Kind == "HostUpgradeRequestV2") && prepared.GetHostUpgradePreview() == nil {
 		return fmt.Errorf("source agent does not provide target-generation upgrade planning; upgrade the source agent before retrying")
@@ -590,7 +590,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	submit.DryRun = false
 	accepted, err := conn.Client.SubmitOperation(ctx, submit)
 	if err != nil {
-		return err
+		return explainHostUpgradeError(err)
 	}
 	terminal, err := waitAcceptedOperationStatus(ctx, conn.Client, accepted, opts.waitTimeout, stderr)
 	if err != nil {
@@ -601,7 +601,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	if err := operationResultError(terminal); err != nil {
 		report.Result = terminal.GetResult()
 		_ = writeHostUpgradeReport(stdout, opts.output, report)
-		return err
+		return explainHostUpgradeError(err)
 	}
 	agentStart := status.GetAgentStartId()
 	stagedStatus, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
