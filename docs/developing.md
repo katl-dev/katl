@@ -10,7 +10,7 @@ the public [KatlOS documentation](README.md); this page is for contributors.
 - [Generation ownership](development/generation-ownership.md) explains the
   boundary between offline installation, boot health, and node operations.
 - [Release KatlOS](development/releases.md) covers preparation, qualification,
-  and the version-specific guidance in `docs/releases`.
+  and the release guidance in `docs/releases`.
 - [Publish Kubernetes bundles](development/kubernetes-releases.md) explains
   how the producer selects, publishes, and verifies each version.
 - [Base service security](development/service-security.md) identifies the policy

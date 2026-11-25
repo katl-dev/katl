@@ -208,6 +208,107 @@ func TestKatlReleaseArtifactNotesIncludeVersionedUpgradeGuide(t *testing.T) {
 	}
 }
 
+func TestKatlReleaseArtifactNotesGuidanceSelection(t *testing.T) {
+	repo := repoRoot(t)
+
+	tests := []struct {
+		name    string
+		version string
+		files   map[string]string
+		want    string
+		absent  []string
+	}{
+		{
+			name:    "next for rc",
+			version: "2026.12.0-rc.1",
+			files:   map[string]string{"next.md": "## Pending guidance\n"},
+			want:    "## Pending guidance",
+		},
+		{
+			name:    "next for final",
+			version: "2026.12.0",
+			files:   map[string]string{"next.md": "## Pending guidance\n"},
+			want:    "## Pending guidance",
+		},
+		{
+			name:    "versioned over next",
+			version: "2026.12.0",
+			files: map[string]string{
+				"next.md":      "## Pending guidance\n",
+				"2026.12.0.md": "## Published guidance\n",
+			},
+			want:   "## Published guidance",
+			absent: []string{"## Pending guidance"},
+		},
+		{
+			name:    "exact rc over final and next",
+			version: "2026.12.0-rc.1",
+			files: map[string]string{
+				"next.md":           "## Pending guidance\n",
+				"2026.12.0.md":      "## Final guidance\n",
+				"2026.12.0-rc.1.md": "## RC guidance\n",
+			},
+			want:   "## RC guidance",
+			absent: []string{"## Pending guidance", "## Final guidance"},
+		},
+		{
+			name:    "final over next for rc",
+			version: "2026.12.0-rc.2",
+			files: map[string]string{
+				"next.md":      "## Pending guidance\n",
+				"2026.12.0.md": "## Final guidance\n",
+			},
+			want:   "## Final guidance",
+			absent: []string{"## Pending guidance"},
+		},
+		{
+			name:    "no guidance",
+			version: "2026.12.0-rc.1",
+			files:   map[string]string{},
+			want:    "## Changes",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gitDir := t.TempDir()
+			runGit(t, gitDir, "init", "--quiet")
+			if err := os.WriteFile(filepath.Join(gitDir, "change"), []byte("change\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, gitDir, "add", "change")
+			runGit(t, gitDir, "commit", "--quiet", "-m", "release: prepare candidate")
+
+			guidanceRoot := t.TempDir()
+			guidanceDir := filepath.Join(guidanceRoot, "docs", "releases")
+			if err := os.MkdirAll(guidanceDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			for name, content := range test.files {
+				if err := os.WriteFile(filepath.Join(guidanceDir, name), []byte(content), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", test.version)
+			cmd.Dir = gitDir
+			cmd.Env = append(gittest.Env(os.Environ(), gitDir), "KATL_REPO_ROOT="+guidanceRoot)
+			output, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("notes failed: %v\n%s", err, output)
+			}
+			notes := string(output)
+			if !strings.Contains(notes, test.want) {
+				t.Fatalf("release notes missing %q:\n%s", test.want, notes)
+			}
+			for _, value := range test.absent {
+				if strings.Contains(notes, value) {
+					t.Fatalf("release notes unexpectedly contain %q:\n%s", value, notes)
+				}
+			}
+		})
+	}
+}
+
 func TestKatlReleaseArtifactBuildKatlctl(t *testing.T) {
 	repo := repoRoot(t)
 	buildDir := t.TempDir()

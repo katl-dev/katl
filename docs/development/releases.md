@@ -9,9 +9,15 @@ separate publication approval is required.
 1. Merge the intended changes and their required checks. Choose an unused
    canonical `YYYY.M.PATCH` version, optionally with `-alpha.N`, `-beta.N`, or
    `-rc.N`. Prerelease versions receive GitHub's prerelease designation.
-2. Add `docs/releases/VERSION.md` when operators need upgrade instructions,
-   required actions, compatibility notices, known limitations, or recovery
-   guidance. Otherwise commit subjects supply the release notes.
+2. Add or update `docs/releases/next.md` when operators need upgrade
+   instructions, required actions, compatibility notices, known limitations, or
+   recovery guidance. Otherwise commit subjects supply the release notes. The
+   release notes use the first that exists of `docs/releases/VERSION.md`,
+   `docs/releases/BASE.md` for a prerelease's final version BASE, and `next.md`. A
+   release candidate and its final release therefore render the same
+   guidance from `next.md`. After the final release is published, a small PR
+   moves `next.md` to `docs/releases/VERSION.md`, which keeps the published
+   guidance for that tag.
 3. Dispatch a candidate from `main` and wait for it to pass. Production-image
    checks run only in this workflow, so a tag must not be the first run:
 
