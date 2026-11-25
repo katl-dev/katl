@@ -1,8 +1,10 @@
 # Continuous integration
 
 **CI** is the required check for pull requests and the merge queue, and it also
-runs fast checks on main. It selects VM and driver coverage from changed paths
-and fails if any selected job fails, is cancelled, or is skipped. Documentation,
+runs fast checks on main. A short **Plan** job selects VM and driver coverage from
+changed paths, so image builds and driver qualification start with the run rather
+than after **Fast checks**. CI fails if any selected job fails, is cancelled, or
+is skipped. Documentation,
 maintainer release tooling, and unit-only changes need only fast checks.
 
 ## VM coverage
