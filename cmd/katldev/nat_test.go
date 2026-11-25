@@ -324,3 +324,64 @@ func TestSyncNetworkDoesNotRequireIptables(t *testing.T) {
 		t.Fatalf("nat record lost: %v", err)
 	}
 }
+
+// Every command that reads or changes the host NAT rules must tell the
+// operator what to fix and what to rerun when sudo cannot run iptables.
+func TestWorldNATExplainsUnusableIptables(t *testing.T) {
+	const guidance = "could not read or change the host NAT rules"
+	setup := func(t *testing.T, record bool) (installerManager, *fakeNATTable, katldevWorld, *strings.Builder) {
+		manager, table, world := natFixture(t)
+		var stderr strings.Builder
+		manager.stderr = &stderr
+		if record {
+			if err := manager.setNAT(context.Background(), "cp-1", "198.18.0.10"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		table.denied = true
+		return manager, table, world, &stderr
+	}
+	check := func(t *testing.T, got, kept, rerun string) {
+		t.Helper()
+		for _, want := range []string{guidance, "sudo that does not prompt for iptables", "rerun: " + rerun} {
+			if !strings.Contains(got, want) {
+				t.Errorf("message lacks %q: %s", want, got)
+			}
+		}
+		if hasKept := strings.Contains(got, "its record is kept"); hasKept != (kept == "kept") {
+			t.Errorf("record-kept statement = %v, want %q: %s", hasKept, kept, got)
+		}
+	}
+
+	t.Run("remove", func(t *testing.T) {
+		manager, _, _, _ := setup(t, true)
+		err := manager.removeNAT(context.Background(), "cp-1")
+		if err == nil {
+			t.Fatal("removeNAT() succeeded")
+		}
+		check(t, err.Error(), "kept", "katldev world nat cp-1 --remove")
+	})
+	t.Run("address", func(t *testing.T) {
+		manager, _, _, _ := setup(t, false)
+		err := manager.setNAT(context.Background(), "cp-1", "198.18.0.10")
+		if err == nil {
+			t.Fatal("setNAT() succeeded")
+		}
+		check(t, err.Error(), "", "katldev world nat cp-1 --address 198.18.0.10")
+	})
+	t.Run("world remove", func(t *testing.T) {
+		manager, _, world, _ := setup(t, true)
+		err := manager.removeWorldObjects(context.Background(), world.World.RunID)
+		if err == nil {
+			t.Fatal("removeWorldObjects() succeeded")
+		}
+		check(t, err.Error(), "kept", "katldev world remove")
+	})
+	t.Run("sync warning", func(t *testing.T) {
+		manager, _, world, stderr := setup(t, true)
+		if err := manager.syncNetwork(context.Background(), world); err != nil {
+			t.Fatal(err)
+		}
+		check(t, stderr.String(), "kept", "katldev world nat cp-1 --address 198.18.0.10")
+	})
+}

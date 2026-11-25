@@ -150,7 +150,13 @@ func (manager installerManager) syncNAT(ctx context.Context, world katldevWorld)
 		return err
 	}
 	if err := manager.applyNAT(ctx, world, nat); err != nil {
-		fmt.Fprintf(manager.stderr, "katldev world: could not refresh the host NAT rules: %v\n", err)
+		names := make([]string, 0, len(nat))
+		for name := range nat {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		rerun := fmt.Sprintf("katldev world nat %s --address %s", names[0], nat[names[0]])
+		fmt.Fprintf(manager.stderr, "katldev world: %v\n", natFailure(err, true, rerun))
 	}
 	return nil
 }
@@ -225,16 +231,43 @@ func (manager installerManager) removeNATChain(ctx context.Context, chain string
 	return err
 }
 
+// hostNATError marks a failure to read or change the host nat table. Only
+// iptables creates it, and natFailure is the only place that explains it.
+type hostNATError struct{ err error }
+
+func (e hostNATError) Error() string { return e.err.Error() }
+func (e hostNATError) Unwrap() error { return e.err }
+
+// natFailure is the operator's message for a failed host NAT operation, so
+// every path that touches the host rules gives the same guidance. recordKept
+// says that nat.json still holds the address, and rerun is the command that
+// retries once the cause is fixed. Errors that did not come from iptables
+// pass through unchanged.
+func natFailure(err error, recordKept bool, rerun string) error {
+	if !errors.As(err, &hostNATError{}) {
+		return err
+	}
+	kept := ""
+	if recordKept {
+		kept = "; its record is kept"
+	}
+	return fmt.Errorf("could not read or change the host NAT rules%s: %w; katldev needs sudo that does not prompt for iptables (check that sudo -n iptables -L works as this user), then rerun: %s", kept, err, rerun)
+}
+
 // iptables edits the host nat table, which needs root; sudo must not prompt.
 func (manager installerManager) iptables(ctx context.Context, args ...string) ([]byte, error) {
 	fullArgs := append([]string{"-w", "-t", "nat"}, args...)
 	if manager.runIptables != nil {
-		return manager.runIptables(ctx, fullArgs...)
+		output, err := manager.runIptables(ctx, fullArgs...)
+		if err != nil {
+			return nil, hostNATError{err}
+		}
+		return output, nil
 	}
 	command := append([]string{firstNonEmpty(os.Getenv("KATL_VMTEST_SUDO"), "sudo"), "-n", "iptables"}, fullArgs...)
 	output, err := exec.CommandContext(ctx, command[0], command[1:]...).CombinedOutput()
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w: %s", strings.Join(command, " "), err, strings.TrimSpace(string(output)))
+		return nil, hostNATError{fmt.Errorf("%s: %w: %s", strings.Join(command, " "), err, strings.TrimSpace(string(output)))}
 	}
 	return output, nil
 }
@@ -303,14 +336,15 @@ func (manager installerManager) setNAT(ctx context.Context, name, address string
 	}
 	// A chain left by an earlier world would otherwise translate the address
 	// to a VM that no longer exists, and make it look taken.
+	rerun := fmt.Sprintf("katldev world nat %s --address %s", node.Name, parsed)
 	if err := manager.removeStaleNATChains(ctx, natChain(world.World.RunID)); err != nil {
-		return err
+		return natFailure(err, false, rerun)
 	}
 	// Another world's rule for the address would win or lose by OUTPUT order,
 	// so this host could reach a different VM there.
 	table, err := manager.readNATTable(ctx)
 	if err != nil {
-		return err
+		return natFailure(err, false, rerun)
 	}
 	own := natChain(world.World.RunID)
 	for _, line := range table.rules {
@@ -328,7 +362,7 @@ func (manager installerManager) setNAT(ctx context.Context, name, address string
 		return err
 	}
 	if err := manager.applyNAT(ctx, world, nat); err != nil {
-		return fmt.Errorf("recorded NAT address %s for %s but could not install the host rule: %w; rerun katldev world nat %s --address %s", parsed, node.Name, err, node.Name, parsed)
+		return natFailure(err, true, rerun)
 	}
 	fmt.Fprintf(manager.stdout, "This host reaches %s at %s and translates it to %s, which the VM holds.\n", node.Name, parsed, node.Address)
 	fmt.Fprintf(manager.stdout, "In %s, give %s:\n", manager.clusterConfigPath(), node.Name)
@@ -349,8 +383,9 @@ func (manager installerManager) removeNAT(ctx context.Context, name string) erro
 	if !ok {
 		return fmt.Errorf("%s has no NAT address", name)
 	}
+	rerun := "katldev world nat " + name + " --remove"
 	if err := manager.removeStaleNATChains(ctx, natChain(world.World.RunID)); err != nil {
-		return err
+		return natFailure(err, true, rerun)
 	}
 	// The record stays until the host rules are gone, so a failed removal
 	// can be retried.
@@ -361,7 +396,7 @@ func (manager installerManager) removeNAT(ctx context.Context, name string) erro
 		}
 	}
 	if err := manager.applyNAT(ctx, world, remaining); err != nil {
-		return fmt.Errorf("could not remove the host NAT rule for %s, so its record is kept: %w; rerun katldev world nat %s --remove", name, err, name)
+		return natFailure(err, true, rerun)
 	}
 	if err := manager.writeNAT(remaining); err != nil {
 		return err
