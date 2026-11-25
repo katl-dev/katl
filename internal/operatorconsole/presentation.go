@@ -28,7 +28,7 @@ func presentInstaller(snapshot *Snapshot) Presentation {
 		return Presentation{State: PresentationFailed, Label: stateLabel(snapshot.State)}
 	case installstatus.StateRebootRequested:
 		return Presentation{State: PresentationHealthy, Label: stateLabel(snapshot.State)}
-	case "starting-installer", installstatus.StateRunning, installstatus.StateWaitingForConfig, installstatus.StateDebugHold:
+	case "starting-installer", StatePreparingInstall, installstatus.StateRunning, installstatus.StateWaitingForConfig, installstatus.StateDebugHold:
 		return Presentation{State: PresentationProgressing, Label: stateLabel(snapshot.State)}
 	default:
 		return Presentation{State: PresentationUnknown, Label: stateLabel(snapshot.State)}
@@ -170,6 +170,8 @@ func stateLabel(state string) string {
 		return "Installer stopped"
 	case "starting-runtime":
 		return "Starting KatlOS"
+	case StatePreparingInstall:
+		return "Preparing automatic install"
 	case "running":
 		return "Installing"
 	case "debug-hold":

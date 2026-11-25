@@ -18,6 +18,10 @@ const (
 	// without leaving a failed install status record.
 	StateInstallerFailed = "installer-failed"
 
+	// StatePreparingInstall is shown while an automatic install has reserved
+	// the installer but has not begun its first step.
+	StatePreparingInstall = "preparing-install"
+
 	installerFailureHint = "fix the cause above, then reboot to restart the installer; Ctrl+Alt+F2 opens a console where journalctl -u katlos-install has the full log"
 )
 
@@ -80,6 +84,7 @@ func (c Collector) collectInstallerService(snapshot *Snapshot) {
 		snapshot.InstallerStatus = service.Status
 		return
 	}
+	snapshot.InstallerStopped = true
 	switch snapshot.State {
 	case installstatus.StateFailedBeforeMutation, installstatus.StateFailedAfterMutation, installstatus.StateInstallRefused:
 	default:

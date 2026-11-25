@@ -126,6 +126,9 @@ func (c Collector) collectInstaller(snapshot *Snapshot, now time.Time) {
 	if snapshot.State == "" {
 		snapshot.State = "starting-installer"
 	}
+	if snapshot.State == installstatus.StateRunning && snapshot.CurrentStep == "" && snapshot.InstallProgress == "" && !snapshot.DestructiveMutation {
+		snapshot.State = StatePreparingInstall
+	}
 	path := c.HandoffPath
 	if path == "" {
 		path = rooted(c.Root, HandoffPath)

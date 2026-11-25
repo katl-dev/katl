@@ -123,7 +123,7 @@ func (render *Renderer) paintDashboard(snapshot *Snapshot, journal Journal) {
 		}
 		writeField(&normal, "Disk changes", value, style)
 	}
-	if snapshot.Handoff.URL != "" {
+	if snapshot.Handoff.URL != "" && !snapshot.InstallerStopped {
 		writeField(&normal, "Configure", snapshot.Handoff.URL, "")
 		writeField(&normal, "Run", "katlctl config init cluster.yaml --installer "+installerCommandEndpoint(snapshot.Handoff.URL), "")
 	}
@@ -411,7 +411,8 @@ func writeInstallerStatus(content *Viewport, snapshot *Snapshot) {
 	if snapshot.State == "running" && snapshot.CurrentStep != "" {
 		writeField(content, "Progress", fallback(snapshot.InstallProgress, snapshot.CurrentStep), "")
 	}
-	if snapshot.InstallerStatus != "" && (snapshot.State == "starting-installer" || snapshot.State == "waiting-for-config") && snapshot.Handoff.URL == "" {
+	waiting := snapshot.State == "starting-installer" || snapshot.State == "waiting-for-config"
+	if snapshot.InstallerStatus != "" && (snapshot.State == StatePreparingInstall || waiting && snapshot.Handoff.URL == "") {
 		writeField(content, "Progress", snapshot.InstallerStatus, "")
 	}
 	if snapshot.Generation != "" {
