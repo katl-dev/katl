@@ -252,6 +252,7 @@ func pullWatchQuery(numbers []int) string {
         oid
         statusCheckRollup { state }
         checkDetails: statusCheckRollup { contexts(first: 50) {
+          checkRunCount statusContextCount
           pageInfo { hasNextPage }
           nodes {
             ... on CheckRun { name conclusion }

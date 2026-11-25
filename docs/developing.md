@@ -240,6 +240,12 @@ and artifact-inspection tools used by VM tests. Image construction stays behind
 `scripts/mkosi`; mkosi and Fedora package installation run inside its builder
 container.
 
+Inside `nix develop`, the development shell puts `katl-queue`, `codex-role`,
+`vmtest-run`, `vmtest-clean`, `vmtest-debug`, `vmtest-exec`,
+`worktree-clean`, and `check-fast` on `PATH`. Each command uses the script
+from the current checkout. Follow the cleanup procedure in
+[AGENTS.md](../AGENTS.md#testing-and-release-confidence).
+
 `katlctl` is also available in the development shell. It runs from the current
 checkout so local source changes are used immediately:
 
@@ -748,11 +754,18 @@ directory. Before admission, a failed head check, a merge conflict,
 or a review requesting changes also needs action. If the PR is still open
 and outside the queue, the daemon gives auto-merge two poll intervals from
 registration before it reports that auto-merge is off.
+If GitHub reports zero check runs and zero commit statuses for the head after
+10 minutes, the wait exits with status 1. The grace period starts when you
+start the wait and restarts when the daemon observes a different head. Close
+and reopen the PR or push to retrigger CI, then start a fresh wait.
 
 Once the daemon saves the registration, `wait` prints a command such as
 `katl-queue wait --resume WATCH_ID` to stderr. Use that command after
-stopping the client or reaching its timeout. Pending waits survive daemon
-restarts and saved outcomes remain available for seven days. Use
+stopping the client or reaching its timeout. Resuming reattaches to that
+attempt. If the attempt already has a verdict, the command shows when and
+for which head it was recorded, without re-evaluating it. After every push,
+start a fresh `katl-queue wait PR`. Pending waits survive daemon restarts,
+and saved outcomes remain available for seven days. Use
 `katl-queue watches` to list them. If GitHub access fails, repair the
 credentials or permissions and resume once the daemon observes recovery.
 

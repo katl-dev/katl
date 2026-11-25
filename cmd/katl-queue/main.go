@@ -37,7 +37,9 @@ Commands:
   wait PR [--timeout D]
                     wait for a merge through watchd
   wait --resume ID [--timeout D]
-                    resume a registered wait or retrieve its result (kept 7 days)
+                    reattach to one wait or replay its recorded verdict (kept 7 days)
+                    without re-evaluating it. After every push, run a fresh
+                    katl-queue wait PR.
   watches           list registered watches and recent results from watchd
   why PR            explain why a Katl PR was removed from the queue
   plan [--milestone M] [--apply | --next]
@@ -117,7 +119,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			flags.BoolVar(&notify, "notify", false, "send desktop notifications for merges and failures")
 		}
 	case "wait":
-		flags.StringVar(&resume, "resume", "", "resume an existing watch ID")
+		flags.StringVar(&resume, "resume", "", "reattach to one attempt without re-evaluating its verdict; after every push, start a fresh katl-queue wait PR")
 		flags.DurationVar(&timeout, "timeout", 0, "maximum wait time (0 waits indefinitely)")
 		// flag stops at the first positional argument. Accept PR before flags.
 		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {

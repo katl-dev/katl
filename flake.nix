@@ -54,10 +54,9 @@
       katlQueuePackageFor =
         pkgs:
         let
-          runtimePath = nixpkgs.lib.makeBinPath [
-            pkgs.gh
-            pkgs.git
-          ];
+          runtimePath = nixpkgs.lib.makeBinPath (
+            [ pkgs.gh pkgs.git ] ++ nixpkgs.lib.optional pkgs.stdenv.hostPlatform.isLinux pkgs.libnotify
+          );
         in
         buildKatlGo pkgs {
           pname = "katl-queue";
@@ -87,14 +86,14 @@
           }
           exec ${pkgs.go}/bin/go run "$repo_root/cmd/katldev" "$@"
         '';
-      katlQueueFor =
-        pkgs:
-        pkgs.writeShellScriptBin "katl-queue" ''
+      repoScriptFor =
+        pkgs: name:
+        pkgs.writeShellScriptBin name ''
           repo_root="$(${pkgs.git}/bin/git rev-parse --show-toplevel 2>/dev/null)" || {
-            echo "error: katl-queue must be run from the Katl checkout" >&2
+            echo "error: ${name} must be run from the Katl checkout" >&2
             exit 1
           }
-          exec "$repo_root/scripts/katl-queue" "$@"
+          exec "$repo_root/scripts/${name}" "$@"
         '';
       gitCommitWrappedFor =
         pkgs:
@@ -144,8 +143,17 @@
             ++ [
               (katlctlFor pkgs)
               (katldevFor pkgs)
-              (katlQueueFor pkgs)
               (gitCommitWrappedFor pkgs)
+            ]
+            ++ map (repoScriptFor pkgs) [
+              "katl-queue"
+              "codex-role"
+              "vmtest-run"
+              "vmtest-clean"
+              "vmtest-debug"
+              "vmtest-exec"
+              "worktree-clean"
+              "check-fast"
             ];
 
           shellHook = ''
