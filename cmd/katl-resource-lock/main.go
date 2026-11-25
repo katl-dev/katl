@@ -209,6 +209,7 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	manifestPath := flags.String("manifest", "", "resource-test manifest output path")
 	lockPath := flags.String("lock", defaultLockPath, "package lock path")
 	mkosiDir := flags.String("mkosi-dir", "_build/mkosi", "mkosi output directory")
+	pinDir := flags.String("pin-dir", "", "directory to pin the mkosi outputs into; the manifest then records the pinned files")
 	runtimeRoot := flags.String("runtime-root", "", "runtime root directory containing an RPM database")
 	mode := flags.String("mode", "record", "package inventory mode: record, strict, or refresh")
 	runID := flags.String("run-id", "", "resource-test run id")
@@ -236,6 +237,14 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	if *runtimeRoot == "" {
 		*runtimeRoot = filepath.Join(*mkosiDir, "katl-runtime-root")
 	}
+	if *pinDir != "" {
+		// Everything below reads and records the pinned files, so the manifest
+		// describes the bytes the run boots.
+		if err := pinMkosiOutputs(*mkosiDir, *pinDir); err != nil {
+			return err
+		}
+		*mkosiDir = *pinDir
+	}
 	if *runID == "" {
 		*runID = "resource-" + time.Now().UTC().Format("20060102T150405Z")
 	}
@@ -260,6 +269,11 @@ func runPrepareMkosi(args []string, stdout, stderr io.Writer) error {
 	}
 	if err := addMkosiArtifacts(&manifest, *mkosiDir); err != nil {
 		return err
+	}
+	if *pinDir != "" {
+		if err := verifyPinnedIndex(*pinDir, manifest.Artifacts); err != nil {
+			return err
+		}
 	}
 	repo, err := parseRepository(*fedoraRepo)
 	if err != nil {
@@ -557,6 +571,7 @@ func addMkosiArtifacts(manifest *resourcetest.Manifest, mkosiDir string) error {
 		{Name: "installer-uki", Kind: "uki", Path: filepath.Join(mkosiDir, "katl-installer.efi")},
 		{Name: "installer-kernel", Kind: "linux-kernel", Path: filepath.Join(mkosiDir, "katl-installer.vmlinuz")},
 		{Name: "installer-initrd", Kind: "initrd", Path: filepath.Join(mkosiDir, "katl-installer.initrd")},
+		{Name: "installer-iso", Kind: "iso", Path: filepath.Join(mkosiDir, "katl-installer.iso")},
 		{Name: "runtime-uki", Kind: "uki", Path: filepath.Join(mkosiDir, "katl-runtime.efi")},
 		{Name: "runtime-root", Kind: "squashfs", Path: filepath.Join(mkosiDir, "katl-runtime-root.squashfs")},
 		{Name: "kubernetes-sysext", Kind: "sysext", Path: filepath.Join(mkosiDir, "katl-kubernetes.raw")},

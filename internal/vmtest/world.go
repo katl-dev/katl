@@ -24,9 +24,12 @@ type World struct {
 	RunDir     string `json:"runDir"`
 	// Lease is the run lease of the scripts/vmtest-run invocation that owns the
 	// libvirt objects of this world, if one does.
-	Lease            string                 `json:"lease,omitempty"`
-	CacheDir         string                 `json:"cacheDir"`
-	ArtifactDir      string                 `json:"artifactDir"`
+	Lease       string `json:"lease,omitempty"`
+	CacheDir    string `json:"cacheDir"`
+	ArtifactDir string `json:"artifactDir"`
+	// ArtifactsPinned reports that ArtifactDir holds this run's copy of the mkosi
+	// outputs, bound before the first VM started.
+	ArtifactsPinned  bool                   `json:"artifactsPinned,omitempty"`
 	ScenarioDir      string                 `json:"scenarioDir"`
 	RunIndex         string                 `json:"runIndex,omitempty"`
 	GoTestLog        string                 `json:"goTestLog,omitempty"`
@@ -44,10 +47,12 @@ type World struct {
 }
 
 type WorldArtifact struct {
-	Name      string `json:"name"`
-	Kind      string `json:"kind"`
-	Path      string `json:"path"`
-	RepoPath  string `json:"repoPath,omitempty"`
+	Name     string `json:"name"`
+	Kind     string `json:"kind"`
+	Path     string `json:"path"`
+	RepoPath string `json:"repoPath,omitempty"`
+	// Pinned marks Path as the run's own copy of the build output at RepoPath.
+	Pinned    bool   `json:"pinned,omitempty"`
 	Digest    string `json:"sha256"`
 	SizeBytes int64  `json:"sizeBytes"`
 	Source    string `json:"source"`
@@ -350,4 +355,15 @@ func validWorldStatus(status WorldStatus) bool {
 	default:
 		return false
 	}
+}
+
+// MkosiDir is the directory VM tests read mkosi outputs from. A run that
+// pinned its artifacts reads its own copy, so a build in another worktree
+// cannot change what the run boots; otherwise it is the checkout's build
+// directory.
+func (world World) MkosiDir(repo string) string {
+	if world.ArtifactsPinned {
+		return world.ArtifactDir
+	}
+	return filepath.Join(repo, "_build", "mkosi")
 }

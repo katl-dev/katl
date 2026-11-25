@@ -70,7 +70,7 @@ func planDirectRuntimeWorldRun(world World, name, repo string, kvm KVMPolicy) (d
 }
 
 func resolveDirectRuntimeWorldInput(repo string, input directRuntimeWorldInput) (directRuntimeWorldInput, error) {
-	index := defaultLocalMkosiArtifacts(repo)
+	index := defaultLocalMkosiArtifacts(repo, filepath.Join(repo, "_build", "mkosi"))
 	if indexPath := explicitMkosiArtifactIndexPath(); indexPath != "" {
 		var err error
 		index, err = readMkosiArtifactIndex(indexPath, repo)
