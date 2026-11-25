@@ -1,0 +1,13 @@
+name: Combine flavours
+description: Download the assembled flavours of this commit and merge them into dist/.
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@v8
+      with:
+        pattern: katl-assembled-*-${{ github.sha }}
+        path: flavours
+    - name: Combine flavours
+      shell: bash
+      run: |
+        scripts/katl-release-artifacts combine dist "standard=flavours/katl-assembled-standard-$GITHUB_SHA" "lts=flavours/katl-assembled-lts-$GITHUB_SHA"

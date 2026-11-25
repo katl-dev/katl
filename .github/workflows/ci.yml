@@ -39,6 +39,9 @@ jobs:
     outputs:
       vm-flavours: ${{ steps.plan.outputs.vm-flavours }}
       driver-flavours: ${{ steps.plan.outputs.driver-flavours }}
+      production-flavours: ${{ steps.plan.outputs.production-flavours }}
+      production-version: ${{ steps.production.outputs.version }}
+      production-previous-tag: ${{ steps.production.outputs.previous-tag }}
       kubernetes-version: ${{ steps.plan.outputs.kubernetes-version }}
       scenarios: ${{ steps.plan.outputs.scenarios }}
       range: ${{ steps.plan.outputs.range }}
@@ -110,6 +113,9 @@ jobs:
           no_vms=false
           if [[ "$regression" == false && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then no_vms=true; fi
           if [[ "$regression" == true ]]; then options+=(--regression); fi
+          # The full plan also builds the production images, whatever the changed paths.
+          production='[]'
+          if [[ "$full_plan" == true ]]; then production='["standard","lts"]'; fi
           # The result job's name derives from the payload base, which a rerun replays,
           # so the required check names the base this run tested.
           check_suffix=
@@ -134,6 +140,7 @@ jobs:
           {
             echo "vm-flavours=$(jq -c .vmFlavours _build/ci-plan.json)"
             echo "driver-flavours=$(jq -c .driverFlavours _build/ci-plan.json)"
+            echo "production-flavours=$production"
             echo "scenarios=$(jq -c '{include: .groups}' _build/ci-plan.json)"
             echo "kubernetes-version=$(jq -r '.include[0].payloadVersion // empty' _build/kubernetes-plan.json)"
             echo "range=$base..HEAD"
@@ -141,6 +148,20 @@ jobs:
             echo "check-suffix=$check_suffix"
           } >> "$GITHUB_OUTPUT"
           cat _build/ci-plan.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Resolve production identity
+        id: production
+        if: steps.plan.outputs.production-flavours != '[]'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # Production bytes carry a development version above the stable release
+          # they upgrade from; nothing is published. The merge queue upgrades from
+          # the latest stable release. A pull request into a release branch upgrades
+          # from the latest stable tag in that branch's own series.
+          tag="$(scripts/katl-release-artifacts previous-tag ${BASE_SHA:+"$BASE_SHA"})"
+          echo "previous-tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$(scripts/katl-release-artifacts dev-version "$tag")" >> "$GITHUB_OUTPUT"
 
   checks:
     name: Fast checks
@@ -213,10 +234,45 @@ jobs:
     with:
       flavour: ${{ matrix.flavour }}
 
+  production:
+    name: Production (${{ matrix.flavour }})
+    needs: plan
+    if: needs.plan.outputs.production-flavours != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: ${{ fromJSON(needs.plan.outputs.production-flavours) }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/production-build.yml
+    with:
+      flavour: ${{ matrix.flavour }}
+      version: ${{ needs.plan.outputs.production-version }}
+      previous-tag: ${{ needs.plan.outputs.production-previous-tag }}
+      publication: false
+
+  bundle:
+    name: Production bundle
+    needs: [plan, production]
+    if: needs.plan.outputs.production-flavours != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: ./.github/actions/combine-flavours
+
   result:
     name: CI${{ needs.plan.outputs.check-suffix && format(' {0}', needs.plan.outputs.check-suffix) || '' }}
     if: always()
-    needs: [plan, checks, nix, vms, drivers]
+    needs: [plan, checks, nix, vms, drivers, production, bundle]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -227,7 +283,9 @@ jobs:
           jq -e '
             .plan.result == "success" and .checks.result == "success" and .nix.result == "success" and
             ([{flavours: .plan.outputs["vm-flavours"], result: .vms.result},
-              {flavours: .plan.outputs["driver-flavours"], result: .drivers.result}]
+              {flavours: .plan.outputs["driver-flavours"], result: .drivers.result},
+              {flavours: .plan.outputs["production-flavours"], result: .production.result},
+              {flavours: .plan.outputs["production-flavours"], result: .bundle.result}]
              | all(.[];
                  (.flavours | fromjson) as $flavours |
                  ($flavours | type == "array") and

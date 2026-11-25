@@ -7,6 +7,27 @@ than after **Fast checks**. CI fails if any selected job fails, is cancelled, or
 is skipped. Documentation,
 maintainer release tooling, and unit-only changes need only fast checks.
 
+## Production images
+
+The full plan also builds both flavours through the reusable `production-build.yml`
+with `publication: false`: the merge queue and pull requests into a `release/[0-9]*`
+series branch run it, and the `vmtest` label does not. The build runs the production
+checks (`check-runtime-root`, `check-runtime-boot-asset`, `check-installer-image`,
+and the KatlOS image checks) with `KATL_VMTEST_IMAGE_SUPPORT=0` on production
+bytes, in parallel with fast checks and VM regression. A following bundle job
+combines the two flavours with `katl-release-artifacts combine`, as the release
+workflow does, and CI requires both jobs whenever the plan selects them. A change
+that breaks a release check therefore fails before merge rather than at tag time.
+The assembled bytes remain available for one day as `katl-assembled-<flavour>-<sha>`.
+Other pull requests do not run it: the build costs a full image build per flavour on
+every push.
+
+The build carries a development version above the stable release it upgrades from
+(`scripts/katl-release-artifacts previous-tag` and `dev-version`). The merge queue
+upgrades from the latest stable release. A pull request into a release series
+branch upgrades from the newest stable tag reachable from its base, so a series
+upgrades from its own history rather than from a newer series.
+
 ## VM coverage
 
 GitHub-hosted Ubuntu runners execute the existing libvirt suite with KVM. Each
