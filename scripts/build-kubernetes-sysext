@@ -185,9 +185,23 @@ restore_build_files() {
         rm -f "$profile_backup"
     fi
 }
-trap 'restore_build_files; rm -f "$log"' EXIT
+# mkosi always writes the profile's Output, katl-kubernetes.raw. A build for
+# another output name borrows that path, so the existing default artifact is set
+# aside until the new build has been moved to its own name.
+base_stash=""
+restore_base_artifact() {
+    if [[ -n "$base_stash" && -e "$base_stash" ]]; then
+        mv -f "$base_stash" "$base_artifact"
+    fi
+    base_stash=""
+}
+trap 'restore_build_files; restore_base_artifact; rm -f "$log"' EXIT
 
 mkdir -p "$(dirname "$repo_file")" "$build_dir"
+if [[ "$artifact" != "$base_artifact" && -e "$base_artifact" ]]; then
+    base_stash="$(mktemp -p "$build_dir" .katl-kubernetes-base.XXXXXX)"
+    mv -f "$base_artifact" "$base_stash"
+fi
 cat >"$repo_file" <<EOF
 [${KATL_KUBERNETES_REPO_ID}]
 name=Kubernetes ${KATL_KUBERNETES_MINOR}
@@ -233,7 +247,8 @@ if [[ ! -f "$base_artifact" ]]; then
     exit 1
 fi
 if [[ "$artifact" != "$base_artifact" ]]; then
-    cp --reflink=auto "$base_artifact" "$artifact"
+    mv -f "$base_artifact" "$artifact"
+    restore_base_artifact
 fi
 
 KATL_BUILD_COMMIT="$build_commit" \

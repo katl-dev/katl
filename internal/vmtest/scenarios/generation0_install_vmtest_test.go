@@ -129,7 +129,7 @@ func threeNodeGeneration0InstallWorldRun(t *testing.T) (threeNodeGeneration0Inst
 	repo := katlRepoRoot(t)
 	specs := threeControlPlaneWorldRuntimeSpecs()
 	kvm := vmtest.DefaultOptions().KVM
-	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, specs, kvm); err != nil {
+	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, specs, kvm, ""); err != nil {
 		failWorldFixtureSetup(t, world, "three-node-generation-0-install", err)
 	}
 	run, err := planThreeNodeGeneration0InstallRun(world, repo, specs, kvm)

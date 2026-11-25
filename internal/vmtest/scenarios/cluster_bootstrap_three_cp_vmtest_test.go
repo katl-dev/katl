@@ -48,7 +48,7 @@ import (
 )
 
 func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
-	if run, ok := threeControlPlaneWorldSmokeRun(t, "installed-runtime-three-control-plane-stacked-etcd", false); ok {
+	if run, ok := threeControlPlaneWorldSmokeRun(t, "installed-runtime-three-control-plane-stacked-etcd", false, false); ok {
 		runThreeControlPlaneStackedEtcdSmoke(t, run)
 		return
 	}
@@ -61,8 +61,7 @@ func TestInstalledRuntimeThreeControlPlaneStackedEtcdSmoke(t *testing.T) {
 }
 
 func TestKubeadmUpgradeEtcdFailure(t *testing.T) {
-	if run, ok := threeControlPlaneWorldSmokeRun(t, "kubeadm-upgrade-etcd-failure", false); ok {
-		run.KubernetesUpgrade = true
+	if run, ok := threeControlPlaneWorldSmokeRun(t, "kubeadm-upgrade-etcd-failure", false, true); ok {
 		run.EtcdUpgradeFailure = true
 		runThreeControlPlaneStackedEtcdSmoke(t, run)
 		return
@@ -74,8 +73,7 @@ func TestKubeadmUpgradeEtcdFailure(t *testing.T) {
 }
 
 func TestKubeadmUpgradeThreeControlPlanes(t *testing.T) {
-	if run, ok := threeControlPlaneWorldSmokeRun(t, "kubeadm-upgrade-three-control-planes", false); ok {
-		run.KubernetesUpgrade = true
+	if run, ok := threeControlPlaneWorldSmokeRun(t, "kubeadm-upgrade-three-control-planes", false, true); ok {
 		runThreeControlPlaneStackedEtcdSmoke(t, run)
 		return
 	}
@@ -86,7 +84,7 @@ func TestKubeadmUpgradeThreeControlPlanes(t *testing.T) {
 }
 
 func TestInstalledRuntimeThreeControlPlaneV01WorkloadProof(t *testing.T) {
-	if run, ok := threeControlPlaneWorldSmokeRun(t, "installed-runtime-three-control-plane-v01-workload-proof", true); ok {
+	if run, ok := threeControlPlaneWorldSmokeRun(t, "installed-runtime-three-control-plane-v01-workload-proof", true, false); ok {
 		runThreeControlPlaneStackedEtcdSmoke(t, run)
 		return
 	}
@@ -99,7 +97,7 @@ func TestInstalledRuntimeThreeControlPlaneV01WorkloadProof(t *testing.T) {
 }
 
 func TestInstalledRuntimeThreeControlPlaneReplacementSmoke(t *testing.T) {
-	if run, ok := threeControlPlaneWorldSmokeRun(t, "installed-runtime-three-control-plane-replacement", false); ok {
+	if run, ok := threeControlPlaneWorldSmokeRun(t, "installed-runtime-three-control-plane-replacement", false, false); ok {
 		run.ReplacementProof = true
 		runThreeControlPlaneStackedEtcdSmoke(t, run)
 		return
@@ -127,7 +125,7 @@ type threeControlPlaneSmokeRun struct {
 	EtcdUpgradeFailure bool
 }
 
-func threeControlPlaneWorldSmokeRun(t *testing.T, scenarioName string, workloadProof bool) (threeControlPlaneSmokeRun, bool) {
+func threeControlPlaneWorldSmokeRun(t *testing.T, scenarioName string, workloadProof, upgrade bool) (threeControlPlaneSmokeRun, bool) {
 	t.Helper()
 	if strings.TrimSpace(os.Getenv(vmtest.WorldManifestEnv)) == "" {
 		return threeControlPlaneSmokeRun{}, false
@@ -135,16 +133,18 @@ func threeControlPlaneWorldSmokeRun(t *testing.T, scenarioName string, workloadP
 	world := vmtest.RequireWorld(t)
 	repo := katlRepoRoot(t)
 	kvm := vmtest.DefaultOptions().KVM
-	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, threeControlPlaneWorldRuntimeSpecs(), kvm); err != nil {
+	kubernetesVersion := operationBackedKubernetesVersion(t, repo, upgrade)
+	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, threeControlPlaneWorldRuntimeSpecs(), kvm, kubernetesVersion); err != nil {
 		failWorldFixtureSetup(t, world, scenarioName, err)
 	}
-	run, err := planThreeControlPlaneWorldSmokeRun(world, repo, scenarioName, operationBackedKubernetesVersion(t, repo), kvm, workloadProof)
+	run, err := planThreeControlPlaneWorldSmokeRun(world, repo, scenarioName, kubernetesVersion, kvm, workloadProof)
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
 	missing := twoNodeHostToolPrereqs(exec.LookPath)
 	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "three-control-plane stacked-etcd smoke prerequisites missing", missing)
 	t.Cleanup(run.WorldScenario.Release)
+	run.KubernetesUpgrade = upgrade
 	return run, true
 }
 
@@ -262,7 +262,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	evidenceDir := filepath.Join(result.RunDir, "operation-evidence")
 	versionEvidenceDir := filepath.Join(result.RunDir, "kubernetes-version-evidence")
 	bootstrapFixture := bootstrapFixtureInputsFromEnv()
-	kubernetesBundle, bundleServer, err := stageOperationBackedKubernetesPayloadBundle(katlRepoRoot(t), result, smoke.WorldScenario.World.Network.Gateway, inputs.KubernetesVersion)
+	kubernetesBundle, bundleServer, err := stageOperationBackedKubernetesPayloadBundle(katlRepoRoot(t), result, smoke.WorldScenario.World.Network.Gateway, inputs.KubernetesVersion, smoke.KubernetesUpgrade)
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("stage Kubernetes payload bundles: %v", err)
@@ -1393,11 +1393,10 @@ func threeControlPlaneNodeConfigForRun(run threeControlPlaneSmokeRun, name, disk
 	return config
 }
 
-func stageThreeControlPlaneKubernetesPayloadBundles(repo string, result vmtest.Result, selectedVersion string) (threeControlPlaneKubernetesPayloadBundle, error) {
+func stageThreeControlPlaneKubernetesPayloadBundles(repo string, result vmtest.Result, selectedVersion string, upgrade bool) (threeControlPlaneKubernetesPayloadBundle, error) {
 	selectedVersion = firstString(strings.TrimSpace(selectedVersion), "v1.36.1")
 
-	artifactPath := filepath.Join(repo, "_build/mkosi/katl-kubernetes.raw")
-	baseMetadataPath := filepath.Join(repo, "_build/mkosi/katl-kubernetes.raw.json")
+	artifactPath, baseMetadataPath := kubernetesSourceSysext(repo, upgrade)
 	baseMeta, err := artifact.ReadLocal(baseMetadataPath)
 	if err != nil {
 		return threeControlPlaneKubernetesPayloadBundle{}, fmt.Errorf("read Kubernetes sysext metadata %s: %w", baseMetadataPath, err)

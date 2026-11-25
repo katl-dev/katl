@@ -287,7 +287,7 @@ func copyDir(source, target string) error {
 // TestWorkerReaddress moves a joined worker through the documented re-address
 // procedure, first to a new DHCP reservation and then to a static address.
 func TestWorkerReaddress(t *testing.T) {
-	if run, ok := operationBackedWorldSmokeRun(t, "installed-runtime-two-node-worker-readdress"); ok {
+	if run, ok := operationBackedWorldSmokeRun(t, "installed-runtime-two-node-worker-readdress", false); ok {
 		runOperationBackedBootstrapSmoke(t, run, readdressProof)
 		return
 	}

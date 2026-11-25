@@ -255,3 +255,97 @@ func writeExecutable(t *testing.T, path string, content string) {
 		t.Fatal(err)
 	}
 }
+
+func TestVMTestRunKubernetesUpgradeSource(t *testing.T) {
+	const upgradeSource = "_build/mkosi/katl-kubernetes-upgrade-source.raw"
+	for _, tc := range []struct {
+		name, run   string
+		wantSource  bool
+		wantChecked []string
+	}{
+		{
+			name:        "upgrade with bootstrap",
+			run:         "TestKubeadmUpgradeOperationSmoke|TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke",
+			wantSource:  true,
+			wantChecked: []string{upgradeSource, "_build/mkosi/katl-kubernetes-upgrade.raw"},
+		},
+		{name: "bootstrap only", run: "TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke"},
+		{
+			name:        "upgrade only",
+			run:         "TestKubeadmUpgradeOperationSmoke",
+			wantSource:  true,
+			wantChecked: []string{upgradeSource, "_build/mkosi/katl-kubernetes-upgrade.raw"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			scripts := filepath.Join(root, "scripts")
+			if err := os.MkdirAll(scripts, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			writeExecutable(t, filepath.Join(scripts, "mkosi"), `#!/usr/bin/env bash
+if [[ "$1" == builder-version ]]; then echo 26; exit 0; fi
+mkdir -p "$KATL_REPO_ROOT/_build/mkosi"
+printf current > "$KATL_REPO_ROOT/_build/mkosi/katl-runtime-root.squashfs"
+`)
+			// The fake records the payload version it was asked to build into the
+			// artifact metadata, as the real builder does.
+			writeExecutable(t, filepath.Join(scripts, "build-kubernetes-sysext"), `#!/usr/bin/env bash
+name=katl-kubernetes
+[[ "$1" == --output ]] && name="$2"
+mkdir -p "$KATL_REPO_ROOT/_build/mkosi"
+printf sysext > "$KATL_REPO_ROOT/_build/mkosi/$name.raw"
+printf '{"payloadVersion":"%s"}\n' "${KATL_KUBERNETES_PAYLOAD_VERSION:-default}" > "$KATL_REPO_ROOT/_build/mkosi/$name.raw.json"
+`)
+			writeExecutable(t, filepath.Join(scripts, "check-kubernetes-sysext"), `#!/usr/bin/env bash
+printf '%s\n' "${1#"$KATL_REPO_ROOT/"}" >> "$KATL_SCRIPTTEST_CHECKED"
+`)
+			writeExecutable(t, filepath.Join(root, "resource-lock"), "#!/usr/bin/env bash\nexit 17\n")
+
+			checked := filepath.Join(root, "checked.log")
+			cmd := exec.Command(filepath.Join(repoRoot(t), "scripts/vmtest-run"), "./internal/vmtest/scenarios", "-run", tc.run)
+			cmd.Dir = root
+			cmd.Env = append(os.Environ(),
+				"KATL_REPO_ROOT="+root,
+				"KATL_MKOSI_BUILD_DIR="+filepath.Join(root, "_build/mkosi"),
+				"KATL_VMTEST_RESOURCE_LOCK="+filepath.Join(root, "resource-lock"),
+				"KATL_VMTEST_RUN_DIR="+filepath.Join(root, "run"),
+				"KATL_VMTEST_CACHE_DIR="+filepath.Join(root, "cache"),
+				"KATL_SCRIPTTEST_CHECKED="+checked,
+				"KATL_KUBERNETES_PAYLOAD_VERSION=",
+				"KATL_VMTEST_KUBERNETES_BUNDLE=",
+				"KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE=",
+			)
+			// The fake resource lock stops the run once artifacts are built.
+			output, err := cmd.CombinedOutput()
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+				t.Fatalf("exit = %v, want setup failure after the build: %s", err, output)
+			}
+
+			defaultMetadata, err := os.ReadFile(filepath.Join(root, "_build/mkosi/katl-kubernetes.raw.json"))
+			if err != nil || !strings.Contains(string(defaultMetadata), `"default"`) {
+				t.Fatalf("default payload metadata = %q, %v; want the default payload: %s", defaultMetadata, err, output)
+			}
+			sourceMetadata, err := os.ReadFile(filepath.Join(root, upgradeSource+".json"))
+			if !tc.wantSource {
+				if err == nil {
+					t.Fatalf("upgrade source built for a run that does not need it: %s", sourceMetadata)
+				}
+			} else if err != nil || !strings.Contains(string(sourceMetadata), `"v1.36.0"`) {
+				t.Fatalf("upgrade source metadata = %q, %v; want v1.36.0 at its own path: %s", sourceMetadata, err, output)
+			}
+
+			got, err := os.ReadFile(checked)
+			if tc.wantChecked == nil {
+				if err == nil {
+					t.Fatalf("verified Kubernetes artifacts for a run without upgrade tests: %q", got)
+				}
+				return
+			}
+			if err != nil || strings.Join(strings.Fields(string(got)), " ") != strings.Join(tc.wantChecked, " ") {
+				t.Fatalf("verified artifacts = %q, %v; want %q", got, err, tc.wantChecked)
+			}
+		})
+	}
+}

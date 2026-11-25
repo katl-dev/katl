@@ -106,10 +106,10 @@ func wipeReinstallWorldSmokeRunNamed(t *testing.T, scenarioName string) (operati
 	repo := katlRepoRoot(t)
 	kvm := vmtest.DefaultOptions().KVM
 	specs := twoNodeWorldRuntimeSpecs()
-	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, specs, kvm); err != nil {
+	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, specs, kvm, ""); err != nil {
 		failWorldFixtureSetup(t, world, scenarioName, err)
 	}
-	run, err := planOperationBackedWorldSmokeRunNamed(world, repo, operationBackedKubernetesVersion(t, repo), kvm, scenarioName)
+	run, err := planOperationBackedWorldSmokeRunNamed(world, repo, operationBackedKubernetesVersion(t, repo, false), kvm, scenarioName)
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
@@ -195,7 +195,7 @@ func runWipeReinstallBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
 	defer cancel()
 	artifactManifest := filepath.Join(result.ManifestDir, "wipe-reinstall-bootstrap-artifacts.json")
-	kubernetesBundle, bundleServer, err := stageOperationBackedKubernetesPayloadBundle(katlRepoRoot(t), result, run.WorldScenario.World.Network.Gateway, inputs.KubernetesVersion)
+	kubernetesBundle, bundleServer, err := stageOperationBackedKubernetesPayloadBundle(katlRepoRoot(t), result, run.WorldScenario.World.Network.Gateway, inputs.KubernetesVersion, false)
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("stage Kubernetes payload bundle: %v", err)
@@ -301,7 +301,7 @@ func runWipeNodeBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 	requireVMHost(t, runner, scenario, result, vmtest.HostRequirements{Libvirt: true, OVMF: true, KVM: run.Options.KVM})
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)
 	defer cancel()
-	bundle, bundleServer, err := stageOperationBackedKubernetesPayloadBundle(katlRepoRoot(t), result, run.WorldScenario.World.Network.Gateway, inputs.KubernetesVersion)
+	bundle, bundleServer, err := stageOperationBackedKubernetesPayloadBundle(katlRepoRoot(t), result, run.WorldScenario.World.Network.Gateway, inputs.KubernetesVersion, false)
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatal(err)
