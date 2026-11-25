@@ -74,6 +74,25 @@ func TestRetainedInputs(t *testing.T) {
 			t.Fatalf("unexpected retained bytes for %s", pkg.Name)
 		}
 	}
+	otherDirectory, err := Prepare(ctx, lock, t.TempDir(), layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// mkosi records RPM modification times in its image cache manifest, so
+	// identical RPM sets must carry identical times.
+	for _, pkg := range set.Packages {
+		a, err := os.Stat(filepath.Join(directory, pkg.FileName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.Stat(filepath.Join(otherDirectory, pkg.FileName))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !a.ModTime().Equal(b.ModTime()) {
+			t.Errorf("%s modification time differs between preparations: %v vs %v", pkg.FileName, a.ModTime(), b.ModTime())
+		}
+	}
 	// A verified cache remains sufficient when transport is unavailable.
 	if err := os.RemoveAll(layout); err != nil {
 		t.Fatal(err)

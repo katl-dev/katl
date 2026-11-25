@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/resourcetest"
+	"github.com/katl-dev/katl/internal/rpmdir"
 )
 
 type source struct {
@@ -179,10 +180,8 @@ func run(args []string) error {
 	if err := os.MkdirAll(destination, 0o755); err != nil {
 		return err
 	}
-	for name := range record.Packages {
-		if err := copyFile(filepath.Join(set, name), filepath.Join(destination, name)); err != nil {
-			return err
-		}
+	if err := publishRPMs(set, destination, record); err != nil {
+		return err
 	}
 	if err := os.WriteFile(filepath.Join(*output, "build.json"), data, 0o644); err != nil {
 		return err
@@ -193,6 +192,20 @@ func run(args []string) error {
 		config += fmt.Sprintf("        %s-%s-1.katl.fc%s.x86_64\n", name, strings.TrimPrefix(sources[name].Version, "v"), *fedora)
 	}
 	return os.WriteFile(filepath.Join(*output, "mkosi.conf"), []byte(config), 0o644)
+}
+
+// publishRPMs copies a cached RPM set into the directory mkosi reads packages from.
+func publishRPMs(set, destination string, record buildRecord) error {
+	for name := range record.Packages {
+		path := filepath.Join(destination, name)
+		if err := copyFile(filepath.Join(set, name), path); err != nil {
+			return err
+		}
+		if err := rpmdir.Pin(path); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func verifyInventory(path string, sources map[string]source, fedora string) error {

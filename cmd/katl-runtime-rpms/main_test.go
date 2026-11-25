@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRuntimeInventory(t *testing.T) {
@@ -139,5 +140,40 @@ func TestRPMCacheIntegrity(t *testing.T) {
 	}
 	if validCache(directory, record.Identity) {
 		t.Fatal("accepted a corrupted cached RPM")
+	}
+}
+
+func TestPublishRPMsStableTimes(t *testing.T) {
+	set := t.TempDir()
+	record := buildRecord{Packages: map[string]string{"containerd.rpm": "", "crun.rpm": ""}}
+	for name := range record.Packages {
+		if err := os.WriteFile(filepath.Join(set, name), []byte("abc"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first, second := t.TempDir(), t.TempDir()
+	if err := publishRPMs(set, first, record); err != nil {
+		t.Fatal(err)
+	}
+	// Distinct copies of identical RPMs must be indistinguishable to mkosi's
+	// cache manifest, which records modification times.
+	time.Sleep(10 * time.Millisecond)
+	if err := publishRPMs(set, second, record); err != nil {
+		t.Fatal(err)
+	}
+
+	for name := range record.Packages {
+		a, err := os.Stat(filepath.Join(first, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.Stat(filepath.Join(second, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !a.ModTime().Equal(b.ModTime()) {
+			t.Errorf("%s modification time differs between copies: %v vs %v", name, a.ModTime(), b.ModTime())
+		}
 	}
 }
