@@ -654,6 +654,10 @@ katl-queue check 123         # merge 123 over origin/main and the queue ahead of
 katl-queue enqueue 123       # check, then enable auto-merge; refuses on conflict
 katl-queue watch 123         # one line per state change until 123 merges or leaves
 katl-queue why 123           # removal reason, failing jobs and their first errors
+katl-queue plan [--milestone M]   # order ready PRs for the queue; report held ones and their blockers
+katl-queue plan --milestone M --apply   # make an autopilot pass: the plan, rebases and explanations
+katl-queue plan --next       # open, unassigned issues whose blockers are all closed
+katl-queue autopilot         # report what a pass would rebase, enqueue, dequeue or explain
 ```
 
 `check` merges with `git merge-tree` in a throwaway object directory, so it
@@ -662,6 +666,41 @@ conflicting PR and paths when the merge conflicts. `watch` with no arguments
 follows everything queued or waiting with auto-merge, polls every minute
 (`-interval` changes this), keeps going through transient `gh` failures, and
 exits 1 when a watched PR leaves the queue without merging.
+
+`plan` simulates every ready, non-draft PR over `main` plus the queue and the
+PRs it has already chosen. It orders by `release-blocker`, `dev-experience`,
+everything else, and age. A PR that declares a dependency (GitHub's blocked-by
+on the PR and on the issue it closes, and `Depends on #N` lines in the PR body)
+is held until the dependency has merged, so dependents join the queue in a
+later pass; a blocker in another repository cannot be checked and holds the PR
+too. A conflicting PR is held behind the PR it conflicts with. Like GitHub, it
+gates on required checks only: a PR whose required checks failed, that the
+queue removed for failed checks, or that someone dequeued by hand is held
+rather than re-enqueued until its head changes. katl-queue runs as your own
+login, so GitHub records its dequeues and yours alike as manual removals; it
+posts a hidden marker naming the head before it dequeues an unmergeable entry,
+and treats every other manual removal as yours. It records the head it first
+saw with each such removal in a comment, so any new head, including its own
+rebase, settles the removal. A failing optional check is reported once per head
+and holds the PR only when another PR declares a dependency on it.
+
+A `Hold: <reason>` line in a PR body, outside a code fence, holds the PR with
+that reason before any other check, and autopilot disables its auto-merge. The
+orchestrator adds `Hold:` while a PR awaits VM gates or a journey, and deletes
+it when they pass. Editing the body does not trigger `ci.yml`, which runs on
+opened, synchronize, reopened and labeled, so the hold lifts on the next pass.
+
+`autopilot` rebases only a PR that the plan would otherwise enqueue and that
+conflicts with `main`, pushing a clean result with `--force-with-lease` over
+HTTPS through `gh auth git-credential`. It labels a conflicting rebase
+`needs-rebase` with a comment naming the files, disables auto-merge on PRs held
+for required checks, an ejection, a dequeue or a `Hold:` (never for an optional
+failure or a rebase), dequeues entries the queue marks `UNMERGEABLE`, and posts
+the `why` excerpt on a PR the queue removed for failed or timed-out checks. It
+never retries checks and never touches `release/*` branches or PRs targeting
+them. `plan` and `autopilot` only report; `--apply` makes the changes (both
+need `--milestone`; `plan --apply` is one autopilot pass), and
+`autopilot --once` runs a single pass instead of polling.
 
 Fast checks skip mkosi builds, libvirt/KVM setup, VM scenarios, and publishing.
 Run focused VM gates locally with `scripts/vmtest-run` on a capable host and

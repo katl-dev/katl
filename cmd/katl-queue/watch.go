@@ -53,9 +53,9 @@ func (o observation) settled() bool {
 }
 
 // removedSince reports a removal newer than prev's. GitHub also records a
-// removal, with reason "merged", when an entry merges; that is not one.
+// removal when an entry merges, which is not one (see mergeRecord).
 func (o observation) removedSince(prev observation) bool {
-	if o.Merged || o.Removal == nil || o.Removal.Reason == "merged" {
+	if o.Merged || o.Removal == nil || o.Removal.mergeRecord() {
 		return false
 	}
 	return prev.Removal == nil || o.Removal.CreatedAt.After(prev.Removal.CreatedAt)

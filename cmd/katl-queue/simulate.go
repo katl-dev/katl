@@ -19,6 +19,8 @@ type scratchObjects struct {
 	repo string
 	dir  string
 	env  []string
+	// config is passed to every git command as leading arguments.
+	config []string
 }
 
 func newScratchObjects(repo string, env []string) (*scratchObjects, error) {
@@ -55,7 +57,7 @@ func (s *scratchObjects) Close() error {
 }
 
 func (s *scratchObjects) git(ctx context.Context, args ...string) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-c", "gc.auto=0", "-c", "maintenance.auto=false"}, args...)...)
+	cmd := exec.CommandContext(ctx, "git", append(append(append([]string(nil), s.config...), "-c", "gc.auto=0", "-c", "maintenance.auto=false"), args...)...)
 	cmd.Dir = s.repo
 	cmd.Env = s.env
 	var stderr bytes.Buffer
@@ -115,6 +117,8 @@ func dedupe(paths []string) []string {
 type queuedPR struct {
 	Number int
 	Head   string
+	// Closes lists the issues the pull request closes.
+	Closes []int
 }
 
 type simulation struct {

@@ -31,6 +31,18 @@ Commands:
   watch [PR...]     report queue state changes until the PRs merge or leave
                     (default: everything queued or with auto-merge enabled)
   why PR            explain why PR was removed from the queue
+  plan [--milestone M] [--apply | --next]
+                    order ready PRs for the queue, holding conflicting ones;
+                    --apply makes an autopilot pass, --next lists startable issues
+  autopilot [--milestone M] [--apply] [--once] [--interval D]
+                    rebase held PRs, enqueue what merges cleanly, dequeue
+                    unmergeable entries and explain ejections
+
+plan and autopilot only report unless given --apply, which needs --milestone.
+
+A "Hold: <reason>" line in a PR body holds the PR out of the queue. The
+orchestrator adds it while a PR awaits VM gates or a journey, and deletes it
+when they pass.
 
 Exit status is 1 when check finds a conflict, enqueue refuses, or a watched PR
 leaves the queue without merging, and 2 on any other error.
@@ -71,8 +83,22 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("katl-queue "+command, flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	interval := time.Minute
-	if command == "watch" {
+	var (
+		milestone                string
+		applyChanges, next, once bool
+	)
+	switch command {
+	case "watch":
 		flags.DurationVar(&interval, "interval", interval, "time between polls")
+	case "plan":
+		flags.StringVar(&milestone, "milestone", "", "limit to this milestone")
+		flags.BoolVar(&applyChanges, "apply", false, "make the changes an autopilot pass would")
+		flags.BoolVar(&next, "next", false, "list issues that can be started")
+	case "autopilot":
+		flags.StringVar(&milestone, "milestone", "", "limit to this milestone")
+		flags.BoolVar(&applyChanges, "apply", false, "make the changes instead of reporting them")
+		flags.BoolVar(&once, "once", false, "run one pass and exit")
+		flags.DurationVar(&interval, "interval", interval, "time between passes")
 	}
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -92,6 +118,16 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	case "status", "watch":
 		if command == "status" && len(numbers) > 0 {
 			return errors.New("status takes no arguments")
+		}
+	case "plan", "autopilot":
+		if len(numbers) > 0 {
+			return fmt.Errorf("%s takes no arguments", command)
+		}
+		if next && applyChanges {
+			return errors.New("--next only lists issues; it cannot be combined with --apply")
+		}
+		if err := applyScope(command, milestone, applyChanges); err != nil {
+			return err
 		}
 	case "check", "enqueue", "why":
 		if err := needOne(); err != nil {
@@ -116,6 +152,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		return enqueue(ctx, g, numbers[0], stdout)
 	case "watch":
 		return watch(ctx, g, numbers, interval, stdout, stderr)
+	case "plan":
+		if next {
+			return nextCommand(ctx, g, milestone, stdout)
+		}
+		return planCommand(ctx, g, milestone, applyChanges, stdout)
+	case "autopilot":
+		return autopilot(ctx, g, milestone, !applyChanges, once, interval, stdout)
 	default:
 		return why(ctx, g, numbers[0], stdout)
 	}
@@ -263,20 +306,28 @@ func enqueue(ctx context.Context, g *gh, number int, out io.Writer) error {
 		return err
 	}
 
-	// GitHub adds the entry asynchronously, and not at all until the pull
-	// request's own required checks pass.
+	if !waitQueued(ctx, g, number, out) && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return nil
+}
+
+// waitQueued gives GitHub a moment to add the entry, which it does
+// asynchronously and not at all until the pull request's own required checks
+// pass.
+func waitQueued(ctx context.Context, g *gh, number int, out io.Writer) bool {
 	for attempt := 0; attempt < 5; attempt++ {
 		pr, err := g.pullRequest(ctx, number)
 		if err == nil && pr.MergeQueueEntry != nil {
 			fmt.Fprintf(out, "#%d queued at position %d (%s)\n", number, pr.MergeQueueEntry.Position, pr.MergeQueueEntry.State)
-			return nil
+			return true
 		}
 		if !sleep(ctx, 2*time.Second) {
-			return ctx.Err()
+			return false
 		}
 	}
-	fmt.Fprintf(out, "#%d auto-merge enabled; it joins the queue behind %d entries once its required checks pass\n", number, len(snap.Entries))
-	return nil
+	fmt.Fprintf(out, "#%d auto-merge enabled; it joins the queue once its required checks pass\n", number)
+	return false
 }
 
 func watch(ctx context.Context, g *gh, numbers []int, interval time.Duration, out, errOut io.Writer) error {
@@ -399,4 +450,14 @@ func reportArtifactFailures(ctx context.Context, g *gh, run int64, out io.Writer
 			fmt.Fprintf(out, "  | %s\n", line)
 		}
 	}
+}
+
+// applyScope refuses an --apply that would change pull requests without a
+// milestone to confine it: a pass pushes to branches and dequeues entries, which
+// should never reach every open pull request by default.
+func applyScope(command, milestone string, apply bool) error {
+	if apply && milestone == "" {
+		return fmt.Errorf("%s --apply changes pull requests, so it needs --milestone to say which; run it without --apply to see what it would do", command)
+	}
+	return nil
 }
