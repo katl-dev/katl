@@ -37,6 +37,26 @@ func runAgentRotateManagement(ctx context.Context, args []string, input io.Reade
 	return rotateManagementOnNode(ctx, *root, *dryRun, input, stdout, systemdAgentService)
 }
 
+func runAgentManagementAuthority(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("katlc agent management-authority", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	root := flags.String("root", "/", "installed runtime root")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	if filepath.Clean(*root) == "/" && os.Geteuid() != 0 {
+		return fmt.Errorf("reading the management authority requires root SSH access")
+	}
+	status, err := nodeidentity.InspectManagementAuthority(*root)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(stdout).Encode(status)
+}
+
 func rotateManagementOnNode(ctx context.Context, root string, dryRun bool, input io.Reader, stdout io.Writer, service rotationServiceRunner) error {
 	decoder := json.NewDecoder(io.LimitReader(input, managementRotationLimit+1))
 	decoder.DisallowUnknownFields()

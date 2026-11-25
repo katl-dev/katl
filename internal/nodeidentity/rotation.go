@@ -30,6 +30,46 @@ type ManagementRotationStatus struct {
 	AlreadyRotated   bool   `json:"alreadyRotated"`
 }
 
+// ManagementAuthorityStatus is the installed management authority of an mTLS
+// node, read so an operator without the original secrets can replace it.
+type ManagementAuthorityStatus struct {
+	NodeName  string `json:"nodeName"`
+	MachineID string `json:"machineID"`
+	Authority string `json:"authority"`
+}
+
+// InspectManagementAuthority reports the fingerprint of the CA the node
+// trusts. It changes nothing and refuses a node that is not mTLS.
+func InspectManagementAuthority(root string) (ManagementAuthorityStatus, error) {
+	if strings.TrimSpace(root) == "" {
+		return ManagementAuthorityStatus{}, fmt.Errorf("runtime root is required")
+	}
+	mode, err := ManagementAuthentication(root)
+	if err != nil {
+		return ManagementAuthorityStatus{}, err
+	}
+	if mode != managementidentity.MutualTLS {
+		return ManagementAuthorityStatus{}, fmt.Errorf("node uses %s management and has no management authority to recover", mode)
+	}
+	enrollment, err := ReadEnrollment(root)
+	if err != nil {
+		return ManagementAuthorityStatus{}, err
+	}
+	caPath, _, _, err := ManagementCredentialsPaths(root)
+	if err != nil {
+		return ManagementAuthorityStatus{}, err
+	}
+	ca, err := os.ReadFile(caPath)
+	if err != nil {
+		return ManagementAuthorityStatus{}, fmt.Errorf("read installed management authority: %w", err)
+	}
+	fingerprint, err := managementidentity.CAFingerprint(string(ca))
+	if err != nil {
+		return ManagementAuthorityStatus{}, fmt.Errorf("installed management authority: %w", err)
+	}
+	return ManagementAuthorityStatus{NodeName: enrollment.InventoryNodeName, MachineID: enrollment.MachineID, Authority: fingerprint}, nil
+}
+
 // ManagementCredentialsPaths selects one complete credential set. The active
 // link changes atomically; a restart therefore reads either the old or new set.
 func ManagementCredentialsPaths(root string) (string, string, string, error) {

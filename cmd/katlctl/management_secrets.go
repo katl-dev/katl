@@ -22,7 +22,7 @@ import (
 const defaultManagementSecrets = "management-secrets.yaml"
 
 func missingManagementIdentity(clusterName, path string) error {
-	return fmt.Errorf("management credentials for cluster %q are missing; restore the original secrets file at %s. A newly generated key cannot access installed nodes. If no backup remains, node trust must be recovered through SSH or console access; deleting workstation context does not reset it", clusterName, path)
+	return fmt.Errorf("management credentials for cluster %q are missing; restore the original secrets file at %s. A newly generated key cannot access installed nodes. If no backup remains, run `katlctl management identity recover --config <cluster.yaml>` with root SSH access to every node; deleting workstation context does not reset trust", clusterName, path)
 }
 
 func contextSaveInvocation(path string) string {

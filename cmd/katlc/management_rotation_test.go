@@ -102,3 +102,31 @@ func mustIssueRotationNode(t *testing.T, bundle managementidentity.Bundle) manag
 	}
 	return identity
 }
+
+func TestAgentManagementAuthorityReportsInstalledAuthority(t *testing.T) {
+	root := t.TempDir()
+	machineID, err := nodeidentity.WriteMachineID(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nodeidentity.WriteEnrollment(root, "cp-1", machineID, nil); err != nil {
+		t.Fatal(err)
+	}
+	identity := rotationTestNodeIdentity(t)
+	if err := nodeidentity.WriteManagementIdentity(root, "cp-1", identity); err != nil {
+		t.Fatal(err)
+	}
+	want, err := managementidentity.CAFingerprint(identity.CACertificate)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	if err := runAgentManagementAuthority([]string{"--root", root}, &stdout, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	var status nodeidentity.ManagementAuthorityStatus
+	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil || status.Authority != want || status.NodeName != "cp-1" {
+		t.Fatalf("status = %+v, %v; want authority %s", status, err, want)
+	}
+}

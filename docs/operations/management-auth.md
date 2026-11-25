@@ -210,6 +210,45 @@ existing nodes while locating the original secrets. A configuration bundle
 contains neither the authority private key nor the operator key and cannot
 recover them.
 
-If both secrets and context are lost, Katl cannot recover trust through the
-management API. Privileged SSH or console access is a separate recovery
-boundary; there is currently no automated trust-recovery command.
+If the secrets file is lost and no backup remains, replace the authority the
+nodes trust with a new one over root SSH:
+
+```sh
+katlctl management identity recover --config ./cluster.yaml
+```
+
+Before running it, make sure that:
+
+1. Every node runs a KatlOS release that supports `katlc agent
+   management-authority`.
+2. Root SSH works to each management address with a trusted, recorded host
+   key, as for [rotation](#rotate-a-management-authority). Pass
+   `--ssh-key` and `--ssh-known-hosts` when the defaults do not apply. An
+   unknown host key is refused, and with `--ssh-known-hosts` only that file is
+   trusted. Neither the installer nor `katlctl install apply` prints host keys,
+   so record them yourself, preferably at install time: run
+   `ssh-keyscan -t ed25519 <node>` over a network path you trust, and compare
+   each fingerprint (`ssh-keygen -lf <file>`) with the node's own, read on the
+   console or an existing SSH session with
+   `ssh-keygen -lf /var/lib/katl/ssh/host-keys/ssh_host_ed25519_key.pub`. Keep
+   the verified keys in the known-hosts file for later recovery. Do not take
+   keys from a first, unverified connection.
+3. No node operation is active.
+
+The command reads the authority each node trusts, and changes nothing until
+every node has been reached. It then writes the new secrets to the path that
+`spec.managementIdentity` references, or to `--output` (a `.sops.yaml` name
+encrypts it first), installs the new authority on each node, and checks that
+the new credentials manage the node. Nodes stay in mTLS mode and the lost
+authority and anonymous clients are refused afterwards; the command never
+switches a node to trusted-network access. Back up the new secrets file, then
+refresh saved contexts with `katlctl context save --config ./cluster.yaml`.
+
+If the command stops partway through, keep the new secrets file and rerun the
+same command: nodes that already trust the new authority are skipped. To
+recover with a different authority, move the new secrets file aside first. A
+file that already exists at the target path is used as the replacement.
+
+If SSH to a node is unavailable, no remote path can recover it, because the
+management API requires the lost credentials. Use the node console to restore
+SSH access, then rerun the command.

@@ -184,11 +184,18 @@ func runManagementIdentityRotate(ctx context.Context, opts managementRotationOpt
 	return nil
 }
 
+// unreadableSecretsError marks an existing replacement secrets file that could
+// not be read, as opposed to one that was read and rejected.
+type unreadableSecretsError struct{ err error }
+
+func (e *unreadableSecretsError) Error() string { return e.err.Error() }
+func (e *unreadableSecretsError) Unwrap() error { return e.err }
+
 func replacementManagementIdentity(configPath, outputPath string, source configbundle.SourceConfig) (managementidentity.Bundle, error) {
 	if _, err := os.Stat(outputPath); err == nil {
 		bundle, err := readManagementIdentity(outputPath)
 		if err != nil {
-			return managementidentity.Bundle{}, err
+			return managementidentity.Bundle{}, &unreadableSecretsError{err: err}
 		}
 		if bundle.ClusterName != source.Metadata.Name {
 			return managementidentity.Bundle{}, fmt.Errorf("replacement secrets belong to cluster %q, not %q", bundle.ClusterName, source.Metadata.Name)
@@ -299,7 +306,7 @@ func writeEncryptedManagementIdentity(configPath, outputPath string, bundle mana
 	return dir.Sync()
 }
 
-func managementRotationNodes(ctx context.Context, configPath string, source configbundle.SourceConfig, oldFingerprint string, next managementidentity.Bundle) ([]managementRotationNode, error) {
+func managementRotationTargets(ctx context.Context, configPath string, source configbundle.SourceConfig) ([]managementRotationNode, error) {
 	inv, err := readManagementInventory(configPath)
 	if err != nil {
 		return nil, err
@@ -314,18 +321,28 @@ func managementRotationNodes(ctx context.Context, configPath string, source conf
 		if err != nil {
 			return nil, err
 		}
-		credentials, ok := next.Nodes[node.Name]
-		if !ok {
-			return nil, fmt.Errorf("replacement management identity lacks node %q", node.Name)
-		}
 		machineID := ""
 		if saved, ok := enrolledTarget(ctx, "", "", source.Metadata.Name, node.Name); ok {
 			machineID = saved.machineID
 		}
-		nodes = append(nodes, managementRotationNode{name: node.Name, host: host, endpoint: endpoint, machineID: machineID,
-			request: nodeidentity.ManagementRotation{NodeName: node.Name, ExpectedMachineID: machineID, ExpectedAuthority: oldFingerprint,
-				Replacement: managementidentity.NodeCredentials{CACertificate: next.CertificateAuthority.Certificate, ServerCertificate: credentials.Certificate, ServerPrivateKey: credentials.PrivateKey}},
-		})
+		nodes = append(nodes, managementRotationNode{name: node.Name, host: host, endpoint: endpoint, machineID: machineID})
+	}
+	return nodes, nil
+}
+
+func managementRotationNodes(ctx context.Context, configPath string, source configbundle.SourceConfig, oldFingerprint string, next managementidentity.Bundle) ([]managementRotationNode, error) {
+	nodes, err := managementRotationTargets(ctx, configPath, source)
+	if err != nil {
+		return nil, err
+	}
+	for i := range nodes {
+		node := &nodes[i]
+		credentials, ok := next.Nodes[node.name]
+		if !ok {
+			return nil, fmt.Errorf("replacement management identity lacks node %q", node.name)
+		}
+		node.request = nodeidentity.ManagementRotation{NodeName: node.name, ExpectedMachineID: node.machineID, ExpectedAuthority: oldFingerprint,
+			Replacement: managementidentity.NodeCredentials{CACertificate: next.CertificateAuthority.Certificate, ServerCertificate: credentials.Certificate, ServerPrivateKey: credentials.PrivateKey}}
 	}
 	return nodes, nil
 }
@@ -335,34 +352,48 @@ func sshManagementRotation(ctx context.Context, node managementRotationNode, opt
 	if err != nil {
 		return nodeidentity.ManagementRotationStatus{}, err
 	}
-	args := []string{"-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", "-p", strconv.Itoa(opts.sshPort)}
-	if opts.sshKey != "" {
-		args = append(args, "-i", opts.sshKey, "-o", "IdentitiesOnly=yes")
-	}
-	if opts.knownHosts != "" {
-		args = append(args, "-o", "UserKnownHostsFile="+opts.knownHosts)
-	}
-	args = append(args, "root@"+node.host, "/usr/bin/katlc", "agent", "rotate-management")
+	args := []string{"rotate-management"}
 	if dryRun {
 		args = append(args, "--dry-run")
 	}
-	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
-	defer cancel()
-	command := exec.CommandContext(requestCtx, "ssh", args...)
-	command.Stdin = bytes.NewReader(request)
-	var stdout, stderr bytes.Buffer
-	command.Stdout, command.Stderr = &stdout, &stderr
-	if err := command.Run(); err != nil {
-		return nodeidentity.ManagementRotationStatus{}, fmt.Errorf("root SSH to %s: %w: %s; verify its host key and root SSH access", node.name, err, strings.TrimSpace(stderr.String()))
+	output, err := runKatlcAgentSSH(ctx, node, opts, request, args...)
+	if err != nil {
+		return nodeidentity.ManagementRotationStatus{}, err
 	}
 	var status nodeidentity.ManagementRotationStatus
-	if err := json.Unmarshal(stdout.Bytes(), &status); err != nil {
+	if err := json.Unmarshal(output, &status); err != nil {
 		return nodeidentity.ManagementRotationStatus{}, fmt.Errorf("read node rotation result: %w", err)
 	}
 	if status.NodeName != node.name || (node.machineID != "" && status.MachineID != node.machineID) {
 		return nodeidentity.ManagementRotationStatus{}, fmt.Errorf("SSH endpoint does not match node %s and its saved machine identity", node.name)
 	}
 	return status, nil
+}
+
+// runKatlcAgentSSH runs `katlc agent <args>` as root over SSH with the host
+// key pinned in known_hosts; an unknown key is refused, never accepted.
+func runKatlcAgentSSH(ctx context.Context, node managementRotationNode, opts managementRotationOptions, stdin []byte, agentArgs ...string) ([]byte, error) {
+	args := []string{"-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes", "-o", "ConnectTimeout=10", "-p", strconv.Itoa(opts.sshPort)}
+	if opts.sshKey != "" {
+		args = append(args, "-i", opts.sshKey, "-o", "IdentitiesOnly=yes")
+	}
+	if opts.knownHosts != "" {
+		// Only the supplied file may vouch for a host key; the system-wide
+		// list must not widen what the operator pinned.
+		args = append(args, "-o", "UserKnownHostsFile="+opts.knownHosts, "-o", "GlobalKnownHostsFile=/dev/null")
+	}
+	args = append(args, "root@"+node.host, "/usr/bin/katlc", "agent")
+	args = append(args, agentArgs...)
+	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
+	defer cancel()
+	command := exec.CommandContext(requestCtx, "ssh", args...)
+	command.Stdin = bytes.NewReader(stdin)
+	var stdout, stderr bytes.Buffer
+	command.Stdout, command.Stderr = &stdout, &stderr
+	if err := command.Run(); err != nil {
+		return nil, fmt.Errorf("root SSH to %s: %w: %s; verify its host key and root SSH access", node.name, err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.Bytes(), nil
 }
 
 func verifyRotatedManagement(ctx context.Context, node managementRotationNode, next, old managementidentity.ClientCredentials, timeout time.Duration) error {
