@@ -341,21 +341,24 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, stderr io.Writ
 			})
 			continue
 		}
-		requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
-		nodeCtx := withManagementDial(requestCtx, node.Name, &management)
-		conn, err := dialKatlcAgent(nodeCtx, endpoint)
+		var status *agentapi.NodeStatus
+		err := awaitManagementEndpoint(ctx, stderr, node.Name, endpoint, func() error {
+			requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
+			defer cancel()
+			conn, err := dialKatlcAgent(withManagementDial(requestCtx, node.Name, &management), endpoint)
+			if err != nil {
+				return err
+			}
+			var statusErr error
+			status, statusErr = conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
+			closeErr := conn.Close()
+			if statusErr != nil {
+				return statusErr
+			}
+			return closeErr
+		})
 		if err != nil {
-			cancel()
 			return workstation.Config{}, contextSaveReport{}, verificationFailure(node, endpoint, err)
-		}
-		status, statusErr := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
-		closeErr := conn.Close()
-		cancel()
-		if statusErr != nil {
-			return workstation.Config{}, contextSaveReport{}, verificationFailure(node, endpoint, statusErr)
-		}
-		if closeErr != nil {
-			return workstation.Config{}, contextSaveReport{}, fmt.Errorf("close node %s management endpoint: %w", node.Name, closeErr)
 		}
 		if strings.TrimSpace(status.GetMachineId()) == "" {
 			return workstation.Config{}, contextSaveReport{}, fmt.Errorf("verify node %s management endpoint: agent did not report a machine identity", node.Name)
