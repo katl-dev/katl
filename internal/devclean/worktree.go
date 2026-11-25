@@ -30,6 +30,8 @@ type Worktree struct {
 	// root is the path that was verified; Remove deletes nothing else.
 	root     string
 	verified bool
+	// tracked names the top-level entries holding tracked files.
+	tracked []string
 }
 
 // CheckWorktree returns the linked worktree of the repository containing repo
@@ -129,12 +131,31 @@ func CheckWorktree(ctx context.Context, environ []string, lookup PullRequestLook
 
 	// Checked last, so that work added while the checks above ran, which
 	// includes a fetch and a GitHub lookup, is not deleted.
-	dirty, err := g.run(ctx, abs, "status", "--porcelain", "--untracked-files=no")
+	status, err := g.run(ctx, abs, "status", "--porcelain", "--untracked-files=no")
 	if err != nil {
 		return Worktree{}, err
 	}
-	if dirty = strings.TrimRight(dirty, "\n"); dirty != "" {
-		return Worktree{}, fmt.Errorf("%s has tracked modifications or staged changes; commit and push them or discard them yourself:\n%s", abs, dirty)
+	// A tracked file that is only missing from the working tree loses nothing,
+	// because HEAD holds it. It is what an earlier removal that stopped part
+	// way leaves behind, and refusing it would make that removal unrepeatable.
+	var dirty []string
+	for _, line := range strings.Split(strings.TrimRight(status, "\n"), "\n") {
+		if line != "" && !strings.HasPrefix(line, " D ") {
+			dirty = append(dirty, line)
+		}
+	}
+	if len(dirty) > 0 {
+		return Worktree{}, fmt.Errorf("%s has tracked modifications or staged changes; commit and push them or discard them yourself:\n%s", abs, strings.Join(dirty, "\n"))
+	}
+
+	files, err := g.run(ctx, abs, "ls-files", "-z")
+	if err != nil {
+		return Worktree{}, err
+	}
+	for _, file := range strings.Split(files, "\x00") {
+		if top, _, _ := strings.Cut(file, "/"); top != "" && !contains(wt.tracked, top) {
+			wt.tracked = append(wt.tracked, top)
+		}
 	}
 	return wt, nil
 }

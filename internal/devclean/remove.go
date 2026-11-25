@@ -8,8 +8,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
+	"strconv"
 	"strings"
-	"syscall"
 )
 
 // UserNS removes a tree from inside the rootless container user namespace,
@@ -18,6 +19,9 @@ type UserNS interface {
 	// RemoveAll deletes path and everything below it that is on the same
 	// filesystem as path.
 	RemoveAll(ctx context.Context, path string) error
+	// Mountinfo returns the namespace's /proc/self/mountinfo, which can list
+	// mounts the host cannot see. An error means the namespace is unavailable.
+	Mountinfo(ctx context.Context) (string, error)
 }
 
 // PodmanUserNS removes trees with podman unshare.
@@ -32,6 +36,16 @@ func (PodmanUserNS) RemoveAll(ctx context.Context, path string) error {
 		return fmt.Errorf("podman unshare: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return nil
+}
+
+// Mountinfo reads the mount table from inside the user namespace podman
+// unshare enters.
+func (PodmanUserNS) Mountinfo(ctx context.Context) (string, error) {
+	out, err := exec.CommandContext(ctx, "podman", "unshare", "cat", "/proc/self/mountinfo").Output()
+	if err != nil {
+		return "", fmt.Errorf("podman unshare: %w", err)
+	}
+	return string(out), nil
 }
 
 // LeftoverError reports that a removal left files behind.
@@ -56,21 +70,28 @@ func (e *LeftoverError) Unwrap() error { return e.Cause }
 const maxLeftovers = 5
 
 // Remove deletes the verified worktree directory, using ns for files that the
-// calling user cannot delete. It does not follow symbolic links or cross
-// mount points, never touches a path other than the worktree, and succeeds
-// only when the directory is gone. The worktree's .git file is removed last,
-// so a partial removal can be retried.
+// calling user cannot delete. It does not follow symbolic links, refuses a
+// worktree that holds a mount point, never touches a path other than the
+// worktree, and succeeds only when the directory is gone. Untracked output is
+// removed before tracked files and the .git file last, so a partial removal
+// can be retried.
 func (w Worktree) Remove(ctx context.Context, ns UserNS) error {
 	if !w.verified || w.Path != w.root {
 		return errors.New("refusing to remove a worktree that CheckWorktree did not verify")
 	}
-	return newTree(w.root, ".git").remove(ctx, ns)
+	return w.tree().remove(ctx, ns)
+}
+
+func (w Worktree) tree() tree {
+	t := newTree(w.root, ".git")
+	t.last = w.tracked
+	return t
 }
 
 // Remove deletes the verified run directory, using ns for files that the
-// calling user cannot delete. It does not follow symbolic links or cross
-// mount points, never touches a path other than the run directory, and
-// succeeds only when it is gone. The ownership marker is removed last, so a
+// calling user cannot delete. It does not follow symbolic links, refuses a
+// run directory that holds a mount point, never touches a path other than the
+// run directory, and succeeds only when it is gone. The ownership marker is removed last, so a
 // partial removal can be retried.
 func (r RunDir) Remove(ctx context.Context, ns UserNS) error {
 	if !r.verified || r.Path != r.root {
@@ -84,28 +105,86 @@ func (r RunDir) Remove(ctx context.Context, ns UserNS) error {
 type tree struct {
 	root   string
 	marker string
+	// last names the top-level entries removed only once every other entry
+	// is gone.
+	last []string
 
-	// remove deletes one file or empty directory.
+	// removeEntry deletes one file or empty directory.
 	removeEntry func(path string) error
-	// device identifies the filesystem holding an entry.
-	device func(fs.FileInfo) uint64
+	// hostMountinfo returns the host's /proc/self/mountinfo.
+	hostMountinfo func() (string, error)
 }
 
 func newTree(root, marker string) tree {
-	return tree{root: root, marker: marker, removeEntry: os.Remove, device: statDevice}
+	return tree{root: root, marker: marker, removeEntry: os.Remove, hostMountinfo: readHostMountinfo}
 }
 
-func statDevice(info fs.FileInfo) uint64 {
-	if st, ok := info.Sys().(*syscall.Stat_t); ok {
-		return uint64(st.Dev)
+func readHostMountinfo() (string, error) {
+	b, err := os.ReadFile("/proc/self/mountinfo")
+	return string(b), err
+}
+
+// mountsUnder returns the mount points in mountinfo that are root or below it.
+func mountsUnder(mountinfo, root string) []string {
+	var found []string
+	for _, line := range strings.Split(mountinfo, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+		point := unescapeMountinfo(fields[4])
+		if point == root || strings.HasPrefix(point, root+"/") {
+			found = append(found, point)
+		}
 	}
-	return 0
+	return found
+}
+
+// unescapeMountinfo decodes the octal escapes, such as \040 for a space, that
+// the kernel uses for whitespace and backslashes in mountinfo paths.
+func unescapeMountinfo(s string) string {
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			if n, err := strconv.ParseUint(s[i+1:i+4], 8, 8); err == nil {
+				b.WriteByte(byte(n))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// checkNoMounts refuses when a mount point is root or below it. Deleting a
+// mount point deletes the contents of the filesystem mounted there, and a bind
+// mount keeps the device of its surroundings, so mounts are found in the mount
+// tables rather than by comparing devices. Rootless overlay mounts can be
+// visible only inside the user namespace, so its table is read too when the
+// namespace is available.
+func (t tree) checkNoMounts(ctx context.Context, ns UserNS) error {
+	host, err := t.hostMountinfo()
+	if err != nil {
+		return fmt.Errorf("refusing to remove %s: cannot read the mount table to check for mounted filesystems: %w", t.root, err)
+	}
+	mounts := mountsUnder(host, t.root)
+	if inNS, err := ns.Mountinfo(ctx); err == nil {
+		mounts = append(mounts, mountsUnder(inNS, t.root)...)
+	}
+	if len(mounts) == 0 {
+		return nil
+	}
+	slices.Sort(mounts)
+	mounts = slices.Compact(mounts)
+	return fmt.Errorf("refusing to remove %s: it holds mounted filesystems whose contents would be deleted: %s; unmount them with umount <path> (podman unshare umount <path> for mounts made in the rootless user namespace) and run the command again", t.root, strings.Join(mounts, ", "))
 }
 
 // remove first deletes the tree as the calling user, which handles read-only
 // directories and files owned by other users inside directories the caller
-// owns, then asks ns for what remains. The result is judged by looking at the
-// filesystem, never by what either step reports.
+// owns, then asks ns for what remains. Entries named by last are left until
+// everything else is gone, so a failure leaves them for a retry. The result is
+// judged by looking at the filesystem, never by what either step reports.
 func (t tree) remove(ctx context.Context, ns UserNS) error {
 	root := t.root
 	if !filepath.IsAbs(root) || filepath.Clean(root) != root || filepath.Dir(root) == root {
@@ -121,73 +200,99 @@ func (t tree) remove(ctx context.Context, ns UserNS) error {
 	if !info.IsDir() {
 		return fmt.Errorf("refusing to remove %s: not a directory", root)
 	}
+	if err := t.checkNoMounts(ctx, ns); err != nil {
+		return err
+	}
 
-	rootDev := t.device(info)
-	t.removeContents(root, rootDev, true)
-
+	// Directories the caller owns may be read-only.
+	_ = os.Chmod(root, 0o700)
 	var cause error
-	if rest := t.entries(root); len(rest) > 0 {
+	for _, stage := range t.stages() {
+		for _, entry := range stage {
+			t.removePath(entry)
+		}
+		var rest []string
+		for _, entry := range stage {
+			if present(entry) {
+				rest = append(rest, entry)
+			}
+		}
 		for _, entry := range rest {
 			if err := ns.RemoveAll(ctx, entry); err != nil && cause == nil {
 				cause = err
 			}
 		}
+		if len(rest) > 0 {
+			break
+		}
 	}
 
-	if len(t.entries(root)) == 0 {
+	if len(t.entries()) == 0 {
 		_ = t.removeEntry(filepath.Join(root, t.marker))
 		_ = t.removeEntry(root)
 	}
 	if _, err := os.Lstat(root); errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
-	return &LeftoverError{Root: root, Paths: t.leftovers(root, rootDev), Cause: cause}
+	return &LeftoverError{Root: root, Paths: t.leftovers(root), Cause: cause}
 }
 
-// entries lists the top-level entries of root other than the marker.
-func (t tree) entries(root string) []string {
-	list, _ := os.ReadDir(root)
+func present(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
+// stages splits the top-level entries into those removed first and those named
+// by last.
+func (t tree) stages() [][]string {
+	var first, later []string
+	for _, entry := range t.entries() {
+		if slices.Contains(t.last, filepath.Base(entry)) {
+			later = append(later, entry)
+		} else {
+			first = append(first, entry)
+		}
+	}
+	return [][]string{first, later}
+}
+
+// entries lists the top-level entries of the root other than the marker.
+func (t tree) entries() []string {
+	list, _ := os.ReadDir(t.root)
 	var found []string
 	for _, entry := range list {
 		if entry.Name() != t.marker {
-			found = append(found, filepath.Join(root, entry.Name()))
+			found = append(found, filepath.Join(t.root, entry.Name()))
 		}
 	}
 	return found
 }
 
-// removeContents deletes what is below dir without following symbolic links
-// or entering directories on another filesystem. Failures are ignored:
-// whatever stays is reported by the final check.
-func (t tree) removeContents(dir string, rootDev uint64, top bool) {
-	// Directories the caller owns may be read-only.
-	_ = os.Chmod(dir, 0o700)
-	list, err := os.ReadDir(dir)
+// removePath deletes path and, for a directory, what is below it without
+// following symbolic links. Failures are ignored: whatever stays is reported
+// by the final check.
+func (t tree) removePath(path string) {
+	info, err := os.Lstat(path)
 	if err != nil {
 		return
 	}
-	for _, entry := range list {
-		if top && entry.Name() == t.marker {
-			continue
-		}
-		path := filepath.Join(dir, entry.Name())
-		info, err := os.Lstat(path)
+	if info.IsDir() {
+		// Directories the caller owns may be read-only.
+		_ = os.Chmod(path, 0o700)
+		list, err := os.ReadDir(path)
 		if err != nil {
-			continue
+			return
 		}
-		if info.IsDir() {
-			if t.device(info) != rootDev {
-				continue
-			}
-			t.removeContents(path, rootDev, false)
+		for _, entry := range list {
+			t.removePath(filepath.Join(path, entry.Name()))
 		}
-		_ = t.removeEntry(path)
 	}
+	_ = t.removeEntry(path)
 }
 
 // leftovers returns up to maxLeftovers of the innermost entries still present
 // under root, other than the marker.
-func (t tree) leftovers(root string, rootDev uint64) []string {
+func (t tree) leftovers(root string) []string {
 	var found []string
 	_ = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if path == root || (filepath.Dir(path) == root && entry != nil && entry.Name() == t.marker) {
@@ -199,11 +304,6 @@ func (t tree) leftovers(root string, rootDev uint64) []string {
 			found = append(found, path)
 			return fs.SkipDir
 		case entry.IsDir():
-			info, infoErr := entry.Info()
-			if infoErr == nil && t.device(info) != rootDev {
-				found = append(found, path)
-				return fs.SkipDir
-			}
 			if list, readErr := os.ReadDir(path); readErr == nil && len(list) == 0 {
 				found = append(found, path)
 			}

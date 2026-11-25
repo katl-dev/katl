@@ -938,8 +938,10 @@ scripts/worktree-clean <worktree-path>
 releases the networks the run owns, confirms with libvirt that every domain is
 gone, and then deletes the run directory, including read-only files left by
 mkosi and libvirt. It refuses any directory that is not a direct child of a
-`katl-vmtest` directory containing a `result.json`, and repeating it on a
-removed run succeeds. Given a single `result.json` it removes that node's
+`katl-vmtest` directory holding the `.katl-vmtest-run-dir` marker that
+`vmtest-run` writes (a directory it did not create, such as a pre-existing
+`KATL_VMTEST_RUN_DIR`, is refused and must be checked and removed by hand), and
+repeating it on a removed run succeeds. Given a single `result.json` it removes that node's
 domains and leaves the directory.
 
 `scripts/worktree-clean` removes a linked git worktree and its untracked build
@@ -956,8 +958,12 @@ that merged pull request, and otherwise keeps it and says so.
 Both scripts delete through `katl-devclean`, which removes files owned by the
 calling user first and then removes what remains from inside the rootless
 podman user namespace, so subuid-owned build output needs no manual step. It
-never follows symbolic links out of the verified directory or crosses into
-another filesystem, and it judges success by looking at the directory. It
+never follows symbolic links out of the verified directory, and it refuses, with
+nothing deleted, a directory that holds a mount point, bind mounts included,
+listing the mounts from the host and from the rootless user namespace so that
+you can `umount` or `podman unshare umount` them first. It removes untracked
+output before tracked files, accepts a worktree whose tracked files were already
+deleted by an earlier attempt, and judges success by looking at the directory. It
 removes the directory's identity marker last, so a removal that stopped part
 way can be repeated. A refusal removes nothing and exits 2; when something
 could not be removed, it lists the remaining paths and exits 1. `vmtest-run`

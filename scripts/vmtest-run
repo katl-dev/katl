@@ -1190,15 +1190,15 @@ validate_debug_on_failure_policy() {
 # per-scenario results. Disks, VM directories and images are deleted.
 compact_run_dir() {
     local file
-    find "$run_dir" -type f -name '*serial.log' -print0 | while IFS= read -r -d '' file; do
+    find "$run_dir" -xdev -type f -name '*serial.log' -print0 | while IFS= read -r -d '' file; do
         gzip -f -- "$file" || true
     done
-    find "$run_dir" -type f \
+    find "$run_dir" -xdev -type f \
         ! -name go-test.log ! -name test-summary.txt ! -name run.json ! -name world.json \
         ! -name host-capabilities.json ! -name host-health.json ! -name resource-test-manifest.json \
         ! -name result.json ! -name scenario.json ! -name '*serial.log.gz' \
         ! -name "$(basename "$run_owner_marker")" -delete
-    find "$run_dir" -mindepth 1 -depth -type d -empty -delete
+    find "$run_dir" -xdev -mindepth 1 -depth -type d -empty -delete
 }
 
 write_test_summary() {

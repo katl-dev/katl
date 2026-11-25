@@ -3,19 +3,22 @@ package devclean
 import (
 	"context"
 	"errors"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
 // fakeNS records the paths it is asked to remove and runs act on them.
 type fakeNS struct {
-	calls []string
-	act   func(path string) error
+	calls  []string
+	mounts string
+	act    func(path string) error
 }
+
+func (f *fakeNS) Mountinfo(context.Context) (string, error) { return f.mounts, nil }
 
 func (f *fakeNS) RemoveAll(_ context.Context, path string) error {
 	f.calls = append(f.calls, path)
@@ -235,36 +238,156 @@ func TestRemoveKeepsMarkerUntilEverythingElseIsGone(t *testing.T) {
 	}
 }
 
-func TestRemoveDoesNotCrossMountPoints(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "wt")
-	writeFile(t, filepath.Join(root, "plain", "f"))
-	writeFile(t, filepath.Join(root, "mnt", "precious", "f"))
-	tr := newTree(root, ".git")
-	realDevice := tr.device
-	tr.device = func(info fs.FileInfo) uint64 {
-		if info.Name() == "mnt" {
-			return realDevice(info) + 1
-		}
-		return realDevice(info)
-	}
-	ns := &fakeNS{act: func(path string) error {
-		if filepath.Base(path) == "mnt" {
-			return nil // as rm --one-file-system skips a mount point
-		}
-		return os.RemoveAll(path)
-	}}
+// mountinfoLine formats a /proc/self/mountinfo entry for a mount at point.
+func mountinfoLine(point string) string {
+	escaped := strings.NewReplacer(" ", `\040`, "\t", `\011`, `\`, `\134`).Replace(point)
+	return "36 35 8:1 / " + escaped + " rw,relatime shared:1 - ext4 /dev/sda1 rw\n"
+}
 
-	err := tr.remove(context.Background(), ns)
+func TestRemoveRefusesMountPoints(t *testing.T) {
+	setup := func(t *testing.T) (tree, string) {
+		root := filepath.Join(t.TempDir(), "wt")
+		writeFile(t, filepath.Join(root, "dir", "precious", "f"))
+		writeFile(t, filepath.Join(root, "with space", "f"))
+		return newTree(root, ".git"), root
+	}
 
-	var left *LeftoverError
-	if !errors.As(err, &left) || !strings.Contains(err.Error(), filepath.Join(root, "mnt")) {
-		t.Fatalf("remove() = %v; want a LeftoverError naming the mount point", err)
+	for name, mountpoint := range map[string]func(root string) string{
+		"below the root":        func(root string) string { return filepath.Join(root, "dir") },
+		"deep below the root":   func(root string) string { return filepath.Join(root, "dir", "precious") },
+		"with an escaped space": func(root string) string { return filepath.Join(root, "with space") },
+		"the root itself":       func(root string) string { return root },
+		"inside the namespace":  func(root string) string { return filepath.Join(root, "dir") },
+	} {
+		for source, inNamespace := range map[string]bool{"host": false, "namespace": true} {
+			if name == "inside the namespace" && !inNamespace {
+				continue
+			}
+			t.Run(name+"/"+source, func(t *testing.T) {
+				tr, root := setup(t)
+				table := "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n" + mountinfoLine(mountpoint(root))
+				ns := &fakeNS{act: removeEverything}
+				if inNamespace {
+					ns.mounts = table
+					tr.hostMountinfo = func() (string, error) { return "", nil }
+				} else {
+					tr.hostMountinfo = func() (string, error) { return table, nil }
+				}
+
+				err := tr.remove(context.Background(), ns)
+
+				if err == nil || !strings.Contains(err.Error(), mountpoint(root)) || !strings.Contains(err.Error(), "umount") {
+					t.Fatalf("remove() = %v; want a refusal naming the mount point and how to unmount it", err)
+				}
+				var left *LeftoverError
+				if errors.As(err, &left) {
+					t.Fatalf("remove() reported a partial removal, so it deleted something: %v", err)
+				}
+				for _, path := range []string{
+					filepath.Join(root, "dir", "precious", "f"),
+					filepath.Join(root, "with space", "f"),
+				} {
+					if !exists(path) {
+						t.Fatalf("a refused removal deleted %s", path)
+					}
+				}
+				if len(ns.calls) != 0 {
+					t.Fatalf("a refused removal called the namespace step: %v", ns.calls)
+				}
+			})
+		}
 	}
-	if !exists(filepath.Join(root, "mnt", "precious", "f")) {
-		t.Fatal("removal entered another filesystem")
+
+	t.Run("a path that only shares the root as a prefix", func(t *testing.T) {
+		tr, root := setup(t)
+		table := mountinfoLine(root+"foo") + mountinfoLine(filepath.Dir(root))
+		tr.hostMountinfo = func() (string, error) { return table, nil }
+		ns := &fakeNS{mounts: table, act: removeEverything}
+
+		if err := tr.remove(context.Background(), ns); err != nil {
+			t.Fatal(err)
+		}
+		if exists(root) {
+			t.Fatal("tree survived")
+		}
+	})
+
+	t.Run("an unreadable mount table", func(t *testing.T) {
+		tr, root := setup(t)
+		tr.hostMountinfo = func() (string, error) { return "", errors.New("no /proc") }
+		ns := &fakeNS{act: removeEverything}
+
+		if err := tr.remove(context.Background(), ns); err == nil || !exists(filepath.Join(root, "dir", "precious", "f")) {
+			t.Fatalf("remove() = %v; want a refusal that deletes nothing", err)
+		}
+	})
+}
+
+const mountHelperEnv = "KATL_DEVCLEAN_MOUNT_HELPER"
+
+// TestRemoveRefusesRealMounts mounts a tmpfs and a same-device bind mount in
+// a private mount namespace and checks that neither has its contents deleted.
+func TestRemoveRefusesRealMounts(t *testing.T) {
+	if dir := os.Getenv(mountHelperEnv); dir != "" {
+		realMountsHelper(t, dir)
+		return
 	}
-	if exists(filepath.Join(root, "plain")) {
-		t.Fatal("removal gave up on the rest of the tree")
+	if err := exec.Command("unshare", "-rm", "true").Run(); err != nil {
+		t.Skipf("unprivileged mount namespaces unavailable: %v", err)
+	}
+	dir := t.TempDir()
+
+	cmd := exec.Command("unshare", "-rm", os.Args[0], "-test.run=^TestRemoveRefusesRealMounts$", "-test.v")
+	cmd.Env = append(os.Environ(), mountHelperEnv+"="+dir)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%v\n%s", err, out)
+	}
+
+	// Checked from outside the mount namespace, where the mounts never existed.
+	for _, name := range []string{"tmpfs", "bind"} {
+		if exists(filepath.Join(dir, "wt", name, "precious")) {
+			t.Fatalf("%s: the file appeared on the host filesystem", name)
+		}
+	}
+}
+
+func realMountsHelper(t *testing.T, dir string) {
+	root := filepath.Join(dir, "wt")
+	source := filepath.Join(dir, "source")
+	writeFile(t, filepath.Join(source, "precious"))
+	for _, name := range []string{"tmpfs", "bind"} {
+		if err := os.MkdirAll(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := syscall.Mount("tmpfs", filepath.Join(root, "tmpfs"), "tmpfs", 0, ""); err != nil {
+		t.Skipf("cannot mount in this namespace: %v", err)
+	}
+	if err := syscall.Mount(source, filepath.Join(root, "bind"), "", syscall.MS_BIND, ""); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, "tmpfs", "precious"))
+	ns := &fakeNS{act: removeEverything}
+
+	err := newTree(root, ".git").remove(context.Background(), ns)
+
+	if err == nil || !strings.Contains(err.Error(), filepath.Join(root, "bind")) || !strings.Contains(err.Error(), filepath.Join(root, "tmpfs")) {
+		t.Fatalf("remove() = %v; want a refusal naming both mounts", err)
+	}
+	for _, path := range []string{filepath.Join(root, "tmpfs", "precious"), filepath.Join(root, "bind", "precious"), filepath.Join(source, "precious")} {
+		if !exists(path) {
+			t.Fatalf("a refused removal deleted %s", path)
+		}
+	}
+	if len(ns.calls) != 0 {
+		t.Fatalf("a refused removal called the namespace step: %v", ns.calls)
+	}
+}
+
+func TestMountinfoPathsAreUnescaped(t *testing.T) {
+	got := mountsUnder(mountinfoLine("/x/root/a b\tc\\d"), "/x/root")
+	if len(got) != 1 || got[0] != "/x/root/a b\tc\\d" {
+		t.Fatalf("mountsUnder() = %q", got)
 	}
 }
 

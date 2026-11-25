@@ -63,8 +63,9 @@ func CheckRunDir(path string) (RunDir, error) {
 	if !info.IsDir() {
 		return RunDir{}, fmt.Errorf("%s is not a vmtest run directory: it is not a directory (symbolic links are refused)", abs)
 	}
-	if marker, err := os.Lstat(filepath.Join(abs, RunDirMarker)); err != nil || !marker.Mode().IsRegular() {
-		return RunDir{}, fmt.Errorf("%s is not a vmtest run directory: it has no %s marker", abs, RunDirMarker)
+	marker, err := os.Lstat(filepath.Join(abs, RunDirMarker))
+	if err != nil || !marker.Mode().IsRegular() {
+		return RunDir{}, fmt.Errorf("%s is not a vmtest run directory: it has no %s marker, so vmtest-run did not create it (for example a KATL_VMTEST_RUN_DIR that already existed); check its contents and remove it yourself", abs, RunDirMarker)
 	}
 	return RunDir{Path: abs, Present: true, root: abs, verified: true}, nil
 }
@@ -90,7 +91,16 @@ func CheckOwnedRunDir(path, runID string) (RunDir, error) {
 	if !info.IsDir() {
 		return RunDir{}, fmt.Errorf("%s is not a vmtest run directory: it is not a directory (symbolic links are refused)", abs)
 	}
-	got, err := os.ReadFile(filepath.Join(abs, RunDirMarker))
+	// The marker is read only when it is a regular file, so a symbolic link
+	// cannot make another file's content name the run.
+	markerPath := filepath.Join(abs, RunDirMarker)
+	marker, err := os.Lstat(markerPath)
+	var got []byte
+	if err == nil && marker.Mode().IsRegular() {
+		got, err = os.ReadFile(markerPath)
+	} else if err == nil {
+		err = errors.New("marker is not a regular file")
+	}
 	if err != nil || runID == "" || strings.TrimSpace(string(got)) != runID {
 		return RunDir{}, fmt.Errorf("%s is not the run directory of run %q: its %s marker does not name that run", abs, runID, RunDirMarker)
 	}

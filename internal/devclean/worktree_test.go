@@ -356,3 +356,62 @@ func TestMergedBranchDispositionKeepsMovedBranch(t *testing.T) {
 		t.Fatalf("mergedBranchDisposition() = %t, %q; want the moved branch kept, naming PR #616", del, reason)
 	}
 }
+
+func TestWorktreeRemovalCanBeRetried(t *testing.T) {
+	f := newFixture(t)
+	wt := f.worktree("feature")
+	writeFile(t, filepath.Join(wt, "_build", "image.iso"))
+	writeFile(t, filepath.Join(wt, "docs", "a.md"))
+	f.git(wt, "add", "docs/a.md")
+	f.git(wt, "commit", "--quiet", "-m", "docs")
+	f.git(wt, "push", "--quiet", "origin", "feature")
+
+	checked, err := f.check(wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The calling user cannot delete the build output, as when it is subuid-owned.
+	hostCannotDeleteBuild := func() tree {
+		tr := checked.tree()
+		tr.removeEntry = func(path string) error {
+			if strings.Contains(path, "_build") {
+				return errors.New("permission denied")
+			}
+			return os.Remove(path)
+		}
+		return tr
+	}
+	failing := &fakeNS{act: func(string) error { return errors.New("podman: not found") }}
+	if err := hostCannotDeleteBuild().remove(context.Background(), failing); err == nil {
+		t.Fatal("remove succeeded although the build output could not be deleted")
+	}
+
+	// A partial removal must not have deleted tracked files before the
+	// uncheckable output, which would leave the worktree looking modified.
+	if !exists(filepath.Join(wt, "base.txt")) || !exists(filepath.Join(wt, "docs", "a.md")) {
+		t.Fatal("tracked files were deleted while untracked output remained")
+	}
+	retry, err := f.check(wt)
+	if err != nil {
+		t.Fatalf("a partly removed worktree is refused, so removal cannot be retried: %v", err)
+	}
+	working := &fakeNS{act: removeEverything}
+	if err := retry.Remove(context.Background(), working); err != nil {
+		t.Fatal(err)
+	}
+	if exists(wt) {
+		t.Fatal("worktree survived the retry")
+	}
+}
+
+func TestCheckWorktreeAcceptsDeletedTrackedFiles(t *testing.T) {
+	f := newFixture(t)
+	wt := f.worktree("feature")
+	if err := os.Remove(filepath.Join(wt, "base.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.check(wt); err != nil {
+		t.Fatalf("a worktree missing only tracked files is refused: %v", err)
+	}
+}

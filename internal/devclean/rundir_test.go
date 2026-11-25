@@ -166,3 +166,35 @@ func TestCheckOwnedRunDir(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckOwnedRunDirRefusesSymlinkedMarker(t *testing.T) {
+	base := t.TempDir()
+	dir := filepath.Join(base, "run-1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(base, "other-file")
+	if err := os.WriteFile(other, []byte("run-1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, filepath.Join(dir, RunDirMarker)); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := CheckOwnedRunDir(dir, "run-1"); err == nil {
+		t.Fatal("CheckOwnedRunDir accepted a marker that is a symbolic link")
+	}
+}
+
+func TestCheckRunDirMissingMarkerSaysWhatToDo(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), RunDirParent, "run-1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := CheckRunDir(dir)
+
+	if err == nil || !strings.Contains(err.Error(), "remove it yourself") || !strings.Contains(err.Error(), "KATL_VMTEST_RUN_DIR") {
+		t.Fatalf("CheckRunDir() = %v; want guidance for a directory vmtest-run did not create", err)
+	}
+}
