@@ -42,6 +42,20 @@ A manual dispatch with `version` builds and qualifies a candidate without
 publishing. A tag still qualifies its own built bytes before promotion.
 Only a tag push can publish; a dispatch never reaches the publication jobs.
 
+The release workflow repeats the VM regression suite for a release candidate
+or final version only when CI has not already passed it at the tagged commit.
+`scripts/katl-release regression VERSION COMMIT` decides, and prints `skip`
+only when a successful `CI` run of the merge queue produced the exact commit on
+`main`, which plans the full regression suite and the Production VM jobs.
+Pushes, pull requests, other versions, and any lookup that fails run the suite.
+Release validation accepts skipped regression lanes only on that decision.
+Only tag pushes may skip; scheduled and dispatched runs always repeat the
+suite. Production build and qualification always run, because the bytes embed the
+version. A final version also requires a successful release run of one of its
+`-rc.N` tags at the same commit; without one the run
+fails before building, so
+tag a candidate first and tag the final version once it publishes.
+
 ## Qualification and promotion
 
 Both standard and LTS flavours must pass:

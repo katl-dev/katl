@@ -82,9 +82,14 @@ jobs:
       - run: .github/scripts/hosted-apt-install dosfstools mtools xorriso squashfs-tools
       - run: scripts/check-fast
 
+  # Release candidates and final releases repeat the regression lanes only when
+  # CI has not already passed them at this commit (scripts/katl-release
+  # regression). Production build and qualification always run, because the
+  # bytes embed the release version.
   vmtests:
     name: VM regression
-    if: inputs.qualify_run == 0
+    needs: identity
+    if: inputs.qualify_run == 0 && needs.identity.outputs.regression != 'skip'
     strategy:
       fail-fast: false
       matrix:
@@ -101,6 +106,7 @@ jobs:
       artifact-name: ${{ steps.release.outputs.artifact-name }}
       version: ${{ steps.release.outputs.version }}
       previous-tag: ${{ steps.previous.outputs.tag }}
+      regression: ${{ steps.regression.outputs.decision }}
 
     env:
       KATL_ARCHITECTURE: x86_64
@@ -130,6 +136,24 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: echo "tag=$(scripts/katl-release-artifacts previous-tag)" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      # Only tag pushes may skip the regression lanes; scheduled and dispatched
+      # runs always repeat them, because an empty decision runs the lanes. A final
+      # tag fails here unless a release candidate of it already
+      # succeeded at this commit.
+      - name: Decide VM regression
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        id: regression
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          decision="$(scripts/katl-release regression "$VERSION" "$GITHUB_SHA")"
+          echo "decision=$decision" >> "$GITHUB_OUTPUT"
+          echo "VM regression: $decision" >> "$GITHUB_STEP_SUMMARY"
 
   build-standard:
     name: Build standard
@@ -236,6 +260,7 @@ jobs:
     name: Release validation
     if: always() && inputs.qualify_run == 0
     needs:
+      - identity
       - bundle
       - vmtests
       - qualification-standard
@@ -246,6 +271,7 @@ jobs:
     steps:
       - env:
           UNIT: ${{ needs.unit.result }}
+          REGRESSION_DECISION: ${{ needs.identity.outputs.regression }}
           BUNDLE: ${{ needs.bundle.result }}
           REGRESSION: ${{ needs.vmtests.result }}
           PRODUCTION_STANDARD: ${{ needs.qualification-standard.result }}
@@ -254,7 +280,12 @@ jobs:
         run: |
           test "$UNIT" = success
           test "$BUNDLE" = success
-          test "$REGRESSION" = success
+          # The lanes may be skipped only when the identity job established that CI passed them.
+          if [[ "$REGRESSION_DECISION" == skip ]]; then
+            test "$REGRESSION" = skipped
+          else
+            test "$REGRESSION" = success
+          fi
           test "$PRODUCTION_STANDARD" = success
           test "$PRODUCTION_LTS" = success
           test "$QUALIFIED" = success
