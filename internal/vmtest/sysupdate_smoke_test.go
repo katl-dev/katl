@@ -162,7 +162,13 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	// Sysupdate acquires the root partition before the UKI and does not roll its
 	// GPT type back when the UKI transfer fails. This records the on-disk state
 	// the retry has to accept.
-	t.Logf("partition types after failed staging:\n%s", guestCommandOutput(t, ctx, guest, "partition-types", "lsblk", "-rno", "NAME,PARTLABEL,PARTTYPE"))
+	partitionTypes := guestCommandOutput(t, ctx, guest, "partition-types", "lsblk", "-rno", "NAME,PARTLABEL,PARTTYPE")
+	t.Logf("partition types after failed staging, as udev reports them:\n%s", partitionTypes)
+	// lsblk reports types from the udev database, which is not refreshed when
+	// sysupdate writes the GPT without telling the kernel. Read the disk itself.
+	if disk := diskWithPartitionLabel(partitionTypes, "katl_0"); disk != "" {
+		t.Logf("partition table of /dev/%s after failed staging, from the disk:\n%s", disk, guestCommandOutput(t, ctx, guest, "partition-table", "sfdisk", "--dump", "/dev/"+disk))
+	}
 	if failedStatus.GetResult() != operation.ResultFailedNeedsRepair {
 		t.Fatalf("host upgrade with a read-only ESP status = %+v, want result %s", failedStatus, operation.ResultFailedNeedsRepair)
 	}
@@ -1201,4 +1207,21 @@ func waitActiveGeneration(t *testing.T, ctx context.Context, guest *GuestControl
 		time.Sleep(250 * time.Millisecond)
 	}
 	t.Fatalf("generation %s did not become active", id)
+}
+
+// diskWithPartitionLabel returns the whole-disk name holding the partition
+// labelled label in `lsblk -rno NAME,PARTLABEL,PARTTYPE` output.
+func diskWithPartitionLabel(lsblk, label string) string {
+	for _, line := range strings.Split(lsblk, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[1] != label {
+			continue
+		}
+		disk := strings.TrimRight(fields[0], "0123456789")
+		if strings.HasSuffix(disk, "p") && strings.TrimRight(strings.TrimSuffix(disk, "p"), "0123456789") != strings.TrimSuffix(disk, "p") {
+			disk = strings.TrimSuffix(disk, "p")
+		}
+		return disk
+	}
+	return ""
 }
