@@ -423,7 +423,7 @@ func checkManagementCredential(ctx context.Context, node managementRotationNode,
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	requestCtx = withManagementDial(requestCtx, node.name, &credentials)
-	conn, err := dialKatlcAgent(requestCtx, node.endpoint)
+	conn, err := dialKatlcAgent(withoutManagementWait(requestCtx), node.endpoint)
 	if err != nil {
 		return err
 	}

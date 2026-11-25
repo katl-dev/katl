@@ -3403,7 +3403,9 @@ func dialKatlcAgentTCP(ctx context.Context, endpoint string) (katlcAgentConnecti
 	if err != nil {
 		return katlcAgentConnection{}, fmt.Errorf("management credentials for node %q: %w", identity.nodeName, err)
 	}
-	conn, err := grpc.DialContext(ctx, endpoint, katlcAgentDialOptions(transportCredentials)...)
+	_, noWait := ctx.Value(noManagementWaitKey{}).(bool)
+	options := append(katlcAgentDialOptions(transportCredentials), managementDialOptions(identity.nodeName, endpoint, !noWait)...)
+	conn, err := grpc.DialContext(ctx, endpoint, options...)
 	if err != nil {
 		return katlcAgentConnection{}, err
 	}

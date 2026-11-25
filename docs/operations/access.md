@@ -64,9 +64,11 @@ katlctl context save --config ./cluster.yaml
 configured authentication mode, confirms that it is the node named in
 `cluster.yaml`, and records its identity: the machine ID and an enrollment ID,
 a random ID that each installation creates. It does not use SSH or alter the
-node. If a node has just booted and its management API is not listening yet, it
-waits up to 30 seconds and reports progress before failing with the next step
-to take. Run it again after a reinstall to record the new identities.
+node. If a node has just booted or restarted its agent and the management API
+is not listening yet, this command and every other katlctl command that
+connects to a node wait up to 30 seconds and report progress before failing
+with the next step to take. Run it again after a reinstall to record the new
+identities.
 
 ## Use a context
 

@@ -376,7 +376,7 @@ func waitNodeOffline(ctx context.Context, target managementTarget) error {
 	for {
 		attemptCtx, cancelAttempt := context.WithTimeout(ctx, 2*time.Second)
 		attemptCtx = withManagementTarget(attemptCtx, target)
-		conn, err := dialKatlcAgent(attemptCtx, target.endpoint)
+		conn, err := dialKatlcAgent(withoutManagementWait(attemptCtx), target.endpoint)
 		if err == nil {
 			_, err = conn.Client.GetNodeStatus(attemptCtx, &agentapi.GetNodeStatusRequest{})
 			_ = conn.Close()

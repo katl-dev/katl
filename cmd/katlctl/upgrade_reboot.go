@@ -211,7 +211,7 @@ func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgen
 	for {
 		answered = false
 		for _, endpoint := range target.endpoints {
-			conn, err := dialKatlcAgent(ctx, endpoint)
+			conn, err := dialKatlcAgent(withoutManagementWait(ctx), endpoint)
 			if err != nil {
 				continue
 			}
@@ -249,7 +249,7 @@ func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgen
 func waitNodeKubernetesRecovery(ctx context.Context, nodeName, endpoint string, requirement nodeRecoveryRequirement, progressPrefix string, stderr io.Writer) (katlcAgentConnection, *agentapi.NodeStatus, error) {
 	lastRecovery := nodeRecovery{}
 	for {
-		conn, err := dialKatlcAgent(ctx, endpoint)
+		conn, err := dialKatlcAgent(withoutManagementWait(ctx), endpoint)
 		if err == nil {
 			status, statusErr := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 			if statusErr == nil {
