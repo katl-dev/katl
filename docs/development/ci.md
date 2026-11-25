@@ -19,9 +19,11 @@ selected kernel flavour builds immutable test inputs once and runs two lanes:
 
 VM suites run in the merge queue, and on a pull request only while it carries the
 `vmtest` label. A pull request without the label runs fast checks, the Nix build,
-and any selected driver qualification. Adding a label to a pull request starts a
-fresh run in place of the one in progress, so add `vmtest` early in the life of a
-branch. Pushes to main run no VM or driver jobs, because the merge queue already
+and any selected driver qualification. Adding `vmtest` reruns the head commit's CI with
+the VM suites, cancelling a run
+still in progress; other labels do not affect CI. Pull requests from forks
+cannot be restarted this way, so push a commit instead. Add `vmtest` early in
+the life of a branch. Pushes to main run no VM or driver jobs, because the merge queue already
 tested the same tree.
 
 Every selected test must emit a Go JSON pass event. A labelled pull request and

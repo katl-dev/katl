@@ -10,7 +10,6 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
 
 # Label events do not trigger this workflow, because a cancelled or skipped run
 # would publish a CI result for the head SHA. vmtest-label.yml reruns the pull
@@ -27,6 +26,9 @@ jobs:
   plan:
     name: Plan
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
     timeout-minutes: 10
     outputs:
       vm-flavours: ${{ steps.plan.outputs.vm-flavours }}
@@ -52,8 +54,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
-          labels="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name]')"
-          echo "vmtest=$(jq -r 'index("vmtest") != null' <<< "$labels")" >> "$GITHUB_OUTPUT"
+          echo "vmtest=$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels \
+            --jq 'any(.labels[]; .name == "vmtest")')" >> "$GITHUB_OUTPUT"
       - name: Select validation
         id: plan
         env:
