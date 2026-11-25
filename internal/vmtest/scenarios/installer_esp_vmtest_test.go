@@ -165,10 +165,10 @@ func (j *installerESPJourney) installAndPowerOff(ctx context.Context, handle *vm
 	config := filepath.Join(j.dir, "cluster.yaml")
 	// Katl does not choose a disk without a hardware identity implicitly, so
 	// the operator names it by the attachment path the installer reports.
-	if _, err := j.cli(ctx, "config", "init", config, "--installer", j.address, "--ssh-authorized-key", j.publicKey); err == nil || !strings.Contains(err.Error(), "will not choose it implicitly") {
+	if _, err := j.cli(ctx, "config", "init", config, "--management-authentication", "trusted-network", "--installer", j.address, "--ssh-authorized-key", j.publicKey); err == nil || !strings.Contains(err.Error(), "will not choose it implicitly") {
 		return fmt.Errorf("config init chose an identity-less disk implicitly: %v", err)
 	}
-	if _, err := j.cli(ctx, "config", "init", config, "--node", "cp-1=control-plane,"+j.address+","+j.byPath, "--ssh-authorized-key", j.publicKey); err != nil {
+	if _, err := j.cli(ctx, "config", "init", config, "--management-authentication", "trusted-network", "--node", "cp-1=control-plane,"+j.address+","+j.byPath, "--ssh-authorized-key", j.publicKey); err != nil {
 		return err
 	}
 	if err := requireConfiguredSystemDisk(config, j.byPath); err != nil {

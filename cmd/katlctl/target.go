@@ -176,7 +176,11 @@ func resolveClusterConfigTopology(ctx context.Context, path string) (workstation
 	}
 	if source, sourceErr := configbundle.DecodeSource(bytes.NewReader(data)); sourceErr == nil {
 		resolved.ClusterName = strings.TrimSpace(source.Metadata.Name)
-		if source.Spec.ManagementIdentity != "" || source.ManagementAuthentication() == managementidentity.TrustedNetwork {
+		authentication, err := source.ManagementAuthentication()
+		if err != nil {
+			return workstation.ResolvedTopology{}, err
+		}
+		if source.Spec.ManagementIdentity != "" || authentication == managementidentity.TrustedNetwork {
 			credentials, err := managementClientForConfig(path, source.Metadata.Name)
 			if err != nil {
 				return workstation.ResolvedTopology{}, err

@@ -96,7 +96,11 @@ func runManagementIdentityRotate(ctx context.Context, opts managementRotationOpt
 	if err != nil {
 		return err
 	}
-	if source.ManagementAuthentication() != managementidentity.MutualTLS {
+	authentication, err := source.ManagementAuthentication()
+	if err != nil {
+		return err
+	}
+	if authentication != managementidentity.MutualTLS {
 		return fmt.Errorf("management identity rotation requires an mTLS cluster")
 	}
 	oldPath := strings.TrimSpace(source.Spec.ManagementIdentity)

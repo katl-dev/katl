@@ -22,10 +22,10 @@ import (
 func newManagementIdentityCommand(stdout, stderr io.Writer) *cobra.Command {
 	command := &cobra.Command{
 		Use:   "identity",
-		Short: "Create, inspect, and recover opt-in mTLS credentials",
-		Long: `Trusted-network clusters need no management keys. For opt-in mTLS, keep
+		Short: "Create, inspect, and recover mTLS credentials",
+		Long: `Trusted-network clusters need no management keys. For mTLS, keep
 the original management secrets beside the ClusterConfig, optionally encrypted
-with SOPS. Config init --management-authentication mtls creates this file;
+with SOPS. Config init creates this file by default;
 identity create prepares it for a hand-written new configuration.
 
 Use export to migrate an existing workstation-held authority. Path and import
@@ -143,7 +143,11 @@ func managementPlanningForSource(sourcePath string, stderr io.Writer) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	if source.ManagementAuthentication() == managementidentity.TrustedNetwork {
+	authentication, err := source.ManagementAuthentication()
+	if err != nil {
+		return nil, err
+	}
+	if authentication == managementidentity.TrustedNetwork {
 		identities := make(map[string]manifest.ManagementIdentity, len(source.Spec.Nodes))
 		for _, node := range source.Spec.Nodes {
 			identities[node.Name] = manifest.ManagementIdentity{Authentication: managementidentity.TrustedNetwork}

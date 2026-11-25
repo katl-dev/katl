@@ -29,11 +29,13 @@ the cluster.
 
 ### Choose an access mode
 
-By default, installer port `8080` and management port `9443` use plaintext
-connections and grant access without credentials, so keep both on trusted
-networks. If you need authenticated management, you must
-[choose mTLS](operations/management-auth.md#choose-an-access-mode) before you
-install. See [Network trust](support.md#network-trust) for what each port
+By default, management port `9443` uses mTLS, and `katlctl config init` creates
+the management secrets beside `cluster.yaml`. Installer port `8080` uses a
+plaintext connection and grants access without credentials, so keep it on a
+trusted network. If you want unauthenticated management on a trusted network
+instead, you must
+[choose trusted-network](operations/management-auth.md#choose-an-access-mode)
+before you install. See [Network trust](support.md#network-trust) for what each port
 exposes.
 
 ### Decide whether to keep this cluster
@@ -69,7 +71,10 @@ katlctl config init ./cluster.yaml \
   --installer 192.0.2.21
 ```
 
-If you chose mTLS, add `--management-authentication mtls` to this command.
+This creates `management-secrets.yaml` beside `cluster.yaml`; keep it, because
+it lets you manage the nodes again after a reinstall. If you chose
+trusted-network management, add `--management-authentication trusted-network`
+to this command.
 If a machine has more than one eligible disk,
 [select the disk yourself](installing.md#select-the-target-disk).
 

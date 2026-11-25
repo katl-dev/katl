@@ -8,8 +8,8 @@ attention. To set up a new lab from the release ISO, start with
 
 - [Access installed nodes](access.md) to check a fresh install, save the nodes
   in a context, and reach them through SSH, the console, and `katlctl`.
-- [Secure the management API](management-auth.md) to choose trusted-network or
-  mTLS access before installation and to keep, rotate, or recover mTLS secrets.
+- [Secure the management API](management-auth.md) to choose mTLS or
+  trusted-network access before installation and to keep, rotate, or recover mTLS secrets.
 - [Bootstrap Kubernetes](bootstrap-kubernetes.md) when all the intended nodes
   are installed and reachable.
 - [Preserve Kubernetes identity](kubernetes-identity.md) before bootstrap if

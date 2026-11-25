@@ -8,10 +8,10 @@ To choose or manage how the management API authenticates, see
 
 ## Security boundary
 
-The `katlc` management agent serves the management API on TCP `9443`. In the
-default trusted-network mode, anyone who can reach that port can manage the
-node, including destructive operations; opt-in mTLS authenticates and encrypts
-the connection and must be [chosen before installation](management-auth.md#choose-an-access-mode).
+The `katlc` management agent serves the management API on TCP `9443`. The
+default mTLS mode authenticates and encrypts the connection. In trusted-network
+mode, anyone who can reach that port, including cluster workloads, can manage
+the node, including destructive operations. The mode must be [chosen before installation](management-auth.md#choose-an-access-mode).
 [Network trust](../support.md#network-trust) describes what each port exposes.
 Kubernetes kubeconfigs and SSH keys remain separate from management access.
 

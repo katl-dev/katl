@@ -34,7 +34,7 @@ func TestManagementJourney(t *testing.T) {
 			}
 			config := filepath.Join(dir, "cluster.yaml")
 			args := []string{"config", "init", config, "--name", "lab", "--ssh-authorized-key", key, "--node", "cp-1=control-plane,127.0.0.1,/dev/disk/by-id/test"}
-			if mode == "mtls" {
+			if mode == "trusted-network" {
 				args = append(args, "--management-authentication", mode)
 			}
 			for _, invocation := range [][]string{args, append(append([]string{}, args...), "--force")} {
@@ -47,7 +47,7 @@ func TestManagementJourney(t *testing.T) {
 				t.Fatal(err)
 			}
 			source, err := configbundle.DecodeSource(bytes.NewReader(data))
-			if err != nil || string(source.ManagementAuthentication()) != mode {
+			if got, modeErr := source.ManagementAuthentication(); err != nil || modeErr != nil || string(got) != mode {
 				t.Fatalf("source mode: %v, %v", source.Spec.ManagementAuthentication, err)
 			}
 			source.Spec.Nodes[0].Kubernetes.Address = "192.0.2.1"

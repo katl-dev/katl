@@ -652,6 +652,7 @@ func writeSharedFirstInstallConfigBundle(t *testing.T, dir string) string {
 			"name": "katl-shared",
 		},
 		"spec": jsonObject{
+			"managementAuthentication": "trusted-network",
 			"controlPlaneEndpoint": jsonObject{
 				"host": "api.katl.test",
 				"port": 6443,

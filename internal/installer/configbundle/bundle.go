@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -379,7 +380,11 @@ func compileSource(request BuildRequest, deferExtensions bool) (compiledSource, 
 	}
 	// Preserve complete operator intent even when only selected nodes acquire
 	// payloads. Resolution metadata belongs to node material, not source YAML.
-	source.Spec.ManagementAuthentication = source.ManagementAuthentication()
+	authentication, err := source.ManagementAuthentication()
+	if err != nil {
+		return compiledSource{}, err
+	}
+	source.Spec.ManagementAuthentication = authentication
 	source.Spec.ManagementIdentity = ""
 	normalized, err := marshalCanonical(source)
 	if err != nil {
@@ -410,7 +415,7 @@ func compileSource(request BuildRequest, deferExtensions bool) (compiledSource, 
 	kubeadmSourceInputs = append(kubeadmSourceInputs, nodeKubeletInputs...)
 	sourceDigest := digestSourceInputs(normalized, kubeadmSourceInputs)
 	planning := request.Planning
-	if source.ManagementAuthentication() == managementidentity.TrustedNetwork {
+	if authentication == managementidentity.TrustedNetwork {
 		planning.ManagementIdentities = make(map[string]manifest.ManagementIdentity, len(source.Spec.Nodes))
 		for _, node := range source.Spec.Nodes {
 			planning.ManagementIdentities[node.Name] = manifest.ManagementIdentity{Authentication: managementidentity.TrustedNetwork}
@@ -800,7 +805,7 @@ func normalizeSource(source SourceConfig) (SourceConfig, error) {
 
 func normalizeSourceIssues(source SourceConfig) (SourceConfig, []error) {
 	var errs []error
-	if err := source.Spec.ManagementAuthentication.Validate(); err != nil {
+	if _, err := source.ManagementAuthentication(); err != nil {
 		errs = append(errs, err)
 	}
 	if strings.TrimSpace(source.Metadata.Name) == "" {
@@ -1607,15 +1612,26 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-// ManagementAuthentication resolves authoring defaults without consulting workstation state.
-func (source SourceConfig) ManagementAuthentication() managementidentity.Authentication {
+// errManagementAuthenticationRequired refuses a config that states neither a
+// management authentication mode nor a management identity.
+var errManagementAuthenticationRequired = errors.New("spec.managementAuthentication is required: to keep managing nodes installed with trusted-network management, add `managementAuthentication: trusted-network` under spec; for a new mTLS cluster run `katlctl management identity create --config CONFIG`; changing an installed cluster's mode requires reprovisioning (docs/operations/management-auth.md#change-the-access-mode)")
+
+// ManagementAuthentication resolves the management mode a config selects
+// without consulting workstation state. An explicit value wins, and a
+// management identity reference implies mTLS. A config that states neither is
+// an error rather than a mode, because the mode of the nodes it manages cannot
+// be inferred offline.
+func (source SourceConfig) ManagementAuthentication() (managementidentity.Authentication, error) {
 	if source.Spec.ManagementAuthentication != "" {
-		return source.Spec.ManagementAuthentication
+		if err := source.Spec.ManagementAuthentication.Validate(); err != nil {
+			return "", err
+		}
+		return source.Spec.ManagementAuthentication, nil
 	}
 	if source.Spec.ManagementIdentity != "" {
-		return managementidentity.MutualTLS
+		return managementidentity.MutualTLS, nil
 	}
-	return managementidentity.TrustedNetwork
+	return "", errManagementAuthenticationRequired
 }
 
 // nodeKubeadmConfig returns the kubeadm input that node installs and that its

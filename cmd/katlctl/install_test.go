@@ -51,6 +51,7 @@ func TestConfigInitFromInstallerAddress(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"config", "init",
+		"--management-authentication", "trusted-network",
 		"--name", "direct-lab",
 		"--installer", address,
 	}, &stdout, &stderr)

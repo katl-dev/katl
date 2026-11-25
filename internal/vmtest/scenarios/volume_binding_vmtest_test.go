@@ -236,7 +236,7 @@ func (j *volumeJourney) install(ctx context.Context, handle *vmtest.VMHandle) er
 		return err
 	}
 	j.config = filepath.Join(j.dir, "cluster.yaml")
-	if _, err := j.cli(ctx, "config", "init", j.config, "--node", "cp-1=control-plane,"+j.address+","+j.byPath, "--ssh-authorized-key", j.publicKey); err != nil {
+	if _, err := j.cli(ctx, "config", "init", j.config, "--management-authentication", "trusted-network", "--node", "cp-1=control-plane,"+j.address+","+j.byPath, "--ssh-authorized-key", j.publicKey); err != nil {
 		return err
 	}
 	if err := j.selectDataDisk("/dev/disk/by-id/virtio-katl-data"); err != nil {

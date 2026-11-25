@@ -98,7 +98,7 @@ func newConfigInitCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.
 			return runConfigInit(ctx, opts, stdout, stderr)
 		},
 	}
-	cmd.Flags().StringVar(&opts.managementAuthentication, "management-authentication", "", "trusted-network (default) or mtls; --force preserves the existing mode unless specified")
+	cmd.Flags().StringVar(&opts.managementAuthentication, "management-authentication", "", "mtls (default) or trusted-network; --force preserves the existing mode unless specified")
 	cmd.Flags().StringVar(&opts.clusterName, "name", opts.clusterName, "cluster name")
 	cmd.Flags().StringVar(&opts.controlPlane, "control-plane-endpoint", "", "stable Kubernetes API endpoint host:port; defaults to the first control-plane address")
 	cmd.Flags().StringVar(&opts.kubernetesVersion, "kubernetes-version", opts.kubernetesVersion, "override the default Kubernetes payload version")
@@ -180,7 +180,7 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 		}
 	}
 	if source.Spec.ManagementAuthentication == "" {
-		source.Spec.ManagementAuthentication = managementidentity.TrustedNetwork
+		source.Spec.ManagementAuthentication = managementidentity.MutualTLS
 	}
 	existingReference := false
 	existingTLS := false
@@ -191,11 +191,15 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 			if decodeErr != nil {
 				return fmt.Errorf("read existing cluster configuration: %w", decodeErr)
 			}
-			if opts.managementAuthentication == "" {
-				source.Spec.ManagementAuthentication = previousSource.ManagementAuthentication()
+			previousMode, modeErr := previousSource.ManagementAuthentication()
+			if modeErr != nil {
+				return fmt.Errorf("existing cluster configuration %s: %w", opts.outputPath, modeErr)
 			}
-			existingTLS = previousSource.ManagementAuthentication() == managementidentity.MutualTLS
-			if reference := previousSource.Spec.ManagementIdentity; reference != "" && source.ManagementAuthentication() == managementidentity.MutualTLS {
+			if opts.managementAuthentication == "" {
+				source.Spec.ManagementAuthentication = previousMode
+			}
+			existingTLS = previousMode == managementidentity.MutualTLS
+			if reference := previousSource.Spec.ManagementIdentity; reference != "" && source.Spec.ManagementAuthentication == managementidentity.MutualTLS {
 				source.Spec.ManagementIdentity = reference
 				existingReference = true
 			}
@@ -203,7 +207,14 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 			return readErr
 		}
 	}
-	if source.ManagementAuthentication() == managementidentity.MutualTLS && source.Spec.ManagementIdentity == "" {
+	authentication, err := source.ManagementAuthentication()
+	if err != nil {
+		return err
+	}
+	if authentication == managementidentity.MutualTLS && source.Spec.ManagementIdentity == "" {
+		if strings.TrimSpace(opts.outputPath) == "" {
+			return fmt.Errorf("pass PATH so management secrets can be created beside it, or --management-authentication trusted-network")
+		}
 		source.Spec.ManagementIdentity = defaultManagementSecrets
 	}
 	data, err := yaml.Marshal(source)
@@ -225,7 +236,7 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 	if outputErr != nil && !errors.Is(outputErr, os.ErrNotExist) {
 		return outputErr
 	}
-	if source.ManagementAuthentication() != managementidentity.TrustedNetwork {
+	if authentication != managementidentity.TrustedNetwork {
 		secretsPath := source.Spec.ManagementIdentity
 		if !filepath.IsAbs(secretsPath) {
 			secretsPath = filepath.Join(filepath.Dir(opts.outputPath), secretsPath)

@@ -115,8 +115,8 @@ node join to add an installed node, node upgrade to upgrade KatlOS, and
 kubernetes upgrade to apply the Kubernetes version in your configuration.
 
 Pass --config ./cluster.yaml to select your cluster. A saved context is an optional
-shortcut for management commands, not a requirement. New clusters use trusted-network
-management; mTLS is opt-in. Run any command with --help for examples and flags.`,
+shortcut for management commands, not a requirement. New clusters use mTLS
+management; trusted-network is opt-in. Run any command with --help for examples and flags.`,
 		SilenceUsage:      true,
 		SilenceErrors:     true,
 		PersistentPreRunE: validateCommandFlags,
@@ -153,7 +153,7 @@ management; mTLS is opt-in. Run any command with --help for examples and flags.`
 	kubernetesCmd.AddCommand(newKubernetesUpgradeCommand(ctx, stdout, stderr))
 	cmd.AddCommand(kubernetesCmd)
 
-	managementCmd := &cobra.Command{Use: "management", Short: "Manage opt-in mTLS credentials", Example: "katlctl management identity create --config cluster.yaml"}
+	managementCmd := &cobra.Command{Use: "management", Short: "Manage mTLS credentials", Example: "katlctl management identity create --config cluster.yaml"}
 	managementCmd.AddCommand(newManagementIdentityCommand(stdout, stderr))
 	cmd.AddCommand(managementCmd)
 
@@ -1464,7 +1464,11 @@ func overlayWipeContext(ctx context.Context, inv inventory.Inventory, configPath
 				if _, err := managementClientForConfig(sourcePath, source.Metadata.Name); err != nil {
 					return inventory.Inventory{}, err
 				}
-				if source.Spec.ManagementIdentity != "" || source.ManagementAuthentication() == managementidentity.TrustedNetwork {
+				authentication, err := source.ManagementAuthentication()
+				if err != nil {
+					return inventory.Inventory{}, err
+				}
+				if source.Spec.ManagementIdentity != "" || authentication == managementidentity.TrustedNetwork {
 					return inv, nil
 				}
 			}

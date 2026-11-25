@@ -216,7 +216,7 @@ func (j *oldDiskJourney) installAndPowerOff(ctx context.Context, handle *vmtest.
 	}
 
 	config := filepath.Join(j.dir, "cluster.yaml")
-	if _, err := j.cli(ctx, "config", "init", config, "--node", "cp-1=control-plane,"+j.address+","+j.byPath, "--ssh-authorized-key", j.publicKey); err != nil {
+	if _, err := j.cli(ctx, "config", "init", config, "--management-authentication", "trusted-network", "--node", "cp-1=control-plane,"+j.address+","+j.byPath, "--ssh-authorized-key", j.publicKey); err != nil {
 		return err
 	}
 	if _, err := j.cli(ctx, "install", "ssh", "--config", config, "--node", "cp-1"); err != nil {

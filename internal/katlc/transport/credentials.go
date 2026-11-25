@@ -28,9 +28,12 @@ func (c *clientCredentials) ClientHandshake(ctx context.Context, authority strin
 	secure, info, err := c.TransportCredentials.ClientHandshake(ctx, authority, conn)
 	var unknownCA x509.UnknownAuthorityError
 	var wrongName x509.HostnameError
+	var plaintext tls.RecordHeaderError
 	switch {
 	case errors.As(err, &unknownCA):
 		return nil, nil, fmt.Errorf("node uses a different management authority; after rotation use the updated ClusterConfig and refresh saved contexts, otherwise restore the installed authority's secrets or recover node trust through SSH or console access")
+	case errors.As(err, &plaintext):
+		return nil, nil, fmt.Errorf("node serves trusted-network management but the configuration selects mtls; to keep it, set `managementAuthentication: trusted-network`; changing mode requires reprovisioning (docs/operations/management-auth.md#change-the-access-mode)")
 	case errors.As(err, &wrongName):
 		return nil, nil, fmt.Errorf("management address answered with a certificate for another node; check the node name and management.address in the cluster configuration")
 	default:

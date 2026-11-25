@@ -51,8 +51,8 @@ katlctl cluster bootstrap --config ./cluster.yaml \
 ```
 
 Planning uses the configured management mode without extra credential flags.
-Trusted-network mode needs no secrets; mTLS uses the referenced secrets
-file. Set `management.address` and, when different, `kubernetes.address` in
+mTLS, the default, uses the referenced secrets file; trusted-network mode
+needs no secrets. Set `management.address` and, when different, `kubernetes.address` in
 `cluster.yaml` before planning. The `--node-address` flag is hidden, and
 bootstrap rejects it together with `--config`.
 
