@@ -583,3 +583,65 @@ func TestReleaseBranchTriggers(t *testing.T) {
 		}
 	}
 }
+
+// A rerun after a retarget replays the old merge commit, so CI must fail rather
+// than pass for a base it did not test.
+func TestPlanRequiresTestedBase(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Name string
+				If   string `yaml:"if"`
+				Env  map[string]string
+				Run  string
+			}
+		}
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+	var script string
+	for _, step := range workflow.Jobs["plan"].Steps {
+		if step.Name == "Require the tested base" {
+			script = step.Run
+			if step.If != "github.event_name == 'pull_request'" {
+				t.Errorf("step condition = %q, want pull_request events only", step.If)
+			}
+			if step.Env["TESTED_BASE"] != "${{ github.base_ref }}" || step.Env["LIVE_BASE"] != "${{ steps.pr.outputs.base }}" {
+				t.Errorf("step env = %v, want the payload base and the live base", step.Env)
+			}
+		}
+	}
+	if script == "" {
+		t.Fatal("plan job has no step requiring the tested base")
+	}
+
+	for _, tc := range []struct {
+		name, tested, live string
+		wantFail           bool
+	}{
+		{"same base", "main", "main", false},
+		{"retargeted to release branch", "main", "release/2026.12.x", true},
+		{"retargeted to main", "release/2026.12.x", "main", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			command := exec.Command("bash", "-e", "-c", script)
+			command.Env = append(os.Environ(), "TESTED_BASE="+tc.tested, "LIVE_BASE="+tc.live)
+			output, err := command.CombinedOutput()
+			if (err != nil) != tc.wantFail {
+				t.Fatalf("err = %v, want failure %v: %s", err, tc.wantFail, output)
+			}
+			if tc.wantFail {
+				for _, want := range []string{"tested " + tc.tested, "now targets " + tc.live, "close and reopen the pull request, or push a commit"} {
+					if !strings.Contains(string(output), want) {
+						t.Errorf("output = %q, want %q", output, want)
+					}
+				}
+			}
+		})
+	}
+}

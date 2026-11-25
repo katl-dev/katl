@@ -1,12 +1,14 @@
 name: Restart CI
 
-# Adding the vmtest label, or retargeting a pull request to another base, reruns
-# the pull request's CI run so that it plans for the new situation: the VM suites
-# for vmtest, and the full plan for a release-branch base. Retargeting fires only
-# `edited`, which CI does not handle, so a stale fast-only result could otherwise
-# satisfy the release ruleset. This workflow publishes no check named CI, and CI
-# does not trigger on label or edit events, so no other label or edit can cancel,
-# skip or replace the required CI result for the head SHA.
+# Adding the vmtest label reruns the pull request's CI run so that it plans the VM
+# suites. Retargeting a pull request fires only `edited`, which CI does not handle,
+# and a rerun replays the merge commit made with the old base. CI therefore fails
+# that rerun on purpose, which turns the stale green result for the head SHA red
+# until reopening the pull request or pushing a commit runs CI against the new
+# base. GITHUB_TOKEN cannot close and reopen the pull request itself, since events
+# it causes do not start workflows. This workflow publishes no check named CI, and
+# CI does not trigger on label or edit events, so no other label or edit can
+# cancel, skip or replace the required CI result for the head SHA.
 on:
   pull_request:
     types: [labeled, edited]
@@ -43,7 +45,7 @@ jobs:
             state="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid,labels \
               --jq '.headRefOid + " " + (any(.labels[]; .name == "vmtest") | tostring)')"
             [[ "${state%% *}" == "$EVENT_SHA" ]] || return 1
-            # A retarget restarts CI whatever the labels are.
+            # A retarget reruns CI whatever the labels are, to fail the stale result.
             [[ "$ACTION" != labeled || "${state##* }" == true ]]
           }
           if ! current; then

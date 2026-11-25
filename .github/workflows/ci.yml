@@ -13,7 +13,9 @@ permissions:
 
 # Label and edit events do not trigger this workflow, because a cancelled or
 # skipped run would publish a CI result for the head SHA. ci-restart.yml reruns
-# the pull request's run when vmtest is added or the base changes.
+# the pull request's run when vmtest is added or the base changes. After a base
+# change the rerun fails, because it tested the old base; only a fresh run from
+# reopening the pull request or pushing a commit can pass.
 #
 # Only a newer push to the same pull request supersedes a run. Merge-group
 # entries have unique refs, and every other trigger (push, dispatch) is
@@ -47,8 +49,8 @@ jobs:
           go-version-file: go.mod
           cache: true
       # Read the labels and base now rather than from the event payload, which a
-      # rerun repeats unchanged. A pull request retargeted onto a release branch
-      # is rerun to pick up the new base.
+      # rerun repeats unchanged. A run whose payload base is stale fails below
+      # rather than plan for a base it did not test.
       - name: Read pull request state
         id: pr
         if: github.event_name == 'pull_request'
@@ -58,6 +60,19 @@ jobs:
         run: |
           gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels,baseRefName --jq '
             "vmtest=\(any(.labels[]; .name == "vmtest"))\nbase=\(.baseRefName)"' >> "$GITHUB_OUTPUT"
+      # A rerun replays the payload and its merge commit, which was made with the
+      # base at the time. If the pull request has been retargeted since, this run
+      # tested the wrong base and must not pass for the new one.
+      - name: Require the tested base
+        if: github.event_name == 'pull_request'
+        env:
+          TESTED_BASE: ${{ github.base_ref }}
+          LIVE_BASE: ${{ steps.pr.outputs.base }}
+        run: |
+          if [[ "$TESTED_BASE" != "$LIVE_BASE" ]]; then
+            echo "::error::This run tested $TESTED_BASE but the pull request now targets $LIVE_BASE; close and reopen the pull request, or push a commit, to run CI against the new base."
+            exit 1
+          fi
       - name: Select validation
         id: plan
         env:
