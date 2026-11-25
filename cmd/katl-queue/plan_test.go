@@ -337,3 +337,49 @@ func TestStartable(t *testing.T) {
 		t.Errorf("startable = %v, want %v", got, want)
 	}
 }
+
+func TestDeclaredHold(t *testing.T) {
+	tests := []struct {
+		name, body, want string
+	}{
+		{"none", "Closes #5\nholding pattern\n", ""},
+		{"plain", "Closes #5\n\nHold: awaiting the VM gate\n", "awaiting the VM gate"},
+		{"case and indentation", "   hOLD:   needs a journey  \n", "needs a journey"},
+		{"empty reason", "Hold:\nHold:   \n", ""},
+		{"inline mention", "see Hold: later\n", ""},
+		{"fenced", "```\nHold: example\n```\n~~~sh\nHold: another\n~~~\n", ""},
+		{"after a fence", "```\nHold: example\n```\nHold: real\n", "real"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := declaredHold(tt.body); got != tt.want {
+				t.Errorf("declaredHold() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPlanHoldsDeclaredHold(t *testing.T) {
+	f := newPlanFixture(t)
+	held := f.pr(1, "a", 0)
+	held.Hold = "awaiting the VM gate"
+	fine := f.pr(2, "b", 1)
+
+	p := f.plan(planInput{Candidates: []candidate{held, fine}})
+
+	f.expect(p, []int{2}, heldWant{1, 0, nil})
+	if !strings.Contains(p.Held[0].Reason, "awaiting the VM gate") {
+		t.Errorf("reason = %q, want it to give the declared reason", p.Held[0].Reason)
+	}
+}
+
+func TestDecideDisablesAutoMergeForHold(t *testing.T) {
+	f := newDecideFixture(t)
+	w := world{PRs: []openPR{f.clean(1, "b", func(p *openPR) { p.AutoMerge, p.Hold = true, "journey pending" })}}
+
+	got := f.decide(w)
+
+	if want := []string{"disable-auto-merge #1"}; !slices.Equal(actionSummary(got), want) {
+		t.Errorf("actions = %v, want %v", actionSummary(got), want)
+	}
+}

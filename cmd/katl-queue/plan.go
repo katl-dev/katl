@@ -35,6 +35,11 @@ type candidate struct {
 	// Dequeued is set when someone dequeued it by hand and its head has not
 	// changed since.
 	Dequeued bool
+	// SelfDequeued is set when katl-queue dequeued it as unmergeable and its
+	// head has not changed since.
+	SelfDequeued bool
+	// Hold is the reason its body declares it not ready, or empty.
+	Hold string
 }
 
 // externalRef is the state of an issue or pull request that a candidate
@@ -105,6 +110,24 @@ func declaredDeps(body string) []int {
 		}
 	}
 	return deps
+}
+
+var holdLine = regexp.MustCompile(`(?i)^\s*hold:\s*(\S.*?)\s*$`)
+
+// declaredHold returns the reason on the first "Hold: <reason>" line of a pull
+// request body outside a code fence, or empty when there is none.
+func declaredHold(body string) string {
+	fenced := false
+	for _, line := range strings.Split(body, "\n") {
+		if trimmed := strings.TrimSpace(line); strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			fenced = !fenced
+			continue
+		}
+		if m := holdLine.FindStringSubmatch(line); m != nil && !fenced {
+			return m[1]
+		}
+	}
+	return ""
 }
 
 // waits is a candidate's resolved ordering constraints. A dependency counts as
@@ -273,12 +296,20 @@ func planQueue(ctx context.Context, objects *scratchObjects, in planInput) (plan
 			p.Held = append(p.Held, h)
 		}
 
+		if c.Hold != "" {
+			hold(heldPR{Reason: "held: " + c.Hold})
+			continue
+		}
 		if c.Ejected {
 			hold(heldPR{Reason: "was removed from the merge queue for failed checks and no push since is recorded; fix it and push (katl-queue never retries)"})
 			continue
 		}
 		if c.Dequeued {
 			hold(heldPR{Reason: "was dequeued by hand; katl-queue leaves it out until a new head is pushed"})
+			continue
+		}
+		if c.SelfDequeued {
+			hold(heldPR{Reason: "was dequeued by katl-queue as unmergeable; katl-queue leaves it out until a new head is pushed"})
 			continue
 		}
 		if c.ChecksFailed {

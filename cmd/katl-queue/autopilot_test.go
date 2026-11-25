@@ -74,6 +74,9 @@ const (
 	unrecorded recording = iota
 	recordedAtHead
 	recordedBefore
+	// dequeuedBySelf is a pull request katl-queue itself dequeued, which
+	// left only its dequeue marker.
+	dequeuedBySelf
 )
 
 // removedWith gives a pull request the removal and settles it against the
@@ -87,8 +90,10 @@ func removedWith(r removalEvent, rec recording) func(*openPR) {
 			marks = []marker{removalMarker(r.ID, p.Head)}
 		case recordedBefore:
 			marks = []marker{removalMarker(r.ID, "0ld")}
+		case dequeuedBySelf:
+			marks = []marker{dequeueMarker(p.Head)}
 		}
-		p.settle(marks, viewer)
+		p.settle(marks)
 	}
 }
 
@@ -369,7 +374,7 @@ func (r *recorder) Rebase(_ context.Context, branch, head string) (rebaseResult,
 
 func TestApply(t *testing.T) {
 	actions := []action{
-		{Kind: actionDequeue, Number: 6, ID: "id-6"},
+		{Kind: actionDequeue, Number: 6, ID: "id-6", Head: "h6"},
 		{Kind: actionDisable, Number: 7},
 		{Kind: actionExplain, Number: 5, RemovalID: "r-5", Head: "h5"},
 		{Kind: actionRecord, Number: 8, RemovalID: "r-8", Head: "h8"},
@@ -403,11 +408,12 @@ func TestApply(t *testing.T) {
 			}
 			fx.calls[i] = strings.SplitN(call, " | ", 2)[0]
 		}
-		if strings.HasPrefix(call, "comment 8 ") {
+		if strings.HasPrefix(call, "comment 8 ") || strings.HasPrefix(call, "comment 6 ") {
 			fx.calls[i] = strings.SplitN(call, " | ", 2)[0]
 		}
 	}
 	want := []string{
+		"comment 6 <!-- katl-queue:dequeue h6 -->",
 		"dequeue id-6",
 		"disable-auto 7",
 		"comment 5 <!-- katl-queue:removal r-5@h5 --> | ``` | #5 removed | ```",

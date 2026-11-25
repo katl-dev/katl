@@ -40,6 +40,10 @@ Commands:
 
 plan and autopilot only report unless given --apply, which needs --milestone.
 
+A "Hold: <reason>" line in a PR body holds the PR out of the queue. The
+orchestrator adds it while a PR awaits VM gates or a journey, and deletes it
+when they pass.
+
 Exit status is 1 when check finds a conflict, enqueue refuses, or a watched PR
 leaves the queue without merging, and 2 on any other error.
 `

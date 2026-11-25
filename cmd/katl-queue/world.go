@@ -34,6 +34,9 @@ type openPR struct {
 	// OptionalReported is set when katl-queue already reported the failing
 	// optional checks of this head.
 	OptionalReported bool
+	// DequeueMarked is set when katl-queue recorded that it dequeued this
+	// head itself.
+	DequeueMarked bool
 }
 
 // queueEntryState is a merge-queue entry and its queue-assigned state.
@@ -91,23 +94,32 @@ func (w world) eligible(pr openPR) bool {
 type removalKind int
 
 const (
-	// removalOther is a removal katl-queue takes no position on: none, the
-	// queue's own conflict or merge handling, or katl-queue's own dequeue.
+	// removalOther is a removal katl-queue takes no position on: none, or
+	// the queue's own conflict or merge handling.
 	removalOther removalKind = iota
 	// removalEjected is the queue's removal for failed or timed-out checks.
 	removalEjected
-	// removalDequeued is a dequeue by someone other than katl-queue, which
-	// is the operator's intent to keep the pull request out.
+	// removalDequeued is a dequeue by hand, which is the operator's intent
+	// to keep the pull request out.
 	removalDequeued
+	// removalSelf is katl-queue's own dequeue of an unmergeable entry. It
+	// needs no record, and re-enqueueing the same head would only repeat it.
+	removalSelf
 )
 
-func (pr openPR) removalKind(viewer string) removalKind {
+// removalKind classifies a removal by what it records rather than who made
+// it: katl-queue runs as the operator's own login, so a hand dequeue and
+// katl-queue's own both appear as a manual removal by the viewer. Only the
+// marker katl-queue posts before dequeuing tells them apart.
+func (pr openPR) removalKind() removalKind {
 	switch {
 	case pr.Removal == nil:
 		return removalOther
 	case pr.Removal.forFailedChecks():
 		return removalEjected
-	case pr.Removal.Reason == "manual" && (pr.Removal.Actor == nil || pr.Removal.Actor.Login != viewer):
+	case pr.Removal.Reason == "manual" && pr.DequeueMarked:
+		return removalSelf
+	case pr.Removal.Reason == "manual":
 		return removalDequeued
 	}
 	return removalOther
@@ -123,6 +135,12 @@ func removalMarker(removalID, head string) marker {
 	return marker{Kind: "removal", Value: removalID + "@" + head}
 }
 
+// dequeueMarker records, before katl-queue dequeues a pull request, the head
+// it had.
+func dequeueMarker(head string) marker {
+	return marker{Kind: "dequeue", Value: head}
+}
+
 // optionalMarker tags a comment that reported the failing optional checks of
 // a head, so each head is reported once.
 func optionalMarker(head string) marker {
@@ -134,12 +152,16 @@ func optionalMarker(head string) marker {
 // A removal that katl-queue has not recorded holds the pull request unless
 // GitHub records a push after it; without that record katl-queue cannot tell
 // whether the head changed, so it holds.
-func (pr *openPR) settle(marks []marker, viewer string) {
+func (pr *openPR) settle(marks []marker) {
 	for _, m := range marks {
 		switch m.Kind {
 		case "removal":
 			if id, head, ok := strings.Cut(m.Value, "@"); ok && pr.Removal != nil && id == pr.Removal.ID {
 				pr.RemovalHead = head
+			}
+		case "dequeue":
+			if m.Value == pr.Head {
+				pr.DequeueMarked = true
 			}
 		case "optional":
 			if m.Value == pr.Head {
@@ -151,15 +173,17 @@ func (pr *openPR) settle(marks []marker, viewer string) {
 	if pr.RemovalHead != "" {
 		held = pr.RemovalHead == pr.Head
 	}
-	kind := pr.removalKind(viewer)
+	kind := pr.removalKind()
 	pr.Ejected = kind == removalEjected && held
 	pr.Dequeued = kind == removalDequeued && held
+	pr.SelfDequeued = kind == removalSelf && held
 }
 
 // unrecorded reports whether the latest removal is one katl-queue holds the
 // pull request for but has not yet recorded.
-func (pr openPR) unrecorded(viewer string) bool {
-	return pr.removalKind(viewer) != removalOther && pr.RemovalHead == "" && !pr.PushedAfterRemoval
+func (pr openPR) unrecorded() bool {
+	kind := pr.removalKind()
+	return (kind == removalEjected || kind == removalDequeued) && pr.RemovalHead == "" && !pr.PushedAfterRemoval
 }
 
 // worldFrom derives the world from a snapshot. A non-empty milestone limits
@@ -204,6 +228,7 @@ func worldFrom(snap queueSnapshot, milestone string) world {
 			}
 		}
 		pr.Deps = declaredDeps(n.Body)
+		pr.Hold = declaredHold(n.Body)
 		w.PRs = append(w.PRs, pr)
 	}
 	return w
@@ -243,7 +268,7 @@ func (g *gh) world(ctx context.Context, milestone string) (world, error) {
 		if err != nil {
 			return w, err
 		}
-		pr.settle(marks, w.Viewer)
+		pr.settle(marks)
 	}
 
 	if err := g.loadDependencies(ctx, &w); err != nil {

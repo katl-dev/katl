@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -57,7 +59,7 @@ func TestSettleRemoval(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			pr := openPR{candidate: candidate{Head: tt.head}, Removal: &tt.removal}
 
-			pr.settle(tt.marks, viewer)
+			pr.settle(tt.marks)
 
 			if pr.Ejected != tt.wantEjected || pr.Dequeued {
 				t.Errorf("Ejected, Dequeued = %v, %v; want %v, false", pr.Ejected, pr.Dequeued, tt.wantEjected)
@@ -70,8 +72,8 @@ func TestSettleRemoval(t *testing.T) {
 		held := openPR{candidate: candidate{Head: "A"}, Removal: &manual}
 		settled := openPR{candidate: candidate{Head: "B"}, Removal: &manual}
 
-		held.settle([]marker{removalMarker("r3", "A")}, viewer)
-		settled.settle([]marker{removalMarker("r3", "A")}, viewer)
+		held.settle([]marker{removalMarker("r3", "A")})
+		settled.settle([]marker{removalMarker("r3", "A")})
 
 		if !held.Dequeued || held.Ejected {
 			t.Errorf("unchanged head: Dequeued, Ejected = %v, %v; want true, false", held.Dequeued, held.Ejected)
@@ -81,23 +83,52 @@ func TestSettleRemoval(t *testing.T) {
 		}
 	})
 
+	// katl-queue runs as the operator's own login, so a hand dequeue is a
+	// manual removal by the viewer too.
+	t.Run("hand dequeue by the viewer", func(t *testing.T) {
+		manual := removalBy("r3", "manual", viewer)
+		pr := openPR{candidate: candidate{Head: "A"}, Removal: &manual}
+
+		pr.settle(nil)
+
+		if !pr.Dequeued || pr.SelfDequeued || !pr.unrecorded() {
+			t.Errorf("Dequeued, SelfDequeued, unrecorded = %v, %v, %v; want true, false, true", pr.Dequeued, pr.SelfDequeued, pr.unrecorded())
+		}
+	})
+
 	t.Run("own dequeue", func(t *testing.T) {
-		own := removalBy("r3", "manual", viewer)
-		pr := openPR{candidate: candidate{Head: "A"}, Removal: &own}
+		manual := removalBy("r3", "manual", viewer)
+		held := openPR{candidate: candidate{Head: "A"}, Removal: &manual}
+		settled := openPR{candidate: candidate{Head: "B"}, Removal: &manual}
 
-		pr.settle(nil, viewer)
+		held.settle([]marker{dequeueMarker("A")})
+		settled.settle([]marker{dequeueMarker("A"), removalMarker("r3", "A")})
 
-		if pr.Dequeued || pr.Ejected || pr.unrecorded(viewer) {
-			t.Errorf("katl-queue's own UNMERGEABLE dequeue is not held, recorded or explained: %+v", pr)
+		if !held.SelfDequeued || held.Dequeued || held.Ejected || held.unrecorded() {
+			t.Errorf("unchanged head: %+v; want held, and neither recorded nor explained", held)
+		}
+		if settled.SelfDequeued || settled.Dequeued {
+			t.Error("a new head must settle katl-queue's own dequeue")
+		}
+	})
+
+	t.Run("dequeue marker of another head", func(t *testing.T) {
+		manual := removalBy("r3", "manual", viewer)
+		pr := openPR{candidate: candidate{Head: "B"}, Removal: &manual}
+
+		pr.settle([]marker{dequeueMarker("A")})
+
+		if pr.SelfDequeued || !pr.Dequeued {
+			t.Errorf("SelfDequeued, Dequeued = %v, %v; want false, true: a marker covers one head", pr.SelfDequeued, pr.Dequeued)
 		}
 	})
 
 	t.Run("optional report", func(t *testing.T) {
 		pr := openPR{candidate: candidate{Head: "A"}}
 
-		pr.settle([]marker{optionalMarker("A"), optionalMarker("old")}, viewer)
+		pr.settle([]marker{optionalMarker("A"), optionalMarker("old")})
 		other := openPR{candidate: candidate{Head: "B"}}
-		other.settle([]marker{optionalMarker("A")}, viewer)
+		other.settle([]marker{optionalMarker("A")})
 
 		if !pr.OptionalReported || other.OptionalReported {
 			t.Errorf("OptionalReported = %v, %v; want true, false: a report covers one head", pr.OptionalReported, other.OptionalReported)
@@ -111,6 +142,7 @@ func TestDecideRemovals(t *testing.T) {
 	timedOut := removalBy("r-timeout", "checks_timed_out", "github-merge-queue")
 	manual := removalBy("r-manual", "manual", "someone")
 	own := removalBy("r-own", "manual", viewer)
+	handByViewer := removalBy("r-hand", "manual", viewer)
 	conflict := removalBy("r-conflict", "merge_conflict", "github-merge-queue")
 
 	tests := []struct {
@@ -128,7 +160,9 @@ func TestDecideRemovals(t *testing.T) {
 		{"hand dequeue, first seen", manual, unrecorded, []string{"record #1"}},
 		{"hand dequeue, unchanged head", manual, recordedAtHead, nil},
 		{"hand dequeue, new head", manual, recordedBefore, []string{"enqueue #1"}},
-		{"own dequeue", own, unrecorded, []string{"enqueue #1"}},
+		{"hand dequeue by the viewer", handByViewer, unrecorded, []string{"record #1"}},
+		{"hand dequeue by the viewer, recorded", handByViewer, recordedAtHead, nil},
+		{"own dequeue", own, dequeuedBySelf, nil},
 		{"other removal reason", conflict, unrecorded, []string{"enqueue #1"}},
 	}
 	for _, tt := range tests {
@@ -141,6 +175,42 @@ func TestDecideRemovals(t *testing.T) {
 				t.Errorf("actions = %v, want %v", actionSummary(got), tt.want)
 			}
 		})
+	}
+}
+
+// katl-queue's dequeue of an unmergeable entry is a manual removal that an
+// unchanged head would otherwise re-enqueue, only to be marked unmergeable
+// again.
+func TestDecideDoesNotRepeatOwnDequeue(t *testing.T) {
+	f := newDecideFixture(t)
+	unmergeable := f.clean(1, "b", func(p *openPR) { p.InQueue = true })
+	w := world{
+		Entries: []queueEntryState{{Number: 1, ID: "id-1", State: "UNMERGEABLE"}},
+		Queue:   []queuedPR{{Number: 1, Head: unmergeable.Head}},
+		PRs:     []openPR{unmergeable},
+	}
+
+	first := f.decide(w)
+	dequeue := first.Actions[0]
+	fx := &recorder{}
+	if err := apply(context.Background(), fx, first.Actions, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	// The next pass sees the pull request out of the queue, removed by this
+	// login, with the marker the first pass left.
+	afterwards := unmergeable
+	afterwards.InQueue = false
+	removedWith(removalBy("r-self", "manual", viewer), dequeuedBySelf)(&afterwards)
+	second := f.decide(world{PRs: []openPR{afterwards}})
+
+	if dequeue.Kind != actionDequeue || dequeue.Head != unmergeable.Head {
+		t.Fatalf("first pass actions = %v, want a dequeue of the head it saw", actionSummary(first))
+	}
+	if len(fx.calls) != 2 || !strings.Contains(fx.calls[0], dequeueMarker(unmergeable.Head).String()) || fx.calls[1] != "dequeue id-1" {
+		t.Errorf("calls = %v, want the marker comment before the dequeue", fx.calls)
+	}
+	if got := actionSummary(second); len(got) != 0 {
+		t.Errorf("second pass actions = %v, want none for an unchanged head", got)
 	}
 }
 
@@ -293,13 +363,13 @@ func TestWorldRemovalWithoutMarker(t *testing.T) {
 
 			w := worldFrom(queueSnapshot{Viewer: viewer, PRs: []prResponse{pr}}, "")
 			got := w.PRs[0]
-			got.settle(nil, viewer)
+			got.settle(nil)
 
 			if got.Ejected != tt.wantEjected {
 				t.Errorf("Ejected = %v, want %v", got.Ejected, tt.wantEjected)
 			}
-			if got.unrecorded(viewer) != tt.wantEjected {
-				t.Errorf("unrecorded = %v, want %v", got.unrecorded(viewer), tt.wantEjected)
+			if got.unrecorded() != tt.wantEjected {
+				t.Errorf("unrecorded = %v, want %v", got.unrecorded(), tt.wantEjected)
 			}
 		})
 	}

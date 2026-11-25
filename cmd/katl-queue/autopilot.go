@@ -103,7 +103,7 @@ func decide(ctx context.Context, objects *scratchObjects, w world) (decision, er
 	for _, e := range w.Entries {
 		if pr, ok := byNumber[e.Number]; e.State == "UNMERGEABLE" && ok && w.eligible(pr) {
 			unmergeable[e.Number] = true
-			d.Actions = append(d.Actions, action{Kind: actionDequeue, Number: e.Number, ID: e.ID, Detail: "the queue marked the entry unmergeable"})
+			d.Actions = append(d.Actions, action{Kind: actionDequeue, Number: e.Number, ID: e.ID, Head: pr.Head, Detail: "the queue marked the entry unmergeable"})
 		}
 	}
 	w.Queue = slices.DeleteFunc(slices.Clone(w.Queue), func(q queuedPR) bool { return unmergeable[q.Number] })
@@ -113,8 +113,8 @@ func decide(ctx context.Context, objects *scratchObjects, w world) (decision, er
 		if !w.eligible(pr) || pr.InQueue {
 			continue
 		}
-		if pr.unrecorded(w.Viewer) {
-			switch pr.removalKind(w.Viewer) {
+		if pr.unrecorded() {
+			switch pr.removalKind() {
 			case removalEjected:
 				d.Actions = append(d.Actions, action{Kind: actionExplain, Number: pr.Number, RemovalID: pr.Removal.ID, Head: pr.Head, Detail: "removed from the queue: " + pr.Removal.Reason})
 			case removalDequeued:
@@ -219,6 +219,12 @@ func applyOne(ctx context.Context, fx effects, a action, out io.Writer) error {
 	case actionEnqueue:
 		return fx.Enqueue(ctx, a.Number)
 	case actionDequeue:
+		// GitHub records the dequeue as a manual removal by this login,
+		// the same as a hand dequeue; the marker is what tells them apart,
+		// so it goes first.
+		if err := fx.Comment(ctx, a.Number, dequeueMarker(a.Head).String()+"\nDequeued by katl-queue because the queue marked the entry unmergeable. It stays out of the queue until a new head is pushed."); err != nil {
+			return err
+		}
 		return fx.Dequeue(ctx, a.ID)
 	case actionDisable:
 		return fx.DisableAutoMerge(ctx, a.Number)
