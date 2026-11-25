@@ -738,7 +738,10 @@ fi
 run_flags=(
     run
     --rm
-    --privileged
+    --cap-add SYS_ADMIN
+    --cap-add NET_ADMIN
+    --security-opt seccomp=unconfined
+    --security-opt label=disable
     --volume "$repo_root:/work"
     --workdir /work
     --env "KATL_FLAVOUR=$flavour"
@@ -846,9 +849,17 @@ if [[ -n "$installer_package_set" ]]; then
     mkosi_env+=(--manifest-format json)
 fi
 
-if [[ "$runtime" == podman ]]; then
-    run_flags+=(--userns=keep-id --user root)
-fi
+# The builder gets the capabilities mkosi-sandbox needs to mount and unshare,
+# and no host devices: --privileged makes the runtime pass every node in the
+# host /dev at create time, so a hot-unplugged device fails container start.
+case "$runtime" in
+    podman)
+        run_flags+=(--userns=keep-id --user root --security-opt unmask=ALL)
+        ;;
+    docker)
+        run_flags+=(--security-opt apparmor=unconfined --security-opt systempaths=unconfined)
+        ;;
+esac
 if [[ -n "$mkosi_installer_package_set" ]]; then
     run_flags+=(--env "KATL_INSTALLER_PACKAGE_SET=$mkosi_installer_package_set")
 else
