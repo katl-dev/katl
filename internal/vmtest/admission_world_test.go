@@ -151,20 +151,21 @@ func TestPlanScenarioSweepsFinishedRunsEachTime(t *testing.T) {
 }
 
 func TestAdmissionWaitsForAvailableMemory(t *testing.T) {
-	a := testAdmission(t, 8, 65536)
+	a := testAdmission(t, 4, 65536)
+	demand := Demand{VCPUs: 6, MemoryMiB: 2048}
 	var available atomic.Int64
 	available.Store(1024)
 	a.AvailableMemoryMiB = func() (int, error) { return int(available.Load()), nil }
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	_, err := a.Admit(ctx, "run-a", "one", Demand{VCPUs: 2, MemoryMiB: 2048})
+	_, err := a.Admit(ctx, "run-a", "one", demand)
 
 	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "available memory") {
 		t.Fatalf("Admit() with an empty ledger and scarce host memory error = %v, want a wait on available memory", err)
 	}
 	available.Store(4096)
-	admitNow(t, a, "run-a", "one", Demand{VCPUs: 2, MemoryMiB: 2048})
+	admitNow(t, a, "run-a", "one", demand)
 }
 
 func TestAvailableMemoryLeavesHostReserve(t *testing.T) {

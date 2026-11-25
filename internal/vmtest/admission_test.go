@@ -119,44 +119,91 @@ func waitFor(t *testing.T, condition func() bool) {
 	}
 }
 
-func TestAdmissionRejectsDemandHostCanNeverMeet(t *testing.T) {
-	a := testAdmission(t, 4, 8192)
+func TestAdmissionSerializesVCPUOvercommit(t *testing.T) {
+	for _, tt := range []struct {
+		name                 string
+		heldVCPUs, nextVCPUs int
+	}{
+		{"oversized request", 2, 6},
+		{"oversized holder", 6, 2},
+		{"combined demand", 3, 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			a := testAdmission(t, 4, 13653)
+			held := admitNow(t, a, "run-a", "first", Demand{VCPUs: tt.heldVCPUs, MemoryMiB: 6144})
+			next := Demand{VCPUs: tt.nextVCPUs, MemoryMiB: 6144}
 
-	started := time.Now()
-	_, err := a.Admit(context.Background(), "run-a", "big", Demand{VCPUs: 6, MemoryMiB: 1024})
+			assertAdmissionWaits(t, a, "run-b", "second", next)
 
-	if !errors.Is(err, ErrDemandExceedsHost) {
-		t.Fatalf("Admit() error = %v, want ErrDemandExceedsHost", err)
-	}
-	if time.Since(started) > time.Second {
-		t.Fatalf("Admit() took %s, want an immediate rejection", time.Since(started))
+			held.Release()
+			admitNow(t, a, "run-b", "second", next)
+		})
 	}
 }
 
-func TestAdmissionRejectsScenarioNestedBeyondCapacity(t *testing.T) {
-	// A scenario that starts while its own run holds another can only wait
-	// for the outer one, which waits for it.
-	a := testAdmission(t, 4, 8192)
-	admitNow(t, a, "run-a", "outer", Demand{VCPUs: 2, MemoryMiB: 4096})
+func TestAdmissionAllowsOwnRunGrowth(t *testing.T) {
+	a := testAdmission(t, 4, 13653)
+	admitNow(t, a, "run-a", "outer", Demand{VCPUs: 4, MemoryMiB: 4096})
 
-	_, err := a.Admit(context.Background(), "run-a", "inner", Demand{VCPUs: 4, MemoryMiB: 1024})
+	admitNow(t, a, "run-a", "worker", Demand{VCPUs: 2, MemoryMiB: 2048})
+}
 
-	if !errors.Is(err, ErrDemandExceedsHost) {
-		t.Fatalf("Admit() error = %v, want ErrDemandExceedsHost", err)
+func TestAdmissionGrowthWaitsForOtherRuns(t *testing.T) {
+	a := testAdmission(t, 4, 13653)
+	admitNow(t, a, "run-a", "outer", Demand{VCPUs: 3, MemoryMiB: 4096})
+	other := admitNow(t, a, "run-b", "other", Demand{VCPUs: 1, MemoryMiB: 2048})
+	growth := Demand{VCPUs: 2, MemoryMiB: 2048}
+
+	assertAdmissionWaits(t, a, "run-a", "more", growth)
+
+	other.Release()
+	admitNow(t, a, "run-a", "more", growth)
+}
+
+func assertAdmissionWaits(t *testing.T, a Admission, run, scenario string, demand Demand) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	reservation, err := a.Admit(ctx, run, scenario, demand)
+	defer reservation.Release()
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Admit(%s/%s, %s) error = %v, want it to wait for capacity", run, scenario, demand, err)
 	}
+}
+
+func TestAdmissionRejectsMemoryBeyondCapacity(t *testing.T) {
+	t.Run("scenario", func(t *testing.T) {
+		a := testAdmission(t, 4, 8192)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		reservation, err := a.Admit(ctx, "run-a", "big", Demand{VCPUs: 2, MemoryMiB: 8193})
+		defer reservation.Release()
+
+		if !errors.Is(err, ErrDemandExceedsHost) || !strings.Contains(err.Error(), admissionMemoryEnv) {
+			t.Fatalf("Admit() error = %v, want ErrDemandExceedsHost and memory capacity guidance", err)
+		}
+	})
+	t.Run("own run", func(t *testing.T) {
+		a := testAdmission(t, 4, 8192)
+		admitNow(t, a, "run-a", "outer", Demand{VCPUs: 2, MemoryMiB: 4096})
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		reservation, err := a.Admit(ctx, "run-a", "inner", Demand{VCPUs: 2, MemoryMiB: 4097})
+		defer reservation.Release()
+
+		if !errors.Is(err, ErrDemandExceedsHost) {
+			t.Fatalf("Admit() error = %v, want ErrDemandExceedsHost", err)
+		}
+	})
 }
 
 func TestAdmissionStopsWaitingWhenContextEnds(t *testing.T) {
 	a := testAdmission(t, 2, 4096)
 	admitNow(t, a, "run-a", "one", Demand{VCPUs: 2, MemoryMiB: 4096})
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
 
-	_, err := a.Admit(ctx, "run-b", "two", Demand{VCPUs: 1, MemoryMiB: 1024})
-
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Admit() error = %v, want the context's deadline", err)
-	}
+	assertAdmissionWaits(t, a, "run-b", "two", Demand{VCPUs: 1, MemoryMiB: 1024})
 }
 
 func TestAdmissionReleaseFreesCapacityOnce(t *testing.T) {

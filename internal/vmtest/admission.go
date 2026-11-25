@@ -35,8 +35,8 @@ const (
 	admissionProgressEach   = 30 * time.Second
 )
 
-// ErrDemandExceedsHost reports a demand that the host's capacity can never
-// meet, however many reservations end.
+// ErrDemandExceedsHost reports a demand that exceeds the host's memory budget
+// even when the run is alone.
 var ErrDemandExceedsHost = errors.New("vmtest demand exceeds host capacity")
 
 // Demand is the vCPU and memory that a scenario's VMs need at the same time.
@@ -51,10 +51,6 @@ func nodesDemand(nodes int) Demand {
 
 func (d Demand) String() string {
 	return fmt.Sprintf("%d vCPU / %d MiB", d.VCPUs, d.MemoryMiB)
-}
-
-func (d Demand) fitsIn(capacity Demand) bool {
-	return d.VCPUs <= capacity.VCPUs && d.MemoryMiB <= capacity.MemoryMiB
 }
 
 // HostCapacity returns what VMs may use together: the host's CPUs and memory
@@ -176,13 +172,13 @@ type Admission struct {
 }
 
 // Admit reserves demand for the scenario, waiting until the ledger has room.
-// A demand that capacity can never meet fails at once with
-// ErrDemandExceedsHost.
+// A run may exceed the vCPU budget when it is the only holder. A demand that
+// exceeds the memory budget even with only its own run fails immediately.
 func (a Admission) Admit(ctx context.Context, run, scenario string, demand Demand) (*Reservation, error) {
 	if demand.VCPUs <= 0 || demand.MemoryMiB <= 0 {
 		return nil, fmt.Errorf("vmtest demand %s must be positive", demand)
 	}
-	if !demand.fitsIn(a.Capacity) {
+	if demand.MemoryMiB > a.Capacity.MemoryMiB {
 		return nil, fmt.Errorf("%w: scenario %s needs %s, the host allows %s; lower the scenario's nodes or raise %s and %s", ErrDemandExceedsHost, scenario, demand, a.Capacity, admissionVCPUsEnv, admissionMemoryEnv)
 	}
 	if err := os.MkdirAll(a.Dir, 0o755); err != nil {
@@ -244,21 +240,26 @@ func (a Admission) tryAdmit(run, scenario string, demand Demand) (*Reservation, 
 	if err != nil {
 		return nil, "", err
 	}
-	var used, own Demand
+	var own, other Demand
 	for _, held := range live {
 		if held.Run == run {
 			own.VCPUs += held.VCPUs
 			own.MemoryMiB += held.MemoryMiB
+		} else {
+			other.VCPUs += held.VCPUs
+			other.MemoryMiB += held.MemoryMiB
 		}
-		used.VCPUs += held.VCPUs
-		used.MemoryMiB += held.MemoryMiB
 	}
 	// A run executes its tests one after another, so a scenario that starts while
 	// another of its run is live is nested in it. Waiting for the outer scenario
 	// to finish would never end.
-	if !(Demand{VCPUs: own.VCPUs + demand.VCPUs, MemoryMiB: own.MemoryMiB + demand.MemoryMiB}).fitsIn(a.Capacity) {
+	runMemory := own.MemoryMiB + demand.MemoryMiB
+	if runMemory > a.Capacity.MemoryMiB {
 		return nil, "", fmt.Errorf("%w: scenario %s needs %s while its own run holds %s of the host's %s", ErrDemandExceedsHost, scenario, demand, own, a.Capacity)
 	}
+	// KVM can overcommit vCPUs. Enforce the CPU budget only when another run
+	// holds a reservation, including all of this run's existing demand then.
+	cpuFits := other.VCPUs == 0 || own.VCPUs+demand.VCPUs+other.VCPUs <= a.Capacity.VCPUs
 	// The ledger knows only admitted scenarios; the host's available memory also
 	// reflects VMs that nobody admitted.
 	memoryShort := ""
@@ -271,7 +272,7 @@ func (a Admission) tryAdmit(run, scenario string, demand Demand) (*Reservation, 
 			memoryShort = fmt.Sprintf("the host's available memory (%d MiB beyond its reserve)", available)
 		}
 	}
-	if memoryShort == "" && (Demand{VCPUs: used.VCPUs + demand.VCPUs, MemoryMiB: used.MemoryMiB + demand.MemoryMiB}).fitsIn(a.Capacity) {
+	if cpuFits && runMemory+other.MemoryMiB <= a.Capacity.MemoryMiB && memoryShort == "" {
 		reservation, err := a.reserve(run, scenario, demand)
 		return reservation, "", err
 	}

@@ -168,12 +168,20 @@ The ledger is a directory of reservation files shared by the user's runs
 reservation counts while a process holds a flock on its file; the kernel drops
 that lock when the holder dies, so a killed run frees its capacity and the next
 admission deletes the leftover file. Counting and creating a reservation happen
-under one ledger lock. Capacity is the host's CPUs and its memory minus a
-reserve of the larger of 2 GiB and an eighth, and
-`KATL_VMTEST_ADMISSION_VCPUS` and `KATL_VMTEST_ADMISSION_MEMORY_MIB` override
-it. A scenario that does not fit waits and prints `waiting for N vCPU / M MiB;
-held by run X`. A demand above capacity, or one that its own run's earlier
-scenario makes impossible, fails at once.
+under one ledger lock.
+
+The host's CPU count sets the vCPU budget for concurrent runs. A run can exceed
+that budget when it holds the only reservations, including when it adds nodes
+through a nested scenario. While multiple runs hold reservations, their
+combined demand must fit within the vCPU budget.
+
+The memory budget defaults to the host's total memory minus the larger of 2 GiB
+and one eighth of total memory. If a run's combined memory demand exceeds that
+budget, admission fails immediately. A scenario waits if the other runs'
+reservations leave too little capacity or the host has too little memory
+available beyond its reserve. While a scenario waits, it reports its demand
+and what is holding capacity. `KATL_VMTEST_ADMISSION_VCPUS` and
+`KATL_VMTEST_ADMISSION_MEMORY_MIB` override the respective budgets.
 
 vsock guest CIDs are allocated by libvirt (`cid auto='yes'`) and read back from
 the running domain.
