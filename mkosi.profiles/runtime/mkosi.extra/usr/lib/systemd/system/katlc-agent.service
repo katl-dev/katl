@@ -8,7 +8,7 @@ Before=katl-kubeadm-ready.target
 RequiresMountsFor=/efi /var/lib/katl
 
 [Service]
-Type=simple
+Type=notify
 ExecStart=/usr/bin/katlc agent serve --root=/ --listen tcp://0.0.0.0:9443
 Restart=on-failure
 RestartSec=5s
