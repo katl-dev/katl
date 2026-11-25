@@ -257,7 +257,7 @@ version_for_ref() {
     local version
 
     case "$event" in
-        workflow_dispatch)
+        workflow_dispatch|schedule)
             version="$manual_version"
             ;;
         push)

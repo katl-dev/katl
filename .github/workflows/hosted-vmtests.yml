@@ -30,10 +30,6 @@ on:
       scenarios:
         description: Planned include matrix; empty runs the complete suite
         type: string
-      cache-only:
-        description: Build the shared images to refresh build caches without running scenarios
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -244,7 +240,6 @@ jobs:
   scenarios:
     name: VM / ${{ matrix.name }}
     needs: [plan, images]
-    if: ${{ !inputs.cache-only }}
     runs-on: ${{ needs.plan.outputs.runner }}
     timeout-minutes: 90
     strategy:

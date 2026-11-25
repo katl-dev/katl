@@ -31,6 +31,8 @@ func TestKatlReleaseArtifactVersion(t *testing.T) {
 		{name: "development tag", args: []string{"version", "push", "tag", "v2026.7.0-dev.0"}, want: "2026.7.0-dev.0"},
 		{name: "alpha tag", args: []string{"version", "push", "tag", "v2026.7.0-alpha.1"}, want: "2026.7.0-alpha.1"},
 		{name: "manual", args: []string{"version", "workflow_dispatch", "branch", "main", "2026.7.0-dev.1"}, want: "2026.7.0-dev.1"},
+		{name: "scheduled", args: []string{"version", "schedule", "branch", "main", "2026.7.1-dev.0"}, want: "2026.7.1-dev.0"},
+		{name: "scheduled without version", args: []string{"version", "schedule", "branch", "main", ""}, wantErr: "version is empty"},
 		{name: "series branch", args: []string{"version", "push", "branch", "release/2026.12.x"}, wantErr: "unsupported push ref type"},
 		{name: "versioned branch", args: []string{"version", "push", "branch", "release/2026.7.0-rc.1"}, wantErr: "unsupported push ref type"},
 		{name: "semantic version", args: []string{"version", "push", "tag", "v0.1.0"}, wantErr: "not canonical"},

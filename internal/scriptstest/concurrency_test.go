@@ -139,6 +139,9 @@ func (p *expressionParser) and() any {
 
 func (p *expressionParser) equal() any {
 	v := p.primary()
+	if p.take("!=") {
+		return v != p.primary()
+	}
 	if p.take("==") {
 		return v == p.primary()
 	}
@@ -159,8 +162,12 @@ func (p *expressionParser) primary() any {
 		return v
 	}
 	start := p.pos
-	for p.pos < len(p.src) && (p.src[p.pos] == '.' || p.src[p.pos] == '_' || p.src[p.pos] >= 'a' && p.src[p.pos] <= 'z') {
+	for p.pos < len(p.src) && (p.src[p.pos] == '.' || p.src[p.pos] == '_' || p.src[p.pos] >= 'a' && p.src[p.pos] <= 'z' || p.src[p.pos] >= '0' && p.src[p.pos] <= '9') {
 		p.pos++
 	}
-	return p.ctx[p.src[start:p.pos]]
+	name := p.src[start:p.pos]
+	if name != "" && name[0] >= '0' && name[0] <= '9' {
+		return name
+	}
+	return p.ctx[name]
 }

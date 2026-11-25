@@ -12,6 +12,7 @@ import (
 )
 
 type workflowStep struct {
+	ID              string            `yaml:"id"`
 	Name            string            `yaml:"name"`
 	If              string            `yaml:"if"`
 	Run             string            `yaml:"run"`
@@ -611,6 +612,183 @@ func TestReleaseValidationRegressionSkip(t *testing.T) {
 			output, err := command.CombinedOutput()
 			if (err == nil) != tc.pass {
 				t.Fatalf("validation result = %v, want pass=%v: %s", err, tc.pass, output)
+			}
+		})
+	}
+}
+
+func TestNightlyCandidateScheduled(t *testing.T) {
+	workflow, _ := readWorkflow(t, "release-artifacts.yml")
+	var on struct {
+		Schedule []struct{ Cron string } `yaml:"schedule"`
+	}
+	if err := workflow.On.Decode(&on); err != nil {
+		t.Fatal(err)
+	}
+	if len(on.Schedule) != 1 {
+		t.Fatalf("release artifacts schedules = %v, want one nightly candidate", on.Schedule)
+	}
+
+	// A scheduled run has no inputs; an unset number input compares equal to zero.
+	vmtests, ok := workflow.Jobs["vmtests"]
+	if !ok {
+		t.Fatal("release artifacts has no vmtests job")
+	}
+	condition := expandExpressions(t, "${{ "+vmtests.If+" }}", map[string]string{
+		"github.event_name": "schedule", "inputs.qualify_run": "0",
+	})
+	if condition != "true" {
+		t.Errorf("vmtests if %q evaluates to %s on schedule, want true so the nightly refreshes the VM image caches", vmtests.If, condition)
+	}
+	if scenarios := vmtests.With["scenarios"]; scenarios != "" {
+		t.Errorf("vmtests passes scenarios %q, want the complete suite so the VM images are built", scenarios)
+	}
+
+	hostedData, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/hosted-vmtests.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hosted struct {
+		Jobs map[string]struct {
+			Steps []workflowStep `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(hostedData, &hosted); err != nil {
+		t.Fatal(err)
+	}
+	saved := false
+	for _, job := range hosted.Jobs {
+		for _, step := range job.Steps {
+			if !strings.HasPrefix(step.Uses, "actions/cache/save@") {
+				continue
+			}
+			saved = true
+			if !strings.Contains(step.If, "github.event_name != 'merge_group'") || strings.Contains(step.If, "schedule") {
+				t.Errorf("cache save step if %q must run on schedule and skip only the merge queue", step.If)
+			}
+		}
+	}
+	if !saved {
+		t.Error("hosted VM tests have no cache save step for the nightly candidate to refresh")
+	}
+}
+
+// The nightly candidate keeps its bundle and assembled artifacts for a week;
+// tags and dispatches keep them for the full publication window.
+func TestNightlyArtifactRetention(t *testing.T) {
+	release, _ := readWorkflow(t, "release-artifacts.yml")
+	build, _ := readWorkflow(t, "production-build.yml")
+	retention := map[string]string{}
+	for _, step := range release.Jobs["bundle"].Steps {
+		if strings.HasPrefix(step.Uses, "actions/upload-artifact@") {
+			retention["bundle"] = step.With["retention-days"]
+		}
+	}
+	for _, step := range build.Jobs["assemble"].Steps {
+		if strings.HasPrefix(step.Uses, "actions/upload-artifact@") && strings.HasPrefix(step.With["name"], "katl-assembled-") {
+			retention["assembled"] = step.With["retention-days"]
+		}
+	}
+	if len(retention) != 2 {
+		t.Fatalf("found retention for %v, want the bundle and assembled uploads", retention)
+	}
+
+	for name, expression := range retention {
+		for event, want := range map[string]string{"schedule": "7", "push": "30", "workflow_dispatch": "30"} {
+			ctx := map[string]string{"github.event_name": event, "inputs.publication": "true"}
+			if got := expandExpressions(t, expression, ctx); got != want {
+				t.Errorf("%s retention on %s = %s, want %s", name, event, got, want)
+			}
+		}
+	}
+}
+
+// The nightly candidate must not cancel, queue behind or share a group with a
+// tag run, a dispatch or another ref's run, and two nights must not overlap.
+func TestNightlyCandidateConcurrency(t *testing.T) {
+	workflow, _ := readWorkflow(t, "release-artifacts.yml")
+	var concurrency struct {
+		Group            string
+		CancelInProgress bool `yaml:"cancel-in-progress"`
+	}
+	if err := workflow.Concurrency.Decode(&concurrency); err != nil {
+		t.Fatal(err)
+	}
+	group := func(event, ref, runID string) string {
+		return expandExpressions(t, concurrency.Group, map[string]string{
+			"github.workflow": "wf", "github.event_name": event, "github.ref": ref, "github.run_id": runID,
+		})
+	}
+
+	night := group("schedule", "refs/heads/main", "1")
+	if again := group("schedule", "refs/heads/main", "2"); night != again {
+		t.Errorf("consecutive nightly runs use groups %q and %q, want one group so they never overlap", night, again)
+	}
+	for name, other := range map[string]string{
+		"push to main":    group("push", "refs/heads/main", "3"),
+		"tag push":        group("push", "refs/tags/v2026.11.2-rc.1", "4"),
+		"dispatch":        group("workflow_dispatch", "refs/heads/main", "5"),
+		"dispatch on tag": group("workflow_dispatch", "refs/tags/v2026.11.2", "6"),
+	} {
+		if night == other {
+			t.Errorf("nightly candidate shares group %q with a %s", night, name)
+		}
+	}
+	if concurrency.CancelInProgress {
+		t.Error("a release artifacts run cancels runs in its group")
+	}
+}
+
+// The scheduled run has no input and no tag, so it derives its development
+// version from the latest stable release; a tag run keeps the tag's version.
+func TestReleaseIdentityVersion(t *testing.T) {
+	workflow, _ := readWorkflow(t, "release-artifacts.yml")
+	steps := workflow.Jobs["identity"].Steps
+	previous, release := -1, -1
+	for i, step := range steps {
+		switch {
+		case strings.Contains(step.Run, "katl-release-artifacts previous-tag"):
+			previous = i
+		case strings.Contains(step.Run, "katl-release-artifacts version"):
+			release = i
+		}
+	}
+	if previous < 0 || release < 0 || previous >= release {
+		t.Fatalf("upgrade source step %d must exist and precede the identity step %d that derives the version from it", previous, release)
+	}
+	step := steps[release]
+	if got, want := step.Env["PREVIOUS_TAG"], "${{ steps.previous.outputs.tag }}"; got != want || steps[previous].ID != "previous" {
+		t.Errorf("identity step PREVIOUS_TAG = %q from step id %q, want %q from the upgrade source step", got, steps[previous].ID, want)
+	}
+	if got, want := step.Env["MANUAL_VERSION"], "${{ inputs.version }}"; got != want {
+		t.Errorf("identity step MANUAL_VERSION = %q, want %q", got, want)
+	}
+
+	for _, tt := range []struct {
+		name    string
+		env     []string
+		version string
+	}{
+		{"nightly", []string{"GITHUB_EVENT_NAME=schedule", "GITHUB_REF_TYPE=branch", "GITHUB_REF_NAME=main", "PREVIOUS_TAG=v2026.11.1", "MANUAL_VERSION="}, "2026.11.2-dev.0"},
+		{"tag", []string{"GITHUB_EVENT_NAME=push", "GITHUB_REF_TYPE=tag", "GITHUB_REF_NAME=v2026.11.3-rc.1", "PREVIOUS_TAG=v2026.11.1", "MANUAL_VERSION="}, "2026.11.3-rc.1"},
+		{"dispatch", []string{"GITHUB_EVENT_NAME=workflow_dispatch", "GITHUB_REF_TYPE=branch", "GITHUB_REF_NAME=main", "PREVIOUS_TAG=v2026.11.1", "MANUAL_VERSION=2026.12.0-beta.1"}, "2026.12.0-beta.1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			outputs := filepath.Join(t.TempDir(), "output")
+			command := exec.Command("bash", "-euo", "pipefail", "-c", step.Run)
+			command.Dir = repoRoot(t)
+			command.Env = append(os.Environ(), tt.env...)
+			command.Env = append(command.Env, "GITHUB_OUTPUT="+outputs, "GITHUB_SHA=0123456789abcdef0123456789abcdef01234567", "KATL_ARCHITECTURE=x86_64")
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("identity step failed: %v\n%s", err, output)
+			}
+			written, err := os.ReadFile(outputs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "version=" + tt.version + "\nartifact-name=katl-" + tt.version + "-x86_64-0123456789ab\n"
+			if string(written) != want {
+				t.Errorf("identity outputs = %q, want %q", written, want)
 			}
 		})
 	}
