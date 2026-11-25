@@ -9,7 +9,6 @@ repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 go_bin="${KATL_VMTEST_GO:-go}"
 release_bin="${KATL_VMTEST_RELEASE_NETWORKS:-}"
 devclean_bin="${KATL_DEVCLEAN:-}"
-podman_bin="${KATL_VMTEST_PODMAN:-podman}"
 
 usage() {
     printf 'usage: scripts/vmtest-clean <run-dir|result.json>\n' >&2
@@ -220,16 +219,10 @@ for entry in "${recorded_domains[@]}"; do
     fi
 done
 
-# mkosi and libvirt leave read-only and relabelled files, and mkosi trees can be
-# owned by subuids that only a user-namespace shell can change.
-chmod -R u+rwX -- "$run_dir" 2>/dev/null || true
-rm -rf -- "$run_dir" 2>/dev/null || true
-if [[ -e "$run_dir" ]]; then
-    # shellcheck disable=SC2016 # the script is expanded by the inner shell
-    "$podman_bin" unshare sh -c 'chmod -R u+rwX -- "$1"; rm -rf -- "$1"' sh "$run_dir" || true
-fi
-if [[ -e "$run_dir" ]]; then
+# katl-devclean also clears the read-only, relabelled and subuid-owned files
+# that mkosi and libvirt leave behind, and reports any it cannot remove.
+devclean remove run-dir "$run_dir" >/dev/null || {
     printf 'vmtest-clean: failed to delete %s\n' "$run_dir" >&2
     exit 1
-fi
+}
 printf 'vmtest-clean: cleaned %d preserved domain(s) and deleted %s\n' "$cleaned" "$run_dir" >&2

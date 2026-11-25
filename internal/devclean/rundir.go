@@ -18,6 +18,8 @@ type RunDir struct {
 	Path string
 	// Present is false when the directory is already gone.
 	Present bool
+
+	verified bool
 }
 
 // CheckRunDir returns the run directory at path, or an error when path is not
@@ -36,7 +38,7 @@ func CheckRunDir(path string) (RunDir, error) {
 
 	info, err := os.Lstat(abs)
 	if errors.Is(err, fs.ErrNotExist) {
-		return RunDir{Path: abs}, nil
+		return RunDir{Path: abs, verified: true}, nil
 	}
 	if err != nil {
 		return RunDir{}, err
@@ -52,7 +54,7 @@ func CheckRunDir(path string) (RunDir, error) {
 	if !found {
 		return RunDir{}, fmt.Errorf("%s is not a vmtest run directory: it contains no result.json", abs)
 	}
-	return RunDir{Path: abs, Present: true}, nil
+	return RunDir{Path: abs, Present: true, verified: true}, nil
 }
 
 func containsResult(dir string) (bool, error) {

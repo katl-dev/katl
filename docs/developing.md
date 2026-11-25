@@ -953,6 +953,13 @@ as safe. It then deletes the local branch only when that branch is merged into
 `origin/main`, contained in a remote branch of the same name, or at the head of
 that merged pull request, and otherwise keeps it and says so.
 
+Both scripts delete through `katl-devclean`, which removes files owned by the
+calling user first and then removes what remains from inside the rootless
+podman user namespace, so subuid-owned build output needs no manual step. It
+never follows symbolic links out of the verified directory, and it judges
+success by looking at the directory: when something could not be removed, it
+lists the remaining paths and the script exits non-zero.
+
 Run each command on its own, without a leading `cd … &&` and without a pipe, so
 that an allow rule for the command matches it. Do not clean up with `rm -rf`,
 `chmod -R`, `git worktree remove --force` or `virsh destroy`.

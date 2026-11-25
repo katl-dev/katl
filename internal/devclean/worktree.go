@@ -24,6 +24,8 @@ type Worktree struct {
 	// remote branch because HEAD is its head commit, or zero when HEAD is on a
 	// remote branch.
 	MergedPR int
+
+	verified bool
 }
 
 // CheckWorktree returns the linked worktree of the repository containing repo
@@ -82,7 +84,7 @@ func CheckWorktree(ctx context.Context, environ []string, lookup PullRequestLook
 	if err != nil {
 		return Worktree{}, err
 	}
-	wt := Worktree{Path: abs}
+	wt := Worktree{Path: abs, verified: true}
 	var head string
 	if unpushed = strings.TrimRight(unpushed, "\n"); unpushed != "" {
 		out, err := g.run(ctx, abs, "rev-parse", "HEAD")
