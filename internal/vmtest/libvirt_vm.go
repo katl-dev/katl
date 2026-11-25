@@ -61,10 +61,12 @@ type VMConfig struct {
 	Network           VMNetworkConfig
 	HostForwards      []HostForward
 	SerialHooks       []SerialHook
-	VSock             VSockConfig
-	Agent             AgentControlConfig
-	DomainMetadata    string
-	PersistentSerial  bool
+	// HandoffHooks need Network.Address, the reserved address of the installer.
+	HandoffHooks     []HandoffHook
+	VSock            VSockConfig
+	Agent            AgentControlConfig
+	DomainMetadata   string
+	PersistentSerial bool
 	// Graphics gives the domain a VGA display and a localhost VNC server, so a
 	// screenshot shows the virtual console an operator sees on a monitor.
 	Graphics        bool
@@ -471,6 +473,8 @@ type VMRunner struct {
 	Executor       VMExecutor
 	AgentConnector func(ctx context.Context, plan VSockPlan, transcript string) (AgentHealthClient, error)
 	probe          probe
+	// handoffProbe replaces the HTTP probe of the installer handoff API.
+	handoffProbe func(ctx context.Context, base string) error
 
 	// notifyListen replaces the host vsock notify listener in tests.
 	notifyListen func() (notifySocket, uint32, error)
@@ -750,6 +754,7 @@ func (h *VMHandle) WaitForExpectedSerial() error {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	hooksRun := make([]bool, len(h.Config.SerialHooks))
+	handoffRun := make([]bool, len(h.Config.HandoffHooks))
 	lastSerialLen := -1
 	lastSerialProgress := time.Now().UTC()
 	for {
@@ -761,7 +766,10 @@ func (h *VMHandle) WaitForExpectedSerial() error {
 		if err := h.runner.runSerialHooks(h.ctx, h.Result, h.Config, h.Plan, serialText, hooksRun); err != nil {
 			return err
 		}
-		if strings.Contains(serialText, h.Config.Expect) {
+		if err := h.runHandoffHooks(handoffRun); err != nil {
+			return err
+		}
+		if strings.Contains(serialText, h.Config.Expect) && allRun(handoffRun) {
 			if err := h.CheckAgent(); err != nil {
 				return err
 			}
@@ -774,7 +782,7 @@ func (h *VMHandle) WaitForExpectedSerial() error {
 			if hookErr := h.runner.runSerialHooks(h.ctx, h.Result, h.Config, h.Plan, serialText, hooksRun); hookErr != nil {
 				return hookErr
 			}
-			if strings.Contains(serialText, h.Config.Expect) {
+			if strings.Contains(serialText, h.Config.Expect) && allRun(handoffRun) {
 				if checkErr := h.CheckAgent(); checkErr != nil {
 					return checkErr
 				}
@@ -782,6 +790,9 @@ func (h *VMHandle) WaitForExpectedSerial() error {
 			}
 			if err == nil {
 				err = errors.New("libvirt domain exited before serial signal appeared")
+			}
+			if !allRun(handoffRun) {
+				return fmt.Errorf("libvirt domain exited before the installer handoff API waited for configuration: %v", err)
 			}
 			return fmt.Errorf("libvirt domain exited before serial signal %q appeared: %v", h.Config.Expect, err)
 		case <-h.ctx.Done():
@@ -2005,4 +2016,20 @@ func quoteArg(arg string) string {
 		return arg
 	}
 	return "'" + strings.ReplaceAll(arg, "'", "'\\''") + "'"
+}
+
+func allRun(ran []bool) bool {
+	for _, done := range ran {
+		if !done {
+			return false
+		}
+	}
+	return true
+}
+
+// completeLines returns the newline-terminated prefix of serialText. Serial
+// output arrives in arbitrary chunks, so the unterminated tail may be a line
+// that is still being written.
+func completeLines(serialText string) string {
+	return serialText[:strings.LastIndex(serialText, "\n")+1]
 }

@@ -828,15 +828,22 @@ func prepareHandoffRetry(server *handoff.HandoffServer, runDir, endpoint string,
 		return false
 	}
 	status, err := installstatus.ReadFile(filepath.Join(runDir, "state", "status.json"))
-	nodeName := server.Status().SelectedNode
-	if err != nil || !server.PrepareRetry(status) {
+	if err != nil {
 		return false
 	}
 	command := "katlctl install apply --config " + installstatus.ConfigPlaceholder + " --endpoint " + endpoint
-	if nodeName != "" {
+	if nodeName := server.Status().SelectedNode; nodeName != "" {
 		command += " --node " + nodeName
 	}
+	// The API reports waiting for configuration as soon as PrepareRetry
+	// returns, so the record it publishes must already carry the retry command.
+	// Its newer UpdatedAt keeps it ahead of the durable record until that is
+	// rewritten below.
 	status.RetryHint = "correct the failure, then run " + command
+	status.UpdatedAt = time.Now().UTC()
+	if !server.PrepareRetry(status) {
+		return false
+	}
 	writeConsoleInstallStatus(runDir, status, stdout)
 	fmt.Fprintf(stdout, "katlos-install install failed: %s\n", status.FailureSummary())
 	reportInstallerProgress(stdout, "install failed before disk mutation; waiting for corrected configuration", false)
@@ -956,7 +963,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	seedWait := flags.Duration("seed-wait", 15*time.Second, "time to wait for installer seed devices")
 	runDir := flags.String("run-dir", "/run/katl", "runtime installer input directory")
 	etcDir := flags.String("etc-dir", "/etc/katl", "persistent installer input directory")
-	handoffAddr := flags.String("handoff-addr", "0.0.0.0:8080", "installer handoff listen address")
+	handoffAddr := flags.String("handoff-addr", net.JoinHostPort("0.0.0.0", handoff.DefaultPort), "installer handoff listen address")
 
 	if err := flags.Parse(args); err != nil {
 		return err

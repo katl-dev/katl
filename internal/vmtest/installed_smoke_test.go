@@ -175,6 +175,7 @@ func TestFirstInstallTargetDiskBootSmoke(t *testing.T) {
 	defer cancel()
 
 	vm := VMConfig{
+		Network: worldRun.Node.VMNetwork(),
 		KVM:     runner.options().KVM,
 		RAMMiB:  2048,
 		CPUs:    2,
@@ -272,8 +273,8 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 		t.Fatalf("first install local handoff status = %q, failure = %q, run dir = %s", result.Status, result.FailureSummary, result.RunDir)
 	}
 	request := readLog(t, result.Artifacts.HandoffRequest)
-	if request.PostURL == "" || request.Announcement == "" {
-		t.Fatalf("handoff request missing guest announcement details: %#v", request)
+	if request.PostURL == "" {
+		t.Fatalf("handoff request missing guest handoff details: %#v", request)
 	}
 	response := readLog(t, result.Artifacts.HandoffResponse)
 	if response.StatusCode < 200 || response.StatusCode >= 300 {

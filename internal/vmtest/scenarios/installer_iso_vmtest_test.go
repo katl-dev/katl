@@ -119,6 +119,12 @@ spec:
 `, publicKey)), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	node, err := worldScenario.AddNode(vmtest.NodeSpec{Name: "pxe-node", Role: vmtest.ControlPlane})
+	if err != nil {
+		t.Fatal(err)
+	}
+	network := node.VMNetwork()
+	network.ExtraDisconnected = true
 	kernel := os.Getenv("KATL_INSTALLER_KERNEL")
 	if kernel == "" {
 		kernel = filepath.Join(world.MkosiDir(repo), "katl-installer.vmlinuz")
@@ -127,8 +133,6 @@ spec:
 	if initrd == "" {
 		initrd = filepath.Join(world.MkosiDir(repo), "katl-installer.initrd")
 	}
-	network := worldScenario.VMNetwork()
-	network.ExtraDisconnected = true
 	result, err := vmtest.RunInstallerBoot(
 		context.Background(),
 		vmtest.NewRunner(options),
@@ -145,22 +149,14 @@ spec:
 			Expect: "katlos-install progress: waiting for configuration at",
 			VM: vmtest.VMConfig{
 				Network: network,
-				SerialHooks: []vmtest.SerialHook{{
-					Name:   "handoff-ready",
-					Signal: "katlos-install progress: waiting for configuration at",
-					Run: func(ctx context.Context, event vmtest.SerialHookEvent) error {
+				HandoffHooks: []vmtest.HandoffHook{{
+					Name: "handoff-ready",
+					Run: func(ctx context.Context, event vmtest.HandoffEvent) error {
 						// Nothing in the installer pulls network-online.target, so
 						// katlos-install's own address wait is the network gate.
-						// Reaching katlctl and sshd at the announced address shows
+						// Reaching katlctl and sshd at the reserved address shows
 						// the guest holds it despite the disconnected second NIC.
-						announcement, ok, err := vmtest.LastHandoffAnnouncement(event.SerialText)
-						if err != nil {
-							return err
-						}
-						if !ok {
-							return fmt.Errorf("installer did not announce its handoff endpoint")
-						}
-						endpoint, err := url.Parse(announcement.Base)
+						endpoint, err := url.Parse(event.Base)
 						if err != nil {
 							return err
 						}
@@ -251,6 +247,10 @@ install:
       filesystem: xfs
       wipe: false
 `, management, installerISOTestSSHKey))
+	node, err := worldScenario.AddNode(vmtest.NodeSpec{Name: "iso-node", Role: vmtest.ControlPlane})
+	if err != nil {
+		t.Fatal(err)
+	}
 	vm := vmtest.VMConfig{
 		KVM:     options.KVM,
 		RAMMiB:  2048,
@@ -271,7 +271,7 @@ install:
 			vmtest.ExtraDisk("data", string(vmtest.DiskRaw), "4G"),
 		},
 	}, vmtest.FirstInstallConfig{
-		Network:   worldScenario.VMNetwork(),
+		Network:   node.VMNetwork(),
 		Installer: vmtest.InstallerBootConfig{InstallerISO: iso, VM: runtimeVM},
 		Runtime: vmtest.InstalledRuntimeConfig{
 			VM: runtimeVM,
