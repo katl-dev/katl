@@ -312,10 +312,20 @@ func (g *GuestControl) ExportJournal(ctx context.Context, req GuestJournalReques
 	return record, nil
 }
 
+// CollectDiagnostics gathers the plan's evidence even when ctx is already done,
+// as it is after a test fails on its deadline. Journals are exported first so a
+// command that hangs until the plan timeout cannot starve them.
 func (g *GuestControl) CollectDiagnostics(ctx context.Context, plan GuestDiagnostics) GuestDiagnosticReport {
-	ctx, cancel := g.withTimeout(ctx, plan.Timeout)
+	ctx, cancel := g.withTimeout(context.WithoutCancel(ctx), plan.Timeout)
 	defer cancel()
 	var report GuestDiagnosticReport
+	for _, req := range plan.Journals {
+		record, err := g.ExportJournal(ctx, req)
+		report.Journals = append(report.Journals, record)
+		if err != nil {
+			report.Errors = append(report.Errors, err.Error())
+		}
+	}
 	for _, req := range plan.Commands {
 		record, err := g.RunCommand(ctx, req)
 		report.Commands = append(report.Commands, record)
@@ -326,13 +336,6 @@ func (g *GuestControl) CollectDiagnostics(ctx context.Context, plan GuestDiagnos
 	for _, req := range plan.Files {
 		record, err := g.ReadFile(ctx, req)
 		report.Files = append(report.Files, record)
-		if err != nil {
-			report.Errors = append(report.Errors, err.Error())
-		}
-	}
-	for _, req := range plan.Journals {
-		record, err := g.ExportJournal(ctx, req)
-		report.Journals = append(report.Journals, record)
 		if err != nil {
 			report.Errors = append(report.Errors, err.Error())
 		}

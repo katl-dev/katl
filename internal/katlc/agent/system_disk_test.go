@@ -34,9 +34,12 @@ type hostDisk struct {
 // systemdisk.Resolve reads, and lsblk and blkid answers for the same disks
 // whether addressed by kernel name or by diskseq.
 type hostDisks struct {
-	sysfs string
-	disks []hostDisk
-	calls []string
+	// devRoot, when set, is the executor root the device paths are under; a path
+	// outside it is not a block device.
+	devRoot string
+	sysfs   string
+	disks   []hostDisk
+	calls   []string
 }
 
 // newHostDisks attaches disks in order, giving disk i minors 16*i to 16*i+15.
@@ -76,6 +79,13 @@ func (h *hostDisks) booted(index, partition int) func() (systemdisk.Layout, erro
 func (h *hostDisks) run(_ context.Context, argv []string, _ func(int)) ToolResult {
 	h.calls = append(h.calls, strings.Join(argv, " "))
 	device := argv[len(argv)-1]
+	if h.devRoot != "" {
+		if !strings.HasPrefix(device, h.devRoot+"/") {
+			device = "unrooted:" + device
+		} else {
+			device = strings.TrimPrefix(device, h.devRoot)
+		}
+	}
 	switch argv[0] {
 	case "lsblk":
 		for _, disk := range h.disks {
@@ -293,5 +303,31 @@ func TestFindRootSlotsAfterInterruptedTransfer(t *testing.T) {
 				t.Fatalf("commands = %q, want %q", host.calls, want)
 			}
 		})
+	}
+}
+
+func TestFindRootSlotsUnderExecutorRoot(t *testing.T) {
+	root := t.TempDir()
+	host := newHostDisks(t, katlHostDisk("vdb", 7, "new"))
+	host.devRoot = root
+	executor := &Executor{Root: root, RunTool: host.run, volumeDevices: volumeDevices{bootedDisk: host.booted(0, 2)}}
+
+	slots, err := executor.findRootSlots(context.Background(), "new-root-a")
+	if err != nil {
+		t.Fatalf("findRootSlots() error = %v", err)
+	}
+	host.calls = nil
+	if err := executor.prepareSysupdateSlots(context.Background(), slots); err != nil {
+		t.Fatalf("prepareSysupdateSlots() error = %v", err)
+	}
+
+	disk := filepath.Join(root, "dev/disk/by-diskseq/7")
+	if slots.Disk != disk {
+		t.Fatalf("slots.Disk = %q, want %q", slots.Disk, disk)
+	}
+	for _, call := range host.calls {
+		if !strings.Contains(call, " "+disk+" ") {
+			t.Fatalf("relabel command %q does not address %s", call, disk)
+		}
 	}
 }

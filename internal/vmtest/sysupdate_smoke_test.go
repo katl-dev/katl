@@ -1196,17 +1196,24 @@ func guestCommandOutput(t *testing.T, ctx context.Context, guest *GuestControl, 
 }
 
 func collectSysupdateFailureEvidence(ctx context.Context, guest *GuestControl) {
-	for _, req := range []GuestCommandRequest{
-		{Name: "upgrade-agent-journal", Argv: []string{"journalctl", "-b", "-u", "katlc-agent.service", "--no-pager", "-n", "1000"}, AllowFailure: true, StdoutLimit: 1 << 20},
-		{Name: "upgrade-state-storage", Argv: []string{"findmnt", "--df", "--bytes", "--target", "/var/lib/katl"}, AllowFailure: true},
-		{Name: "upgrade-efi-storage", Argv: []string{"findmnt", "--df", "--bytes", "--target", "/efi"}, AllowFailure: true},
-		{Name: "sysupdate-status", Argv: []string{"/usr/lib/systemd/systemd-sysupdate", "--no-pager", "--verify=no", "--definitions=/var/lib/katl/test-artifacts/sysupdate/sysupdate.d", "list"}, AllowFailure: true},
-		{Name: "root-labels", Argv: []string{"blkid", "-o", "export"}, AllowFailure: true, StdoutLimit: 1 << 20},
-		{Name: "sysupdate-files", Argv: []string{"find", "/var/lib/katl/test-artifacts/sysupdate", "-maxdepth", "4", "-type", "f", "-print"}, AllowFailure: true},
-		{Name: "efi-linux-files", Argv: []string{"find", "/efi/EFI/Linux", "-maxdepth", "1", "-type", "f", "-print"}, AllowFailure: true},
-	} {
-		_, _ = guest.RunCommand(ctx, req)
-	}
+	guest.CollectDiagnostics(ctx, GuestDiagnostics{
+		Timeout: 2 * time.Minute,
+		// The journal of the failing boot, and of the boot before it when the
+		// test had already rebooted.
+		Journals: []GuestJournalRequest{
+			{Name: "upgrade-journal", MaxBytes: 4 << 20},
+			{Name: "upgrade-previous-boot-journal", BootID: "-1", MaxBytes: 4 << 20},
+			{Name: "upgrade-agent-journal", Units: []string{"katlc-agent.service"}},
+		},
+		Commands: []GuestCommandRequest{
+			{Name: "upgrade-state-storage", Argv: []string{"findmnt", "--df", "--bytes", "--target", "/var/lib/katl"}},
+			{Name: "upgrade-efi-storage", Argv: []string{"findmnt", "--df", "--bytes", "--target", "/efi"}},
+			{Name: "sysupdate-status", Argv: []string{"/usr/lib/systemd/systemd-sysupdate", "--no-pager", "--verify=no", "--definitions=/var/lib/katl/test-artifacts/sysupdate/sysupdate.d", "list"}},
+			{Name: "root-labels", Argv: []string{"blkid", "-o", "export"}, StdoutLimit: 1 << 20},
+			{Name: "sysupdate-files", Argv: []string{"find", "/var/lib/katl/test-artifacts/sysupdate", "-maxdepth", "4", "-type", "f", "-print"}},
+			{Name: "efi-linux-files", Argv: []string{"find", "/efi/EFI/Linux", "-maxdepth", "1", "-type", "f", "-print"}},
+		},
+	})
 }
 
 func sha256Hex(data []byte) string {

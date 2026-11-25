@@ -450,7 +450,7 @@ func hermeticVolumeDevices(t *testing.T) volumeDevices {
 		}
 	}
 	byDiskSeq := t.TempDir()
-	for seq, disk := range map[string]string{"1": "/dev/vda", "2": "/dev/vdb", "3": "/dev/vdc"} {
+	for seq, disk := range map[string]string{"1": "/dev/vda", "2": "/dev/vdb", "3": "/dev/vdc", "1-part5": "/dev/vda5", "2-part1": "/dev/vdb1", "2-part2": "/dev/vdb2", "3-part1": "/dev/vdc1"} {
 		if err := os.Symlink(disk, filepath.Join(byDiskSeq, seq)); err != nil {
 			t.Fatal(err)
 		}

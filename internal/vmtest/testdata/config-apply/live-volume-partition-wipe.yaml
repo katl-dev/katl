@@ -1,0 +1,18 @@
+apiVersion: katl.dev/v1alpha1
+kind: NodeConfigurationChange
+metadata:
+  sourceID: storage-operator
+  desiredVersion: "4"
+spec:
+  nodeOverrides:
+    cp-1:
+      volumes:
+        - name: data
+          selector:
+            partition: {}
+          filesystem: xfs
+        - name: scratch
+          selector:
+            partition: {}
+          filesystem: xfs
+          wipe: true

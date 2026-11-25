@@ -360,8 +360,8 @@ func TestDiskExecutorRechecksVolumeDisksBeforeWipingSystemDisk(t *testing.T) {
 func TestPlanVolumesRefusesSharedTargets(t *testing.T) {
 	data := diskForLayout("/dev/sdb", "/dev/disk/by-id/ata-data", 16384)
 	data.Partitions = []BlockDevice{
-		{Path: "/dev/sdb1", Type: DevicePartition, PartitionNumber: 1, ByID: []string{"/dev/disk/by-id/ata-data-part1"}, PartitionUUID: "part-1", FilesystemSignature: "xfs"},
-		{Path: "/dev/sdb2", Type: DevicePartition, PartitionNumber: 2, ByID: []string{"/dev/disk/by-id/ata-data-part2"}, PartitionUUID: "part-2", FilesystemSignature: "xfs"},
+		{Path: "/dev/sdb1", Type: DevicePartition, PartitionNumber: 1, ByDiskSeq: "/dev/disk/by-diskseq/98-part1", ByID: []string{"/dev/disk/by-id/ata-data-part1"}, PartitionUUID: "part-1", FilesystemSignature: "xfs"},
+		{Path: "/dev/sdb2", Type: DevicePartition, PartitionNumber: 2, ByDiskSeq: "/dev/disk/by-diskseq/98-part2", ByID: []string{"/dev/disk/by-id/ata-data-part2"}, PartitionUUID: "part-2", FilesystemSignature: "xfs"},
 	}
 	root := diskForLayout("/dev/nvme0n1", "/dev/disk/by-id/nvme-root", 32768)
 	facts := layoutFacts(root, data)
@@ -666,7 +666,7 @@ func TestVolumePlanningRefusesAmbiguousReleasedBinding(t *testing.T) {
 func TestPlanVolumesStaysOnRetainedPartition(t *testing.T) {
 	root := diskForLayout("/dev/nvme0n1", "/dev/disk/by-id/nvme-root", 32768)
 	first := diskForLayout("/dev/sdb", "/dev/disk/by-id/ata-first", 16384)
-	first.Partitions = []BlockDevice{{Path: "/dev/sdb1", Type: DevicePartition, PartitionNumber: 1, PartitionUUID: "data-part", FilesystemSignature: "xfs", SizeBytes: 1 << 30}}
+	first.Partitions = []BlockDevice{{Path: "/dev/sdb1", Type: DevicePartition, PartitionNumber: 1, ByDiskSeq: "/dev/disk/by-diskseq/98-part1", PartitionUUID: "data-part", FilesystemSignature: "xfs", SizeBytes: 1 << 30}}
 	request := VolumeRequest{Name: "data", Partition: &PartitionSelector{PartUUID: "data-part"}, Filesystem: "xfs", Wipe: true}
 
 	plans, err := PlanVolumes(layoutFacts(root, first), root, []VolumeRequest{request}, nil)
@@ -731,5 +731,25 @@ func TestVolumePlanDestructiveAndTarget(t *testing.T) {
 	got := VolumePlan{Name: "data", Disk: diskID, Partition: partition, MountSource: "PARTUUID=x", Wipe: true}.Target()
 	if want := (VolumeTarget{Disk: diskID, Partition: partition}); got != want {
 		t.Fatalf("Target() = %+v, want only the disk and partition %+v", got, want)
+	}
+}
+
+func TestPlanningRefusesPartitionWithoutDiskSeqLink(t *testing.T) {
+	root := diskForLayout("/dev/nvme0n1", "/dev/disk/by-id/nvme-root", 32768)
+	// The disk has its by-diskseq link but its partition has none.
+	data := diskForLayout("/dev/sdb", "/dev/disk/by-id/ata-data", 16384)
+	data.Partitions = []BlockDevice{{Path: "/dev/sdb1", Type: DevicePartition, PartitionNumber: 1, PartitionUUID: "data-part", FilesystemSignature: "xfs"}}
+	facts := layoutFacts(root, data)
+
+	formatted := VolumeRequest{Name: "data", Partition: &PartitionSelector{PartUUID: "data-part"}, Filesystem: "xfs", Wipe: true}
+	_, err := PlanVolumes(facts, root, []VolumeRequest{formatted}, nil)
+	if !mentions(err, "/dev/sdb1", "by-diskseq/98-part1", "udevadm settle") {
+		t.Fatalf("PlanVolumes() error = %v, want refusal naming /dev/sdb1, its missing by-diskseq link and the udevadm settle next step", err)
+	}
+
+	// A repartitioned disk is written through the disk link alone.
+	repartitioned := VolumeRequest{Name: "data", Disk: &TargetDiskSelector{ByID: "/dev/disk/by-id/ata-data"}, Filesystem: "xfs", Wipe: true}
+	if _, err := PlanVolumes(facts, root, []VolumeRequest{repartitioned}, nil); err != nil {
+		t.Fatalf("PlanVolumes() for a repartitioned disk error = %v", err)
 	}
 }
