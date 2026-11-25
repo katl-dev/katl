@@ -30,6 +30,7 @@ func TestConfigInitEmitsStarterClusterConfig(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"config", "init",
+		"--management-authentication", "trusted-network",
 		"--name", "homelab",
 		"--ssh-authorized-key", keyPath,
 		"--node", "cp-1=control-plane,192.0.2.11,/dev/disk/by-id/ata-cp-root",
@@ -73,6 +74,7 @@ func TestConfigInitRendersExplicitIntent(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"config", "init",
+		"--management-authentication", "trusted-network",
 		"--ssh-authorized-key", keyPath,
 		"--control-plane-endpoint", "api.home.arpa:6443",
 		"--kubernetes-version", "v1.36.2",
@@ -115,6 +117,7 @@ func TestConfigInitUsesSSHAgentKeys(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := run(context.Background(), []string{
 		"config", "init",
+		"--management-authentication", "trusted-network",
 		"--node", "cp-1=control-plane,192.0.2.11,/dev/disk/by-id/ata-cp-root",
 	}, &stdout, &stderr)
 	if err != nil {

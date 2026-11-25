@@ -10,6 +10,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/peer"
 	grpcstatus "google.golang.org/grpc/status"
 )
@@ -42,18 +44,32 @@ func WithManagementProgress(ctx context.Context, w io.Writer) context.Context {
 }
 
 // ManagementDialOptions returns the connection options every dial of a
-// management endpoint shares. Unless ctx came from WithoutManagementWait,
-// calls retry a refused connection for at most ManagementReadyWait, reporting
+// management endpoint shares, including its transport credentials. A plaintext
+// (trusted-network) client that reaches an mTLS node is told to select the
+// cluster's configuration. Unless ctx came from WithoutManagementWait, calls
+// also retry a refused connection for at most ManagementReadyWait, reporting
 // progress, and then fail with guidance.
-func ManagementDialOptions(ctx context.Context, node, endpoint string) []grpc.DialOption {
+func ManagementDialOptions(ctx context.Context, node, endpoint string, creds credentials.TransportCredentials) []grpc.DialOption {
+	options := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
+	if creds.Info().SecurityProtocol == insecure.NewCredentials().Info().SecurityProtocol {
+		options = append(options,
+			grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+				return explainMutualTLSNode(invoker(ctx, method, req, reply, cc, opts...))
+			}),
+			grpc.WithChainStreamInterceptor(func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+				stream, err := streamer(ctx, desc, cc, method, opts...)
+				return stream, explainMutualTLSNode(err)
+			}),
+		)
+	}
 	if _, noWait := ctx.Value(noManagementWaitKey{}).(bool); noWait {
-		return nil
+		return options
 	}
 	var progress io.Writer = io.Discard
 	if w, ok := ctx.Value(managementProgressKey{}).(io.Writer); ok && w != nil {
 		progress = w
 	}
-	return []grpc.DialOption{
+	return append(options,
 		grpc.WithConnectParams(grpc.ConnectParams{
 			Backoff:           backoff.Config{BaseDelay: 500 * time.Millisecond, Multiplier: 1.6, Jitter: 0.2, MaxDelay: 2 * time.Second},
 			MinConnectTimeout: 20 * time.Second,
@@ -71,7 +87,20 @@ func ManagementDialOptions(ctx context.Context, node, endpoint string) []grpc.Di
 			})
 			return stream, err
 		}),
+	)
+}
+
+// explainMutualTLSNode maps the failure of a plaintext call to a TLS listener.
+// A TLS listener closes the connection before sending its HTTP/2 server
+// preface, which gRPC reports only as a generic unavailable error. Any
+// endpoint that accepts TCP and then closes or speaks something other than
+// HTTP/2 produces the same error, so the message states a likely cause rather
+// than a certainty.
+func explainMutualTLSNode(err error) error {
+	if grpcstatus.Code(err) == codes.Unavailable && strings.Contains(err.Error(), "server preface") {
+		return fmt.Errorf("node did not answer plaintext gRPC; it likely serves mTLS management, so select its mTLS configuration (--config or --context), or check that management.address and management.authentication match the node and that the address points at the katlc agent on port 9443: %w", err)
 	}
+	return err
 }
 
 // refusedBeforeConnect reports a call that never reached the agent because

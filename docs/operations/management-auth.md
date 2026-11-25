@@ -15,26 +15,56 @@ across reprovisioning. Kubernetes kubeconfigs and SSH keys are also separate.
 Choose the mode before installation, because it is fixed when a node is
 installed.
 
-New configurations default to `spec.managementAuthentication: trusted-network`:
-the API uses plaintext, unauthenticated connections, and network access grants
-node-management access, including destructive operations. Keep it on your
-trusted management network. There are no management keys to create, copy,
-encrypt, or recover in this mode.
+New configurations default to `spec.managementAuthentication: mtls`.
+`katlctl config init` creates `management-secrets.yaml` beside the configuration
+and references it through `spec.managementIdentity`, so the management
+connection is authenticated and encrypted. See
+[durable cluster secrets](#durable-cluster-secrets).
 
-Choose `spec.managementAuthentication: mtls` when the management connection needs
-authentication and encryption. `katlctl config init --management-authentication
-mtls` creates `management-secrets.yaml` beside the configuration and references
-it through `spec.managementIdentity`. See [durable cluster secrets](#durable-cluster-secrets).
+Choose `spec.managementAuthentication: trusted-network` with
+`katlctl config init --management-authentication trusted-network` only when the
+management network is the boundary you trust. The API then uses plaintext,
+unauthenticated connections, and network access grants node-management access,
+including destructive operations. Cluster workloads count as being on that
+network, because pods can reach node addresses (see
+[network trust](../support.md#network-trust)). There are no management keys to
+create, copy, encrypt, or recover in this mode.
 
-Changing the mode requires deliberately reprovisioning the node with the new
-mode, because editing `cluster.yaml` or applying a generation does not change a
-running node's authentication. A failed TLS handshake never falls back to
-trusted-network access.
+`spec.managementAuthentication` is required unless `spec.managementIdentity` is
+set, which implies `mtls`. `katlctl` refuses every command that reads a
+configuration stating neither, and prints the line to add. It never infers the
+mode, never changes an installed node, and never falls back to another mode.
+
+A failed TLS handshake never falls back to trusted-network access.
+
+### Change the access mode
+
+Editing `cluster.yaml` or applying a generation does not change a running
+node's authentication, because the mode is fixed when the node is installed.
+The mode belongs to the configuration, so a cluster changes mode as a whole,
+and a node refuses a configuration of the other mode. To switch a
+trusted-network cluster to mTLS:
+
+1. With the current configuration, still stating the installed mode, plan and
+   run a [whole-cluster wipe](wipe-reinstall.md#plan-a-whole-cluster-wipe). If
+   the cluster must keep its Kubernetes identity, set that up first
+   ([Kubernetes identity](kubernetes-identity.md)) and take an
+   [etcd snapshot](back-up-etcd.md).
+2. Set `spec.managementAuthentication: mtls`.
+3. Run `katlctl management identity create --config ./cluster.yaml`.
+4. Reinstall the nodes and bootstrap the cluster.
+
+Wiping from an mTLS configuration cannot reach nodes that serve
+`trusted-network` management, which is why the wipe comes first. A node that
+serves `trusted-network` management refuses an `mtls` configuration with a
+message naming the mismatch; set `managementAuthentication: trusted-network` to
+keep managing it.
 
 Older mTLS configurations and nodes keep mTLS: an
 existing configuration with a secrets reference and no explicit mode uses
 mTLS, and installed nodes without a mode record keep mTLS after an OS upgrade.
-An mTLS configuration without `spec.managementIdentity` takes its credentials
+A configuration without `spec.managementIdentity` must say
+`managementAuthentication: mtls` explicitly; it then takes its credentials
 from a saved context, so run `katlctl context save --config ./cluster.yaml`
 before other commands.
 A new trusted-network installation requires a release that supports this
@@ -42,7 +72,7 @@ setting on both the installer and the installed runtime.
 
 ## Durable cluster secrets
 
-This section applies only to opt-in mTLS. Trusted-network clusters need only
+This section applies to mTLS clusters, the default. Trusted-network clusters need only
 their configuration on each workstation.
 
 Keep the file referenced by `spec.managementIdentity` across reinstalls. Paths

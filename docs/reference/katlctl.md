@@ -139,15 +139,16 @@ supported instead of assuming nothing happened or immediately wiping the node.
 
 ## Cluster management secrets
 
-New configurations default to `managementAuthentication: trusted-network` and
-need no management keys. The `katlctl management identity` commands apply only
-to opt-in `managementAuthentication: mtls`; see
+New configurations default to `managementAuthentication: mtls`, and
+`config init` creates the management secrets. A configuration with
+`managementAuthentication: trusted-network` needs no management keys; the
+`katlctl management identity` commands apply to `mtls`. See
 [management authentication](../operations/management-auth.md) for choosing a
 mode, the secrets file, SOPS encryption, rotation, and recovery.
 
 | Command | Use |
 | --- | --- |
-| `config init --management-authentication mtls` | Create `management-secrets.yaml` beside a new configuration and reference it in `spec.managementIdentity` |
+| `config init` | Create `management-secrets.yaml` beside a new configuration and reference it in `spec.managementIdentity` |
 | `management identity create --config CONFIG` | Create the secrets file for a hand-written new configuration |
 | `management identity export --config CONFIG` | Migrate an existing cluster's original management authority from the legacy workstation store |
 | `management identity rotate --config CONFIG --output NEW` | Replace an installed management authority through host-key-verified root SSH |

@@ -519,7 +519,7 @@ func writeKubernetesUpgradeConfig(t *testing.T, version string, nodes ...worksta
 	t.Helper()
 	contextPath := writeTestEnrollmentContext(t, "home", nodes...)
 	var source strings.Builder
-	_, _ = fmt.Fprintf(&source, "apiVersion: config.katl.dev/v1alpha1\nkind: ClusterConfig\nmetadata:\n  name: home\nspec:\n  controlPlaneEndpoint:\n    host: 192.0.2.10\n    port: 6443\n  kubernetes:\n    version: %s\n  defaults:\n    install:\n      systemDisk:\n        minSizeMiB: 32768\n    access:\n      ssh:\n        authorizedKeys:\n          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example\n  nodes:\n", version)
+	_, _ = fmt.Fprintf(&source, "apiVersion: config.katl.dev/v1alpha1\nkind: ClusterConfig\nmetadata:\n  name: home\nspec:\n  managementAuthentication: trusted-network\n  controlPlaneEndpoint:\n    host: 192.0.2.10\n    port: 6443\n  kubernetes:\n    version: %s\n  defaults:\n    install:\n      systemDisk:\n        minSizeMiB: 32768\n    access:\n      ssh:\n        authorizedKeys:\n          - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm katl@example\n  nodes:\n", version)
 	for _, node := range nodes {
 		address := strings.TrimSuffix(node.ManagementEndpoint, ":9443")
 		_, _ = fmt.Fprintf(&source, "    - name: %s\n      controlPlane: %t\n      management:\n        address: %s\n      install:\n        systemDisk:\n          byID: /dev/disk/by-id/ata-%s-root\n", node.Name, node.SystemRole == inventory.RoleControlPlane, address, node.Name)

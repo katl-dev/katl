@@ -63,7 +63,7 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 	case "configbundle.SourceSpec.controlPlaneEndpoint":
 		return description("Stable Kubernetes API endpoint and optional Katl-managed advertisement.")
 	case "configbundle.SourceSpec.managementAuthentication":
-		return schemaFieldRule{Description: "Management authorization boundary; defaults to trusted-network, or mtls when managementIdentity is referenced.", Enum: []any{"trusted-network", "mtls"}}
+		return schemaFieldRule{Description: "Management authorization boundary: mtls (written by config init) or trusted-network; required unless managementIdentity is set.", Enum: []any{"trusted-network", "mtls"}}
 	case "configbundle.SourceSpec.managementIdentity":
 		return description("Operator-held management secrets YAML, relative to this config; may be SOPS encrypted. Never installed on nodes.")
 	case "configbundle.SourceSpec.kubernetes":

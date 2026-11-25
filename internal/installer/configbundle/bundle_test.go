@@ -142,6 +142,7 @@ kind: ClusterConfig
 metadata:
   name: layering
 spec:
+  managementAuthentication: trusted-network
   kubernetes:
     version: v1.36.1
   defaults:
@@ -317,6 +318,7 @@ kind: ClusterConfig
 metadata:
   name: empty-values
 spec:
+  managementAuthentication: trusted-network
   nodes:
     - name: cp-1
       controlPlane: true
@@ -983,6 +985,7 @@ kind: ClusterConfig
 metadata:
   name: lab
 spec:
+  managementAuthentication: trusted-network
   kubernetes:
     version: v1.36.1
   defaults:
@@ -1456,6 +1459,7 @@ kind: ClusterConfig
 metadata:
   name: lab
 spec:
+  managementAuthentication: trusted-network
   nodeRange:
     prefix: worker
 `,
@@ -1478,6 +1482,7 @@ kind: ClusterConfig
 metadata:
   name: lab
 spec:
+  managementAuthentication: trusted-network
   nodeTemplate:
     count: 3
 `)
@@ -1788,6 +1793,7 @@ kind: ClusterConfig
 metadata:
   name: lab
 spec:
+  managementAuthentication: trusted-network
   controlPlaneEndpoint:
     host: api.katl.test
     port: 6443

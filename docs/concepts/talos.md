@@ -29,7 +29,7 @@ KatlOS equivalent of a familiar Talos concept or command.
 | Talos | KatlOS | Key difference |
 | --- | --- | --- |
 | `talosconfig` context | `katlctl` [context](../operations/access.md#save-a-context) from `katlctl context save` | A context is a workstation record of node identities and addresses. It never holds desired state, so you can recreate it from `cluster.yaml` with `katlctl context save`. |
-| apid on port 50000, always mTLS | The management API served by the `katlc` management agent on port 9443 | The default trusted-network mode is weaker than Talos: connections are unauthenticated plaintext, so network access grants node management. mTLS is opt-in and must be [chosen before installation](../operations/management-auth.md#choose-an-access-mode). See [network trust](../support.md#network-trust). |
+| apid on port 50000, always mTLS | The management API served by the `katlc` management agent on port 9443 | New clusters use mTLS, as Talos does. The opt-in trusted-network mode is weaker than Talos: connections are unauthenticated plaintext, so network access grants node management, and cluster workloads count as being on that network. The mode must be [chosen before installation](../operations/management-auth.md#choose-an-access-mode). See [network trust](../support.md#network-trust). |
 | No SSH or shell | Key-only SSH and a local console | Use SSH for arbitrary administration. The management API exposes bounded lifecycle operations, not remote command execution. |
 | `talosctl dashboard` | `katlctl cluster status` and `katlctl node logs` remotely; a read-only dashboard on the local `tty1` console | The KatlOS dashboard is local only. `node logs` streams the native systemd journal. |
 | `talosctl logs` | `katlctl node logs` | Reads or follows the node's systemd journal. |
@@ -60,7 +60,7 @@ KatlOS equivalent of a familiar Talos concept or command.
   unschedulable unless you allow it.
 - The generated kubeadm profile keeps kube-proxy enabled; disable it in a
   native kubeadm configuration when your CNI replaces it.
-- Management API access defaults to trusted-network mode rather than mTLS.
+- Management API access can be set to trusted-network mode, which is unauthenticated, instead of the default mTLS.
 
 To try the workflow end to end, follow [Get started](../getting-started.md). For
 what a generation contains and what host rollback restores, read

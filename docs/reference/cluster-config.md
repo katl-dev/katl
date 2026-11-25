@@ -16,7 +16,7 @@ and "—" means the field has no default.
 
 | Path | Purpose | Default | Applies |
 | --- | --- | --- | --- |
-| `spec.managementAuthentication` | `trusted-network` or opt-in `mtls` access to the management API; see [management authentication](../operations/management-auth.md#choose-an-access-mode) | `trusted-network`, or `mtls` when `spec.managementIdentity` is set without a mode | Installation only; changing it requires reprovisioning |
+| `spec.managementAuthentication` | `mtls` or `trusted-network` access to the management API; see [management authentication](../operations/management-auth.md#choose-an-access-mode) | Required; `mtls` when `spec.managementIdentity` is set without a mode, and `config init` writes `mtls` | Installation only; changing it requires reprovisioning |
 | `spec.managementIdentity` | mTLS management secrets file, relative to `cluster.yaml` | — | Installation; replace the management authority with `katlctl management identity rotate` |
 | `spec.controlPlaneEndpoint` | [Stable Kubernetes API endpoint](#kubernetes-api-endpoint): `host`, `port`, optional `advertisement.vip` | `port: 6443` | Next boot before bootstrap; host, port, and VIP changes are refused after bootstrap |
 | `spec.kubernetes.version` | Exact Kubernetes version | Written by `config init` | [Kubernetes upgrade](../operations/upgrade-kubernetes.md) workflow |
@@ -64,6 +64,8 @@ spec:
   # Set controlPlane: true on nodes that join the Kubernetes control plane.
   # Omission means worker.
   # Nodes use DHCP by default; native systemd-networkd files can be set under defaults or a node.
+  managementAuthentication: mtls
+  managementIdentity: management-secrets.yaml
   kubernetes:
     version: v1.36.1
   defaults:

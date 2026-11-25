@@ -62,8 +62,14 @@ func refreshConfiguredManagementAt(ctx context.Context, sourcePath, contextPath,
 			}
 			return ctx, nil
 		}
-	} else if source.ManagementAuthentication() == managementidentity.MutualTLS && source.Spec.ManagementIdentity == "" {
-		return withSavedEndpoints(ctx, source.Metadata.Name, endpoints)
+	} else {
+		authentication, err := source.ManagementAuthentication()
+		if err != nil {
+			return ctx, err
+		}
+		if authentication == managementidentity.MutualTLS && source.Spec.ManagementIdentity == "" {
+			return withSavedEndpoints(ctx, source.Metadata.Name, endpoints)
+		}
 	}
 	// Instance IDs bind this operation to the observed installations. Only an
 	// explicit context save persists observations or changes the current cluster.
@@ -149,7 +155,11 @@ func managementClientForConfig(path, clusterName string) (managementidentity.Cli
 		}
 		return managementClientForCluster(clusterName)
 	}
-	if source.ManagementAuthentication() == managementidentity.TrustedNetwork {
+	authentication, err := source.ManagementAuthentication()
+	if err != nil {
+		return managementidentity.ClientCredentials{}, err
+	}
+	if authentication == managementidentity.TrustedNetwork {
 		return managementidentity.ClientCredentials{Authentication: managementidentity.TrustedNetwork}, nil
 	}
 	bundle, err := managementIdentityForSource(path, source)

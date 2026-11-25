@@ -56,20 +56,25 @@ and upgrade behavior.
 ## Network trust
 
 KatlOS expects its installer and management ports to be reachable only from
-networks you trust, because by default neither port requires credentials and
-neither encrypts its traffic.
+networks you trust. The installer port requires no credentials and does not
+encrypt its traffic, and neither does the management port in `trusted-network`
+mode.
 
 | Port | Served by | Default access | What network access grants |
 | --- | --- | --- | --- |
 | TCP `8080` | Installer (ISO or PXE live environment) | Unauthenticated plaintext HTTP | Submitting an install configuration to a waiting installer. The installer accepts one structurally valid configuration and then closes the handoff path. |
-| TCP `9443` | Management API, served by the `katlc` management agent | `trusted-network`: unauthenticated plaintext | Full node management, including destructive operations. |
+| TCP `9443` | Management API, served by the `katlc` management agent | `mtls`; `trusted-network` is an unauthenticated plaintext opt-in | Full node management, including destructive operations. |
 
 Restrict port `8080` to the provisioning network, and keep installed nodes on
 a trusted management LAN. The installer handoff is intentionally
 unauthenticated HTTP for this trusted home-lab path.
 
-When the management connection needs authentication and encryption, choose
-opt-in mTLS (`spec.managementAuthentication: mtls`) before you install.
+New clusters use mTLS for port `9443` (`spec.managementAuthentication: mtls`);
+`trusted-network` is an explicit opt-in chosen before you install. In
+`trusted-network` mode, pods can reach node addresses, so cluster workloads are
+on the management network and can manage nodes. Use mTLS, or a `9443` filter
+that admits only your management and workstation network (see the nftables
+guidance below), for any cluster that runs workloads you do not fully trust.
 Changing the mode requires deliberate reprovisioning, and a failed TLS
 handshake never falls back to trusted-network access. Kubernetes kubeconfigs
 and SSH keys are separate from this setting. See

@@ -134,7 +134,8 @@ kind: ClusterConfig
 metadata:
   name: external-lab
 spec:
-  managementAuthentication: trusted-network
+  managementAuthentication: mtls
+  managementIdentity: management-secrets.yaml
   kubernetes:
     version: v1.36.1
     external:
@@ -183,9 +184,12 @@ certificates.
 
 Boot the worker's installer media and follow the
 [ISO install procedure](../installing.md#apply-the-configuration). Use the same
-configuration for installation and enrollment:
+configuration for installation and enrollment. Create the management secrets
+first, and keep `management-secrets.yaml` private
+([details](management-auth.md#durable-cluster-secrets)):
 
 ```sh
+katlctl management identity create --config ./cluster.yaml
 katlctl config validate ./cluster.yaml
 katlctl install apply --config ./cluster.yaml --node worker-1
 katlctl node status worker-1 --config ./cluster.yaml

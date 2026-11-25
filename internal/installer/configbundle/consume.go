@@ -88,10 +88,9 @@ func ReadBundle(reader io.Reader, expectedDigest string) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, err
 	}
-	mode := source.Spec.ManagementAuthentication
-	if mode == "" {
-		// Bundles published before explicit modes always provisioned mTLS.
-		mode = managementidentity.MutualTLS
+	mode, err := source.ManagementAuthentication()
+	if err != nil {
+		return Bundle{}, fmt.Errorf("config bundle records no management authentication; rebuild it from its cluster.yaml with `katlctl config bundle`")
 	}
 	return Bundle{Manifest: bundle, Digest: bundleDigest, Authentication: mode}, nil
 }

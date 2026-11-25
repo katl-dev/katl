@@ -49,6 +49,7 @@ kind: ClusterConfig
 metadata:
   name: katl-lab
 spec:
+  managementAuthentication: trusted-network
   nodes:
   - name: cp-1  # first control plane
     controlPlane: true

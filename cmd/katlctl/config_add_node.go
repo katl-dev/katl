@@ -68,6 +68,9 @@ func runConfigAddNode(ctx context.Context, opts configAddNodeOptions, stdout, st
 	if err != nil {
 		return fmt.Errorf("read ClusterConfig %s: %w", opts.configPath, err)
 	}
+	if _, err := source.ManagementAuthentication(); err != nil {
+		return fmt.Errorf("read ClusterConfig %s: %w", opts.configPath, err)
+	}
 	endpoint, err := normalizeInstallerAddress(opts.installer)
 	if err != nil {
 		return fmt.Errorf("--installer %q: %w", opts.installer, err)

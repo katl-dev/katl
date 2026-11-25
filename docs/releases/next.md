@@ -66,3 +66,17 @@ Those releases are affected, and a stuck node plans its upgrade with its install
 5. Reboot the node, then run `katlctl node upgrade` again.
 
 `katlctl node upgrade` prints these steps, with the node's disk filled in, when it meets the `found 1 root partitions` or `partially installed` refusal. For the `sysfs reported` refusal it asks for a reboot only.
+
+## New clusters use mTLS management
+
+`katlctl config init` now writes `managementAuthentication: mtls` and creates `management-secrets.yaml` beside `cluster.yaml`, so the management API on port 9443 is authenticated and encrypted by default. Keep the secrets file across reinstalls; SOPS encryption is supported. To use unauthenticated management on a trusted network, run `katlctl config init --management-authentication trusted-network`.
+
+`spec.managementAuthentication` is now required unless `spec.managementIdentity` is set. See [Secure the management API](../operations/management-auth.md#choose-an-access-mode).
+
+## Existing trusted-network clusters
+
+A configuration that already says `managementAuthentication: trusted-network` needs no action; that covers everything `config init` has written since v2026.9.0. Any configuration without the field and without `managementIdentity` that worked with `katlctl` v2026.9.0 through v2026.11.x was trusted-network, so adding that line is correct.
+
+If the field is missing, `katlctl` refuses every command that reads the configuration and prints the line to add. Nodes are never changed. Add `managementAuthentication: trusted-network` under `spec` to keep managing them.
+
+In trusted-network mode, pods can reach port 9443 on node addresses, so cluster workloads are on the management network. For a cluster that runs workloads you do not fully trust, either [reprovision to mTLS](../operations/management-auth.md#change-the-access-mode) or [filter port 9443](../support.md#network-trust) to your management and workstation network.

@@ -593,6 +593,7 @@ kind: ClusterConfig
 metadata:
   name: lab
 spec:
+  managementAuthentication: trusted-network
   controlPlaneEndpoint:
     host: api.katl.test
     port: 6443

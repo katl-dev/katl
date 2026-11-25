@@ -46,7 +46,6 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
@@ -115,8 +114,8 @@ node join to add an installed node, node upgrade to upgrade KatlOS, and
 kubernetes upgrade to apply the Kubernetes version in your configuration.
 
 Pass --config ./cluster.yaml to select your cluster. A saved context is an optional
-shortcut for management commands, not a requirement. New clusters use trusted-network
-management; mTLS is opt-in. Run any command with --help for examples and flags.`,
+shortcut for management commands, not a requirement. New clusters use mTLS
+management; trusted-network is opt-in. Run any command with --help for examples and flags.`,
 		SilenceUsage:      true,
 		SilenceErrors:     true,
 		PersistentPreRunE: validateCommandFlags,
@@ -153,7 +152,7 @@ management; mTLS is opt-in. Run any command with --help for examples and flags.`
 	kubernetesCmd.AddCommand(newKubernetesUpgradeCommand(ctx, stdout, stderr))
 	cmd.AddCommand(kubernetesCmd)
 
-	managementCmd := &cobra.Command{Use: "management", Short: "Manage opt-in mTLS credentials", Example: "katlctl management identity create --config cluster.yaml"}
+	managementCmd := &cobra.Command{Use: "management", Short: "Manage mTLS credentials", Example: "katlctl management identity create --config cluster.yaml"}
 	managementCmd.AddCommand(newManagementIdentityCommand(stdout, stderr))
 	cmd.AddCommand(managementCmd)
 
@@ -1464,7 +1463,11 @@ func overlayWipeContext(ctx context.Context, inv inventory.Inventory, configPath
 				if _, err := managementClientForConfig(sourcePath, source.Metadata.Name); err != nil {
 					return inventory.Inventory{}, err
 				}
-				if source.Spec.ManagementIdentity != "" || source.ManagementAuthentication() == managementidentity.TrustedNetwork {
+				authentication, err := source.ManagementAuthentication()
+				if err != nil {
+					return inventory.Inventory{}, err
+				}
+				if source.Spec.ManagementIdentity != "" || authentication == managementidentity.TrustedNetwork {
 					return inv, nil
 				}
 			}
@@ -3408,7 +3411,7 @@ func dialKatlcAgentTCP(ctx context.Context, endpoint string) (katlcAgentConnecti
 	if err != nil {
 		return katlcAgentConnection{}, fmt.Errorf("management credentials for node %q: %w", identity.nodeName, err)
 	}
-	options := append(katlcAgentDialOptions(transportCredentials), transport.ManagementDialOptions(ctx, identity.nodeName, endpoint)...)
+	options := append(katlcAgentDialOptions(), transport.ManagementDialOptions(ctx, identity.nodeName, endpoint, transportCredentials)...)
 	conn, err := grpc.DialContext(ctx, endpoint, options...)
 	if err != nil {
 		return katlcAgentConnection{}, err
@@ -3419,9 +3422,8 @@ func dialKatlcAgentTCP(ctx context.Context, endpoint string) (katlcAgentConnecti
 	}, nil
 }
 
-func katlcAgentDialOptions(transportCredentials credentials.TransportCredentials) []grpc.DialOption {
+func katlcAgentDialOptions() []grpc.DialOption {
 	return []grpc.DialOption{
-		grpc.WithTransportCredentials(transportCredentials),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(256<<20),
 			grpc.MaxCallSendMsgSize(256<<20),

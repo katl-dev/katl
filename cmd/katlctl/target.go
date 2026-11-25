@@ -90,6 +90,11 @@ func resolveManagementTarget(ctx context.Context, opts managementTargetOptions) 
 	if !useContext {
 		if nodeName := strings.TrimSpace(opts.nodeName); nodeName != "" {
 			resolved, resolveErr := workstation.ResolveTopology(workstation.ResolveRequest{})
+			if resolveErr != nil && !errors.Is(resolveErr, os.ErrNotExist) {
+				// An unreadable saved config must not silently downgrade the node to a
+				// plaintext connection.
+				return managementTarget{}, fmt.Errorf("resolve saved katlctl config for node %q: %w; fix it, or pass --config or --context to select the node explicitly", nodeName, resolveErr)
+			}
 			if resolveErr == nil {
 				target, targetErr := targetFromTopology(resolved.Topology, nodeName)
 				if targetErr == nil && target.enrollmentID != "" {
@@ -176,7 +181,11 @@ func resolveClusterConfigTopology(ctx context.Context, path string) (workstation
 	}
 	if source, sourceErr := configbundle.DecodeSource(bytes.NewReader(data)); sourceErr == nil {
 		resolved.ClusterName = strings.TrimSpace(source.Metadata.Name)
-		if source.Spec.ManagementIdentity != "" || source.ManagementAuthentication() == managementidentity.TrustedNetwork {
+		authentication, err := source.ManagementAuthentication()
+		if err != nil {
+			return workstation.ResolvedTopology{}, err
+		}
+		if source.Spec.ManagementIdentity != "" || authentication == managementidentity.TrustedNetwork {
 			credentials, err := managementClientForConfig(path, source.Metadata.Name)
 			if err != nil {
 				return workstation.ResolvedTopology{}, err

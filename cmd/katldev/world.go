@@ -365,7 +365,7 @@ func newWorldCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comma
 			if err := manager.removeWorld(ctx); err != nil {
 				return err
 			}
-			fmt.Fprintln(stdout, "Removed the katldev world. _build/katldev/cluster.yaml is kept.")
+			fmt.Fprintln(stdout, "Removed the katldev world. _build/katldev/cluster.yaml and management-secrets.yaml are kept.")
 			return nil
 		},
 	})

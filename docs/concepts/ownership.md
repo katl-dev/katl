@@ -13,7 +13,7 @@ kubeconfig. You manage the cluster network, add-ons, workloads, and backups.
 | Immutable host generations and boot health | Katl | Katl stages, trial-boots, promotes, or falls back between versioned host generations. |
 | Host configuration declared in `ClusterConfig` | Katl | Katl applies the supported SSH, storage, kernel, native Linux, networking, and extension domains. |
 | kubeadm init, join, and supported upgrades | Katl | Katl performs explicit, durable operations and writes the operator kubeconfig. |
-| Management API access | Operator | Trusted-network access is the default; optional mTLS uses management secrets kept with the project across reinstalls. A context is a workstation record that you can recreate from `cluster.yaml` with `katlctl context save`. |
+| Management API access | Operator | mTLS is the default and uses management secrets kept with the project across reinstalls; trusted-network access is an explicit opt-in. A context is a workstation record that you can recreate from `cluster.yaml` with `katlctl context save`. |
 | Kubernetes identity | Operator | Create or import, protect, and independently back up the optional Katl identity file; Katl validates and installs it only for explicit bootstrap. |
 | DHCP, TFTP, iPXE, Matchbox, firmware boot order | Operator | Katl publishes artifacts and consumes a selected `.katlcfg`; it does not operate provisioning infrastructure. |
 | Stable DNS and external routing | Operator | Katl can health-gate and advertise a configured VIP, but the surrounding DNS, routers, peers, and network policy remain yours. |
@@ -57,7 +57,7 @@ etcd contents or Kubernetes resources.
 
 [Network trust](../support.md#network-trust) states what the installer on port
 8080 and the management API on port 9443 expose, and how to choose between
-trusted-network access and mTLS. SSH accepts public keys only, so it is usable
+mTLS and trusted-network access. SSH accepts public keys only, so it is usable
 only when `ClusterConfig` supplies keys. The live installer authorizes
 `root` only after the selected node's keys are handed off to it. On an installed
 node, the SSH keys from `ClusterConfig` authorize both the `katl` account and

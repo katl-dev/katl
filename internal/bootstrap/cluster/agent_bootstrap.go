@@ -103,7 +103,7 @@ func (c TCPAgentConnector) Connect(ctx context.Context, node inventory.PlannedNo
 	if err != nil {
 		return AgentConnection{}, fmt.Errorf("management credentials for node %q: %w", node.Name, err)
 	}
-	opts := append([]grpc.DialOption{grpc.WithTransportCredentials(transportCredentials)}, transport.ManagementDialOptions(ctx, node.Name, endpoint)...)
+	opts := transport.ManagementDialOptions(ctx, node.Name, endpoint, transportCredentials)
 	dialCtx := ctx
 	if c.DialTimeout > 0 {
 		var cancel context.CancelFunc

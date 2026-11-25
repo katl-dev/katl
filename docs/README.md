@@ -31,7 +31,7 @@ maps the concepts you know to their KatlOS equivalents.
   [etcd backups](operations/back-up-etcd.md), and
   [certificate renewal](operations/renew-certificates.md).
 - [Secure the management API](operations/management-auth.md) to choose between
-  trusted-network and mTLS management and to manage mTLS management secrets.
+  mTLS and trusted-network management and to manage mTLS management secrets.
 - [Troubleshoot KatlOS](operations/troubleshoot.md) to find where an operation
   failed and collect the information you need for recovery.
 

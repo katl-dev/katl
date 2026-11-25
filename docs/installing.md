@@ -50,7 +50,13 @@ katlctl config init ./cluster.yaml \
   --installer 192.0.2.21
 ```
 
-Replace both addresses with those of your installers. The first address
+`config init` also creates `management-secrets.yaml` beside `cluster.yaml` for
+mTLS management. It holds private keys: keep it across reinstalls and do not
+commit it unencrypted ([encrypt it with SOPS](operations/management-auth.md#encrypt-the-secrets-with-sops)).
+Pass
+`--management-authentication trusted-network` to opt out
+([details](operations/management-auth.md#choose-an-access-mode)). Replace both
+addresses with those of your installers. The first address
 becomes `cp-1`. Bare addresses use HTTP port `8080`. The flag also accepts a
 hostname, `host:port`, or HTTP(S) base URL. To add a machine to an existing
 `cluster.yaml` later, use `katlctl config add-node` as described in
