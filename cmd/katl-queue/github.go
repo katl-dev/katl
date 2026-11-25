@@ -330,3 +330,10 @@ func (g *gh) downloadTestLog(ctx context.Context, runID int64, name, dir string)
 	})
 	return log, err
 }
+
+func decodeJSON(raw []byte, out any) error {
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("decode gh output: %w", err)
+	}
+	return nil
+}
