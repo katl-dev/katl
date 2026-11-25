@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -28,6 +30,9 @@ func TestSelectGroups(t *testing.T) {
 		{"internal CLI", []string{"internal/katlctl/workstation/config.go"}, allNames()},
 		{"shared product", []string{"internal/installer/operation/run.go"}, allNames()},
 		{"VM tests", []string{"internal/vmtest/installed_smoke_test.go"}, allNames()},
+		{"release workflow", []string{".github/workflows/release-artifacts.yml"}, allNames()},
+		{"production build workflow", []string{".github/workflows/production-build.yml"}, allNames()},
+		{"production qualification workflow", []string{".github/workflows/production-vmtests.yml"}, allNames()},
 		{"builder", []string{"scripts/mkosi"}, allNames()},
 		{"unknown with docs", []string{"docs/readme.md", "new-input"}, allNames()},
 		{"CLI with shared change", []string{"cmd/katlctl/main.go", "go.mod"}, allNames()},
@@ -205,15 +210,15 @@ func TestCIPlan(t *testing.T) {
 		{name: "kernel schedule and docs", paths: ".github/workflows/kernel-updates.yml\x00docs/developing.md"},
 		{name: "regression kernel schedule and docs", paths: ".github/workflows/kernel-updates.yml\x00docs/developing.md", regression: true},
 		{name: "kernel schedule and lock", paths: ".github/workflows/kernel-updates.yml\x00kernels/fedora-45/x86_64/standard.json", vms: []string{"standard"}, drivers: []string{"standard"}},
-		{name: "release workflow", paths: ".github/workflows/release-artifacts.yml"},
-		{name: "production qualification workflow", paths: ".github/workflows/production-vmtests.yml"},
-		{name: "production build workflow", paths: ".github/workflows/production-build.yml"},
-		{name: "production build and release", paths: ".github/workflows/production-build.yml\x00.github/workflows/release-artifacts.yml"},
+		{name: "release workflow", paths: ".github/workflows/release-artifacts.yml", vms: both},
+		{name: "production qualification workflow", paths: ".github/workflows/production-vmtests.yml", vms: both},
+		{name: "production build workflow", paths: ".github/workflows/production-build.yml", vms: both},
+		{name: "production build and release", paths: ".github/workflows/production-build.yml\x00.github/workflows/release-artifacts.yml", vms: both},
 		{name: "production build and image builder", paths: ".github/workflows/production-build.yml\x00scripts/mkosi", vms: both, drivers: both},
-		{name: "release orchestration and docs", paths: ".github/workflows/release-artifacts.yml\x00.github/workflows/production-vmtests.yml\x00docs/developing.md"},
-		{name: "regression release orchestration", paths: ".github/workflows/release-artifacts.yml\x00.github/workflows/production-vmtests.yml", regression: true},
+		{name: "release orchestration and docs", paths: ".github/workflows/release-artifacts.yml\x00.github/workflows/production-vmtests.yml\x00docs/developing.md", vms: both},
+		{name: "regression release orchestration", paths: ".github/workflows/release-artifacts.yml\x00.github/workflows/production-vmtests.yml", regression: true, vms: both},
 		{name: "release and image builder", paths: ".github/workflows/release-artifacts.yml\x00scripts/mkosi", vms: both, drivers: both},
-		{name: "release and standard lock", paths: ".github/workflows/release-artifacts.yml\x00kernels/fedora-44/x86_64/standard.json", vms: []string{"standard"}, drivers: []string{"standard"}},
+		{name: "release and standard lock", paths: ".github/workflows/release-artifacts.yml\x00kernels/fedora-44/x86_64/standard.json", vms: both, drivers: []string{"standard"}},
 		{name: "production and scenario", paths: ".github/workflows/production-vmtests.yml\x00internal/vmtest/release_lifecycle_test.go", vms: both},
 		{name: "production and shared VM action", paths: ".github/workflows/production-vmtests.yml\x00.github/actions/hosted-vmtest/action.yml", vms: both, drivers: both},
 		{name: "release and unknown workflow", paths: ".github/workflows/release-artifacts.yml\x00.github/workflows/new-release.yml", vms: both},
@@ -271,4 +276,40 @@ func TestCIPlan(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestReleaseLifecycle needs an assembled production bundle, so the regression
+// lanes cannot run it. Production VM runs it instead, and a test renamed away
+// from that workflow would otherwise stop running without failing anything.
+func TestProductionCoverage(t *testing.T) {
+	const name = "TestReleaseLifecycle"
+
+	for _, lane := range batchGroups(groups) {
+		if slices.Contains(strings.Split(lane.Tests, "|"), name) {
+			t.Errorf("regression lane %s runs %s, which skips without a production bundle", lane.Name, name)
+		}
+	}
+
+	workflow, err := os.ReadFile("../../.github/workflows/production-vmtests.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(workflow), "-run '^"+name+"$'") {
+		t.Errorf("production-vmtests.yml does not run %s", name)
+	}
+
+	files, err := filepath.Glob("../../internal/vmtest/*_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		source, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(source), "\nfunc "+name+"(t *testing.T)") {
+			return
+		}
+	}
+	t.Errorf("internal/vmtest defines no %s", name)
 }
