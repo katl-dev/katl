@@ -50,3 +50,40 @@ func TestLegacyManagementRetainsTLS(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestInspectManagementAuthority(t *testing.T) {
+	t.Run("mTLS reports the installed authority", func(t *testing.T) {
+		root := t.TempDir()
+		identity := testManagementIdentity(t, "cp-1")
+		machineID, err := WriteMachineID(root, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := WriteEnrollment(root, "cp-1", machineID, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := WriteManagementIdentity(root, "cp-1", identity); err != nil {
+			t.Fatal(err)
+		}
+		want, err := managementidentity.CAFingerprint(identity.CACertificate)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		status, err := InspectManagementAuthority(root)
+		if err != nil || status.Authority != want || status.NodeName != "cp-1" || status.MachineID != machineID {
+			t.Fatalf("status = %+v, %v; want authority %s", status, err, want)
+		}
+	})
+
+	t.Run("trusted-network has nothing to recover", func(t *testing.T) {
+		root := t.TempDir()
+		if err := WriteManagementIdentity(root, "cp-1", managementidentity.NodeCredentials{Authentication: managementidentity.TrustedNetwork}); err != nil {
+			t.Fatal(err)
+		}
+
+		if _, err := InspectManagementAuthority(root); err == nil {
+			t.Fatal("trusted-network node reported an authority")
+		}
+	})
+}

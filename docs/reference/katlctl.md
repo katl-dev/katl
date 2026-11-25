@@ -152,6 +152,7 @@ mode, the secrets file, SOPS encryption, rotation, and recovery.
 | `management identity create --config CONFIG` | Create the secrets file for a hand-written new configuration |
 | `management identity export --config CONFIG` | Migrate an existing cluster's original management authority from the legacy workstation store |
 | `management identity rotate --config CONFIG --output NEW` | Replace an installed management authority through host-key-verified root SSH |
+| `management identity recover --config CONFIG` | Replace an installed management authority through root SSH when the secrets are lost |
 | `management identity path`, `inspect`, `import` | Legacy workstation-store recovery and inspection |
 
 Keep the secrets file across reinstalls. A workstation context is only a
