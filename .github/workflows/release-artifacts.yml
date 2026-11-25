@@ -1,6 +1,10 @@
 name: Katl Release Artifacts
 
 on:
+  # The nightly candidate on main runs the release path at a development version
+  # above the latest stable, publishes nothing, and refreshes main's build caches.
+  schedule:
+    - cron: '17 3 * * *'
   push:
     tags:
       - "v*"
@@ -20,9 +24,11 @@ permissions:
   actions: read
 
 # Tag pushes queue per ref so publication is serialised and never
-# cancelled. Dispatches publish nothing, so each gets its own group.
+# cancelled. Dispatches publish nothing, so each gets its own group. The
+# nightly candidate has a group of its own, so it never queues behind or ahead
+# of a tag or a dispatch.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -117,13 +123,23 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Resolve supported upgrade source
+        id: previous
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "tag=$(scripts/katl-release-artifacts previous-tag)" >> "$GITHUB_OUTPUT"
+
       - name: Resolve release identity
         id: release
         shell: bash
         env:
           MANUAL_VERSION: ${{ inputs.version }}
+          PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
         run: |
           event="$GITHUB_EVENT_NAME"
+          if [[ "$event" == schedule ]]; then
+            MANUAL_VERSION="$(scripts/katl-release-artifacts dev-version "$PREVIOUS_TAG")"
+          fi
           version="$(scripts/katl-release-artifacts version \
             "$event" "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" \
             "$MANUAL_VERSION")"
@@ -131,11 +147,6 @@ jobs:
           artifact_name="katl-${version}-${KATL_ARCHITECTURE}-${short_sha}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "artifact-name=$artifact_name" >> "$GITHUB_OUTPUT"
-      - name: Resolve supported upgrade source
-        id: previous
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: echo "tag=$(scripts/katl-release-artifacts previous-tag)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod

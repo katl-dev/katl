@@ -621,3 +621,113 @@ func TestReleaseValidationRegressionSkip(t *testing.T) {
 		})
 	}
 }
+
+func TestNightlyCandidateScheduled(t *testing.T) {
+	workflow, _ := readWorkflow(t, "release-artifacts.yml")
+	var on struct {
+		Schedule []struct{ Cron string } `yaml:"schedule"`
+	}
+	if err := workflow.On.Decode(&on); err != nil {
+		t.Fatal(err)
+	}
+	if len(on.Schedule) != 1 {
+		t.Fatalf("release artifacts schedules = %v, want one nightly candidate", on.Schedule)
+	}
+
+	if _, err := os.Stat(filepath.Join(repoRoot(t), ".github/workflows/cache-warm.yml")); err == nil {
+		t.Error("cache-warm workflow still exists; the nightly candidate refreshes the caches")
+	}
+	hosted, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/hosted-vmtests.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(hosted), "cache-only") {
+		t.Error("hosted VM tests still support a cache-only mode that nothing calls")
+	}
+}
+
+// The nightly candidate must not cancel, queue behind or share a group with a
+// tag run, a dispatch or another ref's run, and two nights must not overlap.
+func TestNightlyCandidateConcurrency(t *testing.T) {
+	workflow, _ := readWorkflow(t, "release-artifacts.yml")
+	var concurrency struct {
+		Group            string
+		CancelInProgress bool `yaml:"cancel-in-progress"`
+	}
+	if err := workflow.Concurrency.Decode(&concurrency); err != nil {
+		t.Fatal(err)
+	}
+	group := func(event, ref, runID string) string {
+		return expandExpressions(t, concurrency.Group, map[string]string{
+			"github.workflow": "wf", "github.event_name": event, "github.ref": ref, "github.run_id": runID,
+		})
+	}
+
+	night := group("schedule", "refs/heads/main", "1")
+	if again := group("schedule", "refs/heads/main", "2"); night != again {
+		t.Errorf("consecutive nightly runs use groups %q and %q, want one group so they never overlap", night, again)
+	}
+	for name, other := range map[string]string{
+		"push to main":    group("push", "refs/heads/main", "3"),
+		"tag push":        group("push", "refs/tags/v2026.11.2-rc.1", "4"),
+		"dispatch":        group("workflow_dispatch", "refs/heads/main", "5"),
+		"dispatch on tag": group("workflow_dispatch", "refs/tags/v2026.11.2", "6"),
+	} {
+		if night == other {
+			t.Errorf("nightly candidate shares group %q with a %s", night, name)
+		}
+	}
+	if concurrency.CancelInProgress {
+		t.Error("a release artifacts run cancels runs in its group")
+	}
+}
+
+// The scheduled run has no input and no tag, so it derives its development
+// version from the latest stable release; a tag run keeps the tag's version.
+func TestReleaseIdentityVersion(t *testing.T) {
+	workflow, _ := readWorkflow(t, "release-artifacts.yml")
+	steps := workflow.Jobs["identity"].Steps
+	index := map[string]int{}
+	for i, step := range steps {
+		switch {
+		case strings.Contains(step.Run, "katl-release-artifacts previous-tag"):
+			index["previous"] = i
+		case strings.Contains(step.Run, "katl-release-artifacts version"):
+			index["release"] = i
+		}
+	}
+	previous, release := index["previous"], index["release"]
+	if _, ok := index["release"]; !ok || previous >= release {
+		t.Fatalf("upgrade source step %d must precede the identity step %d that derives the version from it", previous, release)
+	}
+	step := steps[release]
+
+	for _, tt := range []struct {
+		name    string
+		env     []string
+		version string
+	}{
+		{"nightly", []string{"GITHUB_EVENT_NAME=schedule", "GITHUB_REF_TYPE=branch", "GITHUB_REF_NAME=main", "PREVIOUS_TAG=v2026.11.1", "MANUAL_VERSION="}, "2026.11.2-dev.0"},
+		{"tag", []string{"GITHUB_EVENT_NAME=push", "GITHUB_REF_TYPE=tag", "GITHUB_REF_NAME=v2026.11.3-rc.1", "PREVIOUS_TAG=v2026.11.1", "MANUAL_VERSION="}, "2026.11.3-rc.1"},
+		{"dispatch", []string{"GITHUB_EVENT_NAME=workflow_dispatch", "GITHUB_REF_TYPE=branch", "GITHUB_REF_NAME=main", "PREVIOUS_TAG=v2026.11.1", "MANUAL_VERSION=2026.12.0-beta.1"}, "2026.12.0-beta.1"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			outputs := filepath.Join(t.TempDir(), "output")
+			command := exec.Command("bash", "-euo", "pipefail", "-c", step.Run)
+			command.Dir = repoRoot(t)
+			command.Env = append(os.Environ(), tt.env...)
+			command.Env = append(command.Env, "GITHUB_OUTPUT="+outputs, "GITHUB_SHA=0123456789abcdef0123456789abcdef01234567", "KATL_ARCHITECTURE=x86_64")
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("identity step failed: %v\n%s", err, output)
+			}
+			written, err := os.ReadFile(outputs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "version=" + tt.version + "\nartifact-name=katl-" + tt.version + "-x86_64-0123456789ab\n"
+			if string(written) != want {
+				t.Errorf("identity outputs = %q, want %q", written, want)
+			}
+		})
+	}
+}

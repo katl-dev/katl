@@ -86,12 +86,12 @@ control artifact and package-cache reuse.
 ## Build caches
 
 Merge queue runs restore build caches but do not save them: their refs are never
-restored by other runs and would only consume cache quota. The scheduled
-**Cache warm** workflow builds the shared VM images for both flavours on main
-nightly, which refreshes the BuildKit builder layers (`mkosi-builder`) and the
-`hosted-vmtest-build-*` Go and package caches that pull requests and the merge
-queue restore from main. Release artifact caches (`katl-go-runtime-*`,
-`katl-go-installer-*`, `katl-mkosi-packages-*`) are saved only by Release
+restored by other runs and would only consume cache quota. The nightly
+candidate on main (below) builds the shared VM images for both flavours,
+which refreshes the BuildKit builder layers
+(`mkosi-builder`) and the `hosted-vmtest-build-*` Go and package caches that
+pull requests and the merge queue restore from main. The production build
+caches (`katl-go-runtime-*`, `katl-go-installer-*`, `katl-mkosi-packages-*`) are saved by tag, dispatch and nightly runs of Release
 Artifacts.
 
 ## Kernel updates
@@ -118,15 +118,18 @@ credentials in the trusted proposal and promotion jobs; PR test jobs use the
 read-only built-in token. See [Creating a GitHub App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app).
 
 The optional `katl-vmtest` ARC pool is restricted to trusted main revisions by
-workflow routing, which today means manual dispatches and the scheduled cache
-warm on main. Before enabling it, enforce trusted workflow/ref admission
+workflow routing, which today means manual dispatches and the nightly candidate on main. Before enabling it, enforce trusted workflow/ref admission
 outside PR-editable YAML and allocate at most one VM runner per node because
 vsock CIDs share the host kernel. Qualify the deployed pool manually before
 setting `KATL_VMTEST_MAIN_RUNNER=katl-vmtest`.
 
 ## Release promotion
 
-**Katl Release Artifacts** runs on tags or manual dispatch.
+**Katl Release Artifacts** runs on tags, manual dispatch, and nightly on main. The nightly candidate is a
+dispatch-equivalent run at the development version above the latest stable
+release, with its own concurrency group so it never queues behind or cancels a
+tag run or a dispatch. It publishes nothing; a failed night appears as a failed
+scheduled run.
 Merged revisions are qualified by the merge queue without a second release-artifact build.
 Each flavour is built by the reusable `production-build.yml` workflow (inputs `flavour`,
 `version`, `previous-tag`, `publication`), and its Production VM qualification starts
