@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/katl-dev/katl/internal/gittest"
 )
 
 func TestSystemExtensionPublication(t *testing.T) {
@@ -111,7 +113,7 @@ func TestSystemExtensionPublication(t *testing.T) {
 			}
 			head := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
 			outputPath := filepath.Join(dir, "output")
-			env := append(hermeticGitEnv(os.Environ(), dir),
+			env := append(gittest.Env(os.Environ(), dir),
 				"KATL_BIRD_RECIPE_PATTERN="+bird.Env["KATL_BIRD_RECIPE_PATTERN"],
 				"BASE_SHA="+base, "GITHUB_SHA="+head, "GITHUB_OUTPUT="+outputPath,
 				"EVENT_NAME="+tc.event, "MANUAL_PUBLISH="+tc.manual,

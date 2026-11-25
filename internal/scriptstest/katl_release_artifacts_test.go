@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/gittest"
 )
 
 func TestKatlReleaseArtifactVersion(t *testing.T) {
@@ -89,7 +91,7 @@ func TestKatlReleaseArtifactNotesFollowReleaseHistory(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.7.0-beta.1")
 	cmd.Dir = gitDir
-	cmd.Env = hermeticGitEnv(os.Environ(), gitDir)
+	cmd.Env = gittest.Env(os.Environ(), gitDir)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("notes failed: %v\n%s", err, output)
@@ -149,7 +151,7 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.7.0-dev.4")
 	cmd.Dir = gitDir
 	cmd.Env = append(
-		hermeticGitEnv(environmentWithout("KATL_RELEASE_TARGET"), gitDir),
+		gittest.Env(environmentWithout("KATL_RELEASE_TARGET"), gitDir),
 		"GITHUB_REF_TYPE=branch",
 		"GITHUB_SHA=not-a-commit-in-the-test-repository",
 		"KATL_RELEASE_REPOSITORY_URL=https://github.example/katl-dev/katl",
@@ -196,7 +198,7 @@ func TestKatlReleaseArtifactNotesIncludeVersionedUpgradeGuide(t *testing.T) {
 
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.9.0-beta.18")
 	cmd.Dir = gitDir
-	cmd.Env = hermeticGitEnv(os.Environ(), gitDir)
+	cmd.Env = gittest.Env(os.Environ(), gitDir)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("notes failed: %v\n%s", err, output)
@@ -671,7 +673,7 @@ func TestKatlReleaseArtifactNotesReleaseNoteTrailers(t *testing.T) {
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.7.0-dev.4")
 	cmd.Dir = gitDir
 	cmd.Env = append(
-		hermeticGitEnv(environmentWithout("KATL_RELEASE_TARGET"), gitDir),
+		gittest.Env(environmentWithout("KATL_RELEASE_TARGET"), gitDir),
 		"GITHUB_REF_TYPE=branch",
 		"KATL_RELEASE_REPOSITORY_URL=https://github.example/katl-dev/katl",
 	)
@@ -720,7 +722,7 @@ func TestKatlReleaseArtifactNotesPreviousTag(t *testing.T) {
 	notes := func(env ...string) (string, error) {
 		cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.7.2")
 		cmd.Dir = gitDir
-		cmd.Env = append(hermeticGitEnv(environmentWithout("KATL_RELEASE_TARGET", "KATL_RELEASE_PREVIOUS_TAG"), gitDir), env...)
+		cmd.Env = append(gittest.Env(environmentWithout("KATL_RELEASE_TARGET", "KATL_RELEASE_PREVIOUS_TAG"), gitDir), env...)
 		output, err := cmd.CombinedOutput()
 		return string(output), err
 	}

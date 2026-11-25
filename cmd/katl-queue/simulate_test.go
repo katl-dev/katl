@@ -8,28 +8,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
-)
 
-// hermeticGitEnv confines git to dir: no system or global config, no
-// repository discovery above it, and a fixed identity.
-func hermeticGitEnv(dir string) []string {
-	var env []string
-	for _, value := range os.Environ() {
-		if !strings.HasPrefix(value, "GIT_") {
-			env = append(env, value)
-		}
-	}
-	return append(
-		env,
-		"GIT_CONFIG_NOSYSTEM=1",
-		"GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_CEILING_DIRECTORIES="+filepath.Dir(dir),
-		"GIT_AUTHOR_NAME=Katl Test",
-		"GIT_AUTHOR_EMAIL=test@katl.dev",
-		"GIT_COMMITTER_NAME=Katl Test",
-		"GIT_COMMITTER_EMAIL=test@katl.dev",
-	)
-}
+	"github.com/katl-dev/katl/internal/gittest"
+)
 
 type fixtureRepo struct {
 	t   *testing.T
@@ -40,7 +21,7 @@ func (r fixtureRepo) git(args ...string) string {
 	r.t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = r.dir
-	cmd.Env = hermeticGitEnv(r.dir)
+	cmd.Env = gittest.Env(os.Environ(), r.dir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		r.t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
@@ -137,7 +118,7 @@ func TestSimulate(t *testing.T) {
 			headBefore := repo.git("rev-parse", "HEAD")
 			objectsBefore := repo.git("count-objects")
 
-			objects, err := newScratchObjects(repo.dir, hermeticGitEnv(repo.dir))
+			objects, err := newScratchObjects(repo.dir, gittest.Env(os.Environ(), repo.dir))
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/katl-dev/katl/internal/gittest"
 )
 
 // decideFixture is a main that moved past oldBase, so that a pull request
@@ -496,7 +498,7 @@ func TestRebaseEnv(t *testing.T) {
 	}
 	for _, entry := range got {
 		name, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(name, "GIT_") && !slices.Contains([]string{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"}, name) {
+		if strings.HasPrefix(name, "GIT_") && !slices.Contains([]string{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_VALUE_1"}, name) {
 			t.Errorf("env passes %s", entry)
 		}
 		if name == "AWS_SECRET_ACCESS_KEY" || name == "EDITOR" {
@@ -511,6 +513,9 @@ func TestRebaseEnv(t *testing.T) {
 	}
 	if last["GIT_CONFIG_GLOBAL"] != "/dev/null" || last["GIT_CONFIG_NOSYSTEM"] != "1" {
 		t.Errorf("configuration = %q, %q; want global config ignored", last["GIT_CONFIG_GLOBAL"], last["GIT_CONFIG_NOSYSTEM"])
+	}
+	if last["GIT_CONFIG_COUNT"] != "2" || last["GIT_CONFIG_KEY_0"] != "gc.auto" || last["GIT_CONFIG_VALUE_0"] != "0" || last["GIT_CONFIG_KEY_1"] != "maintenance.auto" || last["GIT_CONFIG_VALUE_1"] != "false" {
+		t.Errorf("env %q does not disable background maintenance, which could outlive the throwaway repository", got)
 	}
 	if last["GIT_TERMINAL_PROMPT"] != "0" {
 		t.Errorf("GIT_TERMINAL_PROMPT = %q; a credential failure must fail the rebase, not wait for input", last["GIT_TERMINAL_PROMPT"])
@@ -535,7 +540,7 @@ func TestRebaser(t *testing.T) {
 	if err := os.WriteFile(hostile, []byte("[commit]\n\tgpgsign = true\n[gpg]\n\tprogram = false\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	env := append(hermeticGitEnv(f.repo.dir), "HOME="+t.TempDir(), "GIT_DIR="+other, "GIT_WORK_TREE="+other, "GIT_CONFIG_GLOBAL="+hostile)
+	env := append(gittest.Env(os.Environ(), f.repo.dir), "HOME="+t.TempDir(), "GIT_DIR="+other, "GIT_WORK_TREE="+other, "GIT_CONFIG_GLOBAL="+hostile)
 
 	push := func(oid, branch string) { f.repo.git("push", "--quiet", "--force", remote, oid+":refs/heads/"+branch) }
 	remoteHead := func(branch string) string {

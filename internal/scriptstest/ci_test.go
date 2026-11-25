@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/katl-dev/katl/internal/gittest"
 )
 
 func TestCIChanges(t *testing.T) {
@@ -69,7 +71,7 @@ esac
 `)
 	command := exec.Command("bash", "-euo", "pipefail", "-c", script)
 	command.Dir = dir
-	command.Env = append(hermeticGitEnv(os.Environ(), dir), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
+	command.Env = append(gittest.Env(os.Environ(), dir), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"GITHUB_EVENT_NAME=pull_request", "BASE_SHA="+base, "HEAD_SHA="+head,
 		"GITHUB_OUTPUT="+filepath.Join(dir, "output"), "GITHUB_STEP_SUMMARY="+filepath.Join(dir, "summary"))
 	if output, err := command.CombinedOutput(); err != nil {
@@ -206,7 +208,7 @@ esac
 			argsPath := filepath.Join(run, "args")
 			command := exec.Command("bash", "-e", "-c", script)
 			command.Dir = dir
-			command.Env = append(hermeticGitEnv(os.Environ(), dir), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
+			command.Env = append(gittest.Env(os.Environ(), dir), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"GITHUB_EVENT_NAME="+tc.event, "BASE_SHA="+base, "BEFORE_SHA="+base, "VMTEST_LABEL="+tc.label,
 				"PLANNER_ARGS="+argsPath, "GITHUB_OUTPUT="+outputPath, "GITHUB_STEP_SUMMARY="+filepath.Join(run, "summary"))
 			if output, err := command.CombinedOutput(); err != nil {
@@ -349,7 +351,7 @@ esac
 			outputPath := filepath.Join(t.TempDir(), "output")
 			command := exec.Command("bash", "-e", "-c", plan)
 			command.Dir = dir
-			command.Env = append(hermeticGitEnv(os.Environ(), dir), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
+			command.Env = append(gittest.Env(os.Environ(), dir), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"GITHUB_EVENT_NAME="+tc.event, "BASE_SHA="+base, "BEFORE_SHA="+base, "VMTEST_LABEL="+tc.label,
 				"GITHUB_OUTPUT="+outputPath, "GITHUB_STEP_SUMMARY="+filepath.Join(t.TempDir(), "summary"))
 			if output, err := command.CombinedOutput(); err != nil {

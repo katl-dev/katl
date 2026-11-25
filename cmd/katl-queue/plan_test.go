@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/katl-dev/katl/internal/gittest"
 )
 
 // planFixture is a repository with a base commit over three files and a
@@ -24,7 +27,7 @@ func newPlanFixture(t *testing.T) planFixture {
 	repo.git("init", "--quiet", "--initial-branch=main")
 	repo.git("commit", "--quiet", "--allow-empty", "-m", "root")
 	base := repo.commit(repo.git("rev-parse", "HEAD"), map[string]string{"a": "a\n", "b": "b\n", "c": "c\n"})
-	objects, err := newScratchObjects(repo.dir, hermeticGitEnv(repo.dir))
+	objects, err := newScratchObjects(repo.dir, gittest.Env(os.Environ(), repo.dir))
 	if err != nil {
 		t.Fatal(err)
 	}
