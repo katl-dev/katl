@@ -72,7 +72,9 @@ katlctl config init ./cluster.yaml \
 ```
 
 This creates `management-secrets.yaml` beside `cluster.yaml`; keep it, because
-it lets you manage the nodes again after a reinstall. If you chose
+it lets you manage the nodes again after a reinstall. It holds private keys,
+so do not commit it unencrypted
+([encrypt it with SOPS](operations/management-auth.md#encrypt-the-secrets-with-sops)). If you chose
 trusted-network management, add `--management-authentication trusted-network`
 to this command.
 If a machine has more than one eligible disk,

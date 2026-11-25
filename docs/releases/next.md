@@ -75,7 +75,7 @@ Those releases are affected, and a stuck node plans its upgrade with its install
 
 ## Existing trusted-network clusters
 
-A configuration that already says `managementAuthentication: trusted-network` needs no action; that covers everything `config init` wrote since 2026.10.0.
+A configuration that already says `managementAuthentication: trusted-network` needs no action; that covers everything `config init` has written since v2026.9.0. Any configuration without the field and without `managementIdentity` that worked with `katlctl` v2026.9.0 through v2026.11.x was trusted-network, so adding that line is correct.
 
 If the field is missing, `katlctl` refuses every command that reads the configuration and prints the line to add. Nodes are never changed. Add `managementAuthentication: trusted-network` under `spec` to keep managing them.
 

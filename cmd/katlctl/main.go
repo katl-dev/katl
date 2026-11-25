@@ -46,7 +46,6 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials"
 	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
@@ -3412,7 +3411,7 @@ func dialKatlcAgentTCP(ctx context.Context, endpoint string) (katlcAgentConnecti
 	if err != nil {
 		return katlcAgentConnection{}, fmt.Errorf("management credentials for node %q: %w", identity.nodeName, err)
 	}
-	options := append(katlcAgentDialOptions(transportCredentials), transport.ManagementDialOptions(ctx, identity.nodeName, endpoint)...)
+	options := append(katlcAgentDialOptions(), transport.ManagementDialOptions(ctx, identity.nodeName, endpoint, transportCredentials)...)
 	conn, err := grpc.DialContext(ctx, endpoint, options...)
 	if err != nil {
 		return katlcAgentConnection{}, err
@@ -3423,9 +3422,8 @@ func dialKatlcAgentTCP(ctx context.Context, endpoint string) (katlcAgentConnecti
 	}, nil
 }
 
-func katlcAgentDialOptions(transportCredentials credentials.TransportCredentials) []grpc.DialOption {
+func katlcAgentDialOptions() []grpc.DialOption {
 	return []grpc.DialOption{
-		grpc.WithTransportCredentials(transportCredentials),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(256<<20),
 			grpc.MaxCallSendMsgSize(256<<20),

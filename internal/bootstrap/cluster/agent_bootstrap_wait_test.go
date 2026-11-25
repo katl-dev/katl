@@ -3,15 +3,19 @@ package cluster
 import (
 	"bytes"
 	"context"
+	"net"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/katl-dev/katl/internal/nettest"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 )
 
 type listeningAgent struct {
@@ -74,5 +78,44 @@ func TestRunAgentBootstrapWaitsForRestartingAgent(t *testing.T) {
 	}
 	if !strings.Contains(progress.String(), "Waiting for node cp-1 management endpoint "+port.Endpoint) {
 		t.Fatalf("no progress while waiting:\n%s", progress.String())
+	}
+}
+
+// Cluster bootstrap explains a trusted-network client reaching an mTLS node
+// as katlctl's other management commands do.
+func TestTCPAgentConnectorExplainsMutualTLSNode(t *testing.T) {
+	now := time.Now().UTC()
+	identity, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "lab", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, _, err := managementidentity.EnsureNode(&identity, "cp-1", now, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverTLS, err := transport.ServerTLSConfigForNode(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
+	t.Cleanup(server.Stop)
+	go func() { _ = server.Serve(listener) }()
+	connector := TCPAgentConnector{Credentials: &managementidentity.ClientCredentials{Authentication: managementidentity.TrustedNetwork}}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn, err := connector.Connect(ctx, inventory.PlannedNode{Name: "cp-1", Address: listener.Addr().String(), Access: inventory.Access{Method: "agent"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, err = conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+
+	if err == nil || !strings.Contains(err.Error(), "node requires mTLS management; pass --config or --context") {
+		t.Fatalf("error = %v", err)
 	}
 }

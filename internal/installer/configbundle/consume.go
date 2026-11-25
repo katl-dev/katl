@@ -90,7 +90,7 @@ func ReadBundle(reader io.Reader, expectedDigest string) (Bundle, error) {
 	}
 	mode, err := source.ManagementAuthentication()
 	if err != nil {
-		return Bundle{}, fmt.Errorf("config bundle records no management authentication; rebuild it with `katlctl config bundle`: %w", err)
+		return Bundle{}, fmt.Errorf("config bundle records no management authentication; rebuild it from its cluster.yaml with `katlctl config bundle`")
 	}
 	return Bundle{Manifest: bundle, Digest: bundleDigest, Authentication: mode}, nil
 }

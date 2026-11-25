@@ -192,13 +192,17 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 				return fmt.Errorf("read existing cluster configuration: %w", decodeErr)
 			}
 			previousMode, modeErr := previousSource.ManagementAuthentication()
-			if modeErr != nil {
+			explicitMode := managementidentity.Authentication(opts.managementAuthentication)
+			if modeErr != nil && explicitMode != managementidentity.TrustedNetwork {
 				return fmt.Errorf("existing cluster configuration %s: %w", opts.outputPath, modeErr)
 			}
 			if opts.managementAuthentication == "" {
 				source.Spec.ManagementAuthentication = previousMode
 			}
 			existingTLS = previousMode == managementidentity.MutualTLS
+			if existingTLS && explicitMode == managementidentity.TrustedNetwork {
+				fmt.Fprintln(stderr, "nodes installed with mTLS management will refuse this configuration; changing mode requires reprovisioning (docs/operations/management-auth.md#change-the-access-mode)")
+			}
 			if reference := previousSource.Spec.ManagementIdentity; reference != "" && source.Spec.ManagementAuthentication == managementidentity.MutualTLS {
 				source.Spec.ManagementIdentity = reference
 				existingReference = true
@@ -277,7 +281,7 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 		if identity.ClusterName != source.Metadata.Name {
 			return fmt.Errorf("management secrets %s belong to cluster %q, not %q", secretsPath, identity.ClusterName, source.Metadata.Name)
 		}
-		fmt.Fprintf(stdout, "management secrets: %s (keep across reinstalls; supports SOPS encryption)\n", secretsPath)
+		fmt.Fprintf(stdout, "management secrets: %s (private keys: keep across reinstalls, never commit unencrypted)\n", secretsPath)
 	}
 	flags := os.O_WRONLY | os.O_CREATE
 	if opts.force {

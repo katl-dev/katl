@@ -393,7 +393,7 @@ func checkExposedManagementCredential(ctx context.Context, node managementRotati
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	// The credential is polled until it takes effect, so a refused connection is reported at once.
-	options := append(katlcAgentDialOptions(transport.NewClientCredentials(config)), transport.ManagementDialOptions(transport.WithoutManagementWait(requestCtx), node.name, node.endpoint)...)
+	options := append(katlcAgentDialOptions(), transport.ManagementDialOptions(transport.WithoutManagementWait(requestCtx), node.name, node.endpoint, transport.NewClientCredentials(config))...)
 	conn, err := grpc.DialContext(requestCtx, node.endpoint, options...)
 	if err != nil {
 		return err

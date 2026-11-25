@@ -64,6 +64,8 @@ spec:
   # Set controlPlane: true on nodes that join the Kubernetes control plane.
   # Omission means worker.
   # Nodes use DHCP by default; native systemd-networkd files can be set under defaults or a node.
+  managementAuthentication: mtls
+  managementIdentity: management-secrets.yaml
   kubernetes:
     version: v1.36.1
   defaults:

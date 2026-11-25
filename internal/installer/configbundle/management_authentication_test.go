@@ -99,7 +99,7 @@ func TestReadBundleRefusesUnrecordedManagementAuthentication(t *testing.T) {
 
 	stripped := replaceNormalizedSource(t, archive, func(source *SourceConfig) { source.Spec.ManagementAuthentication = "" })
 	bundle, err := ReadBundle(bytes.NewReader(stripped), "")
-	if err == nil || !strings.Contains(err.Error(), "rebuild it with `katlctl config bundle`") || bundle.Authentication != "" {
+	if err == nil || !strings.Contains(err.Error(), "rebuild it from its cluster.yaml with `katlctl config bundle`") || bundle.Authentication != "" {
 		t.Fatalf("ReadBundle() = %q, %v", bundle.Authentication, err)
 	}
 }

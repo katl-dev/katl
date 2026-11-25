@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/katl-dev/katl/internal/nettest"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -130,7 +131,7 @@ func refusedDial(addr string) error {
 // listening is non-nil and false, dials fail as a refused connection does.
 func dialManagement(ctx context.Context, t *testing.T, endpoint string, creds credentials.TransportCredentials, listening *atomic.Bool) agentapi.KatlcAgentClient {
 	t.Helper()
-	options := append([]grpc.DialOption{grpc.WithTransportCredentials(creds)}, ManagementDialOptions(ctx, "cp-1", endpoint)...)
+	options := ManagementDialOptions(ctx, "cp-1", endpoint, creds)
 	if listening != nil {
 		options = append(options, grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
 			if !listening.Load() {
@@ -335,5 +336,106 @@ func TestManagementCallSurvivesSlowHandshake(t *testing.T) {
 	}
 	if agent.calls.Load() != 1 {
 		t.Fatalf("agent handled %d calls, want 1", agent.calls.Load())
+	}
+}
+
+// serveMutualTLS serves agent on a TLS listener whose certificate is issued
+// for cp-1 and returns its endpoint and a client identity for the cluster.
+func serveMutualTLS(t *testing.T, agent *countingAgent) (string, managementidentity.ClientCredentials) {
+	t.Helper()
+	now := time.Now().UTC()
+	identity, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "lab", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, _, err := managementidentity.EnsureNode(&identity, "cp-1", now, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverTLS, err := ServerTLSConfigForNode(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := managementidentity.Client(identity, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
+	agentapi.RegisterKatlcAgentServer(server, agent)
+	t.Cleanup(server.Stop)
+	go func() { _ = server.Serve(listener) }()
+	return listener.Addr().String(), client
+}
+
+// The dial owner tells a trusted-network client that the node requires mTLS
+// at once, with or without the wait, while a refused endpoint still waits and
+// an mTLS client reaches the node.
+func TestManagementDialOutcomes(t *testing.T) {
+	trustedNetwork := managementidentity.ClientCredentials{Authentication: managementidentity.TrustedNetwork}
+	tests := map[string]struct {
+		refused   bool
+		mutualTLS bool
+		noWait    bool
+		wantErr   string
+		wantWait  bool
+	}{
+		"trusted-network client, mTLS node":         {wantErr: "node requires mTLS management; pass --config or --context"},
+		"trusted-network client, mTLS node, nowait": {noWait: true, wantErr: "node requires mTLS management; pass --config or --context"},
+		"trusted-network client, refused endpoint":  {refused: true, wantErr: "refused connections", wantWait: true},
+		"mTLS client, mTLS node":                    {mutualTLS: true},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			shortWait(t, 300*time.Millisecond)
+			agent := &countingAgent{}
+			endpoint, client := serveMutualTLS(t, agent)
+			if test.refused {
+				endpoint = nettest.ReservePort(t).Endpoint
+			}
+			identity := trustedNetwork
+			if test.mutualTLS {
+				identity = client
+			}
+			creds, err := ClientCredentialsForNode(identity, "cp-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			progress := &gatedProgress{}
+			ctx, cancel := context.WithTimeout(WithManagementProgress(context.Background(), progress), 10*time.Second)
+			defer cancel()
+			if test.noWait {
+				ctx = WithoutManagementWait(ctx)
+			}
+			conn, err := grpc.NewClient("passthrough:///"+endpoint, ManagementDialOptions(ctx, "cp-1", endpoint, creds)...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = conn.Close() })
+
+			_, err = agentapi.NewKatlcAgentClient(conn).GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+
+			if test.wantErr == "" {
+				if err != nil || agent.calls.Load() != 1 {
+					t.Fatalf("error = %v, agent calls = %d; want one successful call", err, agent.calls.Load())
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("error = %v, want it to contain %q", err, test.wantErr)
+			}
+			if !test.refused && strings.Contains(err.Error(), "refused connections") {
+				t.Errorf("mTLS node reported as refusing connections: %v", err)
+			}
+			if test.refused && strings.Contains(err.Error(), "requires mTLS") {
+				t.Errorf("refused endpoint reported as requiring mTLS: %v", err)
+			}
+			if waited := progress.String() != ""; waited != test.wantWait {
+				t.Errorf("waited = %v, want %v; progress:\n%s", waited, test.wantWait, progress.String())
+			}
+		})
 	}
 }
