@@ -11,7 +11,7 @@ func TestWritePreseedDir(t *testing.T) {
 	root := t.TempDir()
 	manifest := []byte(`{"katlosImage":{"localRef":"images/katlos.img"}}`)
 	for path, content := range map[string]string{
-		"images/katlos.img":                 "image",
+		"images/katlos.img":    "image",
 		"kubeadm/etc/note.txt": "file",
 	} {
 		full := filepath.Join(root, path)
@@ -40,9 +40,9 @@ func TestWritePreseedDir(t *testing.T) {
 			t.Fatalf("install-input.json = %v", input)
 		}
 		for path, want := range map[string]string{
-			"install-manifest.json":             string(manifest),
-			"images/katlos.img":                 "image",
-			"kubeadm/etc/note.txt": "file",
+			"install-manifest.json": string(manifest),
+			"images/katlos.img":     "image",
+			"kubeadm/etc/note.txt":  "file",
 		} {
 			got, err := os.ReadFile(filepath.Join(dir, path))
 			if err != nil || string(got) != want {
