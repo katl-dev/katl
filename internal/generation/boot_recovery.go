@@ -37,9 +37,7 @@ func ArmBootRecovery(root string, generationID string) (bool, error) {
 		if err != nil {
 			return err
 		}
-		trialID := strings.TrimSpace(selection.TrialGenerationID)
-		targetID := strings.TrimSpace(selection.TargetBootGenerationID)
-		if !selection.PendingHealthValidation || (generationID != trialID && generationID != targetID) {
+		if !selection.IsPendingBootTarget(generationID) {
 			return nil
 		}
 		fallbackID := strings.TrimSpace(selection.PreviousKnownGoodGenerationID)
@@ -95,30 +93,40 @@ func ClearBootRecovery(root string) error {
 	return nil
 }
 
-func bootRecoveryArmed(root string, generationID string) (bool, error) {
-	root = cleanRoot(root)
+type runningBoot struct {
+	GenerationID string
+	Trial        bool
+	Armed        bool
+	KnownGood    bool
+}
+
+func (boot runningBoot) failureDemotes() bool {
+	return boot.Trial || !boot.KnownGood
+}
+
+func readRunningBoot(root, generationID string, selection BootSelectionRecord, status GenerationStatus) (runningBoot, error) {
+	boot := runningBoot{
+		GenerationID: generationID,
+		Trial:        selection.IsPendingBootTarget(generationID),
+		KnownGood:    IsKnownGood(status),
+	}
 	data, err := os.ReadFile(rootedPathUnchecked(root, bootRecoveryPath))
 	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+		return boot, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("read boot recovery authorization: %w", err)
+		return runningBoot{}, fmt.Errorf("read boot recovery authorization: %w", err)
 	}
 	var arm bootRecoveryArm
 	if err := json.Unmarshal(data, &arm); err != nil {
-		return false, fmt.Errorf("decode boot recovery authorization: %w", err)
+		return runningBoot{}, fmt.Errorf("decode boot recovery authorization: %w", err)
 	}
 	trialID := strings.TrimSpace(arm.TrialGeneration)
 	fallbackID := strings.TrimSpace(arm.FallbackGeneration)
-	if trialID != strings.TrimSpace(generationID) || fallbackID == "" || fallbackID == trialID {
-		return false, nil
+	if trialID == generationID && fallbackID != "" && fallbackID != trialID &&
+		strings.TrimSpace(selection.PreviousKnownGoodGenerationID) == fallbackID {
+		boot.Armed = validBootRecoveryTarget(root, selection, fallbackID)
 	}
-	selection, err := ReadBootSelection(root)
-	if err != nil {
-		return false, err
-	}
-	if strings.TrimSpace(selection.PreviousKnownGoodGenerationID) != fallbackID {
-		return false, nil
-	}
-	return validBootRecoveryTarget(root, selection, fallbackID), nil
+	boot.Trial = boot.Trial || boot.Armed
+	return boot, nil
 }

@@ -12,6 +12,7 @@ spec:
         - vmtest-optional-failure.service
         - vmtest-optional-early-failure.service
         - vmtest-before-network.service
+        - vmtest-ordinary-boot.service
       sets:
         vmtest-optional-failure:
           files:
@@ -27,6 +28,19 @@ spec:
 
                 [Install]
                 WantedBy=multi-user.target
+            - path: /etc/systemd/system/vmtest-ordinary-boot.service
+              content: |
+                [Unit]
+                Description=Fail an ordinary boot when the test marker exists
+                RequiresMountsFor=/var/lib/katl/test-artifacts
+                Before=katl-boot-health.service
+
+                [Service]
+                Type=oneshot
+                ExecStart=/usr/bin/sh -ec 'if test -f /var/lib/katl/test-artifacts/fail-ordinary-boot; then set -C; cat /proc/sys/kernel/random/boot_id > /var/lib/katl/test-artifacts/failed-ordinary-boot-id; exit 1; fi'
+
+                [Install]
+                RequiredBy=katl-boot-health.service
             - path: /etc/systemd/system/vmtest-optional-early-failure.service
               content: |
                 [Unit]

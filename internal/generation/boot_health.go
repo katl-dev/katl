@@ -24,20 +24,21 @@ type BootHealthRequest struct {
 	Reason         string
 	Now            time.Time
 	RequestReboot  bool
-	ForceFailure   bool
 	SetBootDefault BootDefaultSetter
 }
 
 type BootHealthResult struct {
-	GenerationID      string
-	Result            string
-	Promoted          bool
-	Failed            bool
-	RebootRequested   bool
-	RecoveryRequired  bool
-	DefaultGeneration string
-	BootDefaultEntry  string
-	BootDefaultSet    bool
+	GenerationID       string
+	Result             string
+	Promoted           bool
+	Failed             bool
+	KeptKnownGood      bool
+	RebootRequested    bool
+	RecoveryRequired   bool
+	DefaultGeneration  string
+	NextBootGeneration string
+	BootDefaultEntry   string
+	BootDefaultSet     bool
 }
 
 type BootDefaultSetter func(root string, bootEntry string) error
@@ -63,6 +64,9 @@ func RecordBootedGeneration(root, commandLine string) error {
 		if err != nil {
 			return err
 		}
+		if err := validatePendingBootTarget(selection, generationID); err != nil {
+			return err
+		}
 		observed := inferBootedSelection(selection, spec, generationID, commandLine)
 		if err := validateBootedSelection(observed, spec, generationID, commandLine); err != nil {
 			return err
@@ -76,8 +80,9 @@ func RecordBootedGeneration(root, commandLine string) error {
 		}
 		if !recorded {
 			observed.ActiveGenerationID = generationID
+			observed.BootedOneShot = false
 		}
-		if observed.BootedGenerationID != selection.BootedGenerationID || observed.BootedBootEntry != selection.BootedBootEntry || observed.ActiveGenerationID != selection.ActiveGenerationID {
+		if observed != selection {
 			observed.UpdatedAt = time.Now().UTC()
 			if err := WriteBootSelection(root, observed); err != nil {
 				return err
@@ -357,9 +362,14 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 	if status.UnavailableReason != "" {
 		return BootHealthResult{}, fmt.Errorf("generation %s cannot boot: %s", generationID, status.UnavailableReason)
 	}
-	// Replaying health for the running boot must not consume a later manual
-	// selection. Its target takes effect only when that generation actually boots.
-	if !selection.PendingHealthValidation && selection.TargetBootGenerationID != "" && selection.TargetBootGenerationID != generationID && generationID == selection.BootedGenerationID && IsKnownGood(status) {
+	if err := validatePendingBootTarget(selection, generationID); err != nil {
+		return BootHealthResult{}, err
+	}
+	// Health retries preserve a consumed one-shot's temporary boot and any
+	// manual selection queued for another generation.
+	laterManualTarget := selection.TargetBootGenerationID != "" && selection.TargetBootGenerationID != generationID
+	if !selection.PendingHealthValidation && generationID == selection.BootedGenerationID &&
+		IsKnownGood(status) && (selection.BootedOneShot || laterManualTarget) {
 		if err := validateBootedSelection(selection, spec, generationID, request.CommandLine); err != nil {
 			return BootHealthResult{}, err
 		}
@@ -460,10 +470,6 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 
 func failBootedGeneration(request BootHealthRequest, generationID string, now time.Time) (BootHealthResult, error) {
 	root := cleanRoot(request.Root)
-	recoveryArmed, err := bootRecoveryArmed(root, generationID)
-	if err != nil {
-		return BootHealthResult{}, err
-	}
 	selection, err := ReadBootSelection(root)
 	if err != nil {
 		return BootHealthResult{}, err
@@ -476,13 +482,41 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 	if err := validateBootedSelection(selection, spec, generationID, request.CommandLine); err != nil {
 		return BootHealthResult{}, err
 	}
-	if status.BootState == BootStateGood && status.HealthState == HealthStateHealthy && !request.ForceFailure && selection.TargetBootGenerationID != generationID {
+	boot, err := readRunningBoot(root, generationID, selection, status)
+	if err != nil {
+		return BootHealthResult{}, err
+	}
+	if !boot.failureDemotes() {
+		if !selection.PendingHealthValidation && strings.TrimSpace(selection.TargetBootGenerationID) == boot.GenerationID {
+			// Both manual selection modes write LoaderEntryOneShot. Its presence
+			// protects a selection for a later boot of this same generation.
+			_, err := os.Stat(rootedPathUnchecked(root, loaderEntryOneShotPath))
+			if errors.Is(err, os.ErrNotExist) {
+				// Retain the consumed one-shot as evidence about the running boot.
+				// Health retries and activation of the default still need it.
+				selection.BootedOneShot = selection.BootedOneShot || (selection.OneShot && generationID != selection.DefaultGenerationID)
+				selection.TargetBootGenerationID = ""
+				selection.TargetBootEntry = ""
+				selection.OneShot = false
+				selection.UpdatedAt = now.UTC()
+				if err := WriteBootSelection(root, selection); err != nil {
+					return BootHealthResult{}, err
+				}
+			} else if err != nil {
+				return BootHealthResult{}, fmt.Errorf("check EFI one-shot boot selection: %w", err)
+			}
+		}
 		return BootHealthResult{
-			GenerationID:      generationID,
-			Result:            request.Result,
-			DefaultGeneration: strings.TrimSpace(selection.DefaultGenerationID),
-			BootDefaultEntry:  strings.TrimSpace(selection.DefaultBootEntry),
+			GenerationID:       boot.GenerationID,
+			Result:             request.Result,
+			KeptKnownGood:      true,
+			DefaultGeneration:  strings.TrimSpace(selection.DefaultGenerationID),
+			NextBootGeneration: selection.NextBootGenerationID(),
+			BootDefaultEntry:   strings.TrimSpace(selection.DefaultBootEntry),
 		}, nil
+	}
+	if err := validatePendingBootTarget(selection, generationID); err != nil {
+		return BootHealthResult{}, err
 	}
 	if status.BootState != BootStateFailed || status.HealthState != HealthStateUnhealthy {
 		updatedStatus := status
@@ -508,6 +542,7 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 		selection.PreviousKnownGoodBootEntry = selection.DefaultBootEntry
 	}
 	selection.OneShot = false
+	selection.BootedOneShot = false
 	if previousID == "" && selection.DefaultGenerationID != generationID {
 		previousID = strings.TrimSpace(selection.DefaultGenerationID)
 	}
@@ -545,7 +580,7 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 	}
 	// Consume the ephemeral authorization before handing a clean exit to
 	// systemd. A service restart cannot request a second automatic reboot.
-	rebootRequested := request.RequestReboot && recoveryArmed && !selection.RecoveryRequired
+	rebootRequested := request.RequestReboot && boot.Armed && !selection.RecoveryRequired
 	if rebootRequested {
 		if err := ClearBootRecovery(root); err != nil {
 			return BootHealthResult{}, err
@@ -570,46 +605,36 @@ func inferBootedSelection(selection BootSelectionRecord, spec GenerationSpec, ge
 	if err != nil || cmdlineGeneration != generationID {
 		return selection
 	}
+	entry := strings.TrimSpace(spec.Boot.LoaderEntryPath)
 	if selection.PendingHealthValidation {
-		trialID := strings.TrimSpace(selection.TrialGenerationID)
-		targetID := strings.TrimSpace(selection.TargetBootGenerationID)
-		if generationID != trialID && generationID != targetID {
+		if !selection.IsPendingBootTarget(generationID) {
 			return selection
+		}
+		switch {
+		case generationID == strings.TrimSpace(selection.TrialGenerationID) && strings.TrimSpace(selection.TrialBootEntry) != "":
+			entry = strings.TrimSpace(selection.TrialBootEntry)
+		case generationID == strings.TrimSpace(selection.TargetBootGenerationID) && strings.TrimSpace(selection.TargetBootEntry) != "":
+			entry = strings.TrimSpace(selection.TargetBootEntry)
 		}
 	} else {
-		if generationID == selection.TargetBootGenerationID || (generationID == selection.DefaultGenerationID && selection.OneShot) {
-			selection.BootedGenerationID = generationID
-			selection.BootedBootEntry = spec.Boot.LoaderEntryPath
-			return selection
-		}
-		if isManualKnownGoodFallback(selection, generationID) {
-			selection.BootedGenerationID = generationID
-			selection.BootedBootEntry = strings.TrimSpace(spec.Boot.LoaderEntryPath)
-			return selection
-		}
-		if generationID == strings.TrimSpace(selection.ActiveGenerationID) &&
-			generationID == strings.TrimSpace(selection.DefaultGenerationID) &&
-			generationID != strings.TrimSpace(selection.BootedGenerationID) {
-			selection.BootedGenerationID = generationID
-			selection.BootedBootEntry = strings.TrimSpace(spec.Boot.LoaderEntryPath)
-			return selection
-		}
 		failedID := strings.TrimSpace(selection.FailedBootGenerationID)
-		if failedID == "" ||
-			generationID != strings.TrimSpace(selection.DefaultGenerationID) ||
-			strings.TrimSpace(selection.BootedGenerationID) != failedID {
+		bootedID := strings.TrimSpace(selection.BootedGenerationID)
+		atDefault := generationID == strings.TrimSpace(selection.DefaultGenerationID)
+		switch {
+		case generationID == selection.TargetBootGenerationID:
+		case isManualKnownGoodFallback(selection, generationID):
+		case atDefault && (selection.OneShot || selection.BootedOneShot):
+		case atDefault && generationID == strings.TrimSpace(selection.ActiveGenerationID) && generationID != bootedID:
+		case atDefault && failedID != "" && bootedID == failedID:
+		default:
 			return selection
 		}
+	}
+	if generationID != strings.TrimSpace(selection.BootedGenerationID) {
+		selection.BootedOneShot = false
 	}
 	selection.BootedGenerationID = generationID
-	switch {
-	case generationID == strings.TrimSpace(selection.TrialGenerationID) && strings.TrimSpace(selection.TrialBootEntry) != "":
-		selection.BootedBootEntry = strings.TrimSpace(selection.TrialBootEntry)
-	case generationID == strings.TrimSpace(selection.TargetBootGenerationID) && strings.TrimSpace(selection.TargetBootEntry) != "":
-		selection.BootedBootEntry = strings.TrimSpace(selection.TargetBootEntry)
-	default:
-		selection.BootedBootEntry = strings.TrimSpace(spec.Boot.LoaderEntryPath)
-	}
+	selection.BootedBootEntry = entry
 	return selection
 }
 
@@ -637,14 +662,16 @@ func isFallbackRecovery(selection BootSelectionRecord, generationID string) bool
 		generationID == strings.TrimSpace(selection.FailedBootGenerationID)
 }
 
-func validateBootedSelection(selection BootSelectionRecord, spec GenerationSpec, generationID string, commandLine string) error {
-	if selection.PendingHealthValidation {
+func validatePendingBootTarget(selection BootSelectionRecord, generationID string) error {
+	if selection.PendingHealthValidation && !selection.IsPendingBootTarget(generationID) {
 		targetID := strings.TrimSpace(selection.TargetBootGenerationID)
 		trialID := strings.TrimSpace(selection.TrialGenerationID)
-		if generationID != targetID && generationID != trialID {
-			return fmt.Errorf("selected generation %s does not match pending boot target %s", generationID, firstNonEmptyBootGeneration(targetID, trialID))
-		}
+		return fmt.Errorf("selected generation %s does not match pending boot target %s", generationID, firstNonEmptyBootGeneration(targetID, trialID))
 	}
+	return nil
+}
+
+func validateBootedSelection(selection BootSelectionRecord, spec GenerationSpec, generationID string, commandLine string) error {
 	if strings.TrimSpace(selection.BootedGenerationID) == "" {
 		return fmt.Errorf("bootedGenerationID is required for boot health")
 	}

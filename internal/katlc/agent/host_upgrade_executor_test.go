@@ -105,6 +105,7 @@ func TestExecutorClassifiesHostUpgradeFailureByMutationBoundary(t *testing.T) {
 
 func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	const nextVersion = "2026.7.0-local.version-longer-than-a-gpt-partition-label"
+	const commandLine = "root=PARTUUID=aaaaaaaa-1111-2222-3333-444444444444 rootfstype=squashfs ro katl.generation=gen0 katl.root-slot=root-a"
 	root := t.TempDir()
 	for _, dir := range []string{"etc", "efi/EFI/Linux", "efi/EFI/katl", "dev/disk/by-partlabel"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o755); err != nil {
@@ -117,7 +118,7 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(root, "proc"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(root, "proc/cmdline"), []byte("root=PARTUUID=aaaaaaaa-1111-2222-3333-444444444444 rootfstype=squashfs ro katl.generation=gen0 katl.root-slot=root-a\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "proc/cmdline"), []byte(commandLine+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Date(2026, 7, 11, 12, 0, 0, 0, time.UTC)
@@ -397,6 +398,19 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	if !completed.Terminal || completed.Result != operation.ResultSucceeded || !completed.BootHealthPending {
 		t.Fatalf("completed operation = %+v", completed)
 	}
+
+	t.Run("running boot fails while trial is queued", func(t *testing.T) {
+		health, err := generation.RecordBootHealth(generation.BootHealthRequest{
+			Root: root, CommandLine: commandLine, Result: generation.BootHealthFailure, RequestReboot: true,
+		})
+		if err != nil || !health.KeptKnownGood || health.DefaultGeneration != "gen0" || health.NextBootGeneration != "gen1" || health.RebootRequested {
+			t.Fatalf("boot health = %#v, %v, want kept gen0 with gen1 queued", health, err)
+		}
+		after, err := generation.ReadBootSelection(root)
+		if err != nil || after != selection {
+			t.Fatalf("boot selection after recovery = %#v, %v, want original trial %#v", after, err, selection)
+		}
+	})
 }
 
 func testSHA(data []byte) string {

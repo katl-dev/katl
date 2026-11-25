@@ -215,8 +215,11 @@ the caller's deadline, so clients see the retry guidance within their own
 timeouts. Node status reports `pending` while the target has a start job or
 boot health is still running after the target gave up, and `failed` when boot
 health failed or did not run. A boot whose health cannot run still settles, so
-an operator can push a repair or select another generation. Reads, reboot, and
-shutdown are never held.
+an operator can push a repair or select another generation. Node status names
+required units that systemd still reports as failed alongside any volume or
+generation diagnostic. If no required unit still shows as failed, status directs
+the operator to `journalctl -b -u katl-boot-health`. Reads, reboot, and shutdown
+are never held.
 
 ## Promotion Rules
 
@@ -252,6 +255,27 @@ model. Rollback selection is defined in
 `docs/internal/rollback-selection-rules.md`; transaction details are defined in
 `docs/internal/boot-selection-transaction.md`.
 
+## Failure on a known-good generation
+
+When boot health fails on a generation that was already known-good, Katl
+preserves that status and the EFI default unless the boot is armed for recovery
+or the running generation is the pending trial or target. This also applies
+when booting a superseded known-good generation from the boot menu or by
+manual selection. Katl clears a matching, consumed manual selection, whether
+one-shot or persistent. A selection queued for a future boot remains in effect.
+
+The recovery service reports the running generation, the persistent default
+and the generation selected for the next boot. It exits unsuccessfully so
+systemd leaves the node running. When management is reachable, use
+`katlctl node status <node>` to see the failed boot and
+`katlctl node generations list <node>` to check the next boot. On the node, use
+`systemctl --failed` to investigate. If remote management is unreachable,
+use the console or out-of-band access. Fix the cause, for example by applying
+corrected configuration with `katlctl cluster apply --config cluster.yaml --node <node>`,
+then run `katlctl node reboot <node>`. Use `systemctl reboot` from the console
+if management is still unreachable. A repair that stages a new generation
+selects it for the next boot.
+
 ## Failed-trial recovery
 
 Katl automatically reboots once after a supported trial fails. Before allowing
@@ -269,6 +293,10 @@ is condition-skipped without that authorization. Failure handling consumes the
 authorization before systemd requests the one reboot, so restarting a service
 cannot request another automatic reboot.
 
+A pending trial that fails before recovery is armed still records the trial
+failure and restores the fallback as the default when one is available.
+Automatic reboot requires the boot-local authorization.
+
 This mechanism supports failures after PID 1 has started the boot deadline and
 `/var` and `/efi` are available. It includes an unreachable management network,
 required-unit or generation activation failure, and a boot that stalls before
@@ -283,10 +311,10 @@ Katl does not automatically reboot in these cases:
   the recovery service can run.
 - Boot metadata is missing, corrupt, or does not match the running root.
 
-These cases set or retain `recoveryRequired` when durable state is available.
-The fallback boot never recreates the trial authorization; if it fails, Katl
-preserves the failed state and stops for console or out-of-band recovery. Katl
-does not use `FailureAction=reboot`, an unbounded service restart, or a hardware
+For a failed trial without a valid fallback, Katl sets `recoveryRequired` when
+durable state is available. A fallback boot does not recreate the trial
+authorization, so a failure follows the known-good policy above. Katl does
+not use `FailureAction=reboot`, an unbounded service restart, or a hardware
 watchdog for this policy because those mechanisms cannot prove a remaining
 known-good boot source before resetting the node.
 

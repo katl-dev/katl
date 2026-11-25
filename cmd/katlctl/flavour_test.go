@@ -147,3 +147,22 @@ func TestUpgradeAlreadyInstalledAfterConfigApply(t *testing.T) {
 		t.Fatal("already-installed version and flavour caused a mutation")
 	}
 }
+
+func TestUpgradeAlreadyInstalledReportsFailedBoot(t *testing.T) {
+	fake := readyHostUpgradeClient()
+	fake.generation.RuntimeVersion = "2026.9.0"
+	fake.generation.CommitState, fake.generation.BootState, fake.generation.HealthState = "committed", "good", "healthy"
+	fake.nodeStatus.BootHealthState = "failed"
+	diagnostic := "Required units failed: sshd.service. Fix the cause, then reboot"
+	fake.nodeStatus.BootHealthDiagnostic = diagnostic
+	installKatlcDial(t, nil, fake)
+
+	var out, errs bytes.Buffer
+	err := run(t.Context(), []string{"node", "upgrade", "cp-1", "--config", writeClusterConfig(t), "--version", "2026.9.0"}, &out, &errs)
+	if err == nil || !strings.Contains(err.Error(), diagnostic) || strings.Contains(out.String(), "health healthy") {
+		t.Fatalf("same-version upgrade = %v, output %q, want current boot failure and diagnostic", err, out.String())
+	}
+	if fake.submitRequest != nil || len(fake.rebootRequests) != 0 {
+		t.Fatal("already-installed version caused a mutation")
+	}
+}

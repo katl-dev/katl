@@ -38,14 +38,10 @@ func readNodeBootHealth(root string) nodeBootHealth {
 	}
 
 	booted := strings.TrimSpace(selection.BootedGenerationID)
-	if selection.PendingHealthValidation {
-		target := strings.TrimSpace(selection.TargetBootGenerationID)
-		trial := strings.TrimSpace(selection.TrialGenerationID)
-		if selected == target || selected == trial {
-			result.State = nodeBootHealthPending
-			result.Diagnostic = fmt.Sprintf("generation %s is awaiting boot-health validation", selected)
-			return result
-		}
+	if selection.IsPendingBootTarget(selected) {
+		result.State = nodeBootHealthPending
+		result.Diagnostic = fmt.Sprintf("generation %s is awaiting boot-health validation", selected)
+		return result
 	}
 	if booted != "" && booted != selected {
 		result.State = nodeBootHealthFailed
@@ -63,9 +59,7 @@ func readNodeBootHealth(root string) nodeBootHealth {
 	case generationStatus.UnavailableReason != "":
 		result.State = nodeBootHealthFailed
 		result.Diagnostic = generationStatus.UnavailableReason
-	case (generationStatus.CommitState == generation.CommitStateCommitted || generationStatus.CommitState == generation.CommitStateSuperseded) &&
-		generationStatus.BootState == generation.BootStateGood &&
-		generationStatus.HealthState == generation.HealthStateHealthy:
+	case generation.IsKnownGood(generationStatus):
 		result.State = nodeBootHealthHealthy
 	case generationStatus.BootState == generation.BootStateFailed || generationStatus.HealthState == generation.HealthStateUnhealthy:
 		result.State = nodeBootHealthFailed

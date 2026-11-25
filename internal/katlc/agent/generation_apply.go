@@ -319,10 +319,7 @@ func (s *Server) ListGenerations(ctx context.Context, req *agentapi.ListGenerati
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "inspect generations: %v", err)
 	}
-	out := &agentapi.ListGenerationsResponse{DefaultGenerationId: selection.DefaultGenerationID, NextBootGenerationId: selection.TargetBootGenerationID, OneShot: selection.OneShot && selection.TargetBootGenerationID != ""}
-	if out.NextBootGenerationId == "" {
-		out.NextBootGenerationId = out.DefaultGenerationId
-	}
+	out := &agentapi.ListGenerationsResponse{DefaultGenerationId: selection.DefaultGenerationID, NextBootGenerationId: selection.NextBootGenerationID(), OneShot: selection.OneShot && selection.TargetBootGenerationID != ""}
 	if policy, err := s.generationRetention(); err == nil {
 		count, age, err := policy.Limits()
 		if err != nil {

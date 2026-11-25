@@ -4,6 +4,8 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -44,6 +46,17 @@ func (u *healthUnit) set(properties string) { u.properties.Store(properties) }
 
 func (u *healthUnit) run(_ context.Context, argv []string, _ func(int)) ToolResult {
 	return ToolResult{Stdout: []byte(u.properties.Load().(string))}
+}
+
+func (u *healthUnit) runWithFailedSSH(ctx context.Context, argv []string, progress func(int)) ToolResult {
+	switch {
+	case slices.Contains(argv, "--property=Requires"):
+		return ToolResult{Stdout: []byte("sshd.service\n")}
+	case slices.Contains(argv, "sshd.service"):
+		return ToolResult{Stdout: []byte("Id=sshd.service\nActiveState=failed\n")}
+	default:
+		return u.run(ctx, argv, progress)
+	}
 }
 
 // knownGoodNode is a node whose generation-0 passed boot health in an earlier
@@ -99,6 +112,62 @@ func TestNodeStatusBootHealthFollowsCurrentBoot(t *testing.T) {
 			}
 			if nodeStatus.GetBootHealthState() != tc.want {
 				t.Fatalf("boot health = %q (%s), want %q", nodeStatus.GetBootHealthState(), nodeStatus.GetBootHealthDiagnostic(), tc.want)
+			}
+		})
+	}
+}
+
+func TestNodeStatusReportsFailedBootDependencies(t *testing.T) {
+	for _, tc := range []struct {
+		name, units, details string
+		failed, mismatch     bool
+	}{
+		{name: "skipped", units: healthDependencyFailed, failed: true, details: "did not run in this boot"},
+		{name: "failed with durable diagnostic", units: healthFailed, failed: true, mismatch: true, details: "does not match durable boot evidence"},
+		{name: "skipped with failed volumes", units: healthDependencyFailed + "\n\nId=katl-volumes-activate.service\nLoadState=loaded\nActiveState=failed\nJob=\n", failed: true, details: "katl-volumes-activate.service failed"},
+		{name: "dependency no longer failed", units: healthDependencyFailed, details: "journalctl -b -u katl-boot-health"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, unit := knownGoodNode(t, tc.units)
+			if tc.mismatch {
+				selection, err := generation.ReadBootSelection(server.Root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				selection.BootedGenerationID = "older"
+				selection.ActiveGenerationID = "generation-0"
+				if err := generation.WriteBootSelection(server.Root, selection); err != nil {
+					t.Fatal(err)
+				}
+			}
+			server.RunBootHealthStatus = func(ctx context.Context, argv []string, progress func(int)) ToolResult {
+				switch {
+				case slices.Contains(argv, "--property=Requires") && slices.Contains(argv, bootHealthUnit):
+					return ToolResult{Stdout: []byte("sshd.service systemd-networkd.service\n")}
+				case slices.Contains(argv, "--property=Id,ActiveState") && slices.Contains(argv, "sshd.service"):
+					state := "active"
+					if tc.failed {
+						state = "failed"
+					}
+					return ToolResult{Stdout: []byte("ActiveState=" + state + "\nId=sshd.service\n\nActiveState=active\nId=systemd-networkd.service\n")}
+				default:
+					return unit.run(ctx, argv, progress)
+				}
+			}
+
+			nodeStatus, err := server.GetNodeStatus(t.Context(), &agentapi.GetNodeStatusRequest{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			diagnostic := nodeStatus.GetBootHealthDiagnostic()
+			if nodeStatus.GetBootHealthState() != nodeBootHealthFailed ||
+				!strings.Contains(diagnostic, tc.details) ||
+				!strings.Contains(diagnostic, "katlctl cluster apply") ||
+				!strings.Contains(diagnostic, "katlctl node reboot <node>") {
+				t.Fatalf("boot health = %s (%s), want failed with %q and repair guidance", nodeStatus.GetBootHealthState(), diagnostic, tc.details)
+			}
+			if strings.Contains(diagnostic, "sshd.service") != tc.failed || strings.Contains(diagnostic, "systemd-networkd.service") {
+				t.Fatalf("diagnostic = %q, want failed dependencies only", diagnostic)
 			}
 		})
 	}

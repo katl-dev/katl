@@ -188,6 +188,12 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if err != nil {
 		return fail("arm-trial-boot", err)
 	}
+	// The trial changes the next boot. Recovery can still run for this boot
+	// before the operator reboots into the candidate.
+	plan.BootSelection.BootedGenerationID = previousSelection.BootedGenerationID
+	plan.BootSelection.BootedBootEntry = previousSelection.BootedBootEntry
+	plan.BootSelection.BootedOneShot = previousSelection.BootedOneShot
+	plan.BootSelection.ActiveGenerationID = previousSelection.ActiveGenerationID
 	if err := generation.WriteBootSelection(e.Root, plan.BootSelection); err != nil {
 		return fail("arm-trial-boot", err)
 	}

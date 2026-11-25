@@ -16,7 +16,7 @@ import (
 )
 
 func (s *Server) previewHostUpgrade(ctx context.Context, req *agentapi.SubmitOperationRequest) (preview *agentapi.HostUpgradePreview, resultErr error) {
-	if err := s.validateHostUpgradePlan(req.HostUpgrade); err != nil {
+	if err := s.validateHostUpgradePlan(ctx, req.HostUpgrade); err != nil {
 		return nil, err
 	}
 	executor, ok := s.Dispatcher.(*Executor)

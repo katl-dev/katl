@@ -173,7 +173,7 @@ func (s *Server) pruneGenerations(ctx context.Context) (bool, error) {
 	if selection.PendingHealthValidation || selection.RecoveryRequired {
 		return false, nil
 	}
-	if readNodeBootHealth(s.Root).State != nodeBootHealthHealthy {
+	if s.nodeBootHealth(ctx).State != nodeBootHealthHealthy {
 		return false, nil
 	}
 	policy, err := s.generationRetention()
