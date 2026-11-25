@@ -717,6 +717,51 @@ follows everything queued or waiting with auto-merge, polls every minute
 (`-interval` changes this), keeps going through transient `gh` failures, and
 exits 1 when a watched PR leaves the queue without merging.
 
+For background waits, add Katl as a flake input named `katl`, then import
+and enable the watcher in your Home Manager configuration.
+
+```nix
+{
+  imports = [ katl.homeManagerModules.katl-queue-watch ];
+  services.katl-queue-watch.enable = true;
+}
+```
+
+Authenticate with `gh auth login`. The service polls `katl-dev/katl` for
+all registered waits. After enabling auto-merge on a PR, start a wait and
+use its exit status to decide what to do next.
+
+```sh
+katl-queue wait 123 --timeout 2h
+```
+
+| Exit status | Meaning |
+| --- | --- |
+| 0 | The PR merged. |
+| 1 | The PR needs action. The message includes the PR URL and the condition that triggered the result. |
+| 2 | The invocation has no verdict. Read the error for the cause. |
+
+A PR needs action if it closes unmerged or leaves the queue after this wait
+has seen it queued. For a queue departure, run `katl-queue why 123` to see
+the removal history. The packaged command uses `katl-dev/katl` from any
+directory. Before admission, a failed head check, a merge conflict,
+or a review requesting changes also needs action. If the PR is still open
+and outside the queue, the daemon gives auto-merge two poll intervals from
+registration before it reports that auto-merge is off.
+
+Once the daemon saves the registration, `wait` prints a command such as
+`katl-queue wait --resume WATCH_ID` to stderr. Use that command after
+stopping the client or reaching its timeout. Pending waits survive daemon
+restarts and saved outcomes remain available for seven days. Use
+`katl-queue watches` to list them. If GitHub access fails, repair the
+credentials or permissions and resume once the daemon observes recovery.
+
+Set `services.katl-queue-watch.interval` to change the default `"60s"`
+poll interval. Specify a positive whole number followed by `ms`, `s`,
+`m`, or `h`. Set `services.katl-queue-watch.notify = true` for desktop
+notifications on merge or when a PR needs action. View daemon events with
+`journalctl --user -u katl-queue-watch.service`.
+
 `plan` simulates every ready, non-draft PR over `main` plus the queue and the
 PRs it has already chosen. It orders by `release-blocker`, `dev-experience`,
 everything else, and age. A PR that declares a dependency (GitHub's blocked-by
