@@ -7,6 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/katl-dev/katl/internal/installer/handoff"
+	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
 func TestHandoffBase(t *testing.T) {
@@ -32,14 +36,21 @@ func TestHandoffBaseRequiresReservedAddress(t *testing.T) {
 }
 
 func TestProbeHandoff(t *testing.T) {
-	healthy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/healthz" {
-			http.NotFound(w, r)
-			return
-		}
-		_, _ = w.Write([]byte("ok\n"))
-	}))
-	defer healthy.Close()
+	waiting := httptest.NewServer(handoff.NewHandoffServer(nil).Handler())
+	defer waiting.Close()
+	// The installer serves its API while a boot-provided install runs.
+	automaticServer := handoff.NewHandoffServer(nil)
+	automaticServer.BeginAutomatic("cp-1")
+	automatic := httptest.NewServer(automaticServer.Handler())
+	defer automatic.Close()
+	// A refusal before disk mutation returns the API to waiting.
+	refusedServer := handoff.NewHandoffServer(nil)
+	refusedServer.BeginAutomatic("cp-1")
+	if !refusedServer.PrepareRetry(installstatus.New(installstatus.StateFailedBeforeMutation, time.Now())) {
+		t.Fatal("refusal before disk mutation was not retryable")
+	}
+	refused := httptest.NewServer(refusedServer.Handler())
+	defer refused.Close()
 	// Another service answers the port, but not as the installer.
 	other := httptest.NewServer(http.NotFoundHandler())
 	defer other.Close()
@@ -47,8 +58,14 @@ func TestProbeHandoff(t *testing.T) {
 	closedURL := closed.URL
 	closed.Close()
 
-	if err := probeHandoff(context.Background(), healthy.URL); err != nil {
-		t.Fatalf("probe of the handoff API: %v", err)
+	if err := probeHandoff(context.Background(), waiting.URL); err != nil {
+		t.Fatalf("probe of a waiting handoff API: %v", err)
+	}
+	if err := probeHandoff(context.Background(), refused.URL); err != nil {
+		t.Fatalf("probe of a handoff API waiting after a refusal: %v", err)
+	}
+	if err := probeHandoff(context.Background(), automatic.URL); err == nil {
+		t.Fatal("probe accepted a handoff API that is running an automatic install")
 	}
 	if err := probeHandoff(context.Background(), other.URL); err == nil {
 		t.Fatal("probe accepted a server that is not the handoff API")

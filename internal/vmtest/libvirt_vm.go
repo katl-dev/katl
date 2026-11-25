@@ -792,7 +792,7 @@ func (h *VMHandle) WaitForExpectedSerial() error {
 				err = errors.New("libvirt domain exited before serial signal appeared")
 			}
 			if !allRun(handoffRun) {
-				return fmt.Errorf("libvirt domain exited before the installer handoff API answered: %v", err)
+				return fmt.Errorf("libvirt domain exited before the installer handoff API waited for configuration: %v", err)
 			}
 			return fmt.Errorf("libvirt domain exited before serial signal %q appeared: %v", h.Config.Expect, err)
 		case <-h.ctx.Done():

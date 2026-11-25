@@ -50,6 +50,29 @@ func TestAutomaticRetryGuidance(t *testing.T) {
 	}
 }
 
+func TestRetryGuidanceWhileWaiting(t *testing.T) {
+	runDir := t.TempDir()
+	server := handoff.NewHandoffServer(nil)
+	server.BeginAutomatic("cp-1")
+	failure := installstatus.New(installstatus.StateFailedBeforeMutation, time.Now())
+	failure.LastError = "volume data disk not found"
+	failure.RetryHint = "fix input or environment and rerun before disk mutation"
+	writeConsoleInstallStatus(runDir, failure, io.Discard)
+	// The durable record still predates the retry, as it does between the
+	// API returning to waiting and the record being rewritten.
+	server.SetStatusReader(func() (installstatus.Record, error) { return failure, nil })
+
+	if !prepareHandoffRetry(server, runDir, "http://192.0.2.1:8080", errors.New("plan failed"), io.Discard) {
+		t.Fatal("safe automatic refusal was not retryable")
+	}
+
+	observed := server.Status()
+	want := "katlctl install apply --config <cluster-config> --endpoint http://192.0.2.1:8080 --node cp-1"
+	if observed.State != handoff.HandoffWaiting || !strings.Contains(observed.InstallStatus.RetryHint, want) {
+		t.Fatalf("waiting status = %q with retry hint %q, want %q with command %q", observed.State, observed.InstallStatus.RetryHint, handoff.HandoffWaiting, want)
+	}
+}
+
 func TestRetryGuidanceOnConsole(t *testing.T) {
 	runDir := t.TempDir()
 	server := handoff.NewHandoffServer(nil)

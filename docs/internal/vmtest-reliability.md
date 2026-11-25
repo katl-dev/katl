@@ -65,7 +65,7 @@ Each phase waits on one event it is owed, with a deadline:
 
 - a libvirt lifecycle event;
 - the DHCP lease on the owned network;
-- the installer handoff API answering at the reserved address;
+- the installer handoff API at the reserved address reporting that it is waiting for configuration;
 - PID 1's notifications over vsock, through systemd's `vmm.notify_socket` credential;
 - the test agent connecting, on vmtest images only.
 

@@ -841,7 +841,7 @@ func TestFirstInstallGuestHandoffRequiresAPI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunFirstInstall() error = %v", err)
 	}
-	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "installer handoff API answered") {
+	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "installer handoff API waited for configuration") {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
 	}
 }
