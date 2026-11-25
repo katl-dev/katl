@@ -39,7 +39,9 @@ runs:
           virsh -c qemu:///system net-start default
         fi
         sudo mkdir -p /var/lib/libvirt/images
-        if ! sudo virsh -c qemu:///system pool-info default; then
+        # A missing pool is the expected first-run state; only failures to define or start it are errors.
+        if ! sudo virsh -c qemu:///system pool-info default >/dev/null 2>&1; then
+          echo 'defining libvirt pool default'
           sudo virsh -c qemu:///system pool-define-as default dir --target /var/lib/libvirt/images
         fi
         if ! virsh -c qemu:///system pool-list --name | grep -Fxq default; then
