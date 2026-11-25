@@ -217,7 +217,7 @@ jobs:
           name: ${{ needs.identity.outputs.artifact-name }}
           path: dist/
           if-no-files-found: error
-          retention-days: 30
+          retention-days: ${{ github.event_name == 'schedule' && 7 || 30 }}
           compression-level: 0
 
 

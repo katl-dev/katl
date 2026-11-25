@@ -12,6 +12,7 @@ import (
 )
 
 type workflowStep struct {
+	ID              string            `yaml:"id"`
 	Name            string            `yaml:"name"`
 	If              string            `yaml:"if"`
 	Run             string            `yaml:"run"`
@@ -634,15 +635,77 @@ func TestNightlyCandidateScheduled(t *testing.T) {
 		t.Fatalf("release artifacts schedules = %v, want one nightly candidate", on.Schedule)
 	}
 
-	if _, err := os.Stat(filepath.Join(repoRoot(t), ".github/workflows/cache-warm.yml")); err == nil {
-		t.Error("cache-warm workflow still exists; the nightly candidate refreshes the caches")
+	// A scheduled run has no inputs; an unset number input compares equal to zero.
+	vmtests, ok := workflow.Jobs["vmtests"]
+	if !ok {
+		t.Fatal("release artifacts has no vmtests job")
 	}
-	hosted, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/hosted-vmtests.yml"))
+	condition := expandExpressions(t, "${{ "+vmtests.If+" }}", map[string]string{
+		"github.event_name": "schedule", "inputs.qualify_run": "0",
+	})
+	if condition != "true" {
+		t.Errorf("vmtests if %q evaluates to %s on schedule, want true so the nightly refreshes the VM image caches", vmtests.If, condition)
+	}
+	if scenarios := vmtests.With["scenarios"]; scenarios != "" {
+		t.Errorf("vmtests passes scenarios %q, want the complete suite so the VM images are built", scenarios)
+	}
+
+	hostedData, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/hosted-vmtests.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(hosted), "cache-only") {
-		t.Error("hosted VM tests still support a cache-only mode that nothing calls")
+	var hosted struct {
+		Jobs map[string]struct {
+			Steps []workflowStep `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(hostedData, &hosted); err != nil {
+		t.Fatal(err)
+	}
+	saved := false
+	for _, job := range hosted.Jobs {
+		for _, step := range job.Steps {
+			if !strings.HasPrefix(step.Uses, "actions/cache/save@") {
+				continue
+			}
+			saved = true
+			if !strings.Contains(step.If, "github.event_name != 'merge_group'") || strings.Contains(step.If, "schedule") {
+				t.Errorf("cache save step if %q must run on schedule and skip only the merge queue", step.If)
+			}
+		}
+	}
+	if !saved {
+		t.Error("hosted VM tests have no cache save step for the nightly candidate to refresh")
+	}
+}
+
+// The nightly candidate keeps its bundle and assembled artifacts for a week;
+// tags and dispatches keep them for the full publication window.
+func TestNightlyArtifactRetention(t *testing.T) {
+	release, _ := readWorkflow(t, "release-artifacts.yml")
+	build, _ := readWorkflow(t, "production-build.yml")
+	retention := map[string]string{}
+	for _, step := range release.Jobs["bundle"].Steps {
+		if strings.HasPrefix(step.Uses, "actions/upload-artifact@") {
+			retention["bundle"] = step.With["retention-days"]
+		}
+	}
+	for _, step := range build.Jobs["assemble"].Steps {
+		if strings.HasPrefix(step.Uses, "actions/upload-artifact@") && strings.HasPrefix(step.With["name"], "katl-assembled-") {
+			retention["assembled"] = step.With["retention-days"]
+		}
+	}
+	if len(retention) != 2 {
+		t.Fatalf("found retention for %v, want the bundle and assembled uploads", retention)
+	}
+
+	for name, expression := range retention {
+		for event, want := range map[string]string{"schedule": "7", "push": "30", "workflow_dispatch": "30"} {
+			ctx := map[string]string{"github.event_name": event, "inputs.publication": "true"}
+			if got := expandExpressions(t, expression, ctx); got != want {
+				t.Errorf("%s retention on %s = %s, want %s", name, event, got, want)
+			}
+		}
 	}
 }
 
@@ -687,20 +750,25 @@ func TestNightlyCandidateConcurrency(t *testing.T) {
 func TestReleaseIdentityVersion(t *testing.T) {
 	workflow, _ := readWorkflow(t, "release-artifacts.yml")
 	steps := workflow.Jobs["identity"].Steps
-	index := map[string]int{}
+	previous, release := -1, -1
 	for i, step := range steps {
 		switch {
 		case strings.Contains(step.Run, "katl-release-artifacts previous-tag"):
-			index["previous"] = i
+			previous = i
 		case strings.Contains(step.Run, "katl-release-artifacts version"):
-			index["release"] = i
+			release = i
 		}
 	}
-	previous, release := index["previous"], index["release"]
-	if _, ok := index["release"]; !ok || previous >= release {
-		t.Fatalf("upgrade source step %d must precede the identity step %d that derives the version from it", previous, release)
+	if previous < 0 || release < 0 || previous >= release {
+		t.Fatalf("upgrade source step %d must exist and precede the identity step %d that derives the version from it", previous, release)
 	}
 	step := steps[release]
+	if got, want := step.Env["PREVIOUS_TAG"], "${{ steps.previous.outputs.tag }}"; got != want || steps[previous].ID != "previous" {
+		t.Errorf("identity step PREVIOUS_TAG = %q from step id %q, want %q from the upgrade source step", got, steps[previous].ID, want)
+	}
+	if got, want := step.Env["MANUAL_VERSION"], "${{ inputs.version }}"; got != want {
+		t.Errorf("identity step MANUAL_VERSION = %q, want %q", got, want)
+	}
 
 	for _, tt := range []struct {
 		name    string
