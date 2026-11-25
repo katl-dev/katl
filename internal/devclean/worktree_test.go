@@ -387,46 +387,25 @@ func TestWorktreeRemovalCanBeRetried(t *testing.T) {
 	f := newFixture(t)
 	wt := f.worktree("feature")
 	writeFile(t, filepath.Join(wt, "_build", "image.iso"))
-	writeFile(t, filepath.Join(wt, "docs", "a.md"))
-	f.git(wt, "add", "docs/a.md")
-	f.git(wt, "commit", "--quiet", "-m", "docs")
 	f.git(wt, "push", "--quiet", "origin", "feature")
+	// An earlier removal that stopped part way left a tracked file missing.
+	if err := os.Remove(filepath.Join(wt, "base.txt")); err != nil {
+		t.Fatal(err)
+	}
 
 	checked, err := f.check(wt)
 	if err != nil {
-		t.Fatal(err)
-	}
-	// The calling user cannot delete the build output, as when it is subuid-owned.
-	hostCannotDeleteBuild := func() tree {
-		tr := checked.tree()
-		tr.removeEntry = func(path string) error {
-			if strings.Contains(path, "_build") {
-				return errors.New("permission denied")
-			}
-			return os.Remove(path)
-		}
-		return tr
-	}
-	failing := &fakeNS{act: func(string) error { return errors.New("podman: not found") }}
-	if err := hostCannotDeleteBuild().remove(context.Background(), failing); err == nil {
-		t.Fatal("remove succeeded although the build output could not be deleted")
-	}
-
-	// A partial removal must not have deleted tracked files before the
-	// uncheckable output, which would leave the worktree looking modified.
-	if !exists(filepath.Join(wt, "base.txt")) || !exists(filepath.Join(wt, "docs", "a.md")) {
-		t.Fatal("tracked files were deleted while untracked output remained")
-	}
-	retry, err := f.check(wt)
-	if err != nil {
 		t.Fatalf("a partly removed worktree is refused, so removal cannot be retried: %v", err)
 	}
-	working := &fakeNS{act: removeEverything}
-	if err := retry.Remove(context.Background(), working); err != nil {
+	if err := checked.Remove(context.Background(), &fakeNS{act: removeEverything}); err != nil {
 		t.Fatal(err)
 	}
+
 	if exists(wt) {
-		t.Fatal("worktree survived the retry")
+		t.Fatal("worktree survived")
+	}
+	if list := f.git(f.repo, "worktree", "list", "--porcelain"); strings.Contains(list, wt) {
+		t.Fatalf("git still lists the removed worktree:\n%s", list)
 	}
 }
 
@@ -456,7 +435,7 @@ func TestCheckWorktreeIgnoresStaleRegistrations(t *testing.T) {
 	}
 }
 
-func TestWorktreeDeregisters(t *testing.T) {
+func TestWorktreeRemoveDeregisters(t *testing.T) {
 	f := newFixture(t)
 	wt := f.worktree("feature")
 	f.git(wt, "push", "--quiet", "origin", "feature")
@@ -464,18 +443,11 @@ func TestWorktreeDeregisters(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := got.Deregister(); err == nil {
-		t.Fatal("Deregister succeeded while the directory still exists")
-	}
-
 	if err := got.Remove(context.Background(), &fakeNS{act: removeEverything}); err != nil {
 		t.Fatal(err)
 	}
-	if err := got.Deregister(); err != nil {
-		t.Fatal(err)
-	}
-	if !got.DeleteBranchIfUnmoved(context.Background()) {
-		t.Fatal("the pushed branch was not deleted")
+	if deleted, why := got.DeleteBranchIfUnmoved(context.Background()); !deleted {
+		t.Fatalf("the pushed branch was not deleted: %s", why)
 	}
 
 	if list := f.git(f.repo, "worktree", "list", "--porcelain"); strings.Contains(list, wt) {
@@ -483,6 +455,12 @@ func TestWorktreeDeregisters(t *testing.T) {
 	}
 	if out := f.git(f.repo, "branch", "--list", "feature"); strings.TrimSpace(out) != "" {
 		t.Fatalf("branch survived: %s", out)
+	}
+	if list := f.git(f.repo, "worktree", "list", "--porcelain"); strings.Contains(list, "prunable") {
+		t.Fatalf("a stale registration is left:\n%s", list)
+	}
+	if _, err := os.Stat(filepath.Join(f.repo, ".git", "worktrees", "wt-feature")); !os.IsNotExist(err) {
+		t.Fatalf("the registration directory survives: %v", err)
 	}
 }
 
@@ -495,15 +473,12 @@ func TestWorktreeKeepsBranchThatMoved(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.commit(wt, "late.txt", "late")
-	if err := os.RemoveAll(wt); err != nil {
-		t.Fatal(err)
-	}
-	if err := got.Deregister(); err != nil {
+	if err := got.Remove(context.Background(), &fakeNS{act: removeEverything}); err != nil {
 		t.Fatal(err)
 	}
 
-	if got.DeleteBranchIfUnmoved(context.Background()) {
-		t.Fatal("a branch that moved after it was judged was deleted")
+	if deleted, why := got.DeleteBranchIfUnmoved(context.Background()); deleted || !strings.Contains(why, "moved") {
+		t.Fatalf("a branch that moved after it was judged: deleted=%t, reason %q; want kept because it moved", deleted, why)
 	}
 }
 
@@ -533,5 +508,164 @@ func TestWorktreeCheckNotInUse(t *testing.T) {
 	}
 	if err := got.CheckNotInUse(filepath.Join(elsewhere, "base.txt"), elsewhere); err != nil {
 		t.Fatalf("a script and directory outside the worktree were refused: %v", err)
+	}
+}
+
+func TestCheckWorktreeRefusesForeignGitFile(t *testing.T) {
+	// copyGitFile gives target the .git file of source, as copying a
+	// checkout over a removed one would.
+	copyGitFile := func(t *testing.T, f *fixture, target, content string) {
+		t.Helper()
+		if err := os.RemoveAll(target); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(target, ".git"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("a .git copied from a live worktree", func(t *testing.T) {
+		f := newFixture(t)
+		live := f.worktree("live")
+		stale := f.worktree("stale")
+		f.git(live, "push", "--quiet", "origin", "live")
+		gitFile, err := os.ReadFile(filepath.Join(live, ".git"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		copyGitFile(t, f, stale, string(gitFile))
+
+		_, err = f.check(stale)
+		if err == nil || !strings.Contains(err.Error(), "belongs to") {
+			t.Fatalf("CheckWorktree() error = %v; want a refusal naming the registration's real owner", err)
+		}
+
+		if list := f.git(f.repo, "worktree", "list", "--porcelain"); !strings.Contains(list, live) {
+			t.Fatalf("the live worktree lost its registration:\n%s", list)
+		}
+		if out := f.git(live, "symbolic-ref", "--short", "HEAD"); strings.TrimSpace(out) != "live" {
+			t.Fatalf("live HEAD = %q; want live", out)
+		}
+		if out := f.git(f.repo, "branch", "--list", "live"); strings.TrimSpace(out) == "" {
+			t.Fatal("the live worktree's branch is gone")
+		}
+	})
+
+	t.Run("a .git pointing into another repository", func(t *testing.T) {
+		f := newFixture(t)
+		other := newFixture(t)
+		foreign := other.worktree("foreign")
+		stale := f.worktree("stale")
+		gitFile, err := os.ReadFile(filepath.Join(foreign, ".git"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		copyGitFile(t, f, stale, string(gitFile))
+
+		_, err = f.check(stale)
+		if err == nil || !strings.Contains(err.Error(), "belongs to the repository") {
+			t.Fatalf("CheckWorktree() error = %v; want a refusal naming the other repository", err)
+		}
+		if list := other.git(other.repo, "worktree", "list", "--porcelain"); !strings.Contains(list, foreign) {
+			t.Fatalf("the other repository's worktree lost its registration:\n%s", list)
+		}
+	})
+}
+
+func TestWorktreeKeepsBranchCheckedOutElsewhere(t *testing.T) {
+	f := newFixture(t)
+	wt := f.worktree("feature")
+	f.git(wt, "push", "--quiet", "origin", "feature")
+	got, err := f.check(wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(f.root, "other")
+	f.git(f.repo, "worktree", "add", "--quiet", "--force", other, "feature")
+	if err := got.Remove(context.Background(), &fakeNS{act: removeEverything}); err != nil {
+		t.Fatal(err)
+	}
+
+	deleted, why := got.DeleteBranchIfUnmoved(context.Background())
+	if deleted || !strings.Contains(why, "checked out in "+other) {
+		t.Fatalf("DeleteBranchIfUnmoved() = %t, %q; want the branch kept because it is checked out in %s", deleted, why, other)
+	}
+	if out := f.git(f.repo, "branch", "--list", "feature"); strings.TrimSpace(out) == "" {
+		t.Fatal("a branch checked out elsewhere was deleted")
+	}
+}
+
+func TestCleanScriptsFailWhenBuildFails(t *testing.T) {
+	// The scripts use an installed katl-devclean when there is one.
+	var path []string
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if _, err := os.Stat(filepath.Join(dir, "katl-devclean")); err != nil {
+			path = append(path, dir)
+		}
+	}
+	tmp := t.TempDir()
+	for _, c := range []struct {
+		script string
+		args   []string
+		env    string
+	}{
+		{"worktree-clean", []string{filepath.Join(tmp, "wt")}, "KATL_WORKTREE_GO"},
+		{"vmtest-clean", []string{tmp}, "KATL_VMTEST_GO"},
+	} {
+		t.Run(c.script, func(t *testing.T) {
+			cmd := exec.Command(filepath.Join("..", "..", "scripts", c.script), c.args...)
+			cmd.Env = append(os.Environ(), "PATH="+strings.Join(path, ":"), c.env+"=false")
+			out, err := cmd.CombinedOutput()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() == 127 {
+				t.Fatalf("%s: %v\n%s", c.script, err, out)
+			}
+			if !strings.Contains(string(out), "could not build katl-devclean") {
+				t.Fatalf("%s output does not say the build failed:\n%s", c.script, out)
+			}
+		})
+	}
+}
+
+func TestCheckWorktreeRefusesItsOwnCheckout(t *testing.T) {
+	f := newFixture(t)
+	wt := f.worktree("feature")
+	f.git(wt, "push", "--quiet", "origin", "feature")
+
+	_, err := CheckWorktree(context.Background(), f.env, &f.lookup, wt, wt)
+	if err == nil || !strings.Contains(err.Error(), "main checkout or another worktree") {
+		t.Fatalf("CheckWorktree() error = %v; want a refusal to remove the checkout it runs from", err)
+	}
+}
+
+func TestWorktreeRemovesSubuidOwnedOutput(t *testing.T) {
+	if err := exec.Command("podman", "unshare", "true").Run(); err != nil {
+		t.Skipf("rootless podman is unavailable: %v", err)
+	}
+	f := newFixture(t)
+	wt := f.worktree("feature")
+	f.git(wt, "push", "--quiet", "origin", "feature")
+	build := filepath.Join(wt, "_build", "mkosi")
+	script := `mkdir -p "$1/sub" && touch "$1/sub/file" && chown 1:1 "$1/sub" "$1/sub/file" && chmod 0500 "$1/sub"`
+	if out, err := exec.Command("podman", "unshare", "sh", "-c", script, "sh", build).CombinedOutput(); err != nil {
+		t.Skipf("cannot create subuid-owned output: %v: %s", err, out)
+	}
+	got, err := f.check(wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := got.Remove(context.Background(), PodmanUserNS{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if exists(wt) {
+		t.Fatal("worktree survived")
+	}
+	if list := f.git(f.repo, "worktree", "list", "--porcelain"); strings.Contains(list, wt) {
+		t.Fatalf("git still lists the removed worktree:\n%s", list)
 	}
 }

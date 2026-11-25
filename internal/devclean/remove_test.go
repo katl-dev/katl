@@ -485,7 +485,6 @@ func TestRemoveContinuesAfterNamespaceStep(t *testing.T) {
 		}
 		return os.Remove(path)
 	}
-	tr.last = []string{"src"}
 	ns := &fakeNS{act: removeEverything}
 
 	if err := tr.remove(context.Background(), ns); err != nil {

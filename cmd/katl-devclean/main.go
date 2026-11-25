@@ -78,11 +78,8 @@ func run(ctx context.Context, args []string) error {
 		if err := wt.Remove(ctx, devclean.PodmanUserNS{}); err != nil {
 			return err
 		}
-		if err := wt.Deregister(); err != nil {
-			return err
-		}
-		deleted := wt.DeleteBranchIfUnmoved(ctx)
-		fmt.Printf("path=%s\nbranch=%s\ndelete-branch=%t\nkeep-reason=%s\nmerged-pr=%d\ntip=%s\nbranch-deleted=%t\n", wt.Path, wt.Branch, wt.DeleteBranch, wt.KeepReason, wt.MergedPR, wt.Tip, deleted)
+		deleted, kept := wt.DeleteBranchIfUnmoved(ctx)
+		fmt.Printf("path=%s\nbranch=%s\ndelete-branch=%t\nkeep-reason=%s\nmerged-pr=%d\ntip=%s\nbranch-deleted=%t\nbranch-kept=%s\n", wt.Path, wt.Branch, wt.DeleteBranch, wt.KeepReason, wt.MergedPR, wt.Tip, deleted, kept)
 	default:
 		return fmt.Errorf("%s", usage)
 	}

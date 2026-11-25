@@ -26,7 +26,10 @@ devclean() {
         if [[ -z "${built_devclean:-}" ]]; then
             built_dir="$(mktemp -d)"
             trap 'rm -rf "$built_dir"' EXIT
-            (cd "$repo_root" && "$go_bin" build -o "$built_dir/katl-devclean" ./cmd/katl-devclean)
+            if ! (cd "$repo_root" && "$go_bin" build -o "$built_dir/katl-devclean" ./cmd/katl-devclean); then
+                printf 'vmtest-clean: could not build katl-devclean\n' >&2
+                return 2
+            fi
             built_devclean="$built_dir/katl-devclean"
         fi
         "$built_devclean" "$@"

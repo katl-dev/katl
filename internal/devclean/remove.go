@@ -69,25 +69,6 @@ func (e *LeftoverError) Unwrap() error { return e.Cause }
 
 const maxLeftovers = 5
 
-// Remove deletes the verified worktree directory, using ns for files that the
-// calling user cannot delete. It does not follow symbolic links, refuses a
-// worktree that holds a mount point, never touches a path other than the
-// worktree, and succeeds only when the directory is gone. Untracked output is
-// removed before tracked files and the .git file last, so a partial removal
-// can be retried.
-func (w Worktree) Remove(ctx context.Context, ns UserNS) error {
-	if !w.verified || w.Path != w.root {
-		return errors.New("refusing to remove a worktree that CheckWorktree did not verify")
-	}
-	return w.tree().remove(ctx, ns)
-}
-
-func (w Worktree) tree() tree {
-	t := newTree(w.root, ".git")
-	t.last = w.tracked
-	return t
-}
-
 // Remove deletes the verified run directory, using ns for files that the
 // calling user cannot delete. It does not follow symbolic links, refuses a
 // run directory that holds a mount point, never touches a path other than the
@@ -105,9 +86,6 @@ func (r RunDir) Remove(ctx context.Context, ns UserNS) error {
 type tree struct {
 	root   string
 	marker string
-	// last names the top-level entries removed only once every other entry
-	// is gone.
-	last []string
 
 	// removeEntry deletes one file or empty directory.
 	removeEntry func(path string) error
@@ -197,8 +175,7 @@ func (u unavailableNS) Mountinfo(context.Context) (string, error) { return "", u
 
 // remove first deletes the tree as the calling user, which handles read-only
 // directories and files owned by other users inside directories the caller
-// owns, then asks ns for what remains. Entries named by last are left until
-// everything else is gone, so a failure leaves them for a retry. The result is
+// owns, then asks ns for what remains. The result is
 // judged by looking at the filesystem, never by what either step reports.
 func (t tree) remove(ctx context.Context, ns UserNS) error {
 	root := t.root
@@ -223,25 +200,15 @@ func (t tree) remove(ctx context.Context, ns UserNS) error {
 	// Directories the caller owns may be read-only.
 	_ = os.Chmod(root, 0o700)
 	var cause error
-	for _, stage := range t.stages() {
-		for _, entry := range stage {
-			t.removePath(entry)
-		}
-		var rest []string
-		for _, entry := range stage {
-			if present(entry) {
-				rest = append(rest, entry)
-			}
-		}
-		for _, entry := range rest {
+	entries := t.entries()
+	for _, entry := range entries {
+		t.removePath(entry)
+	}
+	for _, entry := range entries {
+		if present(entry) {
 			if err := ns.RemoveAll(ctx, entry); err != nil && cause == nil {
 				cause = err
 			}
-		}
-		// Later stages run only once this one is gone, judged again after the
-		// namespace step.
-		if slices.ContainsFunc(rest, present) {
-			break
 		}
 	}
 
@@ -258,20 +225,6 @@ func (t tree) remove(ctx context.Context, ns UserNS) error {
 func present(path string) bool {
 	_, err := os.Lstat(path)
 	return err == nil
-}
-
-// stages splits the top-level entries into those removed first and those named
-// by last.
-func (t tree) stages() [][]string {
-	var first, later []string
-	for _, entry := range t.entries() {
-		if slices.Contains(t.last, filepath.Base(entry)) {
-			later = append(later, entry)
-		} else {
-			first = append(first, entry)
-		}
-	}
-	return [][]string{first, later}
 }
 
 // entries lists the top-level entries of the root other than the marker.

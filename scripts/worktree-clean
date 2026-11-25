@@ -24,7 +24,10 @@ devclean() {
         if [[ -z "${built_devclean:-}" ]]; then
             built_dir="$(mktemp -d)"
             trap 'rm -rf "$built_dir"' EXIT
-            (cd "$repo_root" && "$go_bin" build -o "$built_dir/katl-devclean" ./cmd/katl-devclean)
+            if ! (cd "$repo_root" && "$go_bin" build -o "$built_dir/katl-devclean" ./cmd/katl-devclean); then
+                printf 'worktree-clean: could not build katl-devclean\n' >&2
+                return 2
+            fi
             built_devclean="$built_dir/katl-devclean"
         fi
         "$built_devclean" "$@"
@@ -53,6 +56,7 @@ delete_branch="$(sed -n 's/^delete-branch=//p' <<<"$info")"
 keep_reason="$(sed -n 's/^keep-reason=//p' <<<"$info")"
 merged_pr="$(sed -n 's/^merged-pr=//p' <<<"$info")"
 branch_deleted="$(sed -n 's/^branch-deleted=//p' <<<"$info")"
+branch_kept="$(sed -n 's/^branch-kept=//p' <<<"$info")"
 if [[ -n "$merged_pr" && "$merged_pr" != 0 ]]; then
     printf 'worktree-clean: HEAD is the head of merged pull request #%s\n' "$merged_pr" >&2
 fi
@@ -66,7 +70,7 @@ if [[ "$delete_branch" == true ]]; then
     if [[ "$branch_deleted" == true ]]; then
         printf 'worktree-clean: deleted branch %s\n' "$branch" >&2
     else
-        printf 'worktree-clean: kept branch %s: it moved after it was checked\n' "$branch" >&2
+        printf 'worktree-clean: %s\n' "$branch_kept" >&2
     fi
 else
     printf 'worktree-clean: kept branch %s: %s\n' "$branch" "$keep_reason" >&2
