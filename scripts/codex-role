@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+    printf 'usage: scripts/codex-role <delivery|reviewer|debugger> [--effort LEVEL] <task-text-or-@file>\n' >&2
+    exit 2
+}
+
+case "${1-}" in
+    delivery) model=gpt-6.2-sol effort=medium sandbox=workspace-write ;;
+    reviewer|debugger) model=gpt-6.2-astra effort=high sandbox=read-only ;;
+    *) usage ;;
+esac
+role="$1"
+shift
+
+if [[ "${1-}" == --effort ]]; then
+    [[ -n "${2-}" && "$2" != -* ]] || usage
+    effort="$2"
+    shift 2
+fi
+[[ $# -eq 1 ]] || usage
+
+task="$1"
+if [[ "$task" == @* ]]; then
+    file="${task#@}"
+    if [[ ! -f "$file" || ! -r "$file" ]]; then
+        printf 'codex-role: cannot read task file %s\n' "$file" >&2
+        exit 2
+    fi
+    task="$(cat -- "$file")"
+fi
+if [[ "$task" != *[![:space:]]* ]]; then
+    printf 'codex-role: task must contain text\n' >&2
+    exit 2
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+guide="$repo_root/docs/development/agent-roles.md"
+if ! section="$(awk -v heading="## ${role^}" '
+    $0 == heading { found = 1; print; next }
+    found && /^## / { exit }
+    found { print }
+    END { if (!found) exit 1 }
+' "$guide")"; then
+    printf 'codex-role: cannot find the %s role in %s\n' "$role" "$guide" >&2
+    exit 1
+fi
+
+printf -v prompt '%s\n\n%s' "$section" "$task"
+# Codex appends piped input to the prompt, so give it immediate EOF.
+exec codex exec -C "$repo_root" -s "$sandbox" -m "$model" -c "model_reasoning_effort=$effort" "$prompt" </dev/null
