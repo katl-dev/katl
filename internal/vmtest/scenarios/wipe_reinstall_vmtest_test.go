@@ -219,7 +219,7 @@ func runWipeReinstallBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 		t.Fatalf("create Kubernetes identity: %v\nstdout:\n%s\nstderr:\n%s", err, identityStdout.String(), identityStderr.String())
 	}
 
-	initialNodes, err := startOperationBackedNodes(ctx, run, result, inputs.ControlPlaneDisk, inputs.ControlPlaneDiskFormat, inputs.ControlPlaneESP, inputs.ControlPlaneFixture, inputs.ControlPlaneMetadata, inputs.ControlPlaneMAC, inputs.WorkerDisk, inputs.WorkerDiskFormat, inputs.WorkerESP, inputs.WorkerFixture, inputs.WorkerMetadata, inputs.WorkerMAC)
+	initialNodes, err := startOperationBackedNodes(ctx, run, result, inputs.ControlPlaneDisk, inputs.ControlPlaneDiskFormat, inputs.ControlPlaneESP, inputs.ControlPlaneFixture, inputs.ControlPlaneMetadata, inputs.ControlPlaneNetwork, inputs.WorkerDisk, inputs.WorkerDiskFormat, inputs.WorkerESP, inputs.WorkerFixture, inputs.WorkerMetadata, inputs.WorkerNetwork)
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatal(err)
@@ -265,7 +265,7 @@ func runWipeReinstallBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 		t.Fatal(err)
 	}
 	postResult.Started = time.Now().UTC()
-	reinstalledNodes, err := startOperationBackedNodes(ctx, run, postResult, reinstallDisks["cp-1"], string(vmtest.DiskQCOW2), reinstallESPs["cp-1"], "", inputs.ControlPlaneMetadata, inputs.ControlPlaneMAC, reinstallDisks["worker-1"], string(vmtest.DiskQCOW2), reinstallESPs["worker-1"], "", inputs.WorkerMetadata, inputs.WorkerMAC)
+	reinstalledNodes, err := startOperationBackedNodes(ctx, run, postResult, reinstallDisks["cp-1"], string(vmtest.DiskQCOW2), reinstallESPs["cp-1"], "", inputs.ControlPlaneMetadata, inputs.ControlPlaneNetwork, reinstallDisks["worker-1"], string(vmtest.DiskQCOW2), reinstallESPs["worker-1"], "", inputs.WorkerMetadata, inputs.WorkerNetwork)
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatal(err)
@@ -313,7 +313,7 @@ func runWipeNodeBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 			stopNode(t, node)
 		}
 	}()
-	nodes, err := startOperationBackedNodes(ctx, run, result, inputs.ControlPlaneDisk, inputs.ControlPlaneDiskFormat, inputs.ControlPlaneESP, inputs.ControlPlaneFixture, inputs.ControlPlaneMetadata, inputs.ControlPlaneMAC, inputs.WorkerDisk, inputs.WorkerDiskFormat, inputs.WorkerESP, inputs.WorkerFixture, inputs.WorkerMetadata, inputs.WorkerMAC)
+	nodes, err := startOperationBackedNodes(ctx, run, result, inputs.ControlPlaneDisk, inputs.ControlPlaneDiskFormat, inputs.ControlPlaneESP, inputs.ControlPlaneFixture, inputs.ControlPlaneMetadata, inputs.ControlPlaneNetwork, inputs.WorkerDisk, inputs.WorkerDiskFormat, inputs.WorkerESP, inputs.WorkerFixture, inputs.WorkerMetadata, inputs.WorkerNetwork)
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatal(err)
@@ -340,7 +340,7 @@ func runWipeNodeBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 	stopNode(t, workerNode)
 	liveNodes = []vmtest.RunningInstalledRuntimeNode{cpNode}
 	reinstallRunner := vmtest.NewRunner(vmtest.Options{Enabled: true, StateRoot: filepath.Join(result.RunDir, "wipe-node-reinstall-vm-runs"), Keep: vmtest.KeepAlways, KVM: run.Options.KVM, Missing: vmtest.MissingFails})
-	reinstallResult, err := runWipeReinstallNode(ctx, run, reinstallRunner, "worker-1", workerOverlay, inputs.WorkerInstall, inputs.WorkerMAC)
+	reinstallResult, err := runWipeReinstallNode(ctx, run, reinstallRunner, "worker-1", workerOverlay, inputs.WorkerInstall, inputs.WorkerNetwork)
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatal(err)
@@ -355,7 +355,7 @@ func runWipeNodeBootstrapSmoke(t *testing.T, run operationBackedSmokeRun) {
 		t.Fatal(err)
 	}
 	postResult.Started = time.Now().UTC()
-	reinstalledWorker, err := vmtest.StartInstalledRuntimeNode(ctx, postResult, vmtest.InstalledRuntimeNodeConfig{Name: "worker-1", Runtime: vmtest.InstalledRuntimeConfig{Disk: workerDisk, DiskFormat: vmtest.DiskQCOW2, ESPArtifacts: reinstallResult.Artifacts.InstalledESP, NodeMetadata: inputs.WorkerMetadata, VM: operationBackedVMConfigForRun(run, inputs.WorkerMAC, 0)}}, vmtest.VMRunner{})
+	reinstalledWorker, err := vmtest.StartInstalledRuntimeNode(ctx, postResult, vmtest.InstalledRuntimeNodeConfig{Name: "worker-1", Runtime: vmtest.InstalledRuntimeConfig{Disk: workerDisk, DiskFormat: vmtest.DiskQCOW2, ESPArtifacts: reinstallResult.Artifacts.InstalledESP, NodeMetadata: inputs.WorkerMetadata, VM: operationBackedVMConfigForRun(run, inputs.WorkerNetwork, 0)}}, vmtest.VMRunner{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -389,7 +389,7 @@ func runWipePreBootstrapControlPlaneSmoke(t *testing.T, run operationBackedSmoke
 			stopNode(t, node)
 		}
 	}()
-	nodes, err := startOperationBackedNodes(ctx, run, result, inputs.ControlPlaneDisk, inputs.ControlPlaneDiskFormat, inputs.ControlPlaneESP, inputs.ControlPlaneFixture, inputs.ControlPlaneMetadata, inputs.ControlPlaneMAC, inputs.WorkerDisk, inputs.WorkerDiskFormat, inputs.WorkerESP, inputs.WorkerFixture, inputs.WorkerMetadata, inputs.WorkerMAC)
+	nodes, err := startOperationBackedNodes(ctx, run, result, inputs.ControlPlaneDisk, inputs.ControlPlaneDiskFormat, inputs.ControlPlaneESP, inputs.ControlPlaneFixture, inputs.ControlPlaneMetadata, inputs.ControlPlaneNetwork, inputs.WorkerDisk, inputs.WorkerDiskFormat, inputs.WorkerESP, inputs.WorkerFixture, inputs.WorkerMetadata, inputs.WorkerNetwork)
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatal(err)
@@ -432,7 +432,7 @@ func runWipePreBootstrapControlPlaneSmoke(t *testing.T, run operationBackedSmoke
 	liveNodes = []vmtest.RunningInstalledRuntimeNode{otherNode}
 
 	reinstallRunner := vmtest.NewRunner(vmtest.Options{Enabled: true, StateRoot: filepath.Join(result.RunDir, "pre-bootstrap-control-plane-reinstall-vm-runs"), Keep: vmtest.KeepAlways, KVM: run.Options.KVM, Missing: vmtest.MissingFails})
-	reinstallResult, err := runWipeReinstallNode(ctx, run, reinstallRunner, "cp-1", cpOverlay, inputs.ControlPlaneInstall, inputs.ControlPlaneMAC)
+	reinstallResult, err := runWipeReinstallNode(ctx, run, reinstallRunner, "cp-1", cpOverlay, inputs.ControlPlaneInstall, inputs.ControlPlaneNetwork)
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatal(err)
@@ -447,7 +447,7 @@ func runWipePreBootstrapControlPlaneSmoke(t *testing.T, run operationBackedSmoke
 		t.Fatal(err)
 	}
 	postResult.Started = time.Now().UTC()
-	reinstalledCP, err := vmtest.StartInstalledRuntimeNode(ctx, postResult, vmtest.InstalledRuntimeNodeConfig{Name: "cp-1", Runtime: vmtest.InstalledRuntimeConfig{Disk: cpDisk, DiskFormat: vmtest.DiskQCOW2, ESPArtifacts: reinstallResult.Artifacts.InstalledESP, NodeMetadata: inputs.ControlPlaneMetadata, VM: operationBackedVMConfigForRun(run, inputs.ControlPlaneMAC, 0)}}, vmtest.VMRunner{})
+	reinstalledCP, err := vmtest.StartInstalledRuntimeNode(ctx, postResult, vmtest.InstalledRuntimeNodeConfig{Name: "cp-1", Runtime: vmtest.InstalledRuntimeConfig{Disk: cpDisk, DiskFormat: vmtest.DiskQCOW2, ESPArtifacts: reinstallResult.Artifacts.InstalledESP, NodeMetadata: inputs.ControlPlaneMetadata, VM: operationBackedVMConfigForRun(run, inputs.ControlPlaneNetwork, 0)}}, vmtest.VMRunner{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -749,7 +749,7 @@ func writeWipePoweroffEvidence(path string, node vmtest.RunningInstalledRuntimeN
 	return path, writeTwoNodeDiagnosticJSON(path, evidence)
 }
 
-func startOperationBackedNodes(ctx context.Context, run operationBackedSmokeRun, result vmtest.Result, cpDisk, cpFormat, cpESP, cpFixture, cpMetadata, cpMAC, workerDisk, workerFormat, workerESP, workerFixture, workerMetadata, workerMAC string) ([]vmtest.RunningInstalledRuntimeNode, error) {
+func startOperationBackedNodes(ctx context.Context, run operationBackedSmokeRun, result vmtest.Result, cpDisk, cpFormat, cpESP, cpFixture, cpMetadata string, cpNetwork vmtest.VMNetworkConfig, workerDisk, workerFormat, workerESP, workerFixture, workerMetadata string, workerNetwork vmtest.VMNetworkConfig) ([]vmtest.RunningInstalledRuntimeNode, error) {
 	cpNode, err := vmtest.StartInstalledRuntimeNode(ctx, result, vmtest.InstalledRuntimeNodeConfig{
 		Name: "cp-1",
 		Runtime: vmtest.InstalledRuntimeConfig{
@@ -758,7 +758,7 @@ func startOperationBackedNodes(ctx context.Context, run operationBackedSmokeRun,
 			ESPArtifacts:    cpESP,
 			FixtureManifest: cpFixture,
 			NodeMetadata:    cpMetadata,
-			VM:              operationBackedVMConfigForRun(run, cpMAC, 0),
+			VM:              operationBackedVMConfigForRun(run, cpNetwork, 0),
 		},
 	}, vmtest.VMRunner{})
 	if err != nil {
@@ -772,7 +772,7 @@ func startOperationBackedNodes(ctx context.Context, run operationBackedSmokeRun,
 			ESPArtifacts:    workerESP,
 			FixtureManifest: workerFixture,
 			NodeMetadata:    workerMetadata,
-			VM:              operationBackedVMConfigForRun(run, workerMAC, 0),
+			VM:              operationBackedVMConfigForRun(run, workerNetwork, 0),
 		},
 	}, vmtest.VMRunner{})
 	if err != nil {
@@ -1029,12 +1029,12 @@ func runTwoNodeReinstallProofs(ctx context.Context, run operationBackedSmokeRun,
 	for _, node := range []struct {
 		name       string
 		provenance firstInstallProvenance
-		mac        string
+		network    vmtest.VMNetworkConfig
 	}{
-		{name: "cp-1", provenance: run.Inputs.ControlPlaneInstall, mac: run.Inputs.ControlPlaneMAC},
-		{name: "worker-1", provenance: run.Inputs.WorkerInstall, mac: run.Inputs.WorkerMAC},
+		{name: "cp-1", provenance: run.Inputs.ControlPlaneInstall, network: run.Inputs.ControlPlaneNetwork},
+		{name: "worker-1", provenance: run.Inputs.WorkerInstall, network: run.Inputs.WorkerNetwork},
 	} {
-		result, err := runWipeReinstallNode(ctx, run, reinstallRunner, node.name, overlays[node.name], node.provenance, node.mac)
+		result, err := runWipeReinstallNode(ctx, run, reinstallRunner, node.name, overlays[node.name], node.provenance, node.network)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -1049,7 +1049,7 @@ func runTwoNodeReinstallProofs(ctx context.Context, run operationBackedSmokeRun,
 	return results, disks, esps, nil
 }
 
-func runWipeReinstallNode(ctx context.Context, run operationBackedSmokeRun, runner vmtest.Runner, name, source string, provenance firstInstallProvenance, mac string) (vmtest.Result, error) {
+func runWipeReinstallNode(ctx context.Context, run operationBackedSmokeRun, runner vmtest.Runner, name, source string, provenance firstInstallProvenance, network vmtest.VMNetworkConfig) (vmtest.Result, error) {
 	if strings.TrimSpace(source) == "" {
 		return vmtest.Result{}, fmt.Errorf("%s bootstrapped disk overlay is required", name)
 	}
@@ -1066,18 +1066,19 @@ func runWipeReinstallNode(ctx context.Context, run operationBackedSmokeRun, runn
 			InstallerInitrd: provenance.InstallerInitrd,
 			CommandLine:     append([]string(nil), provenance.InstallerCommandLine...),
 			RuntimeArtifact: provenance.RuntimeArtifact,
-			VM:              operationBackedVMConfigForRun(run, mac, 0),
+			VM:              operationBackedVMConfigForRun(run, vmtest.VMNetworkConfig{}, 0),
 		},
 		Runtime: vmtest.InstalledRuntimeConfig{
 			RequireVMTestAgent: true,
 			VM: func() vmtest.VMConfig {
-				config := operationBackedVMConfigForRun(run, mac, 0)
+				config := operationBackedVMConfigForRun(run, vmtest.VMNetworkConfig{}, 0)
 				config.Agent.RequireHealth = true
 				config.Agent.Timeout = 30 * time.Second
 				return config
 			}(),
 		},
 		ManifestPath:    provenance.InstallManifest,
+		Network:         network,
 		UseInstalledESP: true,
 	}
 	switch vmtest.FirstInstallWorldMode(provenance.FirstInstallMode) {

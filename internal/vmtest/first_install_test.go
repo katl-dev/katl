@@ -980,3 +980,95 @@ func firstManifest() string {
 		}
 	}`
 }
+
+// domainRecorder records the domain definition each VM run starts from.
+type domainRecorder struct {
+	signal  string
+	domains []string
+}
+
+func (r *domainRecorder) Run(_ context.Context, _ string, args []string, serial io.Writer) error {
+	for _, arg := range args {
+		if filepath.Base(arg) == "domain.xml" {
+			data, err := os.ReadFile(arg)
+			if err != nil {
+				return err
+			}
+			r.domains = append(r.domains, string(data))
+		}
+	}
+	_, err := io.WriteString(serial, r.signal)
+	return err
+}
+
+func leasedRunner(executor VMExecutor) VMRunner {
+	runner := fakeVMWithExecutor(executor)
+	runner.probe.env = func(name string) string {
+		if name == "KATL_VMTEST_RUN_LEASE" {
+			return "lease-1"
+		}
+		return ""
+	}
+	return runner
+}
+
+func TestFirstInstallAttachesBothVMsToNodeNetwork(t *testing.T) {
+	root := t.TempDir()
+	uki := writeFixture(t, root, "katl-installer.efi", "uki")
+	runtime := writeFixture(t, root, "runtime.squashfs", "runtime")
+	_, vmConfig := vmFixture(t)
+	installer := &domainRecorder{signal: "Katl installer ready"}
+	installed := &domainRecorder{signal: runtimeBootSignal}
+	result, err := RunFirstInstall(context.Background(), NewRunner(Options{StateRoot: root, RunID: "run-1"}), Scenario{Name: "first-install"}, FirstInstallConfig{
+		Installer: InstallerBootConfig{InstallerUKI: uki, RuntimeArtifact: runtime, VM: vmConfig},
+		Runtime:   InstalledRuntimeConfig{ESPArtifacts: espFixture(t), VM: vmConfig},
+		Network: VMNetworkConfig{
+			Name:    "katl-run-scenario",
+			MAC:     "52:54:00:12:34:56",
+			Address: "10.200.0.2",
+		},
+		Manifest:        []byte(firstManifest()),
+		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
+		DiskRunner:      fileDiskRunner{},
+		InstallerRunner: leasedRunner(installer),
+		RuntimeRunner:   leasedRunner(installed),
+	})
+	if err != nil {
+		t.Fatalf("RunFirstInstall() error = %v", err)
+	}
+	if result.Status != StatusPassed {
+		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
+	}
+
+	for phase, recorder := range map[string]*domainRecorder{"installer": installer, "runtime": installed} {
+		if len(recorder.domains) != 1 {
+			t.Fatalf("%s VM ran %d times, want once", phase, len(recorder.domains))
+		}
+		domain := recorder.domains[0]
+		if !strings.Contains(domain, `<source network="katl-run-scenario">`) || !strings.Contains(domain, `52:54:00:12:34:56`) {
+			t.Errorf("%s domain is not attached to the node network with the node MAC:\n%s", phase, domain)
+		}
+	}
+}
+
+func TestFirstInstallWithoutNetworkFailsUnderRunLease(t *testing.T) {
+	root := t.TempDir()
+	uki := writeFixture(t, root, "katl-installer.efi", "uki")
+	runtime := writeFixture(t, root, "runtime.squashfs", "runtime")
+	_, vmConfig := vmFixture(t)
+	result, err := RunFirstInstall(context.Background(), NewRunner(Options{StateRoot: root, RunID: "run-1"}), Scenario{Name: "first-install"}, FirstInstallConfig{
+		Installer:       InstallerBootConfig{InstallerUKI: uki, RuntimeArtifact: runtime, VM: vmConfig},
+		Runtime:         InstalledRuntimeConfig{ESPArtifacts: espFixture(t), VM: vmConfig},
+		Manifest:        []byte(firstManifest()),
+		TargetDisk:      TargetDisk("root", string(DiskRaw), "64M"),
+		DiskRunner:      fileDiskRunner{},
+		InstallerRunner: leasedRunner(vmExec{write: "Katl installer ready"}),
+		RuntimeRunner:   leasedRunner(vmExec{write: runtimeBootSignal}),
+	})
+	if err != nil {
+		t.Fatalf("RunFirstInstall() error = %v", err)
+	}
+	if result.Status != StatusFailed || !strings.Contains(result.FailureSummary, "no libvirt network") {
+		t.Fatalf("Status = %q, failure = %q, want a refusal for the missing libvirt network", result.Status, result.FailureSummary)
+	}
+}

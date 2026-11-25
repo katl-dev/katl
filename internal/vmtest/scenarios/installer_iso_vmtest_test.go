@@ -45,6 +45,7 @@ func TestInstallerISOBootSmoke(t *testing.T) {
 			InstallerISO: iso,
 			Expect:       "reboot: Power down",
 			VM: vmtest.VMConfig{
+				Network: worldScenario.VMNetwork(),
 				SerialHooks: []vmtest.SerialHook{{
 					Name:   "power-button",
 					Signal: "katlos-install progress: waiting for configuration at",
@@ -126,6 +127,8 @@ spec:
 	if initrd == "" {
 		initrd = filepath.Join(repo, "_build", "mkosi", "katl-installer.initrd")
 	}
+	network := worldScenario.VMNetwork()
+	network.ExtraDisconnected = true
 	result, err := vmtest.RunInstallerBoot(
 		context.Background(),
 		vmtest.NewRunner(options),
@@ -141,7 +144,7 @@ spec:
 			},
 			Expect: "katlos-install progress: waiting for configuration at",
 			VM: vmtest.VMConfig{
-				Network: vmtest.VMNetworkConfig{ExtraDisconnected: true},
+				Network: network,
 				SerialHooks: []vmtest.SerialHook{{
 					Name:   "handoff-ready",
 					Signal: "katlos-install progress: waiting for configuration at",
@@ -268,6 +271,7 @@ install:
 			vmtest.ExtraDisk("data", string(vmtest.DiskRaw), "4G"),
 		},
 	}, vmtest.FirstInstallConfig{
+		Network:   worldScenario.VMNetwork(),
 		Installer: vmtest.InstallerBootConfig{InstallerISO: iso, VM: runtimeVM},
 		Runtime: vmtest.InstalledRuntimeConfig{
 			VM: runtimeVM,

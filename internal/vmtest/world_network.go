@@ -20,6 +20,12 @@ func (node Node) VMNetwork() VMNetworkConfig {
 	return config
 }
 
+// VMNetwork returns the network attachment of a VM that is not one of the
+// scenario nodes: the scenario network, without a reservation.
+func (scenario *WorldScenario) VMNetwork() VMNetworkConfig {
+	return VMNetworkConfig{Name: scenario.World.Network.Name}
+}
+
 var swept sync.Once
 
 // sweepOnce removes the libvirt objects of finished runs at the first

@@ -64,6 +64,7 @@ func planDirectRuntimeWorldRun(world World, name, repo string, kvm KVMPolicy) (d
 		RuntimeRoot: input.RuntimeRoot,
 		Kernel:      input.Kernel,
 		Initrd:      input.Initrd,
+		VM:          VMConfig{Network: scenario.VMNetwork()},
 	}
 	return run, nil
 }

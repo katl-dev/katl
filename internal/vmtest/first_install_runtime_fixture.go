@@ -418,6 +418,7 @@ func ProduceFirstInstallRuntimeFixture(ctx context.Context, contract FirstInstal
 		UseInstalledESP: contract.UseInstalledESP,
 		ManifestPath:    contract.ManifestPath,
 		TargetDisk:      contract.TargetDisk,
+		Network:         contract.WorldNode.VMNetwork(),
 	}
 	switch firstInstallModeForContract(contract) {
 	case FirstInstallWorldPreseed:

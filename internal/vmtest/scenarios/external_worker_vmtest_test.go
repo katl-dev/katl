@@ -158,7 +158,7 @@ func runExternalWorkerJoin(t *testing.T, smoke operationBackedSmokeRun) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		fixture.Config.VM = operationBackedVMConfigForRun(smoke, fixture.Node.MACAddress, 0)
+		fixture.Config.VM = operationBackedVMConfigForRun(smoke, fixture.Node.VMNetwork(), 0)
 		running, err := vmtest.StartInstalledRuntimeNode(ctx, result, vmtest.InstalledRuntimeNodeConfig{Name: spec.Name, Runtime: fixture.Config}, vmtest.VMRunner{})
 		if err != nil {
 			t.Fatalf("start %s: %v", spec.Name, err)
