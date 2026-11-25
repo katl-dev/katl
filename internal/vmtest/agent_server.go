@@ -35,6 +35,8 @@ type AgentCommandRunner interface {
 type execAgentCommandRunner struct {
 	allowed map[string]bool
 	limit   uint32
+	// keepTail retains the end of an over-limit stdout instead of its start.
+	keepTail bool
 }
 
 func NewAgentServer(version string) AgentServer {
@@ -309,7 +311,12 @@ func (s AgentServer) exportJournal(ctx context.Context, req *vmtestpb.ExportJour
 	if limit == 0 {
 		limit = s.outputLimit()
 	}
-	result, err := s.runCommand(ctx, &vmtestpb.RunCommandRequest{
+	// The end of a long journal is the part that explains a failure.
+	runner := s.CommandRunner
+	if runner == nil {
+		runner = execAgentCommandRunner{allowed: s.commands(), limit: s.outputLimit(), keepTail: true}
+	}
+	result, err := runner.Run(ctx, &vmtestpb.RunCommandRequest{
 		Argv:        argv,
 		StdoutLimit: limit,
 		StderrLimit: 64 << 10,
@@ -394,7 +401,7 @@ func (r execAgentCommandRunner) Run(ctx context.Context, req *vmtestpb.RunComman
 		}
 		cmd.Env = env
 	}
-	stdout := limitedBuffer{limit: limitOrDefault(req.StdoutLimit, r.limit)}
+	stdout := limitedBuffer{limit: limitOrDefault(req.StdoutLimit, r.limit), keepTail: r.keepTail}
 	stderr := limitedBuffer{limit: limitOrDefault(req.StderrLimit, r.limit)}
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -420,14 +427,22 @@ func (r execAgentCommandRunner) Run(ctx context.Context, req *vmtestpb.RunComman
 }
 
 type limitedBuffer struct {
-	buf     bytes.Buffer
-	limit   uint32
-	written uint32
+	buf      bytes.Buffer
+	limit    uint32
+	written  uint32
+	keepTail bool
 }
 
 func (b *limitedBuffer) Write(data []byte) (int, error) {
 	n := len(data)
 	b.written += uint32(n)
+	if b.keepTail {
+		_, _ = b.buf.Write(data)
+		if over := b.buf.Len() - int(b.limit); over > 0 {
+			b.buf.Next(over)
+		}
+		return n, nil
+	}
 	remaining := int(b.limit) - b.buf.Len()
 	if remaining > 0 {
 		if len(data) > remaining {

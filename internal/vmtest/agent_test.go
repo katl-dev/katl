@@ -465,3 +465,27 @@ func readTranscript(t *testing.T, path string) []transcriptEntry {
 	}
 	return entries
 }
+
+func TestAgentJournalExportKeepsTail(t *testing.T) {
+	run := func(keepTail bool) *vmtestpb.CommandResult {
+		t.Helper()
+		result, err := execAgentCommandRunner{allowed: map[string]bool{"seq": true}, limit: 1 << 10, keepTail: keepTail}.Run(
+			context.Background(),
+			&vmtestpb.RunCommandRequest{Argv: []string{"seq", "1", "100"}, StdoutLimit: 20},
+		)
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+		return result
+	}
+
+	head := string(run(false).Stdout)
+	if !strings.HasPrefix(head, "1\n") || strings.Contains(head, "100") {
+		t.Fatalf("head-limited output = %q, want the start of the output", head)
+	}
+
+	tail := run(true)
+	if !strings.HasSuffix(string(tail.Stdout), "99\n100\n") || len(tail.Stdout) != 20 || !tail.StdoutTruncated {
+		t.Fatalf("tail-limited output = %q truncated=%v, want the last 20 bytes", tail.Stdout, tail.StdoutTruncated)
+	}
+}

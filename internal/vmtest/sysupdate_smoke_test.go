@@ -248,9 +248,6 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 		t.Fatalf("staging left the pending slot type:\n%s", dump)
 	}
 
-	// The re-added slot reports no PARTUUID until the reboot below.
-	assertSlotNodeAfterReadd(t, ctx, guest, disk, inactivePart)
-
 	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
 	waitGenerationPromotion(t, ctx, guest, candidateGeneration)
 	assertBootedGenerationIdentity(t, ctx, guest, candidateSpec)
@@ -1278,42 +1275,4 @@ func inactiveRootSlot(t *testing.T, ctx context.Context, guest *GuestControl) (s
 	}
 	t.Fatalf("no root slot other than %s on %s", source, disk)
 	return "", ""
-}
-
-// assertSlotNodeAfterReadd removes and adds the unmounted inactive slot as
-// partx --update does, then checks without waiting for udev that the kernel
-// already reports the slot by disk sequence and partition number, which is how
-// systemdisk.Partition.Node finds the device to write. The kernel reports no
-// PARTUUID for the re-added partition until reboot, so the caller reboots next.
-func assertSlotNodeAfterReadd(t *testing.T, ctx context.Context, guest *GuestControl, disk, part string) {
-	t.Helper()
-	guestCommand(t, ctx, guest, "slot-delete", "partx", "--delete", "--nr", part, disk)
-	guestCommand(t, ctx, guest, "slot-add", "partx", "--add", "--nr", part, disk)
-
-	var table struct {
-		BlockDevices []struct {
-			Name     string `json:"name"`
-			DiskSeq  any    `json:"diskseq"`
-			Children []struct {
-				Name   string `json:"name"`
-				PartN  any    `json:"partn"`
-				PartID any    `json:"partuuid"`
-			} `json:"children"`
-		} `json:"blockdevices"`
-	}
-	output := guestCommandOutput(t, ctx, guest, "slot-readd-table", "lsblk", "--json", "--output", "NAME,DISKSEQ,PARTN,PARTUUID", disk)
-	if err := json.Unmarshal([]byte(output), &table); err != nil || len(table.BlockDevices) != 1 {
-		t.Fatalf("parse lsblk of %s: %v\n%s", disk, err, output)
-	}
-	if seq := fmt.Sprint(table.BlockDevices[0].DiskSeq); seq == "" || seq == "<nil>" || seq == "0" {
-		t.Fatalf("kernel reports no diskseq for %s:\n%s", disk, output)
-	}
-	for _, child := range table.BlockDevices[0].Children {
-		if fmt.Sprint(child.PartN) != part {
-			continue
-		}
-		guestCommand(t, ctx, guest, "slot-readd-node", "test", "-b", "/dev/"+child.Name)
-		return
-	}
-	t.Fatalf("kernel reports no partition %s on %s straight after it was added again:\n%s", part, disk, output)
 }

@@ -743,8 +743,8 @@ func TestPlanningRefusesPartitionWithoutDiskSeqLink(t *testing.T) {
 
 	formatted := VolumeRequest{Name: "data", Partition: &PartitionSelector{PartUUID: "data-part"}, Filesystem: "xfs", Wipe: true}
 	_, err := PlanVolumes(facts, root, []VolumeRequest{formatted}, nil)
-	if !mentions(err, "/dev/sdb1", "by-diskseq/98-part1") {
-		t.Fatalf("PlanVolumes() error = %v, want refusal naming /dev/sdb1 and its missing by-diskseq link", err)
+	if !mentions(err, "/dev/sdb1", "by-diskseq/98-part1", "udevadm settle") {
+		t.Fatalf("PlanVolumes() error = %v, want refusal naming /dev/sdb1, its missing by-diskseq link and the udevadm settle next step", err)
 	}
 
 	// A repartitioned disk is written through the disk link alone.

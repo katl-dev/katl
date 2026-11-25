@@ -329,3 +329,22 @@ func TestSysupdateFailureEvidenceKeepsGuestJournal(t *testing.T) {
 		t.Fatalf("diagnostics = %#v, want a journal artifact that is not limited to units", report)
 	}
 }
+
+func TestCollectDiagnosticsAfterCancel(t *testing.T) {
+	result := guestResult(t)
+	client := &fakeGuestClient{
+		command: &vmtestpb.CommandResult{},
+		journal: &vmtestpb.JournalResult{Text: "failing boot\n", SizeBytes: 13},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	report := NewGuestControl(result, client).CollectDiagnostics(ctx, GuestDiagnostics{
+		Commands: []GuestCommandRequest{{Name: "status", Argv: []string{"true"}}},
+		Journals: []GuestJournalRequest{{Name: "boot"}},
+	})
+
+	if len(report.Errors) != 0 || len(report.Journals) != 1 || len(report.Commands) != 1 {
+		t.Fatalf("report = %#v, want evidence collected despite the cancelled test context", report)
+	}
+}
