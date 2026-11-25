@@ -351,6 +351,7 @@ func newWorldCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Comma
 	cmd.AddCommand(newWorldConsoleCommand(ctx, stdout, stderr, "console [NODE]"))
 	cmd.AddCommand(newWorldReaddressCommand(ctx, stdout, stderr))
 	cmd.AddCommand(newWorldNATCommand(ctx, stdout, stderr))
+	cmd.AddCommand(newWorldServeCommand(ctx, stdout, stderr))
 	cmd.AddCommand(newWorldMultihomeCommand(ctx, stdout, stderr))
 	cmd.AddCommand(&cobra.Command{
 		Use:   "remove",
@@ -378,6 +379,9 @@ func addInstallerFlags(cmd *cobra.Command, opts *installerOptions) {
 	cmd.Flags().DurationVar(&opts.Timeout, "timeout", opts.Timeout, "installer DHCP and readiness timeout")
 	cmd.Flags().BoolVar(&opts.NoBuild, "no-build", false, "use the existing installer ISO without checking the current checkout")
 	cmd.Flags().StringVar(&opts.ISO, "iso", "", "boot this installer ISO, such as a published release, instead of building the current checkout's")
+	cmd.Flags().StringVar(&opts.PreseedDir, "preseed-dir", "", "attach this directory as KATLSEED media")
+	cmd.Flags().StringVar(&opts.Manifest, "manifest", "", "install automatically from this install manifest, with its katlosImage.localRef file, as KATLSEED media")
+	cmd.Flags().StringArrayVar(&opts.CommandLine, "cmdline", nil, "append to the installer kernel command line, such as katl.bundle.url=http://{gateway}:8080/cluster.katlcfg; {gateway} is the host address on the world network; repeatable")
 	cmd.Flags().BoolVar(&opts.ForceConfig, "force-config", false, "replace the generated katldev ClusterConfig")
 }
 

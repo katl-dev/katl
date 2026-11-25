@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -1461,4 +1462,77 @@ func TestLinkDownPrimaryInterface(t *testing.T) {
 	if len(domain.Interfaces) != 1 || domain.Interfaces[0].Link.State != "down" {
 		t.Fatalf("expected the only interface to be link-down: %+v", domain.Interfaces)
 	}
+}
+
+func TestVMCommandLineReachesFirmwareBootedGuest(t *testing.T) {
+	probeOK := probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	}
+	type domainDoc struct {
+		Cmdline string   `xml:"os>cmdline"`
+		OEM     []string `xml:"sysinfo>oemStrings>entry"`
+	}
+	smbiosMode := regexp.MustCompile(`<smbios mode="sysinfo">`)
+
+	t.Run("ISO boot extends the UKI command line through SMBIOS", func(t *testing.T) {
+		result, config := vmFixture(t)
+		iso := filepath.Join(t.TempDir(), "installer.iso")
+		if err := os.WriteFile(iso, []byte("iso"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		config.Boot = VMBoot{ISO: iso, DiskFirst: true, CommandLine: []string{"katl.install.mode=auto", "katl.bundle.url=http://192.0.2.1/c.katlcfg"}}
+		plan, err := planVM(result, config, probeOK)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var domain domainDoc
+		if err := xml.Unmarshal([]byte(plan.DomainXML), &domain); err != nil {
+			t.Fatal(err)
+		}
+		want := "io.systemd.stub.kernel-cmdline-extra=katl.install.mode=auto katl.bundle.url=http://192.0.2.1/c.katlcfg"
+		if len(domain.OEM) != 1 || domain.OEM[0] != want || !smbiosMode.MatchString(plan.DomainXML) || domain.Cmdline != "" {
+			t.Fatalf("domain = %+v, want one OEM string %q and no <cmdline>:\n%s", domain, want, plan.DomainXML)
+		}
+	})
+
+	t.Run("ISO boot without arguments adds no SMBIOS strings", func(t *testing.T) {
+		result, config := vmFixture(t)
+		iso := filepath.Join(t.TempDir(), "installer.iso")
+		if err := os.WriteFile(iso, []byte("iso"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		config.Boot = VMBoot{ISO: iso, DiskFirst: true}
+		plan, err := planVM(result, config, probeOK)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(plan.DomainXML, "sysinfo") || strings.Contains(plan.DomainXML, "smbios") {
+			t.Fatalf("domain XML has SMBIOS data:\n%s", plan.DomainXML)
+		}
+	})
+
+	t.Run("direct kernel boot keeps its command line", func(t *testing.T) {
+		result, config := vmFixture(t)
+		dir := t.TempDir()
+		kernel, initrd := filepath.Join(dir, "vmlinuz"), filepath.Join(dir, "initrd")
+		for _, path := range []string{kernel, initrd} {
+			if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		config.Boot = VMBoot{Kernel: kernel, Initrd: initrd, CommandLine: []string{"console=ttyS0", "katl.install.mode=auto"}}
+		plan, err := planVM(result, config, probeOK)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var domain domainDoc
+		if err := xml.Unmarshal([]byte(plan.DomainXML), &domain); err != nil {
+			t.Fatal(err)
+		}
+		if domain.Cmdline != "console=ttyS0 katl.install.mode=auto" || len(domain.OEM) != 0 {
+			t.Fatalf("domain = %+v, want <cmdline> only", domain)
+		}
+	})
 }

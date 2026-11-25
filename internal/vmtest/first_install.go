@@ -325,10 +325,20 @@ type preseedMedia struct {
 	Image string
 }
 
-func writePreseedMedia(ctx context.Context, result Result, config FirstInstallConfig, manifest []byte) (preseedMedia, error) {
-	dir := filepath.Join(result.Artifacts.ManifestsDir, "preseed")
+// PreseedInput describes the files of KATLSEED media that installs
+// automatically. Manifest is used unless ConfigBundle is set.
+type PreseedInput struct {
+	Manifest     []byte
+	ManifestRoot string
+	ConfigBundle string
+	SelectedNode string
+}
+
+// WritePreseedDir populates dir with the files the installer reads from
+// KATLSEED media, including the manifest's local image and kubeadm files.
+func WritePreseedDir(dir string, in PreseedInput) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return preseedMedia{}, err
+		return err
 	}
 	input := struct {
 		ManifestPath string `json:"manifestPath,omitempty"`
@@ -336,33 +346,52 @@ func writePreseedMedia(ctx context.Context, result Result, config FirstInstallCo
 		NodeName     string `json:"nodeName,omitempty"`
 		InstallMode  string `json:"installMode"`
 	}{InstallMode: "auto"}
-	if strings.TrimSpace(config.ConfigBundle) != "" {
+	if strings.TrimSpace(in.ConfigBundle) != "" {
 		input.BundlePath = "/run/katl/preseed/config.katlcfg"
-		input.NodeName = strings.TrimSpace(config.SelectedNode)
+		input.NodeName = strings.TrimSpace(in.SelectedNode)
 		if input.NodeName == "" {
-			return preseedMedia{}, errors.New("selected node is required for preseed config bundle")
+			return errors.New("selected node is required for preseed config bundle")
 		}
-		if err := copyRequiredFile(config.ConfigBundle, filepath.Join(dir, "config.katlcfg"), 0o600); err != nil {
-			return preseedMedia{}, fmt.Errorf("copy preseed config bundle: %w", err)
+		if err := copyRequiredFile(in.ConfigBundle, filepath.Join(dir, "config.katlcfg"), 0o600); err != nil {
+			return fmt.Errorf("copy preseed config bundle: %w", err)
 		}
 	} else {
 		input.ManifestPath = "/run/katl/preseed/install-manifest.json"
 	}
 	if err := writeJSON(filepath.Join(dir, "install-input.json"), input); err != nil {
-		return preseedMedia{}, err
+		return err
 	}
 	if input.ManifestPath != "" {
-		if err := os.WriteFile(filepath.Join(dir, "install-manifest.json"), manifest, 0o600); err != nil {
-			return preseedMedia{}, err
+		if err := os.WriteFile(filepath.Join(dir, "install-manifest.json"), in.Manifest, 0o600); err != nil {
+			return err
 		}
 	}
-	if err := copyPreseedLocalRef(config, result, manifest, dir); err != nil {
-		return preseedMedia{}, err
+	if err := copyPreseedLocalRef(in.ManifestRoot, in.Manifest, dir); err != nil {
+		return err
 	}
 	if input.ManifestPath != "" {
-		if err := copyPreseedKubeadmDirs(config, result, dir); err != nil {
-			return preseedMedia{}, err
-		}
+		return copyPreseedKubeadmDirs(in.ManifestRoot, dir)
+	}
+	return nil
+}
+
+func preseedManifestRoot(result Result, config FirstInstallConfig) string {
+	if config.ManifestPath != "" {
+		return filepath.Dir(config.ManifestPath)
+	}
+	return filepath.Dir(result.Artifacts.InstallManifest)
+}
+
+func writePreseedMedia(ctx context.Context, result Result, config FirstInstallConfig, manifest []byte) (preseedMedia, error) {
+	dir := filepath.Join(result.Artifacts.ManifestsDir, "preseed")
+	err := WritePreseedDir(dir, PreseedInput{
+		Manifest:     manifest,
+		ManifestRoot: preseedManifestRoot(result, config),
+		ConfigBundle: config.ConfigBundle,
+		SelectedNode: config.SelectedNode,
+	})
+	if err != nil {
+		return preseedMedia{}, err
 	}
 	image := filepath.Join(result.Artifacts.ManifestsDir, "preseed.img")
 	if err := createPreseedImage(ctx, dir, image, config.PreseedRunner); err != nil {
@@ -383,11 +412,11 @@ func writeGuestHandoffSeedMedia(ctx context.Context, result Result, config First
 	if err := os.WriteFile(filepath.Join(networkDir, "80-katl-vmtest-installer-dhcp.network"), []byte(vmtestDHCPNetwork), 0o644); err != nil {
 		return preseedMedia{}, err
 	}
-	if err := copyPreseedLocalRef(config, result, manifest, dir); err != nil {
+	if err := copyPreseedLocalRef(preseedManifestRoot(result, config), manifest, dir); err != nil {
 		return preseedMedia{}, err
 	}
 	if strings.TrimSpace(config.ConfigBundle) == "" {
-		if err := copyPreseedKubeadmDirs(config, result, dir); err != nil {
+		if err := copyPreseedKubeadmDirs(preseedManifestRoot(result, config), dir); err != nil {
 			return preseedMedia{}, err
 		}
 	}
@@ -398,7 +427,7 @@ func writeGuestHandoffSeedMedia(ctx context.Context, result Result, config First
 	return preseedMedia{Dir: dir, Image: image}, nil
 }
 
-func copyPreseedLocalRef(config FirstInstallConfig, result Result, manifest []byte, preseedDir string) error {
+func copyPreseedLocalRef(manifestRoot string, manifest []byte, preseedDir string) error {
 	var input struct {
 		KatlosImage struct {
 			LocalRef string `json:"localRef" yaml:"localRef"`
@@ -414,10 +443,6 @@ func copyPreseedLocalRef(config FirstInstallConfig, result Result, manifest []by
 	if filepath.IsAbs(localRef) || filepath.Clean(localRef) != localRef || localRef == "." || strings.HasPrefix(localRef, "../") || strings.Contains(localRef, "/../") {
 		return fmt.Errorf("preseed KatlOS image localRef %q must be a clean relative path", localRef)
 	}
-	manifestRoot := filepath.Dir(result.Artifacts.InstallManifest)
-	if config.ManifestPath != "" {
-		manifestRoot = filepath.Dir(config.ManifestPath)
-	}
 	src := filepath.Join(manifestRoot, filepath.FromSlash(localRef))
 	dst := filepath.Join(preseedDir, filepath.FromSlash(localRef))
 	if err := copyRequiredFile(src, dst, 0o600); err != nil {
@@ -426,11 +451,7 @@ func copyPreseedLocalRef(config FirstInstallConfig, result Result, manifest []by
 	return nil
 }
 
-func copyPreseedKubeadmDirs(config FirstInstallConfig, result Result, preseedDir string) error {
-	manifestRoot := filepath.Dir(result.Artifacts.InstallManifest)
-	if config.ManifestPath != "" {
-		manifestRoot = filepath.Dir(config.ManifestPath)
-	}
+func copyPreseedKubeadmDirs(manifestRoot, preseedDir string) error {
 	for _, name := range []string{installer.KubeadmConfigObjectsDir, installer.KubeadmConfigFilesDir} {
 		src := filepath.Join(manifestRoot, name)
 		dst := filepath.Join(preseedDir, name)

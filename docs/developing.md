@@ -281,6 +281,34 @@ it is intentional. The world's VMs, 32 GiB target disks, and network state live
 under `_build/katldev/world`; they are not owned or cleaned up by automated
 vmtest runs.
 
+To exercise the automatic install paths, start or add a VM with boot inputs.
+They apply to the VMs that command boots, so use `world add-node` to give each
+node different inputs:
+
+| Flag | Effect |
+| --- | --- |
+| `--preseed-dir DIR` | Attach `DIR` as `KATLSEED` media, such as an `install-input.json` with its files. |
+| `--manifest FILE` | Build `KATLSEED` media that installs automatically from an install manifest, including the file its `katlosImage.localRef` names, resolved beside the manifest. |
+| `--cmdline ARG` | Append `ARG` to the installer kernel command line; repeatable. `{gateway}` expands to the host address on the world network. |
+
+`--preseed-dir` and `--manifest` are mutually exclusive. Command-line arguments
+reach the installer UKI through SMBIOS (`io.systemd.stub.kernel-cmdline-extra`),
+so they also apply when the installed system boots from the same VM.
+
+To install from a bundle served by the host, serve a directory on the world
+network and point the installer at it:
+
+```sh
+katldev installer start \
+  --cmdline 'katl.bundle.url=http://{gateway}:8080/cluster.katlcfg' \
+  --cmdline katl.node=cp-1 --cmdline katl.install.mode=auto
+katldev world serve ./bundles    # leave running; Ctrl-C stops it
+```
+
+`katldev world serve` listens on the world network's host address, which exists
+once the world has started. Automatic installs do not wait for configuration, so
+use `katldev world console` to follow them.
+
 The world's `katlctl` contexts live in `_build/katldev/katlctl.yaml`, so a dev
 journey's `katlctl context save` cannot change or replace the contexts for
 your own clusters. The development shell, entered with `nix develop` or
