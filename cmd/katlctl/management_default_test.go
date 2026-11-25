@@ -17,9 +17,11 @@ import (
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlc/transport"
+	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"gopkg.in/yaml.v3"
 )
 
 const managementAuthenticationRequiredLine = "add `managementAuthentication: trusted-network` under spec"
@@ -343,7 +345,35 @@ func TestTrustedNetworkClientExplainsMutualTLSNode(t *testing.T) {
 
 	_, err = conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 
-	if err == nil || !strings.Contains(err.Error(), "node requires mTLS management; pass --config or --context") {
+	if err == nil || !strings.Contains(err.Error(), "likely serves mTLS") || !strings.Contains(err.Error(), "--config") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+// An unusable saved config must fail target resolution for an address-only
+// call, not fall back to a plaintext trusted-network target.
+func TestEndpointRefusesUnusableSavedConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "context.yaml")
+	data, err := yaml.Marshal(workstation.Config{
+		CurrentContext: "lab",
+		Contexts:       []workstation.Context{{Name: "lab", Cluster: "lab"}},
+		Clusters: []workstation.Cluster{{
+			Name:       "lab",
+			Nodes:      []workstation.Node{{Name: "cp-1", ManagementEndpoint: "10.0.0.1:9443", EnrollmentID: "enroll-1"}},
+			Management: &managementidentity.ClientCredentials{Authentication: managementidentity.MutualTLS},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KATLCTL_CONFIG", path)
+
+	_, err = resolveManagementTarget(context.Background(), managementTargetOptions{nodeName: "cp-1", endpoint: "127.0.0.1:9443"})
+
+	if err == nil || !strings.Contains(err.Error(), "chmod 600") {
+		t.Fatalf("error = %v, want the permission error with its remedy", err)
 	}
 }

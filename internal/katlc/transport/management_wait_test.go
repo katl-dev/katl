@@ -380,13 +380,16 @@ func TestManagementDialOutcomes(t *testing.T) {
 		refused   bool
 		mutualTLS bool
 		noWait    bool
+		stream    bool
 		wantErr   string
 		wantWait  bool
 	}{
-		"trusted-network client, mTLS node":         {wantErr: "node requires mTLS management; pass --config or --context"},
-		"trusted-network client, mTLS node, nowait": {noWait: true, wantErr: "node requires mTLS management; pass --config or --context"},
-		"trusted-network client, refused endpoint":  {refused: true, wantErr: "refused connections", wantWait: true},
-		"mTLS client, mTLS node":                    {mutualTLS: true},
+		"trusted-network client, mTLS node":                 {wantErr: "likely serves mTLS"},
+		"trusted-network client, mTLS node, nowait":         {noWait: true, wantErr: "likely serves mTLS"},
+		"trusted-network client, mTLS node, stream":         {stream: true, wantErr: "likely serves mTLS"},
+		"trusted-network client, mTLS node, stream, nowait": {stream: true, noWait: true, wantErr: "likely serves mTLS"},
+		"trusted-network client, refused endpoint":          {refused: true, wantErr: "refused connections", wantWait: true},
+		"mTLS client, mTLS node":                            {mutualTLS: true},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -416,7 +419,15 @@ func TestManagementDialOutcomes(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = conn.Close() })
 
-			_, err = agentapi.NewKatlcAgentClient(conn).GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+			if test.stream {
+				var stream grpc.ServerStreamingClient[agentapi.OperationEvent]
+				stream, err = agentapi.NewKatlcAgentClient(conn).WatchOperation(ctx, &agentapi.WatchOperationRequest{})
+				if err == nil {
+					_, err = stream.Recv()
+				}
+			} else {
+				_, err = agentapi.NewKatlcAgentClient(conn).GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+			}
 
 			if test.wantErr == "" {
 				if err != nil || agent.calls.Load() != 1 {
@@ -430,7 +441,7 @@ func TestManagementDialOutcomes(t *testing.T) {
 			if !test.refused && strings.Contains(err.Error(), "refused connections") {
 				t.Errorf("mTLS node reported as refusing connections: %v", err)
 			}
-			if test.refused && strings.Contains(err.Error(), "requires mTLS") {
+			if test.refused && strings.Contains(err.Error(), "mTLS") {
 				t.Errorf("refused endpoint reported as requiring mTLS: %v", err)
 			}
 			if waited := progress.String() != ""; waited != test.wantWait {

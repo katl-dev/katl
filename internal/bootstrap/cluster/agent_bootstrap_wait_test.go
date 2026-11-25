@@ -115,7 +115,7 @@ func TestTCPAgentConnectorExplainsMutualTLSNode(t *testing.T) {
 	defer conn.Close()
 	_, err = conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 
-	if err == nil || !strings.Contains(err.Error(), "node requires mTLS management; pass --config or --context") {
+	if err == nil || !strings.Contains(err.Error(), "likely serves mTLS") || !strings.Contains(err.Error(), "--config") {
 		t.Fatalf("error = %v", err)
 	}
 }
