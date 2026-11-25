@@ -16,8 +16,11 @@ For an internal-only change, write "None: internal".
 
 ## Journey
 
+- [ ] User-facing: this changes an operator workflow, so the PR has the `user-facing` label.
+
 <!--
-Record the katldev journey for this workflow: the commands and outcomes, or
-"pending". It runs alongside the merge queue and is required before the next
-release candidate.
+Record the katldev journey for this workflow here: the commands and outcomes.
+Whoever runs it then adds `journey: passed`, or `journey: gap` plus a link to
+the release-blocker fix. It runs alongside the merge queue and must pass before
+the next release candidate.
 -->

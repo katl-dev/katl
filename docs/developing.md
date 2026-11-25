@@ -743,9 +743,11 @@ ref no longer exists or points at a different commit, and cancels nothing when
 the ref listing is empty but the merge queue is not.
 
 A `Hold: <reason>` line in a PR body, outside a code fence, holds the PR with
-that reason before any other check, and autopilot disables its auto-merge. The
-orchestrator adds `Hold:` while a PR awaits VM gates or a journey, and deletes
-it when they pass. Editing the body does not trigger `ci.yml`, which runs on
+that reason before any other check, and autopilot disables its auto-merge. A PR
+carries `Hold:` only for an explicit dependency on another open PR or an
+operator precondition, and the line is deleted when that clears. The merge
+queue's VM run is the regression gate, so pending VM gates or journeys never
+hold a PR. Editing the body does not trigger `ci.yml`, which runs on
 opened, synchronize, reopened and labeled, so the hold lifts on the next pass.
 
 `autopilot` rebases only a PR that the plan would otherwise enqueue and that
