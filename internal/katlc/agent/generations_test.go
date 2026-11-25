@@ -194,13 +194,9 @@ func TestGenerationCleanupFollowsBootHealth(t *testing.T) {
 	if err := generation.WriteGeneration(root, obsolete, status); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithCancel(t.Context())
-	done := make(chan struct{})
-	go func() { defer close(done); server.maintainGenerations(ctx, 10*time.Millisecond) }()
-	t.Cleanup(func() { cancel(); <-done })
 
 	obsoletePath := filepath.Join(root, "var/lib/katl/generations/obsolete")
-	if complete, err := server.pruneGenerations(ctx); err != nil || complete {
+	if complete, err := server.pruneGenerations(t.Context()); err != nil || complete {
 		t.Fatalf("cleanup during pending boot = complete %t, error %v", complete, err)
 	}
 	if _, err := os.Stat(obsoletePath); err != nil {
@@ -213,6 +209,23 @@ func TestGenerationCleanupFollowsBootHealth(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+
+	unit := &healthUnit{}
+	unit.set(healthDependencyFailed)
+	server.RunBootHealthStatus = unit.runWithFailedSSH
+	complete, err := server.pruneGenerations(t.Context())
+	if _, statErr := os.Stat(obsoletePath); statErr != nil {
+		t.Fatalf("cleanup removed an eligible generation during failed boot health: %v", statErr)
+	}
+	if err != nil || complete {
+		t.Fatalf("cleanup during failed boot = complete %t, error %v", complete, err)
+	}
+
+	unit.set(healthSucceeded)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); server.maintainGenerations(ctx, 10*time.Millisecond) }()
+	t.Cleanup(func() { cancel(); <-done })
 	deadline := time.After(2 * time.Second)
 	for {
 		if _, err := os.Stat(obsoletePath); errors.Is(err, os.ErrNotExist) {

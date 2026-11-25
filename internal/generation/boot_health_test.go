@@ -1047,6 +1047,79 @@ func TestRecordBootHealthKeepsKnownGood(t *testing.T) {
 	}
 }
 
+func TestFailedKnownGoodOneShotRemainsTemporary(t *testing.T) {
+	for _, next := range []string{"reboot", "health retry"} {
+		t.Run(next, func(t *testing.T) {
+			root := t.TempDir()
+			now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+			writeBootHealthGeneration(t, root, "gen1", "", CommitStateSuperseded, BootStateGood, HealthStateHealthy, now.Add(-2*time.Hour))
+			writeBootHealthGeneration(t, root, "gen2", "gen1", CommitStateCommitted, BootStateGood, HealthStateHealthy, now.Add(-time.Hour))
+			writeBootHealthSelection(t, root, BootSelectionRecord{
+				APIVersion: APIVersion, Kind: BootSelectionKind, UpdatedAt: now.Add(-time.Minute),
+				DefaultGenerationID: "gen2", DefaultBootEntry: "loader/entries/katl-gen2.conf",
+				PreviousKnownGoodGenerationID: "gen1", PreviousKnownGoodBootEntry: "loader/entries/katl-gen1.conf",
+				BootedGenerationID: "gen2", BootedBootEntry: "loader/entries/katl-gen2.conf", ActiveGenerationID: "gen2",
+				OneShot: true, TargetBootGenerationID: "gen1", TargetBootEntry: "loader/entries/katl-gen1.conf",
+			})
+			gen1Cmdline := bootHealthCommandLine("gen1")
+			if err := RecordBootedGeneration(root, gen1Cmdline); err != nil {
+				t.Fatal(err)
+			}
+			result, err := RecordBootHealth(BootHealthRequest{
+				Root: root, CommandLine: gen1Cmdline, Result: BootHealthFailure, RequestReboot: true, Now: now,
+			})
+			if err != nil || !result.KeptKnownGood || result.RebootRequested || result.NextBootGeneration != "gen2" {
+				t.Fatalf("failed one-shot = %#v, %v, want kept gen1 and next boot gen2", result, err)
+			}
+			selection, err := ReadBootSelection(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if selection.OneShot || selection.TargetBootGenerationID != "" || selection.TargetBootEntry != "" {
+				t.Fatalf("consumed selection remains: %#v", selection)
+			}
+
+			if next == "reboot" {
+				// A kernel reboot starts with a fresh /run.
+				if err := os.Remove(rootedPathUnchecked(root, currentBootPath)); err != nil {
+					t.Fatal(err)
+				}
+				if err := RecordBootedGeneration(root, bootHealthCommandLine("gen2")); err != nil {
+					t.Fatalf("activate default after one-shot: %v", err)
+				}
+				selection, err := ReadBootSelection(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if selection.BootedGenerationID != "gen2" || selection.ActiveGenerationID != "gen2" {
+					t.Fatalf("default boot did not become active: %#v", selection)
+				}
+				return
+			}
+
+			for range 2 {
+				result, err := RecordBootHealth(BootHealthRequest{
+					Root: root, CommandLine: gen1Cmdline, Result: BootHealthSuccess, Now: now.Add(time.Minute),
+					SetBootDefault: func(_, entry string) error {
+						t.Fatalf("health retry attempted to set EFI default to %s", entry)
+						return nil
+					},
+				})
+				if err != nil || result.Promoted || result.DefaultGeneration != "gen2" {
+					t.Fatalf("health retry = %#v, %v, want gen1 to stay temporary", result, err)
+				}
+				selection, err := ReadBootSelection(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if selection.DefaultGenerationID != "gen2" || selection.DefaultBootEntry != "loader/entries/katl-gen2.conf" {
+					t.Fatalf("health retry changed the boot default: %#v", selection)
+				}
+			}
+		})
+	}
+}
+
 func TestRecordBootHealthDemotesKnownGoodTrial(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

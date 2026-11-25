@@ -509,7 +509,7 @@ func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperat
 			return operation.OperationRecord{}, accepted, nil
 		}
 		if req.GetHostUpgrade() != nil {
-			if err := s.validateHostUpgradePlan(req.GetHostUpgrade()); err != nil {
+			if err := s.validateHostUpgradePlan(ctx, req.GetHostUpgrade()); err != nil {
 				return operation.OperationRecord{}, nil, status.Errorf(codes.FailedPrecondition, "host upgrade preflight: %v", err)
 			}
 		}
@@ -561,7 +561,7 @@ func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperat
 		return s.acceptDestructiveResetOperation(req, digest, id, locks, now)
 	}
 	if req.GetHostUpgrade() != nil {
-		return s.acceptHostUpgradeOperation(req, digest, id, locks, now)
+		return s.acceptHostUpgradeOperation(ctx, req, digest, id, locks, now)
 	}
 	if req.GetEtcdMemberRemove() != nil {
 		return s.acceptEtcdMemberRemoveOperation(req, digest, id, locks, now)

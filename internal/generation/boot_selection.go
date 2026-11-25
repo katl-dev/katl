@@ -27,6 +27,7 @@ type BootSelectionRecord struct {
 	TrialGenerationID             string    `json:"trialGenerationID,omitempty"`
 	PreviousKnownGoodGenerationID string    `json:"previousKnownGoodGenerationID,omitempty"`
 	BootedGenerationID            string    `json:"bootedGenerationID,omitempty"`
+	BootedOneShot                 bool      `json:"bootedOneShot,omitempty"`
 	ActiveGenerationID            string    `json:"activeGenerationID,omitempty"`
 	Generation0FallbackID         string    `json:"generation0FallbackID,omitempty"`
 	FailedBootGenerationID        string    `json:"failedBootGenerationID,omitempty"`

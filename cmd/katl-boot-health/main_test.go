@@ -255,8 +255,15 @@ func TestRunKeepsKnownGoodGenerationOnNetworkOutage(t *testing.T) {
 }
 
 func TestRunRecoveryKeepsKnownGood(t *testing.T) {
-	for _, running := range []string{"gen2", "gen1"} {
-		t.Run(running, func(t *testing.T) {
+	for _, tc := range []struct {
+		name, running, next string
+	}{
+		{name: "default", running: "gen2", next: "gen2"},
+		{name: "one-shot", running: "gen1", next: "gen2"},
+		{name: "queued trial", running: "gen2", next: "gen3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			running := tc.running
 			root := t.TempDir()
 			now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
 			for _, id := range []string{"gen1", "gen2"} {
@@ -273,6 +280,15 @@ func TestRunRecoveryKeepsKnownGood(t *testing.T) {
 				selection.OneShot = true
 				selection.TargetBootGenerationID = running
 				selection.TargetBootEntry = selection.BootedBootEntry
+			}
+			if tc.next == "gen3" {
+				writeCommandGeneration(t, root, tc.next, now)
+				selection.PendingHealthValidation = true
+				selection.PersistentDefaultPromotion = generation.DefaultPromotionPending
+				selection.TrialGenerationID = tc.next
+				selection.TrialBootEntry = "loader/entries/katl-gen3.conf"
+				selection.TargetBootGenerationID = tc.next
+				selection.TargetBootEntry = selection.TrialBootEntry
 			}
 			if err := generation.WriteBootSelection(root, selection); err != nil {
 				t.Fatal(err)
@@ -292,7 +308,7 @@ func TestRunRecoveryKeepsKnownGood(t *testing.T) {
 			}
 			for _, want := range []string{
 				"running generation " + running + " stays known-good", "boot default is generation gen2",
-				"Generation gen2 is selected for the next boot", "No automatic reboot",
+				"Generation " + tc.next + " is selected for the next boot", "No automatic reboot",
 				"katlctl node status <node>", "systemctl --failed", "console or out-of-band",
 				"katlctl cluster apply", "katlctl node reboot <node>",
 			} {
@@ -302,6 +318,15 @@ func TestRunRecoveryKeepsKnownGood(t *testing.T) {
 			}
 			if !strings.Contains(stdout.String(), "failed=false recoveryRequired=false rebootRequested=false") {
 				t.Fatalf("boot-health result = %q, want kept generation and no reboot", stdout.String())
+			}
+			if tc.next == "gen3" {
+				got, err := generation.ReadBootSelection(root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got != selection {
+					t.Fatalf("recovery altered the queued trial: %#v", got)
+				}
 			}
 		})
 	}

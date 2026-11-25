@@ -48,6 +48,17 @@ func (u *healthUnit) run(_ context.Context, argv []string, _ func(int)) ToolResu
 	return ToolResult{Stdout: []byte(u.properties.Load().(string))}
 }
 
+func (u *healthUnit) runWithFailedSSH(ctx context.Context, argv []string, progress func(int)) ToolResult {
+	switch {
+	case slices.Contains(argv, "--property=Requires"):
+		return ToolResult{Stdout: []byte("sshd.service\n")}
+	case slices.Contains(argv, "sshd.service"):
+		return ToolResult{Stdout: []byte("Id=sshd.service\nActiveState=failed\n")}
+	default:
+		return u.run(ctx, argv, progress)
+	}
+}
+
 // knownGoodNode is a node whose generation-0 passed boot health in an earlier
 // boot, so persisted state alone reports it healthy.
 func knownGoodNode(t *testing.T, unitProperties string) (*testServer, *healthUnit) {

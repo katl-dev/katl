@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,7 +47,7 @@ func validateHostUpgradeRequest(kind string, req *agentapi.HostUpgradeOperationR
 	return operation.ValidateHostUpgrade(hostUpgradeFromProto(req))
 }
 
-func (s *Server) validateHostUpgradePlan(req *agentapi.HostUpgradeOperationRequest) error {
+func (s *Server) validateHostUpgradePlan(ctx context.Context, req *agentapi.HostUpgradeOperationRequest) error {
 	request := hostUpgradeFromProto(req)
 	if err := s.validateCandidateGenerationAvailable(request.CandidateGenerationID); err != nil {
 		return err
@@ -68,6 +69,11 @@ func (s *Server) validateHostUpgradePlan(req *agentapi.HostUpgradeOperationReque
 	}
 	if err := katlosimage.ValidateHostUpgradeSource(previousSpec, previousStatus, kubernetesState.bootstrapped); err != nil {
 		return fmt.Errorf("%w; inspect the current generation, then recover it or wipe and reinstall this node before retrying the upgrade", err)
+	}
+	// A known-good source may have failed this boot. Preserve the inactive
+	// slot until the generation that would replace it as fallback is healthy.
+	if health := s.nodeBootHealth(ctx); health.State == nodeBootHealthFailed {
+		return fmt.Errorf("cannot replace the inactive root slot while the current boot has failed health checks. %s", health.Diagnostic)
 	}
 	return nil
 }
@@ -106,9 +112,9 @@ func validateHostUpgradeBootEvidence(root, currentID string, current generation.
 	return nil
 }
 
-func (s *Server) acceptHostUpgradeOperation(req *agentapi.SubmitOperationRequest, digest, id string, locks []string, now time.Time) (operation.OperationRecord, *agentapi.OperationAccepted, error) {
+func (s *Server) acceptHostUpgradeOperation(ctx context.Context, req *agentapi.SubmitOperationRequest, digest, id string, locks []string, now time.Time) (operation.OperationRecord, *agentapi.OperationAccepted, error) {
 	request := hostUpgradeFromProto(req.GetHostUpgrade())
-	if err := s.validateHostUpgradePlan(req.GetHostUpgrade()); err != nil {
+	if err := s.validateHostUpgradePlan(ctx, req.GetHostUpgrade()); err != nil {
 		return operation.OperationRecord{}, nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
 	kind := OperationKindHostUpgrade

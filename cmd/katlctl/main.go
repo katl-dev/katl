@@ -327,16 +327,17 @@ type hostUpgradeOptions struct {
 }
 
 type hostUpgradeReport struct {
-	Plan           *agentapi.HostUpgradePreview `json:"plan,omitempty"`
-	DeferredChecks bool                         `json:"deferredChecks,omitempty"`
-	Flavour        string                       `json:"flavour"`
-	Node           string                       `json:"node"`
-	Version        string                       `json:"version"`
-	Image          string                       `json:"image"`
-	Result         string                       `json:"result"`
-	Rebooted       bool                         `json:"rebooted"`
-	BootHealth     string                       `json:"bootHealth"`
-	Kubernetes     string                       `json:"kubernetes,omitempty"`
+	Plan                 *agentapi.HostUpgradePreview `json:"plan,omitempty"`
+	DeferredChecks       bool                         `json:"deferredChecks,omitempty"`
+	Flavour              string                       `json:"flavour"`
+	Node                 string                       `json:"node"`
+	Version              string                       `json:"version"`
+	Image                string                       `json:"image"`
+	Result               string                       `json:"result"`
+	Rebooted             bool                         `json:"rebooted"`
+	BootHealth           string                       `json:"bootHealth"`
+	BootHealthDiagnostic string                       `json:"bootHealthDiagnostic,omitempty"`
+	Kubernetes           string                       `json:"kubernetes,omitempty"`
 }
 
 type hostUpgradeArtifact struct {
@@ -676,17 +677,30 @@ func reportInstalledHostUpgrade(ctx context.Context, opts hostUpgradeOptions, ta
 		node = target.endpoint
 	}
 	recovery := nodeUpgradeRecovery(status, requirement)
-	if !recovery.Ready {
+	if status.GetBootHealthState() != bootHealthFailed && !recovery.Ready {
 		recoveryCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
 		recoveryConn, recoveredStatus, err := waitNodeKubernetesRecovery(recoveryCtx, node, target.endpoint, requirement, "upgrade node="+node, stderr)
 		cancel()
 		if err != nil {
 			return err
 		}
-		recovery = nodeUpgradeRecovery(recoveredStatus, requirement)
+		status = recoveredStatus
+		recovery = nodeUpgradeRecovery(status, requirement)
 		_ = recoveryConn.Close()
 	}
-	return writeHostUpgradeReport(stdout, opts.output, hostUpgradeReport{Node: node, Version: opts.version, Flavour: opts.flavour, Image: image, Result: result, BootHealth: generation.HealthStateHealthy, Kubernetes: recovery.State})
+	if status.GetBootHealthState() == bootHealthFailed {
+		return bootHealthFailure(bootWaitTarget{nodeName: node, flags: opts.target.guidanceFlags()}, runningGeneration(status), status)
+	}
+	report := hostUpgradeReport{
+		Node: node, Version: opts.version, Flavour: opts.flavour, Image: image, Result: result,
+		BootHealth:           firstNonEmpty(strings.TrimSpace(status.GetBootHealthState()), "unknown"),
+		BootHealthDiagnostic: strings.TrimSpace(status.GetBootHealthDiagnostic()), Kubernetes: recovery.State,
+	}
+	if err := writeHostUpgradeReport(stdout, opts.output, report); err != nil || opts.output == "json" || report.BootHealthDiagnostic == "" {
+		return err
+	}
+	_, err := fmt.Fprintln(stdout, report.BootHealthDiagnostic)
+	return err
 }
 
 func writeHostUpgradeReport(stdout io.Writer, output string, report hostUpgradeReport) error {

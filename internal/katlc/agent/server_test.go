@@ -1030,6 +1030,33 @@ func TestHostUpgradeDryRunAllowsHealthySourceBeforeBootstrap(t *testing.T) {
 	}
 }
 
+func TestHostUpgradeRefusesFailedRunningBoot(t *testing.T) {
+	for _, dryRun := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dry-run=%t", dryRun), func(t *testing.T) {
+			server := newTestServer(t)
+			writeKnownGoodHostUpgradeSource(t, server.Root)
+			unit := &healthUnit{}
+			unit.set(healthDependencyFailed)
+			server.RunBootHealthStatus = unit.runWithFailedSSH
+			server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error { return nil })
+			req := hostUpgradeSubmitRequest("req-host-upgrade-failed-boot")
+			req.DryRun = dryRun
+
+			_, err := server.SubmitOperation(t.Context(), req)
+			if status.Code(err) != codes.FailedPrecondition ||
+				!strings.Contains(err.Error(), "sshd.service") ||
+				!strings.Contains(err.Error(), "katlctl cluster apply") ||
+				!strings.Contains(err.Error(), "katlctl node reboot <node>") {
+				t.Fatalf("upgrade error = %v, want failed unit and repair guidance", err)
+			}
+			ids, err := server.Store.OperationIDs()
+			if err != nil || len(ids) != 0 {
+				t.Fatalf("operation IDs = %v, %v, want no accepted upgrade", ids, err)
+			}
+		})
+	}
+}
+
 func TestHostUpgradeRejectsDurableRollbackBeforeReboot(t *testing.T) {
 	server := newTestServer(t)
 	writeKnownGoodHostUpgradeSource(t, server.Root)
