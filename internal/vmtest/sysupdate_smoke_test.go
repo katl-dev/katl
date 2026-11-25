@@ -176,7 +176,8 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	// the space to free, and leaves the partition table and the ESP as they were.
 	disk, inactivePart := inactiveRootSlot(t, ctx, guest)
 	tableBeforeFull := guestCommandOutput(t, ctx, guest, "partition-table-before-full", "sfdisk", "--dump", disk)
-	efiBeforeFull := guestCommandOutput(t, ctx, guest, "efi-files-before-full", "find", "/efi", "-type", "f", "-printf", "%p %s\n")
+	efiState := []string{"find", "/efi", "-type", "f", "-printf", "%p %s\n", "-exec", "sha256sum", "{}", ";"}
+	efiBeforeFull := guestCommandOutput(t, ctx, guest, "efi-files-before-full", efiState...)
 	fill, err := guest.RunCommand(ctx, GuestCommandRequest{Name: "efi-fill", Argv: []string{"dd", "if=/dev/zero", "of=/efi/katl-vmtest-fill", "bs=1M"}, Timeout: 5 * time.Minute, StdoutLimit: 1 << 16, StderrLimit: 1 << 16, AllowFailure: true})
 	if err != nil || fill.ExitStatus == 0 {
 		t.Fatalf("fill ESP: exit %d, err %v; want dd to stop at ENOSPC", fill.ExitStatus, err)
@@ -184,14 +185,14 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	_, fullStatus := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, candidateGeneration+"-full", localRef, upgrade, "host-upgrade-handoff", "")
 	t.Logf("full ESP failure_reason: %s", fullStatus.GetFailureReason())
 	guestCommand(t, ctx, guest, "efi-unfill", "find", "/efi", "-maxdepth", "1", "-name", "katl-vmtest-fill", "-delete")
-	if fullStatus.GetResult() == operation.ResultSucceeded || fullStatus.GetExternalMutationStarted() ||
+	if fullStatus.GetResult() != "failed" || fullStatus.GetExternalMutationStarted() ||
 		!strings.Contains(fullStatus.GetFailureReason(), "insufficient space on the EFI system partition") || !strings.Contains(fullStatus.GetFailureReason(), "Free at least") {
 		t.Fatalf("host upgrade with a full ESP status = %+v, want a refusal before mutation that says how much to free", fullStatus)
 	}
 	if got := guestCommandOutput(t, ctx, guest, "partition-table-after-full", "sfdisk", "--dump", disk); got != tableBeforeFull {
 		t.Fatalf("full-ESP refusal changed the partition table:\n%s\nwant\n%s", got, tableBeforeFull)
 	}
-	if got := guestCommandOutput(t, ctx, guest, "efi-files-after-full", "find", "/efi", "-type", "f", "-printf", "%p %s\n"); got != efiBeforeFull {
+	if got := guestCommandOutput(t, ctx, guest, "efi-files-after-full", efiState...); got != efiBeforeFull {
 		t.Fatalf("full-ESP refusal changed the ESP:\n%s\nwant\n%s", got, efiBeforeFull)
 	}
 	if got := readGuestFile(t, ctx, guest, "/var/lib/katl/boot/selection.json"); got != selectionBeforeRejectedPlan {
@@ -1265,7 +1266,8 @@ func inactiveRootSlot(t *testing.T, ctx context.Context, guest *GuestControl) (s
 		if !ok || device == source || !strings.Contains(strings.ToUpper(rest), "TYPE="+rootType) {
 			continue
 		}
-		return disk, strings.TrimPrefix(device, disk)
+		// nvme and mmc names put a "p" between the disk and the number.
+		return disk, strings.TrimPrefix(strings.TrimPrefix(device, disk), "p")
 	}
 	t.Fatalf("no root slot other than %s on %s", source, disk)
 	return "", ""
