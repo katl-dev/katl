@@ -2290,15 +2290,8 @@ func stageKubernetesImageFixtures(ctx context.Context, repo, kubernetesVersion s
 	for _, node := range nodes {
 		nodeFixture := fixture
 		nodeFixture.GuestPath = filepath.Join("/var/lib/katl/test-artifacts/bootstrap-images", filepath.Base(fixture.Source))
-		if err := writeNodeFileChunked(ctx, node, nodeFixture.GuestPath, data, 0o644); err != nil {
+		if err := importNodeImageArchive(ctx, node, nodeFixture.GuestPath, data, 0o644); err != nil {
 			return nil, fmt.Errorf("stage Kubernetes %s image fixture on %s: %w", kubernetesVersion, node.Name, err)
-		}
-		result, err := runNodeCommand(ctx, node, []string{"ctr", "-n", "k8s.io", "images", "import", nodeFixture.GuestPath}, 128<<10)
-		if err != nil {
-			return nil, fmt.Errorf("import Kubernetes %s image fixture on %s: %w", kubernetesVersion, node.Name, err)
-		}
-		if result.ExitStatus != 0 {
-			return nil, fmt.Errorf("import Kubernetes %s image fixture on %s: %w", kubernetesVersion, node.Name, commandErrorDetail(result))
 		}
 		if err := writeNodeFile(ctx, node, nodeFixture.GuestPath, nil, 0o644, true); err != nil {
 			return nil, fmt.Errorf("truncate imported Kubernetes image fixture on %s: %w", node.Name, err)
@@ -2499,13 +2492,8 @@ func stageTwoNodeImageFixtures(ctx context.Context, repo, workDir string, nodes 
 			}
 			nodeFixture := fixture
 			nodeFixture.GuestPath = filepath.Join("/var/lib/katl/test-artifacts/bootstrap-images", filepath.Base(fixture.Source))
-			if err := writeNodeFileChunked(ctx, node, nodeFixture.GuestPath, data, 0o644); err != nil {
+			if err := importNodeImageArchive(ctx, node, nodeFixture.GuestPath, data, 0o644); err != nil {
 				return nil, fmt.Errorf("stage %s image fixture on %s: %w", fixture.Image, node.Name, err)
-			}
-			if result, err := runNodeCommand(ctx, node, []string{"ctr", "-n", "k8s.io", "images", "import", nodeFixture.GuestPath}, 64<<10); err != nil {
-				return nil, fmt.Errorf("import %s image fixture on %s: %w", fixture.Image, node.Name, err)
-			} else if result.ExitStatus != 0 {
-				return nil, fmt.Errorf("import %s image fixture on %s: %w", fixture.Image, node.Name, commandErrorDetail(result))
 			}
 			staged[node.Name] = append(staged[node.Name], nodeFixture)
 		}
@@ -3002,8 +2990,44 @@ func writeNodeFileChunked(ctx context.Context, node vmtest.RunningInstalledRunti
 	return nil
 }
 
+// minImageImportRate is the slowest containerd image import, in bytes per
+// second, that a healthy guest sustains. ctr copies the archive into the
+// content store and unpacks every layer, so the import's duration grows with
+// the archive; the Kubernetes image fixture alone is about 440 MB.
+const minImageImportRate = 4 << 20
+
+// importNodeImageArchive writes an image archive to path on the node and
+// imports it into containerd's k8s.io namespace. The import's deadline adds
+// the archive's size at minImageImportRate to the probe deadline, so it still
+// stops a hung agent without cutting off a large import.
+func importNodeImageArchive(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, path string, archive []byte, mode uint32) error {
+	if err := writeNodeFileChunked(ctx, node, path, archive, mode); err != nil {
+		return err
+	}
+
+	timeout := nodeCommandTimeout + time.Duration(len(archive))*time.Second/minImageImportRate
+	result, err := runNodeCommandWithin(ctx, node, timeout, []string{"ctr", "-n", "k8s.io", "images", "import", path}, 128<<10)
+	if err == nil && result.ExitStatus != 0 {
+		err = commandErrorDetail(result)
+	}
+	if err != nil {
+		return fmt.Errorf("import %s: %w", path, err)
+	}
+	return nil
+}
+
+// nodeCommandTimeout bounds a guest command whose work does not grow with
+// its input.
+const nodeCommandTimeout = 30 * time.Second
+
 func runNodeCommand(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, argv []string, stdoutLimit uint32) (*vmtestpb.CommandResult, error) {
-	return withDirectAgent(ctx, node, 30*time.Second, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.CommandResult, error) {
+	return runNodeCommandWithin(ctx, node, nodeCommandTimeout, argv, stdoutLimit)
+}
+
+// runNodeCommandWithin runs argv on the node; the agent stops the command when
+// timeout expires.
+func runNodeCommandWithin(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, timeout time.Duration, argv []string, stdoutLimit uint32) (*vmtestpb.CommandResult, error) {
+	return withDirectAgent(ctx, node, timeout, func(opCtx context.Context, client *vmtest.AgentClient) (*vmtestpb.CommandResult, error) {
 		return client.RunCommand(opCtx, &vmtestpb.RunCommandRequest{
 			Argv:        argv,
 			StdoutLimit: stdoutLimit,
