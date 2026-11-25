@@ -644,3 +644,46 @@ func runInGroup(t *testing.T, cmd *exec.Cmd, timeout time.Duration) ([]byte, err
 		return out.Bytes(), errScriptTimeout
 	}
 }
+
+// The builder must not receive host devices: --privileged and --device make
+// the runtime enumerate /dev at create time, and a device that disappears
+// before start fails the build.
+func TestMkosiBuilderGetsNoHostDevices(t *testing.T) {
+	for _, runtime := range []string{"podman", "docker"} {
+		t.Run(runtime, func(t *testing.T) {
+			repo, tmp := scriptRepoFixture(t), t.TempDir()
+			bin := filepath.Join(tmp, "bin")
+			if err := os.MkdirAll(bin, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			args := filepath.Join(tmp, "args")
+			writeFakeExecutable(t, bin, runtime, `if [[ "$1" == image ]]; then
+  exit 0
+fi
+printf '%s\n' "$@" > "$KATL_FAKE_RUNTIME_ARGS"
+`)
+			cmd := exec.Command(filepath.Join(repo, "scripts/mkosi"), "--version")
+			cmd.Dir = repo
+			cmd.Env = append(os.Environ(),
+				"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"KATL_CONTAINER_RUNTIME="+runtime,
+				"KATL_MKOSI_BUILD_DIR="+filepath.Join(tmp, "build"),
+				"KATL_FAKE_RUNTIME_ARGS="+args,
+			)
+			cmd.Env = append(cmd.Env, activeGoCacheEnv(t)...)
+			if out, err := runInGroup(t, cmd, scriptTimeout); err != nil {
+				t.Fatalf("%v\n%s", err, out)
+			}
+
+			got := readLinesForScripts(t, args)
+			for _, arg := range got {
+				if arg == "--privileged" || arg == "--device" || strings.HasPrefix(arg, "--device=") {
+					t.Fatalf("builder run passes host devices via %s: %v", arg, got)
+				}
+			}
+			if !containsString(got, "SYS_ADMIN") {
+				t.Fatalf("builder run lacks CAP_SYS_ADMIN needed by mkosi-sandbox: %v", got)
+			}
+		})
+	}
+}
