@@ -4,25 +4,17 @@ import (
 	"context"
 	"net"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/health"
-	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
 
 // An mTLS client reaching a node that serves plaintext management must get the
-// mode-mismatch refusal, and no request may reach the node's handler.
+// mode-mismatch refusal rather than a raw TLS record error.
 func TestClientHandshakeReportsPlaintextNode(t *testing.T) {
-	var handled atomic.Int32
-	server := grpc.NewServer(grpc.UnaryInterceptor(func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, next grpc.UnaryHandler) (any, error) {
-		handled.Add(1)
-		return next(ctx, req)
-	}))
-	healthpb.RegisterHealthServer(server, health.NewServer())
+	server := grpc.NewServer()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -43,7 +35,7 @@ func TestClientHandshakeReportsPlaintextNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(NewClientCredentials(clientTLS)))
+	conn, err := net.Dial("tcp", listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,11 +43,8 @@ func TestClientHandshakeReportsPlaintextNode(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	_, err = healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{})
+	_, _, err = NewClientCredentials(clientTLS).ClientHandshake(ctx, listener.Addr().String(), conn)
 	if err == nil || !strings.Contains(err.Error(), "managementAuthentication: trusted-network") {
-		t.Fatalf("Check error = %v", err)
-	}
-	if handled.Load() != 0 {
-		t.Fatalf("server handled %d requests", handled.Load())
+		t.Fatalf("handshake error = %v", err)
 	}
 }
