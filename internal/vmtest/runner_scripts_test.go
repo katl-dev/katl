@@ -65,9 +65,6 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if err != nil {
 		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
 	}
-	if strings.Contains(string(output), `{"Action":"run"`) {
-		t.Fatalf("vmtest-run emitted JSON without caller -json:\n%s", output)
-	}
 	if strings.Contains(string(output), "=== RUN") || strings.Contains(string(output), "ok  \tfake/vmtest") {
 		t.Fatalf("vmtest-run emitted go test output instead of logging it:\n%s", output)
 	}
@@ -183,7 +180,7 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 		t.Fatalf("summary.json exists unexpectedly: %v", err)
 	}
 	goLog := readFile(t, filepath.Join(runDir, "go-test.log"))
-	if !strings.Contains(goLog, "=== RUN   TestForwarded") || !strings.Contains(goLog, "ok  \tfake/vmtest") {
+	if !strings.Contains(goLog, `{"Action":"run","Package":"fake/vmtest"}`) || !strings.Contains(goLog, `{"Action":"pass","Package":"fake/vmtest"}`) {
 		t.Fatalf("go-test.log missing go test output:\n%s", goLog)
 	}
 	assertJSONEmptyObject(t, filepath.Join(runDir, "network", "leases.json"))
@@ -1006,7 +1003,7 @@ func TestVMTestRunDoesNotDefaultFlagOnlyArgs(t *testing.T) {
 		filepath.Join(repo, "scripts", "vmtest-exec"),
 		"-p",
 		"1",
-		"-v",
+		"-json",
 		"-run",
 		"^TestDoesNotNeedLibvirt$",
 		"-timeout",
@@ -1458,7 +1455,7 @@ func TestVMTestRunAcceptsNestedWorldScenarioResult(t *testing.T) {
 		t.Fatalf("output included go test success instead of logging it:\n%s", output)
 	}
 	goLog := readFile(t, filepath.Join(runDir, "go-test.log"))
-	if !strings.Contains(goLog, "ok  \tfake/vmtest") {
+	if !strings.Contains(goLog, `{"Action":"pass","Package":"fake/vmtest"}`) {
 		t.Fatalf("go-test.log missing go test success:\n%s", goLog)
 	}
 }

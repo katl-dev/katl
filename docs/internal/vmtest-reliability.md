@@ -123,7 +123,7 @@ These steps are required before v2026.11.2 so that its own gates are trustworthy
 
 These steps follow the release, as separate pull requests:
 
-5. Build the environment from an allowlist, and add `go test -json` and `run.json`.
+5. Build the environment from an allowlist, and add `go test -json` and `run.json` (done).
 6. Pin artifacts per run. Then remove the AGENTS.md rule against building while a gate runs.
 7. Add ownership: run leases, per-scenario owned networks with MAC reservations and DHCP logging, run-scoped names, libvirt-assigned CIDs, and an owner-scoped sweep. The host lock stays.
 8. Add demand-based admission, then remove the host lock.
