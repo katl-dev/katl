@@ -2,5 +2,5 @@
 set -euo pipefail
 
 # Keep the Go result independently of the harness's successful-world cleanup.
-evidence="${GITHUB_WORKSPACE:?}/_build/hosted-evidence"
+evidence="$PWD/_build/hosted-evidence"
 go "$@" 2> "$evidence/go-stderr.log" | tee "$evidence/go-test.jsonl"

@@ -614,14 +614,20 @@ scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \
 The runner creates a temporary world under `${TMPDIR:-/tmp}/katl-vmtest/`, probes
 host capabilities, records `world.json`, `host-capabilities.json`, `run.json`,
 and `go-test.log`, exports the world environment, and then executes `go test`
-with the caller's package patterns and flags. Argument meaning belongs to
+with the caller's package patterns and flags, in an environment built from an
+allowlist: `PATH`, locale, the Go toolchain settings and caches, and `KATL_*`
+variables pass through, while `HOME` and the XDG directories point into the run
+directory. Argument meaning belongs to
 `go test`; `scripts/vmtest-run` only adds the harness execution needed to route
 compiled package test binaries through `scripts/vmtest-exec`. VM test package
 binaries are serialized by default because they share world fixtures and host
 resource pools; pass an explicit `-p` value to override that policy.
 
 The runner keeps terminal output minimal: it prints the world paths, writes the
-full `go test` stream to `go-test.log`, and reports a concise final outcome.
+full `go test -json` event stream to `go-test.log` (each `--- PASS` line is in an
+event's `Output`, and `test-summary.txt` lists them as text), and reports a
+concise final outcome. `run.json` records the revision and a digest of
+uncommitted changes.
 Scenario artifacts remain under the world directory for later inspection or
 aggregation by another tool. Pass `--no-rebuild` before the `go test` arguments
 to skip the runner's automatic `scripts/mkosi` artifact builds and use only

@@ -234,7 +234,7 @@ print_missing_capabilities() {
     printf 'vmtest run dir: %s\n' "$run_dir" >&2
 }
 
-has_go_test_verbosity() {
+has_go_test_json() {
     local arg
     while (($# > 0)); do
         arg="$1"
@@ -242,7 +242,7 @@ has_go_test_verbosity() {
             -args)
                 return 1
                 ;;
-            -v | --v | -v=* | -test.v | -test.v=* | -json | --json)
+            -json | --json | -json=true | --json=true)
                 return 0
                 ;;
         esac
@@ -1095,6 +1095,19 @@ write_world() {
         }' >"$world_manifest"
 }
 
+# A digest of everything uncommitted identifies, with the revision, the code under
+# test: tracked changes and the content of untracked files.
+uncommitted_digest() {
+    local state
+    state="$(
+        git -C "$repo_root" diff HEAD
+        git -C "$repo_root" ls-files -z --others --exclude-standard | (cd "$repo_root" && xargs -0 -r sha256sum)
+    )" 2>/dev/null || return 0
+    if [[ -n "$state" ]]; then
+        printf '%s' "$state" | sha256sum | cut -d' ' -f1
+    fi
+}
+
 write_run_index() {
     local status="$1"
     shift
@@ -1112,6 +1125,8 @@ write_run_index() {
         --arg scenarioDir "$scenario_dir" \
         --arg worldManifest "$world_manifest" \
         --arg hostCapabilities "$host_capabilities_json" \
+        --arg revision "$(git_revision)" \
+        --arg uncommittedDigest "$(uncommitted_digest)" \
         --arg goTestLog "$go_test_log" \
         --arg resourceManifest "$resource_manifest" \
         --arg resourceManifestSHA256 "$resource_manifest_sha256" \
@@ -1135,6 +1150,8 @@ write_run_index() {
           scenarioDir: $scenarioDir,
           worldManifest: $worldManifest,
           hostCapabilities: $hostCapabilities,
+          revision: $revision,
+          uncommittedDigest: $uncommittedDigest,
           goTestLog: $goTestLog,
           resourceManifest: $resourceManifest,
           resourceManifestSHA256: $resourceManifestSHA256,
@@ -1212,6 +1229,8 @@ write_test_summary() {
 }
 
 # Host health is diagnostic; failing to record it never changes the run result.
+# It runs in the caller's environment, not run_env: it reads only /proc, the run
+# directory and go-test.log, and holds no credentials the gate could be tainted by.
 record_host_health() {
     (cd "$repo_root" && "$resource_go_bin" run ./cmd/katl-vmtest-health finish \
         -start "$run_dir/host-health-start.json" -run-dir "$run_dir" \
@@ -1422,12 +1441,49 @@ export KATL_VMTEST_LIBVIRT_STORAGE_PATH="$libvirt_storage_path"
 export KATL_VMTEST_LIBVIRT_DOMAIN_PREFIX="$libvirt_domain_prefix"
 export KATL_VMTEST_DEBUG_ON_FAILURE="$debug_on_failure_effective"
 export KATL_VMTEST_RESOURCE_MANIFEST="$resource_manifest"
-# The operator's katlctl config may select a real cluster. Replace any
-# inherited katlctl settings so nothing in the run can fall back to it.
-while IFS= read -r katlctl_var; do
-    unset "$katlctl_var"
-done < <(compgen -v KATLCTL_ || true)
 export KATLCTL_CONFIG="$run_dir/katlctl.yaml"
+
+# run_env is the complete environment of go test and of the tools the harness
+# runs for it. Nothing else is inherited, so the operator's home directory,
+# credentials and katlctl configuration cannot influence a gate. HOME and the
+# XDG directories live in the run; the Go caches stay the caller's so the run
+# does not start cold. Rootless podman, which the tests and mkosi use, would
+# otherwise create a fresh image store under the run's XDG_DATA_HOME, so
+# CONTAINERS_STORAGE_CONF points it at the caller's storage, and
+# XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS give it the caller's user session
+# for the systemd cgroup manager.
+run_home="$run_dir/home"
+mkdir -p "$run_home/.config" "$run_home/.cache" "$run_home/.local/share" "$run_home/.local/state"
+caller_home="${HOME:-/nonexistent}"
+containers_storage_conf="${CONTAINERS_STORAGE_CONF:-${XDG_CONFIG_HOME:-$caller_home/.config}/containers/storage.conf}"
+if [[ ! -f "$containers_storage_conf" ]]; then
+    containers_storage_conf="$run_dir/containers-storage.conf"
+    printf '[storage]\ngraphroot = "%s/containers/storage"\nrunroot = "%s/containers"\n' \
+        "${XDG_DATA_HOME:-$caller_home/.local/share}" "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
+        >"$containers_storage_conf"
+fi
+run_env=(
+    "CONTAINERS_STORAGE_CONF=$containers_storage_conf"
+    "HOME=$run_home"
+    "XDG_CONFIG_HOME=$run_home/.config"
+    "XDG_CACHE_HOME=$run_home/.cache"
+    "XDG_DATA_HOME=$run_home/.local/share"
+    "XDG_STATE_HOME=$run_home/.local/state"
+    "GOPATH=${GOPATH:-$caller_home/go}"
+    "GOCACHE=${GOCACHE:-${XDG_CACHE_HOME:-$caller_home/.cache}/go-build}"
+    "GOMODCACHE=${GOMODCACHE:-${GOPATH:-$caller_home/go}/pkg/mod}"
+)
+for name in PATH LANG LC_ALL TERM TZ TMPDIR \
+    GOROOT GOFLAGS GOPROXY GOSUMDB GONOSUMDB GONOPROXY GOPRIVATE GOTOOLCHAIN GOWORK \
+    CGO_ENABLED CC CXX KATLCTL_CONFIG XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS; do
+    if [[ -n "${!name+x}" ]]; then
+        run_env+=("$name=${!name}")
+    fi
+done
+# KATL_ is the harness's own namespace: artifact inputs and VM test settings.
+while IFS= read -r name; do
+    run_env+=("$name=${!name}")
+done < <(compgen -v KATL_ || true)
 
 final_status="go-test"
 write_run_index "$final_status" "$@"
@@ -1451,13 +1507,13 @@ fi
 if [[ -n "$go_test_timeout" ]] && ! has_go_test_timeout "$@"; then
     go_test_args+=("-timeout" "$go_test_timeout")
 fi
-if ! has_go_test_verbosity "$@"; then
-    # Per-test results in go-test.log are the run's evidence.
-    go_test_args+=("-v")
+if ! has_go_test_json "$@"; then
+    # The event stream in go-test.log is the per-test evidence of the run.
+    go_test_args+=("-json")
 fi
 (cd "$repo_root" && "$resource_go_bin" run ./cmd/katl-vmtest-health start -out "$run_dir/host-health-start.json") >&2 || true
 set +e
-"$go_bin" test -exec "$repo_root/scripts/vmtest-exec" "${go_test_args[@]}" "$@" >"$go_test_log" 2>&1
+env -i "${run_env[@]}" "$go_bin" test -exec "$repo_root/scripts/vmtest-exec" "${go_test_args[@]}" "$@" >"$go_test_log" 2>&1
 exit_code=$?
 set -e
 if [[ "$exit_code" -ne 0 ]]; then
@@ -1474,7 +1530,7 @@ if [[ "$exit_code" -ne 0 ]]; then
 fi
 # go test exits 0 when -run matches nothing, so confirm the requested tests
 # reported a pass.
-if ! (cd "$repo_root" && "$resource_go_bin" run ./cmd/katl-vmtest-ran -log "$go_test_log" -- "$@") >&2; then
+if ! (cd "$repo_root" && env -i "${run_env[@]}" "$resource_go_bin" run ./cmd/katl-vmtest-ran -log "$go_test_log" -- "$@") >&2; then
     write_run_index "tests-not-run" "$@"
     record_host_health fail
     write_test_summary

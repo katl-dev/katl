@@ -1,6 +1,7 @@
 package scriptstest
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +11,10 @@ import (
 )
 
 const evidenceFakeGo = `#!/usr/bin/env bash
+if [[ -n "$KATL_SCRIPTTEST_ENV_DUMP" ]]; then
+  { printf "ARGS %s\n" "$*"; env; } >"$KATL_SCRIPTTEST_ENV_DUMP"
+  cat "$CONTAINERS_STORAGE_CONF" >"$KATL_SCRIPTTEST_ENV_DUMP.storage"
+fi
 node="$KATL_VMTEST_RUN_DIR/scenarios/smoke/nodes/n1"
 mkdir -p "$node/disks" "$node/vm"
 printf '{}\n' >"$KATL_VMTEST_RUN_DIR/scenarios/smoke/result.json"
@@ -255,5 +260,107 @@ func TestVMTestRunRecordsHostHealth(t *testing.T) {
 				t.Errorf("output lacks host health line:\n%s", output)
 			}
 		})
+	}
+}
+
+func TestVMTestRunEnvironmentIsAllowlisted(t *testing.T) {
+	poisoned := t.TempDir()
+	callerData := filepath.Join(t.TempDir(), "data")
+	runtimeDir := t.TempDir()
+	dump := filepath.Join(t.TempDir(), "go-env.txt")
+	goCache := filepath.Join(t.TempDir(), "go-build")
+	t.Setenv("KATL_SCRIPTTEST_ENV_DUMP", dump)
+	t.Setenv("HOME", poisoned)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(poisoned, "config"))
+	t.Setenv("XDG_DATA_HOME", callerData)
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+	t.Setenv("CONTAINERS_STORAGE_CONF", "")
+	t.Setenv("SSH_AUTH_SOCK", filepath.Join(poisoned, "agent.sock"))
+	t.Setenv("GH_TOKEN", "poisoned-token")
+	t.Setenv("KATLCTL_CONTEXT", "poisoned-cluster")
+	t.Setenv("GOCACHE", goCache)
+	t.Setenv("GOPATH", filepath.Join(t.TempDir(), "go"))
+	t.Setenv("GOMODCACHE", filepath.Join(t.TempDir(), "mod"))
+
+	runDir, output, ok := runEvidenceVMTest(t, t.TempDir(), "env-run", false)
+	if !ok {
+		t.Fatalf("vmtest-run failed:\n%s", output)
+	}
+
+	raw, err := os.ReadFile(dump)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := map[string]string{}
+	var args string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if rest, ok := strings.CutPrefix(line, "ARGS "); ok {
+			args = rest
+		} else if name, value, ok := strings.Cut(line, "="); ok {
+			env[name] = value
+		}
+	}
+
+	for name, value := range env {
+		if strings.Contains(value, poisoned) && !strings.HasPrefix(name, "KATL_") {
+			t.Errorf("go test saw %s=%s from the caller's home", name, value)
+		}
+	}
+	for _, name := range []string{"SSH_AUTH_SOCK", "GH_TOKEN", "KATLCTL_CONTEXT"} {
+		if v, found := env[name]; found {
+			t.Errorf("go test inherited %s=%q", name, v)
+		}
+	}
+	for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"} {
+		if !strings.HasPrefix(env[name], filepath.Join(runDir, "home")) {
+			t.Errorf("go test saw %s=%q, want a directory in the run", name, env[name])
+		}
+	}
+	if env["XDG_RUNTIME_DIR"] != runtimeDir {
+		t.Errorf("XDG_RUNTIME_DIR = %q, want the caller's %q", env["XDG_RUNTIME_DIR"], runtimeDir)
+	}
+	conf, err := os.ReadFile(dump + ".storage")
+	if err != nil {
+		t.Fatalf("container storage config seen by go test is unreadable: %v", err)
+	}
+	if want := filepath.Join(callerData, "containers", "storage"); !strings.Contains(string(conf), want) {
+		t.Errorf("container storage config = %q, want graphroot %q in the caller's data dir", conf, want)
+	}
+	if strings.Contains(string(conf), filepath.Join(runDir, "home")) {
+		t.Errorf("container storage config places storage in the run home: %q", conf)
+	}
+	if env["GOCACHE"] != goCache {
+		t.Errorf("GOCACHE = %q, want the caller's %q so the run keeps a warm build cache", env["GOCACHE"], goCache)
+	}
+	if env["PATH"] == "" || env["KATL_VMTEST_RUN_DIR"] == "" {
+		t.Errorf("go test lost PATH or the run's own settings: PATH=%q KATL_VMTEST_RUN_DIR=%q", env["PATH"], env["KATL_VMTEST_RUN_DIR"])
+	}
+	if !strings.Contains(" "+args+" ", " -json ") {
+		t.Errorf("go test args = %q, want -json", args)
+	}
+}
+
+func TestVMTestRunRecordsSourceInRunIndex(t *testing.T) {
+	t.Setenv("KATL_VMTEST_KEEP", "always")
+
+	runDir, output, ok := runEvidenceVMTest(t, t.TempDir(), "source-run", false)
+	if !ok {
+		t.Fatalf("vmtest-run failed:\n%s", output)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(runDir, "run.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var index struct{ Revision, UncommittedDigest string }
+	if err := json.Unmarshal(raw, &index); err != nil {
+		t.Fatal(err)
+	}
+	head, err := exec.Command("git", "-C", repoRoot(t), "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if index.Revision != strings.TrimSpace(string(head)) {
+		t.Errorf("run.json revision = %q, want %q", index.Revision, head)
 	}
 }
