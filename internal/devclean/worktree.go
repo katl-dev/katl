@@ -24,7 +24,11 @@ type Worktree struct {
 	// remote branch because HEAD is its head commit, or zero when HEAD is on a
 	// remote branch.
 	MergedPR int
+	// Tip is the commit Branch pointed at when it was judged deletable.
+	Tip string
 
+	// root is the path that was verified; Remove deletes nothing else.
+	root     string
 	verified bool
 }
 
@@ -69,12 +73,14 @@ func CheckWorktree(ctx context.Context, environ []string, lookup PullRequestLook
 		return Worktree{}, fmt.Errorf("%s is not a linked worktree of %s; see git worktree list", abs, paths[0])
 	}
 
-	dirty, err := g.run(ctx, abs, "status", "--porcelain", "--untracked-files=no")
+	// A directory without its own .git is judged by whichever repository
+	// encloses it, so git's answers are trusted only for a worktree root.
+	top, err := g.run(ctx, abs, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return Worktree{}, err
 	}
-	if dirty = strings.TrimRight(dirty, "\n"); dirty != "" {
-		return Worktree{}, fmt.Errorf("%s has tracked modifications or staged changes; commit and push them or discard them yourself:\n%s", abs, dirty)
+	if top, err = resolve(strings.TrimSpace(top)); err != nil || top != abs {
+		return Worktree{}, fmt.Errorf("%s is not the top level of its own git worktree (git reports %s); it may be half removed, so remove it yourself", abs, top)
 	}
 
 	if _, err := g.run(ctx, repo, "fetch", "origin"); err != nil {
@@ -84,7 +90,7 @@ func CheckWorktree(ctx context.Context, environ []string, lookup PullRequestLook
 	if err != nil {
 		return Worktree{}, err
 	}
-	wt := Worktree{Path: abs, verified: true}
+	wt := Worktree{Path: abs, root: abs, verified: true}
 	var head string
 	if unpushed = strings.TrimRight(unpushed, "\n"); unpushed != "" {
 		out, err := g.run(ctx, abs, "rev-parse", "HEAD")
@@ -102,25 +108,41 @@ func CheckWorktree(ctx context.Context, environ []string, lookup PullRequestLook
 		wt.MergedPR = pr.Number
 	}
 
-	branch, err := g.run(ctx, abs, "symbolic-ref", "--quiet", "--short", "HEAD")
-	if err != nil {
-		// A detached HEAD has no branch to keep or delete.
-		return wt, nil
+	if branch, err := g.run(ctx, abs, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
+		wt.Branch = strings.TrimSpace(branch)
+		// The decision is made about one commit, so deleting the branch can
+		// be conditional on it still being there.
+		tip, err := g.run(ctx, repo, "rev-parse", "refs/heads/"+wt.Branch)
+		if err != nil {
+			return Worktree{}, err
+		}
+		tip = strings.TrimSpace(tip)
+		if wt.MergedPR != 0 {
+			wt.DeleteBranch, wt.KeepReason = g.mergedBranchDisposition(wt.Branch, tip, head, wt.MergedPR)
+		} else {
+			wt.DeleteBranch, wt.KeepReason = g.branchDisposition(ctx, repo, wt.Branch, tip)
+		}
+		if wt.DeleteBranch {
+			wt.Tip = tip
+		}
 	}
-	wt.Branch = strings.TrimSpace(branch)
-	if wt.MergedPR != 0 {
-		wt.DeleteBranch, wt.KeepReason = g.mergedBranchDisposition(ctx, repo, wt.Branch, head, wt.MergedPR)
-	} else {
-		wt.DeleteBranch, wt.KeepReason = g.branchDisposition(ctx, repo, wt.Branch)
+
+	// Checked last, so that work added while the checks above ran, which
+	// includes a fetch and a GitHub lookup, is not deleted.
+	dirty, err := g.run(ctx, abs, "status", "--porcelain", "--untracked-files=no")
+	if err != nil {
+		return Worktree{}, err
+	}
+	if dirty = strings.TrimRight(dirty, "\n"); dirty != "" {
+		return Worktree{}, fmt.Errorf("%s has tracked modifications or staged changes; commit and push them or discard them yourself:\n%s", abs, dirty)
 	}
 	return wt, nil
 }
 
 // mergedBranchDisposition reports whether branch can be deleted because its
 // tip is exactly the head commit of merged pull request pr.
-func (g gitRunner) mergedBranchDisposition(ctx context.Context, repo, branch, prHead string, pr int) (bool, string) {
-	tip, err := g.run(ctx, repo, "rev-parse", "refs/heads/"+branch)
-	if err == nil && strings.TrimSpace(tip) == prHead {
+func (gitRunner) mergedBranchDisposition(branch, tip, prHead string, pr int) (bool, string) {
+	if tip == prHead {
 		return true, ""
 	}
 	return false, fmt.Sprintf("branch %s is not at the head of merged pull request #%d", branch, pr)
@@ -128,15 +150,14 @@ func (g gitRunner) mergedBranchDisposition(ctx context.Context, repo, branch, pr
 
 // branchDisposition reports whether branch can be deleted without losing a
 // commit that is on neither origin/main nor the same-named remote branch.
-func (g gitRunner) branchDisposition(ctx context.Context, repo, branch string) (bool, string) {
-	ref := "refs/heads/" + branch
-	if g.isAncestor(ctx, repo, ref, "refs/remotes/origin/main") {
+func (g gitRunner) branchDisposition(ctx context.Context, repo, branch, tip string) (bool, string) {
+	if g.isAncestor(ctx, repo, tip, "refs/remotes/origin/main") {
 		return true, ""
 	}
 	remotes, err := g.run(ctx, repo, "for-each-ref", "--format=%(refname)", "refs/remotes/*/"+branch)
 	if err == nil {
 		for _, remote := range strings.Fields(remotes) {
-			if g.isAncestor(ctx, repo, ref, remote) {
+			if g.isAncestor(ctx, repo, tip, remote) {
 				return true, ""
 			}
 		}

@@ -340,11 +340,15 @@ func TestVMTestGroupInterrupt(t *testing.T) {
 
 func TestVMTestRetentionLease(t *testing.T) {
 	f := newLockFixture(t)
-	rm, err := exec.LookPath("rm")
-	if err != nil {
-		t.Fatal(err)
+	devclean := filepath.Join(t.TempDir(), "katl-devclean")
+	build := exec.Command("go", "build", "-o", devclean, "./cmd/katl-devclean")
+	build.Dir = repoRoot(t)
+	if out, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("building katl-devclean: %v\n%s", err, out)
 	}
-	f.env = append(f.env, "KATL_VMTEST_KEEP=never", "KATL_LOCK_RM="+rm, "PATH="+f.root+":"+os.Getenv("PATH"))
+	// The run directory is removed by katl-devclean; the fixture's rm
+	// process holds the removal at a barrier and then runs the real one.
+	f.env = append(f.env, "KATL_VMTEST_KEEP=never", "KATL_LOCK_RM="+devclean, "KATL_DEVCLEAN="+filepath.Join(f.root, "rm"))
 	r := f.start(t, 0)
 	f.wait(t, "work.ready")
 	f.release(t, "work")

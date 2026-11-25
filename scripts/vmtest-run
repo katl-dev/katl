@@ -1229,6 +1229,17 @@ print_evidence() {
     fi
 }
 
+# What may be deleted is decided by cmd/katl-devclean.
+devclean() {
+    if [[ -n "${KATL_DEVCLEAN:-}" ]]; then
+        "$KATL_DEVCLEAN" "$@"
+    elif command -v katl-devclean >/dev/null 2>&1; then
+        katl-devclean "$@"
+    else
+        (cd "$repo_root" && "$resource_go_bin" run ./cmd/katl-devclean "$@")
+    fi
+}
+
 # Evidence is bounded by age; the ownership marker identifies run directories
 # this script created.
 prune_old_runs() {
@@ -1238,7 +1249,9 @@ prune_old_runs() {
     fi
     while IFS= read -r -d '' marker; do
         if [[ "$(dirname "$marker")" != "$run_dir" ]]; then
-            rm -rf -- "$(dirname "$marker")"
+            if ! devclean remove run-dir "$(dirname "$marker")" >/dev/null; then
+                printf 'vmtest old run dir cleanup failed: %s\n' "$(dirname "$marker")" >&2
+            fi
         fi
     done < <(find "$tmp_parent" -mindepth 2 -maxdepth 2 -name .katl-vmtest-run-dir -type f -mtime "+$evidence_days" -print0)
 }
@@ -1281,7 +1294,10 @@ cleanup_run_dir() {
         printf 'vmtest run dir compacted: %s\n' "$run_dir" >&2
         return 0
     fi
-    rm -rf -- "$run_dir"
+    if ! devclean remove owned-run-dir "$run_id" "$run_dir" >/dev/null; then
+        printf 'vmtest run dir cleanup failed: %s\n' "$run_dir" >&2
+        return 1
+    fi
     printf 'vmtest run dir removed: %s\n' "$run_dir" >&2
 }
 

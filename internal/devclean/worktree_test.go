@@ -96,6 +96,9 @@ func TestCheckWorktreeAccepts(t *testing.T) {
 		if got.Path != wt || got.Branch != "feature" || !got.DeleteBranch {
 			t.Fatalf("CheckWorktree() = %+v; want feature branch deletable", got)
 		}
+		if got.Tip != f.head(wt) {
+			t.Fatalf("Tip = %s; want the commit the branch points at, %s", got.Tip, f.head(wt))
+		}
 	})
 
 	t.Run("a push made to a URL that leaves the tracking branch stale", func(t *testing.T) {
@@ -201,6 +204,16 @@ func TestCheckWorktreeRefuses(t *testing.T) {
 			t.Fatal(err)
 		}
 		f.refused(sub, "not a linked worktree")
+	})
+
+	t.Run("a directory under the main checkout that lost its .git", func(t *testing.T) {
+		f := newFixture(t)
+		nested := filepath.Join(f.repo, "nested")
+		f.git(f.repo, "worktree", "add", "--quiet", "-b", "feature", nested, "main")
+		if err := os.Remove(filepath.Join(nested, ".git")); err != nil {
+			t.Fatal(err)
+		}
+		f.refused(nested, "not the top level")
 	})
 
 	t.Run("a tracked modification", func(t *testing.T) {
@@ -338,7 +351,7 @@ func TestMergedBranchDispositionKeepsMovedBranch(t *testing.T) {
 	f.commit(wt, "b.txt", "b")
 	g := gitRunner{environ: f.env}
 
-	del, reason := g.mergedBranchDisposition(context.Background(), f.repo, "feature", merged, 616)
+	del, reason := g.mergedBranchDisposition("feature", f.head(wt), merged, 616)
 	if del || !strings.Contains(reason, "#616") {
 		t.Fatalf("mergedBranchDisposition() = %t, %q; want the moved branch kept, naming PR #616", del, reason)
 	}

@@ -956,9 +956,12 @@ that merged pull request, and otherwise keeps it and says so.
 Both scripts delete through `katl-devclean`, which removes files owned by the
 calling user first and then removes what remains from inside the rootless
 podman user namespace, so subuid-owned build output needs no manual step. It
-never follows symbolic links out of the verified directory, and it judges
-success by looking at the directory: when something could not be removed, it
-lists the remaining paths and the script exits non-zero.
+never follows symbolic links out of the verified directory or crosses into
+another filesystem, and it judges success by looking at the directory. It
+removes the directory's identity marker last, so a removal that stopped part
+way can be repeated. A refusal removes nothing and exits 2; when something
+could not be removed, it lists the remaining paths and exits 1. `vmtest-run`
+removes its own run directories the same way.
 
 Run each command on its own, without a leading `cd … &&` and without a pipe, so
 that an allow rule for the command matches it. Do not clean up with `rm -rf`,

@@ -221,8 +221,11 @@ done
 
 # katl-devclean also clears the read-only, relabelled and subuid-owned files
 # that mkosi and libvirt leave behind, and reports any it cannot remove.
-devclean remove run-dir "$run_dir" >/dev/null || {
+# It exits 2 when it refused and 1 when it removed only part of the directory.
+rc=0
+devclean remove run-dir "$run_dir" >/dev/null || rc=$?
+if [[ "$rc" -ne 0 ]]; then
     printf 'vmtest-clean: failed to delete %s\n' "$run_dir" >&2
-    exit 1
-}
+    exit "$rc"
+fi
 printf 'vmtest-clean: cleaned %d preserved domain(s) and deleted %s\n' "$cleaned" "$run_dir" >&2

@@ -23,16 +23,28 @@ devclean() {
     fi
 }
 
-if ! info="$(devclean remove worktree "$repo_root" "$target")"; then
-    printf 'worktree-clean: %s was not removed\n' "$target" >&2
-    exit 1
-fi
+# katl-devclean exits 2 when it refused and removed nothing, and 1 when it
+# removed some of the worktree and could not remove the rest.
+rc=0
+info="$(devclean remove worktree "$repo_root" "$target")" || rc=$?
+case "$rc" in
+    0) ;;
+    1)
+        printf 'worktree-clean: %s was only partly removed; fix what is listed above and run worktree-clean again\n' "$target" >&2
+        exit 1
+        ;;
+    *)
+        printf 'worktree-clean: %s was not removed\n' "$target" >&2
+        exit "$rc"
+        ;;
+esac
 git -C "$repo_root" worktree prune
 path="$(sed -n 's/^path=//p' <<<"$info")"
 branch="$(sed -n 's/^branch=//p' <<<"$info")"
 delete_branch="$(sed -n 's/^delete-branch=//p' <<<"$info")"
 keep_reason="$(sed -n 's/^keep-reason=//p' <<<"$info")"
 merged_pr="$(sed -n 's/^merged-pr=//p' <<<"$info")"
+tip="$(sed -n 's/^tip=//p' <<<"$info")"
 if [[ -n "$merged_pr" && "$merged_pr" != 0 ]]; then
     printf 'worktree-clean: HEAD is the head of merged pull request #%s\n' "$merged_pr" >&2
 fi
@@ -43,7 +55,12 @@ if [[ -z "$branch" ]]; then
     exit 0
 fi
 if [[ "$delete_branch" == true ]]; then
-    git -C "$repo_root" branch -D "$branch" >&2
+    # Deleted only if it still points at the commit that was judged safe.
+    if git -C "$repo_root" update-ref -d "refs/heads/$branch" "$tip" >&2; then
+        printf 'worktree-clean: deleted branch %s\n' "$branch" >&2
+    else
+        printf 'worktree-clean: kept branch %s: it moved after it was checked\n' "$branch" >&2
+    fi
 else
     printf 'worktree-clean: kept branch %s: %s\n' "$branch" "$keep_reason" >&2
 fi

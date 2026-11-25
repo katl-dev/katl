@@ -21,6 +21,7 @@ func TestCheckRunDir(t *testing.T) {
 	t.Run("accepts a run directory with a result at the top", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "katl-vmtest", "run-1")
 		write(t, filepath.Join(dir, "result.json"))
+		write(t, filepath.Join(dir, RunDirMarker))
 
 		got, err := CheckRunDir(dir)
 		if err != nil || !got.Present || got.Path != dir {
@@ -31,6 +32,7 @@ func TestCheckRunDir(t *testing.T) {
 	t.Run("accepts a run directory whose result is below it", func(t *testing.T) {
 		dir := filepath.Join(t.TempDir(), "katl-vmtest", "run-1")
 		write(t, filepath.Join(dir, "nodes", "cp-1", "result.json"))
+		write(t, filepath.Join(dir, RunDirMarker))
 
 		if got, err := CheckRunDir(dir); err != nil || !got.Present {
 			t.Fatalf("CheckRunDir() = %+v, %v; want present", got, err)
@@ -56,6 +58,7 @@ func TestCheckRunDir(t *testing.T) {
 			setup: func(t *testing.T) string {
 				dir := filepath.Join(t.TempDir(), "projects", "run-1")
 				write(t, filepath.Join(dir, "result.json"))
+				write(t, filepath.Join(dir, RunDirMarker))
 				return dir
 			},
 			want: "not named katl-vmtest",
@@ -74,18 +77,34 @@ func TestCheckRunDir(t *testing.T) {
 			setup: func(t *testing.T) string {
 				dir := filepath.Join(t.TempDir(), "katl-vmtest", "run-1", "nodes")
 				write(t, filepath.Join(dir, "result.json"))
+				write(t, filepath.Join(dir, RunDirMarker))
 				return dir
 			},
 			want: "not named katl-vmtest",
 		},
 		{
-			name: "no result.json",
+			name: "no marker",
 			setup: func(t *testing.T) string {
 				dir := filepath.Join(t.TempDir(), "katl-vmtest", "mine")
 				write(t, filepath.Join(dir, "notes.txt"))
+				write(t, filepath.Join(dir, "result.json"))
 				return dir
 			},
-			want: "no result.json",
+			want: "no " + RunDirMarker + " marker",
+		},
+		{
+			name: "a katl-vmtest name that is a symbolic link elsewhere",
+			setup: func(t *testing.T) string {
+				root := t.TempDir()
+				real := filepath.Join(root, "projects")
+				write(t, filepath.Join(real, "run-1", RunDirMarker))
+				link := filepath.Join(root, "katl-vmtest")
+				if err := os.Symlink(real, link); err != nil {
+					t.Fatal(err)
+				}
+				return filepath.Join(link, "run-1")
+			},
+			want: "not named katl-vmtest",
 		},
 		{
 			name: "a symbolic link to a run directory",
@@ -126,5 +145,24 @@ func TestCheckRunDir(t *testing.T) {
 				t.Fatalf("a refused path must be left alone: %v", statErr)
 			}
 		})
+	}
+}
+
+func TestCheckOwnedRunDir(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "anywhere", "run-1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, RunDirMarker), []byte("run-1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := CheckOwnedRunDir(dir, "run-1"); err != nil || got.Path != dir {
+		t.Fatalf("CheckOwnedRunDir() = %+v, %v; want %s", got, err, dir)
+	}
+	for _, id := range []string{"run-2", ""} {
+		if _, err := CheckOwnedRunDir(dir, id); err == nil {
+			t.Fatalf("CheckOwnedRunDir accepted a directory whose marker names another run (id %q)", id)
+		}
 	}
 }

@@ -1267,6 +1267,9 @@ func TestVMTestCleanDestroysRecordedDomains(t *testing.T) {
 }`), 0o644); err != nil {
 		t.Fatalf("WriteFile(result) error = %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(result), ".katl-vmtest-run-dir"), []byte("run\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	virshLog := filepath.Join(tmp, "virsh.log")
 	virsh := filepath.Join(tmp, "virsh")
 	writeExecutable(t, virsh, `#!/usr/bin/env bash
@@ -2094,6 +2097,7 @@ func TestVMTestCleanReleasesRecordedNetworks(t *testing.T) {
 		return `{"preserved": true, "domainName": "` + domain + `", "libvirtURI": "qemu:///fixture", "network": "` + network + `"}`
 	}
 	runDir := filepath.Join(dir, "katl-vmtest", "run")
+	write(filepath.Join(runDir, ".katl-vmtest-run-dir"), "run\n")
 	write(filepath.Join(runDir, "one", "result.json"), `{"debug": {"targets": [`+
 		target("katl-run-1-a", "katl-run-1-shared")+","+target("katl-run-1-c", "katl-run-1-solo")+","+
 		target("katl-run-1-d", "katl-run-1-sibling")+"]}}")
@@ -2144,6 +2148,9 @@ func TestVMTestCleanDeletesRunDir(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(filepath.Join(node, "result.json"), []byte(`{"debug":{"targets":[{"preserved":true,"domainName":"katl-gone","libvirtURI":"qemu:///system"}]}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(runDir, ".katl-vmtest-run-dir"), []byte("run-1\n"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		return runDir
@@ -2214,7 +2221,7 @@ func TestVMTestCleanDeletesRunDir(t *testing.T) {
 	t.Run("refuses a directory that is not a run directory", func(t *testing.T) {
 		for name, dir := range map[string]string{
 			"outside katl-vmtest": filepath.Join(t.TempDir(), "elsewhere", "run-1"),
-			"without a result":    filepath.Join(t.TempDir(), "katl-vmtest", "run-1"),
+			"without a marker":    filepath.Join(t.TempDir(), "katl-vmtest", "run-1"),
 		} {
 			t.Run(name, func(t *testing.T) {
 				if err := os.MkdirAll(dir, 0o755); err != nil {
