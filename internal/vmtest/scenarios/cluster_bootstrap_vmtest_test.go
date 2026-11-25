@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -3015,26 +3016,11 @@ func waitForKatlcAgentTCP(ctx context.Context, nodeName, address string, timeout
 	if strings.TrimSpace(address) == "" {
 		return fmt.Errorf("%s has no node address", nodeName)
 	}
-	deadline := time.Now().Add(timeout)
-	target := net.JoinHostPort(address, "9443")
-	var lastErr error
-	for {
-		dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", target)
-		cancel()
-		if err == nil {
-			_ = conn.Close()
-			return nil
-		}
-		lastErr = err
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("%s did not accept TCP connections on %s: %w", nodeName, target, lastErr)
-		}
-		time.Sleep(500 * time.Millisecond)
+	parsed, err := netip.ParseAddr(strings.TrimSpace(address))
+	if err != nil {
+		return fmt.Errorf("%s node address: %w", nodeName, err)
 	}
+	return vmtest.WaitManagementEndpoint(ctx, nodeName, netip.AddrPortFrom(parsed, 9443), timeout)
 }
 
 func liveNodeIPv4Address(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, fallback string) (string, error) {

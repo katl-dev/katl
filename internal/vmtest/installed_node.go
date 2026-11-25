@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,6 +97,17 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 		if err := writeJSON(result.Artifacts.LibvirtLease, lease); err != nil {
 			return failWithDebug(fmt.Errorf("write libvirt lease artifact: %w", err))
 		}
+		// Callers use the address as the node's management endpoint. Neither
+		// the lease nor vmtest agent health orders it after katlc-agent binds:
+		// a reserved address is leased at once, and katlc-agent.service is
+		// Type=simple, so systemd reports it active before it listens.
+		address, err := netip.ParseAddr(lease.IPAddress)
+		if err != nil {
+			return failWithDebug(fmt.Errorf("libvirt lease address %q: %w", lease.IPAddress, err))
+		}
+		if err := WaitManagementEndpoint(handle.ctx, name, netip.AddrPortFrom(address, katlcAgentPort), managementStartupTimeout); err != nil {
+			return failWithDebug(err)
+		}
 	}
 	if err := writeInstalledRuntimeNodeResult(result, StatusPassed, "", started); err != nil {
 		handle.StopSuccess()
@@ -107,6 +120,35 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 		VSock:  handle.Plan.VSock,
 		handle: handle,
 	}, nil
+}
+
+const (
+	katlcAgentPort           = 9443
+	managementStartupTimeout = time.Minute
+)
+
+// WaitManagementEndpoint waits until the node's katlc agent accepts TCP
+// connections at endpoint, as katlctl first observes it.
+func WaitManagementEndpoint(ctx context.Context, node string, endpoint netip.AddrPort, timeout time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		dialCtx, dialCancel := context.WithTimeout(ctx, 2*time.Second)
+		conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", endpoint.String())
+		dialCancel()
+		if err == nil {
+			return conn.Close()
+		}
+		lastErr = err
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("%s did not accept management connections on %s: %w", node, endpoint, lastErr)
+		case <-ticker.C:
+		}
+	}
 }
 
 func PlannedInstalledRuntimeNodeResult(parent Result, name string) (Result, error) {

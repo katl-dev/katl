@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -104,6 +105,112 @@ func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) 
 		t.Fatalf("node scenario record = %#v", record)
 	}
 	if err := node.Stop(); err != context.Canceled {
+		t.Fatalf("Stop() error = %v, want context.Canceled", err)
+	}
+}
+
+// A reserved address is leased as the guest's network comes up, which can be
+// before katlc-agent listens. The node is usable only once katlctl can reach
+// its management endpoint at the leased address.
+func TestStartInstalledRuntimeNodeWaitsForManagementEndpoint(t *testing.T) {
+	root := t.TempDir()
+	disk := filepath.Join(root, "installed.raw")
+	if err := os.WriteFile(disk, []byte("disk"), 0o644); err != nil {
+		t.Fatalf("write disk: %v", err)
+	}
+	esp := espFixture(t)
+	nodeMetadata := filepath.Join(root, "node.json")
+	if err := os.WriteFile(nodeMetadata, []byte(`{"kind":"NodeMetadata"}`), 0o644); err != nil {
+		t.Fatalf("write node metadata: %v", err)
+	}
+	fixtureManifest := writeInstalledFixtureManifest(t, root, disk, esp, nodeMetadata)
+	parent, err := NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-1",
+	}).Plan(Scenario{Name: "two-node"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+
+	// Any loopback address works on Linux; a distinctive one keeps port 9443
+	// free of other listeners.
+	const address = "127.83.41.7"
+	const mac = "52:54:00:83:41:07"
+	leased := filepath.Join(root, "leased")
+	virsh := filepath.Join(root, "virsh")
+	writeExecutable(t, virsh, `#!/usr/bin/env bash
+for arg in "$@"; do
+  if [[ $arg == net-dhcp-leases ]]; then
+    touch '`+leased+`'
+    printf ' 2099-01-01 00:00:00   `+mac+`   ipv4   `+address+`/24   cp-1   -\n'
+  fi
+done
+`)
+	_, vmConfig := vmFixture(t)
+	vmConfig.Expect = runtimeBootSignal
+	vmConfig.Timeout = time.Minute
+	vmConfig.VSock = VSockConfig{Enabled: true, GuestCID: 62002}
+	vmConfig.Network.MAC = mac
+	runner := VMRunner{
+		Executor: longRunningVMExec{ready: runtimeBootSignal},
+		AgentConnector: func(context.Context, VSockPlan, string) (AgentHealthClient, error) {
+			return fakeHealthClient{}, nil
+		},
+		probe: probe{
+			lookPath: func(string) (string, error) { return virsh, nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+			output: func(string, ...string) ([]byte, error) {
+				return []byte("vhost-vsock-pci guest-cid=<uint32>"), nil
+			},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	type started struct {
+		node RunningInstalledRuntimeNode
+		err  error
+	}
+	done := make(chan started, 1)
+	go func() {
+		node, err := StartInstalledRuntimeNode(ctx, parent, InstalledRuntimeNodeConfig{
+			Name: "cp-1",
+			Runtime: InstalledRuntimeConfig{
+				Disk:            disk,
+				DiskFormat:      DiskRaw,
+				ESPArtifacts:    esp,
+				FixtureManifest: fixtureManifest,
+				NodeMetadata:    nodeMetadata,
+				VM:              vmConfig,
+			},
+		}, runner)
+		done <- started{node, err}
+	}()
+	// Nothing listens yet, so the node must not be returned as usable.
+	select {
+	case got := <-done:
+		_ = got.node.Stop()
+		t.Fatalf("StartInstalledRuntimeNode() returned before the management endpoint listened: %v", got.err)
+	case <-time.After(time.Second):
+	}
+	if _, err := os.Stat(leased); err != nil {
+		t.Fatalf("StartInstalledRuntimeNode() has not read the lease: %v", err)
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort(address, "9443"))
+	if err != nil {
+		t.Fatalf("listen as the node's katlc agent: %v", err)
+	}
+	defer listener.Close()
+
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("StartInstalledRuntimeNode() error = %v", got.err)
+	}
+	if got.node.Result.IPAddress != address {
+		t.Fatalf("node address = %q, want %s", got.node.Result.IPAddress, address)
+	}
+	if err := got.node.Stop(); err != context.Canceled {
 		t.Fatalf("Stop() error = %v, want context.Canceled", err)
 	}
 }
