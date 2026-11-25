@@ -67,12 +67,8 @@ func runEtcdUpgradeFailureProof(t *testing.T, ctx context.Context, result vmtest
 		return err
 	}
 	guestArchive := "/var/lib/katl/test-artifacts/failed-etcd.tar"
-	if err := writeNodeFileChunked(ctx, cp1, guestArchive, data, 0o600); err != nil {
-		return err
-	}
-	loaded, err := runNodeCommand(ctx, cp1, []string{"ctr", "-n", "k8s.io", "images", "import", guestArchive}, 128<<10)
-	if err != nil || loaded.ExitStatus != 0 {
-		return fmt.Errorf("import failing etcd image: %v", err)
+	if err := importNodeImageArchive(ctx, cp1, guestArchive, data, 0o600); err != nil {
+		return fmt.Errorf("stage failing etcd image: %w", err)
 	}
 	live, err := kubectlOutput(ctx, kubeconfig, "-n", "kube-system", "get", "configmap", "kubeadm-config", "-o", "jsonpath={.data.ClusterConfiguration}")
 	if err != nil {
