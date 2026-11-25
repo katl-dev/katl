@@ -3,8 +3,15 @@ name: Production VM qualification
 on:
   workflow_dispatch:
     inputs:
+      flavour:
+        description: Kernel flavour to qualify
+        type: choice
+        options:
+          - standard
+          - lts
+        required: true
       artifact-name:
-        description: Artifact to qualify; {0} is replaced by the flavour
+        description: Artifact containing the bundle to qualify
         type: string
         required: true
       run-id:
@@ -17,8 +24,12 @@ on:
         required: true
   workflow_call:
     inputs:
+      flavour:
+        description: Kernel flavour to qualify
+        type: string
+        required: true
       artifact-name:
-        description: Artifact to qualify; {0} is replaced by the flavour
+        description: Artifact containing the bundle to qualify
         type: string
         required: true
       run-id:
@@ -34,15 +45,11 @@ permissions:
 
 jobs:
   qualification:
-    name: Production VM (${{ matrix.flavour }})
+    name: Production VM (${{ inputs.flavour }})
     runs-on: ubuntu-24.04
     timeout-minutes: 80
-    strategy:
-      fail-fast: false
-      matrix:
-        flavour: [standard, lts]
     env:
-      KATL_FLAVOUR: ${{ matrix.flavour }}
+      KATL_FLAVOUR: ${{ inputs.flavour }}
       KATL_VMTEST_KVM: 'on'
       KATL_VMTEST_KEEP: failed
       KATL_VMTEST_DEBUG_ON_FAILURE: '0'
@@ -63,7 +70,7 @@ jobs:
       - uses: ./.github/actions/hosted-vmtest
       - uses: actions/download-artifact@v8
         with:
-          name: ${{ format(inputs.artifact-name, matrix.flavour) }}
+          name: ${{ inputs.artifact-name }}
           run-id: ${{ inputs.run-id > 0 && inputs.run-id || github.run_id }}
           github-token: ${{ github.token }}
           path: dist
@@ -88,7 +95,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: success() && inputs.run-id == 0
         with:
-          name: katl-qualified-${{ matrix.flavour }}-${{ github.sha }}
+          name: katl-qualified-${{ inputs.flavour }}-${{ github.sha }}
           overwrite: true
           path: dist/SHA256SUMS
           if-no-files-found: error
@@ -99,7 +106,7 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: production-vmtest-${{ matrix.flavour }}-${{ github.run_id }}
+          name: production-vmtest-${{ inputs.flavour }}-${{ github.run_id }}
           path: |
             _build/hosted-evidence/
             _build/production-vmtest/**/*.log

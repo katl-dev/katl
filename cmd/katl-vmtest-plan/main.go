@@ -182,9 +182,10 @@ func selectGroups(paths []string) []group {
 			name == "cmd/katl-kernel-release/publish.go", name == "cmd/katl-kernel-release/update-commit.txt",
 			name == ".github/workflows/kernel-updates.yml", name == ".github/workflows/kernel-automerge.yml":
 			continue
-		case name == ".github/workflows/release-artifacts.yml", name == ".github/workflows/production-vmtests.yml":
+		case name == ".github/workflows/release-artifacts.yml", name == ".github/workflows/production-build.yml", name == ".github/workflows/production-vmtests.yml":
 			// Generic CI does not execute these workflows. Validate their changes
-			// through Release Artifacts and its assembled-bytes Production VM qualification.
+			// through Release Artifacts, which runs the production build and its
+			// assembled-bytes Production VM qualification.
 			continue
 		case name == "cmd/katlctl/config_compatibility.go", name == "cmd/katlctl/config_inspect.go":
 			selected["config"], selected["management"], selected["two-node"], selected["readdress"] = true, true, true, true

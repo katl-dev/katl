@@ -53,10 +53,15 @@ jobs:
           echo "previous-tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)" >> "$GITHUB_OUTPUT"
 
   requalify:
-    name: Requalify production VM
+    name: Requalify production VM (${{ matrix.flavour }})
     needs: existing-bundle
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: [standard, lts]
     uses: ./.github/workflows/production-vmtests.yml
     with:
+      flavour: ${{ matrix.flavour }}
       artifact-name: ${{ needs.existing-bundle.outputs.artifact }}
       run-id: ${{ fromJSON(inputs.qualify_run || '0') }}
       previous-tag: ${{ needs.existing-bundle.outputs.previous-tag }}
@@ -123,533 +128,33 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: echo "tag=$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)" >> "$GITHUB_OUTPUT"
 
-  runtime:
-    name: Build And Verify Runtime
+  build-standard:
+    name: Build standard
     needs: identity
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        flavour: [standard, lts]
-    timeout-minutes: 90
-    outputs:
-      mkosi-version: ${{ steps.mkosi-version.outputs.version }}
-
-    env:
-      KATL_FLAVOUR: ${{ matrix.flavour }}
-      KATL_MKOSI_BUILD_DIR: ${{ github.workspace }}/_build/mkosi
-      GOTOOLCHAIN: auto
-      KATL_ARCHITECTURE: x86_64
-      KATL_BUILD_COMMIT: ${{ github.sha }}
-      KATL_CONTAINER_RUNTIME: docker
-      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:go-squashfs
-      KATL_VERSION: ${{ needs.identity.outputs.version }}
-      KATL_VMTEST_IMAGE_SUPPORT: "0"
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Restore Katl Go build caches
-        uses: actions/cache@v6
-        with:
-          path: |
-            _build/go-mod
-            _build/go-cache
-          key: katl-go-runtime-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi') }}-${{ github.sha }}
-          restore-keys: |
-            katl-go-runtime-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi') }}-
-            katl-go-runtime-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-
-
-      - name: Resolve mkosi cache identity
-        id: mkosi-cache
-        shell: bash
-        run: |
-          digest="$({
-            sha256sum \
-              Containerfile.mkosi \
-              mkosi.conf \
-              "kernels/fedora-$(scripts/fedora-release)/x86_64/$KATL_FLAVOUR.json" \
-              mkosi.profiles/installer-image/mkosi.conf \
-              mkosi.profiles/kubernetes-sysext/kubernetes.env \
-              mkosi.profiles/kubernetes-sysext/mkosi.conf \
-              mkosi.profiles/runtime/mkosi.conf \
-              scripts/fedora-release
-          } | sha256sum | cut -d ' ' -f 1)"
-          echo "key=$digest" >> "$GITHUB_OUTPUT"
-
-      - name: Restore mkosi package cache
-        uses: actions/cache@v6
-        with:
-          path: _build/mkosi/package-cache
-          key: katl-mkosi-packages-runtime-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ steps.mkosi-cache.outputs.key }}-${{ github.sha }}
-          restore-keys: |
-            katl-mkosi-packages-runtime-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ steps.mkosi-cache.outputs.key }}-
-
-      - name: Prepare cached builder
-        uses: ./.github/actions/mkosi-builder
-        with:
-          image: ${{ env.KATL_MKOSI_IMAGE }}
-
-      - name: Build runtime
-        shell: bash
-        run: scripts/mkosi build-runtime
-
-      - name: Build endpoint advertiser sysext
-        shell: bash
-        run: scripts/build-endpoint-advertiser-sysext
-
-      - name: Resolve mkosi version
-        id: mkosi-version
-        shell: bash
-        run: |
-          version="$(docker run --rm "$KATL_MKOSI_IMAGE" mkosi --version)"
-          version="${version#mkosi }"
-          if [[ ! "$version" =~ ^[0-9]+([.][0-9]+)*$ ]]; then
-            echo "unexpected mkosi version from builder: $version" >&2
-            exit 1
-          fi
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-
-      - name: Verify runtime
-        shell: bash
-        run: |
-          docker run --rm \
-            --volume "$GITHUB_WORKSPACE:/work" \
-            --workdir /work \
-            "$KATL_MKOSI_IMAGE" \
-            bash -euo pipefail -c '
-              scripts/check-runtime-root
-              scripts/check-runtime-boot-asset
-            '
-
-      - name: Upload runtime build inputs
-        uses: actions/upload-artifact@v7
-        with:
-          name: katl-runtime-${{ matrix.flavour }}-${{ github.sha }}
-          path: |
-            _build/mkosi/katl-runtime-root.squashfs*
-            _build/mkosi/katl-kernel-lock.json
-            _build/mkosi/katl-kernel-inputs.tar*
-            _build/mkosi/katl-endpoint-advertiser.raw*
-            _build/mkosi/katl-runtime.efi*
-            _build/mkosi/katl-runtime.packages.tsv
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
-
-  extension-inventory:
-    name: Inventory Release Extensions
-    if: inputs.qualify_run == 0
-    runs-on: ubuntu-24.04
-    outputs:
-      extensions: ${{ steps.inventory.outputs.extensions }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - name: Discover release recipes
-        id: inventory
-        run: |
-          inventory="$(go run ./cmd/katl-mkosi-artifacts inventory-release-extensions)"
-          echo "extensions=$(jq -c .extension <<<"$inventory")" >> "$GITHUB_OUTPUT"
-
-  extensions:
-    name: Build Extension (${{ matrix.extension }}, ${{ matrix.flavour }})
-    needs: [identity, runtime, extension-inventory]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        flavour: [standard, lts]
-        extension: ${{ fromJSON(needs.extension-inventory.outputs.extensions) }}
-    env:
-      KATL_FLAVOUR: ${{ matrix.flavour }}
-      KATL_MKOSI_BUILD_DIR: ${{ github.workspace }}/_build/mkosi
-      GOTOOLCHAIN: auto
-      KATL_ARCHITECTURE: x86_64
-      KATL_BUILD_COMMIT: ${{ github.sha }}
-      KATL_CONTAINER_RUNTIME: docker
-      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:go-squashfs
-      KATL_VERSION: ${{ needs.identity.outputs.version }}
-      KATL_VMTEST_IMAGE_SUPPORT: "0"
-
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: ./.github/actions/mkosi-builder
-        with:
-          image: ${{ env.KATL_MKOSI_IMAGE }}
-      - name: Download runtime build inputs
-        uses: actions/download-artifact@v8
-        with:
-          name: katl-runtime-${{ matrix.flavour }}-${{ github.sha }}
-          path: _build/mkosi
-      - name: Install module inspection tools
-        run: .github/scripts/hosted-apt-install systemd-container kmod squashfs-tools
-
-      - name: Build and verify release recipe
-        run: scripts/build-release-extensions "${{ matrix.extension }}"
-      - name: Upload verified extension closure
-        uses: actions/upload-artifact@v7
-        with:
-          name: katl-extension-${{ matrix.flavour }}-${{ matrix.extension }}-${{ github.sha }}
-          path: _build/mkosi/release-extensions/
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
-
-  images:
-    name: Package KatlOS Images (${{ matrix.flavour }})
-    needs: [identity, extensions]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix:
-        flavour: [standard, lts]
-    env:
-      KATL_FLAVOUR: ${{ matrix.flavour }}
-      KATL_MKOSI_BUILD_DIR: ${{ github.workspace }}/_build/mkosi
-      GOTOOLCHAIN: auto
-      KATL_ARCHITECTURE: x86_64
-      KATL_BUILD_COMMIT: ${{ github.sha }}
-      KATL_CONTAINER_RUNTIME: docker
-      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:go-squashfs
-      KATL_VERSION: ${{ needs.identity.outputs.version }}
-      KATL_VMTEST_IMAGE_SUPPORT: "0"
-
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-      - uses: ./.github/actions/mkosi-builder
-        with:
-          image: ${{ env.KATL_MKOSI_IMAGE }}
-      - name: Download runtime build inputs
-        uses: actions/download-artifact@v8
-        with:
-          name: katl-runtime-${{ matrix.flavour }}-${{ github.sha }}
-          path: _build/mkosi
-      - name: Install module inspection tools
-        run: .github/scripts/hosted-apt-install systemd-container kmod squashfs-tools
-
-      - name: Download release extension closures
-        uses: actions/download-artifact@v8
-        with:
-          pattern: katl-extension-${{ matrix.flavour }}-*-${{ github.sha }}
-          path: _build/mkosi/release-extensions
-          merge-multiple: true
-      - name: Assemble and verify complete extension selection
-        run: scripts/assemble-release-extensions
-
-      - name: Package install and upgrade images concurrently
-        shell: bash
-        env:
-          KATL_EXTENSION_RELEASE: _build/mkosi/release-extensions.json
-        run: |
-          install_status=0
-          upgrade_status=0
-          scripts/build-katlos-install-image &
-          install_pid=$!
-          KATL_KATLOS_IMAGE_ROLE=upgrade scripts/build-katlos-install-image &
-          upgrade_pid=$!
-          wait "$install_pid" || install_status=$?
-          wait "$upgrade_pid" || upgrade_status=$?
-          ((install_status == 0 && upgrade_status == 0))
-
-      - name: Verify KatlOS images
-        shell: bash
-        run: |
-          scripts/check-katlos-install-image
-          KATL_KATLOS_IMAGE_ROLE=upgrade scripts/check-katlos-install-image
-          CGO_ENABLED=0 go test -c -o _build/extension-closure.test ./internal/installer/katlosimage
-          for role in install upgrade; do
-            docker run --rm \
-              --volume "$GITHUB_WORKSPACE:/work" \
-              --workdir /work \
-              --env "KATL_TEST_KATLOS_IMAGE=/work/_build/mkosi/katlos-${role}-${KATL_VERSION}-${KATL_ARCHITECTURE}.squashfs" \
-              "$KATL_MKOSI_IMAGE" \
-              /work/_build/extension-closure.test \
-                -test.run '^TestBuiltImage(ExtensionClosure|IndexReadableByBeta14)$' -test.count=1 -test.v
-          done
-
-      - name: Upload runtime and KatlOS image intermediates
-        uses: actions/upload-artifact@v7
-        with:
-          name: katl-runtime-images-${{ matrix.flavour }}-${{ github.sha }}
-          path: |
-            _build/mkosi/katl-runtime-root.squashfs
-            _build/mkosi/katl-runtime-root.squashfs.json
-            _build/mkosi/katl-runtime-root.squashfs.sha256
-            _build/mkosi/katl-runtime.efi
-            _build/mkosi/katl-runtime.efi.json
-            _build/mkosi/katl-runtime.efi.sha256
-            _build/mkosi/katl-runtime.packages.tsv
-            _build/mkosi/release-extensions.json
-            _build/mkosi/katl-runtime.extensions.json
-            _build/mkosi/extension-bundles/
-            _build/mkosi/katlos-install-*.squashfs
-            _build/mkosi/katlos-install-*.squashfs.json
-            _build/mkosi/katlos-install-*.squashfs.sha256
-            _build/mkosi/katlos-upgrade-*.squashfs
-            _build/mkosi/katlos-upgrade-*.squashfs.json
-            _build/mkosi/katlos-upgrade-*.squashfs.sha256
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
-
-  installer:
-    name: Build And Verify Installer
-    needs: identity
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        flavour: [standard, lts]
-    timeout-minutes: 90
-
-    env:
-      KATL_FLAVOUR: ${{ matrix.flavour }}
-      KATL_MKOSI_BUILD_DIR: ${{ github.workspace }}/_build/mkosi
-      GOTOOLCHAIN: auto
-      KATL_ARCHITECTURE: x86_64
-      KATL_BUILD_COMMIT: ${{ github.sha }}
-      KATL_CONTAINER_RUNTIME: docker
-      KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:go-squashfs
-      KATL_VERSION: ${{ needs.identity.outputs.version }}
-      KATL_VMTEST_IMAGE_SUPPORT: "0"
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Restore Katl Go build caches
-        uses: actions/cache@v6
-        with:
-          path: |
-            _build/go-mod
-            _build/go-cache
-          key: katl-go-installer-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi') }}-${{ github.sha }}
-          restore-keys: |
-            katl-go-installer-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi') }}-
-            katl-go-installer-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-
-
-      - name: Resolve mkosi cache identity
-        id: mkosi-cache
-        shell: bash
-        run: |
-          digest="$({
-            sha256sum \
-              Containerfile.mkosi \
-              mkosi.conf \
-              "kernels/fedora-$(scripts/fedora-release)/x86_64/$KATL_FLAVOUR.json" \
-              mkosi.profiles/installer-image/mkosi.conf \
-              mkosi.profiles/kubernetes-sysext/kubernetes.env \
-              mkosi.profiles/kubernetes-sysext/mkosi.conf \
-              mkosi.profiles/runtime/mkosi.conf \
-              scripts/fedora-release
-          } | sha256sum | cut -d ' ' -f 1)"
-          echo "key=$digest" >> "$GITHUB_OUTPUT"
-
-      - name: Restore mkosi package cache
-        uses: actions/cache@v6
-        with:
-          path: _build/mkosi/package-cache
-          key: katl-mkosi-packages-installer-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ steps.mkosi-cache.outputs.key }}-${{ github.sha }}
-          restore-keys: |
-            katl-mkosi-packages-installer-${{ matrix.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ steps.mkosi-cache.outputs.key }}-
-
-      - name: Prepare cached builder
-        uses: ./.github/actions/mkosi-builder
-        with:
-          image: ${{ env.KATL_MKOSI_IMAGE }}
-
-      - name: Build installer
-        shell: bash
-        run: scripts/mkosi build-installer
-
-      - name: Verify installer
-        shell: bash
-        run: |
-          docker run --rm \
-            --volume "$GITHUB_WORKSPACE:/work" \
-            --workdir /work \
-            "$KATL_MKOSI_IMAGE" \
-            scripts/check-installer-image
-
-      - name: Upload installer intermediates
-        uses: actions/upload-artifact@v7
-        with:
-          name: katl-installer-${{ matrix.flavour }}-${{ github.sha }}
-          path: |
-            _build/mkosi/katl-installer.efi
-            _build/mkosi/katl-installer.efi.json
-            _build/mkosi/katl-installer.efi.sha256
-            _build/mkosi/katl-installer.initrd
-            _build/mkosi/katl-installer.initrd.json
-            _build/mkosi/katl-installer.initrd.sha256
-            _build/mkosi/katl-installer.packages.tsv
-            _build/mkosi/katl-installer.vmlinuz
-            _build/mkosi/katl-installer.vmlinuz.json
-            _build/mkosi/katl-installer.vmlinuz.sha256
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
-
-  katlctl:
-    name: Build And Verify katlctl
-    needs: identity
-    runs-on: ubuntu-24.04
-
-    env:
-      KATL_ARCHITECTURE: x86_64
-      KATL_BUILD_COMMIT: ${{ github.sha }}
-      KATL_VERSION: ${{ needs.identity.outputs.version }}
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Build katlctl
-        shell: bash
-        run: scripts/katl-release-artifacts build-katlctl "$KATL_VERSION"
-
-      - name: Upload katlctl intermediate
-        uses: actions/upload-artifact@v7
-        with:
-          name: katlctl-${{ github.sha }}
-          path: _build/mkosi/katlctl-*
-          if-no-files-found: error
-          retention-days: 1
-          compression-level: 0
-
-  assemble:
-    name: Assemble And Verify Katl Release
-    needs:
-      - identity
-      - runtime
-      - images
-      - installer
-      - katlctl
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        flavour: [standard, lts]
-    timeout-minutes: 30
     permissions:
-      attestations: write
       contents: read
-      id-token: write
+    uses: ./.github/workflows/production-build.yml
+    with:
+      flavour: standard
+      version: ${{ needs.identity.outputs.version }}
+      previous-tag: ${{ needs.identity.outputs.previous-tag }}
+      publication: true
 
-    env:
-      KATL_FLAVOUR: ${{ matrix.flavour }}
-      KATL_MKOSI_BUILD_DIR: ${{ github.workspace }}/_build/mkosi
-      GOTOOLCHAIN: auto
-      KATL_ARCHITECTURE: x86_64
-      KATL_BUILD_COMMIT: ${{ github.sha }}
-      KATL_VERSION: ${{ needs.identity.outputs.version }}
-      KATL_RELEASE_PREVIOUS_TAG: ${{ needs.identity.outputs.previous-tag }}
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
-
-      - name: Download runtime and KatlOS image intermediates
-        uses: actions/download-artifact@v8
-        with:
-          name: katl-runtime-images-${{ matrix.flavour }}-${{ github.sha }}
-          path: _build/mkosi
-
-      - name: Download installer intermediates
-        uses: actions/download-artifact@v8
-        with:
-          name: katl-installer-${{ matrix.flavour }}-${{ github.sha }}
-          path: _build/mkosi
-
-      - name: Download katlctl intermediate
-        uses: actions/download-artifact@v8
-        with:
-          name: katlctl-${{ github.sha }}
-          path: _build/mkosi
-
-      - name: Install ISO assembly tools
-        shell: bash
-        run: .github/scripts/hosted-apt-install dosfstools mtools xorriso
-
-      - name: Assemble and verify installer ISO
-        shell: bash
-        run: |
-          scripts/build-installer-iso >/dev/null
-          go run ./cmd/katl-mkosi-artifacts write-installer-artifacts >/dev/null
-          scripts/check-installer-iso
-
-      - name: Record release build inputs
-        shell: bash
-        env:
-          MKOSI_VERSION: ${{ needs.runtime.outputs.mkosi-version }}
-        run: |
-          go run ./cmd/katl-resource-lock prepare-mkosi \
-            -manifest _build/mkosi/katl-release-build-inputs.json \
-            -mode record \
-            -run-id "release-${KATL_VERSION}-${GITHUB_SHA:0:12}" \
-            -git-revision "$GITHUB_SHA" \
-            -mkosi-version "$MKOSI_VERSION" \
-            -package-set installer-image \
-            -package-set runtime \
-            -package-set katlos-install-image
-
-      - name: Stage supported publication artifacts
-        shell: bash
-        run: scripts/katl-release-artifacts stage "$KATL_VERSION" dist
-
-      - name: Upload GitHub Actions artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: katl-assembled-${{ matrix.flavour }}-${{ github.sha }}
-          path: dist/
-          if-no-files-found: error
-          retention-days: 30
-          compression-level: 0
+  build-lts:
+    name: Build lts
+    needs: identity
+    permissions:
+      contents: read
+    uses: ./.github/workflows/production-build.yml
+    with:
+      flavour: lts
+      version: ${{ needs.identity.outputs.version }}
+      previous-tag: ${{ needs.identity.outputs.previous-tag }}
+      publication: true
 
   bundle:
     name: Bundle Kernel Flavours
-    needs: [identity, assemble]
+    needs: [identity, build-standard, build-lts]
     runs-on: ubuntu-24.04
     permissions:
       attestations: write
@@ -683,17 +188,27 @@ jobs:
           compression-level: 0
 
 
-  qualification:
-    name: Production VM
-    needs: [identity, assemble]
+  qualification-standard:
+    name: Production VM (standard)
+    needs: [identity, build-standard]
     uses: ./.github/workflows/production-vmtests.yml
     with:
-      artifact-name: katl-assembled-{0}-${{ github.sha }}
+      flavour: standard
+      artifact-name: ${{ needs.build-standard.outputs.artifact }}
+      previous-tag: ${{ needs.identity.outputs.previous-tag }}
+
+  qualification-lts:
+    name: Production VM (lts)
+    needs: [identity, build-lts]
+    uses: ./.github/workflows/production-vmtests.yml
+    with:
+      flavour: lts
+      artifact-name: ${{ needs.build-lts.outputs.artifact }}
       previous-tag: ${{ needs.identity.outputs.previous-tag }}
 
   qualified-bytes:
     name: Verify Qualified Bytes
-    needs: [identity, bundle, qualification]
+    needs: [identity, bundle, qualification-standard, qualification-lts]
     runs-on: ubuntu-24.04
     permissions:
       actions: read
@@ -722,26 +237,34 @@ jobs:
   release-validation:
     name: Release validation
     if: always() && inputs.qualify_run == 0
-    needs: [bundle, vmtests, qualification, qualified-bytes, unit]
+    needs:
+      - bundle
+      - vmtests
+      - qualification-standard
+      - qualification-lts
+      - qualified-bytes
+      - unit
     runs-on: ubuntu-24.04
     steps:
       - env:
           UNIT: ${{ needs.unit.result }}
           BUNDLE: ${{ needs.bundle.result }}
           REGRESSION: ${{ needs.vmtests.result }}
-          PRODUCTION: ${{ needs.qualification.result }}
+          PRODUCTION_STANDARD: ${{ needs.qualification-standard.result }}
+          PRODUCTION_LTS: ${{ needs.qualification-lts.result }}
           QUALIFIED: ${{ needs.qualified-bytes.result }}
         run: |
           test "$UNIT" = success
           test "$BUNDLE" = success
           test "$REGRESSION" = success
-          test "$PRODUCTION" = success
+          test "$PRODUCTION_STANDARD" = success
+          test "$PRODUCTION_LTS" = success
           test "$QUALIFIED" = success
 
   publish-extensions:
     name: Publish Kernel Extensions
     if: github.event_name == 'push' && github.ref_type == 'tag'
-    needs: [images, release-validation]
+    needs: [build-standard, build-lts, release-validation]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -754,7 +277,7 @@ jobs:
           cache: true
       - uses: actions/download-artifact@v8
         with:
-          pattern: katl-runtime-images-*-${{ github.sha }}
+          pattern: katl-extension-bundles-*-${{ github.sha }}
           path: artifacts
       - name: Authenticate publication
         env:
@@ -764,7 +287,7 @@ jobs:
         shell: bash
         run: |
           for flavour in standard lts; do
-            directory="artifacts/katl-runtime-images-${flavour}-${GITHUB_SHA}"
+            directory="artifacts/katl-extension-bundles-${flavour}-${GITHUB_SHA}"
             go run ./cmd/katl-mkosi-artifacts publish-release-extensions \
               "$directory/release-extensions.json" "$directory/extension-bundles"
           done

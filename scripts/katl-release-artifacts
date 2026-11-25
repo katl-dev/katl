@@ -16,6 +16,7 @@ usage() {
 usage: scripts/katl-release-artifacts version EVENT REF_TYPE REF_NAME [MANUAL_VERSION]
        scripts/katl-release-artifacts notes VERSION
        scripts/katl-release-artifacts build-katlctl VERSION
+       scripts/katl-release-artifacts verify-katlctl VERSION
        scripts/katl-release-artifacts stage VERSION OUTPUT_DIR
        scripts/katl-release-artifacts combine OUTPUT_DIR FLAVOUR=DIR...
 EOF
@@ -406,6 +407,23 @@ EOF
     write_checksums "$output"
 }
 
+# A release katlctl must be built from a clean checkout of the revision being
+# released, so its embedded VCS stamp identifies exactly the source it came from.
+verify_katlctl() {
+    local version="$1"
+    local revision target info
+
+    validate_version "$version"
+    revision="$(git -C "$repo_root" rev-parse HEAD)"
+    for target in linux-amd64 darwin-arm64; do
+        info="$("$go_command" version -m "$build_dir/katlctl-${version}-${target}")"
+        grep -qxP '\tbuild\tvcs\.modified=false' <<<"$info" ||
+            fail "katlctl-${version}-${target} was built from a modified tree; remove generated files from the checkout"
+        grep -qxF "$(printf '\tbuild\tvcs.revision=%s' "$revision")" <<<"$info" ||
+            fail "katlctl-${version}-${target} was not built from revision $revision"
+    done
+}
+
 case "${1:-}" in
     version)
         [[ $# -ge 4 && $# -le 5 ]] || usage
@@ -418,6 +436,10 @@ case "${1:-}" in
     build-katlctl)
         [[ $# -eq 2 ]] || usage
         build_katlctl "$2"
+        ;;
+    verify-katlctl)
+        [[ $# -eq 2 ]] || usage
+        verify_katlctl "$2"
         ;;
     stage)
         [[ $# -eq 3 ]] || usage

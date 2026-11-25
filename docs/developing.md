@@ -752,11 +752,15 @@ builds restore caches that only Release Artifacts saves, so they do not depend o
 CI caches. They run only for release branches, tags, or explicit manual
 candidates, and later runs do not cancel them.
 
-Release production uses a dependency-aware job graph. Runtime, installer, and
-`katlctl` builds start concurrently. The install and upgrade images are then
-packaged concurrently from the one verified runtime build, and a final job
-assembles the installer ISO from those verified intermediates before staging
-and attesting the complete release set. Runtime and installer jobs each own
+Release production uses a dependency-aware job graph. Release Artifacts calls the
+reusable `.github/workflows/production-build.yml` once per flavour (`build-standard`,
+`build-lts`) with the inputs `flavour`, `version`, `previous-tag`, and `publication`.
+Within a build, the runtime and installer jobs start concurrently and the
+extension closures follow the runtime. An assemble job then packages the install
+and upgrade images concurrently, builds `katlctl`, assembles the installer ISO,
+and stages the flavour's release set. Each flavour's Production VM qualification
+starts as soon as its own build ends, and a final job in Release Artifacts attests
+the combined bundle. Runtime and installer jobs each own
 separate Go, mkosi package, and Docker builder-layer caches, avoiding competing
 writes. Go and package caches save a fresh snapshot per source commit and restore
 the latest compatible snapshot. The builder is loaded through Docker Buildx;

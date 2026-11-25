@@ -34,6 +34,7 @@ separate publication approval is required.
 
 A manual dispatch with `version` builds and qualifies a candidate without
 publishing. A tag still qualifies its own built bytes before promotion.
+Only a tag push can publish; a dispatch never reaches the publication jobs.
 
 ## Qualification and promotion
 
@@ -49,8 +50,10 @@ Both standard and LTS flavours must pass:
   the source generation, preserving machine identity. These tests use the
   production images without a VM test agent.
 
-Production VM qualifies each flavour's assembled bytes while the publication
-bundle is built, and uploads the checksums it verified. Release validation
+Each flavour is built by the reusable `production-build.yml` workflow. Its own
+Production VM job (`qualification-standard`, `qualification-lts`) qualifies the
+assembled bytes as soon as that build ends, while the other flavour and the
+publication bundle are still building, and uploads the checksums it verified. Release validation
 additionally requires those qualified checksums to equal the bundle's; only
 `RELEASE_NOTES.md`, which the bundle renders, is exempt. Publication consumes
 those artifacts without rebuilding.
@@ -86,7 +89,7 @@ gh workflow run release-artifacts.yml --ref main -f version=VERSION -f qualify_r
 ```
 
 This diagnostic run reuses the immutable bundle and ignores VERSION, which
-the dispatch form requires. It has no publication path.
+the dispatch form requires. It has no publication path. Production VM runs once per flavour in the same way.
 Tag promotion still requires all gates in the tag's own build run.
 
 Guest disks are excluded from retained artifacts. Fix the defect and
