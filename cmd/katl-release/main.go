@@ -147,7 +147,7 @@ func prepare(args []string, stdout, stderr io.Writer, call command) error {
 			return fmt.Errorf("tag %s already exists; inspect its run or choose a new version", tag)
 		}
 	}
-	fmt.Fprintf(stdout, "Release: %s\nSource:  %s (%s)\nPublication: automatic after regression and production VM qualification\n\nReview release guidance in docs/releases/%s.md if needed.\nAfter source review, start the candidate build with:\n\n", tag, source.SHA, *ref, version)
+	fmt.Fprintf(stdout, "Release: %s\nSource:  %s (%s)\nPublication: automatic after regression and production VM qualification\n\nReview release guidance in docs/releases/%s.md or, until it is published, docs/releases/next.md.\nAfter source review, start the candidate build with:\n\n", tag, source.SHA, *ref, version)
 	if _, err := os.Stat(".jj"); err == nil {
 		fmt.Fprintf(stdout, "jj git fetch --remote origin\njj tag set %s --revision %s\njj git push --remote origin --tag %s\n", tag, source.SHA, tag)
 	} else {

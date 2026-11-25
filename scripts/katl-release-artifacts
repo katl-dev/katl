@@ -67,6 +67,19 @@ previous_katlos_tag() {
     done < <(git rev-list --first-parent "$target")
 }
 
+# Prints the guidance file for a version: the published <version>.md, else the
+# final release's <base>.md so a prerelease renders what its final release will,
+# else the pending next.md. Prints nothing when none exists.
+release_guidance_file() {
+    local version="$1" candidate
+    for candidate in "$version" "${version%%-*}" next; do
+        if [[ -f "$repo_root/docs/releases/$candidate.md" ]]; then
+            printf '%s\n' "$repo_root/docs/releases/$candidate.md"
+            return 0
+        fi
+    done
+}
+
 generate_release_notes() {
     local version="$1"
     local current_tag="v$version"
@@ -126,8 +139,8 @@ generate_release_notes() {
         printf '_No release note entries for this release._\n'
     fi
 
-    release_notes="$repo_root/docs/releases/$version.md"
-    if [[ -f "$release_notes" ]]; then
+    release_notes="$(release_guidance_file "$version")"
+    if [[ -n "$release_notes" ]]; then
         printf '\n'
         cat "$release_notes"
     fi
