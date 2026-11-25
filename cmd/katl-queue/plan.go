@@ -27,9 +27,14 @@ type candidate struct {
 	External     []string
 	AutoMerge    bool
 	ChecksFailed bool
+	// OptionalFailed names failing checks that branch rules do not require.
+	OptionalFailed []string
 	// Ejected is set when the merge queue removed it for failed checks and
-	// nothing was pushed since.
+	// its head has not changed since.
 	Ejected bool
+	// Dequeued is set when someone dequeued it by hand and its head has not
+	// changed since.
+	Dequeued bool
 }
 
 // externalRef is the state of an issue or pull request that a candidate
@@ -54,6 +59,9 @@ type heldPR struct {
 	Files   []string
 	// Rebase is set when only a rebase onto the base branch can unblock it.
 	Rebase bool
+	// Advisory is set when GitHub would still queue the pull request, so
+	// auto-merge stays enabled.
+	Advisory bool
 }
 
 type plan struct {
@@ -248,6 +256,15 @@ func planQueue(ctx context.Context, objects *scratchObjects, in planInput) (plan
 		p.Held = append(p.Held, heldPR{Number: c.Number, Reason: reason})
 	}
 
+	// A pull request others declare a dependency on cannot be left with a
+	// failing check, optional or not.
+	dependedOn := map[int]bool{}
+	for _, w := range resolved {
+		for _, n := range w.on {
+			dependedOn[n] = true
+		}
+	}
+
 	chosen := slices.Clone(in.Queue)
 	for _, c := range ordered {
 		w := resolved[c.Number]
@@ -257,11 +274,19 @@ func planQueue(ctx context.Context, objects *scratchObjects, in planInput) (plan
 		}
 
 		if c.Ejected {
-			hold(heldPR{Reason: "was removed from the merge queue for failed checks and nothing was pushed since; fix it and push (katl-queue never retries)"})
+			hold(heldPR{Reason: "was removed from the merge queue for failed checks and its head has not changed; fix it and push (katl-queue never retries)"})
+			continue
+		}
+		if c.Dequeued {
+			hold(heldPR{Reason: "was dequeued by hand; katl-queue leaves it out until a new head is pushed"})
 			continue
 		}
 		if c.ChecksFailed {
 			hold(heldPR{Reason: "checks failed; fix them and push (katl-queue never retries checks)"})
+			continue
+		}
+		if len(c.OptionalFailed) > 0 && dependedOn[c.Number] {
+			hold(heldPR{Advisory: true, Reason: "optional checks failed (" + strings.Join(c.OptionalFailed, ", ") + ") and other pull requests depend on it; fix them and push"})
 			continue
 		}
 		if len(c.External) > 0 {

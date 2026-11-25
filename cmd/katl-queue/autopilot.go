@@ -28,26 +28,31 @@ const (
 	actionDequeue actionKind = "dequeue"
 	actionDisable actionKind = "disable-auto-merge"
 	actionExplain actionKind = "explain"
+	actionRecord  actionKind = "record"
+	actionReport  actionKind = "report"
 	actionUnlabel actionKind = "unlabel"
 	actionRebase  actionKind = "rebase"
 	actionEnqueue actionKind = "enqueue"
 )
 
-var actionOrder = []actionKind{actionDequeue, actionDisable, actionExplain, actionUnlabel, actionRebase, actionEnqueue}
+var actionOrder = []actionKind{actionDequeue, actionDisable, actionExplain, actionRecord, actionReport, actionUnlabel, actionRebase, actionEnqueue}
 
 type action struct {
 	Kind   actionKind
 	Number int
 	// ID is the GraphQL ID of the pull request a dequeue acts on.
 	ID string
-	// Head and Branch identify what a rebase starts from.
+	// Head and Branch identify what a rebase starts from, and the head a
+	// record or report is about.
 	Head   string
 	Branch string
 	Detail string
+	// Checks names the failing optional checks a report lists.
+	Checks []string
 	// Files lists the conflicted paths a rebase is expected to hit.
 	Files []string
-	// RemovedAt is the removal an explain action reports.
-	RemovedAt time.Time
+	// RemovalID is the removal an explain or record action is about.
+	RemovalID string
 }
 
 // decision is what one autopilot pass would do.
@@ -108,8 +113,16 @@ func decide(ctx context.Context, objects *scratchObjects, w world) (decision, er
 		if !w.eligible(pr) || pr.InQueue {
 			continue
 		}
-		if pr.Removal != nil && !pr.Pushed && !slices.Contains(pr.Reported, ejectionMarker(pr.Removal.CreatedAt).Value) {
-			d.Actions = append(d.Actions, action{Kind: actionExplain, Number: pr.Number, RemovedAt: pr.Removal.CreatedAt, Detail: "removed from the queue: " + pr.Removal.Reason})
+		if pr.unrecorded(w.Viewer) {
+			switch pr.removalKind(w.Viewer) {
+			case removalEjected:
+				d.Actions = append(d.Actions, action{Kind: actionExplain, Number: pr.Number, RemovalID: pr.Removal.ID, Head: pr.Head, Detail: "removed from the queue: " + pr.Removal.Reason})
+			case removalDequeued:
+				d.Actions = append(d.Actions, action{Kind: actionRecord, Number: pr.Number, RemovalID: pr.Removal.ID, Head: pr.Head, Detail: "dequeued by hand; leaving it out until the head changes"})
+			}
+		}
+		if len(pr.OptionalFailed) > 0 && !pr.OptionalReported {
+			d.Actions = append(d.Actions, action{Kind: actionReport, Number: pr.Number, Head: pr.Head, Checks: pr.OptionalFailed, Detail: "optional checks failed: " + strings.Join(pr.OptionalFailed, ", ")})
 		}
 		if pr.NeedsLabel {
 			sim, err := simulate(ctx, objects, w.Base, nil, queuedPR{Number: pr.Number, Head: pr.Head})
@@ -129,7 +142,7 @@ func decide(ctx context.Context, objects *scratchObjects, w world) (decision, er
 	}
 	for _, h := range d.Plan.Held {
 		pr := byNumber[h.Number]
-		if pr.AutoMerge {
+		if pr.AutoMerge && !h.Advisory && !h.Rebase {
 			d.Actions = append(d.Actions, action{Kind: actionDisable, Number: pr.Number, Detail: "held, so auto-merge must not queue it: " + h.Reason})
 		}
 		// A label means an earlier rebase conflicted and a person must
@@ -216,7 +229,15 @@ func applyOne(ctx context.Context, fx effects, a action, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return fx.Comment(ctx, a.Number, ejectionMarker(a.RemovedAt).String()+"\n```\n"+strings.TrimSpace(report)+"\n```")
+		return fx.Comment(ctx, a.Number, removalMarker(a.RemovalID, a.Head).String()+"\n```\n"+strings.TrimSpace(report)+"\n```")
+	case actionRecord:
+		return fx.Comment(ctx, a.Number, removalMarker(a.RemovalID, a.Head).String()+"\nDequeued by hand. katl-queue leaves it out of the queue until a new head is pushed.")
+	case actionReport:
+		body := optionalMarker(a.Head).String() + "\nOptional checks failed on `" + short(a.Head) + "`. They do not block merging, so katl-queue leaves the pull request alone:\n\n"
+		for _, name := range a.Checks {
+			body += "- " + name + "\n"
+		}
+		return fx.Comment(ctx, a.Number, body)
 	case actionRebase:
 		return applyRebase(ctx, fx, a, out)
 	}
@@ -230,9 +251,7 @@ func applyRebase(ctx context.Context, fx effects, a action, out io.Writer) error
 	}
 	if len(res.Conflicts) == 0 {
 		fmt.Fprintln(out, "  rebased and pushed")
-		// The marker names the pushed head so a later pass does not mistake
-		// this push for the author's.
-		return fx.Comment(ctx, a.Number, marker{"rebased", res.Head}.String()+"\nRebased onto the base branch by katl-queue; the head is now `"+short(res.Head)+"`.")
+		return fx.Comment(ctx, a.Number, "Rebased onto the base branch by katl-queue; the head is now `"+short(res.Head)+"`.")
 	}
 
 	fmt.Fprintf(out, "  rebase conflicts in %s; labelling %s and stopping\n", strings.Join(res.Conflicts, ", "), needsRebaseLabel)
@@ -260,12 +279,19 @@ type ghEffects struct {
 	g     *gh
 	base  string
 	local string
+	out   io.Writer
 }
 
 func (e ghEffects) repoArgs() []string { return []string{"--repo", e.g.owner + "/" + e.g.name} }
 
+// Enqueue enables auto-merge and waits for the entry to appear: GitHub queues
+// asynchronously, so enabling the next before then would reorder the queue.
 func (e ghEffects) Enqueue(ctx context.Context, number int) error {
-	return e.g.enableAutoMerge(ctx, number)
+	if err := e.g.enableAutoMerge(ctx, number); err != nil {
+		return err
+	}
+	waitQueued(ctx, e.g, number, e.out)
+	return nil
 }
 
 func (e ghEffects) Dequeue(ctx context.Context, id string) error {
@@ -342,6 +368,7 @@ func rebaseEnv(environ []string, name, email string) []string {
 	return append(gitEnvFrom(environ),
 		"GIT_CONFIG_GLOBAL=/dev/null",
 		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_TERMINAL_PROMPT=0",
 		"GIT_COMMITTER_NAME="+name,
 		"GIT_COMMITTER_EMAIL="+email,
 	)
@@ -450,7 +477,7 @@ func autopilotPass(ctx context.Context, g *gh, milestone string, dryRun bool, ou
 		fmt.Fprintln(out, "dry run: pass --apply to do this")
 		return nil
 	}
-	return apply(ctx, ghEffects{g: g, base: w.Base, local: "."}, d.Actions, out)
+	return apply(ctx, ghEffects{g: g, base: w.Base, local: ".", out: out}, d.Actions, out)
 }
 
 func worldOids(w world) []string {

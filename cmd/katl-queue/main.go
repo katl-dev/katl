@@ -33,13 +33,12 @@ Commands:
   why PR            explain why PR was removed from the queue
   plan [--milestone M] [--apply | --next]
                     order ready PRs for the queue, holding conflicting ones;
-                    --apply enqueues in that order, --next lists startable issues
+                    --apply makes an autopilot pass, --next lists startable issues
   autopilot [--milestone M] [--apply] [--once] [--interval D]
                     rebase held PRs, enqueue what merges cleanly, dequeue
                     unmergeable entries and explain ejections
 
-plan and autopilot only report unless given --apply, which autopilot allows
-only with --milestone.
+plan and autopilot only report unless given --apply, which needs --milestone.
 
 Exit status is 1 when check finds a conflict, enqueue refuses, or a watched PR
 leaves the queue without merging, and 2 on any other error.
@@ -89,7 +88,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		flags.DurationVar(&interval, "interval", interval, "time between polls")
 	case "plan":
 		flags.StringVar(&milestone, "milestone", "", "limit to this milestone")
-		flags.BoolVar(&applyChanges, "apply", false, "enqueue in the planned order")
+		flags.BoolVar(&applyChanges, "apply", false, "make the changes an autopilot pass would")
 		flags.BoolVar(&next, "next", false, "list issues that can be started")
 	case "autopilot":
 		flags.StringVar(&milestone, "milestone", "", "limit to this milestone")
@@ -449,12 +448,12 @@ func reportArtifactFailures(ctx context.Context, g *gh, run int64, out io.Writer
 	}
 }
 
-// applyScope refuses an autopilot that would change pull requests without a
-// milestone to confine it: it pushes to branches and dequeues entries, which
+// applyScope refuses an --apply that would change pull requests without a
+// milestone to confine it: a pass pushes to branches and dequeues entries, which
 // should never reach every open pull request by default.
 func applyScope(command, milestone string, apply bool) error {
-	if command == "autopilot" && apply && milestone == "" {
-		return errors.New("autopilot --apply changes pull requests, so it needs --milestone to say which; run it without --apply to see what it would do")
+	if apply && milestone == "" {
+		return fmt.Errorf("%s --apply changes pull requests, so it needs --milestone to say which; run it without --apply to see what it would do", command)
 	}
 	return nil
 }

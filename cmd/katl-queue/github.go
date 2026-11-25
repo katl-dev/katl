@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -17,7 +18,8 @@ import (
 // gh runs the GitHub CLI for one repository. Every GitHub read and write the
 // tool makes goes through it, so the repository is resolved once.
 type gh struct {
-	// viewer is the login of the authenticated user, read on first use.
+	// viewer is the login of the authenticated user, set when a snapshot is
+	// read. It identifies the comments and dequeues katl-queue itself made.
 	viewer      string
 	owner, name string
 }
@@ -134,6 +136,7 @@ type queueEntry struct {
 // queueSnapshot is the merge queue for the default branch, the branch tip it
 // builds on, and the open pull requests.
 type queueSnapshot struct {
+	Viewer  string
 	Branch  string
 	BaseOid string
 	Entries []queueEntry
@@ -154,7 +157,7 @@ const (
   mergeQueueEntry { position state }`
 
 	removalOpen = `timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
-    nodes { ... on RemovedFromMergeQueueEvent { createdAt reason`
+    nodes { ... on RemovedFromMergeQueueEvent { id createdAt reason actor { login }`
 	removalClose = ` } } }`
 
 	removalChecks = `
@@ -170,24 +173,15 @@ const (
           }
         }`
 
-	// planFields is what planning and autopilot read beyond prFields. The
-	// history lists removals and pushes in the order they happened, which
-	// tells whether the head moved since the latest removal.
+	// planFields is what planning and autopilot read beyond prFields.
 	planFields = `id body isDraft isCrossRepository headRefName baseRefName createdAt
   milestone { title }
   labels(first: 30) { nodes { name } }
-  closingIssuesReferences(first: 20) { nodes { number } }
-  commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
-  history: timelineItems(last: 30, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT, PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT]) {
-    nodes {
-      __typename
-      ... on PullRequestCommit { commit { oid } }
-      ... on HeadRefForcePushedEvent { afterCommit { oid } }
-    }
-  }`
+  closingIssuesReferences(first: 20) { nodes { number } }`
 )
 
 const snapshotQuery = `query($owner: String!, $name: String!) {
+  viewer { login }
   repository(owner: $owner, name: $name) {
     defaultBranchRef { name target { oid } }
     mergeQueue {
@@ -207,6 +201,9 @@ const snapshotQuery = `query($owner: String!, $name: String!) {
 
 func (g *gh) snapshot(ctx context.Context) (queueSnapshot, error) {
 	var resp struct {
+		Viewer struct {
+			Login string `json:"login"`
+		} `json:"viewer"`
 		Repository struct {
 			DefaultBranchRef struct {
 				Name   string `json:"name"`
@@ -228,8 +225,9 @@ func (g *gh) snapshot(ctx context.Context) (queueSnapshot, error) {
 		return queueSnapshot{}, err
 	}
 
+	g.viewer = resp.Viewer.Login
 	repo := resp.Repository
-	snap := queueSnapshot{Branch: repo.DefaultBranchRef.Name, BaseOid: repo.DefaultBranchRef.Target.Oid}
+	snap := queueSnapshot{Viewer: resp.Viewer.Login, Branch: repo.DefaultBranchRef.Name, BaseOid: repo.DefaultBranchRef.Target.Oid}
 	if repo.MergeQueue == nil {
 		return snap, fmt.Errorf("%s/%s has no merge queue on %s", g.owner, g.name, snap.Branch)
 	}
@@ -282,32 +280,17 @@ type prResponse struct {
 			Name string `json:"name"`
 		} `json:"nodes"`
 	} `json:"labels"`
-	Commits struct {
-		Nodes []struct {
-			Commit struct {
-				StatusCheckRollup *struct {
-					State string `json:"state"`
-				} `json:"statusCheckRollup"`
-			} `json:"commit"`
-		} `json:"nodes"`
-	} `json:"commits"`
-	History struct {
-		Nodes []historyEvent `json:"nodes"`
-	} `json:"history"`
-}
-
-// historyEvent is a removal from the merge queue or a push to the head
-// branch. A push is a commit added to the branch or a force push, and the
-// commits of a push precede its force-push event.
-type historyEvent struct {
-	Type        string                `json:"__typename"`
-	Commit      *struct{ Oid string } `json:"commit"`
-	AfterCommit *struct{ Oid string } `json:"afterCommit"`
 }
 
 type removalEvent struct {
-	CreatedAt    time.Time `json:"createdAt"`
-	Reason       string    `json:"reason"`
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"createdAt"`
+	Reason    string    `json:"reason"`
+	// Actor is who removed the entry: the merge queue itself for failed
+	// checks, and the person or tool that dequeued it for a manual removal.
+	Actor *struct {
+		Login string `json:"login"`
+	} `json:"actor"`
 	BeforeCommit *struct {
 		Oid         string `json:"oid"`
 		CheckSuites struct {
@@ -467,29 +450,103 @@ func (g *gh) disableAutoMerge(ctx context.Context, number int) error {
 	return err
 }
 
-func (g *gh) viewerLogin(ctx context.Context) (string, error) {
-	if g.viewer == "" {
-		out, err := runGH(ctx, "api", "user", "--jq", ".login")
-		if err != nil {
-			return "", err
-		}
-		g.viewer = strings.TrimSpace(string(out))
-	}
-	return g.viewer, nil
-}
-
 // markers lists the markers in every comment on a pull request that the
 // authenticated user wrote. Comments from anyone else are ignored, so a
-// quoted or forged marker cannot suppress or trigger an action.
+// quoted or forged marker cannot suppress or trigger an action. It needs a
+// snapshot to have identified the user.
 func (g *gh) markers(ctx context.Context, number int) ([]marker, error) {
-	viewer, err := g.viewerLogin(ctx)
-	if err != nil {
-		return nil, err
+	if g.viewer == "" {
+		return nil, errors.New("the authenticated user is unknown; read a snapshot first")
 	}
-	filter := fmt.Sprintf(`.[] | select(.user.login == %q) | .body`, viewer)
+	filter := fmt.Sprintf(`.[] | select(.user.login == %q) | .body`, g.viewer)
 	out, err := runGH(ctx, "api", "--paginate", fmt.Sprintf("repos/%s/%s/issues/%d/comments", g.owner, g.name, number), "--jq", filter)
 	if err != nil {
 		return nil, err
 	}
 	return parseMarkers(string(out)), nil
+}
+
+// checkFailures names the checks failing on a pull request's latest commit.
+// Required is what the repository's rules require to merge; Optional is
+// everything else, which GitHub does not hold the pull request for.
+type checkFailures struct {
+	Required, Optional []string
+}
+
+// pullRequestChecks reads the failing checks of pull requests by number.
+// Whether a check is required depends on the pull request, so each is asked
+// for under its own number.
+func (g *gh) pullRequestChecks(ctx context.Context, numbers []int) (map[int]checkFailures, error) {
+	if len(numbers) == 0 {
+		return map[int]checkFailures{}, nil
+	}
+	var query strings.Builder
+	query.WriteString("query($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n")
+	for _, n := range numbers {
+		fmt.Fprintf(&query, `    pr%[1]d: pullRequest(number: %[1]d) { commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
+      __typename
+      ... on CheckRun { name conclusion isRequired(pullRequestNumber: %[1]d) }
+      ... on StatusContext { context state isRequired(pullRequestNumber: %[1]d) }
+    } } } } } } }
+`, n)
+	}
+	query.WriteString("  }\n}\n")
+
+	raw, err := g.queryRaw(ctx, query.String())
+	if err != nil {
+		return nil, err
+	}
+	return decodeCheckFailures(raw, numbers)
+}
+
+func decodeCheckFailures(raw []byte, numbers []int) (map[int]checkFailures, error) {
+	var resp struct {
+		Repository map[string]*struct {
+			Commits struct {
+				Nodes []struct {
+					Commit struct {
+						StatusCheckRollup *struct {
+							Contexts struct {
+								Nodes []struct {
+									Type       string `json:"__typename"`
+									Name       string `json:"name"`
+									Conclusion string `json:"conclusion"`
+									Context    string `json:"context"`
+									State      string `json:"state"`
+									IsRequired bool   `json:"isRequired"`
+								} `json:"nodes"`
+							} `json:"contexts"`
+						} `json:"statusCheckRollup"`
+					} `json:"commit"`
+				} `json:"nodes"`
+			} `json:"commits"`
+		} `json:"repository"`
+	}
+	if err := decodeGraphQL(raw, &resp); err != nil {
+		return nil, err
+	}
+
+	out := map[int]checkFailures{}
+	for _, n := range numbers {
+		pr := resp.Repository[fmt.Sprintf("pr%d", n)]
+		if pr == nil || len(pr.Commits.Nodes) == 0 || pr.Commits.Nodes[0].Commit.StatusCheckRollup == nil {
+			continue
+		}
+		var failures checkFailures
+		for _, c := range pr.Commits.Nodes[0].Commit.StatusCheckRollup.Contexts.Nodes {
+			name, failed := c.Name, slices.Contains([]string{"FAILURE", "TIMED_OUT", "STARTUP_FAILURE"}, c.Conclusion)
+			if c.Type == "StatusContext" {
+				name, failed = c.Context, c.State == "FAILURE" || c.State == "ERROR"
+			}
+			switch {
+			case !failed:
+			case c.IsRequired:
+				failures.Required = append(failures.Required, name)
+			default:
+				failures.Optional = append(failures.Optional, name)
+			}
+		}
+		out[n] = failures
+	}
+	return out, nil
 }

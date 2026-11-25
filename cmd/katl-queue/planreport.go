@@ -20,9 +20,14 @@ func reportHeld(out io.Writer, p plan) {
 	}
 }
 
-// planCommand reports the order to enqueue ready pull requests in and, with
-// apply set, enables auto-merge on them in that order.
+// planCommand reports the order to enqueue ready pull requests in. With apply
+// set it makes the same pass autopilot makes, so one pipeline decides and
+// performs every change.
 func planCommand(ctx context.Context, g *gh, milestone string, apply bool, out io.Writer) error {
+	if apply {
+		return autopilotPass(ctx, g, milestone, false, out)
+	}
+
 	w, err := g.world(ctx, milestone)
 	if err != nil {
 		return err
@@ -48,30 +53,8 @@ func planCommand(ctx context.Context, g *gh, milestone string, apply bool, out i
 		fmt.Fprintln(out, "nothing to enqueue")
 		return nil
 	}
-	if !apply {
-		fmt.Fprintln(out, "dry run: pass --apply to enqueue in this order")
-		return nil
-	}
-
-	for _, n := range p.Enqueue {
-		if i := indexCandidate(cands, n); cands[i].AutoMerge {
-			continue
-		}
-		if err := g.enableAutoMerge(ctx, n); err != nil {
-			return err
-		}
-		waitQueued(ctx, g, n, out)
-	}
+	fmt.Fprintln(out, "dry run: pass --apply to enqueue in this order")
 	return nil
-}
-
-func indexCandidate(cands []candidate, n int) int {
-	for i, c := range cands {
-		if c.Number == n {
-			return i
-		}
-	}
-	return -1
 }
 
 func nextCommand(ctx context.Context, g *gh, milestone string, out io.Writer) error {

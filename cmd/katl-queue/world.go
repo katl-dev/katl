@@ -25,14 +25,12 @@ type openPR struct {
 	NeedsLabel bool // carries the needs-rebase label
 	// Removal is the latest removal from the merge queue, if any.
 	Removal *removalEvent
-	// Pushed is set when someone other than katl-queue pushed to the head
-	// branch after Removal.
-	Pushed bool
-	// Reported lists the removal timestamps already explained by a
-	// katl-queue comment.
-	Reported []string
-
-	history []historyEvent
+	// RemovalHead is the head katl-queue recorded when it first observed
+	// Removal, or empty when it has not yet.
+	RemovalHead string
+	// OptionalReported is set when katl-queue already reported the failing
+	// optional checks of this head.
+	OptionalReported bool
 }
 
 // queueEntryState is a merge-queue entry and its queue-assigned state.
@@ -44,6 +42,8 @@ type queueEntryState struct {
 
 // world is everything planning and autopilot decide from.
 type world struct {
+	// Viewer is the login katl-queue acts as.
+	Viewer  string
 	Branch  string
 	Base    string
 	Queue   []queuedPR
@@ -76,16 +76,6 @@ func parseMarkers(text string) []marker {
 	return out
 }
 
-func hasMarker(marks []marker, kind, value string) bool {
-	return slices.Contains(marks, marker{Kind: kind, Value: value})
-}
-
-// ejectionMarker tags a comment that explains a removal, so the same removal
-// is explained once.
-func ejectionMarker(at time.Time) marker {
-	return marker{Kind: "ejection", Value: at.UTC().Format(time.RFC3339)}
-}
-
 // eligible reports whether katl-queue may manage the pull request. Release
 // branches and pull requests targeting them are never touched, and forks
 // cannot be pushed to.
@@ -94,54 +84,82 @@ func (w world) eligible(pr openPR) bool {
 		!strings.HasPrefix(pr.BaseRef, "release/") && !strings.HasPrefix(pr.HeadRef, "release/")
 }
 
-// authorPushed reports whether anyone but katl-queue pushed to the branch
-// after its latest removal from the queue. History lists removals and pushes
-// in order, and a push's commits precede its force-push event. own lists the
-// heads katl-queue pushed.
-func authorPushed(history []historyEvent, own []string) bool {
-	last := -1
-	for i, e := range history {
-		if e.Commit == nil && e.AfterCommit == nil {
-			last = i
-		}
-	}
+// removalKind classifies the latest removal by how katl-queue treats it.
+type removalKind int
 
-	commits := false
-	for _, e := range history[last+1:] {
-		switch {
-		case e.Commit != nil:
-			commits = true
-		case e.AfterCommit != nil:
-			if !slices.Contains(own, e.AfterCommit.Oid) {
-				return true
-			}
-			commits = false
-		}
+const (
+	// removalOther is a removal katl-queue takes no position on: none, the
+	// queue's own conflict or merge handling, or katl-queue's own dequeue.
+	removalOther removalKind = iota
+	// removalEjected is the queue's removal for failed or timed-out checks.
+	removalEjected
+	// removalDequeued is a dequeue by someone other than katl-queue, which
+	// is the operator's intent to keep the pull request out.
+	removalDequeued
+)
+
+func (pr openPR) removalKind(viewer string) removalKind {
+	switch {
+	case pr.Removal == nil:
+		return removalOther
+	case pr.Removal.forFailedChecks():
+		return removalEjected
+	case pr.Removal.Reason == "manual" && (pr.Removal.Actor == nil || pr.Removal.Actor.Login != viewer):
+		return removalDequeued
 	}
-	return commits
+	return removalOther
 }
 
-// settleRemoval reads the markers katl-queue left on the pull request to
-// decide which removals are already explained and whether the author has
-// acted on the removal since.
-func (pr *openPR) settleRemoval(marks []marker) {
-	var own []string
+// removalMarker records the head a pull request had when katl-queue first
+// observed a removal. The removal stays in force only while the head is
+// unchanged, so no history of pushes is needed to tell that someone acted on
+// it: katl-queue rebases only pull requests the removal no longer holds, and
+// a head that differs from the recorded one is a settled removal whichever
+// push produced it.
+func removalMarker(removalID, head string) marker {
+	return marker{Kind: "removal", Value: removalID + "@" + head}
+}
+
+// optionalMarker tags a comment that reported the failing optional checks of
+// a head, so each head is reported once.
+func optionalMarker(head string) marker {
+	return marker{Kind: "optional", Value: head}
+}
+
+// settle reads the markers katl-queue left on the pull request to decide
+// whether its latest removal still holds it and which reports were made.
+// A removal that katl-queue has not recorded holds the pull request at its
+// current head, which is the safe reading when it cannot tell whether the
+// author already pushed.
+func (pr *openPR) settle(marks []marker, viewer string) {
 	for _, m := range marks {
 		switch m.Kind {
-		case "ejection":
-			pr.Reported = append(pr.Reported, m.Value)
-		case "rebased":
-			own = append(own, m.Value)
+		case "removal":
+			if id, head, ok := strings.Cut(m.Value, "@"); ok && pr.Removal != nil && id == pr.Removal.ID {
+				pr.RemovalHead = head
+			}
+		case "optional":
+			if m.Value == pr.Head {
+				pr.OptionalReported = true
+			}
 		}
 	}
-	pr.Pushed = authorPushed(pr.history, own)
-	pr.Ejected = pr.Removal.forFailedChecks() && !pr.Pushed
+	held := pr.RemovalHead == "" || pr.RemovalHead == pr.Head
+	kind := pr.removalKind(viewer)
+	pr.Ejected = kind == removalEjected && held
+	pr.Dequeued = kind == removalDequeued && held
+}
+
+// unrecorded reports whether the latest removal is one katl-queue holds the
+// pull request for but has not yet recorded.
+func (pr openPR) unrecorded(viewer string) bool {
+	return pr.removalKind(viewer) != removalOther && pr.RemovalHead == ""
 }
 
 // worldFrom derives the world from a snapshot. A non-empty milestone limits
 // the pull requests to that milestone.
 func worldFrom(snap queueSnapshot, milestone string) world {
-	w := world{Branch: snap.Branch, Base: snap.BaseOid}
+	w := world{Viewer: snap.Viewer, Branch: snap.Branch, Base: snap.BaseOid}
 	for _, e := range snap.Entries {
 		pr := e.PullRequest
 		w.Queue = append(w.Queue, queuedPR{Number: pr.Number, Head: pr.HeadRefOid, Closes: pr.ClosingIssuesReferences.numbers()})
@@ -160,7 +178,6 @@ func worldFrom(snap queueSnapshot, milestone string) world {
 			},
 			ID: n.ID, Title: n.Title, HeadRef: n.HeadRefName, BaseRef: n.BaseRefName,
 			Draft: n.IsDraft, Fork: n.IsCrossRepository, InQueue: obs.InQueue,
-			history: n.History.Nodes,
 		}
 		if n.Milestone != nil {
 			pr.Milestone = n.Milestone.Title
@@ -172,11 +189,6 @@ func worldFrom(snap queueSnapshot, milestone string) world {
 			pr.Labels = append(pr.Labels, l.Name)
 		}
 		pr.NeedsLabel = slices.Contains(pr.Labels, needsRebaseLabel)
-		if len(n.Commits.Nodes) > 0 {
-			if rollup := n.Commits.Nodes[0].Commit.StatusCheckRollup; rollup != nil {
-				pr.ChecksFailed = rollup.State == "FAILURE" || rollup.State == "ERROR"
-			}
-		}
 		if obs.Removal != nil && !obs.Removal.mergeRecord() {
 			pr.Removal = obs.Removal
 		}
@@ -196,16 +208,31 @@ func (g *gh) world(ctx context.Context, milestone string) (world, error) {
 	}
 	w := worldFrom(snap, milestone)
 
+	var numbers []int
+	for _, pr := range w.PRs {
+		if w.eligible(pr) && !pr.InQueue {
+			numbers = append(numbers, pr.Number)
+		}
+	}
+	checks, err := g.pullRequestChecks(ctx, numbers)
+	if err != nil {
+		return w, err
+	}
 	for i := range w.PRs {
 		pr := &w.PRs[i]
-		if !w.eligible(*pr) || pr.InQueue || pr.Removal == nil {
+		if !w.eligible(*pr) || pr.InQueue {
+			continue
+		}
+		pr.ChecksFailed = len(checks[pr.Number].Required) > 0
+		pr.OptionalFailed = checks[pr.Number].Optional
+		if pr.Removal == nil && len(pr.OptionalFailed) == 0 {
 			continue
 		}
 		marks, err := g.markers(ctx, pr.Number)
 		if err != nil {
 			return w, err
 		}
-		pr.settleRemoval(marks)
+		pr.settle(marks, w.Viewer)
 	}
 
 	if err := g.loadDependencies(ctx, &w); err != nil {

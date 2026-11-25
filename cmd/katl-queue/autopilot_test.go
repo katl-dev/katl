@@ -47,7 +47,7 @@ func (f decideFixture) stale(number int, edit func(*openPR)) openPR {
 
 func (f decideFixture) decide(w world) decision {
 	f.t.Helper()
-	w.Branch, w.Base = "main", f.base
+	w.Viewer, w.Branch, w.Base = viewer, "main", f.base
 	d, err := decide(context.Background(), f.objects, w)
 	if err != nil {
 		f.t.Fatal(err)
@@ -63,7 +63,34 @@ func actionSummary(d decision) []string {
 	return out
 }
 
-var checksRemoval = removalEvent{CreatedAt: epoch.Add(time.Hour), Reason: "failed_checks"}
+const viewer = "katl-queue-bot"
+
+var checksRemoval = removalEvent{ID: "r-checks", CreatedAt: epoch.Add(time.Hour), Reason: "failed_checks"}
+
+// recording is what katl-queue has recorded about a removal.
+type recording int
+
+const (
+	unrecorded recording = iota
+	recordedAtHead
+	recordedBefore
+)
+
+// removedWith gives a pull request the removal and settles it against the
+// marker katl-queue would have left, as the world reader does.
+func removedWith(r removalEvent, rec recording) func(*openPR) {
+	return func(p *openPR) {
+		p.Removal = &r
+		var marks []marker
+		switch rec {
+		case recordedAtHead:
+			marks = []marker{removalMarker(r.ID, p.Head)}
+		case recordedBefore:
+			marks = []marker{removalMarker(r.ID, "0ld")}
+		}
+		p.settle(marks, viewer)
+	}
+}
 
 func TestDecide(t *testing.T) {
 	f := newDecideFixture(t)
@@ -89,10 +116,8 @@ func TestDecide(t *testing.T) {
 			f.stale(2, nil),
 			f.stale(3, func(p *openPR) { p.NeedsLabel = true }),
 			f.clean(4, "b2", func(p *openPR) { p.NeedsLabel = true }),
-			f.clean(5, "b3", func(p *openPR) { p.Ejected, p.Removal = true, &checksRemoval }),
-			f.clean(6, "b4", func(p *openPR) {
-				p.Ejected, p.Removal, p.Reported = true, &checksRemoval, []string{"2026-01-01T01:00:00Z"}
-			}),
+			f.clean(5, "b3", removedWith(checksRemoval, unrecorded)),
+			f.clean(6, "b4", removedWith(checksRemoval, recordedAtHead)),
 			f.clean(7, "b5", func(p *openPR) { p.BaseRef = "release/1.0" }),
 			f.clean(8, "b6", func(p *openPR) { p.Draft = true }),
 			f.clean(9, "b7", func(p *openPR) { p.HeadRef = "release/hotfix" }),
@@ -146,7 +171,7 @@ func TestDecideRebasesOnlyWhatItWouldEnqueue(t *testing.T) {
 		PRs: []openPR{
 			f.stale(1, nil),
 			f.stale(2, func(p *openPR) { p.ChecksFailed = true }),
-			f.stale(3, func(p *openPR) { p.Ejected, p.Removal = true, &checksRemoval }),
+			f.stale(3, removedWith(checksRemoval, unrecorded)),
 			f.stale(4, func(p *openPR) { p.Deps = []int{50} }),
 			f.stale(5, func(p *openPR) { p.Deps = []int{6} }),
 			f.stale(6, func(p *openPR) { p.Deps = []int{5} }),
@@ -186,25 +211,6 @@ func TestDecideDisablesAutoMergeOnHeldPRs(t *testing.T) {
 	}
 }
 
-func TestDecideExplainsRemovalsNotActedOn(t *testing.T) {
-	f := newDecideFixture(t)
-	manual := removalEvent{CreatedAt: epoch.Add(time.Hour), Reason: "manual"}
-	w := world{
-		PRs: []openPR{
-			f.clean(1, "b", func(p *openPR) { p.Removal = &manual }),
-			f.clean(2, "b2", func(p *openPR) { p.Removal, p.Pushed = &manual, true }),
-			f.clean(3, "b3", func(p *openPR) { p.Removal, p.Reported = &manual, []string{"2026-01-01T01:00:00Z"} }),
-		},
-	}
-
-	got := f.decide(w)
-
-	// #2 was pushed to since the removal, so the removal is history.
-	if want := []string{"explain #1", "enqueue #1", "enqueue #2", "enqueue #3"}; !slices.Equal(actionSummary(got), want) {
-		t.Errorf("actions = %v, want %v", actionSummary(got), want)
-	}
-}
-
 func TestDecideLeavesUnmanagedEntriesAlone(t *testing.T) {
 	f := newDecideFixture(t)
 	w := world{
@@ -217,74 +223,6 @@ func TestDecideLeavesUnmanagedEntriesAlone(t *testing.T) {
 	if len(got.Actions) != 0 {
 		t.Errorf("actions = %v, want none for an entry outside the managed pull requests", actionSummary(got))
 	}
-}
-
-func TestSettleRemoval(t *testing.T) {
-	push := func(oid string) []historyEvent {
-		return []historyEvent{{Commit: &struct{ Oid string }{oid}}, {AfterCommit: &struct{ Oid string }{oid}}}
-	}
-	removal := historyEvent{Type: "RemovedFromMergeQueueEvent"}
-	failed := &removalEvent{CreatedAt: epoch, Reason: "failed_checks"}
-	timedOut := &removalEvent{CreatedAt: epoch, Reason: "checks_timed_out"}
-	manual := &removalEvent{CreatedAt: epoch, Reason: "manual"}
-	conflict := &removalEvent{CreatedAt: epoch, Reason: "merge_conflict"}
-
-	tests := []struct {
-		name        string
-		removal     *removalEvent
-		history     []historyEvent
-		marks       []marker
-		wantEjected bool
-		wantPushed  bool
-	}{
-		{name: "failed checks", removal: failed, history: []historyEvent{removal}, wantEjected: true},
-		{name: "timed out checks", removal: timedOut, history: []historyEvent{removal}, wantEjected: true},
-		{name: "dequeued manually", removal: manual, history: []historyEvent{removal}},
-		{name: "merge conflict", removal: conflict, history: []historyEvent{removal}},
-		{name: "author pushed", removal: failed, history: append([]historyEvent{removal}, push("aaa")...), wantPushed: true},
-		{name: "pushed before the removal", removal: failed, history: append(push("aaa"), removal), wantEjected: true},
-		{
-			name:        "katl-queue pushed",
-			removal:     failed,
-			history:     append([]historyEvent{removal}, push("bbb")...),
-			marks:       []marker{{"rebased", "bbb"}},
-			wantEjected: true,
-		},
-		{
-			name:       "author pushed after katl-queue",
-			removal:    failed,
-			history:    append(append([]historyEvent{removal}, push("bbb")...), historyEvent{Commit: &struct{ Oid string }{"ccc"}}),
-			marks:      []marker{{"rebased", "bbb"}},
-			wantPushed: true,
-		},
-		{
-			name:        "dated commits do not matter",
-			removal:     failed,
-			history:     []historyEvent{removal},
-			wantEjected: true,
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			pr := openPR{Removal: tt.removal, history: tt.history}
-
-			pr.settleRemoval(tt.marks)
-
-			if pr.Ejected != tt.wantEjected || pr.Pushed != tt.wantPushed {
-				t.Errorf("Ejected, Pushed = %v, %v; want %v, %v", pr.Ejected, pr.Pushed, tt.wantEjected, tt.wantPushed)
-			}
-		})
-	}
-
-	t.Run("reported removals", func(t *testing.T) {
-		pr := openPR{Removal: failed}
-
-		pr.settleRemoval([]marker{{"ejection", "2026-01-01T00:00:00Z"}, {"needs-rebase", "abc"}})
-
-		if !slices.Equal(pr.Reported, []string{"2026-01-01T00:00:00Z"}) {
-			t.Errorf("Reported = %v", pr.Reported)
-		}
-	})
 }
 
 func TestParseMarkers(t *testing.T) {
@@ -366,7 +304,9 @@ func TestApplyScope(t *testing.T) {
 		{"autopilot", "", true, true},
 		{"autopilot", "v1", true, false},
 		{"autopilot", "", false, false},
-		{"plan", "", true, false},
+		{"plan", "", true, true},
+		{"plan", "v1", true, false},
+		{"plan", "", false, false},
 	}
 	for _, tt := range tests {
 		err := applyScope(tt.command, tt.milestone, tt.apply)
@@ -428,11 +368,12 @@ func (r *recorder) Rebase(_ context.Context, branch, head string) (rebaseResult,
 }
 
 func TestApply(t *testing.T) {
-	removedAt := epoch.Add(time.Hour)
 	actions := []action{
 		{Kind: actionDequeue, Number: 6, ID: "id-6"},
 		{Kind: actionDisable, Number: 7},
-		{Kind: actionExplain, Number: 5, RemovedAt: removedAt},
+		{Kind: actionExplain, Number: 5, RemovalID: "r-5", Head: "h5"},
+		{Kind: actionRecord, Number: 8, RemovalID: "r-8", Head: "h8"},
+		{Kind: actionReport, Number: 9, Head: "h9", Checks: []string{"lint", "docs"}},
 		{Kind: actionRebase, Number: 2, Branch: "clean", Head: "old"},
 		{Kind: actionRebase, Number: 3, Branch: "conflicting", Head: "c0ffee"},
 		{Kind: actionEnqueue, Number: 4},
@@ -452,16 +393,28 @@ func TestApply(t *testing.T) {
 			fx.calls[i] = strings.SplitN(call, " | ", 2)[0]
 		}
 		// The rebase comment explains itself in prose.
-		if strings.HasPrefix(call, "comment 2 ") {
+		if strings.HasPrefix(call, "comment 2 Rebased") {
+			fx.calls[i] = "comment 2 Rebased"
+		}
+		// The report names the failing checks.
+		if strings.HasPrefix(call, "comment 9 ") {
+			if !strings.Contains(call, "- lint") || !strings.Contains(call, "- docs") {
+				t.Errorf("report comment = %q, want it to list the failing checks", call)
+			}
+			fx.calls[i] = strings.SplitN(call, " | ", 2)[0]
+		}
+		if strings.HasPrefix(call, "comment 8 ") {
 			fx.calls[i] = strings.SplitN(call, " | ", 2)[0]
 		}
 	}
 	want := []string{
 		"dequeue id-6",
 		"disable-auto 7",
-		"comment 5 <!-- katl-queue:ejection 2026-01-01T01:00:00Z --> | ``` | #5 removed | ```",
+		"comment 5 <!-- katl-queue:removal r-5@h5 --> | ``` | #5 removed | ```",
+		"comment 8 <!-- katl-queue:removal r-8@h8 -->",
+		"comment 9 <!-- katl-queue:optional h9 -->",
 		"rebase clean",
-		"comment 2 <!-- katl-queue:rebased new1 -->",
+		"comment 2 Rebased",
 		"rebase conflicting",
 		"label 3 needs-rebase",
 		"comment 3 <!-- katl-queue:needs-rebase c0ffee -->",
@@ -537,7 +490,7 @@ func TestRebaseEnv(t *testing.T) {
 	}
 	for _, entry := range got {
 		name, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(name, "GIT_") && !slices.Contains([]string{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"}, name) {
+		if strings.HasPrefix(name, "GIT_") && !slices.Contains([]string{"GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "GIT_TERMINAL_PROMPT", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"}, name) {
 			t.Errorf("env passes %s", entry)
 		}
 		if name == "AWS_SECRET_ACCESS_KEY" || name == "EDITOR" {
@@ -552,6 +505,9 @@ func TestRebaseEnv(t *testing.T) {
 	}
 	if last["GIT_CONFIG_GLOBAL"] != "/dev/null" || last["GIT_CONFIG_NOSYSTEM"] != "1" {
 		t.Errorf("configuration = %q, %q; want global config ignored", last["GIT_CONFIG_GLOBAL"], last["GIT_CONFIG_NOSYSTEM"])
+	}
+	if last["GIT_TERMINAL_PROMPT"] != "0" {
+		t.Errorf("GIT_TERMINAL_PROMPT = %q; a credential failure must fail the rebase, not wait for input", last["GIT_TERMINAL_PROMPT"])
 	}
 	if last["GIT_COMMITTER_NAME"] != "Name" || last["GIT_COMMITTER_EMAIL"] != "name@example.com" {
 		t.Errorf("identity = %q, %q", last["GIT_COMMITTER_NAME"], last["GIT_COMMITTER_EMAIL"])

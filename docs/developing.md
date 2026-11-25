@@ -655,7 +655,7 @@ katl-queue enqueue 123       # check, then enable auto-merge; refuses on conflic
 katl-queue watch 123         # one line per state change until 123 merges or leaves
 katl-queue why 123           # removal reason, failing jobs and their first errors
 katl-queue plan [--milestone M]   # order ready PRs for the queue; report held ones and their blockers
-katl-queue plan --apply      # enqueue them in that order
+katl-queue plan --milestone M --apply   # make an autopilot pass: the plan, rebases and explanations
 katl-queue plan --next       # open, unassigned issues whose blockers are all closed
 katl-queue autopilot         # report what a pass would rebase, enqueue, dequeue or explain
 ```
@@ -673,17 +673,21 @@ everything else, and age. A PR that declares a dependency (GitHub's blocked-by o
 the PR and on the issue it closes, and `Depends on #N` lines in the PR body) is
 held until the dependency has merged, so dependents join the queue in a later
 pass; a blocker in another repository cannot be checked and holds the PR too. A
-conflicting PR is held behind the PR it conflicts with, and a PR whose checks
-failed or that the queue removed for failed checks without a newer push is held
-rather than re-enqueued. `autopilot` rebases only a PR that the plan would
+conflicting PR is held behind the PR it conflicts with. Like GitHub, it gates on
+required checks only: a PR whose required checks failed, that the queue removed
+for failed checks, or that someone dequeued by hand is held rather than
+re-enqueued until its head changes. katl-queue records the head it first saw
+with each such removal in a comment, so any new head, including its own rebase,
+settles the removal. A failing optional check is reported once per head and holds
+the PR only when another PR declares a dependency on it. `autopilot` rebases only a PR that the plan would
 otherwise enqueue and that conflicts with `main`, pushing a clean result with
-`--force-with-lease` over HTTPS through `gh auth git-credential` and recording the
-pushed head in a comment. It labels a conflicting rebase `needs-rebase` with a
-comment naming the files, disables auto-merge on PRs it holds, dequeues entries
-the queue marks `UNMERGEABLE`, and posts the `why` excerpt on a removed PR that
-nothing has been pushed to since. It never retries checks and never touches
+`--force-with-lease` over HTTPS through `gh auth git-credential`. It labels a conflicting rebase `needs-rebase` with a
+comment naming the files, disables auto-merge on PRs held for required checks, an ejection or a hand dequeue (never for an optional failure or a rebase), dequeues entries
+the queue marks `UNMERGEABLE`, and posts the `why` excerpt on a PR the queue removed for failed or timed-out
+checks. It never retries checks and never touches
 `release/*` branches or PRs targeting them. `plan` and `autopilot` only report;
-`--apply` makes the changes (`autopilot --apply` needs `--milestone`), and
+`--apply` makes the changes (both need `--milestone`; `plan --apply` is one
+autopilot pass), and
 `autopilot --once` runs a single pass instead of polling.
 
 Fast checks skip mkosi builds, libvirt/KVM setup, VM scenarios, and publishing.
