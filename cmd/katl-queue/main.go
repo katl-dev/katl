@@ -37,8 +37,11 @@ Commands:
   autopilot [--milestone M] [--apply] [--once] [--interval D]
                     rebase held PRs, enqueue what merges cleanly, dequeue
                     unmergeable entries and explain ejections
+  prune-runs [--apply]
+                    cancel CI runs of merge groups the queue no longer holds
 
 plan and autopilot only report unless given --apply, which needs --milestone.
+prune-runs only reports unless given --apply.
 
 A "Hold: <reason>" line in a PR body holds the PR out of the queue. The
 orchestrator adds it while a PR awaits VM gates or a journey, and deletes it
@@ -94,6 +97,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		flags.StringVar(&milestone, "milestone", "", "limit to this milestone")
 		flags.BoolVar(&applyChanges, "apply", false, "make the changes an autopilot pass would")
 		flags.BoolVar(&next, "next", false, "list issues that can be started")
+	case "prune-runs":
+		flags.BoolVar(&applyChanges, "apply", false, "cancel the runs instead of reporting them")
 	case "autopilot":
 		flags.StringVar(&milestone, "milestone", "", "limit to this milestone")
 		flags.BoolVar(&applyChanges, "apply", false, "make the changes instead of reporting them")
@@ -118,6 +123,10 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	case "status", "watch":
 		if command == "status" && len(numbers) > 0 {
 			return errors.New("status takes no arguments")
+		}
+	case "prune-runs":
+		if len(numbers) > 0 {
+			return errors.New("prune-runs takes no arguments")
 		}
 	case "plan", "autopilot":
 		if len(numbers) > 0 {
@@ -157,6 +166,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return nextCommand(ctx, g, milestone, stdout)
 		}
 		return planCommand(ctx, g, milestone, applyChanges, stdout)
+	case "prune-runs":
+		return pruneRuns(ctx, g, time.Now(), applyChanges, stdout)
 	case "autopilot":
 		return autopilot(ctx, g, milestone, !applyChanges, once, interval, stdout)
 	default:

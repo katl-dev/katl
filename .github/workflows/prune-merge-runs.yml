@@ -1,0 +1,45 @@
+name: Prune merge-group runs
+
+# GitHub rebuilds merge groups when the queue changes and deletes the ref of
+# each group it replaces, but it leaves the CI run of the replaced group going.
+# This cancels the unfinished runs of groups whose ref is gone so that live
+# groups get the runners. It runs from the default branch: ci.yml cannot do
+# this for a run still waiting for a runner, and a job inside the run would
+# need the run's own checkout.
+on:
+  delete:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: prune-merge-runs
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    name: Prune
+    # A delete event is only interesting for a merge-group branch.
+    if: github.event_name != 'delete' || startsWith(github.event.ref, 'gh-readonly-queue/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Cancel runs of superseded merge groups
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: go run ./cmd/katl-queue prune-runs --apply

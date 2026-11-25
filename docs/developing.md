@@ -658,6 +658,7 @@ katl-queue plan [--milestone M]   # order ready PRs for the queue; report held o
 katl-queue plan --milestone M --apply   # make an autopilot pass: the plan, rebases and explanations
 katl-queue plan --next       # open, unassigned issues whose blockers are all closed
 katl-queue autopilot         # report what a pass would rebase, enqueue, dequeue or explain
+katl-queue prune-runs        # report CI runs of merge groups the queue no longer holds; --apply cancels them
 ```
 
 `check` merges with `git merge-tree` in a throwaway object directory, so it
@@ -683,6 +684,14 @@ and treats every other manual removal as yours. It records the head it first
 saw with each such removal in a comment, so any new head, including its own
 rebase, settles the removal. A failing optional check is reported once per head
 and holds the PR only when another PR declares a dependency on it.
+
+When the queue rebuilds a group (a PR leaves, or one is added ahead), GitHub
+deletes the old group's `gh-readonly-queue` ref but leaves its `ci.yml` run going,
+and that run would hold or wait for a runner. `.github/workflows/prune-merge-runs.yml`
+runs `katl-queue prune-runs --apply` on each deleted group
+branch and every ten minutes, and cancels unfinished merge-group runs whose
+ref no longer exists or points at a different commit, and cancels nothing when
+the ref listing is empty but the merge queue is not.
 
 A `Hold: <reason>` line in a PR body, outside a code fence, holds the PR with
 that reason before any other check, and autopilot disables its auto-merge. The
