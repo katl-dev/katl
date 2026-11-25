@@ -10,6 +10,7 @@ import (
 	"reflect"
 
 	"github.com/katl-dev/katl/internal/installer/payloadbundle"
+	"github.com/katl-dev/katl/internal/rpmdir"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
@@ -109,7 +110,11 @@ func Prepare(ctx context.Context, lock Lock, cache, layout string) (string, erro
 		if err != nil {
 			return "", err
 		}
-		if err := os.WriteFile(filepath.Join(staging, pkg.FileName), data, 0o444); err != nil {
+		path := filepath.Join(staging, pkg.FileName)
+		if err := os.WriteFile(path, data, 0o444); err != nil {
+			return "", err
+		}
+		if err := rpmdir.Pin(path); err != nil {
 			return "", err
 		}
 	}
