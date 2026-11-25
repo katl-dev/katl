@@ -118,10 +118,11 @@ func operationBackedWorldSmokeRun(t *testing.T, scenarioName string, upgrade boo
 	repo := katlRepoRoot(t)
 	kvm := vmtest.DefaultOptions().KVM
 	specs := twoNodeWorldRuntimeSpecs()
-	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, specs, kvm); err != nil {
+	kubernetesVersion := operationBackedKubernetesVersion(t, repo, upgrade)
+	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, specs, kvm, kubernetesVersion); err != nil {
 		failWorldFixtureSetup(t, world, scenarioName, err)
 	}
-	run, err := planOperationBackedWorldSmokeRunNamed(world, repo, operationBackedKubernetesVersion(t, repo, upgrade), kvm, scenarioName)
+	run, err := planOperationBackedWorldSmokeRunNamed(world, repo, kubernetesVersion, kvm, scenarioName)
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
@@ -1491,7 +1492,7 @@ func twoNodeWorldSmokeRun(t *testing.T) (twoNodeSmokeRun, bool) {
 	world := vmtest.RequireWorld(t)
 	repo := katlRepoRoot(t)
 	kvm := vmtest.DefaultOptions().KVM
-	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, twoNodeWorldRuntimeSpecs(), kvm); err != nil {
+	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, twoNodeWorldRuntimeSpecs(), kvm, ""); err != nil {
 		failWorldFixtureSetup(t, world, "installed-runtime-two-node-kubeadm-join", err)
 	}
 	run, err := planTwoNodeWorldSmokeRun(world, repo, firstString(os.Getenv("KATL_KUBERNETES_VERSION"), "v1.36.1"), kvm)

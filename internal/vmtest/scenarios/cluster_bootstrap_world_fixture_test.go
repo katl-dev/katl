@@ -25,7 +25,10 @@ func publishedRuntimeBuildRoots(world vmtest.World, repo string) []string {
 	}
 }
 
-func ensurePublishedRuntimeFixturesForWorld(world vmtest.World, repo string, specs []vmtest.NodeSpec, kvm vmtest.KVMPolicy) error {
+// ensurePublishedRuntimeFixturesForWorld builds the installed-runtime fixtures a
+// scenario starts from. The scenario's bootstrap version, when it has one, is
+// recorded as the fixtures' Kubernetes intent so bootstrap requests match it.
+func ensurePublishedRuntimeFixturesForWorld(world vmtest.World, repo string, specs []vmtest.NodeSpec, kvm vmtest.KVMPolicy, kubernetesVersion string) error {
 	timeout := time.Duration(firstInt(len(specs), 1)) * 30 * time.Minute
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -35,7 +38,7 @@ func ensurePublishedRuntimeFixturesForWorld(world vmtest.World, repo string, spe
 		return err
 	}
 	input.SSHAuthorizedKey = authorizedKey
-	input.KubernetesVersion = strings.TrimSpace(os.Getenv("KATL_KUBERNETES_VERSION"))
+	input.KubernetesVersion = fixtureKubernetesVersion(kubernetesVersion)
 	if strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_BUNDLE")) != "" && input.KubernetesVersion == "" {
 		return fmt.Errorf("KATL_KUBERNETES_VERSION is required with a published bundle")
 	}
@@ -44,6 +47,13 @@ func ensurePublishedRuntimeFixturesForWorld(world vmtest.World, repo string, spe
 		KVM:                        kvm,
 		RequireInstallerProvenance: true,
 	})
+}
+
+// fixtureKubernetesVersion is the Kubernetes version recorded in fixture
+// intent: an explicit KATL_KUBERNETES_VERSION wins, then the scenario's own
+// bootstrap version. Empty leaves the fixtures to the installed image's payload.
+func fixtureKubernetesVersion(scenarioVersion string) string {
+	return strings.TrimSpace(firstString(os.Getenv("KATL_KUBERNETES_VERSION"), scenarioVersion))
 }
 
 func ensureWorldSSHKey(world vmtest.World) (string, string, error) {

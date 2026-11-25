@@ -133,10 +133,11 @@ func threeControlPlaneWorldSmokeRun(t *testing.T, scenarioName string, workloadP
 	world := vmtest.RequireWorld(t)
 	repo := katlRepoRoot(t)
 	kvm := vmtest.DefaultOptions().KVM
-	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, threeControlPlaneWorldRuntimeSpecs(), kvm); err != nil {
+	kubernetesVersion := operationBackedKubernetesVersion(t, repo, upgrade)
+	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, threeControlPlaneWorldRuntimeSpecs(), kvm, kubernetesVersion); err != nil {
 		failWorldFixtureSetup(t, world, scenarioName, err)
 	}
-	run, err := planThreeControlPlaneWorldSmokeRun(world, repo, scenarioName, operationBackedKubernetesVersion(t, repo, upgrade), kvm, workloadProof)
+	run, err := planThreeControlPlaneWorldSmokeRun(world, repo, scenarioName, kubernetesVersion, kvm, workloadProof)
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}

@@ -95,6 +95,8 @@ printf '{"sha256":"%s","sizeBytes":%s}\n' "$digest" "$size" > "$artifact.json"
 )
 `)
 
+	writeTemporaryFile(t, filepath.Join(buildDir, "katl-kubernetes.raw"), "default payload\n")
+
 	cmd := exec.Command(filepath.Join(repo, "scripts", "build-kubernetes-sysext"), "--output", "katl-kubernetes-upgrade", "--no-cache")
 	cmd.Dir = repo
 	cmd.Env = append(
@@ -125,6 +127,14 @@ printf '{"sha256":"%s","sizeBytes":%s}\n' "$digest" "$size" > "$artifact.json"
 	}
 	if _, err := os.Stat(filepath.Join(buildDir, "katl-kubernetes-upgrade.raw.json")); err != nil {
 		t.Fatalf("custom sysext output metadata: %v", err)
+	}
+	// mkosi writes its output to the default path; a build for another name must
+	// neither leave its bytes there nor lose the default artifact.
+	if got := string(mustReadFile(t, filepath.Join(buildDir, "katl-kubernetes.raw"))); got != "default payload\n" {
+		t.Fatalf("default sysext = %q, want it untouched by the custom output build", got)
+	}
+	if got := string(mustReadFile(t, filepath.Join(buildDir, "katl-kubernetes-upgrade.raw"))); got != "sysext payload\n" {
+		t.Fatalf("custom sysext = %q, want the built payload", got)
 	}
 	if got := string(mustReadFile(t, profile)); got != originalProfile {
 		t.Fatalf("profile was not restored:\n%s", got)

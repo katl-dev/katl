@@ -33,7 +33,7 @@ func TestExternalWorkerJoin(t *testing.T) {
 	kvm := vmtest.DefaultOptions().KVM
 	version := operationBackedKubernetesVersion(t, repo, false)
 
-	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, []vmtest.NodeSpec{{Name: "cp-1", Role: vmtest.ControlPlane}}, kvm); err != nil {
+	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, []vmtest.NodeSpec{{Name: "cp-1", Role: vmtest.ControlPlane}}, kvm, ""); err != nil {
 		failWorldFixtureSetup(t, world, name, err)
 	}
 	scenario := world.NewScenario(t, name)

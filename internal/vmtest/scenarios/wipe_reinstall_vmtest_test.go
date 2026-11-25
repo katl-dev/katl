@@ -106,7 +106,7 @@ func wipeReinstallWorldSmokeRunNamed(t *testing.T, scenarioName string) (operati
 	repo := katlRepoRoot(t)
 	kvm := vmtest.DefaultOptions().KVM
 	specs := twoNodeWorldRuntimeSpecs()
-	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, specs, kvm); err != nil {
+	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, specs, kvm, ""); err != nil {
 		failWorldFixtureSetup(t, world, scenarioName, err)
 	}
 	run, err := planOperationBackedWorldSmokeRunNamed(world, repo, operationBackedKubernetesVersion(t, repo, false), kvm, scenarioName)
