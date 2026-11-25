@@ -38,7 +38,8 @@ Commands:
                     rebase held PRs, enqueue what merges cleanly, dequeue
                     unmergeable entries and explain ejections
 
-plan and autopilot only report unless given --apply.
+plan and autopilot only report unless given --apply, which autopilot allows
+only with --milestone.
 
 Exit status is 1 when check finds a conflict, enqueue refuses, or a watched PR
 leaves the queue without merging, and 2 on any other error.
@@ -121,6 +122,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		}
 		if next && applyChanges {
 			return errors.New("--next only lists issues; it cannot be combined with --apply")
+		}
+		if err := applyScope(command, milestone, applyChanges); err != nil {
+			return err
 		}
 	case "check", "enqueue", "why":
 		if err := needOne(); err != nil {
@@ -443,4 +447,14 @@ func reportArtifactFailures(ctx context.Context, g *gh, run int64, out io.Writer
 			fmt.Fprintf(out, "  | %s\n", line)
 		}
 	}
+}
+
+// applyScope refuses an autopilot that would change pull requests without a
+// milestone to confine it: it pushes to branches and dequeues entries, which
+// should never reach every open pull request by default.
+func applyScope(command, milestone string, apply bool) error {
+	if command == "autopilot" && apply && milestone == "" {
+		return errors.New("autopilot --apply changes pull requests, so it needs --milestone to say which; run it without --apply to see what it would do")
+	}
+	return nil
 }

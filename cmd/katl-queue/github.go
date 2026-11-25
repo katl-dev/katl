@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -16,6 +17,8 @@ import (
 // gh runs the GitHub CLI for one repository. Every GitHub read and write the
 // tool makes goes through it, so the repository is resolved once.
 type gh struct {
+	// viewer is the login of the authenticated user, read on first use.
+	viewer      string
 	owner, name string
 }
 
@@ -25,7 +28,9 @@ func runGH(ctx context.Context, args ...string) ([]byte, error) {
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		// Standard output is returned too: gh api prints a GraphQL response
+		// that carries errors, with partial data, before it exits non-zero.
+		return out, fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
 }
@@ -43,27 +48,74 @@ func newGH(ctx context.Context) (*gh, error) {
 }
 
 func (g *gh) graphql(ctx context.Context, query string, out any) error {
-	raw, err := runGH(ctx, "api", "graphql", "-f", "query="+query, "-F", "owner="+g.owner, "-F", "name="+g.name)
+	raw, err := g.queryRaw(ctx, query)
 	if err != nil {
 		return err
 	}
 	return decodeGraphQL(raw, out)
 }
 
+// queryRaw returns the response body. gh exits non-zero for a response that
+// carries errors, and that response still has a body, so only a failure
+// without one is an error here.
+func (g *gh) queryRaw(ctx context.Context, query string) ([]byte, error) {
+	raw, err := runGH(ctx, "api", "graphql", "-f", "query="+query, "-F", "owner="+g.owner, "-F", "name="+g.name)
+	if err != nil && !json.Valid(raw) {
+		return nil, err
+	}
+	return raw, nil
+}
+
+type graphQLErrorItem struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// graphQLError is a response whose errors array is not empty. Data that
+// GraphQL resolved beside the errors is still decoded.
+type graphQLError struct {
+	Errors []graphQLErrorItem
+}
+
+func (e *graphQLError) Error() string { return "GraphQL: " + e.Errors[0].Message }
+
+// onlyNotFound reports whether every error is a NOT_FOUND, which a query for
+// numbers that may not exist expects.
+func (e *graphQLError) onlyNotFound() bool {
+	return !slices.ContainsFunc(e.Errors, func(item graphQLErrorItem) bool { return item.Type != "NOT_FOUND" })
+}
+
 func decodeGraphQL(raw []byte, out any) error {
 	var envelope struct {
-		Data   json.RawMessage `json:"data"`
-		Errors []struct {
-			Message string `json:"message"`
-		} `json:"errors"`
+		Data   json.RawMessage    `json:"data"`
+		Errors []graphQLErrorItem `json:"errors"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return fmt.Errorf("decode GraphQL response: %w", err)
 	}
-	if len(envelope.Errors) > 0 {
-		return fmt.Errorf("GraphQL: %s", envelope.Errors[0].Message)
+	if len(envelope.Data) > 0 && string(envelope.Data) != "null" {
+		if err := json.Unmarshal(envelope.Data, out); err != nil {
+			return err
+		}
 	}
-	return json.Unmarshal(envelope.Data, out)
+	if len(envelope.Errors) > 0 {
+		return &graphQLError{Errors: envelope.Errors}
+	}
+	return nil
+}
+
+type numberNodes struct {
+	Nodes []struct {
+		Number int `json:"number"`
+	} `json:"nodes"`
+}
+
+func (n numberNodes) numbers() []int {
+	var out []int
+	for _, node := range n.Nodes {
+		out = append(out, node.Number)
+	}
+	return out
 }
 
 type queueEntry struct {
@@ -71,41 +123,84 @@ type queueEntry struct {
 	State       string    `json:"state"`
 	EnqueuedAt  time.Time `json:"enqueuedAt"`
 	PullRequest struct {
-		Number     int    `json:"number"`
-		Title      string `json:"title"`
-		HeadRefOid string `json:"headRefOid"`
+		ID                      string      `json:"id"`
+		Number                  int         `json:"number"`
+		Title                   string      `json:"title"`
+		HeadRefOid              string      `json:"headRefOid"`
+		ClosingIssuesReferences numberNodes `json:"closingIssuesReferences"`
 	} `json:"pullRequest"`
 }
 
-type pendingPR struct {
-	Number           int    `json:"number"`
-	Title            string `json:"title"`
-	HeadRefOid       string `json:"headRefOid"`
-	IsInMergeQueue   bool   `json:"isInMergeQueue"`
-	AutoMergeRequest *struct {
-		EnabledAt time.Time `json:"enabledAt"`
-	} `json:"autoMergeRequest"`
-}
-
 // queueSnapshot is the merge queue for the default branch, the branch tip it
-// builds on, and open pull requests that will join it once their checks pass.
+// builds on, and the open pull requests.
 type queueSnapshot struct {
 	Branch  string
 	BaseOid string
 	Entries []queueEntry
-	Pending []pendingPR
+	// PRs lists every open pull request.
+	PRs []prResponse
+	// Pending lists those whose auto-merge will put them in the queue once
+	// their checks pass.
+	Pending []prResponse
 }
+
+// Selections shared by every query that reads a pull request, so that all of
+// them observe the merge queue the same way. The latest removal event carries
+// the merge-group commit it was removed from when removalDetail asks for it.
+const (
+	prFields = `number title state headRefOid merged isInMergeQueue
+  mergeCommit { oid }
+  autoMergeRequest { enabledAt }
+  mergeQueueEntry { position state }`
+
+	removalOpen = `timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
+    nodes { ... on RemovedFromMergeQueueEvent { createdAt reason`
+	removalClose = ` } } }`
+
+	removalChecks = `
+        beforeCommit {
+          oid
+          checkSuites(first: 20) {
+            nodes {
+              workflowRun { databaseId url }
+              checkRuns(first: 50, filterBy: {conclusions: [FAILURE, TIMED_OUT, CANCELLED, STARTUP_FAILURE, ACTION_REQUIRED]}) {
+                nodes { name conclusion detailsUrl }
+              }
+            }
+          }
+        }`
+
+	// planFields is what planning and autopilot read beyond prFields. The
+	// history lists removals and pushes in the order they happened, which
+	// tells whether the head moved since the latest removal.
+	planFields = `id body isDraft isCrossRepository headRefName baseRefName createdAt
+  milestone { title }
+  labels(first: 30) { nodes { name } }
+  closingIssuesReferences(first: 20) { nodes { number } }
+  commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
+  history: timelineItems(last: 30, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT, PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT]) {
+    nodes {
+      __typename
+      ... on PullRequestCommit { commit { oid } }
+      ... on HeadRefForcePushedEvent { afterCommit { oid } }
+    }
+  }`
+)
 
 const snapshotQuery = `query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
     defaultBranchRef { name target { oid } }
     mergeQueue {
       entries(first: 100) {
-        nodes { position state enqueuedAt pullRequest { number title headRefOid } }
+        nodes { position state enqueuedAt pullRequest { id number title headRefOid closingIssuesReferences(first: 20) { nodes { number } } } }
       }
     }
     pullRequests(states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: ASC}) {
-      nodes { number title headRefOid isInMergeQueue autoMergeRequest { enabledAt } }
+      nodes {
+  ` + prFields + `
+  ` + planFields + `
+  ` + removalOpen + removalClose + `
+      }
     }
   }
 }`
@@ -125,7 +220,7 @@ func (g *gh) snapshot(ctx context.Context) (queueSnapshot, error) {
 				} `json:"entries"`
 			} `json:"mergeQueue"`
 			PullRequests struct {
-				Nodes []pendingPR `json:"nodes"`
+				Nodes []prResponse `json:"nodes"`
 			} `json:"pullRequests"`
 		} `json:"repository"`
 	}
@@ -139,7 +234,8 @@ func (g *gh) snapshot(ctx context.Context) (queueSnapshot, error) {
 		return snap, fmt.Errorf("%s/%s has no merge queue on %s", g.owner, g.name, snap.Branch)
 	}
 	snap.Entries = repo.MergeQueue.Entries.Nodes
-	for _, pr := range repo.PullRequests.Nodes {
+	snap.PRs = repo.PullRequests.Nodes
+	for _, pr := range snap.PRs {
 		if pr.AutoMergeRequest != nil && !pr.IsInMergeQueue {
 			snap.Pending = append(snap.Pending, pr)
 		}
@@ -147,16 +243,16 @@ func (g *gh) snapshot(ctx context.Context) (queueSnapshot, error) {
 	return snap, nil
 }
 
-// prResponse is the per-PR state watch and why observe. The latest removal
-// event carries the merge-group commit it was removed from, and that
-// commit's failed check runs explain the removal.
+// prResponse is the per-PR state watch, why, planning and autopilot observe.
+// Which fields are set depends on the selection that read it.
 type prResponse struct {
-	Number      int    `json:"number"`
-	Title       string `json:"title"`
-	State       string `json:"state"`
-	HeadRefOid  string `json:"headRefOid"`
-	Merged      bool   `json:"merged"`
-	MergeCommit *struct {
+	Number         int    `json:"number"`
+	Title          string `json:"title"`
+	State          string `json:"state"`
+	HeadRefOid     string `json:"headRefOid"`
+	Merged         bool   `json:"merged"`
+	IsInMergeQueue bool   `json:"isInMergeQueue"`
+	MergeCommit    *struct {
 		Oid string `json:"oid"`
 	} `json:"mergeCommit"`
 	AutoMergeRequest *struct {
@@ -169,6 +265,44 @@ type prResponse struct {
 	TimelineItems struct {
 		Nodes []removalEvent `json:"nodes"`
 	} `json:"timelineItems"`
+
+	ID                      string      `json:"id"`
+	Body                    string      `json:"body"`
+	IsDraft                 bool        `json:"isDraft"`
+	IsCrossRepository       bool        `json:"isCrossRepository"`
+	HeadRefName             string      `json:"headRefName"`
+	BaseRefName             string      `json:"baseRefName"`
+	CreatedAt               time.Time   `json:"createdAt"`
+	ClosingIssuesReferences numberNodes `json:"closingIssuesReferences"`
+	Milestone               *struct {
+		Title string `json:"title"`
+	} `json:"milestone"`
+	Labels struct {
+		Nodes []struct {
+			Name string `json:"name"`
+		} `json:"nodes"`
+	} `json:"labels"`
+	Commits struct {
+		Nodes []struct {
+			Commit struct {
+				StatusCheckRollup *struct {
+					State string `json:"state"`
+				} `json:"statusCheckRollup"`
+			} `json:"commit"`
+		} `json:"nodes"`
+	} `json:"commits"`
+	History struct {
+		Nodes []historyEvent `json:"nodes"`
+	} `json:"history"`
+}
+
+// historyEvent is a removal from the merge queue or a push to the head
+// branch. A push is a commit added to the branch or a force push, and the
+// commits of a push precede its force-push event.
+type historyEvent struct {
+	Type        string                `json:"__typename"`
+	Commit      *struct{ Oid string } `json:"commit"`
+	AfterCommit *struct{ Oid string } `json:"afterCommit"`
 }
 
 type removalEvent struct {
@@ -190,6 +324,16 @@ type removalEvent struct {
 	} `json:"beforeCommit"`
 }
 
+// mergeRecord reports whether the event is the removal GitHub records, with
+// reason "merged", when an entry merges. It is not a removal from the queue.
+func (r removalEvent) mergeRecord() bool { return r.Reason == "merged" }
+
+// forFailedChecks reports whether the queue removed the entry because its
+// checks failed or timed out.
+func (r removalEvent) forFailedChecks() bool {
+	return r.Reason == "failed_checks" || r.Reason == "checks_timed_out"
+}
+
 type failedCheck struct {
 	Name       string `json:"name"`
 	Conclusion string `json:"conclusion"`
@@ -198,28 +342,8 @@ type failedCheck struct {
 }
 
 const prFragment = `fragment watched on PullRequest {
-  number title state headRefOid merged
-  mergeCommit { oid }
-  autoMergeRequest { enabledAt }
-  mergeQueueEntry { position state }
-  timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
-    nodes {
-      ... on RemovedFromMergeQueueEvent {
-        createdAt reason
-        beforeCommit {
-          oid
-          checkSuites(first: 20) {
-            nodes {
-              workflowRun { databaseId url }
-              checkRuns(first: 50, filterBy: {conclusions: [FAILURE, TIMED_OUT, CANCELLED, STARTUP_FAILURE, ACTION_REQUIRED]}) {
-                nodes { name conclusion detailsUrl }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
+  ` + prFields + `
+  ` + removalOpen + removalChecks + removalClose + `
 }`
 
 // pullRequests reads several pull requests in one query, keyed by number.
@@ -336,4 +460,36 @@ func decodeJSON(raw []byte, out any) error {
 		return fmt.Errorf("decode gh output: %w", err)
 	}
 	return nil
+}
+
+func (g *gh) disableAutoMerge(ctx context.Context, number int) error {
+	_, err := runGH(ctx, "pr", "merge", fmt.Sprint(number), "--disable-auto", "--repo", g.owner+"/"+g.name)
+	return err
+}
+
+func (g *gh) viewerLogin(ctx context.Context) (string, error) {
+	if g.viewer == "" {
+		out, err := runGH(ctx, "api", "user", "--jq", ".login")
+		if err != nil {
+			return "", err
+		}
+		g.viewer = strings.TrimSpace(string(out))
+	}
+	return g.viewer, nil
+}
+
+// markers lists the markers in every comment on a pull request that the
+// authenticated user wrote. Comments from anyone else are ignored, so a
+// quoted or forged marker cannot suppress or trigger an action.
+func (g *gh) markers(ctx context.Context, number int) ([]marker, error) {
+	viewer, err := g.viewerLogin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	filter := fmt.Sprintf(`.[] | select(.user.login == %q) | .body`, viewer)
+	out, err := runGH(ctx, "api", "--paginate", fmt.Sprintf("repos/%s/%s/issues/%d/comments", g.owner, g.name, number), "--jq", filter)
+	if err != nil {
+		return nil, err
+	}
+	return parseMarkers(string(out)), nil
 }

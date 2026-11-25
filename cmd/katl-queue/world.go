@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -21,21 +23,22 @@ type openPR struct {
 	Fork       bool
 	InQueue    bool
 	NeedsLabel bool // carries the needs-rebase label
-	Removal    *removalMark
+	// Removal is the latest removal from the merge queue, if any.
+	Removal *removalEvent
+	// Pushed is set when someone other than katl-queue pushed to the head
+	// branch after Removal.
+	Pushed bool
 	// Reported lists the removal timestamps already explained by a
 	// katl-queue comment.
 	Reported []string
-}
 
-// removalMark is the latest removal from the merge queue.
-type removalMark struct {
-	At     time.Time
-	Reason string
+	history []historyEvent
 }
 
 // queueEntryState is a merge-queue entry and its queue-assigned state.
 type queueEntryState struct {
 	Number int
+	ID     string
 	State  string
 }
 
@@ -51,10 +54,36 @@ type world struct {
 
 const needsRebaseLabel = "needs-rebase"
 
+// marker is a hidden line in a katl-queue comment. It lets a later pass
+// recognise what the comment records without parsing its text.
+type marker struct {
+	Kind, Value string
+}
+
+func (m marker) String() string {
+	return "<!-- katl-queue:" + m.Kind + " " + m.Value + " -->"
+}
+
+var markerLine = regexp.MustCompile(`^<!-- katl-queue:([a-z-]+) (\S+) -->$`)
+
+func parseMarkers(text string) []marker {
+	var out []marker
+	for _, line := range strings.Split(text, "\n") {
+		if m := markerLine.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
+			out = append(out, marker{Kind: m[1], Value: m[2]})
+		}
+	}
+	return out
+}
+
+func hasMarker(marks []marker, kind, value string) bool {
+	return slices.Contains(marks, marker{Kind: kind, Value: value})
+}
+
 // ejectionMarker tags a comment that explains a removal, so the same removal
 // is explained once.
-func ejectionMarker(at time.Time) string {
-	return "<!-- katl-queue:ejection " + at.UTC().Format(time.RFC3339) + " -->"
+func ejectionMarker(at time.Time) marker {
+	return marker{Kind: "ejection", Value: at.UTC().Format(time.RFC3339)}
 }
 
 // eligible reports whether katl-queue may manage the pull request. Release
@@ -65,144 +94,73 @@ func (w world) eligible(pr openPR) bool {
 		!strings.HasPrefix(pr.BaseRef, "release/") && !strings.HasPrefix(pr.HeadRef, "release/")
 }
 
-const worldQuery = `query($owner: String!, $name: String!) {
-  repository(owner: $owner, name: $name) {
-    defaultBranchRef { name target { oid } }
-    mergeQueue {
-      entries(first: 100) {
-        nodes { position state pullRequest { number headRefOid closingIssuesReferences(first: 20) { nodes { number } } } }
-      }
-    }
-    pullRequests(states: OPEN, first: 100, orderBy: {field: CREATED_AT, direction: ASC}) {
-      nodes {
-        id number title body isDraft isCrossRepository isInMergeQueue
-        headRefOid headRefName baseRefName createdAt
-        milestone { title }
-        labels(first: 30) { nodes { name } }
-        closingIssuesReferences(first: 20) { nodes { number } }
-        autoMergeRequest { enabledAt }
-        commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state } } } }
-        comments(last: 50) { nodes { body } }
-        timelineItems(last: 1, itemTypes: [REMOVED_FROM_MERGE_QUEUE_EVENT]) {
-          nodes { ... on RemovedFromMergeQueueEvent { createdAt reason } }
-        }
-      }
-    }
-  }
-}`
+// authorPushed reports whether anyone but katl-queue pushed to the branch
+// after its latest removal from the queue. History lists removals and pushes
+// in order, and a push's commits precede its force-push event. own lists the
+// heads katl-queue pushed.
+func authorPushed(history []historyEvent, own []string) bool {
+	last := -1
+	for i, e := range history {
+		if e.Commit == nil && e.AfterCommit == nil {
+			last = i
+		}
+	}
 
-type numberNodes struct {
-	Nodes []struct {
-		Number int `json:"number"`
-	} `json:"nodes"`
+	commits := false
+	for _, e := range history[last+1:] {
+		switch {
+		case e.Commit != nil:
+			commits = true
+		case e.AfterCommit != nil:
+			if !slices.Contains(own, e.AfterCommit.Oid) {
+				return true
+			}
+			commits = false
+		}
+	}
+	return commits
 }
 
-func (n numberNodes) numbers() []int {
-	var out []int
-	for _, node := range n.Nodes {
-		out = append(out, node.Number)
+// settleRemoval reads the markers katl-queue left on the pull request to
+// decide which removals are already explained and whether the author has
+// acted on the removal since.
+func (pr *openPR) settleRemoval(marks []marker) {
+	var own []string
+	for _, m := range marks {
+		switch m.Kind {
+		case "ejection":
+			pr.Reported = append(pr.Reported, m.Value)
+		case "rebased":
+			own = append(own, m.Value)
+		}
 	}
-	return out
+	pr.Pushed = authorPushed(pr.history, own)
+	pr.Ejected = pr.Removal.forFailedChecks() && !pr.Pushed
 }
 
-// world reads the queue and open pull requests, and resolves each
-// candidate's declared dependencies. A non-empty milestone limits the pull
-// requests to that milestone.
-func (g *gh) world(ctx context.Context, milestone string) (world, error) {
-	var resp struct {
-		Repository struct {
-			DefaultBranchRef struct {
-				Name   string `json:"name"`
-				Target struct {
-					Oid string `json:"oid"`
-				} `json:"target"`
-			} `json:"defaultBranchRef"`
-			MergeQueue *struct {
-				Entries struct {
-					Nodes []struct {
-						State       string `json:"state"`
-						PullRequest struct {
-							Number                  int         `json:"number"`
-							HeadRefOid              string      `json:"headRefOid"`
-							ClosingIssuesReferences numberNodes `json:"closingIssuesReferences"`
-						} `json:"pullRequest"`
-					} `json:"nodes"`
-				} `json:"entries"`
-			} `json:"mergeQueue"`
-			PullRequests struct {
-				Nodes []struct {
-					ID                      string      `json:"id"`
-					Number                  int         `json:"number"`
-					Title                   string      `json:"title"`
-					Body                    string      `json:"body"`
-					IsDraft                 bool        `json:"isDraft"`
-					IsCrossRepository       bool        `json:"isCrossRepository"`
-					IsInMergeQueue          bool        `json:"isInMergeQueue"`
-					HeadRefOid              string      `json:"headRefOid"`
-					HeadRefName             string      `json:"headRefName"`
-					BaseRefName             string      `json:"baseRefName"`
-					CreatedAt               time.Time   `json:"createdAt"`
-					ClosingIssuesReferences numberNodes `json:"closingIssuesReferences"`
-					Milestone               *struct {
-						Title string `json:"title"`
-					} `json:"milestone"`
-					Labels struct {
-						Nodes []struct {
-							Name string `json:"name"`
-						} `json:"nodes"`
-					} `json:"labels"`
-					AutoMergeRequest *struct{} `json:"autoMergeRequest"`
-					Commits          struct {
-						Nodes []struct {
-							Commit struct {
-								StatusCheckRollup *struct {
-									State string `json:"state"`
-								} `json:"statusCheckRollup"`
-								CommittedDate time.Time `json:"committedDate"`
-							} `json:"commit"`
-						} `json:"nodes"`
-					} `json:"commits"`
-					Comments struct {
-						Nodes []struct {
-							Body string `json:"body"`
-						} `json:"nodes"`
-					} `json:"comments"`
-					TimelineItems struct {
-						Nodes []struct {
-							CreatedAt time.Time `json:"createdAt"`
-							Reason    string    `json:"reason"`
-						} `json:"nodes"`
-					} `json:"timelineItems"`
-				} `json:"nodes"`
-			} `json:"pullRequests"`
-		} `json:"repository"`
-	}
-	if err := g.graphql(ctx, worldQuery, &resp); err != nil {
-		return world{}, err
-	}
-
-	repo := resp.Repository
-	w := world{Branch: repo.DefaultBranchRef.Name, Base: repo.DefaultBranchRef.Target.Oid}
-	if repo.MergeQueue == nil {
-		return w, fmt.Errorf("%s/%s has no merge queue on %s", g.owner, g.name, w.Branch)
-	}
-	for _, e := range repo.MergeQueue.Entries.Nodes {
+// worldFrom derives the world from a snapshot. A non-empty milestone limits
+// the pull requests to that milestone.
+func worldFrom(snap queueSnapshot, milestone string) world {
+	w := world{Branch: snap.Branch, Base: snap.BaseOid}
+	for _, e := range snap.Entries {
 		pr := e.PullRequest
 		w.Queue = append(w.Queue, queuedPR{Number: pr.Number, Head: pr.HeadRefOid, Closes: pr.ClosingIssuesReferences.numbers()})
-		w.Entries = append(w.Entries, queueEntryState{Number: pr.Number, State: e.State})
+		w.Entries = append(w.Entries, queueEntryState{Number: pr.Number, ID: pr.ID, State: e.State})
 	}
 
-	for _, n := range repo.PullRequests.Nodes {
+	for _, n := range snap.PRs {
+		obs := observe(n)
 		pr := openPR{
 			candidate: candidate{
 				Number:    n.Number,
 				Head:      n.HeadRefOid,
 				Created:   n.CreatedAt,
 				Closes:    n.ClosingIssuesReferences.numbers(),
-				AutoMerge: n.AutoMergeRequest != nil,
+				AutoMerge: obs.AutoMerge,
 			},
 			ID: n.ID, Title: n.Title, HeadRef: n.HeadRefName, BaseRef: n.BaseRefName,
-			Draft: n.IsDraft, Fork: n.IsCrossRepository, InQueue: n.IsInMergeQueue,
+			Draft: n.IsDraft, Fork: n.IsCrossRepository, InQueue: obs.InQueue,
+			history: n.History.Nodes,
 		}
 		if n.Milestone != nil {
 			pr.Milestone = n.Milestone.Title
@@ -219,22 +177,35 @@ func (g *gh) world(ctx context.Context, milestone string) (world, error) {
 				pr.ChecksFailed = rollup.State == "FAILURE" || rollup.State == "ERROR"
 			}
 		}
-		if len(n.TimelineItems.Nodes) > 0 {
-			last := n.TimelineItems.Nodes[len(n.TimelineItems.Nodes)-1]
-			pr.Removal = &removalMark{At: last.CreatedAt, Reason: last.Reason}
-			if last.Reason != "merged" && len(n.Commits.Nodes) > 0 {
-				pr.Ejected = !n.Commits.Nodes[0].Commit.CommittedDate.After(last.CreatedAt)
-			}
-		}
-		for _, c := range n.Comments.Nodes {
-			for _, line := range strings.Split(c.Body, "\n") {
-				if rest, ok := strings.CutPrefix(line, "<!-- katl-queue:ejection "); ok {
-					pr.Reported = append(pr.Reported, strings.TrimSuffix(rest, " -->"))
-				}
-			}
+		if obs.Removal != nil && !obs.Removal.mergeRecord() {
+			pr.Removal = obs.Removal
 		}
 		pr.Deps = declaredDeps(n.Body)
 		w.PRs = append(w.PRs, pr)
+	}
+	return w
+}
+
+// world reads the queue and open pull requests, and resolves each
+// candidate's declared dependencies. A non-empty milestone limits the pull
+// requests to that milestone.
+func (g *gh) world(ctx context.Context, milestone string) (world, error) {
+	snap, err := g.snapshot(ctx)
+	if err != nil {
+		return world{}, err
+	}
+	w := worldFrom(snap, milestone)
+
+	for i := range w.PRs {
+		pr := &w.PRs[i]
+		if !w.eligible(*pr) || pr.InQueue || pr.Removal == nil {
+			continue
+		}
+		marks, err := g.markers(ctx, pr.Number)
+		if err != nil {
+			return w, err
+		}
+		pr.settleRemoval(marks)
 	}
 
 	if err := g.loadDependencies(ctx, &w); err != nil {
@@ -253,14 +224,17 @@ func (g *gh) loadDependencies(ctx context.Context, w *world) error {
 			continue
 		}
 		for _, n := range append([]int{pr.Number}, pr.Closes...) {
-			deps, err := g.blockedBy(ctx, n)
+			deps, external, err := g.blockedBy(ctx, n)
 			if err != nil {
 				return err
 			}
 			pr.Deps = append(pr.Deps, deps...)
+			pr.External = append(pr.External, external...)
 		}
 		slices.Sort(pr.Deps)
 		pr.Deps = slices.Compact(pr.Deps)
+		slices.Sort(pr.External)
+		pr.External = slices.Compact(pr.External)
 	}
 
 	var missing []int
@@ -283,28 +257,35 @@ func (g *gh) loadDependencies(ctx context.Context, w *world) error {
 	return nil
 }
 
-func (g *gh) blockedBy(ctx context.Context, number int) ([]int, error) {
-	out, err := runGH(ctx, "api", "--paginate", fmt.Sprintf("repos/%s/%s/issues/%d/dependencies/blocked_by", g.owner, g.name, number), "--jq", ".[].number")
+// blockedBy lists what blocks an issue or pull request: the numbers of
+// blockers in this repository, and the blockers elsewhere as owner/name#N,
+// whose numbers mean nothing here.
+func (g *gh) blockedBy(ctx context.Context, number int) (local []int, external []string, err error) {
+	filter := fmt.Sprintf(`.[] | if (.repository_url | ascii_downcase | endswith(%q)) then (.number | tostring) else ((.repository_url | sub(".*/repos/"; "")) + "#" + (.number | tostring)) end`,
+		strings.ToLower("/repos/"+g.owner+"/"+g.name))
+	out, err := runGH(ctx, "api", "--paginate", fmt.Sprintf("repos/%s/%s/issues/%d/dependencies/blocked_by", g.owner, g.name, number), "--jq", filter)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var numbers []int
 	for _, field := range strings.Fields(string(out)) {
+		if strings.Contains(field, "#") {
+			external = append(external, field)
+			continue
+		}
 		n, err := strconv.Atoi(field)
 		if err != nil {
-			return nil, fmt.Errorf("unexpected blocker %q of #%d", field, number)
+			return nil, nil, fmt.Errorf("unexpected blocker %q of #%d", field, number)
 		}
-		numbers = append(numbers, n)
+		local = append(local, n)
 	}
-	return numbers, nil
+	return local, external, nil
 }
 
 // references reads the state of issues and pull requests by number. Numbers
 // that do not exist are absent from the result.
 func (g *gh) references(ctx context.Context, numbers []int) (map[int]externalRef, error) {
-	refs := map[int]externalRef{}
 	if len(numbers) == 0 {
-		return refs, nil
+		return map[int]externalRef{}, nil
 	}
 	var query strings.Builder
 	query.WriteString("query($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n")
@@ -313,28 +294,27 @@ func (g *gh) references(ctx context.Context, numbers []int) (map[int]externalRef
 	}
 	query.WriteString("  }\n}\n")
 
+	raw, err := g.queryRaw(ctx, query.String())
+	if err != nil {
+		return nil, err
+	}
+	return decodeReferences(raw, numbers)
+}
+
+// decodeReferences reads the response to a references query. A number that
+// does not exist is absent from the result; any other error fails it.
+func decodeReferences(raw []byte, numbers []int) (map[int]externalRef, error) {
 	var resp struct {
 		Repository map[string]*struct {
 			Type  string `json:"__typename"`
 			State string `json:"state"`
 		} `json:"repository"`
 	}
-	if err := g.graphql(ctx, query.String(), &resp); err != nil {
-		// A missing number fails the whole query, so retry one by one.
-		if len(numbers) == 1 {
-			return refs, nil
-		}
-		for _, n := range numbers {
-			one, err := g.references(ctx, []int{n})
-			if err != nil {
-				return nil, err
-			}
-			for k, v := range one {
-				refs[k] = v
-			}
-		}
-		return refs, nil
+	var gqlErr *graphQLError
+	if err := decodeGraphQL(raw, &resp); err != nil && !(errors.As(err, &gqlErr) && gqlErr.onlyNotFound()) {
+		return nil, err
 	}
+	refs := map[int]externalRef{}
 	for _, n := range numbers {
 		if r := resp.Repository[fmt.Sprintf("n%d", n)]; r != nil {
 			refs[n] = externalRef{Pull: r.Type == "PullRequest", State: r.State}
@@ -377,7 +357,7 @@ func (g *gh) milestoneIssues(ctx context.Context, milestone string) ([]issueInfo
 			issue.Labels = append(issue.Labels, label.Name)
 		}
 		if !issue.Assigned {
-			if issue.Blockers, err = g.blockedBy(ctx, l.Number); err != nil {
+			if issue.Blockers, issue.External, err = g.blockedBy(ctx, l.Number); err != nil {
 				return nil, nil, err
 			}
 			blockers = append(blockers, issue.Blockers...)

@@ -21,11 +21,14 @@ type candidate struct {
 	Closes []int
 	// Deps lists the issues and pull requests it declares itself blocked
 	// by, including those declared on the issues it closes.
-	Deps         []int
+	Deps []int
+	// External lists the blockers in other repositories, as owner/name#N.
+	// Their numbers mean nothing here, so they cannot be checked.
+	External     []string
 	AutoMerge    bool
 	ChecksFailed bool
-	// Ejected is set when the merge queue removed it and nothing was pushed
-	// since.
+	// Ejected is set when the merge queue removed it for failed checks and
+	// nothing was pushed since.
 	Ejected bool
 }
 
@@ -49,6 +52,8 @@ type heldPR struct {
 	Blocker int
 	Reason  string
 	Files   []string
+	// Rebase is set when only a rebase onto the base branch can unblock it.
+	Rebase bool
 }
 
 type plan struct {
@@ -94,11 +99,14 @@ func declaredDeps(body string) []int {
 	return deps
 }
 
-// waits is a candidate's resolved ordering constraints.
+// waits is a candidate's resolved ordering constraints. A dependency counts as
+// satisfied once it has merged, so a candidate never joins the queue in the
+// same pass as something it depends on.
 type waits struct {
-	// on lists candidates that must be enqueued first.
+	// on lists candidates that must merge first.
 	on []int
-	// problem is set when a dependency can never be satisfied by this plan.
+	// problem is set when a dependency is not a candidate and has not
+	// merged.
 	problem string
 	blocker int
 }
@@ -112,17 +120,24 @@ func resolveDeps(in planInput) map[int]waits {
 			closers[issue] = append(closers[issue], c.Number)
 		}
 	}
-	queued := map[int]bool{}
+	// queued maps the pull requests in the queue, and the issues they close,
+	// to the queued pull request.
+	queued := map[int]int{}
 	for _, q := range in.Queue {
-		queued[q.Number] = true
+		queued[q.Number] = q.Number
 		for _, issue := range q.Closes {
-			queued[issue] = true
+			queued[issue] = q.Number
 		}
 	}
 
 	resolved := map[int]waits{}
 	for _, c := range in.Candidates {
 		var w waits
+		unmet := func(blocker int, format string, args ...any) {
+			if w.problem == "" {
+				w.problem, w.blocker = fmt.Sprintf(format, args...), blocker
+			}
+		}
 		for _, dep := range c.Deps {
 			if dep == c.Number || slices.Contains(c.Closes, dep) {
 				continue
@@ -138,14 +153,15 @@ func resolveDeps(in planInput) map[int]waits {
 						w.on = append(w.on, n)
 					}
 				}
-			case queued[dep]:
+			case queued[dep] != 0:
+				unmet(queued[dep], "waits for #%d, which is queued and has not merged", queued[dep])
 			case !known:
-				w.problem, w.blocker = fmt.Sprintf("depends on #%d, which was not found", dep), dep
+				unmet(dep, "depends on #%d, which was not found", dep)
 			case ref.State == "MERGED", ref.State == "CLOSED" && !ref.Pull:
 			case ref.State == "CLOSED":
-				w.problem, w.blocker = fmt.Sprintf("depends on #%d, which was closed without merging", dep), dep
+				unmet(dep, "depends on #%d, which was closed without merging", dep)
 			default:
-				w.problem, w.blocker = fmt.Sprintf("waits for #%d, which is not ready to enqueue", dep), dep
+				unmet(dep, "waits for #%d, which has not merged", dep)
 			}
 		}
 		slices.Sort(w.on)
@@ -232,33 +248,32 @@ func planQueue(ctx context.Context, objects *scratchObjects, in planInput) (plan
 		p.Held = append(p.Held, heldPR{Number: c.Number, Reason: reason})
 	}
 
-	held := map[int]bool{}
-	for _, h := range p.Held {
-		held[h.Number] = true
-	}
 	chosen := slices.Clone(in.Queue)
 	for _, c := range ordered {
 		w := resolved[c.Number]
 		hold := func(h heldPR) {
 			h.Number = c.Number
 			p.Held = append(p.Held, h)
-			held[c.Number] = true
 		}
 
 		if c.Ejected {
-			hold(heldPR{Reason: "was removed from the merge queue and nothing was pushed since; fix it and push (katl-queue never retries)"})
+			hold(heldPR{Reason: "was removed from the merge queue for failed checks and nothing was pushed since; fix it and push (katl-queue never retries)"})
 			continue
 		}
 		if c.ChecksFailed {
-			hold(heldPR{Reason: "required checks failed; fix them and push (katl-queue never retries checks)"})
+			hold(heldPR{Reason: "checks failed; fix them and push (katl-queue never retries checks)"})
+			continue
+		}
+		if len(c.External) > 0 {
+			hold(heldPR{Reason: "blocked by " + strings.Join(c.External, ", ") + " in another repository, which katl-queue cannot check"})
 			continue
 		}
 		if w.problem != "" {
 			hold(heldPR{Blocker: w.blocker, Reason: w.problem})
 			continue
 		}
-		if i := slices.IndexFunc(w.on, func(n int) bool { return held[n] }); i >= 0 {
-			hold(heldPR{Blocker: w.on[i], Reason: fmt.Sprintf("waits for #%d, which is held", w.on[i])})
+		if len(w.on) > 0 {
+			hold(heldPR{Blocker: w.on[0], Reason: fmt.Sprintf("waits for #%d to merge", w.on[0])})
 			continue
 		}
 
@@ -271,7 +286,7 @@ func planQueue(ctx context.Context, objects *scratchObjects, in planInput) (plan
 			p.Enqueue = append(p.Enqueue, c.Number)
 			chosen = append(chosen, queuedPR{Number: c.Number, Head: c.Head})
 		case sim.ConflictWith == 0:
-			hold(heldPR{Reason: "conflicts with the base branch; rebase it", Files: sim.Conflicts})
+			hold(heldPR{Reason: "conflicts with the base branch; rebase it", Files: sim.Conflicts, Rebase: true})
 		default:
 			hold(heldPR{Blocker: sim.ConflictWith, Reason: fmt.Sprintf("conflicts with #%d; held behind it", sim.ConflictWith), Files: sim.Conflicts})
 		}
@@ -287,14 +302,17 @@ type issueInfo struct {
 	Labels   []string
 	Created  time.Time
 	Blockers []int
+	// External lists blockers in other repositories, as owner/name#N.
+	External []string
 }
 
 // startable lists open, unassigned issues whose blockers are all closed, in
-// priority order. Blockers missing from refs count as open.
+// priority order. Blockers missing from refs count as open, and blockers in
+// other repositories cannot be checked, so they hold an issue back.
 func startable(issues []issueInfo, refs map[int]externalRef) []issueInfo {
 	var out []issueInfo
 	for _, issue := range issues {
-		if issue.Assigned {
+		if issue.Assigned || len(issue.External) > 0 {
 			continue
 		}
 		open := slices.ContainsFunc(issue.Blockers, func(n int) bool {

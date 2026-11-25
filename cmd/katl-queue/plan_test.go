@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -139,7 +140,7 @@ func TestPlanDependencies(t *testing.T) {
 
 		p := f.plan(planInput{Candidates: []candidate{d, c, b, a}})
 
-		f.expect(p, []int{1, 3, 2, 4})
+		f.expect(p, []int{1}, heldWant{3, 1, nil}, heldWant{2, 1, nil}, heldWant{4, 2, nil})
 	})
 
 	t.Run("declared dependency without a textual conflict", func(t *testing.T) {
@@ -148,7 +149,7 @@ func TestPlanDependencies(t *testing.T) {
 
 		p := f.plan(planInput{Candidates: []candidate{second, first}})
 
-		f.expect(p, []int{1, 2})
+		f.expect(p, []int{1}, heldWant{2, 1, nil})
 	})
 
 	t.Run("dependency declared on a closed issue", func(t *testing.T) {
@@ -159,7 +160,7 @@ func TestPlanDependencies(t *testing.T) {
 
 		p := f.plan(planInput{Candidates: []candidate{second, first}})
 
-		f.expect(p, []int{1, 2})
+		f.expect(p, []int{1}, heldWant{2, 1, nil})
 	})
 
 	t.Run("cycle", func(t *testing.T) {
@@ -196,13 +197,36 @@ func TestPlanDependencies(t *testing.T) {
 		f.expect(p, []int{3, 4}, heldWant{1, 90, nil}, heldWant{2, 91, nil}, heldWant{5, 94, nil}, heldWant{6, 95, nil})
 	})
 
-	t.Run("dependency already queued", func(t *testing.T) {
-		queued := f.pr(1, "a", 0)
+	t.Run("dependency with auto-merge on that is not queued yet", func(t *testing.T) {
+		pending := f.pr(1, "a", 0)
+		pending.AutoMerge = true
 		waiting := dep(f.pr(2, "b", 1), 1)
 
-		p := f.plan(planInput{Queue: []queuedPR{{Number: 1, Head: queued.Head}}, Candidates: []candidate{waiting}})
+		p := f.plan(planInput{Candidates: []candidate{pending, waiting}})
 
-		f.expect(p, []int{2})
+		f.expect(p, []int{1}, heldWant{2, 1, nil})
+	})
+
+	t.Run("dependency in the queue", func(t *testing.T) {
+		queued := f.pr(1, "a", 0)
+		waiting := dep(f.pr(2, "b", 1), 1)
+		viaIssue := dep(f.pr(3, "c", 2), 30)
+
+		p := f.plan(planInput{
+			Queue:      []queuedPR{{Number: 1, Head: queued.Head, Closes: []int{30}}},
+			Candidates: []candidate{waiting, viaIssue},
+		})
+
+		f.expect(p, nil, heldWant{2, 1, nil}, heldWant{3, 1, nil})
+	})
+
+	t.Run("dependency that has merged", func(t *testing.T) {
+		waiting := dep(f.pr(1, "a", 0), 90, 91)
+		refs := map[int]externalRef{90: {Pull: true, State: "MERGED"}, 91: {State: "CLOSED"}}
+
+		p := f.plan(planInput{Refs: refs, Candidates: []candidate{waiting}})
+
+		f.expect(p, []int{1})
 	})
 
 	t.Run("dependency that is held", func(t *testing.T) {
@@ -229,6 +253,58 @@ func TestPlanNeverRetriesChecks(t *testing.T) {
 	f.expect(p, []int{3}, heldWant{1, 0, nil}, heldWant{2, 0, nil})
 }
 
+func TestPlanChecksFailedReason(t *testing.T) {
+	f := newPlanFixture(t)
+	failed := f.pr(1, "a", 0)
+	failed.ChecksFailed = true
+
+	p := f.plan(planInput{Candidates: []candidate{failed}})
+
+	// The rollup covers every check, not only the required ones.
+	if len(p.Held) != 1 || strings.Contains(p.Held[0].Reason, "required") {
+		t.Errorf("held = %+v; the reason must not claim the failed checks are required", p.Held)
+	}
+}
+
+func TestPlanHoldsExternalBlocker(t *testing.T) {
+	f := newPlanFixture(t)
+	blocked := f.pr(1, "a", 0)
+	blocked.External = []string{"other/repo#1"}
+	// A blocker in this repository that happens to share the number.
+	local := f.pr(2, "b", 1)
+	local.Deps = []int{1}
+	refs := map[int]externalRef{1: {Pull: true, State: "MERGED"}}
+
+	p := f.plan(planInput{Refs: refs, Candidates: []candidate{blocked, local}})
+
+	f.expect(p, nil, heldWant{1, 0, nil}, heldWant{2, 1, nil})
+	if !strings.Contains(p.Held[0].Reason, "other/repo#1") {
+		t.Errorf("reason = %q, want it to name the other repository's blocker", p.Held[0].Reason)
+	}
+}
+
+func TestPlanMarksOnlyBaseConflictsForRebase(t *testing.T) {
+	f := newPlanFixture(t)
+	stale := f.pr(1, "a", 0)
+	stale2 := f.pr(2, "a", 1)
+	queued := f.pr(3, "b", 2)
+	behindQueue := f.pr(4, "b", 3)
+	f.base = f.repo.commit(f.base, map[string]string{"a": "main moved\n"})
+
+	p := f.plan(planInput{
+		Queue:      []queuedPR{{Number: 3, Head: queued.Head}},
+		Candidates: []candidate{stale, stale2, behindQueue},
+	})
+
+	rebase := map[int]bool{}
+	for _, h := range p.Held {
+		rebase[h.Number] = h.Rebase
+	}
+	if want := (map[int]bool{1: true, 2: true, 4: false}); !reflect.DeepEqual(rebase, want) {
+		t.Errorf("rebase = %v, want %v: a rebase onto the base cannot resolve a conflict with a queued entry", rebase, want)
+	}
+}
+
 func TestDeclaredDeps(t *testing.T) {
 	body := "Closes #5\n\nDepends on #7, #8\n  depends on #9\nSee #10 and mention depends on #11 inline\n"
 	want := []int{7, 8, 9}
@@ -246,6 +322,7 @@ func TestStartable(t *testing.T) {
 		{Number: 5, Created: epoch.Add(time.Hour), Blockers: []int{80}},
 		{Number: 6, Created: epoch.Add(2 * time.Hour), Labels: []string{"release-blocker"}, Blockers: []int{80, 81}},
 		{Number: 7, Created: epoch, Blockers: []int{82}},
+		{Number: 8, Created: epoch, External: []string{"other/repo#3"}},
 	}
 	refs := map[int]externalRef{80: {State: "CLOSED"}, 81: {Pull: true, State: "MERGED"}, 1: {State: "OPEN"}}
 
@@ -254,7 +331,8 @@ func TestStartable(t *testing.T) {
 		got = append(got, issue.Number)
 	}
 
-	// #4 waits on open #1, #3 is assigned, #7's blocker is unknown.
+	// #4 waits on open #1, #3 is assigned, #7's blocker is unknown, #8 is
+	// blocked in another repository.
 	if want := []int{6, 2, 5, 1}; !slices.Equal(got, want) {
 		t.Errorf("startable = %v, want %v", got, want)
 	}

@@ -668,18 +668,23 @@ follows everything queued or waiting with auto-merge, polls every minute
 exits 1 when a watched PR leaves the queue without merging.
 
 `plan` simulates every ready, non-draft PR over `main` plus the queue and the PRs
-it has already chosen. It orders by declared dependencies first (GitHub's
-blocked-by on the PR and on the issue it closes, and `Depends on #N` lines in
-the PR body), then `release-blocker`, `dev-experience`, everything else, and age.
-A conflicting PR is held behind the PR it conflicts with, and a PR whose checks
-failed or that the queue removed without a newer push is held rather than
-re-enqueued. `autopilot` also rebases PRs that conflict with `main` and pushes a
-clean result with `--force-with-lease` over HTTPS through `gh auth git-credential`,
-labels a conflicting rebase `needs-rebase` with a comment naming the files,
-dequeues entries the queue marks `UNMERGEABLE`, and posts the `why` excerpt on an
-ejected PR. It never retries checks and never touches `release/*` branches or PRs
-targeting them. `plan` and `autopilot` only report; `--apply` makes the changes,
-and `autopilot --once` runs a single pass instead of polling.
+it has already chosen. It orders by `release-blocker`, `dev-experience`,
+everything else, and age. A PR that declares a dependency (GitHub's blocked-by on
+the PR and on the issue it closes, and `Depends on #N` lines in the PR body) is
+held until the dependency has merged, so dependents join the queue in a later
+pass; a blocker in another repository cannot be checked and holds the PR too. A
+conflicting PR is held behind the PR it conflicts with, and a PR whose checks
+failed or that the queue removed for failed checks without a newer push is held
+rather than re-enqueued. `autopilot` rebases only a PR that the plan would
+otherwise enqueue and that conflicts with `main`, pushing a clean result with
+`--force-with-lease` over HTTPS through `gh auth git-credential` and recording the
+pushed head in a comment. It labels a conflicting rebase `needs-rebase` with a
+comment naming the files, disables auto-merge on PRs it holds, dequeues entries
+the queue marks `UNMERGEABLE`, and posts the `why` excerpt on a removed PR that
+nothing has been pushed to since. It never retries checks and never touches
+`release/*` branches or PRs targeting them. `plan` and `autopilot` only report;
+`--apply` makes the changes (`autopilot --apply` needs `--milestone`), and
+`autopilot --once` runs a single pass instead of polling.
 
 Fast checks skip mkosi builds, libvirt/KVM setup, VM scenarios, and publishing.
 Run focused VM gates locally with `scripts/vmtest-run` on a capable host and
