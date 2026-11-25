@@ -260,6 +260,8 @@ func TestAdmissionRacingAdmitsStayWithinCapacity(t *testing.T) {
 	// shared lock admits more than two at once.
 	dir := t.TempDir()
 	var live, peak atomic.Int32
+	full := make(chan struct{})
+	var markFull sync.Once
 	var wg sync.WaitGroup
 	for i := range 8 {
 		wg.Add(1)
@@ -280,6 +282,15 @@ func TestAdmissionRacingAdmitsStayWithinCapacity(t *testing.T) {
 					break
 				}
 			}
+			// Keep the first reservation held until another fits alongside it.
+			if now >= 2 {
+				markFull.Do(func() { close(full) })
+			}
+			select {
+			case <-full:
+			case <-ctx.Done():
+				t.Error("timed out waiting for two concurrent reservations")
+			}
 			time.Sleep(10 * time.Millisecond)
 			live.Add(-1)
 			reservation.Release()
@@ -296,6 +307,7 @@ func TestAdmissionRacingAdmitsStayWithinCapacity(t *testing.T) {
 }
 
 func TestHostCapacityEnvironmentOverrides(t *testing.T) {
+	useHostMemory(t, 64<<10, 48<<10)
 	t.Setenv(admissionVCPUsEnv, "3")
 	t.Setenv(admissionMemoryEnv, "4096")
 

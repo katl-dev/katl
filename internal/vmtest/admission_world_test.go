@@ -185,7 +185,6 @@ func TestScenarioAdmissionCountsMemoryOfUnadmittedVMs(t *testing.T) {
 	world, _ := ownedScenarioWorld(t)
 	// The static budget is ample, but other VMs already use the host's memory.
 	useHostMemory(t, 64<<10, 9<<10)
-	t.Setenv(admissionMemoryEnv, "40000")
 	t.Setenv(admissionTimeoutEnv, "100ms")
 	scenario, err := world.planScenario("squeezed")
 	if err != nil {

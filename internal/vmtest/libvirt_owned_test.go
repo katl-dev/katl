@@ -174,11 +174,14 @@ func mkdirForFile(t *testing.T, path string) {
 	}
 }
 
-// ownedScenarioWorld returns a world that a held run lease owns, whose
-// libvirt is the fake.
+// ownedScenarioWorld returns a world with a held run lease, fake libvirt, and
+// fixed host admission inputs.
 func ownedScenarioWorld(t *testing.T) (World, fakeLibvirt) {
 	t.Helper()
 	t.Setenv(admissionDirEnv, t.TempDir())
+	t.Setenv(admissionVCPUsEnv, "8")
+	t.Setenv(admissionMemoryEnv, "40000")
+	t.Setenv(admissionTimeoutEnv, "")
 	useHostMemory(t, 64<<10, 48<<10)
 	fake := newFakeLibvirt(t)
 	world := testWorld(t)
