@@ -8,9 +8,22 @@ sudo_bin="${KATL_VMTEST_SUDO:-sudo}"
 repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 go_bin="${KATL_VMTEST_GO:-go}"
 release_bin="${KATL_VMTEST_RELEASE_NETWORKS:-}"
+devclean_bin="${KATL_DEVCLEAN:-}"
+podman_bin="${KATL_VMTEST_PODMAN:-podman}"
 
 usage() {
     printf 'usage: scripts/vmtest-clean <run-dir|result.json>\n' >&2
+}
+
+# What may be deleted is decided by cmd/katl-devclean.
+devclean() {
+    if [[ -n "$devclean_bin" ]]; then
+        "$devclean_bin" "$@"
+    elif command -v katl-devclean >/dev/null 2>&1; then
+        katl-devclean "$@"
+    else
+        (cd "$repo_root" && "$go_bin" run ./cmd/katl-devclean "$@")
+    fi
 }
 
 if [[ "$#" -ne 1 ]]; then
@@ -19,10 +32,21 @@ if [[ "$#" -ne 1 ]]; then
 fi
 
 target="$1"
+# Only a run directory is deleted. A single result.json names one node of a
+# run, so its directory is left for the run as a whole to remove.
+run_dir=""
 if [[ -d "$target" ]]; then
+    if ! info="$(devclean run-dir "$target")"; then
+        printf 'vmtest-clean: not deleting %s\n' "$target" >&2
+        exit 2
+    fi
+    run_dir="$(sed -n 's/^path=//p' <<<"$info")"
     mapfile -t result_files < <(find "$target" -name result.json -print | sort)
 elif [[ -f "$target" ]]; then
     result_files=("$target")
+elif info="$(devclean run-dir "$target" 2>/dev/null)" && grep -qx 'present=false' <<<"$info"; then
+    printf 'vmtest-clean: %s is already removed\n' "$target" >&2
+    exit 0
 else
     printf 'vmtest-clean: target not found: %s\n' "$target" >&2
     exit 2
@@ -34,6 +58,7 @@ if [[ "${#result_files[@]}" -eq 0 ]]; then
 fi
 
 cleaned=0
+recorded_domains=()
 # Libvirt networks that the cleaned domains used, by libvirt URI.
 declare -A recorded_networks=()
 kill_qemu_pid() {
@@ -133,6 +158,7 @@ for result in "${result_files[@]}"; do
             fi
         }
         cleaned=$((cleaned + 1))
+        recorded_domains+=("$domain	$uri")
         # Worlds without a run network use libvirt's default one, which is not ours to remove.
         if [[ "$network" =~ ^[A-Za-z0-9_.:-]+$ && "$network" == katl-* ]]; then
             case " ${recorded_networks[$uri]:-} " in
@@ -151,7 +177,7 @@ for result in "${result_files[@]}"; do
     )
 done
 
-if [[ "$cleaned" -eq 0 ]]; then
+if [[ "$cleaned" -eq 0 && -z "$run_dir" ]]; then
     printf 'vmtest-clean: no preserved vmtest domains recorded in %s\n' "$target" >&2
     exit 1
 fi
@@ -179,4 +205,31 @@ for uri in "${!recorded_networks[@]}"; do
     release_networks "$uri" "${names[@]}" || exit 1
 done
 
-printf 'vmtest-clean: cleaned %d preserved domain(s)\n' "$cleaned" >&2
+if [[ -z "$run_dir" ]]; then
+    printf 'vmtest-clean: cleaned %d preserved domain(s)\n' "$cleaned" >&2
+    exit 0
+fi
+
+# Deleting the run directory discards the only record of its domains, so
+# confirm with libvirt that every one is gone first.
+for entry in "${recorded_domains[@]}"; do
+    IFS=$'\t' read -r domain uri <<<"$entry"
+    if domain_exists "$domain" "$uri"; then
+        printf 'vmtest-clean: %s still exists on %s; leaving %s in place\n' "$domain" "$uri" "$run_dir" >&2
+        exit 1
+    fi
+done
+
+# mkosi and libvirt leave read-only and relabelled files, and mkosi trees can be
+# owned by subuids that only a user-namespace shell can change.
+chmod -R u+rwX -- "$run_dir" 2>/dev/null || true
+rm -rf -- "$run_dir" 2>/dev/null || true
+if [[ -e "$run_dir" ]]; then
+    # shellcheck disable=SC2016 # the script is expanded by the inner shell
+    "$podman_bin" unshare sh -c 'chmod -R u+rwX -- "$1"; rm -rf -- "$1"' sh "$run_dir" || true
+fi
+if [[ -e "$run_dir" ]]; then
+    printf 'vmtest-clean: failed to delete %s\n' "$run_dir" >&2
+    exit 1
+fi
+printf 'vmtest-clean: cleaned %d preserved domain(s) and deleted %s\n' "$cleaned" "$run_dir" >&2

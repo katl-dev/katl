@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+go_bin="${KATL_WORKTREE_GO:-go}"
+devclean_bin="${KATL_DEVCLEAN:-}"
+podman_bin="${KATL_WORKTREE_PODMAN:-podman}"
+
+if [[ "$#" -ne 1 ]]; then
+    printf 'usage: scripts/worktree-clean <worktree-path>\n' >&2
+    exit 2
+fi
+target="$1"
+
+# Whether the worktree and its branch may be removed is decided by
+# cmd/katl-devclean; this script only carries the decision out.
+devclean() {
+    if [[ -n "$devclean_bin" ]]; then
+        "$devclean_bin" "$@"
+    elif command -v katl-devclean >/dev/null 2>&1; then
+        katl-devclean "$@"
+    else
+        (cd "$repo_root" && "$go_bin" run ./cmd/katl-devclean "$@")
+    fi
+}
+
+if ! info="$(devclean worktree "$repo_root" "$target")"; then
+    printf 'worktree-clean: not removing %s\n' "$target" >&2
+    exit 2
+fi
+path="$(sed -n 's/^path=//p' <<<"$info")"
+branch="$(sed -n 's/^branch=//p' <<<"$info")"
+delete_branch="$(sed -n 's/^delete-branch=//p' <<<"$info")"
+keep_reason="$(sed -n 's/^keep-reason=//p' <<<"$info")"
+merged_pr="$(sed -n 's/^merged-pr=//p' <<<"$info")"
+if [[ -n "$merged_pr" && "$merged_pr" != 0 ]]; then
+    printf 'worktree-clean: HEAD is the head of merged pull request #%s\n' "$merged_pr" >&2
+fi
+
+# Untracked build output, such as mkosi trees owned by subuids, makes git
+# refuse a plain removal and can resist rm, so it is cleared from inside a
+# user namespace when needed.
+if ! git -C "$repo_root" worktree remove --force "$path" 2>/dev/null; then
+    # shellcheck disable=SC2016 # the script is expanded by the inner shell
+    "$podman_bin" unshare sh -c 'chmod -R u+rwX -- "$1"; rm -rf -- "$1"' sh "$path" || true
+    git -C "$repo_root" worktree prune
+fi
+if [[ -e "$path" ]]; then
+    printf 'worktree-clean: failed to remove %s\n' "$path" >&2
+    exit 1
+fi
+printf 'worktree-clean: removed %s\n' "$path" >&2
+
+if [[ -z "$branch" ]]; then
+    exit 0
+fi
+if [[ "$delete_branch" == true ]]; then
+    git -C "$repo_root" branch -D "$branch" >&2
+else
+    printf 'worktree-clean: kept branch %s: %s\n' "$branch" "$keep_reason" >&2
+fi

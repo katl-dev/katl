@@ -924,9 +924,38 @@ Installed-runtime tests consume the KatlOS install image and reject
 `--artifact-set=install` so fixture invalidation follows the installed payload.
 
 Use delete-on-success retention for routine gates. While debugging, use
-`--debug-on-failure` with a single narrow scenario, retain the run directory as
-evidence, and clean retained domains and the run networks they used with `scripts/vmtest-clean` when inspection
-is done.
+`--debug-on-failure` with a single narrow scenario and retain the run directory
+as evidence.
+
+Clean up retained state with two commands, and only these:
+
+```sh
+scripts/vmtest-clean /tmp/katl-vmtest/<run-id>
+scripts/worktree-clean <worktree-path>
+```
+
+`scripts/vmtest-clean` destroys and undefines the run's recorded domains,
+releases the networks the run owns, confirms with libvirt that every domain is
+gone, and then deletes the run directory, including read-only files left by
+mkosi and libvirt. It refuses any directory that is not a direct child of a
+`katl-vmtest` directory containing a `result.json`, and repeating it on a
+removed run succeeds. Given a single `result.json` it removes that node's
+domains and leaves the directory.
+
+`scripts/worktree-clean` removes a linked git worktree and its untracked build
+output, such as subuid-owned `_build/` trees. It refuses the main worktree, a
+worktree with tracked modifications or staged changes, and one whose HEAD
+commit is on no remote branch after fetching `origin`, unless GitHub reports a
+merged pull request whose head commit is exactly HEAD (squash merges and
+deleted head branches leave no remote ref). The message names what is modified
+or unpushed, and says so when GitHub could not be asked, which is never treated
+as safe. It then deletes the local branch only when that branch is merged into
+`origin/main`, contained in a remote branch of the same name, or at the head of
+that merged pull request, and otherwise keeps it and says so.
+
+Run each command on its own, without a leading `cd … &&` and without a pipe, so
+that an allow rule for the command matches it. Do not clean up with `rm -rf`,
+`chmod -R`, `git worktree remove --force` or `virsh destroy`.
 
 The focused external-worker regression uses one Katl control-plane VM and an
 independently provisioned [external worker](operations/external-workers.md). It
