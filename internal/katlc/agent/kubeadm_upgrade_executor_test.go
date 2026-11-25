@@ -18,6 +18,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
@@ -786,7 +787,7 @@ func TestValidateKubeadmUpgradeExecutionSafetyInputs(t *testing.T) {
 	if err := validateKubernetesSysextUpdateRequest(OperationKindKubeadmUpgrade, base); err != nil {
 		t.Fatalf("valid request: %v", err)
 	}
-	bundle := *base
+	bundle := proto.Clone(base).(*agentapi.KubernetesSysextUpdateOperationRequest)
 	bundle.TargetSysextPath = ""
 	bundle.TargetSysextSha256 = ""
 	bundle.TargetSysextSizeBytes = 0
@@ -798,22 +799,22 @@ func TestValidateKubeadmUpgradeExecutionSafetyInputs(t *testing.T) {
 	bundle.SnapshotOperatorIdentity = ""
 	bundle.KubernetesBundleSource = "https://ghcr.io/v2/katl-dev/kubernetes"
 	bundle.KubernetesBundleRef = "ghcr.io/katl-dev/kubernetes@sha256:" + strings.Repeat("d", 64)
-	if err := validateKubernetesSysextUpdateRequest(OperationKindKubeadmUpgrade, &bundle); err != nil {
+	if err := validateKubernetesSysextUpdateRequest(OperationKindKubeadmUpgrade, bundle); err != nil {
 		t.Fatalf("valid bundle request: %v", err)
 	}
 	bundle.TargetSysextPath = base.TargetSysextPath
 	bundle.TargetSysextSha256 = base.TargetSysextSha256
-	if err := validateKubernetesSysextUpdateRequest(OperationKindKubeadmUpgrade, &bundle); err == nil || !strings.Contains(err.Error(), "resolved by the node") {
+	if err := validateKubernetesSysextUpdateRequest(OperationKindKubeadmUpgrade, bundle); err == nil || !strings.Contains(err.Error(), "resolved by the node") {
 		t.Fatalf("operator-resolved target error = %v", err)
 	}
-	missing := *base
+	missing := proto.Clone(base).(*agentapi.KubernetesSysextUpdateOperationRequest)
 	missing.SnapshotDigest = ""
-	if err := validateKubernetesSysextUpdateRequest(OperationKindKubeadmUpgrade, &missing); err == nil || !strings.Contains(err.Error(), "snapshotDigest is required") {
+	if err := validateKubernetesSysextUpdateRequest(OperationKindKubeadmUpgrade, missing); err == nil || !strings.Contains(err.Error(), "snapshotDigest is required") {
 		t.Fatalf("missing snapshot error = %v", err)
 	}
-	skip := *base
+	skip := proto.Clone(base).(*agentapi.KubernetesSysextUpdateOperationRequest)
 	skip.TargetPayloadVersion = "v1.38.0"
-	if err := validateKubernetesSysextUpdateRequest(OperationKindKubeadmUpgrade, &skip); err == nil || !strings.Contains(err.Error(), "only a newer patch or the next minor") {
+	if err := validateKubernetesSysextUpdateRequest(OperationKindKubeadmUpgrade, skip); err == nil || !strings.Contains(err.Error(), "only a newer patch or the next minor") {
 		t.Fatalf("skip error = %v", err)
 	}
 }

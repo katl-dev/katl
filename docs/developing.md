@@ -631,7 +631,7 @@ branch, run:
 scripts/check-fast origin/main...HEAD
 ```
 
-The command checks all tracked Go formatting, patch whitespace, and runs the
+The command checks all tracked Go formatting and patch whitespace, runs `go vet ./...`, and runs the
 complete Go suite with `-count=1` so cached test results cannot hide failures.
 Changes reach `main` through pull requests and the merge queue after
 [CI](development/ci.md) passes. Pull requests run fast checks, the Nix build, and

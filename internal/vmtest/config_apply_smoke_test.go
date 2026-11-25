@@ -542,7 +542,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	var rejected agentapi.ConfigValidationResult
 	mustUnmarshalProtoJSON(t, rejectedOutput, &rejected)
 	if rejected.Accepted || !strings.Contains(strings.Join(rejected.Diagnostics, "\n"), "kernel module configuration is next-boot-only") {
-		t.Fatalf("rejected validation = %+v, want fail closed next-boot module diagnostic", rejected)
+		t.Fatalf("rejected validation = %+v, want fail closed next-boot module diagnostic", &rejected)
 	}
 	assertGuestMissing(t, ctx, guest, "/var/lib/katl/generations/"+rejectedGeneration)
 	assertOptionalReadlink(t, ctx, guest, "/run/extensions/katl-kubernetes.raw", beforeSysext)
@@ -1024,7 +1024,7 @@ func configApplyConfigArgs(path string) []string {
 	return []string{"--config", path}
 }
 
-func katlctlGenerationStatus(t *testing.T, ctx context.Context, result Result, katlctl katlctlRunner, endpoint, name, generationID string) agentapi.Generation {
+func katlctlGenerationStatus(t *testing.T, ctx context.Context, result Result, katlctl katlctlRunner, endpoint, name, generationID string) *agentapi.Generation {
 	t.Helper()
 	output := runKatlctl(
 		t, ctx, result, katlctl, name,
@@ -1032,8 +1032,8 @@ func katlctlGenerationStatus(t *testing.T, ctx context.Context, result Result, k
 		"--endpoint", endpoint,
 		"--generation", generationID,
 	)
-	var gen agentapi.Generation
-	mustUnmarshalProtoJSON(t, output, &gen)
+	gen := &agentapi.Generation{}
+	mustUnmarshalProtoJSON(t, output, gen)
 	return gen
 }
 

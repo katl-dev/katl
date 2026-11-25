@@ -3260,9 +3260,8 @@ func (c *fakeKatlcAgentClient) StageHostUpgradeArtifact(context.Context, ...grpc
 }
 
 func (s *fakeHostUpgradeArtifactClient) Send(request *agentapi.StageHostUpgradeArtifactRequest) error {
-	copyRequest := *request
-	copyRequest.Chunk = append([]byte(nil), request.Chunk...)
-	s.client.stageArtifact = append(s.client.stageArtifact, &copyRequest)
+	copyRequest := proto.Clone(request).(*agentapi.StageHostUpgradeArtifactRequest)
+	s.client.stageArtifact = append(s.client.stageArtifact, copyRequest)
 	if s.client.stageArtifactSendErr != nil {
 		return s.client.stageArtifactSendErr
 	}
