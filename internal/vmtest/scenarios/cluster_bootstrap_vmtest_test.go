@@ -41,7 +41,7 @@ import (
 )
 
 func TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke(t *testing.T) {
-	if run, ok := operationBackedWorldSmokeRun(t, "installed-runtime-two-node-operation-backed-bootstrap"); ok {
+	if run, ok := operationBackedWorldSmokeRun(t, "installed-runtime-two-node-operation-backed-bootstrap", false); ok {
 		runOperationBackedBootstrapSmoke(t, run, bootstrapProof)
 		return
 	}
@@ -54,7 +54,7 @@ func TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke(t *testing.T) {
 }
 
 func TestKubeadmUpgradeOperationSmoke(t *testing.T) {
-	if run, ok := operationBackedWorldSmokeRun(t, "installed-runtime-two-node-operation-backed-bootstrap"); ok {
+	if run, ok := operationBackedWorldSmokeRun(t, "installed-runtime-two-node-operation-backed-bootstrap", true); ok {
 		runOperationBackedBootstrapSmoke(t, run, upgradeProof)
 		return
 	}
@@ -108,7 +108,7 @@ type firstInstallProvenance struct {
 	FirstInstallMode     string
 }
 
-func operationBackedWorldSmokeRun(t *testing.T, scenarioName string) (operationBackedSmokeRun, bool) {
+func operationBackedWorldSmokeRun(t *testing.T, scenarioName string, upgrade bool) (operationBackedSmokeRun, bool) {
 	t.Helper()
 	if strings.TrimSpace(os.Getenv(vmtest.WorldManifestEnv)) == "" {
 		return operationBackedSmokeRun{}, false
@@ -121,7 +121,7 @@ func operationBackedWorldSmokeRun(t *testing.T, scenarioName string) (operationB
 	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, specs, kvm); err != nil {
 		failWorldFixtureSetup(t, world, scenarioName, err)
 	}
-	run, err := planOperationBackedWorldSmokeRunNamed(world, repo, operationBackedKubernetesVersion(t, repo), kvm, scenarioName)
+	run, err := planOperationBackedWorldSmokeRunNamed(world, repo, operationBackedKubernetesVersion(t, repo, upgrade), kvm, scenarioName)
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
@@ -136,8 +136,9 @@ func operationBackedFreshFixtureWorld(world vmtest.World) vmtest.World {
 	return world
 }
 
-func operationBackedKubernetesVersion(t *testing.T, repo string) string {
+func operationBackedKubernetesVersion(t *testing.T, repo string, upgrade bool) string {
 	t.Helper()
+	_, sourceMetadata := kubernetesSourceSysext(repo, upgrade)
 	if version := firstString(os.Getenv("KATL_KUBERNETES_VERSION"), os.Getenv("KATL_KUBERNETES_PAYLOAD_VERSION")); version != "" {
 		return version
 	}
@@ -146,7 +147,7 @@ func operationBackedKubernetesVersion(t *testing.T, repo string) string {
 	}
 	for _, path := range []string{
 		os.Getenv("KATL_KUBERNETES_SYSEXT_METADATA"),
-		filepath.Join(repo, "_build/mkosi/katl-kubernetes.raw.json"),
+		sourceMetadata,
 	} {
 		path = strings.TrimSpace(path)
 		if path == "" {
@@ -292,7 +293,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 	if err != nil {
 		t.Fatal(err)
 	}
-	kubernetesBundle, bundleServer, err := stageOperationBackedKubernetesPayloadBundle(katlRepoRoot(t), result, smoke.WorldScenario.World.Network.Gateway, inputs.KubernetesVersion)
+	kubernetesBundle, bundleServer, err := stageOperationBackedKubernetesPayloadBundle(katlRepoRoot(t), result, smoke.WorldScenario.World.Network.Gateway, inputs.KubernetesVersion, proveUpgrade)
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("stage Kubernetes payload bundle: %v", err)
@@ -1420,7 +1421,7 @@ func operationBackedVMConfigForRun(run operationBackedSmokeRun, mac string, cid 
 	return config
 }
 
-func stageOperationBackedKubernetesPayloadBundle(repo string, result vmtest.Result, gateway, kubernetesVersion string) (threeControlPlaneKubernetesPayloadBundle, guestReachableBundleServer, error) {
+func stageOperationBackedKubernetesPayloadBundle(repo string, result vmtest.Result, gateway, kubernetesVersion string, upgrade bool) (threeControlPlaneKubernetesPayloadBundle, guestReachableBundleServer, error) {
 	if value := strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_BUNDLE")); value != "" {
 		image, err := kubernetesbundle.ParseImageReference(value)
 		if err != nil {
@@ -1445,7 +1446,7 @@ func stageOperationBackedKubernetesPayloadBundle(repo string, result vmtest.Resu
 		}
 		return bundle, guestReachableBundleServer{}, nil
 	}
-	bundle, err := stageThreeControlPlaneKubernetesPayloadBundles(repo, result, kubernetesVersion)
+	bundle, err := stageThreeControlPlaneKubernetesPayloadBundles(repo, result, kubernetesVersion, upgrade)
 	if err != nil {
 		return threeControlPlaneKubernetesPayloadBundle{}, guestReachableBundleServer{}, err
 	}

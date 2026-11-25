@@ -416,11 +416,12 @@ build_default_artifacts() {
         default | install)
             targets+=("build-katlos-install-image")
             targets+=("build-katlos-upgrade-image")
-            if vmtest_requests_kubernetes_upgrade && ! vmtest_uses_published_kubernetes_upgrade_bundles; then
-                targets+=("build-kubernetes-upgrade-sysext")
-                targets+=("build-kubernetes-upgrade-source-sysext")
-            elif ! vmtest_requests_kubernetes_upgrade; then
+            if ! vmtest_uses_published_kubernetes_upgrade_bundles; then
                 targets+=("build-kubernetes-sysext")
+                if vmtest_requests_kubernetes_upgrade; then
+                    targets+=("build-kubernetes-upgrade-sysext")
+                    targets+=("build-kubernetes-upgrade-source-sysext")
+                fi
             fi
             targets+=("build-installer-iso")
             ;;
@@ -470,6 +471,7 @@ build_default_artifacts() {
                     "KATL_KUBERNETES_KUBELET_VERSION=${KATL_KUBERNETES_UPGRADE_SOURCE_KUBELET_VERSION:-0:1.36.0-150500.1.1}"
                     "KATL_KUBERNETES_KUBECTL_VERSION=${KATL_KUBERNETES_UPGRADE_SOURCE_KUBECTL_VERSION:-0:1.36.0-150500.1.1}"
                     "$repo_root/scripts/build-kubernetes-sysext"
+                    --output katl-kubernetes-upgrade-source
                 )
                 ;;
             *)
@@ -503,7 +505,7 @@ build_default_artifacts() {
 }
 
 verify_kubernetes_upgrade_artifacts() {
-	local base="$repo_root/_build/mkosi/katl-kubernetes.raw"
+	local base="$repo_root/_build/mkosi/katl-kubernetes-upgrade-source.raw"
 	local target="$repo_root/_build/mkosi/katl-kubernetes-upgrade.raw"
 	local upgrade_source_payload="${KATL_KUBERNETES_UPGRADE_SOURCE_PAYLOAD_VERSION:-v1.36.0}"
 	local upgrade_target_payload="${KATL_KUBERNETES_UPGRADE_PAYLOAD_VERSION:-v1.36.1}"
