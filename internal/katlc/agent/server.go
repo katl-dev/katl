@@ -277,6 +277,7 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "read management status: %v", err)
 	}
+	management.NodeTime = formatTime(s.trialClock().Now())
 	return &agentapi.NodeStatus{
 		ApiVersion:              APIVersion,
 		MachineId:               machineID,

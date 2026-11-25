@@ -11,6 +11,7 @@ import (
 	"github.com/katl-dev/katl/internal/generation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlc/transport"
+	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/spf13/cobra"
 )
 
@@ -54,6 +55,22 @@ type hostStatusReport struct {
 	APIProxy             *apiProxyStatusReport       `json:"apiProxy,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointReport `json:"controlPlaneEndpoint,omitempty"`
 	Volumes              []volumeStatusReport        `json:"volumes,omitempty"`
+	Management           *managementStatusReport     `json:"management,omitempty"`
+}
+
+// managementStatusReport is the node's installed management mode and any
+// recorded trust transition; it is absent for a node too old to report them.
+type managementStatusReport struct {
+	Authentication string                      `json:"authentication"`
+	Authority      string                      `json:"authority,omitempty"`
+	Transition     *managementTransitionReport `json:"transition,omitempty"`
+}
+
+type managementTransitionReport struct {
+	State           string `json:"state"`
+	TargetAuthority string `json:"targetAuthority,omitempty"`
+	Deadline        string `json:"deadline,omitempty"`
+	RevertReason    string `json:"revertReason,omitempty"`
 }
 
 type apiProxyStatusReport struct {
@@ -437,6 +454,7 @@ func newHostStatusReport(node, endpoint string, status *agentapi.NodeStatus, cur
 		Kubernetes:           newKubernetesStatusReport(status.GetKubernetes()),
 		APIProxy:             newAPIProxyStatusReport(status.GetApiProxy()),
 		ControlPlaneEndpoint: newControlPlaneEndpointReport(status.GetControlPlaneEndpoint()),
+		Management:           newManagementStatusReport(status.GetManagement()),
 	}
 	if target := strings.TrimSpace(status.GetBootTargetGenerationId()); target != "" && target != current.GetGenerationId() {
 		report.NextBoot = target
@@ -524,7 +542,7 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport, v
 		return writeJSON(stdout, report)
 	}
 	w := newTable(stdout)
-	w.row("NODE", "HEALTH", "KUBERNETES", "KATLOS", "GENERATION", "NEXT BOOT", "ACTIVITY")
+	w.row("NODE", "HEALTH", "KUBERNETES", "KATLOS", "GENERATION", "NEXT BOOT", "ACTIVITY", "MANAGEMENT")
 	version := report.KatlOSVersion
 	if report.KatlOSFlavour == "lts" {
 		version += " (lts)"
@@ -540,7 +558,10 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport, v
 	if report.Kubernetes != nil {
 		kubernetes = firstNonEmpty(strings.TrimSpace(report.Kubernetes.State), "unknown")
 	}
-	w.row(report.Node, report.Health, kubernetes, version, report.Generation, nextBoot, report.Activity)
+	w.row(report.Node, report.Health, kubernetes, version, report.Generation, nextBoot, report.Activity, report.Management.mode())
+	if detail := report.Management.detail(); detail != "" {
+		w.row("", detail)
+	}
 	if report.BootHealthDiagnostic != "" {
 		w.row("", report.BootHealthDiagnostic)
 	}
@@ -662,4 +683,50 @@ func hostTargetName(target managementTarget) string {
 		return node
 	}
 	return target.endpoint
+}
+
+func newManagementStatusReport(status *agentapi.ManagementStatus) *managementStatusReport {
+	if status == nil {
+		return nil
+	}
+	report := &managementStatusReport{Authentication: status.GetAuthentication(), Authority: status.GetAuthority()}
+	if transition := status.GetTransition(); transition != nil {
+		report.Transition = &managementTransitionReport{
+			State: transition.GetState(), TargetAuthority: transition.GetTargetAuthority(),
+			Deadline: transition.GetDeadline(), RevertReason: transition.GetRevertReason(),
+		}
+	}
+	return report
+}
+
+// mode is the management column: the installed mode, marked while a trial of
+// mTLS is live.
+func (report *managementStatusReport) mode() string {
+	if report == nil {
+		return "-"
+	}
+	mode := firstNonEmpty(report.Authentication, "unknown")
+	if report.Transition != nil && report.Transition.State == "trial" {
+		mode += " (mtls trial)"
+	}
+	return mode
+}
+
+// detail explains a transition the operator may need to act on, if any.
+func (report *managementStatusReport) detail() string {
+	if report == nil || report.Transition == nil {
+		return ""
+	}
+	switch transition := report.Transition; transition.State {
+	case "trial":
+		return fmt.Sprintf("management: mTLS trial until %s; it returns to %s unless katlctl management enable-mtls confirms it", firstNonEmpty(transition.Deadline, "its deadline"), firstNonEmpty(report.Authentication, "its installed mode"))
+	case "reverted":
+		if report.Authentication == string(managementidentity.MutualTLS) {
+			return ""
+		}
+		return "management: last mTLS trial reverted: " + firstNonEmpty(transition.RevertReason, "no reason recorded")
+	case "unreadable":
+		return "management: the transition record is unreadable; run katlc agent management-trial revert on the node"
+	}
+	return ""
 }

@@ -40,6 +40,7 @@ type clusterNodeStatus struct {
 	ControlPlaneEndpoint *controlPlaneEndpointReport    `json:"controlPlaneEndpoint,omitempty"`
 	SystemExtensions     []clusterSystemExtensionStatus `json:"systemExtensions,omitempty"`
 	Volumes              []volumeStatusReport           `json:"volumes,omitempty"`
+	Management           *managementStatusReport        `json:"management,omitempty"`
 }
 
 type clusterSystemExtensionStatus struct {
@@ -141,6 +142,7 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 			result.Activity = host.Activity
 			result.Kubernetes = host.Kubernetes
 			result.ControlPlaneEndpoint = host.ControlPlaneEndpoint
+			result.Management = host.Management
 			result.Volumes = append(result.Volumes, host.Volumes...)
 			for _, extension := range status.GetSystemExtensions() {
 				result.SystemExtensions = append(result.SystemExtensions, clusterSystemExtensionStatus{
@@ -165,13 +167,14 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 		}
 		w.row()
 	}
-	w.row("NODE", "ROLE", "REACHABLE", "HEALTH", "KUBERNETES", "KATLOS", "GENERATION", "ACTIVITY")
+	w.row("NODE", "ROLE", "REACHABLE", "HEALTH", "KUBERNETES", "KATLOS", "GENERATION", "ACTIVITY", "MANAGEMENT")
 	for _, node := range report.Nodes {
 		reachable := "no"
-		health, kubernetes, version, generation, activity := "-", "-", "-", "-", "-"
+		health, kubernetes, version, generation, activity, management := "-", "-", "-", "-", "-", "-"
 		if node.Reachable {
 			reachable = "yes"
 			health, version, generation, activity = node.Health, node.KatlOSVersion, node.Generation, node.Activity
+			management = node.Management.mode()
 			if node.KatlOSFlavour == "lts" {
 				version += " (lts)"
 			}
@@ -179,7 +182,10 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 				kubernetes = firstNonEmpty(strings.TrimSpace(node.Kubernetes.State), "unknown")
 			}
 		}
-		w.row(node.Node, node.Role, reachable, health, kubernetes, version, generation, activity)
+		w.row(node.Node, node.Role, reachable, health, kubernetes, version, generation, activity, management)
+		if detail := node.Management.detail(); detail != "" {
+			w.row("", "", "", detail)
+		}
 		if node.Error != "" {
 			w.row("", "", "", node.Error)
 		}

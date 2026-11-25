@@ -152,8 +152,9 @@ management; trusted-network is opt-in. Run any command with --help for examples 
 	kubernetesCmd.AddCommand(newKubernetesUpgradeCommand(ctx, stdout, stderr))
 	cmd.AddCommand(kubernetesCmd)
 
-	managementCmd := &cobra.Command{Use: "management", Short: "Manage mTLS credentials", Example: "katlctl management identity create --config cluster.yaml"}
+	managementCmd := &cobra.Command{Use: "management", Short: "Manage mTLS credentials and move clusters to mTLS", Example: "katlctl management identity create --config cluster.yaml\nkatlctl management enable-mtls --config cluster.yaml"}
 	managementCmd.AddCommand(newManagementIdentityCommand(stdout, stderr))
+	managementCmd.AddCommand(newManagementEnableMTLSCommand(stdout, stderr))
 	cmd.AddCommand(managementCmd)
 
 	configCmd := &cobra.Command{Use: "config", Short: "Prepare, validate, and compare cluster configuration"}

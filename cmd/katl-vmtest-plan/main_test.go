@@ -24,6 +24,7 @@ func TestSelectGroups(t *testing.T) {
 		{"maintainer tooling", []string{"cmd/katl-release/main.go", "scripts/katl-release"}, []string{}},
 		{"CLI configuration", []string{"cmd/katlctl/config_compatibility.go"}, []string{"config", "management", "two-node", "worker-join", "readdress"}},
 		{"CLI rotation", []string{"cmd/katlctl/management_rotation.go"}, []string{"management"}},
+		{"CLI enable-mtls", []string{"cmd/katlctl/management_enable_mtls.go"}, []string{"enable-mtls"}},
 		{"CLI rotation and docs", []string{"cmd/katlctl/management_rotation.go", "docs/operations/install.md"}, []string{"management"}},
 		{"shared CLI", []string{"cmd/katlctl/main.go"}, allNames()},
 		{"shared configuration input", []string{"cmd/katlctl/config_input.go"}, allNames()},
@@ -76,7 +77,7 @@ func TestReaddressSelection(t *testing.T) {
 }
 
 func allNames() []string {
-	return []string{"boot", "install", "storage", "volume-binding", "config", "management", "update", "two-node", "worker-join", "readdress", "three-node-install"}
+	return []string{"boot", "install", "storage", "volume-binding", "config", "management", "enable-mtls", "update", "two-node", "worker-join", "readdress", "three-node-install"}
 }
 
 func TestPlan(t *testing.T) {
@@ -178,6 +179,7 @@ func testCoverage(t *testing.T, args []string, input string) {
 			"TestInstallerESPSameDiskInstall",
 			"TestInstallerReinstallBesideOldKatlDisk",
 			"TestVolumeBindingGate",
+			"TestManagementEnableMTLS",
 		},
 		"./internal/vmtest": {
 			"TestFirstInstallTargetDiskBootSmoke",

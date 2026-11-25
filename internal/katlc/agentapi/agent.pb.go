@@ -474,8 +474,11 @@ type ManagementStatus struct {
 	// authentication is the installed mode, which a trial does not change.
 	Authentication string `protobuf:"bytes,1,opt,name=authentication,proto3" json:"authentication,omitempty"`
 	// authority is the installed mTLS authority's CA fingerprint.
-	Authority     string                `protobuf:"bytes,2,opt,name=authority,proto3" json:"authority,omitempty"`
-	Transition    *ManagementTransition `protobuf:"bytes,3,opt,name=transition,proto3" json:"transition,omitempty"`
+	Authority  string                `protobuf:"bytes,2,opt,name=authority,proto3" json:"authority,omitempty"`
+	Transition *ManagementTransition `protobuf:"bytes,3,opt,name=transition,proto3" json:"transition,omitempty"`
+	// node_time is the node's RFC 3339 wall-clock time when status was read,
+	// so a client can check that credentials it issues are already valid there.
+	NodeTime      string `protobuf:"bytes,4,opt,name=node_time,json=nodeTime,proto3" json:"node_time,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -529,6 +532,13 @@ func (x *ManagementStatus) GetTransition() *ManagementTransition {
 		return x.Transition
 	}
 	return nil
+}
+
+func (x *ManagementStatus) GetNodeTime() string {
+	if x != nil {
+		return x.NodeTime
+	}
+	return ""
 }
 
 type APIProxyStatus struct {
@@ -7179,13 +7189,14 @@ const file_agent_proto_rawDesc = "" +
 	"\tapi_proxy\x18\x14 \x01(\v2\x1d.katl.agent.v1.APIProxyStatusR\bapiProxy\x12?\n" +
 	"\n" +
 	"management\x18\x15 \x01(\v2\x1f.katl.agent.v1.ManagementStatusR\n" +
-	"management\"\x9d\x01\n" +
+	"management\"\xba\x01\n" +
 	"\x10ManagementStatus\x12&\n" +
 	"\x0eauthentication\x18\x01 \x01(\tR\x0eauthentication\x12\x1c\n" +
 	"\tauthority\x18\x02 \x01(\tR\tauthority\x12C\n" +
 	"\n" +
 	"transition\x18\x03 \x01(\v2#.katl.agent.v1.ManagementTransitionR\n" +
-	"transition\"\xb3\x03\n" +
+	"transition\x12\x1b\n" +
+	"\tnode_time\x18\x04 \x01(\tR\bnodeTime\"\xb3\x03\n" +
 	"\x0eAPIProxyStatus\x12\x14\n" +
 	"\x05state\x18\x01 \x01(\tR\x05state\x12C\n" +
 	"\tlisteners\x18\x02 \x03(\v2%.katl.agent.v1.APIProxyListenerStatusR\tlisteners\x12@\n" +

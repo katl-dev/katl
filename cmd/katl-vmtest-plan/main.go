@@ -46,6 +46,7 @@ var groups = []group{
 	{"config", "./internal/vmtest", "TestInstalledRuntimeConfigApplyModesSmoke|TestInstalledRuntimeServiceSecuritySmoke", "config", 570},
 	{"update", "./internal/vmtest", "TestInstalledRuntimeSysupdateRootUKITransfer", "lifecycle", 330},
 	{"management", "./internal/vmtest", "TestInstalledRuntimeManagementRotationSmoke", "lifecycle", 70},
+	{"enable-mtls", "./internal/vmtest/scenarios", "TestManagementEnableMTLS", "cluster", 160},
 	{"storage", "./internal/vmtest/scenarios", "TestInstallerISOFirstInstallStorageAuthority", "two-node", 32},
 	{"volume-binding", "./internal/vmtest/scenarios", "TestVolumeBindingGate", "cluster", 150},
 	{"boot", "./internal/vmtest/scenarios", "TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke|TestInstallerESPSameDiskInstall|TestInstallerReinstallBesideOldKatlDisk", "two-node", 180},
@@ -230,6 +231,8 @@ func selectGroups(paths []string) []group {
 			continue
 		case name == "cmd/katlctl/config_compatibility.go", name == "cmd/katlctl/config_inspect.go":
 			selected["config"], selected["management"], selected["two-node"], selected["worker-join"], selected["readdress"] = true, true, true, true, true
+		case name == "cmd/katlctl/management_enable_mtls.go":
+			selected["enable-mtls"] = true
 		case name == "cmd/katlctl/management_rotation.go":
 			selected["management"] = true
 		default:

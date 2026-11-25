@@ -33,7 +33,11 @@ func trustedNetworkNodes(configPath string) error {
 }
 
 func contextSaveInvocation(path string) string {
-	return "katlctl context save --config '" + strings.ReplaceAll(path, "'", "'\"'\"'") + "'"
+	return "katlctl context save --config " + shellQuote(path)
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 type observedManagementKey struct{}

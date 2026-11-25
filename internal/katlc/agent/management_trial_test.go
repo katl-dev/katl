@@ -631,3 +631,18 @@ func peerContext(t *testing.T, bundle managementidentity.Bundle) context.Context
 	chain := []*x509.Certificate{parse(bundle.Operator.Certificate), parse(bundle.CertificateAuthority.Certificate)}
 	return peer.NewContext(t.Context(), &peer.Peer{AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{chain}}}})
 }
+
+// A client issues trial credentials against the node clock that NodeStatus
+// reports, so it must be the clock the trial validates them with.
+func TestNodeStatusReportsTrialClock(t *testing.T) {
+	node := newManagementTrialNode(t)
+	node.clock.now = time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+
+	status, err := node.server.GetNodeStatus(context.Background(), &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := status.GetManagement().GetNodeTime(); got != "2026-01-02T03:04:05Z" {
+		t.Fatalf("node time = %q, want the trial clock", got)
+	}
+}
