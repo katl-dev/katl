@@ -428,13 +428,27 @@ func dirtyPath(root string, absolutePath string, nonEmpty bool) (bool, error) {
 
 // FailureSummary is the operator-facing explanation of a failed install: the
 // reason followed by what to do next. katlctl and the installer console both
-// present it so they cannot diverge.
+// present it so they cannot diverge. The console shows ConfigPlaceholder.
 func (r Record) FailureSummary() string {
+	return r.FailureSummaryFor("")
+}
+
+// ConfigPlaceholder stands for the operator's cluster configuration path in
+// remedies recorded by the installer, which cannot know where it is kept.
+const ConfigPlaceholder = "<cluster-config>"
+
+// FailureSummaryFor is FailureSummary with ConfigPlaceholder replaced by
+// configPath, quoted so the remedy can be pasted into a shell. An empty
+// configPath keeps the placeholder.
+func (r Record) FailureSummaryFor(configPath string) string {
 	primary := strings.TrimSpace(r.RefusalReason)
 	if primary == "" {
 		primary = strings.TrimSpace(r.LastError)
 	}
 	hint := strings.TrimSpace(r.RetryHint)
+	if configPath != "" {
+		hint = strings.ReplaceAll(hint, ConfigPlaceholder, shellQuote(configPath))
+	}
 	switch {
 	case primary != "" && hint != "" && hint != primary:
 		return primary + "; " + hint
@@ -444,4 +458,13 @@ func (r Record) FailureSummary() string {
 		return hint
 	}
 	return "inspect installer status and console"
+}
+
+var shellSafe = regexp.MustCompile(`^[A-Za-z0-9_@%+=:,./-]+$`)
+
+func shellQuote(value string) string {
+	if shellSafe.MatchString(value) {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
 }

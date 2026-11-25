@@ -64,7 +64,8 @@ type installSSHReport struct {
 }
 
 type installHandoffReport struct {
-	ExternalWorker bool                  `json:"-"`
+	ExternalWorker bool `json:"-"`
+	configPath     string
 	Skipped        bool                  `json:"skipped,omitempty"`
 	SkipReason     string                `json:"skipReason,omitempty"`
 	APIVersion     string                `json:"apiVersion"`
@@ -336,6 +337,7 @@ func applyInstallNode(ctx context.Context, opts installApplyOptions, inventory c
 		return "", err
 	}
 	report := newInstallHandoffReport(endpoint, selected.Node.Name, accepted)
+	report.configPath = opts.configPath
 	report.ExternalWorker = selected.InstallManifest.Node.Kubernetes.External
 	if opts.noWait {
 		return "", writeInstallReport(stdout, opts.output, report)
@@ -349,7 +351,11 @@ func applyInstallNode(ctx context.Context, opts installApplyOptions, inventory c
 		return "", err
 	}
 	if installFailed(status.InstallStatus.State) {
-		return "", fmt.Errorf("installer finished in %s: %s", status.InstallStatus.State, status.InstallStatus.FailureSummary())
+		// Text output has already printed the failure and its remedy.
+		if opts.output == "text" {
+			return "", fmt.Errorf("installer finished in %s", status.InstallStatus.State)
+		}
+		return "", fmt.Errorf("installer finished in %s: %s", status.InstallStatus.State, status.InstallStatus.FailureSummaryFor(opts.configPath))
 	}
 	return "", nil
 }
@@ -579,7 +585,9 @@ func runInstallStatus(ctx context.Context, opts installStatusOptions, stdout, st
 	if node == "" {
 		node = opts.nodeName
 	}
-	return writeInstallReport(stdout, opts.output, newInstallHandoffReport(endpoint, node, status))
+	report := newInstallHandoffReport(endpoint, node, status)
+	report.configPath = opts.configPath
+	return writeInstallReport(stdout, opts.output, report)
 }
 
 func normalizeInstallerEndpoint(value string) (string, error) {
@@ -821,7 +829,7 @@ func writeInstallReport(stdout io.Writer, output string, report installHandoffRe
 			}
 		}
 		if installFailed(report.Handoff.InstallStatus.State) {
-			if _, err := fmt.Fprintf(stdout, "Failure: %s\n", report.Handoff.InstallStatus.FailureSummary()); err != nil {
+			if _, err := fmt.Fprintf(stdout, "Failure: %s\n", report.Handoff.InstallStatus.FailureSummaryFor(report.configPath)); err != nil {
 				return err
 			}
 		}
