@@ -683,7 +683,7 @@ requests with `gh pr create --base release/...`; after retargeting an existing
 pull request onto a release branch, close and reopen it or push a commit. Agents still
 run the relevant local `scripts/vmtest-run` gates before opening a pull request,
 as `AGENTS.md` requires. Kubernetes producer validation shares the VM image
-build and cluster lane. Direct pushes are not part of the supported development
+build and two-node lane. Direct pushes are not part of the supported development
 loop.
 
 The merge queue marks an entry `UNMERGEABLE` when it conflicts with one ahead
