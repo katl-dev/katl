@@ -30,11 +30,12 @@ func run(args []string) error {
 		}
 		fmt.Printf("path=%s\npresent=%t\n", dir.Path, dir.Present)
 	case len(args) == 3 && args[0] == "worktree":
-		wt, err := devclean.CheckWorktree(context.Background(), os.Environ(), args[1], args[2])
+		lookup := devclean.GitHubLookup{Environ: os.Environ(), Repo: args[1]}
+		wt, err := devclean.CheckWorktree(context.Background(), os.Environ(), lookup, args[1], args[2])
 		if err != nil {
 			return err
 		}
-		fmt.Printf("path=%s\nbranch=%s\ndelete-branch=%t\nkeep-reason=%s\n", wt.Path, wt.Branch, wt.DeleteBranch, wt.KeepReason)
+		fmt.Printf("path=%s\nbranch=%s\ndelete-branch=%t\nkeep-reason=%s\nmerged-pr=%d\n", wt.Path, wt.Branch, wt.DeleteBranch, wt.KeepReason, wt.MergedPR)
 	default:
 		return fmt.Errorf("%s", usage)
 	}

@@ -2,6 +2,7 @@ package devclean
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,6 +20,7 @@ type fixture struct {
 	origin string
 	repo   string
 	env    []string
+	lookup fakeLookup
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -69,7 +71,7 @@ func (f *fixture) worktree(branch string) string {
 
 func (f *fixture) check(path string) (Worktree, error) {
 	f.t.Helper()
-	return CheckWorktree(context.Background(), f.env, f.repo, path)
+	return CheckWorktree(context.Background(), f.env, &f.lookup, f.repo, path)
 }
 
 func (f *fixture) refused(path, want string) {
@@ -242,4 +244,102 @@ func TestCheckWorktreeRefuses(t *testing.T) {
 		f.git(f.repo, "remote", "remove", "origin")
 		f.refused(wt, "fetching origin failed")
 	})
+}
+
+// fakeLookup answers PullRequests with the same fixed result for any commit
+// and records the commits asked about.
+type fakeLookup struct {
+	prs   []PullRequest
+	err   error
+	asked []string
+}
+
+func (l *fakeLookup) PullRequests(_ context.Context, commit string) ([]PullRequest, error) {
+	l.asked = append(l.asked, commit)
+	return l.prs, l.err
+}
+
+func (f *fixture) head(dir string) string {
+	f.t.Helper()
+	return strings.TrimSpace(f.git(dir, "rev-parse", "HEAD"))
+}
+
+func TestCheckWorktreeMergedPullRequest(t *testing.T) {
+	t.Run("accepts a squash-merged head and deletes its branch", func(t *testing.T) {
+		f := newFixture(t)
+		wt := f.worktree("feature")
+		f.commit(wt, "a.txt", "a")
+		f.lookup.prs = []PullRequest{{Number: 616, Merged: true, HeadSHA: f.head(wt)}}
+
+		got, err := f.check(wt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.MergedPR != 616 || !got.DeleteBranch {
+			t.Fatalf("CheckWorktree() = %+v; want PR 616 and the branch deletable", got)
+		}
+		if len(f.lookup.asked) != 1 || f.lookup.asked[0] != f.head(wt) {
+			t.Fatalf("lookup asked about %v; want exactly HEAD", f.lookup.asked)
+		}
+	})
+
+	t.Run("refuses a later commit that the merged head does not cover", func(t *testing.T) {
+		f := newFixture(t)
+		wt := f.worktree("feature")
+		f.commit(wt, "a.txt", "a")
+		merged := f.head(wt)
+		f.commit(wt, "b.txt", "b")
+		f.lookup.prs = []PullRequest{{Number: 616, Merged: true, HeadSHA: merged}}
+
+		f.refused(wt, "change b.txt")
+	})
+
+	t.Run("refuses a pull request that is not merged", func(t *testing.T) {
+		f := newFixture(t)
+		wt := f.worktree("feature")
+		f.commit(wt, "a.txt", "a")
+		f.lookup.prs = []PullRequest{{Number: 616, Merged: false, HeadSHA: f.head(wt)}}
+
+		f.refused(wt, "change a.txt")
+	})
+
+	t.Run("refuses when GitHub cannot be asked", func(t *testing.T) {
+		f := newFixture(t)
+		wt := f.worktree("feature")
+		f.commit(wt, "a.txt", "a")
+		f.lookup.err = errors.New("gh: not logged in")
+
+		f.refused(wt, "gh: not logged in")
+		f.refused(wt, "change a.txt")
+	})
+
+	t.Run("does not ask GitHub about a commit that is on a remote branch", func(t *testing.T) {
+		f := newFixture(t)
+		wt := f.worktree("feature")
+		f.commit(wt, "a.txt", "a")
+		f.git(wt, "push", "--quiet", "origin", "feature")
+		f.lookup.err = errors.New("must not be asked")
+
+		got, err := f.check(wt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.MergedPR != 0 || !got.DeleteBranch || len(f.lookup.asked) != 0 {
+			t.Fatalf("CheckWorktree() = %+v, asked %v; want the remote-branch path with no lookup", got, f.lookup.asked)
+		}
+	})
+}
+
+func TestMergedBranchDispositionKeepsMovedBranch(t *testing.T) {
+	f := newFixture(t)
+	wt := f.worktree("feature")
+	f.commit(wt, "a.txt", "a")
+	merged := f.head(wt)
+	f.commit(wt, "b.txt", "b")
+	g := gitRunner{environ: f.env}
+
+	del, reason := g.mergedBranchDisposition(context.Background(), f.repo, "feature", merged, 616)
+	if del || !strings.Contains(reason, "#616") {
+		t.Fatalf("mergedBranchDisposition() = %t, %q; want the moved branch kept, naming PR #616", del, reason)
+	}
 }

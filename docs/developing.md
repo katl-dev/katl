@@ -939,10 +939,13 @@ domains and leaves the directory.
 `scripts/worktree-clean` removes a linked git worktree and its untracked build
 output, such as subuid-owned `_build/` trees. It refuses the main worktree, a
 worktree with tracked modifications or staged changes, and one whose HEAD
-commit is on no remote branch after fetching `origin`; the message names what
-is modified or unpushed. It then deletes the local branch only when that branch
-is merged into `origin/main` or contained in a remote branch of the same name,
-and otherwise keeps it and says so.
+commit is on no remote branch after fetching `origin`, unless GitHub reports a
+merged pull request whose head commit is exactly HEAD (squash merges and
+deleted head branches leave no remote ref). The message names what is modified
+or unpushed, and says so when GitHub could not be asked, which is never treated
+as safe. It then deletes the local branch only when that branch is merged into
+`origin/main`, contained in a remote branch of the same name, or at the head of
+that merged pull request, and otherwise keeps it and says so.
 
 Run each command on its own, without a leading `cd … &&` and without a pipe, so
 that an allow rule for the command matches it. Do not clean up with `rm -rf`,

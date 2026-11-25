@@ -20,16 +20,23 @@ type Worktree struct {
 	DeleteBranch bool
 	// KeepReason explains why Branch is kept when DeleteBranch is false.
 	KeepReason string
+	// MergedPR is the number of the merged pull request that stands in for a
+	// remote branch because HEAD is its head commit, or zero when HEAD is on a
+	// remote branch.
+	MergedPR int
 }
 
 // CheckWorktree returns the linked worktree of the repository containing repo
 // at path, or an error naming what stops it being removed: it is not a linked
 // worktree, it has tracked modifications or staged changes, or its HEAD
-// commit is on no remote branch. It fetches origin first, because pushes made
-// to a URL do not update remote-tracking branches.
+// commit is on no remote branch and is not the head of a merged pull request.
+// A squash merge leaves the pull request's commits on no remote branch, so
+// lookup supplies that second evidence; when it fails, HEAD is not treated as
+// safe. It fetches origin first, because pushes made to a URL do not update
+// remote-tracking branches.
 //
 // environ is the environment git runs in.
-func CheckWorktree(ctx context.Context, environ []string, repo, path string) (Worktree, error) {
+func CheckWorktree(ctx context.Context, environ []string, lookup PullRequestLookup, repo, path string) (Worktree, error) {
 	g := gitRunner{environ: environ}
 
 	abs, err := resolve(path)
@@ -75,19 +82,46 @@ func CheckWorktree(ctx context.Context, environ []string, repo, path string) (Wo
 	if err != nil {
 		return Worktree{}, err
 	}
+	wt := Worktree{Path: abs}
+	var head string
 	if unpushed = strings.TrimRight(unpushed, "\n"); unpushed != "" {
-		return Worktree{}, fmt.Errorf("%s has commits on no remote branch; push them first:\n%s", abs, unpushed)
+		out, err := g.run(ctx, abs, "rev-parse", "HEAD")
+		if err != nil {
+			return Worktree{}, err
+		}
+		head = strings.TrimSpace(out)
+		pr, merged, err := mergedHead(ctx, lookup, head)
+		switch {
+		case err != nil:
+			return Worktree{}, fmt.Errorf("%s has commits on no remote branch and GitHub could not confirm they were merged (%v); push them, or retry when GitHub is reachable:\n%s", abs, err, unpushed)
+		case !merged:
+			return Worktree{}, fmt.Errorf("%s has commits on no remote branch, and %s is not the head of a merged pull request; push them first:\n%s", abs, head, unpushed)
+		}
+		wt.MergedPR = pr.Number
 	}
 
-	wt := Worktree{Path: abs}
 	branch, err := g.run(ctx, abs, "symbolic-ref", "--quiet", "--short", "HEAD")
 	if err != nil {
 		// A detached HEAD has no branch to keep or delete.
 		return wt, nil
 	}
 	wt.Branch = strings.TrimSpace(branch)
-	wt.DeleteBranch, wt.KeepReason = g.branchDisposition(ctx, repo, wt.Branch)
+	if wt.MergedPR != 0 {
+		wt.DeleteBranch, wt.KeepReason = g.mergedBranchDisposition(ctx, repo, wt.Branch, head, wt.MergedPR)
+	} else {
+		wt.DeleteBranch, wt.KeepReason = g.branchDisposition(ctx, repo, wt.Branch)
+	}
 	return wt, nil
+}
+
+// mergedBranchDisposition reports whether branch can be deleted because its
+// tip is exactly the head commit of merged pull request pr.
+func (g gitRunner) mergedBranchDisposition(ctx context.Context, repo, branch, prHead string, pr int) (bool, string) {
+	tip, err := g.run(ctx, repo, "rev-parse", "refs/heads/"+branch)
+	if err == nil && strings.TrimSpace(tip) == prHead {
+		return true, ""
+	}
+	return false, fmt.Sprintf("branch %s is not at the head of merged pull request #%d", branch, pr)
 }
 
 // branchDisposition reports whether branch can be deleted without losing a

@@ -32,6 +32,10 @@ path="$(sed -n 's/^path=//p' <<<"$info")"
 branch="$(sed -n 's/^branch=//p' <<<"$info")"
 delete_branch="$(sed -n 's/^delete-branch=//p' <<<"$info")"
 keep_reason="$(sed -n 's/^keep-reason=//p' <<<"$info")"
+merged_pr="$(sed -n 's/^merged-pr=//p' <<<"$info")"
+if [[ -n "$merged_pr" && "$merged_pr" != 0 ]]; then
+    printf 'worktree-clean: HEAD is the head of merged pull request #%s\n' "$merged_pr" >&2
+fi
 
 # Untracked build output, such as mkosi trees owned by subuids, makes git
 # refuse a plain removal and can resist rm, so it is cleared from inside a
