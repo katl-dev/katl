@@ -13,12 +13,13 @@ import (
 
 // fakeNS records the paths it is asked to remove and runs act on them.
 type fakeNS struct {
-	calls  []string
-	mounts string
-	act    func(path string) error
+	calls     []string
+	mounts    string
+	mountsErr error
+	act       func(path string) error
 }
 
-func (f *fakeNS) Mountinfo(context.Context) (string, error) { return f.mounts, nil }
+func (f *fakeNS) Mountinfo(context.Context) (string, error) { return f.mounts, f.mountsErr }
 
 func (f *fakeNS) RemoveAll(_ context.Context, path string) error {
 	f.calls = append(f.calls, path)
@@ -257,12 +258,8 @@ func TestRemoveRefusesMountPoints(t *testing.T) {
 		"deep below the root":   func(root string) string { return filepath.Join(root, "dir", "precious") },
 		"with an escaped space": func(root string) string { return filepath.Join(root, "with space") },
 		"the root itself":       func(root string) string { return root },
-		"inside the namespace":  func(root string) string { return filepath.Join(root, "dir") },
 	} {
 		for source, inNamespace := range map[string]bool{"host": false, "namespace": true} {
-			if name == "inside the namespace" && !inNamespace {
-				continue
-			}
 			t.Run(name+"/"+source, func(t *testing.T) {
 				tr, root := setup(t)
 				table := "1 0 8:1 / / rw - ext4 /dev/sda1 rw\n" + mountinfoLine(mountpoint(root))
@@ -312,6 +309,23 @@ func TestRemoveRefusesMountPoints(t *testing.T) {
 		}
 	})
 
+	t.Run("an unreadable namespace mount table", func(t *testing.T) {
+		_, root := setup(t)
+		tr := hostCannotDelete(root)
+		tr.hostMountinfo = func() (string, error) { return "", nil }
+		ns := &fakeNS{mountsErr: errors.New("podman: not found"), act: removeEverything}
+
+		err := tr.remove(context.Background(), ns)
+
+		var left *LeftoverError
+		if !errors.As(err, &left) || !strings.Contains(err.Error(), "user namespace unavailable: podman: not found") {
+			t.Fatalf("remove() = %v; want leftovers caused by the unavailable namespace", err)
+		}
+		if len(ns.calls) != 0 {
+			t.Fatalf("the namespace step ran without a readable mount table: %v", ns.calls)
+		}
+	})
+
 	t.Run("an unreadable mount table", func(t *testing.T) {
 		tr, root := setup(t)
 		tr.hostMountinfo = func() (string, error) { return "", errors.New("no /proc") }
@@ -339,8 +353,13 @@ func TestRemoveRefusesRealMounts(t *testing.T) {
 
 	cmd := exec.Command("unshare", "-rm", os.Args[0], "-test.run=^TestRemoveRefusesRealMounts$", "-test.v")
 	cmd.Env = append(os.Environ(), mountHelperEnv+"="+dir)
-	if out, err := cmd.CombinedOutput(); err != nil {
+	out, err := cmd.CombinedOutput()
+	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
+	}
+	// A helper that skips still exits 0, so its own PASS line shows it ran.
+	if !strings.Contains(string(out), "--- PASS: TestRemoveRefusesRealMounts") {
+		t.Skipf("the mount helper did not run to a pass:\n%s", out)
 	}
 
 	// Checked from outside the mount namespace, where the mounts never existed.

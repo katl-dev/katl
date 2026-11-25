@@ -1187,7 +1187,9 @@ validate_debug_on_failure_policy() {
 }
 
 # Passing runs keep only the compact evidence record: logs, manifests and
-# per-scenario results. Disks, VM directories and images are deleted.
+# per-scenario results. Disks, VM directories and images are deleted. -xdev does
+# not stop same-device bind mounts, so this relies on vmtest-run never mounting
+# anything under run_dir.
 compact_run_dir() {
     local file
     find "$run_dir" -xdev -type f -name '*serial.log' -print0 | while IFS= read -r -d '' file; do

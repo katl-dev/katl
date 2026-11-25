@@ -162,23 +162,38 @@ func unescapeMountinfo(s string) string {
 // mount keeps the device of its surroundings, so mounts are found in the mount
 // tables rather than by comparing devices. Rootless overlay mounts can be
 // visible only inside the user namespace, so its table is read too when the
-// namespace is available.
-func (t tree) checkNoMounts(ctx context.Context, ns UserNS) error {
+// namespace is available. It returns the namespace the removal may use: when
+// the namespace mount table cannot be read, mounts there cannot be ruled out,
+// so the namespace step is replaced by one that refuses to delete anything.
+func (t tree) checkNoMounts(ctx context.Context, ns UserNS) (UserNS, error) {
 	host, err := t.hostMountinfo()
 	if err != nil {
-		return fmt.Errorf("refusing to remove %s: cannot read the mount table to check for mounted filesystems: %w", t.root, err)
+		return nil, fmt.Errorf("refusing to remove %s: cannot read the mount table to check for mounted filesystems: %w", t.root, err)
 	}
 	mounts := mountsUnder(host, t.root)
-	if inNS, err := ns.Mountinfo(ctx); err == nil {
+	inNS, err := ns.Mountinfo(ctx)
+	if err != nil {
+		ns = unavailableNS{err: err}
+	} else {
 		mounts = append(mounts, mountsUnder(inNS, t.root)...)
 	}
 	if len(mounts) == 0 {
-		return nil
+		return ns, nil
 	}
 	slices.Sort(mounts)
 	mounts = slices.Compact(mounts)
-	return fmt.Errorf("refusing to remove %s: it holds mounted filesystems whose contents would be deleted: %s; unmount them with umount <path> (podman unshare umount <path> for mounts made in the rootless user namespace) and run the command again", t.root, strings.Join(mounts, ", "))
+	return nil, fmt.Errorf("refusing to remove %s: it holds mounted filesystems whose contents would be deleted: %s; unmount them with umount <path> (podman unshare umount <path> for mounts made in the rootless user namespace) and run the command again", t.root, strings.Join(mounts, ", "))
 }
+
+// unavailableNS stands in for a user namespace whose mount table could not be
+// read, so that nothing is deleted there and the cause is reported.
+type unavailableNS struct{ err error }
+
+func (u unavailableNS) RemoveAll(context.Context, string) error {
+	return fmt.Errorf("user namespace unavailable: %w", u.err)
+}
+
+func (u unavailableNS) Mountinfo(context.Context) (string, error) { return "", u.err }
 
 // remove first deletes the tree as the calling user, which handles read-only
 // directories and files owned by other users inside directories the caller
@@ -200,7 +215,8 @@ func (t tree) remove(ctx context.Context, ns UserNS) error {
 	if !info.IsDir() {
 		return fmt.Errorf("refusing to remove %s: not a directory", root)
 	}
-	if err := t.checkNoMounts(ctx, ns); err != nil {
+	ns, err = t.checkNoMounts(ctx, ns)
+	if err != nil {
 		return err
 	}
 

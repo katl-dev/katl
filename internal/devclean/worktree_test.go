@@ -235,6 +235,32 @@ func TestCheckWorktreeRefuses(t *testing.T) {
 		f.refused(wt, "new.txt")
 	})
 
+	t.Run("a staged new file deleted from the working tree", func(t *testing.T) {
+		f := newFixture(t)
+		wt := f.worktree("feature")
+		if err := os.WriteFile(filepath.Join(wt, "new.txt"), []byte("new"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		f.git(wt, "add", "new.txt")
+		if err := os.Remove(filepath.Join(wt, "new.txt")); err != nil {
+			t.Fatal(err)
+		}
+		f.refused(wt, "new.txt")
+	})
+
+	t.Run("a staged modification deleted from the working tree", func(t *testing.T) {
+		f := newFixture(t)
+		wt := f.worktree("feature")
+		if err := os.WriteFile(filepath.Join(wt, "base.txt"), []byte("edited"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		f.git(wt, "add", "base.txt")
+		if err := os.Remove(filepath.Join(wt, "base.txt")); err != nil {
+			t.Fatal(err)
+		}
+		f.refused(wt, "base.txt")
+	})
+
 	t.Run("an unpushed commit, naming it", func(t *testing.T) {
 		f := newFixture(t)
 		wt := f.worktree("feature")
