@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/gittest"
 )
 
 func TestGitCommitWrapped(t *testing.T) {
@@ -12,7 +14,7 @@ func TestGitCommitWrapped(t *testing.T) {
 	run := func(dir, body string, args ...string) (string, error) {
 		cmd := exec.Command(script, args...)
 		cmd.Dir = dir
-		cmd.Env = hermeticGitEnv(environmentWithout(), dir)
+		cmd.Env = gittest.Env(environmentWithout(), dir)
 		cmd.Stdin = strings.NewReader(body)
 		output, err := cmd.CombinedOutput()
 		return string(output), err

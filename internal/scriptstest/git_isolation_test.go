@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/gittest"
 )
 
 func TestRunGitIgnoresInheritedGitEnvironment(t *testing.T) {
@@ -29,7 +31,7 @@ func TestRunGitIgnoresInheritedGitEnvironment(t *testing.T) {
 		t.Fatalf("fixture was not initialized: %v", err)
 	}
 	author := strings.TrimSpace(runGit(t, fixture, "log", "-1", "--format=%an <%ae>"))
-	if author != gitTestName+" <"+gitTestEmail+">" {
+	if author != gittest.Name+" <"+gittest.Email+">" {
 		t.Fatalf("fixture author = %q", author)
 	}
 	configAfter, err := os.ReadFile(sentinelConfig)
@@ -59,7 +61,7 @@ func TestHermeticGitStaysInsideFixture(t *testing.T) {
 
 	cmd := exec.Command("git", "rev-parse", "--git-dir")
 	cmd.Dir = fixture
-	cmd.Env = hermeticGitEnv(os.Environ(), fixture)
+	cmd.Env = gittest.Env(os.Environ(), fixture)
 	if output, err := cmd.CombinedOutput(); err == nil {
 		t.Fatalf("git discovered a repository from a non-repository fixture: %s", output)
 	}

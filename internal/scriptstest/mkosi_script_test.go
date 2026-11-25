@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/katl-dev/katl/internal/gittest"
 )
 
 func TestMkosiDirectRejectsRuntimePackaging(t *testing.T) {
@@ -507,7 +509,7 @@ cp -a "$tree" "$build/katl-runtime-root"
 	outputs := make([][]byte, len(worktrees))
 	var builds sync.WaitGroup
 	for i, worktree := range worktrees {
-		env := hermeticGitEnv(os.Environ(), worktree)
+		env := gittest.Env(os.Environ(), worktree)
 		env = append(env, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "KATL_CONTAINER_RUNTIME=podman", "KATL_MKOSI_BUILD_DIR=", "KATL_MKOSI_CACHE_DIR=", "KATL_MKOSI_LOCK_FD=", "KATL_FAKE_PACKAGES="+strings.Join(packageSets[i], " "), "TMPDIR="+tmp)
 		env = append(env, activeGoCacheEnv(t)...)
 		cmd := exec.Command(filepath.Join(worktree, "scripts", "mkosi"), "runtime")
