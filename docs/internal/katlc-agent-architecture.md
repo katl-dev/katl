@@ -71,6 +71,7 @@ The target service shape is:
 
 ```text
 katlc-agent.service
+  Type=notify (READY=1 once the management listener accepts connections)
   ExecStart=/usr/bin/katlc agent serve --listen tcp://<management-address>
   RequiresMountsFor=/var/lib/katl
   After=local-fs.target katl-generation-activate.service

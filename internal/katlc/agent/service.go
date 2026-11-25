@@ -93,6 +93,11 @@ func Serve(ctx context.Context, config ServeConfig) error {
 		}
 		close(errc)
 	}()
+	// The listener is bound, so connections made from here on are accepted.
+	if err := notifyReady(); err != nil {
+		server.Stop()
+		return errors.Join(err, shutdownDispatcher(dispatcher))
+	}
 	select {
 	case <-ctx.Done():
 		server.GracefulStop()

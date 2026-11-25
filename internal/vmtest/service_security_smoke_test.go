@@ -61,6 +61,16 @@ func TestInstalledRuntimeServiceSecuritySmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// An active agent must already accept management connections: the unit
+	// reports readiness only after the listener is bound.
+	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "katlc-agent-type", "systemctl", "show", "--property=Type", "--value", "katlc-agent.service")); got != "notify" {
+		t.Fatalf("katlc-agent.service Type = %q, want notify", got)
+	}
+	listening := guestCommandOutput(t, ctx, guest, "management-listeners", "sh", "-c", "cat /proc/net/tcp /proc/net/tcp6")
+	if !strings.Contains(listening, ":24E3 ") {
+		t.Fatalf("no listener on :9443 after boot completed:\n%s", listening)
+	}
+
 	// Host orchestration and container mounts must remain visible to PID 1.
 	hostNamespace := guestCommandOutput(t, ctx, guest, "host-mount-namespace", "readlink", "/proc/1/ns/mnt")
 	for _, unit := range []string{"katlc-agent.service", "containerd.service"} {

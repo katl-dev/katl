@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"net"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -73,5 +75,67 @@ func TestParseListenAcceptsTCPOnly(t *testing.T) {
 				t.Fatalf("parseListen(%q) succeeded, want error", value)
 			}
 		})
+	}
+}
+
+func TestServeNotifiesReadyOnceListening(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := probe.Addr().String()
+	probe.Close()
+
+	socketPath := filepath.Join(t.TempDir(), "notify")
+	notify, err := net.ListenPacket("unixgram", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer notify.Close()
+	t.Setenv("NOTIFY_SOCKET", socketPath)
+
+	root := t.TempDir()
+	identity, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "test", Now: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, _, err := managementidentity.EnsureNode(&identity, "node-a", time.Now().UTC(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := nodeidentity.WriteManagementIdentity(root, "node-a", managementidentity.NodeCredentials{
+		CACertificate: node.CACertificate, ServerCertificate: node.ServerCertificate, ServerPrivateKey: node.ServerPrivateKey,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- Serve(ctx, ServeConfig{Root: root, Listen: "tcp://" + address, Dispatcher: &shutdownTestDispatcher{called: make(chan struct{})}})
+	}()
+
+	if err := notify.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 64)
+	n, _, err := notify.ReadFrom(buf)
+	if err != nil {
+		t.Fatalf("no readiness message: %v", err)
+	}
+	if got := string(buf[:n]); got != "READY=1" {
+		t.Fatalf("notification = %q, want READY=1", got)
+	}
+
+	// The endpoint must already accept connections when readiness is reported.
+	conn, err := net.DialTimeout("tcp", address, time.Second)
+	if err != nil {
+		t.Fatalf("endpoint refused after READY=1: %v", err)
+	}
+	conn.Close()
+
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Serve() error = %v, want context cancellation", err)
 	}
 }
