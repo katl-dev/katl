@@ -12,7 +12,9 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -296,4 +298,46 @@ func sendNotify(address, message string) error {
 		return fmt.Errorf("receiver did not close the connection: n=%d err=%v", n, err)
 	}
 	return nil
+}
+
+func TestVMDomainSingleSMBIOSBlock(t *testing.T) {
+	result, config := vmFixture(t)
+	iso := filepath.Join(t.TempDir(), "installer.iso")
+	if err := os.WriteFile(iso, []byte("iso"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config.Boot = VMBoot{ISO: iso, DiskFirst: true, CommandLine: []string{"katl.install.mode=auto"}}
+	config.notifyPort = 4242
+
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if n := strings.Count(plan.DomainXML, "<sysinfo "); n != 1 {
+		t.Fatalf("domain has %d sysinfo elements, want 1:\n%s", n, plan.DomainXML)
+	}
+	if n := strings.Count(plan.DomainXML, "<smbios "); n != 1 {
+		t.Fatalf("domain has %d smbios elements, want 1:\n%s", n, plan.DomainXML)
+	}
+	var domain struct {
+		OEM []string `xml:"sysinfo>oemStrings>entry"`
+	}
+	if err := xml.Unmarshal([]byte(plan.DomainXML), &domain); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"io.systemd.credential:vmm.notify_socket=vsock-stream:2:4242",
+		"io.systemd.stub.kernel-cmdline-extra=katl.install.mode=auto",
+	}
+	got := append([]string(nil), domain.OEM...)
+	sort.Strings(got)
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("OEM strings = %q, want %q", domain.OEM, want)
+	}
 }

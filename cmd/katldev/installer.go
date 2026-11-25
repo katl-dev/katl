@@ -39,7 +39,14 @@ type installerOptions struct {
 	NoBuild   bool
 	// ISO boots this installer ISO, such as a published release, instead of
 	// the current checkout's.
-	ISO         string
+	ISO string
+	// PreseedDir is attached as KATLSEED media. Manifest builds that media
+	// from an install manifest and the files its katlosImage.localRef names.
+	// They are mutually exclusive.
+	PreseedDir string
+	Manifest   string
+	// CommandLine extends the installer's kernel command line.
+	CommandLine []string
 	ForceConfig bool
 }
 
@@ -184,6 +191,19 @@ func validateInstallerOptions(opts installerOptions) error {
 	if opts.Timeout <= 0 {
 		return errors.New("--timeout must be positive")
 	}
+	if opts.PreseedDir != "" && opts.Manifest != "" {
+		return errors.New("--preseed-dir and --manifest are mutually exclusive")
+	}
+	if opts.PreseedDir != "" {
+		if info, err := os.Stat(opts.PreseedDir); err != nil || !info.IsDir() {
+			return fmt.Errorf("--preseed-dir %s must be an existing directory", opts.PreseedDir)
+		}
+	}
+	if opts.Manifest != "" {
+		if info, err := os.Stat(opts.Manifest); err != nil || !info.Mode().IsRegular() {
+			return fmt.Errorf("--manifest %s must be an existing file", opts.Manifest)
+		}
+	}
 	return nil
 }
 
@@ -221,19 +241,13 @@ func (manager installerManager) prepareInstaller(ctx context.Context, opts insta
 	return iso, digest, nil
 }
 
-// createNode defines and boots a fresh installer VM for node, replacing any
-// domain of the same name that this world owns.
-func (manager installerManager) createNode(ctx context.Context, world katldevWorld, node vmtest.Node, opts installerOptions, iso, digest string) (installerState, error) {
-	result, err := world.Scenario.PlanNodeVM(node, []vmtest.DiskFixture{vmtest.TargetDisk("root", string(vmtest.DiskQCOW2), opts.DiskSize)}, vmtest.KVMAuto)
-	if err != nil {
-		return installerState{}, fmt.Errorf("plan VM %s: %w", node.Name, err)
-	}
-	uri := world.World.Libvirt.URI
-	config := vmtest.VMConfig{
-		Boot:             vmtest.VMBoot{ISO: iso, DiskFirst: true},
+func installerVMConfig(world katldevWorld, node vmtest.Node, opts installerOptions, iso, preseedDir string) vmtest.VMConfig {
+	return vmtest.VMConfig{
+		Boot:             vmtest.VMBoot{ISO: iso, DiskFirst: true, CommandLine: expandGateway(opts.CommandLine, world.World.Network.Gateway)},
+		PreseedDir:       preseedDir,
 		VirshPath:        firstNonEmpty(os.Getenv("KATL_VMTEST_VIRSH"), "virsh"),
 		ImageTool:        firstNonEmpty(os.Getenv("KATL_VMTEST_IMAGE_TOOL"), "qemu-img"),
-		LibvirtURI:       uri,
+		LibvirtURI:       world.World.Libvirt.URI,
 		LibvirtNetwork:   world.World.Network.Name,
 		OVMFCode:         os.Getenv("KATL_OVMF_CODE"),
 		OVMFVars:         os.Getenv("KATL_OVMF_VARS"),
@@ -247,6 +261,45 @@ func (manager installerManager) createNode(ctx context.Context, world katldevWor
 		PersistentSerial: true,
 		HotplugPCISlots:  3,
 	}
+}
+
+// installerPreseedDir returns the directory to attach as KATLSEED media, or
+// "" for none. A directory generated from --manifest is removed by cleanup,
+// which is safe once PrepareVM has copied it into the media image.
+func installerPreseedDir(opts installerOptions) (string, func(), error) {
+	if opts.Manifest == "" {
+		return opts.PreseedDir, func() {}, nil
+	}
+	manifest, err := os.ReadFile(opts.Manifest)
+	if err != nil {
+		return "", nil, fmt.Errorf("read --manifest: %w", err)
+	}
+	dir, err := os.MkdirTemp("", "katldev-preseed-")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	if err := vmtest.WritePreseedDir(dir, vmtest.PreseedInput{Manifest: manifest, ManifestRoot: filepath.Dir(opts.Manifest)}); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("build preseed media from --manifest: %w", err)
+	}
+	return dir, cleanup, nil
+}
+
+// createNode defines and boots a fresh installer VM for node, replacing any
+// domain of the same name that this world owns.
+func (manager installerManager) createNode(ctx context.Context, world katldevWorld, node vmtest.Node, opts installerOptions, iso, digest string) (installerState, error) {
+	result, err := world.Scenario.PlanNodeVM(node, []vmtest.DiskFixture{vmtest.TargetDisk("root", string(vmtest.DiskQCOW2), opts.DiskSize)}, vmtest.KVMAuto)
+	if err != nil {
+		return installerState{}, fmt.Errorf("plan VM %s: %w", node.Name, err)
+	}
+	uri := world.World.Libvirt.URI
+	preseedDir, cleanup, err := installerPreseedDir(opts)
+	if err != nil {
+		return installerState{}, err
+	}
+	defer cleanup()
+	config := installerVMConfig(world, node, opts, iso, preseedDir)
 	plan, err := vmtest.PlanVM(result, config)
 	if err != nil {
 		return installerState{}, fmt.Errorf("plan libvirt VM %s: %w", node.Name, err)
@@ -1059,4 +1112,14 @@ func firstNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// expandGateway replaces {gateway} in kernel arguments so a URL can name the
+// host address of a world network before the world exists.
+func expandGateway(args []string, gateway string) []string {
+	var expanded []string
+	for _, arg := range args {
+		expanded = append(expanded, strings.ReplaceAll(arg, "{gateway}", gateway))
+	}
+	return expanded
 }

@@ -1381,8 +1381,10 @@ type domainXML struct {
 	Devices  domainDevices  `xml:"devices"`
 }
 
-// domainSysinfo carries SMBIOS type 11 OEM strings, which systemd imports as
-// system credentials.
+// domainSysinfo carries SMBIOS type 11 OEM strings. systemd imports
+// io.systemd.credential:* entries as system credentials, and systemd-stub reads
+// io.systemd.stub.kernel-cmdline-extra to extend the command line of a UKI that
+// firmware boots, where libvirt has no <cmdline>.
 type domainSysinfo struct {
 	Type       string   `xml:"type,attr"`
 	OEMStrings []string `xml:"oemStrings>entry"`
@@ -1800,9 +1802,19 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 		// The guest connects to the host, so libvirt may pick any free CID.
 		doc.Devices.VSock = &domainVSock{Model: "virtio", CID: domainVSockCID{Auto: "yes"}}
 	}
+	// The only place that builds the SMBIOS block: libvirt accepts a single
+	// <sysinfo type="smbios"> and a single <os><smbios>, so every feature adds
+	// its OEM string here instead of emitting its own.
+	var oemStrings []string
 	if domain.NotifyPort != 0 {
+		oemStrings = append(oemStrings, notifySocketCredential(domain.NotifyPort))
+	}
+	if domain.Kernel == "" && domain.CommandLine != "" {
+		oemStrings = append(oemStrings, "io.systemd.stub.kernel-cmdline-extra="+domain.CommandLine)
+	}
+	if len(oemStrings) > 0 {
 		doc.OS.SMBIOS = &domainSMBIOS{Mode: "sysinfo"}
-		doc.Sysinfo = &domainSysinfo{Type: "smbios", OEMStrings: []string{notifySocketCredential(domain.NotifyPort)}}
+		doc.Sysinfo = &domainSysinfo{Type: "smbios", OEMStrings: oemStrings}
 	}
 	data, err := xml.MarshalIndent(doc, "", "  ")
 	if err != nil {
