@@ -69,12 +69,15 @@ jobs:
           scripts/mkosi build-katlos-install-image
           scripts/mkosi build-installer
           scripts/mkosi --profile vmtest-drbd-tools -f build
+          # The VM runner pins the install image named in the completed artifact index.
+          go run ./cmd/katl-mkosi-artifacts write
+          go run ./cmd/katl-mkosi-artifacts path katlos-install-image >/dev/null
           .github/scripts/hosted-vmtest-measure drbd .github/scripts/hosted-vmtest-run \
             --artifact-set=install --no-rebuild ./internal/vmtest \
             -run '^TestInstalledRuntimeDRBDReplication$' -count=1 -json -timeout 40m
       - name: Record the qualified commit and inputs
         run: |
-          printf 'Qualified commit: `%s`\n\n' "$KATL_BUILD_COMMIT" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Qualified commit: %s\n\n' "\`$KATL_BUILD_COMMIT\`" >> "$GITHUB_STEP_SUMMARY"
           jq '{flavour, kernelRelease, reference, packages: [.packages[] | {name, nevra, digest}]}' \
             "$KATL_KERNEL_LOCK" >> "$GITHUB_STEP_SUMMARY"
       - name: Collect VM diagnostics
