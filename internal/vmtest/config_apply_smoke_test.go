@@ -112,6 +112,17 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 		}
 	}()
 	guest := NewGuestControl(node.Result, client)
+	// StartInstalledRuntimeNode returns once management listens, which can
+	// precede sshd and the rest of the boot; the assertions below describe a
+	// settled boot.
+	if err := guest.WaitBootComplete(ctx); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if t.Failed() {
+			collectConfigApplyFailureEvidence(ctx, guest)
+		}
+	}()
 	if err := RunKatlcSmoke(ctx, guest); err != nil {
 		t.Fatalf("katlc runtime smoke: %v", err)
 	}
@@ -133,14 +144,6 @@ func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	endpoint := katlcEndpoint(t, node, plannedAddress)
 	assertDefaultNetworkdCNIOwnership(t, ctx, guest)
 	assertUnauthenticatedManagementRejected(t, ctx, endpoint)
-	if err := guest.WaitBootComplete(ctx); err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if t.Failed() {
-			collectConfigApplyFailureEvidence(ctx, guest)
-		}
-	}()
 	currentGeneration := currentGenerationFromGuest(t, ctx, guest)
 	waitGenerationPromotion(t, ctx, guest, currentGeneration)
 	enrollConfigApplyNode(t, ctx, result, katlctl, endpoint)
@@ -183,7 +186,9 @@ func assertDefaultNetworkdCNIOwnership(t *testing.T, ctx context.Context, guest 
 	}
 
 	hostLink := defaultRouteLink(t, ctx, guest)
-	before := networkdStatus(t, ctx, guest, "networkd-host-before-cni", hostLink)
+	// Boot completion does not order networkd's host link configuration: the
+	// link can still be configuring its IPv6 side after the DHCPv4 lease binds.
+	before := waitNetworkdStatuses(t, ctx, guest, "networkd-host-before-cni", []string{hostLink})[hostLink]
 	assertNetworkdDHCPHost(t, before)
 
 	for _, module := range []string{"veth", "dummy", "geneve", "vxlan", "bridge"} {
@@ -227,7 +232,7 @@ func assertDefaultNetworkdCNIOwnership(t *testing.T, ctx context.Context, guest 
 		links = append(links, name)
 	}
 	slices.Sort(links)
-	statuses := waitNetworkdStatuses(t, ctx, guest, links)
+	statuses := waitNetworkdStatuses(t, ctx, guest, "networkd-cni-status", links)
 	for _, name := range links {
 		status := statuses[name]
 		if status.Kind != wantKinds[name] || status.AdministrativeState != "unmanaged" || status.NetworkFile != "" || status.IPv4AddressState != "off" {
@@ -300,14 +305,16 @@ func defaultRouteLink(t *testing.T, ctx context.Context, guest *GuestControl) st
 	return routes[0].Dev
 }
 
-func waitNetworkdStatuses(t *testing.T, ctx context.Context, guest *GuestControl, links []string) map[string]networkdLinkStatus {
+// waitNetworkdStatuses waits until networkd has finished setting up each link,
+// whatever state the link settles in.
+func waitNetworkdStatuses(t *testing.T, ctx context.Context, guest *GuestControl, commandName string, links []string) map[string]networkdLinkStatus {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		argv := append([]string{"networkctl", "status"}, links...)
 		argv = append(argv, "--json=short")
 		record, err := guest.RunCommand(ctx, GuestCommandRequest{
-			Name:         "networkd-cni-status",
+			Name:         commandName,
 			Argv:         argv,
 			AllowFailure: true,
 		})
@@ -316,7 +323,8 @@ func waitNetworkdStatuses(t *testing.T, ctx context.Context, guest *GuestControl
 			if decodeErr == nil && len(statuses) == len(links) {
 				allSettled := true
 				for _, link := range links {
-					if statuses[link].AdministrativeState == "" || statuses[link].AdministrativeState == "pending" {
+					switch statuses[link].AdministrativeState {
+					case "", "pending", "initialized", "configuring":
 						allSettled = false
 					}
 				}
