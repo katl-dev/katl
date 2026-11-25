@@ -8,7 +8,8 @@ usage() {
 
 case "${1-}" in
     delivery) model=gpt-6.2-sol effort=medium sandbox=workspace-write ;;
-    reviewer|debugger) model=gpt-6.2-astra effort=high sandbox=read-only ;;
+    reviewer) model=gpt-6.2-astra effort=medium sandbox=read-only ;;
+    debugger) model=gpt-6.2-astra effort=high sandbox=read-only ;;
     *) usage ;;
 esac
 role="$1"

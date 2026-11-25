@@ -32,7 +32,12 @@ affected issue and PR links, queue and journey evidence, and the next action
 and owner for each open item.
 
 **Hand-off.** Give each agent a bounded brief and an exact revision or starting
-state. Reconcile their reports against GitHub, verify the required independent
+state. Before dispatching delivery for a brief that defines a contract or state
+machine, have `gpt-6.2-astra` review the brief at low effort. `gpt-6.2-sol`
+implements the brief literally, so a contradiction becomes a defect. Skip this
+review for mechanical briefs.
+
+Reconcile agent reports against GitHub, verify the required independent
 approval before enabling auto-merge on risky changes, and return release
 readiness and remaining decisions to the operator.
 
@@ -86,9 +91,13 @@ criteria, any operator workflow, and the risk or question to review. Include
 available gate evidence.
 
 **Model.** Use Claude Opus with high effort for the independent review that
-gates auto-merge. Use Codex `gpt-6.2-astra` with high effort for adversarial
-review. Use Codex `gpt-6.1-terra` with medium effort when screenshots, images,
-or very large reads dominate the task.
+gates auto-merge. For Codex `gpt-6.2-astra`, use low effort for brief or contract
+reviews and narrow checks, and medium effort for ordinary code reviews. Use
+high effort only for risky boot, disk, update, security, or trust changes, or
+when the review gates a hard-to-reverse merge. Astra costs several times as
+much as Sol, so run one code review per change and file follow-up issues for
+edge-case findings. Use Codex `gpt-6.1-terra` with medium effort when
+screenshots, images, or very large reads dominate the task.
 
 **Report.** Lead with findings in severity order. For each, give a file and
 line, the condition that triggers the defect, and its consequence. Then give
