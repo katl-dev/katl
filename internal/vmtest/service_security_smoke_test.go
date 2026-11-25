@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -66,10 +67,13 @@ func TestInstalledRuntimeServiceSecuritySmoke(t *testing.T) {
 	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "katlc-agent-type", "systemctl", "show", "--property=Type", "--value", "katlc-agent.service")); got != "notify" {
 		t.Fatalf("katlc-agent.service Type = %q, want notify", got)
 	}
-	listening := guestCommandOutput(t, ctx, guest, "management-listeners", "sh", "-c", "cat /proc/net/tcp /proc/net/tcp6")
-	if !strings.Contains(listening, ":24E3 ") {
-		t.Fatalf("no listener on :9443 after boot completed:\n%s", listening)
+	// A single host dial, with no retry, fails if readiness was reported
+	// before the listener was bound.
+	conn, err := (&net.Dialer{Timeout: 3 * time.Second}).DialContext(ctx, "tcp", katlcEndpoint(t, node, ""))
+	if err != nil {
+		t.Fatalf("management endpoint refused a connection after boot completed: %v", err)
 	}
+	_ = conn.Close()
 
 	// Host orchestration and container mounts must remain visible to PID 1.
 	hostNamespace := guestCommandOutput(t, ctx, guest, "host-mount-namespace", "readlink", "/proc/1/ns/mnt")
