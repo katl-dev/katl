@@ -22,6 +22,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/artifact"
+	"github.com/katl-dev/katl/internal/installer/fetcherr"
 	"github.com/katl-dev/katl/internal/installer/payloadbundle"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -762,7 +763,7 @@ func fetchDescriptorToFile(ctx context.Context, client *http.Client, source stri
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("fetch descriptor %s %s: %w", descriptor.Role, inventory.Redact(value), cleanFetchError(err))
+		return fmt.Errorf("fetch descriptor %s %s: %w", descriptor.Role, inventory.Redact(value), fetcherr.Cause(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -883,7 +884,7 @@ func fetch(ctx context.Context, client *http.Client, value string) ([]byte, erro
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, cleanFetchError(err)
+		return nil, fetcherr.Cause(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -970,14 +971,6 @@ func stringMapEqual(left map[string]string, right map[string]string) bool {
 		}
 	}
 	return true
-}
-
-func cleanFetchError(err error) error {
-	var urlErr *url.Error
-	if !errors.As(err, &urlErr) {
-		return err
-	}
-	return fmt.Errorf("%s: %w", urlErr.Op, urlErr.Err)
 }
 
 func replaceDir(src string, dst string) error {

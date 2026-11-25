@@ -18,6 +18,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/installer/fetcherr"
 )
 
 const (
@@ -506,7 +507,7 @@ func fetch(ctx context.Context, client *http.Client, value string) ([]byte, erro
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, cleanFetchError(err)
+		return nil, fetcherr.Cause(err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
@@ -618,14 +619,6 @@ func indexEntriesEqual(left IndexEntry, right IndexEntry) bool {
 		left.Deprecated == right.Deprecated &&
 		stringSlicesEqual(left.SupportedRuntimeInterfaces, right.SupportedRuntimeInterfaces) &&
 		capabilitiesEqual(left.Capabilities, right.Capabilities)
-}
-
-func cleanFetchError(err error) error {
-	var urlErr *url.Error
-	if !errors.As(err, &urlErr) {
-		return err
-	}
-	return fmt.Errorf("%s: %w", urlErr.Op, urlErr.Err)
 }
 
 func replaceDir(src string, dst string) error {

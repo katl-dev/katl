@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/fetcherr"
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -43,7 +44,7 @@ func (layout *httpLayout) open(ctx context.Context, method, pin string) (*http.R
 	}
 	response, err := layout.client.Do(request)
 	if err != nil {
-		return nil, err
+		return nil, fetcherr.Cause(err)
 	}
 	if response.StatusCode != http.StatusOK {
 		response.Body.Close()
