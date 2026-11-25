@@ -78,34 +78,37 @@ const euclean = "operation host-upgrade-handoff-20261125T014748Z-5adb5c34ac54 fi
 
 func TestStuckSlotRecovery(t *testing.T) {
 	const (
-		rm   = "rm -f /efi/EFI/katl/.sysupdate.partial.* /efi/EFI/katl/.sysupdate.pending.*"
-		root = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
+		find      = "find /efi/EFI/katl -maxdepth 1 -name '.sysupdate.*' -print -delete"
+		dumpSlot  = `sfdisk --dump "$DISK" | awk '`
+		slotMatch = `/name="katl_1"/ && toupper($0) ~ /TYPE=(64362E66-88A7-463B-B325-7AF60C81BE06|7A01D3C6-92AC-43E9-BD77-5726B602AD9D),/ {`
+		readType  = `ROOT_TYPE=$(sfdisk --part-type "$DISK" "$(lsblk -no PARTN "/dev/block/$(findmnt -no MAJ:MIN /)")")`
+		setType   = `sfdisk --no-reread --no-tell-kernel --part-type "$DISK" PARTNUMBER "$ROOT_TYPE"`
 	)
 
 	tests := []struct {
-		name   string
-		err    error
-		sfdisk string
+		name string
+		err  error
+		disk string
 	}{
 		{
-			name:   "found 1 root partition",
-			err:    grpcstatus.Error(codes.FailedPrecondition, refusalV20261104),
-			sfdisk: "sfdisk --no-reread --no-tell-kernel --part-type /dev/nvme0n1 PARTNUMBER " + root,
+			name: "found 1 root partition",
+			err:  grpcstatus.Error(codes.FailedPrecondition, refusalV20261104),
+			disk: "/dev/nvme0n1",
 		},
 		{
-			name:   "found 1 root partition in a failed operation",
-			err:    fmt.Errorf("operation op-1 finished with result failed: find inactive root slot: found 1 root partitions with type 4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709 on system disk vda, want 2"),
-			sfdisk: "sfdisk --no-reread --no-tell-kernel --part-type /dev/vda PARTNUMBER " + root,
+			name: "found 1 root partition in a failed operation",
+			err:  fmt.Errorf("operation op-1 finished with result failed: find inactive root slot: found 1 root partitions with type 4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709 on system disk vda, want 2"),
+			disk: "/dev/vda",
 		},
 		{
-			name:   "partially installed update",
-			err:    errors.New(euclean),
-			sfdisk: "sfdisk --no-reread --no-tell-kernel --part-type /dev/vda PARTNUMBER ROOT_TYPE",
+			name: "partially installed update",
+			err:  errors.New(euclean),
+			disk: "/dev/vda",
 		},
 		{
-			name:   "partially installed update without a discovered disk",
-			err:    errors.New("systemd-sysupdate: exit-1: Selected update '1' is already acquired and partially installed. Vacuum it to try installing again."),
-			sfdisk: "sfdisk --no-reread --no-tell-kernel --part-type /dev/DISK PARTNUMBER ROOT_TYPE",
+			name: "partially installed update without a discovered disk",
+			err:  errors.New("systemd-sysupdate: exit-1: Selected update '1' is already acquired and partially installed. Vacuum it to try installing again."),
+			disk: "/dev/DISK",
 		},
 	}
 	for _, tt := range tests {
@@ -116,19 +119,23 @@ func TestStuckSlotRecovery(t *testing.T) {
 				t.Fatalf("explained error no longer wraps the original")
 			}
 			guide := strings.TrimPrefix(got.Error(), tt.err.Error())
-			for _, want := range []string{rm, "df -h /efi", "at least 90 MiB", tt.sfdisk, "Reboot the node, then run the upgrade again."} {
+			for _, want := range []string{find, "df -h /efi", "at least 100 MiB", "DISK=" + tt.disk + "\n", dumpSlot, slotMatch, readType, setType, "Reboot the node, then run the upgrade again."} {
 				if !strings.Contains(guide, want) {
 					t.Errorf("guidance lacks %q:\n%s", want, guide)
 				}
 			}
 
+			if strings.Contains(strings.ToLower(guide), "4f68bce3") {
+				t.Errorf("guidance hard-codes the root type instead of reading it from the running slot:\n%s", guide)
+			}
+
 			// Deleting the UKI files comes first and the type is restored
 			// before the reboot.
-			order := []string{rm, "90 MiB", "sfdisk", "Reboot"}
+			order := []string{find, "100 MiB", "DISK=", setType, "Reboot"}
 			last := -1
 			for _, s := range order {
 				i := strings.Index(guide, s)
-				if i < last {
+				if i < 0 || i < last {
 					t.Errorf("%q appears out of order in guidance:\n%s", s, guide)
 				}
 				last = i

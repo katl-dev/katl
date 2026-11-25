@@ -3,15 +3,14 @@ package main
 import (
 	"fmt"
 	"regexp"
-	"strings"
 )
 
 // stuckRootSlotRefusal matches the refusal that agents through v2026.11.4
 // give when a failed upgrade staging left the inactive root slot with the
 // partial or pending partition type that sysupdate derives from the root type.
 // Those agents report neither the system disk nor its partitions, so the
-// message is all katlctl can learn: the root type and the disk's kernel name.
-var stuckRootSlotRefusal = regexp.MustCompile(`find inactive root slot: found 1 root partitions with type ([0-9a-fA-F-]{36}) on system disk (\S+), want 2`)
+// message is all katlctl can learn: the disk's kernel name.
+var stuckRootSlotRefusal = regexp.MustCompile(`find inactive root slot: found 1 root partitions with type [0-9a-fA-F-]{36} on system disk (\S+), want 2`)
 
 // partialInstallRefusal matches systemd-sysupdate's refusal to install an
 // update whose root slot was written but whose UKI was not. The agent reports
@@ -56,15 +55,14 @@ func explainHostUpgradeError(err error) error {
 		return &stuckRootSlotError{cause: err, guide: staleSysfsGuidance}
 	}
 	if match := stuckRootSlotRefusal.FindStringSubmatch(msg); match != nil {
-		return &stuckRootSlotError{cause: err, guide: stuckRootSlotGuidance("whose PARTTYPE is not "+strings.ToLower(match[1]), "/dev/"+match[2], strings.ToLower(match[1]))}
+		return &stuckRootSlotError{cause: err, guide: stuckRootSlotGuidance("/dev/" + match[1])}
 	}
 	if partialInstallRefusal.MatchString(msg) {
 		disk := "/dev/DISK"
 		if match := discoveredDisk.FindStringSubmatch(msg); match != nil {
 			disk = match[1]
 		}
-		const rootType = "ROOT_TYPE"
-		return &stuckRootSlotError{cause: err, guide: stuckRootSlotGuidance("whose PARTTYPE differs from the partition mounted at / (ROOT_TYPE is that partition's PARTTYPE)", disk, rootType)}
+		return &stuckRootSlotError{cause: err, guide: stuckRootSlotGuidance(disk)}
 	}
 	return err
 }
@@ -72,8 +70,11 @@ func explainHostUpgradeError(err error) error {
 // stuckRootSlotGuidance is the one-time recovery for a node whose failed
 // upgrade left the inactive root slot with a partial or pending type and
 // leftover UKI files on the ESP. The agent does not report which partition the
-// slot is, so the operator finds it with lsblk.
-func stuckRootSlotGuidance(slotTest, disk, rootType string) string {
+// slot is, so the operator finds it from the partition table: sysupdate gives
+// the slot the partial or pending type derived from the root type, and Katl
+// always labels the staged slot katl_1. The same commands appear in
+// docs/releases/next.md.
+func stuckRootSlotGuidance(disk string) string {
 	return fmt.Sprintf(`
 This node cannot be upgraded because an earlier failed upgrade left its inactive root slot half-installed. The repair is one-time and per node: only nodes whose upgrade failed need it, and healthy nodes are unaffected.
 
@@ -81,21 +82,38 @@ On the node, as root:
 
 1. Delete the leftover UKI files of the failed upgrade:
 
-     rm -f /efi/EFI/katl/.sysupdate.partial.* /efi/EFI/katl/.sysupdate.pending.*
+     find /efi/EFI/katl -maxdepth 1 -name '.sysupdate.*' -print -delete
 
-2. Make sure the ESP has at least 90 MiB free, and free space if it does not:
+2. Make sure the ESP has at least 100 MiB free, and free space if it does not:
 
      df -h /efi
 
-3. Find the root slot that is not mounted at / and %[1]s:
+3. Find the half-installed root slot. This only reads the partition table:
 
-     lsblk -o NAME,PARTN,PARTTYPE,PARTLABEL,MOUNTPOINT %[2]s
+     DISK=%s
+     sfdisk --dump "$DISK" | awk '
+       /name="katl_1"/ && toupper($0) ~ /TYPE=(64362E66-88A7-463B-B325-7AF60C81BE06|7A01D3C6-92AC-43E9-BD77-5726B602AD9D),/ {
+         n++
+         part = $1
+       }
+       END {
+         if (n != 1) {
+           print "found " n+0 " half-installed root slots, expected 1; do not change any partition type" > "/dev/stderr"
+           exit 1
+         }
+         sub(/^.*[^0-9]/, "", part)
+         print "half-installed root slot: partition " part
+       }'
 
-   Set that slot's type back, with its PARTN in place of PARTNUMBER:
+   If it prints a partition, continue with step 4. If it finds none, skip step 4 and go to step 5. If it finds more than one, stop and do not change any partition type.
 
-     sfdisk --no-reread --no-tell-kernel --part-type %[2]s PARTNUMBER %[3]s
+4. Set that slot's type to the type of the running root slot, with the partition number from step 3 in place of PARTNUMBER:
+
+     ROOT_TYPE=$(sfdisk --part-type "$DISK" "$(lsblk -no PARTN "/dev/block/$(findmnt -no MAJ:MIN /)")")
+     echo "$ROOT_TYPE"
+     sfdisk --no-reread --no-tell-kernel --part-type "$DISK" PARTNUMBER "$ROOT_TYPE"
 
    Never run this against the partition mounted at /.
 
-4. Reboot the node, then run the upgrade again.`, slotTest, disk, rootType)
+5. Reboot the node, then run the upgrade again.`, disk)
 }
