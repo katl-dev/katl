@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -32,6 +34,12 @@ type Worktree struct {
 	verified bool
 	// tracked names the top-level entries holding tracked files.
 	tracked []string
+	// environ is the environment git runs in.
+	environ []string
+	// commonDir is the repository git directory and adminDir the worktree own
+	// directory below commonDir/worktrees. Both are resolved before the
+	// worktree is deleted, because afterwards git cannot find them from it.
+	commonDir, adminDir string
 }
 
 // CheckWorktree returns the linked worktree of the repository containing repo
@@ -59,6 +67,10 @@ func CheckWorktree(ctx context.Context, environ []string, lookup PullRequestLook
 	for _, line := range strings.Split(listing, "\n") {
 		if p, ok := strings.CutPrefix(line, "worktree "); ok {
 			resolved, err := resolve(p)
+			if errors.Is(err, fs.ErrNotExist) {
+				// A stale registration cannot be the target, which exists.
+				continue
+			}
 			if err != nil {
 				return Worktree{}, err
 			}
@@ -92,7 +104,19 @@ func CheckWorktree(ctx context.Context, environ []string, lookup PullRequestLook
 	if err != nil {
 		return Worktree{}, err
 	}
-	wt := Worktree{Path: abs, root: abs, verified: true}
+	wt := Worktree{Path: abs, root: abs, verified: true, environ: environ}
+	commonDir, err := g.run(ctx, abs, "rev-parse", "--path-format=absolute", "--git-common-dir")
+	if err != nil {
+		return Worktree{}, err
+	}
+	adminDir, err := g.run(ctx, abs, "rev-parse", "--absolute-git-dir")
+	if err != nil {
+		return Worktree{}, err
+	}
+	wt.commonDir, wt.adminDir = strings.TrimSpace(commonDir), strings.TrimSpace(adminDir)
+	if filepath.Dir(wt.adminDir) != filepath.Join(wt.commonDir, "worktrees") {
+		return Worktree{}, fmt.Errorf("%s: git directory %s is not a linked worktree directory of %s", abs, wt.adminDir, wt.commonDir)
+	}
 	var head string
 	if unpushed = strings.TrimRight(unpushed, "\n"); unpushed != "" {
 		out, err := g.run(ctx, abs, "rev-parse", "HEAD")
@@ -230,4 +254,46 @@ func contains(list []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// Deregister removes the worktree's registration from its repository. It
+// acts on the repository's git directory, not on a checkout, so it works when
+// the worktree was the checkout the caller ran from. Call it after Remove.
+func (w Worktree) Deregister() error {
+	if !w.verified || w.adminDir == "" || filepath.Dir(w.adminDir) != filepath.Join(w.commonDir, "worktrees") {
+		return errors.New("refusing to deregister a worktree that CheckWorktree did not verify")
+	}
+	if present(w.root) {
+		return fmt.Errorf("%s still exists; not deregistering it", w.root)
+	}
+	return os.RemoveAll(w.adminDir)
+}
+
+// DeleteBranchIfUnmoved deletes the worktree's branch when it was judged
+// deletable and still points at the commit that was judged, and reports
+// whether it did. Call it after Deregister, when git no longer sees the
+// branch as checked out.
+func (w Worktree) DeleteBranchIfUnmoved(ctx context.Context) bool {
+	if !w.DeleteBranch || w.Branch == "" {
+		return false
+	}
+	g := gitRunner{environ: w.environ}
+	_, err := g.run(ctx, w.commonDir, "--git-dir="+w.commonDir, "update-ref", "-d", "refs/heads/"+w.Branch, w.Tip)
+	return err == nil
+}
+
+// CheckNotInUse refuses removal when the worktree contains the running script
+// or the caller's working directory, which removal would pull out from under
+// the caller.
+func (w Worktree) CheckNotInUse(script, cwd string) error {
+	for _, p := range []string{script, cwd} {
+		resolved, err := resolve(p)
+		if err != nil {
+			continue
+		}
+		if resolved == w.root || strings.HasPrefix(resolved, w.root+"/") {
+			return fmt.Errorf("%s contains %s, which is in use; run worktree-clean from the main checkout or another worktree", w.root, resolved)
+		}
+	}
+	return nil
 }

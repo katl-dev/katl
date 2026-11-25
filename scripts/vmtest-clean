@@ -21,7 +21,15 @@ devclean() {
     elif command -v katl-devclean >/dev/null 2>&1; then
         katl-devclean "$@"
     else
-        (cd "$repo_root" && "$go_bin" run ./cmd/katl-devclean "$@")
+        # go run reports every failure of the program as exit status 1, which
+        # would turn a refusal into a partial removal.
+        if [[ -z "${built_devclean:-}" ]]; then
+            built_dir="$(mktemp -d)"
+            trap 'rm -rf "$built_dir"' EXIT
+            (cd "$repo_root" && "$go_bin" build -o "$built_dir/katl-devclean" ./cmd/katl-devclean)
+            built_devclean="$built_dir/katl-devclean"
+        fi
+        "$built_devclean" "$@"
     fi
 }
 
@@ -51,7 +59,7 @@ else
     exit 2
 fi
 
-if [[ "${#result_files[@]}" -eq 0 ]]; then
+if [[ "${#result_files[@]}" -eq 0 && -z "$run_dir" ]]; then
     printf 'vmtest-clean: no result.json files found under %s\n' "$target" >&2
     exit 2
 fi
@@ -135,27 +143,31 @@ for result in "${result_files[@]}"; do
             printf 'vmtest-clean: refusing empty libvirt URI for %s in %s\n' "$domain" "$result" >&2
             exit 2
         fi
-        printf 'vmtest-clean: destroying %s on %s\n' "$domain" "$uri" >&2
-        "$virsh_bin" -c "$uri" destroy "$domain" >/dev/null 2>&1 || {
-            printf 'vmtest-clean: virsh destroy failed for %s; checking domain state\n' "$domain" >&2
-        }
-        if ! wait_domain_inactive "$domain" "$uri"; then
-            printf 'vmtest-clean: %s is still active after destroy; checking for orphan qemu process\n' "$domain" >&2
-            cleanup_orphan_qemu "$domain"
+        if ! domain_exists "$domain" "$uri"; then
+            printf 'vmtest-clean: domain %s is already gone from %s\n' "$domain" "$uri" >&2
+        else
+            printf 'vmtest-clean: destroying %s on %s\n' "$domain" "$uri" >&2
+            "$virsh_bin" -c "$uri" destroy "$domain" >/dev/null 2>&1 || {
+                printf 'vmtest-clean: virsh destroy failed for %s; checking domain state\n' "$domain" >&2
+            }
             if ! wait_domain_inactive "$domain" "$uri"; then
-                printf 'vmtest-clean: failed to stop %s on %s\n' "$domain" "$uri" >&2
-                exit 1
+                printf 'vmtest-clean: %s is still active after destroy; checking for orphan qemu process\n' "$domain" >&2
+                cleanup_orphan_qemu "$domain"
+                if ! wait_domain_inactive "$domain" "$uri"; then
+                    printf 'vmtest-clean: failed to stop %s on %s\n' "$domain" "$uri" >&2
+                    exit 1
+                fi
             fi
+            printf 'vmtest-clean: undefining %s on %s\n' "$domain" "$uri" >&2
+            "$virsh_bin" -c "$uri" undefine "$domain" --nvram >/dev/null 2>&1 || {
+                printf 'vmtest-clean: virsh undefine failed for %s; checking for orphan qemu process\n' "$domain" >&2
+                cleanup_orphan_qemu "$domain"
+                if domain_exists "$domain" "$uri"; then
+                    printf 'vmtest-clean: failed to undefine %s on %s\n' "$domain" "$uri" >&2
+                    exit 1
+                fi
+            }
         fi
-        printf 'vmtest-clean: undefining %s on %s\n' "$domain" "$uri" >&2
-        "$virsh_bin" -c "$uri" undefine "$domain" --nvram >/dev/null 2>&1 || {
-            printf 'vmtest-clean: virsh undefine failed for %s; checking for orphan qemu process\n' "$domain" >&2
-            cleanup_orphan_qemu "$domain"
-            if domain_exists "$domain" "$uri"; then
-                printf 'vmtest-clean: failed to undefine %s on %s\n' "$domain" "$uri" >&2
-                exit 1
-            fi
-        }
         cleaned=$((cleaned + 1))
         recorded_domains+=("$domain	$uri")
         # Worlds without a run network use libvirt's default one, which is not ours to remove.

@@ -441,3 +441,97 @@ func TestCheckWorktreeAcceptsDeletedTrackedFiles(t *testing.T) {
 		t.Fatalf("a worktree missing only tracked files is refused: %v", err)
 	}
 }
+
+func TestCheckWorktreeIgnoresStaleRegistrations(t *testing.T) {
+	f := newFixture(t)
+	stale := f.worktree("stale")
+	wt := f.worktree("feature")
+	f.git(wt, "push", "--quiet", "origin", "feature")
+	if err := os.RemoveAll(stale); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := f.check(wt); err != nil {
+		t.Fatalf("a listed worktree whose directory is gone blocked removing another: %v", err)
+	}
+}
+
+func TestWorktreeDeregisters(t *testing.T) {
+	f := newFixture(t)
+	wt := f.worktree("feature")
+	f.git(wt, "push", "--quiet", "origin", "feature")
+	got, err := f.check(wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := got.Deregister(); err == nil {
+		t.Fatal("Deregister succeeded while the directory still exists")
+	}
+
+	if err := got.Remove(context.Background(), &fakeNS{act: removeEverything}); err != nil {
+		t.Fatal(err)
+	}
+	if err := got.Deregister(); err != nil {
+		t.Fatal(err)
+	}
+	if !got.DeleteBranchIfUnmoved(context.Background()) {
+		t.Fatal("the pushed branch was not deleted")
+	}
+
+	if list := f.git(f.repo, "worktree", "list", "--porcelain"); strings.Contains(list, wt) {
+		t.Fatalf("git still lists the removed worktree:\n%s", list)
+	}
+	if out := f.git(f.repo, "branch", "--list", "feature"); strings.TrimSpace(out) != "" {
+		t.Fatalf("branch survived: %s", out)
+	}
+}
+
+func TestWorktreeKeepsBranchThatMoved(t *testing.T) {
+	f := newFixture(t)
+	wt := f.worktree("feature")
+	f.git(wt, "push", "--quiet", "origin", "feature")
+	got, err := f.check(wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.commit(wt, "late.txt", "late")
+	if err := os.RemoveAll(wt); err != nil {
+		t.Fatal(err)
+	}
+	if err := got.Deregister(); err != nil {
+		t.Fatal(err)
+	}
+
+	if got.DeleteBranchIfUnmoved(context.Background()) {
+		t.Fatal("a branch that moved after it was judged was deleted")
+	}
+}
+
+func TestWorktreeCheckNotInUse(t *testing.T) {
+	f := newFixture(t)
+	wt := f.worktree("feature")
+	f.git(wt, "push", "--quiet", "origin", "feature")
+	got, err := f.check(wt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := f.repo
+
+	for name, c := range map[string]struct{ script, cwd string }{
+		"script inside": {filepath.Join(wt, "scripts", "worktree-clean"), elsewhere},
+		"cwd inside":    {filepath.Join(elsewhere, "scripts", "worktree-clean"), filepath.Join(wt, "sub")},
+		"cwd at root":   {elsewhere, wt},
+	} {
+		if err := os.MkdirAll(filepath.Join(wt, "sub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		writeFile(t, filepath.Join(wt, "scripts", "worktree-clean"))
+		err := got.CheckNotInUse(c.script, c.cwd)
+		if err == nil || !strings.Contains(err.Error(), "main checkout or another worktree") {
+			t.Fatalf("%s: CheckNotInUse() = %v; want a refusal saying where to run from", name, err)
+		}
+	}
+	if err := got.CheckNotInUse(filepath.Join(elsewhere, "base.txt"), elsewhere); err != nil {
+		t.Fatalf("a script and directory outside the worktree were refused: %v", err)
+	}
+}

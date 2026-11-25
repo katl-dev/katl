@@ -238,7 +238,9 @@ func (t tree) remove(ctx context.Context, ns UserNS) error {
 				cause = err
 			}
 		}
-		if len(rest) > 0 {
+		// Later stages run only once this one is gone, judged again after the
+		// namespace step.
+		if slices.ContainsFunc(rest, present) {
 			break
 		}
 	}

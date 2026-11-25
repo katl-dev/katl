@@ -470,3 +470,28 @@ func TestRemoveSubuidOwnedFiles(t *testing.T) {
 		t.Fatal("removal followed a symbolic link out of the run directory")
 	}
 }
+
+func TestRemoveContinuesAfterNamespaceStep(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "wt")
+	writeFile(t, filepath.Join(root, "_build", "image.iso"))
+	writeFile(t, filepath.Join(root, "src", "main.go"))
+	writeFile(t, filepath.Join(root, ".git"))
+	tr := newTree(root, ".git")
+	// Only the namespace can delete the untracked output; the host can
+	// delete everything else.
+	tr.removeEntry = func(path string) error {
+		if strings.Contains(path, "_build") {
+			return errors.New("permission denied")
+		}
+		return os.Remove(path)
+	}
+	tr.last = []string{"src"}
+	ns := &fakeNS{act: removeEverything}
+
+	if err := tr.remove(context.Background(), ns); err != nil {
+		t.Fatalf("remove() = %v; want one call to finish the tree after the namespace step succeeded", err)
+	}
+	if exists(root) {
+		t.Fatal("tree survived")
+	}
+}

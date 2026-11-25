@@ -19,14 +19,23 @@ devclean() {
     elif command -v katl-devclean >/dev/null 2>&1; then
         katl-devclean "$@"
     else
-        (cd "$repo_root" && "$go_bin" run ./cmd/katl-devclean "$@")
+        # go run reports every failure of the program as exit status 1, which
+        # would turn a refusal into a partial removal.
+        if [[ -z "${built_devclean:-}" ]]; then
+            built_dir="$(mktemp -d)"
+            trap 'rm -rf "$built_dir"' EXIT
+            (cd "$repo_root" && "$go_bin" build -o "$built_dir/katl-devclean" ./cmd/katl-devclean)
+            built_devclean="$built_dir/katl-devclean"
+        fi
+        "$built_devclean" "$@"
     fi
 }
 
 # katl-devclean exits 2 when it refused and removed nothing, and 1 when it
 # removed some of the worktree and could not remove the rest.
 rc=0
-info="$(devclean remove worktree "$repo_root" "$target")" || rc=$?
+script="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+info="$(devclean remove worktree "$repo_root" "$target" "$script")" || rc=$?
 case "$rc" in
     0) ;;
     1)
@@ -38,13 +47,12 @@ case "$rc" in
         exit "$rc"
         ;;
 esac
-git -C "$repo_root" worktree prune
 path="$(sed -n 's/^path=//p' <<<"$info")"
 branch="$(sed -n 's/^branch=//p' <<<"$info")"
 delete_branch="$(sed -n 's/^delete-branch=//p' <<<"$info")"
 keep_reason="$(sed -n 's/^keep-reason=//p' <<<"$info")"
 merged_pr="$(sed -n 's/^merged-pr=//p' <<<"$info")"
-tip="$(sed -n 's/^tip=//p' <<<"$info")"
+branch_deleted="$(sed -n 's/^branch-deleted=//p' <<<"$info")"
 if [[ -n "$merged_pr" && "$merged_pr" != 0 ]]; then
     printf 'worktree-clean: HEAD is the head of merged pull request #%s\n' "$merged_pr" >&2
 fi
@@ -55,8 +63,7 @@ if [[ -z "$branch" ]]; then
     exit 0
 fi
 if [[ "$delete_branch" == true ]]; then
-    # Deleted only if it still points at the commit that was judged safe.
-    if git -C "$repo_root" update-ref -d "refs/heads/$branch" "$tip" >&2; then
+    if [[ "$branch_deleted" == true ]]; then
         printf 'worktree-clean: deleted branch %s\n' "$branch" >&2
     else
         printf 'worktree-clean: kept branch %s: it moved after it was checked\n' "$branch" >&2

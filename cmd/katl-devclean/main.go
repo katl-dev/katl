@@ -11,7 +11,7 @@ import (
 	"github.com/katl-dev/katl/internal/devclean"
 )
 
-const usage = "usage: katl-devclean run-dir <path> | remove run-dir <path> | remove owned-run-dir <run-id> <path> | remove worktree <repo> <path>"
+const usage = "usage: katl-devclean run-dir <path> | remove run-dir <path> | remove owned-run-dir <run-id> <path> | remove worktree <repo> <path> <script>"
 
 // Exit statuses: a refusal changed nothing; an incomplete removal changed
 // something, and repeating the command may finish it.
@@ -62,16 +62,27 @@ func run(ctx context.Context, args []string) error {
 			return err
 		}
 		fmt.Printf("path=%s\n", dir.Path)
-	case len(args) == 4 && args[0] == "remove" && args[1] == "worktree":
+	case len(args) == 5 && args[0] == "remove" && args[1] == "worktree":
 		lookup := devclean.GitHubLookup{Environ: os.Environ(), Repo: args[2]}
 		wt, err := devclean.CheckWorktree(ctx, os.Environ(), lookup, args[2], args[3])
 		if err != nil {
 			return err
 		}
+		cwd, err := os.Getwd()
+		if err != nil {
+			return err
+		}
+		if err := wt.CheckNotInUse(args[4], cwd); err != nil {
+			return err
+		}
 		if err := wt.Remove(ctx, devclean.PodmanUserNS{}); err != nil {
 			return err
 		}
-		fmt.Printf("path=%s\nbranch=%s\ndelete-branch=%t\nkeep-reason=%s\nmerged-pr=%d\ntip=%s\n", wt.Path, wt.Branch, wt.DeleteBranch, wt.KeepReason, wt.MergedPR, wt.Tip)
+		if err := wt.Deregister(); err != nil {
+			return err
+		}
+		deleted := wt.DeleteBranchIfUnmoved(ctx)
+		fmt.Printf("path=%s\nbranch=%s\ndelete-branch=%t\nkeep-reason=%s\nmerged-pr=%d\ntip=%s\nbranch-deleted=%t\n", wt.Path, wt.Branch, wt.DeleteBranch, wt.KeepReason, wt.MergedPR, wt.Tip, deleted)
 	default:
 		return fmt.Errorf("%s", usage)
 	}

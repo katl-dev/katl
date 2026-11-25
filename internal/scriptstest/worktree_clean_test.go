@@ -137,6 +137,37 @@ func TestWorktreeClean(t *testing.T) {
 		}
 	})
 
+	t.Run("refuses to remove the checkout the script runs from", func(t *testing.T) {
+		f := setup(t)
+		git(f, f.wt, "push", "--quiet", "origin", "feature")
+		copied := filepath.Join(f.wt, "scripts", "worktree-clean")
+		if err := os.MkdirAll(filepath.Dir(copied), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body, err := os.ReadFile(script)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(copied, body, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command(copied, f.wt)
+		cmd.Env = append(f.env, "KATL_DEVCLEAN="+devclean)
+
+		out, err := cmd.CombinedOutput()
+
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 2 {
+			t.Fatalf("worktree-clean error = %v; want exit status 2 for a refusal:\n%s", err, out)
+		}
+		if !strings.Contains(string(out), "main checkout or another worktree") {
+			t.Fatalf("message does not say where to run from:\n%s", out)
+		}
+		if !exists(f.wt) || !listed(f) || !branchExists(f) {
+			t.Fatal("a refused removal deleted the worktree, its registration or its branch")
+		}
+	})
+
 	t.Run("reports a partial removal and keeps the branch", func(t *testing.T) {
 		f := setup(t)
 		git(f, f.wt, "push", "--quiet", "origin", "feature")
@@ -160,4 +191,24 @@ func TestWorktreeClean(t *testing.T) {
 			t.Fatal("the branch was deleted although the worktree is still there")
 		}
 	})
+}
+
+// The scripts must see katl-devclean's own exit status, which go run replaces
+// with 1.
+func TestWorktreeCleanKeepsDevcleanExitStatus(t *testing.T) {
+	root := repoRoot(t)
+	target := t.TempDir()
+	cmd := exec.Command(filepath.Join(root, "scripts", "worktree-clean"), target)
+	cmd.Dir = root
+	cmd.Env = append(os.Environ(), "KATL_REPO_ROOT="+root, "KATL_DEVCLEAN=")
+
+	out, err := cmd.CombinedOutput()
+
+	var exit *exec.ExitError
+	if !errors.As(err, &exit) || exit.ExitCode() != 2 {
+		t.Fatalf("worktree-clean error = %v; want exit status 2 for a refusal:\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "was not removed") || strings.Contains(string(out), "partly removed") || strings.Contains(string(out), "exit status") {
+		t.Fatalf("a refusal was reported as something else:\n%s", out)
+	}
 }

@@ -1275,7 +1275,9 @@ func TestVMTestCleanDestroysRecordedDomains(t *testing.T) {
 	writeExecutable(t, virsh, `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_VIRSH_LOG"
-[[ "$3" == dominfo ]] && exit 1
+# The domain exists until it is undefined.
+if [[ "$3" == dominfo ]]; then [[ -e "$KATL_FAKE_VIRSH_LOG.undefined" ]] && exit 1; exit 0; fi
+[[ "$3" == undefine ]] && touch "$KATL_FAKE_VIRSH_LOG.undefined"
 exit 0
 `)
 
@@ -1317,6 +1319,8 @@ func TestVMTestCleanKillsOrphanQEMUProcess(t *testing.T) {
 	}
 	virsh := filepath.Join(tmp, "virsh")
 	writeExecutable(t, virsh, `#!/usr/bin/env bash
+# Failing virsh; the domain stays defined until its qemu process is killed.
+[[ "$3" == dominfo && ! -e "$KATL_FAKE_KILL_LOG" ]] && exit 0
 exit 1
 `)
 	ps := filepath.Join(tmp, "ps")
@@ -1370,6 +1374,7 @@ func TestVMTestCleanFailsWhenOrphanQEMUKillFails(t *testing.T) {
 	}
 	virsh := filepath.Join(tmp, "virsh")
 	writeExecutable(t, virsh, `#!/usr/bin/env bash
+[[ "$3" == dominfo ]] && exit 0
 exit 1
 `)
 	ps := filepath.Join(tmp, "ps")
@@ -2245,4 +2250,49 @@ func TestVMTestCleanDeletesRunDir(t *testing.T) {
 			})
 		}
 	})
+}
+
+func TestVMTestCleanMarkerOnlyRunDir(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	runDir := filepath.Join(t.TempDir(), "katl-vmtest", "run-1")
+	if err := os.MkdirAll(filepath.Join(runDir, "work"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runDir, ".katl-vmtest-run-dir"), []byte("run-1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-clean"), runDir)
+	cmd.Dir = repo
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		t.Fatalf("vmtest-clean of an interrupted run failed: %v\n%s", err, output)
+	}
+	if _, err := os.Lstat(runDir); !os.IsNotExist(err) {
+		t.Fatalf("run directory survived: %v", err)
+	}
+}
+
+func TestVMTestCleanGoneDomainIsNotAFailure(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	result := filepath.Join(tmp, "result.json")
+	if err := os.WriteFile(result, []byte(`{"debug":{"targets":[{"preserved":true,"domainName":"katl-gone","libvirtURI":"qemu:///system"}]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	virsh := filepath.Join(tmp, "virsh")
+	writeExecutable(t, virsh, "#!/usr/bin/env bash\ncase \"$3\" in domstate) exit 1;; *) exit 1;; esac\n")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-clean"), result)
+	cmd.Dir = repo
+	cmd.Env = append(os.Environ(), "KATL_VMTEST_VIRSH="+virsh)
+	output, err := cmd.CombinedOutput()
+
+	if err != nil {
+		t.Fatalf("vmtest-clean failed: %v\n%s", err, output)
+	}
+	if !strings.Contains(string(output), "already gone") || strings.Contains(string(output), "failed") {
+		t.Fatalf("a domain that no longer exists should be reported as gone, not as a failure:\n%s", output)
+	}
 }
