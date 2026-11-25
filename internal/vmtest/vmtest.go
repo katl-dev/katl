@@ -136,6 +136,8 @@ type ArtifactPaths struct {
 	DomainXML              string `json:"domainXML"`
 	InstallerSerial        string `json:"installerSerial"`
 	RuntimeSerial          string `json:"runtimeSerial"`
+	InstallerNotify        string `json:"installerNotify,omitempty"`
+	RuntimeNotify          string `json:"runtimeNotify,omitempty"`
 	InstallManifest        string `json:"installManifest,omitempty"`
 	SingleImageProof       string `json:"singleImageProof,omitempty"`
 	InstalledRuntime       string `json:"installedRuntime,omitempty"`
@@ -590,6 +592,8 @@ func pathsFor(runDir string) ArtifactPaths {
 		DomainXML:              filepath.Join(runDir, "vm", "domain.xml"),
 		InstallerSerial:        filepath.Join(runDir, "vm", "installer-serial.log"),
 		RuntimeSerial:          filepath.Join(runDir, "vm", "runtime-serial.log"),
+		InstallerNotify:        filepath.Join(runDir, "vm", "installer-notify.jsonl"),
+		RuntimeNotify:          filepath.Join(runDir, "vm", "runtime-notify.jsonl"),
 		InstallManifest:        filepath.Join(runDir, "manifests", "install-manifest.json"),
 		SingleImageProof:       filepath.Join(runDir, "manifests", "single-image-proof.json"),
 		InstalledRuntime:       filepath.Join(runDir, "manifests", "installed-runtime.json"),

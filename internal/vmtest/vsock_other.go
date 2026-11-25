@@ -15,3 +15,7 @@ func DialVSock(context.Context, uint32, uint32) (*os.File, error) {
 func ListenVSock(context.Context, uint32, func(*os.File)) error {
 	return errors.New("vmtest vsock is only supported on linux")
 }
+
+func listenVSockNotify() (notifySocket, uint32, error) {
+	return nil, 0, errors.New("vmtest vsock is only supported on linux")
+}
