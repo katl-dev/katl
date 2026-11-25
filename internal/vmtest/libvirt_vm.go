@@ -65,7 +65,10 @@ type VMConfig struct {
 	Agent             AgentControlConfig
 	DomainMetadata    string
 	PersistentSerial  bool
-	HotplugPCISlots   int
+	// Graphics gives the domain a VGA display and a localhost VNC server, so a
+	// screenshot shows the virtual console an operator sees on a monitor.
+	Graphics        bool
+	HotplugPCISlots int
 
 	// notifyPort is the host vsock port of the runner's notify listener. Zero
 	// leaves the guest without the vmm.notify_socket credential.
@@ -1164,6 +1167,7 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		MetadataLease:     firstPath(config.DomainMetadata == "", probe.env("KATL_VMTEST_RUN_LEASE")),
 		MetadataRun:       firstPath(config.DomainMetadata == "", probe.env("KATL_VMTEST_RUN_ID")),
 		PersistentSerial:  config.PersistentSerial,
+		Graphics:          config.Graphics,
 		HotplugPCISlots:   config.HotplugPCISlots,
 	})
 	if err != nil {
@@ -1382,6 +1386,7 @@ type libvirtDomain struct {
 	MetadataLease     string
 	MetadataRun       string
 	PersistentSerial  bool
+	Graphics          bool
 	HotplugPCISlots   int
 }
 
@@ -1464,6 +1469,28 @@ type domainDevices struct {
 	Serial      domainSerial       `xml:"serial"`
 	Console     domainConsole      `xml:"console"`
 	VSock       *domainVSock       `xml:"vsock,omitempty"`
+	Graphics    *domainGraphics    `xml:"graphics,omitempty"`
+	Video       *domainVideo       `xml:"video,omitempty"`
+}
+
+type domainGraphics struct {
+	Type     string               `xml:"type,attr"`
+	AutoPort string               `xml:"autoport,attr"`
+	Listen   domainGraphicsListen `xml:"listen"`
+}
+
+type domainGraphicsListen struct {
+	Type    string `xml:"type,attr"`
+	Address string `xml:"address,attr"`
+}
+
+type domainVideo struct {
+	Model domainVideoModel `xml:"model"`
+}
+
+type domainVideoModel struct {
+	Type string `xml:"type,attr"`
+	VRAM int    `xml:"vram,attr"`
 }
 
 type domainRNG struct {
@@ -1759,6 +1786,10 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 			Model:  domainInterfaceModel{Type: "virtio"},
 			Link:   &domainInterfaceLink{State: "down"},
 		})
+	}
+	if domain.Graphics {
+		doc.Devices.Graphics = &domainGraphics{Type: "vnc", AutoPort: "yes", Listen: domainGraphicsListen{Type: "address", Address: "127.0.0.1"}}
+		doc.Devices.Video = &domainVideo{Model: domainVideoModel{Type: "vga", VRAM: 16384}}
 	}
 	if domain.PersistentSerial {
 		doc.Devices.Serial.Log = &domainSerialLog{File: domain.SerialLog, Append: "on"}

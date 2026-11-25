@@ -11,7 +11,7 @@ import (
 var notifySystemd = sendSystemdNotification
 
 func reportInstallerProgress(stdout io.Writer, message string, ready bool) {
-	message = strings.Join(strings.Fields(message), " ")
+	message = compactMessage(message)
 	if message == "" {
 		return
 	}
@@ -45,4 +45,19 @@ func sendSystemdNotification(payload string) error {
 		return err
 	}
 	return nil
+}
+
+func compactMessage(message string) string {
+	return strings.Join(strings.Fields(message), " ")
+}
+
+// reportInstallerFailure leaves the failure in the unit's STATUS, which
+// systemd retains after the service exits, so the operator console can show
+// why the installer stopped.
+func reportInstallerFailure(err error) {
+	message := compactMessage(err.Error())
+	if message == "" {
+		return
+	}
+	_ = notifySystemd("STATUS=installer stopped: " + message)
 }

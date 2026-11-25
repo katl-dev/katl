@@ -411,6 +411,9 @@ func writeInstallerStatus(content *Viewport, snapshot *Snapshot) {
 	if snapshot.State == "running" && snapshot.CurrentStep != "" {
 		writeField(content, "Progress", fallback(snapshot.InstallProgress, snapshot.CurrentStep), "")
 	}
+	if snapshot.InstallerStatus != "" && (snapshot.State == "starting-installer" || snapshot.State == "waiting-for-config") && snapshot.Handoff.URL == "" {
+		writeField(content, "Progress", snapshot.InstallerStatus, "")
+	}
 	if snapshot.Generation != "" {
 		value := snapshot.Generation
 		if health := healthLabel(snapshot.GenerationHealth); health != "" {

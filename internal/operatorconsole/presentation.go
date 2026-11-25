@@ -24,7 +24,7 @@ func presentInstaller(snapshot *Snapshot) Presentation {
 		return Presentation{State: PresentationUnknown, Label: "Unknown"}
 	}
 	switch snapshot.State {
-	case installstatus.StateFailedBeforeMutation, installstatus.StateFailedAfterMutation, installstatus.StateInstallRefused:
+	case installstatus.StateFailedBeforeMutation, installstatus.StateFailedAfterMutation, installstatus.StateInstallRefused, StateInstallerFailed:
 		return Presentation{State: PresentationFailed, Label: stateLabel(snapshot.State)}
 	case installstatus.StateRebootRequested:
 		return Presentation{State: PresentationHealthy, Label: stateLabel(snapshot.State)}
@@ -166,6 +166,8 @@ func stateLabel(state string) string {
 	switch state {
 	case "starting-installer":
 		return "Starting installer"
+	case StateInstallerFailed:
+		return "Installer stopped"
 	case "starting-runtime":
 		return "Starting KatlOS"
 	case "running":

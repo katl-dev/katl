@@ -41,6 +41,7 @@ var (
 
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
+		reportInstallerFailure(err)
 		fmt.Fprintf(os.Stderr, "katlos-install: %v\n", err)
 		os.Exit(1)
 	}

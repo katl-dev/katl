@@ -34,8 +34,9 @@ when the agent or network is unavailable.
 
 On an attached VGA or ipKVM console, `tty1` is the KatlOS status dashboard and
 includes current network addresses plus a live journal tail. Use
-`Ctrl+Alt+F2` for a local shell. The last rendered dashboard is also available
-at `/run/katl/console/rendered.txt` for collection over SSH.
+`Ctrl+Alt+F2` for a local shell. On installer media the dashboard also shows what the installer is waiting
+for or why it stopped. The last rendered dashboard is also available at
+`/run/katl/console/rendered.txt` for collection over SSH.
 
 ## Collect installed-node evidence
 
