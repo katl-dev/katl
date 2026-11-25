@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -215,12 +216,82 @@ func TestPrepareSysupdateSlotsAddressesDiskSeq(t *testing.T) {
 		t.Fatalf("prepareSysupdateSlots() error = %v", err)
 	}
 	want := []string{
-		"sfdisk --part-label /dev/disk/by-diskseq/7 2 katl_0",
-		"partx --update --nr 2 /dev/disk/by-diskseq/7",
-		"sfdisk --part-label /dev/disk/by-diskseq/7 3 _empty",
-		"partx --update --nr 3 /dev/disk/by-diskseq/7",
+		"sfdisk --no-tell-kernel --part-label /dev/disk/by-diskseq/7 2 katl_0",
+		"sfdisk --no-tell-kernel --part-type /dev/disk/by-diskseq/7 3 " + rootType,
+		"sfdisk --no-tell-kernel --part-label /dev/disk/by-diskseq/7 3 _empty",
 	}
 	if !reflect.DeepEqual(host.calls, want) {
 		t.Fatalf("relabel commands = %q, want %q", host.calls, want)
+	}
+	// Slot preparation edits the GPT on the disk only. Making the kernel re-read
+	// or re-add partitions loses the inactive slot's PARTUUID until reboot.
+	for _, call := range host.calls {
+		for _, forbidden := range []string{"partx", "partprobe", "--rereadpt"} {
+			if strings.Contains(call, forbidden) {
+				t.Fatalf("slot preparation asked the kernel to re-read partitions: %q", call)
+			}
+		}
+	}
+}
+
+// A sysupdate transfer that fails after acquiring the inactive slot leaves it
+// with a partial or pending type until the next sysupdate run.
+func TestFindRootSlotsAfterInterruptedTransfer(t *testing.T) {
+	// Types sysupdate derives from rootType, computed independently with
+	// HMAC-SHA256 as sd_id128_get_app_specific does.
+	const (
+		partialType = "7a01d3c6-92ac-43e9-bd77-5726b602ad9d"
+		pendingType = "64362e66-88a7-463b-b325-7af60c81be06"
+	)
+	for _, test := range []struct {
+		name         string
+		active       int // booted partition
+		activeType   string
+		inactiveType string
+		wantErr      string
+	}{
+		{name: "inactive partial", active: 2, inactiveType: partialType},
+		{name: "inactive pending", active: 2, inactiveType: pendingType},
+		{name: "inactive pending, other slot", active: 3, inactiveType: pendingType},
+		{name: "active pending", active: 2, activeType: pendingType, wantErr: "found 1 root partitions"},
+		{name: "active partial", active: 2, activeType: partialType, wantErr: "found 1 root partitions"},
+		{name: "inactive foreign type", active: 2, inactiveType: stateType, wantErr: "found 1 root partitions"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			disk := katlHostDisk("vdb", 7, "new")
+			active, inactive := &disk.partitions[test.active-1], &disk.partitions[4-test.active]
+			if test.activeType != "" {
+				active.t = test.activeType
+			}
+			if test.inactiveType != "" {
+				inactive.t = test.inactiveType
+			}
+			host := newHostDisks(t, disk)
+			executor := &Executor{RunTool: host.run, volumeDevices: volumeDevices{bootedDisk: host.booted(0, test.active)}}
+
+			slots, err := executor.findRootSlots(context.Background(), active.uuid)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("findRootSlots() error = %v, want %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("findRootSlots() error = %v", err)
+			}
+			if slots.InactivePartUUID != inactive.uuid || slots.RootType != rootType {
+				t.Fatalf("findRootSlots() = %+v, want inactive %s with root type %s", slots, inactive.uuid, rootType)
+			}
+
+			// The stuck slot is restored before staging.
+			host.calls = nil
+			if err := executor.prepareSysupdateSlots(context.Background(), slots); err != nil {
+				t.Fatal(err)
+			}
+			want := fmt.Sprintf("sfdisk --no-tell-kernel --part-type /dev/disk/by-diskseq/7 %d %s", inactive.number, rootType)
+			if !slices.Contains(host.calls, want) {
+				t.Fatalf("commands = %q, want %q", host.calls, want)
+			}
+		})
 	}
 }

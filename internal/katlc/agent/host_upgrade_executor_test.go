@@ -244,9 +244,8 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 		{3, "KATL_ROOT_B", "bbbbbbbb-1111-2222-3333-444444444444", rootType},
 		{4, "KATL_STATE", "state-partuuid", stateType},
 	}})
-	// Refreshing the slot with partx makes the kernel add the inactive
-	// partition again, and udev has not yet recreated its by-diskseq link:
-	// only the kernel node exists.
+	// udev has not yet created the inactive partition's by-diskseq link: only
+	// the kernel node exists.
 	inactiveDevice := filepath.Join(root, "dev/vda3")
 	writeTestFile(t, inactiveDevice, string(make([]byte, len(runtimeBytes)+32)))
 	executor := NewExecutor(root, store, "agent-test")
@@ -281,11 +280,12 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 				return ToolResult{Err: errors.New("GPT label exceeds 36 characters"), ExitStatus: 1}
 			}
 			return ToolResult{}
-		case "partx":
-			return ToolResult{}
 		case "systemd-sysupdate":
 			if _, err := os.Stat(inactiveUKI); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("inactive UKI still looks installed to sysupdate: %v", err)
+			}
+			if argv[len(argv)-1] == "vacuum" {
+				return ToolResult{}
 			}
 			stagedRoot = append(append([]byte(nil), runtimeBytes...), make([]byte, 32)...)
 			if argv[len(argv)-1] != "1" {
@@ -322,14 +322,19 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	if calls := strings.Join(toolCalls, "\n"); strings.Contains(calls, "--sync=no") {
 		t.Fatalf("host upgrade disabled sysupdate durability:\n%s", calls)
 	}
-	sysupdateCall, flushCall := -1, -1
+	vacuumCall, sysupdateCall, flushCall := -1, -1, -1
 	for index, call := range toolCalls {
 		switch {
+		case strings.Contains(call, "systemd-sysupdate") && strings.HasSuffix(call, " vacuum"):
+			vacuumCall = index
 		case strings.Contains(call, "systemd-sysupdate"):
 			sysupdateCall = index
 		case strings.HasPrefix(call, "blockdev --flushbufs "):
 			flushCall = index
 		}
+	}
+	if vacuumCall < 0 || vacuumCall > sysupdateCall {
+		t.Fatalf("host upgrade calls = %#v, want sysupdate vacuum before update", toolCalls)
 	}
 	if sysupdateCall < 0 || flushCall != sysupdateCall+1 {
 		t.Fatalf("host upgrade calls = %#v, want block cache flush immediately after sysupdate", toolCalls)

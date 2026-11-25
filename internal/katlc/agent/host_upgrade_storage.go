@@ -168,3 +168,34 @@ func cleanupUpgradeUploads(directory, preservedLocalRef string, now time.Time) e
 	}
 	return cleanupErr
 }
+
+// espStagingMargin is the free space beyond the UKI that staging requires on
+// the ESP, for FAT directory and allocation overhead.
+const espStagingMargin = 8 << 20
+
+// requireESPSpace refuses before any write when the ESP cannot hold the UKI at
+// ukiPath. The slot's current UKI and sysupdate's partial or pending copies of
+// it are removed before staging, so their space counts as free.
+func requireESPSpace(available availableStorageFunc, root, ukiPath string, ukiBytes uint64) error {
+	if available == nil {
+		available = filesystemAvailable
+	}
+	hostPath := filepath.Join(runtimeRoot(root), strings.TrimPrefix(ukiPath, "/"))
+	free, err := available(filepath.Dir(hostPath))
+	if err != nil {
+		return fmt.Errorf("inspect free space on the EFI system partition: %w", err)
+	}
+	base := filepath.Base(hostPath)
+	for _, name := range []string{base, ".sysupdate.partial." + base, ".sysupdate.pending." + base} {
+		if info, err := os.Stat(filepath.Join(filepath.Dir(hostPath), name)); err == nil && info.Mode().IsRegular() {
+			free += uint64(info.Size())
+		}
+	}
+	required := ukiBytes + espStagingMargin
+	if free >= required {
+		return nil
+	}
+	const mib = 1 << 20
+	short := (required - free + mib - 1) / mib
+	return fmt.Errorf("insufficient space on the EFI system partition (/efi): %d MiB available, need %d MiB for the new boot image. Free at least %d MiB on /efi, then retry the upgrade", free/mib, (required+mib-1)/mib, short)
+}

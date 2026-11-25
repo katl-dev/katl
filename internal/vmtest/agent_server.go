@@ -479,6 +479,7 @@ func defaultAgentCommands() map[string]bool {
 		"kubelet":           true,
 		"kubectl":           true,
 		"losetup":           true,
+		"lsblk":             true,
 		"lsmod":             true,
 		"modinfo":           true,
 		"modprobe":          true,

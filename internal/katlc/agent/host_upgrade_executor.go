@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
@@ -115,6 +116,9 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 		if err := e.MountBootRoot(ctx, bootRoot); err != nil {
 			return fail("verify-katlos-image", fmt.Errorf("mount boot root: %w", err))
 		}
+	}
+	if err := requireESPSpace(e.AvailableStorage, e.Root, ukiPath, uint64(payload.Boot.SizeBytes)); err != nil {
+		return fail("verify-katlos-image", err)
 	}
 	phase = "stage-sysupdate-components"
 	updatedRecord, err = e.Store.Update(record.OperationID, "host-upgrade-mutation-start", "stage-sysupdate-components", func(current operation.OperationRecord) (operation.OperationRecord, error) {
@@ -377,18 +381,22 @@ func (e *Executor) stageHostUpgrade(ctx context.Context, record operation.Operat
 	if err := os.Remove(filepath.Join(root, strings.TrimPrefix(ukiPath, "/"))); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("clear inactive slot UKI: %w", err)
 	}
-	argv := []string{"/usr/lib/systemd/systemd-sysupdate", "--no-pager", "--verify=no", "--definitions=" + definitions}
+	sysupdate := []string{"/usr/lib/systemd/systemd-sysupdate", "--no-pager", "--verify=no", "--definitions=" + definitions}
 	if root != "/" {
-		argv = append(argv, "--root="+root)
+		sysupdate = append(sysupdate, "--root="+root)
 	}
-	argv = append(argv, "update", "1")
-	result := e.toolRunner()(ctx, argv, nil)
+	// An interrupted staging leaves sysupdate's partial or pending files, and
+	// sysupdate refuses to update over them ("already acquired and partially
+	// installed") before it vacuums. Vacuum first so every attempt starts clean.
+	if result := e.toolRunner()(ctx, append(slices.Clone(sysupdate), "vacuum"), nil); result.Err != nil || result.ExitStatus != 0 {
+		return fmt.Errorf("systemd-sysupdate vacuum: %s", toolFailure(result))
+	}
+	result := e.toolRunner()(ctx, append(slices.Clone(sysupdate), "update", "1"), nil)
 	if result.Err != nil || result.ExitStatus != 0 {
 		return fmt.Errorf("systemd-sysupdate: %s", toolFailure(result))
 	}
-	// prepareSysupdateSlots refreshes the inactive slot with partx, which makes
-	// the kernel remove and add that partition again. Its by-diskseq link then
-	// waits for udev, but its kernel node already exists.
+	// The kernel node exists as soon as the kernel has the partition, while its
+	// by-diskseq link waits for udev.
 	node, err := inactive.Node()
 	if err != nil {
 		return fmt.Errorf("find staged runtime root: %w", err)
@@ -412,7 +420,7 @@ func (e *Executor) toolOutput(ctx context.Context, name string, args ...string) 
 		return "", fmt.Errorf("%s: %s", name, toolFailure(result))
 	}
 	value := strings.TrimSpace(string(result.Stdout))
-	if value == "" && name != "sfdisk" && name != "partx" {
+	if value == "" && name != "sfdisk" {
 		return "", fmt.Errorf("%s returned empty output", name)
 	}
 	return value, nil
