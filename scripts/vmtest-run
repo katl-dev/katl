@@ -1447,11 +1447,23 @@ export KATLCTL_CONFIG="$run_dir/katlctl.yaml"
 # runs for it. Nothing else is inherited, so the operator's home directory,
 # credentials and katlctl configuration cannot influence a gate. HOME and the
 # XDG directories live in the run; the Go caches stay the caller's so the run
-# does not start cold.
+# does not start cold. Rootless podman, which the tests and mkosi use, would
+# otherwise create a fresh image store under the run's XDG_DATA_HOME, so
+# CONTAINERS_STORAGE_CONF points it at the caller's storage, and
+# XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS give it the caller's user session
+# for the systemd cgroup manager.
 run_home="$run_dir/home"
 mkdir -p "$run_home/.config" "$run_home/.cache" "$run_home/.local/share" "$run_home/.local/state"
 caller_home="${HOME:-/nonexistent}"
+containers_storage_conf="${CONTAINERS_STORAGE_CONF:-${XDG_CONFIG_HOME:-$caller_home/.config}/containers/storage.conf}"
+if [[ ! -f "$containers_storage_conf" ]]; then
+    containers_storage_conf="$run_dir/containers-storage.conf"
+    printf '[storage]\ngraphroot = "%s/containers/storage"\nrunroot = "%s/containers"\n' \
+        "${XDG_DATA_HOME:-$caller_home/.local/share}" "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
+        >"$containers_storage_conf"
+fi
 run_env=(
+    "CONTAINERS_STORAGE_CONF=$containers_storage_conf"
     "HOME=$run_home"
     "XDG_CONFIG_HOME=$run_home/.config"
     "XDG_CACHE_HOME=$run_home/.cache"
@@ -1463,7 +1475,7 @@ run_env=(
 )
 for name in PATH LANG LC_ALL TERM TZ TMPDIR \
     GOROOT GOFLAGS GOPROXY GOSUMDB GONOSUMDB GONOPROXY GOPRIVATE GOTOOLCHAIN GOWORK \
-    CGO_ENABLED CC CXX KATLCTL_CONFIG; do
+    CGO_ENABLED CC CXX KATLCTL_CONFIG XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS; do
     if [[ -n "${!name+x}" ]]; then
         run_env+=("$name=${!name}")
     fi

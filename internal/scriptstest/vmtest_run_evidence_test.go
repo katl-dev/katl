@@ -13,6 +13,7 @@ import (
 const evidenceFakeGo = `#!/usr/bin/env bash
 if [[ -n "$KATL_SCRIPTTEST_ENV_DUMP" ]]; then
   { printf "ARGS %s\n" "$*"; env; } >"$KATL_SCRIPTTEST_ENV_DUMP"
+  cat "$CONTAINERS_STORAGE_CONF" >"$KATL_SCRIPTTEST_ENV_DUMP.storage"
 fi
 node="$KATL_VMTEST_RUN_DIR/scenarios/smoke/nodes/n1"
 mkdir -p "$node/disks" "$node/vm"
@@ -264,12 +265,16 @@ func TestVMTestRunRecordsHostHealth(t *testing.T) {
 
 func TestVMTestRunEnvironmentIsAllowlisted(t *testing.T) {
 	poisoned := t.TempDir()
+	callerData := filepath.Join(t.TempDir(), "data")
+	runtimeDir := t.TempDir()
 	dump := filepath.Join(t.TempDir(), "go-env.txt")
 	goCache := filepath.Join(t.TempDir(), "go-build")
 	t.Setenv("KATL_SCRIPTTEST_ENV_DUMP", dump)
 	t.Setenv("HOME", poisoned)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(poisoned, "config"))
-	t.Setenv("XDG_DATA_HOME", filepath.Join(poisoned, "data"))
+	t.Setenv("XDG_DATA_HOME", callerData)
+	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
+	t.Setenv("CONTAINERS_STORAGE_CONF", "")
 	t.Setenv("SSH_AUTH_SOCK", filepath.Join(poisoned, "agent.sock"))
 	t.Setenv("GH_TOKEN", "poisoned-token")
 	t.Setenv("KATLCTL_CONTEXT", "poisoned-cluster")
@@ -310,6 +315,19 @@ func TestVMTestRunEnvironmentIsAllowlisted(t *testing.T) {
 		if !strings.HasPrefix(env[name], filepath.Join(runDir, "home")) {
 			t.Errorf("go test saw %s=%q, want a directory in the run", name, env[name])
 		}
+	}
+	if env["XDG_RUNTIME_DIR"] != runtimeDir {
+		t.Errorf("XDG_RUNTIME_DIR = %q, want the caller's %q", env["XDG_RUNTIME_DIR"], runtimeDir)
+	}
+	conf, err := os.ReadFile(dump + ".storage")
+	if err != nil {
+		t.Fatalf("container storage config seen by go test is unreadable: %v", err)
+	}
+	if want := filepath.Join(callerData, "containers", "storage"); !strings.Contains(string(conf), want) {
+		t.Errorf("container storage config = %q, want graphroot %q in the caller's data dir", conf, want)
+	}
+	if strings.Contains(string(conf), filepath.Join(runDir, "home")) {
+		t.Errorf("container storage config places storage in the run home: %q", conf)
 	}
 	if env["GOCACHE"] != goCache {
 		t.Errorf("GOCACHE = %q, want the caller's %q so the run keeps a warm build cache", env["GOCACHE"], goCache)
