@@ -10,6 +10,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/bootstrap/kubeconfig"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -175,7 +176,8 @@ func readClusterCredentials(ctx context.Context, target managementTarget) (kubec
 	// Bound each attempt so an unreachable node cannot consume the whole fallback budget.
 	ctx, cancel := context.WithTimeout(withManagementTarget(ctx, target), 10*time.Second)
 	defer cancel()
-	conn, err := dialKatlcAgent(ctx, target.endpoint)
+	// Failing over to the next control plane is quicker than waiting for this one.
+	conn, err := dialKatlcAgent(transport.WithoutManagementWait(ctx), target.endpoint)
 	if err != nil {
 		return kubeconfig.Credentials{}, err
 	}

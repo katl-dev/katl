@@ -9,6 +9,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/generation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/katlc/transport"
 )
 
 var upgradeRebootPollInterval = 2 * time.Second
@@ -128,7 +129,9 @@ func (target bootWaitTarget) verify(endpoint string, status *agentapi.NodeStatus
 // settle boot health and, when it runs targetGeneration healthily, to recover
 // Kubernetes. Only boot health the agent reports for its running boot counts:
 // persisted generation health can describe an earlier boot of the same
-// generation.
+// generation. It polls for itself, so its connections report a refused
+// connection at once, and the connection it returns keeps that behaviour for the
+// later calls of a node that has just been verified healthy.
 func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgentStart, targetGeneration string, requirement nodeRecoveryRequirement, progressPrefix string, stderr io.Writer) (katlcAgentConnection, verifiedNodeBoot, error) {
 	nodeName := target.nodeName
 	lastPhase := ""
@@ -211,7 +214,7 @@ func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgen
 	for {
 		answered = false
 		for _, endpoint := range target.endpoints {
-			conn, err := dialKatlcAgent(ctx, endpoint)
+			conn, err := dialKatlcAgent(transport.WithoutManagementWait(ctx), endpoint)
 			if err != nil {
 				continue
 			}
@@ -246,10 +249,12 @@ func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgen
 	}
 }
 
+// waitNodeKubernetesRecovery polls for itself, so the connection it returns
+// reports a refused connection at once on later calls, like waitNodeBootHealth.
 func waitNodeKubernetesRecovery(ctx context.Context, nodeName, endpoint string, requirement nodeRecoveryRequirement, progressPrefix string, stderr io.Writer) (katlcAgentConnection, *agentapi.NodeStatus, error) {
 	lastRecovery := nodeRecovery{}
 	for {
-		conn, err := dialKatlcAgent(ctx, endpoint)
+		conn, err := dialKatlcAgent(transport.WithoutManagementWait(ctx), endpoint)
 		if err == nil {
 			status, statusErr := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 			if statusErr == nil {

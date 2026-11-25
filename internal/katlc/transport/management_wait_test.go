@@ -1,0 +1,339 @@
+package transport
+
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"io"
+	"net"
+	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"testing"
+	"time"
+
+	"github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/nettest"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
+	grpcstatus "google.golang.org/grpc/status"
+)
+
+type countingAgent struct {
+	agentapi.UnimplementedKatlcAgentServer
+	calls   atomic.Int32
+	status  error
+	onApply func()
+}
+
+func (a *countingAgent) GetNodeStatus(context.Context, *agentapi.GetNodeStatusRequest) (*agentapi.NodeStatus, error) {
+	a.calls.Add(1)
+	return &agentapi.NodeStatus{InventoryNodeName: "cp-1"}, a.status
+}
+
+func (a *countingAgent) ApplyGeneration(context.Context, *agentapi.GenerationApplyRequest) (*agentapi.OperationAccepted, error) {
+	a.calls.Add(1)
+	if a.onApply != nil {
+		a.onApply()
+	}
+	return &agentapi.OperationAccepted{OperationId: "op-1"}, a.status
+}
+
+func (a *countingAgent) WatchOperation(_ *agentapi.WatchOperationRequest, stream grpc.ServerStreamingServer[agentapi.OperationEvent]) error {
+	a.calls.Add(1)
+	return stream.Send(&agentapi.OperationEvent{})
+}
+
+func (a *countingAgent) StageHostUpgradeArtifact(stream grpc.ClientStreamingServer[agentapi.StageHostUpgradeArtifactRequest, agentapi.HostUpgradeArtifactStaged]) error {
+	a.calls.Add(1)
+	for {
+		if _, err := stream.Recv(); err != nil {
+			break
+		}
+	}
+	return stream.SendAndClose(&agentapi.HostUpgradeArtifactStaged{})
+}
+
+// connTracker remembers the last connection a listener accepted so a handler
+// can reset it.
+type connTracker struct {
+	net.Listener
+	delay time.Duration
+	mu    sync.Mutex
+	last  net.Conn
+}
+
+func (l *connTracker) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err == nil {
+		time.Sleep(l.delay)
+		l.mu.Lock()
+		l.last = conn
+		l.mu.Unlock()
+	}
+	return conn, err
+}
+
+func (l *connTracker) reset() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if tcp, ok := l.last.(*net.TCPConn); ok {
+		_ = tcp.SetLinger(0)
+	}
+	_ = l.last.Close()
+}
+
+func serve(t *testing.T, agent *countingAgent, delay time.Duration) *connTracker {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker := &connTracker{Listener: listener, delay: delay}
+	server := grpc.NewServer()
+	agentapi.RegisterKatlcAgentServer(server, agent)
+	t.Cleanup(server.Stop)
+	go func() { _ = server.Serve(tracker) }()
+	return tracker
+}
+
+// gatedProgress opens the gate on the first progress line, which is when a
+// restarting agent is simulated to begin listening.
+type gatedProgress struct {
+	mu   sync.Mutex
+	text strings.Builder
+	open atomic.Bool
+}
+
+func (g *gatedProgress) Write(p []byte) (int, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.open.Store(true)
+	return g.text.Write(p)
+}
+
+func (g *gatedProgress) String() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.text.String()
+}
+
+func refusedDial(addr string) error {
+	return &net.OpError{Op: "dial", Net: "tcp", Err: os.NewSyscallError("connect", syscall.ECONNREFUSED)}
+}
+
+// dialManagement connects to endpoint through ManagementDialOptions. While
+// listening is non-nil and false, dials fail as a refused connection does.
+func dialManagement(ctx context.Context, t *testing.T, endpoint string, creds credentials.TransportCredentials, listening *atomic.Bool) agentapi.KatlcAgentClient {
+	t.Helper()
+	options := append([]grpc.DialOption{grpc.WithTransportCredentials(creds)}, ManagementDialOptions(ctx, "cp-1", endpoint)...)
+	if listening != nil {
+		options = append(options, grpc.WithContextDialer(func(ctx context.Context, addr string) (net.Conn, error) {
+			if !listening.Load() {
+				return nil, refusedDial(addr)
+			}
+			return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+		}))
+	}
+	conn, err := grpc.NewClient("passthrough:///"+endpoint, options...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return agentapi.NewKatlcAgentClient(conn)
+}
+
+func shortWait(t *testing.T, bound time.Duration) {
+	t.Helper()
+	old := managementReady
+	t.Cleanup(func() { managementReady = old })
+	managementReady.bound, managementReady.interval = bound, 20*time.Millisecond
+}
+
+// Each call shape a katlctl command uses reaches the agent once it listens, as
+// node status, upgrade planning, apply and upgrade staging do.
+func TestManagementCallsWaitForListener(t *testing.T) {
+	calls := map[string]func(context.Context, agentapi.KatlcAgentClient) error{
+		"status": func(ctx context.Context, client agentapi.KatlcAgentClient) error {
+			_, err := client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+			return err
+		},
+		"apply": func(ctx context.Context, client agentapi.KatlcAgentClient) error {
+			_, err := client.ApplyGeneration(ctx, &agentapi.GenerationApplyRequest{})
+			return err
+		},
+		"watch": func(ctx context.Context, client agentapi.KatlcAgentClient) error {
+			stream, err := client.WatchOperation(ctx, &agentapi.WatchOperationRequest{})
+			if err != nil {
+				return err
+			}
+			_, err = stream.Recv()
+			return err
+		},
+		"stage": func(ctx context.Context, client agentapi.KatlcAgentClient) error {
+			stream, err := client.StageHostUpgradeArtifact(ctx)
+			if err != nil {
+				return err
+			}
+			if err := stream.Send(&agentapi.StageHostUpgradeArtifactRequest{}); err != nil && !errors.Is(err, io.EOF) {
+				return err
+			}
+			_, err = stream.CloseAndRecv()
+			return err
+		},
+	}
+	for name, call := range calls {
+		t.Run(name, func(t *testing.T) {
+			shortWait(t, 10*time.Second)
+			agent := &countingAgent{}
+			endpoint := serve(t, agent, 0).Addr().String()
+			progress := &gatedProgress{}
+			ctx := WithManagementProgress(context.Background(), progress)
+			client := dialManagement(ctx, t, endpoint, insecure.NewCredentials(), &progress.open)
+
+			if err := call(ctx, client); err != nil {
+				t.Fatalf("call: %v", err)
+			}
+
+			if got := agent.calls.Load(); got != 1 {
+				t.Fatalf("agent handled %d calls, want exactly 1", got)
+			}
+			if !strings.Contains(progress.String(), "Waiting for node cp-1 management endpoint "+endpoint) {
+				t.Fatalf("no progress while waiting:\n%s", progress.String())
+			}
+		})
+	}
+}
+
+// With nothing listening the call gives up after the bound with guidance,
+// whether the bound or the caller's deadline ends the wait.
+func TestManagementCallRefusedGivesGuidance(t *testing.T) {
+	tests := map[string]struct {
+		bound, deadline time.Duration
+		wantInErr       string
+	}{
+		"bound":    {bound: 300 * time.Millisecond, deadline: 10 * time.Second},
+		"deadline": {bound: 30 * time.Second, deadline: 300 * time.Millisecond, wantInErr: "context deadline exceeded"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			shortWait(t, test.bound)
+			progress := &gatedProgress{}
+			ctx, cancel := context.WithTimeout(WithManagementProgress(context.Background(), progress), test.deadline)
+			defer cancel()
+			endpoint := nettest.ReservePort(t).Endpoint
+			client := dialManagement(ctx, t, endpoint, insecure.NewCredentials(), nil)
+
+			start := time.Now()
+			_, err := client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+
+			if err == nil {
+				t.Fatal("call succeeded with nothing listening")
+			}
+			if time.Since(start) > 5*time.Second {
+				t.Fatalf("call took %s, want it bounded", time.Since(start))
+			}
+			for _, want := range []string{"cp-1", endpoint, "refused connections", "systemctl status katlc-agent", "rerun", test.wantInErr} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error lacks %q: %v", want, err)
+				}
+			}
+			if progress.String() == "" {
+				t.Error("no progress before giving up")
+			}
+		})
+	}
+}
+
+// Failures that waiting cannot cure surface at once and unchanged: a handshake
+// that fails, and an agent that answers with an error that merely mentions a
+// refused connection.
+func TestManagementCallDoesNotRetryOtherErrors(t *testing.T) {
+	tests := map[string]struct {
+		creds   credentials.TransportCredentials
+		status  error
+		wantErr string
+	}{
+		"handshake": {creds: credentials.NewTLS(&tls.Config{InsecureSkipVerify: true, MinVersion: tls.VersionTLS13}), wantErr: "handshake"},
+		"agent error": {
+			creds:   insecure.NewCredentials(),
+			status:  grpcstatus.Error(codes.Unavailable, "dial tcp 10.0.0.9:6443: connect: connection refused"),
+			wantErr: "10.0.0.9:6443",
+		},
+		"denied": {creds: insecure.NewCredentials(), status: grpcstatus.Error(codes.PermissionDenied, "connection refused by policy"), wantErr: "policy"},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			shortWait(t, 10*time.Second)
+			agent := &countingAgent{status: test.status}
+			endpoint := serve(t, agent, 0).Addr().String()
+			progress := &gatedProgress{}
+			ctx := WithManagementProgress(context.Background(), progress)
+			client := dialManagement(ctx, t, endpoint, test.creds, nil)
+
+			start := time.Now()
+			_, err := client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("error = %v, want it to contain %q", err, test.wantErr)
+			}
+			if time.Since(start) > 5*time.Second {
+				t.Fatalf("failure took %s, want it immediate", time.Since(start))
+			}
+			if agent.calls.Load() > 1 {
+				t.Fatalf("agent handled %d calls, want at most 1", agent.calls.Load())
+			}
+			if progress.String() != "" {
+				t.Fatalf("reported waiting for a non-transient error:\n%s", progress.String())
+			}
+		})
+	}
+}
+
+// A connection the agent resets after it received a mutation may have been
+// applied, so the call is not repeated and the error is the transport's own.
+func TestManagementMutationNotRetriedAfterReset(t *testing.T) {
+	shortWait(t, 10*time.Second)
+	agent := &countingAgent{}
+	tracker := serve(t, agent, 0)
+	agent.onApply = tracker.reset
+	progress := &gatedProgress{}
+	ctx := WithManagementProgress(context.Background(), progress)
+	client := dialManagement(ctx, t, tracker.Addr().String(), insecure.NewCredentials(), nil)
+
+	_, err := client.ApplyGeneration(ctx, &agentapi.GenerationApplyRequest{})
+
+	if grpcstatus.Code(err) != codes.Unavailable {
+		t.Fatalf("error = %v, want the transport's Unavailable", err)
+	}
+	if strings.Contains(err.Error(), "katlc-agent is not listening") {
+		t.Fatalf("reset reported as a refused connection: %v", err)
+	}
+	if got := agent.calls.Load(); got != 1 {
+		t.Fatalf("agent handled %d apply calls, want exactly 1", got)
+	}
+	if progress.String() != "" {
+		t.Fatalf("waited after a reset:\n%s", progress.String())
+	}
+}
+
+// An agent that is slow to complete the HTTP/2 handshake, as one starting under
+// load is, is still reached.
+func TestManagementCallSurvivesSlowHandshake(t *testing.T) {
+	agent := &countingAgent{}
+	endpoint := serve(t, agent, time.Second).Addr().String()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	client := dialManagement(ctx, t, endpoint, insecure.NewCredentials(), nil)
+
+	if _, err := client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{}); err != nil {
+		t.Fatalf("call with a handshake delayed by 1s: %v", err)
+	}
+	if agent.calls.Load() != 1 {
+		t.Fatalf("agent handled %d calls, want 1", agent.calls.Load())
+	}
+}

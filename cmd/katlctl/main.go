@@ -71,6 +71,10 @@ var (
 	}
 )
 
+// defaultManagementTimeout is the default request timeout of commands that read
+// a node: the wait for a restarting agent to listen plus a request.
+const defaultManagementTimeout = transport.ManagementReadyWait + 15*time.Second
+
 const (
 	configBundleCreator      = "katlctl config bundle"
 	clusterBootstrapCreator  = "katlctl cluster bootstrap"
@@ -98,6 +102,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 }
 
 func newKatlctlCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
+	ctx = transport.WithManagementProgress(ctx, stderr)
 	cmd := &cobra.Command{
 		Use:   "katlctl",
 		Short: "Install and manage KatlOS clusters",
@@ -3403,7 +3408,8 @@ func dialKatlcAgentTCP(ctx context.Context, endpoint string) (katlcAgentConnecti
 	if err != nil {
 		return katlcAgentConnection{}, fmt.Errorf("management credentials for node %q: %w", identity.nodeName, err)
 	}
-	conn, err := grpc.DialContext(ctx, endpoint, katlcAgentDialOptions(transportCredentials)...)
+	options := append(katlcAgentDialOptions(transportCredentials), transport.ManagementDialOptions(ctx, identity.nodeName, endpoint)...)
+	conn, err := grpc.DialContext(ctx, endpoint, options...)
 	if err != nil {
 		return katlcAgentConnection{}, err
 	}

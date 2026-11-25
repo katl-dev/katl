@@ -4,100 +4,106 @@ import (
 	"bytes"
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"google.golang.org/grpc/codes"
+	"github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/katlc/transport"
+	"github.com/katl-dev/katl/internal/managementidentity"
+	"github.com/katl-dev/katl/internal/nettest"
+	"google.golang.org/grpc"
 	grpcstatus "google.golang.org/grpc/status"
 )
 
-// saveContextWithWorkerDial runs `context save` against a two-node
-// configuration where worker-1 fails its first dials with workerErrs and then
-// answers.
-func saveContextWithWorkerDial(t *testing.T, workerErrs []error) (dials int, stderr string, err error) {
-	t.Helper()
-	path := writeMovedWorkerConfig(t, "")
-	cp := healthyHostClient("machine-cp-1", "agent-1", "generation-1")
-	cp.nodeStatus.InventoryNodeName = "cp-1"
-	worker := movedWorkerClient("agent-1")
-	oldDial := dialKatlcAgent
-	t.Cleanup(func() { dialKatlcAgent = oldDial })
-	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
-		if endpoint != workerDesiredEndpoint {
-			return katlcAgentConnection{Client: cp, Close: func() error { return nil }}, nil
-		}
-		dials++
-		if dials <= len(workerErrs) {
-			return katlcAgentConnection{}, workerErrs[dials-1]
-		}
-		return katlcAgentConnection{Client: worker, Close: func() error { return nil }}, nil
-	}
-	oldWait := managementReadyWait
-	t.Cleanup(func() { managementReadyWait = oldWait })
-	managementReadyWait.bound, managementReadyWait.interval = 200*time.Millisecond, 10*time.Millisecond
-
-	var out, errOut bytes.Buffer
-	err = run(context.Background(), []string{"context", "save", "--config", path}, &out, &errOut)
-	return dials, errOut.String(), err
+// listenOnFirstWrite starts agent on port when the first byte is written, as a
+// restarting katlc-agent begins listening after the first retry notice.
+type listenOnFirstWrite struct {
+	bytes.Buffer
+	mu    sync.Mutex
+	port  *nettest.Port
+	agent agentapi.KatlcAgentServer
+	once  sync.Once
+	stop  func()
 }
 
-var refused = grpcstatus.Error(codes.Unavailable, "connection error: desc = \"transport: Error while dialing: dial tcp 10.0.0.23:9443: connect: connection refused\"")
+func (w *listenOnFirstWrite) Write(p []byte) (int, error) {
+	w.once.Do(func() {
+		listener, err := w.port.Listen()
+		if err != nil {
+			return
+		}
+		server := grpc.NewServer()
+		agentapi.RegisterKatlcAgentServer(server, w.agent)
+		go func() { _ = server.Serve(listener) }()
+		w.stop = server.Stop
+	})
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.Buffer.Write(p)
+}
 
-func TestContextSaveWaitsForListener(t *testing.T) {
-	dials, stderr, err := saveContextWithWorkerDial(t, []error{refused, refused})
+func trustedDial(t *testing.T) {
+	t.Helper()
+	old := dialKatlcAgent
+	t.Cleanup(func() { dialKatlcAgent = old })
+	dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
+		credentials := managementidentity.ClientCredentials{Authentication: managementidentity.TrustedNetwork}
+		return dialKatlcAgentTCP(withManagementDial(ctx, "node-a", &credentials), endpoint)
+	}
+}
+
+// A command waits for a restarting agent and reports progress on the command's
+// own stderr.
+func TestCommandWaitsForRestartingAgent(t *testing.T) {
+	trustedDial(t)
+	port := nettest.ReservePort(t)
+	stderr := &listenOnFirstWrite{port: port, agent: &clusterApplyIdentityServer{client: healthyHostClient("machine-a", "agent-a", "generation-0")}}
+	t.Cleanup(func() {
+		if stderr.stop != nil {
+			stderr.stop()
+		}
+	})
+
+	var stdout bytes.Buffer
+	err := run(context.Background(), []string{"node", "status", "node-a", "--endpoint", port.Endpoint}, &stdout, stderr)
 
 	if err != nil {
-		t.Fatalf("context save: %v\n%s", err, stderr)
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
-	if dials != 3 {
-		t.Fatalf("worker dialed %d times, want 3", dials)
+	if !strings.Contains(stderr.String(), "Waiting for node node-a management endpoint "+port.Endpoint) {
+		t.Fatalf("stderr lacks progress:\n%s", stderr.String())
 	}
-	if !strings.Contains(stderr, "Waiting for node worker-1 management endpoint "+workerDesiredEndpoint) {
-		t.Fatalf("no progress for the waiting node:\n%s", stderr)
-	}
-}
-
-func TestContextSaveRefusedBeyondBound(t *testing.T) {
-	dials, stderr, err := saveContextWithWorkerDial(t, repeatError(refused, 1000))
-
-	if err == nil {
-		t.Fatalf("context save succeeded against a node that never listens\n%s", stderr)
-	}
-	if dials < 2 || dials > 100 {
-		t.Fatalf("worker dialed %d times, want a bounded number of retries", dials)
-	}
-	for _, want := range []string{"worker-1", workerDesiredEndpoint, "refused connections", "systemctl status katlc-agent", "rerun"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error lacks %q: %v", want, err)
-		}
+	if !strings.Contains(stdout.String(), "generation-0") {
+		t.Fatalf("stdout lacks the status:\n%s", stdout.String())
 	}
 }
 
-func TestContextSaveDoesNotRetryOtherErrors(t *testing.T) {
-	for name, failure := range map[string]error{
-		"handshake": grpcstatus.Error(codes.Unavailable, "authentication handshake failed: x509: certificate signed by unknown authority"),
-		"denied":    grpcstatus.Error(codes.PermissionDenied, "connection refused by policy"),
-	} {
-		t.Run(name, func(t *testing.T) {
-			dials, stderr, err := saveContextWithWorkerDial(t, []error{failure})
+// Callers that poll for a node's state take the refusal at once, not after the
+// wait that ordinary commands give a restarting agent.
+func TestWithoutManagementWaitReachesDial(t *testing.T) {
+	trustedDial(t)
+	port := nettest.ReservePort(t)
+	var progress bytes.Buffer
+	ctx := transport.WithManagementProgress(transport.WithoutManagementWait(context.Background()), &progress)
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
 
-			if err == nil || !strings.Contains(err.Error(), failure.Error()) {
-				t.Fatalf("error = %v, want %v", err, failure)
-			}
-			if dials != 1 {
-				t.Fatalf("worker dialed %d times, want 1", dials)
-			}
-			if strings.Contains(stderr, "Waiting") {
-				t.Fatalf("reported waiting for a non-transient error:\n%s", stderr)
-			}
-		})
+	start := time.Now()
+	conn, err := dialKatlcAgent(ctx, port.Endpoint)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
+	defer conn.Close()
+	_, err = conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 
-func repeatError(err error, n int) []error {
-	errs := make([]error, n)
-	for i := range errs {
-		errs[i] = err
+	if err == nil || strings.Contains(err.Error(), "katlc-agent is not listening") {
+		t.Fatalf("error = %v, want the raw refusal", err)
 	}
-	return errs
+	if !strings.Contains(grpcstatus.Convert(err).Message(), "connection refused") {
+		t.Fatalf("error = %v, want a refused connection", err)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second || progress.Len() != 0 {
+		t.Fatalf("refusal took %s with progress %q, want an immediate silent failure", elapsed, progress.String())
+	}
 }

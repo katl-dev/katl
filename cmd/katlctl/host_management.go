@@ -10,6 +10,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/generation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/spf13/cobra"
 )
 
@@ -133,7 +134,7 @@ type hostShutdownReport struct {
 var hostShutdownPollInterval = 500 * time.Millisecond
 
 func newHostStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := hostStatusOptions{timeout: 15 * time.Second, output: hostOutputText}
+	opts := hostStatusOptions{timeout: defaultManagementTimeout, output: hostOutputText}
 	cmd := &cobra.Command{
 		Use:   "status [NODE]",
 		Short: "Show the current state of one KatlOS node",
@@ -376,7 +377,7 @@ func waitNodeOffline(ctx context.Context, target managementTarget) error {
 	for {
 		attemptCtx, cancelAttempt := context.WithTimeout(ctx, 2*time.Second)
 		attemptCtx = withManagementTarget(attemptCtx, target)
-		conn, err := dialKatlcAgent(attemptCtx, target.endpoint)
+		conn, err := dialKatlcAgent(transport.WithoutManagementWait(attemptCtx), target.endpoint)
 		if err == nil {
 			_, err = conn.Client.GetNodeStatus(attemptCtx, &agentapi.GetNodeStatusRequest{})
 			_ = conn.Close()
