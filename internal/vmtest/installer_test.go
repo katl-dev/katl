@@ -116,7 +116,7 @@ func TestInstallerBootISO(t *testing.T) {
 	for _, want := range []string{
 		`<disk type="file" device="cdrom">`,
 		`<source file="` + iso + `"></source>`,
-		`<target dev="sda" bus="sata"></target>`,
+		`<target dev="sda" bus="scsi"></target>`,
 		`<readonly></readonly>`,
 		`<boot order="1"></boot>`,
 	} {

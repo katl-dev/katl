@@ -1623,12 +1623,16 @@ func vmDomainDisks(result Result, config VMConfig) ([]libvirtDisk, string, strin
 		if boot.DiskFirst {
 			isoBootOrder = 2
 		}
+		// The ISO sits on virtio-scsi rather than SATA. QEMU's AHCI CD-ROM
+		// intermittently stops completing OVMF's reads until something
+		// unrelated wakes QEMU's main loop, so firmware spins before it
+		// loads a boot entry (#533).
 		disks = append(disks, libvirtDisk{
 			Path:      boot.ISO,
 			Format:    DiskRaw,
 			Target:    "sda",
 			Device:    "cdrom",
-			Bus:       "sata",
+			Bus:       "scsi",
 			ReadOnly:  true,
 			BootOrder: isoBootOrder,
 		})
@@ -1742,6 +1746,12 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 	if domain.PersistentSerial {
 		doc.Devices.Serial.Log = &domainSerialLog{File: domain.SerialLog, Append: "on"}
 	}
+	scsiDisks := false
+	for _, disk := range domain.Disks {
+		if disk.Bus == "scsi" {
+			scsiDisks = true
+		}
+	}
 	if domain.HotplugPCISlots > 0 {
 		doc.Devices.Controllers = append(doc.Devices.Controllers, domainController{
 			Type:  "pci",
@@ -1756,6 +1766,9 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 		if domain.VSock.Enabled || domain.NotifyPort != 0 {
 			rootPorts++
 		}
+		if scsiDisks {
+			rootPorts++
+		}
 		for index := 1; index <= rootPorts; index++ {
 			doc.Devices.Controllers = append(doc.Devices.Controllers, domainController{
 				Type:  "pci",
@@ -1763,6 +1776,14 @@ func libvirtDomainXML(domain libvirtDomain) (string, error) {
 				Model: "pcie-root-port",
 			})
 		}
+	}
+	if scsiDisks {
+		// Name the model: libvirt's default SCSI controller on x86 is LSI,
+		// which OVMF does not drive by default.
+		doc.Devices.Controllers = append(doc.Devices.Controllers, domainController{
+			Type:  "scsi",
+			Model: "virtio-scsi",
+		})
 	}
 	for _, disk := range domain.Disks {
 		device := disk.Device
