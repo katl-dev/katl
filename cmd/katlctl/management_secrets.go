@@ -137,15 +137,20 @@ func managementIdentityForSource(sourcePath string, source configbundle.SourceCo
 	} else if !filepath.IsAbs(path) {
 		path = filepath.Join(filepath.Dir(sourcePath), path)
 	}
-	bundle, err := readManagementIdentity(path)
+	bundle, err := readManagementIdentityForCluster(path, source.Metadata.Name)
 	if errors.Is(err, os.ErrNotExist) {
 		return managementidentity.Bundle{}, missingManagementIdentity(source.Metadata.Name, path)
 	}
+	return bundle, err
+}
+
+func readManagementIdentityForCluster(path, clusterName string) (managementidentity.Bundle, error) {
+	bundle, err := readManagementIdentity(path)
 	if err != nil {
 		return managementidentity.Bundle{}, err
 	}
-	if bundle.ClusterName != source.Metadata.Name {
-		return managementidentity.Bundle{}, fmt.Errorf("management secrets %s belong to cluster %q, not %q", path, bundle.ClusterName, source.Metadata.Name)
+	if bundle.ClusterName != clusterName {
+		return managementidentity.Bundle{}, fmt.Errorf("management secrets %s belong to cluster %q, not %q", path, bundle.ClusterName, clusterName)
 	}
 	return bundle, nil
 }

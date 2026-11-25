@@ -702,10 +702,10 @@ func enableMTLSResumeHint(done []enableMTLSNode, mode managementidentity.Authent
 }
 
 // enableMTLSInvocation is the command that resumes this run with the same
-// secrets file.
+// secrets file. An empty secretsPath uses the file selected by the config.
 func enableMTLSInvocation(configPath, secretsPath string) string {
 	command := "katlctl management enable-mtls --config " + shellQuote(configPath)
-	if secretsPath != filepath.Join(filepath.Dir(configPath), defaultManagementSecrets) {
+	if secretsPath != "" && secretsPath != filepath.Join(filepath.Dir(configPath), defaultManagementSecrets) {
 		command += " --output " + shellQuote(secretsPath)
 	}
 	return command

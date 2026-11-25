@@ -12,8 +12,7 @@ across reprovisioning. Kubernetes kubeconfigs and SSH keys are also separate.
 
 ## Choose an access mode
 
-Choose the mode before installation, because it is fixed when a node is
-installed.
+Choose the initial mode before installation.
 
 New configurations default to `spec.managementAuthentication: mtls`.
 `katlctl config init` creates `management-secrets.yaml` beside the configuration
@@ -32,33 +31,39 @@ create, copy, encrypt, or recover in this mode.
 
 `spec.managementAuthentication` is required unless `spec.managementIdentity` is
 set, which implies `mtls`. `katlctl` refuses every command that reads a
-configuration stating neither, and prints the line to add. It never infers the
-mode, never changes an installed node, and never falls back to another mode.
-
+configuration stating neither, and prints the line to add. Routine commands
+use the configured mode. During a move to mTLS, status commands can read nodes
+that already serve the new authority using the move's management secrets.
 A failed TLS handshake never falls back to trusted-network access.
 
 ### Change the access mode
 
-Editing `cluster.yaml` or applying a generation does not change a running
-node's authentication, because the mode is fixed when the node is installed.
-The mode belongs to the configuration, so a cluster changes mode as a whole,
-and a node refuses a configuration of the other mode. To switch a
-trusted-network cluster to mTLS:
+Use `katlctl management enable-mtls --config ./cluster.yaml` to move an
+installed trusted-network cluster to mTLS. Editing the config or applying a
+generation cannot change a running node's authentication. The command
+creates or reuses `management-secrets.yaml` beside the config, then moves nodes
+one at a time. Each node serves mTLS on trial and returns to trusted-network
+at its deadline unless the command confirms it. The config switches to mTLS
+after every node is confirmed. Back up the management secrets when the command
+reports their path.
 
-1. With the current configuration, still stating the installed mode, plan and
-   run a [whole-cluster wipe](wipe-reinstall.md#plan-a-whole-cluster-wipe). If
-   the cluster must keep its Kubernetes identity, set that up first
-   ([Kubernetes identity](kubernetes-identity.md)) and take an
-   [etcd snapshot](back-up-etcd.md).
-2. Set `spec.managementAuthentication: mtls`.
-3. Run `katlctl management identity create --config ./cluster.yaml`.
-4. Reinstall the nodes and bootstrap the cluster.
+If the move stops partway through, check it with the same config.
 
-Wiping from an mTLS configuration cannot reach nodes that serve
-`trusted-network` management, which is why the wipe comes first. A node that
-serves `trusted-network` management refuses an `mtls` configuration with a
-message naming the mismatch; set `managementAuthentication: trusted-network` to
-keep managing it.
+```sh
+katlctl cluster status --config ./cluster.yaml
+katlctl node status cp-1 --config ./cluster.yaml
+```
+
+If a node stops answering plaintext, these commands try the secrets beside
+the config or the file named in `spec.managementIdentity`. A node on trial
+shows `trusted-network (mtls trial)` and the deadline in your local time.
+A confirmed node shows `mtls`. Rerun `katlctl management enable-mtls --config
+./cluster.yaml` before the deadline to resume a live trial, or wait for the node
+to return to trusted-network. The same command skips confirmed nodes and
+finishes the move and config update. If you chose a custom `--output` path that
+the config does not reference, pass the same `--output` when you resume. When
+status cannot find the secrets, it reports the plaintext connection failure
+and explains that an interrupted trial may still be live.
 
 Older mTLS configurations and nodes keep mTLS: an
 existing configuration with a secrets reference and no explicit mode uses

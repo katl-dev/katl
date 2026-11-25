@@ -127,13 +127,12 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 				return
 			}
 			defer conn.Close()
-			status, current, err := readHostState(requestCtx, conn.Client, node.Name)
+			host, status, err := readStatusReport(requestCtx, conn.Client, node.Name, node.ManagementEndpoint, opts.clusterConfig, topology.Management)
 			if err != nil {
 				result.Error = err.Error()
 				report.Nodes[i] = result
 				return
 			}
-			host := newHostStatusReport(node.Name, node.ManagementEndpoint, status, current)
 			result.Reachable = true
 			result.Health = host.Health
 			result.KatlOSVersion = host.KatlOSVersion
@@ -185,6 +184,9 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 		w.row(node.Node, node.Role, reachable, health, kubernetes, version, generation, activity, management)
 		if detail := node.Management.detail(); detail != "" {
 			w.row("", "", "", detail)
+		}
+		if node.Management != nil && node.Management.NextStep != "" {
+			w.row("", "", "", node.Management.NextStep)
 		}
 		if node.Error != "" {
 			w.row("", "", "", node.Error)

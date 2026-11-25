@@ -173,6 +173,19 @@ func (j *enableMTLSJourney) migrate(ctx context.Context) error {
 	if err := requireConfigMode(config, "trusted-network"); err != nil {
 		return err
 	}
+	// The original config reaches the live trial directly, using the same
+	// secrets that were created for the interrupted run.
+	for _, args := range [][]string{{"node", "status", "cp-1"}, {"cluster", "status"}} {
+		status, err := j.cli(ctx, append(args, "--config", config)...)
+		if err != nil {
+			return fmt.Errorf("%s status during the trial: %w", args[0], err)
+		}
+		for _, want := range []string{"trusted-network (mtls trial)", "mTLS trial until", "cp-1 is on an enable-mtls trial; rerun katlctl management enable-mtls"} {
+			if !strings.Contains(string(status), want) {
+				return fmt.Errorf("%s status during the trial lacks %q:\n%s", args[0], want, status)
+			}
+		}
+	}
 	if err := j.waitReverted(ctx, config); err != nil {
 		return fmt.Errorf("after the interrupted run: %w", err)
 	}
@@ -209,8 +222,8 @@ func (j *enableMTLSJourney) migrate(ctx context.Context) error {
 	if err := j.requireManagement(ctx, config, "mtls"); err != nil {
 		return err
 	}
-	if _, err := j.cli(ctx, "node", "status", "cp-1", "--config", trustedConfig); err == nil || !strings.Contains(err.Error(), "likely serves mTLS management") {
-		return fmt.Errorf("trusted-network configuration = %v, want a refusal naming mTLS management", err)
+	if _, err := j.cli(ctx, "node", "status", "cp-1", "--config", trustedConfig); err == nil || !strings.Contains(err.Error(), "likely serves mTLS management") || !strings.Contains(err.Error(), "may be on an interrupted enable-mtls trial") {
+		return fmt.Errorf("trusted-network configuration without secrets = %v, want the plaintext refusal and resume hint", err)
 	}
 	if pid, err := j.ssh(ctx, "systemctl show --property=MainPID --value katlc-agent.service"); err != nil || pid != agentPID {
 		return fmt.Errorf("katlc-agent main PID = %q (%v), want %s: the migration restarted the agent", pid, err, agentPID)
