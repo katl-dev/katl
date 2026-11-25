@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
@@ -115,6 +116,9 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 		if err := e.MountBootRoot(ctx, bootRoot); err != nil {
 			return fail("verify-katlos-image", fmt.Errorf("mount boot root: %w", err))
 		}
+	}
+	if err := requireESPSpace(e.AvailableStorage, e.Root, ukiPath, uint64(payload.Boot.SizeBytes)); err != nil {
+		return fail("verify-katlos-image", err)
 	}
 	phase = "stage-sysupdate-components"
 	updatedRecord, err = e.Store.Update(record.OperationID, "host-upgrade-mutation-start", "stage-sysupdate-components", func(current operation.OperationRecord) (operation.OperationRecord, error) {
@@ -377,12 +381,17 @@ func (e *Executor) stageHostUpgrade(ctx context.Context, record operation.Operat
 	if err := os.Remove(filepath.Join(root, strings.TrimPrefix(ukiPath, "/"))); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("clear inactive slot UKI: %w", err)
 	}
-	argv := []string{"/usr/lib/systemd/systemd-sysupdate", "--no-pager", "--verify=no", "--definitions=" + definitions}
+	sysupdate := []string{"/usr/lib/systemd/systemd-sysupdate", "--no-pager", "--verify=no", "--definitions=" + definitions}
 	if root != "/" {
-		argv = append(argv, "--root="+root)
+		sysupdate = append(sysupdate, "--root="+root)
 	}
-	argv = append(argv, "update", "1")
-	result := e.toolRunner()(ctx, argv, nil)
+	// An interrupted staging leaves sysupdate's partial or pending files, and
+	// sysupdate refuses to update over them ("already acquired and partially
+	// installed") before it vacuums. Vacuum first so every attempt starts clean.
+	if result := e.toolRunner()(ctx, append(slices.Clone(sysupdate), "vacuum"), nil); result.Err != nil || result.ExitStatus != 0 {
+		return fmt.Errorf("systemd-sysupdate vacuum: %s", toolFailure(result))
+	}
+	result := e.toolRunner()(ctx, append(slices.Clone(sysupdate), "update", "1"), nil)
 	if result.Err != nil || result.ExitStatus != 0 {
 		return fmt.Errorf("systemd-sysupdate: %s", toolFailure(result))
 	}

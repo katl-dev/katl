@@ -161,16 +161,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	guestCommand(t, ctx, guest, "efi-read-only", "mount", "-o", "remount,ro", "/efi")
 	_, failedStatus := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, failedCandidate, localRef, upgrade, "host-upgrade-handoff", "")
 	guestCommand(t, ctx, guest, "efi-read-write", "mount", "-o", "remount,rw", "/efi")
-	// Record the inactive slot's type: a sysupdate failure after it acquires
-	// the root slot would leave a derived partial or pending type, which the
-	// retry has to accept.
-	partitionTypes := guestCommandOutput(t, ctx, guest, "partition-types", "lsblk", "-rno", "NAME,PARTLABEL,PARTTYPE")
-	t.Logf("partition types after failed staging, as udev reports them:\n%s", partitionTypes)
-	// lsblk reports types from the udev database, which is not refreshed when
-	// sysupdate writes the GPT without telling the kernel. Read the disk itself.
-	if disk := diskWithPartitionLabel(partitionTypes, "katl_0"); disk != "" {
-		t.Logf("partition table of /dev/%s after failed staging, from the disk:\n%s", disk, guestCommandOutput(t, ctx, guest, "partition-table", "sfdisk", "--dump", "/dev/"+disk))
-	}
+	t.Logf("read-only ESP failure_reason: %s", failedStatus.GetFailureReason())
 	if failedStatus.GetResult() != operation.ResultFailedNeedsRepair {
 		t.Fatalf("host upgrade with a read-only ESP status = %+v, want result %s", failedStatus, operation.ResultFailedNeedsRepair)
 	}
@@ -180,6 +171,47 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	waitHostUpgradeWorkspaceClean(t, ctx, guest, "failed")
 	localRef = stageHostUpgradeArtifactForVMTest(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), upgrade)
 	assertHostUpgradePlanAccepted(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, candidateGeneration, localRef, upgrade)
+
+	// A full ESP must be refused before anything is written. The refusal names
+	// the space to free, and leaves the partition table and the ESP as they were.
+	disk, inactivePart := inactiveRootSlot(t, ctx, guest)
+	tableBeforeFull := guestCommandOutput(t, ctx, guest, "partition-table-before-full", "sfdisk", "--dump", disk)
+	efiBeforeFull := guestCommandOutput(t, ctx, guest, "efi-files-before-full", "find", "/efi", "-type", "f", "-printf", "%p %s\n")
+	fill, err := guest.RunCommand(ctx, GuestCommandRequest{Name: "efi-fill", Argv: []string{"dd", "if=/dev/zero", "of=/efi/katl-vmtest-fill", "bs=1M"}, Timeout: 5 * time.Minute, StdoutLimit: 1 << 16, StderrLimit: 1 << 16, AllowFailure: true})
+	if err != nil || fill.ExitStatus == 0 {
+		t.Fatalf("fill ESP: exit %d, err %v; want dd to stop at ENOSPC", fill.ExitStatus, err)
+	}
+	_, fullStatus := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, candidateGeneration+"-full", localRef, upgrade, "host-upgrade-handoff", "")
+	t.Logf("full ESP failure_reason: %s", fullStatus.GetFailureReason())
+	guestCommand(t, ctx, guest, "efi-unfill", "find", "/efi", "-maxdepth", "1", "-name", "katl-vmtest-fill", "-delete")
+	if fullStatus.GetResult() == operation.ResultSucceeded || fullStatus.GetExternalMutationStarted() ||
+		!strings.Contains(fullStatus.GetFailureReason(), "insufficient space on the EFI system partition") || !strings.Contains(fullStatus.GetFailureReason(), "Free at least") {
+		t.Fatalf("host upgrade with a full ESP status = %+v, want a refusal before mutation that says how much to free", fullStatus)
+	}
+	if got := guestCommandOutput(t, ctx, guest, "partition-table-after-full", "sfdisk", "--dump", disk); got != tableBeforeFull {
+		t.Fatalf("full-ESP refusal changed the partition table:\n%s\nwant\n%s", got, tableBeforeFull)
+	}
+	if got := guestCommandOutput(t, ctx, guest, "efi-files-after-full", "find", "/efi", "-type", "f", "-printf", "%p %s\n"); got != efiBeforeFull {
+		t.Fatalf("full-ESP refusal changed the ESP:\n%s\nwant\n%s", got, efiBeforeFull)
+	}
+	if got := readGuestFile(t, ctx, guest, "/var/lib/katl/boot/selection.json"); got != selectionBeforeRejectedPlan {
+		t.Fatal("full-ESP refusal changed boot selection")
+	}
+	waitHostUpgradeWorkspaceClean(t, ctx, guest, "full")
+	localRef = stageHostUpgradeArtifactForVMTest(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), upgrade)
+
+	// A staging that dies after sysupdate wrote the root slot, such as on a
+	// full ESP before this check existed, leaves the slot in the pending type
+	// and a partial UKI. Sysupdate refuses to update over that until it
+	// vacuums, so the upgrade has to clear it. The type below is the one
+	// systemd 262 wrote in that failure (derived from the root type).
+	const pendingRootType = "64362E66-88A7-463B-B325-7AF60C81BE06"
+	guestCommand(t, ctx, guest, "plant-partial-uki", "dd", "if=/dev/zero", "of=/efi/EFI/katl/.sysupdate.partial.katl-root-b-1.efi", "bs=1M", "count=4")
+	guestCommand(t, ctx, guest, "plant-pending-type", "sfdisk", "--no-reread", "--no-tell-kernel", "--part-type", disk, inactivePart, pendingRootType)
+	guestCommand(t, ctx, guest, "plant-pending-label", "sfdisk", "--no-reread", "--no-tell-kernel", "--part-label", disk, inactivePart, "katl_1")
+	if dump := guestCommandOutput(t, ctx, guest, "partition-table-planted", "sfdisk", "--dump", disk); !strings.Contains(strings.ToUpper(dump), "TYPE="+pendingRootType) {
+		t.Fatalf("planting the interrupted-transfer slot type failed:\n%s", dump)
+	}
 
 	combinedAuthorizedKey := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm combined-upgrade@katl"
 	combinedConfig := hostUpgradeConfiguration("3", "    identity:\n      authorizedKeys:\n        - "+combinedAuthorizedKey+"\n")
@@ -208,6 +240,14 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	candidateSpec := generationFromGuest(t, ctx, guest, candidateGeneration)
 	if candidateSpec.RuntimeVersion != upgrade.Version || candidateSpec.Root.Slot == previousSpec.Root.Slot {
 		t.Fatalf("host upgrade candidate spec = %#v; previous = %#v", candidateSpec, previousSpec)
+	}
+	// Staging cleared the interrupted transfer: sysupdate's leftovers are gone and
+	// the slot is back to a plain root slot on the disk.
+	if leftovers := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "sysupdate-leftovers", "find", "/efi/EFI/katl", "-name", ".sysupdate.*")); leftovers != "" {
+		t.Fatalf("staging left sysupdate files on the ESP:\n%s", leftovers)
+	}
+	if dump := guestCommandOutput(t, ctx, guest, "partition-table-staged", "sfdisk", "--dump", disk); strings.Contains(strings.ToUpper(dump), "TYPE="+pendingRootType) {
+		t.Fatalf("staging left the pending slot type:\n%s", dump)
 	}
 
 	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
@@ -1211,19 +1251,22 @@ func waitActiveGeneration(t *testing.T, ctx context.Context, guest *GuestControl
 	t.Fatalf("generation %s did not become active", id)
 }
 
-// diskWithPartitionLabel returns the whole-disk name holding the partition
-// labelled label in `lsblk -rno NAME,PARTLABEL,PARTTYPE` output.
-func diskWithPartitionLabel(lsblk, label string) string {
-	for _, line := range strings.Split(lsblk, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[1] != label {
+// inactiveRootSlot returns the system disk device and the partition number of
+// the root slot that is not mounted at /, read from the on-disk partition
+// table.
+func inactiveRootSlot(t *testing.T, ctx context.Context, guest *GuestControl) (string, string) {
+	t.Helper()
+	const rootType = "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709"
+	source := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "root-source", "findmnt", "-no", "SOURCE", "/"))
+	parent := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "root-disk", "lsblk", "-no", "PKNAME", source))
+	disk := "/dev/" + parent
+	for _, line := range strings.Split(guestCommandOutput(t, ctx, guest, "root-slots", "sfdisk", "--dump", disk), "\n") {
+		device, rest, ok := strings.Cut(line, " : ")
+		if !ok || device == source || !strings.Contains(strings.ToUpper(rest), "TYPE="+rootType) {
 			continue
 		}
-		disk := strings.TrimRight(fields[0], "0123456789")
-		if strings.HasSuffix(disk, "p") && strings.TrimRight(strings.TrimSuffix(disk, "p"), "0123456789") != strings.TrimSuffix(disk, "p") {
-			disk = strings.TrimSuffix(disk, "p")
-		}
-		return disk
+		return disk, strings.TrimPrefix(device, disk)
 	}
-	return ""
+	t.Fatalf("no root slot other than %s on %s", source, disk)
+	return "", ""
 }

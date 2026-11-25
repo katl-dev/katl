@@ -284,6 +284,9 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 			if _, err := os.Stat(inactiveUKI); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("inactive UKI still looks installed to sysupdate: %v", err)
 			}
+			if argv[len(argv)-1] == "vacuum" {
+				return ToolResult{}
+			}
 			stagedRoot = append(append([]byte(nil), runtimeBytes...), make([]byte, 32)...)
 			if argv[len(argv)-1] != "1" {
 				t.Fatalf("sysupdate selected release version instead of local candidate: %v", argv)
@@ -319,14 +322,19 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	if calls := strings.Join(toolCalls, "\n"); strings.Contains(calls, "--sync=no") {
 		t.Fatalf("host upgrade disabled sysupdate durability:\n%s", calls)
 	}
-	sysupdateCall, flushCall := -1, -1
+	vacuumCall, sysupdateCall, flushCall := -1, -1, -1
 	for index, call := range toolCalls {
 		switch {
+		case strings.Contains(call, "systemd-sysupdate") && strings.HasSuffix(call, " vacuum"):
+			vacuumCall = index
 		case strings.Contains(call, "systemd-sysupdate"):
 			sysupdateCall = index
 		case strings.HasPrefix(call, "blockdev --flushbufs "):
 			flushCall = index
 		}
+	}
+	if vacuumCall < 0 || vacuumCall > sysupdateCall {
+		t.Fatalf("host upgrade calls = %#v, want sysupdate vacuum before update", toolCalls)
 	}
 	if sysupdateCall < 0 || flushCall != sysupdateCall+1 {
 		t.Fatalf("host upgrade calls = %#v, want block cache flush immediately after sysupdate", toolCalls)

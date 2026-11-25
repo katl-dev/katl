@@ -1,27 +1,45 @@
 ## Retry a host upgrade after a failed staging
 
-A host upgrade that failed while staging the new OS (`failed-needs-repair`) left the node unable to plan another upgrade until it rebooted. The next `katlctl node upgrade` was refused with `read root partition types …: partition N has PARTUUID …, but sysfs reported "" …; retry the upgrade`, and retrying did not help.
+A host upgrade that failed while staging the new OS (`failed-needs-repair`) could leave the node unable to upgrade again. The next `katlctl node upgrade` was refused with one of:
 
-This release keeps the node's view of its root partitions intact during staging, so a retry in the same boot works.
+- `read root partition types …: partition N has PARTUUID …, but sysfs reported "" …; retry the upgrade`, or `find inactive root slot: found 1 root partitions with type …, want 2`, because the failed staging had changed the inactive root slot's partition type or removed it from the running kernel's view.
+- `systemd-sysupdate: … Selected update '1' is already acquired and partially installed. Vacuum it to try installing again.`, because the failed staging left a partial UKI on the ESP, most often after the ESP ran out of space (a 512 MiB ESP holds a UKI of about 90 MiB for each slot, plus whatever else was written there).
 
-Affects nodes running v2026.11.0-beta.1 through v2026.11.4 whose upgrade failed during staging. Those nodes still run the older agent when they plan the upgrade to this release, so on an affected node, reboot it once, then run the upgrade again. Nodes that have not had a failed upgrade need no action.
+This release clears those leftovers before every staging, leaves the kernel's view of the root slots alone, and checks that the ESP has room for the new UKI before it changes anything. When it does not, the upgrade is refused with `insufficient space on the EFI system partition (/efi)`, which says how much to free. After that, free the space and run the upgrade again; no reboot is needed.
 
-If, after a reboot, the upgrade is refused with `find inactive root slot: found 1 root partitions with type …, want 2`, the inactive root slot was left with a different partition type. Restore it once, as root on the node:
+### Recovering a node already stuck on v2026.11.0-beta.1 through v2026.11.4
 
-1. Find the root slot that is not mounted at `/` and whose PARTTYPE is not `4f68bce3-e8cd-4db1-96e7-fbcaf984b709`:
+Those releases are affected, and a stuck node plans its upgrade with its installed agent, so it cannot upgrade to this release until the leftovers are removed by hand. As root on the node:
 
-   ```sh
-   lsblk -o NAME,PARTN,PARTTYPE,PARTLABEL,MOUNTPOINT /dev/DISK
-   ```
-
-2. Set that slot's type back, with its PARTN in place of PARTNUMBER:
+1. Delete sysupdate's leftovers on the ESP:
 
    ```sh
-   sfdisk --no-reread --no-tell-kernel --part-type /dev/DISK PARTNUMBER 4f68bce3-e8cd-4db1-96e7-fbcaf984b709
+   find /efi/EFI/katl -maxdepth 1 -name '.sysupdate.*' -print -delete
    ```
 
-   Never run this against the partition mounted at `/`.
+2. Make sure `/efi` has at least 100 MiB free (the UKI is about 90 MiB), and remove any files you added there if it does not:
 
-3. Reboot the node, then run the upgrade again.
+   ```sh
+   df -h /efi
+   ```
 
-`katlctl node upgrade` prints the matching steps, with the node's disk filled in, when it meets either refusal.
+3. Find the inactive root slot and set its partition type back to the root type. Read the partition table from the disk with `sfdisk`; `lsblk` can show a stale type. The inactive slot is the root slot whose partition is not the one mounted at `/`:
+
+   ```sh
+   ROOT=$(findmnt -no SOURCE /)
+   DISK=/dev/$(lsblk -no PKNAME "$ROOT")
+   echo "running root: $ROOT"
+   sfdisk --dump "$DISK"
+   ```
+
+   In the dump, the inactive slot is the other partition with the same `size=` as `$ROOT`. A node that failed before the root slot was written still shows the root type there, and the command below changes nothing. Set its type, with its number in place of `PARTNUMBER`:
+
+   ```sh
+   sfdisk --no-reread --no-tell-kernel --part-type "$DISK" PARTNUMBER 4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709
+   ```
+
+   Never run this against `$ROOT`.
+
+4. Reboot the node, then run `katlctl node upgrade` again.
+
+`katlctl node upgrade` prints the matching steps when it meets either refusal.

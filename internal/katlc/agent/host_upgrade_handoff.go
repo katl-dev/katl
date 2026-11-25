@@ -149,6 +149,9 @@ func (e *Executor) executeHostUpgradeHandoff(ctx context.Context, record operati
 	if err := requireHostUpgradeStorage(e.AvailableStorage, hostUpgradeArtifactRoot(e.Root), stagingBytes, "root and UKI staging"); err != nil {
 		return fail("verify-katlos-image", err)
 	}
+	if err := requireESPSpace(e.AvailableStorage, e.Root, ukiPath, uint64(payload.Boot.SizeBytes)); err != nil {
+		return fail("verify-katlos-image", err)
+	}
 	phase = "stage-sysupdate-components"
 	updatedRecord, err := e.Store.Update(record.OperationID, "host-upgrade-handoff-mutation-start", "stage-sysupdate-components", func(current operation.OperationRecord) (operation.OperationRecord, error) {
 		current.Phase = "stage-sysupdate-components"
