@@ -70,7 +70,7 @@ func refreshConfiguredManagementAt(ctx context.Context, sourcePath, contextPath,
 	if ctx.Value(observedManagementKey{}) == nil {
 		ctx = context.WithValue(ctx, observedManagementKey{}, workstation.Config{})
 	}
-	observed, _, err := prepareContext(ctx, contextSaveOptions{configInput: sourcePath, contextPath: contextPath, contextName: contextName, timeout: 15 * time.Second, output: "text", selectedNodes: selectedNodes, endpoints: endpoints}, stderr)
+	observed, _, err := prepareContext(ctx, contextSaveOptions{configInput: sourcePath, contextPath: contextPath, contextName: contextName, timeout: defaultManagementTimeout, output: "text", selectedNodes: selectedNodes, endpoints: endpoints}, stderr)
 	if err != nil {
 		return ctx, err
 	}

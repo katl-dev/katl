@@ -93,7 +93,7 @@ func newOperationStatusCommand(ctx context.Context, stdout, stderr io.Writer) *c
 }
 
 func newOperationListCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := operationListOptions{limit: 20, diagnostics: "normal", timeout: 15 * time.Second, output: "text"}
+	opts := operationListOptions{limit: 20, diagnostics: "normal", timeout: defaultManagementTimeout, output: "text"}
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List current and recent KatlOS operations",

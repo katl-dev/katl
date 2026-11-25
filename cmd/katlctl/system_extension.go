@@ -177,7 +177,7 @@ func newSystemExtensionPublishCommand(ctx context.Context, stdout io.Writer) *co
 
 func newSystemExtensionStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	_ = stderr
-	opts := systemExtensionStatusOptions{timeout: 15 * time.Second, output: "text"}
+	opts := systemExtensionStatusOptions{timeout: defaultManagementTimeout, output: "text"}
 	cmd := &cobra.Command{
 		Use:   "status [NAME]",
 		Short: "Show extension state and failures; use --verbose for details",

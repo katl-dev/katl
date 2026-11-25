@@ -50,7 +50,7 @@ type contextSaveReport struct {
 }
 
 func newContextSaveCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := contextSaveOptions{timeout: 15 * time.Second, output: "text"}
+	opts := contextSaveOptions{timeout: defaultManagementTimeout, output: "text"}
 	cmd := &cobra.Command{
 		Use:   "save",
 		Short: "Save installed KatlOS nodes as the current workstation context",
@@ -487,7 +487,7 @@ type contextRebindOptions struct {
 }
 
 func newContextRebindCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := contextRebindOptions{timeout: 15 * time.Second}
+	opts := contextRebindOptions{timeout: defaultManagementTimeout}
 	cmd := &cobra.Command{Use: "rebind", Short: "Verify an enrolled node and save its new management address", Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error {
 		_ = stderr
 		return runContextRebind(ctx, opts, stdout)

@@ -388,7 +388,9 @@ func checkExposedManagementCredential(ctx context.Context, node managementRotati
 	config := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, Certificates: []tls.Certificate{certificate}, ServerName: node.name}
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	conn, err := grpc.DialContext(requestCtx, node.endpoint, katlcAgentDialOptions(transport.NewClientCredentials(config))...)
+	// The credential is polled until it takes effect, so a refused connection is reported at once.
+	options := append(katlcAgentDialOptions(transport.NewClientCredentials(config)), transport.ManagementDialOptions(transport.WithoutManagementWait(requestCtx), node.name, node.endpoint)...)
+	conn, err := grpc.DialContext(requestCtx, node.endpoint, options...)
 	if err != nil {
 		return err
 	}
@@ -423,7 +425,7 @@ func checkManagementCredential(ctx context.Context, node managementRotationNode,
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	requestCtx = withManagementDial(requestCtx, node.name, &credentials)
-	conn, err := dialKatlcAgent(withoutManagementWait(requestCtx), node.endpoint)
+	conn, err := dialKatlcAgent(transport.WithoutManagementWait(requestCtx), node.endpoint)
 	if err != nil {
 		return err
 	}

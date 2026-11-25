@@ -60,7 +60,7 @@ type clusterStatusReport struct {
 }
 
 func newClusterStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
-	opts := clusterStatusOptions{timeout: 15 * time.Second, output: "text"}
+	opts := clusterStatusOptions{timeout: defaultManagementTimeout, output: "text"}
 	cmd := &cobra.Command{Use: "status", Short: "Show the state of every KatlOS node", Args: cobra.NoArgs, RunE: func(*cobra.Command, []string) error {
 		_ = stderr
 		return runClusterStatus(ctx, opts, stdout)
