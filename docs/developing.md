@@ -919,7 +919,7 @@ Installed-runtime tests consume the KatlOS install image and reject
 
 Use delete-on-success retention for routine gates. While debugging, use
 `--debug-on-failure` with a single narrow scenario, retain the run directory as
-evidence, and clean retained domains with `scripts/vmtest-clean` when inspection
+evidence, and clean retained domains and the run networks they used with `scripts/vmtest-clean` when inspection
 is done.
 
 The focused external-worker regression uses one Katl control-plane VM and an

@@ -110,6 +110,7 @@ type DebugTarget struct {
 	Reason         string    `json:"reason,omitempty"`
 	DomainName     string    `json:"domainName"`
 	LibvirtURI     string    `json:"libvirtURI"`
+	Network        string    `json:"network,omitempty"`
 	SerialLog      string    `json:"serialLog"`
 	ConsoleCommand string    `json:"consoleCommand"`
 	CleanupCommand string    `json:"cleanupCommand"`

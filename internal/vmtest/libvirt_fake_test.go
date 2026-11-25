@@ -33,9 +33,10 @@ case "$command" in
   list) for f in "$root"/domains/*.meta; do [[ -e $f ]] && basename "$f" .meta; done || true ;;
   metadata) [[ -f "$root/domains/$1.meta" ]] || exit 1; cat "$root/domains/$1.meta"; vanish "$1" ;;
   dumpxml) cat "$root/domains/$1.xml" ;;
-  domstate) missing_domain "$1"; printf 'running\n' ;;
-  destroy) missing_domain "$1" ;;
-  undefine) missing_domain "$1"; rm -f "$root/domains/$1.meta" "$root/domains/$1.xml" ;;
+  domstate) missing_domain "$1"; if [[ -f "$root/domains/$1.stopped" ]]; then printf 'shut off\n'; else printf 'running\n'; fi ;;
+  destroy) missing_domain "$1"; touch "$root/domains/$1.stopped" ;;
+  undefine) missing_domain "$1"; rm -f "$root/domains/$1.meta" "$root/domains/$1.xml" "$root/domains/$1.stopped" ;;
+  dominfo) missing_domain "$1" ;;
   net-list) for f in "$root"/networks/*.xml; do [[ -e $f ]] && basename "$f" .xml; done || true ;;
   net-define)
     sleep "${FAKE_DEFINE_DELAY:-0}"

@@ -502,3 +502,26 @@ func TestOwnedNetworkXMLRunOwnership(t *testing.T) {
 		t.Fatalf("XML =\n%s\nwant\n%s", got, want)
 	}
 }
+
+func TestReleaseRunNetworksOwnsOnlyLeasedNetworks(t *testing.T) {
+	fake := newFakeLibvirt(t)
+	lease := filepath.Join(t.TempDir(), "lease")
+	add := func(name, owner, lease string) {
+		fake.addNetwork(t, OwnedNetwork{Name: name, Owner: owner, Lease: lease, CIDR: "10.200.1.0/24", Gateway: "10.200.1.1"})
+	}
+	add("katl-run-1-idle", vmtestMetadata, lease)
+	add("katl-run-1-preserved", vmtestMetadata, lease)
+	fake.addDomain(t, "debug", vmtestMetadataFor(lease), "katl-run-1-preserved")
+	add("katl-dev-world-1", "katl/katldev-world/dev-world-1", "")
+	add("katl-run-1-leaseless", vmtestMetadata, "")
+
+	names := []string{"katl-run-1-idle", "katl-run-1-preserved", "katl-dev-world-1", "katl-run-1-leaseless", "missing"}
+	if err := ReleaseRunNetworks(context.Background(), "qemu:///fixture", names, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	want := []string{"katl-dev-world-1", "katl-run-1-leaseless", "katl-run-1-preserved"}
+	if got := fake.objects(t, "networks"); !slices.Equal(got, want) {
+		t.Fatalf("networks = %v, want %v", got, want)
+	}
+}

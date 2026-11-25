@@ -36,10 +36,7 @@ func TestExternalWorkerJoin(t *testing.T) {
 	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, []vmtest.NodeSpec{{Name: "cp-1", Role: vmtest.ControlPlane}}, kvm); err != nil {
 		failWorldFixtureSetup(t, world, name, err)
 	}
-	scenario, err := world.PlanScenario(name)
-	if err != nil {
-		t.Fatal(err)
-	}
+	scenario := world.NewScenario(t, name)
 	options := vmtest.Options{Enabled: true, StateRoot: filepath.Join(scenario.Dir, "vm-runs"), Keep: vmtest.KeepFailed, KVM: kvm, Missing: vmtest.MissingFails}
 	runner := vmtest.NewRunner(options)
 	vmScenario := vmtest.Scenario{Name: name}

@@ -484,6 +484,31 @@ func releaseNetwork(ctx context.Context, virsh virshFunc, name, lease string, st
 	return removeNetwork(ctx, virsh, name)
 }
 
+// ReleaseRunNetworks removes the networks that a run's lease owns once nothing
+// of that lease attaches to them any more, as a scenario does when it ends. A
+// network that is not a leased vmtest network is left alone, so a caller can
+// name networks from a record without risking the host's others.
+func ReleaseRunNetworks(ctx context.Context, uri string, networks []string, stderr io.Writer) error {
+	virsh := runVirsh(uri)
+	var errs []error
+	for _, network := range networks {
+		if err := releaseRunNetwork(ctx, virsh, network, stderr); err != nil {
+			errs = append(errs, fmt.Errorf("release libvirt network %s: %w", network, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// releaseRunNetwork releases a network on behalf of the lease its metadata
+// names.
+func releaseRunNetwork(ctx context.Context, virsh virshFunc, name string, stderr io.Writer) error {
+	metadata, ok := networkMetadataOf(ctx, virsh, name)
+	if !ok || metadata.Lease == "" {
+		return nil
+	}
+	return releaseNetwork(ctx, virsh, name, metadata.Lease, stderr)
+}
+
 // attachesToNetwork reports whether a domain definition has an interface on
 // the libvirt network.
 func attachesToNetwork(domain []byte, network string) (bool, error) {

@@ -810,6 +810,7 @@ func (r VMRunner) withDebugTarget(result Result, plan VMPlan, preservation *Doma
 	target := DebugTarget{
 		DomainName:     plan.DomainName,
 		LibvirtURI:     plan.LibvirtURI,
+		Network:        plan.LibvirtNetwork,
 		SerialLog:      plan.SerialLog,
 		ConsoleCommand: consoleCommandLine(plan.LibvirtURI, plan.DomainName),
 		CleanupCommand: cleanupCommandLine(result.Artifacts.Result),
