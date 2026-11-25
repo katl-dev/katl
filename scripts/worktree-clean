@@ -20,11 +20,13 @@ devclean() {
         katl-devclean "$@"
     else
         # go run reports every failure of the program as exit status 1, which
-        # would turn a refusal into a partial removal.
+        # would turn a refusal into a partial removal. Nothing reads the VCS
+        # stamp, and in a linked worktree Go takes it from whatever .git
+        # directory lies above the checkout, so it is not recorded.
         if [[ -z "${built_devclean:-}" ]]; then
             built_dir="$(mktemp -d)"
             trap 'rm -rf "$built_dir"' EXIT
-            if ! (cd "$repo_root" && "$go_bin" build -o "$built_dir/katl-devclean" ./cmd/katl-devclean); then
+            if ! (cd "$repo_root" && "$go_bin" build -buildvcs=false -o "$built_dir/katl-devclean" ./cmd/katl-devclean); then
                 printf 'worktree-clean: could not build katl-devclean\n' >&2
                 return 2
             fi

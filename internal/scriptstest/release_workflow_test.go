@@ -479,13 +479,7 @@ var hostedRunPattern = regexp.MustCompile(`-run\s+(?:'([^']*)'|"([^"]*)")`)
 // katl-vmtest-ran can only hold a run to the tests it can read from -run, and
 // a pattern it cannot parse names no tests, so the run passes unchecked.
 func TestWorkflowsRunPatternsAreCheckable(t *testing.T) {
-	root := repoRoot(t)
-	checker := filepath.Join(t.TempDir(), "katl-vmtest-ran")
-	build := exec.Command("go", "build", "-o", checker, "./cmd/katl-vmtest-ran")
-	build.Dir = root
-	if out, err := build.CombinedOutput(); err != nil {
-		t.Fatalf("build katl-vmtest-ran: %v\n%s", err, out)
-	}
+	checker := buildCommand(t, t.TempDir(), "katl-vmtest-ran")
 
 	// The log passes only an unrelated test, so every requested test is missing.
 	log := filepath.Join(t.TempDir(), "go-test.log")
