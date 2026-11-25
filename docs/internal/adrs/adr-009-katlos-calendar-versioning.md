@@ -12,7 +12,7 @@ milestone scope, but using it as the product version would discard the requested
 date-based release identity.
 
 The version is embedded in KatlOS image names and metadata, Go binaries,
-release-branch artifacts, Git tags, and GitHub Releases. It must sort in a
+Git tags, and GitHub Releases. It must sort in a
 predictable maturity order, be accepted by ordinary version tooling, and stay
 independent from Kubernetes and node-extension payload versions.
 
@@ -57,11 +57,9 @@ accepts an optional `v`, removes it from embedded artifact metadata, and rejects
 months, leading-zero counters, other prerelease labels, and non-calendar
 versions. Manual workflow runs use the product version without the `v`.
 
-Amendment (2026-11-25): release series branches, such as `release/2026.12.x`,
-carry no version. The version comes from the release candidate or final tag, or
-from the manual workflow input, and release tooling derives no version from a
-branch name. This supersedes the earlier rule that a release branch is named
-for the exact product version.
+Release series branches, such as `release/2026.12.x`, carry no version. The
+version comes from the release candidate or final tag, or from the manual
+workflow input, and release tooling derives none from a branch name.
 
 SemVer compares textual prerelease identifiers lexically, which does not place
 `dev`, `alpha`, `beta`, and `rc` in Katl's maturity order. Release notes and

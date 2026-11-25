@@ -195,17 +195,18 @@ esac
 
 	for _, tc := range []struct {
 		name, event, label, baseRef string
-		regression                  bool
-		vms, drivers                string
+		regression, fullPlan        bool
+		vms, drivers, check         string
 	}{
-		{"pull request", "pull_request", "false", "main", false, `[]`, `["standard"]`},
-		{"pull request into release branch", "pull_request", "false", "release/2026.12.x", true, `["standard","lts"]`, `["standard"]`},
-		{"pull request into non-series release branch", "pull_request", "false", "release/foo", false, `[]`, `["standard"]`},
-		{"labelled pull request", "pull_request", "true", "main", true, `["standard","lts"]`, `["standard"]`},
-		{"merge group", "merge_group", "false", "main", true, `["standard","lts"]`, `["standard"]`},
-		{"push to main", "push", "false", "main", false, `[]`, `[]`},
-		{"push to release branch", "push", "false", "", false, `[]`, `[]`},
-		{"manual dispatch", "workflow_dispatch", "false", "main", false, `["standard","lts"]`, `["standard"]`},
+		{"pull request", "pull_request", "false", "main", false, false, `[]`, `["standard"]`, "CI"},
+		{"pull request into release series", "pull_request", "false", "release/2026.12.x", true, true, `["standard","lts"]`, `["standard"]`, "CI (release)"},
+		{"pull request into non-series release branch", "pull_request", "false", "release/foo", false, false, `[]`, `["standard"]`, "CI"},
+		{"pull request into nested release branch", "pull_request", "false", "release/2026.12.x/foo", false, false, `[]`, `["standard"]`, "CI"},
+		{"labelled pull request", "pull_request", "true", "main", true, false, `["standard","lts"]`, `["standard"]`, "CI"},
+		{"labelled pull request into release series", "pull_request", "true", "release/2026.12.x", true, true, `["standard","lts"]`, `["standard"]`, "CI (release)"},
+		{"merge group", "merge_group", "false", "", true, true, `["standard","lts"]`, `["standard"]`, "CI"},
+		{"push to main", "push", "false", "", false, false, `[]`, `[]`, "CI"},
+		{"manual dispatch", "workflow_dispatch", "false", "", false, false, `["standard","lts"]`, `["standard"]`, "CI"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			run := t.TempDir()
@@ -214,7 +215,7 @@ esac
 			command := exec.Command("bash", "-e", "-c", script)
 			command.Dir = dir
 			command.Env = append(gittest.Env(os.Environ(), dir), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
-				"GITHUB_EVENT_NAME="+tc.event, "BASE_SHA="+base, "BEFORE_SHA="+base, "VMTEST_LABEL="+tc.label, "BASE_REF="+tc.baseRef,
+				"GITHUB_EVENT_NAME="+tc.event, "BASE_SHA="+base, "BEFORE_SHA="+base, "VMTEST_LABEL="+tc.label, "BASE_REF="+tc.baseRef, "PAYLOAD_BASE="+tc.baseRef,
 				"PLANNER_ARGS="+argsPath, "GITHUB_OUTPUT="+outputPath, "GITHUB_STEP_SUMMARY="+filepath.Join(run, "summary"))
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("plan: %v: %s", err, output)
@@ -232,8 +233,17 @@ esac
 			if tc.vms == `[]` && !strings.Contains(string(outputs), "scenarios={\"include\":[]}\n") {
 				t.Fatalf("outputs = %s, want no scenarios without VM flavours", outputs)
 			}
-			if want := fmt.Sprintf("full-plan=%t\n", tc.regression); !strings.Contains(string(outputs), want) {
+			if want := fmt.Sprintf("full-plan=%t\n", tc.fullPlan); !strings.Contains(string(outputs), want) {
 				t.Fatalf("outputs = %s, want %q", outputs, want)
+			}
+			check := "CI"
+			for _, line := range strings.Split(string(outputs), "\n") {
+				if suffix, ok := strings.CutPrefix(line, "check-suffix="); ok && suffix != "" {
+					check += " " + suffix
+				}
+			}
+			if check != tc.check {
+				t.Fatalf("required check = %q, want %q: outputs = %s", check, tc.check, outputs)
 			}
 			args, err := os.ReadFile(argsPath)
 			if err != nil {
@@ -427,17 +437,19 @@ esac
 	}
 }
 
-// Only adding vmtest or changing the base may restart CI, and no workflow
-// triggered by those events may publish a CI result of its own: a skipped or
-// cancelled job counts against the required check for the head SHA.
-func TestRestartWorkflowPublishesNoCI(t *testing.T) {
+// Only adding vmtest may restart CI, and no workflow triggered by a label or an
+// edit may publish a CI result of either name: a skipped or cancelled job counts
+// against the required check for the head SHA.
+func TestLabelWorkflowsPublishNoCI(t *testing.T) {
 	type workflowFile struct {
 		On struct {
 			PullRequest struct{ Types []string } `yaml:"pull_request"`
 		} `yaml:"on"`
-		Jobs map[string]struct {
-			Name string
-			If   string `yaml:"if"`
+		Concurrency yaml.Node
+		Jobs        map[string]struct {
+			Name        string
+			If          string `yaml:"if"`
+			Concurrency yaml.Node
 		}
 	}
 	paths, err := filepath.Glob(filepath.Join(repoRoot(t), ".github/workflows/*.yml"))
@@ -445,7 +457,7 @@ func TestRestartWorkflowPublishesNoCI(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var sawRestart bool
+	var sawLabelWorkflow bool
 	for _, path := range paths {
 		name := filepath.Base(path)
 		data, err := os.ReadFile(path)
@@ -457,34 +469,76 @@ func TestRestartWorkflowPublishesNoCI(t *testing.T) {
 			t.Fatal(err)
 		}
 		types := workflow.On.PullRequest.Types
-		labeled, edited := slices.Contains(types, "labeled"), slices.Contains(types, "edited")
-		if !labeled && !edited {
+		if !slices.Contains(types, "labeled") && !slices.Contains(types, "edited") {
 			continue
 		}
 		if name == "ci.yml" {
 			t.Errorf("ci.yml pull request types %v include labeled or edited; any label or edit would cancel the run", types)
 		}
-		sawRestart = true
+		sawLabelWorkflow = true
+		// A workflow-level group would admit runs whose jobs are skipped.
+		if !workflow.Concurrency.IsZero() {
+			t.Errorf("%s has workflow-level concurrency; put it on the job so skipped runs never enter the group", name)
+		}
 		for id, job := range workflow.Jobs {
-			if job.Name == "CI" || id == "CI" {
-				t.Errorf("%s job %s publishes a check named CI", name, id)
+			for _, check := range []string{"CI", "CI (release)"} {
+				if job.Name == check || id == check {
+					t.Errorf("%s job %s publishes a check named %q", name, id, check)
+				}
 			}
-			if labeled && (!strings.Contains(job.If, "github.event.label.name") || !strings.Contains(job.If, "'vmtest'")) {
-				t.Errorf("%s job %s condition = %q, want labeled limited to the vmtest label", name, id, job.If)
+			if !strings.Contains(job.If, "github.event.label.name") || !strings.Contains(job.If, "'vmtest'") {
+				t.Errorf("%s job %s condition = %q, want it limited to the vmtest label", name, id, job.If)
 			}
-			if edited && !strings.Contains(job.If, "github.event.changes.base") {
-				t.Errorf("%s job %s condition = %q, want edited limited to base changes", name, id, job.If)
+			if job.Concurrency.IsZero() {
+				t.Errorf("%s job %s has no concurrency group", name, id)
 			}
 		}
 	}
-	if !sawRestart {
-		t.Error("no workflow restarts CI when vmtest is added or the base changes")
+	if !sawLabelWorkflow {
+		t.Error("no workflow restarts CI when vmtest is added")
 	}
 }
 
-// A pull request retargeted onto a release branch must be replanned from the
-// live base, which a rerun cannot read from its frozen event payload.
-func TestPlanReadsLiveBase(t *testing.T) {
+// The required check names the base its payload tested, so a rerun, a merge
+// group, a push or a dispatch can never publish the release check.
+func TestResultCheckNameFollowsPayloadBase(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Name    string
+			Outputs map[string]string
+			Steps   []struct {
+				ID  string
+				Env map[string]string
+			}
+		}
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+
+	const wantName = "CI${{ needs.plan.outputs.check-suffix && format(' {0}', needs.plan.outputs.check-suffix) || '' }}"
+	if got := workflow.Jobs["result"].Name; got != wantName {
+		t.Errorf("result job name = %q, want %q", got, wantName)
+	}
+	if got, want := workflow.Jobs["plan"].Outputs["check-suffix"], "${{ steps.plan.outputs.check-suffix }}"; got != want {
+		t.Errorf("plan check-suffix output = %q, want %q", got, want)
+	}
+	for _, step := range workflow.Jobs["plan"].Steps {
+		if step.ID == "plan" {
+			if got, want := step.Env["PAYLOAD_BASE"], "${{ github.base_ref }}"; got != want {
+				t.Errorf("plan PAYLOAD_BASE = %q, want %q: the name must follow the base the payload tested, not the live base", got, want)
+			}
+		}
+	}
+}
+
+// A retargeted pull request must be replanned from the live labels and base,
+// which a rerun cannot read from its frozen event payload.
+func TestPlanReadsLiveState(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/ci.yml"))
 	if err != nil {
 		t.Fatal(err)
@@ -513,22 +567,59 @@ func TestPlanReadsLiveBase(t *testing.T) {
 			plan.Env, plan.Run = step.Env, step.Run
 		}
 	}
-
 	if got, want := plan.Env["BASE_REF"], "${{ steps.pr.outputs.base }}"; got != want {
-		t.Errorf("plan BASE_REF = %q, want %q: the base must come from the live read, not the event payload", got, want)
+		t.Errorf("plan BASE_REF = %q, want %q", got, want)
 	}
 	if got, want := plan.Env["VMTEST_LABEL"], "${{ steps.pr.outputs.vmtest }}"; got != want {
 		t.Errorf("plan VMTEST_LABEL = %q, want %q", got, want)
 	}
-	if strings.Count(read.Run, "gh pr view") != 1 || !strings.Contains(read.Run, "labels,baseRefName") || !strings.Contains(read.Run, "base=") {
-		t.Errorf("pull request read = %q, want one gh pr view call for labels and baseRefName", read.Run)
+
+	// The fake gh returns only the JSON fields requested and applies --jq with
+	// jq, as gh does, so the step is judged by the outputs it publishes.
+	tools := t.TempDir()
+	writeFakeExecutable(t, tools, "gh", `
+[[ "$1 $2" == "pr view" ]] || exit 2
+while (($#)); do
+  case "$1" in
+    --json) fields="$2"; shift ;;
+    --jq) expr="$2"; shift ;;
+  esac
+  shift
+done
+jq -c --arg fields "$fields" 'with_entries(select(.key as $k | $fields | split(",") | index($k)))' <<< "$PR_JSON" | jq -r "$expr"
+`)
+	for _, tc := range []struct {
+		name, prJSON, vmtest, base string
+	}{
+		{"labelled release pull request", `{"labels":[{"name":"area: ci"},{"name":"vmtest"}],"baseRefName":"release/2026.12.x","title":"x"}`, "true", "release/2026.12.x"},
+		{"unlabelled pull request", `{"labels":[{"name":"area: ci"}],"baseRefName":"main","title":"x"}`, "false", "main"},
+		{"no labels", `{"labels":[],"baseRefName":"main"}`, "false", "main"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outputPath := filepath.Join(t.TempDir(), "output")
+			command := exec.Command("bash", "-e", "-c", read.Run)
+			command.Env = append(os.Environ(), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
+				"GH_TOKEN=x", "PR=603", "GITHUB_REPOSITORY=katl-dev/katl", "GITHUB_OUTPUT="+outputPath, "PR_JSON="+tc.prJSON)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("read: %v: %s", err, output)
+			}
+			outputs, err := os.ReadFile(outputPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, want := range []string{"vmtest=" + tc.vmtest + "\n", "base=" + tc.base + "\n"} {
+				if !strings.Contains(string(outputs), want) {
+					t.Errorf("outputs = %q, want %q", outputs, want)
+				}
+			}
+		})
 	}
 }
 
 // Version-less series branches get fast checks on push and build no release
 // artifacts, which are produced for tags and manual dispatch only.
 func TestReleaseBranchTriggers(t *testing.T) {
-	pushBranches := func(file string) []string {
+	push := func(file string) (branches, tags, ignored []string) {
 		t.Helper()
 		data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows", file))
 		if err != nil {
@@ -536,13 +627,18 @@ func TestReleaseBranchTriggers(t *testing.T) {
 		}
 		var workflow struct {
 			On struct {
-				Push struct{ Branches []string } `yaml:"push"`
+				Push struct {
+					Branches       []string
+					Tags           []string
+					BranchesIgnore []string `yaml:"branches-ignore"`
+				} `yaml:"push"`
 			} `yaml:"on"`
 		}
 		if err := yaml.Unmarshal(data, &workflow); err != nil {
 			t.Fatal(err)
 		}
-		return workflow.On.Push.Branches
+		p := workflow.On.Push
+		return p.Branches, p.Tags, p.BranchesIgnore
 	}
 	triggers := func(patterns []string, branch string) bool {
 		t.Helper()
@@ -561,9 +657,13 @@ func TestReleaseBranchTriggers(t *testing.T) {
 		return false
 	}
 
-	ci, artifacts := pushBranches("ci.yml"), pushBranches("release-artifacts.yml")
-	if len(artifacts) != 0 {
-		t.Errorf("release artifacts branch filters = %v, want none: only tags and dispatch carry a version", artifacts)
+	ci, _, _ := push("ci.yml")
+	artifactBranches, artifactTags, artifactIgnored := push("release-artifacts.yml")
+	if len(artifactBranches) != 0 || len(artifactIgnored) != 0 {
+		t.Errorf("release artifacts branches = %v, branches-ignore = %v, want neither: only tags and dispatch carry a version", artifactBranches, artifactIgnored)
+	}
+	if !slices.Equal(artifactTags, []string{"v*"}) {
+		t.Errorf("release artifacts tags = %v, want [v*]", artifactTags)
 	}
 	for _, tc := range []struct {
 		branch string
@@ -574,11 +674,12 @@ func TestReleaseBranchTriggers(t *testing.T) {
 		{"release/2026.12.0", true},
 		{"release/foo", false},
 		{"release/experiment/2026.12.x", false},
+		{"release/2026.12.x/foo", false},
 	} {
 		if got := triggers(ci, tc.branch); got != tc.ci {
 			t.Errorf("push to %s triggers CI = %v, want %v", tc.branch, got, tc.ci)
 		}
-		if triggers(artifacts, tc.branch) {
+		if triggers(artifactBranches, tc.branch) {
 			t.Errorf("push to %s triggers release artifacts", tc.branch)
 		}
 	}

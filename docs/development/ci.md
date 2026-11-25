@@ -17,17 +17,23 @@ selected kernel flavour builds immutable test inputs once and runs two lanes:
 - **Cluster:** ISO/PXE boot, storage authority, two-node bootstrap, and three-node
   installation.
 
-VM suites run in the merge queue, on a pull request into a `release/[0-9]*` branch,
-and on any other pull request only while it carries the `vmtest` label. Pushes to
-`release/[0-9]*` branches run fast checks. A pull request without either runs fast checks, the Nix build,
-and any selected driver qualification. Adding `vmtest` reruns the head commit's CI with
-the VM suites, cancelling a run
-still in progress. Retargeting a pull request to another base reruns it the same
-way, so a pull request moved from main onto a release branch gets the full plan;
-other labels and edits do not affect CI. Pull requests from forks
+VM suites run in the merge queue, on a pull request into a `release/[0-9]*` series
+branch, and on any other pull request only while it carries the `vmtest` label.
+Pushes to `release/[0-9]*` branches run fast checks. A pull request without
+either runs fast checks, the Nix build, and any selected driver qualification.
+Adding `vmtest` reruns the head commit's CI with the VM suites, cancelling a run
+still in progress; other labels do not affect CI. Pull requests from forks
 cannot be restarted this way, so push a commit instead. Add `vmtest` early in
-the life of a branch. Pushes to main run no VM or driver jobs, because the merge queue already
-tested the same tree.
+the life of a branch. Pushes to main run no VM or driver jobs, because the merge
+queue already tested the same tree.
+
+The required check names the base CI tested. A pull request into a release
+series branch publishes `CI (release)`; every other event publishes `CI`, and the
+release branch ruleset waits for `CI (release)`. A rerun replays the original
+event, so it keeps the name of the base it tested. After a pull request is
+retargeted onto a release branch it therefore has no `CI (release)` result:
+open release pull requests with `gh pr create --base release/...`, or close and
+reopen the pull request, or push a commit, after retargeting.
 
 Every selected test must emit a Go JSON pass event. A labelled pull request and
 the merge queue run the complete suite for both standard and LTS whenever any

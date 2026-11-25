@@ -640,9 +640,11 @@ also runs the VM suites for both kernel flavours; none of this runs again after
 the merge. To run the VM suites on a pull request before queueing it, add the
 `vmtest` label; later pushes to the branch keep running them while the label is
 present. Pull requests into a `release/[0-9]*` branch run them without the label.
-Adding `vmtest`, or retargeting a pull request to another base, reruns the head
-commit's CI; other labels and edits do not affect CI, and fork pull requests
-cannot be restarted this way. Agents still
+Adding `vmtest` reruns the head commit's CI; other labels do not affect CI, and
+fork pull requests cannot be restarted this way. CI names the base it tested, and
+the release branch ruleset waits for `CI (release)`, so open release pull
+requests with `gh pr create --base release/...`; after retargeting an existing
+pull request onto a release branch, close and reopen it or push a commit. Agents still
 run the relevant local `scripts/vmtest-run` gates before opening a pull request,
 as `AGENTS.md` requires. Kubernetes producer validation shares the VM image
 build and cluster lane. Direct pushes are not part of the supported development
@@ -745,8 +747,9 @@ and verify a candidate, and monitor automated qualification and publication.
 Start with `scripts/katl-release prepare VERSION`; it performs read-only checks
 and prints the commands for starting the tag build.
 
-`.github/workflows/release-artifacts.yml` builds Katl artifacts for pushed `v*` KatlOS tags. It can also be dispatched manually
-with an explicit version for build verification. Manual runs
+`.github/workflows/release-artifacts.yml` builds Katl artifacts for pushed `v*`
+KatlOS tags. It can also be dispatched manually with an explicit version for
+build verification. Manual runs
 retain one GitHub Actions artifact; tag runs additionally publish those exact
 files as assets on the matching GitHub Release.
 

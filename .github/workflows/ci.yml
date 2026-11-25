@@ -12,10 +12,14 @@ permissions:
   contents: read
 
 # Label and edit events do not trigger this workflow, because a cancelled or
-# skipped run would publish a CI result for the head SHA. ci-restart.yml reruns
-# the pull request's run when vmtest is added or the base changes. After a base
-# change the rerun fails, because it tested the old base; only a fresh run from
-# reopening the pull request or pushing a commit can pass.
+# skipped run would publish a CI result for the head SHA. vmtest-label.yml reruns
+# the pull request's run when vmtest is added.
+#
+# The result job is named after the base its payload tested: CI for every event
+# except a pull request into a release branch, which publishes "CI (release)".
+# A rerun replays the payload and so keeps its name, and the release ruleset
+# requires only "CI (release)". A pull request retargeted onto a release branch
+# therefore lacks that check until it is reopened or receives a commit.
 #
 # Only a newer push to the same pull request supersedes a run. Merge-group
 # entries have unique refs, and every other trigger (push, dispatch) is
@@ -39,6 +43,7 @@ jobs:
       scenarios: ${{ steps.plan.outputs.scenarios }}
       range: ${{ steps.plan.outputs.range }}
       full-plan: ${{ steps.plan.outputs.full-plan }}
+      check-suffix: ${{ steps.plan.outputs.check-suffix }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -79,25 +84,36 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           BEFORE_SHA: ${{ github.event.before }}
           BASE_REF: ${{ steps.pr.outputs.base }}
+          PAYLOAD_BASE: ${{ github.base_ref }}
           VMTEST_LABEL: ${{ steps.pr.outputs.vmtest }}
         run: |
           mkdir -p _build
           options=(--ci)
-          # The full plan runs the VM suites for both flavours. It applies in the merge
-          # queue, on pull requests labelled vmtest, and on pull requests into a release
-          # branch, which has no merge queue; BASE_REF is read live, as for the label.
-          # Driver qualification runs wherever the planner selects it, except on pushes.
+          # Release series branches match the push filter, where * does not cross a slash.
+          release_base() { [[ "$1" == release/[0-9]* && "$1" != release/*/* ]]; }
+          # The full plan applies in the merge queue and on pull requests into a release
+          # branch, which has no merge queue. The vmtest label adds the VM suites without
+          # it, so a labelled pull request into main does not take full-plan decisions.
+          # BASE_REF is read live, as the label is. Driver qualification runs wherever
+          # the planner selects it, except on pushes.
           full_plan=false
+          regression=false
           no_drivers=false
           case "$GITHUB_EVENT_NAME" in
             pull_request)
-              if [[ "${VMTEST_LABEL:-false}" == true || "${BASE_REF:-}" == release/[0-9]* ]]; then full_plan=true; fi ;;
+              if release_base "${BASE_REF:-}"; then full_plan=true; fi
+              if [[ "${VMTEST_LABEL:-false}" == true ]]; then regression=true; fi ;;
             merge_group) full_plan=true ;;
             push) no_drivers=true ;;
           esac
+          if [[ "$full_plan" == true ]]; then regression=true; fi
           no_vms=false
-          if [[ "$full_plan" == false && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then no_vms=true; fi
-          if [[ "$full_plan" == true ]]; then options+=(--regression); fi
+          if [[ "$regression" == false && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then no_vms=true; fi
+          if [[ "$regression" == true ]]; then options+=(--regression); fi
+          # The result job's name derives from the payload base, which a rerun replays,
+          # so the required check names the base this run tested.
+          check_suffix=
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]] && release_base "${PAYLOAD_BASE:-}"; then check_suffix="(release)"; fi
           # BASE_SHA stays the payload value: a rerun checks out the same merge commit
           # as the payload describes, so the range matches the tree under test.
           if [[ "$GITHUB_EVENT_NAME" == pull_request || "$GITHUB_EVENT_NAME" == merge_group ]]; then
@@ -122,6 +138,7 @@ jobs:
             echo "kubernetes-version=$(jq -r '.include[0].payloadVersion // empty' _build/kubernetes-plan.json)"
             echo "range=$base..HEAD"
             echo "full-plan=$full_plan"
+            echo "check-suffix=$check_suffix"
           } >> "$GITHUB_OUTPUT"
           cat _build/ci-plan.json >> "$GITHUB_STEP_SUMMARY"
 
@@ -197,7 +214,7 @@ jobs:
       flavour: ${{ matrix.flavour }}
 
   result:
-    name: CI
+    name: CI${{ needs.plan.outputs.check-suffix && format(' {0}', needs.plan.outputs.check-suffix) || '' }}
     if: always()
     needs: [plan, checks, nix, vms, drivers]
     runs-on: ubuntu-24.04
