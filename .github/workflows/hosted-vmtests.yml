@@ -190,8 +190,6 @@ jobs:
           .github/scripts/hosted-vmtest-measure agent .github/scripts/hosted-vmtest-run \
             --artifact-set=runtime --no-rebuild ./internal/vmtest \
             -run '^TestDirectRuntimeVMTestAgentSmoke$' -count=1 -json -timeout 8m
-          jq -se 'any(.[]; .Action == "pass" and .Test == "TestDirectRuntimeVMTestAgentSmoke")' \
-            _build/hosted-evidence/go-test.jsonl
       - name: Build shared installer and lifecycle inputs
         run: |
           .github/scripts/hosted-vmtest-measure build-install scripts/mkosi build-installer-iso

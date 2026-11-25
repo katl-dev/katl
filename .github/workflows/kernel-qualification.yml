@@ -72,8 +72,6 @@ jobs:
           .github/scripts/hosted-vmtest-measure drbd .github/scripts/hosted-vmtest-run \
             --artifact-set=install --no-rebuild ./internal/vmtest \
             -run '^TestInstalledRuntimeDRBDReplication$' -count=1 -json -timeout 40m
-          jq -se 'any(.[]; .Action == "pass" and .Test == "TestInstalledRuntimeDRBDReplication")' \
-            _build/hosted-evidence/go-test.jsonl
       - name: Record the qualified commit and inputs
         run: |
           printf 'Qualified commit: `%s`\n\n' "$KATL_BUILD_COMMIT" >> "$GITHUB_STEP_SUMMARY"

@@ -49,6 +49,8 @@ func releaseFile(t *testing.T, dir, pattern string) string {
 	return paths[0]
 }
 
+// runReleaseLifecycle journeys must never skip: katl-vmtest-ran checks only the
+// outcome of the top-level test, so a skipped subtest would pass the gate.
 func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 	t.Helper()
 	world := RequireWorld(t)
