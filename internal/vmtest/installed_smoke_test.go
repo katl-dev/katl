@@ -35,6 +35,7 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 		RequireVMTestAgent: true,
 		VM: FirstInstallRuntimeVMConfig(VMConfig{
 			KVM:     runner.options().KVM,
+			Network: contract.WorldNode.VMNetwork(),
 			RAMMiB:  2048,
 			CPUs:    2,
 			Timeout: 8 * time.Minute,
@@ -74,6 +75,7 @@ func TestFirstInstallTargetDiskFixtureContract(t *testing.T) {
 		RequireVMTestAgent: true,
 		VM: FirstInstallRuntimeVMConfig(VMConfig{
 			KVM:     runner.options().KVM,
+			Network: contract.WorldNode.VMNetwork(),
 			RAMMiB:  2048,
 			CPUs:    2,
 			Timeout: 8 * time.Minute,
@@ -193,6 +195,7 @@ func TestFirstInstallTargetDiskBootSmoke(t *testing.T) {
 			VM:           FirstInstallRuntimeVMConfig(vm),
 		},
 		UseInstalledESP: worldRun.Config.UseInstalledESP,
+		Network:         worldRun.Config.Network,
 		ManifestPath:    worldRun.Config.ManifestPath,
 		PreseedManifest: true,
 		TargetDisk:      worldRun.Config.TargetDisk,
@@ -255,6 +258,7 @@ func TestFirstInstallTargetDiskLocalHandoffSmoke(t *testing.T) {
 			VM:           FirstInstallRuntimeVMConfig(vm),
 		},
 		UseInstalledESP: worldRun.Config.UseInstalledESP,
+		Network:         worldRun.Config.Network,
 		ManifestPath:    worldRun.Config.ManifestPath,
 		ConfigBundle:    worldRun.Config.ConfigBundle,
 		SelectedNode:    worldRun.Config.SelectedNode,
@@ -294,6 +298,7 @@ func TestDirectRuntimeVMTestAgentSmoke(t *testing.T) {
 		config := worldRun.Config
 		config.RequireVMTestAgent = true
 		config.VM = VMConfig{
+			Network: config.VM.Network,
 			KVM:     worldRun.Runner.options().KVM,
 			Timeout: 3 * time.Minute,
 			VSock: VSockConfig{
@@ -335,6 +340,7 @@ func TestInstalledRuntimeKubeadmAPISmoke(t *testing.T) {
 		defer cancel()
 		config := worldRun.Config
 		config.VM = VMConfig{
+			Network: config.VM.Network,
 			KVM:     worldRun.Runner.options().KVM,
 			RAMMiB:  2048,
 			CPUs:    2,
@@ -471,6 +477,7 @@ func TestFirstInstallOfflinePreseedWithoutLink(t *testing.T) {
 			VM:           FirstInstallRuntimeVMConfig(vm),
 		},
 		UseInstalledESP: worldRun.Config.UseInstalledESP,
+		Network:         worldRun.Config.Network,
 		ManifestPath:    worldRun.Config.ManifestPath,
 		PreseedManifest: true,
 		TargetDisk:      worldRun.Config.TargetDisk,

@@ -1606,3 +1606,46 @@ func TestVMCommandLineReachesFirmwareBootedGuest(t *testing.T) {
 		}
 	})
 }
+
+func TestPlanVMRunLeaseRequiresNetwork(t *testing.T) {
+	env := func(values map[string]string) probe {
+		return probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+			env:      func(name string) string { return values[name] },
+		}
+	}
+	leased := map[string]string{"KATL_VMTEST_RUN_LEASE": "lease-1", "KATL_VMTEST_LIBVIRT_NETWORK": "default"}
+
+	t.Run("refuses default fallback", func(t *testing.T) {
+		result, config := vmFixture(t)
+		_, err := planVM(result, config, env(leased))
+		if err == nil || !strings.Contains(err.Error(), "no libvirt network") {
+			t.Fatalf("planVM() error = %v, want refusal for a VM without a network", err)
+		}
+	})
+
+	t.Run("attached VM plans", func(t *testing.T) {
+		result, config := vmFixture(t)
+		config.Network.Name = "katl-run-scenario"
+		plan, err := planVM(result, config, env(leased))
+		if err != nil {
+			t.Fatalf("planVM() error = %v", err)
+		}
+		if !strings.Contains(plan.DomainXML, `<source network="katl-run-scenario"></source>`) {
+			t.Fatalf("domain XML missing scenario network:\n%s", plan.DomainXML)
+		}
+	})
+
+	t.Run("without lease falls back", func(t *testing.T) {
+		result, config := vmFixture(t)
+		plan, err := planVM(result, config, env(nil))
+		if err != nil {
+			t.Fatalf("planVM() error = %v", err)
+		}
+		if !strings.Contains(plan.DomainXML, `<source network="default"></source>`) {
+			t.Fatalf("domain XML missing default network:\n%s", plan.DomainXML)
+		}
+	})
+}

@@ -213,21 +213,21 @@ func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, scenarioName, 
 			CP1Fixture:        nodes["cp-1"].Config.FixtureManifest,
 			CP1Metadata:       nodes["cp-1"].Config.NodeMetadata,
 			CP1Address:        nodes["cp-1"].Node.Address,
-			CP1MAC:            nodes["cp-1"].Node.MACAddress,
+			CP1Network:        nodes["cp-1"].Node.VMNetwork(),
 			CP2Disk:           nodes["cp-2"].Config.Disk,
 			CP2DiskFormat:     string(nodes["cp-2"].Config.DiskFormat),
 			CP2ESP:            nodes["cp-2"].Config.ESPArtifacts,
 			CP2Fixture:        nodes["cp-2"].Config.FixtureManifest,
 			CP2Metadata:       nodes["cp-2"].Config.NodeMetadata,
 			CP2Address:        nodes["cp-2"].Node.Address,
-			CP2MAC:            nodes["cp-2"].Node.MACAddress,
+			CP2Network:        nodes["cp-2"].Node.VMNetwork(),
 			CP3Disk:           nodes["cp-3"].Config.Disk,
 			CP3DiskFormat:     string(nodes["cp-3"].Config.DiskFormat),
 			CP3ESP:            nodes["cp-3"].Config.ESPArtifacts,
 			CP3Fixture:        nodes["cp-3"].Config.FixtureManifest,
 			CP3Metadata:       nodes["cp-3"].Config.NodeMetadata,
 			CP3Address:        nodes["cp-3"].Node.Address,
-			CP3MAC:            nodes["cp-3"].Node.MACAddress,
+			CP3Network:        nodes["cp-3"].Node.VMNetwork(),
 			CP3Install:        firstInstallProvenanceFromPublished(cp3Published),
 			SSHPrivateKey:     sshPrivateKey,
 			SSHAuthorizedKey:  sshAuthorizedKey,
@@ -282,14 +282,14 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Minute)
 	defer cancel()
 
-	cp1Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-1", inputs.CP1Disk, inputs.CP1ESP, inputs.CP1Fixture, inputs.CP1Metadata, vmtest.DiskFormat(inputs.CP1DiskFormat), inputs.CP1MAC, 0), vmtest.VMRunner{})
+	cp1Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-1", inputs.CP1Disk, inputs.CP1ESP, inputs.CP1Fixture, inputs.CP1Metadata, vmtest.DiskFormat(inputs.CP1DiskFormat), inputs.CP1Network, 0), vmtest.VMRunner{})
 	if err != nil {
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
 		t.Fatalf("start cp-1 VM: %v", err)
 	}
 	defer stopNode(t, cp1Node)
 
-	cp2Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-2", inputs.CP2Disk, inputs.CP2ESP, inputs.CP2Fixture, inputs.CP2Metadata, vmtest.DiskFormat(inputs.CP2DiskFormat), inputs.CP2MAC, 0), vmtest.VMRunner{})
+	cp2Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-2", inputs.CP2Disk, inputs.CP2ESP, inputs.CP2Fixture, inputs.CP2Metadata, vmtest.DiskFormat(inputs.CP2DiskFormat), inputs.CP2Network, 0), vmtest.VMRunner{})
 	if err != nil {
 		collectTwoNodeDiagnostics("", cp1Node)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -297,7 +297,7 @@ func runThreeControlPlaneStackedEtcdSmoke(t *testing.T, smoke threeControlPlaneS
 	}
 	defer stopNode(t, cp2Node)
 
-	cp3Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-3", inputs.CP3Disk, inputs.CP3ESP, inputs.CP3Fixture, inputs.CP3Metadata, vmtest.DiskFormat(inputs.CP3DiskFormat), inputs.CP3MAC, 0), vmtest.VMRunner{})
+	cp3Node, err := vmtest.StartInstalledRuntimeNode(ctx, result, threeControlPlaneNodeConfigForRun(smoke, "cp-3", inputs.CP3Disk, inputs.CP3ESP, inputs.CP3Fixture, inputs.CP3Metadata, vmtest.DiskFormat(inputs.CP3DiskFormat), inputs.CP3Network, 0), vmtest.VMRunner{})
 	if err != nil {
 		collectTwoNodeDiagnostics("", cp1Node, cp2Node)
 		finishTwoNodeResult(t, runner, scenario, result, vmtest.StatusFailed, err.Error())
@@ -655,7 +655,7 @@ func runThreeControlPlaneReplacementProof(t *testing.T, ctx context.Context, smo
 		LibvirtURI: smoke.LibvirtURI,
 		Network:    smoke.Network,
 	}
-	reinstallResult, err := runWipeReinstallNode(ctx, reinstallRun, reinstallRunner, "cp-3", cp3Overlay, smoke.Inputs.CP3Install, smoke.Inputs.CP3MAC)
+	reinstallResult, err := runWipeReinstallNode(ctx, reinstallRun, reinstallRunner, "cp-3", cp3Overlay, smoke.Inputs.CP3Install, smoke.Inputs.CP3Network)
 	if err != nil {
 		return nodes, fmt.Errorf("reinstall cp-3: %w", err)
 	}
@@ -676,7 +676,7 @@ func runThreeControlPlaneReplacementProof(t *testing.T, ctx context.Context, smo
 	}
 	postResult.Started = time.Now().UTC()
 	reinstalledCP3, err := vmtest.StartInstalledRuntimeNode(ctx, postResult, threeControlPlaneNodeConfigForRun(
-		smoke, "cp-3", reinstalledDisk, reinstallResult.Artifacts.InstalledESP, "", smoke.Inputs.CP3Metadata, vmtest.DiskQCOW2, smoke.Inputs.CP3MAC, 0,
+		smoke, "cp-3", reinstalledDisk, reinstallResult.Artifacts.InstalledESP, "", smoke.Inputs.CP3Metadata, vmtest.DiskQCOW2, smoke.Inputs.CP3Network, 0,
 	), vmtest.VMRunner{})
 	if err != nil {
 		return nodes, fmt.Errorf("start reinstalled cp-3: %w", err)
@@ -1333,21 +1333,21 @@ type threeControlPlaneSmokeInputs struct {
 	CP1Fixture        string
 	CP1Metadata       string
 	CP1Address        string
-	CP1MAC            string
+	CP1Network        vmtest.VMNetworkConfig
 	CP2Disk           string
 	CP2DiskFormat     string
 	CP2ESP            string
 	CP2Fixture        string
 	CP2Metadata       string
 	CP2Address        string
-	CP2MAC            string
+	CP2Network        vmtest.VMNetworkConfig
 	CP3Disk           string
 	CP3DiskFormat     string
 	CP3ESP            string
 	CP3Fixture        string
 	CP3Metadata       string
 	CP3Address        string
-	CP3MAC            string
+	CP3Network        vmtest.VMNetworkConfig
 	CP3Install        firstInstallProvenance
 	SSHPrivateKey     string
 	SSHAuthorizedKey  string
@@ -1385,11 +1385,10 @@ func threeControlPlaneNodeConfig(name, disk, esp, fixtureManifest, nodeMetadata 
 	}
 }
 
-func threeControlPlaneNodeConfigForRun(run threeControlPlaneSmokeRun, name, disk, esp, fixtureManifest, nodeMetadata string, format vmtest.DiskFormat, mac string, cid uint32) vmtest.InstalledRuntimeNodeConfig {
+func threeControlPlaneNodeConfigForRun(run threeControlPlaneSmokeRun, name, disk, esp, fixtureManifest, nodeMetadata string, format vmtest.DiskFormat, network vmtest.VMNetworkConfig, cid uint32) vmtest.InstalledRuntimeNodeConfig {
 	config := threeControlPlaneNodeConfig(name, disk, esp, fixtureManifest, nodeMetadata, format, run.Options.KVM, cid)
 	config.Runtime.VM.LibvirtURI = run.LibvirtURI
-	config.Runtime.VM.LibvirtNetwork = run.Network
-	config.Runtime.VM.Network.MAC = mac
+	config.Runtime.VM.Network = network
 	return config
 }
 

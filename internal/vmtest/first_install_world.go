@@ -170,6 +170,7 @@ func planFirstInstallScenarioRun(scenario *WorldScenario, repo string, spec Node
 		ConfigBundle:    configBundle.Path,
 		SelectedNode:    spec.Name,
 		TargetDisk:      target,
+		Network:         node.VMNetwork(),
 	}
 	if err := verifyGenericInstallerArtifactsOmitExternalConfig(run.Config.Installer, run.Config.ManifestPath, run.Config.Runtime.NodeMetadata); err != nil {
 		_ = scenario.WriteSetupFailure(err)

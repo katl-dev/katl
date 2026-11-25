@@ -105,6 +105,15 @@ type VMNetworkConfig struct {
 	LinkDown bool
 }
 
+// attach returns network with the name, MAC and address of n; its mode and link
+// flags stay.
+func (n VMNetworkConfig) attach(network VMNetworkConfig) VMNetworkConfig {
+	network.Name = n.Name
+	network.MAC = n.MAC
+	network.Address = n.Address
+	return network
+}
+
 type HostForward struct {
 	HostPort  int
 	GuestPort int
@@ -1066,7 +1075,15 @@ func planVM(result Result, config VMConfig, probe probe) (VMPlan, error) {
 		virsh = found
 	}
 	libvirtURI := first(config.LibvirtURI, probe.env("KATL_VMTEST_LIBVIRT_URI"), "qemu:///system")
-	libvirtNetwork := first(config.LibvirtNetwork, config.Network.Name, probe.env("KATL_VMTEST_LIBVIRT_NETWORK"), "default")
+	libvirtNetwork := first(config.LibvirtNetwork, config.Network.Name)
+	if libvirtNetwork == "" {
+		// A run lease owns the libvirt networks of its scenarios, so a VM
+		// outside them would share the host default network with other runs.
+		if probe.env("KATL_VMTEST_RUN_LEASE") != "" {
+			return VMPlan{}, errors.New("VM has no libvirt network: a run-leased VM attaches to its scenario network; take it from Node.VMNetwork or WorldScenario.VMNetwork")
+		}
+		libvirtNetwork = first(probe.env("KATL_VMTEST_LIBVIRT_NETWORK"), "default")
+	}
 	directKernel := config.Boot.Kernel != ""
 	if directKernel {
 		if _, err := probe.stat(config.Boot.Kernel); err != nil {

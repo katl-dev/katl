@@ -83,7 +83,7 @@ type operationBackedSmokeInputs struct {
 	ControlPlaneFixture    string
 	ControlPlaneMetadata   string
 	ControlPlaneAddress    string
-	ControlPlaneMAC        string
+	ControlPlaneNetwork    vmtest.VMNetworkConfig
 	ControlPlaneInstall    firstInstallProvenance
 	WorkerDisk             string
 	WorkerDiskFormat       string
@@ -91,7 +91,7 @@ type operationBackedSmokeInputs struct {
 	WorkerFixture          string
 	WorkerMetadata         string
 	WorkerAddress          string
-	WorkerMAC              string
+	WorkerNetwork          vmtest.VMNetworkConfig
 	WorkerInstall          firstInstallProvenance
 	KubernetesVersion      string
 	SSHPrivateKey          string
@@ -228,7 +228,7 @@ func planOperationBackedWorldSmokeRunNamed(world vmtest.World, repo, kubernetesV
 			ControlPlaneFixture:    cp.Config.FixtureManifest,
 			ControlPlaneMetadata:   cp.Config.NodeMetadata,
 			ControlPlaneAddress:    cp.Node.Address,
-			ControlPlaneMAC:        cp.Node.MACAddress,
+			ControlPlaneNetwork:    cp.Node.VMNetwork(),
 			ControlPlaneInstall:    firstInstallProvenanceFromPublished(cpPublished),
 			WorkerDisk:             worker.Config.Disk,
 			WorkerDiskFormat:       string(worker.Config.DiskFormat),
@@ -236,7 +236,7 @@ func planOperationBackedWorldSmokeRunNamed(world vmtest.World, repo, kubernetesV
 			WorkerFixture:          worker.Config.FixtureManifest,
 			WorkerMetadata:         worker.Config.NodeMetadata,
 			WorkerAddress:          worker.Node.Address,
-			WorkerMAC:              worker.Node.MACAddress,
+			WorkerNetwork:          worker.Node.VMNetwork(),
 			WorkerInstall:          firstInstallProvenanceFromPublished(workerPublished),
 			KubernetesVersion:      firstString(kubernetesVersion, "v1.36.1"),
 			SSHPrivateKey:          filepath.Join(vmtest.WorldFixtureCacheDir(world), "ssh", "id_ed25519"),
@@ -341,7 +341,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 			ESPArtifacts:    inputs.ControlPlaneESP,
 			FixtureManifest: inputs.ControlPlaneFixture,
 			NodeMetadata:    inputs.ControlPlaneMetadata,
-			VM:              operationBackedVMConfigForRun(smoke, inputs.ControlPlaneMAC, 0),
+			VM:              operationBackedVMConfigForRun(smoke, inputs.ControlPlaneNetwork, 0),
 		},
 	}, vmtest.VMRunner{})
 	if err != nil {
@@ -358,7 +358,7 @@ func runOperationBackedBootstrapSmoke(t *testing.T, smoke operationBackedSmokeRu
 			ESPArtifacts:    inputs.WorkerESP,
 			FixtureManifest: inputs.WorkerFixture,
 			NodeMetadata:    inputs.WorkerMetadata,
-			VM:              operationBackedVMConfigForRun(smoke, inputs.WorkerMAC, 0),
+			VM:              operationBackedVMConfigForRun(smoke, inputs.WorkerNetwork, 0),
 		},
 	}, vmtest.VMRunner{})
 	if err != nil {
@@ -1414,11 +1414,10 @@ func waitForBootstrapRuntimeAfterReboot(ctx context.Context, node vmtest.Running
 	}
 }
 
-func operationBackedVMConfigForRun(run operationBackedSmokeRun, mac string, cid uint32) vmtest.VMConfig {
+func operationBackedVMConfigForRun(run operationBackedSmokeRun, network vmtest.VMNetworkConfig, cid uint32) vmtest.VMConfig {
 	config := twoNodeVMConfig(run.Options.KVM, cid)
 	config.LibvirtURI = run.LibvirtURI
-	config.LibvirtNetwork = run.Network
-	config.Network.MAC = mac
+	config.Network = network
 	return config
 }
 
@@ -1559,14 +1558,14 @@ func planTwoNodeWorldSmokeRun(world vmtest.World, repo, kubernetesVersion string
 			ControlPlaneFixture:    cp.Config.FixtureManifest,
 			ControlPlaneMetadata:   cp.Config.NodeMetadata,
 			ControlPlaneAddress:    cp.Node.Address,
-			ControlPlaneMAC:        cp.Node.MACAddress,
+			ControlPlaneNetwork:    cp.Node.VMNetwork(),
 			WorkerDisk:             worker.Config.Disk,
 			WorkerDiskFormat:       string(worker.Config.DiskFormat),
 			WorkerESP:              worker.Config.ESPArtifacts,
 			WorkerFixture:          worker.Config.FixtureManifest,
 			WorkerMetadata:         worker.Config.NodeMetadata,
 			WorkerAddress:          worker.Node.Address,
-			WorkerMAC:              worker.Node.MACAddress,
+			WorkerNetwork:          worker.Node.VMNetwork(),
 			KubernetesVersion:      firstString(kubernetesVersion, "v1.36.1"),
 			WorldProvenance:        twoNodeWorldProvenance(world, repo),
 		},
@@ -1597,11 +1596,10 @@ func twoNodeVMConfig(kvm vmtest.KVMPolicy, cid uint32) vmtest.VMConfig {
 	}
 }
 
-func twoNodeVMConfigForRun(run twoNodeSmokeRun, mac string, cid uint32) vmtest.VMConfig {
+func twoNodeVMConfigForRun(run twoNodeSmokeRun, network vmtest.VMNetworkConfig, cid uint32) vmtest.VMConfig {
 	config := twoNodeVMConfig(run.Options.KVM, cid)
 	config.LibvirtURI = run.LibvirtURI
-	config.LibvirtNetwork = run.Network
-	config.Network.MAC = mac
+	config.Network = network
 	return config
 }
 
@@ -1612,14 +1610,14 @@ type twoNodeSmokeInputs struct {
 	ControlPlaneFixture    string
 	ControlPlaneMetadata   string
 	ControlPlaneAddress    string
-	ControlPlaneMAC        string
+	ControlPlaneNetwork    vmtest.VMNetworkConfig
 	WorkerDisk             string
 	WorkerDiskFormat       string
 	WorkerESP              string
 	WorkerFixture          string
 	WorkerMetadata         string
 	WorkerAddress          string
-	WorkerMAC              string
+	WorkerNetwork          vmtest.VMNetworkConfig
 	KubernetesVersion      string
 	WorldProvenance        multiNodeWorldProvenancePaths
 }

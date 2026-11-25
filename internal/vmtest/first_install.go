@@ -24,8 +24,11 @@ import (
 )
 
 type FirstInstallConfig struct {
-	Installer           InstallerBootConfig
-	Runtime             InstalledRuntimeConfig
+	Installer InstallerBootConfig
+	Runtime   InstalledRuntimeConfig
+	// Network attaches both the installer and the installed runtime VM, which
+	// are one node. When set it replaces their network, MAC and address.
+	Network             VMNetworkConfig
 	UseInstalledESP     bool
 	ESPExtractor        InstalledESPExtractor
 	Manifest            []byte
@@ -72,6 +75,10 @@ func RunFirstInstall(ctx context.Context, runner Runner, scenario Scenario, conf
 	result, err := runner.Plan(scenario)
 	if err != nil {
 		return Result{}, err
+	}
+	if config.Network != (VMNetworkConfig{}) {
+		config.Installer.VM.Network = config.Network.attach(config.Installer.VM.Network)
+		config.Runtime.VM.Network = config.Network.attach(config.Runtime.VM.Network)
 	}
 	result.start(runner.time())
 	if err := CreateDisks(ctx, diskExec(config.DiskRunner), result.Disks); err != nil {

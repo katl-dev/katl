@@ -44,23 +44,22 @@ type threeNodeGeneration0InstallInputs struct {
 }
 
 type threeNodeGeneration0Input struct {
-	Name                 string   `json:"name"`
-	Role                 string   `json:"role"`
-	Disk                 string   `json:"disk"`
-	DiskFormat           string   `json:"diskFormat"`
-	ESPArtifacts         string   `json:"espArtifacts"`
-	FixtureManifest      string   `json:"fixtureManifest"`
-	NodeMetadata         string   `json:"nodeMetadata,omitempty"`
-	Address              string   `json:"address,omitempty"`
-	MACAddress           string   `json:"macAddress,omitempty"`
-	Network              string   `json:"network,omitempty"`
-	InstallerUKI         string   `json:"installerUKI,omitempty"`
-	InstallerKernel      string   `json:"installerKernel,omitempty"`
-	InstallerInitrd      string   `json:"installerInitrd,omitempty"`
-	InstallerCommandLine []string `json:"installerCommandLine,omitempty"`
-	RuntimeArtifact      string   `json:"runtimeArtifact,omitempty"`
-	InstallManifest      string   `json:"installManifest,omitempty"`
-	FirstInstallMode     string   `json:"firstInstallMode,omitempty"`
+	Name                 string                 `json:"name"`
+	Role                 string                 `json:"role"`
+	Disk                 string                 `json:"disk"`
+	DiskFormat           string                 `json:"diskFormat"`
+	ESPArtifacts         string                 `json:"espArtifacts"`
+	FixtureManifest      string                 `json:"fixtureManifest"`
+	NodeMetadata         string                 `json:"nodeMetadata,omitempty"`
+	Address              string                 `json:"address,omitempty"`
+	VMNetwork            vmtest.VMNetworkConfig `json:"vmNetwork"`
+	InstallerUKI         string                 `json:"installerUKI,omitempty"`
+	InstallerKernel      string                 `json:"installerKernel,omitempty"`
+	InstallerInitrd      string                 `json:"installerInitrd,omitempty"`
+	InstallerCommandLine []string               `json:"installerCommandLine,omitempty"`
+	RuntimeArtifact      string                 `json:"runtimeArtifact,omitempty"`
+	InstallManifest      string                 `json:"installManifest,omitempty"`
+	FirstInstallMode     string                 `json:"firstInstallMode,omitempty"`
 }
 
 type threeNodeGeneration0Proof struct {
@@ -173,8 +172,7 @@ func planThreeNodeGeneration0InstallRun(world vmtest.World, repo string, specs [
 			FixtureManifest:      node.Config.FixtureManifest,
 			NodeMetadata:         node.Config.NodeMetadata,
 			Address:              node.Node.Address,
-			MACAddress:           node.Node.MACAddress,
-			Network:              node.Node.Network,
+			VMNetwork:            node.Node.VMNetwork(),
 			InstallerUKI:         published.InstallerUKI,
 			InstallerKernel:      published.InstallerKernel,
 			InstallerInitrd:      published.InstallerInitrd,
@@ -243,13 +241,10 @@ func runThreeNodeGeneration0Install(t *testing.T, run threeNodeGeneration0Instal
 				NodeMetadata:       input.NodeMetadata,
 				RequireVMTestAgent: true,
 				VM: vmtest.VMConfig{
-					KVM:    run.Runner.Options.KVM,
-					RAMMiB: 2048,
-					CPUs:   2,
-					Network: vmtest.VMNetworkConfig{
-						MAC:  input.MACAddress,
-						Name: input.Network,
-					},
+					KVM:     run.Runner.Options.KVM,
+					RAMMiB:  2048,
+					CPUs:    2,
+					Network: input.VMNetwork,
 					Timeout: 8 * time.Minute,
 					VSock: vmtest.VSockConfig{
 						Enabled: true,
@@ -381,6 +376,7 @@ func runThreeNodeGeneration0RerunProof(ctx context.Context, runner vmtest.Runner
 			},
 		},
 		ManifestPath:    input.InstallManifest,
+		Network:         input.VMNetwork,
 		UseInstalledESP: true,
 	}
 	switch vmtest.FirstInstallWorldMode(input.FirstInstallMode) {

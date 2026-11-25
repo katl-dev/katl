@@ -71,7 +71,7 @@ func TestVolumeBindingGate(t *testing.T) {
 	runner := vmtest.NewRunner(options)
 	vm := vmtest.VMConfig{
 		Boot:          vmtest.VMBoot{Image: disk, ImageFormat: vmtest.DiskRaw, ImageWithoutSerial: true},
-		Network:       vmtest.VMNetworkConfig{MAC: node.MACAddress},
+		Network:       node.VMNetwork(),
 		PreserveNVRAM: true,
 		KVM:           options.KVM,
 		RAMMiB:        2048,
