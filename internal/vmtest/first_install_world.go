@@ -849,7 +849,7 @@ func resolveFirstInstallWorldInput(scenario *WorldScenario, repo string, spec No
 }
 
 func ResolveFirstInstallWorldInput(scenario *WorldScenario, repo string, spec NodeSpec, input FirstInstallWorldInput) (FirstInstallWorldInput, error) {
-	index := defaultLocalMkosiArtifacts(repo)
+	index := defaultLocalMkosiArtifacts(repo, scenario.World.MkosiDir(repo))
 	if indexPath := explicitMkosiArtifactIndexPath(); indexPath != "" {
 		var err error
 		index, err = readMkosiArtifactIndex(indexPath, repo)
@@ -967,9 +967,8 @@ func explicitMkosiArtifactIndexPath() string {
 	return strings.TrimSpace(os.Getenv("KATL_MKOSI_ARTIFACT_INDEX"))
 }
 
-func defaultLocalMkosiArtifacts(repo string) mkosiArtifactIndex {
+func defaultLocalMkosiArtifacts(repo, mkosiDir string) mkosiArtifactIndex {
 	var index mkosiArtifactIndex
-	mkosiDir := filepath.Join(repo, "_build", "mkosi")
 	if current, err := readMkosiArtifactIndex(filepath.Join(mkosiDir, "artifacts.json"), repo); err == nil {
 		index = current
 	}
@@ -986,7 +985,7 @@ func defaultLocalMkosiArtifacts(repo string) mkosiArtifactIndex {
 		}
 	}
 	if _, exists := index.artifact("katlos-install-image"); !exists {
-		if artifact, err := discoverKatlOSInstallImage(repo); err == nil {
+		if artifact, err := discoverKatlOSInstallImage(mkosiDir); err == nil {
 			index.Artifacts = append(index.Artifacts, artifact)
 		}
 	}
@@ -1022,7 +1021,7 @@ func writeFirstInstallWorldBundleSource(scenario *WorldScenario, repo string, sp
 	image, ok := index.artifact("katlos-install-image")
 	if !ok {
 		var err error
-		image, err = discoverKatlOSInstallImage(repo)
+		image, err = discoverKatlOSInstallImage(scenario.World.MkosiDir(repo))
 		if err != nil {
 			return "", "", err
 		}
@@ -1186,7 +1185,7 @@ func writeFirstInstallWorldManifestSource(scenario *WorldScenario, repo string, 
 	image, ok := index.artifact("katlos-install-image")
 	if !ok {
 		var err error
-		image, err = discoverKatlOSInstallImage(repo)
+		image, err = discoverKatlOSInstallImage(scenario.World.MkosiDir(repo))
 		if err != nil {
 			return "", err
 		}
@@ -1479,8 +1478,8 @@ func writeFirstInstallWorldNodeMetadataSource(scenario *WorldScenario, spec Node
 	return metadataPath, nil
 }
 
-func discoverKatlOSInstallImage(repo string) (mkosiArtifact, error) {
-	matches, err := filepath.Glob(filepath.Join(repo, "_build", "mkosi", "katlos-install-*.squashfs"))
+func discoverKatlOSInstallImage(mkosiDir string) (mkosiArtifact, error) {
+	matches, err := filepath.Glob(filepath.Join(mkosiDir, "katlos-install-*.squashfs"))
 	if err != nil {
 		return mkosiArtifact{}, err
 	}

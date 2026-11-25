@@ -34,7 +34,7 @@ func TestInstallerISOBootSmoke(t *testing.T) {
 	options.Keep = vmtest.KeepFailed
 	iso := os.Getenv("KATL_INSTALLER_ISO")
 	if iso == "" {
-		iso = filepath.Join(katlRepoRoot(t), "_build", "mkosi", "katl-installer.iso")
+		iso = filepath.Join(world.MkosiDir(katlRepoRoot(t)), "katl-installer.iso")
 	}
 	runner := vmtest.NewRunner(options)
 	result, err := vmtest.RunInstallerBoot(
@@ -121,11 +121,11 @@ spec:
 	}
 	kernel := os.Getenv("KATL_INSTALLER_KERNEL")
 	if kernel == "" {
-		kernel = filepath.Join(repo, "_build", "mkosi", "katl-installer.vmlinuz")
+		kernel = filepath.Join(world.MkosiDir(repo), "katl-installer.vmlinuz")
 	}
 	initrd := os.Getenv("KATL_INSTALLER_INITRD")
 	if initrd == "" {
-		initrd = filepath.Join(repo, "_build", "mkosi", "katl-installer.initrd")
+		initrd = filepath.Join(world.MkosiDir(repo), "katl-installer.initrd")
 	}
 	network := worldScenario.VMNetwork()
 	network.ExtraDisconnected = true
@@ -215,7 +215,7 @@ func TestInstallerISOFirstInstallStorageAuthority(t *testing.T) {
 	options.Keep = vmtest.KeepFailed
 	iso := os.Getenv("KATL_INSTALLER_ISO")
 	if iso == "" {
-		iso = filepath.Join(katlRepoRoot(t), "_build", "mkosi", "katl-installer.iso")
+		iso = filepath.Join(world.MkosiDir(katlRepoRoot(t)), "katl-installer.iso")
 	}
 	identity, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "installer-storage"})
 	if err != nil {

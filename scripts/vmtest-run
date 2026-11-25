@@ -613,6 +613,7 @@ prepare_resource_manifest() {
         -mode record \
         -run-id "$run_id" \
 		-git-revision "$revision" \
+		-pin-dir "$artifact_dir" \
 		-mkosi-version "$mkosi_version"; then
         setup_failures+=("record vmtest resource manifest failed")
         return 1
@@ -633,13 +634,14 @@ prepare_resource_manifest() {
               name,
               kind,
               path: abs_path($repoRoot),
-              repoPath: .path,
+              repoPath: (if (.path | startswith($artifactDir + "/")) then ("_build/mkosi/" + (.path | split("/") | last)) else .path end),
+              pinned: (.path | startswith($artifactDir + "/")),
               sha256,
               sizeBytes,
               source: "resource-test-manifest",
               action: action_for($actions)
             })
-        ' --arg repoRoot "$repo_root" --argjson actions "$(artifact_build_actions_json)" "$resource_manifest"
+        ' --arg repoRoot "$repo_root" --arg artifactDir "$artifact_dir" --argjson actions "$(artifact_build_actions_json)" "$resource_manifest"
 	)"
 	vmtest_artifact_inputs_json="$(
 		jq -c '
@@ -1052,6 +1054,7 @@ write_world() {
           lease: $lease,
           cacheDir: $cacheDir,
           artifactDir: $artifactDir,
+          artifactsPinned: ($vmtestArtifacts | length > 0 and all($vmtestArtifacts[]; .pinned == true)),
           scenarioDir: $scenarioDir,
           runIndex: $runIndex,
           goTestLog: $goTestLog,

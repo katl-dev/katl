@@ -1772,6 +1772,7 @@ manifest=""
 mode=""
 run_id="resource-test"
 git_revision="unknown"
+pin_dir=""
 while (($# > 0)); do
     case "$1" in
         -manifest)
@@ -1790,6 +1791,10 @@ while (($# > 0)); do
             git_revision="$2"
             shift 2
             ;;
+        -pin-dir)
+            pin_dir="$2"
+            shift 2
+            ;;
         *)
             shift
             ;;
@@ -1803,6 +1808,7 @@ mkdir -p "$(dirname "$manifest")"
 jq -n \
     --arg runID "$run_id" \
     --arg gitRevision "$git_revision" \
+    --arg pinDir "$pin_dir" \
     '{
       apiVersion: "katl.dev/v1alpha1",
       kind: "ResourceTestManifest",
@@ -1812,7 +1818,7 @@ jq -n \
       tools: [{name: "mkosi", version: "fake"}],
       mkosiProfiles: [{name: "installer-image", path: "mkosi.profiles/installer-image", configSHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", packageSetRef: "installer-image"}],
       packageSets: [{name: "installer-image", source: "mkosi.profiles/installer-image", packages: [{name: "systemd", nevra: "systemd-1.x86_64"}]}],
-      artifacts: [{name: "installer-uki", kind: "uki", path: "/tmp/katl-installer.efi", sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", sizeBytes: 1}]
+      artifacts: [{name: "installer-uki", kind: "uki", path: (if $pinDir != "" and env.KATL_FAKE_PIN == "1" then $pinDir + "/katl-installer.efi" else "/tmp/katl-installer.efi" end), sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", sizeBytes: 1}]
     }' > "$manifest"
 printf 'manifest: %s\nmode: record\nartifacts: 1\npackageSets: 1\n' "$manifest"
 `)
@@ -2291,5 +2297,56 @@ func TestVMTestCleanGoneDomainIsNotAFailure(t *testing.T) {
 	}
 	if !strings.Contains(string(output), "already gone") || strings.Contains(string(output), "failed") {
 		t.Fatalf("a domain that no longer exists should be reported as gone, not as a failure:\n%s", output)
+	}
+}
+
+func TestVMTestRunRecordsPinnedArtifacts(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	tmp := t.TempDir()
+	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
+	host := writeFakeHostTools(t, tmp, true)
+	runDir := filepath.Join(tmp, "run")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest/scenarios", "-run", "^TestTwoNode$")
+	cmd.Dir = repo
+	cmd.Env = appendHostEnv(
+		removeEnv(removeEnv(os.Environ(), "CI"), "KATL_VMTEST_DEBUG_ON_FAILURE"), host,
+		"KATL_VMTEST_GO="+fakeGo,
+		"KATL_FAKE_GO_ARGS="+filepath.Join(tmp, "go-args.txt"),
+		"KATL_FAKE_CHILD="+fakeChild,
+		"KATL_FAKE_CHILD_ARGS="+filepath.Join(tmp, "child-args.txt"),
+		"KATL_FAKE_CHILD_ENV="+filepath.Join(tmp, "child-env.txt"),
+		"KATL_FAKE_PIN=1",
+		"KATL_VMTEST_RUN_ID=run-pinned",
+		"KATL_VMTEST_RUN_DIR="+runDir,
+		"TMPDIR="+tmp,
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("vmtest-run failed: %v\n%s", err, output)
+	}
+
+	world, err := LoadWorld(filepath.Join(runDir, "world.json"))
+	if err != nil {
+		t.Fatalf("LoadWorld() error = %v", err)
+	}
+	if !world.ArtifactsPinned || world.MkosiDir(repo) != filepath.Join(runDir, "artifacts") {
+		t.Fatalf("world pinned = %v, mkosi dir = %q", world.ArtifactsPinned, world.MkosiDir(repo))
+	}
+	runIndex := readRunIndex(t, filepath.Join(runDir, "run.json"))
+	if len(runIndex.Artifacts) != 1 {
+		t.Fatalf("run artifacts = %#v", runIndex.Artifacts)
+	}
+	if artifact := runIndex.Artifacts[0]; !artifact.Pinned || artifact.Path != filepath.Join(runDir, "artifacts", "katl-installer.efi") || artifact.Digest != strings.Repeat("c", 64) {
+		t.Fatalf("run artifact = %#v", artifact)
+	}
+}
+
+func TestWorldMkosiDir(t *testing.T) {
+	repo := "/repo"
+	if got := (World{ArtifactDir: "/run/artifacts"}).MkosiDir(repo); got != "/repo/_build/mkosi" {
+		t.Fatalf("unpinned MkosiDir = %q, want the checkout build directory", got)
+	}
+	if got := (World{ArtifactDir: "/run/artifacts", ArtifactsPinned: true}).MkosiDir(repo); got != "/run/artifacts" {
+		t.Fatalf("pinned MkosiDir = %q, want the run's artifact directory", got)
 	}
 }
