@@ -815,7 +815,7 @@ func prepareHandoffRetry(server *handoff.HandoffServer, runDir, endpoint string,
 	if err != nil || !server.PrepareRetry(status) {
 		return false
 	}
-	command := "katlctl install apply --config CLUSTER_CONFIG --endpoint " + endpoint
+	command := "katlctl install apply --config " + installstatus.ConfigPlaceholder + " --endpoint " + endpoint
 	if nodeName != "" {
 		command += " --node " + nodeName
 	}

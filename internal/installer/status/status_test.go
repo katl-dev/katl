@@ -257,6 +257,26 @@ func writeFile(t *testing.T, root string, path string, data string) {
 	}
 }
 
+func TestFailureSummaryForConfig(t *testing.T) {
+	record := Record{LastError: "disk missing", RetryHint: "run katlctl install apply --config <cluster-config> --node cp-1"}
+	for name, tc := range map[string]struct {
+		path string
+		want string
+	}{
+		"console placeholder": {"", "disk missing; run katlctl install apply --config <cluster-config> --node cp-1"},
+		"plain path":          {"/srv/lab/cluster.yaml", "disk missing; run katlctl install apply --config /srv/lab/cluster.yaml --node cp-1"},
+		"space":               {"/srv/my lab/cluster.yaml", "disk missing; run katlctl install apply --config '/srv/my lab/cluster.yaml' --node cp-1"},
+		"quote":               {"/srv/it's.yaml", `disk missing; run katlctl install apply --config '/srv/it'\''s.yaml' --node cp-1`},
+		"shell metacharacter": {"a;rm -rf x.yaml", "disk missing; run katlctl install apply --config 'a;rm -rf x.yaml' --node cp-1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := record.FailureSummaryFor(tc.path); got != tc.want {
+				t.Fatalf("FailureSummaryFor(%q) = %q, want %q", tc.path, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestFailureSummary(t *testing.T) {
 	for name, tc := range map[string]struct {
 		record Record

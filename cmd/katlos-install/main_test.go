@@ -44,7 +44,7 @@ func TestAutomaticRetryGuidance(t *testing.T) {
 	if observed.LastError != failure.LastError || observed.CurrentStep != "PlanInstall" || observed.State != installstatus.StateFailedBeforeMutation {
 		t.Fatalf("retry replaced failure evidence: %+v", observed)
 	}
-	want := "katlctl install apply --config CLUSTER_CONFIG --endpoint http://192.0.2.1:8080 --node cp-1"
+	want := "katlctl install apply --config <cluster-config> --endpoint http://192.0.2.1:8080 --node cp-1"
 	if !strings.Contains(observed.RetryHint, want) {
 		t.Fatalf("retry hint = %q, want command %q", observed.RetryHint, want)
 	}
@@ -66,7 +66,7 @@ func TestRetryGuidanceOnConsole(t *testing.T) {
 			t.Fatalf("attempt %d: refusal was not retryable", attempt)
 		}
 		out := console.String()
-		for _, want := range []string{"selected system disk not attached", "katlctl install apply --config CLUSTER_CONFIG --endpoint http://192.0.2.1:8080 --node cp-1"} {
+		for _, want := range []string{"selected system disk not attached", "katlctl install apply --config <cluster-config> --endpoint http://192.0.2.1:8080 --node cp-1"} {
 			if got := strings.Count(out, want); got != 1 {
 				t.Fatalf("attempt %d: console shows %q %d times, want once:\n%s", attempt, want, got, out)
 			}

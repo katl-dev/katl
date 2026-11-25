@@ -548,7 +548,7 @@ func TestInstallApplyReportsClassifiedFailure(t *testing.T) {
 		if statusRequests.Add(1) > 1 {
 			state = installTestStatus(handoff.HandoffAccepted, installstatus.StateFailedBeforeMutation, "Validate")
 			state.InstallStatus.LastError = "target disk was not found"
-			state.InstallStatus.RetryHint = "fix the target disk selector and rerun"
+			state.InstallStatus.RetryHint = "correct the failure, then run katlctl install apply --config " + installstatus.ConfigPlaceholder + " --node cp-1"
 		}
 		_ = json.NewEncoder(w).Encode(state)
 	})
@@ -563,11 +563,65 @@ func TestInstallApplyReportsClassifiedFailure(t *testing.T) {
 		"install", "apply", "--config", sourcePath, "--endpoint", ts.URL,
 		"--node", "cp-1", "--timeout", "5s",
 	}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "failed-before-mutation") || !strings.Contains(err.Error(), "target disk was not found") || !strings.Contains(err.Error(), "fix the target disk selector and rerun") {
+	if err == nil || !strings.Contains(err.Error(), "failed-before-mutation") {
 		t.Fatalf("run() error = %v", err)
 	}
-	if stdout.Len() == 0 {
-		t.Fatal("classified failure did not print final report")
+
+	wantRemedy := "target disk was not found; correct the failure, then run katlctl install apply --config " + sourcePath + " --node cp-1"
+	if got := strings.Count(stdout.String()+err.Error(), "target disk was not found"); got != 1 {
+		t.Fatalf("failure reported %d times, want once:\nstdout=%s\nerr=%v", got, &stdout, err)
+	}
+	if !strings.Contains(stdout.String(), "Failure: "+wantRemedy+"\n") {
+		t.Fatalf("stdout missing %q:\n%s", wantRemedy, &stdout)
+	}
+}
+
+func TestInstallApplyJSONFailureNamesConfig(t *testing.T) {
+	sourcePath := writeClusterConfig(t)
+	var statusRequests atomic.Int32
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/status", func(w http.ResponseWriter, _ *http.Request) {
+		state := installTestStatus(handoff.HandoffWaiting, installstatus.StateWaitingForConfig, "")
+		if statusRequests.Add(1) > 1 {
+			state = installTestStatus(handoff.HandoffAccepted, installstatus.StateFailedBeforeMutation, "Validate")
+			state.InstallStatus.LastError = "target disk was not found"
+			state.InstallStatus.RetryHint = "run katlctl install apply --config " + installstatus.ConfigPlaceholder
+		}
+		_ = json.NewEncoder(w).Encode(state)
+	})
+	mux.HandleFunc("POST /v1/config-bundle", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(installTestStatus(handoff.HandoffAccepted, installstatus.StateRunning, "Validate"))
+	})
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{
+		"install", "apply", "--config", sourcePath, "--endpoint", ts.URL,
+		"--node", "cp-1", "--timeout", "5s", "--output", "json",
+	}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "run katlctl install apply --config "+sourcePath) {
+		t.Fatalf("run() error = %v", err)
+	}
+}
+
+func TestInstallStatusRemedyUsesConfig(t *testing.T) {
+	sourcePath := writeClusterConfig(t)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		state := installTestStatus(handoff.HandoffAccepted, installstatus.StateFailedBeforeMutation, "Validate")
+		state.InstallStatus.LastError = "target disk was not found"
+		state.InstallStatus.RetryHint = "run katlctl install apply --config " + installstatus.ConfigPlaceholder
+		_ = json.NewEncoder(w).Encode(state)
+	}))
+	defer ts.Close()
+
+	var stdout, stderr bytes.Buffer
+	err := run(context.Background(), []string{"install", "status", "--config", sourcePath, "--endpoint", ts.URL, "--node", "cp-1"}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("run() error = %v", err)
+	}
+	if want := "run katlctl install apply --config " + sourcePath + "\n"; !strings.Contains(stdout.String(), want) {
+		t.Fatalf("stdout missing %q:\n%s", want, &stdout)
 	}
 }
 
