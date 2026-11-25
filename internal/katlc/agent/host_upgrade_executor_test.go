@@ -244,9 +244,8 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 		{3, "KATL_ROOT_B", "bbbbbbbb-1111-2222-3333-444444444444", rootType},
 		{4, "KATL_STATE", "state-partuuid", stateType},
 	}})
-	// Refreshing the slot with partx makes the kernel add the inactive
-	// partition again, and udev has not yet recreated its by-diskseq link:
-	// only the kernel node exists.
+	// udev has not yet created the inactive partition's by-diskseq link: only
+	// the kernel node exists.
 	inactiveDevice := filepath.Join(root, "dev/vda3")
 	writeTestFile(t, inactiveDevice, string(make([]byte, len(runtimeBytes)+32)))
 	executor := NewExecutor(root, store, "agent-test")
@@ -280,8 +279,6 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 			if len(argv[len(argv)-1]) > 36 {
 				return ToolResult{Err: errors.New("GPT label exceeds 36 characters"), ExitStatus: 1}
 			}
-			return ToolResult{}
-		case "partx":
 			return ToolResult{}
 		case "systemd-sysupdate":
 			if _, err := os.Stat(inactiveUKI); !errors.Is(err, os.ErrNotExist) {

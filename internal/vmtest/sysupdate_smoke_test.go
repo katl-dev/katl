@@ -152,7 +152,24 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	}
 	assertGuestMissing(t, ctx, guest, "/var/lib/katl/generations/"+rejectedCandidate)
 
-	combinedAuthorizedKey := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm combined-upgrade@katl"
+	// A staging that fails after the inactive slot is relabelled must leave the
+	// node able to plan and stage again in the same boot. A read-only ESP fails
+	// the UKI transfer after the slot labels are rewritten.
+	failedCandidate := candidateGeneration + "-failed"
+	guestCommand(t, ctx, guest, "efi-read-only", "mount", "-o", "remount,ro", "/efi")
+	_, failedStatus := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, failedCandidate, localRef, upgrade, "host-upgrade-handoff", "")
+	guestCommand(t, ctx, guest, "efi-read-write", "mount", "-o", "remount,rw", "/efi")
+	if failedStatus.GetResult() != operation.ResultFailedNeedsRepair {
+		t.Fatalf("host upgrade with a read-only ESP status = %+v, want result %s", failedStatus, operation.ResultFailedNeedsRepair)
+	}
+	if got := readGuestFile(t, ctx, guest, "/var/lib/katl/boot/selection.json"); got != selectionBeforeRejectedPlan {
+		t.Fatal("failed staging changed boot selection")
+	}
+	waitHostUpgradeWorkspaceClean(t, ctx, guest, "failed")
+	localRef = stageHostUpgradeArtifactForVMTest(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), upgrade)
+	assertHostUpgradePlanAccepted(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, candidateGeneration, localRef, upgrade)
+
+	combinedAuthorizedKey := "ssh-ed25519AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm combined-upgrade@katl"
 	combinedConfig := hostUpgradeConfiguration("3", "    identity:\n      authorizedKeys:\n        - "+combinedAuthorizedKey+"\n")
 	operationID, status := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, candidateGeneration, localRef, upgrade, "host-upgrade-handoff", combinedConfig)
 	if status.GetResult() != operation.ResultSucceeded || !status.GetBootHealthPending() || status.GetCandidateGenerationId() != candidateGeneration {
@@ -432,6 +449,32 @@ func assertHostUpgradePlanRejected(t *testing.T, ctx context.Context, endpoint, 
 	})
 	if err == nil || !strings.Contains(err.Error(), want) {
 		t.Fatalf("combined host upgrade plan error = %v, want %q", err, want)
+	}
+}
+
+// assertHostUpgradePlanAccepted dry-runs a host upgrade, which plans the root
+// slots from the booted disk without changing it.
+func assertHostUpgradePlanAccepted(t *testing.T, ctx context.Context, endpoint, nodeName, machineID, currentGeneration, candidateGeneration, localRef string, upgrade builtUpgradeImage) {
+	t.Helper()
+	conn, katlc := dialKatlcAgentForVMTest(t, ctx, endpoint, nodeName)
+	defer conn.Close()
+	nodeStatus, err := katlc.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatalf("read enrolled node identity before host upgrade plan: %v", err)
+	}
+	_, err = katlc.SubmitOperation(ctx, &agentapi.SubmitOperationRequest{
+		ApiVersion: operation.APIVersion, Kind: agent.RequestKind,
+		ClientRequestId: "vmtest-host-upgrade-plan-" + candidateGeneration,
+		OperationKind:   "host-upgrade-handoff", Actor: "installed runtime host upgrade vmtest",
+		ExpectedEnrollmentId: nodeStatus.GetEnrollmentId(), ExpectedInventoryNodeName: nodeStatus.GetInventoryNodeName(),
+		ExpectedMachineId: machineID, ExpectedCurrentGenerationId: currentGeneration, DryRun: true,
+		HostUpgrade: &agentapi.HostUpgradeOperationRequest{
+			ImageLocalRef: localRef, ImageSha256: upgrade.SHA256, ImageSizeBytes: upgrade.SizeBytes,
+			CandidateGenerationId: candidateGeneration,
+		},
+	})
+	if err != nil {
+		t.Fatalf("host upgrade plan after failed staging: %v", err)
 	}
 }
 

@@ -216,9 +216,7 @@ func TestPrepareSysupdateSlotsAddressesDiskSeq(t *testing.T) {
 	}
 	want := []string{
 		"sfdisk --part-label /dev/disk/by-diskseq/7 2 katl_0",
-		"partx --update --nr 2 /dev/disk/by-diskseq/7",
 		"sfdisk --part-label /dev/disk/by-diskseq/7 3 _empty",
-		"partx --update --nr 3 /dev/disk/by-diskseq/7",
 	}
 	if !reflect.DeepEqual(host.calls, want) {
 		t.Fatalf("relabel commands = %q, want %q", host.calls, want)

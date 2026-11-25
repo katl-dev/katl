@@ -138,7 +138,11 @@ func (e *Executor) partitionTypes(ctx context.Context, diskPath string, system s
 
 // prepareSysupdateSlots labels the active slot as sysupdate version 0 and the
 // inactive slot as free, so sysupdate writes the candidate to the inactive
-// slot.
+// slot. It rewrites the GPT only: sysupdate matches slots by the labels on the
+// disk, and Katl reads no root slot label from the kernel. Asking the kernel
+// to re-read would remove and add the unmounted inactive slot, and a partition
+// added that way reports no PARTUUID in sysfs until the next boot, so
+// findRootSlots would refuse every later plan or retry.
 func (e *Executor) prepareSysupdateSlots(ctx context.Context, slots rootSlots) error {
 	for _, request := range []struct {
 		part  int
@@ -150,9 +154,6 @@ func (e *Executor) prepareSysupdateSlots(ctx context.Context, slots rootSlots) e
 		part := strconv.Itoa(request.part)
 		if _, err := e.toolOutput(ctx, "sfdisk", "--part-label", slots.Disk, part, request.label); err != nil {
 			return fmt.Errorf("set root slot label %s: %w", request.label, err)
-		}
-		if _, err := e.toolOutput(ctx, "partx", "--update", "--nr", part, slots.Disk); err != nil {
-			return fmt.Errorf("refresh root slot label %s: %w", request.label, err)
 		}
 	}
 	return nil

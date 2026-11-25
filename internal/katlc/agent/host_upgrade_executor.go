@@ -386,9 +386,8 @@ func (e *Executor) stageHostUpgrade(ctx context.Context, record operation.Operat
 	if result.Err != nil || result.ExitStatus != 0 {
 		return fmt.Errorf("systemd-sysupdate: %s", toolFailure(result))
 	}
-	// prepareSysupdateSlots refreshes the inactive slot with partx, which makes
-	// the kernel remove and add that partition again. Its by-diskseq link then
-	// waits for udev, but its kernel node already exists.
+	// The kernel node exists as soon as the kernel has the partition, while its
+	// by-diskseq link waits for udev.
 	node, err := inactive.Node()
 	if err != nil {
 		return fmt.Errorf("find staged runtime root: %w", err)
@@ -412,7 +411,7 @@ func (e *Executor) toolOutput(ctx context.Context, name string, args ...string) 
 		return "", fmt.Errorf("%s: %s", name, toolFailure(result))
 	}
 	value := strings.TrimSpace(string(result.Stdout))
-	if value == "" && name != "sfdisk" && name != "partx" {
+	if value == "" && name != "sfdisk" {
 		return "", fmt.Errorf("%s returned empty output", name)
 	}
 	return value, nil
