@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/katl-dev/katl/internal/vmtest"
 	"github.com/spf13/cobra"
 )
@@ -545,6 +546,19 @@ func (manager installerManager) katlctlConfigPath() string {
 	return filepath.Join(manager.repoRoot, "_build", "katldev", "katlctl.yaml")
 }
 
+// ensureKatlctlConfig creates an empty world katlctl config when none exists,
+// so the path katldev prints and the dev shell exports names a real file. An
+// existing file holds the world's saved contexts and is never rewritten.
+func (manager installerManager) ensureKatlctlConfig() error {
+	path := manager.katlctlConfigPath()
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect world katlctl config: %w", err)
+	}
+	return workstation.Save(path, workstation.Config{})
+}
+
 func (manager installerManager) printKatlctlConfig() {
 	path := manager.katlctlConfigPath()
 	fmt.Fprintf(manager.stdout, "katlctl contexts: %s\n", path)
@@ -580,6 +594,9 @@ func (manager installerManager) report(ctx context.Context, world katldevWorld, 
 		return err
 	}
 	manager.labelConfigNodes(observations)
+	if err := manager.ensureKatlctlConfig(); err != nil {
+		return err
+	}
 
 	fmt.Fprintln(manager.stdout, "KatlOS world is ready.")
 	manager.printWorld(world, observations)

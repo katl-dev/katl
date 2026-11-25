@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/katl-dev/katl/internal/vmtest"
 )
 
@@ -813,5 +814,47 @@ func TestLibvirtGuestsWarning(t *testing.T) {
 	manager.warnHostShutdown()
 	if stderr.Len() != 0 {
 		t.Fatalf("unreadable configuration produced output: %s", stderr.String())
+	}
+}
+
+func TestEnsureKatlctlConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "xdg"))
+	manager := installerManager{repoRoot: t.TempDir()}
+	path := manager.katlctlConfigPath()
+
+	if err := manager.ensureKatlctlConfig(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := workstation.Load(path); err != nil {
+		t.Fatalf("created world config does not load: %v", err)
+	}
+
+	saved := workstation.Config{
+		CurrentContext: "lab",
+		Contexts:       []workstation.Context{{Name: "lab", Cluster: "lab"}},
+		Clusters:       []workstation.Cluster{{Name: "lab", Nodes: []workstation.Node{{Name: "cp-1", ManagementEndpoint: "192.0.2.10:9443", SystemRole: "control-plane"}}}},
+	}
+	if err := workstation.Save(path, saved); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.ensureKatlctlConfig(); err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("repeated ensure rewrote the world config:\n%s\nwant\n%s", after, before)
+	}
+
+	home, _ := os.UserConfigDir()
+	if _, err := os.Stat(filepath.Join(home, "katl", "katlctl.yaml")); err == nil {
+		t.Fatal("operator katlctl config was created")
 	}
 }
