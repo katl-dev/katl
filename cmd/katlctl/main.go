@@ -205,6 +205,9 @@ management; trusted-network is opt-in. Run any command with --help for examples 
 	configureCommandGroups(cmd)
 	setMinimumInvocationExamples(cmd)
 	applyOptionEnv(cmd)
+	// Commands that read cmd.Context() must see the interrupt and progress
+	// context, not cobra's background default.
+	cmd.SetContext(ctx)
 	return cmd
 }
 

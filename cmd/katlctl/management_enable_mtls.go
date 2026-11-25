@@ -17,6 +17,7 @@ import (
 	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/katl-dev/katl/internal/managementidentity"
+	"github.com/katl-dev/katl/internal/nodeidentity"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -99,8 +100,13 @@ failed node; nodes already on mTLS are skipped.`,
 }
 
 func runManagementEnableMTLS(ctx context.Context, opts enableMTLSOptions, stdout, stderr io.Writer) error {
-	if opts.timeout <= 0 || opts.trialWindow <= 0 {
-		return fmt.Errorf("--timeout and --trial-window must be positive")
+	if opts.timeout <= 0 {
+		return fmt.Errorf("--timeout must be positive")
+	}
+	// The node refuses a window outside its bounds and receives whole seconds,
+	// so check here before preflight creates anything.
+	if window := opts.trialWindow; window < nodeidentity.MinimumManagementTrialWindow || window > nodeidentity.MaximumManagementTrialWindow || window%time.Second != 0 {
+		return fmt.Errorf("--trial-window must be a whole number of seconds from %s to %s, the range a node accepts", nodeidentity.MinimumManagementTrialWindow, nodeidentity.MaximumManagementTrialWindow)
 	}
 	configPath, err := filepath.Abs(opts.configPath)
 	if err != nil {
@@ -124,7 +130,10 @@ func runManagementEnableMTLS(ctx context.Context, opts enableMTLSOptions, stdout
 	}
 
 	// Preflight reads existing secrets but creates none, so a failed
-	// preflight leaves the workstation and every node unchanged.
+	// preflight leaves the workstation and every node unchanged. Without
+	// secrets, preflight passes only if every node answers plaintext
+	// trusted-network management, so creating them strands no node even when
+	// the config already says mtls.
 	var bundle *managementidentity.Bundle
 	if _, err := os.Stat(secretsPath); err == nil {
 		existing, err := replacementManagementIdentity(configPath, secretsPath, source)
@@ -134,8 +143,6 @@ func runManagementEnableMTLS(ctx context.Context, opts enableMTLSOptions, stdout
 		bundle = &existing
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
-	} else if mode == managementidentity.MutualTLS {
-		return missingManagementIdentity(source.Metadata.Name, secretsPath)
 	}
 	var authority string
 	var client *managementidentity.ClientCredentials
@@ -150,9 +157,15 @@ func runManagementEnableMTLS(ctx context.Context, opts enableMTLSOptions, stdout
 		return err
 	}
 	fmt.Fprintf(stderr, "Preflight: checking %d node(s); nothing changes until every check passes\n", len(nodes))
+	// A config that says mtls fixes the secrets path, so there --output
+	// cannot name another file.
+	otherSecrets := "pass the secrets file it was moved to with --output"
+	if mode == managementidentity.MutualTLS {
+		otherSecrets = "put the secrets file it was moved to at " + secretsPath + ", where the ClusterConfig expects it"
+	}
 	var problems []string
 	for i := range nodes {
-		if err := observeEnableMTLSNode(ctx, &nodes[i], client, authority, opts.timeout); err != nil {
+		if err := observeEnableMTLSNode(ctx, &nodes[i], client, authority, otherSecrets, opts.timeout); err != nil {
 			problems = append(problems, err.Error())
 		}
 	}
@@ -211,7 +224,7 @@ func runManagementEnableMTLS(ctx context.Context, opts enableMTLSOptions, stdout
 			if relErr != nil {
 				relative = secretsPath
 			}
-			return fmt.Errorf("every node now uses mTLS management, but %s could not be updated: %w; set these fields under spec, then run %s:\n  managementAuthentication: mtls\n  managementIdentity: %s", configPath, err, contextSaveInvocation(configPath), filepath.ToSlash(relative))
+			return fmt.Errorf("every node now uses mTLS management, but %s could not be updated: %w; fix that and rerun %s, or set these fields under spec, then run %s:\n  managementAuthentication: mtls\n  managementIdentity: %s", configPath, err, enableMTLSInvocation(configPath, secretsPath), contextSaveInvocation(configPath), filepath.ToSlash(relative))
 		}
 	}
 	refreshed, err := refreshEnableMTLSContext(ctx, configPath, source.Metadata.Name, opts.timeout, stderr)
@@ -307,7 +320,9 @@ func enableMTLSNodes(ctx context.Context, configPath string, source configbundle
 // observeEnableMTLSNode derives a node's phase from what it answers: the new
 // authority means it is on trial or confirmed, plaintext means it is still on
 // trusted-network. A node in a live trial does not answer plaintext.
-func observeEnableMTLSNode(ctx context.Context, node *enableMTLSNode, client *managementidentity.ClientCredentials, authority string, timeout time.Duration) error {
+// otherSecrets tells the operator how to supply the secrets a node was moved
+// to when they are not the ones in use.
+func observeEnableMTLSNode(ctx context.Context, node *enableMTLSNode, client *managementidentity.ClientCredentials, authority, otherSecrets string, timeout time.Duration) error {
 	probe := min(timeout, 15*time.Second)
 	var mtlsErr error
 	if client != nil {
@@ -338,11 +353,11 @@ func observeEnableMTLSNode(ctx context.Context, node *enableMTLSNode, client *ma
 	status, err := enableMTLSStatus(ctx, *node, trustedNetworkClient, probe)
 	observedAt := time.Now()
 	if err != nil {
-		if strings.Contains(err.Error(), "server preface") {
+		if transport.PlaintextAtTLS(err) {
 			if client == nil {
-				return fmt.Errorf("%s serves mTLS management with an authority this workstation does not hold; if an earlier enable-mtls run lost its secrets file, the node returns to trusted-network when its trial ends, so wait and rerun; if it was already moved, pass that run's secrets file with --output", node.name)
+				return fmt.Errorf("%s serves mTLS management with an authority this workstation does not hold; if an earlier enable-mtls run lost its secrets file, the node returns to trusted-network when its trial ends, so wait and rerun; if it was already moved, %s, then rerun", node.name, otherSecrets)
 			}
-			return fmt.Errorf("%s serves mTLS management but does not accept the secrets in use (%v); pass the secrets file the node was moved to with --output", node.name, mtlsErr)
+			return fmt.Errorf("%s serves mTLS management but does not accept the secrets in use (%v); %s, then rerun", node.name, mtlsErr, otherSecrets)
 		}
 		return fmt.Errorf("%s is unreachable at %s: %v; fix it or remove it from the config, then rerun", node.name, node.endpoint, err)
 	}
@@ -457,7 +472,6 @@ func migrateEnableMTLSNode(ctx context.Context, node *enableMTLSNode, bundle man
 		if !ok {
 			return fmt.Errorf("management secrets lack node %q", node.name)
 		}
-		started := time.Now()
 		var trial *agentapi.ManagementTransition
 		err := enableMTLSCall(ctx, *node, trustedNetworkClient, timeout, func(ctx context.Context, agent agentapi.KatlcAgentClient) (err error) {
 			trial, err = agent.BeginManagementTransition(ctx, &agentapi.BeginManagementTransitionRequest{
@@ -469,24 +483,33 @@ func migrateEnableMTLSNode(ctx context.Context, node *enableMTLSNode, bundle man
 			})
 			return err
 		})
+		// The node starts its window when Begin reaches it, no later than
+		// now, so now plus the window bounds the deadline from above. An
+		// interrupted Begin may still have started the trial.
+		if err != nil && ctx.Err() != nil {
+			return enableMTLSInterrupted(time.Now().Add(opts.trialWindow))
+		}
 		if err != nil {
 			return enableMTLSBeginError(err)
 		}
 		if trial.GetState() != "committed" {
-			deadline = started.Add(opts.trialWindow)
-			fmt.Fprintf(stderr, "%s: serving the new authority on trial; it returns to trusted-network at %s unless confirmed\n", node.name, deadline.Local().Format(time.TimeOnly))
+			deadline = time.Now().Add(opts.trialWindow)
+			fmt.Fprintf(stderr, "%s: serving the new authority on trial; it returns to trusted-network by %s unless confirmed\n", node.name, deadline.Local().Format(time.TimeOnly))
 		}
 	} else {
+		if !deadline.IsZero() && !time.Now().Before(deadline) {
+			return fmt.Errorf("its earlier trial passed its deadline at %s but it has not returned to trusted-network yet; wait for it to revert, then rerun this command", deadline.Local().Format(time.TimeOnly))
+		}
 		fmt.Fprintf(stderr, "%s: resuming its trial of the new authority\n", node.name)
 	}
 	if deadline.IsZero() {
 		deadline = time.Now().Add(opts.trialWindow)
 	}
-	reverts := fmt.Sprintf("it returns to trusted-network by itself by %s, and 'katlc agent management-trial revert' on its console returns it at once", deadline.Local().Format(time.TimeOnly))
+	reverts := enableMTLSReverts(deadline)
 
 	if err := waitEnableMTLSTrial(ctx, *node, client, authority, min(time.Until(deadline), timeout)); err != nil {
 		if ctx.Err() != nil {
-			return fmt.Errorf("interrupted before the new authority was confirmed; %s. Rerun this command before then to finish it", reverts)
+			return enableMTLSInterrupted(deadline)
 		}
 		return fmt.Errorf("did not answer over mTLS with the new authority: %w; %s. Check that management.address reaches the node from this workstation, then rerun", err, reverts)
 	}
@@ -531,6 +554,15 @@ func migrateEnableMTLSNode(ctx context.Context, node *enableMTLSNode, bundle man
 		return fmt.Errorf("uses mTLS management now but is not healthy after %s: %w; check it with 'katlctl node status', then rerun to continue with the remaining nodes", timeout, err)
 	}
 	return nil
+}
+
+func enableMTLSReverts(deadline time.Time) string {
+	return fmt.Sprintf("it returns to trusted-network by itself by %s, and 'katlc agent management-trial revert' on its console returns it at once", deadline.Local().Format(time.TimeOnly))
+}
+
+// enableMTLSInterrupted reports a run stopped while the node may be on trial.
+func enableMTLSInterrupted(deadline time.Time) error {
+	return fmt.Errorf("interrupted before the new authority was confirmed; %s. Rerun this command before then to finish it", enableMTLSReverts(deadline))
 }
 
 func committedTo(status *agentapi.NodeStatus, authority string) bool {

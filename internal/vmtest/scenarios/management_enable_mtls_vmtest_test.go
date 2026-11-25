@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -210,8 +209,8 @@ func (j *enableMTLSJourney) migrate(ctx context.Context) error {
 	if err := j.requireManagement(ctx, config, "mtls"); err != nil {
 		return err
 	}
-	if _, err := j.cli(ctx, "node", "status", "cp-1", "--config", trustedConfig); err == nil {
-		return errors.New("the node still answers its trusted-network configuration")
+	if _, err := j.cli(ctx, "node", "status", "cp-1", "--config", trustedConfig); err == nil || !strings.Contains(err.Error(), "likely serves mTLS management") {
+		return fmt.Errorf("trusted-network configuration = %v, want a refusal naming mTLS management", err)
 	}
 	if pid, err := j.ssh(ctx, "systemctl show --property=MainPID --value katlc-agent.service"); err != nil || pid != agentPID {
 		return fmt.Errorf("katlc-agent main PID = %q (%v), want %s: the migration restarted the agent", pid, err, agentPID)
@@ -244,8 +243,8 @@ func (j *enableMTLSJourney) migrate(ctx context.Context) error {
 	if err := j.requireManagement(ctx, config, "mtls"); err != nil {
 		return fmt.Errorf("after reboot: %w", err)
 	}
-	if _, err := j.cli(ctx, "node", "status", "cp-1", "--config", trustedConfig); err == nil {
-		return errors.New("after reboot the node answers its trusted-network configuration")
+	if _, err := j.cli(ctx, "node", "status", "cp-1", "--config", trustedConfig); err == nil || !strings.Contains(err.Error(), "likely serves mTLS management") {
+		return fmt.Errorf("after reboot, trusted-network configuration = %v, want a refusal naming mTLS management", err)
 	}
 	return nil
 }
