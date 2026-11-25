@@ -636,7 +636,8 @@ kernel driver gates. The merge queue repeats them against the merged result and
 also runs the VM suites for both kernel flavours; none of this runs again after
 the merge. To run the VM suites on a pull request before queueing it, add the
 `vmtest` label; later pushes to the branch keep running them while the label is
-present. Adding any label restarts the pull request run. Agents still
+present. Adding `vmtest` reruns the head commit's CI with the VM suites; other labels
+do not affect CI, and fork pull requests cannot be restarted this way. Agents still
 run the relevant local `scripts/vmtest-run` gates before opening a pull request,
 as `AGENTS.md` requires. Kubernetes producer validation shares the VM image
 build and cluster lane. Direct pushes are not part of the supported development

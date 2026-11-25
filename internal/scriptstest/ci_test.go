@@ -305,9 +305,6 @@ func TestCIGatesPlannedJobs(t *testing.T) {
 			t.Errorf("%s needs %v, want only plan", name, got)
 		}
 	}
-	if !slices.Contains(workflow.On.PullRequest.Types, "labeled") {
-		t.Errorf("pull request types %v must include labeled to start VM runs", workflow.On.PullRequest.Types)
-	}
 
 	var plan string
 	for _, step := range workflow.Jobs["plan"].Steps {
@@ -417,5 +414,55 @@ esac
 				}
 			}
 		})
+	}
+}
+
+// Only adding vmtest may restart CI, and no label-triggered workflow may publish
+// a CI result of its own: a skipped or cancelled job counts against the
+// required check for the head SHA.
+func TestLabelWorkflowsPublishNoCI(t *testing.T) {
+	type workflowFile struct {
+		On struct {
+			PullRequest struct{ Types []string } `yaml:"pull_request"`
+		} `yaml:"on"`
+		Jobs map[string]struct {
+			Name string
+			If   string `yaml:"if"`
+		}
+	}
+	paths, err := filepath.Glob(filepath.Join(repoRoot(t), ".github/workflows/*.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var sawLabelWorkflow bool
+	for _, path := range paths {
+		name := filepath.Base(path)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var workflow workflowFile
+		if err := yaml.Unmarshal(data, &workflow); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(workflow.On.PullRequest.Types, "labeled") {
+			continue
+		}
+		if name == "ci.yml" {
+			t.Errorf("ci.yml pull request types %v include labeled; any label would cancel the run", workflow.On.PullRequest.Types)
+		}
+		sawLabelWorkflow = true
+		for id, job := range workflow.Jobs {
+			if job.Name == "CI" || id == "CI" {
+				t.Errorf("%s job %s publishes a check named CI", name, id)
+			}
+			if !strings.Contains(job.If, "github.event.label.name") || !strings.Contains(job.If, "'vmtest'") {
+				t.Errorf("%s job %s condition = %q, want it limited to the vmtest label", name, id, job.If)
+			}
+		}
+	}
+	if !sawLabelWorkflow {
+		t.Error("no workflow restarts CI when vmtest is added")
 	}
 }

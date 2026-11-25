@@ -1,0 +1,81 @@
+name: Restart CI for vmtest
+
+# Adding the vmtest label reruns the pull request's CI run so that it selects
+# the VM suites. This workflow publishes no check named CI, and CI does not
+# trigger on label events, so no other label can cancel, skip or replace the
+# required CI result for the head SHA.
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: vmtest-label-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  restart:
+    name: Restart CI
+    if: github.event.label.name == 'vmtest'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Rerun CI for the head SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          EVENT_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # The event payload can be stale, so the head and labels are read live.
+          # A rerun of a superseded head would cancel the new head's CI through
+          # the shared ci-<PR> concurrency group, hence the re-checks below.
+          current() {
+            local state
+            state="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json headRefOid,labels \
+              --jq '.headRefOid + " " + (any(.labels[]; .name == "vmtest") | tostring)')"
+            [[ "$state" == "$EVENT_SHA true" ]]
+          }
+          if ! current; then
+            echo "::notice::The head moved from $EVENT_SHA or vmtest was removed; nothing to restart."
+            exit 0
+          fi
+
+          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event pull_request \
+            --commit "$EVENT_SHA" --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+          if [[ -z "$run_id" ]]; then
+            echo "::notice::No CI run exists for $EVENT_SHA yet; the pending run reads labels when it starts."
+            exit 0
+          fi
+
+          status() {
+            gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json status --jq .status
+          }
+          # A run can be rerun only once it has completed.
+          if [[ "$(status)" != completed ]]; then
+            if ! current; then
+              echo "::notice::The head moved or vmtest was removed; nothing to restart."
+              exit 0
+            fi
+            gh run cancel "$run_id" --repo "$GITHUB_REPOSITORY"
+            finished=false
+            for _ in $(seq 60); do
+              if [[ "$(status)" == completed ]]; then
+                finished=true
+                break
+              fi
+              sleep 10
+            done
+            if [[ "$finished" != true ]]; then
+              echo "::error::CI run did not finish cancelling."
+              exit 1
+            fi
+          fi
+
+          if ! current; then
+            echo "::notice::The head moved or vmtest was removed; nothing to restart."
+            exit 0
+          fi
+          gh run rerun "$run_id" --repo "$GITHUB_REPOSITORY"
