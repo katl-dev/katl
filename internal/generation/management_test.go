@@ -1,6 +1,7 @@
 package generation
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -327,6 +328,42 @@ func TestSelectedBootFailure(t *testing.T) {
 			selection, _ := ReadBootSelection(root)
 			if selection.DefaultGenerationID != "current" || selection.OneShot || entry != "loader/entries/katl-current.conf" {
 				t.Fatalf("failure recovery: %+v %s", selection, entry)
+			}
+		})
+	}
+}
+
+func TestInvalidateSlotLeavesSelectionUnchanged(t *testing.T) {
+	root, now := managementFixture(t)
+	managedFixture(t, root, "obsolete", "root-b", "0", now.Add(-time.Hour))
+	path, err := BootSelectionPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := InvalidateSlot(root, "22222222-2222-3333-4444-555555555555", now, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	invalidated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name, partitionUUID string
+	}{
+		{"already invalid slot", "22222222-2222-3333-4444-555555555555"},
+		{"slot without generations", "99999999-2222-3333-4444-555555555555"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := InvalidateSlot(root, test.partitionUUID, now.Add(time.Hour), nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(after, invalidated) {
+				t.Fatalf("selection.json changed:\n%s\nwant:\n%s", after, invalidated)
 			}
 		})
 	}

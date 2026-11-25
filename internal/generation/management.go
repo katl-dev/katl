@@ -72,7 +72,7 @@ func inspect(root string, selection BootSelectionRecord) ([]ManagedGeneration, e
 		if item.UnavailableReason == "" {
 			current := latest[item.Spec.Root.PartitionUUID]
 			if current.GenerationID != "" && (current.RuntimeVersion != item.Spec.RuntimeVersion || current.Boot.UKIPath != item.Spec.Boot.UKIPath || current.Root.Flavour != item.Spec.Root.Flavour || current.Root.RuntimeArtifactSHA256 != item.Spec.Root.RuntimeArtifactSHA256) {
-				item.UnavailableReason = "OS slot has been replaced"
+				item.UnavailableReason = slotReplaced
 			} else if item.Spec.Boot.LoaderEntryPath == "" {
 				item.UnavailableReason = "loader entry is missing"
 			} else if item.Status.CommitState != CommitStateCommitted && item.Status.CommitState != CommitStateSuperseded {
@@ -352,6 +352,8 @@ func removeEntries(root string, spec GenerationSpec) error {
 	return handle.Sync()
 }
 
+const slotReplaced = "OS slot has been replaced"
+
 // InvalidateSlot removes boot entry points before the caller overwrites a root.
 // Metadata stays available for diagnostics and shared artifact ownership until GC.
 func InvalidateSlot(root, partitionUUID string, now time.Time, setDefault, setOneshot BootDefaultSetter) error {
@@ -360,6 +362,7 @@ func InvalidateSlot(root, partitionUUID string, now time.Time, setDefault, setOn
 		if err != nil {
 			return err
 		}
+		before := selection
 		items, err := inspect(root, selection)
 		if err != nil {
 			return err
@@ -421,12 +424,15 @@ func InvalidateSlot(root, partitionUUID string, now time.Time, setDefault, setOn
 		if invalid[selection.FailedBootGenerationID] {
 			selection.FailedBootGenerationID = ""
 		}
-		selection.UpdatedAt = now.UTC()
-		if err := WriteBootSelection(root, selection); err != nil {
-			return err
+		// A slot that is already invalid leaves the persisted selection alone.
+		if selection != before {
+			selection.UpdatedAt = now.UTC()
+			if err := WriteBootSelection(root, selection); err != nil {
+				return err
+			}
 		}
 		for _, item := range items {
-			if !invalid[item.Spec.GenerationID] {
+			if !invalid[item.Spec.GenerationID] || item.Status.UnavailableReason == slotReplaced {
 				continue
 			}
 			item.Status.UnavailableReason = "OS slot has been replaced"

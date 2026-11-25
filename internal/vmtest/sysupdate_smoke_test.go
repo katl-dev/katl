@@ -152,13 +152,17 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	}
 	assertGuestMissing(t, ctx, guest, "/var/lib/katl/generations/"+rejectedCandidate)
 
-	// A staging that fails after the inactive slot is relabelled must leave the
-	// node able to plan and stage again in the same boot. A read-only ESP fails
-	// the UKI transfer after the slot labels are rewritten.
+	// A staging that fails after sysupdate acquires the inactive root slot must
+	// leave the node able to plan and stage again in the same boot. A read-only
+	// ESP fails the UKI transfer after the root transfer.
 	failedCandidate := candidateGeneration + "-failed"
 	guestCommand(t, ctx, guest, "efi-read-only", "mount", "-o", "remount,ro", "/efi")
 	_, failedStatus := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, failedCandidate, localRef, upgrade, "host-upgrade-handoff", "")
 	guestCommand(t, ctx, guest, "efi-read-write", "mount", "-o", "remount,rw", "/efi")
+	// Sysupdate acquires the root partition before the UKI and does not roll its
+	// GPT type back when the UKI transfer fails. This records the on-disk state
+	// the retry has to accept.
+	t.Logf("partition types after failed staging:\n%s", guestCommandOutput(t, ctx, guest, "partition-types", "lsblk", "-rno", "NAME,PARTLABEL,PARTTYPE"))
 	if failedStatus.GetResult() != operation.ResultFailedNeedsRepair {
 		t.Fatalf("host upgrade with a read-only ESP status = %+v, want result %s", failedStatus, operation.ResultFailedNeedsRepair)
 	}
@@ -169,7 +173,7 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	localRef = stageHostUpgradeArtifactForVMTest(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), upgrade)
 	assertHostUpgradePlanAccepted(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, candidateGeneration, localRef, upgrade)
 
-	combinedAuthorizedKey := "ssh-ed25519AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm combined-upgrade@katl"
+	combinedAuthorizedKey := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVm combined-upgrade@katl"
 	combinedConfig := hostUpgradeConfiguration("3", "    identity:\n      authorizedKeys:\n        - "+combinedAuthorizedKey+"\n")
 	operationID, status := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, candidateGeneration, localRef, upgrade, "host-upgrade-handoff", combinedConfig)
 	if status.GetResult() != operation.ResultSucceeded || !status.GetBootHealthPending() || status.GetCandidateGenerationId() != candidateGeneration {
