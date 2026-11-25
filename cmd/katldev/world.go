@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -209,62 +208,9 @@ func (manager installerManager) createWorld(ctx context.Context) (katldevWorld, 
 }
 
 func (manager installerManager) networksInUse(ctx context.Context, uri string) ([]*net.IPNet, error) {
-	var inUse []*net.IPNet
-	output, err := manager.virsh(ctx, uri, "net-list", "--all", "--name")
-	if err != nil {
-		return nil, err
-	}
-	for _, name := range strings.Fields(string(output)) {
-		data, err := manager.virsh(ctx, uri, "net-dumpxml", name)
-		if err != nil {
-			return nil, err
-		}
-		subnet, err := vmtest.LibvirtNetworkIPv4(data)
-		if err != nil {
-			return nil, fmt.Errorf("read libvirt network %s: %w", name, err)
-		}
-		inUse = append(inUse, subnet)
-	}
-	addresses, err := net.InterfaceAddrs()
-	if err != nil {
-		return nil, err
-	}
-	for _, address := range addresses {
-		if subnet, ok := address.(*net.IPNet); ok && subnet.IP.To4() != nil {
-			inUse = append(inUse, &net.IPNet{IP: subnet.IP.Mask(subnet.Mask), Mask: subnet.Mask})
-		}
-	}
-	// Routes cover networks without a local address, such as VPN routes.
-	if data, err := os.ReadFile("/proc/net/route"); err == nil {
-		inUse = append(inUse, routedSubnets(data)...)
-	}
-	return inUse, nil
-}
-
-// routedSubnets returns the IPv4 destinations of /proc/net/route, except the
-// default route, which overlaps every subnet.
-func routedSubnets(data []byte) []*net.IPNet {
-	var subnets []*net.IPNet
-	for _, line := range strings.Split(string(data), "\n")[1:] {
-		fields := strings.Fields(line)
-		if len(fields) < 8 {
-			continue
-		}
-		destination, err := strconv.ParseUint(fields[1], 16, 32)
-		if err != nil {
-			continue
-		}
-		mask, err := strconv.ParseUint(fields[7], 16, 32)
-		if err != nil || mask == 0 {
-			continue
-		}
-		// The kernel prints the network-order address as a host-order word.
-		ip, netmask := make(net.IP, 4), make(net.IPMask, 4)
-		binary.NativeEndian.PutUint32(ip, uint32(destination))
-		binary.NativeEndian.PutUint32(netmask, uint32(mask))
-		subnets = append(subnets, &net.IPNet{IP: ip.Mask(netmask), Mask: netmask})
-	}
-	return subnets
+	return vmtest.SubnetsInUse(ctx, func(ctx context.Context, args ...string) ([]byte, error) {
+		return manager.virsh(ctx, uri, args...)
+	})
 }
 
 // addWorldNode reserves the next address and MAC for a node. The name defaults
@@ -298,7 +244,7 @@ func addWorldNode(world katldevWorld, name string, controlPlane bool) (vmtest.No
 // exactly the scenario's node addresses. The scenario is the source of truth,
 // so an interrupted readdress or add-node converges on the next command.
 func (manager installerManager) syncNetwork(ctx context.Context, world katldevWorld) error {
-	if err := manager.syncOwnedNetwork(ctx, world.World.Libvirt.URI, world.network(), filepath.Join(world.World.RunDir, "network", "network.xml")); err != nil {
+	if err := manager.ensureNetwork(ctx, world.World.Libvirt.URI, world.network(), filepath.Join(world.World.RunDir, "network", "network.xml")); err != nil {
 		return err
 	}
 	if err := manager.syncMultihome(ctx, world, false); err != nil {
@@ -307,135 +253,16 @@ func (manager installerManager) syncNetwork(ctx context.Context, world katldevWo
 	return manager.syncNAT(ctx, world, false)
 }
 
-// syncOwnedNetwork defines and starts desired if needed, refuses a network
-// of the same name that the world does not own, and converges its DHCP
-// reservations on desired.Hosts.
-func (manager installerManager) syncOwnedNetwork(ctx context.Context, uri string, desired vmtest.OwnedNetwork, path string) error {
-	exists, err := manager.networkExists(ctx, uri, desired.Name)
-	if err != nil {
-		return err
+// ensureNetwork converges desired through vmtest.OwnedNetwork.Ensure, which
+// owns network creation, ownership checks and DHCP reservations.
+func (manager installerManager) ensureNetwork(ctx context.Context, uri string, desired vmtest.OwnedNetwork, definition string) error {
+	err := desired.Ensure(ctx, func(ctx context.Context, args ...string) ([]byte, error) {
+		return manager.virsh(ctx, uri, args...)
+	}, definition)
+	if errors.Is(err, vmtest.ErrNetworkStart) {
+		return fmt.Errorf("%w; if another network, VPN, or route now uses that subnet, run katldev world reset to recreate the world on a free subnet", err)
 	}
-	defined := false
-	if !exists {
-		definition, err := desired.XML()
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(path, []byte(definition), 0o644); err != nil {
-			return err
-		}
-		if _, err := manager.virsh(ctx, uri, "net-define", path); err != nil {
-			return err
-		}
-		defined = true
-	}
-	if err := manager.requireOwnedNetwork(ctx, uri, desired.Name, desired.Owner); err != nil {
-		if !defined {
-			return err
-		}
-		// A libvirt without network metadata accepts the definition but drops
-		// the ownership marker, which would leave a network katldev refuses to
-		// manage or remove.
-		if _, undefineErr := manager.virsh(ctx, uri, "net-undefine", desired.Name); undefineErr != nil {
-			return fmt.Errorf("libvirt network %s lost its ownership metadata and could not be undefined: %w; remove it with virsh net-undefine %s", desired.Name, undefineErr, desired.Name)
-		}
-		return fmt.Errorf("libvirt did not keep the ownership metadata of network %s, so it was undefined again; katldev world needs libvirt 9.7 or newer for network metadata: %w", desired.Name, err)
-	}
-	active, err := manager.networkActive(ctx, uri, desired.Name)
-	if err != nil {
-		return err
-	}
-	if !active {
-		if _, err := manager.virsh(ctx, uri, "net-start", desired.Name); err != nil {
-			return fmt.Errorf("start libvirt network %s on %s: %w; if another network, VPN, or route now uses that subnet, run katldev world reset to recreate the world on a free subnet", desired.Name, desired.CIDR, err)
-		}
-	}
-
-	data, err := manager.virsh(ctx, uri, "net-dumpxml", desired.Name, "--inactive")
-	if err != nil {
-		return err
-	}
-	current, err := vmtest.LibvirtNetworkHosts(data)
-	if err != nil {
-		return fmt.Errorf("read libvirt network %s reservations: %w", desired.Name, err)
-	}
-	byMAC := map[string]vmtest.DHCPHost{}
-	for _, host := range current {
-		byMAC[strings.ToLower(host.MACAddress)] = host
-	}
-	update := func(command string, host vmtest.DHCPHost) error {
-		element, err := desired.HostXML(host)
-		if err != nil {
-			return err
-		}
-		_, err = manager.virsh(ctx, uri, "net-update", desired.Name, command, "ip-dhcp-host", element, "--live", "--config")
-		return err
-	}
-	for _, host := range desired.Hosts {
-		mac := strings.ToLower(host.MACAddress)
-		existing, ok := byMAC[mac]
-		delete(byMAC, mac)
-		switch {
-		case !ok:
-			err = update("add-last", host)
-		case existing.Address != host.Address || existing.Name != host.Name:
-			err = update("modify", host)
-		}
-		if err != nil {
-			return err
-		}
-	}
-	for _, stale := range byMAC {
-		if err := update("delete", stale); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (manager installerManager) networkExists(ctx context.Context, uri, name string) (bool, error) {
-	output, err := manager.virsh(ctx, uri, "net-list", "--all", "--name")
-	if err != nil {
-		return false, err
-	}
-	for _, line := range strings.Fields(string(output)) {
-		if line == name {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func (manager installerManager) networkActive(ctx context.Context, uri, name string) (bool, error) {
-	output, err := manager.virsh(ctx, uri, "net-info", name)
-	if err != nil {
-		return false, err
-	}
-	for _, line := range strings.Split(string(output), "\n") {
-		key, value, ok := strings.Cut(line, ":")
-		if ok && strings.EqualFold(strings.TrimSpace(key), "Active") {
-			return strings.EqualFold(strings.TrimSpace(value), "yes"), nil
-		}
-	}
-	return false, fmt.Errorf("virsh net-info %s did not report whether it is active", name)
-}
-
-func (manager installerManager) requireOwnedNetwork(ctx context.Context, uri, name, owner string) error {
-	output, err := manager.virsh(ctx, uri, "net-metadata", name, vmtestMetadataURI)
-	if err != nil {
-		return fmt.Errorf("refusing to manage libvirt network %s without katldev world ownership metadata: %w", name, err)
-	}
-	got, err := domainOwner(output)
-	if err != nil {
-		return fmt.Errorf("decode libvirt network %s ownership metadata: %w", name, err)
-	}
-	if got != owner {
-		return fmt.Errorf("refusing to manage libvirt network %s owned by %q", name, got)
-	}
-	return nil
+	return err
 }
 
 // removeWorld deletes exactly the libvirt domains and network that carry
@@ -499,32 +326,6 @@ func (manager installerManager) removeWorldObjects(ctx context.Context, runID st
 		if err := manager.removeOwnedNetwork(ctx, uri, network, owner); err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-func (manager installerManager) removeOwnedNetwork(ctx context.Context, uri, network, owner string) error {
-	exists, err := manager.networkExists(ctx, uri, network)
-	if err != nil {
-		return err
-	}
-	if exists {
-		if err := manager.requireOwnedNetwork(ctx, uri, network, owner); err != nil {
-			return err
-		}
-		active, err := manager.networkActive(ctx, uri, network)
-		if err != nil {
-			return err
-		}
-		if active {
-			if _, err := manager.virsh(ctx, uri, "net-destroy", network); err != nil {
-				return err
-			}
-		}
-		if _, err := manager.virsh(ctx, uri, "net-undefine", network); err != nil {
-			return err
-		}
-		fmt.Fprintf(manager.stderr, "katldev world: removed network %s\n", network)
 	}
 	return nil
 }
@@ -907,4 +708,14 @@ func (manager installerManager) readdress(ctx context.Context, name, address str
 	fmt.Fprintf(manager.stdout, "  katlctl node reboot %s --config %s --endpoint %s\n", configName, config, previous)
 	fmt.Fprintf(manager.stdout, "  katlctl cluster apply --config %s --node %s\n", config, configName)
 	return nil
+}
+
+func (manager installerManager) removeOwnedNetwork(ctx context.Context, uri, network, owner string) error {
+	removed, err := vmtest.OwnedNetwork{Name: network, Owner: owner}.Remove(ctx, func(ctx context.Context, args ...string) ([]byte, error) {
+		return manager.virsh(ctx, uri, args...)
+	})
+	if removed {
+		fmt.Fprintf(manager.stderr, "katldev world: removed network %s\n", network)
+	}
+	return err
 }

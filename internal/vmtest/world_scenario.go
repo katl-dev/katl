@@ -1,6 +1,7 @@
 package vmtest
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -40,6 +41,9 @@ type WorldScenario struct {
 	// loaded marks a scenario reopened from its manifest. Other processes
 	// may share it, so allocations reload its nodes first.
 	loaded bool
+	// owned marks a scenario that created its own libvirt network, which it
+	// keeps reserving its nodes' addresses in.
+	owned bool
 }
 
 type Node struct {
@@ -51,10 +55,15 @@ type Node struct {
 	// reserved until ConfirmAddress observes the node at Address.
 	PreviousAddress string `json:"previousAddress,omitempty"`
 	MACAddress      string `json:"macAddress"`
-	ArtifactDir     string `json:"artifactDir"`
-	ManifestDir     string `json:"manifestDir"`
-	DiskDir         string `json:"diskDir"`
-	VMDir           string `json:"vmDir"`
+	// Network is the libvirt network the node's VM attaches to.
+	Network string `json:"network,omitempty"`
+	// Reserved marks a node whose network gives its MAC the planned address
+	// through a DHCP reservation.
+	Reserved    bool   `json:"reserved,omitempty"`
+	ArtifactDir string `json:"artifactDir"`
+	ManifestDir string `json:"manifestDir"`
+	DiskDir     string `json:"diskDir"`
+	VMDir       string `json:"vmDir"`
 }
 
 type scenarioManifest struct {
@@ -93,9 +102,12 @@ type leaseEntry struct {
 	Node       string `json:"node"`
 }
 
+// NewScenario plans and records a scenario. In a world that a run lease owns,
+// the scenario gets its own libvirt network, which t's cleanup removes.
 func (world World) NewScenario(t interface {
 	Helper()
 	Fatalf(format string, args ...any)
+	Cleanup(func())
 }, name string,
 ) *WorldScenario {
 	t.Helper()
@@ -103,13 +115,29 @@ func (world World) NewScenario(t interface {
 	if err != nil {
 		t.Fatalf("plan VM test scenario: %v", err)
 	}
+	t.Cleanup(scenario.Release)
 	if err := scenario.WriteManifest(); err != nil {
 		t.Fatalf("write VM test scenario manifest: %v", err)
 	}
 	return scenario
 }
 
+// PlanScenario plans a scenario. In a world with libvirt that a run lease owns,
+// it also creates the scenario's own libvirt network, which Release removes.
 func (world World) PlanScenario(name string) (*WorldScenario, error) {
+	scenario, err := world.planScenario(name)
+	if err != nil {
+		return nil, err
+	}
+	if world.Lease != "" && world.Capabilities["libvirt"] == WorldStatusPassed {
+		if err := scenario.createNetwork(context.Background()); err != nil {
+			return nil, fmt.Errorf("create scenario network: %w", err)
+		}
+	}
+	return scenario, nil
+}
+
+func (world World) planScenario(name string) (*WorldScenario, error) {
 	id := clean(name)
 	if id == "" {
 		return nil, errors.New("scenario name is required")
@@ -159,6 +187,8 @@ func (scenario *WorldScenario) AddNode(spec NodeSpec) (Node, error) {
 		Name:        spec.Name,
 		Role:        spec.Role,
 		MACAddress:  nodeMACAddress(scenario.World.RunID, scenario.ID, spec.Name),
+		Network:     scenario.World.Network.Name,
+		Reserved:    scenario.owned,
 		ArtifactDir: artifactDir,
 		ManifestDir: filepath.Join(artifactDir, "manifests"),
 		DiskDir:     filepath.Join(artifactDir, "disks"),
@@ -252,7 +282,19 @@ func (scenario *WorldScenario) WriteResult(status WorldStatus, failure string) e
 // between them can only over-claim. A loaded scenario's nodes are reloaded
 // from the manifest first so that processes sharing it do not overwrite each
 // other's nodes.
+//
+// The scenario's network is synced after the lock is released: virsh may be
+// slow, and the lock's other waiters give up quickly. Each scenario owns its
+// network and a sync reconciles every reservation of its nodes, so a later
+// sync repairs an earlier failed one.
 func (scenario *WorldScenario) allocate(change func(reserved map[string]bool) (*leaseEntry, error)) error {
+	if err := scenario.allocateLocked(change); err != nil {
+		return err
+	}
+	return scenario.syncNetwork(context.Background())
+}
+
+func (scenario *WorldScenario) allocateLocked(change func(reserved map[string]bool) (*leaseEntry, error)) error {
 	unlock, err := lockLeaseFile(scenario.World.Network.LeaseFile)
 	if err != nil {
 		return err
@@ -345,6 +387,13 @@ func writeLeases(path string, leases leaseFile) error {
 }
 
 func lockLeaseFile(path string) (func(), error) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	return lockFile(ctx, path)
+}
+
+// lockFile takes an exclusive flock on path+".lock", waiting until ctx ends.
+func lockFile(ctx context.Context, path string) (func(), error) {
 	lockPath := path + ".lock"
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return nil, err
@@ -353,7 +402,7 @@ func lockLeaseFile(path string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	for i := 0; i < 100; i++ {
+	for {
 		err = unix.Flock(int(lock.Fd()), unix.LOCK_EX|unix.LOCK_NB)
 		if err == nil {
 			return func() {
@@ -365,38 +414,47 @@ func lockLeaseFile(path string) (func(), error) {
 			_ = lock.Close()
 			return nil, err
 		}
-		time.Sleep(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			_ = lock.Close()
+			return nil, fmt.Errorf("timed out waiting for lock %s: %w", lockPath, ctx.Err())
+		case <-time.After(10 * time.Millisecond):
+		}
 	}
-	_ = lock.Close()
-	return nil, fmt.Errorf("timed out waiting for lease lock %s", lockPath)
 }
 
+// worldAddressPlan returns how the world's network divides its addresses.
+func worldAddressPlan(world World) (addressPlan, error) {
+	_, network, err := parseWorldNetwork(world)
+	if err != nil {
+		return addressPlan{}, err
+	}
+	gateway := net.ParseIP(world.Network.Gateway).To4()
+	if gateway == nil {
+		return addressPlan{}, fmt.Errorf("world gateway %q is invalid", world.Network.Gateway)
+	}
+	return planAddresses(network, gateway)
+}
+
+// firstAvailableAddress returns the first reservable address that leased does
+// not hold.
 func firstAvailableAddress(world World, leased map[string]bool) (string, error) {
-	networkIP, network, err := parseWorldNetwork(world)
+	plan, err := worldAddressPlan(world)
 	if err != nil {
 		return "", err
 	}
-	gateway := net.ParseIP(world.Network.Gateway).To4()
-	networkStart := ipToUint32(networkIP)
-	networkEnd := broadcast(network)
-	if networkEnd <= networkStart+1 {
-		return "", fmt.Errorf("no free addresses in %s", world.Network.CIDR)
-	}
-	start := networkStart + 1
-	end := networkEnd - 1
-	for candidate := start; candidate <= end; candidate++ {
+	for candidate := plan.reservableStart; candidate <= plan.reservableEnd; candidate++ {
 		address := uint32ToIP(candidate).String()
-		if gateway != nil && address == gateway.String() {
-			continue
+		if plan.reservable(candidate) && !leased[address] {
+			return address, nil
 		}
-		if leased[address] {
-			continue
-		}
-		return address, nil
 	}
 	return "", fmt.Errorf("no free addresses in %s", world.Network.CIDR)
 }
 
+// validateRequestedAddress accepts a reservable address that leased does not
+// hold. Addresses of the dynamic DHCP range are refused because dnsmasq may
+// give them to any guest.
 func validateRequestedAddress(world World, leased map[string]bool, address string) error {
 	ip := net.ParseIP(address).To4()
 	if ip == nil {
@@ -409,18 +467,20 @@ func validateRequestedAddress(world World, leased map[string]bool, address strin
 	if !network.Contains(ip) {
 		return fmt.Errorf("node address %q is outside %s", address, world.Network.CIDR)
 	}
-	if address == network.IP.String() {
-		return fmt.Errorf("node address %q is reserved as network address", address)
+	plan, err := worldAddressPlan(world)
+	if err != nil {
+		return err
 	}
-	gateway := net.ParseIP(world.Network.Gateway).To4()
-	if gateway == nil {
-		return fmt.Errorf("world gateway %q is invalid", world.Network.Gateway)
-	}
-	if address == gateway.String() {
-		return fmt.Errorf("node address %q is reserved as gateway", address)
-	}
-	if address == uint32ToIP(broadcast(network)).String() {
-		return fmt.Errorf("node address %q is reserved as broadcast address", address)
+	if !plan.reservable(ipToUint32(ip)) {
+		switch value := ipToUint32(ip); {
+		case value == ipToUint32(network.IP):
+			return fmt.Errorf("node address %q is reserved as network address", address)
+		case value == broadcast(network):
+			return fmt.Errorf("node address %q is reserved as broadcast address", address)
+		case value == plan.gateway:
+			return fmt.Errorf("node address %q is reserved as gateway", address)
+		}
+		return fmt.Errorf("node address %q is in the dynamic DHCP range %s-%s of %s", address, uint32ToIP(plan.dynamicStart), uint32ToIP(plan.dynamicEnd), world.Network.CIDR)
 	}
 	if leased[address] {
 		return fmt.Errorf("node address %q is already leased", address)
@@ -437,7 +497,6 @@ func parseWorldNetwork(world World) (net.IP, *net.IPNet, error) {
 	if ip == nil {
 		return nil, nil, fmt.Errorf("world CIDR %q is not IPv4", world.Network.CIDR)
 	}
-	network.IP = ip
 	return ip, network, nil
 }
 
@@ -462,7 +521,7 @@ func broadcast(network *net.IPNet) uint32 {
 // LoadScenario reopens a scenario whose manifest an earlier process wrote, so
 // a persistent world can keep adding to and managing its nodes.
 func (world World) LoadScenario(name string) (*WorldScenario, error) {
-	scenario, err := world.PlanScenario(name)
+	scenario, err := world.planScenario(name)
 	if err != nil {
 		return nil, err
 	}

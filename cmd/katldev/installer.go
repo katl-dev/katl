@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
@@ -898,40 +897,9 @@ func (manager installerManager) removeDomain(ctx context.Context, uri, domain, o
 	if err := manager.requireOwnedDomain(ctx, uri, domain, owner); err != nil {
 		return err
 	}
-	domainState, err := manager.domainState(ctx, uri, domain)
-	if err != nil {
-		return err
-	}
-	if domainState != "shut off" && domainState != "crashed" {
-		if _, err := manager.virsh(ctx, uri, "destroy", domain); err != nil {
-			return err
-		}
-	}
-	hasManagedSave, err := manager.domainHasManagedSave(ctx, uri, domain)
-	if err != nil {
-		return err
-	}
-	if hasManagedSave {
-		if _, err := manager.virsh(ctx, uri, "managedsave-remove", domain); err != nil {
-			return err
-		}
-	}
-	_, err = manager.virsh(ctx, uri, "undefine", domain, "--nvram")
-	return err
-}
-
-func (manager installerManager) domainHasManagedSave(ctx context.Context, uri, domain string) (bool, error) {
-	output, err := manager.virsh(ctx, uri, "dominfo", domain)
-	if err != nil {
-		return false, err
-	}
-	for _, line := range strings.Split(string(output), "\n") {
-		key, value, ok := strings.Cut(line, ":")
-		if ok && strings.EqualFold(strings.TrimSpace(key), "Managed save") {
-			return strings.EqualFold(strings.TrimSpace(value), "yes"), nil
-		}
-	}
-	return false, nil
+	return vmtest.RemoveDomain(ctx, func(ctx context.Context, args ...string) ([]byte, error) {
+		return manager.virsh(ctx, uri, args...)
+	}, domain)
 }
 
 func (manager installerManager) domainExists(ctx context.Context, uri, domain string) (bool, error) {
@@ -971,13 +939,11 @@ func (manager installerManager) requireOwnedDomain(ctx context.Context, uri, dom
 }
 
 func domainOwner(data []byte) (string, error) {
-	var metadata struct {
-		Value string `xml:",chardata"`
-	}
-	if err := xml.Unmarshal(data, &metadata); err != nil {
+	metadata, err := vmtest.ParseLibvirtMetadata(data)
+	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(metadata.Value), nil
+	return metadata.Value, nil
 }
 
 func (manager installerManager) virsh(ctx context.Context, uri string, args ...string) ([]byte, error) {

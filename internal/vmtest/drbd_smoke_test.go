@@ -94,19 +94,21 @@ func TestInstalledRuntimeDRBDReplication(t *testing.T) {
 	var driverVersion string
 	var kubernetesVersion string
 	var kernelCommandLine []string
+	// Both nodes share one scenario, and so one network, to replicate.
+	runs, ok := installedRuntimeWorldRunsFor(t, "drbd", []NodeSpec{
+		{Name: "cp-1", Role: ControlPlane},
+		{Name: "cp-2", Role: ControlPlane},
+	})
+	if !ok {
+		t.Fatal("DRBD qualification requires a VM-test world")
+	}
+	copy(worlds[:], runs)
 	for i := range nodes {
 		name := fmt.Sprintf("cp-%d", i+1)
-		world, ok := installedRuntimeWorldRunFor(t, "drbd-"+name, NodeSpec{
-			Name: name,
-			Role: ControlPlane,
-		})
-		if !ok {
-			t.Fatal("DRBD qualification requires a VM-test world")
-		}
-		worlds[i] = world
+		world := worlds[i]
 		// libvirt can relabel backing files. Keep that ownership change inside
 		// the disposable run rather than touching a shared build artifact.
-		toolsCopy := filepath.Join(world.Scenario.Dir, "drbd-tools.raw")
+		toolsCopy := filepath.Join(world.Scenario.Dir, name+"-drbd-tools.raw")
 		if err := copyFile(toolsImage, toolsCopy, 0o644); err != nil {
 			t.Fatal(err)
 		}
@@ -134,7 +136,6 @@ func TestInstalledRuntimeDRBDReplication(t *testing.T) {
 		runtime.VM.CPUs = 2
 		runtime.VM.Timeout = 25 * time.Minute
 		runtime.VM.PreserveNVRAM = true
-		runtime.VM.Network.MAC = world.Node.MACAddress
 		nodes[i], err = StartInstalledRuntimeNode(ctx, result, InstalledRuntimeNodeConfig{
 			Name:    name,
 			Runtime: runtime,

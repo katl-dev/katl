@@ -5,6 +5,9 @@ virsh_bin="${KATL_VMTEST_VIRSH:-virsh}"
 ps_bin="${KATL_VMTEST_PS:-ps}"
 kill_bin="${KATL_VMTEST_KILL:-kill}"
 sudo_bin="${KATL_VMTEST_SUDO:-sudo}"
+repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+go_bin="${KATL_VMTEST_GO:-go}"
+release_bin="${KATL_VMTEST_RELEASE_NETWORKS:-}"
 
 usage() {
     printf 'usage: scripts/vmtest-clean <run-dir|result.json>\n' >&2
@@ -31,6 +34,8 @@ if [[ "${#result_files[@]}" -eq 0 ]]; then
 fi
 
 cleaned=0
+# Libvirt networks that the cleaned domains used, by libvirt URI.
+declare -A recorded_networks=()
 kill_qemu_pid() {
     local pid="$1"
     local domain="$2"
@@ -93,7 +98,7 @@ domain_exists() {
 }
 
 for result in "${result_files[@]}"; do
-    while IFS=$'\t' read -r domain uri; do
+    while IFS=$'\t' read -r domain uri network; do
         if [[ -z "$domain" ]]; then
             printf 'vmtest-clean: refusing empty domain name in %s\n' "$result" >&2
             exit 2
@@ -128,12 +133,19 @@ for result in "${result_files[@]}"; do
             fi
         }
         cleaned=$((cleaned + 1))
+        # Worlds without a run network use libvirt's default one, which is not ours to remove.
+        if [[ "$network" =~ ^[A-Za-z0-9_.:-]+$ && "$network" == katl-* ]]; then
+            case " ${recorded_networks[$uri]:-} " in
+                *" $network "*) ;;
+                *) recorded_networks[$uri]="${recorded_networks[$uri]:-} $network" ;;
+            esac
+        fi
     done < <(
         jq -r '
           (.debug.targets // [])
           | map(select(.preserved == true))
           | .[]
-          | [.domainName, .libvirtURI]
+          | [.domainName, .libvirtURI, (.network // "")]
           | @tsv
         ' "$result"
     )
@@ -143,5 +155,28 @@ if [[ "$cleaned" -eq 0 ]]; then
     printf 'vmtest-clean: no preserved vmtest domains recorded in %s\n' "$target" >&2
     exit 1
 fi
+
+# Release the networks only after every recorded domain is gone, so a network
+# that two recorded domains shared is not kept for a domain removed later.
+# Which networks a run owns, and whether anything still attaches to them, is
+# decided by the same release that ends a scenario.
+release_networks() {
+    local uri="$1"
+    shift
+
+    if [[ -n "$release_bin" ]]; then
+        "$release_bin" "$uri" "$@"
+    elif command -v katl-vmtest-release-networks >/dev/null 2>&1; then
+        katl-vmtest-release-networks "$uri" "$@"
+    else
+        (cd "$repo_root" && "$go_bin" run ./cmd/katl-vmtest-release-networks "$uri" "$@")
+    fi
+}
+
+for uri in "${!recorded_networks[@]}"; do
+    read -r -a names <<<"${recorded_networks[$uri]}"
+    printf 'vmtest-clean: releasing libvirt network(s) %s on %s\n' "${names[*]}" "$uri" >&2
+    release_networks "$uri" "${names[@]}" || exit 1
+done
 
 printf 'vmtest-clean: cleaned %d preserved domain(s)\n' "$cleaned" >&2

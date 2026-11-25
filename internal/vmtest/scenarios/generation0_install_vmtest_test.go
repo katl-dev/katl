@@ -53,6 +53,7 @@ type threeNodeGeneration0Input struct {
 	NodeMetadata         string   `json:"nodeMetadata,omitempty"`
 	Address              string   `json:"address,omitempty"`
 	MACAddress           string   `json:"macAddress,omitempty"`
+	Network              string   `json:"network,omitempty"`
 	InstallerUKI         string   `json:"installerUKI,omitempty"`
 	InstallerKernel      string   `json:"installerKernel,omitempty"`
 	InstallerInitrd      string   `json:"installerInitrd,omitempty"`
@@ -135,6 +136,7 @@ func threeNodeGeneration0InstallWorldRun(t *testing.T) (threeNodeGeneration0Inst
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
+	t.Cleanup(run.WorldScenario.Release)
 	return run, true
 }
 
@@ -172,6 +174,7 @@ func planThreeNodeGeneration0InstallRun(world vmtest.World, repo string, specs [
 			NodeMetadata:         node.Config.NodeMetadata,
 			Address:              node.Node.Address,
 			MACAddress:           node.Node.MACAddress,
+			Network:              node.Node.Network,
 			InstallerUKI:         published.InstallerUKI,
 			InstallerKernel:      published.InstallerKernel,
 			InstallerInitrd:      published.InstallerInitrd,
@@ -244,7 +247,8 @@ func runThreeNodeGeneration0Install(t *testing.T, run threeNodeGeneration0Instal
 					RAMMiB: 2048,
 					CPUs:   2,
 					Network: vmtest.VMNetworkConfig{
-						MAC: input.MACAddress,
+						MAC:  input.MACAddress,
+						Name: input.Network,
 					},
 					Timeout: 8 * time.Minute,
 					VSock: vmtest.VSockConfig{

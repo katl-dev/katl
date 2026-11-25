@@ -36,10 +36,7 @@ func TestExternalWorkerJoin(t *testing.T) {
 	if err := ensurePublishedRuntimeFixturesForWorld(world, repo, []vmtest.NodeSpec{{Name: "cp-1", Role: vmtest.ControlPlane}}, kvm); err != nil {
 		failWorldFixtureSetup(t, world, name, err)
 	}
-	scenario, err := world.PlanScenario(name)
-	if err != nil {
-		t.Fatal(err)
-	}
+	scenario := world.NewScenario(t, name)
 	options := vmtest.Options{Enabled: true, StateRoot: filepath.Join(scenario.Dir, "vm-runs"), Keep: vmtest.KeepFailed, KVM: kvm, Missing: vmtest.MissingFails}
 	runner := vmtest.NewRunner(options)
 	vmScenario := vmtest.Scenario{Name: name}
@@ -48,7 +45,7 @@ func TestExternalWorkerJoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	result.Started = time.Now().UTC()
-	smoke := operationBackedSmokeRun{WorldScenario: scenario, Options: options, Runner: runner, Scenario: vmScenario, Result: result, LibvirtURI: world.Libvirt.URI, Network: world.Libvirt.Network, Inputs: operationBackedSmokeInputs{KubernetesVersion: version}}
+	smoke := operationBackedSmokeRun{WorldScenario: scenario, Options: options, Runner: runner, Scenario: vmScenario, Result: result, LibvirtURI: world.Libvirt.URI, Network: scenario.World.Network.Name, Inputs: operationBackedSmokeInputs{KubernetesVersion: version}}
 	runExternalWorkerJoin(t, smoke)
 }
 

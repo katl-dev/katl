@@ -33,13 +33,11 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	}
 	runner := NewRunner(options)
 	runtime := InstalledRuntimeConfig{}
-	var plannedMAC string
 	var worldScenario *WorldScenario
 	spec := NodeSpec{Name: "sysupdate-partx-1", Role: ControlPlane}
 	if worldRun, ok := installedRuntimeWorldRunFor(t, "installed-runtime-sysupdate-root-uki", spec); ok {
 		runner = worldRun.Runner
 		runtime = worldRun.Config
-		plannedMAC = worldRun.Node.MACAddress
 		worldScenario = worldRun.Scenario
 	} else {
 		_ = RequireWorld(t)
@@ -71,7 +69,6 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	vm.RAMMiB = 2048
 	vm.CPUs = 2
 	vm.Timeout = 8 * time.Minute
-	vm.Network.MAC = first(vm.Network.MAC, plannedMAC)
 	vm.VSock.Enabled = true
 	vm.Agent.RequireHealth = true
 	vm.Agent.Timeout = 30 * time.Second

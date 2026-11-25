@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -83,6 +84,9 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	}
 	if world.CacheDir != filepath.Join(repo, "_build", "vmtest") {
 		t.Fatalf("world cache dir = %q", world.CacheDir)
+	}
+	if world.Lease != filepath.Join(runDir, "lease") {
+		t.Fatalf("world lease = %q", world.Lease)
 	}
 	if world.RunIndex != filepath.Join(runDir, "run.json") {
 		t.Fatalf("world run index = %q", world.RunIndex)
@@ -2044,4 +2048,64 @@ func copyRunCheck(t *testing.T, realRepo, repo string) {
 	}
 	copyScript(t, filepath.Join(realRepo, "go.mod"), filepath.Join(repo, "go.mod"))
 	copyScript(t, filepath.Join(realRepo, "cmd", "katl-vmtest-ran", "main.go"), filepath.Join(dir, "main.go"))
+}
+
+func TestVMTestCleanReleasesRecordedNetworks(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	fake := newFakeLibvirt(t)
+	dir := t.TempDir()
+	lease := filepath.Join(dir, "run", "lease")
+	otherLease := filepath.Join(dir, "other-run", "lease")
+	network := func(name, owner, lease string) {
+		fake.addNetwork(t, OwnedNetwork{Name: name, Owner: owner, Lease: lease, CIDR: "10.200.1.0/24", Gateway: "10.200.1.1"})
+	}
+	// Two preserved domains share one network; another preserved domain has its own.
+	network("katl-run-1-shared", vmtestMetadata, lease)
+	network("katl-run-1-solo", vmtestMetadata, lease)
+	fake.addDomain(t, "katl-run-1-a", vmtestMetadataFor(lease), "katl-run-1-shared")
+	fake.addDomain(t, "katl-run-1-b", vmtestMetadataFor(lease), "katl-run-1-shared")
+	fake.addDomain(t, "katl-run-1-c", vmtestMetadataFor(lease), "katl-run-1-solo")
+	// A domain of the run that the record does not name keeps its network.
+	network("katl-run-1-sibling", vmtestMetadata, lease)
+	fake.addDomain(t, "katl-run-1-d", vmtestMetadataFor(lease), "katl-run-1-sibling")
+	fake.addDomain(t, "katl-run-1-e", vmtestMetadataFor(lease), "katl-run-1-sibling")
+	// Networks that the record does not name, and ones that are not run networks.
+	network("katl-run-1-unrecorded", vmtestMetadata, lease)
+	network("katl-run-2-scenario", vmtestMetadata, otherLease)
+	network("katl-dev-world-1", "katl/katldev-world/dev-world-1", "")
+	for domain, network := range map[string]string{"katl-run-1-g": "default", "katl-run-1-h": "katl-dev-world-1"} {
+		fake.addDomain(t, domain, vmtestMetadataFor(lease), network)
+	}
+
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	target := func(domain, network string) string {
+		return `{"preserved": true, "domainName": "` + domain + `", "libvirtURI": "qemu:///fixture", "network": "` + network + `"}`
+	}
+	runDir := filepath.Join(dir, "run")
+	write(filepath.Join(runDir, "one", "result.json"), `{"debug": {"targets": [`+
+		target("katl-run-1-a", "katl-run-1-shared")+","+target("katl-run-1-c", "katl-run-1-solo")+","+
+		target("katl-run-1-d", "katl-run-1-sibling")+"]}}")
+	write(filepath.Join(runDir, "two", "result.json"), `{"debug": {"targets": [`+
+		target("katl-run-1-b", "katl-run-1-shared")+","+target("katl-run-1-g", "default")+","+
+		target("katl-run-1-h", "katl-dev-world-1")+"]}}")
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-clean"), runDir)
+	cmd.Dir = repo
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("vmtest-clean failed: %v\n%s", err, output)
+	}
+
+	want := []string{"katl-dev-world-1", "katl-run-1-sibling", "katl-run-1-unrecorded", "katl-run-2-scenario"}
+	if got := fake.objects(t, "networks"); !slices.Equal(got, want) {
+		t.Fatalf("networks after vmtest-clean = %v, want %v\n%s", got, want, output)
+	}
 }

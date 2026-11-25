@@ -1,6 +1,7 @@
 package scriptstest
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -53,6 +54,10 @@ func TestVMTestLockProcess(t *testing.T) {
 		if err := os.WriteFile(filepath.Join(root, "descendant.pid"), []byte(strconv.Itoa(child.Process.Pid)), 0600); err != nil {
 			panic(err)
 		}
+		env := os.Getenv("KATL_VMTEST_RUN_LEASE") + "\n" + os.Getenv("KATL_VMTEST_RUN_ID") + "\n"
+		if err := os.WriteFile(filepath.Join(root, "go-env.txt"), []byte(env), 0600); err != nil {
+			panic(err)
+		}
 		barrier("work")
 		fmt.Println("--- PASS: NoVM (0.00s)")
 		code, _ := strconv.Atoi(os.Getenv("KATL_LOCK_EXIT"))
@@ -72,15 +77,6 @@ func TestVMTestLockProcess(t *testing.T) {
 			fmt.Print("State: running\n")
 		case "pool-dumpxml":
 			fmt.Printf("<pool><target><path>%s</path></target></pool>\n", root)
-		case "list":
-			fmt.Println("katl-lock-fixture")
-		case "metadata":
-			fmt.Print("<vmtest xmlns=\"https://katlos.io/xmlns/vmtest/1\">katl/vmtest</vmtest>\n")
-		case "domstate":
-			fmt.Println("running")
-		case "destroy":
-			barrier("cleanup")
-		case "undefine":
 		default:
 			os.Exit(1)
 		}
@@ -115,7 +111,7 @@ func newLockFixture(t *testing.T) lockFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"cleanup", "work", "retention"} {
+	for _, name := range []string{"work", "retention"} {
 		if err := syscall.Mkfifo(filepath.Join(root, name+".fifo"), 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -153,7 +149,7 @@ func (f lockFixture) start(t *testing.T, exit int) lockRun {
 	go func() { done <- cmd.Wait(); out.Close() }()
 	t.Cleanup(func() {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		for _, name := range []string{"cleanup.ready", "work.ready", "retention.ready", "descendant.pid"} {
+		for _, name := range []string{"work.ready", "retention.ready", "descendant.pid"} {
 			if b, err := os.ReadFile(filepath.Join(f.root, name)); err == nil {
 				pid, _ := strconv.Atoi(string(b))
 				if pid > 0 {
@@ -198,14 +194,32 @@ func (f lockFixture) release(t *testing.T, name string) {
 
 func (f lockFixture) locked(t *testing.T, want bool) {
 	t.Helper()
-	err := exec.Command("flock", "--wait", "0.1", filepath.Join(f.root, "host.lock"), "true").Run()
+	contended(t, filepath.Join(f.root, "host.lock"), want)
+}
+
+// held checks the host lock and the run lease together, which a runner holds
+// from the moment it is admitted until it exits.
+func (f lockFixture) held(t *testing.T, want bool) {
+	t.Helper()
+	f.locked(t, want)
+	contended(t, filepath.Join(f.root, "run", "lease"), want)
+}
+
+// contended checks with a native flock whether a live process holds path. A
+// missing file has no holder.
+func contended(t *testing.T, path string, want bool) {
+	t.Helper()
+	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) && !want {
+		return
+	}
+	err := exec.Command("flock", "--wait", "0.1", path, "true").Run()
 	if want {
 		var exit *exec.ExitError
 		if !errors.As(err, &exit) || exit.ExitCode() != 1 {
-			t.Fatalf("native flock = %v, want contention", err)
+			t.Fatalf("native flock %s = %v, want contention", path, err)
 		}
 	} else if err != nil {
-		t.Fatalf("native flock could not acquire released lease: %v", err)
+		t.Fatalf("native flock could not acquire released %s: %v", path, err)
 	}
 }
 
@@ -245,11 +259,8 @@ func TestVMTestHostLease(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newLockFixture(t)
 			r := f.start(t, tc.exit)
-			f.wait(t, "cleanup.ready")
-			f.locked(t, true)
-			f.release(t, "cleanup")
 			f.wait(t, "work.ready")
-			f.locked(t, true)
+			f.held(t, true)
 			if tc.signal != 0 {
 				if err := r.cmd.Process.Signal(tc.signal); err != nil {
 					t.Fatal(err)
@@ -257,11 +268,11 @@ func TestVMTestHostLease(t *testing.T) {
 			}
 			if tc.signal == syscall.SIGKILL {
 				r.result(t, tc.want)
-				f.locked(t, false)
+				f.held(t, false)
 				return
 			}
 			if tc.signal != 0 {
-				f.locked(t, true)
+				f.held(t, true)
 			}
 			f.release(t, "work")
 			r.result(t, tc.want)
@@ -274,22 +285,57 @@ func TestVMTestHostLease(t *testing.T) {
 			if err := syscall.Kill(pid, 0); err != nil {
 				t.Fatalf("fixture descendant did not survive: %v", err)
 			}
-			f.locked(t, false)
+			f.held(t, false)
 		})
 	}
+}
+
+// The run lease is the owner that libvirt objects name, so go test must see
+// the same path that world.json records and the runner holds.
+func TestVMTestRunLeaseExported(t *testing.T) {
+	f := newLockFixture(t)
+	r := f.start(t, 0)
+	f.wait(t, "work.ready")
+
+	lease := filepath.Join(f.root, "run", "lease")
+	exported, err := os.ReadFile(filepath.Join(f.root, "go-env.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fields := strings.Fields(string(exported))
+	if len(fields) != 2 || fields[0] != lease || fields[1] == "" {
+		t.Fatalf("go test saw KATL_VMTEST_RUN_LEASE and KATL_VMTEST_RUN_ID %q, want %s and a run ID", fields, lease)
+	}
+	data, err := os.ReadFile(filepath.Join(f.root, "run", "world.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var world struct {
+		RunID string `json:"runID"`
+		Lease string `json:"lease"`
+	}
+	if err := json.Unmarshal(data, &world); err != nil {
+		t.Fatal(err)
+	}
+	if world.Lease != lease || world.RunID != fields[1] {
+		t.Fatalf("world.json lease %q run %q, want %q and %q", world.Lease, world.RunID, lease, fields[1])
+	}
+	f.held(t, true)
+
+	f.release(t, "work")
+	r.result(t, 0)
+	f.held(t, false)
 }
 
 func TestVMTestGroupInterrupt(t *testing.T) {
 	f := newLockFixture(t)
 	r := f.start(t, 0)
-	f.wait(t, "cleanup.ready")
-	f.release(t, "cleanup")
 	f.wait(t, "work.ready")
 	if err := syscall.Kill(-r.cmd.Process.Pid, syscall.SIGINT); err != nil {
 		t.Fatal(err)
 	}
 	r.result(t, 130)
-	f.locked(t, false)
+	f.held(t, false)
 }
 
 func TestVMTestRetentionLease(t *testing.T) {
@@ -300,20 +346,18 @@ func TestVMTestRetentionLease(t *testing.T) {
 	}
 	f.env = append(f.env, "KATL_VMTEST_KEEP=never", "KATL_LOCK_RM="+rm, "PATH="+f.root+":"+os.Getenv("PATH"))
 	r := f.start(t, 0)
-	f.wait(t, "cleanup.ready")
-	f.release(t, "cleanup")
 	f.wait(t, "work.ready")
 	f.release(t, "work")
 	f.wait(t, "retention.ready")
-	f.locked(t, true)
+	f.held(t, true)
 
 	if err := r.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
-	f.locked(t, true)
+	f.held(t, true)
 	f.release(t, "retention")
 	r.result(t, 143)
-	f.locked(t, false)
+	f.held(t, false)
 	if _, err := os.Stat(filepath.Join(f.root, "run")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("run directory was not removed: %v", err)
 	}
@@ -353,7 +397,7 @@ func TestVMTestCancelledWaiter(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("waiter did not cancel")
 	}
-	for _, name := range []string{"cleanup.ready", "work.ready"} {
+	for _, name := range []string{"work.ready"} {
 		if _, err := os.Stat(filepath.Join(f.root, name)); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("cancelled waiter entered %s", name)
 		}

@@ -540,6 +540,9 @@ The host must provide:
   polkit policy, or an explicit privileged manual session.
 - An active libvirt network named `default`, or
   `KATL_VMTEST_LIBVIRT_NETWORK` set to the active test network.
+- Permission to define NAT networks in that daemon, which must be libvirt 9.7 or
+  newer so networks keep their metadata. Each VM test scenario creates and
+  removes its own network on a free /24 in 10.200.0.0/13.
 - An active libvirt storage pool named `default`, or
   `KATL_VMTEST_LIBVIRT_STORAGE_POOL` set to the active test pool.
 
@@ -916,7 +919,7 @@ Installed-runtime tests consume the KatlOS install image and reject
 
 Use delete-on-success retention for routine gates. While debugging, use
 `--debug-on-failure` with a single narrow scenario, retain the run directory as
-evidence, and clean retained domains with `scripts/vmtest-clean` when inspection
+evidence, and clean retained domains and the run networks they used with `scripts/vmtest-clean` when inspection
 is done.
 
 The focused external-worker regression uses one Katl control-plane VM and an

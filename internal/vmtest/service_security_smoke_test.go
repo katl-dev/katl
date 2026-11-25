@@ -37,7 +37,6 @@ func TestInstalledRuntimeServiceSecuritySmoke(t *testing.T) {
 	runtime.VM.KVM = options.KVM
 	runtime.VM.RAMMiB, runtime.VM.CPUs = 2048, 2
 	runtime.VM.Timeout = 10 * time.Minute
-	runtime.VM.Network.MAC = world.Node.MACAddress
 	runtime.VM.VSock.Enabled = true
 	runtime.VM.Agent.RequireHealth = true
 	node, err := StartInstalledRuntimeNode(ctx, result, InstalledRuntimeNodeConfig{Name: "cp-1", Runtime: runtime}, VMRunner{})
@@ -57,9 +56,6 @@ func TestInstalledRuntimeServiceSecuritySmoke(t *testing.T) {
 	}
 	defer client.Close()
 	guest := NewGuestControl(node.Result, client)
-	if err := guest.WaitBootComplete(ctx); err != nil {
-		t.Fatal(err)
-	}
 
 	// Host orchestration and container mounts must remain visible to PID 1.
 	hostNamespace := guestCommandOutput(t, ctx, guest, "host-mount-namespace", "readlink", "/proc/1/ns/mnt")

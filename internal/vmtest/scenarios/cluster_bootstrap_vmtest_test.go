@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -126,6 +127,7 @@ func operationBackedWorldSmokeRun(t *testing.T, scenarioName string) (operationB
 	}
 	missing := twoNodeHostToolPrereqs(exec.LookPath)
 	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node operation-backed bootstrap smoke prerequisites missing", missing)
+	t.Cleanup(run.WorldScenario.Release)
 	return run, true
 }
 
@@ -216,7 +218,7 @@ func planOperationBackedWorldSmokeRunNamed(world vmtest.World, repo, kubernetesV
 		Scenario:      vmtest.Scenario{Name: scenarioName},
 		Result:        result,
 		LibvirtURI:    world.Libvirt.URI,
-		Network:       world.Libvirt.Network,
+		Network:       scenario.World.Network.Name,
 		Inputs: operationBackedSmokeInputs{
 			ControlPlaneDisk:       cp.Config.Disk,
 			ControlPlaneDiskFormat: string(cp.Config.DiskFormat),
@@ -1497,6 +1499,7 @@ func twoNodeWorldSmokeRun(t *testing.T) (twoNodeSmokeRun, bool) {
 	}
 	missing := twoNodeHostToolPrereqs(exec.LookPath)
 	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node kubeadm join smoke prerequisites missing", missing)
+	t.Cleanup(run.WorldScenario.Release)
 	return run, true
 }
 
@@ -1546,7 +1549,7 @@ func planTwoNodeWorldSmokeRun(world vmtest.World, repo, kubernetesVersion string
 		Scenario:      vmScenario,
 		Result:        result,
 		LibvirtURI:    world.Libvirt.URI,
-		Network:       world.Libvirt.Network,
+		Network:       scenario.World.Network.Name,
 		Inputs: twoNodeSmokeInputs{
 			ControlPlaneDisk:       cp.Config.Disk,
 			ControlPlaneDiskFormat: string(cp.Config.DiskFormat),
@@ -3013,26 +3016,11 @@ func waitForKatlcAgentTCP(ctx context.Context, nodeName, address string, timeout
 	if strings.TrimSpace(address) == "" {
 		return fmt.Errorf("%s has no node address", nodeName)
 	}
-	deadline := time.Now().Add(timeout)
-	target := net.JoinHostPort(address, "9443")
-	var lastErr error
-	for {
-		dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", target)
-		cancel()
-		if err == nil {
-			_ = conn.Close()
-			return nil
-		}
-		lastErr = err
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("%s did not accept TCP connections on %s: %w", nodeName, target, lastErr)
-		}
-		time.Sleep(500 * time.Millisecond)
+	parsed, err := netip.ParseAddr(strings.TrimSpace(address))
+	if err != nil {
+		return fmt.Errorf("%s node address: %w", nodeName, err)
 	}
+	return vmtest.WaitManagementEndpoint(ctx, nodeName, netip.AddrPortFrom(parsed, 9443), timeout)
 }
 
 func liveNodeIPv4Address(ctx context.Context, node vmtest.RunningInstalledRuntimeNode, fallback string) (string, error) {

@@ -105,7 +105,7 @@ func (manager installerManager) syncMultihome(ctx context.Context, world katldev
 			return fmt.Errorf("%s gives a second NIC to %s, which the world no longer has; run katldev world multihome %s --remove", manager.multihomePath(), name, name)
 		}
 	}
-	return manager.syncOwnedNetwork(ctx, uri, state.network(world), filepath.Join(world.World.RunDir, "network", "multihome.xml"))
+	return manager.ensureNetwork(ctx, uri, state.network(world), filepath.Join(world.World.RunDir, "network", "multihome.xml"))
 }
 
 // attachMultihome gives an existing domain its second NIC, persistently and,

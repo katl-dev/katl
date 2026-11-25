@@ -76,7 +76,7 @@ func TestInstallerESPSameDiskInstall(t *testing.T) {
 	if err := writeInstallerESPDisk(ctx, worldScenario.Dir, disk, installerUKI); err != nil {
 		fail(err)
 	}
-	imageURL, imageRequests, stopImageServer, err := serveInstallImage(world.Network.Gateway, image)
+	imageURL, imageRequests, stopImageServer, err := serveInstallImage(worldScenario.World.Network.Gateway, image)
 	if err != nil {
 		fail(err)
 	}
@@ -93,7 +93,7 @@ func TestInstallerESPSameDiskInstall(t *testing.T) {
 	// minimum installer RAM; the downloaded image is staged in memory.
 	vm := vmtest.VMConfig{
 		Boot:          vmtest.VMBoot{Image: disk, ImageFormat: vmtest.DiskRaw, ImageWithoutSerial: true},
-		Network:       vmtest.VMNetworkConfig{MAC: node.MACAddress},
+		Network:       node.VMNetwork(),
 		PreserveNVRAM: true,
 		KVM:           options.KVM,
 		RAMMiB:        2048,

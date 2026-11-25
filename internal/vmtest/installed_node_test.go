@@ -5,11 +5,15 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 )
 
 func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) {
@@ -40,6 +44,7 @@ func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) 
 		AgentConnector: func(context.Context, VSockPlan, string) (AgentHealthClient, error) {
 			return fakeHealthClient{}, nil
 		},
+		guestConnector: settledGuest,
 		probe: probe{
 			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
@@ -108,6 +113,113 @@ func TestStartInstalledRuntimeNodeKeepsVMRunningWithNodeArtifacts(t *testing.T) 
 	}
 }
 
+// A reserved address is leased as the guest's network comes up, which can be
+// before katlc-agent listens. The node is usable only once katlctl can reach
+// its management endpoint at the leased address.
+func TestStartInstalledRuntimeNodeWaitsForManagementEndpoint(t *testing.T) {
+	root := t.TempDir()
+	disk := filepath.Join(root, "installed.raw")
+	if err := os.WriteFile(disk, []byte("disk"), 0o644); err != nil {
+		t.Fatalf("write disk: %v", err)
+	}
+	esp := espFixture(t)
+	nodeMetadata := filepath.Join(root, "node.json")
+	if err := os.WriteFile(nodeMetadata, []byte(`{"kind":"NodeMetadata"}`), 0o644); err != nil {
+		t.Fatalf("write node metadata: %v", err)
+	}
+	fixtureManifest := writeInstalledFixtureManifest(t, root, disk, esp, nodeMetadata)
+	parent, err := NewRunner(Options{
+		StateRoot: root,
+		RunID:     "run-1",
+	}).Plan(Scenario{Name: "two-node"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+
+	// Any loopback address works on Linux; a distinctive one keeps port 9443
+	// free of other listeners.
+	const address = "127.83.41.7"
+	const mac = "52:54:00:83:41:07"
+	leased := filepath.Join(root, "leased")
+	virsh := filepath.Join(root, "virsh")
+	writeExecutable(t, virsh, `#!/usr/bin/env bash
+for arg in "$@"; do
+  if [[ $arg == net-dhcp-leases ]]; then
+    touch '`+leased+`'
+    printf ' 2099-01-01 00:00:00   `+mac+`   ipv4   `+address+`/24   cp-1   -\n'
+  fi
+done
+`)
+	_, vmConfig := vmFixture(t)
+	vmConfig.Expect = runtimeBootSignal
+	vmConfig.Timeout = time.Minute
+	vmConfig.VSock = VSockConfig{Enabled: true, GuestCID: 62002}
+	vmConfig.Network.MAC = mac
+	runner := VMRunner{
+		Executor: longRunningVMExec{ready: runtimeBootSignal},
+		AgentConnector: func(context.Context, VSockPlan, string) (AgentHealthClient, error) {
+			return fakeHealthClient{}, nil
+		},
+		guestConnector: settledGuest,
+		probe: probe{
+			lookPath: func(string) (string, error) { return virsh, nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+			output: func(string, ...string) ([]byte, error) {
+				return []byte("vhost-vsock-pci guest-cid=<uint32>"), nil
+			},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	type started struct {
+		node RunningInstalledRuntimeNode
+		err  error
+	}
+	done := make(chan started, 1)
+	go func() {
+		node, err := StartInstalledRuntimeNode(ctx, parent, InstalledRuntimeNodeConfig{
+			Name: "cp-1",
+			Runtime: InstalledRuntimeConfig{
+				Disk:            disk,
+				DiskFormat:      DiskRaw,
+				ESPArtifacts:    esp,
+				FixtureManifest: fixtureManifest,
+				NodeMetadata:    nodeMetadata,
+				VM:              vmConfig,
+			},
+		}, runner)
+		done <- started{node, err}
+	}()
+	// Nothing listens yet, so the node must not be returned as usable.
+	select {
+	case got := <-done:
+		_ = got.node.Stop()
+		t.Fatalf("StartInstalledRuntimeNode() returned before the management endpoint listened: %v", got.err)
+	case <-time.After(time.Second):
+	}
+	if _, err := os.Stat(leased); err != nil {
+		t.Fatalf("StartInstalledRuntimeNode() has not read the lease: %v", err)
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort(address, "9443"))
+	if err != nil {
+		t.Fatalf("listen as the node's katlc agent: %v", err)
+	}
+	defer listener.Close()
+
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("StartInstalledRuntimeNode() error = %v", got.err)
+	}
+	if got.node.Result.IPAddress != address {
+		t.Fatalf("node address = %q, want %s", got.node.Result.IPAddress, address)
+	}
+	if err := got.node.Stop(); err != context.Canceled {
+		t.Fatalf("Stop() error = %v, want context.Canceled", err)
+	}
+}
+
 func TestInstalledRuntimeNodeStopFailureRewritesDebugResult(t *testing.T) {
 	root := t.TempDir()
 	disk := filepath.Join(root, "installed.raw")
@@ -137,6 +249,7 @@ func TestInstalledRuntimeNodeStopFailureRewritesDebugResult(t *testing.T) {
 		AgentConnector: func(context.Context, VSockPlan, string) (AgentHealthClient, error) {
 			return fakeHealthClient{}, nil
 		},
+		guestConnector: settledGuest,
 		probe: probe{
 			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
 			stat:     os.Stat,
@@ -331,4 +444,100 @@ func readNodeResult(t *testing.T, path string) Result {
 		t.Fatalf("decode result %s: %v", path, err)
 	}
 	return result
+}
+
+type fakeGuestConn struct{ GuestAgentClient }
+
+func (fakeGuestConn) Close() error { return nil }
+
+func settledGuest(context.Context, VSockPlan, string) (guestConn, error) {
+	return fakeGuestConn{&firstInstallHealthClient{health: "success"}}, nil
+}
+
+// A node is returned only after the boot has settled, so tests never act on a
+// guest that is still starting.
+func TestStartInstalledRuntimeNodeWaitsForBootComplete(t *testing.T) {
+	root := t.TempDir()
+	disk := filepath.Join(root, "installed.raw")
+	if err := os.WriteFile(disk, []byte("disk"), 0o644); err != nil {
+		t.Fatalf("write disk: %v", err)
+	}
+	esp := espFixture(t)
+	nodeMetadata := filepath.Join(root, "node.json")
+	if err := os.WriteFile(nodeMetadata, []byte(`{"kind":"NodeMetadata"}`), 0o644); err != nil {
+		t.Fatalf("write node metadata: %v", err)
+	}
+	fixtureManifest := writeInstalledFixtureManifest(t, root, disk, esp, nodeMetadata)
+	parent, err := NewRunner(Options{StateRoot: root, RunID: "run-1"}).Plan(Scenario{Name: "two-node"})
+	if err != nil {
+		t.Fatalf("Plan() error = %v", err)
+	}
+	_, vmConfig := vmFixture(t)
+	vmConfig.Expect = runtimeBootSignal
+	vmConfig.Timeout = time.Minute
+	vmConfig.VSock = VSockConfig{Enabled: true, GuestCID: 62003}
+	var settled atomic.Bool
+	runner := VMRunner{
+		Executor: longRunningVMExec{ready: runtimeBootSignal},
+		AgentConnector: func(context.Context, VSockPlan, string) (AgentHealthClient, error) {
+			return fakeHealthClient{}, nil
+		},
+		guestConnector: func(context.Context, VSockPlan, string) (guestConn, error) {
+			client := &gatedBootClient{firstInstallHealthClient{health: "success"}, &settled}
+			return fakeGuestConn{client}, nil
+		},
+		probe: probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+			output: func(string, ...string) ([]byte, error) {
+				return []byte("vhost-vsock-pci guest-cid=<uint32>"), nil
+			},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	type started struct {
+		node RunningInstalledRuntimeNode
+		err  error
+	}
+	done := make(chan started, 1)
+	go func() {
+		node, err := StartInstalledRuntimeNode(ctx, parent, InstalledRuntimeNodeConfig{
+			Name: "cp-1",
+			Runtime: InstalledRuntimeConfig{
+				Disk: disk, DiskFormat: DiskRaw, ESPArtifacts: esp,
+				FixtureManifest: fixtureManifest, NodeMetadata: nodeMetadata, VM: vmConfig,
+			},
+		}, runner)
+		done <- started{node, err}
+	}()
+	select {
+	case got := <-done:
+		_ = got.node.Stop()
+		t.Fatalf("StartInstalledRuntimeNode() returned before the boot completed: %v", got.err)
+	case <-time.After(time.Second):
+	}
+
+	settled.Store(true)
+	got := <-done
+	if got.err != nil {
+		t.Fatalf("StartInstalledRuntimeNode() error = %v", got.err)
+	}
+	if err := got.node.Stop(); err != context.Canceled {
+		t.Fatalf("Stop() error = %v, want context.Canceled", err)
+	}
+}
+
+type gatedBootClient struct {
+	firstInstallHealthClient
+	settled *atomic.Bool
+}
+
+func (c *gatedBootClient) RunCommand(ctx context.Context, req *vmtestpb.RunCommandRequest) (*vmtestpb.CommandResult, error) {
+	if req.Argv[1] == "is-active" && req.Argv[len(req.Argv)-1] == "katl-boot-complete.target" && !c.settled.Load() {
+		return &vmtestpb.CommandResult{ExitStatus: 3}, nil
+	}
+	return c.firstInstallHealthClient.RunCommand(ctx, req)
 }

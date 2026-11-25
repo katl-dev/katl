@@ -142,7 +142,7 @@ func TestInstalledRuntimeWithVMTestAgent(t *testing.T) {
 	if result.Status != StatusPassed {
 		t.Fatalf("Status = %q, failure = %q", result.Status, result.FailureSummary)
 	}
-	if result.VSock.GuestCID == 0 || result.VSock.Port != DefaultAgentPort {
+	if !result.VSock.Enabled || result.VSock.Port != DefaultAgentPort {
 		t.Fatalf("vsock = %#v", result.VSock)
 	}
 	domainXML := readDomainXML(t, result)

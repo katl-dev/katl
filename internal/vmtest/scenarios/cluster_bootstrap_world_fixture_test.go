@@ -68,10 +68,7 @@ func ensureWorldSSHKey(world vmtest.World) (string, string, error) {
 
 func failWorldFixtureSetup(t *testing.T, world vmtest.World, scenarioName string, err error) {
 	t.Helper()
-	scenario, scenarioErr := world.PlanScenario(scenarioName)
-	if scenarioErr != nil {
-		t.Fatalf("plan world setup failure scenario: %v; original error: %v", scenarioErr, err)
-	}
+	scenario := world.NewScenario(t, scenarioName)
 	failTwoNodeWorldSetup(t, scenario, err)
 }
 

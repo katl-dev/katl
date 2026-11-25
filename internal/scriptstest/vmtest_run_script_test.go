@@ -104,7 +104,7 @@ exit 17
 	}
 }
 
-func TestVMTestRunRemovesExistingDomainsBeforeGoTest(t *testing.T) {
+func TestVMTestRunLeavesDomainsAlone(t *testing.T) {
 	repo := repoRoot(t)
 	tmp := t.TempDir()
 	logPath := filepath.Join(tmp, "commands.log")
@@ -214,7 +214,7 @@ esac
 		t.Fatalf("read blocked command log: %v", err)
 	}
 	if strings.Contains(string(blockedLog), " list --all --name") || strings.Contains(string(blockedLog), "go test ") {
-		t.Fatalf("domain cleanup or go test ran without the host lock:\n%s", blockedLog)
+		t.Fatalf("go test ran without the host lock:\n%s", blockedLog)
 	}
 	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
 		t.Fatal(err)
@@ -237,31 +237,15 @@ esac
 		t.Fatalf("read command log: %v", err)
 	}
 	log := string(logData)
-	for _, want := range []string{
-		"virsh -c qemu:///system list --all --name",
-		"virsh -c qemu:///system metadata katl-old --uri https://katlos.io/xmlns/vmtest/1",
-		"virsh -c qemu:///system metadata other-domain --uri https://katlos.io/xmlns/vmtest/1",
-		"virsh -c qemu:///system metadata katl-current --uri https://katlos.io/xmlns/vmtest/1",
-		"virsh -c qemu:///system destroy katl-old",
-		"virsh -c qemu:///system undefine katl-old --nvram",
-		"virsh -c qemu:///system destroy katl-current",
-		"virsh -c qemu:///system undefine katl-current --nvram",
-		"go test -exec ",
-	} {
-		if !strings.Contains(log, want) {
-			t.Fatalf("command log missing %q:\n%s", want, log)
-		}
+	if !strings.Contains(log, "go test -exec ") {
+		t.Fatalf("go test did not run:\n%s", log)
 	}
-	for _, unwanted := range []string{
-		"virsh -c qemu:///system destroy other-domain",
-		"virsh -c qemu:///system undefine other-domain --nvram",
-	} {
+	// Libvirt objects of other runs belong to the runs that hold their leases,
+	// so the runner leaves every domain, including vmtest ones, alone.
+	for _, unwanted := range []string{" list ", " metadata ", " destroy ", " undefine "} {
 		if strings.Contains(log, unwanted) {
-			t.Fatalf("unowned domain command %q found in log:\n%s", unwanted, log)
+			t.Fatalf("runner touched libvirt domains (%q) in:\n%s", unwanted, log)
 		}
-	}
-	if strings.Index(log, "virsh -c qemu:///system undefine katl-current --nvram") > strings.Index(log, "go test -exec ") {
-		t.Fatalf("go test started before vm cleanup completed:\n%s", log)
 	}
 }
 
