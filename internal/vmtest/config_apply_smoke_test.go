@@ -947,8 +947,7 @@ func runVolumeRemovalSmoke(t *testing.T, ctx context.Context, guest *GuestContro
 	guestCommand(t, ctx, guest, "volume-readd-marker-preserved", "test", "-f", "/var/mnt/data/katl-removal-preserves-data")
 	assertGuestFileContains(t, ctx, guest, removed.RecordPath, `"operationKind": "generation-apply"`, `"result": "succeeded"`)
 
-	runPartitionWipeSmoke(t, ctx, guest, result, katlctl, endpoint)
-	return readdGeneration
+	return runPartitionWipeSmoke(t, ctx, guest, result, katlctl, endpoint)
 }
 
 func assertInstalledSSHReady(t *testing.T, ctx context.Context, guest *GuestControl) {
@@ -1722,8 +1721,10 @@ func runSystemdUnitSmoke(t *testing.T, ctx context.Context, guest *GuestControl,
 // already exists, so the filesystem is created through the partition's
 // by-diskseq link under real udev, and checks the result through the guest's
 // own view of the partition. Applying the same volume again must preserve it.
-func runPartitionWipeSmoke(t *testing.T, ctx context.Context, guest *GuestControl, result Result, katlctl katlctlRunner, endpoint string) {
+// It returns the generation left active.
+func runPartitionWipeSmoke(t *testing.T, ctx context.Context, guest *GuestControl, result Result, katlctl katlctlRunner, endpoint string) string {
 	t.Helper()
+	const wipeGeneration = "2026.06.06-vmtest-partition-wipe"
 	const (
 		disk      = "/dev/disk/by-id/virtio-katl-scratch"
 		partition = "/dev/disk/by-partlabel/u-scratch"
@@ -1738,17 +1739,22 @@ func runPartitionWipeSmoke(t *testing.T, ctx context.Context, guest *GuestContro
 	}); err != nil {
 		t.Fatalf("write scratch partition table: %v", err)
 	}
+	// The guest command runner has no stdin, so sfdisk reads its script from a
+	// transient unit. --pipe is omitted because it replaces the unit's
+	// StandardInput with the caller's, which leaves sfdisk without the script.
 	guestCommand(
 		t, ctx, guest, "scratch-partition-create",
-		"systemd-run", "--quiet", "--wait", "--collect", "--pipe", "--property=StandardInput=file:"+table,
-		"sfdisk", "--quiet", disk,
+		"systemd-run", "--wait", "--collect",
+		"--property=StandardInput=file:"+table,
+		"--property=StandardOutput=file:"+table+".log", "--property=StandardError=inherit",
+		"sfdisk", disk,
 	)
 	guestCommand(t, ctx, guest, "scratch-partition-settled", "udevadm", "settle", "--timeout=30")
 	if existing := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "scratch-partition-unformatted", "blkid", "-s", "TYPE", "-o", "value", partition)); existing != "" {
 		t.Fatalf("scratch partition already has filesystem %q before the volume is applied", existing)
 	}
 
-	applied := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-partition-wipe", "live", "2026.06.06-vmtest-partition-wipe", configApplyFixture(t, "live-volume-partition-wipe.yaml"), false)
+	applied := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-partition-wipe", "live", wipeGeneration, configApplyFixture(t, "live-volume-partition-wipe.yaml"), false)
 	appliedStatus := waitKatlcOperationTerminal(t, ctx, endpoint, applied.OperationId)
 	if appliedStatus.Result != operation.ResultSucceeded || appliedStatus.ConfigApplyPhase != "active" {
 		t.Fatalf("partition wipe operation status = %+v, want active success", appliedStatus)
@@ -1770,13 +1776,21 @@ func runPartitionWipeSmoke(t *testing.T, ctx context.Context, guest *GuestContro
 	}
 	guestCommand(t, ctx, guest, "scratch-write-marker", "install", "-m", "0600", markerSource, "/var/mnt/scratch/katl-reapply-preserves-data")
 
-	again := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "config-apply-partition-wipe-again", "live", "2026.06.06-vmtest-partition-wipe-again", configApplyFixture(t, "live-volume-partition-wipe.yaml"), false)
-	againStatus := waitKatlcOperationTerminal(t, ctx, endpoint, again.OperationId)
-	if againStatus.Result != operation.ResultSucceeded || againStatus.ConfigApplyPhase != "active" {
-		t.Fatalf("repeated partition wipe operation status = %+v, want active success", againStatus)
+	// An unchanged desired state completes without creating a generation, so the
+	// terminal status comes from the apply itself.
+	var again agentapi.OperationStatus
+	mustUnmarshalProtoJSON(t, runKatlctl(
+		t, ctx, result, katlctl, "config-apply-partition-wipe-again",
+		"node", "apply", "--node", "cp-1", "--config", configApplyFixture(t, "live-volume-partition-wipe.yaml"),
+		"--candidate-generation", "2026.06.06-vmtest-partition-wipe-again",
+		"--actor", "installed-runtime config apply vmtest", "--output", "json", "--mode", "live",
+	), &again)
+	if !again.Terminal || again.Result != operation.ResultSucceeded || again.ExternalMutationStarted {
+		t.Fatalf("repeated partition wipe status = %+v, want terminal success without mutation", &again)
 	}
 	if after := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "scratch-uuid-after-reapply", "blkid", "-s", "UUID", "-o", "value", partition)); after != uuid {
 		t.Fatalf("repeated apply reformatted the partition: filesystem UUID %s became %s", uuid, after)
 	}
 	guestCommand(t, ctx, guest, "scratch-marker-preserved", "test", "-f", "/var/mnt/scratch/katl-reapply-preserves-data")
+	return wipeGeneration
 }

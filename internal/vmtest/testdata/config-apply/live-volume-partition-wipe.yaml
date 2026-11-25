@@ -13,7 +13,6 @@ spec:
           filesystem: xfs
         - name: scratch
           selector:
-            partition:
-              byVolumeName: true
+            partition: {}
           filesystem: xfs
           wipe: true
