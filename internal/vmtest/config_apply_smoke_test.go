@@ -762,6 +762,7 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	}
 	guest, client = runOptionalUnitFailureSmoke(t, ctx, node, guest, client, result, katlctl, endpoint)
 	optionalGeneration := currentGenerationFromGuest(t, ctx, guest)
+	guest, client = runOrdinaryBootFailureSmoke(t, ctx, node, guest, client, result, katlctl, optionalGeneration)
 	guest, client = runManagementNetworkFailureSmoke(t, ctx, node, guest, client, result, katlctl, endpoint, optionalGeneration)
 	guest, client = runFailedTrialRecoverySmoke(t, ctx, node, guest, client, result, katlctl, endpoint, optionalGeneration)
 	guest, client = runExtensionBootHealthSmoke(t, ctx, node, guest, client, result, katlctl, endpoint, optionalGeneration, "vmtest-required", "27",
@@ -810,6 +811,71 @@ func runOptionalUnitFailureSmoke(t *testing.T, ctx context.Context, node *Runnin
 	if !strings.Contains(string(statusOutput), candidate) {
 		t.Fatalf("katlctl status does not show promoted generation %s:\n%s", candidate, statusOutput)
 	}
+	return guest, client
+}
+
+func runOrdinaryBootFailureSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl katlctlRunner, generationID string) (*GuestControl, *AgentClient) {
+	t.Helper()
+	const (
+		marker        = "/var/lib/katl/test-artifacts/fail-ordinary-boot"
+		failedBootID  = "/var/lib/katl/test-artifacts/failed-ordinary-boot-id"
+		requiredUnit  = "vmtest-ordinary-boot.service"
+		defaultEFIVar = "/sys/firmware/efi/efivars/LoaderEntryDefault-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+	)
+
+	// The preceding configuration trial passed with the marker absent.
+	// Trigger the failure through its installed native systemd unit.
+	beforeDefault := guestCommandOutput(t, ctx, guest, "efi-default-before-ordinary-boot", "systemd-run", "--quiet", "--wait", "--collect", "--pipe", "/usr/bin/od", "-An", "-v", "-tx1", defaultEFIVar)
+	writeGuestFile(t, ctx, guest, marker, []byte("fail on boot\n"), 0o600)
+	previousBootID := guestBootID(t, ctx, client)
+	_, rebootErr := runKatlctlOutcome(t, ctx, result, katlctl, "reboot-into-ordinary-unit-failure", "node", "reboot", "cp-1", "--timeout", "3m")
+	if rebootErr == nil || !containsAll(rebootErr.Error(), "failed boot health on generation "+generationID, requiredUnit) {
+		t.Fatalf("ordinary reboot error = %v, want failed boot health on %s naming %s", rebootErr, generationID, requiredUnit)
+	}
+	_ = client.Close()
+	guest, client = reconnectGuestAfterBoot(t, ctx, node, previousBootID)
+
+	jsonStatus := runKatlctl(t, ctx, result, katlctl, "status-after-ordinary-unit-failure", "node", "status", "cp-1", "--output", "json")
+	var status struct {
+		Generation           string `json:"generation"`
+		Health               string `json:"health"`
+		BootHealthDiagnostic string `json:"bootHealthDiagnostic"`
+	}
+	if err := json.Unmarshal(jsonStatus, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Generation != generationID || status.Health != "failed" || !strings.Contains(status.BootHealthDiagnostic, requiredUnit) {
+		t.Fatalf("unexpected node status after ordinary failure:\n%s", jsonStatus)
+	}
+	jsonGenerations := runKatlctl(t, ctx, result, katlctl, "generations-after-ordinary-unit-failure", "node", "generations", "list", "cp-1", "--output", "json")
+	var generations agentapi.ListGenerationsResponse
+	mustUnmarshalProtoJSON(t, jsonGenerations, &generations)
+	if generations.GetDefaultGenerationId() != generationID || generations.GetNextBootGenerationId() != generationID {
+		t.Fatalf("ordinary failure changed the boot selection:\n%s", jsonGenerations)
+	}
+	index := slices.IndexFunc(generations.GetGenerations(), func(gen *agentapi.Generation) bool { return gen.GetGenerationId() == generationID })
+	if index < 0 || generations.Generations[index].GetBootState() != generation.BootStateGood || generations.Generations[index].GetHealthState() != generation.HealthStateHealthy {
+		t.Fatalf("ordinary failure changed the generation's known-good status:\n%s", jsonGenerations)
+	}
+	afterDefault := guestCommandOutput(t, ctx, guest, "efi-default-after-ordinary-boot", "systemd-run", "--quiet", "--wait", "--collect", "--pipe", "/usr/bin/od", "-An", "-v", "-tx1", defaultEFIVar)
+	if afterDefault != beforeDefault {
+		t.Fatalf("ordinary failure changed EFI default bytes from %q to %q", beforeDefault, afterDefault)
+	}
+	journal := guestCommandOutput(t, ctx, guest, "ordinary-boot-recovery-journal", "journalctl", "-b", "--no-pager", "-u", "katl-boot-recovery.service")
+	if !containsAll(journal, "running generation "+generationID+" stays known-good", "rebootRequested=false") {
+		t.Fatalf("ordinary boot recovery journal lacks the kept-known-good outcome:\n%s", journal)
+	}
+	guestCommand(t, ctx, guest, "ordinary-boot-recovery-refused-reboot", "systemctl", "is-failed", "--quiet", "katl-boot-recovery.service")
+	firstFailureID := strings.TrimSpace(readGuestFile(t, ctx, guest, failedBootID))
+	if got := guestBootID(t, ctx, client); got != firstFailureID {
+		t.Fatalf("boot ID changed after the unit failed from %s to %s", firstFailureID, got)
+	}
+
+	guestCommand(t, ctx, guest, "repair-ordinary-boot-unit", "systemd-run", "--quiet", "--wait", "--collect", "/usr/bin/rm", "--", marker)
+	runKatlctl(t, ctx, result, katlctl, "reboot-after-ordinary-unit-repair", "node", "reboot", "cp-1", "--timeout", "3m")
+	_ = client.Close()
+	guest, client = reconnectGuestAfterBoot(t, ctx, node, firstFailureID)
+	assertBootedGenerationIdentity(t, ctx, guest, generationFromGuest(t, ctx, guest, generationID))
 	return guest, client
 }
 

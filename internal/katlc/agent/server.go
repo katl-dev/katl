@@ -249,10 +249,8 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 	}
 	bootTargetGenerationID := currentGenerationID
 	if selection, selectionErr := generation.ReadBootSelection(s.Root); selectionErr == nil {
-		if target := strings.TrimSpace(selection.TargetBootGenerationID); target != "" {
+		if target := selection.NextBootGenerationID(); target != "" {
 			bootTargetGenerationID = target
-		} else if selected := strings.TrimSpace(selection.DefaultGenerationID); selected != "" {
-			bootTargetGenerationID = selected
 		}
 	}
 	systemExtensions, err := nodeSystemExtensionStatus(ctx, s.Root, currentGenerationID, bootTargetGenerationID, s.RunSystemExtensionStatus)

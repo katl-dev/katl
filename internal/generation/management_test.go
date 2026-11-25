@@ -312,22 +312,51 @@ func TestReplaceStagedSlot(t *testing.T) {
 	}
 }
 
-func TestSelectedBootFailure(t *testing.T) {
+func TestFailedBootConsumesManualSelection(t *testing.T) {
 	for _, oneShot := range []bool{true, false} {
 		t.Run(map[bool]string{true: "one-shot", false: "persistent"}[oneShot], func(t *testing.T) {
 			root, now := managementFixture(t)
 			managedFixture(t, root, "old", "root-a", "1", now.Add(-time.Hour))
 			entry := "loader/entries/katl-current.conf"
-			setter := func(_, value string) error { entry = value; return nil }
-			if err := Select(SelectRequest{Root: root, GenerationID: "old", OneShot: oneShot, Now: now, SetDefault: setter, SetOneshot: func(string, string) error { return nil }}); err != nil {
+			if err := Select(SelectRequest{
+				Root: root, GenerationID: "old", OneShot: oneShot, Now: now,
+				SetDefault: func(_, value string) error { entry = value; return nil },
+				SetOneshot: func(string, string) error { return nil },
+			}); err != nil {
 				t.Fatal(err)
 			}
-			if _, err := RecordBootHealth(BootHealthRequest{Root: root, GenerationID: "old", CommandLine: bootHealthCommandLine("old"), Result: BootHealthFailure, Now: now, SetBootDefault: setter}); err != nil {
+			wantDefault := "old"
+			if oneShot {
+				wantDefault = "current"
+			}
+
+			result, err := RecordBootHealth(BootHealthRequest{
+				Root: root, CommandLine: bootHealthCommandLine("old"), Result: BootHealthFailure, RequestReboot: true, Now: now,
+				SetBootDefault: func(_, value string) error {
+					t.Fatalf("unexpected EFI default write to %s", value)
+					return nil
+				},
+			})
+			if err != nil {
 				t.Fatal(err)
 			}
-			selection, _ := ReadBootSelection(root)
-			if selection.DefaultGenerationID != "current" || selection.OneShot || entry != "loader/entries/katl-current.conf" {
-				t.Fatalf("failure recovery: %+v %s", selection, entry)
+			if result.Failed || result.RebootRequested || result.RecoveryRequired || result.DefaultGeneration != wantDefault {
+				t.Fatalf("boot health = %#v, want known-good and default %s without reboot", result, wantDefault)
+			}
+			_, status, err := ReadGeneration(root, "old")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !IsKnownGood(status) {
+				t.Fatalf("selected generation lost its known-good status: %#v", status)
+			}
+			selection, err := ReadBootSelection(root)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if selection.DefaultGenerationID != wantDefault || selection.DefaultBootEntry != entry ||
+				selection.TargetBootGenerationID != "" || selection.TargetBootEntry != "" || selection.OneShot {
+				t.Fatalf("boot selection = %+v, want default %s and no target", selection, wantDefault)
 			}
 		})
 	}

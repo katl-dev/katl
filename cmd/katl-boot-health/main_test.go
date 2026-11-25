@@ -254,6 +254,59 @@ func TestRunKeepsKnownGoodGenerationOnNetworkOutage(t *testing.T) {
 	}
 }
 
+func TestRunRecoveryKeepsKnownGood(t *testing.T) {
+	for _, running := range []string{"gen2", "gen1"} {
+		t.Run(running, func(t *testing.T) {
+			root := t.TempDir()
+			now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+			for _, id := range []string{"gen1", "gen2"} {
+				writeCommandGeneration(t, root, id, now.Add(-time.Hour))
+				markCommandGenerationHealthy(t, root, id, now.Add(-time.Minute))
+			}
+			selection := generation.BootSelectionRecord{
+				APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind, UpdatedAt: now,
+				DefaultGenerationID: "gen2", DefaultBootEntry: "loader/entries/katl-gen2.conf",
+				PreviousKnownGoodGenerationID: "gen1", PreviousKnownGoodBootEntry: "loader/entries/katl-gen1.conf",
+				BootedGenerationID: running, BootedBootEntry: "loader/entries/katl-" + running + ".conf",
+			}
+			if running == "gen1" {
+				selection.OneShot = true
+				selection.TargetBootGenerationID = running
+				selection.TargetBootEntry = selection.BootedBootEntry
+			}
+			if err := generation.WriteBootSelection(root, selection); err != nil {
+				t.Fatal(err)
+			}
+			cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 katl.generation="+running)
+			oldDefault := bootDefaultCommand
+			t.Cleanup(func() { bootDefaultCommand = oldDefault })
+			bootDefaultCommand = func(_, entry string) error {
+				t.Fatalf("unexpected EFI default write to %s", entry)
+				return nil
+			}
+
+			var stdout bytes.Buffer
+			err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result=failure", "--reason=katl-boot-health.service-failed", "--force-failure", "--request-reboot"}, &stdout)
+			if err == nil {
+				t.Fatal("successful exit would trigger the recovery service's SuccessAction=reboot")
+			}
+			for _, want := range []string{
+				"running generation " + running + " stays known-good", "boot default is generation gen2",
+				"Generation gen2 is selected for the next boot", "No automatic reboot",
+				"katlctl node status <node>", "systemctl --failed", "console or out-of-band",
+				"katlctl cluster apply", "katlctl node reboot <node>",
+			} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("recovery error = %q, want %q", err, want)
+				}
+			}
+			if !strings.Contains(stdout.String(), "failed=false recoveryRequired=false rebootRequested=false") {
+				t.Fatalf("boot-health result = %q, want kept generation and no reboot", stdout.String())
+			}
+		})
+	}
+}
+
 func TestRunDeadmanArmsRebootForTrialFailure(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 18, 0, 0, 0, time.UTC)

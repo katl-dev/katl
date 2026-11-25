@@ -31,7 +31,7 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	result := flags.String("result", generation.BootHealthSuccess, "boot health result: success, failure, or timeout")
 	reason := flags.String("reason", "", "boot health transition reason")
 	requestReboot := flags.Bool("request-reboot", false, "allow systemd to reboot after a validated fallback is selected")
-	forceFailureFlag := flags.Bool("force-failure", false, "record failure even when the running generation was previously healthy")
+	forceFailureFlag := flags.Bool("force-failure", false, "exit unsuccessfully on boot failure unless recovery requests a reboot")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -74,7 +74,6 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		Now:            bootHealthClockValue,
 		CommandLine:    commandLine,
 		RequestReboot:  *requestReboot,
-		ForceFailure:   forceFailure,
 		SetBootDefault: bootDefaultCommand,
 	})
 	if err != nil {
@@ -99,6 +98,14 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 			record.RecoveryRequired,
 			record.RebootRequested,
 		)
+	}
+	if record.KeptKnownGood && requestedResult == generation.BootHealthFailure && (*requestReboot || forceFailure) {
+		return fmt.Errorf("running generation %s stays known-good. The boot default is generation %s. "+
+			"Generation %s is selected for the next boot. No automatic reboot. "+
+			"See 'katlctl node status <node>' and 'systemctl --failed'. "+
+			"Use the node console or out-of-band access if remote management is unreachable. "+
+			"Fix the cause, for example with 'katlctl cluster apply', then run 'katlctl node reboot <node>'",
+			record.GenerationID, record.DefaultGeneration, record.NextBootGeneration)
 	}
 	if *requestReboot && !record.RebootRequested {
 		return fmt.Errorf("automatic reboot refused: this is not an armed trial with a validated known-good fallback; preserve boot diagnostics and recover from the console")

@@ -14,6 +14,8 @@ const (
 
 	DefaultPromotionPending = "pending"
 	DefaultPromotionDone    = "promoted"
+
+	loaderEntryOneShotPath = "/sys/firmware/efi/efivars/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 )
 
 type BootSelectionRecord struct {
@@ -39,6 +41,21 @@ type BootSelectionRecord struct {
 	PersistentDefaultPromotion    string    `json:"persistentDefaultPromotion,omitempty"`
 	RecoveryRequired              bool      `json:"recoveryRequired"`
 	UpdatedAt                     time.Time `json:"updatedAt"`
+}
+
+// IsPendingBootTarget reports whether this generation's boot awaits health validation.
+func (selection BootSelectionRecord) IsPendingBootTarget(generationID string) bool {
+	return selection.PendingHealthValidation && generationID != "" &&
+		(generationID == strings.TrimSpace(selection.TrialGenerationID) ||
+			generationID == strings.TrimSpace(selection.TargetBootGenerationID))
+}
+
+// NextBootGenerationID returns the recorded target or the persistent default.
+func (selection BootSelectionRecord) NextBootGenerationID() string {
+	if target := strings.TrimSpace(selection.TargetBootGenerationID); target != "" {
+		return target
+	}
+	return strings.TrimSpace(selection.DefaultGenerationID)
 }
 
 func BootSelectionPath(root string) (string, error) {
