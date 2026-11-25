@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -153,7 +154,7 @@ func TestRunDoesNotPromoteWithoutManagementNetwork(t *testing.T) {
 	}
 	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen0\n")
 	oldWait := waitForManagementNetwork
-	waitForManagementNetwork = func(context.Context) error { return errors.New("no usable address") }
+	waitForManagementNetwork = func(context.Context, bool, io.Writer) error { return errors.New("no usable address") }
 	t.Cleanup(func() { waitForManagementNetwork = oldWait })
 
 	var stdout bytes.Buffer
@@ -238,7 +239,7 @@ func TestRunKeepsKnownGoodGenerationOnNetworkOutage(t *testing.T) {
 	}
 	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen0\n")
 	oldWait := waitForManagementNetwork
-	waitForManagementNetwork = func(context.Context) error { return errors.New("no usable address") }
+	waitForManagementNetwork = func(context.Context, bool, io.Writer) error { return errors.New("no usable address") }
 	t.Cleanup(func() { waitForManagementNetwork = oldWait })
 
 	var stdout bytes.Buffer
@@ -475,6 +476,155 @@ func writeCommandLine(t *testing.T, root string, commandLine string) string {
 func stubManagementNetwork(t *testing.T) {
 	t.Helper()
 	oldWait := waitForManagementNetwork
-	waitForManagementNetwork = func(context.Context) error { return nil }
+	waitForManagementNetwork = func(context.Context, bool, io.Writer) error { return nil }
 	t.Cleanup(func() { waitForManagementNetwork = oldWait })
+}
+
+const (
+	linkNoCarrier = `{"Interfaces":[{"Name":"enp1s0","NetworkFile":"/etc/systemd/network/10-lan.network","RequiredForOnline":true,"OnlineState":"offline","OperationalState":"no-carrier"}]}`
+	linkRoutable  = `{"Interfaces":[{"Name":"enp1s0","NetworkFile":"/etc/systemd/network/10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable"}]}`
+)
+
+// stubNetworkctl replaces networkctl with state, shortens the bounded wait to
+// deadline, and records the systemd status text boot health reports.
+func stubNetworkctl(t *testing.T, deadline time.Duration, state func() (string, error)) *[]string {
+	t.Helper()
+	oldRead, oldDeadline, oldPoll, oldNotify := readNetworkctlState, managementNetworkDeadline, managementNetworkPoll, notifyStatus
+	t.Cleanup(func() {
+		readNetworkctlState, managementNetworkDeadline, managementNetworkPoll, notifyStatus = oldRead, oldDeadline, oldPoll, oldNotify
+	})
+	readNetworkctlState = func(context.Context) ([]byte, error) {
+		data, err := state()
+		return []byte(data), err
+	}
+	managementNetworkDeadline = deadline
+	managementNetworkPoll = time.Millisecond
+	var statuses []string
+	notifyStatus = func(status string) { statuses = append(statuses, status) }
+	return &statuses
+}
+
+// writeFirstInstall publishes gen0 the way the installer does, so it has no
+// known-good generation to fall back to.
+func writeFirstInstall(t *testing.T, root string, now time.Time) string {
+	t.Helper()
+	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
+	spec, _, err := generation.ReadGeneration(root, "gen0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.Initialize(root, spec); err != nil {
+		t.Fatalf("Initialize() error = %v", err)
+	}
+	return writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen0\n")
+}
+
+func TestRunWaitsForManagementNetworkWithoutFallback(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 6, 15, 19, 0, 0, 0, time.UTC)
+	cmdline := writeFirstInstall(t, root, now)
+	// The cable is connected well after the bounded deadline would have expired.
+	deadline := 10 * time.Millisecond
+	start := time.Now()
+	statuses := stubNetworkctl(t, deadline, func() (string, error) {
+		if time.Since(start) < 20*deadline {
+			return linkNoCarrier, nil
+		}
+		return linkRoutable, nil
+	})
+
+	var stdout bytes.Buffer
+	if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, &stdout); err != nil {
+		t.Fatalf("run() error = %v\n%s", err, stdout.String())
+	}
+
+	waiting := "waiting for the management network: required link enp1s0: no carrier; connect a cable or check the switch port"
+	if !strings.Contains(stdout.String(), "katl-boot-health: "+waiting) || !strings.Contains(stdout.String(), "promoted=true") {
+		t.Fatalf("stdout = %q, want the link it waited for and a promotion", stdout.String())
+	}
+	if len(*statuses) != 2 || (*statuses)[0] != waiting || (*statuses)[1] != "" {
+		t.Fatalf("systemd status = %q, want %q then cleared", *statuses, waiting)
+	}
+	_, status, err := generation.ReadGeneration(root, "gen0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !generation.IsKnownGood(status) {
+		t.Fatalf("gen0 status = %s/%s, want good/healthy", status.BootState, status.HealthState)
+	}
+	selection, err := generation.ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.RecoveryRequired || selection.PendingHealthValidation || selection.FailedBootGenerationID != "" {
+		t.Fatalf("selection = %#v, want gen0 promoted without recovery", selection)
+	}
+}
+
+func TestRunFailsTrialWithoutManagementNetwork(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 6, 15, 19, 30, 0, 0, time.UTC)
+	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
+	markCommandGenerationHealthy(t, root, "gen0", now.Add(-45*time.Minute))
+	writeCommandGeneration(t, root, "gen1", now.Add(-30*time.Minute))
+	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
+		APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind,
+		DefaultGenerationID: "gen0", TargetBootGenerationID: "gen1", TrialGenerationID: "gen1",
+		PreviousKnownGoodGenerationID: "gen0", BootedGenerationID: "gen1",
+		DefaultBootEntry: "loader/entries/katl-gen0.conf", PreviousKnownGoodBootEntry: "loader/entries/katl-gen0.conf",
+		TrialBootEntry: "loader/entries/katl-gen1.conf", BootedBootEntry: "loader/entries/katl-gen1.conf",
+		PendingHealthValidation: true, PersistentDefaultPromotion: generation.DefaultPromotionPending,
+		UpdatedAt: now.Add(-15 * time.Minute),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if armed, err := generation.ArmBootRecovery(root, "gen1"); err != nil || !armed {
+		t.Fatalf("ArmBootRecovery(gen1) = %t, %v", armed, err)
+	}
+	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen1\n")
+	stubNetworkctl(t, 20*time.Millisecond, func() (string, error) { return linkNoCarrier, nil })
+	// An unbounded wait would run until this context ends instead.
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+
+	var stdout bytes.Buffer
+	err := run(ctx, []string{"--root", root, "--cmdline", cmdline}, &stdout)
+	if err == nil || !strings.Contains(err.Error(), "not ready after 20ms: required link enp1s0: no carrier") {
+		t.Fatalf("run() error = %v, want the bounded management-network failure", err)
+	}
+
+	_, status, err := generation.ReadGeneration(root, "gen1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.BootState != generation.BootStateFailed {
+		t.Fatalf("gen1 boot state = %q, want failed", status.BootState)
+	}
+	selection, err := generation.ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.DefaultGenerationID != "gen0" || selection.RecoveryRequired {
+		t.Fatalf("selection = %#v, want fallback to gen0", selection)
+	}
+}
+
+func TestRunRecoveryNamesRebootForManagementNetworkFailure(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 6, 15, 20, 0, 0, 0, time.UTC)
+	cmdline := writeFirstInstall(t, root, now)
+	stubNetworkctl(t, time.Minute, func() (string, error) { return "", errors.New("networkctl list: exit status 1") })
+
+	// Boot health fails, then katl-boot-recovery.service runs as its OnFailure unit.
+	if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, io.Discard); err == nil {
+		t.Fatal("boot health succeeded without network state")
+	}
+	err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result=failure", "--reason=katl-boot-health.service-failed", "--force-failure", "--request-reboot"}, io.Discard)
+
+	if err == nil || !strings.Contains(err.Error(), "automatic reboot refused") || !strings.Contains(err.Error(), "katlctl node reboot <node>") {
+		t.Fatalf("recovery error = %v, want reboot guidance", err)
+	}
+	if strings.Contains(err.Error(), "recover from the console") {
+		t.Fatalf("recovery error = %v, want reboot guidance instead of console recovery", err)
+	}
 }

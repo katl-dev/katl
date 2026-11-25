@@ -535,17 +535,13 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 		}
 	}
 	originalDefaultEntry := selection.DefaultBootEntry
-	previousID := strings.TrimSpace(selection.PreviousKnownGoodGenerationID)
+	previousID := rollbackCandidate(selection, generationID)
 	if selection.OneShot && selection.DefaultGenerationID != generationID {
-		previousID = selection.DefaultGenerationID
 		selection.PreviousKnownGoodGenerationID = previousID
 		selection.PreviousKnownGoodBootEntry = selection.DefaultBootEntry
 	}
 	selection.OneShot = false
 	selection.BootedOneShot = false
-	if previousID == "" && selection.DefaultGenerationID != generationID {
-		previousID = strings.TrimSpace(selection.DefaultGenerationID)
-	}
 	if previousID != "" && !validRollbackTarget(root, previousID) {
 		previousID = ""
 		selection.PreviousKnownGoodGenerationID = ""
@@ -598,6 +594,22 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 		DefaultGeneration: selection.DefaultGenerationID,
 		BootDefaultEntry:  selection.DefaultBootEntry,
 	}, nil
+}
+
+// rollbackCandidate is the generation a failed boot of generationID falls
+// back to, before checking that it is still known-good.
+func rollbackCandidate(selection BootSelectionRecord, generationID string) string {
+	defaultID := strings.TrimSpace(selection.DefaultGenerationID)
+	if selection.OneShot && defaultID != generationID {
+		return defaultID
+	}
+	if previousID := strings.TrimSpace(selection.PreviousKnownGoodGenerationID); previousID != "" {
+		return previousID
+	}
+	if defaultID != generationID {
+		return defaultID
+	}
+	return ""
 }
 
 func inferBootedSelection(selection BootSelectionRecord, spec GenerationSpec, generationID string, commandLine string) BootSelectionRecord {

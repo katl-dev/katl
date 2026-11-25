@@ -55,6 +55,18 @@ rebinds a replaced volume. Boot health therefore orders after the unit with
 while the unit is failed in the running boot, and the volume status names each
 unmounted volume, the cause and the remedy.
 
+How long boot health waits for that state depends on whether a failure has
+somewhere to go. When a failed boot would fall back to a validated known-good
+generation, either as an armed trial or through a known-good default or
+previous generation, the wait fails after 90 seconds so the node returns to
+that generation. Without such a fallback, failing would only record an
+environmental fault, such as an unplugged cable, against the only bootable
+generation. Boot health then waits until the network is ready and promotes the
+generation when it is. While it waits, it writes each change in what it is
+waiting for, such as `required link enp1s0: no carrier; connect a cable or
+check the switch port`, to the console and to the unit's systemd status text.
+Node status reports boot health `pending` with that text.
+
 A generation already recorded as `good` and `healthy` does not repeat network
 qualification during an ordinary boot. This preserves a known-good local
 fallback during a transient network outage; required-service dependencies still
@@ -336,9 +348,21 @@ bootState: good
 healthState: healthy
 ```
 
-If first boot fails, Katl records recovery-required state when possible but does
-not reboot automatically. Repair tooling or reinstall is required; A/B rollback
-only applies after a known-good generation exists.
+First boot has no fallback, so boot health waits for the management network
+rather than failing it, as described under Decision. Connecting the cable or
+fixing the switch port lets the same boot promote generation 0 without
+operator action.
+
+If first boot fails for another reason, Katl records recovery-required state
+when possible but does not reboot automatically, and A/B rollback applies only
+after a known-good generation exists. Configuration apply and upgrade are
+refused while recovery is required. When the recorded failure is the
+management network, which still happens if networkd's link state cannot be
+read, node status, the apply refusal, and the console line from
+`katl-boot-recovery.service` direct the operator to reconnect the management
+network and run `katlctl node reboot <node>`. The reboot repeats boot health,
+which promotes generation 0 once the network is ready. Other first-boot
+failures need console diagnosis, repair tooling, or reinstall.
 
 The first runtime boot of generation 0 is evaluated against the
 installed-runtime profile. It must not wait for `/etc/kubernetes`, containerd,

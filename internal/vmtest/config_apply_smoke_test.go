@@ -901,7 +901,7 @@ func runManagementNetworkFailureSmoke(t *testing.T, ctx context.Context, node *R
 		t.Fatalf("management-network candidate status = %#v, want failed/unhealthy", candidateStatus)
 	}
 	previousJournal := guestCommandOutput(t, ctx, guest, "management-network-recovery-journal", "journalctl", "-b", "-1", "--no-pager", "-u", "katl-boot-health.service")
-	if !strings.Contains(previousJournal, "required links are not online: vmtest-mgmt") {
+	if !strings.Contains(previousJournal, "required link vmtest-mgmt") {
 		t.Fatalf("management-network journal does not identify the required path:\n%s", previousJournal)
 	}
 	return guest, client

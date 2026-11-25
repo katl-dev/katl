@@ -40,32 +40,32 @@ const (
 )
 
 // Volume activation is independent of the generation's boot health check.
-func (s *Server) readBootHealthRun(ctx context.Context) (run bootHealthRun, volumesFailed bool) {
+func (s *Server) readBootHealthRun(ctx context.Context) (run bootHealthRun, volumesFailed bool, statusText string) {
 	if s.RunBootHealthStatus == nil {
-		return bootHealthRunUnknown, false
+		return bootHealthRunUnknown, false, ""
 	}
-	result := s.RunBootHealthStatus(ctx, []string{"/usr/bin/systemctl", "show", bootHealthSettledTarget, bootHealthUnit, bootCompleteTarget, volumesActivateUnit, "--property=Id,LoadState,ActiveState,Job"}, nil)
+	result := s.RunBootHealthStatus(ctx, []string{"/usr/bin/systemctl", "show", bootHealthSettledTarget, bootHealthUnit, bootCompleteTarget, volumesActivateUnit, "--property=Id,LoadState,ActiveState,Job,StatusText"}, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
-		return bootHealthRunUnknown, false
+		return bootHealthRunUnknown, false, ""
 	}
 	units := systemdUnitProperties(result.Stdout)
 	settled, health, complete := units[bootHealthSettledTarget], units[bootHealthUnit], units[bootCompleteTarget]
 	volumesFailed = units[volumesActivateUnit]["ActiveState"] == "failed"
 	switch {
 	case settled["LoadState"] != "loaded":
-		return bootHealthRunUnknown, false
+		return bootHealthRunUnknown, false, ""
 	case settled["Job"] != "":
-		return bootHealthRunSettling, false
+		return bootHealthRunSettling, false, health["StatusText"]
 	case health["ActiveState"] == "failed":
-		return bootHealthRunFailed, volumesFailed
+		return bootHealthRunFailed, volumesFailed, ""
 	// An inactive oneshot does not show whether it ran; the target it orders
 	// before becomes active only after it succeeds.
 	case complete["ActiveState"] == "active":
-		return bootHealthRunSucceeded, volumesFailed
+		return bootHealthRunSucceeded, volumesFailed, ""
 	case health["Job"] != "" || health["ActiveState"] == "activating":
-		return bootHealthRunStalled, volumesFailed
+		return bootHealthRunStalled, volumesFailed, health["StatusText"]
 	default:
-		return bootHealthRunSkipped, volumesFailed
+		return bootHealthRunSkipped, volumesFailed, ""
 	}
 }
 
@@ -115,7 +115,7 @@ func (s *Server) nodeBootHealth(ctx context.Context) nodeBootHealth {
 	if health.SelectedGenerationID == "" {
 		return health
 	}
-	run, volumesFailed := s.readBootHealthRun(ctx)
+	run, volumesFailed, statusText := s.readBootHealthRun(ctx)
 	var diagnostics []string
 	if health.State == nodeBootHealthFailed || health.State == nodeBootHealthUnknown {
 		diagnostics = append(diagnostics, health.Diagnostic)
@@ -127,6 +127,10 @@ func (s *Server) nodeBootHealth(ctx context.Context) nodeBootHealth {
 	case bootHealthRunStalled:
 		health.State = nodeBootHealthPending
 		health.Diagnostic = bootHealthUnit + " has not finished for this boot; inspect the units it requires"
+	}
+	if statusText != "" {
+		health.Diagnostic = "boot health is " + statusText
+		diagnostics = append(diagnostics, health.Diagnostic)
 	}
 	if volumesFailed {
 		diagnostics = append(diagnostics, volumesActivateUnit+" failed in this boot, so volumes are unmounted. See the volume status and boot journal")
@@ -151,8 +155,9 @@ func (s *Server) nodeBootHealth(ctx context.Context) nodeBootHealth {
 }
 
 // Boot health normally settles seconds after the agent starts. An unproven
-// boot can wait 90 seconds for the management network, and the settle target
-// stops waiting after 10 minutes.
+// boot with a known-good fallback waits up to 90 seconds for the management
+// network. An unproven boot without a fallback waits for the network to come
+// up. The settle target stops waiting after 10 minutes.
 var (
 	bootHealthAdmissionWait     = 5 * time.Minute
 	bootHealthAdmissionInterval = 250 * time.Millisecond
@@ -171,7 +176,7 @@ func (s *Server) awaitBootHealth(ctx context.Context) error {
 	if callerDeadline, ok := ctx.Deadline(); ok && callerDeadline.Add(-bootHealthReplyMargin).Before(deadline) {
 		deadline = callerDeadline.Add(-bootHealthReplyMargin)
 	}
-	for run, _ := s.readBootHealthRun(ctx); run == bootHealthRunSettling; run, _ = s.readBootHealthRun(ctx) {
+	for run, _, _ := s.readBootHealthRun(ctx); run == bootHealthRunSettling; run, _, _ = s.readBootHealthRun(ctx) {
 		if !time.Now().Before(deadline) {
 			return status.Error(codes.Unavailable, "node is completing boot health for this boot; retry when `katlctl node status` no longer reports health pending")
 		}

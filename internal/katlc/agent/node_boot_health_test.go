@@ -266,3 +266,57 @@ func TestMutationWaitsForBootHealth(t *testing.T) {
 		}
 	})
 }
+
+func TestNodeStatusBootHealthReportsWhatItWaitsFor(t *testing.T) {
+	waiting := "waiting for the management network: required link enp1s0: no carrier; connect a cable or check the switch port"
+	withStatus := func(properties string) string {
+		return strings.Replace(properties, "Id=katl-boot-health.service\n", "Id=katl-boot-health.service\nStatusText="+waiting+"\n", 1)
+	}
+	for name, unit := range map[string]string{"settling": withStatus(healthSettling), "settle timed out": withStatus(healthStalled)} {
+		t.Run(name, func(t *testing.T) {
+			server, _ := knownGoodNode(t, unit)
+
+			nodeStatus, err := server.GetNodeStatus(context.Background(), &agentapi.GetNodeStatusRequest{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if nodeStatus.GetBootHealthState() != nodeBootHealthPending || !strings.Contains(nodeStatus.GetBootHealthDiagnostic(), waiting) {
+				t.Fatalf("boot health = %q (%s), want pending with %q", nodeStatus.GetBootHealthState(), nodeStatus.GetBootHealthDiagnostic(), waiting)
+			}
+		})
+	}
+}
+
+func TestNodeStatusNamesRebootAfterManagementNetworkFailure(t *testing.T) {
+	server, _ := knownGoodNode(t, healthFailed)
+	root := server.Root
+	spec, status, err := generation.ReadGeneration(root, "generation-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedAt := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	status.BootState, status.HealthState, status.UpdatedAt = generation.BootStateFailed, generation.HealthStateUnhealthy, failedAt
+	status.StatusTransitions = append(status.StatusTransitions, generation.StatusTransition{
+		At: failedAt, Reason: generation.ManagementNetworkFailure + ": networkctl list: exit status 1",
+		CommitState: status.CommitState, BootState: status.BootState, HealthState: status.HealthState,
+	})
+	if err := generation.WriteGenerationStatus(root, spec, status); err != nil {
+		t.Fatal(err)
+	}
+	selection, err := generation.ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection.RecoveryRequired, selection.FailedBootGenerationID = true, "generation-0"
+	if err := generation.WriteBootSelection(root, selection); err != nil {
+		t.Fatal(err)
+	}
+
+	nodeStatus, err := server.GetNodeStatus(context.Background(), &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodeStatus.GetBootHealthState() != nodeBootHealthFailed || !strings.Contains(nodeStatus.GetBootHealthDiagnostic(), "katlctl node reboot <node>") {
+		t.Fatalf("boot health = %q (%s), want failed with reboot guidance", nodeStatus.GetBootHealthState(), nodeStatus.GetBootHealthDiagnostic())
+	}
+}

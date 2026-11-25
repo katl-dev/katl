@@ -84,6 +84,64 @@ func validBootRecoveryTarget(root string, selection BootSelectionRecord, generat
 	return true
 }
 
+// HasBootFallback reports whether a failed boot of generationID would leave a
+// validated known-good generation to boot: the fallback of an armed trial, or
+// the rollback target that recording the failure selects.
+func HasBootFallback(root string, generationID string) (bool, error) {
+	root = cleanRoot(root)
+	generationID = strings.TrimSpace(generationID)
+	var found bool
+	err := withStateLock(filepath.Join(root, "var/lib/katl/boot"), func() error {
+		selection, err := ReadBootSelection(root)
+		if err != nil {
+			return err
+		}
+		_, status, err := ReadGeneration(root, generationID)
+		if err != nil {
+			return err
+		}
+		boot, err := readRunningBoot(root, generationID, selection, status)
+		if err != nil || boot.Armed {
+			found = boot.Armed
+			return err
+		}
+		fallbackID := rollbackCandidate(selection, generationID)
+		found = fallbackID != "" && validRollbackTarget(root, fallbackID)
+		return nil
+	})
+	return found, err
+}
+
+// ManagementNetworkFailure prefixes the boot-health failure reason recorded
+// when the management network was not ready.
+const ManagementNetworkFailure = "management network unavailable"
+
+// RecoveryGuidance returns the operator's next step when selection requires
+// recovery because the failed generation's boot health found the management
+// network unavailable, and "" for any other state. Rebooting repeats boot
+// health, which promotes the generation once the network is ready.
+func RecoveryGuidance(root string, selection BootSelectionRecord) string {
+	failedID := strings.TrimSpace(selection.FailedBootGenerationID)
+	if !selection.RecoveryRequired || failedID == "" {
+		return ""
+	}
+	_, status, err := ReadGeneration(root, failedID)
+	if err != nil || status.BootState != BootStateFailed {
+		return ""
+	}
+	for i := len(status.StatusTransitions) - 1; i >= 0; i-- {
+		transition := status.StatusTransitions[i]
+		if transition.BootState != BootStateFailed {
+			continue
+		}
+		if !strings.HasPrefix(transition.Reason, ManagementNetworkFailure) {
+			return ""
+		}
+		return fmt.Sprintf("generation %s failed boot health because the management network was not ready and no known-good generation exists to fall back to; reconnect the management network, then run `katlctl node reboot <node>` to repeat boot health", failedID)
+	}
+	return ""
+}
+
 // ClearBootRecovery removes the current boot's ephemeral reboot authorization.
 func ClearBootRecovery(root string) error {
 	path := rootedPathUnchecked(root, bootRecoveryPath)

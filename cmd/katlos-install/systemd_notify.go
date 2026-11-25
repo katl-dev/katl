@@ -3,12 +3,12 @@ package main
 import (
 	"fmt"
 	"io"
-	"net"
-	"os"
 	"strings"
+
+	"github.com/katl-dev/katl/internal/systemdunit"
 )
 
-var notifySystemd = sendSystemdNotification
+var notifySystemd = systemdunit.Notify
 
 func reportInstallerProgress(stdout io.Writer, message string, ready bool) {
 	message = compactMessage(message)
@@ -26,25 +26,6 @@ func reportInstallerProgress(stdout io.Writer, message string, ready bool) {
 	if err := notifySystemd(payload); err != nil {
 		fmt.Fprintf(stdout, "katlos-install progress: unable to update systemd status: %v\n", err)
 	}
-}
-
-func sendSystemdNotification(payload string) error {
-	socket := strings.TrimSpace(os.Getenv("NOTIFY_SOCKET"))
-	if socket == "" {
-		return nil
-	}
-	if strings.HasPrefix(socket, "@") {
-		socket = "\x00" + strings.TrimPrefix(socket, "@")
-	}
-	conn, err := net.DialUnix("unixgram", nil, &net.UnixAddr{Name: socket, Net: "unixgram"})
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	if _, err := conn.Write([]byte(payload)); err != nil {
-		return err
-	}
-	return nil
 }
 
 func compactMessage(message string) string {

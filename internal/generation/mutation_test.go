@@ -1,6 +1,7 @@
 package generation
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -57,6 +58,39 @@ func TestPendingBootBlocksMutation(t *testing.T) {
 			}
 			if err := ValidateMutationBase(root, "current"); err == nil {
 				t.Fatal("accepted mutation during pending boot")
+			}
+		})
+	}
+}
+
+func TestRecoveryRefusalGuidance(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason string
+		wantReboot   bool
+	}{
+		{name: "management network", reason: ManagementNetworkFailure + ": networkctl list: exit status 1", wantReboot: true},
+		{name: "required unit", reason: "katl-boot-health.service-failed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			now := time.Date(2026, 6, 15, 13, 0, 0, 0, time.UTC)
+			writeBootHealthGeneration(t, root, "gen0", "", CommitStateCommitted, BootStatePending, HealthStateUnknown, now.Add(-time.Hour))
+			writeBootHealthSelection(t, root, BootSelectionRecord{
+				APIVersion: APIVersion, Kind: BootSelectionKind,
+				DefaultGenerationID: "gen0", BootedGenerationID: "gen0",
+				DefaultBootEntry: "loader/entries/katl-gen0.conf", BootedBootEntry: "loader/entries/katl-gen0.conf",
+				UpdatedAt: now.Add(-30 * time.Minute),
+			})
+			if _, err := RecordBootHealth(BootHealthRequest{Root: root, GenerationID: "gen0", CommandLine: bootHealthCommandLine("gen0"), Result: BootHealthFailure, Reason: tc.reason, Now: now}); err != nil {
+				t.Fatal(err)
+			}
+
+			err := ValidateMutationBase(root, "gen0")
+			if err == nil {
+				t.Fatal("accepted mutation while recovery is required")
+			}
+			if got := strings.Contains(err.Error(), "katlctl node reboot <node>"); got != tc.wantReboot {
+				t.Fatalf("refusal = %q, names reboot = %t, want %t", err, got, tc.wantReboot)
 			}
 		})
 	}

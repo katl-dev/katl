@@ -75,6 +75,16 @@ snapshot looks stale:
 
 Do not edit operation, generation, or boot-selection records as a repair method.
 
+A newly installed node with no management link, such as an unplugged cable,
+waits for it instead of failing its first boot. Its console shows
+`katl-boot-health: waiting for the management network: required link enp1s0:
+no carrier; connect a cable or check the switch port`. Connect the link; boot
+health then completes in the same boot, and `katlctl node status` reports the
+node healthy. If boot health on a node without a known-good generation recorded
+`management network unavailable`, node status and a refused apply name the
+next step: reconnect the management network, then run
+`katlctl node reboot <node>`.
+
 After a failed trial, the previous-boot journal shows why boot health failed and
 whether `katl-boot-recovery.service` requested the single automatic fallback
 reboot. If the fallback also failed, or `recoveryRequired` is true, Katl does not

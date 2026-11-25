@@ -91,3 +91,58 @@ func TestArmBootRecoveryRejectsUnhealthyFallback(t *testing.T) {
 		t.Fatalf("ArmBootRecovery(candidate without fallback UKI) = %t, %v, want disarmed", armed, err)
 	}
 }
+
+func TestHasBootFallback(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		defaultState string
+		selection    BootSelectionRecord
+		want         bool
+	}{
+		{
+			name:      "first install",
+			selection: BootSelectionRecord{DefaultGenerationID: "gen1", TargetBootGenerationID: "gen1", PendingHealthValidation: true, PersistentDefaultPromotion: DefaultPromotionPending},
+		},
+		{
+			name:         "known-good default",
+			defaultState: BootStateGood,
+			selection:    BootSelectionRecord{DefaultGenerationID: "gen0", BootedGenerationID: "gen1"},
+			want:         true,
+		},
+		{
+			name:         "failed default",
+			defaultState: BootStateFailed,
+			selection:    BootSelectionRecord{DefaultGenerationID: "gen0", BootedGenerationID: "gen1"},
+		},
+		{
+			name:         "known-good previous generation",
+			defaultState: BootStateGood,
+			selection:    BootSelectionRecord{DefaultGenerationID: "gen1", PreviousKnownGoodGenerationID: "gen0"},
+			want:         true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			now := time.Date(2026, 6, 15, 13, 0, 0, 0, time.UTC)
+			if tc.defaultState != "" {
+				health := HealthStateHealthy
+				if tc.defaultState == BootStateFailed {
+					health = HealthStateUnhealthy
+				}
+				writeBootHealthGeneration(t, root, "gen0", "", CommitStateCommitted, tc.defaultState, health, now.Add(-2*time.Hour))
+			}
+			writeBootHealthGeneration(t, root, "gen1", "", CommitStateCommitted, BootStatePending, HealthStateUnknown, now.Add(-time.Hour))
+			selection := tc.selection
+			selection.APIVersion, selection.Kind, selection.UpdatedAt = APIVersion, BootSelectionKind, now
+			writeBootHealthSelection(t, root, selection)
+
+			got, err := HasBootFallback(root, "gen1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("HasBootFallback(gen1) = %t, want %t", got, tc.want)
+			}
+		})
+	}
+}

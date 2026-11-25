@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/systemdunit"
 )
 
 func main() {
@@ -48,7 +49,6 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 			return err
 		}
 	}
-	bootHealthClockValue := bootHealthClock()
 	requestedResult := strings.TrimSpace(*result)
 	requestedReason := strings.TrimSpace(*reason)
 	forceFailure := *forceFailureFlag
@@ -59,13 +59,24 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		// A network outage cannot invalidate a generation already proven healthy.
 		if !generation.IsKnownGood(selectedStatus) {
-			if err := waitForManagementNetwork(ctx); err != nil {
+			// With a known-good fallback, a missing network fails fast so the
+			// node returns to it. Without one, failing records an environmental
+			// fault against the only generation, so boot health waits instead.
+			// When the fallback cannot be determined, keep the bounded wait so
+			// rollback is never delayed.
+			bounded, err := generation.HasBootFallback(*root, selected)
+			if err != nil {
+				fmt.Fprintf(stdout, "katl-boot-health: cannot determine a known-good fallback, so the management network wait is bounded: %v\n", err)
+				bounded = true
+			}
+			if err := waitForManagementNetwork(ctx, bounded, stdout); err != nil {
 				requestedResult = generation.BootHealthFailure
-				requestedReason = "management network unavailable: " + err.Error()
+				requestedReason = generation.ManagementNetworkFailure + ": " + err.Error()
 				forceFailure = true
 			}
 		}
 	}
+	bootHealthClockValue := bootHealthClock()
 	record, err := generation.RecordBootHealth(generation.BootHealthRequest{
 		Root:           *root,
 		GenerationID:   selected,
@@ -108,6 +119,11 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 			record.GenerationID, record.DefaultGeneration, record.NextBootGeneration)
 	}
 	if *requestReboot && !record.RebootRequested {
+		if selection, err := generation.ReadBootSelection(*root); err == nil {
+			if guidance := generation.RecoveryGuidance(*root, selection); guidance != "" {
+				return fmt.Errorf("automatic reboot refused: %s", guidance)
+			}
+		}
 		return fmt.Errorf("automatic reboot refused: this is not an armed trial with a validated known-good fallback; preserve boot diagnostics and recover from the console")
 	}
 	if forceFailure && requestedResult == generation.BootHealthFailure && !record.RebootRequested {
@@ -142,7 +158,7 @@ func managementNetworkReady(data []byte) (bool, string, error) {
 		}
 		required = append(required, link.Name)
 		if link.OnlineState == nil || *link.OnlineState != "online" {
-			offline = append(offline, link.Name)
+			offline = append(offline, link.Name+": "+linkWait(link.OperationalState))
 		}
 		if link.OperationalState == "routable" {
 			routable = true
@@ -151,8 +167,11 @@ func managementNetworkReady(data []byte) (bool, string, error) {
 	if len(required) == 0 {
 		return false, "no systemd-networkd link is required for online", nil
 	}
-	if len(offline) > 0 {
-		return false, "required links are not online: " + strings.Join(offline, ", "), nil
+	if len(offline) == 1 {
+		return false, "required link " + offline[0], nil
+	}
+	if len(offline) > 1 {
+		return false, "required links " + strings.Join(offline, "; "), nil
 	}
 	if !routable {
 		return false, "no required link is routable", nil
@@ -160,17 +179,59 @@ func managementNetworkReady(data []byte) (bool, string, error) {
 	return true, "", nil
 }
 
-var waitForManagementNetwork = func(ctx context.Context) error {
-	healthCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-	defer cancel()
-	ticker := time.NewTicker(time.Second)
+// linkWait describes what a required link that is not online is waiting for.
+func linkWait(operationalState string) string {
+	switch operationalState {
+	case "no-carrier":
+		return "no carrier; connect a cable or check the switch port"
+	case "off":
+		return "link is administratively down"
+	case "", "missing":
+		return "link is missing"
+	default:
+		return operationalState + ", not online yet"
+	}
+}
+
+// managementNetworkDeadline bounds the wait when a failure falls back to a
+// known-good generation.
+var (
+	managementNetworkDeadline = 90 * time.Second
+	managementNetworkPoll     = time.Second
+)
+
+// waitForManagementNetwork returns when the configured management network is
+// ready. A bounded wait fails after managementNetworkDeadline; an unbounded one
+// waits until ctx ends. Each change in what it waits for is written to progress,
+// which reaches the console, and to the unit's systemd status, which node
+// status reports.
+var waitForManagementNetwork = func(ctx context.Context, bounded bool, progress io.Writer) error {
+	if bounded {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, managementNetworkDeadline)
+		defer cancel()
+	}
+	if progress == nil {
+		progress = io.Discard
+	}
+	ticker := time.NewTicker(managementNetworkPoll)
 	defer ticker.Stop()
-	lastReason := "network state has not been observed"
+	lastReason := ""
+	notReady := func() error {
+		err := ctx.Err()
+		if bounded && errors.Is(err, context.DeadlineExceeded) {
+			err = fmt.Errorf("configured management network is not ready after %s", managementNetworkDeadline)
+		}
+		if lastReason == "" {
+			return err
+		}
+		return fmt.Errorf("%w: %s", err, lastReason)
+	}
 	for {
-		data, err := readNetworkctlState(healthCtx)
+		data, err := readNetworkctlState(ctx)
 		if err != nil {
-			if errors.Is(healthCtx.Err(), context.DeadlineExceeded) {
-				return fmt.Errorf("configured management network is not ready after 90 seconds: %s", lastReason)
+			if ctx.Err() != nil {
+				return notReady()
 			}
 			return err
 		}
@@ -179,15 +240,30 @@ var waitForManagementNetwork = func(ctx context.Context) error {
 			return err
 		}
 		if ready {
+			if lastReason != "" {
+				fmt.Fprintln(progress, "katl-boot-health: management network is ready")
+				notifyStatus("")
+			}
 			return nil
 		}
-		lastReason = reason
+		if reason != lastReason {
+			waiting := "waiting for the management network: " + reason
+			fmt.Fprintf(progress, "katl-boot-health: %s\n", waiting)
+			notifyStatus(waiting)
+			lastReason = reason
+		}
 		select {
-		case <-healthCtx.Done():
-			return fmt.Errorf("configured management network is not ready after 90 seconds: %s", lastReason)
+		case <-ctx.Done():
+			return notReady()
 		case <-ticker.C:
 		}
 	}
+}
+
+// notifyStatus sets the unit's systemd status text, which node status reads
+// while boot health runs. It does nothing outside systemd.
+var notifyStatus = func(status string) {
+	_ = systemdunit.Notify("STATUS=" + status)
 }
 
 var readNetworkctlState = func(ctx context.Context) ([]byte, error) {
