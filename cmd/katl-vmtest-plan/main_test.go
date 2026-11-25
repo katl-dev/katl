@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestSelectGroups(t *testing.T) {
@@ -123,6 +125,31 @@ func TestCoverage(t *testing.T) {
 	t.Run("default", func(t *testing.T) { testCoverage(t, nil, "") })
 	t.Run("regression", func(t *testing.T) {
 		testCoverage(t, []string{"--ci", "--regression"}, "cmd/katlctl/management_rotation.go\x00")
+	})
+	t.Run("install artifacts", func(t *testing.T) {
+		// Every planned lane uses the same scenario job and its shared install inputs.
+		data, err := os.ReadFile("../../.github/workflows/hosted-vmtests.yml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var workflow struct {
+			Jobs struct {
+				Scenarios struct {
+					Needs []string
+					Env   map[string]string
+				}
+			}
+		}
+		if err := yaml.Unmarshal(data, &workflow); err != nil {
+			t.Fatal(err)
+		}
+		scenarios := workflow.Jobs.Scenarios
+		if set := scenarios.Env["ARTIFACT_SET"]; set != "install" && set != "default" {
+			t.Errorf("scenario lanes use artifact set %q, which does not supply the install image", set)
+		}
+		if !slices.Contains(scenarios.Needs, "images") {
+			t.Error("scenario lanes can start before their shared images are available")
+		}
 	})
 }
 
