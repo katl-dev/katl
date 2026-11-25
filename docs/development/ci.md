@@ -1,11 +1,12 @@
 # Continuous integration
 
 **CI** is the required check for pull requests and the merge queue, and it also
-runs fast checks on main. A short **Plan** job selects VM and driver coverage from
-changed paths, so image builds and driver qualification start with the run rather
-than after **Fast checks**. CI fails if any selected job fails, is cancelled, or
-is skipped. Documentation, maintainer release tooling, and unit-only changes
-generally skip the VM regression and driver qualification jobs.
+runs fast checks on main. A short **Plan** job selects VM coverage from changed
+paths and [driver qualification](driver-qualification.md) from the candidate's
+input digests, so image builds and driver qualification start with the run
+rather than after **Fast checks**. CI fails if any selected job fails, is
+cancelled, or is skipped. Documentation, maintainer release tooling, and
+unit-only changes generally skip the VM regression jobs.
 
 ## Production images
 
@@ -62,8 +63,9 @@ either runs fast checks, the Nix build, and any selected driver qualification.
 Adding `vmtest` reruns the head commit's CI with the VM suites, cancelling a run
 still in progress; other labels do not affect CI. Pull requests from forks
 cannot be restarted this way, so push a commit instead. Add `vmtest` early in
-the life of a branch. Pushes to main run no VM or driver jobs, because the merge
-queue already tested the same tree.
+the life of a branch. Pushes to main run driver qualification for any flavour
+that still needs evidence for its committed inputs. The merge queue covers
+general VM regression.
 
 The required check names the base CI tested. A pull request into a release
 series branch publishes `CI (release)`; every other event publishes `CI`, and the
@@ -75,13 +77,8 @@ reopen the pull request, or push a commit, after retargeting.
 
 Every selected test must emit a Go JSON pass event. A labelled pull request and
 the merge queue run the complete suite for both standard and LTS whenever any
-VM suite is selected. Driver qualification runs wherever it is selected, on pull
-requests and again in the merge queue, so the queue qualifies the combination of
-changes it will merge without relying on earlier pull request results. Kernel
-lock changes select the affected driver flavour, and shared boot, builder,
-module, runtime package, and VM infrastructure changes select both. Manual CI
-dispatch treats every path as changed, so it runs both flavours with driver
-qualification for both.
+VM suite is selected. Manual CI dispatch selects both VM flavours. The weekly
+schedule and manual dispatch both force driver qualification for both flavours.
 
 Kubernetes producer changes select the newest supported Kubernetes candidate.
 The shared image job verifies and stages that bundle, and the two-node lane
@@ -108,13 +105,11 @@ cache miss they rebuild the missing inputs.
 ## Kernel updates
 
 **Kernel Updates** captures signature-verified RPM sets, retains the immutable
-inputs, verifies anonymous retrieval, and opens a ready-for-review PR. Retention
-stores inputs; it does not promote a kernel. CI owns qualification, on the pull
-request and again in the merge queue: for each
-changed flavour it builds both boot artifacts and every release extension,
-verifies module composition, and exercises the production DRBD driver through
-upgrade, replication, and removal, alongside the regression lanes, which the merge queue runs. Shared ABI and
-extension recipe changes require driver qualification for both flavours.
+inputs, verifies anonymous retrieval, and opens a ready-for-review PR. CI
+qualifies each changed kernel lock on the pull request and in the merge queue.
+For the affected flavour, it builds both boot artifacts and every release
+extension, verifies module composition, and exercises production DRBD upgrade,
+replication, and removal. The merge queue also runs the regression lanes.
 
 After pull-request CI succeeds, **Merge Qualified Kernels** enables native auto-merge only
 for the unchanged, same-repository, App-authored, kernel-lock-only revision.

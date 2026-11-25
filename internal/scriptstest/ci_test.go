@@ -65,7 +65,7 @@ func TestCIChanges(t *testing.T) {
 case "$2" in
   ./cmd/katl-vmtest-plan)
     cat > observed-paths
-    printf '{"vmFlavours":[],"driverFlavours":[],"productionFlavours":[],"groups":[]}\n' ;;
+    printf '{"vmFlavours":[],"driverFlavours":[],"driverDigests":{},"productionFlavours":[],"groups":[]}\n' ;;
   ./cmd/katl-kubernetes-release)
     printf '{"include":[]}\n' ;;
   *) exit 2 ;;
@@ -181,8 +181,8 @@ func TestCIEventSelection(t *testing.T) {
 	}
 	runGit(t, dir, "commit", "--quiet", "-am", "change")
 
-	// The fake planner selects everything unless asked for the regression set,
-	// which makes dropped selections visible in the outputs.
+	// The fake planner selects both VM flavours and returns the requested driver
+	// fixture. This makes dropped selections visible in the workflow outputs.
 	tools := t.TempDir()
 	writeFakeExecutable(t, tools, "go", `
 case "$2" in
@@ -191,7 +191,7 @@ case "$2" in
     printf '%s\n' "$*" > "$PLANNER_ARGS"
     production='[]'
     [[ " $* " != *" --production="* ]] || production='["standard","lts"]'
-    printf '{"vmFlavours":["standard","lts"],"driverFlavours":["standard"],"productionFlavours":%s,"groups":[{"name":"cluster"}]}\n' "$production" ;;
+    printf '{"vmFlavours":["standard","lts"],"driverFlavours":%s,"driverDigests":{"standard":"v1:fixture"},"productionFlavours":%s,"groups":[{"name":"cluster"}]}\n' "$DRIVER_MATRIX" "$production" ;;
   ./cmd/katl-kubernetes-release)
     printf '{"include":[]}\n' ;;
   *) exit 2 ;;
@@ -210,8 +210,10 @@ esac
 		{"labelled pull request", "pull_request", "true", "main", true, false, `["standard","lts"]`, `["standard"]`, "CI"},
 		{"labelled pull request into release series", "pull_request", "true", "release/2026.12.x", true, true, `["standard","lts"]`, `["standard"]`, "CI (release)"},
 		{"merge group", "merge_group", "false", "", true, true, `["standard","lts"]`, `["standard"]`, "CI"},
-		{"push to main", "push", "false", "", false, false, `[]`, `[]`, "CI"},
-		{"manual dispatch", "workflow_dispatch", "false", "", false, false, `["standard","lts"]`, `["standard"]`, "CI"},
+		{"unqualified main push", "push", "false", "", false, false, `[]`, `["standard"]`, "CI"},
+		{"qualified main push", "push", "false", "", false, false, `[]`, `[]`, "CI"},
+		{"manual dispatch", "workflow_dispatch", "false", "", false, false, `["standard","lts"]`, `["standard","lts"]`, "CI"},
+		{"schedule", "schedule", "false", "", false, false, `[]`, `["standard","lts"]`, "CI"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			run := t.TempDir()
@@ -221,7 +223,7 @@ esac
 			command.Dir = dir
 			command.Env = append(gittest.Env(os.Environ(), dir), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"GITHUB_EVENT_NAME="+tc.event, "BASE_SHA="+base, "BEFORE_SHA="+base, "VMTEST_LABEL="+tc.label, "BASE_REF="+tc.baseRef, "PAYLOAD_BASE="+tc.baseRef,
-				"PLANNER_ARGS="+argsPath, "GITHUB_OUTPUT="+outputPath, "GITHUB_STEP_SUMMARY="+filepath.Join(run, "summary"))
+				"PLANNER_ARGS="+argsPath, "DRIVER_MATRIX="+tc.drivers, "GITHUB_OUTPUT="+outputPath, "GITHUB_STEP_SUMMARY="+filepath.Join(run, "summary"))
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("plan: %v: %s", err, output)
 			}
@@ -233,6 +235,9 @@ esac
 				t.Fatalf("outputs = %s, want %q", outputs, want)
 			}
 			if want := "driver-flavours=" + tc.drivers + "\n"; !strings.Contains(string(outputs), want) {
+				t.Fatalf("outputs = %s, want %q", outputs, want)
+			}
+			if want := "driver-digests={\"standard\":\"v1:fixture\"}\n"; !strings.Contains(string(outputs), want) {
 				t.Fatalf("outputs = %s, want %q", outputs, want)
 			}
 			// The fixture changes product.go, so both kinds of full plan build.
@@ -369,6 +374,71 @@ esac
 	}
 }
 
+func TestDriverStatusPublication(t *testing.T) {
+	workflow, _ := readWorkflow(t, "ci.yml")
+	publisher := workflow.Jobs["record-drivers"]
+	for name, job := range workflow.Jobs {
+		var permissions map[string]string
+		if err := job.Permissions.Decode(&permissions); err != nil {
+			t.Fatal(err)
+		}
+		if (permissions["statuses"] == "write") != (name == "record-drivers") {
+			t.Errorf("%s job has statuses permission %q", name, permissions["statuses"])
+		}
+	}
+
+	for _, tc := range []struct {
+		event, ref, drivers string
+		publishes           bool
+	}{
+		{"push", "refs/heads/main", "success", true},
+		{"schedule", "refs/heads/main", "success", true},
+		{"workflow_dispatch", "refs/heads/main", "success", true},
+		{"workflow_dispatch", "refs/heads/topic", "success", false},
+		{"push", "refs/heads/release/2026", "success", false},
+		{"pull_request", "refs/pull/1/merge", "success", false},
+		{"merge_group", "refs/heads/gh-readonly-queue/main/pr-1", "success", false},
+		{"push", "refs/heads/main", "failure", false},
+		{"push", "refs/heads/main", "skipped", false},
+	} {
+		condition := strings.Join(strings.Fields(publisher.If), " ")
+		got := expandExpressions(t, "${{ "+condition+" }}", map[string]string{
+			"github.event_name": tc.event, "github.ref": tc.ref, "needs.drivers.result": tc.drivers,
+		})
+		if (got == "true") != tc.publishes {
+			t.Errorf("publication on %s %s with drivers %s = %s, want %v", tc.event, tc.ref, tc.drivers, got, tc.publishes)
+		}
+	}
+	if len(publisher.Steps) != 1 {
+		t.Fatal("missing status publication step")
+	}
+
+	dir := t.TempDir()
+	request := filepath.Join(dir, "request")
+	writeFakeExecutable(t, dir, "gh", `printf '%s\n' "$@" >> "$STATUS_REQUEST"`)
+	standard, lts := "v1:"+strings.Repeat("a", 64), "v1:"+strings.Repeat("b", 64)
+	digestJSON := fmt.Sprintf(`{"standard":%q,"lts":%q}`, standard, lts)
+	sha := strings.Repeat("1", 40)
+	command := exec.Command("bash", "-euo", "pipefail", "-c", publisher.Steps[0].Run)
+	command.Env = append(os.Environ(),
+		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "STATUS_REQUEST="+request,
+		`FLAVOURS=["lts"]`, "DIGESTS="+digestJSON, "GITHUB_SHA="+sha,
+		"GITHUB_REPOSITORY=katl-dev/katl", "GITHUB_SERVER_URL=https://github.com", "GITHUB_RUN_ID=1",
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("publish status: %v: %s", err, output)
+	}
+	data, err := os.ReadFile(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Count(string(data), "api\n") != 1 || !strings.Contains(string(data), "repos/katl-dev/katl/statuses/"+sha+"\n") ||
+		!strings.Contains(string(data), "context=katl/driver-qualification/lts\n") ||
+		!strings.Contains(string(data), "state=success\n") || !strings.Contains(string(data), "description="+lts+"\n") {
+		t.Fatalf("expected one LTS success status on the event SHA, got %s", data)
+	}
+}
+
 // The required CI check must never pass because a planned job did not run, for
 // any event the workflow handles.
 func TestCIGatesPlannedJobs(t *testing.T) {
@@ -409,7 +479,8 @@ func TestCIGatesPlannedJobs(t *testing.T) {
 			t.Errorf("%s condition = %q, want %q", name, got, want)
 		}
 	}
-	// The result job gates on every other job, so none can be skipped unnoticed.
+	// The result job gates on validation. Status publication depends on its
+	// driver result and records evidence for later runs.
 	needsOf := func(job string) []string {
 		t.Helper()
 		var list []string
@@ -428,13 +499,16 @@ func TestCIGatesPlannedJobs(t *testing.T) {
 	}
 	var gating []string
 	for name := range workflow.Jobs {
-		if name != "result" {
+		if name != "result" && name != "record-drivers" {
 			gating = append(gating, name)
 		}
 	}
 	slices.Sort(gating)
 	if got := needsOf("result"); !slices.Equal(got, gating) {
-		t.Errorf("result needs %v, want every other job %v", got, gating)
+		t.Errorf("result needs %v, want every validation job %v", got, gating)
+	}
+	if got := needsOf("record-drivers"); !slices.Equal(got, []string{"drivers", "plan"}) {
+		t.Errorf("record-drivers needs %v, want drivers and plan", got)
 	}
 	for _, name := range []string{"vms", "drivers", "production"} {
 		if got := needsOf(name); !slices.Equal(got, []string{"plan"}) {
@@ -475,7 +549,7 @@ case "$2" in
     cat > /dev/null
     production='[]'
     [[ " $* " != *" --production="* ]] || production='["standard","lts"]'
-    printf '{"vmFlavours":["standard","lts"],"driverFlavours":["standard","lts"],"productionFlavours":%s,"groups":[{"name":"cluster"}]}\n' "$production" ;;
+    printf '{"vmFlavours":["standard","lts"],"driverFlavours":["standard","lts"],"driverDigests":{},"productionFlavours":%s,"groups":[{"name":"cluster"}]}\n' "$production" ;;
   ./cmd/katl-kubernetes-release)
     printf '{"include":[]}\n' ;;
   *) exit 2 ;;
@@ -488,6 +562,7 @@ esac
 		{"merge group", "merge_group", "false"},
 		{"push", "push", "false"},
 		{"dispatch", "workflow_dispatch", "false"},
+		{"schedule", "schedule", "false"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			outputPath := filepath.Join(t.TempDir(), "output")

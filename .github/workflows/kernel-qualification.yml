@@ -6,6 +6,9 @@ on:
       flavour:
         type: string
         required: true
+      input-digest:
+        type: string
+        required: true
 
 permissions:
   contents: read
@@ -73,14 +76,25 @@ jobs:
             --artifact-set=install --no-rebuild ./internal/vmtest \
             -run '^TestInstalledRuntimeDRBDReplication$' -count=1 -json -timeout 40m
       - name: Record the qualified commit and inputs
+        id: record-qualification
+        env:
+          INPUT_DIGEST: ${{ inputs.input-digest }}
         run: |
           printf 'Qualified commit: %s\n\n' "\`$KATL_BUILD_COMMIT\`" >> "$GITHUB_STEP_SUMMARY"
-          jq '{flavour, kernelRelease, reference, packages: [.packages[] | {name, nevra, digest}]}' \
-            "$KATL_KERNEL_LOCK" >> "$GITHUB_STEP_SUMMARY"
+          {
+            printf '%s\n' '```json'
+            jq --arg commit "$KATL_BUILD_COMMIT" --arg digest "$INPUT_DIGEST" '
+              {qualifiedCommit: $commit, inputDigest: ($digest | select(length > 0) // null),
+               flavour, kernelRelease, reference, packages: [.packages[] | {name, nevra, digest}]}
+            ' "$KATL_KERNEL_LOCK"
+            printf '%s\n' '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Collect VM diagnostics
+        id: diagnostics
         if: always()
         run: .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
+        id: upload-diagnostics
         if: always()
         with:
           name: kernel-driver-${{ inputs.flavour }}-${{ github.run_id }}
