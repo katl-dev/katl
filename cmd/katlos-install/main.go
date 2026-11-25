@@ -24,6 +24,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/discovery"
 	"github.com/katl-dev/katl/internal/installer/disk"
+	"github.com/katl-dev/katl/internal/installer/fetcherr"
 	"github.com/katl-dev/katl/internal/installer/handoff"
 	"github.com/katl-dev/katl/internal/installer/installmedia"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
@@ -512,7 +513,7 @@ func fetchURLWithSHA256(ctx context.Context, rawURL, wantSHA256, label string, l
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("fetch %s URL %s: request failed", label, redactURL(rawURL))
+		return nil, fmt.Errorf("fetch %s URL %s: %w", label, redactURL(rawURL), fetcherr.Cause(err))
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

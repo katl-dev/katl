@@ -22,6 +22,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/artifact"
+	"github.com/katl-dev/katl/internal/installer/fetcherr"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/kernelcmdline"
 )
@@ -343,7 +344,7 @@ func downloadImage(ctx context.Context, expected manifest.KatlosImage, workDir s
 	}
 	response, err := client.Do(req)
 	if err != nil {
-		return "", "", 0, fmt.Errorf("fetch KatlOS image: %w", err)
+		return "", "", 0, fmt.Errorf("fetch KatlOS image: %w", fetcherr.Cause(err))
 	}
 	if response == nil {
 		return "", "", 0, fmt.Errorf("fetch KatlOS image: empty response")

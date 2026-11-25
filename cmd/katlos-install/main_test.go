@@ -737,3 +737,63 @@ func assertFile(t *testing.T, path, want string) {
 		t.Fatalf("%s = %q, want %q", path, got, want)
 	}
 }
+
+func TestFetchBundleURLNamesConnectCause(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	address := listener.Addr().String()
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	blocked := make(chan struct{})
+	hang := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-blocked }))
+	t.Cleanup(func() {
+		close(blocked)
+		hang.Close()
+	})
+	untrusted := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(untrusted.Close)
+
+	tests := []struct {
+		name      string
+		host      string
+		timeout   time.Duration
+		wantCause string
+	}{
+		{name: "connection refused", host: "http://" + address, wantCause: "connection refused"},
+		{name: "timeout", host: hang.URL, timeout: 100 * time.Millisecond, wantCause: "timed out"},
+		{name: "untrusted certificate", host: untrusted.URL, wantCause: "certificate signed by unknown authority"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme, host, _ := strings.Cut(tt.host, "://")
+			rawURL := scheme + "://opuser:hunter2@" + host + "/cluster.katlcfg?token=sekret-query"
+			ctx := context.Background()
+			if tt.timeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, tt.timeout)
+				defer cancel()
+			}
+
+			_, err := fetchBundleURL(ctx, rawURL, "", t.TempDir())
+
+			if err == nil {
+				t.Fatal("fetchBundleURL() succeeded, want failure")
+			}
+			wantPrefix := "fetch bundle URL " + scheme + "://" + host + "/cluster.katlcfg?<redacted>: "
+			if !strings.HasPrefix(err.Error(), wantPrefix) {
+				t.Errorf("error = %q, want prefix %q", err, wantPrefix)
+			}
+			if !strings.Contains(err.Error(), tt.wantCause) {
+				t.Errorf("error = %q, want cause %q", err, tt.wantCause)
+			}
+			for _, secret := range []string{"hunter2", "opuser", "sekret-query"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Errorf("error = %q leaks %q", err, secret)
+				}
+			}
+		})
+	}
+}
