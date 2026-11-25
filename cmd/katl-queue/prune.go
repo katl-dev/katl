@@ -1,12 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"strings"
 	"time"
 )
@@ -22,27 +22,47 @@ const (
 type groupRun struct {
 	ID      int64
 	Branch  string
+	SHA     string
 	Created time.Time
 }
+
+// groupRef is a merge-group branch and the commit it points at.
+type groupRef struct {
+	Name string // without the refs/heads/ prefix
+	SHA  string
+}
+
+// errRunCompleted reports that a run finished before it could be cancelled.
+var errRunCompleted = errors.New("run already completed")
 
 // runSource is the GitHub state prune reads and the one change it makes.
 type runSource interface {
 	// ActiveGroupRuns lists the unfinished merge_group runs.
 	ActiveGroupRuns(ctx context.Context) ([]groupRun, error)
-	// GroupRefs lists the merge-group branches that exist, without the
-	// refs/heads/ prefix.
-	GroupRefs(ctx context.Context) ([]string, error)
+	// GroupRefs lists the merge-group branches that exist.
+	GroupRefs(ctx context.Context) ([]groupRef, error)
+	// QueueEntries counts the entries of the merge queue.
+	QueueEntries(ctx context.Context) (int, error)
+	// CancelRun returns errRunCompleted when the run had already finished.
 	CancelRun(ctx context.Context, id int64) error
 }
 
 // supersededRuns selects the runs whose merge group no longer exists. GitHub
 // deletes a group's ref when the group is invalidated or merged, and gives
-// every rebuilt group a new ref, so a run whose ref is absent is for a group
-// the queue will never merge.
-func supersededRuns(runs []groupRun, refs []string, now time.Time) []groupRun {
+// every rebuilt group a new ref, so a run whose ref is absent, or present at a
+// different commit, is for a group the queue will never merge.
+func supersededRuns(runs []groupRun, refs []groupRef, now time.Time) []groupRun {
+	live := make(map[string]string, len(refs))
+	for _, ref := range refs {
+		live[ref.Name] = ref.SHA
+	}
+
 	var out []groupRun
 	for _, r := range runs {
-		if strings.HasPrefix(r.Branch, groupRefPrefix) && !slices.Contains(refs, r.Branch) && now.Sub(r.Created) >= pruneGrace {
+		if !strings.HasPrefix(r.Branch, groupRefPrefix) || now.Sub(r.Created) < pruneGrace {
+			continue
+		}
+		if sha, ok := live[r.Branch]; !ok || sha != r.SHA {
 			out = append(out, r)
 		}
 	}
@@ -65,6 +85,17 @@ func pruneRuns(ctx context.Context, src runSource, now time.Time, apply bool, ou
 	}
 
 	stale := supersededRuns(runs, refs, now)
+	if len(refs) == 0 && len(stale) > 0 {
+		// An empty listing beside a populated queue means the listing is
+		// wrong, and every live group would look superseded.
+		entries, err := src.QueueEntries(ctx)
+		if err != nil {
+			return err
+		}
+		if entries > 0 {
+			return fmt.Errorf("no merge-group refs are listed but the merge queue holds %d entries; cancelling nothing", entries)
+		}
+	}
 	if len(stale) == 0 {
 		fmt.Fprintf(out, "%d unfinished merge-group runs, all for groups in the queue\n", len(runs))
 		return nil
@@ -80,7 +111,10 @@ func pruneRuns(ctx context.Context, src runSource, now time.Time, apply bool, ou
 		if !apply {
 			continue
 		}
-		if err := src.CancelRun(ctx, r.ID); err != nil {
+		err := src.CancelRun(ctx, r.ID)
+		if errors.Is(err, errRunCompleted) {
+			fmt.Fprintf(out, "  run %d had already completed\n", r.ID)
+		} else if err != nil {
 			fmt.Fprintf(out, "  failed: %v\n", err)
 			errs = append(errs, fmt.Errorf("run %d: %w", r.ID, err))
 		}
@@ -111,6 +145,7 @@ func decodeGroupRuns(raw []byte) ([]groupRun, error) {
 		WorkflowRuns []struct {
 			ID         int64     `json:"id"`
 			HeadBranch string    `json:"head_branch"`
+			HeadSHA    string    `json:"head_sha"`
 			CreatedAt  time.Time `json:"created_at"`
 		} `json:"workflow_runs"`
 	}
@@ -119,24 +154,57 @@ func decodeGroupRuns(raw []byte) ([]groupRun, error) {
 	}
 	var runs []groupRun
 	for _, r := range resp.WorkflowRuns {
-		runs = append(runs, groupRun{ID: r.ID, Branch: r.HeadBranch, Created: r.CreatedAt})
+		runs = append(runs, groupRun{ID: r.ID, Branch: r.HeadBranch, SHA: r.HeadSHA, Created: r.CreatedAt})
 	}
 	return runs, nil
 }
 
-func (g *gh) GroupRefs(ctx context.Context) ([]string, error) {
-	out, err := runGH(ctx, "api", "--paginate", g.repoPath()+"/git/matching-refs/heads/"+groupRefPrefix, "--jq", ".[].ref")
+func (g *gh) GroupRefs(ctx context.Context) ([]groupRef, error) {
+	raw, err := runGH(ctx, "api", "--paginate", g.repoPath()+"/git/matching-refs/heads/"+groupRefPrefix)
 	if err != nil {
 		return nil, err
 	}
-	var refs []string
-	for _, ref := range strings.Fields(string(out)) {
-		refs = append(refs, strings.TrimPrefix(ref, "refs/heads/"))
+	return decodeGroupRefs(raw)
+}
+
+// decodeGroupRefs parses the matching-refs listing. --paginate prints one JSON
+// array per page, so the input may hold several.
+func decodeGroupRefs(raw []byte) ([]groupRef, error) {
+	var refs []groupRef
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	for dec.More() {
+		var page []struct {
+			Ref    string `json:"ref"`
+			Object struct {
+				SHA string `json:"sha"`
+			} `json:"object"`
+		}
+		if err := dec.Decode(&page); err != nil {
+			return nil, fmt.Errorf("decode group refs: %w", err)
+		}
+		for _, r := range page {
+			refs = append(refs, groupRef{Name: strings.TrimPrefix(r.Ref, "refs/heads/"), SHA: r.Object.SHA})
+		}
 	}
 	return refs, nil
 }
 
+func (g *gh) QueueEntries(ctx context.Context) (int, error) {
+	snap, err := g.snapshot(ctx)
+	return len(snap.Entries), err
+}
+
 func (g *gh) CancelRun(ctx context.Context, id int64) error {
 	_, err := runGH(ctx, "run", "cancel", fmt.Sprint(id), "--repo", g.owner+"/"+g.name)
+	if err == nil {
+		return nil
+	}
+
+	// A run can finish between the listing and the cancel, which GitHub
+	// refuses with a 409. Re-read the run rather than match the message.
+	raw, readErr := runGH(ctx, "api", fmt.Sprintf("%s/actions/runs/%d", g.repoPath(), id), "--jq", ".status")
+	if readErr == nil && strings.TrimSpace(string(raw)) == "completed" {
+		return errRunCompleted
+	}
 	return err
 }

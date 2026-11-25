@@ -688,9 +688,10 @@ and holds the PR only when another PR declares a dependency on it.
 When the queue rebuilds a group (a PR leaves, or one is added ahead), GitHub
 deletes the old group's `gh-readonly-queue` ref but leaves its `ci.yml` run going,
 and that run would hold or wait for a runner. `.github/workflows/prune-merge-runs.yml`
-runs `katl-queue prune-runs --apply` on each new group, on each deleted group
-branch and every five minutes, and cancels unfinished merge-group runs whose
-ref no longer exists. A run is never cancelled while its ref exists.
+runs `katl-queue prune-runs --apply` on each deleted group
+branch and every ten minutes, and cancels unfinished merge-group runs whose
+ref no longer exists or points at a different commit, and cancels nothing when
+the ref listing is empty but the merge queue is not.
 
 A `Hold: <reason>` line in a PR body, outside a code fence, holds the PR with
 that reason before any other check, and autopilot disables its auto-merge. The
