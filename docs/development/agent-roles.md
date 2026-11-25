@@ -42,9 +42,8 @@ readiness and remaining decisions to the operator.
 operator workflow required by AGENTS.md and find the existing owner of every
 responsibility the change touches. Use a fresh worktree based on an up-to-date
 `origin/main` and reserve `release/*` branches for release work. Read the issue
-discussion, parent issue, and relevant design docs. Link the Bead with
-`--external-ref gh-N`. If the scope exceeds one PR, deliver the smallest
-coherent step and propose sub-issues for the rest.
+discussion, parent issue, and relevant design docs. If the scope exceeds one
+PR, deliver the smallest coherent step and propose sub-issues for the rest.
 
 **Brief.** Supply the issue, acceptance criteria, the authorized delivery
 scope, and any dependencies, operator preconditions, or release milestone.
@@ -71,10 +70,9 @@ journey commands with their starting state and expected results.
 
 **Hand-off.** Return the report to the orchestrator once the scoped PR is
 ready. Identify outstanding review, gates, journeys, and any proposed
-sub-issues. A sandboxed session that cannot commit, push, or write Beads
-leaves the change in its worktree with the proposed commit title and body;
-the orchestrator reviews the diff, commits, opens the PR, and updates the
-Bead.
+sub-issues. A sandboxed session that cannot commit or push leaves the change
+in its worktree with the proposed commit title and body. The orchestrator
+reviews the diff, commits, and opens the PR.
 
 ## Reviewer
 
@@ -143,7 +141,7 @@ Identify the applicable repeat, reboot, and failure or recovery paths.
 tested revision, VM starting state, exact commands and observed outcomes,
 independent state evidence, and links to any gap issue or outstanding check.
 
-**Hand-off.** Record the commands and outcomes in the Bead and the result
-on the PR. Apply the journey labels and file any gap as described above.
+**Hand-off.** Record the exact commands and observed outcomes on the PR.
+Apply the journey labels and file any gap as described above.
 Return the record and any capability gap to the orchestrator, who schedules
 the fix and rerun.
