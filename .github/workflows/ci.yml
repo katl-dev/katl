@@ -52,10 +52,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: ./.github/actions/setup-go
       # Read the labels and base now rather than from the event payload, which a
       # rerun repeats unchanged. A run whose payload base is stale fails below
       # rather than plan for a base it did not test.
@@ -173,10 +170,8 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: ./.github/actions/setup-go
+        id: go
       - run: .github/scripts/hosted-apt-install dosfstools mtools xorriso squashfs-tools
       - name: Run fast checks
         env:
@@ -188,6 +183,15 @@ jobs:
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           -shellcheck=
           -ignore 'input "(app-id|client-id)".*action "actions/create-github-app-token@v3"'
+
+      - name: Save shared Go cache
+        if: github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            ${{ steps.go.outputs.module-cache }}
+            ${{ steps.go.outputs.build-cache }}
+          key: ${{ steps.go.outputs.cache-key }}
 
   nix:
     name: Nix katlctl
@@ -285,10 +289,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: ./.github/actions/setup-go
       - uses: ./.github/actions/combine-flavours
 
   result:

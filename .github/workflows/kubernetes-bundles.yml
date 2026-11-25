@@ -35,10 +35,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: ./.github/actions/setup-go
       - name: Resolve release matrix
         id: plan
         env:
@@ -93,10 +90,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: ./.github/actions/setup-go
       - name: Inspect published upstream release
         id: release
         run: |
@@ -159,8 +153,9 @@ jobs:
             ./internal/installer/kubernetesbundle ./internal/installer/kubernetescompat \
             ./internal/installer/sysextcatalog ./internal/installer/payloadbundle -count=1
       - name: Restore build caches
+        id: build-cache
         if: steps.candidate.outputs.exists != 'true'
-        uses: actions/cache@v6
+        uses: actions/cache/restore@v6
         with:
           path: |
             _build/go-mod
@@ -252,3 +247,13 @@ jobs:
           go run ./cmd/katl-kubernetes-release promote \
             --payload-version "$PAYLOAD_VERSION" --artifact-version "$ARTIFACT_VERSION" \
             --manifest-digest "$MANIFEST_DIGEST" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Save build caches
+        if: github.ref == 'refs/heads/main' && steps.candidate.outputs.exists != 'true' && steps.build-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: |
+            _build/go-mod
+            _build/go-cache
+            _build/mkosi/package-cache
+          key: ${{ steps.build-cache.outputs.cache-primary-key }}

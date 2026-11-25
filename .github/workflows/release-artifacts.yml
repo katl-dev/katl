@@ -2,7 +2,7 @@ name: Katl Release Artifacts
 
 on:
   # The nightly candidate on main runs the release path at a development version
-  # above the latest stable, publishes nothing, and refreshes main's build caches.
+  # above the latest stable and restores shared build caches without publishing.
   schedule:
     - cron: '17 3 * * *'
   push:
@@ -81,10 +81,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: ./.github/actions/setup-go
       - run: .github/scripts/hosted-apt-install dosfstools mtools xorriso squashfs-tools
       - run: scripts/check-fast
 
@@ -147,10 +144,7 @@ jobs:
           artifact_name="katl-${version}-${KATL_ARCHITECTURE}-${short_sha}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "artifact-name=$artifact_name" >> "$GITHUB_OUTPUT"
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: ./.github/actions/setup-go
       # Only tag pushes may skip the regression lanes; scheduled and dispatched
       # runs always repeat them, because an empty decision runs the lanes. A final
       # tag fails here unless a release candidate of it already
@@ -202,10 +196,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: ./.github/actions/setup-go
       - uses: ./.github/actions/combine-flavours
       - name: Attest staged release artifacts
         if: github.event_name == 'push' && github.ref_type == 'tag'
@@ -250,10 +241,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: ./.github/actions/setup-go
       - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.identity.outputs.artifact-name }}
@@ -313,10 +301,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: ./.github/actions/setup-go
       - uses: actions/download-artifact@v8
         with:
           pattern: katl-extension-bundles-*-${{ github.sha }}
@@ -350,10 +335,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: ./.github/actions/setup-go
       - name: Download verified artifacts
         uses: actions/download-artifact@v8
         with:

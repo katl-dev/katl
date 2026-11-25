@@ -68,10 +68,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+        uses: ./.github/actions/setup-go
 
       - name: Restore Katl Go build caches
         id: go-cache
@@ -171,10 +168,8 @@ jobs:
           inventory="$(go run ./cmd/katl-mkosi-artifacts inventory-release-extensions)"
           echo "extensions=$(jq -c .extension <<<"$inventory")" >> "$GITHUB_OUTPUT"
 
-      # Merge queue refs are never restored by other runs, so saving there only
-      # evicts the caches that default-branch and pull request runs use.
       - name: Save Katl Go build caches
-        if: github.event_name != 'merge_group' && steps.go-cache.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: |
@@ -183,7 +178,7 @@ jobs:
           key: ${{ steps.go-cache.outputs.cache-primary-key }}
 
       - name: Save mkosi package cache
-        if: github.event_name != 'merge_group' && steps.package-cache.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.package-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: _build/mkosi/package-cache
@@ -213,10 +208,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+        uses: ./.github/actions/setup-go
 
       - name: Restore Katl Go build caches
         id: go-cache
@@ -293,10 +285,8 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-      # Merge queue refs are never restored by other runs, so saving there only
-      # evicts the caches that default-branch and pull request runs use.
       - name: Save Katl Go build caches
-        if: github.event_name != 'merge_group' && steps.go-cache.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: |
@@ -305,7 +295,7 @@ jobs:
           key: ${{ steps.go-cache.outputs.cache-primary-key }}
 
       - name: Save mkosi package cache
-        if: github.event_name != 'merge_group' && steps.package-cache.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.package-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: _build/mkosi/package-cache
@@ -338,10 +328,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+      - uses: ./.github/actions/setup-go
       - uses: ./.github/actions/mkosi-builder
         with:
           image: ${{ env.KATL_MKOSI_IMAGE }}
@@ -396,10 +383,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache: true
+        uses: ./.github/actions/setup-go
 
       - name: Prepare cached builder
         uses: ./.github/actions/mkosi-builder

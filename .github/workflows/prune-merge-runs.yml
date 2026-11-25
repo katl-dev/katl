@@ -34,10 +34,17 @@ jobs:
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      - uses: actions/checkout@v7
+        if: github.event_name == 'workflow_dispatch' && github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
         with:
-          go-version-file: go.mod
-          cache: true
+          ref: ${{ github.workflow_sha }}
+          path: _build/workflow-actions
+          persist-credentials: false
+          sparse-checkout: .github/actions/setup-go
+      - uses: ./_build/workflow-actions/.github/actions/setup-go
+        if: github.event_name == 'workflow_dispatch' && github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
+      - uses: ./.github/actions/setup-go
+        if: github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
       - name: Cancel runs of superseded merge groups
         env:
           GH_TOKEN: ${{ github.token }}

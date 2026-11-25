@@ -64,11 +64,19 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
-      - uses: actions/setup-go@v6
-        if: inputs.scenarios == ''
+      # An explicit source ref can predate the cache policy in this workflow.
+      - uses: actions/checkout@v7
+        if: inputs.scenarios == '' && inputs.ref != ''
         with:
-          go-version-file: go.mod
-          cache: true
+          ref: ${{ github.workflow_sha }}
+          path: _build/workflow-actions
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/setup-go
+      - uses: ./_build/workflow-actions/.github/actions/setup-go
+        if: inputs.scenarios == '' && inputs.ref != ''
+      - uses: ./.github/actions/setup-go
+        if: inputs.scenarios == '' && inputs.ref == ''
       - name: Select VM runner
         id: host
         env:
@@ -132,10 +140,20 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.source }}
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      # An explicit source ref can predate the cache policy in this workflow.
+      - uses: actions/checkout@v7
+        if: inputs.ref != ''
         with:
-          go-version-file: go.mod
-          cache: true
+          ref: ${{ github.workflow_sha }}
+          path: _build/workflow-actions
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/setup-go
+            .github/actions/mkosi-builder
+      - uses: ./_build/workflow-actions/.github/actions/setup-go
+        if: inputs.ref != ''
+      - uses: ./.github/actions/setup-go
+        if: inputs.ref == ''
       - uses: ./.github/actions/hosted-vmtest
         with:
           prepared: ${{ needs.plan.outputs.prepared }}
@@ -150,7 +168,12 @@ jobs:
           restore-keys: |
             hosted-vmtest-build-${{ env.KATL_FLAVOUR }}-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi', 'mkosi.conf', 'mkosi.profiles/**/mkosi.conf', 'kernels/**') }}-
             hosted-vmtest-build-${{ env.KATL_FLAVOUR }}-${{ runner.os }}-
+      - uses: ./_build/workflow-actions/.github/actions/mkosi-builder
+        if: inputs.ref != ''
+        with:
+          image: ${{ env.KATL_MKOSI_IMAGE }}
       - uses: ./.github/actions/mkosi-builder
+        if: inputs.ref == ''
         with:
           image: ${{ env.KATL_MKOSI_IMAGE }}
       - name: Record builder identity
@@ -229,7 +252,7 @@ jobs:
             _build/hosted-agent/**/stderr
           retention-days: 3
       - uses: actions/cache/save@v6
-        if: always() && github.event_name != 'merge_group' && steps.runtime.outcome == 'success' && steps.build-cache.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && always() && steps.runtime.outcome == 'success' && steps.build-cache.outputs.cache-hit != 'true'
         with:
           path: |
             _build/go-mod
@@ -258,10 +281,19 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.source }}
           persist-credentials: false
-      - uses: actions/setup-go@v6
+      # An explicit source ref can predate the cache policy in this workflow.
+      - uses: actions/checkout@v7
+        if: inputs.ref != ''
         with:
-          go-version-file: go.mod
-          cache: true
+          ref: ${{ github.workflow_sha }}
+          path: _build/workflow-actions
+          persist-credentials: false
+          sparse-checkout: |
+            .github/actions/setup-go
+      - uses: ./_build/workflow-actions/.github/actions/setup-go
+        if: inputs.ref != ''
+      - uses: ./.github/actions/setup-go
+        if: inputs.ref == ''
       - uses: ./.github/actions/hosted-vmtest
         with:
           prepared: ${{ needs.plan.outputs.prepared }}
