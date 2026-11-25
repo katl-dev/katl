@@ -16,8 +16,13 @@ checks (`check-runtime-root`, `check-runtime-boot-asset`, `check-installer-image
 and the KatlOS image checks) with `KATL_VMTEST_IMAGE_SUPPORT=0` on production
 bytes, in parallel with fast checks and VM regression. A following bundle job
 combines the two flavours with `katl-release-artifacts combine`, as the release
-workflow does, and CI requires both jobs whenever the plan selects them. A change
-that breaks a release check therefore fails before merge rather than at tag time.
+workflow does. Production VM then installs each flavour's assembled bytes, reboots,
+upgrades from the previous stable release, and rolls back through `TestReleaseLifecycle`
+with no test agent, as the release does. It starts when the builds end and runs
+alongside the VM regression lanes, which remain the longer path. CI requires all of
+these jobs whenever the plan selects them. A change
+that breaks a release check or the production lifecycle therefore fails before merge
+rather than at tag time.
 The assembled bytes remain available for one day as `katl-assembled-<flavour>-<sha>`.
 Other pull requests do not run it: the build costs a full image build per flavour on
 every push.

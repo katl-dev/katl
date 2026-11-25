@@ -131,9 +131,10 @@ func TestCIGate(t *testing.T) {
 				}},
 				"checks": map[string]string{"result": tc.checks},
 				"vms":    map[string]string{"result": tc.vms}, "drivers": map[string]string{"result": tc.drivers},
-				"nix":        map[string]string{"result": tc.nix},
-				"production": map[string]string{"result": "skipped"},
-				"bundle":     map[string]string{"result": "skipped"},
+				"nix":           map[string]string{"result": tc.nix},
+				"production":    map[string]string{"result": "skipped"},
+				"qualification": map[string]string{"result": "skipped"},
+				"bundle":        map[string]string{"result": "skipped"},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -293,14 +294,15 @@ func TestCIGatesPlannedJobs(t *testing.T) {
 	// the plan selects them. Any other condition can skip a job without the plan
 	// knowing, and a skipped job counts as passing for a required check.
 	for name, want := range map[string]string{
-		"plan":       "",
-		"checks":     "",
-		"nix":        "",
-		"result":     "always()",
-		"vms":        "needs.plan.outputs.vm-flavours != '[]'",
-		"drivers":    "needs.plan.outputs.driver-flavours != '[]'",
-		"production": "needs.plan.outputs.production-flavours != '[]'",
-		"bundle":     "needs.plan.outputs.production-flavours != '[]'",
+		"plan":          "",
+		"checks":        "",
+		"nix":           "",
+		"result":        "always()",
+		"vms":           "needs.plan.outputs.vm-flavours != '[]'",
+		"drivers":       "needs.plan.outputs.driver-flavours != '[]'",
+		"production":    "needs.plan.outputs.production-flavours != '[]'",
+		"bundle":        "needs.plan.outputs.production-flavours != '[]'",
+		"qualification": "needs.plan.outputs.production-flavours != '[]'",
 	} {
 		if got := strings.TrimSpace(workflow.Jobs[name].If); got != want {
 			t.Errorf("%s condition = %q, want %q", name, got, want)
@@ -340,6 +342,9 @@ func TestCIGatesPlannedJobs(t *testing.T) {
 	}
 	if got := needsOf("bundle"); !slices.Equal(got, []string{"plan", "production"}) {
 		t.Errorf("bundle needs %v, want plan and production", got)
+	}
+	if got := needsOf("qualification"); !slices.Equal(got, []string{"plan", "production"}) {
+		t.Errorf("qualification needs %v, want plan and production", got)
 	}
 
 	var plan string
@@ -405,6 +410,7 @@ esac
 				case strings.HasPrefix(line, "production-flavours="):
 					planned["production"] = line != "production-flavours=[]"
 					planned["bundle"] = planned["production"]
+					planned["qualification"] = planned["production"]
 				}
 			}
 
@@ -419,8 +425,9 @@ esac
 					}},
 					"nix": map[string]string{"result": results["nix"]},
 					"vms": map[string]string{"result": results["vms"]}, "drivers": map[string]string{"result": results["drivers"]},
-					"production": map[string]string{"result": results["production"]},
-					"bundle":     map[string]string{"result": results["bundle"]},
+					"production":    map[string]string{"result": results["production"]},
+					"qualification": map[string]string{"result": results["qualification"]},
+					"bundle":        map[string]string{"result": results["bundle"]},
 				})
 				if err != nil {
 					t.Fatal(err)
@@ -432,7 +439,7 @@ esac
 			// A job runs when planned and is skipped otherwise.
 			healthy := func() map[string]string {
 				results := map[string]string{}
-				for _, job := range []string{"plan", "checks", "nix", "vms", "drivers", "production", "bundle"} {
+				for _, job := range []string{"plan", "checks", "nix", "vms", "drivers", "production", "qualification", "bundle"} {
 					results[job] = "skipped"
 					if planned[job] {
 						results[job] = "success"
@@ -885,31 +892,36 @@ func TestCIGateProduction(t *testing.T) {
 	script := workflow.Jobs["result"].Steps[0].Run
 
 	for _, tc := range []struct {
-		name, flavours, production, bundle string
-		pass                               bool
+		name, flavours, production, qualification, bundle string
+		pass                                              bool
 	}{
-		{"success", `["standard","lts"]`, "success", "success", true},
-		{"production failure", `["standard","lts"]`, "failure", "skipped", false},
-		{"production cancelled", `["standard","lts"]`, "cancelled", "skipped", false},
-		{"selected but skipped", `["standard","lts"]`, "skipped", "skipped", false},
-		{"bundle failure", `["standard","lts"]`, "success", "failure", false},
-		{"bundle cancelled", `["standard","lts"]`, "success", "cancelled", false},
-		{"selected bundle skipped", `["standard","lts"]`, "success", "skipped", false},
-		{"unselected but run", `[]`, "success", "skipped", false},
-		{"unselected bundle run", `[]`, "skipped", "success", false},
-		{"missing plan output", ``, "skipped", "skipped", false},
+		{"success", `["standard","lts"]`, "success", "success", "success", true},
+		{"production failure", `["standard","lts"]`, "failure", "success", "skipped", false},
+		{"production cancelled", `["standard","lts"]`, "cancelled", "success", "skipped", false},
+		{"selected but skipped", `["standard","lts"]`, "skipped", "success", "skipped", false},
+		{"bundle failure", `["standard","lts"]`, "success", "success", "failure", false},
+		{"bundle cancelled", `["standard","lts"]`, "success", "success", "cancelled", false},
+		{"selected bundle skipped", `["standard","lts"]`, "success", "success", "skipped", false},
+		{"unselected but run", `[]`, "success", "skipped", "skipped", false},
+		{"unselected bundle run", `[]`, "skipped", "skipped", "success", false},
+		{"qualification failure", `["standard","lts"]`, "success", "failure", "success", false},
+		{"qualification cancelled", `["standard","lts"]`, "success", "cancelled", "success", false},
+		{"selected qualification skipped", `["standard","lts"]`, "success", "skipped", "success", false},
+		{"unselected qualification run", `[]`, "skipped", "success", "skipped", false},
+		{"missing plan output", ``, "skipped", "skipped", "skipped", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			needs, err := json.Marshal(map[string]any{
 				"plan": map[string]any{"result": "success", "outputs": map[string]string{
 					"vm-flavours": `[]`, "driver-flavours": `[]`, "production-flavours": tc.flavours,
 				}},
-				"checks":     map[string]string{"result": "success"},
-				"nix":        map[string]string{"result": "success"},
-				"vms":        map[string]string{"result": "skipped"},
-				"drivers":    map[string]string{"result": "skipped"},
-				"production": map[string]string{"result": tc.production},
-				"bundle":     map[string]string{"result": tc.bundle},
+				"checks":        map[string]string{"result": "success"},
+				"nix":           map[string]string{"result": "success"},
+				"vms":           map[string]string{"result": "skipped"},
+				"drivers":       map[string]string{"result": "skipped"},
+				"production":    map[string]string{"result": tc.production},
+				"qualification": map[string]string{"result": tc.qualification},
+				"bundle":        map[string]string{"result": tc.bundle},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -921,5 +933,48 @@ func TestCIGateProduction(t *testing.T) {
 				t.Fatalf("CI passed = %v, want %v: %s", err == nil, tc.pass, output)
 			}
 		})
+	}
+}
+
+// Production VM qualifies the assembled bytes the production job uploaded for
+// the same commit, upgrading from the release the production identity chose.
+func TestCIQualificationJob(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/ci.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Uses        string `yaml:"uses"`
+			Strategy    struct{ Matrix struct{ Flavour string } }
+			With        map[string]any
+			Permissions map[string]string
+		}
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatal(err)
+	}
+
+	qualification := workflow.Jobs["qualification"]
+	if qualification.Uses != "./.github/workflows/production-vmtests.yml" {
+		t.Errorf("qualification uses %q, want the production VM workflow", qualification.Uses)
+	}
+	if got := qualification.Strategy.Matrix.Flavour; got != "${{ fromJSON(needs.plan.outputs.production-flavours) }}" {
+		t.Errorf("qualification matrix = %q, want the planned production flavours", got)
+	}
+	for name, want := range map[string]any{
+		"flavour":       "${{ matrix.flavour }}",
+		"artifact-name": "katl-assembled-${{ matrix.flavour }}-${{ github.sha }}",
+		"previous-tag":  "${{ needs.plan.outputs.production-previous-tag }}",
+	} {
+		if got := qualification.With[name]; got != want {
+			t.Errorf("qualification %s = %v, want %v", name, got, want)
+		}
+	}
+	if _, ok := qualification.With["run-id"]; ok {
+		t.Error("qualification sets run-id, which would download another run's bytes")
+	}
+	if got := qualification.Permissions["actions"]; got != "read" {
+		t.Errorf("qualification actions permission = %q, want read to download the build artifact", got)
 	}
 }

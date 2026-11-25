@@ -251,6 +251,26 @@ jobs:
       previous-tag: ${{ needs.plan.outputs.production-previous-tag }}
       publication: false
 
+  # Production VM qualifies each flavour's assembled bytes as the release does,
+  # without the test agent. It starts when both production builds end, well
+  # before the VM regression lanes finish.
+  qualification:
+    name: Production VM (${{ matrix.flavour }})
+    needs: [plan, production]
+    if: needs.plan.outputs.production-flavours != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        flavour: ${{ fromJSON(needs.plan.outputs.production-flavours) }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/production-vmtests.yml
+    with:
+      flavour: ${{ matrix.flavour }}
+      artifact-name: katl-assembled-${{ matrix.flavour }}-${{ github.sha }}
+      previous-tag: ${{ needs.plan.outputs.production-previous-tag }}
+
   bundle:
     name: Production bundle
     needs: [plan, production]
@@ -272,7 +292,7 @@ jobs:
   result:
     name: CI${{ needs.plan.outputs.check-suffix && format(' {0}', needs.plan.outputs.check-suffix) || '' }}
     if: always()
-    needs: [plan, checks, nix, vms, drivers, production, bundle]
+    needs: [plan, checks, nix, vms, drivers, production, qualification, bundle]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -285,6 +305,7 @@ jobs:
             ([{flavours: .plan.outputs["vm-flavours"], result: .vms.result},
               {flavours: .plan.outputs["driver-flavours"], result: .drivers.result},
               {flavours: .plan.outputs["production-flavours"], result: .production.result},
+              {flavours: .plan.outputs["production-flavours"], result: .qualification.result},
               {flavours: .plan.outputs["production-flavours"], result: .bundle.result}]
              | all(.[];
                  (.flavours | fromjson) as $flavours |
