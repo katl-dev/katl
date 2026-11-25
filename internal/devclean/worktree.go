@@ -68,17 +68,24 @@ func CheckWorktree(ctx context.Context, environ []string, lookup PullRequestLook
 		return Worktree{}, err
 	}
 	var paths []string
+	var locked []string
+	// current is the resolved path of the listing entry being read, empty for a
+	// stale registration, which cannot be the target.
+	var current string
 	for _, line := range strings.Split(listing, "\n") {
 		if p, ok := strings.CutPrefix(line, "worktree "); ok {
+			current = ""
 			resolved, err := resolve(p)
 			if errors.Is(err, fs.ErrNotExist) {
-				// A stale registration cannot be the target, which exists.
 				continue
 			}
 			if err != nil {
 				return Worktree{}, err
 			}
+			current = resolved
 			paths = append(paths, resolved)
+		} else if (line == "locked" || strings.HasPrefix(line, "locked ")) && current != "" {
+			locked = append(locked, current)
 		}
 	}
 	if len(paths) == 0 {
@@ -94,6 +101,10 @@ func CheckWorktree(ctx context.Context, environ []string, lookup PullRequestLook
 	}
 	if !contains(paths[1:], abs) {
 		return Worktree{}, fmt.Errorf("%s is not a linked worktree of %s; see git worktree list", abs, paths[0])
+	}
+
+	if contains(locked, abs) {
+		return Worktree{}, fmt.Errorf("%s is locked, so git will not remove it; run `git worktree unlock %s` first", abs, abs)
 	}
 
 	// A directory without its own .git is judged by whichever repository
@@ -209,7 +220,12 @@ func (g gitRunner) bindRegistration(ctx context.Context, abs, commonDir string) 
 	if err != nil {
 		return err
 	}
-	adminDir = strings.TrimSpace(adminDir)
+	if adminDir, err = resolve(strings.TrimSpace(adminDir)); err != nil {
+		return err
+	}
+	if registrations := filepath.Join(commonDir, "worktrees"); filepath.Dir(adminDir) != registrations {
+		return fmt.Errorf("%s: its .git points to %s, which is not a worktree registration under %s; remove it yourself", abs, adminDir, registrations)
+	}
 	back, err := os.ReadFile(filepath.Join(adminDir, "gitdir"))
 	if err != nil {
 		return fmt.Errorf("%s: cannot read the registration %s points to: %w", abs, adminDir, err)
@@ -325,10 +341,44 @@ func (w Worktree) Remove(ctx context.Context, ns UserNS) error {
 		}
 	}
 
-	if _, err := (gitRunner{environ: w.environ}).run(ctx, w.repo, "worktree", "remove", "--force", w.root); err != nil && present(w.root) {
+	g := gitRunner{environ: w.environ}
+	_, err = g.run(ctx, w.repo, "worktree", "remove", "--force", w.root)
+	if err == nil {
+		return nil
+	}
+	// git may delete the registration and then fail to delete the files, and
+	// running the removal again is then refused, so say which state was reached
+	// and what to do about it.
+	registered, listErr := w.registered(ctx, g)
+	switch {
+	case listErr != nil && present(w.root):
 		return &LeftoverError{Root: w.root, Paths: t.leftovers(w.root), Cause: err}
+	case listErr != nil:
+		return fmt.Errorf("%s is gone but git could not confirm its registration was removed (%v) after: %w", w.root, listErr, err)
+	case present(w.root) && !registered:
+		return fmt.Errorf("git removed the registration of %s but could not delete its files (%w); delete %s yourself, because running the removal again would be refused", w.root, err, w.root)
+	case present(w.root):
+		return &LeftoverError{Root: w.root, Paths: t.leftovers(w.root), Cause: err}
+	case registered:
+		return fmt.Errorf("%s is gone but git still lists it as a worktree (%w); run `git -C %s worktree prune`", w.root, err, w.repo)
 	}
 	return nil
+}
+
+// registered reports whether git lists the worktree.
+func (w Worktree) registered(ctx context.Context, g gitRunner) (bool, error) {
+	listing, err := g.run(ctx, w.repo, "worktree", "list", "--porcelain")
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(listing, "\n") {
+		if p, ok := strings.CutPrefix(line, "worktree "); ok {
+			if resolved, err := resolve(p); p == w.root || (err == nil && resolved == w.root) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 // DeleteBranchIfUnmoved deletes the worktree's branch when it was judged

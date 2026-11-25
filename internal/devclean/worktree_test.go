@@ -598,38 +598,6 @@ func TestWorktreeKeepsBranchCheckedOutElsewhere(t *testing.T) {
 	}
 }
 
-func TestCleanScriptsFailWhenBuildFails(t *testing.T) {
-	// The scripts use an installed katl-devclean when there is one.
-	var path []string
-	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
-		if _, err := os.Stat(filepath.Join(dir, "katl-devclean")); err != nil {
-			path = append(path, dir)
-		}
-	}
-	tmp := t.TempDir()
-	for _, c := range []struct {
-		script string
-		args   []string
-		env    string
-	}{
-		{"worktree-clean", []string{filepath.Join(tmp, "wt")}, "KATL_WORKTREE_GO"},
-		{"vmtest-clean", []string{tmp}, "KATL_VMTEST_GO"},
-	} {
-		t.Run(c.script, func(t *testing.T) {
-			cmd := exec.Command(filepath.Join("..", "..", "scripts", c.script), c.args...)
-			cmd.Env = append(os.Environ(), "PATH="+strings.Join(path, ":"), c.env+"=false")
-			out, err := cmd.CombinedOutput()
-			var exit *exec.ExitError
-			if !errors.As(err, &exit) || exit.ExitCode() == 127 {
-				t.Fatalf("%s: %v\n%s", c.script, err, out)
-			}
-			if !strings.Contains(string(out), "could not build katl-devclean") {
-				t.Fatalf("%s output does not say the build failed:\n%s", c.script, out)
-			}
-		})
-	}
-}
-
 func TestCheckWorktreeRefusesItsOwnCheckout(t *testing.T) {
 	f := newFixture(t)
 	wt := f.worktree("feature")
@@ -668,4 +636,105 @@ func TestWorktreeRemovesSubuidOwnedOutput(t *testing.T) {
 	if list := f.git(f.repo, "worktree", "list", "--porcelain"); strings.Contains(list, wt) {
 		t.Fatalf("git still lists the removed worktree:\n%s", list)
 	}
+}
+
+func TestCheckWorktreeRefusesLocked(t *testing.T) {
+	f := newFixture(t)
+	wt := f.worktree("feature")
+	f.git(wt, "push", "--quiet", "origin", "feature")
+	f.git(f.repo, "worktree", "lock", wt)
+	writeFile(t, filepath.Join(wt, "_build", "image.iso"))
+
+	f.refused(wt, "git worktree unlock "+wt)
+
+	if !exists(filepath.Join(wt, "_build", "image.iso")) {
+		t.Fatal("a refused worktree lost its untracked output")
+	}
+}
+
+func TestCheckWorktreeRefusesRegistrationOutsideWorktrees(t *testing.T) {
+	f := newFixture(t)
+	wt := f.worktree("feature")
+	f.git(wt, "push", "--quiet", "origin", "feature")
+
+	// A copy of the registration at a path that is not under
+	// <common>/worktrees, still naming the repository and the worktree.
+	real := filepath.Join(f.repo, ".git", "worktrees", "wt-feature")
+	admin := filepath.Join(f.root, "admin")
+	if err := os.Mkdir(admin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"HEAD", "gitdir", "index"} {
+		b, err := os.ReadFile(filepath.Join(real, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(admin, name), b, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(admin, "commondir"), []byte(filepath.Join(f.repo, ".git")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt, ".git"), []byte("gitdir: "+admin+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f.refused(wt, "not a worktree registration")
+}
+
+// failingGit puts a git first in PATH that runs the real one, except that
+// `worktree remove` runs on and then fails.
+func failingGit(t *testing.T, onRemove string) {
+	t.Helper()
+	real, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	script := "#!/bin/sh\nfor a; do last=$a; done\ncase \" $* \" in\n*\" worktree remove \"*) " + onRemove + "; exit 1;; esac\nexec " + real + " \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func TestWorktreeRemoveReportsGitFailure(t *testing.T) {
+	t.Run("files left after the registration is gone", func(t *testing.T) {
+		f := newFixture(t)
+		wt := f.worktree("feature")
+		f.git(wt, "push", "--quiet", "origin", "feature")
+		got, err := f.check(wt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Real git fails to remove a worktree it no longer lists.
+		if err := os.RemoveAll(filepath.Join(f.repo, ".git", "worktrees", "wt-feature")); err != nil {
+			t.Fatal(err)
+		}
+
+		err = got.Remove(context.Background(), &fakeNS{act: removeEverything})
+
+		var left *LeftoverError
+		if err == nil || errors.As(err, &left) || !strings.Contains(err.Error(), "delete "+wt+" yourself") {
+			t.Fatalf("Remove() error = %v; want a manual next step, not a request to run again", err)
+		}
+	})
+
+	t.Run("directory gone but still registered", func(t *testing.T) {
+		f := newFixture(t)
+		wt := f.worktree("feature")
+		f.git(wt, "push", "--quiet", "origin", "feature")
+		got, err := f.check(wt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		failingGit(t, `mv "$last" "$last.moved"`)
+
+		err = got.Remove(context.Background(), &fakeNS{act: removeEverything})
+
+		if err == nil || !strings.Contains(err.Error(), "worktree prune") {
+			t.Fatalf("Remove() error = %v; want it to say the registration remains and how to prune it", err)
+		}
+	})
 }

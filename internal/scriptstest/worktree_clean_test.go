@@ -212,3 +212,36 @@ func TestWorktreeCleanKeepsDevcleanExitStatus(t *testing.T) {
 		t.Fatalf("a refusal was reported as something else:\n%s", out)
 	}
 }
+
+func TestCleanScriptsFailWhenBuildFails(t *testing.T) {
+	root := repoRoot(t)
+	// The scripts use an installed katl-devclean when there is one.
+	var path []string
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if _, err := os.Stat(filepath.Join(dir, "katl-devclean")); err != nil {
+			path = append(path, dir)
+		}
+	}
+	tmp := t.TempDir()
+	for _, c := range []struct {
+		script string
+		args   []string
+		env    string
+	}{
+		{"worktree-clean", []string{filepath.Join(tmp, "wt")}, "KATL_WORKTREE_GO"},
+		{"vmtest-clean", []string{tmp}, "KATL_VMTEST_GO"},
+	} {
+		t.Run(c.script, func(t *testing.T) {
+			cmd := exec.Command(filepath.Join(root, "scripts", c.script), c.args...)
+			cmd.Env = append(os.Environ(), "PATH="+strings.Join(path, ":"), c.env+"=false")
+			out, err := cmd.CombinedOutput()
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 2 {
+				t.Fatalf("%s error = %v; want exit status 2\n%s", c.script, err, out)
+			}
+			if !strings.Contains(string(out), "could not build katl-devclean") {
+				t.Fatalf("%s output does not say the build failed:\n%s", c.script, out)
+			}
+		})
+	}
+}
