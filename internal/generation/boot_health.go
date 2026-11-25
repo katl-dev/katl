@@ -104,6 +104,13 @@ type currentBoot struct {
 	GenerationID string `json:"generationID"`
 }
 
+// CurrentBootGeneration returns the generation that activation recorded for
+// this boot. It reports false when no activation run has recorded this boot.
+func CurrentBootGeneration(root string) (string, bool, error) {
+	boot, recorded, err := readCurrentBoot(cleanRoot(root))
+	return boot.GenerationID, recorded, err
+}
+
 func readCurrentBoot(root string) (currentBoot, bool, error) {
 	data, err := os.ReadFile(rootedPathUnchecked(root, currentBootPath))
 	if errors.Is(err, os.ErrNotExist) {

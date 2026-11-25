@@ -191,7 +191,11 @@ agent starts before boot health runs. The first `katl-generation-activate` run
 in each boot therefore records the kernel-selected generation as both booted
 and active. Activation runs again whenever `systemd-sysext.service` restarts, so
 the first run writes `/run/katl/boot-health/current`, and later runs in the same
-boot keep the active generation, which a live promotion may have replaced. The
+boot keep the active generation, which a live promotion may have replaced.
+Because the agent also starts after a failed activation, `bootedGenerationID`
+alone can describe an earlier boot. At startup the agent resumes a live
+promotion interrupted in an earlier boot only when this boot's
+`/run/katl/boot-health/current` record names the candidate. The
 record relies on `/run` being cleared by every boot; KatlOS does not support
 systemd soft-reboot, which would keep it.
 

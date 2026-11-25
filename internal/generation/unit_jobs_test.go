@@ -130,6 +130,11 @@ func (u runtimeUnits) restartedBy(unit string) map[string]bool {
 func (u runtimeUnits) rerunByRestart(unit string) []string {
 	restarted := u.restartedBy(unit)
 	started := closure(sortedKeys(restarted), func(name string) []string {
+		// This assumes every pulled unit other than an inactive oneshot is
+		// already active. A unit left inactive by a failed boot, such as
+		// systemd-sysext.service, would be started too; the walk holds only
+		// while every restart path to such a unit passes through a unit that
+		// is inactive as well and that try-restart therefore leaves alone.
 		if !restarted[name] && !u.exitsInactive(name) {
 			return nil
 		}
@@ -206,14 +211,26 @@ func TestAgentRerunsNoUnit(t *testing.T) {
 	}
 }
 
-// The agent no longer pulls in generation activation, so the boot must still
-// order the agent after it, and still fail boot health when it fails.
+// The agent only orders itself after generation activation, so the boot must
+// pull activation in by another path, and boot health must fail when it fails.
 func TestAgentFollowsGenerationActivation(t *testing.T) {
 	const activation = "katl-generation-activate.service"
 	units := loadRuntimeUnits(t)
 
 	if !slices.Contains(units.values("katlc-agent.service", "After"), activation) {
 		t.Errorf("katlc-agent.service is not ordered after %s", activation)
+	}
+
+	// After= orders only units in the same transaction.
+	pulled := closure([]string{"multi-user.target"}, func(name string) []string {
+		var next []string
+		for _, key := range []string{"Requires", "Wants", "BindsTo"} {
+			next = append(next, units.values(name, key)...)
+		}
+		return next
+	})
+	if !pulled[activation] {
+		t.Errorf("multi-user.target does not pull in %s, so the agent's ordering after it would order nothing", activation)
 	}
 
 	required := closure([]string{"katl-boot-health.service"}, func(name string) []string {

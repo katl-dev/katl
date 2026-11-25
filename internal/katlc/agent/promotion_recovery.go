@@ -36,7 +36,9 @@ func (e *Executor) recoverLivePromotions(ctx context.Context, bootID string) err
 			continue
 		}
 		// Live health from another boot cannot establish which payload is active
-		// now. Resume across a reboot only when boot health observed this candidate.
+		// now. Resume across a reboot only when this boot's activation recorded
+		// the candidate. The agent also starts after a failed activation, so the
+		// durable booted generation can still describe an earlier boot.
 		sameBoot := len(record.Invocations) > 0 && bootID != "" && record.Invocations[len(record.Invocations)-1].BootID == bootID
 		if !sameBoot {
 			commandLine, err := readCurrentKernelCommandLine(e.Root)
@@ -49,6 +51,10 @@ func (e *Executor) recoverLivePromotions(ctx context.Context, bootID string) err
 			}
 			selection, err := generation.ReadBootSelection(e.Root)
 			if err != nil || selection.BootedGenerationID != spec.GenerationID || selection.PendingHealthValidation {
+				continue
+			}
+			activated, recorded, err := generation.CurrentBootGeneration(e.Root)
+			if err != nil || !recorded || activated != spec.GenerationID {
 				continue
 			}
 		}
