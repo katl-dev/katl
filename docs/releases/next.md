@@ -27,30 +27,30 @@ Those releases are affected, and a stuck node plans its upgrade with its install
 
    ```sh
    DISK=/dev/DISK
-   sfdisk --dump "$DISK" | awk '
-     $2 == ":" && match($0, /type=[0-9A-Fa-f-]+/) {
-       type = toupper(substr($0, RSTART + 5, RLENGTH - 5))
-       if ($0 ~ /name="katl_1"/ && (type == "64362E66-88A7-463B-B325-7AF60C81BE06" || type == "7A01D3C6-92AC-43E9-BD77-5726B602AD9D")) {
-         stuck++
-         part = $1
-       } else if (type == "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709" || type == "B921B045-1DF0-41C3-AF44-4C6F280D3FAE") {
-         roots++
-         root = type
-       }
-     }
-     END {
-       if (stuck != 1) {
-         print "found " stuck+0 " half-installed root slots, expected 1; do not change any partition type" > "/dev/stderr"
-         exit 1
-       }
-       if (roots != 1) {
-         print "found " roots+0 " other root slots, expected 1; do not change any partition type" > "/dev/stderr"
-         exit 1
-       }
-       sub(/^.*[^0-9]/, "", part)
-       print "half-installed root slot: partition " part
-       print "other root slot type: " root
-     }'
+   sfdisk --dump "$DISK" | {
+     stuck=0 roots=0
+     while read -r dev colon rest; do
+       [[ $colon == : && $rest =~ type=([0-9A-Fa-f-]+) ]] || continue
+       type=${BASH_REMATCH[1]^^}
+       if [[ $rest == *'name="katl_1"'* && ( $type == 64362E66-88A7-463B-B325-7AF60C81BE06 || $type == 7A01D3C6-92AC-43E9-BD77-5726B602AD9D ) ]]; then
+         stuck=$((stuck + 1))
+         part=${dev##*[!0-9]}
+       elif [[ $type == 4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709 || $type == B921B045-1DF0-41C3-AF44-4C6F280D3FAE ]]; then
+         roots=$((roots + 1))
+         root=$type
+       fi
+     done
+     if ((stuck != 1)); then
+       echo "found $stuck half-installed root slots, expected 1; do not change any partition type" >&2
+       exit 1
+     fi
+     if ((roots != 1)); then
+       echo "found $roots other root slots, expected 1; do not change any partition type" >&2
+       exit 1
+     fi
+     echo "half-installed root slot: partition $part"
+     echo "other root slot type: $root"
+   }
    ```
 
    If it prints both lines, continue with step 4. If it finds no half-installed slot, the node failed before the slot was retyped: skip step 4 and go to step 5. If it finds more than one half-installed slot, or anything other than one other root slot, stop and do not change any partition type.
