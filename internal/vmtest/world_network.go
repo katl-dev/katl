@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 )
 
@@ -26,17 +25,13 @@ func (scenario *WorldScenario) VMNetwork() VMNetworkConfig {
 	return VMNetworkConfig{Name: scenario.World.Network.Name}
 }
 
-var swept sync.Once
-
-// sweepOnce removes the libvirt objects of finished runs at the first
-// scenario of the process. Cleanup is best effort, so a failure is reported and
-// the scenario goes on; the next process sweeps again.
-func sweepOnce(ctx context.Context, virsh virshFunc) {
-	swept.Do(func() {
-		if err := sweep(ctx, virsh, os.Stderr); err != nil {
-			fmt.Fprintf(os.Stderr, "vmtest cleanup: remove libvirt objects left by finished runs failed: %v\n", err)
-		}
-	})
+// sweepFinishedRuns removes the libvirt objects of finished runs. Cleanup is best
+// effort, so a failure is reported and the caller goes on; the next sweep
+// retries.
+func sweepFinishedRuns(ctx context.Context, virsh virshFunc) {
+	if err := sweep(ctx, virsh, os.Stderr); err != nil {
+		fmt.Fprintf(os.Stderr, "vmtest cleanup: remove libvirt objects left by finished runs failed: %v\n", err)
+	}
 }
 
 func networkCreationLock() string {
@@ -51,7 +46,6 @@ func (scenario *WorldScenario) createNetwork(ctx context.Context) error {
 	defer cancel()
 	world := scenario.World
 	virsh := runVirsh(world.Libvirt.URI)
-	sweepOnce(ctx, virsh)
 	network, err := createNetwork(ctx, virsh, networkCreationLock(), OwnedNetwork{
 		Name:  "katl-" + world.RunID + "-" + scenario.ID,
 		Owner: vmtestMetadata,
@@ -69,7 +63,8 @@ func (scenario *WorldScenario) createNetwork(ctx context.Context) error {
 }
 
 // admit reserves host capacity for the scenario's declared nodes, waiting until
-// the host has it.
+// the host has it. Waiting ends with an error that names the holders once the
+// admission timeout passes, which stays below the go test timeout of a run.
 func (scenario *WorldScenario) admit(ctx context.Context, options ...ScenarioOption) error {
 	settings := scenarioOptions{nodes: 1}
 	for _, option := range options {
@@ -79,7 +74,21 @@ func (scenario *WorldScenario) admit(ctx context.Context, options ...ScenarioOpt
 	if err != nil {
 		return err
 	}
-	reservation, err := Admission{Dir: AdmissionDir(), Capacity: capacity, Progress: os.Stderr}.Admit(ctx, scenario.World.RunID, scenario.ID, nodesDemand(settings.nodes))
+	timeout, err := admissionTimeout()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	virsh := runVirsh(scenario.World.Libvirt.URI)
+	admission := Admission{
+		Dir:                AdmissionDir(),
+		Capacity:           capacity,
+		Progress:           os.Stderr,
+		Reap:               func(ctx context.Context) { sweepFinishedRuns(ctx, virsh) },
+		AvailableMemoryMiB: availableMemoryMiB,
+	}
+	reservation, err := admission.Admit(ctx, scenario.World.RunID, scenario.ID, nodesDemand(settings.nodes))
 	if err != nil {
 		return err
 	}

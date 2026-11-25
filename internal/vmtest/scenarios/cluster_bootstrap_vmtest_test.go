@@ -123,12 +123,14 @@ func operationBackedWorldSmokeRun(t *testing.T, scenarioName string, upgrade boo
 		failWorldFixtureSetup(t, world, scenarioName, err)
 	}
 	run, err := planOperationBackedWorldSmokeRunNamed(world, repo, kubernetesVersion, kvm, scenarioName)
+	if run.WorldScenario != nil {
+		t.Cleanup(run.WorldScenario.Release)
+	}
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
 	missing := twoNodeHostToolPrereqs(exec.LookPath)
 	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node operation-backed bootstrap smoke prerequisites missing", missing)
-	t.Cleanup(run.WorldScenario.Release)
 	return run, true
 }
 
@@ -1495,12 +1497,14 @@ func twoNodeWorldSmokeRun(t *testing.T) (twoNodeSmokeRun, bool) {
 		failWorldFixtureSetup(t, world, "installed-runtime-two-node-kubeadm-join", err)
 	}
 	run, err := planTwoNodeWorldSmokeRun(world, repo, firstString(os.Getenv("KATL_KUBERNETES_VERSION"), "v1.36.1"), kvm)
+	if run.WorldScenario != nil {
+		t.Cleanup(run.WorldScenario.Release)
+	}
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
 	missing := twoNodeHostToolPrereqs(exec.LookPath)
 	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node kubeadm join smoke prerequisites missing", missing)
-	t.Cleanup(run.WorldScenario.Release)
 	return run, true
 }
 

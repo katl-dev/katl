@@ -29,10 +29,12 @@ func firstInstallWorldRunForMode(t *testing.T, name string, spec NodeSpec, useIn
 	}
 	world := RequireWorld(t)
 	run, err := planFirstInstallWorldRun(world, name, repoRoot(t), spec, DefaultFirstInstallWorldInputFromEnv(mode, useInstalledESP), DefaultOptions().KVM)
+	if run.Scenario != nil {
+		t.Cleanup(run.Scenario.Release)
+	}
 	if err != nil {
 		failWorldSetup(t, run.Scenario, err)
 	}
-	t.Cleanup(run.Scenario.Release)
 	return run, true
 }
 

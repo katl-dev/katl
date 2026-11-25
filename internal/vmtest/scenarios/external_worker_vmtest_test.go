@@ -51,7 +51,7 @@ func TestExternalWorkerJoin(t *testing.T) {
 
 func installExternalWorkerFixture(world vmtest.World, repo, cpAddress, version string, kvm vmtest.KVMPolicy) error {
 	input := vmtest.DefaultFirstInstallWorldInputFromEnv(vmtest.FirstInstallWorldPreseed, katlctlEnvBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP"))
-	_, key, err := ensureWorldSSHKey(world)
+	_, key, err := vmtest.EnsureWorldSSHKey(world)
 	if err != nil {
 		return err
 	}

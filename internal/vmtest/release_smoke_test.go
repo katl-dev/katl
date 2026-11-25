@@ -94,10 +94,12 @@ func runReleaseLifecycle(t *testing.T, source, candidate string, upgrade bool) {
 		Mode:      FirstInstallWorldPreseed, SSHAuthorizedKey: strings.TrimSpace(string(public)), UseInstalledESP: true, TargetDiskSize: "32G",
 		DataVolumeDiskID: "/dev/disk/by-id/virtio-katl-data",
 	}, KVMOn)
+	if run.Scenario != nil {
+		t.Cleanup(run.Scenario.Release)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(run.Scenario.Release)
 	ctx, cancel := context.WithTimeout(context.Background(), 35*time.Minute)
 	defer cancel()
 	vm := VMConfig{KVM: KVMOn, RAMMiB: 2048, CPUs: 2, Timeout: 35 * time.Minute, SerialIdleTimeout: -1, PreserveNVRAM: true, Expect: runtimeKernelBootSignal}

@@ -27,10 +27,12 @@ func directRuntimeWorldRunFor(t *testing.T, name string) (directRuntimeWorldRun,
 	}
 	world := RequireWorld(t)
 	run, err := planDirectRuntimeWorldRun(world, name, repoRoot(t), DefaultOptions().KVM)
+	if run.Scenario != nil {
+		t.Cleanup(run.Scenario.Release)
+	}
 	if err != nil {
 		failWorldSetup(t, run.Scenario, err)
 	}
-	t.Cleanup(run.Scenario.Release)
 	return run, true
 }
 

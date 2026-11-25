@@ -179,6 +179,7 @@ func mkdirForFile(t *testing.T, path string) {
 func ownedScenarioWorld(t *testing.T) (World, fakeLibvirt) {
 	t.Helper()
 	t.Setenv(admissionDirEnv, t.TempDir())
+	useHostMemory(t, 64<<10, 48<<10)
 	fake := newFakeLibvirt(t)
 	world := testWorld(t)
 	world.Lease = filepath.Join(t.TempDir(), "lease")
@@ -264,7 +265,9 @@ func TestScenarioReleaseKeepsNetworkOfPreservedDomain(t *testing.T) {
 func TestScenarioNetworkRejectsForeignOwner(t *testing.T) {
 	world, fake := ownedScenarioWorld(t)
 	name := "katl-" + world.RunID + "-foreign"
-	fake.addNetwork(t, OwnedNetwork{Name: name, Owner: vmtestMetadata, Lease: filepath.Join(t.TempDir(), "other"), CIDR: "10.200.9.0/24", Gateway: "10.200.9.1"})
+	foreignLease := filepath.Join(t.TempDir(), "other")
+	startLeaseHolder(t, foreignLease)
+	fake.addNetwork(t, OwnedNetwork{Name: name, Owner: vmtestMetadata, Lease: foreignLease, CIDR: "10.200.9.0/24", Gateway: "10.200.9.1"})
 
 	before := fake.reservations(t, name)
 

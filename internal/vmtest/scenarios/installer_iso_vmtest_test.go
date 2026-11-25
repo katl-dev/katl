@@ -92,7 +92,7 @@ func TestInstallerPXEBootSmoke(t *testing.T) {
 	options.Keep = vmtest.KeepFailed
 	repo := katlRepoRoot(t)
 	katlctl := buildKatlctlCommand(t, context.Background(), repo, filepath.Join(worldScenario.Dir, "katlctl.yaml"))
-	privateKey, publicKey, err := ensureWorldSSHKey(world)
+	privateKey, publicKey, err := vmtest.EnsureWorldSSHKey(world)
 	if err != nil {
 		t.Fatal(err)
 	}

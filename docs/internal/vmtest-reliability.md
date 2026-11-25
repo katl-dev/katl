@@ -59,6 +59,10 @@ Product journeys keep exercising IPv4 DHCP, the common home-lab path, so a gate 
 
 Admission replaces the host lock. A scenario reserves its declared nodes' total vCPU and memory at once against the host's CPUs and memory, minus a reserve. Each reservation is a file held under a lock, so a killed process frees its reservation and the ledger is derived from the files that remain. A demand the host can never meet ends immediately as inconclusive rather than waiting.
 
+Admission also caps a scenario by the memory the host reports as available, minus the same reserve, so VMs that no admission accounts for, such as persistent `katldev` worlds, are not oversubscribed. Each attempt first sweeps the libvirt objects of finished runs, so capacity freed by a killed run is reused only after its domains are gone. A scenario that cannot be admitted within `KATL_VMTEST_ADMISSION_TIMEOUT` (45 minutes by default, below the `go test` timeout) fails with the list of holders. Package parallelism (`-p` above 1) is refused for leased runs, because admission treats scenarios of one run as nested rather than concurrent.
+
+Libvirt objects created before leases existed carry no lease metadata, and no sweep reaps them. Remove them once by hand: list them with `virsh -c qemu:///system list --all`, `net-list --all` and `vol-list` for the vmtest pool, then `destroy` and `undefine --nvram` each stale `katl-` domain and `net-destroy`/`net-undefine` each stale network. Tracked in [#683](https://github.com/katl-dev/katl/issues/683).
+
 ## Progress and timeouts
 
 Each phase waits on one event it is owed, with a deadline:

@@ -138,12 +138,14 @@ func threeControlPlaneWorldSmokeRun(t *testing.T, scenarioName string, workloadP
 		failWorldFixtureSetup(t, world, scenarioName, err)
 	}
 	run, err := planThreeControlPlaneWorldSmokeRun(world, repo, scenarioName, kubernetesVersion, kvm, workloadProof)
+	if run.WorldScenario != nil {
+		t.Cleanup(run.WorldScenario.Release)
+	}
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
 	missing := twoNodeHostToolPrereqs(exec.LookPath)
 	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "three-control-plane stacked-etcd smoke prerequisites missing", missing)
-	t.Cleanup(run.WorldScenario.Release)
 	run.KubernetesUpgrade = upgrade
 	return run, true
 }
@@ -162,7 +164,7 @@ func planThreeControlPlaneWorldSmokeRun(world vmtest.World, repo, scenarioName, 
 		return threeControlPlaneSmokeRun{}, err
 	}
 	run := threeControlPlaneSmokeRun{WorldScenario: scenario}
-	sshPrivateKey, sshAuthorizedKey, err := ensureWorldSSHKey(world)
+	sshPrivateKey, sshAuthorizedKey, err := vmtest.EnsureWorldSSHKey(world)
 	if err != nil {
 		_ = scenario.WriteSetupFailure(err)
 		return run, err

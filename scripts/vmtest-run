@@ -288,6 +288,32 @@ has_go_test_package_parallelism() {
 	return 1
 }
 
+# Admission treats a scenario that starts while another of its run is live as
+# nested in it, which holds only when the run's packages execute one after another.
+reject_package_parallelism() {
+	local arg value
+	while (($# > 0)); do
+		arg="$1"
+		value=""
+		case "$arg" in
+			-args)
+				return 0
+				;;
+			-p | --p)
+				value="${2:-}"
+				;;
+			-p=* | --p=*)
+				value="${arg#*=}"
+				;;
+		esac
+		if [[ -n "$value" ]] && { ! [[ "$value" =~ ^[0-9]+$ ]] || ((value > 1)); }; then
+			printf 'vmtest-run: -p %s is not supported: a run executes its packages one at a time so that admission can tell nested scenarios from concurrent ones; drop -p, or start separate vmtest-run invocations to run packages concurrently\n' "$value" >&2
+			exit 2
+		fi
+		shift
+	done
+}
+
 parse_runner_args() {
     local arg value
     while (($# > 0)); do
@@ -1363,6 +1389,7 @@ if [[ "$help_requested" == 1 ]]; then
     exit 0
 fi
 set -- "${go_test_input_args[@]}"
+reject_package_parallelism "$@"
 
 need jq
 need realpath

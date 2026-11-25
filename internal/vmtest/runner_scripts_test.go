@@ -194,7 +194,7 @@ func TestVMTestRunHonorsPackageParallelismOverride(t *testing.T) {
 	runDir := filepath.Join(tmp, "run")
 	goArgsPath := filepath.Join(tmp, "go-args.txt")
 
-	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestWorldScenario$", "-p=3")
+	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest", "-run", "^TestWorldScenario$", "-p=1")
 	cmd.Dir = repo
 	cmd.Env = appendHostEnv(
 		os.Environ(), host,
@@ -217,7 +217,7 @@ func TestVMTestRunHonorsPackageParallelismOverride(t *testing.T) {
 		if arg == "-p" || strings.HasPrefix(arg, "-p=") {
 			parallelismArgs++
 		}
-		if arg == "-p=3" {
+		if arg == "-p=1" {
 			foundOverride = true
 		}
 	}

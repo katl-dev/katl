@@ -42,7 +42,7 @@ func TestInstallerReinstallBesideOldKatlDisk(t *testing.T) {
 	defer cancel()
 	repo := katlRepoRoot(t)
 	katlctl := buildKatlctlCommand(t, ctx, repo, filepath.Join(worldScenario.Dir, "katlctl.yaml"))
-	privateKey, _, err := ensureWorldSSHKey(world)
+	privateKey, _, err := vmtest.EnsureWorldSSHKey(world)
 	if err != nil {
 		fail(err)
 	}

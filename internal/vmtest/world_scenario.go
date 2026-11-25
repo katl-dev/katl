@@ -660,3 +660,17 @@ func (scenario *WorldScenario) PlanNodeVM(node Node, disks []DiskFixture, kvm KV
 		Disks:        plans,
 	}, nil
 }
+
+// RecordSetupFailure records err as the failure of the named scenario's setup.
+// It is for a failure that precedes the scenario's VMs, so the scenario waits
+// for no host capacity and creates no network.
+func (world World) RecordSetupFailure(name string, err error) (*WorldScenario, error) {
+	scenario, planErr := world.planScenario(name)
+	if planErr != nil {
+		return nil, planErr
+	}
+	if writeErr := scenario.WriteSetupFailure(err); writeErr != nil {
+		return scenario, writeErr
+	}
+	return scenario, nil
+}

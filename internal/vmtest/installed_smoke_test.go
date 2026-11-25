@@ -115,10 +115,12 @@ func firstInstallFixtureContractRunForWorld(t *testing.T, world World, repo stri
 		UseInstalledESP: envBool("KATL_FIRST_INSTALL_USE_INSTALLED_ESP"),
 		TargetDiskSize:  first(os.Getenv("KATL_FIRST_INSTALL_TARGET_DISK_SIZE"), "32G"),
 	}, DefaultOptions().KVM)
+	if worldRun.Scenario != nil {
+		t.Cleanup(worldRun.Scenario.Release)
+	}
 	if err != nil {
 		failWorldSetup(t, worldRun.Scenario, err)
 	}
-	t.Cleanup(worldRun.Scenario.Release)
 	return firstInstallFixtureContractRun{
 		Runner:          worldRun.Runner,
 		WorldScenario:   worldRun.Scenario,

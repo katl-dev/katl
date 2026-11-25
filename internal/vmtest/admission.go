@@ -26,11 +26,13 @@ const (
 )
 
 const (
-	admissionDirEnv       = "KATL_VMTEST_ADMISSION_DIR"
-	admissionVCPUsEnv     = "KATL_VMTEST_ADMISSION_VCPUS"
-	admissionMemoryEnv    = "KATL_VMTEST_ADMISSION_MEMORY_MIB"
-	admissionPollInterval = time.Second
-	admissionProgressEach = 30 * time.Second
+	admissionDirEnv         = "KATL_VMTEST_ADMISSION_DIR"
+	admissionVCPUsEnv       = "KATL_VMTEST_ADMISSION_VCPUS"
+	admissionMemoryEnv      = "KATL_VMTEST_ADMISSION_MEMORY_MIB"
+	admissionTimeoutEnv     = "KATL_VMTEST_ADMISSION_TIMEOUT"
+	defaultAdmissionTimeout = 45 * time.Minute
+	admissionPollInterval   = time.Second
+	admissionProgressEach   = 30 * time.Second
 )
 
 // ErrDemandExceedsHost reports a demand that the host's capacity can never
@@ -61,11 +63,11 @@ func (d Demand) fitsIn(capacity Demand) bool {
 // override each figure.
 func HostCapacity() (Demand, error) {
 	capacity := Demand{VCPUs: runtime.NumCPU()}
-	memory, err := hostMemoryMiB()
+	memory, err := readHostMemory(hostMeminfoPath)
 	if err != nil {
 		return Demand{}, err
 	}
-	capacity.MemoryMiB = memory - max(2048, memory/8)
+	capacity.MemoryMiB = memory.totalMiB - memory.reserveMiB()
 	for name, field := range map[string]*int{admissionVCPUsEnv: &capacity.VCPUs, admissionMemoryEnv: &capacity.MemoryMiB} {
 		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
 			n, err := strconv.Atoi(value)
@@ -78,24 +80,57 @@ func HostCapacity() (Demand, error) {
 	return capacity, nil
 }
 
-func hostMemoryMiB() (int, error) {
-	file, err := os.Open("/proc/meminfo")
+// hostMeminfoPath is where the host's memory figures come from.
+var hostMeminfoPath = "/proc/meminfo"
+
+type hostMemory struct{ totalMiB, availableMiB int }
+
+// reserveMiB is what VMs leave to the host itself and to whatever else runs
+// on it: the larger of 2 GiB and an eighth of memory.
+func (m hostMemory) reserveMiB() int { return max(2048, m.totalMiB/8) }
+
+func readHostMemory(path string) (hostMemory, error) {
+	file, err := os.Open(path)
 	if err != nil {
-		return 0, err
+		return hostMemory{}, err
 	}
 	defer file.Close()
+	var memory hostMemory
+	var haveTotal, haveAvailable bool
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		fields := strings.Fields(scanner.Text())
-		if len(fields) >= 2 && fields[0] == "MemTotal:" {
-			kib, err := strconv.Atoi(fields[1])
-			if err != nil {
-				return 0, fmt.Errorf("parse MemTotal: %w", err)
-			}
-			return kib / 1024, nil
+		if len(fields) < 2 {
+			continue
 		}
+		target := map[string]*int{"MemTotal:": &memory.totalMiB, "MemAvailable:": &memory.availableMiB}[fields[0]]
+		if target == nil {
+			continue
+		}
+		kib, err := strconv.Atoi(fields[1])
+		if err != nil {
+			return hostMemory{}, fmt.Errorf("parse %s: %w", strings.TrimSuffix(fields[0], ":"), err)
+		}
+		*target = kib / 1024
+		haveTotal = haveTotal || fields[0] == "MemTotal:"
+		haveAvailable = haveAvailable || fields[0] == "MemAvailable:"
 	}
-	return 0, errors.New("MemTotal missing from /proc/meminfo")
+	if !haveTotal || !haveAvailable {
+		return hostMemory{}, fmt.Errorf("MemTotal or MemAvailable missing from %s", path)
+	}
+	return memory, nil
+}
+
+// availableMemoryMiB is the memory that VMs may still claim right now: what
+// the host reports as available, minus the host's reserve. Memory used by VMs
+// that no admission accounts for, such as persistent katldev worlds, is
+// already absent from it.
+func availableMemoryMiB() (int, error) {
+	memory, err := readHostMemory(hostMeminfoPath)
+	if err != nil {
+		return 0, err
+	}
+	return memory.availableMiB - memory.reserveMiB(), nil
 }
 
 // AdmissionDir returns the host's ledger of reservations. Every run of the
@@ -131,6 +166,13 @@ type Admission struct {
 	Capacity Demand
 	Poll     time.Duration
 	Progress io.Writer
+	// Reap, when set, runs before every attempt to admit, so capacity freed by
+	// a finished run is reused only after that run's leftovers are gone.
+	Reap func(context.Context)
+	// AvailableMemoryMiB, when set, reports the memory that VMs may still
+	// claim right now. A scenario is admitted only if its demand fits both
+	// this and the capacity that the ledger leaves.
+	AvailableMemoryMiB func() (int, error)
 }
 
 // Admit reserves demand for the scenario, waiting until the ledger has room.
@@ -155,11 +197,16 @@ func (a Admission) Admit(ctx context.Context, run, scenario string, demand Deman
 		progress = io.Discard
 	}
 
-	var announced string
+	var announced, holders string
 	var announcedAt time.Time
 	waitStart := time.Now()
 	for {
-		reservation, holders, err := a.tryAdmit(run, scenario, demand)
+		if a.Reap != nil {
+			a.Reap(ctx)
+		}
+		var reservation *Reservation
+		var err error
+		reservation, holders, err = a.tryAdmit(run, scenario, demand)
 		if err != nil {
 			return nil, err
 		}
@@ -177,7 +224,7 @@ func (a Admission) Admit(ctx context.Context, run, scenario string, demand Deman
 		}
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf("vmtest admission for scenario %s: %w", scenario, ctx.Err())
+			return nil, fmt.Errorf("vmtest admission for scenario %s gave up waiting for %s; held by %s: %w", scenario, demand, holders, ctx.Err())
 		case <-time.After(poll):
 		}
 	}
@@ -212,15 +259,33 @@ func (a Admission) tryAdmit(run, scenario string, demand Demand) (*Reservation, 
 	if !(Demand{VCPUs: own.VCPUs + demand.VCPUs, MemoryMiB: own.MemoryMiB + demand.MemoryMiB}).fitsIn(a.Capacity) {
 		return nil, "", fmt.Errorf("%w: scenario %s needs %s while its own run holds %s of the host's %s", ErrDemandExceedsHost, scenario, demand, own, a.Capacity)
 	}
-	if (Demand{VCPUs: used.VCPUs + demand.VCPUs, MemoryMiB: used.MemoryMiB + demand.MemoryMiB}).fitsIn(a.Capacity) {
+	// The ledger knows only admitted scenarios; the host's available memory also
+	// reflects VMs that nobody admitted.
+	memoryShort := ""
+	if a.AvailableMemoryMiB != nil {
+		available, err := a.AvailableMemoryMiB()
+		if err != nil {
+			return nil, "", err
+		}
+		if demand.MemoryMiB > available {
+			memoryShort = fmt.Sprintf("the host's available memory (%d MiB beyond its reserve)", available)
+		}
+	}
+	if memoryShort == "" && (Demand{VCPUs: used.VCPUs + demand.VCPUs, MemoryMiB: used.MemoryMiB + demand.MemoryMiB}).fitsIn(a.Capacity) {
 		reservation, err := a.reserve(run, scenario, demand)
 		return reservation, "", err
 	}
-	holders := make([]string, 0, len(live))
+	holders := make([]string, 0, len(live)+1)
 	for _, held := range live {
 		holders = append(holders, fmt.Sprintf("run %s (%s, %s)", held.Run, held.Scenario, held.Demand))
 	}
 	sort.Strings(holders)
+	if memoryShort != "" {
+		holders = append(holders, memoryShort)
+	}
+	if len(holders) == 0 {
+		holders = append(holders, "nothing")
+	}
 	return nil, strings.Join(holders, ", "), nil
 }
 
@@ -294,4 +359,19 @@ func (r *Reservation) Release() {
 	_ = os.Remove(r.path)
 	_ = r.file.Close()
 	r.file = nil
+}
+
+// admissionTimeout bounds how long a scenario waits for capacity. It must stay
+// below the go test timeout of scripts/vmtest-run, whose panic would otherwise
+// replace the holder list with a stack dump.
+func admissionTimeout() (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(admissionTimeoutEnv))
+	if value == "" {
+		return defaultAdmissionTimeout, nil
+	}
+	timeout, err := time.ParseDuration(value)
+	if err != nil || timeout <= 0 {
+		return 0, fmt.Errorf("%s must be a positive duration, got %q", admissionTimeoutEnv, value)
+	}
+	return timeout, nil
 }

@@ -55,19 +55,32 @@ func installedRuntimeWorldRunsFor(t *testing.T, name string, specs []NodeSpec, s
 		}
 		digests[i] = inputDigest
 	}
-	scenario, err := world.PlanScenario(name)
-	if err != nil {
-		t.Fatalf("plan VM test scenario: %v", err)
+	scenario, runs, err := planInstalledRuntimeWorldRuns(world, name, specs, options.KVM, digests)
+	if scenario != nil {
+		t.Cleanup(scenario.Release)
 	}
-	t.Cleanup(scenario.Release)
-	runs := make([]installedRuntimeWorldRun, len(specs))
-	for i, spec := range specs {
-		runs[i], err = addInstalledRuntimeWorldRun(scenario, spec, options.KVM, digests[i])
-		if err != nil {
-			failWorldSetup(t, scenario, err)
-		}
+	if err != nil {
+		failWorldSetup(t, scenario, err)
 	}
 	return runs, true
+}
+
+// planInstalledRuntimeWorldRuns plans one scenario that declares a node per
+// spec. The scenario is returned with any error that follows its planning, so
+// the caller can release it.
+func planInstalledRuntimeWorldRuns(world World, name string, specs []NodeSpec, kvm KVMPolicy, digests []string) (*WorldScenario, []installedRuntimeWorldRun, error) {
+	scenario, err := world.PlanScenario(name, Nodes(len(specs)))
+	if err != nil {
+		return nil, nil, fmt.Errorf("plan VM test scenario: %w", err)
+	}
+	runs := make([]installedRuntimeWorldRun, len(specs))
+	for i, spec := range specs {
+		runs[i], err = addInstalledRuntimeWorldRun(scenario, spec, kvm, digests[i])
+		if err != nil {
+			return scenario, nil, err
+		}
+	}
+	return scenario, runs, nil
 }
 
 func TestInstalledRuntimeArtifactSetRejectsRuntimeOnly(t *testing.T) {
@@ -90,14 +103,7 @@ func failInstalledRuntimeWorldFixtureSetup(t *testing.T, world World, name strin
 }
 
 func writeInstalledRuntimeWorldFixtureSetupFailure(world World, name string, err error) (*WorldScenario, error) {
-	scenario, scenarioErr := world.planScenario(name)
-	if scenarioErr != nil {
-		return nil, scenarioErr
-	}
-	if writeErr := scenario.WriteSetupFailure(fmt.Errorf("prepare installed runtime world fixture: %w", err)); writeErr != nil {
-		return scenario, writeErr
-	}
-	return scenario, nil
+	return world.RecordSetupFailure(name, fmt.Errorf("prepare installed runtime world fixture: %w", err))
 }
 
 func ensureInstalledRuntimeWorldFixture(world World, spec NodeSpec, produce func() error) error {

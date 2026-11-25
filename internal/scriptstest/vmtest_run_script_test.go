@@ -316,3 +316,53 @@ printf '%s\n' "${1#"$KATL_REPO_ROOT/"}" >> "$KATL_SCRIPTTEST_CHECKED"
 		})
 	}
 }
+
+func TestVMTestRunRefusesPackageParallelism(t *testing.T) {
+	repo := repoRoot(t)
+	for _, tc := range []struct {
+		name     string
+		args     []string
+		rejected bool
+	}{
+		{name: "separate value", args: []string{"-p", "2"}, rejected: true},
+		{name: "equals value", args: []string{"-p=4"}, rejected: true},
+		{name: "double dash", args: []string{"--p", "3"}, rejected: true},
+		{name: "one", args: []string{"-p", "1"}},
+		{name: "after args", args: []string{"-args", "-p", "8"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			logPath := filepath.Join(tmp, "commands.log")
+			if err := os.WriteFile(logPath, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			fakeGo := filepath.Join(tmp, "fake-go")
+			writeExecutable(t, fakeGo, "#!/usr/bin/env bash\nprintf 'go %s\\n' \"$*\" >>\"$KATL_SCRIPTTEST_LOG\"\nexit 0\n")
+			args := append([]string{"--artifact-set=none", "./internal/vmtest", "-run", "^TestDoesNotMatter$", "-count=1"}, tc.args...)
+			cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), args...)
+			cmd.Dir = repo
+			cmd.Env = append(os.Environ(),
+				"KATL_SCRIPTTEST_LOG="+logPath,
+				"KATL_VMTEST_GO="+fakeGo,
+				"KATL_VMTEST_RUN_ID=scripttest-p",
+				"KATL_VMTEST_RUN_DIR="+filepath.Join(tmp, "run"),
+				"KATL_VMTEST_CACHE_DIR="+filepath.Join(tmp, "cache"),
+				"KATL_VMTEST_REQUIRE_SCENARIO_RESULT=0",
+			)
+
+			output, err := cmd.CombinedOutput()
+
+			logData, _ := os.ReadFile(logPath)
+			ran := strings.Contains(string(logData), "go test")
+			if tc.rejected {
+				if err == nil || ran || !strings.Contains(string(output), "-p") || !strings.Contains(string(output), "one at a time") {
+					t.Fatalf("vmtest-run %v: err = %v, go ran = %v, want a refusal that explains sequential packages\n%s", tc.args, err, ran, output)
+				}
+				return
+			}
+			if strings.Contains(string(output), "one at a time") {
+				t.Fatalf("vmtest-run %v was refused:\n%s", tc.args, output)
+			}
+		})
+	}
+}
