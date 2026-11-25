@@ -349,7 +349,10 @@ selected generation spec or status is missing or invalid, artifact digest
 validation fails, `/run` activation links cannot be created, `systemd-sysext` or
 `systemd-confext` fails, boot-time operation reconciliation fails, or
 `/etc/kubernetes` cannot be projected for a kubeadm-ready generation, the
-generation must not become `good` or `healthy`.
+generation must not become `good` or `healthy`. katlc-agent is ordered after
+activation without requiring it, so it still starts after a failed activation
+and reports the failed boot health; its mutation hold ends when boot health
+settles, as for any other failed boot.
 
 ## Out Of Scope
 

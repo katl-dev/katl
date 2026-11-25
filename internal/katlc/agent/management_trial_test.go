@@ -494,32 +494,6 @@ func TestBeginManagementTransitionServesTrialInProcess(t *testing.T) {
 	}
 }
 
-// A revert made outside the agent, by the systemd timer or the console, takes
-// effect when systemd reloads the agent.
-func TestReloadServesRevertedTrial(t *testing.T) {
-	node := newManagementTrialNode(t)
-	node.server.managementTrialPoll = time.Hour
-	begun, err := node.server.BeginManagementTransition(t.Context(), node.beginRequest())
-	if err != nil {
-		t.Fatal(err)
-	}
-	address := node.serve(t)
-	trialClient, plaintext := node.trialClient(t, address), plaintextClient(t, address)
-	if !node.answers(t, trialClient) {
-		t.Fatal("the agent does not serve the trial")
-	}
-
-	if _, reverted, err := nodeidentity.RevertManagementTrial(node.root, begun.TrialId, "reverted from the console", node.clock); err != nil || !reverted {
-		t.Fatalf("revert = %v, %v", reverted, err)
-	}
-	// What the agent does on SIGHUP.
-	node.server.management.reselect()
-	eventually(t, "installed clients reach the agent", func() bool { return node.answers(t, plaintext) })
-	if node.answers(t, trialClient) {
-		t.Fatal("the agent still serves the reverted trial")
-	}
-}
-
 // Operations started during a trial would race its commit or revert.
 func TestManagementTrialRefusesMutations(t *testing.T) {
 	node := newManagementTrialNode(t)

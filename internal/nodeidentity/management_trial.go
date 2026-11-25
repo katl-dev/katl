@@ -293,10 +293,11 @@ func ConfirmManagementTrial(root, authority string, clock TrialClock) (Managemen
 
 // RevertManagementTrial is the single owner of reverting a live trial. It
 // reports whether it reverted, so a caller knows katlc-agent must re-serve the
-// installed mode. A non-empty id limits it to that trial, so a revert scheduled
-// for an earlier trial cannot cut a later one short.
+// installed mode. A non-empty id limits a readable record to that trial, so a
+// revert scheduled for an earlier trial cannot cut a later one short.
 //
-// An unreadable record is moved aside instead, whatever id names: the mode
+// An unreadable record is moved aside instead, whatever id names, so any
+// revert ends a later trial whose record cannot be read: the mode
 // file and active link alone decide the installed mode, and katlc-agent already
 // serves that mode while the record cannot be read.
 func RevertManagementTrial(root, id, reason string, clock TrialClock) (ManagementTrial, bool, error) {

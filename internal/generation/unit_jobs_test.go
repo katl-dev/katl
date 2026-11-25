@@ -105,13 +105,10 @@ func closure(start []string, next func(string) []string) map[string]bool {
 	return reached
 }
 
-// rerunByRestart returns the oneshot services `systemctl restart unit` runs
-// again. The restart try-restarts every active unit that Requires=, BindsTo=
-// or is PartOf= a restarted unit, and the start half of each restart queues a
-// start job for everything the restarted units pull in, transitively, which
-// runs a oneshot that exited inactive.
-func (u runtimeUnits) rerunByRestart(unit string) []string {
-	restarted := closure([]string{unit}, func(name string) []string {
+// restartedBy returns the units `systemctl restart unit` restarts: unit, and
+// every active unit that Requires=, BindsTo= or is PartOf= a restarted unit.
+func (u runtimeUnits) restartedBy(unit string) map[string]bool {
+	return closure([]string{unit}, func(name string) []string {
 		var active []string
 		for _, dependent := range u.dependents(name, "Requires", "BindsTo", "PartOf") {
 			// try-restart leaves an inactive unit alone.
@@ -121,7 +118,21 @@ func (u runtimeUnits) rerunByRestart(unit string) []string {
 		}
 		return active
 	})
+}
+
+// rerunByRestart returns the oneshot services `systemctl restart unit` runs
+// again. The start half of each restart queues start jobs for what the
+// restarted units pull in. A start job for an active unit is dropped as
+// redundant, together with the jobs only it pulled in, so the walk continues
+// only through units that are actually started: the restarted units and
+// oneshots that exited inactive, which run again. A crash under Restart= and
+// reload-or-restart of a stopped unit queue the same start jobs.
+func (u runtimeUnits) rerunByRestart(unit string) []string {
+	restarted := u.restartedBy(unit)
 	started := closure(sortedKeys(restarted), func(name string) []string {
+		if !restarted[name] && !u.exitsInactive(name) {
+			return nil
+		}
 		var pulled []string
 		for _, key := range []string{"Requires", "Wants", "BindsTo", "Requisite"} {
 			pulled = append(pulled, u.values(name, key)...)
@@ -155,24 +166,60 @@ func sortedKeys(set map[string]bool) []string {
 	return keys
 }
 
-// Management changes made on the node, credential rotation and a trial revert,
-// reload katlc-agent with systemctl reload-or-restart instead of restarting
-// it. A restart reruns the generation activation the agent requires, and a
-// failed rerun would keep the agent from starting again.
-func TestAgentReloadRerunsNoUnit(t *testing.T) {
+// Generation activation runs when systemd-sysext.service or
+// systemd-confext.service starts, and at no other time. Restarting
+// katlc-agent, which systemd also does when the agent crashes and on
+// reload-or-restart of a stopped agent, must not rerun it: a failed rerun
+// would keep the agent down and leave the node unreachable.
+func TestAgentRerunsNoUnit(t *testing.T) {
+	const agent, activation = "katlc-agent.service", "katl-generation-activate.service"
 	units := loadRuntimeUnits(t)
 
-	// The walk must see why a restart is unsafe, or its clean reload result
-	// would prove nothing.
-	if rerun := units.rerunByRestart("katlc-agent.service"); !slices.Contains(rerun, "katl-generation-activate.service") {
-		t.Fatalf("restarting katlc-agent reruns %q; the walk no longer sees the generation activation it requires", rerun)
+	// The walk must see the rerun it guards against, or its clean result for
+	// the agent would prove nothing.
+	for _, extensions := range []string{"systemd-sysext.service", "systemd-confext.service"} {
+		if rerun := units.rerunByRestart(extensions); !slices.Contains(rerun, activation) {
+			t.Errorf("restarting %s reruns %q, not %s", extensions, rerun, activation)
+		}
+		if units.restartedBy(extensions)[agent] {
+			t.Errorf("restarting %s restarts %s; the agent restarts the extensions during bootstrap", extensions, agent)
+		}
+	}
+
+	// katl-kubeadm-ready.target requires the agent, so restarting the agent
+	// restarts the target, which reruns this check. It only prints a marker
+	// once the mounts it requires are up, so it cannot fail where its first
+	// run passed.
+	harmless := []string{"katl-state-projection-check.service"}
+	for _, rerun := range units.rerunByRestart(agent) {
+		if !slices.Contains(harmless, rerun) {
+			t.Errorf("restarting %s reruns %s", agent, rerun)
+		}
 	}
 
 	// reload-or-restart restarts a unit that cannot reload.
-	if !slices.Contains(units.values("katlc-agent.service", "Type"), "notify-reload") && len(units.values("katlc-agent.service", "ExecReload")) == 0 {
-		t.Fatal("katlc-agent.service cannot reload, so reload-or-restart would restart it")
+	if !slices.Contains(units.values(agent, "Type"), "notify-reload") && len(units.values(agent, "ExecReload")) == 0 {
+		t.Errorf("%s cannot reload, so reload-or-restart would restart it", agent)
 	}
-	if reloaded := units.reloaded("katlc-agent.service"); !slices.Equal(reloaded, []string{"katlc-agent.service"}) {
-		t.Fatalf("reloading katlc-agent reloads %q; want only the agent", reloaded)
+	if reloaded := units.reloaded(agent); !slices.Equal(reloaded, []string{agent}) {
+		t.Errorf("reloading %s reloads %q; want only the agent", agent, reloaded)
+	}
+}
+
+// The agent no longer pulls in generation activation, so the boot must still
+// order the agent after it, and still fail boot health when it fails.
+func TestAgentFollowsGenerationActivation(t *testing.T) {
+	const activation = "katl-generation-activate.service"
+	units := loadRuntimeUnits(t)
+
+	if !slices.Contains(units.values("katlc-agent.service", "After"), activation) {
+		t.Errorf("katlc-agent.service is not ordered after %s", activation)
+	}
+
+	required := closure([]string{"katl-boot-health.service"}, func(name string) []string {
+		return append(slices.Clone(units.values(name, "Requires")), units.values(name, "BindsTo")...)
+	})
+	if !required[activation] {
+		t.Errorf("katl-boot-health.service does not require %s, so a failed activation would not fail boot health", activation)
 	}
 }

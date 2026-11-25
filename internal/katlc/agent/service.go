@@ -74,36 +74,49 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	maintenanceDone := make(chan struct{})
 	defer func() { stopMaintenance(); <-maintenanceDone }()
 	go func() { defer close(maintenanceDone); agentServer.maintainGenerations(maintenanceCtx, 5*time.Second) }()
-	// katlc-agent.service is Type=notify-reload: systemd sends SIGHUP when an
-	// on-node command changed management state. Registered before READY=1 so
-	// a reload never meets the default action, which ends the process.
+	err = agentServer.serveReloadable(ctx, network, address, notifyReady)
+	return errors.Join(err, shutdownDispatcher(dispatcher))
+}
+
+// serveReloadable serves management and re-serves it on SIGHUP.
+// katlc-agent.service is Type=notify-reload: systemd sends SIGHUP when an
+// on-node command changed management state. The handler is registered before
+// READY=1 so a reload never meets the default action, which ends the process.
+func (s *Server) serveReloadable(ctx context.Context, network, address string, ready func() error) error {
 	hangups := make(chan os.Signal, 1)
 	signal.Notify(hangups, syscall.SIGHUP)
 	defer signal.Stop(hangups)
+	serveCtx, stop := context.WithCancel(ctx)
+	defer stop()
 	go func() {
 		for {
 			select {
-			case <-ctx.Done():
+			case <-serveCtx.Done():
 				return
 			case <-hangups:
-				agentServer.management.reselect()
+				s.management.reselect()
 			}
 		}
 	}()
-	err = agentServer.serveManagement(ctx, network, address, notifyReady)
-	return errors.Join(err, shutdownDispatcher(dispatcher))
+	return s.serveManagement(serveCtx, network, address, ready)
 }
 
 // serveManagement serves the agent API with the credentials the node's
 // management state selects. It is the only owner of switching them: when a
 // trial begins, is reverted or reaches its deadline, or systemd reloads the
 // agent after an on-node change, it re-serves on the same address in this
-// process. Restarting katlc-agent instead would rerun the boot units it and
-// its dependents require.
+// process, so a credential switch does not interrupt operations the agent
+// runs.
 func (s *Server) serveManagement(ctx context.Context, network, address string, ready func() error) error {
 	clock := s.trialClock()
 	for first := true; ; first = false {
 		s.management.drain()
+		// A SIGHUP drained here belongs to a reload this re-serve completes, so
+		// the report that ends the re-serve is stamped after the drain.
+		drained, err := monotonicUsec()
+		if err != nil {
+			return err
+		}
 		tlsConfig, trial, err := managementServerTLS(s.Root, clock)
 		if err != nil {
 			return err
@@ -133,7 +146,7 @@ func (s *Server) serveManagement(ctx context.Context, network, address string, r
 				server.Stop()
 				return err
 			}
-		} else if err := notifyReady(); err != nil {
+		} else if err := notifyReloaded(drained); err != nil {
 			log.Printf("report re-served management credentials: %v", err)
 		}
 

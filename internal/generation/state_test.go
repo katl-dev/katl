@@ -315,8 +315,12 @@ func TestAgentRuntimeUnit(t *testing.T) {
 	want := `[Unit]
 Description=Run Katl node management agent
 Documentation=man:systemd.service(5)
-Requires=var.mount katl-generation-activate.service
+Requires=var.mount
 Wants=network-online.target
+# Ordered after generation activation without pulling it in: a start job for
+# that oneshot runs it again, so restarting the agent would rerun it. Boot
+# health requires activation through the extension units, so a failed
+# activation still fails boot health while the agent stays reachable.
 After=local-fs.target var.mount katl-generation-activate.service network-online.target
 Before=katl-kubeadm-ready.target
 RequiresMountsFor=/efi /var/lib/katl

@@ -35,15 +35,24 @@ trial begins, is reverted or reaches its deadline. On-node commands that
 change management state, the trial revert and `katlc agent rotate-management`,
 run `systemctl reload-or-restart katlc-agent.service`. The unit is
 `Type=notify-reload`, so systemd sends SIGHUP and waits until the agent
-reports `READY=1` from the new listener.
+reports `READY=1` from the new listener. Each re-serve ends with
+`RELOADING=1`, `READY=1` and a `MONOTONIC_USEC` read after the loop absorbed
+pending signals, so a SIGHUP that arrives while the loop is already
+re-serving for an in-process change still ends the reload systemd began.
 
-Management changes never restart katlc-agent. A restart queues start jobs
-for everything the agent and its restarted dependents pull in, which reruns
-`katl-generation-activate.service`: a oneshot that must stay inactive so a
-`systemd-sysext.service` restart reruns it. If that rerun failed, the agent
-could not start, and the revert meant to restore access would meet the same
-failure. `TestAgentReloadRerunsNoUnit` checks this against the runtime unit
-graph.
+A management change restarts katlc-agent only when the agent is not running,
+because `reload-or-restart` then starts it. Even then, and when systemd
+restarts a crashed agent or one that exits because it cannot rebind, the
+restart does not rerun generation activation. katlc-agent is ordered after
+`katl-generation-activate.service` without requiring it: that oneshot stays
+inactive after it runs so that each `systemd-sysext.service` or
+`systemd-confext.service` start runs it again, and a start job queued by the
+agent would run it too. If such a rerun failed, the agent could not start and
+the revert meant to restore access would meet the same failure. Boot health
+still requires activation through the extension units, so a failed
+activation fails boot health while the agent stays reachable to report it.
+`TestAgentRerunsNoUnit` and `TestAgentFollowsGenerationActivation` check this
+against the runtime unit graph.
 
 ## Accepted risk: replacement key delivery
 
