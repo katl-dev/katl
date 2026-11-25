@@ -250,7 +250,7 @@ func (manager installerManager) syncNetwork(ctx context.Context, world katldevWo
 	if err := manager.syncMultihome(ctx, world, false); err != nil {
 		return err
 	}
-	return manager.syncNAT(ctx, world, false)
+	return manager.syncNAT(ctx, world)
 }
 
 // ensureNetwork converges desired through vmtest.OwnedNetwork.Ensure, which
@@ -302,7 +302,7 @@ func (manager installerManager) removeWorldObjects(ctx context.Context, runID st
 		return err
 	} else if len(nat) > 0 {
 		if err := manager.removeNATChain(ctx, natChain(runID)); err != nil {
-			return err
+			return natFailure(err, true, "katldev world remove")
 		}
 		if err := manager.writeNAT(nil); err != nil {
 			return err

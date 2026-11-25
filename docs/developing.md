@@ -370,8 +370,10 @@ The host then translates connections from this machine to that address to the
 VM's reserved address, and katldev prints the `management.address` and
 `kubernetes.address` to set in `cluster.yaml`. The rule is an iptables DNAT in
 the world's own nat-table chain, so `nat` needs `sudo` that does not prompt.
-Later world commands rewrite it after a readdress or a host firewall reload, and
-`reset` and `remove` delete it.
+`start`, `add-node`, and `readdress` rewrite it after a readdress or a host
+firewall reload, and warn with the command to rerun if they cannot; `status`
+does not touch it. `reset` and `remove` delete it, but
+keep the record and say what to rerun if sudo fails.
 
 To test a multihomed node, whose `management.address` is on a second interface
 that the node holds, give its VM a second NIC:
