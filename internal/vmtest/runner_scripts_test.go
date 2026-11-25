@@ -1252,7 +1252,7 @@ func TestVMTestDebugPrintsLiveTargets(t *testing.T) {
 func TestVMTestCleanDestroysRecordedDomains(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
 	tmp := t.TempDir()
-	result := filepath.Join(tmp, "run", "result.json")
+	result := filepath.Join(tmp, "katl-vmtest", "run", "result.json")
 	if err := os.MkdirAll(filepath.Dir(result), 0o755); err != nil {
 		t.Fatalf("MkdirAll(result dir) error = %v", err)
 	}
@@ -1272,6 +1272,7 @@ func TestVMTestCleanDestroysRecordedDomains(t *testing.T) {
 	writeExecutable(t, virsh, `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_VIRSH_LOG"
+[[ "$3" == dominfo ]] && exit 1
 exit 0
 `)
 
@@ -1290,6 +1291,9 @@ exit 0
 		if !strings.Contains(log, want) {
 			t.Fatalf("virsh log missing %q:\n%s", want, log)
 		}
+	}
+	if _, err := os.Stat(filepath.Dir(result)); !os.IsNotExist(err) {
+		t.Fatalf("run directory still exists after cleanup: %v", err)
 	}
 }
 
@@ -2089,7 +2093,7 @@ func TestVMTestCleanReleasesRecordedNetworks(t *testing.T) {
 	target := func(domain, network string) string {
 		return `{"preserved": true, "domainName": "` + domain + `", "libvirtURI": "qemu:///fixture", "network": "` + network + `"}`
 	}
-	runDir := filepath.Join(dir, "run")
+	runDir := filepath.Join(dir, "katl-vmtest", "run")
 	write(filepath.Join(runDir, "one", "result.json"), `{"debug": {"targets": [`+
 		target("katl-run-1-a", "katl-run-1-shared")+","+target("katl-run-1-c", "katl-run-1-solo")+","+
 		target("katl-run-1-d", "katl-run-1-sibling")+"]}}")
@@ -2108,4 +2112,130 @@ func TestVMTestCleanReleasesRecordedNetworks(t *testing.T) {
 	if got := fake.objects(t, "networks"); !slices.Equal(got, want) {
 		t.Fatalf("networks after vmtest-clean = %v, want %v\n%s", got, want, output)
 	}
+}
+
+func TestVMTestCleanDeletesRunDir(t *testing.T) {
+	repo := scriptTestRepoRoot(t)
+	clean := func(t *testing.T, runDir, virsh string) (string, int) {
+		t.Helper()
+		cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-clean"), runDir)
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), "KATL_VMTEST_VIRSH="+virsh, "KATL_FAKE_VIRSH_LOG="+filepath.Join(filepath.Dir(virsh), "virsh.log"))
+		output, err := cmd.CombinedOutput()
+		return string(output), exitCode(err)
+	}
+	// virshWith fakes a virsh whose dominfo reports the domain as present
+	// only while `exists` is true.
+	virshWith := func(t *testing.T, exists bool) string {
+		t.Helper()
+		virsh := filepath.Join(t.TempDir(), "virsh")
+		status := "1"
+		if exists {
+			status = "0"
+		}
+		writeExecutable(t, virsh, "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$KATL_FAKE_VIRSH_LOG\"\ncase \"$3\" in dominfo) exit "+status+";; *) exit 0;; esac\n")
+		return virsh
+	}
+	runDirWithDomain := func(t *testing.T) string {
+		t.Helper()
+		runDir := filepath.Join(t.TempDir(), "katl-vmtest", "run-1")
+		node := filepath.Join(runDir, "nodes", "cp-1")
+		if err := os.MkdirAll(node, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(node, "result.json"), []byte(`{"debug":{"targets":[{"preserved":true,"domainName":"katl-gone","libvirtURI":"qemu:///system"}]}}`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return runDir
+	}
+
+	t.Run("deletes read-only content", func(t *testing.T) {
+		runDir := runDirWithDomain(t)
+		readonly := filepath.Join(runDir, "ro")
+		if err := os.MkdirAll(readonly, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(readonly, "disk.img"), []byte("x"), 0o400); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(readonly, 0o500); err != nil {
+			t.Fatal(err)
+		}
+
+		output, code := clean(t, runDir, virshWith(t, false))
+		if code != 0 {
+			t.Fatalf("exit = %d\n%s", code, output)
+		}
+		if _, err := os.Lstat(runDir); !os.IsNotExist(err) {
+			t.Fatalf("run directory survived: %v", err)
+		}
+	})
+
+	t.Run("repeating a cleanup succeeds", func(t *testing.T) {
+		runDir := runDirWithDomain(t)
+		virsh := virshWith(t, false)
+		if output, code := clean(t, runDir, virsh); code != 0 {
+			t.Fatalf("first exit = %d\n%s", code, output)
+		}
+
+		output, code := clean(t, runDir, virsh)
+		if code != 0 || !strings.Contains(output, "already removed") {
+			t.Fatalf("second exit = %d, want 0 with a note\n%s", code, output)
+		}
+	})
+
+	t.Run("deletes the directory of a run whose domains are already removed", func(t *testing.T) {
+		runDir := runDirWithDomain(t)
+
+		output, code := clean(t, runDir, virshWith(t, false))
+		if code != 0 {
+			t.Fatalf("exit = %d\n%s", code, output)
+		}
+		if _, err := os.Lstat(runDir); !os.IsNotExist(err) {
+			t.Fatalf("run directory survived: %v", err)
+		}
+	})
+
+	t.Run("keeps the directory while a recorded domain still exists", func(t *testing.T) {
+		runDir := runDirWithDomain(t)
+
+		output, code := clean(t, runDir, virshWith(t, true))
+		if code == 0 {
+			t.Fatalf("cleanup succeeded with a surviving domain\n%s", output)
+		}
+		if !strings.Contains(output, "still exists") {
+			t.Fatalf("output does not name the surviving domain:\n%s", output)
+		}
+		if _, err := os.Lstat(runDir); err != nil {
+			t.Fatalf("run directory was deleted while its domain survives: %v", err)
+		}
+	})
+
+	t.Run("refuses a directory that is not a run directory", func(t *testing.T) {
+		for name, dir := range map[string]string{
+			"outside katl-vmtest": filepath.Join(t.TempDir(), "elsewhere", "run-1"),
+			"without a result":    filepath.Join(t.TempDir(), "katl-vmtest", "run-1"),
+		} {
+			t.Run(name, func(t *testing.T) {
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				keep := filepath.Join(dir, "keep.txt")
+				if name == "outside katl-vmtest" {
+					keep = filepath.Join(dir, "result.json")
+				}
+				if err := os.WriteFile(keep, []byte("precious"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+
+				output, code := clean(t, dir, virshWith(t, false))
+				if code != 2 {
+					t.Fatalf("exit = %d, want 2\n%s", code, output)
+				}
+				if _, err := os.Stat(keep); err != nil {
+					t.Fatalf("refused cleanup deleted content: %v", err)
+				}
+			})
+		}
+	})
 }
