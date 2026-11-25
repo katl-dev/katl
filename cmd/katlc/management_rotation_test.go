@@ -15,7 +15,7 @@ import (
 	"github.com/katl-dev/katl/internal/nodeidentity"
 )
 
-func TestRotateManagementOnNodeRecoversInterruptedRestart(t *testing.T) {
+func TestRotateManagementOnNodeRecoversInterruptedReload(t *testing.T) {
 	root := t.TempDir()
 	machineID, err := nodeidentity.WriteMachineID(root, nil)
 	if err != nil {
@@ -38,12 +38,12 @@ func TestRotateManagementOnNodeRecoversInterruptedRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	running := true
-	failRestart := true
+	failReload := true
 	service := func(_ context.Context, action string) error {
 		switch action {
-		case "restart":
-			if failRestart {
-				failRestart = false
+		case "reload-or-restart":
+			if failReload {
+				failReload = false
 				return errors.New("startup failed")
 			}
 			running = true
@@ -67,7 +67,7 @@ func TestRotateManagementOnNodeRecoversInterruptedRestart(t *testing.T) {
 	output.Reset()
 	err = rotateManagementOnNode(t.Context(), root, false, bytes.NewReader(request), &output, service)
 	if err == nil || !strings.Contains(err.Error(), "startup failed") {
-		t.Fatalf("failed restart = %v", err)
+		t.Fatalf("failed reload = %v", err)
 	}
 	if err := rotateManagementOnNode(t.Context(), root, false, bytes.NewReader(request), &output, service); err != nil {
 		t.Fatalf("resume rotation: %v", err)

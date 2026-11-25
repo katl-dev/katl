@@ -29,8 +29,7 @@ const (
 	BeginManagementTransitionRequestKind   = "BeginManagementTransitionRequest"
 	ConfirmManagementTransitionRequestKind = "ConfirmManagementTransitionRequest"
 
-	managementTrialRevertUnitPrefix  = "katl-management-revert-"
-	managementTrialRestartUnitPrefix = "katl-management-restart-"
+	managementTrialRevertUnitPrefix = "katl-management-revert-"
 
 	managementTrialDeadlineReason = "the transition was not confirmed before its deadline"
 	defaultManagementTrialPoll    = 5 * time.Second
@@ -59,69 +58,100 @@ func managementServerTLS(root string, clock nodeidentity.TrialClock) (*tls.Confi
 	return config, nil, err
 }
 
-// servedTrial tracks the management trial the current listener serves, so the
-// listener can stop serving it once it is committed or reverted.
-type servedTrial struct {
+// managementListener tracks the management trial the current listener serves
+// and wakes the listener loop when management state changes, so one loop owns
+// every switch between the installed mode and a trial.
+type managementListener struct {
 	mu        sync.Mutex
 	id        string
 	committed chan struct{}
-	reverted  chan struct{}
+	changed   chan struct{}
 }
 
-// serve records the trial a new listener serves, if any, and returns channels
-// closed when it is committed or reverted while served.
-func (t *servedTrial) serve(trial *nodeidentity.ManagementTrial) (committed, reverted <-chan struct{}) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.id = ""
+// serve records the trial a new listener serves, if any, and returns a channel
+// closed when it is committed while served.
+func (l *managementListener) serve(trial *nodeidentity.ManagementTrial) <-chan struct{} {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.id = ""
 	if trial != nil {
-		t.id = trial.ID
+		l.id = trial.ID
 	}
-	t.committed, t.reverted = make(chan struct{}), make(chan struct{})
-	return t.committed, t.reverted
+	l.committed = make(chan struct{})
+	return l.committed
 }
 
-func (t *servedTrial) ID() string {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return t.id
+func (l *managementListener) servedID() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.id
+}
+
+// changes is signalled when the listener must select its credentials again.
+func (l *managementListener) changes() chan struct{} {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.changed == nil {
+		// One pending signal is enough: the loop reads management state after
+		// taking it.
+		l.changed = make(chan struct{}, 1)
+	}
+	return l.changed
+}
+
+// reselect asks the listener loop to serve whatever management state now
+// selects.
+func (l *managementListener) reselect() {
+	select {
+	case l.changes() <- struct{}{}:
+	default:
+	}
+}
+
+// drain discards a pending reselect before the loop reads management state;
+// a change signalled after that read is kept.
+func (l *managementListener) drain() {
+	select {
+	case <-l.changes():
+	default:
+	}
 }
 
 // end reports that trial id was committed or reverted. It is ignored unless
 // the current listener serves that trial.
-func (t *servedTrial) end(id string, committed bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if id == "" || id != t.id || t.committed == nil {
-		return
+func (l *managementListener) end(id string, committed bool) {
+	l.mu.Lock()
+	served := id != "" && id == l.id
+	if served && committed && l.committed != nil {
+		close(l.committed)
+		l.committed = nil
 	}
-	if committed {
-		close(t.committed)
-	} else {
-		close(t.reverted)
+	l.mu.Unlock()
+	if served && !committed {
+		l.reselect()
 	}
-	t.committed, t.reverted = nil, nil
+}
+
+// trialRemaining is read before the listener serves a trial, so the first
+// deadline check happens before any client can reach it.
+func trialRemaining(trial nodeidentity.ManagementTrial, clock nodeidentity.TrialClock) time.Duration {
+	sinceBoot, err := clock.SinceBoot()
+	if err != nil {
+		log.Printf("read boot time for management trial %s: %v; reverting", trial.ID, err)
+		return 0
+	}
+	return trial.DeadlineSinceBoot - sinceBoot
 }
 
 // awaitTrialDeadline reports whether the served trial reached its
-// CLOCK_BOOTTIME deadline before it was committed or reverted. It enforces the
-// deadline independently of the systemd revert timer, so either alone stops
-// the trial.
-func (s *Server) awaitTrialDeadline(ctx context.Context, trial nodeidentity.ManagementTrial, clock nodeidentity.TrialClock, committed, reverted <-chan struct{}) bool {
+// CLOCK_BOOTTIME deadline before it was committed. It enforces the deadline
+// independently of the systemd revert timer, so either alone stops the trial.
+func (s *Server) awaitTrialDeadline(ctx context.Context, trial nodeidentity.ManagementTrial, clock nodeidentity.TrialClock, remaining time.Duration, committed <-chan struct{}) bool {
 	poll := s.managementTrialPoll
 	if poll <= 0 {
 		poll = defaultManagementTrialPoll
 	}
-	for {
-		sinceBoot, err := clock.SinceBoot()
-		if err != nil {
-			log.Printf("read boot time for management trial %s: %v; reverting", trial.ID, err)
-			return true
-		}
-		remaining := trial.DeadlineSinceBoot - sinceBoot
-		if remaining <= 0 {
-			return true
-		}
+	for remaining > 0 {
 		// Go timers do not advance while the node is suspended but
 		// CLOCK_BOOTTIME does, so recheck at least every poll interval.
 		wait := time.NewTimer(min(remaining, poll))
@@ -132,21 +162,20 @@ func (s *Server) awaitTrialDeadline(ctx context.Context, trial nodeidentity.Mana
 		case <-committed:
 			wait.Stop()
 			return false
-		case <-reverted:
-			wait.Stop()
-			return false
 		case <-wait.C:
 		}
+		remaining = trialRemaining(trial, clock)
 	}
+	return true
 }
 
 // refuseDuringManagementTrial holds off mutating requests while a management
-// trial is live: the restarts that serve and revert the trial would cut an
-// operation short.
+// trial is live: its commit or revert changes which clients reach the node,
+// and a reboot reverts it.
 func (s *Server) refuseDuringManagementTrial() error {
 	trial, found, err := nodeidentity.ReadManagementTrial(s.Root)
 	if err != nil {
-		return status.Errorf(codes.FailedPrecondition, "read management trial: %v", err)
+		return status.Errorf(codes.FailedPrecondition, "%v; clear it with katlc agent management-trial revert on the node", err)
 	}
 	if found && trial.State == nodeidentity.ManagementTrialLive {
 		return status.Errorf(codes.FailedPrecondition, "a management trust transition is in progress until %s; confirm it, or wait for it to revert, before changing the node", trial.Deadline.Format(time.RFC3339))
@@ -166,8 +195,7 @@ func (s *Server) BeginManagementTransition(ctx context.Context, req *agentapi.Be
 	}
 	// submitMu, the mutation lock and the active-operation check refuse a
 	// trial while a node operation runs, and the live trial record refuses
-	// operations submitted during it, so the restarts that serve and revert the
-	// trial cannot cut one short.
+	// operations submitted during it.
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
 	lock, err := s.Store.AcquireMutationLock()
@@ -197,13 +225,9 @@ func (s *Server) BeginManagementTransition(ctx context.Context, req *agentapi.Be
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
-	if trial.State == nodeidentity.ManagementTrialLive && trial.ID != s.servedTrial.ID() {
-		if err := s.scheduleTrialRestart(ctx, trial.ID); err != nil {
-			if _, _, revertErr := nodeidentity.RevertManagementTrial(s.Root, trial.ID, "katlc-agent restart could not be scheduled", clock); revertErr != nil {
-				err = errors.Join(err, revertErr)
-			}
-			return nil, status.Errorf(codes.Internal, "schedule katlc-agent restart for the management trial: %v; rerun the transition", err)
-		}
+	if trial.State == nodeidentity.ManagementTrialLive && trial.ID != s.management.servedID() {
+		// The listener loop waits for this response before it re-serves.
+		s.management.reselect()
 	}
 	return managementTransitionStatus(trial), nil
 }
@@ -229,21 +253,29 @@ func (s *Server) ConfirmManagementTransition(ctx context.Context, req *agentapi.
 	result, err := nodeidentity.ConfirmManagementTrial(s.Root, authority, s.trialClock())
 	if errors.Is(err, nodeidentity.ErrManagementTrialReverted) {
 		// The listener re-serves the installed mode once this response is sent.
-		s.servedTrial.end(result.ID, false)
+		s.management.end(result.ID, false)
+		s.stopTrialRevertTimer(ctx, result.ID)
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
 	if err != nil {
 		return nil, status.Error(codes.FailedPrecondition, err.Error())
 	}
 	if result.ID != "" {
-		s.servedTrial.end(result.ID, true)
-		// The revert ignores a committed trial, so a timer left behind only
-		// costs a no-op run.
-		if stopResult := s.runManagementTrial(ctx, []string{"systemctl", "stop", managementTrialRevertUnitPrefix + result.ID + ".timer"}); stopResult.Err != nil || stopResult.ExitStatus != 0 {
-			log.Printf("stop management trial %s revert timer: %s", result.ID, toolFailure(stopResult))
-		}
+		s.management.end(result.ID, true)
+		s.stopTrialRevertTimer(ctx, result.ID)
 	}
 	return managementTransitionStatus(result), nil
+}
+
+// stopTrialRevertTimer cancels an ended trial's revert. The revert ignores a
+// trial that is no longer live, so a timer left behind only costs a no-op run.
+func (s *Server) stopTrialRevertTimer(ctx context.Context, id string) {
+	if id == "" {
+		return
+	}
+	if result := s.runManagementTrial(ctx, []string{"systemctl", "stop", managementTrialRevertUnitPrefix + id + ".timer"}); result.Err != nil || result.ExitStatus != 0 {
+		log.Printf("stop management trial %s revert timer: %s", id, toolFailure(result))
+	}
 }
 
 // armManagementRevert schedules the trial's revert with systemd so it runs even
@@ -258,33 +290,6 @@ func (s *Server) armManagementRevert(ctx context.Context, trial nodeidentity.Man
 		return errors.New(toolFailure(result))
 	}
 	return nil
-}
-
-// scheduleTrialRestart has systemd restart katlc-agent shortly after this
-// response is sent, rather than the agent stopping itself mid-request, so the
-// restarted agent serves the trial. The restart unit is named for the trial,
-// so a retried begin reuses a restart that is still pending instead of failing
-// over it.
-func (s *Server) scheduleTrialRestart(ctx context.Context, trialID string) error {
-	unit := managementTrialRestartUnitPrefix + trialID
-	if s.trialRestartPending(ctx, unit) {
-		return nil
-	}
-	result := s.runManagementTrial(ctx, []string{"systemd-run", "--unit=" + unit, "--collect", "--on-active=2s", "systemctl", "restart", "katlc-agent.service"})
-	if result.Err == nil && result.ExitStatus == 0 {
-		return nil
-	}
-	if s.trialRestartPending(ctx, unit) {
-		return nil
-	}
-	return errors.New(toolFailure(result))
-}
-
-// trialRestartPending reports whether the restart unit is waiting to fire or
-// already restarting katlc-agent.
-func (s *Server) trialRestartPending(ctx context.Context, unit string) bool {
-	result := s.runManagementTrial(ctx, []string{"systemctl", "is-active", "--quiet", unit + ".timer", unit + ".service"})
-	return result.Err == nil && result.ExitStatus == 0
 }
 
 func (s *Server) runManagementTrial(ctx context.Context, argv []string) ToolResult {

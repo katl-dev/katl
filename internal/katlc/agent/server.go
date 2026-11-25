@@ -107,8 +107,8 @@ type Server struct {
 	AvailableStorage         availableStorageFunc
 	submitMu                 sync.Mutex
 	etcdSnapshotMu           sync.Mutex
-	// servedTrial is the management trial this process's listener serves.
-	servedTrial servedTrial
+	// management owns which credentials this process's listener serves.
+	management managementListener
 	// managementTrialPoll bounds how long a served trial's deadline can pass
 	// unnoticed, such as across a suspend; zero uses the default.
 	managementTrialPoll time.Duration
@@ -1221,6 +1221,10 @@ func (s *Server) validateMutationTarget(enrollmentID, nodeName, machineID, curre
 	if err := s.validateEnrolledTarget(enrollmentID, nodeName, machineID); err != nil {
 		return err
 	}
+	// Not under submitMu, which a beginning trial holds: a reboot or shutdown
+	// validated just before a trial begins only ends that trial, which reverts
+	// at boot. Submitted operations are checked again under submitMu in
+	// acceptOperation.
 	if err := s.refuseDuringManagementTrial(); err != nil {
 		return err
 	}

@@ -18,7 +18,7 @@ func (fixedTrialClock) BootID() (string, error)             { return "boot-a", n
 func (c fixedTrialClock) SinceBoot() (time.Duration, error) { return c.sinceBoot, nil }
 func (fixedTrialClock) Now() time.Time                      { return time.Now().UTC() }
 
-func TestRevertManagementTrialRestartsAgent(t *testing.T) {
+func TestRevertManagementTrialReloadsAgent(t *testing.T) {
 	root := t.TempDir()
 	machineID, err := nodeidentity.WriteMachineID(root, nil)
 	if err != nil {
@@ -39,12 +39,13 @@ func TestRevertManagementTrialRestartsAgent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var restarts int
+	var reloads int
 	service := func(_ context.Context, action string) error {
-		if action != "restart" {
+		// A restart would rerun the boot units katlc-agent requires.
+		if action != "reload-or-restart" {
 			return errors.New("unexpected action " + action)
 		}
-		restarts++
+		reloads++
 		return nil
 	}
 
@@ -52,8 +53,8 @@ func TestRevertManagementTrialRestartsAgent(t *testing.T) {
 	if err := revertManagementTrial(t.Context(), root, "", "reverted from the console", clock, &output, service); err != nil {
 		t.Fatal(err)
 	}
-	if restarts != 1 || !strings.Contains(output.String(), trial.ID) {
-		t.Fatalf("revert restarted the agent %d times and printed %q", restarts, output.String())
+	if reloads != 1 || !strings.Contains(output.String(), trial.ID) {
+		t.Fatalf("revert reloaded the agent %d times and printed %q", reloads, output.String())
 	}
 	recorded, found, err := nodeidentity.ReadManagementTrial(root)
 	if err != nil || !found || recorded.State != nodeidentity.ManagementTrialReverted || recorded.RevertReason != "reverted from the console" {
@@ -64,7 +65,7 @@ func TestRevertManagementTrialRestartsAgent(t *testing.T) {
 	if err := revertManagementTrial(t.Context(), root, "", "again", clock, &output, service); err != nil {
 		t.Fatal(err)
 	}
-	if restarts != 1 || !strings.Contains(output.String(), "no management trial") {
-		t.Fatalf("repeated revert restarted the agent %d times and printed %q", restarts, output.String())
+	if reloads != 1 || !strings.Contains(output.String(), "no management trial") {
+		t.Fatalf("repeated revert reloaded the agent %d times and printed %q", reloads, output.String())
 	}
 }

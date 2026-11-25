@@ -812,7 +812,8 @@ message ConfirmManagementTransitionRequest {
 }
 
 message ManagementTransition {
-  // state is trial, committed or reverted.
+  // state is trial, committed or reverted, or unreadable when NodeStatus
+  // cannot read the recorded transition.
   string state = 1;
   string trial_id = 2;
   string target_authority = 3;

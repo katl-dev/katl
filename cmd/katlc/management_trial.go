@@ -33,7 +33,7 @@ func runAgentManagementTrial(ctx context.Context, args []string, stdout, stderr 
 	return revertManagementTrial(ctx, *root, *trial, *reason, nodeidentity.SystemTrialClock{}, stdout, systemdAgentService)
 }
 
-// revertManagementTrial restores the installed management mode and restarts
+// revertManagementTrial restores the installed management mode and reloads
 // katlc-agent so it stops serving the trial credentials.
 func revertManagementTrial(ctx context.Context, root, id, reason string, clock nodeidentity.TrialClock, stdout io.Writer, service rotationServiceRunner) error {
 	trial, reverted, err := nodeidentity.RevertManagementTrial(root, id, reason, clock)
@@ -44,9 +44,13 @@ func revertManagementTrial(ctx context.Context, root, id, reason string, clock n
 		fmt.Fprintln(stdout, "no management trial is in progress; the installed management mode is unchanged")
 		return nil
 	}
-	if err := service(ctx, "restart"); err != nil {
-		return fmt.Errorf("management trial %s reverted, but katlc-agent did not restart: %w; restart katlc-agent.service so it serves the installed management mode", trial.ID, err)
+	if err := service(ctx, agentReload); err != nil {
+		return fmt.Errorf("management trial %s reverted, but katlc-agent did not reload: %w; run systemctl reload-or-restart katlc-agent.service so it serves the installed management mode", trial.ID, err)
 	}
-	fmt.Fprintf(stdout, "reverted management trial %s for authority %s; katlc-agent restarted with the installed management mode\n", trial.ID, trial.TargetAuthority)
+	if trial.ID == "" {
+		fmt.Fprintf(stdout, "%s; katlc-agent serves the installed management mode\n", trial.RevertReason)
+		return nil
+	}
+	fmt.Fprintf(stdout, "reverted management trial %s for authority %s; katlc-agent serves the installed management mode\n", trial.ID, trial.TargetAuthority)
 	return nil
 }

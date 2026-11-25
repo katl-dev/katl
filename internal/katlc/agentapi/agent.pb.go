@@ -7053,7 +7053,8 @@ func (x *ConfirmManagementTransitionRequest) GetTargetAuthority() string {
 
 type ManagementTransition struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// state is trial, committed or reverted.
+	// state is trial, committed or reverted, or unreadable when NodeStatus
+	// cannot read the recorded transition.
 	State           string `protobuf:"bytes,1,opt,name=state,proto3" json:"state,omitempty"`
 	TrialId         string `protobuf:"bytes,2,opt,name=trial_id,json=trialId,proto3" json:"trial_id,omitempty"`
 	TargetAuthority string `protobuf:"bytes,3,opt,name=target_authority,json=targetAuthority,proto3" json:"target_authority,omitempty"`

@@ -583,7 +583,7 @@ func renderAgentService() string {
 		"RequiresMountsFor=/efi /var/lib/katl",
 		"",
 		"[Service]",
-		"Type=notify",
+		"Type=notify-reload",
 		"ExecStart=/usr/bin/katlc agent serve --root=/ --listen tcp://0.0.0.0:9443",
 		"Restart=on-failure",
 		"RestartSec=5s",

@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/operation"
@@ -71,20 +74,43 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	maintenanceDone := make(chan struct{})
 	defer func() { stopMaintenance(); <-maintenanceDone }()
 	go func() { defer close(maintenanceDone); agentServer.maintainGenerations(maintenanceCtx, 5*time.Second) }()
+	// katlc-agent.service is Type=notify-reload: systemd sends SIGHUP when an
+	// on-node command changed management state. Registered before READY=1 so
+	// a reload never meets the default action, which ends the process.
+	hangups := make(chan os.Signal, 1)
+	signal.Notify(hangups, syscall.SIGHUP)
+	defer signal.Stop(hangups)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-hangups:
+				agentServer.management.reselect()
+			}
+		}
+	}()
 	err = agentServer.serveManagement(ctx, network, address, notifyReady)
 	return errors.Join(err, shutdownDispatcher(dispatcher))
 }
 
 // serveManagement serves the agent API with the credentials the node's
-// management state selects. When a served trial is reverted or reaches its
-// deadline it serves the installed mode again on the same address, so the
-// trial ends even if the systemd revert timer never runs.
+// management state selects. It is the only owner of switching them: when a
+// trial begins, is reverted or reaches its deadline, or systemd reloads the
+// agent after an on-node change, it re-serves on the same address in this
+// process. Restarting katlc-agent instead would rerun the boot units it and
+// its dependents require.
 func (s *Server) serveManagement(ctx context.Context, network, address string, ready func() error) error {
 	clock := s.trialClock()
 	for first := true; ; first = false {
+		s.management.drain()
 		tlsConfig, trial, err := managementServerTLS(s.Root, clock)
 		if err != nil {
 			return err
+		}
+		var remaining time.Duration
+		if trial != nil {
+			remaining = trialRemaining(*trial, clock)
 		}
 		listener, err := net.Listen(network, address)
 		if err != nil {
@@ -98,7 +124,7 @@ func (s *Server) serveManagement(ctx context.Context, network, address string, r
 		}
 		server := grpc.NewServer(opts...)
 		agentapi.RegisterKatlcAgentServer(server, s)
-		committed, reverted := s.servedTrial.serve(trial)
+		committed := s.management.serve(trial)
 		errc := make(chan error, 1)
 		go func() { errc <- server.Serve(listener) }()
 		// The listener is bound, so connections made from here on are accepted.
@@ -107,13 +133,15 @@ func (s *Server) serveManagement(ctx context.Context, network, address string, r
 				server.Stop()
 				return err
 			}
+		} else if err := notifyReady(); err != nil {
+			log.Printf("report re-served management credentials: %v", err)
 		}
 
 		watchCtx, stopWatch := context.WithCancel(ctx)
 		expired := make(chan struct{})
 		if trial != nil {
 			go func() {
-				if s.awaitTrialDeadline(watchCtx, *trial, clock, committed, reverted) {
+				if s.awaitTrialDeadline(watchCtx, *trial, clock, remaining, committed) {
 					close(expired)
 				}
 			}()
@@ -133,10 +161,13 @@ func (s *Server) serveManagement(ctx context.Context, network, address string, r
 			if _, _, err := nodeidentity.RevertManagementTrial(s.Root, trial.ID, managementTrialDeadlineReason, clock); err != nil {
 				log.Printf("revert management trial %s: %v", trial.ID, err)
 			}
-		case <-reverted:
-			log.Printf("management trial %s was reverted; serving the installed management mode", trial.ID)
+		case <-s.management.changes():
+			log.Printf("management state changed; serving the credentials it selects")
 		}
 		stopWatch()
+		if err := notifyReloading(); err != nil {
+			log.Printf("report management credential reload: %v", err)
+		}
 		stopServer(server, managementReserveTimeout)
 	}
 }

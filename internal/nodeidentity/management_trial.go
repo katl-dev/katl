@@ -167,7 +167,7 @@ func BeginManagementTrial(root string, request ManagementTransition, clock Trial
 	}
 	existing, found, err := readManagementTrial(dir)
 	if err != nil {
-		return ManagementTrial{}, err
+		return ManagementTrial{}, fmt.Errorf("%w; clear it with katlc agent management-trial revert on the node", err)
 	}
 	if found && existing.State == ManagementTrialLive {
 		if existing.BootID == bootID && sinceBoot < existing.DeadlineSinceBoot {
@@ -184,19 +184,27 @@ func BeginManagementTrial(root string, request ManagementTransition, clock Trial
 		}
 	}
 
+	previousActive, err := os.Readlink(filepath.Join(dir, "active"))
+	if err != nil && !os.IsNotExist(err) {
+		return ManagementTrial{}, fmt.Errorf("read active management identity: %w", err)
+	}
 	versions := filepath.Join(dir, "versions")
 	if err := os.MkdirAll(versions, 0o700); err != nil {
 		return ManagementTrial{}, fmt.Errorf("create management identity versions: %w", err)
+	}
+	// No live trial names the target version here, so unless active does, it
+	// was left by a begin that failed after staging. Discard it so material
+	// reissued under the same authority can be staged.
+	if filepath.Join("versions", target) != previousActive {
+		if err := removeManagementVersion(dir, target); err != nil {
+			return ManagementTrial{}, err
+		}
 	}
 	if err := stageManagementVersion(versions, target, request.Replacement); err != nil {
 		return ManagementTrial{}, err
 	}
 	if err := managementTrialStep("staged"); err != nil {
 		return ManagementTrial{}, err
-	}
-	previousActive, err := os.Readlink(filepath.Join(dir, "active"))
-	if err != nil && !os.IsNotExist(err) {
-		return ManagementTrial{}, fmt.Errorf("read active management identity: %w", err)
 	}
 	id, err := generateIdentity(nil)
 	if err != nil {
@@ -284,9 +292,13 @@ func ConfirmManagementTrial(root, authority string, clock TrialClock) (Managemen
 }
 
 // RevertManagementTrial is the single owner of reverting a live trial. It
-// reports whether it reverted, so a caller serving the trial knows to restart
-// katlc-agent. A non-empty id limits it to that trial, so a revert scheduled for
-// an earlier trial cannot cut a later one short.
+// reports whether it reverted, so a caller knows katlc-agent must re-serve the
+// installed mode. A non-empty id limits it to that trial, so a revert scheduled
+// for an earlier trial cannot cut a later one short.
+//
+// An unreadable record is moved aside instead, whatever id names: the mode
+// file and active link alone decide the installed mode, and katlc-agent already
+// serves that mode while the record cannot be read.
 func RevertManagementTrial(root, id, reason string, clock TrialClock) (ManagementTrial, bool, error) {
 	dir := filepath.Join(filepath.Clean(root), managementDirectory)
 	unlock, err := lockManagementIdentity(dir)
@@ -296,8 +308,15 @@ func RevertManagementTrial(root, id, reason string, clock TrialClock) (Managemen
 	defer unlock()
 
 	trial, found, err := readManagementTrial(dir)
-	if err != nil || !found || trial.State != ManagementTrialLive || (id != "" && trial.ID != id) {
-		return trial, false, err
+	if err != nil {
+		moved, moveErr := quarantineManagementTrial(dir, clock.Now())
+		if moveErr != nil {
+			return ManagementTrial{}, false, errors.Join(err, moveErr)
+		}
+		return ManagementTrial{State: ManagementTrialReverted, RevertReason: fmt.Sprintf("moved the unreadable management transition record to %s (%v)", moved, err)}, true, nil
+	}
+	if !found || trial.State != ManagementTrialLive || (id != "" && trial.ID != id) {
+		return trial, false, nil
 	}
 	committed, err := managementCommitted(root, trial.TargetAuthority)
 	if err != nil {
@@ -407,11 +426,8 @@ func revertManagementTrialLocked(dir string, trial ManagementTrial, reason strin
 	}
 	// Discard the abandoned version so a rerun can stage fresh or repaired
 	// material under the same authority.
-	if staged := filepath.Join("versions", trial.TargetAuthority); staged != trial.PreviousActive {
-		if err := os.RemoveAll(filepath.Join(dir, staged)); err != nil {
-			return ManagementTrial{}, fmt.Errorf("remove abandoned management identity version: %w", err)
-		}
-		if err := syncManagementDirectory(filepath.Join(dir, "versions")); err != nil && !os.IsNotExist(err) {
+	if filepath.Join("versions", trial.TargetAuthority) != trial.PreviousActive {
+		if err := removeManagementVersion(dir, trial.TargetAuthority); err != nil {
 			return ManagementTrial{}, err
 		}
 	}
@@ -454,6 +470,27 @@ func writeManagementTrial(dir string, trial ManagementTrial) error {
 		return fmt.Errorf("write management trial: %w", err)
 	}
 	return nil
+}
+
+// removeManagementVersion durably removes versions/authority, if present.
+func removeManagementVersion(dir, authority string) error {
+	if err := os.RemoveAll(filepath.Join(dir, "versions", authority)); err != nil {
+		return fmt.Errorf("remove abandoned management identity version: %w", err)
+	}
+	if err := syncManagementDirectory(filepath.Join(dir, "versions")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+// quarantineManagementTrial keeps an unreadable record for diagnosis under a
+// name no reader opens.
+func quarantineManagementTrial(dir string, now time.Time) (string, error) {
+	moved := filepath.Join(dir, fmt.Sprintf("%s.unreadable-%d", managementTrialFile, now.UTC().UnixNano()))
+	if err := os.Rename(filepath.Join(dir, managementTrialFile), moved); err != nil {
+		return "", fmt.Errorf("move unreadable management trial aside: %w", err)
+	}
+	return moved, syncManagementDirectory(dir)
 }
 
 func removeManagementTrial(dir string) error {

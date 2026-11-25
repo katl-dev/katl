@@ -477,34 +477,113 @@ func TestManagementTrialConfirmRacesRevert(t *testing.T) {
 
 // A rerun after a revert may carry a new server certificate under the same
 // authority, so the abandoned version must not pin the old material.
+// A rerun issues new server material under the same authority, which must
+// replace whatever an ended or failed begin staged.
 func TestManagementTrialRerunReissuesUnderSameAuthority(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		end  func(*testing.T, *trialNode)
+	}{
+		{name: "after a revert", end: func(t *testing.T, n *trialNode) {
+			first := n.mustBegin(t)
+			if _, reverted, err := RevertManagementTrial(n.root, first.ID, "deadline", n.clock); err != nil || !reverted {
+				t.Fatalf("revert = %v, %v", reverted, err)
+			}
+		}},
+		{name: "after an arm failure", end: func(t *testing.T, n *trialNode) {
+			if _, err := BeginManagementTrial(n.root, n.request, n.clock, func(ManagementTrial) error { return errors.New("systemd-run failed") }); err == nil {
+				t.Fatal("begin succeeded without a scheduled revert")
+			}
+		}},
+		{name: "after a crash before the record", end: func(t *testing.T, n *trialNode) {
+			managementTrialStep = func(step string) error {
+				if step == "armed" {
+					return errors.New("crash")
+				}
+				return nil
+			}
+			defer func() { managementTrialStep = func(string) error { return nil } }()
+			if _, err := n.begin(); err == nil {
+				t.Fatal("begin survived the crash")
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			node := newTrialNode(t)
+			now := time.Now().UTC()
+			bundle, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "test", Now: now})
+			if err != nil {
+				t.Fatal(err)
+			}
+			issue := func() managementidentity.NodeCredentials {
+				issued, err := managementidentity.IssueNode(bundle, "cp-1", now, nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return managementidentity.NodeCredentials{CACertificate: issued.CACertificate, ServerCertificate: issued.ServerCertificate, ServerPrivateKey: issued.ServerPrivateKey}
+			}
+			node.request.Replacement = issue()
+			node.authority, err = managementidentity.CAFingerprint(node.request.Replacement.CACertificate)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.end(t, node)
+
+			node.request.Replacement = issue()
+			node.mustBegin(t)
+			if _, err := ConfirmManagementTrial(node.root, node.authority, node.clock); err != nil {
+				t.Fatal(err)
+			}
+			node.assertInstalled(t, managementidentity.MutualTLS)
+		})
+	}
+}
+
+// An unreadable record would otherwise refuse every revert, begin and node
+// mutation with no supported way out.
+func TestManagementTrialRevertQuarantinesUnreadableRecord(t *testing.T) {
 	node := newTrialNode(t)
-	now := time.Now().UTC()
-	bundle, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "test", Now: now})
-	if err != nil {
+	node.mustBegin(t)
+	record := filepath.Join(node.root, managementDirectory, managementTrialFile)
+	if err := os.WriteFile(record, []byte("damaged"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	issue := func() managementidentity.NodeCredentials {
-		issued, err := managementidentity.IssueNode(bundle, "cp-1", now, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return managementidentity.NodeCredentials{CACertificate: issued.CACertificate, ServerCertificate: issued.ServerCertificate, ServerPrivateKey: issued.ServerPrivateKey}
-	}
-	node.request.Replacement = issue()
-	node.authority, err = managementidentity.CAFingerprint(node.request.Replacement.CACertificate)
-	if err != nil {
-		t.Fatal(err)
-	}
-	first := node.mustBegin(t)
-	if _, reverted, err := RevertManagementTrial(node.root, first.ID, "deadline", node.clock); err != nil || !reverted {
-		t.Fatalf("revert = %v, %v", reverted, err)
+	if _, _, err := ReadManagementTrial(node.root); err == nil {
+		t.Fatal("the damaged record reads cleanly")
 	}
 
-	node.request.Replacement = issue()
+	result, reverted, err := RevertManagementTrial(node.root, "some-trial", "deadline", node.clock)
+	if err != nil || !reverted || !strings.Contains(result.RevertReason, "unreadable") {
+		t.Fatalf("revert = %+v, %v, %v; want the record moved aside", result, reverted, err)
+	}
+	if _, found := node.recorded(t); found {
+		t.Fatal("the unreadable record is still read")
+	}
+	kept, err := filepath.Glob(record + ".unreadable-*")
+	if err != nil || len(kept) != 1 {
+		t.Fatalf("kept records = %q, %v; want the damaged one kept for diagnosis", kept, err)
+	}
+	node.assertInstalled(t, managementidentity.TrustedNetwork)
+
 	node.mustBegin(t)
 	if _, err := ConfirmManagementTrial(node.root, node.authority, node.clock); err != nil {
 		t.Fatal(err)
 	}
 	node.assertInstalled(t, managementidentity.MutualTLS)
+}
+
+func TestManagementIdentityLockTimesOut(t *testing.T) {
+	node := newTrialNode(t)
+	unlock, err := lockManagementIdentity(filepath.Join(node.root, managementDirectory))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unlock()
+	timeout := managementLockTimeout
+	managementLockTimeout = 100 * time.Millisecond
+	defer func() { managementLockTimeout = timeout }()
+
+	if _, _, err := RevertManagementTrial(node.root, "", "test", node.clock); err == nil || !strings.Contains(err.Error(), "lock") {
+		t.Fatalf("revert behind a held lock = %v; want a lock timeout", err)
+	}
 }

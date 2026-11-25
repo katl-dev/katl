@@ -16,6 +16,9 @@ import (
 
 const managementDirectory = "var/lib/katl/identity/management"
 
+// managementLockTimeout bounds the wait for the management identity lock.
+var managementLockTimeout = 30 * time.Second
+
 type ManagementRotation struct {
 	NodeName          string                             `json:"nodeName"`
 	ExpectedMachineID string                             `json:"expectedMachineID,omitempty"`
@@ -228,9 +231,23 @@ func lockManagementIdentity(dir string) (func(), error) {
 	if err != nil {
 		return nil, fmt.Errorf("open management identity lock: %w", err)
 	}
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		lock.Close()
-		return nil, fmt.Errorf("lock management identity: %w", err)
+	// Holders only change a few files, so a holder that keeps the lock this
+	// long is stuck; fail rather than stall a revert behind it.
+	deadline := time.Now().Add(managementLockTimeout)
+	for {
+		err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			lock.Close()
+			return nil, fmt.Errorf("lock management identity: %w", err)
+		}
+		if time.Now().After(deadline) {
+			lock.Close()
+			return nil, fmt.Errorf("another katlc process has held the management identity lock for over %s; inspect katlc-agent and running katlc commands on the node, then retry", managementLockTimeout)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	return func() {
 		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)

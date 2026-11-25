@@ -72,7 +72,6 @@ type managementTrialNode struct {
 	mu       sync.Mutex
 	commands [][]string
 	fail     func([]string) bool
-	pending  map[string]bool
 }
 
 func newManagementTrialNode(t *testing.T) *managementTrialNode {
@@ -112,7 +111,7 @@ func newManagementTrialNode(t *testing.T) *managementTrialNode {
 	}
 	node := &managementTrialNode{
 		root: root, clock: &testTrialClock{bootID: "boot-a", sinceBoot: time.Hour, now: now},
-		enrollment: enrollment, bundle: bundle, authority: authority, pending: map[string]bool{},
+		enrollment: enrollment, bundle: bundle, authority: authority,
 		node: managementidentity.NodeCredentials{CACertificate: issued.CACertificate, ServerCertificate: issued.ServerCertificate, ServerPrivateKey: issued.ServerPrivateKey},
 	}
 	node.server = NewServer(root, store)
@@ -120,22 +119,9 @@ func newManagementTrialNode(t *testing.T) *managementTrialNode {
 	node.server.RunManagementTrial = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		node.mu.Lock()
 		defer node.mu.Unlock()
-		// Unit queries answer from the transient units scheduled so far and
-		// are not recorded, since they change nothing.
-		if len(argv) > 2 && argv[0] == "systemctl" && argv[1] == "is-active" {
-			for _, unit := range argv[2:] {
-				if node.pending[strings.TrimSuffix(strings.TrimSuffix(unit, ".timer"), ".service")] {
-					return ToolResult{}
-				}
-			}
-			return ToolResult{ExitStatus: 3}
-		}
 		node.commands = append(node.commands, slices.Clone(argv))
 		if node.fail != nil && node.fail(argv) {
 			return ToolResult{ExitStatus: 1, Stderr: []byte("systemd refused")}
-		}
-		if len(argv) > 1 && argv[0] == "systemd-run" {
-			node.pending[strings.TrimPrefix(argv[1], "--unit=")] = true
 		}
 		return ToolResult{}
 	}
@@ -183,15 +169,8 @@ func isRevertTimer(argv []string, trialID string) bool {
 		slices.Contains(argv, "--trial="+trialID) && slices.Contains(argv, "revert")
 }
 
-func isAgentRestart(argv []string) bool {
-	return len(argv) > 0 && argv[0] == "systemd-run" && slices.Equal(argv[len(argv)-3:], []string{"systemctl", "restart", "katlc-agent.service"})
-}
-
-// forget removes a transient unit, as systemd does once it has run.
-func (n *managementTrialNode) forget(unit string) {
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	delete(n.pending, unit)
+func isTimerStop(argv []string, trialID string) bool {
+	return slices.Equal(argv, []string{"systemctl", "stop", managementTrialRevertUnitPrefix + trialID + ".timer"})
 }
 
 // serve runs the agent's listener loop, which serves whatever the node's
@@ -287,8 +266,8 @@ func TestManagementTransitionCommitsOverTrialCredentials(t *testing.T) {
 		t.Fatalf("begin = %+v, %v", begun, err)
 	}
 	commands := node.takeCommands()
-	if len(commands) != 2 || !isRevertTimer(commands[0], begun.TrialId) || !slices.Contains(commands[0], "--on-active=90s") || !isAgentRestart(commands[1]) {
-		t.Fatalf("begin ran %q; want the revert timer for the trial window, then an agent restart", commands)
+	if len(commands) != 1 || !isRevertTimer(commands[0], begun.TrialId) || !slices.Contains(commands[0], "--on-active=90s") {
+		t.Fatalf("begin ran %q; want only the revert timer for the trial window", commands)
 	}
 	if node.mode(t) != managementidentity.TrustedNetwork {
 		t.Fatal("begin changed the installed mode")
@@ -301,12 +280,11 @@ func TestManagementTransitionCommitsOverTrialCredentials(t *testing.T) {
 		t.Fatalf("confirm over the trial credentials = %+v, %v", confirmed, err)
 	}
 	commands = node.takeCommands()
-	if len(commands) != 1 || !slices.Equal(commands[0], []string{"systemctl", "stop", managementTrialRevertUnitPrefix + begun.TrialId + ".timer"}) {
+	if len(commands) != 1 || !isTimerStop(commands[0], begun.TrialId) {
 		t.Fatalf("confirm ran %q; want only the revert timer stopped", commands)
 	}
 
-	// A repeated confirmation, as after a lost response, succeeds without
-	// restarting the agent.
+	// A repeated confirmation, as after a lost response, succeeds again.
 	if again, err := agent.ConfirmManagementTransition(t.Context(), node.confirmRequest()); err != nil || again.State != "committed" {
 		t.Fatalf("repeated confirm = %+v, %v", again, err)
 	}
@@ -463,17 +441,18 @@ func TestConfirmManagementTransitionRequiresTrialClient(t *testing.T) {
 
 func TestConfirmAfterRevertAsksForRerun(t *testing.T) {
 	node := newManagementTrialNode(t)
-	// The deadline watcher must not notice first, so the late confirm is what
-	// ends the trial.
+	// The listener checks the deadline before it serves the trial and then
+	// not again for an hour, so the late confirm is what ends the trial.
 	node.server.managementTrialPoll = time.Hour
-	if _, err := node.server.BeginManagementTransition(t.Context(), node.beginRequest()); err != nil {
+	begun, err := node.server.BeginManagementTransition(t.Context(), node.beginRequest())
+	if err != nil {
 		t.Fatal(err)
 	}
 	address := node.serve(t)
 	node.clock.advance(2 * time.Minute)
 	node.takeCommands()
 
-	_, err := node.trialClient(t, address).ConfirmManagementTransition(t.Context(), node.confirmRequest())
+	_, err = node.trialClient(t, address).ConfirmManagementTransition(t.Context(), node.confirmRequest())
 	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "rerun") {
 		t.Fatalf("late confirm = %v; want a rerun request", err)
 	}
@@ -481,57 +460,67 @@ func TestConfirmAfterRevertAsksForRerun(t *testing.T) {
 		t.Fatal("late confirm committed the trial")
 	}
 	eventually(t, "installed clients reach the agent", func() bool { return node.answers(t, plaintextClient(t, address)) })
-	if commands := node.takeCommands(); len(commands) != 0 {
-		t.Fatalf("late confirm ran %q; want the agent to re-serve without systemd", commands)
+	if commands := node.takeCommands(); len(commands) != 1 || !isTimerStop(commands[0], begun.TrialId) {
+		t.Fatalf("late confirm ran %q; want only the revert timer stopped", commands)
 	}
 }
 
-func TestBeginManagementTransitionRestartsOnlyAnotherAgent(t *testing.T) {
+// A trial begun on a running agent is served by the same process: restarting
+// katlc-agent would rerun the boot units it requires.
+func TestBeginManagementTransitionServesTrialInProcess(t *testing.T) {
 	node := newManagementTrialNode(t)
-	first, err := node.server.BeginManagementTransition(t.Context(), node.beginRequest())
+	address := node.serve(t)
+	plaintext := plaintextClient(t, address)
+	begun, err := plaintext.BeginManagementTransition(t.Context(), node.beginRequest())
+	if err != nil || begun.State != "trial" {
+		t.Fatalf("begin over the installed listener = %+v, %v", begun, err)
+	}
+	trialClient := node.trialClient(t, address)
+	eventually(t, "the trial client reaches the agent", func() bool { return node.answers(t, trialClient) })
+	if node.answers(t, plaintext) {
+		t.Fatal("the agent still serves installed clients during the trial")
+	}
+	if commands := node.takeCommands(); len(commands) != 1 || !isRevertTimer(commands[0], begun.TrialId) {
+		t.Fatalf("begin ran %q; want only the revert timer", commands)
+	}
+
+	// A repeated begin, as after a lost response, returns the served trial.
+	again, err := trialClient.BeginManagementTransition(t.Context(), node.beginRequest())
+	if err != nil || again.TrialId != begun.TrialId || again.State != "trial" {
+		t.Fatalf("repeated begin = %+v, %v", again, err)
+	}
+	if commands := node.takeCommands(); len(commands) != 0 {
+		t.Fatalf("repeated begin ran %q", commands)
+	}
+}
+
+// A revert made outside the agent, by the systemd timer or the console, takes
+// effect when systemd reloads the agent.
+func TestReloadServesRevertedTrial(t *testing.T) {
+	node := newManagementTrialNode(t)
+	node.server.managementTrialPoll = time.Hour
+	begun, err := node.server.BeginManagementTransition(t.Context(), node.beginRequest())
 	if err != nil {
 		t.Fatal(err)
 	}
-	node.takeCommands()
-	restartUnit := managementTrialRestartUnitPrefix + first.TrialId
-
-	// A retry while the first restart is pending reuses it, even when systemd
-	// would refuse another, so it cannot revert the trial that restart serves.
-	node.fail = isAgentRestart
-	again, err := node.server.BeginManagementTransition(t.Context(), node.beginRequest())
-	if err != nil || again.TrialId != first.TrialId || again.State != "trial" {
-		t.Fatalf("repeated begin with a restart pending = %+v, %v", again, err)
-	}
-	if commands := node.takeCommands(); len(commands) != 0 {
-		t.Fatalf("repeated begin with a restart pending ran %q", commands)
-	}
-	if trial, _, err := nodeidentity.ReadManagementTrial(node.root); err != nil || trial.State != nodeidentity.ManagementTrialLive {
-		t.Fatalf("trial = %+v, %v; want it still live", trial, err)
+	address := node.serve(t)
+	trialClient, plaintext := node.trialClient(t, address), plaintextClient(t, address)
+	if !node.answers(t, trialClient) {
+		t.Fatal("the agent does not serve the trial")
 	}
 
-	// The restart ran without restarting this agent, so a retry schedules it
-	// again.
-	node.fail = nil
-	node.forget(restartUnit)
-	if _, err := node.server.BeginManagementTransition(t.Context(), node.beginRequest()); err != nil {
-		t.Fatal(err)
+	if _, reverted, err := nodeidentity.RevertManagementTrial(node.root, begun.TrialId, "reverted from the console", node.clock); err != nil || !reverted {
+		t.Fatalf("revert = %v, %v", reverted, err)
 	}
-	if commands := node.takeCommands(); len(commands) != 1 || !isAgentRestart(commands[0]) || commands[0][1] != "--unit="+restartUnit {
-		t.Fatalf("repeated begin after a lost restart ran %q; want the trial's restart", commands)
-	}
-
-	node.forget(restartUnit)
-	node.serve(t)
-	if _, err := node.server.BeginManagementTransition(t.Context(), node.beginRequest()); err != nil {
-		t.Fatal(err)
-	}
-	if commands := node.takeCommands(); len(commands) != 0 {
-		t.Fatalf("repeated begin on the agent serving the trial ran %q", commands)
+	// What the agent does on SIGHUP.
+	node.server.management.reselect()
+	eventually(t, "installed clients reach the agent", func() bool { return node.answers(t, plaintext) })
+	if node.answers(t, trialClient) {
+		t.Fatal("the agent still serves the reverted trial")
 	}
 }
 
-// Operations started during a trial would be cut short by the restarts that
-// serve and revert it.
+// Operations started during a trial would race its commit or revert.
 func TestManagementTrialRefusesMutations(t *testing.T) {
 	node := newManagementTrialNode(t)
 	begun, err := node.server.BeginManagementTransition(t.Context(), node.beginRequest())
@@ -579,44 +568,39 @@ func TestManagementTrialRefusesMutations(t *testing.T) {
 
 func TestBeginManagementTransitionFailures(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		setup    func(*testing.T, *managementTrialNode)
-		code     codes.Code
-		recorded bool
+		name  string
+		setup func(*testing.T, *managementTrialNode)
 	}{
 		{name: "active operation", setup: func(t *testing.T, n *managementTrialNode) {
 			if _, err := n.server.Store.Create(operation.OperationRecord{OperationID: "op-1", OperationKind: "test", Scope: "host-generation", RequestDigest: strings.Repeat("f", 64), ResourceLocks: []string{"generation-state.lock"}}, "accepted", time.Now()); err != nil {
 				t.Fatal(err)
 			}
-		}, code: codes.FailedPrecondition},
+		}},
 		{name: "mutation in progress", setup: func(t *testing.T, n *managementTrialNode) {
 			lock, err := n.server.Store.AcquireMutationLock()
 			if err != nil {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { lock.Close() })
-		}, code: codes.FailedPrecondition},
+		}},
 		{name: "revert timer refused", setup: func(t *testing.T, n *managementTrialNode) {
 			n.fail = func(argv []string) bool { return slices.Contains(argv, "revert") }
-		}, code: codes.FailedPrecondition},
-		{name: "restart refused", setup: func(t *testing.T, n *managementTrialNode) {
-			n.fail = isAgentRestart
-		}, code: codes.Internal, recorded: true},
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			node := newManagementTrialNode(t)
 			tc.setup(t, node)
 
 			_, err := node.server.BeginManagementTransition(t.Context(), node.beginRequest())
-			if status.Code(err) != tc.code {
-				t.Fatalf("begin = %v; want %s", err, tc.code)
+			if status.Code(err) != codes.FailedPrecondition {
+				t.Fatalf("begin = %v; want failed precondition", err)
 			}
 			trial, found, readErr := nodeidentity.ReadManagementTrial(node.root)
 			if readErr != nil {
 				t.Fatal(readErr)
 			}
-			if found != tc.recorded || (found && trial.State != nodeidentity.ManagementTrialReverted) {
-				t.Fatalf("trial record = %+v, %v; want recorded %v and never live", trial, found, tc.recorded)
+			if found {
+				t.Fatalf("trial record = %+v; want none", trial)
 			}
 			if served, err := nodeidentity.SettleManagementTrial(node.root, node.clock); err != nil || served != nil {
 				t.Fatalf("agent start would serve %+v, %v", served, err)
