@@ -653,3 +653,75 @@ func writeUnit(t *testing.T, root string, rel string, content string) {
 		t.Fatalf("write %s: %v", rel, err)
 	}
 }
+
+// Restarting katlc-agent, as management trials and credential rotation do,
+// makes systemd try-restart every active unit that Requires=, BindsTo= or is
+// PartOf= it, transitively. A target restarted this way only re-pulls its own
+// requirements, which are already active, but a service would run again, so
+// every service reached must be a oneshot that is inactive once it has run.
+func TestAgentRestartRerunsNoService(t *testing.T) {
+	systemdRoot := filepath.Join(repoRoot(t), "mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system")
+	dependents := map[string][]string{}
+	units := map[string]string{}
+	err := filepath.WalkDir(systemdRoot, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, _ := filepath.Rel(systemdRoot, path)
+		dir, name := filepath.Split(rel)
+		if owner, ok := strings.CutSuffix(strings.TrimSuffix(dir, "/"), ".requires"); ok {
+			dependents[name] = append(dependents[name], owner)
+			return nil
+		}
+		if entry.IsDir() || dir != "" {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		units[name] = string(data)
+		for _, line := range strings.Split(string(data), "\n") {
+			key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+			if !ok || (key != "Requires" && key != "BindsTo" && key != "PartOf") {
+				continue
+			}
+			for _, dependency := range strings.Fields(value) {
+				dependents[dependency] = append(dependents[dependency], name)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	reached := map[string]bool{}
+	queue := []string{"katlc-agent.service"}
+	for len(queue) > 0 {
+		unit := queue[0]
+		queue = queue[1:]
+		for _, dependent := range dependents[unit] {
+			if !reached[dependent] {
+				reached[dependent] = true
+				queue = append(queue, dependent)
+			}
+		}
+	}
+	if !reached["katl-kubeadm-ready.target"] || !reached["katl-boot-health.service"] {
+		t.Fatalf("agent restart reaches %v; the scan no longer sees the known dependents", reached)
+	}
+	for unit := range reached {
+		if strings.HasSuffix(unit, ".target") {
+			continue
+		}
+		body, ok := units[unit]
+		if !ok {
+			t.Errorf("%s depends on katlc-agent but is not a Katl unit this test can check", unit)
+			continue
+		}
+		if !strings.Contains(body, "\nType=oneshot\n") || strings.Contains(body, "RemainAfterExit=yes") {
+			t.Errorf("%s stays active, so restarting katlc-agent would rerun it:\n%s", unit, body)
+		}
+	}
+}

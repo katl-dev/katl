@@ -100,11 +100,18 @@ type Server struct {
 	RunReboot                ToolRunner
 	RunShutdown              ToolRunner
 	RunBootHealthStatus      ToolRunner
+	RunManagementTrial       ToolRunner
+	ManagementTrialClock     nodeidentity.TrialClock
 	Now                      func() time.Time
 	OperationID              func(string, time.Time) (string, error)
 	AvailableStorage         availableStorageFunc
 	submitMu                 sync.Mutex
 	etcdSnapshotMu           sync.Mutex
+	// servedTrial is the management trial this process's listener serves.
+	servedTrial servedTrial
+	// managementTrialPoll bounds how long a served trial's deadline can pass
+	// unnoticed, such as across a suspend; zero uses the default.
+	managementTrialPoll time.Duration
 }
 
 func NewServer(root string, store operation.Store) *Server {
@@ -128,6 +135,7 @@ func NewServer(root string, store operation.Store) *Server {
 		RunReboot:                runChildProcess,
 		RunShutdown:              runChildProcess,
 		RunBootHealthStatus:      runChildProcess,
+		RunManagementTrial:       runChildProcess,
 		Now:                      func() time.Time { return time.Now().UTC() },
 		OperationID:              defaultOperationID,
 		AvailableStorage:         filesystemAvailable,
@@ -265,6 +273,10 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "read volume status: %v", err)
 	}
+	management, err := nodeManagementStatus(s.Root)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "read management status: %v", err)
+	}
 	return &agentapi.NodeStatus{
 		ApiVersion:              APIVersion,
 		MachineId:               machineID,
@@ -286,6 +298,7 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 		BootHealthDiagnostic:    bootHealth.Diagnostic,
 		EnrollmentId:            enrollment.ID,
 		InventoryNodeName:       enrollment.InventoryNodeName,
+		Management:              management,
 	}, nil
 }
 
@@ -461,6 +474,11 @@ func (s *Server) joinDiscoveryKubeconfig(material cluster.JoinMaterial) ([]byte,
 func (s *Server) acceptOperation(ctx context.Context, req *agentapi.SubmitOperationRequest, digest string) (operation.OperationRecord, *agentapi.OperationAccepted, error) {
 	s.submitMu.Lock()
 	defer s.submitMu.Unlock()
+	// Checked again under submitMu, which a management transition holds while
+	// it begins, so an operation validated just before cannot start during it.
+	if err := s.refuseDuringManagementTrial(); err != nil {
+		return operation.OperationRecord{}, nil, err
+	}
 	if existing, ok, err := s.findClientRequest(req.ClientRequestId); err != nil {
 		return operation.OperationRecord{}, nil, status.Errorf(codes.Internal, "read idempotency state: %v", err)
 	} else if ok {
@@ -1200,6 +1218,24 @@ func (s *Server) enrollment() (nodeidentity.Enrollment, error) {
 }
 
 func (s *Server) validateMutationTarget(enrollmentID, nodeName, machineID, currentGenerationID string) error {
+	if err := s.validateEnrolledTarget(enrollmentID, nodeName, machineID); err != nil {
+		return err
+	}
+	if err := s.refuseDuringManagementTrial(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(currentGenerationID) == "" {
+		return status.Error(codes.InvalidArgument, "expectedCurrentGenerationID is required for mutating requests")
+	}
+	if err := cleanPublicID("expectedCurrentGenerationID", currentGenerationID); err != nil {
+		return status.Error(codes.InvalidArgument, err.Error())
+	}
+	return s.validateExpectedCurrentGeneration(currentGenerationID)
+}
+
+// validateEnrolledTarget binds a mutating request to the installation the
+// client observed.
+func (s *Server) validateEnrolledTarget(enrollmentID, nodeName, machineID string) error {
 	for _, required := range []struct {
 		field string
 		value string
@@ -1207,14 +1243,10 @@ func (s *Server) validateMutationTarget(enrollmentID, nodeName, machineID, curre
 		{field: "expectedEnrollmentID", value: enrollmentID},
 		{field: "expectedInventoryNodeName", value: nodeName},
 		{field: "expectedMachineID", value: machineID},
-		{field: "expectedCurrentGenerationID", value: currentGenerationID},
 	} {
 		if strings.TrimSpace(required.value) == "" {
 			return status.Errorf(codes.InvalidArgument, "%s is required for mutating requests", required.field)
 		}
-	}
-	if err := cleanPublicID("expectedCurrentGenerationID", currentGenerationID); err != nil {
-		return status.Error(codes.InvalidArgument, err.Error())
 	}
 	enrollment, err := s.enrollment()
 	if err != nil {
@@ -1229,7 +1261,7 @@ func (s *Server) validateMutationTarget(enrollmentID, nodeName, machineID, curre
 	if machineID != enrollment.MachineID {
 		return status.Error(codes.FailedPrecondition, "expectedMachineID does not match enrolled machine id")
 	}
-	return s.validateExpectedCurrentGeneration(currentGenerationID)
+	return nil
 }
 
 func (s *Server) operationStoreRoot() string {

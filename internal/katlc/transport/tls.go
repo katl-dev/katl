@@ -27,6 +27,16 @@ func ServerTLSConfig(root string) (*tls.Config, error) {
 	if err != nil {
 		return nil, err
 	}
+	return serverTLSConfigFromFiles(caPath, certPath, keyPath)
+}
+
+// TrialServerTLSConfig serves the credentials staged for a management trial's
+// authority instead of the installed mode.
+func TrialServerTLSConfig(root, authority string) (*tls.Config, error) {
+	return serverTLSConfigFromFiles(nodeidentity.ManagementVersionPaths(root, authority))
+}
+
+func serverTLSConfigFromFiles(caPath, certPath, keyPath string) (*tls.Config, error) {
 	ca, err := os.ReadFile(caPath)
 	if err != nil {
 		return nil, fmt.Errorf("read management client CA: %w", err)

@@ -74,6 +74,16 @@ code owns its configuration and extension semantics. Clients use
 `host-upgrade-v2` for a combined upgrade only when talking to an older agent
 that does not advertise the handoff operation.
 
+## Management trust transition
+
+`BeginManagementTransition` and `ConfirmManagementTransition` are RPC methods
+rather than operation kinds: a trial outlives the agent process that accepts it
+and must be confirmed over the credentials it installs. An older agent answers
+both with `Unimplemented`; a client must then stop and say which node needs a
+newer release.
+`NodeStatus.management` reports the installed mode, its authority and any
+recorded trial; an older agent leaves it unset.
+
 ## Image and persisted-state compatibility
 
 Beginning with the first stable series, a target image must support host

@@ -3,6 +3,7 @@ package nodeidentity
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -89,13 +90,39 @@ func ManagementCredentialsPaths(root string) (string, string, string, error) {
 	if _, err := hex.DecodeString(fingerprint); err != nil {
 		return "", "", "", fmt.Errorf("active management identity has invalid fingerprint: %w", err)
 	}
-	base := filepath.Join(dir, target)
-	return filepath.Join(base, "ca.crt"), filepath.Join(base, "server.crt"), filepath.Join(base, "server.key"), nil
+	ca, cert, key := ManagementVersionPaths(root, fingerprint)
+	return ca, cert, key, nil
 }
+
+// ManagementVersionPaths names the credential files staged for one authority.
+func ManagementVersionPaths(root, fingerprint string) (string, string, string) {
+	base := filepath.Join(filepath.Clean(root), managementDirectory, "versions", fingerprint)
+	return filepath.Join(base, "ca.crt"), filepath.Join(base, "server.crt"), filepath.Join(base, "server.key")
+}
+
+// errManagementTrialInProgress refuses a rotation while a trial could still
+// overwrite or discard the active link it would switch.
+var errManagementTrialInProgress = errors.New("a management trust transition is in progress; wait for it to confirm or revert, or run `katlc agent management-trial revert`")
 
 func InspectManagementRotation(root string, request ManagementRotation) (ManagementRotationStatus, error) {
 	if strings.TrimSpace(root) == "" {
 		return ManagementRotationStatus{}, fmt.Errorf("runtime root is required")
+	}
+	unlock, err := lockManagementIdentity(filepath.Join(filepath.Clean(root), managementDirectory))
+	if err != nil {
+		return ManagementRotationStatus{}, err
+	}
+	defer unlock()
+	return inspectManagementRotationLocked(root, request)
+}
+
+func inspectManagementRotationLocked(root string, request ManagementRotation) (ManagementRotationStatus, error) {
+	trial, found, err := ReadManagementTrial(root)
+	if err != nil {
+		return ManagementRotationStatus{}, err
+	}
+	if found && trial.State == ManagementTrialLive {
+		return ManagementRotationStatus{}, errManagementTrialInProgress
 	}
 	mode, err := ManagementAuthentication(root)
 	if err != nil {
@@ -166,17 +193,13 @@ func InspectManagementRotation(root string, request ManagementRotation) (Managem
 
 func RotateManagementIdentity(root string, request ManagementRotation) (ManagementRotationStatus, error) {
 	dir := filepath.Join(filepath.Clean(root), managementDirectory)
-	lock, err := os.OpenFile(filepath.Join(dir, ".rotation.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	unlock, err := lockManagementIdentity(dir)
 	if err != nil {
-		return ManagementRotationStatus{}, fmt.Errorf("open management rotation lock: %w", err)
+		return ManagementRotationStatus{}, err
 	}
-	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		return ManagementRotationStatus{}, fmt.Errorf("lock management identity: %w", err)
-	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	defer unlock()
 
-	status, err := InspectManagementRotation(root, request)
+	status, err := inspectManagementRotationLocked(root, request)
 	if err != nil || status.AlreadyRotated {
 		return status, err
 	}
@@ -187,30 +210,63 @@ func RotateManagementIdentity(root string, request ManagementRotation) (Manageme
 	if err := stageManagementVersion(versions, status.NextAuthority, request.Replacement); err != nil {
 		return ManagementRotationStatus{}, err
 	}
-	link, err := os.CreateTemp(dir, ".active-")
-	if err != nil {
-		return ManagementRotationStatus{}, fmt.Errorf("reserve active identity link: %w", err)
-	}
-	linkPath := link.Name()
-	if err := link.Close(); err != nil {
-		return ManagementRotationStatus{}, err
-	}
-	defer os.Remove(linkPath)
-	if err := os.Remove(linkPath); err != nil {
-		return ManagementRotationStatus{}, err
-	}
-	if err := os.Symlink(filepath.Join("versions", status.NextAuthority), linkPath); err != nil {
-		return ManagementRotationStatus{}, fmt.Errorf("create active identity link: %w", err)
-	}
-	if err := os.Rename(linkPath, filepath.Join(dir, "active")); err != nil {
-		return ManagementRotationStatus{}, fmt.Errorf("switch active management identity: %w", err)
-	}
-	if err := syncManagementDirectory(dir); err != nil {
+	if err := publishActiveManagementVersion(dir, filepath.Join("versions", status.NextAuthority)); err != nil {
 		return ManagementRotationStatus{}, err
 	}
 	status.CurrentAuthority = status.NextAuthority
 	status.AlreadyRotated = true
 	return status, nil
+}
+
+// lockManagementIdentity serializes every change to the installed management
+// credentials, mode and trial record across the agent and SSH or timer commands.
+func lockManagementIdentity(dir string) (func(), error) {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return nil, fmt.Errorf("create management identity directory: %w", err)
+	}
+	lock, err := os.OpenFile(filepath.Join(dir, ".rotation.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open management identity lock: %w", err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		lock.Close()
+		return nil, fmt.Errorf("lock management identity: %w", err)
+	}
+	return func() {
+		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		_ = lock.Close()
+	}, nil
+}
+
+// publishActiveManagementVersion atomically points active at target, or
+// removes it when target is empty so the legacy credential files apply again.
+func publishActiveManagementVersion(dir, target string) error {
+	active := filepath.Join(dir, "active")
+	if target == "" {
+		if err := os.Remove(active); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove active management identity: %w", err)
+		}
+		return syncManagementDirectory(dir)
+	}
+	link, err := os.CreateTemp(dir, ".active-")
+	if err != nil {
+		return fmt.Errorf("reserve active identity link: %w", err)
+	}
+	linkPath := link.Name()
+	if err := link.Close(); err != nil {
+		return err
+	}
+	defer os.Remove(linkPath)
+	if err := os.Remove(linkPath); err != nil {
+		return err
+	}
+	if err := os.Symlink(target, linkPath); err != nil {
+		return fmt.Errorf("create active identity link: %w", err)
+	}
+	if err := os.Rename(linkPath, active); err != nil {
+		return fmt.Errorf("switch active management identity: %w", err)
+	}
+	return syncManagementDirectory(dir)
 }
 
 func stageManagementVersion(versions, fingerprint string, identity managementidentity.NodeCredentials) error {
