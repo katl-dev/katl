@@ -98,7 +98,7 @@ func ManagementDialOptions(ctx context.Context, node, endpoint string, creds cre
 // than a certainty.
 func explainMutualTLSNode(err error) error {
 	if grpcstatus.Code(err) == codes.Unavailable && strings.Contains(err.Error(), "server preface") {
-		return fmt.Errorf("node did not answer plaintext gRPC; it likely serves mTLS management, so select its mTLS configuration (--config or --context), or check that management.address and management.authentication match the node and that the address points at the katlc agent on port 9443: %w", err)
+		return fmt.Errorf("node did not answer plaintext gRPC; it likely serves mTLS management. If `katlctl management enable-mtls` moved it to mTLS without finishing, rerun that command; otherwise select its mTLS configuration (--config or --context), or check that management.address and management.authentication match the node and that the address points at the katlc agent on port 9443: %w", err)
 	}
 	return err
 }

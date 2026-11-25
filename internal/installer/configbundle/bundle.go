@@ -1614,7 +1614,7 @@ func firstNonEmpty(values ...string) string {
 
 // errManagementAuthenticationRequired refuses a config that states neither a
 // management authentication mode nor a management identity.
-var errManagementAuthenticationRequired = errors.New("spec.managementAuthentication is required: to keep managing nodes installed with trusted-network management, add `managementAuthentication: trusted-network` under spec; for a new mTLS cluster run `katlctl management identity create --config CONFIG`; changing an installed cluster's mode requires reprovisioning (docs/operations/management-auth.md#change-the-access-mode)")
+var errManagementAuthenticationRequired = errors.New("spec.managementAuthentication is required: to keep managing nodes installed with trusted-network management, add `managementAuthentication: trusted-network` under spec, and run `katlctl management enable-mtls --config CONFIG` to move them to mTLS; for a new mTLS cluster add `managementAuthentication: mtls` and run `katlctl management identity create --config CONFIG`")
 
 // ManagementAuthentication resolves the management mode a config selects
 // without consulting workstation state. An explicit value wins, and a

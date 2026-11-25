@@ -280,7 +280,7 @@ func TestConfigInitForceTrustedNetworkReplacesConfigWithoutMode(t *testing.T) {
 }
 
 func TestConfigInitForceTrustedNetworkOverMutualTLSWarns(t *testing.T) {
-	const notice = "nodes installed with mTLS management will refuse this configuration; changing mode requires reprovisioning (docs/operations/management-auth.md#change-the-access-mode)"
+	const notice = "the replaced configuration selected mTLS management"
 	dir := t.TempDir()
 	t.Setenv("KATLCTL_CONFIG", filepath.Join(dir, "context.yaml"))
 	path := filepath.Join(dir, "cluster.yaml")
@@ -293,7 +293,7 @@ func TestConfigInitForceTrustedNetworkOverMutualTLSWarns(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !strings.Contains(stderr.String(), notice) {
+	if !strings.Contains(stderr.String(), notice) || !strings.Contains(stderr.String(), "katlctl management enable-mtls") {
 		t.Fatalf("stderr = %q, want mode-change notice", stderr.String())
 	}
 	if source := readInitSource(t, path); source.Spec.ManagementAuthentication != "trusted-network" {
@@ -345,7 +345,7 @@ func TestTrustedNetworkClientExplainsMutualTLSNode(t *testing.T) {
 
 	_, err = conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 
-	if err == nil || !strings.Contains(err.Error(), "likely serves mTLS") || !strings.Contains(err.Error(), "--config") {
+	if err == nil || !strings.Contains(err.Error(), "likely serves mTLS") || !strings.Contains(err.Error(), "--config") || !strings.Contains(err.Error(), "rerun") || !strings.Contains(err.Error(), "katlctl management enable-mtls") {
 		t.Fatalf("error = %v", err)
 	}
 }

@@ -199,9 +199,12 @@ func runConfigInit(ctx context.Context, opts configInitOptions, stdout, stderr i
 			if opts.managementAuthentication == "" {
 				source.Spec.ManagementAuthentication = previousMode
 			}
+			if previousMode == managementidentity.TrustedNetwork && explicitMode == managementidentity.MutualTLS {
+				return trustedNetworkNodes(opts.outputPath)
+			}
 			existingTLS = previousMode == managementidentity.MutualTLS
 			if existingTLS && explicitMode == managementidentity.TrustedNetwork {
-				fmt.Fprintln(stderr, "nodes installed with mTLS management will refuse this configuration; changing mode requires reprovisioning (docs/operations/management-auth.md#change-the-access-mode)")
+				fmt.Fprintln(stderr, "the replaced configuration selected mTLS management: nodes that serve mTLS refuse this configuration and cannot return to trusted-network without reprovisioning; nodes that still serve trusted-network management accept it, and `katlctl management enable-mtls` moves them to mTLS")
 			}
 			if reference := previousSource.Spec.ManagementIdentity; reference != "" && source.Spec.ManagementAuthentication == managementidentity.MutualTLS {
 				source.Spec.ManagementIdentity = reference

@@ -33,7 +33,7 @@ func (c *clientCredentials) ClientHandshake(ctx context.Context, authority strin
 	case errors.As(err, &unknownCA):
 		return nil, nil, fmt.Errorf("node uses a different management authority; after rotation use the updated ClusterConfig and refresh saved contexts, otherwise restore the installed authority's secrets or, if they are lost, run katlctl management identity recover --config CLUSTER.yaml")
 	case errors.As(err, &plaintext):
-		return nil, nil, fmt.Errorf("management endpoint answered without TLS. If this node was installed with trusted-network management, set `managementAuthentication: trusted-network`. Otherwise check that management.address points at the node's katlc agent on 9443. Changing mode requires reprovisioning (docs/operations/management-auth.md#change-the-access-mode): %w", err)
+		return nil, nil, fmt.Errorf("management endpoint answered without TLS, so the node still serves trusted-network management. Run or rerun `katlctl management enable-mtls` to move it to mTLS, or set `managementAuthentication: trusted-network` to keep managing it that way. Otherwise check that management.address points at the node's katlc agent on 9443: %w", err)
 	case errors.As(err, &wrongName):
 		return nil, nil, fmt.Errorf("management address answered with a certificate for another node; check the node name and management.address in the cluster configuration")
 	default:
