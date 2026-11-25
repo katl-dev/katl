@@ -347,10 +347,14 @@ func validateAddressableVolume(plan VolumePlan, disk, partition BlockDevice) err
 	if err := checkAddressable(disk); err != nil {
 		return fmt.Errorf("volume %q: %w", plan.Name, err)
 	}
+	// A selected partition is written through the disk's V-partM link.
+	if !plan.Repartition && partition.ByDiskSeq == "" {
+		return fmt.Errorf("volume %q: udev created no /dev/disk/by-diskseq/%d-part%d link for partition %s, so Katl cannot address it safely; select a partition on a disk udev links by diskseq, such as an sd, vd, nvme, xvd, or mmcblk device", plan.Name, disk.DiskSeq, plan.Partition.Number, partition.Path)
+	}
 	return nil
 }
 
-// volumeDevice addresses what a volume's destructive commands write: the bound
+// volumeDeviceaddresses what a volume's destructive commands write: the bound
 // disk, or the selected partition on it, by the disk's kernel attachment
 // sequence.
 func volumeDevice(plan VolumePlan) (string, error) {

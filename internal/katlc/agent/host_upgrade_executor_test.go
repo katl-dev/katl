@@ -247,6 +247,7 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	// udev has not yet created the inactive partition's by-diskseq link: only
 	// the kernel node exists.
 	inactiveDevice := filepath.Join(root, "dev/vda3")
+	host.devRoot = root
 	writeTestFile(t, inactiveDevice, string(make([]byte, len(runtimeBytes)+32)))
 	executor := NewExecutor(root, store, "agent-test")
 	executor.volumeDevices.bootedDisk = host.booted(0, 2)

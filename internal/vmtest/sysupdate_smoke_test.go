@@ -248,6 +248,9 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 		t.Fatalf("staging left the pending slot type:\n%s", dump)
 	}
 
+	// The re-added slot reports no PARTUUID until the reboot below.
+	assertSlotNodeAfterReadd(t, ctx, guest, disk, inactivePart)
+
 	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
 	waitGenerationPromotion(t, ctx, guest, candidateGeneration)
 	assertBootedGenerationIdentity(t, ctx, guest, candidateSpec)
@@ -1196,17 +1199,24 @@ func guestCommandOutput(t *testing.T, ctx context.Context, guest *GuestControl, 
 }
 
 func collectSysupdateFailureEvidence(ctx context.Context, guest *GuestControl) {
-	for _, req := range []GuestCommandRequest{
-		{Name: "upgrade-agent-journal", Argv: []string{"journalctl", "-b", "-u", "katlc-agent.service", "--no-pager", "-n", "1000"}, AllowFailure: true, StdoutLimit: 1 << 20},
-		{Name: "upgrade-state-storage", Argv: []string{"findmnt", "--df", "--bytes", "--target", "/var/lib/katl"}, AllowFailure: true},
-		{Name: "upgrade-efi-storage", Argv: []string{"findmnt", "--df", "--bytes", "--target", "/efi"}, AllowFailure: true},
-		{Name: "sysupdate-status", Argv: []string{"/usr/lib/systemd/systemd-sysupdate", "--no-pager", "--verify=no", "--definitions=/var/lib/katl/test-artifacts/sysupdate/sysupdate.d", "list"}, AllowFailure: true},
-		{Name: "root-labels", Argv: []string{"blkid", "-o", "export"}, AllowFailure: true, StdoutLimit: 1 << 20},
-		{Name: "sysupdate-files", Argv: []string{"find", "/var/lib/katl/test-artifacts/sysupdate", "-maxdepth", "4", "-type", "f", "-print"}, AllowFailure: true},
-		{Name: "efi-linux-files", Argv: []string{"find", "/efi/EFI/Linux", "-maxdepth", "1", "-type", "f", "-print"}, AllowFailure: true},
-	} {
-		_, _ = guest.RunCommand(ctx, req)
-	}
+	guest.CollectDiagnostics(ctx, GuestDiagnostics{
+		Timeout: 2 * time.Minute,
+		// The journal of the failing boot, and of the boot before it when the
+		// test had already rebooted.
+		Journals: []GuestJournalRequest{
+			{Name: "upgrade-journal", MaxBytes: 4 << 20},
+			{Name: "upgrade-previous-boot-journal", BootID: "-1", MaxBytes: 4 << 20},
+			{Name: "upgrade-agent-journal", Units: []string{"katlc-agent.service"}},
+		},
+		Commands: []GuestCommandRequest{
+			{Name: "upgrade-state-storage", Argv: []string{"findmnt", "--df", "--bytes", "--target", "/var/lib/katl"}},
+			{Name: "upgrade-efi-storage", Argv: []string{"findmnt", "--df", "--bytes", "--target", "/efi"}},
+			{Name: "sysupdate-status", Argv: []string{"/usr/lib/systemd/systemd-sysupdate", "--no-pager", "--verify=no", "--definitions=/var/lib/katl/test-artifacts/sysupdate/sysupdate.d", "list"}},
+			{Name: "root-labels", Argv: []string{"blkid", "-o", "export"}, StdoutLimit: 1 << 20},
+			{Name: "sysupdate-files", Argv: []string{"find", "/var/lib/katl/test-artifacts/sysupdate", "-maxdepth", "4", "-type", "f", "-print"}},
+			{Name: "efi-linux-files", Argv: []string{"find", "/efi/EFI/Linux", "-maxdepth", "1", "-type", "f", "-print"}},
+		},
+	})
 }
 
 func sha256Hex(data []byte) string {
@@ -1268,4 +1278,42 @@ func inactiveRootSlot(t *testing.T, ctx context.Context, guest *GuestControl) (s
 	}
 	t.Fatalf("no root slot other than %s on %s", source, disk)
 	return "", ""
+}
+
+// assertSlotNodeAfterReadd removes and adds the unmounted inactive slot as
+// partx --update does, then checks without waiting for udev that the kernel
+// already reports the slot by disk sequence and partition number, which is how
+// systemdisk.Partition.Node finds the device to write. The kernel reports no
+// PARTUUID for the re-added partition until reboot, so the caller reboots next.
+func assertSlotNodeAfterReadd(t *testing.T, ctx context.Context, guest *GuestControl, disk, part string) {
+	t.Helper()
+	guestCommand(t, ctx, guest, "slot-delete", "partx", "--delete", "--nr", part, disk)
+	guestCommand(t, ctx, guest, "slot-add", "partx", "--add", "--nr", part, disk)
+
+	var table struct {
+		BlockDevices []struct {
+			Name     string `json:"name"`
+			DiskSeq  any    `json:"diskseq"`
+			Children []struct {
+				Name   string `json:"name"`
+				PartN  any    `json:"partn"`
+				PartID any    `json:"partuuid"`
+			} `json:"children"`
+		} `json:"blockdevices"`
+	}
+	output := guestCommandOutput(t, ctx, guest, "slot-readd-table", "lsblk", "--json", "--output", "NAME,DISKSEQ,PARTN,PARTUUID", disk)
+	if err := json.Unmarshal([]byte(output), &table); err != nil || len(table.BlockDevices) != 1 {
+		t.Fatalf("parse lsblk of %s: %v\n%s", disk, err, output)
+	}
+	if seq := fmt.Sprint(table.BlockDevices[0].DiskSeq); seq == "" || seq == "<nil>" || seq == "0" {
+		t.Fatalf("kernel reports no diskseq for %s:\n%s", disk, output)
+	}
+	for _, child := range table.BlockDevices[0].Children {
+		if fmt.Sprint(child.PartN) != part {
+			continue
+		}
+		guestCommand(t, ctx, guest, "slot-readd-node", "test", "-b", "/dev/"+child.Name)
+		return
+	}
+	t.Fatalf("kernel reports no partition %s on %s straight after it was added again:\n%s", part, disk, output)
 }

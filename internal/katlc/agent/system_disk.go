@@ -35,10 +35,10 @@ func bootedSystemDisk() (systemdisk.Layout, error) {
 	return layout, nil
 }
 
-// rootSlots are the two root partitions on the system disk. Disk addresses
-// the system disk by diskseq, so the relabel cannot reach a disk that later
-// takes its kernel name. Inactive is the bound inactive slot, opened through
-// Inactive.Node when it is written.
+// rootSlots are the two root partitions on the system disk. Disk addresses the
+// system disk by diskseq beneath the executor root, so the relabel cannot reach
+// a disk that later takes its kernel name. Inactive is the bound inactive slot,
+// opened through Inactive.Node when it is written.
 type rootSlots struct {
 	Disk             string
 	ActivePart       int
@@ -68,7 +68,7 @@ func (e *Executor) findRootSlots(ctx context.Context, activePartUUID string) (ro
 	if layout.Disk.Seq == 0 {
 		return rootSlots{}, fmt.Errorf("find root slots: system disk %s reports no diskseq", layout.Disk.Name)
 	}
-	diskPath := fmt.Sprintf("/dev/disk/by-diskseq/%d", layout.Disk.Seq)
+	diskPath := rootedRuntimePath(e.Root, fmt.Sprintf("/dev/disk/by-diskseq/%d", layout.Disk.Seq))
 	types, err := e.partitionTypes(ctx, diskPath, layout.Disk)
 	if err != nil {
 		return rootSlots{}, err

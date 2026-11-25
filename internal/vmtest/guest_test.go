@@ -299,3 +299,33 @@ func readFile(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+func TestSysupdateFailureEvidenceKeepsGuestJournal(t *testing.T) {
+	result := guestResult(t)
+	client := &fakeGuestClient{
+		command: &vmtestpb.CommandResult{},
+		journal: &vmtestpb.JournalResult{Text: "kernel: vdb3\n", SizeBytes: 13},
+	}
+
+	collectSysupdateFailureEvidence(context.Background(), NewGuestControl(result, client))
+
+	data, err := os.ReadFile(filepath.Join(result.Artifacts.GuestDir, "diagnostics.json"))
+	if err != nil {
+		t.Fatalf("read diagnostics: %v", err)
+	}
+	var report GuestDiagnosticReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("decode diagnostics: %v", err)
+	}
+	// The whole journal is kept, not only the agent's units, so kernel and
+	// udev messages about the partitions are available.
+	var whole bool
+	for _, journal := range report.Journals {
+		if len(journal.Units) == 0 && journal.Artifact != "" && readFile(t, journal.Artifact) == "kernel: vdb3\n" {
+			whole = true
+		}
+	}
+	if !whole {
+		t.Fatalf("diagnostics = %#v, want a journal artifact that is not limited to units", report)
+	}
+}
