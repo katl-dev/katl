@@ -1,8 +1,6 @@
 package vmtest
 
 import (
-	"encoding/xml"
-	"errors"
 	"fmt"
 	"net"
 )
@@ -47,21 +45,4 @@ func planAddresses(cidr *net.IPNet, gateway net.IP) (addressPlan, error) {
 // reservable reports whether address may be planned for a node.
 func (plan addressPlan) reservable(address uint32) bool {
 	return address >= plan.reservableStart && address <= plan.reservableEnd && address != plan.gateway
-}
-
-// libvirtNetworkGateway returns the address libvirt gives the host side of
-// the network, which guests use as their gateway.
-func libvirtNetworkGateway(data []byte) (net.IP, error) {
-	var doc struct {
-		IPs []networkIPElement `xml:"ip"`
-	}
-	if err := xml.Unmarshal(data, &doc); err != nil {
-		return nil, err
-	}
-	for _, element := range doc.IPs {
-		if ip := net.ParseIP(element.Address).To4(); ip != nil {
-			return ip, nil
-		}
-	}
-	return nil, errors.New("network has no IPv4 address")
 }

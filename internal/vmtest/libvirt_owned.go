@@ -375,9 +375,12 @@ func removeNetwork(ctx context.Context, virsh virshFunc, network string) error {
 // subnet after libvirt refuses to start the network on one.
 const networkCreationAttempts = 4
 
+// ErrScenarioPlanned reports a scenario ID that its run already planned.
+var ErrScenarioPlanned = errors.New("scenario already planned in this run")
+
 // createNetwork defines and starts network on a /24 that nothing else on the
-// host uses, or reuses the network of that name when it carries network's
-// lease. Choosing the subnet and starting the network happen under one lock,
+// host uses, and refuses a network name that already exists. Choosing the
+// subnet and starting the network happen under one lock,
 // so concurrent processes cannot choose the same subnet; a subnet that libvirt
 // still refuses, for example because a network outside libvirt's view uses it,
 // is skipped on the next attempt. The returned network has its CIDR and
@@ -397,31 +400,11 @@ func createNetwork(ctx context.Context, virsh virshFunc, lockPath string, networ
 		if err := network.requireOwned(ctx, virsh); err != nil {
 			return OwnedNetwork{}, err
 		}
-		data, err := virsh(ctx, "net-dumpxml", network.Name)
-		if err != nil {
-			return OwnedNetwork{}, err
-		}
-		subnet, err := LibvirtNetworkIPv4(data)
-		if err != nil || subnet == nil {
-			return OwnedNetwork{}, fmt.Errorf("read libvirt network %s subnet: %v", network.Name, err)
-		}
-		gateway, err := libvirtNetworkGateway(data)
-		if err != nil {
-			return OwnedNetwork{}, fmt.Errorf("read libvirt network %s gateway: %w", network.Name, err)
-		}
-		network.CIDR, network.Gateway = subnet.String(), gateway.String()
-		// The reservations belong to whoever made them: a reused network keeps
-		// them, and the scenario's own syncs reconcile its nodes.
-		active, err := networkActive(ctx, virsh, network.Name)
-		if err != nil {
-			return OwnedNetwork{}, err
-		}
-		if !active {
-			if _, err := virsh(ctx, "net-start", network.Name); err != nil {
-				return OwnedNetwork{}, fmt.Errorf("%w %s on %s: %w", ErrNetworkStart, network.Name, network.CIDR, err)
-			}
-		}
-		return network, nil
+		// A scenario's network name derives from its run and ID, so an existing
+		// one means the ID is already planned in this run, or that a domain
+		// preserved for debugging still holds the network's addresses. Planning
+		// again would give a new node the MAC and address of that earlier VM.
+		return OwnedNetwork{}, fmt.Errorf("%w: libvirt network %s already exists; give each scenario a distinct name, and remove any domain preserved for debugging that still holds it", ErrScenarioPlanned, network.Name)
 	}
 
 	var refused []*net.IPNet
