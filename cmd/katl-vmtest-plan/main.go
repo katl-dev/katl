@@ -61,13 +61,19 @@ func main() {
 func run(args []string, input io.Reader, output io.Writer) error {
 	flags := flag.NewFlagSet("katl-vmtest-plan", flag.ContinueOnError)
 	changed := flags.Bool("changed", false, "select groups from NUL-delimited changed paths on stdin; default: all groups")
-	ci := flags.Bool("ci", false, "plan VM and driver flavours from NUL-delimited changed paths")
+	ci := flags.Bool("ci", false, "plan VM, driver, and production flavours from NUL-delimited changed paths")
 	regression := flags.Bool("regression", false, "with --ci, run both regression flavours for the merge gate when any VM suite is selected")
+	production := flags.String("production", "off", "with --ci, select production flavours: off, non-prose, or always")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || (*regression && !*ci) || (*changed && *ci) {
+	if flags.NArg() != 0 || (!*ci && (*regression || *production != "off")) || (*changed && *ci) {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+	switch *production {
+	case "off", "non-prose", "always":
+	default:
+		return fmt.Errorf("unknown production selection %q", *production)
 	}
 	selected := groups
 	if *changed || *ci {
@@ -88,7 +94,9 @@ func run(args []string, input io.Reader, output io.Writer) error {
 			}
 		}
 		if *ci {
-			return json.NewEncoder(output).Encode(planCI(paths, *regression))
+			plan := planCI(paths, *regression)
+			plan.ProductionFlavours = productionFlavours(paths, *production)
+			return json.NewEncoder(output).Encode(plan)
 		}
 		selected = selectGroups(paths)
 	}
@@ -120,9 +128,30 @@ func driverChange(name string) bool {
 }
 
 type ciPlan struct {
-	VMFlavours     []string `json:"vmFlavours"`
-	DriverFlavours []string `json:"driverFlavours"`
-	Groups         []group  `json:"groups"`
+	VMFlavours         []string `json:"vmFlavours"`
+	DriverFlavours     []string `json:"driverFlavours"`
+	ProductionFlavours []string `json:"productionFlavours"`
+	Groups             []group  `json:"groups"`
+}
+
+func productionFlavours(paths []string, mode string) []string {
+	both := []string{"standard", "lts"}
+	switch mode {
+	case "always":
+		return both
+	case "non-prose":
+		for _, name := range paths {
+			// Production builds read no Markdown except the release staging
+			// inputs docs/support.md and docs/releases/ (scripts/katl-release-artifacts).
+			prose := name == "README.md" || name == "AGENTS.md" ||
+				strings.HasPrefix(name, "docs/") && strings.HasSuffix(name, ".md") &&
+					name != "docs/support.md" && !strings.HasPrefix(name, "docs/releases/")
+			if !prose {
+				return both
+			}
+		}
+	}
+	return []string{}
 }
 
 func planCI(paths []string, regression bool) ciPlan {
