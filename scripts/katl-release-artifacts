@@ -250,11 +250,6 @@ version_for_ref() {
                 tag)
                     version="$ref_name"
                     ;;
-                branch)
-                    [[ "$ref_name" == release/* ]] ||
-                        fail "release branch must start with release/: $ref_name"
-                    version="${ref_name#release/}"
-                    ;;
                 *)
                     fail "unsupported push ref type: $ref_type"
                     ;;

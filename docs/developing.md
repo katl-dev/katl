@@ -641,8 +641,12 @@ kernel driver gates. The merge queue repeats them against the merged result and
 also runs the VM suites for both kernel flavours; none of this runs again after
 the merge. To run the VM suites on a pull request before queueing it, add the
 `vmtest` label; later pushes to the branch keep running them while the label is
-present. Adding `vmtest` reruns the head commit's CI with the VM suites; other labels
-do not affect CI, and fork pull requests cannot be restarted this way. Agents still
+present. Pull requests into a `release/[0-9]*` branch run them without the label.
+Adding `vmtest` reruns the head commit's CI; other labels do not affect CI, and
+fork pull requests cannot be restarted this way. CI names the base it tested, and
+the release branch ruleset waits for `CI (release)`, so open release pull
+requests with `gh pr create --base release/...`; after retargeting an existing
+pull request onto a release branch, close and reopen it or push a commit. Agents still
 run the relevant local `scripts/vmtest-run` gates before opening a pull request,
 as `AGENTS.md` requires. Kubernetes producer validation shares the VM image
 build and cluster lane. Direct pushes are not part of the supported development
@@ -745,9 +749,9 @@ and verify a candidate, and monitor automated qualification and publication.
 Start with `scripts/katl-release prepare VERSION`; it performs read-only checks
 and prints the commands for starting the tag build.
 
-`.github/workflows/release-artifacts.yml` builds Katl artifacts for pushes to
-`release/**` branches and pushed `v*` KatlOS tags. It can also be dispatched manually
-with an explicit version for build verification. Release-branch and manual runs
+`.github/workflows/release-artifacts.yml` builds Katl artifacts for pushed `v*`
+KatlOS tags. It can also be dispatched manually with an explicit version for
+build verification. Manual runs
 retain one GitHub Actions artifact; tag runs additionally publish those exact
 files as assets on the matching GitHub Release.
 
@@ -764,7 +768,7 @@ artifact qualification and requires repeating the affected journeys.
 
 Pushes to `main` run only the fast checks and the Nix build. Release-artifact
 builds restore caches that only Release Artifacts saves, so they do not depend on
-CI caches. They run only for release branches, tags, or explicit manual
+CI caches. They run only for tags or explicit manual
 candidates, and later runs do not cancel them.
 
 Release production uses a dependency-aware job graph. Release Artifacts calls the
@@ -787,8 +791,8 @@ because every release asset has an independent attestation.
 KatlOS release versions use `YYYY.M.PATCH` calendar versions with `-dev.N`,
 `-alpha.N`, `-beta.N`, and `-rc.N` prereleases. The first public alpha for the
 July 2026 line is `2026.7.0-alpha.1`; the stable identity is `2026.7.0`. Use
-tags such as `v2026.7.0-alpha.1` and release branches such as
-`release/2026.7.0-alpha.1`. The workflow strips an optional `v` before embedding
+tags such as `v2026.7.0-alpha.1`; release series branches such as
+`release/2026.12.x` carry no version. The workflow strips an optional `v` before embedding
 the version and rejects noncanonical versions. See
 `docs/internal/adrs/adr-009-katlos-calendar-versioning.md` for the policy.
 

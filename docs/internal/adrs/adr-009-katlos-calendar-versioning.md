@@ -12,7 +12,7 @@ milestone scope, but using it as the product version would discard the requested
 date-based release identity.
 
 The version is embedded in KatlOS image names and metadata, Go binaries,
-release-branch artifacts, Git tags, and GitHub Releases. It must sort in a
+Git tags, and GitHub Releases. It must sort in a
 predictable maturity order, be accepted by ordinary version tooling, and stay
 independent from Kubernetes and node-extension payload versions.
 
@@ -52,12 +52,14 @@ The v0.1 project milestone is therefore a scope milestone, not the literal
 KatlOS product version. Its first development publication is
 `2026.7.0-dev.0`, and its first public alpha is `2026.7.0-alpha.1`.
 
-Git tags use a leading `v`, for example `v2026.7.0-alpha.1`. Release branches use
-the exact product version after `release/`, for example
-`release/2026.7.0-alpha.1`. The release tooling accepts an optional `v` in either
-place, removes it from embedded artifact metadata, and rejects zero-padded
+Git tags use a leading `v`, for example `v2026.7.0-alpha.1`. The release tooling
+accepts an optional `v`, removes it from embedded artifact metadata, and rejects zero-padded
 months, leading-zero counters, other prerelease labels, and non-calendar
 versions. Manual workflow runs use the product version without the `v`.
+
+Release series branches, such as `release/2026.12.x`, carry no version. The
+version comes from the release candidate or final tag, or from the manual
+workflow input, and release tooling derives none from a branch name.
 
 SemVer compares textual prerelease identifiers lexically, which does not place
 `dev`, `alpha`, `beta`, and `rc` in Katl's maturity order. Release notes and
