@@ -11,8 +11,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/signal"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -353,6 +355,7 @@ func why(ctx context.Context, g *gh, number int, out io.Writer) error {
 			}
 			excerpts = errorExcerpts(log, 8)
 		}
+		needArtifacts := run != 0 && !slices.ContainsFunc(slices.Collect(maps.Values(excerpts)), explainsTestFailure)
 		for _, c := range byRun[run] {
 			fmt.Fprintf(out, "\n%s %s\n  %s\n", strings.ToLower(c.Conclusion), c.Name, c.DetailsURL)
 			for _, line := range excerpts[c.Name] {
@@ -372,6 +375,28 @@ func why(ctx context.Context, g *gh, number int, out io.Writer) error {
 				fmt.Fprintf(out, "  | %s\n", line)
 			}
 		}
+		if needArtifacts {
+			reportArtifactFailures(ctx, g, run, out)
+		}
 	}
 	return nil
+}
+
+// reportArtifactFailures prints go test failures from the diagnostics
+// artifacts of a run, which hold the test log that the job log lacks.
+func reportArtifactFailures(ctx context.Context, g *gh, run int64, out io.Writer) {
+	logs, err := g.runArtifactLogs(ctx, run)
+	if err != nil {
+		fmt.Fprintf(out, "could not read the diagnostics artifacts of run %d: %v\n", run, err)
+	}
+	for _, name := range slices.Sorted(maps.Keys(logs)) {
+		lines := testLogExcerpt(logs[name], 8)
+		if len(lines) == 0 {
+			continue
+		}
+		fmt.Fprintf(out, "\ngo test failures in artifact %s\n", name)
+		for _, line := range lines {
+			fmt.Fprintf(out, "  | %s\n", line)
+		}
+	}
 }

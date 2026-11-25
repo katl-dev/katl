@@ -163,7 +163,7 @@ func TestErrorExcerpts(t *testing.T) {
 
 	got := errorExcerpts([]byte(log), 8)
 	want := map[string][]string{
-		"VM / lifecycle": {"error: failed to get pool 'default'", "##[error]Process completed with exit code 1."},
+		"VM / lifecycle": {"##[error]Process completed with exit code 1."},
 		"CI":             {"--- FAIL: TestSomething (0.01s)"},
 	}
 	for job, lines := range want {
