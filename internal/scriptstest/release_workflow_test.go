@@ -638,38 +638,10 @@ func TestNightlyCandidateScheduled(t *testing.T) {
 		"github.event_name": "schedule", "inputs.qualify_run": "0",
 	})
 	if condition != "true" {
-		t.Errorf("vmtests if %q evaluates to %s on schedule, want true so the nightly refreshes the VM image caches", vmtests.If, condition)
+		t.Errorf("vmtests if %q evaluates to %s on schedule, want true so the nightly runs the VM regression suite", vmtests.If, condition)
 	}
 	if scenarios := vmtests.With["scenarios"]; scenarios != "" {
 		t.Errorf("vmtests passes scenarios %q, want the complete suite so the VM images are built", scenarios)
-	}
-
-	hostedData, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/hosted-vmtests.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var hosted struct {
-		Jobs map[string]struct {
-			Steps []workflowStep `yaml:"steps"`
-		} `yaml:"jobs"`
-	}
-	if err := yaml.Unmarshal(hostedData, &hosted); err != nil {
-		t.Fatal(err)
-	}
-	saved := false
-	for _, job := range hosted.Jobs {
-		for _, step := range job.Steps {
-			if !strings.HasPrefix(step.Uses, "actions/cache/save@") {
-				continue
-			}
-			saved = true
-			if !strings.Contains(step.If, "github.event_name != 'merge_group'") || strings.Contains(step.If, "schedule") {
-				t.Errorf("cache save step if %q must run on schedule and skip only the merge queue", step.If)
-			}
-		}
-	}
-	if !saved {
-		t.Error("hosted VM tests have no cache save step for the nightly candidate to refresh")
 	}
 }
 

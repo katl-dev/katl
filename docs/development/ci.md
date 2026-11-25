@@ -91,14 +91,13 @@ control artifact and package-cache reuse.
 
 ## Build caches
 
-Merge queue runs restore build caches but do not save them: their refs are never
-restored by other runs and would only consume cache quota. The nightly candidate
-on main (below) builds the shared VM images for both flavours, which refreshes
-the BuildKit builder layers (`mkosi-builder`) and the `hosted-vmtest-build-*` Go
-and package caches that pull requests and the merge queue restore from main. The
-production build caches (`katl-go-runtime-*`, `katl-go-installer-*`,
-`katl-mkosi-packages-*`) are saved by tag, dispatch and nightly runs of Release
-Artifacts.
+Only runs on `refs/heads/main` save GitHub Actions caches, whatever the
+event. Pushes to `main` refresh the Go module and build caches through the
+fast checks, and the scheduled nightly candidate on `main` refreshes the
+hosted VM, production build and Kubernetes bundle caches. Every other ref
+(pull requests, merge groups, release branches and other branches) only
+restores, because no other ref can restore what those runs would save. On a
+cache miss they rebuild the missing inputs.
 
 ## Kernel updates
 

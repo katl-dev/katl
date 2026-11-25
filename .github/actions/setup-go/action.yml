@@ -1,0 +1,41 @@
+name: Set up Go and restore its cache
+description: Install the Go version in go.mod and restore the shared Go cache
+outputs:
+  module-cache:
+    description: Go module cache path
+    value: ${{ steps.paths.outputs.module }}
+  build-cache:
+    description: Go build cache path
+    value: ${{ steps.paths.outputs.build }}
+  cache-hit:
+    description: Whether the primary key matched
+    value: ${{ steps.cache.outputs.cache-hit }}
+  cache-key:
+    description: Primary Go cache key
+    value: ${{ steps.cache.outputs.cache-primary-key }}
+runs:
+  using: composite
+  steps:
+    # Keep the setup-go v6 cache key and path order so existing entries can be restored.
+    - uses: actions/setup-go@v6
+      id: go
+      with:
+        go-version-file: go.mod
+        cache: false
+    - name: Resolve Go cache
+      id: paths
+      shell: bash
+      run: |
+        {
+          echo "module=$(go env GOMODCACHE)"
+          echo "build=$(go env GOCACHE)"
+          echo "platform=${RUNNER_OS}-${RUNNER_ARCH,,}-${ImageOS-undefined}"
+        } >> "$GITHUB_OUTPUT"
+    - name: Restore Go cache
+      id: cache
+      uses: actions/cache/restore@v6
+      with:
+        path: |
+          ${{ steps.paths.outputs.module }}
+          ${{ steps.paths.outputs.build }}
+        key: setup-go-${{ steps.paths.outputs.platform }}-go-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod') }}
