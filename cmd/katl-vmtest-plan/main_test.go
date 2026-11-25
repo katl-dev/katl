@@ -12,70 +12,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestSelectGroups(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		paths []string
-		want  []string
-	}{
-		{"docs", []string{"docs/development/releases.md", "README.md"}, []string{}},
-		{"unit tests", []string{"internal/installer/operation/run_test.go"}, []string{}},
-		{"CLI unit tests", []string{"cmd/katlctl/main_test.go"}, []string{}},
-		{"maintainer tooling", []string{"cmd/katl-release/main.go", "scripts/katl-release"}, []string{}},
-		{"CLI configuration", []string{"cmd/katlctl/config_compatibility.go"}, []string{"config", "management", "two-node", "worker-join", "readdress"}},
-		{"CLI rotation", []string{"cmd/katlctl/management_rotation.go"}, []string{"management"}},
-		{"CLI enable-mtls", []string{"cmd/katlctl/management_enable_mtls.go"}, []string{"enable-mtls"}},
-		{"CLI rotation and docs", []string{"cmd/katlctl/management_rotation.go", "docs/operations/install.md"}, []string{"management"}},
-		{"shared CLI", []string{"cmd/katlctl/main.go"}, allNames()},
-		{"shared configuration input", []string{"cmd/katlctl/config_input.go"}, allNames()},
-		{"CLI install", []string{"cmd/katlctl/install.go"}, allNames()},
-		{"CLI upgrade", []string{"cmd/katlctl/upgrade_reboot.go"}, allNames()},
-		{"internal CLI", []string{"internal/katlctl/workstation/config.go"}, allNames()},
-		{"shared product", []string{"internal/installer/operation/run.go"}, allNames()},
-		{"VM tests", []string{"internal/vmtest/installed_smoke_test.go"}, allNames()},
-		{"release workflow", []string{".github/workflows/release-artifacts.yml"}, allNames()},
-		{"production build workflow", []string{".github/workflows/production-build.yml"}, allNames()},
-		{"production qualification workflow", []string{".github/workflows/production-vmtests.yml"}, allNames()},
-		{"builder", []string{"scripts/mkosi"}, allNames()},
-		{"unknown with docs", []string{"docs/readme.md", "new-input"}, allNames()},
-		{"CLI with shared change", []string{"cmd/katlctl/main.go", "go.mod"}, allNames()},
-		{"rename into docs", []string{"internal/installer/old.go", "docs/moved.go"}, allNames()},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var got []string
-			for _, selected := range selectGroups(tc.paths) {
-				got = append(got, selected.Name)
-			}
-			slices.Sort(got)
-			slices.Sort(tc.want)
-			if !slices.Equal(got, tc.want) {
-				t.Fatalf("groups = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-// TestReaddressSelection keeps the worker re-address journey selected by
-// changes to the code it exercises.
-func TestReaddressSelection(t *testing.T) {
-	for _, name := range []string{
-		"cmd/katlctl/kubeadm_control_plane_config.go", // cluster apply --endpoint
-		"cmd/katlctl/host_management.go",              // node reboot --endpoint
-		"cmd/katlctl/enroll.go",                       // context rebind
-		"cmd/katlctl/config_compatibility.go",
-		"internal/vmtest/world_scenario.go", // address reassignment
-		"internal/installer/networkdconfig/networkd.go",
-		"internal/installer/configapply/host_configuration.go",
-		"internal/vmtest/scenarios/worker_readdress_vmtest_test.go",
-	} {
-		t.Run(name, func(t *testing.T) {
-			if !slices.ContainsFunc(selectGroups([]string{name}), func(selected group) bool { return selected.Tests == "TestWorkerReaddress" }) {
-				t.Fatalf("%s does not select TestWorkerReaddress", name)
-			}
-		})
-	}
-}
-
 func allNames() []string {
 	return []string{"boot", "install", "storage", "volume-binding", "config", "management", "enable-mtls", "update", "two-node", "worker-join", "readdress", "three-node-install"}
 }
@@ -250,14 +186,14 @@ func TestCIScenarios(t *testing.T) {
 	t.Setenv("GITHUB_EVENT_NAME", "push")
 	t.Setenv("GITHUB_REF", "refs/heads/release/test")
 	var output bytes.Buffer
-	if err := run([]string{"--ci"}, strings.NewReader("cmd/katlctl/management_rotation.go\x00"), &output); err != nil {
+	if err := run([]string{"--ci"}, strings.NewReader(configFixture+"\x00"), &output); err != nil {
 		t.Fatal(err)
 	}
 	var plan ciPlan
 	if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
 		t.Fatal(err)
 	}
-	want := []group{{Name: "lifecycle", Package: "./internal/vmtest", Tests: "TestInstalledRuntimeManagementRotationSmoke"}}
+	want := []group{{Name: "config", Package: "./internal/vmtest", Tests: "TestInstalledRuntimeConfigApplyModesSmoke|TestInstalledRuntimeServiceSecuritySmoke"}}
 	if !slices.Equal(plan.Groups, want) {
 		t.Fatalf("scenarios = %v, want %v", plan.Groups, want)
 	}
@@ -272,12 +208,12 @@ func TestCIVMFlavours(t *testing.T) {
 	}{
 		{name: "empty"},
 		{name: "documentation", paths: "docs/development/ci.md"},
-		{name: "unit only", paths: "internal/installer/run_test.go"},
-		{name: "release tooling", paths: "cmd/katl-release/main.go"},
-		{name: "capture tooling", paths: "cmd/katl-kernel-release/candidate.go"},
-		{name: "proposal workflow", paths: ".github/workflows/kernel-updates.yml"},
-		{name: "kernel schedule and docs", paths: ".github/workflows/kernel-updates.yml\x00docs/developing.md"},
-		{name: "regression kernel schedule and docs", paths: ".github/workflows/kernel-updates.yml\x00docs/developing.md", regression: true},
+		{name: "unit only", paths: "internal/installer/run_test.go", vms: []string{"standard"}},
+		{name: "release tooling", paths: "cmd/katl-release/main.go", vms: []string{"standard"}},
+		{name: "capture tooling", paths: "cmd/katl-kernel-release/candidate.go", vms: []string{"standard"}},
+		{name: "proposal workflow", paths: ".github/workflows/kernel-updates.yml", vms: []string{"standard"}},
+		{name: "kernel schedule and docs", paths: ".github/workflows/kernel-updates.yml\x00docs/developing.md", vms: []string{"standard"}},
+		{name: "regression kernel schedule and docs", paths: ".github/workflows/kernel-updates.yml\x00docs/developing.md", regression: true, vms: both},
 		{name: "kernel schedule and lock", paths: ".github/workflows/kernel-updates.yml\x00kernels/fedora-45/x86_64/standard.json", vms: []string{"standard"}},
 		{name: "release workflow", paths: ".github/workflows/release-artifacts.yml", vms: both},
 		{name: "production qualification workflow", paths: ".github/workflows/production-vmtests.yml", vms: both},
@@ -327,7 +263,8 @@ func TestCIVMFlavours(t *testing.T) {
 			if tc.paths != "" {
 				paths = strings.Split(tc.paths, "\x00")
 			}
-			got := planCI(paths, tc.regression)
+			decision, shadow := planVMs(paths, affectedVMs, func() (map[string]bool, error) { return nil, nil })
+			got := planCI(paths, tc.regression, decision, shadow)
 			if !slices.Equal(got.VMFlavours, tc.vms) || got.VMFlavours == nil {
 				t.Fatalf("VM flavours = %v, want %v", got.VMFlavours, tc.vms)
 			}

@@ -46,10 +46,12 @@ func TestCIChanges(t *testing.T) {
 		}
 	}
 	write("product.go", "original\n")
-	runGit(t, dir, "add", "product.go")
+	write("old.go", "package product\n")
+	runGit(t, dir, "add", "product.go", "old.go")
 	runGit(t, dir, "commit", "--quiet", "-m", "initial")
 	runGit(t, dir, "checkout", "--quiet", "-b", "feature")
 	write("README.md", "documentation\n")
+	runGit(t, dir, "mv", "old.go", "moved.md")
 	runGit(t, dir, "add", "README.md")
 	runGit(t, dir, "commit", "--quiet", "-m", "documentation")
 	head := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
@@ -83,8 +85,8 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(paths) != "README.md\x00" {
-		t.Fatalf("PR changes = %q; must exclude changes already on main", paths)
+	if want := "README.md\x00moved.md\x00old.go\x00"; string(paths) != want {
+		t.Fatalf("PR changes = %q, want %q with both sides of the rename and no changes already on main", paths, want)
 	}
 }
 
@@ -176,22 +178,34 @@ func TestCIEventSelection(t *testing.T) {
 	runGit(t, dir, "add", "product.go")
 	runGit(t, dir, "commit", "--quiet", "-m", "initial")
 	base := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+	if err := os.WriteFile(filepath.Join(dir, "first-pr"), []byte("queued before the last change\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", "first-pr")
+	runGit(t, dir, "commit", "--quiet", "-m", "first queued change")
 	if err := os.WriteFile(filepath.Join(dir, "product.go"), []byte("two\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	runGit(t, dir, "commit", "--quiet", "-am", "change")
 
-	// The fake planner selects both VM flavours and returns the requested driver
-	// fixture. This makes dropped selections visible in the workflow outputs.
+	// The fake planner returns VM selections and the requested driver fixture
+	// so the test can check the workflow's planner arguments and outputs.
 	tools := t.TempDir()
 	writeFakeExecutable(t, tools, "go", `
 case "$2" in
   ./cmd/katl-vmtest-plan)
-    cat > /dev/null
+    cat > "$PLANNER_PATHS"
     printf '%s\n' "$*" > "$PLANNER_ARGS"
     production='[]'
     [[ " $* " != *" --production="* ]] || production='["standard","lts"]'
-    printf '{"vmFlavours":["standard","lts"],"driverFlavours":%s,"driverDigests":{"standard":"v1:fixture"},"productionFlavours":%s,"groups":[{"name":"cluster"}]}\n' "$DRIVER_MATRIX" "$production" ;;
+    vms='["standard","lts"]'
+    groups='[{"name":"cluster"}]'
+    shadow=''
+    case " $* " in
+      *' --vm-mode off '*) vms='[]'; groups='[]' ;;
+      *' --vm-mode merge-group '*) shadow=',"vmShadow":{"suites":["config"],"runnerMinutesSaved":10}' ;;
+    esac
+    printf '{"vmFlavours":%s,"driverFlavours":%s,"driverDigests":{"standard":"v1:fixture"},"productionFlavours":%s,"groups":%s%s}\n' "$vms" "$DRIVER_MATRIX" "$production" "$groups" "$shadow" ;;
   ./cmd/katl-kubernetes-release)
     printf '{"include":[]}\n' ;;
   *) exit 2 ;;
@@ -200,30 +214,32 @@ esac
 
 	for _, tc := range []struct {
 		name, event, label, baseRef string
+		vmMode                      string
 		regression, fullPlan        bool
 		vms, drivers, check         string
 	}{
-		{"pull request", "pull_request", "false", "main", false, false, `[]`, `["standard"]`, "CI"},
-		{"pull request into release series", "pull_request", "false", "release/2026.12.x", true, true, `["standard","lts"]`, `["standard"]`, "CI (release)"},
-		{"pull request into non-series release branch", "pull_request", "false", "release/foo", false, false, `[]`, `["standard"]`, "CI"},
-		{"pull request into nested release branch", "pull_request", "false", "release/2026.12.x/foo", false, false, `[]`, `["standard"]`, "CI"},
-		{"labelled pull request", "pull_request", "true", "main", true, false, `["standard","lts"]`, `["standard"]`, "CI"},
-		{"labelled pull request into release series", "pull_request", "true", "release/2026.12.x", true, true, `["standard","lts"]`, `["standard"]`, "CI (release)"},
-		{"merge group", "merge_group", "false", "", true, true, `["standard","lts"]`, `["standard"]`, "CI"},
-		{"unqualified main push", "push", "false", "", false, false, `[]`, `["standard"]`, "CI"},
-		{"qualified main push", "push", "false", "", false, false, `[]`, `[]`, "CI"},
-		{"manual dispatch", "workflow_dispatch", "false", "", false, false, `["standard","lts"]`, `["standard","lts"]`, "CI"},
-		{"schedule", "schedule", "false", "", false, false, `[]`, `["standard","lts"]`, "CI"},
+		{"pull request", "pull_request", "false", "main", "off", false, false, `[]`, `["standard"]`, "CI"},
+		{"pull request into release series", "pull_request", "false", "release/2026.12.x", "full", true, true, `["standard","lts"]`, `["standard"]`, "CI (release)"},
+		{"pull request into non-series release branch", "pull_request", "false", "release/foo", "off", false, false, `[]`, `["standard"]`, "CI"},
+		{"pull request into nested release branch", "pull_request", "false", "release/2026.12.x/foo", "off", false, false, `[]`, `["standard"]`, "CI"},
+		{"labelled pull request", "pull_request", "true", "main", "affected", true, false, `["standard","lts"]`, `["standard"]`, "CI"},
+		{"labelled pull request into release series", "pull_request", "true", "release/2026.12.x", "full", true, true, `["standard","lts"]`, `["standard"]`, "CI (release)"},
+		{"merge group", "merge_group", "false", "", "merge-group", true, true, `["standard","lts"]`, `["standard"]`, "CI"},
+		{"unqualified main push", "push", "false", "", "off", false, false, `[]`, `["standard"]`, "CI"},
+		{"qualified main push", "push", "false", "", "off", false, false, `[]`, `[]`, "CI"},
+		{"manual dispatch", "workflow_dispatch", "false", "", "always", false, false, `["standard","lts"]`, `["standard","lts"]`, "CI"},
+		{"schedule", "schedule", "false", "", "always", false, false, `["standard","lts"]`, `["standard","lts"]`, "CI"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			run := t.TempDir()
 			outputPath := filepath.Join(run, "output")
 			argsPath := filepath.Join(run, "args")
+			pathsPath := filepath.Join(run, "paths")
 			command := exec.Command("bash", "-e", "-c", script)
 			command.Dir = dir
 			command.Env = append(gittest.Env(os.Environ(), dir), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"GITHUB_EVENT_NAME="+tc.event, "BASE_SHA="+base, "BEFORE_SHA="+base, "VMTEST_LABEL="+tc.label, "BASE_REF="+tc.baseRef, "PAYLOAD_BASE="+tc.baseRef,
-				"PLANNER_ARGS="+argsPath, "DRIVER_MATRIX="+tc.drivers, "GITHUB_OUTPUT="+outputPath, "GITHUB_STEP_SUMMARY="+filepath.Join(run, "summary"))
+				"PLANNER_ARGS="+argsPath, "PLANNER_PATHS="+pathsPath, "DRIVER_MATRIX="+tc.drivers, "GITHUB_OUTPUT="+outputPath, "GITHUB_STEP_SUMMARY="+filepath.Join(run, "summary"))
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("plan: %v: %s", err, output)
 			}
@@ -269,6 +285,31 @@ esac
 			}
 			if got := strings.Contains(string(args), "--regression"); got != tc.regression {
 				t.Fatalf("planner args = %q, regression = %v, want %v", args, got, tc.regression)
+			}
+			if !slices.Contains(strings.Fields(string(args)), tc.vmMode) {
+				t.Fatalf("planner args = %q, want VM mode %s", args, tc.vmMode)
+			}
+			if tc.event == "merge_group" {
+				if !strings.Contains(string(args), "--base "+base) {
+					t.Fatalf("planner args = %q, want payload base %s", args, base)
+				}
+				paths, err := os.ReadFile(pathsPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if want := "first-pr\x00product.go\x00"; string(paths) != want {
+					t.Fatalf("merge-group changes = %q, want both queued changes %q", paths, want)
+				}
+				if !strings.Contains(string(outputs), "vm-shadow={\"suites\":[\"config\"],\"runnerMinutesSaved\":10}\n") {
+					t.Fatalf("outputs = %s, want shadow plan", outputs)
+				}
+				summary, err := os.ReadFile(filepath.Join(run, "summary"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !strings.Contains(string(summary), `"runnerMinutesSaved": 10`) {
+					t.Fatalf("summary = %s, want shadow savings", summary)
+				}
 			}
 			for _, mode := range []string{"non-prose", "always"} {
 				want := tc.fullPlan && (tc.event == "merge_group") == (mode == "non-prose")
