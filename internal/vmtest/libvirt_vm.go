@@ -1,6 +1,7 @@
 package vmtest
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/binary"
@@ -664,19 +665,23 @@ func tailLiveSerial(ctx context.Context, path string, out io.Writer, interval ti
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
-		if err := copySerialFromOffset(path, out, &offset); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := copySerialFromOffset(path, out, &offset, false); err != nil && !errors.Is(err, os.ErrNotExist) {
 			_, _ = fmt.Fprintf(out, "\nvmtest live serial tail error: %v\n", err)
 		}
 		select {
 		case <-ctx.Done():
-			_ = copySerialFromOffset(path, out, &offset)
+			_ = copySerialFromOffset(path, out, &offset, true)
 			return
 		case <-ticker.C:
 		}
 	}
 }
 
-func copySerialFromOffset(path string, out io.Writer, offset *int64) error {
+// copySerialFromOffset writes the complete lines the serial log has gained
+// since offset. out is go test's output stream, where a fragment would join
+// whatever is written next, such as a test result line. A trailing fragment
+// is held back until its newline arrives, or written with one when final.
+func copySerialFromOffset(path string, out io.Writer, offset *int64, final bool) error {
 	file, err := os.Open(path)
 	if err != nil {
 		return err
@@ -685,9 +690,21 @@ func copySerialFromOffset(path string, out io.Writer, offset *int64) error {
 	if _, err := file.Seek(*offset, io.SeekStart); err != nil {
 		return err
 	}
-	n, err := io.Copy(out, file)
-	*offset += n
-	return err
+	data, err := io.ReadAll(file)
+	if err != nil {
+		return err
+	}
+	consumed := bytes.LastIndexByte(data, '\n') + 1
+	chunk := data[:consumed]
+	if final && consumed < len(data) {
+		consumed = len(data)
+		chunk = append(data, '\n')
+	}
+	if _, err := out.Write(chunk); err != nil {
+		return err
+	}
+	*offset += int64(consumed)
+	return nil
 }
 
 func libvirtDomainExitSummary(ctx context.Context, err error, serialLog string) string {

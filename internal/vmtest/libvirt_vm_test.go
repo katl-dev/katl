@@ -1400,3 +1400,38 @@ touch "${@: -1}"
 		KVM:       KVMAuto,
 	}
 }
+
+func TestCopySerialFromOffsetWritesCompleteLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "serial.log")
+	var out strings.Builder
+	var offset int64
+	steps := []struct {
+		append string
+		final  bool
+		want   string
+	}{
+		{"one\ntwo", false, "one\n"},
+		{"", false, "one\n"},
+		{"\nlast", false, "one\ntwo\n"},
+		{"", true, "one\ntwo\nlast\n"},
+		{"", true, "one\ntwo\nlast\n"},
+	}
+	for i, step := range steps {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = f.WriteString(step.append)
+		f.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		if err := copySerialFromOffset(path, &out, &offset, step.final); err != nil {
+			t.Fatal(err)
+		}
+		if got := out.String(); got != step.want {
+			t.Errorf("step %d output = %q, want %q", i, got, step.want)
+		}
+	}
+}

@@ -101,3 +101,12 @@ func TestCheck(t *testing.T) {
 		})
 	}
 }
+
+func TestParseOutcomesAfterUnterminatedOutput(t *testing.T) {
+	log := "=== RUN   TestA\nsshd-session[335]: Recei--- PASS: TestA (22.24s)\nPASS\n"
+
+	got := parseOutcomes(strings.NewReader(log))
+	if got["TestA"] != "pass" {
+		t.Errorf("outcomes = %v, want TestA to pass", got)
+	}
+}

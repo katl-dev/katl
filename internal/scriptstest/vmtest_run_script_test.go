@@ -115,7 +115,7 @@ func TestVMTestRunRemovesExistingDomainsBeforeGoTest(t *testing.T) {
 
 	writeExecutable(t, filepath.Join(binDir, "fake-go"), `#!/usr/bin/env bash
 printf 'go %s\n' "$*" >>"$KATL_SCRIPTTEST_LOG"
-printf -- '--- PASS: TestDoesNotMatter\n'
+printf -- '--- PASS: TestDoesNotMatter (0.00s)\n'
 exit 0
 `)
 	writeExecutable(t, filepath.Join(binDir, "fake-qemu-img"), `#!/usr/bin/env bash

@@ -32,7 +32,10 @@ func main() {
 	}
 }
 
-var textResult = regexp.MustCompile(`^--- (PASS|FAIL|SKIP): (\S+)`)
+// textResult matches anywhere in the line: other writers to go test's stdout can
+// leave an unterminated line that the result is appended to. The duration
+// distinguishes a result from other text mentioning one.
+var textResult = regexp.MustCompile(`--- (PASS|FAIL|SKIP): (\S+) \([0-9.]+s\)`)
 
 // parseOutcomes returns the terminal action of each top-level test. Subtests
 // are not evidence that the test they belong to ran to completion.
