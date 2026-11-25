@@ -22,6 +22,7 @@ need go
 need grep
 need jq
 need modinfo
+need modprobe
 need sha256sum
 need ukify
 need zstd
@@ -102,6 +103,14 @@ for driver in i915 xe amdgpu virtio-gpu; do
         fail "installer initrd is missing console graphics driver $driver"
 done
 for module_dir in "$initrd_root"/usr/lib/modules/*; do
+    # The vsock transport and its dependencies carry systemd's
+    # vmm.notify_socket messages from the initrd to the hypervisor.
+    vsock_chain="$(modprobe -d "$initrd_root" -S "${module_dir##*/}" --show-depends vmw_vsock_virtio_transport)" ||
+        fail "installer initrd cannot resolve the vsock transport"
+    for module in vsock vmw_vsock_virtio_transport_common vmw_vsock_virtio_transport; do
+        grep -Eq "/$module\.ko" <<<"$vsock_chain" ||
+            fail "installer initrd is missing vsock module $module"
+    done
     for driver in loop squashfs erofs; do
         modinfo -b "$initrd_root" -k "${module_dir##*/}" "$driver" >/dev/null ||
             fail "installer cannot inspect extension filesystem: missing $driver support"
