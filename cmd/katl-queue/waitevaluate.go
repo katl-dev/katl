@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const watchCIStartGrace = 10 * time.Minute
+
 type watchOutcome struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
@@ -17,7 +19,8 @@ func needsWatchAction(pr int, condition string) *watchOutcome {
 
 // Only require the fields that prove the particular condition. In particular,
 // a nullable field must be explicitly null before it can prove absence.
-func evaluateWatch(record *watchRecord, pr watchObject, now time.Time, interval time.Duration) (outcome *watchOutcome, conclusive bool) {
+func evaluateWatch(record *watchRecord, evidence watchEvidence, now time.Time, interval time.Duration) (outcome *watchOutcome, conclusive bool) {
+	pr := evidence.pr
 	switch string(pr["merged"]) {
 	case "true":
 		return &watchOutcome{Code: 0, Message: fmt.Sprintf("#%d merged", record.PR)}, true
@@ -51,17 +54,23 @@ func evaluateWatch(record *watchRecord, pr watchObject, now time.Time, interval 
 	if watchString(pr["reviewDecision"]) == "CHANGES_REQUESTED" {
 		return needsWatchAction(record.PR, "has changes requested in review"), true
 	}
-	if commit := failedWatchHead(pr); commit != nil {
+	commit := watchHeadCommit(pr)
+	state := watchString(watchObjectFrom(commit["statusCheckRollup"])["state"])
+	if state == "FAILURE" || state == "ERROR" {
 		return needsWatchAction(record.PR, failingWatchChecks(commit)), true
 	}
 	autoMerge := pr["autoMergeRequest"]
 	if string(autoMerge) == "null" && !now.Before(record.Registered.Add(interval).Add(interval)) {
 		return needsWatchAction(record.PR, "is outside the queue and auto-merge is off"), true
 	}
+	if !evidence.failed && !record.HeadSince.IsZero() && !now.Before(record.HeadSince.Add(watchCIStartGrace)) &&
+		watchHeadHasNoCI(commit) {
+		return needsWatchAction(record.PR, fmt.Sprintf("no CI started for head %s; close and reopen the PR or push to retrigger", record.Head)), true
+	}
 	return nil, string(autoMerge) == "null" || watchObjectFrom(autoMerge) != nil
 }
 
-func failedWatchHead(pr watchObject) watchObject {
+func watchHeadCommit(pr watchObject) watchObject {
 	head := watchString(pr["headRefOid"])
 	if head == "" {
 		return nil
@@ -76,10 +85,15 @@ func failedWatchHead(pr watchObject) watchObject {
 	if watchString(commit["oid"]) != head {
 		return nil
 	}
-	rollup := watchObjectFrom(commit["statusCheckRollup"])
-	switch watchString(rollup["state"]) {
-	case "FAILURE", "ERROR":
-		return commit
+	return commit
+}
+
+func watchHeadHasNoCI(commit watchObject) bool {
+	// GitHub can return a null rollup for a commit without any checks or
+	// statuses. Missing fields and resolver errors cannot prove absence.
+	if string(commit["statusCheckRollup"]) == "null" && string(commit["checkDetails"]) == "null" {
+		return true
 	}
-	return nil
+	contexts := watchObjectFrom(watchObjectFrom(commit["checkDetails"])["contexts"])
+	return string(contexts["checkRunCount"]) == "0" && string(contexts["statusContextCount"]) == "0"
 }

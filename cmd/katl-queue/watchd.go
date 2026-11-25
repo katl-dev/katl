@@ -29,6 +29,8 @@ type watchRecord struct {
 	PR         int           `json:"pr"`
 	Registered time.Time     `json:"registered"`
 	SeenQueued bool          `json:"seenQueued,omitempty"`
+	Head       string        `json:"head,omitempty"`
+	HeadSince  time.Time     `json:"headSince,omitzero"`
 	Fired      time.Time     `json:"fired,omitzero"`
 	Outcome    *watchOutcome `json:"outcome,omitempty"`
 }
@@ -168,23 +170,23 @@ func (d *watchDaemon) signalChange() {
 	d.changed = make(chan struct{})
 }
 
-func (d *watchDaemon) register(req watchRequest) watchReply {
+func (d *watchDaemon) register(req watchRequest) (ack watchReply, replay bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 
 	if record, exists := d.records[req.ID]; exists {
 		if record.expired(d.now()) || record.PR != req.PR {
-			return watchReply{Error: fmt.Sprintf("watch ID %q is expired or already registered for another PR", req.ID)}
+			return watchReply{Error: fmt.Sprintf("watch ID %q is expired or already registered for another PR", req.ID)}, false
 		}
-		return watchReply{ID: record.ID}
+		return watchReply{ID: record.ID}, true
 	}
 	record := watchRecord{PR: req.PR, ID: req.ID, Registered: d.now()}
 	records := maps.Clone(d.records)
 	records[record.ID] = record
 	if err := d.save(records, nil); err != nil {
-		return watchReply{Retry: fmt.Sprintf("persist watch registration: %v", err)}
+		return watchReply{Retry: fmt.Sprintf("persist watch registration: %v", err)}, false
 	}
-	return watchReply{ID: record.ID}
+	return watchReply{ID: record.ID}, false
 }
 
 func (d *watchDaemon) list() []watchRecord {
@@ -194,7 +196,7 @@ func (d *watchDaemon) list() []watchRecord {
 	return slices.DeleteFunc(sortedWatches(d.records), func(r watchRecord) bool { return r.expired(now) })
 }
 
-func (d *watchDaemon) lookup(id string) (watchReply, <-chan struct{}) {
+func (d *watchDaemon) lookup(id string, replay bool) (watchReply, <-chan struct{}) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	record, exists := d.records[id]
@@ -202,6 +204,16 @@ func (d *watchDaemon) lookup(id string) (watchReply, <-chan struct{}) {
 	case !exists || record.expired(d.now()):
 		return watchReply{Error: fmt.Sprintf("watch %q is unknown or expired", id)}, nil
 	case record.Outcome != nil:
+		if replay {
+			outcome := *record.Outcome
+			head := record.Head
+			if head == "" {
+				head = "unknown"
+			}
+			outcome.Message = fmt.Sprintf("recorded %s for head %s: %s; after a push, start a fresh `katl-queue wait PR`",
+				record.Fired.Format(time.RFC3339), head, strings.TrimSuffix(outcome.Message, "."))
+			return watchReply{Outcome: &outcome}, nil
+		}
 		return watchReply{Outcome: record.Outcome}, nil
 	case d.blocked != "":
 		return watchReply{Blocked: d.blocked}, nil
@@ -382,19 +394,32 @@ func (d *watchDaemon) pollBatch(ctx context.Context, numbers []int, active map[i
 	for _, n := range numbers {
 		evidence := envelope.evidence(n)
 		for _, record := range active[n] {
-			seen := record.SeenQueued
+			previous := record
+			head := watchString(evidence.pr["headRefOid"])
+			if head != "" && head != record.Head {
+				// GitHub's commit push time is unavailable. The registration
+				// starts the grace period, and observing a new head resets it.
+				record.HeadSince = record.Registered
+				if record.Head != "" {
+					record.HeadSince = now
+				}
+				record.Head = head
+			}
 			switch {
 			case evidence.absent:
 				record.Outcome = &watchOutcome{Code: 2, Message: fmt.Sprintf("pull request %s/%s#%d not found", katlOwner, katlRepo, n)}
 			default:
-				outcome, conclusive := evaluateWatch(&record, evidence.pr, now, d.interval)
+				outcome, conclusive := evaluateWatch(&record, evidence, now, d.interval)
 				record.Outcome = outcome
 				if outcome == nil {
 					denied[n] = evidence.operator
 					retry[n] = retry[n] || (!conclusive || evidence.failed) && evidence.operator == ""
 				}
 			}
-			if record.SeenQueued != seen || record.Outcome != nil {
+			if record.Outcome != nil {
+				record.Head = head
+			}
+			if record != previous {
 				d.staged = append(d.staged, record)
 			}
 		}
@@ -469,19 +494,20 @@ func (d *watchDaemon) serveClient(ctx context.Context, conn net.Conn) {
 		return
 	}
 	var ack watchReply
+	replay := req.Resume != ""
 	switch {
 	case req.List && req.ID == "" && req.PR == 0 && req.Resume == "":
 		replies.Encode(watchReply{Watches: d.list()})
 		return
 	case req.Resume != "" && req.ID == "" && req.PR == 0 && !req.List:
-		initial, _ := d.lookup(req.Resume)
+		initial, _ := d.lookup(req.Resume, false)
 		if initial.Error != "" {
 			replies.Encode(initial)
 			return
 		}
 		ack.ID = req.Resume
 	case !req.List && req.Resume == "" && req.ID != "" && validPRNumber(req.PR):
-		ack = d.register(req)
+		ack, replay = d.register(req)
 	default:
 		replies.Encode(watchReply{Error: "invalid watch request"})
 		return
@@ -497,7 +523,7 @@ func (d *watchDaemon) serveClient(ctx context.Context, conn net.Conn) {
 		close(disconnected)
 	}()
 	for {
-		reply, changed := d.lookup(ack.ID)
+		reply, changed := d.lookup(ack.ID, replay)
 		if changed == nil {
 			replies.Encode(reply)
 			return

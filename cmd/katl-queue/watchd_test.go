@@ -26,6 +26,7 @@ import (
 const (
 	testInterval = time.Minute
 	pr488URL     = "https://github.com/katl-dev/katl/pull/488"
+	pr488Head    = "52acd0a3f00efc888cab6dcf520b870c75611d86"
 
 	merged488 = `{"data":{"repository":{"pr488":{"state":"MERGED","merged":true,
 		"mergeCommit":{"oid":"b8c94940df9e23c58616cb698df0215277ea326d"}}}}}`
@@ -35,8 +36,8 @@ const (
 	pending488 = `{"data":{"repository":{"pr488":{"state":"OPEN","merged":false,
 		"mergeable":"MERGEABLE","reviewDecision":null,"mergeQueueEntry":null,
 		"autoMergeRequest":{"enabledAt":"2026-11-24T00:39:53Z"},
-		"headRefOid":"52acd0a3f00efc888cab6dcf520b870c75611d86","commits":{"nodes":[
-		{"commit":{"oid":"52acd0a3f00efc888cab6dcf520b870c75611d86","statusCheckRollup":{"state":"PENDING"}}}
+		"headRefOid":"` + pr488Head + `","commits":{"nodes":[
+		{"commit":{"oid":"` + pr488Head + `","statusCheckRollup":{"state":"PENDING"}}}
 		]}}}}}`
 	failedContexts = `{"contexts":{
 		"pageInfo":{"hasNextPage":true},"nodes":[
@@ -377,6 +378,80 @@ func TestWaitQueuedFailingRollup(t *testing.T) {
 	w.tick(testInterval)
 	w.poll(merged488, 488)
 	w.expect(cmd, 0, "#488 merged")
+}
+
+func TestWaitNoCI(t *testing.T) {
+	nullRollup := strings.Replace(pending488, `"statusCheckRollup":{"state":"PENDING"}`,
+		`"statusCheckRollup":null,"checkDetails":null`, 1)
+	for _, tc := range []struct {
+		name, response string
+	}{
+		{"null rollup", nullRollup},
+		{"empty rollup", watchRollup("PENDING", `{"contexts":{"checkRunCount":0,"statusContextCount":0}}`, "")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWatchTest(t)
+			w.start()
+			cmd, _ := w.waiting()
+
+			w.tick(9 * time.Minute)
+			w.poll(tc.response, 488)
+			w.tick(time.Minute)
+			w.poll(tc.response, 488)
+			w.expectBlocker(cmd, "no CI started for head "+pr488Head+"; close and reopen the PR or push to retrigger")
+		})
+	}
+}
+
+func TestWaitRequiresEvidenceOfNoCI(t *testing.T) {
+	for _, tc := range []struct {
+		name, response string
+	}{
+		{"check run", watchRollup("PENDING", `{"contexts":{"checkRunCount":1,"statusContextCount":0}}`, "")},
+		{"commit status", watchRollup("PENDING", `{"contexts":{"checkRunCount":0,"statusContextCount":1}}`, "")},
+		{"missing fields", pending488},
+		{"resolver error", strings.Replace(watchRollup("PENDING", "null", checkDetailsError),
+			`"statusCheckRollup":{"state":"PENDING"}`, `"statusCheckRollup":null`, 1)},
+		{"wrong commit", strings.Replace(watchRollup("PENDING", `{"contexts":{"checkRunCount":0,"statusContextCount":0}}`, ""),
+			`"oid":"`+pr488Head+`"`, `"oid":"different"`, 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newWatchTest(t)
+			w.start()
+			cmd, _ := w.waiting()
+
+			w.tick(11 * time.Minute)
+			w.poll(tc.response, 488)
+			w.tick(time.Minute)
+			w.poll(merged488, 488)
+			w.expect(cmd, 0, "#488 merged")
+		})
+	}
+}
+
+func TestWaitNoCIGraceRestartsOnHeadChange(t *testing.T) {
+	w := newWatchTest(t)
+	stop := w.start()
+	cmd, _ := w.waiting()
+	const newHead = "60e174815286b68cb51f9157fba1c6793e99a5ea"
+	response := strings.ReplaceAll(watchRollup("PENDING", `{"contexts":{"checkRunCount":0,"statusContextCount":0}}`, ""),
+		pr488Head, newHead)
+
+	w.tick(time.Minute)
+	w.poll(pending488, 488)
+	w.tick(10 * time.Minute)
+	w.poll(response, 488)
+	w.tick(0)
+	call := w.query(488)
+	call.reply <- watchHTTP{status: http.StatusOK, body: []byte(response)}
+	stop()
+
+	w.start()
+	w.tick(9 * time.Minute)
+	w.poll(response, 488)
+	w.tick(time.Minute)
+	w.poll(response, 488)
+	w.expectBlocker(cmd, "no CI started for head "+newHead+"; close and reopen the PR or push to retrigger")
 }
 
 func TestWaitBlockers(t *testing.T) {
@@ -893,6 +968,39 @@ func TestWaitNewAttemptAfterOutcome(t *testing.T) {
 	w.poll(merged488, 488)
 	w.expect(second, 0, "#488 merged")
 	w.expect(w.command("wait", "--resume", firstID), 1, "closed without merging")
+}
+
+func TestWaitReplaysRecordedHeadAfterPush(t *testing.T) {
+	w := newWatchTest(t)
+	stop := w.start()
+	first, id := w.waiting()
+	w.tick(testInterval)
+	w.poll(watchRollup("FAILURE", `{"contexts":{"nodes":[{"name":"bird","conclusion":"FAILURE"}]}}`, ""), 488)
+	verdict := pr488URL + " failing checks: bird"
+	w.expect(first, 1, verdict+".")
+	stop()
+
+	w.start()
+	second, _ := w.waiting()
+	const newHead = "60e174815286b68cb51f9157fba1c6793e99a5ea"
+	w.tick(testInterval)
+	w.poll(strings.ReplaceAll(pending488, pr488Head, newHead), 488)
+	want := "recorded 2026-11-24T00:39:00Z for head " + pr488Head + ": " + verdict +
+		"; after a push, start a fresh `katl-queue wait PR`"
+	w.expect(w.command("wait", "--resume", id), 1, want)
+
+	conn, err := dialWatch(t.Context(), w.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reply, err := exchangeWatch(t.Context(), conn, watchRequest{ID: id, PR: 488}, func(string) {})
+	if err != nil || reply.Outcome == nil || reply.Outcome.Code != 1 || reply.Outcome.Message != want {
+		t.Fatalf("replayed registration returned %+v, %v", reply, err)
+	}
+
+	w.tick(testInterval)
+	w.poll(merged488, 488)
+	w.expect(second, 0, "#488 merged")
 }
 
 func TestWaitRetainsOutcomeForSevenDays(t *testing.T) {
