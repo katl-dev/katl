@@ -86,7 +86,7 @@ func TestBuildInstallerISO(t *testing.T) {
 	}
 }
 
-func TestInstallerWaitsForNetworkBeforeURLHandoff(t *testing.T) {
+func TestInstallerOwnsNetworkWait(t *testing.T) {
 	unit, err := os.ReadFile(filepath.Join(repoRoot(t), "mkosi.profiles", "installer-image", "mkosi.extra", "usr", "lib", "systemd", "system", "katlos-install.service"))
 	if err != nil {
 		t.Fatal(err)

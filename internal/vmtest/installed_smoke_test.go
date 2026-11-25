@@ -414,8 +414,8 @@ func repoRoot(t *testing.T) string {
 // TestFirstInstallOfflinePreseedWithoutLink installs from all-local preseed
 // media on a guest whose link is down from the first instant: no carrier and
 // no DHCP. The install must complete without waiting for an address. An
-// installer ordered after network-online.target (the pre-#521 unit) stalls
-// until wait-online gives up or never starts, so the installer completion and
+// installer ordered after network-online.target stalls until wait-online
+// gives up or never starts, so the installer completion and
 // the installed runtime's agent health would not arrive within the deadline;
 // an installer that waits for an address for local inputs would print the wait
 // lines checked below.
