@@ -2,7 +2,7 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled]
+    types: [opened, synchronize, reopened]
   merge_group:
   push:
     branches: [main]
@@ -10,7 +10,12 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
+# Label events do not trigger this workflow, because a cancelled or skipped run
+# would publish a CI result for the head SHA. vmtest-label.yml reruns the pull
+# request's run when vmtest is added.
+#
 # Only a newer push to the same pull request supersedes a run. Merge-group
 # entries have unique refs, and every other trigger (push, dispatch) is
 # independent, so two dispatches on one ref both complete.
@@ -38,12 +43,23 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # Read the labels now rather than from the event payload, which a rerun
+      # repeats unchanged.
+      - name: Read vmtest label
+        id: label
+        if: github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          labels="$(gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name]')"
+          echo "vmtest=$(jq -r 'index("vmtest") != null' <<< "$labels")" >> "$GITHUB_OUTPUT"
       - name: Select validation
         id: plan
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           BEFORE_SHA: ${{ github.event.before }}
-          VMTEST_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'vmtest') }}
+          VMTEST_LABEL: ${{ steps.label.outputs.vmtest }}
         run: |
           mkdir -p _build
           options=(--ci)

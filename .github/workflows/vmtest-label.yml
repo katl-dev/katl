@@ -1,0 +1,43 @@
+name: Restart CI for vmtest
+
+# Adding the vmtest label reruns the pull request's CI run so that it selects
+# the VM suites. This workflow publishes no check named CI, and CI does not
+# trigger on label events, so no other label can cancel, skip or replace the
+# required CI result for the head SHA.
+on:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  actions: write
+  contents: read
+
+concurrency:
+  group: vmtest-label-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  restart:
+    name: Restart CI
+    if: github.event.label.name == 'vmtest'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Rerun CI for the head SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          run_id="$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --event pull_request \
+            --commit "$HEAD_SHA" --limit 1 --json databaseId --jq '.[0].databaseId // empty')"
+          if [[ -z "$run_id" ]]; then
+            echo "No CI run exists for $HEAD_SHA; push a commit to start one." >&2
+            exit 1
+          fi
+          # A run can be rerun only once it has completed.
+          gh run cancel "$run_id" --repo "$GITHUB_REPOSITORY" 2>/dev/null || true
+          for _ in $(seq 60); do
+            [[ "$(gh run view "$run_id" --repo "$GITHUB_REPOSITORY" --json status --jq .status)" == completed ]] && break
+            sleep 10
+          done
+          gh run rerun "$run_id" --repo "$GITHUB_REPOSITORY"
