@@ -152,16 +152,18 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	}
 	assertGuestMissing(t, ctx, guest, "/var/lib/katl/generations/"+rejectedCandidate)
 
-	// A staging that fails after sysupdate acquires the inactive root slot must
-	// leave the node able to plan and stage again in the same boot. A read-only
-	// ESP fails the UKI transfer after the root transfer.
+	// A staging that fails after slot preparation must leave the node able to
+	// plan and stage again in the same boot. A read-only ESP fails the staging
+	// after prepareSysupdateSlots has run, so the retry depends on preparation
+	// leaving the kernel's view of the inactive partition intact: a re-added
+	// partition loses its PARTUUID in sysfs until reboot.
 	failedCandidate := candidateGeneration + "-failed"
 	guestCommand(t, ctx, guest, "efi-read-only", "mount", "-o", "remount,ro", "/efi")
 	_, failedStatus := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, failedCandidate, localRef, upgrade, "host-upgrade-handoff", "")
 	guestCommand(t, ctx, guest, "efi-read-write", "mount", "-o", "remount,rw", "/efi")
-	// Sysupdate acquires the root partition before the UKI and does not roll its
-	// GPT type back when the UKI transfer fails. This records the on-disk state
-	// the retry has to accept.
+	// Record the inactive slot's type: a sysupdate failure after it acquires
+	// the root slot would leave a derived partial or pending type, which the
+	// retry has to accept.
 	partitionTypes := guestCommandOutput(t, ctx, guest, "partition-types", "lsblk", "-rno", "NAME,PARTLABEL,PARTTYPE")
 	t.Logf("partition types after failed staging, as udev reports them:\n%s", partitionTypes)
 	// lsblk reports types from the udev database, which is not refreshed when
