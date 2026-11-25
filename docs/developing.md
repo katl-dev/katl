@@ -309,6 +309,11 @@ katldev world serve ./bundles    # leave running; Ctrl-C stops it
 once the world has started. Automatic installs do not wait for configuration, so
 use `katldev world console` to follow them.
 
+Katldev domains have a VGA display, so `virsh -c <world libvirt URI> screenshot <domain> out.ppm`
+captures `tty1` as an operator at a monitor sees it. While the installer runs,
+`tty1` shows its progress, the endpoint to configure, and any failure with
+the next step.
+
 The world's `katlctl` contexts live in `_build/katldev/katlctl.yaml`, so a dev
 journey's `katlctl context save` cannot change or replace the contexts for
 your own clusters. The development shell, entered with `nix develop` or

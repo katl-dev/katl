@@ -259,6 +259,7 @@ func installerVMConfig(world katldevWorld, node vmtest.Node, opts installerOptio
 		Network:          vmtest.VMNetworkConfig{Mode: vmtest.VMNetworkUser, MAC: node.MACAddress},
 		DomainMetadata:   world.owner(),
 		PersistentSerial: true,
+		Graphics:         true,
 		HotplugPCISlots:  3,
 	}
 }

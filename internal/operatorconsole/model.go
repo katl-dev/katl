@@ -35,6 +35,8 @@ type Snapshot struct {
 	LastError            string
 	RetryHint            string
 	Handoff              Handoff
+	InstallerStatus      string
+	InstallerStopped     bool
 	ManagementAddress    string
 	DisplayInterfaces    []NetworkInterface
 	AdditionalInterfaces int

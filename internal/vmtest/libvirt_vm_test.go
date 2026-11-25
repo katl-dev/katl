@@ -1649,3 +1649,29 @@ func TestPlanVMRunLeaseRequiresNetwork(t *testing.T) {
 		}
 	})
 }
+
+func TestVMPlanGraphicsAddsLocalVNCDisplay(t *testing.T) {
+	plan := func(graphics bool) string {
+		result, config := vmFixture(t)
+		config.Graphics = graphics
+		planned, err := planVM(result, config, probe{
+			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+			stat:     os.Stat,
+			access:   func(string) error { return nil },
+		})
+		if err != nil {
+			t.Fatalf("planVM() error = %v", err)
+		}
+		return planned.DomainXML
+	}
+
+	with := plan(true)
+	for _, want := range []string{`<graphics type="vnc" autoport="yes">`, `<listen type="address" address="127.0.0.1">`, `<model type="vga" vram="16384">`} {
+		if !strings.Contains(with, want) {
+			t.Errorf("graphics domain XML missing %q:\n%s", want, with)
+		}
+	}
+	if without := plan(false); strings.Contains(without, "<graphics") || strings.Contains(without, "<video") {
+		t.Errorf("domain without graphics has a display:\n%s", without)
+	}
+}

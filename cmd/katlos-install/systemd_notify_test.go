@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"net"
 	"path/filepath"
 	"strings"
@@ -48,5 +49,19 @@ func TestSendSystemdNotification(t *testing.T) {
 	}
 	if got := string(buffer[:n]); !strings.Contains(got, "READY=1") || !strings.Contains(got, "STATUS=waiting for configuration") {
 		t.Fatalf("notification = %q", got)
+	}
+}
+
+func TestReportInstallerFailureLeavesStatus(t *testing.T) {
+	previous := notifySystemd
+	t.Cleanup(func() { notifySystemd = previous })
+	var notification string
+	notifySystemd = func(payload string) error {
+		notification = payload
+		return nil
+	}
+	reportInstallerFailure(errors.New("fetch manifest:\n  connection refused"))
+	if want := "STATUS=installer stopped: fetch manifest: connection refused"; notification != want {
+		t.Fatalf("notification = %q, want %q", notification, want)
 	}
 }

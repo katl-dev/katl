@@ -27,6 +27,7 @@ type Collector struct {
 	Addrs                 func(net.Interface) ([]net.Addr, error)
 	DefaultRouteInterface func() (string, error)
 	InterfaceVRFs         func(context.Context) (map[string]string, error)
+	InstallerService      func(context.Context) (InstallerService, error)
 	ProbeControlPlanePods func(context.Context) (ControlPlanePodStatuses, error)
 	probeCluster          func(context.Context, string) (clusterStatus, error)
 	Now                   func() time.Time
@@ -125,6 +126,9 @@ func (c Collector) collectInstaller(snapshot *Snapshot, now time.Time) {
 	if snapshot.State == "" {
 		snapshot.State = "starting-installer"
 	}
+	if snapshot.State == installstatus.StateRunning && snapshot.CurrentStep == "" && snapshot.InstallProgress == "" && !snapshot.DestructiveMutation {
+		snapshot.State = StatePreparingInstall
+	}
 	path := c.HandoffPath
 	if path == "" {
 		path = rooted(c.Root, HandoffPath)
@@ -137,6 +141,7 @@ func (c Collector) collectInstaller(snapshot *Snapshot, now time.Time) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		snapshot.HandoffError = "installer handoff is unreadable; restart the installer handoff service"
 	}
+	c.collectInstallerService(snapshot)
 }
 
 func (c Collector) collectRuntime(snapshot *Snapshot, now time.Time) {

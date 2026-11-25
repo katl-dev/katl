@@ -136,3 +136,11 @@ func TestServeDirectoryServesFiles(t *testing.T) {
 		t.Fatalf("serveDirectory() = %v after cancel", err)
 	}
 }
+
+func TestInstallerVMConfigHasDisplay(t *testing.T) {
+	world := katldevWorld{World: vmtest.World{Network: vmtest.WorldNetwork{Name: "katl-w", Gateway: "10.200.4.1"}}}
+	node := vmtest.Node{Name: "cp-1", MACAddress: "52:54:00:00:00:01"}
+	if config := installerVMConfig(world, node, defaultInstallerOptions(), "/iso", ""); !config.Graphics {
+		t.Fatal("katldev installer domain has no display for virsh screenshot")
+	}
+}
