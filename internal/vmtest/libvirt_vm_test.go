@@ -169,6 +169,76 @@ func TestVMPlanReservesHotplugPCISlots(t *testing.T) {
 	}
 }
 
+func TestVMPlanAttachesISOToVirtioSCSI(t *testing.T) {
+	result, config := vmFixture(t)
+	iso := filepath.Join(t.TempDir(), "katl-installer.iso")
+	if err := os.WriteFile(iso, []byte("iso"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	config.Boot = VMBoot{ISO: iso}
+
+	plan, err := planVM(result, config, probe{
+		lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+		stat:     os.Stat,
+		access:   func(string) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("planVM() error = %v", err)
+	}
+
+	var domain struct {
+		Devices struct {
+			Controllers []domainController `xml:"controller"`
+			Disks       []domainDisk       `xml:"disk"`
+		} `xml:"devices"`
+	}
+	if err := xml.Unmarshal([]byte(plan.DomainXML), &domain); err != nil {
+		t.Fatalf("decode domain XML: %v", err)
+	}
+	var cdroms []domainDisk
+	for _, disk := range domain.Devices.Disks {
+		if disk.Device == "cdrom" {
+			cdroms = append(cdroms, disk)
+		}
+	}
+	if len(cdroms) != 1 || cdroms[0].Source.File != iso || cdroms[0].Target.Bus != "scsi" {
+		t.Fatalf("cdrom disks = %#v, want the ISO on the scsi bus", cdroms)
+	}
+	var scsiModels []string
+	for _, controller := range domain.Devices.Controllers {
+		if controller.Type == "scsi" {
+			scsiModels = append(scsiModels, controller.Model)
+		}
+	}
+	if len(scsiModels) != 1 || scsiModels[0] != "virtio-scsi" {
+		t.Fatalf("scsi controller models = %q, want one virtio-scsi", scsiModels)
+	}
+}
+
+func TestDomainXMLReservesPortForSCSIController(t *testing.T) {
+	image := libvirtDisk{Path: "/vm/root.qcow2", Format: DiskQCOW2, Target: "vda"}
+	cdrom := func(target string) libvirtDisk {
+		return libvirtDisk{Path: "/vm/" + target + ".iso", Format: DiskRaw, Target: target, Device: "cdrom", Bus: "scsi", ReadOnly: true}
+	}
+	ports := func(disks ...libvirtDisk) int {
+		domainXML, err := libvirtDomainXML(libvirtDomain{Accel: "kvm", Name: "vm", RAMMiB: 1024, CPUs: 1, HotplugPCISlots: 3, Disks: disks})
+		if err != nil {
+			t.Fatalf("libvirtDomainXML() error = %v", err)
+		}
+		return countPCIeRootPorts(t, domainXML)
+	}
+
+	withoutCDROM := ports(image)
+	// The controller takes one PCIe slot however many SCSI disks share it,
+	// so hotplug capacity stays the same with the ISO attached.
+	if got := ports(image, cdrom("sda")) - withoutCDROM; got != 1 {
+		t.Fatalf("root ports added by one SCSI CD-ROM = %d, want 1", got)
+	}
+	if got := ports(image, cdrom("sda"), cdrom("sdb")) - withoutCDROM; got != 1 {
+		t.Fatalf("root ports added by two SCSI CD-ROMs = %d, want 1", got)
+	}
+}
+
 func countPCIeRootPorts(t *testing.T, domainXML string) int {
 	t.Helper()
 	var domain struct {
