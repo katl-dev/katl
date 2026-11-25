@@ -5,7 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -283,4 +286,47 @@ func (g *gh) enableAutoMerge(ctx context.Context, number int) error {
 
 func (g *gh) failedRunLog(ctx context.Context, runID int64) ([]byte, error) {
 	return runGH(ctx, "run", "view", fmt.Sprint(runID), "--log-failed", "--repo", g.owner+"/"+g.name)
+}
+
+// runArtifactLogs downloads the diagnostics artifacts of a run and returns the
+// contents of their go test logs by artifact name. Artifacts are untrusted:
+// each is extracted into its own new directory and only read as data.
+func (g *gh) runArtifactLogs(ctx context.Context, runID int64) (map[string][]byte, error) {
+	raw, err := runGH(ctx, "api", "--paginate", fmt.Sprintf("repos/%s/%s/actions/runs/%d/artifacts", g.owner, g.name, runID),
+		"--jq", `.artifacts[] | select(.expired | not) | .name`)
+	if err != nil {
+		return nil, err
+	}
+	logs := map[string][]byte{}
+	for _, name := range diagnosticsArtifacts(string(raw), runID) {
+		dir, err := os.MkdirTemp("", "katl-queue-artifact-")
+		if err != nil {
+			return nil, err
+		}
+		log, err := g.downloadTestLog(ctx, runID, name, dir)
+		os.RemoveAll(dir)
+		if err != nil {
+			return logs, err
+		}
+		if log != nil {
+			logs[name] = log
+		}
+	}
+	return logs, nil
+}
+
+func (g *gh) downloadTestLog(ctx context.Context, runID int64, name, dir string) ([]byte, error) {
+	if _, err := runGH(ctx, "run", "download", fmt.Sprint(runID), "--repo", g.owner+"/"+g.name, "--name", name, "--dir", dir); err != nil {
+		return nil, err
+	}
+	var log []byte
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() || !testLogName.MatchString(d.Name()) {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		log = append(log, data...)
+		return err
+	})
+	return log, err
 }
