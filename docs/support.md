@@ -75,10 +75,13 @@ New clusters use mTLS for port `9443` (`spec.managementAuthentication: mtls`);
 on the management network and can manage nodes. Use mTLS, or a `9443` filter
 that admits only your management and workstation network (see the nftables
 guidance below), for any cluster that runs workloads you do not fully trust.
-Use `katlctl management enable-mtls --config <path>` to move a trusted-network
-cluster to mTLS in place. A failed TLS handshake never falls back to
-trusted-network access. Kubernetes kubeconfigs and SSH keys are separate from
-this setting. See
+
+For an existing trusted-network cluster, upgrade the nodes and run
+`katlctl management enable-mtls --config ./cluster.yaml` to switch management
+to mTLS in place. Follow the
+[migration procedure](operations/management-auth.md#migrate-to-mtls-management).
+A failed TLS handshake never falls back to trusted-network access. Kubernetes
+kubeconfigs and SSH keys are separate from this setting. See
 [Secure the management API](operations/management-auth.md#choose-an-access-mode)
 for mode selection, management secrets, and existing-node upgrade behavior.
 

@@ -32,48 +32,142 @@ create, copy, encrypt, or recover in this mode.
 `spec.managementAuthentication` is required unless `spec.managementIdentity` is
 set, which implies `mtls`. `katlctl` refuses every command that reads a
 configuration stating neither, and prints the line to add. Routine commands
-use the configured mode. During a move to mTLS, status commands can read nodes
-that already serve the new authority using the move's management secrets.
+use the configured mode.
 A failed TLS handshake never falls back to trusted-network access.
 
-### Change the access mode
+Older mTLS configurations and nodes keep mTLS: an
+existing configuration with a secrets reference and no explicit mode uses
+mTLS, and installed nodes without a mode record keep mTLS after an OS upgrade.
+An mTLS configuration without `spec.managementIdentity` must say
+`managementAuthentication: mtls` explicitly; it then takes its credentials
+from a saved context, so run `katlctl context save --config ./cluster.yaml`
+before other commands.
+A new trusted-network installation requires a release that supports this
+setting on both the installer and the installed runtime.
 
-Use `katlctl management enable-mtls --config ./cluster.yaml` to move an
-installed trusted-network cluster to mTLS. Editing the config or applying a
-generation cannot change a running node's authentication. The command
-creates or reuses `management-secrets.yaml` beside the config, then moves nodes
-one at a time. Each node serves mTLS on trial and returns to trusted-network
-at its deadline unless the command confirms it. The config switches to mTLS
-after every node is confirmed. Back up the management secrets when the command
-reports their path.
+<a id="change-the-access-mode"></a>
 
-If the move stops partway through, check it with the same config.
+## Migrate to mTLS management
+
+Start with an installed cluster whose `cluster.yaml` specifies
+`spec.managementAuthentication: trusted-network`. Upgrade every node to a
+KatlOS release that supports the migration, and use a version of `katlctl` that
+provides `management enable-mtls`. Check that each node's `management.address`
+is reachable from your workstation and finish any active node operations.
+Use the migration command to change the mode on running nodes. Editing the
+configuration or applying a generation cannot make that change.
+
+1. Run the migration from your workstation.
+
+   ```sh
+   katlctl management enable-mtls --config ./cluster.yaml
+   ```
+
+   Preflight checks every node before creating secrets or starting a trial.
+   If the command reports `preflight failed; no node was changed`, resolve
+   the reported problem and rerun. A trusted-network node fails preflight if
+   its clock is more than five minutes behind the workstation, since it can
+   reject the new certificates as not yet valid. Correct the node's time source
+   and rerun.
+
+2. Back up the secrets file as soon as the command reports its path. By default
+   the command creates or reuses `management-secrets.yaml` beside `cluster.yaml`.
+   Keep this same file throughout the migration.
+
+   The command moves nodes one at a time in configuration order. For each node,
+   it starts a trial, checks that the node answers with the new credentials,
+   and then confirms the change over mTLS. Before moving on, it verifies that
+   the node refuses plaintext management and passes its health checks. The
+   first of three nodes might report these lines.
+
+   ```text
+   cp-1: serving the new authority on trial; it returns to trusted-network by 14:05:00 unless confirmed
+   cp-1: mTLS confirmed (1/3)
+   ```
+
+   Each trial lasts up to five minutes by default. Set `--trial-window` to
+   change that per-node window. It accepts whole seconds from `30s` through
+   `30m`, inclusive.
+
+3. After every node is confirmed and passes its checks, the command sets
+   `spec.managementAuthentication: mtls` in `cluster.yaml` and sets
+   `spec.managementIdentity` to the secrets path relative to `cluster.yaml`.
+   When it refreshes the saved context for a cluster named `lab`, it prints
+   `Refreshed the saved context for lab.` If you have no saved context for the
+   cluster, a successful migration prints a `katlctl context save` command you
+   can run to create one. Check that every node shows `mtls` in the `MANAGEMENT`
+   column.
+
+   ```sh
+   katlctl cluster status --config ./cluster.yaml
+   ```
+
+### Check and resume an interrupted migration
+
+If Ctrl-C, a closed terminal, or a lost connection interrupts the command,
+a node with an unconfirmed trial reverts to trusted-network at its deadline.
+Nodes that already confirmed mTLS keep it, even if the connection dropped
+before the confirmation reply reached your workstation.
+
+If the command reports `interrupted before the new authority was confirmed`,
+use the reported time to decide whether to resume the trial or wait for it
+to revert.
+
+Check the cluster or an individual node using the same configuration.
 
 ```sh
 katlctl cluster status --config ./cluster.yaml
 katlctl node status cp-1 --config ./cluster.yaml
 ```
 
-If a node stops answering plaintext, these commands try the secrets beside
-the config or the file named in `spec.managementIdentity`. A node on trial
-shows `trusted-network (mtls trial)` and the deadline in your local time.
-A confirmed node shows `mtls`. Rerun `katlctl management enable-mtls --config
-./cluster.yaml` before the deadline to resume a live trial, or wait for the node
-to return to trusted-network. The same command skips confirmed nodes and
-finishes the move and config update. If you chose a custom `--output` path that
-the config does not reference, pass the same `--output` when you resume. When
-status cannot find the secrets, it reports the plaintext connection failure
-and explains that an interrupted trial may still be live.
+When the endpoint closes a trusted-network status connection without answering
+the initial status request, these commands retry over mTLS. They look for
+secrets at the path in `spec.managementIdentity`, or at `management-secrets.yaml`
+beside the config when it has no reference. A live trial shows
+`trusted-network (mtls trial)` in the `MANAGEMENT` column and a detail such as
+`management: mTLS trial until 14:05:00` in local time. A confirmed node shows
+`mtls`. After a revert, the node shows `trusted-network` and reports the reason
+after `management: last mTLS trial reverted:`. If the status command cannot
+find the secrets, it reports the connection failure and says
+`the node may be on an interrupted enable-mtls trial`. Status discovers a
+custom `--output` path only if it matches the path status looks for.
 
-Older mTLS configurations and nodes keep mTLS: an
-existing configuration with a secrets reference and no explicit mode uses
-mTLS, and installed nodes without a mode record keep mTLS after an OS upgrade.
-A configuration without `spec.managementIdentity` must say
-`managementAuthentication: mtls` explicitly; it then takes its credentials
-from a saved context, so run `katlctl context save --config ./cluster.yaml`
-before other commands.
-A new trusted-network installation requires a release that supports this
-setting on both the installer and the installed runtime.
+If the command reports `did not answer over mTLS with the new authority`,
+check that the workstation can reach the node over mTLS at its configured
+`management.address`. To end an unconfirmed trial immediately, run this as root
+on the node's console.
+
+```sh
+katlc agent management-trial revert
+```
+
+Rerun the migration with the same config and secrets file. If you used
+`--output` to select the file, pass the same path. The command resumes a
+reachable trial before its deadline and starts a fresh trial after a revert.
+It rechecks nodes that already confirmed the same authority without starting
+another trial on them. If the deadline has passed and the node is still serving
+the trial credentials, wait for it to revert before rerunning.
+
+### If you lose the secrets during migration
+
+Restore the original file from backup at the path the migration used and rerun
+the command. If you have no backup and every node still uses trusted-network
+or returns to it when its trial ends, rerun once all live trials have reverted.
+The command can then create a new secrets file. You can also end a live trial
+from the node console as shown above.
+
+A confirmed node keeps trusting the authority from the lost file. The console
+revert applies only to a live trial, and a newly generated secrets file cannot
+authenticate to a confirmed node. If every node has confirmed mTLS and your
+release supports SSH recovery, run
+`katlctl management identity recover --config ./cluster.yaml` to replace the
+lost authority over host-key-verified root SSH. If the migration stopped
+before updating the config, set `spec.managementAuthentication: mtls` first.
+See [Recover lost secrets](#recover-lost-secrets) for the prerequisites.
+
+The recovery command requires an mTLS config and mTLS on every node it lists.
+If some nodes still use trusted-network, a config listing the whole cluster
+fails recovery preflight even if its mode is set to mTLS.
 
 ## Durable cluster secrets
 
