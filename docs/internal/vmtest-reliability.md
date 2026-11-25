@@ -82,6 +82,8 @@ A run ends as **pass**, **fail** or **inconclusive**:
 
 Host health is recorded first, and runs are classified only once thresholds are calibrated on CI data. At that point a merge group whose result is inconclusive may be rerun once on a fresh runner. That exception needs explicit wording in AGENTS.md.
 
+`scripts/vmtest-run` records `host-health.json` on every run: host load, available memory, CPU steal, and CPU and memory pressure over the run, plus clocksource watchdog and stall messages from guest serial logs. The same file carries a provisional verdict. A run that did not pass is inconclusive only when go test ended in its own timeout panic, no test reported a failure, and the health shows steal or pressure above threshold or a guest clocksource watchdog message. Every other failure is a fail, including assertion failures on a starved host. The thresholds are not yet calibrated, and nothing acts on the verdict. Per-guest vCPU time is not yet recorded.
+
 Every run keeps `_build/vmtest/runs/<run-id>/`, containing:
 
 - `run.json`, with the revision, a digest of any uncommitted changes, the artifact digests, admission wait, outcome and host health;

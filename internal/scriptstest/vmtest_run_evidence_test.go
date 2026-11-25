@@ -231,3 +231,29 @@ func TestVMTestRunCountsResultAfterUnterminatedOutput(t *testing.T) {
 		t.Errorf("test summary = %q, want the test listed", summary)
 	}
 }
+
+func TestVMTestRunRecordsHostHealth(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		fail bool
+		want string
+	}{
+		{"pass", false, `"outcome": "pass"`},
+		{"deterministic failure", true, `"outcome": "fail"`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			runDir, output, _ := runEvidenceVMTest(t, t.TempDir(), "health-run", tt.fail)
+
+			data, err := os.ReadFile(filepath.Join(runDir, "host-health.json"))
+			if err != nil {
+				t.Fatalf("host-health.json missing: %v\n%s", err, output)
+			}
+			if !strings.Contains(string(data), tt.want) {
+				t.Errorf("host-health.json lacks %s:\n%s", tt.want, data)
+			}
+			if !strings.Contains(output, "vmtest host health: "+strings.Trim(strings.TrimPrefix(tt.want, `"outcome": `), `"`)) {
+				t.Errorf("output lacks host health line:\n%s", output)
+			}
+		})
+	}
+}

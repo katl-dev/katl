@@ -1195,7 +1195,7 @@ compact_run_dir() {
     done
     find "$run_dir" -type f \
         ! -name go-test.log ! -name test-summary.txt ! -name run.json ! -name world.json \
-        ! -name host-capabilities.json ! -name resource-test-manifest.json \
+        ! -name host-capabilities.json ! -name host-health.json ! -name resource-test-manifest.json \
         ! -name result.json ! -name scenario.json ! -name '*serial.log.gz' \
         ! -name "$(basename "$run_owner_marker")" -delete
     find "$run_dir" -mindepth 1 -depth -type d -empty -delete
@@ -1209,6 +1209,13 @@ write_test_summary() {
         # Callers that pass -json get the same lines from test events.
         jq -rR 'fromjson? | select(.Test != null and (.Action | IN("pass", "fail", "skip"))) | "--- \(.Action | ascii_upcase): \(.Test)"' "$go_test_log" 2>/dev/null || true
     } >"$test_summary"
+}
+
+# Host health is diagnostic; failing to record it never changes the run result.
+record_host_health() {
+    (cd "$repo_root" && "$resource_go_bin" run ./cmd/katl-vmtest-health finish \
+        -start "$run_dir/host-health-start.json" -run-dir "$run_dir" \
+        -go-test-log "$go_test_log" -status "$1" -out "$run_dir/host-health.json") >&2 || true
 }
 
 print_evidence() {
@@ -1448,12 +1455,14 @@ if ! has_go_test_verbosity "$@"; then
     # Per-test results in go-test.log are the run's evidence.
     go_test_args+=("-v")
 fi
+(cd "$repo_root" && "$resource_go_bin" run ./cmd/katl-vmtest-health start -out "$run_dir/host-health-start.json") >&2 || true
 set +e
 "$go_bin" test -exec "$repo_root/scripts/vmtest-exec" "${go_test_args[@]}" "$@" >"$go_test_log" 2>&1
 exit_code=$?
 set -e
 if [[ "$exit_code" -ne 0 ]]; then
     write_run_index "failed" "$@"
+    record_host_health fail
     write_test_summary
     printf 'vmtest failed: go test exited %d\n' "$exit_code" >&2
     print_evidence
@@ -1467,6 +1476,7 @@ fi
 # reported a pass.
 if ! (cd "$repo_root" && "$resource_go_bin" run ./cmd/katl-vmtest-ran -log "$go_test_log" -- "$@") >&2; then
     write_run_index "tests-not-run" "$@"
+    record_host_health fail
     write_test_summary
     print_evidence
     printf 'vmtest failed: go test exited 0 but requested tests did not run\n' >&2
@@ -1478,6 +1488,7 @@ fi
 if [[ "$exit_code" -eq 0 && ( "$require_scenario_result" == 1 || "$require_scenario_result" == true ) ]]; then
     if ! find "$scenario_dir" -mindepth 2 -maxdepth 8 -name result.json -print -quit | grep -q .; then
         write_run_index "no-scenario-result" "$@"
+        record_host_health fail
         write_test_summary
         print_evidence
         printf 'vmtest did not execute any world scenario; no result.json found under %s\n' "$scenario_dir" >&2
@@ -1491,6 +1502,7 @@ if [[ "$exit_code" -eq 0 && ( "$require_scenario_result" == 1 || "$require_scena
     fi
 fi
 write_run_index "passed" "$@"
+record_host_health pass
 write_test_summary
 print_evidence
 if ! cleanup_run_dir "passed"; then
