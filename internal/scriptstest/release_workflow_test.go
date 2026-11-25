@@ -27,6 +27,7 @@ type workflowJob struct {
 	Uses            string            `yaml:"uses"`
 	ContinueOnError bool              `yaml:"continue-on-error"`
 	Permissions     yaml.Node         `yaml:"permissions"`
+	Outputs         map[string]string `yaml:"outputs"`
 	Env             map[string]string `yaml:"env"`
 	With            map[string]string `yaml:"with"`
 	Strategy        struct {
@@ -405,7 +406,7 @@ func TestReleaseValidation(t *testing.T) {
 		}{{"success", true}, {"failure", false}, {"skipped", false}, {"cancelled", false}} {
 			t.Run(dependency+"/"+tc.state, func(t *testing.T) {
 				command := exec.Command("bash", "-euo", "pipefail", "-c", strings.Join(scripts, "\n"))
-				command.Env = append(os.Environ(), "UNIT=success", "BUNDLE=success", "REGRESSION=success", "PRODUCTION_STANDARD=success", "PRODUCTION_LTS=success", "QUALIFIED=success", dependency+"="+tc.state)
+				command.Env = append(os.Environ(), "REGRESSION_DECISION=run", "UNIT=success", "BUNDLE=success", "REGRESSION=success", "PRODUCTION_STANDARD=success", "PRODUCTION_LTS=success", "QUALIFIED=success", dependency+"="+tc.state)
 				output, err := command.CombinedOutput()
 				if (err == nil) != tc.pass {
 					t.Fatalf("validation result = %v, want pass=%v: %s", err, tc.pass, output)
@@ -543,5 +544,80 @@ func TestReleaseUploadGuardsPublishedAssets(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("no step uploads to an existing release")
+	}
+}
+
+func TestReleaseRegressionFollowsDecision(t *testing.T) {
+	workflow, _ := readWorkflow(t, "release-artifacts.yml")
+
+	regression := workflow.Jobs["vmtests"]
+	if !regression.needs("identity") || !strings.Contains(regression.If, "needs.identity.outputs.regression != 'skip'") {
+		t.Errorf("VM regression must run unless the identity job decided skip: needs identity=%v if=%q", regression.needs("identity"), regression.If)
+	}
+	if !strings.Contains(regression.If, "inputs.qualify_run == 0") {
+		t.Errorf("VM regression lost its requalification condition: %q", regression.If)
+	}
+
+	// Scheduled and dispatched runs have no decision (empty), so they always run the lanes.
+	if strings.Contains(regression.If, "event_name") || strings.Contains(regression.If, "ref_type") {
+		t.Errorf("VM regression is conditional on the trigger, so a schedule or dispatch could skip it: %q", regression.If)
+	}
+
+	// The release bytes embed the version, so no decision may skip building or qualifying them.
+	for _, name := range []string{"build-standard", "build-lts", "qualification-standard", "qualification-lts", "bundle", "qualified-bytes"} {
+		if job := workflow.Jobs[name]; strings.Contains(job.If, "regression") || strings.Contains(job.If, "decision") {
+			t.Errorf("%s depends on the regression decision: %q", name, job.If)
+		}
+	}
+
+	decided := false
+	for _, step := range workflow.Jobs["identity"].Steps {
+		if !strings.Contains(step.Run, "scripts/katl-release regression") {
+			continue
+		}
+		decided = true
+		if step.If != tagPushCondition || step.Env["GH_TOKEN"] != "${{ github.token }}" || !strings.Contains(step.Run, `"$GITHUB_SHA"`) || !strings.Contains(step.Run, "decision=") {
+			t.Errorf("decision step must run only for tag pushes, read the workflow token and judge the tagged commit: %+v", step)
+		}
+	}
+	if !decided {
+		t.Error("the identity job does not decide the VM regression")
+	}
+	if !strings.Contains(workflow.Jobs["identity"].Outputs["regression"], "steps.regression.outputs.decision") {
+		t.Error("the identity job does not export the decision")
+	}
+}
+
+func TestReleaseValidationRegressionSkip(t *testing.T) {
+	workflow, _ := readWorkflow(t, "release-artifacts.yml")
+
+	var script string
+	for _, step := range workflow.Jobs["release-validation"].Steps {
+		script = step.Run
+		if want := "${{ needs.identity.outputs.regression }}"; step.Env["REGRESSION_DECISION"] != want {
+			t.Errorf("REGRESSION_DECISION = %q, want %q", step.Env["REGRESSION_DECISION"], want)
+		}
+	}
+	for _, tc := range []struct {
+		decision, result string
+		pass             bool
+	}{
+		{"run", "success", true},
+		{"run", "skipped", false},
+		{"", "skipped", false},
+		{"", "success", true},
+		{"skip", "skipped", true},
+		{"skip", "success", false},
+		{"skip", "failure", false},
+	} {
+		t.Run(tc.decision+"/"+tc.result, func(t *testing.T) {
+			command := exec.Command("bash", "-euo", "pipefail", "-c", script)
+			command.Env = append(os.Environ(), "UNIT=success", "BUNDLE=success", "PRODUCTION_STANDARD=success", "PRODUCTION_LTS=success", "QUALIFIED=success",
+				"REGRESSION="+tc.result, "REGRESSION_DECISION="+tc.decision)
+			output, err := command.CombinedOutput()
+			if (err == nil) != tc.pass {
+				t.Fatalf("validation result = %v, want pass=%v: %s", err, tc.pass, output)
+			}
+		})
 	}
 }
