@@ -36,12 +36,18 @@ upgrades from its own history rather than from a newer series.
 ## VM coverage
 
 GitHub-hosted Ubuntu runners execute the existing libvirt suite with KVM. Each
-selected kernel flavour builds immutable test inputs once and runs two lanes:
+selected kernel flavour builds immutable test inputs once and runs five lanes in
+parallel, balanced by measured test duration so that none exceeds about 15
+minutes of tests (`laneBudget` in `cmd/katl-vmtest-plan`):
 
-- **Lifecycle:** installation and local handoff, configuration, management
-  rotation, and update/rollback.
-- **Cluster:** ISO/PXE boot, storage authority, two-node bootstrap, and three-node
-  installation.
+- **Readdress:** worker re-addressing.
+- **Two-node:** two-node bootstrap, ISO/PXE boot, storage authority, and
+  installer disk layouts.
+- **Cluster:** three-node installation, external worker join, and volume
+  binding.
+- **Config:** configuration apply modes and service security.
+- **Lifecycle:** installation and local handoff, management rotation, and
+  update/rollback.
 
 VM suites run in the merge queue, on a pull request into a `release/[0-9]*` series
 branch, and on any other pull request only while it carries the `vmtest` label.
@@ -72,7 +78,7 @@ dispatch treats every path as changed, so it runs both flavours with driver
 qualification for both.
 
 Kubernetes producer changes select the newest supported Kubernetes candidate.
-The shared image job verifies and stages that bundle, and the cluster lane
+The shared image job verifies and stages that bundle, and the two-node lane
 exercises it. The separate scheduled **Kubernetes Bundle Artifacts** workflow
 owns discovery and publication, rather than repeating the PR image build.
 

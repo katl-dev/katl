@@ -11,22 +11,44 @@ import (
 	"strings"
 )
 
+// group is a selectable set of tests. Lane names the CI job that runs it and
+// Seconds is the measured wall time (median of the standard and LTS flavours
+// over recent merge-group runs), which balances the lanes.
 type group struct {
 	Name    string `json:"name"`
 	Package string `json:"package"`
 	Tests   string `json:"tests"`
+	Lane    string `json:"-"`
+	Seconds int    `json:"-"`
 }
 
+type lane struct{ Name, Package string }
+
+// lanes are the parallel VM jobs per kernel flavour. laneBudget bounds the
+// summed Seconds of a lane's groups so no lane becomes the serial tail of a
+// merge group.
+var lanes = []lane{
+	{"readdress", "./internal/vmtest/scenarios"},
+	{"two-node", "./internal/vmtest/scenarios"},
+	{"cluster", "./internal/vmtest/scenarios"},
+	{"config", "./internal/vmtest"},
+	{"lifecycle", "./internal/vmtest"},
+}
+
+const laneBudget = 900
+
 var groups = []group{
-	{"two-node", "./internal/vmtest/scenarios", "TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke|TestExternalWorkerJoin"},
-	{"readdress", "./internal/vmtest/scenarios", "TestWorkerReaddress"},
-	{"three-node-install", "./internal/vmtest/scenarios", "TestThreeNodeGeneration0InstallSmoke"},
-	{"install", "./internal/vmtest", "TestFirstInstallTargetDiskBootSmoke|TestFirstInstallTargetDiskLocalHandoffSmoke"},
-	{"config", "./internal/vmtest", "TestInstalledRuntimeConfigApplyModesSmoke|TestInstalledRuntimeServiceSecuritySmoke"},
-	{"update", "./internal/vmtest", "TestInstalledRuntimeSysupdateRootUKITransfer"},
-	{"management", "./internal/vmtest", "TestInstalledRuntimeManagementRotationSmoke"},
-	{"storage", "./internal/vmtest/scenarios", "TestInstallerISOFirstInstallStorageAuthority|TestVolumeBindingGate"},
-	{"boot", "./internal/vmtest/scenarios", "TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke|TestInstallerESPSameDiskInstall|TestInstallerReinstallBesideOldKatlDisk"},
+	{"two-node", "./internal/vmtest/scenarios", "TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke", "two-node", 660},
+	{"worker-join", "./internal/vmtest/scenarios", "TestExternalWorkerJoin", "cluster", 215},
+	{"readdress", "./internal/vmtest/scenarios", "TestWorkerReaddress", "readdress", 710},
+	{"three-node-install", "./internal/vmtest/scenarios", "TestThreeNodeGeneration0InstallSmoke", "cluster", 270},
+	{"install", "./internal/vmtest", "TestFirstInstallTargetDiskBootSmoke|TestFirstInstallTargetDiskLocalHandoffSmoke", "lifecycle", 75},
+	{"config", "./internal/vmtest", "TestInstalledRuntimeConfigApplyModesSmoke|TestInstalledRuntimeServiceSecuritySmoke", "config", 570},
+	{"update", "./internal/vmtest", "TestInstalledRuntimeSysupdateRootUKITransfer", "lifecycle", 330},
+	{"management", "./internal/vmtest", "TestInstalledRuntimeManagementRotationSmoke", "lifecycle", 70},
+	{"storage", "./internal/vmtest/scenarios", "TestInstallerISOFirstInstallStorageAuthority", "two-node", 32},
+	{"volume-binding", "./internal/vmtest/scenarios", "TestVolumeBindingGate", "cluster", 150},
+	{"boot", "./internal/vmtest/scenarios", "TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke|TestInstallerESPSameDiskInstall|TestInstallerReinstallBesideOldKatlDisk", "two-node", 180},
 }
 
 func main() {
@@ -149,21 +171,16 @@ func planCI(paths []string, regression bool) ciPlan {
 }
 
 func batchGroups(selected []group) []group {
-	lanes := []group{
-		{Name: "cluster", Package: "./internal/vmtest/scenarios"},
-		{Name: "lifecycle", Package: "./internal/vmtest"},
-	}
 	result := []group{}
-	for _, lane := range lanes {
+	for _, l := range lanes {
 		var tests []string
 		for _, scenario := range selected {
-			if scenario.Package == lane.Package {
+			if scenario.Lane == l.Name {
 				tests = append(tests, scenario.Tests)
 			}
 		}
 		if len(tests) != 0 {
-			lane.Tests = strings.Join(tests, "|")
-			result = append(result, lane)
+			result = append(result, group{Name: l.Name, Package: l.Package, Tests: strings.Join(tests, "|")})
 		}
 	}
 	return result
@@ -183,7 +200,7 @@ func selectGroups(paths []string) []group {
 			name == ".github/workflows/kernel-updates.yml", name == ".github/workflows/kernel-automerge.yml":
 			continue
 		case name == "cmd/katlctl/config_compatibility.go", name == "cmd/katlctl/config_inspect.go":
-			selected["config"], selected["management"], selected["two-node"], selected["readdress"] = true, true, true, true
+			selected["config"], selected["management"], selected["two-node"], selected["worker-join"], selected["readdress"] = true, true, true, true, true
 		case name == "cmd/katlctl/management_rotation.go":
 			selected["management"] = true
 		default:

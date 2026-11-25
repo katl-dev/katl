@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestSelectGroups(t *testing.T) {
@@ -20,7 +22,7 @@ func TestSelectGroups(t *testing.T) {
 		{"unit tests", []string{"internal/installer/operation/run_test.go"}, []string{}},
 		{"CLI unit tests", []string{"cmd/katlctl/main_test.go"}, []string{}},
 		{"maintainer tooling", []string{"cmd/katl-release/main.go", "scripts/katl-release"}, []string{}},
-		{"CLI configuration", []string{"cmd/katlctl/config_compatibility.go"}, []string{"config", "management", "two-node", "readdress"}},
+		{"CLI configuration", []string{"cmd/katlctl/config_compatibility.go"}, []string{"config", "management", "two-node", "worker-join", "readdress"}},
 		{"CLI rotation", []string{"cmd/katlctl/management_rotation.go"}, []string{"management"}},
 		{"CLI rotation and docs", []string{"cmd/katlctl/management_rotation.go", "docs/operations/install.md"}, []string{"management"}},
 		{"shared CLI", []string{"cmd/katlctl/main.go"}, allNames()},
@@ -74,7 +76,7 @@ func TestReaddressSelection(t *testing.T) {
 }
 
 func allNames() []string {
-	return []string{"boot", "install", "storage", "config", "management", "update", "two-node", "readdress", "three-node-install"}
+	return []string{"boot", "install", "storage", "volume-binding", "config", "management", "update", "two-node", "worker-join", "readdress", "three-node-install"}
 }
 
 func TestPlan(t *testing.T) {
@@ -84,10 +86,10 @@ func TestPlan(t *testing.T) {
 		input string
 		want  []string
 	}{
-		{"full by default", nil, "", []string{"cluster", "lifecycle"}},
+		{"full by default", nil, "", allLanes},
 		{"empty diff", []string{"--changed"}, "", []string{}},
 		{"docs with spaces", []string{"--changed"}, "docs/design notes.md\x00", []string{}},
-		{"newline in unknown path", []string{"--changed"}, "source\nname\x00", []string{"cluster", "lifecycle"}},
+		{"newline in unknown path", []string{"--changed"}, "source\nname\x00", allLanes},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var output bytes.Buffer
@@ -123,6 +125,31 @@ func TestCoverage(t *testing.T) {
 	t.Run("default", func(t *testing.T) { testCoverage(t, nil, "") })
 	t.Run("regression", func(t *testing.T) {
 		testCoverage(t, []string{"--ci", "--regression"}, "cmd/katlctl/management_rotation.go\x00")
+	})
+	t.Run("install artifacts", func(t *testing.T) {
+		// Every planned lane uses the same scenario job and its shared install inputs.
+		data, err := os.ReadFile("../../.github/workflows/hosted-vmtests.yml")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var workflow struct {
+			Jobs struct {
+				Scenarios struct {
+					Needs []string
+					Env   map[string]string
+				}
+			}
+		}
+		if err := yaml.Unmarshal(data, &workflow); err != nil {
+			t.Fatal(err)
+		}
+		scenarios := workflow.Jobs.Scenarios
+		if set := scenarios.Env["ARTIFACT_SET"]; set != "install" && set != "default" {
+			t.Errorf("scenario lanes use artifact set %q, which does not supply the install image", set)
+		}
+		if !slices.Contains(scenarios.Needs, "images") {
+			t.Error("scenario lanes can start before their shared images are available")
+		}
 	})
 }
 
@@ -161,21 +188,57 @@ func testCoverage(t *testing.T, args []string, input string) {
 			"TestInstalledRuntimeManagementRotationSmoke",
 		},
 	}
-	if len(plan.Include) != 2 {
-		t.Fatalf("expected two VM lanes, got %s", &output)
+	if len(plan.Include) != len(lanes) {
+		t.Fatalf("expected %d VM lanes, got %s", len(lanes), &output)
 	}
+	// A test dropped from every lane or run by two lanes must fail, so collect
+	// across lanes without deduplicating.
+	got := map[string][]string{}
 	for _, lane := range plan.Include {
-		tests := strings.Split(lane.Tests, "|")
-		slices.Sort(tests)
-		expected, ok := want[lane.Package]
-		slices.Sort(expected)
-		if !ok || !slices.Equal(tests, expected) {
-			t.Fatalf("%s tests = %v, want %v", lane.Package, tests, expected)
-		}
-		delete(want, lane.Package)
+		got[lane.Package] = append(got[lane.Package], strings.Split(lane.Tests, "|")...)
 	}
-	if len(want) != 0 {
-		t.Fatalf("missing packages: %v", want)
+	for pkg, expected := range want {
+		slices.Sort(got[pkg])
+		slices.Sort(expected)
+		if !slices.Equal(got[pkg], expected) {
+			t.Errorf("%s tests = %v, want %v", pkg, got[pkg], expected)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("packages = %v, want %v", got, want)
+	}
+}
+
+var allLanes = []string{"readdress", "two-node", "cluster", "config", "lifecycle"}
+
+// TestLaneBalance keeps every lane within the measured time budget, so a
+// test added to the wrong lane, or a lane that grows, cannot lengthen the
+// merge group without failing here.
+func TestLaneBalance(t *testing.T) {
+	seconds := map[string]int{}
+	for _, g := range groups {
+		if !slices.ContainsFunc(lanes, func(l lane) bool { return l.Name == g.Lane && l.Package == g.Package }) {
+			t.Errorf("group %s names lane %q, which does not run package %s", g.Name, g.Lane, g.Package)
+		}
+		seconds[g.Lane] += g.Seconds
+	}
+	for _, l := range lanes {
+		if seconds[l.Name] == 0 {
+			t.Errorf("lane %s has no groups", l.Name)
+		}
+		if seconds[l.Name] > laneBudget {
+			t.Errorf("lane %s takes %ds, over the %ds budget; move a group to a shorter lane", l.Name, seconds[l.Name], laneBudget)
+		}
+	}
+}
+
+// TestBatchGroupsUsesLanes pins the assignment that matters most: the two
+// longest tests never share a lane.
+func TestBatchGroupsUsesLanes(t *testing.T) {
+	for _, l := range batchGroups(groups) {
+		if strings.Contains(l.Tests, "TestWorkerReaddress") && strings.Contains(l.Tests, "TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke") {
+			t.Errorf("lane %s runs the two longest scenarios serially", l.Name)
+		}
 	}
 }
 
@@ -188,7 +251,7 @@ func TestCIScenarios(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
 		t.Fatal(err)
 	}
-	want := []group{{"lifecycle", "./internal/vmtest", "TestInstalledRuntimeManagementRotationSmoke"}}
+	want := []group{{Name: "lifecycle", Package: "./internal/vmtest", Tests: "TestInstalledRuntimeManagementRotationSmoke"}}
 	if !slices.Equal(plan.Groups, want) {
 		t.Fatalf("scenarios = %v, want %v", plan.Groups, want)
 	}

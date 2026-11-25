@@ -244,7 +244,6 @@ jobs:
     timeout-minutes: 90
     strategy:
       fail-fast: false
-      max-parallel: 2
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
     env:
       KATL_BUILD_COMMIT: ${{ needs.plan.outputs.source }}
