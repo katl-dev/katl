@@ -14,6 +14,26 @@ import (
 // loopbackSAN is the address node-local API proxies forward TLS to.
 const loopbackSAN = "127.0.0.1"
 
+const waitControlPlanePhase = "wait-control-plane"
+
+// HasDelegatedInitHealth reports whether the init config skips kubeadm's
+// control-plane health check, as Katl's bootstrap init renderer requests.
+func HasDelegatedInitHealth(content []byte) (bool, error) {
+	documents, err := decodeDocuments(content)
+	if err != nil {
+		return false, err
+	}
+	for _, document := range documents {
+		if document["kind"] == "InitConfiguration" {
+			phases, _ := document["skipPhases"].([]any)
+			if slices.Contains(phases, waitControlPlanePhase) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
 // BootstrapCertSANs returns the apiServer.certSANs that bootstrap adds to the
 // cluster it initialises: the control-plane endpoint host, the loopback
 // address, and the VIP Katl advertises for the endpoint, if any. It is the
@@ -141,8 +161,8 @@ func delegateInitHealth(content []byte) ([]byte, error) {
 					return nil, fmt.Errorf("InitConfiguration.skipPhases must be a list of strings")
 				}
 			}
-			if !slices.Contains(phases, "wait-control-plane") {
-				phases = append(phases, "wait-control-plane")
+			if !slices.Contains(phases, waitControlPlanePhase) {
+				phases = append(phases, waitControlPlanePhase)
 			}
 			document["skipPhases"] = phases
 		}
@@ -152,7 +172,7 @@ func delegateInitHealth(content []byte) ([]byte, error) {
 		documents = append(documents, map[string]any{
 			"apiVersion": "kubeadm.k8s.io/v1beta4",
 			"kind":       "InitConfiguration",
-			"skipPhases": []string{"wait-control-plane"},
+			"skipPhases": []string{waitControlPlanePhase},
 		})
 	}
 	out, err := encodeDocuments(documents)

@@ -11,6 +11,7 @@ const sharedControlPlane = `apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration
 nodeRegistration:
   criSocket: unix:///run/containerd/containerd.sock
+  taints: []
 ---
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration
@@ -125,11 +126,11 @@ func TestForNodeNormalizesStaleRegistration(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, node := range map[string]manifest.NodeConfig{
-		"labels replaced":  testNode("10.0.0.21", map[string]string{"example.com/new": "2"}, manifest.NodeTaint{Key: "old", Effect: "NoSchedule"}),
-		"taints replaced":  testNode("10.0.0.21", map[string]string{"example.com/old": "1"}, manifest.NodeTaint{Key: "new", Effect: "NoExecute"}),
-		"address replaced": testNode("10.0.0.99", map[string]string{"example.com/old": "1"}, manifest.NodeTaint{Key: "old", Effect: "NoSchedule"}),
-		"all cleared":      testNode("", nil),
-		"all removed":      testNode("10.0.0.21", nil),
+		"labels replaced":           testNode("10.0.0.21", map[string]string{"example.com/new": "2"}, manifest.NodeTaint{Key: "old", Effect: "NoSchedule"}),
+		"taints replaced":           testNode("10.0.0.21", map[string]string{"example.com/old": "1"}, manifest.NodeTaint{Key: "new", Effect: "NoExecute"}),
+		"address replaced":          testNode("10.0.0.99", map[string]string{"example.com/old": "1"}, manifest.NodeTaint{Key: "old", Effect: "NoSchedule"}),
+		"all cleared":               testNode("", nil),
+		"labels and taints cleared": testNode("10.0.0.21", nil),
 	} {
 		t.Run(name, func(t *testing.T) {
 			want := forNodeConfig(t, testPlan(t, sharedControlPlane), node)

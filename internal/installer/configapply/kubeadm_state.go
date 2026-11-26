@@ -1,6 +1,7 @@
 package configapply
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -65,12 +66,7 @@ func ReadEffectiveGenerationKubeadmConfig(root, generationID, ref string, node m
 		if err != nil {
 			return nil, err
 		}
-		// A bootstrap generation's confext holds a rendered init config at the
-		// input path rather than the input, which its parent generation owns.
-		if _, err := os.Stat(filepath.Join(dir, "confext/etc/katl/bootstrap-runtime.json")); err == nil {
-			return nil, os.ErrNotExist
-		}
-		return readKubeadmInputFiles(filepath.Join(dir, "confext", kubeadmconfig.InputDir(ref)), ref)
+		return readConfextKubeadmInput(filepath.Join(dir, "confext"), ref)
 	})
 	if errors.Is(err, os.ErrNotExist) {
 		source = ""
@@ -84,6 +80,66 @@ func ReadEffectiveGenerationKubeadmConfig(root, generationID, ref string, node m
 		return kubeadmconfig.NodeInput{}, source, fmt.Errorf("decode kubeadm input: %w", err)
 	}
 	return input, source, nil
+}
+
+func readConfextKubeadmInput(confext, ref string) ([]kubeadmconfig.File, error) {
+	files, err := readKubeadmInputFiles(filepath.Join(confext, kubeadmconfig.InputDir(ref)), ref)
+	if err != nil {
+		return nil, err
+	}
+	runtime, err := os.ReadFile(filepath.Join(confext, "etc/katl/bootstrap-runtime.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return files, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var metadata struct {
+		Kubeadm struct {
+			Path           string `json:"path"`
+			Digest         string `json:"digest"`
+			InitConfigPath string `json:"initConfigPath"`
+		} `json:"kubeadm"`
+	}
+	if err := json.Unmarshal(runtime, &metadata); err != nil {
+		return nil, fmt.Errorf("decode bootstrap runtime metadata: %w", err)
+	}
+	path := kubeadmconfig.ConfigPath(ref)
+	if metadata.Kubeadm.InitConfigPath != "" || (metadata.Kubeadm.Path != "" && metadata.Kubeadm.Path != path) {
+		return files, nil
+	}
+
+	// Legacy init overwrote the input with the config that delegates its health
+	// check to Katl. A matching digest proves that the file is the original
+	// input, which can also request that phase be skipped.
+	for _, file := range files {
+		if file.RenderPath != path {
+			continue
+		}
+		delegated, err := kubeadmconfig.HasDelegatedInitHealth(file.Content)
+		if err != nil {
+			return nil, fmt.Errorf("decode confext kubeadm input: %w", err)
+		}
+		if !delegated {
+			return files, nil
+		}
+		if metadata.Kubeadm.Digest == "" {
+			return nil, os.ErrNotExist
+		}
+		plan, err := kubeadmconfig.PlanFromInputFiles(ref, files)
+		if err != nil {
+			return nil, err
+		}
+		digest, err := plan.InputDigest()
+		if err != nil {
+			return nil, err
+		}
+		if digest != metadata.Kubeadm.Digest {
+			return nil, os.ErrNotExist
+		}
+		break
+	}
+	return files, nil
 }
 
 func readGenerationKubeadmFiles(root, generationID, ref string) ([]kubeadmconfig.File, error) {

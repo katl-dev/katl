@@ -16,6 +16,16 @@ import (
 // tree or renders an input file at the path the input carries, which only
 // this package may do.
 func ownershipViolations(fset *token.FileSet, file *ast.File) []string {
+	var kubeadmPackage string
+	for _, spec := range file.Imports {
+		if path, _ := strconv.Unquote(spec.Path.Value); path == "github.com/katl-dev/katl/internal/installer/kubeadmconfig" {
+			kubeadmPackage = "kubeadmconfig"
+			if spec.Name != nil {
+				kubeadmPackage = spec.Name.Name
+			}
+			break
+		}
+	}
 	var violations []string
 	ast.Inspect(file, func(node ast.Node) bool {
 		switch node := node.(type) {
@@ -37,15 +47,33 @@ func ownershipViolations(fset *token.FileSet, file *ast.File) []string {
 					continue
 				}
 				key, _ := pair.Key.(*ast.Ident)
-				path, _ := pair.Value.(*ast.SelectorExpr)
-				if key != nil && key.Name == "Path" && path != nil && path.Sel.Name == "RenderPath" {
-					violations = append(violations, fset.Position(node.Pos()).String()+": NativeEtcFile written at an input RenderPath")
+				if key != nil && key.Name == "Path" && usesKubeadmInputPath(pair.Value, kubeadmPackage) {
+					violations = append(violations, fset.Position(pair.Value.Pos()).String()+": NativeEtcFile written at a kubeadm input path")
 				}
 			}
 		}
 		return true
 	})
 	return violations
+}
+
+func usesKubeadmInputPath(path ast.Expr, kubeadmPackage string) bool {
+	usesInputPath := false
+	ast.Inspect(path, func(node ast.Node) bool {
+		selector, ok := node.(*ast.SelectorExpr)
+		if !ok {
+			return !usesInputPath
+		}
+		switch selector.Sel.Name {
+		case "RenderPath":
+			usesInputPath = true
+		case "ConfigPath", "InputDir", "PatchesDir":
+			pkg, ok := selector.X.(*ast.Ident)
+			usesInputPath = usesInputPath || (ok && pkg.Name == kubeadmPackage)
+		}
+		return !usesInputPath
+	})
+	return usesInputPath
 }
 
 func TestOwnershipViolationsDetection(t *testing.T) {
@@ -57,7 +85,10 @@ func TestOwnershipViolationsDetection(t *testing.T) {
 		{name: "raw literal", source: "package p; var x = `etc/katl/kubeadm`", want: 1},
 		{name: "joined literal", source: `package p; var x = filepath.Join("/etc/katl/kubeadm", ref)`, want: 1},
 		{name: "render path", source: `package p; var x = confext.NativeEtcFile{Path: input.RenderPath, Content: "x"}`, want: 1},
-		{name: "computed path", source: `package p; var x = confext.NativeEtcFile{Path: kubeadmconfig.BootstrapInitConfigPath}`},
+		{name: "config path", source: `package p; import "github.com/katl-dev/katl/internal/installer/kubeadmconfig"; var x = confext.NativeEtcFile{Path: kubeadmconfig.ConfigPath(ref), Content: rendered}`, want: 1},
+		{name: "joined patch path", source: `package p; import kc "github.com/katl-dev/katl/internal/installer/kubeadmconfig"; var x = confext.NativeEtcFile{Path: filepath.Join(kc.PatchesDir(ref), other.ConfigPath(name)), Content: rendered}`, want: 1},
+		{name: "config path read", source: `package p; import "github.com/katl-dev/katl/internal/installer/kubeadmconfig"; var config, err = os.ReadFile(kubeadmconfig.ConfigPath(ref))`},
+		{name: "bootstrap config path", source: `package p; var x = confext.NativeEtcFile{Path: kubeadmconfig.BootstrapInitConfigPath}`},
 		{name: "other path", source: `package p; var x = "/etc/katl/bootstrap/kubeadm-init.yaml"`},
 		{name: "comment", source: "package p\n// /etc/katl/kubeadm names the tree\nvar x = 1"},
 	} {

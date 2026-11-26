@@ -98,10 +98,9 @@ func withNodeRegistration(plan Plan, registration nodeRegistration) (Plan, error
 // metadata, which their own domains plan, rather than kubeadm configuration.
 // Inline input that sets them anyway is not rejected; ForNode replaces them
 // and ReplacedRegistration reports the values it replaced.
-// An empty taints list is the operator's way to clear kubeadm's default
-// control-plane taint; keepClearedTaints leaves it for registration to keep or
-// replace. The result reports whether any registration field was removed.
-func withoutNodeRegistration(plan Plan, keepClearedTaints bool) (Plan, bool, error) {
+// preserveTaintDefaults keeps empty lists and restores the empty init list
+// that custom taints replace. The result reports whether registration changed.
+func withoutNodeRegistration(plan Plan, preserveTaintDefaults bool) (Plan, bool, error) {
 	documents, err := decodeDocuments(plan.Config.Content)
 	if err != nil {
 		return Plan{}, false, fmt.Errorf("decode KubeadmConfig %q without node registration: %w", plan.Name, err)
@@ -113,8 +112,13 @@ func withoutNodeRegistration(plan Plan, keepClearedTaints bool) (Plan, bool, err
 			continue
 		}
 		if registration, ok := document["nodeRegistration"].(map[string]any); ok {
-			if taints, ok := registration["taints"]; ok && !(keepClearedTaints && isEmptySequence(taints)) {
-				delete(registration, "taints")
+			if taints, ok := registration["taints"]; ok && !(preserveTaintDefaults && isEmptySequence(taints)) {
+				if preserveTaintDefaults && kind == "InitConfiguration" {
+					// Omitting the list makes kubeadm add its control-plane taint.
+					registration["taints"] = []any{}
+				} else {
+					delete(registration, "taints")
+				}
 				removed = true
 			}
 			if extraArgs, ok := registration["kubeletExtraArgs"].([]any); ok {

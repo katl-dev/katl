@@ -153,9 +153,8 @@ var controlPlaneManifestFields = []string{"extraArgs", "extraEnvs", "extraVolume
 
 // SupportedControlPlaneComponentDelta returns the control-plane manifest fields
 // that differ between desired and live ClusterConfiguration, and refuses any
-// other difference. Bootstrap adds the SANs of kubeadmconfig.BootstrapCertSANs
-// to the cluster it initialises, so those are not compared: vip is the VIP the
-// desired configuration advertises for the control-plane endpoint, if any.
+// other difference. Desired input may omit SANs added by bootstrap. vip is the
+// VIP the desired configuration advertises for the control-plane endpoint, if any.
 func SupportedControlPlaneComponentDelta(desired, live []byte, vip string) ([]string, error) {
 	desiredConfig, err := clusterConfiguration(desired)
 	if err != nil {
@@ -199,36 +198,37 @@ func SupportedControlPlaneComponentDelta(desired, live []byte, vip string) ([]st
 
 var errUnsupportedClusterDifference = fmt.Errorf("unsupported ClusterConfiguration difference outside control-plane manifest fields")
 
-// reconcileCertSANs removes the SANs bootstrap adds from the apiServer.certSANs
-// of both configurations, which then must hold the same operator SANs. The
-// live config's endpoint names the host bootstrap added. An absent list equals
-// an empty one, and a SAN that live lacks, such as a VIP configured after
-// bootstrap, is not a difference.
+// reconcileCertSANs lets desired input omit bootstrap SANs already present in
+// the running cluster. An explicit SAN missing from live input still requires
+// a certificate change, including when it matches the endpoint or VIP.
 func reconcileCertSANs(desired, live map[string]any, vip string) error {
 	endpoint, _ := live["controlPlaneEndpoint"].(string)
-	katl := kubeadmconfig.ClusterCertSANs(endpoint, vip)
-	desiredSANs, err := withoutCertSANs(desired, katl)
+	desiredSANs, err := takeCertSANs(desired)
 	if err != nil {
 		return fmt.Errorf("desired: %w", err)
 	}
-	liveSANs, err := withoutCertSANs(live, katl)
+	liveSANs, err := takeCertSANs(live)
 	if err != nil {
 		return fmt.Errorf("live: %w", err)
 	}
+	bootstrapSANs := slices.DeleteFunc(kubeadmconfig.ClusterCertSANs(endpoint, vip), func(san string) bool {
+		return !slices.ContainsFunc(liveSANs, func(liveSAN string) bool { return strings.TrimSpace(liveSAN) == san })
+	})
+	ignoreBootstrapSAN := func(san string) bool { return slices.Contains(bootstrapSANs, strings.TrimSpace(san)) }
+	desiredSANs = slices.DeleteFunc(desiredSANs, ignoreBootstrapSAN)
+	liveSANs = slices.DeleteFunc(liveSANs, ignoreBootstrapSAN)
 	if !slices.Equal(desiredSANs, liveSANs) {
 		return fmt.Errorf("apiServer.certSANs %v differs from the running cluster's %v; config apply does not change API server certificate SANs, so set apiServer.certSANs to the running cluster's SANs (bootstrap-added SANs may be omitted)", desiredSANs, liveSANs)
 	}
 	return nil
 }
 
-// withoutCertSANs removes apiServer.certSANs from config and returns the SANs
-// that are not in katl.
-func withoutCertSANs(config map[string]any, katl []string) ([]string, error) {
+func takeCertSANs(config map[string]any) ([]string, error) {
 	apiServer, err := configurationSection(config, "apiServer")
 	if err != nil {
 		return nil, err
 	}
-	var operator []string
+	var sans []string
 	if value, ok := apiServer["certSANs"]; ok && value != nil {
 		list, ok := value.([]any)
 		if !ok {
@@ -239,14 +239,12 @@ func withoutCertSANs(config map[string]any, katl []string) ([]string, error) {
 			if !ok {
 				return nil, fmt.Errorf("apiServer.certSANs must be a list of strings")
 			}
-			if !slices.Contains(katl, strings.TrimSpace(san)) {
-				operator = append(operator, san)
-			}
+			sans = append(sans, san)
 		}
 	}
 	delete(apiServer, "certSANs")
 	removeEmptySection(config, "apiServer", apiServer)
-	return operator, nil
+	return sans, nil
 }
 
 func EffectiveControlPlaneConfiguration(desired, live []byte, vip string) ([]byte, []string, error) {

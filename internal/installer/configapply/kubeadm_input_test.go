@@ -245,9 +245,10 @@ func TestBootstrapConfextDoesNotOwnKubeadmInput(t *testing.T) {
 	}
 	// A bootstrap generation of an earlier release rendered its init config at
 	// the input path of its confext and stored no input of its own.
+	const renderedInit = "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\nskipPhases: [wait-control-plane]\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\ncontrolPlaneEndpoint: api.katl.test:6443\n"
 	confext := filepath.Join(root, "var/lib/katl/generations/bootstrap/confext/etc/katl")
 	writeConfigurationFile(t, filepath.Join(confext, "bootstrap-runtime.json"), "{}")
-	writeConfigurationFile(t, filepath.Join(confext, "kubeadm/control-plane/config.yaml"), "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\ncontrolPlaneEndpoint: api.katl.test:6443\n")
+	writeConfigurationFile(t, filepath.Join(confext, "kubeadm/control-plane/config.yaml"), renderedInit)
 
 	got, source, err := ReadEffectiveGenerationKubeadmConfig(root, "bootstrap", "control-plane", manifestWithKubeadm().Node)
 	if err != nil {
@@ -264,9 +265,46 @@ func TestBootstrapConfextDoesNotOwnKubeadmInput(t *testing.T) {
 	}
 	writeKubeadmStateGeneration(t, orphan, "bootstrap", "")
 	writeConfigurationFile(t, filepath.Join(orphan, "var/lib/katl/generations/bootstrap/confext/etc/katl/bootstrap-runtime.json"), "{}")
-	writeConfigurationFile(t, filepath.Join(orphan, "var/lib/katl/generations/bootstrap/confext/etc/katl/kubeadm/control-plane/config.yaml"), "kind: ClusterConfiguration\n")
+	writeConfigurationFile(t, filepath.Join(orphan, "var/lib/katl/generations/bootstrap/confext/etc/katl/kubeadm/control-plane/config.yaml"), renderedInit)
 	if _, _, err := ReadEffectiveGenerationKubeadmConfig(orphan, "bootstrap", "control-plane", manifestWithKubeadm().Node); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("rendered init config read as input: %v", err)
+	}
+}
+
+func TestLegacyJoinConfextSuppliesKubeadmInput(t *testing.T) {
+	// A control-plane join retains the selected input, which can itself contain
+	// InitConfiguration. Katl renders the join invocation separately.
+	const ref = "control-plane"
+	const input = "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\nnodeRegistration:\n  name: joining-node\n  taints: []\n"
+	const cluster = "---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n"
+	for name, content := range map[string]string{
+		"control plane":                 input + cluster,
+		"operator skipped health check": input + "skipPhases: [wait-control-plane]\n" + cluster,
+	} {
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			writeKubeadmStateGeneration(t, root, "join", "")
+			confext := filepath.Join(root, "var/lib/katl/generations/join/confext")
+			path := kubeadmconfig.ConfigPath(ref)
+			plan, err := kubeadmconfig.PlanFromRenderedFiles(ref, []kubeadmconfig.File{{RenderPath: path, Content: []byte(content)}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			digest, err := plan.InputDigest()
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeConfigurationFile(t, filepath.Join(confext, "etc/katl/bootstrap-runtime.json"), fmt.Sprintf(`{"kind":"BootstrapRuntime","kubeadm":{"path":%q,"digest":%q}}`, path, digest))
+			writeConfigurationFile(t, filepath.Join(confext, path), content)
+
+			got, source, err := ReadEffectiveGenerationKubeadmConfig(root, "join", ref, manifestWithKubeadm().Node)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if source != "join" || string(got.Plan().Config.Content) != content {
+				t.Fatalf("input = source %q:\n%s", source, got.Plan().Config.Content)
+			}
+		})
 	}
 }
 
