@@ -192,17 +192,20 @@ esac
 		{"failed producer", "completed", "failure", "producer-not-live", time.Minute, []string{"lts"}},
 		{"cancelled producer", "completed", "cancelled", "producer-not-live", time.Minute, []string{"lts"}},
 		{"completed without a success record", "completed", "success", "producer-not-live", time.Minute, []string{"lts"}},
-		{"stale producer", "in_progress", "", "producer-not-live", 4 * time.Hour, []string{"lts"}},
+		{"stale producer", "in_progress", "", "producer-not-live", 91 * time.Minute, []string{"lts"}},
 		{"unavailable producer", "", "", "producer-unavailable", time.Minute, []string{"lts"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			producer := driverRunFixture(102, 1, "schedule", "main", base, tc.state, tc.conclusion)
 			if tc.state == "" {
 				producer = "malformed"
+			} else {
+				started := time.Now().Add(-tc.age).UTC().Format(time.RFC3339)
+				producer = strings.TrimSuffix(producer, "}") + fmt.Sprintf(`,"run_started_at":%q}`, started)
 			}
 			t.Setenv("DRIVER_RUN_RESPONSE", driverRunFixture(101, 1, "schedule", "main", base, "completed", "success"))
 			t.Setenv("PENDING_RUN_RESPONSE", producer)
-			date := time.Now().Add(-tc.age).UTC().Format(time.RFC3339)
+			date := time.Now().Add(-30 * time.Second).UTC().Format(time.RFC3339)
 			t.Setenv("DRIVER_STATUS_RESPONSE", fmt.Sprintf(
 				`{"data":{"repository":{"c0":{"oid":%q,"status":null},"c1":{"oid":%q,"status":{
 					"standard":%s,"lts":%s
@@ -243,6 +246,7 @@ case "$2" in
     printf '%s\n' "$DRIVER_STATUS_RESPONSE";;
   */runs/101/attempts/1) printf '%s\n' "$HISTORICAL_RUN";;
   */runs/102/attempts/1) printf '%s\n' "$EXACT_RUN";;
+  */runs/103/attempts/1) printf '%s\n' "$MAIN_RUN";;
   *) exit 1;;
 esac
 `, 0o755)
@@ -255,18 +259,20 @@ esac
 	const queue = "gh-readonly-queue/main/pr-1-base"
 	const bot = "github-actions"
 	t.Setenv("HISTORICAL_RUN", driverRunFixture(101, 1, "merge_group", queue, older, "completed", "success"))
+	t.Setenv("MAIN_RUN", driverRunFixture(103, 1, "push", "main", older, "completed", "success"))
 	for _, tc := range []struct {
 		name, sha, branch, state, digest string
 		attempt                          int
 		adopt                            bool
+		path                             string
 	}{
-		{"exact successful result", head, queue, "SUCCESS", digests["standard"], 1, true},
-		{"historical result only", older, queue, "", "", 1, false},
-		{"wrong digest", head, queue, "SUCCESS", "wrong digest", 1, false},
-		{"failure", head, queue, "FAILURE", digests["standard"], 1, false},
-		{"wrong producer commit", older, queue, "SUCCESS", digests["standard"], 1, false},
-		{"wrong queue", head, "gh-readonly-queue/release/2026/pr-1-base", "SUCCESS", digests["standard"], 1, false},
-		{"wrong run attempt", head, queue, "SUCCESS", digests["standard"], 2, false},
+		{"exact successful result", head, queue, "SUCCESS", digests["standard"], 1, true, testStandardLock},
+		{"historical result only", older, queue, "", "", 1, false, testBIRDReadme},
+		{"wrong digest", head, queue, "SUCCESS", "wrong digest", 1, false, testStandardLock},
+		{"failure", head, queue, "FAILURE", digests["standard"], 1, false, testStandardLock},
+		{"wrong producer commit", older, queue, "SUCCESS", digests["standard"], 1, false, testBIRDReadme},
+		{"wrong queue", head, "gh-readonly-queue/release/2026/pr-1-base", "SUCCESS", digests["standard"], 1, false, testStandardLock},
+		{"wrong run attempt", head, queue, "SUCCESS", digests["standard"], 2, false, testStandardLock},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			exactStatus := "null"
@@ -278,9 +284,9 @@ esac
 				`{"data":{"repository":{"c0":{"oid":%q,"status":%s},"c1":{"oid":%q,"status":{"standard":%s,"lts":%s}},"c2":{"oid":%q,"status":null}}}}`,
 				head, exactStatus, older,
 				driverStatusFixture(bot, "SUCCESS", digests["standard"], "2026-11-23T01:00:00Z", 101),
-				driverStatusFixture(bot, "SUCCESS", digests["lts"], "2026-11-23T01:00:00Z", 101), base))
+				driverStatusFixture(bot, "SUCCESS", digests["lts"], "2026-11-23T01:00:00Z", 103), base))
 
-			plan := readDriverPlan(t, testStandardLock)
+			plan := readDriverPlan(t, tc.path)
 			if plan.QualifiedDrivers["lts"] != older {
 				t.Fatalf("LTS qualification = %+v, want %s", plan, older)
 			}
@@ -290,7 +296,7 @@ esac
 					t.Fatalf("want main to adopt the queue run for %s, got %+v", head, plan)
 				}
 			} else if !slices.Equal(plan.DriverFlavours, []string{"standard"}) || plan.QualifiedDrivers["standard"] != "" {
-				t.Fatalf("want a fresh standard qualification for the lock change, got %+v", plan)
+				t.Fatalf("want a fresh standard qualification, got %+v", plan)
 			}
 		})
 	}

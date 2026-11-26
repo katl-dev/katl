@@ -116,6 +116,7 @@ type driverQualification struct {
 
 type driverProducer struct {
 	event, status, conclusion string
+	startedAt                 time.Time
 }
 
 func mainDriverQualifications(wanted map[string]string, mainPush bool) (map[string]driverQualification, error) {
@@ -225,29 +226,37 @@ func driverRecordReason(record driverQualification, digest, exactSHA string, now
 	default:
 		return "record-invalid"
 	}
-	// The driver job has a two-hour timeout. Bound the pending lease even
-	// when GitHub still reports a stalled producer as active.
-	if record.status.State == "PENDING" && (record.status.CreatedAt.After(now) || now.Sub(record.status.CreatedAt) > 3*time.Hour) {
-		return "producer-not-live"
-	}
 	producer, err := verifyPublisher(record.sha, record.status)
-	switch {
-	case err != nil:
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "Driver qualification producer unavailable for %s: %v\n", record.sha, err)
 		return "producer-unavailable"
-	case producer.event == "":
+	}
+	if producer.event == "" {
 		return "record-unverified"
+	}
+	// Main can adopt a merge-group result only when the queue landed the
+	// qualified head verbatim. The publisher is already bound to record.sha.
+	if exactSHA != "" && producer.event == "merge_group" && record.sha != exactSHA {
+		return "merge-group-head-mismatch"
+	}
+	switch {
 	case record.status.State == "SUCCESS":
-		if record.sha == exactSHA && producer.event == "merge_group" {
+		if exactSHA != "" && producer.event == "merge_group" {
 			return "same-digest-merge-group-success"
 		}
 		return "same-digest-success"
-	case producer.conclusion == "" && (producer.status == "queued" || producer.status == "in_progress"):
+	case producer.conclusion == "" && (producer.status == "queued" || producer.status == "in_progress") &&
+		!producer.startedAt.IsZero() && !producer.startedAt.After(now) && now.Sub(producer.startedAt) <= driverPendingMaxAge:
 		return "same-digest-qualification-in-progress"
 	default:
 		return "producer-not-live"
 	}
 }
+
+// Hosted image builds and the DRBD journey typically finish within an hour.
+// Allow 90 minutes for slower attempts while capping the wait below the
+// two-hour driver job timeout. A late status cannot extend an attempt's lease.
+const driverPendingMaxAge = 90 * time.Minute
 
 func githubDriverStatuses(ctx context.Context, owner, repo string, commits []string, wanted map[string]string) ([]commitDriverStatuses, error) {
 	var query strings.Builder
@@ -319,6 +328,7 @@ func verifyDriverPublisher(ctx context.Context, repo, sha string, status driverS
 		SHA                string `json:"head_sha"`
 		Path, Event        string
 		Status, Conclusion string
+		StartedAt          time.Time `json:"run_started_at"`
 		Repository         struct {
 			FullName string `json:"full_name"`
 		}
@@ -346,5 +356,5 @@ func verifyDriverPublisher(ctx context.Context, repo, sha string, status driverS
 	default:
 		return driverProducer{}, nil
 	}
-	return driverProducer{event: run.Event, status: run.Status, conclusion: run.Conclusion}, nil
+	return driverProducer{event: run.Event, status: run.Status, conclusion: run.Conclusion, startedAt: run.StartedAt}, nil
 }

@@ -41,14 +41,17 @@ when GitHub lands that same SHA, so the main push can adopt it with the original
 run URL intact, including after a kernel lock change.
 
 The planner reads matching contexts across main's first-parent history and
-uses the most recently published outcome. It verifies the GitHub Actions bot
-as the creator and checks the run attempt against the repository, CI workflow,
-event, branch, and commit. A verified success skips the corresponding flavour.
-A pending record skips it while the named attempt is queued or in progress,
-has no conclusion, and the record is at most three hours old. A terminal
-attempt, a stale record, or evidence the planner cannot verify makes the
-flavour eligible to run again. GitHub lookups have a 20-second budget, and
-concurrent plans can select the same flavour before a pending record appears.
+uses the most recently published outcome, with priority for a verified
+merge-group success on the main push SHA itself. It verifies the GitHub
+Actions bot as the creator and checks the run attempt against the repository,
+CI workflow, event, branch, and commit. If the selected record comes from a
+merge group whose head differs from the main push SHA, that flavour runs
+again. A pending record skips the flavour while the named attempt is queued
+or in progress, has no conclusion, and started at most 90 minutes ago.
+A terminal attempt, a stale record, or evidence the planner cannot verify
+makes the flavour eligible to run again. GitHub lookups have a 20-second
+budget, and concurrent plans can select the same flavour before a pending
+record appears.
 
 The Plan step logs the full digest, record SHA, context, state, producer URL,
 decision, and reason for each flavour in stderr and the step summary.
