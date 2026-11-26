@@ -219,6 +219,40 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 	}
 }
 
+func TestKatlReleaseArtifactNotesFromSquashHistory(t *testing.T) {
+	repo := repoRoot(t)
+	fixtures := filepath.Join(repo, "internal", "scriptstest", "testdata", "release-notes")
+	gitDir := t.TempDir()
+	runGit(t, gitDir, "init", "--quiet")
+	golden, err := os.ReadFile(filepath.Join(fixtures, "changes.golden"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := string(golden)
+
+	for _, ref := range []string{"47561a44", "3bc58a63", "9110881c", "e47afb10"} {
+		message := filepath.Join(fixtures, ref+".txt")
+		runGit(t, gitDir, "commit", "--quiet", "--allow-empty", "--cleanup=verbatim", "-F", message)
+		hash := strings.TrimSpace(runGit(t, gitDir, "rev-parse", "HEAD"))
+		want = strings.NewReplacer("{{"+ref+".full}}", hash, "{{"+ref+".short}}", hash[:7]).Replace(want)
+	}
+
+	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.11.5-rc.1")
+	cmd.Dir = gitDir
+	cmd.Env = append(
+		gittest.Env(environmentWithout("KATL_RELEASE_TARGET", "KATL_RELEASE_PREVIOUS_TAG", "KATL_RELEASE_REPOSITORY_URL"), gitDir),
+		"KATL_REPO_ROOT="+gitDir,
+	)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("notes failed: %v\n%s", err, output)
+	}
+	changes, _, found := strings.Cut(string(output), "\n## Verify\n")
+	if !found || changes != want {
+		t.Fatalf("Changes section:\n%s\nwant:\n%s", changes, want)
+	}
+}
+
 func TestKatlReleaseArtifactNotesIncludeVersionedUpgradeGuide(t *testing.T) {
 	repo := repoRoot(t)
 	gitDir := t.TempDir()
@@ -774,9 +808,9 @@ func TestKatlReleaseArtifactNotesReleaseNoteTrailers(t *testing.T) {
 			want:    "- Reader summary",
 		},
 		{
-			name:    "squash skip",
+			name:    "all skip",
 			subject: "area: skipped change",
-			body:    "* area: first\n\nRelease-Note: skip\n" + coAuthors,
+			body:    "* area: first\n\nRelease-Note: skip\n\nRelease-Note: skip\nCo-authored-by: Someone <someone@example.com>\n",
 		},
 		{
 			name:    "squash skip then note",
@@ -786,9 +820,18 @@ func TestKatlReleaseArtifactNotesReleaseNoteTrailers(t *testing.T) {
 			want: "- install: wrapped summary across lines",
 		},
 		{
-			name:    "squash note then skip",
-			subject: "area: note then skip",
-			body:    "* area: first\n\nRelease-Note: Superseded summary\n\n* area: second\n\nRelease-Note: skip\n" + coAuthors,
+			name:    "body note survives later skips",
+			subject: "area: note then skips",
+			body: "* area: first\n\nRelease-Note: Keep this summary\n\n* area: second\n\nRelease-Note: skip\n\n" +
+				"Release-Note: skip\nCo-authored-by: Someone <someone@example.com>\n",
+			want: "- Keep this summary",
+		},
+		{
+			name:    "last reader note in trailer block",
+			subject: "area: multiple trailers",
+			body: "Details.\n\nRelease-Note: Superseded summary\nRelease-Note: Use this\n" +
+				" folded summary\nRelease-Note: skip\n",
+			want: "- Use this folded summary",
 		},
 		{
 			name:    "squash without trailer",
@@ -800,12 +843,14 @@ func TestKatlReleaseArtifactNotesReleaseNoteTrailers(t *testing.T) {
 
 	runGit(t, gitDir, "commit", "--quiet", "--allow-empty", "-m", "release: base")
 	runGit(t, gitDir, "tag", "v2026.7.0-dev.3")
+	hashes := make([]string, len(cases))
 	for index, tc := range cases {
 		path := filepath.Join(t.TempDir(), fmt.Sprintf("message-%d", index))
 		if err := os.WriteFile(path, []byte(tc.subject+"\n\n"+tc.body), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		runGit(t, gitDir, "commit", "--quiet", "--allow-empty", "-F", path)
+		hashes[index] = strings.TrimSpace(runGit(t, gitDir, "rev-parse", "HEAD"))
 	}
 	runGit(t, gitDir, "tag", "v2026.7.0-dev.4")
 
@@ -822,12 +867,12 @@ func TestKatlReleaseArtifactNotesReleaseNoteTrailers(t *testing.T) {
 	}
 	notes := string(output)
 
-	for _, tc := range cases {
+	for index, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			hash := hashes[index]
 			if tc.want == "" {
-				summary := strings.TrimPrefix(tc.subject, "area: ")
-				if strings.Contains(notes, summary) {
-					t.Fatalf("entry %q should be omitted:\n%s", summary, notes)
+				if strings.Contains(notes, "/commit/"+hash) {
+					t.Fatalf("entry for %q should be omitted:\n%s", tc.subject, notes)
 				}
 				return
 			}
@@ -837,7 +882,7 @@ func TestKatlReleaseArtifactNotesReleaseNoteTrailers(t *testing.T) {
 		})
 	}
 	if strings.Contains(notes, "Superseded summary") {
-		t.Fatalf("notes contain a note superseded by a later skip:\n%s", notes)
+		t.Fatalf("notes contain a note superseded by a later reader note:\n%s", notes)
 	}
 }
 

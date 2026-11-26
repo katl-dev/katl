@@ -1,0 +1,33 @@
+ci: run only the VM suites a change affects (#726)
+
+* ci: run only the VM suites a change affects
+
+Every merge group ran every hosted VM suite, the largest CI cost, even
+for a documentation-only change. The planner now derives the inputs VM
+suites share from Go build and test dependencies, embedded files and
+the hosted image producer's inputs. A docs-only diff skips VM jobs; a
+diff touching only mapped fixtures selects their suites on labelled
+main PRs; anything shared or unmapped runs the full plan. Merge groups
+keep the full plan behind a default-off switch and publish a shadow
+selection with its estimated savings, the evidence for enabling it.
+
+Closes #674
+
+Release-Note: skip
+
+* ci: keep full VM coverage when an input cannot be traced
+
+Review found three ways a change could narrow VM coverage it should
+not: a fixture or producer input symlinked into docs/, a plan run
+without a base that could not see a deleted embedded file, and tests
+that accepted a matrix disagreeing with its summary. The planner now
+resolves VM input symlink targets in both trees, falls back to the full
+suite when a reduced plan has no base, and the tests assert the emitted
+package and test names.
+
+ci.md now fixes the evidence for enabling affected selection on merge
+groups: 20 full merge-group runs on main over at least three days in
+which every VM failure was in a shadow-selected suite, plus the seeded
+regression per narrow rule.
+
+Release-Note: skip

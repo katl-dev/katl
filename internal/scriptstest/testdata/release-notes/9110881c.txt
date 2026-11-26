@@ -1,0 +1,88 @@
+installer: wait for a slow DHCP address and show progress while waiting (#556)
+
+* installer: wait for a slow DHCP address and show progress while waiting
+
+The handoff wait gave up after 30 seconds without telling the operator,
+which a
+switch's spanning-tree forwarding delay alone can exceed.
+
+The installer now waits without a deadline while any non-loopback
+interface has
+carrier, printing the interface and elapsed time at the start and
+every 30
+seconds. With no carrier for 5 minutes it fails with a message naming
+the cable
+and switch port. The policy lives in one waiter with injectable clock,
+link and
+address sources.
+
+Fixes #521
+
+Release-Note: The installer now shows which interface is waiting for a DHCP address and keeps waiting while the link is up
+
+* installer: keep waiting for an address and report why
+
+The installer waited silently: katlos-install.service was ordered
+after network-online.target, so systemd-networkd-wait-online could
+sit for its own timeout before any line appeared, and the handoff
+wait then gave up after 30 seconds, which a switch's spanning-tree
+forwarding delay alone can exceed.
+
+One waiter now owns waiting for an address. It has no deadline,
+prints the interface waiting for DHCP and the elapsed time at the
+start and every 30 seconds, and reports a missing link as a cable
+or switch port problem while it keeps waiting. The service does not
+restart, so exiting would close the handoff API and force a reboot,
+whereas waiting recovers when the link returns. The installer service
+no longer orders after network-online.target, an automatic install
+that fetches its input by URL waits with the same waiter first,
+and a failed automatic install prints its error before the handoff wait.
+
+Fixes #521
+
+Release-Note: The installer shows which interface is waiting for a DHCP address and keeps waiting until a link and address arrive
+
+* installer: wait for a network address before any remote install fetch
+
+The address wait ran only for a bundle or manifest URL. Removing the
+network-online.target ordering also left a KatlOS image URL in a local
+manifest or bundle, fetched during the install, with nothing waiting for
+DHCP.
+
+Decide from the resolved inputs whether the install reads a remote
+source,
+and run the single handoff waiter before the install starts only then.
+All-local inputs never wait, so offline media installs without
+an address.
+
+Release-Note: The installer waits for a network address, with console progress, before downloading a remote KatlOS image
+
+* vmtest: cover an offline preseed install with the guest link held down
+
+Add VMNetworkConfig.LinkDown, which defines the primary interface with
+link state down, and use it in
+TestFirstInstallOfflinePreseedWithoutLink.
+The test installs from all-local preseed media with no carrier and no
+DHCP, requires the installer to complete and the installed runtime to
+become healthy through the vsock agent, and then checks the installer
+serial log for the address-wait lines as post-hoc evidence only.
+
+An installer that is ordered after network-online.target, or that waits
+for an address when every input is local, fails this test.
+
+Release-Note: skip
+
+* vmtest: gate PXE handoff on the installer's own address wait
+
+TestInstallerPXEBootSmoke's readiness hook still required
+systemd-networkd-wait-online.service to have run and succeeded. The
+installer no longer pulls network-online.target, so wait-online never
+starts and the hook failed with exit 3 on both flavours in the merge
+queue, although the installer had waited, got its address and announced
+its endpoint. The hook now checks only host-service readiness;
+katlos-install's address wait is the network gate.
+
+Also rename the unit-ordering scriptstest to describe what it asserts,
+and drop a historical reference from a test comment.
+
+Release-Note: skip

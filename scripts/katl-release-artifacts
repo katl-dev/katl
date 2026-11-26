@@ -30,26 +30,30 @@ is_katlos_tag() {
     [[ "$tag" =~ ^v[0-9]{4}\.([1-9]|1[0-2])\.(0|[1-9][0-9]*)(-(dev|alpha|beta|rc)\.(0|[1-9][0-9]*))?$ ]]
 }
 
-# Prints the Release-Note values of a commit, one per line. A final trailer
-# block is authoritative. Otherwise the body is scanned for lines beginning
-# with the trailer, which is where a squash-merged PR keeps the trailers of its
-# commits. GitHub lists those commits oldest first, so the last note belongs to
-# the PR tip and is the only one printed.
+# Prints the last reader note, or skip if every Release-Note asks to skip.
+# Squash commits can also carry notes in the prose before the trailer block.
 commit_release_note() {
-    local message trailers
+    local message boundary="Katl-Trailer-Boundary: $1"
     message="$(git show -s --format=%B "$1")"
-    trailers="$(git interpret-trailers --parse <<<"$message" | sed -n 's/^Release-Note: //p')"
-    if [[ -n "$trailers" ]]; then
-        printf '%s\n' "$trailers"
-        return 0
-    fi
-    awk '
-        function flush() { if (note != "") last = note; note = "" }
-        /^Release-Note:/ { flush(); note = $0; sub(/^Release-Note:[ \t]*/, "", note); inside = 1; next }
-        inside && NF { note = note " " $0; next }
-        { inside = 0; flush() }
-        END { flush(); if (last != "") print last }
-    ' <<<"$message"
+
+    # Let Git locate and unfold the trailer block. Only notes in the preceding
+    # body can continue on an unindented line.
+    git interpret-trailers --no-divider --unfold --where=start --if-exists=add \
+        --trailer "$boundary" <<<"$message" |
+        awk -v boundary="$boundary" '
+            function flush() {
+                if (!inside) return
+                if (note == "skip") skipped = 1
+                else { last = note; have_note = 1 }
+                inside = 0
+            }
+            NR == 1 { next }
+            $0 == boundary { flush(); in_trailers = 1; next }
+            /^Release-Note:/ { flush(); note = $0; sub(/^Release-Note:[ \t]*/, "", note); inside = 1; next }
+            !in_trailers && inside && NF { note = note " " $0; next }
+            { flush() }
+            END { flush(); if (have_note) print last; else if (skipped) print "skip" }
+        '
 }
 
 previous_katlos_tag() {
@@ -121,7 +125,6 @@ generate_release_notes() {
         [[ "$note" != skip ]] || continue
         short_hash="${hash:0:7}"
         if [[ -n "$note" ]]; then
-            [[ "$note" != *$'\n'* ]] || fail "multiple Release-Note trailers in $hash"
             printf -- "- %s ([\`%s\`](%s/commit/%s))\n" \
                 "$note" "$short_hash" "$repository_url" "$hash"
         elif [[ "$subject" =~ ^([^:]+):[[:space:]]+(.+)$ ]]; then
