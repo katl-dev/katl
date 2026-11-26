@@ -15,8 +15,8 @@ import (
 )
 
 func TestStatusDuringEnableMTLSTrial(t *testing.T) {
-	world, deadline := newManagementStatusTrial(t)
-	wantDeadline := deadline.Local().Format(time.TimeOnly)
+	world, deadline := newManagementStatusTrial(t, 4*time.Minute)
+	wantDeadline := deadline.Add(-4 * time.Minute).Local().Format(time.TimeOnly)
 	wantResume := "cp-1 is on an enable-mtls trial; rerun katlctl management enable-mtls --config '" + world.configPath +
 		"' before " + wantDeadline + " to confirm it, or wait for it to return to trusted-network"
 	for _, command := range [][]string{{"node", "status", "cp-1"}, {"cluster", "status"}} {
@@ -56,11 +56,17 @@ func TestStatusDuringEnableMTLSTrial(t *testing.T) {
 }
 
 func TestStatusWithoutEnableMTLSSecrets(t *testing.T) {
-	world, _ := newManagementStatusTrial(t)
-	custom := filepath.Join(filepath.Dir(world.configPath), "lab-secrets.yaml")
-	if err := os.Rename(world.secretsPath, custom); err != nil {
-		t.Fatal(err)
+	world := newEnableMTLSWorld(t, "cp-1")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	node := world.nodes[0]
+	node.afterBegin = func(context.Context) { cancel() }
+	custom := filepath.Join(t.TempDir(), "lab-secrets.yaml")
+	if _, _, err := world.enableContext(ctx, "--output", custom); err == nil || !strings.Contains(err.Error(), "--output '"+custom+"'") {
+		t.Fatalf("interrupted enable-mtls = %v, want the original command with its custom output", err)
 	}
+	node.rebinds.Wait()
+
 	var out, stderr bytes.Buffer
 	err := run(context.Background(), []string{"node", "status", "cp-1", "--config", world.configPath}, &out, &stderr)
 	if err == nil {
@@ -68,19 +74,26 @@ func TestStatusWithoutEnableMTLSSecrets(t *testing.T) {
 	}
 	for _, want := range []string{
 		"likely serves mTLS management", "may be on an interrupted enable-mtls trial",
-		"rerun katlctl management enable-mtls --config '" + world.configPath + "'", "returns to trusted-network by itself at its deadline",
+		"katlctl management enable-mtls --config '" + world.configPath + "' --output '<original-secrets-path>'",
+		"replace the placeholder with the original path", "returns to trusted-network by itself at its deadline",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("status error lacks %q: %v", want, err)
 		}
 	}
 	if _, err := os.Stat(world.secretsPath); !os.IsNotExist(err) {
-		t.Errorf("status left a file at the missing secrets path: %v", err)
+		t.Fatalf("status left a file at the missing secrets path: %v", err)
+	}
+	if _, stderr, err := world.enable("--output", custom); err != nil {
+		t.Fatalf("resume with the original custom output: %v\n%s", err, stderr)
+	}
+	if _, err := os.Stat(world.secretsPath); !os.IsNotExist(err) {
+		t.Errorf("resume created default secrets: %v", err)
 	}
 }
 
 func TestStatusWithReferencedEnableMTLSSecrets(t *testing.T) {
-	world, _ := newManagementStatusTrial(t)
+	world, _ := newManagementStatusTrial(t, 0)
 	custom := filepath.Join(filepath.Dir(world.configPath), "lab-secrets.yaml")
 	if err := os.Rename(world.secretsPath, custom); err != nil {
 		t.Fatal(err)
@@ -130,20 +143,20 @@ func TestStatusUsesConfiguredManagementWhenItAnswers(t *testing.T) {
 		}
 	})
 	t.Run("mtls", func(t *testing.T) {
-		world, deadline := newManagementStatusTrial(t)
+		world, deadline := newManagementStatusTrial(t, 0)
 		world.useMTLSConfig(t)
 		var out, stderr bytes.Buffer
 		if err := run(context.Background(), []string{"node", "status", "cp-1", "--config", world.configPath}, &out, &stderr); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(out.String(), "mTLS trial until "+deadline.Format(time.RFC3339)) || strings.Contains(out.String(), "rerun katlctl") {
+		if !strings.Contains(out.String(), "mTLS trial until "+deadline.Local().Format(time.TimeOnly)) || strings.Contains(out.String(), "rerun katlctl") {
 			t.Errorf("mTLS status changed:\n%s", &out)
 		}
 	})
 }
 
 func TestRebootUsesConfiguredManagementDuringEnableMTLSTrial(t *testing.T) {
-	world, _ := newManagementStatusTrial(t)
+	world, _ := newManagementStatusTrial(t, 0)
 	// Reboot shares the node status RPC as a preflight. A retry in the common
 	// dialer or state reader would reach the fake agent over mTLS.
 	var out, stderr bytes.Buffer
@@ -153,7 +166,7 @@ func TestRebootUsesConfiguredManagementDuringEnableMTLSTrial(t *testing.T) {
 	}
 }
 
-func newManagementStatusTrial(t *testing.T) (enableMTLSWorld, time.Time) {
+func newManagementStatusTrial(t *testing.T, clockOffset time.Duration) (enableMTLSWorld, time.Time) {
 	t.Helper()
 	world := newEnableMTLSWorld(t, "cp-1")
 	node := world.nodes[0]
@@ -172,8 +185,9 @@ func newManagementStatusTrial(t *testing.T) (enableMTLSWorld, time.Time) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deadline := time.Now().UTC().Add(4 * time.Minute).Truncate(time.Second)
+	deadline := time.Now().UTC().Add(4*time.Minute + clockOffset).Truncate(time.Second)
 	node.mu.Lock()
+	node.clockOffset = clockOffset
 	node.staged = staged
 	node.trial = &agentapi.ManagementTransition{State: "trial", TargetAuthority: authority, Deadline: deadline.Format(time.RFC3339)}
 	node.mu.Unlock()

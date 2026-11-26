@@ -239,7 +239,7 @@ func readJoinNode(ctx context.Context, configPath string, node inventory.Node) (
 		return nil, nil, fmt.Errorf("connect %s: %w", node.Name, err)
 	}
 	defer conn.Close()
-	status, current, err := readHostState(ctx, conn.Client, node.Name)
+	status, current, _, err := readHostState(ctx, conn.Client, node.Name)
 	if err != nil {
 		return nil, nil, err
 	}

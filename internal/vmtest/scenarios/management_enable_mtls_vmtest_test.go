@@ -411,8 +411,8 @@ func writeProxiedConfig(from, to, address string) error {
 	return os.WriteFile(to, out, 0o600)
 }
 
-// startPlaintextOnlyProxy forwards TCP to target but closes any connection
-// that opens with a TLS record.
+// startPlaintextOnlyProxy lets the node's plaintext gRPC preface reach even a
+// TLS probe. Once the node serves mTLS, it drops the TLS handshake response.
 func startPlaintextOnlyProxy(target string) (net.Listener, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -426,22 +426,23 @@ func startPlaintextOnlyProxy(target string) (net.Listener, error) {
 			}
 			go func() {
 				defer client.Close()
-				first := make([]byte, 1)
-				if _, err := io.ReadFull(client, first); err != nil || first[0] == 0x16 {
-					return
-				}
 				upstream, err := net.DialTimeout("tcp", target, 5*time.Second)
 				if err != nil {
 					return
 				}
 				defer upstream.Close()
-				if _, err := upstream.Write(first); err != nil {
+				go func() {
+					defer upstream.Close()
+					_, _ = io.Copy(upstream, client)
+				}()
+				var first [1]byte
+				const tlsAlert, tlsHandshake = 0x15, 0x16
+				if _, err := io.ReadFull(upstream, first[:]); err != nil || first[0] == tlsAlert || first[0] == tlsHandshake {
 					return
 				}
-				done := make(chan struct{}, 2)
-				go func() { _, _ = io.Copy(upstream, client); done <- struct{}{} }()
-				go func() { _, _ = io.Copy(client, upstream); done <- struct{}{} }()
-				<-done
+				if _, err := client.Write(first[:]); err == nil {
+					_, _ = io.Copy(client, upstream)
+				}
 			}()
 		}
 	}()

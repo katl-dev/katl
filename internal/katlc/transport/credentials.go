@@ -32,7 +32,15 @@ func (c *clientCredentials) ClientHandshake(ctx context.Context, authority strin
 	switch {
 	case errors.As(err, &unknownCA):
 		return nil, nil, fmt.Errorf("node uses a different management authority; after rotation use the updated ClusterConfig and refresh saved contexts, otherwise restore the installed authority's secrets or, if they are lost, run katlctl management identity recover --config CLUSTER.yaml")
-	case errors.As(err, &plaintext):
+	case errors.As(err, &plaintext) && plaintext.Conn != nil:
+		// A plaintext gRPC server sends an HTTP/2 SETTINGS frame first.
+		// Mark that evidence before gRPC flattens the handshake error.
+		const settingsFrameType = 0x4
+		header := plaintext.RecordHeader
+		length := int(header[0])<<16 | int(header[1])<<8 | int(header[2])
+		if header[3] == settingsFrameType && header[4] == 0 && length <= 16384 && length%6 == 0 {
+			err = fmt.Errorf("%s: %w", plaintextGRPCHandshake, err)
+		}
 		return nil, nil, fmt.Errorf("management endpoint answered without TLS, so the node still serves trusted-network management. Run or rerun `katlctl management enable-mtls` to move it to mTLS, or set `managementAuthentication: trusted-network` to keep managing it that way. Otherwise check that management.address points at the node's katlc agent on 9443: %w", err)
 	case errors.As(err, &wrongName):
 		return nil, nil, fmt.Errorf("management address answered with a certificate for another node; check the node name and management.address in the cluster configuration")

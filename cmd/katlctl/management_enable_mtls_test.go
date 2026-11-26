@@ -51,12 +51,13 @@ type trialNode struct {
 	apiProxyState string
 	// Fault knobs.
 	clockOffset      time.Duration
+	omitNodeTime     bool
 	legacy           bool
 	unreachableTrial bool
 	loseConfirmReply bool
 	healthState      string
-	// onBegin runs when a Begin request arrives, before the trial starts.
-	onBegin func()
+	// afterBegin runs once a Begin request has armed the trial.
+	afterBegin func(context.Context)
 	// afterConfirm runs, with the node locked, once a confirm commits.
 	afterConfirm func(*trialNode)
 }
@@ -175,11 +176,14 @@ func (n *trialNode) GetNodeStatus(context.Context, *agentapi.GetNodeStatusReques
 		if n.trial == nil {
 			status.Management.Transition = nil
 		}
+		if n.omitNodeTime {
+			status.Management.NodeTime = ""
+		}
 	}
 	return status, nil
 }
 
-func (n *trialNode) BeginManagementTransition(_ context.Context, req *agentapi.BeginManagementTransitionRequest) (*agentapi.ManagementTransition, error) {
+func (n *trialNode) BeginManagementTransition(ctx context.Context, req *agentapi.BeginManagementTransitionRequest) (*agentapi.ManagementTransition, error) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if n.legacy {
@@ -192,17 +196,17 @@ func (n *trialNode) BeginManagementTransition(_ context.Context, req *agentapi.B
 	if err != nil {
 		return nil, grpcstatus.Error(codes.InvalidArgument, err.Error())
 	}
-	if n.onBegin != nil {
-		n.onBegin()
-	}
 	n.begins++
 	n.staged = managementidentity.NodeCredentials{CACertificate: req.GetCaCertificate(), ServerCertificate: req.GetServerCertificate(), ServerPrivateKey: req.GetServerPrivateKey()}
 	n.trial = &agentapi.ManagementTransition{
 		State: "trial", TrialId: fmt.Sprintf("trial-%d", n.begins), TargetAuthority: target,
-		Deadline: time.Now().Add(time.Duration(req.GetTrialSeconds()) * time.Second).UTC().Format(time.RFC3339),
+		Deadline: time.Now().Add(n.clockOffset + time.Duration(req.GetTrialSeconds())*time.Second).UTC().Format(time.RFC3339),
 	}
 	result := proto.Clone(n.trial).(*agentapi.ManagementTransition)
 	n.rebindLocked()
+	if n.afterBegin != nil {
+		n.afterBegin(ctx)
+	}
 	return result, nil
 }
 
@@ -391,7 +395,7 @@ func TestEnableMTLSPreflightChangesNothing(t *testing.T) {
 		want  []string
 	}{
 		"unreachable":       {fault: func(n *trialNode) { n.mu.Lock(); n.server.Stop(); n.mu.Unlock() }, want: []string{"cp-2 is unreachable", "fix it or remove it from the config"}},
-		"older node":        {fault: func(n *trialNode) { n.legacy = true }, want: []string{"cp-2 runs a KatlOS release that cannot move management trust", "upgrade it first"}},
+		"older node":        {fault: func(n *trialNode) { n.legacy = true }, want: []string{"cp-2 runs a KatlOS release that cannot move management trust", "katlctl node upgrade"}},
 		"clock behind":      {fault: func(n *trialNode) { n.clockOffset = -6 * time.Minute }, want: []string{"cp-2's clock is 6m0s behind", "NTP"}},
 		"etcd below quorum": {fault: func(n *trialNode) { n.controlPlane, n.etcdHealthy = true, 1 }, want: []string{"cp-2 is not healthy", "etcd has 1 healthy members, below quorum 2"}},
 		"unhealthy":         {fault: func(n *trialNode) { n.healthState = "degraded" }, want: []string{"cp-2 is not healthy", "boot health is degraded"}},
@@ -424,6 +428,75 @@ func TestEnableMTLSPreflightChangesNothing(t *testing.T) {
 				t.Error("preflight failure changed the ClusterConfig")
 			}
 		})
+	}
+}
+
+func TestEnableMTLSDoesNotDowngradeAfterCertificateFailure(t *testing.T) {
+	world := newEnableMTLSWorld(t, "cp-1")
+	plaintext := world.nodes[0]
+	tlsNode := newTrialNode(t, plaintext.name)
+	tlsNode.serveForeignAuthority(t)
+
+	bundle, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "lab"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := managementidentity.EnsureNode(&bundle, plaintext.name, time.Now(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := managementidentity.Write(world.secretsPath, bundle); err != nil {
+		t.Fatal(err)
+	}
+	plaintextDial := dialKatlcAgent
+	plaintextProbes := 0
+	dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
+		if transport.ClientCredentialsFromContext(ctx).Authentication != managementidentity.TrustedNetwork {
+			return dialKatlcAgentTCP(ctx, tlsNode.address)
+		}
+		plaintextProbes++
+		return plaintextDial(ctx, endpoint)
+	}
+
+	_, _, err = world.enable()
+	if err == nil || !strings.Contains(err.Error(), "different management authority") {
+		t.Fatalf("enable-mtls = %v, want certificate verification failure", err)
+	}
+	plaintext.rebinds.Wait()
+	plaintext.mu.Lock()
+	defer plaintext.mu.Unlock()
+	if plaintextProbes != 0 || plaintext.begins != 0 || plaintext.staged.ServerPrivateKey != "" {
+		t.Errorf("verification failure allowed %d plaintext connections, %d Begin calls, key received = %t",
+			plaintextProbes, plaintext.begins, plaintext.staged.ServerPrivateKey != "")
+	}
+}
+
+func TestEnableMTLSRerunChecksPlaintextRefusal(t *testing.T) {
+	world := newEnableMTLSWorld(t, "cp-1")
+	node := world.nodes[0]
+	plaintext := newTrialNode(t, node.name)
+	normalDial := dialKatlcAgent
+	dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
+		mode, _, _ := node.state()
+		if mode == managementidentity.MutualTLS && transport.ClientCredentialsFromContext(ctx).Authentication == managementidentity.TrustedNetwork {
+			return dialKatlcAgentTCP(ctx, plaintext.address)
+		}
+		return normalDial(ctx, endpoint)
+	}
+
+	for _, attempt := range []string{"initial migration", "rerun"} {
+		if _, _, err := world.enable(); err == nil || !strings.Contains(err.Error(), "still answers plaintext management") {
+			t.Fatalf("%s = %v, want plaintext refusal check to fail", attempt, err)
+		}
+		if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
+			t.Fatalf("%s published %s while plaintext still answered", attempt, mode)
+		}
+		if mode, transition, begins := node.state(); mode != managementidentity.MutualTLS || transition != "committed" || begins != 1 {
+			t.Fatalf("%s: node = %s %s after %d begins, want a single committed trial", attempt, mode, transition, begins)
+		}
+	}
+	dialKatlcAgent = normalDial
+	if _, stderr, err := world.enable(); err != nil {
+		t.Fatalf("rerun after plaintext closed: %v\n%s", err, stderr)
 	}
 }
 
@@ -508,6 +581,59 @@ func TestEnableMTLSDetectsLostConfirmReply(t *testing.T) {
 	}
 }
 
+func TestEnableMTLSInterruptedConfirmationCheck(t *testing.T) {
+	world := newEnableMTLSWorld(t, "cp-1")
+	node := world.nodes[0]
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	node.afterConfirm = func(*trialNode) { cancel() }
+
+	_, _, err := world.enableContext(ctx)
+	if err == nil || !strings.Contains(err.Error(), "may already have committed") ||
+		!strings.Contains(err.Error(), "Rerun katlctl management enable-mtls") {
+		t.Fatalf("interrupted confirmation check = %v", err)
+	}
+	if strings.Contains(err.Error(), "returns to trusted-network") || strings.Contains(err.Error(), "management-trial revert") {
+		t.Errorf("confirmation error promises a revert: %v", err)
+	}
+	if mode, trial, _ := node.state(); mode != managementidentity.MutualTLS || trial != "committed" {
+		t.Fatalf("node state = %s %s, want committed mTLS", mode, trial)
+	}
+	if _, stderr, err := world.enable(); err != nil {
+		t.Fatalf("rerun after interrupted confirmation: %v\n%s", err, stderr)
+	}
+}
+
+func TestEnableMTLSRerunRepairsSavedContext(t *testing.T) {
+	world := newEnableMTLSWorld(t, "cp-1")
+	var out bytes.Buffer
+	if err := run(context.Background(), []string{"context", "save", "--config", world.configPath}, &out, &out); err != nil {
+		t.Fatalf("save trusted-network context: %v\n%s", err, &out)
+	}
+	contextPath, err := workstation.ConfigPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldContext, err := os.ReadFile(contextPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, stderr, err := world.enable(); err != nil {
+		t.Fatalf("enable-mtls: %v\n%s", err, stderr)
+	}
+	// Restore the context as it was just before the migration refreshed it.
+	if err := os.WriteFile(contextPath, oldContext, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if stdout, stderr, err := world.enable(); err != nil || !strings.Contains(stdout, "Refreshed the saved context for lab.") {
+		t.Fatalf("rerun with stale context = %v\n%s%s", err, stdout, stderr)
+	}
+	out.Reset()
+	if err := run(context.Background(), []string{"node", "status", "cp-1"}, &out, &out); err != nil || !strings.Contains(out.String(), "mtls") {
+		t.Fatalf("node status through repaired context: %v\n%s", err, &out)
+	}
+}
+
 func TestEnableMTLSResumeKeepsSecretsFile(t *testing.T) {
 	world := newEnableMTLSWorld(t, "cp-1")
 	world.nodes[0].unreachableTrial = true
@@ -529,7 +655,7 @@ func TestManagementStatusColumn(t *testing.T) {
 		"mtls":       {status: &agentapi.ManagementStatus{Authentication: "mtls", Authority: "abc"}, mode: "mtls"},
 		"trial": {
 			status: &agentapi.ManagementStatus{Authentication: "trusted-network", Transition: &agentapi.ManagementTransition{State: "trial", Deadline: "2026-11-25T12:00:00Z"}},
-			mode:   "trusted-network (mtls trial)", detail: "mTLS trial until 2026-11-25T12:00:00Z",
+			mode:   "trusted-network (mtls trial)", detail: "mTLS trial until " + time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC).Local().Format(time.TimeOnly),
 		},
 		"reverted": {
 			status: &agentapi.ManagementStatus{Authentication: "trusted-network", Transition: &agentapi.ManagementTransition{State: "reverted", RevertReason: "deadline passed"}},
@@ -540,7 +666,7 @@ func TestManagementStatusColumn(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			status := enrolledStatus("cp-1", "e", "m")
 			status.Management = tc.status
-			report := newHostStatusReport("cp-1", "127.0.0.1:9443", status, &agentapi.Generation{GenerationId: "0"})
+			report := newHostStatusReport("cp-1", "127.0.0.1:9443", status, &agentapi.Generation{GenerationId: "0"}, time.Now())
 			var out bytes.Buffer
 			if err := writeHostStatus(&out, "text", report, false); err != nil {
 				t.Fatal(err)
@@ -632,11 +758,12 @@ func TestEnableMTLSAcceptsClockWithinBackdate(t *testing.T) {
 func TestEnableMTLSInterruptedBegin(t *testing.T) {
 	world := newEnableMTLSWorld(t, "cp-1")
 	node := world.nodes[0]
+	node.clockOffset = -4 * time.Minute
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	node.onBegin = cancel
+	node.afterBegin = func(context.Context) { cancel() }
 
-	_, _, err := world.enableContext(ctx)
+	_, _, err := world.enableContext(ctx, "--trial-window", "45s")
 	if err == nil {
 		t.Fatal("enable-mtls succeeded although it was interrupted")
 	}
@@ -651,7 +778,9 @@ func TestEnableMTLSInterruptedBegin(t *testing.T) {
 
 	node.rebinds.Wait()
 	node.mu.Lock()
-	node.onBegin = nil
+	node.afterBegin = nil
+	// Agents from before NodeTime can still have a live trial.
+	node.omitNodeTime = true
 	node.mu.Unlock()
 	_, stderr, err := world.enable()
 	if err != nil {
@@ -662,6 +791,28 @@ func TestEnableMTLSInterruptedBegin(t *testing.T) {
 	}
 	if mode, _, begins := node.state(); mode != managementidentity.MutualTLS || begins != 1 {
 		t.Errorf("node = %s after %d begins, want mtls after 1", mode, begins)
+	}
+}
+
+func TestEnableMTLSBeginTimeout(t *testing.T) {
+	world := newEnableMTLSWorld(t, "cp-1")
+	node := world.nodes[0]
+	node.afterBegin = func(ctx context.Context) { <-ctx.Done() }
+
+	_, _, err := world.enable("--timeout", "1s", "--trial-window", "45s")
+	node.rebinds.Wait()
+	if _, trial, _ := node.state(); trial != "trial" {
+		t.Fatalf("node state = %q, want a trial armed before the timeout", trial)
+	}
+	for _, want := range []string{
+		"interrupted before the new authority was confirmed",
+		"returns to trusted-network by itself by",
+		"katlc agent management-trial revert",
+		"Rerun katlctl management enable-mtls",
+	} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("error lacks %q: %v", want, err)
+		}
 	}
 }
 
@@ -760,6 +911,13 @@ func TestEnableMTLSChecksAPIProxyAfterConfirm(t *testing.T) {
 	}
 	if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
 		t.Fatalf("config mode = %s although a node failed its health check", mode)
+	}
+
+	if _, _, err := world.enable(); err == nil || !strings.Contains(err.Error(), "Kubernetes API proxy: starting") {
+		t.Fatalf("rerun with a degraded API proxy = %v", err)
+	}
+	if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
+		t.Fatalf("rerun published %s while the API proxy was unhealthy", mode)
 	}
 
 	node.mu.Lock()
