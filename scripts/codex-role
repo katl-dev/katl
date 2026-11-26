@@ -139,6 +139,14 @@ bind_dir BindPaths "${caches[0]}"
 bind_dir BindPaths "${caches[1]}"
 export GOCACHE="${caches[0]}" GOMODCACHE="${caches[1]}"
 
+codex_args=(exec -C "$repo_root" -s "$sandbox" -m "$model" -c "model_reasoning_effort=$effort")
+if [[ "$sandbox" == workspace-write ]]; then
+    # Host-configured roots can be masked by ProtectHome, where bubblewrap
+    # cannot create the mount points it uses to protect .git. Grant write
+    # access only to the workspace, Codex's temp roots, and the bound Go caches.
+    codex_args+=(-c 'sandbox_workspace_write.writable_roots=[]' --add-dir "$GOCACHE" --add-dir "$GOMODCACHE")
+fi
+
 environment=(--setenv=PATH --setenv=HOME --setenv=GOCACHE --setenv=GOMODCACHE)
 if [[ -n "${GH_CONFIG_DIR:-}" ]]; then
     environment+=(--setenv=GH_CONFIG_DIR)
@@ -159,4 +167,4 @@ exec systemd-run --user --unit "$unit" --collect --wait --same-dir --expand-envi
         codex "$@" </dev/null || status=$?
         printf "\nexit=%s\n" "$status" || exit
         exit "$status"
-    ' codex-role "$log" exec -C "$repo_root" -s "$sandbox" -m "$model" -c "model_reasoning_effort=$effort" "$prompt"
+    ' codex-role "$log" "${codex_args[@]}" "$prompt"

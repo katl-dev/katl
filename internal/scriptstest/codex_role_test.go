@@ -34,7 +34,12 @@ func TestCodexRoleExec(t *testing.T) {
 	if err := os.MkdirAll(ghConfig, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	buildCache, moduleCache := t.TempDir(), t.TempDir()
+	buildCache, moduleCache := filepath.Join(home, ".cache", "go-build"), filepath.Join(home, "go", "pkg", "mod")
+	for _, dir := range []string{buildCache, moduleCache} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t.Setenv("GOCACHE", buildCache)
 	t.Setenv("GOMODCACHE", moduleCache)
 
@@ -135,6 +140,9 @@ exit "$CODEX_TEST_STATUS"
 
 			args := strings.Split(strings.TrimSuffix(string(mustReadFile(t, filepath.Join(work, "codex-args"))), "\x00"), "\x00")
 			want := []string{"exec", "-C", repo, "-s", tc.sandbox, "-m", tc.model, "-c", "model_reasoning_effort=" + tc.effort}
+			if tc.role == "delivery" {
+				want = append(want, "-c", "sandbox_workspace_write.writable_roots=[]", "--add-dir", buildCache, "--add-dir", moduleCache)
+			}
 			if len(args) != len(want)+1 || !slices.Equal(args[:len(want)], want) {
 				t.Fatalf("codex args = %q, want %q followed by one prompt", args, want)
 			}
