@@ -11,8 +11,8 @@ on:
         description: Canonical CalVer embedded in artifacts
         type: string
         required: true
-      previous-tag:
-        description: Stable release the upgrade image is built against
+      notes-base-tag:
+        description: Reachable stable release tag that starts the release notes
         type: string
         required: true
       publication:
@@ -362,7 +362,7 @@ jobs:
       extension-bundles: ${{ steps.names.outputs.extension-bundles }}
 
     env:
-      KATL_RELEASE_PREVIOUS_TAG: ${{ inputs.previous-tag }}
+      KATL_RELEASE_PREVIOUS_TAG: ${{ inputs.notes-base-tag }}
 
     steps:
       - name: Validate flavour

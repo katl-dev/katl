@@ -62,9 +62,12 @@ version comes from the release candidate or final tag, or from the manual
 workflow input, and release tooling derives none from a branch name.
 
 SemVer compares textual prerelease identifiers lexically, which does not place
-`dev`, `alpha`, `beta`, and `rc` in Katl's maturity order. Release notes and
-automation therefore select the previous KatlOS release from first-parent Git
-history, not from lexical or `version:refname` tag ordering.
+`dev`, `alpha`, `beta`, and `rc` in Katl's maturity order. When selecting a
+previous KatlOS release across maturity stages, the release notes renderer
+walks first-parent Git history. CI supplies the newest reachable stable tag as
+an explicit starting point. Release staging limits that same selection to
+published stable GitHub releases and excludes the release's own tag. The
+selection compares only stable versions, which have no maturity suffix.
 
 The calendar version identifies a KatlOS release as a whole. Kubernetes payload
 bundles and node-extension bundles retain their independent payload versions

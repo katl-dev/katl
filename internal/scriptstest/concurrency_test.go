@@ -162,7 +162,7 @@ func (p *expressionParser) primary() any {
 		return v
 	}
 	start := p.pos
-	for p.pos < len(p.src) && (p.src[p.pos] == '.' || p.src[p.pos] == '_' || p.src[p.pos] >= 'a' && p.src[p.pos] <= 'z' || p.src[p.pos] >= '0' && p.src[p.pos] <= '9') {
+	for p.pos < len(p.src) && (p.src[p.pos] == '.' || p.src[p.pos] == '_' || p.src[p.pos] == '-' || p.src[p.pos] >= 'a' && p.src[p.pos] <= 'z' || p.src[p.pos] >= '0' && p.src[p.pos] <= '9') {
 		p.pos++
 	}
 	name := p.src[start:p.pos]
