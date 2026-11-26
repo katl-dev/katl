@@ -72,11 +72,11 @@ func rotateManagementOnNode(ctx context.Context, root string, dryRun bool, input
 	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
 		return fmt.Errorf("management rotation request must contain one JSON document")
 	}
-	status, err := nodeidentity.InspectManagementRotation(root, request)
-	if err != nil {
-		return err
-	}
 	if dryRun {
+		status, err := nodeidentity.InspectManagementRotation(root, request)
+		if err != nil {
+			return err
+		}
 		return json.NewEncoder(stdout).Encode(status)
 	}
 	// Share the executor's mutation lock so an in-flight node mutation cannot
@@ -97,11 +97,9 @@ func rotateManagementOnNode(ctx context.Context, root string, dryRun bool, input
 	if err := refuseActiveNodeOperations(root); err != nil {
 		return err
 	}
-	if !status.AlreadyRotated {
-		status, err = nodeidentity.RotateManagementIdentity(root, request)
-		if err != nil {
-			return err
-		}
+	status, err := nodeidentity.RotateManagementIdentity(root, request)
+	if err != nil {
+		return err
 	}
 	// The agent keeps serving the old identity until the reload finishes.
 	// Repeated calls reload a previously switched identity after interruption.

@@ -2,8 +2,8 @@
 
 A trusted-network node moves to mTLS management through a confirm-or-revert
 trial, so a mistake in the new credentials cannot lock the operator out. The
-public driver is `katlctl management enable-mtls` (#672); this document records
-the node-side contract it relies on.
+public driver is `katlctl management enable-mtls` (#672). Rotation and recovery
+use the same listener trust report to verify an installed mTLS authority.
 
 ## Trial lifecycle
 
@@ -53,6 +53,56 @@ still requires activation through the extension units, so a failed
 activation fails boot health while the agent stays reachable to report it.
 `TestAgentRerunsNoUnit` and `TestAgentFollowsGenerationActivation` check this
 against the runtime unit graph.
+
+## Evidence for a trust change
+
+`NodeStatus.management.served_client_trust` describes the listener that
+answered the request. The TLS config builder fingerprints the DER of each
+certificate it adds to the client CA pool. The listener carries those
+fingerprints until it stops serving, even if installed state on disk changes
+while calls drain. A plaintext listener reports a present, empty set,
+including when the agent falls back after a trial fails to load.
+
+A trial listener also reports its trial ID and target authority. The existing
+transition record gives the durable trial state and deadline, and the existing
+authentication and authority fields describe the installed mode. Commit
+publishes the installed mode and removes the trial record. The listener then
+clears its trial fields while keeping the same CA pool.
+
+Rotation, recovery, and enable-mTLS require a timely status reply from the
+bound node over the credential they are verifying. An mTLS reply must report
+the exact expected set. Rotation and recovery require committed mTLS with
+only the replacement CA. A replacement-only report proves removal of the old
+CA directly. Enable-mTLS also checks that the answering listener and the live
+trial record agree before it confirms within the trial deadline. It checks
+committed trust and health before advancing to the next node. A final saved
+context refresh verifies committed trust and the bound installation before
+publishing workstation state. Confirmation carries the verified trial ID,
+which the agent checks under the identity lock before committing. A lost
+confirmation reply can be resolved by a fresh committed status through the
+replacement credentials.
+
+If recovery observes the replacement installed over SSH and cannot reach the
+listener over mTLS, it reruns the pinned SSH rotation command with the installed
+authority as the expected replacement. That request can only reload the
+already installed credentials. Recovery still checks the listener after reload
+before publishing the new secrets reference.
+
+A node can use compatibility behavior when its initial timely status omits
+the report. Once it provides a report, later omissions stop verification.
+Older clients can still confirm a trial using only its authority. Recovery and an already configured rotation retain
+their positive reachability and identity checks. Legacy rotation requires
+positive replacement status before and after a timely issuer-specific TLS
+`unknown_ca` from the authenticated old-credential probe connection.
+Enable-mTLS retains the positive trial, installed-mode, identity and health
+checks available from older agents. Its initial plaintext discovery guard
+still requires a timely HTTP/2 server preface before retrying a failed mTLS
+preflight over plaintext.
+
+A mismatched report, expired request, generic TLS alert, EOF, result from
+another handshake, or unscoped gRPC `Unauthenticated` cannot establish
+trust. If verification remains inconclusive, the command stops and tells the
+operator how to resume with the same secrets.
 
 ## Accepted risk: replacement key delivery
 

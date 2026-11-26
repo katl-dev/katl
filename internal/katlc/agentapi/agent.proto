@@ -89,6 +89,8 @@ message ManagementStatus {
   // node_time is the node's RFC 3339 wall-clock time when status was read,
   // so a client can check that credentials it issues are already valid there.
   string node_time = 4;
+  // Present on agents that report the answering listener's client trust.
+  ManagementClientTrust served_client_trust = 5;
 }
 
 message APIProxyStatus {
@@ -814,6 +816,9 @@ message ConfirmManagementTransitionRequest {
   string expected_inventory_node_name = 5;
   string expected_machine_id = 6;
   string target_authority = 7;
+  // New clients supply the observed trial ID. Omission is reserved for
+  // older clients; a present ID must be nonempty.
+  optional string expected_trial_id = 8;
 }
 
 message ManagementTransition {
@@ -825,4 +830,14 @@ message ManagementTransition {
   // deadline is the trial's RFC 3339 deadline in node wall-clock time.
   string deadline = 4;
   string revert_reason = 5;
+}
+
+message ManagementClientTrust {
+  // SHA-256 fingerprints of the DER certificates in the listener's client
+  // CA pool. Empty for a plaintext listener.
+  repeated string authorities = 1;
+  // Identify the trial selected by this listener until it commits. The
+  // transition record reports the durable state of the trial.
+  string trial_id = 2;
+  string trial_authority = 3;
 }

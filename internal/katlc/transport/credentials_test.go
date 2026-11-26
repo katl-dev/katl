@@ -76,7 +76,7 @@ func TestManagementPlaintextHTTP2UsesWireEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	serverTLS, err := ServerTLSConfigForNode(identity)
+	serverTLS, _, err := ServerTLSConfigForNode(identity)
 	if err != nil {
 		t.Fatal(err)
 	}

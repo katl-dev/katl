@@ -50,8 +50,6 @@ func ClassifyManagementEvidence(err error, oldAuthorityRefused func(error) bool)
 		return ManagementInconclusive
 	case oldAuthorityRefused != nil && grpcstatus.Code(err) == codes.Unavailable && oldAuthorityRefused(err):
 		return ManagementRefusedExplicitly
-	case oldAuthorityRefused == nil && grpcstatus.Code(err) == codes.Unauthenticated:
-		return ManagementRefusedExplicitly
 	default:
 		return ManagementInconclusive
 	}

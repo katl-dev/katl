@@ -36,7 +36,7 @@ func TestManagementEvidence(t *testing.T) {
 		{name: "issuer rejection", err: grpcstatus.Error(codes.Unavailable, "handshake failed"), issuerRefused: func(error) bool { return true }, want: ManagementRefusedExplicitly},
 		{name: "late issuer rejection", err: managementRPCInconclusive{cause: context.DeadlineExceeded}, issuerRefused: func(error) bool { return true }, want: ManagementInconclusive},
 		{name: "alert in error text", err: grpcstatus.Error(codes.Unavailable, "tls: unknown certificate authority"), want: ManagementInconclusive},
-		{name: "RPC authentication refusal", err: grpcstatus.Error(codes.Unauthenticated, "unauthenticated"), want: ManagementRefusedExplicitly},
+		{name: "RPC authentication refusal", err: grpcstatus.Error(codes.Unauthenticated, "unauthenticated"), want: ManagementInconclusive},
 		{name: "RPC authentication refusal does not identify the issuer", err: grpcstatus.Error(codes.Unauthenticated, "unauthenticated"), issuerRefused: func(error) bool { return false }, want: ManagementInconclusive},
 		{name: "EOF", err: io.EOF, want: ManagementInconclusive},
 		{name: "reset", err: syscall.ECONNRESET, want: ManagementInconclusive},
@@ -488,7 +488,7 @@ func serveMutualTLS(t *testing.T, agent *countingAgent) (string, managementident
 	if err != nil {
 		t.Fatal(err)
 	}
-	serverTLS, err := ServerTLSConfigForNode(node)
+	serverTLS, _, err := ServerTLSConfigForNode(node)
 	if err != nil {
 		t.Fatal(err)
 	}

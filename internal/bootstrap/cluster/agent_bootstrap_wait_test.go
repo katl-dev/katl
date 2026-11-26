@@ -93,7 +93,7 @@ func TestTCPAgentConnectorExplainsMutualTLSNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	serverTLS, err := transport.ServerTLSConfigForNode(node)
+	serverTLS, _, err := transport.ServerTLSConfigForNode(node)
 	if err != nil {
 		t.Fatal(err)
 	}

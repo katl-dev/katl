@@ -31,26 +31,35 @@ import (
 )
 
 func TestManagementIdentityRotateReplacesLiveTrust(t *testing.T) {
-	testManagementRotationLiveTrust(t, "", false, false)
+	testManagementRotationLiveTrust(t, "", false, false, false)
 }
 
 func TestManagementIdentityRotateRetriesWithClockSkew(t *testing.T) {
-	testManagementRotationLiveTrust(t, "", false, true)
+	testManagementRotationLiveTrust(t, "", false, true, false)
 }
 
 func TestManagementIdentityRotateRequiresIssuerRejection(t *testing.T) {
 	t.Run("old leaf expires at the server", func(t *testing.T) {
-		testManagementRotationLiveTrust(t, "expired leaf", false, false)
+		testManagementRotationLiveTrust(t, "expired leaf", false, false, false)
 	})
 	t.Run("old leaf expires with a second node pending", func(t *testing.T) {
-		testManagementRotationLiveTrust(t, "expired leaf", true, false)
+		testManagementRotationLiveTrust(t, "expired leaf", true, false, false)
 	})
 	t.Run("TLS policy rejects a fresh leaf generically", func(t *testing.T) {
-		testManagementRotationLiveTrust(t, "generic rejection", true, false)
+		testManagementRotationLiveTrust(t, "generic rejection", true, false, false)
 	})
 }
 
-func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker, retryWithClockSkew bool) {
+func TestManagementIdentityRotateUsesServedTrust(t *testing.T) {
+	t.Run("replacement alone with a slow node clock", func(t *testing.T) {
+		testManagementRotationLiveTrust(t, "", false, true, true)
+	})
+	t.Run("old authority also served", func(t *testing.T) {
+		testManagementRotationLiveTrust(t, "reported extra CA", true, false, true)
+	})
+}
+
+func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker, retryWithClockSkew, reportTrust bool) {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("KATLCTL_CONFIG", filepath.Join(dir, "no-context.yaml"))
@@ -129,10 +138,11 @@ func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker, 
 			server.Stop()
 			listener.Close()
 		}
-		tlsConfig, err := transport.ServerTLSConfig(root)
+		tlsConfig, authorities, err := transport.ServerTLSConfig(root)
 		if err != nil {
 			t.Fatal(err)
 		}
+		installed := authorities[0]
 		switch {
 		case rotated && retryWithClockSkew:
 			tlsConfig.Time = func() time.Time { return serverTime }
@@ -140,6 +150,7 @@ func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker, 
 			if !tlsConfig.ClientCAs.AppendCertsFromPEM([]byte(old.CertificateAuthority.Certificate)) {
 				t.Fatal("add old authority to deliberately unsafe test server")
 			}
+			authorities = append(authorities, oldInfo.Fingerprint)
 			switch rejection {
 			case "expired leaf":
 				// The server clock expires only the original operator leaf.
@@ -166,7 +177,14 @@ func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker, 
 		}
 		endpoint = listener.Addr().String()
 		server = grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
-		agentapi.RegisterKatlcAgentServer(server, &clusterApplyIdentityServer{client: &fakeKatlcAgentClient{nodeStatus: enrolledStatus("cp-1", enrollment.ID, machineID)}})
+		status := enrolledStatus("cp-1", enrollment.ID, machineID)
+		if reportTrust {
+			status.Management = &agentapi.ManagementStatus{
+				Authentication: "mtls", Authority: installed,
+				ServedClientTrust: &agentapi.ManagementClientTrust{Authorities: authorities},
+			}
+		}
+		agentapi.RegisterKatlcAgentServer(server, &clusterApplyIdentityServer{client: &fakeKatlcAgentClient{nodeStatus: status}})
 		go server.Serve(listener)
 	}
 	start()
@@ -229,7 +247,11 @@ func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker, 
 			t.Fatalf("rotation published the replacement reference before verification: %v", err)
 		}
 		target := managementRotationNode{name: "cp-1", endpoint: mustHostPort(t, endpoint), machineID: machineID}
-		if err := checkManagementCredential(t.Context(), target, mustManagementClient(t, replacement), time.Second); err != nil {
+		authority, err := managementidentity.CAFingerprint(replacement.CertificateAuthority.Certificate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := checkManagementCredential(t.Context(), target, mustManagementClient(t, replacement), authority, time.Second); err != nil {
 			t.Fatalf("node with a slow clock did not accept the existing replacement: %v", err)
 		}
 		stdout.Reset()
@@ -247,6 +269,9 @@ func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker, 
 		want := "old authority still has management access"
 		if rejection == "generic rejection" {
 			want = "could not confirm the node stopped trusting the old authority; the node may still trust the old authority"
+		}
+		if reportTrust {
+			want = "listener trusts client CAs"
 		}
 		if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "rerun with the same --output") {
 			t.Fatalf("rotate = %v\n%s\nwant %q and rerun guidance", err, &stderr, want)
@@ -271,7 +296,13 @@ func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker, 
 	if err != nil || nextInfo.Fingerprint == oldInfo.Fingerprint {
 		t.Fatalf("authority was not replaced: %v", err)
 	}
-	if err := verifyRotatedManagement(context.Background(), managementRotationNode{name: "cp-1", endpoint: mustHostPort(t, endpoint), machineID: machineID}, mustManagementClient(t, next), old.Operator, 3*time.Second); err != nil {
+	probe := func() (managementidentity.CertificateKey, error) {
+		if reportTrust {
+			t.Fatal("requested a legacy probe after receiving an exact trust report")
+		}
+		return old.Operator, nil
+	}
+	if err := verifyRotatedManagement(context.Background(), managementRotationNode{name: "cp-1", endpoint: mustHostPort(t, endpoint), machineID: machineID}, mustManagementClient(t, next), nextInfo.Fingerprint, probe, 3*time.Second); err != nil {
 		t.Fatalf("independent management check: %v", err)
 	}
 	stdout.Reset()
@@ -311,6 +342,7 @@ func TestManagementIdentityRotateConfiguredReplacement(t *testing.T) {
 		{"connection refused", "connection refused"},
 		{"closes after ServerHello", "EOF"},
 		{"different authority", "certificate signed by unknown authority"},
+		{"extra reported authority", "listener trusts client CAs"},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			testManagementRotationConfiguredReplacement(t, scenario.name, scenario.wantCause)
@@ -363,7 +395,7 @@ func testManagementRotationConfiguredReplacement(t *testing.T, scenario, wantCau
 		if err != nil {
 			t.Fatal(err)
 		}
-		tlsConfig, err := transport.ServerTLSConfigForNode(node)
+		tlsConfig, authorities, err := transport.ServerTLSConfigForNode(node)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -380,6 +412,14 @@ func testManagementRotationConfiguredReplacement(t *testing.T, scenario, wantCau
 			}()
 		} else {
 			server := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
+			if scenario == "extra reported authority" {
+				status := enrolledStatus("cp-1", "installed", "machine")
+				status.Management = &agentapi.ManagementStatus{
+					Authentication: "mtls", Authority: authorities[0],
+					ServedClientTrust: &agentapi.ManagementClientTrust{Authorities: append(authorities, "extra")},
+				}
+				agentapi.RegisterKatlcAgentServer(server, &clusterApplyIdentityServer{client: &fakeKatlcAgentClient{nodeStatus: status}})
+			}
 			t.Cleanup(server.Stop)
 			go server.Serve(listener)
 		}
@@ -560,7 +600,7 @@ func TestManagementRotationOldAuthorityRefusal(t *testing.T) {
 				}
 
 				target := managementRotationNode{name: node.name, endpoint: mustManagement(t, "192.0.2.11").Endpoint(), machineID: "machine-" + node.name}
-				err = verifyRotatedManagement(t.Context(), target, mustManagementClient(t, next), probe, time.Second)
+				err = verifyRotatedManagement(t.Context(), target, mustManagementClient(t, next), node.authority, func() (managementidentity.CertificateKey, error) { return probe, nil }, time.Second)
 				if scenario != "unrelated failure" && !sawRefusal {
 					t.Fatal("the agent did not refuse the old credential")
 				}

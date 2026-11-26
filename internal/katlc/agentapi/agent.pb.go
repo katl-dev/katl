@@ -2,7 +2,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v7.34.1
-// source: agent.proto
+// source: internal/katlc/agentapi/agent.proto
 
 package agentapi
 
@@ -29,7 +29,7 @@ type GetNodeStatusRequest struct {
 
 func (x *GetNodeStatusRequest) Reset() {
 	*x = GetNodeStatusRequest{}
-	mi := &file_agent_proto_msgTypes[0]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -41,7 +41,7 @@ func (x *GetNodeStatusRequest) String() string {
 func (*GetNodeStatusRequest) ProtoMessage() {}
 
 func (x *GetNodeStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[0]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -54,7 +54,7 @@ func (x *GetNodeStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetNodeStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetNodeStatusRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{0}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{0}
 }
 
 type GetKubeconfigRequest struct {
@@ -65,7 +65,7 @@ type GetKubeconfigRequest struct {
 
 func (x *GetKubeconfigRequest) Reset() {
 	*x = GetKubeconfigRequest{}
-	mi := &file_agent_proto_msgTypes[1]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -77,7 +77,7 @@ func (x *GetKubeconfigRequest) String() string {
 func (*GetKubeconfigRequest) ProtoMessage() {}
 
 func (x *GetKubeconfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[1]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -90,7 +90,7 @@ func (x *GetKubeconfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetKubeconfigRequest.ProtoReflect.Descriptor instead.
 func (*GetKubeconfigRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{1}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{1}
 }
 
 type KubeconfigResponse struct {
@@ -102,7 +102,7 @@ type KubeconfigResponse struct {
 
 func (x *KubeconfigResponse) Reset() {
 	*x = KubeconfigResponse{}
-	mi := &file_agent_proto_msgTypes[2]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -114,7 +114,7 @@ func (x *KubeconfigResponse) String() string {
 func (*KubeconfigResponse) ProtoMessage() {}
 
 func (x *KubeconfigResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[2]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -127,7 +127,7 @@ func (x *KubeconfigResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KubeconfigResponse.ProtoReflect.Descriptor instead.
 func (*KubeconfigResponse) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{2}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *KubeconfigResponse) GetKubeconfig() []byte {
@@ -151,7 +151,7 @@ type JournalRequest struct {
 
 func (x *JournalRequest) Reset() {
 	*x = JournalRequest{}
-	mi := &file_agent_proto_msgTypes[3]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -163,7 +163,7 @@ func (x *JournalRequest) String() string {
 func (*JournalRequest) ProtoMessage() {}
 
 func (x *JournalRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[3]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -176,7 +176,7 @@ func (x *JournalRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JournalRequest.ProtoReflect.Descriptor instead.
 func (*JournalRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{3}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *JournalRequest) GetUnits() []string {
@@ -230,7 +230,7 @@ type JournalEntry struct {
 
 func (x *JournalEntry) Reset() {
 	*x = JournalEntry{}
-	mi := &file_agent_proto_msgTypes[4]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -242,7 +242,7 @@ func (x *JournalEntry) String() string {
 func (*JournalEntry) ProtoMessage() {}
 
 func (x *JournalEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[4]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -255,7 +255,7 @@ func (x *JournalEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JournalEntry.ProtoReflect.Descriptor instead.
 func (*JournalEntry) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{4}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *JournalEntry) GetLine() string {
@@ -294,7 +294,7 @@ type NodeStatus struct {
 
 func (x *NodeStatus) Reset() {
 	*x = NodeStatus{}
-	mi := &file_agent_proto_msgTypes[5]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -306,7 +306,7 @@ func (x *NodeStatus) String() string {
 func (*NodeStatus) ProtoMessage() {}
 
 func (x *NodeStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[5]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -319,7 +319,7 @@ func (x *NodeStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NodeStatus.ProtoReflect.Descriptor instead.
 func (*NodeStatus) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{5}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *NodeStatus) GetApiVersion() string {
@@ -478,14 +478,16 @@ type ManagementStatus struct {
 	Transition *ManagementTransition `protobuf:"bytes,3,opt,name=transition,proto3" json:"transition,omitempty"`
 	// node_time is the node's RFC 3339 wall-clock time when status was read,
 	// so a client can check that credentials it issues are already valid there.
-	NodeTime      string `protobuf:"bytes,4,opt,name=node_time,json=nodeTime,proto3" json:"node_time,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	NodeTime string `protobuf:"bytes,4,opt,name=node_time,json=nodeTime,proto3" json:"node_time,omitempty"`
+	// Present on agents that report the answering listener's client trust.
+	ServedClientTrust *ManagementClientTrust `protobuf:"bytes,5,opt,name=served_client_trust,json=servedClientTrust,proto3" json:"served_client_trust,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *ManagementStatus) Reset() {
 	*x = ManagementStatus{}
-	mi := &file_agent_proto_msgTypes[6]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -497,7 +499,7 @@ func (x *ManagementStatus) String() string {
 func (*ManagementStatus) ProtoMessage() {}
 
 func (x *ManagementStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[6]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -510,7 +512,7 @@ func (x *ManagementStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagementStatus.ProtoReflect.Descriptor instead.
 func (*ManagementStatus) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{6}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ManagementStatus) GetAuthentication() string {
@@ -541,6 +543,13 @@ func (x *ManagementStatus) GetNodeTime() string {
 	return ""
 }
 
+func (x *ManagementStatus) GetServedClientTrust() *ManagementClientTrust {
+	if x != nil {
+		return x.ServedClientTrust
+	}
+	return nil
+}
+
 type APIProxyStatus struct {
 	state                  protoimpl.MessageState    `protogen:"open.v1"`
 	State                  string                    `protobuf:"bytes,1,opt,name=state,proto3" json:"state,omitempty"`
@@ -558,7 +567,7 @@ type APIProxyStatus struct {
 
 func (x *APIProxyStatus) Reset() {
 	*x = APIProxyStatus{}
-	mi := &file_agent_proto_msgTypes[7]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -570,7 +579,7 @@ func (x *APIProxyStatus) String() string {
 func (*APIProxyStatus) ProtoMessage() {}
 
 func (x *APIProxyStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[7]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -583,7 +592,7 @@ func (x *APIProxyStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use APIProxyStatus.ProtoReflect.Descriptor instead.
 func (*APIProxyStatus) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{7}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *APIProxyStatus) GetState() string {
@@ -659,7 +668,7 @@ type APIProxyListenerStatus struct {
 
 func (x *APIProxyListenerStatus) Reset() {
 	*x = APIProxyListenerStatus{}
-	mi := &file_agent_proto_msgTypes[8]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -671,7 +680,7 @@ func (x *APIProxyListenerStatus) String() string {
 func (*APIProxyListenerStatus) ProtoMessage() {}
 
 func (x *APIProxyListenerStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[8]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -684,7 +693,7 @@ func (x *APIProxyListenerStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use APIProxyListenerStatus.ProtoReflect.Descriptor instead.
 func (*APIProxyListenerStatus) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{8}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *APIProxyListenerStatus) GetAddress() string {
@@ -715,7 +724,7 @@ type APIProxyBackendStatus struct {
 
 func (x *APIProxyBackendStatus) Reset() {
 	*x = APIProxyBackendStatus{}
-	mi := &file_agent_proto_msgTypes[9]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -727,7 +736,7 @@ func (x *APIProxyBackendStatus) String() string {
 func (*APIProxyBackendStatus) ProtoMessage() {}
 
 func (x *APIProxyBackendStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[9]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -740,7 +749,7 @@ func (x *APIProxyBackendStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use APIProxyBackendStatus.ProtoReflect.Descriptor instead.
 func (*APIProxyBackendStatus) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{9}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *APIProxyBackendStatus) GetName() string {
@@ -804,7 +813,7 @@ type VolumeStatus struct {
 
 func (x *VolumeStatus) Reset() {
 	*x = VolumeStatus{}
-	mi := &file_agent_proto_msgTypes[10]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -816,7 +825,7 @@ func (x *VolumeStatus) String() string {
 func (*VolumeStatus) ProtoMessage() {}
 
 func (x *VolumeStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[10]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -829,7 +838,7 @@ func (x *VolumeStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VolumeStatus.ProtoReflect.Descriptor instead.
 func (*VolumeStatus) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{10}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *VolumeStatus) GetName() string {
@@ -935,7 +944,7 @@ type SystemExtensionStatus struct {
 
 func (x *SystemExtensionStatus) Reset() {
 	*x = SystemExtensionStatus{}
-	mi := &file_agent_proto_msgTypes[11]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -947,7 +956,7 @@ func (x *SystemExtensionStatus) String() string {
 func (*SystemExtensionStatus) ProtoMessage() {}
 
 func (x *SystemExtensionStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[11]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -960,7 +969,7 @@ func (x *SystemExtensionStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SystemExtensionStatus.ProtoReflect.Descriptor instead.
 func (*SystemExtensionStatus) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{11}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *SystemExtensionStatus) GetName() string {
@@ -1104,7 +1113,7 @@ type SystemExtensionPayloadStatus struct {
 
 func (x *SystemExtensionPayloadStatus) Reset() {
 	*x = SystemExtensionPayloadStatus{}
-	mi := &file_agent_proto_msgTypes[12]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1116,7 +1125,7 @@ func (x *SystemExtensionPayloadStatus) String() string {
 func (*SystemExtensionPayloadStatus) ProtoMessage() {}
 
 func (x *SystemExtensionPayloadStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[12]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1129,7 +1138,7 @@ func (x *SystemExtensionPayloadStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SystemExtensionPayloadStatus.ProtoReflect.Descriptor instead.
 func (*SystemExtensionPayloadStatus) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{12}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SystemExtensionPayloadStatus) GetName() string {
@@ -1192,7 +1201,7 @@ type SystemExtensionFileStatus struct {
 
 func (x *SystemExtensionFileStatus) Reset() {
 	*x = SystemExtensionFileStatus{}
-	mi := &file_agent_proto_msgTypes[13]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1204,7 +1213,7 @@ func (x *SystemExtensionFileStatus) String() string {
 func (*SystemExtensionFileStatus) ProtoMessage() {}
 
 func (x *SystemExtensionFileStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[13]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1217,7 +1226,7 @@ func (x *SystemExtensionFileStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SystemExtensionFileStatus.ProtoReflect.Descriptor instead.
 func (*SystemExtensionFileStatus) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{13}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *SystemExtensionFileStatus) GetPath() string {
@@ -1258,7 +1267,7 @@ type SystemExtensionUnitStatus struct {
 
 func (x *SystemExtensionUnitStatus) Reset() {
 	*x = SystemExtensionUnitStatus{}
-	mi := &file_agent_proto_msgTypes[14]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1270,7 +1279,7 @@ func (x *SystemExtensionUnitStatus) String() string {
 func (*SystemExtensionUnitStatus) ProtoMessage() {}
 
 func (x *SystemExtensionUnitStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[14]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1283,7 +1292,7 @@ func (x *SystemExtensionUnitStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SystemExtensionUnitStatus.ProtoReflect.Descriptor instead.
 func (*SystemExtensionUnitStatus) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{14}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *SystemExtensionUnitStatus) GetName() string {
@@ -1368,7 +1377,7 @@ type KubernetesStatus struct {
 
 func (x *KubernetesStatus) Reset() {
 	*x = KubernetesStatus{}
-	mi := &file_agent_proto_msgTypes[15]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1380,7 +1389,7 @@ func (x *KubernetesStatus) String() string {
 func (*KubernetesStatus) ProtoMessage() {}
 
 func (x *KubernetesStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[15]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1393,7 +1402,7 @@ func (x *KubernetesStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KubernetesStatus.ProtoReflect.Descriptor instead.
 func (*KubernetesStatus) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{15}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *KubernetesStatus) GetState() string {
@@ -1472,7 +1481,7 @@ type CertificateExpiry struct {
 
 func (x *CertificateExpiry) Reset() {
 	*x = CertificateExpiry{}
-	mi := &file_agent_proto_msgTypes[16]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1484,7 +1493,7 @@ func (x *CertificateExpiry) String() string {
 func (*CertificateExpiry) ProtoMessage() {}
 
 func (x *CertificateExpiry) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[16]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1497,7 +1506,7 @@ func (x *CertificateExpiry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CertificateExpiry.ProtoReflect.Descriptor instead.
 func (*CertificateExpiry) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{16}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *CertificateExpiry) GetName() string {
@@ -1529,7 +1538,7 @@ type ControlPlaneEndpointStatus struct {
 
 func (x *ControlPlaneEndpointStatus) Reset() {
 	*x = ControlPlaneEndpointStatus{}
-	mi := &file_agent_proto_msgTypes[17]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1541,7 +1550,7 @@ func (x *ControlPlaneEndpointStatus) String() string {
 func (*ControlPlaneEndpointStatus) ProtoMessage() {}
 
 func (x *ControlPlaneEndpointStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[17]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1554,7 +1563,7 @@ func (x *ControlPlaneEndpointStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ControlPlaneEndpointStatus.ProtoReflect.Descriptor instead.
 func (*ControlPlaneEndpointStatus) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{17}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ControlPlaneEndpointStatus) GetEndpoint() string {
@@ -1634,7 +1643,7 @@ type SubmitOperationRequest struct {
 
 func (x *SubmitOperationRequest) Reset() {
 	*x = SubmitOperationRequest{}
-	mi := &file_agent_proto_msgTypes[18]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1646,7 +1655,7 @@ func (x *SubmitOperationRequest) String() string {
 func (*SubmitOperationRequest) ProtoMessage() {}
 
 func (x *SubmitOperationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[18]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1659,7 +1668,7 @@ func (x *SubmitOperationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SubmitOperationRequest.ProtoReflect.Descriptor instead.
 func (*SubmitOperationRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{18}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *SubmitOperationRequest) GetApiVersion() string {
@@ -1829,7 +1838,7 @@ type BootstrapOperationRequest struct {
 
 func (x *BootstrapOperationRequest) Reset() {
 	*x = BootstrapOperationRequest{}
-	mi := &file_agent_proto_msgTypes[19]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1841,7 +1850,7 @@ func (x *BootstrapOperationRequest) String() string {
 func (*BootstrapOperationRequest) ProtoMessage() {}
 
 func (x *BootstrapOperationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[19]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1854,7 +1863,7 @@ func (x *BootstrapOperationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BootstrapOperationRequest.ProtoReflect.Descriptor instead.
 func (*BootstrapOperationRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{19}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *BootstrapOperationRequest) GetInventoryNodeName() string {
@@ -2001,7 +2010,7 @@ type WorkerJoinMaterial struct {
 
 func (x *WorkerJoinMaterial) Reset() {
 	*x = WorkerJoinMaterial{}
-	mi := &file_agent_proto_msgTypes[20]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2013,7 +2022,7 @@ func (x *WorkerJoinMaterial) String() string {
 func (*WorkerJoinMaterial) ProtoMessage() {}
 
 func (x *WorkerJoinMaterial) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[20]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2026,7 +2035,7 @@ func (x *WorkerJoinMaterial) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorkerJoinMaterial.ProtoReflect.Descriptor instead.
 func (*WorkerJoinMaterial) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{20}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *WorkerJoinMaterial) GetJoinArgv() []string {
@@ -2058,7 +2067,7 @@ type GetEtcdStatusRequest struct {
 
 func (x *GetEtcdStatusRequest) Reset() {
 	*x = GetEtcdStatusRequest{}
-	mi := &file_agent_proto_msgTypes[21]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2070,7 +2079,7 @@ func (x *GetEtcdStatusRequest) String() string {
 func (*GetEtcdStatusRequest) ProtoMessage() {}
 
 func (x *GetEtcdStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[21]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2083,7 +2092,7 @@ func (x *GetEtcdStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetEtcdStatusRequest.ProtoReflect.Descriptor instead.
 func (*GetEtcdStatusRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{21}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{21}
 }
 
 type SaveEtcdSnapshotRequest struct {
@@ -2094,7 +2103,7 @@ type SaveEtcdSnapshotRequest struct {
 
 func (x *SaveEtcdSnapshotRequest) Reset() {
 	*x = SaveEtcdSnapshotRequest{}
-	mi := &file_agent_proto_msgTypes[22]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2106,7 +2115,7 @@ func (x *SaveEtcdSnapshotRequest) String() string {
 func (*SaveEtcdSnapshotRequest) ProtoMessage() {}
 
 func (x *SaveEtcdSnapshotRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[22]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2119,7 +2128,7 @@ func (x *SaveEtcdSnapshotRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SaveEtcdSnapshotRequest.ProtoReflect.Descriptor instead.
 func (*SaveEtcdSnapshotRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{22}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{22}
 }
 
 type EtcdSnapshotChunk struct {
@@ -2132,7 +2141,7 @@ type EtcdSnapshotChunk struct {
 
 func (x *EtcdSnapshotChunk) Reset() {
 	*x = EtcdSnapshotChunk{}
-	mi := &file_agent_proto_msgTypes[23]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2144,7 +2153,7 @@ func (x *EtcdSnapshotChunk) String() string {
 func (*EtcdSnapshotChunk) ProtoMessage() {}
 
 func (x *EtcdSnapshotChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[23]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2157,7 +2166,7 @@ func (x *EtcdSnapshotChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EtcdSnapshotChunk.ProtoReflect.Descriptor instead.
 func (*EtcdSnapshotChunk) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{23}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *EtcdSnapshotChunk) GetInfo() *EtcdSnapshotInfo {
@@ -2189,7 +2198,7 @@ type EtcdSnapshotInfo struct {
 
 func (x *EtcdSnapshotInfo) Reset() {
 	*x = EtcdSnapshotInfo{}
-	mi := &file_agent_proto_msgTypes[24]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2201,7 +2210,7 @@ func (x *EtcdSnapshotInfo) String() string {
 func (*EtcdSnapshotInfo) ProtoMessage() {}
 
 func (x *EtcdSnapshotInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[24]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2214,7 +2223,7 @@ func (x *EtcdSnapshotInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EtcdSnapshotInfo.ProtoReflect.Descriptor instead.
 func (*EtcdSnapshotInfo) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{24}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *EtcdSnapshotInfo) GetClusterId() string {
@@ -2282,7 +2291,7 @@ type EtcdStatus struct {
 
 func (x *EtcdStatus) Reset() {
 	*x = EtcdStatus{}
-	mi := &file_agent_proto_msgTypes[25]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2294,7 +2303,7 @@ func (x *EtcdStatus) String() string {
 func (*EtcdStatus) ProtoMessage() {}
 
 func (x *EtcdStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[25]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2307,7 +2316,7 @@ func (x *EtcdStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EtcdStatus.ProtoReflect.Descriptor instead.
 func (*EtcdStatus) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{25}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *EtcdStatus) GetClusterId() string {
@@ -2381,7 +2390,7 @@ type EtcdMember struct {
 
 func (x *EtcdMember) Reset() {
 	*x = EtcdMember{}
-	mi := &file_agent_proto_msgTypes[26]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2393,7 +2402,7 @@ func (x *EtcdMember) String() string {
 func (*EtcdMember) ProtoMessage() {}
 
 func (x *EtcdMember) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[26]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2406,7 +2415,7 @@ func (x *EtcdMember) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EtcdMember.ProtoReflect.Descriptor instead.
 func (*EtcdMember) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{26}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *EtcdMember) GetId() string {
@@ -2471,7 +2480,7 @@ type EtcdMemberRemoveOperationRequest struct {
 
 func (x *EtcdMemberRemoveOperationRequest) Reset() {
 	*x = EtcdMemberRemoveOperationRequest{}
-	mi := &file_agent_proto_msgTypes[27]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2483,7 +2492,7 @@ func (x *EtcdMemberRemoveOperationRequest) String() string {
 func (*EtcdMemberRemoveOperationRequest) ProtoMessage() {}
 
 func (x *EtcdMemberRemoveOperationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[27]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2496,7 +2505,7 @@ func (x *EtcdMemberRemoveOperationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EtcdMemberRemoveOperationRequest.ProtoReflect.Descriptor instead.
 func (*EtcdMemberRemoveOperationRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{27}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *EtcdMemberRemoveOperationRequest) GetTargetNodeName() string {
@@ -2557,7 +2566,7 @@ type ValidateConfigRequest struct {
 
 func (x *ValidateConfigRequest) Reset() {
 	*x = ValidateConfigRequest{}
-	mi := &file_agent_proto_msgTypes[28]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2569,7 +2578,7 @@ func (x *ValidateConfigRequest) String() string {
 func (*ValidateConfigRequest) ProtoMessage() {}
 
 func (x *ValidateConfigRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[28]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2582,7 +2591,7 @@ func (x *ValidateConfigRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ValidateConfigRequest.ProtoReflect.Descriptor instead.
 func (*ValidateConfigRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{28}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *ValidateConfigRequest) GetApiVersion() string {
@@ -2713,7 +2722,7 @@ type ConfigValidationResult struct {
 
 func (x *ConfigValidationResult) Reset() {
 	*x = ConfigValidationResult{}
-	mi := &file_agent_proto_msgTypes[29]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2725,7 +2734,7 @@ func (x *ConfigValidationResult) String() string {
 func (*ConfigValidationResult) ProtoMessage() {}
 
 func (x *ConfigValidationResult) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[29]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2738,7 +2747,7 @@ func (x *ConfigValidationResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigValidationResult.ProtoReflect.Descriptor instead.
 func (*ConfigValidationResult) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{29}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *ConfigValidationResult) GetApiVersion() string {
@@ -2862,7 +2871,7 @@ type GenerationApplyRequest struct {
 
 func (x *GenerationApplyRequest) Reset() {
 	*x = GenerationApplyRequest{}
-	mi := &file_agent_proto_msgTypes[30]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2874,7 +2883,7 @@ func (x *GenerationApplyRequest) String() string {
 func (*GenerationApplyRequest) ProtoMessage() {}
 
 func (x *GenerationApplyRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[30]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2887,7 +2896,7 @@ func (x *GenerationApplyRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerationApplyRequest.ProtoReflect.Descriptor instead.
 func (*GenerationApplyRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{30}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *GenerationApplyRequest) GetApiVersion() string {
@@ -3009,7 +3018,7 @@ type ConfigApplyOperationRequest struct {
 
 func (x *ConfigApplyOperationRequest) Reset() {
 	*x = ConfigApplyOperationRequest{}
-	mi := &file_agent_proto_msgTypes[31]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3021,7 +3030,7 @@ func (x *ConfigApplyOperationRequest) String() string {
 func (*ConfigApplyOperationRequest) ProtoMessage() {}
 
 func (x *ConfigApplyOperationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[31]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3034,7 +3043,7 @@ func (x *ConfigApplyOperationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigApplyOperationRequest.ProtoReflect.Descriptor instead.
 func (*ConfigApplyOperationRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{31}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *ConfigApplyOperationRequest) GetCandidateGenerationId() string {
@@ -3109,7 +3118,7 @@ type KubeadmControlPlaneConfigOperationRequest struct {
 
 func (x *KubeadmControlPlaneConfigOperationRequest) Reset() {
 	*x = KubeadmControlPlaneConfigOperationRequest{}
-	mi := &file_agent_proto_msgTypes[32]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3121,7 +3130,7 @@ func (x *KubeadmControlPlaneConfigOperationRequest) String() string {
 func (*KubeadmControlPlaneConfigOperationRequest) ProtoMessage() {}
 
 func (x *KubeadmControlPlaneConfigOperationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[32]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3134,7 +3143,7 @@ func (x *KubeadmControlPlaneConfigOperationRequest) ProtoReflect() protoreflect.
 
 // Deprecated: Use KubeadmControlPlaneConfigOperationRequest.ProtoReflect.Descriptor instead.
 func (*KubeadmControlPlaneConfigOperationRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{32}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *KubeadmControlPlaneConfigOperationRequest) GetRolloutId() string {
@@ -3320,7 +3329,7 @@ type KubernetesSysextUpdateOperationRequest struct {
 
 func (x *KubernetesSysextUpdateOperationRequest) Reset() {
 	*x = KubernetesSysextUpdateOperationRequest{}
-	mi := &file_agent_proto_msgTypes[33]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3332,7 +3341,7 @@ func (x *KubernetesSysextUpdateOperationRequest) String() string {
 func (*KubernetesSysextUpdateOperationRequest) ProtoMessage() {}
 
 func (x *KubernetesSysextUpdateOperationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[33]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3345,7 +3354,7 @@ func (x *KubernetesSysextUpdateOperationRequest) ProtoReflect() protoreflect.Mes
 
 // Deprecated: Use KubernetesSysextUpdateOperationRequest.ProtoReflect.Descriptor instead.
 func (*KubernetesSysextUpdateOperationRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{33}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *KubernetesSysextUpdateOperationRequest) GetTargetPayloadVersion() string {
@@ -3508,7 +3517,7 @@ type DestructiveResetOperationRequest struct {
 
 func (x *DestructiveResetOperationRequest) Reset() {
 	*x = DestructiveResetOperationRequest{}
-	mi := &file_agent_proto_msgTypes[34]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3520,7 +3529,7 @@ func (x *DestructiveResetOperationRequest) String() string {
 func (*DestructiveResetOperationRequest) ProtoMessage() {}
 
 func (x *DestructiveResetOperationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[34]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3533,7 +3542,7 @@ func (x *DestructiveResetOperationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DestructiveResetOperationRequest.ProtoReflect.Descriptor instead.
 func (*DestructiveResetOperationRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{34}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *DestructiveResetOperationRequest) GetInventoryNodeName() string {
@@ -3586,7 +3595,7 @@ type HostUpgradeOperationRequest struct {
 
 func (x *HostUpgradeOperationRequest) Reset() {
 	*x = HostUpgradeOperationRequest{}
-	mi := &file_agent_proto_msgTypes[35]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3598,7 +3607,7 @@ func (x *HostUpgradeOperationRequest) String() string {
 func (*HostUpgradeOperationRequest) ProtoMessage() {}
 
 func (x *HostUpgradeOperationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[35]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3611,7 +3620,7 @@ func (x *HostUpgradeOperationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostUpgradeOperationRequest.ProtoReflect.Descriptor instead.
 func (*HostUpgradeOperationRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{35}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *HostUpgradeOperationRequest) GetImageUrl() string {
@@ -3680,7 +3689,7 @@ type HostUpgradePreview struct {
 
 func (x *HostUpgradePreview) Reset() {
 	*x = HostUpgradePreview{}
-	mi := &file_agent_proto_msgTypes[36]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3692,7 +3701,7 @@ func (x *HostUpgradePreview) String() string {
 func (*HostUpgradePreview) ProtoMessage() {}
 
 func (x *HostUpgradePreview) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[36]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3705,7 +3714,7 @@ func (x *HostUpgradePreview) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostUpgradePreview.ProtoReflect.Descriptor instead.
 func (*HostUpgradePreview) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{36}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *HostUpgradePreview) GetImageSha256() string {
@@ -3782,7 +3791,7 @@ type HostUpgradeExtensionChange struct {
 
 func (x *HostUpgradeExtensionChange) Reset() {
 	*x = HostUpgradeExtensionChange{}
-	mi := &file_agent_proto_msgTypes[37]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3794,7 +3803,7 @@ func (x *HostUpgradeExtensionChange) String() string {
 func (*HostUpgradeExtensionChange) ProtoMessage() {}
 
 func (x *HostUpgradeExtensionChange) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[37]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3807,7 +3816,7 @@ func (x *HostUpgradeExtensionChange) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostUpgradeExtensionChange.ProtoReflect.Descriptor instead.
 func (*HostUpgradeExtensionChange) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{37}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *HostUpgradeExtensionChange) GetName() string {
@@ -3849,7 +3858,7 @@ type StageHostUpgradeArtifactRequest struct {
 
 func (x *StageHostUpgradeArtifactRequest) Reset() {
 	*x = StageHostUpgradeArtifactRequest{}
-	mi := &file_agent_proto_msgTypes[38]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3861,7 +3870,7 @@ func (x *StageHostUpgradeArtifactRequest) String() string {
 func (*StageHostUpgradeArtifactRequest) ProtoMessage() {}
 
 func (x *StageHostUpgradeArtifactRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[38]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3874,7 +3883,7 @@ func (x *StageHostUpgradeArtifactRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use StageHostUpgradeArtifactRequest.ProtoReflect.Descriptor instead.
 func (*StageHostUpgradeArtifactRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{38}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *StageHostUpgradeArtifactRequest) GetApiVersion() string {
@@ -3958,7 +3967,7 @@ type HostUpgradeArtifactStaged struct {
 
 func (x *HostUpgradeArtifactStaged) Reset() {
 	*x = HostUpgradeArtifactStaged{}
-	mi := &file_agent_proto_msgTypes[39]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3970,7 +3979,7 @@ func (x *HostUpgradeArtifactStaged) String() string {
 func (*HostUpgradeArtifactStaged) ProtoMessage() {}
 
 func (x *HostUpgradeArtifactStaged) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[39]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3983,7 +3992,7 @@ func (x *HostUpgradeArtifactStaged) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HostUpgradeArtifactStaged.ProtoReflect.Descriptor instead.
 func (*HostUpgradeArtifactStaged) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{39}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *HostUpgradeArtifactStaged) GetLocalRef() string {
@@ -4024,7 +4033,7 @@ type CreateWorkerJoinMaterialRequest struct {
 
 func (x *CreateWorkerJoinMaterialRequest) Reset() {
 	*x = CreateWorkerJoinMaterialRequest{}
-	mi := &file_agent_proto_msgTypes[40]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4036,7 +4045,7 @@ func (x *CreateWorkerJoinMaterialRequest) String() string {
 func (*CreateWorkerJoinMaterialRequest) ProtoMessage() {}
 
 func (x *CreateWorkerJoinMaterialRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[40]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4049,7 +4058,7 @@ func (x *CreateWorkerJoinMaterialRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateWorkerJoinMaterialRequest.ProtoReflect.Descriptor instead.
 func (*CreateWorkerJoinMaterialRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{40}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *CreateWorkerJoinMaterialRequest) GetApiVersion() string {
@@ -4126,7 +4135,7 @@ type CreateWorkerJoinMaterialResponse struct {
 
 func (x *CreateWorkerJoinMaterialResponse) Reset() {
 	*x = CreateWorkerJoinMaterialResponse{}
-	mi := &file_agent_proto_msgTypes[41]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4138,7 +4147,7 @@ func (x *CreateWorkerJoinMaterialResponse) String() string {
 func (*CreateWorkerJoinMaterialResponse) ProtoMessage() {}
 
 func (x *CreateWorkerJoinMaterialResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[41]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4151,7 +4160,7 @@ func (x *CreateWorkerJoinMaterialResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateWorkerJoinMaterialResponse.ProtoReflect.Descriptor instead.
 func (*CreateWorkerJoinMaterialResponse) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{41}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *CreateWorkerJoinMaterialResponse) GetMaterialRef() string {
@@ -4190,7 +4199,7 @@ type OperationAccepted struct {
 
 func (x *OperationAccepted) Reset() {
 	*x = OperationAccepted{}
-	mi := &file_agent_proto_msgTypes[42]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4202,7 +4211,7 @@ func (x *OperationAccepted) String() string {
 func (*OperationAccepted) ProtoMessage() {}
 
 func (x *OperationAccepted) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[42]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4215,7 +4224,7 @@ func (x *OperationAccepted) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationAccepted.ProtoReflect.Descriptor instead.
 func (*OperationAccepted) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{42}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *OperationAccepted) GetOperationId() string {
@@ -4278,7 +4287,7 @@ type GetOperationRequest struct {
 
 func (x *GetOperationRequest) Reset() {
 	*x = GetOperationRequest{}
-	mi := &file_agent_proto_msgTypes[43]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4290,7 +4299,7 @@ func (x *GetOperationRequest) String() string {
 func (*GetOperationRequest) ProtoMessage() {}
 
 func (x *GetOperationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[43]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4303,7 +4312,7 @@ func (x *GetOperationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetOperationRequest.ProtoReflect.Descriptor instead.
 func (*GetOperationRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{43}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *GetOperationRequest) GetOperationId() string {
@@ -4338,7 +4347,7 @@ type ListOperationsRequest struct {
 
 func (x *ListOperationsRequest) Reset() {
 	*x = ListOperationsRequest{}
-	mi := &file_agent_proto_msgTypes[44]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4350,7 +4359,7 @@ func (x *ListOperationsRequest) String() string {
 func (*ListOperationsRequest) ProtoMessage() {}
 
 func (x *ListOperationsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[44]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4363,7 +4372,7 @@ func (x *ListOperationsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListOperationsRequest.ProtoReflect.Descriptor instead.
 func (*ListOperationsRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{44}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *ListOperationsRequest) GetActiveOnly() bool {
@@ -4396,7 +4405,7 @@ type ListOperationsResponse struct {
 
 func (x *ListOperationsResponse) Reset() {
 	*x = ListOperationsResponse{}
-	mi := &file_agent_proto_msgTypes[45]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4408,7 +4417,7 @@ func (x *ListOperationsResponse) String() string {
 func (*ListOperationsResponse) ProtoMessage() {}
 
 func (x *ListOperationsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[45]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4421,7 +4430,7 @@ func (x *ListOperationsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListOperationsResponse.ProtoReflect.Descriptor instead.
 func (*ListOperationsResponse) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{45}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *ListOperationsResponse) GetOperations() []*OperationStatus {
@@ -4471,7 +4480,7 @@ type OperationStatus struct {
 
 func (x *OperationStatus) Reset() {
 	*x = OperationStatus{}
-	mi := &file_agent_proto_msgTypes[46]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4483,7 +4492,7 @@ func (x *OperationStatus) String() string {
 func (*OperationStatus) ProtoMessage() {}
 
 func (x *OperationStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[46]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4496,7 +4505,7 @@ func (x *OperationStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationStatus.ProtoReflect.Descriptor instead.
 func (*OperationStatus) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{46}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *OperationStatus) GetOperationId() string {
@@ -4740,7 +4749,7 @@ type EtcdUpgradeEvidence struct {
 
 func (x *EtcdUpgradeEvidence) Reset() {
 	*x = EtcdUpgradeEvidence{}
-	mi := &file_agent_proto_msgTypes[47]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4752,7 +4761,7 @@ func (x *EtcdUpgradeEvidence) String() string {
 func (*EtcdUpgradeEvidence) ProtoMessage() {}
 
 func (x *EtcdUpgradeEvidence) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[47]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4765,7 +4774,7 @@ func (x *EtcdUpgradeEvidence) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EtcdUpgradeEvidence.ProtoReflect.Descriptor instead.
 func (*EtcdUpgradeEvidence) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{47}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *EtcdUpgradeEvidence) GetSourceImage() string {
@@ -4845,7 +4854,7 @@ type EtcdSnapshot struct {
 
 func (x *EtcdSnapshot) Reset() {
 	*x = EtcdSnapshot{}
-	mi := &file_agent_proto_msgTypes[48]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4857,7 +4866,7 @@ func (x *EtcdSnapshot) String() string {
 func (*EtcdSnapshot) ProtoMessage() {}
 
 func (x *EtcdSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[48]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4870,7 +4879,7 @@ func (x *EtcdSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EtcdSnapshot.ProtoReflect.Descriptor instead.
 func (*EtcdSnapshot) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{48}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *EtcdSnapshot) GetPath() string {
@@ -4931,7 +4940,7 @@ type EtcdObservation struct {
 
 func (x *EtcdObservation) Reset() {
 	*x = EtcdObservation{}
-	mi := &file_agent_proto_msgTypes[49]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4943,7 +4952,7 @@ func (x *EtcdObservation) String() string {
 func (*EtcdObservation) ProtoMessage() {}
 
 func (x *EtcdObservation) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[49]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4956,7 +4965,7 @@ func (x *EtcdObservation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EtcdObservation.ProtoReflect.Descriptor instead.
 func (*EtcdObservation) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{49}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *EtcdObservation) GetObservedAt() string {
@@ -5038,7 +5047,7 @@ type EtcdMemberObservation struct {
 
 func (x *EtcdMemberObservation) Reset() {
 	*x = EtcdMemberObservation{}
-	mi := &file_agent_proto_msgTypes[50]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5050,7 +5059,7 @@ func (x *EtcdMemberObservation) String() string {
 func (*EtcdMemberObservation) ProtoMessage() {}
 
 func (x *EtcdMemberObservation) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[50]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5063,7 +5072,7 @@ func (x *EtcdMemberObservation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EtcdMemberObservation.ProtoReflect.Descriptor instead.
 func (*EtcdMemberObservation) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{50}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *EtcdMemberObservation) GetId() string {
@@ -5184,7 +5193,7 @@ type DiagnosticArtifact struct {
 
 func (x *DiagnosticArtifact) Reset() {
 	*x = DiagnosticArtifact{}
-	mi := &file_agent_proto_msgTypes[51]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5196,7 +5205,7 @@ func (x *DiagnosticArtifact) String() string {
 func (*DiagnosticArtifact) ProtoMessage() {}
 
 func (x *DiagnosticArtifact) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[51]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5209,7 +5218,7 @@ func (x *DiagnosticArtifact) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DiagnosticArtifact.ProtoReflect.Descriptor instead.
 func (*DiagnosticArtifact) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{51}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *DiagnosticArtifact) GetArtifactId() string {
@@ -5264,7 +5273,7 @@ type OperationInvocation struct {
 
 func (x *OperationInvocation) Reset() {
 	*x = OperationInvocation{}
-	mi := &file_agent_proto_msgTypes[52]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5276,7 +5285,7 @@ func (x *OperationInvocation) String() string {
 func (*OperationInvocation) ProtoMessage() {}
 
 func (x *OperationInvocation) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[52]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5289,7 +5298,7 @@ func (x *OperationInvocation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationInvocation.ProtoReflect.Descriptor instead.
 func (*OperationInvocation) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{52}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *OperationInvocation) GetInvocationId() string {
@@ -5368,7 +5377,7 @@ type WatchOperationRequest struct {
 
 func (x *WatchOperationRequest) Reset() {
 	*x = WatchOperationRequest{}
-	mi := &file_agent_proto_msgTypes[53]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5380,7 +5389,7 @@ func (x *WatchOperationRequest) String() string {
 func (*WatchOperationRequest) ProtoMessage() {}
 
 func (x *WatchOperationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[53]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5393,7 +5402,7 @@ func (x *WatchOperationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchOperationRequest.ProtoReflect.Descriptor instead.
 func (*WatchOperationRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{53}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *WatchOperationRequest) GetOperationId() string {
@@ -5446,7 +5455,7 @@ type OperationEvent struct {
 
 func (x *OperationEvent) Reset() {
 	*x = OperationEvent{}
-	mi := &file_agent_proto_msgTypes[54]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5458,7 +5467,7 @@ func (x *OperationEvent) String() string {
 func (*OperationEvent) ProtoMessage() {}
 
 func (x *OperationEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[54]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5471,7 +5480,7 @@ func (x *OperationEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationEvent.ProtoReflect.Descriptor instead.
 func (*OperationEvent) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{54}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *OperationEvent) GetOperationId() string {
@@ -5532,7 +5541,7 @@ type ListGenerationsRequest struct {
 
 func (x *ListGenerationsRequest) Reset() {
 	*x = ListGenerationsRequest{}
-	mi := &file_agent_proto_msgTypes[55]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5544,7 +5553,7 @@ func (x *ListGenerationsRequest) String() string {
 func (*ListGenerationsRequest) ProtoMessage() {}
 
 func (x *ListGenerationsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[55]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5557,7 +5566,7 @@ func (x *ListGenerationsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListGenerationsRequest.ProtoReflect.Descriptor instead.
 func (*ListGenerationsRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{55}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *ListGenerationsRequest) GetIncludeConfigApply() bool {
@@ -5581,7 +5590,7 @@ type ListGenerationsResponse struct {
 
 func (x *ListGenerationsResponse) Reset() {
 	*x = ListGenerationsResponse{}
-	mi := &file_agent_proto_msgTypes[56]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5593,7 +5602,7 @@ func (x *ListGenerationsResponse) String() string {
 func (*ListGenerationsResponse) ProtoMessage() {}
 
 func (x *ListGenerationsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[56]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5606,7 +5615,7 @@ func (x *ListGenerationsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListGenerationsResponse.ProtoReflect.Descriptor instead.
 func (*ListGenerationsResponse) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{56}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *ListGenerationsResponse) GetGenerations() []*Generation {
@@ -5661,7 +5670,7 @@ type GetGenerationRequest struct {
 
 func (x *GetGenerationRequest) Reset() {
 	*x = GetGenerationRequest{}
-	mi := &file_agent_proto_msgTypes[57]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5673,7 +5682,7 @@ func (x *GetGenerationRequest) String() string {
 func (*GetGenerationRequest) ProtoMessage() {}
 
 func (x *GetGenerationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[57]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5686,7 +5695,7 @@ func (x *GetGenerationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetGenerationRequest.ProtoReflect.Descriptor instead.
 func (*GetGenerationRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{57}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *GetGenerationRequest) GetGenerationId() string {
@@ -5729,7 +5738,7 @@ type Generation struct {
 
 func (x *Generation) Reset() {
 	*x = Generation{}
-	mi := &file_agent_proto_msgTypes[58]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5741,7 +5750,7 @@ func (x *Generation) String() string {
 func (*Generation) ProtoMessage() {}
 
 func (x *Generation) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[58]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5754,7 +5763,7 @@ func (x *Generation) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Generation.ProtoReflect.Descriptor instead.
 func (*Generation) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{58}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *Generation) GetGenerationId() string {
@@ -5898,7 +5907,7 @@ type ExtensionRelease struct {
 
 func (x *ExtensionRelease) Reset() {
 	*x = ExtensionRelease{}
-	mi := &file_agent_proto_msgTypes[59]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -5910,7 +5919,7 @@ func (x *ExtensionRelease) String() string {
 func (*ExtensionRelease) ProtoMessage() {}
 
 func (x *ExtensionRelease) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[59]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -5923,7 +5932,7 @@ func (x *ExtensionRelease) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExtensionRelease.ProtoReflect.Descriptor instead.
 func (*ExtensionRelease) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{59}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *ExtensionRelease) GetVersion() string {
@@ -5990,7 +5999,7 @@ type ExtensionRef struct {
 
 func (x *ExtensionRef) Reset() {
 	*x = ExtensionRef{}
-	mi := &file_agent_proto_msgTypes[60]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6002,7 +6011,7 @@ func (x *ExtensionRef) String() string {
 func (*ExtensionRef) ProtoMessage() {}
 
 func (x *ExtensionRef) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[60]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6015,7 +6024,7 @@ func (x *ExtensionRef) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ExtensionRef.ProtoReflect.Descriptor instead.
 func (*ExtensionRef) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{60}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *ExtensionRef) GetName() string {
@@ -6079,7 +6088,7 @@ type GeneratedConfext struct {
 
 func (x *GeneratedConfext) Reset() {
 	*x = GeneratedConfext{}
-	mi := &file_agent_proto_msgTypes[61]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6091,7 +6100,7 @@ func (x *GeneratedConfext) String() string {
 func (*GeneratedConfext) ProtoMessage() {}
 
 func (x *GeneratedConfext) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[61]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6104,7 +6113,7 @@ func (x *GeneratedConfext) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GeneratedConfext.ProtoReflect.Descriptor instead.
 func (*GeneratedConfext) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{61}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *GeneratedConfext) GetName() string {
@@ -6155,7 +6164,7 @@ type ConfigApplyStatus struct {
 
 func (x *ConfigApplyStatus) Reset() {
 	*x = ConfigApplyStatus{}
-	mi := &file_agent_proto_msgTypes[62]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6167,7 +6176,7 @@ func (x *ConfigApplyStatus) String() string {
 func (*ConfigApplyStatus) ProtoMessage() {}
 
 func (x *ConfigApplyStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[62]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6180,7 +6189,7 @@ func (x *ConfigApplyStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigApplyStatus.ProtoReflect.Descriptor instead.
 func (*ConfigApplyStatus) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{62}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *ConfigApplyStatus) GetPhase() string {
@@ -6282,7 +6291,7 @@ type ConfigApplyDomainAction struct {
 
 func (x *ConfigApplyDomainAction) Reset() {
 	*x = ConfigApplyDomainAction{}
-	mi := &file_agent_proto_msgTypes[63]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6294,7 +6303,7 @@ func (x *ConfigApplyDomainAction) String() string {
 func (*ConfigApplyDomainAction) ProtoMessage() {}
 
 func (x *ConfigApplyDomainAction) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[63]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6307,7 +6316,7 @@ func (x *ConfigApplyDomainAction) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigApplyDomainAction.ProtoReflect.Descriptor instead.
 func (*ConfigApplyDomainAction) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{63}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *ConfigApplyDomainAction) GetDomain() string {
@@ -6371,7 +6380,7 @@ type ConfigApplyEffect struct {
 
 func (x *ConfigApplyEffect) Reset() {
 	*x = ConfigApplyEffect{}
-	mi := &file_agent_proto_msgTypes[64]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6383,7 +6392,7 @@ func (x *ConfigApplyEffect) String() string {
 func (*ConfigApplyEffect) ProtoMessage() {}
 
 func (x *ConfigApplyEffect) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[64]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6396,7 +6405,7 @@ func (x *ConfigApplyEffect) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ConfigApplyEffect.ProtoReflect.Descriptor instead.
 func (*ConfigApplyEffect) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{64}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{64}
 }
 
 func (x *ConfigApplyEffect) GetAction() string {
@@ -6443,7 +6452,7 @@ type RebootRequest struct {
 
 func (x *RebootRequest) Reset() {
 	*x = RebootRequest{}
-	mi := &file_agent_proto_msgTypes[65]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6455,7 +6464,7 @@ func (x *RebootRequest) String() string {
 func (*RebootRequest) ProtoMessage() {}
 
 func (x *RebootRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[65]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6468,7 +6477,7 @@ func (x *RebootRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RebootRequest.ProtoReflect.Descriptor instead.
 func (*RebootRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{65}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *RebootRequest) GetApiVersion() string {
@@ -6537,7 +6546,7 @@ type RebootAccepted struct {
 
 func (x *RebootAccepted) Reset() {
 	*x = RebootAccepted{}
-	mi := &file_agent_proto_msgTypes[66]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6549,7 +6558,7 @@ func (x *RebootAccepted) String() string {
 func (*RebootAccepted) ProtoMessage() {}
 
 func (x *RebootAccepted) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[66]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6562,7 +6571,7 @@ func (x *RebootAccepted) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RebootAccepted.ProtoReflect.Descriptor instead.
 func (*RebootAccepted) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{66}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *RebootAccepted) GetScheduled() bool {
@@ -6594,7 +6603,7 @@ type ShutdownRequest struct {
 
 func (x *ShutdownRequest) Reset() {
 	*x = ShutdownRequest{}
-	mi := &file_agent_proto_msgTypes[67]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6606,7 +6615,7 @@ func (x *ShutdownRequest) String() string {
 func (*ShutdownRequest) ProtoMessage() {}
 
 func (x *ShutdownRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[67]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6619,7 +6628,7 @@ func (x *ShutdownRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShutdownRequest.ProtoReflect.Descriptor instead.
 func (*ShutdownRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{67}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *ShutdownRequest) GetApiVersion() string {
@@ -6680,7 +6689,7 @@ type ShutdownAccepted struct {
 
 func (x *ShutdownAccepted) Reset() {
 	*x = ShutdownAccepted{}
-	mi := &file_agent_proto_msgTypes[68]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6692,7 +6701,7 @@ func (x *ShutdownAccepted) String() string {
 func (*ShutdownAccepted) ProtoMessage() {}
 
 func (x *ShutdownAccepted) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[68]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6705,7 +6714,7 @@ func (x *ShutdownAccepted) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShutdownAccepted.ProtoReflect.Descriptor instead.
 func (*ShutdownAccepted) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{68}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *ShutdownAccepted) GetScheduled() bool {
@@ -6729,7 +6738,7 @@ type GenerationMutationRequest struct {
 
 func (x *GenerationMutationRequest) Reset() {
 	*x = GenerationMutationRequest{}
-	mi := &file_agent_proto_msgTypes[69]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6741,7 +6750,7 @@ func (x *GenerationMutationRequest) String() string {
 func (*GenerationMutationRequest) ProtoMessage() {}
 
 func (x *GenerationMutationRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[69]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6754,7 +6763,7 @@ func (x *GenerationMutationRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerationMutationRequest.ProtoReflect.Descriptor instead.
 func (*GenerationMutationRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{69}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *GenerationMutationRequest) GetGenerationId() string {
@@ -6809,7 +6818,7 @@ type GenerationMutationResult struct {
 
 func (x *GenerationMutationResult) Reset() {
 	*x = GenerationMutationResult{}
-	mi := &file_agent_proto_msgTypes[70]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6821,7 +6830,7 @@ func (x *GenerationMutationResult) String() string {
 func (*GenerationMutationResult) ProtoMessage() {}
 
 func (x *GenerationMutationResult) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[70]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6834,7 +6843,7 @@ func (x *GenerationMutationResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GenerationMutationResult.ProtoReflect.Descriptor instead.
 func (*GenerationMutationResult) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{70}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *GenerationMutationResult) GetGenerationId() string {
@@ -6873,7 +6882,7 @@ type BeginManagementTransitionRequest struct {
 
 func (x *BeginManagementTransitionRequest) Reset() {
 	*x = BeginManagementTransitionRequest{}
-	mi := &file_agent_proto_msgTypes[71]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -6885,7 +6894,7 @@ func (x *BeginManagementTransitionRequest) String() string {
 func (*BeginManagementTransitionRequest) ProtoMessage() {}
 
 func (x *BeginManagementTransitionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[71]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -6898,7 +6907,7 @@ func (x *BeginManagementTransitionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BeginManagementTransitionRequest.ProtoReflect.Descriptor instead.
 func (*BeginManagementTransitionRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{71}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *BeginManagementTransitionRequest) GetApiVersion() string {
@@ -6987,13 +6996,16 @@ type ConfirmManagementTransitionRequest struct {
 	ExpectedInventoryNodeName string                 `protobuf:"bytes,5,opt,name=expected_inventory_node_name,json=expectedInventoryNodeName,proto3" json:"expected_inventory_node_name,omitempty"`
 	ExpectedMachineId         string                 `protobuf:"bytes,6,opt,name=expected_machine_id,json=expectedMachineId,proto3" json:"expected_machine_id,omitempty"`
 	TargetAuthority           string                 `protobuf:"bytes,7,opt,name=target_authority,json=targetAuthority,proto3" json:"target_authority,omitempty"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	// New clients supply the observed trial ID. Omission is reserved for
+	// older clients; a present ID must be nonempty.
+	ExpectedTrialId *string `protobuf:"bytes,8,opt,name=expected_trial_id,json=expectedTrialId,proto3,oneof" json:"expected_trial_id,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ConfirmManagementTransitionRequest) Reset() {
 	*x = ConfirmManagementTransitionRequest{}
-	mi := &file_agent_proto_msgTypes[72]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7005,7 +7017,7 @@ func (x *ConfirmManagementTransitionRequest) String() string {
 func (*ConfirmManagementTransitionRequest) ProtoMessage() {}
 
 func (x *ConfirmManagementTransitionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[72]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7018,7 +7030,7 @@ func (x *ConfirmManagementTransitionRequest) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use ConfirmManagementTransitionRequest.ProtoReflect.Descriptor instead.
 func (*ConfirmManagementTransitionRequest) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{72}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *ConfirmManagementTransitionRequest) GetApiVersion() string {
@@ -7070,6 +7082,13 @@ func (x *ConfirmManagementTransitionRequest) GetTargetAuthority() string {
 	return ""
 }
 
+func (x *ConfirmManagementTransitionRequest) GetExpectedTrialId() string {
+	if x != nil && x.ExpectedTrialId != nil {
+		return *x.ExpectedTrialId
+	}
+	return ""
+}
+
 type ManagementTransition struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// state is trial, committed or reverted, or unreadable when NodeStatus
@@ -7086,7 +7105,7 @@ type ManagementTransition struct {
 
 func (x *ManagementTransition) Reset() {
 	*x = ManagementTransition{}
-	mi := &file_agent_proto_msgTypes[73]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -7098,7 +7117,7 @@ func (x *ManagementTransition) String() string {
 func (*ManagementTransition) ProtoMessage() {}
 
 func (x *ManagementTransition) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_proto_msgTypes[73]
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -7111,7 +7130,7 @@ func (x *ManagementTransition) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ManagementTransition.ProtoReflect.Descriptor instead.
 func (*ManagementTransition) Descriptor() ([]byte, []int) {
-	return file_agent_proto_rawDescGZIP(), []int{73}
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{73}
 }
 
 func (x *ManagementTransition) GetState() string {
@@ -7149,11 +7168,75 @@ func (x *ManagementTransition) GetRevertReason() string {
 	return ""
 }
 
-var File_agent_proto protoreflect.FileDescriptor
+type ManagementClientTrust struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// SHA-256 fingerprints of the DER certificates in the listener's client
+	// CA pool. Empty for a plaintext listener.
+	Authorities []string `protobuf:"bytes,1,rep,name=authorities,proto3" json:"authorities,omitempty"`
+	// Identify the trial selected by this listener until it commits. The
+	// transition record reports the durable state of the trial.
+	TrialId        string `protobuf:"bytes,2,opt,name=trial_id,json=trialId,proto3" json:"trial_id,omitempty"`
+	TrialAuthority string `protobuf:"bytes,3,opt,name=trial_authority,json=trialAuthority,proto3" json:"trial_authority,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
 
-const file_agent_proto_rawDesc = "" +
+func (x *ManagementClientTrust) Reset() {
+	*x = ManagementClientTrust{}
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[74]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ManagementClientTrust) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ManagementClientTrust) ProtoMessage() {}
+
+func (x *ManagementClientTrust) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_katlc_agentapi_agent_proto_msgTypes[74]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ManagementClientTrust.ProtoReflect.Descriptor instead.
+func (*ManagementClientTrust) Descriptor() ([]byte, []int) {
+	return file_internal_katlc_agentapi_agent_proto_rawDescGZIP(), []int{74}
+}
+
+func (x *ManagementClientTrust) GetAuthorities() []string {
+	if x != nil {
+		return x.Authorities
+	}
+	return nil
+}
+
+func (x *ManagementClientTrust) GetTrialId() string {
+	if x != nil {
+		return x.TrialId
+	}
+	return ""
+}
+
+func (x *ManagementClientTrust) GetTrialAuthority() string {
+	if x != nil {
+		return x.TrialAuthority
+	}
+	return ""
+}
+
+var File_internal_katlc_agentapi_agent_proto protoreflect.FileDescriptor
+
+const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\n" +
-	"\vagent.proto\x12\rkatl.agent.v1\"\x16\n" +
+	"#internal/katlc/agentapi/agent.proto\x12\rkatl.agent.v1\"\x16\n" +
 	"\x14GetNodeStatusRequest\"\x16\n" +
 	"\x14GetKubeconfigRequest\"4\n" +
 	"\x12KubeconfigResponse\x12\x1e\n" +
@@ -7198,14 +7281,15 @@ const file_agent_proto_rawDesc = "" +
 	"\tapi_proxy\x18\x14 \x01(\v2\x1d.katl.agent.v1.APIProxyStatusR\bapiProxy\x12?\n" +
 	"\n" +
 	"management\x18\x15 \x01(\v2\x1f.katl.agent.v1.ManagementStatusR\n" +
-	"management\"\xba\x01\n" +
+	"management\"\x90\x02\n" +
 	"\x10ManagementStatus\x12&\n" +
 	"\x0eauthentication\x18\x01 \x01(\tR\x0eauthentication\x12\x1c\n" +
 	"\tauthority\x18\x02 \x01(\tR\tauthority\x12C\n" +
 	"\n" +
 	"transition\x18\x03 \x01(\v2#.katl.agent.v1.ManagementTransitionR\n" +
 	"transition\x12\x1b\n" +
-	"\tnode_time\x18\x04 \x01(\tR\bnodeTime\"\xb3\x03\n" +
+	"\tnode_time\x18\x04 \x01(\tR\bnodeTime\x12T\n" +
+	"\x13served_client_trust\x18\x05 \x01(\v2$.katl.agent.v1.ManagementClientTrustR\x11servedClientTrust\"\xb3\x03\n" +
 	"\x0eAPIProxyStatus\x12\x14\n" +
 	"\x05state\x18\x01 \x01(\tR\x05state\x12C\n" +
 	"\tlisteners\x18\x02 \x03(\v2%.katl.agent.v1.APIProxyListenerStatusR\tlisteners\x12@\n" +
@@ -7877,7 +7961,7 @@ const file_agent_proto_rawDesc = "" +
 	"\x12server_certificate\x18\t \x01(\tR\x11serverCertificate\x12,\n" +
 	"\x12server_private_key\x18\n" +
 	" \x01(\tR\x10serverPrivateKey\x12#\n" +
-	"\rtrial_seconds\x18\v \x01(\rR\ftrialSeconds\"\xc1\x02\n" +
+	"\rtrial_seconds\x18\v \x01(\rR\ftrialSeconds\"\x88\x03\n" +
 	"\"ConfirmManagementTransitionRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -7886,13 +7970,19 @@ const file_agent_proto_rawDesc = "" +
 	"\x16expected_enrollment_id\x18\x04 \x01(\tR\x14expectedEnrollmentId\x12?\n" +
 	"\x1cexpected_inventory_node_name\x18\x05 \x01(\tR\x19expectedInventoryNodeName\x12.\n" +
 	"\x13expected_machine_id\x18\x06 \x01(\tR\x11expectedMachineId\x12)\n" +
-	"\x10target_authority\x18\a \x01(\tR\x0ftargetAuthority\"\xb3\x01\n" +
+	"\x10target_authority\x18\a \x01(\tR\x0ftargetAuthority\x12/\n" +
+	"\x11expected_trial_id\x18\b \x01(\tH\x00R\x0fexpectedTrialId\x88\x01\x01B\x14\n" +
+	"\x12_expected_trial_id\"\xb3\x01\n" +
 	"\x14ManagementTransition\x12\x14\n" +
 	"\x05state\x18\x01 \x01(\tR\x05state\x12\x19\n" +
 	"\btrial_id\x18\x02 \x01(\tR\atrialId\x12)\n" +
 	"\x10target_authority\x18\x03 \x01(\tR\x0ftargetAuthority\x12\x1a\n" +
 	"\bdeadline\x18\x04 \x01(\tR\bdeadline\x12#\n" +
-	"\rrevert_reason\x18\x05 \x01(\tR\frevertReason2\xa7\x10\n" +
+	"\rrevert_reason\x18\x05 \x01(\tR\frevertReason\"}\n" +
+	"\x15ManagementClientTrust\x12 \n" +
+	"\vauthorities\x18\x01 \x03(\tR\vauthorities\x12\x19\n" +
+	"\btrial_id\x18\x02 \x01(\tR\atrialId\x12'\n" +
+	"\x0ftrial_authority\x18\x03 \x01(\tR\x0etrialAuthority2\xa7\x10\n" +
 	"\n" +
 	"KatlcAgent\x12O\n" +
 	"\rGetNodeStatus\x12#.katl.agent.v1.GetNodeStatusRequest\x1a\x19.katl.agent.v1.NodeStatus\x12O\n" +
@@ -7919,19 +8009,19 @@ const file_agent_proto_rawDesc = "" +
 	"\x1bConfirmManagementTransition\x121.katl.agent.v1.ConfirmManagementTransitionRequest\x1a#.katl.agent.v1.ManagementTransitionB;Z9github.com/katl-dev/katl/internal/katlc/agentapi;agentapib\x06proto3"
 
 var (
-	file_agent_proto_rawDescOnce sync.Once
-	file_agent_proto_rawDescData []byte
+	file_internal_katlc_agentapi_agent_proto_rawDescOnce sync.Once
+	file_internal_katlc_agentapi_agent_proto_rawDescData []byte
 )
 
-func file_agent_proto_rawDescGZIP() []byte {
-	file_agent_proto_rawDescOnce.Do(func() {
-		file_agent_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_agent_proto_rawDesc), len(file_agent_proto_rawDesc)))
+func file_internal_katlc_agentapi_agent_proto_rawDescGZIP() []byte {
+	file_internal_katlc_agentapi_agent_proto_rawDescOnce.Do(func() {
+		file_internal_katlc_agentapi_agent_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_internal_katlc_agentapi_agent_proto_rawDesc), len(file_internal_katlc_agentapi_agent_proto_rawDesc)))
 	})
-	return file_agent_proto_rawDescData
+	return file_internal_katlc_agentapi_agent_proto_rawDescData
 }
 
-var file_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 75)
-var file_agent_proto_goTypes = []any{
+var file_internal_katlc_agentapi_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 76)
+var file_internal_katlc_agentapi_agent_proto_goTypes = []any{
 	(*GetNodeStatusRequest)(nil),                      // 0: katl.agent.v1.GetNodeStatusRequest
 	(*GetKubeconfigRequest)(nil),                      // 1: katl.agent.v1.GetKubeconfigRequest
 	(*KubeconfigResponse)(nil),                        // 2: katl.agent.v1.KubeconfigResponse
@@ -8006,9 +8096,10 @@ var file_agent_proto_goTypes = []any{
 	(*BeginManagementTransitionRequest)(nil),          // 71: katl.agent.v1.BeginManagementTransitionRequest
 	(*ConfirmManagementTransitionRequest)(nil),        // 72: katl.agent.v1.ConfirmManagementTransitionRequest
 	(*ManagementTransition)(nil),                      // 73: katl.agent.v1.ManagementTransition
-	nil,                                               // 74: katl.agent.v1.ExtensionRelease.ExtensionsEntry
+	(*ManagementClientTrust)(nil),                     // 74: katl.agent.v1.ManagementClientTrust
+	nil,                                               // 75: katl.agent.v1.ExtensionRelease.ExtensionsEntry
 }
-var file_agent_proto_depIdxs = []int32{
+var file_internal_katlc_agentapi_agent_proto_depIdxs = []int32{
 	17, // 0: katl.agent.v1.NodeStatus.control_plane_endpoint:type_name -> katl.agent.v1.ControlPlaneEndpointStatus
 	15, // 1: katl.agent.v1.NodeStatus.kubernetes:type_name -> katl.agent.v1.KubernetesStatus
 	11, // 2: katl.agent.v1.NodeStatus.system_extensions:type_name -> katl.agent.v1.SystemExtensionStatus
@@ -8016,119 +8107,121 @@ var file_agent_proto_depIdxs = []int32{
 	7,  // 4: katl.agent.v1.NodeStatus.api_proxy:type_name -> katl.agent.v1.APIProxyStatus
 	6,  // 5: katl.agent.v1.NodeStatus.management:type_name -> katl.agent.v1.ManagementStatus
 	73, // 6: katl.agent.v1.ManagementStatus.transition:type_name -> katl.agent.v1.ManagementTransition
-	8,  // 7: katl.agent.v1.APIProxyStatus.listeners:type_name -> katl.agent.v1.APIProxyListenerStatus
-	9,  // 8: katl.agent.v1.APIProxyStatus.backends:type_name -> katl.agent.v1.APIProxyBackendStatus
-	12, // 9: katl.agent.v1.SystemExtensionStatus.payloads:type_name -> katl.agent.v1.SystemExtensionPayloadStatus
-	13, // 10: katl.agent.v1.SystemExtensionStatus.files:type_name -> katl.agent.v1.SystemExtensionFileStatus
-	14, // 11: katl.agent.v1.SystemExtensionStatus.units:type_name -> katl.agent.v1.SystemExtensionUnitStatus
-	16, // 12: katl.agent.v1.KubernetesStatus.certificate_expiry:type_name -> katl.agent.v1.CertificateExpiry
-	19, // 13: katl.agent.v1.SubmitOperationRequest.bootstrap:type_name -> katl.agent.v1.BootstrapOperationRequest
-	31, // 14: katl.agent.v1.SubmitOperationRequest.config_apply:type_name -> katl.agent.v1.ConfigApplyOperationRequest
-	33, // 15: katl.agent.v1.SubmitOperationRequest.kubernetes_sysext_update:type_name -> katl.agent.v1.KubernetesSysextUpdateOperationRequest
-	34, // 16: katl.agent.v1.SubmitOperationRequest.destructive_reset:type_name -> katl.agent.v1.DestructiveResetOperationRequest
-	35, // 17: katl.agent.v1.SubmitOperationRequest.host_upgrade:type_name -> katl.agent.v1.HostUpgradeOperationRequest
-	32, // 18: katl.agent.v1.SubmitOperationRequest.kubeadm_control_plane_config:type_name -> katl.agent.v1.KubeadmControlPlaneConfigOperationRequest
-	27, // 19: katl.agent.v1.SubmitOperationRequest.etcd_member_remove:type_name -> katl.agent.v1.EtcdMemberRemoveOperationRequest
-	20, // 20: katl.agent.v1.BootstrapOperationRequest.worker_join_material:type_name -> katl.agent.v1.WorkerJoinMaterial
-	24, // 21: katl.agent.v1.EtcdSnapshotChunk.info:type_name -> katl.agent.v1.EtcdSnapshotInfo
-	26, // 22: katl.agent.v1.EtcdStatus.members:type_name -> katl.agent.v1.EtcdMember
-	49, // 23: katl.agent.v1.EtcdStatus.observation:type_name -> katl.agent.v1.EtcdObservation
-	59, // 24: katl.agent.v1.HostUpgradePreview.extension_release:type_name -> katl.agent.v1.ExtensionRelease
-	37, // 25: katl.agent.v1.HostUpgradePreview.extensions:type_name -> katl.agent.v1.HostUpgradeExtensionChange
-	20, // 26: katl.agent.v1.CreateWorkerJoinMaterialResponse.worker_join_material:type_name -> katl.agent.v1.WorkerJoinMaterial
-	46, // 27: katl.agent.v1.OperationAccepted.initial_status:type_name -> katl.agent.v1.OperationStatus
-	36, // 28: katl.agent.v1.OperationAccepted.host_upgrade_preview:type_name -> katl.agent.v1.HostUpgradePreview
-	46, // 29: katl.agent.v1.ListOperationsResponse.operations:type_name -> katl.agent.v1.OperationStatus
-	51, // 30: katl.agent.v1.OperationStatus.diagnostics:type_name -> katl.agent.v1.DiagnosticArtifact
-	52, // 31: katl.agent.v1.OperationStatus.invocations:type_name -> katl.agent.v1.OperationInvocation
-	62, // 32: katl.agent.v1.OperationStatus.config_apply:type_name -> katl.agent.v1.ConfigApplyStatus
-	47, // 33: katl.agent.v1.OperationStatus.etcd_upgrade:type_name -> katl.agent.v1.EtcdUpgradeEvidence
-	48, // 34: katl.agent.v1.EtcdUpgradeEvidence.snapshot:type_name -> katl.agent.v1.EtcdSnapshot
-	49, // 35: katl.agent.v1.EtcdUpgradeEvidence.before:type_name -> katl.agent.v1.EtcdObservation
-	49, // 36: katl.agent.v1.EtcdUpgradeEvidence.pre_restart:type_name -> katl.agent.v1.EtcdObservation
-	49, // 37: katl.agent.v1.EtcdUpgradeEvidence.after:type_name -> katl.agent.v1.EtcdObservation
-	50, // 38: katl.agent.v1.EtcdObservation.members:type_name -> katl.agent.v1.EtcdMemberObservation
-	46, // 39: katl.agent.v1.OperationEvent.status:type_name -> katl.agent.v1.OperationStatus
-	51, // 40: katl.agent.v1.OperationEvent.diagnostics:type_name -> katl.agent.v1.DiagnosticArtifact
-	58, // 41: katl.agent.v1.ListGenerationsResponse.generations:type_name -> katl.agent.v1.Generation
-	60, // 42: katl.agent.v1.Generation.sysexts:type_name -> katl.agent.v1.ExtensionRef
-	61, // 43: katl.agent.v1.Generation.confexts:type_name -> katl.agent.v1.GeneratedConfext
-	62, // 44: katl.agent.v1.Generation.config_apply:type_name -> katl.agent.v1.ConfigApplyStatus
-	59, // 45: katl.agent.v1.Generation.extension_release:type_name -> katl.agent.v1.ExtensionRelease
-	74, // 46: katl.agent.v1.ExtensionRelease.extensions:type_name -> katl.agent.v1.ExtensionRelease.ExtensionsEntry
-	63, // 47: katl.agent.v1.ConfigApplyStatus.domain_actions:type_name -> katl.agent.v1.ConfigApplyDomainAction
-	64, // 48: katl.agent.v1.ConfigApplyDomainAction.effects:type_name -> katl.agent.v1.ConfigApplyEffect
-	0,  // 49: katl.agent.v1.KatlcAgent.GetNodeStatus:input_type -> katl.agent.v1.GetNodeStatusRequest
-	21, // 50: katl.agent.v1.KatlcAgent.GetEtcdStatus:input_type -> katl.agent.v1.GetEtcdStatusRequest
-	22, // 51: katl.agent.v1.KatlcAgent.SaveEtcdSnapshot:input_type -> katl.agent.v1.SaveEtcdSnapshotRequest
-	1,  // 52: katl.agent.v1.KatlcAgent.GetKubeconfig:input_type -> katl.agent.v1.GetKubeconfigRequest
-	3,  // 53: katl.agent.v1.KatlcAgent.ReadJournal:input_type -> katl.agent.v1.JournalRequest
-	65, // 54: katl.agent.v1.KatlcAgent.Reboot:input_type -> katl.agent.v1.RebootRequest
-	67, // 55: katl.agent.v1.KatlcAgent.Shutdown:input_type -> katl.agent.v1.ShutdownRequest
-	28, // 56: katl.agent.v1.KatlcAgent.ValidateConfig:input_type -> katl.agent.v1.ValidateConfigRequest
-	30, // 57: katl.agent.v1.KatlcAgent.ApplyGeneration:input_type -> katl.agent.v1.GenerationApplyRequest
-	30, // 58: katl.agent.v1.KatlcAgent.StageGeneration:input_type -> katl.agent.v1.GenerationApplyRequest
-	38, // 59: katl.agent.v1.KatlcAgent.StageHostUpgradeArtifact:input_type -> katl.agent.v1.StageHostUpgradeArtifactRequest
-	18, // 60: katl.agent.v1.KatlcAgent.SubmitOperation:input_type -> katl.agent.v1.SubmitOperationRequest
-	40, // 61: katl.agent.v1.KatlcAgent.CreateWorkerJoinMaterial:input_type -> katl.agent.v1.CreateWorkerJoinMaterialRequest
-	43, // 62: katl.agent.v1.KatlcAgent.GetOperation:input_type -> katl.agent.v1.GetOperationRequest
-	44, // 63: katl.agent.v1.KatlcAgent.ListOperations:input_type -> katl.agent.v1.ListOperationsRequest
-	53, // 64: katl.agent.v1.KatlcAgent.WatchOperation:input_type -> katl.agent.v1.WatchOperationRequest
-	55, // 65: katl.agent.v1.KatlcAgent.ListGenerations:input_type -> katl.agent.v1.ListGenerationsRequest
-	57, // 66: katl.agent.v1.KatlcAgent.GetGeneration:input_type -> katl.agent.v1.GetGenerationRequest
-	69, // 67: katl.agent.v1.KatlcAgent.SelectGeneration:input_type -> katl.agent.v1.GenerationMutationRequest
-	69, // 68: katl.agent.v1.KatlcAgent.RemoveGeneration:input_type -> katl.agent.v1.GenerationMutationRequest
-	71, // 69: katl.agent.v1.KatlcAgent.BeginManagementTransition:input_type -> katl.agent.v1.BeginManagementTransitionRequest
-	72, // 70: katl.agent.v1.KatlcAgent.ConfirmManagementTransition:input_type -> katl.agent.v1.ConfirmManagementTransitionRequest
-	5,  // 71: katl.agent.v1.KatlcAgent.GetNodeStatus:output_type -> katl.agent.v1.NodeStatus
-	25, // 72: katl.agent.v1.KatlcAgent.GetEtcdStatus:output_type -> katl.agent.v1.EtcdStatus
-	23, // 73: katl.agent.v1.KatlcAgent.SaveEtcdSnapshot:output_type -> katl.agent.v1.EtcdSnapshotChunk
-	2,  // 74: katl.agent.v1.KatlcAgent.GetKubeconfig:output_type -> katl.agent.v1.KubeconfigResponse
-	4,  // 75: katl.agent.v1.KatlcAgent.ReadJournal:output_type -> katl.agent.v1.JournalEntry
-	66, // 76: katl.agent.v1.KatlcAgent.Reboot:output_type -> katl.agent.v1.RebootAccepted
-	68, // 77: katl.agent.v1.KatlcAgent.Shutdown:output_type -> katl.agent.v1.ShutdownAccepted
-	29, // 78: katl.agent.v1.KatlcAgent.ValidateConfig:output_type -> katl.agent.v1.ConfigValidationResult
-	42, // 79: katl.agent.v1.KatlcAgent.ApplyGeneration:output_type -> katl.agent.v1.OperationAccepted
-	42, // 80: katl.agent.v1.KatlcAgent.StageGeneration:output_type -> katl.agent.v1.OperationAccepted
-	39, // 81: katl.agent.v1.KatlcAgent.StageHostUpgradeArtifact:output_type -> katl.agent.v1.HostUpgradeArtifactStaged
-	42, // 82: katl.agent.v1.KatlcAgent.SubmitOperation:output_type -> katl.agent.v1.OperationAccepted
-	41, // 83: katl.agent.v1.KatlcAgent.CreateWorkerJoinMaterial:output_type -> katl.agent.v1.CreateWorkerJoinMaterialResponse
-	46, // 84: katl.agent.v1.KatlcAgent.GetOperation:output_type -> katl.agent.v1.OperationStatus
-	45, // 85: katl.agent.v1.KatlcAgent.ListOperations:output_type -> katl.agent.v1.ListOperationsResponse
-	54, // 86: katl.agent.v1.KatlcAgent.WatchOperation:output_type -> katl.agent.v1.OperationEvent
-	56, // 87: katl.agent.v1.KatlcAgent.ListGenerations:output_type -> katl.agent.v1.ListGenerationsResponse
-	58, // 88: katl.agent.v1.KatlcAgent.GetGeneration:output_type -> katl.agent.v1.Generation
-	70, // 89: katl.agent.v1.KatlcAgent.SelectGeneration:output_type -> katl.agent.v1.GenerationMutationResult
-	70, // 90: katl.agent.v1.KatlcAgent.RemoveGeneration:output_type -> katl.agent.v1.GenerationMutationResult
-	73, // 91: katl.agent.v1.KatlcAgent.BeginManagementTransition:output_type -> katl.agent.v1.ManagementTransition
-	73, // 92: katl.agent.v1.KatlcAgent.ConfirmManagementTransition:output_type -> katl.agent.v1.ManagementTransition
-	71, // [71:93] is the sub-list for method output_type
-	49, // [49:71] is the sub-list for method input_type
-	49, // [49:49] is the sub-list for extension type_name
-	49, // [49:49] is the sub-list for extension extendee
-	0,  // [0:49] is the sub-list for field type_name
+	74, // 7: katl.agent.v1.ManagementStatus.served_client_trust:type_name -> katl.agent.v1.ManagementClientTrust
+	8,  // 8: katl.agent.v1.APIProxyStatus.listeners:type_name -> katl.agent.v1.APIProxyListenerStatus
+	9,  // 9: katl.agent.v1.APIProxyStatus.backends:type_name -> katl.agent.v1.APIProxyBackendStatus
+	12, // 10: katl.agent.v1.SystemExtensionStatus.payloads:type_name -> katl.agent.v1.SystemExtensionPayloadStatus
+	13, // 11: katl.agent.v1.SystemExtensionStatus.files:type_name -> katl.agent.v1.SystemExtensionFileStatus
+	14, // 12: katl.agent.v1.SystemExtensionStatus.units:type_name -> katl.agent.v1.SystemExtensionUnitStatus
+	16, // 13: katl.agent.v1.KubernetesStatus.certificate_expiry:type_name -> katl.agent.v1.CertificateExpiry
+	19, // 14: katl.agent.v1.SubmitOperationRequest.bootstrap:type_name -> katl.agent.v1.BootstrapOperationRequest
+	31, // 15: katl.agent.v1.SubmitOperationRequest.config_apply:type_name -> katl.agent.v1.ConfigApplyOperationRequest
+	33, // 16: katl.agent.v1.SubmitOperationRequest.kubernetes_sysext_update:type_name -> katl.agent.v1.KubernetesSysextUpdateOperationRequest
+	34, // 17: katl.agent.v1.SubmitOperationRequest.destructive_reset:type_name -> katl.agent.v1.DestructiveResetOperationRequest
+	35, // 18: katl.agent.v1.SubmitOperationRequest.host_upgrade:type_name -> katl.agent.v1.HostUpgradeOperationRequest
+	32, // 19: katl.agent.v1.SubmitOperationRequest.kubeadm_control_plane_config:type_name -> katl.agent.v1.KubeadmControlPlaneConfigOperationRequest
+	27, // 20: katl.agent.v1.SubmitOperationRequest.etcd_member_remove:type_name -> katl.agent.v1.EtcdMemberRemoveOperationRequest
+	20, // 21: katl.agent.v1.BootstrapOperationRequest.worker_join_material:type_name -> katl.agent.v1.WorkerJoinMaterial
+	24, // 22: katl.agent.v1.EtcdSnapshotChunk.info:type_name -> katl.agent.v1.EtcdSnapshotInfo
+	26, // 23: katl.agent.v1.EtcdStatus.members:type_name -> katl.agent.v1.EtcdMember
+	49, // 24: katl.agent.v1.EtcdStatus.observation:type_name -> katl.agent.v1.EtcdObservation
+	59, // 25: katl.agent.v1.HostUpgradePreview.extension_release:type_name -> katl.agent.v1.ExtensionRelease
+	37, // 26: katl.agent.v1.HostUpgradePreview.extensions:type_name -> katl.agent.v1.HostUpgradeExtensionChange
+	20, // 27: katl.agent.v1.CreateWorkerJoinMaterialResponse.worker_join_material:type_name -> katl.agent.v1.WorkerJoinMaterial
+	46, // 28: katl.agent.v1.OperationAccepted.initial_status:type_name -> katl.agent.v1.OperationStatus
+	36, // 29: katl.agent.v1.OperationAccepted.host_upgrade_preview:type_name -> katl.agent.v1.HostUpgradePreview
+	46, // 30: katl.agent.v1.ListOperationsResponse.operations:type_name -> katl.agent.v1.OperationStatus
+	51, // 31: katl.agent.v1.OperationStatus.diagnostics:type_name -> katl.agent.v1.DiagnosticArtifact
+	52, // 32: katl.agent.v1.OperationStatus.invocations:type_name -> katl.agent.v1.OperationInvocation
+	62, // 33: katl.agent.v1.OperationStatus.config_apply:type_name -> katl.agent.v1.ConfigApplyStatus
+	47, // 34: katl.agent.v1.OperationStatus.etcd_upgrade:type_name -> katl.agent.v1.EtcdUpgradeEvidence
+	48, // 35: katl.agent.v1.EtcdUpgradeEvidence.snapshot:type_name -> katl.agent.v1.EtcdSnapshot
+	49, // 36: katl.agent.v1.EtcdUpgradeEvidence.before:type_name -> katl.agent.v1.EtcdObservation
+	49, // 37: katl.agent.v1.EtcdUpgradeEvidence.pre_restart:type_name -> katl.agent.v1.EtcdObservation
+	49, // 38: katl.agent.v1.EtcdUpgradeEvidence.after:type_name -> katl.agent.v1.EtcdObservation
+	50, // 39: katl.agent.v1.EtcdObservation.members:type_name -> katl.agent.v1.EtcdMemberObservation
+	46, // 40: katl.agent.v1.OperationEvent.status:type_name -> katl.agent.v1.OperationStatus
+	51, // 41: katl.agent.v1.OperationEvent.diagnostics:type_name -> katl.agent.v1.DiagnosticArtifact
+	58, // 42: katl.agent.v1.ListGenerationsResponse.generations:type_name -> katl.agent.v1.Generation
+	60, // 43: katl.agent.v1.Generation.sysexts:type_name -> katl.agent.v1.ExtensionRef
+	61, // 44: katl.agent.v1.Generation.confexts:type_name -> katl.agent.v1.GeneratedConfext
+	62, // 45: katl.agent.v1.Generation.config_apply:type_name -> katl.agent.v1.ConfigApplyStatus
+	59, // 46: katl.agent.v1.Generation.extension_release:type_name -> katl.agent.v1.ExtensionRelease
+	75, // 47: katl.agent.v1.ExtensionRelease.extensions:type_name -> katl.agent.v1.ExtensionRelease.ExtensionsEntry
+	63, // 48: katl.agent.v1.ConfigApplyStatus.domain_actions:type_name -> katl.agent.v1.ConfigApplyDomainAction
+	64, // 49: katl.agent.v1.ConfigApplyDomainAction.effects:type_name -> katl.agent.v1.ConfigApplyEffect
+	0,  // 50: katl.agent.v1.KatlcAgent.GetNodeStatus:input_type -> katl.agent.v1.GetNodeStatusRequest
+	21, // 51: katl.agent.v1.KatlcAgent.GetEtcdStatus:input_type -> katl.agent.v1.GetEtcdStatusRequest
+	22, // 52: katl.agent.v1.KatlcAgent.SaveEtcdSnapshot:input_type -> katl.agent.v1.SaveEtcdSnapshotRequest
+	1,  // 53: katl.agent.v1.KatlcAgent.GetKubeconfig:input_type -> katl.agent.v1.GetKubeconfigRequest
+	3,  // 54: katl.agent.v1.KatlcAgent.ReadJournal:input_type -> katl.agent.v1.JournalRequest
+	65, // 55: katl.agent.v1.KatlcAgent.Reboot:input_type -> katl.agent.v1.RebootRequest
+	67, // 56: katl.agent.v1.KatlcAgent.Shutdown:input_type -> katl.agent.v1.ShutdownRequest
+	28, // 57: katl.agent.v1.KatlcAgent.ValidateConfig:input_type -> katl.agent.v1.ValidateConfigRequest
+	30, // 58: katl.agent.v1.KatlcAgent.ApplyGeneration:input_type -> katl.agent.v1.GenerationApplyRequest
+	30, // 59: katl.agent.v1.KatlcAgent.StageGeneration:input_type -> katl.agent.v1.GenerationApplyRequest
+	38, // 60: katl.agent.v1.KatlcAgent.StageHostUpgradeArtifact:input_type -> katl.agent.v1.StageHostUpgradeArtifactRequest
+	18, // 61: katl.agent.v1.KatlcAgent.SubmitOperation:input_type -> katl.agent.v1.SubmitOperationRequest
+	40, // 62: katl.agent.v1.KatlcAgent.CreateWorkerJoinMaterial:input_type -> katl.agent.v1.CreateWorkerJoinMaterialRequest
+	43, // 63: katl.agent.v1.KatlcAgent.GetOperation:input_type -> katl.agent.v1.GetOperationRequest
+	44, // 64: katl.agent.v1.KatlcAgent.ListOperations:input_type -> katl.agent.v1.ListOperationsRequest
+	53, // 65: katl.agent.v1.KatlcAgent.WatchOperation:input_type -> katl.agent.v1.WatchOperationRequest
+	55, // 66: katl.agent.v1.KatlcAgent.ListGenerations:input_type -> katl.agent.v1.ListGenerationsRequest
+	57, // 67: katl.agent.v1.KatlcAgent.GetGeneration:input_type -> katl.agent.v1.GetGenerationRequest
+	69, // 68: katl.agent.v1.KatlcAgent.SelectGeneration:input_type -> katl.agent.v1.GenerationMutationRequest
+	69, // 69: katl.agent.v1.KatlcAgent.RemoveGeneration:input_type -> katl.agent.v1.GenerationMutationRequest
+	71, // 70: katl.agent.v1.KatlcAgent.BeginManagementTransition:input_type -> katl.agent.v1.BeginManagementTransitionRequest
+	72, // 71: katl.agent.v1.KatlcAgent.ConfirmManagementTransition:input_type -> katl.agent.v1.ConfirmManagementTransitionRequest
+	5,  // 72: katl.agent.v1.KatlcAgent.GetNodeStatus:output_type -> katl.agent.v1.NodeStatus
+	25, // 73: katl.agent.v1.KatlcAgent.GetEtcdStatus:output_type -> katl.agent.v1.EtcdStatus
+	23, // 74: katl.agent.v1.KatlcAgent.SaveEtcdSnapshot:output_type -> katl.agent.v1.EtcdSnapshotChunk
+	2,  // 75: katl.agent.v1.KatlcAgent.GetKubeconfig:output_type -> katl.agent.v1.KubeconfigResponse
+	4,  // 76: katl.agent.v1.KatlcAgent.ReadJournal:output_type -> katl.agent.v1.JournalEntry
+	66, // 77: katl.agent.v1.KatlcAgent.Reboot:output_type -> katl.agent.v1.RebootAccepted
+	68, // 78: katl.agent.v1.KatlcAgent.Shutdown:output_type -> katl.agent.v1.ShutdownAccepted
+	29, // 79: katl.agent.v1.KatlcAgent.ValidateConfig:output_type -> katl.agent.v1.ConfigValidationResult
+	42, // 80: katl.agent.v1.KatlcAgent.ApplyGeneration:output_type -> katl.agent.v1.OperationAccepted
+	42, // 81: katl.agent.v1.KatlcAgent.StageGeneration:output_type -> katl.agent.v1.OperationAccepted
+	39, // 82: katl.agent.v1.KatlcAgent.StageHostUpgradeArtifact:output_type -> katl.agent.v1.HostUpgradeArtifactStaged
+	42, // 83: katl.agent.v1.KatlcAgent.SubmitOperation:output_type -> katl.agent.v1.OperationAccepted
+	41, // 84: katl.agent.v1.KatlcAgent.CreateWorkerJoinMaterial:output_type -> katl.agent.v1.CreateWorkerJoinMaterialResponse
+	46, // 85: katl.agent.v1.KatlcAgent.GetOperation:output_type -> katl.agent.v1.OperationStatus
+	45, // 86: katl.agent.v1.KatlcAgent.ListOperations:output_type -> katl.agent.v1.ListOperationsResponse
+	54, // 87: katl.agent.v1.KatlcAgent.WatchOperation:output_type -> katl.agent.v1.OperationEvent
+	56, // 88: katl.agent.v1.KatlcAgent.ListGenerations:output_type -> katl.agent.v1.ListGenerationsResponse
+	58, // 89: katl.agent.v1.KatlcAgent.GetGeneration:output_type -> katl.agent.v1.Generation
+	70, // 90: katl.agent.v1.KatlcAgent.SelectGeneration:output_type -> katl.agent.v1.GenerationMutationResult
+	70, // 91: katl.agent.v1.KatlcAgent.RemoveGeneration:output_type -> katl.agent.v1.GenerationMutationResult
+	73, // 92: katl.agent.v1.KatlcAgent.BeginManagementTransition:output_type -> katl.agent.v1.ManagementTransition
+	73, // 93: katl.agent.v1.KatlcAgent.ConfirmManagementTransition:output_type -> katl.agent.v1.ManagementTransition
+	72, // [72:94] is the sub-list for method output_type
+	50, // [50:72] is the sub-list for method input_type
+	50, // [50:50] is the sub-list for extension type_name
+	50, // [50:50] is the sub-list for extension extendee
+	0,  // [0:50] is the sub-list for field type_name
 }
 
-func init() { file_agent_proto_init() }
-func file_agent_proto_init() {
-	if File_agent_proto != nil {
+func init() { file_internal_katlc_agentapi_agent_proto_init() }
+func file_internal_katlc_agentapi_agent_proto_init() {
+	if File_internal_katlc_agentapi_agent_proto != nil {
 		return
 	}
+	file_internal_katlc_agentapi_agent_proto_msgTypes[72].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_proto_rawDesc), len(file_agent_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_katlc_agentapi_agent_proto_rawDesc), len(file_internal_katlc_agentapi_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   75,
+			NumMessages:   76,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
-		GoTypes:           file_agent_proto_goTypes,
-		DependencyIndexes: file_agent_proto_depIdxs,
-		MessageInfos:      file_agent_proto_msgTypes,
+		GoTypes:           file_internal_katlc_agentapi_agent_proto_goTypes,
+		DependencyIndexes: file_internal_katlc_agentapi_agent_proto_depIdxs,
+		MessageInfos:      file_internal_katlc_agentapi_agent_proto_msgTypes,
 	}.Build()
-	File_agent_proto = out.File
-	file_agent_proto_goTypes = nil
-	file_agent_proto_depIdxs = nil
+	File_internal_katlc_agentapi_agent_proto = out.File
+	file_internal_katlc_agentapi_agent_proto_goTypes = nil
+	file_internal_katlc_agentapi_agent_proto_depIdxs = nil
 }

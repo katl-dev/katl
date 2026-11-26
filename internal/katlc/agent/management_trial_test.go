@@ -258,6 +258,88 @@ func (n *managementTrialNode) dial(t *testing.T, address string, client manageme
 	return agentapi.NewKatlcAgentClient(conn)
 }
 
+func TestNodeStatusReportsListenerClientCAs(t *testing.T) {
+	node := newManagementTrialNode(t)
+	other, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	extra, err := managementidentity.CAFingerprint(other.CertificateAuthority.Certificate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.server.BeginManagementTransition(t.Context(), node.beginRequest()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := node.server.ConfirmManagementTransition(peerContext(t, node.bundle), node.confirmRequest()); err != nil {
+		t.Fatal(err)
+	}
+	caPath, _, _, err := nodeidentity.ManagementCredentialsPaths(node.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(caPath, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	original := node.node.CACertificate
+	bundle := original + other.CertificateAuthority.Certificate + original +
+		"-----BEGIN CERTIFICATE-----\nZm9v\n-----END CERTIFICATE-----\n"
+	if err := os.WriteFile(caPath, []byte(bundle), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	address := node.serve(t)
+	client := node.trialClient(t, address)
+	want := []string{node.authority, extra}
+	slices.Sort(want)
+	assertTrust := func() *agentapi.ManagementStatus {
+		t.Helper()
+		report := readManagementStatus(t, client)
+		if got := report.GetServedClientTrust(); !slices.Equal(got.GetAuthorities(), want) || got.GetTrialId() != "" {
+			t.Fatalf("listener trust = %v, want %v with no trial", got, want)
+		}
+		return report
+	}
+	assertTrust()
+
+	// Changing disk state without reloading leaves the old pool in use.
+	if err := os.WriteFile(caPath, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if installed := assertTrust().GetAuthority(); installed != node.authority {
+		t.Fatalf("installed authority = %q, want %q", installed, node.authority)
+	}
+
+	// The second authority really can authenticate to this listener.
+	certificate, err := tls.X509KeyPair([]byte(other.Operator.Certificate), []byte(other.Operator.PrivateKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots := x509.NewCertPool()
+	roots.AppendCertsFromPEM([]byte(original))
+	conn, err := grpc.NewClient(address, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{
+		MinVersion: tls.VersionTLS13, RootCAs: roots, ServerName: "cp-1", Certificates: []tls.Certificate{certificate},
+	})))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	if report := readManagementStatus(t, agentapi.NewKatlcAgentClient(conn)); !slices.Equal(report.GetServedClientTrust().GetAuthorities(), want) {
+		t.Fatalf("second client got a different trust set: %v", report)
+	}
+}
+
+func readManagementStatus(t *testing.T, client agentapi.KatlcAgentClient) *agentapi.ManagementStatus {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	reply, err := client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return reply.GetManagement()
+}
+
 func TestManagementTransitionCommitsOverTrialCredentials(t *testing.T) {
 	node := newManagementTrialNode(t)
 	node.server.managementTrialPoll = 10 * time.Millisecond
@@ -275,9 +357,23 @@ func TestManagementTransitionCommitsOverTrialCredentials(t *testing.T) {
 
 	address := node.serve(t)
 	agent := node.trialClient(t, address)
+	report := readManagementStatus(t, agent)
+	trust := report.GetServedClientTrust()
+	if report.GetAuthentication() != "trusted-network" || report.GetTransition().GetState() != "trial" ||
+		trust.GetTrialId() != begun.TrialId || trust.GetTrialAuthority() != node.authority ||
+		!slices.Equal(trust.GetAuthorities(), []string{node.authority}) {
+		t.Fatalf("trial listener status = %v", report)
+	}
 	confirmed, err := agent.ConfirmManagementTransition(t.Context(), node.confirmRequest())
 	if err != nil || confirmed.State != "committed" {
 		t.Fatalf("confirm over the trial credentials = %+v, %v", confirmed, err)
+	}
+	report = readManagementStatus(t, agent)
+	trust = report.GetServedClientTrust()
+	if report.GetAuthentication() != "mtls" || report.GetAuthority() != node.authority ||
+		report.GetTransition() != nil || trust.GetTrialId() != "" || trust.GetTrialAuthority() != "" ||
+		!slices.Equal(trust.GetAuthorities(), []string{node.authority}) {
+		t.Fatalf("committed listener status = %v", report)
 	}
 	commands = node.takeCommands()
 	if len(commands) != 1 || !isTimerStop(commands[0], begun.TrialId) {
@@ -298,7 +394,7 @@ func TestManagementTransitionCommitsOverTrialCredentials(t *testing.T) {
 	if node.mode(t) != managementidentity.MutualTLS || !node.answers(t, agent) {
 		t.Fatal("the agent stopped serving the committed credentials at the trial deadline")
 	}
-	installed, trial, err := managementServerTLS(node.root, node.clock)
+	installed, _, trial, err := managementServerTLS(node.root, node.clock)
 	if err != nil || installed == nil || trial != nil {
 		t.Fatalf("restarted agent serves %v, trial %+v, %v; want the installed mTLS credentials", installed, trial, err)
 	}
@@ -436,6 +532,54 @@ func TestConfirmManagementTransitionRequiresTrialClient(t *testing.T) {
 	}
 	if _, err := node.server.ConfirmManagementTransition(peerContext(t, node.bundle), node.confirmRequest()); err != nil {
 		t.Fatalf("confirm from the trial authority = %v", err)
+	}
+}
+
+func TestConfirmManagementTransitionBindsTrialID(t *testing.T) {
+	node := newManagementTrialNode(t)
+	first, err := node.server.BeginManagementTransition(t.Context(), node.beginRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, reverted, err := nodeidentity.RevertManagementTrial(node.root, first.TrialId, "operator requested revert", node.clock); err != nil || !reverted {
+		t.Fatalf("revert first trial = %t, %v", reverted, err)
+	}
+	second, err := node.server.BeginManagementTransition(t.Context(), node.beginRequest())
+	if err != nil || second.TrialId == first.TrialId || second.TargetAuthority != first.TargetAuthority {
+		t.Fatalf("begin second trial = %v, %v; want a new trial for the same authority", second, err)
+	}
+
+	ctx := peerContext(t, node.bundle)
+	confirm := func(id string) (*agentapi.ManagementTransition, error) {
+		request := node.confirmRequest()
+		request.ExpectedTrialId = &id
+		return node.server.ConfirmManagementTransition(ctx, request)
+	}
+	for _, tc := range []struct {
+		name string
+		id   string
+		code codes.Code
+	}{
+		{"stale ID", first.TrialId, codes.FailedPrecondition},
+		{"explicitly empty ID", "", codes.InvalidArgument},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := confirm(tc.id); status.Code(err) != tc.code {
+				t.Fatalf("confirm = %v, want %s", err, tc.code)
+			}
+			trial, found, err := nodeidentity.ReadManagementTrial(node.root)
+			if err != nil || !found || trial.ID != second.TrialId || trial.State != nodeidentity.ManagementTrialLive ||
+				node.mode(t) != managementidentity.TrustedNetwork {
+				t.Fatalf("refused confirmation changed the second trial: %v, %v", trial, err)
+			}
+		})
+		if t.Failed() {
+			return
+		}
+	}
+	confirmed, err := confirm(second.TrialId)
+	if err != nil || confirmed.GetTrialId() != second.TrialId || node.mode(t) != managementidentity.MutualTLS {
+		t.Fatalf("confirm the verified trial = %v, %v", confirmed, err)
 	}
 }
 
@@ -596,17 +740,14 @@ func TestManagementServerTLSRevertsUnloadableTrial(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	config, served, err := managementServerTLS(node.root, node.clock)
-	if err != nil || config != nil || served != nil {
-		t.Fatalf("agent start = %v, trial %+v, %v; want the installed plaintext listener", config, served, err)
-	}
-	trial, found, err := nodeidentity.ReadManagementTrial(node.root)
-	if err != nil || !found || trial.State != nodeidentity.ManagementTrialReverted || !strings.Contains(trial.RevertReason, "could not load") {
-		t.Fatalf("trial = %+v, %v, %v; want reverted for the load failure", trial, found, err)
-	}
-	status, err := nodeManagementStatus(node.root)
-	if err != nil || status.Authentication != "trusted-network" || status.Transition.GetState() != "reverted" || status.Transition.GetRevertReason() == "" {
-		t.Fatalf("management status = %+v, %v", status, err)
+	address := node.serve(t)
+	report := readManagementStatus(t, plaintextClient(t, address))
+	trial := report.GetTransition()
+	trust := report.GetServedClientTrust()
+	if report.GetAuthentication() != "trusted-network" || trial.GetState() != "reverted" ||
+		trial.GetTargetAuthority() != node.authority || !strings.Contains(trial.GetRevertReason(), "could not load") ||
+		trust == nil || len(trust.GetAuthorities()) != 0 || trust.GetTrialId() != "" || trust.GetTrialAuthority() != "" {
+		t.Fatalf("failed trial fallback status = %v", report)
 	}
 	if rerun, err := node.server.BeginManagementTransition(t.Context(), node.beginRequest()); err != nil || rerun.State != "trial" {
 		t.Fatalf("rerun after the damaged trial = %+v, %v", rerun, err)

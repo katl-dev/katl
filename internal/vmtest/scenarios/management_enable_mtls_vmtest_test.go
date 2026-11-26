@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -16,6 +17,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/katl-dev/katl/internal/vmtest"
 )
 
@@ -132,6 +134,9 @@ func (j *enableMTLSJourney) migrate(ctx context.Context) error {
 	if err := requireConfigMode(config, "trusted-network"); err != nil {
 		return err
 	}
+	if err := j.requireManagement(ctx, config, "trusted-network", ""); err != nil {
+		return err
+	}
 	trustedConfig := filepath.Join(j.dir, "trusted", "cluster.yaml")
 	if err := os.MkdirAll(filepath.Dir(trustedConfig), 0o700); err != nil {
 		return err
@@ -162,8 +167,13 @@ func (j *enableMTLSJourney) migrate(ctx context.Context) error {
 	if err == nil {
 		return fmt.Errorf("interrupted enable-mtls succeeded:\n%s", stderr)
 	}
-	if _, err := os.Stat(filepath.Join(j.dir, "management-secrets.yaml")); err != nil {
-		return fmt.Errorf("the interrupted run left no secrets file: %w", err)
+	replacement, _, err := managementidentity.Read(filepath.Join(j.dir, "management-secrets.yaml"))
+	if err != nil {
+		return fmt.Errorf("read the interrupted run's secrets file: %w", err)
+	}
+	authority, err := managementidentity.CAFingerprint(replacement.CertificateAuthority.Certificate)
+	if err != nil {
+		return err
 	}
 	for _, want := range []string{
 		"could not confirm the node accepts the replacement authority; the node may still trust the trusted network",
@@ -191,6 +201,15 @@ func (j *enableMTLSJourney) migrate(ctx context.Context) error {
 				return fmt.Errorf("%s status during the trial lacks %q:\n%s", args[0], want, status)
 			}
 		}
+	}
+	trial, err := j.management(ctx, config)
+	if err != nil {
+		return err
+	}
+	if trial.Authentication != "trusted-network" || trial.Transition == nil || trial.Transition.State != "trial" ||
+		trial.ServedClientTrust == nil || trial.ServedClientTrust.TrialID == "" || trial.ServedClientTrust.TrialAuthority != authority ||
+		!slices.Equal(trial.ServedClientTrust.Authorities, []string{authority}) {
+		return fmt.Errorf("expected the listener to trust only trial authority %s: %+v, trust %+v", authority, trial, trial.ServedClientTrust)
 	}
 	if err := j.waitReverted(ctx, config); err != nil {
 		return fmt.Errorf("after the interrupted run: %w", err)
@@ -230,7 +249,7 @@ func (j *enableMTLSJourney) migrate(ctx context.Context) error {
 	if err := requireConfigMode(config, "mtls"); err != nil {
 		return err
 	}
-	if err := j.requireManagement(ctx, config, "mtls"); err != nil {
+	if err := j.requireManagement(ctx, config, "mtls", authority); err != nil {
 		return err
 	}
 	if _, err := j.cli(ctx, "node", "status", "cp-1", "--config", trustedConfig); err == nil || !strings.Contains(err.Error(), "likely serves mTLS management") || !strings.Contains(err.Error(), "may be on an interrupted enable-mtls trial") {
@@ -264,7 +283,7 @@ func (j *enableMTLSJourney) migrate(ctx context.Context) error {
 	if err := j.requireGeneration0(ctx, config); err != nil {
 		return fmt.Errorf("after reboot: %w", err)
 	}
-	if err := j.requireManagement(ctx, config, "mtls"); err != nil {
+	if err := j.requireManagement(ctx, config, "mtls", authority); err != nil {
 		return fmt.Errorf("after reboot: %w", err)
 	}
 	if _, err := j.cli(ctx, "node", "status", "cp-1", "--config", trustedConfig); err == nil || !strings.Contains(err.Error(), "likely serves mTLS management") {
@@ -315,7 +334,8 @@ func (j *enableMTLSJourney) waitReverted(ctx context.Context, config string) err
 	var last error
 	for {
 		report, err := j.management(deadline, config)
-		if err == nil && report.Authentication == "trusted-network" && report.Transition != nil && report.Transition.State == "reverted" {
+		if err == nil && report.matchesInstalledTrust("trusted-network", "") &&
+			report.Transition != nil && report.Transition.State == "reverted" {
 			return nil
 		}
 		last = fmt.Errorf("management %+v: %v", report, err)
@@ -328,9 +348,14 @@ func (j *enableMTLSJourney) waitReverted(ctx context.Context, config string) err
 }
 
 type managementReport struct {
-	Authentication string `json:"authentication"`
-	Authority      string `json:"authority"`
-	Transition     *struct {
+	Authentication    string `json:"authentication"`
+	Authority         string `json:"authority"`
+	ServedClientTrust *struct {
+		Authorities    []string
+		TrialID        string
+		TrialAuthority string
+	} `json:"servedClientTrust"`
+	Transition *struct {
 		State        string `json:"state"`
 		RevertReason string `json:"revertReason"`
 	} `json:"transition"`
@@ -353,13 +378,23 @@ func (j *enableMTLSJourney) management(ctx context.Context, config string) (mana
 	return *status.Management, nil
 }
 
-func (j *enableMTLSJourney) requireManagement(ctx context.Context, config, mode string) error {
+func (report managementReport) matchesInstalledTrust(mode, authority string) bool {
+	var expected []string
+	if authority != "" {
+		expected = []string{authority}
+	}
+	trust := report.ServedClientTrust
+	return report.Authentication == mode && report.Authority == authority && trust != nil &&
+		trust.Authorities != nil && slices.Equal(trust.Authorities, expected) && trust.TrialID == "" && trust.TrialAuthority == ""
+}
+
+func (j *enableMTLSJourney) requireManagement(ctx context.Context, config, mode, authority string) error {
 	report, err := j.management(ctx, config)
 	if err != nil {
 		return err
 	}
-	if report.Authentication != mode || (mode == "mtls" && report.Authority == "") {
-		return fmt.Errorf("node management = %+v, want %s", report, mode)
+	if !report.matchesInstalledTrust(mode, authority) {
+		return fmt.Errorf("expected installed mode %s with authority %q: %+v, trust %+v", mode, authority, report, report.ServedClientTrust)
 	}
 	return nil
 }

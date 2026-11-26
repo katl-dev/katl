@@ -149,6 +149,12 @@ find the secrets, it reports the connection failure and says
 `the node may be on an interrupted enable-mtls trial`. Status discovers a
 custom `--output` path only if it matches the path status looks for.
 
+Use `katlctl node status cp-1 --config ./cluster.yaml --output json` to
+inspect `management.servedClientTrust.authorities`, the CA fingerprints the
+answering listener trusts. A plaintext listener reports an empty list. During
+a live trial, `servedClientTrust` also identifies the authority and trial
+that the listener serves. Older agents omit `servedClientTrust`.
+
 Rerun the migration with the same config and secrets file. If you used
 `--output` to select the file, pass the same path. The command resumes a
 reachable trial before its deadline and starts a fresh trial after a revert.
@@ -288,10 +294,11 @@ katlctl management identity rotate \
 ```
 
 The command preflights all nodes over root SSH, switches them one at a time,
-and verifies that the new mTLS authority works. It presents a fresh, valid
-client certificate signed by the old authority and requires a TLS `unknown_ca`
-alert from the authenticated node on that probe's connection, within the
-probe's timeout.
+and uses the replacement credentials to verify that each node reports only
+the new authority. If a node answers status but omits its trust report, the
+command also presents a fresh client certificate signed by the old authority
+and requires a timely TLS `unknown_ca` alert from the authenticated node
+on that probe's connection.
 Only after every node passes does it change `spec.managementIdentity` to the new
 file. A saved workstation context still has the old client certificate; refresh
 it after the command succeeds:
@@ -376,9 +383,9 @@ The command reads the authority each node trusts, and changes nothing until
 every node has been reached. It then writes the new secrets to the path that
 `spec.managementIdentity` references, or to `--output` (a `.sops.yaml` name
 encrypts it first), installs the new authority on each node, and checks that
-the new credentials manage the node. Nodes stay in mTLS mode and the lost
-authority and anonymous clients are refused afterwards; the command never
-switches a node to trusted-network access. Back up the new secrets file, then
+the new credentials manage the node. When the node reports its listener's
+trusted CAs, recovery requires the replacement authority to be the only one
+in that set. Nodes stay in mTLS mode throughout. Back up the new secrets file, then
 refresh saved contexts with `katlctl context save --config ./cluster.yaml`.
 
 If recovery reports `could not confirm the node accepts the replacement

@@ -21,7 +21,7 @@ func TestServerAuthenticationFailsClosed(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			config, err := ServerTLSConfig(root)
+			config, _, err := ServerTLSConfig(root)
 			if mode == "trusted-network" {
 				if err != nil || config != nil {
 					t.Fatalf("trusted mode: %v, %v", config, err)

@@ -231,10 +231,11 @@ func BeginManagementTrial(root string, request ManagementTransition, clock Trial
 	return trial, nil
 }
 
-// ConfirmManagementTrial commits the live trial for authority. Confirming an
-// authority that is already committed succeeds again. The result names the
-// trial it committed, if any, so its scheduled revert can be cancelled.
-func ConfirmManagementTrial(root, authority string, clock TrialClock) (ManagementTrial, error) {
+// ConfirmManagementTrial commits the live trial for authority. A non-empty ID
+// binds the confirmation to that trial under the identity lock. Confirming
+// an already committed authority succeeds again. The result names the trial
+// it committed, if any, so its scheduled revert can be cancelled.
+func ConfirmManagementTrial(root, authority, id string, clock TrialClock) (ManagementTrial, error) {
 	dir := filepath.Join(filepath.Clean(root), managementDirectory)
 	unlock, err := lockManagementIdentity(dir)
 	if err != nil {
@@ -245,6 +246,9 @@ func ConfirmManagementTrial(root, authority string, clock TrialClock) (Managemen
 	trial, found, err := readManagementTrial(dir)
 	if err != nil {
 		return ManagementTrial{}, err
+	}
+	if id != "" && found && trial.ID != id {
+		return ManagementTrial{}, fmt.Errorf("the management trial changed; rerun the transition")
 	}
 	committed, err := managementCommitted(root, authority)
 	if err != nil {

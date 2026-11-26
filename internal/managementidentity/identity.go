@@ -239,12 +239,11 @@ func Validate(bundle Bundle, now time.Time) (Info, error) {
 			return Info{}, err
 		}
 	}
-	sum := sha256.Sum256(ca.Raw)
 	return Info{
 		ClusterName: clusterName,
 		CreatedAt:   bundle.CreatedAt.UTC(),
 		ExpiresAt:   ca.NotAfter.UTC(),
-		Fingerprint: hex.EncodeToString(sum[:]),
+		Fingerprint: CertificateFingerprint(ca),
 	}, nil
 }
 
@@ -282,8 +281,13 @@ func CAFingerprint(certificate string) (string, error) {
 	if !ca.IsCA || ca.KeyUsage&x509.KeyUsageCertSign == 0 {
 		return "", fmt.Errorf("caCertificate is not a certificate-signing CA")
 	}
-	sum := sha256.Sum256(ca.Raw)
-	return hex.EncodeToString(sum[:]), nil
+	return CertificateFingerprint(ca), nil
+}
+
+// CertificateFingerprint returns the management fingerprint of a parsed certificate.
+func CertificateFingerprint(cert *x509.Certificate) string {
+	sum := sha256.Sum256(cert.Raw)
+	return hex.EncodeToString(sum[:])
 }
 
 func ValidateClient(credentials ClientCredentials, now time.Time) error {

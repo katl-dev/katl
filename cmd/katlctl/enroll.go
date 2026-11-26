@@ -29,6 +29,7 @@ type contextSaveOptions struct {
 	replacementNode []string
 	selectedNodes   []string
 	endpoints       map[string]inventory.HostPort
+	observeStatus   func(context.Context, string, inventory.HostPort) (*agentapi.NodeStatus, error)
 	timeout         time.Duration
 	output          string
 }
@@ -337,6 +338,18 @@ func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions,
 		return fmt.Errorf("verify node %s management endpoint %s: %w%s", node.Name, endpoint, confirmationError(err), hint)
 	}
 
+	observeStatus := opts.observeStatus
+	if observeStatus == nil {
+		observeStatus = func(ctx context.Context, name string, endpoint inventory.HostPort) (*agentapi.NodeStatus, error) {
+			status, err := contextEndpointStatus(withManagementDial(ctx, name, &management), endpoint)
+			if err != nil {
+				return nil, err
+			}
+			_, err = transport.ObserveNode(name, status)
+			return status, err
+		}
+	}
+
 	for _, node := range inv.Nodes {
 		endpoint := node.ManagementEndpoint()
 		if override, ok := opts.endpoints[node.Name]; ok {
@@ -351,19 +364,10 @@ func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions,
 			continue
 		}
 		requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
-		status, err := contextEndpointStatus(withManagementDial(requestCtx, node.Name, &management), endpoint)
+		status, err := observeStatus(requestCtx, node.Name, endpoint)
 		cancel()
 		if err != nil {
 			return workstation.Config{}, contextSaveReport{}, verificationFailure(node, endpoint, err)
-		}
-		if strings.TrimSpace(status.GetMachineId()) == "" {
-			return workstation.Config{}, contextSaveReport{}, fmt.Errorf("verify node %s management endpoint: agent did not report a machine identity", node.Name)
-		}
-		if strings.TrimSpace(status.GetEnrollmentId()) == "" {
-			return workstation.Config{}, contextSaveReport{}, fmt.Errorf("verify node %s management endpoint: agent did not report an enrollment identity", node.Name)
-		}
-		if got := strings.TrimSpace(status.GetInventoryNodeName()); got != node.Name {
-			return workstation.Config{}, contextSaveReport{}, fmt.Errorf("verify node %s management endpoint: address answered as enrolled node %q", node.Name, got)
 		}
 		replaced := false
 		if previous, ok := known[node.Name]; ok && previous.EnrollmentID != "" && (previous.EnrollmentID != status.GetEnrollmentId() || previous.MachineID != status.GetMachineId()) {

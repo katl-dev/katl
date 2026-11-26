@@ -222,7 +222,7 @@ func TestManagementTrialConfirmCommits(t *testing.T) {
 	}
 
 	for range 2 {
-		result, err := ConfirmManagementTrial(node.root, node.authority, node.clock)
+		result, err := ConfirmManagementTrial(node.root, node.authority, "", node.clock)
 		if err != nil || result.State != ManagementTrialCommitted {
 			t.Fatalf("confirm = %+v, %v", result, err)
 		}
@@ -259,7 +259,7 @@ func TestManagementTrialConfirmRefusesOtherAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ConfirmManagementTrial(node.root, other, node.clock); err == nil || !strings.Contains(err.Error(), "targets authority") {
+	if _, err := ConfirmManagementTrial(node.root, other, "", node.clock); err == nil || !strings.Contains(err.Error(), "targets authority") {
 		t.Fatalf("confirm for another authority = %v", err)
 	}
 	node.assertInstalled(t, managementidentity.TrustedNetwork)
@@ -293,7 +293,7 @@ func TestManagementTrialReverts(t *testing.T) {
 		}, reason: "restarted"},
 		{name: "confirm after deadline", revert: func(t *testing.T, n *trialNode, _ ManagementTrial) {
 			n.clock.advance(time.Minute)
-			if _, err := ConfirmManagementTrial(n.root, n.authority, n.clock); !errors.Is(err, ErrManagementTrialReverted) {
+			if _, err := ConfirmManagementTrial(n.root, n.authority, "", n.clock); !errors.Is(err, ErrManagementTrialReverted) {
 				t.Fatalf("late confirm = %v", err)
 			}
 		}, reason: "deadline"},
@@ -315,7 +315,7 @@ func TestManagementTrialReverts(t *testing.T) {
 			if !found || recorded.State != ManagementTrialReverted || !strings.Contains(recorded.RevertReason, tc.reason) {
 				t.Fatalf("trial record = %+v; want reverted for %q", recorded, tc.reason)
 			}
-			if _, err := ConfirmManagementTrial(node.root, node.authority, node.clock); !errors.Is(err, ErrManagementTrialReverted) || !strings.Contains(err.Error(), "rerun") {
+			if _, err := ConfirmManagementTrial(node.root, node.authority, "", node.clock); !errors.Is(err, ErrManagementTrialReverted) || !strings.Contains(err.Error(), "rerun") {
 				t.Fatalf("confirm after revert = %v", err)
 			}
 			if served, err := SettleManagementTrial(node.root, node.clock); err != nil || served != nil {
@@ -388,7 +388,7 @@ func TestManagementTrialInterruptions(t *testing.T) {
 					var err error
 					if tc.confirm {
 						node.mustBegin(t)
-						_, err = ConfirmManagementTrial(node.root, node.authority, node.clock)
+						_, err = ConfirmManagementTrial(node.root, node.authority, "", node.clock)
 					} else {
 						_, err = node.begin()
 					}
@@ -422,7 +422,7 @@ func TestManagementTrialInterruptions(t *testing.T) {
 
 					// The client retries its confirmation; a node that never
 					// recorded a trial or has reverted it asks for a rerun.
-					result, err := ConfirmManagementTrial(node.root, node.authority, node.clock)
+					result, err := ConfirmManagementTrial(node.root, node.authority, "", node.clock)
 					if tc.committed || trialLive {
 						if err != nil || result.State != ManagementTrialCommitted {
 							t.Fatalf("retried confirm = %+v, %v", result, err)
@@ -453,7 +453,10 @@ func TestManagementTrialConfirmRacesRevert(t *testing.T) {
 		var confirmErr, revertErr error
 		var reverted bool
 		wg.Add(2)
-		go func() { defer wg.Done(); _, confirmErr = ConfirmManagementTrial(node.root, node.authority, node.clock) }()
+		go func() {
+			defer wg.Done()
+			_, confirmErr = ConfirmManagementTrial(node.root, node.authority, "", node.clock)
+		}()
 		go func() {
 			defer wg.Done()
 			_, reverted, revertErr = RevertManagementTrial(node.root, trial.ID, "deadline", node.clock)
@@ -531,7 +534,7 @@ func TestManagementTrialRerunReissuesUnderSameAuthority(t *testing.T) {
 
 			node.request.Replacement = issue()
 			node.mustBegin(t)
-			if _, err := ConfirmManagementTrial(node.root, node.authority, node.clock); err != nil {
+			if _, err := ConfirmManagementTrial(node.root, node.authority, "", node.clock); err != nil {
 				t.Fatal(err)
 			}
 			node.assertInstalled(t, managementidentity.MutualTLS)
@@ -566,7 +569,7 @@ func TestManagementTrialRevertQuarantinesUnreadableRecord(t *testing.T) {
 	node.assertInstalled(t, managementidentity.TrustedNetwork)
 
 	node.mustBegin(t)
-	if _, err := ConfirmManagementTrial(node.root, node.authority, node.clock); err != nil {
+	if _, err := ConfirmManagementTrial(node.root, node.authority, "", node.clock); err != nil {
 		t.Fatal(err)
 	}
 	node.assertInstalled(t, managementidentity.MutualTLS)
