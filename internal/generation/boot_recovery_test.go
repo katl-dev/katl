@@ -105,21 +105,28 @@ func TestArmBootRecoveryRejectsUnhealthyFallback(t *testing.T) {
 	}
 }
 
-func TestArmBootRecoveryRequiresFullFallbackEvidence(t *testing.T) {
+func TestTrialFallbackVerification(t *testing.T) {
 	for _, fault := range []struct {
-		name, reason string
-		inject       func(*testing.T, string, GenerationSpec)
+		name, stagingError, armingError string
+		inject                          func(*testing.T, string, GenerationSpec)
 	}{
-		{"replaced root", "runtime SHA-256", func(t *testing.T, root string, spec GenerationSpec) {
+		{"replaced root", "runtime SHA-256", "", func(t *testing.T, root string, spec GenerationSpec) {
 			writeBootFixture(t, bootDevicePath(root, spec.Root.Slot), bootRootImage("replacement"))
 		}},
-		{"unreadable root", "bootability indeterminate", func(t *testing.T, root string, spec GenerationSpec) {
-			path := bootDevicePath(root, spec.Root.Slot)
-			removeBootFixture(t, path)
-			linkBootFixture(t, path, path)
+		{"private devices", "open root PARTUUID", "", func(t *testing.T, root string, spec GenerationSpec) {
+			// The sandbox hides the device node while leaving sysfs visible.
+			removeBootFixture(t, bootDevicePath(root, spec.Root.Slot))
 		}},
-		{"missing extension", "/sysext/", func(t *testing.T, root string, spec GenerationSpec) {
+		{"missing extension", "/sysext/", "", func(t *testing.T, root string, spec GenerationSpec) {
 			removeBootFixture(t, rootedPathUnchecked(root, spec.Sysexts[0].Path))
+		}},
+		{"missing PARTUUID", "absent from the system disk", "absent from the system disk", func(t *testing.T, root string, spec GenerationSpec) {
+			path := filepath.Join(root, "sys/devices/vda", filepath.Base(bootDevicePath(root, spec.Root.Slot)), "uevent")
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeBootFixture(t, path, []byte(strings.ReplaceAll(string(data), spec.Root.PartitionUUID, "99999999-2222-3333-4444-555555555555")))
 		}},
 	} {
 		t.Run(fault.name, func(t *testing.T) {
@@ -138,19 +145,26 @@ func TestArmBootRecoveryRequiresFullFallbackEvidence(t *testing.T) {
 			selection.PersistentDefaultPromotion = DefaultPromotionPending
 			writeBootHealthSelection(t, root, selection)
 
-			if armed, err := ArmBootRecovery(root, "trial"); !armed || err != nil {
-				t.Fatalf("initial arm = %t, %v", armed, err)
+			if err := CheckTrialFallback(root, selection); err != nil {
+				t.Fatalf("initial fallback check: %v", err)
 			}
 			spec, _, err := ReadGeneration(root, selection.DefaultGenerationID)
 			if err != nil {
 				t.Fatal(err)
 			}
 			fault.inject(t, root, spec)
-			if armed, err := ArmBootRecovery(root, "trial"); armed || err == nil || !strings.Contains(err.Error(), fault.reason) {
-				t.Fatalf("arm after fault = %t, %v, want %q", armed, err, fault.reason)
+			if err := CheckTrialFallback(root, selection); err == nil || !strings.Contains(err.Error(), fault.stagingError) {
+				t.Fatalf("staging check after fault = %v, want %q", err, fault.stagingError)
 			}
-			if _, err := os.Stat(rootedPathUnchecked(root, bootRecoveryPath)); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("refusal left reboot authorization: %v", err)
+
+			armed, err := ArmBootRecovery(root, "trial")
+			_, markerErr := os.Stat(rootedPathUnchecked(root, bootRecoveryPath))
+			if fault.armingError == "" {
+				if !armed || err != nil || markerErr != nil {
+					t.Fatalf("arm = %t, %v, authorization stat = %v, want armed", armed, err, markerErr)
+				}
+			} else if armed || err == nil || !strings.Contains(err.Error(), fault.armingError) || !errors.Is(markerErr, os.ErrNotExist) {
+				t.Fatalf("arm = %t, %v, authorization stat = %v, want refusal with %q", armed, err, markerErr, fault.armingError)
 			}
 		})
 	}

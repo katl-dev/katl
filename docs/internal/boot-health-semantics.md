@@ -242,9 +242,10 @@ trial that must pass the boot health gate.
 ## Generation bootability
 
 `internal/generation` owns bootability evidence. It matches the spec's PARTUUID
-to a partition on the running system disk and opens the bound partition by disk
-attachment sequence and partition number. A partition enumeration or clone scan
-error makes the match indeterminate.
+to a partition on the running system disk through sysfs. A partition enumeration
+or clone scan error makes the match indeterminate. For a full check, the verifier
+opens the bound partition's kernel device node, which it resolves by disk
+attachment sequence and partition number.
 
 The verifier hashes the padded SquashFS image at the start of the partition.
 Katl's runtime builder uses the default 4 KiB image padding, so the verifier
@@ -275,13 +276,20 @@ and compensation has a bounded timeout independent of the request.
 
 Next-boot configuration and host upgrades verify the known-good fallback
 before writing EFI for a trial. Reboot admission rechecks the staged target and
-its fallback and uses the entry selected by systemd-boot, where a one-shot can
-take precedence over the persistent default. A successful staging receipt can
-still report a bootability problem if the target changes after staging. The
-agent refuses to schedule the reboot when it cannot verify the target.
+its fallback with the full check. It uses the next entry reported by `bootctl`
+and verifies that it agrees with the effective EFI variable, where a one-shot
+takes precedence over the persistent default. If both variables are absent on
+readable, mounted efivarfs, the default reported by `bootctl` is sufficient.
+An unmounted efivarfs or an unreadable variable makes the entry indeterminate.
+A successful staging receipt can still report a bootability problem if the
+target changes after staging. The agent refuses to schedule the reboot when it
+cannot verify the target.
 
-Boot activation verifies the fallback before granting boot-local reboot
-authorization. If verification fails, activation reports the fallback problem
+Boot activation verifies the fallback's known-good health, bound root PARTUUID,
+loader entry, and UKI before granting boot-local reboot authorization. The
+activation service runs with `PrivateDevices=yes`, so this check uses sysfs
+for partition identity and relies on staging for root digest and extension
+verification. If verification fails, activation reports the fallback problem
 and continues checking the candidate. Failure selection checks known-good
 health, the loader entry, and the UKI before setting the fallback as the
 default. Slot replacement also checks the running generation's loader entry
@@ -345,8 +353,8 @@ The boot-health deadline uses the same path when the candidate does not reach
 the health target within 10 minutes. Generation activation creates the
 ephemeral `/run/katl/boot-health/pending` authorization only when the running
 generation matches the pending trial and its distinct known-good fallback
-passes the full bootability check. The fallback
-and ordinary boots do not arm recovery. A successful boot removes the
+passes activation's bootability check. The fallback and ordinary boots do not
+arm recovery. A successful boot removes the
 authorization. The timer may remain scheduled, but its service is
 condition-skipped without that authorization. Failure handling consumes the
 authorization before systemd requests the one reboot, so restarting a service

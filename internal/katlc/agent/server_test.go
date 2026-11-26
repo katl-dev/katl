@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -18,6 +19,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer"
@@ -27,6 +29,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/kubernetesidentity"
+	"golang.org/x/sys/unix"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -447,6 +450,10 @@ func TestListOperationsFiltersActiveRecords(t *testing.T) {
 func TestRebootSchedulesCommittedSelectedGeneration(t *testing.T) {
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)
+	dir := rootedPath(server.Root, efiVarsPath)
+	server.efiStatfs = testEFIVarFS
+	writeTestEFIVariable(t, dir, "LoaderEntryDefault", "katl-previous.conf")
+	writeTestEFIVariable(t, dir, "LoaderEntryOneShot", "katl-generation-0.conf")
 	var argv []string
 	server.RunReboot = func(_ context.Context, got []string, _ func(int)) ToolResult {
 		argv = append([]string(nil), got...)
@@ -472,9 +479,35 @@ func TestRebootSchedulesCommittedSelectedGeneration(t *testing.T) {
 	}
 }
 
+func TestRebootAdmitsLoaderConfigDefault(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+	if err := os.MkdirAll(rootedPath(server.Root, efiVarsPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The fixture has a mounted efivarfs with both loader variables absent.
+	// The bootctl fixture reports the target as the loader.conf default.
+	server.efiStatfs = testEFIVarFS
+	var scheduled bool
+	server.RunReboot = func(context.Context, []string, func(int)) ToolResult {
+		scheduled = true
+		return ToolResult{}
+	}
+
+	accepted, err := server.Reboot(t.Context(), &agentapi.RebootRequest{
+		ApiVersion: APIVersion, Kind: RebootRequestKind, Actor: "test",
+		ExpectedMachineId: testMachineID, TargetGenerationId: "generation-0",
+	})
+	if err != nil || !scheduled || !accepted.GetScheduled() || accepted.GetTargetGenerationId() != "generation-0" {
+		t.Fatalf("reboot = %v, %v, scheduled = %t, want generation-0 scheduled", accepted, err, scheduled)
+	}
+}
+
 func TestRebootRefusesDifferentFirmwareTarget(t *testing.T) {
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)
+	writeRebootEFIDefault(t, server.Server)
+	writeTestEFIVariable(t, rootedPath(server.Root, efiVarsPath), "LoaderEntryOneShot", "katl-one-shot.conf")
 	server.runBootctl = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 		if !slices.Contains(argv, "list") {
 			t.Fatalf("boot inspection = %v", argv)
@@ -497,9 +530,127 @@ func TestRebootRefusesDifferentFirmwareTarget(t *testing.T) {
 	}
 }
 
+func TestRebootRefusesConflictingEFISelection(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+	writeRebootEFIDefault(t, server.Server)
+	// bootctl reports the requested entry as the default despite the one-shot.
+	writeTestEFIVariable(t, rootedPath(server.Root, efiVarsPath), "LoaderEntryOneShot", "katl-one-shot.conf")
+	server.RunReboot = func(context.Context, []string, func(int)) ToolResult {
+		t.Fatal("scheduled reboot despite a conflicting one-shot")
+		return ToolResult{}
+	}
+
+	_, err := server.Reboot(t.Context(), &agentapi.RebootRequest{
+		ApiVersion: APIVersion, Kind: RebootRequestKind, Actor: "test",
+		ExpectedMachineId: testMachineID, TargetGenerationId: "generation-0",
+	})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "katl-one-shot.conf") {
+		t.Fatalf("reboot = %v, want refusal naming the conflicting EFI entry", err)
+	}
+}
+
+func TestRebootRefusesHiddenEFISelection(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+
+	// The firmware retains B, but the agent sees an empty mountpoint.
+	const oneShot = "LoaderEntryOneShot"
+	writeTestEFIVariable(t, t.TempDir(), oneShot, "katl-one-shot.conf")
+	efivars := filepath.Join(server.Root, "sys/firmware/efi/efivars")
+	if err := os.MkdirAll(efivars, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	server.runBootctl = func(context.Context, []string, func(int)) ToolResult {
+		// With no visible one-shot, bootctl silently reports the loader.conf default.
+		if _, err := os.ReadFile(filepath.Join(efivars, oneShot+loaderVarGUID)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("read visible one-shot: %v, want ENOENT", err)
+		}
+		return ToolResult{Stdout: []byte(`[{"id":"katl-generation-0.conf","isDefault":true},{"id":"katl-one-shot.conf","isDefault":false}]`)}
+	}
+	server.RunReboot = func(context.Context, []string, func(int)) ToolResult {
+		t.Fatal("scheduled reboot while the retained EFI one-shot was hidden")
+		return ToolResult{}
+	}
+
+	_, err := server.Reboot(t.Context(), &agentapi.RebootRequest{
+		ApiVersion: APIVersion, Kind: RebootRequestKind, Actor: "test",
+		ExpectedMachineId: testMachineID, TargetGenerationId: "generation-0",
+	})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "indeterminate") || !strings.Contains(err.Error(), "mount efivarfs") {
+		t.Fatalf("reboot = %v, want indeterminate refusal with efivarfs recovery guidance", err)
+	}
+}
+
+func TestRebootRefusesUnreadableEFIVariable(t *testing.T) {
+	for _, tc := range []struct {
+		name, unreadable, want string
+	}{
+		{name: "one-shot unreadable", unreadable: "LoaderEntryOneShot", want: "read EFI variable LoaderEntryOneShot"},
+		{name: "default unreadable", unreadable: "LoaderEntryDefault", want: "read EFI variable LoaderEntryDefault"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newTestServer(t)
+			writeCleanGenerationZeroState(t, server.Root)
+			dir := rootedPath(server.Root, efiVarsPath)
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			server.efiStatfs = testEFIVarFS
+			// The other variable independently names the requested entry.
+			other := "LoaderEntryDefault"
+			if tc.unreadable == other {
+				other = "LoaderEntryOneShot"
+			}
+			writeTestEFIVariable(t, dir, other, "katl-generation-0.conf")
+			path := filepath.Join(dir, tc.unreadable+loaderVarGUID)
+			if tc.unreadable == "LoaderEntryOneShot" {
+				if err := os.Symlink("unavailable", path); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				writeTestFile(t, path, "bad")
+			}
+			server.RunReboot = func(context.Context, []string, func(int)) ToolResult {
+				t.Fatal("scheduled reboot without verified EFI evidence")
+				return ToolResult{}
+			}
+
+			_, err := server.Reboot(t.Context(), &agentapi.RebootRequest{
+				ApiVersion: APIVersion, Kind: RebootRequestKind, Actor: "test",
+				ExpectedMachineId: testMachineID, TargetGenerationId: "generation-0",
+			})
+			if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "indeterminate") || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("reboot = %v, want indeterminate refusal containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func writeRebootEFIDefault(t *testing.T, server *Server) {
+	t.Helper()
+	server.efiStatfs = testEFIVarFS
+	writeTestEFIVariable(t, rootedPath(server.Root, efiVarsPath), "LoaderEntryDefault", "katl-generation-0.conf")
+}
+
+func testEFIVarFS(_ int, fs *unix.Statfs_t) error {
+	fs.Type = unix.EFIVARFS_MAGIC
+	return nil
+}
+
+func writeTestEFIVariable(t *testing.T, dir, name, value string) {
+	t.Helper()
+	data := []byte{7, 0, 0, 0}
+	for _, unit := range utf16.Encode([]rune(value + "\x00")) {
+		data = binary.LittleEndian.AppendUint16(data, unit)
+	}
+	writeTestFile(t, filepath.Join(dir, name+loaderVarGUID), string(data))
+}
+
 func TestRebootLeavesManagedRouteWithdrawalToSystemdShutdown(t *testing.T) {
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)
+	writeRebootEFIDefault(t, server.Server)
 	writeTestFile(t, filepath.Join(server.Root, apivip.OwnershipEnabledPath), "enabled\n")
 	server.RunEndpointLifecycle = func(_ context.Context, _ []string, _ func(int)) ToolResult {
 		t.Fatal("reboot must leave service teardown to systemd")
@@ -530,6 +681,7 @@ func TestRebootLeavesManagedRouteWithdrawalToSystemdShutdown(t *testing.T) {
 func TestRebootSchedulingFailureDoesNotDisruptManagedRouting(t *testing.T) {
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)
+	writeRebootEFIDefault(t, server.Server)
 	writeTestFile(t, filepath.Join(server.Root, apivip.OwnershipEnabledPath), "enabled\n")
 	server.RunEndpointLifecycle = func(_ context.Context, _ []string, _ func(int)) ToolResult {
 		t.Fatal("a failed reboot schedule must not disrupt endpoint services")

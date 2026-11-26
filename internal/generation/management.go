@@ -73,18 +73,16 @@ func inspect(root string, selection BootSelectionRecord, verifyRoot bool) ([]Man
 		}
 	}
 	check := bootabilityCheck{root: root}
-	probe := func(spec GenerationSpec, status GenerationStatus) bootability {
-		return checkBootArtifacts(root, spec, status)
-	}
+	level := bootArtifacts
 	if verifyRoot {
-		probe = check.check
+		level = bootFull
 	}
 	rollbackSlots := map[string]bool{}
 	for i := range items {
 		item := &items[i]
 		id := item.Spec.GenerationID
 		uuid := strings.ToLower(item.Spec.Root.PartitionUUID)
-		result := probe(item.Spec, item.Status)
+		result := check.check(item.Spec, item.Status, level)
 		if err := manualBootEligibility(result, item.Status); err != nil {
 			item.UnavailableReason = err.Error()
 		}
@@ -175,7 +173,7 @@ func Select(ctx context.Context, request SelectRequest) error {
 			return err
 		}
 		check := bootabilityCheck{root: request.Root}
-		if err := manualBootEligibility(check.check(spec, status), status); err != nil {
+		if err := manualBootEligibility(check.check(spec, status, bootFull), status); err != nil {
 			return fmt.Errorf("generation %s %w", request.GenerationID, err)
 		}
 		if request.SetDefault == nil || request.SetOneshot == nil {
@@ -394,7 +392,8 @@ func InvalidateSlot(root, partitionUUID string, now time.Time, setDefault, setOn
 			if !IsKnownGood(state) || invalid[active] {
 				return fmt.Errorf("running generation is not a safe boot default")
 			}
-			if err := checkBootFiles(root, spec).problem(); err != nil {
+			check := bootabilityCheck{root: root}
+			if err := check.check(spec, state, bootFiles).problem(); err != nil {
 				return fmt.Errorf("cannot replace selected slot: running generation %s %w. Restore its boot artifacts before retrying", active, err)
 			}
 			if setDefault == nil || setOneshot == nil {

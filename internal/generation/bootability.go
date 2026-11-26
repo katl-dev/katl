@@ -22,6 +22,15 @@ const (
 	bootable
 )
 
+type bootabilityLevel uint8
+
+const (
+	bootFiles bootabilityLevel = iota
+	bootArtifacts
+	bootIdentity
+	bootFull
+)
+
 type bootability struct {
 	state    bootabilityState
 	evidence string
@@ -44,7 +53,7 @@ func (result bootability) problem() error {
 // It supports read-only guidance for a published generation.
 func CheckBootability(root string, spec GenerationSpec, status GenerationStatus) error {
 	check := bootabilityCheck{root: root}
-	return check.check(spec, status).problem()
+	return check.check(spec, status, bootFull).problem()
 }
 
 type bootabilityCheck struct {
@@ -54,20 +63,31 @@ type bootabilityCheck struct {
 
 // check verifies the artifacts selected by an immutable generation spec.
 // Callers apply their own health and transition requirements.
-func (check *bootabilityCheck) check(spec GenerationSpec, status GenerationStatus) bootability {
-	if files := checkBootArtifacts(check.root, spec, status); files.state != bootable {
+func (check *bootabilityCheck) check(spec GenerationSpec, status GenerationStatus, level bootabilityLevel) bootability {
+	if status.UnavailableReason != "" {
+		return bootability{state: bootUnavailable, evidence: status.UnavailableReason}
+	}
+	if files := checkBootFiles(check.root, spec); files.state != bootable || level == bootFiles {
 		return files
+	}
+	if level == bootArtifacts || level == bootFull {
+		if extensions := checkBootExtensions(check.root, spec); extensions.state != bootable || level == bootArtifacts {
+			return extensions
+		}
+	}
+	uuid := strings.ToLower(spec.Root.PartitionUUID)
+	if level == bootIdentity {
+		return checkRootArtifact(check.root, uuid, level)
 	}
 
 	// A cleanup pass can inspect several generations on the same slot.
 	// Share the observed digest for that pass, under the boot-state lock.
-	uuid := strings.ToLower(spec.Root.PartitionUUID)
 	if check.roots == nil {
 		check.roots = make(map[string]bootability)
 	}
 	observed, ok := check.roots[uuid]
 	if !ok {
-		observed = checkRootArtifact(check.root, uuid)
+		observed = checkRootArtifact(check.root, uuid, level)
 		check.roots[uuid] = observed
 	}
 	if observed.state != bootable {
@@ -80,13 +100,7 @@ func (check *bootabilityCheck) check(spec GenerationSpec, status GenerationStatu
 	return observed
 }
 
-func checkBootArtifacts(root string, spec GenerationSpec, status GenerationStatus) bootability {
-	if status.UnavailableReason != "" {
-		return bootability{state: bootUnavailable, evidence: status.UnavailableReason}
-	}
-	if files := checkBootFiles(root, spec); files.state != bootable {
-		return files
-	}
+func checkBootExtensions(root string, spec GenerationSpec) bootability {
 	for _, extensions := range [][]ExtensionRef{spec.Sysexts, spec.BundledConfexts} {
 		for _, ref := range extensions {
 			if file := checkBootArtifact(root, ref.Path, false); file.state != bootable {
@@ -126,7 +140,7 @@ func checkBootArtifact(root, path string, directory bool) bootability {
 	}
 }
 
-func checkRootArtifact(root, uuid string) bootability {
+func checkRootArtifact(root, uuid string, level bootabilityLevel) bootability {
 	layout, err := systemdisk.ResolveRunning(cleanRoot(root))
 	if err != nil {
 		return bootability{state: bootIndeterminate, err: fmt.Errorf("locate root PARTUUID %s: %w", uuid, err)}
@@ -138,10 +152,17 @@ func checkRootArtifact(root, uuid string) bootability {
 	if !found {
 		return bootability{state: bootUnavailable, evidence: "root PARTUUID " + uuid + " is absent from the system disk"}
 	}
-	file, err := os.Open(rootedPathUnchecked(root, partition.DevicePath()))
+	if level == bootIdentity {
+		// Boot activation can inspect sysfs under PrivateDevices=yes.
+		return bootability{state: bootable}
+	}
+	node, err := partition.Node()
 	if err != nil {
-		// The kernel reported the partition. Failure to open its bound device
-		// could be a transient device or udev failure.
+		return bootability{state: bootIndeterminate, err: fmt.Errorf("locate bound root PARTUUID %s: %w", uuid, err)}
+	}
+	file, err := os.Open(rootedPathUnchecked(root, node))
+	if err != nil {
+		// A bound partition can become inaccessible between lookup and open.
 		return bootability{state: bootIndeterminate, err: fmt.Errorf("open root PARTUUID %s: %w", uuid, err)}
 	}
 	defer file.Close()

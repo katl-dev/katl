@@ -166,7 +166,7 @@ func TestStageRefusesUnverifiedFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(server.Root, "dev/disk/by-diskseq/17-part1")
+	path := filepath.Join(server.Root, "dev/vda1")
 	if err := os.Truncate(path, 96); err != nil {
 		t.Fatal(err)
 	}

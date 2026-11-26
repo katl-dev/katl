@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -34,6 +35,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/kubernetesidentity"
+	"golang.org/x/sys/unix"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -102,6 +104,7 @@ type Server struct {
 	RunEtcd                  ToolRunner
 	RunReboot                ToolRunner
 	runBootctl               ToolRunner
+	efiStatfs                func(int, *unix.Statfs_t) error
 	RunShutdown              ToolRunner
 	RunBootHealthStatus      ToolRunner
 	RunManagementTrial       ToolRunner
@@ -138,6 +141,7 @@ func NewServer(root string, store operation.Store) *Server {
 		RunEtcd:                  runChildProcess,
 		RunReboot:                runChildProcess,
 		runBootctl:               runChildProcess,
+		efiStatfs:                unix.Fstatfs,
 		RunShutdown:              runChildProcess,
 		RunBootHealthStatus:      runChildProcess,
 		RunManagementTrial:       runChildProcess,
@@ -215,7 +219,11 @@ func (s *Server) checkRebootTarget(ctx context.Context, target string) error {
 	if s.runBootctl == nil {
 		return fmt.Errorf("boot entry inspection is not configured")
 	}
-	// systemd-boot owns the precedence of its EFI variables and loader.conf.
+	efiEntries, err := s.readEFIBootEntries()
+	if err != nil {
+		return fmt.Errorf("next systemd-boot entry is indeterminate: %w", err)
+	}
+	// systemd-boot owns entry matching and precedence.
 	bootCtx, cancel := context.WithTimeout(ctx, bootRootMountTimeout)
 	defer cancel()
 	result := s.runBootctl(bootCtx, []string{"bootctl", "--esp-path=" + filepath.Join(runtimeRoot(s.Root), "efi"), "--json=short", "list"}, nil)
@@ -238,6 +246,11 @@ func (s *Server) checkRebootTarget(ctx context.Context, target string) error {
 			want := filepath.Base(spec.Boot.LoaderEntryPath)
 			if entry.ID != want {
 				return fmt.Errorf("systemd-boot will use entry %q ahead of %q for generation %s", entry.ID, want, target)
+			}
+			// A one-shot overrides the persistent variable. When both are
+			// absent on efivarfs, bootctl can report the loader.conf default.
+			if efiEntry := cmp.Or(efiEntries[0], efiEntries[1]); efiEntry != "" && !strings.EqualFold(entry.ID, efiEntry) {
+				return fmt.Errorf("next systemd-boot entry is indeterminate: EFI names entry %q but bootctl reports %q. Select generation %s with 'katlctl node generations select' before retrying", efiEntry, entry.ID, target)
 			}
 			return nil
 		}

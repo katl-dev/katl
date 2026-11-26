@@ -555,7 +555,7 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 	if previousID != "" {
 		fallback := bootability{state: bootUnavailable, evidence: "fallback is the failed generation"}
 		if previousID != generationID {
-			fallback = checkRecoveryFallback(root, selection, previousID, false)
+			fallback = checkRecoveryFallback(root, selection, previousID, bootFiles)
 		}
 		if fallback.state == bootIndeterminate {
 			return BootHealthResult{}, fmt.Errorf("check fallback before changing the boot target: %w. Preserve boot diagnostics and recover from the console", fallback.problem())

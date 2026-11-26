@@ -246,7 +246,7 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 		{4, "KATL_STATE", "state-partuuid", stateType},
 	}})
 	host.mountRoot(t, root, 2)
-	writeTestFile(t, filepath.Join(root, "dev/disk/by-diskseq/1-part2"), string(testBootRootImage()))
+	writeTestFile(t, filepath.Join(root, "dev/vda2"), string(testBootRootImage()))
 	writeTestFile(t, filepath.Join(root, "efi", previous.Boot.LoaderEntryPath), "known-good loader entry")
 	// udev has not yet created the inactive partition's by-diskseq link: only
 	// the kernel node exists.

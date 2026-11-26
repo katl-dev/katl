@@ -65,7 +65,7 @@ func TestBootability(t *testing.T) {
 				test.change(t, root, &spec)
 			}
 			probe := bootabilityCheck{root: root}
-			got := probe.check(spec, status)
+			got := probe.check(spec, status, bootFull)
 			if got.state != test.want || !strings.Contains(got.evidence, test.evidence) {
 				t.Fatalf("bootability = %+v, want %d with %q", got, test.want, test.evidence)
 			}
@@ -218,7 +218,7 @@ func bootDevicePath(root, slot string) string {
 	if slot == "root-b" {
 		part = "2"
 	}
-	return filepath.Join(root, "dev/disk/by-diskseq", "17-part"+part)
+	return filepath.Join(root, "dev", "vda"+part)
 }
 
 func writeBootDisk(t *testing.T, root string) {

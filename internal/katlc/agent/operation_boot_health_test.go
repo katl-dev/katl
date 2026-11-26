@@ -151,7 +151,7 @@ func TestPendingReceiptReportsBootability(t *testing.T) {
 				}
 			case "root":
 				writeTestBootArtifacts(t, server.Root, spec)
-				path := filepath.Join(server.Root, "dev/disk/by-diskseq/17-part1")
+				path := filepath.Join(server.Root, "dev/vda1")
 				if err := os.Truncate(path, 96); err != nil {
 					t.Fatal(err)
 				}

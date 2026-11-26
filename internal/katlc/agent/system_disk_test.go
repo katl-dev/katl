@@ -108,7 +108,7 @@ func writeTestBootDisk(t *testing.T, root, partUUID string) {
 		{3, "KATL_STATE", "state-partuuid", stateType},
 	}})
 	host.mountRoot(t, root, 1)
-	writeTestFile(t, filepath.Join(root, "dev/disk/by-diskseq/17-part1"), string(testBootRootImage()))
+	writeTestFile(t, filepath.Join(root, "dev/vda1"), string(testBootRootImage()))
 }
 
 func (h *hostDisks) run(_ context.Context, argv []string, _ func(int)) ToolResult {
