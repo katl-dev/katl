@@ -281,6 +281,9 @@ and verifies that it agrees with the effective EFI variable, where a one-shot
 takes precedence over the persistent default. If both variables are absent on
 readable, mounted efivarfs, the default reported by `bootctl` is sufficient.
 An unmounted efivarfs or an unreadable variable makes the entry indeterminate.
+A `preferred` key in the ESP's `loader/loader.conf` also makes the entry
+indeterminate because firmware can apply it ahead of the persistent EFI default
+that `bootctl list` reports. KatlOS does not write this key.
 A successful staging receipt can still report a bootability problem if the
 target changes after staging. The agent refuses to schedule the reboot when it
 cannot verify the target.
@@ -294,6 +297,13 @@ and continues checking the candidate. Failure selection checks known-good
 health, the loader entry, and the UKI before setting the fallback as the
 default. Slot replacement also checks the running generation's loader entry
 and UKI before redirecting EFI and allowing the overwrite.
+
+A trial staged by v2026.11.5 did not receive the full fallback check at
+staging. On that upgrade, the boot-safe checks at activation can still arm
+recovery if the fallback's root bytes are damaged but its PARTUUID, loader
+entry, UKI, and known-good status survive. This matches the released behavior.
+Every trial staged by this version receives full fallback verification at
+staging.
 
 The existing trial and boot-local authorization rules govern when recovery can
 act. The durable boot-move intent and EFI reconciliation are tracked in

@@ -223,10 +223,24 @@ func (s *Server) checkRebootTarget(ctx context.Context, target string) error {
 	if err != nil {
 		return fmt.Errorf("next systemd-boot entry is indeterminate: %w", err)
 	}
+	espPath := filepath.Join(runtimeRoot(s.Root), "efi")
+	loaderConf := filepath.Join(espPath, "loader", "loader.conf")
+	config, err := os.ReadFile(loaderConf)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("next systemd-boot entry is indeterminate: %w", err)
+	}
+	// Firmware considers preferred before LoaderEntryDefault, while bootctl
+	// can report the EFI default. KatlOS does not write preferred.
+	for i, line := range strings.Split(string(config), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == "preferred" {
+			return fmt.Errorf("next systemd-boot entry is indeterminate: %s:%d sets preferred. Remove that line and use 'katlctl node generations select' if you need to change the boot target", loaderConf, i+1)
+		}
+	}
 	// systemd-boot owns entry matching and precedence.
 	bootCtx, cancel := context.WithTimeout(ctx, bootRootMountTimeout)
 	defer cancel()
-	result := s.runBootctl(bootCtx, []string{"bootctl", "--esp-path=" + filepath.Join(runtimeRoot(s.Root), "efi"), "--json=short", "list"}, nil)
+	result := s.runBootctl(bootCtx, []string{"bootctl", "--esp-path=" + espPath, "--json=short", "list"}, nil)
 	if result.Err != nil || result.ExitStatus != 0 {
 		return fmt.Errorf("inspect next systemd-boot entry: %s", toolFailure(result))
 	}

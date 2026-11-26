@@ -503,6 +503,32 @@ func TestRebootAdmitsLoaderConfigDefault(t *testing.T) {
 	}
 }
 
+func TestRebootRefusesPreferredLoaderEntry(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+	writeRebootEFIDefault(t, server.Server)
+	// bootctl reports the EFI default, which firmware can override with preferred.
+	loaderConf := filepath.Join(server.Root, "efi", "loader", "loader.conf")
+	if err := os.WriteFile(loaderConf, []byte("# Boot selection\r\n \tpreferred\tkatl-other.conf\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server.RunReboot = func(context.Context, []string, func(int)) ToolResult {
+		t.Fatal("scheduled reboot despite a preferred loader entry")
+		return ToolResult{}
+	}
+
+	_, err := server.Reboot(t.Context(), &agentapi.RebootRequest{
+		ApiVersion: APIVersion, Kind: RebootRequestKind, Actor: "test",
+		ExpectedMachineId: testMachineID, TargetGenerationId: "generation-0",
+	})
+	if status.Code(err) != codes.FailedPrecondition ||
+		!strings.Contains(err.Error(), "entry is indeterminate") ||
+		!strings.Contains(err.Error(), "loader.conf:2 sets preferred") ||
+		!strings.Contains(err.Error(), "Remove that line") {
+		t.Fatalf("reboot = %v, want refusal identifying the directive and how to recover", err)
+	}
+}
+
 func TestRebootRefusesDifferentFirmwareTarget(t *testing.T) {
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)
