@@ -17,12 +17,20 @@ import (
 )
 
 func TestPhaseNetworkEvidence(t *testing.T) {
-	for _, phase := range []string{"timeout", "success", "aborted hook"} {
+	for _, phase := range []string{"timeout", "unreserved timeout", "guest dial timeout", "success", "aborted hook"} {
 		t.Run(phase, func(t *testing.T) {
 			dir := t.TempDir()
 			virsh := filepath.Join(dir, "virsh")
 			destroyed := filepath.Join(dir, "destroyed")
 			t.Setenv("KATL_FAKE_DESTROYED", destroyed)
+			mac := "52:54:00:01:02:03"
+			t.Setenv("KATL_FAKE_MAC", mac)
+			unreserved := phase == "unreserved timeout"
+			if unreserved {
+				t.Setenv("KATL_FAKE_UNRESERVED", "1")
+			} else {
+				t.Setenv("KATL_FAKE_UNRESERVED", "")
+			}
 			writeExecutable(t, virsh, `#!/usr/bin/env bash
 set -eu
 shift 2
@@ -33,17 +41,19 @@ case "$1" in
   destroy) touch "$KATL_FAKE_DESTROYED" ;;
   dumpxml)
     test ! -e "$KATL_FAKE_DESTROYED"
-    echo '<domain><devices><vsock><cid address="41"/></vsock>
-      <interface><mac address="52:54:00:01:02:05"/><source network="isolated"/><target dev="vnet5"/></interface>
-      <interface><mac address="52:54:00:01:02:03"/><source network="isolated"/><target dev="vnet9"/></interface>
-      </devices></domain>'
+    echo '<domain><devices><vsock><cid address="41"/></vsock>'
+    if [[ -z "$KATL_FAKE_UNRESERVED" ]]; then
+      echo '<interface><mac address="52:54:00:01:02:05"/><source network="isolated"/><target dev="vnet5"/></interface>'
+    fi
+    echo '<interface><mac address="52:54:00:01:02:03"/><source network="isolated"/><target dev="vnet9"/></interface>
+          </devices></domain>'
     ;;
   net-dumpxml)
     test "$2" = isolated && test ! -e "$KATL_FAKE_DESTROYED"
     echo '<network><bridge name="virbr7"/></network>'
     ;;
   net-dhcp-leases)
-    test "$*" = 'net-dhcp-leases isolated --mac 52:54:00:01:02:03' && test ! -e "$KATL_FAKE_DESTROYED"
+    test "$*" = "net-dhcp-leases isolated --mac $KATL_FAKE_MAC" && test ! -e "$KATL_FAKE_DESTROYED"
     echo 'Expiry Time  MAC address  Protocol  IP address'
     ;;
   *) exit 1 ;;
@@ -51,8 +61,12 @@ esac
 `)
 			result, config := vmFixture(t)
 			config.KVM, config.VirshPath = KVMOff, virsh
-			config.Network = VMNetworkConfig{Name: "isolated", MAC: "52:54:00:01:02:03"}
+			config.Network = VMNetworkConfig{Name: "isolated"}
+			if !unreserved {
+				config.Network.MAC = mac
+			}
 			config.VSock.Enabled = true
+			evidenceDir := strings.TrimSuffix(result.Artifacts.InstallerSerial, ".log") + "-network-evidence"
 			guest := &networkEvidenceGuest{fakeGuestClient: fakeGuestClient{
 				command: &vmtestpb.CommandResult{Stdout: []byte(`[{"ifname":"other0","address":"52:54:00:01:02:05"},{"ifname":"enp1s9","address":"52:54:00:01:02:03"}]`)},
 				journal: &vmtestpb.JournalResult{Text: "enp1s9: Lost carrier\n"},
@@ -65,6 +79,12 @@ esac
 				}
 				if _, err := os.Stat(destroyed); !errors.Is(err, os.ErrNotExist) {
 					return nil, fmt.Errorf("guest capture ran after destroy: %v", err)
+				}
+				if phase == "guest dial timeout" {
+					if _, err := os.Stat(filepath.Join(evidenceDir, "network.json")); err != nil {
+						return nil, fmt.Errorf("host evidence was not persisted before dialing: %w", err)
+					}
+					return nil, context.DeadlineExceeded
 				}
 				return guest, nil
 			}
@@ -88,13 +108,12 @@ esac
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
-			evidenceDir := strings.TrimSuffix(result.Artifacts.InstallerSerial, ".log") + "-network-evidence"
 			done := make(chan struct{})
 			go func() {
 				defer close(done)
 				result = runner.RunWithVM(ctx, result, config, func(vm *VMHandle) error {
 					switch phase {
-					case "timeout":
+					case "timeout", "unreserved timeout", "guest dial timeout":
 						wait, cancel := context.WithDeadline(vm.ctx, time.Now())
 						defer cancel()
 						return wait.Err()
@@ -111,7 +130,7 @@ esac
 				}
 				return
 			}
-			if phase == "timeout" && (result.Status != StatusFailed || result.FailureSummary != context.DeadlineExceeded.Error()) {
+			if phase != "aborted hook" && (result.Status != StatusFailed || result.FailureSummary != context.DeadlineExceeded.Error()) {
 				t.Fatalf("phase timeout result = %s, %q", result.Status, result.FailureSummary)
 			}
 
@@ -121,9 +140,21 @@ esac
 			}
 			tap := &linkState{Interface: "vnet9", Carrier: "1", Operstate: "unknown"}
 			bridge := &linkState{Interface: "virbr7", Carrier: "1", Operstate: "up"}
-			if !reflect.DeepEqual(evidence.Tap, tap) || !reflect.DeepEqual(evidence.Bridge, bridge) ||
-				!strings.Contains(evidence.DHCPLeases, "Expiry Time") || len(evidence.HostErrors) != 0 || evidence.GuestError != "" {
+			if evidence.MAC != mac || !reflect.DeepEqual(evidence.Tap, tap) || !reflect.DeepEqual(evidence.Bridge, bridge) ||
+				!strings.Contains(evidence.DHCPLeases, "Expiry Time") || len(evidence.HostErrors) != 0 {
 				t.Fatalf("network evidence = %+v, tap = %+v, bridge = %+v", evidence, evidence.Tap, evidence.Bridge)
+			}
+			if _, err := os.Stat(destroyed); err != nil {
+				t.Fatalf("executor did not destroy the domain after capture: %v", err)
+			}
+			if phase == "guest dial timeout" {
+				if evidence.GuestError != "connect guest control: "+context.DeadlineExceeded.Error() {
+					t.Fatalf("guest error = %q", evidence.GuestError)
+				}
+				return
+			}
+			if evidence.GuestError != "" {
+				t.Fatalf("guest error = %q", evidence.GuestError)
 			}
 			if guest.commandReq == nil || !reflect.DeepEqual(guest.commandReq.Argv, []string{"ip", "-j", "-d", "link", "show"}) ||
 				guest.journalReq == nil || !reflect.DeepEqual(guest.journalReq.Units, []string{"systemd-networkd.service"}) {
@@ -145,9 +176,6 @@ esac
 			}
 			if got := readFile(t, report.Journals[0].Artifact); got != "enp1s9: Lost carrier\n" {
 				t.Fatalf("networkd journal = %q", got)
-			}
-			if _, err := os.Stat(destroyed); err != nil {
-				t.Fatalf("executor did not destroy the domain after capture: %v", err)
 			}
 		})
 	}

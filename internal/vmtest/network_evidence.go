@@ -42,12 +42,6 @@ func (r VMRunner) captureNetworkFailure(ctx context.Context, plan VMPlan, result
 	evidence.captureHost(hostCtx, virsh, r.probe.withDefaults().readFile)
 	cancel()
 
-	// Give these diagnostics their own directory so they cannot replace the
-	// scenario's normal guest diagnostics or be replaced by a subsequent phase.
-	result.Artifacts.GuestDir = dir
-	if err := r.captureGuestNetwork(ctx, plan, result); err != nil {
-		evidence.GuestError = err.Error()
-	}
 	path := filepath.Join(dir, "network.json")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		fmt.Fprintf(os.Stderr, "vmtest network evidence: %v\n", err)
@@ -58,6 +52,16 @@ func (r VMRunner) captureNetworkFailure(ctx context.Context, plan VMPlan, result
 		return
 	}
 	fmt.Fprintf(os.Stderr, "vmtest network evidence: %s\n", path)
+
+	// Persist the host snapshot before contacting the affected guest.
+	// Keep these diagnostics separate from the scenario's normal guest data.
+	result.Artifacts.GuestDir = dir
+	if err := r.captureGuestNetwork(ctx, plan.VSock, result, evidence.MAC); err != nil {
+		evidence.GuestError = err.Error()
+		if err := writeJSON(path, evidence); err != nil {
+			fmt.Fprintf(os.Stderr, "vmtest network evidence: %v\n", err)
+		}
+	}
 }
 
 func (e *networkEvidence) captureHost(ctx context.Context, virsh func(context.Context, ...string) (string, error), readFile func(string) ([]byte, error)) {
@@ -136,23 +140,30 @@ func readLinkState(name string, readFile func(string) ([]byte, error)) *linkStat
 	return state
 }
 
-func (r VMRunner) captureGuestNetwork(ctx context.Context, plan VMPlan, result Result) error {
-	if !plan.VSock.Enabled || plan.VSock.GuestCID == 0 {
+func (r VMRunner) captureGuestNetwork(ctx context.Context, vsock VSockPlan, result Result, mac string) error {
+	if !vsock.Enabled || vsock.GuestCID == 0 {
 		return errors.New("guest control is unavailable; see the serial log")
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-	client, err := r.connectGuest(dialCtx, plan.VSock, result.Artifacts.VSockTranscript)
+	client, err := r.connectGuest(dialCtx, vsock, result.Artifacts.VSockTranscript)
 	cancel()
 	if err != nil {
 		return fmt.Errorf("connect guest control: %w", err)
 	}
 	defer client.Close()
 
+	// Bound the whole guest exchange, including a write to an unresponsive peer.
+	const linkTimeout, diagnosticsTimeout = 2 * time.Second, 6 * time.Second
+	ctx, cancel = context.WithTimeout(ctx, linkTimeout+diagnosticsTimeout)
+	defer cancel()
+	stop := context.AfterFunc(ctx, func() { _ = client.Close() })
+	defer stop()
+
 	guest := NewGuestControl(result, client)
-	guest.Timeout = 2 * time.Second
-	link, err := guestInterfaceForMAC(ctx, guest, plan.MACAddress)
+	guest.Timeout = linkTimeout
+	link, err := guestInterfaceForMAC(ctx, guest, mac)
 	diagnostics := GuestDiagnostics{
-		Timeout: 6 * time.Second,
+		Timeout: diagnosticsTimeout,
 		Journals: []GuestJournalRequest{
 			{Name: "networkd", Units: []string{"systemd-networkd.service"}, MaxBytes: 128 << 10},
 		},

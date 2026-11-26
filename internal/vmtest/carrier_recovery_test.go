@@ -2,6 +2,7 @@ package vmtest
 
 import (
 	"context"
+	"encoding/xml"
 	"fmt"
 	"net/netip"
 	"path/filepath"
@@ -17,7 +18,16 @@ func TestInstalledRuntimeCarrierRecovery(t *testing.T) {
 	if !DefaultOptions().Enabled {
 		t.Skip("run with scripts/vmtest-run")
 	}
-	const scenario = "installed-runtime-carrier-recovery"
+	t.Run("post-lease", func(t *testing.T) {
+		testInstalledRuntimeCarrierRecovery(t, "installed-runtime-carrier-recovery", false)
+	})
+	t.Run("pre-lease", func(t *testing.T) {
+		testInstalledRuntimeCarrierRecovery(t, "installed-runtime-carrier-recovery-pre-lease", true)
+	})
+}
+
+func testInstalledRuntimeCarrierRecovery(t *testing.T, scenario string, preLease bool) {
+	t.Helper()
 	run, ok := installedRuntimeWorldRunFor(t, scenario, NodeSpec{Name: "cp-1", Role: ControlPlane})
 	if !ok {
 		t.Fatal("run this test with a vmtest world")
@@ -60,6 +70,17 @@ func TestInstalledRuntimeCarrierRecovery(t *testing.T) {
 	// Retain the old boot identity to prove the interruption hits the rebooted guest.
 	defer client.Close()
 	previousBoot := guestBootID(t, ctx, client)
+	plan := node.handle.Plan
+	virsh := LibvirtVMExecutor{VirshPath: plan.VirshPath, URI: plan.LibvirtURI}
+	var restoreDHCP func(context.Context)
+	if preLease {
+		if !run.Scenario.owned || plan.LibvirtNetwork != run.Scenario.World.Network.Name {
+			t.Fatal("pre-lease carrier recovery requires a scenario-owned network")
+		}
+		// The agent can become ready after networkd has already received a
+		// lease. Pause DHCP before reboot so link-up can be observed without racing it.
+		restoreDHCP = pauseScenarioDHCP(t, ctx, virsh, run.Scenario.ownedNetwork())
+	}
 	cursor := len(node.handle.notifyEvents())
 
 	rebootCtx, stop := context.WithTimeout(ctx, 3*time.Minute)
@@ -70,24 +91,40 @@ func TestInstalledRuntimeCarrierRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	plan := node.handle.Plan
 	guest := NewGuestControl(node.Result, client)
 	link, err := guestInterfaceForMAC(rebootCtx, guest, plan.MACAddress)
 	if err != nil {
 		t.Fatal(err)
 	}
-	virsh := LibvirtVMExecutor{VirshPath: plan.VirshPath, URI: plan.LibvirtURI}
 	prefix := netip.PrefixFrom(reserved, 32)
-	if err := waitCarrierAddress(rebootCtx, client, link, prefix, "1", true); err != nil {
+	outagePrefix := prefix
+	if preLease {
+		outagePrefix = netip.PrefixFrom(netip.IPv4Unspecified(), 0)
+	}
+	if err := waitCarrierAddress(rebootCtx, client, link, outagePrefix, "1", !preLease); err != nil {
 		t.Fatalf("new boot %s did not bring up %s: %v", bootID, link, err)
 	}
+	// Host-side setlink tests recovery from a carrier loss that clears.
+	// In #529 the guest lost carrier with host carrier up and never regained it.
 	if err := virsh.virsh(rebootCtx, "domif-setlink", plan.DomainName, plan.MACAddress, "down"); err != nil {
 		t.Fatal(err)
 	}
 	// A cached libvirt lease may survive the outage. Require the guest to
 	// actually lose the address before giving it carrier again.
-	if err := waitCarrierAddress(rebootCtx, client, link, prefix, "0", false); err != nil {
-		t.Fatalf("carrier interruption did not remove %s from %s: %v", reserved, link, err)
+	if err := waitCarrierAddress(rebootCtx, client, link, outagePrefix, "0", false); err != nil {
+		t.Fatalf("guest did not observe carrier down without an address from %s on %s: %v", outagePrefix, link, err)
+	}
+	if preLease {
+		hold := time.NewTimer(3 * time.Second)
+		defer hold.Stop()
+		select {
+		case <-rebootCtx.Done():
+			t.Fatal(rebootCtx.Err())
+		case <-hold.C:
+		}
+		// Have the server ready before restoring carrier so the first lease
+		// depends on carrier recovery, with no guest-side reconfigure.
+		restoreDHCP(rebootCtx)
 	}
 	if err := virsh.virsh(rebootCtx, "domif-setlink", plan.DomainName, plan.MACAddress, "up"); err != nil {
 		t.Fatal(err)
@@ -99,8 +136,53 @@ func TestInstalledRuntimeCarrierRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	runKatlctl(t, rebootCtx, result, katlctl, "carrier-restored-status", "node", "status", node.Name, "--output", "json")
+	if got := guestBootID(t, rebootCtx, client); got != bootID {
+		t.Fatalf("carrier recovery changed boot ID from %s to %s", bootID, got)
+	}
 	if err := run.Scenario.WriteResult(WorldStatusPassed, ""); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func pauseScenarioDHCP(t *testing.T, ctx context.Context, virsh LibvirtVMExecutor, network OwnedNetwork) func(context.Context) {
+	t.Helper()
+	var live struct {
+		IPs []struct {
+			Ranges []struct {
+				XMLName xml.Name
+				networkDHCPRange
+			} `xml:"dhcp>range"`
+			Hosts []networkDHCPHost `xml:"dhcp>host"`
+		} `xml:"ip"`
+	}
+	if err := readLiveXML(ctx, virsh.virshOutput, &live, "net-dumpxml", network.Name); err != nil {
+		t.Fatal(err)
+	}
+	if len(live.IPs) != 1 || len(live.IPs[0].Ranges) != 1 || len(live.IPs[0].Hosts) != 1 || len(network.Hosts) != 1 ||
+		!strings.EqualFold(live.IPs[0].Hosts[0].MAC, network.Hosts[0].MACAddress) {
+		t.Fatal("expected the scenario network to have one DHCP pool and the node's reservation")
+	}
+	pool, err := xml.Marshal(live.IPs[0].Ranges[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	reservation, err := network.HostXML(network.Hosts[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	update := func(ctx context.Context, action, section, element string) {
+		t.Helper()
+		if err := virsh.virsh(ctx, "net-update", network.Name, action, section, element, "--parent-index", "0", "--live"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Remove both allocations so dnsmasq cannot serve a dynamic or reserved
+	// address. Range updates restart dnsmasq without replacing the bridge.
+	update(ctx, "delete", "ip-dhcp-host", reservation)
+	update(ctx, "delete", "ip-dhcp-range", string(pool))
+	return func(ctx context.Context) {
+		update(ctx, "add-last", "ip-dhcp-range", string(pool))
+		update(ctx, "add-last", "ip-dhcp-host", reservation)
 	}
 }
 

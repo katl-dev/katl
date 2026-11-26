@@ -250,6 +250,7 @@ jobs:
             _build/hosted-agent/**/*.stderr
             _build/hosted-agent/**/stdout
             _build/hosted-agent/**/stderr
+            _build/hosted-agent/**/*-network-evidence/**
           retention-days: 3
       - uses: actions/cache/save@v6
         if: github.ref == 'refs/heads/main' && always() && steps.runtime.outcome == 'success' && steps.build-cache.outputs.cache-hit != 'true'

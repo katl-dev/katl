@@ -78,33 +78,58 @@ func (s *vsockNotifySocket) Close() error {
 }
 
 func DialVSock(ctx context.Context, cid, port uint32) (*os.File, error) {
-	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM|unix.SOCK_NONBLOCK|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}
-	done := make(chan error, 1)
-	go func() {
-		for {
-			err := unix.Connect(fd, &unix.SockaddrVM{CID: cid, Port: port})
-			if err == unix.EINTR {
-				continue
-			}
-			done <- err
-			return
-		}
-	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			_ = unix.Close(fd)
-			return nil, err
-		}
-		return os.NewFile(uintptr(fd), fmt.Sprintf("vsock-%d-%d", cid, port)), nil
-	case <-ctx.Done():
-		_ = unix.Close(fd)
-		<-done
+	file := os.NewFile(uintptr(fd), fmt.Sprintf("vsock-%d-%d", cid, port))
+	err = unix.Connect(fd, &unix.SockaddrVM{CID: cid, Port: port})
+	if err == unix.EINPROGRESS || err == unix.EINTR {
+		err = waitVSockConnect(ctx, file)
+	}
+	if ctx.Err() != nil {
+		_ = file.Close()
 		return nil, ctx.Err()
 	}
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	return file, nil
+}
+
+func waitVSockConnect(ctx context.Context, file *os.File) error {
+	conn, err := file.SyscallConn()
+	if err != nil {
+		return err
+	}
+	// Closing a pollable file wakes RawConn.Write without waiting for the
+	// kernel's connection timeout.
+	stop := context.AfterFunc(ctx, func() { _ = file.Close() })
+	defer stop()
+	var connectErr error
+	err = conn.Write(func(fd uintptr) bool {
+		var status int
+		status, connectErr = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_ERROR)
+		if connectErr != nil {
+			return true
+		}
+		if status != 0 {
+			connectErr = syscall.Errno(status)
+			return true
+		}
+		// RawConn may call us before the socket becomes writable. SO_ERROR
+		// can be zero while the handshake is still pending.
+		_, connectErr = unix.Getpeername(int(fd))
+		return connectErr != unix.ENOTCONN
+	})
+	if err != nil {
+		return err
+	}
+	return connectErr
 }
 
 func ListenVSock(ctx context.Context, port uint32, ready func() error, handler func(*os.File)) error {
