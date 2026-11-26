@@ -31,7 +31,29 @@ func (c *generationClient) RemoveGeneration(_ context.Context, r *agentapi.Gener
 }
 
 func (c *generationClient) ListGenerations(context.Context, *agentapi.ListGenerationsRequest, ...grpc.CallOption) (*agentapi.ListGenerationsResponse, error) {
+	if c.generationList != nil {
+		return c.generationList, nil
+	}
 	return &agentapi.ListGenerationsResponse{DefaultGenerationId: "current", NextBootGenerationId: "previous", OneShot: true, KeepLast: 5, MaxAge: "720h", Generations: []*agentapi.Generation{{GenerationId: "previous", RuntimeVersion: "1", RootSlot: "root-b", ProtectedBy: []string{"slot rollback"}}, {GenerationId: "current", RuntimeVersion: "2", RootSlot: "root-a", ProtectedBy: []string{"active", "default"}}}}, nil
+}
+
+func TestGenerationListShowsNextBootDiagnostic(t *testing.T) {
+	fake := &generationClient{fakeKatlcAgentClient: healthyHostClient("machine-a", "agent-a", "current")}
+	fake.generationList = &agentapi.ListGenerationsResponse{
+		DefaultGenerationId:  "current",
+		NextBootGenerationId: "previous",
+		Generations:          []*agentapi.Generation{{GenerationId: "previous", UnavailableReason: "bootability indeterminate: input/output error"}},
+	}
+	installKatlcDial(t, nil, fake)
+
+	var out bytes.Buffer
+	args := []string{"node", "generations", "list", "--node", "node-a", "--endpoint", "node-a.test:9443"}
+	if err := run(t.Context(), args, &out, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "next boot (bootability indeterminate: input/output error)") {
+		t.Fatalf("listed next boot without its diagnostic: %s", &out)
+	}
 }
 
 func TestGenerationCommands(t *testing.T) {

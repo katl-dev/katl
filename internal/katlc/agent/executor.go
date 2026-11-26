@@ -917,6 +917,9 @@ func (e *Executor) commitTrialGeneration(ctx context.Context, record operation.O
 	selection.PendingHealthValidation = true
 	selection.PersistentDefaultPromotion = generation.DefaultPromotionPending
 	selection.UpdatedAt = committedAt
+	if err := generation.CheckTrialFallback(e.Root, selection); err != nil {
+		return err
+	}
 	if err := generation.WriteBootSelection(e.Root, selection); err != nil {
 		return fmt.Errorf("arm boot health validation: %w", err)
 	}

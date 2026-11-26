@@ -45,10 +45,19 @@ func (s *Server) SelectGeneration(ctx context.Context, req *agentapi.GenerationM
 	if err := s.mountGenerationBootRoot(ctx); err != nil {
 		return nil, err
 	}
-	err := generation.Select(generation.SelectRequest{
+	// Once selection is published, EFI writes and compensation must still run
+	// if the request goes away. Bound each write so compensation has its own time.
+	setBootEntry := func(set func(context.Context, string, string) error) generation.BootDefaultSetter {
+		return func(root, entry string) error {
+			efiCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bootRootMountTimeout)
+			defer cancel()
+			return set(efiCtx, root, entry)
+		}
+	}
+	err := generation.Select(ctx, generation.SelectRequest{
 		Root: s.Root, GenerationID: req.GenerationId, OneShot: req.OneShot, Now: s.clock(),
-		SetDefault: func(root, entry string) error { return s.SetBootDefault(ctx, root, entry) },
-		SetOneshot: func(root, entry string) error { return s.SetBootOneshot(ctx, root, entry) },
+		SetDefault: setBootEntry(s.SetBootDefault),
+		SetOneshot: setBootEntry(s.SetBootOneshot),
 	})
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "select generation: %v", err)

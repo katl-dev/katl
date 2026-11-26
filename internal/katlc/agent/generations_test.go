@@ -17,6 +17,59 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+func TestSelectionCompensatesAfterRPCCancellation(t *testing.T) {
+	server, _ := knownGoodNode(t, healthSucceeded)
+	selection, err := generation.ReadBootSelection(server.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection.DefaultGenerationID, selection.TargetBootGenerationID = "old", "once"
+	selection.DefaultBootEntry, selection.TargetBootEntry = "loader/entries/katl-old.conf", "loader/entries/katl-once.conf"
+	selection.OneShot = true
+	if err := generation.WriteBootSelection(server.Root, selection); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	firmwareDefault, firmwareNext := selection.DefaultBootEntry, selection.TargetBootEntry
+	const newEntry = "loader/entries/katl-generation-0.conf"
+	server.SetBootDefault = func(efiCtx context.Context, _ string, entry string) error {
+		if err := efiCtx.Err(); err != nil {
+			return err
+		}
+		firmwareDefault = entry
+		if entry == newEntry {
+			cancel()
+		}
+		return nil
+	}
+	server.SetBootOneshot = func(efiCtx context.Context, _ string, entry string) error {
+		if err := efiCtx.Err(); err != nil {
+			return err
+		}
+		if _, bounded := efiCtx.Deadline(); !bounded {
+			t.Error("EFI write has no deadline")
+		}
+		firmwareNext = entry
+		if entry == newEntry {
+			return errors.New("one-shot update failed after write")
+		}
+		return nil
+	}
+
+	_, err = server.SelectGeneration(ctx, &agentapi.GenerationMutationRequest{
+		GenerationId: "generation-0", ExpectedEnrollmentId: testEnrollmentID, ExpectedInventoryNodeName: testInventoryNodeName,
+		ExpectedMachineId: testMachineID, ExpectedCurrentGenerationId: "generation-0",
+	})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "one-shot update failed after write") {
+		t.Fatalf("select = %v, want write failure after cancellation", err)
+	}
+	after, err := generation.ReadBootSelection(server.Root)
+	if err != nil || after != selection || firmwareDefault != selection.DefaultBootEntry || firmwareNext != selection.TargetBootEntry {
+		t.Fatalf("after cancellation selection = %+v, %v; EFI default = %q, one-shot = %q", after, err, firmwareDefault, firmwareNext)
+	}
+}
+
 func TestGenerationMutationBinding(t *testing.T) {
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)
@@ -71,10 +124,12 @@ func TestGenerationManagementAPI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Use an independently published older generation as the removable target.
+	// Publish a generation whose runtime has since been replaced on this slot.
 	other := spec
 	other.GenerationID = "old"
 	other.Boot.LoaderEntryPath = "loader/entries/katl-old.conf"
+	other.Boot.UKIPath = "/efi/EFI/katl/old.efi"
+	other.Root.RuntimeArtifactSHA256 = strings.Repeat("a", 64)
 	other.Confexts = nil
 	other.CreatedAt = spec.CreatedAt.Add(-1)
 	oldState, err := generation.NewGenerationStatus(other, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, spec.CreatedAt)
@@ -86,13 +141,8 @@ func TestGenerationManagementAPI(t *testing.T) {
 	}
 	// Initial generation's fixture has not passed health yet. Removal still
 	// protects it because it is the selected default, independently of health.
-	path := filepath.Join(server.Root, "efi/loader/entries/katl-old.conf")
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("old entry"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	writeTestBootArtifacts(t, server.Root, other)
+	path := filepath.Join(server.Root, "efi", other.Boot.LoaderEntryPath)
 	server.MountBootRoot = func(context.Context, string) error { return nil }
 	req := &agentapi.GenerationMutationRequest{GenerationId: "generation-0", ExpectedEnrollmentId: testEnrollmentID, ExpectedInventoryNodeName: testInventoryNodeName, ExpectedMachineId: testMachineID, ExpectedCurrentGenerationId: "generation-0"}
 	if _, err := server.RemoveGeneration(context.Background(), req); err == nil || !strings.Contains(err.Error(), "protected") {
@@ -106,6 +156,42 @@ func TestGenerationManagementAPI(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("boot entry remained: %v", err)
+	}
+}
+
+func TestStageRefusesUnverifiedFallback(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	before, err := generation.ReadBootSelection(server.Root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(server.Root, "dev/vda1")
+	if err := os.Truncate(path, 96); err != nil {
+		t.Fatal(err)
+	}
+	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor.Async = false
+	executor.SetBootOneshot = func(context.Context, string, string) error {
+		t.Fatal("staged a one-shot without a verified fallback")
+		return nil
+	}
+	server.Dispatcher = executor
+
+	accepted, err := server.StageGeneration(t.Context(), &agentapi.GenerationApplyRequest{
+		ApiVersion: APIVersion, Kind: "GenerationApplyRequest", ClientRequestId: "stage-invalid-fallback",
+		Actor: "test", ExpectedMachineId: testMachineID, CandidateGenerationId: "next", ConfigYaml: configApplyYAML("next-boot"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := server.GetOperation(t.Context(), &agentapi.GetOperationRequest{OperationId: accepted.OperationId})
+	if err != nil || !completed.GetTerminal() || completed.GetResult() == operation.ResultSucceeded ||
+		!strings.Contains(completed.GetFailureReason(), "bootability indeterminate") {
+		t.Fatalf("stage = %+v, %v, want unverified fallback refusal", completed, err)
+	}
+	if after, err := generation.ReadBootSelection(server.Root); err != nil || before != after {
+		t.Fatalf("selection changed after refusal: %+v, %v", after, err)
 	}
 }
 

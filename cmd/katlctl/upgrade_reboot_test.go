@@ -224,8 +224,10 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 		// observations are reported in order; the last repeats.
 		observations []bootObservation
 		// settled is the observation the wait must end on.
-		settled int
-		err     []string
+		settled         int
+		err             []string
+		noRebootAdvice  bool
+		nextUnavailable string
 	}{
 		{
 			name: "same generation waits for its own boot",
@@ -244,8 +246,18 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 				{agentStart: "after", running: "gen-a", health: "failed", diagnostic: skipped, nextBoot: "gen-old", candidate: healthy},
 				{agentStart: "after", running: "gen-a", health: "failed", diagnostic: skipped, nextBoot: "gen-old", candidate: healthy},
 			},
-			settled: 2,
-			err:     []string{"node cp-1 failed boot health on generation gen-a: " + skipped, "generation gen-old is selected for next boot", "'katlctl node reboot cp-1 --config cluster.yaml'", "'katlctl node logs cp-1 --config cluster.yaml'"},
+			settled:        2,
+			err:            []string{"node cp-1 failed boot health on generation gen-a: " + skipped, "Generation gen-old is recorded for next boot", "'katlctl node generations list cp-1 --config cluster.yaml'", "'katlctl node logs cp-1 --config cluster.yaml'"},
+			noRebootAdvice: true,
+		},
+		{
+			name: "recorded fallback with indeterminate bootability",
+			observations: []bootObservation{
+				{agentStart: "after", running: "gen-a", health: "failed", diagnostic: skipped, nextBoot: "gen-old", candidate: unhealthy},
+			},
+			err:             []string{"Generation gen-old is recorded for next boot (bootability indeterminate: input/output error)", "'katlctl node generations list cp-1 --config cluster.yaml'"},
+			noRebootAdvice:  true,
+			nextUnavailable: "bootability indeterminate: input/output error",
 		},
 		{
 			name: "failed boot without another generation",
@@ -287,6 +299,10 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 				observed = min(observed+1, len(test.observations)-1)
 				current := test.observations[observed]
 				fake.nodeStatus = current.status()
+				fake.generationList = &agentapi.ListGenerationsResponse{
+					NextBootGenerationId: current.nextBoot,
+					Generations:          []*agentapi.Generation{{GenerationId: current.nextBoot, UnavailableReason: test.nextUnavailable}},
+				}
 				fake.generation = &agentapi.Generation{GenerationId: "gen-a", CommitState: generation.CommitStateCommitted, BootState: generation.BootStateGood, HealthState: current.candidate}
 				if current.candidate == unhealthy {
 					fake.generation.BootState = generation.BootStateFailed
@@ -313,6 +329,9 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 			}
 			if err == nil {
 				t.Fatalf("wait succeeded, want error containing %q", test.err)
+			}
+			if test.noRebootAdvice && strings.Contains(err.Error(), "'katlctl node reboot") {
+				t.Errorf("error recommends rebooting with indeterminate bootability: %v", err)
 			}
 			for _, want := range test.err {
 				if !strings.Contains(err.Error(), want) {

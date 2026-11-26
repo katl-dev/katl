@@ -26,7 +26,7 @@ func ValidateMutationBase(root, expected string) error {
 		if selection.TargetBootGenerationID != "" && selection.TargetBootGenerationID != active {
 			return fmt.Errorf("generation %q is selected for the next boot; complete or explicitly change that selection first", selection.TargetBootGenerationID)
 		}
-		items, err := inspect(root, selection)
+		items, err := readManagedGenerations(root)
 		if err != nil {
 			return err
 		}

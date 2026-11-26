@@ -67,15 +67,19 @@ func newGenerationsCommand(ctx context.Context, stdout io.Writer) *cobra.Command
 				w := newTable(stdout)
 				w.row("GENERATION", "KATLOS", "SLOT", "CREATED", "BOOT", "PROTECTED BY")
 				for _, gen := range result.Generations {
-					boot := "available"
+					boot := "artifacts present"
 					if gen.UnavailableReason != "" {
 						boot = gen.UnavailableReason
 					}
 					if gen.GenerationId == result.NextBootGenerationId {
-						boot = "next boot"
+						next := "next boot"
 						if result.OneShot {
-							boot += " (one-shot)"
+							next += " (one-shot)"
 						}
+						if gen.UnavailableReason != "" {
+							next += " (" + gen.UnavailableReason + ")"
+						}
+						boot = next
 					}
 					w.row(gen.GenerationId, gen.RuntimeVersion, gen.RootSlot, gen.CreatedAt, boot, strings.Join(gen.ProtectedBy, ", "))
 				}

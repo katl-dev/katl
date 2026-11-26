@@ -7,12 +7,15 @@
 package systemdisk
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"unicode/utf16"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/katl-dev/katl/internal/installer/disk"
 )
@@ -56,6 +59,50 @@ type Layout struct {
 	Root  Partition
 	ESP   Partition
 	State Partition
+
+	diskDir string
+}
+
+// ResolveRunning identifies the system disk backing the mounted root.
+func ResolveRunning(root string) (Layout, error) {
+	var info unix.Stat_t
+	if err := unix.Stat(root, &info); err != nil {
+		return Layout{}, fmt.Errorf("stat mounted root: %w", err)
+	}
+	device := uint64(info.Dev)
+	return Resolve(filepath.Join(root, "sys"), unix.Major(device), unix.Minor(device), true)
+}
+
+// BootPartition binds a generation's PARTUUID to a partition on the running
+// system disk. A duplicate could make the initrd boot a different disk.
+func (layout Layout) BootPartition(uuid string) (Partition, bool, error) {
+	var selected Partition
+	var unidentified bool
+	for _, partition := range layout.Disk.Partitions {
+		unidentified = unidentified || partition.UUID == ""
+		if !strings.EqualFold(partition.UUID, uuid) {
+			continue
+		}
+		if selected.Name != "" {
+			return Partition{}, false, fmt.Errorf("system disk has multiple partitions with PARTUUID %s", uuid)
+		}
+		selected = partition
+	}
+	if selected.Name == "" {
+		if unidentified {
+			return Partition{}, false, fmt.Errorf("a partition on system disk %s has no reported PARTUUID", layout.Disk.Name)
+		}
+		return Partition{}, false, nil
+	}
+	if selected.DiskSeq == 0 {
+		return Partition{}, false, fmt.Errorf("system disk %s has no disk sequence number", layout.Disk.Name)
+	}
+	if selected.UUID != layout.Root.UUID {
+		if err := checkNoClones(selected.sysfs, layout.diskDir, selected); err != nil {
+			return Partition{}, false, err
+		}
+	}
+	return selected, true, nil
 }
 
 // DevicePath addresses a partition by its disk's attachment sequence, so the
@@ -86,7 +133,14 @@ func (p Partition) Node() (string, error) {
 	}
 	for _, entry := range entries {
 		dir, err := filepath.EvalSymlinks(filepath.Join(p.sysfs, "class/block", entry.Name()))
-		if err != nil || !isPartition(dir) {
+		if err != nil {
+			continue
+		}
+		partition, err := isPartition(dir)
+		if err != nil {
+			return "", err
+		}
+		if !partition {
 			continue
 		}
 		candidate, err := readPartition(p.sysfs, dir)
@@ -103,7 +157,14 @@ func (p Partition) Node() (string, error) {
 // partitionOf describes the partition with the given device number.
 func partitionOf(sysfs string, device Device) (Partition, error) {
 	dir, err := filepath.EvalSymlinks(filepath.Join(sysfs, "dev/block", fmt.Sprintf("%d:%d", device.Major, device.Minor)))
-	if err != nil || !isPartition(dir) {
+	if err != nil {
+		return Partition{}, fmt.Errorf("%d:%d is not a disk partition", device.Major, device.Minor)
+	}
+	partition, err := isPartition(dir)
+	if err != nil {
+		return Partition{}, err
+	}
+	if !partition {
 		return Partition{}, fmt.Errorf("%d:%d is not a disk partition", device.Major, device.Minor)
 	}
 	return readPartition(sysfs, dir)
@@ -120,7 +181,11 @@ func Resolve(sysfs string, major, minor uint32, checkBoot bool) (Layout, error) 
 	if err != nil {
 		return Layout{}, &Failure{Cause: fmt.Sprintf("the running root %d:%d is not a known block device", major, minor), Guidance: reinstallGuidance}
 	}
-	if !isPartition(rootDir) {
+	isRootPartition, err := isPartition(rootDir)
+	if err != nil {
+		return Layout{}, err
+	}
+	if !isRootPartition {
 		return Layout{}, &Failure{Cause: fmt.Sprintf("the running root %s is not a disk partition", filepath.Base(rootDir)), Guidance: reinstallGuidance}
 	}
 
@@ -135,8 +200,15 @@ func Resolve(sysfs string, major, minor uint32, checkBoot bool) (Layout, error) 
 	}
 	var root Partition
 	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
 		dir := filepath.Join(diskDir, entry.Name())
-		if !isPartition(dir) {
+		isPart, err := isPartition(dir)
+		if err != nil {
+			return Layout{}, err
+		}
+		if !isPart {
 			continue
 		}
 		partition, err := readPartition(sysfs, dir)
@@ -149,7 +221,7 @@ func Resolve(sysfs string, major, minor uint32, checkBoot bool) (Layout, error) 
 		}
 	}
 
-	layout := Layout{Disk: system, Root: root}
+	layout := Layout{Disk: system, Root: root, diskDir: diskDir}
 	if layout.ESP, err = uniqueLabel(system, disk.GPTLabelESP); err != nil {
 		return Layout{}, err
 	}
@@ -159,7 +231,7 @@ func Resolve(sysfs string, major, minor uint32, checkBoot bool) (Layout, error) 
 	if !checkBoot {
 		return layout, nil
 	}
-	if err := checkNoClones(sysfs, diskDir, layout); err != nil {
+	if err := checkNoClones(sysfs, diskDir, layout.Root, layout.ESP, layout.State); err != nil {
 		return Layout{}, err
 	}
 	if err := checkBootedESP(sysfs, diskDir, layout); err != nil {
@@ -187,9 +259,9 @@ func uniqueLabel(system Disk, label string) (Partition, error) {
 // checkNoClones fails when a partition on another disk shares a PARTUUID with
 // the system disk. The firmware and initrd select partitions by PARTUUID, so
 // a cloned disk makes it impossible to know which disk was meant.
-func checkNoClones(sysfs, diskDir string, layout Layout) error {
+func checkNoClones(sysfs, diskDir string, partitions ...Partition) error {
 	owned := map[string]string{}
-	for _, partition := range []Partition{layout.Root, layout.ESP, layout.State} {
+	for _, partition := range partitions {
 		if partition.UUID != "" {
 			owned[partition.UUID] = partition.Name
 		}
@@ -200,12 +272,22 @@ func checkNoClones(sysfs, diskDir string, layout Layout) error {
 	}
 	for _, entry := range entries {
 		dir, err := filepath.EvalSymlinks(filepath.Join(sysfs, "class/block", entry.Name()))
-		if err != nil || filepath.Dir(dir) == diskDir || !isPartition(dir) {
+		if err != nil {
+			return fmt.Errorf("resolve block device %s for PARTUUID scan: %w", entry.Name(), err)
+		}
+		if filepath.Dir(dir) == diskDir {
+			continue
+		}
+		isPart, err := isPartition(dir)
+		if err != nil {
+			return err
+		}
+		if !isPart {
 			continue
 		}
 		other, err := readPartition(sysfs, dir)
 		if err != nil {
-			continue
+			return err
 		}
 		if name, ok := owned[other.UUID]; ok {
 			return &Failure{
@@ -263,9 +345,15 @@ func decodeEFIString(value []byte) string {
 	return strings.ToLower(strings.TrimSpace(string(utf16.Decode(units))))
 }
 
-func isPartition(dir string) bool {
+func isPartition(dir string) (bool, error) {
 	_, err := os.Stat(filepath.Join(dir, "partition"))
-	return err == nil
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("check partition attribute for %s: %w", filepath.Base(dir), err)
+	}
+	return true, nil
 }
 
 func readPartition(sysfs, dir string) (Partition, error) {

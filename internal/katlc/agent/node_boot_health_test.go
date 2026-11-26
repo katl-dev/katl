@@ -82,6 +82,7 @@ func knownGoodNode(t *testing.T, unitProperties string) (*testServer, *healthUni
 	if err := generation.WriteGeneration(root, spec, knownGood); err != nil {
 		t.Fatal(err)
 	}
+	writeTestBootArtifacts(t, root, spec)
 	writeProcCmdline(t, root, "root=PARTUUID=11111111-1111-1111-1111-111111111111 rootfstype=squashfs ro katl.generation=generation-0")
 	unit := &healthUnit{}
 	unit.set(unitProperties)
@@ -245,6 +246,7 @@ func TestMutationWaitsForBootHealth(t *testing.T) {
 	t.Run("reboot and shutdown", func(t *testing.T) {
 		bootHealthAdmissionWait = 10 * time.Second
 		server, _ := knownGoodNode(t, healthSettling)
+		writeRebootEFIDefault(t, server.Server)
 		server.RunReboot = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
 		server.RunShutdown = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)

@@ -98,11 +98,14 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 			record.RecoveryRequired,
 			record.RebootRequested,
 		)
+		if record.FallbackProblem != "" {
+			fmt.Fprintln(stdout, record.FallbackProblem)
+		}
 	}
 	if record.KeptKnownGood && requestedResult == generation.BootHealthFailure && (*requestReboot || forceFailure) {
 		return fmt.Errorf("running generation %s stays known-good. The boot default is generation %s. "+
 			"Generation %s is selected for the next boot. No automatic reboot. "+
-			"See 'katlctl node status <node>' and 'systemctl --failed'. "+
+			"See 'katlctl node status <node>', 'katlctl node generations list <node>' and 'systemctl --failed'. "+
 			"Use the node console or out-of-band access if remote management is unreachable. "+
 			"Fix the cause, for example with 'katlctl cluster apply', then run 'katlctl node reboot <node>'",
 			record.GenerationID, record.DefaultGeneration, record.NextBootGeneration)

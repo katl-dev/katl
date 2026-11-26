@@ -2,7 +2,10 @@ package generation
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -23,7 +26,7 @@ func TestSelectionBoots(t *testing.T) {
 				SetOneshot: func(_, entry string) error { firmwareNext = entry; return nil },
 			}
 			for range 2 {
-				if err := Select(req); err != nil {
+				if err := Select(t.Context(), req); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -82,12 +85,62 @@ func TestSelectionFailureRestoresDefault(t *testing.T) {
 		}
 		return nil
 	}}
-	if err := Select(req); err == nil {
+	if err := Select(t.Context(), req); err == nil {
 		t.Fatal("expected EFI failure")
 	}
 	selection, _ := ReadBootSelection(root)
 	if selection.DefaultGenerationID != "current" || selection.TargetBootGenerationID != "" || entry != "loader/entries/katl-current.conf" {
 		t.Fatalf("selection=%+v entry=%s", selection, entry)
+	}
+}
+
+func TestExpiredSelectionLeavesBootTargetUnchanged(t *testing.T) {
+	root, now := managementFixture(t)
+	managedFixture(t, root, "old", "root-a", "1", now.Add(-time.Hour))
+	before, err := ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firmwareDefault, firmwareNext := before.DefaultBootEntry, before.TargetBootEntry
+	ctx, cancel := context.WithDeadline(t.Context(), time.Time{})
+	defer cancel()
+
+	err = Select(ctx, SelectRequest{
+		Root: root, GenerationID: "old",
+		SetDefault: func(_, entry string) error { firmwareDefault = entry; return nil },
+		SetOneshot: func(_, entry string) error { firmwareNext = entry; return nil },
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("select = %v, want expired deadline", err)
+	}
+	after, err := ReadBootSelection(root)
+	if err != nil || after != before || firmwareDefault != before.DefaultBootEntry || firmwareNext != before.TargetBootEntry {
+		t.Fatalf("after deadline selection = %+v, %v; EFI default = %q, one-shot = %q", after, err, firmwareDefault, firmwareNext)
+	}
+}
+
+func TestSelectionRequiresKnownGood(t *testing.T) {
+	root, now := managementFixture(t)
+	managedFixture(t, root, "old", "root-b", "1", now.Add(-time.Hour))
+	spec, _, err := ReadGeneration(root, "old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := NewGenerationStatus(spec, CommitStateCommitted, BootStateFailed, HealthStateUnhealthy, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteGenerationStatus(root, spec, state); err != nil {
+		t.Fatal(err)
+	}
+
+	setter := func(_, entry string) error {
+		t.Fatalf("unexpected EFI write to %s", entry)
+		return nil
+	}
+	err = Select(t.Context(), SelectRequest{Root: root, GenerationID: "old", SetDefault: setter, SetOneshot: setter})
+	if err == nil || !strings.Contains(err.Error(), "has not passed boot health") {
+		t.Fatalf("select = %v, want health refusal for a bootable generation", err)
 	}
 }
 
@@ -144,7 +197,7 @@ func TestPruneReplacedOS(t *testing.T) {
 	}
 	for _, item := range items {
 		if item.Spec.GenerationID == "obsolete" {
-			if item.Status.UnavailableReason != "" || item.UnavailableReason != "OS slot has been replaced" {
+			if item.UnavailableReason != "" {
 				t.Fatalf("obsolete generation availability = %+v", item)
 			}
 		}
@@ -246,6 +299,7 @@ func managementFixture(t *testing.T) (string, time.Time) {
 	t.Helper()
 	root := t.TempDir()
 	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	writeBootDisk(t, root)
 	managedFixture(t, root, "current", "root-a", "1", now)
 	writeBootHealthSelection(t, root, BootSelectionRecord{APIVersion: APIVersion, Kind: BootSelectionKind, DefaultGenerationID: "current", ActiveGenerationID: "current", BootedGenerationID: "current", DefaultBootEntry: "loader/entries/katl-current.conf", BootedBootEntry: "loader/entries/katl-current.conf", UpdatedAt: now})
 	return root, now
@@ -259,6 +313,9 @@ func managedFixture(t *testing.T, root, id, slot, version string, created time.T
 	}
 	record := abRecord(t, id, slot, uuid, version, "v1.36.1", created)
 	spec := SpecFromRecord(record)
+	image := bootRootImage(version)
+	spec.Root.RuntimeArtifactSHA256 = fmt.Sprintf("%x", sha256.Sum256(image))
+	writeBootFixture(t, bootDevicePath(root, slot), append(image, []byte("old partition tail")...))
 	spec.Boot.LoaderEntryPath = "loader/entries/katl-" + id + ".conf"
 	spec.Boot.UKIPath = "/efi/EFI/katl/" + slot + ".efi"
 	state, err := NewGenerationStatus(spec, CommitStateCommitted, BootStateGood, HealthStateHealthy, created)
@@ -273,22 +330,19 @@ func managedFixture(t *testing.T, root, id, slot, version string, created time.T
 		paths = append(paths, ref.Path)
 	}
 	for _, ref := range spec.Confexts {
-		paths = append(paths, ref.Path)
+		if err := os.MkdirAll(rootedPathUnchecked(root, ref.Path), 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	for _, path := range paths {
-		full := rootedPathUnchecked(root, path)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte("artifact"), 0o644); err != nil {
-			t.Fatal(err)
-		}
+		writeBootFixture(t, rootedPathUnchecked(root, path), []byte("artifact"))
 	}
 }
 
 func TestReplaceStagedSlot(t *testing.T) {
 	root, now := managementFixture(t)
 	managedFixture(t, root, "staged", "root-b", "2", now.Add(time.Hour))
+	removeBootFixture(t, filepath.Join(root, "efi/EFI/katl/root-a.efi"))
 	selection, _ := ReadBootSelection(root)
 	selection.TargetBootGenerationID = "staged"
 	selection.TargetBootEntry = "loader/entries/katl-staged.conf"
@@ -300,12 +354,28 @@ func TestReplaceStagedSlot(t *testing.T) {
 		t.Fatal(err)
 	}
 	firmwareDefault, firmwareNext := "loader/entries/katl-current.conf", selection.TargetBootEntry
-	err := InvalidateSlot(root, "22222222-2222-3333-4444-555555555555", now,
-		func(_, entry string) error { firmwareDefault = entry; return nil }, func(_, entry string) error { firmwareNext = entry; return nil })
-	if err != nil {
+	const partitionUUID = "22222222-2222-3333-4444-555555555555"
+	setDefault := func(_, entry string) error { firmwareDefault = entry; return nil }
+	setOneshot := func(_, entry string) error { firmwareNext = entry; return nil }
+	if err := InvalidateSlot(root, partitionUUID, now, setDefault, setOneshot); err == nil || !strings.Contains(err.Error(), "root-a.efi") {
+		t.Fatalf("replace without running UKI = %v, want refusal", err)
+	}
+	after, err := ReadBootSelection(root)
+	if err != nil || after != selection || firmwareDefault != selection.DefaultBootEntry || firmwareNext != selection.TargetBootEntry {
+		t.Fatalf("refusal changed selection or EFI: %+v %v %s %s", after, err, firmwareDefault, firmwareNext)
+	}
+	spec, state, err := ReadGeneration(root, "staged")
+	if err != nil || state.UnavailableReason != "" {
+		t.Fatalf("refusal invalidated the staged generation: %+v %v", state, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "efi", spec.Boot.LoaderEntryPath)); err != nil {
+		t.Fatalf("refusal removed the staged loader entry: %v", err)
+	}
+
+	writeBootFixture(t, filepath.Join(root, "efi/EFI/katl/root-a.efi"), []byte("restored UKI"))
+	if err := InvalidateSlot(root, partitionUUID, now, setDefault, setOneshot); err != nil {
 		t.Fatal(err)
 	}
-	// If the replacement write subsequently fails, firmware still boots current.
 	selection, _ = ReadBootSelection(root)
 	if firmwareDefault != "loader/entries/katl-current.conf" || firmwareNext != "" || selection.PendingHealthValidation || selection.TargetBootGenerationID != "" {
 		t.Fatalf("unsafe replacement: %+v %s %s", selection, firmwareDefault, firmwareNext)
@@ -318,7 +388,7 @@ func TestFailedBootConsumesManualSelection(t *testing.T) {
 			root, now := managementFixture(t)
 			managedFixture(t, root, "old", "root-a", "1", now.Add(-time.Hour))
 			entry := "loader/entries/katl-current.conf"
-			if err := Select(SelectRequest{
+			if err := Select(t.Context(), SelectRequest{
 				Root: root, GenerationID: "old", OneShot: oneShot, Now: now,
 				SetDefault: func(_, value string) error { entry = value; return nil },
 				SetOneshot: func(string, string) error { return nil },

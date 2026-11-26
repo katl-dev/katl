@@ -12,8 +12,6 @@ import (
 	"strconv"
 	"strings"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/katl-dev/katl/internal/systemdisk"
 )
 
@@ -21,11 +19,7 @@ import (
 // the checks the boot-time generator makes: it refuses when another disk shares
 // a PARTUUID with the system disk or the firmware booted a different ESP.
 func bootedSystemDisk() (systemdisk.Layout, error) {
-	var root unix.Stat_t
-	if err := unix.Stat("/", &root); err != nil {
-		return systemdisk.Layout{}, fmt.Errorf("identify the system disk: stat /: %w", err)
-	}
-	layout, err := systemdisk.Resolve("/sys", unix.Major(root.Dev), unix.Minor(root.Dev), true)
+	layout, err := systemdisk.ResolveRunning("/")
 	if failure := (*systemdisk.Failure)(nil); errors.As(err, &failure) {
 		return systemdisk.Layout{}, fmt.Errorf("identify the system disk: %s. %s", failure.Cause, failure.Guidance)
 	}

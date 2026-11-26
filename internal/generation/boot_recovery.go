@@ -41,8 +41,11 @@ func ArmBootRecovery(root string, generationID string) (bool, error) {
 			return nil
 		}
 		fallbackID := strings.TrimSpace(selection.PreviousKnownGoodGenerationID)
-		if fallbackID == "" || fallbackID == generationID || !validBootRecoveryTarget(root, selection, fallbackID) {
+		if fallbackID == "" || fallbackID == generationID {
 			return nil
+		}
+		if err := checkTrialFallback(root, selection, bootIdentity); err != nil {
+			return err
 		}
 		data, err := json.Marshal(bootRecoveryArm{
 			TrialGeneration:    generationID,
@@ -61,27 +64,43 @@ func ArmBootRecovery(root string, generationID string) (bool, error) {
 	return armed, err
 }
 
-func validBootRecoveryTarget(root string, selection BootSelectionRecord, generationID string) bool {
+// CheckTrialFallback verifies the known-good generation that a staged trial can
+// return to. Callers own when the trial is eligible to be armed.
+func CheckTrialFallback(root string, selection BootSelectionRecord) error {
+	return checkTrialFallback(root, selection, bootFull)
+}
+
+func checkTrialFallback(root string, selection BootSelectionRecord, level bootabilityLevel) error {
+	id := selection.PreviousKnownGoodGenerationID
+	if id == "" || selection.IsPendingBootTarget(id) {
+		return fmt.Errorf("cannot arm trial without a distinct known-good fallback. Boot a known-good generation before retrying")
+	}
+	if err := checkRecoveryFallback(root, selection, id, level).problem(); err != nil {
+		return fmt.Errorf("cannot arm trial: fallback generation %s %w. Check 'katlctl node generations list' and restore the fallback or boot a known-good generation before retrying", id, err)
+	}
+	return nil
+}
+
+func checkRecoveryFallback(root string, selection BootSelectionRecord, generationID string, level bootabilityLevel) bootability {
 	spec, status, err := ReadGeneration(root, generationID)
-	if err != nil || !IsKnownGood(status) {
-		return false
+	if errors.Is(err, os.ErrNotExist) {
+		return bootability{state: bootUnavailable, evidence: "fallback generation record is missing"}
+	}
+	if err != nil {
+		return bootability{state: bootIndeterminate, err: fmt.Errorf("read fallback generation %s health: %w", generationID, err)}
+	}
+	if !IsKnownGood(status) {
+		return bootability{state: bootUnavailable, evidence: "fallback generation is not known-good"}
 	}
 	entry := strings.TrimSpace(selection.PreviousKnownGoodBootEntry)
 	if entry == "" && strings.TrimSpace(selection.DefaultGenerationID) == generationID {
 		entry = strings.TrimSpace(selection.DefaultBootEntry)
 	}
 	if entry == "" || entry != strings.TrimSpace(spec.Boot.LoaderEntryPath) {
-		return false
+		return bootability{state: bootUnavailable, evidence: "fallback loader entry does not match the generation"}
 	}
-	for _, path := range []string{
-		filepath.Join("/efi", entry),
-		filepath.Join("/efi", entryPath(spec.Boot.UKIPath)),
-	} {
-		if _, err := os.Stat(rootedPathUnchecked(root, path)); err != nil {
-			return false
-		}
-	}
-	return true
+	check := bootabilityCheck{root: root}
+	return check.check(spec, status, level)
 }
 
 // ClearBootRecovery removes the current boot's ephemeral reboot authorization.
@@ -125,8 +144,19 @@ func readRunningBoot(root, generationID string, selection BootSelectionRecord, s
 	fallbackID := strings.TrimSpace(arm.FallbackGeneration)
 	if trialID == generationID && fallbackID != "" && fallbackID != trialID &&
 		strings.TrimSpace(selection.PreviousKnownGoodGenerationID) == fallbackID {
-		boot.Armed = validBootRecoveryTarget(root, selection, fallbackID)
+		fallback := checkRecoveryFallback(root, selection, fallbackID, bootFiles)
+		if fallback.state == bootIndeterminate {
+			return runningBoot{}, fallback.problem()
+		}
+		boot.Armed = fallback.state == bootable
 	}
 	boot.Trial = boot.Trial || boot.Armed
 	return boot, nil
+}
+
+func recordedFallback(selection BootSelectionRecord, generationID string) bool {
+	return !selection.PendingHealthValidation && !selection.RecoveryRequired && !selection.OneShot &&
+		selection.TargetBootGenerationID == "" && selection.TrialGenerationID == "" &&
+		selection.FailedBootGenerationID == generationID &&
+		selection.DefaultGenerationID != "" && selection.DefaultGenerationID == selection.PreviousKnownGoodGenerationID
 }

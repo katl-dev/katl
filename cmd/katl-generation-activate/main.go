@@ -59,8 +59,10 @@ func run(_ context.Context, args []string, stdout io.Writer) error {
 		}
 	}
 	armed, err := generation.ArmBootRecovery(*root, selected)
-	if err != nil {
-		return fmt.Errorf("prepare boot recovery: %w", err)
+	if err != nil && stdout != nil {
+		// Failure to assess the fallback is independent of candidate health.
+		// Failing activation here would run the trial's failure handler.
+		fmt.Fprintf(stdout, "katl-generation-activate could not arm boot recovery for %s: %v\n", selected, err)
 	}
 	metadataPath, err := generation.MetadataPath(*root, selected)
 	if err != nil {

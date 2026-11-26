@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
@@ -34,6 +35,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/kubernetesidentity"
+	"golang.org/x/sys/unix"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -101,6 +103,8 @@ type Server struct {
 	volumeDevices            volumeDevices
 	RunEtcd                  ToolRunner
 	RunReboot                ToolRunner
+	runBootctl               ToolRunner
+	efiStatfs                func(int, *unix.Statfs_t) error
 	RunShutdown              ToolRunner
 	RunBootHealthStatus      ToolRunner
 	RunManagementTrial       ToolRunner
@@ -136,6 +140,8 @@ func NewServer(root string, store operation.Store) *Server {
 		RunVolumeDiscovery:       runChildProcess,
 		RunEtcd:                  runChildProcess,
 		RunReboot:                runChildProcess,
+		runBootctl:               runChildProcess,
+		efiStatfs:                unix.Fstatfs,
 		RunShutdown:              runChildProcess,
 		RunBootHealthStatus:      runChildProcess,
 		RunManagementTrial:       runChildProcess,
@@ -158,6 +164,8 @@ func (s *Server) Reboot(ctx context.Context, req *agentapi.RebootRequest) (*agen
 	if strings.TrimSpace(req.Actor) == "" {
 		return nil, status.Error(codes.InvalidArgument, "actor is required")
 	}
+	s.submitMu.Lock()
+	defer s.submitMu.Unlock()
 	if err := s.validateMutationTarget(req.ExpectedEnrollmentId, req.ExpectedInventoryNodeName, req.ExpectedMachineId, req.ExpectedCurrentGenerationId); err != nil {
 		return nil, err
 	}
@@ -165,25 +173,15 @@ func (s *Server) Reboot(ctx context.Context, req *agentapi.RebootRequest) (*agen
 	if err := cleanPublicID("targetGenerationID", target); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
-	_, generationStatus, err := generation.ReadGeneration(s.Root, target)
-	if err != nil {
-		return nil, status.Errorf(codes.FailedPrecondition, "read target generation: %v", err)
-	} else if generationStatus.UnavailableReason != "" || (generationStatus.CommitState != generation.CommitStateCommitted && !generation.IsKnownGood(generationStatus)) {
-		return nil, status.Errorf(codes.FailedPrecondition, "target generation %q is not committed", target)
-	}
-	selection, err := generation.ReadBootSelection(s.Root)
-	if err != nil {
-		return nil, status.Errorf(codes.FailedPrecondition, "read boot selection: %v", err)
-	}
-	if selection.TargetBootGenerationID != target && selection.DefaultGenerationID != target {
-		return nil, status.Errorf(codes.FailedPrecondition, "target generation %q is not selected for boot", target)
-	}
 	active, err := s.activeOperationIDs()
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "read operation locks: %v", err)
 	}
 	if len(active) > 0 {
 		return nil, status.Error(codes.FailedPrecondition, "cannot reboot while another operation is active")
+	}
+	if err := s.checkRebootTarget(ctx, target); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "refuse reboot: %v. Check 'katlctl node generations list' and restore the boot target before retrying", err)
 	}
 	if s.RunReboot == nil {
 		return nil, status.Error(codes.FailedPrecondition, "node reboot runner is not configured")
@@ -193,6 +191,85 @@ func (s *Server) Reboot(ctx context.Context, req *agentapi.RebootRequest) (*agen
 		return nil, status.Errorf(codes.Internal, "schedule reboot: %s", inventory.Redact(toolFailure(result)))
 	}
 	return &agentapi.RebootAccepted{Scheduled: true, TargetGenerationId: target}, nil
+}
+
+func (s *Server) checkRebootTarget(ctx context.Context, target string) error {
+	selection, err := generation.ReadBootSelection(s.Root)
+	if err != nil {
+		return err
+	}
+	if selection.NextBootGenerationID() != target {
+		return fmt.Errorf("generation %q is recorded for next boot, requested %q", selection.NextBootGenerationID(), target)
+	}
+	spec, state, err := generation.ReadGeneration(s.Root, target)
+	if err != nil {
+		return err
+	}
+	if state.CommitState != generation.CommitStateCommitted && !generation.IsKnownGood(state) {
+		return fmt.Errorf("target generation %q is not committed", target)
+	}
+	if err := generation.CheckBootability(s.Root, spec, state); err != nil {
+		return fmt.Errorf("target generation %s %w", target, err)
+	}
+	if selection.IsPendingBootTarget(target) && (spec.PreviousGenerationID != "" || selection.PreviousKnownGoodGenerationID != "") {
+		if err := generation.CheckTrialFallback(s.Root, selection); err != nil {
+			return err
+		}
+	}
+	if s.runBootctl == nil {
+		return fmt.Errorf("boot entry inspection is not configured")
+	}
+	efiEntries, err := s.readEFIBootEntries()
+	if err != nil {
+		return fmt.Errorf("next systemd-boot entry is indeterminate: %w", err)
+	}
+	espPath := filepath.Join(runtimeRoot(s.Root), "efi")
+	loaderConf := filepath.Join(espPath, "loader", "loader.conf")
+	config, err := os.ReadFile(loaderConf)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("next systemd-boot entry is indeterminate: %w", err)
+	}
+	// Firmware considers preferred before LoaderEntryDefault, while bootctl
+	// can report the EFI default. KatlOS does not write preferred.
+	for i, line := range strings.Split(string(config), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && fields[0] == "preferred" {
+			return fmt.Errorf("next systemd-boot entry is indeterminate: %s:%d sets preferred. Remove that line and use 'katlctl node generations select' if you need to change the boot target", loaderConf, i+1)
+		}
+	}
+	// systemd-boot owns entry matching and precedence.
+	bootCtx, cancel := context.WithTimeout(ctx, bootRootMountTimeout)
+	defer cancel()
+	result := s.runBootctl(bootCtx, []string{"bootctl", "--esp-path=" + espPath, "--json=short", "list"}, nil)
+	if result.Err != nil || result.ExitStatus != 0 {
+		return fmt.Errorf("inspect next systemd-boot entry: %s", toolFailure(result))
+	}
+	// bootctl can warn and continue when it cannot read a loader variable.
+	if diagnostic := strings.TrimSpace(string(result.Stderr)); diagnostic != "" {
+		return fmt.Errorf("next systemd-boot entry is indeterminate: %s", diagnostic)
+	}
+	var entries []struct {
+		ID        string `json:"id"`
+		IsDefault bool   `json:"isDefault"`
+	}
+	if err := json.Unmarshal(result.Stdout, &entries); err != nil {
+		return fmt.Errorf("decode systemd-boot entries: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDefault {
+			want := filepath.Base(spec.Boot.LoaderEntryPath)
+			if entry.ID != want {
+				return fmt.Errorf("systemd-boot will use entry %q ahead of %q for generation %s", entry.ID, want, target)
+			}
+			// A one-shot overrides the persistent variable. When both are
+			// absent on efivarfs, bootctl can report the loader.conf default.
+			if efiEntry := cmp.Or(efiEntries[0], efiEntries[1]); efiEntry != "" && !strings.EqualFold(entry.ID, efiEntry) {
+				return fmt.Errorf("next systemd-boot entry is indeterminate: EFI names entry %q but bootctl reports %q. Select generation %s with 'katlctl node generations select' before retrying", efiEntry, entry.ID, target)
+			}
+			return nil
+		}
+	}
+	return fmt.Errorf("systemd-boot did not report a next boot entry")
 }
 
 func (s *Server) Shutdown(ctx context.Context, req *agentapi.ShutdownRequest) (*agentapi.ShutdownAccepted, error) {
@@ -1411,7 +1488,7 @@ func (s *Server) operationStatus(record operation.OperationRecord, includeDiagno
 	// The receipt records what remained at operation completion. Generation
 	// health owns the later boot result, including after it is superseded.
 	if out.BootHealthPending && record.Terminal && record.Result == operation.ResultSucceeded {
-		_, state, err := generation.ReadGeneration(s.Root, record.CandidateGenerationID)
+		spec, state, err := generation.ReadGeneration(s.Root, record.CandidateGenerationID)
 		retired := err == nil && state.UnavailableReason != ""
 		if errors.Is(err, os.ErrNotExist) {
 			if selection, selectionErr := generation.ReadBootSelection(s.Root); selectionErr == nil {
@@ -1419,13 +1496,28 @@ func (s *Server) operationStatus(record operation.OperationRecord, includeDiagno
 				retired = selection.ActiveGenerationID != id && selection.BootedGenerationID != id && selection.DefaultGenerationID != id && selection.TargetBootGenerationID != id && selection.TrialGenerationID != id
 			}
 		}
-		if retired {
+		switch {
+		case retired:
 			out.BootHealthPending = false
 			out.NextAction = "generation is no longer bootable; list generations to choose an available boot target"
-		}
-		if err == nil && generation.IsKnownGood(state) && state.CommittedByOperation == record.OperationID {
+		case err == nil && generation.IsKnownGood(state) && state.CommittedByOperation == record.OperationID:
 			out.BootHealthPending = false
 			out.NextAction = "boot health completed; continue managing the node through its active generation"
+		default:
+			if err == nil {
+				selection, selectionErr := generation.ReadBootSelection(s.Root)
+				switch {
+				case selectionErr != nil:
+					err = selectionErr
+				case selection.NextBootGenerationID() != spec.GenerationID:
+					err = fmt.Errorf("is pending health validation and the recorded next boot is %s", selection.NextBootGenerationID())
+				default:
+					err = generation.CheckBootability(s.Root, spec, state)
+				}
+			}
+			if err != nil {
+				out.NextAction = fmt.Sprintf("generation %s %v. Check 'katlctl node generations list' before rebooting", record.CandidateGenerationID, err)
+			}
 		}
 	}
 	statusPath, err := generation.ConfigApplyStatusPath(s.Root, record.CandidateGenerationID)

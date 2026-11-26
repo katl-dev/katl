@@ -507,7 +507,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	// Published releases are immutable; local builds may reuse a version label
 	// with different runtime or extension content and must undergo preflight.
 	if localArtifact == nil && !opts.applyConfig && current.GetRuntimeVersion() == opts.version && installedFlavour == opts.flavour && current.GetCommitState() == generation.CommitStateCommitted && current.GetBootState() == generation.BootStateGood && current.GetHealthState() == generation.HealthStateHealthy {
-		return reportInstalledHostUpgrade(ctx, opts, target, status, recoveryRequirement, image, operation.ResultSucceeded, stdout, stderr)
+		return reportInstalledHostUpgrade(ctx, conn.Client, opts, target, status, recoveryRequirement, image, operation.ResultSucceeded, stdout, stderr)
 	}
 	if localArtifact != nil {
 		localRef, err := stageHostUpgradeArtifact(ctx, conn.Client, strings.TrimSpace(opts.actor), status, *localArtifact, target.nodeName, stderr)
@@ -572,7 +572,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	}
 	if preview := prepared.GetHostUpgradePreview(); preview != nil {
 		if preview.GetNoChanges() {
-			return reportInstalledHostUpgrade(ctx, opts, target, status, recoveryRequirement, image, "unchanged", stdout, stderr)
+			return reportInstalledHostUpgrade(ctx, conn.Client, opts, target, status, recoveryRequirement, image, "unchanged", stdout, stderr)
 		}
 		submit.HostUpgrade.ImageSha256 = preview.ImageSha256
 		submit.HostUpgrade.ImageSizeBytes = preview.ImageSizeBytes
@@ -675,7 +675,7 @@ func observedBootHealth(verified verifiedNodeBoot, targetGeneration string) stri
 	return "unknown"
 }
 
-func reportInstalledHostUpgrade(ctx context.Context, opts hostUpgradeOptions, target managementTarget, status *agentapi.NodeStatus, requirement nodeRecoveryRequirement, image, result string, stdout, stderr io.Writer) error {
+func reportInstalledHostUpgrade(ctx context.Context, client agentapi.KatlcAgentClient, opts hostUpgradeOptions, target managementTarget, status *agentapi.NodeStatus, requirement nodeRecoveryRequirement, image, result string, stdout, stderr io.Writer) error {
 	node := target.nodeName
 	if node == "" {
 		node = target.endpoint.String()
@@ -693,7 +693,7 @@ func reportInstalledHostUpgrade(ctx context.Context, opts hostUpgradeOptions, ta
 		_ = recoveryConn.Close()
 	}
 	if status.GetBootHealthState() == bootHealthFailed {
-		return bootHealthFailure(bootWaitTarget{nodeName: node, flags: opts.target.guidanceFlags()}, runningGeneration(status), status)
+		return bootHealthFailure(ctx, client, bootWaitTarget{nodeName: node, flags: opts.target.guidanceFlags()}, runningGeneration(status), status)
 	}
 	report := hostUpgradeReport{
 		Node: node, Version: opts.version, Flavour: opts.flavour, Image: image, Result: result,

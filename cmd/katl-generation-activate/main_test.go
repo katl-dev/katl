@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
+	"golang.org/x/sys/unix"
 )
 
 func TestGenerationActivateUsesSelectedMetadata(t *testing.T) {
@@ -64,8 +67,68 @@ func TestGenerationActivateRejectsMismatchedMetadata(t *testing.T) {
 
 func TestGenerationActivateArmsRecoveryBeforeCandidateActivation(t *testing.T) {
 	root := t.TempDir()
+	writeActivationTrial(t, root)
+
+	err := run(t.Context(), []string{"--root", root, "--generation", "candidate"}, nil)
+	if err == nil {
+		t.Fatal("activation with missing candidate metadata succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(root, "run/katl/boot-health/pending")); err != nil {
+		t.Fatalf("activation failure was not recovery-armed: %v", err)
+	}
+}
+
+func TestGenerationActivateContinuesWhenFallbackCannotBeRead(t *testing.T) {
+	root := t.TempDir()
+	writeActivationTrial(t, root)
+	writeActivationFallback(t, root, "candidate", time.Date(2026, 9, 28, 14, 0, 0, 0, time.UTC))
+	uki := filepath.Join(root, "efi/EFI/Linux/katl-known-good.efi")
+	if err := os.Remove(uki); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(uki, uki); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout bytes.Buffer
+	if err := run(t.Context(), []string{"--root", root, "--generation", "candidate"}, &stdout); err != nil {
+		t.Fatalf("unreadable fallback interrupted candidate activation: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "could not arm boot recovery") || !strings.Contains(stdout.String(), "recoveryArmed=false") {
+		t.Fatalf("activation omitted the recovery diagnostic: %s", &stdout)
+	}
+	if _, err := os.Stat(filepath.Join(root, "run/katl/boot-health/pending")); !os.IsNotExist(err) {
+		t.Fatalf("unreadable fallback created an authorization: %v", err)
+	}
+}
+
+func writeActivationTrial(t *testing.T, root string) {
+	t.Helper()
 	now := time.Date(2026, 9, 28, 14, 0, 0, 0, time.UTC)
 	writeActivationFallback(t, root, "known-good", now.Add(-time.Hour))
+	var stat unix.Stat_t
+	if err := unix.Stat(root, &stat); err != nil {
+		t.Fatal(err)
+	}
+	sysfs := filepath.Join(root, "sys")
+	device := fmt.Sprintf("%d:%d", unix.Major(uint64(stat.Dev)), unix.Minor(uint64(stat.Dev)))
+	disk := filepath.Join(sysfs, "devices/vda")
+	writeCommandFile(t, filepath.Join(disk, "diskseq"), "17\n")
+	for n, label := range []string{"KATL_ROOT_A", "KATL_ESP", "KATL_STATE"} {
+		dir := filepath.Join(disk, fmt.Sprintf("vda%d", n+1))
+		writeCommandFile(t, filepath.Join(dir, "partition"), fmt.Sprint(n+1))
+		writeCommandFile(t, filepath.Join(dir, "uevent"), fmt.Sprintf("PARTN=%d\nPARTNAME=%s\nPARTUUID=%d1111111-2222-3333-4444-555555555555\n", n+1, label, n+1))
+	}
+	for _, path := range []string{"dev/block/" + device, "class/block/vda1"} {
+		path = filepath.Join(sysfs, path)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(disk, "vda1"), path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeCommandFile(t, filepath.Join(root, "dev/disk/by-diskseq/17-part1"), string(activationRuntimeImage()))
 	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
 		APIVersion:                    generation.APIVersion,
 		Kind:                          generation.BootSelectionKind,
@@ -76,19 +139,12 @@ func TestGenerationActivateArmsRecoveryBeforeCandidateActivation(t *testing.T) {
 		DefaultBootEntry:              "loader/entries/katl-known-good.conf",
 		TrialBootEntry:                "loader/entries/katl-candidate.conf",
 		PreviousKnownGoodBootEntry:    "loader/entries/katl-known-good.conf",
+		PendingTransactionID:          "next-boot-apply",
 		PendingHealthValidation:       true,
 		PersistentDefaultPromotion:    generation.DefaultPromotionPending,
 		UpdatedAt:                     now,
 	}); err != nil {
 		t.Fatal(err)
-	}
-
-	err := run(t.Context(), []string{"--root", root, "--generation", "candidate"}, nil)
-	if err == nil {
-		t.Fatal("activation with missing candidate metadata succeeded")
-	}
-	if _, err := os.Stat(filepath.Join(root, "run/katl/boot-health/pending")); err != nil {
-		t.Fatalf("activation failure was not recovery-armed: %v", err)
 	}
 }
 
@@ -220,7 +276,7 @@ func writeActivationFallback(t *testing.T, root string, id string, updatedAt tim
 			RuntimeVersion:        "0.1.0",
 			RuntimeInterface:      "katl-runtime-1",
 			Architecture:          "x86_64",
-			RuntimeArtifactSHA256: strings.Repeat("a", 64),
+			RuntimeArtifactSHA256: fmt.Sprintf("%x", sha256.Sum256(activationRuntimeImage())),
 		},
 		Boot: generation.BootSelection{
 			UKIPath:         "/efi/EFI/Linux/katl-" + id + ".efi",
@@ -238,6 +294,13 @@ func writeActivationFallback(t *testing.T, root string, id string, updatedAt tim
 	for _, path := range []string{spec.Boot.UKIPath, filepath.Join("/efi", spec.Boot.LoaderEntryPath)} {
 		writeCommandFile(t, filepath.Join(root, strings.TrimPrefix(path, "/")), id)
 	}
+}
+
+func activationRuntimeImage() []byte {
+	image := make([]byte, 4096)
+	copy(image, "hsqs")
+	binary.LittleEndian.PutUint64(image[40:48], 96)
+	return image
 }
 
 func writeCommandFile(t *testing.T, path string, content string) {
