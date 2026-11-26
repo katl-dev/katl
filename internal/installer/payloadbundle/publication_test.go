@@ -3,6 +3,7 @@ package payloadbundle
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,12 +13,25 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"oras.land/oras-go/v2/errdef"
+	"oras.land/oras-go/v2/registry/remote"
 )
 
 func TestPublishLayout(t *testing.T) {
+	t.Run("retention tag becomes visible", func(t *testing.T) {
+		testPublishLayout(t, false)
+	})
+	t.Run("retention tag stays missing", func(t *testing.T) {
+		testPublishLayout(t, true)
+	})
+}
+
+func testPublishLayout(t *testing.T, retentionStaysMissing bool) {
+	t.Helper()
 	ctx := context.Background()
 	directory := t.TempDir()
 	blob := DescribeBytes([]byte("qualified driver bytes"), "systemd-sysext", "application/vnd.katl.sysext.raw.v1", "driver.raw")
@@ -35,6 +49,8 @@ func TestPublishLayout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	tag := "manifest-sha256-" + strings.TrimPrefix(packed.ManifestDigest, "sha256:")
+	backoff := []time.Duration{0, 0}
 
 	// Observe registry bytes independently of the bundle reader. Repacking a
 	// semantically equivalent manifest must not change the qualified identity.
@@ -43,6 +59,8 @@ func TestPublishLayout(t *testing.T) {
 	tags := map[string]string{}
 	writes := 0
 	requests := 0
+	retentionPuts := 0
+	retentionMissingReads := 0
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -67,11 +85,20 @@ func TestPublishLayout(t *testing.T) {
 			data, _ := io.ReadAll(r.Body)
 			pin := digest.FromBytes(data).String()
 			objects[pin] = data
-			tags[strings.TrimPrefix(path, "manifests/")] = pin
+			uploadedTag := strings.TrimPrefix(path, "manifests/")
+			tags[uploadedTag] = pin
+			if uploadedTag == tag {
+				retentionPuts++
+			}
 			writes++
 			w.Header().Set("Docker-Content-Digest", pin)
 			w.WriteHeader(http.StatusCreated)
 		case r.Method == http.MethodGet || r.Method == http.MethodHead:
+			if path == "manifests/"+tag && retentionPuts > 0 && (retentionStaysMissing || retentionMissingReads == 0) {
+				retentionMissingReads++
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
 			pin := strings.TrimPrefix(strings.TrimPrefix(path, "manifests/"), "blobs/")
 			if tagged, ok := tags[pin]; ok {
 				pin = tagged
@@ -96,16 +123,31 @@ func TestPublishLayout(t *testing.T) {
 		}
 	}))
 	defer server.Close()
+	repositoryName := strings.TrimPrefix(server.URL, "https://") + "/extensions/driver"
 	request := FetchRequest{
 		LayoutDir:       directory,
-		Reference:       strings.TrimPrefix(server.URL, "https://") + "/extensions/driver@" + packed.ManifestDigest,
+		Reference:       repositoryName + "@" + packed.ManifestDigest,
 		ArtifactType:    "application/vnd.katl.test.v1",
 		ConfigMediaType: "application/vnd.katl.test.config.v1+json",
 		Client:          server.Client(),
 	}
+	if retentionStaysMissing {
+		_, err := publishLayout(ctx, request, backoff)
+		verification := "verify published OCI tag " + repositoryName + ":" + tag
+		if !errors.Is(err, errdef.ErrNotFound) || !strings.Contains(err.Error(), verification) {
+			t.Fatalf("missing retention tag error = %v", err)
+		}
+		mu.Lock()
+		defer mu.Unlock()
+		if retentionPuts != 1 || retentionMissingReads != 1+len(backoff) {
+			t.Errorf("retention tag got %d PUTs and %d missing reads", retentionPuts, retentionMissingReads)
+		}
+		return
+	}
+
 	initialWrites := 0
 	for attempt := 0; attempt < 2; attempt++ {
-		published, err := PublishLayout(ctx, request)
+		published, err := publishLayout(ctx, request, backoff)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -123,7 +165,7 @@ func TestPublishLayout(t *testing.T) {
 	}
 	alias := "v2026.9.0-beta.15-standard-x86_64-driver-1.0.0"
 	aliased := request
-	aliased.Reference = strings.TrimSuffix(request.Reference, "@"+packed.ManifestDigest) + ":" + alias + "@" + packed.ManifestDigest
+	aliased.Reference = repositoryName + ":" + alias + "@" + packed.ManifestDigest
 	for attempt := 0; attempt < 2; attempt++ {
 		published, err := PublishLayout(ctx, aliased)
 		if err != nil {
@@ -141,9 +183,27 @@ func TestPublishLayout(t *testing.T) {
 		}
 		mu.Unlock()
 	}
+
+	repository, err := remote.NewRepository(repositoryName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	repository.Client = server.Client()
+	for _, name := range []string{tag, alias} {
+		resolved, err := repository.Resolve(ctx, name)
+		if err != nil || resolved.Digest.String() != packed.ManifestDigest {
+			t.Errorf("resolve %s = %s, %v (want %s)", name, resolved.Digest, err, packed.ManifestDigest)
+		}
+	}
+	mu.Lock()
+	if retentionPuts != 1 {
+		t.Errorf("retention tag got %d PUTs, want 1", retentionPuts)
+	}
+	mu.Unlock()
+
 	// The build-and-publish interface uses the same transport contract.
 	published, err := Publish(ctx, PublishRequest{
-		Reference:       strings.TrimPrefix(server.URL, "https://") + "/extensions/driver:release-v1",
+		Reference:       repositoryName + ":release-v1",
 		ArtifactType:    build.ArtifactType,
 		ConfigMediaType: build.ConfigMediaType,
 		Config:          build.Config,
@@ -161,7 +221,6 @@ func TestPublishLayout(t *testing.T) {
 	// A conflicting retention tag must not be overwritten, even though its name
 	// was derived from the desired digest rather than supplied by an operator.
 	mu.Lock()
-	tag := "manifest-sha256-" + strings.TrimPrefix(packed.ManifestDigest, "sha256:")
 	conflict := digest.FromString("different manifest").String()
 	objects[conflict] = []byte("different manifest")
 	tags[tag] = conflict
