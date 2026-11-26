@@ -28,12 +28,14 @@ following AGENTS.md. Write it before enabling auto-merge and update it after
 every fix round so it describes the final change. Post gate results, reviews,
 the operator workflow, and journey evidence as PR comments.
 
-**Codex jobs.** Launch every Codex job as a tracked background command using
-the harness's `run_in_background`. Never launch a job with `&` or `nohup`.
-For the default role models, pass a role, a task name, and the brief as text or
-`@file` to `scripts/codex-role`. For example, use
-`scripts/codex-role reviewer review-contract @review.md` from the task worktree.
-When a role calls for Terra, give that Codex session the same role brief.
+**Codex jobs.** Use `scripts/codex-role` as the only way to launch a Codex job.
+Run it as a tracked background command with the harness's `run_in_background`
+so you can recover the systemd unit and its log after a hand-off. From the task
+worktree, pass the role, task name, and brief as text or `@file`. Use
+`scripts/codex-role reviewer review-contract @review.md` for review and
+`scripts/codex-role rebase rebase-pr @rebase.md` for rebases and conflict
+resolution. The rebase role uses Terra at medium effort by default and accepts
+`--effort low` before the task name.
 
 `codex-role` uses `systemd-run --user` to launch `katl-codex-<role>-<task>.service`,
 waits for the unit to finish, and returns its exit status. Choose a task name
@@ -46,9 +48,16 @@ existing parent directory. The unit overwrites the log with the Codex report
 and ends it with `exit=N`.
 
 The unit masks the home directory and mounts the worktree, linked Git metadata,
-Go caches, Codex auth and session state, and any external log directory. When
-GitHub CLI configuration is present, the unit mounts it read-only so roles can
-use `gh` to read issues and pull requests.
+Go caches, Codex auth and session state, and any external log directory. Start
+the launcher from a maintainer session where `gh` is authenticated to
+`github.com` when the brief requires GitHub reads. The launcher resolves the
+login before masking the home directory and supplies it as a read-only systemd
+credential. The login retains its existing GitHub API scopes.
+
+To make evidence outside the repository available at its existing path, pass
+`--ro-bind PATH` once per file or directory before the task name, then refer to
+the bound paths in the brief. This also applies to evidence in a session
+scratchpad under `/tmp`, because the unit uses a private `/tmp`.
 
 To recover jobs after a hand-off, find running units with
 `systemctl --user list-units 'katl-codex-*'`. Use

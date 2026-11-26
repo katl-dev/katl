@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-    printf 'usage: scripts/codex-role <delivery|reviewer|debugger> [--effort LEVEL] [--log PATH] [--bind DIR | --ro-bind DIR | --env NAME]... [--] <task-name> <task-text-or-@file>\n' >&2
+    printf 'usage: scripts/codex-role <delivery|reviewer|debugger|rebase> [--effort LEVEL] [--log PATH] [--bind DIR | --ro-bind PATH | --env NAME]... [--] <task-name> <task-text-or-@file>\n' >&2
     exit 2
 }
 
@@ -10,6 +10,7 @@ case "${1-}" in
     delivery) model=gpt-6.2-sol effort=medium sandbox=workspace-write ;;
     reviewer) model=gpt-6.2-astra effort=medium sandbox=read-only ;;
     debugger) model=gpt-6.2-astra effort=high sandbox=read-only ;;
+    rebase) model=gpt-6.1-terra effort=medium sandbox=workspace-write ;;
     *) usage ;;
 esac
 role="$1"
@@ -100,53 +101,65 @@ systemd_path() {
 # values of HOME too, and restore the selected host paths with BindPaths.
 mounts=(-p ProtectHome=tmpfs -p PrivateUsers=yes -p PrivateTmp=yes)
 [[ "$home" == /tmp ]] || mounts+=(-p "TemporaryFileSystem=$(systemd_path "$home"):ro")
-bind_dir() {
-    local property="$1" dir="$2" source spec
-    source="$(realpath -e -- "$dir")" && [[ -d "$source" ]] || {
-        printf 'codex-role: bind directory does not exist: %s\n' "$dir" >&2
-        exit 1
-    }
-    if [[ "$home" == "$source" || "$home" == "${source%/}/"* ]]; then
-        printf 'codex-role: bind would expose all of HOME: %s\n' "$dir" >&2
+bind_path() {
+    local property="$1" path="$2" source spec
+    if ! source="$(realpath -e -- "$path")" ||
+        ! [[ -d "$source" || ( "$property" == BindReadOnlyPaths && -f "$source" ) ]]; then
+        printf 'codex-role: invalid %s path: %s\n' "$property" "$path" >&2
         exit 1
     fi
-    if [[ "$source" == /tmp || "$dir" == /tmp ]]; then
-        printf 'codex-role: bind would expose all of /tmp: %s\n' "$dir" >&2
+    if [[ "$home" == "$source" || "$home" == "${source%/}/"* ]]; then
+        printf 'codex-role: bind would expose all of HOME: %s\n' "$path" >&2
+        exit 1
+    fi
+    if [[ "$source" == /tmp || "$path" == /tmp ]]; then
+        printf 'codex-role: bind would expose all of /tmp: %s\n' "$path" >&2
         exit 1
     fi
     spec="$(systemd_path "$source")"
-    if [[ "$source" != "$dir" ]]; then
-        spec+=":$(systemd_path "$dir")"
+    if [[ "$source" != "$path" ]]; then
+        spec+=":$(systemd_path "$path")"
     fi
     mounts+=(-p "$property=$spec")
 }
 
-bind_dir BindPaths "$repo_root"
+bind_path BindPaths "$repo_root"
 git_common="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)"
 case "$git_common" in
     "$repo_root"/*) ;;
-    *) bind_dir BindPaths "$git_common" ;; # A linked worktree needs the shared Git metadata.
+    *) bind_path BindPaths "$git_common" ;; # A linked worktree needs the shared Git metadata.
 esac
 log_dir="$(realpath -e -- "${log%/*}")"
 case "$log_dir" in
     "$repo_root"|"$repo_root"/*) ;;
-    *) bind_dir BindPaths "$log_dir" ;; # The unit opens the external log itself.
+    *) bind_path BindPaths "$log_dir" ;; # The unit opens the external log itself.
 esac
 log="$log_dir/${log##*/}"
 
 job_env[CODEX_HOME]="$(realpath -m -- "${CODEX_HOME:-$HOME/.codex}")"
-bind_dir BindPaths "${job_env[CODEX_HOME]}" # Codex uses this directory for auth and session state.
-gh_config="$(realpath -m -- "${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}")"
-if [[ -d "$gh_config" ]]; then
-    bind_dir BindReadOnlyPaths "$gh_config" # Roles use gh to read issues and pull requests.
-    job_env[GH_CONFIG_DIR]="$gh_config"
-fi
+bind_path BindPaths "${job_env[CODEX_HOME]}" # Codex uses this directory for auth and session state.
 
-bind_dir BindPaths "${job_env[GOCACHE]}"
-bind_dir BindPaths "${job_env[GOMODCACHE]}"
+bind_path BindPaths "${job_env[GOCACHE]}"
+bind_path BindPaths "${job_env[GOMODCACHE]}"
 for ((i = 0; i < ${#binds[@]}; i += 2)); do
-    bind_dir "${binds[i]}" "$(realpath -ms -- "${binds[i + 1]}")"
+    bind_path "${binds[i]}" "$(realpath -ms -- "${binds[i + 1]}")"
 done
+
+credentials=()
+# Resolve auth before isolating the unit from the maintainer's keyring and home.
+# Only ciphertext crosses D-Bus, and gh reads the resulting credential as config.
+if command -v gh >/dev/null && gh_token="$(gh auth token --hostname github.com 2>/dev/null)" && [[ -n "$gh_token" ]]; then
+    if ! [[ "$gh_token" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        printf 'codex-role: unexpected GitHub token format\n' >&2
+        exit 1
+    fi
+    gh_credential="$(printf 'github.com:\n    oauth_token: "%s"\n' "$gh_token" |
+        systemd-creds encrypt --user --name=hosts.yml - - | tr -d '\n')"
+    unset gh_token
+    # Mark the generated config as migrated so older gh versions can read it
+    # without attempting to update the read-only credential directory.
+    credentials+=(-p 'SetCredential=config.yml:version: 1' -p "SetCredentialEncrypted=hosts.yml:$gh_credential")
+fi
 
 codex_args=(exec -C "$repo_root" -s "$sandbox" -m "$model" -c "model_reasoning_effort=$effort")
 if [[ "$sandbox" == workspace-write ]]; then
@@ -163,7 +176,7 @@ done
 
 # Open the log in the service so a rejected launch cannot truncate it.
 exec systemd-run --user --unit "$unit" --collect --wait --working-directory="$repo_root" --expand-environment=no \
-    "${mounts[@]}" "${environment[@]}" -- "$BASH" -p -c '
+    "${mounts[@]}" "${credentials[@]}" "${environment[@]}" -- "$BASH" -p -c '
         exec >"$1" 2>&1 || exit
         shift
         # User units also receive the manager environment. Keep only the values
@@ -174,6 +187,9 @@ exec systemd-run --user --unit "$unit" --collect --wait --working-directory="$re
             shift
         done
         shift
+        if [[ -n "${CREDENTIALS_DIRECTORY-}" ]]; then
+            environment+=("GH_CONFIG_DIR=$CREDENTIALS_DIRECTORY")
+        fi
         status=0
         # Codex appends piped input to the prompt, so give it immediate EOF.
         env -i "${environment[@]}" codex "$@" </dev/null || status=$?

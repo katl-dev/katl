@@ -9,6 +9,21 @@
       "Bash(gh pr edit * -R katl-dev/katl --add-label 'journey: passed')",
       "Bash(gh pr edit * -R katl-dev/katl --add-label 'journey: gap')",
       "Bash(gh pr edit * -R katl-dev/katl --add-label 'journey: passed' --remove-label 'journey: gap')"
+    ],
+    "deny": ["Bash(codex exec:*)"]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(codex exec *)",
+            "command": "jq -c 'select(.tool_input.command | test(\"^[[:space:]]*codex[[:space:]]+exec([[:space:]]|$)\")) | {hookSpecificOutput:{hookEventName:\"PreToolUse\",permissionDecision:\"deny\",permissionDecisionReason:\"Launch Codex jobs through scripts/codex-role so they survive the agent session.\"}}'"
+          }
+        ]
+      }
     ]
   },
   "autoMode": {

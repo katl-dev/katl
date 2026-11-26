@@ -16,6 +16,7 @@ checkpoint lets a new session recover the work.
 | [Delivery](roles/delivery.md) | Codex `gpt-6.2-sol`, medium effort |
 | [Reviewer](roles/reviewer.md) | Codex `gpt-6.2-astra`, medium effort for ordinary code reviews and high effort for the independent review that gates auto-merge. |
 | [Debugger](roles/debugger.md) | Codex `gpt-6.2-astra`, high effort for hard debugging |
+| [Rebase](roles/rebase.md) | Codex `gpt-6.1-terra`, medium effort |
 | [Journey](roles/journey.md) | Claude Sonnet, medium effort |
 | [Washup](roles/washup.md) | Claude Sonnet |
 
