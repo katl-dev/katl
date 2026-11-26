@@ -99,6 +99,9 @@ fi
 source "$repo_root/scripts/job-environment"
 declare -A job_env=()
 job_environment "$repo_root" "$home" "${requested_env[@]}"
+# NixOS bash sources /etc/bashrc, and through it the profile that replaces PATH,
+# for a non-interactive command whose stdin is a socket, as it is under Codex.
+job_env[NOSYSBASHRC]=1
 
 systemd_path() {
     local path="${1//\\/\\\\}"
@@ -188,7 +191,9 @@ else
     printf 'codex-role: launching without GitHub auth. Provision %s as described in dev/agents/README.md.\n' "$token_file" >&2
 fi
 
-codex_args=(exec -C "$repo_root" -s "$sandbox" -m "$model" -c "model_reasoning_effort=$effort")
+# Codex runs commands in a login shell by default, which would rebuild PATH from
+# the host profile. A non-login shell keeps the PATH from job_environment.
+codex_args=(exec -C "$repo_root" -s "$sandbox" -m "$model" -c "model_reasoning_effort=$effort" -c allow_login_shell=false)
 if [[ "$sandbox" == workspace-write ]]; then
     # Host-configured roots can be masked by ProtectHome, where bubblewrap
     # cannot create the mount points it uses to protect .git. Grant write

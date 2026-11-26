@@ -211,6 +211,7 @@ exit "$CODEX_TEST_STATUS"
 				"PATH=" + path, "HOME=" + home, "TERM=xterm", "CODEX_HOME=" + codexHome,
 				"GOCACHE=" + buildCache, "GOMODCACHE=" + moduleCache, "GOTELEMETRY=off",
 				"KATLCTL_CONFIG=" + filepath.Join(repo, "_build/katlctl/config.yaml"), "CODEX_TEST_STATUS=" + status,
+				"NOSYSBASHRC=1",
 			} {
 				if !slices.Contains(runArgs, "--setenv="+assignment) {
 					t.Errorf("systemd-run missing explicit assignment %s", assignment)
@@ -242,7 +243,7 @@ exit "$CODEX_TEST_STATUS"
 			}
 
 			args := strings.Split(strings.TrimSuffix(string(mustReadFile(t, filepath.Join(work, "codex-args"))), "\x00"), "\x00")
-			want := []string{"exec", "-C", repo, "-s", tc.sandbox, "-m", tc.model, "-c", "model_reasoning_effort=" + tc.effort}
+			want := []string{"exec", "-C", repo, "-s", tc.sandbox, "-m", tc.model, "-c", "model_reasoning_effort=" + tc.effort, "-c", "allow_login_shell=false"}
 			if tc.sandbox == "workspace-write" {
 				want = append(want, "-c", "sandbox_workspace_write.writable_roots=[]", "--add-dir", buildCache, "--add-dir", moduleCache)
 			}
