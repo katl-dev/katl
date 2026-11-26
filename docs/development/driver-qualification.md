@@ -19,7 +19,7 @@ includes their in-tree targets.
 | --- | --- |
 | Active Fedora x86_64 kernel lock | The exact kernel RPMs for each flavour. |
 | Extension recipes, kernel-extension mkosi profiles, extension build and assembly scripts, kernel and extension Go packages, and the associated artifact commands | Kernel RPM preparation, exported kernel inputs, recipe compilation, release extension metadata and composition, and validation of the combined module tree. |
-| mkosi wrapper, install and upgrade image assembly script, builder container and action, root mkosi configuration, and runtime build, configuration, and finalization files | The toolchain, kernel export, and the runtime and upgrade images used in qualification. The root config projection omits comments and local cache and workspace settings. |
+| mkosi wrapper, install and upgrade image assembly script, builder container and action, root and installer mkosi configuration, and runtime build, configuration, and finalization files | The toolchain, kernel export, and the installer, runtime, and upgrade images used in qualification. The root and installer config projections omit comments and local cache and workspace settings. |
 | Runtime release identity, module paths, and module loader configuration | The matching fields in `os-release` and `extension-release.*` and the locations where the system installs and looks up drivers. |
 | Generation activation and module-index code, installer extension bundles and image metadata, config apply extension code, sysext units, and activation settings | Staging a release-owned extension, activating it when the generation boots, and updating module indexes when the extension changes. |
 | Driver workflow's build and test settings, the DRBD test and its fixture helpers, and the DRBD tools mkosi profile | Installation of the test nodes, replication and resync, repeat apply, driver removal, and inspection of the running kernel and backing disks. The workflow projection excludes record publication and diagnostics. |
@@ -42,16 +42,21 @@ run URL intact, including after a kernel lock change.
 
 The planner reads matching contexts across main's first-parent history and
 uses the most recently published outcome, with priority for a verified
-merge-group success on the main push SHA itself. It verifies the GitHub
-Actions bot as the creator and checks the run attempt against the repository,
-CI workflow, event, branch, and commit. If the selected record comes from a
-merge group whose head differs from the main push SHA, that flavour runs
-again. A pending record skips the flavour while the named attempt is queued
-or in progress, has no conclusion, and started at most 90 minutes ago.
-A terminal attempt, a stale record, or evidence the planner cannot verify
-makes the flavour eligible to run again. GitHub lookups have a 20-second
-budget, and concurrent plans can select the same flavour before a pending
-record appears.
+merge-group success on the main push SHA itself. When timestamps tie,
+failure takes precedence over pending, which takes precedence over success.
+
+The planner verifies the GitHub Actions bot as the creator and checks the
+run attempt against the repository, CI workflow, event, branch, and commit.
+It finds the executable Drivers job in that attempt by the flavour and
+digest in its display name. A success record requires the matching job to
+have completed successfully. If the selected record comes from a merge
+group whose head differs from the main push SHA, that flavour runs again.
+
+A pending record defers Drivers while the matching job is queued or in
+progress without a conclusion and the attempt started at most 90 minutes
+ago. Otherwise Drivers runs again. GitHub lookups have a 20-second budget,
+and concurrent plans can select the same flavour before a pending record
+appears.
 
 The Plan step logs the full digest, record SHA, context, state, producer URL,
 decision, and reason for each flavour in stderr and the step summary.

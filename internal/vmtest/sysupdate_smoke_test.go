@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -754,33 +753,6 @@ func assertBootedGenerationIdentity(t *testing.T, ctx context.Context, guest *Gu
 	assertGuestExists(t, ctx, guest, spec.Boot.UKIPath)
 }
 
-func waitGenerationPromotion(t *testing.T, ctx context.Context, guest *GuestControl, generationID string) {
-	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	// Persisted selection can already name the generation before this boot's
-	// health runs, as after a persistent rollback.
-	bootCtx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
-	if err := guest.WaitBootComplete(bootCtx); err != nil {
-		t.Fatalf("generation %s boot did not complete: %v", generationID, err)
-	}
-	var lastStatus generation.GenerationStatus
-	var lastSelection generation.BootSelectionRecord
-	for time.Now().Before(deadline) {
-		_, lastStatus = generationRecordsFromGuest(t, ctx, guest, generationID)
-		lastSelection = bootSelectionFromGuest(t, ctx, guest)
-		if lastStatus.CommitState == generation.CommitStateCommitted &&
-			lastStatus.BootState == generation.BootStateGood &&
-			lastStatus.HealthState == generation.HealthStateHealthy &&
-			lastSelection.DefaultGenerationID == generationID &&
-			!lastSelection.PendingHealthValidation {
-			return
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
-	t.Fatalf("generation %s was not promoted; status=%#v selection=%#v", generationID, lastStatus, lastSelection)
-}
-
 type sysupdateGuestFixture struct {
 	RootPath         string
 	UKIPath          string
@@ -1076,41 +1048,10 @@ func partitionDiskAndNumber(t *testing.T, device string) (string, string) {
 	return disk, part
 }
 
-func bootSelectionFromGuest(t *testing.T, ctx context.Context, guest *GuestControl) generation.BootSelectionRecord {
-	t.Helper()
-	data := readGuestFile(t, ctx, guest, "/var/lib/katl/boot/selection.json")
-	selection, err := decodeGuestRecord[generation.BootSelectionRecord]([]byte(data), generation.BootSelectionRecordType)
-	if err != nil {
-		t.Fatalf("decode boot selection: %v\n%s", err, data)
-	}
-	if err := generation.ValidateBootSelection(selection); err != nil {
-		t.Fatalf("guest boot selection is invalid: %v\n%s", err, data)
-	}
-	return selection
-}
-
 func generationFromGuest(t *testing.T, ctx context.Context, guest *GuestControl, generationID string) generation.GenerationSpec {
 	t.Helper()
 	spec, _ := generationRecordsFromGuest(t, ctx, guest, generationID)
 	return spec
-}
-
-func generationRecordsFromGuest(t *testing.T, ctx context.Context, guest *GuestControl, generationID string) (generation.GenerationSpec, generation.GenerationStatus) {
-	t.Helper()
-	specData := readGuestFile(t, ctx, guest, "/var/lib/katl/generations/"+generationID+"/spec.json")
-	statusData := readGuestFile(t, ctx, guest, "/var/lib/katl/generations/"+generationID+"/status.json")
-	spec, err := decodeGuestRecord[generation.GenerationSpec]([]byte(specData), generation.GenerationSpecRecordType)
-	if err != nil {
-		t.Fatalf("decode candidate generation spec: %v\n%s", err, specData)
-	}
-	status, err := decodeGuestRecord[generation.GenerationStatus]([]byte(statusData), generation.GenerationStatusRecordType)
-	if err != nil {
-		t.Fatalf("decode candidate generation status: %v\n%s", err, statusData)
-	}
-	if err := generation.ValidateGenerationStatus(spec, status); err != nil {
-		t.Fatalf("candidate generation invalid: %v\nspec=%s\nstatus=%s", err, specData, statusData)
-	}
-	return spec, status
 }
 
 func writeGuestJSON(t *testing.T, ctx context.Context, guest *GuestControl, path string, value any) {
@@ -1141,60 +1082,6 @@ func writeGuestJSON(t *testing.T, ctx context.Context, guest *GuestControl, path
 	writeGuestFile(t, ctx, guest, path, data, 0o644)
 }
 
-func decodeGuestRecord[T any](data []byte, recordType string) (T, error) {
-	var value T
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return value, err
-	}
-	if _, enveloped := fields["recordType"]; !enveloped {
-		return value, json.Unmarshal(data, &value)
-	}
-	envelope, err := persistedrecord.DecodeEnvelope(data)
-	if err != nil {
-		return value, err
-	}
-	if envelope.RecordType != recordType || envelope.RecordVersion != 1 {
-		return value, fmt.Errorf("got %s/v%d, want %s/v1", envelope.RecordType, envelope.RecordVersion, recordType)
-	}
-	return persistedrecord.DecodePayload[T](envelope)
-}
-
-func writeGuestFile(t *testing.T, ctx context.Context, guest *GuestControl, path string, content []byte, mode fs.FileMode) {
-	t.Helper()
-	if _, err := guest.WriteFile(ctx, GuestFileRequest{
-		Name:     filepath.Base(path),
-		Path:     path,
-		Content:  content,
-		Mode:     mode,
-		Truncate: true,
-	}); err != nil {
-		t.Fatalf("write guest file %s: %v", path, err)
-	}
-}
-
-func guestCommand(t *testing.T, ctx context.Context, guest *GuestControl, name string, argv ...string) GuestCommandArtifact {
-	t.Helper()
-	record, err := guest.RunCommand(ctx, GuestCommandRequest{
-		Name:         name,
-		Argv:         argv,
-		Timeout:      2 * time.Minute,
-		StdoutLimit:  1 << 20,
-		StderrLimit:  1 << 20,
-		AllowFailure: false,
-	})
-	if err != nil {
-		t.Fatalf("%s failed: %v\nstdout:\n%s\nstderr:\n%s", name, err, readOptionalFile(t, record.Stdout), readOptionalFile(t, record.Stderr))
-	}
-	return record
-}
-
-func guestCommandOutput(t *testing.T, ctx context.Context, guest *GuestControl, name string, argv ...string) string {
-	t.Helper()
-	record := guestCommand(t, ctx, guest, name, argv...)
-	return readFile(t, record.Stdout)
-}
-
 func collectSysupdateFailureEvidence(ctx context.Context, guest *GuestControl) {
 	guest.CollectDiagnostics(ctx, GuestDiagnostics{
 		Timeout: 2 * time.Minute,
@@ -1219,14 +1106,6 @@ func collectSysupdateFailureEvidence(ctx context.Context, guest *GuestControl) {
 func sha256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
-}
-
-func readOptionalFile(t *testing.T, path string) string {
-	t.Helper()
-	if path == "" {
-		return ""
-	}
-	return readFile(t, path)
 }
 
 func selectBootGeneration(t *testing.T, ctx context.Context, endpoint, node, id string, oneShot bool) {

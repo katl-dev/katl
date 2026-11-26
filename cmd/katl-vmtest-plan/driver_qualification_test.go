@@ -21,11 +21,15 @@ const (
 	testOSRelease    = "mkosi.profiles/runtime/os-release.in"
 	testAgentUnit    = "mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system/katlc-agent.service"
 	testActivation   = "internal/generation/activation.go"
+	testRuntimeApply = "internal/installer/configapply/runtime_apply.go"
+	testInstaller    = "mkosi.profiles/installer-image/mkosi.conf"
 	testKatlctl      = "cmd/katlctl/main.go"
 	testBIRDReadme   = "extensions/bird/README.md"
 	testStandardLock = "kernels/fedora-45/x86_64/standard.json"
 	testClusterPlan  = "internal/installer/clusterplan/compile.go"
 	testGuestHelper  = "internal/vmtest/guest.go"
+	testBootRecords  = "internal/vmtest/guest_records_test.go"
+	testSysupdate    = "internal/vmtest/sysupdate_smoke_test.go"
 	testSecurity     = "mkosi.profiles/runtime/mkosi.extra/usr/lib/katl/systemd/service-security.conf"
 )
 
@@ -52,7 +56,11 @@ func TestDriverDigestCandidate(t *testing.T) {
 		{"sysext compatibility", testOSRelease, "ID=katlos\nSYSEXT_LEVEL=katl-runtime-2\n", both},
 		{"mkosi architecture", "mkosi.conf", "[Distribution]\nRelease=45\nArchitecture=arm64\n[Build]\nCacheDirectory=cache\n", both},
 		{"driver activation", testActivation, "package generation\nconst activation = \"refresh systemd-sysext\"\n", both},
+		{"candidate sysext staging", testRuntimeApply, "package configapply\nconst sysextDir = \"wrong-extensions\"\n", both},
+		{"installer kernel modules", testInstaller, "[Content]\nKernelModules=\n        /drivers/block/\n", both},
 		{"DRBD guest helper", testGuestHelper, "package vmtest\nconst readFile = \"new helper\"\n", both},
+		{"boot selection helper", testBootRecords, "package vmtest\nfunc bootSelectionFromGuest() string { return \"new-record\" }\n", both},
+		{"sysupdate smoke only", testSysupdate, "package vmtest\nfunc TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) { t.Fatal(\"transfer failed\") }\n", nil},
 		{"activation security symlink target", testSecurity, "[Service]\nNoNewPrivileges=no\n", both},
 		{"qualification command", qualificationWorkflow, testWorkflow("drbd-new", "upload-logs"), both},
 	} {
@@ -174,6 +182,8 @@ case "$2" in
   graphql) printf '%%s\n' "$DRIVER_STATUS_RESPONSE";;
   */runs/101/attempts/1) printf '%%s\n' "$DRIVER_RUN_RESPONSE";;
   */runs/102/attempts/1) printf '%%s\n' "$PENDING_RUN_RESPONSE";;
+  */runs/101/attempts/1/jobs\?*) printf '%%s\n' "$DRIVER_JOBS_RESPONSE";;
+  */runs/102/attempts/1/jobs\?*) printf '%%s\n' "$PENDING_JOBS_RESPONSE";;
   *) exit 1;;
 esac
 `, side)
@@ -204,7 +214,9 @@ esac
 				producer = strings.TrimSuffix(producer, "}") + fmt.Sprintf(`,"run_started_at":%q}`, started)
 			}
 			t.Setenv("DRIVER_RUN_RESPONSE", driverRunFixture(101, 1, "schedule", "main", base, "completed", "success"))
+			t.Setenv("DRIVER_JOBS_RESPONSE", driverJobsFixture("standard", digests["standard"], "completed", "success"))
 			t.Setenv("PENDING_RUN_RESPONSE", producer)
+			t.Setenv("PENDING_JOBS_RESPONSE", driverJobsFixture("lts", digests["lts"], tc.state, tc.conclusion))
 			date := time.Now().Add(-30 * time.Second).UTC().Format(time.RFC3339)
 			t.Setenv("DRIVER_STATUS_RESPONSE", fmt.Sprintf(
 				`{"data":{"repository":{"c0":{"oid":%q,"status":null},"c1":{"oid":%q,"status":{
@@ -247,6 +259,8 @@ case "$2" in
   */runs/101/attempts/1) printf '%s\n' "$HISTORICAL_RUN";;
   */runs/102/attempts/1) printf '%s\n' "$EXACT_RUN";;
   */runs/103/attempts/1) printf '%s\n' "$MAIN_RUN";;
+  */runs/10[12]/attempts/1/jobs\?*) printf '%s\n' "$STANDARD_JOBS";;
+  */runs/103/attempts/1/jobs\?*) printf '%s\n' "$LTS_JOBS";;
   *) exit 1;;
 esac
 `, 0o755)
@@ -260,6 +274,8 @@ esac
 	const bot = "github-actions"
 	t.Setenv("HISTORICAL_RUN", driverRunFixture(101, 1, "merge_group", queue, older, "completed", "success"))
 	t.Setenv("MAIN_RUN", driverRunFixture(103, 1, "push", "main", older, "completed", "success"))
+	t.Setenv("STANDARD_JOBS", driverJobsFixture("standard", digests["standard"], "completed", "success"))
+	t.Setenv("LTS_JOBS", driverJobsFixture("lts", digests["lts"], "completed", "success"))
 	for _, tc := range []struct {
 		name, sha, branch, state, digest string
 		attempt                          int
@@ -316,6 +332,7 @@ case "$2" in
   graphql) printf '%s\n' "$DRIVER_STATUS_RESPONSE";;
   */runs/101/attempts/1) printf '%s\n' "$OLD_RUN";;
   */runs/102/attempts/1) printf '%s\n' "$HEAD_RUN";;
+  */runs/10[12]/attempts/1/jobs\?*) printf '%s\n' "$STANDARD_JOBS";;
   *) exit 1;;
 esac
 `, 0o755)
@@ -324,6 +341,7 @@ esac
 	t.Setenv("GITHUB_SERVER_URL", "https://github.com")
 	t.Setenv("OLD_RUN", driverRunFixture(101, 1, "schedule", "main", old, "completed", "success"))
 	t.Setenv("HEAD_RUN", driverRunFixture(102, 1, "schedule", "main", head, "completed", "success"))
+	t.Setenv("STANDARD_JOBS", driverJobsFixture("standard", digest, "completed", "success"))
 	status := func(creator, state, date string, id int) string {
 		return `{"standard":` + driverStatusFixture(creator, state, digest, date, id) + `}`
 	}
@@ -363,6 +381,92 @@ esac
 	}
 }
 
+func TestDriverQualificationNeedsMatchingJob(t *testing.T) {
+	head := newDriverRepo(t)
+	driverGit(t, "update-ref", "refs/remotes/origin/main", head)
+	digests := readDriverDigests(t)
+	digest := digests["standard"]
+	stub := t.TempDir()
+	writeDriverInput(t, filepath.Join(stub, "gh"), `#!/bin/sh
+case "$2" in
+  graphql) printf '%s\n' "$DRIVER_STATUS_RESPONSE";;
+  repos/katl-dev/katl/actions/runs/101/attempts/1) printf '%s\n' "$DRIVER_RUN_RESPONSE";;
+  "repos/katl-dev/katl/actions/runs/101/attempts/1/jobs?per_page=100") printf '%s\n' "$DRIVER_JOBS_RESPONSE";;
+  *) exit 1;;
+esac
+`, 0o755)
+	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GITHUB_REPOSITORY", "katl-dev/katl")
+	t.Setenv("GITHUB_SERVER_URL", "https://github.com")
+	t.Setenv("GITHUB_EVENT_NAME", "pull_request")
+	t.Setenv("GITHUB_REF", "refs/pull/1/merge")
+	now := time.Now().UTC()
+	const standardJob = "Drivers (standard) / drivers"
+	jobName := standardJob + " (" + digest + ")"
+	for _, tc := range []struct {
+		name, state                 string
+		runStatus, runConclusion    string
+		jobName, status, conclusion string
+		wantReuse                   bool
+	}{
+		{"successful job in failed CI", "SUCCESS", "completed", "failure", jobName, "completed", "success", true},
+		{"skipped job in successful CI", "SUCCESS", "completed", "success", jobName, "completed", "skipped", false},
+		{"failed job", "SUCCESS", "completed", "failure", jobName, "completed", "failure", false},
+		{"different flavour", "SUCCESS", "completed", "success", "Drivers (lts) / drivers (" + digests["lts"] + ")", "completed", "success", false},
+		{"different digest", "SUCCESS", "completed", "success", standardJob + " (" + digests["lts"] + ")", "completed", "success", false},
+		{"only status writer passed", "SUCCESS", "completed", "success", "Drivers (standard) / Record final driver qualification", "completed", "success", false},
+		{"skipped job in live CI", "PENDING", "in_progress", "", jobName, "completed", "skipped", false},
+		{"missing job in live CI", "PENDING", "in_progress", "", "", "", "", false},
+		{"finished job with pending record", "PENDING", "in_progress", "", jobName, "completed", "success", false},
+		{"queued job", "PENDING", "in_progress", "", jobName, "queued", "", true},
+		{"running job", "PENDING", "in_progress", "", jobName, "in_progress", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			run := driverRunFixture(101, 1, "schedule", "main", head, tc.runStatus, tc.runConclusion)
+			run = strings.TrimSuffix(run, "}") + fmt.Sprintf(`,"run_started_at":%q}`, now.Add(-time.Minute).Format(time.RFC3339))
+			t.Setenv("DRIVER_RUN_RESPONSE", run)
+			jobs := `[{"jobs":[]}]`
+			if tc.jobName != "" {
+				jobs = fmt.Sprintf(`[{"jobs":[{"name":%q,"status":%q,"conclusion":%q}]}]`, tc.jobName, tc.status, tc.conclusion)
+			}
+			t.Setenv("DRIVER_JOBS_RESPONSE", jobs)
+			t.Setenv("DRIVER_STATUS_RESPONSE", fmt.Sprintf(`{"data":{"repository":{"c0":{"oid":%q,"status":{"standard":%s}}}}}`,
+				head, driverStatusFixture("github-actions", tc.state, digest, now.Format(time.RFC3339), 101)))
+
+			plan := readDriverPlan(t, testBIRDReadme)
+			if reused := !slices.Contains(plan.DriverFlavours, "standard"); reused != tc.wantReuse {
+				t.Fatalf("standard reused = %v, want %v: %v", reused, tc.wantReuse, plan.DriverDecisions)
+			}
+		})
+	}
+}
+
+func TestDriverQualificationTiedFailure(t *testing.T) {
+	now := time.Now()
+	const digest = "standard-digest"
+	for _, states := range [][2]string{{"PENDING", "FAILURE"}, {"FAILURE", "PENDING"}} {
+		t.Run(strings.Join(states[:], "-"), func(t *testing.T) {
+			history := []string{"head", "parent"}
+			readStatuses := func([]string) ([]commitDriverStatuses, error) {
+				statuses := make([]commitDriverStatuses, len(history))
+				for i, sha := range history {
+					statuses[i] = commitDriverStatuses{OID: sha, Status: map[string]*driverStatus{
+						"standard": {State: states[i], Description: digest, CreatedAt: now},
+					}}
+				}
+				return statuses, nil
+			}
+			got, err := findDriverQualifications(history, map[string]string{"standard": digest}, "", now, readStatuses,
+				func(string, string, driverStatus) (driverProducer, error) {
+					return driverProducer{event: "push", jobStatus: "in_progress", startedAt: now.Add(-time.Minute)}, nil
+				})
+			if err != nil || got["standard"].reason != "record-failed" {
+				t.Fatalf("want tied failure to require a fresh run, got %v, %v", got, err)
+			}
+		})
+	}
+}
+
 func readDriverPlan(t *testing.T, path string) ciPlan {
 	t.Helper()
 	var result bytes.Buffer
@@ -385,6 +489,11 @@ func driverRunFixture(id, attempt int, event, branch, sha, state, conclusion str
 	return fmt.Sprintf(`{"id":%d,"run_attempt":%d,"path":".github/workflows/ci.yml","head_branch":%q,
 		"head_sha":%q,"event":%q,"status":%q,"conclusion":%q,"repository":{"full_name":"katl-dev/katl"},
 		"head_repository":{"full_name":"katl-dev/katl"}}`, id, attempt, branch, sha, event, state, conclusion)
+}
+
+func driverJobsFixture(flavour, digest, status, conclusion string) string {
+	name := fmt.Sprintf("Drivers (%s) / drivers (%s)", flavour, digest)
+	return fmt.Sprintf(`[{"jobs":[{"name":%q,"status":%q,"conclusion":%q}]}]`, name, status, conclusion)
 }
 
 func fixtureDriverLookup(commit string, records map[string]string) func(map[string]string, bool) (map[string]driverQualification, error) {
@@ -426,9 +535,13 @@ func newDriverRepo(t *testing.T) string {
 	writeDriverInput(t, "go.mod", testGoMod+"require example.org/a v1.0.0\nrequire example.org/z v1.1.0 // indirect\n", 0o644)
 	writeDriverInput(t, testKatlctl, "package main\nfunc main() {}\n", 0o644)
 	writeDriverInput(t, testActivation, "package generation\nconst activation = \"activate systemd-sysext\"\n", 0o644)
+	writeDriverInput(t, testRuntimeApply, "package configapply\nconst sysextDir = \"extensions\"\n", 0o644)
+	writeDriverInput(t, testInstaller, "[Content]\nKernelModules=\n        /drivers/block/\n        /drivers/virtio/\n", 0o644)
 	writeDriverInput(t, testClusterPlan, "package clusterplan\nconst extension = \"none\"\n", 0o644)
 	writeDriverInput(t, "internal/vmtest/drbd_smoke_test.go", "package vmtest\nvar observed = readFile\n", 0o644)
 	writeDriverInput(t, testGuestHelper, "package vmtest\nconst readFile = \"guest helper\"\n", 0o644)
+	writeDriverInput(t, testBootRecords, "package vmtest\nfunc bootSelectionFromGuest() string { return \"record\" }\n", 0o644)
+	writeDriverInput(t, testSysupdate, "package vmtest\nfunc TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {}\n", 0o644)
 	writeDriverInput(t, testSecurity, "[Service]\nNoNewPrivileges=yes\n", 0o644)
 	const dropIn = "mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system/katl-system-extensions-activate.service.d/10-security.conf"
 	if err := os.MkdirAll(filepath.Dir(dropIn), 0o755); err != nil {

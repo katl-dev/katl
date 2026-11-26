@@ -42,6 +42,7 @@ jobs:
             -f "target_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT" >/dev/null
 
   drivers:
+    name: drivers (${{ inputs.input-digest }})
     needs: [record-driver-start]
     if: >-
       !cancelled() &&

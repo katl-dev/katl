@@ -291,15 +291,6 @@ func recordPath(t *testing.T, result Result, kind string) string {
 	return filepath.Join(result.Artifacts.GuestDir, kind, entries[0].Name())
 }
 
-func readFile(t *testing.T, path string) string {
-	t.Helper()
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read %s: %v", path, err)
-	}
-	return string(data)
-}
-
 func TestSysupdateFailureEvidenceKeepsGuestJournal(t *testing.T) {
 	result := guestResult(t)
 	client := &fakeGuestClient{

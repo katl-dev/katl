@@ -16,7 +16,7 @@ import (
 )
 
 // Bump when changing the digest format or the interpretation of its inputs.
-const driverDigestVersion = "v3"
+const driverDigestVersion = "v4"
 
 var kernelFlavours = []string{flavour.Standard, flavour.LTS}
 
@@ -53,6 +53,7 @@ var driverInputs = []string{
 	".github/actions/mkosi-builder/**",
 	"mkosi.conf",
 	"mkosi.conf.d/**",
+	"mkosi.profiles/installer-image/mkosi.conf",
 	"mkosi.profiles/runtime/mkosi.build",
 	"mkosi.profiles/runtime/mkosi.conf",
 	"mkosi.profiles/runtime/mkosi.finalize",
@@ -83,6 +84,7 @@ var driverInputs = []string{
 	"internal/installer/katlosimage/**",
 	"internal/installer/configapply/extension_resolution.go",
 	"internal/installer/configapply/module_indexes.go",
+	"internal/installer/configapply/runtime_apply.go",
 	"internal/installer/configapply/system_extensions.go",
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system/katl-system-extensions-*/**",
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system/katl-system-extensions-*.service",
@@ -105,13 +107,14 @@ var driverInputs = []string{
 	"internal/vmtest/first_install_runtime_fixture.go",
 	"internal/vmtest/first_install_world.go",
 	"internal/vmtest/guest.go",
+	"internal/vmtest/guest_io_test.go",
+	"internal/vmtest/guest_records_test.go",
 	"internal/vmtest/installed_node.go",
 	"internal/vmtest/installed_smoke_test.go",
 	"internal/vmtest/installed_world.go",
 	"internal/vmtest/installed_world_test.go",
 	"internal/vmtest/katlctl.go",
 	"internal/vmtest/management_identity.go",
-	"internal/vmtest/sysupdate_smoke_test.go",
 	"internal/vmtest/vmtest.go",
 	"internal/vmtest/world.go",
 	"internal/vmtest/world_fixtures.go",
@@ -259,7 +262,7 @@ func driverInputProjection(name string) func([]byte) ([]byte, error) {
 	switch {
 	case name == qualificationWorkflow:
 		return qualificationSteps
-	case name == "mkosi.conf":
+	case name == "mkosi.conf", name == "mkosi.profiles/installer-image/mkosi.conf":
 		return mkosiBuildInputs
 	case name == "go.mod":
 		return driverGoMod

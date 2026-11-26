@@ -115,8 +115,9 @@ type driverQualification struct {
 }
 
 type driverProducer struct {
-	event, status, conclusion string
-	startedAt                 time.Time
+	event                    string
+	jobStatus, jobConclusion string
+	startedAt                time.Time
 }
 
 func mainDriverQualifications(wanted map[string]string, mainPush bool) (map[string]driverQualification, error) {
@@ -148,15 +149,15 @@ func mainDriverQualifications(wanted map[string]string, mainPush bool) (map[stri
 	defer cancel()
 	return findDriverQualifications(commits, wanted, exactSHA, time.Now(), func(commits []string) ([]commitDriverStatuses, error) {
 		return githubDriverStatuses(ctx, owner, repo, commits, wanted)
-	}, func(sha string, record driverStatus) (driverProducer, error) {
-		return verifyDriverPublisher(ctx, owner+"/"+repo, sha, record)
+	}, func(sha, flavour string, record driverStatus) (driverProducer, error) {
+		return verifyDriverPublisher(ctx, owner+"/"+repo, sha, flavour, record)
 	})
 }
 
 func findDriverQualifications(
 	history []string, wanted map[string]string, exactSHA string, now time.Time,
 	readStatuses func([]string) ([]commitDriverStatuses, error),
-	verifyPublisher func(string, driverStatus) (driverProducer, error),
+	verifyPublisher func(sha, flavour string, status driverStatus) (driverProducer, error),
 ) (map[string]driverQualification, error) {
 	results := map[string]driverQualification{}
 	latest := map[string]driverQualification{}
@@ -184,18 +185,18 @@ func findDriverQualifications(
 				}
 				candidate := driverQualification{sha: commit.OID, status: *record}
 				if commit.OID == exactSHA && record.State == "SUCCESS" {
-					candidate.reason = driverRecordReason(candidate, digest, exactSHA, now, verifyPublisher)
+					candidate.reason = driverRecordReason(candidate, flavour, digest, exactSHA, now, verifyPublisher)
 					if candidate.reason == "same-digest-merge-group-success" {
 						results[flavour] = candidate
 						continue
 					}
 				}
 				previous := latest[flavour].status
-				// Runs can finish out of commit order. In a timestamp tie,
-				// pending or failed evidence takes precedence over success.
+				// Runs can finish out of commit order. In a timestamp tie, prefer
+				// evidence that requires rerunning, then pending, then success.
 				if record.CreatedAt.After(previous.CreatedAt) ||
-					(record.CreatedAt.Equal(previous.CreatedAt) && previous.State == "SUCCESS" &&
-						(record.State != "SUCCESS" || record.Description != digest)) {
+					(record.CreatedAt.Equal(previous.CreatedAt) &&
+						driverStatusPriority(*record, digest) > driverStatusPriority(previous, digest)) {
 					latest[flavour] = candidate
 				}
 			}
@@ -206,15 +207,26 @@ func findDriverQualifications(
 	}
 	for flavour, record := range latest {
 		if record.reason == "" {
-			record.reason = driverRecordReason(record, wanted[flavour], exactSHA, now, verifyPublisher)
+			record.reason = driverRecordReason(record, flavour, wanted[flavour], exactSHA, now, verifyPublisher)
 		}
 		results[flavour] = record
 	}
 	return results, nil
 }
 
-func driverRecordReason(record driverQualification, digest, exactSHA string, now time.Time,
-	verifyPublisher func(string, driverStatus) (driverProducer, error),
+func driverStatusPriority(status driverStatus, digest string) int {
+	switch {
+	case status.Description == digest && status.State == "SUCCESS":
+		return 0
+	case status.Description == digest && status.State == "PENDING":
+		return 1
+	default:
+		return 2
+	}
+}
+
+func driverRecordReason(record driverQualification, flavour, digest, exactSHA string, now time.Time,
+	verifyPublisher func(sha, flavour string, status driverStatus) (driverProducer, error),
 ) string {
 	if record.status.Description != digest {
 		return "record-invalid"
@@ -226,7 +238,7 @@ func driverRecordReason(record driverQualification, digest, exactSHA string, now
 	default:
 		return "record-invalid"
 	}
-	producer, err := verifyPublisher(record.sha, record.status)
+	producer, err := verifyPublisher(record.sha, flavour, record.status)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Driver qualification producer unavailable for %s: %v\n", record.sha, err)
 		return "producer-unavailable"
@@ -241,11 +253,14 @@ func driverRecordReason(record driverQualification, digest, exactSHA string, now
 	}
 	switch {
 	case record.status.State == "SUCCESS":
+		if producer.jobStatus != "completed" || producer.jobConclusion != "success" {
+			return "producer-job-not-successful"
+		}
 		if exactSHA != "" && producer.event == "merge_group" {
 			return "same-digest-merge-group-success"
 		}
 		return "same-digest-success"
-	case producer.conclusion == "" && (producer.status == "queued" || producer.status == "in_progress") &&
+	case producer.jobConclusion == "" && (producer.jobStatus == "queued" || producer.jobStatus == "in_progress") &&
 		!producer.startedAt.IsZero() && !producer.startedAt.After(now) && now.Sub(producer.startedAt) <= driverPendingMaxAge:
 		return "same-digest-qualification-in-progress"
 	default:
@@ -301,7 +316,7 @@ func githubDriverStatuses(ctx context.Context, owner, repo string, commits []str
 
 var driverRunPath = regexp.MustCompile(`^([1-9][0-9]*)/attempts/([1-9][0-9]*)$`)
 
-func verifyDriverPublisher(ctx context.Context, repo, sha string, status driverStatus) (driverProducer, error) {
+func verifyDriverPublisher(ctx context.Context, repo, sha, flavour string, status driverStatus) (driverProducer, error) {
 	// GitHub exposes this account as github-actions[bot] in REST and
 	// github-actions in GraphQL. A user with a similar name is a different actor.
 	if status.Creator.Type != "Bot" || status.Creator.Login != "github-actions" || status.Creator.DatabaseID != 41898282 {
@@ -316,20 +331,20 @@ func verifyDriverPublisher(ctx context.Context, repo, sha string, status driverS
 		return driverProducer{}, nil
 	}
 
-	command := exec.CommandContext(ctx, "gh", "api", "repos/"+repo+"/actions/runs/"+marker)
+	attempt := "repos/" + repo + "/actions/runs/" + marker
+	command := exec.CommandContext(ctx, "gh", "api", attempt)
 	output, err := command.Output()
 	if err != nil {
 		return driverProducer{}, fmt.Errorf("verify driver qualification run: %w", err)
 	}
 	var run struct {
-		ID                 int64
-		Attempt            int    `json:"run_attempt"`
-		Branch             string `json:"head_branch"`
-		SHA                string `json:"head_sha"`
-		Path, Event        string
-		Status, Conclusion string
-		StartedAt          time.Time `json:"run_started_at"`
-		Repository         struct {
+		ID          int64
+		Attempt     int    `json:"run_attempt"`
+		Branch      string `json:"head_branch"`
+		SHA         string `json:"head_sha"`
+		Path, Event string
+		StartedAt   time.Time `json:"run_started_at"`
+		Repository  struct {
 			FullName string `json:"full_name"`
 		}
 		HeadRepository struct {
@@ -356,5 +371,34 @@ func verifyDriverPublisher(ctx context.Context, repo, sha string, status driverS
 	default:
 		return driverProducer{}, nil
 	}
-	return driverProducer{event: run.Event, status: run.Status, conclusion: run.Conclusion, startedAt: run.StartedAt}, nil
+	command = exec.CommandContext(ctx, "gh", "api", attempt+"/jobs?per_page=100", "--paginate", "--slurp")
+	output, err = command.Output()
+	if err != nil {
+		return driverProducer{}, fmt.Errorf("list driver qualification jobs: %w", err)
+	}
+	var pages []struct {
+		Jobs []struct {
+			Name, Status, Conclusion string
+		}
+	}
+	if err := json.Unmarshal(output, &pages); err != nil {
+		return driverProducer{}, fmt.Errorf("decode driver qualification jobs: %w", err)
+	}
+
+	// Match the executable job in ci.yml and kernel-qualification.yml. Its
+	// display name binds the tested digest independently of the status writer.
+	name := fmt.Sprintf("Drivers (%s) / drivers (%s)", flavour, status.Description)
+	var producer driverProducer
+	for _, page := range pages {
+		for _, job := range page.Jobs {
+			if job.Name != name {
+				continue
+			}
+			if producer.event != "" {
+				return driverProducer{}, fmt.Errorf("ambiguous driver qualification job %q", name)
+			}
+			producer = driverProducer{event: run.Event, jobStatus: job.Status, jobConclusion: job.Conclusion, startedAt: run.StartedAt}
+		}
+	}
+	return producer, nil
 }
