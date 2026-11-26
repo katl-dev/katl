@@ -1075,7 +1075,7 @@ func TestEnableMTLSChecksInstalledVIPAfterConfirm(t *testing.T) {
 	node := world.nodes[0]
 	node.controlPlane = true
 	node.endpoint = &agentapi.ControlPlaneEndpointStatus{
-		Endpoint: "api.katl.test:6443", Vip: "192.0.2.10",
+		Endpoint: "api.katl.test:6443", Vip: "192.0.2.10/32",
 		State: "active", LocalApiReady: true, LocalVipOwned: true,
 	}
 	node.afterConfirm = func(n *trialNode) {
@@ -1083,15 +1083,59 @@ func TestEnableMTLSChecksInstalledVIPAfterConfirm(t *testing.T) {
 		n.endpoint.LocalVipOwned = false
 	}
 
-	_, _, err := world.enable("--timeout", "1s")
-	if err == nil || !strings.Contains(err.Error(), "managed API endpoint is released") {
-		t.Fatalf("enable-mtls = %v, want the installed VIP health failure", err)
+	for _, attempt := range []string{"initial migration", "rerun"} {
+		if stdout, _, err := world.enable("--timeout", "1s"); err == nil || !strings.Contains(err.Error(), "managed API endpoint is released") {
+			t.Fatalf("%s = %v, want the installed VIP health failure\n%s", attempt, err, stdout)
+		}
+		if mode, trial, begins := node.state(); mode != managementidentity.MutualTLS || trial != "committed" || begins != 1 {
+			t.Fatalf("%s: node = %s %s after %d begins, want one committed trial", attempt, mode, trial, begins)
+		}
+		if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
+			t.Fatalf("%s published %s while the VIP was released", attempt, mode)
+		}
 	}
-	if mode, trial, begins := node.state(); mode != managementidentity.MutualTLS || trial != "committed" || begins != 1 {
-		t.Fatalf("node = %s %s after %d begins, want one committed trial", mode, trial, begins)
+
+	node.mu.Lock()
+	node.endpoint.State = "active"
+	node.endpoint.LocalVipOwned = true
+	node.mu.Unlock()
+	if _, stderr, err := world.enable(); err != nil {
+		t.Fatalf("rerun after VIP ownership was restored: %v\n%s", err, stderr)
 	}
-	if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
-		t.Fatalf("config published %s after the node lost its VIP", mode)
+	if mode, _ := world.configMode(t); mode != managementidentity.MutualTLS {
+		t.Errorf("config = %s after VIP ownership was restored, want mtls", mode)
+	}
+	if _, _, begins := node.state(); begins != 1 {
+		t.Errorf("began %d trials, want 1", begins)
+	}
+}
+
+func TestEnableMTLSAllowsExternalControlPlaneEndpoint(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		endpoint *agentapi.ControlPlaneEndpointStatus
+	}{
+		{name: "no VIP configured"},
+		{
+			name: "VIP ownership disabled",
+			endpoint: &agentapi.ControlPlaneEndpointStatus{
+				Endpoint: "api.katl.test:6443", Vip: "192.0.2.10/32", State: "disabled",
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			world := newEnableMTLSWorld(t, "cp-1")
+			node := world.nodes[0]
+			node.controlPlane = true
+			node.endpoint = tc.endpoint
+
+			if _, stderr, err := world.enable("--timeout", "1s"); err != nil {
+				t.Fatalf("enable-mtls with an external endpoint: %v\n%s", err, stderr)
+			}
+			if mode, _ := world.configMode(t); mode != managementidentity.MutualTLS {
+				t.Errorf("config = %s with an external endpoint, want mtls", mode)
+			}
+		})
 	}
 }
 

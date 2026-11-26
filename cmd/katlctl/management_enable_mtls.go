@@ -421,9 +421,10 @@ func (node *enableMTLSNode) bind(status *agentapi.NodeStatus, observedAt time.Ti
 	// bootstrap. Joined nodes must meet the same requirements on every run.
 	kubernetes := status.GetKubernetes()
 	if kubernetes.GetRole() != "" || kubernetes.GetState() != "not-configured" {
-		// An active installed VIP must recover even when the input config
-		// omits its advertisement.
-		requireVIP := (node.controlPlane && node.managedVIP) || managedEndpointReady(status.GetControlPlaneEndpoint())
+		// The agent reports the configured VIP both when ownership is disabled
+		// and when an enabled owner has released it. A released VIP still gates retries.
+		endpoint := status.GetControlPlaneEndpoint()
+		requireVIP := (node.controlPlane && node.managedVIP) || (endpoint.GetVip() != "" && endpoint.GetState() != "disabled")
 		node.requirement = nodeRecoveryRequirement{
 			KubernetesConfigured: true,
 			NodeReady:            true,
