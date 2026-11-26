@@ -81,7 +81,68 @@ elif [[ "$log" != /* ]]; then
 fi
 printf 'Codex log: %s\n' "$log"
 
-environment=(--setenv=PATH --setenv=HOME)
+home="$(realpath -e -- "${HOME:?HOME must be set}")"
+if [[ ! -d "$home" || "$home" == / ]]; then
+    printf 'codex-role: HOME must name an existing directory other than /\n' >&2
+    exit 1
+fi
+
+systemd_path() {
+    local path="${1//\\/\\\\}"
+    printf '"%s"' "${path//\"/\\\"}"
+}
+
+# An explicit tmpfs also covers nonstandard home paths and makes systemd
+# require a mount namespace when every bind maps to its original location.
+mounts=(-p ProtectHome=tmpfs -p PrivateUsers=yes -p "TemporaryFileSystem=$(systemd_path "$home"):ro")
+bind_dir() {
+    local property="$1" dir="$2" source spec
+    source="$(realpath -e -- "$dir")" && [[ -d "$source" ]] || {
+        printf 'codex-role: bind directory does not exist: %s\n' "$dir" >&2
+        exit 1
+    }
+    if [[ "$home" == "$source" || "$home" == "${source%/}/"* ]]; then
+        printf 'codex-role: bind would expose all of HOME: %s\n' "$dir" >&2
+        exit 1
+    fi
+    spec="$(systemd_path "$source")"
+    if [[ "$source" != "$dir" ]]; then
+        spec+=":$(systemd_path "$dir")"
+    fi
+    mounts+=(-p "$property=$spec")
+}
+
+bind_dir BindPaths "$repo_root"
+git_common="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)"
+case "$git_common" in
+    "$repo_root"/*) ;;
+    *) bind_dir BindPaths "$git_common" ;; # A linked worktree needs the shared Git metadata.
+esac
+log_dir="$(realpath -e -- "${log%/*}")"
+case "$log_dir" in
+    "$repo_root"|"$repo_root"/*) ;;
+    *) bind_dir BindPaths "$log_dir" ;; # The unit opens the external log itself.
+esac
+log="$log_dir/${log##*/}"
+
+export CODEX_HOME="$(realpath -m -- "${CODEX_HOME:-$HOME/.codex}")"
+bind_dir BindPaths "$CODEX_HOME" # Codex uses this directory for auth and session state.
+gh_config="$(realpath -m -- "${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}")"
+if [[ -d "$gh_config" ]]; then
+    bind_dir BindReadOnlyPaths "$gh_config" # Roles use gh to read issues and pull requests.
+    export GH_CONFIG_DIR="$gh_config"
+fi
+
+cache_paths="$(go env GOCACHE GOMODCACHE)"
+mapfile -t caches <<<"$cache_paths"
+bind_dir BindPaths "${caches[0]}"
+bind_dir BindPaths "${caches[1]}"
+export GOCACHE="${caches[0]}" GOMODCACHE="${caches[1]}"
+
+environment=(--setenv=PATH --setenv=HOME --setenv=GOCACHE --setenv=GOMODCACHE)
+if [[ -n "${GH_CONFIG_DIR:-}" ]]; then
+    environment+=(--setenv=GH_CONFIG_DIR)
+fi
 while IFS= read -r name; do
     case "$name" in
         CODEX_*|XDG_*) environment+=("--setenv=$name") ;;
@@ -90,7 +151,7 @@ done < <(compgen -e)
 
 # Open the log in the service so a rejected launch cannot truncate it.
 exec systemd-run --user --unit "$unit" --collect --wait --same-dir --expand-environment=no \
-    "${environment[@]}" -- "$BASH" -c '
+    "${mounts[@]}" "${environment[@]}" -- "$BASH" -c '
         exec >"$1" 2>&1 || exit
         shift
         status=0

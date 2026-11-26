@@ -242,9 +242,21 @@ container.
 
 Inside `nix develop`, the development shell puts `katl-queue`, `codex-role`,
 `vmtest-run`, `vmtest-clean`, `vmtest-debug`, `vmtest-exec`,
-`worktree-clean`, and `check-fast` on `PATH`. Each command uses the script
-from the current checkout. Follow the cleanup procedure in
+`worktree-clean`, `hermetic`, and `check-fast` on `PATH`. Each command uses the
+script from the current checkout. Follow the cleanup procedure in
 [AGENTS.md](../AGENTS.md#testing-and-release-confidence).
+
+Run direct Go tests through Bubblewrap to keep workstation files out of the
+test environment.
+
+```sh
+scripts/hermetic -- go test ./...
+```
+
+The wrapper requires Linux user namespaces and mounts an empty filesystem over
+your home. It gives the command writable access to the checkout, its linked
+Git metadata, and the Go build and module caches. Use `--bind DIR` before `--`
+for each additional scratch directory the command needs.
 
 `katlctl` is also available in the development shell. It runs from the current
 checkout so local source changes are used immediately:
@@ -644,9 +656,9 @@ aggregation by another tool. Pass `--no-rebuild` before the `go test` arguments
 to skip the runner's automatic `scripts/mkosi` artifact builds and use only
 already-discoverable artifacts.
 
-Plain `go test ./...` keeps enabled VM scenarios disabled. If an enabled smoke
-is invoked directly without the world manifest, it fails with a setup error
-naming `scripts/vmtest-run`.
+`scripts/hermetic -- go test ./...` keeps VM scenarios disabled. If an enabled
+smoke is invoked directly without the world manifest, it fails with a setup
+error naming `scripts/vmtest-run`.
 
 World-backed smokes derive their fixture inputs from repo-controlled artifacts:
 mkosi artifact indexes, KatlOS install images, runtime roots, generated install
@@ -678,8 +690,8 @@ branch, run:
 scripts/check-fast origin/main...HEAD
 ```
 
-The command checks all tracked Go formatting and patch whitespace, runs `go vet ./...`, and runs the
-complete Go suite with `-count=1` so cached test results cannot hide failures.
+Inside the hermetic wrapper, the command checks Go formatting and patch
+whitespace, runs `go vet ./...`, and runs the complete Go suite with `-count=1`.
 Changes reach `main` through pull requests and the merge queue after
 [CI](development/ci.md) passes. Pull requests run fast checks, the Nix build, and
 kernel driver gates. The merge queue repeats them against the merged result and

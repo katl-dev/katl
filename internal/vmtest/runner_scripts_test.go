@@ -10,6 +10,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/gittest"
 )
 
 func TestVMTestRunInjectsWorld(t *testing.T) {
@@ -396,8 +398,7 @@ func TestVMTestRunBuildsDefaultArtifacts(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
 		t.Fatalf("MkdirAll(scripts) error = %v", err)
 	}
-	copyScript(t, filepath.Join(realRepo, "scripts", "vmtest-run"), filepath.Join(repo, "scripts", "vmtest-run"))
-	copyRunCheck(t, realRepo, repo)
+	copyVMTestRunner(t, realRepo, repo)
 	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
@@ -475,8 +476,7 @@ func TestVMTestRunRecordsCacheResolvedArtifacts(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
 		t.Fatalf("MkdirAll(scripts) error = %v", err)
 	}
-	copyScript(t, filepath.Join(realRepo, "scripts", "vmtest-run"), filepath.Join(repo, "scripts", "vmtest-run"))
-	copyRunCheck(t, realRepo, repo)
+	copyVMTestRunner(t, realRepo, repo)
 	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
@@ -556,8 +556,7 @@ func TestVMTestRunRecordsRuntimeOnlyCacheProvenance(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
 		t.Fatalf("MkdirAll(scripts) error = %v", err)
 	}
-	copyScript(t, filepath.Join(realRepo, "scripts", "vmtest-run"), filepath.Join(repo, "scripts", "vmtest-run"))
-	copyRunCheck(t, realRepo, repo)
+	copyVMTestRunner(t, realRepo, repo)
 	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
@@ -663,8 +662,7 @@ func TestVMTestRunCanDisableDefaultArtifactBuilds(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(repo, "scripts"), 0o755); err != nil {
 		t.Fatalf("MkdirAll(scripts) error = %v", err)
 	}
-	copyScript(t, filepath.Join(realRepo, "scripts", "vmtest-run"), filepath.Join(repo, "scripts", "vmtest-run"))
-	copyRunCheck(t, realRepo, repo)
+	copyVMTestRunner(t, realRepo, repo)
 	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
@@ -1517,7 +1515,7 @@ func TestVMTestRunInvalidCIDRSetupFailed(t *testing.T) {
 
 func writeFakeGoTools(t *testing.T, dir string) (string, string) {
 	t.Helper()
-	fakeGo := filepath.Join(dir, "go")
+	fakeGo := filepath.Join(dir, "fake-go")
 	fakeChild := filepath.Join(dir, "fake-test-binary")
 	writeExecutable(t, fakeGo, `#!/usr/bin/env bash
 set -euo pipefail
@@ -2053,9 +2051,18 @@ func TestVMTestRunNestedScenario(t *testing.T) {
 	}
 }
 
-// copyRunCheck gives a stand-in repo the helper vmtest-run runs after go test.
-func copyRunCheck(t *testing.T, realRepo, repo string) {
+func copyVMTestRunner(t *testing.T, realRepo, repo string) {
 	t.Helper()
+	git := exec.Command("git", "init", "--quiet")
+	git.Dir = repo
+	git.Env = gittest.Env(os.Environ(), repo)
+	if output, err := git.CombinedOutput(); err != nil {
+		t.Fatalf("initialize runner fixture: %v\n%s", err, output)
+	}
+	for _, name := range []string{"vmtest-run", "hermetic"} {
+		path := filepath.Join("scripts", name)
+		copyScript(t, filepath.Join(realRepo, path), filepath.Join(repo, path))
+	}
 	dir := filepath.Join(repo, "cmd", "katl-vmtest-ran")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)

@@ -179,7 +179,7 @@ The wrapper injects the VM world by preparing the world environment and ending
 with the equivalent `go test -exec` invocation:
 
 ```sh
-go test -exec scripts/vmtest-exec ./internal/vmtest/scenarios \
+scripts/hermetic -- go test -exec scripts/vmtest-exec ./internal/vmtest/scenarios \
   -run '^TestTwoNodeKubeadmJoinSmoke$' -count=1
 ```
 
@@ -286,7 +286,7 @@ manifests are `setup-failed` in enabled hermetic suites.
 Plain unit test runs keep their current role:
 
 ```text
-go test ./...
+scripts/hermetic -- go test ./...
 ```
 
 They run unit, parser, planner, golden, and helper tests. Enabled VM scenarios

@@ -1472,37 +1472,26 @@ export KATL_VMTEST_DEBUG_ON_FAILURE="$debug_on_failure_effective"
 export KATL_VMTEST_RESOURCE_MANIFEST="$resource_manifest"
 export KATLCTL_CONFIG="$run_dir/katlctl.yaml"
 
-# run_env is the complete environment of go test and of the tools the harness
-# runs for it. Nothing else is inherited, so the operator's home directory,
-# credentials and katlctl configuration cannot influence a gate. HOME and the
-# XDG directories live in the run; the Go caches stay the caller's so the run
-# does not start cold. Rootless podman, which the tests and mkosi use, would
-# otherwise create a fresh image store under the run's XDG_DATA_HOME, so
-# CONTAINERS_STORAGE_CONF points it at the caller's storage, and
-# XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS give it the caller's user session
-# for the systemd cgroup manager.
+# The mount namespace hides the caller's home. The allowlist also keeps the
+# test environment independent of the caller's credentials and contexts.
+# libvirt clients talk to the daemon over its socket in /run. The daemon
+# reads its own config and storage outside the test namespace.
 run_home="$run_dir/home"
-mkdir -p "$run_home/.config" "$run_home/.cache" "$run_home/.local/share" "$run_home/.local/state"
-caller_home="${HOME:-/nonexistent}"
-containers_storage_conf="${CONTAINERS_STORAGE_CONF:-${XDG_CONFIG_HOME:-$caller_home/.config}/containers/storage.conf}"
-if [[ ! -f "$containers_storage_conf" ]]; then
-    containers_storage_conf="$run_dir/containers-storage.conf"
-    printf '[storage]\ngraphroot = "%s/containers/storage"\nrunroot = "%s/containers"\n' \
-        "${XDG_DATA_HOME:-$caller_home/.local/share}" "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
-        >"$containers_storage_conf"
-fi
+mkdir -p "$run_home/.config" "$run_home/.cache" "$run_home/.local/share" "$run_home/.local/state" "$run_dir/tmp"
+go_cache_paths="$(go env GOPATH GOCACHE GOMODCACHE)"
+mapfile -t go_paths <<<"$go_cache_paths"
 run_env=(
-    "CONTAINERS_STORAGE_CONF=$containers_storage_conf"
     "HOME=$run_home"
     "XDG_CONFIG_HOME=$run_home/.config"
     "XDG_CACHE_HOME=$run_home/.cache"
     "XDG_DATA_HOME=$run_home/.local/share"
     "XDG_STATE_HOME=$run_home/.local/state"
-    "GOPATH=${GOPATH:-$caller_home/go}"
-    "GOCACHE=${GOCACHE:-${XDG_CACHE_HOME:-$caller_home/.cache}/go-build}"
-    "GOMODCACHE=${GOMODCACHE:-${GOPATH:-$caller_home/go}/pkg/mod}"
+    "TMPDIR=$run_dir/tmp"
+    "GOPATH=${go_paths[0]}"
+    "GOCACHE=${go_paths[1]}"
+    "GOMODCACHE=${go_paths[2]}"
 )
-for name in PATH LANG LC_ALL TERM TZ TMPDIR \
+for name in PATH LANG LC_ALL TERM TZ \
     GOROOT GOFLAGS GOPROXY GOSUMDB GONOSUMDB GONOPROXY GOPRIVATE GOTOOLCHAIN GOWORK \
     CGO_ENABLED CC CXX KATLCTL_CONFIG XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS; do
     if [[ -n "${!name+x}" ]]; then
@@ -1542,7 +1531,8 @@ if ! has_go_test_json "$@"; then
 fi
 (cd "$repo_root" && "$resource_go_bin" run ./cmd/katl-vmtest-health start -out "$run_dir/host-health-start.json") >&2 || true
 set +e
-env -i "${run_env[@]}" "$go_bin" test -exec "$repo_root/scripts/vmtest-exec" "${go_test_args[@]}" "$@" >"$go_test_log" 2>&1
+"$repo_root/scripts/hermetic" --bind "$run_dir" --bind "$cache_dir" -- \
+    env -i "${run_env[@]}" "$go_bin" test -exec "$repo_root/scripts/vmtest-exec" "${go_test_args[@]}" "$@" >"$go_test_log" 2>&1
 exit_code=$?
 set -e
 if [[ "$exit_code" -ne 0 ]]; then

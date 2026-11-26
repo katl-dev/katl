@@ -23,9 +23,20 @@ func TestCodexRoleExec(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	codexHome := filepath.Join(home, "codex config")
+	if err := os.Mkdir(codexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("CODEX_HOME", codexHome)
 	xdgConfig := filepath.Join(home, "xdg config")
 	t.Setenv("XDG_CONFIG_HOME", xdgConfig)
+	t.Setenv("GH_CONFIG_DIR", "")
+	ghConfig := filepath.Join(xdgConfig, "gh")
+	if err := os.MkdirAll(ghConfig, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	buildCache, moduleCache := t.TempDir(), t.TempDir()
+	t.Setenv("GOCACHE", buildCache)
+	t.Setenv("GOMODCACHE", moduleCache)
 
 	task := "Review \"this change\".\nKeep $HOME literal."
 	writeFakeExecutable(t, bin, "codex", `if IFS= read -r unexpected; then
@@ -106,6 +117,16 @@ exit "$CODEX_TEST_STATUS"
 			for _, flag := range []string{"--user", "--collect", "--wait", "--same-dir", "--expand-environment=no"} {
 				if !slices.Contains(runArgs, flag) {
 					t.Errorf("systemd-run missing %s", flag)
+				}
+			}
+			for _, property := range []string{
+				"ProtectHome=tmpfs", "PrivateUsers=yes", `TemporaryFileSystem="` + home + `":ro`,
+				`BindPaths="` + repo + `"`, `BindPaths="` + work + `"`, `BindPaths="` + codexHome + `"`,
+				`BindPaths="` + buildCache + `"`, `BindPaths="` + moduleCache + `"`, `BindReadOnlyPaths="` + ghConfig + `"`,
+			} {
+				index := slices.Index(runArgs, property)
+				if index <= 0 || runArgs[index-1] != "-p" {
+					t.Errorf("systemd-run missing property %s", property)
 				}
 			}
 			if env := string(mustReadFile(t, filepath.Join(work, "codex-env"))); env != strings.Join([]string{path, home, codexHome, xdgConfig, ""}, "\x00") {

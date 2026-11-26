@@ -111,6 +111,7 @@
           packages =
             (with pkgs; [
               bashInteractive
+              bubblewrap
               cacert
               cpio
               curl
@@ -154,9 +155,21 @@
               "vmtest-exec"
               "worktree-clean"
               "check-fast"
+              "hermetic"
             ];
 
           shellHook = ''
+            # Run Go tests through scripts/hermetic -- go test ...
+            # Prepare the caches before the wrapper requires them as bind sources.
+            if katl_go_caches="$(${pkgs.go}/bin/go env GOCACHE GOMODCACHE)"; then
+              mapfile -t katl_go_cache_dirs <<< "$katl_go_caches"
+              for katl_go_cache in "''${katl_go_cache_dirs[@]}"; do
+                if [[ "$katl_go_cache" == /* ]]; then
+                  mkdir -p -- "$katl_go_cache"
+                fi
+              done
+            fi
+            unset katl_go_caches katl_go_cache_dirs katl_go_cache
             if katl_repo_root="$(${pkgs.git}/bin/git rev-parse --show-toplevel 2>/dev/null)"; then
               source ${./scripts/dev-shell-env} "$katl_repo_root"
             fi

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+probe() {
+    bwrap --unshare-user --dev-bind / / -- bwrap --unshare-user --dev-bind / / -- true
+}
+
+if output="$(probe 2>&1)"; then
+    exit 0
+fi
+restriction=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+if [[ "${RUNNER_ENVIRONMENT:-}" != github-hosted || ! -r "$restriction" || "$(<"$restriction")" != 1 ]]; then
+    printf 'Bubblewrap needs nested user namespaces on the test runner:\n%s\n' "$output" >&2
+    exit 1
+fi
+
+# An ephemeral Ubuntu runner can grant user namespaces to its CI copy of
+# Bubblewrap without changing the system restriction or the distro profile.
+ci_bin=/opt/katl-ci/bin
+sudo install -D -m 0755 -- "$(command -v bwrap)" "$ci_bin/bwrap"
+sudo apparmor_parser -r <<EOF
+abi <abi/4.0>,
+profile katl-ci-bwrap $ci_bin/bwrap flags=(unconfined) {
+  userns,
+}
+EOF
+export PATH="$ci_bin:$PATH"
+probe
+printf '%s\n' "$ci_bin" >>"$GITHUB_PATH"
