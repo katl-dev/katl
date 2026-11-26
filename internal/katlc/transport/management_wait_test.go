@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	grpcstatus "google.golang.org/grpc/status"
 )
 
@@ -36,6 +38,8 @@ func TestManagementEvidence(t *testing.T) {
 		{name: "issuer rejection", err: grpcstatus.Error(codes.Unavailable, "handshake failed"), issuerRefused: func(error) bool { return true }, want: ManagementRefusedExplicitly},
 		{name: "late issuer rejection", err: managementRPCInconclusive{cause: context.DeadlineExceeded}, issuerRefused: func(error) bool { return true }, want: ManagementInconclusive},
 		{name: "alert in error text", err: grpcstatus.Error(codes.Unavailable, "tls: unknown certificate authority"), want: ManagementInconclusive},
+		{name: "Unavailable without dial evidence", err: grpcstatus.Error(codes.Unavailable, "dial tcp: connect: connection refused"), want: ManagementInconclusive},
+		{name: "RPC deadline", err: grpcstatus.Error(codes.DeadlineExceeded, "deadline exceeded"), want: ManagementInconclusive},
 		{name: "RPC authentication refusal", err: grpcstatus.Error(codes.Unauthenticated, "unauthenticated"), want: ManagementInconclusive},
 		{name: "RPC authentication refusal does not identify the issuer", err: grpcstatus.Error(codes.Unauthenticated, "unauthenticated"), issuerRefused: func(error) bool { return false }, want: ManagementInconclusive},
 		{name: "EOF", err: io.EOF, want: ManagementInconclusive},
@@ -44,7 +48,7 @@ func TestManagementEvidence(t *testing.T) {
 		{name: "deadline", err: context.DeadlineExceeded, want: ManagementInconclusive},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ClassifyManagementEvidence(tc.err, tc.issuerRefused); got != tc.want {
+			if got := ClassifyManagementEvidence(tc.err, nil, tc.issuerRefused); got != tc.want {
 				t.Errorf("evidence = %v, want %v", got, tc.want)
 			}
 		})
@@ -301,6 +305,13 @@ func TestManagementRPCInconclusive(t *testing.T) {
 	}{
 		{name: "unary"},
 		{name: "stream open"},
+		{name: "stream header", stream: func(s grpc.ClientStream) error {
+			header, err := s.Header()
+			if header != nil {
+				return fmt.Errorf("exposed header after the call budget: %v", header)
+			}
+			return err
+		}},
 		{name: "stream send", stream: func(s grpc.ClientStream) error {
 			return s.SendMsg(&agentapi.StageHostUpgradeArtifactRequest{})
 		}},
@@ -380,6 +391,13 @@ func (c managementDeadlineContext) Deadline() (time.Time, bool) { return c.deadl
 type managementResultStream struct {
 	grpc.ClientStream
 	finish func() error
+}
+
+func (s managementResultStream) Header() (metadata.MD, error) {
+	if err := s.finish(); err != nil {
+		return nil, err
+	}
+	return metadata.Pairs("evidence", "answer"), nil
 }
 
 func (s managementResultStream) SendMsg(any) error { return s.finish() }

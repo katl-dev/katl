@@ -106,9 +106,11 @@ When a saved node's address changes, verify and save it explicitly:
 katlctl context rebind --node cp-1 --endpoint 192.0.2.51
 ```
 
-Rebind succeeds only when TLS authenticates the expected node name and the new
-address reports the same node name, enrollment ID, and machine ID that the
-context recorded. If verification reports `could not confirm the node answers
+Rebind uses the transport mode saved in the context and checks that the new
+address reports the recorded node name, enrollment ID, and machine ID. With
+mTLS, TLS authenticates the expected node name before that check. With
+trusted-network management, rebind checks the reported values over plaintext.
+If verification reports `could not confirm the node answers
 at the proposed address with the saved management credentials`, the context
 keeps the previous address. Check the address and node reachability, then rerun
 the `katlctl context rebind` command in the message. If verification timed out,
@@ -195,7 +197,7 @@ Reboot a node and wait for it to return healthy:
 katlctl node reboot cp-1
 ```
 
-Shut down a node and wait for its management API to stop:
+Request a node shutdown and wait for its management API to stop responding.
 
 ```sh
 katlctl node shutdown cp-1
@@ -204,17 +206,23 @@ katlctl node shutdown cp-1
 Neither command requires a confirmation flag. Reboot honors the node's selected
 boot target, including a generation already staged for next boot, and verifies
 that a new agent instance returns on that generation with good boot health.
-Shutdown can prove that KatlOS management is offline; without an out-of-band
-power API, it cannot independently prove the machine's final hardware power
-state. Use `--no-wait` only when intentionally detaching, and `--output json`
-when a script needs structured output.
+Use `--no-wait` to return after the agent acknowledges the request, and
+`--output json` when a script needs structured output.
 
-A status probe that expires while waiting for shutdown leaves the management
-API's state unverified, so `katlctl` keeps checking until the shutdown wait
-ends. If that wait times out for `cp-1`, the command reports the following.
+After the agent acknowledges shutdown, `katlctl` probes the management endpoint
+with fresh TCP connections. If a connection fails or times out, it exits
+successfully and reports
+`cp-1 stopped responding after acknowledging shutdown`, or
+`"result": "unreachable-after-ack"` in JSON. Power-off and a network interruption
+can both produce this result. Check the node's console to verify power state.
+
+A missing, late, or failed acknowledgement causes a nonzero exit. After an
+acknowledgement, if TCP connects, the wait continues even if the handshake or
+status request fails or times out.
+If that wait times out for `cp-1`, the command reports the following.
 
 ```text
-shutdown was scheduled for cp-1. Could not verify that its management API is offline: context deadline exceeded. Check the node's console
+shutdown was scheduled for cp-1. Could not confirm shutdown: context deadline exceeded. Check the node's console
 ```
 
 ## Retrieve a kubeconfig
