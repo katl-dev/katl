@@ -5,8 +5,7 @@ runs fast checks on main. A short **Plan** job selects VM coverage from changed
 paths and [driver qualification](driver-qualification.md) from the candidate's
 input digests, so image builds and driver qualification start with the run
 rather than after **Fast checks**. CI fails if any selected job fails, is
-cancelled, or is skipped. Documentation, maintainer release tooling, and
-unit-only changes generally skip the VM regression jobs.
+cancelled, or is skipped. CI expects unselected jobs to be skipped.
 
 ## Production images
 
@@ -75,10 +74,44 @@ retargeted onto a release branch it therefore has no `CI (release)` result:
 open release pull requests with `gh pr create --base release/...`, or close and
 reopen the pull request, or push a commit, after retargeting.
 
-Every selected test must emit a Go JSON pass event. A labelled pull request and
-the merge queue run the complete suite for both standard and LTS whenever any
-VM suite is selected. Manual CI dispatch selects both VM flavours. The weekly
-schedule and manual dispatch both force driver qualification for both flavours.
+Every selected test must emit a Go JSON pass event. Labelled pull requests into
+main run the affected suites on both standard and LTS. Merge groups and release
+series pull requests run the full hosted suite on both flavours. For a
+documentation-only diff, both the flavour and scenario matrices are empty, and
+CI expects the hosted VM job to report skipped. Scheduled and manually
+dispatched VM runs, including the nightly candidate, run the full hosted suite.
+
+The planner compares the event's tested base SHA with the checked-out merge
+commit for a pull request or the group head for a merge group. It includes both
+paths of a rename, so moving a file into documentation still accounts for the
+removed input. Only explicitly mapped scenario fixtures can narrow the suite.
+Shared image, harness, and packaging inputs take precedence over fixture and
+documentation rules. The planner resolves Go build and test dependencies,
+embedded files, and VM input symlink targets in both trees. A missing base,
+an unmapped non-documentation path, or an inventory failure selects the full
+suite.
+
+The **Plan** summary records the suites and the selection reason. While
+`selectAffectedMergeGroupVMs` in `cmd/katl-vmtest-plan/vm_selection.go` is
+false, full merge-group runs also publish `vm-shadow` with the affected suites
+and estimated runner-minutes saved. The estimate sums the measured durations
+of omitted tests across both flavours.
+
+Before enabling affected selection on merge groups, collect at least 20 full
+merge-group runs targeting main over at least three days, each with published
+`vm-shadow` output. Every VM suite failure must occur in a suite selected by
+the shadow plan. If an omitted suite fails, fix the mapping and restart the
+count.
+
+Also collect shadow runs for representative changes to every narrow rule.
+For each rule, seed a regression in its mapped input on a test branch and
+confirm that a suite in the shadow plan catches it in the full run. Include
+a group with changes to two different rules and confirm its shadow lists
+both sets of suites. Record the run links, selected suites, failure evidence
+and estimated savings in the change that enables the switch.
+
+The weekly schedule and manual dispatch both force driver qualification for
+both flavours.
 
 Kubernetes producer changes select the newest supported Kubernetes candidate.
 The shared image job verifies and stages that bundle, and the two-node lane

@@ -63,8 +63,10 @@ func run(args []string, input io.Reader, output io.Writer) error {
 	flags := flag.NewFlagSet("katl-vmtest-plan", flag.ContinueOnError)
 	changed := flags.Bool("changed", false, "select groups from NUL-delimited changed paths on stdin; default: all groups")
 	ci := flags.Bool("ci", false, "plan VM, driver, and production flavours from NUL-delimited changed paths")
-	regression := flags.Bool("regression", false, "with --ci, run both regression flavours for the merge gate when any VM suite is selected")
+	regression := flags.Bool("regression", false, "with --ci, use both regression flavours when VM suites are selected")
 	production := flags.String("production", "off", "with --ci, select production flavours: off, non-prose, or always")
+	vmModeFlag := flags.String("vm-mode", string(affectedVMs), "with --ci, select affected, full, merge-group, always, or off")
+	base := flags.String("base", "", "tested base revision required for reduced VM coverage")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -75,6 +77,12 @@ func run(args []string, input io.Reader, output io.Writer) error {
 	case "off", "non-prose", "always":
 	default:
 		return fmt.Errorf("unknown production selection %q", *production)
+	}
+	mode := vmMode(*vmModeFlag)
+	switch mode {
+	case affectedVMs, fullVMs, mergeGroupVMs, alwaysVMs, noVMs:
+	default:
+		return fmt.Errorf("unknown VM selection mode %q", mode)
 	}
 	selected := groups
 	if *changed || *ci {
@@ -94,13 +102,16 @@ func run(args []string, input io.Reader, output io.Writer) error {
 				return fmt.Errorf("changed path must be repository-relative: %q", name)
 			}
 		}
+		decision, shadow := planVMs(paths, mode, func() (vmInputs, error) {
+			return sharedVMInputs(*base)
+		})
 		if *ci {
-			plan := planCI(paths, *regression)
+			plan := planCI(paths, *regression || mode == alwaysVMs, decision, shadow)
 			plan.ProductionFlavours = productionFlavours(paths, *production)
 			plan.selectDrivers(paths, os.Getenv("GITHUB_EVENT_NAME"), os.Getenv("GITHUB_REF"), committedDriverDigests, mainDriverQualifications)
 			return json.NewEncoder(output).Encode(plan)
 		}
-		selected = selectGroups(paths)
+		selected = decision.groups
 	}
 	return json.NewEncoder(output).Encode(struct {
 		Include []group `json:"include"`
@@ -130,12 +141,14 @@ func bothVMFlavours(name string) bool {
 }
 
 type ciPlan struct {
-	VMFlavours         []string          `json:"vmFlavours"`
-	DriverFlavours     []string          `json:"driverFlavours"`
-	DriverDigests      map[string]string `json:"driverDigests"`
-	QualifiedDrivers   map[string]string `json:"qualifiedDrivers"`
-	ProductionFlavours []string          `json:"productionFlavours"`
-	Groups             []group           `json:"groups"`
+	VMFlavours         []string           `json:"vmFlavours"`
+	DriverFlavours     []string           `json:"driverFlavours"`
+	DriverDigests      map[string]string  `json:"driverDigests"`
+	QualifiedDrivers   map[string]string  `json:"qualifiedDrivers"`
+	ProductionFlavours []string           `json:"productionFlavours"`
+	Groups             []group            `json:"groups"`
+	VMSelection        vmSelectionSummary `json:"vmSelection"`
+	VMShadow           *vmShadow          `json:"vmShadow,omitempty"`
 }
 
 func productionFlavours(paths []string, mode string) []string {
@@ -158,10 +171,10 @@ func productionFlavours(paths []string, mode string) []string {
 	return []string{}
 }
 
-func planCI(paths []string, regression bool) ciPlan {
+func planCI(paths []string, regression bool, selected vmSelection, shadow *vmSelection) ciPlan {
 	vms := map[string]bool{}
 	for _, name := range paths {
-		if len(selectGroups([]string{name})) == 0 {
+		if skipsLegacyQualification(name) {
 			continue
 		}
 		if strings.HasPrefix(name, "kernels/") {
@@ -180,17 +193,23 @@ func planCI(paths []string, regression bool) ciPlan {
 			vms["standard"] = true
 		}
 	}
-	if regression && len(vms) != 0 {
+	if len(selected.groups) == 0 {
+		clear(vms)
+	} else if regression {
 		vms["standard"], vms["lts"] = true, true
+	} else if len(vms) == 0 {
+		vms["standard"] = true
 	}
-	selected := selectGroups(paths)
-	if regression && len(vms) != 0 {
-		selected = groups
-	}
-	plan := ciPlan{VMFlavours: []string{}, Groups: batchGroups(selected)}
+	plan := ciPlan{VMFlavours: []string{}, Groups: batchGroups(selected.groups), VMSelection: selected.summary()}
 	for _, flavour := range kernelFlavours {
 		if vms[flavour] {
 			plan.VMFlavours = append(plan.VMFlavours, flavour)
+		}
+	}
+	if shadow != nil {
+		plan.VMShadow = &vmShadow{
+			vmSelectionSummary: shadow.summary(),
+			RunnerMinutesSaved: float64((suiteSeconds(selected.groups)-suiteSeconds(shadow.groups))*len(plan.VMFlavours)) / 60,
 		}
 	}
 	return plan
@@ -212,35 +231,19 @@ func batchGroups(selected []group) []group {
 	return result
 }
 
-func selectGroups(paths []string) []group {
-	selected := map[string]bool{}
-	for _, name := range paths {
-		switch {
-		case strings.HasPrefix(name, "docs/"), name == "README.md", name == "AGENTS.md", name == ".gitignore",
-			strings.HasPrefix(name, ".github/ISSUE_TEMPLATE/"), name == ".github/dependabot.yml",
-			strings.HasPrefix(name, "cmd/katl-release/"), name == "scripts/katl-release",
-			strings.HasSuffix(name, "_test.go") && !strings.HasPrefix(name, "internal/vmtest/"):
-			continue
-		case name == "cmd/katl-kernel-release/candidate.go", name == "cmd/katl-kernel-release/propose.go",
-			name == "cmd/katl-kernel-release/publish.go", name == "cmd/katl-kernel-release/update-commit.txt",
-			name == ".github/workflows/kernel-updates.yml", name == ".github/workflows/kernel-automerge.yml":
-			continue
-		case name == "cmd/katlctl/config_compatibility.go", name == "cmd/katlctl/config_inspect.go":
-			selected["config"], selected["management"], selected["two-node"], selected["worker-join"], selected["readdress"] = true, true, true, true, true
-		case name == "cmd/katlctl/management_enable_mtls.go":
-			selected["enable-mtls"] = true
-		case name == "cmd/katlctl/management_rotation.go":
-			selected["management"] = true
-		default:
-			// Unknown and shared changes receive the full suite: missing coverage must not look green.
-			return groups
-		}
+// Preserve the path exclusions that applied to flavour selection before VM
+// suites gained their own selection policy.
+func skipsLegacyQualification(name string) bool {
+	switch {
+	case strings.HasPrefix(name, "docs/"), name == "README.md", name == "AGENTS.md", name == ".gitignore",
+		strings.HasPrefix(name, ".github/ISSUE_TEMPLATE/"), name == ".github/dependabot.yml",
+		strings.HasPrefix(name, "cmd/katl-release/"), name == "scripts/katl-release",
+		strings.HasSuffix(name, "_test.go") && !strings.HasPrefix(name, "internal/vmtest/"):
+		return true
+	case name == "cmd/katl-kernel-release/candidate.go", name == "cmd/katl-kernel-release/propose.go",
+		name == "cmd/katl-kernel-release/publish.go", name == "cmd/katl-kernel-release/update-commit.txt",
+		name == ".github/workflows/kernel-updates.yml", name == ".github/workflows/kernel-automerge.yml":
+		return true
 	}
-	result := []group{}
-	for _, candidate := range groups {
-		if selected[candidate.Name] {
-			result = append(result, candidate)
-		}
-	}
-	return result
+	return false
 }

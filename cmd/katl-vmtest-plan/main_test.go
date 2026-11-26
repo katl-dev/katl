@@ -12,68 +12,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestSelectGroups(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		paths []string
-		want  []string
-	}{
-		{"docs", []string{"docs/development/releases.md", "README.md"}, []string{}},
-		{"unit tests", []string{"internal/installer/operation/run_test.go"}, []string{}},
-		{"CLI unit tests", []string{"cmd/katlctl/main_test.go"}, []string{}},
-		{"maintainer tooling", []string{"cmd/katl-release/main.go", "scripts/katl-release"}, []string{}},
-		{"CLI configuration", []string{"cmd/katlctl/config_compatibility.go"}, []string{"config", "management", "two-node", "worker-join", "readdress"}},
-		{"CLI rotation", []string{"cmd/katlctl/management_rotation.go"}, []string{"management"}},
-		{"CLI enable-mtls", []string{"cmd/katlctl/management_enable_mtls.go"}, []string{"enable-mtls"}},
-		{"CLI rotation and docs", []string{"cmd/katlctl/management_rotation.go", "docs/operations/install.md"}, []string{"management"}},
-		{"shared CLI", []string{"cmd/katlctl/main.go"}, allNames()},
-		{"shared configuration input", []string{"cmd/katlctl/config_input.go"}, allNames()},
-		{"CLI install", []string{"cmd/katlctl/install.go"}, allNames()},
-		{"CLI upgrade", []string{"cmd/katlctl/upgrade_reboot.go"}, allNames()},
-		{"internal CLI", []string{"internal/katlctl/workstation/config.go"}, allNames()},
-		{"shared product", []string{"internal/installer/operation/run.go"}, allNames()},
-		{"VM tests", []string{"internal/vmtest/installed_smoke_test.go"}, allNames()},
-		{"release workflow", []string{".github/workflows/release-artifacts.yml"}, allNames()},
-		{"production build workflow", []string{".github/workflows/production-build.yml"}, allNames()},
-		{"production qualification workflow", []string{".github/workflows/production-vmtests.yml"}, allNames()},
-		{"builder", []string{"scripts/mkosi"}, allNames()},
-		{"unknown with docs", []string{"docs/readme.md", "new-input"}, allNames()},
-		{"CLI with shared change", []string{"cmd/katlctl/main.go", "go.mod"}, allNames()},
-		{"rename into docs", []string{"internal/installer/old.go", "docs/moved.go"}, allNames()},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var got []string
-			for _, selected := range selectGroups(tc.paths) {
-				got = append(got, selected.Name)
-			}
-			slices.Sort(got)
-			slices.Sort(tc.want)
-			if !slices.Equal(got, tc.want) {
-				t.Fatalf("groups = %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-// TestReaddressSelection keeps the worker re-address journey selected by
-// changes to the code it exercises.
-func TestReaddressSelection(t *testing.T) {
-	for _, name := range []string{
-		"cmd/katlctl/kubeadm_control_plane_config.go", // cluster apply --endpoint
-		"cmd/katlctl/host_management.go",              // node reboot --endpoint
-		"cmd/katlctl/enroll.go",                       // context rebind
-		"cmd/katlctl/config_compatibility.go",
-		"internal/vmtest/world_scenario.go", // address reassignment
-		"internal/installer/networkdconfig/networkd.go",
-		"internal/installer/configapply/host_configuration.go",
-		"internal/vmtest/scenarios/worker_readdress_vmtest_test.go",
-	} {
-		t.Run(name, func(t *testing.T) {
-			if !slices.ContainsFunc(selectGroups([]string{name}), func(selected group) bool { return selected.Tests == "TestWorkerReaddress" }) {
-				t.Fatalf("%s does not select TestWorkerReaddress", name)
-			}
-		})
-	}
+func testBase(t *testing.T) string {
+	t.Helper()
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	return "HEAD"
 }
 
 func allNames() []string {
@@ -81,6 +24,7 @@ func allNames() []string {
 }
 
 func TestPlan(t *testing.T) {
+	base := testBase(t)
 	for _, tc := range []struct {
 		name  string
 		args  []string
@@ -88,8 +32,8 @@ func TestPlan(t *testing.T) {
 		want  []string
 	}{
 		{"full by default", nil, "", allLanes},
-		{"empty diff", []string{"--changed"}, "", []string{}},
-		{"docs with spaces", []string{"--changed"}, "docs/design notes.md\x00", []string{}},
+		{"empty diff", []string{"--changed", "--base", base}, "", []string{}},
+		{"docs with spaces", []string{"--changed", "--base", base}, "docs/design notes.md\x00", []string{}},
 		{"newline in unknown path", []string{"--changed"}, "source\nname\x00", allLanes},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -169,7 +113,14 @@ func testCoverage(t *testing.T, args []string, input string) {
 	if len(args) != 0 {
 		plan.Include = plan.Groups
 	}
-	want := map[string][]string{
+	if len(plan.Include) != len(lanes) {
+		t.Fatalf("expected %d VM lanes, got %s", len(lanes), &output)
+	}
+	assertMatrixTests(t, plan.Include, fullMatrixTests())
+}
+
+func fullMatrixTests() map[string][]string {
+	return map[string][]string{
 		"./internal/vmtest/scenarios": {
 			"TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke",
 			"TestExternalWorkerJoin",
@@ -192,13 +143,14 @@ func testCoverage(t *testing.T, args []string, input string) {
 			"TestInstalledRuntimeManagementRotationSmoke",
 		},
 	}
-	if len(plan.Include) != len(lanes) {
-		t.Fatalf("expected %d VM lanes, got %s", len(lanes), &output)
-	}
+}
+
+func assertMatrixTests(t *testing.T, matrix []group, want map[string][]string) {
+	t.Helper()
 	// A test dropped from every lane or run by two lanes must fail, so collect
 	// across lanes without deduplicating.
 	got := map[string][]string{}
-	for _, lane := range plan.Include {
+	for _, lane := range matrix {
 		got[lane.Package] = append(got[lane.Package], strings.Split(lane.Tests, "|")...)
 	}
 	for pkg, expected := range want {
@@ -246,24 +198,10 @@ func TestBatchGroupsUsesLanes(t *testing.T) {
 	}
 }
 
-func TestCIScenarios(t *testing.T) {
+func TestCIPlan(t *testing.T) {
+	base := testBase(t)
 	t.Setenv("GITHUB_EVENT_NAME", "push")
 	t.Setenv("GITHUB_REF", "refs/heads/release/test")
-	var output bytes.Buffer
-	if err := run([]string{"--ci"}, strings.NewReader("cmd/katlctl/management_rotation.go\x00"), &output); err != nil {
-		t.Fatal(err)
-	}
-	var plan ciPlan
-	if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
-		t.Fatal(err)
-	}
-	want := []group{{Name: "lifecycle", Package: "./internal/vmtest", Tests: "TestInstalledRuntimeManagementRotationSmoke"}}
-	if !slices.Equal(plan.Groups, want) {
-		t.Fatalf("scenarios = %v, want %v", plan.Groups, want)
-	}
-}
-
-func TestCIVMFlavours(t *testing.T) {
 	both := []string{"standard", "lts"}
 	for _, tc := range []struct {
 		name, paths string
@@ -272,12 +210,12 @@ func TestCIVMFlavours(t *testing.T) {
 	}{
 		{name: "empty"},
 		{name: "documentation", paths: "docs/development/ci.md"},
-		{name: "unit only", paths: "internal/installer/run_test.go"},
-		{name: "release tooling", paths: "cmd/katl-release/main.go"},
-		{name: "capture tooling", paths: "cmd/katl-kernel-release/candidate.go"},
-		{name: "proposal workflow", paths: ".github/workflows/kernel-updates.yml"},
-		{name: "kernel schedule and docs", paths: ".github/workflows/kernel-updates.yml\x00docs/developing.md"},
-		{name: "regression kernel schedule and docs", paths: ".github/workflows/kernel-updates.yml\x00docs/developing.md", regression: true},
+		{name: "unit only", paths: "internal/installer/run_test.go", vms: []string{"standard"}},
+		{name: "release tooling", paths: "cmd/katl-release/main.go", vms: []string{"standard"}},
+		{name: "capture tooling", paths: "cmd/katl-kernel-release/candidate.go", vms: []string{"standard"}},
+		{name: "proposal workflow", paths: ".github/workflows/kernel-updates.yml", vms: []string{"standard"}},
+		{name: "kernel schedule and docs", paths: ".github/workflows/kernel-updates.yml\x00docs/developing.md", vms: []string{"standard"}},
+		{name: "regression kernel schedule and docs", paths: ".github/workflows/kernel-updates.yml\x00docs/developing.md", regression: true, vms: both},
 		{name: "kernel schedule and lock", paths: ".github/workflows/kernel-updates.yml\x00kernels/fedora-45/x86_64/standard.json", vms: []string{"standard"}},
 		{name: "release workflow", paths: ".github/workflows/release-artifacts.yml", vms: both},
 		{name: "production qualification workflow", paths: ".github/workflows/production-vmtests.yml", vms: both},
@@ -323,11 +261,22 @@ func TestCIVMFlavours(t *testing.T) {
 		{name: "renamed module", paths: "docs/moved.go\x00internal/kernelmodule/old.go", vms: both},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var paths []string
-			if tc.paths != "" {
-				paths = strings.Split(tc.paths, "\x00")
+			input := tc.paths
+			if input != "" {
+				input += "\x00"
 			}
-			got := planCI(paths, tc.regression)
+			args := []string{"--ci", "--base", base}
+			if tc.regression {
+				args = append(args, "--regression")
+			}
+			var output bytes.Buffer
+			if err := run(args, strings.NewReader(input), &output); err != nil {
+				t.Fatal(err)
+			}
+			var got ciPlan
+			if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
 			if !slices.Equal(got.VMFlavours, tc.vms) || got.VMFlavours == nil {
 				t.Fatalf("VM flavours = %v, want %v", got.VMFlavours, tc.vms)
 			}

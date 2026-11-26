@@ -49,6 +49,7 @@ jobs:
       production-previous-tag: ${{ steps.production.outputs.previous-tag }}
       kubernetes-version: ${{ steps.plan.outputs.kubernetes-version }}
       scenarios: ${{ steps.plan.outputs.scenarios }}
+      vm-shadow: ${{ steps.plan.outputs.vm-shadow }}
       range: ${{ steps.plan.outputs.range }}
       full-plan: ${{ steps.plan.outputs.full-plan }}
       check-suffix: ${{ steps.plan.outputs.check-suffix }}
@@ -103,16 +104,21 @@ jobs:
           # BASE_REF is read live, as the label is.
           full_plan=false
           regression=false
+          vm_mode=off
           case "$GITHUB_EVENT_NAME" in
             pull_request)
               if release_base "${BASE_REF:-}"; then full_plan=true; fi
-              if [[ "${VMTEST_LABEL:-false}" == true ]]; then regression=true; fi ;;
-            merge_group) full_plan=true ;;
+              if [[ "${VMTEST_LABEL:-false}" == true ]]; then regression=true; fi
+              if [[ "$full_plan" == true ]]; then vm_mode=full
+              elif [[ "$regression" == true ]]; then
+                if [[ "${BASE_REF:-}" == main ]]; then vm_mode=affected; else vm_mode=full; fi
+              fi ;;
+            merge_group) full_plan=true; vm_mode=merge-group ;;
+            schedule|workflow_dispatch) vm_mode=always ;;
           esac
           if [[ "$full_plan" == true ]]; then regression=true; fi
-          no_vms=false
-          if [[ "$regression" == false && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then no_vms=true; fi
           if [[ "$regression" == true ]]; then options+=(--regression); fi
+          options+=(--vm-mode "$vm_mode")
           if [[ "$GITHUB_EVENT_NAME" == merge_group ]]; then
             options+=(--production=non-prose)
           elif [[ "$full_plan" == true ]]; then
@@ -126,6 +132,7 @@ jobs:
           # as the payload describes, so the range matches the tree under test.
           if [[ "$GITHUB_EVENT_NAME" == pull_request || "$GITHUB_EVENT_NAME" == merge_group ]]; then
             base="$BASE_SHA"
+            options+=(--base "$base")
           elif [[ "$GITHUB_EVENT_NAME" == push && "$BEFORE_SHA" != 0000000000000000000000000000000000000000 ]]; then
             base="$BEFORE_SHA"
           elif [[ "$GITHUB_EVENT_NAME" == schedule ]]; then
@@ -135,10 +142,7 @@ jobs:
           fi
           # Include deletions as well as additions when a file is renamed.
           git diff --name-only --no-renames -z "$base" HEAD > _build/ci-changes
-          go run ./cmd/katl-vmtest-plan "${options[@]}" < _build/ci-changes > _build/ci-candidates.json
-          jq -c --argjson noVMs "$no_vms" '
-            if $noVMs then .vmFlavours = [] | .groups = [] else . end
-          ' _build/ci-candidates.json > _build/ci-plan.json
+          go run ./cmd/katl-vmtest-plan "${options[@]}" < _build/ci-changes > _build/ci-plan.json
           go run ./cmd/katl-kubernetes-release presubmit --base "$base" > _build/kubernetes-plan.json
           {
             echo "vm-flavours=$(jq -c .vmFlavours _build/ci-plan.json)"
@@ -146,12 +150,17 @@ jobs:
             echo "driver-digests=$(jq -c .driverDigests _build/ci-plan.json)"
             echo "production-flavours=$(jq -c .productionFlavours _build/ci-plan.json)"
             echo "scenarios=$(jq -c '{include: .groups}' _build/ci-plan.json)"
+            echo "vm-shadow=$(jq -c '.vmShadow // empty' _build/ci-plan.json)"
             echo "kubernetes-version=$(jq -r '.include[0].payloadVersion // empty' _build/kubernetes-plan.json)"
             echo "range=$base..HEAD"
             echo "full-plan=$full_plan"
             echo "check-suffix=$check_suffix"
           } >> "$GITHUB_OUTPUT"
-          cat _build/ci-plan.json >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo '```json'
+            jq . _build/ci-plan.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Resolve production identity
         id: production
         if: steps.plan.outputs.full-plan == 'true'
