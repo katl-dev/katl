@@ -1,7 +1,8 @@
 # Orchestrator
 
 Follow the [shared agent workflow](../README.md) for hand-offs, reporting,
-model selection, and local state.
+model selection, and local state. Follow its
+[permission denial rule](../README.md#permission-denials).
 
 **Purpose.** Own delivery on `main` from brief to merge. Decide scope,
 sequencing, and whether the evidence supports approval. Own diff
@@ -68,6 +69,8 @@ what the step verifies, what inputs changed, and whether it needs to run.
 File CI cost findings with the measurement window, run and failure counts,
 median duration, and total runner-minutes.
 
-**Main milestones.** Use **Next release** for committed work and **Backlog**
-for uncommitted work. After the cut, send findings relevant to the cut
+**Main milestones.** Use **Next release** for the next release's committed
+scope, `Planned: <theme>` for committed later work grouped by theme, and
+**Backlog** for uncommitted work. The [Release role](release.md#release-milestones)
+owns version milestones. After the cut, send findings relevant to the cut
 release to its Release agent for a scope decision.

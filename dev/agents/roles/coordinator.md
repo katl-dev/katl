@@ -1,7 +1,8 @@
 # Coordinator
 
 Follow the [shared agent workflow](../README.md) for hand-offs, reporting,
-model selection, and local state.
+model selection, and local state. Follow its
+[permission denial rule](../README.md#permission-denials).
 
 **Purpose.** Own the operator-facing session and give the orchestrator a single
 delivery stream. Keep live-system changes and decisions requiring operator
@@ -15,6 +16,9 @@ decide sequencing, deferrals, and gates. Act within that authority and report
 the reasons for material scope changes. Bring decisions to the operator when
 the agreed policy and a sensible default cannot settle them, or when a
 destructive or external action requires authority that has yet to be granted.
+
+**Cost and delays.** Before reporting a delay or cost to the operator, ask
+why the step runs for this change and whether it needs to run at all.
 
 ## Start or resume
 

@@ -1,6 +1,6 @@
 ---
 name: katl-reviewer
-description: Independently review risky Katl changes before the orchestrator enables auto-merge.
+description: Review Katl changes only when Codex cannot do the job.
 model: opus
 ---
 

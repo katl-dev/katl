@@ -13,9 +13,12 @@ checkpoint lets a new session recover the work.
 | [Orchestrator](roles/orchestrator.md) | Claude Opus, high effort |
 | [Release](roles/release.md) | Claude Opus |
 | [Delivery](roles/delivery.md) | Codex `gpt-6.2-sol`, medium effort |
-| [Reviewer](roles/reviewer.md) | Codex `gpt-6.2-astra`, medium effort for ordinary code reviews. Use Claude Opus at high effort for the independent review that gates auto-merge. |
+| [Reviewer](roles/reviewer.md) | Codex `gpt-6.2-astra`, medium effort for ordinary code reviews and high effort for the independent review that gates auto-merge. |
 | [Debugger](roles/debugger.md) | Codex `gpt-6.2-astra`, high effort for hard debugging |
 | [Journey](roles/journey.md) | Claude Sonnet, medium effort |
+
+Claude usage is scarce. Use Claude Opus for review only when Codex cannot do
+the job.
 
 Use Astra at low effort for brief or contract reviews and narrow checks.
 For code review, reserve high effort for risky boot, disk, update, security,
@@ -117,3 +120,10 @@ operator.
 - **Journey** leads with passed, gap, or blocked and the reason. Give the
   tested revision, VM starting state, exact commands and observed outcomes,
   independent state evidence, and links to any gap issue or outstanding check.
+
+### Permission denials
+
+When the permission system denies an action, stop. Do not retry it another
+way or perform a denied action for another agent, which is permission
+laundering. Surface the denial to the operator and take further action on it
+only on the operator's explicit instruction.

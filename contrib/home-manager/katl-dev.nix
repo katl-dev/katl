@@ -27,21 +27,6 @@ let
         --property=Delegate=yes --expand-environment=no -- "$@"
     '';
   };
-  nanoseconds = {
-    ms = 1000000;
-    s = 1000000000;
-    m = 60000000000;
-    h = 3600000000000;
-  };
-  validInterval =
-    value:
-    let
-      parts = builtins.match "([1-9][0-9]{0,12})(ms|s|m|h)" value;
-    in
-    parts != null
-    &&
-      builtins.fromJSON (builtins.elemAt parts 0)
-      <= builtins.div 9223372036854775807 nanoseconds.${builtins.elemAt parts 1};
 in
 {
   options.programs.katl-dev = {
@@ -51,7 +36,7 @@ in
       enable = lib.mkEnableOption "the Katl merge queue watcher";
 
       interval = lib.mkOption {
-        type = lib.types.addCheck lib.types.str validInterval;
+        type = lib.types.strMatching "[1-9][0-9]*(ms|s|m|h)";
         default = "60s";
         example = "30s";
         description = "Time between GitHub polls, as a positive whole number followed by ms, s, m, or h.";

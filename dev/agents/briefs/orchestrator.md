@@ -14,7 +14,7 @@ and [shared agent workflow](../README.md). Select agents using the
 worktrees. Use Nix with `--option builders ''` and authenticated HTTPS for
 GitHub pushes. Follow AGENTS.md for worktree and VM cleanup, test isolation,
 and PR updates. Carry forward only the queue authority granted for this
-goal. Report permission denials to the coordinator and stop the denied action.
+goal and follow the [permission denial rule](../README.md#permission-denials).
 
 **Priorities.** Clear release blockers and validate outstanding journeys.
 Follow the [release hand-off](../README.md#release-hand-off) at the branch cut.
