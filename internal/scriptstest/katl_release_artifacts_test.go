@@ -135,10 +135,12 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 	}
 	runGit(t, gitDir, "tag", "v2026.7.0-dev.4")
 
+	published := fakeReleaseListing(t, `[{"tag_name":"v2026.6.2","draft":false,"prerelease":false}]`)
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.7.0-dev.4")
 	cmd.Dir = gitDir
 	cmd.Env = append(
 		gittest.Env(environmentWithout("KATL_RELEASE_TARGET"), gitDir),
+		published,
 		"GITHUB_REF_TYPE=branch",
 		"GITHUB_SHA=not-a-commit-in-the-test-repository",
 		"KATL_RELEASE_REPOSITORY_URL=https://github.example/katl-dev/katl",
@@ -225,7 +227,10 @@ func TestKatlReleaseArtifactNotesIncludeVersionedUpgradeGuide(t *testing.T) {
 		t.Fatalf("notes failed: %v\n%s", err, output)
 	}
 	notes := string(output)
-	for _, want := range []string{"## Upgrade paths", "beta.17", "beta.14", "## Verify"} {
+	for _, want := range []string{
+		"## Upgrade paths", "beta.17", "beta.14", "## Verify",
+		"This is an experimental beta release for home-lab evaluation, not a production-supported release.",
+	} {
 		if !strings.Contains(notes, want) {
 			t.Fatalf("release notes missing %q:\n%s", want, notes)
 		}
@@ -808,10 +813,12 @@ func TestKatlReleaseArtifactNotesReleaseNoteTrailers(t *testing.T) {
 	}
 	runGit(t, gitDir, "tag", "v2026.7.0-dev.4")
 
+	published := fakeReleaseListing(t, `[{"tag_name":"v2026.6.2","draft":false,"prerelease":false}]`)
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.7.0-dev.4")
 	cmd.Dir = gitDir
 	cmd.Env = append(
 		gittest.Env(environmentWithout("KATL_RELEASE_TARGET"), gitDir),
+		published,
 		"GITHUB_REF_TYPE=branch",
 		"KATL_RELEASE_REPOSITORY_URL=https://github.example/katl-dev/katl",
 	)
@@ -851,18 +858,30 @@ func TestKatlReleaseArtifactNotesSiblingRelease(t *testing.T) {
 	runGit(t, dir, "tag", "-a", "v2026.11.5", "-m", "Previous release")
 	runGit(t, dir, "switch", "--quiet", "main")
 	runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "New feature")
+	runGit(t, dir, "tag", "v2026.11.6")
+	runGit(t, dir, "tag", "v2026.11.7")
+	runGit(t, dir, "tag", "v2026.11.8")
 
 	t.Run("without a pin", func(t *testing.T) {
-		assertReleaseNoteSubjects(t, dir, "HEAD", "2026.11.6", []string{"New feature"})
+		published := fakeReleaseListing(t, `[
+  {"tag_name":"v2026.11.4","draft":false,"prerelease":false},
+  {"tag_name":"v2026.11.7","draft":true,"prerelease":false},
+  {"tag_name":"v2026.11.5","draft":false,"prerelease":false},
+  {"tag_name":"v2026.11.8","draft":false,"prerelease":true},
+  {"tag_name":"v2026.11.10","draft":false,"prerelease":false}
+]`)
+		// v2026.11.6 has no release, and v2026.11.10 has no local tag.
+		assertReleaseNoteSubjects(t, dir, "HEAD", "2026.11.11", []string{"New feature"}, published)
 	})
 
 	t.Run("with a pin", func(t *testing.T) {
-		// A newer, unqualified tag would hide the feature if it overrode the pin.
-		runGit(t, dir, "tag", "v2026.11.6")
+		tools := t.TempDir()
+		writeFakeExecutable(t, tools, "gh", "echo pinned releases do not need the release API >&2\nexit 1\n")
 		writeReleaseScriptFixture(t, dir, "v2026.11.5")
 		runGit(t, dir, "add", productionBaselineFile)
 		runGit(t, dir, "commit", "--quiet", "-m", "New fix")
-		assertReleaseNoteSubjects(t, dir, "HEAD", "2026.11.7", []string{"New fix", "New feature"})
+		assertReleaseNoteSubjects(t, dir, "HEAD", "2026.11.6", []string{"New fix", "New feature"},
+			"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"))
 	})
 }
 
@@ -881,14 +900,26 @@ func TestKatlReleaseArtifactNotesAfterPromotion(t *testing.T) {
 	runGit(t, dir, "commit", "--quiet", "-m", "Pin the published final")
 	runGit(t, dir, "tag", "v2026.11.7")
 
-	assertReleaseNoteSubjects(t, dir, "v2026.11.6-rc.1", "2026.11.6-rc.1", []string{"Candidate feature"})
+	published := fakeReleaseListing(t, `[
+  {"tag_name":"v2026.11.7","draft":false,"prerelease":false},
+  {"tag_name":"v2026.11.6","draft":false,"prerelease":false},
+  {"tag_name":"v2026.11.5","draft":false,"prerelease":false}
+]`)
+	assertReleaseNoteSubjects(t, dir, "v2026.11.6-rc.1", "2026.11.6-rc.1", []string{"Candidate feature"}, published)
 }
 
-func assertReleaseNoteSubjects(t *testing.T, dir, target, version string, want []string) {
+func fakeReleaseListing(t *testing.T, releases string) string {
+	t.Helper()
+	tools := t.TempDir()
+	writeFakeExecutable(t, tools, "gh", "test \"$1\" = api\ncat <<'EOF'\n"+releases+"\nEOF\n")
+	return "PATH=" + tools + string(os.PathListSeparator) + os.Getenv("PATH")
+}
+
+func assertReleaseNoteSubjects(t *testing.T, dir, target, version string, want []string, path string) {
 	t.Helper()
 	cmd := exec.Command(filepath.Join(repoRoot(t), "scripts", "katl-release-artifacts"), "notes", version)
 	cmd.Dir = dir
-	cmd.Env = append(gittest.Env(os.Environ(), dir), "KATL_RELEASE_TARGET="+target, "KATL_REPO_ROOT="+dir)
+	cmd.Env = append(gittest.Env(os.Environ(), dir), "KATL_RELEASE_TARGET="+target, "KATL_REPO_ROOT="+dir, path)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("notes: %v\n%s", err, output)
@@ -938,7 +969,8 @@ func TestKatlReleaseArtifactVerifyKatlctl(t *testing.T) {
 
 	run := func(command string) ([]byte, error) {
 		cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), command, version)
-		cmd.Env = append(os.Environ(),
+		cmd.Env = append(
+			os.Environ(),
 			"KATL_REPO_ROOT="+source,
 			"KATL_MKOSI_BUILD_DIR="+buildDir,
 			"KATL_ARCHITECTURE=x86_64",

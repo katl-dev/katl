@@ -61,7 +61,10 @@ commit_release_note() {
 # Candidates and finals describe the same version's changes. Read the pin
 # from the target commit so replay uses the original upgrade source.
 release_notes_base() {
-    local target="$1" final_tag="v${2%%-*}" tag tags
+    local target="$1" final_tag="v${2%%-*}" tag tags releases
+    local repository="${GITHUB_REPOSITORY:-}"
+    local -a earlier_tags=()
+    local -A published_tags=()
     if git cat-file -e "$target:$production_baseline_file" 2>/dev/null; then
         tag="$(production_upgrade_baseline "$target")" || return
         if stable_tag_precedes "$tag" "$final_tag"; then
@@ -73,11 +76,25 @@ release_notes_base() {
     tags="$(git tag --list 'v[0-9]*' --sort=-version:refname)" || return
     while IFS= read -r tag; do
         is_stable_tag "$tag" && stable_tag_precedes "$tag" "$final_tag" || continue
+        earlier_tags+=("$tag")
+    done <<< "$tags"
+    (("${#earlier_tags[@]}" > 0)) || return 0
+
+    [[ -n "$repository" ]] || repository='{owner}/{repo}'
+    releases="$(gh api --paginate "repos/$repository/releases?per_page=100" |
+        jq -r '.[] | select(.draft == false and .prerelease == false) | .tag_name')" ||
+        fail "cannot list published releases for $repository"
+    while IFS= read -r tag; do
+        is_stable_tag "$tag" && published_tags["$tag"]=1
+    done <<< "$releases"
+
+    for tag in "${earlier_tags[@]}"; do
+        [[ -n "${published_tags[$tag]:-}" ]] || continue
         git rev-parse --verify --quiet "refs/tags/$tag^{commit}" >/dev/null ||
             fail "release tag does not point to a commit: $tag"
         printf '%s\n' "$tag"
         return
-    done <<< "$tags"
+    done
     return 0
 }
 

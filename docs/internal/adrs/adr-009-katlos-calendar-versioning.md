@@ -65,9 +65,9 @@ SemVer compares textual prerelease identifiers lexically, which does not place
 `dev`, `alpha`, `beta`, and `rc` in Katl's maturity order. The release notes
 renderer uses the pinned upgrade baseline at the release commit if it precedes
 the version being rendered. Otherwise it selects the highest earlier stable
-version, including tags on sibling branches. The renderer compares candidate
-and final versions using their common calendar version so both describe the
-same upgrade.
+version with a published, non-prerelease GitHub release, including tags on
+sibling branches. The renderer compares candidate and final versions using
+their common calendar version so both describe the same upgrade.
 
 The calendar version identifies a KatlOS release as a whole. Kubernetes payload
 bundles and node-extension bundles retain their independent payload versions

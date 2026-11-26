@@ -24,7 +24,7 @@ and triage findings through final publication.
    release commit and omit commits reachable from that tag, including when
    the tag is on a sibling release branch. If the release commit has no pin
    for an earlier version, the notes use the highest stable tag below the
-   version being rendered.
+   version being rendered that has a published, non-prerelease GitHub release.
 3. Cut `release/<version>` from the selected `main` commit SHA, using the
    final version for the branch name. Dispatch qualification from that branch and
    wait for it to pass. Production-image checks run only in this workflow, so

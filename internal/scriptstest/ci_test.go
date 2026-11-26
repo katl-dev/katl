@@ -1113,12 +1113,14 @@ func TestCIProductionIdentity(t *testing.T) {
 	runGit(t, dir, "switch", "--quiet", "main")
 	commit("v2026.11.6")
 	writeReleaseScriptFixture(t, dir, "v2026.11.5")
+	runGit(t, dir, "add", productionBaselineFile)
+	runGit(t, dir, "commit", "--quiet", "-m", "Pin the upgrade baseline")
 	if err := os.Mkdir(filepath.Join(dir, "_build"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
 	tools := t.TempDir()
-	writeFakeExecutable(t, tools, "gh", `touch "$GH_CALLS"; printf 'v2026.11.8\n'`)
+	writeFakeExecutable(t, tools, "gh", "touch \"$GH_CALLS\"\nexit 1\n")
 
 	for _, tc := range []struct{ name, event, prBase, mergeBase, baseline, version string }{
 		{"merge group", "merge_group", "", base, "v2026.11.5", "2026.11.6-dev.0"},
