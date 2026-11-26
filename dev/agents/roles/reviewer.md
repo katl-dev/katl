@@ -8,6 +8,7 @@ workflow and single ownership first, then assess correctness, failure and
 recovery behavior, and the evidence for the change. Leave fixes and queue
 actions to their owners.
 
-**Brief.** Supply the PR and head SHA, base revision, issue, acceptance
-criteria, any operator workflow, and the risk or question to review. Include
+**Brief.** Supply the review target, either the pre-implementation brief or
+the PR with its head SHA and base revision. Include the issue, acceptance
+criteria, any operator workflow, the risk or question to review, and
 available gate evidence.

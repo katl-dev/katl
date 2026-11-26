@@ -57,10 +57,12 @@ follow-up work.
 - **Delivery** returns the scoped work in its worktree with proposed PR text
   when ready or blocked. Identify outstanding review, gates, journeys, and
   proposed sub-issues. The orchestrator reviews, commits, and publishes.
-- **Reviewer** returns a verdict for the reviewed revision. The orchestrator
+- **Reviewer** reports to the orchestrator when ready or blocked. Give a
+  verdict for the reviewed brief or revision when available. The orchestrator
   routes fixes and obtains approval for the updated change.
-- **Debugger** gives the orchestrator the proposed fix scope, the behavior a
-  regression test should verify, and any evidence or capability still needed.
+- **Debugger** reports to the orchestrator when ready or blocked. Give the
+  proposed fix scope, the behavior a regression test should verify, and any
+  evidence or capability still needed.
 - **Journey** records exact commands and observed outcomes on the PR, applies
   the journey labels, and files gaps under the rules in AGENTS.md. Return the
   record and any capability gap to the orchestrator, who schedules the fix
@@ -83,20 +85,20 @@ agent to carry to the release branch.
 
 ## Reporting
 
-The orchestrator updates the coordinator, who gives the operator a brief
-update, when a blocker resolves, a permission is denied, a failure remains
-unexplained after investigation, related issues require a redesign, or a
-decision needs the operator's authority. Lead with the finding or decision and
-link to the evidence. For every queue ejection, give the PR
+The orchestrator and Release agent update the coordinator, who gives the
+operator a brief update, when a blocker resolves, a permission is denied,
+a failure remains unexplained after investigation, related issues require a
+redesign, or a decision needs the operator's authority. Lead with the finding
+or decision and link to the evidence. For every queue ejection, give the PR
 and the reason from `katl-queue why PR`, whether the PR caused it or a flake did,
 and the fix issue when one is needed. If the cause remains unresolved, give
 the current evidence and next action.
 
-The Release agent tells the coordinator when a blocker resolves, a candidate
-is tagged or published, the final release or its security advisory is published,
-or a decision needs operator authority. Include the affected revision, evidence,
-and next action when a gate or a permission blocks progress. The coordinator
-relays release events to the operator.
+The Release agent also tells the coordinator when a candidate is tagged or
+published or when the final release or its security advisory is published.
+Include the affected revision, evidence, and next action when a gate or a
+permission blocks progress. The coordinator relays release events to the
+operator.
 
 - **Delivery** leads with the outcome, a defect's root cause, and any gap.
   Give the worktree and base revision, any existing PR link, the design and
@@ -106,7 +108,8 @@ relays release events to the operator.
   and expected results.
 - **Reviewer** leads with findings in severity order. Give the file and line,
   trigger, and consequence for each finding, followed by the approve or
-  request-changes verdict, reviewed SHA, and any evidence gaps.
+  request-changes verdict when available, reviewed brief or SHA, and any
+  evidence gaps.
 - **Debugger** leads with the root cause or best-supported hypothesis and its
   uncertainty. Give the evidence and run IDs, the violated invariant and its
   owner, explanations the evidence rules out, and the narrowest command or

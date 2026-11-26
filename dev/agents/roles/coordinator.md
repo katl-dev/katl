@@ -35,3 +35,7 @@ destructive or external action requires authority that has yet to be granted.
    one with the goal and current release or milestone using its
    [brief template](../briefs/orchestrator.md). Pass through any constraints
    or authority already agreed with the operator.
+6. Resume the Release agent for each open version milestone. If its owner is
+   missing or unavailable, start a replacement using the reconciled release
+   state and [Release brief template](../briefs/release.md), then update the
+   checkpoint with the owner.

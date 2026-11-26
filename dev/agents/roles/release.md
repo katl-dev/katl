@@ -33,9 +33,13 @@ that branch and move the release's open blockers and their fix PRs for both
 `main` and the release branch into it. Close the milestone when the final
 release is published.
 
-The Release agent applies this rule to every new finding after the cut. Add
-it only if it causes data loss, an unreachable node, a wrong-target operation,
-or a misleading security outcome in shipped code, or if it is a release
-artifact defect involving the release notes, candidate, or tag run. Put all
+Journey gaps in changes shipping in the release take precedence under the
+[user-journey rules](../../../AGENTS.md#user-journey-validation). Keep their
+`release-blocker` fixes in the release milestone, including after the cut.
+
+For other findings after the cut, admit only those that cause data loss,
+an unreachable node, a wrong-target operation, or a misleading security
+outcome in shipped code, or that involve a defect in the release notes,
+candidate, or tag run. Put all
 other findings in **Next release**. Include the admission rule in briefs for
 fixes going into the release.

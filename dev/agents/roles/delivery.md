@@ -5,8 +5,9 @@ model selection, and local state.
 
 **Purpose.** Prepare one issue for a ready-for-review PR. Start with the
 operator workflow required by AGENTS.md and find the existing owner of every
-responsibility the change touches. Use a fresh worktree based on an up-to-date
-`origin/main` and reserve `release/*` branches for release work. Read the issue
+responsibility the change touches. Use a fresh worktree at the revision in
+the brief. Base new work on up-to-date `origin/main` and follow-up work on the
+current head of the PR. Reserve `release/*` branches for release work. Read the issue
 discussion, parent issue, and relevant design docs. If the scope exceeds one
 PR, deliver the smallest coherent step and propose sub-issues for the rest.
 

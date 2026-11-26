@@ -15,29 +15,33 @@ and triage findings through final publication.
    `-rc.N`. Prerelease versions receive GitHub's prerelease designation.
 2. Add or update `docs/releases/next.md` when operators need upgrade
    instructions, required actions, compatibility notices, known limitations, or
-   recovery guidance. Otherwise commit subjects supply the release notes. The
-   release notes use the first that exists of `docs/releases/VERSION.md`,
+   recovery guidance. The `Release-Note` trailers carried from PR bodies into
+   squash commits supply the release entries. The notes append guidance from
+   the first file that exists among `docs/releases/VERSION.md`,
    `docs/releases/BASE.md` for a prerelease's final version BASE, and `next.md`. A
    release candidate and its final release therefore render the same
    guidance from `next.md`. Commit entries start after the newest stable tag
    reachable from the release commit that has a published, non-prerelease
    GitHub release. The current release's own tag is excluded.
-3. Dispatch a candidate from `main` and wait for it to pass. Production-image
-   checks run only in this workflow, so a tag must not be the first run:
+3. Cut `release/<version>` from the selected `main` commit SHA, using the
+   final version for the branch name. Dispatch qualification from that branch and
+   wait for it to pass. Production-image checks run only in this workflow, so
+   qualify the commit before tagging it.
 
    ```sh
-   gh workflow run release-artifacts.yml --ref main -f version=2026.10.2
+   gh workflow run release-artifacts.yml --ref release/2026.10.2 -f version=2026.10.2-rc.1
    ```
 
-4. Resolve the source and print the tag commands:
+4. Set `QUALIFIED_SHA` to the head SHA of the passing qualification run and
+   prepare the candidate tag.
 
    ```sh
-   scripts/katl-release prepare 2026.10.2
+   scripts/katl-release prepare --ref "$QUALIFIED_SHA" 2026.10.2-rc.1
    ```
 
-   Preparation reads GitHub's `main`, rejects an existing tag, and prints the
-   exact source SHA and commands for the checkout's version-control system. Use
-   `--ref REF` before the version to select another published source.
+   Preparation rejects an existing tag and prints the exact source SHA and
+   commands for the checkout's version-control system. When preparing the final
+   tag, pass the published, passing candidate's commit SHA with `--ref`.
 5. Review the source and run the printed commands. Do not move or reuse a
    release tag. Follow the tag run in
    [Katl Release Artifacts](https://github.com/katl-dev/katl/actions/workflows/release-artifacts.yml).

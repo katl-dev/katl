@@ -7,8 +7,8 @@ Use these defaults unless the coordinator supplies a specific constraint.
 **Current release.** `<Release target or milestone>`
 
 **Operating model.** Follow the [Orchestrator role](../roles/orchestrator.md)
-and [shared agent workflow](../README.md). Reserve Claude design or review
-agents for cases where Codex is unsuitable.
+and [shared agent workflow](../README.md). Select agents using the
+[shared model and effort guidance](../README.md#model-and-effort).
 
 **Constraints.** Keep the starting checkout on its branch and use task
 worktrees. Use Nix with `--option builders ''` and authenticated HTTPS for
