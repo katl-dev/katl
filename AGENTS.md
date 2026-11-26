@@ -17,6 +17,7 @@ See the [agent workflow](dev/agents/) for assignments and hand-offs.
 ## Engineering Boundaries
 
 - Use Go for product policy, state machines, validation, planning, agents, and reusable logic that benefits from unit tests.
+- Use the shared retry owner for network-dependent operations, with deadline-bounded, jittered exponential backoff for failures that are transient and safe to retry, and a convergence wait for eventually consistent state. Reviewers flag hand-rolled retry and convergence loops and new network calls that bypass the shared policy.
 - Keep shell to small hooks and orchestration. Shell must not own installer policy, disk layout decisions, update policy, or other substantial state machines.
 - Use mkosi as the image builder through `scripts/mkosi`; do not turn mkosi hooks into the installer engine.
 - Use the libvirt-backed `scripts/vmtest-run` world for automated VM testing. Do not add competing VM runners without an explicit product need.

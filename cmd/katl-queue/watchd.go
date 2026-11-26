@@ -19,10 +19,14 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/persistedrecord"
+	"github.com/katl-dev/katl/internal/retry"
 	"golang.org/x/sys/unix"
 )
 
-const watchRetention = 7 * 24 * time.Hour
+const (
+	watchRetention  = 7 * 24 * time.Hour
+	watchRetryLimit = 15 * time.Minute
+)
 
 type watchRecord struct {
 	ID         string        `json:"id"`
@@ -56,8 +60,8 @@ type watchReply struct {
 }
 
 type watchRetry struct {
-	at       time.Time
-	failures int
+	at      time.Time
+	backoff retry.Backoff
 }
 
 type watchDaemon struct {
@@ -77,13 +81,13 @@ type watchDaemon struct {
 	denied  map[int]string
 
 	// Only the poll loop reads or writes staged observations and retry state.
-	staged       []watchRecord
-	retries      map[int]watchRetry
-	lastPolled   int
-	ratePath     string
-	rateUntil    time.Time
-	rateUnsaved  bool
-	rateFailures int
+	staged      []watchRecord
+	retries     map[int]watchRetry
+	lastPolled  int
+	ratePath    string
+	rateUntil   time.Time
+	rateUnsaved bool
+	rateBackoff retry.Backoff
 }
 
 func loadWatchDaemon(dir string, interval time.Duration, log io.Writer) (*watchDaemon, error) {
@@ -91,7 +95,8 @@ func loadWatchDaemon(dir string, interval time.Duration, log io.Writer) (*watchD
 		log: log, path: filepath.Join(dir, "watches.json"), ratePath: filepath.Join(dir, "rate-limit.json"), now: time.Now,
 		write: persistedrecord.WriteFileAtomic, interval: interval, notifications: make(chan string, 8),
 		records: map[string]watchRecord{}, changed: make(chan struct{}), denied: map[int]string{},
-		retries: map[int]watchRetry{},
+		retries:     map[int]watchRetry{},
+		rateBackoff: retry.NewBackoff(max(interval, time.Minute), watchRetryLimit),
 	}
 	data, err := os.ReadFile(d.ratePath)
 	if err == nil {
@@ -284,14 +289,6 @@ func (d *watchDaemon) activeWatches() map[int][]watchRecord {
 	return active
 }
 
-func watchBackoff(interval time.Duration, failures int) time.Duration {
-	delay := interval
-	for i := 1; i < failures && delay < 15*time.Minute; i++ {
-		delay = min(2*delay, 15*time.Minute)
-	}
-	return delay
-}
-
 func (d *watchDaemon) pollOnce(ctx context.Context) {
 	if !d.flush() || !d.saveRateLimit() || d.now().Before(d.rateUntil) {
 		return
@@ -317,18 +314,22 @@ func (d *watchDaemon) pollOnce(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		retry, issue := d.pollBatch(ctx, numbers, active)
+		retryPRs, issue := d.pollBatch(ctx, numbers, active)
 		if ctx.Err() != nil {
 			return
 		}
 		limited = issue.limited
 		for _, n := range numbers {
-			if !retry[n] {
+			if !retryPRs[n] {
 				delete(d.retries, n)
 				continue
 			}
-			failures := min(d.retries[n].failures+1, 16)
-			d.retries[n] = watchRetry{failures: failures, at: d.now().Add(watchBackoff(d.interval, failures))}
+			next, ok := d.retries[n]
+			if !ok {
+				next.backoff = retry.NewBackoff(d.interval, watchRetryLimit)
+			}
+			next.at = d.now().Add(next.backoff.Next())
+			d.retries[n] = next
 		}
 		saved := d.flush()
 		if issue.operator {
@@ -339,7 +340,7 @@ func (d *watchDaemon) pollOnce(ctx context.Context) {
 		}
 	}
 	if !limited && len(active) != 0 {
-		d.rateFailures = 0
+		d.rateBackoff.Reset()
 	}
 }
 
@@ -364,12 +365,12 @@ func (d *watchDaemon) fetch(ctx context.Context, query string) (watchGraphQL, wa
 	defer cancel()
 	response, err := d.query(ctx, query)
 	now := d.now()
-	envelope, issue := readWatchQuery(response, err, now)
+	envelope, issue := readWatchQuery(ctx, response, err, now)
 	if issue.limited {
-		d.rateFailures = min(d.rateFailures+1, 16)
+		fallback := d.rateBackoff.Next()
 		d.rateUntil = issue.retryAt
 		if d.rateUntil.IsZero() {
-			d.rateUntil = now.Add(watchBackoff(max(d.interval, time.Minute), d.rateFailures))
+			d.rateUntil = now.Add(max(fallback, time.Minute))
 		}
 		d.rateUnsaved = true
 		d.saveRateLimit()

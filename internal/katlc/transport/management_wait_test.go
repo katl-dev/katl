@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	grpcstatus "google.golang.org/grpc/status"
 )
 
@@ -491,6 +492,28 @@ func TestManagementCallSurvivesSlowHandshake(t *testing.T) {
 	if agent.calls.Load() != 1 {
 		t.Fatalf("agent handled %d calls, want 1", agent.calls.Load())
 	}
+}
+
+func TestManagementReadinessPreservesRPCBudget(t *testing.T) {
+	shortWait(t, 100*time.Millisecond)
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		attempts := 0
+
+		err := awaitManagementEndpoint(ctx, io.Discard, "cp-1", "unused", func(*peer.Peer) error {
+			attempts++
+			if attempts == 1 {
+				return grpcstatus.Error(codes.Unavailable, "connect: connection refused")
+			}
+			time.Sleep(time.Second)
+			return nil
+		})
+
+		if err != nil || attempts != 2 {
+			t.Fatalf("wait returned %v after %d calls, want the successful RPC after one refusal", err, attempts)
+		}
+	})
 }
 
 // serveMutualTLS serves agent on a TLS listener whose certificate is issued

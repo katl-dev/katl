@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/retry"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/codes"
@@ -32,7 +33,7 @@ var managementReady = struct{ bound, interval time.Duration }{bound: ManagementR
 
 // ErrManagementRPCInconclusive means the call budget ended before its result
 // could be used to establish what the node did.
-var ErrManagementRPCInconclusive = errors.New("management RPC outcome is inconclusive")
+var ErrManagementRPCInconclusive = retry.ErrInconclusive
 
 type ManagementEvidence uint8
 
@@ -111,7 +112,7 @@ func (d *ManagementDialEvidence) failed() bool {
 type managementRPCInconclusive struct{ cause error }
 
 func (e managementRPCInconclusive) Error() string {
-	return ErrManagementRPCInconclusive.Error() + ": " + e.cause.Error()
+	return "management RPC " + retry.ErrInconclusive.Error() + ": " + e.cause.Error()
 }
 
 func (e managementRPCInconclusive) Unwrap() error { return e.cause }
@@ -133,13 +134,7 @@ func managementRPCResult(ctx context.Context, result error) error {
 // ManagementContextError checks whether a command or RPC result arrived within
 // its budget, even if the deadline elapsed before cancellation was delivered.
 func ManagementContextError(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
-		return context.DeadlineExceeded
-	}
-	return nil
+	return retry.ContextError(ctx)
 }
 
 type (
@@ -303,33 +298,41 @@ func refusedBeforeConnect(err error, p *peer.Peer) bool {
 // context which ends after a refusal reports the refusal with its guidance.
 func awaitManagementEndpoint(ctx context.Context, progress io.Writer, node, endpoint string, attempt func(*peer.Peer) error) error {
 	start := time.Now()
-	var refused error
+	readyCtx, cancel := context.WithDeadline(ctx, start.Add(managementReady.bound))
+	defer cancel()
+
 	giveUp := func(err error) error {
 		return fmt.Errorf("node %s management endpoint %s refused connections for %s: katlc-agent is not listening; the node may still be booting, so wait and rerun this command, and if it persists check the address and run 'systemctl status katlc-agent' on the node console: %w", node, endpoint, time.Since(start).Round(time.Second), err)
 	}
-	for {
+
+	var refused, result error
+	var finished bool
+	delay := retry.NewBackoff(managementReady.interval, 2*managementReady.interval)
+	waitErr := delay.Do(readyCtx, func(context.Context) error {
 		var p peer.Peer
-		err := attempt(&p)
-		switch {
-		case err == nil:
-			return nil
-		case refusedBeforeConnect(err, &p):
-			refused = err
-		case refused != nil && errors.Is(err, ErrManagementRPCInconclusive):
-			return giveUp(err)
-		default:
-			return err
+		// The readiness budget limits new attempts. An in-flight RPC keeps
+		// its caller's budget, including any stream that the attempt opens.
+		result = managementRPCResult(ctx, attempt(&p))
+		finished = !refusedBeforeConnect(result, &p)
+		if !finished {
+			refused = result
 		}
-		if time.Since(start)+managementReady.interval > managementReady.bound {
-			return giveUp(managementRPCResult(ctx, refused))
+		return result
+	}, func(error) bool {
+		if finished {
+			return false
 		}
 		_, _ = fmt.Fprintf(progress, "Waiting for node %s management endpoint %s to accept connections (%s elapsed)...\n", node, endpoint, time.Since(start).Round(time.Second))
-		timer := time.NewTimer(managementReady.interval)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return giveUp(managementRPCResult(ctx, refused))
-		case <-timer.C:
+		return true
+	})
+	if finished {
+		if refused != nil && errors.Is(result, ErrManagementRPCInconclusive) {
+			return giveUp(result)
 		}
+		return result
 	}
+	if refused != nil {
+		return giveUp(managementRPCResult(ctx, refused))
+	}
+	return managementRPCResult(ctx, waitErr)
 }
