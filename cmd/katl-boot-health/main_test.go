@@ -67,8 +67,7 @@ func TestRunPromotesGenerationFromCommandLine(t *testing.T) {
 	}
 }
 
-func TestRunPromotesTrialAndSetsBootDefault(t *testing.T) {
-	stubManagementNetwork(t)
+func TestRunPromotesTrialAfterManagementReadError(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 17, 0, 0, 0, time.UTC)
 	writeCommandGeneration(t, root, "gen0", now.Add(-2*time.Hour))
@@ -122,9 +121,21 @@ func TestRunPromotesTrialAndSetsBootDefault(t *testing.T) {
 	t.Cleanup(func() { bootDefaultCommand = oldBootDefault })
 
 	var stdout bytes.Buffer
-	if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result", generation.BootHealthSuccess}, &stdout); err != nil {
-		t.Fatalf("run() error = %v", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		oldRead := readNetworkctlState
+		t.Cleanup(func() { readNetworkctlState = oldRead })
+		started := time.Now()
+		readNetworkctlState = func(context.Context) ([]byte, error) {
+			if time.Since(started) < time.Minute {
+				return nil, errors.New("networkctl temporarily unavailable")
+			}
+			return []byte(`{"Interfaces":[{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["routable","routable"],"CarrierState":"carrier","AddressState":"routable","OperationalState":"routable"}]}`), nil
+		}
+
+		if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, &stdout); err != nil {
+			t.Fatalf("run() after %s: %v (%s)", time.Since(started), err, &stdout)
+		}
+	})
 	if gotRoot != root || gotEntry != "loader/entries/katl-gen1.conf" {
 		t.Fatalf("boot default call = (%q, %q), want (%q, loader/entries/katl-gen1.conf)", gotRoot, gotEntry, root)
 	}

@@ -149,13 +149,13 @@ func (timing managementNetworkTiming) wait(ctx context.Context) error {
 			if healthCtx.Err() != nil {
 				break
 			}
-			return err
-		}
-		if ready {
+			lastReason = err.Error()
+		} else if ready {
 			return nil
+		} else {
+			lastReason = reason
+			expiry.observeOffline(reason)
 		}
-		lastReason = reason
-		expiry.observeOffline(lastReason)
 		select {
 		case <-healthCtx.Done():
 		case <-ticker.C:

@@ -1,49 +1,10 @@
 package networkdconfig
 
 import (
-	"os"
 	"path"
-	"slices"
 	"sort"
 	"strings"
 )
-
-// ConfiguresAddress reports whether the effective native network unit assigns
-// addresses to the matching link. The caller supplies networkd's matched unit
-// and drop-ins in load order.
-func ConfiguresAddress(unit string, dropIns []string) (bool, error) {
-	var addresses bool
-	var bond, bridge, dhcp, acceptRA string
-	for _, file := range append([]string{unit}, dropIns...) {
-		content, err := os.ReadFile(file)
-		if err != nil {
-			return false, err
-		}
-		for _, setting := range unitSettings(string(content)) {
-			key, value, _ := strings.Cut(setting, "=")
-			switch key {
-			case "[Network]Address":
-				addresses = value != ""
-			case "[Address]Address":
-				addresses = addresses || value != ""
-			case "[Network]Bond":
-				bond = value
-			case "[Network]Bridge":
-				bridge = value
-			case "[Network]DHCP":
-				dhcp = value
-			case "[Network]IPv6AcceptRA":
-				acceptRA = value
-			}
-		}
-	}
-	if bond != "" || bridge != "" {
-		return false, nil
-	}
-	enabled := []string{"yes", "true", "on", "1"}
-	return addresses || slices.Contains(enabled, acceptRA) ||
-		slices.Contains(enabled, dhcp) || slices.Contains([]string{"ipv4", "ipv6", "both"}, dhcp), nil
-}
 
 // stackingKeys are the [Network] settings that make networkd create or
 // enslave a netdev when it configures the matching link.

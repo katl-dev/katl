@@ -8,8 +8,6 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
-
-	"github.com/katl-dev/katl/internal/installer/networkdconfig"
 )
 
 type networkctlState struct {
@@ -21,9 +19,7 @@ type networkctlLink struct {
 	OperationalState         string    `json:"OperationalState"`
 	CarrierState             string    `json:"CarrierState"`
 	AddressState             string    `json:"AddressState"`
-	OnlineState              *string   `json:"OnlineState"`
 	NetworkFile              string    `json:"NetworkFile"`
-	NetworkFileDropins       []string  `json:"NetworkFileDropins"`
 	RequiredForOnline        bool      `json:"RequiredForOnline"`
 	RequiredOperationalState [2]string `json:"RequiredOperationalStateForOnline"`
 }
@@ -48,22 +44,10 @@ func Ready(ctx context.Context, read func(context.Context) ([]byte, error)) (boo
 		}
 		required = append(required, link.Name)
 		switch {
-		case link.OnlineState == nil || *link.OnlineState != "online" ||
-			!slices.Contains([]string{"carrier", "degraded-carrier", "enslaved"}, link.CarrierState):
+		case !slices.Contains([]string{"carrier", "degraded-carrier", "enslaved"}, link.CarrierState):
 			offline = append(offline, link.Name)
-		case link.AddressState != "degraded" && link.AddressState != "routable":
-			// A native address configuration can require an address even when
-			// networkd considers carrier sufficient to report the link online.
-			requiresAddress := link.RequiredOperationalState[0] == "routable"
-			if !requiresAddress {
-				requiresAddress, err = networkdconfig.ConfiguresAddress(link.NetworkFile, link.NetworkFileDropins)
-				if err != nil {
-					return false, "", fmt.Errorf("read address configuration for %s: %w", link.Name, err)
-				}
-			}
-			if requiresAddress {
-				addressless = append(addressless, link.Name)
-			}
+		case !link.meetsAddressMinimum():
+			addressless = append(addressless, link.Name)
 		}
 		if link.OperationalState == "routable" {
 			routable = true
@@ -86,6 +70,17 @@ func Ready(ctx context.Context, read func(context.Context) ([]byte, error)) (boo
 		return false, "no required link is routable: " + strings.Join(required, ", "), nil
 	}
 	return true, "", nil
+}
+
+func (link networkctlLink) meetsAddressMinimum() bool {
+	switch link.RequiredOperationalState[0] {
+	case "routable":
+		return link.AddressState == "routable"
+	case "degraded":
+		return link.AddressState == "degraded" || link.AddressState == "routable"
+	default:
+		return true
+	}
 }
 
 // ReadState returns the effective link state reported by systemd-networkd.

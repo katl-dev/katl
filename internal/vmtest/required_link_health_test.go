@@ -66,7 +66,7 @@ func TestInstalledRuntimeRequiredLinkHealth(t *testing.T) {
 MACAddress=`+mac+`
 
 [Link]
-RequiredForOnline=carrier
+RequiredForOnline=routable
 
 [Network]
 Address=`+address+`
