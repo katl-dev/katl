@@ -128,7 +128,7 @@ func TestHostStatusReportsLinkLossOnActiveGeneration(t *testing.T) {
 	fake.nodeStatus.SelectedGenerationId = "generation-0"
 	fake.nodeStatus.BootTargetGenerationId = "generation-1"
 	fake.nodeStatus.BootHealthState = "unhealthy"
-	fake.nodeStatus.BootHealthDiagnostic = "required links are not online: enp1s0. Check the cable"
+	fake.nodeStatus.BootHealthDiagnostic = "systemd-networkd reports required link enp1s0 not online"
 	installKatlcDial(t, nil, fake)
 
 	var stdout, stderr bytes.Buffer
@@ -140,7 +140,7 @@ func TestHostStatusReportsLinkLossOnActiveGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if fake.generationRequest.GetGenerationId() != "generation-1" || report.Generation != "generation-1" ||
-		report.Health != "unhealthy" || !strings.Contains(report.BootHealthDiagnostic, "enp1s0") {
+		report.Health != "unhealthy" || !strings.Contains(report.BootHealthDiagnostic, "enp1s0") || !strings.Contains(report.BootHealthDiagnostic, "systemd-networkd") {
 		t.Fatalf("status = %+v after looking up %s, want an unhealthy generation-1 with the link named", report, fake.generationRequest.GetGenerationId())
 	}
 }

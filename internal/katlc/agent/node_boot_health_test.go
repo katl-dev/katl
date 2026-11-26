@@ -176,7 +176,8 @@ func TestNodeStatusTracksRequiredManagementLink(t *testing.T) {
 					t.Fatalf("boot health = %s (%s), want %s", report.GetBootHealthState(), diagnostic, want)
 				}
 				if want == nodeBootHealthUnhealthy && (!strings.Contains(diagnostic, "management0") ||
-					!strings.Contains(diagnostic, "Check the cable") || !strings.Contains(diagnostic, "katlctl node status")) {
+					!strings.Contains(diagnostic, "systemd-networkd") || strings.Contains(diagnostic, "cable") ||
+					strings.Contains(diagnostic, "switch port") || strings.Contains(diagnostic, "lost carrier") || strings.Contains(diagnostic, "link down") || !strings.Contains(diagnostic, "katlctl node status")) {
 					t.Fatalf("boot health diagnostic = %q, want link and repair guidance", diagnostic)
 				}
 				if want == nodeBootHealthHealthy && diagnostic != "" {

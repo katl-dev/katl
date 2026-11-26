@@ -26,7 +26,7 @@ func TestReadyUsesConfiguredRequiredLinks(t *testing.T) {
 		{
 			name:       "workload address cannot supply required route",
 			links:      `{"Interfaces":[{"Name":"enp1s0","NetworkFile":"/etc/systemd/network/10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"degraded","CarrierState":"carrier","AddressState":"degraded"},{"Name":"cni0","OnlineState":null,"OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}]}`,
-			wantReason: "no required link is routable: enp1s0",
+			wantReason: "no routable required link among enp1s0",
 		},
 		{
 			name:  "optional secondary link is ignored",

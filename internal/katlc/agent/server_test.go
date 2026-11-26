@@ -1262,7 +1262,7 @@ func TestHostUpgradeRequiresConfirmedBootHealth(t *testing.T) {
 		{state: "failed", properties: healthDependencyFailed, reason: "sshd.service"},
 		{state: "pending", properties: healthStalled, reason: "has not finished for this boot"},
 		{state: "unknown", reason: "cannot read boot health for this boot from systemd"},
-		{state: "unhealthy", properties: healthSucceeded, reason: "required links have no usable address: management0", network: addresslessManagementNetwork},
+		{state: "unhealthy", properties: healthSucceeded, reason: "systemd-networkd reports required link management0", network: addresslessManagementNetwork},
 	} {
 		for _, dryRun := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/dry-run=%t", tc.state, dryRun), func(t *testing.T) {
@@ -1285,8 +1285,7 @@ func TestHostUpgradeRequiresConfirmedBootHealth(t *testing.T) {
 					!strings.Contains(err.Error(), tc.state) ||
 					!strings.Contains(err.Error(), tc.reason) ||
 					!strings.Contains(err.Error(), "katlctl node status <node>") ||
-					!strings.Contains(err.Error(), "katlctl cluster apply") ||
-					!strings.Contains(err.Error(), "katlctl node reboot <node>") {
+					strings.Contains(err.Error(), "katlctl node reboot <node>") != (tc.state != "unhealthy") {
 					t.Fatalf("upgrade error = %v, want %s health with %q and repair guidance", err, tc.state, tc.reason)
 				}
 				ids, err := server.Store.OperationIDs()

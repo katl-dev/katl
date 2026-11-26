@@ -164,7 +164,7 @@ func (s *Server) nodeBootHealth(ctx context.Context) nodeBootHealth {
 		case !ready:
 			health.State = nodeBootHealthUnhealthy
 			health.Diagnostic = "management network unavailable: " + reason +
-				". Check the cable, switch port and address configuration, then rerun 'katlctl node status <node>'"
+				". Check the link and the node's network configuration, then run 'katlctl node status <node>' again"
 		}
 	}
 	return health

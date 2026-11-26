@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -83,7 +84,11 @@ func requireHostUpgradeBootHealth(ctx context.Context, readHealth func(context.C
 	if health.State == nodeBootHealthHealthy {
 		return nil
 	}
-	return fmt.Errorf("cannot replace the inactive root slot until current boot health is confirmed: %s (%s). Run 'katlctl node status <node>', then repair with 'katlctl cluster apply' or 'katlctl node reboot <node>'", health.State, health.Diagnostic)
+	message := fmt.Sprintf("cannot replace the inactive root slot until current boot health is confirmed: %s (%s)", health.State, health.Diagnostic)
+	if health.State != nodeBootHealthUnhealthy {
+		message += ". Run 'katlctl node status <node>', then repair with 'katlctl cluster apply' or 'katlctl node reboot <node>'"
+	}
+	return errors.New(message)
 }
 
 func validateHostUpgradeBootEvidence(root, currentID string, current generation.GenerationSpec) error {

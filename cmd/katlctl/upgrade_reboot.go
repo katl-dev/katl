@@ -187,7 +187,11 @@ func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgen
 		case bootHealthUnknown:
 			phase("boot-health-unknown")
 		case bootHealthUnhealthy:
-			phase("boot-health-unhealthy")
+			progress := "boot-health-unhealthy"
+			if reason := strings.TrimSpace(status.GetBootHealthDiagnostic()); reason != "" {
+				progress += " (" + reason + ")"
+			}
+			phase(progress)
 		}
 		observed.Status = status
 		observed.Endpoint = endpoint

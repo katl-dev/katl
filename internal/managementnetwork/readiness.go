@@ -2,10 +2,13 @@
 package managementnetwork
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 )
@@ -36,18 +39,17 @@ func Ready(ctx context.Context, read func(context.Context) ([]byte, error)) (boo
 		return false, "", fmt.Errorf("decode networkctl state: %w", err)
 	}
 
-	var required, offline, addressless []string
+	var required, reasons []string
 	routable := false
 	for _, link := range state.Interfaces {
 		if link.NetworkFile == "" || !link.RequiredForOnline {
 			continue
 		}
 		required = append(required, link.Name)
-		switch {
-		case !slices.Contains([]string{"carrier", "degraded-carrier", "enslaved"}, link.CarrierState):
-			offline = append(offline, link.Name)
-		case !link.meetsAddressMinimum():
-			addressless = append(addressless, link.Name)
+		if !slices.Contains([]string{"carrier", "degraded-carrier", "enslaved"}, link.CarrierState) ||
+			!link.meetsAddressMinimum() {
+			reasons = append(reasons, fmt.Sprintf("systemd-networkd reports required link %s not online (carrier: %s, address: %s) (kernel carrier: %s)",
+				link.Name, cmp.Or(link.CarrierState, "unknown"), cmp.Or(link.AddressState, "unknown"), kernelCarrier(link.Name)))
 		}
 		if link.OperationalState == "routable" {
 			routable = true
@@ -56,20 +58,32 @@ func Ready(ctx context.Context, read func(context.Context) ([]byte, error)) (boo
 	if len(required) == 0 {
 		return false, "no systemd-networkd link is required for online", nil
 	}
-	var reasons []string
-	if len(offline) > 0 {
-		reasons = append(reasons, "required links are not online: "+strings.Join(offline, ", "))
-	}
-	if len(addressless) > 0 {
-		reasons = append(reasons, "required links have no usable address: "+strings.Join(addressless, ", "))
-	}
 	if len(reasons) > 0 {
 		return false, strings.Join(reasons, ". "), nil
 	}
 	if !routable {
-		return false, "no required link is routable: " + strings.Join(required, ", "), nil
+		return false, "systemd-networkd reports no routable required link among " + strings.Join(required, ", "), nil
 	}
 	return true, "", nil
+}
+
+func kernelCarrier(name string) string {
+	if !filepath.IsLocal(name) || filepath.Base(name) != name {
+		return "unknown"
+	}
+	data, err := os.ReadFile(filepath.Join("/sys/class/net", name, "carrier"))
+	if err != nil {
+		// An administratively down interface can return EINVAL.
+		return "unknown"
+	}
+	switch strings.TrimSpace(string(data)) {
+	case "1":
+		return "up"
+	case "0":
+		return "down"
+	default:
+		return "unknown"
+	}
 }
 
 func (link networkctlLink) meetsAddressMinimum() bool {

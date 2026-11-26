@@ -110,7 +110,7 @@ LinkLocalAddressing=no
 		if err != nil || got.Generation != current {
 			t.Fatalf("%s: node status = %+v, want health %s on %s: %v", phase, got, want, current, err)
 		}
-		if want == "unhealthy" && !containsAll(got.BootHealthDiagnostic, link, "Check the cable", "katlctl node status") {
+		if want == "unhealthy" && !containsAll(got.BootHealthDiagnostic, link, "systemd-networkd", "katlctl node status") {
 			t.Fatalf("%s: diagnostic = %q, want required link %s and repair guidance", phase, got.BootHealthDiagnostic, link)
 		}
 		return got.BootHealthDiagnostic
@@ -166,8 +166,8 @@ bootctl --no-pager list --json=short`)
 
 	guestCommand(t, ctx, guest, "remove-required-link-address", "ip", "address", "del", address, "dev", link)
 	waitRequiredLinkCarrier(t, ctx, guest, mac, true)
-	if diagnostic := waitStatus("address-lost", "unhealthy"); !strings.Contains(diagnostic, "required links have no usable address: "+link) {
-		t.Fatalf("address loss diagnostic = %q, want missing address on %s", diagnostic, link)
+	if diagnostic := waitStatus("address-lost", "unhealthy"); !strings.Contains(diagnostic, "kernel carrier: up") {
+		t.Fatalf("address loss diagnostic = %q, want the kernel to report carrier on %s", diagnostic, link)
 	}
 	assertBootUnchanged("efi-during-address-loss")
 

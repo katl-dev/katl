@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -85,9 +86,9 @@ func TestManagementNetworkExpiryPreservesOfflineReason(t *testing.T) {
 			}
 
 			err := timing.wait(t.Context())
-			const want = "configured management network is not ready after 90 seconds: required links are not online: management0"
-			if err == nil || err.Error() != want {
-				t.Fatalf("management network wait = %v, want %q", err, want)
+			if err == nil || !strings.Contains(err.Error(), "after 90 seconds") ||
+				!strings.Contains(err.Error(), "systemd-networkd") || !strings.Contains(err.Error(), "management0") {
+				t.Fatalf("management network wait = %v, want the deadline and last networkd observation for management0", err)
 			}
 			if !reported {
 				t.Fatal("effective injection was not reported")

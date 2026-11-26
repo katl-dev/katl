@@ -227,6 +227,7 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 		// settled is the observation the wait must end on.
 		settled         int
 		err             []string
+		progress        []string
 		noRebootAdvice  bool
 		nextUnavailable string
 	}{
@@ -242,11 +243,12 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 		{
 			name: "reboot waits for management link recovery",
 			observations: []bootObservation{
-				{agentStart: "after", running: "gen-a", health: "unhealthy", diagnostic: "required links are not online: enp1s0", candidate: healthy},
+				{agentStart: "after", running: "gen-a", health: "unhealthy", diagnostic: "systemd-networkd reports required link enp1s0 not online", candidate: healthy},
 				{agentStart: "after", running: "gen-a", health: "unknown", candidate: healthy},
 				{agentStart: "after", running: "gen-a", health: "healthy", candidate: healthy},
 			},
-			settled: 2,
+			settled:  2,
+			progress: []string{"systemd-networkd", "enp1s0"},
 		},
 		{
 			name: "failed boot of a previously healthy generation",
@@ -288,7 +290,7 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 		{
 			name: "fallback lost a management link",
 			observations: []bootObservation{
-				{agentStart: "fallback", running: "gen-old", health: "unhealthy", diagnostic: "required links are not online: enp1s0", candidate: unhealthy},
+				{agentStart: "fallback", running: "gen-old", health: "unhealthy", diagnostic: "systemd-networkd reports required link enp1s0 not online", candidate: unhealthy},
 			},
 			err: []string{"rejected generation gen-a during boot health and returned on generation gen-old"},
 		},
@@ -336,8 +338,14 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			_, verified, err := waitNodeBootHealth(ctx, bootWaitTarget{nodeName: "cp-1", endpoints: []string{"10.0.0.11:9443"}, flags: " --config cluster.yaml"}, "before", "gen-a", nodeRecoveryRequirement{}, "reboot node=cp-1", io.Discard)
+			var progress strings.Builder
+			_, verified, err := waitNodeBootHealth(ctx, bootWaitTarget{nodeName: "cp-1", endpoints: []string{"10.0.0.11:9443"}, flags: " --config cluster.yaml"}, "before", "gen-a", nodeRecoveryRequirement{}, "reboot node=cp-1", &progress)
 
+			for _, want := range test.progress {
+				if !strings.Contains(progress.String(), want) {
+					t.Errorf("progress = %q, want %q", progress.String(), want)
+				}
+			}
 			if errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("wait timed out: %v", err)
 			}
