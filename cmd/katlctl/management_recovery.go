@@ -166,7 +166,7 @@ func runManagementIdentityRecover(ctx context.Context, opts managementRotationOp
 	// the new credentials before the cluster is reported recovered.
 	for _, node := range withNext {
 		if err := checkManagementCredential(ctx, node, client, min(opts.timeout, 5*time.Second)); err != nil {
-			return fmt.Errorf("node %s does not accept %s: %w; rerun the same command", node.name, outputPath, err)
+			return fmt.Errorf("could not verify that node %s accepts %s: %w; rerun the same command", node.name, outputPath, err)
 		}
 	}
 	if referenced != outputPath {

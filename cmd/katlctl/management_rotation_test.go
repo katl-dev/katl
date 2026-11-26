@@ -15,6 +15,7 @@ import (
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/katl-dev/katl/internal/managementidentity"
+	"github.com/katl-dev/katl/internal/nettest"
 	"github.com/katl-dev/katl/internal/nodeidentity"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -153,6 +154,126 @@ func TestManagementIdentityRotateReplacesLiveTrust(t *testing.T) {
 	start()
 	if err := verifyRotatedManagement(context.Background(), managementRotationNode{name: "cp-1", endpoint: endpoint, machineID: machineID}, mustManagementClient(t, next), mustManagementClient(t, old), 3*time.Second); err == nil || !strings.Contains(err.Error(), "exposed authority still has management access") {
 		t.Fatalf("server that still trusts exposed client was accepted: %v", err)
+	}
+}
+
+func TestManagementIdentityRotateLateCredentialCheck(t *testing.T) {
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1", "worker-1"}, func(t *testing.T, world enableMTLSWorld) {
+		if _, stderr, err := world.enable(); err != nil {
+			t.Fatalf("enable-mtls: %v\n%s", err, stderr)
+		}
+		node := world.nodes[0]
+		// Keep the old-credential probe on loopback even if verification
+		// incorrectly proceeds past the late replacement reply.
+		config, err := os.ReadFile(world.configPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unserved := nettest.ReservePort(t).Endpoint
+		config = bytes.ReplaceAll(config, []byte("192.0.2.11"), []byte(unserved))
+		if err := os.WriteFile(world.configPath, config, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		dial := dialKatlcAgent
+		dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
+			if endpoint == unserved {
+				return node.dial(ctx, endpoint)
+			}
+			return dial(ctx, endpoint)
+		}
+		rotate := runManagementRotationSSH
+		t.Cleanup(func() { runManagementRotationSSH = rotate })
+		var changed []string
+		runManagementRotationSSH = func(_ context.Context, target managementRotationNode, _ managementRotationOptions, dryRun bool) (nodeidentity.ManagementRotationStatus, error) {
+			if !dryRun {
+				changed = append(changed, target.name)
+				if target.name != node.name {
+					return nodeidentity.ManagementRotationStatus{}, errors.New("rotation reached the second node")
+				}
+				node.mu.Lock()
+				node.staged = target.request.Replacement
+				node.rebindLocked()
+				node.mu.Unlock()
+				node.rebinds.Wait()
+				node.interceptRPC = delayManagementStatus
+			}
+			return nodeidentity.ManagementRotationStatus{}, nil
+		}
+
+		output := filepath.Join(filepath.Dir(world.configPath), "next.yaml")
+		var stdout, stderr bytes.Buffer
+		err = run(t.Context(), []string{"management", "identity", "rotate", "--config", world.configPath, "--output", output, "--timeout", "1s"}, &stdout, &stderr)
+		if len(changed) != 1 || changed[0] != node.name {
+			t.Fatalf("rotation changed %v after a late reply from %s: %v", changed, node.name, err)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), output) {
+			t.Fatalf("rotation = %v\n%s\nwant a deadline error and guidance to keep the replacement secrets", err, &stderr)
+		}
+		if _, reference := world.configMode(t); reference != defaultManagementSecrets {
+			t.Fatalf("rotation published %q after late credential verification", reference)
+		}
+	})
+}
+
+func TestManagementRotationExposedCredentialRefusal(t *testing.T) {
+	for _, scenario := range []string{"timely", "late", "unrelated failure"} {
+		t.Run(scenario, func(t *testing.T) {
+			testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+				if _, stderr, err := world.enable(); err != nil {
+					t.Fatalf("enable-mtls: %v\n%s", err, stderr)
+				}
+				next, err := readManagementIdentity(world.secretsPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				old, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "lab"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				node := world.nodes[0]
+				dial := dialKatlcAgentWithTransport
+				t.Cleanup(func() { dialKatlcAgentWithTransport = dial })
+				sawRefusal := false
+				dialKatlcAgentWithTransport = func(ctx context.Context, _, endpoint string, creds credentials.TransportCredentials) (katlcAgentConnection, error) {
+					return node.dialWithTransport(
+						ctx, endpoint, creds,
+						grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+							if scenario == "unrelated failure" {
+								return errors.New("connection reset")
+							}
+							err := invoker(ctx, method, req, reply, cc, opts...)
+							if err != nil {
+								sawRefusal = true
+								if scenario == "late" {
+									<-ctx.Done()
+								}
+							}
+							return err
+						}),
+					)
+				}
+
+				target := managementRotationNode{name: node.name, endpoint: "192.0.2.11:9443", machineID: "machine-" + node.name}
+				err = verifyRotatedManagement(t.Context(), target, mustManagementClient(t, next), mustManagementClient(t, old), time.Second)
+				if scenario != "unrelated failure" && !sawRefusal {
+					t.Fatal("the agent did not refuse the old credential")
+				}
+				switch scenario {
+				case "timely":
+					if err != nil {
+						t.Fatalf("rotation rejected timely certificate refusal: %v", err)
+					}
+				case "late":
+					if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "rerun with the same --output") {
+						t.Fatalf("rotation verification = %v, want a deadline error and rerun guidance", err)
+					}
+				default:
+					if err == nil || !strings.Contains(err.Error(), "could not verify rejection") {
+						t.Fatalf("rotation verification = %v, want an unverified rejection", err)
+					}
+				}
+			})
+		})
 	}
 }
 

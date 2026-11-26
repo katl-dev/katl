@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -67,6 +68,8 @@ type trialNode struct {
 	afterBegin func(context.Context)
 	// afterConfirm runs, with the node locked, once a confirm commits.
 	afterConfirm func(*trialNode)
+	// interceptRPC runs inside the production dial options.
+	interceptRPC grpc.UnaryClientInterceptor
 }
 
 func newTrialNode(t *testing.T, name string) *trialNode {
@@ -120,10 +123,10 @@ func (n *trialNode) serve() {
 }
 
 func (n *trialNode) dial(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
-	n.mu.Lock()
-	listener := n.listener
-	n.mu.Unlock()
+	return n.dialWithOptions(ctx, endpoint)
+}
 
+func (n *trialNode) dialWithOptions(ctx context.Context, endpoint string, extra ...grpc.DialOption) (katlcAgentConnection, error) {
 	identity := transport.ClientCredentialsFromContext(ctx)
 	if identity == nil {
 		return katlcAgentConnection{}, fmt.Errorf("no management credentials for test node %s", n.name)
@@ -132,10 +135,25 @@ func (n *trialNode) dial(ctx context.Context, endpoint string) (katlcAgentConnec
 	if err != nil {
 		return katlcAgentConnection{}, err
 	}
+	return n.dialWithTransport(ctx, endpoint, creds, extra...)
+}
+
+func (n *trialNode) dialWithTransport(ctx context.Context, endpoint string, creds credentials.TransportCredentials, extra ...grpc.DialOption) (katlcAgentConnection, error) {
+	// A bufconn dial holds the listener it starts with, so it cannot reach
+	// the replacement listener if it races with an in-progress restart.
+	n.rebinds.Wait()
+	n.mu.Lock()
+	listener := n.listener
+	n.mu.Unlock()
+
 	options := transport.ManagementDialOptions(ctx, n.name, endpoint, creds)
+	if n.interceptRPC != nil {
+		options = append(options, grpc.WithChainUnaryInterceptor(n.interceptRPC))
+	}
 	options = append(options, grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
 		return listener.DialContext(ctx)
 	}))
+	options = append(options, extra...)
 	conn, err := grpc.NewClient("passthrough:///"+endpoint, options...)
 	if err != nil {
 		return katlcAgentConnection{}, err
@@ -811,6 +829,181 @@ func TestEnableMTLSRerunRepairsSavedContext(t *testing.T) {
 	}
 }
 
+func TestEnableMTLSLatePreflightFailure(t *testing.T) {
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+		bundle, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "lab"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		node := world.nodes[0]
+		if _, _, err := managementidentity.EnsureNode(&bundle, node.name, time.Now(), nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := managementidentity.Write(world.secretsPath, bundle); err != nil {
+			t.Fatal(err)
+		}
+
+		// Ensure the TLS probe sees a plaintext SETTINGS frame before the
+		// connection closes, so it has wire evidence for a fallback.
+		listener := bufconn.Listen(32 << 10)
+		defer listener.Close()
+		go func() {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			if _, err := io.ReadFull(conn, make([]byte, 1)); err == nil {
+				_ = http2.NewFramer(conn, nil).WriteSettings()
+				_, _ = io.Copy(io.Discard, conn)
+			}
+		}()
+		dial := dialKatlcAgent
+		delayed := false
+		plaintextProbes := 0
+		dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
+			if transport.ClientCredentialsFromContext(ctx).Authentication == managementidentity.TrustedNetwork {
+				plaintextProbes++
+				return dial(ctx, endpoint)
+			}
+			if delayed {
+				return dial(ctx, endpoint)
+			}
+			return node.dialWithOptions(
+				ctx, endpoint,
+				grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return listener.DialContext(ctx) }),
+				grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+					err := invoker(ctx, method, req, reply, cc, opts...)
+					delayed = true
+					// Keep the wire observation from this failed attempt
+					// while delaying delivery of its result.
+					_ = cc.Close()
+					<-ctx.Done()
+					return err
+				}),
+			)
+		}
+		_, _, err = world.enable("--timeout", "1s")
+		if _, _, begins := node.state(); begins != 0 {
+			t.Fatalf("began %d trials after the preflight failure arrived late", begins)
+		}
+		if plaintextProbes != 0 {
+			t.Fatalf("made %d plaintext probes after the preflight failure arrived late", plaintextProbes)
+		}
+		if !delayed || err == nil || !strings.Contains(err.Error(), "mTLS preflight") || !strings.Contains(err.Error(), "rerun") {
+			t.Fatalf("enable-mtls = %v, want guidance on the inconclusive mTLS preflight", err)
+		}
+	})
+}
+
+func TestEnableMTLSLatePlaintextRefusal(t *testing.T) {
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+		node := world.nodes[0]
+		delayed := false
+		node.interceptRPC = func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			err := invoker(ctx, method, req, reply, cc, opts...)
+			mode, _, _ := node.state()
+			if mode == managementidentity.MutualTLS && method == agentapi.KatlcAgent_GetNodeStatus_FullMethodName && err != nil {
+				delayed = true
+				_ = cc.Close()
+				<-ctx.Done()
+			}
+			return err
+		}
+
+		stdout, stderr, err := world.enable("--timeout", "1s")
+		if mode, trial, _ := node.state(); mode != managementidentity.MutualTLS || trial != "committed" {
+			t.Fatalf("node = %s/%s, want committed mTLS: %v\n%s%s", mode, trial, err, stdout, stderr)
+		}
+		if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
+			t.Fatalf("published %s after the plaintext refusal arrived late", mode)
+		}
+		if !delayed || err == nil || !strings.Contains(err.Error(), "could not verify that it refuses plaintext") || !strings.Contains(err.Error(), "rerun") {
+			t.Fatalf("enable-mtls = %v, want guidance on the inconclusive plaintext probe", err)
+		}
+	})
+}
+
+func TestEnableMTLSLateContextRefresh(t *testing.T) {
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+		var out bytes.Buffer
+		if err := run(t.Context(), []string{"context", "save", "--config", world.configPath}, &out, &out); err != nil {
+			t.Fatalf("save trusted-network context: %v\n%s", err, &out)
+		}
+		contextPath, err := workstation.ConfigPath()
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.ReadFile(contextPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		node := world.nodes[0]
+		delayed := false
+		node.interceptRPC = func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			err := invoker(ctx, method, req, reply, cc, opts...)
+			if err == nil && method == agentapi.KatlcAgent_GetNodeStatus_FullMethodName {
+				mode, _ := world.configMode(t)
+				if mode == managementidentity.MutualTLS {
+					delayed = true
+					<-ctx.Done()
+				}
+			}
+			return err
+		}
+
+		stdout, stderr, err := world.enable("--timeout", "1s")
+		if mode, _ := world.configMode(t); mode != managementidentity.MutualTLS {
+			t.Fatalf("config = %s, want committed mTLS: %v\n%s%s", mode, err, stdout, stderr)
+		}
+		after, readErr := os.ReadFile(contextPath)
+		if readErr != nil || !bytes.Equal(before, after) {
+			t.Fatalf("saved context changed after the refresh reply arrived late: %v", readErr)
+		}
+		if !delayed || err == nil || !strings.Contains(err.Error(), "saved context could not be refreshed") ||
+			!strings.Contains(err.Error(), contextSaveInvocation(world.configPath)) || strings.Contains(stdout, "Refreshed the saved context") {
+			t.Fatalf("enable-mtls = %v\n%s\nwant refresh failure and context save guidance", err, stdout)
+		}
+	})
+}
+
+func TestContextRebindLateStatus(t *testing.T) {
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+		var out bytes.Buffer
+		if err := run(t.Context(), []string{"context", "save", "--config", world.configPath}, &out, &out); err != nil {
+			t.Fatalf("save trusted-network context: %v\n%s", err, &out)
+		}
+		contextPath, err := workstation.ConfigPath()
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.ReadFile(contextPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		node := world.nodes[0]
+		node.interceptRPC = delayManagementStatus
+		dialKatlcAgent = node.dial
+
+		err = run(t.Context(), []string{"context", "rebind", "--context-file", contextPath, "--node", node.name, "--endpoint", "192.0.2.91", "--timeout", "1s"}, &bytes.Buffer{}, &bytes.Buffer{})
+		after, readErr := os.ReadFile(contextPath)
+		if readErr != nil || !bytes.Equal(before, after) {
+			t.Fatalf("saved endpoint changed after its verification reply arrived late: %v", readErr)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("context rebind = %v, want a deadline error", err)
+		}
+	})
+}
+
+func delayManagementStatus(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+	err := invoker(ctx, method, req, reply, cc, opts...)
+	if err == nil && method == agentapi.KatlcAgent_GetNodeStatus_FullMethodName {
+		<-ctx.Done()
+	}
+	return err
+}
+
 func TestEnableMTLSResumeKeepsSecretsFile(t *testing.T) {
 	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
 		world.nodes[0].unreachableTrial = true
@@ -945,7 +1138,7 @@ func TestEnableMTLSInterruptedBegin(t *testing.T) {
 	if err == nil {
 		t.Fatal("enable-mtls succeeded although it was interrupted")
 	}
-	for _, want := range []string{"cp-1: interrupted before the new authority was confirmed", "returns to trusted-network by itself by", "Rerun katlctl management enable-mtls"} {
+	for _, want := range []string{"cp-1: interrupted before the new authority was confirmed", "resumes a live trial or starts again if the node has already reverted", "Rerun katlctl management enable-mtls"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error lacks %q: %v", want, err)
 		}
@@ -992,13 +1185,12 @@ func TestEnableMTLSRefusesTrialWithoutNodeTime(t *testing.T) {
 func TestEnableMTLSBeginTimeout(t *testing.T) {
 	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
 		node := world.nodes[0]
-		dial := dialKatlcAgent
-		dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
-			conn, err := dial(ctx, endpoint)
-			if err == nil {
-				conn.Client = lateBeginClient{conn.Client}
+		node.interceptRPC = func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			err := invoker(ctx, method, req, reply, cc, opts...)
+			if err == nil && method == agentapi.KatlcAgent_BeginManagementTransition_FullMethodName {
+				<-ctx.Done()
 			}
-			return conn, err
+			return err
 		}
 
 		_, _, err := world.enable("--timeout", "1s", "--trial-window", "45s")
@@ -1010,7 +1202,7 @@ func TestEnableMTLSBeginTimeout(t *testing.T) {
 		}
 		for _, want := range []string{
 			"interrupted before the new authority was confirmed",
-			"returns to trusted-network by itself by",
+			"resumes a live trial or starts again if the node has already reverted",
 			"katlc agent management-trial revert",
 			"Rerun katlctl management enable-mtls",
 		} {
@@ -1018,40 +1210,30 @@ func TestEnableMTLSBeginTimeout(t *testing.T) {
 				t.Errorf("error lacks %q: %v", want, err)
 			}
 		}
+		if err != nil && strings.Contains(err.Error(), "by itself by") {
+			t.Errorf("interrupted Begin reported an unverified trial deadline: %v", err)
+		}
 	})
 }
 
-type lateBeginClient struct {
-	agentapi.KatlcAgentClient
-}
-
-func (c lateBeginClient) BeginManagementTransition(ctx context.Context, req *agentapi.BeginManagementTransitionRequest, opts ...grpc.CallOption) (*agentapi.ManagementTransition, error) {
-	trial, err := c.KatlcAgentClient.BeginManagementTransition(ctx, req, opts...)
-	if err == nil {
-		// Deliver the successful reply after the command's request deadline.
-		<-ctx.Done()
-	}
-	return trial, err
-}
-
 func TestEnableMTLSRejectsReplyAfterDeadline(t *testing.T) {
-	oldDial := dialKatlcAgent
-	t.Cleanup(func() { dialKatlcAgent = oldDial })
-	dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
-		return katlcAgentConnection{Close: func() error { return nil }}, nil
-	}
-
-	synctest.Test(t, func(t *testing.T) {
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
 		// Model an inherited deadline whose cancellation callback is delayed.
 		ctx := deadlineOnlyContext{Context: t.Context(), deadline: time.Now().Add(time.Second)}
-		err := enableMTLSCall(ctx, enableMTLSNode{}, trustedNetworkClient, time.Minute, func(ctx context.Context, _ agentapi.KatlcAgentClient) error {
+		world.nodes[0].interceptRPC = func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			err := invoker(ctx, method, req, reply, cc, opts...)
+			if err != nil {
+				t.Fatalf("RPC failed before delay: %v", err)
+			}
 			time.Sleep(time.Second)
 			if err := ctx.Err(); err != nil {
 				t.Fatalf("request canceled before the reply: %v", err)
 			}
 			return nil
-		})
-		if !errors.Is(err, context.DeadlineExceeded) {
+		}
+		node := enableMTLSNode{name: "cp-1", endpoint: "192.0.2.11:9443"}
+		_, err := enableMTLSStatus(ctx, node, trustedNetworkClient, time.Minute)
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, transport.ErrManagementRPCInconclusive) {
 			t.Fatalf("late RPC reply = %v, want deadline exceeded", err)
 		}
 	})

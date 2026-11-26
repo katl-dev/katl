@@ -24,6 +24,9 @@ import (
 	"github.com/katl-dev/katl/internal/nodeidentity"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/peer"
+	grpcstatus "google.golang.org/grpc/status"
 	"gopkg.in/yaml.v3"
 )
 
@@ -131,6 +134,9 @@ func runManagementIdentityRotate(ctx context.Context, opts managementRotationOpt
 		}
 		for _, node := range nodes {
 			if err := checkManagementCredential(ctx, node, client, opts.timeout); err != nil {
+				if errors.Is(err, transport.ErrManagementRPCInconclusive) {
+					return fmt.Errorf("could not verify the configured authority on %s: %w; check the endpoint and rerun", node.name, err)
+				}
 				return fmt.Errorf("ClusterConfig already references %s, but node %s does not accept it: %w; restore the previous secrets reference and rerun rotation", outputPath, node.name, err)
 			}
 		}
@@ -398,20 +404,20 @@ func runKatlcAgentSSH(ctx context.Context, node managementRotationNode, opts man
 
 func verifyRotatedManagement(ctx context.Context, node managementRotationNode, next, old managementidentity.ClientCredentials, timeout time.Duration) error {
 	if err := waitManagementCredential(ctx, node, next, timeout); err != nil {
-		return fmt.Errorf("replacement authority cannot manage the node: %w", err)
+		return fmt.Errorf("could not verify that the replacement authority can manage the node: %w", err)
 	}
 	// Trust the new server certificate while presenting the old client leaf.
 	// This proves the node rejects the exposed client credential itself.
-	if err := checkExposedManagementCredential(ctx, node, next.CACertificate, old, min(timeout, 5*time.Second)); err == nil {
-		return fmt.Errorf("exposed authority still has management access")
+	if err := verifyExposedManagementCredentialRejected(ctx, node, next.CACertificate, old, min(timeout, 5*time.Second)); err != nil {
+		return err
 	}
 	if err := checkManagementCredential(ctx, node, next, min(timeout, 5*time.Second)); err != nil {
-		return fmt.Errorf("replacement authority lost access during old-client rejection check: %w", err)
+		return fmt.Errorf("could not reverify the replacement authority after checking the exposed client credential: %w", err)
 	}
 	return nil
 }
 
-func checkExposedManagementCredential(ctx context.Context, node managementRotationNode, currentCA string, exposed managementidentity.ClientCredentials, timeout time.Duration) error {
+func verifyExposedManagementCredentialRejected(ctx context.Context, node managementRotationNode, currentCA string, exposed managementidentity.ClientCredentials, timeout time.Duration) error {
 	certificate, err := tls.X509KeyPair([]byte(exposed.ClientCertificate), []byte(exposed.ClientPrivateKey))
 	if err != nil {
 		return fmt.Errorf("load exposed client credential: %w", err)
@@ -420,24 +426,32 @@ func checkExposedManagementCredential(ctx context.Context, node managementRotati
 	if !roots.AppendCertsFromPEM([]byte(currentCA)) {
 		return fmt.Errorf("replacement management authority has no certificate")
 	}
-	config := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, Certificates: []tls.Certificate{certificate}, ServerName: node.name}
+	config := &tls.Config{
+		MinVersion: tls.VersionTLS13, RootCAs: roots, ServerName: node.name,
+		// Send the old certificate even if its issuer is absent from the
+		// server's acceptable CA list so the server must reject it itself.
+		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return &certificate, nil },
+	}
+	creds, rejected := transport.ObserveClientCertificateRejection(config)
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	// The credential is polled until it takes effect, so a refused connection is reported at once.
-	options := append(katlcAgentDialOptions(), transport.ManagementDialOptions(transport.WithoutManagementWait(requestCtx), node.name, node.endpoint, transport.NewClientCredentials(config))...)
-	conn, err := grpc.DialContext(requestCtx, node.endpoint, options...)
+	conn, err := dialKatlcAgentWithTransport(transport.WithoutManagementWait(requestCtx), node.name, node.endpoint, creds)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
-	status, err := agentapi.NewKatlcAgentClient(conn).GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
+	var remote peer.Peer
+	status, err := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{}, grpc.Peer(&remote))
 	if err != nil {
-		return err
+		if !errors.Is(err, transport.ErrManagementRPCInconclusive) && grpcstatus.Code(err) == codes.Unavailable && remote.Addr == nil && rejected() {
+			return nil
+		}
+		return fmt.Errorf("could not verify rejection of the exposed client credential: %w; check the endpoint and rerun with the same --output", err)
 	}
 	if status.GetInventoryNodeName() != node.name || (node.machineID != "" && status.GetMachineId() != node.machineID) {
 		return fmt.Errorf("management endpoint reported a different node or machine")
 	}
-	return nil
+	return fmt.Errorf("exposed authority still has management access")
 }
 
 func waitManagementCredential(ctx context.Context, node managementRotationNode, credentials managementidentity.ClientCredentials, timeout time.Duration) error {

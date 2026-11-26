@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -11,7 +12,11 @@ import (
 
 	"github.com/katl-dev/katl/internal/generation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/katl-dev/katl/internal/managementidentity"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 func TestHostStatusUsesContextAndPrintsOperatorView(t *testing.T) {
@@ -229,6 +234,57 @@ func TestHostShutdownWaitsForManagementAPIToStop(t *testing.T) {
 	if got := stderr.String(); !strings.Contains(got, "Shutdown scheduled for node-a") {
 		t.Fatalf("stderr = %q", got)
 	}
+}
+
+func TestHostShutdownLateStatusFailure(t *testing.T) {
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+		node := world.nodes[0]
+		node.interceptRPC = func(ctx context.Context, _ string, _, _ any, _ *grpc.ClientConn, _ grpc.UnaryInvoker, _ ...grpc.CallOption) error {
+			<-ctx.Done()
+			return grpcstatus.Error(codes.Unavailable, "connection reset")
+		}
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		target := managementTarget{nodeName: node.name, endpoint: "192.0.2.11:9443", credentials: &trustedNetworkClient}
+		if err := waitNodeOffline(ctx, target); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("shutdown verification = %v, want deadline exceeded", err)
+		}
+	})
+}
+
+func TestHostStatusLatePlaintextRefusal(t *testing.T) {
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+		if _, stderr, err := world.enable(); err != nil {
+			t.Fatalf("enable-mtls: %v\n%s", err, stderr)
+		}
+		node := world.nodes[0]
+		node.interceptRPC = func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoke grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			err := invoke(ctx, method, req, reply, cc, opts...)
+			if err == nil {
+				t.Fatal("the node answered the plaintext probe")
+			}
+			_ = cc.Close()
+			deadline, _ := ctx.Deadline()
+			time.Sleep(time.Until(deadline))
+			return err
+		}
+		ctx, observation := transport.ObserveManagementConnection(deadlineOnlyContext{Context: t.Context(), deadline: time.Now().Add(time.Second)})
+		endpoint := "192.0.2.11:9443"
+		conn, err := node.dial(transport.WithoutManagementWait(withManagementDial(ctx, node.name, &trustedNetworkClient)), endpoint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
+			t.Fatal("node status fell back to mTLS based on an expired plaintext probe")
+			return katlcAgentConnection{}, nil
+		}
+
+		_, _, err = readStatusReport(ctx, conn.Client, node.name, endpoint, world.configPath, &trustedNetworkClient, observation)
+		if !errors.Is(err, context.DeadlineExceeded) || !observation.PlaintextClosed() {
+			t.Fatalf("node status = %v, want a deadline error after observing plaintext close", err)
+		}
+	})
 }
 
 func TestHostShutdownNoWaitJSON(t *testing.T) {

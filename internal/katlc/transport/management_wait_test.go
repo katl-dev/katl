@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -248,6 +249,39 @@ func TestManagementCallRefusedGivesGuidance(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestManagementStreamLateEOF(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		options := ManagementDialOptions(WithoutManagementWait(ctx), "cp-1", "unused", insecure.NewCredentials())
+		options = append(options, grpc.WithChainStreamInterceptor(func(ctx context.Context, _ *grpc.StreamDesc, _ *grpc.ClientConn, _ string, _ grpc.Streamer, _ ...grpc.CallOption) (grpc.ClientStream, error) {
+			return closingManagementStream{ctx: ctx}, nil
+		}))
+		conn, err := grpc.NewClient("passthrough:///unused", options...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		stream, err := conn.NewStream(ctx, &grpc.StreamDesc{ServerStreams: true}, agentapi.KatlcAgent_WatchOperation_FullMethodName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := stream.RecvMsg(&agentapi.OperationEvent{}); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("late stream result = %v, want deadline exceeded", err)
+		}
+	})
+}
+
+type closingManagementStream struct {
+	grpc.ClientStream
+	ctx context.Context
+}
+
+func (s closingManagementStream) RecvMsg(any) error {
+	<-s.ctx.Done()
+	return io.EOF
 }
 
 // Failures that waiting cannot cure surface at once and unchanged: a handshake

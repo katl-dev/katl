@@ -15,6 +15,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
@@ -544,6 +545,9 @@ func runContextRebind(ctx context.Context, opts contextRebindOptions, stdout io.
 	status, statusErr := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
 	closeErr := conn.Close()
 	if statusErr != nil {
+		if errors.Is(statusErr, transport.ErrManagementRPCInconclusive) {
+			return fmt.Errorf("verify proposed address %s: %w; check the address and node reachability, then rerun or increase --timeout", endpoint, statusErr)
+		}
 		return fmt.Errorf("verify proposed address %s: %w", endpoint, statusErr)
 	}
 	if closeErr != nil {

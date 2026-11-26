@@ -51,6 +51,59 @@ func (c *clientCredentials) Clone() credentials.TransportCredentials {
 	return &clientCredentials{TransportCredentials: c.TransportCredentials.Clone()}
 }
 
+// ObserveClientCertificateRejection records a peer's certificate refusal
+// after the client has authenticated the server and presented its certificate.
+func ObserveClientCertificateRejection(config *tls.Config) (credentials.TransportCredentials, func() bool) {
+	var rejected atomic.Bool
+	return &clientCertificateProbe{TransportCredentials: NewClientCredentials(config), rejected: &rejected}, rejected.Load
+}
+
+type clientCertificateProbe struct {
+	credentials.TransportCredentials
+	rejected *atomic.Bool
+}
+
+func (c *clientCertificateProbe) Clone() credentials.TransportCredentials {
+	return &clientCertificateProbe{TransportCredentials: c.TransportCredentials.Clone(), rejected: c.rejected}
+}
+
+func (c *clientCertificateProbe) ClientHandshake(ctx context.Context, address string, conn net.Conn) (net.Conn, credentials.AuthInfo, error) {
+	secure, info, err := c.TransportCredentials.ClientHandshake(ctx, address, conn)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	// A TLS 1.3 client can finish its handshake before the server checks
+	// its certificate. Read the alert or the start of the server preface
+	// before gRPC writes its own preface to a potentially closed connection.
+	reader := bufio.NewReader(secure)
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	_, err = reader.Peek(1)
+	if !stop() {
+		return nil, nil, ctx.Err()
+	}
+	if err == nil {
+		return &clientCertificateProbeConn{Conn: secure, reader: reader}, info, nil
+	}
+	// crypto/tls wraps alerts from a TCP peer in a net.OpError. Capture
+	// certificate alerts here, before gRPC reduces them to status text.
+	var remote *net.OpError
+	if errors.As(err, &remote) && remote.Op == "remote error" {
+		switch remote.Err.Error() {
+		case "tls: unknown certificate authority", "tls: bad certificate", "tls: expired certificate", "tls: revoked certificate", "tls: unsupported certificate":
+			c.rejected.Store(true)
+		}
+	}
+	return nil, nil, err
+}
+
+type clientCertificateProbeConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *clientCertificateProbeConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
+
 // ClientCredentialsForNode selects exactly one configured transport; it never retries without TLS.
 func ClientCredentialsForNode(identity managementidentity.ClientCredentials, node string) (*clientCredentials, error) {
 	if err := managementidentity.ValidateClient(identity, time.Now().UTC()); err != nil {

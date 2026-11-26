@@ -369,6 +369,9 @@ func observeEnableMTLSNode(ctx context.Context, node *enableMTLSNode, client *ma
 			}
 			return nil
 		}
+		if errors.Is(err, transport.ErrManagementRPCInconclusive) {
+			return fmt.Errorf("%s mTLS preflight at %s: %w; check the address and node reachability, then rerun", node.name, node.endpoint, err)
+		}
 		switch protocol := observation.Protocol(); {
 		case remote.Addr != nil || protocol == transport.TLS:
 			return fmt.Errorf("%s could not be verified over mTLS at %s: %w; check its address and node name. If it uses a different authority, %s, then rerun", node.name, node.endpoint, err, otherSecrets)
@@ -380,6 +383,9 @@ func observeEnableMTLSNode(ctx context.Context, node *enableMTLSNode, client *ma
 	status, err := enableMTLSStatus(ctx, *node, trustedNetworkClient, probe)
 	observedAt := time.Now()
 	if err != nil {
+		if errors.Is(err, transport.ErrManagementRPCInconclusive) {
+			return fmt.Errorf("%s plaintext preflight at %s: %w; check the address and node reachability, then rerun", node.name, node.endpoint, err)
+		}
 		if transport.TLSAtPlaintext(err) {
 			return fmt.Errorf("%s no longer answers plaintext management; if an earlier enable-mtls trial is active, wait for its deadline or resume with the same secrets; if it was already moved, %s, then rerun: %w", node.name, otherSecrets, err)
 		}
@@ -543,11 +549,8 @@ func migrateEnableMTLSNode(ctx context.Context, node *enableMTLSNode, bundle man
 			})
 			return err
 		})
-		// The node starts its window when Begin reaches it, no later than
-		// now, so now plus the window bounds the deadline from above. An
-		// interrupted Begin may still have started the trial.
-		if err != nil && (ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) || grpcstatus.Code(err) == codes.DeadlineExceeded) {
-			return enableMTLSInterrupted(time.Now().Add(opts.trialWindow))
+		if errors.Is(err, transport.ErrManagementRPCInconclusive) || managementVerificationTimedOut(err) {
+			return enableMTLSInterrupted(err)
 		}
 		if err != nil {
 			return enableMTLSBeginError(err)
@@ -567,7 +570,7 @@ func migrateEnableMTLSNode(ctx context.Context, node *enableMTLSNode, bundle man
 	trialStatus, err := waitEnableMTLSTrial(ctx, *node, client, authority, min(time.Until(deadline), timeout))
 	if err != nil {
 		if ctx.Err() != nil {
-			return enableMTLSInterrupted(deadline)
+			return enableMTLSInterrupted(ctx.Err())
 		}
 		return fmt.Errorf("did not answer over mTLS with the new authority: %w; %s. Check that management.address reaches the node from this workstation, then rerun", err, reverts)
 	}
@@ -621,14 +624,15 @@ func verifyEnableMTLSPlaintextRefused(ctx context.Context, node enableMTLSNode, 
 	ctx, observation := transport.ObserveManagementConnection(ctx)
 	var remote peer.Peer
 	_, err := enableMTLSStatus(ctx, node, trustedNetworkClient, min(timeout, 5*time.Second), grpc.Peer(&remote))
-	switch {
-	case err == nil || remote.Addr != nil:
-		return fmt.Errorf("uses mTLS management but still answers plaintext management; inspect it with 'katlctl node status' and rerun")
-	case !observation.PlaintextClosed():
-		return fmt.Errorf("could not verify that it refuses plaintext management: %w; check the endpoint and rerun", err)
-	default:
-		return nil
+	if !errors.Is(err, transport.ErrManagementRPCInconclusive) {
+		switch {
+		case err == nil || remote.Addr != nil:
+			return fmt.Errorf("uses mTLS management but still answers plaintext management; inspect it with 'katlctl node status' and rerun")
+		case observation.PlaintextClosed():
+			return nil
+		}
 	}
+	return fmt.Errorf("could not verify that it refuses plaintext management: %w; check the endpoint and rerun", err)
 }
 
 func enableMTLSReverts(deadline time.Time) string {
@@ -636,8 +640,8 @@ func enableMTLSReverts(deadline time.Time) string {
 }
 
 // enableMTLSInterrupted reports a run stopped while the node may be on trial.
-func enableMTLSInterrupted(deadline time.Time) error {
-	return fmt.Errorf("interrupted before the new authority was confirmed; %s. Rerun this command before then to finish it", enableMTLSReverts(deadline))
+func enableMTLSInterrupted(err error) error {
+	return fmt.Errorf("interrupted before the new authority was confirmed: %w. Rerunning with the same secrets resumes a live trial or starts again if the node has already reverted. To revert a live trial immediately, run 'katlc agent management-trial revert' on the node console", err)
 }
 
 func committedTo(status *agentapi.NodeStatus, authority string) bool {
@@ -730,18 +734,7 @@ func enableMTLSCall(ctx context.Context, node enableMTLSNode, credentials manage
 		return err
 	}
 	defer conn.Close()
-	if err := call(requestCtx, conn.Client); err != nil {
-		return err
-	}
-	// A successful reply can race with cancellation, and the timer callback
-	// can run after the deadline. Check both before acting on the reply.
-	if err := requestCtx.Err(); err != nil {
-		return err
-	}
-	if deadline, _ := requestCtx.Deadline(); !time.Now().Before(deadline) {
-		return context.DeadlineExceeded
-	}
-	return nil
+	return call(requestCtx, conn.Client)
 }
 
 // refreshEnableMTLSContext updates a saved context for the cluster so it uses
