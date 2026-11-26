@@ -132,6 +132,10 @@ type Published struct {
 	Existing       bool
 }
 
+// Allow up to 30 seconds for registry tag visibility, with early reads for
+// brief propagation delays and 5 seconds reserved for the requests themselves.
+var tagVisibilityBackoff = [...]time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 10 * time.Second}
+
 // ManifestDigestTag returns a stable registry tag for an OCI manifest digest.
 // The "sha256-<hex>" shape is reserved by the OCI referrers fallback protocol,
 // so Katl uses a distinct namespace for direct immutable manifest references.
@@ -294,7 +298,7 @@ func Publish(ctx context.Context, request PublishRequest) (Published, error) {
 		return Published{}, err
 	}
 	defer cleanup()
-	return publishTarget(ctx, store, manifestDescriptor, ref, request.Client, request.UseDockerCredentials)
+	return publishTarget(ctx, store, manifestDescriptor, ref, request.Client, request.UseDockerCredentials, tagVisibilityBackoff[:])
 }
 
 // PublishLayout publishes the verified digest-pinned closure without repacking
@@ -302,6 +306,10 @@ func Publish(ctx context.Context, request PublishRequest) (Published, error) {
 // collect untagged artifacts. An optional tag on the pinned reference becomes
 // an immutable alias for the same manifest.
 func PublishLayout(ctx context.Context, request FetchRequest) (Published, error) {
+	return publishLayout(ctx, request, tagVisibilityBackoff[:])
+}
+
+func publishLayout(ctx context.Context, request FetchRequest, backoff []time.Duration) (Published, error) {
 	if request.LayoutDir == "" || request.LayoutURL != "" {
 		return Published{}, fmt.Errorf("publication requires a local OCI layout")
 	}
@@ -345,7 +353,7 @@ func PublishLayout(ctx context.Context, request FetchRequest) (Published, error)
 	existing := true
 	var published Published
 	for _, destination := range destinations {
-		published, err = publishTarget(ctx, source, descriptor, destination, request.Client, request.UseDockerCredentials)
+		published, err = publishTarget(ctx, source, descriptor, destination, request.Client, request.UseDockerCredentials, backoff)
 		if err != nil {
 			return Published{}, err
 		}
@@ -355,7 +363,7 @@ func PublishLayout(ctx context.Context, request FetchRequest) (Published, error)
 	return published, nil
 }
 
-func publishTarget(ctx context.Context, source oras.ReadOnlyTarget, descriptor ocispec.Descriptor, ref reference.Named, client *http.Client, useCredentials bool) (Published, error) {
+func publishTarget(ctx context.Context, source oras.ReadOnlyTarget, descriptor ocispec.Descriptor, ref reference.Named, client *http.Client, useCredentials bool, backoff []time.Duration) (Published, error) {
 	repository, err := remote.NewRepository(ref.Name())
 	if err != nil {
 		return Published{}, fmt.Errorf("open OCI repository %s: %w", ref.Name(), err)
@@ -396,7 +404,20 @@ func publishTarget(ctx context.Context, source oras.ReadOnlyTarget, descriptor o
 	if published.Digest != descriptor.Digest {
 		return Published{}, fmt.Errorf("published OCI manifest digest %s does not match local digest %s", published.Digest, descriptor.Digest)
 	}
-	resolved, err := repository.Resolve(ctx, Tag(ref))
+	verifyCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	resolved, err := repository.Resolve(verifyCtx, Tag(ref))
+	for _, delay := range backoff {
+		if !errors.Is(err, errdef.ErrNotFound) {
+			break
+		}
+		select {
+		case <-verifyCtx.Done():
+			err = verifyCtx.Err()
+		case <-time.After(delay):
+			resolved, err = repository.Resolve(verifyCtx, Tag(ref))
+		}
+	}
 	if err != nil {
 		return Published{}, fmt.Errorf("verify published OCI tag %s: %w", ref.String(), err)
 	}
