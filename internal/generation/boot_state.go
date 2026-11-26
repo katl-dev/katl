@@ -5,9 +5,53 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/katl-dev/katl/internal/efiboot"
 )
+
+// BootTargets identifies the running, next-boot and live-selected generations
+// for status reporting.
+type BootTargets struct {
+	Current string
+	Next    string
+	Live    string
+}
+
+// ReadBootTargets reads the current boot marker and the pending move's desired
+// target when there is an intent. Legacy callers may supply current-generation
+// evidence from outside the generation store.
+func ReadBootTargets(root string, legacyCurrent func(BootSelectionRecord) string) (BootTargets, error) {
+	root = cleanRoot(root)
+	var targets BootTargets
+	err := withBootStateLock(root, func() error {
+		intent, err := readBootMoveIntent(root)
+		if err != nil {
+			return err
+		}
+		if intent != nil {
+			current, _, err := CurrentBootGeneration(root)
+			targets = BootTargets{Current: current, Next: intent.nextGenerationID(), Live: current}
+			return err
+		}
+		selection, err := ReadBootSelection(root)
+		if err != nil {
+			return err
+		}
+		var current string
+		if legacyCurrent != nil {
+			current = legacyCurrent(selection)
+		}
+		current = cmp.Or(current, strings.TrimSpace(selection.ActiveGenerationID), strings.TrimSpace(selection.BootedGenerationID), strings.TrimSpace(selection.DefaultGenerationID))
+		targets = BootTargets{
+			Current: current,
+			Next:    cmp.Or(selection.NextBootGenerationID(), current),
+			Live:    cmp.Or(strings.TrimSpace(selection.TargetBootGenerationID), current),
+		}
+		return nil
+	})
+	return targets, err
+}
 
 type bootState struct {
 	intent *bootMoveIntent

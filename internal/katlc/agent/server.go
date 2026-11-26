@@ -327,8 +327,12 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "read enrollment identity: %v", err)
 	}
-	currentGenerationID, _ := currentGenerationID(s.Root)
+	targets, targetErr := readNodeBootTargets(s.Root)
+	currentGenerationID, bootTargetGenerationID := targets.Current, targets.Next
 	bootHealth := s.nodeBootHealth(ctx)
+	if errors.Is(targetErr, generation.ErrBootMoveBlocked) {
+		bootHealth.Diagnostic = targetErr.Error()
+	}
 	endpointStatus, err := controlPlaneEndpointStatus(s.Root)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "read control-plane endpoint status: %v", err)
@@ -340,12 +344,6 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 	kubernetesStatus, err := nodeKubernetesStatus(ctx, s.Root, s.RunKubernetesStatus)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "read Kubernetes status: %v", err)
-	}
-	bootTargetGenerationID := currentGenerationID
-	if selection, selectionErr := generation.ReadBootSelection(s.Root); selectionErr == nil {
-		if target := selection.NextBootGenerationID(); target != "" {
-			bootTargetGenerationID = target
-		}
 	}
 	systemExtensions, err := nodeSystemExtensionStatus(ctx, s.Root, currentGenerationID, bootTargetGenerationID, s.RunSystemExtensionStatus)
 	if err != nil {

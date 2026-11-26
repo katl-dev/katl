@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/efiboot"
 	"golang.org/x/sys/unix"
 )
 
@@ -977,7 +978,7 @@ func TestRecordBootHealthKeepsFallbackAfterTrialReboot(t *testing.T) {
 func TestRecordBootHealthKeepsKnownGood(t *testing.T) {
 	for _, tc := range []struct {
 		name, running, bootDefault, target, next string
-		oneShot, queued                          bool
+		oneShot, queued, unmounted               bool
 	}{
 		{name: "ordinary", running: "gen2", bootDefault: "gen2", next: "gen2"},
 		{name: "superseded fallback", running: "gen1", bootDefault: "gen2", next: "gen2"},
@@ -985,6 +986,7 @@ func TestRecordBootHealthKeepsKnownGood(t *testing.T) {
 		{name: "future persistent to running generation", running: "gen2", bootDefault: "gen2", target: "gen2", next: "gen2", queued: true},
 		{name: "future one-shot to another generation", running: "gen2", bootDefault: "gen2", target: "gen1", next: "gen1", oneShot: true, queued: true},
 		{name: "future persistent to another generation", running: "gen2", bootDefault: "gen1", target: "gen1", next: "gen1", queued: true},
+		{name: "unmounted EFI variables", running: "gen2", bootDefault: "gen2", target: "gen2", oneShot: true, unmounted: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -1008,14 +1010,16 @@ func TestRecordBootHealthKeepsKnownGood(t *testing.T) {
 				selection.TargetBootEntry = entry(tc.target)
 			}
 			writeBootHealthSelection(t, root, selection)
-			if tc.queued {
+			if tc.queued || tc.unmounted {
 				// Simulate a LoaderEntryOneShot that the loader has yet to consume.
 				path := filepath.Join(root, "sys/firmware/efi/efivars/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f")
 				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(path, []byte{7, 0, 0, 0}, 0o644); err != nil {
-					t.Fatal(err)
+				if tc.queued {
+					if err := os.WriteFile(path, []byte{7, 0, 0, 0, 'e', 0, 0, 0}, 0o644); err != nil {
+						t.Fatal(err)
+					}
 				}
 			}
 			_, before, err := ReadGeneration(root, tc.running)
@@ -1023,17 +1027,20 @@ func TestRecordBootHealthKeepsKnownGood(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			result, err := RecordBootHealth(BootHealthRequest{
+			request := BootHealthRequest{
 				Root: root, CommandLine: bootHealthCommandLine(tc.running), Result: BootHealthFailure, RequestReboot: true, Now: now,
 				SetBootDefault: func(_, entry string) error {
 					t.Fatalf("unexpected EFI default write to %s", entry)
 					return nil
 				},
-			})
-			if err != nil {
-				t.Fatal(err)
 			}
-			if !result.KeptKnownGood || result.Failed || result.RebootRequested || result.RecoveryRequired ||
+			if tc.unmounted {
+				if _, err := RecordBootHealth(request); err == nil || !strings.Contains(err.Error(), "mount efivarfs") {
+					t.Fatalf("expected EFI mount guidance, got %v", err)
+				}
+			} else if result, err := recordBootHealth(request, mountedBootHealthEFI.Read); err != nil {
+				t.Fatal(err)
+			} else if !result.KeptKnownGood || result.Failed || result.RebootRequested || result.RecoveryRequired ||
 				result.DefaultGeneration != tc.bootDefault || result.NextBootGeneration != tc.next {
 				t.Fatalf("boot health = %#v, want kept %s with default %s and next boot %s", result, tc.running, tc.bootDefault, tc.next)
 			}
@@ -1055,6 +1062,11 @@ func TestRecordBootHealthKeepsKnownGood(t *testing.T) {
 	}
 }
 
+var mountedBootHealthEFI = efiboot.Reader{Statfs: func(_ int, stat *unix.Statfs_t) error {
+	stat.Type = unix.EFIVARFS_MAGIC
+	return nil
+}}
+
 func TestFailedKnownGoodOneShotRemainsTemporary(t *testing.T) {
 	for _, next := range []string{"reboot", "health retry"} {
 		t.Run(next, func(t *testing.T) {
@@ -1073,9 +1085,12 @@ func TestFailedKnownGoodOneShotRemainsTemporary(t *testing.T) {
 			if err := RecordBootedGeneration(root, gen1Cmdline); err != nil {
 				t.Fatal(err)
 			}
-			result, err := RecordBootHealth(BootHealthRequest{
+			if err := os.MkdirAll(filepath.Join(root, "sys/firmware/efi/efivars"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			result, err := recordBootHealth(BootHealthRequest{
 				Root: root, CommandLine: gen1Cmdline, Result: BootHealthFailure, RequestReboot: true, Now: now,
-			})
+			}, mountedBootHealthEFI.Read)
 			if err != nil || !result.KeptKnownGood || result.RebootRequested || result.NextBootGeneration != "gen2" {
 				t.Fatalf("failed one-shot = %#v, %v, want kept gen1 and next boot gen2", result, err)
 			}

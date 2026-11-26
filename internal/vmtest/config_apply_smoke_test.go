@@ -784,8 +784,101 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		"katl-system-extensions-activate.service: Failed with result 'timeout'")
 	assertExtensionActivationProductionTimeout(t, ctx, guest, "after-fallback")
 	assertBootstrappedKubernetesSysextChangeRejected(t, ctx, guest, endpoint)
+	guest, client = runBootMoveReaderSmoke(t, ctx, node, guest, client, result, katlctl, endpoint, optionalGeneration)
 	shutdownGuestThroughKatlctl(t, ctx, result, katlctl, endpoint, node, client)
 	return guest, nil
+}
+
+func runBootMoveReaderSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl katlctlRunner, endpoint, fallback string) (*GuestControl, *AgentClient) {
+	t.Helper()
+	const trial = "2026.06.06-vmtest-boot-move"
+	const config = `apiVersion: katl.dev/v1alpha1
+kind: NodeConfigurationChange
+metadata:
+  sourceID: operator
+  desiredVersion: "30"
+apply:
+  mode: next-boot
+spec:
+  clusterDefaults:
+    kernel:
+      commandLine:
+        - katl.vmtest.boot_move_reader=1
+`
+	staged := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "stage-intent-trial", "next-boot", trial, config, false)
+	if receipt := waitKatlcOperationTerminal(t, ctx, endpoint, staged.OperationId); receipt.Result != operation.ResultSucceeded {
+		t.Fatalf("stage intent trial: %+v", receipt)
+	}
+	const efiOneShot = "/sys/firmware/efi/efivars/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+	assertGuestExists(t, ctx, guest, efiOneShot)
+	previousBootID := guestBootID(t, ctx, client)
+	beforeSelection := readGuestFile(t, ctx, guest, "/var/lib/katl/boot/selection.json")
+	selection := bootSelectionFromGuest(t, ctx, guest)
+	if selection.DefaultGenerationID != fallback || selection.TrialGenerationID != trial {
+		t.Fatalf("staged selection = %+v, want default %s and trial %s", selection, fallback, trial)
+	}
+
+	// The fixture represents a move interrupted before firmware consumed the
+	// prior one-shot. Katl's managed reboot correctly refuses while it exists.
+	const intentPath = "/var/lib/katl/boot/move-intent.json"
+	intent := fmt.Sprintf(`{
+		"recordType": "katl.boot.move-intent",
+		"recordVersion": 1,
+		"payload": {
+			"operationID": "vmtest-interrupted-boot-move",
+			"bootID": %q,
+			"expectedSelectionRevision": %d,
+			"sourceGenerationID": %q,
+			"destinationGenerationID": %q,
+			"priorDefault": {"generationID": %q, "entry": %q},
+			"priorOneShot": {"generationID": %q, "entry": %q},
+			"desiredDefault": {"generationID": %q, "entry": %q},
+			"desiredOneShot": {"generationID": "", "entry": ""},
+			"desiredSelection": {
+				"apiVersion": "katl.dev/v1alpha1", "kind": "BootSelection", "revision": %d,
+				"defaultGenerationID": %q, "defaultBootEntry": %q, "updatedAt": "2026-11-26T15:00:00Z"
+			},
+			"statusChanges": [],
+			"reboot": {"trialID": "", "eligible": false, "spent": false}
+		}
+	}`, previousBootID, selection.Revision, trial, fallback, fallback, filepath.Base(selection.DefaultBootEntry),
+		trial, filepath.Base(selection.TrialBootEntry), fallback, filepath.Base(selection.DefaultBootEntry),
+		selection.Revision+1, fallback, selection.DefaultBootEntry)
+	writeGuestFile(t, ctx, guest, intentPath, []byte(intent), 0o600)
+	if err := requestGuestReboot(ctx, guest); err != nil {
+		t.Fatalf("reboot into recorded one-shot: %v", err)
+	}
+	_ = client.Close()
+	guest, client = reconnectGuestAfterBoot(t, ctx, node, previousBootID)
+	assertGuestMissing(t, ctx, guest, efiOneShot)
+	waitGuestFileContains(t, ctx, guest, "/run/katl/boot-health/current", `"generationID":"`+trial+`"`)
+	activation := guestCommandOutput(t, ctx, guest, "activate-recorded-trial", "systemctl", "show",
+		"--property=Result", "--property=ExecMainStatus", "katl-generation-activate.service")
+	if !containsAll(activation, "Result=success", "ExecMainStatus=0") {
+		t.Fatalf("generation activation failed during boot move: %s", activation)
+	}
+	if current := currentGenerationFromGuest(t, ctx, guest); current != trial {
+		t.Fatalf("booted generation = %s, want %s", current, trial)
+	}
+	guestCommand(t, ctx, guest, "agent-during-boot-move", "systemctl", "start", "katlc-agent.service")
+	statusJSON := runKatlctl(t, ctx, result, katlctl, "status-during-boot-move", "node", "status", "cp-1", "--output", "json")
+	var status struct {
+		Generation string `json:"generation"`
+		NextBoot   string `json:"nextBoot"`
+	}
+	if err := json.Unmarshal(statusJSON, &status); err != nil {
+		t.Fatal(err)
+	}
+	if status.Generation != trial || status.NextBoot != fallback {
+		t.Fatalf("status during boot move = %s, want current %s and next %s", statusJSON, trial, fallback)
+	}
+	if got := readGuestFile(t, ctx, guest, "/var/lib/katl/boot/selection.json"); got != beforeSelection {
+		t.Fatal("reader changed durable boot selection")
+	}
+	if got := readGuestFile(t, ctx, guest, intentPath); got != intent {
+		t.Fatal("reader changed durable boot move")
+	}
+	return guest, client
 }
 
 func runOptionalUnitFailureSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl katlctlRunner, endpoint string) (*GuestControl, *AgentClient) {
@@ -1529,6 +1622,7 @@ contexts: []
 current-context: ""
 users: []
 `
+	assertGuestMissing(t, ctx, guest, kubeletConf)
 	beforeSysext := readlinkOptional(t, ctx, guest, "/run/extensions/katl-kubernetes.raw")
 	beforeGeneration := currentGenerationFromGuest(t, ctx, guest)
 	markerSource := "/var/lib/katl/test-artifacts/config-apply/kubelet.conf"
@@ -1546,6 +1640,12 @@ users: []
 	}); err != nil {
 		t.Fatalf("install bootstrapped kubelet marker: %v", err)
 	}
+	defer func() {
+		if !t.Failed() {
+			guestCommand(t, ctx, guest, "remove-bootstrapped-kubelet-marker",
+				"systemd-run", "--quiet", "--wait", "--collect", "/usr/bin/rm", kubeletConf)
+		}
+	}()
 	assertGuestFileContains(t, ctx, guest, kubeletConf, "kind: Config")
 	assertGuestMissing(t, ctx, guest, "/etc/kubernetes/admin.conf")
 	assertGuestMissing(t, ctx, guest, "/etc/kubernetes/manifests/kube-apiserver.yaml")

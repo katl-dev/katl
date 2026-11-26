@@ -1134,10 +1134,23 @@ func (s *Server) validateCandidateGenerationAvailable(generationID string) error
 }
 
 func currentGenerationID(root string) (string, error) {
-	selection, err := generation.ReadBootSelection(root)
+	targets, err := readNodeBootTargets(root)
 	if err != nil {
 		return "", err
 	}
+	if targets.Current == "" {
+		return "", fmt.Errorf("current generation is not recorded")
+	}
+	return targets.Current, nil
+}
+
+func readNodeBootTargets(root string) (generation.BootTargets, error) {
+	return generation.ReadBootTargets(root, func(selection generation.BootSelectionRecord) string {
+		return currentGenerationFromSelection(root, selection)
+	})
+}
+
+func currentGenerationFromSelection(root string, selection generation.BootSelectionRecord) string {
 	if selection.PendingHealthValidation {
 		target := strings.TrimSpace(selection.TargetBootGenerationID)
 		transaction := strings.TrimSpace(selection.PendingTransactionID)
@@ -1146,17 +1159,17 @@ func currentGenerationID(root string) (string, error) {
 			if storeErr == nil {
 				record, readErr := store.Read(transaction)
 				if readErr == nil && record.Terminal && record.Result == operation.ResultSucceeded && record.ActivationState == operation.ActivationStateActiveLive && record.CandidateGenerationID == target {
-					return target, nil
+					return target
 				}
 			}
 		}
 	}
 	for _, candidate := range []string{selection.ActiveGenerationID, selection.BootedGenerationID, selection.TargetBootGenerationID, selection.DefaultGenerationID} {
 		if strings.TrimSpace(candidate) != "" {
-			return strings.TrimSpace(candidate), nil
+			return strings.TrimSpace(candidate)
 		}
 	}
-	return "", fmt.Errorf("current generation is not recorded")
+	return ""
 }
 
 func inheritCurrentKernelCommandLine(root string, record generation.Record, replaced []string) generation.Record {

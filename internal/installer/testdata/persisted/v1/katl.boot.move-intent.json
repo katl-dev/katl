@@ -8,7 +8,7 @@
     "sourceGenerationID": "gen1",
     "destinationGenerationID": "gen2",
     "priorDefault": {"generationID": "gen0", "entry": "katl-gen0.conf"},
-    "priorOneShot": {"generationID": "gen1", "entry": "katl-gen1.conf"},
+    "priorOneShot": {"generationID": "gen1", "entry": ""},
     "desiredDefault": {"generationID": "gen2", "entry": "katl-gen2.conf"},
     "desiredOneShot": {"generationID": "gen3", "entry": "katl-gen3.conf"},
     "desiredSelection": {

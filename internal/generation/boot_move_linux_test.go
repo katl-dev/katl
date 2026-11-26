@@ -17,7 +17,7 @@ import (
 func TestReadBootMoveIntent(t *testing.T) {
 	root := t.TempDir()
 	writeIntentFixture(t, root, intentFixture(t))
-	got, err := readBootMoveIntent(root)
+	got, err := readBootMoveFile(filepath.Join(root, bootMovePath))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +29,7 @@ func TestReadBootMoveIntent(t *testing.T) {
 		SourceGenerationID:        "gen1",
 		DestinationGenerationID:   new("gen2"),
 		PriorDefault:              &bootMoveTarget{new("gen0"), new("katl-gen0.conf")},
-		PriorOneShot:              &bootMoveTarget{new("gen1"), new("katl-gen1.conf")},
+		PriorOneShot:              &bootMoveTarget{new("gen1"), new("")},
 		DesiredDefault:            &bootMoveTarget{new("gen2"), new("katl-gen2.conf")},
 		DesiredOneShot:            &bootMoveTarget{new("gen3"), new("katl-gen3.conf")},
 		DesiredSelection: BootSelectionRecord{
@@ -56,7 +56,9 @@ func TestBootStateRefusesInvalidIntent(t *testing.T) {
 	for _, tc := range []struct{ name, data, detail string }{
 		{"missing operation", strings.Replace(fixture, `"operationID": "recover-gen1",`, "", 1), "operationID"},
 		{"missing expected revision", strings.Replace(fixture, `"expectedSelectionRevision": 7,`, "", 1), "expectedSelectionRevision"},
-		{"missing one-shot", strings.Replace(fixture, `"priorOneShot": {"generationID": "gen1", "entry": "katl-gen1.conf"},`, "", 1), "priorOneShot"},
+		{"missing one-shot", strings.Replace(fixture, `"priorOneShot": {"generationID": "gen1", "entry": ""},`, "", 1), "priorOneShot"},
+		{"contradictory default", strings.Replace(fixture, `"desiredDefault": {"generationID": "gen2"`, `"desiredDefault": {"generationID": "outside"`, 1), "desiredDefault disagrees"},
+		{"contradictory prior entry", strings.Replace(fixture, `"priorDefault": {"generationID": "gen0", "entry": "katl-gen0.conf"}`, `"priorDefault": {"generationID": "gen0", "entry": "katl-outside.conf"}`, 1), "does not match its generation loader entry"},
 		{"missing spent", strings.Replace(fixture, `, "spent": true`, "", 1), "spent"},
 		{"unsupported", strings.Replace(fixture, `"recordVersion": 1`, `"recordVersion": 2`, 1), "unsupported boot move intent katl.boot.move-intent/v2"},
 		{"corrupt", "{", "decode envelope"},
@@ -66,6 +68,7 @@ func TestBootStateRefusesInvalidIntent(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			writeBootMoveLegacyFixture(t, root)
+			writeBootHealthGeneration(t, root, "outside", "", CommitStateCommitted, BootStateGood, HealthStateHealthy, time.Now().UTC())
 			switch tc.name {
 			case "directory":
 				// A directory cannot be read as an intent even by a privileged test runner.
@@ -87,7 +90,12 @@ func TestBootStateRefusesInvalidIntent(t *testing.T) {
 					t.Fatalf("expected actionable %q error, got %v", tc.detail, err)
 				}
 			}
-			assertIntentError(RecordBootedGeneration(root, bootHealthCommandLine("gen1")))
+			booted := "gen1"
+			if tc.name == "contradictory default" {
+				booted = "outside"
+				writeBootDisk(t, root)
+			}
+			assertIntentError(RecordBootedGeneration(root, bootHealthCommandLine(booted)))
 			assertIntentError(Select(t.Context(), SelectRequest{Root: root, GenerationID: "gen0"}))
 		})
 	}
@@ -98,12 +106,15 @@ func TestActivationWithBootMoveIntent(t *testing.T) {
 		t.Run(id, func(t *testing.T) {
 			root := t.TempDir()
 			selection := writeBootMoveLegacyFixture(t, root)
-			for _, other := range []string{"gen2", "gen3", "outside"} {
-				writeBootHealthGeneration(t, root, other, "gen0", CommitStateCommitted, BootStateGood, HealthStateHealthy, selection.UpdatedAt)
+			writeBootHealthGeneration(t, root, "outside", "gen0", CommitStateCommitted, BootStateGood, HealthStateHealthy, selection.UpdatedAt)
+			writeBootDisk(t, root)
+			fixture := intentFixture(t)
+			if id == "gen0" {
+				// The fallback boot can also follow a one-shot consumed after the snapshot.
+				fixture = strings.Replace(fixture, `"priorOneShot": {"generationID": "gen1", "entry": ""}`,
+					`"priorOneShot": {"generationID": "gen1", "entry": "katl-gen1.conf"}`, 1)
 			}
-			writeIntentFixture(t, root, intentFixture(t))
-			// The prior one-shot is already consumed. Legacy selection is still
-			// pending gen1, while firmware could have fallen back to gen0.
+			writeIntentFixture(t, root, fixture)
 			efiDir := filepath.Join(root, "sys/firmware/efi/efivars")
 			writeObservedBootDefault(t, root)
 			before := snapshotBootFiles(t, filepath.Join(root, "var"))
@@ -289,6 +300,9 @@ func writeBootMoveLegacyFixture(t *testing.T, root string) BootSelectionRecord {
 	now := time.Date(2026, 11, 26, 14, 0, 0, 0, time.UTC)
 	writeBootHealthGeneration(t, root, "gen0", "", CommitStateCommitted, BootStateGood, HealthStateHealthy, now)
 	writeBootHealthGeneration(t, root, "gen1", "gen0", CommitStateCommitted, BootStateTrying, HealthStateUnknown, now)
+	for _, id := range []string{"gen2", "gen3"} {
+		writeBootHealthGeneration(t, root, id, "gen0", CommitStateCommitted, BootStateGood, HealthStateHealthy, now)
+	}
 	selection := BootSelectionRecord{
 		APIVersion: APIVersion, Kind: BootSelectionKind,
 		DefaultGenerationID: "gen0", DefaultBootEntry: "loader/entries/katl-gen0.conf",

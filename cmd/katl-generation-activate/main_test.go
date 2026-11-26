@@ -106,6 +106,28 @@ func writeActivationTrial(t *testing.T, root string) {
 	t.Helper()
 	now := time.Date(2026, 9, 28, 14, 0, 0, 0, time.UTC)
 	writeActivationFallback(t, root, "known-good", now.Add(-time.Hour))
+	writeActivationDisk(t, root)
+	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
+		APIVersion:                    generation.APIVersion,
+		Kind:                          generation.BootSelectionKind,
+		DefaultGenerationID:           "known-good",
+		TargetBootGenerationID:        "candidate",
+		TrialGenerationID:             "candidate",
+		PreviousKnownGoodGenerationID: "known-good",
+		DefaultBootEntry:              "loader/entries/katl-known-good.conf",
+		TrialBootEntry:                "loader/entries/katl-candidate.conf",
+		PreviousKnownGoodBootEntry:    "loader/entries/katl-known-good.conf",
+		PendingTransactionID:          "next-boot-apply",
+		PendingHealthValidation:       true,
+		PersistentDefaultPromotion:    generation.DefaultPromotionPending,
+		UpdatedAt:                     now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeActivationDisk(t *testing.T, root string) {
+	t.Helper()
 	var stat unix.Stat_t
 	if err := unix.Stat(root, &stat); err != nil {
 		t.Fatal(err)
@@ -129,22 +151,59 @@ func writeActivationTrial(t *testing.T, root string) {
 		}
 	}
 	writeCommandFile(t, filepath.Join(root, "dev/disk/by-diskseq/17-part1"), string(activationRuntimeImage()))
-	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
-		APIVersion:                    generation.APIVersion,
-		Kind:                          generation.BootSelectionKind,
-		DefaultGenerationID:           "known-good",
-		TargetBootGenerationID:        "candidate",
-		TrialGenerationID:             "candidate",
-		PreviousKnownGoodGenerationID: "known-good",
-		DefaultBootEntry:              "loader/entries/katl-known-good.conf",
-		TrialBootEntry:                "loader/entries/katl-candidate.conf",
-		PreviousKnownGoodBootEntry:    "loader/entries/katl-known-good.conf",
-		PendingTransactionID:          "next-boot-apply",
-		PendingHealthValidation:       true,
-		PersistentDefaultPromotion:    generation.DefaultPromotionPending,
-		UpdatedAt:                     now,
-	}); err != nil {
+}
+
+func TestGenerationActivateDuringSlotInvalidation(t *testing.T) {
+	fixture, err := os.ReadFile("../../internal/installer/testdata/persisted/v1/katl.boot.move-intent.json")
+	if err != nil {
 		t.Fatal(err)
+	}
+	const unavailable = "OS slot has been replaced"
+	intent := strings.Replace(string(fixture), `"unavailableReason": ""`, `"unavailableReason": "`+unavailable+`"`, 1)
+	now := time.Date(2026, 11, 26, 14, 59, 0, 0, time.UTC)
+	for _, tc := range []struct{ name, operation, uuid, wantError string }{
+		{"intact prior target", "recover-gen1", "11111111-2222-3333-4444-555555555555", ""},
+		{"unrelated invalidation", "other-operation", "11111111-2222-3333-4444-555555555555", unavailable},
+		{"wrong running root", "recover-gen1", "21111111-2222-3333-4444-555555555555", "does not match generation root PARTUUID"},
+		{"missing bound slot", "recover-gen1", "", "is absent from the system disk"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeActivationDisk(t, root)
+			for _, id := range []string{"gen0", "gen1", "gen2", "gen3"} {
+				writeActivationFallback(t, root, id, now.Add(-time.Minute))
+			}
+			spec, status, err := generation.ReadGeneration(root, "gen1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			status.UnavailableReason = unavailable
+			status.UpdatedAt = now
+			status.StatusTransitions = append(status.StatusTransitions, generation.StatusTransition{At: now, OperationID: tc.operation, Reason: "trial failed"})
+			if err := generation.WriteGenerationStatus(root, spec, status); err != nil {
+				t.Fatal(err)
+			}
+			writeCommandFile(t, filepath.Join(root, "var/lib/katl/boot/move-intent.json"), intent)
+			uuid := tc.uuid
+			if uuid == "" {
+				uuid = spec.Root.PartitionUUID
+				writeCommandFile(t, filepath.Join(root, "sys/devices/vda/vda1/uevent"), "PARTN=1\nPARTNAME=KATL_ROOT_A\nPARTUUID=41111111-2222-3333-4444-555555555555\n")
+			}
+			cmdline := filepath.Join(root, "proc-cmdline")
+			writeCommandFile(t, cmdline, "root=PARTUUID="+uuid+" katl.generation=gen1\n")
+
+			err = run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, nil)
+			if tc.wantError == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				if id, recorded, err := generation.CurrentBootGeneration(root); err != nil || !recorded || id != "gen1" {
+					t.Fatalf("activation recorded %q, %t, %v", id, recorded, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+				t.Fatalf("activation = %v, want %q", err, tc.wantError)
+			}
+		})
 	}
 }
 

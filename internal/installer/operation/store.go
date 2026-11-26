@@ -477,7 +477,7 @@ func (s Store) OperationIDs() ([]string, error) {
 	return ids, nil
 }
 
-func (s Store) ReconcileBoot(now time.Time, bootID string, live LiveInvocationFunc) (ReconcileReport, error) {
+func (s Store) ReconcileBoot(now time.Time, bootID string, live LiveInvocationFunc, deferred ...string) (ReconcileReport, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -493,6 +493,9 @@ func (s Store) ReconcileBoot(now time.Time, bootID string, live LiveInvocationFu
 		UpdatedAt:  now.UTC(),
 	}
 	for _, id := range ids {
+		if slices.Contains(deferred, id) {
+			continue
+		}
 		record, err := s.Read(id)
 		if err != nil {
 			return ReconcileReport{}, fmt.Errorf("reconcile operation %s: %w", id, err)

@@ -1,10 +1,12 @@
 package generation
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"syscall"
@@ -12,6 +14,10 @@ import (
 
 	"github.com/katl-dev/katl/internal/persistedrecord"
 )
+
+// ErrBootMoveBlocked signals that a legacy operation must wait for a runtime
+// that can read and complete the durable move.
+var ErrBootMoveBlocked = errors.New("boot move in progress")
 
 const (
 	bootStateDir          = "/var/lib/katl/boot"
@@ -79,7 +85,7 @@ func requireBootMoveIdle(root string) error {
 		return err
 	}
 	if intent != nil {
-		return fmt.Errorf("boot move in progress (operation %s). From the node console, boot a runtime that can complete the move before retrying", intent.OperationID)
+		return fmt.Errorf("%w (operation %s). From the node console, boot a runtime that can complete the move before retrying", ErrBootMoveBlocked, intent.OperationID)
 	}
 	return nil
 }
@@ -87,8 +93,11 @@ func requireBootMoveIdle(root string) error {
 func readBootMoveIntent(root string) (*bootMoveIntent, error) {
 	path := rootedPathUnchecked(root, bootMovePath)
 	intent, err := readBootMoveFile(path)
+	if err == nil && intent != nil {
+		err = intent.validateBindings(root)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("read boot move intent at %s: %v. From the node console, restore access to intact boot state or boot a runtime that supports this intent before retrying", path, err)
+		return nil, fmt.Errorf("%w: read boot move intent at %s: %v. From the node console, restore access to intact boot state or boot a runtime that supports this intent before retrying", ErrBootMoveBlocked, path, err)
 	}
 	return intent, nil
 }
@@ -170,12 +179,13 @@ func (intent bootMoveIntent) validate() error {
 			if err := validateMoveID(field.name+".entry", entry); err != nil {
 				return err
 			}
+			if *field.target.GenerationID == "" {
+				return fmt.Errorf("%s.entry requires a generationID", field.name)
+			}
 		}
 	}
-	for _, target := range []*bootMoveTarget{intent.PriorOneShot, intent.DesiredOneShot} {
-		if *target.Entry == "" && *target.GenerationID != "" {
-			return fmt.Errorf("a cleared one-shot cannot name a generation")
-		}
+	if *intent.DesiredOneShot.Entry == "" && *intent.DesiredOneShot.GenerationID != "" {
+		return fmt.Errorf("a cleared desired one-shot cannot name a generation")
 	}
 	revision := intent.DesiredSelection.Revision
 	if intent.ExpectedSelectionRevision == nil || revision == 0 || revision-1 != *intent.ExpectedSelectionRevision {
@@ -183,6 +193,9 @@ func (intent bootMoveIntent) validate() error {
 	}
 	if err := ValidateBootSelection(intent.DesiredSelection); err != nil {
 		return fmt.Errorf("invalid desiredSelection: %w", err)
+	}
+	if err := intent.validateDesiredTargets(); err != nil {
+		return err
 	}
 	if intent.StatusChanges == nil {
 		return fmt.Errorf("statusChanges is required")
@@ -216,6 +229,62 @@ func (intent bootMoveIntent) validate() error {
 		return fmt.Errorf("reboot trialID and spent require eligibility")
 	}
 	return nil
+}
+
+func (intent bootMoveIntent) validateDesiredTargets() error {
+	selection := intent.DesiredSelection
+	defaultID, defaultEntry := *intent.DesiredDefault.GenerationID, *intent.DesiredDefault.Entry
+	if defaultID != selection.DefaultGenerationID ||
+		(defaultEntry != "" && defaultEntry != filepath.Base(selection.DefaultBootEntry)) {
+		return fmt.Errorf("desiredDefault disagrees with desiredSelection default")
+	}
+	oneShotID, oneShotEntry := *intent.DesiredOneShot.GenerationID, *intent.DesiredOneShot.Entry
+	for _, target := range []struct{ id, entry string }{
+		{selection.TargetBootGenerationID, selection.TargetBootEntry},
+		{selection.TrialGenerationID, selection.TrialBootEntry},
+	} {
+		if target.id == "" && target.entry == "" {
+			continue
+		}
+		if oneShotID == "" || target.id != oneShotID || filepath.Base(target.entry) != oneShotEntry {
+			return fmt.Errorf("desiredOneShot disagrees with desiredSelection target or trial")
+		}
+	}
+	if selection.TargetBootGenerationID == "" && selection.TrialGenerationID == "" &&
+		oneShotID != "" && oneShotID != defaultID {
+		return fmt.Errorf("desiredOneShot without a selection target or trial must name the default generation")
+	}
+	return nil
+}
+
+func (intent bootMoveIntent) validateBindings(root string) error {
+	for _, target := range []*bootMoveTarget{intent.PriorDefault, intent.PriorOneShot, intent.DesiredDefault, intent.DesiredOneShot} {
+		id, entry := *target.GenerationID, *target.Entry
+		if id == "" {
+			continue
+		}
+		spec, _, err := ReadGeneration(root, id)
+		if err != nil {
+			return fmt.Errorf("read recorded boot target %s: %w", id, err)
+		}
+		if spec.GenerationID != id || spec.Boot.LoaderEntryPath == "" ||
+			(entry != "" && entry != filepath.Base(spec.Boot.LoaderEntryPath)) ||
+			(target == intent.DesiredDefault && intent.DesiredSelection.DefaultBootEntry != spec.Boot.LoaderEntryPath) {
+			return fmt.Errorf("recorded boot target %s does not match its generation loader entry", id)
+		}
+		if target == intent.DesiredOneShot {
+			selection := intent.DesiredSelection
+			if (selection.TargetBootGenerationID != "" && selection.TargetBootEntry != spec.Boot.LoaderEntryPath) ||
+				(selection.TrialGenerationID != "" && selection.TrialBootEntry != spec.Boot.LoaderEntryPath) {
+				return fmt.Errorf("desiredSelection target or trial does not match generation %s loader entry", id)
+			}
+		}
+	}
+	return nil
+}
+
+func (intent bootMoveIntent) nextGenerationID() string {
+	return cmp.Or(*intent.DesiredOneShot.GenerationID, *intent.DesiredDefault.GenerationID)
 }
 
 func validateMoveID(name, value string) error {

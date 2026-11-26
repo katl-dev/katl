@@ -64,34 +64,7 @@ func run(_ context.Context, args []string, stdout io.Writer) error {
 		// Failing activation here would run the trial's failure handler.
 		fmt.Fprintf(stdout, "katl-generation-activate could not arm boot recovery for %s: %v\n", selected, err)
 	}
-	metadataPath, err := generation.MetadataPath(*root, selected)
-	if err != nil {
-		return err
-	}
-	record, err := generation.ReadRecord(metadataPath)
-	if err != nil {
-		return err
-	}
-	if record.GenerationID != selected {
-		return fmt.Errorf("metadata generation %q does not match selected generation %q", record.GenerationID, selected)
-	}
-	if commandLine != "" {
-		// Recovery is armed first so a failed identity write can still roll back a trial.
-		if err := generation.RecordBootedGeneration(*root, commandLine); err != nil {
-			return fmt.Errorf("record booted generation: %w", err)
-		}
-	}
-	var plan generation.ActivationPlan
-	activate := func() error {
-		var err error
-		plan, err = generation.ApplyActivation(*root, record)
-		return err
-	}
-	if commandLine == "" {
-		err = generation.WithLegacyBootState(*root, activate)
-	} else {
-		err = activate()
-	}
+	plan, err := generation.ActivateBootGeneration(*root, selected, commandLine)
 	if err != nil {
 		return err
 	}

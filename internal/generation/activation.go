@@ -9,7 +9,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+
+	"github.com/katl-dev/katl/internal/efiboot"
 )
 
 const (
@@ -29,6 +32,79 @@ type ActivationLink struct {
 	Name           string
 	SourcePath     string
 	ActivationPath string
+}
+
+// ActivateBootGeneration applies the kernel-selected generation under the boot
+// lock. An explicit activation without kernel evidence uses the legacy path.
+func ActivateBootGeneration(root, id, commandLine string) (ActivationPlan, error) {
+	root = cleanRoot(root)
+	var plan ActivationPlan
+	activate := func(state bootState) error {
+		if state.intent != nil {
+			record, err := state.intent.activationRecord(root, id, commandLine)
+			if err != nil {
+				return err
+			}
+			plan, err = ApplyActivation(root, record)
+			if err != nil {
+				return err
+			}
+			return writeCurrentBoot(root, currentBoot{GenerationID: id})
+		}
+
+		path, err := MetadataPath(root, id)
+		if err != nil {
+			return err
+		}
+		record, err := ReadRecord(path)
+		if err != nil {
+			return err
+		}
+		if record.GenerationID != id {
+			return fmt.Errorf("metadata generation %q does not match selected generation %q", record.GenerationID, id)
+		}
+		if commandLine != "" {
+			if err := recordLegacyBootedGeneration(root, id, commandLine, state.legacy); err != nil {
+				return fmt.Errorf("record booted generation: %w", err)
+			}
+		}
+		plan, err = ApplyActivation(root, record)
+		return err
+	}
+	if commandLine == "" {
+		err := WithLegacyBootState(root, func() error { return activate(bootState{}) })
+		return plan, err
+	}
+	err := withBootState(root, id, efiboot.Reader{}.Read, activate)
+	return plan, err
+}
+
+func (intent bootMoveIntent) activationRecord(root, id, commandLine string) (Record, error) {
+	if err := intent.validateBootedGeneration(id); err != nil {
+		return Record{}, err
+	}
+	spec, status, err := ReadGeneration(root, id)
+	if err != nil {
+		return Record{}, err
+	}
+	observed := BootSelectionRecord{BootedGenerationID: id, BootedBootEntry: spec.Boot.LoaderEntryPath}
+	if err := validateBootedSelection(observed, spec, id, commandLine); err != nil {
+		return Record{}, err
+	}
+	if status.UnavailableReason != "" &&
+		slices.ContainsFunc(intent.StatusChanges, func(change bootStatusChange) bool {
+			return change.GenerationID == id && *change.UnavailableReason == status.UnavailableReason
+		}) && len(status.StatusTransitions) > 0 &&
+		status.StatusTransitions[len(status.StatusTransitions)-1].OperationID == intent.OperationID {
+		// A slot cannot be overwritten until the redirect is verified and the
+		// intent is retired. This move's projected status can precede the redirect.
+		status.UnavailableReason = ""
+	}
+	check := bootabilityCheck{root: root}
+	if err := check.check(spec, status, bootIdentity).problem(); err != nil {
+		return Record{}, fmt.Errorf("generation %s cannot activate during boot move %s: %w", id, intent.OperationID, err)
+	}
+	return RecordFromSplit(spec, status), nil
 }
 
 func ReadRecord(path string) (Record, error) {

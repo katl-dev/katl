@@ -129,11 +129,11 @@ func waitForContext(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-func AuditStartup(store operation.Store, now time.Time) (operation.ReconcileReport, error) {
+func AuditStartup(store operation.Store, now time.Time, deferred ...string) (operation.ReconcileReport, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	report, err := store.ReconcileBoot(now, currentBootID(), liveAgentInvocation)
+	report, err := store.ReconcileBoot(now, currentBootID(), liveAgentInvocation, deferred...)
 	if err != nil {
 		return operation.ReconcileReport{}, err
 	}
@@ -158,7 +158,7 @@ func AuditStartup(store operation.Store, now time.Time) (operation.ReconcileRepo
 			}
 		}
 	}
-	if err := failAcceptedButNotStarted(store, now); err != nil {
+	if err := failAcceptedButNotStarted(store, now, deferred...); err != nil {
 		return operation.ReconcileReport{}, err
 	}
 	return report, nil
@@ -1462,13 +1462,16 @@ func liveAgentInvocation(invocation operation.InvocationRecord) bool {
 	return process.Signal(syscall.Signal(0)) == nil
 }
 
-func failAcceptedButNotStarted(store operation.Store, now time.Time) error {
+func failAcceptedButNotStarted(store operation.Store, now time.Time, deferred ...string) error {
 	ids, err := store.OperationIDs()
 	if err != nil {
 		return err
 	}
 	var cleanupErrors error
 	for _, id := range ids {
+		if slices.Contains(deferred, id) {
+			continue
+		}
 		record, err := store.Read(id)
 		if err != nil {
 			return err
