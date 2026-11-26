@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -45,14 +46,31 @@ var hostedGoTargets = []string{
 	"./internal/vmtest/testdata/service-security",
 }
 
-func sharedGoInputs(base string) (map[string]bool, error) {
+type vmInputs struct {
+	goFiles     map[string]bool
+	linkTargets map[string]bool
+}
+
+func (in vmInputs) hasLinkTarget(name string) bool {
+	for ; name != "."; name = path.Dir(name) {
+		if in.linkTargets[name] {
+			return true
+		}
+	}
+	return in.linkTargets["."]
+}
+
+func sharedVMInputs(base string) (vmInputs, error) {
+	if base == "" {
+		return vmInputs{}, fmt.Errorf("--base is required to reduce VM coverage")
+	}
 	module, err := exec.Command("go", "env", "GOMOD").Output()
 	if err != nil {
-		return nil, fmt.Errorf("find Go module: %w", err)
+		return vmInputs{}, fmt.Errorf("find Go module: %w", err)
 	}
 	modFile := strings.TrimSuffix(string(module), "\n")
 	if filepath.Base(modFile) != "go.mod" {
-		return nil, fmt.Errorf("cannot find go.mod")
+		return vmInputs{}, fmt.Errorf("cannot find go.mod")
 	}
 	targets := slices.Clone(hostedGoTargets)
 	for _, g := range groups {
@@ -60,24 +78,22 @@ func sharedGoInputs(base string) (map[string]bool, error) {
 			targets = append(targets, g.Package)
 		}
 	}
-	return goInputsForTrees(filepath.Dir(modFile), base, targets)
+	return vmInputsForTrees(filepath.Dir(modFile), base, targets)
 }
 
-func goInputsForTrees(repo, base string, targets []string) (map[string]bool, error) {
-	inputs := map[string]bool{}
-	if err := addGoInputs(inputs, repo, targets); err != nil {
-		return nil, fmt.Errorf("candidate tree: %w", err)
-	}
-	if base == "" {
-		return inputs, nil
+func vmInputsForTrees(repo, base string, targets []string) (vmInputs, error) {
+	inputs := vmInputs{goFiles: map[string]bool{}, linkTargets: map[string]bool{}}
+	if err := inputs.addTree(repo, repo, "", targets); err != nil {
+		return vmInputs{}, fmt.Errorf("candidate tree: %w", err)
 	}
 
 	snapshot, err := os.MkdirTemp("", "katl-vm-inputs-")
 	if err != nil {
-		return nil, err
+		return vmInputs{}, err
 	}
 	defer os.RemoveAll(snapshot)
 	tree := filepath.Join(snapshot, "tree")
+	index := filepath.Join(snapshot, "index")
 	// Use a private index so deleted files can be inspected without changing
 	// the checkout or applying archive export-ignore rules to build inputs.
 	for _, args := range [][]string{
@@ -86,15 +102,110 @@ func goInputsForTrees(repo, base string, targets []string) (map[string]bool, err
 	} {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = repo
-		cmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+filepath.Join(snapshot, "index"))
+		cmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+index)
 		if output, err := cmd.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("materialize tested base: %w: %s", err, strings.TrimSpace(string(output)))
+			return vmInputs{}, fmt.Errorf("materialize tested base: %w: %s", err, strings.TrimSpace(string(output)))
 		}
 	}
-	if err := addGoInputs(inputs, tree, targets); err != nil {
-		return nil, fmt.Errorf("tested base: %w", err)
+	if err := inputs.addTree(repo, tree, index, targets); err != nil {
+		return vmInputs{}, fmt.Errorf("tested base: %w", err)
 	}
 	return inputs, nil
+}
+
+func (in vmInputs) addTree(repo, tree, index string, targets []string) error {
+	goFiles := map[string]bool{}
+	if err := addGoInputs(goFiles, tree, targets); err != nil {
+		return err
+	}
+	for name := range goFiles {
+		in.goFiles[name] = true
+	}
+
+	cmd := exec.Command("git", "ls-files", "--stage", "-z")
+	cmd.Dir = repo
+	if index != "" {
+		cmd.Env = append(os.Environ(), "GIT_INDEX_FILE="+index)
+	}
+	output, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("list tracked input symlinks: %w", err)
+	}
+	links := map[string]bool{}
+	var pending []string
+	for entry := range strings.SplitSeq(string(output), "\x00") {
+		if !strings.HasPrefix(entry, "120000 ") {
+			continue
+		}
+		_, name, _ := strings.Cut(entry, "\t")
+		links[name] = true
+		// Unmapped non-doc paths may also be VM inputs. A whole producer
+		// directory can be a link, so include those sources conservatively.
+		if !documentationPath(name) || sharedVMPath(name) || goFiles[name] {
+			pending = append(pending, name)
+		}
+	}
+
+	// A link to a directory also makes links within that directory relevant.
+	for i := 0; i < len(pending); i++ {
+		name := pending[i]
+		target, err := in.resolveInputLink(repo, tree, name, links)
+		if err != nil {
+			return err
+		}
+		if target == "" {
+			continue
+		}
+		in.linkTargets[target] = true
+		for link := range links {
+			if (target == "." || strings.HasPrefix(link, target+"/")) && !slices.Contains(pending, link) {
+				pending = append(pending, link)
+			}
+		}
+	}
+	return nil
+}
+
+func (in vmInputs) resolveInputLink(repo, tree, name string, links map[string]bool) (string, error) {
+	// Resolve each component so an intermediate link remains an input even
+	// when its final target is elsewhere. Guest-absolute links have no
+	// repository target, unless they name a path under the checkout.
+	dir, rest := path.Dir(name), path.Base(name)
+	for followed := 0; rest != ""; {
+		part, remaining, _ := strings.Cut(rest, "/")
+		rest = remaining
+		if part == "" || part == "." {
+			continue
+		}
+		if part == ".." && dir == "." {
+			return "", nil
+		}
+		candidate := path.Join(dir, part)
+		if !links[candidate] {
+			dir = candidate
+			continue
+		}
+		followed++
+		if followed > 255 {
+			return "", fmt.Errorf("too many symlink traversals from %s", name)
+		}
+		if candidate != name {
+			in.linkTargets[candidate] = true
+		}
+		target, err := os.Readlink(filepath.Join(tree, candidate))
+		if err != nil {
+			return "", err
+		}
+		if filepath.IsAbs(target) {
+			target, err = filepath.Rel(repo, target)
+			if err != nil || !filepath.IsLocal(target) {
+				return "", nil
+			}
+			dir = "."
+		}
+		rest = target + "/" + rest
+	}
+	return dir, nil
 }
 
 func addGoInputs(inputs map[string]bool, repo string, targets []string) error {

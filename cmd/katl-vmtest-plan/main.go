@@ -66,7 +66,7 @@ func run(args []string, input io.Reader, output io.Writer) error {
 	regression := flags.Bool("regression", false, "with --ci, use both regression flavours when VM suites are selected")
 	production := flags.String("production", "off", "with --ci, select production flavours: off, non-prose, or always")
 	vmModeFlag := flags.String("vm-mode", string(affectedVMs), "with --ci, select affected, full, merge-group, always, or off")
-	base := flags.String("base", "", "tested base revision for checking shared VM inputs in both trees")
+	base := flags.String("base", "", "tested base revision required for reduced VM coverage")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -102,8 +102,8 @@ func run(args []string, input io.Reader, output io.Writer) error {
 				return fmt.Errorf("changed path must be repository-relative: %q", name)
 			}
 		}
-		decision, shadow := planVMs(paths, mode, func() (map[string]bool, error) {
-			return sharedGoInputs(*base)
+		decision, shadow := planVMs(paths, mode, func() (vmInputs, error) {
+			return sharedVMInputs(*base)
 		})
 		if *ci {
 			plan := planCI(paths, *regression || mode == alwaysVMs, decision, shadow)

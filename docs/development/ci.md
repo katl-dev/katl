@@ -86,9 +86,10 @@ commit for a pull request or the group head for a merge group. It includes both
 paths of a rename, so moving a file into documentation still accounts for the
 removed input. Only explicitly mapped scenario fixtures can narrow the suite.
 Shared image, harness, and packaging inputs take precedence over fixture and
-documentation rules. Go build and test dependencies and their embedded files
-are resolved in both trees. An unmapped non-documentation path or an inventory
-failure selects the full suite.
+documentation rules. The planner resolves Go build and test dependencies,
+embedded files, and VM input symlink targets in both trees. A missing base,
+an unmapped non-documentation path, or an inventory failure selects the full
+suite.
 
 The **Plan** summary records the suites and the selection reason. While
 `selectAffectedMergeGroupVMs` in `cmd/katl-vmtest-plan/vm_selection.go` is
@@ -96,13 +97,18 @@ false, full merge-group runs also publish `vm-shadow` with the affected suites
 and estimated runner-minutes saved. The estimate sums the measured durations
 of omitted tests across both flavours.
 
-Before enabling affected selection on merge groups, collect shadow runs for
-representative changes to every narrow rule. For each rule, seed a regression
-in its mapped input on a test branch and confirm a suite reported by the
-shadow plan catches it in the full run. Include a group with changes to two
-different rules and confirm its shadow lists both sets of suites. Record the
-run links, selected suites, failure evidence and estimated savings in the
-change that enables the switch.
+Before enabling affected selection on merge groups, collect at least 20 full
+merge-group runs targeting main over at least three days, each with published
+`vm-shadow` output. Every VM suite failure must occur in a suite selected by
+the shadow plan. If an omitted suite fails, fix the mapping and restart the
+count.
+
+Also collect shadow runs for representative changes to every narrow rule.
+For each rule, seed a regression in its mapped input on a test branch and
+confirm that a suite in the shadow plan catches it in the full run. Include
+a group with changes to two different rules and confirm its shadow lists
+both sets of suites. Record the run links, selected suites, failure evidence
+and estimated savings in the change that enables the switch.
 
 The weekly schedule and manual dispatch both force driver qualification for
 both flavours.

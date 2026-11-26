@@ -16,7 +16,7 @@ const (
 	workloadFixture = "internal/vmtest/scenarios/testdata/bootstrap/cross-node-workload.yaml"
 )
 
-func noSharedGoInputs() (map[string]bool, error) { return nil, nil }
+func noSharedInputs() (vmInputs, error) { return vmInputs{}, nil }
 
 func TestAffectedSelection(t *testing.T) {
 	for _, tc := range []struct {
@@ -39,7 +39,7 @@ func TestAffectedSelection(t *testing.T) {
 		{"shared input overrides a rule", "shared VM input", []string{configFixture, "scripts/vmtest-run"}, allNames()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			selected, shadow := planVMs(tc.paths, affectedVMs, noSharedGoInputs)
+			selected, shadow := planVMs(tc.paths, affectedVMs, noSharedInputs)
 			got := selected.summary()
 			slices.Sort(got.Suites)
 			slices.Sort(tc.want)
@@ -51,8 +51,8 @@ func TestAffectedSelection(t *testing.T) {
 }
 
 func TestUnavailableInventory(t *testing.T) {
-	selection, _ := planVMs([]string{"docs/change.md"}, affectedVMs, func() (map[string]bool, error) {
-		return nil, errors.New("go list failed")
+	selection, _ := planVMs([]string{"docs/change.md"}, affectedVMs, func() (vmInputs, error) {
+		return vmInputs{}, errors.New("go list failed")
 	})
 	if len(selection.groups) != len(allNames()) || !strings.Contains(selection.reason, "go list failed") {
 		t.Fatalf("selection = %+v, want full plan with inventory error", selection.summary())
@@ -60,21 +60,33 @@ func TestUnavailableInventory(t *testing.T) {
 }
 
 func TestVMPlanModes(t *testing.T) {
+	base := testBase(t)
+	t.Setenv("GITHUB_EVENT_NAME", "push")
+	t.Setenv("GITHUB_REF", "refs/heads/release/test")
+	configTests := map[string][]string{
+		"./internal/vmtest": {"TestInstalledRuntimeConfigApplyModesSmoke", "TestInstalledRuntimeServiceSecuritySmoke"},
+	}
+	clusterTests := map[string][]string{
+		"./internal/vmtest/scenarios": {"TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke", "TestExternalWorkerJoin", "TestWorkerReaddress"},
+	}
+	both := []string{"standard", "lts"}
 	for _, tc := range []struct {
 		name, mode, input string
 		wantVMs           []string
 		wantGroups        []string
+		wantTests         map[string][]string
 		shadow            bool
 	}{
-		{"labelled main PR", "affected", configFixture, []string{"standard", "lts"}, []string{"config"}, false},
-		{"release PR", "full", configFixture, []string{"standard", "lts"}, allNames(), false},
-		{"merge group", "merge-group", configFixture, []string{"standard", "lts"}, allNames(), true},
-		{"merge group docs", "merge-group", "extensions/bird/README.md", nil, nil, false},
-		{"release PR docs", "full", "docs/releases/next.md", nil, nil, false},
-		{"scheduled or dispatched run", "always", "README.md", []string{"standard", "lts"}, allNames(), false},
+		{"labelled main PR", "affected", configFixture, both, []string{"config"}, configTests, false},
+		{"labelled main PR cluster fixture", "affected", workloadFixture, both, []string{"two-node", "worker-join", "readdress"}, clusterTests, false},
+		{"release PR", "full", configFixture, both, allNames(), fullMatrixTests(), false},
+		{"merge group", "merge-group", configFixture, both, allNames(), fullMatrixTests(), true},
+		{"merge group docs", "merge-group", "extensions/bird/README.md", nil, nil, nil, false},
+		{"release PR docs", "full", "docs/releases/next.md", nil, nil, nil, false},
+		{"scheduled or dispatched run", "always", "README.md", both, allNames(), fullMatrixTests(), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			args := []string{"--ci", "--vm-mode", tc.mode}
+			args := []string{"--ci", "--vm-mode", tc.mode, "--base", base}
 			if tc.mode != "always" {
 				args = append(args, "--regression")
 			}
@@ -95,6 +107,7 @@ func TestVMPlanModes(t *testing.T) {
 			if plan.VMFlavours == nil || (len(plan.Groups) == 0) != (len(tc.wantVMs) == 0) {
 				t.Fatalf("hosted outer and scenario matrices disagree: %s", &output)
 			}
+			assertMatrixTests(t, plan.Groups, tc.wantTests)
 			if tc.shadow && !slices.Equal(plan.VMShadow.Suites, []string{"config"}) {
 				t.Fatalf("shadow suites = %v, want config", plan.VMShadow.Suites)
 			}
@@ -125,14 +138,15 @@ func TestMergeGroupShadow(t *testing.T) {
 
 	diff := gitIn(t, repo, "diff", "--name-only", "--no-renames", "-z", base, "HEAD")
 	paths := strings.Split(strings.TrimSuffix(diff, "\x00"), "\x00")
-	actual, shadow := planVMs(paths, mergeGroupVMs, noSharedGoInputs)
+	actual, shadow := planVMs(paths, mergeGroupVMs, noSharedInputs)
 	plan := planCI(paths, true, actual, shadow)
 	want := []string{"two-node", "worker-join", "readdress", "config"}
 	if plan.VMShadow == nil || !slices.Equal(plan.VMShadow.Suites, want) || len(plan.VMSelection.Suites) != len(allNames()) {
 		t.Fatalf("plan = %+v, shadow = %+v, want all suites with shadow %v", plan.VMSelection, plan.VMShadow, want)
 	}
-	// Two flavours omit 1,107 seconds each across the remaining suites.
-	if want := float64(2214) / 60; plan.VMShadow.RunnerMinutesSaved != want {
+	// Two flavours omit 1,297 seconds each across the remaining suites,
+	// including the 190-second mTLS enablement suite.
+	if want := float64(2594) / 60; plan.VMShadow.RunnerMinutesSaved != want {
 		t.Fatalf("savings = %g runner-minutes, want %g", plan.VMShadow.RunnerMinutesSaved, want)
 	}
 }
@@ -152,7 +166,7 @@ func TestCodeRenamedToDocs(t *testing.T) {
 
 	diff := gitIn(t, repo, "diff", "--name-only", "--no-renames", "-z", "HEAD^", "HEAD")
 	paths := strings.Split(strings.TrimSuffix(diff, "\x00"), "\x00")
-	selection, _ := planVMs(paths, affectedVMs, noSharedGoInputs)
+	selection, _ := planVMs(paths, affectedVMs, noSharedInputs)
 	if len(selection.groups) != len(allNames()) || !slices.Equal(selection.paths, []string{source}) {
 		t.Fatalf("selection = %+v, want full plan because %s was deleted", selection.summary(), source)
 	}

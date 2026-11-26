@@ -12,11 +12,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func testBase(t *testing.T) string {
+	t.Helper()
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	return "HEAD"
+}
+
 func allNames() []string {
 	return []string{"boot", "install", "storage", "volume-binding", "config", "management", "enable-mtls", "update", "two-node", "worker-join", "readdress", "three-node-install"}
 }
 
 func TestPlan(t *testing.T) {
+	base := testBase(t)
 	for _, tc := range []struct {
 		name  string
 		args  []string
@@ -24,8 +32,8 @@ func TestPlan(t *testing.T) {
 		want  []string
 	}{
 		{"full by default", nil, "", allLanes},
-		{"empty diff", []string{"--changed"}, "", []string{}},
-		{"docs with spaces", []string{"--changed"}, "docs/design notes.md\x00", []string{}},
+		{"empty diff", []string{"--changed", "--base", base}, "", []string{}},
+		{"docs with spaces", []string{"--changed", "--base", base}, "docs/design notes.md\x00", []string{}},
 		{"newline in unknown path", []string{"--changed"}, "source\nname\x00", allLanes},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -105,7 +113,14 @@ func testCoverage(t *testing.T, args []string, input string) {
 	if len(args) != 0 {
 		plan.Include = plan.Groups
 	}
-	want := map[string][]string{
+	if len(plan.Include) != len(lanes) {
+		t.Fatalf("expected %d VM lanes, got %s", len(lanes), &output)
+	}
+	assertMatrixTests(t, plan.Include, fullMatrixTests())
+}
+
+func fullMatrixTests() map[string][]string {
+	return map[string][]string{
 		"./internal/vmtest/scenarios": {
 			"TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke",
 			"TestExternalWorkerJoin",
@@ -128,13 +143,14 @@ func testCoverage(t *testing.T, args []string, input string) {
 			"TestInstalledRuntimeManagementRotationSmoke",
 		},
 	}
-	if len(plan.Include) != len(lanes) {
-		t.Fatalf("expected %d VM lanes, got %s", len(lanes), &output)
-	}
+}
+
+func assertMatrixTests(t *testing.T, matrix []group, want map[string][]string) {
+	t.Helper()
 	// A test dropped from every lane or run by two lanes must fail, so collect
 	// across lanes without deduplicating.
 	got := map[string][]string{}
-	for _, lane := range plan.Include {
+	for _, lane := range matrix {
 		got[lane.Package] = append(got[lane.Package], strings.Split(lane.Tests, "|")...)
 	}
 	for pkg, expected := range want {
@@ -182,24 +198,10 @@ func TestBatchGroupsUsesLanes(t *testing.T) {
 	}
 }
 
-func TestCIScenarios(t *testing.T) {
+func TestCIPlan(t *testing.T) {
+	base := testBase(t)
 	t.Setenv("GITHUB_EVENT_NAME", "push")
 	t.Setenv("GITHUB_REF", "refs/heads/release/test")
-	var output bytes.Buffer
-	if err := run([]string{"--ci"}, strings.NewReader(configFixture+"\x00"), &output); err != nil {
-		t.Fatal(err)
-	}
-	var plan ciPlan
-	if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
-		t.Fatal(err)
-	}
-	want := []group{{Name: "config", Package: "./internal/vmtest", Tests: "TestInstalledRuntimeConfigApplyModesSmoke|TestInstalledRuntimeServiceSecuritySmoke"}}
-	if !slices.Equal(plan.Groups, want) {
-		t.Fatalf("scenarios = %v, want %v", plan.Groups, want)
-	}
-}
-
-func TestCIVMFlavours(t *testing.T) {
 	both := []string{"standard", "lts"}
 	for _, tc := range []struct {
 		name, paths string
@@ -259,12 +261,22 @@ func TestCIVMFlavours(t *testing.T) {
 		{name: "renamed module", paths: "docs/moved.go\x00internal/kernelmodule/old.go", vms: both},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var paths []string
-			if tc.paths != "" {
-				paths = strings.Split(tc.paths, "\x00")
+			input := tc.paths
+			if input != "" {
+				input += "\x00"
 			}
-			decision, shadow := planVMs(paths, affectedVMs, func() (map[string]bool, error) { return nil, nil })
-			got := planCI(paths, tc.regression, decision, shadow)
+			args := []string{"--ci", "--base", base}
+			if tc.regression {
+				args = append(args, "--regression")
+			}
+			var output bytes.Buffer
+			if err := run(args, strings.NewReader(input), &output); err != nil {
+				t.Fatal(err)
+			}
+			var got ciPlan
+			if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+				t.Fatal(err)
+			}
 			if !slices.Equal(got.VMFlavours, tc.vms) || got.VMFlavours == nil {
 				t.Fatalf("VM flavours = %v, want %v", got.VMFlavours, tc.vms)
 			}

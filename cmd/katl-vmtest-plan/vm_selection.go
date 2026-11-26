@@ -52,7 +52,7 @@ func (s vmSelection) summary() vmSelectionSummary {
 	return vmSelectionSummary{Suites: suites, Reason: s.reason, Paths: s.paths}
 }
 
-func planVMs(paths []string, mode vmMode, loadInputs func() (map[string]bool, error)) (vmSelection, *vmSelection) {
+func planVMs(paths []string, mode vmMode, loadInputs func() (vmInputs, error)) (vmSelection, *vmSelection) {
 	switch mode {
 	case alwaysVMs:
 		return vmSelection{groups: groups, reason: "scheduled or manual run"}, nil
@@ -77,13 +77,9 @@ func planVMs(paths []string, mode vmMode, loadInputs func() (map[string]bool, er
 	return affected, nil
 }
 
-func affectedSelection(paths []string, loadInputs func() (map[string]bool, error)) vmSelection {
-	if len(paths) == 0 {
-		return vmSelection{reason: "empty diff"}
-	}
-
+func affectedSelection(paths []string, loadInputs func() (vmInputs, error)) vmSelection {
 	// A path that already requires the full plan makes inventory discovery
-	// unnecessary. For a possible reduction, check the Go inputs before
+	// unnecessary. For a possible reduction, check the input inventory before
 	// honoring either the documentation skip or a fixture rule.
 	for _, name := range paths {
 		if sharedVMPath(name) {
@@ -97,13 +93,19 @@ func affectedSelection(paths []string, loadInputs func() (map[string]bool, error
 	}
 	inputs, err := loadInputs()
 	if err != nil {
-		return vmSelection{groups: groups, reason: "could not inventory shared Go inputs: " + err.Error()}
+		return vmSelection{groups: groups, reason: "could not inventory shared VM inputs: " + err.Error()}
+	}
+	if len(paths) == 0 {
+		return vmSelection{reason: "empty diff"}
 	}
 	selected := map[string]bool{}
 	var mappedPaths []string
 	for _, name := range paths {
-		if inputs[name] {
+		if inputs.goFiles[name] {
 			return vmSelection{groups, "shared Go build or test input", []string{name}}
+		}
+		if inputs.hasLinkTarget(name) {
+			return vmSelection{groups, "VM input symlink target", []string{name}}
 		}
 		if suites, mapped := fixtureSuites[name]; mapped {
 			mappedPaths = append(mappedPaths, name)
