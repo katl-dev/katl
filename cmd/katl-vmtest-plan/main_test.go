@@ -137,6 +137,7 @@ func fullMatrixTests() map[string][]string {
 		"./internal/vmtest": {
 			"TestFirstInstallTargetDiskBootSmoke",
 			"TestFirstInstallTargetDiskLocalHandoffSmoke",
+			"TestInstalledRuntimeRequiredLinkHealth",
 			"TestInstalledRuntimeConfigApplyModesSmoke",
 			"TestInstalledRuntimeServiceSecuritySmoke",
 			"TestInstalledRuntimeCarrierRecovery",

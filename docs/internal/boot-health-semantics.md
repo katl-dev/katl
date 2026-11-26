@@ -55,10 +55,15 @@ rebinds a replaced volume. Boot health therefore orders after the unit with
 while the unit is failed in the running boot, and the volume status names each
 unmounted volume, the cause and the remedy.
 
-A generation already recorded as `good` and `healthy` does not repeat network
-qualification during an ordinary boot. This preserves a known-good local
-fallback during a transient network outage; required-service dependencies still
-apply on every boot.
+Required-service dependencies apply on every boot. During an ordinary boot of a
+known-good generation, the boot service can complete while a management link is
+down, preserving the generation as a local fallback. After boot health settles,
+`katlctl node status` checks current management readiness using the same
+networkd criteria as trial boot health. It reports `unhealthy` and names an offline
+required link when carrier or address loss makes the link unavailable. The next
+status read after the network recovers reports the node healthy if the other health
+checks pass. These observations leave the boot selection and generation records
+intact, so operators can still apply a repair or request a reboot.
 
 For generation 0, "machine identity available" means PID 1 received the
 install-generated value through `systemd.machine_id=`, `/etc/machine-id`

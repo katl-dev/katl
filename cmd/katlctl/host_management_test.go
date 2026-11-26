@@ -123,6 +123,28 @@ func TestHostStatusReportsSelectedFallbackAndBootFailure(t *testing.T) {
 	}
 }
 
+func TestHostStatusReportsLinkLossOnActiveGeneration(t *testing.T) {
+	fake := healthyHostClient("machine-a", "agent-a", "generation-1")
+	fake.nodeStatus.SelectedGenerationId = "generation-0"
+	fake.nodeStatus.BootTargetGenerationId = "generation-1"
+	fake.nodeStatus.BootHealthState = "unhealthy"
+	fake.nodeStatus.BootHealthDiagnostic = "required links are not online: enp1s0. Check the cable"
+	installKatlcDial(t, nil, fake)
+
+	var stdout, stderr bytes.Buffer
+	if err := run(t.Context(), []string{"node", "status", "node-a", "--endpoint", "node-a.test:9443", "--output", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+	}
+	var report hostStatusReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if fake.generationRequest.GetGenerationId() != "generation-1" || report.Generation != "generation-1" ||
+		report.Health != "unhealthy" || !strings.Contains(report.BootHealthDiagnostic, "enp1s0") {
+		t.Fatalf("status = %+v after looking up %s, want an unhealthy generation-1 with the link named", report, fake.generationRequest.GetGenerationId())
+	}
+}
+
 func TestHostStatusReportsGenerationMismatchWithUnknownHealth(t *testing.T) {
 	fake := healthyHostClient("machine-a", "agent-a", "generation-0")
 	fake.nodeStatus.CurrentGenerationId = "generation-1"

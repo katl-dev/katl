@@ -1,8 +1,10 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -40,6 +42,8 @@ const (
 		"Id=katl-boot-health.service\nLoadState=not-found\nActiveState=inactive\nJob=\n\n" +
 		"Id=katl-boot-complete.target\nLoadState=not-found\nActiveState=inactive\nJob=\n"
 )
+
+const readyManagementLink = `{"Interfaces":[{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable"}]}`
 
 // healthUnit fakes systemd's view of katl-boot-health.service.
 type healthUnit struct{ properties atomic.Value }
@@ -93,7 +97,96 @@ func knownGoodNode(t *testing.T, unitProperties string) (*testServer, *healthUni
 	unit := &healthUnit{}
 	unit.set(unitProperties)
 	server.RunBootHealthStatus = unit.run
+	server.readManagementNetwork = func(context.Context) ([]byte, error) {
+		return []byte(readyManagementLink), nil
+	}
 	return server, unit
+}
+
+func TestNodeStatusTracksRequiredManagementLink(t *testing.T) {
+	for _, tc := range []struct {
+		name, operationalState string
+	}{
+		{name: "carrier lost", operationalState: "no-carrier"},
+		{name: "address lost", operationalState: "carrier"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _ := knownGoodNode(t, healthSucceeded)
+			writeRebootEFIDefault(t, server.Server)
+			efi := rootedPath(server.Root, efiVarsPath)
+			writeTestEFIVariable(t, efi, "LoaderEntryOneShot", "katl-generation-0.conf")
+			server.SetBootDefault = func(_ context.Context, _, entry string) error {
+				writeTestEFIVariable(t, efi, "LoaderEntryDefault", entry)
+				return nil
+			}
+			server.SetBootOneshot = func(_ context.Context, _, entry string) error {
+				writeTestEFIVariable(t, efi, "LoaderEntryOneShot", entry)
+				return nil
+			}
+			server.RunReboot = func(context.Context, []string, func(int)) ToolResult {
+				t.Fatal("a management link outage requested a reboot")
+				return ToolResult{}
+			}
+			files := []string{
+				filepath.Join(server.Root, "var/lib/katl/boot/selection.json"),
+				filepath.Join(server.Root, "var/lib/katl/generations/generation-0/status.json"),
+				filepath.Join(efi, "LoaderEntryDefault"+loaderVarGUID),
+				filepath.Join(efi, "LoaderEntryOneShot"+loaderVarGUID),
+			}
+			type snapshot struct {
+				data []byte
+				info os.FileInfo
+			}
+			readFiles := func() []snapshot {
+				t.Helper()
+				var snapshots []snapshot
+				for _, path := range files {
+					data, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					info, err := os.Stat(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					snapshots = append(snapshots, snapshot{data, info})
+				}
+				return snapshots
+			}
+			before := readFiles()
+
+			// A second routable link must not hide the required link's outage.
+			network := fmt.Sprintf(`{"Interfaces":[
+				{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"offline","OperationalState":%q},
+				{"Name":"management1","NetworkFile":"20-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable"}
+			]}`, tc.operationalState)
+			server.readManagementNetwork = func(context.Context) ([]byte, error) { return []byte(network), nil }
+			for _, want := range []string{nodeBootHealthUnhealthy, nodeBootHealthHealthy} {
+				report, err := server.GetNodeStatus(t.Context(), &agentapi.GetNodeStatusRequest{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				diagnostic := report.GetBootHealthDiagnostic()
+				if report.GetBootHealthState() != want {
+					t.Fatalf("boot health = %s (%s), want %s", report.GetBootHealthState(), diagnostic, want)
+				}
+				if want == nodeBootHealthUnhealthy && (!strings.Contains(diagnostic, "management0") ||
+					!strings.Contains(diagnostic, "Check the cable") || !strings.Contains(diagnostic, "katlctl node status")) {
+					t.Fatalf("boot health diagnostic = %q, want link and repair guidance", diagnostic)
+				}
+				if want == nodeBootHealthHealthy && diagnostic != "" {
+					t.Fatalf("recovered boot health diagnostic = %q, want empty", diagnostic)
+				}
+				for i, after := range readFiles() {
+					if !bytes.Equal(before[i].data, after.data) || !os.SameFile(before[i].info, after.info) ||
+						!before[i].info.ModTime().Equal(after.info.ModTime()) {
+						t.Fatalf("%s changed while reporting boot health %s", files[i], want)
+					}
+				}
+				network = readyManagementLink
+			}
+		})
+	}
 }
 
 func TestNodeStatusBootHealthFollowsCurrentBoot(t *testing.T) {

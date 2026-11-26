@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/managementnetwork"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -150,6 +151,21 @@ func (s *Server) nodeBootHealth(ctx context.Context) nodeBootHealth {
 	if volumesFailed || run == bootHealthRunFailed || run == bootHealthRunSkipped {
 		health.State = nodeBootHealthFailed
 		health.Diagnostic = strings.Join(diagnostics, ". ")
+	}
+	if run == bootHealthRunSucceeded && health.State == nodeBootHealthHealthy {
+		// A live observation reports reachability without changing boot selection.
+		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		ready, reason, err := managementnetwork.Ready(probeCtx, s.readManagementNetwork)
+		switch {
+		case err != nil:
+			health.State = nodeBootHealthUnknown
+			health.Diagnostic = "cannot read management link state from systemd-networkd: " + err.Error()
+		case !ready:
+			health.State = nodeBootHealthUnhealthy
+			health.Diagnostic = "management network unavailable: " + reason +
+				". Check the cable, switch port and address configuration, then rerun 'katlctl node status <node>'"
+		}
 	}
 	return health
 }

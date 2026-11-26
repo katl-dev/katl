@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/managementnetwork"
 )
 
 func main() {
@@ -119,50 +119,6 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	return nil
 }
 
-type networkctlState struct {
-	Interfaces []networkctlLink `json:"Interfaces"`
-}
-
-type networkctlLink struct {
-	Name              string  `json:"Name"`
-	OperationalState  string  `json:"OperationalState"`
-	OnlineState       *string `json:"OnlineState"`
-	NetworkFile       string  `json:"NetworkFile"`
-	RequiredForOnline bool    `json:"RequiredForOnline"`
-}
-
-func managementNetworkReady(data []byte) (bool, string, error) {
-	var state networkctlState
-	if err := json.Unmarshal(data, &state); err != nil {
-		return false, "", fmt.Errorf("decode networkctl state: %w", err)
-	}
-
-	var required, offline []string
-	routable := false
-	for _, link := range state.Interfaces {
-		if link.NetworkFile == "" || !link.RequiredForOnline {
-			continue
-		}
-		required = append(required, link.Name)
-		if link.OnlineState == nil || *link.OnlineState != "online" {
-			offline = append(offline, link.Name)
-		}
-		if link.OperationalState == "routable" {
-			routable = true
-		}
-	}
-	if len(required) == 0 {
-		return false, "no systemd-networkd link is required for online", nil
-	}
-	if len(offline) > 0 {
-		return false, "required links are not online: " + strings.Join(offline, ", "), nil
-	}
-	if !routable {
-		return false, "no required link is routable", nil
-	}
-	return true, "", nil
-}
-
 type managementNetworkTiming struct {
 	trialTimeout time.Duration
 	pollInterval time.Duration
@@ -188,15 +144,11 @@ func (timing managementNetworkTiming) wait(ctx context.Context) error {
 	lastReason := "network state has not been observed"
 	for healthCtx.Err() == nil {
 		// A completed online observation wins even if the read's context expired.
-		data, err := readNetworkctlState(healthCtx)
+		ready, reason, err := managementnetwork.Ready(healthCtx, readNetworkctlState)
 		if err != nil {
 			if healthCtx.Err() != nil {
 				break
 			}
-			return err
-		}
-		ready, reason, err := managementNetworkReady(data)
-		if err != nil {
 			return err
 		}
 		if ready {
@@ -217,14 +169,7 @@ func (timing managementNetworkTiming) wait(ctx context.Context) error {
 	return fmt.Errorf("configured management network is not ready after %g seconds: %s", timing.trialTimeout.Seconds(), lastReason)
 }
 
-var readNetworkctlState = func(ctx context.Context) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "networkctl", "list", "--json=short", "--no-pager")
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return nil, fmt.Errorf("networkctl list: %w: %s", err, strings.TrimSpace(string(output)))
-	}
-	return output, nil
-}
+var readNetworkctlState = managementnetwork.ReadState
 
 func markConfigApplyBootActive(root, generationID string, now time.Time) error {
 	path, err := generation.ConfigApplyStatusPath(root, generationID)

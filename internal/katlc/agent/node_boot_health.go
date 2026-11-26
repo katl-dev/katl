@@ -8,10 +8,11 @@ import (
 )
 
 const (
-	nodeBootHealthHealthy = "healthy"
-	nodeBootHealthPending = "pending"
-	nodeBootHealthFailed  = "failed"
-	nodeBootHealthUnknown = "unknown"
+	nodeBootHealthHealthy   = "healthy"
+	nodeBootHealthPending   = "pending"
+	nodeBootHealthFailed    = "failed"
+	nodeBootHealthUnhealthy = "unhealthy"
+	nodeBootHealthUnknown   = "unknown"
 )
 
 type nodeBootHealth struct {

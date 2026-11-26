@@ -33,10 +33,11 @@ func (boot verifiedNodeBoot) healthyOn(generationID string) bool {
 
 // Boot health states reported by the node agent for its running boot.
 const (
-	bootHealthHealthy = "healthy"
-	bootHealthPending = "pending"
-	bootHealthFailed  = "failed"
-	bootHealthUnknown = "unknown"
+	bootHealthHealthy   = "healthy"
+	bootHealthPending   = "pending"
+	bootHealthFailed    = "failed"
+	bootHealthUnknown   = "unknown"
+	bootHealthUnhealthy = "unhealthy"
 )
 
 // runningGeneration is the generation the node booted. Active configuration
@@ -185,6 +186,8 @@ func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgen
 			phase("boot-health-pending")
 		case bootHealthUnknown:
 			phase("boot-health-unknown")
+		case bootHealthUnhealthy:
+			phase("boot-health-unhealthy")
 		}
 		observed.Status = status
 		observed.Endpoint = endpoint

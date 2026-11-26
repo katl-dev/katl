@@ -239,6 +239,14 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 			settled: 2,
 		},
 		{
+			name: "reboot waits for management link recovery",
+			observations: []bootObservation{
+				{agentStart: "after", running: "gen-a", health: "unhealthy", diagnostic: "required links are not online: enp1s0", candidate: healthy},
+				{agentStart: "after", running: "gen-a", health: "healthy", candidate: healthy},
+			},
+			settled: 1,
+		},
+		{
 			name: "failed boot of a previously healthy generation",
 			observations: []bootObservation{
 				{agentStart: "before", running: "gen-a", health: "healthy", candidate: healthy},
