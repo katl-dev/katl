@@ -100,52 +100,6 @@ func TestKatlReleaseArtifactDevVersion(t *testing.T) {
 	}
 }
 
-func TestKatlReleaseArtifactNotesFollowReleaseHistory(t *testing.T) {
-	repo := repoRoot(t)
-	gitDir := t.TempDir()
-	runGit(t, gitDir, "init", "--quiet")
-
-	for index, release := range []struct {
-		tag     string
-		subject string
-	}{
-		{tag: "v2026.7.0-dev.4", subject: "release: finish development train"},
-		{tag: "v2026.7.0-alpha.1", subject: "release: publish first alpha"},
-		{tag: "v2026.7.0-beta.1", subject: "release: publish first beta"},
-	} {
-		path := filepath.Join(gitDir, fmt.Sprintf("release-%d", index))
-		if err := os.WriteFile(path, []byte(release.subject+"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		runGit(t, gitDir, "add", filepath.Base(path))
-		runGit(t, gitDir, "commit", "--quiet", "-m", release.subject)
-		runGit(t, gitDir, "tag", release.tag)
-	}
-
-	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.7.0-beta.1")
-	cmd.Dir = gitDir
-	cmd.Env = gittest.Env(os.Environ(), gitDir)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("notes failed: %v\n%s", err, output)
-	}
-	notes := string(output)
-	for _, value := range []string{
-		"experimental beta release for home-lab evaluation",
-		"publish first beta",
-		"v2026.7.0-alpha.1...v2026.7.0-beta.1",
-	} {
-		if !strings.Contains(notes, value) {
-			t.Fatalf("release notes missing %q:\n%s", value, notes)
-		}
-	}
-	for _, value := range []string{"publish first alpha", "finish development train"} {
-		if strings.Contains(notes, value) {
-			t.Fatalf("release notes unexpectedly contain %q:\n%s", value, notes)
-		}
-	}
-}
-
 func TestKatlReleaseArtifactNotes(t *testing.T) {
 	repo := repoRoot(t)
 	gitDir := t.TempDir()
@@ -175,16 +129,18 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 		runGit(t, gitDir, args...)
 		hashes = append(hashes, strings.TrimSpace(runGit(t, gitDir, "rev-parse", "HEAD")))
 		if index == 1 {
-			runGit(t, gitDir, "tag", "v2026.7.0-dev.3")
+			runGit(t, gitDir, "tag", "v2026.6.2")
 			runGit(t, gitDir, "tag", "v1.36.0-katl.99")
 		}
 	}
 	runGit(t, gitDir, "tag", "v2026.7.0-dev.4")
 
+	published := fakeReleaseListing(t, `[{"tag_name":"v2026.6.2","draft":false,"prerelease":false}]`)
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.7.0-dev.4")
 	cmd.Dir = gitDir
 	cmd.Env = append(
 		gittest.Env(environmentWithout("KATL_RELEASE_TARGET"), gitDir),
+		published,
 		"GITHUB_REF_TYPE=branch",
 		"GITHUB_SHA=not-a-commit-in-the-test-repository",
 		"KATL_RELEASE_REPOSITORY_URL=https://github.example/katl-dev/katl",
@@ -205,8 +161,8 @@ func TestKatlReleaseArtifactNotes(t *testing.T) {
 		"## Verify",
 		"[PROVENANCE.md](https://github.example/katl-dev/katl/releases/download/v2026.7.0-dev.4/PROVENANCE.md)",
 		"[SUPPORT.md](https://github.example/katl-dev/katl/releases/download/v2026.7.0-dev.4/SUPPORT.md)",
-		"v2026.7.0-dev.3...v2026.7.0-dev.4",
-		"https://github.example/katl-dev/katl/compare/v2026.7.0-dev.3...v2026.7.0-dev.4",
+		"v2026.6.2...v2026.7.0-dev.4",
+		"https://github.example/katl-dev/katl/compare/v2026.6.2...v2026.7.0-dev.4",
 	} {
 		if !strings.Contains(notes, value) {
 			t.Fatalf("release notes missing %q:\n%s", value, notes)
@@ -240,7 +196,7 @@ func TestKatlReleaseArtifactNotesFromSquashHistory(t *testing.T) {
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.11.5-rc.1")
 	cmd.Dir = gitDir
 	cmd.Env = append(
-		gittest.Env(environmentWithout("KATL_RELEASE_TARGET", "KATL_RELEASE_PREVIOUS_TAG", "KATL_RELEASE_REPOSITORY_URL"), gitDir),
+		gittest.Env(environmentWithout("KATL_RELEASE_TARGET", "KATL_RELEASE_REPOSITORY_URL"), gitDir),
 		"KATL_REPO_ROOT="+gitDir,
 	)
 	output, err := cmd.CombinedOutput()
@@ -271,7 +227,10 @@ func TestKatlReleaseArtifactNotesIncludeVersionedUpgradeGuide(t *testing.T) {
 		t.Fatalf("notes failed: %v\n%s", err, output)
 	}
 	notes := string(output)
-	for _, want := range []string{"## Upgrade paths", "beta.17", "beta.14", "## Verify"} {
+	for _, want := range []string{
+		"## Upgrade paths", "beta.17", "beta.14", "## Verify",
+		"This is an experimental beta release for home-lab evaluation, not a production-supported release.",
+	} {
 		if !strings.Contains(notes, want) {
 			t.Fatalf("release notes missing %q:\n%s", want, notes)
 		}
@@ -842,7 +801,7 @@ func TestKatlReleaseArtifactNotesReleaseNoteTrailers(t *testing.T) {
 	}
 
 	runGit(t, gitDir, "commit", "--quiet", "--allow-empty", "-m", "release: base")
-	runGit(t, gitDir, "tag", "v2026.7.0-dev.3")
+	runGit(t, gitDir, "tag", "v2026.6.2")
 	hashes := make([]string, len(cases))
 	for index, tc := range cases {
 		path := filepath.Join(t.TempDir(), fmt.Sprintf("message-%d", index))
@@ -854,10 +813,12 @@ func TestKatlReleaseArtifactNotesReleaseNoteTrailers(t *testing.T) {
 	}
 	runGit(t, gitDir, "tag", "v2026.7.0-dev.4")
 
+	published := fakeReleaseListing(t, `[{"tag_name":"v2026.6.2","draft":false,"prerelease":false}]`)
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.7.0-dev.4")
 	cmd.Dir = gitDir
 	cmd.Env = append(
 		gittest.Env(environmentWithout("KATL_RELEASE_TARGET"), gitDir),
+		published,
 		"GITHUB_REF_TYPE=branch",
 		"KATL_RELEASE_REPOSITORY_URL=https://github.example/katl-dev/katl",
 	)
@@ -886,67 +847,95 @@ func TestKatlReleaseArtifactNotesReleaseNoteTrailers(t *testing.T) {
 	}
 }
 
-func TestKatlReleaseArtifactNotesPreviousTag(t *testing.T) {
-	repo := repoRoot(t)
-	gitDir := t.TempDir()
-	runGit(t, gitDir, "init", "--quiet")
+func TestKatlReleaseArtifactNotesSiblingRelease(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet", "--initial-branch=main")
+	runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "Old release")
+	runGit(t, dir, "tag", "v2026.11.4")
+	runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "Already shipped")
+	runGit(t, dir, "switch", "--quiet", "-c", "release/2026.11.5")
+	runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "Package the previous release")
+	runGit(t, dir, "tag", "-a", "v2026.11.5", "-m", "Previous release")
+	runGit(t, dir, "switch", "--quiet", "main")
+	runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "New feature")
+	runGit(t, dir, "tag", "v2026.11.6")
+	runGit(t, dir, "tag", "v2026.11.7")
+	runGit(t, dir, "tag", "v2026.11.8")
 
-	for _, step := range []struct{ subject, tag string }{
-		{"release: published base", "v2026.7.0"},
-		{"area: change before failed tag", ""},
-		{"release: unpublished failed tag", "v2026.7.1"},
-		{"area: change after failed tag", ""},
-	} {
-		runGit(t, gitDir, "commit", "--quiet", "--allow-empty", "-m", step.subject)
-		if step.tag != "" {
-			runGit(t, gitDir, "tag", step.tag)
-		}
+	t.Run("without a pin", func(t *testing.T) {
+		published := fakeReleaseListing(t, `[
+  {"tag_name":"v2026.11.4","draft":false,"prerelease":false},
+  {"tag_name":"v2026.11.7","draft":true,"prerelease":false},
+  {"tag_name":"v2026.11.5","draft":false,"prerelease":false},
+  {"tag_name":"v2026.11.8","draft":false,"prerelease":true},
+  {"tag_name":"v2026.11.10","draft":false,"prerelease":false}
+]`)
+		// v2026.11.6 has no release, and v2026.11.10 has no local tag.
+		assertReleaseNoteSubjects(t, dir, "HEAD", "2026.11.11", []string{"New feature"}, published)
+	})
+
+	t.Run("with a pin", func(t *testing.T) {
+		tools := t.TempDir()
+		writeFakeExecutable(t, tools, "gh", "echo pinned releases do not need the release API >&2\nexit 1\n")
+		writeReleaseScriptFixture(t, dir, "v2026.11.5")
+		runGit(t, dir, "add", productionBaselineFile)
+		runGit(t, dir, "commit", "--quiet", "-m", "New fix")
+		assertReleaseNoteSubjects(t, dir, "HEAD", "2026.11.6", []string{"New fix", "New feature"},
+			"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"))
+	})
+}
+
+func TestKatlReleaseArtifactNotesAfterPromotion(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "Previous release")
+	runGit(t, dir, "tag", "v2026.11.5")
+	runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "Candidate feature")
+	runGit(t, dir, "tag", "v2026.11.6-rc.1")
+	runGit(t, dir, "tag", "v2026.11.6")
+
+	// A checkout that has moved on may now pin the final release.
+	writeReleaseScriptFixture(t, dir, "v2026.11.6")
+	runGit(t, dir, "add", productionBaselineFile)
+	runGit(t, dir, "commit", "--quiet", "-m", "Pin the published final")
+	runGit(t, dir, "tag", "v2026.11.7")
+
+	published := fakeReleaseListing(t, `[
+  {"tag_name":"v2026.11.7","draft":false,"prerelease":false},
+  {"tag_name":"v2026.11.6","draft":false,"prerelease":false},
+  {"tag_name":"v2026.11.5","draft":false,"prerelease":false}
+]`)
+	assertReleaseNoteSubjects(t, dir, "v2026.11.6-rc.1", "2026.11.6-rc.1", []string{"Candidate feature"}, published)
+}
+
+func fakeReleaseListing(t *testing.T, releases string) string {
+	t.Helper()
+	tools := t.TempDir()
+	writeFakeExecutable(t, tools, "gh", "test \"$1\" = api\ncat <<'EOF'\n"+releases+"\nEOF\n")
+	return "PATH=" + tools + string(os.PathListSeparator) + os.Getenv("PATH")
+}
+
+func assertReleaseNoteSubjects(t *testing.T, dir, target, version string, want []string, path string) {
+	t.Helper()
+	cmd := exec.Command(filepath.Join(repoRoot(t), "scripts", "katl-release-artifacts"), "notes", version)
+	cmd.Dir = dir
+	cmd.Env = append(gittest.Env(os.Environ(), dir), "KATL_RELEASE_TARGET="+target, "KATL_REPO_ROOT="+dir, path)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("notes: %v\n%s", err, output)
 	}
 
-	notes := func(env ...string) (string, error) {
-		cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "notes", "2026.7.2")
-		cmd.Dir = gitDir
-		cmd.Env = append(gittest.Env(environmentWithout("KATL_RELEASE_TARGET", "KATL_RELEASE_PREVIOUS_TAG"), gitDir), env...)
-		output, err := cmd.CombinedOutput()
-		return string(output), err
+	changes, _, _ := strings.Cut(string(output), "\n## Verify\n")
+	var subjects []string
+	for _, line := range strings.Split(changes, "\n") {
+		if subject, ok := strings.CutPrefix(line, "- "); ok {
+			subject, _, _ = strings.Cut(subject, " ([`")
+			subjects = append(subjects, subject)
+		}
 	}
-
-	t.Run("published previous release", func(t *testing.T) {
-		out, err := notes("KATL_RELEASE_PREVIOUS_TAG=v2026.7.0")
-		if err != nil {
-			t.Fatalf("notes failed: %v\n%s", err, out)
-		}
-		for _, want := range []string{"change before failed tag", "change after failed tag", "v2026.7.0...v2026.7.2"} {
-			if !strings.Contains(out, want) {
-				t.Fatalf("release notes missing %q:\n%s", want, out)
-			}
-		}
-	})
-
-	t.Run("nearest tag without published release", func(t *testing.T) {
-		out, err := notes()
-		if err != nil {
-			t.Fatalf("notes failed: %v\n%s", err, out)
-		}
-		if strings.Contains(out, "change before failed tag") {
-			t.Fatalf("release notes unexpectedly contain earlier change:\n%s", out)
-		}
-		if !strings.Contains(out, "change after failed tag") {
-			t.Fatalf("release notes missing later change:\n%s", out)
-		}
-	})
-
-	t.Run("previous tag not an ancestor", func(t *testing.T) {
-		runGit(t, gitDir, "branch", "release-line")
-		runGit(t, gitDir, "checkout", "--quiet", "--orphan", "other")
-		runGit(t, gitDir, "commit", "--quiet", "--allow-empty", "-m", "other: unrelated")
-		runGit(t, gitDir, "tag", "v2026.6.0")
-		runGit(t, gitDir, "checkout", "--quiet", "-f", "release-line")
-		out, err := notes("KATL_RELEASE_PREVIOUS_TAG=v2026.6.0")
-		if err == nil || !strings.Contains(out, "not an ancestor") {
-			t.Fatalf("notes err = %v, want ancestor failure:\n%s", err, out)
-		}
-	})
+	if !slices.Equal(subjects, want) {
+		t.Fatalf("subjects = %q, want %q\n%s", subjects, want, output)
+	}
 }
 
 func TestKatlReleaseArtifactVerifyKatlctl(t *testing.T) {
@@ -980,7 +969,8 @@ func TestKatlReleaseArtifactVerifyKatlctl(t *testing.T) {
 
 	run := func(command string) ([]byte, error) {
 		cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), command, version)
-		cmd.Env = append(os.Environ(),
+		cmd.Env = append(
+			os.Environ(),
 			"KATL_REPO_ROOT="+source,
 			"KATL_MKOSI_BUILD_DIR="+buildDir,
 			"KATL_ARCHITECTURE=x86_64",
@@ -1083,55 +1073,6 @@ func TestKatlReleaseArtifactBaselineAtRevision(t *testing.T) {
 			cmd.Env = append(gittest.Env(os.Environ(), dir), "KATL_REPO_ROOT="+dir)
 			if output, err := cmd.CombinedOutput(); err != nil || string(output) != tc.want {
 				t.Fatalf("upgrade-baseline %v = %q, error %v, want %q", tc.args, output, err, tc.want)
-			}
-		})
-	}
-}
-
-func TestKatlReleaseArtifactPreviousPublishedTag(t *testing.T) {
-	script := filepath.Join(repoRoot(t), "scripts", "katl-release-artifacts")
-	dir := t.TempDir()
-	runGit(t, dir, "init", "--quiet")
-	for _, tag := range []string{"v2026.11.0", "v2026.11.1", "v2026.11.2", "v2026.11.3", "v2026.11.4", "v2026.11.5"} {
-		runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", tag)
-		runGit(t, dir, "tag", tag)
-	}
-	runGit(t, dir, "switch", "--quiet", "--detach", "v2026.11.4")
-
-	tools := t.TempDir()
-	writeFakeExecutable(t, tools, "gh", `
-test "$1" = api
-test ! -e "$GH_CALL_LOG"
-touch "$GH_CALL_LOG"
-cat <<'EOF'
-[
-  {"tag_name":"v2026.11.5","draft":false,"prerelease":false},
-  {"tag_name":"v2026.11.4","draft":false,"prerelease":false},
-  {"tag_name":"v2026.11.2","draft":false,"prerelease":true},
-  {"tag_name":"v2026.11.1","draft":true,"prerelease":false},
-  {"tag_name":"v2026.11.0","draft":false,"prerelease":false}
-]
-EOF
-`)
-
-	for _, tc := range []struct {
-		name string
-		args []string
-		want string
-	}{
-		{name: "published", args: []string{"--published", "HEAD", "v2026.11.4"}, want: "v2026.11.0\n"},
-		{name: "offline", args: []string{"HEAD", "v2026.11.4"}, want: "v2026.11.3\n"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			log := filepath.Join(t.TempDir(), "gh-called")
-			cmd := exec.Command(script, append([]string{"previous-tag"}, tc.args...)...)
-			cmd.Dir = dir
-			cmd.Env = append(gittest.Env(os.Environ(), dir), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"), "GH_CALL_LOG="+log)
-			if output, err := cmd.CombinedOutput(); err != nil || string(output) != tc.want {
-				t.Fatalf("previous-tag %v = %q, error %v, want %q", tc.args, output, err, tc.want)
-			}
-			if _, err := os.Stat(log); tc.name == "offline" && !os.IsNotExist(err) {
-				t.Fatalf("offline previous-tag contacted GitHub or could not check the call log: %v", err)
 			}
 		})
 	}

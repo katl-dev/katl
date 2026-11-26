@@ -36,8 +36,10 @@ builds on pull requests are reserved for release series branches.
 The build carries a development version above its upgrade source. The merge
 queue uses `scripts/production-upgrade-baseline.txt`, which the release process
 updates after publication. A pull request into a release series branch uses the
-newest stable tag reachable from its base. Release notes start at the newest
-stable tag reachable from the tested base in either case.
+newest stable tag reachable from its base. The notes renderer uses the earlier
+upgrade baseline pinned at the tested commit when available. Otherwise it starts
+at the highest published stable version below the build version, including
+releases tagged on sibling branches.
 
 ## VM coverage
 
@@ -171,11 +173,10 @@ queues behind or cancels a tag run or a dispatch. It publishes nothing, keeps
 its bundle and assembled artifacts for 7 days instead of 30, and a failed night
 appears as a failed scheduled run.
 Merged revisions are qualified by the merge queue without a second release-artifact build.
-The release workflow starts notes at the newest stable tag reachable from the
-build commit with a published, non-prerelease GitHub release. It excludes the
-tag for the version being built.
+Release builds use the same notes renderer as CI. A candidate and its final
+release share the same version boundary when the renderer selects the baseline.
 Each flavour is built by the reusable `production-build.yml` workflow (inputs `flavour`,
-`version`, `notes-base-tag`, `publication`), and its Production VM qualification starts
+`version`, `publication`), and its Production VM qualification starts
 when that build ends. Releases run regression for both flavours and qualify each
 flavour's assembled production bytes,
 including installation, reboot, upgrade from the pinned baseline, and rollback

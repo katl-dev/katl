@@ -21,9 +21,11 @@ publication under the
    the first file that exists among `docs/releases/VERSION.md`,
    `docs/releases/BASE.md` for a prerelease's final version BASE, and `next.md`. A
    release candidate and its final release therefore render the same
-   guidance from `next.md`. Commit entries start after the newest stable tag
-   reachable from the release commit that has a published, non-prerelease
-   GitHub release. The current release's own tag is excluded.
+   guidance from `next.md`. The notes use the upgrade baseline pinned at the
+   release commit and omit commits reachable from that tag, including when
+   the tag is on a sibling release branch. If the release commit has no pin
+   for an earlier version, the notes use the highest stable tag below the
+   version being rendered that has a published, non-prerelease GitHub release.
 3. Cut `release/<version>` from the selected `main` commit SHA, using the
    final version for the branch name. Dispatch qualification from that branch and
    wait for it to pass. Production-image checks run only in this workflow, so
@@ -49,7 +51,7 @@ publication under the
 6. After the final release is published, open a small PR against `main` to set
    `scripts/production-upgrade-baseline.txt` to the published stable tag,
    including its `v` prefix. This sets the source release for Production VM
-   upgrades. In the same PR, move `docs/releases/next.md` to
+   upgrades and release notes. In the same PR, move `docs/releases/next.md` to
    `docs/releases/VERSION.md` if it exists to keep the published guidance for
    that tag.
 

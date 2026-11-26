@@ -5,6 +5,7 @@ repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
 architecture="${KATL_ARCHITECTURE:-$(uname -m)}"
 go_command="${KATL_RELEASE_GO:-go}"
+production_baseline_file=scripts/production-upgrade-baseline.txt
 
 fail() {
     echo "error: $*" >&2
@@ -15,7 +16,7 @@ usage() {
     cat >&2 <<'EOF'
 usage: scripts/katl-release-artifacts version EVENT REF_TYPE REF_NAME [MANUAL_VERSION]
        scripts/katl-release-artifacts upgrade-baseline [REV]
-       scripts/katl-release-artifacts previous-tag [--published] BASE_REF [EXCLUDE_TAG]
+       scripts/katl-release-artifacts previous-tag BASE_REF
        scripts/katl-release-artifacts dev-version STABLE_TAG
        scripts/katl-release-artifacts notes VERSION
        scripts/katl-release-artifacts build-katlctl VERSION
@@ -57,19 +58,48 @@ commit_release_note() {
         '
 }
 
-previous_katlos_tag() {
-    local target="$1"
-    local current_tag="$2"
-    local commit tag
-
-    while IFS= read -r commit; do
-        while IFS= read -r tag; do
-            is_katlos_tag "$tag" || continue
-            [[ "$tag" != "$current_tag" ]] || continue
+# Candidates and finals describe the same version's changes. Read the pin
+# from the target commit so replay uses the original upgrade source.
+release_notes_base() {
+    local target="$1" final_tag="v${2%%-*}" tag tags releases
+    local repository="${GITHUB_REPOSITORY:-}"
+    local -a earlier_tags=()
+    local -A published_tags=()
+    if git cat-file -e "$target:$production_baseline_file" 2>/dev/null; then
+        tag="$(production_upgrade_baseline "$target")" || return
+        if stable_tag_precedes "$tag" "$final_tag"; then
             printf '%s\n' "$tag"
-            return 0
-        done < <(git tag --points-at "$commit" --list 'v*' --sort=refname)
-    done < <(git rev-list --first-parent "$target")
+            return
+        fi
+    fi
+
+    tags="$(git tag --list 'v[0-9]*' --sort=-version:refname)" || return
+    while IFS= read -r tag; do
+        is_stable_tag "$tag" && stable_tag_precedes "$tag" "$final_tag" || continue
+        earlier_tags+=("$tag")
+    done <<< "$tags"
+    (("${#earlier_tags[@]}" > 0)) || return 0
+
+    [[ -n "$repository" ]] || repository='{owner}/{repo}'
+    releases="$(gh api --paginate "repos/$repository/releases?per_page=100" |
+        jq -r '.[] | select(.draft == false and .prerelease == false) | .tag_name')" ||
+        fail "cannot list published releases for $repository"
+    while IFS= read -r tag; do
+        is_stable_tag "$tag" && published_tags["$tag"]=1
+    done <<< "$releases"
+
+    for tag in "${earlier_tags[@]}"; do
+        [[ -n "${published_tags[$tag]:-}" ]] || continue
+        git rev-parse --verify --quiet "refs/tags/$tag^{commit}" >/dev/null ||
+            fail "release tag does not point to a commit: $tag"
+        printf '%s\n' "$tag"
+        return
+    done
+    return 0
+}
+
+stable_tag_precedes() {
+    printf '%s\n' "$1" "$2" | LC_ALL=C sort -V -C -u
 }
 
 # Prints the guidance file for a version: the published <version>.md, else the
@@ -97,18 +127,10 @@ generate_release_notes() {
     git rev-parse --verify --quiet "$target^{commit}" >/dev/null ||
         fail "release notes target is not a commit: $target"
 
-    if [[ -n "${KATL_RELEASE_PREVIOUS_TAG:-}" ]]; then
-        previous_tag="$KATL_RELEASE_PREVIOUS_TAG"
-        git rev-parse --verify --quiet "refs/tags/$previous_tag^{commit}" >/dev/null ||
-            fail "previous release tag does not exist: $previous_tag"
-        git merge-base --is-ancestor "refs/tags/$previous_tag^{commit}" "$target" ||
-            fail "previous release tag $previous_tag is not an ancestor of $target"
-    else
-        previous_tag="$(previous_katlos_tag "$target" "$current_tag" || true)"
-    fi
+    previous_tag="$(release_notes_base "$target" "$version")" || return
 
     if [[ -n "$previous_tag" ]]; then
-        range="$previous_tag..$target"
+        range="refs/tags/$previous_tag..$target"
     else
         range="$target"
     fi
@@ -293,7 +315,7 @@ is_stable_tag() {
 }
 
 production_upgrade_baseline() {
-    local file="scripts/production-upgrade-baseline.txt" revision="$1" tag
+    local file="$production_baseline_file" revision="$1" tag
     if [[ -n "$revision" ]]; then
         tag="$(git show --end-of-options "$revision:$file")" || fail "cannot read $file at $revision"
     else
@@ -305,37 +327,18 @@ production_upgrade_baseline() {
     printf '%s\n' "$tag"
 }
 
-# Picks the newest stable tag reachable from the tested base. Release staging
-# limits the candidates to published releases and excludes the release's own tag.
+# A pull request qualifies upgrades within the release series of its base.
 previous_stable_tag() {
-    local base="$1" exclude="$2" published="$3" candidate
-    local -A published_tags=()
+    local base="$1" candidate
     git rev-parse --verify --quiet "$base^{commit}" >/dev/null ||
         fail "base ref does not exist: $base"
 
-    if [[ "$published" == true ]]; then
-        local repository="${GITHUB_REPOSITORY:-}" releases
-        [[ -n "$repository" ]] || repository='{owner}/{repo}'
-        releases="$(gh api --paginate "repos/$repository/releases?per_page=100" |
-            jq -r '.[] | select(.draft == false and .prerelease == false) | .tag_name')" ||
-            fail "cannot list published releases for $repository"
-        while IFS= read -r candidate; do
-            is_stable_tag "$candidate" && published_tags["$candidate"]=1
-        done <<< "$releases"
-    fi
-
     while IFS= read -r candidate; do
-        [[ "$candidate" != "$exclude" ]] && is_stable_tag "$candidate" || continue
-        if [[ "$published" == true && -z "${published_tags[$candidate]:-}" ]]; then
-            continue
-        fi
+        is_stable_tag "$candidate" || continue
         printf '%s\n' "$candidate"
         return
     done < <(git tag --merged "$base" --list 'v[0-9]*' --sort=-version:refname)
 
-    if [[ "$published" == true ]]; then
-        fail "no published stable release tag is reachable from $base"
-    fi
     fail "no stable release tag is reachable from $base"
 }
 
@@ -511,14 +514,8 @@ case "${1:-}" in
         production_upgrade_baseline "${2:-}"
         ;;
     previous-tag)
-        shift
-        published=false
-        if [[ "${1:-}" == --published ]]; then
-            published=true
-            shift
-        fi
-        [[ $# -ge 1 && $# -le 2 ]] || usage
-        previous_stable_tag "$1" "${2:-}" "$published"
+        [[ $# -eq 2 ]] || usage
+        previous_stable_tag "$2"
         ;;
     dev-version)
         [[ $# -eq 2 ]] || usage
