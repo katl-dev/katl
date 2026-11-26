@@ -7,6 +7,8 @@ the public [KatlOS documentation](README.md); this page is for contributors.
 ## Find project documentation
 
 - [CI and validation](development/ci.md) explains which jobs exercise a change.
+- [Agent roles](development/agent-roles.md) explains how to start or resume
+  release coordination.
 - [Generation ownership](development/generation-ownership.md) explains the
   boundary between offline installation, boot health, and node operations.
 - [Release KatlOS](development/releases.md) covers preparation, qualification,
@@ -749,19 +751,51 @@ follows everything queued or waiting with auto-merge, polls every minute
 (`-interval` changes this), keeps going through transient `gh` failures, and
 exits 1 when a watched PR leaves the queue without merging.
 
-For background waits, add Katl as a flake input named `katl`, then import
-and enable the watcher in your Home Manager configuration.
+### Set up release coordination with Home Manager
+
+On a Linux development host with a systemd user manager, add Katl to your
+flake inputs.
 
 ```nix
+inputs.katl.url = "github:katl-dev/katl";
+```
+
+Pass the `katl` input through `extraSpecialArgs` if you configure Home Manager
+in a separate module. Import the Katl module and enable the tools, watcher, and
+runner.
+
+```nix
+{ katl, ... }:
 {
-  imports = [ katl.homeManagerModules.katl-queue-watch ];
-  services.katl-queue-watch.enable = true;
+  imports = [ katl.homeManagerModules.katl-dev ];
+  programs.katl-dev = {
+    enable = true;
+    watcher.enable = true;
+    runner.enable = true;
+  };
 }
 ```
 
-Authenticate with `gh auth login`. The service polls `katl-dev/katl` for
-all registered waits. After enabling auto-merge on a PR, start a wait and
-use its exit status to decide what to do next.
+`programs.katl-dev.enable` puts `katl-queue` and the checkout-based
+development commands on PATH. Use the Nix development shell for build and
+test dependencies. Use `programs.katl-dev.runner.enable` to install
+`katl-dev-run` and its user slice. From the Katl checkout, wrap your agent
+with `katl-dev-run claude`. To start the coordinator, run:
+
+```sh
+katl-dev-run claude --agent katl-coordinator
+```
+
+The runner puts the agent in a delegated scope in `katl-dev.slice`, where
+rootless Podman can create cgroups for its containers and VM workloads.
+The agent recovers work using the [coordination checkpoint](development/agent-roles.md#local-state).
+
+### Track background queue waits
+
+`programs.katl-dev.watcher.enable` installs the watcher and its socket.
+Authenticate with `gh auth login` so it can poll `katl-dev/katl` for
+registered waits. After enabling auto-merge on a PR, start a wait and use
+its exit status to decide what to do next.
 
 ```sh
 katl-queue wait 123 --timeout 2h
@@ -795,11 +829,13 @@ and saved outcomes remain available for seven days. Use
 `katl-queue watches` to list them. If GitHub access fails, repair the
 credentials or permissions and resume once the daemon observes recovery.
 
-Set `services.katl-queue-watch.interval` to change the default `"60s"`
+Set `programs.katl-dev.watcher.interval` to change the default `"60s"`
 poll interval. Specify a positive whole number followed by `ms`, `s`,
-`m`, or `h`. Set `services.katl-queue-watch.notify = true` for desktop
+`m`, or `h`. Set `programs.katl-dev.watcher.notify = true` for desktop
 notifications on merge or when a PR needs action. View daemon events with
 `journalctl --user -u katl-queue-watch.service`.
+
+### Plan and maintain the queue
 
 `plan` simulates every ready, non-draft PR over `main` plus the queue and the
 PRs it has already chosen. It orders by `release-blocker`, `dev-experience`,

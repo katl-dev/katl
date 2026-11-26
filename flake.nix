@@ -105,6 +105,23 @@
           ];
           text = builtins.readFile ./scripts/git-commit-wrapped;
         };
+      devToolsFor =
+        pkgs:
+        [
+          (katlctlFor pkgs)
+          (katldevFor pkgs)
+          (gitCommitWrappedFor pkgs)
+        ]
+        ++ map (repoScriptFor pkgs) [
+          "codex-role"
+          "vmtest-run"
+          "vmtest-clean"
+          "vmtest-debug"
+          "vmtest-exec"
+          "worktree-clean"
+          "check-fast"
+          "hermetic"
+        ];
       shellFor =
         pkgs:
         pkgs.mkShell {
@@ -141,22 +158,8 @@
               zsh
               zstd
             ])
-            ++ [
-              (katlctlFor pkgs)
-              (katldevFor pkgs)
-              (gitCommitWrappedFor pkgs)
-            ]
-            ++ map (repoScriptFor pkgs) [
-              "katl-queue"
-              "codex-role"
-              "vmtest-run"
-              "vmtest-clean"
-              "vmtest-debug"
-              "vmtest-exec"
-              "worktree-clean"
-              "check-fast"
-              "hermetic"
-            ];
+            ++ devToolsFor pkgs
+            ++ [ (repoScriptFor pkgs "katl-queue") ];
 
           shellHook = ''
             # Run Go tests through scripts/hermetic -- go test ...
@@ -206,7 +209,10 @@
         // {
           aarch64-linux.katl-queue = katlQueuePackageFor (pkgsFor "aarch64-linux");
         };
-      homeManagerModules.katl-queue-watch = import ./contrib/home-manager/katl-queue-watch.nix self;
+      homeManagerModules.katl-dev = import ./contrib/home-manager/katl-dev.nix {
+        katl = self;
+        inherit devToolsFor;
+      };
       devShells = forDevSystems (
         system:
         let

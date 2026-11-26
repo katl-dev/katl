@@ -79,7 +79,7 @@ if systemctl --user is-active --quiet "$unit"; then
 fi
 
 if [[ -z "$log" ]]; then
-    log="$repo_root/_build/codex/${unit%.service}.log"
+    log="${XDG_STATE_HOME:-$HOME/.local/state}/katl-dev/logs/${unit%.service}.log"
     mkdir -p -- "${log%/*}"
 elif [[ "$log" != /* ]]; then
     log="$PWD/$log"
