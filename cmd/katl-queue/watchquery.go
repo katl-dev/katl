@@ -16,6 +16,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/retry"
 )
 
 const (
@@ -38,9 +40,6 @@ func queryWatchGitHub(ctx context.Context, query string) (watchHTTP, error) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	raw, err := cmd.Output()
-	if ctx.Err() != nil {
-		return watchHTTP{}, ctx.Err()
-	}
 	response := watchHTTP{stderr: strings.TrimSpace(stderr.String())}
 	if !bytes.HasPrefix(raw, []byte("HTTP/")) {
 		if err == nil {
@@ -156,7 +155,10 @@ type watchQueryIssue struct {
 	retryAt  time.Time
 }
 
-func readWatchQuery(response watchHTTP, transportErr error, now time.Time) (watchGraphQL, watchQueryIssue) {
+func readWatchQuery(ctx context.Context, response watchHTTP, transportErr error, now time.Time) (watchGraphQL, watchQueryIssue) {
+	if err := retry.ContextError(ctx); err != nil {
+		return watchGraphQL{}, watchQueryIssue{cause: fmt.Sprintf("GitHub transport: %v", err)}
+	}
 	var envelope watchGraphQL
 	decodeErr := json.Unmarshal(response.body, &envelope)
 	message := envelope.Message

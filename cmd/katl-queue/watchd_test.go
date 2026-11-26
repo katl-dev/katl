@@ -567,6 +567,26 @@ func TestWaitPollEvidence(t *testing.T) {
 	w.expect(sibling, 0, "#457 merged")
 }
 
+func TestWatchPollDiscardsLateResult(t *testing.T) {
+	d, err := loadWatchDaemon(t.TempDir(), testInterval, io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	synctest.Test(t, func(t *testing.T) {
+		d.records["watch"] = watchRecord{ID: "watch", PR: 488, Registered: time.Now()}
+		d.query = func(ctx context.Context, _ string) (watchHTTP, error) {
+			<-ctx.Done()
+			return watchHTTP{status: http.StatusOK, body: []byte(merged488)}, nil
+		}
+
+		d.pollOnce(t.Context())
+
+		if outcome := d.records["watch"].Outcome; outcome != nil {
+			t.Fatalf("watch settled from a reply after its query budget: %+v", outcome)
+		}
+	})
+}
+
 func TestWaitMalformedGraphQLError(t *testing.T) {
 	w := newWatchTest(t)
 	w.start()

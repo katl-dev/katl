@@ -13,9 +13,13 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/katl-dev/katl/internal/retry"
 )
 
 const startWatchSocket = "start it with: systemctl --user start katl-queue-watch.socket"
+
+var errWatchReconnect = errors.New("reconnect to watchd")
 
 func watchSocketPath() (string, error) {
 	dir := os.Getenv("XDG_RUNTIME_DIR")
@@ -43,6 +47,9 @@ func exchangeWatch(ctx context.Context, conn net.Conn, req watchRequest, accepte
 	defer stop()
 
 	var reply watchReply
+	if err := retry.ContextError(ctx); err != nil {
+		return reply, err
+	}
 	conn.SetDeadline(time.Now().Add(5 * time.Second))
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return reply, err
@@ -54,6 +61,9 @@ func exchangeWatch(ctx context.Context, conn net.Conn, req watchRequest, accepte
 	if !req.List && reply.Error == "" && reply.Retry == "" {
 		if reply.ID != req.ID && reply.ID != req.Resume || reply.ID == "" {
 			return watchReply{}, errors.New("watchd returned an unexpected watch ID")
+		}
+		if err := retry.ContextError(ctx); err != nil {
+			return watchReply{}, err
 		}
 		conn.SetDeadline(time.Time{})
 		accepted(reply.ID)
@@ -144,46 +154,48 @@ func waitForWatch(ctx context.Context, dial func(context.Context, string) (net.C
 	}
 
 	connected := false
-	backoff := 100 * time.Millisecond
-	for ctx.Err() == nil {
+	backoff := retry.NewBackoff(100*time.Millisecond, 2*time.Second)
+	reply, err := retry.Await(ctx, &backoff, func(ctx context.Context) (watchReply, bool, error) {
 		conn, err := dial(ctx, path)
-		if err == nil {
-			connected = true
-			reply, err := exchangeWatch(ctx, conn, req, func(string) {
-				if req.Resume == "" {
-					printResume()
-				}
-				req = watchRequest{Resume: id}
-				backoff = 100 * time.Millisecond
-			})
-			switch {
-			case err == nil && reply.Blocked != "":
-				printResume()
-				return fmt.Errorf("%s; repair GitHub access, then resume the watch", reply.Blocked)
-			case err == nil && reply.Retry == "":
-				return reportWatch(reply, out)
-			case err != nil && ctx.Err() == nil:
-				var connErr *net.OpError
-				if !errors.As(err, &connErr) && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-					return fmt.Errorf("read watchd reply: %w", err)
-				}
+		if err != nil {
+			if !connected {
+				return watchReply{}, false, watchUnavailable(err)
 			}
-		} else if !connected && ctx.Err() == nil {
-			return watchUnavailable(err)
+			return watchReply{}, false, fmt.Errorf("%w: %w", errWatchReconnect, err)
 		}
-
-		// Only switch from registration to resume after its acknowledgement.
-		// A lost acknowledgement can leave a durable registration behind.
-		if !sleep(ctx, backoff) {
-			break
+		connected = true
+		reply, err := exchangeWatch(ctx, conn, req, func(string) {
+			// A lost acknowledgement can leave a durable registration behind.
+			if req.Resume == "" {
+				printResume()
+			}
+			req = watchRequest{Resume: id}
+			backoff.Reset()
+		})
+		if err != nil {
+			var connErr *net.OpError
+			if errors.As(err, &connErr) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				return watchReply{}, false, fmt.Errorf("%w: %w", errWatchReconnect, err)
+			}
+			return watchReply{}, false, fmt.Errorf("read watchd reply: %w", err)
 		}
-		backoff = min(2*backoff, 2*time.Second)
+		return reply, reply.Blocked != "" || reply.Retry == "", nil
+	}, func(err error) bool { return errors.Is(err, errWatchReconnect) })
+	if err == nil {
+		if reply.Blocked != "" {
+			printResume()
+			return fmt.Errorf("%s; repair GitHub access, then resume the watch", reply.Blocked)
+		}
+		return reportWatch(reply, out)
 	}
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+	if errors.Is(err, context.DeadlineExceeded) {
 		if req.Resume != "" {
 			return fmt.Errorf("timed out waiting for watch %s", id)
 		}
 		return fmt.Errorf("timed out registering a watch for #%d", req.PR)
 	}
-	return ctx.Err()
+	if errors.Is(err, retry.ErrInconclusive) && errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	return err
 }
