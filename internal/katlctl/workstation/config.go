@@ -86,8 +86,18 @@ type ResolveRequest struct {
 	ExplicitPlan      *inventory.Plan
 }
 
+// TestPathCheck is installed by TestMain to reject workstation paths outside
+// the test sandbox before using them.
+var TestPathCheck func(string) error
+
 func ConfigPath() (string, error) {
-	return ResolvePath(os.Getenv, os.UserConfigDir)
+	path, err := ResolvePath(os.Getenv, os.UserConfigDir)
+	if err == nil && TestPathCheck != nil {
+		if err := TestPathCheck(path); err != nil {
+			return "", err
+		}
+	}
+	return path, err
 }
 
 func ResolvePath(getenv func(string) string, userConfigDir func() (string, error)) (string, error) {
@@ -106,6 +116,11 @@ func ResolvePath(getenv func(string) string, userConfigDir func() (string, error
 
 func Load(path string) (Config, error) {
 	path = strings.TrimSpace(path)
+	if TestPathCheck != nil {
+		if err := TestPathCheck(path); err != nil {
+			return Config{}, err
+		}
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("read katlctl config: %w", err)
@@ -146,6 +161,11 @@ func Save(path string, cfg Config) error {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return fmt.Errorf("workstation context file path is required")
+	}
+	if TestPathCheck != nil {
+		if err := TestPathCheck(path); err != nil {
+			return err
+		}
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
