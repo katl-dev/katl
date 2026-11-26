@@ -16,7 +16,7 @@ func TestHostUpgradeAfterLivePromotion(t *testing.T) {
 	}{{"same runtime", false}, {"different runtime", true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := newTestServer(t)
-			writeKnownGoodHostUpgradeSource(t, server.Root)
+			writeKnownGoodHostUpgradeSource(t, server)
 			spec, _, err := generation.ReadGeneration(server.Root, "generation-0")
 			if err != nil {
 				t.Fatal(err)

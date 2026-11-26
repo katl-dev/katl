@@ -236,7 +236,7 @@ func TestGenerationCleanupFollowsBootHealth(t *testing.T) {
 		Root: generation.RootSelection{
 			RuntimeVersion: "0.1.0", RuntimeInterface: "katl-runtime-1", Architecture: "x86_64",
 			Slot: "root-a", PartitionUUID: "11111111-1111-1111-1111-111111111111",
-			RuntimeArtifactSHA256: strings.Repeat("a", 64),
+			RuntimeArtifactSHA256: testSHA(testBootRootImage()),
 		},
 		GenerationID: "generation-0",
 		UKIPath:      "/efi/EFI/Linux/katl-generation-0.efi",
@@ -255,38 +255,38 @@ func TestGenerationCleanupFollowsBootHealth(t *testing.T) {
 	if err := generation.Initialize(root, current); err != nil {
 		t.Fatal(err)
 	}
+	writeTestBootDisk(t, root, current.Root.PartitionUUID)
+	writeTestBootArtifacts(t, root, current)
 	commandLine := "root=PARTUUID=11111111-1111-1111-1111-111111111111 rootfstype=squashfs ro katl.generation=generation-0"
 	writeProcCmdline(t, root, commandLine)
-	if err := configapply.WriteGenerationManifest(root, "generation-0", validVolumeStatusManifest()); err != nil {
+	manifest := validVolumeStatusManifest()
+	keepLast := 1
+	manifest.Node.GenerationRetention = &generation.Retention{KeepLast: &keepLast, MaxAge: "30d"}
+	if err := configapply.WriteGenerationManifest(root, "generation-0", manifest); err != nil {
 		t.Fatal(err)
 	}
 	server.MountBootRoot = func(context.Context, string) error { return nil }
 
-	obsolete := current
-	obsolete.GenerationID = "obsolete"
-	obsolete.RuntimeVersion = "0.0.9"
-	obsolete.Root.Slot = "root-b"
-	obsolete.Root.PartitionUUID = "22222222-2222-2222-2222-222222222222"
-	obsolete.Root.RuntimeArtifactSHA256 = strings.Repeat("c", 64)
-	obsolete.Boot.LoaderEntryPath = "loader/entries/katl-obsolete.conf"
-	obsolete.Boot.UKIPath = "/efi/EFI/Linux/katl-obsolete.efi"
-	obsolete.Confexts = nil
-	obsolete.CreatedAt = current.CreatedAt.Add(-time.Hour)
-	status, err := generation.NewGenerationStatus(obsolete, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, obsolete.CreatedAt)
+	fallback := current
+	fallback.GenerationID = "aged-fallback"
+	fallback.Boot.LoaderEntryPath = "loader/entries/katl-aged-fallback.conf"
+	fallback.Confexts = nil
+	fallback.CreatedAt = current.CreatedAt.Add(-60 * 24 * time.Hour)
+	status, err := generation.NewGenerationStatus(fallback, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, fallback.CreatedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	status.UnavailableReason = "OS slot has been replaced"
-	if err := generation.WriteGeneration(root, obsolete, status); err != nil {
+	if err := generation.WriteGeneration(root, fallback, status); err != nil {
 		t.Fatal(err)
 	}
+	writeTestBootArtifacts(t, root, fallback)
 
-	obsoletePath := filepath.Join(root, "var/lib/katl/generations/obsolete")
+	fallbackPath := filepath.Join(root, "var/lib/katl/generations/aged-fallback")
 	if complete, err := server.pruneGenerations(t.Context()); err != nil || complete {
 		t.Fatalf("cleanup during pending boot = complete %t, error %v", complete, err)
 	}
-	if _, err := os.Stat(obsoletePath); err != nil {
-		t.Fatalf("pending boot removed obsolete generation: %v", err)
+	if _, err := os.Stat(fallbackPath); err != nil {
+		t.Fatalf("pending trial removed fallback generation: %v", err)
 	}
 	if _, err := generation.RecordBootHealth(generation.BootHealthRequest{
 		Root: root, GenerationID: "generation-0", CommandLine: commandLine,
@@ -297,14 +297,18 @@ func TestGenerationCleanupFollowsBootHealth(t *testing.T) {
 	}
 
 	unit := &healthUnit{}
-	unit.set(healthDependencyFailed)
 	server.RunBootHealthStatus = unit.runWithFailedSSH
-	complete, err := server.pruneGenerations(t.Context())
-	if _, statErr := os.Stat(obsoletePath); statErr != nil {
-		t.Fatalf("cleanup removed an eligible generation during failed boot health: %v", statErr)
-	}
-	if err != nil || complete {
-		t.Fatalf("cleanup during failed boot = complete %t, error %v", complete, err)
+	for _, tc := range []struct{ state, properties string }{
+		{"failed", healthDependencyFailed}, {"pending", healthStalled}, {"unknown", ""},
+	} {
+		unit.set(tc.properties)
+		complete, err := server.pruneGenerations(t.Context())
+		if _, statErr := os.Stat(fallbackPath); statErr != nil {
+			t.Fatalf("cleanup removed an eligible generation during %s boot health: %v", tc.state, statErr)
+		}
+		if err != nil || complete {
+			t.Fatalf("cleanup during %s boot health = complete %t, error %v", tc.state, complete, err)
+		}
 	}
 
 	unit.set(healthSucceeded)
@@ -314,14 +318,14 @@ func TestGenerationCleanupFollowsBootHealth(t *testing.T) {
 	t.Cleanup(func() { cancel(); <-done })
 	deadline := time.After(2 * time.Second)
 	for {
-		if _, err := os.Stat(obsoletePath); errors.Is(err, os.ErrNotExist) {
+		if _, err := os.Stat(fallbackPath); errors.Is(err, os.ErrNotExist) {
 			break
 		} else if err != nil {
 			t.Fatal(err)
 		}
 		select {
 		case <-deadline:
-			t.Fatal("obsolete generation survived healthy boot")
+			t.Fatal("aged fallback generation survived healthy boot")
 		case <-time.After(10 * time.Millisecond):
 		}
 	}

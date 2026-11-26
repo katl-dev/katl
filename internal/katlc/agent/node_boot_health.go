@@ -20,10 +20,11 @@ type nodeBootHealth struct {
 	Diagnostic           string
 }
 
-func readNodeBootHealth(root string) nodeBootHealth {
+// readPersistedBootHealth describes the selected generation's durable state.
+func readPersistedBootHealth(root string) nodeBootHealth {
 	commandLine, err := readCurrentKernelCommandLine(root)
 	if err != nil {
-		return nodeBootHealth{}
+		return nodeBootHealth{State: nodeBootHealthUnknown, Diagnostic: "cannot read the running kernel command line"}
 	}
 	selected, err := generation.SelectedGenerationFromCommandLine(strings.Join(commandLine, " "))
 	if err != nil {

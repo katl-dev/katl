@@ -101,7 +101,9 @@ until it finishes. A held request is refused with a retry message after five
 minutes or shortly before its own timeout. Status, reboot, and shutdown requests
 are not held. If a unit that boot health requires fails to start, boot health
 does not run, status reports health `failed`, and node operations are
-accepted so that you can repair the node.
+available for repair. After the hold ends, you can use `katlctl cluster apply`
+and `katlctl node reboot` to repair a stalled or failed boot. If the agent
+cannot read current-boot health from systemd, status reports `unknown`.
 
 When an armed trial loses management networking, fails required activation, or
 misses the 10-minute boot deadline, Katl restores the previous healthy
@@ -124,7 +126,8 @@ previous release. Configuration generations share the release image in their
 slot, so the generation list can hold more history than two entries, but it
 never holds more than two bootable KatlOS releases. Staging the next host
 upgrade overwrites the inactive slot and makes every older generation that used
-that slot unavailable for boot.
+that slot unavailable for boot. Katl requires confirmed health for the running
+boot before it stages a host upgrade or automatically prunes generations.
 
 `katlc` also removes old generation records automatically according to
 `generationRetention`. For each installed KatlOS release it keeps the newest

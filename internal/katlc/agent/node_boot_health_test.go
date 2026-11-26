@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -45,7 +47,11 @@ type healthUnit struct{ properties atomic.Value }
 func (u *healthUnit) set(properties string) { u.properties.Store(properties) }
 
 func (u *healthUnit) run(_ context.Context, argv []string, _ func(int)) ToolResult {
-	return ToolResult{Stdout: []byte(u.properties.Load().(string))}
+	properties := u.properties.Load().(string)
+	if properties == "" {
+		return ToolResult{Err: errors.New("systemd query failed"), ExitStatus: 1}
+	}
+	return ToolResult{Stdout: []byte(properties)}
 }
 
 func (u *healthUnit) runWithFailedSSH(ctx context.Context, argv []string, progress func(int)) ToolResult {
@@ -102,7 +108,8 @@ func TestNodeStatusBootHealthFollowsCurrentBoot(t *testing.T) {
 		// still reports the volumes the activation check left unmounted.
 		{name: "volumes refused", unit: healthSucceeded + "\n\nId=katl-volumes-activate.service\nLoadState=loaded\nActiveState=failed\nJob=\n", want: nodeBootHealthFailed},
 		{name: "settle timed out", unit: healthStalled, want: nodeBootHealthPending},
-		{name: "units unavailable", unit: healthUnitsMissing, want: nodeBootHealthHealthy},
+		{name: "units unavailable", unit: healthUnitsMissing, want: nodeBootHealthUnknown},
+		{name: "query failed", want: nodeBootHealthUnknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, _ := knownGoodNode(t, tc.unit)
@@ -115,6 +122,44 @@ func TestNodeStatusBootHealthFollowsCurrentBoot(t *testing.T) {
 				t.Fatalf("boot health = %q (%s), want %q", nodeStatus.GetBootHealthState(), nodeStatus.GetBootHealthDiagnostic(), tc.want)
 			}
 		})
+	}
+}
+
+func TestRepairDuringStalledBootHealth(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	writeProcCmdline(t, server.Root, "root=PARTUUID=11111111-1111-1111-1111-111111111111 rootfstype=squashfs ro katl.generation=generation-0")
+	unit := &healthUnit{}
+	unit.set(healthStalled)
+	server.RunBootHealthStatus = unit.run
+	server.MountBootRoot = func(context.Context, string) error { return nil }
+	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor.Async = false
+	server.Dispatcher = executor
+
+	accepted, err := server.SubmitOperation(t.Context(), &agentapi.SubmitOperationRequest{
+		ApiVersion: APIVersion, Kind: RequestKind, ClientRequestId: "repair-apply",
+		OperationKind: OperationKindGenerationApply, Actor: "test-actor",
+		ConfigApply: &agentapi.ConfigApplyOperationRequest{
+			CandidateGenerationId: "repair",
+			ApplyMode:             generation.ApplyModeAuto,
+			ConfigYaml:            configApplyNoChangesYAML(),
+		},
+	})
+	if err != nil {
+		t.Fatalf("apply during stalled boot health: %v", err)
+	}
+	record, err := server.Store.Read(accepted.GetOperationId())
+	if err != nil || record.Result != operation.ResultSucceeded {
+		t.Fatalf("apply result = %q, read error = %v", record.Result, err)
+	}
+
+	writeRebootEFIDefault(t, server.Server)
+	server.RunReboot = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
+	if _, err := server.Reboot(t.Context(), &agentapi.RebootRequest{
+		ApiVersion: APIVersion, Kind: RebootRequestKind, Actor: "test", TargetGenerationId: "generation-0",
+	}); err != nil {
+		t.Fatalf("reboot during stalled boot health: %v", err)
 	}
 }
 
