@@ -614,6 +614,7 @@ func waitEnableMTLSTrial(ctx context.Context, node enableMTLSNode, client manage
 func waitEnableMTLSHealthy(ctx context.Context, node enableMTLSNode, client managementidentity.ClientCredentials, timeout time.Duration) error {
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	var lastErr error
 	for {
 		status, err := enableMTLSStatus(deadline, node, client, min(timeout, 5*time.Second))
 		if err == nil {
@@ -622,9 +623,14 @@ func waitEnableMTLSHealthy(ctx context.Context, node enableMTLSNode, client mana
 				return nil
 			}
 		}
+		// The last RPC can exhaust the remaining time. Keep an earlier
+		// diagnosis when that RPC only reports a deadline error.
+		if lastErr == nil || (!errors.Is(err, context.DeadlineExceeded) && grpcstatus.Code(err) != codes.DeadlineExceeded) {
+			lastErr = err
+		}
 		select {
 		case <-deadline.Done():
-			return err
+			return lastErr
 		case <-time.After(enableMTLSPoll):
 		}
 	}

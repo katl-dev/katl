@@ -79,4 +79,4 @@ A configuration that already says `managementAuthentication: trusted-network` ne
 
 If the field is missing, `katlctl` refuses every command that reads the configuration and prints the line to add. Nodes are never changed. Add `managementAuthentication: trusted-network` under `spec` to keep managing them.
 
-In trusted-network mode, pods can reach port 9443 on node addresses, so cluster workloads are on the management network. For a cluster that runs workloads you do not fully trust, either [reprovision to mTLS](../operations/management-auth.md#change-the-access-mode) or [filter port 9443](../support.md#network-trust) to your management and workstation network.
+In trusted-network mode, pods can reach port 9443 on node addresses, so cluster workloads are on the management network. For a cluster that runs workloads you do not fully trust, [move to mTLS in place](../operations/management-auth.md#change-the-access-mode) with `katlctl management enable-mtls --config <path>` or [filter port 9443](../support.md#network-trust) to your management and workstation network.

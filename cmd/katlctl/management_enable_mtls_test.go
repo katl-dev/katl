@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
@@ -770,6 +771,30 @@ func TestEnableMTLSChecksAPIProxyAfterConfirm(t *testing.T) {
 	if mode, _ := world.configMode(t); mode != managementidentity.MutualTLS {
 		t.Errorf("config mode = %s after the node recovered", mode)
 	}
+}
+
+func TestEnableMTLSRetainsHealthDiagnosisAtDeadline(t *testing.T) {
+	oldDial := dialKatlcAgent
+	t.Cleanup(func() { dialKatlcAgent = oldDial })
+	status := &agentapi.NodeStatus{
+		BootHealthState: bootHealthHealthy,
+		Kubernetes:      &agentapi.KubernetesStatus{State: "ready", KubeletActive: true},
+		ApiProxy:        &agentapi.APIProxyStatus{State: "starting"},
+	}
+	var client agentapi.KatlcAgentClient = &fakeKatlcAgentClient{nodeStatus: status}
+	dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
+		conn := katlcAgentConnection{Client: client, Close: func() error { return nil }}
+		client = &deadlineKatlcAgentClient{}
+		return conn, nil
+	}
+	node := enableMTLSNode{requirement: nodeRecoveryRequirement{APIProxyReady: true}}
+
+	synctest.Test(t, func(t *testing.T) {
+		err := waitEnableMTLSHealthy(t.Context(), node, managementidentity.ClientCredentials{}, 2*enableMTLSPoll)
+		if err == nil || !strings.Contains(err.Error(), "Kubernetes API proxy: starting") {
+			t.Fatalf("health check = %v, want the API proxy diagnosis", err)
+		}
+	})
 }
 
 // A config that already says mtls but whose nodes still serve trusted-network
