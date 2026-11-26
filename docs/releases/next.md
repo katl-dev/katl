@@ -75,8 +75,27 @@ Those releases are affected, and a stuck node plans its upgrade with its install
 
 ## Existing trusted-network clusters
 
-A configuration that already says `managementAuthentication: trusted-network` needs no action; that covers everything `config init` has written since v2026.9.0. Any configuration without the field and without `managementIdentity` that worked with `katlctl` v2026.9.0 through v2026.11.x was trusted-network, so adding that line is correct.
+A configuration that already says `managementAuthentication: trusted-network`
+needs no change to keep using trusted-network management. If your existing
+trusted-network configuration has neither
+`spec.managementAuthentication` nor `spec.managementIdentity`, add
+`managementAuthentication: trusted-network` under `spec` so `katlctl` can
+read it. `katlctl` reports the missing setting without changing any nodes.
+This records the mode the installed nodes already use. A configuration with
+neither field that worked with `katlctl` v2026.9.0 through v2026.11.x used
+trusted-network management.
 
-If the field is missing, `katlctl` refuses every command that reads the configuration and prints the line to add. Nodes are never changed. Add `managementAuthentication: trusted-network` under `spec` to keep managing them.
+In trusted-network mode, pods can reach port 9443 on node addresses, so cluster
+workloads are on the management network. If you run workloads you do not fully
+trust, migrate to mTLS or [filter port 9443](../support.md#network-trust) to your
+management and workstation network.
 
-In trusted-network mode, pods can reach port 9443 on node addresses, so cluster workloads are on the management network. For a cluster that runs workloads you do not fully trust, [move to mTLS in place](../operations/management-auth.md#change-the-access-mode) with `katlctl management enable-mtls --config <path>` or [filter port 9443](../support.md#network-trust) to your management and workstation network.
+To migrate in place, upgrade all nodes to a release that supports the migration,
+then run this command from your workstation.
+
+```sh
+katlctl management enable-mtls --config ./cluster.yaml
+```
+
+Follow the [migration procedure](../operations/management-auth.md#migrate-to-mtls-management)
+to back up the management secrets and check the result.

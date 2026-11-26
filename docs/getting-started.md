@@ -38,6 +38,9 @@ instead, you must
 before you install. See [Network trust](support.md#network-trust) for what each port
 exposes.
 
+If you already run a trusted-network cluster, you can
+[migrate it to mTLS in place](operations/management-auth.md#migrate-to-mtls-management).
+
 ### Decide whether to keep this cluster
 
 If you plan to keep this cluster, create and back up its
