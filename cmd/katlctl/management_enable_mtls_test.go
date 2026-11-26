@@ -1319,7 +1319,7 @@ func TestManagementStatusColumn(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			status := enrolledStatus("cp-1", "e", "m")
 			status.Management = tc.status
-			report := newHostStatusReport("cp-1", "127.0.0.1:9443", status, &agentapi.Generation{GenerationId: "0"}, time.Now())
+			report := newHostStatusReport("cp-1", "127.0.0.1:9443", status, &agentapi.Generation{GenerationId: "0"}, time.Now(), nil)
 			var out bytes.Buffer
 			if err := writeHostStatus(&out, "text", report, false); err != nil {
 				t.Fatal(err)

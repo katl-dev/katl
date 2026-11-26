@@ -3180,6 +3180,7 @@ type fakeKatlcAgentClient struct {
 	generation              *agentapi.Generation
 	generationList          *agentapi.ListGenerationsResponse
 	generationRequest       *agentapi.GetGenerationRequest
+	generationErr           error
 	operationStatus         *agentapi.OperationStatus
 	operationRequest        *agentapi.GetOperationRequest
 	operations              *agentapi.ListOperationsResponse
@@ -3455,7 +3456,7 @@ func (c *fakeKatlcAgentClient) ListGenerations(context.Context, *agentapi.ListGe
 
 func (c *fakeKatlcAgentClient) GetGeneration(_ context.Context, req *agentapi.GetGenerationRequest, _ ...grpc.CallOption) (*agentapi.Generation, error) {
 	c.generationRequest = req
-	return c.generation, nil
+	return c.generation, c.generationErr
 }
 
 func writeConfigApplyFixture(t *testing.T, root string, fixture configApplyFixture) {

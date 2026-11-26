@@ -155,6 +155,39 @@ func TestHostStatusReportsGenerationMismatchWithUnknownHealth(t *testing.T) {
 	}
 }
 
+func TestHostStatusReportsMismatchWithoutGenerationDetails(t *testing.T) {
+	fake := healthyHostClient("machine-a", "agent-a", "generation-selected")
+	fake.nodeStatus.CurrentGenerationId = "generation-active"
+	fake.nodeStatus.SelectedGenerationId = "generation-selected"
+	fake.nodeStatus.BootHealthState = bootHealthUnknown
+	fake.nodeStatus.BootHealthDiagnostic = "kernel-selected generation differs from disk state"
+	fake.generation = nil
+	fake.generationErr = grpcstatus.Error(codes.Internal, "generation record is unreadable")
+	installKatlcDial(t, nil, fake)
+
+	var stdout, stderr bytes.Buffer
+	if err := run(t.Context(), []string{"node", "status", "node-a", "--endpoint", "node-a.test:9443"}, &stdout, &stderr); err != nil {
+		t.Fatalf("node status: %v\n%s", err, stderr.String())
+	}
+
+	output := stdout.String()
+	_, rows, _ := strings.Cut(output, "\n")
+	row, _, _ := strings.Cut(rows, "\n")
+	fields := strings.Fields(row)
+	if len(fields) < 5 || fields[1] != "unknown" || fields[4] != "generation-selected" {
+		t.Fatalf("status row missing unknown health or selected generation:\n%s", output)
+	}
+	for _, want := range []string{
+		fake.nodeStatus.BootHealthDiagnostic,
+		"Active generation recorded on disk: generation-active",
+		"Note: read current generation from node-a: " + fake.generationErr.Error(),
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
 func TestHostRebootDefaultAllowsBootDeadmanRecovery(t *testing.T) {
 	cmd := newHostRebootCommand(context.Background(), io.Discard, io.Discard)
 	timeout, err := cmd.Flags().GetDuration("timeout")
