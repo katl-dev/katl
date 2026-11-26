@@ -9,11 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand/v2"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/distribution/reference"
@@ -26,6 +29,7 @@ import (
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
 	"oras.land/oras-go/v2/registry/remote/credentials"
+	"oras.land/oras-go/v2/registry/remote/errcode"
 )
 
 // ParseReference validates an explicitly qualified OCI bundle reference.
@@ -294,7 +298,7 @@ func Publish(ctx context.Context, request PublishRequest) (Published, error) {
 		return Published{}, err
 	}
 	defer cleanup()
-	return publishTarget(ctx, store, manifestDescriptor, ref, request.Client, request.UseDockerCredentials)
+	return publishTarget(ctx, store, manifestDescriptor, ref, request.Client, request.UseDockerCredentials, rand.Int64N)
 }
 
 // PublishLayout publishes the verified digest-pinned closure without repacking
@@ -302,6 +306,10 @@ func Publish(ctx context.Context, request PublishRequest) (Published, error) {
 // collect untagged artifacts. An optional tag on the pinned reference becomes
 // an immutable alias for the same manifest.
 func PublishLayout(ctx context.Context, request FetchRequest) (Published, error) {
+	return publishLayout(ctx, request, rand.Int64N)
+}
+
+func publishLayout(ctx context.Context, request FetchRequest, randomN func(int64) int64) (Published, error) {
 	if request.LayoutDir == "" || request.LayoutURL != "" {
 		return Published{}, fmt.Errorf("publication requires a local OCI layout")
 	}
@@ -345,7 +353,7 @@ func PublishLayout(ctx context.Context, request FetchRequest) (Published, error)
 	existing := true
 	var published Published
 	for _, destination := range destinations {
-		published, err = publishTarget(ctx, source, descriptor, destination, request.Client, request.UseDockerCredentials)
+		published, err = publishTarget(ctx, source, descriptor, destination, request.Client, request.UseDockerCredentials, randomN)
 		if err != nil {
 			return Published{}, err
 		}
@@ -355,7 +363,7 @@ func PublishLayout(ctx context.Context, request FetchRequest) (Published, error)
 	return published, nil
 }
 
-func publishTarget(ctx context.Context, source oras.ReadOnlyTarget, descriptor ocispec.Descriptor, ref reference.Named, client *http.Client, useCredentials bool) (Published, error) {
+func publishTarget(ctx context.Context, source oras.ReadOnlyTarget, descriptor ocispec.Descriptor, ref reference.Named, client *http.Client, useCredentials bool, randomN func(int64) int64) (Published, error) {
 	repository, err := remote.NewRepository(ref.Name())
 	if err != nil {
 		return Published{}, fmt.Errorf("open OCI repository %s: %w", ref.Name(), err)
@@ -396,17 +404,57 @@ func publishTarget(ctx context.Context, source oras.ReadOnlyTarget, descriptor o
 	if published.Digest != descriptor.Digest {
 		return Published{}, fmt.Errorf("published OCI manifest digest %s does not match local digest %s", published.Digest, descriptor.Digest)
 	}
-	resolved, err := repository.Resolve(ctx, Tag(ref))
-	if err != nil {
-		return Published{}, fmt.Errorf("verify published OCI tag %s: %w", ref.String(), err)
-	}
-	if resolved.Digest != descriptor.Digest {
-		return Published{}, fmt.Errorf("published OCI tag %s resolves to %s, want %s", ref.String(), resolved.Digest, descriptor.Digest)
+	if err := waitForPublishedTag(ctx, repository, ref, descriptor.Digest, randomN); err != nil {
+		return Published{}, err
 	}
 	return Published{
 		Reference:      ref,
 		ManifestDigest: descriptor.Digest.String(),
 	}, nil
+}
+
+func waitForPublishedTag(ctx context.Context, repository *remote.Repository, ref reference.Named, expected digest.Digest, randomN func(int64) int64) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	lastObservation := "no registry response"
+	for window := 500 * time.Millisecond; ctx.Err() == nil; window = min(2*window, 8*time.Second) {
+		resolved, err := repository.Resolve(ctx, Tag(ref))
+		if ctx.Err() != nil {
+			break
+		}
+		if err == nil {
+			if resolved.Digest != expected {
+				return fmt.Errorf("verify published OCI tag %s (expected %s): observed digest %s", ref, expected, resolved.Digest)
+			}
+			return nil
+		}
+		if !retryableTagRead(err) {
+			return fmt.Errorf("verify published OCI tag %s (expected %s): %w", ref, expected, err)
+		}
+		lastObservation = err.Error()
+
+		// Equal jitter spreads registry reads while retaining half the backoff.
+		half := window / 2
+		timer := time.NewTimer(half + time.Duration(randomN(int64(half))))
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+		}
+		timer.Stop()
+	}
+	return fmt.Errorf("verify published OCI tag %s (expected %s, last observation: %s): %w", ref, expected, lastObservation, ctx.Err())
+}
+
+func retryableTagRead(err error) bool {
+	var response *errcode.ErrorResponse
+	if errors.As(err, &response) {
+		return response.StatusCode >= 500 && response.StatusCode < 600
+	}
+	var transport net.Error
+	return errors.Is(err, errdef.ErrNotFound) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		(errors.As(err, &transport) && transport.Timeout())
 }
 
 func pack(ctx context.Context, request PackRequest, tag string) (store oras.Target, manifestDescriptor ocispec.Descriptor, cleanup func(), err error) {
