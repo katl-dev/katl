@@ -23,9 +23,10 @@ import (
 var timeNow = func() time.Time { return time.Now().UTC() }
 
 type ServeConfig struct {
-	Root       string
-	Listen     string
-	Dispatcher Dispatcher
+	Root                  string
+	Listen                string
+	Dispatcher            Dispatcher
+	KubeletHealthDeadline kubeletHealthDeadline
 }
 
 type dispatcherShutdown interface {
@@ -55,6 +56,7 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	dispatcher := config.Dispatcher
 	if dispatcher == nil {
 		executor := NewExecutor(root, store, agentServer.AgentStartID)
+		executor.kubeletHealthDeadline = config.KubeletHealthDeadline
 		if err := executor.recoverLivePromotions(ctx, currentBootID()); err != nil {
 			return err
 		}
