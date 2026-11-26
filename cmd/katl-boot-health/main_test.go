@@ -381,14 +381,19 @@ func TestRunDeadmanArmsRebootForTrialFailure(t *testing.T) {
 		PreviousKnownGoodBootEntry:    "loader/entries/katl-gen0.conf",
 		TrialBootEntry:                "loader/entries/katl-gen1.conf",
 		BootedBootEntry:               "loader/entries/katl-gen1.conf",
+		PendingTransactionID:          "next-boot-apply",
 		PendingHealthValidation:       true,
 		PersistentDefaultPromotion:    generation.DefaultPromotionPending,
 		UpdatedAt:                     now.Add(-15 * time.Minute),
 	}); err != nil {
 		t.Fatalf("WriteBootSelection() error = %v", err)
 	}
-	if armed, err := generation.ArmBootRecovery(root, "gen1"); err != nil || !armed {
-		t.Fatalf("ArmBootRecovery(gen1) = %t, %v", armed, err)
+	authorization := filepath.Join(root, "run/katl/boot-health/pending")
+	if err := os.MkdirAll(filepath.Dir(authorization), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(authorization, []byte(`{"trialGeneration":"gen1","fallbackGeneration":"gen0"}`), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen1\n")
 	oldClock := bootHealthClock

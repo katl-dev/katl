@@ -194,6 +194,9 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	plan.BootSelection.BootedBootEntry = previousSelection.BootedBootEntry
 	plan.BootSelection.BootedOneShot = previousSelection.BootedOneShot
 	plan.BootSelection.ActiveGenerationID = previousSelection.ActiveGenerationID
+	if err := generation.CheckTrialFallback(e.Root, plan.BootSelection); err != nil {
+		return fail("arm-trial-boot", err)
+	}
 	if err := generation.WriteBootSelection(e.Root, plan.BootSelection); err != nil {
 		return fail("arm-trial-boot", err)
 	}

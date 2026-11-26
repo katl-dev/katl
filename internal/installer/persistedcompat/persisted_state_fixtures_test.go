@@ -260,6 +260,15 @@ func TestPersistedStateRollbackCompatibilityEquivalent(t *testing.T) {
 		t.Fatalf("WriteBootSelection(candidate) error = %v", err)
 	}
 
+	for _, rel := range []string{filepath.Join("efi", previous.Boot.LoaderEntryPath), previous.Boot.UKIPath} {
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("previous boot artifact"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	result, err := generation.RecordBootHealth(generation.BootHealthRequest{
 		Root:         root,
 		GenerationID: candidate.GenerationID,

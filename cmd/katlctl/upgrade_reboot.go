@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"time"
 
@@ -46,7 +47,7 @@ func runningGeneration(status *agentapi.NodeStatus) string {
 // bootHealthFailure explains a boot that finished boot health unsuccessfully.
 // The agent reports pending while boot recovery runs, so a failed boot is
 // final: no automatic reboot follows it.
-func bootHealthFailure(target bootWaitTarget, targetGeneration string, status *agentapi.NodeStatus) error {
+func bootHealthFailure(ctx context.Context, client agentapi.KatlcAgentClient, target bootWaitTarget, targetGeneration string, status *agentapi.NodeStatus) error {
 	nodeName := target.nodeName
 	running := runningGeneration(status)
 	reason := firstNonEmpty(strings.TrimSpace(status.GetBootHealthDiagnostic()), "boot health is "+firstNonEmpty(strings.TrimSpace(status.GetBootHealthState()), "not reported"))
@@ -55,9 +56,18 @@ func bootHealthFailure(target bootWaitTarget, targetGeneration string, status *a
 		message = fmt.Sprintf("node %s booted generation %s instead of %s, and it failed boot health: %s", nodeName, running, targetGeneration, reason)
 	}
 	if next := strings.TrimSpace(status.GetBootTargetGenerationId()); next != "" && next != running {
-		message += fmt.Sprintf("; generation %s is selected for next boot, so run %s to return to it", next, target.command("reboot"))
+		message += fmt.Sprintf(". Generation %s is recorded for next boot", next)
+		list, err := client.ListGenerations(ctx, &agentapi.ListGenerationsRequest{})
+		generations := list.GetGenerations()
+		index := slices.IndexFunc(generations, func(gen *agentapi.Generation) bool { return gen.GetGenerationId() == next })
+		if err == nil && list.GetNextBootGenerationId() == next && index >= 0 {
+			if reason := generations[index].GetUnavailableReason(); reason != "" {
+				message += " (" + reason + ")"
+			}
+		}
+		message += fmt.Sprintf(". Check %s before rebooting", target.command("generations list"))
 	} else {
-		message += fmt.Sprintf("; the node will boot generation %s again, so correct the failure or select a known-good generation with %s before rebooting", running, target.command("generations select GENERATION"))
+		message += fmt.Sprintf(". Fix the failure or check %s and select an available generation with %s before rebooting", target.command("generations list"), target.command("generations select GENERATION"))
 	}
 	return fmt.Errorf("%s. Find the failed unit with %s and %s", message, target.command("logs"), target.command("status"))
 }
@@ -186,7 +196,7 @@ func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgen
 		case bootHealthPending, "":
 			return verifiedNodeBoot{}, false, nil
 		default:
-			return verifiedNodeBoot{}, true, bootHealthFailure(target, targetGeneration, status)
+			return verifiedNodeBoot{}, true, bootHealthFailure(ctx, conn.Client, target, targetGeneration, status)
 		}
 		running := runningGeneration(status)
 		if running == targetGeneration && !observed.healthyOn(targetGeneration) {

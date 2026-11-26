@@ -134,7 +134,7 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 			RuntimeVersion:        "2026.7.0-local.previous-version-longer-than-a-gpt-partition-label",
 			RuntimeInterface:      "katl-runtime-1",
 			Architecture:          "x86_64",
-			RuntimeArtifactSHA256: strings.Repeat("a", 64),
+			RuntimeArtifactSHA256: testSHA(testBootRootImage()),
 		},
 		Boot: generation.BootSelection{
 			UKIPath:         "/efi/EFI/Linux/katl_gen0.efi",
@@ -245,6 +245,9 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 		{3, "KATL_ROOT_B", "bbbbbbbb-1111-2222-3333-444444444444", rootType},
 		{4, "KATL_STATE", "state-partuuid", stateType},
 	}})
+	host.mountRoot(t, root, 2)
+	writeTestFile(t, filepath.Join(root, "dev/disk/by-diskseq/1-part2"), string(testBootRootImage()))
+	writeTestFile(t, filepath.Join(root, "efi", previous.Boot.LoaderEntryPath), "known-good loader entry")
 	// udev has not yet created the inactive partition's by-diskseq link: only
 	// the kernel node exists.
 	inactiveDevice := filepath.Join(root, "dev/vda3")

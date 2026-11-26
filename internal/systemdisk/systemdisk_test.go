@@ -220,6 +220,28 @@ func TestResolveWholeDiskRoot(t *testing.T) {
 	}
 }
 
+func TestBootPartition(t *testing.T) {
+	sysfs := twoKatlDisks(t)
+	layout, err := Resolve(sysfs.root, sysfs.major, runningRootMinor, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	partition, found, err := layout.BootPartition("new-root-b")
+	if err != nil || !found || partition.DevicePath() != "/dev/disk/by-diskseq/9-part3" {
+		t.Fatalf("bound partition = %+v, %t, %v, want the inactive slot on the system disk", partition, found, err)
+	}
+	if _, found, err := layout.BootPartition("old-root-b"); err != nil || found {
+		t.Fatalf("bound decoy partition = %t, %v, want absent", found, err)
+	}
+
+	// The running root is still unambiguous, but the candidate would not be.
+	sysfs.addDisk(t, "vdb", "katl-clone", 11, 32, fakePartition{3, "KATL_ROOT_B", "new-root-b"})
+	if _, found, err := layout.BootPartition("new-root-b"); err == nil || found {
+		t.Fatalf("bound cloned partition = %t, %v, want an ambiguity error", found, err)
+	}
+}
+
 func TestPartitionNode(t *testing.T) {
 	// The decoy vda sorts first and also has a partition 3.
 	sysfs := newFakeSysfs(t)

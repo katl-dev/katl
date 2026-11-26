@@ -1,13 +1,17 @@
 package generation
 
 import (
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestPromoteLiveGenerationMakesHealthyPersistentDefault(t *testing.T) {
@@ -593,6 +597,7 @@ func TestRecordBootHealthTimeoutRestoresPreviousAndRequestsReboot(t *testing.T) 
 		PersistentDefaultPromotion:    DefaultPromotionPending,
 		UpdatedAt:                     now.Add(-30 * time.Minute),
 	})
+	writeBootHealthFallback(t, root, "gen0")
 	if armed, err := ArmBootRecovery(root, "gen1"); err != nil || !armed {
 		t.Fatalf("ArmBootRecovery(gen1) = %t, %v", armed, err)
 	}
@@ -650,6 +655,7 @@ func TestRecordBootedGenerationAfterTrialFallback(t *testing.T) {
 		PreviousKnownGoodBootEntry:    "loader/entries/katl-gen0.conf",
 		TrialBootEntry:                "loader/entries/katl-gen1.conf",
 		BootedBootEntry:               "loader/entries/katl-gen1.conf",
+		PendingTransactionID:          "next-boot-apply",
 		PendingHealthValidation:       true,
 		PersistentDefaultPromotion:    DefaultPromotionPending,
 		UpdatedAt:                     now.Add(-time.Minute),
@@ -924,10 +930,12 @@ func TestRecordBootHealthKeepsFallbackAfterTrialReboot(t *testing.T) {
 		PreviousKnownGoodBootEntry:    "loader/entries/katl-gen0.conf",
 		TrialBootEntry:                "loader/entries/katl-gen1.conf",
 		BootedBootEntry:               "loader/entries/katl-gen1.conf",
+		PendingTransactionID:          "next-boot-apply",
 		PendingHealthValidation:       true,
 		PersistentDefaultPromotion:    DefaultPromotionPending,
 		UpdatedAt:                     now.Add(-time.Minute),
 	})
+	writeBootHealthFallback(t, root, "gen0")
 	if armed, err := ArmBootRecovery(root, "gen1"); err != nil || !armed {
 		t.Fatalf("ArmBootRecovery(gen1) = %t, %v", armed, err)
 	}
@@ -1120,13 +1128,16 @@ func TestFailedKnownGoodOneShotRemainsTemporary(t *testing.T) {
 	}
 }
 
-func TestRecordBootHealthDemotesKnownGoodTrial(t *testing.T) {
+func TestTrialFailureSelectsFallback(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		armed bool
+		name         string
+		intent       bool
+		armed        bool
+		missingEntry bool
 	}{
-		{name: "pending and unarmed"},
-		{name: "armed without pending selection", armed: true},
+		{name: "missing fallback entry", intent: true, missingEntry: true},
+		{name: "legacy trial without a pending transaction ID"},
+		{name: "OnFailure reboots to the recorded default", intent: true, armed: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
@@ -1141,27 +1152,49 @@ func TestRecordBootHealthDemotesKnownGoodTrial(t *testing.T) {
 				TrialGenerationID: "gen2", TrialBootEntry: "loader/entries/katl-gen2.conf",
 				PendingHealthValidation: true, PersistentDefaultPromotion: DefaultPromotionPending,
 			}
+			if tc.intent {
+				selection.PendingTransactionID = "next-boot-apply"
+			}
 			writeBootHealthSelection(t, root, selection)
 			if tc.armed {
+				writeBootHealthFallback(t, root, "gen1")
 				if armed, err := ArmBootRecovery(root, "gen2"); err != nil || !armed {
 					t.Fatalf("arm trial = %t, %v", armed, err)
 				}
-				selection.PendingHealthValidation = false
-				selection.PersistentDefaultPromotion = DefaultPromotionDone
-				selection.TrialGenerationID = ""
-				selection.TrialBootEntry = ""
-				writeBootHealthSelection(t, root, selection)
+			}
+			if tc.missingEntry {
+				removeBootFixture(t, filepath.Join(root, "efi/loader/entries/katl-gen1.conf"))
 			}
 
-			result, err := RecordBootHealth(BootHealthRequest{
-				Root: root, CommandLine: bootHealthCommandLine("gen2"), Result: BootHealthFailure, RequestReboot: true, Now: now,
-				SetBootDefault: bootHealthDefaultRecorder(t, "loader/entries/katl-gen1.conf"),
-			})
+			setter := bootHealthDefaultRecorder(t, "loader/entries/katl-gen1.conf")
+			if tc.missingEntry {
+				setter = func(_, entry string) error {
+					t.Fatalf("unexpected EFI write to %s", entry)
+					return nil
+				}
+			}
+			request := BootHealthRequest{
+				Root: root, CommandLine: bootHealthCommandLine("gen2"), Result: BootHealthFailure, Now: now,
+				SetBootDefault: setter,
+			}
+			result, err := RecordBootHealth(request)
+			if tc.missingEntry {
+				if err != nil || !result.Failed || !result.RecoveryRequired || result.RebootRequested ||
+					!strings.Contains(result.FallbackProblem, "katl-gen1.conf") {
+					t.Fatalf("boot health = %+v, %v, want recovery required with missing entry", result, err)
+				}
+				after, err := ReadBootSelection(root)
+				if err != nil || after.DefaultGenerationID != selection.DefaultGenerationID || after.DefaultBootEntry != selection.DefaultBootEntry {
+					t.Fatalf("default changed to %+v, %v", after, err)
+				}
+				return
+			}
+
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !result.Failed || result.DefaultGeneration != "gen1" || result.RebootRequested != tc.armed || result.RecoveryRequired {
-				t.Fatalf("boot health = %#v, want demotion and fallback with reboot requested = %t", result, tc.armed)
+			if !result.Failed || result.DefaultGeneration != "gen1" || result.RebootRequested || result.RecoveryRequired {
+				t.Fatalf("boot health = %#v, want demotion and selected fallback", result)
 			}
 			_, status, err := ReadGeneration(root, "gen2")
 			if err != nil {
@@ -1169,6 +1202,66 @@ func TestRecordBootHealthDemotesKnownGoodTrial(t *testing.T) {
 			}
 			if status.BootState != BootStateFailed || status.HealthState != HealthStateUnhealthy {
 				t.Fatalf("generation status = %#v, want failed/unhealthy", status)
+			}
+
+			request.RequestReboot = true
+			request.SetBootDefault = func(_, entry string) error {
+				t.Fatalf("failure replay attempted to set EFI default to %s", entry)
+				return nil
+			}
+			for attempt := range 2 {
+				result, err := RecordBootHealth(request)
+				if err != nil || result.DefaultGeneration != "gen1" || result.RebootRequested != (tc.armed && attempt == 0) {
+					t.Fatalf("failure replay %d = %+v, %v", attempt, result, err)
+				}
+			}
+		})
+	}
+}
+
+func TestTrialFailureWithUnreadableFallback(t *testing.T) {
+	for _, legacy := range []bool{false, true} {
+		t.Run(map[bool]string{false: "status read", true: "legacy metadata read"}[legacy], func(t *testing.T) {
+			root := t.TempDir()
+			now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+			writeBootHealthGeneration(t, root, "gen0", "", CommitStateCommitted, BootStateGood, HealthStateHealthy, now.Add(-time.Hour))
+			writeBootHealthGeneration(t, root, "gen1", "gen0", CommitStateCommitted, BootStateTrying, HealthStateUnknown, now)
+			selection := BootSelectionRecord{
+				APIVersion: APIVersion, Kind: BootSelectionKind, UpdatedAt: now,
+				DefaultGenerationID: "gen1", DefaultBootEntry: "loader/entries/katl-gen1.conf",
+				TrialGenerationID: "gen1", TrialBootEntry: "loader/entries/katl-gen1.conf",
+				PreviousKnownGoodGenerationID: "gen0", PreviousKnownGoodBootEntry: "loader/entries/katl-gen0.conf",
+				PendingHealthValidation: true, PersistentDefaultPromotion: DefaultPromotionPending, PendingTransactionID: "next-boot-apply",
+			}
+			writeBootHealthSelection(t, root, selection)
+			path := filepath.Join(root, "var/lib/katl/generations/gen0/status.json")
+			wantErr := unix.ELOOP
+			if legacy {
+				removeBootFixture(t, filepath.Join(filepath.Dir(path), "spec.json"))
+				metadata := filepath.Join(filepath.Dir(path), "metadata.json")
+				// Linux rejects reads from the unmapped offset zero of /proc/self/mem.
+				linkBootFixture(t, metadata, "/proc/self/mem")
+				wantErr = unix.EIO
+			} else {
+				removeBootFixture(t, path)
+				linkBootFixture(t, path, path)
+			}
+
+			_, err := RecordBootHealth(BootHealthRequest{
+				Root: root, CommandLine: bootHealthCommandLine("gen1"), Result: BootHealthFailure, RequestReboot: true,
+				SetBootDefault: func(_, entry string) error {
+					t.Fatalf("unexpected EFI write to %s", entry)
+					return nil
+				},
+			})
+			if !errors.Is(err, wantErr) || !strings.Contains(err.Error(), "bootability indeterminate") {
+				t.Fatalf("failure outcome = %v, want indeterminate with %v", err, wantErr)
+			}
+			if after, err := ReadBootSelection(root); err != nil || after != selection {
+				t.Fatalf("selection changed to %+v, %v", after, err)
+			}
+			if _, status, err := ReadGeneration(root, "gen1"); err != nil || status.BootState != BootStateTrying {
+				t.Fatalf("candidate status changed to %+v, %v", status, err)
 			}
 		})
 	}
@@ -1321,6 +1414,7 @@ func TestRecordBootHealthFailureRequiresKnownGoodRollbackTarget(t *testing.T) {
 		PreviousKnownGoodBootEntry:    "loader/entries/katl-gen0.conf",
 		TrialBootEntry:                "loader/entries/katl-gen1.conf",
 		BootedBootEntry:               "loader/entries/katl-gen1.conf",
+		PendingTransactionID:          "next-boot-apply",
 		PendingHealthValidation:       true,
 		PersistentDefaultPromotion:    DefaultPromotionPending,
 		UpdatedAt:                     now.Add(-30 * time.Minute),
@@ -1346,6 +1440,7 @@ func writeBootHealthGeneration(t *testing.T, root string, id string, previous st
 	t.Helper()
 	record := abRecord(t, id, "root-a", "11111111-2222-3333-4444-555555555555", "0.1.0", "v1.36.1", updatedAt)
 	spec := SpecFromRecord(record)
+	spec.Root.RuntimeArtifactSHA256 = fmt.Sprintf("%x", sha256.Sum256(bootRootImage("boot health runtime")))
 	spec.PreviousGenerationID = previous
 	spec.Boot.LoaderEntryPath = "loader/entries/katl-" + id + ".conf"
 	status, err := NewGenerationStatus(spec, commitState, bootState, healthState, updatedAt)
@@ -1361,6 +1456,24 @@ func writeBootHealthGeneration(t *testing.T, root string, id string, previous st
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(path, []byte(id), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func writeBootHealthFallback(t *testing.T, root, id string) {
+	t.Helper()
+	spec, _, err := ReadGeneration(root, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeBootDisk(t, root)
+	writeBootFixture(t, bootDevicePath(root, spec.Root.Slot), bootRootImage("boot health runtime"))
+	for _, ref := range spec.Sysexts {
+		writeBootFixture(t, rootedPathUnchecked(root, ref.Path), []byte("sysext"))
+	}
+	for _, ref := range spec.Confexts {
+		if err := os.MkdirAll(rootedPathUnchecked(root, ref.Path), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}

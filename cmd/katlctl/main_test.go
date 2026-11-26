@@ -3149,6 +3149,7 @@ type fakeKatlcAgentClient struct {
 	etcdStatusErr           error
 	onGetNodeStatus         func()
 	generation              *agentapi.Generation
+	generationList          *agentapi.ListGenerationsResponse
 	generationRequest       *agentapi.GetGenerationRequest
 	operationStatus         *agentapi.OperationStatus
 	operationRequest        *agentapi.GetOperationRequest
@@ -3420,7 +3421,7 @@ func (c *fakeKatlcAgentClient) WatchOperation(context.Context, *agentapi.WatchOp
 }
 
 func (c *fakeKatlcAgentClient) ListGenerations(context.Context, *agentapi.ListGenerationsRequest, ...grpc.CallOption) (*agentapi.ListGenerationsResponse, error) {
-	return nil, nil
+	return c.generationList, nil
 }
 
 func (c *fakeKatlcAgentClient) GetGeneration(_ context.Context, req *agentapi.GetGenerationRequest, _ ...grpc.CallOption) (*agentapi.Generation, error) {

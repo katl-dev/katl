@@ -216,7 +216,7 @@ func ReadSplitRecords(dir string) (GenerationSpec, GenerationStatus, error) {
 		if os.IsNotExist(err) {
 			legacy, legacyErr := readRecordFile(filepath.Join(dir, "metadata.json"))
 			if legacyErr != nil {
-				return GenerationSpec{}, GenerationStatus{}, fmt.Errorf("read generation spec: %w", err)
+				return GenerationSpec{}, GenerationStatus{}, fmt.Errorf("read legacy generation metadata: %w", legacyErr)
 			}
 			spec := SpecFromRecord(legacy)
 			digest, digestErr := CanonicalSpecDigest(spec)

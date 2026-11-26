@@ -471,9 +471,9 @@ katlctl node generations remove GENERATION cp-1 --config cluster.yaml
 Selection does not reboot the node. By default it changes the persistent boot
 default. `--one-shot` preserves that default, including after boot health
 passes; the following reboot returns to it. Selection accepts available healthy
-generations. Listing shows each
-generation's OS version, slot, availability, and protection reasons, and all
-commands support `--output json`. Removing an already absent generation
+generations. Listing shows each generation's OS version, slot, boot artifact
+checks, and protection reasons. Selection and reboot also verify the runtime
+image. All commands support `--output json`. Removing an already absent generation
 succeeds. Removal refuses running, selected, rollback, and referenced
 generations; select another default or finish the pending boot first where
 applicable.

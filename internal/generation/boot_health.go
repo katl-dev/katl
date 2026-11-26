@@ -39,6 +39,7 @@ type BootHealthResult struct {
 	NextBootGeneration string
 	BootDefaultEntry   string
 	BootDefaultSet     bool
+	FallbackProblem    string
 }
 
 type BootDefaultSetter func(root string, bootEntry string) error
@@ -493,6 +494,24 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 	if err != nil {
 		return BootHealthResult{}, err
 	}
+	if recordedFallback(selection, generationID) {
+		// OnFailure can consume the reboot authorization after health already
+		// selected the fallback. It must not select a target a second time.
+		reboot := request.RequestReboot && boot.Armed
+		if reboot {
+			if err := ClearBootRecovery(root); err != nil {
+				return BootHealthResult{}, err
+			}
+		}
+		return BootHealthResult{
+			GenerationID:      generationID,
+			Result:            request.Result,
+			Failed:            true,
+			RebootRequested:   reboot,
+			DefaultGeneration: selection.DefaultGenerationID,
+			BootDefaultEntry:  selection.DefaultBootEntry,
+		}, nil
+	}
 	if !boot.failureDemotes() {
 		if !selection.PendingHealthValidation && strings.TrimSpace(selection.TargetBootGenerationID) == boot.GenerationID {
 			// Both manual selection modes write LoaderEntryOneShot. Its presence
@@ -525,6 +544,30 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 	if err := validatePendingBootTarget(selection, generationID); err != nil {
 		return BootHealthResult{}, err
 	}
+	originalDefaultEntry := selection.DefaultBootEntry
+	previousID := strings.TrimSpace(selection.PreviousKnownGoodGenerationID)
+	if (selection.OneShot || previousID == "") && selection.DefaultGenerationID != generationID {
+		previousID = strings.TrimSpace(selection.DefaultGenerationID)
+		selection.PreviousKnownGoodGenerationID = previousID
+		selection.PreviousKnownGoodBootEntry = originalDefaultEntry
+	}
+	var fallbackProblem string
+	if previousID != "" {
+		fallback := bootability{state: bootUnavailable, evidence: "fallback is the failed generation"}
+		if previousID != generationID {
+			fallback = checkRecoveryFallback(root, selection, previousID, false)
+		}
+		if fallback.state == bootIndeterminate {
+			return BootHealthResult{}, fmt.Errorf("check fallback before changing the boot target: %w. Preserve boot diagnostics and recover from the console", fallback.problem())
+		}
+		if fallback.state == bootUnavailable {
+			fallbackProblem = fmt.Sprintf("generation %s %v. The boot default was left unchanged. Preserve boot diagnostics and recover from the console", previousID, fallback.problem())
+			previousID = ""
+			selection.PreviousKnownGoodGenerationID = ""
+			selection.PreviousKnownGoodBootEntry = ""
+		}
+	}
+
 	if status.BootState != BootStateFailed || status.HealthState != HealthStateUnhealthy {
 		updatedStatus := status
 		updatedStatus.BootState = BootStateFailed
@@ -541,23 +584,8 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 			return BootHealthResult{}, err
 		}
 	}
-	originalDefaultEntry := selection.DefaultBootEntry
-	previousID := strings.TrimSpace(selection.PreviousKnownGoodGenerationID)
-	if selection.OneShot && selection.DefaultGenerationID != generationID {
-		previousID = selection.DefaultGenerationID
-		selection.PreviousKnownGoodGenerationID = previousID
-		selection.PreviousKnownGoodBootEntry = selection.DefaultBootEntry
-	}
 	selection.OneShot = false
 	selection.BootedOneShot = false
-	if previousID == "" && selection.DefaultGenerationID != generationID {
-		previousID = strings.TrimSpace(selection.DefaultGenerationID)
-	}
-	if previousID != "" && !validRollbackTarget(root, previousID) {
-		previousID = ""
-		selection.PreviousKnownGoodGenerationID = ""
-		selection.PreviousKnownGoodBootEntry = ""
-	}
 	selection.FailedBootGenerationID = generationID
 	selection.TargetBootGenerationID = ""
 	selection.TrialGenerationID = ""
@@ -604,6 +632,7 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 		RecoveryRequired:  selection.RecoveryRequired,
 		DefaultGeneration: selection.DefaultGenerationID,
 		BootDefaultEntry:  selection.DefaultBootEntry,
+		FallbackProblem:   fallbackProblem,
 	}, nil
 }
 
@@ -719,14 +748,6 @@ func firstNonEmptyBootGeneration(values ...string) string {
 		}
 	}
 	return "<missing>"
-}
-
-func validRollbackTarget(root string, generationID string) bool {
-	_, status, err := ReadGeneration(root, generationID)
-	if err != nil {
-		return false
-	}
-	return IsKnownGood(status)
 }
 
 func SelectedRootPartUUIDFromCommandLine(commandLine string) (string, error) {

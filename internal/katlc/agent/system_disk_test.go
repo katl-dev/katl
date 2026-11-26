@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/katl-dev/katl/internal/systemdisk"
+	"golang.org/x/sys/unix"
 )
 
 const (
@@ -74,6 +76,39 @@ func (h *hostDisks) booted(index, partition int) func() (systemdisk.Layout, erro
 	return func() (systemdisk.Layout, error) {
 		return systemdisk.Resolve(h.sysfs, 253, uint32(16*index+partition), true)
 	}
+}
+
+func (h *hostDisks) mountRoot(t *testing.T, root string, part int) {
+	t.Helper()
+	var stat unix.Stat_t
+	if err := unix.Stat(root, &stat); err != nil {
+		t.Fatal(err)
+	}
+	mounted := fmt.Sprintf("%d:%d", unix.Major(uint64(stat.Dev)), unix.Minor(uint64(stat.Dev)))
+	if err := os.Symlink(filepath.Join(h.sysfs, "devices/virtual/block", h.disks[0].name, fmt.Sprintf("%s%d", h.disks[0].name, part)), filepath.Join(h.sysfs, "dev/block", mounted)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(h.sysfs, filepath.Join(root, "sys")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func testBootRootImage() []byte {
+	image := make([]byte, 4096)
+	copy(image, "hsqs")
+	binary.LittleEndian.PutUint64(image[40:48], 96)
+	return image
+}
+
+func writeTestBootDisk(t *testing.T, root, partUUID string) {
+	t.Helper()
+	host := newHostDisks(t, hostDisk{"vda", 17, []hostPartition{
+		{1, "KATL_ROOT_A", partUUID, rootType},
+		{2, "KATL_ESP", "esp-partuuid", espType},
+		{3, "KATL_STATE", "state-partuuid", stateType},
+	}})
+	host.mountRoot(t, root, 1)
+	writeTestFile(t, filepath.Join(root, "dev/disk/by-diskseq/17-part1"), string(testBootRootImage()))
 }
 
 func (h *hostDisks) run(_ context.Context, argv []string, _ func(int)) ToolResult {

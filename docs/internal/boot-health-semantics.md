@@ -239,6 +239,59 @@ upgrades. It marks the generation good and healthy and makes it the persistent
 EFI default immediately. Only next-boot apply and host upgrade arm a one-shot
 trial that must pass the boot health gate.
 
+## Generation bootability
+
+`internal/generation` owns bootability evidence. It matches the spec's PARTUUID
+to a partition on the running system disk and opens the bound partition by disk
+attachment sequence and partition number. A partition enumeration or clone scan
+error makes the match indeterminate.
+
+The verifier hashes the padded SquashFS image at the start of the partition.
+Katl's runtime builder uses the default 4 KiB image padding, so the verifier
+rounds the superblock's `bytes_used` up to the next 4 KiB boundary. An
+implausible extent, including a padded image larger than the partition, is
+indeterminate. Deriving the extent keeps the partition tail out of the digest
+and works with existing generation specs. Install and upgrade write verification
+use the build's recorded artifact length to verify the write they just made.
+
+The same check requires the loader entry and UKI on the ESP and each selected
+sysext, bundled confext, and generated confext at its recorded path. Activation
+still verifies extension content digests when the kernel-selected generation
+starts. This gives manual selection three outcomes:
+
+- **Bootable** means the root digest matches and the recorded boot artifacts
+  are present. Manual selection also requires known-good health.
+- **Unavailable** means the check found evidence such as an absent PARTUUID,
+  a mismatched root digest, a missing artifact, or prior slot invalidation.
+- **Indeterminate** means Katl could not complete the check, for example because
+  reading the root returned an I/O error. Katl reports the cause and protects
+  the record from explicit removal and pruning while the check is indeterminate.
+
+`katlctl node generations list` checks recorded state and artifact presence
+without reading the root image under the submission and boot-state locks.
+Manual selection, removal, and pruning verify the root digest. Manual selection
+checks the request deadline before publishing the selection, and each EFI write
+and compensation has a bounded timeout independent of the request.
+
+Next-boot configuration and host upgrades verify the known-good fallback
+before writing EFI for a trial. Reboot admission rechecks the staged target and
+its fallback and uses the entry selected by systemd-boot, where a one-shot can
+take precedence over the persistent default. A successful staging receipt can
+still report a bootability problem if the target changes after staging. The
+agent refuses to schedule the reboot when it cannot verify the target.
+
+Boot activation verifies the fallback before granting boot-local reboot
+authorization. If verification fails, activation reports the fallback problem
+and continues checking the candidate. Failure selection checks known-good
+health, the loader entry, and the UKI before setting the fallback as the
+default. Slot replacement also checks the running generation's loader entry
+and UKI before redirecting EFI and allowing the overwrite.
+
+The existing trial and boot-local authorization rules govern when recovery can
+act. The durable boot-move intent and EFI reconciliation are tracked in
+[#732](https://github.com/katl-dev/katl/issues/732) and
+[#733](https://github.com/katl-dev/katl/issues/733).
+
 ## Attempt Count
 
 The initial update policy allows one attempted boot for a new generation. The
@@ -284,22 +337,27 @@ selects it for the next boot.
 
 Katl automatically reboots once after a supported trial fails. Before allowing
 that reboot, `katl-boot-health` must validate that the previous generation is
-still `good` and `healthy`, restore its boot entry as the default, mark the
+still `good` and `healthy` with its loader entry and UKI present, restore its
+boot entry as the default, mark the
 trial `failed` and `unhealthy`, and persist `selection.json`. The
 `katl-boot-recovery.service` unit then uses systemd's normal reboot transaction.
 The boot-health deadline uses the same path when the candidate does not reach
 the health target within 10 minutes. Generation activation creates the
 ephemeral `/run/katl/boot-health/pending` authorization only when the running
-generation is the pending trial and its distinct fallback is still `good` and
-`healthy`. The fallback and ordinary boots do not arm recovery. A successful
-boot removes the authorization. The timer may remain scheduled, but its service
-is condition-skipped without that authorization. Failure handling consumes the
+generation matches the pending trial and its distinct known-good fallback
+passes the full bootability check. The fallback
+and ordinary boots do not arm recovery. A successful boot removes the
+authorization. The timer may remain scheduled, but its service is
+condition-skipped without that authorization. Failure handling consumes the
 authorization before systemd requests the one reboot, so restarting a service
 cannot request another automatic reboot.
 
-A pending trial that fails before recovery is armed still records the trial
-failure and restores the fallback as the default when one is available.
-Automatic reboot requires the boot-local authorization.
+A pending trial that fails before recovery is armed can still record the trial
+failure and restore the fallback as the default after the boot-file checks
+pass. If the fallback is unavailable, Katl reports its evidence and keeps the
+default. If its evidence is indeterminate, Katl leaves selection unchanged so
+the operator can diagnose the read failure. Automatic reboot requires the
+boot-local authorization.
 
 This mechanism supports failures after PID 1 has started the boot deadline and
 `/var` and `/efi` are available. It includes an unreachable management network,

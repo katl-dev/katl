@@ -82,6 +82,7 @@ func knownGoodNode(t *testing.T, unitProperties string) (*testServer, *healthUni
 	if err := generation.WriteGeneration(root, spec, knownGood); err != nil {
 		t.Fatal(err)
 	}
+	writeTestBootArtifacts(t, root, spec)
 	writeProcCmdline(t, root, "root=PARTUUID=11111111-1111-1111-1111-111111111111 rootfstype=squashfs ro katl.generation=generation-0")
 	unit := &healthUnit{}
 	unit.set(unitProperties)

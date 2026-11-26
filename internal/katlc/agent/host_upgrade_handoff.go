@@ -200,6 +200,9 @@ func (e *Executor) executeHostUpgradeHandoff(ctx context.Context, record operati
 	selection.PendingHealthValidation = true
 	selection.PersistentDefaultPromotion = generation.DefaultPromotionPending
 	selection.UpdatedAt = e.clock()
+	if err := generation.CheckTrialFallback(e.Root, selection); err != nil {
+		return fail("arm-trial-boot", err)
+	}
 	if err := e.SetBootDefault(ctx, e.Root, previous.Boot.LoaderEntryPath); err != nil {
 		return fail("arm-trial-boot", fmt.Errorf("retain source boot default: %w", err))
 	}

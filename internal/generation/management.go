@@ -1,6 +1,7 @@
 package generation
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -15,9 +16,10 @@ type ManagedGeneration struct {
 	Status            GenerationStatus
 	UnavailableReason string
 	ProtectedBy       []string
+	replaced          bool
 }
 
-// Inspect serializes with selection, boot health and garbage collection.
+// Inspect lists recorded state and checks artifact presence without reading root images.
 func Inspect(root string) ([]ManagedGeneration, BootSelectionRecord, error) {
 	var items []ManagedGeneration
 	var selection BootSelectionRecord
@@ -27,13 +29,13 @@ func Inspect(root string) ([]ManagedGeneration, BootSelectionRecord, error) {
 		if err != nil {
 			return err
 		}
-		items, err = inspect(root, selection)
+		items, err = inspect(root, selection, false)
 		return err
 	})
 	return items, selection, err
 }
 
-func inspect(root string, selection BootSelectionRecord) ([]ManagedGeneration, error) {
+func readManagedGenerations(root string) ([]ManagedGeneration, error) {
 	entries, err := os.ReadDir(rootedPathUnchecked(root, GenerationRecordsDir))
 	if err != nil {
 		return nil, err
@@ -49,52 +51,48 @@ func inspect(root string, selection BootSelectionRecord) ([]ManagedGeneration, e
 		}
 		items = append(items, ManagedGeneration{Spec: spec, Status: status})
 	}
+	return items, nil
+}
+
+func inspect(root string, selection BootSelectionRecord, verifyRoot bool) ([]ManagedGeneration, error) {
+	items, err := readManagedGenerations(root)
+	if err != nil {
+		return nil, err
+	}
 	slices.SortFunc(items, func(a, b ManagedGeneration) int {
 		if c := b.Spec.CreatedAt.Compare(a.Spec.CreatedAt); c != 0 {
 			return c
 		}
 		return strings.Compare(b.Spec.GenerationID, a.Spec.GenerationID)
 	})
-	latest := map[string]GenerationSpec{}
+	type slotArtifact struct{ uuid, digest string }
+	acceptedArtifacts := map[slotArtifact]bool{}
 	for _, item := range items {
-		if item.Status.CommitState != CommitStateCommitted && item.Status.CommitState != CommitStateSuperseded {
-			continue
+		if verifyRoot && item.Status.UnavailableReason == "" && (item.Status.CommitState == CommitStateCommitted || item.Status.CommitState == CommitStateSuperseded) {
+			acceptedArtifacts[slotArtifact{strings.ToLower(item.Spec.Root.PartitionUUID), strings.ToLower(item.Spec.Root.RuntimeArtifactSHA256)}] = true
 		}
-		if _, ok := latest[item.Spec.Root.PartitionUUID]; !ok {
-			latest[item.Spec.Root.PartitionUUID] = item.Spec
-		}
+	}
+	check := bootabilityCheck{root: root}
+	probe := func(spec GenerationSpec, status GenerationStatus) bootability {
+		return checkBootArtifacts(root, spec, status)
+	}
+	if verifyRoot {
+		probe = check.check
 	}
 	rollbackSlots := map[string]bool{}
 	for i := range items {
 		item := &items[i]
 		id := item.Spec.GenerationID
-		item.UnavailableReason = item.Status.UnavailableReason
-		if item.UnavailableReason == "" {
-			current := latest[item.Spec.Root.PartitionUUID]
-			if current.GenerationID != "" && (current.RuntimeVersion != item.Spec.RuntimeVersion || current.Boot.UKIPath != item.Spec.Boot.UKIPath || current.Root.Flavour != item.Spec.Root.Flavour || current.Root.RuntimeArtifactSHA256 != item.Spec.Root.RuntimeArtifactSHA256) {
-				item.UnavailableReason = slotReplaced
-			} else if item.Spec.Boot.LoaderEntryPath == "" {
-				item.UnavailableReason = "loader entry is missing"
-			} else if item.Status.CommitState != CommitStateCommitted && item.Status.CommitState != CommitStateSuperseded {
-				item.UnavailableReason = "generation is not committed"
-			} else {
-				paths := []string{filepath.Join("/efi", item.Spec.Boot.LoaderEntryPath), filepath.Join("/efi", entryPath(item.Spec.Boot.UKIPath))}
-				for _, ref := range item.Spec.Sysexts {
-					paths = append(paths, ref.Path)
-				}
-				for _, ref := range item.Spec.BundledConfexts {
-					paths = append(paths, ref.Path)
-				}
-				for _, ref := range item.Spec.Confexts {
-					paths = append(paths, ref.Path)
-				}
-				for _, path := range paths {
-					if _, err := os.Stat(rootedPathUnchecked(root, path)); err != nil {
-						item.UnavailableReason = "boot artifact unavailable: " + path
-						break
-					}
-				}
-			}
+		uuid := strings.ToLower(item.Spec.Root.PartitionUUID)
+		result := probe(item.Spec, item.Status)
+		if err := manualBootEligibility(result, item.Status); err != nil {
+			item.UnavailableReason = err.Error()
+		}
+		// A digest that matches another accepted generation shows this slot
+		// was replaced. An unknown digest could indicate damage instead.
+		item.replaced = result.state == bootUnavailable && acceptedArtifacts[slotArtifact{uuid, result.digest}]
+		if result.state == bootIndeterminate {
+			item.ProtectedBy = append(item.ProtectedBy, "bootability indeterminate")
 		}
 		for _, p := range []struct{ id, reason string }{
 			{selection.ActiveGenerationID, "active"},
@@ -108,9 +106,9 @@ func inspect(root string, selection BootSelectionRecord) ([]ManagedGeneration, e
 				item.ProtectedBy = append(item.ProtectedBy, p.reason)
 			}
 		}
-		if item.UnavailableReason == "" && IsKnownGood(item.Status) && !rollbackSlots[item.Spec.Root.PartitionUUID] {
+		if item.UnavailableReason == "" && !rollbackSlots[uuid] {
 			item.ProtectedBy = append(item.ProtectedBy, "slot rollback")
-			rollbackSlots[item.Spec.Root.PartitionUUID] = true
+			rollbackSlots[uuid] = true
 		}
 	}
 	// A generation can own extension files still referenced by another generation.
@@ -150,7 +148,17 @@ type SelectRequest struct {
 	SetOneshot   BootDefaultSetter
 }
 
-func Select(request SelectRequest) error {
+func manualBootEligibility(result bootability, status GenerationStatus) error {
+	if err := result.problem(); err != nil {
+		return err
+	}
+	if !IsKnownGood(status) {
+		return fmt.Errorf("has not passed boot health; use the staged upgrade or configuration workflow")
+	}
+	return nil
+}
+
+func Select(ctx context.Context, request SelectRequest) error {
 	return withStateLock(rootedPathUnchecked(request.Root, "/var/lib/katl/boot"), func() error {
 		selection, err := ReadBootSelection(request.Root)
 		if err != nil {
@@ -159,32 +167,23 @@ func Select(request SelectRequest) error {
 		if selection.PendingHealthValidation || selection.RecoveryRequired {
 			return fmt.Errorf("finish the pending boot or recover boot health before selecting a generation")
 		}
-		items, err := inspect(request.Root, selection)
+		spec, status, err := ReadGeneration(request.Root, request.GenerationID)
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("generation %q does not exist or is incomplete; list generations first", request.GenerationID)
+		}
 		if err != nil {
 			return err
 		}
-		var selected *ManagedGeneration
-		for i := range items {
-			if items[i].Spec.GenerationID == request.GenerationID {
-				selected = &items[i]
-				break
-			}
-		}
-		if selected == nil {
-			return fmt.Errorf("generation %q does not exist; list generations first", request.GenerationID)
-		}
-		if selected.UnavailableReason != "" {
-			return fmt.Errorf("generation %s cannot boot: %s", request.GenerationID, selected.UnavailableReason)
-		}
-		if !IsKnownGood(selected.Status) {
-			return fmt.Errorf("generation %s has not passed boot health; use the staged upgrade or configuration workflow", request.GenerationID)
+		check := bootabilityCheck{root: request.Root}
+		if err := manualBootEligibility(check.check(spec, status), status); err != nil {
+			return fmt.Errorf("generation %s %w", request.GenerationID, err)
 		}
 		if request.SetDefault == nil || request.SetOneshot == nil {
 			return fmt.Errorf("boot selection setters are required")
 		}
 		previous := selection
 		selection.TargetBootGenerationID = request.GenerationID
-		selection.TargetBootEntry = selected.Spec.Boot.LoaderEntryPath
+		selection.TargetBootEntry = spec.Boot.LoaderEntryPath
 		selection.OneShot = request.OneShot
 		if !request.OneShot {
 			if selection.DefaultGenerationID != request.GenerationID {
@@ -192,7 +191,7 @@ func Select(request SelectRequest) error {
 				selection.PreviousKnownGoodBootEntry = previous.DefaultBootEntry
 			}
 			selection.DefaultGenerationID = request.GenerationID
-			selection.DefaultBootEntry = selected.Spec.Boot.LoaderEntryPath
+			selection.DefaultBootEntry = spec.Boot.LoaderEntryPath
 		}
 		selection.UpdatedAt = request.Now.UTC()
 		if selection.UpdatedAt.IsZero() {
@@ -200,6 +199,9 @@ func Select(request SelectRequest) error {
 		}
 		// Publish intent before EFI: boot health must understand the selection even
 		// if the machine loses power immediately after the firmware variable changes.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := WriteBootSelection(request.Root, selection); err != nil {
 			return err
 		}
@@ -235,7 +237,7 @@ func Remove(root, id string) error {
 		if selection.PendingHealthValidation || selection.RecoveryRequired {
 			return fmt.Errorf("finish the pending boot or recover boot health before removing generations")
 		}
-		items, err := inspect(root, selection)
+		items, err := inspect(root, selection, true)
 		if err != nil {
 			return err
 		}
@@ -271,7 +273,7 @@ func Prune(root string, policy Retention, now time.Time) ([]string, error) {
 		if selection.PendingHealthValidation || selection.RecoveryRequired {
 			return nil
 		}
-		items, err := inspect(root, selection)
+		items, err := inspect(root, selection, true)
 		if err != nil {
 			return err
 		}
@@ -282,7 +284,7 @@ func Prune(root string, policy Retention, now time.Time) ([]string, error) {
 			if len(item.ProtectedBy) > 0 {
 				continue
 			}
-			if item.Status.UnavailableReason == "" && item.UnavailableReason != "OS slot has been replaced" &&
+			if item.Status.UnavailableReason == "" && !item.replaced &&
 				(counts[key] <= count || !item.Spec.CreatedAt.Before(now.Add(-age))) {
 				continue
 			}
@@ -363,7 +365,7 @@ func InvalidateSlot(root, partitionUUID string, now time.Time, setDefault, setOn
 			return err
 		}
 		before := selection
-		items, err := inspect(root, selection)
+		items, err := readManagedGenerations(root)
 		if err != nil {
 			return err
 		}
@@ -391,6 +393,9 @@ func InvalidateSlot(root, partitionUUID string, now time.Time, setDefault, setOn
 			}
 			if !IsKnownGood(state) || invalid[active] {
 				return fmt.Errorf("running generation is not a safe boot default")
+			}
+			if err := checkBootFiles(root, spec).problem(); err != nil {
+				return fmt.Errorf("cannot replace selected slot: running generation %s %w. Restore its boot artifacts before retrying", active, err)
 			}
 			if setDefault == nil || setOneshot == nil {
 				return fmt.Errorf("boot setters required to replace selected slot")
@@ -435,7 +440,7 @@ func InvalidateSlot(root, partitionUUID string, now time.Time, setDefault, setOn
 			if !invalid[item.Spec.GenerationID] || item.Status.UnavailableReason == slotReplaced {
 				continue
 			}
-			item.Status.UnavailableReason = "OS slot has been replaced"
+			item.Status.UnavailableReason = slotReplaced
 			item.Status.UpdatedAt = now.UTC()
 			if err := WriteGenerationStatus(root, item.Spec, item.Status); err != nil {
 				return err

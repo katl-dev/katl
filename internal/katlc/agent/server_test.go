@@ -472,6 +472,31 @@ func TestRebootSchedulesCommittedSelectedGeneration(t *testing.T) {
 	}
 }
 
+func TestRebootRefusesDifferentFirmwareTarget(t *testing.T) {
+	server := newTestServer(t)
+	writeCleanGenerationZeroState(t, server.Root)
+	server.runBootctl = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+		if !slices.Contains(argv, "list") {
+			t.Fatalf("boot inspection = %v", argv)
+		}
+		return ToolResult{Stdout: []byte(`[
+			{"id":"katl-generation-0.conf","isSelected":true,"isDefault":false},
+			{"id":"katl-one-shot.conf","isSelected":false,"isDefault":true}
+		]`)}
+	}
+	server.RunReboot = func(context.Context, []string, func(int)) ToolResult {
+		t.Fatal("scheduled reboot despite a different firmware target")
+		return ToolResult{}
+	}
+	_, err := server.Reboot(t.Context(), &agentapi.RebootRequest{
+		ApiVersion: APIVersion, Kind: RebootRequestKind, Actor: "test",
+		ExpectedMachineId: testMachineID, TargetGenerationId: "generation-0",
+	})
+	if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "katl-one-shot.conf") {
+		t.Fatalf("reboot = %v, want refusal naming the actual boot entry", err)
+	}
+}
+
 func TestRebootLeavesManagedRouteWithdrawalToSystemdShutdown(t *testing.T) {
 	server := newTestServer(t)
 	writeCleanGenerationZeroState(t, server.Root)
@@ -3526,6 +3551,9 @@ func newTestServer(t *testing.T) *testServer {
 		t.Fatal(err)
 	}
 	server := NewServer(root, store)
+	server.runBootctl = func(context.Context, []string, func(int)) ToolResult {
+		return ToolResult{Stdout: []byte(`[{"id":"katl-generation-0.conf","isDefault":true}]`)}
+	}
 	// Tests opt in to a boot health unit; the host running them has none.
 	server.RunBootHealthStatus = nil
 	server.EnrollmentID = testEnrollmentID
@@ -3699,7 +3727,7 @@ func writeCleanGenerationZeroState(t *testing.T, root string) {
 			Architecture:          "x86_64",
 			Slot:                  "root-a",
 			PartitionUUID:         "11111111-1111-1111-1111-111111111111",
-			RuntimeArtifactSHA256: strings.Repeat("a", 64),
+			RuntimeArtifactSHA256: testSHA(testBootRootImage()),
 		},
 		GenerationID: "generation-0",
 		UKIPath:      "/efi/EFI/Linux/katl-generation-0.efi",
@@ -3716,6 +3744,7 @@ func writeCleanGenerationZeroState(t *testing.T, root string) {
 		t.Fatal(err)
 	}
 	spec := generation.SpecFromRecord(record)
+	spec.Boot.LoaderEntryPath = "loader/entries/katl-generation-0.conf"
 	digest, err := generation.CanonicalSpecDigest(spec)
 	if err != nil {
 		t.Fatal(err)
@@ -3723,7 +3752,20 @@ func writeCleanGenerationZeroState(t *testing.T, root string) {
 	if err := generation.WriteGeneration(root, spec, generation.StatusFromRecord(record, digest)); err != nil {
 		t.Fatal(err)
 	}
+	writeTestBootDisk(t, root, spec.Root.PartitionUUID)
+	writeTestBootArtifacts(t, root, spec)
 	writeBootSelection(t, root, "generation-0")
+}
+
+func writeTestBootArtifacts(t *testing.T, root string, spec generation.GenerationSpec) {
+	t.Helper()
+	writeTestFile(t, filepath.Join(root, "efi", spec.Boot.LoaderEntryPath), "loader entry")
+	writeTestFile(t, filepath.Join(root, spec.Boot.UKIPath), "UKI")
+	for _, ref := range spec.Confexts {
+		if err := os.MkdirAll(filepath.Join(root, ref.Path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func writeKernelParameter(t *testing.T, root, key, value string) {
@@ -3755,7 +3797,7 @@ func writeConfigApplyBaseState(t *testing.T, root string) {
 			Architecture:          "x86_64",
 			Slot:                  "root-a",
 			PartitionUUID:         "11111111-1111-1111-1111-111111111111",
-			RuntimeArtifactSHA256: strings.Repeat("a", 64),
+			RuntimeArtifactSHA256: testSHA(testBootRootImage()),
 		},
 		GenerationID: "generation-0",
 		UKIPath:      "/efi/EFI/Linux/katl-generation-0.efi",
@@ -3782,13 +3824,16 @@ func writeConfigApplyBaseState(t *testing.T, root string) {
 		t.Fatal(err)
 	}
 	spec := generation.SpecFromRecord(record)
-	digest, err := generation.CanonicalSpecDigest(spec)
+	spec.Boot.LoaderEntryPath = "loader/entries/katl-generation-0.conf"
+	state, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, spec.CreatedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := generation.WriteGeneration(root, spec, generation.StatusFromRecord(record, digest)); err != nil {
+	if err := generation.WriteGeneration(root, spec, state); err != nil {
 		t.Fatal(err)
 	}
+	writeTestBootDisk(t, root, spec.Root.PartitionUUID)
+	writeTestBootArtifacts(t, root, spec)
 	writeBootSelection(t, root, "generation-0")
 	manifestPath := filepath.Join(root, "var/lib/katl/install/manifest.json")
 	if err := os.MkdirAll(filepath.Dir(manifestPath), 0o755); err != nil {
