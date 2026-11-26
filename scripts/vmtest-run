@@ -469,6 +469,14 @@ build_default_artifacts() {
         local -a build_command
         log="$(mktemp)"
         case "$target" in
+            build-katlos-upgrade-image)
+                # katlctl requires a four-digit year in upgrade artifact metadata.
+                build_command=(
+                    env
+                    "KATL_UPGRADE_VERSION=${KATL_UPGRADE_VERSION:-${KATL_VERSION:-0000.0.0-dev.1}}"
+                    "$repo_root/scripts/mkosi" "$target"
+                )
+                ;;
             build-kubernetes-sysext)
                 build_command=("$repo_root/scripts/build-kubernetes-sysext")
                 ;;

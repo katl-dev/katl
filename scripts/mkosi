@@ -706,9 +706,8 @@ else
 			shift
 			"$repo_root/scripts/mkosi" build-runtime
 			"$repo_root/scripts/build-endpoint-advertiser-sysext"
-			# Local upgrade images also need the CLI's four-digit version year.
 			KATL_KATLOS_IMAGE_ROLE=upgrade \
-				KATL_VERSION="${KATL_UPGRADE_VERSION:-${KATL_VERSION:-0000.0.0-dev.1}}" \
+				KATL_VERSION="${KATL_UPGRADE_VERSION:-${KATL_VERSION:-0.0.0-dev.1}}" \
 				KATL_BUILD_COMMIT="$build_commit" \
 				"$repo_root/scripts/build-katlos-install-image" "$@"
 			exit $?
