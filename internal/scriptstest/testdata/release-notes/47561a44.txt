@@ -1,0 +1,158 @@
+katlctl: move trusted-network clusters to mTLS with enable-mtls (#696)
+
+* katlctl: move trusted-network clusters to mTLS with enable-mtls
+
+Add `katlctl management enable-mtls`, which moves an installed
+trusted-network cluster to mTLS management without reprovisioning. It
+checks every node over plaintext first (reachable, same installation,
+new enough, idle, healthy, clock within the certificate backdate),
+creates or reuses the secrets file before touching a node, then moves
+the nodes one at a time in config order through the node's
+confirm-or-revert trial: begin, reach the node over mTLS, confirm,
+check plaintext is refused, and wait for health. Only after every node
+is confirmed does it write managementAuthentication and
+managementIdentity into the ClusterConfig and refresh a saved context.
+State is derived from the config, the secrets file and each node's
+reported management mode, so a rerun resumes an interrupted or reverted
+node and a finished cluster reports that it already uses mTLS.
+
+NodeStatus.management now reports the node clock for the preflight
+clock check, and node status and cluster status show each node's
+management mode and any trial or revert.
+
+Release-Note: katlctl: move a trusted-network cluster to mTLS management in place with `katlctl management enable-mtls`
+
+* katlctl: address enable-mtls review findings
+
+Refuse a --trial-window outside the node's bounds, using the bounds
+nodeidentity now exports, or one that is not whole seconds, before
+preflight. Report an interrupt during Begin as interrupted, since
+the trial may have started. Start from an mtls config without a
+secrets file when every node still answers plaintext trusted-network
+management. Make the hint about other secrets depend on the mode,
+and tell an operator resuming an expired trial that has not reverted
+yet to wait for the revert.
+
+Root cause of the ignored Ctrl-C: run() executed the root command
+without a context, so commands that read cmd.Context() got cobra's
+background context instead of the interrupt context. The root command
+now carries it.
+
+transport.PlaintextAtTLS is now the one plaintext-at-TLS classifier. The
+enable-mtls VM scenario gets a lane of its own so the cluster lane
+stays clear of its 75m timeout.
+
+Release-Note: skip
+
+* katlctl: show an interrupted enable-mtls trial in status
+
+While an enable-mtls trial is live, the node refuses plaintext, but the
+operator's ClusterConfig stays trusted-network until every node is
+confirmed. node status and cluster status then printed only the generic
+"likely serves mTLS" error, with no trial, deadline or resume step.
+
+When a trusted-network status read meets a TLS listener and the
+enable-mtls secrets for this config exist, status now reads the node
+over mTLS with them and shows the trial row, its deadline and the rerun
+command. Without the secrets, the error says the node may be on an
+interrupted trial and how to resume it. Mutating commands keep their
+configured credentials.
+
+Closes #708
+
+Release-Note: skip
+
+* katlctl: point mode guidance at enable-mtls
+
+enable-mtls moves a trusted-network cluster to mTLS in place, but
+config init, the plaintext-endpoint error, the missing-mode error and
+the docs still said that changing the mode requires reprovisioning.
+They now name enable-mtls for trusted-network to mTLS, and say that
+mTLS to trusted-network is unsupported in place.
+
+The final health poll in enable-mtls could exhaust the deadline and
+replace an already observed diagnosis, such as the API proxy still
+starting, with a bare deadline error. It now keeps the earlier
+diagnosis, which also removes the flake in
+TestEnableMTLSChecksAPIProxyAfterConfirm.
+
+Release-Note: skip
+
+* vmtest: use the exported world SSH key helper in enable-mtls
+
+Main moved the world SSH key helper into the vmtest package as
+EnsureWorldSSHKey, so the enable-mtls scenario no longer compiled after
+rebasing onto it.
+
+Release-Note: skip
+
+* katlctl: never fall back to plaintext after a TLS failure
+
+enable-mtls fell back to plaintext after any failed mTLS status call,
+including a certificate verification failure, and could then send the
+transition and the node's server key over an unauthenticated
+connection. It now takes the plaintext path only when the TLS
+handshake received a plaintext HTTP/2 SETTINGS frame; any other TLS
+failure stops with a verification error.
+
+A rerun now verifies on every node that plaintext management is
+refused, and runs the health gate, before it publishes the mTLS config
+or reports success, including when no node remains to migrate. It
+repairs a stale saved context or prints the exact context save
+command. Interrupted Begin and confirmation calls report the trial
+deadline and whether the node may already be committed, deadlines are
+shown corrected for node clock skew, a node without node_time falls
+back to the workstation clock, resume guidance keeps a custom --output
+path, and upgrade guidance names katlctl node upgrade.
+
+Release-Note: skip
+
+* katlctl: classify the management transport from wire evidence
+
+The plaintext decision in enable-mtls still matched a marker in gRPC
+error text, which a peer can influence, so a plaintext-capable endpoint
+could still receive the transition and server key. The transport
+package now observes the first frame the endpoint returns to a TLS
+handshake and classifies it as TLS, plaintext HTTP/2 or unknown;
+enable-mtls takes the plaintext path only on a complete SETTINGS frame
+on stream 0, and stops before starting a trial when the transport
+cannot be classified.
+
+A rerun takes its health requirements from the node's installed
+Kubernetes role and the cluster configuration rather than from its
+current state, so a node degraded after confirmation blocks
+publication. The confirm-or-revert trial has not shipped, so an agent
+that omits node_time is refused with upgrade guidance, and status shows
+a trial deadline only when corrected by the observed node time.
+
+Release-Note: skip
+
+* nix: update the Go module hash for x/net/http2
+
+The transport package now imports golang.org/x/net/http2 directly to
+classify the management transport, which changes the vendored module
+set and so katlctl's vendorHash; go mod tidy also marks x/net as a
+direct dependency.
+
+Release-Note: skip
+
+* katlctl: hold enable-mtls to valid SETTINGS and the installed VIP
+
+Classify a peer as plaintext HTTP/2 only when its initial SETTINGS
+are valid for a server, including a disabled push and an in-range
+priority setting. Keep an installed control-plane VIP required after
+confirmation even when the input configuration omits its advertisement,
+and make the migration test inject the legacy marker where enable-mtls
+actually reads it.
+
+Release-Note: skip
+
+* katlctl: keep requiring a released Katl-owned VIP on retry
+
+Decide whether enable-mtls must restore a VIP from the agent's installed
+endpoint status rather than from its current readiness. A retry after
+confirmation released the VIP therefore still refuses to publish,
+while a VIP whose ownership Katl does not manage remains eligible
+for migration.
+
+Release-Note: skip

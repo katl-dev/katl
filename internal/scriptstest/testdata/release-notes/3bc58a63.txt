@@ -1,0 +1,99 @@
+katlctl: act only on timely, positive management evidence (#748)
+
+* katlctl: stop enable-mtls acting on replies past its deadline
+
+A Begin reply that arrived just after the call's deadline, before
+the client context reported cancellation, was treated as success,
+and the command went on to confirm the trial on fresh budgets. Check
+cancellation and the absolute deadline before acting on any reply,
+so an expired call reports an interrupted trial that the operator
+resumes by rerunning. Drive the enable-mtls timeout tests with
+testing/synctest's virtual clock instead of wall-clock timing.
+
+Fixes #741.
+
+Release-Note: katlctl management enable-mtls no longer confirms a trial after its --timeout has expired
+
+* katlctl: treat late management RPC results as inconclusive
+
+Management RPC results that arrived at or after their call deadline
+were used as evidence: an expired mTLS preflight error fell back to
+plaintext, an expired plaintext-refusal probe let enable-mtls publish
+the mTLS configuration, and late replies advanced rotation, recovery,
+context rebind and saved-context refresh. The shared management dial
+options now return a distinct inconclusive error for any result at
+or after the deadline or after cancellation, and callers stop with
+guidance instead of acting on it. Rotation counts only a timely
+certificate refusal from the old credential as rejection.
+
+Release-Note: katlctl stops instead of acting on management replies that arrive after their timeout
+
+* docs: describe inconclusive management checks and their retries
+
+Quote the guidance enable-mtls, identity rotate, identity recover,
+context rebind and host shutdown now print when a management check
+is inconclusive, and cover the shared contract that any result at or
+after a call's deadline is inconclusive for unary and streaming calls.
+
+Release-Note: skip
+
+* katlctl: prove old-CA removal before rotation advances
+
+Rotation counted an expired or revoked client certificate alert as proof
+that a node no longer trusted the old authority, although such an alert
+only rejects that one leaf. Rotation now presents a freshly minted
+leaf from the old CA and advances only on a timely unknown_ca alert
+followed by a successful recheck with the replacement credential. Any
+other alert stops it with guidance. A rerun whose node is unreachable
+keeps the configured replacement and tells the operator to check the
+endpoint instead of restoring the previous reference.
+
+Release-Note: katlctl management identity rotate advances only after a node rejects the old certificate authority itself
+
+* katlctl: say an interrupted enable-mtls trial reverts by itself
+
+Keep the safety fact in the interrupted-trial guidance: if the window
+ends before confirmation, the node returns to trusted-network by
+itself. The guidance no longer quotes a computed time. The VM journey,
+unit tests and runbook quote the final wording.
+
+Release-Note: skip
+
+* katlctl: keep rotation retries stable under clock skew
+
+Anchor the fresh old-CA probe's validity to the old CA's own start,
+so a node whose clock runs behind still reaches the issuer check on
+every retry. Advise restoring the previous secrets reference only
+when local verification rejects the server certificate's authority;
+a connection lost after ServerHello keeps the replacement and asks
+the operator to check the endpoint.
+
+Release-Note: skip
+
+* katlctl: advance management rollouts only on positive evidence
+
+Rotate, recover and enable-mtls classified TLS alerts and connection
+errors into trust conclusions, and each review found another case
+where that inference misled the operator. One classifier in the
+management transport now sorts each result into confirmed, explicit
+refusal or inconclusive. Rollouts advance only after a successful
+authenticated call with the replacement credential, plus a timely
+unknown_ca rejection of a fresh old-CA leaf for rotation. Anything
+else stops before the next node or any publication and reports what
+could not be confirmed and how to rerun or check status. Rollback
+is never advised from inference. #747 replaces the inference with an
+agent report of trusted CAs.
+
+Release-Note: skip
+
+* katlctl: bind trust evidence to the call that produced it
+
+Context save and rebind no longer suggest switching to trusted-network
+or restoring secrets after a failed handshake; they report uncertain
+trust through the shared classifier. Rotation counts unknown_ca
+only from the probe's own single handshake within its deadline. A
+late result from katlc agent over SSH is inconclusive under the same
+deadline rule as the management transport, so rotation and recovery
+preflight stop instead of moving to the next node.
+
+Release-Note: katlctl management enable-mtls, identity rotate and identity recover stop with guidance instead of acting on late or inconclusive replies from a node
