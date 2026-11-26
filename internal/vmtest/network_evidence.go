@@ -9,8 +9,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
+
+	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 )
+
+const carrierUnavailable = "carrier unavailable: interface down"
 
 type networkEvidence struct {
 	CapturedAt time.Time  `json:"capturedAt"`
@@ -130,7 +135,12 @@ func readLinkState(name string, readFile func(string) ([]byte, error)) *linkStat
 		name  string
 		value *string
 	}{{"carrier", &state.Carrier}, {"operstate", &state.Operstate}} {
-		data, err := readFile(filepath.Join("/sys/class/net", name, file.name))
+		path := filepath.Join("/sys/class/net", name, file.name)
+		data, err := readFile(path)
+		if isCarrierUnavailable(path, err) {
+			state.Carrier = carrierUnavailable
+			continue
+		}
 		if err != nil {
 			state.Errors = append(state.Errors, err.Error())
 			continue
@@ -138,6 +148,25 @@ func readLinkState(name string, readFile func(string) ([]byte, error)) *linkStat
 		*file.value = strings.TrimSpace(string(data))
 	}
 	return state
+}
+
+func readGuestFileWithCarrierState(ctx context.Context, client GuestAgentClient, req *vmtestpb.ReadFileRequest) (*vmtestpb.FileResult, error) {
+	result, err := client.ReadFile(ctx, req)
+	if !isCarrierUnavailable(req.Path, err) {
+		return result, err
+	}
+	content := []byte(carrierUnavailable + "\n")
+	return &vmtestpb.FileResult{Content: content, SizeBytes: uint32(len(content))}, nil
+}
+
+func isCarrierUnavailable(path string, err error) bool {
+	if err == nil || filepath.Base(path) != "carrier" || filepath.Dir(filepath.Dir(path)) != "/sys/class/net" {
+		return false
+	}
+	// Linux returns EINVAL for carrier reads while the interface is administratively down.
+	// The guest agent transmits the read error as text.
+	readErr := &os.PathError{Op: "read", Path: path, Err: syscall.EINVAL}
+	return errors.Is(err, syscall.EINVAL) || err.Error() == "read_file_failed: "+readErr.Error()
 }
 
 func (r VMRunner) captureGuestNetwork(ctx context.Context, vsock VSockPlan, result Result, mac string) error {

@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -181,13 +183,75 @@ esac
 	}
 }
 
-type networkEvidenceGuest struct{ fakeGuestClient }
+func TestWaitCarrierAddress(t *testing.T) {
+	guest := &networkEvidenceGuest{
+		fakeGuestClient: fakeGuestClient{command: &vmtestpb.CommandResult{
+			Stdout: []byte("2: enp1s9 inet 192.0.2.10/24 scope global enp1s9\n"),
+		}},
+		carrierError: errors.New("read_file_failed: read /sys/class/net/enp1s9/carrier: invalid argument"),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := waitCarrierAddress(ctx, guest, "enp1s9", netip.MustParsePrefix("192.0.2.10/32"), "1", true); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestGuestNetworkEvidenceCarrier(t *testing.T) {
+	const mac = "52:54:00:01:02:03"
+	guest := &networkEvidenceGuest{
+		fakeGuestClient: fakeGuestClient{
+			command: &vmtestpb.CommandResult{Stdout: []byte(`[{"ifname":"enp1s9","address":"52:54:00:01:02:03"}]`)},
+			journal: &vmtestpb.JournalResult{Text: "enp1s9: Lost carrier\n"},
+		},
+		carrierError: &os.PathError{Op: "read", Path: "/sys/class/net/enp1s9/carrier", Err: syscall.EINVAL},
+	}
+	runner := VMRunner{guestConnector: func(context.Context, VSockPlan, string) (guestConn, error) {
+		return guest, nil
+	}}
+	for _, want := range []string{"carrier unavailable: interface down\n", "1\n"} {
+		dir := t.TempDir()
+		var result Result
+		result.Artifacts.GuestDir = dir
+		if err := runner.captureGuestNetwork(context.Background(), VSockPlan{Enabled: true, GuestCID: 41}, result, mac); err != nil {
+			t.Fatal(err)
+		}
+
+		var report GuestDiagnosticReport
+		if err := json.Unmarshal([]byte(readFile(t, filepath.Join(dir, "diagnostics.json"))), &report); err != nil {
+			t.Fatal(err)
+		}
+		if len(report.Errors) != 0 || len(report.Files) != 2 || len(report.Journals) != 1 {
+			t.Fatalf("guest report = %+v", report)
+		}
+		files := map[string]string{}
+		for _, file := range report.Files {
+			files[file.Name] = readFile(t, file.Artifact)
+		}
+		if got := files["carrier"]; got != want {
+			t.Fatalf("carrier evidence = %q, want %q", got, want)
+		}
+	}
+}
+
+type networkEvidenceGuest struct {
+	fakeGuestClient
+	carrierError error
+	carrierReads int
+}
 
 func (g *networkEvidenceGuest) Close() error { return nil }
 
 func (g *networkEvidenceGuest) ReadFile(_ context.Context, req *vmtestpb.ReadFileRequest) (*vmtestpb.FileResult, error) {
 	switch req.Path {
 	case "/sys/class/net/enp1s9/carrier":
+		if g.carrierError != nil {
+			g.carrierReads++
+			if g.carrierReads == 1 {
+				return nil, g.carrierError
+			}
+			return &vmtestpb.FileResult{Content: []byte("1\n")}, nil
+		}
 		return &vmtestpb.FileResult{Content: []byte("0\n")}, nil
 	case "/sys/class/net/enp1s9/operstate":
 		return &vmtestpb.FileResult{Content: []byte("down\n")}, nil

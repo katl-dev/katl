@@ -186,11 +186,11 @@ func pauseScenarioDHCP(t *testing.T, ctx context.Context, virsh LibvirtVMExecuto
 	}
 }
 
-func waitCarrierAddress(ctx context.Context, client *AgentClient, link string, reserved netip.Prefix, wantCarrier string, wantAddress bool) error {
+func waitCarrierAddress(ctx context.Context, client GuestAgentClient, link string, reserved netip.Prefix, wantCarrier string, wantAddress bool) error {
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		carrier, err := client.ReadFile(ctx, &vmtestpb.ReadFileRequest{
+		carrier, err := readGuestFileWithCarrierState(ctx, client, &vmtestpb.ReadFileRequest{
 			Path: filepath.Join("/sys/class/net", link, "carrier"), MaxBytes: 128,
 		})
 		if err != nil {
