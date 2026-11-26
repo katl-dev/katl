@@ -37,7 +37,7 @@ See [Agent roles](docs/development/agent-roles.md) for assignments and hand-offs
 
 - Test operator-visible outcomes and durable contracts, not incidental formatting, timing, generated ordering, or implementation details. Fix systemic test design when failures reveal overspecification; do not mask flakes with retries or looser assertions.
 - Treat a check that fails on an unrelated change as a defect to root-cause and fix immediately, not as noise to rerun. Rerun such a check only while its root cause is understood and a fix is in progress.
-- Run Go tests from the development shell with `scripts/hermetic -- go test ...`. `scripts/check-fast` and `scripts/vmtest-run` apply the same home isolation automatically.
+- Run unit tests from the development shell with `scripts/hermetic -- go test ...`. `scripts/check-fast` invokes the wrapper itself. Run `scripts/vmtest-run` directly while VM fixture staging still needs `sudo`. See [#764](https://github.com/katl-dev/katl/issues/764) for sudo-free staging and VM wrapper integration.
 - Keep each test's Git and `katlctl` configuration in its own temporary directory and keep `katldev` contexts in the world's own `KATLCTL_CONFIG`.
 - Set `KATLCTL_CONFIG` to a file in the worktree whenever you invoke `katlctl`. Never use the operator's configuration.
 - Create fixtures in fresh temporary directories with `t.TempDir()` or `mktemp -d`. Never reuse a fixed directory that needs cleanup before the next run.

@@ -258,10 +258,10 @@ your home. It gives the command writable access to the checkout, its linked
 Git metadata, and the Go build and module caches. Use `--bind DIR` before `--`
 for each additional writable directory, or `--ro-bind DIR` for read-only input.
 
-`scripts/vmtest-run` binds the caller's containers configuration directory
-read-only if present. When it discovers a local Podman store, it also binds the
-graph root for cached Kubernetes fixture images and the run root for Podman
-runtime state.
+Run `scripts/check-fast` directly because it invokes the wrapper itself.
+Run `scripts/vmtest-run` directly because fixture staging uses `sudo`, which
+Bubblewrap blocks. See [#764](https://github.com/katl-dev/katl/issues/764) for
+sudo-free staging and VM wrapper integration.
 
 `katlctl` is also available in the development shell. It runs from the current
 checkout so local source changes are used immediately:

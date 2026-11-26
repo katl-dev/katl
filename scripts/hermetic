@@ -29,8 +29,7 @@ mapfile -t caches <<<"$cache_paths"
 [[ ${#caches[@]} == 2 && "${caches[0]}" == /* && "${caches[1]}" == /* ]] ||
     fail 'Go must report absolute GOCACHE and GOMODCACHE directories'
 
-# A separate user namespace blocks access through host processes' /proc roots
-# while retaining the PIDs and process groups used by the VM test runner.
+# A separate user namespace blocks access through host processes' /proc roots.
 args=(--dev-bind / / --unshare-user --tmpfs "$home")
 binds=("${default_binds[@]}" --bind "${caches[0]}" --bind "${caches[1]}" "${binds[@]}")
 for ((i = 0; i < ${#binds[@]}; i += 2)); do

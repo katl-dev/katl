@@ -179,9 +179,13 @@ The wrapper injects the VM world by preparing the world environment and ending
 with the equivalent `go test -exec` invocation:
 
 ```sh
-scripts/hermetic -- go test -exec scripts/vmtest-exec ./internal/vmtest/scenarios \
+go test -exec scripts/vmtest-exec ./internal/vmtest/scenarios \
   -run '^TestTwoNodeKubeadmJoinSmoke$' -count=1
 ```
+
+The VM runner invokes Go directly so fixture staging can use `sudo`.
+See [#764](https://github.com/katl-dev/katl/issues/764) for sudo-free staging
+and VM wrapper integration.
 
 `scripts/vmtest-exec` is an implementation detail of `scripts/vmtest-run`, not
 a second developer entrypoint. It should fail when invoked without a world

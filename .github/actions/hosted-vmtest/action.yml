@@ -55,11 +55,6 @@ runs:
         if ! command -v podman >/dev/null; then
           .github/scripts/hosted-apt-install podman
         fi
-    - name: Prepare test isolation
-      shell: bash
-      run: |
-        .github/scripts/hosted-apt-install bubblewrap
-        .github/scripts/hosted-hermetic-setup
     - name: Verify host capabilities
       shell: bash
       run: |
@@ -69,7 +64,6 @@ runs:
         done
         test -r "$KATL_OVMF_CODE"
         test -r "$KATL_OVMF_VARS"
-        command -v bwrap
         command -v podman
         command -v kubectl
         docker info > _build/hosted-evidence/docker.txt

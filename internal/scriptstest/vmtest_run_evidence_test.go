@@ -13,17 +13,7 @@ import (
 const evidenceFakeGo = `#!/usr/bin/env bash
 if [[ -n "$KATL_SCRIPTTEST_ENV_DUMP" ]]; then
   { printf "ARGS %s\n" "$*"; env; } >"$KATL_SCRIPTTEST_ENV_DUMP"
-  if [[ -e "$KATL_SCRIPTTEST_HOME/.config/katl/katlctl.yaml" ]]; then
-    printf 'operator home is visible\n' >&2
-    exit 1
-  fi
-  cat "$CONTAINERS_STORAGE_CONF" >"$KATL_SCRIPTTEST_ENV_DUMP.storage" || exit 1
-  test -r "$XDG_CONFIG_HOME/containers/registries.conf" || exit 1
-  if touch "$XDG_CONFIG_HOME/containers/written" 2>/dev/null; then
-    printf 'operator container configuration is writable\n' >&2
-    exit 1
-  fi
-  touch "$KATL_SCRIPTTEST_GRAPH_ROOT/written" "$KATL_SCRIPTTEST_PODMAN_RUN_ROOT/written" || exit 1
+  cat "$CONTAINERS_STORAGE_CONF" >"$KATL_SCRIPTTEST_ENV_DUMP.storage"
 fi
 node="$KATL_VMTEST_RUN_DIR/scenarios/smoke/nodes/n1"
 mkdir -p "$node/disks" "$node/vm"
@@ -274,41 +264,22 @@ func TestVMTestRunRecordsHostHealth(t *testing.T) {
 
 func TestVMTestRunEnvironmentIsAllowlisted(t *testing.T) {
 	poisoned := t.TempDir()
+	callerData := filepath.Join(t.TempDir(), "data")
 	runtimeDir := t.TempDir()
 	dump := filepath.Join(t.TempDir(), "go-env.txt")
-	goCache := t.TempDir()
-	config := filepath.Join(poisoned, ".config/katl")
-	xdgConfig := filepath.Join(poisoned, "config")
-	containersConfig := filepath.Join(xdgConfig, "containers")
-	graphRoot := filepath.Join(poisoned, "podman graph")
-	podmanRunRoot := filepath.Join(poisoned, "podman run")
-	for _, dir := range []string{config, containersConfig, graphRoot, podmanRunRoot} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	writeArtifact(t, config, "katlctl.yaml", "operator context\n")
-	writeArtifact(t, containersConfig, "registries.conf", "# fixture\n")
-	bin := t.TempDir()
-	writeExecutable(t, filepath.Join(bin, "podman"), `#!/usr/bin/env bash
-test "$1" = info || exit 1
-printf '%s\n' "$KATL_SCRIPTTEST_GRAPH_ROOT" "$KATL_SCRIPTTEST_PODMAN_RUN_ROOT"
-`)
-	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	goCache := filepath.Join(t.TempDir(), "go-build")
 	t.Setenv("KATL_SCRIPTTEST_ENV_DUMP", dump)
-	t.Setenv("KATL_SCRIPTTEST_HOME", poisoned)
-	t.Setenv("KATL_SCRIPTTEST_GRAPH_ROOT", graphRoot)
-	t.Setenv("KATL_SCRIPTTEST_PODMAN_RUN_ROOT", podmanRunRoot)
 	t.Setenv("HOME", poisoned)
-	t.Setenv("XDG_CONFIG_HOME", xdgConfig)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(poisoned, "config"))
+	t.Setenv("XDG_DATA_HOME", callerData)
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
-	t.Setenv("CONTAINERS_STORAGE_CONF", filepath.Join(poisoned, "containers-storage.conf"))
+	t.Setenv("CONTAINERS_STORAGE_CONF", "")
 	t.Setenv("SSH_AUTH_SOCK", filepath.Join(poisoned, "agent.sock"))
 	t.Setenv("GH_TOKEN", "poisoned-token")
 	t.Setenv("KATLCTL_CONTEXT", "poisoned-cluster")
 	t.Setenv("GOCACHE", goCache)
 	t.Setenv("GOPATH", filepath.Join(t.TempDir(), "go"))
-	t.Setenv("GOMODCACHE", t.TempDir())
+	t.Setenv("GOMODCACHE", filepath.Join(t.TempDir(), "mod"))
 
 	runDir, output, ok := runEvidenceVMTest(t, t.TempDir(), "env-run", false)
 	if !ok {
@@ -347,17 +318,15 @@ printf '%s\n' "$KATL_SCRIPTTEST_GRAPH_ROOT" "$KATL_SCRIPTTEST_PODMAN_RUN_ROOT"
 	if env["XDG_RUNTIME_DIR"] != runtimeDir {
 		t.Errorf("XDG_RUNTIME_DIR = %q, want the caller's %q", env["XDG_RUNTIME_DIR"], runtimeDir)
 	}
-	if want := filepath.Join(runDir, "containers-storage.conf"); env["CONTAINERS_STORAGE_CONF"] != want {
-		t.Errorf("CONTAINERS_STORAGE_CONF = %q, want %q", env["CONTAINERS_STORAGE_CONF"], want)
-	}
 	conf, err := os.ReadFile(dump + ".storage")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("container storage config seen by go test is unreadable: %v", err)
 	}
-	for _, root := range []string{graphRoot, podmanRunRoot} {
-		if !strings.Contains(string(conf), root) || !exists(filepath.Join(root, "written")) {
-			t.Errorf("Podman root %q was not configured and writable", root)
-		}
+	if want := filepath.Join(callerData, "containers", "storage"); !strings.Contains(string(conf), want) {
+		t.Errorf("container storage config = %q, want graphroot %q in the caller's data dir", conf, want)
+	}
+	if strings.Contains(string(conf), filepath.Join(runDir, "home")) {
+		t.Errorf("container storage config places storage in the run home: %q", conf)
 	}
 	if env["GOCACHE"] != goCache {
 		t.Errorf("GOCACHE = %q, want the caller's %q so the run keeps a warm build cache", env["GOCACHE"], goCache)
