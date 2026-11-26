@@ -14,5 +14,5 @@ if [[ -f /etc/apt/apt-mirrors.txt ]]; then
 fi
 
 apt_options=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
-sudo apt-get "${apt_options[@]}" update -qq
+sudo apt-get "${apt_options[@]}" -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update -qq
 sudo apt-get "${apt_options[@]}" install -y --no-install-recommends "$@"
