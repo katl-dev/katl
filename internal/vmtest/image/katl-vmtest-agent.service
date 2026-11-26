@@ -6,7 +6,7 @@ Wants=etc-kubernetes.mount
 After=basic.target etc-kubernetes.mount
 
 [Service]
-Type=simple
+Type=notify
 ExecStart=/usr/lib/katl/vmtest/katl-vmtest-agent
 Restart=on-failure
 RestartSec=1s
@@ -17,6 +17,3 @@ NoNewPrivileges=yes
 StandardOutput=journal+console
 StandardError=journal+console
 SyslogIdentifier=katl-vmtest-agent
-
-[Install]
-WantedBy=multi-user.target

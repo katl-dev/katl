@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
@@ -171,6 +172,36 @@ func TestRunDoesNotPromoteWithoutManagementNetwork(t *testing.T) {
 	if status.BootState != generation.BootStateFailed {
 		t.Fatalf("boot state = %q, want failed", status.BootState)
 	}
+}
+
+func TestManagementNetworkTimingDefaults(t *testing.T) {
+	if managementTiming.trialTimeout != 90*time.Second || managementTiming.pollInterval != time.Second {
+		t.Fatalf("management network trial timeout = %s, poll interval = %s, want 90s and 1s",
+			managementTiming.trialTimeout, managementTiming.pollInterval)
+	}
+}
+
+func TestManagementNetworkAcceptsOnlineReadAtDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		oldRead := readNetworkctlState
+		t.Cleanup(func() { readNetworkctlState = oldRead })
+		reads := 0
+		readNetworkctlState = func(ctx context.Context) ([]byte, error) {
+			reads++
+			if reads == 1 {
+				return []byte(`{"Interfaces":[{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"offline"}]}`), nil
+			}
+			// Deliver the completed online observation after the deadline is visible.
+			<-ctx.Done()
+			return []byte(`{"Interfaces":[{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable"}]}`), nil
+		}
+
+		timing := managementTiming
+		timing.managementExpiryHooks = managementExpiryHooks{}
+		if err := timing.wait(t.Context()); err != nil {
+			t.Fatalf("management network wait rejected a successful online read: %v", err)
+		}
+	})
 }
 
 func TestManagementNetworkReadyUsesConfiguredRequiredLinks(t *testing.T) {

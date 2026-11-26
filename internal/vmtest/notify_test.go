@@ -18,10 +18,59 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
 const waitOnlineHeartbeat = "STATUS=User job systemd-networkd-wait-online.service/start running (50s / 2min)..."
+
+func TestWaitForUnitActive(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		const unit = "agent-ready.target"
+		recorder := &notifyRecorder{log: json.NewEncoder(io.Discard)}
+		recorder.record(notifyEvent{UnitActive: unit})
+		cursor := len(recorder.snapshot())
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		done := make(chan error, 1)
+		go func() {
+			_, err := recorder.waitForUnitActive(ctx, nil, unit, cursor)
+			done <- err
+		}()
+
+		recorder.record(notifyEvent{UnitActive: "another.target"})
+		synctest.Wait()
+		select {
+		case err := <-done:
+			t.Fatalf("wait ended before the next activation: %v", err)
+		default:
+		}
+
+		recorder.record(notifyEvent{UnitActive: unit})
+		if err := <-done; err != nil {
+			t.Fatalf("wait did not see the next activation: %v", err)
+		}
+	})
+}
+
+func TestWaitForUnitActiveStopsOnCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		recorder := &notifyRecorder{log: json.NewEncoder(io.Discard)}
+		ctx, cancel := context.WithCancelCause(t.Context())
+		done := make(chan error, 1)
+		go func() {
+			_, err := recorder.waitForUnitActive(ctx, nil, "agent-ready.target", 0)
+			done <- err
+		}()
+
+		synctest.Wait()
+		commandErr := errors.New("reboot command failed")
+		cancel(commandErr)
+		if err := <-done; !errors.Is(err, commandErr) {
+			t.Fatalf("wait returned %v, want the reboot command failure", err)
+		}
+	})
+}
 
 func TestServeNotify(t *testing.T) {
 	socket, address := listenUnixNotify(t)

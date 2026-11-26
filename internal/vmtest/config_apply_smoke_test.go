@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -889,22 +890,172 @@ func runManagementNetworkFailureSmoke(t *testing.T, ctx context.Context, node *R
 	}
 
 	previousBootID := guestBootID(t, ctx, client)
-	_, rebootErr := runKatlctlOutcome(t, ctx, result, katlctl, "host-reboot-management-network", "node", "reboot", "cp-1", "--timeout", "4m")
+	bootEventCursor := len(node.handle.notifyEvents())
+	repo := repoRoot(t)
+	rebootCtx, cancelReboot := context.WithCancel(ctx)
+	candidateCtx, cancelCandidate := context.WithCancelCause(ctx)
+	defer cancelCandidate(nil)
+	rebootDone := make(chan struct{})
+	var rebootErr error
+	phaseStart := time.Now()
+	go func() {
+		defer close(rebootDone)
+		_, rebootErr = recordKatlctlOutcome(rebootCtx, repo, result, katlctl, "host-reboot-management-network", "node", "reboot", "cp-1", "--timeout", "4m")
+		cancelCandidate(fmt.Errorf("katlctl reboot completed before candidate discovery: %v", rebootErr))
+	}()
+	defer func() {
+		cancelReboot()
+		<-rebootDone
+	}()
+	_ = client.Close()
+	candidateClient, candidateBootID, err := discoverGuestBoot(candidateCtx, node, previousBootID, bootEventCursor)
+	if err != nil {
+		t.Fatalf("discover management-network candidate after boot %s: %v", previousBootID, err)
+	}
+	defer candidateClient.Close()
+	candidateGuest := NewGuestControl(node.Result, candidateClient)
+	if err := RunKatlcSmoke(candidateCtx, candidateGuest); err != nil {
+		t.Fatalf("katlc runtime smoke on candidate boot %s: %v", candidateBootID, err)
+	}
+	if booted := currentGenerationFromGuest(t, ctx, candidateGuest); booted != candidate {
+		t.Fatalf("boot %s is running generation %s, want candidate %s", candidateBootID, booted, candidate)
+	}
+
+	invocation := waitForManagementNetworkExpiryArm(t, ctx, candidateGuest, candidateBootID, rebootDone)
+	assertRequiredManagementLinkOffline(t, ctx, candidateGuest)
+	select {
+	case <-rebootDone:
+		t.Fatalf("katlctl reboot completed before management network expiry: %v", rebootErr)
+	default:
+	}
+	// Write to this invocation's armed FIFO. A stale or missing reader fails
+	// immediately, without leaving a request for another invocation.
+	guestCommand(t, ctx, candidateGuest, "expire-management-network",
+		"dd", "if=/dev/zero", "of=/run/katl-vmtest-boot-health/"+invocation,
+		"bs=1", "count=1", "oflag=nonblock", "conv=nocreat", "status=none")
+
+	<-rebootDone
 	if rebootErr == nil || !strings.Contains(rebootErr.Error(), "rejected generation "+candidate+" during boot health and returned on generation "+fallbackGeneration) {
 		t.Fatalf("management-network reboot error = %v, want actionable fallback report", rebootErr)
 	}
-	_ = client.Close()
-	guest, client = reconnectGuestAfterGeneration(t, ctx, node, previousBootID, fallbackGeneration)
+	guest, client = reconnectGuestAfterBoot(t, ctx, node, candidateBootID)
+	if booted := currentGenerationFromGuest(t, ctx, guest); booted != fallbackGeneration {
+		t.Fatalf("boot after candidate %s is running generation %s, want fallback %s", candidateBootID, booted, fallbackGeneration)
+	}
+	t.Logf("management-network failure phase: %s", time.Since(phaseStart))
 
 	_, candidateStatus := generationRecordsFromGuest(t, ctx, guest, candidate)
 	if candidateStatus.BootState != generation.BootStateFailed || candidateStatus.HealthState != generation.HealthStateUnhealthy {
 		t.Fatalf("management-network candidate status = %#v, want failed/unhealthy", candidateStatus)
 	}
-	previousJournal := guestCommandOutput(t, ctx, guest, "management-network-recovery-journal", "journalctl", "-b", "-1", "--no-pager", "-u", "katl-boot-health.service")
-	if !strings.Contains(previousJournal, "required links are not online: vmtest-mgmt") {
-		t.Fatalf("management-network journal does not identify the required path:\n%s", previousJournal)
+	journalBoot := "--boot=" + strings.ReplaceAll(candidateBootID, "-", "")
+	guestCommand(t, ctx, guest, "management-network-injected-expiry-journal", "journalctl", journalBoot,
+		"--unit=katl-boot-health.service", "--no-pager", "--grep=^vmtest management network expiry injected$",
+		"_SYSTEMD_INVOCATION_ID="+invocation)
+	healthJournal := guestCommandOutput(t, ctx, guest, "management-network-health-journal", "journalctl", journalBoot, "--no-pager", "-u", "katl-boot-health.service")
+	if !containsAll(healthJournal, "generation="+candidate+" result=failure", "management network unavailable: configured management network is not ready after 90 seconds: required links are not online: vmtest-mgmt") {
+		t.Fatalf("boot-health journal for boot %s lacks the named-link deadline failure:\n%s", candidateBootID, healthJournal)
 	}
+	recoveryJournal := guestCommandOutput(t, ctx, guest, "management-network-recovery-journal", "journalctl", journalBoot, "--no-pager", "-u", "katl-boot-recovery.service")
+	if !containsAll(recoveryJournal, "generation="+candidate+" result=failure default="+fallbackGeneration, "rebootRequested=true") {
+		t.Fatalf("recovery journal for boot %s lacks automatic fallback:\n%s", candidateBootID, recoveryJournal)
+	}
+	t.Logf("management-network candidate boot %s recovered to fallback boot %s", candidateBootID, guestBootID(t, ctx, client))
 	return guest, client
+}
+
+func discoverGuestBoot(ctx context.Context, node *RunningInstalledRuntimeNode, previousBootID string, cursor int) (*AgentClient, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	for {
+		var err error
+		cursor, err = node.handle.notify.waitForUnitActive(ctx, node.handle.done, "katl-vmtest-agent-ready.target", cursor)
+		if err != nil {
+			return nil, "", fmt.Errorf("wait for guest agent readiness: %w", err)
+		}
+		client, err := DialAgent(ctx, node.VSock.GuestCID, node.VSock.Port, node.Result.Artifacts.VSockTranscript)
+		if err != nil {
+			return nil, "", fmt.Errorf("connect to ready guest agent: %w", err)
+		}
+		health, err := client.Health(ctx)
+		if err != nil {
+			_ = client.Close()
+			return nil, "", fmt.Errorf("read boot ID from ready guest agent: %w", err)
+		}
+		bootID := strings.TrimSpace(health.GetBootId())
+		if bootID != "" && bootID != previousBootID {
+			return client, bootID, nil
+		}
+		_ = client.Close()
+		if bootID == "" {
+			return nil, "", errors.New("ready guest agent returned an empty boot ID")
+		}
+	}
+}
+
+func waitForManagementNetworkExpiryArm(t *testing.T, ctx context.Context, guest *GuestControl, bootID string, rebootDone <-chan struct{}) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		record, err := guest.RunCommand(ctx, GuestCommandRequest{
+			Name: "management-network-expiry-armed",
+			Argv: []string{"journalctl", "--boot=" + strings.ReplaceAll(bootID, "-", ""), "--unit=katl-boot-health.service", "--output=json", "--lines=1", "--no-pager",
+				"--grep=^vmtest management network expiry armed: required links are not online: vmtest-mgmt(,|$)"},
+			AllowFailure: true, // journalctl exits 1 when no event has matched yet.
+		})
+		if err != nil {
+			t.Fatalf("read expiry arm event for candidate boot %s: %v", bootID, err)
+		}
+		if record.ExitStatus == 0 {
+			var entry struct {
+				Invocation string `json:"_SYSTEMD_INVOCATION_ID"`
+			}
+			output := readFile(t, record.Stdout)
+			if err := json.Unmarshal([]byte(output), &entry); err != nil {
+				t.Fatalf("decode expiry arm event: %v\n%s", err, output)
+			}
+			if id, err := hex.DecodeString(entry.Invocation); err != nil || len(id) != 16 {
+				t.Fatalf("expiry arm event has invalid invocation ID: %q", entry.Invocation)
+			}
+			return entry.Invocation
+		}
+		if stderr := readFile(t, record.Stderr); record.ExitStatus != 1 || strings.TrimSpace(stderr) != "" {
+			t.Fatalf("read expiry arm event for candidate boot %s: journalctl exited %d\n%s", bootID, record.ExitStatus, stderr)
+		}
+		select {
+		case <-rebootDone:
+			t.Fatalf("katlctl reboot completed before boot-health armed expiry on candidate boot %s", bootID)
+		case <-ctx.Done():
+			t.Fatalf("boot-health did not arm expiry for vmtest-mgmt on candidate boot %s: %v", bootID, ctx.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func assertRequiredManagementLinkOffline(t *testing.T, ctx context.Context, guest *GuestControl) {
+	t.Helper()
+	output := guestCommandOutput(t, ctx, guest, "management-network-link-state", "networkctl", "list", "--json=short", "--no-pager")
+	var state struct {
+		Interfaces []struct {
+			Name              string
+			NetworkFile       string
+			RequiredForOnline bool
+			OnlineState       string
+			OperationalState  string
+		}
+	}
+	if err := json.Unmarshal([]byte(output), &state); err != nil {
+		t.Fatalf("decode networkd link state: %v\n%s", err, output)
+	}
+	for _, link := range state.Interfaces {
+		if link.Name == "vmtest-mgmt" && link.NetworkFile != "" && link.RequiredForOnline && link.OnlineState == "offline" && link.OperationalState != "routable" {
+			return
+		}
+	}
+	t.Fatalf("networkd does not show vmtest-mgmt required and offline:\n%s", output)
 }
 
 func runFailedTrialRecoverySmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl katlctlRunner, endpoint, fallbackGeneration string) (*GuestControl, *AgentClient) {
@@ -1281,9 +1432,13 @@ func runKatlctl(t *testing.T, ctx context.Context, result Result, katlctl katlct
 
 func runKatlctlOutcome(t *testing.T, ctx context.Context, result Result, katlctl katlctlRunner, name string, args ...string) ([]byte, error) {
 	t.Helper()
+	return recordKatlctlOutcome(ctx, repoRoot(t), result, katlctl, name, args...)
+}
+
+func recordKatlctlOutcome(ctx context.Context, repo string, result Result, katlctl katlctlRunner, name string, args ...string) ([]byte, error) {
 	dir := filepath.Join(result.RunDir, "katlctl", name)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatalf("create katlctl artifact dir: %v", err)
+		return nil, fmt.Errorf("create katlctl artifact dir: %w", err)
 	}
 	record := struct {
 		Name  string   `json:"name"`
@@ -1296,9 +1451,9 @@ func runKatlctlOutcome(t *testing.T, ctx context.Context, result Result, katlctl
 	var stdout, stderr bytes.Buffer
 	cmd, err := katlctl.bin.Command(ctx, katlctl.config, args...)
 	if err != nil {
-		t.Fatalf("%s: %v", name, err)
+		return nil, fmt.Errorf("%s: %w", name, err)
 	}
-	cmd.Dir = repoRoot(t)
+	cmd.Dir = repo
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err = cmd.Run()
