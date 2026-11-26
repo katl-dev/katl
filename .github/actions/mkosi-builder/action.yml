@@ -11,13 +11,17 @@ runs:
       shell: bash
       run: |
         mkdir -p mkosi.conf.d
+        action_dir="${GITHUB_ACTION_PATH#"$GITHUB_WORKSPACE"/}"
         # Fetch metadata and RPMs from the same canonical repository.
-        cat > mkosi.conf.d/ci-downloads.conf <<'EOF'
+        cat > mkosi.conf.d/ci-downloads.conf <<EOF
         [Distribution]
         Mirror=https://dl.fedoraproject.org/pub/fedora
 
         [Build]
         SandboxTrees=.github/actions/mkosi-builder/sandbox
+        # Keep the builder's DNF binary available behind the sandbox wrapper.
+        SandboxTrees=$action_dir/dnf5:/usr/bin/dnf5
+        SandboxTrees=/usr/bin/dnf5:/usr/libexec/katl-dnf5
         EOF
     - id: fedora
       shell: bash

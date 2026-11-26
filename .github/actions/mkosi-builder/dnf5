@@ -1,0 +1,52 @@
+#!/bin/bash
+set -u
+
+# SandboxTrees exposes the builder's DNF binary behind this wrapper.
+dnf=/usr/libexec/katl-dnf5
+
+# mkosi passes single-token global options before the DNF command.
+retry_args=("$@")
+metadata_option=
+operation=
+for i in "${!retry_args[@]}"; do
+    case "${retry_args[i]}" in
+        --setopt=cacheonly=metadata) metadata_option=$i ;;
+        --cacheonly|--setopt=cacheonly=all) exec "$dnf" "$@" ;;
+        -*) ;;
+        *) operation=${retry_args[i]}; break ;;
+    esac
+done
+if [[ "$operation" != install || -z "$metadata_option" ]]; then
+    exec "$dnf" "$@"
+fi
+
+log=$(mktemp) || exit
+trap 'rm -f "$log"' EXIT
+"$dnf" "$@" 2>&1 | tee "$log"
+status=${PIPESTATUS[0]}
+if (( status == 0 )); then
+    exit 0
+fi
+
+# Match the terminal download error to a 404 for that RPM. At this point
+# DNF has not applied the transaction, so it can resolve and install again.
+if ! awk '
+    /Status code: 404 for https?:\/\// {
+        sub(/^.*Status code: 404 for /, "")
+        missing[$1] = 1
+    }
+    /^ *Librepo error: Cannot download [^[:space:]]+\.rpm: All mirrors were tried$/ {
+        rpm = $5
+        sub(/:$/, "", rpm)
+        for (url in missing)
+            if (substr(url, length(url) - length(rpm)) == "/" rpm)
+                found = 1
+    }
+    END { exit !found }
+' "$log"; then
+    exit "$status"
+fi
+
+echo 'Fedora RPM returned HTTP 404. Refreshing DNF metadata and retrying the install once.' >&2
+retry_args[metadata_option]=--setopt=cacheonly=none
+"$dnf" --refresh "${retry_args[@]}"
