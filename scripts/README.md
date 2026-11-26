@@ -188,35 +188,24 @@ to identify each copy.
 
 ### Configure automatic cleanup
 
-The `katl-dev` Home Manager module needs these `systemd.user.tmpfiles.rules`.
+Enable `programs.katl-dev.enable` and run `home-manager switch` to configure
+the private evidence store. With the default `XDG_STATE_HOME`, the module's
+user tmpfiles rules and the evidence tool both use
+`~/.local/state/katl-dev/evidence`. The rules expire evidence after 14 days
+based on file and directory modification times and exclude the `.pinned`
+subtree.
+When copying a tree of older evidence into a new entry, use
+`cp -R --reflink=auto` so the copy starts with fresh timestamps.
 
-```nix
-systemd.user.tmpfiles.rules = [
-  "d %h/.local/state/katl-dev/evidence 0700 - - mM:14d -"
-  "x %h/.local/state/katl-dev/evidence/.pinned - - - - -"
-];
-```
+The module runs `katl-dev-evidence prune` before periodic user tmpfiles
+cleanup. Pruning returns expired pins to the ordinary tree even when the
+store is below budget. Age-based cleanup proceeds if pruning fails.
 
-The rules use `%h/.local/state` so they address the tool's store even when
-`XDG_STATE_HOME` is set. The first rule creates the private store and
-expires files and directories based on their modification time. When copying
-a tree of older evidence into a new entry, use `cp -R --reflink=auto` so the
-copy starts with fresh timestamps.
+To let Claude clean up evidence without a permission prompt, the maintainer
+adds these recommended Bash allow rules.
 
-The second rule excludes the entire `.pinned` subtree from tmpfiles
-cleanup. When a pin expires, `prune` moves the entry back to the
-ordinary tree even if the store is below budget. Add this Home Manager
-drop-in to run pruning before periodic user tmpfiles cleanup. Here
-`katlDevEvidence` is the flake's `katl-dev-evidence` package for the host.
-The leading `-` lets age-based cleanup proceed if pruning cannot meet the
-budget because of active pins.
-
-```nix
-xdg.configFile."systemd/user/systemd-tmpfiles-clean.service.d/katl-dev-evidence.conf".text = ''
-  [Service]
-  ExecStartPre=-${katlDevEvidence}/bin/katl-dev-evidence prune
-'';
-```
+- `Bash(katl-dev-evidence release:*)`
+- `Bash(katl-dev-evidence prune:*)`
 
 [tmpfiles.d reference](https://www.freedesktop.org/software/systemd/man/latest/tmpfiles.d.html)
 

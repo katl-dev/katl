@@ -8,6 +8,7 @@
 let
   cfg = config.programs.katl-dev;
   queue = katl.packages.${pkgs.stdenv.hostPlatform.system}.katl-queue;
+  evidence = katl.packages.${pkgs.stdenv.hostPlatform.system}.katl-dev-evidence;
   # cgroupfs places rootless Podman's cgroups for containers and VM worlds
   # beneath the delegated scope so the development slice accounts for them.
   containersConf = pkgs.writeText "katl-dev-containers.conf" ''
@@ -54,6 +55,14 @@ in
     })
     (lib.mkIf cfg.enable {
       home.packages = devToolsFor pkgs;
+      systemd.user.tmpfiles.rules = [
+        "d %S/katl-dev/evidence 0700 - - mM:14d -"
+        "x %S/katl-dev/evidence/.pinned - - - - -"
+      ];
+      xdg.configFile."systemd/user/systemd-tmpfiles-clean.service.d/katl-dev-evidence.conf".text = ''
+        [Service]
+        ExecStartPre=-${lib.getExe evidence} prune
+      '';
     })
     (lib.mkIf cfg.watcher.enable {
       systemd.user.sockets.katl-queue-watch = {
