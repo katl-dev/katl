@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -48,10 +49,17 @@ func readReadyManagementNetwork(context.Context) ([]byte, error) {
 	return []byte(readyManagementLink), nil
 }
 
-const addresslessManagementLink = `{"Interfaces":[
-	{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"carrier","CarrierState":"carrier","AddressState":"off"},
+func addresslessManagementNetwork(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "10-lan.network")
+	if err := os.WriteFile(path, []byte("[Network]\nDHCP=yes\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return fmt.Sprintf(`{"Interfaces":[
+	{"Name":"management0","NetworkFile":%q,"RequiredForOnline":true,"RequiredOperationalStateForOnline":["carrier","routable"],"OnlineState":"online","OperationalState":"carrier","CarrierState":"carrier","AddressState":"off"},
 	{"Name":"management1","NetworkFile":"20-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}
-]}`
+]}`, path)
+}
 
 // healthUnit fakes systemd's view of katl-boot-health.service.
 type healthUnit struct{ properties atomic.Value }
@@ -116,7 +124,7 @@ func TestNodeStatusTracksRequiredManagementLink(t *testing.T) {
 			{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"offline","OperationalState":"no-carrier","CarrierState":"no-carrier","AddressState":"routable"},
 			{"Name":"management1","NetworkFile":"20-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}
 		]}`},
-		{name: "address lost", network: addresslessManagementLink},
+		{name: "address lost", network: addresslessManagementNetwork(t)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, _ := knownGoodNode(t, healthSucceeded)

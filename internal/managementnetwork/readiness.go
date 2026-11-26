@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"slices"
 	"strings"
+
+	"github.com/katl-dev/katl/internal/installer/networkdconfig"
 )
 
 type networkctlState struct {
@@ -15,13 +17,15 @@ type networkctlState struct {
 }
 
 type networkctlLink struct {
-	Name              string  `json:"Name"`
-	OperationalState  string  `json:"OperationalState"`
-	CarrierState      string  `json:"CarrierState"`
-	AddressState      string  `json:"AddressState"`
-	OnlineState       *string `json:"OnlineState"`
-	NetworkFile       string  `json:"NetworkFile"`
-	RequiredForOnline bool    `json:"RequiredForOnline"`
+	Name                     string    `json:"Name"`
+	OperationalState         string    `json:"OperationalState"`
+	CarrierState             string    `json:"CarrierState"`
+	AddressState             string    `json:"AddressState"`
+	OnlineState              *string   `json:"OnlineState"`
+	NetworkFile              string    `json:"NetworkFile"`
+	NetworkFileDropins       []string  `json:"NetworkFileDropins"`
+	RequiredForOnline        bool      `json:"RequiredForOnline"`
+	RequiredOperationalState [2]string `json:"RequiredOperationalStateForOnline"`
 }
 
 // Ready checks one networkd snapshot for configured management readiness.
@@ -47,9 +51,19 @@ func Ready(ctx context.Context, read func(context.Context) ([]byte, error)) (boo
 		case link.OnlineState == nil || *link.OnlineState != "online" ||
 			!slices.Contains([]string{"carrier", "degraded-carrier", "enslaved"}, link.CarrierState):
 			offline = append(offline, link.Name)
-		// RequiredForOnline=carrier can report online before any address is usable.
 		case link.AddressState != "degraded" && link.AddressState != "routable":
-			addressless = append(addressless, link.Name)
+			// A native address configuration can require an address even when
+			// networkd considers carrier sufficient to report the link online.
+			requiresAddress := link.RequiredOperationalState[0] == "routable"
+			if !requiresAddress {
+				requiresAddress, err = networkdconfig.ConfiguresAddress(link.NetworkFile, link.NetworkFileDropins)
+				if err != nil {
+					return false, "", fmt.Errorf("read address configuration for %s: %w", link.Name, err)
+				}
+			}
+			if requiresAddress {
+				addressless = append(addressless, link.Name)
+			}
 		}
 		if link.OperationalState == "routable" {
 			routable = true

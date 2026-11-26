@@ -39,14 +39,6 @@ func TestReadyUsesConfiguredRequiredLinks(t *testing.T) {
 			wantReason: "enp2s0",
 		},
 		{
-			name: "online secondary link has carrier but no address",
-			links: `{"Interfaces":[
-				{"Name":"enp1s0","NetworkFile":"/etc/systemd/network/10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"},
-				{"Name":"enp2s0","NetworkFile":"/etc/systemd/network/20-secondary.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"carrier","CarrierState":"carrier","AddressState":"off"}
-			]}`,
-			wantReason: "required links have no usable address: enp2s0",
-		},
-		{
 			name:       "no configured management link",
 			links:      `{"Interfaces":[{"Name":"cni0","OnlineState":null,"OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}]}`,
 			wantReason: "no systemd-networkd link",

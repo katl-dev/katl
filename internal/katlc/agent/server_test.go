@@ -1262,7 +1262,7 @@ func TestHostUpgradeRequiresConfirmedBootHealth(t *testing.T) {
 		{state: "failed", properties: healthDependencyFailed, reason: "sshd.service"},
 		{state: "pending", properties: healthStalled, reason: "has not finished for this boot"},
 		{state: "unknown", reason: "cannot read boot health for this boot from systemd"},
-		{state: "unhealthy", properties: healthSucceeded, reason: "required links have no usable address: management0", network: addresslessManagementLink},
+		{state: "unhealthy", properties: healthSucceeded, reason: "required links have no usable address: management0", network: addresslessManagementNetwork(t)},
 	} {
 		for _, dryRun := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/dry-run=%t", tc.state, dryRun), func(t *testing.T) {
