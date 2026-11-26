@@ -24,7 +24,6 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/katlc/agent"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
-	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
@@ -354,7 +353,8 @@ func upgradeAfterBootHealthRepair(t *testing.T, ctx context.Context, node *Runni
 	t.Helper()
 	result := node.Result
 	katlctl := configApplyKatlctl(BuildKatlctl(t, ctx, repoRoot(t)), result)
-	configPath := sysupdateRepairConfig(t, ctx, guest, katlctl, endpoint, node.Name, source)
+	configPath := sysupdateRepairConfig(t, ctx, guest, filepath.Dir(katlctl.config), endpoint, node.Name, source)
+	saveVMTestManagementContext(t, ctx, result, katlctl, configPath)
 	statusArgs := []string{"node", "status", node.Name, "--config", configPath, "--output", "json"}
 	listArgs := []string{"node", "generations", "list", node.Name, "--config", configPath, "--output", "json"}
 
@@ -407,7 +407,7 @@ func upgradeAfterBootHealthRepair(t *testing.T, ctx context.Context, node *Runni
 	return reconnectGuestAfterBoot(t, ctx, node, beforeUpgrade)
 }
 
-func sysupdateRepairConfig(t *testing.T, ctx context.Context, guest *GuestControl, katlctl katlctlRunner, endpoint, nodeName string, source generation.GenerationSpec) string {
+func sysupdateRepairConfig(t *testing.T, ctx context.Context, guest *GuestControl, dir, endpoint, nodeName string, source generation.GenerationSpec) string {
 	t.Helper()
 	installed, err := manifest.Decode(strings.NewReader(guestCommandOutput(t, ctx, guest, "installed-intent",
 		"dd", "if=/var/lib/katl/install/manifest.json", "status=none")))
@@ -439,12 +439,7 @@ func sysupdateRepairConfig(t *testing.T, ctx context.Context, guest *GuestContro
 	if err != nil {
 		t.Fatal(err)
 	}
-	dir := filepath.Dir(katlctl.config)
-	identity, err := VMTestManagementIdentity(VMTestManagementClusterName)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := managementidentity.Write(filepath.Join(dir, "management", VMTestManagementClusterName+".katlkey"), identity); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "cluster.json")
