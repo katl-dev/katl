@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/gittest"
 	"gopkg.in/yaml.v3"
 )
 
@@ -712,14 +713,14 @@ func TestNightlyCandidateConcurrency(t *testing.T) {
 }
 
 // The scheduled run has no input and no tag, so it derives its development
-// version from the latest stable release; a tag run keeps the tag's version.
+// version from the pinned upgrade source; a tag run keeps the tag's version.
 func TestReleaseIdentityVersion(t *testing.T) {
 	workflow, _ := readWorkflow(t, "release-artifacts.yml")
 	steps := workflow.Jobs["identity"].Steps
 	previous, release := -1, -1
 	for i, step := range steps {
 		switch {
-		case strings.Contains(step.Run, "katl-release-artifacts previous-tag"):
+		case strings.Contains(step.Run, "katl-release-artifacts upgrade-baseline"):
 			previous = i
 		case strings.Contains(step.Run, "katl-release-artifacts version"):
 			release = i
@@ -736,21 +737,49 @@ func TestReleaseIdentityVersion(t *testing.T) {
 		t.Errorf("identity step MANUAL_VERSION = %q, want %q", got, want)
 	}
 
+	dir := t.TempDir()
+	writeReleaseScriptFixture(t, dir, "v2026.11.5")
+	runGit(t, dir, "init", "--quiet", "--initial-branch=main")
+	runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "previous release")
+	runGit(t, dir, "tag", "v2026.11.3")
+	runGit(t, dir, "switch", "--quiet", "-c", "release/2026.11.x")
+	runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "sibling release")
+	runGit(t, dir, "tag", "v2026.11.5")
+	runGit(t, dir, "switch", "--quiet", "main")
+	runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "failed release")
+	runGit(t, dir, "tag", "v2026.11.4")
+	runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "final release")
+	runGit(t, dir, "tag", "v2026.11.6")
+	tools := t.TempDir()
+	writeFakeExecutable(t, tools, "gh", `
+test "$GH_TOKEN" = test-token
+cat <<'EOF'
+[
+  {"tag_name":"v2026.11.5","draft":false,"prerelease":false},
+  {"tag_name":"v2026.11.3","draft":false,"prerelease":false}
+]
+EOF
+`)
+	if got, want := step.Env["GH_TOKEN"], "${{ github.token }}"; got != want {
+		t.Errorf("identity step GH_TOKEN = %q, want %q", got, want)
+	}
+
 	for _, tt := range []struct {
-		name    string
-		env     []string
-		version string
+		name, event, refType, refName, manual string
+		version, notesBase                    string
 	}{
-		{"nightly", []string{"GITHUB_EVENT_NAME=schedule", "GITHUB_REF_TYPE=branch", "GITHUB_REF_NAME=main", "PREVIOUS_TAG=v2026.11.1", "MANUAL_VERSION="}, "2026.11.2-dev.0"},
-		{"tag", []string{"GITHUB_EVENT_NAME=push", "GITHUB_REF_TYPE=tag", "GITHUB_REF_NAME=v2026.11.3-rc.1", "PREVIOUS_TAG=v2026.11.1", "MANUAL_VERSION="}, "2026.11.3-rc.1"},
-		{"dispatch", []string{"GITHUB_EVENT_NAME=workflow_dispatch", "GITHUB_REF_TYPE=branch", "GITHUB_REF_NAME=main", "PREVIOUS_TAG=v2026.11.1", "MANUAL_VERSION=2026.12.0-beta.1"}, "2026.12.0-beta.1"},
+		{"nightly", "schedule", "branch", "main", "", "2026.11.6-dev.0", "v2026.11.3"},
+		{"tag", "push", "tag", "v2026.11.6", "", "2026.11.6", "v2026.11.3"},
+		{"dispatch", "workflow_dispatch", "branch", "main", "2026.12.0-beta.1", "2026.12.0-beta.1", "v2026.11.3"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			outputs := filepath.Join(t.TempDir(), "output")
 			command := exec.Command("bash", "-euo", "pipefail", "-c", step.Run)
-			command.Dir = repoRoot(t)
-			command.Env = append(os.Environ(), tt.env...)
-			command.Env = append(command.Env, "GITHUB_OUTPUT="+outputs, "GITHUB_SHA=0123456789abcdef0123456789abcdef01234567", "KATL_ARCHITECTURE=x86_64")
+			command.Dir = dir
+			command.Env = append(gittest.Env(os.Environ(), dir), "KATL_REPO_ROOT="+dir, "PREVIOUS_TAG=v2026.11.5",
+				"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"), "GH_TOKEN=test-token",
+				"GITHUB_EVENT_NAME="+tt.event, "GITHUB_REF_TYPE="+tt.refType, "GITHUB_REF_NAME="+tt.refName, "MANUAL_VERSION="+tt.manual,
+				"GITHUB_OUTPUT="+outputs, "GITHUB_SHA=0123456789abcdef0123456789abcdef01234567", "KATL_ARCHITECTURE=x86_64")
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("identity step failed: %v\n%s", err, output)
 			}
@@ -758,7 +787,7 @@ func TestReleaseIdentityVersion(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := "version=" + tt.version + "\nartifact-name=katl-" + tt.version + "-x86_64-0123456789ab\n"
+			want := "version=" + tt.version + "\nnotes-base-tag=" + tt.notesBase + "\nartifact-name=katl-" + tt.version + "-x86_64-0123456789ab\n"
 			if string(written) != want {
 				t.Errorf("identity outputs = %q, want %q", written, want)
 			}

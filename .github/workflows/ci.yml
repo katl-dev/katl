@@ -47,6 +47,7 @@ jobs:
       production-flavours: ${{ steps.plan.outputs.production-flavours }}
       production-version: ${{ steps.production.outputs.version }}
       production-previous-tag: ${{ steps.production.outputs.previous-tag }}
+      production-notes-base-tag: ${{ steps.production.outputs.notes-base-tag }}
       kubernetes-version: ${{ steps.plan.outputs.kubernetes-version }}
       scenarios: ${{ steps.plan.outputs.scenarios }}
       vm-shadow: ${{ steps.plan.outputs.vm-shadow }}
@@ -169,23 +170,26 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Resolve production identity
         id: production
-        if: steps.plan.outputs.full-plan == 'true'
+        if: steps.plan.outputs.full-plan == 'true' || github.event_name != 'pull_request'
         env:
-          GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           PRODUCTION_FLAVOURS: ${{ steps.plan.outputs.production-flavours }}
         run: |
-          # Production bytes carry a development version above the stable release
-          # they upgrade from; nothing is published. The merge queue upgrades from
-          # the latest stable release. A pull request into a release branch upgrades
-          # from the latest stable tag in that branch's own series.
-          tag="$(scripts/katl-release-artifacts previous-tag ${BASE_SHA:+"$BASE_SHA"})"
-          version="$(scripts/katl-release-artifacts dev-version "$tag")"
-          echo "previous-tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          upgrade_baseline=
+          if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
+            upgrade_baseline="$(scripts/katl-release-artifacts upgrade-baseline)"
+          fi
+          notes_base="$(scripts/katl-release-artifacts previous-tag "${BASE_SHA:-HEAD}")"
+          upgrade_baseline="${upgrade_baseline:-$notes_base}"
+          version="$(scripts/katl-release-artifacts dev-version "$upgrade_baseline")"
+          {
+            echo "previous-tag=$upgrade_baseline"
+            echo "notes-base-tag=$notes_base"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
           # Commit trailers can break release-note rendering independently of the diff.
           if [[ "$PRODUCTION_FLAVOURS" == '[]' ]]; then
-            KATL_RELEASE_PREVIOUS_TAG="$tag" scripts/katl-release-artifacts notes "$version" > _build/ci-release-notes.md
+            KATL_RELEASE_PREVIOUS_TAG="$notes_base" scripts/katl-release-artifacts notes "$version" > _build/ci-release-notes.md
           fi
 
   checks:
@@ -287,7 +291,7 @@ jobs:
     with:
       flavour: ${{ matrix.flavour }}
       version: ${{ needs.plan.outputs.production-version }}
-      previous-tag: ${{ needs.plan.outputs.production-previous-tag }}
+      notes-base-tag: ${{ needs.plan.outputs.production-notes-base-tag }}
       publication: false
 
   # Production VM qualifies each flavour's assembled bytes as the release does,

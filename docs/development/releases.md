@@ -15,9 +15,9 @@ separate publication approval is required.
    release notes use the first that exists of `docs/releases/VERSION.md`,
    `docs/releases/BASE.md` for a prerelease's final version BASE, and `next.md`. A
    release candidate and its final release therefore render the same
-   guidance from `next.md`. After the final release is published, a small PR
-   moves `next.md` to `docs/releases/VERSION.md`, which keeps the published
-   guidance for that tag.
+   guidance from `next.md`. Commit entries start after the newest stable tag
+   reachable from the release commit that has a published, non-prerelease
+   GitHub release. The current release's own tag is excluded.
 3. Dispatch a candidate from `main` and wait for it to pass. Production-image
    checks run only in this workflow, so a tag must not be the first run:
 
@@ -37,6 +37,12 @@ separate publication approval is required.
 5. Review the source and run the printed commands. Do not move or reuse a
    release tag. Follow the tag run in
    [Katl Release Artifacts](https://github.com/katl-dev/katl/actions/workflows/release-artifacts.yml).
+6. After the final release is published, open a small PR against `main` to set
+   `scripts/production-upgrade-baseline.txt` to the published stable tag,
+   including its `v` prefix. This sets the source release for Production VM
+   upgrades. In the same PR, move `docs/releases/next.md` to
+   `docs/releases/VERSION.md` if it exists to keep the published guidance for
+   that tag.
 
 A manual dispatch with `version` builds and qualifies a candidate without
 publishing. A tag still qualifies its own built bytes before promotion.
@@ -72,7 +78,7 @@ Both standard and LTS flavours must pass:
   management, storage, and update/rollback journeys.
 - Production-image installation and reboot through SSH and the release
   `katlctl`, with management and persisted boot health checked independently.
-- Upgrade from the previous stable release to the candidate and rollback to
+- Upgrade from the pinned stable release to the candidate and rollback to
   the source generation, preserving machine identity. These tests use the
   production images without a VM test agent.
 
@@ -115,7 +121,8 @@ gh workflow run release-artifacts.yml --ref main -f version=VERSION -f qualify_r
 ```
 
 This diagnostic run reuses the immutable bundle and ignores VERSION, which
-the dispatch form requires. It has no publication path. Production VM runs once per flavour in the same way.
+the dispatch form requires. Production VM runs once per flavour using the
+upgrade baseline pinned at the commit that produced the bundle.
 Tag promotion still requires all gates in the tag's own build run.
 
 Guest disks are excluded from retained artifacts. Fix the defect and

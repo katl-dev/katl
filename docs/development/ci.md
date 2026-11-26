@@ -33,11 +33,11 @@ The assembled bytes remain available for one day as `katl-assembled-<flavour>-<s
 The `vmtest` label on other pull requests selects regression VMs. Production
 builds on pull requests are reserved for release series branches.
 
-The build carries a development version above the stable release it upgrades from
-(`scripts/katl-release-artifacts previous-tag` and `dev-version`). The merge queue
-upgrades from the latest stable release. A pull request into a release series
-branch upgrades from the newest stable tag reachable from its base, so a series
-upgrades from its own history rather than from a newer series.
+The build carries a development version above its upgrade source. The merge
+queue uses `scripts/production-upgrade-baseline.txt`, which the release process
+updates after publication. A pull request into a release series branch uses the
+newest stable tag reachable from its base. Release notes start at the newest
+stable tag reachable from the tested base in either case.
 
 ## VM coverage
 
@@ -166,16 +166,20 @@ setting `KATL_VMTEST_MAIN_RUNNER=katl-vmtest`.
 
 **Katl Release Artifacts** runs on tags, manual dispatch, and nightly on main.
 The nightly candidate is a dispatch-equivalent run at the development version
-above the latest stable release, with its own concurrency group so it never
+above the pinned upgrade baseline, with its own concurrency group so it never
 queues behind or cancels a tag run or a dispatch. It publishes nothing, keeps
 its bundle and assembled artifacts for 7 days instead of 30, and a failed night
 appears as a failed scheduled run.
 Merged revisions are qualified by the merge queue without a second release-artifact build.
+The release workflow starts notes at the newest stable tag reachable from the
+build commit with a published, non-prerelease GitHub release. It excludes the
+tag for the version being built.
 Each flavour is built by the reusable `production-build.yml` workflow (inputs `flavour`,
-`version`, `previous-tag`, `publication`), and its Production VM qualification starts
+`version`, `notes-base-tag`, `publication`), and its Production VM qualification starts
 when that build ends. Releases run regression for both flavours and qualify each
 flavour's assembled production bytes,
-including installation, reboot, upgrade from the previous release, and rollback
-without a test agent. Release validation requires the published bundle to equal
-those qualified bytes, and publication consumes them. See
+including installation, reboot, upgrade from the pinned baseline, and rollback
+without a test agent. Requalifying an existing bundle reads the baseline pin
+from the commit that produced the bundle. Release validation checks that the
+publication bundle contains the same qualified bytes. See
 [Release KatlOS](releases.md) for the promotion contract and failure handling.

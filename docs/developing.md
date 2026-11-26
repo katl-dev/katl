@@ -898,7 +898,7 @@ candidates, and later runs do not cancel them.
 
 Release production uses a dependency-aware job graph. Release Artifacts calls the
 reusable `.github/workflows/production-build.yml` once per flavour (`build-standard`,
-`build-lts`) with the inputs `flavour`, `version`, `previous-tag`, and `publication`.
+`build-lts`) with the inputs `flavour`, `version`, `notes-base-tag`, and `publication`.
 Within a build, the runtime and installer jobs start concurrently and the
 extension closures follow the runtime. An assemble job then packages the install
 and upgrade images concurrently, builds `katlctl`, assembles the installer ISO,

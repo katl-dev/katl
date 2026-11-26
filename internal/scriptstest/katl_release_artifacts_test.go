@@ -1023,57 +1023,115 @@ func TestMkosiBuilderActionOutputIsIgnored(t *testing.T) {
 	}
 }
 
-func TestKatlReleaseArtifactPreviousTag(t *testing.T) {
-	repo := repoRoot(t)
-	script := filepath.Join(repo, "scripts", "katl-release-artifacts")
-	tests := []struct {
-		name, tag string
-		ghFails   bool
-		want      string
-		wantErr   string
-	}{
-		{name: "stable", tag: "v2026.11.4", want: "v2026.11.4"},
-		{name: "release candidate", tag: "v2026.11.5-rc.1", wantErr: "not a stable"},
-		{name: "development", tag: "v2026.11.5-dev.0", wantErr: "not a stable"},
-		{name: "foreign tag", tag: "v1.2.3", wantErr: "not a stable"},
-		{name: "no release", tag: "", wantErr: "not a stable"},
-		{name: "lookup failure", ghFails: true, wantErr: "cannot resolve"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tools := t.TempDir()
-			argsPath := filepath.Join(t.TempDir(), "args")
-			body := `echo "$*" > "$GH_ARGS"` + "\n"
-			if tt.ghFails {
-				body += "exit 1\n"
-			} else {
-				body += "printf '%s\\n' \"$GH_TAG\"\n"
-			}
-			writeFakeExecutable(t, tools, "gh", body)
+const productionBaselineFile = "scripts/production-upgrade-baseline.txt"
 
-			cmd := exec.Command(script, "previous-tag")
-			cmd.Dir = repo
-			cmd.Env = append(os.Environ(), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
-				"GH_ARGS="+argsPath, "GH_TAG="+tt.tag, "GITHUB_REPOSITORY=katl-dev/katl")
-			output, err := cmd.CombinedOutput()
-			if tt.wantErr != "" {
-				if err == nil || !strings.Contains(string(output), tt.wantErr) {
-					t.Fatalf("error = %v, output = %q, want %q", err, output, tt.wantErr)
-				}
-				return
+func writeReleaseScriptFixture(t *testing.T, dir, baseline string) {
+	t.Helper()
+	if err := os.Mkdir(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := "scripts/katl-release-artifacts"
+	if err := os.Symlink(filepath.Join(repoRoot(t), script), filepath.Join(dir, script)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, productionBaselineFile), []byte(baseline+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestKatlReleaseArtifactBaselineRejectsPrerelease(t *testing.T) {
+	dir := t.TempDir()
+	writeReleaseScriptFixture(t, dir, "v2026.11.5-rc.1")
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "release candidate")
+	runGit(t, dir, "tag", "v2026.11.5-rc.1")
+
+	command := exec.Command(filepath.Join(dir, "scripts/katl-release-artifacts"), "upgrade-baseline")
+	command.Dir = dir
+	command.Env = append(gittest.Env(os.Environ(), dir), "KATL_REPO_ROOT="+dir)
+	if output, err := command.CombinedOutput(); err == nil || !strings.Contains(string(output), productionBaselineFile+" must contain a stable KatlOS release tag") {
+		t.Fatalf("prerelease pin should fail: %v: %s", err, output)
+	}
+}
+
+func TestKatlReleaseArtifactBaselineAtRevision(t *testing.T) {
+	dir := t.TempDir()
+	writeReleaseScriptFixture(t, dir, "v2026.11.4")
+	runGit(t, dir, "init", "--quiet")
+	runGit(t, dir, "add", productionBaselineFile)
+	runGit(t, dir, "commit", "--quiet", "-m", "produce bundle")
+	runGit(t, dir, "tag", "v2026.11.4")
+	producingRevision := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+
+	if err := os.WriteFile(filepath.Join(dir, productionBaselineFile), []byte("v2026.11.5\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "commit", "--quiet", "-am", "move baseline")
+	runGit(t, dir, "tag", "v2026.11.5")
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "checkout", want: "v2026.11.5\n"},
+		{name: "producing revision", args: []string{producingRevision}, want: "v2026.11.4\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmd := exec.Command(filepath.Join(dir, "scripts/katl-release-artifacts"), append([]string{"upgrade-baseline"}, tc.args...)...)
+			cmd.Dir = dir
+			cmd.Env = append(gittest.Env(os.Environ(), dir), "KATL_REPO_ROOT="+dir)
+			if output, err := cmd.CombinedOutput(); err != nil || string(output) != tc.want {
+				t.Fatalf("upgrade-baseline %v = %q, error %v, want %q", tc.args, output, err, tc.want)
 			}
-			if err != nil {
-				t.Fatalf("previous-tag failed: %v\n%s", err, output)
+		})
+	}
+}
+
+func TestKatlReleaseArtifactPreviousPublishedTag(t *testing.T) {
+	script := filepath.Join(repoRoot(t), "scripts", "katl-release-artifacts")
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	for _, tag := range []string{"v2026.11.0", "v2026.11.1", "v2026.11.2", "v2026.11.3", "v2026.11.4", "v2026.11.5"} {
+		runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", tag)
+		runGit(t, dir, "tag", tag)
+	}
+	runGit(t, dir, "switch", "--quiet", "--detach", "v2026.11.4")
+
+	tools := t.TempDir()
+	writeFakeExecutable(t, tools, "gh", `
+test "$1" = api
+test ! -e "$GH_CALL_LOG"
+touch "$GH_CALL_LOG"
+cat <<'EOF'
+[
+  {"tag_name":"v2026.11.5","draft":false,"prerelease":false},
+  {"tag_name":"v2026.11.4","draft":false,"prerelease":false},
+  {"tag_name":"v2026.11.2","draft":false,"prerelease":true},
+  {"tag_name":"v2026.11.1","draft":true,"prerelease":false},
+  {"tag_name":"v2026.11.0","draft":false,"prerelease":false}
+]
+EOF
+`)
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "published", args: []string{"--published", "HEAD", "v2026.11.4"}, want: "v2026.11.0\n"},
+		{name: "offline", args: []string{"HEAD", "v2026.11.4"}, want: "v2026.11.3\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			log := filepath.Join(t.TempDir(), "gh-called")
+			cmd := exec.Command(script, append([]string{"previous-tag"}, tc.args...)...)
+			cmd.Dir = dir
+			cmd.Env = append(gittest.Env(os.Environ(), dir), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"), "GH_CALL_LOG="+log)
+			if output, err := cmd.CombinedOutput(); err != nil || string(output) != tc.want {
+				t.Fatalf("previous-tag %v = %q, error %v, want %q", tc.args, output, err, tc.want)
 			}
-			if got := strings.TrimSpace(string(output)); got != tt.want {
-				t.Fatalf("previous-tag = %q, want %q", got, tt.want)
-			}
-			args, err := os.ReadFile(argsPath)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !strings.Contains(string(args), "katl-dev/katl") {
-				t.Fatalf("gh was not scoped to the repository: %q", args)
+			if _, err := os.Stat(log); tc.name == "offline" && !os.IsNotExist(err) {
+				t.Fatalf("offline previous-tag contacted GitHub or could not check the call log: %v", err)
 			}
 		})
 	}
