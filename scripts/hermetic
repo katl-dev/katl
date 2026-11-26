@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+fail() {
+    printf 'hermetic: %s\n' "$*" >&2
+    exit 1
+}
+
+binds=()
+requested_env=()
+while [[ $# -ge 2 ]]; do
+    case "$1" in
+        --bind|--ro-bind) binds+=("$1" "$2") ;;
+        --env) requested_env+=("$2") ;;
+        *) break ;;
+    esac
+    shift 2
+done
+[[ "${1-}" == -- && $# -ge 2 ]] || fail 'usage: scripts/hermetic [--bind DIR | --ro-bind DIR | --env NAME]... -- CMD [ARGS...]'
+shift
+
+command -v bwrap >/dev/null || fail 'bwrap is required; enter the development shell with nix develop'
+home="$(realpath -e -- "${HOME:?HOME must be set}")" && [[ -d "$home" && "$home" != / ]] ||
+    fail 'HOME must name an existing directory other than /'
+worktree="$(git rev-parse --show-toplevel)" || fail 'run from inside a Git worktree'
+git_common="$(git rev-parse --path-format=absolute --git-common-dir)"
+source "$(dirname -- "${BASH_SOURCE[0]}")/job-environment"
+# Preserve the caller's PATH and TERM, isolated HOME and katlctl config, Go
+# caches with telemetry off, Nix compiler/linker/pkg-config and CA settings
+# listed in job-environment, and variables explicitly selected with --env.
+declare -A job_env=()
+job_environment "$worktree" "$home" "${requested_env[@]}"
+
+default_binds=(--bind "$worktree")
+case "$git_common" in
+    "$worktree"/*) ;;
+    *) default_binds+=(--bind "$git_common") ;; # A linked worktree stores refs and objects here.
+esac
+# A separate user namespace blocks access through host processes' /proc roots.
+args=(--dev-bind / / --unshare-user --clearenv --tmpfs /tmp)
+[[ "$home" == /tmp ]] || args+=(--tmpfs "$home")
+# Overlay the private directories before restoring individual host paths.
+binds=("${default_binds[@]}" --bind "${job_env[GOCACHE]}" --bind "${job_env[GOMODCACHE]}" "${binds[@]}")
+for ((i = 0; i < ${#binds[@]}; i += 2)); do
+    dir="${binds[i + 1]}"
+    path="$(realpath -e -- "$dir")" && [[ -d "$path" ]] ||
+        fail "bind directory does not exist: $dir"
+    if [[ "$home" == "$path" || "$home" == "${path%/}/"* ]]; then
+        fail "bind would expose all of HOME: $dir"
+    fi
+    # Preserve the spelling used by callers even if a home symlink is hidden.
+    destination="$(realpath -ms -- "$dir")"
+    if [[ "$path" == /tmp || "$destination" == /tmp ]]; then
+        fail "bind would expose all of /tmp: $dir"
+    fi
+    args+=("${binds[i]}" "$path" "$destination")
+done
+
+for name in "${!job_env[@]}"; do
+    args+=(--setenv "$name" "${job_env[$name]}")
+done
+exec bwrap "${args[@]}" -- "$@"

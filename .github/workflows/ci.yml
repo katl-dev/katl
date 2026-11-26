@@ -200,7 +200,8 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
         id: go
-      - run: .github/scripts/hosted-apt-install dosfstools mtools xorriso squashfs-tools
+      - run: .github/scripts/hosted-apt-install bubblewrap dosfstools mtools xorriso squashfs-tools
+      - run: .github/scripts/hosted-hermetic-setup
       - name: Run fast checks
         env:
           COMPARISON: ${{ needs.plan.outputs.range }}

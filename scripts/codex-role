@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-    printf 'usage: scripts/codex-role <delivery|reviewer|debugger> [--effort LEVEL] [--log PATH] [--] <task-name> <task-text-or-@file>\n' >&2
+    printf 'usage: scripts/codex-role <delivery|reviewer|debugger> [--effort LEVEL] [--log PATH] [--bind DIR | --ro-bind DIR | --env NAME]... [--] <task-name> <task-text-or-@file>\n' >&2
     exit 2
 }
 
@@ -16,11 +16,16 @@ role="$1"
 shift
 
 log=""
-while [[ "${1-}" == --effort || "${1-}" == --log ]]; do
+binds=()
+requested_env=()
+while [[ "${1-}" == --effort || "${1-}" == --log || "${1-}" == --bind || "${1-}" == --ro-bind || "${1-}" == --env ]]; do
     [[ -n "${2-}" && "$2" != -* ]] || usage
     case "$1" in
         --effort) effort="$2" ;;
         --log) log="$2" ;;
+        --bind) binds+=(BindPaths "$2") ;;
+        --ro-bind) binds+=(BindReadOnlyPaths "$2") ;;
+        --env) requested_env+=("$2") ;;
     esac
     shift 2
 done
@@ -55,7 +60,7 @@ if [[ "$task" != *[![:space:]]* ]]; then
     exit 2
 fi
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 guide="$repo_root/docs/development/agent-roles.md"
 if ! section="$(awk -v heading="## ${role^}" '
     $0 == heading { found = 1; print; next }
@@ -81,21 +86,102 @@ elif [[ "$log" != /* ]]; then
 fi
 printf 'Codex log: %s\n' "$log"
 
-environment=(--setenv=PATH --setenv=HOME)
-while IFS= read -r name; do
-    case "$name" in
-        CODEX_*|XDG_*) environment+=("--setenv=$name") ;;
-    esac
-done < <(compgen -e)
+home="$(realpath -e -- "${HOME:?HOME must be set}")"
+if [[ ! -d "$home" || "$home" == / ]]; then
+    printf 'codex-role: HOME must name an existing directory other than /\n' >&2
+    exit 1
+fi
+
+source "$repo_root/scripts/job-environment"
+declare -A job_env=()
+job_environment "$repo_root" "$home" "${requested_env[@]}"
+
+systemd_path() {
+    local path="${1//\\/\\\\}"
+    printf '"%s"' "${path//\"/\\\"}"
+}
+
+# ProtectHome covers standard home paths. Use an explicit tmpfs for other
+# values of HOME too, and restore the selected host paths with BindPaths.
+mounts=(-p ProtectHome=tmpfs -p PrivateUsers=yes -p PrivateTmp=yes)
+[[ "$home" == /tmp ]] || mounts+=(-p "TemporaryFileSystem=$(systemd_path "$home"):ro")
+bind_dir() {
+    local property="$1" dir="$2" source spec
+    source="$(realpath -e -- "$dir")" && [[ -d "$source" ]] || {
+        printf 'codex-role: bind directory does not exist: %s\n' "$dir" >&2
+        exit 1
+    }
+    if [[ "$home" == "$source" || "$home" == "${source%/}/"* ]]; then
+        printf 'codex-role: bind would expose all of HOME: %s\n' "$dir" >&2
+        exit 1
+    fi
+    if [[ "$source" == /tmp || "$dir" == /tmp ]]; then
+        printf 'codex-role: bind would expose all of /tmp: %s\n' "$dir" >&2
+        exit 1
+    fi
+    spec="$(systemd_path "$source")"
+    if [[ "$source" != "$dir" ]]; then
+        spec+=":$(systemd_path "$dir")"
+    fi
+    mounts+=(-p "$property=$spec")
+}
+
+bind_dir BindPaths "$repo_root"
+git_common="$(git -C "$repo_root" rev-parse --path-format=absolute --git-common-dir)"
+case "$git_common" in
+    "$repo_root"/*) ;;
+    *) bind_dir BindPaths "$git_common" ;; # A linked worktree needs the shared Git metadata.
+esac
+log_dir="$(realpath -e -- "${log%/*}")"
+case "$log_dir" in
+    "$repo_root"|"$repo_root"/*) ;;
+    *) bind_dir BindPaths "$log_dir" ;; # The unit opens the external log itself.
+esac
+log="$log_dir/${log##*/}"
+
+job_env[CODEX_HOME]="$(realpath -m -- "${CODEX_HOME:-$HOME/.codex}")"
+bind_dir BindPaths "${job_env[CODEX_HOME]}" # Codex uses this directory for auth and session state.
+gh_config="$(realpath -m -- "${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}")"
+if [[ -d "$gh_config" ]]; then
+    bind_dir BindReadOnlyPaths "$gh_config" # Roles use gh to read issues and pull requests.
+    job_env[GH_CONFIG_DIR]="$gh_config"
+fi
+
+bind_dir BindPaths "${job_env[GOCACHE]}"
+bind_dir BindPaths "${job_env[GOMODCACHE]}"
+for ((i = 0; i < ${#binds[@]}; i += 2)); do
+    bind_dir "${binds[i]}" "$(realpath -ms -- "${binds[i + 1]}")"
+done
+
+codex_args=(exec -C "$repo_root" -s "$sandbox" -m "$model" -c "model_reasoning_effort=$effort")
+if [[ "$sandbox" == workspace-write ]]; then
+    # Host-configured roots can be masked by ProtectHome, where bubblewrap
+    # cannot create the mount points it uses to protect .git. Grant write
+    # access only to the workspace, Codex's temp roots, and the bound Go caches.
+    codex_args+=(-c 'sandbox_workspace_write.writable_roots=[]' --add-dir "${job_env[GOCACHE]}" --add-dir "${job_env[GOMODCACHE]}")
+fi
+
+environment=()
+for name in "${!job_env[@]}"; do
+    environment+=("--setenv=$name=${job_env[$name]}")
+done
 
 # Open the log in the service so a rejected launch cannot truncate it.
-exec systemd-run --user --unit "$unit" --collect --wait --same-dir --expand-environment=no \
-    "${environment[@]}" -- "$BASH" -c '
+exec systemd-run --user --unit "$unit" --collect --wait --working-directory="$repo_root" --expand-environment=no \
+    "${mounts[@]}" "${environment[@]}" -- "$BASH" -p -c '
         exec >"$1" 2>&1 || exit
+        shift
+        # User units also receive the manager environment. Keep only the values
+        # assigned by this launch before starting Codex.
+        environment=()
+        while [[ "$1" != -- ]]; do
+            environment+=("$1=${!1}")
+            shift
+        done
         shift
         status=0
         # Codex appends piped input to the prompt, so give it immediate EOF.
-        codex "$@" </dev/null || status=$?
+        env -i "${environment[@]}" codex "$@" </dev/null || status=$?
         printf "\nexit=%s\n" "$status" || exit
         exit "$status"
-    ' codex-role "$log" exec -C "$repo_root" -s "$sandbox" -m "$model" -c "model_reasoning_effort=$effort" "$prompt"
+    ' codex-role "$log" "${!job_env[@]}" -- "${codex_args[@]}" "$prompt"

@@ -1,0 +1,44 @@
+# Sourced by hermetic and codex-role after resolving the worktree and HOME.
+job_environment() {
+    local worktree="$1" home="$2" name config cache_paths
+    local -a caches
+    shift 2
+
+    for name in "$@"; do
+        [[ "$name" =~ ^[a-zA-Z_][a-zA-Z_0-9]*$ ]] || {
+            printf '%s: invalid environment variable name: %s\n' "${0##*/}" "$name" >&2
+            return 1
+        }
+    done
+
+    config="$(realpath -m -- "${KATLCTL_CONFIG:-$worktree/_build/katlctl/config.yaml}")" || return
+    if [[ "$config" != "$worktree/"* ]]; then
+        printf '%s: KATLCTL_CONFIG must point to a file inside the worktree: %s\n' "${0##*/}" "$config" >&2
+        return 1
+    fi
+
+    cache_paths="$(go env GOCACHE GOMODCACHE)" || return
+    mapfile -t caches <<<"$cache_paths"
+    if [[ ${#caches[@]} != 2 || "${caches[0]}" != /* || "${caches[1]}" != /* ]]; then
+        printf '%s: Go must report absolute GOCACHE and GOMODCACHE directories\n' "${0##*/}" >&2
+        return 1
+    fi
+
+    for name in "$@" \
+        CC CXX AR AS LD NM RANLIB STRIP PKG_CONFIG_PATH \
+        NIX_CC NIX_BINTOOLS NIX_CFLAGS_COMPILE NIX_LDFLAGS NIX_ENFORCE_NO_NATIVE NIX_HARDENING_ENABLE \
+        NIX_SSL_CERT_FILE SSL_CERT_FILE \
+        "${!NIX_CC_WRAPPER_TARGET_HOST_@}" "${!NIX_BINTOOLS_WRAPPER_TARGET_HOST_@}"; do
+        if [[ -v $name && ${!name@a} == *x* ]]; then
+            job_env[$name]="${!name}"
+        fi
+    done
+
+    job_env[PATH]="$PATH"
+    job_env[TERM]="${TERM:-dumb}"
+    job_env[HOME]="$home"
+    job_env[GOCACHE]="${caches[0]}"
+    job_env[GOMODCACHE]="${caches[1]}"
+    job_env[GOTELEMETRY]=off
+    job_env[KATLCTL_CONFIG]="$config"
+}

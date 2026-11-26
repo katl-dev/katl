@@ -82,7 +82,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-      - run: .github/scripts/hosted-apt-install dosfstools mtools xorriso squashfs-tools
+      - run: .github/scripts/hosted-apt-install bubblewrap dosfstools mtools xorriso squashfs-tools
+      - run: .github/scripts/hosted-hermetic-setup
       - run: scripts/check-fast
 
   # Release candidates and final releases repeat the regression lanes only when

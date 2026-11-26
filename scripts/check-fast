@@ -4,6 +4,9 @@ set -euo pipefail
 repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 cd "$repo_root"
 
+exec "$repo_root/scripts/hermetic" -- bash -s -- "$@" <<'CHECKS'
+set -euo pipefail
+
 mapfile -d '' go_files < <(
     git ls-files -z --cached --others --exclude-standard '*.go' |
         while IFS= read -r -d '' file; do
@@ -30,3 +33,4 @@ fi
 
 go vet ./...
 go test ./... -count=1
+CHECKS

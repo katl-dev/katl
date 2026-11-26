@@ -55,6 +55,11 @@ state for the job. Without `--log`, the log is
 pass `--log PATH` before the task name and use an existing parent directory.
 The unit overwrites the log with the Codex report and ends it with `exit=N`.
 
+The unit masks the home directory and mounts the worktree, linked Git metadata,
+Go caches, Codex auth and session state, and any external log directory. When
+GitHub CLI configuration is present, the unit mounts it read-only so roles can
+use `gh` to read issues and pull requests.
+
 To recover jobs after a hand-off, find running units with
 `systemctl --user list-units 'katl-codex-*'`. Use
 `journalctl --user -u katl-codex-<role>-<task>.service` to inspect the unit's

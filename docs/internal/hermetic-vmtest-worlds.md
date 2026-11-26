@@ -183,6 +183,10 @@ go test -exec scripts/vmtest-exec ./internal/vmtest/scenarios \
   -run '^TestTwoNodeKubeadmJoinSmoke$' -count=1
 ```
 
+The VM runner invokes Go directly so fixture staging can use `sudo`.
+See [#764](https://github.com/katl-dev/katl/issues/764) for sudo-free staging
+and VM wrapper integration.
+
 `scripts/vmtest-exec` is an implementation detail of `scripts/vmtest-run`, not
 a second developer entrypoint. It should fail when invoked without a world
 created by the runner.
@@ -286,7 +290,7 @@ manifests are `setup-failed` in enabled hermetic suites.
 Plain unit test runs keep their current role:
 
 ```text
-go test ./...
+scripts/hermetic -- go test ./...
 ```
 
 They run unit, parser, planner, golden, and helper tests. Enabled VM scenarios

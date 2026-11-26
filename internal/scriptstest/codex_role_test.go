@@ -23,9 +23,28 @@ func TestCodexRoleExec(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	codexHome := filepath.Join(home, "codex config")
+	if err := os.Mkdir(codexHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("CODEX_HOME", codexHome)
 	xdgConfig := filepath.Join(home, "xdg config")
 	t.Setenv("XDG_CONFIG_HOME", xdgConfig)
+	t.Setenv("GH_CONFIG_DIR", "")
+	ghConfig := filepath.Join(xdgConfig, "gh")
+	if err := os.MkdirAll(ghConfig, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	buildCache, moduleCache := filepath.Join(home, ".cache", "go-build"), filepath.Join(home, "go", "pkg", "mod")
+	for _, dir := range []string{buildCache, moduleCache} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("GOCACHE", buildCache)
+	t.Setenv("GOMODCACHE", moduleCache)
+	t.Setenv("KATLCTL_CONFIG", "")
+	t.Setenv("TERM", "xterm")
+	t.Setenv("CODEX_UNLISTED", "caller state")
 
 	task := "Review \"this change\".\nKeep $HOME literal."
 	writeFakeExecutable(t, bin, "codex", `if IFS= read -r unexpected; then
@@ -34,7 +53,7 @@ func TestCodexRoleExec(t *testing.T) {
 fi
 [[ /dev/stdin -ef /dev/null ]]
 printf '%s\0' "$@" > codex-args
-printf '%s\0' "$PATH" "$HOME" "$CODEX_HOME" "$XDG_CONFIG_HOME" > codex-env
+printf '%s\0' "$PATH" "$HOME" "$CODEX_HOME" "${XDG_CONFIG_HOME-unset}" "${KATL_MANAGER_PROBE-unset}" > codex-env
 printf 'progress\n' >&2
 printf 'final message'
 exit "$CODEX_TEST_STATUS"
@@ -68,7 +87,7 @@ exit "$CODEX_TEST_STATUS"
 			const taskName = "issue:413-v2.review_service.service"
 			const logName = "codex report.log"
 			logPath := filepath.Join(work, logName)
-			launcherArgs := append([]string{tc.role, "--log", logName}, tc.options...)
+			launcherArgs := append([]string{tc.role, "--log", logName, "--env", "CODEX_TEST_STATUS"}, tc.options...)
 			launcherArgs = append(launcherArgs, taskName, tc.input)
 			cmd := exec.CommandContext(ctx, filepath.Join(repo, "scripts", "codex-role"), launcherArgs...)
 			cmd.Dir = work
@@ -103,17 +122,47 @@ exit "$CODEX_TEST_STATUS"
 			if unitIndex < 0 || runArgs[unitIndex+1] != unit {
 				t.Fatalf("systemd-run did not launch %q", unit)
 			}
-			for _, flag := range []string{"--user", "--collect", "--wait", "--same-dir", "--expand-environment=no"} {
+			for _, flag := range []string{"--user", "--collect", "--wait", "--working-directory=" + repo, "--expand-environment=no"} {
 				if !slices.Contains(runArgs, flag) {
 					t.Errorf("systemd-run missing %s", flag)
 				}
 			}
-			if env := string(mustReadFile(t, filepath.Join(work, "codex-env"))); env != strings.Join([]string{path, home, codexHome, xdgConfig, ""}, "\x00") {
+			for _, property := range []string{
+				"ProtectHome=tmpfs", "PrivateUsers=yes", "PrivateTmp=yes", `TemporaryFileSystem="` + home + `":ro`,
+				`BindPaths="` + repo + `"`, `BindPaths="` + work + `"`, `BindPaths="` + codexHome + `"`,
+				`BindPaths="` + buildCache + `"`, `BindPaths="` + moduleCache + `"`, `BindReadOnlyPaths="` + ghConfig + `"`,
+			} {
+				index := slices.Index(runArgs, property)
+				if index <= 0 || runArgs[index-1] != "-p" {
+					t.Errorf("systemd-run missing property %s", property)
+				}
+			}
+			for _, assignment := range []string{
+				"PATH=" + path, "HOME=" + home, "TERM=xterm", "CODEX_HOME=" + codexHome, "GH_CONFIG_DIR=" + ghConfig,
+				"GOCACHE=" + buildCache, "GOMODCACHE=" + moduleCache, "GOTELEMETRY=off",
+				"KATLCTL_CONFIG=" + filepath.Join(repo, "_build/katlctl/config.yaml"), "CODEX_TEST_STATUS=" + status,
+			} {
+				if !slices.Contains(runArgs, "--setenv="+assignment) {
+					t.Errorf("systemd-run missing explicit assignment %s", assignment)
+				}
+			}
+			for _, arg := range runArgs[:slices.Index(runArgs, "--")] {
+				if assignment, ok := strings.CutPrefix(arg, "--setenv="); ok {
+					name, _, explicit := strings.Cut(assignment, "=")
+					if !explicit || name == "XDG_CONFIG_HOME" || name == "CODEX_UNLISTED" {
+						t.Errorf("systemd-run unexpected environment argument %s", arg)
+					}
+				}
+			}
+			if env := string(mustReadFile(t, filepath.Join(work, "codex-env"))); env != strings.Join([]string{path, home, codexHome, "unset", "unset", ""}, "\x00") {
 				t.Fatalf("unexpected Codex environment %q", env)
 			}
 
 			args := strings.Split(strings.TrimSuffix(string(mustReadFile(t, filepath.Join(work, "codex-args"))), "\x00"), "\x00")
 			want := []string{"exec", "-C", repo, "-s", tc.sandbox, "-m", tc.model, "-c", "model_reasoning_effort=" + tc.effort}
+			if tc.role == "delivery" {
+				want = append(want, "-c", "sandbox_workspace_write.writable_roots=[]", "--add-dir", buildCache, "--add-dir", moduleCache)
+			}
 			if len(args) != len(want)+1 || !slices.Equal(args[:len(want)], want) {
 				t.Fatalf("codex args = %q, want %q followed by one prompt", args, want)
 			}
@@ -189,12 +238,12 @@ environment=()
 while [[ "$1" != -- ]]; do
     case "$1" in
         --unit) shift ;;
-        --setenv=*) name="${1#--setenv=}"; environment+=("$name=${!name}") ;;
+        --setenv=*) environment+=("${1#--setenv=}") ;;
     esac
     shift
 done
 shift
-# A service does not inherit the launcher's environment.
-exec env -i "${environment[@]}" "$@"
+# Model the ambient environment of the user manager plus the unit assignments.
+exec env -i KATL_MANAGER_PROBE=manager "${environment[@]}" "$@"
 `)
 }

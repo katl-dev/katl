@@ -26,9 +26,12 @@ runs:
       id: paths
       shell: bash
       run: |
+        module="$(go env GOMODCACHE)"
+        build="$(go env GOCACHE)"
+        mkdir -p -- "$module" "$build"
         {
-          echo "module=$(go env GOMODCACHE)"
-          echo "build=$(go env GOCACHE)"
+          echo "module=$module"
+          echo "build=$build"
           echo "platform=${RUNNER_OS}-${RUNNER_ARCH,,}-${ImageOS-undefined}"
         } >> "$GITHUB_OUTPUT"
     - name: Restore Go cache
