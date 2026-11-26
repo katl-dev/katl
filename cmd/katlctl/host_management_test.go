@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -207,33 +209,88 @@ func TestHostRebootTimesOutWhenAgentDoesNotRestart(t *testing.T) {
 }
 
 func TestHostShutdownWaitsForManagementAPIToStop(t *testing.T) {
-	configPath := writeHostMutationContext(t, "machine-a")
-	fake := healthyHostClient("machine-a", "agent-a", "generation-0")
-	fake.onShutdown = func(*agentapi.ShutdownRequest) {
-		fake.nodeStatusErr = context.Canceled
-	}
-	installKatlcDial(t, nil, fake)
-	oldInterval := hostShutdownPollInterval
-	hostShutdownPollInterval = time.Millisecond
-	t.Cleanup(func() { hostShutdownPollInterval = oldInterval })
+	for _, test := range []struct {
+		name      string
+		statusErr error
+	}{
+		{name: "connection refused"},
+		{name: "agent error", statusErr: grpcstatus.Error(codes.Unavailable, "connection error: dial tcp: connect: connection refused")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := grpc.NewServer()
+			agent := &shutdownTestAgent{
+				status:    healthyHostClient("machine-a", "agent-a", "generation-0").nodeStatus,
+				statusErr: test.statusErr,
+				requests:  make(chan *agentapi.ShutdownRequest, 1),
+			}
+			if test.statusErr == nil {
+				// Stop accepting connections while the existing RPC can still acknowledge shutdown.
+				agent.stopListening = func() { _ = listener.Close() }
+			}
+			agentapi.RegisterKatlcAgentServer(server, agent)
+			go func() { _ = server.Serve(listener) }()
+			t.Cleanup(server.Stop)
 
-	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"node", "shutdown", "node-a", "--context-file", configPath, "--timeout", "1s"}, &stdout, &stderr); err != nil {
-		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+			configPath := writeHostMutationContext(t, "machine-a")
+			var stdout, stderr bytes.Buffer
+			err = run(t.Context(), []string{"node", "shutdown", "node-a", "--context-file", configPath, "--endpoint", listener.Addr().String(), "--timeout", "1s"}, &stdout, &stderr)
+			select {
+			case request := <-agent.requests:
+				if request.GetActor() != "katlctl node shutdown" || request.GetExpectedMachineId() != "machine-a" {
+					t.Fatalf("shutdown request = %#v", request)
+				}
+			default:
+				t.Fatalf("agent did not receive a shutdown request: %v", err)
+			}
+			if !strings.Contains(stderr.String(), "Shutdown scheduled for node-a") {
+				t.Fatalf("stderr = %q", stderr.String())
+			}
+
+			if test.statusErr != nil {
+				if !agent.repliedWithError.Load() {
+					t.Fatal("the live agent did not return the application error during shutdown verification")
+				}
+				if err == nil || !strings.Contains(err.Error(), "Could not confirm shutdown") || !strings.Contains(err.Error(), "Check the node's console") || stdout.Len() != 0 {
+					t.Fatalf("stdout = %q, err = %v, want an unconfirmed shutdown with console guidance", stdout.String(), err)
+				}
+				return
+			}
+			if err != nil || stdout.String() != "node-a shut down; management API is offline\n" {
+				t.Fatalf("stdout = %q, err = %v, want offline confirmation", stdout.String(), err)
+			}
+		})
 	}
-	if len(fake.shutdownRequests) != 1 {
-		t.Fatalf("shutdown requests = %d, want 1", len(fake.shutdownRequests))
+}
+
+type shutdownTestAgent struct {
+	agentapi.UnimplementedKatlcAgentServer
+	status           *agentapi.NodeStatus
+	statusErr        error
+	stopListening    func()
+	requests         chan *agentapi.ShutdownRequest
+	scheduled        atomic.Bool
+	repliedWithError atomic.Bool
+}
+
+func (a *shutdownTestAgent) GetNodeStatus(context.Context, *agentapi.GetNodeStatusRequest) (*agentapi.NodeStatus, error) {
+	if a.scheduled.Load() && a.statusErr != nil {
+		a.repliedWithError.Store(true)
+		return nil, a.statusErr
 	}
-	request := fake.shutdownRequests[0]
-	if request.GetActor() != "katlctl node shutdown" || request.GetExpectedMachineId() != "machine-a" {
-		t.Fatalf("shutdown request = %#v", request)
+	return a.status, nil
+}
+
+func (a *shutdownTestAgent) Shutdown(_ context.Context, req *agentapi.ShutdownRequest) (*agentapi.ShutdownAccepted, error) {
+	a.requests <- req
+	a.scheduled.Store(true)
+	if a.stopListening != nil {
+		a.stopListening()
 	}
-	if got := stdout.String(); got != "node-a shut down; management API is offline\n" {
-		t.Fatalf("stdout = %q", got)
-	}
-	if got := stderr.String(); !strings.Contains(got, "Shutdown scheduled for node-a") {
-		t.Fatalf("stderr = %q", got)
-	}
+	return &agentapi.ShutdownAccepted{Scheduled: true}, nil
 }
 
 func TestHostShutdownLateStatusFailure(t *testing.T) {
@@ -241,7 +298,7 @@ func TestHostShutdownLateStatusFailure(t *testing.T) {
 		node := world.nodes[0]
 		node.interceptRPC = func(ctx context.Context, _ string, _, _ any, _ *grpc.ClientConn, _ grpc.UnaryInvoker, _ ...grpc.CallOption) error {
 			<-ctx.Done()
-			return grpcstatus.Error(codes.Unavailable, "connection reset")
+			return grpcstatus.Error(codes.Unavailable, "connection error: dial tcp: connect: connection refused")
 		}
 		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 		defer cancel()
@@ -308,6 +365,8 @@ func TestHostShutdownNoWaitJSON(t *testing.T) {
 func TestWaitNodeOfflineRetainsResolvedManagementIdentity(t *testing.T) {
 	credentials := &managementidentity.ClientCredentials{}
 	target := managementTarget{nodeName: "node-a", endpoint: mustHostPort(t, "override.test:9443"), credentials: credentials}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	oldDial := dialKatlcAgent
 	dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
 		if endpoint != target.endpoint.String() {
@@ -317,12 +376,13 @@ func TestWaitNodeOfflineRetainsResolvedManagementIdentity(t *testing.T) {
 		if !ok || identity.nodeName != target.nodeName || identity.credentials != credentials {
 			t.Fatalf("management identity = %#v, want resolved target credentials", identity)
 		}
+		cancel()
 		return katlcAgentConnection{}, context.Canceled
 	}
 	t.Cleanup(func() { dialKatlcAgent = oldDial })
 
-	if err := waitNodeOffline(context.Background(), target); err != nil {
-		t.Fatalf("waitNodeOffline() error = %v", err)
+	if err := waitNodeOffline(ctx, target); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitNodeOffline() error = %v, want cancellation", err)
 	}
 }
 
@@ -361,6 +421,8 @@ contexts:
   cluster: homelab
 clusters:
 - name: homelab
+  management:
+    authentication: trusted-network
   nodes:
   - name: node-a
     managementEndpoint: node-a.test:9443

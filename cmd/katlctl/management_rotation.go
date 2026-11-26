@@ -447,7 +447,7 @@ func verifyOldManagementAuthorityRejected(ctx context.Context, node managementRo
 	}
 	defer conn.Close()
 	status, err := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
-	switch transport.ClassifyManagementEvidence(err, unknownAuthority) {
+	switch transport.ClassifyManagementEvidence(err, nil, unknownAuthority) {
 	case transport.ManagementRefusedExplicitly:
 		return nil
 	case transport.ManagementConfirmed:
@@ -486,7 +486,7 @@ func checkManagementCredential(ctx context.Context, node managementRotationNode,
 	}
 	defer conn.Close()
 	status, err := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
-	if transport.ClassifyManagementEvidence(err, nil) != transport.ManagementConfirmed {
+	if transport.ClassifyManagementEvidence(err, nil, nil) != transport.ManagementConfirmed {
 		return nil, err
 	}
 	if err := checkManagementStatusIdentity(node, status); err != nil {

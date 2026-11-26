@@ -333,7 +333,7 @@ func observeEnableMTLSNode(ctx context.Context, node *enableMTLSNode, client *ma
 		started := time.Now()
 		status, err := enableMTLSStatus(probeCtx, *node, *client, probe)
 		observedAt := time.Now()
-		if transport.ClassifyManagementEvidence(err, nil) == transport.ManagementConfirmed {
+		if transport.ClassifyManagementEvidence(err, nil, nil) == transport.ManagementConfirmed {
 			if err := node.bind(status, observedAt); err != nil {
 				return err
 			}
@@ -360,7 +360,7 @@ func observeEnableMTLSNode(ctx context.Context, node *enableMTLSNode, client *ma
 
 	status, err := enableMTLSStatus(ctx, *node, trustedNetworkClient, probe)
 	observedAt := time.Now()
-	if transport.ClassifyManagementEvidence(err, nil) != transport.ManagementConfirmed {
+	if transport.ClassifyManagementEvidence(err, nil, nil) != transport.ManagementConfirmed {
 		return fmt.Errorf("%s at %s: %w; check the management address and node reachability", node.name, node.endpoint,
 			managementConfirmationError("the node uses trusted-network management", "an mTLS authority", err))
 	}
@@ -585,7 +585,7 @@ func migrateEnableMTLSNode(ctx context.Context, node *enableMTLSNode, bundle man
 			})
 			return err
 		})
-		if transport.ClassifyManagementEvidence(err, nil) != transport.ManagementConfirmed {
+		if transport.ClassifyManagementEvidence(err, nil, nil) != transport.ManagementConfirmed {
 			return enableMTLSBeginError(err)
 		}
 		deadline = started.Add(opts.trialWindow)
@@ -654,7 +654,7 @@ func waitEnableMTLSTrial(ctx context.Context, node *enableMTLSNode, client manag
 	for {
 		started := time.Now()
 		status, err := enableMTLSStatus(deadline, *node, client, min(wait, 5*time.Second))
-		if transport.ClassifyManagementEvidence(err, nil) == transport.ManagementConfirmed {
+		if transport.ClassifyManagementEvidence(err, nil, nil) == transport.ManagementConfirmed {
 			if verifyErr := node.verifyBoundStatus(status); verifyErr != nil {
 				return time.Time{}, verifyErr
 			}
@@ -686,7 +686,7 @@ func waitEnableMTLSHealthy(ctx context.Context, node *enableMTLSNode, client man
 	var lastErr error
 	for {
 		status, err := enableMTLSStatus(deadline, *node, client, min(timeout, 5*time.Second))
-		if transport.ClassifyManagementEvidence(err, nil) == transport.ManagementConfirmed {
+		if transport.ClassifyManagementEvidence(err, nil, nil) == transport.ManagementConfirmed {
 			if err := node.verifyCommittedStatus(status, authority); err != nil {
 				return err
 			}

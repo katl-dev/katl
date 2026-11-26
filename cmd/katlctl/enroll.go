@@ -435,7 +435,7 @@ func contextEndpointStatus(ctx context.Context, endpoint inventory.HostPort) (*a
 	}
 	status, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 	closeErr := conn.Close()
-	if transport.ClassifyManagementEvidence(err, nil) != transport.ManagementConfirmed {
+	if transport.ClassifyManagementEvidence(err, nil, nil) != transport.ManagementConfirmed {
 		return nil, err
 	}
 	return status, closeErr

@@ -17,6 +17,8 @@ import (
 	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/peer"
 )
 
 const (
@@ -160,7 +162,7 @@ type hostShutdownReport struct {
 	Result string `json:"result"`
 }
 
-var hostShutdownPollInterval = 500 * time.Millisecond
+const hostShutdownPollInterval = 500 * time.Millisecond
 
 func newHostStatusCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := hostStatusOptions{timeout: defaultManagementTimeout, output: hostOutputText}
@@ -397,7 +399,7 @@ func runHostShutdown(ctx context.Context, opts hostShutdownOptions, stdout, stde
 	err = waitNodeOffline(waitCtx, target)
 	cancelWait()
 	if err != nil {
-		return fmt.Errorf("shutdown was scheduled for %s. Could not verify that its management API is offline: %w. Check the node's console", node, err)
+		return fmt.Errorf("shutdown was scheduled for %s. Could not confirm shutdown: %w. Check the node's console", node, err)
 	}
 	report.Result = "offline"
 	return writeHostShutdown(stdout, opts.output, report)
@@ -408,12 +410,15 @@ func waitNodeOffline(ctx context.Context, target managementTarget) error {
 		attemptCtx, cancelAttempt := context.WithTimeout(ctx, 2*time.Second)
 		attemptCtx = withManagementTarget(attemptCtx, target)
 		conn, err := dialKatlcAgent(transport.WithoutManagementWait(attemptCtx), target.endpoint.String())
+		evidence := transport.ManagementInconclusive
 		if err == nil {
-			_, err = conn.Client.GetNodeStatus(attemptCtx, &agentapi.GetNodeStatusRequest{})
+			var p peer.Peer
+			_, err = conn.Client.GetNodeStatus(attemptCtx, &agentapi.GetNodeStatusRequest{}, grpc.Peer(&p))
+			evidence = transport.ClassifyManagementEvidence(err, &p, nil)
 			_ = conn.Close()
 		}
 		cancelAttempt()
-		if err != nil && !errors.Is(err, transport.ErrManagementRPCInconclusive) {
+		if evidence == transport.ManagementUnreachable {
 			return nil
 		}
 

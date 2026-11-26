@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	grpcstatus "google.golang.org/grpc/status"
 )
 
@@ -44,7 +46,7 @@ func TestManagementEvidence(t *testing.T) {
 		{name: "deadline", err: context.DeadlineExceeded, want: ManagementInconclusive},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ClassifyManagementEvidence(tc.err, tc.issuerRefused); got != tc.want {
+			if got := ClassifyManagementEvidence(tc.err, nil, tc.issuerRefused); got != tc.want {
 				t.Errorf("evidence = %v, want %v", got, tc.want)
 			}
 		})
@@ -301,6 +303,13 @@ func TestManagementRPCInconclusive(t *testing.T) {
 	}{
 		{name: "unary"},
 		{name: "stream open"},
+		{name: "stream header", stream: func(s grpc.ClientStream) error {
+			header, err := s.Header()
+			if header != nil {
+				return fmt.Errorf("exposed header after the call budget: %v", header)
+			}
+			return err
+		}},
 		{name: "stream send", stream: func(s grpc.ClientStream) error {
 			return s.SendMsg(&agentapi.StageHostUpgradeArtifactRequest{})
 		}},
@@ -380,6 +389,13 @@ func (c managementDeadlineContext) Deadline() (time.Time, bool) { return c.deadl
 type managementResultStream struct {
 	grpc.ClientStream
 	finish func() error
+}
+
+func (s managementResultStream) Header() (metadata.MD, error) {
+	if err := s.finish(); err != nil {
+		return nil, err
+	}
+	return metadata.Pairs("evidence", "answer"), nil
 }
 
 func (s managementResultStream) SendMsg(any) error { return s.finish() }

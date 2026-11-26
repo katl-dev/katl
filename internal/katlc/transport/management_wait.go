@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/peer"
 	grpcstatus "google.golang.org/grpc/status"
 )
@@ -37,12 +38,14 @@ const (
 	ManagementInconclusive ManagementEvidence = iota
 	ManagementConfirmed
 	ManagementRefusedExplicitly
+	ManagementUnreachable
 )
 
-// ClassifyManagementEvidence classifies an RPC result for a trust change.
+// ClassifyManagementEvidence classifies an RPC result within its budget.
+// Pass p when the call collected peer information with grpc.Peer.
 // An old-client-CA probe requires issuer-specific evidence. A gRPC
 // authentication refusal does not identify which CA the server trusts.
-func ClassifyManagementEvidence(err error, oldAuthorityRefused func(error) bool) ManagementEvidence {
+func ClassifyManagementEvidence(err error, p *peer.Peer, oldAuthorityRefused func(error) bool) ManagementEvidence {
 	switch {
 	case err == nil:
 		return ManagementConfirmed
@@ -50,6 +53,8 @@ func ClassifyManagementEvidence(err error, oldAuthorityRefused func(error) bool)
 		return ManagementInconclusive
 	case oldAuthorityRefused != nil && grpcstatus.Code(err) == codes.Unavailable && oldAuthorityRefused(err):
 		return ManagementRefusedExplicitly
+	case p != nil && refusedBeforeConnect(err, p):
+		return ManagementUnreachable
 	default:
 		return ManagementInconclusive
 	}
@@ -171,6 +176,14 @@ func ManagementDialOptions(ctx context.Context, node, endpoint string, creds cre
 type managementRPCStream struct {
 	grpc.ClientStream
 	ctx context.Context
+}
+
+func (s managementRPCStream) Header() (metadata.MD, error) {
+	header, err := s.ClientStream.Header()
+	if err := managementRPCResult(s.ctx, err); err != nil {
+		return nil, err
+	}
+	return header, nil
 }
 
 func (s managementRPCStream) SendMsg(msg any) error {

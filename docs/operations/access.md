@@ -106,9 +106,11 @@ When a saved node's address changes, verify and save it explicitly:
 katlctl context rebind --node cp-1 --endpoint 192.0.2.51
 ```
 
-Rebind succeeds only when TLS authenticates the expected node name and the new
-address reports the same node name, enrollment ID, and machine ID that the
-context recorded. If verification reports `could not confirm the node answers
+Rebind uses the transport mode saved in the context and checks that the new
+address reports the recorded node name, enrollment ID, and machine ID. With
+mTLS, TLS authenticates the expected node name before that check. With
+trusted-network management, rebind checks the reported values over plaintext.
+If verification reports `could not confirm the node answers
 at the proposed address with the saved management credentials`, the context
 keeps the previous address. Check the address and node reachability, then rerun
 the `katlctl context rebind` command in the message. If verification timed out,
@@ -209,12 +211,13 @@ power API, it cannot independently prove the machine's final hardware power
 state. Use `--no-wait` only when intentionally detaching, and `--output json`
 when a script needs structured output.
 
-A status probe that expires while waiting for shutdown leaves the management
-API's state unverified, so `katlctl` keeps checking until the shutdown wait
-ends. If that wait times out for `cp-1`, the command reports the following.
+A refused connection confirms the management API is offline. If a status
+probe expires or the agent returns an application error, `katlctl` keeps
+checking until it has transport evidence or the shutdown wait ends. If that
+wait times out for `cp-1`, the command reports the following.
 
 ```text
-shutdown was scheduled for cp-1. Could not verify that its management API is offline: context deadline exceeded. Check the node's console
+shutdown was scheduled for cp-1. Could not confirm shutdown: context deadline exceeded. Check the node's console
 ```
 
 ## Retrieve a kubeconfig
