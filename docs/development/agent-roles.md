@@ -10,10 +10,6 @@ Label each issue and PR that changes an operator workflow `user-facing` at
 creation. Record the journey outcome on the PR and apply `journey: passed` or
 `journey: gap`. For a gap, link the `release-blocker` issue in the same milestone.
 
-Use `scripts/codex-role` for the default Codex sessions below. When a role
-calls for Terra, start a Codex session with that model and give it the same
-role brief.
-
 ## Orchestrator
 
 **Purpose.** Own release coordination and judgment. Define scope, sequence
@@ -36,6 +32,29 @@ state. Before dispatching delivery for a brief that defines a contract or state
 machine, have `gpt-6.2-astra` review the brief at low effort. `gpt-6.2-sol`
 implements the brief literally, so a contradiction becomes a defect. Skip this
 review for mechanical briefs.
+
+**Codex jobs.** Launch every Codex job as a tracked background command using
+the harness's `run_in_background`. Never launch a job with `&` or `nohup`.
+For the default role models, pass a role, a task name, and the brief as text or
+`@file` to `scripts/codex-role`. For example, use
+`scripts/codex-role reviewer review-413 @review.md` from the task worktree.
+When a role calls for Terra, give that Codex session the same role brief.
+
+`codex-role` uses `systemd-run --user` to launch `katl-codex-<role>-<task>.service`,
+waits for the unit to finish, and returns its exit status. Choose a task name
+that is unique among running jobs for that role and uses 1 to 232 characters
+from `[A-Za-z0-9:_.-]`. Record the unit name and printed log path in the local
+state for the job. Without `--log`, the log is
+`_build/codex/katl-codex-<role>-<task>.log` in the worktree. To choose a log path,
+pass `--log PATH` before the task name and use an existing parent directory.
+The unit overwrites the log with the Codex report and ends it with `exit=N`.
+
+To recover jobs after a hand-off, find running units with
+`systemctl --user list-units 'katl-codex-*'`. Use
+`journalctl --user -u katl-codex-<role>-<task>.service` to inspect the unit's
+lifecycle, including after systemd collects the unit. Open the recorded log
+for the Codex report and exit status. If the log has no exit line, check the
+journal for a startup failure or interruption.
 
 Reconcile agent reports against GitHub, verify the required independent
 approval before enabling auto-merge on risky changes, and return release

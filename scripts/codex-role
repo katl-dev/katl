@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-    printf 'usage: scripts/codex-role <delivery|reviewer|debugger> [--effort LEVEL] <task-text-or-@file>\n' >&2
+    printf 'usage: scripts/codex-role <delivery|reviewer|debugger> [--effort LEVEL] [--log PATH] [--] <task-name> <task-text-or-@file>\n' >&2
     exit 2
 }
 
@@ -15,14 +15,33 @@ esac
 role="$1"
 shift
 
-if [[ "${1-}" == --effort ]]; then
+log=""
+while [[ "${1-}" == --effort || "${1-}" == --log ]]; do
     [[ -n "${2-}" && "$2" != -* ]] || usage
-    effort="$2"
+    case "$1" in
+        --effort) effort="$2" ;;
+        --log) log="$2" ;;
+    esac
     shift 2
+done
+if [[ "${1-}" == -- ]]; then
+    shift
 fi
-[[ $# -eq 1 ]] || usage
+[[ $# -eq 2 ]] || usage
 
-task="$1"
+task_name="$1"
+unit_stem="katl-codex-$role-"
+unit_suffix=.service
+max_task_length=$((255 - ${#unit_stem} - ${#unit_suffix}))
+unit="$unit_stem$task_name$unit_suffix"
+shopt -s globasciiranges
+if [[ -z "$task_name" || "$task_name" == *[!A-Za-z0-9:_.-]* || ${#task_name} -gt $max_task_length ]]; then
+    printf 'codex-role: invalid task name %q. Use 1 to %s characters from [A-Za-z0-9:_.-].\n' \
+        "$task_name" "$max_task_length" >&2
+    exit 2
+fi
+
+task="$2"
 if [[ "$task" == @* ]]; then
     file="${task#@}"
     if [[ ! -f "$file" || ! -r "$file" ]]; then
@@ -49,5 +68,34 @@ if ! section="$(awk -v heading="## ${role^}" '
 fi
 
 printf -v prompt '%s\n\n%s' "$section" "$task"
-# Codex appends piped input to the prompt, so give it immediate EOF.
-exec codex exec -C "$repo_root" -s "$sandbox" -m "$model" -c "model_reasoning_effort=$effort" "$prompt" </dev/null
+if systemctl --user is-active --quiet "$unit"; then
+    printf 'codex-role: %s is already active. Choose another task name or wait for it to finish.\n' "$unit" >&2
+    exit 1
+fi
+
+if [[ -z "$log" ]]; then
+    log="$repo_root/_build/codex/${unit%.service}.log"
+    mkdir -p -- "${log%/*}"
+elif [[ "$log" != /* ]]; then
+    log="$PWD/$log"
+fi
+printf 'Codex log: %s\n' "$log"
+
+environment=(--setenv=PATH --setenv=HOME)
+while IFS= read -r name; do
+    case "$name" in
+        CODEX_*|XDG_*) environment+=("--setenv=$name") ;;
+    esac
+done < <(compgen -e)
+
+# Open the log in the service so a rejected launch cannot truncate it.
+exec systemd-run --user --unit "$unit" --collect --wait --same-dir --expand-environment=no \
+    "${environment[@]}" -- "$BASH" -c '
+        exec >"$1" 2>&1 || exit
+        shift
+        status=0
+        # Codex appends piped input to the prompt, so give it immediate EOF.
+        codex "$@" </dev/null || status=$?
+        printf "\nexit=%s\n" "$status" || exit
+        exit "$status"
+    ' codex-role "$log" exec -C "$repo_root" -s "$sandbox" -m "$model" -c "model_reasoning_effort=$effort" "$prompt"
