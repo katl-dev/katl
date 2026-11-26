@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/binary"
 	"encoding/pem"
 	"errors"
 	"net"
@@ -26,28 +27,32 @@ import (
 )
 
 func TestManagementIdentityRotateReplacesLiveTrust(t *testing.T) {
-	testManagementRotationLiveTrust(t, "", false)
+	testManagementRotationLiveTrust(t, "", false, false)
+}
+
+func TestManagementIdentityRotateRetriesWithClockSkew(t *testing.T) {
+	testManagementRotationLiveTrust(t, "", false, true)
 }
 
 func TestManagementIdentityRotateRequiresIssuerRejection(t *testing.T) {
 	t.Run("old leaf expires at the server", func(t *testing.T) {
-		testManagementRotationLiveTrust(t, "expired leaf", false)
+		testManagementRotationLiveTrust(t, "expired leaf", false, false)
 	})
 	t.Run("old leaf expires with a second node pending", func(t *testing.T) {
-		testManagementRotationLiveTrust(t, "expired leaf", true)
+		testManagementRotationLiveTrust(t, "expired leaf", true, false)
 	})
 	t.Run("TLS policy rejects a fresh leaf generically", func(t *testing.T) {
-		testManagementRotationLiveTrust(t, "generic rejection", false)
+		testManagementRotationLiveTrust(t, "generic rejection", false, false)
 	})
 }
 
-func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker bool) {
+func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker, retryWithClockSkew bool) {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("KATLCTL_CONFIG", filepath.Join(dir, "no-context.yaml"))
 	t.Setenv("KATLCTL_CONFIG_DIR", "")
 	configPath := filepath.Join(dir, "cluster.yaml")
-	config := configBundleSource()
+	config := strings.Replace(configBundleSource(), "  managementAuthentication: mtls\n", "  managementAuthentication: mtls\n  managementIdentity: "+defaultManagementSecrets+"\n", 1)
 	if addWorker {
 		config += `    - name: worker-1
       management:
@@ -60,16 +65,33 @@ func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker b
 	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	createTestManagementSecrets(t, configPath)
 	oldPath := filepath.Join(dir, defaultManagementSecrets)
-	old, err := readManagementIdentity(oldPath)
+	outputPath := filepath.Join(dir, "management-secrets-next.yaml")
+	now := time.Now()
+	serverTime := now.Add(2 * time.Hour)
+	old, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "lab", Now: now.Add(-2 * time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	serverTime := time.Now().Add(2 * time.Hour)
 	if rejection == "expired leaf" {
 		shortenRotationTestLeaf(t, &old, serverTime.Add(-time.Hour))
-		if err := managementidentity.SaveExisting(oldPath, old); err != nil {
+	}
+	if err := managementidentity.Write(oldPath, old); err != nil {
+		t.Fatal(err)
+	}
+
+	var replacement managementidentity.Bundle
+	if retryWithClockSkew {
+		serverTime = now.Add(-10 * time.Minute)
+		issued := now.Add(-time.Hour)
+		replacement, err = managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: old.ClusterName, Now: issued})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := managementidentity.EnsureNode(&replacement, "cp-1", issued, nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := managementidentity.Write(outputPath, replacement); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -107,7 +129,10 @@ func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker b
 		if err != nil {
 			t.Fatal(err)
 		}
-		if rotated && rejection != "" {
+		switch {
+		case rotated && retryWithClockSkew:
+			tlsConfig.Time = func() time.Time { return serverTime }
+		case rotated && rejection != "":
 			if !tlsConfig.ClientCAs.AppendCertsFromPEM([]byte(old.CertificateAuthority.Certificate)) {
 				t.Fatal("add old authority to deliberately unsafe test server")
 			}
@@ -162,6 +187,7 @@ func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker b
 	t.Cleanup(func() { dialKatlcAgent = previousDial })
 	previousSSH := runManagementRotationSSH
 	var changed []string
+	interrupted := errors.New("SSH disconnected after switching the node")
 	runManagementRotationSSH = func(_ context.Context, target managementRotationNode, _ managementRotationOptions, dryRun bool) (nodeidentity.ManagementRotationStatus, error) {
 		if target.name != "cp-1" {
 			if !dryRun {
@@ -178,16 +204,34 @@ func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker b
 		if err == nil {
 			rotated = true
 			start()
-			if rejection == "" {
+			switch {
+			case retryWithClockSkew && len(changed) == 1:
+				return result, interrupted
+			case rejection == "" && !retryWithClockSkew:
 				transientDialFailures = 1
 			}
 		}
 		return result, err
 	}
 	t.Cleanup(func() { runManagementRotationSSH = previousSSH })
-	outputPath := filepath.Join(dir, "management-secrets-next.yaml")
+	args := []string{"management", "identity", "rotate", "--config", configPath, "--output", outputPath, "--timeout", "3s"}
 	var stdout, stderr bytes.Buffer
-	err = run(t.Context(), []string{"management", "identity", "rotate", "--config", configPath, "--output", outputPath, "--timeout", "3s"}, &stdout, &stderr)
+	if retryWithClockSkew {
+		if err := run(t.Context(), args, &stdout, &stderr); !errors.Is(err, interrupted) {
+			t.Fatalf("first rotation = %v, want an interruption after switching the node", err)
+		}
+		data, err := os.ReadFile(configPath)
+		if err != nil || !bytes.Equal(data, configured) {
+			t.Fatalf("rotation published the replacement reference before verification: %v", err)
+		}
+		target := managementRotationNode{name: "cp-1", endpoint: endpoint, machineID: machineID}
+		if err := checkManagementCredential(t.Context(), target, mustManagementClient(t, replacement), time.Second); err != nil {
+			t.Fatalf("node with a slow clock did not accept the existing replacement: %v", err)
+		}
+		stdout.Reset()
+		stderr.Reset()
+	}
+	err = run(t.Context(), args, &stdout, &stderr)
 	if rejection != "" {
 		data, readErr := os.ReadFile(configPath)
 		if readErr != nil || !bytes.Equal(data, configured) {
@@ -255,10 +299,39 @@ func shortenRotationTestLeaf(t *testing.T, bundle *managementidentity.Bundle, ex
 	bundle.Operator.Certificate = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 }
 
-func TestManagementIdentityRotateConfiguredReplacementUnreachable(t *testing.T) {
+func TestManagementIdentityRotateConfiguredReplacement(t *testing.T) {
+	for _, scenario := range []struct {
+		name         string
+		wantError    string
+		wantRollback bool
+	}{
+		{"connection refused", "connection refused", false},
+		{"closes after ServerHello", "EOF", false},
+		{"different authority", "different management authority", true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			testManagementRotationConfiguredReplacement(t, scenario.name, scenario.wantError, scenario.wantRollback)
+		})
+	}
+}
+
+func testManagementRotationConfiguredReplacement(t *testing.T, scenario, wantError string, wantRollback bool) {
+	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("KATLCTL_CONFIG", filepath.Join(dir, "no-context.yaml"))
-	endpoint := nettest.ReservePort(t).Endpoint
+	var listener net.Listener
+	var endpoint string
+	if scenario == "connection refused" {
+		endpoint = nettest.ReservePort(t).Endpoint
+	} else {
+		var err error
+		listener, err = net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { listener.Close() })
+		endpoint = listener.Addr().String()
+	}
 	configPath := filepath.Join(dir, "cluster.yaml")
 	config := strings.ReplaceAll(configBundleSource(), "10.0.0.11", endpoint)
 	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
@@ -271,18 +344,91 @@ func TestManagementIdentityRotateConfiguredReplacementUnreachable(t *testing.T) 
 	}
 
 	outputPath := filepath.Join(dir, defaultManagementSecrets)
+	var serverResult chan error
+	if listener != nil {
+		bundle, err := readManagementIdentity(outputPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if scenario == "different authority" {
+			bundle, err = managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: bundle.ClusterName})
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		node, _, err := managementidentity.EnsureNode(&bundle, "cp-1", time.Now(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tlsConfig, err := transport.ServerTLSConfigForNode(node)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if scenario == "closes after ServerHello" {
+			tlsConfig.NextProtos = []string{"h2"}
+			serverResult = make(chan error, 1)
+			go func() {
+				conn, err := listener.Accept()
+				if err == nil {
+					err = tls.Server(serverHelloConn{conn}, tlsConfig).HandshakeContext(t.Context())
+					conn.Close()
+				}
+				serverResult <- err
+			}()
+		} else {
+			server := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
+			t.Cleanup(server.Stop)
+			go server.Serve(listener)
+		}
+	}
 	var stdout, stderr bytes.Buffer
 	err = run(t.Context(), []string{"management", "identity", "rotate", "--config", configPath, "--output", outputPath, "--timeout", "3s"}, &stdout, &stderr)
-	if err == nil || !strings.Contains(err.Error(), "connection refused") {
-		t.Fatalf("rotate = %v, want an immediate TCP refusal", err)
+	if serverResult != nil {
+		select {
+		case serverErr := <-serverResult:
+			if !errors.Is(serverErr, errServerHelloSent) {
+				t.Fatalf("server did not close after ServerHello: %v", serverErr)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("server did not complete its side of the handshake")
+		}
 	}
-	if !strings.Contains(err.Error(), "keep the configured replacement, check the endpoint and rerun") || strings.Contains(err.Error(), "restore the previous secrets reference") {
+	if err == nil || !strings.Contains(err.Error(), wantError) {
+		t.Fatalf("rotate = %v, want %q", err, wantError)
+	}
+	rollback := strings.Contains(err.Error(), "restore the previous secrets reference")
+	if rollback != wantRollback {
+		t.Fatalf("rotate = %v, want rollback guidance: %t", err, wantRollback)
+	}
+	if !wantRollback && !strings.Contains(err.Error(), "keep the configured replacement, check the endpoint and rerun") {
 		t.Fatalf("rotate = %v, want guidance to keep the replacement and retry", err)
 	}
 	after, err := os.ReadFile(configPath)
 	if err != nil || !bytes.Equal(before, after) {
-		t.Fatalf("configured replacement changed after a TCP refusal: %v", err)
+		t.Fatalf("configured replacement changed after verification failed: %v", err)
 	}
+}
+
+var errServerHelloSent = errors.New("closed the connection after sending ServerHello")
+
+type serverHelloConn struct{ net.Conn }
+
+func (c serverHelloConn) Write(p []byte) (int, error) {
+	const headerSize, handshakeRecord, serverHello = 5, 22, 2
+	if len(p) <= headerSize || p[0] != handshakeRecord || p[headerSize] != serverHello {
+		return 0, errors.New("first server TLS record does not contain ServerHello")
+	}
+	recordEnd := headerSize + int(binary.BigEndian.Uint16(p[3:headerSize]))
+	if recordEnd > len(p) {
+		return 0, errors.New("first server TLS record is incomplete")
+	}
+	// The TLS server can flush several records together. Forward only the
+	// first, so the client sees ServerHello before the connection closes.
+	n, err := c.Conn.Write(p[:recordEnd])
+	if err != nil {
+		return n, err
+	}
+	return n, errServerHelloSent
 }
 
 func TestManagementIdentityRotateLateCredentialCheck(t *testing.T) {

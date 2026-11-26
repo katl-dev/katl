@@ -309,10 +309,15 @@ affected agent's client CA trust and journal. Verify that the management
 address reaches that agent directly or through a TLS passthrough, then rerun
 with the same `--output`.
 
-When `cluster.yaml` already references the replacement, an unreachable
-endpoint or an expired verification deadline reports
-`could not verify the configured authority on` the affected node. Keep the
-configured replacement, check the endpoint and rerun.
+When `cluster.yaml` already references the replacement, a connection failure
+or an expired verification deadline reports `could not verify the configured
+authority on` the affected node. This includes a connection that drops during
+the TLS handshake. Keep the configured replacement, check the endpoint and
+rerun.
+
+If rotation reports that the node's certificate `uses a different management
+authority`, check that the address reaches the intended node, then follow the
+guidance to `restore the previous secrets reference and rerun rotation`.
 
 After verification, remove exposed plaintext secrets from the tracked tree and
 keep only protected recovery copies. Published Git history remains a separate

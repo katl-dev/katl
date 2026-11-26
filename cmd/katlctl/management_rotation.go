@@ -135,10 +135,10 @@ func runManagementIdentityRotate(ctx context.Context, opts managementRotationOpt
 		for _, node := range nodes {
 			probeCtx, observation := transport.ObserveManagementConnection(ctx)
 			if err := checkManagementCredential(probeCtx, node, client, opts.timeout); err != nil {
-				if errors.Is(err, transport.ErrManagementRPCInconclusive) || observation.Protocol() != transport.TLS {
-					return fmt.Errorf("could not verify the configured authority on %s at %s: %w; keep the configured replacement, check the endpoint and rerun", node.name, node.endpoint, err)
+				if !errors.Is(err, transport.ErrManagementRPCInconclusive) && observation.UnknownServerAuthority() {
+					return fmt.Errorf("ClusterConfig already references %s, but the certificate for node %s at %s uses a different management authority; restore the previous secrets reference and rerun rotation", outputPath, node.name, node.endpoint)
 				}
-				return fmt.Errorf("ClusterConfig already references %s, but node %s does not accept it: %w; restore the previous secrets reference and rerun rotation", outputPath, node.name, err)
+				return fmt.Errorf("could not verify the configured authority on %s at %s: %w; keep the configured replacement, check the endpoint and rerun", node.name, node.endpoint, err)
 			}
 		}
 		fmt.Fprintf(stdout, "Management identity for %s already uses %s on %d node(s)\n", source.Metadata.Name, oldInfo.Fingerprint, len(nodes))

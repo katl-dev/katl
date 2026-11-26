@@ -37,7 +37,7 @@ func (c *clientCredentials) ClientHandshake(ctx context.Context, authority strin
 	var plaintext tls.RecordHeaderError
 	switch {
 	case errors.As(err, &unknownCA):
-		return nil, nil, fmt.Errorf("node uses a different management authority; after rotation use the updated ClusterConfig and refresh saved contexts, otherwise restore the installed authority's secrets or, if they are lost, run katlctl management identity recover --config CLUSTER.yaml")
+		return nil, nil, fmt.Errorf("node uses a different management authority; after rotation use the updated ClusterConfig and refresh saved contexts, otherwise restore the installed authority's secrets or, if they are lost, run katlctl management identity recover --config CLUSTER.yaml: %w", err)
 	case errors.As(err, &plaintext) && plaintext.Conn != nil:
 		return nil, nil, fmt.Errorf("management endpoint answered without TLS, so the node still serves trusted-network management. Run or rerun `katlctl management enable-mtls` to move it to mTLS, or set `managementAuthentication: trusted-network` to keep managing it that way. Otherwise check that management.address points at the node's katlc agent on 9443: %w", err)
 	case errors.As(err, &wrongName):
@@ -130,10 +130,11 @@ type managementObservationKey struct{}
 // ManagementObservation records wire evidence from a management dial. If gRPC
 // handshakes on more than one connection, the evidence is inconclusive.
 type ManagementObservation struct {
-	attempts        atomic.Uint32
-	protocol        atomic.Uint32
-	plaintextSent   atomic.Bool
-	plaintextClosed atomic.Bool
+	attempts               atomic.Uint32
+	protocol               atomic.Uint32
+	plaintextSent          atomic.Bool
+	plaintextClosed        atomic.Bool
+	unknownServerAuthority atomic.Bool
 }
 
 // ObserveManagementConnection enables one dial's wire observation through
@@ -158,6 +159,12 @@ func (o *ManagementObservation) PlaintextClosed() bool {
 	return o.attempts.Load() == 1 && o.plaintextSent.Load() && o.plaintextClosed.Load()
 }
 
+// UnknownServerAuthority reports that TLS verification rejected the server
+// certificate because it could not chain to the configured authority.
+func (o *ManagementObservation) UnknownServerAuthority() bool {
+	return o.attempts.Load() == 1 && o.unknownServerAuthority.Load()
+}
+
 type observedCredentials struct {
 	credentials.TransportCredentials
 	observation *ManagementObservation
@@ -169,14 +176,20 @@ func (c *observedCredentials) Clone() credentials.TransportCredentials {
 }
 
 func (c *observedCredentials) ClientHandshake(ctx context.Context, authority string, conn net.Conn) (net.Conn, credentials.AuthInfo, error) {
-	if c.observation.attempts.Add(1) == 1 {
+	first := c.observation.attempts.Add(1) == 1
+	if first {
 		observed := &observedConn{Conn: conn, observation: c.observation}
 		if !c.plaintext {
 			observed.reader = bufio.NewReaderSize(conn, frameHeaderSize+initialMaxFrameSize)
 		}
 		conn = observed
 	}
-	return c.TransportCredentials.ClientHandshake(ctx, authority, conn)
+	secure, info, err := c.TransportCredentials.ClientHandshake(ctx, authority, conn)
+	var unknownCA x509.UnknownAuthorityError
+	if first && errors.As(err, &unknownCA) {
+		c.observation.unknownServerAuthority.Store(true)
+	}
+	return secure, info, err
 }
 
 const (

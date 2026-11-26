@@ -27,8 +27,8 @@ const (
 	Kind       = "ManagementIdentity"
 	MaxSize    = 1 << 20
 
-	// CertificateBackdate is how long before issue every certificate becomes
-	// valid, so a node whose clock lags the issuer by less still accepts it.
+	// CertificateBackdate allows for clock skew when validating a newly
+	// issued CA, operator, or node certificate.
 	CertificateBackdate = 5 * time.Minute
 )
 
@@ -96,7 +96,7 @@ func Generate(options GenerateOptions) (Bundle, error) {
 	if err != nil {
 		return Bundle{}, fmt.Errorf("generate management CA: %w", err)
 	}
-	operator, err := issueCertificate(ca, caKey, "katlctl", nil, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, now, random)
+	operator, err := issueCertificate(ca, caKey, "katlctl", nil, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, now.Add(-CertificateBackdate), random)
 	if err != nil {
 		return Bundle{}, fmt.Errorf("issue operator certificate: %w", err)
 	}
@@ -136,7 +136,7 @@ func IssueNode(bundle Bundle, nodeName string, now time.Time, random io.Reader) 
 	if random == nil {
 		random = rand.Reader
 	}
-	server, err := issueCertificate(ca, caKey, nodeName, []string{nodeName}, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, now.UTC(), random)
+	server, err := issueCertificate(ca, caKey, nodeName, []string{nodeName}, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, now.UTC().Add(-CertificateBackdate), random)
 	if err != nil {
 		return NodeCredentials{}, fmt.Errorf("issue node %q server certificate: %w", nodeName, err)
 	}
@@ -201,7 +201,9 @@ func IssueRotationProbe(authority CertificateKey, now time.Time) (CertificateKey
 	if err != nil {
 		return CertificateKey{}, err
 	}
-	return issueCertificate(ca, key, "katlctl rotation probe", nil, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, now, rand.Reader)
+	// A slow node checks the leaf's validity before checking its issuer.
+	// Use the issuer's validity start so a retry cannot move that boundary.
+	return issueCertificate(ca, key, "katlctl rotation probe", nil, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, ca.NotBefore, rand.Reader)
 }
 
 func Validate(bundle Bundle, now time.Time) (Info, error) {
@@ -496,7 +498,7 @@ func generateCA(clusterName string, now time.Time, random io.Reader) (*x509.Cert
 	return certificate, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})), private, nil
 }
 
-func issueCertificate(ca *x509.Certificate, caKey crypto.Signer, commonName string, dnsNames []string, usages []x509.ExtKeyUsage, now time.Time, random io.Reader) (CertificateKey, error) {
+func issueCertificate(ca *x509.Certificate, caKey crypto.Signer, commonName string, dnsNames []string, usages []x509.ExtKeyUsage, notBefore time.Time, random io.Reader) (CertificateKey, error) {
 	public, private, err := ed25519.GenerateKey(random)
 	if err != nil {
 		return CertificateKey{}, err
@@ -509,7 +511,7 @@ func issueCertificate(ca *x509.Certificate, caKey crypto.Signer, commonName stri
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: commonName},
 		DNSNames:              dnsNames,
-		NotBefore:             now.Add(-CertificateBackdate),
+		NotBefore:             notBefore,
 		NotAfter:              ca.NotAfter,
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           usages,
