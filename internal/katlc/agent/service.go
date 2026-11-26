@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
-	"github.com/katl-dev/katl/internal/katlc/transport"
+	"github.com/katl-dev/katl/internal/nodeidentity"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -48,20 +51,6 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	if err != nil {
 		return err
 	}
-	tlsConfig, err := transport.ServerTLSConfig(root)
-	if err != nil {
-		return err
-	}
-	listener, err := net.Listen(network, address)
-	if err != nil {
-		return err
-	}
-	defer listener.Close()
-	opts := []grpc.ServerOption{grpc.MaxRecvMsgSize(256 << 20), grpc.MaxSendMsgSize(256 << 20)}
-	if tlsConfig != nil {
-		opts = append(opts, grpc.Creds(credentials.NewTLS(tlsConfig)))
-	}
-	server := grpc.NewServer(opts...)
 	agentServer := NewServer(root, store)
 	dispatcher := config.Dispatcher
 	if dispatcher == nil {
@@ -85,25 +74,129 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	maintenanceDone := make(chan struct{})
 	defer func() { stopMaintenance(); <-maintenanceDone }()
 	go func() { defer close(maintenanceDone); agentServer.maintainGenerations(maintenanceCtx, 5*time.Second) }()
-	agentapi.RegisterKatlcAgentServer(server, agentServer)
-	errc := make(chan error, 1)
+	err = agentServer.serveReloadable(ctx, network, address, notifyReady)
+	return errors.Join(err, shutdownDispatcher(dispatcher))
+}
+
+// serveReloadable serves management and re-serves it on SIGHUP.
+// katlc-agent.service is Type=notify-reload: systemd sends SIGHUP when an
+// on-node command changed management state. The handler is registered before
+// READY=1 so a reload never meets the default action, which ends the process.
+func (s *Server) serveReloadable(ctx context.Context, network, address string, ready func() error) error {
+	hangups := make(chan os.Signal, 1)
+	signal.Notify(hangups, syscall.SIGHUP)
+	defer signal.Stop(hangups)
+	serveCtx, stop := context.WithCancel(ctx)
+	defer stop()
 	go func() {
-		if err := server.Serve(listener); err != nil {
-			errc <- err
+		for {
+			select {
+			case <-serveCtx.Done():
+				return
+			case <-hangups:
+				s.management.reselect()
+			}
 		}
-		close(errc)
 	}()
-	// The listener is bound, so connections made from here on are accepted.
-	if err := notifyReady(); err != nil {
-		server.Stop()
-		return errors.Join(err, shutdownDispatcher(dispatcher))
+	return s.serveManagement(serveCtx, network, address, ready)
+}
+
+// serveManagement serves the agent API with the credentials the node's
+// management state selects. It is the only owner of switching them: when a
+// trial begins, is reverted or reaches its deadline, or systemd reloads the
+// agent after an on-node change, it re-serves on the same address in this
+// process, so a credential switch does not interrupt operations the agent
+// runs.
+func (s *Server) serveManagement(ctx context.Context, network, address string, ready func() error) error {
+	clock := s.trialClock()
+	for first := true; ; first = false {
+		s.management.drain()
+		// A SIGHUP drained here belongs to a reload this re-serve completes, so
+		// the report that ends the re-serve is stamped after the drain.
+		drained, err := monotonicUsec()
+		if err != nil {
+			return err
+		}
+		tlsConfig, trial, err := managementServerTLS(s.Root, clock)
+		if err != nil {
+			return err
+		}
+		var remaining time.Duration
+		if trial != nil {
+			remaining = trialRemaining(*trial, clock)
+		}
+		listener, err := net.Listen(network, address)
+		if err != nil {
+			return err
+		}
+		// Rebind the address the first listener chose.
+		address = listener.Addr().String()
+		opts := []grpc.ServerOption{grpc.MaxRecvMsgSize(256 << 20), grpc.MaxSendMsgSize(256 << 20)}
+		if tlsConfig != nil {
+			opts = append(opts, grpc.Creds(credentials.NewTLS(tlsConfig)))
+		}
+		server := grpc.NewServer(opts...)
+		agentapi.RegisterKatlcAgentServer(server, s)
+		committed := s.management.serve(trial)
+		errc := make(chan error, 1)
+		go func() { errc <- server.Serve(listener) }()
+		// The listener is bound, so connections made from here on are accepted.
+		if first {
+			if err := ready(); err != nil {
+				server.Stop()
+				return err
+			}
+		} else if err := notifyReloaded(drained); err != nil {
+			log.Printf("report re-served management credentials: %v", err)
+		}
+
+		watchCtx, stopWatch := context.WithCancel(ctx)
+		expired := make(chan struct{})
+		if trial != nil {
+			go func() {
+				if s.awaitTrialDeadline(watchCtx, *trial, clock, remaining, committed) {
+					close(expired)
+				}
+			}()
+		}
+		select {
+		case <-ctx.Done():
+			stopWatch()
+			server.GracefulStop()
+			return ctx.Err()
+		case err := <-errc:
+			stopWatch()
+			return err
+		case <-expired:
+			log.Printf("management trial %s reached its deadline; serving the installed management mode", trial.ID)
+			// The revert timer may have reverted it already; the revert is
+			// scoped to this trial and runs at most once.
+			if _, _, err := nodeidentity.RevertManagementTrial(s.Root, trial.ID, managementTrialDeadlineReason, clock); err != nil {
+				log.Printf("revert management trial %s: %v", trial.ID, err)
+			}
+		case <-s.management.changes():
+			log.Printf("management state changed; serving the credentials it selects")
+		}
+		stopWatch()
+		if err := notifyReloading(); err != nil {
+			log.Printf("report management credential reload: %v", err)
+		}
+		stopServer(server, managementReserveTimeout)
 	}
+}
+
+// managementReserveTimeout bounds how long in-flight calls on a listener that
+// served an ended trial may finish before it is closed.
+const managementReserveTimeout = 5 * time.Second
+
+func stopServer(server *grpc.Server, timeout time.Duration) {
+	stopped := make(chan struct{})
+	go func() { server.GracefulStop(); close(stopped) }()
 	select {
-	case <-ctx.Done():
-		server.GracefulStop()
-		return errors.Join(ctx.Err(), shutdownDispatcher(dispatcher))
-	case err := <-errc:
-		return errors.Join(err, shutdownDispatcher(dispatcher))
+	case <-stopped:
+	case <-time.After(timeout):
+		server.Stop()
+		<-stopped
 	}
 }
 

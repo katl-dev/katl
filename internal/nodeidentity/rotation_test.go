@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/katl-dev/katl/internal/managementidentity"
 )
@@ -92,5 +93,48 @@ func TestManagementRotationRejectsOtherNode(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(root, managementDirectory, "active")); !os.IsNotExist(err) {
 		t.Fatalf("wrong-node request changed active credentials: %v", err)
+	}
+}
+
+func TestManagementRotationWaitsForTrial(t *testing.T) {
+	root := t.TempDir()
+	machineID, err := WriteMachineID(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := WriteEnrollment(root, "cp-1", machineID, nil); err != nil {
+		t.Fatal(err)
+	}
+	old := testManagementIdentity(t, "cp-1")
+	if err := WriteManagementIdentity(root, "cp-1", old); err != nil {
+		t.Fatal(err)
+	}
+	oldFingerprint, err := managementidentity.CAFingerprint(old.CACertificate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := ManagementRotation{NodeName: "cp-1", ExpectedMachineID: machineID, ExpectedAuthority: oldFingerprint, Replacement: testManagementIdentity(t, "cp-1")}
+	dir := filepath.Join(root, managementDirectory)
+	trial := ManagementTrial{ID: "trial-1", State: ManagementTrialLive, TargetAuthority: strings.Repeat("b", 64), BootID: "boot-a", DeadlineSinceBoot: time.Hour}
+	if err := writeManagementTrial(dir, trial); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := InspectManagementRotation(root, request); err == nil || !strings.Contains(err.Error(), "transition is in progress") {
+		t.Fatalf("inspect during a trial = %v", err)
+	}
+	if _, err := RotateManagementIdentity(root, request); err == nil || !strings.Contains(err.Error(), "management-trial revert") {
+		t.Fatalf("rotate during a trial = %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "active")); !os.IsNotExist(err) {
+		t.Fatalf("rotation during a trial switched active: %v", err)
+	}
+
+	trial.State = ManagementTrialReverted
+	if err := writeManagementTrial(dir, trial); err != nil {
+		t.Fatal(err)
+	}
+	if status, err := RotateManagementIdentity(root, request); err != nil || !status.AlreadyRotated {
+		t.Fatalf("rotate after the trial reverted = %+v, %v", status, err)
 	}
 }

@@ -63,6 +63,9 @@ Commands:
   agent serve             Run the KatlOS node management agent.
   agent rotate-management Replace installed mTLS credentials through root SSH.
   agent management-authority Print the installed mTLS authority fingerprint through root SSH.
+  agent management-trial revert
+                          Abandon an unconfirmed management transition and
+                          restore the installed management mode.
   kubeadm plan            Compare selected desired kubeadm input with read-only live state.
   volumes check           Refuse when an active volume binding does not match the attached disks.
 
@@ -80,6 +83,8 @@ func runAgent(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		return runAgentManagementAuthority(args[1:], stdout, stderr)
 	case "rotate-management":
 		return runAgentRotateManagement(ctx, args[1:], os.Stdin, stdout, stderr)
+	case "management-trial":
+		return runAgentManagementTrial(ctx, args[1:], stdout, stderr)
 	default:
 		return fmt.Errorf("unsupported agent command %q", args[0])
 	}

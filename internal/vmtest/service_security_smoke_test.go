@@ -60,8 +60,8 @@ func TestInstalledRuntimeServiceSecuritySmoke(t *testing.T) {
 
 	// An active agent must already accept management connections: the unit
 	// reports readiness only after the listener is bound.
-	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "katlc-agent-type", "systemctl", "show", "--property=Type", "--value", "katlc-agent.service")); got != "notify" {
-		t.Fatalf("katlc-agent.service Type = %q, want notify", got)
+	if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "katlc-agent-type", "systemctl", "show", "--property=Type", "--value", "katlc-agent.service")); got != "notify-reload" {
+		t.Fatalf("katlc-agent.service Type = %q, want notify-reload", got)
 	}
 	// A single host dial, with no retry, fails if readiness was reported
 	// before the listener was bound.

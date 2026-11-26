@@ -186,7 +186,7 @@ katlctl cluster status --config ./cluster.yaml
 If rotation stops partway through, keep the new secrets file and rerun the exact
 same command. Nodes already switched accept the same replacement again, and
 `cluster.yaml` continues to reference the original authority until all nodes
-pass. If an agent fails to restart, use root SSH to inspect
+pass. If an agent fails to reload its credentials, use root SSH to inspect
 `katlc-agent.service` and its journal, repair that failure, and rerun. Do not
 generate another replacement during recovery.
 

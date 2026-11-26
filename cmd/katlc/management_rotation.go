@@ -20,6 +20,11 @@ const managementRotationLimit = 1 << 20
 
 type rotationServiceRunner func(context.Context, string) error
 
+// agentReload re-serves katlc-agent's management credentials in place, or
+// starts the agent if it is not running. A restart would also rerun the boot
+// units the agent and its dependents require.
+const agentReload = "reload-or-restart"
+
 func runAgentRotateManagement(ctx context.Context, args []string, input io.Reader, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("katlc agent rotate-management", flag.ContinueOnError)
 	flags.SetOutput(stderr)
@@ -75,7 +80,7 @@ func rotateManagementOnNode(ctx context.Context, root string, dryRun bool, input
 		return json.NewEncoder(stdout).Encode(status)
 	}
 	// Share the executor's mutation lock so an in-flight node mutation cannot
-	// overlap the trust switch or agent restart.
+	// overlap the trust switch or agent reload.
 	operationRoot := filepath.Join(root, "var/lib/katl/operations")
 	if err := os.MkdirAll(operationRoot, 0o700); err != nil {
 		return err
@@ -98,10 +103,10 @@ func rotateManagementOnNode(ctx context.Context, root string, dryRun bool, input
 			return err
 		}
 	}
-	// The old process keeps serving until systemd starts the replacement.
-	// Repeated calls restart a previously switched identity after interruption.
-	if err := service(ctx, "restart"); err != nil {
-		return fmt.Errorf("restart katlc agent with replacement identity: %w; retry this SSH rotation command after repairing the service", err)
+	// The agent keeps serving the old identity until the reload finishes.
+	// Repeated calls reload a previously switched identity after interruption.
+	if err := service(ctx, agentReload); err != nil {
+		return fmt.Errorf("reload katlc agent with replacement identity: %w; retry this SSH rotation command after repairing the service", err)
 	}
 	if err := service(ctx, "is-active"); err != nil {
 		return fmt.Errorf("katlc agent did not remain active after rotation: %w; retry this SSH rotation command after inspecting its journal", err)

@@ -27,6 +27,12 @@ service KatlcAgent {
   rpc GetGeneration(GetGenerationRequest) returns (Generation);
   rpc SelectGeneration(GenerationMutationRequest) returns (GenerationMutationResult);
   rpc RemoveGeneration(GenerationMutationRequest) returns (GenerationMutationResult);
+  // BeginManagementTransition stages replacement management credentials and
+  // restarts the agent to serve them on trial until the returned deadline.
+  rpc BeginManagementTransition(BeginManagementTransitionRequest) returns (ManagementTransition);
+  // ConfirmManagementTransition commits the trial. It is accepted only over
+  // TLS with a client certificate from the trial's authority.
+  rpc ConfirmManagementTransition(ConfirmManagementTransitionRequest) returns (ManagementTransition);
 }
 
 message GetNodeStatusRequest {}
@@ -71,6 +77,15 @@ message NodeStatus {
   string enrollment_id = 18;
   string inventory_node_name = 19;
   APIProxyStatus api_proxy = 20;
+  ManagementStatus management = 21;
+}
+
+message ManagementStatus {
+  // authentication is the installed mode, which a trial does not change.
+  string authentication = 1;
+  // authority is the installed mTLS authority's CA fingerprint.
+  string authority = 2;
+  ManagementTransition transition = 3;
 }
 
 message APIProxyStatus {
@@ -767,4 +782,42 @@ message GenerationMutationRequest {
 message GenerationMutationResult {
   string generation_id = 1;
   bool one_shot = 2;
+}
+
+message BeginManagementTransitionRequest {
+  string api_version = 1;
+  string kind = 2;
+  string actor = 3;
+  string expected_enrollment_id = 4;
+  string expected_inventory_node_name = 5;
+  string expected_machine_id = 6;
+  // expected_authentication is the node's installed mode; only
+  // trusted-network can begin a transition.
+  string expected_authentication = 7;
+  string ca_certificate = 8;
+  string server_certificate = 9;
+  string server_private_key = 10;
+  // trial_seconds bounds the trial; zero selects the node's default.
+  uint32 trial_seconds = 11;
+}
+
+message ConfirmManagementTransitionRequest {
+  string api_version = 1;
+  string kind = 2;
+  string actor = 3;
+  string expected_enrollment_id = 4;
+  string expected_inventory_node_name = 5;
+  string expected_machine_id = 6;
+  string target_authority = 7;
+}
+
+message ManagementTransition {
+  // state is trial, committed or reverted, or unreadable when NodeStatus
+  // cannot read the recorded transition.
+  string state = 1;
+  string trial_id = 2;
+  string target_authority = 3;
+  // deadline is the trial's RFC 3339 deadline in node wall-clock time.
+  string deadline = 4;
+  string revert_reason = 5;
 }
