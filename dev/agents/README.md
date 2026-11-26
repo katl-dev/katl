@@ -39,33 +39,10 @@ implementation.
 
 ## Launch Codex jobs
 
-Use `scripts/codex-role` from the task worktree so jobs and their logs survive
-the launching session. The repository's Claude permissions deny direct Codex
-launches. See the [orchestrator role](roles/orchestrator.md) for launch options.
-
-### Provision GitHub read access
-
-Jobs can launch without GitHub authentication. For jobs that need authenticated
-reads, configure a dedicated token from the maintainer's session.
-
-1. In GitHub's **Fine-grained personal access tokens** settings, create a token
-   with resource owner `katl-dev` and repository access limited to `katl`.
-2. Under **Repository permissions**, grant **Read-only** access to **Contents**,
-   **Issues**, **Pull requests**, and **Actions**. GitHub grants **Metadata**
-   read access automatically.
-3. Set up the token file from outside the worktree, then paste the token into
-   it using an editor. Store only the token in the file.
-
-   ```bash
-   token_file="${XDG_CONFIG_HOME:-$HOME/.config}/katl-dev/codex-gh-token"
-   mkdir -p -- "${token_file%/*}"
-   (umask 077; touch -- "$token_file")
-   chmod 0600 -- "$token_file"
-   ```
-
-The launcher checks mode `0600` and supplies the token as a read-only systemd
-credential. A missing file produces a launch notice with the provisioning path.
-The repository development shell includes `jq` and `gh` for this workflow.
+Use `scripts/codex-role` from the task worktree. The repository's Claude
+permissions deny direct Codex launches. See the [launcher reference](../../scripts/README.md#codex-role)
+for job arguments, report recovery, and
+[GitHub credential setup](../../scripts/README.md#provision-github-read-access).
 
 ## Local state
 

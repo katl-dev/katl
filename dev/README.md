@@ -17,33 +17,33 @@ integrity and qualification evidence. [katl-release reference](../cmd/katl-relea
 ## `codex-role`
 
 Launch a scoped Codex job as a tracked systemd user service and capture its
-report and exit status. [Launch and recover Codex jobs](agents/roles/orchestrator.md)
+report and exit status. [codex-role reference](../scripts/README.md#codex-role)
 
 ## `hermetic`
 
 Run Go tests with Bubblewrap to isolate the test process from workstation
-files. [Run tests in the Nix development shell](../docs/developing.md#nix-dev-shell)
+files. [hermetic reference](../scripts/README.md#hermetic)
 
 ## `vmtest-run`
 
 Run automated VM tests in a libvirt world with recorded host capabilities and
-per-run evidence. [Run VM tests on a capable host](../docs/developing.md#vm-tests-on-a-capable-host)
+per-run evidence. [vmtest-run reference](../scripts/README.md#vmtest-run)
 
 ## `vmtest-clean`
 
 Remove a retained VM test run and its recorded libvirt resources.
-[VM test cleanup](../docs/developing.md#vm-tests-on-a-capable-host)
+[vmtest-clean reference](../scripts/README.md#vmtest-clean)
 
 ## `worktree-clean`
 
 Remove a linked worktree after checking its identity and whether its tracked
-work has been preserved. [Worktree cleanup](../docs/developing.md#vm-tests-on-a-capable-host)
+work has been preserved. [worktree-clean reference](../scripts/README.md#worktree-clean)
 
 ## `katldev`
 
 Keep a persistent libvirt VM world for hands-on install and lifecycle journeys
 through the public `katlctl` interface.
-[Work with a persistent development VM](../docs/developing.md#nix-dev-shell)
+[katldev reference](../cmd/katldev/README.md)
 
 ## `programs.katl-dev`
 
