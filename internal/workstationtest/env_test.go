@@ -24,11 +24,11 @@ func TestRunPreservesGoCaches(t *testing.T) {
 		if filepath.Dir(home) != tmp {
 			t.Fatalf("isolated HOME %q is outside %q", home, tmp)
 		}
-		output, err := exec.Command("go", "env", "GOPATH", "GOMODCACHE", "GOCACHE").CombinedOutput()
+		output, err := exec.Command("go", "env", "GOPATH", "GOMODCACHE", "GOCACHE", "GOTELEMETRY").CombinedOutput()
 		if err != nil {
 			t.Fatalf("go env: %v\n%s", err, output)
 		}
-		if want := os.Getenv("KATL_TEST_GO_CACHE_EXPECTED"); string(output) != want {
+		if want := os.Getenv("KATL_TEST_GO_CACHE_EXPECTED") + "off\n"; string(output) != want {
 			t.Fatalf("go env after setup = %q, want %q", output, want)
 		}
 		if err := os.WriteFile(filepath.Join(home, "child-ran"), nil, 0o600); err != nil {
@@ -52,6 +52,9 @@ func TestRunPreservesGoCaches(t *testing.T) {
 
 	env := append(os.Environ(), "HOME="+home, "XDG_CONFIG_HOME="+config, "TMPDIR="+tmp,
 		"GOENV=", "GOPATH=", "GOMODCACHE=", "GOCACHE=")
+	if err := disableGoTelemetry(env); err != nil {
+		t.Fatal(err)
+	}
 	before := exec.Command("go", "env", "GOPATH", "GOMODCACHE", "GOCACHE")
 	before.Env = env
 	want, err := before.Output()
