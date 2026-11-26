@@ -12,10 +12,12 @@ checkpoint lets a new session recover the work.
 | [Coordinator](roles/coordinator.md) | Claude Opus |
 | [Orchestrator](roles/orchestrator.md) | Claude Opus, high effort |
 | [Release](roles/release.md) | Claude Opus |
+| [Planner](roles/planner.md) | Claude Sonnet |
 | [Delivery](roles/delivery.md) | Codex `gpt-6.2-sol`, medium effort |
 | [Reviewer](roles/reviewer.md) | Codex `gpt-6.2-astra`, medium effort for ordinary code reviews and high effort for the independent review that gates auto-merge. |
 | [Debugger](roles/debugger.md) | Codex `gpt-6.2-astra`, high effort for hard debugging |
 | [Journey](roles/journey.md) | Claude Sonnet, medium effort |
+| [Washup](roles/washup.md) | Claude Sonnet |
 
 Claude usage is scarce. Use Claude Opus for review only when Codex cannot do
 the job.
@@ -28,6 +30,10 @@ file follow-up issues for edge-case findings. Use Codex `gpt-6.1-terra` at
 medium effort for review or diagnosis dominated by screenshots, images, or
 very large reads.
 
+Send rebases and conflict resolution to Codex `gpt-6.1-terra` at low or medium
+effort, or to a Claude Sonnet subagent, not to Sol. Keep Sol for
+implementation.
+
 ## Local state
 
 Use `${XDG_STATE_HOME:-$HOME/.local/state}/katl-dev` for coordination state.
@@ -37,7 +43,7 @@ jobs start, finish, or change hands.
 
 | Path | Contents |
 | --- | --- |
-| `state.md` | Active orchestrator and agent identifiers, open version milestones and their Release agent identifiers, issue and PR links, worktree paths, running unit names and log paths, queue watch IDs, and the next action and owner. |
+| `state.md` | Active orchestrator, Planner, and other agent identifiers, open version milestones and their Release agent identifiers, pending washups and their Release agent identifiers, issue and PR links, worktree paths, running unit names and log paths, queue watch IDs, and the next action and owner. |
 | `logs/` | Codex job reports, retained across session and worktree cleanup. |
 | `worktrees/` | Linked worktrees for scoped tasks and a trusted `origin/main` checkout for cleanup. |
 
@@ -71,37 +77,70 @@ follow-up work.
   record and any capability gap to the orchestrator, who schedules the fix
   and rerun.
 
-### Release hand-off
+### Release lifecycle
 
 The coordinator confirms the planned cut with the orchestrator. At freeze,
-start one Release agent to own the release, including the branch cut. The
+start one Release agent to own the release from the branch cut. The
 orchestrator passes the version, branch and cut revision, scope and open
-blockers, and any explicit operator authority with the
-[Release brief template](briefs/release.md). Record the agent and version
-milestone in the checkpoint and continue delivery on `main`.
+blockers, and any explicit maintainer authority with the
+[Release brief template](briefs/release.md).
 
-After the cut, the coordinator routes release decisions and any explicit
-operator authority to the Release agent. The Release agent keeps the milestone
-and checkpoint current and routes admitted fixes through the orchestrator on
-`main` first. The orchestrator hands back the merged revisions for the Release
-agent to carry to the release branch.
+1. Merge every release blocker into `main`.
+2. Fetch `origin/main` at the cut and create a branch for this version from
+   that exact SHA, for example `release/2026.12.1`. Push `release/<version>`
+   and start candidate qualification from it.
+3. Create milestone `v<version>` and move every issue in **Next release**,
+   open or closed, into it unless there is a compelling reason to leave it
+   out. Move open PRs as well, subject to the same exclusions. Use the
+   [flake rule](roles/release.md#flakes) for flakes found around the cut.
+   Record the milestone and its Release agent in the checkpoint.
+4. Open two issues in the milestone, `Tag v<version>-rc.1` and `Tag v<version>`.
+5. From then on, the Release agent owns admission to the milestone as release
+   coordinator and admits almost nothing under the
+   [release admission rule](roles/release.md#release-admission-rule).
+6. When the final release is published, record the pending washup and its
+   Release agent in the checkpoint, then close the milestone.
+7. The Coordinator runs the [washup](roles/washup.md) with the Release agent
+   and decides how its findings change the plans and the next release before
+   the usual hand-off. Keep the washup in the checkpoint until the hand-off
+   is complete.
+
+[#777](https://github.com/katl-dev/katl/issues/777) tracks `katl-release cut`
+for the currently manual steps 1–4.
+
+Existing series branches such as `release/2026.11.x` remain in use only for
+releases already cut on them.
+
+After the cut, delivery continues on `main`. The coordinator routes release
+decisions and any explicit maintainer authority to the Release agent. The
+Release agent keeps the milestone and checkpoint current and routes admitted
+fixes through the orchestrator on `main` first. The orchestrator hands back
+merged revisions for the Release agent to cherry-pick through a PR targeting
+`release/<version>`. Keep a PR's source branch outside the
+`release/[0-9]*` ruleset, for example `backport/2026.12.1-fix`. Cut the next
+version from the then-current `origin/main` SHA because reusing a branch
+with cherry-picks would require a force-push or a merge from `main`, both
+of which are forbidden.
+
+After the cut, only process changes that block the release land on its
+critical path. Route other process changes to the tooling stream.
 
 ## Reporting
 
 The orchestrator and Release agent update the coordinator, who gives the
-operator a brief update, when a blocker resolves, a permission is denied,
+maintainer a brief update, when a blocker resolves, a permission is denied,
 a failure remains unexplained after investigation, related issues require a
-redesign, or a decision needs the operator's authority. Lead with the finding
+redesign, or a decision needs the maintainer's authority. Lead with the finding
 or decision and link to the evidence. For every queue ejection, give the PR
-and the reason from `katl-queue why PR`, whether the PR caused it or a flake did,
-and the fix issue when one is needed. If the cause remains unresolved, give
-the current evidence and next action.
+and the reason from `katl-queue why PR`, the cause if known, and the fix issue
+when one is needed. If the cause remains unresolved, give the current
+evidence and next action.
 
 The Release agent also tells the coordinator when a candidate is tagged or
 published or when the final release or its security advisory is published.
 Include the affected revision, evidence, and next action when a gate or a
 permission blocks progress. The coordinator relays release events to the
-operator.
+maintainer.
 
 - **Delivery** leads with the outcome, a defect's root cause, and any gap.
   Give the worktree and base revision, any existing PR link, the design and
@@ -125,5 +164,5 @@ operator.
 
 When the permission system denies an action, stop. Do not retry it another
 way or perform a denied action for another agent, which is permission
-laundering. Surface the denial to the operator and take further action on it
-only on the operator's explicit instruction.
+laundering. Surface the denial to the maintainer and take further action on it
+only on the maintainer's explicit instruction.

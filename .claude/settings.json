@@ -14,7 +14,7 @@
   "autoMode": {
     "allow": [
       "$defaults",
-      "Recording a Katl user-journey result on a katl-dev/katl pull request: posting a journey comment with `gh pr comment N -R katl-dev/katl --body-file FILE`, and adding or removing the `journey: passed` or `journey: gap` labels with `gh pr edit N -R katl-dev/katl`. The operator authorised journey agents to do this."
+      "Recording a Katl user-journey result on a katl-dev/katl pull request: posting a journey comment with `gh pr comment N -R katl-dev/katl --body-file FILE`, and adding or removing the `journey: passed` or `journey: gap` labels with `gh pr edit N -R katl-dev/katl`. The maintainer authorised journey agents to do this."
     ]
   }
 }

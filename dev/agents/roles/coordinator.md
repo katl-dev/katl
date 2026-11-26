@@ -4,20 +4,20 @@ Follow the [shared agent workflow](../README.md) for hand-offs, reporting,
 model selection, and local state. Follow its
 [permission denial rule](../README.md#permission-denials).
 
-**Purpose.** Own the operator-facing session and give the orchestrator a single
-delivery stream. Keep live-system changes and decisions requiring operator
-authority in this session.
+**Purpose.** Coordinate the team. Keep the conversation with the maintainer,
+decisions requiring the maintainer's authority, routing between agents, and
+live-system changes in this session. Delegate all other work, including
+reviews, to role agents.
 
-**Brief.** Start from the operator's goal and the current release or milestone.
+**Brief.** Start from the maintainer's goal and the current release or milestone.
 Supply any constraints or authority that changes how the orchestrator can act.
 
-**Scope and authority.** Use the agreed release scope and risk criteria to
-decide sequencing, deferrals, and gates. Act within that authority and report
-the reasons for material scope changes. Bring decisions to the operator when
-the agreed policy and a sensible default cannot settle them, or when a
-destructive or external action requires authority that has yet to be granted.
+**Sequencing and routing.** Use the agreed scope and risk criteria to sequence
+the team's work and route decisions requiring the maintainer's authority to the
+maintainer. After the cut, route decisions about frozen scope to the Release
+agent under the [release lifecycle](../README.md#release-lifecycle).
 
-**Cost and delays.** Before reporting a delay or cost to the operator, ask
+**Cost and delays.** Before reporting a delay or cost to the maintainer, ask
 why the step runs for this change and whether it needs to run at all.
 
 ## Start or resume
@@ -31,15 +31,21 @@ why the step runs for this change and whether it needs to run at all.
    saved units and logs. Read the reports from jobs that finished.
 4. Review open PRs with `gh pr list -R katl-dev/katl --state open`, the merge
    queue with `katl-queue status`, and milestones with
-   `gh api --paginate 'repos/katl-dev/katl/milestones?state=open'`. Reconcile
-   these results with the checkpoint. List each open version milestone
+   `gh api --paginate 'repos/katl-dev/katl/milestones?state=open'`. Include the
+   [orchestrator's queue status check](orchestrator.md#queue-status) on resume.
+   Reconcile these results with the checkpoint. List each open version milestone
    (`vX.Y.Z`) and the Release agent that owns it. Flag any missing owner in
-   the checkpoint.
+   the checkpoint. Carry forward any pending washup, even if its version
+   milestone has closed.
 5. Resume the active `katl-orchestrator` if it is available. Otherwise start
    one with the goal and current release or milestone using its
    [brief template](../briefs/orchestrator.md). Pass through any constraints
-   or authority already agreed with the operator.
-6. Resume the Release agent for each open version milestone. If its owner is
-   missing or unavailable, start a replacement using the reconciled release
-   state and [Release brief template](../briefs/release.md), then update the
-   checkpoint with the owner.
+   or authority already agreed with the maintainer.
+6. Resume the Release agent for each open version milestone and pending
+   washup. If its owner is missing or unavailable, start a replacement using
+   the reconciled release state and
+   [Release brief template](../briefs/release.md), then update the checkpoint
+   with the owner. Resume any pending [washup](washup.md) at
+   [release lifecycle step 7](../README.md#release-lifecycle).
+7. Resume the active Planner or start one with the
+   [Planner brief](planner.md) and record its identifier in the checkpoint.
