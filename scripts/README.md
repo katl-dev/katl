@@ -150,6 +150,71 @@ it invokes this wrapper itself. For enabled VM tests, use
 [`vmtest-run`](#vmtest-run) directly because fixture staging still needs
 `sudo`. [Sudo-free staging work](https://github.com/katl-dev/katl/issues/764)
 
+## `katl-dev-evidence`
+
+Use `katl-dev-evidence` from the development shell to manage evidence
+that needs to survive the worktree or session. The store defaults to
+`$XDG_STATE_HOME/katl-dev/evidence`, or `~/.local/state/katl-dev/evidence`
+if `XDG_STATE_HOME` is unset. Set `KATL_DEV_EVIDENCE_ROOT` to use a
+separate store for a test.
+
+Create an entry and copy retained files to the printed path.
+
+```sh
+entry=$(katl-dev-evidence new 822/ci-logs)
+cp -- downloaded-ci.log "$entry/"
+katl-dev-evidence list
+```
+
+`list` reports each entry's logical file size, age since the entry
+directory was last modified, and owner. To keep an entry
+past the normal 14-day age limit, use
+`katl-dev-evidence keep 822/ci-logs --until YYYY-MM-DD` with the date
+you need. The pin lasts through that date in local time. `keep` moves
+the entry and prints its new path, so update any consumers of the old
+path. You can refer to an entry by its stable `owner/name` ID or by
+its current absolute path.
+
+When you finish with an entry, run `katl-dev-evidence release 822/ci-logs`.
+Use `katl-dev-evidence prune` to trim the store to its default budget of
+50 GiB, or supply a separate target with `--budget 20GiB`. Pruning counts
+pinned data toward the budget and removes unpinned entries oldest first.
+If the store is over its default budget, `new` directs you to release
+evidence before allocating another entry.
+
+### Configure automatic cleanup
+
+The `katl-dev` Home Manager module needs these `systemd.user.tmpfiles.rules`.
+
+```nix
+systemd.user.tmpfiles.rules = [
+  "d %S/katl-dev/evidence 0700 - - mM:14d -"
+  "x %S/katl-dev/evidence/.pinned - - - - -"
+];
+```
+
+In user mode, `%S` resolves to the XDG state directory. The first rule
+creates the private store and expires files and directories based on their
+modification time. When copying a tree of older evidence into a new entry,
+use `cp -R --reflink=auto` so the copy starts with fresh timestamps.
+
+The second rule excludes the entire `.pinned` subtree from tmpfiles
+cleanup. When a pin expires, `prune` moves the entry back to the
+ordinary tree even if the store is below budget. Add this Home Manager
+drop-in to run pruning before periodic user tmpfiles cleanup. Here
+`katlDevEvidence` is the flake's `katl-dev-evidence` package for the host.
+The leading `-` lets age-based cleanup proceed if pruning cannot meet the
+budget because of active pins.
+
+```nix
+xdg.configFile."systemd/user/systemd-tmpfiles-clean.service.d/katl-dev-evidence.conf".text = ''
+  [Service]
+  ExecStartPre=-${katlDevEvidence}/bin/katl-dev-evidence prune
+'';
+```
+
+[tmpfiles.d reference](https://www.freedesktop.org/software/systemd/man/latest/tmpfiles.d.html)
+
 ## `vmtest-run`
 
 Run enabled installer, installed-runtime, and Kubernetes scenarios through
@@ -222,6 +287,9 @@ scenario, `preserved-vm-debug.txt`, when present, gives the retained
 domain, serial log, console and cleanup commands. Use a narrow scenario
 with `--debug-on-failure` while debugging, then use
 [`vmtest-clean`](#vmtest-clean) to remove retained state.
+If evidence must outlive that cleanup, create an entry with
+[`katl-dev-evidence new`](#katl-dev-evidence) and copy the needed files
+to the returned path before cleaning the run.
 
 ### Capable-host gates
 

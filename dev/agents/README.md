@@ -59,6 +59,20 @@ jobs start, finish, or change hands.
 
 Reconcile the checkpoint with running jobs and GitHub before acting on it.
 
+### Retain investigation evidence
+
+Keep only small, transient files in the session scratchpad. Store retained
+evidence larger than about 100 MB, such as harness state or downloaded CI
+logs, in an entry allocated by `katl-dev-evidence new <owner>/<name>`.
+Use the issue number as the owner for issue-scoped work and include the
+entry path in the hand-off.
+
+Keep VM runs in the run directories managed by `scripts/vmtest-run` and
+`scripts/vmtest-clean`. If evidence must outlive its run directory, allocate
+an entry with `katl-dev-evidence new` and copy the needed files there before
+cleaning the run. Use the [evidence tool](../../scripts/README.md#katl-dev-evidence)
+to list, retain, and release stored entries.
+
 ## Hand-offs
 
 The coordinator routes related delivery follow-ups to the active orchestrator

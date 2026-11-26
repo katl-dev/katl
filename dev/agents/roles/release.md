@@ -58,7 +58,10 @@ Include the admission rule in briefs for fixes going into the release.
 ### Flakes
 
 Track flakes in separate fix issues. Assign every flake an owner and
-preserve the first failure's evidence.
+preserve the first failure's evidence. Keep the scratchpad for small,
+transient files and use the
+[evidence store](../README.md#retain-investigation-evidence) for retained
+evidence over about 100 MB.
 Before the cut, put every flake in **Next release** as priority work. Flakes
 are exempt from the tight-scope rule because they slow development.
 After the cut, put flakes in the next **Next release**. The frozen version

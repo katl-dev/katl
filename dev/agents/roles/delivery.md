@@ -27,6 +27,11 @@ tests, give the command for each kernel flavour. Use `KATL_FLAVOUR=lts` with
 `scripts/vmtest-run` in a second worktree at the same revision, since each
 worktree's `_build/mkosi` serves one flavour.
 
+Keep the scratchpad for small, transient files. Use the
+[evidence store](../README.md#retain-investigation-evidence) for evidence over
+about 100 MB and copy VM evidence there only if it must outlive its run
+directory.
+
 **PR proposal.** Include a proposed PR title and description in the hand-off
 report. Explain what changed and why, give the root cause for defects, include
 `Fixes #N` when the work completes the issue, and end with the
