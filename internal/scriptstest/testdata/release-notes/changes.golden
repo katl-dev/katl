@@ -1,0 +1,5 @@
+## Changes
+
+- The installer waits for a network address, with console progress, before downloading a remote KatlOS image ([`{{9110881c.short}}`](https://github.com/katl-dev/katl/commit/{{9110881c.full}}))
+- katlctl management enable-mtls, identity rotate and identity recover stop with guidance instead of acting on late or inconclusive replies from a node ([`{{3bc58a63.short}}`](https://github.com/katl-dev/katl/commit/{{3bc58a63.full}}))
+- katlctl: move a trusted-network cluster to mTLS management in place with `katlctl management enable-mtls` ([`{{47561a44.short}}`](https://github.com/katl-dev/katl/commit/{{47561a44.full}}))

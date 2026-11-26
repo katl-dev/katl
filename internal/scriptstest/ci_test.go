@@ -357,9 +357,9 @@ case "$2" in
 esac
 `)
 	writeFakeExecutable(t, tools, "gh", `printf 'v2026.10.0\n'`)
-	for _, tc := range []struct{ name, trailers, wantError string }{
-		{"valid trailer", "Release-Note: Update the documentation", ""},
-		{"duplicate trailers", "Release-Note: First note\nRelease-Note: Second note", "multiple Release-Note trailers"},
+	for _, tc := range []struct{ name, trailers string }{
+		{"single trailer", "Release-Note: Update the documentation"},
+		{"multiple trailers", "Release-Note: Earlier note\nRelease-Note: Update the documentation\nRelease-Note: skip"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -396,12 +396,6 @@ esac
 			command = exec.Command("bash", "-e", "-c", production)
 			command.Dir, command.Env = dir, append(env, "BASE_SHA=", "PRODUCTION_FLAVOURS=[]")
 			output, err := command.CombinedOutput()
-			if tc.wantError != "" {
-				if err == nil || !strings.Contains(string(output), tc.wantError) {
-					t.Fatalf("production identity: %v: %s, want %q", err, output, tc.wantError)
-				}
-				return
-			}
 			if err != nil {
 				t.Fatalf("production identity: %v: %s", err, output)
 			}
