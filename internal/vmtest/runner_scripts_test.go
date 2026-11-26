@@ -400,7 +400,7 @@ func TestVMTestRunBuildsDefaultArtifacts(t *testing.T) {
 	copyRunCheck(t, realRepo, repo)
 	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
 set -euo pipefail
-printf '%s version=%s\n' "$*" "${KATL_UPGRADE_VERSION:-}" >> "$KATL_FAKE_MKOSI_ARGS"
+printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
 `)
 	writeExecutable(t, filepath.Join(repo, "scripts", "build-kubernetes-sysext"), `#!/usr/bin/env bash
 set -euo pipefail
@@ -441,8 +441,6 @@ exec "$@"
 		"KATL_RUNTIME_ARTIFACT",
 		"KATL_INSTALL_MANIFEST",
 		"KATL_VMTEST_AUTO_REBUILD",
-		"KATL_VERSION",
-		"KATL_UPGRADE_VERSION",
 	} {
 		env = removeEnv(env, name)
 	}
@@ -456,13 +454,8 @@ exec "$@"
 	}
 
 	mkosiArgs := readLines(t, mkosiArgsPath)
-	wantMkosiCalls := []string{
-		"build-katlos-install-image version=",
-		"build-katlos-upgrade-image version=0000.0.0-dev.1",
-		"build-installer-iso version=",
-	}
-	if !reflect.DeepEqual(mkosiArgs, wantMkosiCalls) {
-		t.Fatalf("mkosi calls = %q, want %q", mkosiArgs, wantMkosiCalls)
+	if !reflect.DeepEqual(mkosiArgs, []string{"build-katlos-install-image", "build-katlos-upgrade-image", "build-installer-iso"}) {
+		t.Fatalf("mkosi args = %#v", mkosiArgs)
 	}
 	if sysextArgs := readLines(t, sysextArgsPath); !reflect.DeepEqual(sysextArgs, []string{"default"}) {
 		t.Fatalf("sysext args = %#v", sysextArgs)
