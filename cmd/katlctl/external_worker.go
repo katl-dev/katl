@@ -26,7 +26,7 @@ func runExternalNodeJoin(ctx context.Context, opts nodeJoinOptions, inv inventor
 	if err := validateClusterNodeLifecycle(target, status); err != nil {
 		return err
 	}
-	if reported, err := inventory.DecodeHostPort(status.GetKubernetes().GetExternalEndpoint()); err != nil || reported != inv.ControlPlaneEndpoint {
+	if reported, err := inventory.DecodeHostPort(status.GetKubernetes().GetExternalEndpoint()); err != nil || !reported.Equal(inv.ControlPlaneEndpoint) {
 		return fmt.Errorf("node %s is not provisioned for external endpoint %s; inspect its installed configuration before joining", target.Name, inv.ControlPlaneEndpoint)
 	}
 	pending, err := unfinishedNodeJoin(ctx, opts.configPath, target, current)

@@ -65,6 +65,15 @@ type NodeConfig struct {
 	Bootstrap            *BootstrapIntent             `json:"bootstrap,omitempty" yaml:"bootstrap,omitempty"`
 }
 
+// ClusterEndpoint returns the node's stored control-plane endpoint and VIP.
+func (n NodeConfig) ClusterEndpoint() (inventory.HostPort, string, error) {
+	var recorded string
+	if n.Bootstrap != nil {
+		recorded = n.Bootstrap.ControlPlaneEndpoint
+	}
+	return inventory.ResolveStoredControlPlaneEndpoint(n.ControlPlaneEndpoint, recorded)
+}
+
 type KernelConfig struct {
 	CommandLine []string `json:"commandLine,omitempty" yaml:"commandLine,omitempty"`
 }

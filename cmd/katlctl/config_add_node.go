@@ -79,12 +79,17 @@ func runConfigAddNode(ctx context.Context, opts configAddNodeOptions, stdout, st
 	if err != nil || parsed.Hostname() == "" {
 		return fmt.Errorf("installer endpoint %q has no usable address", endpoint)
 	}
-	address := parsed.Hostname()
+	installerAddress := inventory.DecodeManagementAddress(parsed.Hostname())
+	address := installerAddress.Host.String()
+	explicitInstaller := opts.installer
+	if target, err := inventory.DecodeHostPort(parsed.Host); err == nil && parsed.Scheme == "http" && target.Equal(installerAddress.InstallerEndpoint()) {
+		explicitInstaller = ""
+	}
 
 	// The installer's address identifies the machine, so a repeated command
 	// finds its earlier entry even after the installer has stopped waiting.
 	for _, node := range source.Spec.Nodes {
-		if !strings.EqualFold(strings.TrimSpace(node.Management.Address), address) {
+		if !inventory.DecodeManagementAddress(node.Management.Address).Host.Equal(installerAddress.Host) {
 			continue
 		}
 		existingRole := inventory.RoleWorker
@@ -98,7 +103,7 @@ func runConfigAddNode(ctx context.Context, opts configAddNodeOptions, stdout, st
 			return fmt.Errorf("%s already lists %s at %s as a %s; a node's role cannot change without wiping and reinstalling it", opts.configPath, node.Name, address, existingRole)
 		}
 		fmt.Fprintf(stdout, "%s already lists %s (%s) at %s; unchanged\n", opts.configPath, node.Name, existingRole, address)
-		fmt.Fprintf(stdout, "If %s is not installed and joined yet, run:\n%s", node.Name, addNodeNextSteps(opts.configPath, opts.installer, address, node.Name))
+		fmt.Fprintf(stdout, "If %s is not installed and joined yet, run:\n%s", node.Name, addNodeNextSteps(opts.configPath, explicitInstaller, node.Name))
 		return nil
 	}
 
@@ -145,19 +150,14 @@ func runConfigAddNode(ctx context.Context, opts configAddNodeOptions, stdout, st
 	}
 
 	fmt.Fprintf(stdout, "added %s (%s) at %s to %s\n", name, role, address, opts.configPath)
-	fmt.Fprintf(stdout, "Install it and join it to the running cluster:\n%s", addNodeNextSteps(opts.configPath, opts.installer, address, name))
+	fmt.Fprintf(stdout, "Install it and join it to the running cluster:\n%s", addNodeNextSteps(opts.configPath, explicitInstaller, name))
 	return nil
 }
 
-// addNodeNextSteps names the commands that install and join name, passing
-// the installer address to install apply unless it is the default for the
-// node's management address.
-func addNodeNextSteps(configPath, installer, address, name string) string {
+func addNodeNextSteps(configPath, installer, name string) string {
 	endpoint := ""
-	if normalized, err := normalizeInstallerAddress(installer); err == nil {
-		if bare, err := normalizeInstallerAddress(address); err != nil || bare != normalized {
-			endpoint = " --endpoint " + installer
-		}
+	if installer != "" {
+		endpoint = " --endpoint " + installer
 	}
 	return fmt.Sprintf("  katlctl install apply --config %s --node %s%s\n  katlctl node join %s --config %s\n", configPath, name, endpoint, name, configPath)
 }

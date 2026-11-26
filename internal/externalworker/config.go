@@ -8,27 +8,25 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"net"
 	"net/netip"
 	"net/url"
-	"strconv"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"gopkg.in/yaml.v3"
 )
 
 // Endpoint validates the API URL and returns its host and port.
-func Endpoint(value string) (string, error) {
+func Endpoint(value string) (inventory.HostPort, error) {
 	u, err := url.Parse(value)
 	if err != nil || u.Scheme != "https" || u.User != nil || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-		return "", fmt.Errorf("must be an HTTPS API URL with an explicit port and no path, credentials, query, or fragment")
+		return inventory.HostPort{}, fmt.Errorf("must be an HTTPS API URL with an explicit port and no path, credentials, query, or fragment")
 	}
-	host, port, err := net.SplitHostPort(u.Host)
-	number, portErr := strconv.Atoi(port)
-	if err != nil || host == "" || portErr != nil || number < 1 || number > 65535 || strings.ContainsAny(host, " \t\r\n%") {
-		return "", fmt.Errorf("must contain an API host and port, such as https://api.lab.example:6443")
+	endpoint, err := inventory.ParseHostPort(u.Host)
+	if err != nil {
+		return inventory.HostPort{}, fmt.Errorf("must contain an API host and port, such as https://api.lab.example:6443")
 	}
-	return u.Host, nil
+	return endpoint, nil
 }
 
 type bootstrapConfig struct {
@@ -60,7 +58,7 @@ type bootstrapConfig struct {
 // Bootstrap validates a self-contained, token-only kubeconfig. Restricting its
 // shape prevents credentials, workstation paths, and executable plugins from
 // acquiring responsibilities on the node. The cluster owns token permissions.
-func Bootstrap(data []byte, endpoint string) ([]byte, error) {
+func Bootstrap(data []byte, endpoint inventory.HostPort) ([]byte, error) {
 	if len(data) > 1024*1024 {
 		return nil, fmt.Errorf("bootstrap kubeconfig exceeds 1 MiB")
 	}
@@ -78,8 +76,8 @@ func Bootstrap(data []byte, endpoint string) ([]byte, error) {
 		return nil, fmt.Errorf("bootstrap kubeconfig must contain one v1 Config cluster, token user, and context")
 	}
 	cluster, user, context := config.Clusters[0], config.Users[0], config.Contexts[0]
-	host, err := Endpoint(cluster.Cluster.Server)
-	if err != nil || host != endpoint {
+	server, err := Endpoint(cluster.Cluster.Server)
+	if err != nil || !server.Equal(endpoint) {
 		return nil, fmt.Errorf("bootstrap kubeconfig server must match the configured external endpoint")
 	}
 	ca, err := base64.StdEncoding.DecodeString(cluster.Cluster.CA)

@@ -1015,7 +1015,11 @@ func (s *Server) validateJoinMaterial(operationKind string, request *agentapi.Bo
 		if operationKind != "bootstrap-join-worker" || material != nil {
 			return status.Error(codes.InvalidArgument, "external worker enrollment requires a worker join without kubeadm join material")
 		}
-		if _, err := externalworker.Bootstrap(request.GetBootstrapKubeconfig(), request.GetControlPlaneEndpoint()); err != nil {
+		endpoint, err := inventory.ParseHostPort(request.GetControlPlaneEndpoint())
+		if err != nil {
+			return status.Error(codes.InvalidArgument, err.Error())
+		}
+		if _, err := externalworker.Bootstrap(request.GetBootstrapKubeconfig(), endpoint); err != nil {
 			return status.Error(codes.InvalidArgument, err.Error())
 		}
 		return nil

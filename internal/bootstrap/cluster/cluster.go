@@ -317,12 +317,16 @@ func Run(ctx context.Context, request Request, deps Dependencies) (Result, error
 func writeOperatorKubeconfig(request Request, initNode inventory.PlannedNode, plan inventory.Plan, bootstrap UserBootstrap, credentials AdminCredentials, stableEndpointReady, proxyEndpointReady, overwrite bool) (kubeconfig.Result, error) {
 	direct := plan.WorkstationKubernetesEndpoint(initNode)
 	proxy := plan.WorkstationProxyEndpoint(initNode)
+	canonical := plan.ControlPlaneEndpoint.String()
+	if plan.ControlPlaneEndpointDerived {
+		canonical = ""
+	}
 	return kubeconfig.Write(kubeconfig.Request{
 		Path:      request.KubeconfigOut,
 		Overwrite: overwrite,
 		Endpoint: kubeconfig.EndpointSelection{
 			InitialEndpoint:      direct.Address.String(),
-			ControlPlaneEndpoint: plan.ControlPlaneEndpoint.String(),
+			ControlPlaneEndpoint: canonical,
 			StableEndpoint:       bootstrap.StableEndpoint,
 			StableEndpointReady:  stableEndpointReady,
 			ProxyEndpoint:        proxy.Address.String(),

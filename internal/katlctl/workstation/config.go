@@ -27,11 +27,12 @@ type Context struct {
 }
 
 type Cluster struct {
-	ExternalControlPlane bool                                  `json:"externalControlPlane,omitempty" yaml:"externalControlPlane,omitempty"`
-	Name                 string                                `json:"name" yaml:"name"`
-	ControlPlaneEndpoint string                                `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint"`
-	Nodes                []Node                                `json:"nodes" yaml:"nodes"`
-	Management           *managementidentity.ClientCredentials `json:"management,omitempty" yaml:"management,omitempty"`
+	ExternalControlPlane        bool                                  `json:"externalControlPlane,omitempty" yaml:"externalControlPlane,omitempty"`
+	ControlPlaneEndpointDerived bool                                  `json:"controlPlaneEndpointDerived,omitempty" yaml:"controlPlaneEndpointDerived,omitempty"`
+	Name                        string                                `json:"name" yaml:"name"`
+	ControlPlaneEndpoint        string                                `json:"controlPlaneEndpoint,omitempty" yaml:"controlPlaneEndpoint"`
+	Nodes                       []Node                                `json:"nodes" yaml:"nodes"`
+	Management                  *managementidentity.ClientCredentials `json:"management,omitempty" yaml:"management,omitempty"`
 }
 
 type Node struct {
@@ -56,12 +57,13 @@ const (
 )
 
 type Topology struct {
-	ExternalControlPlane bool                                  `json:"externalControlPlane,omitempty"`
-	ContextName          string                                `json:"contextName,omitempty"`
-	ClusterName          string                                `json:"clusterName"`
-	ControlPlaneEndpoint inventory.HostPort                    `json:"controlPlaneEndpoint,omitzero"`
-	Nodes                []TopologyNode                        `json:"nodes"`
-	Management           *managementidentity.ClientCredentials `json:"-"`
+	ExternalControlPlane        bool                                  `json:"externalControlPlane,omitempty"`
+	ControlPlaneEndpointDerived bool                                  `json:"controlPlaneEndpointDerived,omitempty" yaml:"controlPlaneEndpointDerived,omitempty"`
+	ContextName                 string                                `json:"contextName,omitempty"`
+	ClusterName                 string                                `json:"clusterName"`
+	ControlPlaneEndpoint        inventory.HostPort                    `json:"controlPlaneEndpoint,omitzero"`
+	Nodes                       []TopologyNode                        `json:"nodes"`
+	Management                  *managementidentity.ClientCredentials `json:"-"`
 }
 
 type TopologyNode struct {
@@ -348,10 +350,11 @@ func (t Topology) ControlPlaneNodes() []TopologyNode {
 func topologyFromCluster(contextName string, cluster Cluster) (Topology, error) {
 	clusterName := strings.TrimSpace(cluster.Name)
 	topology := Topology{
-		ExternalControlPlane: cluster.ExternalControlPlane,
-		ContextName:          strings.TrimSpace(contextName),
-		ClusterName:          clusterName,
-		Nodes:                make([]TopologyNode, 0, len(cluster.Nodes)),
+		ExternalControlPlane:        cluster.ExternalControlPlane,
+		ControlPlaneEndpointDerived: cluster.ControlPlaneEndpointDerived,
+		ContextName:                 strings.TrimSpace(contextName),
+		ClusterName:                 clusterName,
+		Nodes:                       make([]TopologyNode, 0, len(cluster.Nodes)),
 	}
 	if cluster.Management != nil {
 		if err := managementidentity.ValidateClient(*cluster.Management, time.Now().UTC()); err != nil {
@@ -393,10 +396,11 @@ func topologyFromCluster(contextName string, cluster Cluster) (Topology, error) 
 
 func topologyFromInventory(inv inventory.Inventory) (Topology, error) {
 	topology := Topology{
-		ClusterName:          "inventory",
-		ExternalControlPlane: inv.ExternalControlPlane,
-		ControlPlaneEndpoint: inv.ControlPlaneEndpoint,
-		Nodes:                make([]TopologyNode, 0, len(inv.Nodes)),
+		ClusterName:                 "inventory",
+		ExternalControlPlane:        inv.ExternalControlPlane,
+		ControlPlaneEndpointDerived: inv.ControlPlaneEndpointDerived,
+		ControlPlaneEndpoint:        inv.ControlPlaneEndpoint,
+		Nodes:                       make([]TopologyNode, 0, len(inv.Nodes)),
 	}
 	for _, node := range inv.Nodes {
 		topology.Nodes = append(topology.Nodes, TopologyNode{
@@ -412,10 +416,11 @@ func topologyFromInventory(inv inventory.Inventory) (Topology, error) {
 
 func topologyFromPlan(plan inventory.Plan) (Topology, error) {
 	topology := Topology{
-		ClusterName:          "plan",
-		ExternalControlPlane: plan.ExternalControlPlane,
-		ControlPlaneEndpoint: plan.ControlPlaneEndpoint,
-		Nodes:                make([]TopologyNode, 0, len(plan.Nodes)),
+		ClusterName:                 "plan",
+		ExternalControlPlane:        plan.ExternalControlPlane,
+		ControlPlaneEndpointDerived: plan.ControlPlaneEndpointDerived,
+		ControlPlaneEndpoint:        plan.ControlPlaneEndpoint,
+		Nodes:                       make([]TopologyNode, 0, len(plan.Nodes)),
 	}
 	for _, node := range plan.Nodes {
 		topology.Nodes = append(topology.Nodes, TopologyNode{
@@ -433,9 +438,10 @@ func topologyFromPlan(plan inventory.Plan) (Topology, error) {
 // management address is its saved endpoint, port included.
 func (t Topology) Inventory() inventory.Inventory {
 	inv := inventory.Inventory{
-		ExternalControlPlane: t.ExternalControlPlane,
-		ControlPlaneEndpoint: t.ControlPlaneEndpoint,
-		Nodes:                make([]inventory.Node, 0, len(t.Nodes)),
+		ExternalControlPlane:        t.ExternalControlPlane,
+		ControlPlaneEndpointDerived: t.ControlPlaneEndpointDerived,
+		ControlPlaneEndpoint:        t.ControlPlaneEndpoint,
+		Nodes:                       make([]inventory.Node, 0, len(t.Nodes)),
 	}
 	for _, node := range t.Nodes {
 		inv.Nodes = append(inv.Nodes, node.InventoryNode())

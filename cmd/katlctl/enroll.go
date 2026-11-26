@@ -288,10 +288,11 @@ func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions,
 		contextName = clusterName
 	}
 	clusterProfile := workstation.Cluster{
-		ExternalControlPlane: inv.ExternalControlPlane,
-		Name:                 clusterName,
-		ControlPlaneEndpoint: inv.ControlPlaneEndpoint.String(),
-		Management:           &management,
+		ExternalControlPlane:        inv.ExternalControlPlane,
+		ControlPlaneEndpointDerived: inv.ControlPlaneEndpointDerived,
+		Name:                        clusterName,
+		ControlPlaneEndpoint:        inv.ControlPlaneEndpoint.String(),
+		Management:                  &management,
 	}
 	report := contextSaveReport{APIVersion: "katl.dev/v1alpha1", Kind: "ContextSaveReport", Context: contextName, ConfigPath: configPath}
 	cfg := workstation.Config{}
@@ -327,7 +328,7 @@ func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions,
 		case !managementUnreachable(err):
 		case !overridden && node.SystemRole == inventory.RoleWorker:
 			hint = "; " + readdressHint(node.Name, endpoint, opts.configInput, savedEndpoint(configPath, clusterName, node.Name))
-		case overridden && !configured.IsZero() && configured != endpoint:
+		case overridden && !configured.IsZero() && !configured.Equal(endpoint):
 			hint = "; " + movedHint(node.Name, configured, opts.configInput)
 		}
 		if managementVerificationTimedOut(err) {
@@ -454,7 +455,7 @@ func managementUnreachable(err error) bool {
 // supply the address.
 func readdressHint(nodeName string, endpoint inventory.HostPort, configInput string, saved inventory.HostPort) string {
 	const guide = "see docs/operations/change-cluster-nodes.md#re-address-a-worker"
-	if !saved.IsZero() && saved != endpoint {
+	if !saved.IsZero() && !saved.Equal(endpoint) {
 		return fmt.Sprintf("%s is not answering at %s, and the saved context last reached it at %s; if you are changing its address, run 'katlctl cluster apply --config %s --node %s --endpoint %s' (%s)", nodeName, endpoint, saved, configInput, nodeName, managementHost(saved), guide)
 	}
 	return fmt.Sprintf("if you are changing %s's address, run 'katlctl cluster apply --config %s --node %s --endpoint CURRENT_ADDRESS' with the address it answers at now (%s)", nodeName, configInput, nodeName, guide)
@@ -652,7 +653,7 @@ func warnPendingReaddress(ctx context.Context, configInput string, endpoints map
 		}
 		configured := configuredEndpoint(node)
 		reached := used[node.Name]
-		if configured.IsZero() || reached.IsZero() || configured == reached || baselines[node.Name].IsZero() || baselines[node.Name] == configured {
+		if configured.IsZero() || reached.IsZero() || configured.Equal(reached) || baselines[node.Name].IsZero() || baselines[node.Name].Equal(configured) {
 			continue
 		}
 		fmt.Fprintf(stderr, "warning: %s is configured at management.address %s, but the saved context reaches it at %s, so this command uses %s; "+

@@ -143,7 +143,10 @@ func TestConfigAddNodeRepeatIsUnchanged(t *testing.T) {
 	if err := run(context.Background(), args, io.Discard, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	added := readAddNodeConfig(t, path)
+	added := strings.Replace(readAddNodeConfig(t, path), "address: 127.0.0.1", "address: 127.0.0.1:9443", 1)
+	if err := os.WriteFile(path, []byte(added), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	// After install apply nothing answers as an installer, so the repeat
 	// targets the bare address, where no installer listens.

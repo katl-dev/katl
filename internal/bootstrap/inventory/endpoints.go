@@ -6,6 +6,7 @@ import (
 	"strconv"
 
 	"github.com/katl-dev/katl/internal/apiproxy"
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 )
 
 const (
@@ -25,6 +26,25 @@ const (
 type TLSEndpoint struct {
 	Address    HostPort
 	ServerName Host
+}
+
+// ResolveStoredControlPlaneEndpoint reads the endpoint a node has stored for
+// bootstrap. Managed advertisement intent takes precedence over the recorded
+// endpoint and supplies the VIP kubeadm includes in the API certificate.
+func ResolveStoredControlPlaneEndpoint(configured *controlplaneendpoint.Config, recorded string) (endpoint HostPort, vip string, err error) {
+	if configured != nil {
+		plan, err := controlplaneendpoint.Normalize(*configured)
+		if err != nil {
+			return HostPort{}, "", err
+		}
+		if plan.Config.Advertisement != nil {
+			vip = plan.Config.Advertisement.VIP
+		}
+		endpoint, err = ParseHostPort(plan.Endpoint)
+		return endpoint, vip, err
+	}
+	err = endpoint.UnmarshalText([]byte(recorded))
+	return endpoint, "", err
 }
 
 // URL returns the endpoint as an https:// URL for kubeconfigs and kubectl.
@@ -57,15 +77,22 @@ func (n PlannedNode) ManagementEndpoint() HostPort {
 	return n.Address.Endpoint()
 }
 
+// KubernetesHost returns the Kubernetes address or, if unset, the management host.
+func (n Node) KubernetesHost() Host {
+	return kubernetesHost(n.KubernetesAddress, n.Address)
+}
+
 // KubernetesHost returns the host other nodes use to reach this node's
-// kube-apiserver and etcd member: its Kubernetes address, or its management
-// host when none is declared. Unlike API proxy addresses it keeps a DNS
-// management name, because the dialer resolves it.
+// kube-apiserver and etcd member.
 func (n PlannedNode) KubernetesHost() Host {
-	if n.KubernetesAddress.IsValid() {
-		return HostFromAddr(n.KubernetesAddress)
+	return kubernetesHost(n.KubernetesAddress, n.Address)
+}
+
+func kubernetesHost(address netip.Addr, management ManagementAddress) Host {
+	if address.IsValid() {
+		return HostFromAddr(address)
 	}
-	return n.Address.Host
+	return management.Host
 }
 
 // KubernetesEndpoint returns the node's kube-apiserver as other nodes reach

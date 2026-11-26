@@ -801,10 +801,19 @@ func matchingKatldevConfig(path, address string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("decode config: %w", err)
 	}
+	host, err := inventory.ParseHost(address)
+	if err != nil {
+		return "", err
+	}
 	for _, node := range source.Spec.Nodes {
 		// A node behind NAT holds its kubernetes.address, not its
 		// management.address.
-		if node.Management.Address != address && node.Kubernetes.Address != address {
+		management := inventory.DecodeManagementAddress(node.Management.Address)
+		kubernetes, err := inventory.ParseKubernetesAddress(node.Kubernetes.Address)
+		if err != nil {
+			return "", fmt.Errorf("node %s kubernetes.address: %w", node.Name, err)
+		}
+		if !management.Host.Equal(host) && !inventory.HostFromAddr(kubernetes).Equal(host) {
 			continue
 		}
 		layer, err := configbundle.ResolveNodeLayer(source.Spec.Defaults, node)

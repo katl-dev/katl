@@ -107,6 +107,7 @@ func LowerTopology(config Config, addressOverrides map[string]string) (Topology,
 	if endpoint != nil {
 		topology.Endpoint = endpoint
 		topology.Inventory.ControlPlaneEndpointManaged = endpoint.Config.Advertisement != nil
+		topology.Inventory.ControlPlaneEndpointDerived = config.Spec.ControlPlaneEndpoint == nil && !topology.Inventory.ExternalControlPlane
 		if topology.Inventory.ControlPlaneEndpoint, err = inventory.ParseHostPort(endpoint.Endpoint); err != nil {
 			return Topology{}, fmt.Errorf("control-plane endpoint: %w", err)
 		}
@@ -124,7 +125,7 @@ func kubernetesAddressText(addr netip.Addr) string {
 }
 
 // resolveControlPlaneEndpoint returns the configured endpoint, or for a
-// single control plane without one, that node's management host.
+// single control plane without one, the host its Kubernetes peers use.
 func resolveControlPlaneEndpoint(config Config, nodes []inventory.Node) (*controlplaneendpoint.Plan, error) {
 	if external := config.Spec.Kubernetes.ExternalEndpoint; external != "" {
 		endpoint, err := inventory.ParseHostPort(external)
@@ -152,20 +153,21 @@ func resolveControlPlaneEndpoint(config Config, nodes []inventory.Node) (*contro
 	endpoint := config.Spec.ControlPlaneEndpoint
 	if endpoint == nil {
 		first := controlPlanes[0]
+		host := first.KubernetesHost()
 		if len(controlPlanes) > 1 {
 			// A cluster bootstrapped with one control plane already serves
 			// the API at that node's address, so naming it keeps the
 			// cluster's endpoint unchanged.
 			err := errors.New("spec.controlPlaneEndpoint is required for a cluster with more than one control-plane node")
-			if !first.Address.IsZero() {
-				err = fmt.Errorf("%w; a cluster bootstrapped with one control plane serves its API at that node's address, so to add control planes to it set spec.controlPlaneEndpoint.host to that address, such as %s for %s", err, first.Address.Host, first.Name)
+			if !host.IsZero() {
+				err = fmt.Errorf("%w; a cluster bootstrapped with one control plane serves its API at that node's address, so to add control planes to it set spec.controlPlaneEndpoint.host to that address, such as %s for %s", err, host, first.Name)
 			}
 			return nil, err
 		}
-		if first.Address.IsZero() {
+		if host.IsZero() {
 			return nil, fmt.Errorf("spec.controlPlaneEndpoint is required when control-plane node %q has no bootstrap address", first.Name)
 		}
-		endpoint = &controlplaneendpoint.Config{Host: first.Address.Host.String()}
+		endpoint = &controlplaneendpoint.Config{Host: host.String()}
 	}
 	plan, err := controlplaneendpoint.Normalize(*endpoint)
 	if err != nil {

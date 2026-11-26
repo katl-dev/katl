@@ -42,7 +42,12 @@ func TestManagementInventoryMatchesCompile(t *testing.T) {
 			name: "NAT control plane with an agent port and a Kubernetes address",
 			nodes: node("cp-1", true, management("198.18.0.11:19443")+kubernetes("10.0.0.11")) +
 				node("worker-1", false, management("198.18.0.21:19443")+kubernetes("::ffff:10.0.0.21")),
-			served: "198.18.0.11:6443",
+			served: "10.0.0.11:6443",
+		},
+		{
+			name:   "single control plane with a management hostname",
+			nodes:  node("cp-1", true, management("cp_1.home.arpa")+kubernetes("10.0.0.11")),
+			served: "10.0.0.11:6443",
 		},
 		{
 			name:     "several control planes with an endpoint",

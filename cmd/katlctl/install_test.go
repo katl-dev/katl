@@ -444,15 +444,59 @@ func TestSelectInstallNode(t *testing.T) {
 	if _, err := selectInstallNode(manifest, "192.0.2.11"); err == nil || !strings.Contains(err.Error(), "matches multiple nodes") {
 		t.Fatalf("ambiguous address error = %v", err)
 	}
+}
 
-	// Behind one NAT host, nodes differ only by agent port.
-	manifest.Cluster.BootstrapInventory.Nodes[0].Address = mustManagement(t, "198.18.0.10:19443")
-	manifest.Cluster.BootstrapInventory.Nodes[1].Address = mustManagement(t, "198.18.0.10:29443")
-	if got, err := selectInstallNode(manifest, "198.18.0.10:29443"); err != nil || got != "worker-1" {
-		t.Fatalf("NAT address with port = %q, %v, want worker-1", got, err)
+func TestInstallApplySharedManagementHost(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cluster.yaml")
+	source := strings.Replace(configBundleSource(), "managementAuthentication: mtls", "managementAuthentication: trusted-network", 1)
+	image := manifest.KatlosImage{
+		LocalRef: "images/katlos-test-x86_64.squashfs", SHA256: strings.Repeat("a", 64), SizeBytes: 1,
+		Version: "test", Architecture: "x86_64", RuntimeInterface: "katl-runtime-1", Role: "install",
 	}
-	if _, err := selectInstallNode(manifest, "198.18.0.10"); err == nil || !strings.Contains(err.Error(), "matches multiple nodes") {
-		t.Fatalf("NAT host without port error = %v", err)
+	workers := []*handoff.HandoffServer{
+		handoff.NewHandoffServerWithDefaultImage(nil, image),
+		handoff.NewHandoffServerWithDefaultImage(nil, image),
+	}
+	routes := map[string]string{}
+	for i, worker := range workers {
+		server := httptest.NewServer(worker.Handler())
+		t.Cleanup(server.Close)
+		if i == 0 {
+			routes["198.18.0.10:8080"] = server.Listener.Addr().String()
+		}
+		routes[fmt.Sprintf("198.18.0.10:%d", 9080+i)] = server.Listener.Addr().String()
+		source += fmt.Sprintf("    - name: worker-%d\n      management:\n        address: 198.18.0.10:%d\n      kubernetes:\n        address: 192.0.2.%d\n      install:\n        systemDisk:\n          byID: /dev/disk/by-id/worker-%d\n", i+1, 19443+i, 21+i, i+1)
+	}
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	routeInstallers(t, routes)
+
+	apply := func(node string, extra ...string) error {
+		args := []string{"install", "apply", "--config", path, "--node", node, "--no-wait"}
+		return run(context.Background(), append(args, extra...), io.Discard, io.Discard)
+	}
+	for _, endpoint := range [][]string{nil, {"--endpoint", "198.18.0.10:8080"}} {
+		err := apply("198.18.0.10:19444", endpoint...)
+		for i, worker := range workers {
+			if payload := worker.Bundle(); len(payload.Data) != 0 {
+				t.Fatalf("installer %d received config for %q without a distinct endpoint", i+1, payload.NodeName)
+			}
+		}
+		if err == nil || !strings.Contains(err.Error(), "is shared") || !strings.Contains(err.Error(), "--endpoint") {
+			t.Fatalf("ambiguous apply error = %v", err)
+		}
+	}
+
+	for i, worker := range workers {
+		name := fmt.Sprintf("worker-%d", i+1)
+		endpoint := fmt.Sprintf("198.18.0.10:%d", 9080+i)
+		if err := apply(fmt.Sprintf("198.18.0.10:%d", 19443+i), "--endpoint", endpoint); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+		if payload := worker.Bundle(); payload.NodeName != name || len(payload.Data) == 0 {
+			t.Fatalf("installer for %s received payload for %q (%d bytes)", name, payload.NodeName, len(payload.Data))
+		}
 	}
 }
 

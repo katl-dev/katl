@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/codes"
@@ -221,7 +222,7 @@ func TLSAtPlaintext(err error) bool {
 // explainMutualTLSNode maps the failure of a plaintext call to a TLS listener.
 func explainMutualTLSNode(err error) error {
 	if TLSAtPlaintext(err) {
-		return fmt.Errorf("node did not answer plaintext gRPC; it likely serves mTLS management. If `katlctl management enable-mtls` moved it to mTLS without finishing, rerun that command; otherwise select its mTLS configuration (--config or --context), or check that management.address and management.authentication match the node and that the address points at the katlc agent on port 9443: %w", err)
+		return fmt.Errorf("node did not answer plaintext gRPC; it likely serves mTLS management. If `katlctl management enable-mtls` moved it to mTLS without finishing, rerun that command; otherwise select its mTLS configuration (--config or --context), or check that management.address and management.authentication match the node and that the address points at the katlc agent on port %d: %w", inventory.ManagementPort, err)
 	}
 	return err
 }

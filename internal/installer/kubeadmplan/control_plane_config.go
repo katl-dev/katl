@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"gopkg.in/yaml.v3"
 )
@@ -212,15 +213,26 @@ func reconcileCertSANs(desired, live map[string]any, vip string) error {
 		return fmt.Errorf("live: %w", err)
 	}
 	bootstrapSANs := slices.DeleteFunc(kubeadmconfig.ClusterCertSANs(endpoint, vip), func(san string) bool {
-		return !slices.ContainsFunc(liveSANs, func(liveSAN string) bool { return strings.TrimSpace(liveSAN) == san })
+		return !slices.ContainsFunc(liveSANs, func(liveSAN string) bool { return sameCertSAN(liveSAN, san) })
 	})
-	ignoreBootstrapSAN := func(san string) bool { return slices.Contains(bootstrapSANs, strings.TrimSpace(san)) }
+	ignoreBootstrapSAN := func(san string) bool {
+		return slices.ContainsFunc(bootstrapSANs, func(bootstrapSAN string) bool { return sameCertSAN(san, bootstrapSAN) })
+	}
 	desiredSANs = slices.DeleteFunc(desiredSANs, ignoreBootstrapSAN)
 	liveSANs = slices.DeleteFunc(liveSANs, ignoreBootstrapSAN)
 	if !slices.Equal(desiredSANs, liveSANs) {
 		return fmt.Errorf("apiServer.certSANs %v differs from the running cluster's %v; config apply does not change API server certificate SANs, so set apiServer.certSANs to the running cluster's SANs (bootstrap-added SANs may be omitted)", desiredSANs, liveSANs)
 	}
 	return nil
+}
+
+func sameCertSAN(a, b string) bool {
+	if strings.TrimSpace(a) == strings.TrimSpace(b) {
+		return true
+	}
+	hostA, errA := inventory.ParseHost(a)
+	hostB, errB := inventory.ParseHost(b)
+	return errA == nil && errB == nil && hostA.Equal(hostB)
 }
 
 func takeCertSANs(config map[string]any) ([]string, error) {

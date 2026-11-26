@@ -205,6 +205,7 @@ func TestSupportedControlPlaneComponentDeltaAccountsForBootstrapSANs(t *testing.
 		{name: "no operator SANs", desired: cluster(""), live: cluster(endpoint, "api.katl.test", "127.0.0.1")},
 		{name: "live endpoint without a port", desired: cluster("", "extra.example"), live: cluster("api.example", "api.example", "127.0.0.1", "extra.example")},
 		{name: "live IPv6 endpoint without a port", desired: cluster("", "extra.example"), live: cluster("\"[2001:db8::1]\"", "2001:db8::1", "127.0.0.1", "extra.example")},
+		{name: "legacy IPv6 bootstrap SAN", desired: cluster("", "extra.example"), live: cluster("'[2001:0db8::1]:6443'", "2001:0db8::1", "127.0.0.1", "extra.example")},
 		{name: "SAN added", desired: cluster("", "user-api.example", "new.example"), live: bootstrapped, vip: "192.0.2.10", wantError: "[user-api.example new.example] differs from the running cluster's [user-api.example]"},
 		{name: "operator SAN removed", desired: cluster(""), live: bootstrapped, vip: "192.0.2.10", wantError: "[] differs from the running cluster's [user-api.example]"},
 		{name: "operator SANs replaced", desired: cluster("", "other.example"), live: bootstrapped, vip: "192.0.2.10", wantError: "[other.example] differs from the running cluster's [user-api.example]; config apply does not change API server certificate SANs, so set apiServer.certSANs"},

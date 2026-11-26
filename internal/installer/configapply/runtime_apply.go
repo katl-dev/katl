@@ -609,7 +609,16 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 	applyOverlay(&merged, roleOverlay, request.KubernetesInitialized, &domains, &unsafeFiles)
 	nodeOverlay := request.NodeOverrides[request.NodeName]
 	for _, overlay := range []NodeOverlay{request.ClusterDefaults, roleOverlay, nodeOverlay} {
-		if overlay.ExternalEndpoint != nil && (request.CurrentManifest.Node.Bootstrap == nil || *overlay.ExternalEndpoint != request.CurrentManifest.Node.Bootstrap.ControlPlaneEndpoint) {
+		if overlay.ExternalEndpoint == nil {
+			continue
+		}
+		installed := request.CurrentManifest.Node.Bootstrap
+		if installed == nil {
+			return manifest.Manifest{}, nil, nil, fmt.Errorf("changing an external worker endpoint requires reprovisioning the node")
+		}
+		current, currentErr := inventory.DecodeHostPort(installed.ControlPlaneEndpoint)
+		desired, desiredErr := inventory.ParseHostPort(*overlay.ExternalEndpoint)
+		if currentErr != nil || desiredErr != nil || !current.Equal(desired) {
 			return manifest.Manifest{}, nil, nil, fmt.Errorf("changing an external worker endpoint requires reprovisioning the node")
 		}
 	}
@@ -945,7 +954,9 @@ func classifyControlPlaneEndpointChange(current, desired *controlplaneendpoint.C
 		domains.add(DomainControlPlaneEndpointIdentity)
 		return
 	}
-	identityChanged := currentPlan.Config.Host != desiredPlan.Config.Host || currentPlan.Config.Port != desiredPlan.Config.Port || currentPlan.VIPPrefix != desiredPlan.VIPPrefix
+	currentEndpoint, currentErr := inventory.ParseHostPort(currentPlan.Endpoint)
+	desiredEndpoint, desiredErr := inventory.ParseHostPort(desiredPlan.Endpoint)
+	identityChanged := currentErr != nil || desiredErr != nil || !currentEndpoint.Equal(desiredEndpoint) || currentPlan.VIPPrefix != desiredPlan.VIPPrefix
 	if identityChanged {
 		if kubernetesInitialized {
 			domains.add(DomainControlPlaneEndpointIdentity)
@@ -954,7 +965,7 @@ func classifyControlPlaneEndpointChange(current, desired *controlplaneendpoint.C
 		}
 		return
 	}
-	if !reflect.DeepEqual(currentPlan.Config, desiredPlan.Config) {
+	if !reflect.DeepEqual(currentPlan.Config.Advertisement, desiredPlan.Config.Advertisement) {
 		domains.addEndpointVIP(endpointVIPImpact(currentPlan.Config, desiredPlan.Config))
 	}
 }

@@ -259,16 +259,7 @@ func applyInstallNode(ctx context.Context, opts installApplyOptions, manifest co
 	if err != nil {
 		return "", err
 	}
-	var installer inventory.HostPort
-	for _, node := range manifest.Cluster.BootstrapInventory.Nodes {
-		if node.Name == nodeName {
-			installer = node.InstallerEndpoint()
-		}
-	}
-	if skipUnavailable && len(manifest.Nodes) > 1 && installer.IsZero() {
-		return "", fmt.Errorf("node %s has no bootstrap address; configure its management address before cluster-wide installation", nodeName)
-	}
-	endpoint, err := resolveInstallEndpoint(opts.endpoint, installer)
+	endpoint, err := resolveNodeInstaller(opts.endpoint, nodeName, manifest.Cluster.BootstrapInventory)
 	if err != nil {
 		return "", err
 	}
@@ -390,18 +381,13 @@ func runInstallSSH(ctx context.Context, opts installSSHOptions, stdout, stderr i
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
-	nodeName, installer, keys, err := readInstallerSSHKeys(opts.configPath, opts.nodeName)
+	nodeName, endpoint, keys, err := readInstallerSSHKeys(opts.configPath, opts.nodeName, opts.endpoint)
 	if err != nil {
 		return fmt.Errorf("read installer SSH access: %w", err)
 	}
 	if len(keys) == 0 {
 		return fmt.Errorf("node %s has no SSH authorized keys; add spec.nodes[%q].access.ssh.authorizedKeys before enabling installer SSH", nodeName, nodeName)
 	}
-	endpoint, err := resolveInstallEndpoint(opts.endpoint, installer)
-	if err != nil {
-		return err
-	}
-
 	requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 	defer cancel()
 	client := newInstallerClient(requestTimeout(opts.timeout))
@@ -429,10 +415,10 @@ func runInstallSSH(ctx context.Context, opts installSSHOptions, stdout, stderr i
 	})
 }
 
-func readInstallerSSHKeys(path, selector string) (name string, installer inventory.HostPort, keys []string, err error) {
+func readInstallerSSHKeys(path, selector, explicitEndpoint string) (name, endpoint string, keys []string, err error) {
 	inv, err := readManagementInventory(path)
 	if err != nil {
-		return "", installer, nil, err
+		return "", "", nil, err
 	}
 	selection := configbundle.BundleManifest{
 		Cluster: configbundle.ClusterRecord{BootstrapInventory: inv},
@@ -442,37 +428,69 @@ func readInstallerSSHKeys(path, selector string) (name string, installer invento
 	}
 	name, err = selectInstallNode(selection, selector)
 	if err != nil {
-		return "", installer, nil, err
+		return "", "", nil, err
 	}
-	for _, node := range inv.Nodes {
-		if node.Name == name {
-			installer = node.InstallerEndpoint()
-		}
+	endpoint, err = resolveNodeInstaller(explicitEndpoint, name, inv)
+	if err != nil {
+		return "", "", nil, err
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", installer, nil, err
+		return "", "", nil, err
 	}
 	if source, sourceErr := configbundle.DecodeSource(bytes.NewReader(data)); sourceErr == nil {
 		for _, node := range source.Spec.Nodes {
 			if node.Name == name {
 				layer, err := configbundle.ResolveNodeLayer(source.Spec.Defaults, node)
 				if err != nil {
-					return "", installer, nil, err
+					return "", "", nil, err
 				}
-				return name, installer, layer.SSH.AuthorizedKeys, nil
+				return name, endpoint, layer.SSH.AuthorizedKeys, nil
 			}
 		}
-		return "", installer, nil, fmt.Errorf("node %q disappeared from configuration", name)
+		return "", "", nil, fmt.Errorf("node %q disappeared from configuration", name)
 	}
 	selected, err := configbundle.ReadSelectedNode(bytes.NewReader(data), configbundle.ReadOptions{
 		NodeName:                name,
 		AllowMissingKatlosImage: true,
 	})
 	if err != nil {
-		return "", installer, nil, err
+		return "", "", nil, err
 	}
-	return name, installer, selected.InstallManifest.Node.Identity.SSH.AuthorizedKeys, nil
+	return name, endpoint, selected.InstallManifest.Node.Identity.SSH.AuthorizedKeys, nil
+}
+
+func resolveNodeInstaller(explicit, name string, inv inventory.Inventory) (string, error) {
+	var configured inventory.HostPort
+	for _, node := range inv.Nodes {
+		if node.Name == name {
+			configured = node.InstallerEndpoint()
+			break
+		}
+	}
+	endpoint, err := resolveInstallEndpoint(explicit, configured)
+	if err != nil || configured.IsZero() {
+		return endpoint, err
+	}
+	if strings.TrimSpace(explicit) != "" {
+		u, err := url.Parse(endpoint)
+		if err != nil {
+			return "", err
+		}
+		// A URL without a port uses the HTTP or HTTPS default port.
+		override, err := inventory.DecodeHostPort(u.Host)
+		if err != nil || !override.Equal(configured) {
+			return endpoint, nil
+		}
+	}
+	// Agent ports can distinguish nodes that share a management host.
+	// The installer always uses InstallerPort at that host.
+	for _, node := range inv.Nodes {
+		if node.Name != name && node.InstallerEndpoint().Equal(configured) {
+			return "", fmt.Errorf("installer address %s is shared by nodes %q and %q. Pass --node %s --endpoint ADDRESS with a distinct address or port for that node's live installer", configured, name, node.Name, name)
+		}
+	}
+	return endpoint, nil
 }
 
 // resolveInstallEndpoint returns the installer URL: an operator's --endpoint, or
@@ -520,11 +538,11 @@ func selectInstallNode(manifest configbundle.BundleManifest, selector string) (s
 	selected := inventory.DecodeManagementAddress(selector)
 	var matches, exact []string
 	for _, node := range manifest.Cluster.BootstrapInventory.Nodes {
-		if node.Address.Host != selected.Host {
+		if !node.Address.Host.Equal(selected.Host) {
 			continue
 		}
 		matches = append(matches, node.Name)
-		if selected.Port != 0 && node.Address.Endpoint() == selected.Endpoint() {
+		if selected.Port != 0 && node.ManagementEndpoint().Equal(selected.Endpoint()) {
 			exact = append(exact, node.Name)
 		}
 	}
@@ -566,9 +584,10 @@ func runInstallStatus(ctx context.Context, opts installStatusOptions, stdout, st
 	if opts.timeout <= 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
-	var installer inventory.HostPort
+	var inv inventory.Inventory
 	if opts.configPath != "" {
-		inv, err := readManagementInventory(opts.configPath)
+		var err error
+		inv, err = readManagementInventory(opts.configPath)
 		if err != nil {
 			return err
 		}
@@ -581,16 +600,10 @@ func runInstallStatus(ctx context.Context, opts installStatusOptions, stdout, st
 			return err
 		}
 		opts.nodeName = name
-		for _, node := range inv.Nodes {
-			if node.Name == name {
-				installer = node.InstallerEndpoint()
-				break
-			}
-		}
 	} else if opts.nodeName != "" {
 		return fmt.Errorf("--config is required to select node %q; use --endpoint ADDRESS to query an installer directly", opts.nodeName)
 	}
-	endpoint, err := resolveInstallEndpoint(opts.endpoint, installer)
+	endpoint, err := resolveNodeInstaller(opts.endpoint, opts.nodeName, inv)
 	if err != nil {
 		return err
 	}

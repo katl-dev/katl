@@ -85,6 +85,11 @@ func (h Host) IsZero() bool {
 	return !h.addr.IsValid() && h.name == ""
 }
 
+// Equal compares host identity without resolving DNS names.
+func (h Host) Equal(other Host) bool {
+	return h.addr == other.addr && strings.EqualFold(h.name, other.name)
+}
+
 func (h Host) String() string {
 	if h.addr.IsValid() {
 		return h.addr.String()
@@ -145,6 +150,19 @@ func parseHostPort(value string, rule hostRule) (HostPort, error) {
 
 func (e HostPort) IsZero() bool {
 	return e.Host.IsZero()
+}
+
+// AddrPort returns the literal IP endpoint, or an invalid value for a hostname.
+func (e HostPort) AddrPort() netip.AddrPort {
+	return netip.AddrPortFrom(e.Host.addr, e.Port)
+}
+
+// Equal compares the host and port, with IP endpoints compared as netip values.
+func (e HostPort) Equal(other HostPort) bool {
+	if e.Host.addr.IsValid() && other.Host.addr.IsValid() {
+		return e.AddrPort() == other.AddrPort()
+	}
+	return e.Port == other.Port && e.Host.Equal(other.Host)
 }
 
 func (e HostPort) String() string {

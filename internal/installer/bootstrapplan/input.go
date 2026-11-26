@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/configdomain"
@@ -38,8 +39,16 @@ func SelectInput(root, generationID string, installed installer.ClusterIntent, r
 	if configuration.Manifest.Node.Kubernetes.External != request.ExternalWorker {
 		return InputSelection{}, fmt.Errorf("bootstrap control-plane ownership does not match the selected generation")
 	}
-	if request.ExternalWorker && (request.SystemRole != "worker" || configuration.Manifest.Node.Bootstrap == nil || configuration.Manifest.Node.Bootstrap.ControlPlaneEndpoint != request.ControlPlaneEndpoint || request.APIProxyConfig != "") {
-		return InputSelection{}, fmt.Errorf("external worker bootstrap must use the installed external endpoint and direct API access")
+	if request.ExternalWorker {
+		intent := configuration.Manifest.Node.Bootstrap
+		if request.SystemRole != "worker" || intent == nil || request.APIProxyConfig != "" {
+			return InputSelection{}, fmt.Errorf("external worker bootstrap must use the installed external endpoint and direct API access")
+		}
+		installedEndpoint, installedErr := inventory.DecodeHostPort(intent.ControlPlaneEndpoint)
+		requestedEndpoint, requestedErr := inventory.ParseHostPort(request.ControlPlaneEndpoint)
+		if installedErr != nil || requestedErr != nil || !installedEndpoint.Equal(requestedEndpoint) {
+			return InputSelection{}, fmt.Errorf("external worker bootstrap must use the installed external endpoint and direct API access")
+		}
 	}
 	ref := strings.TrimSpace(configuration.Manifest.Node.Kubernetes.Kubeadm.ConfigRef)
 	input := configuration.Kubeadm

@@ -58,6 +58,8 @@ var endpointLiteralAllowlist = []endpointAllowance{
 	{"cmd/katldev/installer.go", "inventory.ManagementPort"},
 	{"cmd/katldev/installer.go", "inventory.InstallerPort"},
 	// Help, error and template text that shows an operator the default.
+	{"internal/katlc/transport/credentials.go", "inventory.ManagementPort"},
+	{"internal/katlc/transport/management_wait.go", "inventory.ManagementPort"},
 	{"cmd/katlc/main.go", "such as tcp://0.0.0.0:9443"},
 	{"cmd/katlctl/install.go", "check the installed system (port 9443)"},
 	{"cmd/katlctl/diagnostics.go", "for example https://192.0.2.10:6443"},

@@ -41,6 +41,7 @@ type Inventory struct {
 	ExternalControlPlane        bool       `json:"externalControlPlane,omitempty"`
 	ControlPlaneEndpoint        HostPort   `json:"controlPlaneEndpoint" yaml:"controlPlaneEndpoint"`
 	ControlPlaneEndpointManaged bool       `json:"controlPlaneEndpointManaged,omitempty"`
+	ControlPlaneEndpointDerived bool       `json:"controlPlaneEndpointDerived,omitempty" yaml:"controlPlaneEndpointDerived,omitempty"`
 	KubernetesVersion           string     `json:"kubernetesVersion"`
 	KubernetesBundleSource      string     `json:"kubernetesBundleSource,omitempty"`
 	KubernetesBundleRef         string     `json:"kubernetesBundleRef,omitempty"`
@@ -106,6 +107,7 @@ type Plan struct {
 	InitNode                    string            `json:"initNode"`
 	ControlPlaneEndpoint        HostPort          `json:"controlPlaneEndpoint"`
 	ControlPlaneEndpointManaged bool              `json:"controlPlaneEndpointManaged,omitempty"`
+	ControlPlaneEndpointDerived bool              `json:"controlPlaneEndpointDerived,omitempty" yaml:"controlPlaneEndpointDerived,omitempty"`
 	KubernetesVersion           string            `json:"kubernetesVersion"`
 	KubernetesBundleSource      string            `json:"kubernetesBundleSource,omitempty"`
 	KubernetesBundleRef         string            `json:"kubernetesBundleRef,omitempty"`
@@ -253,6 +255,7 @@ func PlanInventory(request PlanRequest) (Plan, error) {
 		InitNode:                    initNode,
 		ControlPlaneEndpoint:        controlPlaneEndpoint,
 		ControlPlaneEndpointManaged: request.Inventory.ControlPlaneEndpointManaged,
+		ControlPlaneEndpointDerived: request.Inventory.ControlPlaneEndpointDerived,
 		KubernetesVersion:           version,
 		KubernetesBundleSource:      bundleSource,
 		KubernetesBundleRef:         bundleRef,

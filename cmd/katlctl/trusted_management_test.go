@@ -132,7 +132,7 @@ func TestManagementJourney(t *testing.T) {
 					}
 				}
 				kubeData, err := os.ReadFile(kubePath)
-				if err != nil || !bytes.Contains(kubeData, []byte("server: https://127.0.0.1:6443")) {
+				if err != nil || !bytes.Contains(kubeData, []byte("server: https://127.0.0.1:6443")) || !bytes.Contains(kubeData, []byte("tls-server-name: 192.0.2.1")) {
 					t.Fatalf("retrieved kubeconfig endpoint: %s, %v", kubeData, err)
 				}
 				info, err := os.Stat(kubePath)
@@ -158,6 +158,14 @@ func TestManagementJourney(t *testing.T) {
 			}
 			if err := run(context.Background(), []string{"context", "save", "--config", config}, io.Discard, io.Discard); err != nil {
 				t.Fatal(err)
+			}
+			savedKubeconfig := filepath.Join(dir, "saved-kubeconfig")
+			if err := run(context.Background(), []string{"cluster", "kubeconfig", savedKubeconfig}, io.Discard, io.Discard); err != nil {
+				t.Fatal(err)
+			}
+			kubeData, err := os.ReadFile(savedKubeconfig)
+			if err != nil || !bytes.Contains(kubeData, []byte("server: https://127.0.0.1:6443")) || !bytes.Contains(kubeData, []byte("tls-server-name: 192.0.2.1")) {
+				t.Fatalf("retrieved kubeconfig endpoint from saved context: %s, %v", kubeData, err)
 			}
 			saved, err := workstation.Load(contextPath)
 			if err != nil {
