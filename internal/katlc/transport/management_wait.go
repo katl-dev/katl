@@ -50,8 +50,12 @@ func WithManagementProgress(ctx context.Context, w io.Writer) context.Context {
 // also retry a refused connection for at most ManagementReadyWait, reporting
 // progress, and then fail with guidance.
 func ManagementDialOptions(ctx context.Context, node, endpoint string, creds credentials.TransportCredentials) []grpc.DialOption {
+	plaintext := creds.Info().SecurityProtocol == insecure.NewCredentials().Info().SecurityProtocol
+	if observation, ok := ctx.Value(managementObservationKey{}).(*ManagementObservation); ok {
+		creds = &observedCredentials{TransportCredentials: creds, observation: observation, plaintext: plaintext}
+	}
 	options := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
-	if creds.Info().SecurityProtocol == insecure.NewCredentials().Info().SecurityProtocol {
+	if plaintext {
 		options = append(options,
 			grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 				return explainMutualTLSNode(invoker(ctx, method, req, reply, cc, opts...))
@@ -90,14 +94,19 @@ func ManagementDialOptions(ctx context.Context, node, endpoint string, creds cre
 	)
 }
 
+// TLSAtPlaintext reports whether a plaintext call failed the way it does
+// against a TLS listener. A TLS listener closes the connection before sending
+// its HTTP/2 server preface, which gRPC reports only as a generic unavailable
+// error. Any endpoint that accepts TCP and then closes or speaks something
+// other than HTTP/2 produces the same error, so a true result names a likely
+// cause rather than a certainty. Use it only for diagnostics.
+func TLSAtPlaintext(err error) bool {
+	return grpcstatus.Code(err) == codes.Unavailable && strings.Contains(err.Error(), "server preface")
+}
+
 // explainMutualTLSNode maps the failure of a plaintext call to a TLS listener.
-// A TLS listener closes the connection before sending its HTTP/2 server
-// preface, which gRPC reports only as a generic unavailable error. Any
-// endpoint that accepts TCP and then closes or speaks something other than
-// HTTP/2 produces the same error, so the message states a likely cause rather
-// than a certainty.
 func explainMutualTLSNode(err error) error {
-	if grpcstatus.Code(err) == codes.Unavailable && strings.Contains(err.Error(), "server preface") {
+	if TLSAtPlaintext(err) {
 		return fmt.Errorf("node did not answer plaintext gRPC; it likely serves mTLS management. If `katlctl management enable-mtls` moved it to mTLS without finishing, rerun that command; otherwise select its mTLS configuration (--config or --context), or check that management.address and management.authentication match the node and that the address points at the katlc agent on port 9443: %w", err)
 	}
 	return err

@@ -49,8 +49,8 @@ minutes of tests (`laneBudget` in `cmd/katl-vmtest-plan`):
 - **Readdress:** worker re-addressing.
 - **Two-node:** two-node bootstrap, ISO/PXE boot, storage authority, and
   installer disk layouts.
-- **Cluster:** three-node installation, external worker join, and volume
-  binding.
+- **Cluster:** three-node installation, external worker join, volume
+  binding, and moving a trusted-network node to mTLS management.
 - **Config:** configuration apply modes and service security.
 - **Lifecycle:** installation and local handoff, management rotation, and
   update/rollback.

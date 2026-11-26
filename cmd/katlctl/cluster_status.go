@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/spf13/cobra"
 )
@@ -40,6 +41,7 @@ type clusterNodeStatus struct {
 	ControlPlaneEndpoint *controlPlaneEndpointReport    `json:"controlPlaneEndpoint,omitempty"`
 	SystemExtensions     []clusterSystemExtensionStatus `json:"systemExtensions,omitempty"`
 	Volumes              []volumeStatusReport           `json:"volumes,omitempty"`
+	Management           *managementStatusReport        `json:"management,omitempty"`
 }
 
 type clusterSystemExtensionStatus struct {
@@ -118,6 +120,7 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 			result := clusterNodeStatus{Node: node.Name, Role: string(node.SystemRole), Endpoint: node.ManagementEndpoint}
 			requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 			defer cancel()
+			requestCtx, observation := transport.ObserveManagementConnection(requestCtx)
 			requestCtx = withManagementDial(requestCtx, node.Name, topology.Management)
 			conn, err := dialKatlcAgent(requestCtx, node.ManagementEndpoint)
 			if err != nil {
@@ -126,13 +129,12 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 				return
 			}
 			defer conn.Close()
-			status, current, err := readHostState(requestCtx, conn.Client, node.Name)
+			host, status, err := readStatusReport(requestCtx, conn.Client, node.Name, node.ManagementEndpoint, opts.clusterConfig, topology.Management, observation)
 			if err != nil {
 				result.Error = err.Error()
 				report.Nodes[i] = result
 				return
 			}
-			host := newHostStatusReport(node.Name, node.ManagementEndpoint, status, current)
 			result.Reachable = true
 			result.Health = host.Health
 			result.KatlOSVersion = host.KatlOSVersion
@@ -141,6 +143,7 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 			result.Activity = host.Activity
 			result.Kubernetes = host.Kubernetes
 			result.ControlPlaneEndpoint = host.ControlPlaneEndpoint
+			result.Management = host.Management
 			result.Volumes = append(result.Volumes, host.Volumes...)
 			for _, extension := range status.GetSystemExtensions() {
 				result.SystemExtensions = append(result.SystemExtensions, clusterSystemExtensionStatus{
@@ -165,13 +168,14 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 		}
 		w.row()
 	}
-	w.row("NODE", "ROLE", "REACHABLE", "HEALTH", "KUBERNETES", "KATLOS", "GENERATION", "ACTIVITY")
+	w.row("NODE", "ROLE", "REACHABLE", "HEALTH", "KUBERNETES", "KATLOS", "GENERATION", "ACTIVITY", "MANAGEMENT")
 	for _, node := range report.Nodes {
 		reachable := "no"
-		health, kubernetes, version, generation, activity := "-", "-", "-", "-", "-"
+		health, kubernetes, version, generation, activity, management := "-", "-", "-", "-", "-", "-"
 		if node.Reachable {
 			reachable = "yes"
 			health, version, generation, activity = node.Health, node.KatlOSVersion, node.Generation, node.Activity
+			management = node.Management.mode()
 			if node.KatlOSFlavour == "lts" {
 				version += " (lts)"
 			}
@@ -179,7 +183,13 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 				kubernetes = firstNonEmpty(strings.TrimSpace(node.Kubernetes.State), "unknown")
 			}
 		}
-		w.row(node.Node, node.Role, reachable, health, kubernetes, version, generation, activity)
+		w.row(node.Node, node.Role, reachable, health, kubernetes, version, generation, activity, management)
+		if detail := node.Management.detail(); detail != "" {
+			w.row("", "", "", detail)
+		}
+		if node.Management != nil && node.Management.NextStep != "" {
+			w.row("", "", "", node.Management.NextStep)
+		}
 		if node.Error != "" {
 			w.row("", "", "", node.Error)
 		}

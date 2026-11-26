@@ -206,8 +206,8 @@ func planEtcdRemovalState(ctx context.Context, inv inventory.Inventory, targetNa
 	}
 	if member == nil {
 		if allowAbsent {
-			if status.GetHealthyMembers() < status.GetQuorum() {
-				return etcdRemovalPlan{}, fmt.Errorf("etcd has %d healthy members, below quorum %d", status.GetHealthyMembers(), status.GetQuorum())
+			if err := etcdBelowQuorum(status); err != nil {
+				return etcdRemovalPlan{}, err
 			}
 			return etcdRemovalPlan{Coordinator: coordinator, Target: target, Status: status, AlreadyGone: true}, nil
 		}
@@ -219,8 +219,8 @@ func planEtcdRemovalState(ctx context.Context, inv inventory.Inventory, targetNa
 	if member.GetId() == status.GetLocalMemberId() {
 		return etcdRemovalPlan{}, fmt.Errorf("coordinator %s cannot remove its own member; choose another healthy control plane", coordinator.Name)
 	}
-	if status.GetHealthyMembers() < status.GetQuorum() {
-		return etcdRemovalPlan{}, fmt.Errorf("etcd has %d healthy members, below quorum %d", status.GetHealthyMembers(), status.GetQuorum())
+	if err := etcdBelowQuorum(status); err != nil {
+		return etcdRemovalPlan{}, err
 	}
 	healthySurvivors := status.GetHealthyMembers()
 	if member.GetHealthy() {
@@ -397,6 +397,15 @@ func printEtcdStatus(w io.Writer, coordinator string, status *agentapi.EtcdStatu
 	if status.ObservationError != "" {
 		_, err := fmt.Fprintf(w, "Direct etcd observation incomplete: %s\n", status.ObservationError)
 		return err
+	}
+	return nil
+}
+
+// etcdBelowQuorum refuses a change that needs etcd while fewer members are
+// healthy than its quorum.
+func etcdBelowQuorum(status *agentapi.EtcdStatus) error {
+	if status.GetHealthyMembers() < status.GetQuorum() {
+		return fmt.Errorf("etcd has %d healthy members, below quorum %d", status.GetHealthyMembers(), status.GetQuorum())
 	}
 	return nil
 }

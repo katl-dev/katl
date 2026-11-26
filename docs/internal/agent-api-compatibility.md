@@ -82,7 +82,9 @@ and must be confirmed over the credentials it installs. An older agent answers
 both with `Unimplemented`; a client must then stop and say which node needs a
 newer release.
 `NodeStatus.management` reports the installed mode, its authority and any
-recorded trial; an older agent leaves it unset.
+recorded trial; an older agent leaves it unset. Its `node_time` is the node's
+wall clock, which `katlctl management enable-mtls` compares with the
+certificate backdate before it changes any node.
 
 ## Image and persisted-state compatibility
 

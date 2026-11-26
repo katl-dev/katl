@@ -26,6 +26,10 @@ const (
 	APIVersion = "katl.dev/v1alpha1"
 	Kind       = "ManagementIdentity"
 	MaxSize    = 1 << 20
+
+	// CertificateBackdate is how long before issue every certificate becomes
+	// valid, so a node whose clock lags the issuer by less still accepts it.
+	CertificateBackdate = 5 * time.Minute
 )
 
 type CertificateKey struct {
@@ -461,7 +465,7 @@ func generateCA(clusterName string, now time.Time, random io.Reader) (*x509.Cert
 	template := &x509.Certificate{
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: "katl management " + clusterName},
-		NotBefore:             now.Add(-5 * time.Minute),
+		NotBefore:             now.Add(-CertificateBackdate),
 		NotAfter:              now.AddDate(10, 0, 0),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
 		BasicConstraintsValid: true,
@@ -491,7 +495,7 @@ func issueCertificate(ca *x509.Certificate, caKey crypto.Signer, commonName stri
 		SerialNumber:          serial,
 		Subject:               pkix.Name{CommonName: commonName},
 		DNSNames:              dnsNames,
-		NotBefore:             now.Add(-5 * time.Minute),
+		NotBefore:             now.Add(-CertificateBackdate),
 		NotAfter:              ca.NotAfter,
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           usages,

@@ -29,8 +29,13 @@ const (
 	managementTrialRecordVersion = 1
 
 	defaultManagementTrialWindow = 5 * time.Minute
-	minimumManagementTrialWindow = 30 * time.Second
-	maximumManagementTrialWindow = 30 * time.Minute
+)
+
+// A trial window outside these bounds is refused. The workstation checks them
+// too, before it changes anything.
+const (
+	MinimumManagementTrialWindow = 30 * time.Second
+	MaximumManagementTrialWindow = 30 * time.Minute
 )
 
 type ManagementTrialState string
@@ -109,8 +114,8 @@ func BeginManagementTrial(root string, request ManagementTransition, clock Trial
 	if window == 0 {
 		window = defaultManagementTrialWindow
 	}
-	if window < minimumManagementTrialWindow || window > maximumManagementTrialWindow {
-		return ManagementTrial{}, fmt.Errorf("management trial window must be between %s and %s", minimumManagementTrialWindow, maximumManagementTrialWindow)
+	if window < MinimumManagementTrialWindow || window > MaximumManagementTrialWindow {
+		return ManagementTrial{}, fmt.Errorf("management trial window must be between %s and %s", MinimumManagementTrialWindow, MaximumManagementTrialWindow)
 	}
 	dir := filepath.Join(filepath.Clean(root), managementDirectory)
 	unlock, err := lockManagementIdentity(dir)
