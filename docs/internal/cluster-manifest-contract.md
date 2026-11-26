@@ -300,10 +300,10 @@ it. These upstream fields do not gain duplicate typed ClusterConfig options.
 Node-specific Kubernetes identity and kubelet policy remain the bounded typed
 exceptions described above.
 
-Changing `nodes[].kubernetes.address` on an already installed node is a
-node-identity migration. Normal config apply keeps the requested field visible
-but refuses the change with a kubeadm-aware operation requirement; set the
-address in the ClusterConfig used for installation.
+Changing an installed node's effective Kubernetes address requires a wipe,
+reinstall, and node join. Config apply compares the explicit address when set
+and otherwise uses the node address recorded at install, so adding the same
+address explicitly leaves the node unchanged.
 
 `install.systemDisk` is consumed by installation. `storage.volumes` remains
 persistent node intent and is reconciled by supported configuration workflows.

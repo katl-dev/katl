@@ -233,27 +233,45 @@ func TestControlPlaneEndpointApplyClassification(t *testing.T) {
 	}
 }
 
-func TestKubernetesAddressApplyClassification(t *testing.T) {
-	current := baseManifest()
-	desired := current.Node.Kubernetes
-	desired.Address = "10.254.1.1"
-	request := trustedBundleRequest(t.TempDir(), TrustedBundleRequest{
-		ApplyMode:       generation.ApplyModeAuto,
-		CurrentManifest: current,
-		NodeOverrides: map[string]NodeOverlay{
-			"cp-1": {Kubernetes: &desired},
-		},
-	})
-	_, changes, _, err := mergeRuntimeConfig(request)
-	if err != nil {
-		t.Fatalf("mergeRuntimeConfig() error = %v", err)
-	}
-	if len(changes) != 1 || changes[0].Domain != DomainKubeletNodeIdentity {
-		t.Fatalf("changes = %#v, want %q", changes, DomainKubeletNodeIdentity)
-	}
-	decision, err := Plan(request.ApplyMode, changes)
-	if err == nil || len(decision.Diagnostics) != 1 || decision.Diagnostics[0].RequiredOperation != "wipe, reinstall, and node join" {
-		t.Fatalf("Plan() error = %v, decision = %#v", err, decision)
+func TestKubernetesAddressApply(t *testing.T) {
+	const installedAddress = "10.254.1.1"
+	for _, tc := range []struct {
+		name, current, desired string
+		rejected               bool
+	}{
+		{name: "add current address", desired: installedAddress},
+		{name: "add different address", desired: "10.254.1.2", rejected: true},
+		{name: "leave address unset"},
+		{name: "remove current address", current: installedAddress},
+		{name: "normalize mapped address", current: "::ffff:10.254.1.1", desired: installedAddress},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			current := baseManifest()
+			current.Node.Bootstrap = &manifest.BootstrapIntent{NodeAddress: installedAddress + ":9443"}
+			current.Node.Kubernetes.Address = tc.current
+			desired := current.Node.Kubernetes
+			desired.Address = tc.desired
+			request := trustedBundleRequest(t.TempDir(), TrustedBundleRequest{
+				ApplyMode:         generation.ApplyModeAuto,
+				CurrentManifest:   current,
+				KubeletRegistered: true,
+				NodeOverrides:     map[string]NodeOverlay{"cp-1": {Kubernetes: &desired}},
+			})
+
+			result, err := PlanTrustedBundle(request)
+			if !tc.rejected {
+				if !errors.Is(err, ErrNoChanges) {
+					t.Fatalf("PlanTrustedBundle() error = %v, want ErrNoChanges", err)
+				}
+				return
+			}
+			diagnostics := result.Plan.Decision.Diagnostics
+			if err == nil || len(diagnostics) != 1 ||
+				diagnostics[0].Domain != DomainKubeletNodeIdentity ||
+				diagnostics[0].RequiredOperation != "wipe, reinstall, and node join" {
+				t.Fatalf("PlanTrustedBundle() error = %v, diagnostics = %#v, want kubelet identity rejection with wipe guidance", err, diagnostics)
+			}
+		})
 	}
 }
 
@@ -1433,25 +1451,5 @@ func TestExternalEndpointChange(t *testing.T) {
 	request.ClusterDefaults.ExternalEndpoint = &desired
 	if _, err := PlanTrustedBundle(request); err == nil || !strings.Contains(err.Error(), "reprovisioning") {
 		t.Fatalf("endpoint change error=%v", err)
-	}
-}
-
-// A manifest installed with a v4-mapped kubernetes.address names the same
-// address that the unmapped form does, so re-applying it changes nothing.
-func TestKubernetesAddressSameAddressIsUnchanged(t *testing.T) {
-	current := baseManifest()
-	current.Node.Kubernetes.Address = "::ffff:10.254.1.1"
-	desired := current.Node.Kubernetes
-	desired.Address = "10.254.1.1"
-	request := trustedBundleRequest(t.TempDir(), TrustedBundleRequest{
-		ApplyMode:       generation.ApplyModeAuto,
-		CurrentManifest: current,
-		NodeOverrides: map[string]NodeOverlay{
-			"cp-1": {Kubernetes: &desired},
-		},
-	})
-
-	if _, changes, _, err := mergeRuntimeConfig(request); !errors.Is(err, ErrNoChanges) {
-		t.Fatalf("mergeRuntimeConfig() changes = %#v, error = %v, want ErrNoChanges", changes, err)
 	}
 }
