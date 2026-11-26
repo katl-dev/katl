@@ -150,6 +150,65 @@ it invokes this wrapper itself. For enabled VM tests, use
 [`vmtest-run`](#vmtest-run) directly because fixture staging still needs
 `sudo`. [Sudo-free staging work](https://github.com/katl-dev/katl/issues/764)
 
+## `katl-dev-evidence`
+
+Use `katl-dev-evidence` from the development shell to manage evidence
+that needs to survive the worktree or session. The store is
+`~/.local/state/katl-dev/evidence`, with `~` taken from your passwd
+entry. The store path must use real directories at every level.
+
+Create an entry and copy retained files to the printed path.
+
+```sh
+entry=$(katl-dev-evidence new 822/ci-logs)
+cp -- downloaded-ci.log "$entry/"
+katl-dev-evidence list
+```
+
+`list` reports each entry's logical file size, age since the entry
+directory was last modified, and owner. To keep an entry
+past the normal 14-day age limit, use
+`katl-dev-evidence keep 822/ci-logs --until YYYY-MM-DD` with the date
+you need. The pin lasts through that date in local time. `keep` moves
+the entry and prints its new path, so update any consumers of the old
+path. You can refer to an entry by its stable `owner/name` ID or by
+its current absolute path.
+
+When you finish with an entry, run `katl-dev-evidence release 822/ci-logs`.
+Use `katl-dev-evidence prune` to trim the store to its default budget of
+50 GiB, or supply a separate target with `--budget 20GiB`. Pruning counts
+pinned data toward the budget and removes unpinned entries oldest first.
+If the store is over its default budget, `new` directs you to release
+evidence before allocating another entry.
+
+`release` and `prune` report mounted directories and leave their contents alone. If
+an expired pin's original path has been recreated, `prune` reports both
+paths and continues processing other entries. Use the reported absolute paths
+to identify each copy.
+
+### Configure automatic cleanup
+
+Enable `programs.katl-dev.enable` and run `home-manager switch` to configure
+the private evidence store. The module's user tmpfiles rules and the evidence
+tool both use `~/.local/state/katl-dev/evidence` under the passwd home,
+whatever `XDG_STATE_HOME` is set to. The rules expire evidence after 14 days
+based on file and directory modification times and exclude the `.pinned`
+subtree.
+When copying a tree of older evidence into a new entry, use
+`cp -R --reflink=auto` so the copy starts with fresh timestamps.
+
+The module runs `katl-dev-evidence prune` before periodic user tmpfiles
+cleanup. Pruning returns expired pins to the ordinary tree even when the
+store is below budget. Age-based cleanup proceeds if pruning fails.
+
+To let Claude clean up evidence without a permission prompt, the maintainer
+adds these recommended Bash allow rules.
+
+- `Bash(katl-dev-evidence release:*)`
+- `Bash(katl-dev-evidence prune:*)`
+
+[tmpfiles.d reference](https://www.freedesktop.org/software/systemd/man/latest/tmpfiles.d.html)
+
 ## `vmtest-run`
 
 Run enabled installer, installed-runtime, and Kubernetes scenarios through
@@ -222,6 +281,9 @@ scenario, `preserved-vm-debug.txt`, when present, gives the retained
 domain, serial log, console and cleanup commands. Use a narrow scenario
 with `--debug-on-failure` while debugging, then use
 [`vmtest-clean`](#vmtest-clean) to remove retained state.
+If evidence must outlive that cleanup, create an entry with
+[`katl-dev-evidence new`](#katl-dev-evidence) and copy the needed files
+to the returned path before cleaning the run.
 
 ### Capable-host gates
 

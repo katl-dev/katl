@@ -8,6 +8,10 @@
 let
   cfg = config.programs.katl-dev;
   queue = katl.packages.${pkgs.stdenv.hostPlatform.system}.katl-queue;
+  evidence = katl.packages.${pkgs.stdenv.hostPlatform.system}.katl-dev-evidence;
+  # katl-dev-evidence resolves its store under the passwd home, not
+  # XDG_STATE_HOME, so the cleanup rules name that path rather than %S.
+  evidenceDir = "${config.home.homeDirectory}/.local/state/katl-dev/evidence";
   # cgroupfs places rootless Podman's cgroups for containers and VM worlds
   # beneath the delegated scope so the development slice accounts for them.
   containersConf = pkgs.writeText "katl-dev-containers.conf" ''
@@ -54,6 +58,16 @@ in
     })
     (lib.mkIf cfg.enable {
       home.packages = devToolsFor pkgs;
+    })
+    (lib.mkIf (cfg.enable && pkgs.stdenv.hostPlatform.isLinux) {
+      systemd.user.tmpfiles.rules = [
+        "d ${evidenceDir} 0700 - - mM:14d -"
+        "x ${evidenceDir}/.pinned - - - - -"
+      ];
+      xdg.configFile."systemd/user/systemd-tmpfiles-clean.service.d/katl-dev-evidence.conf".text = ''
+        [Service]
+        ExecStartPre=-${lib.getExe evidence} prune
+      '';
     })
     (lib.mkIf cfg.watcher.enable {
       systemd.user.sockets.katl-queue-watch = {

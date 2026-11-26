@@ -68,6 +68,14 @@
           '';
           meta.mainProgram = "katl-queue";
         };
+      katlDevEvidencePackageFor =
+        pkgs:
+        buildKatlGo pkgs {
+          pname = "katl-dev-evidence";
+          env.CGO_ENABLED = "1";
+          subPackages = [ "cmd/katl-dev-evidence" ];
+          meta.mainProgram = "katl-dev-evidence";
+        };
       katlctlFor =
         pkgs:
         pkgs.writeShellScriptBin "katlctl" ''
@@ -110,6 +118,7 @@
         [
           (katlctlFor pkgs)
           (katldevFor pkgs)
+          (katlDevEvidencePackageFor pkgs)
           (gitCommitWrappedFor pkgs)
         ]
         ++ map (repoScriptFor pkgs) [
@@ -203,11 +212,15 @@
           {
             inherit katlctl;
             katl-queue = katlQueuePackageFor pkgs;
+            katl-dev-evidence = katlDevEvidencePackageFor pkgs;
             default = katlctl;
           }
         )
         // {
-          aarch64-linux.katl-queue = katlQueuePackageFor (pkgsFor "aarch64-linux");
+          aarch64-linux = {
+            katl-queue = katlQueuePackageFor (pkgsFor "aarch64-linux");
+            katl-dev-evidence = katlDevEvidencePackageFor (pkgsFor "aarch64-linux");
+          };
         };
       homeManagerModules.katl-dev = import ./contrib/home-manager/katl-dev.nix {
         katl = self;

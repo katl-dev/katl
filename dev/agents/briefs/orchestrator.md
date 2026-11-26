@@ -15,6 +15,9 @@ worktrees. Use Nix with `--option builders ''` and authenticated HTTPS for
 GitHub pushes. Follow AGENTS.md for worktree and VM cleanup, test isolation,
 and PR updates. Carry forward only the queue authority granted for this
 goal and follow the [permission denial rule](../README.md#permission-denials).
+Keep the session scratchpad for small, transient files. Use the
+[evidence store](../README.md#retain-investigation-evidence) for retained
+evidence over about 100 MB.
 
 **Priorities.** Clear release blockers and validate outstanding journeys.
 Follow the [release lifecycle](../README.md#release-lifecycle) at the branch cut.
