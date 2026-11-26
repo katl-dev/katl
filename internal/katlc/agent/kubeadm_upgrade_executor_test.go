@@ -150,7 +150,7 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("candidate depends on configuration ancestry: %v", err)
 	}
-	if got := string(configuration.KubeadmConfigs["default"].Config.Content); got != "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n" {
+	if got := string(configuration.Kubeadm.Plan().Config.Content); got != "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n" {
 		t.Fatalf("candidate lost desired kubeadm input: %s", got)
 	}
 }
@@ -1050,7 +1050,7 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 	configuration := validVolumeStatusManifest()
 	configuration.Node.Kubernetes.Kubeadm.ConfigRef = "default"
 	if err := configapply.WriteGenerationConfiguration(root, previous.GenerationID, configapply.GenerationConfiguration{
-		Manifest: configuration, KubeadmConfigs: bootstrapRuntimeKubeadmConfigs("control-plane"),
+		Manifest: configuration, Kubeadm: testNodeInput(t, bootstrapRuntimeKubeadmConfigs("control-plane")["default"]),
 	}); err != nil {
 		t.Fatal(err)
 	}

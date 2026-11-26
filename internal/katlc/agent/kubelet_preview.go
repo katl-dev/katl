@@ -21,7 +21,7 @@ func validateSharedKubeletBase(root string, request *operation.KubeadmControlPla
 		return fmt.Errorf("read selected shared kubelet base: %w", err)
 	}
 	ref := configuration.Manifest.Node.Kubernetes.Kubeadm.ConfigRef
-	plan, ok := configuration.KubeadmConfigs[ref]
+	plan, ok := configuration.Kubeadm.Plan(), ref != "" && configuration.Kubeadm.Name() == ref
 	if !ok || ref != request.ConfigName || plan.Config.RenderPath != request.ConfigPath {
 		return fmt.Errorf("selected generation does not own the requested shared kubelet base")
 	}

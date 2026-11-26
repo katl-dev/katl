@@ -1148,7 +1148,7 @@ func defaultKubeadmConfigs(kubernetesVersion string) (map[string]kubeadmconfig.P
 			return nil, err
 		}
 		plan, err := kubeadmconfig.PlanFromRenderedFiles(role.name, []kubeadmconfig.File{{
-			RenderPath: "/etc/katl/kubeadm/" + role.name + "/config.yaml",
+			RenderPath: kubeadmconfig.ConfigPath(role.name),
 			Content:    content,
 			Mode:       0o644,
 		}})
@@ -1311,14 +1311,15 @@ func addNodeKubeadmInputs(members *[]member, descriptors *[]Descriptor, node clu
 	if ref == "" {
 		return nil, nil
 	}
-	plan, err := nodeKubeadmConfig(node, configs)
+	input, err := nodeKubeadmConfig(node, configs)
 	if err != nil {
 		return nil, err
 	}
+	plan := input.Plan()
 	var out []Descriptor
 	files := append([]kubeadmconfig.File{plan.Config}, plan.Patches...)
 	for _, file := range files {
-		rel := strings.TrimPrefix(strings.TrimPrefix(filepath.ToSlash(file.RenderPath), "/etc/katl/kubeadm/"+ref+"/"), "/")
+		rel := strings.TrimPrefix(strings.TrimPrefix(filepath.ToSlash(file.RenderPath), kubeadmconfig.InputDir(ref)+"/"), "/")
 		desc := addBytes(members, descriptors, "kubeadm-input", node.Name, "application/vnd.katl.kubeadm.input.v1+yaml", "nodes/"+node.Name+"/kubernetes/kubeadm/"+rel, file.Content, map[string]string{
 			"dev.katl.kubeadm.resolved-id":         ref,
 			"dev.katl.kubeadm.intent":              string(node.KubeadmConfig.Intent),
@@ -1638,18 +1639,15 @@ func (source SourceConfig) ManagementAuthentication() (managementidentity.Authen
 // generations store: the shared config with the node's registration. Every
 // workstation path that renders node configuration must use it, so an
 // unedited config compares equal to the input a node already holds.
-func nodeKubeadmConfig(node clusterplan.NodeMaterial, configs map[string]kubeadmconfig.Plan) (kubeadmconfig.Plan, error) {
+func nodeKubeadmConfig(node clusterplan.NodeMaterial, configs map[string]kubeadmconfig.Plan) (kubeadmconfig.NodeInput, error) {
 	ref := strings.TrimSpace(node.KubeadmConfig.Ref)
 	plan, ok := configs[ref]
 	if !ok {
-		return kubeadmconfig.Plan{}, fmt.Errorf("node %s kubeadm config %q was not resolved", node.Name, ref)
+		return kubeadmconfig.NodeInput{}, fmt.Errorf("node %s kubeadm config %q was not resolved", node.Name, ref)
 	}
-	if node.InstallManifest.Node.Kubernetes.External {
-		return plan, nil
-	}
-	plan, err := kubeadmconfig.WithNodeRegistration(plan, kubeadmconfig.RegistrationFor(node.InstallManifest.Node))
+	input, err := kubeadmconfig.ForNode(plan, node.InstallManifest.Node)
 	if err != nil {
-		return kubeadmconfig.Plan{}, fmt.Errorf("node %s kubeadm config %q: %w", node.Name, ref, err)
+		return kubeadmconfig.NodeInput{}, fmt.Errorf("node %s kubeadm config %q: %w", node.Name, ref, err)
 	}
-	return plan, nil
+	return input, nil
 }

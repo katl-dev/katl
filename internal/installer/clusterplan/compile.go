@@ -341,12 +341,18 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 	}
 	kubeadmConfig := inventory.KubeadmConfig{}
 	var kubeadmPlan *kubeadmconfig.Plan
+	var kubeadmInput kubeadmconfig.NodeInput
 	if kubeadmRef != "" {
 		configPlan, ok := kubeadmConfigs[kubeadmRef]
 		if !ok {
 			return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q kubeadm config ref %q was not resolved", name, kubeadmRef)
 		}
 		kubeadmPlan = &configPlan
+		var err error
+		kubeadmInput, err = kubeadmconfig.ForNode(configPlan, installManifest.Node)
+		if err != nil {
+			return NodeMaterial{}, inventory.Node{}, fmt.Errorf("node %q kubeadm config %q: %w", name, kubeadmRef, err)
+		}
 		kubeadmConfig = inventory.KubeadmConfig{
 			Ref:              kubeadmRef,
 			Path:             configPlan.Config.RenderPath,
@@ -356,7 +362,7 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 	}
 	nativeEtcFiles, err := configdomain.NativeEtcFiles(configdomain.RenderRequest{
 		Manifest:                 installManifest,
-		KubeadmConfigs:           kubeadmConfigs,
+		Kubeadm:                  kubeadmInput,
 		KubernetesVersion:        kubernetes.version,
 		KubernetesActivationPath: kubernetes.activationPath,
 		DeferKubeadmInputs:       true,

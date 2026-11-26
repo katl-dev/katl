@@ -100,7 +100,7 @@ func resolveNodeKubeletConfigs(sourceRoot string, source SourceConfig, base map[
 			}
 			ref := nodeKubeadmConfigRef(node.Name)
 			content = append([]byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\nnodeRegistration:\n  criSocket: unix:///run/containerd/containerd.sock\n---\n"), content...)
-			plan, err := kubeadmconfig.PlanFromRenderedFiles(ref, []kubeadmconfig.File{{SourcePath: configFile, RenderPath: "/etc/katl/kubeadm/" + ref + "/config.yaml", Content: content, Mode: 0o644}})
+			plan, err := kubeadmconfig.PlanFromRenderedFiles(ref, []kubeadmconfig.File{{SourcePath: configFile, RenderPath: kubeadmconfig.ConfigPath(ref), Content: content, Mode: 0o644}})
 			if err != nil {
 				return nil, nil, fmt.Errorf("%s: %w", field, err)
 			}
@@ -178,7 +178,7 @@ func kubeadmPlanWithNodeKubeletConfig(base kubeadmconfig.Plan, name, sourcePath 
 	}
 	files := []kubeadmconfig.File{{
 		SourcePath: base.Config.SourcePath,
-		RenderPath: "/etc/katl/kubeadm/" + name + "/config.yaml",
+		RenderPath: kubeadmconfig.ConfigPath(name),
 		Content:    content,
 		Mode:       0o644,
 	}}
@@ -188,14 +188,14 @@ func kubeadmPlanWithNodeKubeletConfig(base kubeadmconfig.Plan, name, sourcePath 
 			return kubeadmconfig.Plan{}, err
 		}
 		copy := existing
-		copy.RenderPath = "/etc/katl/kubeadm/" + name + "/patches/00-native/" + rel
+		copy.RenderPath = kubeadmconfig.PatchesDir(name) + "/00-native/" + rel
 		files = append(files, copy)
 	}
 	// Kubeadm walks patch directories in lexical order. Separate groups retain
 	// the operator's native ordering and apply the explicit node overlay last.
 	files = append(files, kubeadmconfig.File{
 		SourcePath: sourcePath,
-		RenderPath: "/etc/katl/kubeadm/" + name + "/patches/10-node/kubeletconfiguration+merge.yaml",
+		RenderPath: kubeadmconfig.PatchesDir(name) + "/10-node/kubeletconfiguration+merge.yaml",
 		Content:    patch,
 		Mode:       0o644,
 	})
@@ -284,7 +284,7 @@ func splitKubeadmPlans(input kubeadmconfig.Plan, kubernetesVersion string) (map[
 		}
 		files := []kubeadmconfig.File{{
 			SourcePath: input.Config.SourcePath,
-			RenderPath: "/etc/katl/kubeadm/" + role.name + "/config.yaml",
+			RenderPath: kubeadmconfig.ConfigPath(role.name),
 			Content:    content,
 			Mode:       0o644,
 		}}
@@ -412,7 +412,7 @@ func encodeKubeadmDocuments(documents []map[string]any, role string, hasPatches 
 				continue
 			}
 			patches := childMapping(document, "patches")
-			patches["directory"] = "/etc/katl/kubeadm/" + role + "/patches"
+			patches["directory"] = kubeadmconfig.PatchesDir(role)
 			document["patches"] = patches
 		}
 	}
@@ -459,7 +459,7 @@ func childMapping(parent map[string]any, key string) map[string]any {
 }
 
 func rolePatches(input kubeadmconfig.Plan, role string) []kubeadmconfig.File {
-	base := "/etc/katl/kubeadm/" + input.Name + "/patches/"
+	base := kubeadmconfig.PatchesDir(input.Name) + "/"
 	out := make([]kubeadmconfig.File, 0, len(input.Patches))
 	for _, patch := range input.Patches {
 		rel := strings.TrimPrefix(filepath.ToSlash(patch.RenderPath), base)
@@ -467,7 +467,7 @@ func rolePatches(input kubeadmconfig.Plan, role string) []kubeadmconfig.File {
 			continue
 		}
 		copy := patch
-		copy.RenderPath = "/etc/katl/kubeadm/" + role + "/patches/" + rel
+		copy.RenderPath = kubeadmconfig.PatchesDir(role) + "/" + rel
 		out = append(out, copy)
 	}
 	return out

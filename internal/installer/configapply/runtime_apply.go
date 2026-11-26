@@ -63,6 +63,10 @@ type TrustedBundleRequest struct {
 	SkipVolumeRendering             bool
 	Chown                           func(path string, uid int, gid int) error
 	Now                             func() time.Time
+
+	// inlineKubeadmRefs names the KubeadmConfigs entries the request carried
+	// inline, as opposed to installed input it inherited.
+	inlineKubeadmRefs map[string]struct{}
 }
 
 type NodeOverlay struct {
@@ -204,9 +208,15 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		return TrustedBundleResult{}, fmt.Errorf("prepare selected module indexes: %w", err)
 	}
 	defer indexes.Close()
+	kubeadm, err := request.nodeKubeadmInput(merged)
+	if err != nil {
+		audit := request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
+		auditPath, auditErr := writeAudit(request.Root, sourceID, desiredVersion, audit)
+		return TrustedBundleResult{Manifest: merged, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
+	}
 	files, err := configdomain.NativeEtcFiles(configdomain.RenderRequest{
 		Manifest:                 merged,
-		KubeadmConfigs:           request.KubeadmConfigs,
+		Kubeadm:                  kubeadm,
 		KubernetesVersion:        runtimeKubernetesPayloadVersion(request),
 		KubernetesActivationPath: runtimeKubernetesActivationPath(request),
 	})
@@ -261,7 +271,7 @@ func ApplyTrustedBundle(ctx context.Context, request TrustedBundleRequest) (Trus
 		return TrustedBundleResult{Manifest: merged, Files: files, Tree: tree, Audit: audit, AuditPath: auditPath}, joinAuditError(err, auditErr)
 	}
 	if err := WriteGenerationConfiguration(request.Root, request.GenerationID, GenerationConfiguration{
-		Manifest: merged, KubeadmConfigs: request.KubeadmConfigs,
+		Manifest: merged, Kubeadm: kubeadm,
 	}); err != nil {
 		audit = request.audit(sourceID, desiredVersion, "", changes, nil, err, now)
 		audit.CandidateGeneration = request.GenerationID
@@ -488,7 +498,15 @@ func PlanTrustedBundle(request TrustedBundleRequest) (TrustedBundleResult, error
 	}
 	merged, changes, unsafeFiles, err := mergeRuntimeConfig(request)
 	if err != nil {
-		return TrustedBundleResult{Manifest: merged}, err
+		result := TrustedBundleResult{Manifest: merged}
+		if errors.Is(err, ErrNoChanges) {
+			// A registration-only inline edit changes no domain, so the warning
+			// has to travel with the no-change result.
+			if warning, warnErr := request.replacedRegistrationWarning(merged); warnErr == nil && warning != "" {
+				result.Plan.Decision.Warnings = []string{warning}
+			}
+		}
+		return result, err
 	}
 	if err := manifest.Validate(merged); err != nil {
 		return TrustedBundleResult{Manifest: merged}, err
@@ -503,9 +521,20 @@ func PlanTrustedBundle(request TrustedBundleRequest) (TrustedBundleResult, error
 			Plan:     Result{Decision: matrixDecision},
 		}, err
 	}
+	kubeadm, err := request.nodeKubeadmInput(merged)
+	if err != nil {
+		return TrustedBundleResult{Manifest: merged}, err
+	}
+	registrationWarning, err := request.replacedRegistrationWarning(merged)
+	if err != nil {
+		return TrustedBundleResult{Manifest: merged}, err
+	}
+	if registrationWarning != "" && !slices.Contains(matrixDecision.Warnings, registrationWarning) {
+		matrixDecision.Warnings = append(matrixDecision.Warnings, registrationWarning)
+	}
 	files, err := configdomain.NativeEtcFiles(configdomain.RenderRequest{
 		Manifest:                 merged,
-		KubeadmConfigs:           request.KubeadmConfigs,
+		Kubeadm:                  kubeadm,
 		KubernetesVersion:        runtimeKubernetesPayloadVersion(request),
 		KubernetesActivationPath: runtimeKubernetesActivationPath(request),
 	})
@@ -1387,6 +1416,42 @@ func requestDigest(request TrustedBundleRequest) string {
 	})
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
+}
+
+// nodeKubeadmInput returns the kubeadm input the node holds under the merged
+// configuration, the form its generation stores whatever form the request
+// carries. Inline input that sets registration fields Katl owns has them
+// replaced rather than rejected; planning warns about the replaced values.
+func (request TrustedBundleRequest) nodeKubeadmInput(merged manifest.Manifest) (kubeadmconfig.NodeInput, error) {
+	ref := strings.TrimSpace(merged.Node.Kubernetes.Kubeadm.ConfigRef)
+	if ref == "" {
+		return kubeadmconfig.NodeInput{}, nil
+	}
+	plan, ok := request.KubeadmConfigs[ref]
+	if !ok {
+		return kubeadmconfig.NodeInput{}, fmt.Errorf("node.kubernetes.kubeadm.configRef %q was not resolved", ref)
+	}
+	return kubeadmconfig.ForNode(plan, merged.Node)
+}
+
+// replacedRegistrationWarning returns the warning for inline kubeadm input
+// that sets registration fields Katl replaces, or "" when it sets none.
+// Installed input the request did not carry is already registered for the
+// node, so only inline input is checked.
+func (request TrustedBundleRequest) replacedRegistrationWarning(merged manifest.Manifest) (string, error) {
+	ref := strings.TrimSpace(merged.Node.Kubernetes.Kubeadm.ConfigRef)
+	if _, inline := request.inlineKubeadmRefs[ref]; !inline {
+		return "", nil
+	}
+	plan, ok := request.KubeadmConfigs[ref]
+	if !ok {
+		return "", nil
+	}
+	replaced, err := kubeadmconfig.ReplacedRegistration(plan, merged.Node)
+	if err != nil || len(replaced) == 0 {
+		return "", err
+	}
+	return fmt.Sprintf("kubeadm config %q sets %s; Katl sets these from the node's configuration and replaces the inline values. Remove them from the inline kubeadm config.", ref, strings.Join(replaced, ", ")), nil
 }
 
 func (request TrustedBundleRequest) now() time.Time {

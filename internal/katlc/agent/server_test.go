@@ -2198,7 +2198,7 @@ func TestConfigApplyBasePrefersDesiredKubeadmInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := configapply.WriteGenerationKubeadmConfig(root, "generation-0", ref, plan); err != nil {
+	if err := configapply.WriteGenerationKubeadmConfig(root, "generation-0", testNodeInput(t, plan)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -4293,5 +4293,76 @@ func TestApplyGenerationRefusedBeforeActivationAbandonsCandidate(t *testing.T) {
 	}
 	if err := server.validateCandidateGenerationAvailable("generation-next"); err != nil {
 		t.Fatalf("next apply is blocked: %v", err)
+	}
+}
+
+func TestValidateConfigWarnsOfReplacedRegistrationWithoutChange(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	configuration, err := configapply.ReadGenerationConfiguration(server.Root, "generation-0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration.Manifest.Node.Kubernetes.Address = "10.0.0.21"
+	configuration.Manifest.Node.Kubernetes.Kubeadm.ConfigRef = "control-plane"
+	plan, err := kubeadmconfig.PlanFromRenderedFiles("control-plane", []kubeadmconfig.File{{
+		RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml",
+		Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nkubernetesVersion: v1.35.0\n"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configuration.Kubeadm, err = kubeadmconfig.ForNode(plan, configuration.Manifest.Node); err != nil {
+		t.Fatal(err)
+	}
+	if err := configapply.WriteGenerationConfiguration(server.Root, "generation-0", configuration); err != nil {
+		t.Fatal(err)
+	}
+
+	// Only the node-ip, which Katl owns, differs from the installed input.
+	result, err := server.ValidateConfig(context.Background(), &agentapi.ValidateConfigRequest{
+		ApiVersion:            APIVersion,
+		Kind:                  "ValidateConfigRequest",
+		ClientRequestId:       "req-registration-warning",
+		Actor:                 "test-actor",
+		ApplyMode:             generation.ApplyModeAuto,
+		CandidateGenerationId: "generation-registration-warning",
+		ConfigYaml: strings.Join([]string{
+			"apiVersion: katl.dev/v1alpha1",
+			"kind: NodeConfigurationChange",
+			"metadata:",
+			"  sourceID: operator",
+			"  desiredVersion: \"4\"",
+			"apply:",
+			"  mode: auto",
+			"spec:",
+			"  kubeadmConfigs:",
+			"    control-plane:",
+			"      config: |",
+			"        apiVersion: kubeadm.k8s.io/v1beta4",
+			"        kind: InitConfiguration",
+			"        nodeRegistration:",
+			"          kubeletExtraArgs:",
+			"            - name: node-ip",
+			"              value: 10.9.9.9",
+			"        ---",
+			"        apiVersion: kubeadm.k8s.io/v1beta4",
+			"        kind: ClusterConfiguration",
+			"        kubernetesVersion: v1.35.0",
+			"",
+		}, "\n"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !result.GetAccepted() || !result.GetNoChanges() {
+		t.Fatalf("validation result = %+v, want accepted no-op", result)
+	}
+	if len(result.GetDiagnostics()) != 0 {
+		t.Fatalf("diagnostics = %q, want none on a no-change result", result.GetDiagnostics())
+	}
+	if len(result.GetWarnings()) != 1 || !strings.Contains(result.GetWarnings()[0], "node-ip") {
+		t.Fatalf("warnings = %q, want one naming node-ip", result.GetWarnings())
 	}
 }

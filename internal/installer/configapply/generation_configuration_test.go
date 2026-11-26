@@ -24,8 +24,8 @@ func TestGenerationConfigurationMaterializesInheritedInputs(t *testing.T) {
 	desired := manifestWithKubeadm()
 	desired.Node.HostConfiguration = hostSysctlConfiguration("1")
 	if err := WriteGenerationConfiguration(root, "configured", GenerationConfiguration{
-		Manifest:       desired,
-		KubeadmConfigs: map[string]kubeadmconfig.Plan{"control-plane": configurationKubeadm(t, "desired")},
+		Manifest: desired,
+		Kubeadm:  nodeInput(t, configurationKubeadm(t, "desired")),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestGenerationConfigurationMaterializesInheritedInputs(t *testing.T) {
 	if content := got.Manifest.Node.HostConfiguration.Sets["forwarding"].Files[0].Content; content == nil || *content != "net.ipv4.ip_forward = 1\n" {
 		t.Fatalf("inherited host configuration was lost: %#v", content)
 	}
-	if content := string(got.KubeadmConfigs["control-plane"].Config.Content); !strings.Contains(content, "name: desired\n") {
+	if content := string(got.Kubeadm.Plan().Config.Content); !strings.Contains(content, "name: desired\n") {
 		t.Fatalf("desired kubeadm input was replaced: %s", content)
 	}
 	if _, err := ReadGenerationConfiguration(root, "bootstrap"); err != nil {
@@ -113,7 +113,7 @@ func TestGenerationConfigurationLegacyInputs(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if content := string(got.KubeadmConfigs["control-plane"].Config.Content); !strings.Contains(content, "name: "+source+"\n") {
+			if content := string(got.Kubeadm.Plan().Config.Content); !strings.Contains(content, "name: "+source+"\n") {
 				t.Fatalf("legacy input = %s, want %s", content, source)
 			}
 		})
@@ -130,7 +130,7 @@ func TestGenerationConfigurationOwnsLegacyInput(t *testing.T) {
 			}
 			if ancestor == "canonical" {
 				writeKubeadmStateGeneration(t, root, "ancestor", "")
-				if err := WriteGenerationKubeadmConfig(root, "ancestor", "control-plane", configurationKubeadm(t, "ancestor")); err != nil {
+				if err := WriteGenerationKubeadmConfig(root, "ancestor", nodeInput(t, configurationKubeadm(t, "ancestor"))); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -151,7 +151,7 @@ func TestGenerationConfigurationOwnsLegacyInput(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			input := got.KubeadmConfigs["control-plane"]
+			input := got.Kubeadm.Plan()
 			if !strings.Contains(string(input.Config.Content), "name: selected\n") {
 				t.Fatalf("selected input replaced by ancestor: %s", input.Config.Content)
 			}
@@ -190,7 +190,7 @@ func TestGenerationConfigurationSize(t *testing.T) {
 					Content:    []byte("metadata:\n  annotations:\n    katl.test/example: retained\n"),
 					Mode:       0o600,
 				}}
-				value.KubeadmConfigs = map[string]kubeadmconfig.Plan{"control-plane": plan}
+				value.Kubeadm = nodeInput(t, plan)
 			}
 			root := t.TempDir()
 			size, err := value.SizeBytes()
@@ -240,6 +240,16 @@ func configurationKubeadm(t *testing.T, name string) kubeadmconfig.Plan {
 		t.Fatal(err)
 	}
 	return plan
+}
+
+// nodeInput returns the input of manifestWithKubeadm's node for plan.
+func nodeInput(t *testing.T, plan kubeadmconfig.Plan) kubeadmconfig.NodeInput {
+	t.Helper()
+	input, err := kubeadmconfig.ForNode(plan, manifestWithKubeadm().Node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return input
 }
 
 func writeInstalledConfiguration(t *testing.T, root string, value manifest.Manifest, kubeadmName string) {

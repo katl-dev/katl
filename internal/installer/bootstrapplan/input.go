@@ -2,7 +2,6 @@ package bootstrapplan
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/installer"
@@ -43,11 +42,11 @@ func SelectInput(root, generationID string, installed installer.ClusterIntent, r
 		return InputSelection{}, fmt.Errorf("external worker bootstrap must use the installed external endpoint and direct API access")
 	}
 	ref := strings.TrimSpace(configuration.Manifest.Node.Kubernetes.Kubeadm.ConfigRef)
-	plan, ok := configuration.KubeadmConfigs[ref]
-	if !ok || ref == "" || plan.Name != ref || plan.Config.RenderPath != filepath.Join("/etc/katl/kubeadm", ref, "config.yaml") {
+	input := configuration.Kubeadm
+	if ref == "" || input.Name() != ref {
 		return InputSelection{}, fmt.Errorf("selected generation does not own kubeadm config %q", ref)
 	}
-	role, err := configdomain.KubeadmIntent(plan)
+	role, err := configdomain.KubeadmIntent(input.Plan())
 	if err != nil {
 		return InputSelection{}, fmt.Errorf("read selected kubeadm intent: %w", err)
 	}
@@ -65,21 +64,14 @@ func SelectInput(root, generationID string, installed installer.ClusterIntent, r
 	if !allowed {
 		return InputSelection{}, fmt.Errorf("bootstrapProfileRef %q does not select generation kubeadm config %q", profile, ref)
 	}
-	if !request.ExternalWorker {
-		plan, err = kubeadmconfig.WithNodeRegistration(plan, kubeadmconfig.RegistrationFor(configuration.Manifest.Node))
-		if err != nil {
-			return InputSelection{}, fmt.Errorf("prepare selected bootstrap node address: %w", err)
-		}
-	}
-	digest, err := plan.InputDigest()
+	digest, err := input.InputDigest()
 	if err != nil {
 		return InputSelection{}, err
 	}
 	if expected := strings.TrimSpace(request.KubeadmInputDigest); expected != "" && expected != digest {
 		return InputSelection{}, fmt.Errorf("bootstrapRequest kubeadmInputDigest does not match selected generation input")
 	}
-	configuration.KubeadmConfigs[ref] = plan
 	return InputSelection{Configuration: configuration, Input: KubeadmInput{
-		ConfigRef: ref, Intent: role, Path: plan.Config.RenderPath, Digest: digest,
+		ConfigRef: ref, Intent: role, Path: kubeadmconfig.ConfigPath(ref), Digest: digest,
 	}}, nil
 }

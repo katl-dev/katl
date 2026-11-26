@@ -18,18 +18,18 @@ const (
 	kubeletNodeLabelsArgument = "node-labels"
 )
 
-// NodeRegistration is the node identity and Kubernetes metadata that kubeadm
+// nodeRegistration is the node identity and Kubernetes metadata that kubeadm
 // registers a node with.
-type NodeRegistration struct {
+type nodeRegistration struct {
 	Address string
 	Labels  map[string]string
 	Taints  []manifest.NodeTaint
 }
 
-// RegistrationFor returns the registration declared by a node's desired
+// registrationFor returns the registration declared by a node's desired
 // configuration.
-func RegistrationFor(node manifest.NodeConfig) NodeRegistration {
-	registration := NodeRegistration{Address: node.Kubernetes.Address}
+func registrationFor(node manifest.NodeConfig) nodeRegistration {
+	registration := nodeRegistration{Address: node.Kubernetes.Address}
 	if node.Bootstrap != nil {
 		registration.Labels = node.Bootstrap.Labels
 		registration.Taints = node.Bootstrap.Taints
@@ -37,13 +37,13 @@ func RegistrationFor(node manifest.NodeConfig) NodeRegistration {
 	return registration
 }
 
-// WithNodeRegistration returns a node-specific kubeadm plan. Kubeadm persists
+// withNodeRegistration returns a node-specific kubeadm plan. Kubeadm persists
 // nodeRegistration.kubeletExtraArgs into kubeadm-flags.env, so one source of
 // node identity configures both kubelet and the local API endpoint. Labels and
 // taints take effect only when the Node is first registered: kubelet creates
 // it with its labels, kubeadm join registers it with its taints, and kubeadm
 // init marks the first control plane with them.
-func WithNodeRegistration(plan Plan, registration NodeRegistration) (Plan, error) {
+func withNodeRegistration(plan Plan, registration nodeRegistration) (Plan, error) {
 	address := strings.TrimSpace(registration.Address)
 	if address == "" && len(registration.Labels) == 0 && len(registration.Taints) == 0 {
 		return clonePlan(plan), nil
@@ -91,35 +91,52 @@ func WithNodeRegistration(plan Plan, registration NodeRegistration) (Plan, error
 	return withDocuments(plan, documents, "for node registration")
 }
 
-// WithoutNodeRegistration returns plan without the fields WithNodeRegistration
+// withoutNodeRegistration returns plan without the fields withNodeRegistration
 // owns: node-ip, node-labels, nodeRegistration.taints and advertiseAddress.
 // ClusterConfig validation reserves them for Katl. Kubeadm reads them only when
 // it registers the node, so after registration they describe node identity and
 // metadata, which their own domains plan, rather than kubeadm configuration.
-func WithoutNodeRegistration(plan Plan) (Plan, error) {
+// Inline input that sets them anyway is not rejected; ForNode replaces them
+// and ReplacedRegistration reports the values it replaced.
+// preserveTaintDefaults keeps empty lists and restores the empty init list
+// that custom taints replace. The result reports whether registration changed.
+func withoutNodeRegistration(plan Plan, preserveTaintDefaults bool) (Plan, bool, error) {
 	documents, err := decodeDocuments(plan.Config.Content)
 	if err != nil {
-		return Plan{}, fmt.Errorf("decode KubeadmConfig %q without node registration: %w", plan.Name, err)
+		return Plan{}, false, fmt.Errorf("decode KubeadmConfig %q without node registration: %w", plan.Name, err)
 	}
+	removed := false
 	for _, document := range documents {
 		kind, _ := document["kind"].(string)
 		if kind != "InitConfiguration" && kind != "JoinConfiguration" {
 			continue
 		}
-		if nodeRegistration, ok := document["nodeRegistration"].(map[string]any); ok {
-			delete(nodeRegistration, "taints")
-			if extraArgs, ok := nodeRegistration["kubeletExtraArgs"].([]any); ok {
-				nodeRegistration["kubeletExtraArgs"] = slices.DeleteFunc(slices.Clone(extraArgs), func(raw any) bool {
+		if registration, ok := document["nodeRegistration"].(map[string]any); ok {
+			if taints, ok := registration["taints"]; ok && !(preserveTaintDefaults && isEmptySequence(taints)) {
+				if preserveTaintDefaults && kind == "InitConfiguration" {
+					// Omitting the list makes kubeadm add its control-plane taint.
+					registration["taints"] = []any{}
+				} else {
+					delete(registration, "taints")
+				}
+				removed = true
+			}
+			if extraArgs, ok := registration["kubeletExtraArgs"].([]any); ok {
+				kept := slices.DeleteFunc(slices.Clone(extraArgs), func(raw any) bool {
 					argument, _ := raw.(map[string]any)
 					name, _ := argument["name"].(string)
 					name = strings.TrimSpace(name)
 					return name == kubeletNodeIPArgument || name == kubeletNodeLabelsArgument
 				})
-				if len(nodeRegistration["kubeletExtraArgs"].([]any)) == 0 {
-					delete(nodeRegistration, "kubeletExtraArgs")
+				if len(kept) != len(extraArgs) {
+					removed = true
+				}
+				registration["kubeletExtraArgs"] = kept
+				if len(kept) == 0 {
+					delete(registration, "kubeletExtraArgs")
 				}
 			}
-			if len(nodeRegistration) == 0 {
+			if len(registration) == 0 {
 				delete(document, "nodeRegistration")
 			}
 		}
@@ -128,13 +145,22 @@ func WithoutNodeRegistration(plan Plan) (Plan, error) {
 			endpoint, _ = document["controlPlane"].(map[string]any)
 		}
 		if local, ok := endpoint["localAPIEndpoint"].(map[string]any); ok {
-			delete(local, "advertiseAddress")
+			if _, ok := local["advertiseAddress"]; ok {
+				delete(local, "advertiseAddress")
+				removed = true
+			}
 			if len(local) == 0 {
 				delete(endpoint, "localAPIEndpoint")
 			}
 		}
 	}
-	return withDocuments(plan, documents, "without node registration")
+	stripped, err := withDocuments(plan, documents, "without node registration")
+	return stripped, removed, err
+}
+
+func isEmptySequence(value any) bool {
+	sequence, ok := value.([]any)
+	return value == nil || ok && len(sequence) == 0
 }
 
 func withDocuments(plan Plan, documents []map[string]any, purpose string) (Plan, error) {

@@ -158,14 +158,25 @@ func TestPrepareMaterializesCandidateRuntimeWithoutBootDefault(t *testing.T) {
 		t.Fatalf("candidate kernel command line = %q", commandLine)
 	}
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/kubeadm/control-plane/config.yaml"), "InitConfiguration")
-	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/kubeadm/control-plane/config.yaml"), "controlPlaneEndpoint: api.katl.test:6443")
-	desiredKubeadm, sourceGeneration, err := configapply.ReadEffectiveGenerationKubeadmConfig(root, "1", "control-plane")
+	initConfig := filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/bootstrap/kubeadm-init.yaml")
+	for _, want := range []string{"controlPlaneEndpoint: api.katl.test:6443", "- api.katl.test", "- 127.0.0.1", "- wait-control-plane"} {
+		assertContains(t, initConfig, want)
+	}
+	if info, err := os.Stat(initConfig); err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("init config = %v, %v; want mode 0600", info, err)
+	}
+	inputConfig, err := os.ReadFile(filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/kubeadm/control-plane/config.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sourceGeneration != "1" || strings.Contains(string(desiredKubeadm.Config.Content), "controlPlaneEndpoint:") {
-		t.Fatalf("desired kubeadm input = source %q content:\n%s", sourceGeneration, desiredKubeadm.Config.Content)
+	desiredKubeadm, sourceGeneration, err := configapply.ReadEffectiveGenerationKubeadmConfig(root, "1", "control-plane", zeroNode(t, root))
+	if err != nil {
+		t.Fatal(err)
 	}
+	if sourceGeneration != "1" || string(desiredKubeadm.Plan().Config.Content) != string(inputConfig) || strings.Contains(string(inputConfig), "controlPlaneEndpoint:") {
+		t.Fatalf("desired kubeadm input = source %q content:\n%s\nconfext input:\n%s", sourceGeneration, desiredKubeadm.Plan().Config.Content, inputConfig)
+	}
+	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/bootstrap-runtime.json"), `"initConfigPath": "/etc/katl/bootstrap/kubeadm-init.yaml"`)
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/bootstrap-runtime.json"), `"controlPlaneEndpoint": "api.katl.test:6443"`)
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/api-proxy/config.json"), `"canonicalEndpoint": "api.katl.test:6443"`)
 	assertContains(t, filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/api-proxy/config.json"), `"address": "192.0.2.10:6443"`)
@@ -244,7 +255,7 @@ func TestPrepareInitHealthOwnership(t *testing.T) {
 				t.Fatal(err)
 			}
 			renderedDir := filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/kubeadm/control-plane")
-			content, err := os.ReadFile(filepath.Join(renderedDir, "config.yaml"))
+			content, err := os.ReadFile(filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/bootstrap/kubeadm-init.yaml"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -286,7 +297,7 @@ func TestPrepareInitHealthOwnership(t *testing.T) {
 			if initCount != 1 || kubeletCount != 1 {
 				t.Fatalf("rendered %d init documents and %d kubelet documents", initCount, kubeletCount)
 			}
-			for _, path := range []string{filepath.Join(inputDir, "config.yaml"), filepath.Join(root, "var/lib/katl/generations/1/kubeadm-input/control-plane/config.yaml")} {
+			for _, path := range []string{filepath.Join(inputDir, "config.yaml"), filepath.Join(root, "var/lib/katl/generations/1/kubeadm-input/control-plane/config.yaml"), filepath.Join(renderedDir, "config.yaml")} {
 				got, err := os.ReadFile(path)
 				if err != nil || string(got) != source {
 					t.Fatalf("stored source changed at %s: %s, %v", path, got, err)
@@ -306,6 +317,7 @@ func TestPrepareJoinPreservesHealthOwnership(t *testing.T) {
 			root := t.TempDir()
 			plan := preparePlan(t, root)
 			plan.Operation.OperationKind = kind
+			writeFile(t, filepath.Join(root, "var/lib/katl/generations/0/confext/etc/katl/bootstrap/kubeadm-init.yaml"), "inherited from an earlier bootstrap\n")
 			source := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: JoinConfiguration\nskipPhases: [preflight]\n"
 			writeFile(t, filepath.Join(root, "var/lib/katl/cluster/kubeadm/control-plane/config.yaml"), source)
 			plan.RuntimeInputs.KubeadmInput.Digest = storedInputDigest(t, root, plan.RuntimeInputs.KubeadmInput)
@@ -317,6 +329,9 @@ func TestPrepareJoinPreservesHealthOwnership(t *testing.T) {
 			got, err := os.ReadFile(filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/kubeadm/control-plane/config.yaml"))
 			if err != nil || string(got) != source {
 				t.Fatalf("join configuration changed: %s, %v", got, err)
+			}
+			if _, err := os.Lstat(filepath.Join(root, "var/lib/katl/generations/1/confext/etc/katl/bootstrap/kubeadm-init.yaml")); !os.IsNotExist(err) {
+				t.Fatalf("join generation carries an init config: %v", err)
 			}
 		})
 	}
@@ -411,11 +426,14 @@ func TestPreparePreservesConfiguration(t *testing.T) {
 	if err := configapply.WriteGenerationManifest(root, "0", current); err != nil {
 		t.Fatal(err)
 	}
-	oldInput := kubeadmconfig.Plan{Config: kubeadmconfig.File{
+	oldInput, err := kubeadmconfig.PlanFromRenderedFiles("control-plane", []kubeadmconfig.File{{
 		RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml",
 		Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\nnodeRegistration:\n  name: obsolete\n"), Mode: 0o644,
-	}}
-	if err := configapply.WriteGenerationKubeadmConfig(root, "0", "control-plane", oldInput); err != nil {
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeInput(t, root, oldInput); err != nil {
 		t.Fatal(err)
 	}
 	newInput := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\nnodeRegistration:\n  name: cp-1\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n"
@@ -424,7 +442,7 @@ func TestPreparePreservesConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := configapply.WriteGenerationKubeadmConfig(root, "0", "control-plane", desired); err != nil {
+	if err := writeInput(t, root, desired); err != nil {
 		t.Fatal(err)
 	}
 	plan.RuntimeInputs.KubeadmInput.Digest = storedInputDigest(t, root, plan.RuntimeInputs.KubeadmInput)
@@ -442,8 +460,8 @@ func TestPreparePreservesConfiguration(t *testing.T) {
 	if content := got.Manifest.Node.HostConfiguration.Sets["forwarding"].Files[0].Content; content == nil || *content != "net.ipv4.ip_forward = 1\n" {
 		t.Fatalf("bootstrap lost current host configuration: %#v", content)
 	}
-	if got.Manifest.Node.Kubernetes.Kubeadm.ConfigRef != "control-plane" || string(got.KubeadmConfigs["control-plane"].Config.Content) != newInput {
-		t.Fatalf("bootstrap did not retain newly selected desired input: %#v", got.KubeadmConfigs)
+	if got.Manifest.Node.Kubernetes.Kubeadm.ConfigRef != "control-plane" || string(got.Kubeadm.Plan().Config.Content) != newInput {
+		t.Fatalf("bootstrap did not retain newly selected desired input: %#v", got.Kubeadm)
 	}
 }
 
@@ -462,7 +480,7 @@ func TestPrepareReplacesSelectedPatchTree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := configapply.WriteGenerationKubeadmConfig(root, "0", "control-plane", desired); err != nil {
+	if err := writeInput(t, root, desired); err != nil {
 		t.Fatal(err)
 	}
 	plan.RuntimeInputs.KubeadmInput.Digest = storedInputDigest(t, root, plan.RuntimeInputs.KubeadmInput)
@@ -544,7 +562,7 @@ func TestPreparePreservesInstalledOwnership(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			selected := got.KubeadmConfigs["control-plane"]
+			selected := got.Kubeadm.Plan()
 			if !selected.NodeLocalKubelet || !selected.SharedKubeletBase || !strings.Contains(string(selected.Config.Content), "maxPods: 110") || len(selected.Patches) != 1 || string(selected.Patches[0].Content) != "maxPods: 121\n" {
 				t.Fatalf("candidate lost shared-base ownership: %+v", selected)
 			}
@@ -634,7 +652,7 @@ func preparePlan(t *testing.T, root string) bootstrapplan.Plan {
 
 func storedInputDigest(t *testing.T, root string, input bootstrapplan.KubeadmInput) string {
 	t.Helper()
-	selected, _, err := configapply.ReadEffectiveGenerationKubeadmConfig(root, "0", input.ConfigRef)
+	selected, _, err := configapply.ReadEffectiveGenerationKubeadmConfig(root, "0", input.ConfigRef, zeroNode(t, root))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -643,6 +661,26 @@ func storedInputDigest(t *testing.T, root string, input bootstrapplan.KubeadmInp
 		t.Fatal(err)
 	}
 	return digest
+}
+
+// zeroNode is the node of generation 0, the source generation of preparePlan.
+func zeroNode(t *testing.T, root string) manifest.NodeConfig {
+	t.Helper()
+	current, _, err := configapply.ReadEffectiveGenerationManifest(root, "0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return current.Node
+}
+
+// writeInput stores plan as generation 0's kubeadm input.
+func writeInput(t *testing.T, root string, plan kubeadmconfig.Plan) error {
+	t.Helper()
+	input, err := kubeadmconfig.ForNode(plan, zeroNode(t, root))
+	if err != nil {
+		return err
+	}
+	return configapply.WriteGenerationKubeadmConfig(root, "0", input)
 }
 
 func prepareSnapshot(t *testing.T, root string, plan bootstrapplan.Plan, now time.Time) (Result, error) {

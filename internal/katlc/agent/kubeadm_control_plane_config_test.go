@@ -109,9 +109,9 @@ func TestAcceptSharedKubeletBase(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			plan := configuration.KubeadmConfigs["control-plane"]
+			plan := configuration.Kubeadm.Plan()
 			plan.NodeLocalKubelet, plan.SharedKubeletBase = true, marked
-			configuration.KubeadmConfigs["control-plane"] = plan
+			configuration.Kubeadm = testNodeInput(t, plan)
 			if err := configapply.WriteGenerationConfiguration(server.Root, "generation-0", configuration); err != nil {
 				t.Fatal(err)
 			}
@@ -163,6 +163,7 @@ func TestExecuteKubeadmControlPlaneConfigRunsBoundedPhases(t *testing.T) {
 	if err := os.WriteFile(desiredPath, []byte(desiredConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	writeKubeadmConfigFixture(t, root, "gen-2", "control-plane", desiredConfig, nil)
 	body.DesiredConfigSHA256, _ = kubeadmplan.CanonicalClusterConfigurationSHA256([]byte(desiredConfig))
 	body.ExpectedLiveConfigSHA256, _ = kubeadmplan.CanonicalClusterConfigurationSHA256([]byte(liveConfig))
 	writeControlPlaneManifests(t, root)
@@ -260,6 +261,7 @@ func TestControlPlaneRestart(t *testing.T) {
 			liveConfig := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nkubernetesVersion: v1.36.1\n"
 			desiredConfig := liveConfig + "apiServer:\n  extraArgs:\n  - name: profiling\n    value: \"false\"\n"
 			writeKubernetesStatusFile(t, root, "etc/katl/kubeadm/control-plane/config.yaml", desiredConfig)
+			writeKubeadmConfigFixture(t, root, "gen-2", "control-plane", desiredConfig, nil)
 			store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
 			if err != nil {
 				t.Fatal(err)
@@ -380,6 +382,7 @@ func TestExecuteKubeadmControlPlaneConfigNoChangeIsIdempotent(t *testing.T) {
 	body := controlPlaneConfigFromProto(validControlPlaneConfigRequest())
 	body.KubernetesPayloadVersion = "v1.36.1"
 	body.KubernetesPayloadSHA256 = strings.Repeat("c", 64)
+	writeKubeadmConfigFixture(t, root, "gen-2", "control-plane", desiredConfig, nil)
 	body.DesiredConfigSHA256, _ = kubeadmplan.CanonicalClusterConfigurationSHA256([]byte(desiredConfig))
 	record, err := store.Create(operation.OperationRecord{OperationID: "cp-config-no-change", OperationKind: OperationKindKubeadmControlPlaneConfig, Scope: "kubeadm-state", RequestDigest: strings.Repeat("b", 64), Phase: "accepted", KubeadmControlPlaneConfig: &body}, "accepted", time.Now().UTC())
 	if err != nil {
@@ -465,6 +468,7 @@ func TestExecuteKubeadmControlPlaneConfigStopsAfterMutationUncertainty(t *testin
 	if err := os.WriteFile(path, []byte(desiredConfig), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	writeKubeadmConfigFixture(t, root, "gen-2", "control-plane", desiredConfig, nil)
 	body.DesiredConfigSHA256, _ = kubeadmplan.CanonicalClusterConfigurationSHA256([]byte(desiredConfig))
 	body.ExpectedLiveConfigSHA256, _ = kubeadmplan.CanonicalClusterConfigurationSHA256([]byte(liveConfig))
 	writeControlPlaneManifests(t, root)
@@ -565,6 +569,7 @@ func TestControlPlanePatchConvergence(t *testing.T) {
 				config = init + patches + "---\n" + shared
 			}
 			writeKubernetesStatusFile(t, root, "etc/katl/kubeadm/control-plane/config.yaml", config)
+			writeKubeadmConfigFixture(t, root, "gen-2", "control-plane", config, nil)
 			body := controlPlaneConfigFromProto(validControlPlaneConfigRequest())
 			body.CoordinatorUpload = true
 			body.KubernetesPayloadVersion = "v1.36.1"

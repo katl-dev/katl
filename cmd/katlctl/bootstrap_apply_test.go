@@ -107,12 +107,16 @@ func TestClusterApplyAfterBootstrapKeepsKubeadmConfig(t *testing.T) {
 			}
 			selected.InstallManifest.KatlosImage = manifest.KatlosImage{LocalRef: "images/katlos.raw", SHA256: strings.Repeat("a", 64), SizeBytes: 1024, Version: "0.1.0", Architecture: "x86_64", Role: "install"}
 			root := t.TempDir()
-			if err := configapply.WriteGenerationConfiguration(root, "0", configapply.GenerationConfiguration{Manifest: selected.InstallManifest, KubeadmConfigs: selected.KubeadmConfigs}); err != nil {
+			ref := selected.InstallManifest.Node.Kubernetes.Kubeadm.ConfigRef
+			installed, err := kubeadmconfig.ForNode(selected.KubeadmConfigs[ref], selected.InstallManifest.Node)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := configapply.WriteGenerationConfiguration(root, "0", configapply.GenerationConfiguration{Manifest: selected.InstallManifest, Kubeadm: installed}); err != nil {
 				t.Fatal(err)
 			}
 
 			// Bootstrap preserves its selected input as the candidate's configuration.
-			ref := selected.InstallManifest.Node.Kubernetes.Kubeadm.ConfigRef
 			selection, err := bootstrapplan.SelectInput(root, "0", installer.ClusterIntent{
 				GenerationID: "0",
 				SystemRole:   test.role,
@@ -122,20 +126,20 @@ func TestClusterApplyAfterBootstrapKeepsKubeadmConfig(t *testing.T) {
 				t.Fatal(err)
 			}
 			stored := selection.Configuration
+			if err := configapply.WriteGenerationConfiguration(root, "1", stored); err != nil {
+				t.Fatal(err)
+			}
 			if test.shared {
-				stored.KubeadmConfigs = map[string]kubeadmconfig.Plan{ref: sharedKubeadmInput(t, test.node, ref)}
+				writeStoredInput(t, root, "1", sharedKubeadmInput(t, test.node, ref))
 			}
 			if test.drift {
-				plan := stored.KubeadmConfigs[ref]
+				plan := stored.Kubeadm.Plan()
 				drifted := strings.Replace(string(plan.Config.Content), "10.244.0.0/16", "10.245.0.0/16", 1)
 				if drifted == string(plan.Config.Content) {
 					t.Fatal("drift did not change the stored input")
 				}
 				plan.Config.Content = []byte(drifted)
-				stored.KubeadmConfigs = map[string]kubeadmconfig.Plan{ref: plan}
-			}
-			if err := configapply.WriteGenerationConfiguration(root, "1", stored); err != nil {
-				t.Fatal(err)
+				writeStoredInput(t, root, "1", plan)
 			}
 			current, err := configapply.ReadLocalGenerationConfiguration(root, "1")
 			if err != nil {
@@ -164,16 +168,27 @@ func TestClusterApplyAfterBootstrapKeepsKubeadmConfig(t *testing.T) {
 			request, err := configapply.DecodeNodeConfigurationChange(bytes.NewReader(change), configapply.TrustedBundleRequest{
 				NodeName:        test.node,
 				CurrentManifest: current.Manifest,
-				KubeadmConfigs:  current.KubeadmConfigs,
+				KubeadmConfigs:  map[string]kubeadmconfig.Plan{ref: current.Kubeadm.Plan()},
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			if got := request.NodeOverrides[test.node].KubeadmChanged; got != test.want {
-				t.Fatalf("kubeadm change = %t, want %t:\nstored:\n%s\napplied:\n%s", got, test.want, current.KubeadmConfigs[ref].Config.Content, request.KubeadmConfigs[ref].Config.Content)
+				t.Fatalf("kubeadm change = %t, want %t:\nstored:\n%s\napplied:\n%s", got, test.want, current.Kubeadm.Plan().Config.Content, request.KubeadmConfigs[ref].Config.Content)
 			}
 		})
 	}
+}
+
+// kubeadmInput returns the input of a selected bundle node as the node holds it.
+func kubeadmInput(t *testing.T, selected configbundle.SelectedNodeMaterial) kubeadmconfig.NodeInput {
+	t.Helper()
+	node := selected.InstallManifest.Node
+	input, err := kubeadmconfig.ForNode(selected.KubeadmConfigs[node.Kubernetes.Kubeadm.ConfigRef], node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return input
 }
 
 // sharedKubeadmInput returns the node's input without registration, as an
@@ -202,4 +217,27 @@ func sharedKubeadmInput(t *testing.T, node, ref string) kubeadmconfig.Plan {
 		t.Fatalf("shared input %q = %s", ref, plan.Config.Content)
 	}
 	return plan
+}
+
+// writeStoredInput replaces the stored kubeadm input of a generation with plan
+// as is, in whatever form an earlier release stored it.
+func writeStoredInput(t *testing.T, root, generationID string, plan kubeadmconfig.Plan) {
+	t.Helper()
+	dir := filepath.Join(root, "var/lib/katl/generations", generationID, "kubeadm-input", plan.Name)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	files, err := plan.InputFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range files {
+		path := filepath.Join(dir, strings.TrimPrefix(file.RenderPath, kubeadmconfig.InputDir(plan.Name)+"/"))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, file.Content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 }

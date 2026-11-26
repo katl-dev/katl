@@ -462,7 +462,7 @@ func selectedKubeadmConfigs(archive ociArchive, node NodeRecord) (map[string]kub
 			return nil, err
 		}
 		filesByRef[ref] = append(filesByRef[ref], kubeadmconfig.File{
-			RenderPath: "/etc/katl/kubeadm/" + ref + "/" + rel,
+			RenderPath: kubeadmconfig.InputDir(ref) + "/" + filepath.ToSlash(rel),
 			Content:    data,
 			Mode:       0o644,
 		})

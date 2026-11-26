@@ -140,7 +140,7 @@ func TestRenderNodeConfigurationChangeCarriesSelectedKubeadmInput(t *testing.T) 
 			SystemRole: "control-plane",
 			Kubernetes: manifest.KubernetesConfig{Kubeadm: manifest.KubeadmReference{ConfigRef: "control-plane"}},
 		}},
-		KubeadmConfigs: map[string]kubeadmconfig.Plan{"control-plane": plan},
+		Kubeadm:        nodeInput(t, plan),
 		SourceID:       "lab",
 		DesiredVersion: "2",
 	})
@@ -175,7 +175,7 @@ func TestRenderedKubeadmPatchPaths(t *testing.T) {
 		Manifest: manifest.Manifest{Node: manifest.NodeConfig{
 			Kubernetes: manifest.KubernetesConfig{Kubeadm: manifest.KubeadmReference{ConfigRef: "control-plane"}},
 		}},
-		KubeadmConfigs: map[string]kubeadmconfig.Plan{"control-plane": plan},
+		Kubeadm: nodeInput(t, plan),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -202,15 +202,20 @@ func TestRenderedKubeadmPatchPaths(t *testing.T) {
 }
 
 func TestRenderNodeConfigurationChangeCanSelectOnlyKubeadmInput(t *testing.T) {
+	plan, err := kubeadmconfig.PlanFromRenderedFiles("control-plane", []kubeadmconfig.File{{
+		RenderPath: "/etc/katl/kubeadm/control-plane/config.yaml",
+		Content:    []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	data, err := RenderNodeConfigurationChange(RenderNodeRequest{
 		NodeName: "cp-1",
 		Manifest: manifest.Manifest{Node: manifest.NodeConfig{
 			Identity:   manifest.NodeIdentity{Hostname: "cp-1"},
 			Kubernetes: manifest.KubernetesConfig{Kubeadm: manifest.KubeadmReference{ConfigRef: "control-plane"}},
 		}},
-		KubeadmConfigs: map[string]kubeadmconfig.Plan{
-			"control-plane": {Name: "control-plane", Config: kubeadmconfig.File{Content: []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\n")}},
-		},
+		Kubeadm:  nodeInput(t, plan),
 		SourceID: "lab", DesiredVersion: "2", ApplyMode: generation.ApplyModeAuto, KubeadmOnly: true,
 	})
 	if err != nil {

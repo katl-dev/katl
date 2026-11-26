@@ -630,7 +630,7 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		if !ok {
 			return activatedClusterConfig{}, fmt.Errorf("node %q is not in the selected configuration", node.Name)
 		}
-		plan, ok := render.KubeadmConfigs[render.Manifest.Node.Kubernetes.Kubeadm.ConfigRef]
+		plan, ok := render.Kubeadm.Plan(), !render.Kubeadm.IsZero() && render.Kubeadm.Name() == render.Manifest.Node.Kubernetes.Kubeadm.ConfigRef
 		if !ok {
 			return activatedClusterConfig{}, fmt.Errorf("selected kubeadm input %q for %s is missing", node.KubeadmConfig.Ref, node.Name)
 		}
@@ -718,6 +718,12 @@ func activateClusterConfig(ctx context.Context, opts kubeadmControlPlaneConfigOp
 		input.noChanges = validation.NoChanges
 		input.acceptedApplyMode = validation.AcceptedApplyMode
 		input.changedDomains = slices.Clone(validation.ChangedDomains)
+		for _, warning := range validation.GetWarnings() {
+			if err := clusterApplyProgress(opts.progress, "node=%s warning=%s", node.Name, warning); err != nil {
+				_ = conn.Close()
+				return activatedClusterConfig{}, err
+			}
+		}
 		input.diagnostics = slices.Clone(validation.Diagnostics)
 		for _, diagnostic := range input.diagnostics {
 			if err := clusterApplyProgress(opts.progress, "node=%s warning=%s", node.Name, diagnostic); err != nil {

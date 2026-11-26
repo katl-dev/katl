@@ -84,8 +84,8 @@ func TestBootstrapSelectedInput(t *testing.T) {
 				t.Fatalf("acceptance rewrote installed input: %s, %v", unchanged, err)
 			}
 			if tt.kind == "bootstrap-init" {
-				if !slices.Contains(record.ExecutorPlan.Argv, selected.Config.RenderPath) {
-					t.Fatalf("init path did not select generation input: %v", record.ExecutorPlan.Argv)
+				if !slices.Contains(record.ExecutorPlan.Argv, kubeadmconfig.BootstrapInitConfigPath) || slices.Contains(record.ExecutorPlan.Argv, selected.Config.RenderPath) {
+					t.Fatalf("init did not read its own init config: %v", record.ExecutorPlan.Argv)
 				}
 			} else {
 				join, err := os.ReadFile(filepath.Join(server.Root, strings.TrimPrefix(record.BootstrapRequest.TemporaryJoinConfigPath, "/")))
@@ -97,7 +97,7 @@ func TestBootstrapSelectedInput(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			reconstructed := plan.SelectedInput.Configuration.KubeadmConfigs[tt.ref]
+			reconstructed := plan.SelectedInput.Configuration.Kubeadm.Plan()
 			if (tt.address == "" && !bytes.Equal(reconstructed.Config.Content, selected.Config.Content)) || !reconstructed.SharedKubeletBase {
 				t.Fatal("reconstruction lost selected bytes or ownership")
 			}
@@ -133,7 +133,7 @@ func TestBootstrapSelectedInput(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := persisted.KubeadmConfigs[tt.ref]
+			got := persisted.Kubeadm.Plan()
 			if !bytes.Equal(got.Config.Content, reconstructed.Config.Content) || !got.NodeLocalKubelet || !got.SharedKubeletBase || len(got.Patches) != 1 || !bytes.Equal(got.Patches[0].Content, selected.Patches[0].Content) {
 				t.Fatalf("candidate lost desired input snapshot: %+v", got)
 			}
@@ -255,7 +255,7 @@ func TestBootstrapInstalledProfileAlias(t *testing.T) {
 		t.Fatalf("bound installed alias refused: %v", err)
 	}
 	record, err := server.Store.Read(accepted.OperationId)
-	if err != nil || !slices.Contains(record.ExecutorPlan.Argv, "/etc/katl/kubeadm/control-plane/config.yaml") {
+	if err != nil || !slices.Contains(record.ExecutorPlan.Argv, kubeadmconfig.BootstrapInitConfigPath) {
 		t.Fatalf("installed alias changed selected native path: %+v, %v", record, err)
 	}
 }
@@ -286,7 +286,10 @@ func publishBootstrapInput(t *testing.T, root, role, ref, profile string, shared
 		t.Fatal(err)
 	}
 	selected.NodeLocalKubelet, selected.SharedKubeletBase = true, shared
-	configuration.KubeadmConfigs = map[string]kubeadmconfig.Plan{ref: selected}
+	configuration.Kubeadm, err = kubeadmconfig.ForNode(selected, configuration.Manifest.Node)
+	if err != nil {
+		t.Fatal(err)
+	}
 	spec, _, err := generation.ReadGeneration(root, "0")
 	if err != nil {
 		t.Fatal(err)

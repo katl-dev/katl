@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/kubeadmplan"
 )
 
@@ -69,8 +70,8 @@ func runKubeadm(ctx context.Context, args []string, stdout, stderr io.Writer) er
 	if err != nil {
 		return writeKubeadmCollectionFailure(stdout, selected, err)
 	}
-	desiredPath := "/etc/katl/kubeadm/" + selected + "/config.yaml"
-	patchesDir := "/etc/katl/kubeadm/" + selected + "/patches"
+	desiredPath := kubeadmconfig.ConfigPath(selected)
+	patchesDir := kubeadmconfig.PatchesDir(selected)
 	if _, statErr := os.Stat(filepath.Join(filepath.Clean(*root), strings.TrimPrefix(patchesDir, "/"))); errors.Is(statErr, os.ErrNotExist) {
 		patchesDir = ""
 	} else if statErr != nil {

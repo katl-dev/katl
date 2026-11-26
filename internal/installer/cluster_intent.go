@@ -102,11 +102,15 @@ func WriteClusterIntent(request ClusterIntentRequest) (string, error) {
 	if strings.TrimSpace(request.TargetRoot) == "" {
 		return "", fmt.Errorf("target root is required")
 	}
-	intent, err := BuildClusterIntent(request)
+	input, err := nodeKubeadmInput(request.Manifest.Node, request.KubeadmConfigs)
 	if err != nil {
 		return "", err
 	}
-	if err := writeClusterKubeadmInput(request.TargetRoot, intent, request.KubeadmConfigs); err != nil {
+	intent, err := buildClusterIntent(request, input)
+	if err != nil {
+		return "", err
+	}
+	if err := writeClusterKubeadmInput(request.TargetRoot, intent, input); err != nil {
 		return "", err
 	}
 	data, err := marshalClusterIntent(intent)
@@ -195,6 +199,14 @@ func StoredKubeadmInputDir(root string, ref string) (string, error) {
 }
 
 func BuildClusterIntent(request ClusterIntentRequest) (ClusterIntent, error) {
+	input, err := nodeKubeadmInput(request.Manifest.Node, request.KubeadmConfigs)
+	if err != nil {
+		return ClusterIntent{}, err
+	}
+	return buildClusterIntent(request, input)
+}
+
+func buildClusterIntent(request ClusterIntentRequest, input kubeadmconfig.NodeInput) (ClusterIntent, error) {
 	if strings.TrimSpace(request.GenerationID) == "" {
 		return ClusterIntent{}, fmt.Errorf("generation id is required")
 	}
@@ -243,17 +255,7 @@ func BuildClusterIntent(request ClusterIntentRequest) (ClusterIntent, error) {
 	if ref == "" {
 		return intent, nil
 	}
-	config, ok := request.KubeadmConfigs[ref]
-	if !ok {
-		return ClusterIntent{}, fmt.Errorf("node.kubernetes.kubeadm.configRef %q was not resolved", ref)
-	}
-	if !request.Manifest.Node.Kubernetes.External {
-		var err error
-		config, err = kubeadmconfig.WithNodeRegistration(config, kubeadmconfig.RegistrationFor(request.Manifest.Node))
-		if err != nil {
-			return ClusterIntent{}, err
-		}
-	}
+	config := input.Plan()
 	intentValue, err := configdomain.KubeadmIntent(config)
 	if err != nil {
 		return ClusterIntent{}, err
@@ -287,24 +289,27 @@ func BuildClusterIntent(request ClusterIntentRequest) (ClusterIntent, error) {
 	return intent, nil
 }
 
-func writeClusterKubeadmInput(root string, intent ClusterIntent, configs map[string]kubeadmconfig.Plan) error {
+// nodeKubeadmInput returns the node's kubeadm input, zero when the manifest
+// names none.
+func nodeKubeadmInput(node manifest.NodeConfig, configs map[string]kubeadmconfig.Plan) (kubeadmconfig.NodeInput, error) {
+	ref := strings.TrimSpace(node.Kubernetes.Kubeadm.ConfigRef)
+	if ref == "" {
+		return kubeadmconfig.NodeInput{}, nil
+	}
+	plan, ok := configs[ref]
+	if !ok {
+		return kubeadmconfig.NodeInput{}, fmt.Errorf("node.kubernetes.kubeadm.configRef %q was not resolved", ref)
+	}
+	return kubeadmconfig.ForNode(plan, node)
+}
+
+func writeClusterKubeadmInput(root string, intent ClusterIntent, input kubeadmconfig.NodeInput) error {
 	if intent.Kubeadm == nil {
 		return nil
 	}
 	ref := strings.TrimSpace(intent.Kubeadm.ConfigRef)
-	if ref == "" {
-		return fmt.Errorf("cluster intent kubeadm configRef is required")
-	}
-	plan, ok := configs[ref]
-	if !ok {
+	if ref == "" || input.Name() != ref {
 		return fmt.Errorf("cluster intent kubeadm configRef %q was not resolved", ref)
-	}
-	if !intent.Kubernetes.External {
-		var err error
-		plan, err = kubeadmconfig.WithNodeRegistration(plan, kubeadmconfig.NodeRegistration{Address: intent.Kubernetes.Address, Labels: intent.Inventory.Labels, Taints: intent.Inventory.Taints})
-		if err != nil {
-			return err
-		}
 	}
 	dir, err := StoredKubeadmInputDir(root, ref)
 	if err != nil {
@@ -316,7 +321,7 @@ func writeClusterKubeadmInput(root string, intent ClusterIntent, configs map[str
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create stored kubeadm input directory: %w", err)
 	}
-	files, err := plan.InputFiles()
+	files, err := input.InputFiles()
 	if err != nil {
 		return err
 	}
@@ -348,7 +353,7 @@ func writeStoredKubeadmFile(dir string, ref string, file kubeadmconfig.File) err
 }
 
 func storedKubeadmRelativePath(ref string, renderPath string) (string, error) {
-	base := filepath.ToSlash(filepath.Join("/etc/katl/kubeadm", ref))
+	base := kubeadmconfig.InputDir(ref)
 	renderPath = filepath.ToSlash(filepath.Clean("/" + strings.TrimPrefix(strings.TrimSpace(renderPath), "/")))
 	if renderPath == base || !strings.HasPrefix(renderPath, base+"/") {
 		return "", fmt.Errorf("kubeadm input path %q must be under %s", renderPath, base)

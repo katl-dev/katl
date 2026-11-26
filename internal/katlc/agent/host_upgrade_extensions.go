@@ -14,14 +14,14 @@ import (
 )
 
 type hostExtensionPlan struct {
-	kubeadmConfigs map[string]kubeadmconfig.Plan
-	document       []byte
-	manifest       manifest.Manifest
-	desired        []manifest.SystemExtension
-	materials      []configapply.SystemExtensionPayload
-	replace        []string
-	sysexts        []generation.ExtensionRef
-	confexts       []generation.ExtensionRef
+	kubeadm   kubeadmconfig.NodeInput
+	document  []byte
+	manifest  manifest.Manifest
+	desired   []manifest.SystemExtension
+	materials []configapply.SystemExtensionPayload
+	replace   []string
+	sysexts   []generation.ExtensionRef
+	confexts  []generation.ExtensionRef
 }
 
 func planHostExtensions(ctx context.Context, current manifest.Manifest, payload katlosimage.Payload, candidate string, fetch func(context.Context, systemextensionbundle.ResolveRequest) (systemextensionbundle.Resolved, error)) (hostExtensionPlan, error) {

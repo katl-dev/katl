@@ -23,7 +23,7 @@ import (
 
 type RenderRequest struct {
 	Manifest                 manifest.Manifest
-	KubeadmConfigs           map[string]kubeadmconfig.Plan
+	Kubeadm                  kubeadmconfig.NodeInput
 	KubernetesVersion        string
 	KubernetesActivationPath string
 	DeferKubeadmInputs       bool
@@ -75,19 +75,13 @@ func NativeEtcFiles(request RenderRequest) ([]confext.NativeEtcFile, error) {
 	ref := request.Manifest.Node.Kubernetes.Kubeadm.ConfigRef
 	var kubeadm *kubeadmconfig.Plan
 	if ref != "" {
-		config, ok := request.KubeadmConfigs[ref]
-		if !ok {
+		if request.Kubeadm.IsZero() {
 			return nil, fmt.Errorf("node.kubernetes.kubeadm.configRef %q was not resolved", ref)
 		}
-		if !request.Manifest.Node.Kubernetes.External {
-			config, err = kubeadmconfig.WithNodeRegistration(config, kubeadmconfig.RegistrationFor(request.Manifest.Node))
-			if err != nil {
-				return nil, err
-			}
+		if request.Kubeadm.Name() != ref {
+			return nil, fmt.Errorf("node.kubernetes.kubeadm.configRef %q resolved to KubeadmConfig %q", ref, request.Kubeadm.Name())
 		}
-		if config.Name != ref {
-			return nil, fmt.Errorf("node.kubernetes.kubeadm.configRef %q resolved to KubeadmConfig %q", ref, config.Name)
-		}
+		config := request.Kubeadm.Plan()
 		if err := validateKubeadmIntent(request.Manifest.Node.SystemRole, config); err != nil {
 			return nil, err
 		}

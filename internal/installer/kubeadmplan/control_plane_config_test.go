@@ -119,7 +119,7 @@ func TestSupportedControlPlaneProfilingDelta(t *testing.T) {
 func TestSupportedControlPlaneComponentDeltaAllowsManifestFields(t *testing.T) {
 	live := []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nclusterName: katl\nkubernetesVersion: v1.36.1\n")
 	desired := []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nclusterName: katl\nkubernetesVersion: v1.36.1\napiServer:\n  extraArgs:\n    - name: audit-log-maxage\n      value: '7'\nscheduler:\n  extraEnvs:\n    - name: KATL_TEST\n      value: enabled\n")
-	got, err := SupportedControlPlaneComponentDelta(desired, live)
+	got, err := SupportedControlPlaneComponentDelta(desired, live, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -132,7 +132,7 @@ func TestSupportedControlPlaneComponentDeltaAllowsManifestFields(t *testing.T) {
 func TestEffectiveControlPlaneConfigurationPreservesLiveClusterState(t *testing.T) {
 	live := []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nclusterName: katl\ncontrolPlaneEndpoint: api.katl.test:6443\nkubernetesVersion: v1.36.1\napiServer:\n  certSANs: [api.katl.test]\n  extraArgs:\n    - name: profiling\n      value: 'true'\n")
 	desired := []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: InitConfiguration\nnodeRegistration:\n  criSocket: unix:///run/containerd/containerd.sock\n---\napiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nkubernetesVersion: v1.36.1\napiServer:\n  extraArgs:\n    - name: profiling\n      value: 'false'\n")
-	effective, delta, err := EffectiveControlPlaneConfiguration(desired, live)
+	effective, delta, err := EffectiveControlPlaneConfiguration(desired, live, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestEffectiveControlPlaneConfigurationPreservesLiveClusterState(t *testing.
 func TestSupportedControlPlaneComponentDeltaAllowsNoChange(t *testing.T) {
 	live := []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nclusterName: katl\nkubernetesVersion: v1.36.1\n")
 	desired := []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nkubernetesVersion: v1.36.1\n")
-	delta, err := SupportedControlPlaneComponentDelta(desired, live)
+	delta, err := SupportedControlPlaneComponentDelta(desired, live, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,15 +161,85 @@ func TestSupportedControlPlaneComponentDeltaAllowsNoChange(t *testing.T) {
 
 func TestSupportedControlPlaneComponentDeltaRejectsCertificateAndClusterChanges(t *testing.T) {
 	live := []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nkubernetesVersion: v1.36.1\n")
-	for name, desired := range map[string][]byte{
-		"certificate": []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nkubernetesVersion: v1.36.1\napiServer:\n  certSANs: [api.example.test]\n"),
-		"version":     []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nkubernetesVersion: v1.36.2\n"),
+	for name, tt := range map[string]struct {
+		desired []byte
+		want    string
+	}{
+		"certificate": {[]byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nkubernetesVersion: v1.36.1\napiServer:\n  certSANs: [api.example.test]\n"), "api.example.test"},
+		"version":     {[]byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nkubernetesVersion: v1.36.2\n"), "outside control-plane"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := SupportedControlPlaneComponentDelta(desired, live); err == nil || !strings.Contains(err.Error(), "outside control-plane") {
+			if _, err := SupportedControlPlaneComponentDelta(tt.desired, live, ""); err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("error = %v", err)
 			}
 		})
+	}
+}
+
+func TestSupportedControlPlaneComponentDeltaAccountsForBootstrapSANs(t *testing.T) {
+	cluster := func(endpoint string, sans ...string) []byte {
+		config := "apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\nkubernetesVersion: v1.36.1\n"
+		if endpoint != "" {
+			config += "controlPlaneEndpoint: " + endpoint + "\n"
+		}
+		if len(sans) > 0 {
+			config += "apiServer:\n  certSANs: [" + strings.Join(sans, ", ") + "]\n"
+		}
+		return []byte(config)
+	}
+	const endpoint = "api.katl.test:6443"
+	bootstrapped := cluster(endpoint, "user-api.example", "api.katl.test", "127.0.0.1", "192.0.2.10")
+	for _, tt := range []struct {
+		name      string
+		desired   []byte
+		live      []byte
+		vip       string
+		wantError string
+	}{
+		{name: "operator SANs beside bootstrap SANs", desired: cluster("", "user-api.example"), live: bootstrapped, vip: "192.0.2.10"},
+		{name: "endpoint in desired", desired: cluster(endpoint, "user-api.example"), live: bootstrapped, vip: "192.0.2.10"},
+		{name: "operator lists the host", desired: cluster("", "user-api.example", "api.katl.test"), live: bootstrapped, vip: "192.0.2.10"},
+		{name: "operator lists the VIP", desired: cluster("", "user-api.example", "192.0.2.10"), live: bootstrapped, vip: "192.0.2.10"},
+		{name: "live lacks the VIP", desired: cluster("", "user-api.example", "192.0.2.10"), live: cluster(endpoint, "user-api.example", "api.katl.test", "127.0.0.1"), vip: "192.0.2.10", wantError: "[user-api.example 192.0.2.10] differs from the running cluster's [user-api.example]; config apply does not change API server certificate SANs, so set apiServer.certSANs"},
+		{name: "VIP advertised but absent from both SAN lists", desired: cluster("", "user-api.example"), live: cluster(endpoint, "user-api.example", "api.katl.test", "127.0.0.1"), vip: "192.0.2.10"},
+		{name: "no operator SANs", desired: cluster(""), live: cluster(endpoint, "api.katl.test", "127.0.0.1")},
+		{name: "live endpoint without a port", desired: cluster("", "extra.example"), live: cluster("api.example", "api.example", "127.0.0.1", "extra.example")},
+		{name: "live IPv6 endpoint without a port", desired: cluster("", "extra.example"), live: cluster("\"[2001:db8::1]\"", "2001:db8::1", "127.0.0.1", "extra.example")},
+		{name: "SAN added", desired: cluster("", "user-api.example", "new.example"), live: bootstrapped, vip: "192.0.2.10", wantError: "[user-api.example new.example] differs from the running cluster's [user-api.example]"},
+		{name: "operator SAN removed", desired: cluster(""), live: bootstrapped, vip: "192.0.2.10", wantError: "[] differs from the running cluster's [user-api.example]"},
+		{name: "operator SANs replaced", desired: cluster("", "other.example"), live: bootstrapped, vip: "192.0.2.10", wantError: "[other.example] differs from the running cluster's [user-api.example]; config apply does not change API server certificate SANs, so set apiServer.certSANs"},
+		{name: "VIP the desired config does not advertise", desired: cluster("", "user-api.example"), live: bootstrapped, wantError: "differs from the running cluster's [user-api.example 192.0.2.10]"},
+		{name: "other endpoint", desired: cluster("other.test:6443", "user-api.example"), live: bootstrapped, vip: "192.0.2.10", wantError: "outside control-plane"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			delta, err := SupportedControlPlaneComponentDelta(tt.desired, tt.live, tt.vip)
+			if tt.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tt.wantError) {
+					t.Fatalf("error = %v, want %q", err, tt.wantError)
+				}
+				return
+			}
+			if err != nil || len(delta) != 0 {
+				t.Fatalf("delta = %v, error = %v; want accepted without change", delta, err)
+			}
+		})
+	}
+}
+
+func TestEffectiveControlPlaneConfigurationKeepsLiveSANs(t *testing.T) {
+	live := []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\ncontrolPlaneEndpoint: api.katl.test:6443\napiServer:\n  certSANs: [user-api.example, api.katl.test, 127.0.0.1]\n")
+	desired := []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\napiServer:\n  certSANs: [user-api.example]\n  extraArgs:\n    - name: profiling\n      value: \"false\"\n")
+	effective, delta, err := EffectiveControlPlaneConfiguration(desired, live, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(delta, []string{"ClusterConfiguration.apiServer.extraArgs"}) {
+		t.Fatalf("delta = %v", delta)
+	}
+	for _, want := range []string{"- api.katl.test", "- 127.0.0.1", "name: profiling"} {
+		if !strings.Contains(string(effective), want) {
+			t.Fatalf("effective config lacks %q:\n%s", want, effective)
+		}
 	}
 }
 

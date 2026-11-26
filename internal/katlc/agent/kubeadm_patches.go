@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/katl-dev/katl/internal/installer/configapply"
 )
@@ -14,8 +13,7 @@ func (e *Executor) prepareKubeadmPatches(operationID, generationID string) (stri
 	if err != nil {
 		return "", fmt.Errorf("read selected kubeadm patches: %w", err)
 	}
-	ref := strings.TrimSpace(configuration.Manifest.Node.Kubernetes.Kubeadm.ConfigRef)
-	plan := configuration.KubeadmConfigs[ref]
+	plan := configuration.Kubeadm.Plan()
 	if len(plan.Patches) == 0 {
 		return "", nil
 	}

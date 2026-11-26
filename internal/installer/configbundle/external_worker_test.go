@@ -69,7 +69,7 @@ func TestExternalWorkers(t *testing.T) {
 			t.Fatal("external worker received managed API proxy")
 		}
 		if node.Name == selected.Node.Name {
-			data, err := configapply.RenderNodeConfigurationChange(configapply.RenderNodeRequest{NodeName: node.Name, SourceID: "external-lab", DesiredVersion: "2", Manifest: node.InstallManifest, KubeadmConfigs: result.NodeKubeadmConfigs[node.Name]})
+			data, err := configapply.RenderNodeConfigurationChange(configapply.RenderNodeRequest{NodeName: node.Name, SourceID: "external-lab", DesiredVersion: "2", Manifest: node.InstallManifest, Kubeadm: result.NodeKubeadmConfigs[node.Name]})
 			if err != nil {
 				t.Fatal(err)
 			}

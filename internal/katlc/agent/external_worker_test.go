@@ -40,11 +40,14 @@ func externalWorkerRequest(t *testing.T, server *testServer, executor *Executor)
 	if err != nil {
 		t.Fatal(err)
 	}
-	configuration.KubeadmConfigs["default"] = input
+	configuration.Kubeadm, err = kubeadmconfig.ForNode(input, configuration.Manifest.Node)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := configapply.WriteGenerationConfiguration(server.Root, "0", configuration); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := installer.WriteClusterIntent(installer.ClusterIntentRequest{TargetRoot: server.Root, Manifest: configuration.Manifest, KubeadmConfigs: configuration.KubeadmConfigs, KubernetesVersion: "v1.35.0", GenerationID: "0"}); err != nil {
+	if _, err := installer.WriteClusterIntent(installer.ClusterIntentRequest{TargetRoot: server.Root, Manifest: configuration.Manifest, KubeadmConfigs: map[string]kubeadmconfig.Plan{"default": input}, KubernetesVersion: "v1.35.0", GenerationID: "0"}); err != nil {
 		t.Fatal(err)
 	}
 	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "external worker runtime")

@@ -9,12 +9,14 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 )
 
-const (
-	DefaultKubeadmConfigPath       = "/etc/katl/kubeadm/control-plane/config.yaml"
-	DefaultProjectedKubernetesPath = "/var/lib/katl/kubernetes/etc-kubernetes"
-)
+const DefaultProjectedKubernetesPath = "/var/lib/katl/kubernetes/etc-kubernetes"
+
+// DefaultKubeadmConfigPath is the input of the control-plane kubeadm config.
+var DefaultKubeadmConfigPath = kubeadmconfig.ConfigPath("control-plane")
 
 type KubeadmAPISmokeConfig struct {
 	Runtime        InstalledRuntimeConfig

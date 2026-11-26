@@ -2919,6 +2919,45 @@ func TestConfigApplyAlreadyMatchesWithoutSubmittingOperation(t *testing.T) {
 	}
 }
 
+func TestConfigApplyNoChangesPrintsWarnings(t *testing.T) {
+	contextPath := writeNodeAEnrollmentContext(t)
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte("apiVersion: katl.dev/v1alpha1\nkind: NodeConfigurationChange\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, plan := range []bool{false, true} {
+		t.Run(fmt.Sprintf("plan=%t", plan), func(t *testing.T) {
+			fake := &fakeKatlcAgentClient{nodeStatus: enrolledNodeAStatus(), validateResult: &agentapi.ConfigValidationResult{
+				Accepted:  true,
+				NoChanges: true,
+				Warnings:  []string{"kubeadm config \"cp\" sets node-ip"},
+			}}
+			oldDial := dialKatlcAgent
+			dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
+				return katlcAgentConnection{Client: fake, Close: func() error { return nil }}, nil
+			}
+			t.Cleanup(func() { dialKatlcAgent = oldDial })
+			args := []string{"node", "apply", "--context-file", contextPath, "--endpoint", "node-a.example.test:9443", "--config", configPath}
+			if plan {
+				args = append(args, "--plan")
+			}
+			var stdout, stderr bytes.Buffer
+			if err := run(context.Background(), args, &stdout, &stderr); err != nil {
+				t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
+			}
+			if !strings.Contains(stdout.String(), "configuration already matches") {
+				t.Fatalf("stdout = %q", stdout.String())
+			}
+			if !strings.Contains(stderr.String(), "warning:") || !strings.Contains(stderr.String(), "sets node-ip") {
+				t.Fatalf("stderr = %q, want the warning", stderr.String())
+			}
+			if fake.submitRequest != nil || fake.stageRequest != nil || fake.applyRequest != nil {
+				t.Fatalf("no-op submitted mutation")
+			}
+		})
+	}
+}
+
 func assertSuccessfulMutationOutput(t *testing.T, data []byte) {
 	t.Helper()
 	var status agentapi.OperationStatus

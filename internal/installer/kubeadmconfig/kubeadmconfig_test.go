@@ -448,12 +448,12 @@ func TestWithNodeRegistrationPreservesNodeLocalKubeletMode(t *testing.T) {
 	}
 	plan.NodeLocalKubelet = true
 	plan.SharedKubeletBase = true
-	got, err := WithNodeRegistration(plan, NodeRegistration{Address: "192.0.2.10"})
+	got, err := withNodeRegistration(plan, nodeRegistration{Address: "192.0.2.10"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !got.NodeLocalKubelet || !got.SharedKubeletBase {
-		t.Fatal("WithNodeRegistration() dropped kubelet input ownership")
+		t.Fatal("withNodeRegistration() dropped kubelet input ownership")
 	}
 }
 

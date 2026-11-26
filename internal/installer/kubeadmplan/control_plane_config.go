@@ -8,10 +8,12 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"gopkg.in/yaml.v3"
 )
 
@@ -149,7 +151,11 @@ var profilingComponents = []string{"apiServer", "controllerManager", "scheduler"
 
 var controlPlaneManifestFields = []string{"extraArgs", "extraEnvs", "extraVolumes"}
 
-func SupportedControlPlaneComponentDelta(desired, live []byte) ([]string, error) {
+// SupportedControlPlaneComponentDelta returns the control-plane manifest fields
+// that differ between desired and live ClusterConfiguration, and refuses any
+// other difference. Desired input may omit SANs added by bootstrap. vip is the
+// VIP the desired configuration advertises for the control-plane endpoint, if any.
+func SupportedControlPlaneComponentDelta(desired, live []byte, vip string) ([]string, error) {
 	desiredConfig, err := clusterConfiguration(desired)
 	if err != nil {
 		return nil, fmt.Errorf("desired: %w", err)
@@ -180,15 +186,69 @@ func SupportedControlPlaneComponentDelta(desired, live []byte) ([]string, error)
 		removeEmptySection(desiredConfig, component, desiredSection)
 		removeEmptySection(liveConfig, component, liveSection)
 	}
+	if err := reconcileCertSANs(desiredConfig, liveConfig, vip); err != nil {
+		return nil, err
+	}
 	if !containsValue(liveConfig, desiredConfig) {
-		return nil, fmt.Errorf("unsupported ClusterConfiguration difference outside control-plane manifest fields")
+		return nil, errUnsupportedClusterDifference
 	}
 	sort.Strings(delta)
 	return delta, nil
 }
 
-func EffectiveControlPlaneConfiguration(desired, live []byte) ([]byte, []string, error) {
-	delta, err := SupportedControlPlaneComponentDelta(desired, live)
+var errUnsupportedClusterDifference = fmt.Errorf("unsupported ClusterConfiguration difference outside control-plane manifest fields")
+
+// reconcileCertSANs lets desired input omit bootstrap SANs already present in
+// the running cluster. An explicit SAN missing from live input still requires
+// a certificate change, including when it matches the endpoint or VIP.
+func reconcileCertSANs(desired, live map[string]any, vip string) error {
+	endpoint, _ := live["controlPlaneEndpoint"].(string)
+	desiredSANs, err := takeCertSANs(desired)
+	if err != nil {
+		return fmt.Errorf("desired: %w", err)
+	}
+	liveSANs, err := takeCertSANs(live)
+	if err != nil {
+		return fmt.Errorf("live: %w", err)
+	}
+	bootstrapSANs := slices.DeleteFunc(kubeadmconfig.ClusterCertSANs(endpoint, vip), func(san string) bool {
+		return !slices.ContainsFunc(liveSANs, func(liveSAN string) bool { return strings.TrimSpace(liveSAN) == san })
+	})
+	ignoreBootstrapSAN := func(san string) bool { return slices.Contains(bootstrapSANs, strings.TrimSpace(san)) }
+	desiredSANs = slices.DeleteFunc(desiredSANs, ignoreBootstrapSAN)
+	liveSANs = slices.DeleteFunc(liveSANs, ignoreBootstrapSAN)
+	if !slices.Equal(desiredSANs, liveSANs) {
+		return fmt.Errorf("apiServer.certSANs %v differs from the running cluster's %v; config apply does not change API server certificate SANs, so set apiServer.certSANs to the running cluster's SANs (bootstrap-added SANs may be omitted)", desiredSANs, liveSANs)
+	}
+	return nil
+}
+
+func takeCertSANs(config map[string]any) ([]string, error) {
+	apiServer, err := configurationSection(config, "apiServer")
+	if err != nil {
+		return nil, err
+	}
+	var sans []string
+	if value, ok := apiServer["certSANs"]; ok && value != nil {
+		list, ok := value.([]any)
+		if !ok {
+			return nil, fmt.Errorf("apiServer.certSANs must be a list of strings")
+		}
+		for _, item := range list {
+			san, ok := item.(string)
+			if !ok {
+				return nil, fmt.Errorf("apiServer.certSANs must be a list of strings")
+			}
+			sans = append(sans, san)
+		}
+	}
+	delete(apiServer, "certSANs")
+	removeEmptySection(config, "apiServer", apiServer)
+	return sans, nil
+}
+
+func EffectiveControlPlaneConfiguration(desired, live []byte, vip string) ([]byte, []string, error) {
+	delta, err := SupportedControlPlaneComponentDelta(desired, live, vip)
 	if err != nil {
 		return nil, nil, err
 	}

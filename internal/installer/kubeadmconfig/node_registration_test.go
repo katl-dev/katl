@@ -9,7 +9,7 @@ import (
 )
 
 func TestWithNodeRegistration(t *testing.T) {
-	metadata := NodeRegistration{
+	metadata := nodeRegistration{
 		Labels: map[string]string{"example.com/b": "", "example.com/a": "1"},
 		Taints: []manifest.NodeTaint{
 			{Key: "dedicated", Value: "storage", Effect: "NoSchedule"},
@@ -33,7 +33,7 @@ taints:
 		name         string
 		config       string
 		kind         string
-		registration NodeRegistration
+		registration nodeRegistration
 		want         string
 	}{
 		{
@@ -44,7 +44,7 @@ nodeRegistration:
   criSocket: unix:///run/containerd/containerd.sock
 `,
 			kind:         "JoinConfiguration",
-			registration: NodeRegistration{Address: "10.0.0.21", Labels: metadata.Labels, Taints: metadata.Taints},
+			registration: nodeRegistration{Address: "10.0.0.21", Labels: metadata.Labels, Taints: metadata.Taints},
 			want:         "criSocket: unix:///run/containerd/containerd.sock" + registeredMetadata,
 		},
 		{
@@ -59,7 +59,7 @@ apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration
 `,
 			kind:         "InitConfiguration",
-			registration: NodeRegistration{Address: "10.0.0.21", Labels: metadata.Labels, Taints: metadata.Taints},
+			registration: nodeRegistration{Address: "10.0.0.21", Labels: metadata.Labels, Taints: metadata.Taints},
 			want:         "criSocket: unix:///run/containerd/containerd.sock" + registeredMetadata,
 		},
 		{
@@ -71,7 +71,7 @@ nodeRegistration:
   taints: []
 `,
 			kind:         "InitConfiguration",
-			registration: NodeRegistration{Address: "10.0.0.21"},
+			registration: nodeRegistration{Address: "10.0.0.21"},
 			want: `criSocket: unix:///run/containerd/containerd.sock
 kubeletExtraArgs:
   - name: node-ip
@@ -87,9 +87,9 @@ taints: []
 				t.Fatal(err)
 			}
 
-			got, err := WithNodeRegistration(plan, tt.registration)
+			got, err := withNodeRegistration(plan, tt.registration)
 			if err != nil {
-				t.Fatalf("WithNodeRegistration() error = %v", err)
+				t.Fatalf("withNodeRegistration() error = %v", err)
 			}
 			var want any
 			if err := yaml.Unmarshal([]byte(tt.want), &want); err != nil {
@@ -100,9 +100,9 @@ taints: []
 			}
 
 			// Stored node-specific input is specialized again when it is read back.
-			again, err := WithNodeRegistration(got, tt.registration)
+			again, err := withNodeRegistration(got, tt.registration)
 			if err != nil {
-				t.Fatalf("WithNodeRegistration() on specialized input error = %v", err)
+				t.Fatalf("withNodeRegistration() on specialized input error = %v", err)
 			}
 			if string(again.Config.Content) != string(got.Config.Content) {
 				t.Fatalf("respecialized input changed:\n%s\nwant:\n%s", again.Config.Content, got.Config.Content)
@@ -184,7 +184,7 @@ kind: ClusterConfiguration
 		t.Fatal(err)
 	}
 
-	got, err := WithoutNodeRegistration(plan)
+	got, _, err := withoutNodeRegistration(plan, false)
 	if err != nil {
 		t.Fatal(err)
 	}

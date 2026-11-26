@@ -117,13 +117,9 @@ func (s *Server) validateBootstrapContinuation(previous operation.OperationRecor
 			return fmt.Errorf("failed bootstrap has no pinned input and its local candidate snapshot is unavailable; preserve node state for repair: %w", err)
 		}
 		ref := candidate.Manifest.Node.Kubernetes.Kubeadm.ConfigRef
-		input, ok := candidate.KubeadmConfigs[ref]
-		if !ok || ref != selected.Input.ConfigRef || input.Config.RenderPath != selected.Input.Path {
+		input := candidate.Kubeadm
+		if ref == "" || input.Name() != ref || ref != selected.Input.ConfigRef || kubeadmconfig.ConfigPath(ref) != selected.Input.Path {
 			return fmt.Errorf("failed bootstrap candidate does not own the recorded source input; preserve node state for repair")
-		}
-		input, err = kubeadmconfig.WithNodeRegistration(input, kubeadmconfig.RegistrationFor(candidate.Manifest.Node))
-		if err != nil {
-			return fmt.Errorf("normalize failed bootstrap candidate input: %w", err)
 		}
 		digest, err := input.InputDigest()
 		if err != nil || digest != selected.Input.Digest {
@@ -191,7 +187,7 @@ func (s *Server) validateBootstrapContinuation(previous operation.OperationRecor
 	if want.ExternalWorker {
 		// A native kubelet enrollment survives a boot only when its durable
 		// configuration and bootstrap identity still match the accepted request.
-		input := selected.Configuration.KubeadmConfigs[selected.Input.ConfigRef]
+		input := selected.Configuration.Kubeadm.Plan()
 		expected, err := externalKubeletConfig(input.Config.Content)
 		if err != nil {
 			return err

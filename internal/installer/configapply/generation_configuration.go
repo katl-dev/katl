@@ -19,8 +19,9 @@ const maxGenerationAncestry = 256
 // Persist it before publishing the generation so pruning its history cannot
 // change the configuration used by a later operation.
 type GenerationConfiguration struct {
-	Manifest       manifest.Manifest
-	KubeadmConfigs map[string]kubeadmconfig.Plan
+	Manifest manifest.Manifest
+	// Kubeadm is the node's kubeadm input, zero when the manifest names none.
+	Kubeadm kubeadmconfig.NodeInput
 }
 
 type configurationFile struct {
@@ -48,9 +49,9 @@ func ReadGenerationConfiguration(root, id string) (GenerationConfiguration, erro
 	if err != nil {
 		return GenerationConfiguration{}, err
 	}
-	return readConfiguration(value, func(ref string) (kubeadmconfig.Plan, error) {
-		plan, _, err := ReadEffectiveGenerationKubeadmConfig(root, id, ref)
-		return plan, err
+	return readConfiguration(value, func(ref string) (kubeadmconfig.NodeInput, error) {
+		input, _, err := ReadEffectiveGenerationKubeadmConfig(root, id, ref, value.Node)
+		return input, err
 	})
 }
 
@@ -62,20 +63,24 @@ func ReadLocalGenerationConfiguration(root, id string) (GenerationConfiguration,
 	if err != nil {
 		return GenerationConfiguration{}, err
 	}
-	return readConfiguration(value, func(ref string) (kubeadmconfig.Plan, error) {
-		return readGenerationKubeadmConfig(root, id, ref)
+	return readConfiguration(value, func(ref string) (kubeadmconfig.NodeInput, error) {
+		files, err := readGenerationKubeadmFiles(root, id, ref)
+		if err != nil {
+			return kubeadmconfig.NodeInput{}, err
+		}
+		return kubeadmconfig.ReadNodeInput(ref, files, value.Node)
 	})
 }
 
-func readConfiguration(value manifest.Manifest, read func(string) (kubeadmconfig.Plan, error)) (GenerationConfiguration, error) {
+func readConfiguration(value manifest.Manifest, read func(string) (kubeadmconfig.NodeInput, error)) (GenerationConfiguration, error) {
 	result := GenerationConfiguration{Manifest: value}
 	ref := strings.TrimSpace(value.Node.Kubernetes.Kubeadm.ConfigRef)
 	if ref != "" {
-		plan, err := read(ref)
+		input, err := read(ref)
 		if err != nil {
 			return GenerationConfiguration{}, err
 		}
-		result.KubeadmConfigs = map[string]kubeadmconfig.Plan{ref: plan}
+		result.Kubeadm = input
 	}
 	return result, nil
 }
@@ -96,11 +101,13 @@ func (value GenerationConfiguration) files() ([]configurationFile, error) {
 	var files []configurationFile
 	ref := strings.TrimSpace(value.Manifest.Node.Kubernetes.Kubeadm.ConfigRef)
 	if ref != "" {
-		plan, ok := value.KubeadmConfigs[ref]
-		if !ok {
+		if value.Kubeadm.IsZero() {
 			return nil, fmt.Errorf("selected kubeadm config %q is missing", ref)
 		}
-		files, err = generationKubeadmFiles(ref, plan)
+		if value.Kubeadm.Name() != ref {
+			return nil, fmt.Errorf("selected kubeadm config %q holds input %q", ref, value.Kubeadm.Name())
+		}
+		files, err = generationKubeadmFiles(value.Kubeadm)
 		if err != nil {
 			return nil, err
 		}

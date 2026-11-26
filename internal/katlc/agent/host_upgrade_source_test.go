@@ -24,9 +24,8 @@ func TestUpgradeSourceConfigurationFromFrozenSnapshot(t *testing.T) {
 	if configuration.Manifest.Node.Identity.Hostname != "configured-node" {
 		t.Fatalf("configuration reverted to installation: %q", configuration.Manifest.Node.Identity.Hostname)
 	}
-	ref := configuration.Manifest.Node.Kubernetes.Kubeadm.ConfigRef
-	if !strings.Contains(string(configuration.KubeadmConfigs[ref].Config.Content), "maxPods: 117") {
-		t.Fatalf("desired kubeadm input reverted: %s", configuration.KubeadmConfigs[ref].Config.Content)
+	if !strings.Contains(string(configuration.Kubeadm.Plan().Config.Content), "maxPods: 117") {
+		t.Fatalf("desired kubeadm input reverted: %s", configuration.Kubeadm.Plan().Config.Content)
 	}
 	if _, err := configapply.ReadGenerationManifest(host, "bootstrap"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("live source was modified: %v", err)
@@ -99,8 +98,7 @@ func TestUpgradeSnapshotCarriesEffectiveConfiguration(t *testing.T) {
 	if configuration.Manifest.Node.Identity.Hostname != "configured-node" {
 		t.Fatalf("snapshot lost effective host configuration: %q", configuration.Manifest.Node.Identity.Hostname)
 	}
-	ref := configuration.Manifest.Node.Kubernetes.Kubeadm.ConfigRef
-	if !strings.Contains(string(configuration.KubeadmConfigs[ref].Config.Content), "maxPods: 117") {
+	if !strings.Contains(string(configuration.Kubeadm.Plan().Config.Content), "maxPods: 117") {
 		t.Fatal("snapshot lost desired kubeadm input")
 	}
 	if _, err := os.Stat(filepath.Join(snapshot, "var/lib/katl/generations/generation-0/spec.json")); !os.IsNotExist(err) {
@@ -150,7 +148,10 @@ func frozenConfigurationSnapshot(t *testing.T) (string, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	configuration.KubeadmConfigs = map[string]kubeadmconfig.Plan{ref: plan}
+	configuration.Kubeadm, err = kubeadmconfig.ForNode(plan, configuration.Manifest.Node)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := configapply.WriteGenerationConfiguration(host, "generation-0", configuration); err != nil {
 		t.Fatal(err)
 	}

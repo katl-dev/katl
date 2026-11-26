@@ -1035,7 +1035,7 @@ func TestApplyTrustedBundleRejectsUnsafeKubeadmRenderPath(t *testing.T) {
 			"control-plane": plan,
 		},
 	}))
-	if err == nil || !strings.Contains(err.Error(), "cannot own kubeadm-managed /etc/kubernetes state") {
+	if err == nil || !strings.Contains(err.Error(), "rendered kubeadm file path") {
 		t.Fatalf("ApplyTrustedBundle() error = %v, want unsafe kubeadm render rejection; result = %#v", err, result)
 	}
 	if result.Audit.Decision != DecisionRejected || !containsDomain(result.Audit.ChangedDomains, DomainKubeadmConfig) {

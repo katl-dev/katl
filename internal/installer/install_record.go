@@ -45,10 +45,13 @@ func renderInstallGeneration(request installGenerationRequest) (installGeneratio
 
 	files := slices.Clone(request.NativeEtcFiles)
 	if request.NativeEtcFiles == nil {
-		var err error
+		kubeadm, err := nodeKubeadmInput(request.Manifest.Node, request.KubeadmConfigs)
+		if err != nil {
+			return installGenerationResult{}, err
+		}
 		files, err = configdomain.NativeEtcFiles(configdomain.RenderRequest{
 			Manifest:           request.Manifest,
-			KubeadmConfigs:     request.KubeadmConfigs,
+			Kubeadm:            kubeadm,
 			KubernetesVersion:  firstNonEmpty(request.KubernetesVersion, selectedKubernetesPayloadVersion(request.Record)),
 			DeferKubeadmInputs: true,
 		})

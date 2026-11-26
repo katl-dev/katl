@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/disk"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
@@ -1971,7 +1972,7 @@ func validateKubeadmControlPlaneConfig(request KubeadmControlPlaneConfig) error 
 	if request.NodeCount < 1 || request.NodePosition < 1 || request.NodePosition > request.NodeCount {
 		return fmt.Errorf("kubeadmControlPlaneConfig node position must identify one node in the rollout")
 	}
-	if filepath.Base(request.ConfigName) != request.ConfigName || request.ConfigPath != "/etc/katl/kubeadm/"+request.ConfigName+"/config.yaml" {
+	if filepath.Base(request.ConfigName) != request.ConfigName || request.ConfigPath != kubeadmconfig.ConfigPath(request.ConfigName) {
 		return fmt.Errorf("kubeadmControlPlaneConfig config path is invalid")
 	}
 	for name, value := range map[string]string{

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"gopkg.in/yaml.v3"
 )
 
@@ -398,7 +399,7 @@ func kubeadmConfigPath(node inventory.PlannedNode) string {
 		return node.KubeadmConfig.Path
 	}
 	if strings.TrimSpace(node.KubeadmConfig.Ref) != "" {
-		return "/etc/katl/kubeadm/" + node.KubeadmConfig.Ref + "/config.yaml"
+		return kubeadmconfig.ConfigPath(node.KubeadmConfig.Ref)
 	}
 	return ""
 }

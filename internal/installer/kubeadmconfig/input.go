@@ -39,7 +39,7 @@ func (p Plan) InputFiles() ([]File, error) {
 		return nil, err
 	}
 	return append(files, File{
-		RenderPath: filepath.Join("/etc/katl/kubeadm", p.Name, inputMetadataFile),
+		RenderPath: filepath.Join(inputRoot, p.Name, inputMetadataFile),
 		Content:    data, Mode: 0o644,
 	}), nil
 }
@@ -47,7 +47,7 @@ func (p Plan) InputFiles() ([]File, error) {
 // PlanFromInputFiles separates persisted ownership metadata from native inputs.
 // Missing metadata keeps legacy inputs unproven as a shared base.
 func PlanFromInputFiles(name string, files []File) (Plan, error) {
-	metadataPath := filepath.Join("/etc/katl/kubeadm", name, inputMetadataFile)
+	metadataPath := filepath.Join(inputRoot, name, inputMetadataFile)
 	var native []File
 	var metadata inputMetadata
 	found := false

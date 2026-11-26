@@ -65,7 +65,7 @@ type File struct {
 // PatchRelativePath preserves native kubeadm's directory ordering while keeping
 // every patch within the selected configuration's owned subtree.
 func (p Plan) PatchRelativePath(patch File) (string, error) {
-	rel, err := filepath.Rel(filepath.Join("/etc/katl/kubeadm", p.Name, "patches"), patch.RenderPath)
+	rel, err := filepath.Rel(PatchesDir(p.Name), patch.RenderPath)
 	if err != nil || !filepath.IsLocal(rel) || rel == "." {
 		return "", fmt.Errorf("invalid kubeadm patch path %q for configuration %q", patch.RenderPath, p.Name)
 	}
@@ -119,7 +119,7 @@ func Resolve(request ResolveRequest) (Plan, error) {
 	if err != nil {
 		return Plan{}, fmt.Errorf("read kubeadm config: %w", err)
 	}
-	renderBase := "/etc/katl/kubeadm/" + request.Object.Metadata.Name
+	renderBase := inputRoot + "/" + request.Object.Metadata.Name
 	patchesRenderDir := renderBase + "/patches"
 	documents, err := validateKubeadmYAML(configData, patchesRenderDir)
 	if err != nil {
@@ -146,7 +146,7 @@ func PlanFromRenderedFiles(name string, files []File) (Plan, error) {
 	if err := validateName("name", name); err != nil {
 		return Plan{}, err
 	}
-	renderBase := "/etc/katl/kubeadm/" + name
+	renderBase := inputRoot + "/" + name
 	configPath := renderBase + "/config.yaml"
 	patchesRenderDir := renderBase + "/patches"
 	var config File

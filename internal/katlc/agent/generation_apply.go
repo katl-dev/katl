@@ -185,6 +185,7 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 							CandidateGenerationId: candidateID,
 							ChangedDomains:        []string{configapply.DomainHostConfiguration},
 							Diagnostics:           diagnostics,
+							Warnings:              plan.Plan.Decision.Warnings,
 						}, nil
 					}
 					return &agentapi.ConfigValidationResult{
@@ -196,6 +197,7 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 						CandidateGenerationId: candidateID,
 						Diagnostics:           append([]string{"configuration files match, but runtime state is not current; reboot to reapply and verify the selected host configuration"}, diagnostics...),
 						NoChanges:             true,
+						Warnings:              plan.Plan.Decision.Warnings,
 					}, nil
 				}
 			}
@@ -207,6 +209,7 @@ func (s *Server) ValidateConfig(ctx context.Context, req *agentapi.ValidateConfi
 				RequestedApplyMode:    applyMode,
 				CandidateGenerationId: candidateID,
 				NoChanges:             true,
+				Warnings:              plan.Plan.Decision.Warnings,
 			}, nil
 		}
 		return rejected(err, configApplyDiagnostics(plan.Plan.Decision)), nil
@@ -1049,7 +1052,7 @@ func configApplyBase(root string, nodeName string, generationID string, now func
 		GenerationID:                    strings.TrimSpace(generationID),
 		CurrentManifest:                 currentManifest,
 		CurrentRecord:                   current,
-		KubeadmConfigs:                  configuration.KubeadmConfigs,
+		KubeadmConfigs:                  kubeadmPlans(configuration),
 		RuntimeKubernetesVersion:        kubernetesVersion,
 		RuntimeKubernetesActivationPath: kubernetesActivationPath,
 		KubernetesInitialized:           controlPlaneKubernetesInitialized(root),
@@ -1074,6 +1077,15 @@ func controlPlaneKubernetesInitialized(root string) bool {
 		}
 	}
 	return false
+}
+
+// kubeadmPlans is the kubeadm input an apply starts from, which inline input
+// in the request may replace.
+func kubeadmPlans(configuration configapply.GenerationConfiguration) map[string]kubeadmconfig.Plan {
+	if configuration.Kubeadm.IsZero() {
+		return nil
+	}
+	return map[string]kubeadmconfig.Plan{configuration.Kubeadm.Name(): configuration.Kubeadm.Plan()}
 }
 
 func clusterIntentKubernetesActivationPath(intent installer.ClusterIntent) string {

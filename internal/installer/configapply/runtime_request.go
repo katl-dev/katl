@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"sort"
 	"strings"
@@ -139,6 +138,13 @@ func (document nodeConfigurationChangeDocument) request(base TrustedBundleReques
 		return TrustedBundleRequest{}, err
 	}
 	request.KubeadmConfigs = kubeadmConfigs
+	request.inlineKubeadmRefs = nil
+	for name := range document.Spec.KubeadmConfigs {
+		if request.inlineKubeadmRefs == nil {
+			request.inlineKubeadmRefs = map[string]struct{}{}
+		}
+		request.inlineKubeadmRefs[name] = struct{}{}
+	}
 	request.SystemExtensionPayloads = slices.Clone(document.Spec.SystemExtensionPayloads)
 	request.ClusterDefaults = document.Spec.ClusterDefaults.nodeOverlay(changedKubeadmConfigs)
 	request.SystemRoleOverrides = nodeOverlayMap(document.Spec.SystemRoleOverrides, changedKubeadmConfigs)
@@ -261,7 +267,7 @@ func mergeInlineKubeadmConfigs(installed map[string]kubeadmconfig.Plan, inline m
 	for _, name := range names {
 		input := inline[name]
 		files := []kubeadmconfig.File{{
-			RenderPath: "/etc/katl/kubeadm/" + name + "/config.yaml",
+			RenderPath: kubeadmconfig.ConfigPath(name),
 			Content:    []byte(input.Config),
 			Mode:       0o644,
 		}}
@@ -279,7 +285,7 @@ func mergeInlineKubeadmConfigs(installed map[string]kubeadmconfig.Plan, inline m
 				return nil, nil, fmt.Errorf("spec.kubeadmConfigs.%s.patches: %q must contain kubeadm patch YAML", name, patchName)
 			}
 			files = append(files, kubeadmconfig.File{
-				RenderPath: filepath.ToSlash(filepath.Join("/etc/katl/kubeadm", name, "patches", patchName)),
+				RenderPath: filepath.ToSlash(filepath.Join(kubeadmconfig.PatchesDir(name), patchName)),
 				Content:    []byte(input.Patches[patchName]),
 				Mode:       0o644,
 			})
@@ -291,51 +297,10 @@ func mergeInlineKubeadmConfigs(installed map[string]kubeadmconfig.Plan, inline m
 		plan.NodeLocalKubelet = input.NodeLocalKubelet
 		plan.SharedKubeletBase = input.SharedKubeletBase
 		previous, exists := installed[name]
-		if !exists || !equivalentKubeadmInputs(previous, plan) {
+		if !exists || !kubeadmconfig.SameSharedConfig(previous, plan) {
 			changed[name] = struct{}{}
 		}
 		configs[name] = plan
 	}
 	return configs, changed, nil
-}
-
-// equivalentKubeadmInputs compares inputs ignoring node registration, which
-// the identity and metadata domains plan; it does not own registration. It
-// reconciles the forms generations already hold: v2026.11.0 and v2026.11.1
-// applies stored the shared input, bootstrap and join stored it registered,
-// and a label or taint edit leaves an earlier registration. Hand-written
-// inline input is not validated against the reserved fields, so a change only
-// there, such as dropping InitConfiguration taints before bootstrap, is stored
-// but not reported as a kubeadm change.
-func equivalentKubeadmInputs(previous, desired kubeadmconfig.Plan) bool {
-	previous, err := kubeadmconfig.WithoutNodeRegistration(previous)
-	if err != nil {
-		return false
-	}
-	desired, err = kubeadmconfig.WithoutNodeRegistration(desired)
-	if err != nil {
-		return false
-	}
-	return equivalentKubeadmPlans(previous, desired)
-}
-
-func equivalentKubeadmPlans(previous, desired kubeadmconfig.Plan) bool {
-	if previous.NodeLocalKubelet != desired.NodeLocalKubelet || previous.SharedKubeletBase != desired.SharedKubeletBase {
-		return false
-	}
-	previousFiles := previous.NativeEtcFiles()
-	desiredFiles := desired.NativeEtcFiles()
-	if len(previousFiles) != len(desiredFiles) {
-		return false
-	}
-	for i := range previousFiles {
-		previousContent := strings.TrimSuffix(previousFiles[i].Content, "\n")
-		desiredContent := strings.TrimSuffix(desiredFiles[i].Content, "\n")
-		previousFiles[i].Content = ""
-		desiredFiles[i].Content = ""
-		if previousContent != desiredContent || !reflect.DeepEqual(previousFiles[i], desiredFiles[i]) {
-			return false
-		}
-	}
-	return true
 }

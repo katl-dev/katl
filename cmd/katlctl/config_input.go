@@ -11,6 +11,7 @@ import (
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 )
 
 type katlConfigInput struct {
@@ -53,7 +54,7 @@ func loadNodeConfiguration(ctx context.Context, path string, planning configbund
 			result.Nodes[node.Name] = configapply.RenderNodeRequest{
 				NodeName:                  node.Name,
 				Manifest:                  node.InstallManifest,
-				KubeadmConfigs:            compiled.NodeKubeadmConfigs[node.Name],
+				Kubeadm:                   compiled.NodeKubeadmConfigs[node.Name],
 				SourceID:                  compiled.ClusterName,
 				SystemExtensionSelections: &selections,
 				APIProxy:                  node.APIProxy,
@@ -75,10 +76,21 @@ func loadNodeConfiguration(ctx context.Context, path string, planning configbund
 		if err != nil {
 			return nodeConfigurationInput{}, err
 		}
+		var kubeadm kubeadmconfig.NodeInput
+		if ref := selected.InstallManifest.Node.Kubernetes.Kubeadm.ConfigRef; ref != "" {
+			plan, ok := selected.KubeadmConfigs[ref]
+			if !ok {
+				return nodeConfigurationInput{}, fmt.Errorf("node %s kubeadm config %q was not resolved", node.Name, ref)
+			}
+			kubeadm, err = kubeadmconfig.ForNode(plan, selected.InstallManifest.Node)
+			if err != nil {
+				return nodeConfigurationInput{}, fmt.Errorf("node %s kubeadm config %q: %w", node.Name, ref, err)
+			}
+		}
 		result.Nodes[node.Name] = configapply.RenderNodeRequest{
 			NodeName:                node.Name,
 			Manifest:                selected.InstallManifest,
-			KubeadmConfigs:          selected.KubeadmConfigs,
+			Kubeadm:                 kubeadm,
 			SourceID:                result.ClusterName,
 			SystemExtensionPayloads: configApplySystemExtensionPayloads(selected.SystemExtensionPayloads),
 			APIProxy:                selected.NodeMaterial.APIProxy,

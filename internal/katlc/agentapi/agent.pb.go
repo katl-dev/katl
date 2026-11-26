@@ -2705,8 +2705,10 @@ type ConfigValidationResult struct {
 	NoChanges                                  bool                   `protobuf:"varint,11,opt,name=no_changes,json=noChanges,proto3" json:"no_changes,omitempty"`
 	RequiredDestructiveStorageAcknowledgements []string               `protobuf:"bytes,12,rep,name=required_destructive_storage_acknowledgements,json=requiredDestructiveStorageAcknowledgements,proto3" json:"required_destructive_storage_acknowledgements,omitempty"`
 	RequiredVolumeRebinds                      []string               `protobuf:"bytes,13,rep,name=required_volume_rebinds,json=requiredVolumeRebinds,proto3" json:"required_volume_rebinds,omitempty"`
-	unknownFields                              protoimpl.UnknownFields
-	sizeCache                                  protoimpl.SizeCache
+	// Warnings on a no-change result; accepted changes carry theirs in diagnostics.
+	Warnings      []string `protobuf:"bytes,14,rep,name=warnings,proto3" json:"warnings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *ConfigValidationResult) Reset() {
@@ -2826,6 +2828,13 @@ func (x *ConfigValidationResult) GetRequiredDestructiveStorageAcknowledgements()
 func (x *ConfigValidationResult) GetRequiredVolumeRebinds() []string {
 	if x != nil {
 		return x.RequiredVolumeRebinds
+	}
+	return nil
+}
+
+func (x *ConfigValidationResult) GetWarnings() []string {
+	if x != nil {
+		return x.Warnings
 	}
 	return nil
 }
@@ -7416,7 +7425,7 @@ const file_agent_proto_rawDesc = "" +
 	"$destructive_storage_acknowledgements\x18\f \x03(\tR\"destructiveStorageAcknowledgements\x124\n" +
 	"\x16expected_enrollment_id\x18\r \x01(\tR\x14expectedEnrollmentId\x12?\n" +
 	"\x1cexpected_inventory_node_name\x18\x0e \x01(\tR\x19expectedInventoryNodeName\x12%\n" +
-	"\x0evolume_rebinds\x18\x0f \x03(\tR\rvolumeRebinds\"\xd6\x04\n" +
+	"\x0evolume_rebinds\x18\x0f \x03(\tR\rvolumeRebinds\"\xf2\x04\n" +
 	"\x16ConfigValidationResult\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -7433,7 +7442,8 @@ const file_agent_proto_rawDesc = "" +
 	"\n" +
 	"no_changes\x18\v \x01(\bR\tnoChanges\x12a\n" +
 	"-required_destructive_storage_acknowledgements\x18\f \x03(\tR*requiredDestructiveStorageAcknowledgements\x126\n" +
-	"\x17required_volume_rebinds\x18\r \x03(\tR\x15requiredVolumeRebinds\"\xbe\x05\n" +
+	"\x17required_volume_rebinds\x18\r \x03(\tR\x15requiredVolumeRebinds\x12\x1a\n" +
+	"\bwarnings\x18\x0e \x03(\tR\bwarnings\"\xbe\x05\n" +
 	"\x16GenerationApplyRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
