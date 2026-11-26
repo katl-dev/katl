@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/efiboot"
 )
 
 const (
@@ -49,51 +51,58 @@ type BootDefaultSetter func(root string, bootEntry string) error
 // decides promotion.
 func RecordBootedGeneration(root, commandLine string) error {
 	root = cleanRoot(root)
-	return withStateLock(filepath.Join(root, "var/lib/katl/boot"), func() error {
-		selection, err := ReadBootSelection(root)
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-		generationID, err := SelectedGenerationFromCommandLine(commandLine)
-		if err != nil {
-			return err
-		}
-		spec, _, err := ReadGeneration(root, generationID)
-		if err != nil {
-			return err
-		}
-		if err := validatePendingBootTarget(selection, generationID); err != nil {
-			return err
-		}
-		observed := inferBootedSelection(selection, spec, generationID, commandLine)
-		if err := validateBootedSelection(observed, spec, generationID, commandLine); err != nil {
-			return err
-		}
-		// Activation reruns when systemd-sysext.service restarts. Only its
-		// first run in a boot replaces an active generation left by the
-		// previous boot; later runs must keep a live promotion from this boot.
-		_, recorded, err := readCurrentBoot(root)
-		if err != nil {
-			return err
-		}
-		if !recorded {
-			observed.ActiveGenerationID = generationID
-			observed.BootedOneShot = false
-		}
-		if observed != selection {
-			observed.UpdatedAt = time.Now().UTC()
-			if err := WriteBootSelection(root, observed); err != nil {
+	generationID, err := SelectedGenerationFromCommandLine(commandLine)
+	if err != nil {
+		return err
+	}
+	return withBootState(root, generationID, efiboot.Reader{}.Read, func(state bootState) error {
+		if state.intent != nil {
+			if _, err := state.intent.activationRecord(root, generationID, commandLine); err != nil {
 				return err
 			}
+			return writeCurrentBoot(root, currentBoot{GenerationID: generationID})
 		}
-		if recorded {
-			return nil
-		}
-		return writeCurrentBoot(root, currentBoot{GenerationID: generationID})
+		return recordLegacyBootedGeneration(root, generationID, commandLine, state.legacy)
 	})
+}
+
+func recordLegacyBootedGeneration(root, generationID, commandLine string, legacy *legacyBootState) error {
+	if legacy == nil {
+		return nil
+	}
+	selection := legacy.selection
+	running := legacy.generations[generationID]
+	if running.err != nil {
+		return running.err
+	}
+	spec := running.spec
+	if err := validatePendingBootTarget(selection, generationID); err != nil {
+		return err
+	}
+	observed := inferBootedSelection(selection, spec, generationID, commandLine)
+	if err := validateBootedSelection(observed, spec, generationID, commandLine); err != nil {
+		return err
+	}
+	// Only the first activation replaces an active generation left by a
+	// previous boot. Later runs preserve this boot's live promotion.
+	_, recorded, err := readCurrentBoot(root)
+	if err != nil {
+		return err
+	}
+	if !recorded {
+		observed.ActiveGenerationID = generationID
+		observed.BootedOneShot = false
+	}
+	if observed != selection {
+		observed.UpdatedAt = time.Now().UTC()
+		if err := WriteBootSelection(root, observed); err != nil {
+			return err
+		}
+	}
+	if recorded {
+		return nil
+	}
+	return writeCurrentBoot(root, currentBoot{GenerationID: generationID})
 }
 
 // currentBootPath records that activation has run since the kernel started.
@@ -154,7 +163,7 @@ type LivePromotionRequest struct {
 // upgrade, whose boot payload is identical to the runtime that was just
 // validated and therefore does not require a disruptive trial reboot.
 func PromoteLiveGeneration(request LivePromotionRequest) error {
-	return withStateLock(filepath.Join(cleanRoot(request.Root), "var/lib/katl/boot"), func() error { return promoteLiveGeneration(request) })
+	return WithLegacyBootState(request.Root, func() error { return promoteLiveGeneration(request) })
 }
 
 func promoteLiveGeneration(request LivePromotionRequest) error {
@@ -322,16 +331,20 @@ func promoteLiveGeneration(request LivePromotionRequest) error {
 }
 
 func RecordBootHealth(request BootHealthRequest) (BootHealthResult, error) {
+	return recordBootHealth(request, efiboot.Reader{}.Read)
+}
+
+func recordBootHealth(request BootHealthRequest, readEFI func(string) (efiboot.Entries, error)) (BootHealthResult, error) {
 	var result BootHealthResult
-	err := withStateLock(filepath.Join(cleanRoot(request.Root), "var/lib/katl/boot"), func() error {
+	err := WithLegacyBootState(request.Root, func() error {
 		var err error
-		result, err = recordBootHealth(request)
+		result, err = updateBootHealth(request, readEFI)
 		return err
 	})
 	return result, err
 }
 
-func recordBootHealth(request BootHealthRequest) (BootHealthResult, error) {
+func updateBootHealth(request BootHealthRequest, readEFI func(string) (efiboot.Entries, error)) (BootHealthResult, error) {
 	now := request.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -351,7 +364,7 @@ func recordBootHealth(request BootHealthRequest) (BootHealthResult, error) {
 	case BootHealthSuccess:
 		return promoteBootedGeneration(request, generationID, now)
 	case BootHealthFailure, BootHealthTimeout:
-		return failBootedGeneration(request, generationID, now)
+		return failBootedGeneration(request, generationID, now, readEFI)
 	default:
 		return BootHealthResult{}, fmt.Errorf("boot health result must be success, failure, or timeout")
 	}
@@ -476,7 +489,7 @@ func promoteBootedGeneration(request BootHealthRequest, generationID string, now
 	}, nil
 }
 
-func failBootedGeneration(request BootHealthRequest, generationID string, now time.Time) (BootHealthResult, error) {
+func failBootedGeneration(request BootHealthRequest, generationID string, now time.Time, readEFI func(string) (efiboot.Entries, error)) (BootHealthResult, error) {
 	root := cleanRoot(request.Root)
 	selection, err := ReadBootSelection(root)
 	if err != nil {
@@ -516,8 +529,11 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 		if !selection.PendingHealthValidation && strings.TrimSpace(selection.TargetBootGenerationID) == boot.GenerationID {
 			// Both manual selection modes write LoaderEntryOneShot. Its presence
 			// protects a selection for a later boot of this same generation.
-			_, err := os.Stat(rootedPathUnchecked(root, loaderEntryOneShotPath))
-			if errors.Is(err, os.ErrNotExist) {
+			efi, err := readEFI(root)
+			if err != nil {
+				return BootHealthResult{}, fmt.Errorf("check EFI one-shot boot selection: %w", err)
+			}
+			if efi.OneShot == "" {
 				// Retain the consumed one-shot as evidence about the running boot.
 				// Health retries and activation of the default still need it.
 				selection.BootedOneShot = selection.BootedOneShot || (selection.OneShot && generationID != selection.DefaultGenerationID)
@@ -528,8 +544,6 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 				if err := WriteBootSelection(root, selection); err != nil {
 					return BootHealthResult{}, err
 				}
-			} else if err != nil {
-				return BootHealthResult{}, fmt.Errorf("check EFI one-shot boot selection: %w", err)
 			}
 		}
 		return BootHealthResult{

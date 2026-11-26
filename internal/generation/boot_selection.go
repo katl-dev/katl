@@ -14,11 +14,11 @@ const (
 
 	DefaultPromotionPending = "pending"
 	DefaultPromotionDone    = "promoted"
-
-	loaderEntryOneShotPath = "/sys/firmware/efi/efivars/LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 )
 
 type BootSelectionRecord struct {
+	Revision                      uint64    `json:"revision,omitempty"`
+	SpentRecoveryTrialID          string    `json:"spentRecoveryTrialID,omitempty"`
 	OneShot                       bool      `json:"oneShot,omitempty"`
 	APIVersion                    string    `json:"apiVersion"`
 	Kind                          string    `json:"kind"`
@@ -60,7 +60,7 @@ func (selection BootSelectionRecord) NextBootGenerationID() string {
 }
 
 func BootSelectionPath(root string) (string, error) {
-	return rootedPath(root, "/var/lib/katl/boot/selection.json")
+	return rootedPath(root, bootStateDir+"/selection.json")
 }
 
 func ReadBootSelection(root string) (BootSelectionRecord, error) {
@@ -120,6 +120,11 @@ func ValidateBootSelection(selection BootSelectionRecord) error {
 	}
 	if selection.Kind != BootSelectionKind {
 		return fmt.Errorf("boot selection kind must be %q", BootSelectionKind)
+	}
+	if selection.SpentRecoveryTrialID != "" {
+		if err := validateMoveID("spentRecoveryTrialID", selection.SpentRecoveryTrialID); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(selection.DefaultGenerationID) == "" && !selection.RecoveryRequired {
 		return fmt.Errorf("boot selection defaultGenerationID is required")

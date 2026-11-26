@@ -337,6 +337,16 @@ func TestRunRecoveryKeepsKnownGood(t *testing.T) {
 			if err == nil {
 				t.Fatal("successful exit would trigger the recovery service's SuccessAction=reboot")
 			}
+			if tc.name == "one-shot" {
+				if !strings.Contains(err.Error(), "mount efivarfs") {
+					t.Fatalf("recovery with unreadable EFI = %v, want mount guidance", err)
+				}
+				got, err := generation.ReadBootSelection(root)
+				if err != nil || got != selection {
+					t.Fatalf("recovery with unreadable EFI changed one-shot selection: %#v, %v", got, err)
+				}
+				return
+			}
 			for _, want := range []string{
 				"running generation " + running + " stays known-good", "boot default is generation gen2",
 				"Generation " + tc.next + " is selected for the next boot", "No automatic reboot",

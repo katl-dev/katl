@@ -664,6 +664,11 @@ func testEFIVarFS(_ int, fs *unix.Statfs_t) error {
 	return nil
 }
 
+const (
+	efiVarsPath   = "/sys/firmware/efi/efivars"
+	loaderVarGUID = "-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
+)
+
 func writeTestEFIVariable(t *testing.T, dir, name, value string) {
 	t.Helper()
 	data := []byte{7, 0, 0, 0}

@@ -400,13 +400,16 @@ func TestFailedBootConsumesManualSelection(t *testing.T) {
 				wantDefault = "current"
 			}
 
-			result, err := RecordBootHealth(BootHealthRequest{
+			if err := os.MkdirAll(filepath.Join(root, "sys/firmware/efi/efivars"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			result, err := recordBootHealth(BootHealthRequest{
 				Root: root, CommandLine: bootHealthCommandLine("old"), Result: BootHealthFailure, RequestReboot: true, Now: now,
 				SetBootDefault: func(_, value string) error {
 					t.Fatalf("unexpected EFI default write to %s", value)
 					return nil
 				},
-			})
+			}, mountedBootHealthEFI.Read)
 			if err != nil {
 				t.Fatal(err)
 			}

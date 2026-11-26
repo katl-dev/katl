@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 )
 
@@ -26,7 +25,11 @@ func ArmBootRecovery(root string, generationID string) (bool, error) {
 	}
 
 	var armed bool
-	err := withStateLock(filepath.Join(root, "var/lib/katl/boot"), func() error {
+	err := withBootStateLock(root, func() error {
+		intent, err := readBootMoveIntent(root)
+		if err != nil || intent != nil {
+			return err
+		}
 		if err := ClearBootRecovery(root); err != nil {
 			return err
 		}

@@ -26,6 +26,7 @@ import (
 	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/bootstrap/cluster"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
+	"github.com/katl-dev/katl/internal/efiboot"
 	"github.com/katl-dev/katl/internal/externalworker"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer"
@@ -180,8 +181,13 @@ func (s *Server) Reboot(ctx context.Context, req *agentapi.RebootRequest) (*agen
 	if len(active) > 0 {
 		return nil, status.Error(codes.FailedPrecondition, "cannot reboot while another operation is active")
 	}
-	if err := s.checkRebootTarget(ctx, target); err != nil {
-		return nil, status.Errorf(codes.FailedPrecondition, "refuse reboot: %v. Check 'katlctl node generations list' and restore the boot target before retrying", err)
+	if err := generation.WithLegacyBootState(s.Root, func() error {
+		if err := s.checkRebootTarget(ctx, target); err != nil {
+			return fmt.Errorf("%w. Check 'katlctl node generations list' and restore the boot target before retrying", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, status.Errorf(codes.FailedPrecondition, "refuse reboot: %v", err)
 	}
 	if s.RunReboot == nil {
 		return nil, status.Error(codes.FailedPrecondition, "node reboot runner is not configured")
@@ -219,7 +225,7 @@ func (s *Server) checkRebootTarget(ctx context.Context, target string) error {
 	if s.runBootctl == nil {
 		return fmt.Errorf("boot entry inspection is not configured")
 	}
-	efiEntries, err := s.readEFIBootEntries()
+	efiEntries, err := (efiboot.Reader{Statfs: s.efiStatfs}).Read(runtimeRoot(s.Root))
 	if err != nil {
 		return fmt.Errorf("next systemd-boot entry is indeterminate: %w", err)
 	}
@@ -263,7 +269,7 @@ func (s *Server) checkRebootTarget(ctx context.Context, target string) error {
 			}
 			// A one-shot overrides the persistent variable. When both are
 			// absent on efivarfs, bootctl can report the loader.conf default.
-			if efiEntry := cmp.Or(efiEntries[0], efiEntries[1]); efiEntry != "" && !strings.EqualFold(entry.ID, efiEntry) {
+			if efiEntry := cmp.Or(efiEntries.OneShot, efiEntries.Default); efiEntry != "" && !strings.EqualFold(entry.ID, efiEntry) {
 				return fmt.Errorf("next systemd-boot entry is indeterminate: EFI names entry %q but bootctl reports %q. Select generation %s with 'katlctl node generations select' before retrying", efiEntry, entry.ID, target)
 			}
 			return nil
@@ -321,8 +327,12 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "read enrollment identity: %v", err)
 	}
-	currentGenerationID, _ := currentGenerationID(s.Root)
+	targets, targetErr := readNodeBootTargets(s.Root)
+	currentGenerationID, bootTargetGenerationID := targets.Current, targets.Next
 	bootHealth := s.nodeBootHealth(ctx)
+	if errors.Is(targetErr, generation.ErrBootMoveBlocked) {
+		bootHealth.Diagnostic = targetErr.Error()
+	}
 	endpointStatus, err := controlPlaneEndpointStatus(s.Root)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "read control-plane endpoint status: %v", err)
@@ -334,12 +344,6 @@ func (s *Server) GetNodeStatus(ctx context.Context, _ *agentapi.GetNodeStatusReq
 	kubernetesStatus, err := nodeKubernetesStatus(ctx, s.Root, s.RunKubernetesStatus)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "read Kubernetes status: %v", err)
-	}
-	bootTargetGenerationID := currentGenerationID
-	if selection, selectionErr := generation.ReadBootSelection(s.Root); selectionErr == nil {
-		if target := selection.NextBootGenerationID(); target != "" {
-			bootTargetGenerationID = target
-		}
 	}
 	systemExtensions, err := nodeSystemExtensionStatus(ctx, s.Root, currentGenerationID, bootTargetGenerationID, s.RunSystemExtensionStatus)
 	if err != nil {

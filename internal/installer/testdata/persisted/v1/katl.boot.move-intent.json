@@ -1,0 +1,39 @@
+{
+  "recordType": "katl.boot.move-intent",
+  "recordVersion": 1,
+  "payload": {
+    "operationID": "recover-gen1",
+    "bootID": "6baea692-085e-49ac-9bd6-c948a8da8406",
+    "expectedSelectionRevision": 7,
+    "sourceGenerationID": "gen1",
+    "destinationGenerationID": "gen2",
+    "priorDefault": {"generationID": "gen0", "entry": "katl-gen0.conf"},
+    "priorOneShot": {"generationID": "gen1", "entry": ""},
+    "desiredDefault": {"generationID": "gen2", "entry": "katl-gen2.conf"},
+    "desiredOneShot": {"generationID": "gen3", "entry": "katl-gen3.conf"},
+    "desiredSelection": {
+      "apiVersion": "katl.dev/v1alpha1",
+      "kind": "BootSelection",
+      "revision": 8,
+      "spentRecoveryTrialID": "trial-gen1",
+      "defaultGenerationID": "gen2",
+      "defaultBootEntry": "loader/entries/katl-gen2.conf",
+      "targetBootGenerationID": "gen3",
+      "targetBootEntry": "loader/entries/katl-gen3.conf",
+      "oneShot": true,
+      "pendingHealthValidation": false,
+      "recoveryRequired": false,
+      "updatedAt": "2026-11-26T15:00:00Z"
+    },
+    "statusChanges": [{
+      "generationID": "gen1",
+      "at": "2026-11-26T14:59:00Z",
+      "reason": "trial failed",
+      "commitState": "committed",
+      "bootState": "failed",
+      "healthState": "unhealthy",
+      "unavailableReason": ""
+    }],
+    "reboot": {"trialID": "trial-gen1", "eligible": true, "spent": true}
+  }
+}

@@ -53,6 +53,72 @@ selection pointers.
 Katl may validate systemd-boot state and sysupdate-staged resources, but those
 states are never authoritative over Katl generation selection.
 
+## Durable boot-move intent
+
+The runtime reads `/var/lib/katl/boot/move-intent.json` under the boot-state
+lock before it interprets the legacy pending target. A separate file lets
+runtimes continue reading `selection.json` in its existing format while the
+intent reader rolls out to every generation the node can boot. The
+reader-only runtime creates no intent.
+
+The v1 file uses the persisted-record JSON envelope with
+`recordType: katl.boot.move-intent` and `recordVersion: 1`. The payload contains
+the following fields.
+
+| Field | Meaning |
+| --- | --- |
+| `operationID`, `bootID` | The unique ID of the move and the kernel boot ID of the boot that began it. A subsequent boot can encounter the same move. |
+| `expectedSelectionRevision`, `desiredSelection` | The compare-and-set input and the exact `BootSelection` payload to publish. Its `revision` is one greater than the expected revision. Reconciliation can distinguish a move awaiting publication from one already published. |
+| `sourceGenerationID`, `destinationGenerationID` | The generation the operation moves from and the intended destination. An empty destination records an operation with no safe destination. |
+| `priorDefault`, `priorOneShot`, `desiredDefault`, `desiredOneShot` | Each object records the logical `generationID` and the raw systemd-boot EFI entry ID in `entry`. An empty prior entry means the variable was absent, including when firmware already consumed the one-shot before the move began. Preserve the logical prior one-shot generation in that case. An empty desired default entry uses the loader default. A cleared desired one-shot has both fields empty. |
+| `statusChanges` | An array of absolute changes with at most one per generation. Each carries `generationID`, `at`, `reason`, `commitState`, `bootState`, `healthState`, and `unavailableReason` (empty when clear). Projection uses the intent’s `operationID` as the status transition ID for each generation, so each change applies once. When the change first commits a generation, the projection uses `at` and `operationID` for its commit attribution. An empty array leaves status alone. |
+| `reboot` | An object with `trialID`, `eligible`, and `spent`. An ineligible operation has an empty trial ID and `spent: false`. An eligible operation refers to the ID of the originating trial and can request a reboot once. Once spent, its exact trial ID is stored in `desiredSelection.spentRecoveryTrialID` and published to `selection.json` so retries can recognise it after intent retirement. |
+
+All payload fields are required. The reader rejects a malformed or unreadable
+file and unsupported versions, with recovery guidance. Every nonempty EFI
+entry must match the named generation's loader entry. The desired default and
+any desired target or trial must also agree with the published selection. A
+desired one-shot can repeat the default when the selection has no target or
+trial. Writers can emit a
+format or semantics only after every reachable runtime understands them.
+Future incompatible changes require a new version and a reader rollout
+before those writers are enabled.
+
+When the file is absent, the runtime imports the validated legacy selection
+and the spec-bound statuses of the running and referenced generations under
+the same lock. An omitted `revision` is revision 0, and the import preserves
+`pendingTransactionID`. A staged generation with a predecessor, a trial or
+next-boot pointer, pending health validation, and an operation ID is recorded as a
+legacy trial. First-install health and manual selections have no legacy
+trial. The import also observes `LoaderEntryDefault` and
+`LoaderEntryOneShot` through the shared efivarfs reader. Mounted, readable
+efivarfs distinguishes a consumed or unset one-shot from a read error. A read
+error or a referenced generation record error remains part of the observation.
+Import changes no file or EFI variable.
+
+With an intent present, boot activation checks the kernel-selected generation
+against the four logical targets before interpreting status. The generation
+must pass the kernel root PARTUUID check and the bootability verifier's
+boot-time checks for the bound partition, loader entry, and UKI. If the
+current intent already projected its own slot invalidation, activation can
+still use that generation while the artifacts and identity pass verification.
+Other recorded invalidations still apply. The writer must durably record
+intent before projecting status, then clear the EFI one-shot, set the
+default, and set the desired one-shot. It must verify both variables,
+publish selection, and retire the intent before allowing any slot overwrite.
+The boot-time identity check is sufficient during the intent because the
+writer preserves the slot bytes throughout that interval.
+
+Successful activation records the kernel-selected generation in `/run`.
+During a pending move, node status and the console display that generation
+as current and the intent's desired one-shot or default as the next target
+after the move completes. The reader-only runtime leaves the durable
+selection and intent untouched. It withholds legacy recovery authorization
+and refuses boot health, target moves, and managed reboots. It also keeps
+interrupted live promotion receipts eligible for recovery at a later startup
+after a runtime capable of reconciliation completes the move. A missing
+intent uses the existing boot health and selection path.
+
 ## Transaction Flow
 
 To try a new candidate generation:

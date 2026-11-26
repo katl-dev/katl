@@ -361,18 +361,15 @@ func readDefaultRouteInterface(path string) (string, error) {
 
 func (c Collector) collectGeneration(snapshot *Snapshot) {
 	root := cleanRoot(c.Root)
-	selection, err := generation.ReadBootSelection(root)
+	targets, err := generation.ReadBootTargets(root, nil)
 	if err != nil {
 		snapshot.GenerationError = "generation metadata is unavailable; inspect the KatlOS generation store"
+		if errors.Is(err, generation.ErrBootMoveBlocked) {
+			snapshot.GenerationError = err.Error()
+		}
 		return
 	}
-	id := strings.TrimSpace(selection.ActiveGenerationID)
-	if id == "" {
-		id = strings.TrimSpace(selection.BootedGenerationID)
-	}
-	if id == "" {
-		id = strings.TrimSpace(selection.DefaultGenerationID)
-	}
+	id := targets.Current
 	if id == "" {
 		snapshot.GenerationError = "generation metadata does not identify the running KatlOS generation"
 		return
@@ -384,22 +381,25 @@ func (c Collector) collectGeneration(snapshot *Snapshot) {
 	}
 	snapshot.CurrentSoftware = softwareFromSpec(bootedSpec)
 	snapshot.GenerationHealth = status.HealthState
+	snapshot.BootRecoveryRequired = targets.RecoveryRequired
 
-	nextID := strings.TrimSpace(selection.TargetBootGenerationID)
-	if nextID == "" {
-		nextID = strings.TrimSpace(selection.DefaultGenerationID)
-	}
-	if nextID == "" || nextID == id {
+	nextID := targets.Next
+	switch nextID {
+	case "":
+	case id:
 		snapshot.NextBootSoftware = snapshot.CurrentSoftware
-	} else if spec, _, nextErr := generation.ReadGeneration(root, nextID); nextErr == nil {
-		snapshot.NextBootSoftware = softwareFromSpec(spec)
-	} else {
-		snapshot.NextBootSoftware = Software{Generation: nextID}
-		snapshot.GenerationError = "next-boot generation metadata is unreadable; inspect the KatlOS generation store"
+	default:
+		spec, _, err := generation.ReadGeneration(root, nextID)
+		if err != nil {
+			snapshot.NextBootSoftware = Software{Generation: nextID}
+			snapshot.GenerationError = "next-boot generation metadata is unreadable; inspect the KatlOS generation store"
+		} else {
+			snapshot.NextBootSoftware = softwareFromSpec(spec)
+		}
 	}
 
 	snapshot.LiveSoftware = snapshot.CurrentSoftware
-	target := strings.TrimSpace(selection.TargetBootGenerationID)
+	target := targets.Live
 	if target != "" && target != id {
 		// Bootstrap and online lifecycle operations activate their candidate
 		// before arming it for boot. Report the selected software immediately,

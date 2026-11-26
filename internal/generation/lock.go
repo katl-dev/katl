@@ -13,7 +13,8 @@ func withStateLock(dir string, action func() error) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	lock, err := os.OpenFile(filepath.Join(dir, ".state.lock"), os.O_CREATE|os.O_RDWR, 0o600)
+	// Linux can flock the existing lock file through the console's read-only mount.
+	lock, err := os.OpenFile(filepath.Join(dir, ".state.lock"), os.O_CREATE|os.O_RDONLY, 0o600)
 	if err != nil {
 		return err
 	}

@@ -26,6 +26,7 @@ var acceptedRecords = []persistedrecord.Handler{
 	{RecordType: "katl.generation.status", RecordVersion: 1},
 	{RecordType: "katl.generation.config-apply-status", RecordVersion: 1},
 	{RecordType: "katl.boot.selection", RecordVersion: 1},
+	{RecordType: "katl.boot.move-intent", RecordVersion: 1},
 	{RecordType: "katl.install.status", RecordVersion: 1},
 	{RecordType: "katl.operation.record", RecordVersion: 1},
 	{RecordType: "katl.operation.journal-event", RecordVersion: 1},
@@ -34,6 +35,7 @@ var acceptedRecords = []persistedrecord.Handler{
 }
 
 var acceptedFixtureFiles = []string{
+	"katl.boot.move-intent.json",
 	"katl.boot.selection.json",
 	"katl.cluster.intent.json",
 	"katl.config-request.decision.json",

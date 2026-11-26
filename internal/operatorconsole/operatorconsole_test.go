@@ -517,6 +517,119 @@ func TestCollectorReportsLiveBootstrapCandidateBeforeReboot(t *testing.T) {
 	}
 }
 
+func TestBootstrappedDashboardWithReadOnlyBootState(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		id   string
+	}{
+		{name: "generation zero", id: "0"},
+		{name: "after live config apply", id: "config-apply"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+			testConsoleGeneration(t, root, "0", "2026.11.0", "v1.36.1", now)
+			if tc.id != "0" {
+				testConsoleGeneration(t, root, tc.id, "2026.11.0", "v1.36.1", now)
+			}
+			selection := generation.BootSelectionRecord{
+				APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind,
+				DefaultGenerationID: tc.id, BootedGenerationID: "0", ActiveGenerationID: tc.id, UpdatedAt: now,
+			}
+			if err := generation.WithLegacyBootState(root, func() error {
+				return generation.WriteBootSelection(root, selection)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			for _, path := range []string{"etc/kubernetes/kubelet.conf", "etc/kubernetes/manifests/kube-apiserver.yaml"} {
+				path = filepath.Join(root, path)
+				if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, nil, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// The runtime console's mount namespace exposes boot state read-only.
+			bootDir := filepath.Join(root, "var/lib/katl/boot")
+			entries, err := os.ReadDir(bootDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if err := os.Chmod(filepath.Join(bootDir, entry.Name()), 0o444); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Chmod(bootDir, 0o555); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				if err := os.Chmod(bootDir, 0o755); err != nil {
+					t.Error(err)
+				}
+			})
+			collector := Collector{
+				Mode: ModeRuntime, Root: root,
+				Hostname:   func() (string, error) { return "cp-1", nil },
+				Interfaces: func() ([]net.Interface, error) { return nil, nil },
+				ProbeControlPlanePods: func(context.Context) (ControlPlanePodStatuses, error) {
+					pods := initialControlPlanePods(KubernetesPodRunning)
+					for i := range pods {
+						pods[i].Version = "v1.36.1"
+					}
+					return pods, nil
+				},
+				probeCluster: func(context.Context, string) (clusterStatus, error) {
+					return clusterStatus{Known: true, APIReady: true, Nodes: 2, Ready: 2}, nil
+				},
+			}
+			var snapshot Snapshot
+
+			collector.Collect(&snapshot)
+			rendered := string(renderDashboard(&snapshot, nil, 80, 24, false))
+			for _, want := range []string{"State:Controlplanehealthy", "/2nodesready", "APIserver:v1.36.1(Healthy)", "Controller:v1.36.1(Running)", "Scheduler:v1.36.1(Running)"} {
+				if !containsIgnoringLayout(rendered, want) {
+					t.Fatalf("missing dashboard observation %q:\n%s", want, rendered)
+				}
+			}
+			if snapshot.CurrentSoftware.Generation != tc.id || snapshot.NextBootSoftware.Generation != tc.id || snapshot.LiveSoftware.Generation != tc.id {
+				t.Fatalf("ordinary boot has current=%q, next=%q, live=%q, want %q", snapshot.CurrentSoftware.Generation, snapshot.NextBootSoftware.Generation, snapshot.LiveSoftware.Generation, tc.id)
+			}
+			if strings.Contains(rendered, "Boot recovery") {
+				t.Fatalf("ordinary boot displays a recovery alert:\n%s", rendered)
+			}
+		})
+	}
+}
+
+func TestDashboardBootRecoveryAlert(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		recovery bool
+		next     string
+		want     bool
+	}{
+		{name: "recovery without a target", recovery: true, want: true},
+		{name: "recovery with a target", recovery: true, next: "0"},
+		{name: "incomplete snapshot"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			snapshot := Snapshot{
+				Mode:                 ModeRuntime,
+				CurrentSoftware:      Software{Generation: "0"},
+				NextBootSoftware:     Software{Generation: tc.next},
+				BootRecoveryRequired: tc.recovery,
+			}
+
+			rendered := string(renderDashboard(&snapshot, nil, 80, 24, false))
+			if got := containsIgnoringLayout(rendered, "Boot recovery:No next target for current generation 0"); got != tc.want {
+				t.Fatalf("recovery alert present = %t, want %t:\n%s", got, tc.want, rendered)
+			}
+		})
+	}
+}
+
 func TestCollectorPresentsControlPlaneStateWithoutInternalInterface(t *testing.T) {
 	root := t.TempDir()
 	for _, directory := range []string{

@@ -305,10 +305,10 @@ entry, UKI, and known-good status survive. This matches the released behavior.
 Every trial staged by this version receives full fallback verification at
 staging.
 
-The existing trial and boot-local authorization rules govern when recovery can
-act. The durable boot-move intent and EFI reconciliation are tracked in
-[#732](https://github.com/katl-dev/katl/issues/732) and
-[#733](https://github.com/katl-dev/katl/issues/733).
+The existing trial and boot-local authorization rules govern recovery when
+there is no durable intent. The boot selection transaction decision describes
+the [intent format and reader-only runtime](boot-selection-transaction.md#durable-boot-move-intent).
+EFI reconciliation is tracked in [#733](https://github.com/katl-dev/katl/issues/733).
 
 ## Attempt Count
 

@@ -22,23 +22,22 @@ func nodeSystemExtensionStatus(ctx context.Context, root, currentGeneration, des
 	if currentErr != nil && !errors.Is(currentErr, os.ErrNotExist) {
 		return nil, currentErr
 	}
-	desiredManifest, desiredErr := generationManifest(root, desiredGeneration)
-	if desiredErr != nil {
-		if !errors.Is(desiredErr, os.ErrNotExist) {
-			return nil, desiredErr
-		}
-		desiredManifest = currentManifest
-	}
 	currentSpec, _, currentSpecErr := generation.ReadGeneration(root, currentGeneration)
 	if currentSpecErr != nil && currentGeneration != "" {
 		return nil, currentSpecErr
 	}
-	desiredSpec, _, desiredSpecErr := generation.ReadGeneration(root, desiredGeneration)
-	if desiredSpecErr != nil {
-		if desiredGeneration != currentGeneration && !errors.Is(desiredSpecErr, os.ErrNotExist) {
-			return nil, desiredSpecErr
+	desiredManifest, desiredSpec := currentManifest, currentSpec
+	if desiredGeneration != "" && desiredGeneration != currentGeneration {
+		if value, err := generationManifest(root, desiredGeneration); err == nil {
+			desiredManifest = value
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
 		}
-		desiredSpec = currentSpec
+		if spec, _, err := generation.ReadGeneration(root, desiredGeneration); err == nil {
+			desiredSpec = spec
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
 	}
 	current := extensionsByRepository(currentManifest.Node.SystemExtensions)
 	desired := extensionsByRepository(desiredManifest.Node.SystemExtensions)
@@ -63,7 +62,7 @@ func nodeSystemExtensionStatus(ctx context.Context, root, currentGeneration, des
 			DesiredState:         manifest.SystemExtensionAbsent,
 			DesiredGenerationId:  desiredGeneration,
 			ObservedGenerationId: currentGeneration,
-			RebootRequired:       desiredGeneration != currentGeneration,
+			RebootRequired:       desiredGeneration != "" && desiredGeneration != currentGeneration,
 			StagingState:         "not-selected",
 			ActivationState:      "inactive",
 			Compatibility:        "unknown",

@@ -53,14 +53,16 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	}
 	agentServer := NewServer(root, store)
 	dispatcher := config.Dispatcher
+	var deferredPromotions []string
 	if dispatcher == nil {
 		executor := NewExecutor(root, store, agentServer.AgentStartID)
-		if err := executor.recoverLivePromotions(ctx, currentBootID()); err != nil {
+		deferredPromotions, err = executor.recoverLivePromotions(ctx, currentBootID())
+		if err != nil {
 			return err
 		}
 		dispatcher = executor
 	}
-	if _, err := AuditStartup(store, timeNow()); err != nil {
+	if _, err := AuditStartup(store, timeNow(), deferredPromotions...); err != nil {
 		return err
 	}
 	if err := recoverInterruptedConfigApplies(root, store, timeNow()); err != nil {

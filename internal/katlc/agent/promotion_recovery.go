@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -12,15 +13,16 @@ import (
 // Recovery derives eligibility from the durable health receipt written before
 // promotion's external boot-default change. It never reruns workload mutation
 // or infers success from a stale operation phase.
-func (e *Executor) recoverLivePromotions(ctx context.Context, bootID string) error {
+func (e *Executor) recoverLivePromotions(ctx context.Context, bootID string) ([]string, error) {
 	ids, err := e.Store.OperationIDs()
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var deferred []string
 	for _, id := range ids {
 		record, err := e.Store.Read(id)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if record.Terminal || record.CandidateGenerationID == "" {
 			continue
@@ -34,6 +36,15 @@ func (e *Executor) recoverLivePromotions(ctx context.Context, bootID string) err
 		}
 		if status.CommitState != generation.CommitStateCommitted || !generation.IsKnownGood(status) || status.CommittedByOperation != id {
 			continue
+		}
+		// Boot identity and apply evidence can reflect a partially projected
+		// promotion. Keep its receipt eligible for recovery on a later startup.
+		if err := generation.WithLegacyBootState(e.Root, func() error { return nil }); err != nil {
+			if errors.Is(err, generation.ErrBootMoveBlocked) {
+				deferred = append(deferred, id)
+				continue
+			}
+			return nil, err
 		}
 		// Live health from another boot cannot establish which payload is active
 		// now. Resume across a reboot only when this boot's activation recorded
@@ -59,17 +70,21 @@ func (e *Executor) recoverLivePromotions(ctx context.Context, bootID string) err
 			}
 		}
 		if err := e.recoverLivePromotion(ctx, record, spec); err != nil {
+			if errors.Is(err, generation.ErrBootMoveBlocked) {
+				deferred = append(deferred, id)
+				continue
+			}
 			_, persistErr := e.Store.Update(id, "promotion-recovery-failed", "promotion-recovery-failed", func(record operation.OperationRecord) (operation.OperationRecord, error) {
 				record.RecoveryRequired = true
 				record.Fail(e.clock(), err.Error(), "inspect generation and boot selection; live promotion recovery could not finish")
 				return record, nil
 			})
 			if persistErr != nil {
-				return persistErr
+				return nil, persistErr
 			}
 		}
 	}
-	return nil
+	return deferred, nil
 }
 
 func (e *Executor) recoverLivePromotion(ctx context.Context, record operation.OperationRecord, spec generation.GenerationSpec) error {
