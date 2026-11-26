@@ -49,6 +49,11 @@ Use background commands for queue and check waits.
 With the watcher enabled, use `katl-queue wait PR` and save its watch ID so
 another session can resume it. Use `katl-queue watch PR` without the watcher.
 
+Run the required local standard and LTS gates for added or modified VM tests
+in parallel. Take each result from its own run's `test-summary.txt`.
+[#815](https://github.com/katl-dev/katl/issues/815) tracks running both flavours
+from one invocation.
+
 Classify each gate failure as a defect in the gate, such as a revision gate
 rejecting identical output, or as real evidence, such as a race the gate
 caught. Narrow a gate only when the failure exposes a defect in the gate.
