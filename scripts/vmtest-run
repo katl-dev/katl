@@ -1227,6 +1227,7 @@ compact_run_dir() {
         ! -name go-test.log ! -name test-summary.txt ! -name run.json ! -name world.json \
         ! -name host-capabilities.json ! -name host-health.json ! -name resource-test-manifest.json \
         ! -name result.json ! -name scenario.json ! -name '*serial.log.gz' \
+        ! -path '*-network-evidence/*' \
         ! -name "$(basename "$run_owner_marker")" -delete
     find "$run_dir" -xdev -mindepth 1 -depth -type d -empty -delete
 }

@@ -43,7 +43,7 @@ var groups = []group{
 	{"readdress", "./internal/vmtest/scenarios", "TestWorkerReaddress", "readdress", 710},
 	{"three-node-install", "./internal/vmtest/scenarios", "TestThreeNodeGeneration0InstallSmoke", "cluster", 270},
 	{"install", "./internal/vmtest", "TestFirstInstallTargetDiskBootSmoke|TestFirstInstallTargetDiskLocalHandoffSmoke", "lifecycle", 75},
-	{"config", "./internal/vmtest", "TestInstalledRuntimeConfigApplyModesSmoke|TestInstalledRuntimeServiceSecuritySmoke", "config", 570},
+	{"config", "./internal/vmtest", "TestInstalledRuntimeConfigApplyModesSmoke|TestInstalledRuntimeServiceSecuritySmoke|TestInstalledRuntimeCarrierRecovery", "config", 570},
 	{"update", "./internal/vmtest", "TestInstalledRuntimeSysupdateRootUKITransfer", "lifecycle", 330},
 	{"management", "./internal/vmtest", "TestInstalledRuntimeManagementRotationSmoke|TestManagementIdentityRecovery", "lifecycle", 140},
 	{"enable-mtls", "./internal/vmtest/scenarios", "TestManagementEnableMTLS", "cluster", 190},

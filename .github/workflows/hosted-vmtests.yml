@@ -342,4 +342,5 @@ jobs:
             _build/hosted-scenario/**/*.stderr
             _build/hosted-scenario/**/stdout
             _build/hosted-scenario/**/stderr
+            _build/hosted-scenario/**/*-network-evidence/**
           retention-days: 3

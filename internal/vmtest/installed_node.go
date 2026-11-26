@@ -136,15 +136,9 @@ const (
 )
 
 func (r VMRunner) waitBootComplete(ctx context.Context, result Result, plan VSockPlan) error {
-	connect := r.guestConnector
-	if connect == nil {
-		connect = func(ctx context.Context, plan VSockPlan, transcript string) (guestConn, error) {
-			return DialAgent(ctx, plan.GuestCID, plan.Port, transcript)
-		}
-	}
 	ctx, cancel := context.WithTimeout(ctx, bootSettleTimeout)
 	defer cancel()
-	client, err := connect(ctx, plan, result.Artifacts.VSockTranscript)
+	client, err := r.connectGuest(ctx, plan, result.Artifacts.VSockTranscript)
 	if err != nil {
 		return fmt.Errorf("connect guest control to wait for boot completion: %w", err)
 	}

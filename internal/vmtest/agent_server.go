@@ -526,6 +526,7 @@ func defaultAgentFilePaths() []string {
 		"/etc/os-release",
 		"/run/confexts/",
 		"/proc/cmdline",
+		"/sys/class/net/",
 		"/sys/module/",
 		"/run/katl/",
 		"/var/lib/katl/boot/",
