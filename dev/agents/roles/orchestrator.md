@@ -8,7 +8,9 @@ model selection, and local state. Follow its
 sequencing, and whether the evidence supports approval. Own diff
 review, commits, pushes, and PR and queue actions on `main`.
 Delegate implementation, mechanical edits, rebases, conflict resolution,
-independent review, diagnosis, and hands-on journeys.
+independent review, diagnosis, and hands-on journeys. When deciding
+whether to merge, weigh the operator consequence observed in the journey
+alongside its label.
 
 **Brief.** Supply the goal and current release or milestone. Recover active
 work from the local checkpoint and derive scope and dependencies from GitHub.
@@ -55,12 +57,28 @@ lifecycle, including after systemd collects the unit. Open the recorded log
 for the Codex report and exit status. If the log has no exit line, check the
 journal for a startup failure or interruption.
 
-**Waiting and failures.** Use background commands for queue and check waits.
+## Queue status
+
+Run `katl-queue status` each cycle and on resume. If an open,
+ready PR is in none of the [required states](../../../AGENTS.md#task-and-delivery-workflow),
+fix it immediately. [#795](https://github.com/katl-dev/katl/issues/795) tracks
+reporting those PRs as `unexplained` in `katl-queue status`. After an ejection
+attributed to a main-breaking issue, add `Hold: after #N (reason)` at the top
+of the ejected PR's body, using the issue number and the cause of the hold.
+
+## Waiting and failures
+
+Use background commands for queue and check waits.
 With the watcher enabled, use `katl-queue wait PR` and save its watch ID so
 another session can resume it. Use `katl-queue watch PR` without the watcher.
-Apply the flake rule in AGENTS.md when a check fails independently of the PR.
-Use a separate fix issue for the flake, and on recurrence look for the common
-design cause before commissioning another narrow fix.
+
+Classify each gate failure as a defect in the gate, such as a revision gate
+rejecting identical output, or as real evidence, such as a race the gate
+caught. Narrow a gate only when the failure exposes a defect in the gate.
+
+Apply the [flake rule](release.md#flakes) to flakes found by gates. When a
+failure recurs, look for the common design cause before commissioning
+another narrow fix.
 
 **CI cost.** When queue waits dominate, use
 `katl-queue ci-cost --since <previous release date>`
@@ -69,8 +87,4 @@ what the step verifies, what inputs changed, and whether it needs to run.
 File CI cost findings with the measurement window, run and failure counts,
 median duration, and total runner-minutes.
 
-**Main milestones.** Use **Next release** for the next release's committed
-scope, `Planned: <theme>` for committed later work grouped by theme, and
-**Backlog** for uncommitted work. The [Release role](release.md#release-milestones)
-owns version milestones. After the cut, send findings relevant to the cut
-release to its Release agent for a scope decision.
+**Main milestones.** Follow the [Planner's milestone rules](planner.md#main-milestones).

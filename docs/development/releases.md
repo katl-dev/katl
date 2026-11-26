@@ -6,9 +6,10 @@ separate publication approval is required.
 
 ## Prepare a release
 
-When cutting a release branch, follow the
-[release milestone policy](../../dev/agents/roles/release.md#release-milestones) to track blockers
-and triage findings through final publication.
+Follow the [release lifecycle](../../dev/agents/README.md#release-lifecycle)
+to cut the branch and track blockers. Triage findings through final
+publication under the
+[release admission rule](../../dev/agents/roles/release.md#release-admission-rule).
 
 1. Merge the intended changes and their required checks. Choose an unused
    canonical `YYYY.M.PATCH` version, optionally with `-alpha.N`, `-beta.N`, or
@@ -29,14 +30,14 @@ and triage findings through final publication.
    qualify the commit before tagging it.
 
    ```sh
-   gh workflow run release-artifacts.yml --ref release/2026.10.2 -f version=2026.10.2-rc.1
+   gh workflow run release-artifacts.yml --ref release/2026.12.1 -f version=2026.12.1-rc.1
    ```
 
 4. Set `QUALIFIED_SHA` to the head SHA of the passing qualification run and
    prepare the candidate tag.
 
    ```sh
-   scripts/katl-release prepare --ref "$QUALIFIED_SHA" 2026.10.2-rc.1
+   scripts/katl-release prepare --ref "$QUALIFIED_SHA" 2026.12.1-rc.1
    ```
 
    Preparation rejects an existing tag and prints the exact source SHA and
@@ -76,6 +77,17 @@ Do not re-run the whole workflow run of a published `-rc.N` tag: it fails at
 the upload guard and makes that candidate ineligible for promotion. Tag a new
 `-rc.N` at the same commit instead.
 
+## Publish a security advisory
+
+After verifying final release publication, update the draft advisory. Put
+references in the description because the advisory API has no `references`
+field. Read the draft back and verify the patched versions, vulnerable range,
+description, and references. Publish only after verification succeeds, in a
+separate operation from the update.
+
+[#778](https://github.com/katl-dev/katl/issues/778) tracks a command for this
+procedure.
+
 ## Qualification and promotion
 
 Both standard and LTS flavours must pass:
@@ -112,8 +124,8 @@ For a tag run:
 ```sh
 scripts/katl-release inspect RUN_ID
 mkdir -p _build/releases
-scripts/katl-release download RUN_ID _build/releases/2026.10.2 \
-  > _build/releases/2026.10.2-receipt.json
+scripts/katl-release download RUN_ID _build/releases/2026.12.1 \
+  > _build/releases/2026.12.1-receipt.json
 ```
 
 Inspection reports the tag, source SHA, run attempt, and final artifact identity.

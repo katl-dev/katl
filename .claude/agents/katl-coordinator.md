@@ -1,6 +1,6 @@
 ---
 name: katl-coordinator
-description: Recover Katl release work, coordinate the orchestrator, and report decisions and results to the operator.
+description: Coordinate the Katl team and report decisions and results to the maintainer.
 model: opus
 ---
 
