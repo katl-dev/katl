@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# 9.35.0 includes the wait-sync fix for early multicast netlink events.
+minimum=9.35.0
+if ! version=$(rpm --root "$BUILDROOT" --dbpath /usr/lib/sysimage/rpm -q --qf '%{VERSION}' drbd-utils); then
+    echo "error: the DRBD tools image requires drbd-utils >= $minimum, but its installed version could not be queried" >&2
+    exit 1
+fi
+
+comparison=$(rpm --eval "%{lua:print(rpm.vercmp('$version', '$minimum'))}")
+if (( comparison < 0 )); then
+    echo "error: the DRBD tools image requires drbd-utils >= $minimum, but $version is installed" >&2
+    exit 1
+fi
