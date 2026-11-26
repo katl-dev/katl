@@ -123,6 +123,38 @@ func TestHostStatusReportsSelectedFallbackAndBootFailure(t *testing.T) {
 	}
 }
 
+func TestHostStatusReportsGenerationMismatchWithUnknownHealth(t *testing.T) {
+	fake := healthyHostClient("machine-a", "agent-a", "generation-0")
+	fake.nodeStatus.CurrentGenerationId = "generation-1"
+	fake.nodeStatus.SelectedGenerationId = "generation-0"
+	fake.nodeStatus.BootHealthState = bootHealthUnknown
+	fake.nodeStatus.BootHealthDiagnostic = "cannot read boot health for this boot from systemd"
+	installKatlcDial(t, nil, fake)
+
+	var stdout, stderr bytes.Buffer
+	if err := run(t.Context(), []string{"node", "status", "node-a", "--endpoint", "node-a.test:9443", "--output", "json"}, &stdout, &stderr); err != nil {
+		t.Fatalf("node status: %v\n%s", err, stderr.String())
+	}
+	if id := fake.generationRequest.GetGenerationId(); id != "generation-0" {
+		t.Fatalf("requested generation = %q, want kernel-selected generation-0", id)
+	}
+	var report hostStatusReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.Health != "unknown" || report.Generation != "generation-0" || report.ActiveGeneration != "generation-1" || report.BootHealthDiagnostic != fake.nodeStatus.BootHealthDiagnostic {
+		t.Fatalf("status did not report the generation mismatch and unknown health: %+v", report)
+	}
+
+	stdout.Reset()
+	if err := run(t.Context(), []string{"node", "status", "node-a", "--endpoint", "node-a.test:9443"}, &stdout, &stderr); err != nil {
+		t.Fatalf("node status: %v\n%s", err, stderr.String())
+	}
+	if output := stdout.String(); !strings.Contains(output, "generation-0") || !strings.Contains(output, "Active generation recorded on disk: generation-1") {
+		t.Fatalf("status did not show both generation identities:\n%s", output)
+	}
+}
+
 func TestHostRebootDefaultAllowsBootDeadmanRecovery(t *testing.T) {
 	cmd := newHostRebootCommand(context.Background(), io.Discard, io.Discard)
 	timeout, err := cmd.Flags().GetDuration("timeout")

@@ -938,6 +938,19 @@ func TestNodeStatusReportsManualFallbackMismatch(t *testing.T) {
 	if !strings.Contains(nodeStatus.GetBootHealthDiagnostic(), "does not match durable boot evidence") {
 		t.Fatalf("boot health diagnostic = %q", nodeStatus.GetBootHealthDiagnostic())
 	}
+
+	server.RunBootHealthStatus = func(context.Context, []string, func(int)) ToolResult {
+		return ToolResult{ExitStatus: 1}
+	}
+	nodeStatus, err = server.GetNodeStatus(t.Context(), &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodeStatus.GetBootHealthState() != nodeBootHealthUnknown ||
+		!strings.Contains(nodeStatus.GetBootHealthDiagnostic(), "running generation generation-0 does not match durable boot evidence generation-1") ||
+		!strings.Contains(nodeStatus.GetBootHealthDiagnostic(), "cannot read boot health for this boot from systemd") {
+		t.Fatalf("boot health with unreadable systemd state = %s (%s)", nodeStatus.GetBootHealthState(), nodeStatus.GetBootHealthDiagnostic())
+	}
 }
 
 func TestNodeStatusReportsLivePromotedGenerationHealthy(t *testing.T) {

@@ -645,6 +645,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	cancel()
 	report.Rebooted = true
 	report.BootHealth = observedBootHealth(verified, request.CandidateGenerationID)
+	report.BootHealthDiagnostic = strings.TrimSpace(verified.Status.GetBootHealthDiagnostic())
 	report.Kubernetes = "unknown"
 	if verified.Status != nil {
 		report.Kubernetes = nodeUpgradeRecovery(verified.Status, recoveryRequirement).State
@@ -660,8 +661,8 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 }
 
 func observedBootHealth(verified verifiedNodeBoot, targetGeneration string) string {
-	if verified.Generation == nil {
-		return "unknown"
+	if verified.Status.GetBootHealthState() == bootHealthUnknown || verified.Generation == nil {
+		return bootHealthUnknown
 	}
 	if verified.Generation.GetHealthState() == generation.HealthStateUnhealthy {
 		return "failed"

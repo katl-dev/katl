@@ -16,6 +16,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/operation"
+	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 )
 
 func TestCleanupManagedHostUpgradeArtifactRemovesOnlyUploadedImage(t *testing.T) {
@@ -104,6 +105,19 @@ func TestExecutorClassifiesHostUpgradeFailureByMutationBoundary(t *testing.T) {
 }
 
 func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
+	exerciseHostUpgrade(t, OperationKindHostUpgrade, true)
+}
+
+func TestExecutorPreservesFallbackWhenBootHealthBecomesUnknown(t *testing.T) {
+	for _, kind := range []string{OperationKindHostUpgrade, operationKindHostUpgradeHandoff} {
+		t.Run(kind, func(t *testing.T) {
+			exerciseHostUpgrade(t, kind, false)
+		})
+	}
+}
+
+func exerciseHostUpgrade(t *testing.T, kind string, staysHealthy bool) {
+	t.Helper()
 	const nextVersion = "2026.7.0-local.version-longer-than-a-gpt-partition-label"
 	const commandLine = "root=PARTUUID=aaaaaaaa-1111-2222-3333-444444444444 rootfstype=squashfs ro katl.generation=gen0 katl.root-slot=root-a"
 	root := t.TempDir()
@@ -213,6 +227,7 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	}
 	payload := katlosimage.Payload{
 		Root:           payloadRoot,
+		ImagePath:      filepath.Join(payloadRoot, "upgrade.squashfs"),
 		ImageSHA256:    strings.Repeat("e", 64),
 		ImageSizeBytes: 4096,
 		Index:          katlosimage.Index{ImageRole: katlosimage.RoleUpgrade, Version: nextVersion, Architecture: "x86_64", RuntimeInterface: "katl-runtime-1"},
@@ -230,13 +245,23 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 		t.Fatal(err)
 	}
 	record, err := store.Create(operation.OperationRecord{
-		OperationID: "host-upgrade-1", OperationKind: OperationKindHostUpgrade, Scope: "host-generation", RequestDigest: strings.Repeat("d", 64),
+		OperationID: "host-upgrade-1", OperationKind: kind, Scope: "host-generation", RequestDigest: strings.Repeat("d", 64),
 		Phase: "accepted", CandidateGenerationID: "gen1", ActivationMode: operation.ActivationModeNextBoot,
-		HostUpgradeRequest: &operation.HostUpgrade{ImageLocalRef: "upgrade.squashfs", ImageSHA256: strings.Repeat("e", 64), CandidateGenerationID: "gen1"},
-		ResourceLocks:      []string{"generation-state.lock", "sysupdate.lock"},
+		ExpectedCurrentGenerationID: previous.GenerationID,
+		HostUpgradeRequest:          &operation.HostUpgrade{ImageLocalRef: "upgrade.squashfs", ImageSHA256: strings.Repeat("e", 64), CandidateGenerationID: "gen1"},
+		ResourceLocks:               []string{"generation-state.lock", "sysupdate.lock"},
 	}, "accepted", now)
 	if err != nil {
 		t.Fatal(err)
+	}
+	server := NewServer(root, store)
+	unit := &healthUnit{}
+	unit.set(healthSucceeded)
+	server.RunBootHealthStatus = unit.run
+	if err := server.validateHostUpgradePlan(t.Context(), &agentapi.HostUpgradeOperationRequest{
+		ImageLocalRef: "upgrade.squashfs", CandidateGenerationId: "gen1",
+	}); err != nil {
+		t.Fatalf("admit upgrade while healthy: %v", err)
 	}
 	oneshoot := ""
 	host := newHostDisks(t, hostDisk{name: "vda", seq: 1, partitions: []hostPartition{
@@ -254,10 +279,16 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 	host.devRoot = root
 	writeTestFile(t, inactiveDevice, string(make([]byte, len(runtimeBytes)+32)))
 	executor := NewExecutor(root, store, "agent-test")
+	executor.nodeBootHealth = server.nodeBootHealth
 	executor.volumeDevices.bootedDisk = host.booted(0, 2)
 	executor.Async = false
 	executor.Now = func() time.Time { return now.Add(time.Minute) }
-	executor.ResolveHostUpgrade = func(context.Context, operation.HostUpgrade) (katlosimage.Payload, error) { return payload, nil }
+	executor.ResolveHostUpgrade = func(context.Context, operation.HostUpgrade) (katlosimage.Payload, error) {
+		if !staysHealthy {
+			unit.set("")
+		}
+		return payload, nil
+	}
 	executor.MountBootRoot = func(_ context.Context, path string) error {
 		if path != filepath.Join(root, "efi") {
 			t.Fatalf("MountBootRoot path = %q, want %q", path, filepath.Join(root, "efi"))
@@ -318,7 +349,40 @@ func TestExecutorStagesHostUpgradeAndArmsTrial(t *testing.T) {
 			return ToolResult{Err: os.ErrNotExist, ExitStatus: -1}
 		}
 	}
-	if err := executor.Execute(context.Background(), record); err != nil {
+	if kind == operationKindHostUpgradeHandoff {
+		err = executor.executeHostUpgradeHandoff(t.Context(), record, executor.ResolveHostUpgrade,
+			func(_ context.Context, _ katlosimage.Payload, handoff generation.UpgradeHandoff, _ string) (preparedUpgrade, error) {
+				// The target planner's output lives in a private state view.
+				prepared := preparedUpgrade{root: t.TempDir()}
+				dir, err := generation.GenerationDir(prepared.root, handoff.CandidateGenerationID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				writeTestFile(t, filepath.Join(dir, "spec.json"), "prepared generation")
+				return prepared, nil
+			})
+	} else {
+		err = executor.Execute(t.Context(), record)
+	}
+	if !staysHealthy {
+		failed, readErr := store.Read(record.OperationID)
+		if readErr != nil || !failed.Terminal || failed.Result != "failed" || failed.ExternalMutationStarted {
+			t.Fatalf("refused upgrade record = %+v, read error = %v", failed, readErr)
+		}
+		for _, want := range []string{"unknown", "cannot read boot health for this boot from systemd", "katlctl node status", "katlctl cluster apply", "katlctl node reboot"} {
+			if err == nil || !strings.Contains(failed.FailureReason, want) {
+				t.Fatalf("upgrade error = %v, failure reason = %q, want %q", err, failed.FailureReason, want)
+			}
+		}
+		if got, err := os.ReadFile(inactiveDevice); err != nil || !bytes.Equal(got, make([]byte, len(runtimeBytes)+32)) {
+			t.Fatalf("inactive root changed before mutation: %q, %v", got, err)
+		}
+		if got, err := os.ReadFile(inactiveUKI); err != nil || string(got) != "stale inactive kernel" {
+			t.Fatalf("inactive UKI changed before mutation: %q, %v", got, err)
+		}
+		return
+	}
+	if err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
 	if calls := strings.Join(toolCalls, "\n"); strings.Contains(calls, "PARTLABEL=") {

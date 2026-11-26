@@ -51,6 +51,7 @@ type hostStatusReport struct {
 	Endpoint             string                      `json:"endpoint"`
 	Health               string                      `json:"health"`
 	Generation           string                      `json:"generation"`
+	ActiveGeneration     string                      `json:"activeGeneration,omitempty"`
 	KatlOSVersion        string                      `json:"katlosVersion,omitempty"`
 	KatlOSFlavour        string                      `json:"katlosFlavour,omitempty"`
 	NextBoot             string                      `json:"nextBoot,omitempty"`
@@ -291,8 +292,9 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 		}
 	}
 
-	status, _, _, err := readHostState(session.ctx, session.client, node)
+	status, err := session.client.GetNodeStatus(session.ctx, &agentapi.GetNodeStatusRequest{})
 	if err != nil {
+		err = fmt.Errorf("read status from %s: %w", node, err)
 		if !desiredEndpoint.IsZero() && managementUnreachable(err) {
 			return fmt.Errorf("%w; %s", err, movedHint(node, desiredEndpoint, opts.target.clusterConfigPath))
 		}
@@ -521,8 +523,9 @@ func readHostState(ctx context.Context, client agentapi.KatlcAgentClient, node s
 	}
 	observedAt := time.Now()
 	generationID := strings.TrimSpace(status.GetCurrentGenerationId())
-	if status.GetBootHealthState() == "failed" && strings.TrimSpace(status.GetSelectedGenerationId()) != "" {
-		generationID = strings.TrimSpace(status.GetSelectedGenerationId())
+	switch status.GetBootHealthState() {
+	case bootHealthFailed, bootHealthUnknown:
+		generationID = runningGeneration(status)
 	}
 	if generationID == "" {
 		return status, nil, observedAt, fmt.Errorf("%s did not report a current KatlOS generation", node)
@@ -556,6 +559,9 @@ func newHostStatusReport(node, endpoint string, status *agentapi.NodeStatus, cur
 		APIProxy:             newAPIProxyStatusReport(status.GetApiProxy()),
 		ControlPlaneEndpoint: newControlPlaneEndpointReport(status.GetControlPlaneEndpoint()),
 		Management:           newManagementStatusReport(status.GetManagement(), observedAt),
+	}
+	if active := strings.TrimSpace(status.GetCurrentGenerationId()); active != "" && active != report.Generation {
+		report.ActiveGeneration = active
 	}
 	if target := strings.TrimSpace(status.GetBootTargetGenerationId()); target != "" && target != current.GetGenerationId() {
 		report.NextBoot = target
@@ -668,6 +674,9 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport, v
 	}
 	if report.BootHealthDiagnostic != "" {
 		w.row("", report.BootHealthDiagnostic)
+	}
+	if report.ActiveGeneration != "" {
+		w.row("", fmt.Sprintf("Active generation recorded on disk: %s", report.ActiveGeneration))
 	}
 	if report.Kubernetes != nil && report.Kubernetes.FailureReason != "" {
 		w.row("", "", report.Kubernetes.FailureReason)

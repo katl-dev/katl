@@ -122,33 +122,11 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 		return fail("verify-katlos-image", err)
 	}
 	phase = "stage-sysupdate-components"
-	updatedRecord, err = e.Store.Update(record.OperationID, "host-upgrade-mutation-start", "stage-sysupdate-components", func(current operation.OperationRecord) (operation.OperationRecord, error) {
-		current.Phase = "stage-sysupdate-components"
-		current.ExternalMutationStarted = true
-		current.MutationScopes = appendMissing(current.MutationScopes, "root-slot-labels", "runtime-root", "runtime-uki")
-		current.UpdatedAt = e.clock()
-		current.NextAction = "stage root and UKI components through systemd-sysupdate"
-		return current, nil
-	})
+	updatedRecord, err = e.beginHostUpgradeMutation(ctx, record.OperationID, "host-upgrade-mutation-start", slots.InactivePartUUID)
 	if err != nil {
 		return err
 	}
 	record = updatedRecord
-	if err := generation.InvalidateSlot(e.Root, slots.InactivePartUUID, e.clock(),
-		func(root, entry string) error {
-			if e.SetBootDefault == nil {
-				return fmt.Errorf("boot default setter is required")
-			}
-			return e.SetBootDefault(ctx, root, entry)
-		},
-		func(root, entry string) error {
-			if e.SetBootOneshot == nil {
-				return fmt.Errorf("boot one-shot setter is required")
-			}
-			return e.SetBootOneshot(ctx, root, entry)
-		}); err != nil {
-		return fail("stage-sysupdate-components", err)
-	}
 	if err := e.prepareSysupdateSlots(ctx, slots); err != nil {
 		return fail("stage-sysupdate-components", err)
 	}
@@ -244,6 +222,39 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 		return current, nil
 	})
 	return err
+}
+
+func (e *Executor) beginHostUpgradeMutation(ctx context.Context, operationID, event, inactivePartUUID string) (operation.OperationRecord, error) {
+	// Image acquisition and preparation can outlast the evidence used at
+	// admission. Confirm the running boot before giving up its fallback.
+	if err := requireHostUpgradeBootHealth(ctx, e.nodeBootHealth); err != nil {
+		return operation.OperationRecord{}, err
+	}
+	record, err := e.Store.Update(operationID, event, "stage-sysupdate-components", func(current operation.OperationRecord) (operation.OperationRecord, error) {
+		current.Phase = "stage-sysupdate-components"
+		current.ExternalMutationStarted = true
+		current.MutationScopes = appendMissing(current.MutationScopes, "root-slot-labels", "runtime-root", "runtime-uki")
+		current.UpdatedAt = e.clock()
+		current.NextAction = "stage root and UKI components through systemd-sysupdate"
+		return current, nil
+	})
+	if err != nil {
+		return operation.OperationRecord{}, err
+	}
+	err = generation.InvalidateSlot(e.Root, inactivePartUUID, e.clock(),
+		func(root, entry string) error {
+			if e.SetBootDefault == nil {
+				return fmt.Errorf("boot default setter is required")
+			}
+			return e.SetBootDefault(ctx, root, entry)
+		},
+		func(root, entry string) error {
+			if e.SetBootOneshot == nil {
+				return fmt.Errorf("boot one-shot setter is required")
+			}
+			return e.SetBootOneshot(ctx, root, entry)
+		})
+	return record, err
 }
 
 func (e *Executor) releaseHostUpgradeImage(payload katlosimage.Payload, request operation.HostUpgrade) error {

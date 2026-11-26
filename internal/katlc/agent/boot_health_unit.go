@@ -123,7 +123,8 @@ func (s *Server) nodeBootHealth(ctx context.Context) nodeBootHealth {
 	switch run {
 	case bootHealthRunUnknown:
 		health.State = nodeBootHealthUnknown
-		health.Diagnostic = "cannot read boot health for this boot from systemd"
+		diagnostics = append(diagnostics, "cannot read boot health for this boot from systemd")
+		health.Diagnostic = strings.Join(diagnostics, ". ")
 	case bootHealthRunSettling:
 		health.State = nodeBootHealthPending
 		health.Diagnostic = "boot health is running for this boot"

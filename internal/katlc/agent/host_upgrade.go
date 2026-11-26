@@ -69,10 +69,21 @@ func (s *Server) validateHostUpgradePlan(ctx context.Context, req *agentapi.Host
 	}
 	// A known-good source may not have passed this boot. Preserve the inactive
 	// slot until the generation that would replace it as fallback is healthy.
-	if health := s.nodeBootHealth(ctx); health.State != nodeBootHealthHealthy {
-		return fmt.Errorf("cannot replace the inactive root slot until current boot health is confirmed: %s (%s). Run 'katlctl node status <node>', then repair with 'katlctl cluster apply' or 'katlctl node reboot <node>'", health.State, health.Diagnostic)
+	if err := requireHostUpgradeBootHealth(ctx, s.nodeBootHealth); err != nil {
+		return err
 	}
 	return validateHostUpgradeBootEvidence(s.Root, currentID, previousSpec)
+}
+
+func requireHostUpgradeBootHealth(ctx context.Context, readHealth func(context.Context) nodeBootHealth) error {
+	health := nodeBootHealth{State: nodeBootHealthUnknown, Diagnostic: "current boot health reader is unavailable"}
+	if readHealth != nil {
+		health = readHealth(ctx)
+	}
+	if health.State == nodeBootHealthHealthy {
+		return nil
+	}
+	return fmt.Errorf("cannot replace the inactive root slot until current boot health is confirmed: %s (%s). Run 'katlctl node status <node>', then repair with 'katlctl cluster apply' or 'katlctl node reboot <node>'", health.State, health.Diagnostic)
 }
 
 func validateHostUpgradeBootEvidence(root, currentID string, current generation.GenerationSpec) error {
