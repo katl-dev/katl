@@ -29,8 +29,7 @@ Keep prints the new path and protects the entry through the given local date.
 Prune returns expired pins to ordinary aging and removes the oldest unpinned
 entries as needed to meet the budget (default 50GiB). Sizes are whole bytes
 or use B, KiB, MiB, GiB, or TiB. Accounting uses logical file sizes.
-The store is in $XDG_STATE_HOME/katl-dev/evidence (default ~/.local/state),
-or the directory named by KATL_DEV_EVIDENCE_ROOT.
+The store is in .local/state/katl-dev/evidence under your passwd home directory.
 `
 
 func main() {
@@ -41,6 +40,16 @@ func main() {
 }
 
 func run(args []string, out io.Writer, now time.Time) error {
+	return runWithStore(args, out, now, func() (*store, error) {
+		location, err := evidenceRoot()
+		if err != nil {
+			return nil, err
+		}
+		return openStore(location)
+	})
+}
+
+func runWithStore(args []string, out io.Writer, now time.Time, open func() (*store, error)) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		_, err := io.WriteString(out, usage)
 		return err
@@ -93,19 +102,15 @@ func run(args []string, out io.Writer, now time.Time) error {
 		}
 	}
 
-	location, err := evidenceRoot()
-	if err != nil {
-		return err
-	}
-	store, err := openStore(location)
+	store, err := open()
 	if err != nil {
 		return err
 	}
 	defer store.close()
 
-	entries, err := store.entries(now.Location())
-	if err != nil {
-		return err
+	entries, scanErr := store.entries(now.Location())
+	if scanErr != nil && command != "prune" {
+		return scanErr
 	}
 	var selected entry
 	switch command {
@@ -130,32 +135,28 @@ func run(args []string, out io.Writer, now time.Time) error {
 		// Store the date itself in the path so one rename commits the payload
 		// and its deadline together.
 		destination := filepath.Join(pinDir, until, selected.id)
-		if err := store.move(selected, destination); err != nil {
+		if _, err := store.move(selected, destination); err != nil {
 			return err
 		}
-		_, err := fmt.Fprintln(out, filepath.Join(location, destination))
+		_, err := fmt.Fprintln(out, filepath.Join(store.location, destination))
 		return err
 	case "release":
 		return store.remove(selected)
 	case "prune":
-		return store.prune(out, entries, now, budget)
+		return errors.Join(scanErr, store.prune(out, entries, now, budget))
 	}
 	return nil
 }
 
 func evidenceRoot() (string, error) {
-	if root := os.Getenv("KATL_DEV_EVIDENCE_ROOT"); root != "" {
-		return filepath.Abs(root)
+	home, err := passwdHome()
+	if err != nil {
+		return "", fmt.Errorf("locate passwd home for evidence store: %w", err)
 	}
-	state := os.Getenv("XDG_STATE_HOME")
-	if !filepath.IsAbs(state) {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return "", fmt.Errorf("locate evidence store: %w", err)
-		}
-		state = filepath.Join(home, ".local", "state")
+	if !filepath.IsAbs(home) {
+		return "", fmt.Errorf("passwd home for evidence store is not absolute: %q", home)
 	}
-	return filepath.Join(state, "katl-dev", "evidence"), nil
+	return filepath.Join(home, ".local", "state", "katl-dev", "evidence"), nil
 }
 
 func parseBudget(value string) (int64, error) {

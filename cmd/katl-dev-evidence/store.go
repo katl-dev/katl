@@ -10,9 +10,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"syscall"
 	"time"
 	"unicode"
+
+	"golang.org/x/sys/unix"
 )
 
 const pinDir = ".pinned"
@@ -22,51 +23,52 @@ type entry struct {
 	path     string
 	modified time.Time
 	deadline time.Time
+	parent   fileID
+	identity fileID
 }
 
 type store struct {
 	location string
 	root     *os.Root
-	lock     *os.File
+	dir      *directory
+
+	beforeRemove func()
+	deviceOf     func(unix.Stat_t) uint64
 }
 
 func openStore(location string) (*store, error) {
-	if err := os.MkdirAll(location, 0o700); err != nil {
-		return nil, err
-	}
-	info, err := os.Lstat(location)
+	root, err := openEvidenceRoot(location)
 	if err != nil {
 		return nil, err
 	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("evidence root %q is not a directory", location)
-	}
-	root, err := os.OpenRoot(location)
-	if err != nil {
-		return nil, err
-	}
-	lock, err := root.Open(".")
+	file, err := root.Open(".")
 	if err != nil {
 		root.Close()
 		return nil, err
 	}
-	bound, err := lock.Stat()
-	if err != nil || !os.SameFile(info, bound) {
-		lock.Close()
+	fd := int(file.Fd())
+	var stat unix.Stat_t
+	if err := unix.Fstat(fd, &stat); err != nil {
+		file.Close()
 		root.Close()
-		return nil, fmt.Errorf("could not bind evidence root %q", location)
+		return nil, err
 	}
 	// Serialize budget checks and renames with other tool invocations.
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
-		lock.Close()
+	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
+		file.Close()
 		root.Close()
 		return nil, fmt.Errorf("lock evidence store: %w", err)
 	}
-	return &store{location: location, root: root, lock: lock}, nil
+	return &store{
+		location: location,
+		root:     root,
+		dir:      &directory{file: file, id: identity(stat), path: location},
+		deviceOf: func(stat unix.Stat_t) uint64 { return uint64(stat.Dev) },
+	}, nil
 }
 
 func (s *store) close() {
-	s.lock.Close()
+	s.dir.file.Close()
 	s.root.Close()
 }
 
@@ -97,119 +99,166 @@ func (s *store) find(entries []entry, operand string) (entry, error) {
 	return entry{}, fmt.Errorf("unknown evidence entry %q; run katl-dev-evidence list", operand)
 }
 
-func (s *store) directories(path string) ([]fs.DirEntry, error) {
-	dirs, err := fs.ReadDir(s.root.FS(), path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+func (d *directory) readSorted() ([]fs.DirEntry, error) {
+	children, err := d.file.ReadDir(-1)
+	slices.SortFunc(children, func(a, b fs.DirEntry) int {
+		return cmp.Compare(a.Name(), b.Name())
+	})
+	return children, err
+}
+
+// withDirectories opens each child relative to the directory we enumerated.
+func (s *store) withDirectories(parent *directory, skip string, visit func(*directory) error) error {
+	children, err := parent.readSorted()
+	if err != nil {
+		return err
 	}
-	return dirs, err
+	var errs []error
+	for _, child := range children {
+		if !child.IsDir() || child.Name() == skip {
+			continue
+		}
+		dir, err := s.openDir(parent, child.Name(), false)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err == nil {
+			err = visit(dir)
+			dir.file.Close()
+		}
+		if err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (s *store) entries(zone *time.Location) ([]entry, error) {
 	var entries []entry
-	readOwners := func(base string, deadline time.Time) error {
-		owners, err := s.directories(base)
-		if err != nil {
-			return err
-		}
-		for _, owner := range owners {
-			if !owner.IsDir() || owner.Name() == pinDir {
-				continue
-			}
-			paths, err := s.directories(filepath.Join(base, owner.Name()))
+	readOwners := func(base *directory, prefix string, deadline time.Time) error {
+		return s.withDirectories(base, pinDir, func(owner *directory) error {
+			children, err := owner.readSorted()
 			if err != nil {
 				return err
 			}
-			for _, dir := range paths {
-				id := filepath.Join(owner.Name(), dir.Name())
-				if !dir.IsDir() || !validID(id) {
+			for _, child := range children {
+				id := filepath.Join(owner.name, child.Name())
+				if !child.IsDir() || !validID(id) {
 					continue
 				}
-				info, err := dir.Info()
+				stat, err := owner.stat(child.Name())
 				if errors.Is(err, fs.ErrNotExist) {
 					continue
 				}
 				if err != nil {
 					return err
 				}
-				entries = append(entries, entry{id: id, path: filepath.Join(base, id), modified: info.ModTime(), deadline: deadline})
+				if stat.Mode&unix.S_IFMT != unix.S_IFDIR {
+					continue
+				}
+				entries = append(entries, entry{
+					id: id, path: filepath.Join(prefix, id),
+					modified: time.Unix(stat.Mtim.Unix()), deadline: deadline,
+					parent: owner.id, identity: identity(stat),
+				})
 			}
-		}
-		return nil
-	}
-	if err := readOwners(".", time.Time{}); err != nil {
-		return nil, err
+			return nil
+		})
 	}
 
-	pins, err := s.root.Lstat(pinDir)
+	ordinaryErr := readOwners(s.dir, "", time.Time{})
+	pins, err := s.openDir(s.dir, pinDir, false)
 	if errors.Is(err, fs.ErrNotExist) {
-		return entries, nil
+		return entries, ordinaryErr
 	}
 	if err != nil {
-		return nil, err
+		return entries, errors.Join(ordinaryErr, err)
 	}
-	if !pins.IsDir() {
-		return nil, fmt.Errorf("%s is not a directory", pinDir)
-	}
-	dates, err := s.directories(pinDir)
-	if err != nil {
-		return nil, err
-	}
-	for _, dir := range dates {
-		date, err := time.ParseInLocation(time.DateOnly, dir.Name(), zone)
-		if err != nil || !dir.IsDir() {
-			continue
-		}
-		if err := readOwners(filepath.Join(pinDir, dir.Name()), date.AddDate(0, 0, 1)); err != nil {
-			return nil, err
-		}
-	}
-	return entries, nil
-}
-
-func (s *store) size(e entry) (int64, error) {
-	var size int64
-	err := fs.WalkDir(s.root.FS(), e.path, func(_ string, d fs.DirEntry, walkErr error) error {
-		if errors.Is(walkErr, fs.ErrNotExist) {
-			return nil // tmpfiles may expire files while we count them.
-		}
-		if walkErr != nil {
-			return walkErr
-		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
-		info, err := d.Info()
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
+	defer pins.file.Close()
+	pinErr := s.withDirectories(pins, "", func(dir *directory) error {
+		date, err := time.ParseInLocation(time.DateOnly, dir.name, zone)
 		if err != nil {
-			return err
+			return nil
 		}
-		size += info.Size()
-		return nil
+		return readOwners(dir, filepath.Join(pinDir, dir.name), date.AddDate(0, 0, 1))
 	})
-	return size, err
+	return entries, errors.Join(ordinaryErr, pinErr)
 }
 
-func (s *store) makeParents(path string) error {
-	current := ""
-	for _, part := range strings.Split(filepath.Dir(path), string(filepath.Separator)) {
-		current = filepath.Join(current, part)
-		err := s.root.Mkdir(current, 0o700)
-		if errors.Is(err, fs.ErrExist) {
-			info, err := s.root.Lstat(current)
+func (s *store) bind(e entry) (*directory, error) {
+	parent, err := s.openPath(filepath.Dir(e.path), false)
+	if err != nil {
+		return nil, err
+	}
+	changed := fmt.Errorf("entry %q changed during cleanup; run katl-dev-evidence list", e.path)
+	if parent.id != e.parent {
+		s.closePath(parent)
+		return nil, changed
+	}
+	dir, err := s.openDir(parent, filepath.Base(e.path), false)
+	if err != nil {
+		s.closePath(parent)
+		return nil, err
+	}
+	if dir.id != e.identity {
+		s.closePath(dir)
+		return nil, changed
+	}
+	return dir, nil
+}
+
+// walk visits children after descendants, opening every directory without
+// following symlinks or mount points. Non-directory names are never opened.
+func (s *store) walk(dir *directory, visit func(*directory, string, *directory) error) error {
+	children, err := dir.file.ReadDir(-1)
+	if err != nil {
+		return err
+	}
+	for _, child := range children {
+		name := child.Name()
+		var subdir *directory
+		if child.IsDir() {
+			subdir, err = s.openDir(dir, name, false)
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
 			if err != nil {
 				return err
 			}
-			if !info.IsDir() {
-				return fmt.Errorf("%q is not a directory", current)
-			}
-		} else if err != nil {
+			err = s.walk(subdir, visit)
+		}
+		if err == nil {
+			err = visit(dir, name, subdir)
+		}
+		if subdir != nil {
+			subdir.file.Close()
+		}
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return err
 		}
+		err = nil // tmpfiles may have removed a child.
 	}
 	return nil
+}
+
+func (s *store) size(e entry) (int64, error) {
+	dir, err := s.bind(e)
+	if err != nil {
+		return 0, err
+	}
+	defer s.closePath(dir)
+	var size int64
+	err = s.walk(dir, func(parent *directory, name string, child *directory) error {
+		if child != nil {
+			return nil
+		}
+		stat, err := parent.stat(name)
+		if stat.Mode&unix.S_IFMT == unix.S_IFREG {
+			size += stat.Size
+		}
+		return err
+	})
+	return size, err
 }
 
 func (s *store) create(entries []entry, id string) (string, error) {
@@ -230,72 +279,77 @@ func (s *store) create(entries []entry, id string) (string, error) {
 	if total > defaultBudget {
 		return "", budgetError(total, defaultBudget)
 	}
-	if err := s.makeParents(id); err != nil {
+	parent, err := s.openPath(filepath.Dir(id), true)
+	if err != nil {
 		return "", err
 	}
-	if err := s.root.Mkdir(id, 0o700); err != nil {
+	defer s.closePath(parent)
+	if err := unix.Mkdirat(parent.fd(), filepath.Base(id), 0o700); err != nil {
 		return "", err
 	}
 	return filepath.Join(s.location, id), nil
 }
 
-func (s *store) move(e entry, destination string) error {
+func (s *store) move(e entry, destination string) (entry, error) {
+	source, err := s.bind(e)
+	if err != nil {
+		return entry{}, err
+	}
+	defer s.closePath(source)
 	if destination == e.path {
-		return nil
-	}
-	if err := s.makeParents(destination); err != nil {
-		return err
-	}
-	if _, err := s.root.Lstat(destination); !errors.Is(err, fs.ErrNotExist) {
-		if err != nil {
-			return err
-		}
-		return fmt.Errorf("entry destination %q already exists", destination)
+		return e, nil
 	}
 
+	parent, err := s.openPath(filepath.Dir(destination), true)
+	if err != nil {
+		return entry{}, err
+	}
+	defer s.closePath(parent)
 	// tmpfiles skips a locked entry and its descendants while it is moved.
-	dir, err := s.root.Open(e.path)
-	if err != nil {
-		return err
+	if err := unix.Flock(source.fd(), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		return entry{}, fmt.Errorf("could not lock entry %q; retry after cleanup: %w", e.id, err)
 	}
-	defer dir.Close()
-	if err := syscall.Flock(int(dir.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return fmt.Errorf("could not lock entry %q; retry after cleanup: %w", e.id, err)
+	if err := source.check(); err != nil {
+		return entry{}, err
 	}
-	bound, err := dir.Stat()
-	if err != nil {
-		return err
+	if err := renameEntry(source.parent, source.name, parent, filepath.Base(destination)); err != nil {
+		return entry{}, fmt.Errorf("move %q to %q: %w", filepath.Join(s.location, e.path), filepath.Join(s.location, destination), err)
 	}
-	current, err := s.root.Lstat(e.path)
-	if err != nil {
-		return err
-	}
-	if !current.IsDir() || !os.SameFile(bound, current) {
-		return fmt.Errorf("entry %q changed during cleanup; run katl-dev-evidence list", e.id)
-	}
-	if err := s.root.Rename(e.path, destination); err != nil {
-		return err
-	}
-	s.tidyPinParents(e)
-	return nil
+	s.tidyPinParents(e, source)
+	e.path, e.parent = destination, parent.id
+	return e, nil
 }
 
 func (s *store) remove(e entry) error {
-	// Root-relative removal confines traversal even if a path is replaced
-	// by a symlink after discovery.
-	if err := s.root.RemoveAll(e.path); err != nil {
+	if s.beforeRemove != nil {
+		s.beforeRemove()
+	}
+	dir, err := s.bind(e)
+	if err != nil {
 		return err
 	}
-	s.tidyPinParents(e)
+	defer s.closePath(dir)
+	if err := s.walk(dir, func(parent *directory, name string, child *directory) error {
+		if child != nil {
+			return child.remove()
+		}
+		return unix.Unlinkat(parent.fd(), name, 0)
+	}); err != nil {
+		return err
+	}
+	if err := dir.remove(); err != nil {
+		return err
+	}
+	s.tidyPinParents(e, dir)
 	return nil
 }
 
-func (s *store) tidyPinParents(e entry) {
+func (s *store) tidyPinParents(e entry, dir *directory) {
 	if !e.deadline.IsZero() {
-		owner := filepath.Dir(e.path)
-		// Remove only empty bookkeeping directories.
-		_ = s.root.Remove(owner)
-		_ = s.root.Remove(filepath.Dir(owner))
+		owner := dir.parent
+		if owner.remove() == nil {
+			_ = owner.parent.remove()
+		}
 	}
 }
 
@@ -305,19 +359,27 @@ func (s *store) prune(out io.Writer, entries []entry, now time.Time, budget int6
 		size int64
 	}
 	var candidates []measuredEntry
+	var errs []error
+	collisions := make(map[string]bool)
 	var total int64
 	for _, e := range entries {
 		if !e.deadline.IsZero() && !now.Before(e.deadline) {
-			if err := s.move(e, e.id); err != nil {
-				return fmt.Errorf("return expired pin %q to ordinary aging: %w", e.id, err)
+			moved, err := s.move(e, e.id)
+			if err == nil {
+				e, e.deadline = moved, time.Time{}
+			} else {
+				errs = append(errs, fmt.Errorf("return expired pin %q to ordinary aging: %w", e.id, err))
+				if errors.Is(err, fs.ErrExist) {
+					collisions[e.id] = true
+				}
 			}
-			e.path, e.deadline = e.id, time.Time{}
 		}
 		size, err := s.size(e)
-		if err != nil {
-			return err
-		}
 		total += size
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
 		if e.deadline.IsZero() {
 			candidates = append(candidates, measuredEntry{e, size})
 		}
@@ -330,18 +392,22 @@ func (s *store) prune(out io.Writer, entries []entry, now time.Time, budget int6
 		if total <= budget {
 			break
 		}
+		if collisions[e.id] {
+			continue
+		}
 		if err := s.remove(e.entry); err != nil {
-			return err
+			errs = append(errs, err)
+			continue
 		}
 		total -= e.size
 		if _, err := fmt.Fprintln(out, e.id); err != nil {
-			return err
+			return errors.Join(append(errs, err)...)
 		}
 	}
 	if total > budget {
-		return budgetError(total, budget)
+		errs = append(errs, budgetError(total, budget))
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 func budgetError(total, budget int64) error {

@@ -153,10 +153,9 @@ it invokes this wrapper itself. For enabled VM tests, use
 ## `katl-dev-evidence`
 
 Use `katl-dev-evidence` from the development shell to manage evidence
-that needs to survive the worktree or session. The store defaults to
-`$XDG_STATE_HOME/katl-dev/evidence`, or `~/.local/state/katl-dev/evidence`
-if `XDG_STATE_HOME` is unset. Set `KATL_DEV_EVIDENCE_ROOT` to use a
-separate store for a test.
+that needs to survive the worktree or session. The store is
+`~/.local/state/katl-dev/evidence`, with `~` taken from your passwd
+entry. The store path must use real directories at every level.
 
 Create an entry and copy retained files to the printed path.
 
@@ -182,21 +181,27 @@ pinned data toward the budget and removes unpinned entries oldest first.
 If the store is over its default budget, `new` directs you to release
 evidence before allocating another entry.
 
+`release` and `prune` report mounted directories and leave their contents alone. If
+an expired pin's original path has been recreated, `prune` reports both
+paths and continues processing other entries. Use the reported absolute paths
+to identify each copy.
+
 ### Configure automatic cleanup
 
 The `katl-dev` Home Manager module needs these `systemd.user.tmpfiles.rules`.
 
 ```nix
 systemd.user.tmpfiles.rules = [
-  "d %S/katl-dev/evidence 0700 - - mM:14d -"
-  "x %S/katl-dev/evidence/.pinned - - - - -"
+  "d %h/.local/state/katl-dev/evidence 0700 - - mM:14d -"
+  "x %h/.local/state/katl-dev/evidence/.pinned - - - - -"
 ];
 ```
 
-In user mode, `%S` resolves to the XDG state directory. The first rule
-creates the private store and expires files and directories based on their
-modification time. When copying a tree of older evidence into a new entry,
-use `cp -R --reflink=auto` so the copy starts with fresh timestamps.
+The rules use `%h/.local/state` so they address the tool's store even when
+`XDG_STATE_HOME` is set. The first rule creates the private store and
+expires files and directories based on their modification time. When copying
+a tree of older evidence into a new entry, use `cp -R --reflink=auto` so the
+copy starts with fresh timestamps.
 
 The second rule excludes the entire `.pinned` subtree from tmpfiles
 cleanup. When a pin expires, `prune` moves the entry back to the

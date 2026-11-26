@@ -72,6 +72,7 @@
         pkgs:
         buildKatlGo pkgs {
           pname = "katl-dev-evidence";
+          env.CGO_ENABLED = "1";
           subPackages = [ "cmd/katl-dev-evidence" ];
           meta.mainProgram = "katl-dev-evidence";
         };
