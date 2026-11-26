@@ -60,15 +60,16 @@ exit "$CODEX_TEST_STATUS"
 `)
 
 	for _, tc := range []struct {
-		role, heading, sandbox, model, effort string
-		input                                 string
-		options                               []string
-		status                                int
+		role, sandbox, model, effort string
+		input                        string
+		options                      []string
+		logLocation                  string
+		status                       int
 	}{
-		{"delivery", "Delivery", "workspace-write", "gpt-6.2-sol", "medium", task, nil, 0},
-		{"reviewer", "Reviewer", "read-only", "gpt-6.2-astra", "medium", task, nil, 0},
-		{"debugger", "Debugger", "read-only", "gpt-6.2-astra", "high", task, nil, 23},
-		{"debugger", "Debugger", "read-only", "gpt-6.2-astra", "low", "@task with spaces.md", []string{"--effort", "low"}, 0},
+		{"delivery", "workspace-write", "gpt-6.2-sol", "medium", task, nil, "home", 0},
+		{"reviewer", "read-only", "gpt-6.2-astra", "medium", task, nil, "xdg", 0},
+		{"debugger", "read-only", "gpt-6.2-astra", "high", task, nil, "xdg", 23},
+		{"debugger", "read-only", "gpt-6.2-astra", "low", "@task with spaces.md", []string{"--effort", "low"}, "explicit", 0},
 	} {
 		t.Run(tc.role+"/"+tc.effort, func(t *testing.T) {
 			work := t.TempDir()
@@ -85,9 +86,20 @@ exit "$CODEX_TEST_STATUS"
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 			const taskName = "issue:413-v2.review_service.service"
-			const logName = "codex report.log"
-			logPath := filepath.Join(work, logName)
-			launcherArgs := append([]string{tc.role, "--log", logName, "--env", "CODEX_TEST_STATUS"}, tc.options...)
+			logName := "katl-codex-" + tc.role + "-" + taskName + ".log"
+			launcherArgs := append([]string{tc.role, "--env", "CODEX_TEST_STATUS"}, tc.options...)
+			stateHome := filepath.Join(work, "xdg state")
+			t.Setenv("XDG_STATE_HOME", stateHome)
+			logPath := filepath.Join(stateHome, "katl-dev", "logs", logName)
+			switch tc.logLocation {
+			case "home":
+				t.Setenv("XDG_STATE_HOME", "")
+				logPath = filepath.Join(home, ".local", "state", "katl-dev", "logs", logName)
+			case "explicit":
+				const customLog = "codex report.log"
+				launcherArgs = append(launcherArgs, "--log", customLog)
+				logPath = filepath.Join(work, customLog)
+			}
 			launcherArgs = append(launcherArgs, taskName, tc.input)
 			cmd := exec.CommandContext(ctx, filepath.Join(repo, "scripts", "codex-role"), launcherArgs...)
 			cmd.Dir = work
@@ -129,7 +141,7 @@ exit "$CODEX_TEST_STATUS"
 			}
 			for _, property := range []string{
 				"ProtectHome=tmpfs", "PrivateUsers=yes", "PrivateTmp=yes", `TemporaryFileSystem="` + home + `":ro`,
-				`BindPaths="` + repo + `"`, `BindPaths="` + work + `"`, `BindPaths="` + codexHome + `"`,
+				`BindPaths="` + repo + `"`, `BindPaths="` + filepath.Dir(logPath) + `"`, `BindPaths="` + codexHome + `"`,
 				`BindPaths="` + buildCache + `"`, `BindPaths="` + moduleCache + `"`, `BindReadOnlyPaths="` + ghConfig + `"`,
 			} {
 				index := slices.Index(runArgs, property)
@@ -168,11 +180,11 @@ exit "$CODEX_TEST_STATUS"
 			}
 
 			prompt := args[len(want)]
-			heading := "## " + tc.heading + "\n"
-			if !strings.HasPrefix(prompt, heading) || !strings.Contains(prompt, "**Report.**") ||
-				strings.Contains(strings.TrimPrefix(prompt, heading), "\n## ") ||
-				!strings.HasSuffix(prompt, "\n\n"+task) {
-				t.Fatalf("want only the %s section followed by the task, got %q", tc.heading, prompt)
+			roleFile := filepath.Join(repo, "dev", "agents", "roles", tc.role+".md")
+			roleText := strings.TrimRight(string(mustReadFile(t, roleFile)), "\n")
+			roleTextInPrompt, rest, found := strings.Cut(prompt, "\n\nRead dev/agents/README.md")
+			if !found || roleTextInPrompt != roleText || !strings.HasSuffix(rest, "\n\n"+task) {
+				t.Fatalf("want the full %s role, the shared workflow reference, and the task, got %q", tc.role, prompt)
 			}
 		})
 	}

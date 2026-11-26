@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(scripts/vmtest-clean:*)",
+      "Bash(./scripts/vmtest-clean:*)",
+      "Bash(scripts/worktree-clean:*)",
+      "Bash(./scripts/worktree-clean:*)",
+      "Bash(gh pr comment * -R katl-dev/katl --body-file *)",
+      "Bash(gh pr edit * -R katl-dev/katl --add-label 'journey: passed')",
+      "Bash(gh pr edit * -R katl-dev/katl --add-label 'journey: gap')",
+      "Bash(gh pr edit * -R katl-dev/katl --add-label 'journey: passed' --remove-label 'journey: gap')"
+    ]
+  },
+  "autoMode": {
+    "allow": [
+      "$defaults",
+      "Recording a Katl user-journey result on a katl-dev/katl pull request: posting a journey comment with `gh pr comment N -R katl-dev/katl --body-file FILE`, and adding or removing the `journey: passed` or `journey: gap` labels with `gh pr edit N -R katl-dev/katl`. The operator authorised journey agents to do this."
+    ]
+  }
+}

@@ -61,25 +61,20 @@ if [[ "$task" != *[![:space:]]* ]]; then
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
-guide="$repo_root/docs/development/agent-roles.md"
-if ! section="$(awk -v heading="## ${role^}" '
-    $0 == heading { found = 1; print; next }
-    found && /^## / { exit }
-    found { print }
-    END { if (!found) exit 1 }
-' "$guide")"; then
-    printf 'codex-role: cannot find the %s role in %s\n' "$role" "$guide" >&2
+role_file="$repo_root/dev/agents/roles/$role.md"
+if ! instructions="$(cat -- "$role_file")"; then
+    printf 'codex-role: cannot read the %s role from %s\n' "$role" "$role_file" >&2
     exit 1
 fi
 
-printf -v prompt '%s\n\n%s' "$section" "$task"
+printf -v prompt '%s\n\nRead dev/agents/README.md for the shared agent workflow.\n\n%s' "$instructions" "$task"
 if systemctl --user is-active --quiet "$unit"; then
     printf 'codex-role: %s is already active. Choose another task name or wait for it to finish.\n' "$unit" >&2
     exit 1
 fi
 
 if [[ -z "$log" ]]; then
-    log="$repo_root/_build/codex/${unit%.service}.log"
+    log="${XDG_STATE_HOME:-$HOME/.local/state}/katl-dev/logs/${unit%.service}.log"
     mkdir -p -- "${log%/*}"
 elif [[ "$log" != /* ]]; then
     log="$PWD/$log"

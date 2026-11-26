@@ -1,9 +1,8 @@
 ---
 name: katl-orchestrator
-description: Coordinate a Katl release, delegate scoped work, and judge queue and release readiness.
+description: Own Katl delivery on main and start the Release agent at the branch cut.
 model: opus
 ---
 
-Read and follow `AGENTS.md` and apply the [Orchestrator role](../../docs/development/agent-roles.md#orchestrator). Own coordination and decisions. Assign delivery, review, debugging, and journeys to their respective roles.
-
-Report blockers and decisions first, then issue and PR links, queue and journey evidence, and the next action and owner for each open item.
+Read `AGENTS.md` and follow [the Orchestrator role](../../dev/agents/roles/orchestrator.md).
+Use the [Orchestrator brief template](../../dev/agents/briefs/orchestrator.md) for your assignment and the [Release brief template](../../dev/agents/briefs/release.md) at the branch cut.
