@@ -196,8 +196,6 @@ func vmtestRuntimePaths(root string) []string {
 	return []string{
 		filepath.Join(root, "usr", "lib", "katl", "vmtest"),
 		filepath.Join(root, "usr", "lib", "katl", "vmtest", "katl-vmtest-agent"),
-		filepath.Join(root, "usr", "lib", "katl", "vmtest", "katlc-instrumented"),
-		filepath.Join(root, "usr", "lib", "systemd", "system", "katlc-agent.service.d", "90-katl-vmtest.conf"),
 		filepath.Join(root, "usr", "lib", "systemd", "system", "katl-vmtest-agent.service"),
 		filepath.Join(root, "usr", "lib", "systemd", "system", "katl-vmtest-debug-shell.service"),
 		filepath.Join(root, "usr", "lib", "systemd", "system", "multi-user.target.wants", "katl-vmtest-agent.service"),

@@ -18,10 +18,11 @@ import (
 )
 
 const (
-	AgentPath               = "/usr/lib/katl/vmtest/katlc-instrumented"
+	AgentPath               = "/usr/lib/katl/vmtest/katl-vmtest-agent"
+	Command                 = "kubelet-health"
+	ExpireCommand           = "expire"
 	CheckpointRolloutPrefix = "vmtest-kubelet-checkpoint-policy-"
 	ArmedMessage            = "vmtest kubelet health armed "
-	ExpireCommand           = "expire-kubelet-health"
 )
 
 type Control struct {

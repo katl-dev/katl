@@ -169,7 +169,7 @@ func observePreCNIKubeletFault(ctx context.Context, privateKey, address, cursor,
 		}
 		if sawDiagnostic && (!checkpoint || armedID != "") {
 			if checkpoint {
-				command := kubelethealth.AgentPath + " " + kubelethealth.ExpireCommand + " " + quoteKubeletShellArg(armedID)
+				command := strings.Join([]string{kubelethealth.AgentPath, kubelethealth.Command, kubelethealth.ExpireCommand, quoteKubeletShellArg(armedID)}, " ")
 				if _, err := readKubeletNode(ctx, privateKey, address, "cp-1", command); err != nil {
 					return "", fmt.Errorf("expire kubelet health for %s: %w", armedID, err)
 				}

@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/katl-dev/katl/internal/vmtest"
+	"github.com/katl-dev/katl/internal/vmtest/image/kubelethealth"
 )
 
 var (
@@ -18,6 +19,14 @@ var (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == kubelethealth.Command {
+		if err := runKubeletHealth(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "kubelet-health:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	port := flag.Uint("port", uint(vmtest.DefaultAgentPort), "vsock port for the vmtest agent")
 	flag.Parse()
 
