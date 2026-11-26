@@ -730,7 +730,18 @@ func enableMTLSCall(ctx context.Context, node enableMTLSNode, credentials manage
 		return err
 	}
 	defer conn.Close()
-	return call(requestCtx, conn.Client)
+	if err := call(requestCtx, conn.Client); err != nil {
+		return err
+	}
+	// A successful reply can race with cancellation, and the timer callback
+	// can run after the deadline. Check both before acting on the reply.
+	if err := requestCtx.Err(); err != nil {
+		return err
+	}
+	if deadline, _ := requestCtx.Deadline(); !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 // refreshEnableMTLSContext updates a saved context for the cluster so it uses
