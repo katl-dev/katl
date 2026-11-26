@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/katl-dev/katl/internal/generation"
@@ -80,6 +81,48 @@ func TestPendingBootMoveStatus(t *testing.T) {
 	operatorconsole.Collector{Mode: operatorconsole.ModeRuntime, Root: server.Root}.Collect(&snapshot)
 	if snapshot.CurrentSoftware.Generation != "generation-0" || snapshot.NextBootSoftware.Generation != "live-recovery" {
 		t.Fatalf("console current=%q next=%q error=%q", snapshot.CurrentSoftware.Generation, snapshot.NextBootSoftware.Generation, snapshot.GenerationError)
+	}
+}
+
+func TestRecoveryBootMoveStatusWithoutTarget(t *testing.T) {
+	server := newTestServer(t)
+	writeConfigApplyBaseState(t, server.Root)
+	writeTestFile(t, filepath.Join(server.Root, "run/katl/boot-health/current"), `{"generationID":"generation-0"}`)
+	writeTestFile(t, filepath.Join(server.Root, "var/lib/katl/boot/move-intent.json"), `{
+		"recordType": "katl.boot.move-intent",
+		"recordVersion": 1,
+		"payload": {
+			"operationID": "recover-without-destination",
+			"bootID": "6baea692-085e-49ac-9bd6-c948a8da8406",
+			"expectedSelectionRevision": 0,
+			"sourceGenerationID": "generation-0",
+			"destinationGenerationID": "",
+			"priorDefault": {"generationID":"generation-0","entry":"katl-generation-0.conf"},
+			"priorOneShot": {"generationID":"","entry":""},
+			"desiredDefault": {"generationID":"","entry":""},
+			"desiredOneShot": {"generationID":"","entry":""},
+			"desiredSelection": {
+				"apiVersion":"katl.dev/v1alpha1","kind":"BootSelection","revision":1,
+				"recoveryRequired":true,"updatedAt":"2026-11-26T15:00:00Z"
+			},
+			"statusChanges": [],
+			"reboot": {"trialID":"","eligible":false,"spent":false}
+		}
+	}`)
+
+	status, err := server.GetNodeStatus(t.Context(), &agentapi.GetNodeStatusRequest{})
+	if err != nil || status.GetCurrentGenerationId() != "generation-0" || status.GetBootTargetGenerationId() != "" {
+		t.Errorf("node status current=%q next=%q error=%v", status.GetCurrentGenerationId(), status.GetBootTargetGenerationId(), err)
+	}
+
+	var snapshot operatorconsole.Snapshot
+	operatorconsole.Collector{Mode: operatorconsole.ModeRuntime, Root: server.Root}.Collect(&snapshot)
+	if snapshot.CurrentSoftware.Generation != "generation-0" || snapshot.NextBootSoftware.Generation != "" || snapshot.GenerationError != "" {
+		t.Errorf("console current=%q next=%q error=%q", snapshot.CurrentSoftware.Generation, snapshot.NextBootSoftware.Generation, snapshot.GenerationError)
+	}
+	renderer := operatorconsole.NewRenderer(operatorconsole.NewRenderTarget(nil, 80, 24), false)
+	if rendered := string(renderer.Render(&snapshot, nil)); !strings.Contains(rendered, "No next target for current generation generation-0") {
+		t.Errorf("console did not display the missing boot target:\n%s", rendered)
 	}
 }
 

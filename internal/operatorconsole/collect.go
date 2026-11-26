@@ -383,13 +383,18 @@ func (c Collector) collectGeneration(snapshot *Snapshot) {
 	snapshot.GenerationHealth = status.HealthState
 
 	nextID := targets.Next
-	if nextID == "" || nextID == id {
+	switch nextID {
+	case "":
+	case id:
 		snapshot.NextBootSoftware = snapshot.CurrentSoftware
-	} else if spec, _, nextErr := generation.ReadGeneration(root, nextID); nextErr == nil {
-		snapshot.NextBootSoftware = softwareFromSpec(spec)
-	} else {
-		snapshot.NextBootSoftware = Software{Generation: nextID}
-		snapshot.GenerationError = "next-boot generation metadata is unreadable; inspect the KatlOS generation store"
+	default:
+		spec, _, err := generation.ReadGeneration(root, nextID)
+		if err != nil {
+			snapshot.NextBootSoftware = Software{Generation: nextID}
+			snapshot.GenerationError = "next-boot generation metadata is unreadable; inspect the KatlOS generation store"
+		} else {
+			snapshot.NextBootSoftware = softwareFromSpec(spec)
+		}
 	}
 
 	snapshot.LiveSoftware = snapshot.CurrentSoftware

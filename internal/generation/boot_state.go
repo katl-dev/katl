@@ -11,7 +11,7 @@ import (
 )
 
 // BootTargets identifies the running, next-boot and live-selected generations
-// for status reporting.
+// for status reporting. Next is empty when a boot move records no destination.
 type BootTargets struct {
 	Current string
 	Next    string

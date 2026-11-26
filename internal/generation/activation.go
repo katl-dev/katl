@@ -111,13 +111,16 @@ func ReadRecord(path string) (Record, error) {
 	if filepath.Base(path) != "metadata.json" {
 		return readRecordFile(path)
 	}
-	// Legacy activation records have a smaller contract than full boot specs.
-	if _, err := os.Stat(filepath.Join(filepath.Dir(path), "spec.json")); os.IsNotExist(err) {
-		return readRecordFile(path)
-	} else if err != nil {
+	dir := filepath.Dir(path)
+	spec, legacy, err := readGenerationMetadata(dir)
+	if err != nil {
 		return Record{}, err
 	}
-	spec, status, err := ReadSplitRecords(filepath.Dir(path))
+	// Legacy activation records have a smaller contract than full boot specs.
+	if legacy != nil {
+		return *legacy, nil
+	}
+	status, err := readGenerationStatus(dir, spec, nil)
 	if err != nil {
 		return Record{}, err
 	}
@@ -297,7 +300,12 @@ func rejectKubernetesSysextChange(root string, record Record) error {
 	if previousID == "" {
 		return nil
 	}
-	previous, err := readRecordFromRoot(root, previousID)
+	dir, err := GenerationDir(root, previousID)
+	if err != nil {
+		return fmt.Errorf("read previous generation for Kubernetes sysext policy: %w", err)
+	}
+	// The predecessor supplies a sysext reference even after its slot becomes unavailable.
+	previous, _, err := readGenerationMetadata(dir)
 	if err != nil {
 		return fmt.Errorf("read previous generation for Kubernetes sysext policy: %w", err)
 	}
@@ -359,14 +367,6 @@ func previousGenerationForActivation(root string, record Record) (string, error)
 		}
 	}
 	return "", nil
-}
-
-func readRecordFromRoot(root string, generationID string) (Record, error) {
-	metadataPath, err := MetadataPath(root, generationID)
-	if err != nil {
-		return Record{}, err
-	}
-	return ReadRecord(metadataPath)
 }
 
 func selectedKubernetesSysext(refs []ExtensionRef) (ExtensionRef, bool) {

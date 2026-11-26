@@ -141,6 +141,46 @@ func TestActivationWithBootMoveIntent(t *testing.T) {
 	}
 }
 
+func TestBootMoveActivatesWithInvalidatedPredecessor(t *testing.T) {
+	root := t.TempDir()
+	writeBootDisk(t, root)
+	fixture := strings.Replace(intentFixture(t), `"unavailableReason": ""`, `"unavailableReason": "OS slot has been replaced"`, 1)
+	writeIntentFixture(t, root, fixture)
+
+	previous := activationRecord(t, root, "gen1", "shared Kubernetes sysext")
+	target := activationRecord(t, root, "gen2", "shared Kubernetes sysext")
+	target.PreviousGenerationID = previous.GenerationID
+	for _, id := range []string{"gen0", "gen3"} {
+		writeBootHealthGeneration(t, root, id, "", CommitStateCommitted, BootStateGood, HealthStateHealthy, target.CreatedAt)
+	}
+	for _, record := range []Record{previous, target} {
+		record.Boot.LoaderEntryPath = "loader/entries/katl-" + record.GenerationID + ".conf"
+		writeActivationGeneration(t, root, record)
+		mustWrite(t, rootedPathUnchecked(root, record.Boot.UKIPath), "UKI", 0o644)
+		mustWrite(t, rootedPathUnchecked(root, "/efi/"+record.Boot.LoaderEntryPath), "loader entry", 0o644)
+	}
+	spec, status, err := ReadGeneration(root, previous.GenerationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status.UnavailableReason = "OS slot has been replaced"
+	status.BootState = BootStateFailed
+	status.HealthState = HealthStateUnhealthy
+	status.UpdatedAt = time.Date(2026, 11, 26, 14, 59, 0, 0, time.UTC)
+	status.StatusTransitions = append(status.StatusTransitions, StatusTransition{
+		At: status.UpdatedAt, OperationID: "recover-gen1", Reason: "trial failed",
+		CommitState: status.CommitState, BootState: status.BootState, HealthState: status.HealthState,
+	})
+	if err := WriteGenerationStatus(root, spec, status); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := ActivateBootGeneration(root, target.GenerationID, bootHealthCommandLine(target.GenerationID)); err != nil {
+		t.Fatal(err)
+	}
+	assertSymlink(t, filepath.Join(root, "run/extensions/kubernetes.raw"), target.Sysexts[0].Path)
+}
+
 func TestPendingBootMoveFencesLegacyMutations(t *testing.T) {
 	root := t.TempDir()
 	writeBootMoveLegacyFixture(t, root)

@@ -209,39 +209,54 @@ func WriteGeneration(root string, spec GenerationSpec, status GenerationStatus) 
 }
 
 func ReadSplitRecords(dir string) (GenerationSpec, GenerationStatus, error) {
-	specPath := filepath.Join(dir, "spec.json")
-	statusPath := filepath.Join(dir, "status.json")
-	spec, err := readGenerationSpecFile(specPath)
+	spec, legacy, err := readGenerationMetadata(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			legacy, legacyErr := readRecordFile(filepath.Join(dir, "metadata.json"))
-			if legacyErr != nil {
-				return GenerationSpec{}, GenerationStatus{}, fmt.Errorf("read legacy generation metadata: %w", legacyErr)
-			}
-			spec := SpecFromRecord(legacy)
-			digest, digestErr := CanonicalSpecDigest(spec)
-			if digestErr != nil {
-				return GenerationSpec{}, GenerationStatus{}, digestErr
-			}
-			status := StatusFromRecord(legacy, digest)
-			if validateErr := ValidateGenerationStatus(spec, status); validateErr != nil {
-				return GenerationSpec{}, GenerationStatus{}, validateErr
-			}
-			return spec, status, nil
-		}
-		return GenerationSpec{}, GenerationStatus{}, fmt.Errorf("read generation spec: %w", err)
-	}
-	if err := validateGenerationDirID(dir, spec.GenerationID); err != nil {
 		return GenerationSpec{}, GenerationStatus{}, err
 	}
-	status, err := readGenerationStatusFile(statusPath)
+	status, err := readGenerationStatus(dir, spec, legacy)
 	if err != nil {
-		return GenerationSpec{}, GenerationStatus{}, fmt.Errorf("read generation status: %w", err)
-	}
-	if err := ValidateGenerationStatus(spec, status); err != nil {
 		return GenerationSpec{}, GenerationStatus{}, err
 	}
 	return spec, status, nil
+}
+
+func readGenerationMetadata(dir string) (GenerationSpec, *Record, error) {
+	spec, err := readGenerationSpecFile(filepath.Join(dir, "spec.json"))
+	if os.IsNotExist(err) {
+		legacy, err := readRecordFile(filepath.Join(dir, "metadata.json"))
+		if err != nil {
+			return GenerationSpec{}, nil, fmt.Errorf("read legacy generation metadata: %w", err)
+		}
+		return SpecFromRecord(legacy), &legacy, nil
+	}
+	if err != nil {
+		return GenerationSpec{}, nil, fmt.Errorf("read generation spec: %w", err)
+	}
+	if err := validateGenerationDirID(dir, spec.GenerationID); err != nil {
+		return GenerationSpec{}, nil, err
+	}
+	return spec, nil, nil
+}
+
+func readGenerationStatus(dir string, spec GenerationSpec, legacy *Record) (GenerationStatus, error) {
+	var status GenerationStatus
+	if legacy != nil {
+		digest, err := CanonicalSpecDigest(spec)
+		if err != nil {
+			return GenerationStatus{}, err
+		}
+		status = StatusFromRecord(*legacy, digest)
+	} else {
+		var err error
+		status, err = readGenerationStatusFile(filepath.Join(dir, "status.json"))
+		if err != nil {
+			return GenerationStatus{}, fmt.Errorf("read generation status: %w", err)
+		}
+	}
+	if err := ValidateGenerationStatus(spec, status); err != nil {
+		return GenerationStatus{}, err
+	}
+	return status, nil
 }
 
 // WriteSplitRecords publishes the immutable spec before the initial status. A
