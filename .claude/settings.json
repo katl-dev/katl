@@ -9,7 +9,8 @@
       "Bash(gh pr edit * -R katl-dev/katl --add-label 'journey: passed')",
       "Bash(gh pr edit * -R katl-dev/katl --add-label 'journey: gap')",
       "Bash(gh pr edit * -R katl-dev/katl --add-label 'journey: passed' --remove-label 'journey: gap')"
-    ]
+    ],
+    "deny": ["Bash(codex exec:*)"]
   },
   "autoMode": {
     "allow": [

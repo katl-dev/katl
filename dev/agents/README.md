@@ -16,6 +16,7 @@ checkpoint lets a new session recover the work.
 | [Delivery](roles/delivery.md) | Codex `gpt-6.2-sol`, medium effort |
 | [Reviewer](roles/reviewer.md) | Codex `gpt-6.2-astra`, medium effort for ordinary code reviews and high effort for the independent review that gates auto-merge. |
 | [Debugger](roles/debugger.md) | Codex `gpt-6.2-astra`, high effort for hard debugging |
+| [Rebase](roles/rebase.md) | Codex `gpt-6.1-terra`, medium effort |
 | [Journey](roles/journey.md) | Claude Sonnet, medium effort |
 | [Washup](roles/washup.md) | Claude Sonnet |
 
@@ -33,6 +34,36 @@ very large reads.
 Send rebases and conflict resolution to Codex `gpt-6.1-terra` at low or medium
 effort, or to a Claude Sonnet subagent, not to Sol. Keep Sol for
 implementation.
+
+## Launch Codex jobs
+
+Use `scripts/codex-role` from the task worktree so jobs and their logs survive
+the launching session. The repository's Claude permissions deny direct Codex
+launches. See the [orchestrator role](roles/orchestrator.md) for launch options.
+
+### Provision GitHub read access
+
+Jobs can launch without GitHub authentication. For jobs that need authenticated
+reads, configure a dedicated token from the maintainer's session.
+
+1. In GitHub's **Fine-grained personal access tokens** settings, create a token
+   with resource owner `katl-dev` and repository access limited to `katl`.
+2. Under **Repository permissions**, grant **Read-only** access to **Contents**,
+   **Issues**, **Pull requests**, and **Actions**. GitHub grants **Metadata**
+   read access automatically.
+3. Set up the token file from outside the worktree, then paste the token into
+   it using an editor. Store only the token in the file.
+
+   ```bash
+   token_file="${XDG_CONFIG_HOME:-$HOME/.config}/katl-dev/codex-gh-token"
+   mkdir -p -- "${token_file%/*}"
+   (umask 077; touch -- "$token_file")
+   chmod 0600 -- "$token_file"
+   ```
+
+The launcher checks mode `0600` and supplies the token as a read-only systemd
+credential. A missing file produces a launch notice with the provisioning path.
+The repository development shell includes `jq` and `gh` for this workflow.
 
 ## Local state
 
