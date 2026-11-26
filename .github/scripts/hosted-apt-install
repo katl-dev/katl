@@ -3,9 +3,25 @@ set -euo pipefail
 
 [[ $# -gt 0 ]] || { echo 'usage: hosted-apt-install PACKAGE...' >&2; exit 2; }
 
+# Third-party repositories on the runner image are not package sources for
+# Katl, so an outage there must not fail the job. Restricting APT to the
+# Ubuntu archive lets Error-Mode=any fail only on indexes Katl depends on.
+source_parts=$(mktemp -d)
+trap 'rm -rf "$source_parts"' EXIT
+
 ubuntu_sources=/etc/apt/sources.list.d/ubuntu.sources
+legacy_sources=/etc/apt/sources.list
 if [[ -f "$ubuntu_sources" ]]; then
     sudo sed -i -E 's@https?://azure\.archive\.ubuntu\.com/ubuntu@https://archive.ubuntu.com/ubuntu@g' "$ubuntu_sources"
+    cp "$ubuntu_sources" "$source_parts/"
+    source_list=/dev/null
+elif grep -Eq '^[[:space:]]*deb[[:space:]]' "$legacy_sources" 2>/dev/null; then
+    # Images before Ubuntu 24.04 keep the archive in the legacy list.
+    sudo sed -i -E 's@https?://azure\.archive\.ubuntu\.com/ubuntu@https://archive.ubuntu.com/ubuntu@g' "$legacy_sources"
+    source_list=$legacy_sources
+else
+    echo "hosted-apt-install: no Ubuntu archive source in $ubuntu_sources or $legacy_sources; this helper installs only from the Ubuntu archive" >&2
+    exit 1
 fi
 
 # Keep the upstream HTTPS fallbacks when APT uses a mirror list.
@@ -13,6 +29,9 @@ if [[ -f /etc/apt/apt-mirrors.txt ]]; then
     sudo sed -i '/azure\.archive\.ubuntu\.com/d' /etc/apt/apt-mirrors.txt
 fi
 
-apt_options=(-o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30)
+apt_options=(
+    -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
+    -o "Dir::Etc::sourcelist=$source_list" -o "Dir::Etc::sourceparts=$source_parts"
+)
 sudo apt-get "${apt_options[@]}" -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update -qq
 sudo apt-get "${apt_options[@]}" install -y --no-install-recommends "$@"
