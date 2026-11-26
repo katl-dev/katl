@@ -117,7 +117,7 @@ func (s *Server) serveManagement(ctx context.Context, network, address string, r
 		if err != nil {
 			return err
 		}
-		tlsConfig, trial, err := managementServerTLS(s.Root, clock)
+		tlsConfig, trust, trial, err := managementServerTLS(s.Root, clock)
 		if err != nil {
 			return err
 		}
@@ -136,8 +136,8 @@ func (s *Server) serveManagement(ctx context.Context, network, address string, r
 			opts = append(opts, grpc.Creds(credentials.NewTLS(tlsConfig)))
 		}
 		server := grpc.NewServer(opts...)
-		agentapi.RegisterKatlcAgentServer(server, s)
 		committed := s.management.serve(trial)
+		agentapi.RegisterKatlcAgentServer(server, &managementListenerAPI{Server: s, trust: trust, committed: committed})
 		errc := make(chan error, 1)
 		go func() { errc <- server.Serve(listener) }()
 		// The listener is bound, so connections made from here on are accepted.
@@ -183,6 +183,28 @@ func (s *Server) serveManagement(ctx context.Context, network, address string, r
 		}
 		stopServer(server, managementReserveTimeout)
 	}
+}
+
+// Each gRPC server keeps its own trust report while in-flight calls drain.
+type managementListenerAPI struct {
+	*Server
+	trust     *agentapi.ManagementClientTrust
+	committed <-chan struct{}
+}
+
+func (s *managementListenerAPI) GetNodeStatus(ctx context.Context, req *agentapi.GetNodeStatusRequest) (*agentapi.NodeStatus, error) {
+	status, err := s.Server.GetNodeStatus(ctx, req)
+	if err != nil {
+		return nil, err
+	}
+	status.Management.ServedClientTrust = s.trust
+	select {
+	case <-s.committed:
+		// Commit publishes the installed mode without replacing this listener.
+		status.Management.ServedClientTrust = &agentapi.ManagementClientTrust{Authorities: s.trust.Authorities}
+	default:
+	}
+	return status, nil
 }
 
 // managementReserveTimeout bounds how long in-flight calls on a listener that

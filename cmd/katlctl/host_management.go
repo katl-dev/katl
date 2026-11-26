@@ -62,14 +62,20 @@ type hostStatusReport struct {
 	Management           *managementStatusReport     `json:"management,omitempty"`
 }
 
-// managementStatusReport is the node's installed management mode and any
-// recorded trust transition; it is absent for a node too old to report them.
+// managementStatusReport describes installed management state and listener trust.
 type managementStatusReport struct {
-	Authentication string                      `json:"authentication"`
-	Authority      string                      `json:"authority,omitempty"`
-	Transition     *managementTransitionReport `json:"transition,omitempty"`
-	NextStep       string                      `json:"nextStep,omitempty"`
-	trialDeadline  string
+	Authentication    string                       `json:"authentication"`
+	Authority         string                       `json:"authority,omitempty"`
+	ServedClientTrust *managementClientTrustReport `json:"servedClientTrust,omitempty"`
+	Transition        *managementTransitionReport  `json:"transition,omitempty"`
+	NextStep          string                       `json:"nextStep,omitempty"`
+	trialDeadline     string
+}
+
+type managementClientTrustReport struct {
+	Authorities    []string `json:"authorities"`
+	TrialID        string   `json:"trialId,omitempty"`
+	TrialAuthority string   `json:"trialAuthority,omitempty"`
 }
 
 type managementTransitionReport struct {
@@ -761,6 +767,12 @@ func newManagementStatusReport(status *agentapi.ManagementStatus, observedAt tim
 		return nil
 	}
 	report := &managementStatusReport{Authentication: status.GetAuthentication(), Authority: status.GetAuthority()}
+	if trust := status.GetServedClientTrust(); trust != nil {
+		report.ServedClientTrust = &managementClientTrustReport{
+			Authorities: append([]string{}, trust.GetAuthorities()...),
+			TrialID:     trust.GetTrialId(), TrialAuthority: trust.GetTrialAuthority(),
+		}
+	}
 	if transition := status.GetTransition(); transition != nil {
 		report.Transition = &managementTransitionReport{
 			State: transition.GetState(), TargetAuthority: transition.GetTargetAuthority(),

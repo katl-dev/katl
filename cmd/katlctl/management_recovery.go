@@ -94,7 +94,7 @@ func runManagementIdentityRecover(ctx context.Context, opts managementRotationOp
 	if err != nil {
 		return err
 	}
-	installed := make(map[string]nodeidentity.ManagementAuthorityStatus, len(nodes))
+	installed := make(map[string]string, len(nodes))
 	for i := range nodes {
 		node := &nodes[i]
 		// A saved machine ID may predate a reinstall; the pinned SSH host key
@@ -107,7 +107,8 @@ func runManagementIdentityRecover(ctx context.Context, opts managementRotationOp
 			return fmt.Errorf("inspect %s: %w; no node credentials were changed; rerun the same command", node.name,
 				managementConfirmationError("the node's installed management authority", "the previous authority", err))
 		}
-		installed[node.name] = status
+		node.machineID = status.MachineID
+		installed[node.name] = status.Authority
 	}
 
 	_, statErr := os.Stat(outputPath)
@@ -129,19 +130,17 @@ func runManagementIdentityRecover(ctx context.Context, opts managementRotationOp
 	} else {
 		fmt.Fprintf(stderr, "Generated new authority %s at %s\n", nextInfo.Fingerprint, outputPath)
 	}
-	withNext, err := managementRotationNodes(ctx, configPath, source, "", next)
-	if err != nil {
-		return err
-	}
 	var pending []managementRotationNode
-	for i, node := range withNext {
-		status := installed[node.name]
-		withNext[i].machineID, withNext[i].request.ExpectedMachineID = status.MachineID, status.MachineID
-		if status.Authority == nextInfo.Fingerprint {
+	for i := range nodes {
+		node := &nodes[i]
+		authority := installed[node.name]
+		if authority == nextInfo.Fingerprint {
 			continue
 		}
-		withNext[i].request.ExpectedAuthority = status.Authority
-		pending = append(pending, withNext[i])
+		if err := node.prepareRotation(authority, next); err != nil {
+			return err
+		}
+		pending = append(pending, *node)
 	}
 	for _, node := range pending {
 		fmt.Fprintf(stderr, "Preflight replacement identity on %s\n", node.name)
@@ -154,17 +153,17 @@ func runManagementIdentityRecover(ctx context.Context, opts managementRotationOp
 	if err != nil {
 		return err
 	}
-	for _, node := range withNext {
+	for _, node := range nodes {
 		var err error
-		if installed[node.name].Authority == nextInfo.Fingerprint {
-			err = checkManagementCredential(ctx, node, client, min(opts.timeout, 5*time.Second))
+		if installed[node.name] == nextInfo.Fingerprint {
+			_, err = checkManagementCredential(ctx, node, client, nextInfo.Fingerprint, min(opts.timeout, 5*time.Second))
 		} else {
 			fmt.Fprintf(stderr, "Installing replacement management authority on %s\n", node.name)
 			if _, err := runManagementRotationSSH(ctx, node, opts, false); err != nil {
 				return fmt.Errorf("recover %s: %w; keep %s and rerun the same command", node.name,
 					managementConfirmationError("the replacement was installed", "the previous authority", err), outputPath)
 			}
-			err = waitManagementCredential(ctx, node, client, opts.timeout)
+			_, err = waitManagementCredential(ctx, node, client, nextInfo.Fingerprint, opts.timeout)
 		}
 		if err != nil {
 			return fmt.Errorf("%s: %w; keep %s and rerun the same command", node.name,
@@ -180,7 +179,7 @@ func runManagementIdentityRecover(ctx context.Context, opts managementRotationOp
 	if len(pending) == 0 {
 		fmt.Fprintf(stdout, "Every node of %s already trusts %s; nothing to recover\n", source.Metadata.Name, nextInfo.Fingerprint)
 	} else {
-		fmt.Fprintf(stdout, "Recovered management trust for %s on %d of %d node(s); new authority %s\n", source.Metadata.Name, len(pending), len(withNext), nextInfo.Fingerprint)
+		fmt.Fprintf(stdout, "Recovered management trust for %s on %d of %d node(s); new authority %s\n", source.Metadata.Name, len(pending), len(nodes), nextInfo.Fingerprint)
 	}
 	fmt.Fprintf(stdout, "Back up %s now; it is the only copy of the new authority. Refresh any saved shortcut with %s.\n", outputPath, contextSaveInvocation(configPath))
 	return nil
@@ -197,6 +196,9 @@ func sshManagementAuthority(ctx context.Context, node managementRotationNode, op
 	}
 	if status.NodeName != node.name {
 		return nodeidentity.ManagementAuthorityStatus{}, fmt.Errorf("SSH endpoint is node %q, not %s; check management.address and the SSH host key", status.NodeName, node.name)
+	}
+	if strings.TrimSpace(status.MachineID) == "" {
+		return nodeidentity.ManagementAuthorityStatus{}, fmt.Errorf("SSH endpoint for %s did not report its machine identity", node.name)
 	}
 	return status, nil
 }

@@ -25,14 +25,16 @@ import (
 // recoveryNode is an installed mTLS node whose management server restarts
 // when its authority is replaced, with SSH replaced by direct calls.
 type recoveryNode struct {
-	name     string
-	root     string
-	endpoint string
-	server   *grpc.Server
-	listener net.Listener
-	status   *agentapi.NodeStatus
-	applied  int
-	failOnce bool
+	name           string
+	root           string
+	endpoint       string
+	server         *grpc.Server
+	listener       net.Listener
+	status         *agentapi.NodeStatus
+	applied        int
+	failOnce       bool
+	reportTrust    bool
+	extraAuthority string
 }
 
 func newRecoveryNode(t *testing.T, name string, installed managementidentity.Bundle) *recoveryNode {
@@ -65,7 +67,7 @@ func (n *recoveryNode) start(t *testing.T) {
 		n.server.Stop()
 		n.listener.Close()
 	}
-	tlsConfig, err := transport.ServerTLSConfig(n.root)
+	tlsConfig, authorities, err := transport.ServerTLSConfig(n.root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,6 +81,15 @@ func (n *recoveryNode) start(t *testing.T) {
 	}
 	n.endpoint = n.listener.Addr().String()
 	n.server = grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
+	if n.reportTrust {
+		n.status.Management = &agentapi.ManagementStatus{
+			Authentication: "mtls", Authority: authorities[0],
+			ServedClientTrust: &agentapi.ManagementClientTrust{Authorities: authorities},
+		}
+		if n.extraAuthority != "" {
+			n.status.Management.ServedClientTrust.Authorities = append(authorities, n.extraAuthority)
+		}
+	}
 	agentapi.RegisterKatlcAgentServer(n.server, &clusterApplyIdentityServer{client: &fakeKatlcAgentClient{nodeStatus: n.status}})
 	go func() { _ = n.server.Serve(n.listener) }()
 }
@@ -266,7 +277,7 @@ func TestManagementIdentityRecoverReplacesLostAuthority(t *testing.T) {
 	if err != nil || oldInfo.Fingerprint == nextInfo.Fingerprint {
 		t.Fatalf("authority was not replaced: %v", err)
 	}
-	if err := checkManagementCredential(context.Background(), managementRotationNode{name: "cp-1", endpoint: mustHostPort(t, w.node.endpoint)}, mustManagementClient(t, next), 3*time.Second); err != nil {
+	if _, err := checkManagementCredential(context.Background(), managementRotationNode{name: "cp-1", endpoint: mustHostPort(t, w.node.endpoint)}, mustManagementClient(t, next), nextInfo.Fingerprint, 3*time.Second); err != nil {
 		t.Fatalf("recovered credentials cannot manage the node: %v", err)
 	}
 
@@ -300,6 +311,46 @@ func TestManagementIdentityRecoverReplacesLostAuthority(t *testing.T) {
 	}
 	if info, err := os.Stat(w.secrets); err != nil || info.Mode().Perm() != 0o600 {
 		t.Fatalf("secrets file mode = %v, %v", info, err)
+	}
+}
+
+func TestManagementIdentityRecoverRequiresExactServedTrust(t *testing.T) {
+	w := newRecoveryWorld(t)
+	authority, err := managementidentity.CAFingerprint(w.old.CertificateAuthority.Certificate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.node.reportTrust, w.node.extraAuthority = true, authority
+	before, err := os.ReadFile(w.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := filepath.Join(filepath.Dir(w.configPath), "next.yaml")
+	args := []string{"management", "identity", "recover", "--config", w.configPath, "--output", output}
+	var stdout, stderr bytes.Buffer
+	if err := run(t.Context(), args, &stdout, &stderr); err == nil ||
+		!strings.Contains(err.Error(), "listener trusts client CAs") || !strings.Contains(err.Error(), "rerun the same command") {
+		t.Fatalf("recover with extra trust = %v", err)
+	}
+	after, err := os.ReadFile(w.configPath)
+	if err != nil || !bytes.Equal(before, after) || w.node.applied != 1 {
+		t.Fatalf("recovery applied %d times and changed config before exact verification: %v", w.node.applied, err)
+	}
+
+	// SSH sees the replacement already installed. Only the fresh status from
+	// the replacement client can now unblock publication.
+	stdout.Reset()
+	if err := run(t.Context(), args, &stdout, &stderr); err == nil || !strings.Contains(err.Error(), "listener trusts client CAs") {
+		t.Fatalf("recover with extra trust when already installed = %v", err)
+	}
+	w.node.extraAuthority = ""
+	w.node.start(t)
+	if err := run(t.Context(), args, &stdout, &stderr); err != nil ||
+		!strings.Contains(stdout.String(), "nothing to recover") || w.node.applied != 1 {
+		t.Fatalf("resume recovery = %v with %d applies, output %s", err, w.node.applied, &stdout)
+	}
+	if data, err := os.ReadFile(w.configPath); err != nil || !strings.Contains(string(data), "managementIdentity: next.yaml") {
+		t.Fatalf("verified recovery did not publish its secrets reference: %v", err)
 	}
 }
 

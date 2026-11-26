@@ -2,9 +2,7 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -39,23 +37,23 @@ const (
 // trial's credentials, or the installed mode. A trial whose credentials cannot
 // be loaded is reverted at once, so a failed trial never leaves the node
 // without a listener for its installed clients.
-func managementServerTLS(root string, clock nodeidentity.TrialClock) (*tls.Config, *nodeidentity.ManagementTrial, error) {
+func managementServerTLS(root string, clock nodeidentity.TrialClock) (*tls.Config, *agentapi.ManagementClientTrust, *nodeidentity.ManagementTrial, error) {
 	trial, err := nodeidentity.SettleManagementTrial(root, clock)
 	if err != nil {
 		log.Printf("settle management trial: %v; serving the installed management mode", err)
 	}
 	if trial != nil {
-		config, err := transport.TrialServerTLSConfig(root, trial.TargetAuthority)
+		config, authorities, err := transport.TrialServerTLSConfig(root, trial.TargetAuthority)
 		if err == nil {
-			return config, trial, nil
+			return config, &agentapi.ManagementClientTrust{Authorities: authorities, TrialId: trial.ID, TrialAuthority: trial.TargetAuthority}, trial, nil
 		}
 		log.Printf("load management trial %s credentials: %v; reverting", trial.ID, err)
 		if _, _, revertErr := nodeidentity.RevertManagementTrial(root, trial.ID, "katlc-agent could not load the trial credentials: "+err.Error(), clock); revertErr != nil {
 			log.Printf("revert management trial %s: %v; serving the installed management mode", trial.ID, revertErr)
 		}
 	}
-	config, err := transport.ServerTLSConfig(root)
-	return config, nil, err
+	config, authorities, err := transport.ServerTLSConfig(root)
+	return config, &agentapi.ManagementClientTrust{Authorities: authorities}, nil, err
 }
 
 // managementListener tracks the management trial the current listener serves
@@ -331,8 +329,7 @@ func peerAuthority(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("confirm the management transition over mTLS with the replacement client certificate")
 	}
 	chain := info.State.VerifiedChains[0]
-	sum := sha256.Sum256(chain[len(chain)-1].Raw)
-	return hex.EncodeToString(sum[:]), nil
+	return managementidentity.CertificateFingerprint(chain[len(chain)-1]), nil
 }
 
 func managementTransitionStatus(trial nodeidentity.ManagementTrial) *agentapi.ManagementTransition {
@@ -355,10 +352,11 @@ func nodeManagementStatus(root string) (*agentapi.ManagementStatus, error) {
 	}
 	result := &agentapi.ManagementStatus{Authentication: string(mode)}
 	if mode == managementidentity.MutualTLS {
-		// A node without installed credentials has no authority to report.
+		// The installed authority is singular. Keep reporting the actual
+		// listener trust if the installed material cannot identify one.
 		authority, err := nodeidentity.InstalledManagementAuthority(root)
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return nil, err
+			log.Printf("read installed management authority: %v", err)
 		}
 		result.Authority = authority
 	}

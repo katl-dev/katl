@@ -25,7 +25,7 @@ func TestManagementTLSRequiresTheOperatorAndExpectedNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	serverTLS, err := ServerTLSConfigForNode(node)
+	serverTLS, _, err := ServerTLSConfigForNode(node)
 	if err != nil {
 		t.Fatal(err)
 	}

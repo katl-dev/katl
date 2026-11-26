@@ -124,12 +124,12 @@ func runManagementIdentityRotate(ctx context.Context, opts managementRotationOpt
 		if err != nil {
 			return err
 		}
-		nodes, err := managementRotationNodes(ctx, configPath, source, oldInfo.Fingerprint, old)
+		nodes, err := managementRotationTargets(ctx, configPath, source)
 		if err != nil {
 			return err
 		}
 		for _, node := range nodes {
-			if err := checkManagementCredential(ctx, node, client, opts.timeout); err != nil {
+			if _, err := checkManagementCredential(ctx, node, client, oldInfo.Fingerprint, opts.timeout); err != nil {
 				return fmt.Errorf("%s at %s: %w; keep %s, check the endpoint and rerun the same command", node.name, node.endpoint,
 					managementConfirmationError("the node accepts the configured authority", "the previous authority", err), outputPath)
 			}
@@ -148,20 +148,27 @@ func runManagementIdentityRotate(ctx context.Context, opts managementRotationOpt
 	if nextInfo.Fingerprint == oldInfo.Fingerprint {
 		return fmt.Errorf("replacement secrets use the installed authority; choose a new --output path")
 	}
-	nodes, err := managementRotationNodes(ctx, configPath, source, oldInfo.Fingerprint, next)
+	nodes, err := managementRotationTargets(ctx, configPath, source)
 	if err != nil {
 		return err
 	}
-	oldProbe, err := managementidentity.IssueRotationProbe(old.CertificateAuthority, time.Now().UTC())
-	if err != nil {
-		return fmt.Errorf("issue a verification credential from the old management authority: %w", err)
+	for i := range nodes {
+		if err := nodes[i].prepareRotation(oldInfo.Fingerprint, next); err != nil {
+			return err
+		}
 	}
-	for _, node := range nodes {
+	oldProbe := func() (managementidentity.CertificateKey, error) {
+		return managementidentity.IssueRotationProbe(old.CertificateAuthority, time.Now().UTC())
+	}
+	for i := range nodes {
+		node := &nodes[i]
 		fmt.Fprintf(stderr, "Preflight root SSH and management identity on %s\n", node.name)
-		if _, err := runManagementRotationSSH(ctx, node, opts, true); err != nil {
+		status, err := runManagementRotationSSH(ctx, *node, opts, true)
+		if err != nil {
 			return fmt.Errorf("preflight %s: %w; no node credentials were changed; keep %s and rerun the same command", node.name,
 				managementConfirmationError("the node is ready to rotate its management identity", "the old authority", err), outputPath)
 		}
+		node.machineID, node.request.ExpectedMachineID = status.MachineID, status.MachineID
 	}
 	newClient, err := managementidentity.Client(next, time.Now().UTC())
 	if err != nil {
@@ -173,10 +180,10 @@ func runManagementIdentityRotate(ctx context.Context, opts managementRotationOpt
 			return fmt.Errorf("rotate %s: %w; keep %s and rerun the same command", node.name,
 				managementConfirmationError("the replacement was installed", "the old authority", err), outputPath)
 		}
-		if err := verifyRotatedManagement(ctx, node, newClient, oldProbe, opts.timeout); err != nil {
+		if err := verifyRotatedManagement(ctx, node, newClient, nextInfo.Fingerprint, oldProbe, opts.timeout); err != nil {
 			return fmt.Errorf("verify %s: %w; keep %s and rerun with the same --output", node.name, err, outputPath)
 		}
-		fmt.Fprintf(stderr, "Verified replacement authority and old-authority rejection on %s\n", node.name)
+		fmt.Fprintf(stderr, "Verified replacement authority and removal of the old authority on %s\n", node.name)
 	}
 	if err := referenceManagementSecrets(configPath, outputPath, sourceData); err != nil {
 		return fmt.Errorf("all nodes rotated, but ClusterConfig still references the old authority: %w; set spec.managementIdentity to %s", err, outputPath)
@@ -328,21 +335,18 @@ func managementRotationTargets(ctx context.Context, configPath string, source co
 	return nodes, nil
 }
 
-func managementRotationNodes(ctx context.Context, configPath string, source configbundle.SourceConfig, oldFingerprint string, next managementidentity.Bundle) ([]managementRotationNode, error) {
-	nodes, err := managementRotationTargets(ctx, configPath, source)
-	if err != nil {
-		return nil, err
+func (node *managementRotationNode) prepareRotation(installed string, next managementidentity.Bundle) error {
+	credentials, ok := next.Nodes[node.name]
+	if !ok {
+		return fmt.Errorf("replacement management identity lacks node %q", node.name)
 	}
-	for i := range nodes {
-		node := &nodes[i]
-		credentials, ok := next.Nodes[node.name]
-		if !ok {
-			return nil, fmt.Errorf("replacement management identity lacks node %q", node.name)
-		}
-		node.request = nodeidentity.ManagementRotation{NodeName: node.name, ExpectedMachineID: node.machineID, ExpectedAuthority: oldFingerprint,
-			Replacement: managementidentity.NodeCredentials{CACertificate: next.CertificateAuthority.Certificate, ServerCertificate: credentials.Certificate, ServerPrivateKey: credentials.PrivateKey}}
+	node.request = nodeidentity.ManagementRotation{
+		NodeName: node.name, ExpectedMachineID: node.machineID, ExpectedAuthority: installed,
+		Replacement: managementidentity.NodeCredentials{
+			CACertificate: next.CertificateAuthority.Certificate, ServerCertificate: credentials.Certificate, ServerPrivateKey: credentials.PrivateKey,
+		},
 	}
-	return nodes, nil
+	return nil
 }
 
 func sshManagementRotation(ctx context.Context, node managementRotationNode, opts managementRotationOptions, dryRun bool) (nodeidentity.ManagementRotationStatus, error) {
@@ -362,7 +366,7 @@ func sshManagementRotation(ctx context.Context, node managementRotationNode, opt
 	if err := json.Unmarshal(output, &status); err != nil {
 		return nodeidentity.ManagementRotationStatus{}, fmt.Errorf("read node rotation result: %w", err)
 	}
-	if status.NodeName != node.name || (node.machineID != "" && status.MachineID != node.machineID) {
+	if status.NodeName != node.name || strings.TrimSpace(status.MachineID) == "" || (node.machineID != "" && status.MachineID != node.machineID) {
 		return nodeidentity.ManagementRotationStatus{}, fmt.Errorf("SSH endpoint does not match node %s and its saved machine identity", node.name)
 	}
 	return status, nil
@@ -398,14 +402,25 @@ func runKatlcAgentSSH(ctx context.Context, node managementRotationNode, opts man
 	return stdout.Bytes(), nil
 }
 
-func verifyRotatedManagement(ctx context.Context, node managementRotationNode, next managementidentity.ClientCredentials, oldProbe managementidentity.CertificateKey, timeout time.Duration) error {
-	if err := waitManagementCredential(ctx, node, next, timeout); err != nil {
+func verifyRotatedManagement(ctx context.Context, node managementRotationNode, next managementidentity.ClientCredentials, authority string, oldProbe func() (managementidentity.CertificateKey, error), timeout time.Duration) error {
+	status, err := waitManagementCredential(ctx, node, next, authority, timeout)
+	if err != nil {
 		return managementConfirmationError("the node accepts the replacement authority", "the old authority", err)
 	}
-	if err := verifyOldManagementAuthorityRejected(ctx, node, next.CACertificate, oldProbe, min(timeout, 5*time.Second)); err != nil {
+	if status.GetManagement().GetServedClientTrust() != nil {
+		return nil
+	}
+
+	// An older agent needs both a positive replacement reply and a scoped
+	// refusal of a fresh credential signed by the old authority.
+	probe, err := oldProbe()
+	if err != nil {
+		return managementConfirmationError("the node stopped trusting the old authority", "the old authority", err)
+	}
+	if err := verifyOldManagementAuthorityRejected(ctx, node, next.CACertificate, probe, min(timeout, 5*time.Second)); err != nil {
 		return err
 	}
-	if err := checkManagementCredential(ctx, node, next, min(timeout, 5*time.Second)); err != nil {
+	if _, err := checkManagementCredential(ctx, node, next, authority, min(timeout, 5*time.Second)); err != nil {
 		return managementConfirmationError("the node still accepts the replacement authority", "the old authority", err)
 	}
 	return nil
@@ -445,36 +460,42 @@ func verifyOldManagementAuthorityRejected(ctx context.Context, node managementRo
 	}
 }
 
-func waitManagementCredential(ctx context.Context, node managementRotationNode, credentials managementidentity.ClientCredentials, timeout time.Duration) error {
+func waitManagementCredential(ctx context.Context, node managementRotationNode, credentials managementidentity.ClientCredentials, authority string, timeout time.Duration) (*agentapi.NodeStatus, error) {
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	for {
-		err := checkManagementCredential(deadline, node, credentials, min(timeout, 5*time.Second))
-		if err == nil {
-			return nil
+		status, err := checkManagementCredential(deadline, node, credentials, authority, min(timeout, 5*time.Second))
+		if err == nil || status != nil {
+			return status, err
 		}
 		select {
 		case <-deadline.Done():
-			return fmt.Errorf("%w; last connection error: %v", deadline.Err(), err)
+			return nil, fmt.Errorf("%w; last connection error: %v", deadline.Err(), err)
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
 }
 
-func checkManagementCredential(ctx context.Context, node managementRotationNode, credentials managementidentity.ClientCredentials, timeout time.Duration) error {
+func checkManagementCredential(ctx context.Context, node managementRotationNode, credentials managementidentity.ClientCredentials, authority string, timeout time.Duration) (*agentapi.NodeStatus, error) {
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	requestCtx = transport.WithoutManagementAdvice(withManagementDial(requestCtx, node.name, &credentials))
 	conn, err := dialKatlcAgent(transport.WithoutManagementWait(requestCtx), node.endpoint.String())
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer conn.Close()
 	status, err := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
 	if transport.ClassifyManagementEvidence(err, nil) != transport.ManagementConfirmed {
-		return err
+		return nil, err
 	}
-	return checkManagementStatusIdentity(node, status)
+	if err := checkManagementStatusIdentity(node, status); err != nil {
+		return status, err
+	}
+	if status.GetManagement().GetServedClientTrust() != nil {
+		return status, checkCommittedManagement(status, authority)
+	}
+	return status, nil
 }
 
 func checkManagementStatusIdentity(node managementRotationNode, status *agentapi.NodeStatus) error {

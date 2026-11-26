@@ -61,7 +61,7 @@ func TestProjectSecretsSurviveContextLoss(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		tlsConfig, err := transport.ServerTLSConfigForNode(node)
+		tlsConfig, _, err := transport.ServerTLSConfigForNode(node)
 		if err != nil {
 			t.Fatal(err)
 		}

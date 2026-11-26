@@ -14,6 +14,40 @@ import (
 	"github.com/katl-dev/katl/internal/managementidentity"
 )
 
+func TestStatusDistinguishesEmptyServedTrustFromLegacy(t *testing.T) {
+	world := newEnableMTLSWorld(t, "cp-1")
+	node := world.nodes[0]
+	args := []string{"node", "status", "cp-1", "--config", world.configPath, "--output", "json"}
+	for _, reports := range []bool{false, true} {
+		node.mu.Lock()
+		node.reportTrust = reports
+		node.mu.Unlock()
+		var output, stderr bytes.Buffer
+		if err := run(t.Context(), args, &output, &stderr); err != nil {
+			t.Fatal(err)
+		}
+		var status struct {
+			Management struct {
+				ServedClientTrust json.RawMessage
+			}
+		}
+		if err := json.Unmarshal(output.Bytes(), &status); err != nil {
+			t.Fatal(err)
+		}
+		trust := status.Management.ServedClientTrust
+		if !reports {
+			if trust != nil {
+				t.Fatalf("legacy node reported served trust: %s", trust)
+			}
+			continue
+		}
+		var report struct{ Authorities []string }
+		if err := json.Unmarshal(trust, &report); err != nil || report.Authorities == nil || len(report.Authorities) != 0 {
+			t.Fatalf("plaintext node trust = %s, want an empty authorities array: %v", trust, err)
+		}
+	}
+}
+
 func TestStatusDuringEnableMTLSTrial(t *testing.T) {
 	world, deadline := newManagementStatusTrial(t, 4*time.Minute)
 	correctedDeadline := deadline.Add(-4 * time.Minute).Local()

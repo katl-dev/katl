@@ -62,6 +62,8 @@ type trialNode struct {
 	clockOffset      time.Duration
 	omitNodeTime     bool
 	legacy           bool
+	reportTrust      bool
+	changeTrust      func(*agentapi.ManagementStatus)
 	unreachableTrial bool
 	loseConfirmReply bool
 	healthState      string
@@ -110,7 +112,7 @@ func (n *trialNode) serve() {
 			}
 			credentialsForNode = node
 		}
-		config, err := transport.ServerTLSConfigForNode(credentialsForNode)
+		config, _, err := transport.ServerTLSConfigForNode(credentialsForNode)
 		if err != nil {
 			n.t.Error(err)
 			return
@@ -221,6 +223,20 @@ func (n *trialNode) GetNodeStatus(context.Context, *agentapi.GetNodeStatusReques
 		}
 		if n.trial == nil {
 			status.Management.Transition = nil
+		}
+		if n.reportTrust {
+			trust := &agentapi.ManagementClientTrust{}
+			switch {
+			case n.mode == managementidentity.MutualTLS:
+				trust.Authorities = []string{n.authority}
+			case n.trial.GetState() == "trial":
+				trust.Authorities = []string{n.trial.GetTargetAuthority()}
+				trust.TrialId, trust.TrialAuthority = n.trial.GetTrialId(), n.trial.GetTargetAuthority()
+			}
+			status.Management.ServedClientTrust = trust
+		}
+		if n.changeTrust != nil {
+			n.changeTrust(status.Management)
 		}
 		if n.omitNodeTime {
 			status.Management.NodeTime = ""
@@ -709,6 +725,7 @@ func TestEnableMTLSResumesAfterUnreachableTrialReverts(t *testing.T) {
 func TestEnableMTLSResumesLiveTrial(t *testing.T) {
 	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
 		node := world.nodes[0]
+		node.reportTrust = true
 		node.unreachableTrial = true
 		if _, _, err := world.enable(); err == nil {
 			t.Fatal("first run succeeded although the trial was unreachable")
@@ -734,6 +751,7 @@ func TestEnableMTLSResumesLiveTrial(t *testing.T) {
 
 func TestEnableMTLSDetectsLostConfirmReply(t *testing.T) {
 	world := newEnableMTLSWorld(t, "cp-1")
+	world.nodes[0].reportTrust = true
 	world.nodes[0].loseConfirmReply = true
 
 	if _, stderr, err := world.enable(); err != nil {
@@ -744,6 +762,86 @@ func TestEnableMTLSDetectsLostConfirmReply(t *testing.T) {
 	}
 	if world.nodes[0].confirms != 1 {
 		t.Errorf("confirms = %d, want 1", world.nodes[0].confirms)
+	}
+}
+
+func TestEnableMTLSRequiresServedTrust(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		change   func(*agentapi.ManagementStatus)
+		confirms int
+		want     string
+	}{
+		{
+			name: "extra authority on trial",
+			change: func(status *agentapi.ManagementStatus) {
+				if status.GetTransition().GetState() == "trial" {
+					trust := status.GetServedClientTrust()
+					trust.Authorities = append(trust.Authorities, "extra")
+				}
+			},
+			want: "listener trusts client CAs",
+		},
+		{
+			name: "different trial",
+			change: func(status *agentapi.ManagementStatus) {
+				if status.GetTransition().GetState() == "trial" {
+					status.ServedClientTrust.TrialId = "different"
+				}
+			},
+			want: "answering listener did not select credentials from the reported trial",
+		},
+		{
+			name: "still serving the trial after confirm",
+			change: func(status *agentapi.ManagementStatus) {
+				if status.GetAuthentication() == "mtls" {
+					status.ServedClientTrust.TrialId = status.GetTransition().GetTrialId()
+					status.ServedClientTrust.TrialAuthority = status.GetAuthority()
+				}
+			},
+			confirms: 1,
+			want:     "answering listener is still serving a management trial",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			world := newEnableMTLSWorld(t, "cp-1", "cp-2")
+			node := world.nodes[0]
+			node.reportTrust, node.changeTrust = true, tc.change
+			_, _, err := world.enable()
+			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "Rerun katlctl management enable-mtls") {
+				t.Fatalf("enable-mtls = %v, want %q with resume guidance", err, tc.want)
+			}
+			if node.confirms != tc.confirms {
+				t.Fatalf("confirmed %d times, want %d", node.confirms, tc.confirms)
+			}
+			if _, _, begins := world.nodes[1].state(); begins != 0 {
+				t.Fatal("started a trial on the next node before verifying trust")
+			}
+			if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
+				t.Fatalf("published mode %s before verifying trust", mode)
+			}
+		})
+	}
+}
+
+func TestEnableMTLSAlreadyCommittedRequiresServedTrust(t *testing.T) {
+	world := newEnableMTLSWorld(t, "cp-1")
+	node := world.nodes[0]
+	node.reportTrust = true
+	if _, stderr, err := world.enable(); err != nil {
+		t.Fatalf("enable-mtls: %v\n%s", err, stderr)
+	}
+	node.mu.Lock()
+	node.changeTrust = func(status *agentapi.ManagementStatus) {
+		status.ServedClientTrust.Authorities = nil
+	}
+	node.mu.Unlock()
+
+	if _, _, err := world.enable(); err == nil || !strings.Contains(err.Error(), "listener trusts client CAs") {
+		t.Fatalf("enable-mtls accepted a committed node with an empty CA set: %v", err)
+	}
+	if _, _, begins := node.state(); begins != 1 {
+		t.Fatalf("enable-mtls began %d trials, want 1", begins)
 	}
 }
 
@@ -870,6 +968,7 @@ func TestEnableMTLSLatePreflightFailure(t *testing.T) {
 func TestEnableMTLSLateCommittedStatus(t *testing.T) {
 	testEnableMTLSWithVirtualTime(t, []string{"cp-1", "cp-2"}, func(t *testing.T, world enableMTLSWorld) {
 		node := world.nodes[0]
+		node.reportTrust = true
 		delayed := false
 		node.interceptRPC = func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 			err := invoker(ctx, method, req, reply, cc, opts...)

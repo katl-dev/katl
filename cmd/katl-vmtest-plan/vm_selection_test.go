@@ -144,9 +144,9 @@ func TestMergeGroupShadow(t *testing.T) {
 	if plan.VMShadow == nil || !slices.Equal(plan.VMShadow.Suites, want) || len(plan.VMSelection.Suites) != len(allNames()) {
 		t.Fatalf("plan = %+v, shadow = %+v, want all suites with shadow %v", plan.VMSelection, plan.VMShadow, want)
 	}
-	// Two flavours omit 1,297 seconds each across the remaining suites,
-	// including the 190-second mTLS enablement suite.
-	if want := float64(2594) / 60; plan.VMShadow.RunnerMinutesSaved != want {
+	// Two flavours omit 1,367 seconds each across the remaining suites,
+	// including rotation, recovery and mTLS enablement.
+	if want := float64(2734) / 60; plan.VMShadow.RunnerMinutesSaved != want {
 		t.Fatalf("savings = %g runner-minutes, want %g", plan.VMShadow.RunnerMinutesSaved, want)
 	}
 }

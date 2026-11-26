@@ -8,14 +8,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/manifest"
+	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/katl-dev/katl/internal/managementidentity"
+	"github.com/katl-dev/katl/internal/nodeidentity"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -273,4 +276,35 @@ func readManagementIdentity(path string) (managementidentity.Bundle, error) {
 	}
 	bundle, err := managementidentity.Parse(data)
 	return bundle, err
+}
+
+// Callers check trust only after a timely status reply from the bound node.
+// Only omission of the report selects the legacy verification path.
+func checkServedClientTrust(trust *agentapi.ManagementClientTrust, expected ...string) error {
+	if trust != nil && !slices.Equal(trust.GetAuthorities(), expected) {
+		return fmt.Errorf("listener trusts client CAs %q, expected %q", trust.GetAuthorities(), expected)
+	}
+	return nil
+}
+
+func checkCommittedManagement(status *agentapi.NodeStatus, authority string) error {
+	management := status.GetManagement()
+	trust := management.GetServedClientTrust()
+	if err := checkServedClientTrust(trust, authority); err != nil {
+		return err
+	}
+	if management.GetAuthentication() != string(managementidentity.MutualTLS) || management.GetAuthority() != authority {
+		return fmt.Errorf("node reports installed management mode %q and authority %q, expected mTLS with %s", management.GetAuthentication(), management.GetAuthority(), authority)
+	}
+	if trust == nil {
+		return nil
+	}
+	trial := management.GetTransition()
+	if trial.GetState() == string(nodeidentity.ManagementTrialLive) {
+		return fmt.Errorf("node still reports a live management trial")
+	}
+	if trust.GetTrialId() != "" || trust.GetTrialAuthority() != "" {
+		return fmt.Errorf("answering listener is still serving a management trial")
+	}
+	return nil
 }

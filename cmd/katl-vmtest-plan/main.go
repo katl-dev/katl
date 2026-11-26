@@ -45,7 +45,7 @@ var groups = []group{
 	{"install", "./internal/vmtest", "TestFirstInstallTargetDiskBootSmoke|TestFirstInstallTargetDiskLocalHandoffSmoke", "lifecycle", 75},
 	{"config", "./internal/vmtest", "TestInstalledRuntimeConfigApplyModesSmoke|TestInstalledRuntimeServiceSecuritySmoke", "config", 570},
 	{"update", "./internal/vmtest", "TestInstalledRuntimeSysupdateRootUKITransfer", "lifecycle", 330},
-	{"management", "./internal/vmtest", "TestInstalledRuntimeManagementRotationSmoke", "lifecycle", 70},
+	{"management", "./internal/vmtest", "TestInstalledRuntimeManagementRotationSmoke|TestManagementIdentityRecovery", "lifecycle", 140},
 	{"enable-mtls", "./internal/vmtest/scenarios", "TestManagementEnableMTLS", "cluster", 190},
 	{"storage", "./internal/vmtest/scenarios", "TestInstallerISOFirstInstallStorageAuthority", "two-node", 32},
 	{"volume-binding", "./internal/vmtest/scenarios", "TestVolumeBindingGate", "cluster", 150},
