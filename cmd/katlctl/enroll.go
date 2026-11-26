@@ -58,7 +58,7 @@ func newContextSaveCommand(ctx context.Context, stdout, stderr io.Writer) *cobra
 		Short: "Save installed KatlOS nodes as the current workstation context",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return runContextSave(ctx, opts, stdout, stderr)
+			return runContextSave(ctx, opts, stdout)
 		},
 	}
 	cmd.Flags().StringVar(&opts.configInput, "config", "", "ClusterConfig YAML or Katl config bundle")
@@ -232,7 +232,7 @@ func newContextUseCommand(stdout, stderr io.Writer) *cobra.Command {
 	return cmd
 }
 
-func prepareContext(ctx context.Context, opts contextSaveOptions, stderr io.Writer) (workstation.Config, contextSaveReport, error) {
+func prepareContext(ctx context.Context, opts contextSaveOptions, rerun string) (workstation.Config, contextSaveReport, error) {
 	if opts.output != "text" && opts.output != "json" {
 		return workstation.Config{}, contextSaveReport{}, fmt.Errorf("--output = %q, want text or json", opts.output)
 	}
@@ -247,10 +247,13 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, stderr io.Writ
 	if err != nil {
 		return workstation.Config{}, contextSaveReport{}, err
 	}
-	return prepareContextWithCredentials(ctx, opts, topology.ClusterName, management)
+	return prepareContextWithCredentials(ctx, opts, topology.ClusterName, management, func(err error) error {
+		return fmt.Errorf("%w; check the address and node reachability, then rerun %s",
+			managementConfirmationError("the node answers with the configured management credentials", contextPossibleTrust(&management), err), rerun)
+	})
 }
 
-func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions, clusterName string, management managementidentity.ClientCredentials) (workstation.Config, contextSaveReport, error) {
+func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions, clusterName string, management managementidentity.ClientCredentials, confirmationError func(error) error) (workstation.Config, contextSaveReport, error) {
 	// Observe the configured endpoints without compiling host payloads or
 	// acquiring artifacts. Their target release is not known until this probe.
 	inv, err := readManagementInventory(opts.configInput)
@@ -329,9 +332,9 @@ func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions,
 			hint = "; " + movedHint(node.Name, configured, opts.configInput)
 		}
 		if managementVerificationTimedOut(err) {
-			return fmt.Errorf("verify node %s management endpoint %s: timed out after %s; check the address and node reachability or increase --timeout%s", node.Name, endpoint, opts.timeout, hint)
+			err = fmt.Errorf("timed out after %s: %w; try to increase --timeout", opts.timeout, err)
 		}
-		return fmt.Errorf("verify node %s management endpoint: %w%s", node.Name, err, hint)
+		return fmt.Errorf("verify node %s management endpoint %s: %w%s", node.Name, endpoint, confirmationError(err), hint)
 	}
 
 	for _, node := range inv.Nodes {
@@ -348,20 +351,10 @@ func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions,
 			continue
 		}
 		requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
-		nodeCtx := withManagementDial(requestCtx, node.Name, &management)
-		conn, err := dialKatlcAgent(nodeCtx, endpoint)
-		if err != nil {
-			cancel()
-			return workstation.Config{}, contextSaveReport{}, verificationFailure(node, endpoint, err)
-		}
-		status, statusErr := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
-		closeErr := conn.Close()
+		status, err := contextEndpointStatus(withManagementDial(requestCtx, node.Name, &management), endpoint)
 		cancel()
-		if statusErr != nil {
-			return workstation.Config{}, contextSaveReport{}, verificationFailure(node, endpoint, statusErr)
-		}
-		if closeErr != nil {
-			return workstation.Config{}, contextSaveReport{}, fmt.Errorf("close node %s management endpoint: %w", node.Name, closeErr)
+		if err != nil {
+			return workstation.Config{}, contextSaveReport{}, verificationFailure(node, endpoint, err)
 		}
 		if strings.TrimSpace(status.GetMachineId()) == "" {
 			return workstation.Config{}, contextSaveReport{}, fmt.Errorf("verify node %s management endpoint: agent did not report a machine identity", node.Name)
@@ -389,8 +382,15 @@ func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions,
 	return cfg, report, nil
 }
 
-func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr io.Writer) error {
-	cfg, report, err := prepareContext(ctx, opts, stderr)
+func runContextSave(ctx context.Context, opts contextSaveOptions, stdout io.Writer) error {
+	rerun := contextSaveInvocation(opts.configInput)
+	if name := strings.TrimSpace(opts.contextName); name != "" {
+		rerun += " --context " + shellQuote(name)
+	}
+	if path := strings.TrimSpace(opts.contextPath); path != "" {
+		rerun += " --context-file " + shellQuote(path)
+	}
+	cfg, report, err := prepareContext(ctx, opts, rerun)
 	if err != nil {
 		return err
 	}
@@ -422,6 +422,26 @@ func runContextSave(ctx context.Context, opts contextSaveOptions, stdout, stderr
 
 func managementVerificationTimedOut(err error) bool {
 	return errors.Is(err, context.DeadlineExceeded) || grpcstatus.Code(err) == codes.DeadlineExceeded
+}
+
+func contextEndpointStatus(ctx context.Context, endpoint string) (*agentapi.NodeStatus, error) {
+	conn, err := dialKatlcAgent(transport.WithoutManagementAdvice(ctx), endpoint)
+	if err != nil {
+		return nil, err
+	}
+	status, err := conn.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+	closeErr := conn.Close()
+	if transport.ClassifyManagementEvidence(err, nil) != transport.ManagementConfirmed {
+		return nil, err
+	}
+	return status, closeErr
+}
+
+func contextPossibleTrust(credentials *managementidentity.ClientCredentials) string {
+	if credentials != nil && credentials.Authentication == managementidentity.TrustedNetwork {
+		return "an mTLS authority"
+	}
+	return "a different management authority"
 }
 
 func managementUnreachable(err error) bool {
@@ -543,20 +563,20 @@ func runContextRebind(ctx context.Context, opts contextRebindOptions, stdout io.
 	if err != nil {
 		return err
 	}
-	conn, err := dialKatlcAgent(withManagementTarget(requestCtx, target), endpoint)
+	status, err := contextEndpointStatus(withManagementTarget(requestCtx, target), endpoint)
 	if err != nil {
-		return fmt.Errorf("connect to proposed address %s: %w", endpoint, err)
-	}
-	status, statusErr := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
-	closeErr := conn.Close()
-	if statusErr != nil {
-		if errors.Is(statusErr, transport.ErrManagementRPCInconclusive) {
-			return fmt.Errorf("verify proposed address %s: %w; check the address and node reachability, then rerun or increase --timeout", endpoint, statusErr)
+		rerun := "katlctl context rebind --node " + shellQuote(target.nodeName) + " --endpoint " + shellQuote(endpoint)
+		if name := strings.TrimSpace(opts.contextName); name != "" {
+			rerun += " --context " + shellQuote(name)
 		}
-		return fmt.Errorf("verify proposed address %s: %w", endpoint, statusErr)
-	}
-	if closeErr != nil {
-		return fmt.Errorf("close proposed address %s: %w", endpoint, closeErr)
+		if path := strings.TrimSpace(opts.contextPath); path != "" {
+			rerun += " --context-file " + shellQuote(path)
+		}
+		if managementVerificationTimedOut(err) {
+			err = fmt.Errorf("%w; try to increase --timeout", err)
+		}
+		return fmt.Errorf("verify proposed address %s: %w; check the address and node reachability, then rerun %s", endpoint,
+			managementConfirmationError("the node answers at the proposed address with the saved management credentials", contextPossibleTrust(target.credentials), err), rerun)
 	}
 	if err := verifyPlannedStatus(target, status); err != nil {
 		return fmt.Errorf("verify proposed address %s: %w", endpoint, err)

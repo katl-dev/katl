@@ -4,12 +4,14 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -51,39 +53,59 @@ func (c *clientCredentials) Clone() credentials.TransportCredentials {
 	return &clientCredentials{TransportCredentials: c.TransportCredentials.Clone()}
 }
 
-// ObserveUnknownClientAuthority records unknown_ca after the client has
-// authenticated the server. Other alerts cannot establish issuer rejection.
-func ObserveUnknownClientAuthority(config *tls.Config, certificate tls.Certificate) (credentials.TransportCredentials, func() bool) {
-	probe := new(clientCertificateEvidence)
-	config = config.Clone()
-	// Offer the leaf even when its issuer is absent from the server's list.
-	config.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-		probe.requested.Store(true)
-		return &certificate, nil
+// ObserveUnknownClientAuthority supplies credentials for one probe call.
+// It recognizes an unknown_ca alert in that call's result only if the TLS
+// handshake authenticated the server and observed the alert within ctx.
+func ObserveUnknownClientAuthority(ctx context.Context, config *tls.Config, certificate tls.Certificate) (credentials.TransportCredentials, func(error) bool) {
+	tag := "[issuer probe " + rand.Text() + "]"
+	probe := &clientCertificateProbe{
+		TransportCredentials: credentials.NewTLS(config),
+		config:               config.Clone(),
+		certificate:          certificate,
+		ctx:                  ctx,
+		refusalTag:           tag,
+		dialed:               new(atomic.Bool),
 	}
-	return &clientCertificateProbe{TransportCredentials: credentials.NewTLS(config), evidence: probe}, func() bool {
-		return probe.attempts.Load() == 1 && probe.unknownAuthority.Load()
+	// gRPC flattens the handshake error into the RPC status. The per-call
+	// tag keeps the evidence on that specific error through the conversion.
+	return probe, func(err error) bool {
+		return strings.Contains(err.Error(), tag)
 	}
-}
-
-type clientCertificateEvidence struct {
-	attempts         atomic.Uint32
-	requested        atomic.Bool
-	unknownAuthority atomic.Bool
 }
 
 type clientCertificateProbe struct {
 	credentials.TransportCredentials
-	evidence *clientCertificateEvidence
+	config      *tls.Config
+	certificate tls.Certificate
+	ctx         context.Context
+	refusalTag  string
+	dialed      *atomic.Bool
 }
 
 func (c *clientCertificateProbe) Clone() credentials.TransportCredentials {
-	return &clientCertificateProbe{TransportCredentials: c.TransportCredentials.Clone(), evidence: c.evidence}
+	clone := *c
+	clone.TransportCredentials = c.TransportCredentials.Clone()
+	return &clone
+}
+
+func (c *clientCertificateProbe) dialContext(ctx context.Context, address string) (net.Conn, error) {
+	// Claim the first TCP attempt, even if it fails before a TLS handshake.
+	if !c.dialed.CompareAndSwap(false, true) {
+		return nil, errors.New("issuer probe already attempted a connection")
+	}
+	return (&net.Dialer{}).DialContext(ctx, "tcp", address)
 }
 
 func (c *clientCertificateProbe) ClientHandshake(ctx context.Context, address string, conn net.Conn) (net.Conn, credentials.AuthInfo, error) {
-	c.evidence.attempts.Add(1)
-	secure, info, err := c.TransportCredentials.ClientHandshake(ctx, address, conn)
+	config := c.config.Clone()
+	config.ServerName = c.Info().ServerName
+	requested := false
+	// Offer the leaf even when its issuer is absent from the server's list.
+	config.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+		requested = true
+		return &c.certificate, nil
+	}
+	secure, info, err := credentials.NewTLS(config).ClientHandshake(ctx, address, conn)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -101,10 +123,11 @@ func (c *clientCertificateProbe) ClientHandshake(ctx context.Context, address st
 		return &clientCertificateProbeConn{Conn: secure, reader: reader}, info, nil
 	}
 	// crypto/tls wraps a TCP peer's alert in a net.OpError with an
-	// unexported alert type. Capture it before gRPC flattens the error.
+	// unexported alert type.
 	var remote *net.OpError
-	if c.evidence.requested.Load() && errors.As(err, &remote) && remote.Op == "remote error" && remote.Err.Error() == "tls: unknown certificate authority" {
-		c.evidence.unknownAuthority.Store(true)
+	if requested && ManagementContextError(c.ctx) == nil && errors.As(err, &remote) &&
+		remote.Op == "remote error" && remote.Err.Error() == "tls: unknown certificate authority" {
+		return nil, nil, fmt.Errorf("%w %s", err, c.refusalTag)
 	}
 	return nil, nil, err
 }

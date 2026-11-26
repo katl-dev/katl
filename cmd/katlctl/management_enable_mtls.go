@@ -698,9 +698,11 @@ func prepareEnableMTLSContext(ctx context.Context, configPath, clusterName strin
 		}
 	}
 	opts := contextSaveOptions{configInput: configPath, contextPath: path, contextName: contextName, timeout: timeout, output: "text"}
-	cfg, _, err := prepareContextWithCredentials(transport.WithoutManagementAdvice(ctx), opts, clusterName, client)
+	cfg, _, err := prepareContextWithCredentials(ctx, opts, clusterName, client, func(err error) error {
+		return managementConfirmationError("the saved context can reach the nodes over mTLS", "the replacement authority", err)
+	})
 	if err != nil {
-		return nil, "", managementConfirmationError("the saved context can reach the nodes over mTLS", "the replacement authority", err)
+		return nil, "", err
 	}
 	cfg.CurrentContext = saved.CurrentContext
 	return &cfg, path, nil

@@ -7,12 +7,14 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -23,7 +25,9 @@ import (
 	"github.com/katl-dev/katl/internal/nettest"
 	"github.com/katl-dev/katl/internal/nodeidentity"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 func TestManagementIdentityRotateReplacesLiveTrust(t *testing.T) {
@@ -491,7 +495,7 @@ func TestManagementIdentityRotateLateCredentialCheck(t *testing.T) {
 }
 
 func TestManagementRotationOldAuthorityRefusal(t *testing.T) {
-	for _, scenario := range []string{"timely", "late", "unrelated failure"} {
+	for _, scenario := range []string{"timely", "late", "other connection", "background after deadline", "unrelated failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
 				if _, stderr, err := world.enable(); err != nil {
@@ -514,6 +518,29 @@ func TestManagementRotationOldAuthorityRefusal(t *testing.T) {
 				t.Cleanup(func() { dialKatlcAgentWithTransport = dial })
 				sawRefusal := false
 				dialKatlcAgentWithTransport = func(ctx context.Context, _, endpoint string, creds credentials.TransportCredentials) (katlcAgentConnection, error) {
+					if scenario == "other connection" || scenario == "background after deadline" {
+						return node.dialWithTransport(ctx, endpoint, creds,
+							grpc.WithChainUnaryInterceptor(func(context.Context, string, any, any, *grpc.ClientConn, grpc.UnaryInvoker, ...grpc.CallOption) error {
+								return grpcstatus.Error(codes.Unavailable, "TCP connection refused")
+							}),
+							grpc.WithUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+								err := invoker(ctx, method, req, reply, cc, opts...)
+								if scenario == "background after deadline" {
+									<-ctx.Done()
+								}
+								// The RPC already returned its TCP failure. A connection
+								// started in the background can still finish a TLS handshake.
+								conn, dialErr := node.listener.DialContext(t.Context())
+								if dialErr != nil {
+									t.Fatal(dialErr)
+								}
+								defer conn.Close()
+								_, _, handshakeErr := creds.ClientHandshake(t.Context(), node.name, conn)
+								sawRefusal = handshakeErr != nil && strings.Contains(handshakeErr.Error(), "unknown certificate authority")
+								return err
+							}),
+						)
+					}
 					return node.dialWithTransport(
 						ctx, endpoint, creds,
 						grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
@@ -550,6 +577,59 @@ func TestManagementRotationOldAuthorityRefusal(t *testing.T) {
 					if err == nil || !strings.Contains(err.Error(), "could not confirm the node stopped trusting the old authority; the node may still trust the old authority") {
 						t.Fatalf("rotation verification = %v, want an unverified rejection", err)
 					}
+				}
+			})
+		})
+	}
+}
+
+func TestManagementSSHPreflightLateResult(t *testing.T) {
+	for _, operation := range []string{"rotate", "recover"} {
+		t.Run(operation, func(t *testing.T) {
+			testEnableMTLSWithVirtualTime(t, []string{"cp-1", "worker-1"}, func(t *testing.T, world enableMTLSWorld) {
+				if _, stderr, err := world.enable(); err != nil {
+					t.Fatalf("enable-mtls: %v\n%s", err, stderr)
+				}
+				before, err := os.ReadFile(world.configPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var hosts []string
+				previous := runManagementSSHCommand
+				t.Cleanup(func() { runManagementSSHCommand = previous })
+				runManagementSSHCommand = func(cmd *exec.Cmd) error {
+					for _, arg := range cmd.Args {
+						if strings.HasPrefix(arg, "root@") {
+							hosts = append(hosts, arg)
+						}
+					}
+					if len(hosts) > 1 {
+						return errors.New("preflight reached the second node")
+					}
+					time.Sleep(time.Second)
+					return json.NewEncoder(cmd.Stdout).Encode(map[string]string{
+						"nodeName": "cp-1", "machineID": "machine-cp-1", "authority": world.nodes[0].authority,
+					})
+				}
+				// The deadline has elapsed when Run returns, while cancellation
+				// is still pending. The successful reply is otherwise usable.
+				ctx := deadlineOnlyContext{Context: t.Context(), deadline: time.Now().Add(time.Second)}
+				output := filepath.Join(filepath.Dir(world.configPath), "next.yaml")
+				err = run(ctx, []string{"management", "identity", operation, "--config", world.configPath, "--output", output, "--timeout", "2s"}, &bytes.Buffer{}, &bytes.Buffer{})
+				if !slices.Equal(hosts, []string{"root@192.0.2.11"}) {
+					t.Errorf("%s attempted SSH to %v after a late reply from cp-1", operation, hosts)
+				}
+				for _, want := range []string{"could not confirm", "the node may still trust", "rerun the same command"} {
+					if err == nil || !strings.Contains(err.Error(), want) {
+						t.Errorf("%s error = %v, missing %q", operation, err, want)
+					}
+				}
+				if !errors.Is(err, context.DeadlineExceeded) {
+					t.Errorf("%s error = %v, want deadline exceeded", operation, err)
+				}
+				after, readErr := os.ReadFile(world.configPath)
+				if readErr != nil || !bytes.Equal(before, after) {
+					t.Fatalf("%s changed ClusterConfig after a late preflight reply: %v", operation, readErr)
 				}
 			})
 		})

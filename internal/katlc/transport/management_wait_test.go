@@ -29,15 +29,15 @@ func TestManagementEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		err           error
-		issuerRefused func() bool
+		issuerRefused func(error) bool
 		want          ManagementEvidence
 	}{
 		{name: "successful call", want: ManagementConfirmed},
-		{name: "issuer rejection", err: grpcstatus.Error(codes.Unavailable, "handshake failed"), issuerRefused: func() bool { return true }, want: ManagementRefusedExplicitly},
-		{name: "late issuer rejection", err: managementRPCInconclusive{cause: context.DeadlineExceeded}, issuerRefused: func() bool { return true }, want: ManagementInconclusive},
+		{name: "issuer rejection", err: grpcstatus.Error(codes.Unavailable, "handshake failed"), issuerRefused: func(error) bool { return true }, want: ManagementRefusedExplicitly},
+		{name: "late issuer rejection", err: managementRPCInconclusive{cause: context.DeadlineExceeded}, issuerRefused: func(error) bool { return true }, want: ManagementInconclusive},
 		{name: "alert in error text", err: grpcstatus.Error(codes.Unavailable, "tls: unknown certificate authority"), want: ManagementInconclusive},
 		{name: "RPC authentication refusal", err: grpcstatus.Error(codes.Unauthenticated, "unauthenticated"), want: ManagementRefusedExplicitly},
-		{name: "RPC authentication refusal does not identify the issuer", err: grpcstatus.Error(codes.Unauthenticated, "unauthenticated"), issuerRefused: func() bool { return false }, want: ManagementInconclusive},
+		{name: "RPC authentication refusal does not identify the issuer", err: grpcstatus.Error(codes.Unauthenticated, "unauthenticated"), issuerRefused: func(error) bool { return false }, want: ManagementInconclusive},
 		{name: "EOF", err: io.EOF, want: ManagementInconclusive},
 		{name: "reset", err: syscall.ECONNRESET, want: ManagementInconclusive},
 		{name: "refusal", err: syscall.ECONNREFUSED, want: ManagementInconclusive},

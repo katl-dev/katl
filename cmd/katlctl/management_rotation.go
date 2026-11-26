@@ -44,6 +44,7 @@ type managementRotationNode struct {
 }
 
 var runManagementRotationSSH = sshManagementRotation
+var runManagementSSHCommand = (*exec.Cmd).Run
 
 func newManagementIdentityRotateCommand(stdout, stderr io.Writer) *cobra.Command {
 	opts := managementRotationOptions{sshPort: 22, timeout: 2 * time.Minute}
@@ -159,7 +160,8 @@ func runManagementIdentityRotate(ctx context.Context, opts managementRotationOpt
 	for _, node := range nodes {
 		fmt.Fprintf(stderr, "Preflight root SSH and management identity on %s\n", node.name)
 		if _, err := runManagementRotationSSH(ctx, node, opts, true); err != nil {
-			return fmt.Errorf("preflight %s: %w; no node credentials were changed; keep %s to resume", node.name, err, outputPath)
+			return fmt.Errorf("preflight %s: %w; no node credentials were changed; keep %s and rerun the same command", node.name,
+				managementConfirmationError("the node is ready to rotate its management identity", "the old authority", err), outputPath)
 		}
 	}
 	newClient, err := managementidentity.Client(next, time.Now().UTC())
@@ -391,7 +393,11 @@ func runKatlcAgentSSH(ctx context.Context, node managementRotationNode, opts man
 	command.Stdin = bytes.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
-	if err := command.Run(); err != nil {
+	err := runManagementSSHCommand(command)
+	if ctxErr := transport.ManagementContextError(requestCtx); ctxErr != nil {
+		return nil, fmt.Errorf("root SSH to %s: %w", node.name, ctxErr)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("root SSH to %s: %w: %s; verify its host key and root SSH access", node.name, err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil
@@ -422,9 +428,9 @@ func verifyOldManagementAuthorityRejected(ctx context.Context, node managementRo
 	config := &tls.Config{
 		MinVersion: tls.VersionTLS13, RootCAs: roots, ServerName: node.name,
 	}
-	creds, unknownAuthority := transport.ObserveUnknownClientAuthority(config, certificate)
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	creds, unknownAuthority := transport.ObserveUnknownClientAuthority(requestCtx, config, certificate)
 	conn, err := dialKatlcAgentWithTransport(transport.WithoutManagementWait(requestCtx), node.name, node.endpoint, creds)
 	if err != nil {
 		return managementConfirmationError("the node stopped trusting the old authority", "the old authority", err)

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -972,6 +973,89 @@ func TestContextRebindLateStatus(t *testing.T) {
 			t.Fatalf("context rebind = %v, want a deadline error", err)
 		}
 	})
+}
+
+func TestContextVerificationHandshakeFailure(t *testing.T) {
+	for _, failure := range []string{"HTTP response", "untrusted certificate"} {
+		t.Run(failure, func(t *testing.T) {
+			testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+				if _, stderr, err := world.enable(); err != nil {
+					t.Fatalf("enable-mtls: %v\n%s", err, stderr)
+				}
+				save := []string{"context", "save", "--config", world.configPath}
+				if err := run(t.Context(), save, io.Discard, io.Discard); err != nil {
+					t.Fatal(err)
+				}
+				contextPath, err := workstation.ConfigPath()
+				if err != nil {
+					t.Fatal(err)
+				}
+				before, err := os.ReadFile(contextPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				node := world.nodes[0]
+				var handshakeError string
+				switch failure {
+				case "HTTP response":
+					handshakeError = "first record does not look like a TLS handshake"
+					dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
+						return node.dialWithOptions(ctx, endpoint, grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+							client, server := net.Pipe()
+							go func() {
+								defer server.Close()
+								var header [5]byte
+								if _, err := io.ReadFull(server, header[:]); err != nil {
+									return
+								}
+								if _, err := io.CopyN(io.Discard, server, int64(binary.BigEndian.Uint16(header[3:]))); err == nil {
+									_, _ = io.WriteString(server, "HTTP/1.1 404 Not Found\r\n\r\n")
+								}
+							}()
+							return client, nil
+						}))
+					}
+				case "untrusted certificate":
+					handshakeError = "certificate signed by unknown authority"
+					other, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "other"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					credentials, _, err := managementidentity.EnsureNode(&other, node.name, time.Now(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					node.mu.Lock()
+					node.staged = credentials
+					node.rebindLocked()
+					node.mu.Unlock()
+					dialKatlcAgent = node.dial
+				}
+				rebind := []string{"context", "rebind", "--node", node.name, "--endpoint", "192.0.2.91"}
+				for _, args := range [][]string{save, rebind} {
+					err := run(t.Context(), args, io.Discard, io.Discard)
+					if err == nil {
+						t.Fatalf("%s accepted the endpoint", args[1])
+					}
+					for _, want := range []string{handshakeError, "could not confirm", "the node may still trust", "rerun katlctl context " + args[1]} {
+						if !strings.Contains(err.Error(), want) {
+							t.Errorf("%s error = %v, missing %q", args[1], err, want)
+						}
+					}
+					for _, unsafe := range []string{"managementAuthentication: trusted-network", "restore the installed authority"} {
+						if strings.Contains(err.Error(), unsafe) {
+							t.Errorf("error suggests a trust change after a failed handshake: %v", err)
+						}
+					}
+					after, readErr := os.ReadFile(contextPath)
+					if readErr != nil || !bytes.Equal(before, after) {
+						t.Fatalf("failed verification changed the context: %v", readErr)
+					}
+				}
+			})
+		})
+	}
 }
 
 func delayManagementStatus(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {

@@ -73,6 +73,11 @@ request timeout; a shorter `--timeout` also ends the wait early, with the same
 guidance. Commands that watch a node reboot or recover report a refused
 connection at once and poll for themselves.
 
+If verification reports `could not confirm the node answers with the
+configured management credentials`, check that the management address reaches
+the intended node, then rerun the `katlctl context save` command in the message.
+A failed handshake leaves the node's installed trust uncertain.
+
 Run `katlctl context save` again after a reinstall to record the new
 identities.
 
@@ -103,9 +108,11 @@ katlctl context rebind --node cp-1 --endpoint 192.0.2.51
 
 Rebind succeeds only when TLS authenticates the expected node name and the new
 address reports the same node name, enrollment ID, and machine ID that the
-context recorded. If verification reports `management RPC outcome is inconclusive`,
-the context keeps the previous address. Follow the message to
-`check the address and node reachability, then rerun or increase --timeout`.
+context recorded. If verification reports `could not confirm the node answers
+at the proposed address with the saved management credentials`, the context
+keeps the previous address. Check the address and node reachability, then rerun
+the `katlctl context rebind` command in the message. If verification timed out,
+you can increase `--timeout`.
 
 Remove a context with `katlctl context delete NAME`. Deleting it does not delete
 the referenced secrets, external cluster secrets, or nodes, and does not change

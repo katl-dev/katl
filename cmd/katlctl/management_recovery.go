@@ -104,7 +104,8 @@ func runManagementIdentityRecover(ctx context.Context, opts managementRotationOp
 		fmt.Fprintf(stderr, "Reading the installed management authority on %s\n", node.name)
 		status, err := runManagementAuthoritySSH(ctx, *node, opts)
 		if err != nil {
-			return fmt.Errorf("inspect %s: %w; no node credentials were changed", node.name, err)
+			return fmt.Errorf("inspect %s: %w; no node credentials were changed; rerun the same command", node.name,
+				managementConfirmationError("the node's installed management authority", "the previous authority", err))
 		}
 		installed[node.name] = status
 	}
@@ -145,7 +146,8 @@ func runManagementIdentityRecover(ctx context.Context, opts managementRotationOp
 	for _, node := range pending {
 		fmt.Fprintf(stderr, "Preflight replacement identity on %s\n", node.name)
 		if _, err := runManagementRotationSSH(ctx, node, opts, true); err != nil {
-			return fmt.Errorf("preflight %s: %w; no node credentials were changed; keep %s to resume", node.name, err, outputPath)
+			return fmt.Errorf("preflight %s: %w; no node credentials were changed; keep %s and rerun the same command", node.name,
+				managementConfirmationError("the node is ready to install the replacement authority", "the previous authority", err), outputPath)
 		}
 	}
 	client, err := managementidentity.Client(next, time.Now().UTC())

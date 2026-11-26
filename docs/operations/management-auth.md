@@ -289,8 +289,9 @@ katlctl management identity rotate \
 
 The command preflights all nodes over root SSH, switches them one at a time,
 and verifies that the new mTLS authority works. It presents a fresh, valid
-client certificate signed by the old authority and requires a timely TLS
-`unknown_ca` alert from the authenticated node before it continues.
+client certificate signed by the old authority and requires a TLS `unknown_ca`
+alert from the authenticated node on that probe's connection, within the
+probe's timeout.
 Only after every node passes does it change `spec.managementIdentity` to the new
 file. A saved workstation context still has the old client certificate; refresh
 it after the command succeeds:
@@ -320,6 +321,11 @@ authority`. When `cluster.yaml` already references the replacement, it
 reports `could not confirm the node accepts the configured authority; the node
 may still trust the previous authority`. Keep the replacement file, check
 the endpoint, and rerun the same command.
+
+Rotation and recovery stop preflight when an SSH result arrives after
+`--timeout`. If the command reports that it could not confirm preflight on a
+node, check SSH access to that node and rerun the same command. Keep any
+replacement secrets the command has already written.
 
 After verification, remove exposed plaintext secrets from the tracked tree and
 keep only protected recovery copies. Published Git history remains a separate

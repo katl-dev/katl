@@ -41,13 +41,13 @@ const (
 // ClassifyManagementEvidence classifies an RPC result for a trust change.
 // An old-client-CA probe requires issuer-specific evidence. A gRPC
 // authentication refusal does not identify which CA the server trusts.
-func ClassifyManagementEvidence(err error, oldAuthorityRefused func() bool) ManagementEvidence {
+func ClassifyManagementEvidence(err error, oldAuthorityRefused func(error) bool) ManagementEvidence {
 	switch {
 	case err == nil:
 		return ManagementConfirmed
 	case errors.Is(err, ErrManagementRPCInconclusive):
 		return ManagementInconclusive
-	case oldAuthorityRefused != nil && grpcstatus.Code(err) == codes.Unavailable && oldAuthorityRefused():
+	case oldAuthorityRefused != nil && grpcstatus.Code(err) == codes.Unavailable && oldAuthorityRefused(err):
 		return ManagementRefusedExplicitly
 	case oldAuthorityRefused == nil && grpcstatus.Code(err) == codes.Unauthenticated:
 		return ManagementRefusedExplicitly
@@ -72,14 +72,22 @@ func (e managementRPCInconclusive) GRPCStatus() *grpcstatus.Status {
 }
 
 func managementRPCResult(ctx context.Context, result error) error {
-	if err := ctx.Err(); err != nil {
+	if err := ManagementContextError(ctx); err != nil {
 		return managementRPCInconclusive{cause: err}
 	}
-	// The deadline can elapse before the cancellation callback runs.
-	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
-		return managementRPCInconclusive{cause: context.DeadlineExceeded}
-	}
 	return result
+}
+
+// ManagementContextError checks whether a command or RPC result arrived within
+// its budget, even if the deadline elapsed before cancellation was delivered.
+func ManagementContextError(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
+	return nil
 }
 
 type (
@@ -114,6 +122,10 @@ func WithManagementProgress(ctx context.Context, w io.Writer) context.Context {
 // also retry a refused connection for at most ManagementReadyWait, reporting
 // progress, and then fail with guidance.
 func ManagementDialOptions(ctx context.Context, node, endpoint string, creds credentials.TransportCredentials) []grpc.DialOption {
+	var options []grpc.DialOption
+	if probe, ok := creds.(*clientCertificateProbe); ok {
+		options = append(options, grpc.WithContextDialer(probe.dialContext))
+	}
 	plaintext := creds.Info().SecurityProtocol == insecure.NewCredentials().Info().SecurityProtocol
 	noAdvice, _ := ctx.Value(noManagementAdviceKey{}).(bool)
 	if wrapped, ok := creds.(*clientCredentials); noAdvice && ok {
@@ -122,7 +134,7 @@ func ManagementDialOptions(ctx context.Context, node, endpoint string, creds cre
 	if observation, ok := ctx.Value(managementObservationKey{}).(*ManagementObservation); ok {
 		creds = &observedCredentials{TransportCredentials: creds, observation: observation, plaintext: plaintext}
 	}
-	options := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
+	options = append(options, grpc.WithTransportCredentials(creds))
 	if plaintext && !noAdvice {
 		options = append(
 			options,
