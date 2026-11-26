@@ -390,7 +390,7 @@ func runHostShutdown(ctx context.Context, opts hostShutdownOptions, stdout, stde
 	err = waitNodeOffline(waitCtx, target)
 	cancelWait()
 	if err != nil {
-		return fmt.Errorf("%s did not shut down: %w", node, err)
+		return fmt.Errorf("shutdown was scheduled for %s. Could not verify that its management API is offline: %w. Check the node's console", node, err)
 	}
 	report.Result = "offline"
 	return writeHostShutdown(stdout, opts.output, report)
@@ -406,7 +406,7 @@ func waitNodeOffline(ctx context.Context, target managementTarget) error {
 			_ = conn.Close()
 		}
 		cancelAttempt()
-		if err != nil {
+		if err != nil && !errors.Is(err, transport.ErrManagementRPCInconclusive) {
 			return nil
 		}
 
@@ -429,7 +429,7 @@ func readStatusReport(ctx context.Context, client agentapi.KatlcAgentClient, nod
 	// The fallback belongs to status. A successful plaintext status read or a
 	// failed generation lookup after it gives no reason to change credentials.
 	configPath = strings.TrimSpace(configPath)
-	if status != nil || credentials == nil || credentials.Authentication != managementidentity.TrustedNetwork ||
+	if errors.Is(err, transport.ErrManagementRPCInconclusive) || status != nil || credentials == nil || credentials.Authentication != managementidentity.TrustedNetwork ||
 		configPath == "" || ctx.Err() != nil || !observation.PlaintextClosed() {
 		return hostStatusReport{}, nil, err
 	}

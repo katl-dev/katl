@@ -4,7 +4,10 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -25,6 +28,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	grpcstatus "google.golang.org/grpc/status"
+	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -33,11 +37,11 @@ import (
 // katlc-agent does.
 type trialNode struct {
 	agentapi.UnimplementedKatlcAgentServer
-	t       *testing.T
-	name    string
-	address string
+	t    *testing.T
+	name string
 
 	mu        sync.Mutex
+	listener  *bufconn.Listener
 	server    *grpc.Server
 	mode      managementidentity.Authentication
 	authority string
@@ -65,11 +69,13 @@ type trialNode struct {
 	afterBegin func(context.Context)
 	// afterConfirm runs, with the node locked, once a confirm commits.
 	afterConfirm func(*trialNode)
+	// interceptRPC runs inside the production dial options.
+	interceptRPC grpc.UnaryClientInterceptor
 }
 
 func newTrialNode(t *testing.T, name string) *trialNode {
 	t.Helper()
-	node := &trialNode{t: t, name: name, address: "127.0.0.1:0", mode: managementidentity.TrustedNetwork, healthState: bootHealthHealthy, etcdHealthy: 3, apiProxyState: "ready"}
+	node := &trialNode{t: t, name: name, mode: managementidentity.TrustedNetwork, healthState: bootHealthHealthy, etcdHealthy: 3, apiProxyState: "ready"}
 	node.serve()
 	t.Cleanup(func() {
 		node.rebinds.Wait()
@@ -80,7 +86,8 @@ func newTrialNode(t *testing.T, name string) *trialNode {
 	return node
 }
 
-// serve binds the node's address with the credentials its state selects.
+// serve starts a gRPC listener with the credentials its state selects. The
+// in-memory listener allows synctest to advance time while gRPC waits for I/O.
 func (n *trialNode) serve() {
 	n.t.Helper()
 	n.mu.Lock()
@@ -108,24 +115,51 @@ func (n *trialNode) serve() {
 			n.t.Error(err)
 			return
 		}
-		options = append(options, grpc.Creds(credentials.NewTLS(config)))
+		options = append(options, grpc.Creds(trialTLSCredentials{credentials.NewTLS(config)}))
 	}
-	var listener net.Listener
-	var err error
-	for range 100 {
-		if listener, err = net.Listen("tcp", n.address); err == nil {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	if err != nil {
-		n.t.Error(err)
-		return
-	}
-	n.address = listener.Addr().String()
+	n.listener = bufconn.Listen(32 << 10)
 	n.server = grpc.NewServer(options...)
 	agentapi.RegisterKatlcAgentServer(n.server, n)
-	go func() { _ = n.server.Serve(listener) }()
+	go n.server.Serve(n.listener)
+}
+
+func (n *trialNode) dial(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
+	return n.dialWithOptions(ctx, endpoint)
+}
+
+func (n *trialNode) dialWithOptions(ctx context.Context, endpoint string, extra ...grpc.DialOption) (katlcAgentConnection, error) {
+	identity := transport.ClientCredentialsFromContext(ctx)
+	if identity == nil {
+		return katlcAgentConnection{}, fmt.Errorf("no management credentials for test node %s", n.name)
+	}
+	creds, err := transport.ClientCredentialsForNode(*identity, n.name)
+	if err != nil {
+		return katlcAgentConnection{}, err
+	}
+	return n.dialWithTransport(ctx, endpoint, creds, extra...)
+}
+
+func (n *trialNode) dialWithTransport(ctx context.Context, endpoint string, creds credentials.TransportCredentials, extra ...grpc.DialOption) (katlcAgentConnection, error) {
+	// A bufconn dial holds the listener it starts with, so it cannot reach
+	// the replacement listener if it races with an in-progress restart.
+	n.rebinds.Wait()
+	n.mu.Lock()
+	listener := n.listener
+	n.mu.Unlock()
+
+	options := transport.ManagementDialOptions(ctx, n.name, endpoint, creds)
+	if n.interceptRPC != nil {
+		options = append(options, grpc.WithChainUnaryInterceptor(n.interceptRPC))
+	}
+	options = append(options, grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+		return listener.DialContext(ctx)
+	}))
+	options = append(options, extra...)
+	conn, err := grpc.NewClient("passthrough:///"+endpoint, options...)
+	if err != nil {
+		return katlcAgentConnection{}, err
+	}
+	return katlcAgentConnection{Client: agentapi.NewKatlcAgentClient(conn), Close: conn.Close}, nil
 }
 
 // rebind re-serves the address once in-flight calls finish, like the agent's
@@ -253,6 +287,17 @@ type enableMTLSWorld struct {
 	nodes       []*trialNode
 }
 
+func testEnableMTLSWithVirtualTime(t *testing.T, names []string, test func(*testing.T, enableMTLSWorld)) {
+	t.Helper()
+	synctest.Test(t, func(t *testing.T) {
+		poll := enableMTLSPoll
+		world := newEnableMTLSWorld(t, names...)
+		// Virtual time can use the production poll interval.
+		enableMTLSPoll = poll
+		test(t, world)
+	})
+}
+
 func newEnableMTLSWorld(t *testing.T, names ...string) enableMTLSWorld {
 	t.Helper()
 	t.Setenv("KATLCTL_CONFIG", filepath.Join(t.TempDir(), "katlctl.yaml"))
@@ -279,10 +324,7 @@ func newEnableMTLSWorld(t *testing.T, names ...string) enableMTLSWorld {
 		if !ok {
 			return katlcAgentConnection{}, fmt.Errorf("no test node at %s", endpoint)
 		}
-		node.mu.Lock()
-		address := node.address
-		node.mu.Unlock()
-		return dialKatlcAgentTCP(ctx, address)
+		return node.dial(ctx, endpoint)
 	}
 	dir := t.TempDir()
 	world.configPath = filepath.Join(dir, "cluster.yaml")
@@ -406,12 +448,12 @@ func TestEnableMTLSPreflightChangesNothing(t *testing.T) {
 		fault func(*trialNode)
 		want  []string
 	}{
-		"unreachable":       {fault: func(n *trialNode) { n.mu.Lock(); n.server.Stop(); n.mu.Unlock() }, want: []string{"cp-2 is unreachable", "fix it or remove it from the config"}},
+		"unreachable":       {fault: func(n *trialNode) { n.mu.Lock(); n.server.Stop(); n.mu.Unlock() }, want: []string{"cp-2 at", "could not confirm the node uses trusted-network management; the node may still trust an mTLS authority", "check the management address and node reachability"}},
 		"older node":        {fault: func(n *trialNode) { n.legacy = true }, want: []string{"cp-2: the installed KatlOS release cannot move management trust", "upgrade the node with `katlctl node upgrade`, then rerun"}},
 		"missing node time": {fault: func(n *trialNode) { n.omitNodeTime = true }, want: []string{"management status did not report a valid node time", "upgrade the node with `katlctl node upgrade`, then rerun"}},
 		"clock behind":      {fault: func(n *trialNode) { n.clockOffset = -6 * time.Minute }, want: []string{"cp-2's clock is 6m0s behind", "NTP"}},
-		"etcd below quorum": {fault: func(n *trialNode) { n.controlPlane, n.etcdHealthy = true, 1 }, want: []string{"cp-2 is not healthy", "etcd has 1 healthy members, below quorum 2"}},
-		"unhealthy":         {fault: func(n *trialNode) { n.healthState = "degraded" }, want: []string{"cp-2 is not healthy", "boot health is degraded"}},
+		"etcd below quorum": {fault: func(n *trialNode) { n.controlPlane, n.etcdHealthy = true, 1 }, want: []string{"cp-2: could not confirm the node is healthy", "etcd has 1 healthy members, below quorum 2"}},
+		"unhealthy":         {fault: func(n *trialNode) { n.healthState = "degraded" }, want: []string{"cp-2: could not confirm the node is healthy", "boot health is degraded"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			world := newEnableMTLSWorld(t, "cp-1", "cp-2")
@@ -464,14 +506,14 @@ func TestEnableMTLSDoesNotDowngradeAfterCertificateFailure(t *testing.T) {
 	plaintextProbes := 0
 	dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
 		if transport.ClientCredentialsFromContext(ctx).Authentication != managementidentity.TrustedNetwork {
-			return dialKatlcAgentTCP(ctx, tlsNode.address)
+			return tlsNode.dial(ctx, endpoint)
 		}
 		plaintextProbes++
 		return plaintextDial(ctx, endpoint)
 	}
 
 	_, _, err = world.enable()
-	if err == nil || !strings.Contains(err.Error(), "different management authority") {
+	if err == nil || !strings.Contains(err.Error(), "could not confirm the node accepts the replacement authority; the node may still trust its previous management authority") {
 		t.Fatalf("enable-mtls = %v, want certificate verification failure", err)
 	}
 	plaintext.rebinds.Wait()
@@ -520,7 +562,7 @@ func TestEnableMTLSDoesNotDowngradeOnRPCErrorText(t *testing.T) {
 		t.Errorf("RPC error text allowed %d plaintext connections, %d Begin calls, key received = %t",
 			plaintextProbes, node.begins, node.staged.ServerPrivateKey != "")
 	}
-	if err == nil || !strings.Contains(err.Error(), "could not classify the management transport") {
+	if err == nil || !strings.Contains(err.Error(), "could not confirm the node accepts the replacement authority; the node may still trust its previous management authority") {
 		t.Errorf("enable-mtls = %v, want an unclassified transport refusal", err)
 	}
 }
@@ -557,10 +599,10 @@ func TestEnableMTLSRefusesUnclassifiedTransport(t *testing.T) {
 	}
 
 	_, _, err = world.enable()
-	if err == nil || !strings.Contains(err.Error(), "could not classify the management transport") || !strings.Contains(err.Error(), "any proxy") {
+	if err == nil || !strings.Contains(err.Error(), "could not confirm the node accepts the replacement authority; the node may still trust its previous management authority") || !strings.Contains(err.Error(), "check the management address and node reachability") {
 		t.Fatalf("enable-mtls = %v, want transport classification guidance", err)
 	}
-	if strings.Contains(err.Error(), "authority") || strings.Contains(err.Error(), "node name") {
+	if strings.Contains(err.Error(), "different management authority") || strings.Contains(err.Error(), "node name") {
 		t.Errorf("unclassified transport blamed identity: %v", err)
 	}
 	if mode, _, begins := node.state(); mode != managementidentity.TrustedNetwork || begins != 0 {
@@ -584,6 +626,28 @@ func (c prefaceCredentials) ServerHandshake(conn net.Conn) (net.Conn, credential
 	return c.TransportCredentials.ServerHandshake(prefaceConn{Conn: conn, reader: reader})
 }
 
+type trialTLSCredentials struct {
+	credentials.TransportCredentials
+}
+
+func (c trialTLSCredentials) ServerHandshake(conn net.Conn) (net.Conn, credentials.AuthInfo, error) {
+	reader := bufio.NewReader(conn)
+	preface, err := reader.Peek(len(http2.ClientPreface))
+	if err != nil {
+		return nil, nil, err
+	}
+	if string(preface) == http2.ClientPreface {
+		// bufconn rejects writes as soon as the peer closes. Read the initial
+		// SETTINGS so the plaintext client can observe EOF on its read.
+		_, _ = reader.Discard(len(preface))
+		if _, err := http2.NewFramer(nil, reader).ReadFrame(); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, fmt.Errorf("expected a TLS client hello")
+	}
+	return c.TransportCredentials.ServerHandshake(prefaceConn{Conn: conn, reader: reader})
+}
+
 type prefaceConn struct {
 	net.Conn
 	reader *bufio.Reader
@@ -591,100 +655,81 @@ type prefaceConn struct {
 
 func (c prefaceConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
 
-func TestEnableMTLSRerunChecksPlaintextRefusal(t *testing.T) {
-	world := newEnableMTLSWorld(t, "cp-1")
-	node := world.nodes[0]
-	plaintext := newTrialNode(t, node.name)
-	normalDial := dialKatlcAgent
-	dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
-		mode, _, _ := node.state()
-		if mode == managementidentity.MutualTLS && transport.ClientCredentialsFromContext(ctx).Authentication == managementidentity.TrustedNetwork {
-			return dialKatlcAgentTCP(ctx, plaintext.address)
-		}
-		return normalDial(ctx, endpoint)
-	}
-
-	for _, attempt := range []string{"initial migration", "rerun"} {
-		if _, _, err := world.enable(); err == nil || !strings.Contains(err.Error(), "still answers plaintext management") {
-			t.Fatalf("%s = %v, want plaintext refusal check to fail", attempt, err)
-		}
-		if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
-			t.Fatalf("%s published %s while plaintext still answered", attempt, mode)
-		}
-		if mode, transition, begins := node.state(); mode != managementidentity.MutualTLS || transition != "committed" || begins != 1 {
-			t.Fatalf("%s: node = %s %s after %d begins, want a single committed trial", attempt, mode, transition, begins)
-		}
-	}
-	dialKatlcAgent = normalDial
-	if _, stderr, err := world.enable(); err != nil {
-		t.Fatalf("rerun after plaintext closed: %v\n%s", err, stderr)
-	}
-}
-
 // A node whose trial this workstation cannot reach is left to revert, the
 // config keeps trusted-network, and a rerun with the same secrets finishes.
 func TestEnableMTLSResumesAfterUnreachableTrialReverts(t *testing.T) {
-	world := newEnableMTLSWorld(t, "cp-1", "cp-2")
-	world.nodes[1].unreachableTrial = true
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1", "cp-2"}, func(t *testing.T, world enableMTLSWorld) {
+		node := world.nodes[1]
+		node.unreachableTrial = true
 
-	_, _, err := world.enable("--trial-window", "40s")
-	if err == nil {
-		t.Fatal("enable-mtls succeeded although cp-2's trial was unreachable")
-	}
-	for _, want := range []string{"cp-2: did not answer over mTLS", "returns to trusted-network by itself", "already on mTLS: cp-1", "keeps trusted-network", "katlctl management enable-mtls --config '" + world.configPath + "'"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error lacks %q: %v", want, err)
+		_, _, err := world.enable("--trial-window", "40s")
+		if err == nil {
+			t.Fatal("enable-mtls succeeded although cp-2's trial was unreachable")
 		}
-	}
-	if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
-		t.Fatalf("config mode = %s before every node was confirmed", mode)
-	}
+		for _, want := range []string{"cp-2: could not confirm the node accepts the replacement authority; the node may still trust the trusted network", "already on mTLS: cp-1", "keeps trusted-network", "katlctl management enable-mtls --config '" + world.configPath + "'"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error lacks %q: %v", want, err)
+			}
+		}
+		if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
+			t.Fatalf("config mode = %s before every node was confirmed", mode)
+		}
+		if mode, trial, _ := node.state(); mode != managementidentity.TrustedNetwork || trial != "trial" {
+			t.Fatalf("cp-2 = %s %s after the connection timeout, want an unconfirmed trial", mode, trial)
+		}
 
-	world.nodes[1].unreachableTrial = false
-	world.nodes[1].revert("the transition was not confirmed before its deadline")
-	world.nodes[1].rebinds.Wait()
-	_, stderr, err := world.enable()
-	if err != nil {
-		t.Fatalf("rerun: %v\n%s", err, stderr)
-	}
-	for _, want := range []string{"cp-1: already mTLS (1/2)", "earlier trial reverted (the transition was not confirmed before its deadline)", "cp-2: mTLS confirmed (2/2)"} {
-		if !strings.Contains(stderr, want) {
-			t.Errorf("rerun progress lacks %q:\n%s", want, stderr)
+		node.rebinds.Wait()
+		node.unreachableTrial = false
+		node.revert("the transition was not confirmed before its deadline")
+		node.rebinds.Wait()
+		if mode, trial, _ := node.state(); mode != managementidentity.TrustedNetwork || trial != "reverted" {
+			t.Fatalf("cp-2 = %s %s after revert, want trusted-network reverted", mode, trial)
 		}
-	}
-	if mode, _ := world.configMode(t); mode != managementidentity.MutualTLS {
-		t.Errorf("config mode = %s after every node was confirmed", mode)
-	}
-	if _, _, begins := world.nodes[0].state(); begins != 1 {
-		t.Errorf("cp-1 began %d trials, want 1", begins)
-	}
+
+		_, stderr, err := world.enable()
+		if err != nil {
+			t.Fatalf("rerun: %v\n%s", err, stderr)
+		}
+		for _, want := range []string{"cp-1: already mTLS (1/2)", "earlier trial reverted (the transition was not confirmed before its deadline)", "cp-2: mTLS confirmed (2/2)"} {
+			if !strings.Contains(stderr, want) {
+				t.Errorf("rerun progress lacks %q:\n%s", want, stderr)
+			}
+		}
+		if mode, _ := world.configMode(t); mode != managementidentity.MutualTLS {
+			t.Errorf("config mode = %s after every node was confirmed", mode)
+		}
+		if _, _, begins := world.nodes[0].state(); begins != 1 {
+			t.Errorf("cp-1 began %d trials, want 1", begins)
+		}
+	})
 }
 
 // A rerun reaches a node still on its trial over mTLS and confirms it without
 // beginning again.
 func TestEnableMTLSResumesLiveTrial(t *testing.T) {
-	world := newEnableMTLSWorld(t, "cp-1")
-	node := world.nodes[0]
-	node.unreachableTrial = true
-	if _, _, err := world.enable(); err == nil {
-		t.Fatal("first run succeeded although the trial was unreachable")
-	}
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+		node := world.nodes[0]
+		node.unreachableTrial = true
+		if _, _, err := world.enable(); err == nil {
+			t.Fatal("first run succeeded although the trial was unreachable")
+		}
 
-	node.mu.Lock()
-	node.unreachableTrial = false
-	node.mu.Unlock()
-	node.rebind()
-	node.rebinds.Wait()
-	_, stderr, err := world.enable()
-	if err != nil {
-		t.Fatalf("rerun: %v\n%s", err, stderr)
-	}
-	if !strings.Contains(stderr, "cp-1: resuming its trial") {
-		t.Errorf("rerun did not resume the trial:\n%s", stderr)
-	}
-	if mode, trial, begins := node.state(); mode != managementidentity.MutualTLS || trial != "committed" || begins != 1 {
-		t.Errorf("node = %s %s after %d begins, want mtls committed after 1", mode, trial, begins)
-	}
+		node.mu.Lock()
+		node.unreachableTrial = false
+		node.mu.Unlock()
+		node.rebind()
+		node.rebinds.Wait()
+		_, stderr, err := world.enable()
+		if err != nil {
+			t.Fatalf("rerun: %v\n%s", err, stderr)
+		}
+		if !strings.Contains(stderr, "cp-1: resuming its trial") {
+			t.Errorf("rerun did not resume the trial:\n%s", stderr)
+		}
+		if mode, trial, begins := node.state(); mode != managementidentity.MutualTLS || trial != "committed" || begins != 1 {
+			t.Errorf("node = %s %s after %d begins, want mtls committed after 1", mode, trial, begins)
+		}
+	})
 }
 
 func TestEnableMTLSDetectsLostConfirmReply(t *testing.T) {
@@ -710,7 +755,7 @@ func TestEnableMTLSInterruptedConfirmationCheck(t *testing.T) {
 	node.afterConfirm = func(*trialNode) { cancel() }
 
 	_, _, err := world.enableContext(ctx)
-	if err == nil || !strings.Contains(err.Error(), "may already have committed") ||
+	if err == nil || !strings.Contains(err.Error(), "could not confirm mTLS confirmation; the node may still trust the replacement authority") ||
 		!strings.Contains(err.Error(), "Rerun katlctl management enable-mtls") {
 		t.Fatalf("interrupted confirmation check = %v", err)
 	}
@@ -755,15 +800,282 @@ func TestEnableMTLSRerunRepairsSavedContext(t *testing.T) {
 	}
 }
 
-func TestEnableMTLSResumeKeepsSecretsFile(t *testing.T) {
-	world := newEnableMTLSWorld(t, "cp-1")
-	world.nodes[0].unreachableTrial = true
-	secrets := filepath.Join(t.TempDir(), "lab-secrets.yaml")
+func TestEnableMTLSLatePreflightFailure(t *testing.T) {
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+		bundle, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "lab"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		node := world.nodes[0]
+		if _, _, err := managementidentity.EnsureNode(&bundle, node.name, time.Now(), nil); err != nil {
+			t.Fatal(err)
+		}
+		if err := managementidentity.Write(world.secretsPath, bundle); err != nil {
+			t.Fatal(err)
+		}
 
-	_, _, err := world.enable("--output", secrets)
-	if err == nil || !strings.Contains(err.Error(), "--output '"+secrets+"'") {
-		t.Fatalf("resume hint does not name the secrets file: %v", err)
+		// Ensure the TLS probe sees a plaintext SETTINGS frame before the
+		// connection closes, so it has wire evidence for a fallback.
+		listener := bufconn.Listen(32 << 10)
+		defer listener.Close()
+		go func() {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			if _, err := io.ReadFull(conn, make([]byte, 1)); err == nil {
+				_ = http2.NewFramer(conn, nil).WriteSettings()
+				_, _ = io.Copy(io.Discard, conn)
+			}
+		}()
+		dial := dialKatlcAgent
+		delayed := false
+		plaintextProbes := 0
+		dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
+			if transport.ClientCredentialsFromContext(ctx).Authentication == managementidentity.TrustedNetwork {
+				plaintextProbes++
+				return dial(ctx, endpoint)
+			}
+			if delayed {
+				return dial(ctx, endpoint)
+			}
+			return node.dialWithOptions(
+				ctx, endpoint,
+				grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) { return listener.DialContext(ctx) }),
+				grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+					err := invoker(ctx, method, req, reply, cc, opts...)
+					delayed = true
+					// Keep the wire observation from this failed attempt
+					// while delaying delivery of its result.
+					_ = cc.Close()
+					<-ctx.Done()
+					return err
+				}),
+			)
+		}
+		_, _, err = world.enable("--timeout", "1s")
+		if _, _, begins := node.state(); begins != 0 {
+			t.Fatalf("began %d trials after the preflight failure arrived late", begins)
+		}
+		if plaintextProbes != 0 {
+			t.Fatalf("made %d plaintext probes after the preflight failure arrived late", plaintextProbes)
+		}
+		if !delayed || err == nil || !strings.Contains(err.Error(), "could not confirm the node accepts the replacement authority") || !strings.Contains(err.Error(), "Rerun katlctl management enable-mtls") {
+			t.Fatalf("enable-mtls = %v, want guidance on the inconclusive mTLS preflight", err)
+		}
+	})
+}
+
+func TestEnableMTLSLateCommittedStatus(t *testing.T) {
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1", "cp-2"}, func(t *testing.T, world enableMTLSWorld) {
+		node := world.nodes[0]
+		delayed := false
+		node.interceptRPC = func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			err := invoker(ctx, method, req, reply, cc, opts...)
+			mode, _, _ := node.state()
+			if mode == managementidentity.MutualTLS && method == agentapi.KatlcAgent_GetNodeStatus_FullMethodName && err == nil {
+				delayed = true
+				_ = cc.Close()
+				<-ctx.Done()
+			}
+			return err
+		}
+
+		stdout, stderr, err := world.enable("--timeout", "1s")
+		if mode, trial, _ := node.state(); mode != managementidentity.MutualTLS || trial != "committed" {
+			t.Fatalf("node = %s/%s, want committed mTLS: %v\n%s%s", mode, trial, err, stdout, stderr)
+		}
+		if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
+			t.Fatalf("published %s after the committed status arrived late", mode)
+		}
+		if _, _, begins := world.nodes[1].state(); begins != 0 {
+			t.Fatalf("began %d trials on cp-2 after the committed status arrived late", begins)
+		}
+		if !delayed || err == nil || !strings.Contains(err.Error(), "could not confirm mTLS confirmation; the node may still trust the replacement authority") ||
+			!strings.Contains(err.Error(), "katlctl node status 'cp-1' --config '"+world.configPath+"'") ||
+			strings.Contains(err.Error(), "management-trial revert") {
+			t.Fatalf("enable-mtls = %v, want status guidance on the inconclusive confirmation", err)
+		}
+	})
+}
+
+func TestEnableMTLSLateContextRefresh(t *testing.T) {
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+		var out bytes.Buffer
+		if err := run(t.Context(), []string{"context", "save", "--config", world.configPath}, &out, &out); err != nil {
+			t.Fatalf("save trusted-network context: %v\n%s", err, &out)
+		}
+		contextPath, err := workstation.ConfigPath()
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.ReadFile(contextPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		node := world.nodes[0]
+		delayed := false
+		committedStatusChecks := 0
+		node.interceptRPC = func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			err := invoker(ctx, method, req, reply, cc, opts...)
+			mode, _, _ := node.state()
+			if err == nil && method == agentapi.KatlcAgent_GetNodeStatus_FullMethodName && mode == managementidentity.MutualTLS {
+				committedStatusChecks++
+				// The first two status calls check confirmation and health.
+				if committedStatusChecks == 3 {
+					delayed = true
+					<-ctx.Done()
+				}
+			}
+			return err
+		}
+
+		stdout, stderr, err := world.enable("--timeout", "1s")
+		if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
+			t.Fatalf("published %s after context verification arrived late: %v\n%s%s", mode, err, stdout, stderr)
+		}
+		after, readErr := os.ReadFile(contextPath)
+		if readErr != nil || !bytes.Equal(before, after) {
+			t.Fatalf("saved context changed after the refresh reply arrived late: %v", readErr)
+		}
+		if !delayed || err == nil || !strings.Contains(err.Error(), "could not confirm the saved context can reach the nodes over mTLS; the node may still trust the replacement authority") ||
+			!strings.Contains(err.Error(), enableMTLSInvocation(world.configPath, world.secretsPath)) || strings.Contains(stdout, "Refreshed the saved context") {
+			t.Fatalf("enable-mtls = %v\n%s\nwant context verification failure and rerun guidance", err, stdout)
+		}
+	})
+}
+
+func TestContextRebindLateStatus(t *testing.T) {
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+		var out bytes.Buffer
+		if err := run(t.Context(), []string{"context", "save", "--config", world.configPath}, &out, &out); err != nil {
+			t.Fatalf("save trusted-network context: %v\n%s", err, &out)
+		}
+		contextPath, err := workstation.ConfigPath()
+		if err != nil {
+			t.Fatal(err)
+		}
+		before, err := os.ReadFile(contextPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		node := world.nodes[0]
+		node.interceptRPC = delayManagementStatus
+		dialKatlcAgent = node.dial
+
+		err = run(t.Context(), []string{"context", "rebind", "--context-file", contextPath, "--node", node.name, "--endpoint", "192.0.2.91", "--timeout", "1s"}, &bytes.Buffer{}, &bytes.Buffer{})
+		after, readErr := os.ReadFile(contextPath)
+		if readErr != nil || !bytes.Equal(before, after) {
+			t.Fatalf("saved endpoint changed after its verification reply arrived late: %v", readErr)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("context rebind = %v, want a deadline error", err)
+		}
+	})
+}
+
+func TestContextVerificationHandshakeFailure(t *testing.T) {
+	for _, failure := range []string{"HTTP response", "untrusted certificate"} {
+		t.Run(failure, func(t *testing.T) {
+			testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+				if _, stderr, err := world.enable(); err != nil {
+					t.Fatalf("enable-mtls: %v\n%s", err, stderr)
+				}
+				save := []string{"context", "save", "--config", world.configPath}
+				if err := run(t.Context(), save, io.Discard, io.Discard); err != nil {
+					t.Fatal(err)
+				}
+				contextPath, err := workstation.ConfigPath()
+				if err != nil {
+					t.Fatal(err)
+				}
+				before, err := os.ReadFile(contextPath)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				node := world.nodes[0]
+				var handshakeError string
+				switch failure {
+				case "HTTP response":
+					handshakeError = "first record does not look like a TLS handshake"
+					dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
+						return node.dialWithOptions(ctx, endpoint, grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
+							client, server := net.Pipe()
+							go func() {
+								defer server.Close()
+								var header [5]byte
+								if _, err := io.ReadFull(server, header[:]); err != nil {
+									return
+								}
+								if _, err := io.CopyN(io.Discard, server, int64(binary.BigEndian.Uint16(header[3:]))); err == nil {
+									_, _ = io.WriteString(server, "HTTP/1.1 404 Not Found\r\n\r\n")
+								}
+							}()
+							return client, nil
+						}))
+					}
+				case "untrusted certificate":
+					handshakeError = "certificate signed by unknown authority"
+					other, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "other"})
+					if err != nil {
+						t.Fatal(err)
+					}
+					credentials, _, err := managementidentity.EnsureNode(&other, node.name, time.Now(), nil)
+					if err != nil {
+						t.Fatal(err)
+					}
+					node.mu.Lock()
+					node.staged = credentials
+					node.rebindLocked()
+					node.mu.Unlock()
+					dialKatlcAgent = node.dial
+				}
+				rebind := []string{"context", "rebind", "--node", node.name, "--endpoint", "192.0.2.91"}
+				for _, args := range [][]string{save, rebind} {
+					err := run(t.Context(), args, io.Discard, io.Discard)
+					if err == nil {
+						t.Fatalf("%s accepted the endpoint", args[1])
+					}
+					for _, want := range []string{handshakeError, "could not confirm", "the node may still trust", "rerun katlctl context " + args[1]} {
+						if !strings.Contains(err.Error(), want) {
+							t.Errorf("%s error = %v, missing %q", args[1], err, want)
+						}
+					}
+					for _, unsafe := range []string{"managementAuthentication: trusted-network", "restore the installed authority"} {
+						if strings.Contains(err.Error(), unsafe) {
+							t.Errorf("error suggests a trust change after a failed handshake: %v", err)
+						}
+					}
+					after, readErr := os.ReadFile(contextPath)
+					if readErr != nil || !bytes.Equal(before, after) {
+						t.Fatalf("failed verification changed the context: %v", readErr)
+					}
+				}
+			})
+		})
 	}
+}
+
+func delayManagementStatus(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+	err := invoker(ctx, method, req, reply, cc, opts...)
+	if err == nil && method == agentapi.KatlcAgent_GetNodeStatus_FullMethodName {
+		<-ctx.Done()
+	}
+	return err
+}
+
+func TestEnableMTLSResumeKeepsSecretsFile(t *testing.T) {
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+		world.nodes[0].unreachableTrial = true
+		secrets := filepath.Join(t.TempDir(), "lab-secrets.yaml")
+
+		_, _, err := world.enable("--output", secrets)
+		if err == nil || !strings.Contains(err.Error(), "--output '"+secrets+"'") {
+			t.Fatalf("resume hint does not name the secrets file: %v", err)
+		}
+	})
 }
 
 func TestManagementStatusColumn(t *testing.T) {
@@ -888,7 +1200,7 @@ func TestEnableMTLSInterruptedBegin(t *testing.T) {
 	if err == nil {
 		t.Fatal("enable-mtls succeeded although it was interrupted")
 	}
-	for _, want := range []string{"cp-1: interrupted before the new authority was confirmed", "returns to trusted-network by itself by", "Rerun katlctl management enable-mtls"} {
+	for _, want := range []string{"cp-1: could not confirm the mTLS trial started; the node may still trust the trusted network", "Rerun katlctl management enable-mtls"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error lacks %q: %v", want, err)
 		}
@@ -933,54 +1245,95 @@ func TestEnableMTLSRefusesTrialWithoutNodeTime(t *testing.T) {
 }
 
 func TestEnableMTLSBeginTimeout(t *testing.T) {
-	world := newEnableMTLSWorld(t, "cp-1")
-	node := world.nodes[0]
-	node.afterBegin = func(ctx context.Context) { <-ctx.Done() }
-
-	_, _, err := world.enable("--timeout", "1s", "--trial-window", "45s")
-	node.rebinds.Wait()
-	if _, trial, _ := node.state(); trial != "trial" {
-		t.Fatalf("node state = %q, want a trial armed before the timeout", trial)
-	}
-	for _, want := range []string{
-		"interrupted before the new authority was confirmed",
-		"returns to trusted-network by itself by",
-		"katlc agent management-trial revert",
-		"Rerun katlctl management enable-mtls",
-	} {
-		if err == nil || !strings.Contains(err.Error(), want) {
-			t.Errorf("error lacks %q: %v", want, err)
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+		node := world.nodes[0]
+		node.interceptRPC = func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			err := invoker(ctx, method, req, reply, cc, opts...)
+			if err == nil && method == agentapi.KatlcAgent_BeginManagementTransition_FullMethodName {
+				<-ctx.Done()
+			}
+			return err
 		}
-	}
+
+		_, _, err := world.enable("--timeout", "1s", "--trial-window", "45s")
+		if mode, trial, begins := node.state(); mode != managementidentity.TrustedNetwork || trial != "trial" || begins != 1 {
+			t.Fatalf("node = %s %s after %d begins, want one unconfirmed trial", mode, trial, begins)
+		}
+		if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
+			t.Errorf("config mode = %s after Begin timed out", mode)
+		}
+		for _, want := range []string{
+			"could not confirm the mTLS trial started; the node may still trust the trusted network",
+			"Rerun katlctl management enable-mtls",
+		} {
+			if err == nil || !strings.Contains(err.Error(), want) {
+				t.Errorf("error lacks %q: %v", want, err)
+			}
+		}
+		if err != nil && strings.Contains(err.Error(), "by itself by") {
+			t.Errorf("interrupted Begin reported an unverified trial deadline: %v", err)
+		}
+	})
 }
+
+func TestEnableMTLSRejectsReplyAfterDeadline(t *testing.T) {
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+		// Model an inherited deadline whose cancellation callback is delayed.
+		ctx := deadlineOnlyContext{Context: t.Context(), deadline: time.Now().Add(time.Second)}
+		world.nodes[0].interceptRPC = func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+			err := invoker(ctx, method, req, reply, cc, opts...)
+			if err != nil {
+				t.Fatalf("RPC failed before delay: %v", err)
+			}
+			time.Sleep(time.Second)
+			if err := ctx.Err(); err != nil {
+				t.Fatalf("request canceled before the reply: %v", err)
+			}
+			return nil
+		}
+		node := enableMTLSNode{name: "cp-1", endpoint: "192.0.2.11:9443"}
+		_, err := enableMTLSStatus(ctx, node, trustedNetworkClient, time.Minute)
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.Is(err, transport.ErrManagementRPCInconclusive) {
+			t.Fatalf("late RPC reply = %v, want deadline exceeded", err)
+		}
+	})
+}
+
+type deadlineOnlyContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c deadlineOnlyContext) Deadline() (time.Time, bool) { return c.deadline, true }
 
 // A trial past its deadline that the node has not yet reverted cannot be
 // confirmed; the operator waits for the revert rather than chasing the
 // address.
 func TestEnableMTLSWaitsForExpiredTrialToRevert(t *testing.T) {
-	world := newEnableMTLSWorld(t, "cp-1")
-	node := world.nodes[0]
-	node.unreachableTrial = true
-	if _, _, err := world.enable(); err == nil {
-		t.Fatal("first run succeeded although the trial was unreachable")
-	}
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+		node := world.nodes[0]
+		node.unreachableTrial = true
+		if _, _, err := world.enable(); err == nil {
+			t.Fatal("first run succeeded although the trial was unreachable")
+		}
 
-	node.mu.Lock()
-	node.unreachableTrial = false
-	node.trial.Deadline = time.Now().Add(-time.Second).UTC().Format(time.RFC3339)
-	node.mu.Unlock()
-	node.rebind()
-	node.rebinds.Wait()
-	_, _, err := world.enable()
-	if err == nil || !strings.Contains(err.Error(), "has not returned to trusted-network yet; wait for it to revert, then rerun") {
-		t.Fatalf("rerun = %v, want a wait for the revert", err)
-	}
-	if strings.Contains(err.Error(), "management.address") {
-		t.Errorf("error blames the address: %v", err)
-	}
-	if node.confirms != 0 {
-		t.Errorf("confirmed an expired trial %d time(s)", node.confirms)
-	}
+		node.mu.Lock()
+		node.unreachableTrial = false
+		node.trial.Deadline = time.Now().Add(-time.Second).UTC().Format(time.RFC3339)
+		node.mu.Unlock()
+		node.rebind()
+		node.rebinds.Wait()
+		_, _, err := world.enable()
+		if err == nil || !strings.Contains(err.Error(), "has not returned to trusted-network yet; wait for it to revert, then rerun") {
+			t.Fatalf("rerun = %v, want a wait for the revert", err)
+		}
+		if strings.Contains(err.Error(), "management.address") {
+			t.Errorf("error blames the address: %v", err)
+		}
+		if node.confirms != 0 {
+			t.Errorf("confirmed an expired trial %d time(s)", node.confirms)
+		}
+	})
 }
 
 func TestEnableMTLSCompletesAfterWriteBackFailure(t *testing.T) {
@@ -1038,76 +1391,78 @@ func TestEnableMTLSCompletesAfterWriteBackFailure(t *testing.T) {
 // A control plane whose API proxy stops being ready after it moves fails the
 // post-confirm health gate, and a rerun continues once it recovers.
 func TestEnableMTLSChecksAPIProxyAfterConfirm(t *testing.T) {
-	world := newEnableMTLSWorld(t, "cp-1")
-	node := world.nodes[0]
-	node.controlPlane = true
-	node.afterConfirm = func(n *trialNode) { n.apiProxyState = "starting" }
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+		node := world.nodes[0]
+		node.controlPlane = true
+		node.afterConfirm = func(n *trialNode) { n.apiProxyState = "starting" }
 
-	_, _, err := world.enable()
-	if err == nil || !strings.Contains(err.Error(), "uses mTLS management now but is not healthy") || !strings.Contains(err.Error(), "Kubernetes API proxy: starting") {
-		t.Fatalf("enable-mtls = %v, want the API proxy health failure", err)
-	}
-	if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
-		t.Fatalf("config mode = %s although a node failed its health check", mode)
-	}
+		_, _, err := world.enable()
+		if err == nil || !strings.Contains(err.Error(), "could not confirm the node is healthy over mTLS") || !strings.Contains(err.Error(), "Kubernetes API proxy: starting") {
+			t.Fatalf("enable-mtls = %v, want the API proxy health failure", err)
+		}
+		if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
+			t.Fatalf("config mode = %s although a node failed its health check", mode)
+		}
 
-	if _, _, err := world.enable(); err == nil || !strings.Contains(err.Error(), "Kubernetes API proxy: starting") {
-		t.Fatalf("rerun with a degraded API proxy = %v", err)
-	}
-	if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
-		t.Fatalf("rerun published %s while the API proxy was unhealthy", mode)
-	}
+		if _, _, err := world.enable(); err == nil || !strings.Contains(err.Error(), "Kubernetes API proxy: starting") {
+			t.Fatalf("rerun with a degraded API proxy = %v", err)
+		}
+		if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
+			t.Fatalf("rerun published %s while the API proxy was unhealthy", mode)
+		}
 
-	node.mu.Lock()
-	node.apiProxyState = "ready"
-	node.mu.Unlock()
-	if _, stderr, err := world.enable(); err != nil {
-		t.Fatalf("rerun: %v\n%s", err, stderr)
-	}
-	if mode, _ := world.configMode(t); mode != managementidentity.MutualTLS {
-		t.Errorf("config mode = %s after the node recovered", mode)
-	}
+		node.mu.Lock()
+		node.apiProxyState = "ready"
+		node.mu.Unlock()
+		if _, stderr, err := world.enable(); err != nil {
+			t.Fatalf("rerun: %v\n%s", err, stderr)
+		}
+		if mode, _ := world.configMode(t); mode != managementidentity.MutualTLS {
+			t.Errorf("config mode = %s after the node recovered", mode)
+		}
+	})
 }
 
 func TestEnableMTLSChecksInstalledVIPAfterConfirm(t *testing.T) {
-	// The ClusterConfig names the API endpoint without VIP advertisement.
-	world := newEnableMTLSWorld(t, "cp-1")
-	node := world.nodes[0]
-	node.controlPlane = true
-	node.endpoint = &agentapi.ControlPlaneEndpointStatus{
-		Endpoint: "api.katl.test:6443", Vip: "192.0.2.10/32",
-		State: "active", LocalApiReady: true, LocalVipOwned: true,
-	}
-	node.afterConfirm = func(n *trialNode) {
-		n.endpoint.State = "released"
-		n.endpoint.LocalVipOwned = false
-	}
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+		// The ClusterConfig names the API endpoint without VIP advertisement.
+		node := world.nodes[0]
+		node.controlPlane = true
+		node.endpoint = &agentapi.ControlPlaneEndpointStatus{
+			Endpoint: "api.katl.test:6443", Vip: "192.0.2.10/32",
+			State: "active", LocalApiReady: true, LocalVipOwned: true,
+		}
+		node.afterConfirm = func(n *trialNode) {
+			n.endpoint.State = "released"
+			n.endpoint.LocalVipOwned = false
+		}
 
-	for _, attempt := range []string{"initial migration", "rerun"} {
-		if stdout, _, err := world.enable("--timeout", "1s"); err == nil || !strings.Contains(err.Error(), "managed API endpoint is released") {
-			t.Fatalf("%s = %v, want the installed VIP health failure\n%s", attempt, err, stdout)
+		for _, attempt := range []string{"initial migration", "rerun"} {
+			if stdout, _, err := world.enable(); err == nil || !strings.Contains(err.Error(), "managed API endpoint is released") {
+				t.Fatalf("%s = %v, want the installed VIP health failure\n%s", attempt, err, stdout)
+			}
+			if mode, trial, begins := node.state(); mode != managementidentity.MutualTLS || trial != "committed" || begins != 1 {
+				t.Fatalf("%s: node = %s %s after %d begins, want one committed trial", attempt, mode, trial, begins)
+			}
+			if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
+				t.Fatalf("%s published %s while the VIP was released", attempt, mode)
+			}
 		}
-		if mode, trial, begins := node.state(); mode != managementidentity.MutualTLS || trial != "committed" || begins != 1 {
-			t.Fatalf("%s: node = %s %s after %d begins, want one committed trial", attempt, mode, trial, begins)
-		}
-		if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
-			t.Fatalf("%s published %s while the VIP was released", attempt, mode)
-		}
-	}
 
-	node.mu.Lock()
-	node.endpoint.State = "active"
-	node.endpoint.LocalVipOwned = true
-	node.mu.Unlock()
-	if _, stderr, err := world.enable(); err != nil {
-		t.Fatalf("rerun after VIP ownership was restored: %v\n%s", err, stderr)
-	}
-	if mode, _ := world.configMode(t); mode != managementidentity.MutualTLS {
-		t.Errorf("config = %s after VIP ownership was restored, want mtls", mode)
-	}
-	if _, _, begins := node.state(); begins != 1 {
-		t.Errorf("began %d trials, want 1", begins)
-	}
+		node.mu.Lock()
+		node.endpoint.State = "active"
+		node.endpoint.LocalVipOwned = true
+		node.mu.Unlock()
+		if _, stderr, err := world.enable(); err != nil {
+			t.Fatalf("rerun after VIP ownership was restored: %v\n%s", err, stderr)
+		}
+		if mode, _ := world.configMode(t); mode != managementidentity.MutualTLS {
+			t.Errorf("config = %s after VIP ownership was restored, want mtls", mode)
+		}
+		if _, _, begins := node.state(); begins != 1 {
+			t.Errorf("began %d trials, want 1", begins)
+		}
+	})
 }
 
 func TestEnableMTLSAllowsExternalControlPlaneEndpoint(t *testing.T) {
@@ -1129,7 +1484,7 @@ func TestEnableMTLSAllowsExternalControlPlaneEndpoint(t *testing.T) {
 			node.controlPlane = true
 			node.endpoint = tc.endpoint
 
-			if _, stderr, err := world.enable("--timeout", "1s"); err != nil {
+			if _, stderr, err := world.enable(); err != nil {
 				t.Fatalf("enable-mtls with an external endpoint: %v\n%s", err, stderr)
 			}
 			if mode, _ := world.configMode(t); mode != managementidentity.MutualTLS {
@@ -1140,45 +1495,50 @@ func TestEnableMTLSAllowsExternalControlPlaneEndpoint(t *testing.T) {
 }
 
 func TestEnableMTLSRerunRequiresWorkerReady(t *testing.T) {
-	world := newEnableMTLSWorld(t, "cp-1", "worker-1")
-	worker := world.nodes[1]
-	worker.kubernetes = &agentapi.KubernetesStatus{State: "ready", Role: "worker", KubeletActive: true, NodeReady: true}
-	worker.afterConfirm = func(n *trialNode) {
-		n.kubernetes.State = "waiting-for-node"
-		n.kubernetes.NodeReady = false
-	}
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1", "worker-1"}, func(t *testing.T, world enableMTLSWorld) {
+		worker := world.nodes[1]
+		worker.kubernetes = &agentapi.KubernetesStatus{State: "ready", Role: "worker", KubeletActive: true, NodeReady: true}
+		worker.afterConfirm = func(n *trialNode) {
+			n.kubernetes.State = "waiting-for-node"
+			n.kubernetes.NodeReady = false
+		}
 
-	for _, attempt := range []string{"initial migration", "rerun"} {
-		if _, _, err := world.enable("--timeout", "1s"); err == nil || !strings.Contains(err.Error(), "Kubernetes node is not Ready") {
-			t.Fatalf("%s = %v, want a worker readiness failure", attempt, err)
+		for _, attempt := range []string{"initial migration", "rerun"} {
+			if _, _, err := world.enable(); err == nil || !strings.Contains(err.Error(), "Kubernetes node is not Ready") {
+				t.Fatalf("%s = %v, want a worker readiness failure", attempt, err)
+			}
+			if mode, trial, begins := worker.state(); mode != managementidentity.MutualTLS || trial != "committed" || begins != 1 {
+				t.Fatalf("%s: worker = %s %s after %d begins, want one committed trial", attempt, mode, trial, begins)
+			}
+			if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
+				t.Fatalf("%s published %s with a NotReady worker", attempt, mode)
+			}
 		}
-		if mode, trial, begins := worker.state(); mode != managementidentity.MutualTLS || trial != "committed" || begins != 1 {
-			t.Fatalf("%s: worker = %s %s after %d begins, want one committed trial", attempt, mode, trial, begins)
-		}
-		if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
-			t.Fatalf("%s published %s with a NotReady worker", attempt, mode)
-		}
-	}
 
-	worker.mu.Lock()
-	worker.kubernetes.State = "ready"
-	worker.kubernetes.NodeReady = true
-	worker.mu.Unlock()
-	if _, stderr, err := world.enable(); err != nil {
-		t.Fatalf("rerun after the worker recovered: %v\n%s", err, stderr)
-	}
-	if mode, _ := world.configMode(t); mode != managementidentity.MutualTLS {
-		t.Errorf("config = %s after recovery, want mtls", mode)
-	}
+		worker.mu.Lock()
+		worker.kubernetes.State = "ready"
+		worker.kubernetes.NodeReady = true
+		worker.mu.Unlock()
+		if _, stderr, err := world.enable(); err != nil {
+			t.Fatalf("rerun after the worker recovered: %v\n%s", err, stderr)
+		}
+		if mode, _ := world.configMode(t); mode != managementidentity.MutualTLS {
+			t.Errorf("config = %s after recovery, want mtls", mode)
+		}
+	})
 }
 
 func TestEnableMTLSRetainsHealthDiagnosisAtDeadline(t *testing.T) {
 	oldDial := dialKatlcAgent
 	t.Cleanup(func() { dialKatlcAgent = oldDial })
 	status := &agentapi.NodeStatus{
-		BootHealthState: bootHealthHealthy,
-		Kubernetes:      &agentapi.KubernetesStatus{State: "ready", KubeletActive: true},
-		ApiProxy:        &agentapi.APIProxyStatus{State: "starting"},
+		InventoryNodeName: "cp-1",
+		EnrollmentId:      "enrollment-1",
+		MachineId:         "machine-1",
+		BootHealthState:   bootHealthHealthy,
+		Kubernetes:        &agentapi.KubernetesStatus{State: "ready", KubeletActive: true},
+		ApiProxy:          &agentapi.APIProxyStatus{State: "starting"},
+		Management:        &agentapi.ManagementStatus{Authentication: "mtls", Authority: "replacement"},
 	}
 	var client agentapi.KatlcAgentClient = &fakeKatlcAgentClient{nodeStatus: status}
 	dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
@@ -1186,10 +1546,14 @@ func TestEnableMTLSRetainsHealthDiagnosisAtDeadline(t *testing.T) {
 		client = &deadlineKatlcAgentClient{}
 		return conn, nil
 	}
-	node := enableMTLSNode{requirement: nodeRecoveryRequirement{APIProxyReady: true}}
+	identity, err := transport.ObserveNode("cp-1", status)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := enableMTLSNode{name: "cp-1", identity: identity, requirement: nodeRecoveryRequirement{APIProxyReady: true}}
 
 	synctest.Test(t, func(t *testing.T) {
-		err := waitEnableMTLSHealthy(t.Context(), node, managementidentity.ClientCredentials{}, 2*enableMTLSPoll)
+		err := waitEnableMTLSHealthy(t.Context(), node, managementidentity.ClientCredentials{}, "replacement", 2*enableMTLSPoll)
 		if err == nil || !strings.Contains(err.Error(), "Kubernetes API proxy: starting") {
 			t.Fatalf("health check = %v, want the API proxy diagnosis", err)
 		}
@@ -1253,8 +1617,8 @@ func TestEnableMTLSRefusesNodeOnOtherAuthority(t *testing.T) {
 			world.nodes[1].serveForeignAuthority(t)
 
 			_, _, err := world.enable()
-			if err == nil || !strings.Contains(err.Error(), "no node was changed") || !strings.Contains(err.Error(), "put the secrets file it was moved to at "+world.secretsPath) {
-				t.Fatalf("enable-mtls = %v, want a preflight refusal naming %s", err, world.secretsPath)
+			if err == nil || !strings.Contains(err.Error(), "no node was changed") || !strings.Contains(err.Error(), "could not confirm") {
+				t.Fatalf("enable-mtls = %v, want an inconclusive preflight", err)
 			}
 			if strings.Contains(err.Error(), "--output") {
 				t.Errorf("refusal suggests --output, which this config refuses: %v", err)

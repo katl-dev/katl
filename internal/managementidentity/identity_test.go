@@ -1,6 +1,7 @@
 package managementidentity
 
 import (
+	"crypto/tls"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -8,6 +9,35 @@ import (
 	"testing"
 	"time"
 )
+
+func TestRotationProbeValidityIsStable(t *testing.T) {
+	issued := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
+	bundle, err := Generate(GenerateOptions{ClusterName: "lab", Now: issued})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readProbe := func(now time.Time) tls.Certificate {
+		t.Helper()
+		probe, err := IssueRotationProbe(bundle.CertificateAuthority, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pair, err := tls.X509KeyPair([]byte(probe.Certificate), []byte(probe.PrivateKey))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pair
+	}
+
+	first := readProbe(issued.Add(time.Hour))
+	retry := readProbe(issued.Add(2 * time.Hour))
+	if !first.Leaf.NotBefore.Equal(retry.Leaf.NotBefore) {
+		t.Fatalf("probe validity moved from %s to %s", first.Leaf.NotBefore, retry.Leaf.NotBefore)
+	}
+	if first.Leaf.Equal(retry.Leaf) {
+		t.Fatal("retry reused the original probe certificate")
+	}
+}
 
 func TestEnsureNodeReusesStableLeafAndPinsItsName(t *testing.T) {
 	now := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)

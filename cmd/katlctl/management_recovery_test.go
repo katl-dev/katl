@@ -136,6 +136,49 @@ func newRecoveryWorld(t *testing.T) recoveryWorld {
 	return newRecoveryWorldOf(t, "cp-1")
 }
 
+func TestManagementIdentityRecoverLateCredentialCheck(t *testing.T) {
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1", "worker-1"}, func(t *testing.T, world enableMTLSWorld) {
+		if _, stderr, err := world.enable(); err != nil {
+			t.Fatalf("enable-mtls: %v\n%s", err, stderr)
+		}
+		output := filepath.Join(filepath.Dir(world.configPath), "next.yaml")
+		if err := os.Rename(world.secretsPath, output); err != nil {
+			t.Fatal(err)
+		}
+		// The node already uses the replacement authority, as on a rerun
+		// after SSH succeeded and before the config reference was written.
+		node := world.nodes[0]
+		inspect, rotate := runManagementAuthoritySSH, runManagementRotationSSH
+		t.Cleanup(func() { runManagementAuthoritySSH, runManagementRotationSSH = inspect, rotate })
+		runManagementAuthoritySSH = func(_ context.Context, target managementRotationNode, _ managementRotationOptions) (nodeidentity.ManagementAuthorityStatus, error) {
+			authority := node.authority
+			if target.name != node.name {
+				authority = "previous-authority"
+			}
+			return nodeidentity.ManagementAuthorityStatus{
+				NodeName: target.name, MachineID: "machine-" + target.name, Authority: authority,
+			}, nil
+		}
+		runManagementRotationSSH = func(_ context.Context, target managementRotationNode, _ managementRotationOptions, dryRun bool) (nodeidentity.ManagementRotationStatus, error) {
+			if !dryRun {
+				t.Errorf("recovery advanced to %s after an inconclusive result", target.name)
+			}
+			return nodeidentity.ManagementRotationStatus{}, nil
+		}
+		node.interceptRPC = delayManagementStatus
+
+		var stdout, stderr bytes.Buffer
+		err := run(t.Context(), []string{"management", "identity", "recover", "--config", world.configPath, "--output", output, "--timeout", "1s"}, &stdout, &stderr)
+		if _, reference := world.configMode(t); reference != defaultManagementSecrets {
+			t.Fatalf("recovery published %q after late credential verification", reference)
+		}
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "rerun the same command") ||
+			!strings.Contains(err.Error(), "could not confirm the node accepts the replacement authority; the node may still trust the previous authority") {
+			t.Fatalf("recovery = %v\n%s\nwant a deadline error with rerun guidance", err, &stderr)
+		}
+	})
+}
+
 // newRecoveryWorldOf installs the named nodes (cp-1 and optionally wk-1)
 // under one lost authority.
 func newRecoveryWorldOf(t *testing.T, names ...string) recoveryWorld {
@@ -230,8 +273,8 @@ func TestManagementIdentityRecoverReplacesLostAuthority(t *testing.T) {
 	// Recovery must not widen access: the lost authority and an anonymous
 	// client are both refused, and the node stays mTLS.
 	node := managementRotationNode{name: "cp-1", endpoint: w.node.endpoint}
-	if err := checkExposedManagementCredential(context.Background(), node, next.CertificateAuthority.Certificate, mustManagementClient(t, w.old), 2*time.Second); err == nil {
-		t.Fatal("lost authority still manages the node")
+	if err := verifyOldManagementAuthorityRejected(context.Background(), node, next.CertificateAuthority.Certificate, w.old.Operator, 2*time.Second); err != nil {
+		t.Fatalf("lost authority was not verifiably rejected: %v", err)
 	}
 	roots := x509.NewCertPool()
 	roots.AppendCertsFromPEM([]byte(next.CertificateAuthority.Certificate))

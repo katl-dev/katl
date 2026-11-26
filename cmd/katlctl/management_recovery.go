@@ -104,7 +104,8 @@ func runManagementIdentityRecover(ctx context.Context, opts managementRotationOp
 		fmt.Fprintf(stderr, "Reading the installed management authority on %s\n", node.name)
 		status, err := runManagementAuthoritySSH(ctx, *node, opts)
 		if err != nil {
-			return fmt.Errorf("inspect %s: %w; no node credentials were changed", node.name, err)
+			return fmt.Errorf("inspect %s: %w; no node credentials were changed; rerun the same command", node.name,
+				managementConfirmationError("the node's installed management authority", "the previous authority", err))
 		}
 		installed[node.name] = status
 	}
@@ -145,29 +146,31 @@ func runManagementIdentityRecover(ctx context.Context, opts managementRotationOp
 	for _, node := range pending {
 		fmt.Fprintf(stderr, "Preflight replacement identity on %s\n", node.name)
 		if _, err := runManagementRotationSSH(ctx, node, opts, true); err != nil {
-			return fmt.Errorf("preflight %s: %w; no node credentials were changed; keep %s to resume", node.name, err, outputPath)
+			return fmt.Errorf("preflight %s: %w; no node credentials were changed; keep %s and rerun the same command", node.name,
+				managementConfirmationError("the node is ready to install the replacement authority", "the previous authority", err), outputPath)
 		}
 	}
 	client, err := managementidentity.Client(next, time.Now().UTC())
 	if err != nil {
 		return err
 	}
-	for _, node := range pending {
-		fmt.Fprintf(stderr, "Installing replacement management authority on %s\n", node.name)
-		if _, err := runManagementRotationSSH(ctx, node, opts, false); err != nil {
-			return fmt.Errorf("recover %s: %w; keep %s and rerun the same command after recovery", node.name, err, outputPath)
+	for _, node := range withNext {
+		var err error
+		if installed[node.name].Authority == nextInfo.Fingerprint {
+			err = checkManagementCredential(ctx, node, client, min(opts.timeout, 5*time.Second))
+		} else {
+			fmt.Fprintf(stderr, "Installing replacement management authority on %s\n", node.name)
+			if _, err := runManagementRotationSSH(ctx, node, opts, false); err != nil {
+				return fmt.Errorf("recover %s: %w; keep %s and rerun the same command", node.name,
+					managementConfirmationError("the replacement was installed", "the previous authority", err), outputPath)
+			}
+			err = waitManagementCredential(ctx, node, client, opts.timeout)
 		}
-		if err := waitManagementCredential(ctx, node, client, opts.timeout); err != nil {
-			return fmt.Errorf("verify %s: %w; keep %s and rerun the same command", node.name, err, outputPath)
+		if err != nil {
+			return fmt.Errorf("%s: %w; keep %s and rerun the same command", node.name,
+				managementConfirmationError("the node accepts the replacement authority", "the previous authority", err), outputPath)
 		}
 		fmt.Fprintf(stderr, "Verified the new authority on %s\n", node.name)
-	}
-	// Every node, including those skipped as already recovered, must accept
-	// the new credentials before the cluster is reported recovered.
-	for _, node := range withNext {
-		if err := checkManagementCredential(ctx, node, client, min(opts.timeout, 5*time.Second)); err != nil {
-			return fmt.Errorf("node %s does not accept %s: %w; rerun the same command", node.name, outputPath, err)
-		}
 	}
 	if referenced != outputPath {
 		if err := referenceManagementSecrets(configPath, outputPath, sourceData); err != nil {

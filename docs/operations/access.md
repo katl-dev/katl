@@ -73,6 +73,11 @@ request timeout; a shorter `--timeout` also ends the wait early, with the same
 guidance. Commands that watch a node reboot or recover report a refused
 connection at once and poll for themselves.
 
+If verification reports `could not confirm the node answers with the
+configured management credentials`, check that the management address reaches
+the intended node, then rerun the `katlctl context save` command in the message.
+A failed handshake leaves the node's installed trust uncertain.
+
 Run `katlctl context save` again after a reinstall to record the new
 identities.
 
@@ -103,7 +108,11 @@ katlctl context rebind --node cp-1 --endpoint 192.0.2.51
 
 Rebind succeeds only when TLS authenticates the expected node name and the new
 address reports the same node name, enrollment ID, and machine ID that the
-context recorded.
+context recorded. If verification reports `could not confirm the node answers
+at the proposed address with the saved management credentials`, the context
+keeps the previous address. Check the address and node reachability, then rerun
+the `katlctl context rebind` command in the message. If verification timed out,
+you can increase `--timeout`.
 
 Remove a context with `katlctl context delete NAME`. Deleting it does not delete
 the referenced secrets, external cluster secrets, or nodes, and does not change
@@ -156,6 +165,18 @@ check to the stable endpoint from the operator workstation, so local ownership
 is not mistaken for end-to-end reachability. Use `--output json` for the
 complete bounded status.
 
+During `katlctl management enable-mtls`, an inconclusive confirmation reports
+`could not confirm mTLS confirmation; the node may still trust the replacement
+authority` and prints a status command for the affected node and config.
+
+```sh
+katlctl node status cp-1 --config ./cluster.yaml
+```
+
+The management field shows the mode the node reports when status can reach it.
+Keep the migration secrets and use the rerun command from the failure message
+to resume. See [Check and resume an interrupted migration](management-auth.md#check-and-resume-an-interrupted-migration).
+
 Read a unit's journal from the workstation:
 
 ```sh
@@ -187,6 +208,14 @@ Shutdown can prove that KatlOS management is offline; without an out-of-band
 power API, it cannot independently prove the machine's final hardware power
 state. Use `--no-wait` only when intentionally detaching, and `--output json`
 when a script needs structured output.
+
+A status probe that expires while waiting for shutdown leaves the management
+API's state unverified, so `katlctl` keeps checking until the shutdown wait
+ends. If that wait times out for `cp-1`, the command reports the following.
+
+```text
+shutdown was scheduled for cp-1. Could not verify that its management API is offline: context deadline exceeded. Check the node's console
+```
 
 ## Retrieve a kubeconfig
 

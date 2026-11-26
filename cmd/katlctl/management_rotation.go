@@ -23,7 +23,6 @@ import (
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/katl-dev/katl/internal/nodeidentity"
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc"
 	"gopkg.in/yaml.v3"
 )
 
@@ -45,6 +44,7 @@ type managementRotationNode struct {
 }
 
 var runManagementRotationSSH = sshManagementRotation
+var runManagementSSHCommand = (*exec.Cmd).Run
 
 func newManagementIdentityRotateCommand(stdout, stderr io.Writer) *cobra.Command {
 	opts := managementRotationOptions{sshPort: 22, timeout: 2 * time.Minute}
@@ -131,7 +131,8 @@ func runManagementIdentityRotate(ctx context.Context, opts managementRotationOpt
 		}
 		for _, node := range nodes {
 			if err := checkManagementCredential(ctx, node, client, opts.timeout); err != nil {
-				return fmt.Errorf("ClusterConfig already references %s, but node %s does not accept it: %w; restore the previous secrets reference and rerun rotation", outputPath, node.name, err)
+				return fmt.Errorf("%s at %s: %w; keep %s, check the endpoint and rerun the same command", node.name, node.endpoint,
+					managementConfirmationError("the node accepts the configured authority", "the previous authority", err), outputPath)
 			}
 		}
 		fmt.Fprintf(stdout, "Management identity for %s already uses %s on %d node(s)\n", source.Metadata.Name, oldInfo.Fingerprint, len(nodes))
@@ -152,27 +153,29 @@ func runManagementIdentityRotate(ctx context.Context, opts managementRotationOpt
 	if err != nil {
 		return err
 	}
+	oldProbe, err := managementidentity.IssueRotationProbe(old.CertificateAuthority, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("issue a verification credential from the old management authority: %w", err)
+	}
 	for _, node := range nodes {
 		fmt.Fprintf(stderr, "Preflight root SSH and management identity on %s\n", node.name)
 		if _, err := runManagementRotationSSH(ctx, node, opts, true); err != nil {
-			return fmt.Errorf("preflight %s: %w; no node credentials were changed; keep %s to resume", node.name, err, outputPath)
+			return fmt.Errorf("preflight %s: %w; no node credentials were changed; keep %s and rerun the same command", node.name,
+				managementConfirmationError("the node is ready to rotate its management identity", "the old authority", err), outputPath)
 		}
 	}
 	newClient, err := managementidentity.Client(next, time.Now().UTC())
 	if err != nil {
 		return err
 	}
-	oldClient, err := managementidentity.Client(old, time.Now().UTC())
-	if err != nil {
-		return err
-	}
 	for _, node := range nodes {
 		fmt.Fprintf(stderr, "Rotating management identity on %s\n", node.name)
 		if _, err := runManagementRotationSSH(ctx, node, opts, false); err != nil {
-			return fmt.Errorf("rotate %s: %w; keep %s and rerun the same command after recovery", node.name, err, outputPath)
+			return fmt.Errorf("rotate %s: %w; keep %s and rerun the same command", node.name,
+				managementConfirmationError("the replacement was installed", "the old authority", err), outputPath)
 		}
-		if err := verifyRotatedManagement(ctx, node, newClient, oldClient, opts.timeout); err != nil {
-			return fmt.Errorf("verify %s: %w; the replacement file at %s is needed to resume", node.name, err, outputPath)
+		if err := verifyRotatedManagement(ctx, node, newClient, oldProbe, opts.timeout); err != nil {
+			return fmt.Errorf("verify %s: %w; keep %s and rerun with the same --output", node.name, err, outputPath)
 		}
 		fmt.Fprintf(stderr, "Verified replacement authority and old-authority rejection on %s\n", node.name)
 	}
@@ -390,54 +393,61 @@ func runKatlcAgentSSH(ctx context.Context, node managementRotationNode, opts man
 	command.Stdin = bytes.NewReader(stdin)
 	var stdout, stderr bytes.Buffer
 	command.Stdout, command.Stderr = &stdout, &stderr
-	if err := command.Run(); err != nil {
+	err := runManagementSSHCommand(command)
+	if ctxErr := transport.ManagementContextError(requestCtx); ctxErr != nil {
+		return nil, fmt.Errorf("root SSH to %s: %w", node.name, ctxErr)
+	}
+	if err != nil {
 		return nil, fmt.Errorf("root SSH to %s: %w: %s; verify its host key and root SSH access", node.name, err, strings.TrimSpace(stderr.String()))
 	}
 	return stdout.Bytes(), nil
 }
 
-func verifyRotatedManagement(ctx context.Context, node managementRotationNode, next, old managementidentity.ClientCredentials, timeout time.Duration) error {
+func verifyRotatedManagement(ctx context.Context, node managementRotationNode, next managementidentity.ClientCredentials, oldProbe managementidentity.CertificateKey, timeout time.Duration) error {
 	if err := waitManagementCredential(ctx, node, next, timeout); err != nil {
-		return fmt.Errorf("replacement authority cannot manage the node: %w", err)
+		return managementConfirmationError("the node accepts the replacement authority", "the old authority", err)
 	}
-	// Trust the new server certificate while presenting the old client leaf.
-	// This proves the node rejects the exposed client credential itself.
-	if err := checkExposedManagementCredential(ctx, node, next.CACertificate, old, min(timeout, 5*time.Second)); err == nil {
-		return fmt.Errorf("exposed authority still has management access")
+	if err := verifyOldManagementAuthorityRejected(ctx, node, next.CACertificate, oldProbe, min(timeout, 5*time.Second)); err != nil {
+		return err
 	}
 	if err := checkManagementCredential(ctx, node, next, min(timeout, 5*time.Second)); err != nil {
-		return fmt.Errorf("replacement authority lost access during old-client rejection check: %w", err)
+		return managementConfirmationError("the node still accepts the replacement authority", "the old authority", err)
 	}
 	return nil
 }
 
-func checkExposedManagementCredential(ctx context.Context, node managementRotationNode, currentCA string, exposed managementidentity.ClientCredentials, timeout time.Duration) error {
-	certificate, err := tls.X509KeyPair([]byte(exposed.ClientCertificate), []byte(exposed.ClientPrivateKey))
+func verifyOldManagementAuthorityRejected(ctx context.Context, node managementRotationNode, currentCA string, oldProbe managementidentity.CertificateKey, timeout time.Duration) error {
+	certificate, err := tls.X509KeyPair([]byte(oldProbe.Certificate), []byte(oldProbe.PrivateKey))
 	if err != nil {
-		return fmt.Errorf("load exposed client credential: %w", err)
+		return fmt.Errorf("load the old authority's verification credential: %w", err)
 	}
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM([]byte(currentCA)) {
 		return fmt.Errorf("replacement management authority has no certificate")
 	}
-	config := &tls.Config{MinVersion: tls.VersionTLS13, RootCAs: roots, Certificates: []tls.Certificate{certificate}, ServerName: node.name}
+	config := &tls.Config{
+		MinVersion: tls.VersionTLS13, RootCAs: roots, ServerName: node.name,
+	}
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	// The credential is polled until it takes effect, so a refused connection is reported at once.
-	options := append(katlcAgentDialOptions(), transport.ManagementDialOptions(transport.WithoutManagementWait(requestCtx), node.name, node.endpoint, transport.NewClientCredentials(config))...)
-	conn, err := grpc.DialContext(requestCtx, node.endpoint, options...)
+	creds, unknownAuthority := transport.ObserveUnknownClientAuthority(requestCtx, config, certificate)
+	conn, err := dialKatlcAgentWithTransport(transport.WithoutManagementWait(requestCtx), node.name, node.endpoint, creds)
 	if err != nil {
-		return err
+		return managementConfirmationError("the node stopped trusting the old authority", "the old authority", err)
 	}
 	defer conn.Close()
-	status, err := agentapi.NewKatlcAgentClient(conn).GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
-	if err != nil {
-		return err
+	status, err := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
+	switch transport.ClassifyManagementEvidence(err, unknownAuthority) {
+	case transport.ManagementRefusedExplicitly:
+		return nil
+	case transport.ManagementConfirmed:
+		if err := checkManagementStatusIdentity(node, status); err != nil {
+			return err
+		}
+		return fmt.Errorf("old authority still has management access; check the agent's client CA trust")
+	default:
+		return managementConfirmationError("the node stopped trusting the old authority", "the old authority", err)
 	}
-	if status.GetInventoryNodeName() != node.name || (node.machineID != "" && status.GetMachineId() != node.machineID) {
-		return fmt.Errorf("management endpoint reported a different node or machine")
-	}
-	return nil
 }
 
 func waitManagementCredential(ctx context.Context, node managementRotationNode, credentials managementidentity.ClientCredentials, timeout time.Duration) error {
@@ -459,18 +469,29 @@ func waitManagementCredential(ctx context.Context, node managementRotationNode, 
 func checkManagementCredential(ctx context.Context, node managementRotationNode, credentials managementidentity.ClientCredentials, timeout time.Duration) error {
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	requestCtx = withManagementDial(requestCtx, node.name, &credentials)
+	requestCtx = transport.WithoutManagementAdvice(withManagementDial(requestCtx, node.name, &credentials))
 	conn, err := dialKatlcAgent(transport.WithoutManagementWait(requestCtx), node.endpoint)
 	if err != nil {
 		return err
 	}
 	defer conn.Close()
 	status, err := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{})
-	if err != nil {
+	if transport.ClassifyManagementEvidence(err, nil) != transport.ManagementConfirmed {
 		return err
 	}
+	return checkManagementStatusIdentity(node, status)
+}
+
+func checkManagementStatusIdentity(node managementRotationNode, status *agentapi.NodeStatus) error {
 	if status.GetInventoryNodeName() != node.name || (node.machineID != "" && status.GetMachineId() != node.machineID) {
 		return fmt.Errorf("management endpoint reported a different node or machine")
 	}
 	return nil
+}
+
+func managementConfirmationError(check, possibleTrust string, err error) error {
+	if err == nil {
+		return fmt.Errorf("could not confirm %s; the node may still trust %s", check, possibleTrust)
+	}
+	return fmt.Errorf("could not confirm %s; the node may still trust %s: %w", check, possibleTrust, err)
 }
