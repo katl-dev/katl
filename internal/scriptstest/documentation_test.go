@@ -17,12 +17,21 @@ var (
 	markdownAnchorPunctuation = regexp.MustCompile(`[^\pL\pN _-]+`)
 )
 
-func TestPublicDocumentationLocalLinks(t *testing.T) {
+func TestDocumentationLocalLinks(t *testing.T) {
 	repo := repoRoot(t)
-	public := publicMarkdownFiles(t, repo)
-	public[filepath.Join(repo, "README.md")] = true
+	pages := publicMarkdownFiles(t, repo)
+	for _, path := range []string{
+		"README.md",
+		"AGENTS.md",
+		"dev/README.md",
+		"dev/agents/README.md",
+		"cmd/katl-queue/README.md",
+		"cmd/katl-release/README.md",
+	} {
+		pages[filepath.Join(repo, path)] = true
+	}
 
-	for path := range public {
+	for path := range pages {
 		content, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatalf("read %s: %v", path, err)

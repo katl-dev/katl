@@ -64,6 +64,8 @@ See the [agent workflow](dev/agents/) for assignments and hand-offs.
 
 ## Task and Delivery Workflow
 
+See the [development tool index](dev/README.md) for tool usage and setup.
+
 - Record scope and acceptance criteria in the GitHub issue. Use labels for status, milestones for release scope and deferrals, sub-issues for follow-up work, and blocked-by links for dependencies.
 - Review `git status --short` before editing, staging, and committing. Preserve unrelated user changes and stage only explicit task paths.
 - Finish the scoped change and run the applicable formatting, unit, generated-asset, systemd, and VM gates. Complete or request focused review when risk warrants it. Recheck status, stage only scoped files, and commit with `git commit-wrapped`.

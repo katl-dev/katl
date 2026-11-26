@@ -714,40 +714,8 @@ as `AGENTS.md` requires. Kubernetes producer validation shares the VM image
 build and two-node lane. Direct pushes are not part of the supported development
 loop.
 
-The merge queue marks an entry `UNMERGEABLE` when it conflicts with one ahead
-of it, but evicts it only when it reaches that entry, so a doomed PR can wait in
-the queue and hold up the PRs behind it. `katl-queue`, which the development
-shell provides (or `scripts/katl-queue` outside it), checks for this before a
-PR joins and follows the queue afterwards. It needs an authenticated `gh`:
-
-```sh
-katl-queue status            # queued entries in order, and PRs waiting to join
-katl-queue check 123         # merge 123 over origin/main and the queue ahead of it
-katl-queue enqueue 123       # check, then enable auto-merge; refuses on conflict
-katl-queue watch 123         # one line per state change until 123 merges or leaves
-katl-queue why 123           # removal reason, failing jobs and their first errors
-katl-queue plan [--milestone M]   # order ready PRs for the queue; report held ones and their blockers
-katl-queue plan --milestone M --apply   # make an autopilot pass: the plan, rebases and explanations
-katl-queue plan --next       # open, unassigned issues whose blockers are all closed
-katl-queue autopilot         # report what a pass would rebase, enqueue, dequeue or explain
-katl-queue prune-runs        # report CI runs of merge groups the queue no longer holds; --apply cancels them
-katl-queue ci-cost           # rank jobs in completed CI runs by runner-minutes
-```
-
-`ci-cost` reports jobs from completed `ci.yml` runs created in the past seven
-days. Use `--since YYYY-MM-DD` to start at midnight UTC on a specific date,
-`--workflow NAME` to select a workflow by filename, display name, or ID, and
-`--limit N` to show the top N rows in each ranking. The report counts each
-timed job attempt once, including retries, and omits skipped jobs. It ranks
-full job names and job prefixes, so you can see both individual matrix jobs
-and their combined cost. Use `--json` for machine-readable output.
-
-`check` merges with `git merge-tree` in a throwaway object directory, so it
-does not change any branch, ref or working tree; it exits 1 and names the
-conflicting PR and paths when the merge conflicts. `watch` with no arguments
-follows everything queued or waiting with auto-merge, polls every minute
-(`-interval` changes this), keeps going through transient `gh` failures, and
-exits 1 when a watched PR leaves the queue without merging.
+Use [katl-queue](../cmd/katl-queue/README.md) to check for conflicts before
+queueing a PR, track progress, and diagnose removals.
 
 ### Set up release coordination with Home Manager
 
@@ -790,97 +758,8 @@ The coordinator resumes work from its local checkpoint. See the
 [agent workflow](../dev/agents/) for checkpoint details, role definitions,
 and hand-offs.
 
-### Track background queue waits
-
-`programs.katl-dev.watcher.enable` installs the watcher and its socket.
-Authenticate with `gh auth login` so it can poll `katl-dev/katl` for
-registered waits. After enabling auto-merge on a PR, start a wait and use
-its exit status to decide what to do next.
-
-```sh
-katl-queue wait 123 --timeout 2h
-```
-
-| Exit status | Meaning |
-| --- | --- |
-| 0 | The PR merged. |
-| 1 | The PR needs action. The message includes the PR URL and the condition that triggered the result. |
-| 2 | The invocation has no verdict. Read the error for the cause. |
-
-A PR needs action if it closes unmerged or leaves the queue after this wait
-has seen it queued. For a queue departure, run `katl-queue why 123` to see
-the removal history. The packaged command uses `katl-dev/katl` from any
-directory. Before admission, a failed head check, a merge conflict,
-or a review requesting changes also needs action. If the PR is still open
-and outside the queue, the daemon gives auto-merge two poll intervals from
-registration before it reports that auto-merge is off.
-If GitHub reports zero check runs and zero commit statuses for the head after
-10 minutes, the wait exits with status 1. The grace period starts when you
-start the wait and restarts when the daemon observes a different head. Close
-and reopen the PR or push to retrigger CI, then start a fresh wait.
-
-Once the daemon saves the registration, `wait` prints a command such as
-`katl-queue wait --resume WATCH_ID` to stderr. Use that command after
-stopping the client or reaching its timeout. Resuming reattaches to that
-attempt. If the attempt already has a verdict, the command shows when and
-for which head it was recorded, without re-evaluating it. After every push,
-start a fresh `katl-queue wait PR`. Pending waits survive daemon restarts,
-and saved outcomes remain available for seven days. Use
-`katl-queue watches` to list them. If GitHub access fails, repair the
-credentials or permissions and resume once the daemon observes recovery.
-
-Set `programs.katl-dev.watcher.interval` to change the default `"60s"`
-poll interval. Specify a positive whole number followed by `ms`, `s`,
-`m`, or `h`. Set `programs.katl-dev.watcher.notify = true` for desktop
-notifications on merge or when a PR needs action. View daemon events with
-`journalctl --user -u katl-queue-watch.service`.
-
-### Plan and maintain the queue
-
-`plan` simulates every ready, non-draft PR over `main` plus the queue and the
-PRs it has already chosen. It orders by `release-blocker`, `dev-experience`,
-everything else, and age. A PR that declares a dependency (GitHub's blocked-by
-on the PR and on the issue it closes, and `Depends on #N` lines in the PR body)
-is held until the dependency has merged, so dependents join the queue in a
-later pass; a blocker in another repository cannot be checked and holds the PR
-too. A conflicting PR is held behind the PR it conflicts with. Like GitHub, it
-gates on required checks only: a PR whose required checks failed, that the
-queue removed for failed checks, or that someone dequeued by hand is held
-rather than re-enqueued until its head changes. katl-queue runs as your own
-login, so GitHub records its dequeues and yours alike as manual removals; it
-posts a hidden marker naming the head before it dequeues an unmergeable entry,
-and treats every other manual removal as yours. It records the head it first
-saw with each such removal in a comment, so any new head, including its own
-rebase, settles the removal. A failing optional check is reported once per head
-and holds the PR only when another PR declares a dependency on it.
-
-When the queue rebuilds a group (a PR leaves, or one is added ahead), GitHub
-deletes the old group's `gh-readonly-queue` ref but leaves its `ci.yml` run going,
-and that run would hold or wait for a runner. `.github/workflows/prune-merge-runs.yml`
-runs `katl-queue prune-runs --apply` on each deleted group
-branch and every ten minutes, and cancels unfinished merge-group runs whose
-ref no longer exists or points at a different commit, and cancels nothing when
-the ref listing is empty but the merge queue is not.
-
-A `Hold: <reason>` line in a PR body, outside a code fence, holds the PR with
-that reason before any other check, and autopilot disables its auto-merge. A PR
-carries `Hold:` only for an explicit dependency on another open PR or an
-operator precondition, and the line is deleted when that clears. The merge
-queue's VM run is the regression gate, so pending VM gates or journeys never
-hold a PR. Editing the body does not trigger `ci.yml`, which runs on
-opened, synchronize, reopened and labeled, so the hold lifts on the next pass.
-
-`autopilot` rebases only a PR that the plan would otherwise enqueue and that
-conflicts with `main`, pushing a clean result with `--force-with-lease` over
-HTTPS through `gh auth git-credential`. It labels a conflicting rebase
-`needs-rebase` with a comment naming the files, disables auto-merge on PRs held
-for required checks, an ejection, a dequeue or a `Hold:` (never for an optional
-failure or a rebase), dequeues entries the queue marks `UNMERGEABLE`, and posts
-the `why` excerpt on a PR the queue removed for failed or timed-out checks. It
-never retries checks and never touches `release/*` branches or PRs targeting
-them. `plan` and `autopilot` only report; `--apply` makes the changes (both
-need `--milestone`; `plan --apply` is one autopilot pass), and
-`autopilot --once` runs a single pass instead of polling.
+For watcher settings and background waits, see the
+[katl-queue reference](../cmd/katl-queue/README.md#watchd).
 
 Fast checks skip mkosi builds, libvirt/KVM setup, VM scenarios, and publishing.
 Run focused VM gates locally with `scripts/vmtest-run` on a capable host and
@@ -907,8 +786,8 @@ distinction between product contracts and build evidence.
 
 Follow [Release KatlOS](development/releases.md) to prepare a version, download
 and verify a candidate, and monitor automated qualification and publication.
-Start with `scripts/katl-release prepare VERSION`; it performs read-only checks
-and prints the commands for starting the tag build.
+See the [katl-release reference](../cmd/katl-release/README.md) for the
+commands used in that procedure.
 
 `.github/workflows/release-artifacts.yml` builds Katl artifacts for pushed `v*`
 KatlOS tags. It can also be dispatched manually with an explicit version for
@@ -974,8 +853,7 @@ published through this workflow. Kubernetes bundles have a separate producer
 contract. Tag publications create keyless SLSA build-provenance attestations
 for every release asset using the `katl-dev/katl` workflow identity. The
 workflow verifies each attestation against its exact signer workflow, tag ref,
-and source commit before publishing, using the same `scripts/katl-release`
-verification as release download. `SHA256SUMS` covers the staged asset set and
+and source commit before publishing. `SHA256SUMS` covers the staged asset set and
 `PROVENANCE.md` documents user verification and the remaining trust boundary.
 The staged `RELEASE_NOTES.md` is generated from commits since the previous
 canonical KatlOS CalVer tag. It links each commit, includes the full comparison,
