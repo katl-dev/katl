@@ -521,12 +521,13 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 
 	originalDefaultEntry := selection.DefaultBootEntry
 	nextDefault := boot.Fallback
-	if nextDefault.generationID == "" {
-		nextDefault, err = recoveryDefault(root, selection, spec, status)
-		if err != nil {
-			return BootHealthResult{}, err
-		}
+	targetErr := boot.FallbackErr
+	if nextDefault.generationID == "" && targetErr == nil {
+		nextDefault, targetErr = recoveryDefault(root, selection, spec, status)
 	}
+	alreadyFailed := status.BootState == BootStateFailed && status.HealthState == HealthStateUnhealthy
+	couldHaveRetargeted := selection.DefaultGenerationID != generationID ||
+		(selection.PreviousKnownGoodGenerationID != "" && selection.PreviousKnownGoodGenerationID != generationID)
 	selection.OneShot = false
 	selection.BootedOneShot = false
 	selection.FailedBootGenerationID = generationID
@@ -541,19 +542,26 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 	selection.PreviousKnownGoodGenerationID = boot.Fallback.generationID
 	selection.PreviousKnownGoodBootEntry = boot.Fallback.bootEntry
 	selection.RecoveryRequired = boot.Fallback.generationID == ""
-	selection.DefaultGenerationID = nextDefault.generationID
-	selection.DefaultBootEntry = nextDefault.bootEntry
+	// Without a validated next target, retain the recorded default for diagnosis
+	// and persist the health failure without changing firmware.
+	if nextDefault.generationID != "" {
+		selection.DefaultGenerationID = nextDefault.generationID
+		selection.DefaultBootEntry = nextDefault.bootEntry
+	}
 	selection.UpdatedAt = now.UTC()
 	// Validate the recovery record before changing the running generation.
 	if err := ValidateBootSelection(selection); err != nil {
 		return BootHealthResult{}, err
 	}
-	updateDefault := selection.DefaultBootEntry != originalDefaultEntry
+	// A previous attempt can have changed EFI before selection.json persisted.
+	// Replay the validated default on retry even if it matches the saved entry.
+	updateDefault := nextDefault.generationID != "" &&
+		(selection.DefaultBootEntry != originalDefaultEntry || (alreadyFailed && couldHaveRetargeted))
 	if updateDefault && request.SetBootDefault == nil {
 		return BootHealthResult{}, fmt.Errorf("boot default updater required for recovery")
 	}
 
-	if status.BootState != BootStateFailed || status.HealthState != HealthStateUnhealthy {
+	if !alreadyFailed {
 		status.BootState = BootStateFailed
 		status.HealthState = HealthStateUnhealthy
 		status.UpdatedAt = now.UTC()
@@ -595,7 +603,7 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 		RecoveryRequired:  selection.RecoveryRequired,
 		DefaultGeneration: selection.DefaultGenerationID,
 		BootDefaultEntry:  selection.DefaultBootEntry,
-	}, nil
+	}, targetErr
 }
 
 func inferBootedSelection(selection BootSelectionRecord, spec GenerationSpec, generationID string, commandLine string) BootSelectionRecord {

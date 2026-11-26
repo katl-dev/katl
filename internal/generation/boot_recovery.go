@@ -189,8 +189,11 @@ func HasBootFallback(root string, generationID string) (bool, error) {
 			return err
 		}
 		boot, err := readRunningBoot(root, generationID, selection, status)
+		if err != nil {
+			return err
+		}
 		found = boot.Fallback.generationID != ""
-		return err
+		return boot.FallbackErr
 	})
 	return found, err
 }
@@ -251,6 +254,7 @@ type runningBoot struct {
 	Armed        bool
 	KnownGood    bool
 	Fallback     rollbackTarget
+	FallbackErr  error
 }
 
 func (boot runningBoot) failureDemotes() bool {
@@ -282,9 +286,7 @@ func readRunningBoot(root, generationID string, selection BootSelectionRecord, s
 		return boot, nil
 	}
 	valid, err := validBootRecoveryTarget(root, fallback)
-	if err != nil {
-		return runningBoot{}, err
-	}
+	boot.FallbackErr = err
 	if valid {
 		boot.Fallback = fallback
 		boot.Armed = authorized

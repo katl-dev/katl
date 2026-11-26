@@ -846,6 +846,75 @@ func TestRecordBootHealthFailureWithoutPreviousRequiresRecovery(t *testing.T) {
 	}
 }
 
+func TestRecordBootHealthRestoresEFIDefaultOnRetry(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 6, 15, 13, 0, 0, 0, time.UTC)
+	writeBootHealthGeneration(t, root, "gen0", "", CommitStateCommitted, BootStateGood, HealthStateHealthy, now.Add(-2*time.Hour))
+	writeBootHealthGeneration(t, root, "gen1", "gen0", CommitStateCommitted, BootStateTrying, HealthStateUnknown, now.Add(-time.Hour))
+	const defaultEntry = "loader/entries/katl-gen0.conf"
+	const trialEntry = "loader/entries/katl-gen1.conf"
+	writeBootHealthSelection(t, root, BootSelectionRecord{
+		APIVersion: APIVersion, Kind: BootSelectionKind, UpdatedAt: now.Add(-time.Minute),
+		DefaultGenerationID: "gen0", DefaultBootEntry: defaultEntry,
+		PreviousKnownGoodGenerationID: "gen0", PreviousKnownGoodBootEntry: defaultEntry,
+		TrialGenerationID: "gen1", TrialBootEntry: trialEntry,
+		BootedGenerationID: "gen1", BootedBootEntry: trialEntry,
+		PendingHealthValidation: true, PersistentDefaultPromotion: DefaultPromotionPending,
+	})
+	if armed, err := ArmBootRecovery(root, "gen1"); err != nil || !armed {
+		t.Fatalf("ArmBootRecovery() = %t, %v, want armed", armed, err)
+	}
+	fallback, _, err := ReadGeneration(root, "gen0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	uki := rootedPathUnchecked(root, fallback.Boot.UKIPath)
+	if err := os.Rename(uki, uki+".saved"); err != nil {
+		t.Fatal(err)
+	}
+	selectionPath, err := BootSelectionPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firmwareDefault := defaultEntry
+	request := BootHealthRequest{
+		Root: root, CommandLine: bootHealthCommandLine("gen1"), Result: BootHealthFailure, Now: now, RequestReboot: true,
+		SetBootDefault: func(_, entry string) error {
+			firmwareDefault = entry
+			// Prevent selection.json from being published after EFI changes.
+			if err := os.Rename(selectionPath, selectionPath+".saved"); err != nil {
+				t.Fatal(err)
+			}
+			return os.Mkdir(selectionPath, 0o755)
+		},
+	}
+	if _, err := RecordBootHealth(request); err == nil || !strings.Contains(err.Error(), "write boot selection") || firmwareDefault != trialEntry {
+		t.Fatalf("failed recovery = %v with EFI default %q, want selection write error after selecting trial", err, firmwareDefault)
+	}
+	if err := os.Remove(selectionPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(selectionPath+".saved", selectionPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(uki+".saved", uki); err != nil {
+		t.Fatal(err)
+	}
+	request.SetBootDefault = func(_, entry string) error { firmwareDefault = entry; return nil }
+
+	result, err := RecordBootHealth(request)
+	if err != nil || !result.RebootRequested {
+		t.Fatalf("recovery retry = %#v, %v, want reboot to restored fallback", result, err)
+	}
+	selection, err := ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.NextBootGenerationID() != "gen0" || firmwareDefault != defaultEntry {
+		t.Fatalf("recovery retry recorded %q with EFI default %q, want both to select gen0", selection.NextBootGenerationID(), firmwareDefault)
+	}
+}
+
 func TestRecordBootHealthRejectsCorruptSelection(t *testing.T) {
 	root := t.TempDir()
 	writeBootHealthGeneration(t, root, "gen0", "", CommitStateCommitted, BootStatePending, HealthStateUnknown, time.Date(2026, 6, 15, 14, 0, 0, 0, time.UTC))

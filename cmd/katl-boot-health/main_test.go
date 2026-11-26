@@ -705,8 +705,44 @@ func TestRunBoundsNetworkWaitWhenFallbackCannotBeRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if status.BootState != generation.BootStatePending || persisted != selection {
-		t.Fatalf("indeterminate fallback changed durable state: boot state %s, selection %#v", status.BootState, persisted)
+	if status.BootState != generation.BootStateFailed || status.HealthState != generation.HealthStateUnhealthy ||
+		!persisted.RecoveryRequired || persisted.FailedBootGenerationID != "gen1" || persisted.DefaultGenerationID != "gen0" {
+		t.Fatalf("indeterminate fallback left status %s/%s and selection %#v, want failure recorded with default unchanged", status.BootState, status.HealthState, persisted)
+	}
+}
+
+func TestRunRecordsFailureWhenFirstBootArtifactIsMissing(t *testing.T) {
+	root := t.TempDir()
+	cmdline := writeFirstInstall(t, root, time.Date(2026, 6, 15, 20, 0, 0, 0, time.UTC))
+	if err := os.Remove(filepath.Join(root, "efi/EFI/Linux/katl-gen0.efi")); err != nil {
+		t.Fatal(err)
+	}
+	oldDefault := bootDefaultCommand
+	t.Cleanup(func() { bootDefaultCommand = oldDefault })
+	bootDefaultCommand = func(_, entry string) error {
+		t.Fatalf("unexpected EFI default write to %s", entry)
+		return nil
+	}
+
+	err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result=failure", "--request-reboot", "--reason=" + generation.ManagementNetworkFailure}, io.Discard)
+	if err == nil {
+		t.Fatal("recovery succeeded without a bootable generation")
+	}
+	_, status, err := generation.ReadGeneration(root, "gen0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection, err := generation.ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.BootState != generation.BootStateFailed || status.HealthState != generation.HealthStateUnhealthy ||
+		!selection.RecoveryRequired || selection.PendingHealthValidation || selection.FailedBootGenerationID != "gen0" ||
+		selection.DefaultGenerationID != "gen0" {
+		t.Fatalf("missing first-boot artifact left status %s/%s and selection %#v, want failed gen0 requiring recovery", status.BootState, status.HealthState, selection)
+	}
+	if guidance := generation.RecoveryGuidance(root, selection); !strings.Contains(guidance, "Use the node console to restore a bootable generation") {
+		t.Fatalf("recovery guidance = %q, want console recovery", guidance)
 	}
 }
 
