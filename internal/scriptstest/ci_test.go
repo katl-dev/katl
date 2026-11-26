@@ -375,67 +375,124 @@ esac
 }
 
 func TestDriverStatusPublication(t *testing.T) {
-	workflow, _ := readWorkflow(t, "ci.yml")
-	publisher := workflow.Jobs["record-drivers"]
-	for name, job := range workflow.Jobs {
-		var permissions map[string]string
-		if err := job.Permissions.Decode(&permissions); err != nil {
-			t.Fatal(err)
+	caller, _ := readWorkflow(t, "ci.yml")
+	workflow, _ := readWorkflow(t, "kernel-qualification.yml")
+	for _, scope := range []struct {
+		workflow workflowFile
+		writers  []string
+	}{
+		{caller, []string{"drivers"}},
+		{workflow, []string{"record-driver-start", "record-driver-result"}},
+	} {
+		for name, job := range scope.workflow.Jobs {
+			var permissions map[string]string
+			if err := job.Permissions.Decode(&permissions); err != nil {
+				t.Fatal(err)
+			}
+			if (permissions["statuses"] == "write") != slices.Contains(scope.writers, name) {
+				t.Errorf("%s job has statuses permission %q", name, permissions["statuses"])
+			}
 		}
-		if (permissions["statuses"] == "write") != (name == "record-drivers") {
-			t.Errorf("%s job has statuses permission %q", name, permissions["statuses"])
+	}
+	requireNeeds(t, workflow, [][2]string{
+		{"drivers", "record-driver-start"},
+		{"record-driver-result", "record-driver-start"},
+		{"record-driver-result", "drivers"},
+	})
+
+	start := workflow.Jobs["record-driver-start"]
+	result := workflow.Jobs["record-driver-result"]
+	if !strings.Contains(result.If, "always()") {
+		t.Error("terminal publication must run when driver qualification fails")
+	}
+	condition := func(job workflowJob, context map[string]string) bool {
+		t.Helper()
+		expr := strings.NewReplacer("always()", "'true' == 'true'", "!cancelled()", "cancelled != 'true'",
+			"needs.record-driver-start.result", "start.result").Replace(job.If)
+		return expandExpressions(t, "${{ "+strings.Join(strings.Fields(expr), " ")+" }}", context) == "true"
+	}
+	for _, tc := range []struct {
+		event, ref string
+		publishes  bool
+	}{
+		{"push", "refs/heads/main", true},
+		{"schedule", "refs/heads/main", true},
+		{"workflow_dispatch", "refs/heads/main", true},
+		{"workflow_dispatch", "refs/heads/topic", false},
+		{"push", "refs/heads/release/2026", false},
+		{"pull_request", "refs/pull/1/merge", false},
+		{"merge_group", "refs/heads/gh-readonly-queue/main/pr-1", false},
+	} {
+		if got := condition(start, map[string]string{"github.event_name": tc.event, "github.ref": tc.ref}); got != tc.publishes {
+			t.Errorf("pending publication on %s %s = %v, want %v", tc.event, tc.ref, got, tc.publishes)
+		}
+	}
+	for _, tc := range []struct {
+		start, drivers string
+		runs, finishes bool
+	}{
+		{"success", "success", true, true},
+		{"success", "failure", true, true},
+		{"success", "cancelled", true, true},
+		{"skipped", "success", true, false},
+		{"failure", "skipped", false, false},
+	} {
+		context := map[string]string{"start.result": tc.start, "needs.drivers.result": tc.drivers}
+		if runs := condition(workflow.Jobs["drivers"], context); runs != tc.runs {
+			t.Errorf("drivers after pending job %s runs = %v, want %v", tc.start, runs, tc.runs)
+		}
+		if finishes := condition(result, context); finishes != tc.finishes {
+			t.Errorf("publication after pending job %s and drivers %s = %v, want %v", tc.start, tc.drivers, finishes, tc.finishes)
 		}
 	}
 
 	for _, tc := range []struct {
-		event, ref, drivers string
-		publishes           bool
+		flavour, drivers string
+		publisher        workflowJob
+		want             string
 	}{
-		{"push", "refs/heads/main", "success", true},
-		{"schedule", "refs/heads/main", "success", true},
-		{"workflow_dispatch", "refs/heads/main", "success", true},
-		{"workflow_dispatch", "refs/heads/topic", "success", false},
-		{"push", "refs/heads/release/2026", "success", false},
-		{"pull_request", "refs/pull/1/merge", "success", false},
-		{"merge_group", "refs/heads/gh-readonly-queue/main/pr-1", "success", false},
-		{"push", "refs/heads/main", "failure", false},
-		{"push", "refs/heads/main", "skipped", false},
+		{"lts", "", start, "pending"},
+		{"lts", "success", result, "success"},
+		{"standard", "failure", result, "failure"},
+		{"standard", "cancelled", result, "failure"},
 	} {
-		condition := strings.Join(strings.Fields(publisher.If), " ")
-		got := expandExpressions(t, "${{ "+condition+" }}", map[string]string{
-			"github.event_name": tc.event, "github.ref": tc.ref, "needs.drivers.result": tc.drivers,
+		t.Run(tc.flavour+"/"+tc.want+"/"+tc.drivers, func(t *testing.T) {
+			if len(tc.publisher.Steps) != 1 {
+				t.Fatal("missing status publication step")
+			}
+			dir := t.TempDir()
+			request := filepath.Join(dir, "request")
+			writeFakeExecutable(t, dir, "gh", `printf '%s\n' "$@" >> "$STATUS_REQUEST"`)
+			digest := "v2:" + strings.Repeat("a", 64)
+			sha := strings.Repeat("1", 40)
+			state := expandExpressions(t, tc.publisher.Env["STATE"], map[string]string{"needs.drivers.result": tc.drivers})
+			command := exec.Command("bash", "-euo", "pipefail", "-c", tc.publisher.Steps[0].Run)
+			command.Env = append(os.Environ(),
+				"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "STATUS_REQUEST="+request,
+				"FLAVOUR="+tc.flavour, "DIGEST="+digest, "STATE="+state, "GITHUB_SHA="+sha,
+				"GITHUB_REPOSITORY=katl-dev/katl", "GITHUB_SERVER_URL=https://github.com", "GITHUB_RUN_ID=42", "GITHUB_RUN_ATTEMPT=2",
+			)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("publish status: %v: %s", err, output)
+			}
+			data, err := os.ReadFile(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(string(data), "api\n") != 1 {
+				t.Errorf("wanted one status, got %s", data)
+			}
+			for _, arg := range []string{
+				"repos/katl-dev/katl/statuses/" + sha,
+				"context=katl/driver-qualification/" + tc.flavour + "/" + digest,
+				"state=" + tc.want, "description=" + digest,
+				"target_url=https://github.com/katl-dev/katl/actions/runs/42/attempts/2",
+			} {
+				if !slices.Contains(strings.Split(string(data), "\n"), arg) {
+					t.Errorf("request = %s, want %q", data, arg)
+				}
+			}
 		})
-		if (got == "true") != tc.publishes {
-			t.Errorf("publication on %s %s with drivers %s = %s, want %v", tc.event, tc.ref, tc.drivers, got, tc.publishes)
-		}
-	}
-	if len(publisher.Steps) != 1 {
-		t.Fatal("missing status publication step")
-	}
-
-	dir := t.TempDir()
-	request := filepath.Join(dir, "request")
-	writeFakeExecutable(t, dir, "gh", `printf '%s\n' "$@" >> "$STATUS_REQUEST"`)
-	standard, lts := "v1:"+strings.Repeat("a", 64), "v1:"+strings.Repeat("b", 64)
-	digestJSON := fmt.Sprintf(`{"standard":%q,"lts":%q}`, standard, lts)
-	sha := strings.Repeat("1", 40)
-	command := exec.Command("bash", "-euo", "pipefail", "-c", publisher.Steps[0].Run)
-	command.Env = append(os.Environ(),
-		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "STATUS_REQUEST="+request,
-		`FLAVOURS=["lts"]`, "DIGESTS="+digestJSON, "GITHUB_SHA="+sha,
-		"GITHUB_REPOSITORY=katl-dev/katl", "GITHUB_SERVER_URL=https://github.com", "GITHUB_RUN_ID=1",
-	)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("publish status: %v: %s", err, output)
-	}
-	data, err := os.ReadFile(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Count(string(data), "api\n") != 1 || !strings.Contains(string(data), "repos/katl-dev/katl/statuses/"+sha+"\n") ||
-		!strings.Contains(string(data), "context=katl/driver-qualification/lts\n") ||
-		!strings.Contains(string(data), "state=success\n") || !strings.Contains(string(data), "description="+lts+"\n") {
-		t.Fatalf("expected one LTS success status on the event SHA, got %s", data)
 	}
 }
 
@@ -479,8 +536,7 @@ func TestCIGatesPlannedJobs(t *testing.T) {
 			t.Errorf("%s condition = %q, want %q", name, got, want)
 		}
 	}
-	// The result job gates on validation. Status publication depends on its
-	// driver result and records evidence for later runs.
+	// The result job gates on every top-level validation job.
 	needsOf := func(job string) []string {
 		t.Helper()
 		var list []string
@@ -499,16 +555,13 @@ func TestCIGatesPlannedJobs(t *testing.T) {
 	}
 	var gating []string
 	for name := range workflow.Jobs {
-		if name != "result" && name != "record-drivers" {
+		if name != "result" {
 			gating = append(gating, name)
 		}
 	}
 	slices.Sort(gating)
 	if got := needsOf("result"); !slices.Equal(got, gating) {
 		t.Errorf("result needs %v, want every validation job %v", got, gating)
-	}
-	if got := needsOf("record-drivers"); !slices.Equal(got, []string{"drivers", "plan"}) {
-		t.Errorf("record-drivers needs %v, want drivers and plan", got)
 	}
 	for _, name := range []string{"vms", "drivers", "production"} {
 		if got := needsOf(name); !slices.Equal(got, []string{"plan"}) {

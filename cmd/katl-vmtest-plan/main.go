@@ -163,9 +163,15 @@ func planCI(paths []string, regression bool) ciPlan {
 		if len(selectGroups([]string{name})) == 0 {
 			continue
 		}
-		if flavour := kernelLockFlavour(name); flavour != "" {
-			vms[flavour] = true
-			continue
+		if strings.HasPrefix(name, "kernels/") {
+			if strings.HasSuffix(name, "/standard.json") {
+				vms["standard"] = true
+				continue
+			}
+			if strings.HasSuffix(name, "/lts.json") {
+				vms["lts"] = true
+				continue
+			}
 		}
 		if bothVMFlavours(name) {
 			vms["standard"], vms["lts"] = true, true

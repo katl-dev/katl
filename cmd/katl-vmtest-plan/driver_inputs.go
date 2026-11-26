@@ -16,7 +16,7 @@ import (
 )
 
 // Bump when changing the digest format or the interpretation of its inputs.
-const driverDigestVersion = "v1"
+const driverDigestVersion = "v2"
 
 var kernelFlavours = []string{flavour.Standard, flavour.LTS}
 
@@ -31,14 +31,6 @@ var driverInputs = []string{
 	"mkosi.profiles/kernel-extension-*/**",
 	"scripts/build-release-extensions",
 	"scripts/assemble-release-extensions",
-	"cmd/katl-mkosi-artifacts/**",
-	"cmd/katl-kernel-release/main.go",
-	"internal/extensionrelease/**",
-	"internal/kernelmodule/**",
-	"internal/kernelrelease/**",
-	"internal/releaseextensions/**",
-	"internal/imagemount/**",
-	"internal/flavour/**",
 
 	// Builder, runtime and installer kernel preparation, and both image roles.
 	"Containerfile.mkosi",
@@ -52,7 +44,6 @@ var driverInputs = []string{
 	"mkosi.conf.d/**",
 	"mkosi.profiles/installer-image/**",
 	"mkosi.profiles/endpoint-advertiser-sysext/**",
-	"cmd/katl-endpoint-advertiser/**",
 	"mkosi.profiles/runtime/components.lock",
 	"mkosi.profiles/runtime/mkosi.*",
 	"mkosi.profiles/runtime/mkosi.conf.d/**",
@@ -70,28 +61,10 @@ var driverInputs = []string{
 	"mkosi.profiles/runtime/mkosi.extra/etc/modprobe.d/**",
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/extension-release.d/**",
 	"packages/**",
-	"cmd/katl-runtime-components/**",
-	"cmd/katl-runtime-rpms/**",
 	"go.mod",
 	"go.sum",
 
 	// Driver selection, staging, module indexing, upgrade, and sysext activation.
-	"cmd/katlctl/**",
-	"internal/katlctl/**",
-	"cmd/katlc/**",
-	"internal/katlc/agent/**",
-	"internal/katlc/agentapi/**",
-	"internal/katlc/config/**",
-	"internal/generation/**",
-	"cmd/katl-generation-activate/**",
-	"cmd/katl-host-config-activate/**",
-	"internal/installer/configapply/**",
-	"internal/installer/configbundle/**",
-	"internal/installer/configdomain/**",
-	"internal/installer/katlosimage/**",
-	"internal/installer/manifest/**",
-	"internal/installer/payloadbundle/**",
-	"internal/installer/systemextensionbundle/**",
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system/katl-system-extensions-*/**",
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system/katl-system-extensions-*.service",
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system/systemd-sysext.*/**",
@@ -110,20 +83,8 @@ var driverInputs = []string{
 	".github/scripts/hosted-vmtest-run",
 	"scripts/vmtest-run",
 	"scripts/vmtest-exec",
-	"cmd/katl-vmtest-agent/**",
-	"cmd/katl-vmtest-ran/**",
-	"cmd/katl-resource-lock/**",
-	"internal/resourcetest/**",
 	"mkosi.profiles/vmtest-drbd-tools/**",
-	"internal/vmtest/*.go",
 	"internal/vmtest/image/**",
-	"internal/vmtest/proto/**",
-	"internal/vmtest/drbd_smoke_test.go",
-	"internal/vmtest/config_apply_smoke_test.go",
-	"internal/vmtest/installed_smoke_test.go",
-	"internal/vmtest/installed_world_test.go",
-	"internal/vmtest/sysupdate_smoke_test.go",
-	"internal/vmtest/world_test_helpers_test.go",
 }
 
 func kernelLockFlavour(name string) string {
@@ -140,12 +101,6 @@ func sharedDriverInput(name string) bool {
 		return false
 	}
 	for _, pattern := range driverInputs {
-		if pattern == name {
-			return true
-		}
-		if strings.HasSuffix(name, "_test.go") {
-			continue
-		}
 		// A terminal /** includes the whole subtree. path.Match handles the
 		// remaining pattern, including the recipe and profile directory names.
 		candidate := name
@@ -185,8 +140,14 @@ func committedDriverDigests() (map[string]string, error) {
 	}
 	lockDir := "kernels/fedora-" + strings.TrimSpace(string(release)) + "/x86_64/"
 
+	goFiles, err := driverGoInputs(fedoraRelease.Dir)
+	if err != nil {
+		return nil, err
+	}
+
 	type input struct{ name, mode, content string }
-	var shared []input
+	files := map[string]input{}
+	var selected []string
 	locks := map[string]input{}
 	for line := range bytes.SplitSeq(bytes.TrimSuffix(tree, []byte{0}), []byte{0}) {
 		metadata, name, ok := strings.Cut(string(line), "\t")
@@ -194,42 +155,77 @@ func committedDriverDigests() (map[string]string, error) {
 		if !ok || len(fields) != 3 {
 			return nil, fmt.Errorf("invalid git tree entry %q", line)
 		}
-		flavour := kernelLockFlavour(name)
-		activeLock := flavour != "" && name == lockDir+flavour+".json"
-		if !activeLock && !sharedDriverInput(name) {
+		file := input{name: name, mode: fields[0], content: fields[2]}
+		files[name] = file
+		if flavour := kernelLockFlavour(name); flavour != "" && name == lockDir+flavour+".json" {
+			locks[flavour] = file
+		} else if sharedDriverInput(name) {
+			selected = append(selected, name)
+		}
+	}
+
+	var shared []input
+	for name, content := range goFiles {
+		if content != "" {
+			shared = append(shared, input{name: name, mode: "module", content: content})
 			continue
 		}
-		if fields[1] != "blob" {
-			return nil, fmt.Errorf("driver input %q is not a Git blob", name)
+		if _, ok := files[name]; !ok {
+			return nil, fmt.Errorf("Go driver input %q is not tracked at HEAD", name)
 		}
-		// Git's blob ID hashes the committed bytes, including symlink targets.
-		// Project mixed-purpose inputs before hashing their content.
-		file := input{name: name, mode: fields[0], content: fields[2]}
-		if project := driverInputProjection(name); project != nil {
-			if file.mode != "100644" && file.mode != "100755" {
-				return nil, fmt.Errorf("projected driver input %q is not a regular file", name)
-			}
-			data, err := gitOutput("cat-file", "blob", file.content)
+		selected = append(selected, name)
+	}
+
+	// Follow selected links through the committed tree. Keep link blobs as
+	// inputs too, so changing the destination is itself observable.
+	seen := map[string]bool{}
+	for i := 0; i < len(selected); i++ {
+		name := selected[i]
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		file := files[name]
+		switch file.mode {
+		case "120000":
+			link, err := gitOutput("cat-file", "blob", file.content)
 			if err != nil {
 				return nil, err
 			}
-			projected, err := project(data)
-			if err != nil {
-				return nil, fmt.Errorf("project driver input %q: %w", name, err)
+			target := path.Join(path.Dir(name), string(link))
+			if !path.IsAbs(string(link)) && target != ".." && !strings.HasPrefix(target, "../") {
+				if _, ok := files[target]; ok {
+					selected = append(selected, target)
+				} else {
+					for child := range files {
+						if target == "." || strings.HasPrefix(child, target+"/") {
+							selected = append(selected, child)
+						}
+					}
+				}
 			}
-			file.content = fmt.Sprintf("%x", sha256.Sum256(projected))
+		case "100644", "100755":
+			if project := driverInputProjection(name); project != nil {
+				data, err := gitOutput("cat-file", "blob", file.content)
+				if err != nil {
+					return nil, err
+				}
+				projected, err := project(data)
+				if err != nil {
+					return nil, fmt.Errorf("project driver input %q: %w", name, err)
+				}
+				file.content = fmt.Sprintf("%x", sha256.Sum256(projected))
+			}
+		default:
+			return nil, fmt.Errorf("driver input %q is not a Git blob", name)
 		}
-		if activeLock {
-			locks[flavour] = file
-		} else {
-			shared = append(shared, file)
-		}
+		shared = append(shared, file)
 	}
 
 	digests := map[string]string{}
 	for _, flavour := range kernelFlavours {
 		lock, ok := locks[flavour]
-		if !ok || lock.mode == "120000" {
+		if !ok || (lock.mode != "100644" && lock.mode != "100755") {
 			continue
 		}
 		inputs := append(slices.Clone(shared), lock)
@@ -304,6 +300,10 @@ func qualificationSteps(data []byte) ([]byte, error) {
 	}
 	jobs, _ := workflow["jobs"].(map[string]any)
 	job, _ := jobs["drivers"].(map[string]any)
+	delete(jobs, "record-driver-start")
+	delete(jobs, "record-driver-result")
+	delete(job, "needs")
+	delete(job, "if")
 	steps, ok := job["steps"].([]any)
 	if !ok {
 		return nil, fmt.Errorf("drivers job has no steps")

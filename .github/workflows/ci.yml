@@ -38,6 +38,7 @@ jobs:
       contents: read
       pull-requests: read
       statuses: read
+      actions: read
     timeout-minutes: 10
     outputs:
       vm-flavours: ${{ steps.plan.outputs.vm-flavours }}
@@ -248,43 +249,13 @@ jobs:
       fail-fast: false
       matrix:
         flavour: ${{ fromJSON(needs.plan.outputs.driver-flavours) }}
+    permissions:
+      contents: read
+      statuses: write
     uses: ./.github/workflows/kernel-qualification.yml
     with:
       flavour: ${{ matrix.flavour }}
       input-digest: ${{ fromJSON(needs.plan.outputs.driver-digests)[matrix.flavour] || '' }}
-
-  record-drivers:
-    name: Record driver qualification on main
-    needs: [plan, drivers]
-    if: >-
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
-      needs.drivers.result == 'success'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 5
-    permissions:
-      statuses: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      FLAVOURS: ${{ needs.plan.outputs.driver-flavours }}
-      DIGESTS: ${{ needs.plan.outputs.driver-digests }}
-    steps:
-      - name: Publish qualified driver inputs
-        run: |
-          for flavour in standard lts; do
-            if ! jq -e --arg flavour "$flavour" 'index($flavour) != null' <<< "$FLAVOURS" >/dev/null; then
-              continue
-            fi
-            digest="$(jq -r --arg flavour "$flavour" '.[$flavour] // empty' <<< "$DIGESTS")"
-            if [[ ! "$digest" =~ ^v[0-9]+:[a-f0-9]{64}$ ]]; then
-              echo "::warning::No readable driver input digest for $flavour on $GITHUB_SHA"
-              continue
-            fi
-            gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
-              -f "context=katl/driver-qualification/$flavour" \
-              -f state=success -f "description=$digest" \
-              -f "target_url=$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >/dev/null
-          done
 
   production:
     name: Production (${{ matrix.flavour }})

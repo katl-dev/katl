@@ -296,6 +296,8 @@ func TestCIVMFlavours(t *testing.T) {
 		{name: "regression docs", paths: "README.md", regression: true},
 		{name: "standard lock", paths: "kernels/fedora-44/x86_64/standard.json", vms: []string{"standard"}},
 		{name: "LTS lock", paths: "kernels/fedora-44/x86_64/lts.json", vms: []string{"lts"}},
+		{name: "custom LTS lock", paths: "kernels/custom/lts.json", vms: []string{"lts"}},
+		{name: "custom standard lock", paths: "kernels/custom/standard.json", vms: []string{"standard"}},
 		{name: "regression LTS lock", paths: "kernels/fedora-44/x86_64/lts.json", regression: true, vms: both},
 		{name: "regression shared ABI", paths: "extensions/drbd9/build.sh", regression: true, vms: both},
 		{name: "both locks", paths: "kernels/fedora-44/x86_64/standard.json\x00kernels/fedora-44/x86_64/lts.json", vms: both},
