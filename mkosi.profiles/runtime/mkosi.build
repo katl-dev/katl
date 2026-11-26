@@ -88,6 +88,7 @@ go build \
 mkdir -p "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants"
 ln -sf ../katl-console.service "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants/katl-console.service"
 install -m 0644 "$repo/mkosi.profiles/runtime/katl-endpoint-activate.service" "$DESTDIR/usr/lib/systemd/system/"
+install -m 0644 "$repo/internal/generation/katl-system-extensions-activate.service" "$DESTDIR/usr/lib/systemd/system/"
 ln -sf ../katl-endpoint-activate.service "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants/katl-endpoint-activate.service"
 
 mkdir -p "$DESTDIR/etc/systemd/system"
@@ -133,6 +134,8 @@ if [[ "$vmtest_image_support" == 1 ]]; then
         "$repo/internal/vmtest/image/katl-vmtest-agent-ready.target" \
         "$repo/internal/vmtest/image/katl-vmtest-debug-shell.service" \
         "$DESTDIR/usr/lib/systemd/system/"
+    # The stall trial's extension copies this fixture into systemd's unit path.
+    install -m 0644 "$repo/internal/vmtest/image/50-vmtest-stall.conf" "$DESTDIR/usr/lib/katl/vmtest/"
     ln -sf ../katl-vmtest-agent-ready.target \
         "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants/katl-vmtest-agent-ready.target"
     ln -sf ../katl-vmtest-debug-shell.service \

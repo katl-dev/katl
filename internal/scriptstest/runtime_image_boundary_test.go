@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/generation"
 )
 
 func TestRuntimeSysctlOwnership(t *testing.T) {
@@ -138,10 +140,30 @@ printf 'fake binary\n' > "$output"
 			t.Errorf("instrumented runtime missing VM-test path %s: %v", path, err)
 		}
 	}
+
+	for _, root := range []string{production, instrumented} {
+		dropIn := filepath.Join(root, "usr/lib/systemd/system/katl-system-extensions-activate.service.d/50-vmtest-stall.conf")
+		if _, err := os.Lstat(dropIn); !os.IsNotExist(err) {
+			t.Errorf("runtime installs an active stall drop-in %s: %v", dropIn, err)
+		}
+	}
 }
 
 func assertRuntimeServicePolicy(t *testing.T, root string) {
 	t.Helper()
+	assets, err := generation.RenderState(generation.StateRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	activationUnit := filepath.Join(root, "usr/lib/systemd/system/katl-system-extensions-activate.service")
+	unit, err := os.ReadFile(activationUnit)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(unit) != assets.ExtensionActivate {
+		t.Errorf("vendor activation unit differs from the generated /etc unit")
+	}
+
 	machineID, err := os.ReadFile(filepath.Join(root, "etc", "machine-id"))
 	if err != nil || len(machineID) != 0 {
 		t.Errorf("runtime machine-id = %q, %v; want empty file to suppress first-boot presets", machineID, err)
@@ -197,6 +219,7 @@ func vmtestRuntimePaths(root string) []string {
 		filepath.Join(root, "usr", "lib", "katl", "vmtest"),
 		filepath.Join(root, "usr", "lib", "katl", "vmtest", "katl-boot-health"),
 		filepath.Join(root, "usr", "lib", "katl", "vmtest", "katl-vmtest-agent"),
+		filepath.Join(root, "usr", "lib", "katl", "vmtest", "50-vmtest-stall.conf"),
 		filepath.Join(root, "usr", "lib", "systemd", "system", "katl-boot-health.service.d", "10-vmtest-management-expiry.conf"),
 		filepath.Join(root, "usr", "lib", "systemd", "system", "katl-vmtest-agent-ready.target"),
 		filepath.Join(root, "usr", "lib", "systemd", "system", "katl-vmtest-agent.service"),

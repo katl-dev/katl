@@ -203,9 +203,10 @@ spec:
 	if _, status := generationRecordsFromGuest(t, ctx, guest, candidate); status.BootState != generation.BootStateFailed || status.HealthState != generation.HealthStateUnhealthy {
 		t.Fatalf("%s candidate status = %#v, want failed/unhealthy", scenario, status)
 	}
-	journal := guestCommandOutput(t, ctx, guest, scenario+"-journal", "journalctl", "-b", "-1", "--no-pager", "-o", "cat",
-		"-u", "katl-system-extensions-activate.service", "-u", "katl-configured-units-check.service", "-u", "katl-boot-health.service")
-	for _, want := range append(wantJournal, "Dependency failed for katl-boot-health.service") {
+	// Recovery can reboot before the vsock agent is reachable on the rejected boot.
+	journal := guestCommandOutput(t, ctx, guest, scenario+"-journal", "journalctl", "-b", "-1", "--no-pager", "-o", "short-monotonic",
+		"-u", "katl-system-extensions-activate.service", "-u", "katl-configured-units-check.service", "-u", "katl-boot-health.service", "-u", "katl-boot-recovery.service")
+	for _, want := range append(wantJournal, "Dependency failed for katl-boot-health.service", "rebootRequested=true") {
 		if !strings.Contains(journal, want) {
 			t.Fatalf("%s rejected boot journal lacks %q:\n%s", scenario, want, journal)
 		}
@@ -216,4 +217,13 @@ spec:
 		t.Fatalf("%s katlctl status after fallback does not report %s:\n%s", scenario, fallbackGeneration, status)
 	}
 	return guest, client
+}
+
+func assertExtensionActivationProductionTimeout(t *testing.T, ctx context.Context, guest *GuestControl, phase string) {
+	t.Helper()
+	got := guestCommandOutput(t, ctx, guest, "extension-activation-timeout-"+phase,
+		"systemctl", "show", "--property=TimeoutStartUSec", "--value", "katl-system-extensions-activate.service")
+	if strings.TrimSpace(got) != "3min" {
+		t.Fatalf("%s extension activation TimeoutStartUSec = %q, want 3min", phase, strings.TrimSpace(got))
+	}
 }

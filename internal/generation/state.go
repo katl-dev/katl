@@ -1,12 +1,16 @@
 package generation
 
 import (
+	_ "embed"
 	"fmt"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 )
+
+//go:embed katl-system-extensions-activate.service
+var extensionActivationUnit string
 
 const (
 	KubernetesSource = "/var/lib/katl/kubernetes/etc-kubernetes"
@@ -82,7 +86,7 @@ func RenderState(request StateRequest) (StateAssets, error) {
 		HostConfigPrepare:    renderHostConfigPrepareService(),
 		HostConfigVerify:     renderHostConfigVerifyService(),
 		ExtensionReload:      renderSystemExtensionReloadService(),
-		ExtensionActivate:    renderSystemExtensionActivateService(),
+		ExtensionActivate:    extensionActivationUnit,
 		ConfiguredUnitsCheck: renderConfiguredUnitsCheckService(),
 		VolumesTarget:        renderVolumesTarget(),
 		VolumesActivate:      renderVolumesActivateService(),
@@ -290,33 +294,6 @@ func renderSystemExtensionReloadService() string {
 		"# so networking and management start and boot health can recover.",
 		"TimeoutStartSec=90s",
 		"ExecStart=/usr/bin/systemctl daemon-reload",
-		"",
-	}, "\n")
-}
-
-func renderSystemExtensionActivateService() string {
-	return strings.Join([]string{
-		"[Unit]",
-		"Description=Activate configured systemd units",
-		"Documentation=man:systemd.service(5)",
-		"DefaultDependencies=no",
-		"Requires=katl-system-extensions-reload.service katl-host-config-verify.service",
-		"After=katl-system-extensions-reload.service katl-host-config-verify.service",
-		"# Queue configured units while the services they may order themselves",
-		"# before are still waiting, so native Before= ordering holds.",
-		"Before=sysinit.target network-pre.target systemd-networkd.service katl-boot-health.service",
-		"Conflicts=shutdown.target",
-		"Before=shutdown.target",
-		"",
-		"[Service]",
-		"Type=oneshot",
-		"RemainAfterExit=yes",
-		"StandardOutput=journal+console",
-		"SyslogIdentifier=katl-system-extensions-activate",
-		"# Boot reaches sysinit.target only after this unit; a stall must fail",
-		"# so networking and management start and boot health can recover.",
-		"TimeoutStartSec=3min",
-		"ExecStart=/usr/lib/katl/runtime/katl-host-config-activate --root=/ --phase=units",
 		"",
 	}, "\n")
 }
