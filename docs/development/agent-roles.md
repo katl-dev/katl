@@ -62,6 +62,11 @@ lifecycle, including after systemd collects the unit. Open the recorded log
 for the Codex report and exit status. If the log has no exit line, check the
 journal for a startup failure or interruption.
 
+**PR description.** The orchestrator owns each PR's description, which becomes
+its squash commit message. Write it before enabling auto-merge and rewrite it
+after every fix round so it describes the final change, following AGENTS.md.
+Post gates, reviews and journey evidence as PR comments.
+
 Reconcile agent reports against GitHub, verify the required independent
 approval before enabling auto-merge on risky changes, and return release
 readiness and remaining decisions to the operator.
@@ -102,7 +107,10 @@ journey commands with their starting state and expected results.
 ready. Identify outstanding review, gates, journeys, and any proposed
 sub-issues. A sandboxed session that cannot commit or push leaves the change
 in its worktree with the proposed commit title and body. The orchestrator
-reviews the diff, commits, and opens the PR.
+reviews the diff, commits, and opens the PR. Branch commit messages are
+working notes; propose the PR description (what changed and why, root cause,
+`Fixes #N`, any `Release-Note:` trailer) in the report, and the orchestrator
+writes and updates the PR description before enabling auto-merge.
 
 ## Reviewer
 
