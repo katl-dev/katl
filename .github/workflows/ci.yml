@@ -157,8 +157,14 @@ jobs:
             echo "check-suffix=$check_suffix"
           } >> "$GITHUB_OUTPUT"
           {
+            echo '#### Driver qualification'
+            echo ''
+            echo '```text'
+            jq -r '.driverDecisions[]' _build/ci-plan.json
+            echo '```'
+            echo ''
             echo '```json'
-            jq . _build/ci-plan.json
+            jq 'del(.driverDecisions)' _build/ci-plan.json
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Resolve production identity

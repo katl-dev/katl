@@ -67,7 +67,7 @@ func TestCIChanges(t *testing.T) {
 case "$2" in
   ./cmd/katl-vmtest-plan)
     cat > observed-paths
-    printf '{"vmFlavours":[],"driverFlavours":[],"driverDigests":{},"productionFlavours":[],"groups":[]}\n' ;;
+    printf '{"vmFlavours":[],"driverFlavours":[],"driverDigests":{},"driverDecisions":[],"productionFlavours":[],"groups":[]}\n' ;;
   ./cmd/katl-kubernetes-release)
     printf '{"include":[]}\n' ;;
   *) exit 2 ;;
@@ -205,7 +205,7 @@ case "$2" in
       *' --vm-mode off '*) vms='[]'; groups='[]' ;;
       *' --vm-mode merge-group '*) shadow=',"vmShadow":{"suites":["config"],"runnerMinutesSaved":10}' ;;
     esac
-    printf '{"vmFlavours":%s,"driverFlavours":%s,"driverDigests":{"standard":"v1:fixture"},"productionFlavours":%s,"groups":%s%s}\n' "$vms" "$DRIVER_MATRIX" "$production" "$groups" "$shadow" ;;
+    printf '{"vmFlavours":%s,"driverFlavours":%s,"driverDigests":{"standard":"v1:fixture"},"driverDecisions":["driver-qualification flavour=standard decision=run reason=no-record"],"productionFlavours":%s,"groups":%s%s}\n' "$vms" "$DRIVER_MATRIX" "$production" "$groups" "$shadow" ;;
   ./cmd/katl-kubernetes-release)
     printf '{"include":[]}\n' ;;
   *) exit 2 ;;
@@ -255,6 +255,10 @@ esac
 			}
 			if want := "driver-digests={\"standard\":\"v1:fixture\"}\n"; !strings.Contains(string(outputs), want) {
 				t.Fatalf("outputs = %s, want %q", outputs, want)
+			}
+			summary := mustReadFile(t, filepath.Join(run, "summary"))
+			if want := "\ndriver-qualification flavour=standard decision=run reason=no-record\n"; !strings.Contains(string(summary), want) {
+				t.Fatalf("summary = %s, want standalone line %q", summary, want)
 			}
 			// The fixture changes product.go, so both kinds of full plan build.
 			wantProduction := `[]`
@@ -447,18 +451,20 @@ func TestDriverStatusPublication(t *testing.T) {
 		return expandExpressions(t, "${{ "+strings.Join(strings.Fields(expr), " ")+" }}", context) == "true"
 	}
 	for _, tc := range []struct {
-		event, ref string
-		publishes  bool
+		event, ref, base string
+		publishes        bool
 	}{
-		{"push", "refs/heads/main", true},
-		{"schedule", "refs/heads/main", true},
-		{"workflow_dispatch", "refs/heads/main", true},
-		{"workflow_dispatch", "refs/heads/topic", false},
-		{"push", "refs/heads/release/2026", false},
-		{"pull_request", "refs/pull/1/merge", false},
-		{"merge_group", "refs/heads/gh-readonly-queue/main/pr-1", false},
+		{"push", "refs/heads/main", "", true},
+		{"schedule", "refs/heads/main", "", true},
+		{"workflow_dispatch", "refs/heads/main", "", true},
+		{"workflow_dispatch", "refs/heads/topic", "", false},
+		{"push", "refs/heads/release/2026", "", false},
+		{"pull_request", "refs/pull/1/merge", "", false},
+		{"merge_group", "refs/heads/gh-readonly-queue/main/pr-1", "refs/heads/main", true},
+		{"merge_group", "refs/heads/gh-readonly-queue/release/2026/pr-1", "refs/heads/release/2026", false},
 	} {
-		if got := condition(start, map[string]string{"github.event_name": tc.event, "github.ref": tc.ref}); got != tc.publishes {
+		context := map[string]string{"github.event_name": tc.event, "github.ref": tc.ref, "github.event.merge_group.base_ref": tc.base}
+		if got := condition(start, context); got != tc.publishes {
 			t.Errorf("pending publication on %s %s = %v, want %v", tc.event, tc.ref, got, tc.publishes)
 		}
 	}
@@ -498,7 +504,7 @@ func TestDriverStatusPublication(t *testing.T) {
 			dir := t.TempDir()
 			request := filepath.Join(dir, "request")
 			writeFakeExecutable(t, dir, "gh", `printf '%s\n' "$@" >> "$STATUS_REQUEST"`)
-			digest := "v2:" + strings.Repeat("a", 64)
+			digest := "v3:" + strings.Repeat("a", 64)
 			sha := strings.Repeat("1", 40)
 			state := expandExpressions(t, tc.publisher.Env["STATE"], map[string]string{"needs.drivers.result": tc.drivers})
 			command := exec.Command("bash", "-euo", "pipefail", "-c", tc.publisher.Steps[0].Run)
@@ -637,7 +643,7 @@ case "$2" in
     cat > /dev/null
     production='[]'
     [[ " $* " != *" --production="* ]] || production='["standard","lts"]'
-    printf '{"vmFlavours":["standard","lts"],"driverFlavours":["standard","lts"],"driverDigests":{},"productionFlavours":%s,"groups":[{"name":"cluster"}]}\n' "$production" ;;
+    printf '{"vmFlavours":["standard","lts"],"driverFlavours":["standard","lts"],"driverDigests":{},"driverDecisions":[],"productionFlavours":%s,"groups":[{"name":"cluster"}]}\n' "$production" ;;
   ./cmd/katl-kubernetes-release)
     printf '{"include":[]}\n' ;;
   *) exit 2 ;;

@@ -1,74 +1,69 @@
 # Driver qualification
 
-The CI planner runs driver qualification for each kernel flavour whose
-candidate inputs lack a matching successful qualification on main. The
-[planner's input list](../../cmd/katl-vmtest-plan/driver_inputs.go) defines the
-versioned digest from the checked-out commit. It hashes the flavour and sorted
-Git paths, modes, and content hashes, so a rename, deletion, or lost executable
-bit changes the digest. The digest represents repository inputs, including
-their source pins. The weekly schedule at 05:37 UTC on Mondays requalifies
-both flavours against the hosted environment and available upstream inputs.
+CI builds and assembles the DRBD9 and NVIDIA release extensions against the
+selected kernel, then runs the DRBD replication journey on two installed nodes.
+The planner uses a versioned digest to decide whether a flavour already has
+qualification evidence for the candidate's inputs. The weekly schedule at
+05:37 UTC on Mondays requalifies both flavours against the hosted environment
+and available upstream inputs.
 
 ## Input coverage
 
+The [planner's input list](../../cmd/katl-vmtest-plan/driver_inputs.go) defines
+the digest. It hashes the flavour and sorted paths, modes, and content from
+the candidate's Git tree. Renaming or deleting a selected file, or changing its
+executable bit, changes the digest. For selected symlinks, the digest also
+includes their in-tree targets.
+
 | Input | What it controls |
 | --- | --- |
-| Active Fedora x86_64 kernel lock | The selected flavour's exact kernel RPMs. Each flavour uses its own active lock. A change to a kernel lock still forces that flavour. |
-| `extensions/*/recipe.json`, kernel-extension mkosi profiles, `scripts/build-release-extensions`, and `scripts/assemble-release-extensions` | Recipe discovery, pinned sources and patches, build hooks, OCI assembly, extension-release generation and validation, and the merged `/usr/lib/modules` tree. |
-| Builder container, container trust policy, mkosi builder action and sandbox, `scripts/fedora-release`, `scripts/mkosi`, `mkosi.conf` and shared fragments | Distribution, architecture, repository and build configuration, and the execution of the selected mkosi targets. The root config projection omits comments and local cache and workspace settings. The whole mkosi wrapper covers generated kernel config, module cleanup, UKI construction, and image dispatch, along with its other targets. |
-| Runtime build hooks, mkosi settings and component lock, installer and endpoint-advertiser profiles, runtime RPM specs and build tools | The workflow builds the runtime and the installer twice, and packages the endpoint-advertiser extension into both the test install and production upgrade images. The profiles, package lists, locks, and hooks are conservatively hashed in full where their settings affect both driver inputs and general image assembly. |
-| `scripts/build-katlos-install-image`, `scripts/build-endpoint-advertiser-sysext`, image assembly and bundle packages, and the artifact-index command | The two image roles share an assembly path. The production upgrade image carries the release extension closure, and the test install image supplies the fixture pinned by the VM runner. |
-| Runtime `os-release.in`, checked-in extension-release files in the selected profiles, module paths and module loader configuration | The release files contribute the matching fields `ID`, `VERSION_ID`, `SYSEXT_LEVEL`, `ARCHITECTURE`, `SYSEXT_SCOPE`, `SYSEXT_ID`, `CONFEXT_LEVEL`, and `KATL_*`. The Go generators contribute their code. Runtime kernel and module loader files, the builder's module export rules, and the module-composition code determine where drivers are installed and loaded. |
-| Sysext activation units, their in-tree symlink targets, and the configuration capability marker | The activation and reload services use shared systemd drop-ins. The digest tracks both the links and the configuration files they reference. |
-| Driver workflow, hosted apt and VM setup, VM execution scripts, and DRBD tools profile | The runner pins the test install image, starts the guests, and requires a pass event from the replication test. The workflow projection keeps build and test settings and drops status publication, summaries, diagnostic collection and upload, and log retention and debug-on-failure settings. |
-| Go entry points, their transitive build and test dependencies, `go.mod`, and `go.sum` | The planner runs `go list -deps` for the image and hosted binaries and adds `-test` for the DRBD test package. This includes installer planning, extension assembly, `katlctl`, activation, embedded files, and the DRBD test helpers. Repository files contribute committed content and modes. External files contribute module versions and content hashes. Go's standard library is outside the digest, and the module files are hashed in full. |
+| Active Fedora x86_64 kernel lock | The exact kernel RPMs for each flavour. |
+| Extension recipes, kernel-extension mkosi profiles, extension build and assembly scripts, kernel and extension Go packages, and the associated artifact commands | Kernel RPM preparation, exported kernel inputs, recipe compilation, release extension metadata and composition, and validation of the combined module tree. |
+| mkosi wrapper, install and upgrade image assembly script, builder container and action, root and installer mkosi configuration, and runtime build, configuration, and finalization files | The toolchain, kernel export, and the installer, runtime, and upgrade images used in qualification. The root and installer config projections omit comments and local cache and workspace settings. |
+| Runtime release identity, module paths, and module loader configuration | The matching fields in `os-release` and `extension-release.*` and the locations where the system installs and looks up drivers. |
+| Generation activation and module-index code, installer extension bundles and image metadata, config apply extension code, sysext units, and activation settings | Staging a release-owned extension, activating it when the generation boots, and updating module indexes when the extension changes. |
+| Driver workflow's build and test settings, the DRBD test and its fixture helpers, and the DRBD tools mkosi profile | Installation of the test nodes, replication and resync, repeat apply, driver removal, and inspection of the running kernel and backing disks. The workflow projection excludes record publication and diagnostics. |
+| Go module directives, versions, and checksums | The Go version, toolchain directives and module pins. Moving a requirement between direct and indirect blocks preserves the digest if its version and other directives are unchanged. |
 
-Recipe discovery reads `extensions/*/recipe.json`. BIRD's README and
-`extension.env`, its standalone system-extension profile, and the
-`build-system-extension` wrapper belong to the BIRD workflow. The
-`build-kernel-extension` wrapper also has independent callers. Driver
-qualification calls the same Go builder through `build-release-extensions`.
-The kernel candidate and proposal sources belong to the kernel-update workflows.
-The flavour lock and generated mkosi include configure LTS builds, so the
-legacy `mkosi.kernel-lts/` cache pattern is outside this input list.
-
-General runtime image assets such as `katlc-agent.service`, SSH and console
-units, networking, and Kubernetes configuration belong to the production
-build, boot, lifecycle, cluster, and service-security gates. The digest covers
-the driver activation units and code reached by the DRBD journey. General job
-routing in `ci.yml` and planner code determine when the job runs. The
-`hosted-vmtest-diagnostics` script collects failure evidence, and
-`hosted-vmtest-package` builds runner artifacts for other workflows. The input
-list excludes those files, tests outside the compiled VM test package, and
-documentation that isn't embedded. When changing the
-fingerprint format or its interpretation, bump the version so records made
-under the earlier interpretation expire.
+General CLI and agent code, unrelated VM suites and runner code, and general
+installer, endpoint-advertiser, and runtime package changes are covered through
+the other CI suites and periodic Drivers runs. Bump the digest version when
+changing its format or interpretation to expire records from earlier versions.
 
 ## Qualification records
 
-The driver job writes its event SHA and input digest beside the committed kernel
-lock details in its job summary. A main push, scheduled run, or manual dispatch
-on main writes a pending commit status before each selected flavour starts.
-When that flavour finishes, its publisher writes success or failure on the
-same SHA. If cancellation prevents publication, the pending status keeps the
-digest unqualified.
+A main run or a merge-group run targeting main publishes a pending status
+against the SHA it tests, followed by success or failure for each selected
+flavour. The status context is `katl/driver-qualification/<flavour>/<digest>`.
+Its description is the versioned digest, and its target URL links to the exact
+CI run attempt. A successful merge-group status is already on main's commit
+when GitHub lands that same SHA, so the main push can adopt it with the original
+run URL intact, including after a kernel lock change.
 
-The status context is `katl/driver-qualification/<flavour>/<digest>` and the
-description is the versioned digest. The publishing jobs use the GitHub Actions
-token and link to the exact CI run attempt. The planner verifies the creator
-and checks that GitHub identifies that attempt as a CI workflow run in this
-repository, on main, at the recorded SHA. Commit statuses survive the
-expiration of diagnostic artifacts.
+The planner reads matching contexts across main's first-parent history and
+uses the most recently published outcome, with priority for a verified
+merge-group success on the main push SHA itself. When timestamps tie,
+failure takes precedence over pending, which takes precedence over success.
 
-The planner reads matching status contexts across main's first-parent history
-in batches and uses the most recently published outcome. An intervening commit
-that skipped a driver job leaves earlier evidence available. A later pending,
-failed, or unverifiable result makes the flavour run again. Verified success
-appears in `qualifiedDrivers` with the qualifying SHA. GitHub lookups have a
-20-second budget. Concurrent plans can select the same flavour before its
-record is published.
+The planner verifies the GitHub Actions bot as the creator and checks the
+run attempt against the repository, CI workflow, event, branch, and commit.
+It finds the executable Drivers job in that attempt by the flavour and
+digest in its display name. A success record requires the matching job to
+have completed successfully. If the selected record comes from a merge
+group whose head differs from the main push SHA, that flavour runs again.
 
-Manual dispatch and scheduled runs bypass reuse for both flavours. A kernel lock
-change bypasses reuse for the affected flavour. Pushes to release branches
-continue to use the release-branch push plan. The aggregate CI check requires
-`skipped` for an empty driver matrix and `success` for a non-empty one.
+A pending record defers Drivers while the matching job is queued or in
+progress without a conclusion and the attempt started at most 90 minutes
+ago. Otherwise Drivers runs again. GitHub lookups have a 20-second budget,
+and concurrent plans can select the same flavour before a pending record
+appears.
+
+The Plan step logs the full digest, record SHA, context, state, producer URL,
+decision, and reason for each flavour in stderr and the step summary.
+`qualifiedDrivers` names the qualifying commit for a verified success.
+
+Manual dispatch and scheduled runs force both flavours. A kernel lock change
+forces the affected flavour unless an exact merge-group success already
+qualifies the main push. Release-branch pushes use the release-branch push
+plan. The aggregate CI check requires `skipped` for an empty driver matrix and
+`success` for a non-empty one.
