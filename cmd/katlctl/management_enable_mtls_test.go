@@ -1465,6 +1465,48 @@ func TestEnableMTLSChecksInstalledVIPAfterConfirm(t *testing.T) {
 	})
 }
 
+func TestEnableMTLSRejectsExternalEndpointWithoutScheme(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("KATLCTL_CONFIG", filepath.Join(dir, "katlctl.yaml"))
+	world := enableMTLSWorld{configPath: filepath.Join(dir, "cluster.yaml")}
+	config := `apiVersion: config.katl.dev/v1alpha1
+kind: ClusterConfig
+metadata:
+  name: lab
+spec:
+  managementAuthentication: trusted-network
+  kubernetes:
+    version: v1.36.1
+    external:
+      endpoint: api.example:6443
+  defaults:
+    kubernetes:
+      kubelet:
+        configFile: kubelet.yaml
+  nodes:
+    - name: worker-1
+      management:
+        address: 192.0.2.11
+`
+	if err := os.WriteFile(world.configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDial := dialKatlcAgent
+	t.Cleanup(func() { dialKatlcAgent = oldDial })
+	dialKatlcAgent = func(_ context.Context, endpoint string) (katlcAgentConnection, error) {
+		t.Errorf("attempted to contact node at %s", endpoint)
+		return katlcAgentConnection{}, errors.New("unexpected node contact")
+	}
+
+	_, stderr, err := world.enable()
+	if err == nil || !strings.Contains(err.Error(), "spec.kubernetes.external.endpoint") || !strings.Contains(err.Error(), "https://api.example:6443") {
+		t.Fatalf("enable-mtls = %v, want external endpoint validation error", err)
+	}
+	if strings.Contains(stderr, "Preflight:") {
+		t.Errorf("enable-mtls started preflight: %s", stderr)
+	}
+}
+
 func TestEnableMTLSAllowsExternalControlPlaneEndpoint(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

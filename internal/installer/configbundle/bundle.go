@@ -723,7 +723,11 @@ func lowerKubernetesSelection(source SourceConfig, bundle string) (clusterplan.K
 	version := strings.TrimSpace(source.Spec.Kubernetes.Version)
 	out := clusterplan.KubernetesSelection{PayloadVersion: version}
 	if external := source.Spec.Kubernetes.External; external != nil {
-		out.ExternalEndpoint = strings.TrimPrefix(external.Endpoint, "https://")
+		endpoint, err := parseSourceExternalEndpoint(external.Endpoint)
+		if err != nil {
+			return clusterplan.KubernetesSelection{}, err
+		}
+		out.ExternalEndpoint = endpoint.String()
 	}
 	if bundle = strings.TrimSpace(bundle); bundle != "" {
 		image, err := kubernetesbundle.ParseImageReference(bundle)
@@ -734,6 +738,14 @@ func lowerKubernetesSelection(source SourceConfig, bundle string) (clusterplan.K
 		out.BundleRef = image.String()
 	}
 	return out, nil
+}
+
+func parseSourceExternalEndpoint(value string) (inventory.HostPort, error) {
+	endpoint, err := externalworker.Endpoint(value)
+	if err != nil {
+		return inventory.HostPort{}, fmt.Errorf("spec.kubernetes.external.endpoint: %w", err)
+	}
+	return endpoint, nil
 }
 
 func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
@@ -849,8 +861,8 @@ func normalizeSourceIssues(source SourceConfig) (SourceConfig, []error) {
 		}
 	}
 	if external := source.Spec.Kubernetes.External; external != nil {
-		if _, err := externalworker.Endpoint(external.Endpoint); err != nil {
-			errs = append(errs, fmt.Errorf("spec.kubernetes.external.endpoint: %w", err))
+		if _, err := parseSourceExternalEndpoint(external.Endpoint); err != nil {
+			errs = append(errs, err)
 		}
 		if source.Spec.Kubernetes.Kubeadm != nil || source.Spec.ControlPlaneEndpoint != nil {
 			errs = append(errs, fmt.Errorf("spec.kubernetes.external cannot be combined with kubernetes.kubeadm or controlPlaneEndpoint"))

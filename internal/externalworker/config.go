@@ -20,11 +20,11 @@ import (
 func Endpoint(value string) (inventory.HostPort, error) {
 	u, err := url.Parse(value)
 	if err != nil || u.Scheme != "https" || u.User != nil || u.Host == "" || u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
-		return inventory.HostPort{}, fmt.Errorf("must be an HTTPS API URL with an explicit port and no path, credentials, query, or fragment")
+		return inventory.HostPort{}, fmt.Errorf("must be an HTTPS API URL with an explicit port and no path, credentials, query, or fragment, such as https://api.example:6443")
 	}
 	endpoint, err := inventory.ParseHostPort(u.Host)
 	if err != nil {
-		return inventory.HostPort{}, fmt.Errorf("must contain an API host and port, such as https://api.lab.example:6443")
+		return inventory.HostPort{}, fmt.Errorf("must contain an API host and port, such as https://api.example:6443")
 	}
 	return endpoint, nil
 }

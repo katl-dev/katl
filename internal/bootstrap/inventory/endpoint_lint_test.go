@@ -64,7 +64,8 @@ var endpointLiteralAllowlist = []endpointAllowance{
 	{"cmd/katlctl/install.go", "check the installed system (port 9443)"},
 	{"cmd/katlctl/diagnostics.go", "for example https://192.0.2.10:6443"},
 	{"cmd/katlctl/config_init.go", "# port: 6443"},
-	{"internal/externalworker/config.go", "such as https://api.lab.example:6443"},
+	{"internal/externalworker/config.go", "or fragment, such as https://api.example:6443"},
+	{"internal/externalworker/config.go", "API host and port, such as https://api.example:6443"},
 	// A VM test world's ClusterConfig fixture spells the port as an operator
 	// would.
 	{"internal/vmtest/first_install_world.go", "6443"},
