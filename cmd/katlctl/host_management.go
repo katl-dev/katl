@@ -373,7 +373,33 @@ func runHostShutdown(ctx context.Context, opts hostShutdownOptions, stdout, stde
 	if err := bindManagementStatus(&target, status); err != nil {
 		return err
 	}
-	accepted, err := session.client.Shutdown(session.ctx, &agentapi.ShutdownRequest{
+	acknowledged, err := requestNodeShutdown(session.ctx, session.client, target, status)
+	session.close()
+	if err != nil {
+		return fmt.Errorf("could not confirm acknowledgement of the shutdown request for %s: %w", node, err)
+	}
+
+	report := hostShutdownReport{Node: node, Result: "scheduled"}
+	if opts.noWait {
+		return writeHostShutdown(stdout, opts.output, report)
+	}
+	_, _ = fmt.Fprintf(stderr, "Shutdown scheduled for %s; waiting for its management API to stop responding...\n", node)
+	waitCtx, cancelWait := context.WithTimeout(ctx, opts.timeout)
+	err = acknowledged.waitUnreachable(waitCtx)
+	cancelWait()
+	if err != nil {
+		return fmt.Errorf("shutdown was scheduled for %s. Could not confirm shutdown: %w. Check the node's console", node, err)
+	}
+	report.Result = "unreachable-after-ack"
+	return writeHostShutdown(stdout, opts.output, report)
+}
+
+type acknowledgedShutdown struct {
+	target managementTarget
+}
+
+func requestNodeShutdown(ctx context.Context, client agentapi.KatlcAgentClient, target managementTarget, status *agentapi.NodeStatus) (*acknowledgedShutdown, error) {
+	accepted, err := client.Shutdown(ctx, &agentapi.ShutdownRequest{
 		ApiVersion:                  generation.APIVersion,
 		Kind:                        "ShutdownRequest",
 		Actor:                       "katlctl node shutdown",
@@ -382,44 +408,42 @@ func runHostShutdown(ctx context.Context, opts hostShutdownOptions, stdout, stde
 		ExpectedMachineId:           status.GetMachineId(),
 		ExpectedCurrentGenerationId: status.GetCurrentGenerationId(),
 	})
-	session.close()
 	if err != nil {
-		return fmt.Errorf("schedule shutdown for %s: %w", node, err)
+		return nil, err
+	}
+	if err := transport.ManagementContextError(ctx); err != nil {
+		return nil, err
 	}
 	if !accepted.GetScheduled() {
-		return fmt.Errorf("%s did not schedule shutdown", node)
+		return nil, errors.New("agent did not schedule shutdown")
 	}
-
-	report := hostShutdownReport{Node: node, Result: "scheduled"}
-	if opts.noWait {
-		return writeHostShutdown(stdout, opts.output, report)
-	}
-	_, _ = fmt.Fprintf(stderr, "Shutdown scheduled for %s; waiting for its management API to stop...\n", node)
-	waitCtx, cancelWait := context.WithTimeout(ctx, opts.timeout)
-	err = waitNodeOffline(waitCtx, target)
-	cancelWait()
-	if err != nil {
-		return fmt.Errorf("shutdown was scheduled for %s. Could not confirm shutdown: %w. Check the node's console", node, err)
-	}
-	report.Result = "offline"
-	return writeHostShutdown(stdout, opts.output, report)
+	return &acknowledgedShutdown{target: target}, nil
 }
 
-func waitNodeOffline(ctx context.Context, target managementTarget) error {
+func (shutdown *acknowledgedShutdown) waitUnreachable(ctx context.Context) error {
+	target := shutdown.target
+	ctx = transport.WithoutManagementWait(withManagementTarget(ctx, target))
+	var conn katlcAgentConnection
 	for {
-		attemptCtx, cancelAttempt := context.WithTimeout(ctx, 2*time.Second)
-		attemptCtx = withManagementTarget(attemptCtx, target)
-		conn, err := dialKatlcAgent(transport.WithoutManagementWait(attemptCtx), target.endpoint.String())
-		evidence := transport.ManagementInconclusive
-		if err == nil {
-			var p peer.Peer
-			_, err = conn.Client.GetNodeStatus(attemptCtx, &agentapi.GetNodeStatusRequest{}, grpc.Peer(&p))
-			evidence = transport.ClassifyManagementEvidence(err, &p, nil)
-			_ = conn.Close()
+		if err := transport.ManagementContextError(ctx); err != nil {
+			return err
 		}
-		cancelAttempt()
-		if evidence == transport.ManagementUnreachable {
-			return nil
+		if conn.Client == nil {
+			dialed, err := dialKatlcAgent(ctx, target.endpoint.String())
+			if err == nil {
+				conn = dialed
+				// A slow dial can finish during a later probe on this connection.
+				defer conn.Close()
+			}
+		}
+		if conn.Client != nil {
+			attemptCtx, cancelAttempt := context.WithTimeout(ctx, 2*time.Second)
+			var p peer.Peer
+			_, err := conn.Client.GetNodeStatus(attemptCtx, &agentapi.GetNodeStatusRequest{}, grpc.Peer(&p))
+			cancelAttempt()
+			if transport.ClassifyManagementEvidence(err, &p, nil) == transport.ManagementUnreachable {
+				return nil
+			}
 		}
 
 		timer := time.NewTimer(hostShutdownPollInterval)
@@ -747,7 +771,7 @@ func writeHostShutdown(stdout io.Writer, output string, report hostShutdownRepor
 		_, err := fmt.Fprintf(stdout, "%s shutdown scheduled\n", report.Node)
 		return err
 	}
-	_, err := fmt.Fprintf(stdout, "%s shut down; management API is offline\n", report.Node)
+	_, err := fmt.Fprintf(stdout, "%s stopped responding after acknowledging shutdown\n", report.Node)
 	return err
 }
 

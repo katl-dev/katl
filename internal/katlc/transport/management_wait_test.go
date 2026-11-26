@@ -24,6 +24,7 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/peer"
 	grpcstatus "google.golang.org/grpc/status"
 )
 
@@ -31,6 +32,7 @@ func TestManagementEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		err           error
+		peer          *peer.Peer
 		issuerRefused func(error) bool
 		want          ManagementEvidence
 	}{
@@ -38,6 +40,11 @@ func TestManagementEvidence(t *testing.T) {
 		{name: "issuer rejection", err: grpcstatus.Error(codes.Unavailable, "handshake failed"), issuerRefused: func(error) bool { return true }, want: ManagementRefusedExplicitly},
 		{name: "late issuer rejection", err: managementRPCInconclusive{cause: context.DeadlineExceeded}, issuerRefused: func(error) bool { return true }, want: ManagementInconclusive},
 		{name: "alert in error text", err: grpcstatus.Error(codes.Unavailable, "tls: unknown certificate authority"), want: ManagementInconclusive},
+		{name: "dial refusal", err: grpcstatus.Error(codes.Unavailable, "dial tcp: connect: connection refused"), peer: &peer.Peer{}, want: ManagementUnreachable},
+		{name: "dial timeout", err: grpcstatus.Error(codes.Unavailable, "dial tcp: i/o timeout"), peer: &peer.Peer{}, want: ManagementUnreachable},
+		{name: "no route to host", err: grpcstatus.Error(codes.Unavailable, "dial tcp: connect: no route to host"), peer: &peer.Peer{}, want: ManagementUnreachable},
+		{name: "live peer unavailable", err: grpcstatus.Error(codes.Unavailable, "dial tcp: connect: connection refused"), peer: &peer.Peer{Addr: &net.TCPAddr{}}, want: ManagementInconclusive},
+		{name: "RPC deadline without peer", err: grpcstatus.Error(codes.DeadlineExceeded, "deadline exceeded"), peer: &peer.Peer{}, want: ManagementInconclusive},
 		{name: "RPC authentication refusal", err: grpcstatus.Error(codes.Unauthenticated, "unauthenticated"), want: ManagementInconclusive},
 		{name: "RPC authentication refusal does not identify the issuer", err: grpcstatus.Error(codes.Unauthenticated, "unauthenticated"), issuerRefused: func(error) bool { return false }, want: ManagementInconclusive},
 		{name: "EOF", err: io.EOF, want: ManagementInconclusive},
@@ -46,7 +53,7 @@ func TestManagementEvidence(t *testing.T) {
 		{name: "deadline", err: context.DeadlineExceeded, want: ManagementInconclusive},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := ClassifyManagementEvidence(tc.err, nil, tc.issuerRefused); got != tc.want {
+			if got := ClassifyManagementEvidence(tc.err, tc.peer, tc.issuerRefused); got != tc.want {
 				t.Errorf("evidence = %v, want %v", got, tc.want)
 			}
 		})

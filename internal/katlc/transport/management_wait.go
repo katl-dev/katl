@@ -53,11 +53,15 @@ func ClassifyManagementEvidence(err error, p *peer.Peer, oldAuthorityRefused fun
 		return ManagementInconclusive
 	case oldAuthorityRefused != nil && grpcstatus.Code(err) == codes.Unavailable && oldAuthorityRefused(err):
 		return ManagementRefusedExplicitly
-	case p != nil && refusedBeforeConnect(err, p):
+	case unavailableBeforePeer(err, p):
 		return ManagementUnreachable
 	default:
 		return ManagementInconclusive
 	}
+}
+
+func unavailableBeforePeer(err error, p *peer.Peer) bool {
+	return p != nil && p.Addr == nil && grpcstatus.Code(err) == codes.Unavailable
 }
 
 type managementRPCInconclusive struct{ cause error }
@@ -241,11 +245,11 @@ func explainMutualTLSNode(err error) error {
 // refusedBeforeConnect reports a call that never reached the agent because
 // nothing was listening, which is what a starting agent produces. A call that
 // had a connection (p.Addr set) may have reached the agent, and retrying it is
-// not safe. Handshake and identity failures are excluded because waiting does
-// not change their outcome. gRPC reports dial failures as Unavailable with the
-// cause only in the message.
+// not safe. The readiness wait retries only a refusal because it indicates
+// that the endpoint may still be starting. A reachability probe can use any
+// Unavailable result without a peer.
 func refusedBeforeConnect(err error, p *peer.Peer) bool {
-	return p.Addr == nil && grpcstatus.Code(err) == codes.Unavailable &&
+	return unavailableBeforePeer(err, p) &&
 		strings.Contains(grpcstatus.Convert(err).Message(), "connect: connection refused")
 }
 

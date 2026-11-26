@@ -7,9 +7,12 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync/atomic"
+	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
@@ -18,6 +21,7 @@ import (
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	grpcstatus "google.golang.org/grpc/status"
 )
 
@@ -208,13 +212,16 @@ func TestHostRebootTimesOutWhenAgentDoesNotRestart(t *testing.T) {
 	}
 }
 
-func TestHostShutdownWaitsForManagementAPIToStop(t *testing.T) {
+func TestHostShutdownWaitsForUnreachability(t *testing.T) {
 	for _, test := range []struct {
 		name      string
 		statusErr error
+		json      bool
 	}{
 		{name: "connection refused"},
-		{name: "agent error", statusErr: grpcstatus.Error(codes.Unavailable, "connection error: dial tcp: connect: connection refused")},
+		{name: "connection refused JSON", json: true},
+		{name: "agent unavailable", statusErr: grpcstatus.Error(codes.Unavailable, "connection error: dial tcp: connect: connection refused")},
+		{name: "agent internal error", statusErr: grpcstatus.Error(codes.Internal, "status read failed")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -237,7 +244,11 @@ func TestHostShutdownWaitsForManagementAPIToStop(t *testing.T) {
 
 			configPath := writeHostMutationContext(t, "machine-a")
 			var stdout, stderr bytes.Buffer
-			err = run(t.Context(), []string{"node", "shutdown", "node-a", "--context-file", configPath, "--endpoint", listener.Addr().String(), "--timeout", "1s"}, &stdout, &stderr)
+			args := []string{"node", "shutdown", "node-a", "--context-file", configPath, "--endpoint", listener.Addr().String(), "--timeout", "1s"}
+			if test.json {
+				args = append(args, "--output", "json")
+			}
+			err = run(t.Context(), args, &stdout, &stderr)
 			select {
 			case request := <-agent.requests:
 				if request.GetActor() != "katlctl node shutdown" || request.GetExpectedMachineId() != "machine-a" {
@@ -259,11 +270,84 @@ func TestHostShutdownWaitsForManagementAPIToStop(t *testing.T) {
 				}
 				return
 			}
-			if err != nil || stdout.String() != "node-a shut down; management API is offline\n" {
-				t.Fatalf("stdout = %q, err = %v, want offline confirmation", stdout.String(), err)
+			if test.json {
+				var report hostShutdownReport
+				if decodeErr := json.Unmarshal(stdout.Bytes(), &report); err != nil || decodeErr != nil || report.Node != "node-a" || report.Result != "unreachable-after-ack" {
+					t.Fatalf("stdout = %q, err = %v, decode error = %v, want unreachable-after-ack", stdout.String(), err, decodeErr)
+				}
+				return
+			}
+			if err != nil || stdout.String() != "node-a stopped responding after acknowledging shutdown\n" {
+				t.Fatalf("stdout = %q, err = %v, want acknowledgement followed by unreachability", stdout.String(), err)
 			}
 		})
 	}
+}
+
+func TestHostShutdownRequiresTimelyAcknowledgement(t *testing.T) {
+	unavailable := grpcstatus.Error(codes.Unavailable, "no route to host")
+	for _, test := range []struct {
+		name     string
+		accepted *agentapi.ShutdownAccepted
+		err      error
+		late     bool
+	}{
+		{name: "partition before acknowledgement", err: unavailable},
+		{name: "missing acknowledgement"},
+		{name: "negative acknowledgement", accepted: &agentapi.ShutdownAccepted{}},
+		{name: "late acknowledgement", accepted: &agentapi.ShutdownAccepted{Scheduled: true}, late: true},
+		{name: "partition after acknowledgement", accepted: &agentapi.ShutdownAccepted{Scheduled: true}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				configPath := writeHostMutationContext(t, "machine-a")
+				client := shutdownReplyClient{
+					KatlcAgentClient: healthyHostClient("machine-a", "agent-a", "generation-0"),
+					reply: func(ctx context.Context) (*agentapi.ShutdownAccepted, error) {
+						if test.late {
+							<-ctx.Done()
+						}
+						return test.accepted, test.err
+					},
+				}
+				dials := 0
+				oldDial := dialKatlcAgent
+				t.Cleanup(func() { dialKatlcAgent = oldDial })
+				dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
+					dials++
+					if dials == 1 {
+						return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
+					}
+					probe := &fakeKatlcAgentClient{nodeStatusErr: unavailable}
+					return katlcAgentConnection{Client: probe, Close: func() error { return nil }}, nil
+				}
+
+				var stdout, stderr bytes.Buffer
+				err := run(t.Context(), []string{"node", "shutdown", "node-a", "--context-file", configPath, "--timeout", "1s"}, &stdout, &stderr)
+				if test.accepted.GetScheduled() && !test.late {
+					if err != nil || stdout.String() != "node-a stopped responding after acknowledging shutdown\n" {
+						t.Fatalf("stdout = %q, err = %v, want acknowledgement followed by unreachability", stdout.String(), err)
+					}
+					return
+				}
+				if err == nil || !strings.Contains(err.Error(), "could not confirm acknowledgement") || stdout.Len() != 0 || stderr.Len() != 0 {
+					t.Fatalf("stdout = %q, stderr = %q, err = %v, want unacknowledged shutdown", stdout.String(), stderr.String(), err)
+				}
+				if dials != 1 {
+					t.Fatalf("made %d connections, want only the request connection", dials)
+				}
+			})
+		})
+	}
+}
+
+type shutdownReplyClient struct {
+	agentapi.KatlcAgentClient
+	reply func(context.Context) (*agentapi.ShutdownAccepted, error)
+}
+
+func (c shutdownReplyClient) Shutdown(ctx context.Context, _ *agentapi.ShutdownRequest, _ ...grpc.CallOption) (*agentapi.ShutdownAccepted, error) {
+	return c.reply(ctx)
 }
 
 type shutdownTestAgent struct {
@@ -303,10 +387,46 @@ func TestHostShutdownLateStatusFailure(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 		defer cancel()
 		target := managementTarget{nodeName: node.name, endpoint: mustManagement(t, "192.0.2.11").Endpoint(), credentials: &trustedNetworkClient}
-		if err := waitNodeOffline(ctx, target); !errors.Is(err, context.DeadlineExceeded) {
+		if err := (&acknowledgedShutdown{target: target}).waitUnreachable(ctx); !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("shutdown verification = %v, want deadline exceeded", err)
 		}
 	})
+}
+
+func TestAcknowledgedShutdownSlowDial(t *testing.T) {
+	for _, cause := range []error{os.ErrDeadlineExceeded, syscall.EHOSTUNREACH, syscall.ECONNRESET} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				oldDial := dialKatlcAgent
+				t.Cleanup(func() { dialKatlcAgent = oldDial })
+				dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
+					options := transport.ManagementDialOptions(ctx, "cp-1", endpoint, insecure.NewCredentials())
+					options = append(options, grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+						timer := time.NewTimer(3 * time.Second)
+						defer timer.Stop()
+						select {
+						case <-ctx.Done():
+							return nil, ctx.Err()
+						case <-timer.C:
+							return nil, &net.OpError{Op: "dial", Net: "tcp", Err: cause}
+						}
+					}))
+					conn, err := grpc.NewClient("passthrough:///"+endpoint, options...)
+					if err != nil {
+						return katlcAgentConnection{}, err
+					}
+					return katlcAgentConnection{Client: agentapi.NewKatlcAgentClient(conn), Close: conn.Close}, nil
+				}
+
+				ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
+				defer cancel()
+				target := managementTarget{nodeName: "cp-1", endpoint: mustHostPort(t, "192.0.2.11:9443"), credentials: &trustedNetworkClient}
+				if err := (&acknowledgedShutdown{target: target}).waitUnreachable(ctx); err != nil {
+					t.Fatalf("shutdown verification = %v, want unreachable after the dial fails", err)
+				}
+			})
+		})
+	}
 }
 
 func TestHostStatusLatePlaintextRefusal(t *testing.T) {
@@ -362,7 +482,7 @@ func TestHostShutdownNoWaitJSON(t *testing.T) {
 	}
 }
 
-func TestWaitNodeOfflineRetainsResolvedManagementIdentity(t *testing.T) {
+func TestAcknowledgedShutdownRetainsResolvedManagementIdentity(t *testing.T) {
 	credentials := &managementidentity.ClientCredentials{}
 	target := managementTarget{nodeName: "node-a", endpoint: mustHostPort(t, "override.test:9443"), credentials: credentials}
 	ctx, cancel := context.WithCancel(t.Context())
@@ -381,8 +501,8 @@ func TestWaitNodeOfflineRetainsResolvedManagementIdentity(t *testing.T) {
 	}
 	t.Cleanup(func() { dialKatlcAgent = oldDial })
 
-	if err := waitNodeOffline(ctx, target); !errors.Is(err, context.Canceled) {
-		t.Fatalf("waitNodeOffline() error = %v, want cancellation", err)
+	if err := (&acknowledgedShutdown{target: target}).waitUnreachable(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("waitUnreachable() error = %v, want cancellation", err)
 	}
 }
 

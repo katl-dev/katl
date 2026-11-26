@@ -197,7 +197,7 @@ Reboot a node and wait for it to return healthy:
 katlctl node reboot cp-1
 ```
 
-Shut down a node and wait for its management API to stop:
+Request a node shutdown and wait for its management API to stop responding.
 
 ```sh
 katlctl node shutdown cp-1
@@ -206,15 +206,19 @@ katlctl node shutdown cp-1
 Neither command requires a confirmation flag. Reboot honors the node's selected
 boot target, including a generation already staged for next boot, and verifies
 that a new agent instance returns on that generation with good boot health.
-Shutdown can prove that KatlOS management is offline; without an out-of-band
-power API, it cannot independently prove the machine's final hardware power
-state. Use `--no-wait` only when intentionally detaching, and `--output json`
-when a script needs structured output.
+Use `--no-wait` to return after the agent acknowledges the request, and
+`--output json` when a script needs structured output.
 
-A refused connection confirms the management API is offline. If a status
-probe expires or the agent returns an application error, `katlctl` keeps
-checking until it has transport evidence or the shutdown wait ends. If that
-wait times out for `cp-1`, the command reports the following.
+After the agent acknowledges shutdown, `katlctl` waits for a transport failure
+before a status probe reaches the agent. It then exits successfully and reports
+`cp-1 stopped responding after acknowledging shutdown`, or
+`"result": "unreachable-after-ack"` in JSON. Power-off and a network interruption
+can both produce this result. Check the node's console to verify power state.
+
+A missing, late, or failed acknowledgement causes a nonzero exit. After an
+acknowledgement, an expired status probe or an error from a live agent leaves
+the wait in progress until a transport failure is observed or the wait ends.
+If that wait times out for `cp-1`, the command reports the following.
 
 ```text
 shutdown was scheduled for cp-1. Could not confirm shutdown: context deadline exceeded. Check the node's console
