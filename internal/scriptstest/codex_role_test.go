@@ -17,6 +17,10 @@ import (
 
 func TestCodexRoleExec(t *testing.T) {
 	repo := repoRoot(t)
+	devGH, err := exec.LookPath("gh")
+	if err != nil {
+		t.Fatalf("find gh on the development shell PATH: %v", err)
+	}
 	bin := t.TempDir()
 	fakeCodexSystemd(t, bin)
 	path := bin + string(os.PathListSeparator) + os.Getenv("PATH")
@@ -59,6 +63,9 @@ printf 'ZW5jcnlw\ndGVk\n'
 	t.Setenv("TERM", "xterm")
 	t.Setenv("CODEX_UNLISTED", "caller state")
 	t.Setenv("GH_TOKEN", "caller_token")
+	t.Setenv("GITHUB_TOKEN", "caller_token")
+	t.Setenv("GH_ENTERPRISE_TOKEN", "caller_token")
+	t.Setenv("GITHUB_ENTERPRISE_TOKEN", "caller_token")
 
 	task := "Review \"this change\".\nKeep $HOME literal."
 	writeFakeExecutable(t, bin, "codex", `if IFS= read -r unexpected; then
@@ -68,6 +75,13 @@ fi
 [[ /dev/stdin -ef /dev/null ]]
 printf '%s\0' "$@" > codex-args
 printf '%s\0' "$PATH" "$HOME" "$CODEX_HOME" "${XDG_CONFIG_HOME-unset}" "${KATL_MANAGER_PROBE-unset}" "${GH_CONFIG_DIR-unset}" "${GH_TOKEN-unset}" "${GITHUB_TOKEN-unset}" "${GH_ENTERPRISE_TOKEN-unset}" "${GITHUB_ENTERPRISE_TOKEN-unset}" > codex-env
+type -aP gh > codex-gh-paths
+if [[ -f "$GH_CONFIG_DIR/hosts.yml" ]]; then
+    # The first path is the launcher probe. Use the development shell's gh
+    # to check which credential the job actually resolves.
+    mapfile -t gh_paths < codex-gh-paths
+    "${gh_paths[1]}" auth token --hostname github.com > codex-gh-token
+fi
 printf 'progress\n' >&2
 printf 'final message'
 exit "$CODEX_TEST_STATUS"
@@ -170,6 +184,9 @@ exit "$CODEX_TEST_STATUS"
 					len(credential["github.com"]) != 1 || credential["github.com"]["oauth_token"] != fakeToken {
 					t.Fatal("encryptor did not receive a config containing only the dedicated token")
 				}
+				if got := string(mustReadFile(t, filepath.Join(work, "codex-gh-token"))); got != fakeToken+"\n" {
+					t.Fatal("job gh did not resolve the dedicated token")
+				}
 				if strings.Contains(stderr.String(), authNotice) {
 					t.Fatalf("authenticated launch reported missing auth: %s", &stderr)
 				}
@@ -237,15 +254,24 @@ exit "$CODEX_TEST_STATUS"
 				}
 			}
 			if env := string(mustReadFile(t, filepath.Join(work, "codex-env"))); env != strings.Join([]string{
-				path, home, codexHome, "unset", "unset", "/run/credentials/probe", "unset", "unset", "unset", "unset", "",
+				path, home, codexHome, "unset", "unset", filepath.Join(work, "credentials"), "unset", "unset", "unset", "unset", "",
 			}, "\x00") {
 				t.Fatalf("unexpected Codex environment %q", env)
 			}
+			ghPaths := strings.Split(string(mustReadFile(t, filepath.Join(work, "codex-gh-paths"))), "\n")
+			if !slices.Contains(ghPaths, devGH) {
+				t.Errorf("job PATH did not include development shell gh at %q", devGH)
+			}
 
 			args := strings.Split(strings.TrimSuffix(string(mustReadFile(t, filepath.Join(work, "codex-args"))), "\x00"), "\x00")
-			want := []string{"exec", "-C", repo, "-s", tc.sandbox, "-m", tc.model, "-c", "model_reasoning_effort=" + tc.effort, "-c", "allow_login_shell=false"}
+			want := []string{"exec", "-C", repo, "-m", tc.model, "-c", "model_reasoning_effort=" + tc.effort, "-c", "allow_login_shell=false"}
 			if tc.sandbox == "workspace-write" {
-				want = append(want, "-c", "sandbox_workspace_write.writable_roots=[]", "--add-dir", buildCache, "--add-dir", moduleCache)
+				want = append(want, "-s", "workspace-write", "-c", "sandbox_workspace_write.network_access=true",
+					"-c", "sandbox_workspace_write.writable_roots=[]", "--add-dir", buildCache, "--add-dir", moduleCache)
+			} else {
+				want = append(want, "-c", `default_permissions="katl-role-read-only"`,
+					"-c", `permissions.katl-role-read-only.extends=":read-only"`,
+					"-c", "permissions.katl-role-read-only.network.enabled=true")
 			}
 			if len(args) != len(want)+1 || !slices.Equal(args[:len(want)], want) {
 				t.Fatalf("codex args = %q, want %q followed by one prompt", args, want)
@@ -373,7 +399,12 @@ while [[ "$1" != -- ]]; do
     case "$1" in
         --unit) shift ;;
         --setenv=*) environment+=("${1#--setenv=}") ;;
-        SetCredential=config.yml:*) environment+=(CREDENTIALS_DIRECTORY=/run/credentials/probe) ;;
+        SetCredential=config.yml:*)
+            mkdir -p credentials
+            printf '%s\n' "${1#SetCredential=config.yml:}" > credentials/config.yml
+            environment+=("CREDENTIALS_DIRECTORY=$PWD/credentials")
+            ;;
+        SetCredentialEncrypted=hosts.yml:*) cp credential-input credentials/hosts.yml ;;
     esac
     shift
 done

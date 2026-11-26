@@ -193,12 +193,19 @@ fi
 
 # Codex runs commands in a login shell by default, which would rebuild PATH from
 # the host profile. A non-login shell keeps the PATH from job_environment.
-codex_args=(exec -C "$repo_root" -s "$sandbox" -m "$model" -c "model_reasoning_effort=$effort" -c allow_login_shell=false)
+codex_args=(exec -C "$repo_root" -m "$model" -c "model_reasoning_effort=$effort" -c allow_login_shell=false)
 if [[ "$sandbox" == workspace-write ]]; then
     # Host-configured roots can be masked by ProtectHome, where bubblewrap
     # cannot create the mount points it uses to protect .git. Grant write
     # access only to the workspace, Codex's temp roots, and the bound Go caches.
-    codex_args+=(-c 'sandbox_workspace_write.writable_roots=[]' --add-dir "${job_env[GOCACHE]}" --add-dir "${job_env[GOMODCACHE]}")
+    codex_args+=(-s "$sandbox" -c sandbox_workspace_write.network_access=true
+        -c 'sandbox_workspace_write.writable_roots=[]' --add-dir "${job_env[GOCACHE]}" --add-dir "${job_env[GOMODCACHE]}")
+else
+    # Legacy read-only mode has no network setting. Inherit its filesystem
+    # policy through a named permissions profile with network enabled.
+    codex_args+=(-c 'default_permissions="katl-role-read-only"'
+        -c 'permissions.katl-role-read-only.extends=":read-only"'
+        -c permissions.katl-role-read-only.network.enabled=true)
 fi
 
 environment=()
@@ -207,6 +214,7 @@ for name in "${!job_env[@]}"; do
 done
 
 # Open the log in the service so a rejected launch cannot truncate it.
+# shellcheck disable=SC2016
 exec systemd-run --user --unit "$unit" --collect --wait --working-directory="$repo_root" --expand-environment=no \
     "${mounts[@]}" "${credentials[@]}" "${environment[@]}" -- "$BASH" -p -c '
         exec >"$1" 2>&1 || exit
