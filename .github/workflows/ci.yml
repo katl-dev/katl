@@ -47,7 +47,6 @@ jobs:
       production-flavours: ${{ steps.plan.outputs.production-flavours }}
       production-version: ${{ steps.production.outputs.version }}
       production-previous-tag: ${{ steps.production.outputs.previous-tag }}
-      production-notes-base-tag: ${{ steps.production.outputs.notes-base-tag }}
       kubernetes-version: ${{ steps.plan.outputs.kubernetes-version }}
       scenarios: ${{ steps.plan.outputs.scenarios }}
       vm-shadow: ${{ steps.plan.outputs.vm-shadow }}
@@ -175,21 +174,19 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           PRODUCTION_FLAVOURS: ${{ steps.plan.outputs.production-flavours }}
         run: |
-          upgrade_baseline=
-          if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            upgrade_baseline="$(scripts/katl-release-artifacts previous-tag "${BASE_SHA:-HEAD}")"
+          else
             upgrade_baseline="$(scripts/katl-release-artifacts upgrade-baseline)"
           fi
-          notes_base="$(scripts/katl-release-artifacts previous-tag "${BASE_SHA:-HEAD}")"
-          upgrade_baseline="${upgrade_baseline:-$notes_base}"
           version="$(scripts/katl-release-artifacts dev-version "$upgrade_baseline")"
           {
             echo "previous-tag=$upgrade_baseline"
-            echo "notes-base-tag=$notes_base"
             echo "version=$version"
           } >> "$GITHUB_OUTPUT"
           # Commit trailers can break release-note rendering independently of the diff.
           if [[ "$PRODUCTION_FLAVOURS" == '[]' ]]; then
-            KATL_RELEASE_PREVIOUS_TAG="$notes_base" scripts/katl-release-artifacts notes "$version" > _build/ci-release-notes.md
+            scripts/katl-release-artifacts notes "$version" > _build/ci-release-notes.md
           fi
 
   checks:
@@ -291,7 +288,6 @@ jobs:
     with:
       flavour: ${{ matrix.flavour }}
       version: ${{ needs.plan.outputs.production-version }}
-      notes-base-tag: ${{ needs.plan.outputs.production-notes-base-tag }}
       publication: false
 
   # Production VM qualifies each flavour's assembled bytes as the release does,

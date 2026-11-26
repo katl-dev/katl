@@ -379,16 +379,17 @@ esac
 			runGit(t, dir, "switch", "--quiet", "main")
 			runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "prepare prerelease")
 			runGit(t, dir, "tag", "v2026.10.1-rc.0")
+			writeReleaseScriptFixture(t, dir, "v2026.10.2")
+			runGit(t, dir, "add", productionBaselineFile)
+			runGit(t, dir, "commit", "--quiet", "-m", "Pin the upgrade baseline")
 			base := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
 			if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("documentation\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			runGit(t, dir, "add", "README.md")
 			runGit(t, dir, "commit", "--quiet", "-m", "docs: update", "-m", tc.trailers)
-			writeReleaseScriptFixture(t, dir, "v2026.10.2")
-
 			outputs := filepath.Join(dir, "output")
-			env := append(gittest.Env(environmentWithout("KATL_RELEASE_TARGET", "KATL_RELEASE_PREVIOUS_TAG"), dir),
+			env := append(gittest.Env(environmentWithout("KATL_RELEASE_TARGET"), dir),
 				"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"), "PLANNER="+planner,
 				"GITHUB_EVENT_NAME=merge_group", "BASE_SHA="+base, "GITHUB_OUTPUT="+outputs,
 				"GITHUB_STEP_SUMMARY="+filepath.Join(dir, "summary"), "KATL_REPO_ROOT="+dir)
@@ -409,7 +410,7 @@ esac
 				t.Fatalf("production identity: %v: %s", err, output)
 			}
 			notes := string(mustReadFile(t, filepath.Join(dir, "_build/ci-release-notes.md")))
-			for _, want := range []string{"Update the documentation", "prepare prerelease", "/compare/v2026.10.0...v2026.10.3-dev.0"} {
+			for _, want := range []string{"Update the documentation", "prepare prerelease", "/compare/v2026.10.2...v2026.10.3-dev.0"} {
 				if !strings.Contains(notes, want) {
 					t.Errorf("release notes missing %q: %s", want, notes)
 				}
@@ -1081,9 +1082,6 @@ func TestCIProductionJobs(t *testing.T) {
 	if got := production.Strategy.Matrix.Flavour; got != "${{ fromJSON(needs.plan.outputs.production-flavours) }}" {
 		t.Errorf("production matrix = %q, want the planned flavours", got)
 	}
-	if got := production.With["notes-base-tag"]; got != "${{ needs.plan.outputs.production-notes-base-tag }}" {
-		t.Errorf("production notes-base-tag = %v, want the planned notes start", got)
-	}
 }
 
 func TestCIProductionIdentity(t *testing.T) {
@@ -1122,10 +1120,10 @@ func TestCIProductionIdentity(t *testing.T) {
 	tools := t.TempDir()
 	writeFakeExecutable(t, tools, "gh", `touch "$GH_CALLS"; printf 'v2026.11.8\n'`)
 
-	for _, tc := range []struct{ name, event, prBase, mergeBase, baseline, notesBase, version string }{
-		{"merge group", "merge_group", "", base, "v2026.11.5", "v2026.11.4", "2026.11.6-dev.0"},
-		{"push", "push", "", "", "v2026.11.5", "v2026.11.6", "2026.11.6-dev.0"},
-		{"release branch pull request", "pull_request", series, "", "v2026.10.2", "v2026.10.2", "2026.10.3-dev.0"},
+	for _, tc := range []struct{ name, event, prBase, mergeBase, baseline, version string }{
+		{"merge group", "merge_group", "", base, "v2026.11.5", "2026.11.6-dev.0"},
+		{"push", "push", "", "", "v2026.11.5", "2026.11.6-dev.0"},
+		{"release branch pull request", "pull_request", series, "", "v2026.10.2", "2026.10.3-dev.0"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := t.TempDir()
@@ -1147,7 +1145,7 @@ func TestCIProductionIdentity(t *testing.T) {
 			if tc.event == "push" {
 				flavours = `[]`
 			}
-			command.Env = append(gittest.Env(environmentWithout("KATL_RELEASE_TARGET", "KATL_RELEASE_PREVIOUS_TAG"), dir),
+			command.Env = append(gittest.Env(environmentWithout("KATL_RELEASE_TARGET"), dir),
 				"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"), "GH_CALLS="+calls,
 				"KATL_REPO_ROOT="+dir, "GITHUB_EVENT_NAME="+tc.event, "BASE_SHA="+baseSHA,
 				"PRODUCTION_FLAVOURS="+flavours, "GITHUB_OUTPUT="+outputPath)
@@ -1158,7 +1156,7 @@ func TestCIProductionIdentity(t *testing.T) {
 				t.Fatalf("production identity consulted GitHub, stat call marker: %v", err)
 			}
 			outputs := mustReadFile(t, outputPath)
-			for _, want := range []string{"previous-tag=" + tc.baseline + "\n", "notes-base-tag=" + tc.notesBase + "\n", "version=" + tc.version + "\n"} {
+			for _, want := range []string{"previous-tag=" + tc.baseline + "\n", "version=" + tc.version + "\n"} {
 				if !strings.Contains(string(outputs), want) {
 					t.Errorf("outputs = %s, want %q", outputs, want)
 				}

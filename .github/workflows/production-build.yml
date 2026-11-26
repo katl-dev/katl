@@ -11,10 +11,6 @@ on:
         description: Canonical CalVer embedded in artifacts
         type: string
         required: true
-      notes-base-tag:
-        description: Reachable stable release tag that starts the release notes
-        type: string
-        required: true
       publication:
         description: Retain the build for publication and upload the extension publication inputs
         type: boolean
@@ -360,9 +356,6 @@ jobs:
     outputs:
       artifact: ${{ steps.names.outputs.artifact }}
       extension-bundles: ${{ steps.names.outputs.extension-bundles }}
-
-    env:
-      KATL_RELEASE_PREVIOUS_TAG: ${{ inputs.notes-base-tag }}
 
     steps:
       - name: Validate flavour

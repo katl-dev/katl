@@ -175,7 +175,7 @@ The release workflow starts notes at the newest stable tag reachable from the
 build commit with a published, non-prerelease GitHub release. It excludes the
 tag for the version being built.
 Each flavour is built by the reusable `production-build.yml` workflow (inputs `flavour`,
-`version`, `notes-base-tag`, `publication`), and its Production VM qualification starts
+`version`, `publication`), and its Production VM qualification starts
 when that build ends. Releases run regression for both flavours and qualify each
 flavour's assembled production bytes,
 including installation, reboot, upgrade from the pinned baseline, and rollback

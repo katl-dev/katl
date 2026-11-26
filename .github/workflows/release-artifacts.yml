@@ -114,7 +114,6 @@ jobs:
       artifact-name: ${{ steps.release.outputs.artifact-name }}
       version: ${{ steps.release.outputs.version }}
       previous-tag: ${{ steps.previous.outputs.tag }}
-      notes-base-tag: ${{ steps.release.outputs.notes-base-tag }}
       regression: ${{ steps.regression.outputs.decision }}
 
     env:
@@ -137,7 +136,6 @@ jobs:
         id: release
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
           MANUAL_VERSION: ${{ inputs.version }}
           PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
         run: |
@@ -148,12 +146,10 @@ jobs:
           version="$(scripts/katl-release-artifacts version \
             "$event" "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" \
             "$MANUAL_VERSION")"
-          notes_base="$(scripts/katl-release-artifacts previous-tag --published HEAD "v$version")"
           short_sha="${GITHUB_SHA:0:12}"
           artifact_name="katl-${version}-${KATL_ARCHITECTURE}-${short_sha}"
           {
             echo "version=$version"
-            echo "notes-base-tag=$notes_base"
             echo "artifact-name=$artifact_name"
           } >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-go
@@ -181,7 +177,6 @@ jobs:
     with:
       flavour: standard
       version: ${{ needs.identity.outputs.version }}
-      notes-base-tag: ${{ needs.identity.outputs.notes-base-tag }}
       publication: true
 
   build-lts:
@@ -193,7 +188,6 @@ jobs:
     with:
       flavour: lts
       version: ${{ needs.identity.outputs.version }}
-      notes-base-tag: ${{ needs.identity.outputs.notes-base-tag }}
       publication: true
 
   bundle:
