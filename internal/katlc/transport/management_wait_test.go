@@ -251,38 +251,114 @@ func TestManagementCallRefusedGivesGuidance(t *testing.T) {
 	}
 }
 
-func TestManagementStreamLateEOF(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-		defer cancel()
-		options := ManagementDialOptions(WithoutManagementWait(ctx), "cp-1", "unused", insecure.NewCredentials())
-		options = append(options, grpc.WithChainStreamInterceptor(func(ctx context.Context, _ *grpc.StreamDesc, _ *grpc.ClientConn, _ string, _ grpc.Streamer, _ ...grpc.CallOption) (grpc.ClientStream, error) {
-			return closingManagementStream{ctx: ctx}, nil
-		}))
-		conn, err := grpc.NewClient("passthrough:///unused", options...)
-		if err != nil {
-			t.Fatal(err)
+func TestManagementRPCInconclusive(t *testing.T) {
+	timings := []struct {
+		name  string
+		delay time.Duration
+		cause error
+	}{
+		{name: "at deadline", delay: time.Second, cause: context.DeadlineExceeded},
+		{name: "after deadline", delay: 2 * time.Second, cause: context.DeadlineExceeded},
+		{name: "after cancellation", cause: context.Canceled},
+	}
+	results := []struct {
+		name string
+		err  error
+	}{
+		{name: "success"},
+		{name: "RPC error", err: grpcstatus.Error(codes.Unavailable, "connection reset")},
+		{name: "EOF", err: io.EOF},
+	}
+	calls := []struct {
+		name   string
+		stream func(grpc.ClientStream) error
+	}{
+		{name: "unary"},
+		{name: "stream open"},
+		{name: "stream send", stream: func(s grpc.ClientStream) error {
+			return s.SendMsg(&agentapi.StageHostUpgradeArtifactRequest{})
+		}},
+		{name: "stream receive", stream: func(s grpc.ClientStream) error {
+			return s.RecvMsg(&agentapi.HostUpgradeArtifactStaged{})
+		}},
+		{name: "stream close", stream: grpc.ClientStream.CloseSend},
+	}
+	for _, call := range calls {
+		for _, timing := range timings {
+			for _, result := range results {
+				t.Run(call.name+"/"+timing.name+"/"+result.name, func(t *testing.T) {
+					synctest.Test(t, func(t *testing.T) {
+						ctx, cancel := context.WithCancel(t.Context())
+						defer cancel()
+						if timing.cause == context.DeadlineExceeded {
+							ctx = managementDeadlineContext{Context: ctx, deadline: time.Now().Add(time.Second)}
+						}
+						finish := func() error {
+							if timing.cause == context.Canceled {
+								cancel()
+							} else {
+								time.Sleep(timing.delay)
+							}
+							return result.err
+						}
+
+						options := ManagementDialOptions(WithoutManagementWait(ctx), "cp-1", "unused", insecure.NewCredentials())
+						options = append(options,
+							grpc.WithChainUnaryInterceptor(func(context.Context, string, any, any, *grpc.ClientConn, grpc.UnaryInvoker, ...grpc.CallOption) error {
+								return finish()
+							}),
+							grpc.WithChainStreamInterceptor(func(context.Context, *grpc.StreamDesc, *grpc.ClientConn, string, grpc.Streamer, ...grpc.CallOption) (grpc.ClientStream, error) {
+								stream := managementResultStream{finish: finish}
+								if call.stream == nil {
+									return stream, finish()
+								}
+								return stream, nil
+							}),
+						)
+						conn, err := grpc.NewClient("passthrough:///unused", options...)
+						if err != nil {
+							t.Fatal(err)
+						}
+						defer conn.Close()
+
+						if call.name == "unary" {
+							_, err = agentapi.NewKatlcAgentClient(conn).GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+						} else {
+							var stream grpc.ClientStream
+							stream, err = conn.NewStream(ctx, &grpc.StreamDesc{ClientStreams: true}, agentapi.KatlcAgent_StageHostUpgradeArtifact_FullMethodName)
+							if call.stream != nil {
+								if err != nil {
+									t.Fatalf("open stream before budget ended: %v", err)
+								}
+								err = call.stream(stream)
+							}
+						}
+						if !errors.Is(err, ErrManagementRPCInconclusive) || !errors.Is(err, timing.cause) {
+							t.Fatalf("result = %v, want an inconclusive outcome wrapping %v", err, timing.cause)
+						}
+					})
+				})
+			}
 		}
-		defer conn.Close()
-		stream, err := conn.NewStream(ctx, &grpc.StreamDesc{ServerStreams: true}, agentapi.KatlcAgent_WatchOperation_FullMethodName)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := stream.RecvMsg(&agentapi.OperationEvent{}); !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("late stream result = %v, want deadline exceeded", err)
-		}
-	})
+	}
 }
 
-type closingManagementStream struct {
+// A deadline can pass before the context reports cancellation.
+type managementDeadlineContext struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c managementDeadlineContext) Deadline() (time.Time, bool) { return c.deadline, true }
+
+type managementResultStream struct {
 	grpc.ClientStream
-	ctx context.Context
+	finish func() error
 }
 
-func (s closingManagementStream) RecvMsg(any) error {
-	<-s.ctx.Done()
-	return io.EOF
-}
+func (s managementResultStream) SendMsg(any) error { return s.finish() }
+func (s managementResultStream) RecvMsg(any) error { return s.finish() }
+func (s managementResultStream) CloseSend() error  { return s.finish() }
 
 // Failures that waiting cannot cure surface at once and unchanged: a handshake
 // that fails, and an agent that answers with an error that merely mentions a

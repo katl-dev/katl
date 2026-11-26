@@ -103,7 +103,9 @@ katlctl context rebind --node cp-1 --endpoint 192.0.2.51
 
 Rebind succeeds only when TLS authenticates the expected node name and the new
 address reports the same node name, enrollment ID, and machine ID that the
-context recorded.
+context recorded. If verification reports `management RPC outcome is inconclusive`,
+the context keeps the previous address. Follow the message to
+`check the address and node reachability, then rerun or increase --timeout`.
 
 Remove a context with `katlctl context delete NAME`. Deleting it does not delete
 the referenced secrets, external cluster secrets, or nodes, and does not change
@@ -187,6 +189,14 @@ Shutdown can prove that KatlOS management is offline; without an out-of-band
 power API, it cannot independently prove the machine's final hardware power
 state. Use `--no-wait` only when intentionally detaching, and `--output json`
 when a script needs structured output.
+
+A status probe that expires while waiting for shutdown leaves the management
+API's state unverified, so `katlctl` keeps checking until the shutdown wait
+ends. If that wait times out for `cp-1`, the command reports the following.
+
+```text
+shutdown was scheduled for cp-1. Could not verify that its management API is offline: context deadline exceeded. Check the node's console
+```
 
 ## Retrieve a kubeconfig
 

@@ -68,7 +68,9 @@ configuration or applying a generation cannot make that change.
    the reported problem and rerun. A trusted-network node fails preflight if
    its clock is more than five minutes behind the workstation, since it can
    reject the new certificates as not yet valid. Correct the node's time source
-   and rerun.
+   and rerun. If an mTLS or plaintext preflight reports
+   `management RPC outcome is inconclusive`, follow its guidance to
+   `check the address and node reachability, then rerun`.
 
 2. Back up the secrets file as soon as the command reports its path. By default
    the command creates or reuses `management-secrets.yaml` beside `cluster.yaml`.
@@ -93,10 +95,12 @@ configuration or applying a generation cannot make that change.
    `spec.managementAuthentication: mtls` in `cluster.yaml` and sets
    `spec.managementIdentity` to the secrets path relative to `cluster.yaml`.
    When it refreshes the saved context for a cluster named `lab`, it prints
-   `Refreshed the saved context for lab.` If you have no saved context for the
-   cluster, a successful migration prints a `katlctl context save` command you
-   can run to create one. Check that every node shows `mtls` in the `MANAGEMENT`
-   column.
+   `Refreshed the saved context for lab.` If it reports `the saved context could
+   not be refreshed:`, the nodes and configuration have already moved to mTLS.
+   Resolve the reported error and run the `katlctl context save --config` command
+   shown in the message. If you have no saved context for the cluster, a successful
+   migration prints a `katlctl context save` command you can run to create one.
+   Check that every node shows `mtls` in the `MANAGEMENT` column.
 
    ```sh
    katlctl cluster status --config ./cluster.yaml
@@ -109,9 +113,10 @@ a node with an unconfirmed trial reverts to trusted-network at its deadline.
 Nodes that already confirmed mTLS keep it, even if the connection dropped
 before the confirmation reply reached your workstation.
 
-If the command reports `interrupted before the new authority was confirmed`,
-use the reported time to decide whether to resume the trial or wait for it
-to revert.
+If the command reports `interrupted before the new authority was confirmed:`,
+a trial may have started on the node. The message gives the recovery steps.
+
+> Rerunning with the same secrets resumes a live trial or starts again if the node has already reverted. To revert a live trial immediately, run 'katlc agent management-trial revert' on the node console
 
 Check the cluster or an individual node using the same configuration.
 
@@ -121,7 +126,9 @@ katlctl node status cp-1 --config ./cluster.yaml
 ```
 
 When the endpoint closes a trusted-network status connection without answering
-the initial status request, these commands retry over mTLS. They look for
+the initial status request within its deadline, these commands retry over mTLS.
+If the request expires, status reports `management RPC outcome is inconclusive`
+and skips the mTLS retry. When retrying over mTLS, the commands look for
 secrets at the path in `spec.managementIdentity`, or at `management-secrets.yaml`
 beside the config when it has no reference. A live trial shows
 `trusted-network (mtls trial)` in the `MANAGEMENT` column and a detail such as
@@ -134,8 +141,9 @@ custom `--output` path only if it matches the path status looks for.
 
 If the command reports `did not answer over mTLS with the new authority`,
 check that the workstation can reach the node over mTLS at its configured
-`management.address`. To end an unconfirmed trial immediately, run this as root
-on the node's console.
+`management.address`. If it reports `could not verify that it refuses plaintext
+management:`, follow its guidance to `check the endpoint and rerun`.
+To end an unconfirmed trial immediately, run this as root on the node's console.
 
 ```sh
 katlc agent management-trial revert
@@ -289,6 +297,12 @@ pass. If an agent fails to reload its credentials, use root SSH to inspect
 `katlc-agent.service` and its journal, repair that failure, and rerun. Do not
 generate another replacement during recovery.
 
+If rotation reports `could not verify rejection of the exposed client credential:`,
+follow its guidance to `check the endpoint and rerun with the same --output`.
+When `cluster.yaml` already references the replacement, an inconclusive check
+reports `could not verify the configured authority on` the affected node and
+tells you to `check the endpoint and rerun`.
+
 After verification, remove exposed plaintext secrets from the tracked tree and
 keep only protected recovery copies. Published Git history remains a separate
 exposure even after the current tree is cleaned. Back up the new SOPS decryption
@@ -343,10 +357,12 @@ authority and anonymous clients are refused afterwards; the command never
 switches a node to trusted-network access. Back up the new secrets file, then
 refresh saved contexts with `katlctl context save --config ./cluster.yaml`.
 
-If the command stops partway through, keep the new secrets file and rerun the
-same command: nodes that already trust the new authority are skipped. To
-recover with a different authority, move the new secrets file aside first. A
-file that already exists at the target path is used as the replacement.
+If recovery reports `could not verify that node` accepts the replacement file,
+keep that file and follow the message to `rerun the same command`. Use the same
+retry if recovery stops partway through. Nodes that already trust the new
+authority are skipped. To recover with a different authority, move the new
+secrets file aside first. A file that already exists at the target path is used
+as the replacement.
 
 If SSH to a node is unavailable, no remote path can recover it, because the
 management API requires the lost credentials. Use the node console to restore
