@@ -133,9 +133,10 @@ func runManagementIdentityRotate(ctx context.Context, opts managementRotationOpt
 			return err
 		}
 		for _, node := range nodes {
-			if err := checkManagementCredential(ctx, node, client, opts.timeout); err != nil {
-				if errors.Is(err, transport.ErrManagementRPCInconclusive) {
-					return fmt.Errorf("could not verify the configured authority on %s: %w; check the endpoint and rerun", node.name, err)
+			probeCtx, observation := transport.ObserveManagementConnection(ctx)
+			if err := checkManagementCredential(probeCtx, node, client, opts.timeout); err != nil {
+				if errors.Is(err, transport.ErrManagementRPCInconclusive) || observation.Protocol() != transport.TLS {
+					return fmt.Errorf("could not verify the configured authority on %s at %s: %w; keep the configured replacement, check the endpoint and rerun", node.name, node.endpoint, err)
 				}
 				return fmt.Errorf("ClusterConfig already references %s, but node %s does not accept it: %w; restore the previous secrets reference and rerun rotation", outputPath, node.name, err)
 			}
@@ -158,6 +159,10 @@ func runManagementIdentityRotate(ctx context.Context, opts managementRotationOpt
 	if err != nil {
 		return err
 	}
+	oldProbe, err := managementidentity.IssueRotationProbe(old.CertificateAuthority, time.Now().UTC())
+	if err != nil {
+		return fmt.Errorf("issue a verification credential from the old management authority: %w", err)
+	}
 	for _, node := range nodes {
 		fmt.Fprintf(stderr, "Preflight root SSH and management identity on %s\n", node.name)
 		if _, err := runManagementRotationSSH(ctx, node, opts, true); err != nil {
@@ -168,16 +173,12 @@ func runManagementIdentityRotate(ctx context.Context, opts managementRotationOpt
 	if err != nil {
 		return err
 	}
-	oldClient, err := managementidentity.Client(old, time.Now().UTC())
-	if err != nil {
-		return err
-	}
 	for _, node := range nodes {
 		fmt.Fprintf(stderr, "Rotating management identity on %s\n", node.name)
 		if _, err := runManagementRotationSSH(ctx, node, opts, false); err != nil {
 			return fmt.Errorf("rotate %s: %w; keep %s and rerun the same command after recovery", node.name, err, outputPath)
 		}
-		if err := verifyRotatedManagement(ctx, node, newClient, oldClient, opts.timeout); err != nil {
+		if err := verifyRotatedManagement(ctx, node, newClient, oldProbe, opts.timeout); err != nil {
 			return fmt.Errorf("verify %s: %w; the replacement file at %s is needed to resume", node.name, err, outputPath)
 		}
 		fmt.Fprintf(stderr, "Verified replacement authority and old-authority rejection on %s\n", node.name)
@@ -402,25 +403,23 @@ func runKatlcAgentSSH(ctx context.Context, node managementRotationNode, opts man
 	return stdout.Bytes(), nil
 }
 
-func verifyRotatedManagement(ctx context.Context, node managementRotationNode, next, old managementidentity.ClientCredentials, timeout time.Duration) error {
+func verifyRotatedManagement(ctx context.Context, node managementRotationNode, next managementidentity.ClientCredentials, oldProbe managementidentity.CertificateKey, timeout time.Duration) error {
 	if err := waitManagementCredential(ctx, node, next, timeout); err != nil {
 		return fmt.Errorf("could not verify that the replacement authority can manage the node: %w", err)
 	}
-	// Trust the new server certificate while presenting the old client leaf.
-	// This proves the node rejects the exposed client credential itself.
-	if err := verifyExposedManagementCredentialRejected(ctx, node, next.CACertificate, old, min(timeout, 5*time.Second)); err != nil {
+	if err := verifyOldManagementAuthorityRejected(ctx, node, next.CACertificate, oldProbe, min(timeout, 5*time.Second)); err != nil {
 		return err
 	}
 	if err := checkManagementCredential(ctx, node, next, min(timeout, 5*time.Second)); err != nil {
-		return fmt.Errorf("could not reverify the replacement authority after checking the exposed client credential: %w", err)
+		return fmt.Errorf("could not reverify the replacement authority after checking the old authority: %w", err)
 	}
 	return nil
 }
 
-func verifyExposedManagementCredentialRejected(ctx context.Context, node managementRotationNode, currentCA string, exposed managementidentity.ClientCredentials, timeout time.Duration) error {
-	certificate, err := tls.X509KeyPair([]byte(exposed.ClientCertificate), []byte(exposed.ClientPrivateKey))
+func verifyOldManagementAuthorityRejected(ctx context.Context, node managementRotationNode, currentCA string, oldProbe managementidentity.CertificateKey, timeout time.Duration) error {
+	certificate, err := tls.X509KeyPair([]byte(oldProbe.Certificate), []byte(oldProbe.PrivateKey))
 	if err != nil {
-		return fmt.Errorf("load exposed client credential: %w", err)
+		return fmt.Errorf("load the old authority's verification credential: %w", err)
 	}
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM([]byte(currentCA)) {
@@ -432,7 +431,7 @@ func verifyExposedManagementCredentialRejected(ctx context.Context, node managem
 		// server's acceptable CA list so the server must reject it itself.
 		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) { return &certificate, nil },
 	}
-	creds, rejected := transport.ObserveClientCertificateRejection(config)
+	creds, unknownAuthority := transport.ObserveUnknownClientAuthority(config)
 	requestCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	conn, err := dialKatlcAgentWithTransport(transport.WithoutManagementWait(requestCtx), node.name, node.endpoint, creds)
@@ -443,15 +442,15 @@ func verifyExposedManagementCredentialRejected(ctx context.Context, node managem
 	var remote peer.Peer
 	status, err := conn.Client.GetNodeStatus(requestCtx, &agentapi.GetNodeStatusRequest{}, grpc.Peer(&remote))
 	if err != nil {
-		if !errors.Is(err, transport.ErrManagementRPCInconclusive) && grpcstatus.Code(err) == codes.Unavailable && remote.Addr == nil && rejected() {
+		if !errors.Is(err, transport.ErrManagementRPCInconclusive) && grpcstatus.Code(err) == codes.Unavailable && remote.Addr == nil && unknownAuthority() {
 			return nil
 		}
-		return fmt.Errorf("could not verify rejection of the exposed client credential: %w; check the endpoint and rerun with the same --output", err)
+		return fmt.Errorf("could not verify rejection of the old authority: %w; check the endpoint and the agent's client CA trust, then rerun with the same --output", err)
 	}
 	if status.GetInventoryNodeName() != node.name || (node.machineID != "" && status.GetMachineId() != node.machineID) {
 		return fmt.Errorf("management endpoint reported a different node or machine")
 	}
-	return fmt.Errorf("exposed authority still has management access")
+	return fmt.Errorf("old authority still has management access; check the agent's client CA trust and rerun with the same --output")
 }
 
 func waitManagementCredential(ctx context.Context, node managementRotationNode, credentials managementidentity.ClientCredentials, timeout time.Duration) error {

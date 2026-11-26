@@ -51,20 +51,20 @@ func (c *clientCredentials) Clone() credentials.TransportCredentials {
 	return &clientCredentials{TransportCredentials: c.TransportCredentials.Clone()}
 }
 
-// ObserveClientCertificateRejection records a peer's certificate refusal
-// after the client has authenticated the server and presented its certificate.
-func ObserveClientCertificateRejection(config *tls.Config) (credentials.TransportCredentials, func() bool) {
-	var rejected atomic.Bool
-	return &clientCertificateProbe{TransportCredentials: NewClientCredentials(config), rejected: &rejected}, rejected.Load
+// ObserveUnknownClientAuthority records unknown_ca after the client has
+// authenticated the server. Other alerts cannot establish issuer rejection.
+func ObserveUnknownClientAuthority(config *tls.Config) (credentials.TransportCredentials, func() bool) {
+	var unknownAuthority atomic.Bool
+	return &clientCertificateProbe{TransportCredentials: NewClientCredentials(config), unknownAuthority: &unknownAuthority}, unknownAuthority.Load
 }
 
 type clientCertificateProbe struct {
 	credentials.TransportCredentials
-	rejected *atomic.Bool
+	unknownAuthority *atomic.Bool
 }
 
 func (c *clientCertificateProbe) Clone() credentials.TransportCredentials {
-	return &clientCertificateProbe{TransportCredentials: c.TransportCredentials.Clone(), rejected: c.rejected}
+	return &clientCertificateProbe{TransportCredentials: c.TransportCredentials.Clone(), unknownAuthority: c.unknownAuthority}
 }
 
 func (c *clientCertificateProbe) ClientHandshake(ctx context.Context, address string, conn net.Conn) (net.Conn, credentials.AuthInfo, error) {
@@ -85,14 +85,11 @@ func (c *clientCertificateProbe) ClientHandshake(ctx context.Context, address st
 	if err == nil {
 		return &clientCertificateProbeConn{Conn: secure, reader: reader}, info, nil
 	}
-	// crypto/tls wraps alerts from a TCP peer in a net.OpError. Capture
-	// certificate alerts here, before gRPC reduces them to status text.
+	// crypto/tls wraps a TCP peer's alert in a net.OpError with an
+	// unexported alert type. Capture it before gRPC flattens the error.
 	var remote *net.OpError
-	if errors.As(err, &remote) && remote.Op == "remote error" {
-		switch remote.Err.Error() {
-		case "tls: unknown certificate authority", "tls: bad certificate", "tls: expired certificate", "tls: revoked certificate", "tls: unsupported certificate":
-			c.rejected.Store(true)
-		}
+	if errors.As(err, &remote) && remote.Op == "remote error" && remote.Err.Error() == "tls: unknown certificate authority" {
+		c.unknownAuthority.Store(true)
 	}
 	return nil, nil, err
 }

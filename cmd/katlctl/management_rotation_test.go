@@ -3,6 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"net"
 	"os"
@@ -22,11 +26,38 @@ import (
 )
 
 func TestManagementIdentityRotateReplacesLiveTrust(t *testing.T) {
+	testManagementRotationLiveTrust(t, "", false)
+}
+
+func TestManagementIdentityRotateRequiresIssuerRejection(t *testing.T) {
+	t.Run("old leaf expires at the server", func(t *testing.T) {
+		testManagementRotationLiveTrust(t, "expired leaf", false)
+	})
+	t.Run("old leaf expires with a second node pending", func(t *testing.T) {
+		testManagementRotationLiveTrust(t, "expired leaf", true)
+	})
+	t.Run("TLS policy rejects a fresh leaf generically", func(t *testing.T) {
+		testManagementRotationLiveTrust(t, "generic rejection", false)
+	})
+}
+
+func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker bool) {
+	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("KATLCTL_CONFIG", filepath.Join(dir, "no-context.yaml"))
 	t.Setenv("KATLCTL_CONFIG_DIR", "")
 	configPath := filepath.Join(dir, "cluster.yaml")
-	if err := os.WriteFile(configPath, []byte(configBundleSource()), 0o644); err != nil {
+	config := configBundleSource()
+	if addWorker {
+		config += `    - name: worker-1
+      management:
+        address: 192.0.2.12
+      install:
+        systemDisk:
+          byID: /dev/disk/by-id/ata-worker-root
+`
+	}
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	createTestManagementSecrets(t, configPath)
@@ -34,6 +65,13 @@ func TestManagementIdentityRotateReplacesLiveTrust(t *testing.T) {
 	old, err := readManagementIdentity(oldPath)
 	if err != nil {
 		t.Fatal(err)
+	}
+	serverTime := time.Now().Add(2 * time.Hour)
+	if rejection == "expired leaf" {
+		shortenRotationTestLeaf(t, &old, serverTime.Add(-time.Hour))
+		if err := managementidentity.SaveExisting(oldPath, old); err != nil {
+			t.Fatal(err)
+		}
 	}
 	oldInfo, err := managementidentity.Validate(old, time.Now())
 	if err != nil {
@@ -58,7 +96,7 @@ func TestManagementIdentityRotateReplacesLiveTrust(t *testing.T) {
 	var server *grpc.Server
 	var listener net.Listener
 	var endpoint string
-	var allowOldClient bool
+	var rotated bool
 	start := func() {
 		t.Helper()
 		if server != nil {
@@ -69,9 +107,24 @@ func TestManagementIdentityRotateReplacesLiveTrust(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if allowOldClient {
+		if rotated && rejection != "" {
 			if !tlsConfig.ClientCAs.AppendCertsFromPEM([]byte(old.CertificateAuthority.Certificate)) {
 				t.Fatal("add old authority to deliberately unsafe test server")
+			}
+			switch rejection {
+			case "expired leaf":
+				// The server clock expires only the original operator leaf.
+				tlsConfig.Time = func() time.Time { return serverTime }
+			case "generic rejection":
+				oldCA, _ := pem.Decode([]byte(old.CertificateAuthority.Certificate))
+				tlsConfig.VerifyPeerCertificate = func(_ [][]byte, chains [][]*x509.Certificate) error {
+					for _, chain := range chains {
+						if bytes.Equal(chain[len(chain)-1].Raw, oldCA.Bytes) {
+							return errors.New("client certificate denied by policy")
+						}
+					}
+					return nil
+				}
 			}
 		}
 		listenAddress := endpoint
@@ -85,7 +138,7 @@ func TestManagementIdentityRotateReplacesLiveTrust(t *testing.T) {
 		endpoint = listener.Addr().String()
 		server = grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)))
 		agentapi.RegisterKatlcAgentServer(server, &clusterApplyIdentityServer{client: &fakeKatlcAgentClient{nodeStatus: enrolledStatus("cp-1", enrollment.ID, machineID)}})
-		go func() { _ = server.Serve(listener) }()
+		go server.Serve(listener)
 	}
 	start()
 	t.Cleanup(func() { server.Stop(); listener.Close() })
@@ -93,7 +146,8 @@ func TestManagementIdentityRotateReplacesLiveTrust(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath, []byte(strings.ReplaceAll(string(configured), "10.0.0.11", endpoint)), 0o600); err != nil {
+	configured = bytes.ReplaceAll(configured, []byte("10.0.0.11"), []byte(endpoint))
+	if err := os.WriteFile(configPath, configured, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	previousDial := dialKatlcAgent
@@ -107,21 +161,51 @@ func TestManagementIdentityRotateReplacesLiveTrust(t *testing.T) {
 	}
 	t.Cleanup(func() { dialKatlcAgent = previousDial })
 	previousSSH := runManagementRotationSSH
+	var changed []string
 	runManagementRotationSSH = func(_ context.Context, target managementRotationNode, _ managementRotationOptions, dryRun bool) (nodeidentity.ManagementRotationStatus, error) {
+		if target.name != "cp-1" {
+			if !dryRun {
+				changed = append(changed, target.name)
+				return nodeidentity.ManagementRotationStatus{}, errors.New("rotation reached the second node")
+			}
+			return nodeidentity.ManagementRotationStatus{}, nil
+		}
 		if dryRun {
 			return nodeidentity.InspectManagementRotation(root, target.request)
 		}
+		changed = append(changed, target.name)
 		result, err := nodeidentity.RotateManagementIdentity(root, target.request)
 		if err == nil {
+			rotated = true
 			start()
-			transientDialFailures = 1
+			if rejection == "" {
+				transientDialFailures = 1
+			}
 		}
 		return result, err
 	}
 	t.Cleanup(func() { runManagementRotationSSH = previousSSH })
 	outputPath := filepath.Join(dir, "management-secrets-next.yaml")
 	var stdout, stderr bytes.Buffer
-	if err := run(context.Background(), []string{"management", "identity", "rotate", "--config", configPath, "--output", outputPath, "--timeout", "3s"}, &stdout, &stderr); err != nil {
+	err = run(t.Context(), []string{"management", "identity", "rotate", "--config", configPath, "--output", outputPath, "--timeout", "3s"}, &stdout, &stderr)
+	if rejection != "" {
+		data, readErr := os.ReadFile(configPath)
+		if readErr != nil || !bytes.Equal(data, configured) {
+			t.Fatalf("rotation published the replacement reference: %v", readErr)
+		}
+		if len(changed) != 1 || changed[0] != "cp-1" {
+			t.Fatalf("rotation changed nodes %v after an unproven old-issuer rejection", changed)
+		}
+		want := "old authority still has management access"
+		if rejection == "generic rejection" {
+			want = "tls: bad certificate"
+		}
+		if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "rerun with the same --output") {
+			t.Fatalf("rotate = %v\n%s\nwant %q and rerun guidance", err, &stderr, want)
+		}
+		return
+	}
+	if err != nil {
 		t.Fatalf("rotate: %v\n%s", err, stderr.String())
 	}
 	if !strings.Contains(stdout.String(), "Rotated management identity") {
@@ -139,7 +223,7 @@ func TestManagementIdentityRotateReplacesLiveTrust(t *testing.T) {
 	if err != nil || nextInfo.Fingerprint == oldInfo.Fingerprint {
 		t.Fatalf("authority was not replaced: %v", err)
 	}
-	if err := verifyRotatedManagement(context.Background(), managementRotationNode{name: "cp-1", endpoint: endpoint, machineID: machineID}, mustManagementClient(t, next), mustManagementClient(t, old), 3*time.Second); err != nil {
+	if err := verifyRotatedManagement(context.Background(), managementRotationNode{name: "cp-1", endpoint: endpoint, machineID: machineID}, mustManagementClient(t, next), old.Operator, 3*time.Second); err != nil {
 		t.Fatalf("independent management check: %v", err)
 	}
 	stdout.Reset()
@@ -150,10 +234,54 @@ func TestManagementIdentityRotateReplacesLiveTrust(t *testing.T) {
 	if !strings.Contains(stdout.String(), "already uses") {
 		t.Fatalf("repeat result = %q", stdout.String())
 	}
-	allowOldClient = true
-	start()
-	if err := verifyRotatedManagement(context.Background(), managementRotationNode{name: "cp-1", endpoint: endpoint, machineID: machineID}, mustManagementClient(t, next), mustManagementClient(t, old), 3*time.Second); err == nil || !strings.Contains(err.Error(), "exposed authority still has management access") {
-		t.Fatalf("server that still trusts exposed client was accepted: %v", err)
+}
+
+func shortenRotationTestLeaf(t *testing.T, bundle *managementidentity.Bundle, expires time.Time) {
+	t.Helper()
+	operator, err := tls.X509KeyPair([]byte(bundle.Operator.Certificate), []byte(bundle.Operator.PrivateKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca, err := tls.X509KeyPair([]byte(bundle.CertificateAuthority.Certificate), []byte(bundle.CertificateAuthority.PrivateKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := *operator.Leaf
+	template.NotAfter = expires
+	der, err := x509.CreateCertificate(rand.Reader, &template, ca.Leaf, template.PublicKey, ca.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle.Operator.Certificate = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
+}
+
+func TestManagementIdentityRotateConfiguredReplacementUnreachable(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("KATLCTL_CONFIG", filepath.Join(dir, "no-context.yaml"))
+	endpoint := nettest.ReservePort(t).Endpoint
+	configPath := filepath.Join(dir, "cluster.yaml")
+	config := strings.ReplaceAll(configBundleSource(), "10.0.0.11", endpoint)
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	createTestManagementSecrets(t, configPath)
+	before, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	outputPath := filepath.Join(dir, defaultManagementSecrets)
+	var stdout, stderr bytes.Buffer
+	err = run(t.Context(), []string{"management", "identity", "rotate", "--config", configPath, "--output", outputPath, "--timeout", "3s"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("rotate = %v, want an immediate TCP refusal", err)
+	}
+	if !strings.Contains(err.Error(), "keep the configured replacement, check the endpoint and rerun") || strings.Contains(err.Error(), "restore the previous secrets reference") {
+		t.Fatalf("rotate = %v, want guidance to keep the replacement and retry", err)
+	}
+	after, err := os.ReadFile(configPath)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("configured replacement changed after a TCP refusal: %v", err)
 	}
 }
 
@@ -215,7 +343,7 @@ func TestManagementIdentityRotateLateCredentialCheck(t *testing.T) {
 	})
 }
 
-func TestManagementRotationExposedCredentialRefusal(t *testing.T) {
+func TestManagementRotationOldAuthorityRefusal(t *testing.T) {
 	for _, scenario := range []string{"timely", "late", "unrelated failure"} {
 		t.Run(scenario, func(t *testing.T) {
 			testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
@@ -254,7 +382,7 @@ func TestManagementRotationExposedCredentialRefusal(t *testing.T) {
 				}
 
 				target := managementRotationNode{name: node.name, endpoint: "192.0.2.11:9443", machineID: "machine-" + node.name}
-				err = verifyRotatedManagement(t.Context(), target, mustManagementClient(t, next), mustManagementClient(t, old), time.Second)
+				err = verifyRotatedManagement(t.Context(), target, mustManagementClient(t, next), old.Operator, time.Second)
 				if scenario != "unrelated failure" && !sawRefusal {
 					t.Fatal("the agent did not refuse the old credential")
 				}

@@ -262,7 +262,7 @@ func TestManagementIdentityRecoverReplacesLostAuthority(t *testing.T) {
 	// Recovery must not widen access: the lost authority and an anonymous
 	// client are both refused, and the node stays mTLS.
 	node := managementRotationNode{name: "cp-1", endpoint: w.node.endpoint}
-	if err := verifyExposedManagementCredentialRejected(context.Background(), node, next.CertificateAuthority.Certificate, mustManagementClient(t, w.old), 2*time.Second); err != nil {
+	if err := verifyOldManagementAuthorityRejected(context.Background(), node, next.CertificateAuthority.Certificate, w.old.Operator, 2*time.Second); err != nil {
 		t.Fatalf("lost authority was not verifiably rejected: %v", err)
 	}
 	roots := x509.NewCertPool()

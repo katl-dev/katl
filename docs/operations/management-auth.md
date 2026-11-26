@@ -280,7 +280,9 @@ katlctl management identity rotate \
 ```
 
 The command preflights all nodes over root SSH, switches them one at a time,
-and verifies that the new mTLS authority works and the old one is rejected.
+and verifies that the new mTLS authority works. It presents a fresh client
+certificate signed by the old authority and requires the node to report an
+unknown client issuer before it continues.
 Only after every node passes does it change `spec.managementIdentity` to the new
 file. A saved workstation context still has the old client certificate; refresh
 it after the command succeeds:
@@ -297,11 +299,16 @@ pass. If an agent fails to reload its credentials, use root SSH to inspect
 `katlc-agent.service` and its journal, repair that failure, and rerun. Do not
 generate another replacement during recovery.
 
-If rotation reports `could not verify rejection of the exposed client credential:`,
-follow its guidance to `check the endpoint and rerun with the same --output`.
-When `cluster.yaml` already references the replacement, an inconclusive check
-reports `could not verify the configured authority on` the affected node and
-tells you to `check the endpoint and rerun`.
+If rotation reports `could not verify rejection of the old authority` or
+`old authority still has management access`, use root SSH to check the
+affected agent's client CA trust and journal. Verify that the management
+address reaches that agent directly or through a TLS passthrough, then rerun
+with the same `--output`.
+
+When `cluster.yaml` already references the replacement, an unreachable
+endpoint or an expired verification deadline reports
+`could not verify the configured authority on` the affected node. Keep the
+configured replacement, check the endpoint and rerun.
 
 After verification, remove exposed plaintext secrets from the tracked tree and
 keep only protected recovery copies. Published Git history remains a separate

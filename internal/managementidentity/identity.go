@@ -190,6 +190,20 @@ func Client(bundle Bundle, now time.Time) (ClientCredentials, error) {
 	}, nil
 }
 
+// IssueRotationProbe creates a fresh client leaf so a node's policy for the
+// existing operator leaf cannot be mistaken for its policy for the issuer.
+func IssueRotationProbe(authority CertificateKey, now time.Time) (CertificateKey, error) {
+	ca, err := validatePair("certificateAuthority", authority, now, true, x509.ExtKeyUsageAny, "")
+	if err != nil {
+		return CertificateKey{}, err
+	}
+	key, err := parsePrivateKey("certificateAuthority.privateKey", authority.PrivateKey)
+	if err != nil {
+		return CertificateKey{}, err
+	}
+	return issueCertificate(ca, key, "katlctl rotation probe", nil, []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, now, rand.Reader)
+}
+
 func Validate(bundle Bundle, now time.Time) (Info, error) {
 	if bundle.APIVersion != APIVersion {
 		return Info{}, fmt.Errorf("management identity apiVersion must be %q", APIVersion)
