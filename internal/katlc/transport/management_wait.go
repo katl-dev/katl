@@ -50,8 +50,12 @@ func WithManagementProgress(ctx context.Context, w io.Writer) context.Context {
 // also retry a refused connection for at most ManagementReadyWait, reporting
 // progress, and then fail with guidance.
 func ManagementDialOptions(ctx context.Context, node, endpoint string, creds credentials.TransportCredentials) []grpc.DialOption {
+	plaintext := creds.Info().SecurityProtocol == insecure.NewCredentials().Info().SecurityProtocol
+	if observation, ok := ctx.Value(managementObservationKey{}).(*ManagementObservation); ok {
+		creds = &observedCredentials{TransportCredentials: creds, observation: observation, plaintext: plaintext}
+	}
 	options := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
-	if creds.Info().SecurityProtocol == insecure.NewCredentials().Info().SecurityProtocol {
+	if plaintext {
 		options = append(options,
 			grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
 				return explainMutualTLSNode(invoker(ctx, method, req, reply, cc, opts...))
@@ -90,21 +94,12 @@ func ManagementDialOptions(ctx context.Context, node, endpoint string, creds cre
 	)
 }
 
-const plaintextGRPCHandshake = "received plaintext HTTP/2 SETTINGS during TLS handshake"
-
-// PlaintextAtTLS reports whether a TLS call received a plaintext HTTP/2
-// response during the handshake. Check it only for calls that never
-// established a gRPC peer.
-func PlaintextAtTLS(err error) bool {
-	return grpcstatus.Code(err) == codes.Unavailable && strings.Contains(grpcstatus.Convert(err).Message(), plaintextGRPCHandshake)
-}
-
 // TLSAtPlaintext reports whether a plaintext call failed the way it does
 // against a TLS listener. A TLS listener closes the connection before sending
 // its HTTP/2 server preface, which gRPC reports only as a generic unavailable
 // error. Any endpoint that accepts TCP and then closes or speaks something
 // other than HTTP/2 produces the same error, so a true result names a likely
-// cause rather than a certainty.
+// cause rather than a certainty. Use it only for diagnostics.
 func TLSAtPlaintext(err error) bool {
 	return grpcstatus.Code(err) == codes.Unavailable && strings.Contains(err.Error(), "server preface")
 }

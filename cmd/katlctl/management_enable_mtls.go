@@ -11,7 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlc/transport"
@@ -26,6 +28,7 @@ import (
 )
 
 const enableMTLSActor = "katlctl management enable-mtls"
+const upgradeManagementTrialAgent = "upgrade the node with `katlctl node upgrade`, then rerun"
 
 // enableMTLSPoll is how often a node is polled while its trial starts and
 // while it returns to health.
@@ -57,6 +60,9 @@ type enableMTLSNode struct {
 	name         string
 	endpoint     string
 	savedMachine string
+	controlPlane bool
+	externalAPI  bool
+	managedVIP   bool
 
 	phase enableMTLSPhase
 	// status and identity are the preflight observation; later requests must
@@ -69,10 +75,8 @@ type enableMTLSNode struct {
 	trialDeadline time.Time
 	lastRevert    string
 	// clockOffset is how far the node clock is ahead of this workstation,
-	// erring towards behind. clockKnown is false for a node that does not
-	// report its time.
+	// erring towards behind.
 	clockOffset time.Duration
-	clockKnown  bool
 }
 
 func newManagementEnableMTLSCommand(stdout, stderr io.Writer) *cobra.Command {
@@ -311,6 +315,8 @@ func enableMTLSNodes(ctx context.Context, configPath string, source configbundle
 	if err != nil {
 		return nil, err
 	}
+	configuredEndpoint := source.Spec.ControlPlaneEndpoint
+	managedVIP := configuredEndpoint != nil && controlplaneendpoint.Managed(*configuredEndpoint)
 	nodes := make([]enableMTLSNode, 0, len(topology.Nodes))
 	for _, node := range topology.Nodes {
 		if node.ManagementEndpoint == "" {
@@ -322,7 +328,11 @@ func enableMTLSNodes(ctx context.Context, configPath string, source configbundle
 		if target, ok := enrolledTarget(ctx, "", "", source.Metadata.Name, node.Name); ok {
 			saved = target.machineID
 		}
-		nodes = append(nodes, enableMTLSNode{name: node.Name, endpoint: node.ManagementEndpoint, savedMachine: saved})
+		nodes = append(nodes, enableMTLSNode{
+			name: node.Name, endpoint: node.ManagementEndpoint, savedMachine: saved,
+			controlPlane: node.SystemRole == inventory.RoleControlPlane,
+			externalAPI:  topology.ExternalControlPlane, managedVIP: managedVIP,
+		})
 	}
 	return nodes, nil
 }
@@ -335,8 +345,9 @@ func enableMTLSNodes(ctx context.Context, configPath string, source configbundle
 func observeEnableMTLSNode(ctx context.Context, node *enableMTLSNode, client *managementidentity.ClientCredentials, authority, otherSecrets string, timeout time.Duration) error {
 	probe := min(timeout, 15*time.Second)
 	if client != nil {
+		probeCtx, observation := transport.ObserveManagementConnection(ctx)
 		var remote peer.Peer
-		status, err := enableMTLSStatus(ctx, *node, *client, probe, grpc.Peer(&remote))
+		status, err := enableMTLSStatus(probeCtx, *node, *client, probe, grpc.Peer(&remote))
 		observedAt := time.Now()
 		if err == nil {
 			if err := node.bind(status, observedAt); err != nil {
@@ -350,13 +361,19 @@ func observeEnableMTLSNode(ctx context.Context, node *enableMTLSNode, client *ma
 			case transition.GetState() == "trial" && transition.GetTargetAuthority() == authority:
 				node.phase = nodeOnTrial
 				node.trialDeadline = managementTrialDeadline(transition, node.clockOffset)
+				if node.trialDeadline.IsZero() {
+					return fmt.Errorf("%s did not report a valid mTLS trial deadline; inspect it with 'katlctl node status' before rerunning", node.name)
+				}
 			default:
 				return fmt.Errorf("%s answered with the new authority but reports %q management; inspect it with 'katlctl node status' before rerunning", node.name, management.GetAuthentication())
 			}
 			return nil
 		}
-		if remote.Addr != nil || !transport.PlaintextAtTLS(err) {
+		switch protocol := observation.Protocol(); {
+		case remote.Addr != nil || protocol == transport.TLS:
 			return fmt.Errorf("%s could not be verified over mTLS at %s: %w; check its address and node name. If it uses a different authority, %s, then rerun", node.name, node.endpoint, err, otherSecrets)
+		case protocol != transport.PlaintextHTTP2:
+			return fmt.Errorf("%s: could not classify the management transport at %s. Check that katlc-agent is listening and any proxy passes TLS and the HTTP/2 server preface through, or connect directly to the agent, then rerun", node.name, node.endpoint)
 		}
 	}
 
@@ -372,9 +389,6 @@ func observeEnableMTLSNode(ctx context.Context, node *enableMTLSNode, client *ma
 		return err
 	}
 	management := status.GetManagement()
-	if management == nil {
-		return fmt.Errorf("%s runs a KatlOS release that cannot move management trust; upgrade it first with 'katlctl node upgrade', then rerun", node.name)
-	}
 	if management.GetAuthentication() != string(managementidentity.TrustedNetwork) {
 		return fmt.Errorf("%s answered plaintext management but reports %q mode; inspect it with 'katlctl node status' before rerunning", node.name, management.GetAuthentication())
 	}
@@ -389,6 +403,11 @@ func observeEnableMTLSNode(ctx context.Context, node *enableMTLSNode, client *ma
 // that installation for every later request. observedAt is when the status
 // arrived, so the recorded clock offset errs towards the node being behind.
 func (node *enableMTLSNode) bind(status *agentapi.NodeStatus, observedAt time.Time) error {
+	var err error
+	node.clockOffset, err = managementClockOffset(status.GetManagement(), observedAt)
+	if err != nil {
+		return fmt.Errorf("%s: %w", node.name, err)
+	}
 	identity, err := transport.ObserveNode(node.name, status)
 	if err != nil {
 		return fmt.Errorf("%s: %w; check its management.address", node.name, err)
@@ -396,22 +415,32 @@ func (node *enableMTLSNode) bind(status *agentapi.NodeStatus, observedAt time.Ti
 	if node.savedMachine != "" && status.GetMachineId() != node.savedMachine {
 		return fmt.Errorf("%s answered with machine ID %s, but the saved context recorded %s; check that its management.address points at that machine", node.name, status.GetMachineId(), node.savedMachine)
 	}
-	node.status, node.identity, node.requirement = status, identity, nodeRecoveryRequirementFor(status)
-	// A configured proxy can already be degraded when a migration resumes.
-	// Require its health even if the first observation finds it unready.
-	if node.requirement.KubernetesConfigured && status.GetApiProxy() != nil {
-		node.requirement.APIProxyReady = true
+	node.status, node.identity = status, identity
+	// The agent reports a Kubernetes role from installed configuration even
+	// when kubelet or the API is unhealthy. Fresh installs can migrate before
+	// bootstrap. Joined nodes must meet the same requirements on every run.
+	kubernetes := status.GetKubernetes()
+	if kubernetes.GetRole() != "" || kubernetes.GetState() != "not-configured" {
+		node.requirement = nodeRecoveryRequirement{
+			KubernetesConfigured: true,
+			NodeReady:            true,
+			APIProxyReady:        !node.externalAPI || status.GetApiProxy() != nil,
+			LocalAPIEligible:     node.controlPlane && !node.externalAPI,
+			ManagedEndpointReady: node.controlPlane && node.managedVIP,
+		}
 	}
-	node.clockOffset, node.clockKnown = managementClockOffset(status.GetManagement(), observedAt)
 	return nil
 }
 
-func managementClockOffset(status *agentapi.ManagementStatus, observedAt time.Time) (time.Duration, bool) {
+func managementClockOffset(status *agentapi.ManagementStatus, observedAt time.Time) (time.Duration, error) {
+	if status == nil {
+		return 0, fmt.Errorf("the installed KatlOS release cannot move management trust. To continue, %s", upgradeManagementTrialAgent)
+	}
 	nodeTime, err := time.Parse(time.RFC3339Nano, status.GetNodeTime())
 	if err != nil || nodeTime.IsZero() {
-		return 0, false
+		return 0, fmt.Errorf("management status did not report a valid node time. To continue, %s", upgradeManagementTrialAgent)
 	}
-	return nodeTime.Sub(observedAt), true
+	return nodeTime.Sub(observedAt), nil
 }
 
 func managementTrialDeadline(transition *agentapi.ManagementTransition, offset time.Duration) time.Time {
@@ -441,7 +470,7 @@ func enableMTLSReady(ctx context.Context, node enableMTLSNode, credentials manag
 	}
 	// A node checks the new certificates against its own clock before it
 	// stages them, and they become valid only CertificateBackdate before issue.
-	if node.phase == nodeOnTrustedNetwork && node.clockKnown && node.clockOffset < -managementidentity.CertificateBackdate {
+	if node.phase == nodeOnTrustedNetwork && node.clockOffset < -managementidentity.CertificateBackdate {
 		return fmt.Errorf("%s's clock is %s behind this workstation, more than the %s the new certificates allow; correct its time, for example its NTP source, then rerun", node.name, (-node.clockOffset).Round(time.Second), managementidentity.CertificateBackdate)
 	}
 	if err := enableMTLSHealth(ctx, node, credentials, status, timeout); err != nil {
@@ -451,7 +480,7 @@ func enableMTLSReady(ctx context.Context, node enableMTLSNode, credentials manag
 }
 
 // enableMTLSHealth checks the node's boot health and Kubernetes recovery
-// against what it reported at preflight, and etcd quorum on a control plane.
+// against the node's configured role, and etcd quorum on a control plane.
 func enableMTLSHealth(ctx context.Context, node enableMTLSNode, credentials managementidentity.ClientCredentials, status *agentapi.NodeStatus, timeout time.Duration) error {
 	if state := status.GetBootHealthState(); state != bootHealthHealthy {
 		return fmt.Errorf("boot health is %s: %s", firstNonEmpty(state, "not reported"), firstNonEmpty(status.GetBootHealthDiagnostic(), "no diagnostic"))
@@ -519,32 +548,27 @@ func migrateEnableMTLSNode(ctx context.Context, node *enableMTLSNode, bundle man
 		if err != nil {
 			return enableMTLSBeginError(err)
 		}
+		deadline = time.Now().Add(opts.trialWindow)
 		if trial.GetState() != "committed" {
-			deadline = time.Now().Add(opts.trialWindow)
 			fmt.Fprintf(stderr, "%s: serving the new authority on trial; it returns to trusted-network by %s unless confirmed\n", node.name, deadline.Local().Format(time.TimeOnly))
 		}
 	} else {
-		if !deadline.IsZero() && !node.clockKnown {
-			// Older agents report only the deadline. Allow for a clock
-			// behind this workstation within the certificate skew bound.
-			// The agent still enforces its trial deadline when confirming.
-			deadline = deadline.Add(managementidentity.CertificateBackdate)
-		}
-		if !deadline.IsZero() && !time.Now().Before(deadline) {
+		if !time.Now().Before(deadline) {
 			return fmt.Errorf("its earlier trial passed its deadline at %s but it has not returned to trusted-network yet; wait for it to revert, then rerun this command", deadline.Local().Format(time.TimeOnly))
 		}
 		fmt.Fprintf(stderr, "%s: resuming its trial of the new authority\n", node.name)
 	}
-	if deadline.IsZero() {
-		deadline = time.Now().Add(opts.trialWindow)
-	}
 	reverts := enableMTLSReverts(deadline)
 
-	if err := waitEnableMTLSTrial(ctx, *node, client, authority, min(time.Until(deadline), timeout)); err != nil {
+	trialStatus, err := waitEnableMTLSTrial(ctx, *node, client, authority, min(time.Until(deadline), timeout))
+	if err != nil {
 		if ctx.Err() != nil {
 			return enableMTLSInterrupted(deadline)
 		}
 		return fmt.Errorf("did not answer over mTLS with the new authority: %w; %s. Check that management.address reaches the node from this workstation, then rerun", err, reverts)
+	}
+	if _, err := managementClockOffset(trialStatus.GetManagement(), time.Now()); err != nil {
+		return fmt.Errorf("%w. %s", err, reverts)
 	}
 
 	confirmErr := enableMTLSCall(ctx, *node, client, timeout, func(ctx context.Context, agent agentapi.KatlcAgentClient) error {
@@ -587,15 +611,16 @@ func migrateEnableMTLSNode(ctx context.Context, node *enableMTLSNode, bundle man
 }
 
 // A timeout or unrelated connection failure does not establish that the
-// listener refused plaintext. Require the preface failure on the endpoint
-// that already answered as this installation over authenticated mTLS.
+// listener refused plaintext. Require the endpoint that already answered as
+// this installation over authenticated mTLS to close without a response.
 func verifyEnableMTLSPlaintextRefused(ctx context.Context, node enableMTLSNode, timeout time.Duration) error {
+	ctx, observation := transport.ObserveManagementConnection(ctx)
 	var remote peer.Peer
 	_, err := enableMTLSStatus(ctx, node, trustedNetworkClient, min(timeout, 5*time.Second), grpc.Peer(&remote))
 	switch {
 	case err == nil || remote.Addr != nil:
 		return fmt.Errorf("uses mTLS management but still answers plaintext management; inspect it with 'katlctl node status' and rerun")
-	case !transport.TLSAtPlaintext(err):
+	case !observation.PlaintextClosed():
 		return fmt.Errorf("could not verify that it refuses plaintext management: %w; check the endpoint and rerun", err)
 	default:
 		return nil
@@ -634,24 +659,24 @@ func enableMTLSBeginError(err error) error {
 // waitEnableMTLSTrial polls until the node answers over mTLS with the new
 // authority as the same installation. The node restarts its agent to start the
 // trial, so refusals are expected at first.
-func waitEnableMTLSTrial(ctx context.Context, node enableMTLSNode, client managementidentity.ClientCredentials, authority string, wait time.Duration) error {
+func waitEnableMTLSTrial(ctx context.Context, node enableMTLSNode, client managementidentity.ClientCredentials, authority string, wait time.Duration) (*agentapi.NodeStatus, error) {
 	deadline, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	for {
 		status, err := enableMTLSStatus(deadline, node, client, min(wait, 5*time.Second))
 		if err == nil {
 			if verifyErr := node.identity.Verify(status); verifyErr != nil {
-				return verifyErr
+				return nil, verifyErr
 			}
 			transition := status.GetManagement().GetTransition()
 			if committedTo(status, authority) || (transition.GetState() == "trial" && transition.GetTargetAuthority() == authority) {
-				return nil
+				return status, nil
 			}
 			err = fmt.Errorf("node reports trial state %q", transition.GetState())
 		}
 		select {
 		case <-deadline.Done():
-			return fmt.Errorf("no answer within %s; last error: %v", wait.Round(time.Second), err)
+			return nil, fmt.Errorf("no answer within %s; last error: %v", wait.Round(time.Second), err)
 		case <-time.After(enableMTLSPoll):
 		}
 	}

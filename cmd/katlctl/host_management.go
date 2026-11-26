@@ -243,6 +243,7 @@ func runHostStatus(ctx context.Context, opts hostStatusOptions, stdout, stderr i
 	if err := validateHostOutput(opts.output); err != nil {
 		return err
 	}
+	ctx, observation := transport.ObserveManagementConnection(ctx)
 	session, err := openManagementSession(ctx, opts.target, opts.timeout)
 	if err != nil {
 		return err
@@ -251,7 +252,7 @@ func runHostStatus(ctx context.Context, opts hostStatusOptions, stdout, stderr i
 	target := session.target
 	node := hostTargetName(target)
 
-	report, _, err := readStatusReport(session.ctx, session.client, node, target.endpoint, opts.target.clusterConfigPath, target.credentials)
+	report, _, err := readStatusReport(session.ctx, session.client, node, target.endpoint, opts.target.clusterConfigPath, target.credentials, observation)
 	if err != nil {
 		return err
 	}
@@ -419,7 +420,7 @@ func waitNodeOffline(ctx context.Context, target managementTarget) error {
 	}
 }
 
-func readStatusReport(ctx context.Context, client agentapi.KatlcAgentClient, node, endpoint, configPath string, credentials *managementidentity.ClientCredentials) (hostStatusReport, *agentapi.NodeStatus, error) {
+func readStatusReport(ctx context.Context, client agentapi.KatlcAgentClient, node, endpoint, configPath string, credentials *managementidentity.ClientCredentials, observation *transport.ManagementObservation) (hostStatusReport, *agentapi.NodeStatus, error) {
 	status, current, observedAt, err := readHostState(ctx, client, node)
 	if err == nil {
 		return newHostStatusReport(node, endpoint, status, current, observedAt), status, nil
@@ -429,7 +430,7 @@ func readStatusReport(ctx context.Context, client agentapi.KatlcAgentClient, nod
 	// failed generation lookup after it gives no reason to change credentials.
 	configPath = strings.TrimSpace(configPath)
 	if status != nil || credentials == nil || credentials.Authentication != managementidentity.TrustedNetwork ||
-		configPath == "" || ctx.Err() != nil || !transport.TLSAtPlaintext(err) {
+		configPath == "" || ctx.Err() != nil || !observation.PlaintextClosed() {
 		return hostStatusReport{}, nil, err
 	}
 	data, readErr := os.ReadFile(configPath)
@@ -759,12 +760,16 @@ func newManagementStatusReport(status *agentapi.ManagementStatus, observedAt tim
 	if transition := status.GetTransition(); transition != nil {
 		report.Transition = &managementTransitionReport{
 			State: transition.GetState(), TargetAuthority: transition.GetTargetAuthority(),
-			Deadline: transition.GetDeadline(), RevertReason: transition.GetRevertReason(),
+			RevertReason: transition.GetRevertReason(),
 		}
 		if transition.GetState() == "trial" {
-			offset, _ := managementClockOffset(status, observedAt)
-			if deadline := managementTrialDeadline(transition, offset); !deadline.IsZero() {
-				report.trialDeadline = deadline.Round(time.Second).Local().Format(time.TimeOnly)
+			offset, err := managementClockOffset(status, observedAt)
+			if err != nil {
+				report.NextStep = err.Error()
+			} else if deadline := managementTrialDeadline(transition, offset); !deadline.IsZero() {
+				deadline = deadline.Round(time.Second).Local()
+				report.Transition.Deadline = deadline.Format(time.RFC3339)
+				report.trialDeadline = deadline.Format(time.TimeOnly)
 			}
 		}
 	}
@@ -772,7 +777,7 @@ func newManagementStatusReport(status *agentapi.ManagementStatus, observedAt tim
 }
 
 func (report *managementStatusReport) addEnableMTLSGuidance(node, invocation string) {
-	if report == nil {
+	if report == nil || report.NextStep != "" {
 		return
 	}
 	if transition := report.Transition; transition != nil && transition.State == "trial" {
@@ -802,11 +807,14 @@ func (report *managementStatusReport) detail() string {
 	}
 	switch transition := report.Transition; transition.State {
 	case "trial":
-		deadline := firstNonEmpty(report.trialDeadline, "its deadline")
-		if report.NextStep != "" {
-			return "management: mTLS trial until " + deadline
+		detail := "management: mTLS trial is active"
+		if report.trialDeadline != "" {
+			detail = "management: mTLS trial until " + report.trialDeadline
 		}
-		return fmt.Sprintf("management: mTLS trial until %s; it returns to %s unless katlctl management enable-mtls confirms it", deadline, firstNonEmpty(report.Authentication, "its installed mode"))
+		if report.NextStep != "" {
+			return detail
+		}
+		return fmt.Sprintf("%s; it returns to %s unless katlctl management enable-mtls confirms it", detail, firstNonEmpty(report.Authentication, "its installed mode"))
 	case "reverted":
 		if report.Authentication == string(managementidentity.MutualTLS) {
 			return ""

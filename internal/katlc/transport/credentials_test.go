@@ -1,6 +1,8 @@
 package transport
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -12,8 +14,105 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/managementidentity"
+	"golang.org/x/net/http2"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 )
+
+func TestTLSResponseRequiresCompleteInitialSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		flags    http2.Flags
+		stream   uint32
+		payload  []byte
+		truncate bool
+	}{
+		{name: "nonzero stream", stream: 1},
+		{name: "acknowledgment", flags: http2.FlagSettingsAck},
+		{name: "truncated setting", payload: []byte{0, 5, 0, 0, 64, 0}, truncate: true},
+		{name: "invalid maximum frame size", payload: []byte{0, 5, 0, 0, 0, 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var wire bytes.Buffer
+			if err := http2.NewFramer(&wire, nil).WriteRawFrame(http2.FrameSettings, tc.flags, tc.stream, tc.payload); err != nil {
+				t.Fatal(err)
+			}
+			if tc.truncate {
+				wire.Truncate(wire.Len() - 1)
+			}
+			if got := classifyTLSResponse(bufio.NewReader(&wire)); got != Unknown {
+				t.Errorf("protocol = %v, want Unknown", got)
+			}
+		})
+	}
+}
+
+func TestManagementProtocolUsesWireEvidence(t *testing.T) {
+	clientBundle, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "lab"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := managementidentity.Client(clientBundle, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := ClientCredentialsForNode(client, "cp-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The untrusted TLS peer's certificate chain contains the legacy marker.
+	serverBundle, err := managementidentity.Generate(managementidentity.GenerateOptions{
+		ClusterName: "received plaintext HTTP/2 SETTINGS during TLS handshake",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, _, err := managementidentity.EnsureNode(&serverBundle, "cp-1", time.Now(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity.ServerCertificate += identity.CACertificate
+	serverTLS, err := ServerTLSConfigForNode(identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		want    ManagementProtocol
+		options []grpc.ServerOption
+	}{
+		{name: "plaintext gRPC", want: PlaintextHTTP2},
+		{name: "untrusted certificate with marker text", want: TLS, options: []grpc.ServerOption{grpc.Creds(credentials.NewTLS(serverTLS))}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			server := grpc.NewServer(tc.options...)
+			go server.Serve(listener)
+			defer server.Stop()
+
+			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			defer cancel()
+			ctx, observation := ObserveManagementConnection(WithoutManagementWait(ctx))
+			endpoint := listener.Addr().String()
+			conn, err := grpc.NewClient("passthrough:///"+endpoint, ManagementDialOptions(ctx, "cp-1", endpoint, creds)...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer conn.Close()
+			if _, err := healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{}); err == nil {
+				t.Fatal("unexpected successful mTLS call")
+			}
+			if protocol := observation.Protocol(); protocol != tc.want {
+				t.Errorf("protocol = %v, want %v", protocol, tc.want)
+			}
+		})
+	}
+}
 
 // An mTLS client reaching a node that serves plaintext management must get the
 // mode-mismatch refusal rather than a raw TLS record error.

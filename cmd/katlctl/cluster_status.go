@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/spf13/cobra"
 )
@@ -119,6 +120,7 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 			result := clusterNodeStatus{Node: node.Name, Role: string(node.SystemRole), Endpoint: node.ManagementEndpoint}
 			requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 			defer cancel()
+			requestCtx, observation := transport.ObserveManagementConnection(requestCtx)
 			requestCtx = withManagementDial(requestCtx, node.Name, topology.Management)
 			conn, err := dialKatlcAgent(requestCtx, node.ManagementEndpoint)
 			if err != nil {
@@ -127,7 +129,7 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 				return
 			}
 			defer conn.Close()
-			host, status, err := readStatusReport(requestCtx, conn.Client, node.Name, node.ManagementEndpoint, opts.clusterConfig, topology.Management)
+			host, status, err := readStatusReport(requestCtx, conn.Client, node.Name, node.ManagementEndpoint, opts.clusterConfig, topology.Management, observation)
 			if err != nil {
 				result.Error = err.Error()
 				report.Nodes[i] = result

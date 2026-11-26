@@ -16,7 +16,8 @@ import (
 
 func TestStatusDuringEnableMTLSTrial(t *testing.T) {
 	world, deadline := newManagementStatusTrial(t, 4*time.Minute)
-	wantDeadline := deadline.Add(-4 * time.Minute).Local().Format(time.TimeOnly)
+	correctedDeadline := deadline.Add(-4 * time.Minute).Local()
+	wantDeadline := correctedDeadline.Format(time.TimeOnly)
 	wantResume := "cp-1 is on an enable-mtls trial; rerun katlctl management enable-mtls --config '" + world.configPath +
 		"' before " + wantDeadline + " to confirm it, or wait for it to return to trusted-network"
 	for _, command := range [][]string{{"node", "status", "cp-1"}, {"cluster", "status"}} {
@@ -48,10 +49,39 @@ func TestStatusDuringEnableMTLSTrial(t *testing.T) {
 				management = report.Nodes[0].Management
 			}
 			if management == nil || management.Authentication != "trusted-network" || management.Transition == nil ||
-				management.Transition.State != "trial" || management.Transition.Deadline != deadline.Format(time.RFC3339) {
-				t.Errorf("status lost the live management transition:\n%s", &out)
+				management.Transition.State != "trial" || management.Transition.Deadline != correctedDeadline.Format(time.RFC3339) {
+				t.Errorf("status lacks the live trial with its corrected deadline:\n%s", &out)
 			}
 		})
+	}
+}
+
+func TestStatusOmitsTrialDeadlineWithoutNodeTime(t *testing.T) {
+	world, deadline := newManagementStatusTrial(t, 4*time.Minute)
+	node := world.nodes[0]
+	node.mu.Lock()
+	node.omitNodeTime = true
+	node.mu.Unlock()
+
+	for _, command := range [][]string{{"node", "status", "cp-1"}, {"cluster", "status"}} {
+		for _, output := range []string{"text", "json"} {
+			t.Run(command[0]+" "+output, func(t *testing.T) {
+				args := append(command, "--config", world.configPath, "--output", output)
+				var out, stderr bytes.Buffer
+				if err := run(t.Context(), args, &out, &stderr); err != nil {
+					t.Fatal(err)
+				}
+				status := out.String()
+				if !strings.Contains(status, "upgrade the node with `katlctl node upgrade`, then rerun") {
+					t.Errorf("status lacks upgrade guidance:\n%s", status)
+				}
+				for _, suspect := range []string{`"deadline":`, "mTLS trial until", deadline.Local().Format(time.TimeOnly)} {
+					if strings.Contains(status, suspect) {
+						t.Errorf("status includes an uncorrected deadline:\n%s", status)
+					}
+				}
+			})
+		}
 	}
 }
 
