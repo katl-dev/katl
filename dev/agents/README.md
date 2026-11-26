@@ -5,6 +5,8 @@ Every role follows the delivery, testing, and user-journey rules in
 milestones, holds, dependencies, review, and journey results. The local
 checkpoint lets a new session recover the work.
 
+Find tool usage and setup in the [development tool index](../README.md).
+
 ## Model and effort
 
 | Role | Default |
