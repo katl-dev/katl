@@ -170,6 +170,17 @@ func TestPersistedStateRollbackCompatibilityEquivalent(t *testing.T) {
 	if err := generation.WriteGeneration(root, previous, previousStatus); err != nil {
 		t.Fatalf("WriteGeneration(previous) error = %v", err)
 	}
+	for _, path := range []string{
+		filepath.Join(root, previous.Boot.UKIPath),
+		filepath.Join(root, "efi", previous.Boot.LoaderEntryPath),
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("boot fixture"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
 		APIVersion:            generation.APIVersion,
 		Kind:                  generation.BootSelectionKind,

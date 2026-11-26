@@ -59,17 +59,18 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		}
 		// A network outage cannot invalidate a generation already proven healthy.
 		if !generation.IsKnownGood(selectedStatus) {
-			// With a known-good fallback, a missing network fails fast so the
-			// node returns to it. Without one, failing records an environmental
-			// fault against the only generation, so boot health waits instead.
-			// When the fallback cannot be determined, keep the bounded wait so
-			// rollback is never delayed.
+			// A known-good fallback gives the node somewhere to boot if the
+			// network stays down. With no fallback, wait for the network.
 			bounded, err := generation.HasBootFallback(*root, selected)
+			fallbackDiagnostic := ""
 			if err != nil {
-				fmt.Fprintf(stdout, "katl-boot-health: cannot determine a known-good fallback, so the management network wait is bounded: %v\n", err)
 				bounded = true
+				fallbackDiagnostic = fmt.Sprintf("cannot determine a known-good fallback, so the management network wait is bounded: %v", err)
+				if stdout != nil {
+					fmt.Fprintln(stdout, "katl-boot-health: "+fallbackDiagnostic)
+				}
 			}
-			if err := waitForManagementNetwork(ctx, bounded, stdout); err != nil {
+			if err := waitForManagementNetwork(ctx, bounded, stdout, fallbackDiagnostic); err != nil {
 				requestedResult = generation.BootHealthFailure
 				requestedReason = generation.ManagementNetworkFailure + ": " + err.Error()
 				forceFailure = true
@@ -205,7 +206,7 @@ var (
 // waits until ctx ends. Each change in what it waits for is written to progress,
 // which reaches the console, and to the unit's systemd status, which node
 // status reports.
-var waitForManagementNetwork = func(ctx context.Context, bounded bool, progress io.Writer) error {
+var waitForManagementNetwork = func(ctx context.Context, bounded bool, progress io.Writer, fallbackDiagnostic string) error {
 	if bounded {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, managementNetworkDeadline)
@@ -213,6 +214,9 @@ var waitForManagementNetwork = func(ctx context.Context, bounded bool, progress 
 	}
 	if progress == nil {
 		progress = io.Discard
+	}
+	if fallbackDiagnostic != "" {
+		notifyStatus("checking the management network. " + fallbackDiagnostic)
 	}
 	ticker := time.NewTicker(managementNetworkPoll)
 	defer ticker.Stop()
@@ -242,6 +246,8 @@ var waitForManagementNetwork = func(ctx context.Context, bounded bool, progress 
 		if ready {
 			if lastReason != "" {
 				fmt.Fprintln(progress, "katl-boot-health: management network is ready")
+			}
+			if lastReason != "" || fallbackDiagnostic != "" {
 				notifyStatus("")
 			}
 			return nil
@@ -249,6 +255,9 @@ var waitForManagementNetwork = func(ctx context.Context, bounded bool, progress 
 		if reason != lastReason {
 			waiting := "waiting for the management network: " + reason
 			fmt.Fprintf(progress, "katl-boot-health: %s\n", waiting)
+			if fallbackDiagnostic != "" {
+				waiting += ". " + fallbackDiagnostic
+			}
 			notifyStatus(waiting)
 			lastReason = reason
 		}

@@ -55,17 +55,17 @@ rebinds a replaced volume. Boot health therefore orders after the unit with
 while the unit is failed in the running boot, and the volume status names each
 unmounted volume, the cause and the remedy.
 
-How long boot health waits for that state depends on whether a failure has
-somewhere to go. When a failed boot would fall back to a validated known-good
-generation, either as an armed trial or through a known-good default or
-previous generation, the wait fails after 90 seconds so the node returns to
-that generation. Without such a fallback, failing would only record an
-environmental fault, such as an unplugged cable, against the only bootable
-generation. Boot health then waits until the network is ready and promotes the
-generation when it is. While it waits, it writes each change in what it is
-waiting for, such as `required link enp1s0: no carrier; connect a cable or
+Boot health waits up to 90 seconds for the management network when a validated
+known-good fallback exists. If the wait times out, boot health selects that
+generation for the next boot. An armed trial reboots automatically. An unarmed
+boot continues running the failed generation until you reboot the node.
+Without a fallback, boot health promotes the running generation once the
+network is ready. While it waits, it reports changes in what
+it is waiting for, such as `required link enp1s0: no carrier; connect a cable or
 check the switch port`, to the console and to the unit's systemd status text.
-Node status reports boot health `pending` with that text.
+Node status reports boot health `pending` with that text. When boot health
+cannot determine whether a fallback exists, it keeps the 90-second deadline
+and includes the error in the status text.
 
 A generation already recorded as `good` and `healthy` does not repeat network
 qualification during an ordinary boot. This preserves a known-good local

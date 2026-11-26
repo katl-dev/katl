@@ -57,7 +57,7 @@ func (s *Server) readBootHealthRun(ctx context.Context) (run bootHealthRun, volu
 	case settled["Job"] != "":
 		return bootHealthRunSettling, false, health["StatusText"]
 	case health["ActiveState"] == "failed":
-		return bootHealthRunFailed, volumesFailed, ""
+		return bootHealthRunFailed, volumesFailed, health["StatusText"]
 	// An inactive oneshot does not show whether it ran; the target it orders
 	// before becomes active only after it succeeds.
 	case complete["ActiveState"] == "active":
@@ -129,8 +129,12 @@ func (s *Server) nodeBootHealth(ctx context.Context) nodeBootHealth {
 		health.Diagnostic = bootHealthUnit + " has not finished for this boot; inspect the units it requires"
 	}
 	if statusText != "" {
-		health.Diagnostic = "boot health is " + statusText
-		diagnostics = append(diagnostics, health.Diagnostic)
+		if run == bootHealthRunFailed {
+			diagnostics = append(diagnostics, "boot health last reported: "+statusText)
+		} else {
+			health.Diagnostic = "boot health is " + statusText
+			diagnostics = append(diagnostics, health.Diagnostic)
+		}
 	}
 	if volumesFailed {
 		diagnostics = append(diagnostics, volumesActivateUnit+" failed in this boot, so volumes are unmounted. See the volume status and boot journal")

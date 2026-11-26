@@ -154,7 +154,7 @@ func TestRunDoesNotPromoteWithoutManagementNetwork(t *testing.T) {
 	}
 	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen0\n")
 	oldWait := waitForManagementNetwork
-	waitForManagementNetwork = func(context.Context, bool, io.Writer) error { return errors.New("no usable address") }
+	waitForManagementNetwork = func(context.Context, bool, io.Writer, string) error { return errors.New("no usable address") }
 	t.Cleanup(func() { waitForManagementNetwork = oldWait })
 
 	var stdout bytes.Buffer
@@ -239,7 +239,7 @@ func TestRunKeepsKnownGoodGenerationOnNetworkOutage(t *testing.T) {
 	}
 	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen0\n")
 	oldWait := waitForManagementNetwork
-	waitForManagementNetwork = func(context.Context, bool, io.Writer) error { return errors.New("no usable address") }
+	waitForManagementNetwork = func(context.Context, bool, io.Writer, string) error { return errors.New("no usable address") }
 	t.Cleanup(func() { waitForManagementNetwork = oldWait })
 
 	var stdout bytes.Buffer
@@ -476,7 +476,7 @@ func writeCommandLine(t *testing.T, root string, commandLine string) string {
 func stubManagementNetwork(t *testing.T) {
 	t.Helper()
 	oldWait := waitForManagementNetwork
-	waitForManagementNetwork = func(context.Context, bool, io.Writer) error { return nil }
+	waitForManagementNetwork = func(context.Context, bool, io.Writer, string) error { return nil }
 	t.Cleanup(func() { waitForManagementNetwork = oldWait })
 }
 
@@ -606,6 +606,63 @@ func TestRunFailsTrialWithoutManagementNetwork(t *testing.T) {
 	}
 	if selection.DefaultGenerationID != "gen0" || selection.RecoveryRequired {
 		t.Fatalf("selection = %#v, want fallback to gen0", selection)
+	}
+}
+
+func TestRunBoundsNetworkWaitWhenFallbackCannotBeRead(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 6, 15, 19, 45, 0, 0, time.UTC)
+	writeCommandGeneration(t, root, "gen0", now.Add(-2*time.Hour))
+	markCommandGenerationHealthy(t, root, "gen0", now.Add(-time.Hour))
+	writeCommandGeneration(t, root, "gen1", now.Add(-30*time.Minute))
+	fallbackDir, err := generation.GenerationDir(root, "gen0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fallbackDir, "spec.json"), []byte("invalid JSON"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	selection := generation.BootSelectionRecord{
+		APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind,
+		DefaultGenerationID: "gen0", BootedGenerationID: "gen1",
+		DefaultBootEntry: "loader/entries/katl-gen0.conf", BootedBootEntry: "loader/entries/katl-gen1.conf",
+		UpdatedAt: now.Add(-time.Minute),
+	}
+	if err := generation.WriteBootSelection(root, selection); err != nil {
+		t.Fatal(err)
+	}
+	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen1\n")
+	statuses := stubNetworkctl(t, 20*time.Millisecond, func() (string, error) { return linkNoCarrier, nil })
+	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	defer cancel()
+
+	var stdout bytes.Buffer
+	err = run(ctx, []string{"--root", root, "--cmdline", cmdline}, &stdout)
+	const fallbackError = "read rollback target gen0"
+	if err == nil || !strings.Contains(err.Error(), fallbackError) || ctx.Err() != nil {
+		t.Fatalf("run() error = %v, context = %v, want bounded wait followed by the rollback target error", err, ctx.Err())
+	}
+	if !strings.Contains(stdout.String(), fallbackError) {
+		t.Fatalf("stdout = %q, want the fallback error", stdout.String())
+	}
+	if len(*statuses) == 0 {
+		t.Fatal("no systemd status was reported")
+	}
+	lastStatus := (*statuses)[len(*statuses)-1]
+	if !strings.Contains(lastStatus, "enp1s0: no carrier") || !strings.Contains(lastStatus, fallbackError) {
+		t.Fatalf("last systemd status = %q, want the link and fallback errors", lastStatus)
+	}
+
+	_, status, err := generation.ReadGeneration(root, "gen1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := generation.ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.BootState != generation.BootStatePending || persisted != selection {
+		t.Fatalf("indeterminate fallback changed durable state: boot state %s, selection %#v", status.BootState, persisted)
 	}
 }
 

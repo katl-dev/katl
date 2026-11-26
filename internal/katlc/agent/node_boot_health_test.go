@@ -45,7 +45,24 @@ type healthUnit struct{ properties atomic.Value }
 func (u *healthUnit) set(properties string) { u.properties.Store(properties) }
 
 func (u *healthUnit) run(_ context.Context, argv []string, _ func(int)) ToolResult {
-	return ToolResult{Stdout: []byte(u.properties.Load().(string))}
+	properties := u.properties.Load().(string)
+	for _, arg := range argv {
+		request, ok := strings.CutPrefix(arg, "--property=")
+		if !ok {
+			continue
+		}
+		requested := strings.Split(request, ",")
+		var output strings.Builder
+		for line := range strings.SplitSeq(properties, "\n") {
+			name, _, isProperty := strings.Cut(line, "=")
+			if !isProperty || slices.Contains(requested, name) {
+				output.WriteString(line)
+				output.WriteByte('\n')
+			}
+		}
+		return ToolResult{Stdout: []byte(output.String())}
+	}
+	return ToolResult{Stdout: []byte(properties)}
 }
 
 func (u *healthUnit) runWithFailedSSH(ctx context.Context, argv []string, progress func(int)) ToolResult {
@@ -269,19 +286,31 @@ func TestMutationWaitsForBootHealth(t *testing.T) {
 
 func TestNodeStatusBootHealthReportsWhatItWaitsFor(t *testing.T) {
 	waiting := "waiting for the management network: required link enp1s0: no carrier; connect a cable or check the switch port"
-	withStatus := func(properties string) string {
-		return strings.Replace(properties, "Id=katl-boot-health.service\n", "Id=katl-boot-health.service\nStatusText="+waiting+"\n", 1)
-	}
-	for name, unit := range map[string]string{"settling": withStatus(healthSettling), "settle timed out": withStatus(healthStalled)} {
-		t.Run(name, func(t *testing.T) {
-			server, _ := knownGoodNode(t, unit)
+	for _, tc := range []struct {
+		name, properties, state, diagnostic string
+	}{
+		{name: "settling", properties: healthSettling, state: nodeBootHealthPending},
+		{name: "settle timed out", properties: healthStalled, state: nodeBootHealthPending},
+		{
+			name:       "stalled with failed volumes",
+			properties: healthStalled + "\n\nId=katl-volumes-activate.service\nLoadState=loaded\nActiveState=failed\nJob=\n",
+			state:      nodeBootHealthFailed,
+			diagnostic: "katl-volumes-activate.service failed",
+		},
+		{name: "failed with failed dependency", properties: healthFailed, state: nodeBootHealthFailed, diagnostic: "Required units failed: sshd.service"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			properties := strings.Replace(tc.properties, "Id=katl-boot-health.service\n", "Id=katl-boot-health.service\nStatusText="+waiting+"\n", 1)
+			server, unit := knownGoodNode(t, properties)
+			server.RunBootHealthStatus = unit.runWithFailedSSH
 
 			nodeStatus, err := server.GetNodeStatus(context.Background(), &agentapi.GetNodeStatusRequest{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if nodeStatus.GetBootHealthState() != nodeBootHealthPending || !strings.Contains(nodeStatus.GetBootHealthDiagnostic(), waiting) {
-				t.Fatalf("boot health = %q (%s), want pending with %q", nodeStatus.GetBootHealthState(), nodeStatus.GetBootHealthDiagnostic(), waiting)
+			diagnostic := nodeStatus.GetBootHealthDiagnostic()
+			if nodeStatus.GetBootHealthState() != tc.state || !strings.Contains(diagnostic, waiting) || !strings.Contains(diagnostic, tc.diagnostic) {
+				t.Fatalf("boot health = %q (%s), want %s with %q and %q", nodeStatus.GetBootHealthState(), diagnostic, tc.state, waiting, tc.diagnostic)
 			}
 		})
 	}

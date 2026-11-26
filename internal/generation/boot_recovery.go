@@ -37,16 +37,18 @@ func ArmBootRecovery(root string, generationID string) (bool, error) {
 		if err != nil {
 			return err
 		}
-		if !selection.IsPendingBootTarget(generationID) {
+		if !selection.IsPendingBootTarget(generationID) || strings.TrimSpace(selection.PreviousKnownGoodGenerationID) == "" {
 			return nil
 		}
-		fallbackID := strings.TrimSpace(selection.PreviousKnownGoodGenerationID)
-		if fallbackID == "" || fallbackID == generationID || !validBootRecoveryTarget(root, selection, fallbackID) {
+		fallback := rollbackCandidate(selection, generationID)
+		// Leave recovery disarmed when the fallback cannot be verified.
+		// Boot health can still qualify the running generation.
+		if valid, _ := validBootRecoveryTarget(root, fallback); !valid {
 			return nil
 		}
 		data, err := json.Marshal(bootRecoveryArm{
 			TrialGeneration:    generationID,
-			FallbackGeneration: fallbackID,
+			FallbackGeneration: fallback.generationID,
 		})
 		if err != nil {
 			return fmt.Errorf("marshal boot recovery authorization: %w", err)
@@ -61,27 +63,56 @@ func ArmBootRecovery(root string, generationID string) (bool, error) {
 	return armed, err
 }
 
-func validBootRecoveryTarget(root string, selection BootSelectionRecord, generationID string) bool {
-	spec, status, err := ReadGeneration(root, generationID)
-	if err != nil || !IsKnownGood(status) {
-		return false
+type rollbackTarget struct {
+	generationID string
+	bootEntry    string
+}
+
+func rollbackCandidate(selection BootSelectionRecord, runningID string) rollbackTarget {
+	defaultID := strings.TrimSpace(selection.DefaultGenerationID)
+	defaultEntry := strings.TrimSpace(selection.DefaultBootEntry)
+	previousID := strings.TrimSpace(selection.PreviousKnownGoodGenerationID)
+	if (selection.OneShot && defaultID != runningID) || previousID == "" {
+		if defaultID != runningID {
+			return rollbackTarget{generationID: defaultID, bootEntry: defaultEntry}
+		}
+		return rollbackTarget{}
 	}
-	entry := strings.TrimSpace(selection.PreviousKnownGoodBootEntry)
-	if entry == "" && strings.TrimSpace(selection.DefaultGenerationID) == generationID {
-		entry = strings.TrimSpace(selection.DefaultBootEntry)
+	if previousID == runningID {
+		return rollbackTarget{}
 	}
-	if entry == "" || entry != strings.TrimSpace(spec.Boot.LoaderEntryPath) {
-		return false
+	previousEntry := strings.TrimSpace(selection.PreviousKnownGoodBootEntry)
+	if previousEntry == "" && previousID == defaultID {
+		previousEntry = defaultEntry
 	}
+	return rollbackTarget{generationID: previousID, bootEntry: previousEntry}
+}
+
+func validBootRecoveryTarget(root string, target rollbackTarget) (bool, error) {
+	if target.generationID == "" {
+		return false, nil
+	}
+	spec, status, err := ReadGeneration(root, target.generationID)
+	if err != nil {
+		return false, fmt.Errorf("read rollback target %s: %w", target.generationID, err)
+	}
+	if !IsKnownGood(status) || target.bootEntry == "" || target.bootEntry != strings.TrimSpace(spec.Boot.LoaderEntryPath) {
+		return false, nil
+	}
+
 	for _, path := range []string{
-		filepath.Join("/efi", entry),
+		filepath.Join("/efi", target.bootEntry),
 		filepath.Join("/efi", entryPath(spec.Boot.UKIPath)),
 	} {
-		if _, err := os.Stat(rootedPathUnchecked(root, path)); err != nil {
-			return false
+		_, err := os.Stat(rootedPathUnchecked(root, path))
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		if err != nil {
+			return false, fmt.Errorf("check rollback target %s boot file %s: %w", target.generationID, path, err)
 		}
 	}
-	return true
+	return true, nil
 }
 
 // HasBootFallback reports whether a failed boot of generationID would leave a
@@ -101,13 +132,8 @@ func HasBootFallback(root string, generationID string) (bool, error) {
 			return err
 		}
 		boot, err := readRunningBoot(root, generationID, selection, status)
-		if err != nil || boot.Armed {
-			found = boot.Armed
-			return err
-		}
-		fallbackID := rollbackCandidate(selection, generationID)
-		found = fallbackID != "" && validRollbackTarget(root, fallbackID)
-		return nil
+		found = boot.Fallback.generationID != ""
+		return err
 	})
 	return found, err
 }
@@ -156,6 +182,7 @@ type runningBoot struct {
 	Trial        bool
 	Armed        bool
 	KnownGood    bool
+	Fallback     rollbackTarget
 }
 
 func (boot runningBoot) failureDemotes() bool {
@@ -169,22 +196,31 @@ func readRunningBoot(root, generationID string, selection BootSelectionRecord, s
 		KnownGood:    IsKnownGood(status),
 	}
 	data, err := os.ReadFile(rootedPathUnchecked(root, bootRecoveryPath))
-	if errors.Is(err, os.ErrNotExist) {
-		return boot, nil
-	}
-	if err != nil {
+	var arm bootRecoveryArm
+	if err == nil {
+		if err := json.Unmarshal(data, &arm); err != nil {
+			return runningBoot{}, fmt.Errorf("decode boot recovery authorization: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return runningBoot{}, fmt.Errorf("read boot recovery authorization: %w", err)
 	}
-	var arm bootRecoveryArm
-	if err := json.Unmarshal(data, &arm); err != nil {
-		return runningBoot{}, fmt.Errorf("decode boot recovery authorization: %w", err)
+
+	fallback := rollbackCandidate(selection, generationID)
+	authorized := strings.TrimSpace(arm.TrialGeneration) == generationID &&
+		fallback.generationID != "" &&
+		fallback.generationID == strings.TrimSpace(arm.FallbackGeneration) &&
+		fallback.generationID == strings.TrimSpace(selection.PreviousKnownGoodGenerationID)
+	if !boot.failureDemotes() && !authorized {
+		return boot, nil
 	}
-	trialID := strings.TrimSpace(arm.TrialGeneration)
-	fallbackID := strings.TrimSpace(arm.FallbackGeneration)
-	if trialID == generationID && fallbackID != "" && fallbackID != trialID &&
-		strings.TrimSpace(selection.PreviousKnownGoodGenerationID) == fallbackID {
-		boot.Armed = validBootRecoveryTarget(root, selection, fallbackID)
+	valid, err := validBootRecoveryTarget(root, fallback)
+	if err != nil {
+		return runningBoot{}, err
 	}
-	boot.Trial = boot.Trial || boot.Armed
+	if valid {
+		boot.Fallback = fallback
+		boot.Armed = authorized
+		boot.Trial = boot.Trial || boot.Armed
+	}
 	return boot, nil
 }

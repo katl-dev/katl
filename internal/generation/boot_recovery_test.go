@@ -94,20 +94,27 @@ func TestArmBootRecoveryRejectsUnhealthyFallback(t *testing.T) {
 
 func TestHasBootFallback(t *testing.T) {
 	for _, tc := range []struct {
-		name         string
-		defaultState string
-		selection    BootSelectionRecord
-		want         bool
+		name            string
+		defaultState    string
+		selection       BootSelectionRecord
+		missingBootFile string
+		want            bool
 	}{
 		{
 			name:      "first install",
 			selection: BootSelectionRecord{DefaultGenerationID: "gen1", TargetBootGenerationID: "gen1", PendingHealthValidation: true, PersistentDefaultPromotion: DefaultPromotionPending},
 		},
 		{
-			name:         "known-good default",
-			defaultState: BootStateGood,
-			selection:    BootSelectionRecord{DefaultGenerationID: "gen0", BootedGenerationID: "gen1"},
-			want:         true,
+			name:            "missing loader entry",
+			defaultState:    BootStateGood,
+			selection:       BootSelectionRecord{DefaultGenerationID: "gen0", BootedGenerationID: "gen1"},
+			missingBootFile: "loader entry",
+		},
+		{
+			name:            "missing UKI",
+			defaultState:    BootStateGood,
+			selection:       BootSelectionRecord{DefaultGenerationID: "gen0", BootedGenerationID: "gen1"},
+			missingBootFile: "UKI",
 		},
 		{
 			name:         "failed default",
@@ -117,7 +124,7 @@ func TestHasBootFallback(t *testing.T) {
 		{
 			name:         "known-good previous generation",
 			defaultState: BootStateGood,
-			selection:    BootSelectionRecord{DefaultGenerationID: "gen1", PreviousKnownGoodGenerationID: "gen0"},
+			selection:    BootSelectionRecord{DefaultGenerationID: "gen1", PreviousKnownGoodGenerationID: "gen0", PreviousKnownGoodBootEntry: "loader/entries/katl-gen0.conf"},
 			want:         true,
 		},
 	} {
@@ -134,7 +141,22 @@ func TestHasBootFallback(t *testing.T) {
 			writeBootHealthGeneration(t, root, "gen1", "", CommitStateCommitted, BootStatePending, HealthStateUnknown, now.Add(-time.Hour))
 			selection := tc.selection
 			selection.APIVersion, selection.Kind, selection.UpdatedAt = APIVersion, BootSelectionKind, now
+			selection.DefaultBootEntry = "loader/entries/katl-" + selection.DefaultGenerationID + ".conf"
 			writeBootHealthSelection(t, root, selection)
+
+			if tc.missingBootFile != "" {
+				spec, _, err := ReadGeneration(root, "gen0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join("/efi", spec.Boot.LoaderEntryPath)
+				if tc.missingBootFile == "UKI" {
+					path = spec.Boot.UKIPath
+				}
+				if err := os.Remove(rootedPathUnchecked(root, path)); err != nil {
+					t.Fatal(err)
+				}
+			}
 
 			got, err := HasBootFallback(root, "gen1")
 			if err != nil {
@@ -144,5 +166,51 @@ func TestHasBootFallback(t *testing.T) {
 				t.Fatalf("HasBootFallback(gen1) = %t, want %t", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBootHealthTimeoutUsesKnownGoodDefault(t *testing.T) {
+	const defaultEntry = "loader/entries/katl-gen0.conf"
+	root := t.TempDir()
+	now := time.Date(2026, 6, 15, 13, 0, 0, 0, time.UTC)
+	writeBootHealthGeneration(t, root, "gen0", "", CommitStateCommitted, BootStateGood, HealthStateHealthy, now.Add(-2*time.Hour))
+	writeBootHealthGeneration(t, root, "gen1", "", CommitStateCommitted, BootStatePending, HealthStateUnknown, now.Add(-time.Hour))
+	writeBootHealthSelection(t, root, BootSelectionRecord{
+		APIVersion:          APIVersion,
+		Kind:                BootSelectionKind,
+		DefaultGenerationID: "gen0",
+		BootedGenerationID:  "gen1",
+		DefaultBootEntry:    defaultEntry,
+		BootedBootEntry:     "loader/entries/katl-gen1.conf",
+		UpdatedAt:           now.Add(-time.Minute),
+	})
+
+	if found, err := HasBootFallback(root, "gen1"); err != nil || !found {
+		t.Fatalf("HasBootFallback(gen1) = %t, %v, want the known-good default", found, err)
+	}
+	result, err := RecordBootHealth(BootHealthRequest{
+		Root: root, GenerationID: "gen1", CommandLine: bootHealthCommandLine("gen1"),
+		Result: BootHealthTimeout, Now: now, RequestReboot: true,
+	})
+	if err != nil || !result.Failed || result.RecoveryRequired || result.RebootRequested {
+		t.Fatalf("RecordBootHealth(timeout) = %#v, %v, want failure with manual fallback", result, err)
+	}
+
+	_, status, err := ReadGeneration(root, "gen1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.BootState != BootStateFailed || status.HealthState != HealthStateUnhealthy {
+		t.Fatalf("gen1 status = %s/%s, want failed/unhealthy", status.BootState, status.HealthState)
+	}
+	selection, err := ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.BootedGenerationID != "gen1" || selection.FailedBootGenerationID != "gen1" ||
+		selection.DefaultGenerationID != "gen0" || selection.NextBootGenerationID() != "gen0" ||
+		selection.PreviousKnownGoodGenerationID != "gen0" || selection.PreviousKnownGoodBootEntry != defaultEntry ||
+		selection.DefaultBootEntry != defaultEntry || selection.RecoveryRequired {
+		t.Fatalf("selection after timeout = %#v, want gen1 running until reboot to gen0", selection)
 	}
 }
