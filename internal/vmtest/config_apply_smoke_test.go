@@ -805,7 +805,11 @@ spec:
       commandLine:
         - katl.vmtest.boot_move_reader=1
 `
-	staged := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "stage-intent-trial", "next-boot", trial, config, false)
+	path := filepath.Join(t.TempDir(), "boot-move.yaml")
+	if err := os.WriteFile(path, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	staged := submitKatlctlConfigApply(t, ctx, result, katlctl, endpoint, "stage-intent-trial", "next-boot", trial, path, false)
 	if receipt := waitKatlcOperationTerminal(t, ctx, endpoint, staged.OperationId); receipt.Result != operation.ResultSucceeded {
 		t.Fatalf("stage intent trial: %+v", receipt)
 	}
