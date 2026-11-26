@@ -41,6 +41,17 @@ type kubeletHealthObservation struct {
 	controlPlane  bool
 }
 
+// kubeletHealthDeadline creates the health check's deadline context from the
+// current operation and the configured timeout.
+type kubeletHealthDeadline func(context.Context, operation.OperationRecord, time.Duration) (context.Context, context.CancelFunc)
+
+func (e *Executor) kubeletHealthContext(ctx context.Context, record operation.OperationRecord) (context.Context, context.CancelFunc) {
+	if e.kubeletHealthDeadline != nil {
+		return e.kubeletHealthDeadline(ctx, record, postKubeadmHealthTimeout)
+	}
+	return context.WithTimeout(ctx, postKubeadmHealthTimeout)
+}
+
 func (e *Executor) captureKubeletHealth(ctx context.Context, record operation.OperationRecord) error {
 	stored, err := e.Store.Read(record.OperationID)
 	if err != nil {
@@ -131,7 +142,7 @@ func (e *Executor) runKubeletConfigHealth(ctx context.Context, record operation.
 		return ToolResult{Err: fmt.Errorf("read kubelet readiness requirement: %w", err), ExitStatus: 1}
 	}
 	record.KubeadmControlPlaneConfig.ReadinessRequirement = stored.KubeadmControlPlaneConfig.ReadinessRequirement
-	healthCtx, cancel := context.WithTimeout(ctx, postKubeadmHealthTimeout)
+	healthCtx, cancel := e.kubeletHealthContext(ctx, stored)
 	defer cancel()
 	var lastErr error
 	for {

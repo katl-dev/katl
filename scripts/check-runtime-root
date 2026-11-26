@@ -197,6 +197,10 @@ runtime_inventory="$(unsquashfs -ll "$artifact")" || fail "list runtime root fai
 if grep -Eiq 'squashfs-root/[^[:space:]]*(vmtest|vm-test)' <<<"$runtime_inventory"; then
     fail "runtime image contains VM-test support"
 fi
+unsquashfs -cat "$artifact" usr/bin/katlc >"$work/katlc" || fail "read /usr/bin/katlc failed"
+if LC_ALL=C grep -aFq -- 'vmtest kubelet health armed ' "$work/katlc"; then
+    fail "production katlc contains the VM-test kubelet health control"
+fi
 
 for path in \
     /usr/lib/os-release \
@@ -268,6 +272,7 @@ for path in \
     /usr/lib/sysimage/rpm \
     /var/lib/rpm-state \
     /usr/lib/katl/vmtest \
+    /usr/lib/systemd/system/katlc-agent.service.d/90-katl-vmtest.conf \
     /usr/lib/systemd/system/katl-vmtest-agent.service \
     /usr/lib/systemd/system/katl-vmtest-debug-shell.service \
     /usr/lib/systemd/system/multi-user.target.wants/katl-vmtest-agent.service \

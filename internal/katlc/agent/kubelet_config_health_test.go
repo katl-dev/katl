@@ -23,6 +23,30 @@ const (
 	configPendingCRI  = `{"status":{"conditions":[{"type":"RuntimeReady","status":true},{"type":"NetworkReady","status":false,"reason":"NetworkPluginNotReady","message":"Network plugin returns error: cni plugin not initialized"}]}}`
 )
 
+func TestKubeletConfigHealthDeadlineDefault(t *testing.T) {
+	var executor Executor
+	start := time.Now()
+	ctx, cancel := executor.kubeletHealthContext(context.Background(), operation.OperationRecord{})
+	defer cancel()
+	deadline, ok := ctx.Deadline()
+	if !ok || deadline.Before(start.Add(2*time.Minute)) || deadline.After(time.Now().Add(2*time.Minute)) {
+		t.Fatalf("kubelet health deadline = %v, want two minutes after creation", deadline)
+	}
+
+	parent, stopParent := context.WithDeadline(context.Background(), start.Add(time.Minute))
+	defer stopParent()
+	ctx, cancelChild := executor.kubeletHealthContext(parent, operation.OperationRecord{})
+	defer cancelChild()
+	deadline, ok = ctx.Deadline()
+	if !ok || !deadline.Equal(start.Add(time.Minute)) {
+		t.Fatalf("kubelet health deadline = %v, want the earlier parent deadline", deadline)
+	}
+	stopParent()
+	if err := ctx.Err(); err != context.Canceled {
+		t.Fatalf("after parent cancellation, Err = %v, want context.Canceled", err)
+	}
+}
+
 func readyKubeletHealthProbe(argv []string) (ToolResult, bool) {
 	if result, ok := controlPlaneMirrorProbe(argv); ok {
 		return result, true

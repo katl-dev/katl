@@ -129,6 +129,8 @@ if [[ "$vmtest_image_support" == 1 ]]; then
     mkdir -p \
         "$DESTDIR/usr/lib/katl/vmtest" \
         "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants"
+    install -Dm0644 "$repo/internal/vmtest/image/katlc-agent.service.d/90-katl-vmtest.conf" \
+        "$DESTDIR/usr/lib/systemd/system/katlc-agent.service.d/90-katl-vmtest.conf"
     cp "$repo/internal/vmtest/image/katl-vmtest-agent.service" \
         "$repo/internal/vmtest/image/katl-vmtest-debug-shell.service" \
         "$DESTDIR/usr/lib/systemd/system/"
@@ -148,6 +150,18 @@ if [[ "$vmtest_image_support" == 1 ]]; then
         -ldflags="-s -w -X main.version=$version -X main.commit=$commit -X main.date=$date" \
         -o "$DESTDIR/usr/lib/katl/vmtest/katl-vmtest-agent" \
         ./cmd/katl-vmtest-agent
+
+    CGO_ENABLED=0 \
+    GOOS=linux \
+    GOARCH=amd64 \
+    GOCACHE="$builddir/go-build" \
+    GOMODCACHE="$gomodcache" \
+    go build \
+        -trimpath \
+        -buildvcs=false \
+        -ldflags="-s -w" \
+        -o "$DESTDIR/usr/lib/katl/vmtest/katlc-instrumented" \
+        ./internal/vmtest/image/katlc
 fi
 
 CGO_ENABLED=0 \
