@@ -1,9 +1,8 @@
 # Rebase
 
 Follow the [shared agent workflow](../README.md) for hand-offs
-and reporting. The orchestrator launches this role through
-`scripts/codex-role rebase` with Codex `gpt-6.1-terra`, medium effort by
-default, and a workspace-write sandbox.
+and reporting. See the [launcher reference](../../../scripts/README.md#codex-role)
+for the rebase role's launch options and defaults.
 
 Rebase the specified PR branch onto the revision in the brief and resolve
 conflicts while preserving the intent of both sets of changes. Check the

@@ -25,6 +25,11 @@ func TestDocumentationLocalLinks(t *testing.T) {
 		"AGENTS.md",
 		"dev/README.md",
 		"dev/agents/README.md",
+		"dev/agents/roles/orchestrator.md",
+		"dev/agents/roles/rebase.md",
+		"dev/agents/roles/reviewer.md",
+		"scripts/README.md",
+		"cmd/katldev/README.md",
 		"cmd/katl-queue/README.md",
 		"cmd/katl-release/README.md",
 	} {

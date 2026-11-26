@@ -112,17 +112,9 @@ service privileges or applying systemd sandbox restrictions.
 
 ## Run VM tests with libvirt
 
-Use the libvirt-backed vmtest world as the supported automated VM layer:
-
-1. Build current artifacts with `scripts/mkosi` or let `scripts/vmtest-run`
-   build the current repo artifacts by default.
-2. Run VM smokes with `scripts/vmtest-run` so world setup, host capability
-   recording, libvirt lifecycle, and serial capture are handled consistently.
-3. Use libvirt tools such as `virsh` for manual inspection of domains,
-   networks, storage pools, and serial consoles.
-
-`virt-manager` is useful for interactive debugging, but it is not a project
-dependency and should not be required by automated tests.
+Use the [VM test runner](../scripts/README.md#vmtest-run) for automated
+coverage and [katldev](../cmd/katldev/README.md) for persistent, hands-on
+journeys. Use libvirt tools such as `virsh` for manual inspection.
 
 ## Local artifacts and boot contract
 
@@ -137,9 +129,7 @@ serial output, lifecycle, and cleanup are consistent.
 - Output directory: `_build/mkosi/`.
 - Primary artifact name: `katl-installer.raw`.
 - Build command: `scripts/mkosi build-installer`.
-- Required smoke path: `scripts/vmtest-run` with libvirt system VM execution
-  and deterministic serial capture.
-- Firmware expectation: the runner is given readable OVMF/edk2 pflash images.
+- Required smoke path: [libvirt VM test runner](../scripts/README.md#vmtest-run).
 - Console settings: the guest kernel command line includes both
   `console=ttyS0,115200n8` and `console=tty3`. `tty3` receives kernel and
   direct console logs, separate from the dashboard on `tty1` and login on
@@ -167,13 +157,11 @@ serial output, lifecycle, and cleanup are consistent.
   masters, rather than configured intent. Installed nodes awaiting cluster
   bootstrap show a pending state and a workstation action even when OS health
   checks have passed.
-- Generated build artifacts belong under `_build/`; VM-test worlds use the
-  temporary path reported by `scripts/vmtest-run`.
+- Generated build artifacts belong under `_build/`.
 
 The libvirt-backed vmtest path is the automation contract because it gives the
 smoke harness stable process control, serial output, timeout handling, network
-leases, storage setup, and exit details. KVM should be used when available, and
-the runner records missing `/dev/kvm` access as a host capability gap.
+leases, storage setup, and exit details.
 
 Installer and lifecycle scenarios deliberately mutate only runner-created VM
 disks. Test agents and fixtures are allowed only in instrumented test artifacts
@@ -196,8 +184,6 @@ terminal switching, and reboot in the persistent VM journey.
 - `scripts/build-kubernetes-sysext`: explicitly builds one Kubernetes sysext
   from the selected release manifest and package versions. VM upgrade fixtures
   call the same builder with explicit version and output inputs.
-- `scripts/vmtest-run`: runs enabled VM, first-install, installed-runtime, and
-  multinode kubeadm smokes through a runner-created world.
 - `libvirt`/`virsh`: defines, starts, observes, and tears down local VM test
   domains.
 - KVM access: the VM test runner should see `/dev/kvm`.
@@ -207,15 +193,9 @@ terminal switching, and reboot in the persistent VM journey.
 The supported top-level script surface is intentionally small. Use
 `scripts/mkosi` for KatlOS image artifacts,
 `scripts/build-kubernetes-sysext` for Kubernetes payload artifacts, and
-`scripts/vmtest-run` for enabled test worlds. Other scripts are compatibility
+[vmtest-run](../scripts/README.md#vmtest-run) for enabled test worlds. Other scripts are compatibility
 wrappers, debug aids, or temporary validators for scaffolding work; do not
 treat the whole `scripts/` directory as the public developer interface.
-
-VM gates build and consume artifacts under the checkout's `_build/mkosi`.
-Unset `KATL_MKOSI_BUILD_DIR` when switching from a separate development or release
-build directory to `scripts/vmtest-run`. The harness rejects alternate output
-directories and explicit artifact-path overrides before building, so its
-builds, recorded provenance, and VM consumers cannot select different roots.
 
 ## Nix dev shell
 
@@ -240,28 +220,11 @@ and artifact-inspection tools used by VM tests. Image construction stays behind
 `scripts/mkosi`; mkosi and Fedora package installation run inside its builder
 container.
 
-Inside `nix develop`, the development shell puts `katl-queue`, `codex-role`,
-`vmtest-run`, `vmtest-clean`, `vmtest-debug`, `vmtest-exec`,
-`worktree-clean`, `hermetic`, and `check-fast` on `PATH`. Each command uses the
-script from the current checkout. Follow the cleanup procedure in
-[AGENTS.md](../AGENTS.md#testing-and-release-confidence).
+The shell puts checkout-backed commands on `PATH`. Find their references in
+the [development tool index](../dev/README.md).
 
-Run direct Go tests through Bubblewrap to keep workstation files out of the
-test environment.
-
-```sh
-scripts/hermetic -- go test ./...
-```
-
-The wrapper requires Linux user namespaces and mounts an empty filesystem over
-your home. It gives the command writable access to the checkout, its linked
-Git metadata, and the Go build and module caches. Use `--bind DIR` before `--`
-for each additional writable directory, or `--ro-bind DIR` for read-only input.
-
-Run `scripts/check-fast` directly because it invokes the wrapper itself.
-Run `scripts/vmtest-run` directly because fixture staging uses `sudo`, which
-Bubblewrap blocks. See [#764](https://github.com/katl-dev/katl/issues/764) for
-sudo-free staging and VM wrapper integration.
+Use [hermetic](../scripts/README.md#hermetic) for isolated Go tests and
+the [VM test runner](../scripts/README.md#vmtest-run) for enabled VM suites.
 
 `katlctl` is also available in the development shell. It runs from the current
 checkout so local source changes are used immediately:
@@ -285,232 +248,8 @@ packages = [ katl.packages.${system}.katlctl ];
 The source-built CLI reports the pinned Git commit in `katlctl version`. The
 development-shell command above continues to run the checkout source directly.
 
-`katldev` owns persistent developer workflows. It keeps one persistent VM
-world per checkout: a set of installer VMs on a libvirt NAT network that the
-world creates for itself, with one shared `_build/katldev/cluster.yaml`. To boot
-the current checkout's installer ISO in a one-node world:
-
-```sh
-katldev installer start
-```
-
-The command cache-checks and builds the self-contained installer ISO, waits for
-the installer API, and creates `_build/katldev/cluster.yaml` from the waiting
-VM's reserved address and target disk. Its output leads directly to
-`katlctl install apply`. A config that lists any of the world's VMs is retained
-so it can be edited for repeated user journeys. If it lists none of them,
-katldev fails with recovery guidance; pass `--force-config` only when replacing
-it is intentional. The world's VMs, 32 GiB target disks, and network state live
-under `_build/katldev/world`; they are not owned or cleaned up by automated
-vmtest runs.
-
-To exercise the automatic install paths, start or add a VM with boot inputs.
-They apply to the VMs that command boots, so use `world add-node` to give each
-node different inputs:
-
-| Flag | Effect |
-| --- | --- |
-| `--preseed-dir DIR` | Attach `DIR` as `KATLSEED` media, such as an `install-input.json` with its files. |
-| `--manifest FILE` | Build `KATLSEED` media that installs automatically from an install manifest, including the file its `katlosImage.localRef` names, resolved beside the manifest. |
-| `--cmdline ARG` | Append `ARG` to the installer kernel command line; repeatable. `{gateway}` expands to the host address on the world network. |
-
-`--preseed-dir` and `--manifest` are mutually exclusive. Command-line arguments
-reach the installer UKI through SMBIOS (`io.systemd.stub.kernel-cmdline-extra`),
-so they also apply when the installed system boots from the same VM.
-
-To install from a bundle served by the host, serve a directory on the world
-network and point the installer at it:
-
-```sh
-katldev installer start \
-  --cmdline 'katl.bundle.url=http://{gateway}:8080/cluster.katlcfg' \
-  --cmdline katl.node=cp-1 --cmdline katl.install.mode=auto
-katldev world serve ./bundles    # leave running; Ctrl-C stops it
-```
-
-`katldev world serve` listens on the world network's host address, which exists
-once the world has started. Automatic installs do not wait for configuration, so
-use `katldev world console` to follow them.
-
-Katldev domains have a VGA display, so `virsh -c <world libvirt URI> screenshot <domain> out.ppm`
-captures `tty1` as an operator at a monitor sees it. While the installer runs,
-`tty1` shows its progress, the endpoint to configure, and any failure with
-the next step.
-
-The world's `katlctl` contexts live in `_build/katldev/katlctl.yaml`, so a dev
-journey's `katlctl context save` cannot change or replace the contexts for
-your own clusters. The development shell, entered with `nix develop` or
-direnv, exports `KATLCTL_CONFIG` with that path and clears any other inherited
-`KATLCTL_*` settings. Inside the shell, `katlctl` therefore manages only the
-dev world. Your own config stays in effect in every other shell. katldev
-prints the world's config path, and from a shell outside the development
-shell it also prints the `export KATLCTL_CONFIG=...` line that selects it. To
-manage a real cluster from inside the development shell, set `KATLCTL_CONFIG`
-to your own config for that command.
-
-VM tests are isolated in the same way. `scripts/vmtest-run` points
-`KATLCTL_CONFIG` at the run directory, and every test runs `katlctl` through
-`vmtest.Katlctl.Command`, which gives the command a config, `HOME`, and
-`XDG_CONFIG_HOME` inside the test's own directory. A unit test rejects VM test
-code that builds, runs, or configures `katlctl` any other way.
-
-`katldev installer` is the one-node form of `katldev world`. Start a multi-node
-world, or add VMs to an existing one, with:
-
-```sh
-katldev world start --nodes 2     # cp-1 and worker-1
-katldev world add-node --control-plane   # cp-2
-katldev world add-node            # the next worker-N
-```
-
-A new world's config lists every VM that was waiting when it was created. A VM
-added later is not written into `cluster.yaml`; katldev prints the
-`katlctl config add-node` command for it, with the VM's installer address, name,
-and role. That command prints the `katlctl install apply` and `katlctl node
-join` steps from
-[Add one node](operations/change-cluster-nodes.md#add-one-node). This keeps
-multi-node journeys on the operator's path.
-
-Use the same world for repeated manual install and management checks:
-
-```sh
-katldev world status
-katldev world console cp-1
-katldev world stop                # or: stop worker-1
-katldev world start
-katldev world reset
-katldev world remove
-```
-
-`start` resumes stopped VMs and recreates a missing VM with a fresh disk.
-`status` reports each VM's libvirt state, observed address, installer or KatlOS
-management state, and the `cluster.yaml` node at that address. Both warn when
-the host's `libvirt-guests.service` is disabled or suspends guests at host
-shutdown. A KatlOS node resumed from suspend finds its clock past DHCP leases
-and certificate checks, so set `ON_SHUTDOWN=shutdown`.
-
-`stop` simulates pressing the power button through ACPI and waits for each
-guest to power off. On an installed Kubernetes node, this lets kubelet use its
-[configured graceful shutdown budgets](operations/maintain-node.md#configure-native-graceful-shutdown).
-Katl does not drain the node or enable those budgets automatically. Use
-`--timeout 5m` when a guest needs more than the default three minutes.
-If shutdown is not confirmed, inspect `status` and `console`; the guest might
-still be shutting down. `stop --force` cuts power immediately and bypasses
-guest shutdown.
-
-Each VM has a DHCP reservation in the world network, with an infinite lease.
-To test [worker re-addressing](operations/change-cluster-nodes.md#re-address-a-worker),
-move the reservation:
-
-```sh
-katldev world readdress worker-1               # first free address
-katldev world readdress worker-1 --address 10.200.4.40
-```
-
-The VM keeps its current address until it next requests one, which normally
-happens when it boots. That address stays reserved for the VM until `status`
-or another katldev command sees it answer at the new one, so a VM added in the
-meantime never receives it. katldev prints the `cluster.yaml` change and the
-`katlctl cluster apply --endpoint` and `katlctl node reboot --endpoint`
-commands that complete the re-address.
-
-To test a node behind NAT, whose `management.address` no VM holds, give it a
-host-translated address outside the world network:
-
-```sh
-katldev world nat cp-1 --address 198.18.0.10
-katldev world nat cp-1 --remove
-```
-
-The host then translates connections from this machine to that address to the
-VM's reserved address, and katldev prints the `management.address` and
-`kubernetes.address` to set in `cluster.yaml`. The rule is an iptables DNAT in
-the world's own nat-table chain, so `nat` needs `sudo` that does not prompt.
-`start`, `add-node`, and `readdress` rewrite it after a readdress or a host
-firewall reload, and warn with the command to rerun if they cannot; `status`
-does not touch it. `reset` and `remove` delete it, but
-keep the record and say what to rerun if sudo fails.
-
-To test a multihomed node, whose `management.address` is on a second interface
-that the node holds, give its VM a second NIC:
-
-```sh
-katldev world multihome cp-1
-katldev world multihome cp-1 --remove
-```
-
-The second NIC joins an isolated libvirt network that the world owns on a free
-subnet; the host reaches the VM there, and the VM's primary network keeps the
-default route. katldev prints the `management.address` for the second NIC and
-the `kubernetes.address` for the primary one to set in `cluster.yaml`. A running
-VM gets the NIC live, `reset` drops it with the VM, and `remove` deletes the
-network.
-
-`reset` first prepares the current checkout's ISO, then removes the world and
-boots fresh installers, keeping the VM count unless `--nodes` changes it.
-`remove` deletes the world without recreating it. Both remove only libvirt
-domains and the network carrying this checkout's world ownership metadata,
-plus the world's disks and state; `cluster.yaml` is kept. They need no
-destructive confirmation because they can only address the checkout-scoped
-development world. The world's identity is a random ID in
-`_build/katldev/world-id`, which both keep, so a world is usually recreated on
-the same subnet with the same addresses and a retained `cluster.yaml` keeps
-matching. If `start` cannot start the world network because another network,
-VPN, or route now uses its subnet, `reset` chooses a free one. Pass `--no-build`
-only when deliberately reusing the existing `_build/mkosi/katl-installer.iso`.
-
-A checkout that still has the single VM from an earlier katldev refuses
-`start`; run `katldev world reset` to remove that VM and boot a world.
-
-Build and verify the current checkout's self-contained installer ISO through
-the discoverable development command:
-
-```sh
-nix develop --command katldev build iso
-```
-
-The command composes the existing source-fingerprinted `scripts/mkosi`
-pipeline, runs the full ISO verifier, and prints absolute paths for the ISO,
-metadata, and checksum together with the digest and byte size. By default it
-derives a checkout-scoped identity such as `2026.7.0-local.1a2b3c4` from the
-nearest KatlOS release line and the current commit. Use `--version` when the
-installed development image needs a particular KatlOS identity:
-
-```sh
-nix develop --command katldev build iso --version 2026.7.0-dev.12
-```
-
-The default command omits release-owned system extensions to keep the routine
-development build focused. To build a release-shaped ISO, build and include
-every discovered release-owned extension:
-
-```sh
-nix develop --command katldev build iso --release-extensions
-```
-
-This option builds the runtime, builds and verifies each extension recipe,
-assembles their aggregate manifest, and embeds the verified closure in the
-KatlOS install image. The command fails if the final image metadata does not
-contain that exact manifest.
-
-Copy the reported ISO to a hypervisor under a versioned name and independently
-compare the reported digest after transfer. Published images should continue
-through `katlctl node upgrade` where possible; use the ISO path for clean
-installation, wipe/reinstall recovery, and current-checkout changes which do
-not yet have a published upgrade source.
-
-Build the matching local upgrade image without repeating the derived version:
-
-```sh
-nix develop --command katldev build upgrade
-```
-
-Use `--release-extensions` when the upgrade must carry the release-owned
-extensions for its target runtime:
-
-```sh
-nix develop --command katldev build upgrade --release-extensions
-```
+See [katldev](../cmd/katldev/README.md) for checkout artifact builds and
+persistent development VM journeys.
 
 ### Container runtime packages
 
@@ -584,106 +323,12 @@ instrumented image, pass
 `--test-lock internal/vmtest/image/components.lock` to `verify`. Production image
 checks also enforce the existing boundary against shipping VM-test support.
 
-### VM host requirements
-
-The development shell includes the complete supported VM test toolchain. It
-does not configure host libvirt, `/dev/kvm`, `/dev/net/tun`, networks, storage
-pools, or polkit access; keep those in the host configuration.
-
-The host must provide:
-
-- A running system libvirt daemon reachable at `qemu:///system`, or an explicit
-  `KATL_VMTEST_LIBVIRT_URI` override.
-- User access to the system libvirt daemon through the host's libvirt group,
-  polkit policy, or an explicit privileged manual session.
-- An active libvirt network named `default`, or
-  `KATL_VMTEST_LIBVIRT_NETWORK` set to the active test network.
-- Permission to define NAT networks in that daemon, which must be libvirt 9.7 or
-  newer so networks keep their metadata. Each VM test scenario creates and
-  removes its own network on a free /24 in 10.200.0.0/13.
-- An active libvirt storage pool named `default`, or
-  `KATL_VMTEST_LIBVIRT_STORAGE_POOL` set to the active test pool.
-
 ## Optional development tools
 
 - `virt-install`: useful for manual libvirt VM creation.
 - `virt-manager`: useful GUI for inspecting and debugging local VMs.
 - `/dev/net/tun` and `vhost_net`: useful for libvirt networks and richer VM
   networking.
-
-## VM test worlds
-
-Enabled VM, first-install, installed-runtime, and multinode kubeadm smokes run
-through one runner-created world. Use `scripts/vmtest-run` instead of preparing
-fixture environment files or invoking `scripts/vmtest-exec` directly:
-
-```sh
-scripts/vmtest-run ./internal/vmtest \
-  -run 'FirstInstallTargetDisk|InstalledRuntime|ConfigApply' -count=1
-scripts/vmtest-run ./internal/vmtest/scenarios \
-  -run 'TwoNodeOperationBackedBootstrap|ThreeControlPlaneStackedEtcd' \
-  -timeout 60m -count=1
-```
-
-To exercise the release boundary rather than locally built Kubernetes
-artifacts, provide digest-pinned source and target OCI bundles. The upgrade
-scenario fetches and verifies both bundles through the product bundle path:
-
-```sh
-KATL_KUBERNETES_VERSION=v1.36.1 \
-KATL_VMTEST_KUBERNETES_UPGRADE_VERSION=v1.36.2 \
-KATL_VMTEST_KUBERNETES_BUNDLE='ghcr.io/katl-dev/kubernetes@sha256:f6060cd025aa28db3ac76c82c45f8aac858baa198d09829e36ff9c920bb1e281' \
-KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE='ghcr.io/katl-dev/kubernetes@sha256:6362d1f3b79fd73323b9f77be8348ac2c76db83b95eb9f818d710eacc89493fb' \
-scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \
-  -run '^TestKubeadmUpgradeOperationSmoke$' \
-  -count=1 -failfast -timeout 75m
-```
-
-The runner creates a temporary world under `${TMPDIR:-/tmp}/katl-vmtest/`, probes
-host capabilities, records `world.json`, `host-capabilities.json`, `run.json`,
-and `go-test.log`, exports the world environment, and then executes `go test`
-with the caller's package patterns and flags, in an environment built from an
-allowlist: `PATH`, locale, the Go toolchain settings and caches, and `KATL_*`
-variables pass through, while `HOME` and the XDG directories point into the run
-directory. Argument meaning belongs to
-`go test`; `scripts/vmtest-run` only adds the harness execution needed to route
-compiled package test binaries through `scripts/vmtest-exec`. VM test package
-binaries are serialized by default because they share world fixtures and host
-resource pools; pass an explicit `-p` value to override that policy.
-
-The runner keeps terminal output minimal: it prints the world paths, writes the
-full `go test -json` event stream to `go-test.log` (each `--- PASS` line is in an
-event's `Output`, and `test-summary.txt` lists them as text), and reports a
-concise final outcome. `run.json` records the revision and a digest of
-uncommitted changes.
-Scenario artifacts remain under the world directory for later inspection or
-aggregation by another tool. Pass `--no-rebuild` before the `go test` arguments
-to skip the runner's automatic `scripts/mkosi` artifact builds and use only
-already-discoverable artifacts.
-
-`scripts/hermetic -- go test ./...` keeps VM scenarios disabled. If an enabled
-smoke is invoked directly without the world manifest, it fails with a setup
-error naming `scripts/vmtest-run`.
-
-World-backed smokes derive their fixture inputs from repo-controlled artifacts:
-mkosi artifact indexes, KatlOS install images, runtime roots, generated install
-manifests, per-node metadata, target disks, ESP artifact trees, and
-installed-runtime fixtures. First-install smokes publish installed runtime
-fixtures inside the world; installed-runtime and multinode kubeadm smokes
-consume those world-published fixtures instead of asking the developer to export
-disk, ESP, metadata, fixture, or node-address variables.
-
-Build artifacts first when the local world cannot discover suitable outputs:
-
-```sh
-scripts/mkosi build-runtime
-scripts/mkosi build-installer
-scripts/mkosi build-katlos-install-image
-```
-
-World run directories and scenario manifests are the supported inspection path
-for already-produced artifacts during harness development. Lower-level helper
-scripts are not the supported way to run enabled VM or kubeadm suites.
 
 ## GitHub checks
 
@@ -709,8 +354,8 @@ fork pull requests cannot be restarted this way. CI names the base it tested, an
 the release branch ruleset waits for `CI (release)`, so open release pull
 requests with `gh pr create --base release/...`; after retargeting an existing
 pull request onto a release branch, close and reopen it or push a commit. Agents still
-run the relevant local `scripts/vmtest-run` gates before opening a pull request,
-as `AGENTS.md` requires. Kubernetes producer validation shares the VM image
+run the relevant [local VM gates](../scripts/README.md#capable-host-gates) before
+opening a pull request, as `AGENTS.md` requires. Kubernetes producer validation shares the VM image
 build and two-node lane. Direct pushes are not part of the supported development
 loop.
 
@@ -762,8 +407,6 @@ For watcher settings and background waits, see the
 [katl-queue reference](../cmd/katl-queue/README.md#watchd).
 
 Fast checks skip mkosi builds, libvirt/KVM setup, VM scenarios, and publishing.
-Run focused VM gates locally with `scripts/vmtest-run` on a capable host and
-record the result with the change or release evidence.
 
 ## Fedora package inputs
 
@@ -908,144 +551,10 @@ does not require a second commit just to update hard-coded verifier digests.
 
 ## VM tests on a capable host
 
-GitHub-hosted Ubuntu runners execute the libvirt suite with KVM, OVMF, and
-vsock. See [VM continuous integration](development/ci.md) for the automated
-journeys, required results, and optional runner configuration. The commands
-below run the same harness on a capable development host.
-
-The [Kubernetes release producer](development/kubernetes-releases.md) discovers
-stable upstream versions and publishes verified bundles automatically. Its
-artifact checks do not substitute for the capable-host bootstrap and upgrade
-gates below; VM validation in the unattended producer is explicitly deferred.
-
-Run the applicable gates directly on a capable development or release host.
-The installer-media gate includes a complete ISO install and observes the
-installer's autonomous reboot into generation 0; the short ISO and PXE checks
-remain fast boot-media diagnostics:
-
-```sh
-scripts/vmtest-run --artifact-set=runtime ./internal/vmtest \
-  -run '^TestDirectRuntimeVMTestAgentSmoke$' \
-  -count=1 -failfast -timeout 20m
-scripts/vmtest-run --artifact-set=default ./internal/vmtest \
-  -run '^TestFirstInstallTargetDiskBootSmoke$' \
-  -count=1 -failfast -timeout 35m
-scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \
-  -run '^(TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke|TestInstallerISOFirstInstallSmoke)$' \
-  -count=1 -failfast -timeout 35m
-scripts/vmtest-run --artifact-set=default ./internal/vmtest \
-  -run '^TestInstalledRuntimeConfigApplyModesSmoke$' \
-  -count=1 -failfast -timeout 45m
-scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \
-  -run '^TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke$' \
-  -count=1 -failfast -timeout 60m
-scripts/vmtest-run --artifact-set=default ./internal/vmtest \
-  -run '^TestInstalledRuntimeSysupdateRootUKITransfer$' \
-  -count=1 -failfast -timeout 45m
-KATL_KUBERNETES_VERSION='<source-version>' \
-KATL_VMTEST_KUBERNETES_UPGRADE_VERSION='<target-version>' \
-KATL_VMTEST_KUBERNETES_BUNDLE='<digest-pinned-source-bundle>' \
-KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE='<digest-pinned-target-bundle>' \
-scripts/vmtest-run --artifact-set=default ./internal/vmtest/scenarios \
-  -run '^TestKubeadmUpgradeOperationSmoke$' \
-  -count=1 -failfast -timeout 75m
-```
-
-The Kubernetes upgrade gate must use deliberately selected, digest-pinned
-source and target OCI references. It proves etcd snapshot capture,
-control-plane-first kubeadm upgrade, live sysext replacement with a kubelet-only
-restart, durable generation promotion without reboot, worker upgrade, and final
-cluster health. Record the selected bundle pair with the retained gate evidence.
-
-The runtime artifact set is intentionally limited to direct-runtime tests.
-Installed-runtime tests consume the KatlOS install image and reject
-`--artifact-set=runtime`; run them with `--artifact-set=default` or
-`--artifact-set=install` so fixture invalidation follows the installed payload.
-
-Use delete-on-success retention for routine gates. While debugging, use
-`--debug-on-failure` with a single narrow scenario and retain the run directory
-as evidence.
-
-Clean up retained state with two commands, and only these:
-
-```sh
-scripts/vmtest-clean /tmp/katl-vmtest/<run-id>
-scripts/worktree-clean <worktree-path>
-```
-
-`scripts/vmtest-clean` destroys and undefines the run's recorded domains,
-releases the networks the run owns, confirms with libvirt that every domain is
-gone, and then deletes the run directory, including read-only files left by
-mkosi and libvirt. It refuses any directory that is not a direct child of a
-`katl-vmtest` directory holding the `.katl-vmtest-run-dir` marker that
-`vmtest-run` writes (a directory it did not create, such as a pre-existing
-`KATL_VMTEST_RUN_DIR`, is refused and must be checked and removed by hand), and
-repeating it on a removed run succeeds. Given a single `result.json` it removes that node's
-domains and leaves the directory.
-
-`scripts/worktree-clean` removes a linked git worktree of the repository it runs
-from. It refuses the main worktree, the checkout it runs from, a worktree whose
-`.git` does not belong to that repository and to that path (a copied `.git`), a
-worktree with tracked modifications or staged changes, and one whose HEAD
-commit is on no remote branch after fetching `origin`, unless GitHub reports a
-merged pull request whose head commit is exactly HEAD (squash merges and
-deleted head branches leave no remote ref). The message names what is modified
-or unpushed, and says so when GitHub could not be asked, which is never treated
-as safe. It then deletes the local branch only when that branch is merged into
-`origin/main`, contained in a remote branch of the same name, or at the head of
-that merged pull request, and otherwise keeps it and says so.
-
-`katl-devclean` decides whether a removal is allowed; git does the removal of a
-worktree. It first clears untracked build output that git could not delete,
-such as subuid-owned `_build/` trees, from inside the rootless podman user
-namespace, and then runs `git worktree remove --force` from the main checkout,
-which deletes the directory and its registration and keeps the branch if it is
-checked out in another worktree. `vmtest-clean` run directories are deleted by
-`katl-devclean` itself: it removes files owned by the calling user first and
-then what remains from inside the namespace, so subuid-owned output needs no
-manual step. It never follows symbolic links out of the verified directory, and it refuses, with
-nothing deleted, a directory that holds a mount point, bind mounts included,
-listing the mounts from the host and from the rootless user namespace so that
-you can `umount` or `podman unshare umount` them first. It accepts a worktree whose tracked files were already deleted by an earlier
-attempt, and judges success by looking at the directory. A run directory's
-identity marker is removed last, so a removal that stopped part way can be
-repeated. A refusal removes nothing and exits 2; when something
-could not be removed, it lists the remaining paths and exits 1. `vmtest-run`
-removes its own run directories the same way.
-
-Run each command on its own, without a leading `cd … &&` and without a pipe, so
-that an allow rule for the command matches it. Do not clean up with `rm -rf`,
-`chmod -R`, `git worktree remove --force` or `virsh destroy`.
-
-The focused external-worker regression uses one Katl control-plane VM and an
-independently provisioned [external worker](operations/external-workers.md). It
-removes kubeadm cluster configuration and stops the control plane's Katl
-management agent before joining the worker, then checks readiness, repeat
-operations, and cross-node Service traffic through the public interfaces:
-
-```sh
-scripts/vmtest-run ./internal/vmtest/scenarios \
-  -run '^TestExternalWorkerJoin$' -count=1 -v -timeout 30m
-```
-
-### Prove host capabilities
-
-Run the full enabled world suite from the Nix development shell on a host with
-readable OVMF firmware, `/dev/kvm`, `/dev/vhost-vsock`, `/dev/net/tun`,
-libvirt system access, an active libvirt network, and an active libvirt storage
-pool:
-
-```sh
-nix develop -c env \
-  KATL_VMTEST_RUN_ID=capable-host-$(date -u +%Y%m%dT%H%M%SZ) \
-  scripts/vmtest-run ./... -count=1
-```
-
-A capable-host run exits zero after `go test` completes. The runner records
-`world.json` and `host-capabilities.json` before handing off to Go; enabled
-tests write their own per-scenario artifacts under the world directory. A
-restricted host should fail during setup with explicit host capability gaps
-rather than fixture generation errors.
+See the [capable-host gates](../scripts/README.md#capable-host-gates) for
+local commands and [VM continuous integration](development/ci.md) for
+automated coverage. Use [vmtest-clean](../scripts/README.md#vmtest-clean)
+and [worktree-clean](../scripts/README.md#worktree-clean) for retained state.
 
 ## Sanity checks
 
@@ -1067,16 +576,6 @@ virt-host-validate qemu
 virsh -c qemu:///system list --all
 ```
 
-Check UEFI firmware configuration for VM runs:
-
-```sh
-test -n "${KATL_OVMF_CODE:-}" && test -r "$KATL_OVMF_CODE"
-test -n "${KATL_OVMF_VARS:-}" && test -r "$KATL_OVMF_VARS"
-```
-
-Set `KATL_OVMF_CODE` and `KATL_OVMF_VARS` explicitly when the host keeps
-OVMF/edk2 firmware somewhere outside the devshell defaults.
-
 ## Common issues
 
 If `/dev/kvm` is missing, load the host KVM module and confirm virtualization is
@@ -1091,10 +590,6 @@ polkit prompt.
 On NixOS, the usual local setup is to enable `virtualisation.libvirtd`, enable
 the default libvirt network and storage pool, and put the development user in a
 group or polkit rule that can access `qemu:///system`.
-
-If `qemu:///session` fails under Codex or another sandbox, prefer
-`qemu:///system` for manual libvirt checks. The vmtest runner defaults to
-`qemu:///system`.
 
 ### Kernel flavours
 
