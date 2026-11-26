@@ -43,6 +43,7 @@ var driverInputs = []string{
 	"internal/kernelrelease/**",
 	"internal/kernelmodule/**",
 	"internal/extensionrelease/**",
+	"internal/retry/retry.go",
 
 	// Kernel export, the mkosi toolchain, and install and upgrade image assembly.
 	"Containerfile.mkosi",

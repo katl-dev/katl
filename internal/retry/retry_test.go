@@ -56,6 +56,27 @@ func TestDoStopsOnPermanentError(t *testing.T) {
 	})
 }
 
+func TestDoAttempts(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		start := time.Now()
+		b := NewBackoff(time.Second, 4*time.Second)
+		unavailable := errors.New("unavailable")
+		attempts := 0
+
+		err := b.DoAttempts(t.Context(), 3, func(context.Context) error {
+			attempts++
+			return unavailable
+		}, func(error) bool { return true })
+
+		if err != unavailable || attempts != 3 {
+			t.Fatalf("DoAttempts = %v after %d attempts, want last error after 3 attempts", err, attempts)
+		}
+		if elapsed := time.Since(start); elapsed < 2400*time.Millisecond || elapsed > 3*time.Second {
+			t.Fatalf("DoAttempts elapsed = %s, want two backoffs", elapsed)
+		}
+	})
+}
+
 // A deadline can pass before the cancellation signal is delivered.
 type deadlineContext struct {
 	context.Context

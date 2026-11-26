@@ -71,6 +71,12 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-go
+      - name: Restore pinned extension sources
+        id: extension-sources
+        uses: actions/cache/restore@v6
+        with:
+          path: _build/mkosi/kernel-sources
+          key: katl-kernel-sources-v1-${{ hashFiles('extensions/*/recipe.json') }}
       - uses: ./.github/actions/mkosi-builder
         with:
           image: ${{ env.KATL_MKOSI_IMAGE }}
@@ -88,7 +94,14 @@ jobs:
           scripts/mkosi build-runtime
           scripts/mkosi build-installer
           scripts/build-release-extensions
-          scripts/assemble-release-extensions
+      - name: Save pinned extension sources
+        if: github.ref == 'refs/heads/main' && steps.extension-sources.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: _build/mkosi/kernel-sources
+          key: ${{ steps.extension-sources.outputs.cache-primary-key }}
+      - name: Assemble release extensions
+        run: scripts/assemble-release-extensions
       - uses: ./.github/actions/hosted-vmtest
       - name: Exercise the production DRBD driver
         run: |

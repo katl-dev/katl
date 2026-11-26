@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,12 +16,14 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/katl-dev/katl/internal/extensionrelease"
 	"github.com/katl-dev/katl/internal/flavour"
 	"github.com/katl-dev/katl/internal/installer/systemextensionbundle"
 	"github.com/katl-dev/katl/internal/kernelmodule"
+	"github.com/katl-dev/katl/internal/retry"
 )
 
 type kernelSource struct {
@@ -186,12 +189,13 @@ func runBuildKernelExtension(args []string, stdout, stderr io.Writer, cfg config
 	if err := unpack.Run(); err != nil {
 		return fmt.Errorf("extract prepared kernel inputs: %w", err)
 	}
+	client := &http.Client{Timeout: 5 * time.Minute}
 	for _, source := range recipe.Sources {
 		file, err := kernelSourceFile(source)
 		if err != nil {
 			return err
 		}
-		if err := acquireKernelSource(source, filepath.Join(sources, file)); err != nil {
+		if err := acquireKernelSource(client, source, filepath.Join(sources, file)); err != nil {
 			return err
 		}
 	}
@@ -279,18 +283,52 @@ func runBuildKernelExtension(args []string, stdout, stderr io.Writer, cfg config
 	return nil
 }
 
-func acquireKernelSource(source kernelSource, destination string) error {
+func acquireKernelSource(client *http.Client, source kernelSource, destination string) error {
 	if _, digest, err := fileInfo(destination); err == nil && digest == source.SHA256 {
 		return nil
 	}
-	client := &http.Client{Timeout: 5 * time.Minute}
-	response, err := client.Get(source.URL)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 16*time.Minute)
+	defer cancel()
+	backoff := retry.NewBackoff(500*time.Millisecond, 2*time.Second)
+	if err := backoff.DoAttempts(ctx, 3, func(ctx context.Context) error {
+		return downloadKernelSource(ctx, client, source, destination)
+	}, retryableKernelSourceError); err != nil {
+		return fmt.Errorf("fetch kernel source %s: %w", source.URL, err)
+	}
+	return nil
+}
+
+type kernelSourceHTTPError struct {
+	code   int
+	status string
+}
+
+func (e kernelSourceHTTPError) Error() string { return e.status }
+
+func retryableKernelSourceError(err error) bool {
+	var response kernelSourceHTTPError
+	if errors.As(err, &response) {
+		return response.code >= 500 && response.code < 600
+	}
+	var transport net.Error
+	return errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) ||
+		(errors.As(err, &transport) && transport.Timeout())
+}
+
+func downloadKernelSource(ctx context.Context, client *http.Client, source kernelSource, destination string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, source.URL, nil)
+	if err != nil {
+		return err
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch kernel source %s: %s", source.URL, response.Status)
+		return kernelSourceHTTPError{code: response.StatusCode, status: response.Status}
 	}
 	file, err := os.CreateTemp(filepath.Dir(destination), ".source-*")
 	if err != nil {
@@ -310,11 +348,14 @@ func acquireKernelSource(source kernelSource, destination string) error {
 		return closeErr
 	}
 	if size > limit {
-		return fmt.Errorf("kernel source %s exceeds %d bytes", source.URL, limit)
+		return fmt.Errorf("source exceeds %d bytes", limit)
 	}
-	if _, digest, err := fileInfo(file.Name()); err != nil || digest != source.SHA256 {
-		return fmt.Errorf("kernel source %s failed SHA-256 verification", source.URL)
+	if _, digest, err := fileInfo(file.Name()); err != nil {
+		return err
+	} else if digest != source.SHA256 {
+		return errors.New("failed SHA-256 verification")
 	}
+	// Publish only verified bytes so concurrent builds never see a partial download.
 	return os.Rename(file.Name(), destination)
 }
 
