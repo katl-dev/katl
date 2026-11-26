@@ -209,6 +209,7 @@ type LibvirtVMExecutor struct {
 	PreserveOnFailure bool
 	PreserveNVRAM     bool
 	Preservation      *DomainPreservation
+	captureFailure    func(context.Context, uint32)
 }
 
 type DomainPreservation struct {
@@ -247,7 +248,13 @@ func (e LibvirtVMExecutor) Run(ctx context.Context, _ string, _ []string, serial
 		return fmt.Errorf("start libvirt domain %q: %w", e.DomainName, err)
 	}
 	started = true
+	var guestCID uint32
 	defer func() {
+		cause := context.Cause(ctx)
+		if e.captureFailure != nil && (errors.Is(cause, errVMRunFailed) || errors.Is(cause, context.DeadlineExceeded)) {
+			// The tap and vsock session are only available while the domain is live.
+			e.captureFailure(context.WithoutCancel(ctx), guestCID)
+		}
 		if started && !e.preserveDomain(ctx, runErr, started) {
 			_ = e.cleanupVirsh("destroy", e.DomainName)
 		}
@@ -257,6 +264,7 @@ func (e LibvirtVMExecutor) Run(ctx context.Context, _ string, _ []string, serial
 		if err != nil {
 			return err
 		}
+		guestCID = cid
 		report(cid)
 	}
 	consoleCtx, stopConsole := context.WithCancel(ctx)
@@ -479,14 +487,24 @@ type VMRunner struct {
 	// notifyListen replaces the host vsock notify listener in tests.
 	notifyListen func() (notifySocket, uint32, error)
 
-	// guestConnector opens the guest control channel used to observe boot
-	// completion; nil dials the vmtest agent.
+	// guestConnector replaces the vmtest agent transport in tests.
 	guestConnector func(ctx context.Context, plan VSockPlan, transcript string) (guestConn, error)
 }
 
 type guestConn interface {
 	GuestAgentClient
 	Close() error
+}
+
+func (r VMRunner) connectGuest(ctx context.Context, plan VSockPlan, transcript string) (guestConn, error) {
+	if r.guestConnector != nil {
+		return r.guestConnector(ctx, plan, transcript)
+	}
+	client, err := DialAgent(ctx, plan.GuestCID, plan.Port, transcript)
+	if err != nil {
+		return nil, err
+	}
+	return client, nil
 }
 
 type VMHandle struct {
@@ -532,24 +550,31 @@ func (r VMRunner) Run(ctx context.Context, result Result, config VMConfig) Resul
 	})
 }
 
-func (r VMRunner) RunWithVM(ctx context.Context, result Result, config VMConfig, run func(*VMHandle) error) Result {
+func (r VMRunner) RunWithVM(ctx context.Context, result Result, config VMConfig, run func(*VMHandle) error) (out Result) {
 	handle, setupResult, ok := r.startVM(ctx, result, config)
 	if !ok {
 		return setupResult
 	}
+	// A test hook can call Fatal, which exits the goroutine through its defers.
+	// Finalize the VM before the scenario can release its network in that case too.
+	runErr := errors.New("vmtest VM handler did not complete")
+	defer func() {
+		if runErr == nil {
+			handle.StopSuccess()
+			_ = handle.Wait()
+			out = handle.Pass()
+			return
+		}
+		handle.StopFailure()
+		_ = handle.Wait()
+		out = handle.Fail(runErr.Error())
+	}()
 	if run == nil {
-		handle.StopFailure()
-		_ = handle.Wait()
-		return handle.Fail("vmtest VM handler is required")
+		runErr = errors.New("vmtest VM handler is required")
+	} else {
+		runErr = run(handle)
 	}
-	if err := run(handle); err != nil {
-		handle.StopFailure()
-		_ = handle.Wait()
-		return handle.Fail(err.Error())
-	}
-	handle.StopSuccess()
-	_ = handle.Wait()
-	return handle.Pass()
+	return
 }
 
 func (r VMRunner) startVM(ctx context.Context, result Result, config VMConfig) (*VMHandle, Result, bool) {
@@ -621,7 +646,7 @@ func (r VMRunner) startVM(ctx context.Context, result Result, config VMConfig) (
 	defaultExecutor := executor == nil
 	var preservation *DomainPreservation
 	if executor == nil {
-		executor, preservation = defaultVMExecutor(result, plan, config)
+		executor, preservation = r.defaultVMExecutor(result, plan, config)
 	}
 	if defaultExecutor && config.Expect != "" && config.SerialIdleTimeout == 0 {
 		config.SerialIdleTimeout = defaultSerialIdleTimeout
@@ -805,13 +830,13 @@ func (h *VMHandle) WaitForExpectedSerial() error {
 	}
 }
 
-func defaultVMExecutor(result Result, plan VMPlan, config VMConfig) (VMExecutor, *DomainPreservation) {
+func (r VMRunner) defaultVMExecutor(result Result, plan VMPlan, config VMConfig) (VMExecutor, *DomainPreservation) {
 	var preservation *DomainPreservation
 	preserve := result.Debug != nil && result.Debug.OnFailure
 	if preserve {
 		preservation = &DomainPreservation{}
 	}
-	return LibvirtVMExecutor{
+	executor := LibvirtVMExecutor{
 		TempDir:           filepath.Join(result.VMDir, "tmp"),
 		VirshPath:         plan.VirshPath,
 		URI:               plan.LibvirtURI,
@@ -820,7 +845,17 @@ func defaultVMExecutor(result Result, plan VMPlan, config VMConfig) (VMExecutor,
 		PreserveOnFailure: preserve,
 		PreserveNVRAM:     config.PreserveNVRAM,
 		Preservation:      preservation,
-	}, preservation
+	}
+	if plan.LibvirtNetwork != "" || plan.VSock.Enabled {
+		executor.captureFailure = func(ctx context.Context, guestCID uint32) {
+			livePlan := plan
+			if guestCID != 0 {
+				livePlan.VSock.GuestCID = guestCID
+			}
+			r.captureNetworkFailure(ctx, livePlan, result, executor.virshOutput)
+		}
+	}
+	return executor, preservation
 }
 
 func tailLiveSerial(ctx context.Context, path string, out io.Writer, interval time.Duration) {
@@ -1521,11 +1556,15 @@ type domainRNGBackend struct {
 }
 
 type domainInterface struct {
-	Type   string                `xml:"type,attr"`
-	Link   *domainInterfaceLink  `xml:"link,omitempty"`
-	MAC    *domainInterfaceMAC   `xml:"mac,omitempty"`
-	Source domainInterfaceSource `xml:"source"`
-	Model  domainInterfaceModel  `xml:"model"`
+	Type   string                 `xml:"type,attr"`
+	Link   *domainInterfaceLink   `xml:"link,omitempty"`
+	MAC    *domainInterfaceMAC    `xml:"mac,omitempty"`
+	Source domainInterfaceSource  `xml:"source"`
+	Model  domainInterfaceModel   `xml:"model"`
+	Target *domainInterfaceTarget `xml:"target,omitempty"`
+}
+type domainInterfaceTarget struct {
+	Dev string `xml:"dev,attr"`
 }
 
 type domainInterfaceLink struct {

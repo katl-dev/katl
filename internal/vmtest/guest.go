@@ -211,7 +211,7 @@ func (g *GuestControl) ReadFile(ctx context.Context, req GuestFileRequest) (Gues
 	}
 	ctx, cancel := g.withTimeout(ctx, req.Timeout)
 	defer cancel()
-	result, err := g.Client.ReadFile(ctx, &vmtestpb.ReadFileRequest{
+	result, err := readGuestFileWithCarrierState(ctx, g.Client, &vmtestpb.ReadFileRequest{
 		Path:      req.Path,
 		MaxBytes:  firstLimit(req.MaxBytes, g.FileLimit),
 		Sensitive: !req.StoreContent,

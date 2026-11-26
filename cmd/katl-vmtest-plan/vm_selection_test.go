@@ -64,7 +64,7 @@ func TestVMPlanModes(t *testing.T) {
 	t.Setenv("GITHUB_EVENT_NAME", "push")
 	t.Setenv("GITHUB_REF", "refs/heads/release/test")
 	configTests := map[string][]string{
-		"./internal/vmtest": {"TestInstalledRuntimeConfigApplyModesSmoke", "TestInstalledRuntimeServiceSecuritySmoke"},
+		"./internal/vmtest": {"TestInstalledRuntimeConfigApplyModesSmoke", "TestInstalledRuntimeServiceSecuritySmoke", "TestInstalledRuntimeCarrierRecovery"},
 	}
 	clusterTests := map[string][]string{
 		"./internal/vmtest/scenarios": {"TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke", "TestExternalWorkerJoin", "TestWorkerReaddress"},

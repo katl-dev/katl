@@ -51,7 +51,7 @@ func DiscoverLibvirtLease(ctx context.Context, virsh, uri, network, mac string) 
 	if strings.TrimSpace(uri) != "" {
 		args = append(args, "-c", uri)
 	}
-	args = append(args, "net-dhcp-leases", network, "--mac", mac)
+	args = append(args, libvirtLeaseArgs(network, mac)...)
 	output, err := exec.CommandContext(ctx, virsh, args...).CombinedOutput()
 	if err != nil {
 		return LibvirtLease{}, fmt.Errorf("virsh %s: %w\n%s", strings.Join(args, " "), err, output)
@@ -61,6 +61,14 @@ func DiscoverLibvirtLease(ctx context.Context, virsh, uri, network, mac string) 
 		return LibvirtLease{}, fmt.Errorf("no libvirt DHCP lease for MAC %s in network %s", mac, network)
 	}
 	return lease, nil
+}
+
+func libvirtLeaseArgs(network, mac string) []string {
+	args := []string{"net-dhcp-leases", network}
+	if mac != "" {
+		args = append(args, "--mac", mac)
+	}
+	return args
 }
 
 func parseLibvirtLease(output []byte, mac string) (LibvirtLease, bool) {

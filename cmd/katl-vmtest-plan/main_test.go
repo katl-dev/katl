@@ -139,6 +139,7 @@ func fullMatrixTests() map[string][]string {
 			"TestFirstInstallTargetDiskLocalHandoffSmoke",
 			"TestInstalledRuntimeConfigApplyModesSmoke",
 			"TestInstalledRuntimeServiceSecuritySmoke",
+			"TestInstalledRuntimeCarrierRecovery",
 			"TestInstalledRuntimeSysupdateRootUKITransfer",
 			"TestInstalledRuntimeManagementRotationSmoke",
 			"TestManagementIdentityRecovery",

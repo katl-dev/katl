@@ -17,9 +17,11 @@ if [[ -n "$KATL_SCRIPTTEST_ENV_DUMP" ]]; then
 fi
 node="$KATL_VMTEST_RUN_DIR/scenarios/smoke/nodes/n1"
 mkdir -p "$node/disks" "$node/vm"
+mkdir -p "$node/vm/runtime-serial-network-evidence/files"
 printf '{}\n' >"$KATL_VMTEST_RUN_DIR/scenarios/smoke/result.json"
 printf 'disk\n' >"$node/disks/root.qcow2"
 printf 'serial\n' >"$node/vm/runtime-serial.log"
+printf '0\n' >"$node/vm/runtime-serial-network-evidence/files/content"
 if [[ -n "$KATL_SCRIPTTEST_NO_TESTS" ]]; then
   printf 'testing: warning: no tests to run\nok  \texample/pkg\t0.0s [no tests to run]\n'
   exit 0
@@ -97,6 +99,7 @@ func TestVMTestRunKeepsEvidenceOnPass(t *testing.T) {
 	for _, kept := range []string{
 		"go-test.log", "run.json", "world.json", "test-summary.txt",
 		"scenarios/smoke/result.json",
+		"scenarios/smoke/nodes/n1/vm/runtime-serial-network-evidence/files/content",
 	} {
 		if !exists(filepath.Join(runDir, kept)) {
 			t.Errorf("passing run lost evidence %s:\n%s", kept, output)
