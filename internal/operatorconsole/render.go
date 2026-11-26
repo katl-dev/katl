@@ -184,7 +184,7 @@ func activeAlerts(snapshot *Snapshot) []alertSpec {
 	}
 	if snapshot.GenerationError != "" {
 		alerts = append(alerts, alertSpec{label: "Generation read", value: snapshot.GenerationError, style: styleWarn})
-	} else if current := snapshot.CurrentSoftware.Generation; current != "" && snapshot.NextBootSoftware.Generation == "" {
+	} else if current := snapshot.CurrentSoftware.Generation; snapshot.BootRecoveryRequired && current != "" && snapshot.NextBootSoftware.Generation == "" {
 		alerts = append(alerts, alertSpec{label: "Boot recovery", value: "No next target for current generation " + current, style: styleWarn})
 	}
 	if snapshot.KubernetesError != "" {

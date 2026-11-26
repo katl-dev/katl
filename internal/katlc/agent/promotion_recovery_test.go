@@ -121,7 +121,7 @@ func TestRecoveryBootMoveStatusWithoutTarget(t *testing.T) {
 		t.Errorf("console current=%q next=%q error=%q", snapshot.CurrentSoftware.Generation, snapshot.NextBootSoftware.Generation, snapshot.GenerationError)
 	}
 	renderer := operatorconsole.NewRenderer(operatorconsole.NewRenderTarget(nil, 80, 24), false)
-	if rendered := string(renderer.Render(&snapshot, nil)); !strings.Contains(rendered, "No next target for current generation generation-0") {
+	if rendered := string(renderer.Render(&snapshot, nil)); !strings.Contains(rendered, "Boot recovery:") || !strings.Contains(rendered, "No next target for current generation generation-0") {
 		t.Errorf("console did not display the missing boot target:\n%s", rendered)
 	}
 }

@@ -23,6 +23,7 @@ type Snapshot struct {
 	CurrentSoftware      Software
 	NextBootSoftware     Software
 	LiveSoftware         Software
+	BootRecoveryRequired bool
 	KubernetesConfigured bool
 	ExternalWorker       bool
 	ControlPlane         bool

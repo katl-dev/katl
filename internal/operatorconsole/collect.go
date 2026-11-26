@@ -381,6 +381,7 @@ func (c Collector) collectGeneration(snapshot *Snapshot) {
 	}
 	snapshot.CurrentSoftware = softwareFromSpec(bootedSpec)
 	snapshot.GenerationHealth = status.HealthState
+	snapshot.BootRecoveryRequired = targets.RecoveryRequired
 
 	nextID := targets.Next
 	switch nextID {

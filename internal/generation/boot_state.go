@@ -13,9 +13,10 @@ import (
 // BootTargets identifies the running, next-boot and live-selected generations
 // for status reporting. Next is empty when a boot move records no destination.
 type BootTargets struct {
-	Current string
-	Next    string
-	Live    string
+	Current          string
+	Next             string
+	Live             string
+	RecoveryRequired bool // Reported by the pending intent.
 }
 
 // ReadBootTargets reads the current boot marker and the pending move's desired
@@ -31,7 +32,12 @@ func ReadBootTargets(root string, legacyCurrent func(BootSelectionRecord) string
 		}
 		if intent != nil {
 			current, _, err := CurrentBootGeneration(root)
-			targets = BootTargets{Current: current, Next: intent.nextGenerationID(), Live: current}
+			targets = BootTargets{
+				Current:          current,
+				Next:             intent.nextGenerationID(),
+				Live:             current,
+				RecoveryRequired: intent.DesiredSelection.RecoveryRequired,
+			}
 			return err
 		}
 		selection, err := ReadBootSelection(root)
