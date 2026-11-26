@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
+	"net/netip"
 	"net/url"
 	"path"
 	"regexp"
@@ -12,7 +12,7 @@ import (
 	"strings"
 
 	"github.com/distribution/reference"
-	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
+	"github.com/katl-dev/katl/internal/installer/kubeadmconfig/inputpath"
 )
 
 type SystemRole string
@@ -39,8 +39,9 @@ const (
 
 type Inventory struct {
 	ExternalControlPlane        bool       `json:"externalControlPlane,omitempty"`
-	ControlPlaneEndpoint        string     `json:"controlPlaneEndpoint"`
+	ControlPlaneEndpoint        HostPort   `json:"controlPlaneEndpoint" yaml:"controlPlaneEndpoint"`
 	ControlPlaneEndpointManaged bool       `json:"controlPlaneEndpointManaged,omitempty"`
+	ControlPlaneEndpointDerived bool       `json:"controlPlaneEndpointDerived,omitempty" yaml:"controlPlaneEndpointDerived,omitempty"`
 	KubernetesVersion           string     `json:"kubernetesVersion"`
 	KubernetesBundleSource      string     `json:"kubernetesBundleSource,omitempty"`
 	KubernetesBundleRef         string     `json:"kubernetesBundleRef,omitempty"`
@@ -71,15 +72,15 @@ type BootstrapWait struct {
 // node and may be translated by NAT. KubernetesAddress, when set, is assigned
 // to the node itself; see kubernetesHost for which one node-side consumers use.
 type Node struct {
-	Name              string        `json:"name"`
-	Address           string        `json:"address,omitempty"`
-	KubernetesAddress string        `json:"kubernetesAddress,omitempty" yaml:"kubernetesAddress,omitempty"`
-	SystemRole        SystemRole    `json:"systemRole"`
-	Access            Access        `json:"access"`
-	KubeadmConfig     KubeadmConfig `json:"kubeadmConfig"`
-	KubernetesVersion string        `json:"kubernetesVersion"`
-	EnrollmentID      string        `json:"enrollmentID,omitempty" yaml:"enrollmentID,omitempty"`
-	MachineID         string        `json:"machineID,omitempty" yaml:"machineID,omitempty"`
+	Name              string            `json:"name"`
+	Address           ManagementAddress `json:"address,omitzero"`
+	KubernetesAddress netip.Addr        `json:"kubernetesAddress,omitzero" yaml:"kubernetesAddress"`
+	SystemRole        SystemRole        `json:"systemRole"`
+	Access            Access            `json:"access"`
+	KubeadmConfig     KubeadmConfig     `json:"kubeadmConfig"`
+	KubernetesVersion string            `json:"kubernetesVersion"`
+	EnrollmentID      string            `json:"enrollmentID,omitempty" yaml:"enrollmentID,omitempty"`
+	MachineID         string            `json:"machineID,omitempty" yaml:"machineID,omitempty"`
 }
 
 type Access struct {
@@ -98,14 +99,15 @@ type KubeadmConfig struct {
 type PlanRequest struct {
 	Inventory       Inventory
 	InitNode        string
-	AddressOverride map[string]string
+	AddressOverride map[string]ManagementAddress
 }
 
 type Plan struct {
 	ExternalControlPlane        bool              `json:"externalControlPlane,omitempty"`
 	InitNode                    string            `json:"initNode"`
-	ControlPlaneEndpoint        string            `json:"controlPlaneEndpoint"`
+	ControlPlaneEndpoint        HostPort          `json:"controlPlaneEndpoint"`
 	ControlPlaneEndpointManaged bool              `json:"controlPlaneEndpointManaged,omitempty"`
+	ControlPlaneEndpointDerived bool              `json:"controlPlaneEndpointDerived,omitempty" yaml:"controlPlaneEndpointDerived,omitempty"`
 	KubernetesVersion           string            `json:"kubernetesVersion"`
 	KubernetesBundleSource      string            `json:"kubernetesBundleSource,omitempty"`
 	KubernetesBundleRef         string            `json:"kubernetesBundleRef,omitempty"`
@@ -115,22 +117,22 @@ type Plan struct {
 }
 
 type PlannedNode struct {
-	Name              string          `json:"name"`
-	Address           string          `json:"address"`
-	KubernetesAddress string          `json:"kubernetesAddress,omitempty"`
-	SystemRole        SystemRole      `json:"systemRole"`
-	Action            BootstrapAction `json:"action"`
-	Access            Access          `json:"access"`
-	KubeadmConfig     KubeadmConfig   `json:"kubeadmConfig"`
-	KubernetesVersion string          `json:"kubernetesVersion"`
-	EnrollmentID      string          `json:"enrollmentID,omitempty" yaml:"enrollmentID,omitempty"`
-	MachineID         string          `json:"machineID,omitempty" yaml:"machineID,omitempty"`
+	Name              string            `json:"name"`
+	Address           ManagementAddress `json:"address"`
+	KubernetesAddress netip.Addr        `json:"kubernetesAddress,omitzero"`
+	SystemRole        SystemRole        `json:"systemRole"`
+	Action            BootstrapAction   `json:"action"`
+	Access            Access            `json:"access"`
+	KubeadmConfig     KubeadmConfig     `json:"kubeadmConfig"`
+	KubernetesVersion string            `json:"kubernetesVersion"`
+	EnrollmentID      string            `json:"enrollmentID,omitempty" yaml:"enrollmentID,omitempty"`
+	MachineID         string            `json:"machineID,omitempty" yaml:"machineID,omitempty"`
 }
 
 type AddressOverride struct {
-	Node    string `json:"node"`
-	Before  string `json:"before,omitempty"`
-	Address string `json:"address"`
+	Node    string            `json:"node"`
+	Before  ManagementAddress `json:"before,omitzero"`
+	Address ManagementAddress `json:"address"`
 }
 
 // ValidateInventory validates durable cluster inventory without requiring an
@@ -155,7 +157,7 @@ func PlanInventory(request PlanRequest) (Plan, error) {
 	}
 	nodes := make([]PlannedNode, 0, len(request.Inventory.Nodes))
 	seen := make(map[string]struct{}, len(request.Inventory.Nodes))
-	originalAddress := make(map[string]string, len(request.Inventory.Nodes))
+	originalAddress := make(map[string]ManagementAddress, len(request.Inventory.Nodes))
 	var controlPlanes []string
 	version := strings.TrimSpace(request.Inventory.KubernetesVersion)
 	for _, node := range request.Inventory.Nodes {
@@ -163,10 +165,9 @@ func PlanInventory(request PlanRequest) (Plan, error) {
 		if err := validateName(name); err != nil {
 			return Plan{}, err
 		}
-		originalAddress[name] = strings.TrimSpace(node.Address)
+		originalAddress[name] = node.Address
 		if override, ok := request.AddressOverride[name]; ok {
-			override = strings.TrimSpace(override)
-			if override == "" {
+			if override.IsZero() {
 				return Plan{}, fmt.Errorf("address override for node %q is empty", name)
 			}
 			node.Address = override
@@ -211,14 +212,9 @@ func PlanInventory(request PlanRequest) (Plan, error) {
 			return Plan{}, err
 		}
 	}
-	controlPlaneEndpoint := strings.TrimSpace(request.Inventory.ControlPlaneEndpoint)
-	if (len(nodes) > 1 || request.Inventory.ExternalControlPlane) && controlPlaneEndpoint == "" {
+	controlPlaneEndpoint := request.Inventory.ControlPlaneEndpoint
+	if (len(nodes) > 1 || request.Inventory.ExternalControlPlane) && controlPlaneEndpoint.IsZero() {
 		return Plan{}, fmt.Errorf("control-plane endpoint is required for multi-node bootstrap")
-	}
-	if controlPlaneEndpoint != "" {
-		if err := validateEndpoint(controlPlaneEndpoint); err != nil {
-			return Plan{}, err
-		}
 	}
 
 	overrides := make([]AddressOverride, 0, len(request.AddressOverride))
@@ -227,7 +223,7 @@ func PlanInventory(request PlanRequest) (Plan, error) {
 			overrides = append(overrides, AddressOverride{
 				Node:    node.Name,
 				Before:  originalAddress[node.Name],
-				Address: strings.TrimSpace(override),
+				Address: override,
 			})
 		}
 		switch node.SystemRole {
@@ -259,6 +255,7 @@ func PlanInventory(request PlanRequest) (Plan, error) {
 		InitNode:                    initNode,
 		ControlPlaneEndpoint:        controlPlaneEndpoint,
 		ControlPlaneEndpointManaged: request.Inventory.ControlPlaneEndpointManaged,
+		ControlPlaneEndpointDerived: request.Inventory.ControlPlaneEndpointDerived,
 		KubernetesVersion:           version,
 		KubernetesBundleSource:      bundleSource,
 		KubernetesBundleRef:         bundleRef,
@@ -310,8 +307,8 @@ func normalizeNode(node Node, inventoryVersion string) (PlannedNode, error) {
 	if err := validateName(name); err != nil {
 		return PlannedNode{}, err
 	}
-	address := strings.TrimSpace(node.Address)
-	if address == "" {
+	address := node.Address
+	if address.IsZero() {
 		return PlannedNode{}, fmt.Errorf("node %q address is required", name)
 	}
 	role := SystemRole(strings.TrimSpace(string(node.SystemRole)))
@@ -338,11 +335,12 @@ func normalizeNode(node Node, inventoryVersion string) (PlannedNode, error) {
 	if inventoryVersion != "" && version != inventoryVersion {
 		return PlannedNode{}, fmt.Errorf("node %q Kubernetes version %q does not match inventory version %q", name, version, inventoryVersion)
 	}
-	kubernetesAddress := strings.TrimSpace(node.KubernetesAddress)
-	if kubernetesAddress != "" {
-		if _, _, err := kubernetesHost(kubernetesAddress, address); err != nil {
-			return PlannedNode{}, fmt.Errorf("node %q: %w", name, err)
+	kubernetesAddress := node.KubernetesAddress
+	if kubernetesAddress.IsValid() {
+		if err := validKubernetesAddr(kubernetesAddress); err != nil {
+			return PlannedNode{}, fmt.Errorf("node %q Kubernetes address %w", name, err)
 		}
+		kubernetesAddress = kubernetesAddress.Unmap()
 	}
 	return PlannedNode{
 		Name:              name,
@@ -422,8 +420,8 @@ func validateKubeadmConfigPath(value string) error {
 	if clean != value {
 		return fmt.Errorf("%q must be a clean absolute path", value)
 	}
-	if !kubeadmconfig.IsInputPath(clean) {
-		return fmt.Errorf("%q must be under %s", value, kubeadmconfig.InputDir(""))
+	if !inputpath.Contains(clean) {
+		return fmt.Errorf("%q must be under %s", value, inputpath.Root+"/")
 	}
 	if path.Base(clean) != "config.yaml" {
 		return fmt.Errorf("%q must end with config.yaml", value)
@@ -455,17 +453,6 @@ func validateName(name string) error {
 	}
 	if len(name) > 63 || !dnsLabelPattern.MatchString(name) {
 		return fmt.Errorf("node name %q must be a single DNS-style label", name)
-	}
-	return nil
-}
-
-func validateEndpoint(endpoint string) error {
-	if strings.Contains(endpoint, "://") {
-		return fmt.Errorf("control-plane endpoint must be host:port")
-	}
-	host, port, err := net.SplitHostPort(endpoint)
-	if err != nil || strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
-		return fmt.Errorf("control-plane endpoint must be host:port")
 	}
 	return nil
 }

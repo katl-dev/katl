@@ -61,7 +61,7 @@ func (c snapshotConnector) Connect(_ context.Context, node inventory.PlannedNode
 	}
 	client.nodeStatus.EnrollmentId = node.EnrollmentID
 	client.nodeStatus.InventoryNodeName = node.Name
-	return cluster.AgentConnection{Endpoint: node.Address + ":9443", Client: client, Close: func() error { return nil }}, nil
+	return cluster.AgentConnection{Endpoint: node.ManagementEndpoint().String(), Client: client, Close: func() error { return nil }}, nil
 }
 
 // snapshotChunks describes contents as digest claims and splits it into

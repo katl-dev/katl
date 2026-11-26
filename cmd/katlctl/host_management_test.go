@@ -245,7 +245,7 @@ func TestHostShutdownLateStatusFailure(t *testing.T) {
 		}
 		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 		defer cancel()
-		target := managementTarget{nodeName: node.name, endpoint: "192.0.2.11:9443", credentials: &trustedNetworkClient}
+		target := managementTarget{nodeName: node.name, endpoint: mustManagement(t, "192.0.2.11").Endpoint(), credentials: &trustedNetworkClient}
 		if err := waitNodeOffline(ctx, target); !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("shutdown verification = %v, want deadline exceeded", err)
 		}
@@ -280,7 +280,7 @@ func TestHostStatusLatePlaintextRefusal(t *testing.T) {
 			return katlcAgentConnection{}, nil
 		}
 
-		_, _, err = readStatusReport(ctx, conn.Client, node.name, endpoint, world.configPath, &trustedNetworkClient, observation)
+		_, _, err = readStatusReport(ctx, conn.Client, node.name, mustHostPort(t, endpoint), world.configPath, &trustedNetworkClient, observation)
 		if !errors.Is(err, context.DeadlineExceeded) || !observation.PlaintextClosed() {
 			t.Fatalf("node status = %v, want a deadline error after observing plaintext close", err)
 		}
@@ -307,10 +307,10 @@ func TestHostShutdownNoWaitJSON(t *testing.T) {
 
 func TestWaitNodeOfflineRetainsResolvedManagementIdentity(t *testing.T) {
 	credentials := &managementidentity.ClientCredentials{}
-	target := managementTarget{nodeName: "node-a", endpoint: "override.test:9443", credentials: credentials}
+	target := managementTarget{nodeName: "node-a", endpoint: mustHostPort(t, "override.test:9443"), credentials: credentials}
 	oldDial := dialKatlcAgent
 	dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
-		if endpoint != target.endpoint {
+		if endpoint != target.endpoint.String() {
 			t.Fatalf("dial endpoint = %q, want %q", endpoint, target.endpoint)
 		}
 		identity, ok := ctx.Value(managementDialIdentityKey{}).(managementDialIdentity)

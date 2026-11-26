@@ -2,14 +2,11 @@ package clusterplan
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"maps"
-	"net"
+	"net/netip"
 	"reflect"
 	"slices"
-	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/apiproxy"
@@ -62,14 +59,11 @@ func Compile(request CompileRequest) (Plan, error) {
 	if len(config.Spec.Nodes) == 0 {
 		return Plan{}, fmt.Errorf("spec.nodes must not be empty")
 	}
-	endpointPlan, err := resolveControlPlaneEndpoint(config, request.AddressOverrides)
+	topology, err := LowerTopology(config, request.AddressOverrides)
 	if err != nil {
 		return Plan{}, err
 	}
-	controlPlaneEndpoint := ""
-	if endpointPlan != nil {
-		controlPlaneEndpoint = endpointPlan.Endpoint
-	}
+	endpointPlan := topology.Endpoint
 	if endpointPlan != nil && endpointPlan.Config.Advertisement != nil {
 		for _, plan := range request.KubeadmConfigs {
 			if err := kubeadmconfig.ValidateManagedEndpoint(plan, endpointPlan.Config.Advertisement.VIP, endpointPlan.Config.Port); err != nil {
@@ -78,86 +72,44 @@ func Compile(request CompileRequest) (Plan, error) {
 		}
 	}
 
-	nodes := slices.Clone(config.Spec.Nodes)
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
-	seen := make(map[string]struct{}, len(nodes))
-	materials := make([]NodeMaterial, 0, len(nodes))
-	inventoryNodes := make([]inventory.Node, 0, len(nodes))
-	addressOverrides := make([]inventory.AddressOverride, 0, len(request.AddressOverrides))
-	unusedAddressOverrides := maps.Clone(request.AddressOverrides)
-	for _, node := range nodes {
-		name := strings.TrimSpace(node.Name)
-		if name == "" {
-			return Plan{}, fmt.Errorf("node name is required")
-		}
-		if _, ok := seen[name]; ok {
-			return Plan{}, fmt.Errorf("duplicate node name %q", name)
-		}
-		seen[name] = struct{}{}
-		role := inventory.SystemRole(strings.TrimSpace(string(node.SystemRole)))
-		if role != inventory.RoleControlPlane && role != inventory.RoleWorker {
-			return Plan{}, fmt.Errorf("node %q systemRole %q is unsupported", name, node.SystemRole)
-		}
-		layer, err := mergedLayer(config.Spec.Defaults, node.Overrides)
+	// Node materials and the bootstrap inventory are ordered by name, so a
+	// bundle does not depend on the order nodes are listed in.
+	slices.SortFunc(topology.Inventory.Nodes, func(a, b inventory.Node) int { return strings.Compare(a.Name, b.Name) })
+	overrides := make(map[string]NodeLayer, len(config.Spec.Nodes))
+	for _, node := range config.Spec.Nodes {
+		overrides[strings.TrimSpace(node.Name)] = node.Overrides
+	}
+	materials := make([]NodeMaterial, 0, len(topology.Inventory.Nodes))
+	inventoryNodes := make([]inventory.Node, 0, len(topology.Inventory.Nodes))
+	for _, located := range topology.Inventory.Nodes {
+		layer, err := mergedLayer(config.Spec.Defaults, overrides[located.Name])
 		if err != nil {
-			return Plan{}, fmt.Errorf("node %q: %w", name, err)
+			return Plan{}, fmt.Errorf("node %q: %w", located.Name, err)
 		}
 		layer.Bootstrap.Access = portableBootstrapAccess(layer.Bootstrap.Access)
 		layer = applyTargetDiskDefaults(layer)
-		material, invNode, err := compileNode(config, name, role, layer, kubernetes, request.KubeadmConfigs, endpointPlan, request.ManagementIdentities[name])
+		material, invNode, err := compileNode(config, located, layer, kubernetes, request.KubeadmConfigs, endpointPlan, request.ManagementIdentities[located.Name])
 		if err != nil {
 			return Plan{}, err
-		}
-		if override, ok := unusedAddressOverrides[name]; ok {
-			delete(unusedAddressOverrides, name)
-			override = strings.TrimSpace(override)
-			if override == "" {
-				return Plan{}, fmt.Errorf("address override for node %q is empty", name)
-			}
-			addressOverrides = append(addressOverrides, inventory.AddressOverride{
-				Node:    name,
-				Before:  invNode.Address,
-				Address: override,
-			})
-			invNode.Address = override
-			material.BootstrapAddress = override
-			if material.InstallManifest.Node.Bootstrap != nil {
-				material.InstallManifest.Node.Bootstrap.NodeAddress = override
-			}
 		}
 		materials = append(materials, material)
 		inventoryNodes = append(inventoryNodes, invNode)
 	}
 	if config.Spec.Kubernetes.ExternalEndpoint == "" {
-		if err := attachAPIProxyConfigs(materials, inventoryNodes, endpointPlan); err != nil {
+		if err := attachAPIProxyConfigs(materials, inventoryNodes, topology.Inventory.ControlPlaneEndpoint); err != nil {
 			return Plan{}, err
 		}
 	}
-	if len(unusedAddressOverrides) > 0 {
-		var names []string
-		for name := range unusedAddressOverrides {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		return Plan{}, fmt.Errorf("address override references unknown node %q", names[0])
-	}
-	sort.Slice(addressOverrides, func(i, j int) bool {
-		return addressOverrides[i].Node < addressOverrides[j].Node
-	})
-	bootstrapInventory := inventory.Inventory{
-		ExternalControlPlane:        config.Spec.Kubernetes.ExternalEndpoint != "",
-		ControlPlaneEndpoint:        controlPlaneEndpoint,
-		ControlPlaneEndpointManaged: endpointPlan != nil && endpointPlan.Config.Advertisement != nil,
-		KubernetesVersion:           kubernetes.version,
-		KubernetesBundleSource:      kubernetes.bundleSource,
-		KubernetesBundleRef:         kubernetes.bundleRef,
-		Nodes:                       inventoryNodes,
-	}
+	bootstrapInventory := topology.Inventory
+	bootstrapInventory.KubernetesVersion = kubernetes.version
+	bootstrapInventory.KubernetesBundleSource = kubernetes.bundleSource
+	bootstrapInventory.KubernetesBundleRef = kubernetes.bundleRef
+	bootstrapInventory.Nodes = inventoryNodes
 	if err := validateBootstrapInventory(bootstrapInventory); err != nil {
 		return Plan{}, err
 	}
 	return Plan{
-		ControlPlaneEndpoint:   bootstrapInventory.ControlPlaneEndpoint,
+		ControlPlaneEndpoint:   bootstrapInventory.ControlPlaneEndpoint.String(),
 		EndpointPlan:           endpointPlan,
 		KubernetesVersion:      kubernetes.version,
 		KubernetesCatalogRef:   kubernetes.catalogRef,
@@ -167,19 +119,20 @@ func Compile(request CompileRequest) (Plan, error) {
 		KatlosImage:            config.Spec.KatlosImage,
 		Nodes:                  materials,
 		BootstrapInventory:     bootstrapInventory,
-		AddressOverrides:       addressOverrides,
+		AddressOverrides:       topology.AddressOverrides,
+		Warnings:               topology.Warnings,
 	}, nil
 }
 
-func attachAPIProxyConfigs(materials []NodeMaterial, nodes []inventory.Node, endpoint *controlplaneendpoint.Plan) error {
-	if endpoint == nil {
+func attachAPIProxyConfigs(materials []NodeMaterial, nodes []inventory.Node, endpoint inventory.HostPort) error {
+	if endpoint.IsZero() {
 		return fmt.Errorf("control-plane endpoint is required for API proxy configuration")
 	}
 	if len(materials) != len(nodes) {
 		return fmt.Errorf("API proxy node materials do not match bootstrap inventory")
 	}
 	for i := range materials {
-		config, known, err := inventory.APIProxyConfig(nodes, nodes[i].Name, endpoint.Endpoint)
+		config, known, err := inventory.APIProxyConfig(nodes, nodes[i].Name, endpoint)
 		if err != nil {
 			return err
 		}
@@ -203,72 +156,8 @@ func attachAPIProxyConfigs(materials []NodeMaterial, nodes []inventory.Node, end
 	return nil
 }
 
-func resolveControlPlaneEndpoint(config Config, addressOverrides map[string]string) (*controlplaneendpoint.Plan, error) {
-	if external := config.Spec.Kubernetes.ExternalEndpoint; external != "" {
-		host, port, err := net.SplitHostPort(external)
-		if err != nil {
-			return nil, err
-		}
-		portNumber, err := strconv.Atoi(port)
-		if err != nil {
-			return nil, err
-		}
-		plan, err := controlplaneendpoint.Normalize(controlplaneendpoint.Config{Host: host, Port: portNumber})
-		return &plan, err
-	}
-	controlPlanes := 0
-	controlPlaneName := ""
-	controlPlaneAddress := ""
-	firstName, firstAddress := "", ""
-	for _, node := range config.Spec.Nodes {
-		if inventory.SystemRole(strings.TrimSpace(string(node.SystemRole))) != inventory.RoleControlPlane {
-			continue
-		}
-		controlPlanes++
-		controlPlaneName = strings.TrimSpace(node.Name)
-		layer, err := mergedLayer(config.Spec.Defaults, node.Overrides)
-		if err != nil {
-			return nil, fmt.Errorf("node %q: %w", controlPlaneName, err)
-		}
-		controlPlaneAddress = strings.TrimSpace(layer.Bootstrap.Address)
-		if override, ok := addressOverrides[controlPlaneName]; ok {
-			controlPlaneAddress = strings.TrimSpace(override)
-		}
-		if controlPlanes == 1 {
-			firstName, firstAddress = controlPlaneName, controlPlaneAddress
-		}
-	}
-	if controlPlanes == 0 {
-		if config.Spec.ControlPlaneEndpoint != nil && controlplaneendpoint.Managed(*config.Spec.ControlPlaneEndpoint) {
-			return nil, fmt.Errorf("managed controlPlaneEndpoint requires at least one control-plane node")
-		}
-		return nil, nil
-	}
-	endpoint := config.Spec.ControlPlaneEndpoint
-	if endpoint == nil {
-		if controlPlanes > 1 {
-			// A cluster bootstrapped with one control plane already serves
-			// the API at that node's address, so naming it keeps the
-			// cluster's endpoint unchanged.
-			err := errors.New("spec.controlPlaneEndpoint is required for a cluster with more than one control-plane node")
-			if firstAddress != "" {
-				err = fmt.Errorf("%w; a cluster bootstrapped with one control plane serves its API at that node's address, so to add control planes to it set spec.controlPlaneEndpoint.host to that address, such as %s for %s", err, firstAddress, firstName)
-			}
-			return nil, err
-		}
-		if controlPlaneAddress == "" {
-			return nil, fmt.Errorf("spec.controlPlaneEndpoint is required when control-plane node %q has no bootstrap address", controlPlaneName)
-		}
-		endpoint = &controlplaneendpoint.Config{Host: controlPlaneAddress}
-	}
-	plan, err := controlplaneendpoint.Normalize(*endpoint)
-	if err != nil {
-		return nil, err
-	}
-	return &plan, nil
-}
-
-func compileNode(config Config, name string, role inventory.SystemRole, layer NodeLayer, kubernetes selectedKubernetes, kubeadmConfigs map[string]kubeadmconfig.Plan, endpointPlan *controlplaneendpoint.Plan, management manifest.ManagementIdentity) (NodeMaterial, inventory.Node, error) {
+func compileNode(config Config, located inventory.Node, layer NodeLayer, kubernetes selectedKubernetes, kubeadmConfigs map[string]kubeadmconfig.Plan, endpointPlan *controlplaneendpoint.Plan, management manifest.ManagementIdentity) (NodeMaterial, inventory.Node, error) {
+	name, role := located.Name, located.SystemRole
 	hostname := strings.TrimSpace(layer.Hostname)
 	if hostname == "" {
 		hostname = name
@@ -311,13 +200,13 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 			ControlPlaneEndpoint: managedEndpoint,
 			Kubernetes: manifest.KubernetesConfig{
 				External: config.Spec.Kubernetes.ExternalEndpoint != "",
-				Address:  strings.TrimSpace(layer.Kubernetes.Address),
+				Address:  kubernetesAddressText(located.KubernetesAddress),
 				Kubeadm:  manifest.KubeadmReference{ConfigRef: layer.Kubernetes.KubeadmConfigRef},
 			},
 			Bootstrap: &manifest.BootstrapIntent{
 				ClusterName:          strings.TrimSpace(config.Metadata.Name),
 				InventoryNodeName:    name,
-				NodeAddress:          strings.TrimSpace(layer.Bootstrap.Address),
+				NodeAddress:          located.Address.String(),
 				ControlPlaneEndpoint: controlPlaneEndpoint,
 				BootstrapProfileRef:  kubeadmRef,
 				ProfileResolvedID:    bootstrapProfileResolvedID,
@@ -381,8 +270,8 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 	}
 	invNode := inventory.Node{
 		Name:              name,
-		Address:           strings.TrimSpace(layer.Bootstrap.Address),
-		KubernetesAddress: installManifest.Node.Kubernetes.Address,
+		Address:           located.Address,
+		KubernetesAddress: located.KubernetesAddress,
 		SystemRole:        role,
 		Access:            layer.Bootstrap.Access,
 		KubeadmConfig:     kubeadmConfig,
@@ -391,7 +280,7 @@ func compileNode(config Config, name string, role inventory.SystemRole, layer No
 	return NodeMaterial{
 		Name:                   name,
 		SystemRole:             role,
-		BootstrapAddress:       invNode.Address,
+		BootstrapAddress:       invNode.Address.String(),
 		InstallManifest:        installManifest,
 		NativeEtcFiles:         nativeEtcFiles,
 		KubeadmConfig:          kubeadmConfig,
@@ -579,8 +468,8 @@ func validateBootstrapInventory(bootstrapInventory inventory.Inventory) error {
 	validationInventory := bootstrapInventory
 	validationInventory.Nodes = slices.Clone(bootstrapInventory.Nodes)
 	for i := range validationInventory.Nodes {
-		if strings.TrimSpace(validationInventory.Nodes[i].Address) == "" {
-			validationInventory.Nodes[i].Address = "127.0.0.1"
+		if validationInventory.Nodes[i].Address.IsZero() {
+			validationInventory.Nodes[i].Address = inventory.ManagementAddress{Host: inventory.HostFromAddr(netip.MustParseAddr("127.0.0.1"))}
 		}
 	}
 	if err := inventory.ValidateInventory(validationInventory); err != nil {

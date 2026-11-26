@@ -27,7 +27,6 @@ import (
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 
 	"github.com/katl-dev/katl/internal/apiproxy"
-	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/artifact"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
@@ -1258,7 +1257,7 @@ func submitKubeadmUpgrade(ctx context.Context, nodeName, address string, request
 		return nil, err
 	}
 	connector.DialTimeout = 10 * time.Second
-	conn, err := connector.Connect(ctx, inventory.PlannedNode{Name: nodeName, Address: address, Access: inventory.Access{Method: "agent"}})
+	conn, err := connector.Connect(ctx, agentNode(nodeName, address))
 	if err != nil {
 		return nil, err
 	}
@@ -1386,9 +1385,7 @@ func waitForBootstrapRuntimeAfterReboot(ctx context.Context, node vmtest.Running
 				continue
 			}
 			connector.DialTimeout = 5 * time.Second
-			connection, connectErr := connector.Connect(ctx, inventory.PlannedNode{
-				Name: node.Name, Address: node.Result.IPAddress, Access: inventory.Access{Method: "agent"},
-			})
+			connection, connectErr := connector.Connect(ctx, agentNode(node.Name, node.Result.IPAddress))
 			if connectErr == nil {
 				status, statusErr := connection.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 				_ = connection.Close()

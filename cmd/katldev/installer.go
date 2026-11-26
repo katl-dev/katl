@@ -13,9 +13,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/katl-dev/katl/internal/vmtest"
@@ -463,10 +465,10 @@ func (manager installerManager) observe(ctx context.Context, world katldevWorld,
 		if address == "" {
 			continue
 		}
-		endpoint := "http://" + net.JoinHostPort(address, "8080")
+		endpoint := "http://" + net.JoinHostPort(address, strconv.Itoa(inventory.InstallerPort))
 		if current, err := manager.installerStatus(ctx, endpoint); err == nil {
 			observation.Installer = current
-		} else if tcpReachable(ctx, net.JoinHostPort(address, "9443"), 500*time.Millisecond) {
+		} else if tcpReachable(ctx, net.JoinHostPort(address, strconv.Itoa(inventory.ManagementPort)), 500*time.Millisecond) {
 			observation.KatlOS = true
 		} else {
 			continue
@@ -799,10 +801,19 @@ func matchingKatldevConfig(path, address string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("decode config: %w", err)
 	}
+	host, err := inventory.ParseHost(address)
+	if err != nil {
+		return "", err
+	}
 	for _, node := range source.Spec.Nodes {
 		// A node behind NAT holds its kubernetes.address, not its
 		// management.address.
-		if node.Management.Address != address && node.Kubernetes.Address != address {
+		management := inventory.DecodeManagementAddress(node.Management.Address)
+		kubernetes, err := inventory.ParseKubernetesAddress(node.Kubernetes.Address)
+		if err != nil {
+			return "", fmt.Errorf("node %s kubernetes.address: %w", node.Name, err)
+		}
+		if !management.Host.Equal(host) && !inventory.HostFromAddr(kubernetes).Equal(host) {
 			continue
 		}
 		layer, err := configbundle.ResolveNodeLayer(source.Spec.Defaults, node)

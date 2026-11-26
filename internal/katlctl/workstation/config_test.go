@@ -69,13 +69,13 @@ func TestLoadSelectedTopology(t *testing.T) {
 	if resolved.Source != SourceConfigContext {
 		t.Fatalf("Source = %q", resolved.Source)
 	}
-	if resolved.ContextName != "prod" || resolved.ClusterName != "katl-prod" || resolved.ControlPlaneEndpoint != "api.prod.test:6443" {
+	if resolved.ContextName != "prod" || resolved.ClusterName != "katl-prod" || resolved.ControlPlaneEndpoint.String() != "api.prod.test:6443" {
 		t.Fatalf("topology = %#v", resolved.Topology)
 	}
 	if len(resolved.Nodes) != 3 {
 		t.Fatalf("nodes = %#v", resolved.Nodes)
 	}
-	if got := resolved.Nodes[0]; got.Name != "cp-1" || got.ManagementEndpoint != "cp-1.prod.test:9443" || got.SystemRole != inventory.RoleControlPlane {
+	if got := resolved.Nodes[0]; got.Name != "cp-1" || got.ManagementEndpoint.String() != "cp-1.prod.test:9443" || got.SystemRole != inventory.RoleControlPlane {
 		t.Fatalf("first node = %#v", got)
 	}
 	controlPlanes := resolved.ControlPlaneNodes()
@@ -196,19 +196,19 @@ func TestSameNodeNameAcrossClustersIsAllowed(t *testing.T) {
 func TestResolveTopologyPrecedence(t *testing.T) {
 	missingConfigPath := filepath.Join(t.TempDir(), "missing.yaml")
 	inv := inventory.Inventory{
-		ControlPlaneEndpoint: "api.inventory.test:6443",
+		ControlPlaneEndpoint: mustHostPort(t, "api.inventory.test:6443"),
 		Nodes: []inventory.Node{{
 			Name:       "inventory-cp",
-			Address:    "inventory-cp.test",
+			Address:    mustManagement(t, "inventory-cp.test"),
 			SystemRole: inventory.RoleControlPlane,
 			Access:     inventory.Access{Method: "agent"},
 		}},
 	}
 	plan := inventory.Plan{
-		ControlPlaneEndpoint: "api.plan.test:6443",
+		ControlPlaneEndpoint: mustHostPort(t, "api.plan.test:6443"),
 		Nodes: []inventory.PlannedNode{{
 			Name:       "plan-cp",
-			Address:    "plan-cp.test:9443",
+			Address:    mustManagement(t, "plan-cp.test:9443"),
 			SystemRole: inventory.RoleControlPlane,
 			Access:     inventory.Access{Method: "agent"},
 		}},
@@ -223,7 +223,7 @@ func TestResolveTopologyPrecedence(t *testing.T) {
 	if resolved.Source != SourceExplicitInventory || resolved.ClusterName != "inventory" || resolved.Nodes[0].Name != "inventory-cp" {
 		t.Fatalf("resolved inventory topology = %#v", resolved)
 	}
-	if resolved.Nodes[0].ManagementEndpoint != "inventory-cp.test:9443" {
+	if resolved.Nodes[0].ManagementEndpoint.String() != "inventory-cp.test:9443" {
 		t.Fatalf("inventory management endpoint = %q", resolved.Nodes[0].ManagementEndpoint)
 	}
 

@@ -426,7 +426,7 @@ func TestManagementTargetEndpointOverridePreservesIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target.nodeName != "cp-1" || target.endpoint != "10.0.0.11:9443" {
+	if target.nodeName != "cp-1" || target.endpoint.String() != "10.0.0.11:9443" {
 		t.Fatalf("target = %#v", target)
 	}
 
@@ -435,7 +435,7 @@ func TestManagementTargetEndpointOverridePreservesIdentity(t *testing.T) {
 		{nodeName: "cp-1", endpoint: "192.0.2.44"},
 	} {
 		got, err := resolveManagementTarget(context.Background(), opts)
-		if err != nil || got.endpoint != "192.0.2.44:9443" || got.nodeName != target.nodeName || got.enrollmentID != target.enrollmentID {
+		if err != nil || got.endpoint.String() != "192.0.2.44:9443" || got.nodeName != target.nodeName || got.enrollmentID != target.enrollmentID {
 			t.Fatalf("override lost node binding: %#v, %v", got, err)
 		}
 	}
@@ -445,7 +445,7 @@ func TestManagementTargetEndpointOverridePreservesIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if target.nodeName != "cp-1" || target.endpoint != "10.0.0.11:9443" {
+	if target.nodeName != "cp-1" || target.endpoint.String() != "10.0.0.11:9443" {
 		t.Fatalf("bundle target = %#v", target)
 	}
 }
@@ -484,12 +484,22 @@ func TestManagementEndpointAcceptsOperatorAddressForms(t *testing.T) {
 	}
 	for input, want := range tests {
 		t.Run(input, func(t *testing.T) {
-			got, err := normalizeManagementAddress(input)
+			got, err := parseEndpointFlag(input)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got != want {
-				t.Fatalf("normalizeManagementAddress(%q) = %q, want %q", input, got, want)
+			if got.String() != want {
+				t.Fatalf("parseEndpointFlag(%q) = %q, want %q", input, got, want)
+			}
+		})
+	}
+}
+
+func TestManagementEndpointRejectsInvalidOperatorAddress(t *testing.T) {
+	for _, input := range []string{"node:99999", "node:0", "node:abc", "ftp://node.home.arpa", "tcp://node.home.arpa/path", "tcp://user@node.home.arpa", "bad host"} {
+		t.Run(input, func(t *testing.T) {
+			if got, err := parseEndpointFlag(input); err == nil || !strings.Contains(err.Error(), "--endpoint") {
+				t.Fatalf("parseEndpointFlag(%q) = %v, %v; want an --endpoint error", input, got, err)
 			}
 		})
 	}
@@ -1074,7 +1084,7 @@ clusters:
 	if resolved.Source != workstation.SourceConfigContext || resolved.ContextName != "stage" || resolved.ClusterName != "katl-stage" {
 		t.Fatalf("topology = %#v", resolved)
 	}
-	if len(resolved.Nodes) != 1 || resolved.Nodes[0].Name != "stage-cp" || resolved.Nodes[0].ManagementEndpoint != "stage-cp.test:9443" {
+	if len(resolved.Nodes) != 1 || resolved.Nodes[0].Name != "stage-cp" || resolved.Nodes[0].ManagementEndpoint.String() != "stage-cp.test:9443" {
 		t.Fatalf("nodes = %#v", resolved.Nodes)
 	}
 }
@@ -1092,8 +1102,8 @@ func TestClusterBootstrapParsesFlagsAndPrintsNextStep(t *testing.T) {
 				InitNode: "cp-1",
 				AddressOverrides: []inventory.AddressOverride{{
 					Node:    "worker-1",
-					Before:  "10.0.0.21",
-					Address: "10.0.0.22",
+					Before:  mustManagement(t, "10.0.0.21"),
+					Address: mustManagement(t, "10.0.0.22"),
 				}},
 				Nodes: []inventory.PlannedNode{{Name: "cp-1"}},
 			},
@@ -1132,13 +1142,13 @@ func TestClusterBootstrapParsesFlagsAndPrintsNextStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
-	if got.InitNode != "cp-1" || got.ControlPlaneEndpoint != "api.override.test:6443" || got.KubeconfigOut != "out.conf" || !got.OverwriteKubeconfig || !got.DryRun {
+	if got.InitNode != "cp-1" || got.ControlPlaneEndpoint.String() != "api.override.test:6443" || got.KubeconfigOut != "out.conf" || !got.OverwriteKubeconfig || !got.DryRun {
 		t.Fatalf("request = %#v", got)
 	}
 	if got.Inventory.Nodes[1].Access.CredentialRef != "" {
 		t.Fatalf("inventory = %#v", got.Inventory)
 	}
-	if got.AddressOverrides["worker-1"] != "10.0.0.22" {
+	if got.AddressOverrides["worker-1"].String() != "10.0.0.22" {
 		t.Fatalf("address overrides = %#v", got.AddressOverrides)
 	}
 	if got.Bootstrap.StableEndpoint != "api.stable.test:6443" {
@@ -1256,10 +1266,10 @@ func TestClusterBootstrapDefaultsToAgentBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
-	if got.InitNode != "cp-1" || got.ControlPlaneEndpoint != "api.override.test:6443" || !got.DryRun {
+	if got.InitNode != "cp-1" || got.ControlPlaneEndpoint.String() != "api.override.test:6443" || !got.DryRun {
 		t.Fatalf("request = %#v", got)
 	}
-	if got.AddressOverrides["cp-1"] != "cp-1.override.test" {
+	if got.AddressOverrides["cp-1"].String() != "cp-1.override.test" {
 		t.Fatalf("address overrides = %#v", got.AddressOverrides)
 	}
 	connector, ok := gotDeps.Connector.(cluster.TCPAgentConnector)
@@ -1363,7 +1373,7 @@ func TestClusterBootstrapCompilesSourceInventory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
-	if got.Inventory.ControlPlaneEndpoint != "api.katl.test:6443" || got.Inventory.KubernetesVersion != "v1.36.1" || len(got.Inventory.Nodes) != 1 {
+	if got.Inventory.ControlPlaneEndpoint.String() != "api.katl.test:6443" || got.Inventory.KubernetesVersion != "v1.36.1" || len(got.Inventory.Nodes) != 1 {
 		t.Fatalf("source inventory = %#v", got.Inventory)
 	}
 }
@@ -1388,7 +1398,7 @@ func TestClusterBootstrapUsesConfigBundleInventory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run() error = %v, stderr = %s", err, stderr.String())
 	}
-	if got.Inventory.ControlPlaneEndpoint != "api.katl.test:6443" || got.Inventory.KubernetesVersion != "v1.36.1" || len(got.Inventory.Nodes) != 1 {
+	if got.Inventory.ControlPlaneEndpoint.String() != "api.katl.test:6443" || got.Inventory.KubernetesVersion != "v1.36.1" || len(got.Inventory.Nodes) != 1 {
 		t.Fatalf("bundle inventory = %#v", got.Inventory)
 	}
 	if got.Inventory.KubernetesBundleRef == "" || got.Inventory.Nodes[0].Access.CredentialRef != "" {
@@ -3070,7 +3080,7 @@ func TestAddressOverrideValidation(t *testing.T) {
 	if err := overrides.Set("node=10.0.0.10"); err != nil {
 		t.Fatalf("Set() error = %v", err)
 	}
-	if overrides.values["node"] != "10.0.0.10" {
+	if overrides.values["node"].String() != "10.0.0.10" {
 		t.Fatalf("values = %#v", overrides.values)
 	}
 }
@@ -3218,7 +3228,7 @@ func (c *fakeWipeClusterConnector) Connect(_ context.Context, node inventory.Pla
 		}
 	}
 	return cluster.AgentConnection{
-		Endpoint: node.Address + ":9443",
+		Endpoint: node.ManagementEndpoint().String(),
 		Client:   client,
 		Close:    func() error { return nil },
 	}, nil

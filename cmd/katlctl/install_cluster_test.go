@@ -25,6 +25,7 @@ func TestInstallApplyCluster(t *testing.T) {
 			sourcePath := writeClusterConfig(t)
 			source := configBundleSource()
 			servers := make([]*handoff.HandoffServer, 3)
+			routes := map[string]string{}
 			for i := range servers {
 				servers[i] = handoff.NewHandoffServerWithDefaultImage(nil, manifest.KatlosImage{
 					LocalRef: "images/katlos-test-x86_64.squashfs", SHA256: strings.Repeat("a", 64), SizeBytes: 1,
@@ -53,7 +54,8 @@ func TestInstallApplyCluster(t *testing.T) {
 				}
 				ts := httptest.NewServer(handler)
 				t.Cleanup(ts.Close)
-				address := strings.TrimPrefix(ts.URL, "http://")
+				address := fmt.Sprintf("10.99.0.%d", 11+i)
+				routes[address+":8080"] = ts.Listener.Addr().String()
 				if i == 0 {
 					source = strings.Replace(source, "10.0.0.11", address, 1)
 					source = strings.Replace(source, "      install:\n", "      kubernetes:\n        address: 192.0.2.11\n      install:\n", 1)
@@ -61,6 +63,7 @@ func TestInstallApplyCluster(t *testing.T) {
 					source += fmt.Sprintf("    - name: worker-%d\n      management:\n        address: %s\n      kubernetes:\n        address: 192.0.2.%d\n      install:\n        systemDisk:\n          byID: /dev/disk/by-id/worker-%d\n", i, address, 11+i, i)
 				}
 			}
+			routeInstallers(t, routes)
 			if err := os.WriteFile(sourcePath, []byte(source), 0600); err != nil {
 				t.Fatal(err)
 			}
@@ -108,6 +111,7 @@ func TestInstallApplyCluster(t *testing.T) {
 func TestInstallClusterExtensionTargets(t *testing.T) {
 	sourcePath := writeClusterConfig(t)
 	source := strings.Replace(configBundleSource(), "  defaults:\n", "  defaults:\n    systemExtensions:\n      - release: registry.example/unavailable\n", 1)
+	routes := map[string]string{}
 	for i, version := range []string{"2026.9.1", "2026.9.2", "busy"} {
 		image := manifest.KatlosImage{
 			LocalRef:         "images/katlos.squashfs",
@@ -150,13 +154,15 @@ func TestInstallClusterExtensionTargets(t *testing.T) {
 			})
 		}))
 		t.Cleanup(server.Close)
-		address := strings.TrimPrefix(server.URL, "http://")
+		address := fmt.Sprintf("10.99.0.%d", 11+i)
+		routes[address+":8080"] = server.Listener.Addr().String()
 		if i == 0 {
 			source = strings.Replace(source, "10.0.0.11", address, 1)
 		} else {
 			source += fmt.Sprintf("    - name: worker-%d\n      management:\n        address: %s\n      install:\n        systemDisk:\n          byID: /dev/disk/by-id/worker-%d\n", i, address, i)
 		}
 	}
+	routeInstallers(t, routes)
 	if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
 	}

@@ -1435,3 +1435,23 @@ func TestExternalEndpointChange(t *testing.T) {
 		t.Fatalf("endpoint change error=%v", err)
 	}
 }
+
+// A manifest installed with a v4-mapped kubernetes.address names the same
+// address that the unmapped form does, so re-applying it changes nothing.
+func TestKubernetesAddressSameAddressIsUnchanged(t *testing.T) {
+	current := baseManifest()
+	current.Node.Kubernetes.Address = "::ffff:10.254.1.1"
+	desired := current.Node.Kubernetes
+	desired.Address = "10.254.1.1"
+	request := trustedBundleRequest(t.TempDir(), TrustedBundleRequest{
+		ApplyMode:       generation.ApplyModeAuto,
+		CurrentManifest: current,
+		NodeOverrides: map[string]NodeOverlay{
+			"cp-1": {Kubernetes: &desired},
+		},
+	})
+
+	if _, changes, _, err := mergeRuntimeConfig(request); !errors.Is(err, ErrNoChanges) {
+		t.Fatalf("mergeRuntimeConfig() changes = %#v, error = %v, want ErrNoChanges", changes, err)
+	}
+}

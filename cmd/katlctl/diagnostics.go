@@ -95,12 +95,15 @@ func newClusterKubeconfigCommand(ctx context.Context, stdout io.Writer) *cobra.C
 			if err != nil {
 				return err
 			}
-			selection := kubeconfig.EndpointSelection{ControlPlaneEndpoint: resolved.ControlPlaneEndpoint, ServerOverride: server, TLSServerName: tlsName}
+			selection := kubeconfig.EndpointSelection{ControlPlaneEndpoint: resolved.ControlPlaneEndpoint.String(), ServerOverride: server, TLSServerName: tlsName}
+			useNodeEndpoint := resolved.ControlPlaneEndpointDerived && server == ""
 			if tlsName != "" && server == "" {
 				return fmt.Errorf("--tls-server-name requires --server")
 			}
-			if _, err := kubeconfig.SelectEndpoint(selection); err != nil {
-				return err
+			if !useNodeEndpoint {
+				if _, err := kubeconfig.SelectEndpoint(selection); err != nil {
+					return err
+				}
 			}
 			path := "kubeconfig"
 			if len(args) != 0 {
@@ -117,6 +120,11 @@ func newClusterKubeconfigCommand(ctx context.Context, stdout io.Writer) *cobra.C
 				target, err := targetFromTopology(resolved.Topology, candidate.Name)
 				if err != nil {
 					return err
+				}
+				if useNodeEndpoint {
+					plan := inventory.Plan{ControlPlaneEndpoint: resolved.ControlPlaneEndpoint}
+					direct := plan.WorkstationKubernetesEndpoint(inventory.PlannedNode{Address: candidate.ManagementEndpoint.ManagementAddress()})
+					selection = kubeconfig.EndpointSelection{InitialEndpoint: direct.Address.String(), TLSServerName: direct.ServerName.String()}
 				}
 				credentials, err := readClusterCredentials(ctx, target)
 				if err != nil {
@@ -177,7 +185,7 @@ func readClusterCredentials(ctx context.Context, target managementTarget) (kubec
 	ctx, cancel := context.WithTimeout(withManagementTarget(ctx, target), 10*time.Second)
 	defer cancel()
 	// Failing over to the next control plane is quicker than waiting for this one.
-	conn, err := dialKatlcAgent(transport.WithoutManagementWait(ctx), target.endpoint)
+	conn, err := dialKatlcAgent(transport.WithoutManagementWait(ctx), target.endpoint.String())
 	if err != nil {
 		return kubeconfig.Credentials{}, err
 	}

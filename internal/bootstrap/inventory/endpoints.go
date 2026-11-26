@@ -1,0 +1,153 @@
+package inventory
+
+import (
+	"net"
+	"net/netip"
+	"strconv"
+
+	"github.com/katl-dev/katl/internal/apiproxy"
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
+)
+
+const (
+	// ManagementPort is where the katlc agent listens when a management
+	// address names no port.
+	ManagementPort = 9443
+	// KubernetesPort is kube-apiserver's secure port on each control plane.
+	KubernetesPort = apiproxy.DefaultBackendPort
+	// EtcdPeerPort is the stacked etcd member's peer port.
+	EtcdPeerPort = 2380
+	// InstallerPort is where installer media serve the handoff API.
+	InstallerPort = 8080
+)
+
+// TLSEndpoint is an address to dial and the name its serving certificate is
+// verified against.
+type TLSEndpoint struct {
+	Address    HostPort
+	ServerName Host
+}
+
+// ResolveStoredControlPlaneEndpoint reads the endpoint a node has stored for
+// bootstrap. Managed advertisement intent takes precedence over the recorded
+// endpoint and supplies the VIP kubeadm includes in the API certificate.
+func ResolveStoredControlPlaneEndpoint(configured *controlplaneendpoint.Config, recorded string) (endpoint HostPort, vip string, err error) {
+	if configured != nil {
+		plan, err := controlplaneendpoint.Normalize(*configured)
+		if err != nil {
+			return HostPort{}, "", err
+		}
+		if plan.Config.Advertisement != nil {
+			vip = plan.Config.Advertisement.VIP
+		}
+		endpoint, err = ParseHostPort(plan.Endpoint)
+		return endpoint, vip, err
+	}
+	err = endpoint.UnmarshalText([]byte(recorded))
+	return endpoint, "", err
+}
+
+// URL returns the endpoint as an https:// URL for kubeconfigs and kubectl.
+func (e TLSEndpoint) URL() string {
+	return "https://" + e.Address.String()
+}
+
+// ManagementEndpoint returns where the workstation reaches the node's agent.
+func (n Node) ManagementEndpoint() HostPort {
+	return n.Address.Endpoint()
+}
+
+// InstallerEndpoint returns where the workstation reaches the node's
+// installer: its management host at InstallerPort, whatever agent port the
+// management address names.
+func (n Node) InstallerEndpoint() HostPort {
+	return n.Address.InstallerEndpoint()
+}
+
+// InstallerEndpoint returns the installer at this management address's host.
+func (a ManagementAddress) InstallerEndpoint() HostPort {
+	if a.IsZero() {
+		return HostPort{}
+	}
+	return HostPort{Host: a.Host, Port: InstallerPort}
+}
+
+// ManagementEndpoint returns where the workstation reaches the node's agent.
+func (n PlannedNode) ManagementEndpoint() HostPort {
+	return n.Address.Endpoint()
+}
+
+// KubernetesHost returns the Kubernetes address or, if unset, the management host.
+func (n Node) KubernetesHost() Host {
+	return kubernetesHost(n.KubernetesAddress, n.Address)
+}
+
+// KubernetesHost returns the host other nodes use to reach this node's
+// kube-apiserver and etcd member.
+func (n PlannedNode) KubernetesHost() Host {
+	return kubernetesHost(n.KubernetesAddress, n.Address)
+}
+
+func kubernetesHost(address netip.Addr, management ManagementAddress) Host {
+	if address.IsValid() {
+		return HostFromAddr(address)
+	}
+	return management.Host
+}
+
+// KubernetesEndpoint returns the node's kube-apiserver as other nodes reach
+// it.
+func (n PlannedNode) KubernetesEndpoint() HostPort {
+	return HostPort{Host: n.KubernetesHost(), Port: KubernetesPort}
+}
+
+// EtcdPeerURL returns the peer URL other members reach this node's stacked
+// etcd member at.
+func (n PlannedNode) EtcdPeerURL() string {
+	return "https://" + net.JoinHostPort(n.KubernetesHost().String(), strconv.Itoa(EtcdPeerPort))
+}
+
+// WorkstationKubernetesEndpoint returns node's kube-apiserver as the
+// workstation reaches it. The workstation reaches a node only at its
+// management host, which NAT may translate and which need not be in the
+// serving certificate, so the endpoint carries the name to verify.
+func (p Plan) WorkstationKubernetesEndpoint(node PlannedNode) TLSEndpoint {
+	return TLSEndpoint{
+		Address:    HostPort{Host: node.Address.Host, Port: KubernetesPort},
+		ServerName: kubernetesServerName(p.ControlPlaneEndpoint, node.KubernetesHost()),
+	}
+}
+
+// WorkstationProxyEndpoint returns node's API proxy listener as the
+// workstation reaches it. The proxy forwards TLS to kube-apiserver
+// unchanged, so it is verified like WorkstationKubernetesEndpoint.
+func (p Plan) WorkstationProxyEndpoint(node PlannedNode) TLSEndpoint {
+	return TLSEndpoint{
+		Address:    node.Address.ProxyEndpoint(),
+		ServerName: kubernetesServerName(p.ControlPlaneEndpoint, node.KubernetesHost()),
+	}
+}
+
+// ProxyEndpoint returns where the workstation reaches a control plane's API
+// proxy at this management address: its host, whatever agent port it names.
+func (a ManagementAddress) ProxyEndpoint() HostPort {
+	if a.IsZero() {
+		return HostPort{}
+	}
+	return HostPort{Host: a.Host, Port: apiproxy.DefaultPort}
+}
+
+// kubernetesServerName returns the name every kube-apiserver certificate in
+// the cluster carries: the control-plane endpoint's host, which kubeadm adds
+// to each one, or for a cluster without one, the address its single control
+// plane advertises.
+func kubernetesServerName(controlPlaneEndpoint HostPort, controlPlane Host) Host {
+	if !controlPlaneEndpoint.IsZero() {
+		return controlPlaneEndpoint.Host
+	}
+	return controlPlane
+}
+
+func endpoint(host netip.Addr, port int) string {
+	return net.JoinHostPort(host.String(), strconv.Itoa(port))
+}

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"gopkg.in/yaml.v3"
 )
 
@@ -31,18 +32,29 @@ func TestBootstrap(t *testing.T) {
 	for _, tt := range []struct {
 		name, data string
 		valid      bool
+		endpoint   string
 	}{
-		{"restricted token", valid, true},
-		{"different cluster", strings.Replace(valid, "api.lab.example", "other.lab.example", 1), false},
-		{"no CA", strings.Replace(valid, ca, "", 1), false},
-		{"exec plugin", strings.Replace(valid, "token: test-restricted-bootstrap-token", "exec:\n      command: credential-helper", 1), false},
-		{"administrator certificate", strings.Replace(valid, "token: test-restricted-bootstrap-token", "client-certificate-data: admin", 1), false},
-		{"token file", strings.Replace(valid, "token: test-restricted-bootstrap-token", "tokenFile: /tmp/token", 1), false},
-		{"insecure TLS", strings.Replace(valid, "server: https", "insecure-skip-tls-verify: true\n    server: https", 1), false},
-		{"multiple documents", valid + "---\nkind: Config\n", false},
+		{name: "restricted token", data: valid, valid: true},
+		{name: "equivalent IPv6 endpoint", data: strings.Replace(valid, "api.lab.example", "[2001:0db8::1]", 1), endpoint: "[2001:db8::1]:6443", valid: true},
+		{name: "different cluster", data: strings.Replace(valid, "api.lab.example", "other.lab.example", 1)},
+		{name: "different port", data: strings.Replace(valid, ":6443", ":7443", 1)},
+		{name: "no CA", data: strings.Replace(valid, ca, "", 1)},
+		{name: "exec plugin", data: strings.Replace(valid, "token: test-restricted-bootstrap-token", "exec:\n      command: credential-helper", 1)},
+		{name: "administrator certificate", data: strings.Replace(valid, "token: test-restricted-bootstrap-token", "client-certificate-data: admin", 1)},
+		{name: "token file", data: strings.Replace(valid, "token: test-restricted-bootstrap-token", "tokenFile: /tmp/token", 1)},
+		{name: "insecure TLS", data: strings.Replace(valid, "server: https", "insecure-skip-tls-verify: true\n    server: https", 1)},
+		{name: "multiple documents", data: valid + "---\nkind: Config\n"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := Bootstrap([]byte(tt.data), "api.lab.example:6443")
+			endpoint := tt.endpoint
+			if endpoint == "" {
+				endpoint = "api.lab.example:6443"
+			}
+			target, err := inventory.ParseHostPort(endpoint)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = Bootstrap([]byte(tt.data), target)
 			if (err == nil) != tt.valid {
 				t.Fatalf("valid=%v error=%v", tt.valid, err)
 			}

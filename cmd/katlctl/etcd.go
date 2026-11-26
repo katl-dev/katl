@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"sort"
 	"strings"
 	"time"
@@ -35,6 +34,7 @@ type etcdRemoveOptions struct {
 }
 
 type etcdRemovalPlan struct {
+	Plan        inventory.Plan
 	Coordinator inventory.PlannedNode
 	Target      inventory.PlannedNode
 	Status      *agentapi.EtcdStatus
@@ -193,7 +193,7 @@ func planEtcdRemovalState(ctx context.Context, inv inventory.Inventory, targetNa
 	if err != nil {
 		return etcdRemovalPlan{}, err
 	}
-	expectedPeer := etcdPeerURL(target.KubernetesHost())
+	expectedPeer := target.EtcdPeerURL()
 	var member *agentapi.EtcdMember
 	for _, candidate := range status.GetMembers() {
 		if candidate.GetName() == target.Name && containsString(candidate.GetPeerUrls(), expectedPeer) {
@@ -209,7 +209,7 @@ func planEtcdRemovalState(ctx context.Context, inv inventory.Inventory, targetNa
 			if err := etcdBelowQuorum(status); err != nil {
 				return etcdRemovalPlan{}, err
 			}
-			return etcdRemovalPlan{Coordinator: coordinator, Target: target, Status: status, AlreadyGone: true}, nil
+			return etcdRemovalPlan{Plan: plan, Coordinator: coordinator, Target: target, Status: status, AlreadyGone: true}, nil
 		}
 		return etcdRemovalPlan{}, fmt.Errorf("etcd member for %s with peer URL %s is not present", target.Name, expectedPeer)
 	}
@@ -230,7 +230,7 @@ func planEtcdRemovalState(ctx context.Context, inv inventory.Inventory, targetNa
 	if healthySurvivors < postQuorum {
 		return etcdRemovalPlan{}, fmt.Errorf("removal would leave %d healthy members, below resulting quorum %d", healthySurvivors, postQuorum)
 	}
-	return etcdRemovalPlan{Coordinator: coordinator, Target: target, Status: status, Member: member}, nil
+	return etcdRemovalPlan{Plan: plan, Coordinator: coordinator, Target: target, Status: status, Member: member}, nil
 }
 
 func selectEtcdCoordinator(inv inventory.Inventory, requested, excluded string) (inventory.PlannedNode, error) {
@@ -270,7 +270,7 @@ func getEtcdStatus(ctx context.Context, coordinator inventory.PlannedNode) (*age
 	if err != nil {
 		return nil, fmt.Errorf("inspect node identity through %s: %w", coordinator.Name, err)
 	}
-	if err := verifyPlannedStatus(managementTarget{nodeName: coordinator.Name, endpoint: conn.Endpoint, enrollmentID: coordinator.EnrollmentID, machineID: coordinator.MachineID}, nodeStatus); err != nil {
+	if err := verifyPlannedStatus(managementTarget{nodeName: coordinator.Name, enrollmentID: coordinator.EnrollmentID, machineID: coordinator.MachineID}, nodeStatus); err != nil {
 		return nil, err
 	}
 	client, ok := conn.Client.(etcdStatusClient)
@@ -298,7 +298,7 @@ func submitEtcdRemoval(ctx context.Context, plan etcdRemovalPlan, timeout time.D
 	if err != nil {
 		return fmt.Errorf("status etcd coordinator %s: %w", plan.Coordinator.Name, err)
 	}
-	if err := verifyPlannedStatus(managementTarget{nodeName: plan.Coordinator.Name, endpoint: conn.Endpoint, enrollmentID: plan.Coordinator.EnrollmentID, machineID: plan.Coordinator.MachineID}, nodeStatus); err != nil {
+	if err := verifyPlannedStatus(managementTarget{nodeName: plan.Coordinator.Name, enrollmentID: plan.Coordinator.EnrollmentID, machineID: plan.Coordinator.MachineID}, nodeStatus); err != nil {
 		return err
 	}
 	requestID, err := clientRequestID("")
@@ -319,7 +319,7 @@ func submitEtcdRemoval(ctx context.Context, plan etcdRemovalPlan, timeout time.D
 		EtcdMemberRemove: &agentapi.EtcdMemberRemoveOperationRequest{
 			TargetNodeName:      plan.Target.Name,
 			TargetMemberId:      plan.Member.GetId(),
-			TargetPeerUrl:       etcdPeerURL(plan.Target.KubernetesHost()),
+			TargetPeerUrl:       plan.Target.EtcdPeerURL(),
 			ExpectedClusterId:   plan.Status.GetClusterId(),
 			ExpectedMemberCount: uint32(len(plan.Status.GetMembers())),
 		},
@@ -354,14 +354,6 @@ func submitEtcdRemoval(ctx context.Context, plan etcdRemovalPlan, timeout time.D
 		case <-ticker.C:
 		}
 	}
-}
-
-func etcdPeerURL(address string) string {
-	host := strings.TrimSpace(address)
-	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
-		host = parsedHost
-	}
-	return "https://" + net.JoinHostPort(host, "2380")
 }
 
 func printEtcdStatus(w io.Writer, coordinator string, status *agentapi.EtcdStatus, output string) error {

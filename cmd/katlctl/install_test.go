@@ -234,7 +234,8 @@ func TestInstallApplyCompilesAndSubmitsSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	source = bytes.Replace(source, []byte("10.0.0.11"), []byte(strings.TrimPrefix(ts.URL, "http://")), 1)
+	routeInstallers(t, map[string]string{"10.99.0.11:8080": ts.Listener.Addr().String()})
+	source = bytes.Replace(source, []byte("10.0.0.11"), []byte("10.99.0.11"), 1)
 	source = bytes.Replace(source, []byte("      install:\n"), []byte("      kubernetes:\n        address: 192.0.2.11\n      install:\n"), 1)
 	if err := os.WriteFile(sourcePath, source, 0o644); err != nil {
 		t.Fatal(err)
@@ -404,8 +405,8 @@ func TestSelectInstallNode(t *testing.T) {
 	manifest := configbundle.BundleManifest{
 		Nodes: []configbundle.NodeRecord{{Name: "cp-1"}, {Name: "worker-1"}},
 		Cluster: configbundle.ClusterRecord{BootstrapInventory: inventory.Inventory{Nodes: []inventory.Node{
-			{Name: "cp-1", Address: "192.0.2.11"},
-			{Name: "worker-1", Address: "192.0.2.21"},
+			{Name: "cp-1", Address: mustManagement(t, "192.0.2.11")},
+			{Name: "worker-1", Address: mustManagement(t, "192.0.2.21")},
 		}}},
 	}
 	for _, test := range []struct {
@@ -416,6 +417,7 @@ func TestSelectInstallNode(t *testing.T) {
 	}{
 		{name: "name", selector: "cp-1", want: "cp-1"},
 		{name: "address", selector: "192.0.2.21", want: "worker-1"},
+		{name: "address with agent port", selector: "192.0.2.21:19443", want: "worker-1"},
 		{name: "required for multiple", wantErr: "contains 2 nodes"},
 		{name: "unknown", selector: "192.0.2.99", wantErr: "cp-1 (192.0.2.11)"},
 	} {
@@ -438,30 +440,84 @@ func TestSelectInstallNode(t *testing.T) {
 	if got, err := selectInstallNode(single, ""); err != nil || got != "cp-1" {
 		t.Fatalf("single-node selection = %q, %v", got, err)
 	}
-	manifest.Cluster.BootstrapInventory.Nodes[1].Address = "192.0.2.11"
+	manifest.Cluster.BootstrapInventory.Nodes[1].Address = mustManagement(t, "192.0.2.11")
 	if _, err := selectInstallNode(manifest, "192.0.2.11"); err == nil || !strings.Contains(err.Error(), "matches multiple nodes") {
 		t.Fatalf("ambiguous address error = %v", err)
 	}
 }
 
+func TestInstallApplySharedManagementHost(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cluster.yaml")
+	source := strings.Replace(configBundleSource(), "managementAuthentication: mtls", "managementAuthentication: trusted-network", 1)
+	image := manifest.KatlosImage{
+		LocalRef: "images/katlos-test-x86_64.squashfs", SHA256: strings.Repeat("a", 64), SizeBytes: 1,
+		Version: "test", Architecture: "x86_64", RuntimeInterface: "katl-runtime-1", Role: "install",
+	}
+	workers := []*handoff.HandoffServer{
+		handoff.NewHandoffServerWithDefaultImage(nil, image),
+		handoff.NewHandoffServerWithDefaultImage(nil, image),
+	}
+	routes := map[string]string{}
+	for i, worker := range workers {
+		server := httptest.NewServer(worker.Handler())
+		t.Cleanup(server.Close)
+		if i == 0 {
+			routes["198.18.0.10:8080"] = server.Listener.Addr().String()
+		}
+		routes[fmt.Sprintf("198.18.0.10:%d", 9080+i)] = server.Listener.Addr().String()
+		source += fmt.Sprintf("    - name: worker-%d\n      management:\n        address: 198.18.0.10:%d\n      kubernetes:\n        address: 192.0.2.%d\n      install:\n        systemDisk:\n          byID: /dev/disk/by-id/worker-%d\n", i+1, 19443+i, 21+i, i+1)
+	}
+	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	routeInstallers(t, routes)
+
+	apply := func(node string, extra ...string) error {
+		args := []string{"install", "apply", "--config", path, "--node", node, "--no-wait"}
+		return run(context.Background(), append(args, extra...), io.Discard, io.Discard)
+	}
+	for _, endpoint := range [][]string{nil, {"--endpoint", "198.18.0.10:8080"}} {
+		err := apply("198.18.0.10:19444", endpoint...)
+		for i, worker := range workers {
+			if payload := worker.Bundle(); len(payload.Data) != 0 {
+				t.Fatalf("installer %d received config for %q without a distinct endpoint", i+1, payload.NodeName)
+			}
+		}
+		if err == nil || !strings.Contains(err.Error(), "is shared") || !strings.Contains(err.Error(), "--endpoint") {
+			t.Fatalf("ambiguous apply error = %v", err)
+		}
+	}
+
+	for i, worker := range workers {
+		name := fmt.Sprintf("worker-%d", i+1)
+		endpoint := fmt.Sprintf("198.18.0.10:%d", 9080+i)
+		if err := apply(fmt.Sprintf("198.18.0.10:%d", 19443+i), "--endpoint", endpoint); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+		if payload := worker.Bundle(); payload.NodeName != name || len(payload.Data) == 0 {
+			t.Fatalf("installer for %s received payload for %q (%d bytes)", name, payload.NodeName, len(payload.Data))
+		}
+	}
+}
+
 func TestInstallEndpoint(t *testing.T) {
 	for _, test := range []struct {
-		name             string
-		endpoint         string
-		bootstrapAddress string
-		want             string
+		name       string
+		endpoint   string
+		configured string
+		want       string
 	}{
-		{name: "configured IPv4", bootstrapAddress: "192.0.2.11", want: "http://192.0.2.11:8080"},
-		{name: "configured IPv6", bootstrapAddress: "2001:db8::11", want: "http://[2001:db8::11]:8080"},
-		{name: "configured hostname", bootstrapAddress: "installer.home.arpa", want: "http://installer.home.arpa:8080"},
-		{name: "configured address with port", bootstrapAddress: "192.0.2.11:9080", want: "http://192.0.2.11:9080"},
-		{name: "explicit bare IP overrides configured address", endpoint: "192.0.2.42", bootstrapAddress: "192.0.2.11", want: "http://192.0.2.42:8080"},
-		{name: "explicit host and port overrides configured address", endpoint: "installer.test:9080", bootstrapAddress: "192.0.2.11", want: "http://installer.test:9080"},
-		{name: "explicit complete HTTP URL overrides configured address", endpoint: "http://installer.test:8080", bootstrapAddress: "192.0.2.11", want: "http://installer.test:8080"},
-		{name: "explicit complete HTTPS URL overrides configured address", endpoint: "https://installer.test:8443", bootstrapAddress: "192.0.2.11", want: "https://installer.test:8443"},
+		{name: "configured IPv4", configured: "192.0.2.11", want: "http://192.0.2.11:8080"},
+		{name: "configured IPv6", configured: "2001:db8::11", want: "http://[2001:db8::11]:8080"},
+		{name: "configured hostname", configured: "installer.home.arpa", want: "http://installer.home.arpa:8080"},
+		{name: "configured address with an agent port", configured: "192.0.2.11:19443", want: "http://192.0.2.11:8080"},
+		{name: "explicit bare IP overrides configured address", endpoint: "192.0.2.42", configured: "192.0.2.11", want: "http://192.0.2.42:8080"},
+		{name: "explicit host and port overrides configured address", endpoint: "installer.test:9080", configured: "192.0.2.11", want: "http://installer.test:9080"},
+		{name: "explicit complete HTTP URL overrides configured address", endpoint: "http://installer.test:8080", configured: "192.0.2.11", want: "http://installer.test:8080"},
+		{name: "explicit complete HTTPS URL overrides configured address", endpoint: "https://installer.test:8443", configured: "192.0.2.11", want: "https://installer.test:8443"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := resolveInstallEndpoint(test.endpoint, test.bootstrapAddress)
+			got, err := resolveInstallEndpoint(test.endpoint, mustManagement(t, test.configured).InstallerEndpoint())
 			if err != nil || got != test.want {
 				t.Fatalf("resolveInstallEndpoint() = %q, %v, want %q", got, err, test.want)
 			}
@@ -743,9 +799,10 @@ func TestInstallRequestRejectsOversizedResponse(t *testing.T) {
 func TestInstallStatusConfigSelection(t *testing.T) {
 	server := httptest.NewServer(handoff.NewHandoffServerWithDefaultImage(nil, manifest.KatlosImage{}).Handler())
 	defer server.Close()
+	routeInstallers(t, map[string]string{"10.99.0.11:8080": server.Listener.Addr().String()})
 	path := filepath.Join(t.TempDir(), "cluster.yaml")
 	// Status only needs addresses; credentials and host configuration files can be unavailable.
-	source := strings.Replace(configBundleSource(), "address: 10.0.0.11", "address: "+strings.TrimPrefix(server.URL, "http://"), 1)
+	source := strings.Replace(configBundleSource(), "address: 10.0.0.11", "address: 10.99.0.11", 1)
 	source = strings.Replace(source, "managementAuthentication: mtls", "managementAuthentication: mtls\n  managementIdentity: unavailable-secret.yaml", 1)
 	if err := os.WriteFile(path, []byte(source), 0o600); err != nil {
 		t.Fatal(err)
@@ -761,7 +818,7 @@ func TestInstallStatusConfigSelection(t *testing.T) {
 		if err := json.Unmarshal(out.Bytes(), &report); err != nil {
 			t.Fatal(err)
 		}
-		if report.Endpoint != server.URL {
+		if report.Endpoint != "http://10.99.0.11:8080" {
 			t.Fatalf("endpoint %s", report.Endpoint)
 		}
 	}
@@ -817,9 +874,9 @@ func TestInstallApplyNoWaitingInstaller(t *testing.T) {
 				_ = json.NewEncoder(w).Encode(installTestStatus(test.state, installstatus.StateRunning, "Install"))
 			}))
 			defer ts.Close()
-			address := strings.TrimPrefix(ts.URL, "http://")
+			routeInstallers(t, map[string]string{"10.99.0.11:8080": ts.Listener.Addr().String()})
 			sourcePath := writeClusterConfig(t)
-			source := strings.Replace(configBundleSource(), "10.0.0.11", address, 1)
+			source := strings.Replace(configBundleSource(), "10.0.0.11", "10.99.0.11", 1)
 			if err := os.WriteFile(sourcePath, []byte(source), 0o600); err != nil {
 				t.Fatal(err)
 			}
@@ -827,13 +884,13 @@ func TestInstallApplyNoWaitingInstaller(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			args := append([]string{"install", "apply", "--config", sourcePath, "--no-wait"}, test.args...)
 			err := run(context.Background(), args, &stdout, &stderr)
-			if err == nil || !strings.Contains(err.Error(), "no waiting installer found at "+ts.URL) || !strings.Contains(err.Error(), "--endpoint") {
+			if err == nil || !strings.Contains(err.Error(), "no waiting installer found at http://10.99.0.11:8080") || !strings.Contains(err.Error(), "--endpoint") {
 				t.Fatalf("run() error = %v", err)
 			}
 			if strings.Contains(stdout.String(), "cp-1") {
 				t.Fatalf("text output reported a skipped node:\n%s", stdout.String())
 			}
-			logged := strings.Contains(stderr.String(), "skipping node cp-1 at "+ts.URL)
+			logged := strings.Contains(stderr.String(), "skipping node cp-1 at http://10.99.0.11:8080")
 			hinted := strings.Contains(err.Error(), "rerun with --verbose")
 			if logged != test.verbose || hinted == test.verbose {
 				t.Fatalf("verbose=%v: skip logged=%v, hint=%v\nstderr: %s\nerror: %v", test.verbose, logged, hinted, stderr.String(), err)

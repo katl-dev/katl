@@ -5,10 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
-	"net/url"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
@@ -44,7 +41,7 @@ func (opts managementTargetOptions) guidanceFlags() string {
 
 type managementTarget struct {
 	nodeName     string
-	endpoint     string
+	endpoint     inventory.HostPort
 	enrollmentID string
 	machineID    string
 	credentials  *managementidentity.ClientCredentials
@@ -61,7 +58,7 @@ func addManagementTargetFlags(cmd *cobra.Command, opts *managementTargetOptions)
 }
 
 func resolveManagementTarget(ctx context.Context, opts managementTargetOptions) (managementTarget, error) {
-	endpoint, err := normalizeManagementAddress(opts.endpoint)
+	endpoint, err := parseEndpointFlag(opts.endpoint)
 	if err != nil {
 		return managementTarget{}, err
 	}
@@ -77,16 +74,16 @@ func resolveManagementTarget(ctx context.Context, opts managementTargetOptions) 
 		if enrolled, ok := enrolledTarget(ctx, strings.TrimSpace(opts.configPath), strings.TrimSpace(opts.contextName), resolved.ClusterName, target.nodeName); ok && target.credentials == nil {
 			target = enrolled
 		}
-		if endpoint != "" {
+		if !endpoint.IsZero() {
 			target.endpoint = endpoint
 		}
-		if target.endpoint == "" {
+		if target.endpoint.IsZero() {
 			return managementTarget{}, fmt.Errorf("node %q has no management.address in --config; set it or pass --endpoint ADDRESS", target.nodeName)
 		}
 		return target, nil
 	}
 
-	useContext := strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.contextName) != "" || endpoint == ""
+	useContext := strings.TrimSpace(opts.configPath) != "" || strings.TrimSpace(opts.contextName) != "" || endpoint.IsZero()
 	if !useContext {
 		if nodeName := strings.TrimSpace(opts.nodeName); nodeName != "" {
 			resolved, resolveErr := workstation.ResolveTopology(workstation.ResolveRequest{})
@@ -107,7 +104,7 @@ func resolveManagementTarget(ctx context.Context, opts managementTargetOptions) 
 	}
 	topology, err := workstation.ResolveTopology(workstation.ResolveRequest{ConfigPath: strings.TrimSpace(opts.configPath), ContextName: strings.TrimSpace(opts.contextName)})
 	if err != nil {
-		if endpoint == "" && errors.Is(err, os.ErrNotExist) {
+		if endpoint.IsZero() && errors.Is(err, os.ErrNotExist) {
 			return managementTarget{}, fmt.Errorf("no node address source: use --config cluster.yaml or --endpoint ADDRESS; for shorter repeated commands, first run 'katlctl context save --config cluster.yaml'")
 		}
 		return managementTarget{}, err
@@ -116,7 +113,7 @@ func resolveManagementTarget(ctx context.Context, opts managementTargetOptions) 
 	if err != nil {
 		return managementTarget{}, err
 	}
-	if endpoint != "" {
+	if !endpoint.IsZero() {
 		target.endpoint = endpoint
 	}
 	return target, nil
@@ -129,33 +126,9 @@ func readManagementInventory(path string) (inventory.Inventory, error) {
 	}
 	source, sourceErr := configbundle.DecodeSource(bytes.NewReader(data))
 	if sourceErr == nil {
-		if len(source.Spec.Nodes) == 0 {
-			return inventory.Inventory{}, fmt.Errorf("read --config %s: spec.nodes must not be empty", path)
-		}
-		inv := inventory.Inventory{ControlPlaneEndpoint: configbundle.SourceControlPlaneEndpoint(source), ExternalControlPlane: source.Spec.Kubernetes.External != nil}
-		seen := make(map[string]struct{}, len(source.Spec.Nodes))
-		for _, sourceNode := range source.Spec.Nodes {
-			name := strings.TrimSpace(sourceNode.Name)
-			if name == "" {
-				return inventory.Inventory{}, fmt.Errorf("read --config %s: spec.nodes[].name is required", path)
-			}
-			if _, exists := seen[name]; exists {
-				return inventory.Inventory{}, fmt.Errorf("read --config %s: duplicate node name %q", path, name)
-			}
-			seen[name] = struct{}{}
-			role := inventory.RoleWorker
-			if sourceNode.ControlPlane {
-				role = inventory.RoleControlPlane
-			}
-			inv.Nodes = append(inv.Nodes, inventory.Node{Name: name, Address: strings.TrimSpace(sourceNode.Management.Address), KubernetesAddress: strings.TrimSpace(sourceNode.Kubernetes.Address), SystemRole: role})
-		}
-		if inv.ControlPlaneEndpoint == "" {
-			for _, node := range inv.Nodes {
-				if node.SystemRole == inventory.RoleControlPlane && strings.TrimSpace(node.Address) != "" {
-					inv.ControlPlaneEndpoint = net.JoinHostPort(strings.TrimSpace(node.Address), "6443")
-					break
-				}
-			}
+		inv, err := configbundle.SourceTopology(source)
+		if err != nil {
+			return inventory.Inventory{}, fmt.Errorf("read --config %s: %w", path, err)
 		}
 		return inv, nil
 	}
@@ -288,7 +261,12 @@ func enrolledTarget(ctx context.Context, configPath, contextName, clusterName, n
 		}
 		for _, node := range cluster.Nodes {
 			if strings.TrimSpace(node.Name) == nodeName && strings.TrimSpace(node.EnrollmentID) != "" {
-				return managementTarget{nodeName: nodeName, endpoint: strings.TrimSpace(node.ManagementEndpoint), enrollmentID: strings.TrimSpace(node.EnrollmentID), machineID: strings.TrimSpace(node.MachineID), credentials: cluster.Management}, true
+				// The saved context file is the boundary for stored endpoints.
+				endpoint, err := inventory.DecodeHostPort(node.ManagementEndpoint)
+				if err != nil {
+					continue
+				}
+				return managementTarget{nodeName: nodeName, endpoint: endpoint, enrollmentID: strings.TrimSpace(node.EnrollmentID), machineID: strings.TrimSpace(node.MachineID), credentials: cluster.Management}, true
 			}
 		}
 	}
@@ -338,44 +316,17 @@ func verifyPlannedStatus(target managementTarget, status *agentapi.NodeStatus) e
 	return bindManagementStatus(&target, status)
 }
 
-func normalizeManagementAddress(value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "", nil
+// parseEndpointFlag parses an --endpoint value: an IP, hostname, host:port, or
+// tcp:// URL, with the agent port defaulted.
+func parseEndpointFlag(value string) (inventory.HostPort, error) {
+	if strings.TrimSpace(value) == "" {
+		return inventory.HostPort{}, nil
 	}
-	if strings.Contains(value, "://") {
-		parsed, err := url.Parse(value)
-		if err != nil {
-			return "", fmt.Errorf("--endpoint is invalid: %w", err)
-		}
-		if parsed.Scheme != "tcp" {
-			return "", fmt.Errorf("--endpoint URL scheme must be tcp")
-		}
-		if parsed.Host == "" || parsed.User != nil || (parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
-			return "", fmt.Errorf("--endpoint must be a tcp:// host or host:port without credentials, path, query, or fragment")
-		}
-		value = parsed.Hostname()
-		if port := parsed.Port(); port != "" {
-			value = net.JoinHostPort(value, port)
-		}
+	address, err := inventory.ParseManagementAddress(value)
+	if err != nil {
+		return inventory.HostPort{}, fmt.Errorf("--endpoint: %w", err)
 	}
-	if ip := net.ParseIP(value); ip != nil {
-		return net.JoinHostPort(ip.String(), "9443"), nil
-	}
-	if host, port, err := net.SplitHostPort(value); err == nil {
-		if strings.TrimSpace(host) == "" || strings.TrimSpace(port) == "" {
-			return "", fmt.Errorf("--endpoint must include a host and port")
-		}
-		portNumber, err := strconv.Atoi(port)
-		if err != nil || portNumber < 1 || portNumber > 65535 {
-			return "", fmt.Errorf("--endpoint port must be a number from 1 to 65535")
-		}
-		return value, nil
-	}
-	if strings.Contains(value, ":") {
-		return "", fmt.Errorf("--endpoint %q must be an IP, hostname, host:port, or tcp:// URL", value)
-	}
-	return net.JoinHostPort(value, "9443"), nil
+	return address.Endpoint(), nil
 }
 
 // Configuration names the trust domain even when another saved cluster uses
@@ -416,15 +367,15 @@ func managementContextForCluster(ctx context.Context, configPath, contextPath, c
 
 // configuredManagementEndpoint returns the endpoint that the cluster
 // configuration names for nodeName, or "" when it names none.
-func configuredManagementEndpoint(configPath, nodeName string) (string, error) {
+func configuredManagementEndpoint(configPath, nodeName string) (inventory.HostPort, error) {
 	inv, err := readManagementInventory(configPath)
 	if err != nil {
-		return "", err
+		return inventory.HostPort{}, err
 	}
 	for _, node := range inv.Nodes {
 		if node.Name == strings.TrimSpace(nodeName) {
-			return normalizeManagementAddress(node.Address)
+			return node.ManagementEndpoint(), nil
 		}
 	}
-	return "", nil
+	return inventory.HostPort{}, nil
 }

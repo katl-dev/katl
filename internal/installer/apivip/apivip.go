@@ -31,7 +31,7 @@ const (
 	defaultHealthPath    = "/readyz"
 	defaultHealthTimeout = "5s"
 	defaultInterfaceName = "katl-api"
-	defaultEndpointPort  = 6443
+	defaultEndpointPort  = controlplaneendpoint.DefaultPort
 )
 
 var interfaceNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.:-]{0,14}$`)

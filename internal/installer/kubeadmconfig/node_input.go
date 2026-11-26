@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/katl-dev/katl/internal/installer/confext"
-	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 )
 
@@ -125,23 +124,4 @@ func (i NodeInput) BootstrapInitConfig(endpoint, vip string) (confext.NativeEtcF
 		return confext.NativeEtcFile{}, err
 	}
 	return confext.NativeEtcFile{Path: BootstrapInitConfigPath, Content: string(content), Mode: 0o600}, nil
-}
-
-// ControlPlaneEndpoint returns the endpoint node reaches its cluster at and
-// the VIP Katl advertises for it, if any.
-func ControlPlaneEndpoint(node manifest.NodeConfig) (endpoint, vip string, err error) {
-	if configured := node.ControlPlaneEndpoint; configured != nil {
-		plan, err := controlplaneendpoint.Normalize(*configured)
-		if err != nil {
-			return "", "", err
-		}
-		if plan.Config.Advertisement != nil {
-			vip = plan.Config.Advertisement.VIP
-		}
-		return plan.Endpoint, vip, nil
-	}
-	if node.Bootstrap != nil {
-		return node.Bootstrap.ControlPlaneEndpoint, "", nil
-	}
-	return "", "", nil
 }

@@ -466,6 +466,10 @@ func compileSource(request BuildRequest, deferExtensions bool) (compiledSource, 
 	if err != nil {
 		return compiledSource{}, publicClusterPlanError(source, err)
 	}
+	for _, warning := range plan.Warnings {
+		warnings = append(warnings, CompilationWarning{Code: warning.Code, Path: warning.Path, Node: warning.Node, Message: warning.Message})
+	}
+	sort.Slice(warnings, func(i, j int) bool { return warnings[i].Path < warnings[j].Path })
 	if len(planning.Nodes) > 0 {
 		for _, name := range planning.Nodes {
 			if !slices.ContainsFunc(plan.Nodes, func(node clusterplan.NodeMaterial) bool { return node.Name == name }) {
@@ -662,8 +666,7 @@ func LowerSource(source SourceConfig, planning PlanningInputs) (clusterplan.Conf
 		if err != nil {
 			return clusterplan.Config{}, fmt.Errorf("%s: %w", sourceNodePath(node, i), err)
 		}
-		layer := lowerNodeLayer(resolved)
-		layer.Bootstrap.Address = strings.TrimSpace(node.Management.Address)
+		layer := topologyLayer(node, lowerNodeLayer(resolved))
 		if access, ok := planning.BootstrapAccess[node.Name]; ok {
 			layer.Bootstrap.Access = access
 		}
@@ -720,7 +723,11 @@ func lowerKubernetesSelection(source SourceConfig, bundle string) (clusterplan.K
 	version := strings.TrimSpace(source.Spec.Kubernetes.Version)
 	out := clusterplan.KubernetesSelection{PayloadVersion: version}
 	if external := source.Spec.Kubernetes.External; external != nil {
-		out.ExternalEndpoint = strings.TrimPrefix(external.Endpoint, "https://")
+		endpoint, err := parseSourceExternalEndpoint(external.Endpoint)
+		if err != nil {
+			return clusterplan.KubernetesSelection{}, err
+		}
+		out.ExternalEndpoint = endpoint.String()
 	}
 	if bundle = strings.TrimSpace(bundle); bundle != "" {
 		image, err := kubernetesbundle.ParseImageReference(bundle)
@@ -731,6 +738,14 @@ func lowerKubernetesSelection(source SourceConfig, bundle string) (clusterplan.K
 		out.BundleRef = image.String()
 	}
 	return out, nil
+}
+
+func parseSourceExternalEndpoint(value string) (inventory.HostPort, error) {
+	endpoint, err := externalworker.Endpoint(value)
+	if err != nil {
+		return inventory.HostPort{}, fmt.Errorf("spec.kubernetes.external.endpoint: %w", err)
+	}
+	return endpoint, nil
 }
 
 func lowerNodeLayer(layer SourceNodeLayer) clusterplan.NodeLayer {
@@ -846,8 +861,8 @@ func normalizeSourceIssues(source SourceConfig) (SourceConfig, []error) {
 		}
 	}
 	if external := source.Spec.Kubernetes.External; external != nil {
-		if _, err := externalworker.Endpoint(external.Endpoint); err != nil {
-			errs = append(errs, fmt.Errorf("spec.kubernetes.external.endpoint: %w", err))
+		if _, err := parseSourceExternalEndpoint(external.Endpoint); err != nil {
+			errs = append(errs, err)
 		}
 		if source.Spec.Kubernetes.Kubeadm != nil || source.Spec.ControlPlaneEndpoint != nil {
 			errs = append(errs, fmt.Errorf("spec.kubernetes.external cannot be combined with kubernetes.kubeadm or controlPlaneEndpoint"))
@@ -878,11 +893,8 @@ func normalizeSourceIssues(source SourceConfig) (SourceConfig, []error) {
 	}
 	for i := range source.Spec.Nodes {
 		path := sourceNodePath(source.Spec.Nodes[i], i)
-		address, err := manifest.NormalizeKubernetesAddress(source.Spec.Nodes[i].Kubernetes.Address)
-		if err != nil {
+		if _, err := inventory.ParseKubernetesAddress(source.Spec.Nodes[i].Kubernetes.Address); err != nil {
 			errs = append(errs, fmt.Errorf("%s.kubernetes.address: %w", path, err))
-		} else {
-			source.Spec.Nodes[i].Kubernetes.Address = address
 		}
 		if kubelet := source.Spec.Nodes[i].Kubernetes.Kubelet; kubelet != nil && strings.TrimSpace(kubelet.ConfigFile) == "" {
 			errs = append(errs, fmt.Errorf("%s.kubernetes.kubelet.configFile is required", path))
@@ -1097,21 +1109,6 @@ func readHostConfigurationSource(sourceRoot, source string) ([]byte, error) {
 		return nil, fmt.Errorf("read %q: %w", source, err)
 	}
 	return data, nil
-}
-
-func SourceControlPlaneEndpoint(source SourceConfig) string {
-	if external := source.Spec.Kubernetes.External; external != nil {
-		endpoint, _ := externalworker.Endpoint(external.Endpoint)
-		return endpoint
-	}
-	if source.Spec.ControlPlaneEndpoint == nil {
-		return ""
-	}
-	plan, err := controlplaneendpoint.Normalize(*source.Spec.ControlPlaneEndpoint)
-	if err != nil {
-		return ""
-	}
-	return plan.Endpoint
 }
 
 func defaultKubeadmInitConfig() string {

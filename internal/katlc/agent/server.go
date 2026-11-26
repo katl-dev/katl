@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -48,12 +49,14 @@ const (
 	ShutdownRequestKind           = "ShutdownRequest"
 	WorkerJoinMaterialRequestKind = "CreateWorkerJoinMaterialRequest"
 
-	DefaultListen = "tcp://0.0.0.0:9443"
-
 	defaultWorkerJoinMaterialTTL     = 30 * time.Minute
 	maxWorkerJoinMaterialTTL         = 24 * time.Hour
 	workerJoinMaterialCommandTimeout = 30 * time.Second
 )
+
+// DefaultListen listens on every address at the management port that
+// workstations dial.
+var DefaultListen = "tcp://0.0.0.0:" + strconv.Itoa(inventory.ManagementPort)
 
 var bootstrapOperationKinds = []string{
 	"bootstrap-init",
@@ -1012,7 +1015,11 @@ func (s *Server) validateJoinMaterial(operationKind string, request *agentapi.Bo
 		if operationKind != "bootstrap-join-worker" || material != nil {
 			return status.Error(codes.InvalidArgument, "external worker enrollment requires a worker join without kubeadm join material")
 		}
-		if _, err := externalworker.Bootstrap(request.GetBootstrapKubeconfig(), request.GetControlPlaneEndpoint()); err != nil {
+		endpoint, err := inventory.ParseHostPort(request.GetControlPlaneEndpoint())
+		if err != nil {
+			return status.Error(codes.InvalidArgument, err.Error())
+		}
+		if _, err := externalworker.Bootstrap(request.GetBootstrapKubeconfig(), endpoint); err != nil {
 			return status.Error(codes.InvalidArgument, err.Error())
 		}
 		return nil

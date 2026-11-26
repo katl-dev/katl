@@ -543,7 +543,7 @@ func localKubeAPIServerEndpoint(root string) (kubeAPIServerEndpoint, error) {
 			continue
 		}
 		var address netip.Addr
-		port := uint16(6443)
+		port := uint16(inventory.KubernetesPort)
 		for _, arg := range container.Command {
 			if value, found := strings.CutPrefix(arg, "--advertise-address="); found {
 				parsed, err := netip.ParseAddr(strings.TrimSpace(value))

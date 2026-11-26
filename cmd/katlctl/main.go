@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/url"
 	"os"
 	"os/exec"
@@ -455,7 +454,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		return err
 	}
 	ctx = withManagementTarget(ctx, target)
-	conn, err := dialKatlcAgent(ctx, target.endpoint)
+	conn, err := dialKatlcAgent(ctx, target.endpoint.String())
 	if err != nil {
 		return err
 	}
@@ -589,7 +588,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	report.Plan = prepared.HostUpgradePreview
 	report.DeferredChecks = false
 	if report.Node == "" {
-		report.Node = target.endpoint
+		report.Node = target.endpoint.String()
 	}
 	if opts.plan {
 		return writeHostUpgradeReport(stdout, opts.output, report)
@@ -642,7 +641,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 	_ = conn.Close()
 	_, _ = fmt.Fprintf(stderr, "upgrade node=%s reboot-scheduled\n", report.Node)
 	bootCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
-	verifiedConn, verified, err := waitNodeBootHealth(bootCtx, bootWaitTarget{nodeName: report.Node, endpoints: []string{target.endpoint}, flags: opts.target.guidanceFlags()}, agentStart, request.CandidateGenerationID, recoveryRequirement, "upgrade node="+report.Node, stderr)
+	verifiedConn, verified, err := waitNodeBootHealth(bootCtx, bootWaitTarget{nodeName: report.Node, endpoints: []string{target.endpoint.String()}, flags: opts.target.guidanceFlags()}, agentStart, request.CandidateGenerationID, recoveryRequirement, "upgrade node="+report.Node, stderr)
 	cancel()
 	report.Rebooted = true
 	report.BootHealth = observedBootHealth(verified, request.CandidateGenerationID)
@@ -679,12 +678,12 @@ func observedBootHealth(verified verifiedNodeBoot, targetGeneration string) stri
 func reportInstalledHostUpgrade(ctx context.Context, opts hostUpgradeOptions, target managementTarget, status *agentapi.NodeStatus, requirement nodeRecoveryRequirement, image, result string, stdout, stderr io.Writer) error {
 	node := target.nodeName
 	if node == "" {
-		node = target.endpoint
+		node = target.endpoint.String()
 	}
 	recovery := nodeUpgradeRecovery(status, requirement)
 	if status.GetBootHealthState() != bootHealthFailed && !recovery.Ready {
 		recoveryCtx, cancel := context.WithTimeout(ctx, opts.waitTimeout)
-		recoveryConn, recoveredStatus, err := waitNodeKubernetesRecovery(recoveryCtx, node, target.endpoint, requirement, "upgrade node="+node, stderr)
+		recoveryConn, recoveredStatus, err := waitNodeKubernetesRecovery(recoveryCtx, node, target.endpoint.String(), requirement, "upgrade node="+node, stderr)
 		cancel()
 		if err != nil {
 			return err
@@ -1083,20 +1082,9 @@ func resolveWipeClusterTargets(ctx context.Context, opts wipeClusterOptions, std
 		if err != nil {
 			return nil, false, fmt.Errorf("resolve cluster from workstation context: %w", err)
 		}
-		plan := inventory.Plan{Nodes: make([]inventory.PlannedNode, 0, len(topology.Nodes))}
+		plan := inventory.Plan{ControlPlaneEndpoint: topology.ControlPlaneEndpoint, Nodes: make([]inventory.PlannedNode, 0, len(topology.Nodes))}
 		for _, node := range topology.Nodes {
-			host, _, err := net.SplitHostPort(node.ManagementEndpoint)
-			if err != nil {
-				return nil, false, fmt.Errorf("node %q management endpoint: %w", node.Name, err)
-			}
-			plan.Nodes = append(plan.Nodes, inventory.PlannedNode{
-				Name:         node.Name,
-				Address:      host,
-				SystemRole:   node.SystemRole,
-				Access:       inventory.Access{Method: "agent"},
-				EnrollmentID: node.EnrollmentID,
-				MachineID:    node.MachineID,
-			})
+			plan.Nodes = append(plan.Nodes, plannedWipeNode(node.InventoryNode()))
 		}
 		return wipeClusterTargets(plan, opts.all, opts.selectedNodes.values)
 	}
@@ -1297,7 +1285,7 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 			} else {
 				report.EtcdCleanup = "succeeded"
 			}
-			deleted := deleteWipeNodeKubernetes(ctx, strings.TrimSpace(opts.kubeconfigPath), target, etcdPlan.Coordinator)
+			deleted := deleteWipeNodeKubernetes(ctx, strings.TrimSpace(opts.kubeconfigPath), target, etcdPlan.Plan.WorkstationKubernetesEndpoint(etcdPlan.Coordinator))
 			cleanup.Diagnostics = append(cleanup.Diagnostics, deleted.Diagnostics...)
 			if deleted.Status == "recovery-required" {
 				cleanup.Status = deleted.Status
@@ -1332,15 +1320,15 @@ func runWipeNodeOptions(ctx context.Context, opts wipeNodeOptions, stdout, stder
 // the host of its etcd peer URL, so a different member still fails to match.
 func observeKubernetesAddress(inv inventory.Inventory, name string, status *agentapi.NodeStatus) {
 	for i := range inv.Nodes {
-		if inv.Nodes[i].Name != name || strings.TrimSpace(inv.Nodes[i].KubernetesAddress) != "" {
+		if inv.Nodes[i].Name != name || inv.Nodes[i].KubernetesAddress.IsValid() {
 			continue
 		}
 		for _, backend := range status.GetApiProxy().GetBackends() {
 			if !backend.GetLocal() {
 				continue
 			}
-			if host, _, err := net.SplitHostPort(backend.GetAddress()); err == nil {
-				inv.Nodes[i].KubernetesAddress = host
+			if addr, ok := inventory.BackendKubernetesAddress(backend.GetAddress()); ok {
+				inv.Nodes[i].KubernetesAddress = addr
 			}
 		}
 	}
@@ -1361,18 +1349,7 @@ func wipeNodeInventory(ctx context.Context, opts wipeNodeOptions, stderr io.Writ
 	if err != nil {
 		return inventory.Inventory{}, fmt.Errorf("resolve cluster from workstation context: %w", err)
 	}
-	inv := inventory.Inventory{}
-	for _, node := range topology.Nodes {
-		host, _, err := net.SplitHostPort(node.ManagementEndpoint)
-		if err != nil {
-			return inventory.Inventory{}, fmt.Errorf("node %q management endpoint: %w", node.Name, err)
-		}
-		inv.Nodes = append(inv.Nodes, inventory.Node{
-			Name: node.Name, Address: host, SystemRole: node.SystemRole, Access: inventory.Access{Method: "agent"},
-			EnrollmentID: node.EnrollmentID, MachineID: node.MachineID,
-		})
-	}
-	return inv, nil
+	return topology.Inventory(), nil
 }
 
 func resolveWipeNodeTarget(ctx context.Context, opts wipeNodeOptions, stderr io.Writer) (inventory.PlannedNode, bool, error) {
@@ -1389,18 +1366,7 @@ func resolveWipeNodeTarget(ctx context.Context, opts wipeNodeOptions, stderr io.
 			if node.Name != opts.selectedNodes.values[0] {
 				continue
 			}
-			host, _, err := net.SplitHostPort(node.ManagementEndpoint)
-			if err != nil {
-				return inventory.PlannedNode{}, false, fmt.Errorf("node %q management endpoint: %w", node.Name, err)
-			}
-			return inventory.PlannedNode{
-				Name:         node.Name,
-				Address:      host,
-				SystemRole:   node.SystemRole,
-				Access:       inventory.Access{Method: "agent"},
-				EnrollmentID: node.EnrollmentID,
-				MachineID:    node.MachineID,
-			}, len(topology.Nodes) > 1, nil
+			return plannedWipeNode(node.InventoryNode()), len(topology.Nodes) > 1, nil
 		}
 		return inventory.PlannedNode{}, false, fmt.Errorf("node %q is not in context %q", opts.selectedNodes.values[0], topology.ContextName)
 	}
@@ -1422,6 +1388,18 @@ func resolveWipeNodeTarget(ctx context.Context, opts wipeNodeOptions, stderr io.
 		return inventory.PlannedNode{}, false, err
 	}
 	return targets[0], partial, nil
+}
+
+// plannedWipeNode returns the agent-managed node as a wipe target.
+func plannedWipeNode(node inventory.Node) inventory.PlannedNode {
+	return inventory.PlannedNode{
+		Name:         node.Name,
+		Address:      node.Address,
+		SystemRole:   node.SystemRole,
+		Access:       node.Access,
+		EnrollmentID: node.EnrollmentID,
+		MachineID:    node.MachineID,
+	}
 }
 
 func loadWipeInventory(ctx context.Context, configPath, inventoryPath string, stderr io.Writer) (inventory.Inventory, error) {
@@ -1450,11 +1428,7 @@ func loadWipeInventory(ctx context.Context, configPath, inventoryPath string, st
 		if !ok {
 			continue
 		}
-		host, _, splitErr := net.SplitHostPort(enrolled.endpoint)
-		if splitErr != nil {
-			return inventory.Inventory{}, splitErr
-		}
-		inv.Nodes[index].Address = host
+		inv.Nodes[index].Address = enrolled.endpoint.ManagementAddress()
 		inv.Nodes[index].EnrollmentID = enrolled.enrollmentID
 		inv.Nodes[index].MachineID = enrolled.machineID
 	}
@@ -1506,11 +1480,7 @@ func overlayWipeContext(ctx context.Context, inv inventory.Inventory, configPath
 		if !ok {
 			return inventory.Inventory{}, fmt.Errorf("node %q from wipe input is missing from context %q", inv.Nodes[index].Name, topology.ContextName)
 		}
-		host, _, err := net.SplitHostPort(node.ManagementEndpoint)
-		if err != nil {
-			return inventory.Inventory{}, fmt.Errorf("node %q management endpoint: %w", node.Name, err)
-		}
-		inv.Nodes[index].Address = host
+		inv.Nodes[index].Address = node.InventoryNode().Address
 		inv.Nodes[index].Access = inventory.Access{Method: "agent"}
 		inv.Nodes[index].EnrollmentID = node.EnrollmentID
 		inv.Nodes[index].MachineID = node.MachineID
@@ -1596,7 +1566,7 @@ func newWipeClusterReport(planOnly bool, partial bool, nodes []inventory.Planned
 	for _, node := range nodes {
 		report.Targets = append(report.Targets, wipeClusterTarget{
 			Name:       node.Name,
-			Address:    node.Address,
+			Address:    managementHost(node.ManagementEndpoint()),
 			SystemRole: string(node.SystemRole),
 		})
 	}
@@ -1647,7 +1617,7 @@ func wipeClusterTargets(plan inventory.Plan, all bool, selected []string) ([]inv
 func planWipeInventory(inv inventory.Inventory) (inventory.Plan, error) {
 	// Wiping targets existing nodes; it must not compile desired software or
 	// require a valid Kubernetes bootstrap configuration.
-	plan := inventory.Plan{}
+	plan := inventory.Plan{ControlPlaneEndpoint: inv.ControlPlaneEndpoint}
 	seen := map[string]bool{}
 	for _, node := range inv.Nodes {
 		if node.Name == "" || seen[node.Name] {
@@ -1675,7 +1645,7 @@ func preflightWipeCluster(ctx context.Context, connector cluster.AgentConnector,
 	statuses := make(map[string]*agentapi.NodeStatus, len(targets))
 	for _, node := range targets {
 		result := wipeClusterNodeResult{Node: node.Name}
-		if strings.TrimSpace(node.Address) == "" {
+		if node.Address.IsZero() {
 			result.Result = "refused"
 			result.Diagnostics = append(result.Diagnostics, "inventory node address is required")
 			report.Nodes = append(report.Nodes, result)
@@ -1703,7 +1673,7 @@ func preflightWipeCluster(ctx context.Context, connector cluster.AgentConnector,
 		if err != nil {
 			result.Diagnostics = append(result.Diagnostics, inventory.Redact(err.Error()))
 		} else {
-			target := managementTarget{nodeName: node.Name, endpoint: conn.Endpoint, enrollmentID: node.EnrollmentID, machineID: node.MachineID}
+			target := managementTarget{nodeName: node.Name, enrollmentID: node.EnrollmentID, machineID: node.MachineID}
 			if verifyErr := bindManagementStatus(&target, status); verifyErr != nil {
 				result.Diagnostics = append(result.Diagnostics, inventory.Redact(verifyErr.Error()))
 			} else {
@@ -2045,9 +2015,9 @@ func prepareWipeNodeKubernetes(ctx context.Context, kubeconfigPath string, node 
 	return result
 }
 
-func deleteWipeNodeKubernetes(ctx context.Context, kubeconfigPath string, node, coordinator inventory.PlannedNode) wipeNodeCleanupResult {
+func deleteWipeNodeKubernetes(ctx context.Context, kubeconfigPath string, node inventory.PlannedNode, apiserver inventory.TLSEndpoint) wipeNodeCleanupResult {
 	result := wipeNodeCleanupResult{Status: "succeeded"}
-	argv := []string{"kubectl", "--kubeconfig", kubeconfigPath, "--server=" + kubernetesNodeServer(coordinator.Address), "delete", "node", node.Name, "--ignore-not-found=true"}
+	argv := []string{"kubectl", "--kubeconfig", kubeconfigPath, "--server=" + apiserver.URL(), "--tls-server-name=" + apiserver.ServerName.String(), "delete", "node", node.Name, "--ignore-not-found=true"}
 	output, err := operatorKubectlRunner.Run(ctx, argv)
 	if err != nil {
 		result.Status = "recovery-required"
@@ -2057,14 +2027,6 @@ func deleteWipeNodeKubernetes(ctx context.Context, kubeconfigPath string, node, 
 		result.Diagnostics = append(result.Diagnostics, inventory.Redact(fmt.Sprintf("delete node failed: %s", strings.TrimSpace(output.Stderr))))
 	}
 	return result
-}
-
-func kubernetesNodeServer(address string) string {
-	host := strings.TrimSpace(address)
-	if parsedHost, _, err := net.SplitHostPort(host); err == nil {
-		host = parsedHost
-	}
-	return "https://" + net.JoinHostPort(host, "6443")
 }
 
 type execWipeNodeKubectlRunner struct{}
@@ -2167,7 +2129,7 @@ func runConfigTopology(opts configTopologyOptions, stdout, stderr io.Writer) err
 		w.row("Cluster:", resolved.ClusterName)
 		w.row("NODE", "ROLE", "ENDPOINT")
 		for _, node := range resolved.Nodes {
-			w.row(node.Name, string(node.SystemRole), node.ManagementEndpoint)
+			w.row(node.Name, string(node.SystemRole), node.ManagementEndpoint.String())
 		}
 		return w.flush()
 	}
@@ -2607,7 +2569,7 @@ func runConfigApply(ctx context.Context, opts configApplyOptions, stdout, stderr
 			return fmt.Errorf("--source-id and --desired-version cannot be used with a pre-rendered NodeConfigurationChange")
 		}
 	}
-	conn, err := dialKatlcAgent(ctx, target.endpoint)
+	conn, err := dialKatlcAgent(ctx, target.endpoint.String())
 	if err != nil {
 		return err
 	}
@@ -2873,7 +2835,7 @@ func runConfigApplyStatus(ctx context.Context, opts configApplyStatusOptions, st
 			return err
 		}
 		ctx = withManagementTarget(ctx, target)
-		conn, err := dialKatlcAgent(ctx, target.endpoint)
+		conn, err := dialKatlcAgent(ctx, target.endpoint.String())
 		if err != nil {
 			return err
 		}
@@ -3148,6 +3110,14 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 	if opts.timeout < 0 {
 		return fmt.Errorf("--timeout must be positive")
 	}
+	var controlPlaneEndpoint inventory.HostPort
+	if strings.TrimSpace(opts.controlPlaneEndpoint) != "" {
+		parsed, err := inventory.ParseHostPort(opts.controlPlaneEndpoint)
+		if err != nil {
+			return fmt.Errorf("--control-plane-endpoint: %w", err)
+		}
+		controlPlaneEndpoint = parsed
+	}
 	ctx, cancel := context.WithTimeout(ctx, opts.timeout)
 	defer cancel()
 	refreshed, err := refreshConfiguredManagement(ctx, opts.configPath, "", "", stderr)
@@ -3190,7 +3160,7 @@ func runClusterBootstrap(ctx context.Context, opts clusterBootstrapOptions, stdo
 		Inventory:            inv,
 		InitNode:             opts.initNode,
 		AddressOverrides:     opts.addresses.values,
-		ControlPlaneEndpoint: opts.controlPlaneEndpoint,
+		ControlPlaneEndpoint: controlPlaneEndpoint,
 		KubeconfigOut:        opts.kubeconfigOut,
 		OverwriteKubeconfig:  opts.overwriteKubeconfig,
 		DryRun:               opts.dryRun,
@@ -3337,19 +3307,15 @@ func bootstrapInventory(ctx context.Context, opts clusterBootstrapOptions, stder
 	}
 	inv := config.Inventory
 	clusterName := config.ClusterName
-	if config.EndpointDerived && inv.ControlPlaneEndpoint != "" {
-		fmt.Fprintf(stderr, "warning: control-plane endpoint %s is derived from the control plane's management address; set spec.controlPlaneEndpoint to a stable VIP or DNS name before bootstrap, because changing the endpoint afterwards is not supported\n", inv.ControlPlaneEndpoint)
+	if inv.ControlPlaneEndpointDerived {
+		fmt.Fprintf(stderr, "warning: control-plane endpoint %s is derived from the control plane's address; set spec.controlPlaneEndpoint to a stable VIP or DNS name before bootstrap, because changing the endpoint afterwards is not supported\n", inv.ControlPlaneEndpoint)
 	}
 	for index := range inv.Nodes {
 		enrolled, ok := enrolledTarget(ctx, "", "", clusterName, inv.Nodes[index].Name)
 		if !ok {
 			return inventory.Inventory{}, "", fmt.Errorf("node %q is not enrolled on this workstation; run 'katlctl context save --config %s' before bootstrap planning", inv.Nodes[index].Name, configPath)
 		}
-		host, _, splitErr := net.SplitHostPort(enrolled.endpoint)
-		if splitErr != nil {
-			return inventory.Inventory{}, "", fmt.Errorf("node %q saved management endpoint: %w", inv.Nodes[index].Name, splitErr)
-		}
-		inv.Nodes[index].Address = host
+		inv.Nodes[index].Address = enrolled.endpoint.ManagementAddress()
 		inv.Nodes[index].EnrollmentID = enrolled.enrollmentID
 		inv.Nodes[index].MachineID = enrolled.machineID
 	}
@@ -3373,7 +3339,7 @@ func managementAgentConnector(clusterName string) cluster.TCPAgentConnector {
 			}
 			return managementClientForCluster(clusterName)
 		}
-		identity, err := managementDialForEndpoint(cluster.AgentEndpoint(node.Address, "9443"))
+		identity, err := managementDialForEndpoint(node.ManagementEndpoint().String())
 		if err != nil {
 			return managementidentity.ClientCredentials{}, err
 		}
@@ -3492,7 +3458,7 @@ func loadInventory(path string) (inventory.Inventory, error) {
 			return inventory.Inventory{}, fmt.Errorf("decode inventory kubernetesBundle: %w", err)
 		}
 	}
-	return doc.inventory(), nil
+	return doc.inventory()
 }
 
 type inventoryDocument struct {
@@ -3527,13 +3493,29 @@ type kubeadmConfigDocument struct {
 	Intent inventory.KubeadmIntent `yaml:"intent"`
 }
 
-func (d inventoryDocument) inventory() inventory.Inventory {
+// inventory parses the document, the boundary for the addresses it carries
+// as text. It decodes them as recorded values, so an inventory file that an
+// earlier release accepted still loads.
+func (d inventoryDocument) inventory() (inventory.Inventory, error) {
+	var controlPlaneEndpoint inventory.HostPort
+	if strings.TrimSpace(d.ControlPlaneEndpoint) != "" {
+		parsed, err := inventory.DecodeHostPort(d.ControlPlaneEndpoint)
+		if err != nil {
+			return inventory.Inventory{}, fmt.Errorf("decode inventory controlPlaneEndpoint: %w", err)
+		}
+		controlPlaneEndpoint = parsed
+	}
 	nodes := make([]inventory.Node, 0, len(d.Nodes))
 	for _, node := range d.Nodes {
+		address := inventory.DecodeManagementAddress(node.Address)
+		kubernetesAddress, err := inventory.ParseKubernetesAddress(node.KubernetesAddress)
+		if err != nil {
+			return inventory.Inventory{}, fmt.Errorf("decode inventory node %q kubernetesAddress: %w", node.Name, err)
+		}
 		nodes = append(nodes, inventory.Node{
 			Name:              node.Name,
-			Address:           node.Address,
-			KubernetesAddress: node.KubernetesAddress,
+			Address:           address,
+			KubernetesAddress: kubernetesAddress,
 			SystemRole:        node.SystemRole,
 			Access: inventory.Access{
 				Method:        node.Access.Method,
@@ -3551,7 +3533,7 @@ func (d inventoryDocument) inventory() inventory.Inventory {
 		})
 	}
 	result := inventory.Inventory{
-		ControlPlaneEndpoint: d.ControlPlaneEndpoint,
+		ControlPlaneEndpoint: controlPlaneEndpoint,
 		KubernetesVersion:    d.KubernetesVersion,
 		Bootstrap:            d.Bootstrap,
 		Nodes:                nodes,
@@ -3560,11 +3542,11 @@ func (d inventoryDocument) inventory() inventory.Inventory {
 		result.KubernetesBundleSource = payloadbundle.Source(image)
 		result.KubernetesBundleRef = image.String()
 	}
-	return result
+	return result, nil
 }
 
 type addressOverrides struct {
-	values map[string]string
+	values map[string]inventory.ManagementAddress
 }
 
 func (o *addressOverrides) String() string {
@@ -3579,10 +3561,14 @@ func (o *addressOverrides) Set(value string) error {
 	if !ok || strings.TrimSpace(name) == "" || strings.TrimSpace(address) == "" {
 		return fmt.Errorf("--node-address requires node=address")
 	}
-	if o.values == nil {
-		o.values = make(map[string]string)
+	parsed, err := inventory.ParseManagementAddress(address)
+	if err != nil {
+		return fmt.Errorf("--node-address %s: %w", strings.TrimSpace(name), err)
 	}
-	o.values[strings.TrimSpace(name)] = strings.TrimSpace(address)
+	if o.values == nil {
+		o.values = make(map[string]inventory.ManagementAddress)
+	}
+	o.values[strings.TrimSpace(name)] = parsed
 	return nil
 }
 

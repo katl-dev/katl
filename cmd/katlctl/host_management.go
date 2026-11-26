@@ -6,11 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -273,20 +273,20 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 
 	// With --config, --endpoint names where the node answers now and
 	// management.address names where its configuration places it after boot.
-	desiredEndpoint := ""
+	var desiredEndpoint inventory.HostPort
 	if strings.TrimSpace(opts.target.clusterConfigPath) != "" && strings.TrimSpace(opts.target.endpoint) != "" {
 		configured, err := configuredManagementEndpoint(opts.target.clusterConfigPath, node)
 		if err != nil {
 			return err
 		}
-		if configured != "" && configured != target.endpoint {
+		if !configured.IsZero() && configured != target.endpoint {
 			desiredEndpoint = configured
 		}
 	}
 
 	status, _, _, err := readHostState(session.ctx, session.client, node)
 	if err != nil {
-		if desiredEndpoint != "" && managementUnreachable(err) {
+		if !desiredEndpoint.IsZero() && managementUnreachable(err) {
 			return fmt.Errorf("%w; %s", err, movedHint(node, desiredEndpoint, opts.target.clusterConfigPath))
 		}
 		return err
@@ -309,10 +309,10 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 	if opts.noWait {
 		return writeHostReboot(stdout, opts.output, report)
 	}
-	wait := bootWaitTarget{nodeName: node, endpoints: []string{target.endpoint}, machineID: status.GetMachineId(), enrollmentID: status.GetEnrollmentId(), flags: opts.target.guidanceFlags()}
-	if desiredEndpoint != "" {
-		wait.endpoints = []string{desiredEndpoint, target.endpoint}
-		_, _ = fmt.Fprintf(stderr, "Reboot scheduled for %s; waiting for KatlOS to return healthy at %s (or %s)...\n", node, desiredEndpoint, target.endpoint)
+	wait := bootWaitTarget{nodeName: node, endpoints: []string{target.endpoint.String()}, machineID: status.GetMachineId(), enrollmentID: status.GetEnrollmentId(), flags: opts.target.guidanceFlags()}
+	if !desiredEndpoint.IsZero() {
+		wait.endpoints = []string{desiredEndpoint.String(), target.endpoint.String()}
+		_, _ = fmt.Fprintf(stderr, "Reboot scheduled for %s; waiting for KatlOS to return healthy at %s (or %s)...\n", node, desiredEndpoint, target.endpoint.String())
 	} else {
 		_, _ = fmt.Fprintf(stderr, "Reboot scheduled for %s; waiting for KatlOS to return healthy...\n", node)
 	}
@@ -320,26 +320,27 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 	waitCtx = withManagementTarget(waitCtx, target)
 	verifiedConn, verified, err := waitNodeBootHealth(waitCtx, wait, previousAgentStart, generationID, recoveryRequirement, "reboot node="+node, stderr)
 	cancelWait()
+	answered, _ := inventory.DecodeHostPort(verified.Endpoint)
 	if err != nil {
-		if desiredEndpoint != "" {
-			return addressChangeRebootError(node, target.endpoint, desiredEndpoint, verified.Endpoint, opts.target.clusterConfigPath, err)
+		if !desiredEndpoint.IsZero() {
+			return addressChangeRebootError(node, target.endpoint, desiredEndpoint, answered, opts.target.clusterConfigPath, err)
 		}
 		return err
 	}
 	_ = verifiedConn.Close()
-	if desiredEndpoint != "" && verified.Endpoint != desiredEndpoint {
-		return addressChangeRebootError(node, target.endpoint, desiredEndpoint, verified.Endpoint, opts.target.clusterConfigPath, fmt.Errorf("node %s returned healthy at %s instead of %s", node, verified.Endpoint, desiredEndpoint))
+	if !desiredEndpoint.IsZero() && !answered.Equal(desiredEndpoint) {
+		return addressChangeRebootError(node, target.endpoint, desiredEndpoint, answered, opts.target.clusterConfigPath, fmt.Errorf("node %s returned healthy at %s instead of %s", node, verified.Endpoint, desiredEndpoint))
 	}
 	report.Result = "rebooted"
 	report.Health = displayHostHealth(verified.Generation)
 	report.Endpoint = verified.Endpoint
-	report.AddressChanged = desiredEndpoint != ""
+	report.AddressChanged = !desiredEndpoint.IsZero()
 	return writeHostReboot(stdout, opts.output, report)
 }
 
-func addressChangeRebootError(node, currentEndpoint, desiredEndpoint, answered, configPath string, err error) error {
-	current, _, _ := net.SplitHostPort(currentEndpoint)
-	if answered == currentEndpoint {
+func addressChangeRebootError(node string, currentEndpoint, desiredEndpoint, answered inventory.HostPort, configPath string, err error) error {
+	current := managementHost(currentEndpoint)
+	if answered.Equal(currentEndpoint) {
 		return fmt.Errorf("%w; %s still answers at its previous address %s, so its new network configuration did not take effect. Correct its network configuration in %s, then rerun 'katlctl cluster apply --config %s --node %s --endpoint %s', or restore management.address to %s to keep the previous address", err, node, current, configPath, configPath, node, current, current)
 	}
 	return fmt.Errorf("%w; %s did not answer as the same installation at %s or %s. If its new address is wrong but still routable, the node can accept it and become unreachable: use the node console to inspect its network, or choose the previous generation from the boot menu, then correct %s", err, node, desiredEndpoint, currentEndpoint, configPath)
@@ -400,7 +401,7 @@ func waitNodeOffline(ctx context.Context, target managementTarget) error {
 	for {
 		attemptCtx, cancelAttempt := context.WithTimeout(ctx, 2*time.Second)
 		attemptCtx = withManagementTarget(attemptCtx, target)
-		conn, err := dialKatlcAgent(transport.WithoutManagementWait(attemptCtx), target.endpoint)
+		conn, err := dialKatlcAgent(transport.WithoutManagementWait(attemptCtx), target.endpoint.String())
 		if err == nil {
 			_, err = conn.Client.GetNodeStatus(attemptCtx, &agentapi.GetNodeStatusRequest{})
 			_ = conn.Close()
@@ -420,10 +421,10 @@ func waitNodeOffline(ctx context.Context, target managementTarget) error {
 	}
 }
 
-func readStatusReport(ctx context.Context, client agentapi.KatlcAgentClient, node, endpoint, configPath string, credentials *managementidentity.ClientCredentials, observation *transport.ManagementObservation) (hostStatusReport, *agentapi.NodeStatus, error) {
+func readStatusReport(ctx context.Context, client agentapi.KatlcAgentClient, node string, endpoint inventory.HostPort, configPath string, credentials *managementidentity.ClientCredentials, observation *transport.ManagementObservation) (hostStatusReport, *agentapi.NodeStatus, error) {
 	status, current, observedAt, err := readHostState(ctx, client, node)
 	if err == nil {
-		return newHostStatusReport(node, endpoint, status, current, observedAt), status, nil
+		return newHostStatusReport(node, endpoint.String(), status, current, observedAt), status, nil
 	}
 
 	// The fallback belongs to status. A successful plaintext status read or a
@@ -463,7 +464,7 @@ func readStatusReport(ctx context.Context, client agentapi.KatlcAgentClient, nod
 		return hostStatusReport{}, nil, fmt.Errorf("%w; use enable-mtls secrets at %s: %v", err, path, readErr)
 	}
 
-	conn, retryErr := dialKatlcAgent(withManagementDial(ctx, node, &identity), endpoint)
+	conn, retryErr := dialKatlcAgent(withManagementDial(ctx, node, &identity), endpoint.String())
 	if retryErr != nil {
 		return hostStatusReport{}, nil, fmt.Errorf("%w; connect using enable-mtls secrets: %v", err, retryErr)
 	}
@@ -472,7 +473,7 @@ func readStatusReport(ctx context.Context, client agentapi.KatlcAgentClient, nod
 	if retryErr != nil {
 		return hostStatusReport{}, nil, fmt.Errorf("%w; using enable-mtls secrets: %v", err, retryErr)
 	}
-	report := newHostStatusReport(node, endpoint, status, current, observedAt)
+	report := newHostStatusReport(node, endpoint.String(), status, current, observedAt)
 	report.Management.addEnableMTLSGuidance(node, invocation)
 	return report, status, nil
 }
@@ -716,7 +717,10 @@ func writeHostReboot(stdout io.Writer, output string, report hostRebootReport) e
 		return err
 	}
 	if report.AddressChanged {
-		host, _, _ := net.SplitHostPort(report.Endpoint)
+		host := report.Endpoint
+		if endpoint, err := inventory.DecodeHostPort(report.Endpoint); err == nil {
+			host = managementHost(endpoint)
+		}
 		_, err := fmt.Fprintf(stdout, "%s rebooted successfully at %s; health %s\n", report.Node, host, report.Health)
 		return err
 	}
@@ -749,7 +753,7 @@ func hostTargetName(target managementTarget) string {
 	if node := strings.TrimSpace(target.nodeName); node != "" {
 		return node
 	}
-	return target.endpoint
+	return target.endpoint.String()
 }
 
 func newManagementStatusReport(status *agentapi.ManagementStatus, observedAt time.Time) *managementStatusReport {

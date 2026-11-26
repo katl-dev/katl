@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"slices"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"gopkg.in/yaml.v3"
 )
 
@@ -34,37 +34,35 @@ func HasDelegatedInitHealth(content []byte) (bool, error) {
 	return false, nil
 }
 
-// BootstrapCertSANs returns the apiServer.certSANs that bootstrap adds to the
-// cluster it initialises: the control-plane endpoint host, the loopback
-// address, and the VIP Katl advertises for the endpoint, if any. It is the
-// single owner of that set, so rendering init config and comparing a running
-// cluster's ClusterConfiguration against desired input agree on it.
-func BootstrapCertSANs(endpoint, vip string) ([]string, error) {
-	endpoint = strings.TrimSpace(endpoint)
-	if endpoint == "" {
-		return nil, nil
+func bootstrapEndpointAndSANs(endpoint, vip string) (inventory.HostPort, []string, error) {
+	if strings.TrimSpace(endpoint) == "" {
+		return inventory.HostPort{}, nil, nil
 	}
-	host, _, err := net.SplitHostPort(endpoint)
-	if err != nil || strings.TrimSpace(host) == "" {
-		return nil, fmt.Errorf("control-plane endpoint must be host:port")
+	target, err := inventory.ParseHostPort(endpoint)
+	if err != nil {
+		return inventory.HostPort{}, nil, fmt.Errorf("control-plane endpoint must be host:port")
 	}
-	return certSANs(host, vip), nil
+	return target, certSANs(target.Host.String(), vip), nil
 }
 
-// ClusterCertSANs is BootstrapCertSANs for the controlPlaneEndpoint of a
-// running cluster's ClusterConfiguration, which kubeadm accepts without a port.
+// ClusterCertSANs returns the bootstrap SANs for a running cluster's
+// controlPlaneEndpoint, which kubeadm accepts without a port.
 func ClusterCertSANs(endpoint, vip string) []string {
 	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" {
 		return nil
 	}
-	host, _, err := net.SplitHostPort(endpoint)
-	if err != nil {
-		host = strings.TrimSuffix(strings.TrimPrefix(endpoint, "["), "]")
+	if target, err := inventory.DecodeHostPort(endpoint); err == nil {
+		return certSANs(target.Host.String(), vip)
 	}
-	return certSANs(host, vip)
+	var host inventory.Host
+	if err := host.UnmarshalText([]byte(strings.TrimSuffix(strings.TrimPrefix(endpoint, "["), "]"))); err != nil || host.IsZero() {
+		return nil
+	}
+	return certSANs(host.String(), vip)
 }
 
+// certSANs is the set bootstrap adds to the cluster it initialises.
 func certSANs(host, vip string) []string {
 	sans := []string{host, loopbackSAN}
 	if vip = strings.TrimSpace(vip); vip != "" && !slices.Contains(sans, vip) {
@@ -73,16 +71,14 @@ func certSANs(host, vip string) []string {
 	return sans
 }
 
-// RenderInitConfig returns base with the cluster endpoint and the SANs of
-// BootstrapCertSANs added to its ClusterConfiguration. An empty endpoint
-// leaves base unchanged.
+// RenderInitConfig adds the endpoint and bootstrap SANs to the
+// ClusterConfiguration. An empty endpoint leaves base unchanged.
 func RenderInitConfig(base []byte, endpoint, vip string) ([]byte, error) {
-	endpoint = strings.TrimSpace(endpoint)
-	sans, err := BootstrapCertSANs(endpoint, vip)
+	target, sans, err := bootstrapEndpointAndSANs(endpoint, vip)
 	if err != nil {
 		return nil, err
 	}
-	if endpoint == "" {
+	if target.IsZero() {
 		return base, nil
 	}
 	docs, err := decodeDocuments(base)
@@ -95,10 +91,13 @@ func RenderInitConfig(base []byte, endpoint, vip string) ([]byte, error) {
 			continue
 		}
 		found = true
-		if configured := strings.TrimSpace(fmt.Sprint(doc["controlPlaneEndpoint"])); configured != "" && configured != "<nil>" && configured != endpoint {
-			return nil, fmt.Errorf("kubeadm ClusterConfiguration controlPlaneEndpoint %q conflicts with cluster endpoint %q", configured, endpoint)
+		if configured := strings.TrimSpace(fmt.Sprint(doc["controlPlaneEndpoint"])); configured != "" && configured != "<nil>" {
+			existing, err := inventory.ParseHostPort(configured)
+			if err != nil || !existing.Equal(target) {
+				return nil, fmt.Errorf("kubeadm ClusterConfiguration controlPlaneEndpoint %q conflicts with cluster endpoint %q", configured, target)
+			}
 		}
-		doc["controlPlaneEndpoint"] = endpoint
+		doc["controlPlaneEndpoint"] = target.String()
 		apiServer, _ := doc["apiServer"].(map[string]any)
 		if apiServer == nil {
 			apiServer = map[string]any{}

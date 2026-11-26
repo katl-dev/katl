@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/disk"
 )
 
@@ -24,16 +25,16 @@ func TestDecodeAcceptsMinimal(t *testing.T) {
 	}
 }
 
-func TestNormalizeKubernetesAddress(t *testing.T) {
+func TestParseKubernetesAddress(t *testing.T) {
 	for _, address := range []string{"10.254.1.1", "fd00::1"} {
-		got, err := NormalizeKubernetesAddress(address)
-		if err != nil || got != address {
-			t.Fatalf("NormalizeKubernetesAddress(%q) = %q, %v", address, got, err)
+		got, err := inventory.ParseKubernetesAddress(address)
+		if err != nil || got.String() != address {
+			t.Fatalf("ParseKubernetesAddress(%q) = %q, %v", address, got, err)
 		}
 	}
 	for _, address := range []string{"10.254.1.0/31", "node.example", "0.0.0.0", "224.0.0.1", "::1"} {
-		if _, err := NormalizeKubernetesAddress(address); err == nil {
-			t.Fatalf("NormalizeKubernetesAddress(%q) error = nil", address)
+		if _, err := inventory.ParseKubernetesAddress(address); err == nil {
+			t.Fatalf("ParseKubernetesAddress(%q) error = nil", address)
 		}
 	}
 }

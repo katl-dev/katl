@@ -247,7 +247,7 @@ func (e *Executor) desiredEndpointVIP(generationID string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("read desired control-plane endpoint: %w", err)
 	}
-	_, vip, err := kubeadmconfig.ControlPlaneEndpoint(configuration.Manifest.Node)
+	_, vip, err := configuration.Manifest.Node.ClusterEndpoint()
 	return vip, err
 }
 

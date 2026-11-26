@@ -9,6 +9,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer/apivip"
 	"github.com/katl-dev/katl/internal/installer/confext"
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
 )
 
 const (
@@ -172,7 +173,7 @@ func normalizeEndpoint(host string, port int) (string, error) {
 		return "", fmt.Errorf("platformAPIEndpoint.endpoint.host must be a host name or address, not a URL or path")
 	}
 	if port == 0 {
-		port = 6443
+		port = controlplaneendpoint.DefaultPort
 	}
 	if port < 1 || port > 65535 {
 		return "", fmt.Errorf("platformAPIEndpoint.endpoint.port must be between 1 and 65535")

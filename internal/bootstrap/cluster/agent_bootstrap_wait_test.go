@@ -68,8 +68,8 @@ func TestRunAgentBootstrapWaitsForRestartingAgent(t *testing.T) {
 	ctx := transport.WithManagementProgress(context.Background(), progress)
 
 	_, err := RunAgentBootstrap(ctx, Request{
-		Inventory:        validSingleNodeInventory(),
-		AddressOverrides: map[string]string{"cp-1": port.Endpoint},
+		Inventory:        validSingleNodeInventory(t),
+		AddressOverrides: map[string]inventory.ManagementAddress{"cp-1": mustManagementAddress(t, port.Endpoint)},
 		DryRun:           true,
 	}, AgentBootstrapDependencies{Connector: TCPAgentConnector{Credentials: &managementidentity.ClientCredentials{Authentication: managementidentity.TrustedNetwork}}})
 
@@ -108,7 +108,7 @@ func TestTCPAgentConnectorExplainsMutualTLSNode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	conn, err := connector.Connect(ctx, inventory.PlannedNode{Name: "cp-1", Address: listener.Addr().String(), Access: inventory.Access{Method: "agent"}})
+	conn, err := connector.Connect(ctx, inventory.PlannedNode{Name: "cp-1", Address: mustManagementAddress(t, listener.Addr().String()), Access: inventory.Access{Method: "agent"}})
 	if err != nil {
 		t.Fatal(err)
 	}

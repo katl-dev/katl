@@ -1,6 +1,10 @@
 package configbundle
 
-import "reflect"
+import (
+	"reflect"
+
+	"github.com/katl-dev/katl/internal/installer/controlplaneendpoint"
+)
 
 type schemaFieldRule struct {
 	Required      bool
@@ -216,7 +220,7 @@ func sourceSchemaFieldRule(t reflect.Type, field string) schemaFieldRule {
 	case "controlplaneendpoint.Config.host":
 		return stringRule("Stable Kubernetes API DNS name or IP address.", "", 1, 253)
 	case "controlplaneendpoint.Config.port":
-		return integerDefaultRule("Kubernetes API port; zero selects the default.", 0, 65535, 6443)
+		return integerDefaultRule("Kubernetes API port; zero selects the default.", 0, 65535, controlplaneendpoint.DefaultPort)
 	case "controlplaneendpoint.Config.advertisement":
 		return description("Optional Katl-managed API VIP ownership.")
 	case "controlplaneendpoint.Advertisement.vip":

@@ -19,7 +19,7 @@ func TestBootstrapCertSANs(t *testing.T) {
 		{name: "not host and port", endpoint: "api.katl.test", wantError: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := BootstrapCertSANs(tt.endpoint, tt.vip)
+			_, got, err := bootstrapEndpointAndSANs(tt.endpoint, tt.vip)
 			if (err != nil) != tt.wantError {
 				t.Fatalf("error = %v, want error %t", err, tt.wantError)
 			}
@@ -72,6 +72,18 @@ func TestRenderInitConfigWithoutEndpointKeepsBase(t *testing.T) {
 	got, err := RenderInitConfig(base, "", "192.0.2.10")
 	if err != nil || string(got) != string(base) {
 		t.Fatalf("RenderInitConfig() = %q, %v", got, err)
+	}
+}
+
+func TestRenderInitConfigAcceptsEquivalentIPv6Endpoint(t *testing.T) {
+	base := []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\ncontrolPlaneEndpoint: '[2001:0db8::1]:6443'\n")
+
+	got, err := RenderInitConfig(base, "[2001:db8::1]:6443", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "controlPlaneEndpoint: '[2001:db8::1]:6443'") || !strings.Contains(string(got), "- 2001:db8::1\n") {
+		t.Fatalf("rendered config lacks canonical endpoint and SAN:\n%s", got)
 	}
 }
 

@@ -102,6 +102,9 @@ type Plan struct {
 	Nodes                  []NodeMaterial              `json:"nodes"`
 	BootstrapInventory     inventory.Inventory         `json:"bootstrapInventory"`
 	AddressOverrides       []inventory.AddressOverride `json:"addressOverrides,omitempty"`
+	// Warnings describe accepted configuration that the operator should
+	// correct.
+	Warnings []Warning `json:"-"`
 }
 
 type NodeMaterial struct {

@@ -15,7 +15,6 @@ import (
 	"github.com/katl-dev/katl/internal/apiproxy"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer"
-	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/kubernetesbundle"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
@@ -337,7 +336,7 @@ func runtimeInputs(root string, previous generation.GenerationSpec, request oper
 	if err != nil {
 		return RuntimeInputs{}, err
 	}
-	endpoint, vip, err := kubeadmconfig.ControlPlaneEndpoint(selection.Configuration.Manifest.Node)
+	endpoint, vip, err := selection.Configuration.Manifest.Node.ClusterEndpoint()
 	if err != nil {
 		return RuntimeInputs{}, err
 	}
@@ -346,7 +345,7 @@ func runtimeInputs(root string, previous generation.GenerationSpec, request oper
 		HostConfig: HostConfig{
 			NodeName:                request.InventoryNodeName,
 			SystemRole:              request.SystemRole,
-			ControlPlaneEndpoint:    firstNonEmpty(request.ControlPlaneEndpoint, endpoint),
+			ControlPlaneEndpoint:    firstNonEmpty(request.ControlPlaneEndpoint, endpoint.String()),
 			ControlPlaneEndpointVIP: vip,
 			NodeMetadataPath:        "/etc/katl/node.json",
 		},

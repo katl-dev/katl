@@ -228,7 +228,7 @@ func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker, 
 		if err != nil || !bytes.Equal(data, configured) {
 			t.Fatalf("rotation published the replacement reference before verification: %v", err)
 		}
-		target := managementRotationNode{name: "cp-1", endpoint: endpoint, machineID: machineID}
+		target := managementRotationNode{name: "cp-1", endpoint: mustHostPort(t, endpoint), machineID: machineID}
 		if err := checkManagementCredential(t.Context(), target, mustManagementClient(t, replacement), time.Second); err != nil {
 			t.Fatalf("node with a slow clock did not accept the existing replacement: %v", err)
 		}
@@ -271,7 +271,7 @@ func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker, 
 	if err != nil || nextInfo.Fingerprint == oldInfo.Fingerprint {
 		t.Fatalf("authority was not replaced: %v", err)
 	}
-	if err := verifyRotatedManagement(context.Background(), managementRotationNode{name: "cp-1", endpoint: endpoint, machineID: machineID}, mustManagementClient(t, next), old.Operator, 3*time.Second); err != nil {
+	if err := verifyRotatedManagement(context.Background(), managementRotationNode{name: "cp-1", endpoint: mustHostPort(t, endpoint), machineID: machineID}, mustManagementClient(t, next), old.Operator, 3*time.Second); err != nil {
 		t.Fatalf("independent management check: %v", err)
 	}
 	stdout.Reset()
@@ -559,7 +559,7 @@ func TestManagementRotationOldAuthorityRefusal(t *testing.T) {
 					)
 				}
 
-				target := managementRotationNode{name: node.name, endpoint: "192.0.2.11:9443", machineID: "machine-" + node.name}
+				target := managementRotationNode{name: node.name, endpoint: mustManagement(t, "192.0.2.11").Endpoint(), machineID: "machine-" + node.name}
 				err = verifyRotatedManagement(t.Context(), target, mustManagementClient(t, next), probe, time.Second)
 				if scenario != "unrelated failure" && !sawRefusal {
 					t.Fatal("the agent did not refuse the old credential")

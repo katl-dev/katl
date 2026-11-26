@@ -136,7 +136,7 @@ func SelectEndpoint(selection EndpointSelection) (SelectedEndpoint, error) {
 		return SelectedEndpoint{Server: server, Access: "canonical-unverified"}, err
 	case strings.TrimSpace(selection.InitialEndpoint) != "":
 		server, err := normalizeServer(selection.InitialEndpoint)
-		return SelectedEndpoint{Server: server, Access: "direct"}, err
+		return SelectedEndpoint{Server: server, TLSServerName: strings.TrimSpace(selection.TLSServerName), Access: "direct"}, err
 	default:
 		return SelectedEndpoint{}, fmt.Errorf("kubeconfig server endpoint is required")
 	}

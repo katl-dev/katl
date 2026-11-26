@@ -877,9 +877,7 @@ func readAgentNodeStatus(ctx context.Context, name, address string) (*agentapi.N
 		return nil, err
 	}
 	connector.DialTimeout = 5 * time.Second
-	conn, err := connector.Connect(ctx, inventory.PlannedNode{
-		Name: name, Address: address, Access: inventory.Access{Method: "agent"},
-	})
+	conn, err := connector.Connect(ctx, agentNode(name, address))
 	if err != nil {
 		return nil, err
 	}
@@ -893,9 +891,7 @@ func readLiveEtcdStatus(ctx context.Context, name, address string) (*agentapi.Et
 		return nil, err
 	}
 	connector.DialTimeout = 5 * time.Second
-	conn, err := connector.Connect(ctx, inventory.PlannedNode{
-		Name: name, Address: address, Access: inventory.Access{Method: "agent"},
-	})
+	conn, err := connector.Connect(ctx, agentNode(name, address))
 	if err != nil {
 		return nil, err
 	}
@@ -930,9 +926,7 @@ func waitForAgentKubernetesReady(ctx context.Context, nodes []vmtest.RunningInst
 				continue
 			}
 			connector.DialTimeout = 5 * time.Second
-			connection, err := connector.Connect(ctx, inventory.PlannedNode{
-				Name: node.Name, Address: addresses[node.Name], Access: inventory.Access{Method: "agent"},
-			})
+			connection, err := connector.Connect(ctx, agentNode(node.Name, addresses[node.Name]))
 			if err == nil {
 				status, statusErr := connection.Client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 				_ = connection.Close()

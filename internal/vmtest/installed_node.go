@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 )
 
 type InstalledRuntimeNodeConfig struct {
@@ -105,7 +107,8 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 		if err != nil {
 			return failWithDebug(fmt.Errorf("libvirt lease address %q: %w", lease.IPAddress, err))
 		}
-		if err := WaitManagementEndpoint(handle.ctx, name, netip.AddrPortFrom(address, katlcAgentPort), managementStartupTimeout); err != nil {
+		management := inventory.ManagementAddress{Host: inventory.HostFromAddr(address)}
+		if err := WaitManagementEndpoint(handle.ctx, name, management.Endpoint().AddrPort(), managementStartupTimeout); err != nil {
 			return failWithDebug(err)
 		}
 	}
@@ -128,7 +131,6 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 }
 
 const (
-	katlcAgentPort           = 9443
 	managementStartupTimeout = time.Minute
 	bootSettleTimeout        = 2 * time.Minute
 )

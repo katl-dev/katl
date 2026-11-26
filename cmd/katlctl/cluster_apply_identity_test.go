@@ -85,7 +85,7 @@ func TestClusterApplySelectsConfiguredTrust(t *testing.T) {
 	oldDial := dialKatlcAgent
 	t.Cleanup(func() { dialKatlcAgent = oldDial })
 	dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
-		if endpoint != "127.0.0.1:9443" {
+		if endpoint != listener.Addr().String() {
 			t.Fatalf("unexpected node endpoint %q", endpoint)
 		}
 		// Route the fixture address to a local server; identity selection and TLS
@@ -99,7 +99,7 @@ func TestClusterApplySelectsConfiguredTrust(t *testing.T) {
 		t.Fatalf("apply: %v\n%s", err, stderr.String())
 	}
 	connector := managementAgentConnector("lab")
-	connection, err := connector.Connect(ctx, inventory.PlannedNode{Name: "cp-1", Address: listener.Addr().String(), Access: inventory.Access{Method: "agent"}})
+	connection, err := connector.Connect(ctx, inventory.PlannedNode{Name: "cp-1", Address: mustManagement(t, listener.Addr().String()), Access: inventory.Access{Method: "agent"}})
 	if err != nil {
 		t.Fatalf("join connection: %v", err)
 	}

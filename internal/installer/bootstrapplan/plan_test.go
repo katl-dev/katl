@@ -208,6 +208,35 @@ func TestCreateAcceptsWorkerJoinFromStoredIntent(t *testing.T) {
 	assertNoKubeadmMutation(t, root)
 }
 
+func TestSelectExternalWorkerInputMatchesIPv6Endpoint(t *testing.T) {
+	root := cleanRoot(t, "worker")
+	configuration, err := configapply.ReadGenerationConfiguration(root, "0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	configuration.Manifest.Node.Kubernetes.External = true
+	configuration.Manifest.Node.Bootstrap = &manifest.BootstrapIntent{ControlPlaneEndpoint: "[2001:0db8::1]:6443"}
+	if err := configapply.WriteGenerationConfiguration(root, "0", configuration); err != nil {
+		t.Fatal(err)
+	}
+	installed, _, err := installer.ReadClusterIntent(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := operation.BootstrapRequest{
+		InventoryNodeName: "worker-1", SystemRole: "worker", KubernetesPayloadVersion: "v1.36.1",
+		BootstrapProfileRef: "worker", ExternalWorker: true, ControlPlaneEndpoint: "[2001:db8::1]:6443",
+	}
+	if selected, err := SelectInput(root, "0", installed, request); err != nil || selected.Input.ConfigRef != "worker" {
+		t.Fatalf("select worker input at equivalent endpoint = %+v, %v", selected.Input, err)
+	}
+
+	request.ControlPlaneEndpoint = "[2001:db8::1]:6444"
+	if _, err := SelectInput(root, "0", installed, request); err == nil || !strings.Contains(err.Error(), "installed external endpoint") {
+		t.Fatalf("select worker input at different port: %v", err)
+	}
+}
+
 func TestCreateAcceptsControlPlaneJoinFromStoredIntent(t *testing.T) {
 	root := cleanRoot(t, "control-plane")
 	source, ref, client := serveKubernetesBundleFixture(t, "v1.36.1", "control-plane join kubernetes sysext payload")

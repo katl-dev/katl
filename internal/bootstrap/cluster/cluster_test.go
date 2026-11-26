@@ -3,6 +3,7 @@ package cluster
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -34,9 +35,9 @@ func TestRunBootstrapsInitWorkerAndKubeconfig(t *testing.T) {
 		join: JoinMaterial{Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--discovery-token-ca-cert-hash", testDiscoveryHash}},
 	}
 	result, err := Run(context.Background(), Request{
-		Inventory:           validInventory(),
+		Inventory:           validInventory(t),
 		InitNode:            "cp-1",
-		AddressOverrides:    map[string]string{"worker-1": "10.0.0.22"},
+		AddressOverrides:    map[string]inventory.ManagementAddress{"worker-1": mustManagementAddress(t, "10.0.0.22")},
 		KubeconfigOut:       out,
 		OverwriteKubeconfig: true,
 	}, Dependencies{
@@ -49,7 +50,7 @@ func TestRunBootstrapsInitWorkerAndKubeconfig(t *testing.T) {
 	if result.Plan.InitNode != "cp-1" {
 		t.Fatalf("init node = %q", result.Plan.InitNode)
 	}
-	if len(result.Plan.AddressOverrides) != 1 || result.Plan.AddressOverrides[0].Address != "10.0.0.22" {
+	if len(result.Plan.AddressOverrides) != 1 || result.Plan.AddressOverrides[0].Address != mustManagementAddress(t, "10.0.0.22") {
 		t.Fatalf("address overrides = %#v", result.Plan.AddressOverrides)
 	}
 	wantPhases := []string{"plan", "readiness", "kubeadm-init", "api-ready", "join-material", "worker-join", "worker-ready", "api-ready-after-join", "kubeconfig"}
@@ -82,7 +83,7 @@ func TestRunBootstrapsInitWorkerAndKubeconfig(t *testing.T) {
 }
 
 func TestRunVerifiesManagedEndpointBeforeCreatingJoinMaterial(t *testing.T) {
-	inv := validInventory()
+	inv := validInventory(t)
 	inv.ControlPlaneEndpointManaged = true
 	var events []string
 	nodeRunner := &fakeNodeRunner{
@@ -127,7 +128,7 @@ func TestRunAppliesUserBootstrapAfterAPIReadinessAndUsesStableEndpoint(t *testin
 	out := filepath.Join(t.TempDir(), "operator.conf")
 	manifestOne := writeBootstrapManifest(t, "01-cni.yaml", "cni")
 	manifestTwo := writeBootstrapManifest(t, "02-flux.yaml", "flux")
-	inv := validSingleNodeInventory()
+	inv := validSingleNodeInventory(t)
 	inv.Bootstrap = &inventory.Bootstrap{
 		Manifests: []inventory.BootstrapManifest{
 			{Path: manifestOne},
@@ -207,7 +208,7 @@ func TestRunAppliesStableEndpointWaitBeforeUserBootstrapManifests(t *testing.T) 
 	out := filepath.Join(t.TempDir(), "operator.conf")
 	bootstrapRunner := &fakeBootstrapRunner{result: BootstrapResult{StableEndpointReady: true}}
 	result, err := Run(context.Background(), Request{
-		Inventory:           validSingleNodeInventory(),
+		Inventory:           validSingleNodeInventory(t),
 		KubeconfigOut:       out,
 		OverwriteKubeconfig: true,
 		Bootstrap: UserBootstrap{
@@ -248,7 +249,7 @@ func TestRunAppliesStableEndpointWaitBeforeUserBootstrapManifests(t *testing.T) 
 func TestRunAppliesExplicitPreWaitsBeforeUserBootstrapManifests(t *testing.T) {
 	bootstrapRunner := &fakeBootstrapRunner{}
 	_, err := Run(context.Background(), Request{
-		Inventory:           validSingleNodeInventory(),
+		Inventory:           validSingleNodeInventory(t),
 		KubeconfigOut:       filepath.Join(t.TempDir(), "operator.conf"),
 		OverwriteKubeconfig: true,
 		Bootstrap: UserBootstrap{
@@ -283,7 +284,7 @@ func TestRunAppliesExplicitPreWaitsBeforeUserBootstrapManifests(t *testing.T) {
 }
 
 func TestRunUsesInventoryStableEndpointForRequestedPreManifestWait(t *testing.T) {
-	inv := validSingleNodeInventory()
+	inv := validSingleNodeInventory(t)
 	inv.Bootstrap = &inventory.Bootstrap{StableEndpoint: "api.inventory.test:6443"}
 	bootstrapRunner := &fakeBootstrapRunner{result: BootstrapResult{StableEndpointReady: true}}
 	_, err := Run(context.Background(), Request{
@@ -317,7 +318,7 @@ func TestRunUsesInventoryStableEndpointForRequestedPreManifestWait(t *testing.T)
 
 func TestRunRejectsPreManifestStableEndpointWithoutEndpoint(t *testing.T) {
 	result, err := Run(context.Background(), Request{
-		Inventory: validSingleNodeInventory(),
+		Inventory: validSingleNodeInventory(t),
 		Bootstrap: UserBootstrap{StableEndpointBeforeManifests: true},
 	}, Dependencies{
 		ReadinessChecker: readyChecker{},
@@ -337,7 +338,7 @@ func TestRunStopsAfterPreManifestStableEndpointFailureAndRedactsSecret(t *testin
 	secret := "abcdef.0123456789abcdef"
 	bootstrapRunner := &fakeBootstrapRunner{err: errors.New("stable endpoint failed with token " + secret)}
 	result, err := Run(context.Background(), Request{
-		Inventory:           validSingleNodeInventory(),
+		Inventory:           validSingleNodeInventory(t),
 		KubeconfigOut:       out,
 		OverwriteKubeconfig: true,
 		Bootstrap: UserBootstrap{
@@ -375,7 +376,7 @@ func TestRunRejectsInvalidBootstrapYAMLBeforeKubeadm(t *testing.T) {
 	nodeRunner := &fakeNodeRunner{}
 	bootstrapRunner := &fakeBootstrapRunner{}
 	_, err := Run(context.Background(), Request{
-		Inventory: validSingleNodeInventory(),
+		Inventory: validSingleNodeInventory(t),
 		Bootstrap: UserBootstrap{Manifests: []BootstrapManifest{{
 			Path:    "bad.yaml",
 			Content: []byte("apiVersion: ["),
@@ -397,7 +398,7 @@ func TestRunRejectsNonKubernetesBootstrapDocumentBeforeKubeadm(t *testing.T) {
 	nodeRunner := &fakeNodeRunner{}
 	bootstrapRunner := &fakeBootstrapRunner{}
 	_, err := Run(context.Background(), Request{
-		Inventory: validSingleNodeInventory(),
+		Inventory: validSingleNodeInventory(t),
 		Bootstrap: UserBootstrap{Manifests: []BootstrapManifest{{
 			Path: "rendered/cilium.yaml",
 			Content: []byte("Pulled: quay.io/cilium/charts/cilium:1.19.6\nDigest: sha256:abc\n---\n" +
@@ -420,7 +421,7 @@ func TestRunDoesNotApplyUserBootstrapBeforeAPIReadiness(t *testing.T) {
 	nodeRunner := &fakeNodeRunner{apiErr: errors.New("not ready yet")}
 	bootstrapRunner := &fakeBootstrapRunner{}
 	_, err := Run(context.Background(), Request{
-		Inventory: validSingleNodeInventory(),
+		Inventory: validSingleNodeInventory(t),
 		Bootstrap: UserBootstrap{Manifests: []BootstrapManifest{{
 			Path:    "cni.yaml",
 			Content: []byte(validBootstrapManifest("cni")),
@@ -443,7 +444,7 @@ func TestRunStopsAfterUserBootstrapServerFailureAndRedactsSecret(t *testing.T) {
 	secret := "abcdef.0123456789abcdef"
 	bootstrapRunner := &fakeBootstrapRunner{err: errors.New("server-side apply failed with token " + secret)}
 	result, err := Run(context.Background(), Request{
-		Inventory:           validSingleNodeInventory(),
+		Inventory:           validSingleNodeInventory(t),
 		KubeconfigOut:       out,
 		OverwriteKubeconfig: true,
 		Bootstrap: UserBootstrap{Manifests: []BootstrapManifest{{
@@ -477,7 +478,7 @@ func TestRunStopsAfterUserBootstrapWaitFailure(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "operator.conf")
 	bootstrapRunner := &fakeBootstrapRunner{err: errors.New("wait condition deployment/cilium failed")}
 	result, err := Run(context.Background(), Request{
-		Inventory:     validSingleNodeInventory(),
+		Inventory:     validSingleNodeInventory(t),
 		KubeconfigOut: out,
 		Bootstrap: UserBootstrap{
 			Waits: []BootstrapWait{{
@@ -509,7 +510,7 @@ func TestRunStopsAfterUserBootstrapWaitFailure(t *testing.T) {
 
 func TestRunRefusesNotReadyNodesBeforeKubeadm(t *testing.T) {
 	nodeRunner := &fakeNodeRunner{}
-	_, err := Run(context.Background(), Request{Inventory: validInventory()}, Dependencies{
+	_, err := Run(context.Background(), Request{Inventory: validInventory(t)}, Dependencies{
 		ReadinessChecker: failingChecker{snapshot: inventory.ReadinessSnapshot{
 			KatlKubeadmReadyTarget: false,
 			KubernetesSysextActive: true,
@@ -534,7 +535,7 @@ func TestRunRefusesNotReadyNodesBeforeKubeadm(t *testing.T) {
 }
 
 func TestRunDryRunSkipsKubeadm(t *testing.T) {
-	result, err := Run(context.Background(), Request{Inventory: validInventory(), DryRun: true}, Dependencies{
+	result, err := Run(context.Background(), Request{Inventory: validInventory(t), DryRun: true}, Dependencies{
 		ReadinessChecker: readyChecker{},
 		NodeRunner:       &fakeNodeRunner{err: errors.New("must not run")},
 	})
@@ -550,10 +551,10 @@ func TestRunDryRunSkipsKubeadm(t *testing.T) {
 }
 
 func TestRunJoinsAdditionalControlPlanesSeriallyBeforeWorkers(t *testing.T) {
-	inv := validInventory()
+	inv := validInventory(t)
 	inv.Nodes = append(inv.Nodes, inventory.Node{
 		Name:              "cp-2",
-		Address:           "10.0.0.12",
+		Address:           mustManagementAddress(t, "10.0.0.12"),
 		SystemRole:        inventory.RoleControlPlane,
 		Access:            inventory.Access{Method: "agent"},
 		KubeadmConfig:     inventory.KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: inventory.IntentControlPlane},
@@ -561,7 +562,7 @@ func TestRunJoinsAdditionalControlPlanesSeriallyBeforeWorkers(t *testing.T) {
 	})
 	inv.Nodes = append(inv.Nodes, inventory.Node{
 		Name:              "cp-3",
-		Address:           "10.0.0.13",
+		Address:           mustManagementAddress(t, "10.0.0.13"),
 		SystemRole:        inventory.RoleControlPlane,
 		Access:            inventory.Access{Method: "agent"},
 		KubeadmConfig:     inventory.KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: inventory.IntentControlPlane},
@@ -615,10 +616,10 @@ func TestRunJoinsAdditionalControlPlanesSeriallyBeforeWorkers(t *testing.T) {
 }
 
 func TestRunStopsAfterControlPlaneJoinHealthFailure(t *testing.T) {
-	inv := validInventory()
+	inv := validInventory(t)
 	inv.Nodes = append(inv.Nodes, inventory.Node{
 		Name:              "cp-2",
-		Address:           "10.0.0.12",
+		Address:           mustManagementAddress(t, "10.0.0.12"),
 		SystemRole:        inventory.RoleControlPlane,
 		Access:            inventory.Access{Method: "agent"},
 		KubeadmConfig:     inventory.KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: inventory.IntentControlPlane},
@@ -647,7 +648,7 @@ func TestRunStopsAfterControlPlaneJoinHealthFailure(t *testing.T) {
 
 func TestRunRedactsKubeadmFailure(t *testing.T) {
 	secret := "abcdef.0123456789abcdef"
-	_, err := Run(context.Background(), Request{Inventory: validInventory()}, Dependencies{
+	_, err := Run(context.Background(), Request{Inventory: validInventory(t)}, Dependencies{
 		ReadinessChecker: readyChecker{},
 		NodeRunner:       &fakeNodeRunner{err: errors.New("kubeadm failed with token " + secret)},
 	})
@@ -664,7 +665,7 @@ func TestRunRefusesDifferentExistingKubeconfig(t *testing.T) {
 	if err := os.WriteFile(out, []byte("different\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := Run(context.Background(), Request{Inventory: validSingleNodeInventory(), KubeconfigOut: out}, Dependencies{
+	_, err := Run(context.Background(), Request{Inventory: validSingleNodeInventory(t), KubeconfigOut: out}, Dependencies{
 		ReadinessChecker: readyChecker{},
 		NodeRunner: &fakeNodeRunner{credentials: AdminCredentials{
 			CertificateAuthorityData: testCA,
@@ -682,7 +683,7 @@ func TestTransportRunnerRunsKubeadmAndRedactsCommandErrors(t *testing.T) {
 	transport.commands[commandKey("kubeadm", "init", "--config", "/etc/katl/kubeadm/control-plane/config.yaml")] = readiness.CommandResult{ExitStatus: 0}
 	transport.files[adminKubeconfigPath] = []byte(adminKubeconfig())
 	runner := TransportRunner{Transport: transport}
-	credentials, err := runner.RunKubeadmInit(context.Background(), validPlannedNode("cp-1", inventory.ActionInit), "")
+	credentials, err := runner.RunKubeadmInit(context.Background(), validPlannedNode(t, "cp-1", inventory.ActionInit), "")
 	if err != nil {
 		t.Fatalf("RunKubeadmInit() error = %v", err)
 	}
@@ -696,19 +697,19 @@ func TestTransportRunnerRunsKubeadmAndRedactsCommandErrors(t *testing.T) {
 		ExitStatus: 1,
 		Stderr:     "token " + secret,
 	}
-	_, err = (TransportRunner{Transport: transport}).CreateWorkerJoin(context.Background(), validPlannedNode("cp-1", inventory.ActionInit))
+	_, err = (TransportRunner{Transport: transport}).CreateWorkerJoin(context.Background(), validPlannedNode(t, "cp-1", inventory.ActionInit))
 	if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
 		t.Fatalf("CreateWorkerJoin() error = %v, want redacted failure", err)
 	}
 
 	transport = newFakeTransport()
 	transport.files["/etc/katl/kubeadm/worker/config.yaml"] = []byte(testWorkerJoinConfig())
-	workerJoinConfigPath := generatedJoinConfigPath(validPlannedNode("worker-1", inventory.ActionWorkerJoin))
+	workerJoinConfigPath := generatedJoinConfigPath(validPlannedNode(t, "worker-1", inventory.ActionWorkerJoin))
 	transport.commands[commandKey("kubeadm", "join", "--config", workerJoinConfigPath)] = readiness.CommandResult{
 		ExitStatus: 1,
 		Stderr:     "join failed with token " + secret,
 	}
-	err = (TransportRunner{Transport: transport}).RunWorkerJoin(context.Background(), validPlannedNode("worker-1", inventory.ActionWorkerJoin), JoinMaterial{
+	err = (TransportRunner{Transport: transport}).RunWorkerJoin(context.Background(), validPlannedNode(t, "worker-1", inventory.ActionWorkerJoin), JoinMaterial{
 		Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", secret, "--discovery-token-ca-cert-hash", testDiscoveryHash},
 	})
 	if err == nil || strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
@@ -726,7 +727,7 @@ func TestTransportRunnerContinuesWhenInitAlreadyCompleted(t *testing.T) {
 		Stderr:     "this node is already initialized",
 	}
 	transport.files[adminKubeconfigPath] = []byte(adminKubeconfig())
-	credentials, err := (TransportRunner{Transport: transport}).RunKubeadmInit(context.Background(), validPlannedNode("cp-1", inventory.ActionInit), "")
+	credentials, err := (TransportRunner{Transport: transport}).RunKubeadmInit(context.Background(), validPlannedNode(t, "cp-1", inventory.ActionInit), "")
 	if err != nil {
 		t.Fatalf("RunKubeadmInit() error = %v", err)
 	}
@@ -737,7 +738,7 @@ func TestTransportRunnerContinuesWhenInitAlreadyCompleted(t *testing.T) {
 
 func TestTransportRunnerSkipsAlreadyJoinedWorker(t *testing.T) {
 	transport := newFakeTransport()
-	node := validPlannedNode("worker-1", inventory.ActionWorkerJoin)
+	node := validPlannedNode(t, "worker-1", inventory.ActionWorkerJoin)
 	joinConfigPath := generatedJoinConfigPath(node)
 	transport.files["/etc/katl/kubeadm/worker/config.yaml"] = []byte(testWorkerJoinConfig())
 	transport.commands[commandKey("kubeadm", "join", "--config", joinConfigPath)] = readiness.CommandResult{
@@ -756,7 +757,7 @@ func TestTransportRunnerSkipsAlreadyJoinedWorker(t *testing.T) {
 
 func TestTransportRunnerRejectsAmbiguousJoinAlreadyExists(t *testing.T) {
 	transport := newFakeTransport()
-	node := validPlannedNode("worker-1", inventory.ActionWorkerJoin)
+	node := validPlannedNode(t, "worker-1", inventory.ActionWorkerJoin)
 	joinConfigPath := generatedJoinConfigPath(node)
 	transport.files["/etc/katl/kubeadm/worker/config.yaml"] = []byte(testWorkerJoinConfig())
 	transport.commands[commandKey("kubeadm", "join", "--config", joinConfigPath)] = readiness.CommandResult{
@@ -774,7 +775,7 @@ func TestTransportRunnerRejectsAmbiguousJoinAlreadyExists(t *testing.T) {
 func TestTransportRunnerRejectsControlPlaneMaterialForWorkerJoin(t *testing.T) {
 	transport := newFakeTransport()
 	certificateKey := strings.Repeat("a", 64)
-	err := (TransportRunner{Transport: transport}).RunWorkerJoin(context.Background(), validPlannedNode("worker-1", inventory.ActionWorkerJoin), JoinMaterial{
+	err := (TransportRunner{Transport: transport}).RunWorkerJoin(context.Background(), validPlannedNode(t, "worker-1", inventory.ActionWorkerJoin), JoinMaterial{
 		Argv: []string{"kubeadm", "join", "api.katl.test:6443", "--token", "abcdef.0123456789abcdef", "--control-plane", "--certificate-key", certificateKey},
 	})
 	if err == nil || !strings.Contains(err.Error(), "must not include --control-plane") {
@@ -796,7 +797,7 @@ func TestTransportRunnerCreatesControlPlaneJoinMaterial(t *testing.T) {
 		ExitStatus: 0,
 		Stdout:     "kubeadm join api.katl.test:6443 --token abcdef.0123456789abcdef --discovery-token-ca-cert-hash " + testDiscoveryHash + "\n",
 	}
-	material, err := (TransportRunner{Transport: transport}).CreateControlPlaneJoin(context.Background(), validPlannedNode("cp-1", inventory.ActionInit))
+	material, err := (TransportRunner{Transport: transport}).CreateControlPlaneJoin(context.Background(), validPlannedNode(t, "cp-1", inventory.ActionInit))
 	if err != nil {
 		t.Fatalf("CreateControlPlaneJoin() error = %v", err)
 	}
@@ -811,7 +812,7 @@ func TestTransportRunnerRejectsUploadCertsWithoutStandaloneCertificateKey(t *tes
 		ExitStatus: 0,
 		Stdout:     "sha256:" + strings.Repeat("b", 64) + "\n",
 	}
-	_, err := (TransportRunner{Transport: transport}).CreateControlPlaneJoin(context.Background(), validPlannedNode("cp-1", inventory.ActionInit))
+	_, err := (TransportRunner{Transport: transport}).CreateControlPlaneJoin(context.Background(), validPlannedNode(t, "cp-1", inventory.ActionInit))
 	if err == nil || !strings.Contains(err.Error(), "certificate key") {
 		t.Fatalf("CreateControlPlaneJoin() error = %v, want missing certificate key", err)
 	}
@@ -841,7 +842,7 @@ func TestTransportRunnerRequiresControlPlaneJoinMaterialFlags(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			transport := newFakeTransport()
-			err := (TransportRunner{Transport: transport}).RunControlPlaneJoin(context.Background(), validPlannedNode("cp-2", inventory.ActionControlPlaneJoin), tt.material)
+			err := (TransportRunner{Transport: transport}).RunControlPlaneJoin(context.Background(), validPlannedNode(t, "cp-2", inventory.ActionControlPlaneJoin), tt.material)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("RunControlPlaneJoin() error = %v, want %q", err, tt.want)
 			}
@@ -855,7 +856,7 @@ func TestTransportRunnerRequiresControlPlaneJoinMaterialFlags(t *testing.T) {
 func TestTransportRunnerRunControlPlaneJoinRedactsCertificateKey(t *testing.T) {
 	transport := newFakeTransport()
 	certificateKey := strings.Repeat("a", 64)
-	node := validPlannedNode("cp-2", inventory.ActionControlPlaneJoin)
+	node := validPlannedNode(t, "cp-2", inventory.ActionControlPlaneJoin)
 	joinConfigPath := generatedJoinConfigPath(node)
 	transport.files["/etc/katl/kubeadm/control-plane/config.yaml"] = []byte(testControlPlaneJoinConfig())
 	transport.commands[commandKey("kubeadm", "join", "--config", joinConfigPath)] = readiness.CommandResult{
@@ -879,7 +880,7 @@ func TestTransportRunnerRunControlPlaneJoinRedactsCertificateKey(t *testing.T) {
 func TestTransportRunnerRunControlPlaneJoinSynthesizesJoinConfig(t *testing.T) {
 	transport := newFakeTransport()
 	certificateKey := strings.Repeat("a", 64)
-	node := validPlannedNode("cp-2", inventory.ActionControlPlaneJoin)
+	node := validPlannedNode(t, "cp-2", inventory.ActionControlPlaneJoin)
 	joinConfigPath := generatedJoinConfigPath(node)
 	transport.files["/etc/katl/kubeadm/control-plane/config.yaml"] = []byte(testControlPlaneInitConfig())
 	transport.commands[commandKey("kubeadm", "join", "--config", joinConfigPath)] = readiness.CommandResult{ExitStatus: 0}
@@ -928,8 +929,8 @@ func TestTransportRunnerWaitsForControlPlaneJoinReady(t *testing.T) {
 
 	err := (TransportRunner{Transport: transport, APITimeout: time.Second, APIPollInterval: time.Millisecond}).WaitControlPlaneJoinReady(
 		context.Background(),
-		validPlannedNode("cp-1", inventory.ActionInit),
-		validPlannedNode("cp-2", inventory.ActionControlPlaneJoin),
+		validPlannedNode(t, "cp-1", inventory.ActionInit),
+		validPlannedNode(t, "cp-2", inventory.ActionControlPlaneJoin),
 	)
 	if err != nil {
 		t.Fatalf("WaitControlPlaneJoinReady() error = %v", err)
@@ -958,8 +959,8 @@ func TestTransportRunnerWaitControlPlaneJoinReadyRequiresEtcdMember(t *testing.T
 
 	err := (TransportRunner{Transport: transport, APITimeout: time.Millisecond, APIPollInterval: time.Millisecond}).WaitControlPlaneJoinReady(
 		context.Background(),
-		validPlannedNode("cp-1", inventory.ActionInit),
-		validPlannedNode("cp-2", inventory.ActionControlPlaneJoin),
+		validPlannedNode(t, "cp-1", inventory.ActionInit),
+		validPlannedNode(t, "cp-2", inventory.ActionControlPlaneJoin),
 	)
 	if err == nil || !strings.Contains(err.Error(), "member cp-2 is missing") {
 		t.Fatalf("WaitControlPlaneJoinReady() error = %v, want missing member", err)
@@ -972,7 +973,7 @@ func TestTransportRunnerWaitsForAPIReady(t *testing.T) {
 		{ExitStatus: 1, Stderr: "not ready"},
 		{ExitStatus: 0, Stdout: "ok\n"},
 	}
-	err := (TransportRunner{Transport: transport, APITimeout: time.Second, APIPollInterval: time.Millisecond}).WaitAPIReady(context.Background(), validPlannedNode("cp-1", inventory.ActionInit))
+	err := (TransportRunner{Transport: transport, APITimeout: time.Second, APIPollInterval: time.Millisecond}).WaitAPIReady(context.Background(), validPlannedNode(t, "cp-1", inventory.ActionInit))
 	if err != nil {
 		t.Fatalf("WaitAPIReady() error = %v", err)
 	}
@@ -1336,14 +1337,14 @@ func readFileString(t *testing.T, path string) string {
 	return string(data)
 }
 
-func validInventory() inventory.Inventory {
+func validInventory(t *testing.T) inventory.Inventory {
 	return inventory.Inventory{
-		ControlPlaneEndpoint: "api.katl.test:6443",
+		ControlPlaneEndpoint: mustHostPort(t, "api.katl.test:6443"),
 		KubernetesVersion:    "v1.36.1",
 		Nodes: []inventory.Node{
 			{
 				Name:              "cp-1",
-				Address:           "10.0.0.11",
+				Address:           mustManagementAddress(t, "10.0.0.11"),
 				SystemRole:        inventory.RoleControlPlane,
 				Access:            inventory.Access{Method: "agent"},
 				KubeadmConfig:     inventory.KubeadmConfig{Ref: "control-plane", Path: "/etc/katl/kubeadm/control-plane/config.yaml", Intent: inventory.IntentControlPlane},
@@ -1353,7 +1354,7 @@ func validInventory() inventory.Inventory {
 			},
 			{
 				Name:              "worker-1",
-				Address:           "10.0.0.21",
+				Address:           mustManagementAddress(t, "10.0.0.21"),
 				SystemRole:        inventory.RoleWorker,
 				Access:            inventory.Access{Method: "agent"},
 				KubeadmConfig:     inventory.KubeadmConfig{Ref: "worker", Path: "/etc/katl/kubeadm/worker/config.yaml", Intent: inventory.IntentWorker},
@@ -1365,14 +1366,14 @@ func validInventory() inventory.Inventory {
 	}
 }
 
-func validSingleNodeInventory() inventory.Inventory {
-	inv := validInventory()
-	inv.ControlPlaneEndpoint = ""
+func validSingleNodeInventory(t *testing.T) inventory.Inventory {
+	inv := validInventory(t)
+	inv.ControlPlaneEndpoint = inventory.HostPort{}
 	inv.Nodes = inv.Nodes[:1]
 	return inv
 }
 
-func validPlannedNode(name string, action inventory.BootstrapAction) inventory.PlannedNode {
+func validPlannedNode(t *testing.T, name string, action inventory.BootstrapAction) inventory.PlannedNode {
 	role := inventory.RoleControlPlane
 	intent := inventory.IntentControlPlane
 	configRef := "control-plane"
@@ -1383,7 +1384,7 @@ func validPlannedNode(name string, action inventory.BootstrapAction) inventory.P
 	}
 	return inventory.PlannedNode{
 		Name:              name,
-		Address:           "10.0.0.11",
+		Address:           mustManagementAddress(t, "10.0.0.11"),
 		SystemRole:        role,
 		Action:            action,
 		Access:            inventory.Access{Method: "agent", CredentialRef: "agent/" + name},
@@ -1735,4 +1736,31 @@ contexts:
     user: katl-admin
 current-context: katl
 `
+}
+
+func mustManagementAddress(t *testing.T, value string) inventory.ManagementAddress {
+	t.Helper()
+	address, err := inventory.ParseManagementAddress(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return address
+}
+
+func mustHostPort(t *testing.T, value string) inventory.HostPort {
+	t.Helper()
+	endpoint, err := inventory.ParseHostPort(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return endpoint
+}
+
+func mustKubernetesAddr(t *testing.T, value string) netip.Addr {
+	t.Helper()
+	addr, err := inventory.ParseKubernetesAddress(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return addr
 }

@@ -1,0 +1,25 @@
+currentContext: lab
+contexts:
+    - name: lab
+      cluster: lab
+clusters:
+    - name: lab
+      controlPlaneEndpoint: cp_1.home.arpa:6443
+      nodes:
+        - name: cp-1
+          managementEndpoint: cp_1.home.arpa:9443
+          configuredEndpoint: cp_1.home.arpa:9443
+          systemRole: control-plane
+          enrollmentID: enrollment-cp-1
+          machineID: machine-cp-1
+        - name: worker-1
+          managementEndpoint: '[worker_1.home.arpa:19443]:9443'
+          configuredEndpoint: worker_1.home.arpa:19443
+          systemRole: worker
+          enrollmentID: enrollment-worker-1
+          machineID: machine-worker-1
+      management:
+        authentication: trusted-network
+        caCertificate: ""
+        clientCertificate: ""
+        clientPrivateKey: ""

@@ -346,7 +346,7 @@ func runKubernetesUpgradeTarget(ctx context.Context, topology workstation.Resolv
 			return nodeReport, fmt.Errorf("Kubernetes upgrade stopped after node %s: missing direct etcd rejoin evidence", target.node.Name)
 		}
 		readyCtx, cancel := context.WithTimeout(ctx, opts.timeout)
-		err := waitKubernetesEndpoint(readyCtx, topology.ControlPlaneEndpoint, target.node.Name, stderr)
+		err := waitKubernetesEndpoint(readyCtx, topology.ControlPlaneEndpoint.String(), target.node.Name, stderr)
 		cancel()
 		if err != nil {
 			nodeReport.Result = "cluster-health-failed"
@@ -584,7 +584,7 @@ func connectKubernetesUpgradeTargets(ctx context.Context, topology workstation.R
 	}
 	for _, node := range nodes {
 		nodeCtx := withManagementDial(ctx, node.Name, topology.Management)
-		conn, err := dialKatlcAgent(nodeCtx, node.ManagementEndpoint)
+		conn, err := dialKatlcAgent(nodeCtx, node.ManagementEndpoint.String())
 		if err != nil {
 			closeTargets()
 			return nil, fmt.Errorf("connect node %s: %w", node.Name, err)

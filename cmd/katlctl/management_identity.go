@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
@@ -215,14 +216,18 @@ func managementDialForEndpoint(endpoint string) (managementDialIdentity, error) 
 		}
 		return managementDialIdentity{}, fmt.Errorf("load saved Katl context: %w", err)
 	}
-	endpoint = strings.TrimSpace(endpoint)
+	target, err := inventory.DecodeHostPort(endpoint)
+	if err != nil {
+		return managementDialIdentity{}, err
+	}
 	var match managementDialIdentity
 	for _, cluster := range config.Clusters {
 		if cluster.Management == nil {
 			continue
 		}
 		for _, node := range cluster.Nodes {
-			if strings.TrimSpace(node.ManagementEndpoint) != endpoint {
+			saved, err := inventory.DecodeHostPort(node.ManagementEndpoint)
+			if err != nil || !saved.Equal(target) {
 				continue
 			}
 			if match.credentials != nil {

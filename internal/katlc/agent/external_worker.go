@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/externalworker"
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/configapply"
@@ -64,7 +65,11 @@ func (e *Executor) prepareExternalWorker(record operation.OperationRecord) error
 	if sha256Bytes(bootstrap) != record.BootstrapRequest.JoinMaterialDigest {
 		return fail(fmt.Errorf("bootstrap kubeconfig no longer matches accepted material"))
 	}
-	ca, err := externalworker.Bootstrap(bootstrap, record.BootstrapRequest.ControlPlaneEndpoint)
+	endpoint, err := inventory.ParseHostPort(record.BootstrapRequest.ControlPlaneEndpoint)
+	if err != nil {
+		return fail(err)
+	}
+	ca, err := externalworker.Bootstrap(bootstrap, endpoint)
 	if err != nil {
 		return fail(err)
 	}
@@ -188,7 +193,11 @@ func externalWorkerCertificate(root, node string, now time.Time) bool {
 }
 
 func externalBootstrapCA(root string, bootstrap []byte, endpoint string) error {
-	ca, err := externalworker.Bootstrap(bootstrap, endpoint)
+	target, err := inventory.ParseHostPort(endpoint)
+	if err != nil {
+		return err
+	}
+	ca, err := externalworker.Bootstrap(bootstrap, target)
 	if err != nil {
 		return err
 	}
@@ -273,7 +282,12 @@ func externalKubeletAccess(root, endpoint string) error {
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return fmt.Errorf("external kubelet kubeconfig is invalid")
 	}
-	if len(config.Clusters) != 1 || config.Clusters[0].Cluster.Server != "https://"+endpoint || config.Clusters[0].Cluster.Insecure || config.Clusters[0].Cluster.Proxy != "" {
+	if len(config.Clusters) != 1 || config.Clusters[0].Cluster.Insecure || config.Clusters[0].Cluster.Proxy != "" {
+		return fmt.Errorf("external kubelet endpoint changed; preserve node state for repair")
+	}
+	server, serverErr := externalworker.Endpoint(config.Clusters[0].Cluster.Server)
+	target, targetErr := inventory.ParseHostPort(endpoint)
+	if serverErr != nil || targetErr != nil || !server.Equal(target) {
 		return fmt.Errorf("external kubelet endpoint changed; preserve node state for repair")
 	}
 	ca, err := base64.StdEncoding.DecodeString(config.Clusters[0].Cluster.CA)

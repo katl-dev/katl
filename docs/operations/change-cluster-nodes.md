@@ -51,9 +51,10 @@ the entry, then run `katlctl config validate ./cluster.yaml`.
 
 A cluster with more than one control plane needs `spec.controlPlaneEndpoint`.
 If the cluster was bootstrapped with one control plane and without that field,
-its API endpoint is that node's `management.address` and port 6443. Set
-`spec.controlPlaneEndpoint.host` to that address before adding a control plane,
-then apply it to the existing nodes:
+its API endpoint uses port 6443 and that node's `kubernetes.address`, falling
+back to the `management.address` host if `kubernetes.address` is unset. Set
+`spec.controlPlaneEndpoint.host` to the host the cluster already uses before
+adding a control plane. Apply the updated configuration to the existing nodes.
 
 ```sh
 katlctl cluster apply --config ./cluster.yaml --plan

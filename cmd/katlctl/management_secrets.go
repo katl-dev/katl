@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/katl-dev/katl/internal/managementidentity"
@@ -56,7 +57,7 @@ func refreshConfiguredManagement(ctx context.Context, sourcePath, contextPath, c
 // refreshConfiguredManagementAt observes nodes as refreshConfiguredManagement
 // does, except that each node named in endpoints is observed at that endpoint
 // instead of its configured management address.
-func refreshConfiguredManagementAt(ctx context.Context, sourcePath, contextPath, contextName string, endpoints map[string]string, stderr io.Writer, selectedNodes ...string) (context.Context, error) {
+func refreshConfiguredManagementAt(ctx context.Context, sourcePath, contextPath, contextName string, endpoints map[string]inventory.HostPort, stderr io.Writer, selectedNodes ...string) (context.Context, error) {
 	if strings.TrimSpace(sourcePath) == "" {
 		return ctx, nil
 	}
@@ -96,7 +97,7 @@ func refreshConfiguredManagementAt(ctx context.Context, sourcePath, contextPath,
 
 // withSavedEndpoints overlays endpoints on the saved context for clusterName
 // for this command only; the saved file is unchanged.
-func withSavedEndpoints(ctx context.Context, clusterName string, endpoints map[string]string) (context.Context, error) {
+func withSavedEndpoints(ctx context.Context, clusterName string, endpoints map[string]inventory.HostPort) (context.Context, error) {
 	if len(endpoints) == 0 {
 		return ctx, nil
 	}
@@ -118,7 +119,7 @@ func withSavedEndpoints(ctx context.Context, clusterName string, endpoints map[s
 		nodes := slices.Clone(saved.Clusters[i].Nodes)
 		for j := range nodes {
 			if endpoint, ok := endpoints[nodes[j].Name]; ok {
-				nodes[j].ManagementEndpoint = endpoint
+				nodes[j].ManagementEndpoint = endpoint.String()
 			}
 		}
 		saved.Clusters[i].Nodes = nodes

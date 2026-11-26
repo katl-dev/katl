@@ -168,7 +168,7 @@ func saveEtcdSnapshot(ctx context.Context, node inventory.PlannedNode, output st
 	if err != nil {
 		return nil, errSnapshotUnavailable{fmt.Errorf("inspect node identity through %s: %w", node.Name, err)}
 	}
-	if err := verifyPlannedStatus(managementTarget{nodeName: node.Name, endpoint: conn.Endpoint, enrollmentID: node.EnrollmentID, machineID: node.MachineID}, nodeStatus); err != nil {
+	if err := verifyPlannedStatus(managementTarget{nodeName: node.Name, enrollmentID: node.EnrollmentID, machineID: node.MachineID}, nodeStatus); err != nil {
 		return nil, err
 	}
 	client, ok := conn.Client.(etcdSnapshotClient)

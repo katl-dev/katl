@@ -117,6 +117,12 @@ operator-owned native software bundle by OCI reference as described below.
 
 ## Node addresses
 
+`management.address` is an IP address or DNS name; `katlctl` reaches the
+`katlc` agent there on port 9443. A host name that is not a valid DNS name,
+such as `cp_1.home.arpa`, is accepted with a warning, because resolvers
+commonly resolve such names. The workstation reaches the node's
+kube-apiserver (6443) and API proxy (7445) at the same host.
+
 On a multihomed node, set the optional exact `nodes[].kubernetes.address`.
 Katl uses it for kubelet `--node-ip` and the kubeadm local API advertise address
 during both init and control-plane join. It is deliberately one literal IP,

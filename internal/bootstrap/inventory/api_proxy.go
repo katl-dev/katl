@@ -2,9 +2,7 @@ package inventory
 
 import (
 	"fmt"
-	"net"
 	"net/netip"
-	"strconv"
 	"strings"
 
 	"github.com/katl-dev/katl/internal/apiproxy"
@@ -12,7 +10,7 @@ import (
 
 // APIProxyConfig returns the API proxy configuration for node self, or false
 // when a control plane's Kubernetes address is not yet known.
-func APIProxyConfig(nodes []Node, self, canonicalEndpoint string) (apiproxy.Config, bool, error) {
+func APIProxyConfig(nodes []Node, self string, canonicalEndpoint HostPort) (apiproxy.Config, bool, error) {
 	members := make([]proxyMember, 0, len(nodes))
 	for _, node := range nodes {
 		members = append(members, proxyMember{
@@ -44,8 +42,8 @@ func (p Plan) APIProxyConfig(self string) (apiproxy.Config, error) {
 type proxyMember struct {
 	name              string
 	role              SystemRole
-	kubernetesAddress string
-	address           string
+	kubernetesAddress netip.Addr
+	address           ManagementAddress
 }
 
 // apiProxyConfig derives backends and the node-side listeners from Kubernetes
@@ -54,9 +52,9 @@ type proxyMember struct {
 // different literal IP: on a multihomed node that address is local, and
 // behind NAT the listener is free-bound and idle while translated
 // connections arrive at the Kubernetes address.
-func apiProxyConfig(members []proxyMember, self, canonicalEndpoint string) (apiproxy.Config, bool, error) {
+func apiProxyConfig(members []proxyMember, self string, canonicalEndpoint HostPort) (apiproxy.Config, bool, error) {
 	var selfMember *proxyMember
-	var selfHost netip.Addr
+	var selfHost, firstHost netip.Addr
 	backends := make([]apiproxy.Backend, 0, len(members))
 	for i, member := range members {
 		if member.name == self {
@@ -65,7 +63,7 @@ func apiProxyConfig(members []proxyMember, self, canonicalEndpoint string) (apip
 		if member.role != RoleControlPlane {
 			continue
 		}
-		host, known, err := kubernetesHost(member.kubernetesAddress, member.address)
+		host, known, err := proxyHost(member.kubernetesAddress, member.address)
 		if err != nil {
 			return apiproxy.Config{}, false, fmt.Errorf("node %q API proxy: %w", member.name, err)
 		}
@@ -75,22 +73,24 @@ func apiProxyConfig(members []proxyMember, self, canonicalEndpoint string) (apip
 		if member.name == self {
 			selfHost = host
 		}
+		if !firstHost.IsValid() {
+			firstHost = host
+		}
 		backends = append(backends, apiproxy.Backend{
-			Name: member.name, Address: endpoint(host, apiproxy.DefaultBackendPort), Local: member.name == self,
+			Name: member.name, Address: endpoint(host, KubernetesPort), Local: member.name == self,
 		})
 	}
 	if selfMember == nil {
 		return apiproxy.Config{}, false, fmt.Errorf("node %q is not in the inventory", self)
 	}
 
-	canonicalEndpoint = strings.TrimSpace(canonicalEndpoint)
-	if canonicalEndpoint == "" && len(backends) > 0 {
-		canonicalEndpoint = backends[0].Address
+	if canonicalEndpoint.IsZero() && firstHost.IsValid() {
+		canonicalEndpoint = HostPort{Host: HostFromAddr(firstHost), Port: KubernetesPort}
 	}
-	tlsName, _, err := net.SplitHostPort(canonicalEndpoint)
-	if err != nil {
-		return apiproxy.Config{}, false, fmt.Errorf("node %q API proxy: control-plane endpoint %q must be host:port", self, canonicalEndpoint)
+	if canonicalEndpoint.IsZero() {
+		return apiproxy.Config{}, false, fmt.Errorf("node %q API proxy: control-plane endpoint is required", self)
 	}
+	tlsName := kubernetesServerName(canonicalEndpoint, Host{})
 
 	listeners := []apiproxy.Listener{{Address: endpoint(netip.MustParseAddr("127.0.0.1"), apiproxy.DefaultPort), Exposure: apiproxy.ExposureNodeLocal}}
 	if selfMember.role == RoleControlPlane {
@@ -100,7 +100,7 @@ func apiProxyConfig(members []proxyMember, self, canonicalEndpoint string) (apip
 		}
 	}
 	config, err := apiproxy.Normalize(apiproxy.Config{
-		TLSName: tlsName, CanonicalEndpoint: canonicalEndpoint, Listeners: listeners, Backends: backends,
+		TLSName: tlsName.String(), CanonicalEndpoint: canonicalEndpoint.String(), Listeners: listeners, Backends: backends,
 	})
 	if err != nil {
 		return apiproxy.Config{}, false, fmt.Errorf("node %q API proxy: %w", self, err)
@@ -108,67 +108,47 @@ func apiProxyConfig(members []proxyMember, self, canonicalEndpoint string) (apip
 	return config, true, nil
 }
 
-// kubernetesHost returns the address assigned to the node itself, which
+// proxyHost returns the address assigned to the node itself, which
 // kube-apiserver serves on and node-side listeners bind. The management
 // address may be translated by NAT, so it stands in only when no Kubernetes
 // address is declared. known is false when neither address is set.
-func kubernetesHost(kubernetesAddress, address string) (host netip.Addr, known bool, err error) {
-	value := strings.TrimSpace(kubernetesAddress)
-	source := "Kubernetes address"
-	if value == "" {
-		value = strings.TrimSpace(address)
-		if host, _, err := net.SplitHostPort(value); err == nil {
-			value = host
+func proxyHost(kubernetesAddress netip.Addr, address ManagementAddress) (host netip.Addr, known bool, err error) {
+	if kubernetesAddress.IsValid() {
+		if err := validKubernetesAddr(kubernetesAddress); err != nil {
+			return netip.Addr{}, false, fmt.Errorf("Kubernetes address %w", err)
 		}
-		source = "management address"
+		return kubernetesAddress.Unmap(), true, nil
 	}
-	if value == "" {
+	if address.IsZero() {
 		return netip.Addr{}, false, nil
 	}
-	parsed, err := netip.ParseAddr(value)
-	if err != nil || parsed.Zone() != "" || !parsed.IsGlobalUnicast() {
-		if source == "management address" {
-			return netip.Addr{}, false, fmt.Errorf("%s %q is not a literal unicast IP; set nodes[].kubernetes.address to the node's own address", source, value)
-		}
-		return netip.Addr{}, false, fmt.Errorf("%s %q must be a literal unicast IP", source, value)
+	if management, ok := managementHost(address); ok {
+		return management, true, nil
 	}
-	return parsed.Unmap(), true, nil
+	return netip.Addr{}, false, fmt.Errorf("management address %q is not a literal unicast IP; set nodes[].kubernetes.address to the node's own address", address.Host)
 }
 
 // managementHost returns the management address when it is a literal
 // unicast IP that a listener can bind; a DNS name has no single address.
-func managementHost(address string) (netip.Addr, bool) {
-	value := strings.TrimSpace(address)
-	if host, _, err := net.SplitHostPort(value); err == nil {
-		value = host
-	}
-	parsed, err := netip.ParseAddr(value)
-	if err != nil || parsed.Zone() != "" || !parsed.IsGlobalUnicast() {
+func managementHost(address ManagementAddress) (netip.Addr, bool) {
+	addr, ok := address.Host.Addr()
+	if !ok || !addr.IsGlobalUnicast() {
 		return netip.Addr{}, false
 	}
-	return parsed.Unmap(), true
+	return addr, true
 }
 
-// KubernetesHost returns the host other nodes use to reach this node's
-// kube-apiserver and etcd member. Unlike API proxy addresses it keeps a DNS
-// management name when no Kubernetes address is declared, because the
-// dialer resolves it.
-func (n PlannedNode) KubernetesHost() string {
-	if address := strings.TrimSpace(n.KubernetesAddress); address != "" {
-		return address
+// BackendKubernetesAddress returns the Kubernetes address of the control plane
+// an API proxy backend reaches, the inverse of how APIProxyConfig renders that
+// backend, or false when backend is not one it renders.
+func BackendKubernetesAddress(backend string) (netip.Addr, bool) {
+	endpoint, err := netip.ParseAddrPort(backend)
+	if err != nil || endpoint.Port() != KubernetesPort {
+		return netip.Addr{}, false
 	}
-	address := strings.TrimSpace(n.Address)
-	if host, _, err := net.SplitHostPort(address); err == nil {
-		address = host
+	addr := endpoint.Addr().Unmap()
+	if validKubernetesAddr(addr) != nil {
+		return netip.Addr{}, false
 	}
-	return address
-}
-
-// KubernetesEndpoint returns the node's kube-apiserver at KubernetesHost.
-func (n PlannedNode) KubernetesEndpoint() string {
-	return net.JoinHostPort(n.KubernetesHost(), strconv.Itoa(apiproxy.DefaultBackendPort))
-}
-
-func endpoint(host netip.Addr, port int) string {
-	return net.JoinHostPort(host.String(), strconv.Itoa(port))
+	return addr, true
 }

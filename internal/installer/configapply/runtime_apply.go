@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/apiproxy"
+	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/apivip"
 	"github.com/katl-dev/katl/internal/installer/confext"
@@ -608,7 +609,16 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 	applyOverlay(&merged, roleOverlay, request.KubernetesInitialized, &domains, &unsafeFiles)
 	nodeOverlay := request.NodeOverrides[request.NodeName]
 	for _, overlay := range []NodeOverlay{request.ClusterDefaults, roleOverlay, nodeOverlay} {
-		if overlay.ExternalEndpoint != nil && (request.CurrentManifest.Node.Bootstrap == nil || *overlay.ExternalEndpoint != request.CurrentManifest.Node.Bootstrap.ControlPlaneEndpoint) {
+		if overlay.ExternalEndpoint == nil {
+			continue
+		}
+		installed := request.CurrentManifest.Node.Bootstrap
+		if installed == nil {
+			return manifest.Manifest{}, nil, nil, fmt.Errorf("changing an external worker endpoint requires reprovisioning the node")
+		}
+		current, currentErr := inventory.DecodeHostPort(installed.ControlPlaneEndpoint)
+		desired, desiredErr := inventory.ParseHostPort(*overlay.ExternalEndpoint)
+		if currentErr != nil || desiredErr != nil || !current.Equal(desired) {
 			return manifest.Manifest{}, nil, nil, fmt.Errorf("changing an external worker endpoint requires reprovisioning the node")
 		}
 	}
@@ -806,6 +816,18 @@ func validateOverlay(path string, overlay NodeOverlay) error {
 	return nil
 }
 
+// sameKubernetesAddress reports whether two kubernetes.address values name the
+// same address, so the same address written another way, such as v4-mapped,
+// is not a node identity change.
+func sameKubernetesAddress(current, desired string) bool {
+	if current == desired {
+		return true
+	}
+	a, errA := inventory.ParseKubernetesAddress(current)
+	b, errB := inventory.ParseKubernetesAddress(desired)
+	return errA == nil && errB == nil && a == b
+}
+
 func applyOverlay(installManifest *manifest.Manifest, overlay NodeOverlay, kubernetesInitialized bool, domains *domainAccumulator, unsafeFiles *[]confext.NativeEtcFile) {
 	node := &installManifest.Node
 	if overlay.Identity != nil {
@@ -883,7 +905,7 @@ func applyOverlay(installManifest *manifest.Manifest, overlay NodeOverlay, kuber
 		}
 	}
 	if overlay.Kubernetes != nil {
-		addressChanged := node.Kubernetes.Address != overlay.Kubernetes.Address
+		addressChanged := !sameKubernetesAddress(node.Kubernetes.Address, overlay.Kubernetes.Address)
 		configChanged := node.Kubernetes.Kubeadm != overlay.Kubernetes.Kubeadm
 		node.Kubernetes = *overlay.Kubernetes
 		if configChanged {
@@ -932,7 +954,9 @@ func classifyControlPlaneEndpointChange(current, desired *controlplaneendpoint.C
 		domains.add(DomainControlPlaneEndpointIdentity)
 		return
 	}
-	identityChanged := currentPlan.Config.Host != desiredPlan.Config.Host || currentPlan.Config.Port != desiredPlan.Config.Port || currentPlan.VIPPrefix != desiredPlan.VIPPrefix
+	currentEndpoint, currentErr := inventory.ParseHostPort(currentPlan.Endpoint)
+	desiredEndpoint, desiredErr := inventory.ParseHostPort(desiredPlan.Endpoint)
+	identityChanged := currentErr != nil || desiredErr != nil || !currentEndpoint.Equal(desiredEndpoint) || currentPlan.VIPPrefix != desiredPlan.VIPPrefix
 	if identityChanged {
 		if kubernetesInitialized {
 			domains.add(DomainControlPlaneEndpointIdentity)
@@ -941,7 +965,7 @@ func classifyControlPlaneEndpointChange(current, desired *controlplaneendpoint.C
 		}
 		return
 	}
-	if !reflect.DeepEqual(currentPlan.Config, desiredPlan.Config) {
+	if !reflect.DeepEqual(currentPlan.Config.Advertisement, desiredPlan.Config.Advertisement) {
 		domains.addEndpointVIP(endpointVIPImpact(currentPlan.Config, desiredPlan.Config))
 	}
 }

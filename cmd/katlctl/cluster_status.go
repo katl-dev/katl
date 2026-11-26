@@ -101,15 +101,15 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 	if err != nil {
 		return err
 	}
-	report := clusterStatusReport{Cluster: topology.ClusterName, ControlPlaneEndpoint: topology.ControlPlaneEndpoint, Nodes: make([]clusterNodeStatus, len(topology.Nodes))}
+	report := clusterStatusReport{Cluster: topology.ClusterName, ControlPlaneEndpoint: topology.ControlPlaneEndpoint.String(), Nodes: make([]clusterNodeStatus, len(topology.Nodes))}
 	var wg sync.WaitGroup
-	if topology.ControlPlaneEndpoint != "" {
+	if !topology.ControlPlaneEndpoint.IsZero() {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			probeCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 			defer cancel()
-			report.StableEndpointFailureReason = stableEndpointFailure(probeCtx, topology.ControlPlaneEndpoint)
+			report.StableEndpointFailureReason = stableEndpointFailure(probeCtx, topology.ControlPlaneEndpoint.String())
 			report.StableEndpointReachable = report.StableEndpointFailureReason == ""
 		}()
 	}
@@ -117,12 +117,12 @@ func runClusterStatus(ctx context.Context, opts clusterStatusOptions, stdout io.
 		wg.Add(1)
 		go func(i int, node workstation.TopologyNode) {
 			defer wg.Done()
-			result := clusterNodeStatus{Node: node.Name, Role: string(node.SystemRole), Endpoint: node.ManagementEndpoint}
+			result := clusterNodeStatus{Node: node.Name, Role: string(node.SystemRole), Endpoint: node.ManagementEndpoint.String()}
 			requestCtx, cancel := context.WithTimeout(ctx, opts.timeout)
 			defer cancel()
 			requestCtx, observation := transport.ObserveManagementConnection(requestCtx)
 			requestCtx = withManagementDial(requestCtx, node.Name, topology.Management)
-			conn, err := dialKatlcAgent(requestCtx, node.ManagementEndpoint)
+			conn, err := dialKatlcAgent(requestCtx, node.ManagementEndpoint.String())
 			if err != nil {
 				result.Error = err.Error()
 				report.Nodes[i] = result
