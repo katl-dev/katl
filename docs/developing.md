@@ -256,7 +256,12 @@ scripts/hermetic -- go test ./...
 The wrapper requires Linux user namespaces and mounts an empty filesystem over
 your home. It gives the command writable access to the checkout, its linked
 Git metadata, and the Go build and module caches. Use `--bind DIR` before `--`
-for each additional scratch directory the command needs.
+for each additional writable directory, or `--ro-bind DIR` for read-only input.
+
+`scripts/vmtest-run` binds the caller's containers configuration directory
+read-only if present. When it discovers a local Podman store, it also binds the
+graph root for cached Kubernetes fixture images and the run root for Podman
+runtime state.
 
 `katlctl` is also available in the development shell. It runs from the current
 checkout so local source changes are used immediately:

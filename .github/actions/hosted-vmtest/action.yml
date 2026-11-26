@@ -24,7 +24,7 @@ runs:
       run: |
         .github/scripts/hosted-apt-install \
           qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients \
-            ovmf mtools fdisk jq acl dnsmasq-base squashfs-tools dosfstools
+            ovmf mtools fdisk jq acl dnsmasq-base squashfs-tools dosfstools podman
         # A provider kernel may compile these drivers in without shipping module metadata.
         if [[ ! -c /dev/vhost-vsock ]]; then sudo modprobe vhost_vsock; fi
         if [[ ! -c /dev/net/tun ]]; then sudo modprobe tun; fi
@@ -47,10 +47,18 @@ runs:
         if ! virsh -c qemu:///system pool-list --name | grep -Fxq default; then
           virsh -c qemu:///system pool-start default
         fi
-    - name: Prepare test isolation and Kubernetes fixture tools
+    - name: Prepare Kubernetes fixture tools
+      if: inputs.prepared == 'true'
       shell: bash
       run: |
-        .github/scripts/hosted-apt-install bubblewrap erofs-utils
+        # The initial ARC image has Docker; Kubernetes fixture archives also require Podman.
+        if ! command -v podman >/dev/null; then
+          .github/scripts/hosted-apt-install podman
+        fi
+    - name: Prepare test isolation
+      shell: bash
+      run: |
+        .github/scripts/hosted-apt-install bubblewrap
         .github/scripts/hosted-hermetic-setup
     - name: Verify host capabilities
       shell: bash
@@ -62,7 +70,7 @@ runs:
         test -r "$KATL_OVMF_CODE"
         test -r "$KATL_OVMF_VARS"
         command -v bwrap
-        command -v fsck.erofs
+        command -v podman
         command -v kubectl
         docker info > _build/hosted-evidence/docker.txt
         {

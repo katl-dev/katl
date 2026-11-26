@@ -7,11 +7,11 @@ fail() {
 }
 
 binds=()
-while [[ "${1-}" == --bind && $# -ge 2 ]]; do
-    binds+=("$2")
+while [[ $# -ge 2 && ( "$1" == --bind || "$1" == --ro-bind ) ]]; do
+    binds+=("$1" "$2")
     shift 2
 done
-[[ "${1-}" == -- && $# -ge 2 ]] || fail 'usage: scripts/hermetic [--bind DIR]... -- CMD [ARGS...]'
+[[ "${1-}" == -- && $# -ge 2 ]] || fail 'usage: scripts/hermetic [--bind DIR | --ro-bind DIR]... -- CMD [ARGS...]'
 shift
 
 command -v bwrap >/dev/null || fail 'bwrap is required; enter the development shell with nix develop'
@@ -19,9 +19,10 @@ home="$(realpath -e -- "${HOME:?HOME must be set}")" && [[ -d "$home" && "$home"
     fail 'HOME must name an existing directory other than /'
 worktree="$(git rev-parse --show-toplevel)" || fail 'run from inside a Git worktree'
 git_common="$(git rev-parse --path-format=absolute --git-common-dir)"
+default_binds=(--bind "$worktree")
 case "$git_common" in
     "$worktree"/*) ;;
-    *) binds+=("$git_common") ;; # A linked worktree stores refs and objects here.
+    *) default_binds+=(--bind "$git_common") ;; # A linked worktree stores refs and objects here.
 esac
 cache_paths="$(go env GOCACHE GOMODCACHE)" || fail 'cannot resolve Go caches'
 mapfile -t caches <<<"$cache_paths"
@@ -31,14 +32,16 @@ mapfile -t caches <<<"$cache_paths"
 # A separate user namespace blocks access through host processes' /proc roots
 # while retaining the PIDs and process groups used by the VM test runner.
 args=(--dev-bind / / --unshare-user --tmpfs "$home")
-for dir in "$worktree" "${caches[@]}" "${binds[@]}"; do
+binds=("${default_binds[@]}" --bind "${caches[0]}" --bind "${caches[1]}" "${binds[@]}")
+for ((i = 0; i < ${#binds[@]}; i += 2)); do
+    dir="${binds[i + 1]}"
     path="$(realpath -e -- "$dir")" && [[ -d "$path" ]] ||
         fail "bind directory does not exist: $dir"
     if [[ "$home" == "$path" || "$home" == "${path%/}/"* ]]; then
         fail "bind would expose all of HOME: $dir"
     fi
     # Preserve the spelling used by callers even if a home symlink is hidden.
-    args+=(--bind "$path" "$(realpath -ms -- "$dir")")
+    args+=("${binds[i]}" "$path" "$(realpath -ms -- "$dir")")
 done
 
 exec bwrap "${args[@]}" --setenv HOME "$home" \

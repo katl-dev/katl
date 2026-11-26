@@ -1491,6 +1491,32 @@ run_env=(
     "GOCACHE=${go_paths[1]}"
     "GOMODCACHE=${go_paths[2]}"
 )
+hermetic_binds=(--bind "$run_dir" --bind "$cache_dir")
+containers_config="${XDG_CONFIG_HOME:-$HOME/.config}/containers"
+if [[ -d "$containers_config" ]]; then
+    # Podman reads the caller's container settings from the run's XDG config.
+    hermetic_binds+=(--ro-bind "$containers_config")
+    ln -sfnT -- "$containers_config" "$run_home/.config/containers"
+fi
+if command -v podman >/dev/null &&
+    podman_store="$(podman info --format '{{.Store.GraphRoot}}{{"\n"}}{{.Store.RunRoot}}' 2>/dev/null)"; then
+    mapfile -t podman_paths <<<"$podman_store"
+    if [[ ${#podman_paths[@]} == 2 && "${podman_paths[0]}" == /* && "${podman_paths[1]}" == /* ]]; then
+        # Fixture pulls populate the caller's image and layer cache.
+        hermetic_binds+=(--bind "${podman_paths[0]}")
+        # Podman needs writable runtime state and locks for that store.
+        hermetic_binds+=(--bind "${podman_paths[1]}")
+        containers_storage_conf="$run_home/.config/containers/storage.conf"
+        if [[ ! -f "$containers_storage_conf" ]]; then
+            # Point Podman's storage defaults at the bound store despite the run-local HOME.
+            containers_storage_conf="$run_dir/containers-storage.conf"
+            jq -nr --arg graphroot "${podman_paths[0]}" --arg runroot "${podman_paths[1]}" \
+                '"[storage]\ngraphroot = \($graphroot | @json)\nrunroot = \($runroot | @json)"' \
+                >"$containers_storage_conf"
+        fi
+        run_env+=("CONTAINERS_STORAGE_CONF=$containers_storage_conf")
+    fi
+fi
 for name in PATH LANG LC_ALL TERM TZ \
     GOROOT GOFLAGS GOPROXY GOSUMDB GONOSUMDB GONOPROXY GOPRIVATE GOTOOLCHAIN GOWORK \
     CGO_ENABLED CC CXX KATLCTL_CONFIG XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS; do
@@ -1531,7 +1557,7 @@ if ! has_go_test_json "$@"; then
 fi
 (cd "$repo_root" && "$resource_go_bin" run ./cmd/katl-vmtest-health start -out "$run_dir/host-health-start.json") >&2 || true
 set +e
-"$repo_root/scripts/hermetic" --bind "$run_dir" --bind "$cache_dir" -- \
+"$repo_root/scripts/hermetic" "${hermetic_binds[@]}" -- \
     env -i "${run_env[@]}" "$go_bin" test -exec "$repo_root/scripts/vmtest-exec" "${go_test_args[@]}" "$@" >"$go_test_log" 2>&1
 exit_code=$?
 set -e

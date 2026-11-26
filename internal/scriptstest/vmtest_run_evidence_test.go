@@ -17,6 +17,13 @@ if [[ -n "$KATL_SCRIPTTEST_ENV_DUMP" ]]; then
     printf 'operator home is visible\n' >&2
     exit 1
   fi
+  cat "$CONTAINERS_STORAGE_CONF" >"$KATL_SCRIPTTEST_ENV_DUMP.storage" || exit 1
+  test -r "$XDG_CONFIG_HOME/containers/registries.conf" || exit 1
+  if touch "$XDG_CONFIG_HOME/containers/written" 2>/dev/null; then
+    printf 'operator container configuration is writable\n' >&2
+    exit 1
+  fi
+  touch "$KATL_SCRIPTTEST_GRAPH_ROOT/written" "$KATL_SCRIPTTEST_PODMAN_RUN_ROOT/written" || exit 1
 fi
 node="$KATL_VMTEST_RUN_DIR/scenarios/smoke/nodes/n1"
 mkdir -p "$node/disks" "$node/vm"
@@ -271,14 +278,29 @@ func TestVMTestRunEnvironmentIsAllowlisted(t *testing.T) {
 	dump := filepath.Join(t.TempDir(), "go-env.txt")
 	goCache := t.TempDir()
 	config := filepath.Join(poisoned, ".config/katl")
-	if err := os.MkdirAll(config, 0o700); err != nil {
-		t.Fatal(err)
+	xdgConfig := filepath.Join(poisoned, "config")
+	containersConfig := filepath.Join(xdgConfig, "containers")
+	graphRoot := filepath.Join(poisoned, "podman graph")
+	podmanRunRoot := filepath.Join(poisoned, "podman run")
+	for _, dir := range []string{config, containersConfig, graphRoot, podmanRunRoot} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	writeArtifact(t, config, "katlctl.yaml", "operator context\n")
+	writeArtifact(t, containersConfig, "registries.conf", "# fixture\n")
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "podman"), `#!/usr/bin/env bash
+test "$1" = info || exit 1
+printf '%s\n' "$KATL_SCRIPTTEST_GRAPH_ROOT" "$KATL_SCRIPTTEST_PODMAN_RUN_ROOT"
+`)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("KATL_SCRIPTTEST_ENV_DUMP", dump)
 	t.Setenv("KATL_SCRIPTTEST_HOME", poisoned)
+	t.Setenv("KATL_SCRIPTTEST_GRAPH_ROOT", graphRoot)
+	t.Setenv("KATL_SCRIPTTEST_PODMAN_RUN_ROOT", podmanRunRoot)
 	t.Setenv("HOME", poisoned)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(poisoned, "config"))
+	t.Setenv("XDG_CONFIG_HOME", xdgConfig)
 	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
 	t.Setenv("CONTAINERS_STORAGE_CONF", filepath.Join(poisoned, "containers-storage.conf"))
 	t.Setenv("SSH_AUTH_SOCK", filepath.Join(poisoned, "agent.sock"))
@@ -312,7 +334,7 @@ func TestVMTestRunEnvironmentIsAllowlisted(t *testing.T) {
 			t.Errorf("go test saw %s=%s from the caller's home", name, value)
 		}
 	}
-	for _, name := range []string{"SSH_AUTH_SOCK", "GH_TOKEN", "KATLCTL_CONTEXT", "CONTAINERS_STORAGE_CONF"} {
+	for _, name := range []string{"SSH_AUTH_SOCK", "GH_TOKEN", "KATLCTL_CONTEXT"} {
 		if v, found := env[name]; found {
 			t.Errorf("go test inherited %s=%q", name, v)
 		}
@@ -324,6 +346,18 @@ func TestVMTestRunEnvironmentIsAllowlisted(t *testing.T) {
 	}
 	if env["XDG_RUNTIME_DIR"] != runtimeDir {
 		t.Errorf("XDG_RUNTIME_DIR = %q, want the caller's %q", env["XDG_RUNTIME_DIR"], runtimeDir)
+	}
+	if want := filepath.Join(runDir, "containers-storage.conf"); env["CONTAINERS_STORAGE_CONF"] != want {
+		t.Errorf("CONTAINERS_STORAGE_CONF = %q, want %q", env["CONTAINERS_STORAGE_CONF"], want)
+	}
+	conf, err := os.ReadFile(dump + ".storage")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, root := range []string{graphRoot, podmanRunRoot} {
+		if !strings.Contains(string(conf), root) || !exists(filepath.Join(root, "written")) {
+			t.Errorf("Podman root %q was not configured and writable", root)
+		}
 	}
 	if env["GOCACHE"] != goCache {
 		t.Errorf("GOCACHE = %q, want the caller's %q so the run keeps a warm build cache", env["GOCACHE"], goCache)

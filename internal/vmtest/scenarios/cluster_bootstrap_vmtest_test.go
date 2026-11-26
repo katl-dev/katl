@@ -15,19 +15,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
-
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
-	"oras.land/oras-go/v2"
-	"oras.land/oras-go/v2/content/oci"
-	"oras.land/oras-go/v2/registry"
-	"oras.land/oras-go/v2/registry/remote"
 
 	"github.com/katl-dev/katl/internal/installer/kubernetescompat"
 	"github.com/katl-dev/katl/internal/installer/payloadbundle"
@@ -1695,10 +1688,10 @@ func twoNodeHostToolPrereqs(lookPath func(string) (string, error)) []vmtest.Miss
 			Detail: "required for host-side kubeconfig verification: " + err.Error(),
 		})
 	}
-	if _, err := lookPath("fsck.erofs"); err != nil {
+	if _, err := lookPath("podman"); err != nil {
 		missing = append(missing, vmtest.MissingPrerequisite{
-			Name:   "fsck.erofs",
-			Detail: "required to extract kubeadm from the Kubernetes sysext: " + err.Error(),
+			Name:   "podman",
+			Detail: "required to cache Kubernetes VM image fixtures: " + err.Error(),
 		})
 	}
 	return missing
@@ -2362,57 +2355,16 @@ func kubernetesImageReferences(ctx context.Context, repo, version string) ([]str
 			return nil, err
 		}
 		defer os.RemoveAll(directory)
-		if err := extractKubernetesSysext(ctx, image, directory); err != nil {
-			return nil, fmt.Errorf("extract %s kubeadm: %w", version, err)
+		kubeadm := filepath.Join(directory, "kubeadm")
+		// Extract read-only instead of mounting a tool view or encoding kubeadm's
+		// etcd/addon version mapping in the fixture builder.
+		command := exec.CommandContext(ctx, "sudo", "systemd-dissect", "--copy-from", image, "/usr/bin/kubeadm", kubeadm)
+		if output, err := command.CombinedOutput(); err != nil {
+			return nil, fmt.Errorf("extract %s kubeadm: %w: %s", version, err, output)
 		}
-		return kubeadmImageReferences(ctx, filepath.Join(directory, "usr/bin/kubeadm"), version)
+		return kubeadmImageReferences(ctx, kubeadm, version)
 	}
 	return nil, fmt.Errorf("no local Kubernetes sysext supplies kubeadm %s; build the source and target artifacts for this VM journey", version)
-}
-
-func extractKubernetesSysext(ctx context.Context, image, directory string) error {
-	// The Kubernetes sysext has a single filesystem partition. Extract it
-	// in userspace so the test does not need a privileged loop device or mount.
-	output, err := exec.CommandContext(ctx, "sfdisk", "--json", image).Output()
-	if err != nil {
-		return fmt.Errorf("inspect sysext partition table: %w", err)
-	}
-	var table struct {
-		PartitionTable struct {
-			SectorSize int64 `json:"sectorsize"`
-			Partitions []struct {
-				Start int64 `json:"start"`
-				Size  int64 `json:"size"`
-			} `json:"partitions"`
-		} `json:"partitiontable"`
-	}
-	if err := json.Unmarshal(output, &table); err != nil {
-		return fmt.Errorf("decode sysext partition table: %w", err)
-	}
-	sectorSize, partitions := table.PartitionTable.SectorSize, table.PartitionTable.Partitions
-	if sectorSize <= 0 || len(partitions) != 1 || partitions[0].Start <= 0 || partitions[0].Size <= 0 {
-		return fmt.Errorf("expected a single filesystem partition in %s", image)
-	}
-	raw, err := os.Open(image)
-	if err != nil {
-		return err
-	}
-	defer raw.Close()
-	part, err := os.CreateTemp("", "katl-kubernetes-*.erofs")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(part.Name())
-	size := partitions[0].Size * sectorSize
-	_, copyErr := io.CopyN(part, io.NewSectionReader(raw, partitions[0].Start*sectorSize, size), size)
-	if err := errors.Join(copyErr, part.Close()); err != nil {
-		return fmt.Errorf("copy sysext partition: %w", err)
-	}
-	cmd := exec.CommandContext(ctx, "fsck.erofs", "--no-preserve", "--extract="+directory, part.Name())
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("extract EROFS filesystem: %w\n%s", err, output)
-	}
-	return nil
 }
 
 func kubeadmImageReferences(ctx context.Context, kubeadm, version string) ([]string, error) {
@@ -2461,34 +2413,20 @@ func validKubernetesImageFixture(archivePath, manifestPath, kubernetesVersion st
 }
 
 func buildKubernetesImageFixture(ctx context.Context, archivePath, manifestPath, kubernetesVersion string, images []string) error {
-	layout, err := os.MkdirTemp("", "katl-kubernetes-images-")
+	podman, err := exec.LookPath("podman")
 	if err != nil {
-		return err
+		return fmt.Errorf("find podman for Kubernetes image fixtures: %w", err)
 	}
-	defer os.RemoveAll(layout)
-	store, err := oci.NewWithContext(ctx, layout)
-	if err != nil {
-		return err
-	}
-	// Import the fully qualified references in the guest with containerd.
-	options := oras.DefaultCopyOptions
-	options.WithTargetPlatform(&ocispec.Platform{OS: "linux", Architecture: runtime.GOARCH})
 	for _, image := range images {
-		ref, err := registry.ParseReference(image)
-		if err != nil {
-			return err
-		}
-		repo, err := remote.NewRepository(ref.Registry + "/" + ref.Repository)
-		if err != nil {
-			return err
-		}
-		if _, err := oras.Copy(ctx, repo, ref.Reference, store, image, options); err != nil {
-			return fmt.Errorf("cache Kubernetes image %s: %w", image, err)
+		cmd := exec.CommandContext(ctx, podman, "pull", "--quiet", image)
+		if output, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("cache Kubernetes image %s: %w\n%s", image, err, output)
 		}
 	}
 	temporaryArchive := archivePath + ".tmp-" + strconv.Itoa(os.Getpid())
 	defer os.Remove(temporaryArchive)
-	cmd := exec.CommandContext(ctx, "tar", "-C", layout, "-cf", temporaryArchive, "oci-layout", "index.json", "blobs")
+	args := append([]string{"save", "--quiet", "--multi-image-archive", "--output", temporaryArchive}, images...)
+	cmd := exec.CommandContext(ctx, podman, args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("save Kubernetes %s image fixture: %w\n%s", kubernetesVersion, err, output)
 	}
@@ -4761,7 +4699,7 @@ func TestTwoNodeHostToolPrereqsUseSelectedKubectl(t *testing.T) {
 	if len(missing) != 0 {
 		t.Fatalf("missing prereqs = %#v", missing)
 	}
-	if strings.Join(checked, ",") != "/tmp/selected-kubectl,fsck.erofs" {
+	if strings.Join(checked, ",") != "/tmp/selected-kubectl,podman" {
 		t.Fatalf("checked tools = %q", checked)
 	}
 }
