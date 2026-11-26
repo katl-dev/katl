@@ -341,6 +341,40 @@ func TestCIPlan(t *testing.T) {
 	}
 }
 
+func TestCIProductionPlan(t *testing.T) {
+	both := []string{"standard", "lts"}
+	for _, tc := range []struct {
+		name, mode, paths string
+		want              []string
+	}{
+		{"audited prose", "non-prose", "README.md\x00docs/development/ci.md\x00", []string{}},
+		{"empty diff", "non-prose", "", []string{}},
+		{"mixed diff", "non-prose", "docs/development/ci.md\x00cmd/katlctl/main.go\x00", both},
+		{"release support", "non-prose", "docs/support.md\x00", both},
+		{"release guidance", "non-prose", "docs/releases/next.md\x00", both},
+		{"other docs Markdown", "non-prose", "docs/development/new-page.md\x00docs/operations/upgrade.md\x00", []string{}},
+		{"non-Markdown under docs", "non-prose", "docs/development/diagram.svg\x00", both},
+		{"unknown path", "non-prose", "LICENSE\x00", both},
+		{"unknown file", "non-prose", "packaging-input\x00", both},
+		{"release series prose", "always", "README.md\x00", both},
+		{"production off", "off", "cmd/katlctl/main.go\x00", []string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var output bytes.Buffer
+			if err := run([]string{"--ci", "--production=" + tc.mode}, strings.NewReader(tc.paths), &output); err != nil {
+				t.Fatal(err)
+			}
+			var plan ciPlan
+			if err := json.Unmarshal(output.Bytes(), &plan); err != nil {
+				t.Fatal(err)
+			}
+			if plan.ProductionFlavours == nil || !slices.Equal(plan.ProductionFlavours, tc.want) {
+				t.Fatalf("production flavours = %v, want %v: %s", plan.ProductionFlavours, tc.want, &output)
+			}
+		})
+	}
+}
+
 // TestReleaseLifecycle needs an assembled production bundle, so the regression
 // lanes cannot run it. Production VM runs it instead, and a test renamed away
 // from that workflow would otherwise stop running without failing anything.

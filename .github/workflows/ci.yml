@@ -110,9 +110,11 @@ jobs:
           no_vms=false
           if [[ "$regression" == false && "$GITHUB_EVENT_NAME" != workflow_dispatch ]]; then no_vms=true; fi
           if [[ "$regression" == true ]]; then options+=(--regression); fi
-          # The full plan also builds the production images, whatever the changed paths.
-          production='[]'
-          if [[ "$full_plan" == true ]]; then production='["standard","lts"]'; fi
+          if [[ "$GITHUB_EVENT_NAME" == merge_group ]]; then
+            options+=(--production=non-prose)
+          elif [[ "$full_plan" == true ]]; then
+            options+=(--production=always)
+          fi
           # The result job's name derives from the payload base, which a rerun replays,
           # so the required check names the base this run tested.
           check_suffix=
@@ -137,7 +139,7 @@ jobs:
           {
             echo "vm-flavours=$(jq -c .vmFlavours _build/ci-plan.json)"
             echo "driver-flavours=$(jq -c .driverFlavours _build/ci-plan.json)"
-            echo "production-flavours=$production"
+            echo "production-flavours=$(jq -c .productionFlavours _build/ci-plan.json)"
             echo "scenarios=$(jq -c '{include: .groups}' _build/ci-plan.json)"
             echo "kubernetes-version=$(jq -r '.include[0].payloadVersion // empty' _build/kubernetes-plan.json)"
             echo "range=$base..HEAD"
@@ -147,18 +149,24 @@ jobs:
           cat _build/ci-plan.json >> "$GITHUB_STEP_SUMMARY"
       - name: Resolve production identity
         id: production
-        if: steps.plan.outputs.production-flavours != '[]'
+        if: steps.plan.outputs.full-plan == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PRODUCTION_FLAVOURS: ${{ steps.plan.outputs.production-flavours }}
         run: |
           # Production bytes carry a development version above the stable release
           # they upgrade from; nothing is published. The merge queue upgrades from
           # the latest stable release. A pull request into a release branch upgrades
           # from the latest stable tag in that branch's own series.
           tag="$(scripts/katl-release-artifacts previous-tag ${BASE_SHA:+"$BASE_SHA"})"
+          version="$(scripts/katl-release-artifacts dev-version "$tag")"
           echo "previous-tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$(scripts/katl-release-artifacts dev-version "$tag")" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # Commit trailers can break release-note rendering independently of the diff.
+          if [[ "$PRODUCTION_FLAVOURS" == '[]' ]]; then
+            KATL_RELEASE_PREVIOUS_TAG="$tag" scripts/katl-release-artifacts notes "$version" > _build/ci-release-notes.md
+          fi
 
   checks:
     name: Fast checks

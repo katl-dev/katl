@@ -65,7 +65,7 @@ func TestCIChanges(t *testing.T) {
 case "$2" in
   ./cmd/katl-vmtest-plan)
     cat > observed-paths
-    printf '{"vmFlavours":[],"driverFlavours":[],"groups":[]}\n' ;;
+    printf '{"vmFlavours":[],"driverFlavours":[],"productionFlavours":[],"groups":[]}\n' ;;
   ./cmd/katl-kubernetes-release)
     printf '{"include":[]}\n' ;;
   *) exit 2 ;;
@@ -189,7 +189,9 @@ case "$2" in
   ./cmd/katl-vmtest-plan)
     cat > /dev/null
     printf '%s\n' "$*" > "$PLANNER_ARGS"
-    printf '{"vmFlavours":["standard","lts"],"driverFlavours":["standard"],"groups":[{"name":"cluster"}]}\n' ;;
+    production='[]'
+    [[ " $* " != *" --production="* ]] || production='["standard","lts"]'
+    printf '{"vmFlavours":["standard","lts"],"driverFlavours":["standard"],"productionFlavours":%s,"groups":[{"name":"cluster"}]}\n' "$production" ;;
   ./cmd/katl-kubernetes-release)
     printf '{"include":[]}\n' ;;
   *) exit 2 ;;
@@ -233,8 +235,7 @@ esac
 			if want := "driver-flavours=" + tc.drivers + "\n"; !strings.Contains(string(outputs), want) {
 				t.Fatalf("outputs = %s, want %q", outputs, want)
 			}
-			// Production images are planned by the full-plan decision alone: a
-			// labelled pull request into main runs VMs but builds no images.
+			// The fixture changes product.go, so both kinds of full plan build.
 			wantProduction := `[]`
 			if tc.fullPlan {
 				wantProduction = `["standard","lts"]`
@@ -263,6 +264,106 @@ esac
 			}
 			if got := strings.Contains(string(args), "--regression"); got != tc.regression {
 				t.Fatalf("planner args = %q, regression = %v, want %v", args, got, tc.regression)
+			}
+			for _, mode := range []string{"non-prose", "always"} {
+				want := tc.fullPlan && (tc.event == "merge_group") == (mode == "non-prose")
+				if got := slices.Contains(strings.Fields(string(args)), "--production="+mode); got != want {
+					t.Fatalf("planner args = %q, want --production=%s present: %v", args, mode, want)
+				}
+			}
+		})
+	}
+}
+
+func TestCIProseReleaseNotes(t *testing.T) {
+	repo := repoRoot(t)
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct{ ID, If, Run string }
+		}
+	}
+	if err := yaml.Unmarshal(mustReadFile(t, filepath.Join(repo, ".github/workflows/ci.yml")), &workflow); err != nil {
+		t.Fatal(err)
+	}
+	var plan, production string
+	for _, step := range workflow.Jobs["plan"].Steps {
+		switch step.ID {
+		case "plan":
+			plan = step.Run
+		case "production":
+			production = step.Run
+			if step.If != "steps.plan.outputs.full-plan == 'true'" {
+				t.Fatalf("production identity condition = %q, want every full plan", step.If)
+			}
+		}
+	}
+	if plan == "" || production == "" {
+		t.Fatal("missing plan or production identity step")
+	}
+
+	tools := t.TempDir()
+	planner := buildCommand(t, tools, "katl-vmtest-plan")
+	writeFakeExecutable(t, tools, "go", `
+case "$2" in
+  ./cmd/katl-vmtest-plan) shift 2; exec "$PLANNER" "$@" ;;
+  ./cmd/katl-kubernetes-release) printf '{"include":[]}\n' ;;
+  *) exit 2 ;;
+esac
+`)
+	writeFakeExecutable(t, tools, "gh", `printf 'v2026.10.0\n'`)
+	for _, tc := range []struct{ name, trailers, wantError string }{
+		{"valid trailer", "Release-Note: Update the documentation", ""},
+		{"duplicate trailers", "Release-Note: First note\nRelease-Note: Second note", "multiple Release-Note trailers"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			runGit(t, dir, "init", "--quiet")
+			runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "stable release")
+			runGit(t, dir, "tag", "v2026.10.0")
+			runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "prepare prerelease")
+			runGit(t, dir, "tag", "v2026.10.1-rc.0")
+			base := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+			if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("documentation\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, dir, "add", "README.md")
+			runGit(t, dir, "commit", "--quiet", "-m", "docs: update", "-m", tc.trailers)
+			if err := os.Symlink(filepath.Join(repo, "scripts"), filepath.Join(dir, "scripts")); err != nil {
+				t.Fatal(err)
+			}
+
+			outputs := filepath.Join(dir, "output")
+			env := append(gittest.Env(environmentWithout("KATL_RELEASE_TARGET", "KATL_RELEASE_PREVIOUS_TAG"), dir),
+				"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"), "PLANNER="+planner,
+				"GITHUB_EVENT_NAME=merge_group", "BASE_SHA="+base, "GITHUB_OUTPUT="+outputs,
+				"GITHUB_STEP_SUMMARY="+filepath.Join(dir, "summary"), "KATL_REPO_ROOT="+dir)
+			command := exec.Command("bash", "-e", "-c", plan)
+			command.Dir, command.Env = dir, env
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("plan: %v: %s", err, output)
+			}
+			planOutputs := string(mustReadFile(t, outputs))
+			if !strings.Contains(planOutputs, "full-plan=true\n") || !strings.Contains(planOutputs, "production-flavours=[]\n") {
+				t.Fatalf("expected a full plan without Production jobs: %s", planOutputs)
+			}
+
+			command = exec.Command("bash", "-e", "-c", production)
+			command.Dir, command.Env = dir, append(env, "BASE_SHA=", "PRODUCTION_FLAVOURS=[]")
+			output, err := command.CombinedOutput()
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(string(output), tc.wantError) {
+					t.Fatalf("production identity: %v: %s, want %q", err, output, tc.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("production identity: %v: %s", err, output)
+			}
+			notes := string(mustReadFile(t, filepath.Join(dir, "_build/ci-release-notes.md")))
+			for _, want := range []string{"Update the documentation", "prepare prerelease", "/releases/download/v2026.10.1-dev.0/PROVENANCE.md"} {
+				if !strings.Contains(notes, want) {
+					t.Errorf("release notes missing %q: %s", want, notes)
+				}
 			}
 		})
 	}
@@ -372,7 +473,9 @@ func TestCIGatesPlannedJobs(t *testing.T) {
 case "$2" in
   ./cmd/katl-vmtest-plan)
     cat > /dev/null
-    printf '{"vmFlavours":["standard","lts"],"driverFlavours":["standard","lts"],"groups":[{"name":"cluster"}]}\n' ;;
+    production='[]'
+    [[ " $* " != *" --production="* ]] || production='["standard","lts"]'
+    printf '{"vmFlavours":["standard","lts"],"driverFlavours":["standard","lts"],"productionFlavours":%s,"groups":[{"name":"cluster"}]}\n' "$production" ;;
   ./cmd/katl-kubernetes-release)
     printf '{"include":[]}\n' ;;
   *) exit 2 ;;

@@ -4,14 +4,20 @@
 runs fast checks on main. A short **Plan** job selects VM and driver coverage from
 changed paths, so image builds and driver qualification start with the run rather
 than after **Fast checks**. CI fails if any selected job fails, is cancelled, or
-is skipped. Documentation,
-maintainer release tooling, and unit-only changes need only fast checks.
+is skipped. Documentation, maintainer release tooling, and unit-only changes
+generally skip the VM regression and driver qualification jobs.
 
 ## Production images
 
-The full plan also builds both flavours through the reusable `production-build.yml`
-with `publication: false`: the merge queue and pull requests into a `release/[0-9]*`
-series branch run it, and the `vmtest` label does not. The build runs the production
+Merge groups and pull requests into a `release/[0-9]*` series branch select both
+Production flavours through `production-build.yml` with `publication: false`.
+A merge group skips the Production build, Production VM, and bundle jobs when
+every changed path is prose: `README.md`, `AGENTS.md`, or Markdown under
+`docs/` other than `docs/support.md` and `docs/releases/`, which feed release
+staging. Any other path requires both flavours. A prose-only merge group still resolves the production
+identity and renders release notes so CI catches invalid commit trailers.
+
+The build runs the production
 checks (`check-runtime-root`, `check-runtime-boot-asset`, `check-installer-image`,
 and the KatlOS image checks) with `KATL_VMTEST_IMAGE_SUPPORT=0` on production
 bytes, in parallel with fast checks and VM regression. A following bundle job
@@ -24,8 +30,8 @@ these jobs whenever the plan selects them. A change
 that breaks a release check or the production lifecycle therefore fails before merge
 rather than at tag time.
 The assembled bytes remain available for one day as `katl-assembled-<flavour>-<sha>`.
-Other pull requests do not run it: the build costs a full image build per flavour on
-every push.
+The `vmtest` label on other pull requests selects regression VMs. Production
+builds on pull requests are reserved for release series branches.
 
 The build carries a development version above the stable release it upgrades from
 (`scripts/katl-release-artifacts previous-tag` and `dev-version`). The merge queue
