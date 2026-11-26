@@ -641,7 +641,10 @@ func enableMTLSReverts(deadline time.Time) string {
 
 // enableMTLSInterrupted reports a run stopped while the node may be on trial.
 func enableMTLSInterrupted(err error) error {
-	return fmt.Errorf("interrupted before the new authority was confirmed: %w. Rerunning with the same secrets resumes a live trial or starts again if the node has already reverted. To revert a live trial immediately, run 'katlc agent management-trial revert' on the node console", err)
+	return fmt.Errorf("interrupted before the new authority was confirmed: %w. "+
+		"If the trial window ends before confirmation, the node returns to trusted-network by itself. "+
+		"Rerunning with the same secrets resumes a live trial or starts again if the node has already reverted. "+
+		"To revert a live trial immediately, run 'katlc agent management-trial revert' on the node console", err)
 }
 
 func committedTo(status *agentapi.NodeStatus, authority string) bool {

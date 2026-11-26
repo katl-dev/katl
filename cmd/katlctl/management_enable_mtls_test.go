@@ -1126,6 +1126,10 @@ func TestEnableMTLSAcceptsClockWithinBackdate(t *testing.T) {
 	}
 }
 
+const interruptedTrialGuidance = "If the trial window ends before confirmation, the node returns to trusted-network by itself. " +
+	"Rerunning with the same secrets resumes a live trial or starts again if the node has already reverted. " +
+	"To revert a live trial immediately, run 'katlc agent management-trial revert' on the node console"
+
 func TestEnableMTLSInterruptedBegin(t *testing.T) {
 	world := newEnableMTLSWorld(t, "cp-1")
 	node := world.nodes[0]
@@ -1138,7 +1142,7 @@ func TestEnableMTLSInterruptedBegin(t *testing.T) {
 	if err == nil {
 		t.Fatal("enable-mtls succeeded although it was interrupted")
 	}
-	for _, want := range []string{"cp-1: interrupted before the new authority was confirmed", "resumes a live trial or starts again if the node has already reverted", "Rerun katlctl management enable-mtls"} {
+	for _, want := range []string{"cp-1: interrupted before the new authority was confirmed:", interruptedTrialGuidance, "Rerun katlctl management enable-mtls"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error lacks %q: %v", want, err)
 		}
@@ -1201,9 +1205,8 @@ func TestEnableMTLSBeginTimeout(t *testing.T) {
 			t.Errorf("config mode = %s after Begin timed out", mode)
 		}
 		for _, want := range []string{
-			"interrupted before the new authority was confirmed",
-			"resumes a live trial or starts again if the node has already reverted",
-			"katlc agent management-trial revert",
+			"interrupted before the new authority was confirmed:",
+			interruptedTrialGuidance,
 			"Rerun katlctl management enable-mtls",
 		} {
 			if err == nil || !strings.Contains(err.Error(), want) {

@@ -116,7 +116,11 @@ before the confirmation reply reached your workstation.
 If the command reports `interrupted before the new authority was confirmed:`,
 a trial may have started on the node. The message gives the recovery steps.
 
-> Rerunning with the same secrets resumes a live trial or starts again if the node has already reverted. To revert a live trial immediately, run 'katlc agent management-trial revert' on the node console
+> If the trial window ends before confirmation, the node returns to
+> trusted-network by itself. Rerunning with the same secrets resumes a live
+> trial or starts again if the node has already reverted. To revert a live
+> trial immediately, run 'katlc agent management-trial revert' on the node
+> console
 
 Check the cluster or an individual node using the same configuration.
 

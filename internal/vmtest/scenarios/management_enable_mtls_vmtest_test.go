@@ -165,7 +165,12 @@ func (j *enableMTLSJourney) migrate(ctx context.Context) error {
 	if _, err := os.Stat(filepath.Join(j.dir, "management-secrets.yaml")); err != nil {
 		return fmt.Errorf("the interrupted run left no secrets file: %w", err)
 	}
-	for _, want := range []string{"interrupted before the new authority was confirmed", "returns to trusted-network by itself"} {
+	for _, want := range []string{
+		"interrupted before the new authority was confirmed:",
+		"If the trial window ends before confirmation, the node returns to trusted-network by itself. " +
+			"Rerunning with the same secrets resumes a live trial or starts again if the node has already reverted. " +
+			"To revert a live trial immediately, run 'katlc agent management-trial revert' on the node console",
+	} {
 		if !strings.Contains(stderr, want) {
 			return fmt.Errorf("interrupted run output lacks %q:\n%s", want, stderr)
 		}
