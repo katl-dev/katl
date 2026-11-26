@@ -23,7 +23,7 @@
       goPackage = {
         version = "git-${builtins.substring 0 8 revision}";
         src = self;
-        vendorHash = "sha256-VIMMzN+wYuYdNw3xpYTYCg0xdkrN5khJ/PmdoVwhFu0=";
+        vendorHash = "sha256-zlkVLnuWECGs2rgABXLWZN0LRHHKI9Hlb9EJCNhQ6Zc=";
         env.CGO_ENABLED = "0";
       };
       buildKatlGo = pkgs: args: pkgs.buildGoModule (goPackage // args);
