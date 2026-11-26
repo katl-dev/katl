@@ -51,6 +51,10 @@ the reasons for material scope changes. Bring decisions to the operator when
 the agreed policy and a sensible default cannot settle them, or when a
 destructive or external action requires authority that has yet to be granted.
 
+**Release cut.** Confirm the release scope with the orchestrator and use the
+[release milestone policy](#release-milestones) to settle scope changes after
+the cut.
+
 ## Orchestrator
 
 **Purpose.** Own delivery from brief to merge and release readiness. Decide
@@ -130,16 +134,14 @@ Apply the flake rule in AGENTS.md when a check fails independently of the PR.
 Use a separate fix issue for the flake, and on recurrence look for the common
 design cause before commissioning another narrow fix.
 
-**Release scope.** Use milestones for planning by intent: **Release candidate**
-for frozen scope under qualification, **Next release** for committed scope,
-and **Backlog** for uncommitted work. Put the version on the tracker when the
-candidate is tagged. During a freeze, route new findings to **Next release**
-unless they could cause data loss, an unreachable node, or a wrong-target
-operation in the frozen release, or AGENTS.md makes them release blockers.
-When using a release branch, cut it at freeze and carry subsequent fixes
-through `main` first.
+**Release scope.** Use **Next release** for committed work and **Backlog** for
+uncommitted work. At the cut and through final publication, follow the
+[release milestone policy](#release-milestones). Evaluate every new finding
+against the post-cut rule and state the rule in delivery briefs. Carry
+release-branch fixes through `main` first.
 
-**Release cut.** Confirm the journey and blocker gates in AGENTS.md and follow
+**Release cut.** When using a release branch, cut it at freeze. Confirm the
+journey and blocker gates in AGENTS.md and follow
 the [release procedure](releases.md) for candidate qualification before tagging
 and promoting a passing candidate at the same commit. At each cut and when
 queue waits dominate, use `katl-queue ci-cost --since <previous release date>`
@@ -147,6 +149,18 @@ to rank jobs by runner-minutes. Before reporting a recurring delay, check
 what the step verifies, what inputs changed, and whether it needs to run.
 File CI cost findings with the measurement window, run and failure counts,
 median duration, and total runner-minutes.
+
+### Release milestones
+
+At each release branch cut, create a milestone named for the release
+(`vX.Y.Z`) and reserve it for work shipping from that branch. Move the release's
+open blockers and their fix PRs for both `main` and the release branch into it.
+Close the milestone when the final release is published.
+
+After the cut, add a new finding only if it causes data loss, an unreachable
+node, a wrong-target operation, or a misleading security outcome in shipped
+code, or if it is a release artifact defect involving the release notes,
+candidate, or tag run. Put all other findings in **Next release**.
 
 ## Delivery
 

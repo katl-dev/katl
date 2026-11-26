@@ -6,6 +6,10 @@ separate publication approval is required.
 
 ## Prepare a release
 
+When cutting a release branch, follow the
+[release milestone policy](agent-roles.md#release-milestones) to track blockers
+and triage findings through final publication.
+
 1. Merge the intended changes and their required checks. Choose an unused
    canonical `YYYY.M.PATCH` version, optionally with `-alpha.N`, `-beta.N`, or
    `-rc.N`. Prerelease versions receive GitHub's prerelease designation.
