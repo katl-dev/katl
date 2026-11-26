@@ -125,6 +125,8 @@ func TestInvalidChanges(t *testing.T) {
 func TestCoverage(t *testing.T) {
 	t.Run("default", func(t *testing.T) { testCoverage(t, nil, "") })
 	t.Run("regression", func(t *testing.T) {
+		t.Setenv("GITHUB_EVENT_NAME", "push")
+		t.Setenv("GITHUB_REF", "refs/heads/release/test")
 		testCoverage(t, []string{"--ci", "--regression"}, "cmd/katlctl/management_rotation.go\x00")
 	})
 	t.Run("install artifacts", func(t *testing.T) {
@@ -245,6 +247,8 @@ func TestBatchGroupsUsesLanes(t *testing.T) {
 }
 
 func TestCIScenarios(t *testing.T) {
+	t.Setenv("GITHUB_EVENT_NAME", "push")
+	t.Setenv("GITHUB_REF", "refs/heads/release/test")
 	var output bytes.Buffer
 	if err := run([]string{"--ci"}, strings.NewReader("cmd/katlctl/management_rotation.go\x00"), &output); err != nil {
 		t.Fatal(err)
@@ -259,12 +263,12 @@ func TestCIScenarios(t *testing.T) {
 	}
 }
 
-func TestCIPlan(t *testing.T) {
+func TestCIVMFlavours(t *testing.T) {
 	both := []string{"standard", "lts"}
 	for _, tc := range []struct {
-		name, paths  string
-		regression   bool
-		vms, drivers []string
+		name, paths string
+		regression  bool
+		vms         []string
 	}{
 		{name: "empty"},
 		{name: "documentation", paths: "docs/development/ci.md"},
@@ -274,70 +278,61 @@ func TestCIPlan(t *testing.T) {
 		{name: "proposal workflow", paths: ".github/workflows/kernel-updates.yml"},
 		{name: "kernel schedule and docs", paths: ".github/workflows/kernel-updates.yml\x00docs/developing.md"},
 		{name: "regression kernel schedule and docs", paths: ".github/workflows/kernel-updates.yml\x00docs/developing.md", regression: true},
-		{name: "kernel schedule and lock", paths: ".github/workflows/kernel-updates.yml\x00kernels/fedora-45/x86_64/standard.json", vms: []string{"standard"}, drivers: []string{"standard"}},
+		{name: "kernel schedule and lock", paths: ".github/workflows/kernel-updates.yml\x00kernels/fedora-45/x86_64/standard.json", vms: []string{"standard"}},
 		{name: "release workflow", paths: ".github/workflows/release-artifacts.yml", vms: both},
 		{name: "production qualification workflow", paths: ".github/workflows/production-vmtests.yml", vms: both},
 		{name: "production build workflow", paths: ".github/workflows/production-build.yml", vms: both},
 		{name: "production build and release", paths: ".github/workflows/production-build.yml\x00.github/workflows/release-artifacts.yml", vms: both},
-		{name: "production build and image builder", paths: ".github/workflows/production-build.yml\x00scripts/mkosi", vms: both, drivers: both},
+		{name: "production build and image builder", paths: ".github/workflows/production-build.yml\x00scripts/mkosi", vms: both},
 		{name: "release orchestration and docs", paths: ".github/workflows/release-artifacts.yml\x00.github/workflows/production-vmtests.yml\x00docs/developing.md", vms: both},
 		{name: "regression release orchestration", paths: ".github/workflows/release-artifacts.yml\x00.github/workflows/production-vmtests.yml", regression: true, vms: both},
-		{name: "release and image builder", paths: ".github/workflows/release-artifacts.yml\x00scripts/mkosi", vms: both, drivers: both},
-		{name: "release and standard lock", paths: ".github/workflows/release-artifacts.yml\x00kernels/fedora-44/x86_64/standard.json", vms: both, drivers: []string{"standard"}},
+		{name: "release and image builder", paths: ".github/workflows/release-artifacts.yml\x00scripts/mkosi", vms: both},
+		{name: "release and standard lock", paths: ".github/workflows/release-artifacts.yml\x00kernels/fedora-44/x86_64/standard.json", vms: both},
 		{name: "production and scenario", paths: ".github/workflows/production-vmtests.yml\x00internal/vmtest/release_lifecycle_test.go", vms: both},
-		{name: "production and shared VM action", paths: ".github/workflows/production-vmtests.yml\x00.github/actions/hosted-vmtest/action.yml", vms: both, drivers: both},
+		{name: "production and shared VM action", paths: ".github/workflows/production-vmtests.yml\x00.github/actions/hosted-vmtest/action.yml", vms: both},
 		{name: "release and unknown workflow", paths: ".github/workflows/release-artifacts.yml\x00.github/workflows/new-release.yml", vms: both},
 		{name: "renamed release workflow", paths: ".github/workflows/release-artifacts.yml\x00.github/workflows/release-artifacts-new.yml", vms: both},
-		{name: "driver qualification workflow", paths: ".github/workflows/kernel-qualification.yml", vms: both, drivers: both},
+		{name: "driver qualification workflow", paths: ".github/workflows/kernel-qualification.yml", vms: both},
 		{name: "product", paths: "cmd/katlctl/main.go", vms: []string{"standard"}},
 		{name: "regression product", paths: "cmd/katlctl/main.go", regression: true, vms: both},
 		{name: "regression docs", paths: "README.md", regression: true},
-		{name: "standard lock", paths: "kernels/fedora-44/x86_64/standard.json", vms: []string{"standard"}, drivers: []string{"standard"}},
-		{name: "LTS lock", paths: "kernels/fedora-44/x86_64/lts.json", vms: []string{"lts"}, drivers: []string{"lts"}},
-		{name: "regression LTS lock", paths: "kernels/fedora-44/x86_64/lts.json", regression: true, vms: both, drivers: []string{"lts"}},
-		{name: "regression shared ABI", paths: "extensions/drbd9/build.sh", regression: true, vms: both, drivers: both},
-		{name: "both locks", paths: "kernels/fedora-44/x86_64/standard.json\x00kernels/fedora-44/x86_64/lts.json", vms: both, drivers: both},
-		{name: "DRBD recipe", paths: "extensions/drbd9/build.sh", vms: both, drivers: both},
-		{name: "driver builder", paths: "scripts/build-kernel-extension", vms: both, drivers: both},
-		{name: "DRBD tools", paths: "mkosi.profiles/vmtest-drbd-tools/mkosi.conf", vms: both, drivers: both},
-		{name: "DRBD journey", paths: "internal/vmtest/drbd_smoke_test.go", vms: both, drivers: both},
-		{name: "module source", paths: "internal/kernelmodule/compose.go", vms: both, drivers: both},
+		{name: "standard lock", paths: "kernels/fedora-44/x86_64/standard.json", vms: []string{"standard"}},
+		{name: "LTS lock", paths: "kernels/fedora-44/x86_64/lts.json", vms: []string{"lts"}},
+		{name: "custom LTS lock", paths: "kernels/custom/lts.json", vms: []string{"lts"}},
+		{name: "custom standard lock", paths: "kernels/custom/standard.json", vms: []string{"standard"}},
+		{name: "regression LTS lock", paths: "kernels/fedora-44/x86_64/lts.json", regression: true, vms: both},
+		{name: "regression shared ABI", paths: "extensions/drbd9/build.sh", regression: true, vms: both},
+		{name: "both locks", paths: "kernels/fedora-44/x86_64/standard.json\x00kernels/fedora-44/x86_64/lts.json", vms: both},
+		{name: "DRBD recipe", paths: "extensions/drbd9/build.sh", vms: both},
+		{name: "driver builder", paths: "scripts/build-kernel-extension", vms: both},
+		{name: "DRBD tools", paths: "mkosi.profiles/vmtest-drbd-tools/mkosi.conf", vms: both},
+		{name: "DRBD journey", paths: "internal/vmtest/drbd_smoke_test.go", vms: both},
+		{name: "module source", paths: "internal/kernelmodule/compose.go", vms: both},
 		{name: "runtime source", paths: "packages/containerd/source.json", vms: both},
 		{name: "runtime spec", paths: "packages/crun/crun.spec", vms: both},
 		{name: "runtime builder", paths: "cmd/katl-runtime-rpms/main.go", vms: both},
-		{name: "runtime hook", paths: "mkosi.profiles/runtime/mkosi.postinst", vms: both, drivers: both},
-		{name: "shared config", paths: "mkosi.conf.d/packages.conf", vms: both, drivers: both},
-		{name: "Go dependency", paths: "go.sum", vms: both, drivers: both},
-		{name: "builder", paths: "scripts/mkosi", vms: both, drivers: both},
+		{name: "runtime hook", paths: "mkosi.profiles/runtime/mkosi.postinst", vms: both},
+		{name: "shared config", paths: "mkosi.conf.d/packages.conf", vms: both},
+		{name: "Go dependency", paths: "go.sum", vms: both},
+		{name: "builder", paths: "scripts/mkosi", vms: both},
 		{name: "VM test", paths: "internal/vmtest/installed_smoke_test.go", vms: both},
 		{name: "VM workflow", paths: ".github/workflows/hosted-vmtests.yml", vms: both},
-		{name: "CI workflow", paths: ".github/workflows/ci.yml", vms: both, drivers: both},
-		{name: "planner", paths: "cmd/katl-vmtest-plan/main.go", vms: both, drivers: both},
+		{name: "CI workflow", paths: ".github/workflows/ci.yml", vms: both},
+		{name: "planner", paths: "cmd/katl-vmtest-plan/main.go", vms: both},
 		{name: "directory boundary", paths: "kernels-not-related/file", vms: []string{"standard"}},
-		{name: "renamed module", paths: "docs/moved.go\x00internal/kernelmodule/old.go", vms: both, drivers: both},
+		{name: "renamed module", paths: "docs/moved.go\x00internal/kernelmodule/old.go", vms: both},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			input := tc.paths
-			if input != "" {
-				input += "\x00"
+			var paths []string
+			if tc.paths != "" {
+				paths = strings.Split(tc.paths, "\x00")
 			}
-			args := []string{"--ci"}
-			if tc.regression {
-				args = append(args, "--regression")
-			}
-			var output bytes.Buffer
-			if err := run(args, strings.NewReader(input), &output); err != nil {
-				t.Fatal(err)
-			}
-			var got ciPlan
-			if err := json.Unmarshal(output.Bytes(), &got); err != nil {
-				t.Fatal(err)
-			}
-			if !slices.Equal(got.VMFlavours, tc.vms) || !slices.Equal(got.DriverFlavours, tc.drivers) || strings.Contains(output.String(), "null") {
-				t.Fatalf("CI plan = %s, want VMs %v and drivers %v", &output, tc.vms, tc.drivers)
+			got := planCI(paths, tc.regression)
+			if !slices.Equal(got.VMFlavours, tc.vms) || got.VMFlavours == nil {
+				t.Fatalf("VM flavours = %v, want %v", got.VMFlavours, tc.vms)
 			}
 			if (len(got.Groups) == 0) != (len(tc.vms) == 0) {
-				t.Fatalf("CI plan scenarios disagree with selected VM flavours: %s", &output)
+				t.Fatalf("CI plan scenarios disagree with selected VM flavours: %+v", got)
 			}
 		})
 	}

@@ -7,6 +7,8 @@ on:
   push:
     branches: [main, 'release/[0-9]*']
   workflow_dispatch:
+  schedule:
+    - cron: '37 5 * * 1'
 
 permissions:
   contents: read
@@ -35,10 +37,13 @@ jobs:
     permissions:
       contents: read
       pull-requests: read
+      statuses: read
+      actions: read
     timeout-minutes: 10
     outputs:
       vm-flavours: ${{ steps.plan.outputs.vm-flavours }}
       driver-flavours: ${{ steps.plan.outputs.driver-flavours }}
+      driver-digests: ${{ steps.plan.outputs.driver-digests }}
       production-flavours: ${{ steps.plan.outputs.production-flavours }}
       production-version: ${{ steps.production.outputs.version }}
       production-previous-tag: ${{ steps.production.outputs.previous-tag }}
@@ -86,6 +91,7 @@ jobs:
           BASE_REF: ${{ steps.pr.outputs.base }}
           PAYLOAD_BASE: ${{ github.base_ref }}
           VMTEST_LABEL: ${{ steps.pr.outputs.vmtest }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           mkdir -p _build
           options=(--ci)
@@ -94,17 +100,14 @@ jobs:
           # The full plan applies in the merge queue and on pull requests into a release
           # branch, which has no merge queue. The vmtest label adds the VM suites without
           # it, so a labelled pull request into main does not take full-plan decisions.
-          # BASE_REF is read live, as the label is. Driver qualification runs wherever
-          # the planner selects it, except on pushes.
+          # BASE_REF is read live, as the label is.
           full_plan=false
           regression=false
-          no_drivers=false
           case "$GITHUB_EVENT_NAME" in
             pull_request)
               if release_base "${BASE_REF:-}"; then full_plan=true; fi
               if [[ "${VMTEST_LABEL:-false}" == true ]]; then regression=true; fi ;;
             merge_group) full_plan=true ;;
-            push) no_drivers=true ;;
           esac
           if [[ "$full_plan" == true ]]; then regression=true; fi
           no_vms=false
@@ -125,20 +128,22 @@ jobs:
             base="$BASE_SHA"
           elif [[ "$GITHUB_EVENT_NAME" == push && "$BEFORE_SHA" != 0000000000000000000000000000000000000000 ]]; then
             base="$BEFORE_SHA"
+          elif [[ "$GITHUB_EVENT_NAME" == schedule ]]; then
+            base=HEAD
           else
             base="$(git hash-object -t tree /dev/null)"
           fi
           # Include deletions as well as additions when a file is renamed.
           git diff --name-only --no-renames -z "$base" HEAD > _build/ci-changes
           go run ./cmd/katl-vmtest-plan "${options[@]}" < _build/ci-changes > _build/ci-candidates.json
-          jq -c --argjson noVMs "$no_vms" --argjson noDrivers "$no_drivers" '
-            (if $noVMs then .vmFlavours = [] | .groups = [] else . end) |
-            (if $noDrivers then .driverFlavours = [] else . end)
+          jq -c --argjson noVMs "$no_vms" '
+            if $noVMs then .vmFlavours = [] | .groups = [] else . end
           ' _build/ci-candidates.json > _build/ci-plan.json
           go run ./cmd/katl-kubernetes-release presubmit --base "$base" > _build/kubernetes-plan.json
           {
             echo "vm-flavours=$(jq -c .vmFlavours _build/ci-plan.json)"
             echo "driver-flavours=$(jq -c .driverFlavours _build/ci-plan.json)"
+            echo "driver-digests=$(jq -c .driverDigests _build/ci-plan.json)"
             echo "production-flavours=$(jq -c .productionFlavours _build/ci-plan.json)"
             echo "scenarios=$(jq -c '{include: .groups}' _build/ci-plan.json)"
             echo "kubernetes-version=$(jq -r '.include[0].payloadVersion // empty' _build/kubernetes-plan.json)"
@@ -244,9 +249,13 @@ jobs:
       fail-fast: false
       matrix:
         flavour: ${{ fromJSON(needs.plan.outputs.driver-flavours) }}
+    permissions:
+      contents: read
+      statuses: write
     uses: ./.github/workflows/kernel-qualification.yml
     with:
       flavour: ${{ matrix.flavour }}
+      input-digest: ${{ fromJSON(needs.plan.outputs.driver-digests)[matrix.flavour] || '' }}
 
   production:
     name: Production (${{ matrix.flavour }})

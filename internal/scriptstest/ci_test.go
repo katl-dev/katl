@@ -65,7 +65,7 @@ func TestCIChanges(t *testing.T) {
 case "$2" in
   ./cmd/katl-vmtest-plan)
     cat > observed-paths
-    printf '{"vmFlavours":[],"driverFlavours":[],"productionFlavours":[],"groups":[]}\n' ;;
+    printf '{"vmFlavours":[],"driverFlavours":[],"driverDigests":{},"productionFlavours":[],"groups":[]}\n' ;;
   ./cmd/katl-kubernetes-release)
     printf '{"include":[]}\n' ;;
   *) exit 2 ;;
@@ -181,8 +181,8 @@ func TestCIEventSelection(t *testing.T) {
 	}
 	runGit(t, dir, "commit", "--quiet", "-am", "change")
 
-	// The fake planner selects everything unless asked for the regression set,
-	// which makes dropped selections visible in the outputs.
+	// The fake planner selects both VM flavours and returns the requested driver
+	// fixture. This makes dropped selections visible in the workflow outputs.
 	tools := t.TempDir()
 	writeFakeExecutable(t, tools, "go", `
 case "$2" in
@@ -191,7 +191,7 @@ case "$2" in
     printf '%s\n' "$*" > "$PLANNER_ARGS"
     production='[]'
     [[ " $* " != *" --production="* ]] || production='["standard","lts"]'
-    printf '{"vmFlavours":["standard","lts"],"driverFlavours":["standard"],"productionFlavours":%s,"groups":[{"name":"cluster"}]}\n' "$production" ;;
+    printf '{"vmFlavours":["standard","lts"],"driverFlavours":%s,"driverDigests":{"standard":"v1:fixture"},"productionFlavours":%s,"groups":[{"name":"cluster"}]}\n' "$DRIVER_MATRIX" "$production" ;;
   ./cmd/katl-kubernetes-release)
     printf '{"include":[]}\n' ;;
   *) exit 2 ;;
@@ -210,8 +210,10 @@ esac
 		{"labelled pull request", "pull_request", "true", "main", true, false, `["standard","lts"]`, `["standard"]`, "CI"},
 		{"labelled pull request into release series", "pull_request", "true", "release/2026.12.x", true, true, `["standard","lts"]`, `["standard"]`, "CI (release)"},
 		{"merge group", "merge_group", "false", "", true, true, `["standard","lts"]`, `["standard"]`, "CI"},
-		{"push to main", "push", "false", "", false, false, `[]`, `[]`, "CI"},
-		{"manual dispatch", "workflow_dispatch", "false", "", false, false, `["standard","lts"]`, `["standard"]`, "CI"},
+		{"unqualified main push", "push", "false", "", false, false, `[]`, `["standard"]`, "CI"},
+		{"qualified main push", "push", "false", "", false, false, `[]`, `[]`, "CI"},
+		{"manual dispatch", "workflow_dispatch", "false", "", false, false, `["standard","lts"]`, `["standard","lts"]`, "CI"},
+		{"schedule", "schedule", "false", "", false, false, `[]`, `["standard","lts"]`, "CI"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			run := t.TempDir()
@@ -221,7 +223,7 @@ esac
 			command.Dir = dir
 			command.Env = append(gittest.Env(os.Environ(), dir), "PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"),
 				"GITHUB_EVENT_NAME="+tc.event, "BASE_SHA="+base, "BEFORE_SHA="+base, "VMTEST_LABEL="+tc.label, "BASE_REF="+tc.baseRef, "PAYLOAD_BASE="+tc.baseRef,
-				"PLANNER_ARGS="+argsPath, "GITHUB_OUTPUT="+outputPath, "GITHUB_STEP_SUMMARY="+filepath.Join(run, "summary"))
+				"PLANNER_ARGS="+argsPath, "DRIVER_MATRIX="+tc.drivers, "GITHUB_OUTPUT="+outputPath, "GITHUB_STEP_SUMMARY="+filepath.Join(run, "summary"))
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("plan: %v: %s", err, output)
 			}
@@ -233,6 +235,9 @@ esac
 				t.Fatalf("outputs = %s, want %q", outputs, want)
 			}
 			if want := "driver-flavours=" + tc.drivers + "\n"; !strings.Contains(string(outputs), want) {
+				t.Fatalf("outputs = %s, want %q", outputs, want)
+			}
+			if want := "driver-digests={\"standard\":\"v1:fixture\"}\n"; !strings.Contains(string(outputs), want) {
 				t.Fatalf("outputs = %s, want %q", outputs, want)
 			}
 			// The fixture changes product.go, so both kinds of full plan build.
@@ -369,6 +374,128 @@ esac
 	}
 }
 
+func TestDriverStatusPublication(t *testing.T) {
+	caller, _ := readWorkflow(t, "ci.yml")
+	workflow, _ := readWorkflow(t, "kernel-qualification.yml")
+	for _, scope := range []struct {
+		workflow workflowFile
+		writers  []string
+	}{
+		{caller, []string{"drivers"}},
+		{workflow, []string{"record-driver-start", "record-driver-result"}},
+	} {
+		for name, job := range scope.workflow.Jobs {
+			var permissions map[string]string
+			if err := job.Permissions.Decode(&permissions); err != nil {
+				t.Fatal(err)
+			}
+			if (permissions["statuses"] == "write") != slices.Contains(scope.writers, name) {
+				t.Errorf("%s job has statuses permission %q", name, permissions["statuses"])
+			}
+		}
+	}
+	requireNeeds(t, workflow, [][2]string{
+		{"drivers", "record-driver-start"},
+		{"record-driver-result", "record-driver-start"},
+		{"record-driver-result", "drivers"},
+	})
+
+	start := workflow.Jobs["record-driver-start"]
+	result := workflow.Jobs["record-driver-result"]
+	if !strings.Contains(result.If, "always()") {
+		t.Error("terminal publication must run when driver qualification fails")
+	}
+	condition := func(job workflowJob, context map[string]string) bool {
+		t.Helper()
+		expr := strings.NewReplacer("always()", "'true' == 'true'", "!cancelled()", "cancelled != 'true'",
+			"needs.record-driver-start.result", "start.result").Replace(job.If)
+		return expandExpressions(t, "${{ "+strings.Join(strings.Fields(expr), " ")+" }}", context) == "true"
+	}
+	for _, tc := range []struct {
+		event, ref string
+		publishes  bool
+	}{
+		{"push", "refs/heads/main", true},
+		{"schedule", "refs/heads/main", true},
+		{"workflow_dispatch", "refs/heads/main", true},
+		{"workflow_dispatch", "refs/heads/topic", false},
+		{"push", "refs/heads/release/2026", false},
+		{"pull_request", "refs/pull/1/merge", false},
+		{"merge_group", "refs/heads/gh-readonly-queue/main/pr-1", false},
+	} {
+		if got := condition(start, map[string]string{"github.event_name": tc.event, "github.ref": tc.ref}); got != tc.publishes {
+			t.Errorf("pending publication on %s %s = %v, want %v", tc.event, tc.ref, got, tc.publishes)
+		}
+	}
+	for _, tc := range []struct {
+		start, drivers string
+		runs, finishes bool
+	}{
+		{"success", "success", true, true},
+		{"success", "failure", true, true},
+		{"success", "cancelled", true, true},
+		{"skipped", "success", true, false},
+		{"failure", "skipped", false, false},
+	} {
+		context := map[string]string{"start.result": tc.start, "needs.drivers.result": tc.drivers}
+		if runs := condition(workflow.Jobs["drivers"], context); runs != tc.runs {
+			t.Errorf("drivers after pending job %s runs = %v, want %v", tc.start, runs, tc.runs)
+		}
+		if finishes := condition(result, context); finishes != tc.finishes {
+			t.Errorf("publication after pending job %s and drivers %s = %v, want %v", tc.start, tc.drivers, finishes, tc.finishes)
+		}
+	}
+
+	for _, tc := range []struct {
+		flavour, drivers string
+		publisher        workflowJob
+		want             string
+	}{
+		{"lts", "", start, "pending"},
+		{"lts", "success", result, "success"},
+		{"standard", "failure", result, "failure"},
+		{"standard", "cancelled", result, "failure"},
+	} {
+		t.Run(tc.flavour+"/"+tc.want+"/"+tc.drivers, func(t *testing.T) {
+			if len(tc.publisher.Steps) != 1 {
+				t.Fatal("missing status publication step")
+			}
+			dir := t.TempDir()
+			request := filepath.Join(dir, "request")
+			writeFakeExecutable(t, dir, "gh", `printf '%s\n' "$@" >> "$STATUS_REQUEST"`)
+			digest := "v2:" + strings.Repeat("a", 64)
+			sha := strings.Repeat("1", 40)
+			state := expandExpressions(t, tc.publisher.Env["STATE"], map[string]string{"needs.drivers.result": tc.drivers})
+			command := exec.Command("bash", "-euo", "pipefail", "-c", tc.publisher.Steps[0].Run)
+			command.Env = append(os.Environ(),
+				"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"), "STATUS_REQUEST="+request,
+				"FLAVOUR="+tc.flavour, "DIGEST="+digest, "STATE="+state, "GITHUB_SHA="+sha,
+				"GITHUB_REPOSITORY=katl-dev/katl", "GITHUB_SERVER_URL=https://github.com", "GITHUB_RUN_ID=42", "GITHUB_RUN_ATTEMPT=2",
+			)
+			if output, err := command.CombinedOutput(); err != nil {
+				t.Fatalf("publish status: %v: %s", err, output)
+			}
+			data, err := os.ReadFile(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Count(string(data), "api\n") != 1 {
+				t.Errorf("wanted one status, got %s", data)
+			}
+			for _, arg := range []string{
+				"repos/katl-dev/katl/statuses/" + sha,
+				"context=katl/driver-qualification/" + tc.flavour + "/" + digest,
+				"state=" + tc.want, "description=" + digest,
+				"target_url=https://github.com/katl-dev/katl/actions/runs/42/attempts/2",
+			} {
+				if !slices.Contains(strings.Split(string(data), "\n"), arg) {
+					t.Errorf("request = %s, want %q", data, arg)
+				}
+			}
+		})
+	}
+}
+
 // The required CI check must never pass because a planned job did not run, for
 // any event the workflow handles.
 func TestCIGatesPlannedJobs(t *testing.T) {
@@ -409,7 +536,7 @@ func TestCIGatesPlannedJobs(t *testing.T) {
 			t.Errorf("%s condition = %q, want %q", name, got, want)
 		}
 	}
-	// The result job gates on every other job, so none can be skipped unnoticed.
+	// The result job gates on every top-level validation job.
 	needsOf := func(job string) []string {
 		t.Helper()
 		var list []string
@@ -434,7 +561,7 @@ func TestCIGatesPlannedJobs(t *testing.T) {
 	}
 	slices.Sort(gating)
 	if got := needsOf("result"); !slices.Equal(got, gating) {
-		t.Errorf("result needs %v, want every other job %v", got, gating)
+		t.Errorf("result needs %v, want every validation job %v", got, gating)
 	}
 	for _, name := range []string{"vms", "drivers", "production"} {
 		if got := needsOf(name); !slices.Equal(got, []string{"plan"}) {
@@ -475,7 +602,7 @@ case "$2" in
     cat > /dev/null
     production='[]'
     [[ " $* " != *" --production="* ]] || production='["standard","lts"]'
-    printf '{"vmFlavours":["standard","lts"],"driverFlavours":["standard","lts"],"productionFlavours":%s,"groups":[{"name":"cluster"}]}\n' "$production" ;;
+    printf '{"vmFlavours":["standard","lts"],"driverFlavours":["standard","lts"],"driverDigests":{},"productionFlavours":%s,"groups":[{"name":"cluster"}]}\n' "$production" ;;
   ./cmd/katl-kubernetes-release)
     printf '{"include":[]}\n' ;;
   *) exit 2 ;;
@@ -488,6 +615,7 @@ esac
 		{"merge group", "merge_group", "false"},
 		{"push", "push", "false"},
 		{"dispatch", "workflow_dispatch", "false"},
+		{"schedule", "schedule", "false"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			outputPath := filepath.Join(t.TempDir(), "output")

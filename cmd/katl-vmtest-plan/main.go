@@ -97,6 +97,7 @@ func run(args []string, input io.Reader, output io.Writer) error {
 		if *ci {
 			plan := planCI(paths, *regression)
 			plan.ProductionFlavours = productionFlavours(paths, *production)
+			plan.selectDrivers(paths, os.Getenv("GITHUB_EVENT_NAME"), os.Getenv("GITHUB_REF"), committedDriverDigests, mainDriverQualifications)
 			return json.NewEncoder(output).Encode(plan)
 		}
 		selected = selectGroups(paths)
@@ -106,13 +107,15 @@ func run(args []string, input io.Reader, output io.Writer) error {
 	}{batchGroups(selected)})
 }
 
-func driverChange(name string) bool {
+// bothVMFlavours preserves the path policy for general VM coverage. Driver
+// qualification is planned independently from its committed inputs.
+func bothVMFlavours(name string) bool {
 	for _, prefix := range []string{
 		"kernels/", "extensions/", "internal/kernelrelease/", "internal/kernelmodule/",
 		"internal/extensionrelease/", "internal/releaseextensions/", "cmd/katl-kernel-release/",
-		"cmd/katl-mkosi-artifacts/", "cmd/katl-vmtest-plan/", "mkosi.conf", "mkosi.conf.d/", "mkosi.profiles/runtime/",
-		"mkosi.profiles/installer-image/", "mkosi.profiles/kernel-extension-", ".github/actions/mkosi-builder/",
-		"mkosi.profiles/vmtest-drbd-tools/", ".github/actions/hosted-vmtest/", ".github/scripts/hosted-vmtest-",
+		"cmd/katl-mkosi-artifacts/", "cmd/katl-vmtest-plan/", "mkosi.conf", "mkosi.profiles/runtime/",
+		"mkosi.profiles/installer-image/", "mkosi.profiles/kernel-extension-", "mkosi.profiles/vmtest-drbd-tools/",
+		"packages/", "cmd/katl-runtime-rpms/", "internal/vmtest/", ".github/",
 	} {
 		if strings.HasPrefix(name, prefix) {
 			return true
@@ -120,19 +123,19 @@ func driverChange(name string) bool {
 	}
 	switch name {
 	case "go.mod", "go.sum", "Containerfile.mkosi", "scripts/mkosi", "scripts/fedora-release",
-		"scripts/build-kernel-extension", "scripts/build-release-extensions", "scripts/assemble-release-extensions",
-		"internal/vmtest/drbd_smoke_test.go", ".github/workflows/kernel-qualification.yml",
-		".github/workflows/ci.yml":
+		"scripts/build-kernel-extension", "scripts/build-release-extensions", "scripts/assemble-release-extensions":
 		return true
 	}
 	return false
 }
 
 type ciPlan struct {
-	VMFlavours         []string `json:"vmFlavours"`
-	DriverFlavours     []string `json:"driverFlavours"`
-	ProductionFlavours []string `json:"productionFlavours"`
-	Groups             []group  `json:"groups"`
+	VMFlavours         []string          `json:"vmFlavours"`
+	DriverFlavours     []string          `json:"driverFlavours"`
+	DriverDigests      map[string]string `json:"driverDigests"`
+	QualifiedDrivers   map[string]string `json:"qualifiedDrivers"`
+	ProductionFlavours []string          `json:"productionFlavours"`
+	Groups             []group           `json:"groups"`
 }
 
 func productionFlavours(paths []string, mode string) []string {
@@ -156,26 +159,22 @@ func productionFlavours(paths []string, mode string) []string {
 }
 
 func planCI(paths []string, regression bool) ciPlan {
-	vms, drivers := map[string]bool{}, map[string]bool{}
+	vms := map[string]bool{}
 	for _, name := range paths {
 		if len(selectGroups([]string{name})) == 0 {
 			continue
 		}
 		if strings.HasPrefix(name, "kernels/") {
 			if strings.HasSuffix(name, "/standard.json") {
-				vms["standard"], drivers["standard"] = true, true
+				vms["standard"] = true
 				continue
 			}
 			if strings.HasSuffix(name, "/lts.json") {
-				vms["lts"], drivers["lts"] = true, true
+				vms["lts"] = true
 				continue
 			}
 		}
-		if driverChange(name) {
-			vms["standard"], vms["lts"] = true, true
-			drivers["standard"], drivers["lts"] = true, true
-		} else if strings.HasPrefix(name, "packages/") || strings.HasPrefix(name, "cmd/katl-runtime-rpms/") ||
-			strings.HasPrefix(name, "internal/vmtest/") || strings.HasPrefix(name, ".github/") {
+		if bothVMFlavours(name) {
 			vms["standard"], vms["lts"] = true, true
 		} else {
 			vms["standard"] = true
@@ -188,13 +187,10 @@ func planCI(paths []string, regression bool) ciPlan {
 	if regression && len(vms) != 0 {
 		selected = groups
 	}
-	plan := ciPlan{VMFlavours: []string{}, DriverFlavours: []string{}, Groups: batchGroups(selected)}
-	for _, flavour := range []string{"standard", "lts"} {
+	plan := ciPlan{VMFlavours: []string{}, Groups: batchGroups(selected)}
+	for _, flavour := range kernelFlavours {
 		if vms[flavour] {
 			plan.VMFlavours = append(plan.VMFlavours, flavour)
-		}
-		if drivers[flavour] {
-			plan.DriverFlavours = append(plan.DriverFlavours, flavour)
 		}
 	}
 	return plan
