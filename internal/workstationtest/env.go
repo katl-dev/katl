@@ -16,15 +16,20 @@ import (
 
 // Run gives a test package an empty workstation environment. Packages that
 // call the workstation resolver in process pass its path-check hook.
-func Run(m *testing.M, pathCheck *func(string) error) int {
-	dir, err := os.MkdirTemp("", "katl-test-")
+func Run(m *testing.M, pathCheck *func(string) error) (status int) {
+	tempDir, err := os.MkdirTemp("", "katl-test-")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	defer os.RemoveAll(dir)
+	defer func() {
+		if err := os.RemoveAll(tempDir); err != nil {
+			fmt.Fprintf(os.Stderr, "remove workstation test directory: %v\n", err)
+			status = 1
+		}
+	}()
 
-	dir, err = filepath.EvalSymlinks(dir)
+	dir, err := filepath.EvalSymlinks(tempDir)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
@@ -86,11 +91,27 @@ func Run(m *testing.M, pathCheck *func(string) error) int {
 		}
 	}
 
-	status := m.Run()
+	if err := disableGoTelemetry(nil); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+
+	status = m.Run()
 	if escaped.Load() && status == 0 {
 		return 1
 	}
 	return status
+}
+
+// Point the command at the isolated config directory before calling this.
+// Even local telemetry can start a sidecar that outlives the go command.
+func disableGoTelemetry(env []string) error {
+	cmd := exec.Command("go", "telemetry", "off")
+	cmd.Env = env
+	if output, err := cmd.CombinedOutput(); err != nil && !errors.Is(err, exec.ErrNotFound) {
+		return fmt.Errorf("disable Go telemetry: %w\n%s", err, output)
+	}
+	return nil
 }
 
 func pinGoCaches() error {

@@ -68,6 +68,9 @@ clusters:
 			env = append(env, entry)
 		}
 	}
+	if err := disableGoTelemetry(env); err != nil {
+		t.Fatal(err)
+	}
 
 	selected := []string{"TestNodeStatusShowsCertificateExpiry", "TestMkosiBuilderActionOutputIsIgnored", "TestGitHubLookupDecodesPullRequests"}
 	args := []string{"test", "-buildvcs=false", "-count=1", "-v", "-run", "^(" + strings.Join(selected, "|") + ")$", "./cmd/katlctl", "./internal/scriptstest", "./internal/devclean"}
