@@ -22,6 +22,12 @@ track the queue and journey outcomes through release readiness. Assign
 implementation, independent review, diagnosis, and hands-on journeys to their
 respective roles. Schedule gates as commands and judge their results.
 
+**Release cut.** Run `katl-queue ci-cost --since <previous release date>`.
+For the jobs that used the most runner-minutes, ask what each verifies, what
+inputs it actually depends on, and whether it needs to run at all. File an
+issue for each finding with the date window and the job's attempt count,
+median duration, and total runner-minutes.
+
 **Brief.** Supply the release target or milestone, the outcome sought, the
 issues and PRs in scope, and authority for any queue or release actions.
 

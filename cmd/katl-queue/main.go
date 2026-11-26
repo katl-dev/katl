@@ -50,6 +50,8 @@ Commands:
                     unmergeable entries and explain ejections
   prune-runs [--apply]
                     cancel CI runs of merge groups the queue no longer holds
+  ci-cost [--since DATE] [--workflow NAME] [--limit N] [--json]
+                    rank jobs in completed workflow runs by runner-minutes
 
 plan and autopilot only report unless given --apply, which needs --milestone.
 prune-runs only reports unless given --apply.
@@ -104,6 +106,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 
 	flags := flag.NewFlagSet("katl-queue "+command, flag.ContinueOnError)
 	flags.SetOutput(stderr)
+	if command == "ci-cost" {
+		return ciCostCommand(ctx, flags, args, stdout)
+	}
 	interval := time.Minute
 	var (
 		milestone                string
