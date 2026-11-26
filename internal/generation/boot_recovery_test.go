@@ -37,6 +37,20 @@ func TestArmBootRecoveryOnlyForValidatedTrial(t *testing.T) {
 		t.Fatalf("trial recovery authorization: %v", err)
 	}
 
+	spec, _, err := ReadGeneration(root, "known-good")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(rootedPathUnchecked(root, spec.Sysexts[0].Path)); err != nil {
+		t.Fatal(err)
+	}
+	if found, err := HasBootFallback(root, "candidate"); err != nil || found {
+		t.Fatalf("HasBootFallback(candidate without fallback Kubernetes sysext) = %t, %v, want no fallback", found, err)
+	}
+	if armed, err := ArmBootRecovery(root, "candidate"); err != nil || armed {
+		t.Fatalf("ArmBootRecovery(candidate without fallback Kubernetes sysext) = %t, %v, want disarmed", armed, err)
+	}
+
 	armed, err = ArmBootRecovery(root, "known-good")
 	if err != nil || armed {
 		t.Fatalf("ArmBootRecovery(known-good) = %t, %v", armed, err)

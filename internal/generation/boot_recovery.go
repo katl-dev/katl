@@ -96,23 +96,80 @@ func validBootRecoveryTarget(root string, target rollbackTarget) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("read rollback target %s: %w", target.generationID, err)
 	}
-	if !IsKnownGood(status) || target.bootEntry == "" || target.bootEntry != strings.TrimSpace(spec.Boot.LoaderEntryPath) {
+	if !IsKnownGood(status) {
 		return false, nil
 	}
+	reason, err := bootTargetUnavailable(root, spec, status, target.bootEntry)
+	return reason == "", err
+}
 
-	for _, path := range []string{
-		filepath.Join("/efi", target.bootEntry),
+// bootTargetUnavailable checks the bound entry and its required artifacts.
+// Health policy is separate: a recovery retry can boot an unproven generation.
+func bootTargetUnavailable(root string, spec GenerationSpec, status GenerationStatus, entry string) (string, error) {
+	if status.UnavailableReason != "" {
+		return status.UnavailableReason, nil
+	}
+	if entry == "" {
+		return "loader entry is missing", nil
+	}
+	if entry != spec.Boot.LoaderEntryPath {
+		return "loader entry does not match the generation", nil
+	}
+	if status.CommitState != CommitStateCommitted && status.CommitState != CommitStateSuperseded {
+		return "generation is not committed", nil
+	}
+
+	paths := []string{
+		filepath.Join("/efi", entry),
 		filepath.Join("/efi", entryPath(spec.Boot.UKIPath)),
-	} {
-		_, err := os.Stat(rootedPathUnchecked(root, path))
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		if err != nil {
-			return false, fmt.Errorf("check rollback target %s boot file %s: %w", target.generationID, path, err)
+	}
+	for _, ref := range spec.Sysexts {
+		paths = append(paths, ref.Path)
+	}
+	for _, ref := range spec.BundledConfexts {
+		paths = append(paths, ref.Path)
+	}
+	for _, ref := range spec.Confexts {
+		paths = append(paths, ref.Path)
+	}
+	for _, path := range paths {
+		if _, err := os.Stat(rootedPathUnchecked(root, path)); err != nil {
+			reason := "boot artifact unavailable: " + path
+			if errors.Is(err, os.ErrNotExist) {
+				return reason, nil
+			}
+			return reason, fmt.Errorf("check generation %s boot artifact %s: %w", spec.GenerationID, path, err)
 		}
 	}
-	return true, nil
+	return "", nil
+}
+
+func recoveryDefault(root string, selection BootSelectionRecord, running GenerationSpec, status GenerationStatus) (rollbackTarget, error) {
+	if selection.DefaultGenerationID != "" && selection.DefaultGenerationID != running.GenerationID {
+		spec, defaultStatus, err := ReadGeneration(root, selection.DefaultGenerationID)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return rollbackTarget{}, err
+		}
+		if err == nil {
+			reason, err := bootTargetUnavailable(root, spec, defaultStatus, selection.DefaultBootEntry)
+			if err != nil {
+				return rollbackTarget{}, err
+			}
+			if reason == "" {
+				return rollbackTarget{generationID: spec.GenerationID, bootEntry: selection.DefaultBootEntry}, nil
+			}
+		}
+	}
+
+	entry := running.Boot.LoaderEntryPath
+	reason, err := bootTargetUnavailable(root, running, status, entry)
+	if err != nil {
+		return rollbackTarget{}, err
+	}
+	if reason != "" {
+		return rollbackTarget{}, fmt.Errorf("generation %s cannot be selected for the next boot: %s. Restore its boot artifacts from the node console", running.GenerationID, reason)
+	}
+	return rollbackTarget{generationID: running.GenerationID, bootEntry: entry}, nil
 }
 
 // HasBootFallback reports whether a failed boot of generationID would leave a
@@ -144,8 +201,7 @@ const ManagementNetworkFailure = "management network unavailable"
 
 // RecoveryGuidance returns the operator's next step when selection requires
 // recovery because the failed generation's boot health found the management
-// network unavailable, and "" for any other state. Rebooting repeats boot
-// health, which promotes the generation once the network is ready.
+// network unavailable, and "" for any other state.
 func RecoveryGuidance(root string, selection BootSelectionRecord) string {
 	failedID := strings.TrimSpace(selection.FailedBootGenerationID)
 	if !selection.RecoveryRequired || failedID == "" {
@@ -163,7 +219,19 @@ func RecoveryGuidance(root string, selection BootSelectionRecord) string {
 		if !strings.HasPrefix(transition.Reason, ManagementNetworkFailure) {
 			return ""
 		}
-		return fmt.Sprintf("generation %s failed boot health because the management network was not ready and no known-good generation exists to fall back to; reconnect the management network, then run `katlctl node reboot <node>` to repeat boot health", failedID)
+		message := fmt.Sprintf("generation %s failed boot health because the management network was not ready", failedID)
+		nextID, entry := selection.DefaultGenerationID, selection.DefaultBootEntry
+		if selection.TargetBootGenerationID != "" {
+			nextID, entry = selection.TargetBootGenerationID, selection.TargetBootEntry
+		}
+		spec, nextStatus, err := ReadGeneration(root, nextID)
+		if err == nil {
+			reason, err := bootTargetUnavailable(root, spec, nextStatus, entry)
+			if err == nil && reason == "" {
+				return fmt.Sprintf("%s. Reconnect the management network, then run `katlctl node reboot <node>` to run boot health on generation %s", message, nextID)
+			}
+		}
+		return message + ". Use the node console to restore a bootable generation before rebooting"
 	}
 	return ""
 }

@@ -520,6 +520,13 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 	}
 
 	originalDefaultEntry := selection.DefaultBootEntry
+	nextDefault := boot.Fallback
+	if nextDefault.generationID == "" {
+		nextDefault, err = recoveryDefault(root, selection, spec, status)
+		if err != nil {
+			return BootHealthResult{}, err
+		}
+	}
 	selection.OneShot = false
 	selection.BootedOneShot = false
 	selection.FailedBootGenerationID = generationID
@@ -534,51 +541,51 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 	selection.PreviousKnownGoodGenerationID = boot.Fallback.generationID
 	selection.PreviousKnownGoodBootEntry = boot.Fallback.bootEntry
 	selection.RecoveryRequired = boot.Fallback.generationID == ""
-	if !selection.RecoveryRequired {
-		selection.DefaultGenerationID = boot.Fallback.generationID
-		selection.DefaultBootEntry = boot.Fallback.bootEntry
-	}
+	selection.DefaultGenerationID = nextDefault.generationID
+	selection.DefaultBootEntry = nextDefault.bootEntry
 	selection.UpdatedAt = now.UTC()
 	// Validate the recovery record before changing the running generation.
 	if err := ValidateBootSelection(selection); err != nil {
 		return BootHealthResult{}, err
 	}
-	updateDefault := !selection.RecoveryRequired && selection.DefaultBootEntry != originalDefaultEntry
+	updateDefault := selection.DefaultBootEntry != originalDefaultEntry
 	if updateDefault && request.SetBootDefault == nil {
 		return BootHealthResult{}, fmt.Errorf("boot default updater required for recovery")
 	}
 
 	if status.BootState != BootStateFailed || status.HealthState != HealthStateUnhealthy {
-		updatedStatus := status
-		updatedStatus.BootState = BootStateFailed
-		updatedStatus.HealthState = HealthStateUnhealthy
-		updatedStatus.UpdatedAt = now.UTC()
-		updatedStatus.StatusTransitions = append(updatedStatus.StatusTransitions, StatusTransition{
+		status.BootState = BootStateFailed
+		status.HealthState = HealthStateUnhealthy
+		status.UpdatedAt = now.UTC()
+		status.StatusTransitions = append(status.StatusTransitions, StatusTransition{
 			At:          now.UTC(),
 			Reason:      transitionReason(request.Reason, "katl boot health failed"),
-			CommitState: updatedStatus.CommitState,
-			BootState:   updatedStatus.BootState,
-			HealthState: updatedStatus.HealthState,
+			CommitState: status.CommitState,
+			BootState:   status.BootState,
+			HealthState: status.HealthState,
 		})
-		if err := WriteGenerationStatus(root, spec, updatedStatus); err != nil {
-			return BootHealthResult{}, err
-		}
+	}
+	// A failed status can already be visible if the preceding write failed
+	// to sync its directory. Persist it again without adding a transition.
+	if err := WriteGenerationStatus(root, spec, status); err != nil {
+		return BootHealthResult{}, err
 	}
 	if updateDefault {
 		if err := request.SetBootDefault(root, selection.DefaultBootEntry); err != nil {
 			return BootHealthResult{}, err
 		}
 	}
-	// Consume the ephemeral authorization before handing a clean exit to
-	// systemd. A service restart cannot request a second automatic reboot.
+	// Keep authorization through the last durable write so a retry can finish
+	// recovery even if the selection was published before the write errored.
+	if err := WriteBootSelection(root, selection); err != nil {
+		return BootHealthResult{}, err
+	}
 	rebootRequested := request.RequestReboot && boot.Armed && !selection.RecoveryRequired
 	if rebootRequested {
+		// Consume authorization before the clean exit that hands off to systemd.
 		if err := ClearBootRecovery(root); err != nil {
 			return BootHealthResult{}, err
 		}
-	}
-	if err := WriteBootSelection(root, selection); err != nil {
-		return BootHealthResult{}, err
 	}
 	return BootHealthResult{
 		GenerationID:      generationID,

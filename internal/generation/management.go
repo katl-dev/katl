@@ -73,27 +73,8 @@ func inspect(root string, selection BootSelectionRecord) ([]ManagedGeneration, e
 			current := latest[item.Spec.Root.PartitionUUID]
 			if current.GenerationID != "" && (current.RuntimeVersion != item.Spec.RuntimeVersion || current.Boot.UKIPath != item.Spec.Boot.UKIPath || current.Root.Flavour != item.Spec.Root.Flavour || current.Root.RuntimeArtifactSHA256 != item.Spec.Root.RuntimeArtifactSHA256) {
 				item.UnavailableReason = slotReplaced
-			} else if item.Spec.Boot.LoaderEntryPath == "" {
-				item.UnavailableReason = "loader entry is missing"
-			} else if item.Status.CommitState != CommitStateCommitted && item.Status.CommitState != CommitStateSuperseded {
-				item.UnavailableReason = "generation is not committed"
 			} else {
-				paths := []string{filepath.Join("/efi", item.Spec.Boot.LoaderEntryPath), filepath.Join("/efi", entryPath(item.Spec.Boot.UKIPath))}
-				for _, ref := range item.Spec.Sysexts {
-					paths = append(paths, ref.Path)
-				}
-				for _, ref := range item.Spec.BundledConfexts {
-					paths = append(paths, ref.Path)
-				}
-				for _, ref := range item.Spec.Confexts {
-					paths = append(paths, ref.Path)
-				}
-				for _, path := range paths {
-					if _, err := os.Stat(rootedPathUnchecked(root, path)); err != nil {
-						item.UnavailableReason = "boot artifact unavailable: " + path
-						break
-					}
-				}
+				item.UnavailableReason, _ = bootTargetUnavailable(root, item.Spec, item.Status, item.Spec.Boot.LoaderEntryPath)
 			}
 		}
 		for _, p := range []struct{ id, reason string }{

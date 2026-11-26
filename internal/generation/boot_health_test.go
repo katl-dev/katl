@@ -1355,7 +1355,7 @@ func writeBootHealthGeneration(t *testing.T, root string, id string, previous st
 	if err := WriteGeneration(root, spec, status); err != nil {
 		t.Fatalf("WriteGeneration(%s) error = %v", id, err)
 	}
-	for _, path := range []string{spec.Boot.UKIPath, filepath.Join("/efi", spec.Boot.LoaderEntryPath)} {
+	for _, path := range []string{spec.Boot.UKIPath, filepath.Join("/efi", spec.Boot.LoaderEntryPath), spec.Sysexts[0].Path} {
 		path = rootedPathUnchecked(root, path)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -1363,6 +1363,9 @@ func writeBootHealthGeneration(t *testing.T, root string, id string, previous st
 		if err := os.WriteFile(path, []byte(id), 0o644); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := os.MkdirAll(rootedPathUnchecked(root, spec.Confexts[0].Path), 0o755); err != nil {
+		t.Fatal(err)
 	}
 }
 

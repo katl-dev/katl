@@ -53,9 +53,9 @@ func (s *Server) readBootHealthRun(ctx context.Context) (run bootHealthRun, volu
 	volumesFailed = units[volumesActivateUnit]["ActiveState"] == "failed"
 	switch {
 	case settled["LoadState"] != "loaded":
-		return bootHealthRunUnknown, false, ""
+		return bootHealthRunUnknown, volumesFailed, ""
 	case settled["Job"] != "":
-		return bootHealthRunSettling, false, health["StatusText"]
+		return bootHealthRunSettling, volumesFailed, health["StatusText"]
 	case health["ActiveState"] == "failed":
 		return bootHealthRunFailed, volumesFailed, health["StatusText"]
 	// An inactive oneshot does not show whether it ran; the target it orders

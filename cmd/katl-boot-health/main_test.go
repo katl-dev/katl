@@ -333,22 +333,23 @@ func TestRunRecoveryKeepsKnownGood(t *testing.T) {
 	}
 }
 
-func TestRunDeadmanArmsRebootForTrialFailure(t *testing.T) {
+func TestRunDeadmanRetriesTrialFailure(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 18, 0, 0, 0, time.UTC)
 	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
 	markCommandGenerationHealthy(t, root, "gen0", now.Add(-45*time.Minute))
 	writeCommandGeneration(t, root, "gen1", now.Add(-30*time.Minute))
+	const fallbackEntry = "loader/entries/katl-gen0.conf"
 	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
 		APIVersion:                    generation.APIVersion,
 		Kind:                          generation.BootSelectionKind,
-		DefaultGenerationID:           "gen0",
+		DefaultGenerationID:           "gen1",
 		TargetBootGenerationID:        "gen1",
 		TrialGenerationID:             "gen1",
 		PreviousKnownGoodGenerationID: "gen0",
 		BootedGenerationID:            "gen1",
-		DefaultBootEntry:              "loader/entries/katl-gen0.conf",
-		PreviousKnownGoodBootEntry:    "loader/entries/katl-gen0.conf",
+		DefaultBootEntry:              "loader/entries/katl-gen1.conf",
+		PreviousKnownGoodBootEntry:    fallbackEntry,
 		TrialBootEntry:                "loader/entries/katl-gen1.conf",
 		BootedBootEntry:               "loader/entries/katl-gen1.conf",
 		PendingHealthValidation:       true,
@@ -365,9 +366,41 @@ func TestRunDeadmanArmsRebootForTrialFailure(t *testing.T) {
 	bootHealthClock = func() time.Time { return now }
 	t.Cleanup(func() { bootHealthClock = oldClock })
 
+	selectionPath, err := generation.BootSelectionPath(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Block the selection's atomic rename after the EFI setter succeeds.
+	oldDefault := bootDefaultCommand
+	t.Cleanup(func() { bootDefaultCommand = oldDefault })
+	savedSelection := selectionPath + ".saved"
+	firmwareDefault := "loader/entries/katl-gen1.conf"
+	bootDefaultCommand = func(_, entry string) error {
+		firmwareDefault = entry
+		if err := os.Rename(selectionPath, savedSelection); err != nil {
+			t.Fatal(err)
+		}
+		return os.Mkdir(selectionPath, 0o755)
+	}
+	args := []string{"--root", root, "--cmdline", cmdline, "--result=timeout", "--reason=katl-boot-health-deadline-expired", "--force-failure", "--request-reboot"}
+	if err := run(t.Context(), args, io.Discard); err == nil || !strings.Contains(err.Error(), "write boot selection") {
+		t.Fatalf("run() error = %v, want the injected selection write failure", err)
+	}
+	if err := os.Remove(selectionPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(savedSelection, selectionPath); err != nil {
+		t.Fatal(err)
+	}
+	bootDefaultCommand = func(_, entry string) error {
+		firmwareDefault = entry
+		return nil
+	}
+
 	var stdout bytes.Buffer
-	if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result=timeout", "--reason=katl-boot-health-deadline-expired", "--force-failure", "--request-reboot"}, &stdout); err != nil {
-		t.Fatalf("run() error = %v", err)
+	// The recovery unit's SuccessAction=reboot depends on this exit status.
+	if err := run(t.Context(), args, &stdout); err != nil {
+		t.Fatalf("run() after restoring selection storage = %v", err)
 	}
 	if !strings.Contains(stdout.String(), "rebootRequested=true") {
 		t.Fatalf("stdout = %q", stdout.String())
@@ -376,8 +409,19 @@ func TestRunDeadmanArmsRebootForTrialFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selection.DefaultGenerationID != "gen0" || selection.FailedBootGenerationID != "gen1" || selection.RecoveryRequired {
-		t.Fatalf("selection = %#v, want bounded fallback to gen0", selection)
+	if selection.NextBootGenerationID() != "gen0" || selection.DefaultBootEntry != fallbackEntry ||
+		selection.FailedBootGenerationID != "gen1" || selection.RecoveryRequired || selection.PendingHealthValidation || firmwareDefault != fallbackEntry {
+		t.Fatalf("selection = %#v and EFI default = %q, want settled fallback to gen0", selection, firmwareDefault)
+	}
+	_, status, err := generation.ReadGeneration(root, "gen1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.BootState != generation.BootStateFailed || status.HealthState != generation.HealthStateUnhealthy {
+		t.Fatalf("trial status = %s/%s, want failed/unhealthy", status.BootState, status.HealthState)
+	}
+	if err := run(t.Context(), args, io.Discard); err == nil || !strings.Contains(err.Error(), "automatic reboot refused") {
+		t.Fatalf("run() after recovery completed = %v, want no further automatic reboot", err)
 	}
 }
 
@@ -683,5 +727,81 @@ func TestRunRecoveryNamesRebootForManagementNetworkFailure(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "recover from the console") {
 		t.Fatalf("recovery error = %v, want reboot guidance instead of console recovery", err)
+	}
+}
+
+func TestRunRetainsBootableTrialWhenDefaultUKIIsMissing(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 6, 15, 20, 0, 0, 0, time.UTC)
+	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
+	markCommandGenerationHealthy(t, root, "gen0", now.Add(-45*time.Minute))
+	writeCommandGeneration(t, root, "gen1", now.Add(-30*time.Minute))
+	const defaultEntry = "loader/entries/katl-gen0.conf"
+	const trialEntry = "loader/entries/katl-gen1.conf"
+	// Upgrade uses an EFI one-shot while keeping the persistent default.
+	selection := generation.BootSelectionRecord{
+		APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind, UpdatedAt: now,
+		DefaultGenerationID: "gen0", DefaultBootEntry: defaultEntry,
+		PreviousKnownGoodGenerationID: "gen0", PreviousKnownGoodBootEntry: defaultEntry,
+		TargetBootGenerationID: "gen1", TargetBootEntry: trialEntry,
+		TrialGenerationID: "gen1", TrialBootEntry: trialEntry,
+		BootedGenerationID: "gen1", BootedBootEntry: trialEntry,
+		PendingHealthValidation: true, PersistentDefaultPromotion: generation.DefaultPromotionPending,
+	}
+	if err := generation.WriteBootSelection(root, selection); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(root, "efi/EFI/Linux/katl-gen0.efi")); err != nil {
+		t.Fatal(err)
+	}
+	if armed, err := generation.ArmBootRecovery(root, "gen1"); err != nil || armed {
+		t.Fatalf("ArmBootRecovery(gen1) = %t, %v, want disarmed", armed, err)
+	}
+	const commandLine = "root=PARTUUID=11111111-2222-3333-4444-555555555555 katl.generation=gen1"
+	cmdline := writeCommandLine(t, root, commandLine)
+	networkErr := errors.New("networkctl list: exit status 1")
+	stubNetworkctl(t, time.Minute, func() (string, error) {
+		if networkErr != nil {
+			return "", networkErr
+		}
+		return linkRoutable, nil
+	})
+	oldDefault := bootDefaultCommand
+	t.Cleanup(func() { bootDefaultCommand = oldDefault })
+	firmwareDefault := defaultEntry
+	bootDefaultCommand = func(_, entry string) error {
+		firmwareDefault = entry
+		return nil
+	}
+
+	args := []string{"--root", root, "--cmdline", cmdline}
+	if err := run(t.Context(), args, io.Discard); err == nil || !strings.Contains(err.Error(), "networkctl list: exit status 1") {
+		t.Fatalf("boot health = %v, want the network read failure", err)
+	}
+	err := run(t.Context(), append(args, "--result=failure", "--force-failure", "--request-reboot"), io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "automatic reboot refused") ||
+		!strings.Contains(err.Error(), "run boot health on generation gen1") ||
+		!strings.Contains(err.Error(), "katlctl node reboot <node>") {
+		t.Fatalf("recovery error = %v, want manual reboot guidance naming gen1", err)
+	}
+	selection, err = generation.ReadBootSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selection.NextBootGenerationID() != "gen1" || selection.DefaultBootEntry != trialEntry || firmwareDefault != trialEntry ||
+		!selection.RecoveryRequired || selection.PendingHealthValidation || selection.FailedBootGenerationID != "gen1" {
+		t.Fatalf("selection = %#v and EFI default = %q, want gen1 selected for recovery", selection, firmwareDefault)
+	}
+
+	networkErr = nil
+	if err := generation.RecordBootedGeneration(root, commandLine); err != nil {
+		t.Fatalf("record reboot into gen1: %v", err)
+	}
+	if err := run(t.Context(), args, io.Discard); err != nil {
+		t.Fatalf("boot health after network repair = %v", err)
+	}
+	_, status, err := generation.ReadGeneration(root, "gen1")
+	if err != nil || !generation.IsKnownGood(status) {
+		t.Fatalf("gen1 after network repair = %s/%s, %v, want known-good", status.BootState, status.HealthState, err)
 	}
 }

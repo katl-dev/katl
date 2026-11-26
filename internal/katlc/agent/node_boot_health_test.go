@@ -286,14 +286,21 @@ func TestMutationWaitsForBootHealth(t *testing.T) {
 
 func TestNodeStatusBootHealthReportsWhatItWaitsFor(t *testing.T) {
 	waiting := "waiting for the management network: required link enp1s0: no carrier; connect a cable or check the switch port"
+	failedVolumes := "\n\nId=katl-volumes-activate.service\nLoadState=loaded\nActiveState=failed\nJob=\n"
 	for _, tc := range []struct {
 		name, properties, state, diagnostic string
 	}{
 		{name: "settling", properties: healthSettling, state: nodeBootHealthPending},
 		{name: "settle timed out", properties: healthStalled, state: nodeBootHealthPending},
 		{
+			name:       "settling with failed volumes",
+			properties: healthSettling + failedVolumes,
+			state:      nodeBootHealthFailed,
+			diagnostic: "katl-volumes-activate.service failed",
+		},
+		{
 			name:       "stalled with failed volumes",
-			properties: healthStalled + "\n\nId=katl-volumes-activate.service\nLoadState=loaded\nActiveState=failed\nJob=\n",
+			properties: healthStalled + failedVolumes,
 			state:      nodeBootHealthFailed,
 			diagnostic: "katl-volumes-activate.service failed",
 		},
@@ -323,6 +330,18 @@ func TestNodeStatusNamesRebootAfterManagementNetworkFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	for _, path := range []string{spec.Boot.UKIPath, filepath.Join("/efi", spec.Boot.LoaderEntryPath)} {
+		path = filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, nil, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, spec.Confexts[0].Path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	failedAt := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
 	status.BootState, status.HealthState, status.UpdatedAt = generation.BootStateFailed, generation.HealthStateUnhealthy, failedAt
 	status.StatusTransitions = append(status.StatusTransitions, generation.StatusTransition{
@@ -337,6 +356,7 @@ func TestNodeStatusNamesRebootAfterManagementNetworkFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	selection.RecoveryRequired, selection.FailedBootGenerationID = true, "generation-0"
+	selection.DefaultBootEntry = spec.Boot.LoaderEntryPath
 	if err := generation.WriteBootSelection(root, selection); err != nil {
 		t.Fatal(err)
 	}
