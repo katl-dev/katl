@@ -145,6 +145,7 @@ type ciPlan struct {
 	DriverFlavours     []string           `json:"driverFlavours"`
 	DriverDigests      map[string]string  `json:"driverDigests"`
 	QualifiedDrivers   map[string]string  `json:"qualifiedDrivers"`
+	DriverDecisions    []string           `json:"driverDecisions"`
 	ProductionFlavours []string           `json:"productionFlavours"`
 	Groups             []group            `json:"groups"`
 	VMSelection        vmSelectionSummary `json:"vmSelection"`

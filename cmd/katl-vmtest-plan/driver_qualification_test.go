@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/katl-dev/katl/internal/gittest"
 )
@@ -19,13 +20,16 @@ const (
 	testRecipe       = "extensions/drbd9/recipe.json"
 	testOSRelease    = "mkosi.profiles/runtime/os-release.in"
 	testAgentUnit    = "mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system/katlc-agent.service"
-	testAgentCode    = "internal/katlc/agent/executor.go"
+	testActivation   = "internal/generation/activation.go"
+	testKatlctl      = "cmd/katlctl/main.go"
 	testBIRDReadme   = "extensions/bird/README.md"
 	testStandardLock = "kernels/fedora-45/x86_64/standard.json"
 	testClusterPlan  = "internal/installer/clusterplan/compile.go"
-	testGuestHelper  = "internal/vmtest/guest_test.go"
+	testGuestHelper  = "internal/vmtest/guest.go"
 	testSecurity     = "mkosi.profiles/runtime/mkosi.extra/usr/lib/katl/systemd/service-security.conf"
 )
+
+const testGoMod = "module github.com/katl-dev/katl\ngo 1.26.0\n"
 
 func TestDriverDigestCandidate(t *testing.T) {
 	both := []string{"standard", "lts"}
@@ -34,16 +38,20 @@ func TestDriverDigestCandidate(t *testing.T) {
 		want                []string
 	}{
 		{"agent unit", testAgentUnit, "[Service]\nExecStart=/usr/bin/katlc agent\n", nil},
+		{"katlctl only", testKatlctl, "package main\nfunc main() { println(1) }\n", nil},
+		{"cluster plan", testClusterPlan, "package clusterplan\nconst extension = \"drbd9\"\n", nil},
+		{"Go direct annotation", "go.mod", testGoMod + "require (\n example.org/z v1.1.0\n example.org/a v1.0.0\n)\n", nil},
+		{"Go module version", "go.mod", testGoMod + "require (\n example.org/a v1.0.1\n example.org/z v1.1.0 // indirect\n)\n", both},
 		{"BIRD documentation", testBIRDReadme, "Updated BIRD documentation\n", nil},
 		{"os-release branding", testOSRelease, "ID=katlos\nSYSEXT_LEVEL=katl-runtime-1\nPRETTY_NAME=KatlOS\n", nil},
 		{"mkosi cache location", "mkosi.conf", "[Distribution]\nRelease=45\n[Build]\nCacheDirectory=new-cache\n", nil},
 		{"workflow diagnostics", qualificationWorkflow, testWorkflow("drbd", "upload-new-logs"), nil},
+		{"kernel lock", testStandardLock, "updated standard lock\n", []string{"standard"}},
 		{"extension recipe", testRecipe, "{\"version\":\"9.3.5\"}\n", both},
 		{"new extension recipe", "extensions/new/recipe.json", "{\"version\":\"1\"}\n", both},
 		{"sysext compatibility", testOSRelease, "ID=katlos\nSYSEXT_LEVEL=katl-runtime-2\n", both},
 		{"mkosi architecture", "mkosi.conf", "[Distribution]\nRelease=45\nArchitecture=arm64\n[Build]\nCacheDirectory=cache\n", both},
-		{"driver activation", testAgentCode, "package agent\nconst activation = \"refresh systemd-sysext\"\n", both},
-		{"cluster plan", testClusterPlan, "package clusterplan\nconst extension = \"drbd9\"\n", both},
+		{"driver activation", testActivation, "package generation\nconst activation = \"refresh systemd-sysext\"\n", both},
 		{"DRBD guest helper", testGuestHelper, "package vmtest\nconst readFile = \"new helper\"\n", both},
 		{"activation security symlink target", testSecurity, "[Service]\nNoNewPrivileges=no\n", both},
 		{"qualification command", qualificationWorkflow, testWorkflow("drbd-new", "upload-logs"), both},
@@ -113,7 +121,7 @@ func TestDriverQualificationPlan(t *testing.T) {
 	for _, tc := range []struct {
 		name, event, ref string
 		paths            []string
-		lookup           func(map[string]string) (map[string]string, error)
+		lookup           func(map[string]string, bool) (map[string]driverQualification, error)
 		wantLookup       []string
 		want             []string
 	}{
@@ -121,23 +129,24 @@ func TestDriverQualificationPlan(t *testing.T) {
 		{"missing on main push", "push", "refs/heads/main", nil, fixtureDriverLookup("", nil), both, both},
 		{"missing on PR", "pull_request", "refs/pull/1/merge", nil, fixtureDriverLookup("", nil), both, both},
 		{"release push", "push", "refs/heads/release/2026", nil, qualified, nil, nil},
-		{"lookup error", "pull_request", "refs/pull/1/merge", nil, func(map[string]string) (map[string]string, error) {
+		{"lookup error", "pull_request", "refs/pull/1/merge", nil, func(map[string]string, bool) (map[string]driverQualification, error) {
 			return nil, errors.New("status lookup failed")
 		}, both, both},
 		{"forced lock", "merge_group", "", []string{testStandardLock}, qualified, []string{"lts"}, []string{"standard"}},
+		{"forced main lock with historical success", "push", "refs/heads/main", []string{testStandardLock}, qualified, both, []string{"standard"}},
 		{"scheduled", "schedule", "refs/heads/main", nil, qualified, nil, both},
 		{"dispatched", "workflow_dispatch", "refs/heads/topic", nil, qualified, nil, both},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var requested []string
 			plan := ciPlan{}
-			plan.selectDrivers(tc.paths, tc.event, tc.ref, currentDigests, func(wanted map[string]string) (map[string]string, error) {
+			plan.selectDrivers(tc.paths, tc.event, tc.ref, currentDigests, func(wanted map[string]string, mainPush bool) (map[string]driverQualification, error) {
 				for _, flavour := range both {
 					if _, ok := wanted[flavour]; ok {
 						requested = append(requested, flavour)
 					}
 				}
-				return tc.lookup(wanted)
+				return tc.lookup(wanted, mainPush)
 			})
 
 			if !slices.Equal(plan.DriverFlavours, tc.want) || plan.DriverFlavours == nil || !slices.Equal(requested, tc.wantLookup) {
@@ -164,6 +173,7 @@ case "$*" in *%s*) exit 1;; esac
 case "$2" in
   graphql) printf '%%s\n' "$DRIVER_STATUS_RESPONSE";;
   */runs/101/attempts/1) printf '%%s\n' "$DRIVER_RUN_RESPONSE";;
+  */runs/102/attempts/1) printf '%%s\n' "$PENDING_RUN_RESPONSE";;
   *) exit 1;;
 esac
 `, side)
@@ -173,24 +183,116 @@ esac
 	t.Setenv("GITHUB_EVENT_NAME", "pull_request")
 	t.Setenv("GITHUB_REF", "refs/pull/1/merge")
 	t.Setenv("GITHUB_SERVER_URL", "https://github.com")
-	t.Setenv("DRIVER_RUN_RESPONSE", driverRunFixture(101, "main", base))
-	t.Setenv("DRIVER_STATUS_RESPONSE", fmt.Sprintf(
-		`{"data":{"repository":{"c0":{"oid":%q,"status":null},"c1":{"oid":%q,"status":{
-			"standard":%s,"lts":%s
-		}}}}}`, main, base, driverStatusFixture("github-actions", "SUCCESS", digests["standard"], "2026-11-23T01:00:00Z", 101),
-		driverStatusFixture("github-actions", "PENDING", digests["lts"], "2026-11-23T01:00:00Z", 101)))
+	for _, tc := range []struct {
+		name, state, conclusion, reason string
+		age                             time.Duration
+		want                            []string
+	}{
+		{"live producer", "in_progress", "", "same-digest-qualification-in-progress", time.Minute, nil},
+		{"failed producer", "completed", "failure", "producer-not-live", time.Minute, []string{"lts"}},
+		{"cancelled producer", "completed", "cancelled", "producer-not-live", time.Minute, []string{"lts"}},
+		{"completed without a success record", "completed", "success", "producer-not-live", time.Minute, []string{"lts"}},
+		{"stale producer", "in_progress", "", "producer-not-live", 4 * time.Hour, []string{"lts"}},
+		{"unavailable producer", "", "", "producer-unavailable", time.Minute, []string{"lts"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			producer := driverRunFixture(102, 1, "schedule", "main", base, tc.state, tc.conclusion)
+			if tc.state == "" {
+				producer = "malformed"
+			}
+			t.Setenv("DRIVER_RUN_RESPONSE", driverRunFixture(101, 1, "schedule", "main", base, "completed", "success"))
+			t.Setenv("PENDING_RUN_RESPONSE", producer)
+			date := time.Now().Add(-tc.age).UTC().Format(time.RFC3339)
+			t.Setenv("DRIVER_STATUS_RESPONSE", fmt.Sprintf(
+				`{"data":{"repository":{"c0":{"oid":%q,"status":null},"c1":{"oid":%q,"status":{
+					"standard":%s,"lts":%s
+				}}}}}`, main, base, driverStatusFixture("github-actions", "SUCCESS", digests["standard"], date, 101),
+				driverStatusFixture("github-actions", "PENDING", digests["lts"], date, 102)))
 
-	var result bytes.Buffer
-	if err := run([]string{"--ci"}, strings.NewReader(testBIRDReadme+"\x00"), &result); err != nil {
-		t.Fatal(err)
+			plan := readDriverPlan(t, testBIRDReadme)
+			if plan.QualifiedDrivers["standard"] != base || plan.QualifiedDrivers["lts"] != "" || !slices.Equal(plan.DriverFlavours, tc.want) {
+				t.Fatalf("plan = %+v, want prior success for standard and driver matrix %v", plan, tc.want)
+			}
+			decision := "skip"
+			if len(tc.want) != 0 {
+				decision = "run"
+			}
+			wantLog := fmt.Sprintf("driver-qualification flavour=lts digest=%q record_sha=%q record_context=%q record_state=\"PENDING\" producer_run=\"https://github.com/katl-dev/katl/actions/runs/102/attempts/1\" decision=%s reason=%s",
+				digests["lts"], base, "katl/driver-qualification/lts/"+digests["lts"], decision, tc.reason)
+			if len(plan.DriverDecisions) != 2 || plan.DriverDecisions[1] != wantLog {
+				t.Errorf("decisions = %v, want %s", plan.DriverDecisions, wantLog)
+			}
+		})
 	}
-	var plan ciPlan
-	if err := json.Unmarshal(result.Bytes(), &plan); err != nil {
-		t.Fatal(err)
-	}
-	if plan.QualifiedDrivers["standard"] != base || plan.QualifiedDrivers["lts"] != "" ||
-		!slices.Equal(plan.DriverFlavours, []string{"lts"}) {
-		t.Fatalf("want older main record for standard and a one-flavour matrix for pending LTS, got %s", &result)
+}
+
+func TestMainAdoptsExactMergeGroupQualification(t *testing.T) {
+	base := newDriverRepo(t)
+	writeDriverInput(t, testStandardLock, "new standard lock\n", 0o644)
+	older := commitDriverRepo(t)
+	writeDriverInput(t, testBIRDReadme, "Documentation in the merge group\n", 0o644)
+	head := commitDriverRepo(t)
+	driverGit(t, "update-ref", "refs/remotes/origin/main", older)
+	digests := readDriverDigests(t)
+
+	stub := t.TempDir()
+	writeDriverInput(t, filepath.Join(stub, "gh"), `#!/bin/sh
+case "$2" in
+  graphql)
+    case "$*" in *"c0: object(oid: \"$DRIVER_HEAD\")"*) ;; *) exit 1;; esac
+    printf '%s\n' "$DRIVER_STATUS_RESPONSE";;
+  */runs/101/attempts/1) printf '%s\n' "$HISTORICAL_RUN";;
+  */runs/102/attempts/1) printf '%s\n' "$EXACT_RUN";;
+  *) exit 1;;
+esac
+`, 0o755)
+	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GITHUB_REPOSITORY", "katl-dev/katl")
+	t.Setenv("GITHUB_EVENT_NAME", "push")
+	t.Setenv("GITHUB_REF", "refs/heads/main")
+	t.Setenv("GITHUB_SERVER_URL", "https://github.com")
+	t.Setenv("DRIVER_HEAD", head)
+	const queue = "gh-readonly-queue/main/pr-1-base"
+	const bot = "github-actions"
+	t.Setenv("HISTORICAL_RUN", driverRunFixture(101, 1, "merge_group", queue, older, "completed", "success"))
+	for _, tc := range []struct {
+		name, sha, branch, state, digest string
+		attempt                          int
+		adopt                            bool
+	}{
+		{"exact successful result", head, queue, "SUCCESS", digests["standard"], 1, true},
+		{"historical result only", older, queue, "", "", 1, false},
+		{"wrong digest", head, queue, "SUCCESS", "wrong digest", 1, false},
+		{"failure", head, queue, "FAILURE", digests["standard"], 1, false},
+		{"wrong producer commit", older, queue, "SUCCESS", digests["standard"], 1, false},
+		{"wrong queue", head, "gh-readonly-queue/release/2026/pr-1-base", "SUCCESS", digests["standard"], 1, false},
+		{"wrong run attempt", head, queue, "SUCCESS", digests["standard"], 2, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exactStatus := "null"
+			if tc.state != "" {
+				exactStatus = `{"standard":` + driverStatusFixture(bot, tc.state, tc.digest, "2026-11-23T02:00:00Z", 102) + `}`
+			}
+			t.Setenv("EXACT_RUN", driverRunFixture(102, tc.attempt, "merge_group", tc.branch, tc.sha, "completed", "success"))
+			t.Setenv("DRIVER_STATUS_RESPONSE", fmt.Sprintf(
+				`{"data":{"repository":{"c0":{"oid":%q,"status":%s},"c1":{"oid":%q,"status":{"standard":%s,"lts":%s}},"c2":{"oid":%q,"status":null}}}}`,
+				head, exactStatus, older,
+				driverStatusFixture(bot, "SUCCESS", digests["standard"], "2026-11-23T01:00:00Z", 101),
+				driverStatusFixture(bot, "SUCCESS", digests["lts"], "2026-11-23T01:00:00Z", 101), base))
+
+			plan := readDriverPlan(t, testStandardLock)
+			if plan.QualifiedDrivers["lts"] != older {
+				t.Fatalf("LTS qualification = %+v, want %s", plan, older)
+			}
+			if tc.adopt {
+				if len(plan.DriverFlavours) != 0 || plan.QualifiedDrivers["standard"] != head ||
+					!strings.Contains(plan.DriverDecisions[0], `/runs/102/attempts/1" decision=skip reason=same-digest-merge-group-success`) {
+					t.Fatalf("want main to adopt the queue run for %s, got %+v", head, plan)
+				}
+			} else if !slices.Equal(plan.DriverFlavours, []string{"standard"}) || plan.QualifiedDrivers["standard"] != "" {
+				t.Fatalf("want a fresh standard qualification for the lock change, got %+v", plan)
+			}
+		})
 	}
 }
 
@@ -214,8 +316,8 @@ esac
 	t.Setenv("PATH", stub+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("GITHUB_REPOSITORY", "katl-dev/katl")
 	t.Setenv("GITHUB_SERVER_URL", "https://github.com")
-	t.Setenv("OLD_RUN", driverRunFixture(101, "main", old))
-	t.Setenv("HEAD_RUN", driverRunFixture(102, "main", head))
+	t.Setenv("OLD_RUN", driverRunFixture(101, 1, "schedule", "main", old, "completed", "success"))
+	t.Setenv("HEAD_RUN", driverRunFixture(102, 1, "schedule", "main", head, "completed", "success"))
 	status := func(creator, state, date string, id int) string {
 		return `{"standard":` + driverStatusFixture(creator, state, digest, date, id) + `}`
 	}
@@ -238,17 +340,34 @@ esac
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.name == "wrong branch" {
-				t.Setenv("HEAD_RUN", driverRunFixture(102, "topic", head))
+				t.Setenv("HEAD_RUN", driverRunFixture(102, 1, "schedule", "topic", head, "completed", "success"))
 			}
 			t.Setenv("DRIVER_STATUS_RESPONSE", fmt.Sprintf(
 				`{"data":{"repository":{"c0":{"oid":%q,"status":%s},"c1":{"oid":%q,"status":%s}}}}`,
 				head, tc.headStatus, old, tc.oldStatus))
-			got, err := mainDriverQualifications(map[string]string{"standard": digest})
-			if err != nil || got["standard"] != tc.want {
+			got, err := mainDriverQualifications(map[string]string{"standard": digest}, false)
+			reused := ""
+			if got["standard"].reason == "same-digest-success" {
+				reused = got["standard"].sha
+			}
+			if err != nil || reused != tc.want {
 				t.Fatalf("qualification = %v, %v, want standard commit %q", got, err, tc.want)
 			}
 		})
 	}
+}
+
+func readDriverPlan(t *testing.T, path string) ciPlan {
+	t.Helper()
+	var result bytes.Buffer
+	if err := run([]string{"--ci", "--vm-mode", "off"}, strings.NewReader(path+"\x00"), &result); err != nil {
+		t.Fatal(err)
+	}
+	var plan ciPlan
+	if err := json.Unmarshal(result.Bytes(), &plan); err != nil {
+		t.Fatal(err)
+	}
+	return plan
 }
 
 func driverStatusFixture(creator, state, digest, date string, id int) string {
@@ -256,18 +375,18 @@ func driverStatusFixture(creator, state, digest, date string, id int) string {
 		"createdAt":%q,"targetUrl":"https://github.com/katl-dev/katl/actions/runs/%d/attempts/1"}`, state, digest, creator, date, id)
 }
 
-func driverRunFixture(id int, branch, sha string) string {
-	return fmt.Sprintf(`{"id":%d,"run_attempt":1,"path":".github/workflows/ci.yml","head_branch":%q,
-		"head_sha":%q,"event":"schedule","repository":{"full_name":"katl-dev/katl"},
-		"head_repository":{"full_name":"katl-dev/katl"}}`, id, branch, sha)
+func driverRunFixture(id, attempt int, event, branch, sha, state, conclusion string) string {
+	return fmt.Sprintf(`{"id":%d,"run_attempt":%d,"path":".github/workflows/ci.yml","head_branch":%q,
+		"head_sha":%q,"event":%q,"status":%q,"conclusion":%q,"repository":{"full_name":"katl-dev/katl"},
+		"head_repository":{"full_name":"katl-dev/katl"}}`, id, attempt, branch, sha, event, state, conclusion)
 }
 
-func fixtureDriverLookup(commit string, records map[string]string) func(map[string]string) (map[string]string, error) {
-	return func(wanted map[string]string) (map[string]string, error) {
-		matches := map[string]string{}
+func fixtureDriverLookup(commit string, records map[string]string) func(map[string]string, bool) (map[string]driverQualification, error) {
+	return func(wanted map[string]string, _ bool) (map[string]driverQualification, error) {
+		matches := map[string]driverQualification{}
 		for flavour, digest := range wanted {
 			if records[flavour] == digest {
-				matches[flavour] = commit
+				matches[flavour] = driverQualification{sha: commit, reason: "same-digest-success"}
 			}
 		}
 		return matches, nil
@@ -298,22 +417,9 @@ func newDriverRepo(t *testing.T) string {
 	writeDriverInput(t, testRecipe, "{\"version\":\"9.3.4\"}\n", 0o644)
 	writeDriverInput(t, testOSRelease, "ID=katlos\nSYSEXT_LEVEL=katl-runtime-1\n", 0o644)
 	writeDriverInput(t, testAgentUnit, "[Service]\nExecStart=/usr/bin/katlc\n", 0o644)
-	writeDriverInput(t, "go.mod", "module github.com/katl-dev/katl\ngo 1.26.0\n", 0o644)
-	writeDriverInput(t, "cmd/katlos-install/main.go", `package main
-import _ "github.com/katl-dev/katl/internal/installer/clusterplan"
-func main() {}
-`, 0o644)
-	writeDriverInput(t, "cmd/katlc/main.go", `package main
-import _ "github.com/katl-dev/katl/internal/katlc/agent"
-func main() {}
-`, 0o644)
-	for _, pkg := range append(slices.Clone(driverGuestPackages), driverHostPackages...) {
-		main := filepath.Join(pkg, "main.go")
-		if _, err := os.Stat(main); errors.Is(err, os.ErrNotExist) {
-			writeDriverInput(t, main, "package main\nfunc main() {}\n", 0o644)
-		}
-	}
-	writeDriverInput(t, testAgentCode, "package agent\nconst activation = \"activate systemd-sysext\"\n", 0o644)
+	writeDriverInput(t, "go.mod", testGoMod+"require example.org/a v1.0.0\nrequire example.org/z v1.1.0 // indirect\n", 0o644)
+	writeDriverInput(t, testKatlctl, "package main\nfunc main() {}\n", 0o644)
+	writeDriverInput(t, testActivation, "package generation\nconst activation = \"activate systemd-sysext\"\n", 0o644)
 	writeDriverInput(t, testClusterPlan, "package clusterplan\nconst extension = \"none\"\n", 0o644)
 	writeDriverInput(t, "internal/vmtest/drbd_smoke_test.go", "package vmtest\nvar observed = readFile\n", 0o644)
 	writeDriverInput(t, testGuestHelper, "package vmtest\nconst readFile = \"guest helper\"\n", 0o644)

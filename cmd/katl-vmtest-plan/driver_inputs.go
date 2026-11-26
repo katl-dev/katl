@@ -16,7 +16,7 @@ import (
 )
 
 // Bump when changing the digest format or the interpretation of its inputs.
-const driverDigestVersion = "v2"
+const driverDigestVersion = "v3"
 
 var kernelFlavours = []string{flavour.Standard, flavour.LTS}
 
@@ -31,24 +31,35 @@ var driverInputs = []string{
 	"mkosi.profiles/kernel-extension-*/**",
 	"scripts/build-release-extensions",
 	"scripts/assemble-release-extensions",
+	"cmd/katl-kernel-release/main.go",
+	"cmd/katl-mkosi-artifacts/main.go",
+	"cmd/katl-mkosi-artifacts/compile_extension.go",
+	"cmd/katl-mkosi-artifacts/kernel_extension.go",
+	"cmd/katl-mkosi-artifacts/kernel_inputs.go",
+	"cmd/katl-mkosi-artifacts/kernel_lock.go",
+	"cmd/katl-mkosi-artifacts/release_extension_inventory.go",
+	"cmd/katl-mkosi-artifacts/release_extensions.go",
+	"internal/releaseextensions/**",
+	"internal/kernelrelease/**",
+	"internal/kernelmodule/**",
+	"internal/extensionrelease/**",
 
-	// Builder, runtime and installer kernel preparation, and both image roles.
+	// Kernel export, the mkosi toolchain, and install and upgrade image assembly.
 	"Containerfile.mkosi",
 	"containers-policy.json",
 	"scripts/fedora-release",
 	"scripts/mkosi",
 	"scripts/build-katlos-install-image",
-	"scripts/build-endpoint-advertiser-sysext",
 	".github/actions/mkosi-builder/**",
 	"mkosi.conf",
 	"mkosi.conf.d/**",
-	"mkosi.profiles/installer-image/**",
-	"mkosi.profiles/endpoint-advertiser-sysext/**",
-	"mkosi.profiles/runtime/components.lock",
-	"mkosi.profiles/runtime/mkosi.*",
-	"mkosi.profiles/runtime/mkosi.conf.d/**",
-	"mkosi.profiles/runtime/mkosi.repart/**",
-	"mkosi.profiles/runtime/mkosi.sandbox/**",
+	"mkosi.profiles/runtime/mkosi.build",
+	"mkosi.profiles/runtime/mkosi.conf",
+	"mkosi.profiles/runtime/mkosi.finalize",
+	"go.mod",
+	"go.sum",
+
+	// Release identity, module layout and loader settings.
 	"mkosi.profiles/runtime/os-release.in",
 	"mkosi.profiles/runtime/mkosi.extra/etc/os-release",
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/os-release",
@@ -57,14 +68,22 @@ var driverInputs = []string{
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/modules-load.d/**",
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/depmod.d/**",
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/modprobe.d/**",
+	"mkosi.profiles/runtime/mkosi.extra/etc/modules-load.d/**",
 	"mkosi.profiles/runtime/mkosi.extra/etc/depmod.d/**",
 	"mkosi.profiles/runtime/mkosi.extra/etc/modprobe.d/**",
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/extension-release.d/**",
-	"packages/**",
-	"go.mod",
-	"go.sum",
 
 	// Driver selection, staging, module indexing, upgrade, and sysext activation.
+	"cmd/katl-generation-activate/**",
+	"internal/generation/activation.go",
+	"internal/generation/module_indexes.go",
+	"internal/generation/state.go",
+	"internal/installer/systemextensionbundle/**",
+	"internal/installer/nodeextensionbundle/**",
+	"internal/installer/katlosimage/**",
+	"internal/installer/configapply/extension_resolution.go",
+	"internal/installer/configapply/module_indexes.go",
+	"internal/installer/configapply/system_extensions.go",
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system/katl-system-extensions-*/**",
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system/katl-system-extensions-*.service",
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system/systemd-sysext.*/**",
@@ -74,17 +93,29 @@ var driverInputs = []string{
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/katl/systemd/activation-security.conf",
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/katl/configuration-capabilities-v1",
 
-	// Hosted runner, generated install fixture and DRBD workload.
+	// Driver invocation, the DRBD workload and the helpers it uses to install
+	// fixtures, control guests and observe the generation and disk state.
 	qualificationWorkflow,
-	".github/actions/hosted-vmtest/action.yml",
-	".github/scripts/hosted-apt-install",
-	".github/scripts/hosted-vmtest-go",
-	".github/scripts/hosted-vmtest-measure",
-	".github/scripts/hosted-vmtest-run",
-	"scripts/vmtest-run",
-	"scripts/vmtest-exec",
 	"mkosi.profiles/vmtest-drbd-tools/**",
-	"internal/vmtest/image/**",
+	"internal/vmtest/drbd_smoke_test.go",
+	"internal/vmtest/agent_client.go",
+	"internal/vmtest/config_apply_smoke_test.go",
+	"internal/vmtest/disk.go",
+	"internal/vmtest/first_install.go",
+	"internal/vmtest/first_install_runtime_fixture.go",
+	"internal/vmtest/first_install_world.go",
+	"internal/vmtest/guest.go",
+	"internal/vmtest/installed_node.go",
+	"internal/vmtest/installed_smoke_test.go",
+	"internal/vmtest/installed_world.go",
+	"internal/vmtest/installed_world_test.go",
+	"internal/vmtest/katlctl.go",
+	"internal/vmtest/management_identity.go",
+	"internal/vmtest/sysupdate_smoke_test.go",
+	"internal/vmtest/vmtest.go",
+	"internal/vmtest/world.go",
+	"internal/vmtest/world_fixtures.go",
+	"internal/vmtest/world_scenario.go",
 }
 
 func kernelLockFlavour(name string) string {
@@ -140,11 +171,6 @@ func committedDriverDigests() (map[string]string, error) {
 	}
 	lockDir := "kernels/fedora-" + strings.TrimSpace(string(release)) + "/x86_64/"
 
-	goFiles, err := driverGoInputs(fedoraRelease.Dir)
-	if err != nil {
-		return nil, err
-	}
-
 	type input struct{ name, mode, content string }
 	files := map[string]input{}
 	var selected []string
@@ -165,17 +191,6 @@ func committedDriverDigests() (map[string]string, error) {
 	}
 
 	var shared []input
-	for name, content := range goFiles {
-		if content != "" {
-			shared = append(shared, input{name: name, mode: "module", content: content})
-			continue
-		}
-		if _, ok := files[name]; !ok {
-			return nil, fmt.Errorf("Go driver input %q is not tracked at HEAD", name)
-		}
-		selected = append(selected, name)
-	}
-
 	// Follow selected links through the committed tree. Keep link blobs as
 	// inputs too, so changing the destination is itself observable.
 	seen := map[string]bool{}
@@ -246,6 +261,8 @@ func driverInputProjection(name string) func([]byte) ([]byte, error) {
 		return qualificationSteps
 	case name == "mkosi.conf":
 		return mkosiBuildInputs
+	case name == "go.mod":
+		return driverGoMod
 	case path.Base(name) == "os-release", path.Base(name) == "os-release.in",
 		strings.HasPrefix(path.Base(name), "extension-release."):
 		return extensionIdentity
@@ -300,8 +317,6 @@ func qualificationSteps(data []byte) ([]byte, error) {
 	}
 	jobs, _ := workflow["jobs"].(map[string]any)
 	job, _ := jobs["drivers"].(map[string]any)
-	delete(jobs, "record-driver-start")
-	delete(jobs, "record-driver-result")
 	delete(job, "needs")
 	delete(job, "if")
 	steps, ok := job["steps"].([]any)
@@ -320,7 +335,7 @@ func qualificationSteps(data []byte) ([]byte, error) {
 		delete(env, "KATL_VMTEST_KEEP")
 		delete(env, "KATL_VMTEST_DEBUG_ON_FAILURE")
 	}
-	return json.Marshal(workflow)
+	return json.Marshal([]any{workflow["env"], workflow["defaults"], job})
 }
 
 func gitOutput(args ...string) ([]byte, error) {

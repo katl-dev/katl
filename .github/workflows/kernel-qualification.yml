@@ -14,8 +14,9 @@ jobs:
   record-driver-start:
     name: Record pending driver qualification
     if: >-
-      github.ref == 'refs/heads/main' &&
-      (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+      (github.ref == 'refs/heads/main' &&
+       (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')) ||
+      (github.event_name == 'merge_group' && github.event.merge_group.base_ref == 'refs/heads/main')
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
@@ -33,6 +34,8 @@ jobs:
             echo "::warning::No readable driver input digest for $FLAVOUR on $GITHUB_SHA"
             exit 0
           fi
+          # GitHub stores this against the commit, so an exact-SHA main push
+          # inherits the merge group's result and its original run URL.
           gh api --method POST "repos/$GITHUB_REPOSITORY/statuses/$GITHUB_SHA" \
             -f "context=katl/driver-qualification/$FLAVOUR/$DIGEST" \
             -f "state=$STATE" -f "description=$DIGEST" \
