@@ -56,6 +56,7 @@ jobs start, finish, or change hands.
 | `state.md` | Active orchestrator, Planner, and other agent identifiers, open version milestones and their Release agent identifiers, pending washups and their Release agent identifiers, issue and PR links, worktree paths, running unit names and log paths, queue watch IDs, and the next action and owner. |
 | `logs/` | Codex job reports, retained across session and worktree cleanup. |
 | `worktrees/` | Linked worktrees for scoped tasks and a trusted `origin/main` checkout for cleanup. |
+| `evidence/` | Retained investigation evidence, managed by the [evidence tool](../../scripts/README.md#katl-dev-evidence) under `~/.local/state/katl-dev` in the passwd home. |
 
 Reconcile the checkpoint with running jobs and GitHub before acting on it.
 

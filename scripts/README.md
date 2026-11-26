@@ -189,9 +189,9 @@ to identify each copy.
 ### Configure automatic cleanup
 
 Enable `programs.katl-dev.enable` and run `home-manager switch` to configure
-the private evidence store. With the default `XDG_STATE_HOME`, the module's
-user tmpfiles rules and the evidence tool both use
-`~/.local/state/katl-dev/evidence`. The rules expire evidence after 14 days
+the private evidence store. The module's user tmpfiles rules and the evidence
+tool both use `~/.local/state/katl-dev/evidence` under the passwd home,
+whatever `XDG_STATE_HOME` is set to. The rules expire evidence after 14 days
 based on file and directory modification times and exclude the `.pinned`
 subtree.
 When copying a tree of older evidence into a new entry, use
