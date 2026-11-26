@@ -8,8 +8,9 @@ import (
 	"testing"
 )
 
-// runtimeUnits describes dependencies from unit files, drop-ins and
-// .wants/.requires directories used to assemble the runtime image.
+// runtimeUnits is the runtime image's unit graph as systemd assembles it from
+// unit files, drop-ins and .wants/.requires directories. Units the image does
+// not ship, such as systemd's own, appear only through those directories.
 type runtimeUnits struct {
 	// directives maps a unit to its directive values, drop-ins included.
 	directives map[string]map[string][]string
@@ -25,22 +26,17 @@ func loadRuntimeUnits(t *testing.T) runtimeUnits {
 		}
 		units.directives[unit][key] = append(units.directives[unit][key], values...)
 	}
-	parse := func(unit, contents string) {
-		for line := range strings.SplitSeq(contents, "\n") {
+	parse := func(unit, path string) error {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for _, line := range strings.Split(string(data), "\n") {
 			key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
 			if ok && !strings.HasPrefix(key, "#") {
 				add(unit, strings.TrimSpace(key), strings.Fields(value)...)
 			}
 		}
-	}
-	// The runtime build hook installs this unit alongside the mkosi.extra tree.
-	parse("katl-system-extensions-activate.service", extensionActivationUnit)
-	parseFile := func(unit, path string) error {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		parse(unit, string(data))
 		return nil
 	}
 	err := filepath.WalkDir(systemdRoot, func(path string, entry os.DirEntry, err error) error {
@@ -52,9 +48,9 @@ func loadRuntimeUnits(t *testing.T) runtimeUnits {
 		dir = strings.TrimSuffix(dir, "/")
 		switch {
 		case dir == "":
-			return parseFile(name, path)
+			return parse(name, path)
 		case strings.HasSuffix(dir, ".d") && strings.HasSuffix(name, ".conf"):
-			return parseFile(strings.TrimSuffix(dir, ".d"), path)
+			return parse(strings.TrimSuffix(dir, ".d"), path)
 		case strings.HasSuffix(dir, ".wants"):
 			add(strings.TrimSuffix(dir, ".wants"), "Wants", name)
 		case strings.HasSuffix(dir, ".requires"):

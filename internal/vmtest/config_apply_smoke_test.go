@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	_ "embed"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -31,6 +32,9 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 )
+
+//go:embed testdata/config-apply/50-vmtest-stall.conf
+var extensionActivationStallDropIn string
 
 func TestInstalledRuntimeConfigApplyModesSmoke(t *testing.T) {
 	options := DefaultOptions()
@@ -773,9 +777,8 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 	// A stall before sysinit.target must time out so that networking,
 	// management, and boot health still run and reject the trial.
 	assertExtensionActivationProductionTimeout(t, ctx, guest, "before-stall")
-	stallDropIn := readGuestFile(t, ctx, guest, extensionActivationStallFixture)
 	guest, client = runExtensionBootHealthSmoke(t, ctx, node, guest, client, result, katlctl, endpoint, optionalGeneration, "vmtest-stall", "28",
-		map[string]string{"usr/lib/systemd/system/katl-system-extensions-activate.service.d/50-vmtest-stall.conf": stallDropIn}, "",
+		map[string]string{"usr/lib/systemd/system/katl-system-extensions-activate.service.d/50-vmtest-stall.conf": extensionActivationStallDropIn}, "",
 		"vmtest stall: TimeoutStartUSec=[5s]",
 		"katl-system-extensions-activate.service: start-pre operation timed out",
 		"katl-system-extensions-activate.service: Failed with result 'timeout'")

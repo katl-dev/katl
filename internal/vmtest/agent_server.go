@@ -17,8 +17,6 @@ import (
 
 const DefaultAgentPort uint32 = 10240
 
-const extensionActivationStallFixture = "/usr/lib/katl/vmtest/50-vmtest-stall.conf"
-
 type AgentServer struct {
 	Version            string
 	AllowedCommands    map[string]bool
@@ -537,7 +535,6 @@ func defaultAgentFilePaths() []string {
 		"/var/lib/katl/operations/",
 		"/var/lib/kubelet/config.yaml",
 		"/usr/lib/os-release",
-		extensionActivationStallFixture,
 		"/var/lib/katl/generations/",
 		"/var/lib/katl/test-artifacts/",
 	}

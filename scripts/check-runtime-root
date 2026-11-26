@@ -268,9 +268,7 @@ for path in \
     /usr/lib/sysimage/rpm \
     /var/lib/rpm-state \
     /usr/lib/katl/vmtest \
-    /usr/lib/katl/vmtest/50-vmtest-stall.conf \
     /usr/lib/systemd/system/katl-boot-health.service.d/10-vmtest-management-expiry.conf \
-    /usr/lib/systemd/system/katl-system-extensions-activate.service.d/50-vmtest-stall.conf \
     /usr/lib/systemd/system/katl-vmtest-agent-ready.target \
     /usr/lib/systemd/system/katl-vmtest-agent.service \
     /usr/lib/systemd/system/katl-vmtest-debug-shell.service \

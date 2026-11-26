@@ -441,6 +441,7 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-host-config-prepare.service"), assets.HostConfigPrepare)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-host-config-verify.service"), assets.HostConfigVerify)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-system-extensions-reload.service"), assets.ExtensionReload)
+	assertRepoFile(t, filepath.Join(systemdRoot, "katl-system-extensions-activate.service"), assets.ExtensionActivate)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-configured-units-check.service"), assets.ConfiguredUnitsCheck)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-volumes.target"), assets.VolumesTarget)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-volumes-activate.service"), assets.VolumesActivate)
@@ -473,22 +474,6 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	assertMissing(t, filepath.Join(systemdRoot, "katl-operation@.service"))
 	assertMissing(t, filepath.Join(systemdRoot, "katl-operation-reconcile.service"))
 	assertMissing(t, filepath.Join(systemdRoot, "katl-kubeadm-ready.target.requires/katl-operation-reconcile.service"))
-}
-
-func TestSystemExtensionActivationTimeout(t *testing.T) {
-	assets, err := RenderState(StateRequest{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var timeouts []string
-	for line := range strings.SplitSeq(assets.ExtensionActivate, "\n") {
-		if value, ok := strings.CutPrefix(line, "TimeoutStartSec="); ok {
-			timeouts = append(timeouts, value)
-		}
-	}
-	if len(timeouts) != 1 || timeouts[0] != "3min" {
-		t.Fatalf("extension activation TimeoutStartSec = %q, want [3min]", timeouts)
-	}
 }
 
 func TestKubernetesProjectionRejectsPath(t *testing.T) {
