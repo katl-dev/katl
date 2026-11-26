@@ -190,7 +190,16 @@ func classifyTLSResponse(reader *bufio.Reader) ManagementProtocol {
 		return Unknown
 	}
 	settings := frame.(*http2.SettingsFrame)
-	if err := settings.ForeachSetting(http2.Setting.Valid); err != nil {
+	if err := settings.ForeachSetting(func(setting http2.Setting) error {
+		// RFC 9113 requires a server to disable push if it sends this setting.
+		// RFC 9218 restricts the priority setting to 0 or 1.
+		switch {
+		case setting.ID == http2.SettingEnablePush && setting.Val != 0,
+			setting.ID == http2.SettingNoRFC7540Priorities && setting.Val > 1:
+			return http2.ConnectionError(http2.ErrCodeProtocol)
+		}
+		return setting.Valid()
+	}); err != nil {
 		return Unknown
 	}
 	return PlaintextHTTP2

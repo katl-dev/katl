@@ -53,6 +53,7 @@ type trialNode struct {
 	kubernetes    *agentapi.KubernetesStatus
 	etcdHealthy   uint32
 	apiProxyState string
+	endpoint      *agentapi.ControlPlaneEndpointStatus
 	// Fault knobs.
 	clockOffset      time.Duration
 	omitNodeTime     bool
@@ -174,6 +175,9 @@ func (n *trialNode) GetNodeStatus(context.Context, *agentapi.GetNodeStatusReques
 	if n.kubernetes != nil {
 		status.Kubernetes = proto.Clone(n.kubernetes).(*agentapi.KubernetesStatus)
 		status.ApiProxy = &agentapi.APIProxyStatus{State: n.apiProxyState}
+	}
+	if n.endpoint != nil {
+		status.ControlPlaneEndpoint = proto.Clone(n.endpoint).(*agentapi.ControlPlaneEndpointStatus)
 	}
 	if !n.legacy {
 		status.Management = &agentapi.ManagementStatus{
@@ -476,6 +480,48 @@ func TestEnableMTLSDoesNotDowngradeAfterCertificateFailure(t *testing.T) {
 	if plaintextProbes != 0 || plaintext.begins != 0 || plaintext.staged.ServerPrivateKey != "" {
 		t.Errorf("verification failure allowed %d plaintext connections, %d Begin calls, key received = %t",
 			plaintextProbes, plaintext.begins, plaintext.staged.ServerPrivateKey != "")
+	}
+}
+
+func TestEnableMTLSDoesNotDowngradeOnRPCErrorText(t *testing.T) {
+	world := newEnableMTLSWorld(t, "cp-1")
+	node := world.nodes[0]
+	bundle, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "lab"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := managementidentity.EnsureNode(&bundle, node.name, time.Now(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := managementidentity.Write(world.secretsPath, bundle); err != nil {
+		t.Fatal(err)
+	}
+
+	// Model a gRPC connection failure with peer-controlled text and no
+	// authenticated peer or wire evidence. Plaintext would reach the node.
+	const marker = "received plaintext HTTP/2 SETTINGS during TLS handshake"
+	probe := &fakeKatlcAgentClient{nodeStatusErr: grpcstatus.Error(codes.Unavailable, marker)}
+	plaintextDial := dialKatlcAgent
+	plaintextProbes := 0
+	dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
+		if transport.ClientCredentialsFromContext(ctx).Authentication != managementidentity.TrustedNetwork {
+			return katlcAgentConnection{Client: probe, Close: func() error { return nil }}, nil
+		}
+		plaintextProbes++
+		return plaintextDial(ctx, endpoint)
+	}
+
+	_, _, err = world.enable()
+
+	node.rebinds.Wait()
+	node.mu.Lock()
+	defer node.mu.Unlock()
+	if plaintextProbes != 0 || node.begins != 0 || node.staged.ServerPrivateKey != "" {
+		t.Errorf("RPC error text allowed %d plaintext connections, %d Begin calls, key received = %t",
+			plaintextProbes, node.begins, node.staged.ServerPrivateKey != "")
+	}
+	if err == nil || !strings.Contains(err.Error(), "could not classify the management transport") {
+		t.Errorf("enable-mtls = %v, want an unclassified transport refusal", err)
 	}
 }
 
@@ -1020,6 +1066,32 @@ func TestEnableMTLSChecksAPIProxyAfterConfirm(t *testing.T) {
 	}
 	if mode, _ := world.configMode(t); mode != managementidentity.MutualTLS {
 		t.Errorf("config mode = %s after the node recovered", mode)
+	}
+}
+
+func TestEnableMTLSChecksInstalledVIPAfterConfirm(t *testing.T) {
+	// The ClusterConfig names the API endpoint without VIP advertisement.
+	world := newEnableMTLSWorld(t, "cp-1")
+	node := world.nodes[0]
+	node.controlPlane = true
+	node.endpoint = &agentapi.ControlPlaneEndpointStatus{
+		Endpoint: "api.katl.test:6443", Vip: "192.0.2.10",
+		State: "active", LocalApiReady: true, LocalVipOwned: true,
+	}
+	node.afterConfirm = func(n *trialNode) {
+		n.endpoint.State = "released"
+		n.endpoint.LocalVipOwned = false
+	}
+
+	_, _, err := world.enable("--timeout", "1s")
+	if err == nil || !strings.Contains(err.Error(), "managed API endpoint is released") {
+		t.Fatalf("enable-mtls = %v, want the installed VIP health failure", err)
+	}
+	if mode, trial, begins := node.state(); mode != managementidentity.MutualTLS || trial != "committed" || begins != 1 {
+		t.Fatalf("node = %s %s after %d begins, want one committed trial", mode, trial, begins)
+	}
+	if mode, _ := world.configMode(t); mode != managementidentity.TrustedNetwork {
+		t.Fatalf("config published %s after the node lost its VIP", mode)
 	}
 }
 

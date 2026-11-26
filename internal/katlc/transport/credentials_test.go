@@ -27,11 +27,18 @@ func TestTLSResponseRequiresCompleteInitialSettings(t *testing.T) {
 		stream   uint32
 		payload  []byte
 		truncate bool
+		want     ManagementProtocol
 	}{
+		{name: "server disables push", payload: []byte{0, 2, 0, 0, 0, 0}, want: PlaintextHTTP2},
+		{name: "unrecognized setting", payload: []byte{255, 255, 0, 0, 0, 1}, want: PlaintextHTTP2},
 		{name: "nonzero stream", stream: 1},
 		{name: "acknowledgment", flags: http2.FlagSettingsAck},
 		{name: "truncated setting", payload: []byte{0, 5, 0, 0, 64, 0}, truncate: true},
+		{name: "server enables push", payload: []byte{0, 2, 0, 0, 0, 1}},
+		{name: "invalid initial window size", payload: []byte{0, 4, 128, 0, 0, 0}},
 		{name: "invalid maximum frame size", payload: []byte{0, 5, 0, 0, 0, 1}},
+		{name: "invalid extended CONNECT setting", payload: []byte{0, 8, 0, 0, 0, 2}},
+		{name: "invalid priority setting", payload: []byte{0, 9, 0, 0, 0, 2}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var wire bytes.Buffer
@@ -41,8 +48,8 @@ func TestTLSResponseRequiresCompleteInitialSettings(t *testing.T) {
 			if tc.truncate {
 				wire.Truncate(wire.Len() - 1)
 			}
-			if got := classifyTLSResponse(bufio.NewReader(&wire)); got != Unknown {
-				t.Errorf("protocol = %v, want Unknown", got)
+			if got := classifyTLSResponse(bufio.NewReader(&wire)); got != tc.want {
+				t.Errorf("protocol = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -61,10 +68,7 @@ func TestManagementProtocolUsesWireEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The untrusted TLS peer's certificate chain contains the legacy marker.
-	serverBundle, err := managementidentity.Generate(managementidentity.GenerateOptions{
-		ClusterName: "received plaintext HTTP/2 SETTINGS during TLS handshake",
-	})
+	serverBundle, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "foreign"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +76,6 @@ func TestManagementProtocolUsesWireEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	identity.ServerCertificate += identity.CACertificate
 	serverTLS, err := ServerTLSConfigForNode(identity)
 	if err != nil {
 		t.Fatal(err)
@@ -84,7 +87,7 @@ func TestManagementProtocolUsesWireEvidence(t *testing.T) {
 		options []grpc.ServerOption
 	}{
 		{name: "plaintext gRPC", want: PlaintextHTTP2},
-		{name: "untrusted certificate with marker text", want: TLS, options: []grpc.ServerOption{grpc.Creds(credentials.NewTLS(serverTLS))}},
+		{name: "untrusted certificate", want: TLS, options: []grpc.ServerOption{grpc.Creds(credentials.NewTLS(serverTLS))}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			listener, err := net.Listen("tcp", "127.0.0.1:0")

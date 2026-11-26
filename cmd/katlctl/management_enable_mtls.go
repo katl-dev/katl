@@ -421,12 +421,15 @@ func (node *enableMTLSNode) bind(status *agentapi.NodeStatus, observedAt time.Ti
 	// bootstrap. Joined nodes must meet the same requirements on every run.
 	kubernetes := status.GetKubernetes()
 	if kubernetes.GetRole() != "" || kubernetes.GetState() != "not-configured" {
+		// An active installed VIP must recover even when the input config
+		// omits its advertisement.
+		requireVIP := (node.controlPlane && node.managedVIP) || managedEndpointReady(status.GetControlPlaneEndpoint())
 		node.requirement = nodeRecoveryRequirement{
 			KubernetesConfigured: true,
 			NodeReady:            true,
 			APIProxyReady:        !node.externalAPI || status.GetApiProxy() != nil,
 			LocalAPIEligible:     node.controlPlane && !node.externalAPI,
-			ManagedEndpointReady: node.controlPlane && node.managedVIP,
+			ManagedEndpointReady: requireVIP,
 		}
 	}
 	return nil
