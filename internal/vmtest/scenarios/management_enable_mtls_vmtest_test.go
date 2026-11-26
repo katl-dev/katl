@@ -166,14 +166,15 @@ func (j *enableMTLSJourney) migrate(ctx context.Context) error {
 		return fmt.Errorf("the interrupted run left no secrets file: %w", err)
 	}
 	for _, want := range []string{
-		"interrupted before the new authority was confirmed:",
-		"If the trial window ends before confirmation, the node returns to trusted-network by itself. " +
-			"Rerunning with the same secrets resumes a live trial or starts again if the node has already reverted. " +
-			"To revert a live trial immediately, run 'katlc agent management-trial revert' on the node console",
+		"could not confirm the node accepts the replacement authority; the node may still trust the trusted network",
+		"Rerun katlctl management enable-mtls --config '" + proxiedConfig + "' to continue",
 	} {
 		if !strings.Contains(stderr, want) {
 			return fmt.Errorf("interrupted run output lacks %q:\n%s", want, stderr)
 		}
+	}
+	if strings.Contains(stderr, "management-trial revert") {
+		return fmt.Errorf("interrupted run advised reverting the trial:\n%s", stderr)
 	}
 	if err := requireConfigMode(config, "trusted-network"); err != nil {
 		return err
@@ -196,8 +197,13 @@ func (j *enableMTLSJourney) migrate(ctx context.Context) error {
 	}
 
 	_, err = j.cli(ctx, "management", "enable-mtls", "--config", proxiedConfig, "--trial-window", "45s", "--timeout", "20s")
-	if err == nil || !strings.Contains(err.Error(), "did not answer over mTLS with the new authority") || !strings.Contains(err.Error(), "returns to trusted-network by itself") {
+	if err == nil || !strings.Contains(err.Error(), "could not confirm the node accepts the replacement authority; the node may still trust the trusted network") ||
+		!strings.Contains(err.Error(), "Rerun katlctl management enable-mtls --config '"+proxiedConfig+"' to continue") ||
+		strings.Contains(err.Error(), "management-trial revert") {
 		return fmt.Errorf("unreachable mTLS check: %v", err)
+	}
+	if err := requireConfigMode(proxiedConfig, "trusted-network"); err != nil {
+		return err
 	}
 	if err := j.waitReverted(ctx, config); err != nil {
 		return fmt.Errorf("after the unreachable mTLS check: %w", err)

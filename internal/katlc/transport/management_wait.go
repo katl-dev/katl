@@ -30,6 +30,32 @@ var managementReady = struct{ bound, interval time.Duration }{bound: ManagementR
 // could be used to establish what the node did.
 var ErrManagementRPCInconclusive = errors.New("management RPC outcome is inconclusive")
 
+type ManagementEvidence uint8
+
+const (
+	ManagementInconclusive ManagementEvidence = iota
+	ManagementConfirmed
+	ManagementRefusedExplicitly
+)
+
+// ClassifyManagementEvidence classifies an RPC result for a trust change.
+// An old-client-CA probe requires issuer-specific evidence. A gRPC
+// authentication refusal does not identify which CA the server trusts.
+func ClassifyManagementEvidence(err error, oldAuthorityRefused func() bool) ManagementEvidence {
+	switch {
+	case err == nil:
+		return ManagementConfirmed
+	case errors.Is(err, ErrManagementRPCInconclusive):
+		return ManagementInconclusive
+	case oldAuthorityRefused != nil && grpcstatus.Code(err) == codes.Unavailable && oldAuthorityRefused():
+		return ManagementRefusedExplicitly
+	case oldAuthorityRefused == nil && grpcstatus.Code(err) == codes.Unauthenticated:
+		return ManagementRefusedExplicitly
+	default:
+		return ManagementInconclusive
+	}
+}
+
 type managementRPCInconclusive struct{ cause error }
 
 func (e managementRPCInconclusive) Error() string {
@@ -59,7 +85,14 @@ func managementRPCResult(ctx context.Context, result error) error {
 type (
 	noManagementWaitKey   struct{}
 	managementProgressKey struct{}
+	noManagementAdviceKey struct{}
 )
+
+// WithoutManagementAdvice lets trust-changing commands report uncertainty
+// without the transport's normal hints about which credentials to select.
+func WithoutManagementAdvice(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noManagementAdviceKey{}, true)
+}
 
 // WithoutManagementWait makes connections dialed with ctx report a refused
 // management connection at once. Callers whose purpose is to observe a node
@@ -82,11 +115,15 @@ func WithManagementProgress(ctx context.Context, w io.Writer) context.Context {
 // progress, and then fail with guidance.
 func ManagementDialOptions(ctx context.Context, node, endpoint string, creds credentials.TransportCredentials) []grpc.DialOption {
 	plaintext := creds.Info().SecurityProtocol == insecure.NewCredentials().Info().SecurityProtocol
+	noAdvice, _ := ctx.Value(noManagementAdviceKey{}).(bool)
+	if wrapped, ok := creds.(*clientCredentials); noAdvice && ok {
+		creds = wrapped.TransportCredentials
+	}
 	if observation, ok := ctx.Value(managementObservationKey{}).(*ManagementObservation); ok {
 		creds = &observedCredentials{TransportCredentials: creds, observation: observation, plaintext: plaintext}
 	}
 	options := []grpc.DialOption{grpc.WithTransportCredentials(creds)}
-	if plaintext {
+	if plaintext && !noAdvice {
 		options = append(
 			options,
 			grpc.WithChainUnaryInterceptor(func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {

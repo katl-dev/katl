@@ -25,6 +25,32 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 )
 
+func TestManagementEvidence(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		err           error
+		issuerRefused func() bool
+		want          ManagementEvidence
+	}{
+		{name: "successful call", want: ManagementConfirmed},
+		{name: "issuer rejection", err: grpcstatus.Error(codes.Unavailable, "handshake failed"), issuerRefused: func() bool { return true }, want: ManagementRefusedExplicitly},
+		{name: "late issuer rejection", err: managementRPCInconclusive{cause: context.DeadlineExceeded}, issuerRefused: func() bool { return true }, want: ManagementInconclusive},
+		{name: "alert in error text", err: grpcstatus.Error(codes.Unavailable, "tls: unknown certificate authority"), want: ManagementInconclusive},
+		{name: "RPC authentication refusal", err: grpcstatus.Error(codes.Unauthenticated, "unauthenticated"), want: ManagementRefusedExplicitly},
+		{name: "RPC authentication refusal does not identify the issuer", err: grpcstatus.Error(codes.Unauthenticated, "unauthenticated"), issuerRefused: func() bool { return false }, want: ManagementInconclusive},
+		{name: "EOF", err: io.EOF, want: ManagementInconclusive},
+		{name: "reset", err: syscall.ECONNRESET, want: ManagementInconclusive},
+		{name: "refusal", err: syscall.ECONNREFUSED, want: ManagementInconclusive},
+		{name: "deadline", err: context.DeadlineExceeded, want: ManagementInconclusive},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ClassifyManagementEvidence(tc.err, tc.issuerRefused); got != tc.want {
+				t.Errorf("evidence = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 type countingAgent struct {
 	agentapi.UnimplementedKatlcAgentServer
 	calls   atomic.Int32

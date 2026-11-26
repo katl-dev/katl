@@ -158,6 +158,18 @@ check to the stable endpoint from the operator workstation, so local ownership
 is not mistaken for end-to-end reachability. Use `--output json` for the
 complete bounded status.
 
+During `katlctl management enable-mtls`, an inconclusive confirmation reports
+`could not confirm mTLS confirmation; the node may still trust the replacement
+authority` and prints a status command for the affected node and config.
+
+```sh
+katlctl node status cp-1 --config ./cluster.yaml
+```
+
+The management field shows the mode the node reports when status can reach it.
+Keep the migration secrets and use the rerun command from the failure message
+to resume. See [Check and resume an interrupted migration](management-auth.md#check-and-resume-an-interrupted-migration).
+
 Read a unit's journal from the workstation:
 
 ```sh

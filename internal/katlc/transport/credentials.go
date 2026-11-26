@@ -53,21 +53,36 @@ func (c *clientCredentials) Clone() credentials.TransportCredentials {
 
 // ObserveUnknownClientAuthority records unknown_ca after the client has
 // authenticated the server. Other alerts cannot establish issuer rejection.
-func ObserveUnknownClientAuthority(config *tls.Config) (credentials.TransportCredentials, func() bool) {
-	var unknownAuthority atomic.Bool
-	return &clientCertificateProbe{TransportCredentials: NewClientCredentials(config), unknownAuthority: &unknownAuthority}, unknownAuthority.Load
+func ObserveUnknownClientAuthority(config *tls.Config, certificate tls.Certificate) (credentials.TransportCredentials, func() bool) {
+	probe := new(clientCertificateEvidence)
+	config = config.Clone()
+	// Offer the leaf even when its issuer is absent from the server's list.
+	config.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+		probe.requested.Store(true)
+		return &certificate, nil
+	}
+	return &clientCertificateProbe{TransportCredentials: credentials.NewTLS(config), evidence: probe}, func() bool {
+		return probe.attempts.Load() == 1 && probe.unknownAuthority.Load()
+	}
+}
+
+type clientCertificateEvidence struct {
+	attempts         atomic.Uint32
+	requested        atomic.Bool
+	unknownAuthority atomic.Bool
 }
 
 type clientCertificateProbe struct {
 	credentials.TransportCredentials
-	unknownAuthority *atomic.Bool
+	evidence *clientCertificateEvidence
 }
 
 func (c *clientCertificateProbe) Clone() credentials.TransportCredentials {
-	return &clientCertificateProbe{TransportCredentials: c.TransportCredentials.Clone(), unknownAuthority: c.unknownAuthority}
+	return &clientCertificateProbe{TransportCredentials: c.TransportCredentials.Clone(), evidence: c.evidence}
 }
 
 func (c *clientCertificateProbe) ClientHandshake(ctx context.Context, address string, conn net.Conn) (net.Conn, credentials.AuthInfo, error) {
+	c.evidence.attempts.Add(1)
 	secure, info, err := c.TransportCredentials.ClientHandshake(ctx, address, conn)
 	if err != nil {
 		return nil, nil, err
@@ -88,8 +103,8 @@ func (c *clientCertificateProbe) ClientHandshake(ctx context.Context, address st
 	// crypto/tls wraps a TCP peer's alert in a net.OpError with an
 	// unexported alert type. Capture it before gRPC flattens the error.
 	var remote *net.OpError
-	if errors.As(err, &remote) && remote.Op == "remote error" && remote.Err.Error() == "tls: unknown certificate authority" {
-		c.unknownAuthority.Store(true)
+	if c.evidence.requested.Load() && errors.As(err, &remote) && remote.Op == "remote error" && remote.Err.Error() == "tls: unknown certificate authority" {
+		c.evidence.unknownAuthority.Store(true)
 	}
 	return nil, nil, err
 }
@@ -116,25 +131,15 @@ func ClientCredentialsForNode(identity managementidentity.ClientCredentials, nod
 	return NewClientCredentials(config), nil
 }
 
-// ManagementProtocol describes the first bytes returned to a TLS client.
-type ManagementProtocol uint32
-
-const (
-	Unknown ManagementProtocol = iota
-	TLS
-	PlaintextHTTP2
-)
-
 type managementObservationKey struct{}
 
 // ManagementObservation records wire evidence from a management dial. If gRPC
 // handshakes on more than one connection, the evidence is inconclusive.
 type ManagementObservation struct {
-	attempts               atomic.Uint32
-	protocol               atomic.Uint32
-	plaintextSent          atomic.Bool
-	plaintextClosed        atomic.Bool
-	unknownServerAuthority atomic.Bool
+	attempts        atomic.Uint32
+	plaintextHTTP2  atomic.Bool
+	plaintextSent   atomic.Bool
+	plaintextClosed atomic.Bool
 }
 
 // ObserveManagementConnection enables one dial's wire observation through
@@ -144,25 +149,17 @@ func ObserveManagementConnection(ctx context.Context) (context.Context, *Managem
 	return context.WithValue(ctx, managementObservationKey{}, observation), observation
 }
 
-// Protocol classifies the first server response to a TLS handshake. A TLS
-// response does not authenticate the peer.
-func (o *ManagementObservation) Protocol() ManagementProtocol {
-	if o.attempts.Load() != 1 {
-		return Unknown
-	}
-	return ManagementProtocol(o.protocol.Load())
+// PlaintextHTTP2 reports a valid plaintext HTTP/2 server preface received
+// during a TLS handshake.
+func (o *ManagementObservation) PlaintextHTTP2() bool {
+	return o.attempts.Load() == 1 && o.plaintextHTTP2.Load()
 }
 
 // PlaintextClosed reports that the HTTP/2 client preface was sent and the
-// server closed the plaintext connection without sending a response.
+// server closed without sending a response. Status can use this to decide
+// whether to try an authenticated read.
 func (o *ManagementObservation) PlaintextClosed() bool {
 	return o.attempts.Load() == 1 && o.plaintextSent.Load() && o.plaintextClosed.Load()
-}
-
-// UnknownServerAuthority reports that TLS verification rejected the server
-// certificate because it could not chain to the configured authority.
-func (o *ManagementObservation) UnknownServerAuthority() bool {
-	return o.attempts.Load() == 1 && o.unknownServerAuthority.Load()
 }
 
 type observedCredentials struct {
@@ -184,12 +181,7 @@ func (c *observedCredentials) ClientHandshake(ctx context.Context, authority str
 		}
 		conn = observed
 	}
-	secure, info, err := c.TransportCredentials.ClientHandshake(ctx, authority, conn)
-	var unknownCA x509.UnknownAuthorityError
-	if first && errors.As(err, &unknownCA) {
-		c.observation.unknownServerAuthority.Store(true)
-	}
-	return secure, info, err
+	return c.TransportCredentials.ClientHandshake(ctx, authority, conn)
 }
 
 const (
@@ -225,32 +217,28 @@ func (c *observedConn) Read(p []byte) (int, error) {
 	if first {
 		// Inspect the frame before TLS can close the connection on a non-TLS
 		// record header. Peek preserves the bytes for the ordinary handshake.
-		c.observation.protocol.Store(uint32(classifyTLSResponse(c.reader)))
+		c.observation.plaintextHTTP2.Store(isPlaintextHTTP2(c.reader))
 	}
 	return c.reader.Read(p)
 }
 
-func classifyTLSResponse(reader *bufio.Reader) ManagementProtocol {
+func isPlaintextHTTP2(reader *bufio.Reader) bool {
 	header, err := reader.Peek(5)
 	if err != nil {
-		return Unknown
-	}
-	const tlsAlert, tlsHandshake = 0x15, 0x16
-	if (header[0] == tlsAlert || header[0] == tlsHandshake) && header[1] == 3 && header[2] <= 3 {
-		return TLS
+		return false
 	}
 
 	length := int(header[0])<<16 | int(header[1])<<8 | int(header[2])
 	if http2.FrameType(header[3]) != http2.FrameSettings || http2.Flags(header[4]).Has(http2.FlagSettingsAck) || length > initialMaxFrameSize || length%6 != 0 {
-		return Unknown
+		return false
 	}
 	data, err := reader.Peek(frameHeaderSize + length)
 	if err != nil {
-		return Unknown
+		return false
 	}
 	frame, err := http2.NewFramer(nil, bytes.NewReader(data)).ReadFrame()
 	if err != nil {
-		return Unknown
+		return false
 	}
 	settings := frame.(*http2.SettingsFrame)
 	if err := settings.ForeachSetting(func(setting http2.Setting) error {
@@ -263,7 +251,7 @@ func classifyTLSResponse(reader *bufio.Reader) ManagementProtocol {
 		}
 		return setting.Valid()
 	}); err != nil {
-		return Unknown
+		return false
 	}
-	return PlaintextHTTP2
+	return true
 }

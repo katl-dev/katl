@@ -27,10 +27,10 @@ func TestTLSResponseRequiresCompleteInitialSettings(t *testing.T) {
 		stream   uint32
 		payload  []byte
 		truncate bool
-		want     ManagementProtocol
+		want     bool
 	}{
-		{name: "server disables push", payload: []byte{0, 2, 0, 0, 0, 0}, want: PlaintextHTTP2},
-		{name: "unrecognized setting", payload: []byte{255, 255, 0, 0, 0, 1}, want: PlaintextHTTP2},
+		{name: "server disables push", payload: []byte{0, 2, 0, 0, 0, 0}, want: true},
+		{name: "unrecognized setting", payload: []byte{255, 255, 0, 0, 0, 1}, want: true},
 		{name: "nonzero stream", stream: 1},
 		{name: "acknowledgment", flags: http2.FlagSettingsAck},
 		{name: "truncated setting", payload: []byte{0, 5, 0, 0, 64, 0}, truncate: true},
@@ -48,14 +48,14 @@ func TestTLSResponseRequiresCompleteInitialSettings(t *testing.T) {
 			if tc.truncate {
 				wire.Truncate(wire.Len() - 1)
 			}
-			if got := classifyTLSResponse(bufio.NewReader(&wire)); got != tc.want {
-				t.Errorf("protocol = %v, want %v", got, tc.want)
+			if got := isPlaintextHTTP2(bufio.NewReader(&wire)); got != tc.want {
+				t.Errorf("plaintext HTTP/2 = %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
-func TestManagementProtocolUsesWireEvidence(t *testing.T) {
+func TestManagementPlaintextHTTP2UsesWireEvidence(t *testing.T) {
 	clientBundle, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "lab"})
 	if err != nil {
 		t.Fatal(err)
@@ -83,11 +83,11 @@ func TestManagementProtocolUsesWireEvidence(t *testing.T) {
 
 	for _, tc := range []struct {
 		name    string
-		want    ManagementProtocol
+		want    bool
 		options []grpc.ServerOption
 	}{
-		{name: "plaintext gRPC", want: PlaintextHTTP2},
-		{name: "untrusted certificate", want: TLS, options: []grpc.ServerOption{grpc.Creds(credentials.NewTLS(serverTLS))}},
+		{name: "plaintext gRPC", want: true},
+		{name: "untrusted certificate", options: []grpc.ServerOption{grpc.Creds(credentials.NewTLS(serverTLS))}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -110,8 +110,8 @@ func TestManagementProtocolUsesWireEvidence(t *testing.T) {
 			if _, err := healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{}); err == nil {
 				t.Fatal("unexpected successful mTLS call")
 			}
-			if protocol := observation.Protocol(); protocol != tc.want {
-				t.Errorf("protocol = %v, want %v", protocol, tc.want)
+			if observed := observation.PlaintextHTTP2(); observed != tc.want {
+				t.Errorf("plaintext HTTP/2 = %v, want %v", observed, tc.want)
 			}
 		})
 	}

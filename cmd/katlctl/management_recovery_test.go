@@ -137,7 +137,7 @@ func newRecoveryWorld(t *testing.T) recoveryWorld {
 }
 
 func TestManagementIdentityRecoverLateCredentialCheck(t *testing.T) {
-	testEnableMTLSWithVirtualTime(t, []string{"cp-1"}, func(t *testing.T, world enableMTLSWorld) {
+	testEnableMTLSWithVirtualTime(t, []string{"cp-1", "worker-1"}, func(t *testing.T, world enableMTLSWorld) {
 		if _, stderr, err := world.enable(); err != nil {
 			t.Fatalf("enable-mtls: %v\n%s", err, stderr)
 		}
@@ -148,12 +148,22 @@ func TestManagementIdentityRecoverLateCredentialCheck(t *testing.T) {
 		// The node already uses the replacement authority, as on a rerun
 		// after SSH succeeded and before the config reference was written.
 		node := world.nodes[0]
-		inspect := runManagementAuthoritySSH
-		t.Cleanup(func() { runManagementAuthoritySSH = inspect })
-		runManagementAuthoritySSH = func(context.Context, managementRotationNode, managementRotationOptions) (nodeidentity.ManagementAuthorityStatus, error) {
+		inspect, rotate := runManagementAuthoritySSH, runManagementRotationSSH
+		t.Cleanup(func() { runManagementAuthoritySSH, runManagementRotationSSH = inspect, rotate })
+		runManagementAuthoritySSH = func(_ context.Context, target managementRotationNode, _ managementRotationOptions) (nodeidentity.ManagementAuthorityStatus, error) {
+			authority := node.authority
+			if target.name != node.name {
+				authority = "previous-authority"
+			}
 			return nodeidentity.ManagementAuthorityStatus{
-				NodeName: node.name, MachineID: "machine-" + node.name, Authority: node.authority,
+				NodeName: target.name, MachineID: "machine-" + target.name, Authority: authority,
 			}, nil
+		}
+		runManagementRotationSSH = func(_ context.Context, target managementRotationNode, _ managementRotationOptions, dryRun bool) (nodeidentity.ManagementRotationStatus, error) {
+			if !dryRun {
+				t.Errorf("recovery advanced to %s after an inconclusive result", target.name)
+			}
+			return nodeidentity.ManagementRotationStatus{}, nil
 		}
 		node.interceptRPC = delayManagementStatus
 
@@ -162,7 +172,8 @@ func TestManagementIdentityRecoverLateCredentialCheck(t *testing.T) {
 		if _, reference := world.configMode(t); reference != defaultManagementSecrets {
 			t.Fatalf("recovery published %q after late credential verification", reference)
 		}
-		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "rerun the same command") {
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "rerun the same command") ||
+			!strings.Contains(err.Error(), "could not confirm the node accepts the replacement authority; the node may still trust the previous authority") {
 			t.Fatalf("recovery = %v\n%s\nwant a deadline error with rerun guidance", err, &stderr)
 		}
 	})

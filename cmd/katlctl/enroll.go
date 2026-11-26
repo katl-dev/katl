@@ -17,6 +17,7 @@ import (
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
+	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
@@ -242,6 +243,14 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, stderr io.Writ
 	if err != nil {
 		return workstation.Config{}, contextSaveReport{}, err
 	}
+	management, err := managementClientForConfig(opts.configInput, topology.ClusterName)
+	if err != nil {
+		return workstation.Config{}, contextSaveReport{}, err
+	}
+	return prepareContextWithCredentials(ctx, opts, topology.ClusterName, management)
+}
+
+func prepareContextWithCredentials(ctx context.Context, opts contextSaveOptions, clusterName string, management managementidentity.ClientCredentials) (workstation.Config, contextSaveReport, error) {
 	// Observe the configured endpoints without compiling host payloads or
 	// acquiring artifacts. Their target release is not known until this probe.
 	inv, err := readManagementInventory(opts.configInput)
@@ -274,15 +283,11 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, stderr io.Writ
 	}
 	contextName := strings.TrimSpace(opts.contextName)
 	if contextName == "" {
-		contextName = topology.ClusterName
-	}
-	management, err := managementClientForConfig(opts.configInput, topology.ClusterName)
-	if err != nil {
-		return workstation.Config{}, contextSaveReport{}, err
+		contextName = clusterName
 	}
 	clusterProfile := workstation.Cluster{
 		ExternalControlPlane: inv.ExternalControlPlane,
-		Name:                 topology.ClusterName,
+		Name:                 clusterName,
 		ControlPlaneEndpoint: inv.ControlPlaneEndpoint,
 		Management:           &management,
 	}
@@ -295,7 +300,7 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, stderr io.Writ
 	}
 	known := make(map[string]workstation.Node)
 	for _, cluster := range cfg.Clusters {
-		if cluster.Name == topology.ClusterName {
+		if cluster.Name == clusterName {
 			for _, node := range cluster.Nodes {
 				known[node.Name] = node
 			}
@@ -319,7 +324,7 @@ func prepareContext(ctx context.Context, opts contextSaveOptions, stderr io.Writ
 		switch {
 		case !managementUnreachable(err):
 		case !overridden && node.SystemRole == inventory.RoleWorker:
-			hint = "; " + readdressHint(node.Name, endpoint, opts.configInput, savedEndpoint(configPath, topology.ClusterName, node.Name))
+			hint = "; " + readdressHint(node.Name, endpoint, opts.configInput, savedEndpoint(configPath, clusterName, node.Name))
 		case overridden && configured != "" && configured != endpoint:
 			hint = "; " + movedHint(node.Name, configured, opts.configInput)
 		}

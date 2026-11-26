@@ -42,7 +42,7 @@ func TestManagementIdentityRotateRequiresIssuerRejection(t *testing.T) {
 		testManagementRotationLiveTrust(t, "expired leaf", true, false)
 	})
 	t.Run("TLS policy rejects a fresh leaf generically", func(t *testing.T) {
-		testManagementRotationLiveTrust(t, "generic rejection", false, false)
+		testManagementRotationLiveTrust(t, "generic rejection", true, false)
 	})
 }
 
@@ -242,7 +242,7 @@ func testManagementRotationLiveTrust(t *testing.T, rejection string, addWorker, 
 		}
 		want := "old authority still has management access"
 		if rejection == "generic rejection" {
-			want = "tls: bad certificate"
+			want = "could not confirm the node stopped trusting the old authority; the node may still trust the old authority"
 		}
 		if err == nil || !strings.Contains(err.Error(), want) || !strings.Contains(err.Error(), "rerun with the same --output") {
 			t.Fatalf("rotate = %v\n%s\nwant %q and rerun guidance", err, &stderr, want)
@@ -301,21 +301,20 @@ func shortenRotationTestLeaf(t *testing.T, bundle *managementidentity.Bundle, ex
 
 func TestManagementIdentityRotateConfiguredReplacement(t *testing.T) {
 	for _, scenario := range []struct {
-		name         string
-		wantError    string
-		wantRollback bool
+		name      string
+		wantCause string
 	}{
-		{"connection refused", "connection refused", false},
-		{"closes after ServerHello", "EOF", false},
-		{"different authority", "different management authority", true},
+		{"connection refused", "connection refused"},
+		{"closes after ServerHello", "EOF"},
+		{"different authority", "certificate signed by unknown authority"},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			testManagementRotationConfiguredReplacement(t, scenario.name, scenario.wantError, scenario.wantRollback)
+			testManagementRotationConfiguredReplacement(t, scenario.name, scenario.wantCause)
 		})
 	}
 }
 
-func testManagementRotationConfiguredReplacement(t *testing.T, scenario, wantError string, wantRollback bool) {
+func testManagementRotationConfiguredReplacement(t *testing.T, scenario, wantCause string) {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("KATLCTL_CONFIG", filepath.Join(dir, "no-context.yaml"))
@@ -393,15 +392,16 @@ func testManagementRotationConfiguredReplacement(t *testing.T, scenario, wantErr
 			t.Fatal("server did not complete its side of the handshake")
 		}
 	}
-	if err == nil || !strings.Contains(err.Error(), wantError) {
-		t.Fatalf("rotate = %v, want %q", err, wantError)
+	for _, want := range []string{
+		"could not confirm the node accepts the configured authority; the node may still trust the previous authority",
+		wantCause, "keep " + outputPath + ", check the endpoint and rerun the same command",
+	} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("rotate = %v, want %q", err, want)
+		}
 	}
-	rollback := strings.Contains(err.Error(), "restore the previous secrets reference")
-	if rollback != wantRollback {
-		t.Fatalf("rotate = %v, want rollback guidance: %t", err, wantRollback)
-	}
-	if !wantRollback && !strings.Contains(err.Error(), "keep the configured replacement, check the endpoint and rerun") {
-		t.Fatalf("rotate = %v, want guidance to keep the replacement and retry", err)
+	if strings.Contains(err.Error(), "restore") || strings.Contains(err.Error(), "different management authority") {
+		t.Fatalf("rotate inferred a trust mismatch or advised rollback: %v", err)
 	}
 	after, err := os.ReadFile(configPath)
 	if err != nil || !bytes.Equal(before, after) {
@@ -480,7 +480,8 @@ func TestManagementIdentityRotateLateCredentialCheck(t *testing.T) {
 		if len(changed) != 1 || changed[0] != node.name {
 			t.Fatalf("rotation changed %v after a late reply from %s: %v", changed, node.name, err)
 		}
-		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), output) {
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), output) ||
+			!strings.Contains(err.Error(), "could not confirm the node accepts the replacement authority; the node may still trust the old authority") {
 			t.Fatalf("rotation = %v\n%s\nwant a deadline error and guidance to keep the replacement secrets", err, &stderr)
 		}
 		if _, reference := world.configMode(t); reference != defaultManagementSecrets {
@@ -501,6 +502,10 @@ func TestManagementRotationOldAuthorityRefusal(t *testing.T) {
 					t.Fatal(err)
 				}
 				old, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "lab"})
+				if err != nil {
+					t.Fatal(err)
+				}
+				probe, err := managementidentity.IssueRotationProbe(old.CertificateAuthority, time.Now())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -528,7 +533,7 @@ func TestManagementRotationOldAuthorityRefusal(t *testing.T) {
 				}
 
 				target := managementRotationNode{name: node.name, endpoint: "192.0.2.11:9443", machineID: "machine-" + node.name}
-				err = verifyRotatedManagement(t.Context(), target, mustManagementClient(t, next), old.Operator, time.Second)
+				err = verifyRotatedManagement(t.Context(), target, mustManagementClient(t, next), probe, time.Second)
 				if scenario != "unrelated failure" && !sawRefusal {
 					t.Fatal("the agent did not refuse the old credential")
 				}
@@ -538,11 +543,11 @@ func TestManagementRotationOldAuthorityRefusal(t *testing.T) {
 						t.Fatalf("rotation rejected timely certificate refusal: %v", err)
 					}
 				case "late":
-					if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "rerun with the same --output") {
-						t.Fatalf("rotation verification = %v, want a deadline error and rerun guidance", err)
+					if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "could not confirm the node stopped trusting the old authority") {
+						t.Fatalf("rotation verification = %v, want an inconclusive deadline error", err)
 					}
 				default:
-					if err == nil || !strings.Contains(err.Error(), "could not verify rejection") {
+					if err == nil || !strings.Contains(err.Error(), "could not confirm the node stopped trusting the old authority; the node may still trust the old authority") {
 						t.Fatalf("rotation verification = %v, want an unverified rejection", err)
 					}
 				}
