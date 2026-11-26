@@ -1,0 +1,7 @@
+[Unit]
+Description=Katl vmtest guest agent is listening
+Requires=katl-vmtest-agent.service
+After=katl-vmtest-agent.service
+
+[Install]
+WantedBy=multi-user.target

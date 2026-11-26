@@ -130,6 +130,31 @@ printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 	if got := readLinesForScripts(t, podmanArgs); len(got) == 0 {
 		t.Fatalf("changed included binary did not invoke fake podman")
 	}
+
+	t.Run("instrumented boot health", func(t *testing.T) {
+		build := func() string {
+			t.Helper()
+			cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
+			cmd.Dir = repo
+			cmd.Env = append(env, "KATL_VMTEST_IMAGE_SUPPORT=1")
+			output, err := runInGroup(t, cmd, scriptTimeout)
+			if err != nil {
+				t.Fatalf("instrumented runtime build failed: %v\n%s", err, output)
+			}
+			return string(output)
+		}
+		build()
+		const hit = "mkosi cache hit: runtime artifacts match the current repo"
+		if output := build(); !strings.Contains(output, hit) {
+			t.Fatalf("unchanged instrumented runtime missed cache:\n%s", output)
+		}
+
+		probe := filepath.Join(repo, "cmd", "katl-boot-health", "cache_identity_probe.go")
+		writeTemporaryFile(t, probe, "//go:build katl_vmtest\n\npackage main\n\nfunc init() { println(\"changed instrumented boot health\") }\n")
+		if output := build(); strings.Contains(output, hit) {
+			t.Fatalf("instrumented-only boot-health edit hit cache:\n%s", output)
+		}
+	})
 }
 
 func TestMkosiRuntimeCacheMissesWhenBinaryIdentityUnavailable(t *testing.T) {

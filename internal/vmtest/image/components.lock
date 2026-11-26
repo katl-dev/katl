@@ -1,4 +1,6 @@
 program /usr/bin/ctr
+program /usr/lib/katl/vmtest/katl-boot-health
 program /usr/lib/katl/vmtest/katl-vmtest-agent
+system-unit katl-vmtest-agent-ready.target
 system-unit katl-vmtest-agent.service
 system-unit katl-vmtest-debug-shell.service

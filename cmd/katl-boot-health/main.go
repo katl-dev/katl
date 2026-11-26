@@ -160,17 +160,35 @@ func managementNetworkReady(data []byte) (bool, string, error) {
 	return true, "", nil
 }
 
+type managementNetworkTiming struct {
+	trialTimeout time.Duration
+	pollInterval time.Duration
+	managementExpiryHooks
+}
+
+var managementTiming = managementNetworkTiming{
+	trialTimeout: 90 * time.Second,
+	pollInterval: time.Second,
+}
+
 var waitForManagementNetwork = func(ctx context.Context) error {
-	healthCtx, cancel := context.WithTimeout(ctx, 90*time.Second)
-	defer cancel()
-	ticker := time.NewTicker(time.Second)
+	return managementTiming.wait(ctx)
+}
+
+func (timing managementNetworkTiming) wait(ctx context.Context) error {
+	// The trial bounds both networkctl and the wait between observations.
+	deadlineCtx, cancel := context.WithTimeout(ctx, timing.trialTimeout)
+	healthCtx, stop, expiry := timing.managementExpiryHooks.start(deadlineCtx, cancel)
+	defer stop()
+	ticker := time.NewTicker(timing.pollInterval)
 	defer ticker.Stop()
 	lastReason := "network state has not been observed"
-	for {
+	for healthCtx.Err() == nil {
+		// A completed online observation wins even if the read's context expired.
 		data, err := readNetworkctlState(healthCtx)
 		if err != nil {
-			if errors.Is(healthCtx.Err(), context.DeadlineExceeded) {
-				return fmt.Errorf("configured management network is not ready after 90 seconds: %s", lastReason)
+			if healthCtx.Err() != nil {
+				break
 			}
 			return err
 		}
@@ -182,12 +200,18 @@ var waitForManagementNetwork = func(ctx context.Context) error {
 			return nil
 		}
 		lastReason = reason
+		expiry.observeOffline(lastReason)
 		select {
 		case <-healthCtx.Done():
-			return fmt.Errorf("configured management network is not ready after 90 seconds: %s", lastReason)
 		case <-ticker.C:
 		}
 	}
+	cause := context.Cause(healthCtx)
+	if !errors.Is(cause, context.DeadlineExceeded) {
+		return cause
+	}
+	expiry.report(cause)
+	return fmt.Errorf("configured management network is not ready after %g seconds: %s", timing.trialTimeout.Seconds(), lastReason)
 }
 
 var readNetworkctlState = func(ctx context.Context) ([]byte, error) {

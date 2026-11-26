@@ -195,10 +195,13 @@ func runRuntimeBuild(t *testing.T, repo, bin, dest, support string) {
 func vmtestRuntimePaths(root string) []string {
 	return []string{
 		filepath.Join(root, "usr", "lib", "katl", "vmtest"),
+		filepath.Join(root, "usr", "lib", "katl", "vmtest", "katl-boot-health"),
 		filepath.Join(root, "usr", "lib", "katl", "vmtest", "katl-vmtest-agent"),
+		filepath.Join(root, "usr", "lib", "systemd", "system", "katl-boot-health.service.d", "10-vmtest-management-expiry.conf"),
+		filepath.Join(root, "usr", "lib", "systemd", "system", "katl-vmtest-agent-ready.target"),
 		filepath.Join(root, "usr", "lib", "systemd", "system", "katl-vmtest-agent.service"),
 		filepath.Join(root, "usr", "lib", "systemd", "system", "katl-vmtest-debug-shell.service"),
-		filepath.Join(root, "usr", "lib", "systemd", "system", "multi-user.target.wants", "katl-vmtest-agent.service"),
+		filepath.Join(root, "usr", "lib", "systemd", "system", "multi-user.target.wants", "katl-vmtest-agent-ready.target"),
 		filepath.Join(root, "usr", "lib", "systemd", "system", "multi-user.target.wants", "katl-vmtest-debug-shell.service"),
 	}
 }

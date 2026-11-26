@@ -107,7 +107,7 @@ func DialVSock(ctx context.Context, cid, port uint32) (*os.File, error) {
 	}
 }
 
-func ListenVSock(ctx context.Context, port uint32, handler func(*os.File)) error {
+func ListenVSock(ctx context.Context, port uint32, ready func() error, handler func(*os.File)) error {
 	fd, err := unix.Socket(unix.AF_VSOCK, unix.SOCK_STREAM, 0)
 	if err != nil {
 		return err
@@ -121,6 +121,9 @@ func ListenVSock(ctx context.Context, port uint32, handler func(*os.File)) error
 	}
 	if err := unix.SetNonblock(fd, true); err != nil {
 		return err
+	}
+	if err := ready(); err != nil {
+		return fmt.Errorf("notify vsock readiness: %w", err)
 	}
 	pollFDs := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
 	for {

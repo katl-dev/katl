@@ -1,6 +1,7 @@
 package vmtest
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -127,6 +128,7 @@ type notifyRecorder struct {
 	mu     sync.Mutex
 	events []notifyEvent
 	log    *json.Encoder
+	change chan struct{}
 }
 
 func (r *notifyRecorder) record(event notifyEvent) {
@@ -134,6 +136,10 @@ func (r *notifyRecorder) record(event notifyEvent) {
 	defer r.mu.Unlock()
 	r.events = append(r.events, event)
 	_ = r.log.Encode(event)
+	if r.change != nil {
+		close(r.change)
+		r.change = nil
+	}
 }
 
 func (r *notifyRecorder) snapshot() []notifyEvent {
@@ -143,4 +149,36 @@ func (r *notifyRecorder) snapshot() []notifyEvent {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]notifyEvent(nil), r.events...)
+}
+
+// waitForUnitActive starts at a cursor captured before the operation that
+// should activate the unit. It also sees events that arrived before the wait.
+func (r *notifyRecorder) waitForUnitActive(ctx context.Context, vmDone <-chan struct{}, unit string, cursor int) (int, error) {
+	if r == nil {
+		return cursor, errors.New("VM has no systemd notification listener")
+	}
+	for {
+		if err := context.Cause(ctx); err != nil {
+			return cursor, err
+		}
+		r.mu.Lock()
+		for ; cursor < len(r.events); cursor++ {
+			if r.events[cursor].UnitActive == unit {
+				r.mu.Unlock()
+				return cursor + 1, nil
+			}
+		}
+		if r.change == nil {
+			r.change = make(chan struct{})
+		}
+		change := r.change
+		r.mu.Unlock()
+		select {
+		case <-change:
+		case <-vmDone:
+			return cursor, errors.New("VM exited")
+		case <-ctx.Done():
+			return cursor, context.Cause(ctx)
+		}
+	}
 }
