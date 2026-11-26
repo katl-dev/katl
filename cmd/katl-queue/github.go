@@ -7,10 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -421,6 +424,115 @@ func (g *gh) enableAutoMerge(ctx context.Context, number int) error {
 
 func (g *gh) failedRunLog(ctx context.Context, runID int64) ([]byte, error) {
 	return runGH(ctx, "run", "view", fmt.Sprint(runID), "--log-failed", "--repo", g.repo())
+}
+
+func (g *gh) workflowRef(ctx context.Context, name string) (string, error) {
+	ext := path.Ext(name)
+	if _, err := strconv.ParseInt(name, 10, 64); err == nil || ext == ".yml" || ext == ".yaml" {
+		return name, nil
+	}
+
+	raw, err := g.api(ctx, "--paginate", "--slurp", g.repoPath()+"/actions/workflows?per_page=100")
+	if err != nil {
+		return "", err
+	}
+	var pages []struct {
+		Workflows []struct {
+			ID   int64  `json:"id"`
+			Name string `json:"name"`
+		} `json:"workflows"`
+	}
+	if err := json.Unmarshal(raw, &pages); err != nil {
+		return "", fmt.Errorf("decode workflows: %w", err)
+	}
+	var ref string
+	for _, page := range pages {
+		for _, workflow := range page.Workflows {
+			if workflow.Name != name {
+				continue
+			}
+			if ref != "" {
+				return "", fmt.Errorf("multiple workflows named %q; use a workflow filename or ID", name)
+			}
+			ref = strconv.FormatInt(workflow.ID, 10)
+		}
+	}
+	if ref == "" {
+		return "", fmt.Errorf("no workflow named %q; use a workflow filename, display name, or ID", name)
+	}
+	return ref, nil
+}
+
+func (g *gh) completedRuns(ctx context.Context, window ciCostWindow) ([]int64, error) {
+	ref, err := g.workflowRef(ctx, window.Workflow)
+	if err != nil {
+		return nil, err
+	}
+	endpoint := g.repoPath() + "/actions/workflows/" + url.PathEscape(ref) + "/runs?per_page=100"
+	created := window.Since.Format(time.RFC3339) + ".." + window.Until.Format(time.RFC3339)
+	runs, err := g.workflowRuns(ctx, endpoint+"&status=completed&created="+url.QueryEscape(created))
+	if err != nil {
+		return nil, err
+	}
+	// GitHub caps searches that use status or created at 1,000 runs. Fall
+	// back to the unfiltered workflow listing so larger windows stay complete.
+	if len(runs) >= 1000 {
+		runs, err = g.workflowRuns(ctx, endpoint)
+		if err != nil {
+			return nil, err
+		}
+	}
+	var ids []int64
+	for _, run := range runs {
+		if run.Status == "completed" && !run.Created.Before(window.Since) && !run.Created.After(window.Until) {
+			ids = append(ids, run.ID)
+		}
+	}
+	return ids, nil
+}
+
+type workflowRun struct {
+	ID      int64     `json:"id"`
+	Status  string    `json:"status"`
+	Created time.Time `json:"created_at"`
+}
+
+func (g *gh) workflowRuns(ctx context.Context, endpoint string) ([]workflowRun, error) {
+	raw, err := g.api(ctx, "--paginate", "--slurp", endpoint)
+	if err != nil {
+		return nil, err
+	}
+	var pages []struct {
+		Runs []workflowRun `json:"workflow_runs"`
+	}
+	if err := json.Unmarshal(raw, &pages); err != nil {
+		return nil, fmt.Errorf("decode workflow runs: %w", err)
+	}
+	var runs []workflowRun
+	for _, page := range pages {
+		runs = append(runs, page.Runs...)
+	}
+	return runs, nil
+}
+
+func (g *gh) runJobs(ctx context.Context, runID int64) ([]ciJob, error) {
+	// filter=all includes earlier attempts when a workflow was rerun.
+	endpoint := fmt.Sprintf("%s/actions/runs/%d/jobs?per_page=100&filter=all", g.repoPath(), runID)
+	raw, err := g.api(ctx, "--paginate", "--slurp", endpoint)
+	if err != nil {
+		return nil, err
+	}
+	var pages []struct {
+		Jobs []ciJob `json:"jobs"`
+	}
+	if err := json.Unmarshal(raw, &pages); err != nil {
+		return nil, fmt.Errorf("decode workflow jobs: %w", err)
+	}
+	var jobs []ciJob
+	for _, page := range pages {
+		jobs = append(jobs, page.Jobs...)
+	}
+	return jobs, nil
 }
 
 // runArtifactLogs downloads the diagnostics artifacts of a run and returns the

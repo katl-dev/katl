@@ -714,7 +714,16 @@ katl-queue plan --milestone M --apply   # make an autopilot pass: the plan, reba
 katl-queue plan --next       # open, unassigned issues whose blockers are all closed
 katl-queue autopilot         # report what a pass would rebase, enqueue, dequeue or explain
 katl-queue prune-runs        # report CI runs of merge groups the queue no longer holds; --apply cancels them
+katl-queue ci-cost           # rank jobs in completed CI runs by runner-minutes
 ```
+
+`ci-cost` reports jobs from completed `ci.yml` runs created in the past seven
+days. Use `--since YYYY-MM-DD` to start at midnight UTC on a specific date,
+`--workflow NAME` to select a workflow by filename, display name, or ID, and
+`--limit N` to show the top N rows in each ranking. The report counts each
+timed job attempt once, including retries, and omits skipped jobs. It ranks
+full job names and job prefixes, so you can see both individual matrix jobs
+and their combined cost. Use `--json` for machine-readable output.
 
 `check` merges with `git merge-tree` in a throwaway object directory, so it
 does not change any branch, ref or working tree; it exits 1 and names the
