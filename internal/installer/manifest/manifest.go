@@ -65,6 +65,20 @@ type NodeConfig struct {
 	Bootstrap            *BootstrapIntent             `json:"bootstrap,omitempty" yaml:"bootstrap,omitempty"`
 }
 
+// KubernetesHost returns the node's Kubernetes host using its recorded
+// bootstrap address when no Kubernetes address was specified.
+func (n NodeConfig) KubernetesHost() (inventory.Host, error) {
+	address, err := inventory.ParseKubernetesAddress(n.Kubernetes.Address)
+	if err != nil {
+		return inventory.Host{}, err
+	}
+	node := inventory.Node{KubernetesAddress: address}
+	if n.Bootstrap != nil {
+		node.Address = inventory.DecodeManagementAddress(n.Bootstrap.NodeAddress)
+	}
+	return node.KubernetesHost(), nil
+}
+
 // ClusterEndpoint returns the node's stored control-plane endpoint and VIP.
 func (n NodeConfig) ClusterEndpoint() (inventory.HostPort, string, error) {
 	var recorded string

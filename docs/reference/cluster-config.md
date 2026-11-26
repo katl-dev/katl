@@ -39,7 +39,7 @@ and "—" means the field has no default.
 | `spec.nodes[].controlPlane` | Join the Kubernetes control plane | `false` (worker) | Wipe and reinstall |
 | `spec.nodes[].install.systemDisk` | [System disk](#system-disk) for installation; required | — | Installation only |
 | `spec.nodes[].management.address` | [Operator-reachable address](#node-addresses) used by `katlctl` | — | Workstation targeting; a control plane's API proxy listener restarts live |
-| `spec.nodes[].kubernetes.address` | [Kubernetes node address](#node-addresses) on a multihomed node | — | Refused as an operation-only change |
+| `spec.nodes[].kubernetes.address` | [Kubernetes node address](#node-addresses) on a multihomed node | — | Changes to the effective IP require a wipe, reinstall, and node join |
 
 ## Start with a generated configuration
 

@@ -629,6 +629,19 @@ func mergeRuntimeConfig(request TrustedBundleRequest) (manifest.Manifest, []Chan
 		applyOverlay(&merged, nodeOverlay, request.KubernetesInitialized, &domains, &unsafeFiles)
 		applyKubernetesMetadata(&merged, nodeOverlay, request.KubeletRegistered, &domains)
 	}
+	// The recorded bootstrap address stays fixed when the workstation's
+	// management address changes.
+	currentKubernetesHost, err := request.CurrentManifest.Node.KubernetesHost()
+	if err != nil {
+		return manifest.Manifest{}, nil, nil, fmt.Errorf("installed node kubernetes.address: %w", err)
+	}
+	desiredKubernetesHost, err := merged.Node.KubernetesHost()
+	if err != nil {
+		return manifest.Manifest{}, nil, nil, fmt.Errorf("desired node kubernetes.address: %w", err)
+	}
+	if !currentKubernetesHost.Equal(desiredKubernetesHost) {
+		domains.add(DomainKubeletNodeIdentity)
+	}
 	if len(domains.domains) == 0 {
 		if request.VolumeBindingsSet && !volumeBindingsEqual(request.CurrentRecord.VolumeBindings, request.VolumeBindings) {
 			domains.add(DomainVolumes)
@@ -816,18 +829,6 @@ func validateOverlay(path string, overlay NodeOverlay) error {
 	return nil
 }
 
-// sameKubernetesAddress reports whether two kubernetes.address values name the
-// same address, so the same address written another way, such as v4-mapped,
-// is not a node identity change.
-func sameKubernetesAddress(current, desired string) bool {
-	if current == desired {
-		return true
-	}
-	a, errA := inventory.ParseKubernetesAddress(current)
-	b, errB := inventory.ParseKubernetesAddress(desired)
-	return errA == nil && errB == nil && a == b
-}
-
 func applyOverlay(installManifest *manifest.Manifest, overlay NodeOverlay, kubernetesInitialized bool, domains *domainAccumulator, unsafeFiles *[]confext.NativeEtcFile) {
 	node := &installManifest.Node
 	if overlay.Identity != nil {
@@ -905,15 +906,11 @@ func applyOverlay(installManifest *manifest.Manifest, overlay NodeOverlay, kuber
 		}
 	}
 	if overlay.Kubernetes != nil {
-		addressChanged := !sameKubernetesAddress(node.Kubernetes.Address, overlay.Kubernetes.Address)
 		configChanged := node.Kubernetes.Kubeadm != overlay.Kubernetes.Kubeadm
 		node.Kubernetes = *overlay.Kubernetes
 		if configChanged {
 			domains.add(DomainSelectedKubeadmConfig)
 			domains.add(DomainBootstrapNodeMetadata)
-		}
-		if addressChanged {
-			domains.add(DomainKubeletNodeIdentity)
 		}
 	}
 	if overlay.ControlPlaneEndpointSet && !reflect.DeepEqual(node.ControlPlaneEndpoint, overlay.ControlPlaneEndpoint) {

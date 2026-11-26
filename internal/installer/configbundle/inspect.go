@@ -32,6 +32,8 @@ type NodeResolution struct {
 	OwnedFiles     []OwnedFile              `json:"ownedFiles" yaml:"ownedFiles"`
 	Warnings       []ResolutionWarning      `json:"warnings" yaml:"warnings"`
 	Classification ResolutionClassification `json:"classification" yaml:"classification"`
+
+	kubernetesHost inventory.Host
 }
 
 type ResolvedCluster struct {
@@ -101,6 +103,10 @@ func InspectSelectedNode(selected SelectedNodeMaterial) (NodeResolution, error) 
 	if err != nil {
 		return NodeResolution{}, fmt.Errorf("resolve node %q: %w", node.Name, err)
 	}
+	kubernetesHost, err := selected.InstallManifest.Node.KubernetesHost()
+	if err != nil {
+		return NodeResolution{}, fmt.Errorf("resolve node %q kubernetes.address: %w", node.Name, err)
+	}
 	effective := SourceNode{
 		Name:                node.Name,
 		ControlPlane:        node.ControlPlane,
@@ -116,11 +122,12 @@ func InspectSelectedNode(selected SelectedNodeMaterial) (NodeResolution, error) 
 	}
 	base := sourceNodePath(node, nodeIndex)
 	report := NodeResolution{
-		APIVersion:  APIVersion,
-		Kind:        NodeResolutionKind,
-		ClusterName: selected.Source.Metadata.Name,
-		Node:        node.Name,
-		Effective:   effective,
+		APIVersion:     APIVersion,
+		Kind:           NodeResolutionKind,
+		ClusterName:    selected.Source.Metadata.Name,
+		Node:           node.Name,
+		Effective:      effective,
+		kubernetesHost: kubernetesHost,
 		Cluster: ResolvedCluster{
 			External:             selected.Source.Spec.Kubernetes.External,
 			ControlPlaneEndpoint: selected.Source.Spec.ControlPlaneEndpoint,
@@ -528,7 +535,9 @@ func DiffNodeResolutions(before, after NodeResolution) (ConfigDiff, error) {
 	diffRepositoryExtensions(&diff, base+".systemExtensions", before.Effective.SystemExtensions.Value(), after.Effective.SystemExtensions.Value())
 	add(base+".install.systemDisk", before.Effective.Install.SystemDisk, after.Effective.Install.SystemDisk)
 	diffNamedVolumes(&diff, base+".storage.volumes", before.Effective.Storage.Volumes.Value(), after.Effective.Storage.Volumes.Value())
-	add(base+".kubernetes.address", before.Effective.Kubernetes.Address, after.Effective.Kubernetes.Address)
+	if !before.kubernetesHost.Equal(after.kubernetesHost) {
+		add(base+".kubernetes.address", before.Effective.Kubernetes.Address, after.Effective.Kubernetes.Address)
+	}
 	add(base+".kubernetes.kubelet", before.Effective.Kubernetes.Kubelet, after.Effective.Kubernetes.Kubelet)
 	diffStringMaps(&diff, base+".kubernetes.labels", before.Effective.Kubernetes.Labels.Value(), after.Effective.Kubernetes.Labels.Value())
 	add(base+".kubernetes.taints", before.Effective.Kubernetes.Taints.Value(), after.Effective.Kubernetes.Taints.Value())
