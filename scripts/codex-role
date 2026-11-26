@@ -26,7 +26,15 @@ while [[ "${1-}" == --effort || "${1-}" == --log || "${1-}" == --bind || "${1-}"
         --log) log="$2" ;;
         --bind) binds+=(BindPaths "$2") ;;
         --ro-bind) binds+=(BindReadOnlyPaths "$2") ;;
-        --env) requested_env+=("$2") ;;
+        --env)
+            case "$2" in
+                GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GITHUB_ENTERPRISE_TOKEN)
+                    printf 'codex-role: --env %s is reserved. See dev/agents/README.md for GitHub credential setup.\n' "$2" >&2
+                    exit 2
+                    ;;
+            esac
+            requested_env+=("$2")
+            ;;
     esac
     shift 2
 done
@@ -102,19 +110,28 @@ systemd_path() {
 mounts=(-p ProtectHome=tmpfs -p PrivateUsers=yes -p PrivateTmp=yes)
 [[ "$home" == /tmp ]] || mounts+=(-p "TemporaryFileSystem=$(systemd_path "$home"):ro")
 bind_path() {
-    local property="$1" path="$2" source spec
-    if ! source="$(realpath -e -- "$path")" ||
+    local property="$1" path="$2" origin="${3:-launcher}" source spec
+    if ! IFS= read -r -d '' source < <(realpath -ez -- "$path") ||
         ! [[ -d "$source" || ( "$property" == BindReadOnlyPaths && -f "$source" ) ]]; then
         printf 'codex-role: invalid %s path: %s\n' "$property" "$path" >&2
+        exit 1
+    fi
+    if [[ "$source" == /tmp ]]; then
+        printf 'codex-role: bind would expose all of /tmp: %s\n' "$path" >&2
         exit 1
     fi
     if [[ "$home" == "$source" || "$home" == "${source%/}/"* ]]; then
         printf 'codex-role: bind would expose all of HOME: %s\n' "$path" >&2
         exit 1
     fi
-    if [[ "$source" == /tmp || "$path" == /tmp ]]; then
-        printf 'codex-role: bind would expose all of /tmp: %s\n' "$path" >&2
-        exit 1
+    if [[ "$origin" == explicit ]]; then
+        if [[ "$source" == "$home/"* ]]; then
+            printf 'codex-role: explicit bind would expose content under HOME: %s\n' "$path" >&2
+            exit 1
+        fi
+        # Use the checked path for both ends of the mount. A host process can
+        # still replace a component of that path before systemd mounts it.
+        path="$source"
     fi
     spec="$(systemd_path "$source")"
     if [[ "$source" != "$path" ]]; then
@@ -142,23 +159,33 @@ bind_path BindPaths "${job_env[CODEX_HOME]}" # Codex uses this directory for aut
 bind_path BindPaths "${job_env[GOCACHE]}"
 bind_path BindPaths "${job_env[GOMODCACHE]}"
 for ((i = 0; i < ${#binds[@]}; i += 2)); do
-    bind_path "${binds[i]}" "$(realpath -ms -- "${binds[i + 1]}")"
+    bind_path "${binds[i]}" "${binds[i + 1]}" explicit
 done
 
-credentials=()
-# Resolve auth before isolating the unit from the maintainer's keyring and home.
-# Only ciphertext crosses D-Bus, and gh reads the resulting credential as config.
-if command -v gh >/dev/null && gh_token="$(gh auth token --hostname github.com 2>/dev/null)" && [[ -n "$gh_token" ]]; then
-    if ! [[ "$gh_token" =~ ^[A-Za-z0-9_-]+$ ]]; then
-        printf 'codex-role: unexpected GitHub token format\n' >&2
+# Use a private gh config even for anonymous jobs. The version marker keeps
+# older gh versions from trying to migrate the read-only config directory.
+credentials=(-p 'SetCredential=config.yml:version: 1')
+token_file="${XDG_CONFIG_HOME:-$home/.config}/katl-dev/codex-gh-token"
+if [[ -e "$token_file" || -L "$token_file" ]]; then
+    if ! token_file="$(realpath -e -- "$token_file")" || [[ ! -f "$token_file" ]] ||
+        ! exec {token_fd}<"$token_file" ||
+        [[ "$(stat -Lc '%a' -- /proc/self/fd/0 <&"$token_fd")" != 600 ]]; then
+        printf 'codex-role: the GitHub token must be a readable regular file with mode 0600. See dev/agents/README.md.\n' >&2
         exit 1
     fi
-    gh_credential="$(printf 'github.com:\n    oauth_token: "%s"\n' "$gh_token" |
-        systemd-creds encrypt --user --name=hosts.yml - - | tr -d '\n')"
-    unset gh_token
-    # Mark the generated config as migrated so older gh versions can read it
-    # without attempting to update the read-only credential directory.
-    credentials+=(-p 'SetCredential=config.yml:version: 1' -p "SetCredentialEncrypted=hosts.yml:$gh_credential")
+    # JSON is valid YAML and escapes characters that could otherwise change the
+    # config structure. The token goes to the encryptor on stdin only.
+    if ! gh_credential="$(jq -Rse 'rtrimstr("\n") | select(length > 0) | {"github.com": {oauth_token: .}}' <&"$token_fd" |
+        systemd-creds encrypt --user --name=hosts.yml - - | tr -d '\n')"; then
+        printf 'codex-role: could not encode and encrypt the GitHub credential. Check the token file and use the development shell.\n' >&2
+        exit 1
+    fi
+    exec {token_fd}<&-
+    credentials+=(-p "SetCredentialEncrypted=hosts.yml:$gh_credential")
+    # XDG_CONFIG_HOME can point outside the masked home directory.
+    mounts+=(-p "InaccessiblePaths=$(systemd_path "-$token_file")")
+else
+    printf 'codex-role: launching without GitHub auth. Provision %s as described in dev/agents/README.md.\n' "$token_file" >&2
 fi
 
 codex_args=(exec -C "$repo_root" -s "$sandbox" -m "$model" -c "model_reasoning_effort=$effort")

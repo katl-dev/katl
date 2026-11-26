@@ -28,19 +28,23 @@ func TestCodexRoleExec(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("CODEX_HOME", codexHome)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg config"))
+	configHome := filepath.Join(t.TempDir(), "xdg config")
+	t.Setenv("XDG_CONFIG_HOME", configHome)
 	ghConfig := filepath.Join(home, "maintainer gh config")
 	t.Setenv("GH_CONFIG_DIR", ghConfig)
 	if err := os.MkdirAll(ghConfig, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	const fakeToken = "fixture_only_token"
-	writeFakeExecutable(t, bin, "gh", `[[ "$*" == "auth token --hostname github.com" ]]
-[[ -d "$GH_CONFIG_DIR" && "$GH_CONFIG_DIR" == "$HOME/maintainer gh config" ]]
-printf '%s\n' '`+fakeToken+`'
+	const fakeToken = "fixture_only_token:\\\"\nother.host:\n  oauth_token: injected"
+	tokenFile := filepath.Join(configHome, "katl-dev", "codex-gh-token")
+	if err := os.MkdirAll(filepath.Dir(tokenFile), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFakeExecutable(t, bin, "gh", `touch gh-called
+printf 'maintainer_token\n'
 `)
 	writeFakeExecutable(t, bin, "systemd-creds", `[[ "$*" == "encrypt --user --name=hosts.yml - -" ]]
-[[ "$(cat)" == $'github.com:\n    oauth_token: "`+fakeToken+`"' ]]
+cat > credential-input
 printf 'ZW5jcnlw\ndGVk\n'
 `)
 	buildCache, moduleCache := filepath.Join(home, ".cache", "go-build"), filepath.Join(home, "go", "pkg", "mod")
@@ -54,6 +58,7 @@ printf 'ZW5jcnlw\ndGVk\n'
 	t.Setenv("KATLCTL_CONFIG", "")
 	t.Setenv("TERM", "xterm")
 	t.Setenv("CODEX_UNLISTED", "caller state")
+	t.Setenv("GH_TOKEN", "caller_token")
 
 	task := "Review \"this change\".\nKeep $HOME literal."
 	writeFakeExecutable(t, bin, "codex", `if IFS= read -r unexpected; then
@@ -62,7 +67,7 @@ printf 'ZW5jcnlw\ndGVk\n'
 fi
 [[ /dev/stdin -ef /dev/null ]]
 printf '%s\0' "$@" > codex-args
-printf '%s\0' "$PATH" "$HOME" "$CODEX_HOME" "${XDG_CONFIG_HOME-unset}" "${KATL_MANAGER_PROBE-unset}" "${GH_CONFIG_DIR-unset}" "${GH_TOKEN-unset}" > codex-env
+printf '%s\0' "$PATH" "$HOME" "$CODEX_HOME" "${XDG_CONFIG_HOME-unset}" "${KATL_MANAGER_PROBE-unset}" "${GH_CONFIG_DIR-unset}" "${GH_TOKEN-unset}" "${GITHUB_TOKEN-unset}" "${GH_ENTERPRISE_TOKEN-unset}" "${GITHUB_ENTERPRISE_TOKEN-unset}" > codex-env
 printf 'progress\n' >&2
 printf 'final message'
 exit "$CODEX_TEST_STATUS"
@@ -74,12 +79,13 @@ exit "$CODEX_TEST_STATUS"
 		options                      []string
 		logLocation                  string
 		status                       int
+		withToken                    bool
 	}{
-		{"delivery", "workspace-write", "gpt-6.2-sol", "medium", task, nil, "home", 0},
-		{"reviewer", "read-only", "gpt-6.2-astra", "medium", task, nil, "xdg", 0},
-		{"debugger", "read-only", "gpt-6.2-astra", "high", task, nil, "xdg", 23},
-		{"debugger", "read-only", "gpt-6.2-astra", "low", "@task with spaces.md", []string{"--effort", "low"}, "explicit", 0},
-		{"rebase", "workspace-write", "gpt-6.1-terra", "medium", task, nil, "xdg", 0},
+		{"delivery", "workspace-write", "gpt-6.2-sol", "medium", task, nil, "home", 0, true},
+		{"reviewer", "read-only", "gpt-6.2-astra", "medium", task, nil, "xdg", 0, false},
+		{"debugger", "read-only", "gpt-6.2-astra", "high", task, nil, "xdg", 23, false},
+		{"debugger", "read-only", "gpt-6.2-astra", "low", "@task with spaces.md", []string{"--effort", "low"}, "explicit", 0, false},
+		{"rebase", "workspace-write", "gpt-6.1-terra", "medium", task, nil, "xdg", 0, false},
 	} {
 		t.Run(tc.role+"/"+tc.effort, func(t *testing.T) {
 			work := t.TempDir()
@@ -88,6 +94,20 @@ exit "$CODEX_TEST_STATUS"
 			const evidenceName = "evidence with spaces.txt"
 			writeArtifact(t, work, evidenceName, "evidence\n")
 			evidenceFile := filepath.Join(work, evidenceName)
+			evidenceAlias := filepath.Join(work, "evidence-alias")
+			if err := os.Symlink(evidenceFile, evidenceAlias); err != nil {
+				t.Fatal(err)
+			}
+			if tc.withToken {
+				if err := os.WriteFile(tokenFile, []byte(fakeToken+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(func() {
+					if err := os.Remove(tokenFile); err != nil {
+						t.Error(err)
+					}
+				})
+			}
 
 			// A background caller can leave its input pipe open indefinitely.
 			reader, writer, err := os.Pipe()
@@ -102,7 +122,7 @@ exit "$CODEX_TEST_STATUS"
 			const taskName = "issue:413-v2.review_service.service"
 			logName := "katl-codex-" + tc.role + "-" + taskName + ".log"
 			launcherArgs := append([]string{tc.role, "--env", "CODEX_TEST_STATUS"}, tc.options...)
-			launcherArgs = append(launcherArgs, "--ro-bind", evidenceDir, "--ro-bind", evidenceFile)
+			launcherArgs = append(launcherArgs, "--ro-bind", evidenceDir, "--ro-bind", evidenceAlias)
 			stateHome := filepath.Join(work, "xdg state")
 			t.Setenv("XDG_STATE_HOME", stateHome)
 			logPath := filepath.Join(stateHome, "katl-dev", "logs", logName)
@@ -139,6 +159,23 @@ exit "$CODEX_TEST_STATUS"
 			if log := string(mustReadFile(t, logPath)); log != "progress\nfinal message\nexit="+status+"\n" {
 				t.Fatalf("log = %q, want progress, final message and exit=%s", log, status)
 			}
+			if _, err := os.Stat(filepath.Join(work, "gh-called")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("launcher consulted maintainer gh auth: stat error = %v", err)
+			}
+			const authNotice = "launching without GitHub auth"
+			if tc.withToken {
+				var credential map[string]map[string]string
+				payload := mustReadFile(t, filepath.Join(work, "credential-input"))
+				if err := json.Unmarshal(payload, &credential); err != nil || len(credential) != 1 ||
+					len(credential["github.com"]) != 1 || credential["github.com"]["oauth_token"] != fakeToken {
+					t.Fatal("encryptor did not receive a config containing only the dedicated token")
+				}
+				if strings.Contains(stderr.String(), authNotice) {
+					t.Fatalf("authenticated launch reported missing auth: %s", &stderr)
+				}
+			} else if strings.Count(stderr.String(), authNotice) != 1 || !strings.Contains(stderr.String(), tokenFile) {
+				t.Fatalf("anonymous launch did not report how to provision auth: %s", &stderr)
+			}
 
 			unit := "katl-codex-" + tc.role + "-" + taskName + ".service"
 			if checked := string(mustReadFile(t, filepath.Join(work, "checked-unit"))); checked != unit+"\n" {
@@ -154,13 +191,17 @@ exit "$CODEX_TEST_STATUS"
 					t.Errorf("systemd-run missing %s", flag)
 				}
 			}
-			for _, property := range []string{
+			properties := []string{
 				"ProtectHome=tmpfs", "PrivateUsers=yes", "PrivateTmp=yes", `TemporaryFileSystem="` + home + `":ro`,
 				`BindPaths="` + repo + `"`, `BindPaths="` + filepath.Dir(logPath) + `"`, `BindPaths="` + codexHome + `"`,
 				`BindPaths="` + buildCache + `"`, `BindPaths="` + moduleCache + `"`,
 				`BindReadOnlyPaths="` + evidenceDir + `"`, `BindReadOnlyPaths="` + evidenceFile + `"`,
-				"SetCredential=config.yml:version: 1", "SetCredentialEncrypted=hosts.yml:ZW5jcnlwdGVk",
-			} {
+				"SetCredential=config.yml:version: 1",
+			}
+			if tc.withToken {
+				properties = append(properties, "SetCredentialEncrypted=hosts.yml:ZW5jcnlwdGVk", `InaccessiblePaths="-`+tokenFile+`"`)
+			}
+			for _, property := range properties {
 				index := slices.Index(runArgs, property)
 				if index <= 0 || runArgs[index-1] != "-p" {
 					t.Errorf("systemd-run missing property %s", property)
@@ -177,8 +218,15 @@ exit "$CODEX_TEST_STATUS"
 			}
 			for _, arg := range runArgs[:slices.Index(runArgs, "--")] {
 				bindsHome := strings.HasPrefix(arg, "Bind") && strings.Contains(arg, `="`+home+`"`)
-				if bindsHome || strings.Contains(arg, ghConfig) || strings.Contains(arg, fakeToken) {
+				if bindsHome || strings.Contains(arg, ghConfig) || strings.Contains(arg, "fixture_only_token") ||
+					strings.Contains(arg, "maintainer_token") || strings.Contains(arg, "caller_token") {
 					t.Fatal("unit received the plaintext token, maintainer gh config, or an unmasked home bind")
+				}
+				if strings.HasPrefix(arg, "Bind") && (strings.Contains(arg, tokenFile) || strings.Contains(arg, evidenceAlias)) {
+					t.Fatalf("unit bound the original token file or the evidence alias: %s", arg)
+				}
+				if !tc.withToken && strings.Contains(arg, "hosts.yml") {
+					t.Fatal("anonymous unit received a GitHub hosts credential")
 				}
 				if assignment, ok := strings.CutPrefix(arg, "--setenv="); ok {
 					name, _, explicit := strings.Cut(assignment, "=")
@@ -187,7 +235,9 @@ exit "$CODEX_TEST_STATUS"
 					}
 				}
 			}
-			if env := string(mustReadFile(t, filepath.Join(work, "codex-env"))); env != strings.Join([]string{path, home, codexHome, "unset", "unset", "/run/credentials/probe", "unset", ""}, "\x00") {
+			if env := string(mustReadFile(t, filepath.Join(work, "codex-env"))); env != strings.Join([]string{
+				path, home, codexHome, "unset", "unset", "/run/credentials/probe", "unset", "unset", "unset", "unset", "",
+			}, "\x00") {
 				t.Fatalf("unexpected Codex environment %q", env)
 			}
 
@@ -215,12 +265,6 @@ func TestCodexRoleClaudeRefusal(t *testing.T) {
 	repo := repoRoot(t)
 	var settings struct {
 		Permissions struct{ Deny []string }
-		Hooks       struct {
-			PreToolUse []struct {
-				Matcher string
-				Hooks   []struct{ If, Command string }
-			}
-		}
 	}
 	if err := json.Unmarshal(mustReadFile(t, filepath.Join(repo, ".claude", "settings.json")), &settings); err != nil {
 		t.Fatal(err)
@@ -229,44 +273,9 @@ func TestCodexRoleClaudeRefusal(t *testing.T) {
 	if !slices.Contains(settings.Permissions.Deny, rule) {
 		t.Fatal("Claude settings must deny a direct Codex launch")
 	}
-	for _, entry := range settings.Hooks.PreToolUse {
-		if entry.Matcher != "Bash" {
-			continue
-		}
-		for _, hook := range entry.Hooks {
-			if hook.If != "Bash(codex exec *)" {
-				continue
-			}
-			cmd := exec.Command("bash", "-c", hook.Command)
-			cmd.Stdin = strings.NewReader(`{"tool_input":{"command":"codex exec --help"}}`)
-			output, err := cmd.Output()
-			if err != nil {
-				t.Fatal(err)
-			}
-			var result struct {
-				HookSpecificOutput struct {
-					HookEventName, PermissionDecision, PermissionDecisionReason string
-				}
-			}
-			if err := json.Unmarshal(output, &result); err != nil {
-				t.Fatal(err)
-			}
-			decision := result.HookSpecificOutput
-			if decision.HookEventName != "PreToolUse" || decision.PermissionDecision != "deny" ||
-				!strings.Contains(decision.PermissionDecisionReason, "scripts/codex-role") {
-				t.Fatalf("direct launch refusal = %s", output)
-			}
-
-			// Claude may run the hook despite its filter for shell expansions.
-			cmd = exec.Command("bash", "-c", hook.Command)
-			cmd.Stdin = strings.NewReader(`{"tool_input":{"command":"echo $(date)"}}`)
-			if output, err := cmd.Output(); err != nil || len(output) != 0 {
-				t.Fatalf("unrelated shell command received a decision: %s (%v)", output, err)
-			}
-			return
-		}
+	if guide := mustReadFile(t, filepath.Join(repo, "dev", "agents", "README.md")); !bytes.Contains(guide, []byte("Use `scripts/codex-role`")) {
+		t.Fatal("agent workflow must name the supported launcher")
 	}
-	t.Fatal("direct launch denial must explain how to use scripts/codex-role")
 }
 
 func TestCodexRoleRejectsLaunch(t *testing.T) {
@@ -275,6 +284,29 @@ func TestCodexRoleRejectsLaunch(t *testing.T) {
 	fakeCodexSystemd(t, bin)
 	writeFakeExecutable(t, bin, "codex", "exit 99\n")
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	home := t.TempDir()
+	privateDir := filepath.Join(home, "private")
+	tokenFile := filepath.Join(home, ".config", "katl-dev", "codex-gh-token")
+	for _, dir := range []string{privateDir, filepath.Dir(tokenFile)} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(tokenFile, []byte("mode_fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	alias := filepath.Join(outside, "home-alias")
+	if err := os.Symlink(privateDir, alias); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("CODEX_HOME", t.TempDir())
+	t.Setenv("GOCACHE", t.TempDir())
+	t.Setenv("GOMODCACHE", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("XDG_STATE_HOME", outside)
+	t.Setenv("KATLCTL_CONFIG", "")
 
 	for _, tc := range []struct {
 		name   string
@@ -296,6 +328,16 @@ func TestCodexRoleRejectsLaunch(t *testing.T) {
 		{"blank file", []string{"debugger", "job", "@blank.md"}, 2, "task must contain text"},
 		{"missing file", []string{"debugger", "job", "@missing.md"}, 2, "cannot read task file"},
 		{"active name", []string{"reviewer", "taken", "task"}, 1, "katl-codex-reviewer-taken.service is already active. Choose another task name"},
+		{"GH_TOKEN", []string{"reviewer", "--env", "GH_TOKEN", "job", "task"}, 2, "--env GH_TOKEN is reserved"},
+		{"GITHUB_TOKEN", []string{"reviewer", "--env", "GITHUB_TOKEN", "job", "task"}, 2, "--env GITHUB_TOKEN is reserved"},
+		{"GH_ENTERPRISE_TOKEN", []string{"reviewer", "--env", "GH_ENTERPRISE_TOKEN", "job", "task"}, 2, "--env GH_ENTERPRISE_TOKEN is reserved"},
+		{"GITHUB_ENTERPRISE_TOKEN", []string{"reviewer", "--env", "GITHUB_ENTERPRISE_TOKEN", "job", "task"}, 2, "--env GITHUB_ENTERPRISE_TOKEN is reserved"},
+		{"bind home", []string{"reviewer", "--bind", home, "job", "task"}, 1, "bind would expose all of HOME"},
+		{"bind ancestor", []string{"reviewer", "--bind", filepath.Dir(home), "job", "task"}, 1, "bind would expose all of HOME"},
+		{"bind private directory", []string{"reviewer", "--bind", privateDir, "job", "task"}, 1, "bind would expose content under HOME"},
+		{"ro-bind home symlink", []string{"reviewer", "--ro-bind", alias, "job", "task"}, 1, "bind would expose content under HOME"},
+		{"ro-bind tmp", []string{"reviewer", "--ro-bind", "/tmp/.", "job", "task"}, 1, "bind would expose all of /tmp"},
+		{"insecure token file", []string{"reviewer", "job", "task"}, 1, "regular file with mode 0600"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			work := t.TempDir()
@@ -330,12 +372,13 @@ while [[ "$1" != -- ]]; do
     case "$1" in
         --unit) shift ;;
         --setenv=*) environment+=("${1#--setenv=}") ;;
-        SetCredentialEncrypted=hosts.yml:*) environment+=(CREDENTIALS_DIRECTORY=/run/credentials/probe) ;;
+        SetCredential=config.yml:*) environment+=(CREDENTIALS_DIRECTORY=/run/credentials/probe) ;;
     esac
     shift
 done
 shift
 # Model the ambient environment of the user manager plus the unit assignments.
-exec env -i KATL_MANAGER_PROBE=manager "${environment[@]}" "$@"
+exec env -i KATL_MANAGER_PROBE=manager GH_TOKEN=manager GITHUB_TOKEN=manager \
+    GH_ENTERPRISE_TOKEN=manager GITHUB_ENTERPRISE_TOKEN=manager "${environment[@]}" "$@"
 `)
 }

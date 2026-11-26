@@ -48,16 +48,16 @@ existing parent directory. The unit overwrites the log with the Codex report
 and ends it with `exit=N`.
 
 The unit masks the home directory and mounts the worktree, linked Git metadata,
-Go caches, Codex auth and session state, and any external log directory. Start
-the launcher from a maintainer session where `gh` is authenticated to
-`github.com` when the brief requires GitHub reads. The launcher resolves the
-login before masking the home directory and supplies it as a read-only systemd
-credential. The login retains its existing GitHub API scopes.
+Go caches, Codex auth and session state, and any external log directory. If the
+brief needs authenticated GitHub reads, use the
+[dedicated GitHub credential](../README.md#provision-github-read-access).
 
-To make evidence outside the repository available at its existing path, pass
-`--ro-bind PATH` once per file or directory before the task name, then refer to
-the bound paths in the brief. This also applies to evidence in a session
-scratchpad under `/tmp`, because the unit uses a private `/tmp`.
+To share evidence outside the repository, pass `--ro-bind PATH` once per file
+or directory before the task name. Refer to the resolved paths in the brief
+when the inputs are symlinks. Use individual paths for evidence in a session
+scratchpad because the unit has a private `/tmp`. Explicit `--bind` and
+`--ro-bind` reject the entire `/tmp` directory, the home directory, its
+ancestors, and paths that resolve inside it.
 
 To recover jobs after a hand-off, find running units with
 `systemctl --user list-units 'katl-codex-*'`. Use
