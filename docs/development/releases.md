@@ -7,7 +7,7 @@ separate publication approval is required.
 ## Prepare a release
 
 When cutting a release branch, follow the
-[release milestone policy](agent-roles.md#release-milestones) to track blockers
+[release milestone policy](../../dev/agents/roles/release.md#release-milestones) to track blockers
 and triage findings through final publication.
 
 1. Merge the intended changes and their required checks. Choose an unused

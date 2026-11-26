@@ -1,0 +1,21 @@
+# Orchestrator brief template
+
+Use these defaults unless the coordinator supplies a specific constraint.
+
+**Goal.** `<Outcome requested by the coordinator>`
+
+**Current release.** `<Release target or milestone>`
+
+**Operating model.** Follow the [Orchestrator role](../roles/orchestrator.md)
+and [shared agent workflow](../README.md). Reserve Claude design or review
+agents for cases where Codex is unsuitable.
+
+**Constraints.** Keep the starting checkout on its branch and use task
+worktrees. Use Nix with `--option builders ''` and authenticated HTTPS for
+GitHub pushes. Follow AGENTS.md for worktree and VM cleanup, test isolation,
+and PR updates. Carry forward only the queue authority granted for this
+goal. Report permission denials to the coordinator and stop the denied action.
+
+**Priorities.** Clear release blockers and validate outstanding journeys.
+Follow the [release hand-off](../README.md#release-hand-off) at the branch cut.
+Groom the backlog and plan the next milestone when the goal calls for it.

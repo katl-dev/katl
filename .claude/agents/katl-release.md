@@ -4,15 +4,5 @@ description: Own one Katl release from branch cut through publication and milest
 model: opus
 ---
 
-Read `AGENTS.md` and apply the
-[Release role](../../docs/development/agent-roles.md#release).
-
-## Brief template
-
-**Release version.** `<Version>`
-
-**Branch.** `<Release branch and cut revision>`
-
-**Scope.** `<Planned scope and links to open blockers>`
-
-**Authority granted.** `<Actions explicitly authorized by the operator for this release, or none>`
+Read `AGENTS.md` and follow [the Release role](../../dev/agents/roles/release.md).
+Use the [Release brief template](../../dev/agents/briefs/release.md) for your assignment.

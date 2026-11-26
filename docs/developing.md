@@ -7,8 +7,6 @@ the public [KatlOS documentation](README.md); this page is for contributors.
 ## Find project documentation
 
 - [CI and validation](development/ci.md) explains which jobs exercise a change.
-- [Agent roles](development/agent-roles.md) explains how to start or resume
-  release coordination.
 - [Generation ownership](development/generation-ownership.md) explains the
   boundary between offline installation, boot health, and node operations.
 - [Release KatlOS](development/releases.md) covers preparation, qualification,
@@ -788,7 +786,9 @@ katl-dev-run claude --agent katl-coordinator
 
 The runner puts the agent in a delegated scope in `katl-dev.slice`, where
 rootless Podman can create cgroups for its containers and VM workloads.
-The agent recovers work using the [coordination checkpoint](development/agent-roles.md#local-state).
+The coordinator resumes work from its local checkpoint. See the
+[agent workflow](../dev/agents/) for checkpoint details, role definitions,
+and hand-offs.
 
 ### Track background queue waits
 

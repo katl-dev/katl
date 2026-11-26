@@ -2,7 +2,7 @@
 
 Katl produces KatlOS, an installable, upgradeable, systemd-native Kubernetes node OS. Keep work inside that product boundary and do not preserve compatibility for designs that have not shipped.
 
-See [Agent roles](docs/development/agent-roles.md) for assignments and hand-offs.
+See the [agent workflow](dev/agents/) for assignments and hand-offs.
 
 ## Product Principles
 
