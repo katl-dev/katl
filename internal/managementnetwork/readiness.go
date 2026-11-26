@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"slices"
 	"strings"
 )
 
@@ -16,6 +17,8 @@ type networkctlState struct {
 type networkctlLink struct {
 	Name              string  `json:"Name"`
 	OperationalState  string  `json:"OperationalState"`
+	CarrierState      string  `json:"CarrierState"`
+	AddressState      string  `json:"AddressState"`
 	OnlineState       *string `json:"OnlineState"`
 	NetworkFile       string  `json:"NetworkFile"`
 	RequiredForOnline bool    `json:"RequiredForOnline"`
@@ -33,15 +36,20 @@ func Ready(ctx context.Context, read func(context.Context) ([]byte, error)) (boo
 		return false, "", fmt.Errorf("decode networkctl state: %w", err)
 	}
 
-	var required, offline []string
+	var required, offline, addressless []string
 	routable := false
 	for _, link := range state.Interfaces {
 		if link.NetworkFile == "" || !link.RequiredForOnline {
 			continue
 		}
 		required = append(required, link.Name)
-		if link.OnlineState == nil || *link.OnlineState != "online" {
+		switch {
+		case link.OnlineState == nil || *link.OnlineState != "online" ||
+			!slices.Contains([]string{"carrier", "degraded-carrier", "enslaved"}, link.CarrierState):
 			offline = append(offline, link.Name)
+		// RequiredForOnline=carrier can report online before any address is usable.
+		case link.AddressState != "degraded" && link.AddressState != "routable":
+			addressless = append(addressless, link.Name)
 		}
 		if link.OperationalState == "routable" {
 			routable = true
@@ -50,8 +58,15 @@ func Ready(ctx context.Context, read func(context.Context) ([]byte, error)) (boo
 	if len(required) == 0 {
 		return false, "no systemd-networkd link is required for online", nil
 	}
+	var reasons []string
 	if len(offline) > 0 {
-		return false, "required links are not online: " + strings.Join(offline, ", "), nil
+		reasons = append(reasons, "required links are not online: "+strings.Join(offline, ", "))
+	}
+	if len(addressless) > 0 {
+		reasons = append(reasons, "required links have no usable address: "+strings.Join(addressless, ", "))
+	}
+	if len(reasons) > 0 {
+		return false, strings.Join(reasons, ". "), nil
 	}
 	if !routable {
 		return false, "no required link is routable: " + strings.Join(required, ", "), nil

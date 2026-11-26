@@ -365,9 +365,9 @@ starts creating virtual interfaces. It does not retrigger existing interfaces.
 
 Installed boot health verifies systemd-networkd and the local management path.
 Every effective networkd link with `RequiredForOnline` enabled must be
-online, and at least one of those required links must be routable. Unmanaged or
-explicitly optional links do not satisfy this gate. The check does not require
-an arbitrary remote operator client to be online.
+online with carrier and a usable address, and at least one of those required
+links must be routable. Unmanaged and explicitly optional links are excluded
+from the gate, which uses local networkd state.
 This handler replaces the dedicated public `networkd` field.
 
 ### sysctl.d

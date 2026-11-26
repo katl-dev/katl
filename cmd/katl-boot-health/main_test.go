@@ -193,7 +193,7 @@ func TestManagementNetworkAcceptsOnlineReadAtDeadline(t *testing.T) {
 			}
 			// Deliver the completed online observation after the deadline is visible.
 			<-ctx.Done()
-			return []byte(`{"Interfaces":[{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable"}]}`), nil
+			return []byte(`{"Interfaces":[{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}]}`), nil
 		}
 
 		timing := managementTiming

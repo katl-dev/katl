@@ -258,6 +258,7 @@ func exerciseHostUpgrade(t *testing.T, kind string, staysHealthy bool) {
 	unit := &healthUnit{}
 	unit.set(healthSucceeded)
 	server.RunBootHealthStatus = unit.run
+	server.readManagementNetwork = readReadyManagementNetwork
 	if err := server.validateHostUpgradePlan(t.Context(), &agentapi.HostUpgradeOperationRequest{
 		ImageLocalRef: "upgrade.squashfs", CandidateGenerationId: "gen1",
 	}); err != nil {

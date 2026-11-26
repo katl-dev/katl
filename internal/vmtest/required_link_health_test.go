@@ -59,16 +59,17 @@ func TestInstalledRuntimeRequiredLinkHealth(t *testing.T) {
 	// link has a static address without a gateway, so its outage is observable
 	// through the public management interface.
 	const mac = "52:54:00:08:23:01"
+	const address = "192.0.2.10/32"
 	const networkFile = "05-vmtest-required-link.network"
 	const tempFile = "/var/lib/katl/test-artifacts/" + networkFile
 	writeGuestFile(t, ctx, guest, tempFile, []byte(`[Match]
 MACAddress=`+mac+`
 
 [Link]
-RequiredForOnline=routable
+RequiredForOnline=carrier
 
 [Network]
-Address=192.0.2.10/32
+Address=`+address+`
 LinkLocalAddressing=no
 `), 0o644)
 	guestCommand(t, ctx, guest, "install-required-link-config", "install", "-D", "-m", "0644", tempFile, "/run/systemd/network/"+networkFile)
@@ -87,7 +88,7 @@ LinkLocalAddressing=no
 	}
 	waitOnline()
 
-	waitStatus := func(phase, want string) {
+	waitStatus := func(phase, want string) string {
 		t.Helper()
 		type nodeStatus struct {
 			Health               string `json:"health"`
@@ -112,6 +113,7 @@ LinkLocalAddressing=no
 		if want == "unhealthy" && !containsAll(got.BootHealthDiagnostic, link, "Check the cable", "katlctl node status") {
 			t.Fatalf("%s: diagnostic = %q, want required link %s and repair guidance", phase, got.BootHealthDiagnostic, link)
 		}
+		return got.BootHealthDiagnostic
 	}
 	waitStatus("carrier-up", "OK")
 
@@ -161,6 +163,18 @@ bootctl --no-pager list --json=short`)
 	waitOnline()
 	waitStatus("carrier-restored", "OK")
 	assertBootUnchanged("efi-after-recovery")
+
+	guestCommand(t, ctx, guest, "remove-required-link-address", "ip", "address", "del", address, "dev", link)
+	waitRequiredLinkCarrier(t, ctx, guest, mac, true)
+	if diagnostic := waitStatus("address-lost", "unhealthy"); !strings.Contains(diagnostic, "required links have no usable address: "+link) {
+		t.Fatalf("address loss diagnostic = %q, want missing address on %s", diagnostic, link)
+	}
+	assertBootUnchanged("efi-during-address-loss")
+
+	guestCommand(t, ctx, guest, "restore-required-link-address", "networkctl", "reconfigure", link)
+	waitOnline()
+	waitStatus("address-restored", "OK")
+	assertBootUnchanged("efi-after-address-recovery")
 
 	if err := run.Scenario.WriteResult(WorldStatusPassed, ""); err != nil {
 		t.Fatal(err)

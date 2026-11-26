@@ -1258,10 +1258,11 @@ func TestHostUpgradeDryRunAllowsHealthySourceBeforeBootstrap(t *testing.T) {
 }
 
 func TestHostUpgradeRequiresConfirmedBootHealth(t *testing.T) {
-	for _, tc := range []struct{ state, properties, reason string }{
-		{"failed", healthDependencyFailed, "sshd.service"},
-		{"pending", healthStalled, "has not finished for this boot"},
-		{"unknown", "", "cannot read boot health for this boot from systemd"},
+	for _, tc := range []struct{ state, properties, reason, network string }{
+		{state: "failed", properties: healthDependencyFailed, reason: "sshd.service"},
+		{state: "pending", properties: healthStalled, reason: "has not finished for this boot"},
+		{state: "unknown", reason: "cannot read boot health for this boot from systemd"},
+		{state: "unhealthy", properties: healthSucceeded, reason: "required links have no usable address: management0", network: addresslessManagementLink},
 	} {
 		for _, dryRun := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/dry-run=%t", tc.state, dryRun), func(t *testing.T) {
@@ -1270,6 +1271,11 @@ func TestHostUpgradeRequiresConfirmedBootHealth(t *testing.T) {
 				unit := &healthUnit{}
 				unit.set(tc.properties)
 				server.RunBootHealthStatus = unit.runWithFailedSSH
+				if tc.network != "" {
+					server.readManagementNetwork = func(context.Context) ([]byte, error) {
+						return []byte(tc.network), nil
+					}
+				}
 				server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error { return nil })
 				req := hostUpgradeSubmitRequest("req-host-upgrade-failed-boot")
 				req.DryRun = dryRun
@@ -3770,6 +3776,7 @@ func newTestServer(t *testing.T) *testServer {
 	}
 	// Tests opt in to a boot health unit; the host running them has none.
 	server.RunBootHealthStatus = nil
+	server.readManagementNetwork = readReadyManagementNetwork
 	server.EnrollmentID = testEnrollmentID
 	server.InventoryNodeName = testInventoryNodeName
 	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)

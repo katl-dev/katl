@@ -196,12 +196,13 @@ func TestWaitNodeBootHealthWaitsForKubernetesRecovery(t *testing.T) {
 
 // bootObservation is what the node reports at one poll after a reboot request.
 type bootObservation struct {
-	agentStart string
-	running    string
-	health     string
-	diagnostic string
-	nextBoot   string
-	candidate  string
+	agentStart    string
+	running       string
+	health        string
+	diagnostic    string
+	nextBoot      string
+	candidate     string
+	candidateBoot string
 }
 
 func (o bootObservation) status() *agentapi.NodeStatus {
@@ -242,9 +243,10 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 			name: "reboot waits for management link recovery",
 			observations: []bootObservation{
 				{agentStart: "after", running: "gen-a", health: "unhealthy", diagnostic: "required links are not online: enp1s0", candidate: healthy},
+				{agentStart: "after", running: "gen-a", health: "unknown", candidate: healthy},
 				{agentStart: "after", running: "gen-a", health: "healthy", candidate: healthy},
 			},
-			settled: 1,
+			settled: 2,
 		},
 		{
 			name: "failed boot of a previously healthy generation",
@@ -279,10 +281,23 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 			observations: []bootObservation{
 				{agentStart: "trial", running: "gen-a", health: "pending", nextBoot: "gen-old", candidate: unhealthy},
 				{agentStart: "fallback", running: "gen-old", health: "pending", candidate: unhealthy},
-				{agentStart: "fallback", running: "gen-old", health: "healthy", candidate: unhealthy},
 			},
-			settled: 2,
+			settled: 1,
 			err:     []string{"rejected generation gen-a during boot health and returned on generation gen-old"},
+		},
+		{
+			name: "fallback lost a management link",
+			observations: []bootObservation{
+				{agentStart: "fallback", running: "gen-old", health: "unhealthy", diagnostic: "required links are not online: enp1s0", candidate: unhealthy},
+			},
+			err: []string{"rejected generation gen-a during boot health and returned on generation gen-old"},
+		},
+		{
+			name: "fallback with a recorded boot failure on the trial",
+			observations: []bootObservation{
+				{agentStart: "fallback", running: "gen-old", health: "unhealthy", candidate: generation.HealthStateUnknown, candidateBoot: generation.BootStateFailed},
+			},
+			err: []string{"rejected generation gen-a during boot health and returned on generation gen-old"},
 		},
 		{
 			name: "failed fallback boot",
@@ -312,8 +327,8 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 					Generations:          []*agentapi.Generation{{GenerationId: current.nextBoot, UnavailableReason: test.nextUnavailable}},
 				}
 				fake.generation = &agentapi.Generation{GenerationId: "gen-a", CommitState: generation.CommitStateCommitted, BootState: generation.BootStateGood, HealthState: current.candidate}
-				if current.candidate == unhealthy {
-					fake.generation.BootState = generation.BootStateFailed
+				if current.candidateBoot != "" {
+					fake.generation.BootState = current.candidateBoot
 				}
 			}
 			installKatlcDial(t, nil, fake)

@@ -24,7 +24,7 @@ systemd-networkd's effective link state and requires:
 
 ```text
 at least one networkd-managed link with RequiredForOnline enabled
-every such required link in networkd's online state
+every such required link online with carrier and a usable address
 at least one such required link in the routable operational state
 ```
 
@@ -32,9 +32,10 @@ The generated DHCP fallback marks its physical Ethernet links
 `RequiredForOnline=routable`. Native networkd configuration may explicitly
 exclude a secondary link with `RequiredForOnline=no`. Unmanaged workload links
 and excluded secondary links cannot satisfy the routable-link requirement or
-hide an offline required link. This check proves the configured local path is
-usable; it does not depend on a particular workstation, gateway, or other
-remote client answering a probe.
+hide an unavailable required link. A carrier-only online threshold still
+requires a usable link-local or routable address for Katl boot health. The
+check uses local networkd state and needs no reply from a workstation, gateway,
+or other remote client.
 
 Systemd owns required-service qualification. The boot-health unit has explicit
 `Requires=` and `After=` dependencies for Katl's baseline management services,

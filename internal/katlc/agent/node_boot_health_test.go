@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -43,7 +42,16 @@ const (
 		"Id=katl-boot-complete.target\nLoadState=not-found\nActiveState=inactive\nJob=\n"
 )
 
-const readyManagementLink = `{"Interfaces":[{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable"}]}`
+const readyManagementLink = `{"Interfaces":[{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}]}`
+
+func readReadyManagementNetwork(context.Context) ([]byte, error) {
+	return []byte(readyManagementLink), nil
+}
+
+const addresslessManagementLink = `{"Interfaces":[
+	{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"carrier","CarrierState":"carrier","AddressState":"off"},
+	{"Name":"management1","NetworkFile":"20-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}
+]}`
 
 // healthUnit fakes systemd's view of katl-boot-health.service.
 type healthUnit struct{ properties atomic.Value }
@@ -97,18 +105,18 @@ func knownGoodNode(t *testing.T, unitProperties string) (*testServer, *healthUni
 	unit := &healthUnit{}
 	unit.set(unitProperties)
 	server.RunBootHealthStatus = unit.run
-	server.readManagementNetwork = func(context.Context) ([]byte, error) {
-		return []byte(readyManagementLink), nil
-	}
 	return server, unit
 }
 
 func TestNodeStatusTracksRequiredManagementLink(t *testing.T) {
 	for _, tc := range []struct {
-		name, operationalState string
+		name, network string
 	}{
-		{name: "carrier lost", operationalState: "no-carrier"},
-		{name: "address lost", operationalState: "carrier"},
+		{name: "carrier lost", network: `{"Interfaces":[
+			{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"offline","OperationalState":"no-carrier","CarrierState":"no-carrier","AddressState":"routable"},
+			{"Name":"management1","NetworkFile":"20-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}
+		]}`},
+		{name: "address lost", network: addresslessManagementLink},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, _ := knownGoodNode(t, healthSucceeded)
@@ -156,10 +164,7 @@ func TestNodeStatusTracksRequiredManagementLink(t *testing.T) {
 			before := readFiles()
 
 			// A second routable link must not hide the required link's outage.
-			network := fmt.Sprintf(`{"Interfaces":[
-				{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"offline","OperationalState":%q},
-				{"Name":"management1","NetworkFile":"20-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable"}
-			]}`, tc.operationalState)
+			network := tc.network
 			server.readManagementNetwork = func(context.Context) ([]byte, error) { return []byte(network), nil }
 			for _, want := range []string{nodeBootHealthUnhealthy, nodeBootHealthHealthy} {
 				report, err := server.GetNodeStatus(t.Context(), &agentapi.GetNodeStatusRequest{})
