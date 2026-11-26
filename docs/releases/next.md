@@ -99,3 +99,14 @@ katlctl management enable-mtls --config ./cluster.yaml
 
 Follow the [migration procedure](../operations/management-auth.md#migrate-to-mtls-management)
 to back up the management secrets and check the result.
+
+If an interruption or inconclusive reply prevents `katlctl management enable-mtls`,
+`katlctl management identity rotate`, or `katlctl management identity recover`
+from verifying a node, the command stops and reports what it “could not confirm,”
+what “the node may still trust,” and what to do next. Follow the reported next
+step and rerun the same command with the same management secrets to resume or
+restart the operation. If `enable-mtls` stops before its trial is confirmed, the
+node returns to trusted-network by itself when the trial window ends. To revert
+a live trial immediately, run
+`katlc agent management-trial revert` as root on the node console. See
+[Check and resume an interrupted migration](../operations/management-auth.md#check-and-resume-an-interrupted-migration).
