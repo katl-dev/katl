@@ -81,7 +81,17 @@ func run(_ context.Context, args []string, stdout io.Writer) error {
 			return fmt.Errorf("record booted generation: %w", err)
 		}
 	}
-	plan, err := generation.ApplyActivation(*root, record)
+	var plan generation.ActivationPlan
+	activate := func() error {
+		var err error
+		plan, err = generation.ApplyActivation(*root, record)
+		return err
+	}
+	if commandLine == "" {
+		err = generation.WithLegacyBootState(*root, activate)
+	} else {
+		err = activate()
+	}
 	if err != nil {
 		return err
 	}

@@ -185,34 +185,39 @@ func (e *Executor) executeHostUpgradeHandoff(ctx context.Context, record operati
 	if err := publishPreparedUpgrade(e.Root, prepared, candidate); err != nil {
 		return fail("write-candidate-generation", err)
 	}
-	selection, err := generation.ReadBootSelection(e.Root)
-	if err != nil {
-		return fail("arm-trial-boot", err)
-	}
-	previousSelection := selection
-	selection.TargetBootGenerationID = candidate
-	selection.TrialGenerationID = candidate
-	selection.PreviousKnownGoodGenerationID = previous.GenerationID
-	selection.TargetBootEntry = entry
-	selection.TrialBootEntry = entry
-	selection.PreviousKnownGoodBootEntry = previous.Boot.LoaderEntryPath
-	selection.PendingTransactionID = record.OperationID
-	selection.PendingHealthValidation = true
-	selection.PersistentDefaultPromotion = generation.DefaultPromotionPending
-	selection.UpdatedAt = e.clock()
-	if err := generation.CheckTrialFallback(e.Root, selection); err != nil {
-		return fail("arm-trial-boot", err)
-	}
-	if err := e.SetBootDefault(ctx, e.Root, previous.Boot.LoaderEntryPath); err != nil {
-		return fail("arm-trial-boot", fmt.Errorf("retain source boot default: %w", err))
-	}
-	if err := generation.WriteBootSelection(e.Root, selection); err != nil {
-		return fail("arm-trial-boot", err)
-	}
-	if err := e.SetBootOneshot(ctx, e.Root, entry); err != nil {
-		if restoreErr := generation.WriteBootSelection(e.Root, previousSelection); restoreErr != nil {
-			err = errors.Join(err, restoreErr)
+	if err := generation.WithLegacyBootState(e.Root, func() error {
+		selection, err := generation.ReadBootSelection(e.Root)
+		if err != nil {
+			return err
 		}
+		previousSelection := selection
+		selection.TargetBootGenerationID = candidate
+		selection.TrialGenerationID = candidate
+		selection.PreviousKnownGoodGenerationID = previous.GenerationID
+		selection.TargetBootEntry = entry
+		selection.TrialBootEntry = entry
+		selection.PreviousKnownGoodBootEntry = previous.Boot.LoaderEntryPath
+		selection.PendingTransactionID = record.OperationID
+		selection.PendingHealthValidation = true
+		selection.PersistentDefaultPromotion = generation.DefaultPromotionPending
+		selection.UpdatedAt = e.clock()
+		if err := generation.CheckTrialFallback(e.Root, selection); err != nil {
+			return err
+		}
+		if err := e.SetBootDefault(ctx, e.Root, previous.Boot.LoaderEntryPath); err != nil {
+			return fmt.Errorf("retain source boot default: %w", err)
+		}
+		if err := generation.WriteBootSelection(e.Root, selection); err != nil {
+			return err
+		}
+		if err := e.SetBootOneshot(ctx, e.Root, entry); err != nil {
+			if restoreErr := generation.WriteBootSelection(e.Root, previousSelection); restoreErr != nil {
+				err = errors.Join(err, restoreErr)
+			}
+			return err
+		}
+		return nil
+	}); err != nil {
 		return fail("arm-trial-boot", err)
 	}
 	phase = "arm-trial-boot"

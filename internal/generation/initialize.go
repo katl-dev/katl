@@ -10,8 +10,7 @@ import (
 // prepared its payload and node inputs. Selection is published last; retry
 // preserves both first-boot health and subsequent generation transitions.
 func Initialize(root string, spec GenerationSpec) error {
-	bootDir, err := rootedPath(root, "/var/lib/katl/boot")
-	if err != nil {
+	if _, err := BootSelectionPath(root); err != nil {
 		return err
 	}
 	if spec.PreviousGenerationID != "" {
@@ -24,7 +23,7 @@ func Initialize(root string, spec GenerationSpec) error {
 	if err != nil {
 		return err
 	}
-	return withStateLock(bootDir, func() error {
+	return WithLegacyBootState(root, func() error {
 		selection, err := ReadBootSelection(root)
 		exists := err == nil
 		if err != nil && !errors.Is(err, os.ErrNotExist) {

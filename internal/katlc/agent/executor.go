@@ -887,71 +887,73 @@ func (e *Executor) promoteLiveGeneration(ctx context.Context, record operation.O
 }
 
 func (e *Executor) commitTrialGeneration(ctx context.Context, record operation.OperationRecord, now time.Time, reason string) error {
-	candidate := strings.TrimSpace(record.CandidateGenerationID)
-	if candidate == "" {
-		return fmt.Errorf("candidate generation id is required")
-	}
-	spec, status, entry, err := e.writeCandidateLoaderEntry(ctx, candidate)
-	if err != nil {
-		return err
-	}
-	committedAt := now.UTC()
-	selection, err := generation.ReadBootSelection(e.Root)
-	if err != nil {
-		return fmt.Errorf("read boot selection: %w", err)
-	}
-	previousSelection := selection
-	fallback := strings.TrimSpace(selection.Generation0FallbackID)
-	if fallback == "" {
-		fallback = selection.DefaultGenerationID
-	}
-	selection.OneShot = false
-	selection.TargetBootGenerationID = candidate
-	selection.TrialGenerationID = candidate
-	selection.PreviousKnownGoodGenerationID = selection.DefaultGenerationID
-	selection.Generation0FallbackID = fallback
-	selection.TargetBootEntry = entry
-	selection.TrialBootEntry = entry
-	selection.PreviousKnownGoodBootEntry = selection.DefaultBootEntry
-	selection.PendingTransactionID = record.OperationID
-	selection.PendingHealthValidation = true
-	selection.PersistentDefaultPromotion = generation.DefaultPromotionPending
-	selection.UpdatedAt = committedAt
-	if err := generation.CheckTrialFallback(e.Root, selection); err != nil {
-		return err
-	}
-	if err := generation.WriteBootSelection(e.Root, selection); err != nil {
-		return fmt.Errorf("arm boot health validation: %w", err)
-	}
-	if e.SetBootOneshot != nil {
-		if err := e.SetBootOneshot(ctx, e.Root, selection.TrialBootEntry); err != nil {
-			if restoreErr := generation.WriteBootSelection(e.Root, previousSelection); restoreErr != nil {
-				return fmt.Errorf("arm boot health validation: %w; restore boot selection: %w", err, restoreErr)
-			}
+	return generation.WithLegacyBootState(e.Root, func() error {
+		candidate := strings.TrimSpace(record.CandidateGenerationID)
+		if candidate == "" {
+			return fmt.Errorf("candidate generation id is required")
+		}
+		spec, status, entry, err := e.writeCandidateLoaderEntry(ctx, candidate)
+		if err != nil {
+			return err
+		}
+		committedAt := now.UTC()
+		selection, err := generation.ReadBootSelection(e.Root)
+		if err != nil {
+			return fmt.Errorf("read boot selection: %w", err)
+		}
+		previousSelection := selection
+		fallback := strings.TrimSpace(selection.Generation0FallbackID)
+		if fallback == "" {
+			fallback = selection.DefaultGenerationID
+		}
+		selection.OneShot = false
+		selection.TargetBootGenerationID = candidate
+		selection.TrialGenerationID = candidate
+		selection.PreviousKnownGoodGenerationID = selection.DefaultGenerationID
+		selection.Generation0FallbackID = fallback
+		selection.TargetBootEntry = entry
+		selection.TrialBootEntry = entry
+		selection.PreviousKnownGoodBootEntry = selection.DefaultBootEntry
+		selection.PendingTransactionID = record.OperationID
+		selection.PendingHealthValidation = true
+		selection.PersistentDefaultPromotion = generation.DefaultPromotionPending
+		selection.UpdatedAt = committedAt
+		if err := generation.CheckTrialFallback(e.Root, selection); err != nil {
+			return err
+		}
+		if err := generation.WriteBootSelection(e.Root, selection); err != nil {
 			return fmt.Errorf("arm boot health validation: %w", err)
 		}
-	}
-	status.CommitState = generation.CommitStateCommitted
-	status.BootState = generation.BootStateTrying
-	status.HealthState = generation.HealthStateUnknown
-	status.UpdatedAt = committedAt
-	status.CommittedAt = &committedAt
-	status.CommittedByOperation = record.OperationID
-	status.StatusTransitions = append(status.StatusTransitions, generation.StatusTransition{
-		At:          committedAt,
-		OperationID: record.OperationID,
-		Reason:      reason,
-		CommitState: status.CommitState,
-		BootState:   status.BootState,
-		HealthState: status.HealthState,
-	})
-	if err := generation.WriteGenerationStatus(e.Root, spec, status); err != nil {
-		if restoreErr := generation.WriteBootSelection(e.Root, previousSelection); restoreErr != nil {
-			return fmt.Errorf("commit candidate generation: %w; restore boot selection: %w", err, restoreErr)
+		if e.SetBootOneshot != nil {
+			if err := e.SetBootOneshot(ctx, e.Root, selection.TrialBootEntry); err != nil {
+				if restoreErr := generation.WriteBootSelection(e.Root, previousSelection); restoreErr != nil {
+					return fmt.Errorf("arm boot health validation: %w; restore boot selection: %w", err, restoreErr)
+				}
+				return fmt.Errorf("arm boot health validation: %w", err)
+			}
 		}
-		return fmt.Errorf("commit candidate generation: %w", err)
-	}
-	return nil
+		status.CommitState = generation.CommitStateCommitted
+		status.BootState = generation.BootStateTrying
+		status.HealthState = generation.HealthStateUnknown
+		status.UpdatedAt = committedAt
+		status.CommittedAt = &committedAt
+		status.CommittedByOperation = record.OperationID
+		status.StatusTransitions = append(status.StatusTransitions, generation.StatusTransition{
+			At:          committedAt,
+			OperationID: record.OperationID,
+			Reason:      reason,
+			CommitState: status.CommitState,
+			BootState:   status.BootState,
+			HealthState: status.HealthState,
+		})
+		if err := generation.WriteGenerationStatus(e.Root, spec, status); err != nil {
+			if restoreErr := generation.WriteBootSelection(e.Root, previousSelection); restoreErr != nil {
+				return fmt.Errorf("commit candidate generation: %w; restore boot selection: %w", err, restoreErr)
+			}
+			return fmt.Errorf("commit candidate generation: %w", err)
+		}
+		return nil
+	})
 }
 
 func (e *Executor) writeCandidateLoaderEntry(ctx context.Context, candidate string) (generation.GenerationSpec, generation.GenerationStatus, string, error) {

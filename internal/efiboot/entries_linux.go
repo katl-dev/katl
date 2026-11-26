@@ -1,4 +1,4 @@
-package agent
+package efiboot
 
 import (
 	"encoding/binary"
@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"unicode"
@@ -19,28 +20,45 @@ const (
 	loaderVarGUID = "-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f"
 )
 
-func (s *Server) readEFIBootEntries() ([2]string, error) {
-	var entries [2]string
-	dir, err := os.Open(rootedPath(s.Root, efiVarsPath))
+// Reader observes the systemd-boot variables on mounted efivarfs. Its zero
+// value uses the running kernel to verify the mount.
+type Reader struct {
+	Statfs func(int, *unix.Statfs_t) error
+}
+
+func (r Reader) Read(root string) (Entries, error) {
+	var entries Entries
+	dir, err := os.Open(filepath.Join(root, efiVarsPath))
 	if err != nil {
-		return entries, fmt.Errorf("open EFI variables: %w. From the node console, mount efivarfs at %s and verify the agent can read it", err, efiVarsPath)
+		return entries, fmt.Errorf("open EFI variables: %w. From the node console, mount efivarfs at %s and verify Katl can read it", err, efiVarsPath)
 	}
 	defer dir.Close()
 
+	statfs := r.Statfs
+	if statfs == nil {
+		statfs = unix.Fstatfs
+	}
 	var fs unix.Statfs_t
-	if err := s.efiStatfs(int(dir.Fd()), &fs); err != nil {
-		return entries, fmt.Errorf("inspect efivarfs: %w. From the node console, verify the agent can read %s", err, efiVarsPath)
+	if err := statfs(int(dir.Fd()), &fs); err != nil {
+		return entries, fmt.Errorf("inspect efivarfs: %w. From the node console, verify Katl can read %s", err, efiVarsPath)
 	}
 	if fs.Type != unix.EFIVARFS_MAGIC {
-		return entries, fmt.Errorf("from the node console, mount efivarfs at %s and verify it is visible to the agent", efiVarsPath)
+		return entries, fmt.Errorf("from the node console, mount efivarfs at %s and verify it is visible to Katl", efiVarsPath)
 	}
 
-	for i, name := range [...]string{"LoaderEntryOneShot", "LoaderEntryDefault"} {
+	for _, variable := range []struct {
+		name  string
+		entry *string
+	}{
+		{"LoaderEntryOneShot", &entries.OneShot},
+		{"LoaderEntryDefault", &entries.Default},
+	} {
+		name := variable.name
 		entry, err := readEFIBootEntry(dir, name)
 		if err != nil {
-			return entries, fmt.Errorf("read EFI variable %s: %w. From the node console, restore access to this variable before retrying", name, err)
+			return Entries{}, fmt.Errorf("read EFI variable %s: %w. From the node console, restore access to this variable before retrying", name, err)
 		}
-		entries[i] = entry
+		*variable.entry = entry
 	}
 	return entries, nil
 }

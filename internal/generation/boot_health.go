@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/efiboot"
 )
 
 const (
@@ -49,22 +51,34 @@ type BootDefaultSetter func(root string, bootEntry string) error
 // decides promotion.
 func RecordBootedGeneration(root, commandLine string) error {
 	root = cleanRoot(root)
-	return withStateLock(filepath.Join(root, "var/lib/katl/boot"), func() error {
-		selection, err := ReadBootSelection(root)
-		if errors.Is(err, os.ErrNotExist) {
+	generationID, err := SelectedGenerationFromCommandLine(commandLine)
+	if err != nil {
+		return err
+	}
+	return withBootState(root, generationID, efiboot.Reader{}.Read, func(state bootState) error {
+		if state.intent != nil {
+			if err := state.intent.validateBootedGeneration(generationID); err != nil {
+				return err
+			}
+			spec, _, err := ReadGeneration(root, generationID)
+			if err != nil {
+				return err
+			}
+			observed := BootSelectionRecord{BootedGenerationID: generationID, BootedBootEntry: spec.Boot.LoaderEntryPath}
+			if err := validateBootedSelection(observed, spec, generationID, commandLine); err != nil {
+				return err
+			}
+			return writeCurrentBoot(root, currentBoot{GenerationID: generationID})
+		}
+		if state.legacy == nil {
 			return nil
 		}
-		if err != nil {
-			return err
+		selection := state.legacy.selection
+		running := state.legacy.generations[generationID]
+		if running.err != nil {
+			return running.err
 		}
-		generationID, err := SelectedGenerationFromCommandLine(commandLine)
-		if err != nil {
-			return err
-		}
-		spec, _, err := ReadGeneration(root, generationID)
-		if err != nil {
-			return err
-		}
+		spec := running.spec
 		if err := validatePendingBootTarget(selection, generationID); err != nil {
 			return err
 		}
@@ -154,7 +168,7 @@ type LivePromotionRequest struct {
 // upgrade, whose boot payload is identical to the runtime that was just
 // validated and therefore does not require a disruptive trial reboot.
 func PromoteLiveGeneration(request LivePromotionRequest) error {
-	return withStateLock(filepath.Join(cleanRoot(request.Root), "var/lib/katl/boot"), func() error { return promoteLiveGeneration(request) })
+	return WithLegacyBootState(request.Root, func() error { return promoteLiveGeneration(request) })
 }
 
 func promoteLiveGeneration(request LivePromotionRequest) error {
@@ -323,7 +337,7 @@ func promoteLiveGeneration(request LivePromotionRequest) error {
 
 func RecordBootHealth(request BootHealthRequest) (BootHealthResult, error) {
 	var result BootHealthResult
-	err := withStateLock(filepath.Join(cleanRoot(request.Root), "var/lib/katl/boot"), func() error {
+	err := WithLegacyBootState(request.Root, func() error {
 		var err error
 		result, err = recordBootHealth(request)
 		return err

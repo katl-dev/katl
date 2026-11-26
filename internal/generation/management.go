@@ -23,7 +23,7 @@ type ManagedGeneration struct {
 func Inspect(root string) ([]ManagedGeneration, BootSelectionRecord, error) {
 	var items []ManagedGeneration
 	var selection BootSelectionRecord
-	err := withStateLock(rootedPathUnchecked(root, "/var/lib/katl/boot"), func() error {
+	err := WithLegacyBootState(root, func() error {
 		var err error
 		selection, err = ReadBootSelection(root)
 		if err != nil {
@@ -157,7 +157,7 @@ func manualBootEligibility(result bootability, status GenerationStatus) error {
 }
 
 func Select(ctx context.Context, request SelectRequest) error {
-	return withStateLock(rootedPathUnchecked(request.Root, "/var/lib/katl/boot"), func() error {
+	return WithLegacyBootState(request.Root, func() error {
 		selection, err := ReadBootSelection(request.Root)
 		if err != nil {
 			return err
@@ -227,7 +227,7 @@ func Remove(root, id string) error {
 	if _, err := cleanSegment("generation id", id); err != nil {
 		return err
 	}
-	return withStateLock(rootedPathUnchecked(root, "/var/lib/katl/boot"), func() error {
+	return WithLegacyBootState(root, func() error {
 		selection, err := ReadBootSelection(root)
 		if err != nil {
 			return err
@@ -263,7 +263,7 @@ func Prune(root string, policy Retention, now time.Time) ([]string, error) {
 		return nil, err
 	}
 	var removed []string
-	err = withStateLock(rootedPathUnchecked(root, "/var/lib/katl/boot"), func() error {
+	err = WithLegacyBootState(root, func() error {
 		selection, err := ReadBootSelection(root)
 		if err != nil {
 			return err
@@ -357,7 +357,7 @@ const slotReplaced = "OS slot has been replaced"
 // InvalidateSlot removes boot entry points before the caller overwrites a root.
 // Metadata stays available for diagnostics and shared artifact ownership until GC.
 func InvalidateSlot(root, partitionUUID string, now time.Time, setDefault, setOneshot BootDefaultSetter) error {
-	return withStateLock(rootedPathUnchecked(root, "/var/lib/katl/boot"), func() error {
+	return WithLegacyBootState(root, func() error {
 		selection, err := ReadBootSelection(root)
 		if err != nil {
 			return err

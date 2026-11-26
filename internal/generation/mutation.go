@@ -5,7 +5,7 @@ import "fmt"
 // ValidateMutationBase checks durable boot state as well as the active base.
 // Callers must exclude other mutations until they publish their candidate.
 func ValidateMutationBase(root, expected string) error {
-	return withStateLock(rootedPathUnchecked(root, "/var/lib/katl/boot"), func() error {
+	return WithLegacyBootState(root, func() error {
 		selection, err := ReadBootSelection(root)
 		if err != nil {
 			return err
