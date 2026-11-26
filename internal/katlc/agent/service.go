@@ -13,6 +13,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/katlc/transport"
+	"github.com/katl-dev/katl/internal/systemdunit"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 )
@@ -94,7 +95,8 @@ func Serve(ctx context.Context, config ServeConfig) error {
 		close(errc)
 	}()
 	// The listener is bound, so connections made from here on are accepted.
-	if err := notifyReady(); err != nil {
+	if err := systemdunit.Notify("READY=1"); err != nil {
+		err = fmt.Errorf("notify systemd: %w", err)
 		server.Stop()
 		return errors.Join(err, shutdownDispatcher(dispatcher))
 	}

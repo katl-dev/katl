@@ -457,6 +457,8 @@ func renderBootHealthService() string {
 		"",
 		"[Service]",
 		"Type=oneshot",
+		"# Boot health reports what it is waiting for as status text for node status.",
+		"NotifyAccess=main",
 		"StandardOutput=journal+console",
 		"SyslogIdentifier=katl-boot-health",
 		"ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=success --reason=katl-boot-complete.target",

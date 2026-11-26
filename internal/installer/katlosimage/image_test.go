@@ -471,6 +471,17 @@ func TestHostUpgradeRollbackMetadataRestoresPreviousKnownGood(t *testing.T) {
 	if err := generation.WriteGeneration(root, plan.Spec, plan.Status); err != nil {
 		t.Fatalf("WriteGeneration(candidate) error = %v", err)
 	}
+	for _, path := range []string{
+		filepath.Join(root, previousSpec.Boot.UKIPath),
+		filepath.Join(root, "efi", previousSpec.Boot.LoaderEntryPath),
+	} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("boot fixture"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
 	booted := plan.BootSelection
 	booted.BootedGenerationID = "gen1"
 	booted.BootedBootEntry = "loader/entries/katl-gen1.conf"

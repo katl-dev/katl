@@ -64,6 +64,9 @@ func readNodeBootHealth(root string) nodeBootHealth {
 	case generationStatus.BootState == generation.BootStateFailed || generationStatus.HealthState == generation.HealthStateUnhealthy:
 		result.State = nodeBootHealthFailed
 		result.Diagnostic = fmt.Sprintf("selected generation %s is recorded as boot=%s health=%s", selected, generationStatus.BootState, generationStatus.HealthState)
+		if guidance := generation.RecoveryGuidance(root, selection); guidance != "" {
+			result.Diagnostic += "; " + guidance
+		}
 	default:
 		result.State = nodeBootHealthPending
 		result.Diagnostic = fmt.Sprintf("selected generation %s is awaiting boot-health validation", selected)

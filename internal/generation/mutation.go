@@ -11,6 +11,9 @@ func ValidateMutationBase(root, expected string) error {
 			return err
 		}
 		if selection.RecoveryRequired || selection.PendingHealthValidation || selection.TrialGenerationID != "" {
+			if guidance := RecoveryGuidance(root, selection); guidance != "" {
+				return fmt.Errorf("%s, then retry", guidance)
+			}
 			return fmt.Errorf("a boot trial or recovery is pending; complete it before applying configuration or upgrading")
 		}
 		active := selection.ActiveGenerationID
