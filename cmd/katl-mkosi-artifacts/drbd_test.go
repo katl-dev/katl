@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestKernelBuildDirectory(t *testing.T) {
@@ -84,9 +86,9 @@ func TestPreparedKernelInputs(t *testing.T) {
 
 func TestKernelSourceIntegrity(t *testing.T) {
 	payload := "verified source archive"
-	requests := 0
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		requests++
+		requests.Add(1)
 		fmt.Fprint(w, payload)
 	}))
 	defer server.Close()
@@ -99,26 +101,86 @@ func TestKernelSourceIntegrity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := acquireKernelSource(source, destination); err != nil {
+	if err := acquireKernelSource(server.Client(), source, destination); err != nil {
 		t.Fatal(err)
 	}
 	data, err := os.ReadFile(destination)
 	if err != nil || string(data) != "verified source archive" {
 		t.Fatalf("cached source = %q, %v", data, err)
 	}
-	if err := acquireKernelSource(source, destination); err != nil {
+	if err := acquireKernelSource(server.Client(), source, destination); err != nil {
 		t.Fatal(err)
 	}
-	if requests != 1 {
-		t.Fatalf("verified cache requested source %d times", requests)
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("verified cache requested source %d times", got)
 	}
 
 	source.SHA256 = strings.Repeat("a", 64)
-	if err := acquireKernelSource(source, destination); err == nil || !strings.Contains(err.Error(), "SHA-256") {
+	if err := acquireKernelSource(server.Client(), source, destination); err == nil || !strings.Contains(err.Error(), "SHA-256") {
 		t.Fatalf("unverified replacement = %v", err)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("checksum mismatch made %d new requests, want 1", got-1)
 	}
 	data, err = os.ReadFile(destination)
 	if err != nil || string(data) != "verified source archive" {
 		t.Fatalf("failed acquisition replaced verified source: %q, %v", data, err)
+	}
+}
+
+func TestKernelSourceRetry(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		status    int
+		wantCalls int32
+	}{
+		{name: "timeout", wantCalls: 2},
+		{name: "server error", status: http.StatusServiceUnavailable, wantCalls: 2},
+		{name: "client error", status: http.StatusNotFound, wantCalls: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const payload = "verified source archive"
+			var requests atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if requests.Add(1) == 1 {
+					if test.status == 0 {
+						<-r.Context().Done()
+					} else {
+						w.WriteHeader(test.status)
+					}
+					return
+				}
+				fmt.Fprint(w, payload)
+			}))
+			defer server.Close()
+			client := server.Client()
+			client.Timeout = time.Second
+			source := kernelSource{
+				URL:    server.URL,
+				SHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(payload))),
+			}
+			destination := filepath.Join(t.TempDir(), "source.tar.gz")
+
+			err := acquireKernelSource(client, source, destination)
+			if test.status == http.StatusNotFound {
+				if err == nil || !strings.Contains(err.Error(), "404") {
+					t.Fatalf("fetch = %v, want 404", err)
+				}
+				if _, err := os.Stat(destination); !os.IsNotExist(err) {
+					t.Fatalf("unavailable source was cached: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, err := os.ReadFile(destination)
+				if err != nil || string(data) != payload {
+					t.Fatalf("cached source = %q, %v", data, err)
+				}
+			}
+			if got := requests.Load(); got != test.wantCalls {
+				t.Fatalf("made %d requests, want %d", got, test.wantCalls)
+			}
+		})
 	}
 }

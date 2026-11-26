@@ -61,7 +61,20 @@ func (b *Backoff) Reset() { b.delay = 0 }
 // Do runs attempt immediately and retries errors classified as transient.
 // Each attempt must honor the context. A nil classifier stops on any error.
 func (b *Backoff) Do(ctx context.Context, attempt func(context.Context) error, transient func(error) bool) error {
-	_, err := Await(ctx, b, func(ctx context.Context) (struct{}, bool, error) {
+	return b.do(ctx, 0, attempt, transient)
+}
+
+// DoAttempts behaves like Do with a positive limit on total attempts.
+// If the limit is reached, it returns the last error without further delay.
+func (b *Backoff) DoAttempts(ctx context.Context, limit int, attempt func(context.Context) error, transient func(error) bool) error {
+	if limit <= 0 {
+		panic("retry attempt limit must be positive")
+	}
+	return b.do(ctx, limit, attempt, transient)
+}
+
+func (b *Backoff) do(ctx context.Context, limit int, attempt func(context.Context) error, transient func(error) bool) error {
+	_, err := await(ctx, b, limit, func(ctx context.Context) (struct{}, bool, error) {
 		return struct{}{}, true, attempt(ctx)
 	}, transient)
 	return err
@@ -71,8 +84,12 @@ func (b *Backoff) Do(ctx context.Context, attempt func(context.Context) error, t
 // failure it returns the last timely observation made without error, or the
 // zero value if there was none. Only transient observation errors are retried.
 func Await[T any](ctx context.Context, b *Backoff, observe func(context.Context) (T, bool, error), transient func(error) bool) (T, error) {
+	return await(ctx, b, 0, observe, transient)
+}
+
+func await[T any](ctx context.Context, b *Backoff, limit int, observe func(context.Context) (T, bool, error), transient func(error) bool) (T, error) {
 	var last T
-	for {
+	for attempt := 1; ; attempt++ {
 		if err := ContextError(ctx); err != nil {
 			return last, err
 		}
@@ -85,7 +102,7 @@ func Await[T any](ctx context.Context, b *Backoff, observe func(context.Context)
 			if matched {
 				return last, nil
 			}
-		} else if transient == nil || !transient(err) {
+		} else if attempt == limit || transient == nil || !transient(err) {
 			return last, err
 		}
 		pause(ctx, b.Next())

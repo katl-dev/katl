@@ -53,6 +53,7 @@ func TestDriverDigestCandidate(t *testing.T) {
 		{"kernel lock", testStandardLock, "updated standard lock\n", []string{"standard"}},
 		{"extension recipe", testRecipe, "{\"version\":\"9.3.5\"}\n", both},
 		{"new extension recipe", "extensions/new/recipe.json", "{\"version\":\"1\"}\n", both},
+		{"source retry policy", "internal/retry/retry.go", "package retry\n", both},
 		{"sysext compatibility", testOSRelease, "ID=katlos\nSYSEXT_LEVEL=katl-runtime-2\n", both},
 		{"mkosi architecture", "mkosi.conf", "[Distribution]\nRelease=45\nArchitecture=arm64\n[Build]\nCacheDirectory=cache\n", both},
 		{"driver activation", testActivation, "package generation\nconst activation = \"refresh systemd-sysext\"\n", both},
