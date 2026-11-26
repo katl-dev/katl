@@ -75,10 +75,26 @@ If the file is missing, the launch notice gives its path and the job
 runs anonymously. For a credential error, check the file and use the
 development shell, which provides `jq` and `gh`.
 
-Codex's command sandbox currently disables network access, so `gh` inside
-a job cannot reach GitHub even with the credential in place (#809). Until
-that is resolved, quote issue text in the brief and pass evidence files
-with `--ro-bind`.
+Every role's Codex command sandbox enables network access. With the token
+provisioned, run the following from inside a job to verify that the repository
+read succeeds and GitHub refuses a label update with HTTP 403. The request
+submits the existing description so an unexpectedly writable token would
+leave the label's description unchanged.
+
+```sh
+(
+  set -e
+  gh api repos/katl-dev/katl --jq .full_name
+  label=repos/katl-dev/katl/labels/bug
+  payload=$(gh api "$label" --jq '{description}')
+  if response=$(printf '%s\n' "$payload" | gh api --include -X PATCH "$label" --input -); then
+    printf 'GitHub accepted the label update\n' >&2
+    exit 1
+  fi
+  printf '%s\n' "$response"
+  printf '%s\n' "$response" | grep -Eq '^HTTP/[0-9.]+ 403([[:space:]]|$)'
+)
+```
 
 ### Find and recover a job
 
