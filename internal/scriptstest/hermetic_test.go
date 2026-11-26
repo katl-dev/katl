@@ -43,6 +43,26 @@ func TestHermeticHidesHome(t *testing.T) {
 	t.Setenv("GOENV", goEnv)
 	t.Setenv("GOCACHE", "")
 	t.Setenv("GOMODCACHE", "")
+	t.Setenv("KATLCTL_CONFIG", "")
+	t.Setenv("KATL_HERMETIC_PROBE", "1")
+	t.Setenv("KATL_HERMETIC_OPT_IN", "value with spaces")
+	strayDir, err := os.MkdirTemp("/tmp", "katl-stray-git-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(strayDir) })
+	strayGit := filepath.Join(strayDir, ".git")
+	if err := os.Mkdir(strayGit, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	strayFile, err := os.CreateTemp("/tmp", "katl-stray-file-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(strayFile.Name()) })
+	if err := strayFile.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, args := range [][]string{
 		{"init", "--quiet"},
@@ -57,19 +77,25 @@ func TestHermeticHidesHome(t *testing.T) {
 	}
 	writeArtifact(t, main, "unrelated", "main checkout\n")
 
-	cmd := exec.Command(script, "--bind", scratch, "--bind", run, "--", "sh", "-ec", `
+	cmd := exec.Command(script, "--bind", scratch, "--env", "KATL_HERMETIC_OPT_IN", "--bind", run, "--", "sh", "-ec", `
 		test "$HOME" = "$1"
 		test ! -e "$1/.config/katl/katlctl.yaml"
 		test ! -e "/proc/$4/root$1/.config/katl/katlctl.yaml"
 		test ! -e "$1/main/unrelated"
-		test ! -e "$GOENV"
+		test -z "${GOENV+x}"
+		test ! -e "$5"
+		test ! -e "$6"
+		test -z "${KATL_HERMETIC_PROBE+x}"
+		test "$KATL_HERMETIC_OPT_IN" = 'value with spaces'
+		test "$GOTELEMETRY" = off
+		test "$KATLCTL_CONFIG" = "$PWD/_build/katlctl/config.yaml"
 		test "$(git log -1 --format=%s)" = fixture
 		: > written
 		: > "$GOCACHE/written"
 		: > "$GOMODCACHE/written"
 		: > "$2/written"
 		: > "$3/written"
-	`, "hermetic-test", home, scratch, run, strconv.Itoa(os.Getpid()))
+	`, "hermetic-test", home, scratch, run, strconv.Itoa(os.Getpid()), strayGit, strayFile.Name())
 	cmd.Dir = worktree
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("hermetic test: %v\n%s", err, output)
@@ -77,6 +103,26 @@ func TestHermeticHidesHome(t *testing.T) {
 	for _, dir := range []string{worktree, buildCache, moduleCache, scratch, run} {
 		if _, err := os.Stat(filepath.Join(dir, "written")); err != nil {
 			t.Errorf("write in %s did not reach the host: %v", dir, err)
+		}
+	}
+
+	cmd = exec.Command(script, "--", "printenv", "KATLCTL_CONFIG")
+	cmd.Dir = worktree
+	cmd.Env = append(os.Environ(), "KATLCTL_CONFIG=custom.yaml")
+	if output, err := cmd.CombinedOutput(); err != nil || string(output) != filepath.Join(worktree, "custom.yaml")+"\n" {
+		t.Fatalf("worktree config: got %v\n%s", err, output)
+	}
+}
+
+func TestHermeticKatlctlConfig(t *testing.T) {
+	repo := repoRoot(t)
+	outside := t.TempDir()
+	for _, config := range []string{filepath.Join(outside, "config.yaml"), filepath.Join(repo, "..", "config.yaml")} {
+		cmd := exec.Command(filepath.Join(repo, "scripts/hermetic"), "--env", "KATLCTL_CONFIG", "--", "true")
+		cmd.Dir = repo
+		cmd.Env = append(os.Environ(), "KATLCTL_CONFIG="+config)
+		if output, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(output), "KATLCTL_CONFIG must point to a file inside the worktree") {
+			t.Errorf("expected refusal for %s, got %v\n%s", config, err, output)
 		}
 	}
 }
