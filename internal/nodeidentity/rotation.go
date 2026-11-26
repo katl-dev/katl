@@ -157,9 +157,6 @@ func inspectManagementRotationLocked(root string, request ManagementRotation) (M
 	if _, err := hex.DecodeString(request.ExpectedAuthority); err != nil {
 		return ManagementRotationStatus{}, fmt.Errorf("expected authority fingerprint is invalid: %w", err)
 	}
-	if request.ExpectedAuthority == next {
-		return ManagementRotationStatus{}, fmt.Errorf("replacement authority must differ from the installed authority")
-	}
 	caPath, certPath, keyPath, err := ManagementCredentialsPaths(root)
 	if err != nil {
 		return ManagementRotationStatus{}, err
@@ -172,6 +169,8 @@ func inspectManagementRotationLocked(root string, request ManagementRotation) (M
 	if err != nil {
 		return ManagementRotationStatus{}, fmt.Errorf("installed management authority: %w", err)
 	}
+	// When expected and replacement match, only the already-installed
+	// credentials qualify, so a recovery retry can reload without switching.
 	if current != request.ExpectedAuthority && current != next {
 		return ManagementRotationStatus{}, fmt.Errorf("installed management authority %s differs from both expected and replacement authorities", current)
 	}

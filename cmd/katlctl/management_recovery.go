@@ -16,6 +16,8 @@ import (
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/katl-dev/katl/internal/nodeidentity"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc/codes"
+	grpcstatus "google.golang.org/grpc/status"
 )
 
 var runManagementAuthoritySSH = sshManagementAuthority
@@ -153,22 +155,36 @@ func runManagementIdentityRecover(ctx context.Context, opts managementRotationOp
 	if err != nil {
 		return err
 	}
+	recovered := 0
 	for _, node := range nodes {
-		var err error
 		if installed[node.name] == nextInfo.Fingerprint {
-			_, err = checkManagementCredential(ctx, node, client, nextInfo.Fingerprint, min(opts.timeout, 5*time.Second))
+			status, err := checkManagementCredential(ctx, node, client, nextInfo.Fingerprint, min(opts.timeout, 5*time.Second))
+			if err == nil {
+				fmt.Fprintf(stderr, "Verified the new authority on %s\n", node.name)
+				continue
+			}
+			if status != nil || grpcstatus.Code(err) != codes.Unavailable {
+				return fmt.Errorf("%s: %w; keep %s and rerun the same command", node.name,
+					managementConfirmationError("the node accepts the replacement authority", "the previous authority", err), outputPath)
+			}
+			// The disk already has the replacement. Bind the SSH retry to
+			// that same authority so it can only reload, even if disk state changes.
+			if err := node.prepareRotation(installed[node.name], next); err != nil {
+				return err
+			}
+			fmt.Fprintf(stderr, "Reloading the installed management authority on %s\n", node.name)
 		} else {
 			fmt.Fprintf(stderr, "Installing replacement management authority on %s\n", node.name)
-			if _, err := runManagementRotationSSH(ctx, node, opts, false); err != nil {
-				return fmt.Errorf("recover %s: %w; keep %s and rerun the same command", node.name,
-					managementConfirmationError("the replacement was installed", "the previous authority", err), outputPath)
-			}
-			_, err = waitManagementCredential(ctx, node, client, nextInfo.Fingerprint, opts.timeout)
 		}
-		if err != nil {
+		if _, err := runManagementRotationSSH(ctx, node, opts, false); err != nil {
+			return fmt.Errorf("recover %s: %w; keep %s and rerun the same command", node.name,
+				managementConfirmationError("the replacement was installed and reloaded", "the previous authority", err), outputPath)
+		}
+		if _, err := waitManagementCredential(ctx, node, client, nextInfo.Fingerprint, opts.timeout); err != nil {
 			return fmt.Errorf("%s: %w; keep %s and rerun the same command", node.name,
 				managementConfirmationError("the node accepts the replacement authority", "the previous authority", err), outputPath)
 		}
+		recovered++
 		fmt.Fprintf(stderr, "Verified the new authority on %s\n", node.name)
 	}
 	if referenced != outputPath {
@@ -176,10 +192,10 @@ func runManagementIdentityRecover(ctx context.Context, opts managementRotationOp
 			return fmt.Errorf("all nodes accept the new authority, but ClusterConfig does not reference it: %w; set spec.managementAuthentication to mtls and spec.managementIdentity to %s", err, outputPath)
 		}
 	}
-	if len(pending) == 0 {
+	if recovered == 0 {
 		fmt.Fprintf(stdout, "Every node of %s already trusts %s; nothing to recover\n", source.Metadata.Name, nextInfo.Fingerprint)
 	} else {
-		fmt.Fprintf(stdout, "Recovered management trust for %s on %d of %d node(s); new authority %s\n", source.Metadata.Name, len(pending), len(nodes), nextInfo.Fingerprint)
+		fmt.Fprintf(stdout, "Recovered management trust for %s on %d of %d node(s); new authority %s\n", source.Metadata.Name, recovered, len(nodes), nextInfo.Fingerprint)
 	}
 	fmt.Fprintf(stdout, "Back up %s now; it is the only copy of the new authority. Refresh any saved shortcut with %s.\n", outputPath, contextSaveInvocation(configPath))
 	return nil

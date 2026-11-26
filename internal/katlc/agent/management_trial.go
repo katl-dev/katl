@@ -248,7 +248,11 @@ func (s *Server) ConfirmManagementTransition(ctx context.Context, req *agentapi.
 		return nil, status.Errorf(codes.PermissionDenied, "client certificate is issued by authority %s, not %s", authority, req.TargetAuthority)
 	}
 
-	result, err := nodeidentity.ConfirmManagementTrial(s.Root, authority, s.trialClock())
+	trialID := req.GetExpectedTrialId()
+	if req.ExpectedTrialId != nil && strings.TrimSpace(trialID) == "" {
+		return nil, status.Error(codes.InvalidArgument, "the expected management trial ID is required")
+	}
+	result, err := nodeidentity.ConfirmManagementTrial(s.Root, authority, trialID, s.trialClock())
 	if errors.Is(err, nodeidentity.ErrManagementTrialReverted) {
 		// The listener re-serves the installed mode once this response is sent.
 		s.management.end(result.ID, false)

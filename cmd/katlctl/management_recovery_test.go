@@ -25,16 +25,17 @@ import (
 // recoveryNode is an installed mTLS node whose management server restarts
 // when its authority is replaced, with SSH replaced by direct calls.
 type recoveryNode struct {
-	name           string
-	root           string
-	endpoint       string
-	server         *grpc.Server
-	listener       net.Listener
-	status         *agentapi.NodeStatus
-	applied        int
-	failOnce       bool
-	reportTrust    bool
-	extraAuthority string
+	name            string
+	root            string
+	endpoint        string
+	server          *grpc.Server
+	listener        net.Listener
+	status          *agentapi.NodeStatus
+	applied         int
+	failOnce        bool
+	interruptReload bool
+	reportTrust     bool
+	extraAuthority  string
 }
 
 func newRecoveryNode(t *testing.T, name string, installed managementidentity.Bundle) *recoveryNode {
@@ -118,6 +119,10 @@ func installRecoverySSH(t *testing.T, nodes ...*recoveryNode) {
 		n.applied++
 		status, err := nodeidentity.RotateManagementIdentity(n.root, node.request)
 		if err == nil {
+			if n.interruptReload {
+				n.interruptReload = false
+				return status, errors.New("connection reset before reload")
+			}
 			n.start(t)
 		}
 		return status, err
@@ -404,6 +409,59 @@ func TestManagementIdentityRecoverResumesAfterFailure(t *testing.T) {
 	keptInfo, _ := managementidentity.Validate(kept, time.Now())
 	if err != nil || trusted.Authority != keptInfo.Fingerprint {
 		t.Fatalf("node authority after resume = %+v, %v", trusted, err)
+	}
+}
+
+func TestManagementIdentityRecoverResumesInterruptedReload(t *testing.T) {
+	w := newRecoveryWorld(t)
+	w.node.reportTrust = true
+	w.node.interruptReload = true
+	output := filepath.Join(filepath.Dir(w.configPath), "next.yaml")
+	before, err := os.ReadFile(w.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := w.recover(t, "--output", output); err == nil || !strings.Contains(err.Error(), "connection reset before reload") {
+		t.Fatalf("interrupted recover = %v", err)
+	}
+	next, err := readManagementIdentity(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := managementidentity.CAFingerprint(next.CertificateAuthority.Certificate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	old, err := managementidentity.CAFingerprint(w.old.CertificateAuthority.Certificate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installed, err := nodeidentity.InspectManagementAuthority(w.node.root)
+	if err != nil || installed.Authority != want {
+		t.Fatalf("disk authority = %v, %v, want %s", installed, err, want)
+	}
+	target := managementRotationNode{name: "cp-1", endpoint: mustHostPort(t, w.node.endpoint), machineID: installed.MachineID}
+	if _, err := checkManagementCredential(t.Context(), target, mustManagementClient(t, w.old), old, time.Second); err != nil {
+		t.Fatalf("old credentials could not reach the interrupted listener: %v", err)
+	}
+	if after, err := os.ReadFile(w.configPath); err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("published config before the replacement was served: %v", err)
+	}
+
+	if stdout, stderr, err := w.recover(t, "--output", output); err != nil || !strings.Contains(stdout, "Recovered management trust") {
+		t.Fatalf("resume recover = %v\n%s%s", err, stdout, stderr)
+	}
+	reply, err := checkManagementCredential(t.Context(), target, mustManagementClient(t, next), want, time.Second)
+	trust := reply.GetManagement().GetServedClientTrust().GetAuthorities()
+	if err != nil || len(trust) != 1 || trust[0] != want {
+		t.Fatalf("replacement listener served %q, %v, want [%s]", trust, err, want)
+	}
+	if after, err := os.ReadFile(w.configPath); err != nil || !strings.Contains(string(after), "managementIdentity: next.yaml") {
+		t.Fatalf("verified recovery did not publish its secrets reference: %v", err)
+	}
+	if stdout, stderr, err := w.recover(t, "--output", output); err != nil || !strings.Contains(stdout, "nothing to recover") {
+		t.Fatalf("repeat recover = %v\n%s%s", err, stdout, stderr)
 	}
 }
 

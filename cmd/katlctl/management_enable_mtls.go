@@ -24,8 +24,10 @@ import (
 	grpcstatus "google.golang.org/grpc/status"
 )
 
-const enableMTLSActor = "katlctl management enable-mtls"
-const upgradeManagementTrialAgent = "upgrade the node with `katlctl node upgrade`, then rerun"
+const (
+	enableMTLSActor             = "katlctl management enable-mtls"
+	upgradeManagementTrialAgent = "upgrade the node with `katlctl node upgrade`, then rerun"
+)
 
 // enableMTLSPoll is how often a node is polled while its trial starts and
 // while it returns to health.
@@ -67,6 +69,9 @@ type enableMTLSNode struct {
 	status      *agentapi.NodeStatus
 	identity    transport.NodeIdentity
 	requirement nodeRecoveryRequirement
+	// A node that has reported served trust must keep reporting it for
+	// every later verification in this run.
+	reportedTrust bool
 	// trialDeadline is the live trial's deadline on this workstation's clock, when
 	// resuming.
 	trialDeadline time.Time
@@ -202,7 +207,7 @@ func runManagementEnableMTLS(ctx context.Context, opts enableMTLSOptions, stdout
 		fmt.Fprintf(stderr, "%s: mTLS confirmed %s\n", node.name, progress)
 	}
 
-	saved, savedPath, err := prepareEnableMTLSContext(ctx, configPath, source.Metadata.Name, *client, opts.timeout)
+	saved, savedPath, err := prepareEnableMTLSContext(ctx, configPath, source.Metadata.Name, nodes, *client, authority, opts.timeout)
 	if err != nil {
 		return fmt.Errorf("saved context could not be prepared: %w. Rerun %s to continue", err, enableMTLSInvocation(configPath, secretsPath))
 	}
@@ -393,6 +398,7 @@ func (node *enableMTLSNode) bind(status *agentapi.NodeStatus, observedAt time.Ti
 		return fmt.Errorf("%s answered with machine ID %s, but the saved context recorded %s; check that its management.address points at that machine", node.name, status.GetMachineId(), node.savedMachine)
 	}
 	node.status, node.identity = status, identity
+	node.reportedTrust = status.GetManagement().GetServedClientTrust() != nil
 	// The agent reports a Kubernetes role from installed configuration even
 	// when kubelet or the API is unhealthy. Fresh installs can migrate before
 	// bootstrap. Joined nodes must meet the same requirements on every run.
@@ -411,6 +417,25 @@ func (node *enableMTLSNode) bind(status *agentapi.NodeStatus, observedAt time.Ti
 		}
 	}
 	return nil
+}
+
+func (node *enableMTLSNode) verifyBoundStatus(status *agentapi.NodeStatus) error {
+	if err := node.identity.Verify(status); err != nil {
+		return err
+	}
+	if status.GetManagement().GetServedClientTrust() != nil {
+		node.reportedTrust = true
+	} else if node.reportedTrust {
+		return fmt.Errorf("listener did not report its client CA trust after reporting it earlier")
+	}
+	return nil
+}
+
+func (node *enableMTLSNode) verifyCommittedStatus(status *agentapi.NodeStatus, authority string) error {
+	if err := node.verifyBoundStatus(status); err != nil {
+		return err
+	}
+	return checkCommittedManagement(status, authority)
 }
 
 func managementClockOffset(status *agentapi.ManagementStatus, observedAt time.Time) (time.Duration, error) {
@@ -574,7 +599,7 @@ func migrateEnableMTLSNode(ctx context.Context, node *enableMTLSNode, bundle man
 		}
 		fmt.Fprintf(stderr, "%s: resuming its trial of the new authority\n", node.name)
 	}
-	observedDeadline, err := waitEnableMTLSTrial(ctx, *node, client, authority, trialID, min(time.Until(deadline), timeout))
+	observedDeadline, err := waitEnableMTLSTrial(ctx, node, client, authority, trialID, min(time.Until(deadline), timeout))
 	if err != nil {
 		return fmt.Errorf("%w; check management.address", managementConfirmationError("the node accepts the replacement authority", "the trusted network", err))
 	}
@@ -583,17 +608,19 @@ func migrateEnableMTLSNode(ctx context.Context, node *enableMTLSNode, bundle man
 			_, err := agent.ConfirmManagementTransition(ctx, &agentapi.ConfirmManagementTransitionRequest{
 				ApiVersion: operation.APIVersion, Kind: "ConfirmManagementTransitionRequest", Actor: enableMTLSActor,
 				ExpectedEnrollmentId: node.status.GetEnrollmentId(), ExpectedInventoryNodeName: node.name, ExpectedMachineId: node.status.GetMachineId(),
-				TargetAuthority: authority,
+				TargetAuthority: authority, ExpectedTrialId: &trialID,
 			})
 			return err
 		})
+		switch grpcstatus.Code(confirmErr) {
+		case codes.FailedPrecondition, codes.InvalidArgument, codes.PermissionDenied:
+			return fmt.Errorf("%w; check status with %s",
+				managementConfirmationError("mTLS confirmation", "the replacement authority", confirmErr), statusCommand)
+		}
 		// A lost confirm reply is resolved by a fresh status over the replacement credentials.
 		status, statusErr := enableMTLSStatus(ctx, *node, client, timeout)
 		if statusErr == nil {
-			statusErr = node.identity.Verify(status)
-		}
-		if statusErr == nil {
-			statusErr = checkCommittedManagement(status, authority)
+			statusErr = node.verifyCommittedStatus(status, authority)
 		}
 		if statusErr != nil {
 			return fmt.Errorf("%w; check status with %s",
@@ -601,7 +628,7 @@ func migrateEnableMTLSNode(ctx context.Context, node *enableMTLSNode, bundle man
 		}
 	}
 
-	if err := waitEnableMTLSHealthy(ctx, *node, client, authority, timeout); err != nil {
+	if err := waitEnableMTLSHealthy(ctx, node, client, authority, timeout); err != nil {
 		return fmt.Errorf("%w; check status with %s",
 			managementConfirmationError("the node is healthy over mTLS", "the replacement authority", err), statusCommand)
 	}
@@ -621,22 +648,27 @@ func enableMTLSBeginError(err error) error {
 
 // waitEnableMTLSTrial returns the deadline of a verified trial, or a zero
 // deadline if the same installation already committed the authority.
-func waitEnableMTLSTrial(ctx context.Context, node enableMTLSNode, client managementidentity.ClientCredentials, authority, trialID string, wait time.Duration) (time.Time, error) {
+func waitEnableMTLSTrial(ctx context.Context, node *enableMTLSNode, client managementidentity.ClientCredentials, authority, trialID string, wait time.Duration) (time.Time, error) {
 	deadline, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 	for {
 		started := time.Now()
-		status, err := enableMTLSStatus(deadline, node, client, min(wait, 5*time.Second))
+		status, err := enableMTLSStatus(deadline, *node, client, min(wait, 5*time.Second))
 		if transport.ClassifyManagementEvidence(err, nil) == transport.ManagementConfirmed {
-			if verifyErr := node.identity.Verify(status); verifyErr != nil {
+			if verifyErr := node.verifyBoundStatus(status); verifyErr != nil {
 				return time.Time{}, verifyErr
 			}
 			trialDeadline, err := verifyEnableMTLSPhase(status, authority, started)
 			if err != nil {
 				return time.Time{}, err
 			}
-			if !trialDeadline.IsZero() && trialID != "" && status.GetManagement().GetTransition().GetTrialId() != trialID {
-				return time.Time{}, fmt.Errorf("node reports a different mTLS trial")
+			if !trialDeadline.IsZero() {
+				if trialID == "" {
+					return time.Time{}, fmt.Errorf("node did not report the mTLS trial ID")
+				}
+				if status.GetManagement().GetTransition().GetTrialId() != trialID {
+					return time.Time{}, fmt.Errorf("node reports a different mTLS trial")
+				}
 			}
 			return trialDeadline, nil
 		}
@@ -648,20 +680,17 @@ func waitEnableMTLSTrial(ctx context.Context, node enableMTLSNode, client manage
 	}
 }
 
-func waitEnableMTLSHealthy(ctx context.Context, node enableMTLSNode, client managementidentity.ClientCredentials, authority string, timeout time.Duration) error {
+func waitEnableMTLSHealthy(ctx context.Context, node *enableMTLSNode, client managementidentity.ClientCredentials, authority string, timeout time.Duration) error {
 	deadline, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	var lastErr error
 	for {
-		status, err := enableMTLSStatus(deadline, node, client, min(timeout, 5*time.Second))
+		status, err := enableMTLSStatus(deadline, *node, client, min(timeout, 5*time.Second))
 		if transport.ClassifyManagementEvidence(err, nil) == transport.ManagementConfirmed {
-			if err := node.identity.Verify(status); err != nil {
+			if err := node.verifyCommittedStatus(status, authority); err != nil {
 				return err
 			}
-			if err := checkCommittedManagement(status, authority); err != nil {
-				return err
-			}
-			err = enableMTLSHealth(deadline, node, client, status, min(timeout, 5*time.Second))
+			err = enableMTLSHealth(deadline, *node, client, status, min(timeout, 5*time.Second))
 			if err == nil {
 				return nil
 			}
@@ -707,7 +736,7 @@ func enableMTLSCall(ctx context.Context, node enableMTLSNode, credentials manage
 
 // Prepare the refreshed context before publishing the mTLS configuration so
 // failed verification leaves both files as they were.
-func prepareEnableMTLSContext(ctx context.Context, configPath, clusterName string, client managementidentity.ClientCredentials, timeout time.Duration) (*workstation.Config, string, error) {
+func prepareEnableMTLSContext(ctx context.Context, configPath, clusterName string, nodes []enableMTLSNode, client managementidentity.ClientCredentials, authority string, timeout time.Duration) (*workstation.Config, string, error) {
 	path, err := workstation.ConfigPath()
 	if err != nil {
 		return nil, "", err
@@ -734,7 +763,24 @@ func prepareEnableMTLSContext(ctx context.Context, configPath, clusterName strin
 			return nil, "", nil
 		}
 	}
-	opts := contextSaveOptions{configInput: configPath, contextPath: path, contextName: contextName, timeout: timeout, output: "text"}
+	bound := make(map[string]*enableMTLSNode, len(nodes))
+	endpoints := make(map[string]inventory.HostPort, len(nodes))
+	for i := range nodes {
+		node := &nodes[i]
+		bound[node.name], endpoints[node.name] = node, node.endpoint
+	}
+	opts := contextSaveOptions{configInput: configPath, contextPath: path, contextName: contextName, timeout: timeout, endpoints: endpoints}
+	opts.observeStatus = func(ctx context.Context, name string, endpoint inventory.HostPort) (*agentapi.NodeStatus, error) {
+		node, ok := bound[name]
+		if !ok {
+			return nil, fmt.Errorf("node %q was not in the migration preflight", name)
+		}
+		status, err := contextEndpointStatus(withManagementDial(ctx, name, &client), endpoint)
+		if err != nil {
+			return nil, err
+		}
+		return status, node.verifyCommittedStatus(status, authority)
+	}
 	cfg, _, err := prepareContextWithCredentials(ctx, opts, clusterName, client, func(err error) error {
 		return managementConfirmationError("the saved context can reach the nodes over mTLS", "the replacement authority", err)
 	})

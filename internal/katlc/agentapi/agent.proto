@@ -816,6 +816,9 @@ message ConfirmManagementTransitionRequest {
   string expected_inventory_node_name = 5;
   string expected_machine_id = 6;
   string target_authority = 7;
+  // New clients supply the observed trial ID. Omission is reserved for
+  // older clients; a present ID must be nonempty.
+  optional string expected_trial_id = 8;
 }
 
 message ManagementTransition {

@@ -535,6 +535,54 @@ func TestConfirmManagementTransitionRequiresTrialClient(t *testing.T) {
 	}
 }
 
+func TestConfirmManagementTransitionBindsTrialID(t *testing.T) {
+	node := newManagementTrialNode(t)
+	first, err := node.server.BeginManagementTransition(t.Context(), node.beginRequest())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, reverted, err := nodeidentity.RevertManagementTrial(node.root, first.TrialId, "operator requested revert", node.clock); err != nil || !reverted {
+		t.Fatalf("revert first trial = %t, %v", reverted, err)
+	}
+	second, err := node.server.BeginManagementTransition(t.Context(), node.beginRequest())
+	if err != nil || second.TrialId == first.TrialId || second.TargetAuthority != first.TargetAuthority {
+		t.Fatalf("begin second trial = %v, %v; want a new trial for the same authority", second, err)
+	}
+
+	ctx := peerContext(t, node.bundle)
+	confirm := func(id string) (*agentapi.ManagementTransition, error) {
+		request := node.confirmRequest()
+		request.ExpectedTrialId = &id
+		return node.server.ConfirmManagementTransition(ctx, request)
+	}
+	for _, tc := range []struct {
+		name string
+		id   string
+		code codes.Code
+	}{
+		{"stale ID", first.TrialId, codes.FailedPrecondition},
+		{"explicitly empty ID", "", codes.InvalidArgument},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := confirm(tc.id); status.Code(err) != tc.code {
+				t.Fatalf("confirm = %v, want %s", err, tc.code)
+			}
+			trial, found, err := nodeidentity.ReadManagementTrial(node.root)
+			if err != nil || !found || trial.ID != second.TrialId || trial.State != nodeidentity.ManagementTrialLive ||
+				node.mode(t) != managementidentity.TrustedNetwork {
+				t.Fatalf("refused confirmation changed the second trial: %v, %v", trial, err)
+			}
+		})
+		if t.Failed() {
+			return
+		}
+	}
+	confirmed, err := confirm(second.TrialId)
+	if err != nil || confirmed.GetTrialId() != second.TrialId || node.mode(t) != managementidentity.MutualTLS {
+		t.Fatalf("confirm the verified trial = %v, %v", confirmed, err)
+	}
+}
+
 func TestConfirmAfterRevertAsksForRerun(t *testing.T) {
 	node := newManagementTrialNode(t)
 	// The listener checks the deadline before it serves the trial and then

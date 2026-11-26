@@ -24,6 +24,43 @@ func TestManagementIdentityRecovery(t *testing.T) {
 	runManagementIdentityJourney(t, "management-identity-recovery", "recover")
 }
 
+func stashRecoverySecret(path string) error {
+	// The run directory and the test temp directory can be on different
+	// filesystems. Keep the rename on the filesystem that holds the secret.
+	dir, err := os.MkdirTemp(filepath.Dir(path), "lost-management-")
+	if err != nil {
+		return err
+	}
+	if err := os.Rename(path, filepath.Join(dir, filepath.Base(path))); err != nil {
+		_ = os.Remove(dir)
+		return err
+	}
+	return nil
+}
+
+func TestRecoveryFixtureStashesSecretsOnSourceFilesystem(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "management-secrets.yaml")
+	if err := os.WriteFile(path, []byte("fixture issuer"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := stashRecoverySecret(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("issuer remains at its lookup path: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 || !entries[0].IsDir() {
+		t.Fatalf("found %v, %v; want a backup directory beside the source", entries, err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, entries[0].Name(), filepath.Base(path)))
+	if err != nil || string(data) != "fixture issuer" {
+		t.Fatalf("could not read the relocated issuer: %v", err)
+	}
+}
+
 func runManagementIdentityJourney(t *testing.T, scenarioName, command string) {
 	t.Helper()
 	options := DefaultOptions()
@@ -132,11 +169,11 @@ func runManagementIdentityJourney(t *testing.T, scenarioName, command string) {
 		runKatlctl(t, ctx, result, katlctl, "identity-export", "management", "identity", "export", "--config", configPath)
 		// Move both issuer copies out of the configuration and legacy lookup
 		// paths. Preserve the old saved client to check its access afterwards.
-		if err := os.Rename(oldPath, filepath.Join(sshDir, "lost-secrets.yaml")); err != nil {
+		if err := stashRecoverySecret(oldPath); err != nil {
 			t.Fatal(err)
 		}
 		legacyPath := filepath.Join(filepath.Dir(katlctl.config), "management", VMTestManagementClusterName+".katlkey")
-		if err := os.Rename(legacyPath, filepath.Join(sshDir, "lost-legacy.katlkey")); err != nil && !os.IsNotExist(err) {
+		if err := stashRecoverySecret(legacyPath); err != nil && !os.IsNotExist(err) {
 			t.Fatal(err)
 		}
 	}

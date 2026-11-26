@@ -75,12 +75,22 @@ the exact expected set. Rotation and recovery require committed mTLS with
 only the replacement CA. A replacement-only report proves removal of the old
 CA directly. Enable-mTLS also checks that the answering listener and the live
 trial record agree before it confirms within the trial deadline. It checks
-committed trust and health before advancing to the next node or publishing
-workstation state. A lost confirmation reply can be resolved by a fresh
-committed status through the replacement credentials.
+committed trust and health before advancing to the next node. A final saved
+context refresh verifies committed trust and the bound installation before
+publishing workstation state. Confirmation carries the verified trial ID,
+which the agent checks under the identity lock before committing. A lost
+confirmation reply can be resolved by a fresh committed status through the
+replacement credentials.
 
-Katlctl uses compatibility behavior for a node only after a timely status
-reply omits the report. Recovery and an already configured rotation retain
+If recovery observes the replacement installed over SSH and cannot reach the
+listener over mTLS, it reruns the pinned SSH rotation command with the installed
+authority as the expected replacement. That request can only reload the
+already installed credentials. Recovery still checks the listener after reload
+before publishing the new secrets reference.
+
+A node can use compatibility behavior when its initial timely status omits
+the report. Once it provides a report, later omissions stop verification.
+Older clients can still confirm a trial using only its authority. Recovery and an already configured rotation retain
 their positive reachability and identity checks. Legacy rotation requires
 positive replacement status before and after a timely issuer-specific TLS
 `unknown_ca` from the authenticated old-credential probe connection.

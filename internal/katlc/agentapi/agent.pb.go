@@ -6996,8 +6996,11 @@ type ConfirmManagementTransitionRequest struct {
 	ExpectedInventoryNodeName string                 `protobuf:"bytes,5,opt,name=expected_inventory_node_name,json=expectedInventoryNodeName,proto3" json:"expected_inventory_node_name,omitempty"`
 	ExpectedMachineId         string                 `protobuf:"bytes,6,opt,name=expected_machine_id,json=expectedMachineId,proto3" json:"expected_machine_id,omitempty"`
 	TargetAuthority           string                 `protobuf:"bytes,7,opt,name=target_authority,json=targetAuthority,proto3" json:"target_authority,omitempty"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	// New clients supply the observed trial ID. Omission is reserved for
+	// older clients; a present ID must be nonempty.
+	ExpectedTrialId *string `protobuf:"bytes,8,opt,name=expected_trial_id,json=expectedTrialId,proto3,oneof" json:"expected_trial_id,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ConfirmManagementTransitionRequest) Reset() {
@@ -7075,6 +7078,13 @@ func (x *ConfirmManagementTransitionRequest) GetExpectedMachineId() string {
 func (x *ConfirmManagementTransitionRequest) GetTargetAuthority() string {
 	if x != nil {
 		return x.TargetAuthority
+	}
+	return ""
+}
+
+func (x *ConfirmManagementTransitionRequest) GetExpectedTrialId() string {
+	if x != nil && x.ExpectedTrialId != nil {
+		return *x.ExpectedTrialId
 	}
 	return ""
 }
@@ -7951,7 +7961,7 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x12server_certificate\x18\t \x01(\tR\x11serverCertificate\x12,\n" +
 	"\x12server_private_key\x18\n" +
 	" \x01(\tR\x10serverPrivateKey\x12#\n" +
-	"\rtrial_seconds\x18\v \x01(\rR\ftrialSeconds\"\xc1\x02\n" +
+	"\rtrial_seconds\x18\v \x01(\rR\ftrialSeconds\"\x88\x03\n" +
 	"\"ConfirmManagementTransitionRequest\x12\x1f\n" +
 	"\vapi_version\x18\x01 \x01(\tR\n" +
 	"apiVersion\x12\x12\n" +
@@ -7960,7 +7970,9 @@ const file_internal_katlc_agentapi_agent_proto_rawDesc = "" +
 	"\x16expected_enrollment_id\x18\x04 \x01(\tR\x14expectedEnrollmentId\x12?\n" +
 	"\x1cexpected_inventory_node_name\x18\x05 \x01(\tR\x19expectedInventoryNodeName\x12.\n" +
 	"\x13expected_machine_id\x18\x06 \x01(\tR\x11expectedMachineId\x12)\n" +
-	"\x10target_authority\x18\a \x01(\tR\x0ftargetAuthority\"\xb3\x01\n" +
+	"\x10target_authority\x18\a \x01(\tR\x0ftargetAuthority\x12/\n" +
+	"\x11expected_trial_id\x18\b \x01(\tH\x00R\x0fexpectedTrialId\x88\x01\x01B\x14\n" +
+	"\x12_expected_trial_id\"\xb3\x01\n" +
 	"\x14ManagementTransition\x12\x14\n" +
 	"\x05state\x18\x01 \x01(\tR\x05state\x12\x19\n" +
 	"\btrial_id\x18\x02 \x01(\tR\atrialId\x12)\n" +
@@ -8194,6 +8206,7 @@ func file_internal_katlc_agentapi_agent_proto_init() {
 	if File_internal_katlc_agentapi_agent_proto != nil {
 		return
 	}
+	file_internal_katlc_agentapi_agent_proto_msgTypes[72].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
