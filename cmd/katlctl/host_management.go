@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strings"
 	"time"
@@ -17,8 +18,6 @@ import (
 	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/peer"
 )
 
 const (
@@ -420,30 +419,32 @@ func requestNodeShutdown(ctx context.Context, client agentapi.KatlcAgentClient, 
 	return &acknowledgedShutdown{target: target}, nil
 }
 
+var dialShutdownTCP = (&net.Dialer{}).DialContext
+
 func (shutdown *acknowledgedShutdown) waitUnreachable(ctx context.Context) error {
 	target := shutdown.target
-	ctx = transport.WithoutManagementWait(withManagementTarget(ctx, target))
-	var conn katlcAgentConnection
+	ctx = withManagementTarget(ctx, target)
 	for {
 		if err := transport.ManagementContextError(ctx); err != nil {
 			return err
 		}
-		if conn.Client == nil {
-			dialed, err := dialKatlcAgent(ctx, target.endpoint.String())
-			if err == nil {
-				conn = dialed
-				// A slow dial can finish during a later probe on this connection.
-				defer conn.Close()
-			}
+		attemptCtx, cancelAttempt := context.WithTimeout(ctx, 2*time.Second)
+		probeCtx, dial := transport.ObserveManagementDial(attemptCtx, dialShutdownTCP)
+		conn, err := dialKatlcAgent(probeCtx, target.endpoint.String())
+		if err == nil {
+			_, err = conn.Client.GetNodeStatus(probeCtx, &agentapi.GetNodeStatusRequest{})
 		}
-		if conn.Client != nil {
-			attemptCtx, cancelAttempt := context.WithTimeout(ctx, 2*time.Second)
-			var p peer.Peer
-			_, err := conn.Client.GetNodeStatus(attemptCtx, &agentapi.GetNodeStatusRequest{}, grpc.Peer(&p))
-			cancelAttempt()
-			if transport.ClassifyManagementEvidence(err, &p, nil) == transport.ManagementUnreachable {
-				return nil
-			}
+		evidence := transport.ClassifyManagementEvidence(err, dial, nil)
+		cancelAttempt()
+		if conn.Close != nil {
+			_ = conn.Close()
+		}
+
+		if err := transport.ManagementContextError(ctx); err != nil {
+			return err
+		}
+		if evidence == transport.ManagementUnreachable {
+			return nil
 		}
 
 		timer := time.NewTimer(hostShutdownPollInterval)

@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
@@ -42,26 +44,68 @@ const (
 )
 
 // ClassifyManagementEvidence classifies an RPC result within its budget.
-// Pass p when the call collected peer information with grpc.Peer.
+// Pass dial when the call recorded its TCP outcome with ObserveManagementDial.
 // An old-client-CA probe requires issuer-specific evidence. A gRPC
 // authentication refusal does not identify which CA the server trusts.
-func ClassifyManagementEvidence(err error, p *peer.Peer, oldAuthorityRefused func(error) bool) ManagementEvidence {
+func ClassifyManagementEvidence(err error, dial *ManagementDialEvidence, oldAuthorityRefused func(error) bool) ManagementEvidence {
 	switch {
 	case err == nil:
 		return ManagementConfirmed
+	case dial != nil:
+		if dial.failed() {
+			return ManagementUnreachable
+		}
+		return ManagementInconclusive
 	case errors.Is(err, ErrManagementRPCInconclusive):
 		return ManagementInconclusive
 	case oldAuthorityRefused != nil && grpcstatus.Code(err) == codes.Unavailable && oldAuthorityRefused(err):
 		return ManagementRefusedExplicitly
-	case unavailableBeforePeer(err, p):
-		return ManagementUnreachable
 	default:
 		return ManagementInconclusive
 	}
 }
 
-func unavailableBeforePeer(err error, p *peer.Peer) bool {
-	return p != nil && p.Addr == nil && grpcstatus.Code(err) == codes.Unavailable
+type managementDialEvidenceKey struct{}
+
+// ManagementDialEvidence records the TCP outcome of a single management probe.
+type ManagementDialEvidence struct {
+	ctx     context.Context
+	dialTCP func(context.Context, string, string) (net.Conn, error)
+	mu      sync.Mutex
+	started bool
+	err     error
+}
+
+// ObserveManagementDial limits a fresh management connection to one TCP
+// attempt, bounded by ctx, and records its outcome before any TLS or HTTP/2
+// handshake. Use the returned context for both the connection and its RPC.
+func ObserveManagementDial(ctx context.Context, dialTCP func(context.Context, string, string) (net.Conn, error)) (context.Context, *ManagementDialEvidence) {
+	dial := &ManagementDialEvidence{ctx: ctx, dialTCP: dialTCP}
+	return context.WithValue(WithoutManagementWait(ctx), managementDialEvidenceKey{}, dial), dial
+}
+
+func (d *ManagementDialEvidence) dial(_ context.Context, address string) (net.Conn, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	if d.started {
+		return nil, errors.New("management probe already attempted a connection")
+	}
+	if err := ManagementContextError(d.ctx); err != nil {
+		return nil, err
+	}
+	d.started = true
+	conn, err := d.dialTCP(d.ctx, "tcp", address)
+	d.err = err
+	return conn, err
+}
+
+func (d *ManagementDialEvidence) failed() bool {
+	// The RPC deadline can fire before gRPC receives the TCP timeout. Wait
+	// for an in-flight dial, which shares that probe deadline, to record it.
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.err != nil && !errors.Is(d.err, context.Canceled)
 }
 
 type managementRPCInconclusive struct{ cause error }
@@ -133,6 +177,8 @@ func ManagementDialOptions(ctx context.Context, node, endpoint string, creds cre
 	var options []grpc.DialOption
 	if probe, ok := creds.(*clientCertificateProbe); ok {
 		options = append(options, grpc.WithContextDialer(probe.dialContext))
+	} else if dial, ok := ctx.Value(managementDialEvidenceKey{}).(*ManagementDialEvidence); ok {
+		options = append(options, grpc.WithContextDialer(dial.dial))
 	}
 	plaintext := creds.Info().SecurityProtocol == insecure.NewCredentials().Info().SecurityProtocol
 	noAdvice, _ := ctx.Value(noManagementAdviceKey{}).(bool)
@@ -246,10 +292,9 @@ func explainMutualTLSNode(err error) error {
 // nothing was listening, which is what a starting agent produces. A call that
 // had a connection (p.Addr set) may have reached the agent, and retrying it is
 // not safe. The readiness wait retries only a refusal because it indicates
-// that the endpoint may still be starting. A reachability probe can use any
-// Unavailable result without a peer.
+// that the endpoint may still be starting.
 func refusedBeforeConnect(err error, p *peer.Peer) bool {
-	return unavailableBeforePeer(err, p) &&
+	return p.Addr == nil && grpcstatus.Code(err) == codes.Unavailable &&
 		strings.Contains(grpcstatus.Convert(err).Message(), "connect: connection refused")
 }
 

@@ -21,7 +21,7 @@ import (
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 	grpcstatus "google.golang.org/grpc/status"
 )
 
@@ -217,9 +217,15 @@ func TestHostShutdownWaitsForUnreachability(t *testing.T) {
 		name      string
 		statusErr error
 		json      bool
+		dialErr   error
+		silent    bool
 	}{
 		{name: "connection refused"},
 		{name: "connection refused JSON", json: true},
+		{name: "host unreachable", dialErr: syscall.EHOSTUNREACH, json: true},
+		{name: "network unreachable", dialErr: syscall.ENETUNREACH, json: true},
+		{name: "connect timeout", dialErr: os.ErrDeadlineExceeded, json: true},
+		{name: "silent loss after successful status", dialErr: syscall.EHOSTUNREACH, silent: true, json: true},
 		{name: "agent unavailable", statusErr: grpcstatus.Error(codes.Unavailable, "connection error: dial tcp: connect: connection refused")},
 		{name: "agent internal error", statusErr: grpcstatus.Error(codes.Internal, "status read failed")},
 	} {
@@ -234,7 +240,7 @@ func TestHostShutdownWaitsForUnreachability(t *testing.T) {
 				statusErr: test.statusErr,
 				requests:  make(chan *agentapi.ShutdownRequest, 1),
 			}
-			if test.statusErr == nil {
+			if test.statusErr == nil && test.dialErr == nil {
 				// Stop accepting connections while the existing RPC can still acknowledge shutdown.
 				agent.stopListening = func() { _ = listener.Close() }
 			}
@@ -242,9 +248,33 @@ func TestHostShutdownWaitsForUnreachability(t *testing.T) {
 			go func() { _ = server.Serve(listener) }()
 			t.Cleanup(server.Stop)
 
+			if test.dialErr != nil {
+				var dropWrites atomic.Bool
+				if test.silent {
+					agent.afterProbe = func() { dropWrites.Store(true) }
+				}
+				replaceShutdownDial(t, func(ctx context.Context, network, address string) (net.Conn, error) {
+					if test.dialErr == os.ErrDeadlineExceeded {
+						<-ctx.Done()
+					}
+					if test.silent && !dropWrites.Load() {
+						conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+						if err != nil {
+							return nil, err
+						}
+						return &shutdownProbeConn{Conn: conn, dropWrites: &dropWrites}, nil
+					}
+					return nil, &net.OpError{Op: "dial", Net: network, Err: test.dialErr}
+				})
+			}
+
 			configPath := writeHostMutationContext(t, "machine-a")
 			var stdout, stderr bytes.Buffer
-			args := []string{"node", "shutdown", "node-a", "--context-file", configPath, "--endpoint", listener.Addr().String(), "--timeout", "1s"}
+			timeout := "1s"
+			if test.dialErr == os.ErrDeadlineExceeded || test.silent {
+				timeout = "4s"
+			}
+			args := []string{"node", "shutdown", "node-a", "--context-file", configPath, "--endpoint", listener.Addr().String(), "--timeout", timeout}
 			if test.json {
 				args = append(args, "--output", "json")
 			}
@@ -296,7 +326,6 @@ func TestHostShutdownRequiresTimelyAcknowledgement(t *testing.T) {
 		{name: "missing acknowledgement"},
 		{name: "negative acknowledgement", accepted: &agentapi.ShutdownAccepted{}},
 		{name: "late acknowledgement", accepted: &agentapi.ShutdownAccepted{Scheduled: true}, late: true},
-		{name: "partition after acknowledgement", accepted: &agentapi.ShutdownAccepted{Scheduled: true}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -315,21 +344,11 @@ func TestHostShutdownRequiresTimelyAcknowledgement(t *testing.T) {
 				t.Cleanup(func() { dialKatlcAgent = oldDial })
 				dialKatlcAgent = func(context.Context, string) (katlcAgentConnection, error) {
 					dials++
-					if dials == 1 {
-						return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
-					}
-					probe := &fakeKatlcAgentClient{nodeStatusErr: unavailable}
-					return katlcAgentConnection{Client: probe, Close: func() error { return nil }}, nil
+					return katlcAgentConnection{Client: client, Close: func() error { return nil }}, nil
 				}
 
 				var stdout, stderr bytes.Buffer
 				err := run(t.Context(), []string{"node", "shutdown", "node-a", "--context-file", configPath, "--timeout", "1s"}, &stdout, &stderr)
-				if test.accepted.GetScheduled() && !test.late {
-					if err != nil || stdout.String() != "node-a stopped responding after acknowledging shutdown\n" {
-						t.Fatalf("stdout = %q, err = %v, want acknowledgement followed by unreachability", stdout.String(), err)
-					}
-					return
-				}
 				if err == nil || !strings.Contains(err.Error(), "could not confirm acknowledgement") || stdout.Len() != 0 || stderr.Len() != 0 {
 					t.Fatalf("stdout = %q, stderr = %q, err = %v, want unacknowledged shutdown", stdout.String(), stderr.String(), err)
 				}
@@ -355,6 +374,7 @@ type shutdownTestAgent struct {
 	status           *agentapi.NodeStatus
 	statusErr        error
 	stopListening    func()
+	afterProbe       func()
 	requests         chan *agentapi.ShutdownRequest
 	scheduled        atomic.Bool
 	repliedWithError atomic.Bool
@@ -364,6 +384,9 @@ func (a *shutdownTestAgent) GetNodeStatus(context.Context, *agentapi.GetNodeStat
 	if a.scheduled.Load() && a.statusErr != nil {
 		a.repliedWithError.Store(true)
 		return nil, a.statusErr
+	}
+	if a.scheduled.Load() && a.afterProbe != nil {
+		a.afterProbe()
 	}
 	return a.status, nil
 }
@@ -397,36 +420,95 @@ func TestAcknowledgedShutdownSlowDial(t *testing.T) {
 	for _, cause := range []error{os.ErrDeadlineExceeded, syscall.EHOSTUNREACH, syscall.ECONNRESET} {
 		t.Run(cause.Error(), func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				oldDial := dialKatlcAgent
-				t.Cleanup(func() { dialKatlcAgent = oldDial })
-				dialKatlcAgent = func(ctx context.Context, endpoint string) (katlcAgentConnection, error) {
-					options := transport.ManagementDialOptions(ctx, "cp-1", endpoint, insecure.NewCredentials())
-					options = append(options, grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
-						timer := time.NewTimer(3 * time.Second)
-						defer timer.Stop()
-						select {
-						case <-ctx.Done():
-							return nil, ctx.Err()
-						case <-timer.C:
-							return nil, &net.OpError{Op: "dial", Net: "tcp", Err: cause}
-						}
-					}))
-					conn, err := grpc.NewClient("passthrough:///"+endpoint, options...)
-					if err != nil {
-						return katlcAgentConnection{}, err
-					}
-					return katlcAgentConnection{Client: agentapi.NewKatlcAgentClient(conn), Close: conn.Close}, nil
+				delay, wantElapsed := 1500*time.Millisecond, 1500*time.Millisecond
+				if cause == os.ErrDeadlineExceeded {
+					delay, wantElapsed = 3*time.Second, 2*time.Second
 				}
+				replaceShutdownDial(t, func(ctx context.Context, _, _ string) (net.Conn, error) {
+					timer := time.NewTimer(delay)
+					defer timer.Stop()
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-timer.C:
+						return nil, &net.OpError{Op: "dial", Net: "tcp", Err: cause}
+					}
+				})
 
 				ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
 				defer cancel()
+				start := time.Now()
 				target := managementTarget{nodeName: "cp-1", endpoint: mustHostPort(t, "192.0.2.11:9443"), credentials: &trustedNetworkClient}
 				if err := (&acknowledgedShutdown{target: target}).waitUnreachable(ctx); err != nil {
 					t.Fatalf("shutdown verification = %v, want unreachable after the dial fails", err)
 				}
+				if elapsed := time.Since(start); elapsed != wantElapsed {
+					t.Fatalf("dial took %s, want %s", elapsed, wantElapsed)
+				}
 			})
 		})
 	}
+}
+
+func TestAcknowledgedShutdownHandshakeRejection(t *testing.T) {
+	now := time.Now()
+	identity, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "lab", Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	node, _, err := managementidentity.EnsureNode(&identity, "cp-1", now, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverTLS, _, err := transport.ServerTLSConfigForNode(node)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLS)))
+	go func() { _ = server.Serve(listener) }()
+	t.Cleanup(server.Stop)
+
+	var connections atomic.Int32
+	replaceShutdownDial(t, func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, address)
+		if err == nil {
+			connections.Add(1)
+		}
+		return conn, err
+	})
+
+	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	target := managementTarget{nodeName: "cp-1", endpoint: mustHostPort(t, listener.Addr().String()), credentials: &trustedNetworkClient}
+	if err := (&acknowledgedShutdown{target: target}).waitUnreachable(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("shutdown verification against live mTLS listener = %v, want deadline exceeded", err)
+	}
+	if connections.Load() == 0 {
+		t.Fatal("the probe did not connect to the mTLS listener")
+	}
+}
+
+func replaceShutdownDial(t *testing.T, dial func(context.Context, string, string) (net.Conn, error)) {
+	t.Helper()
+	oldDial := dialShutdownTCP
+	dialShutdownTCP = dial
+	t.Cleanup(func() { dialShutdownTCP = oldDial })
+}
+
+type shutdownProbeConn struct {
+	net.Conn
+	dropWrites *atomic.Bool
+}
+
+func (c *shutdownProbeConn) Write(p []byte) (int, error) {
+	if c.dropWrites.Load() {
+		return len(p), nil
+	}
+	return c.Conn.Write(p)
 }
 
 func TestHostStatusLatePlaintextRefusal(t *testing.T) {

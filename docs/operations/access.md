@@ -209,15 +209,16 @@ that a new agent instance returns on that generation with good boot health.
 Use `--no-wait` to return after the agent acknowledges the request, and
 `--output json` when a script needs structured output.
 
-After the agent acknowledges shutdown, `katlctl` waits for a transport failure
-before a status probe reaches the agent. It then exits successfully and reports
+After the agent acknowledges shutdown, `katlctl` probes the management endpoint
+with fresh TCP connections. If a connection fails or times out, it exits
+successfully and reports
 `cp-1 stopped responding after acknowledging shutdown`, or
 `"result": "unreachable-after-ack"` in JSON. Power-off and a network interruption
 can both produce this result. Check the node's console to verify power state.
 
 A missing, late, or failed acknowledgement causes a nonzero exit. After an
-acknowledgement, an expired status probe or an error from a live agent leaves
-the wait in progress until a transport failure is observed or the wait ends.
+acknowledgement, if TCP connects, the wait continues even if the handshake or
+status request fails or times out.
 If that wait times out for `cp-1`, the command reports the following.
 
 ```text
