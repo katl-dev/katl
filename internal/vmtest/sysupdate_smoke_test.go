@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,11 +18,13 @@ import (
 
 	"github.com/katl-dev/katl/internal/flavour"
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/installer/configbundle"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/manifest"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/katlc/agent"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/katl-dev/katl/internal/persistedrecord"
 )
 
@@ -319,44 +322,19 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 	if previousSpec.RuntimeVersion == candidateSpec.RuntimeVersion || previousSpec.Boot.UKIPath == candidateSpec.Boot.UKIPath || previousSpec.Root.Slot == candidateSpec.Root.Slot {
 		t.Fatalf("upgrade did not produce distinct version, root slot, and UKI identities: previous=%#v candidate=%#v", previousSpec, candidateSpec)
 	}
-	repeatedGeneration := candidateGeneration + "-repeat"
-	localRef = stageHostUpgradeArtifactForVMTest(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), upgrade)
-	_, repeatedStatus := submitHostUpgradeAndWait(t, ctx, endpoint, spec.Name, nodeStatus.GetMachineId(), previousGeneration, repeatedGeneration, localRef, upgrade, agent.OperationKindHostUpgrade, "")
-	if repeatedStatus.GetResult() != operation.ResultSucceeded || !repeatedStatus.GetBootHealthPending() || repeatedStatus.GetCandidateGenerationId() != repeatedGeneration {
-		t.Fatalf("repeated host upgrade operation status = %+v", repeatedStatus)
-	}
+	guest, client = upgradeAfterBootHealthRepair(t, ctx, &node, guest, client, endpoint, previousSpec, candidateSpec, upgrade)
 	waitHostUpgradeWorkspaceClean(t, ctx, guest, "repeat")
+	repeatedGeneration := currentGenerationFromGuest(t, ctx, guest)
 	repeatedSpec := generationFromGuest(t, ctx, guest, repeatedGeneration)
-	if repeatedSpec.Root.Slot != candidateSpec.Root.Slot || repeatedSpec.Root.PartitionUUID != candidateSpec.Root.PartitionUUID {
-		t.Fatalf("repeated host upgrade root = %#v, want previously upgraded peer %#v", repeatedSpec.Root, candidateSpec.Root)
+	if repeatedGeneration == candidateGeneration || repeatedSpec.RuntimeVersion != upgrade.Version ||
+		repeatedSpec.Root.Slot != candidateSpec.Root.Slot || repeatedSpec.Root.PartitionUUID != candidateSpec.Root.PartitionUUID {
+		t.Fatalf("repeated host upgrade = %#v, want a new generation on the previously upgraded peer %#v", repeatedSpec, candidateSpec)
 	}
-	repeatedTrial := bootSelectionFromGuest(t, ctx, guest)
-	if repeatedTrial.TrialGenerationID != repeatedGeneration || repeatedTrial.PreviousKnownGoodGenerationID != previousGeneration || !repeatedTrial.PendingHealthValidation {
-		t.Fatalf("repeated host upgrade trial selection = %#v", repeatedTrial)
-	}
+	assertBootedGenerationIdentity(t, ctx, guest, repeatedSpec)
 	assertGuestMissing(t, ctx, guest, "/efi/"+candidateSpec.Boot.LoaderEntryPath)
-	_, obsolete := generationRecordsFromGuest(t, ctx, guest, candidateGeneration)
-	if obsolete.UnavailableReason == "" {
-		t.Fatal("replaced OS generation remains available")
-	}
 	guestCommand(t, ctx, guest, "boot-health-evidence", "systemctl", "show", "katl-boot-health.service", "--property=Result,ExecMainStatus")
 	guestCommand(t, ctx, guest, "boot-complete-evidence", "systemctl", "is-active", "katl-boot-complete.target")
-	guest, client = restartGuestAndReconnect(t, ctx, &node, guest, client)
-	waitGenerationPromotion(t, ctx, guest, repeatedGeneration)
-	obsoletePath := "/var/lib/katl/generations/" + candidateGeneration
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		check, err := guest.RunCommand(ctx, GuestCommandRequest{
-			Name: "obsolete-generation-cleanup", Argv: []string{"test", "!", "-e", obsoletePath}, AllowFailure: true,
-		})
-		if err == nil && check.ExitStatus == 0 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("replaced OS generation %s remained after healthy boot: %v %#v", candidateGeneration, err, check)
-		}
-		time.Sleep(250 * time.Millisecond)
-	}
+	waitForGenerationPruning(t, ctx, guest, candidateGeneration)
 	t.Log("host upgrade, rollback, and repeated upgrade staging are serialized per node in v0.1; multi-node rollout orchestration remains operator-controlled")
 	powerOffGuestForCleanSuccess(t, ctx, &node, guest, client)
 	client = nil
@@ -369,6 +347,150 @@ func TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) {
 		if err := worldScenario.WriteResult(WorldStatusPassed, ""); err != nil {
 			t.Fatalf("write world scenario result: %v", err)
 		}
+	}
+}
+
+func upgradeAfterBootHealthRepair(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, endpoint string, source, fallback generation.GenerationSpec, upgrade builtUpgradeImage) (*GuestControl, *AgentClient) {
+	t.Helper()
+	result := node.Result
+	katlctl := configApplyKatlctl(BuildKatlctl(t, ctx, repoRoot(t)), result)
+	configPath := sysupdateRepairConfig(t, ctx, guest, katlctl, endpoint, node.Name, source)
+	statusArgs := []string{"node", "status", node.Name, "--config", configPath, "--output", "json"}
+	listArgs := []string{"node", "generations", "list", node.Name, "--config", configPath, "--output", "json"}
+
+	// Hide one of the queried units for this boot. The runtime mask disappears
+	// on reboot and leaves the agent's repair commands usable while masked.
+	guestCommand(t, ctx, guest, "mask-boot-health-evidence", "systemctl", "mask", "--runtime", "katl-boot-health-settled.target")
+	const eligible = "vmtest-replaced-generation"
+	writePrunableGeneration(t, ctx, guest, eligible, fallback)
+	// A fresh agent evaluates pruning immediately, even if its previous pass
+	// was healthy and scheduled the next pass an hour later.
+	guestCommand(t, ctx, guest, "restart-pruning", "systemctl", "restart", "katlc-agent.service")
+	if status := string(runKatlctl(t, ctx, result, katlctl, "unknown-boot-health", statusArgs...)); !strings.Contains(status, "cannot read boot health for this boot from systemd") {
+		t.Fatalf("node status lacks the unreadable boot health diagnostic:\n%s", status)
+	}
+	slot := "/dev/disk/by-partuuid/" + fallback.Root.PartitionUUID
+	slotBefore := guestFileSHA256(t, ctx, guest, "fallback-root-before", slot)
+	_, err := runKatlctlOutcome(t, ctx, result, katlctl, "refuse-unconfirmed-upgrade",
+		"node", "upgrade", node.Name, "--config", configPath, "--version", upgrade.Version)
+	for _, want := range []string{"cannot read boot health for this boot from systemd", "katlctl node status", "katlctl cluster apply", "katlctl node reboot"} {
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("upgrade error = %v, want %q", err, want)
+		}
+	}
+	if after := guestFileSHA256(t, ctx, guest, "fallback-root-after", slot); after != slotBefore {
+		t.Fatalf("refused upgrade changed the inactive root slot: %s, want %s", after, slotBefore)
+	}
+	var listed agentapi.ListGenerationsResponse
+	mustUnmarshalProtoJSON(t, runKatlctl(t, ctx, result, katlctl, "retained-fallback", listArgs...), &listed)
+	for _, id := range []string{fallback.GenerationID, eligible} {
+		index := slices.IndexFunc(listed.GetGenerations(), func(gen *agentapi.Generation) bool { return gen.GetGenerationId() == id })
+		if index < 0 {
+			t.Fatalf("generation %s disappeared while boot health was unknown: %v", id, &listed)
+		}
+		gen := listed.GetGenerations()[index]
+		if id == fallback.GenerationID && gen.GetUnavailableReason() != "" || id == eligible && len(gen.GetProtectedBy()) != 0 {
+			t.Fatalf("unexpected fallback availability or prune protection: %v", gen)
+		}
+	}
+
+	runKatlctl(t, ctx, result, katlctl, "apply-while-health-unknown", "cluster", "apply", "--node", node.Name, "--config", configPath)
+	beforeReboot := guestBootID(t, ctx, client)
+	runKatlctl(t, ctx, result, katlctl, "repair-reboot", "node", "reboot", node.Name, "--config", configPath)
+	_ = client.Close()
+	guest, client = reconnectGuestAfterBoot(t, ctx, node, beforeReboot)
+	waitForGenerationPruning(t, ctx, guest, eligible)
+
+	beforeUpgrade := guestBootID(t, ctx, client)
+	runKatlctl(t, ctx, result, katlctl, "upgrade-after-repair", "node", "upgrade", node.Name, "--config", configPath, "--artifact", upgrade.Path)
+	_ = client.Close()
+	return reconnectGuestAfterBoot(t, ctx, node, beforeUpgrade)
+}
+
+func sysupdateRepairConfig(t *testing.T, ctx context.Context, guest *GuestControl, katlctl katlctlRunner, endpoint, nodeName string, source generation.GenerationSpec) string {
+	t.Helper()
+	installed, err := manifest.Decode(strings.NewReader(guestCommandOutput(t, ctx, guest, "installed-intent",
+		"dd", "if=/var/lib/katl/install/manifest.json", "status=none")))
+	if err != nil || installed.Node.Bootstrap == nil {
+		t.Fatalf("read installed bootstrap intent: %v", err)
+	}
+	host, _, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	node := firstInstallWorldSourceNode(nodeName, ControlPlane, "/dev/disk/by-id/virtio-katl-root")
+	node["management"] = jsonObject{"address": host}
+	data, err := json.Marshal(jsonObject{
+		"apiVersion": configbundle.APIVersion,
+		"kind":       configbundle.Kind,
+		"metadata":   jsonObject{"name": VMTestManagementClusterName},
+		"spec": jsonObject{
+			"managementAuthentication": "mtls",
+			"controlPlaneEndpoint":     jsonObject{"host": "api.katl.test", "port": 6443},
+			"kubernetes":               jsonObject{"version": installed.Node.Bootstrap.KubernetesVersion},
+			"defaults": jsonObject{
+				"access":            jsonObject{"ssh": jsonObject{"authorizedKeys": installed.Node.Identity.SSH.AuthorizedKeys}},
+				"kernel":            jsonObject{"commandLine": source.ConfiguredKernelCommandLine},
+				"hostConfiguration": vmtestSourceHostConfiguration(),
+			},
+			"nodes": []jsonObject{node},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(katlctl.config)
+	identity, err := VMTestManagementIdentity(VMTestManagementClusterName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := managementidentity.Write(filepath.Join(dir, "management", VMTestManagementClusterName+".katlkey"), identity); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "cluster.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writePrunableGeneration(t *testing.T, ctx context.Context, guest *GuestControl, id string, spec generation.GenerationSpec) {
+	t.Helper()
+	spec.GenerationID = id
+	spec.Boot.LoaderEntryPath = "loader/entries/katl-" + id + ".conf"
+	spec.Sysexts = nil
+	spec.BundledConfexts = nil
+	spec.Confexts = nil
+	status, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, spec.CreatedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status.UnavailableReason = "runtime root slot overwritten by an earlier upgrade"
+	root := t.TempDir()
+	if err := generation.WriteGeneration(root, spec, status); err != nil {
+		t.Fatal(err)
+	}
+	path := "/var/lib/katl/generations/" + id
+	for _, name := range []string{"spec.json", "status.json"} {
+		writeGuestFile(t, ctx, guest, path+"/"+name, []byte(readFile(t, filepath.Join(root, path, name))), 0o600)
+	}
+}
+
+func waitForGenerationPruning(t *testing.T, ctx context.Context, guest *GuestControl, id string) {
+	t.Helper()
+	obsoletePath := "/var/lib/katl/generations/" + id
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		check, err := guest.RunCommand(ctx, GuestCommandRequest{
+			Name: "obsolete-generation-cleanup", Argv: []string{"test", "!", "-e", obsoletePath}, AllowFailure: true,
+		})
+		if err == nil && check.ExitStatus == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("replaced OS generation %s remained after healthy boot: %v %#v", id, err, check)
+		}
+		time.Sleep(250 * time.Millisecond)
 	}
 }
 
