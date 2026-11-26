@@ -371,8 +371,8 @@ func upgradeAfterBootHealthRepair(t *testing.T, ctx context.Context, node *Runni
 	}
 	slot := "/dev/disk/by-partuuid/" + fallback.Root.PartitionUUID
 	slotBefore := guestFileSHA256(t, ctx, guest, "fallback-root-before", slot)
-	_, err := runKatlctlOutcome(t, ctx, result, katlctl, "refuse-unconfirmed-upgrade",
-		"node", "upgrade", node.Name, "--config", configPath, "--version", upgrade.Version)
+	upgradeArgs := []string{"node", "upgrade", node.Name, "--config", configPath, "--artifact", upgrade.Path}
+	_, err := runKatlctlOutcome(t, ctx, result, katlctl, "refuse-unconfirmed-upgrade", upgradeArgs...)
 	for _, want := range []string{"cannot read boot health for this boot from systemd", "katlctl node status", "katlctl cluster apply", "katlctl node reboot"} {
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Fatalf("upgrade error = %v, want %q", err, want)
@@ -402,7 +402,7 @@ func upgradeAfterBootHealthRepair(t *testing.T, ctx context.Context, node *Runni
 	waitForGenerationPruning(t, ctx, guest, eligible)
 
 	beforeUpgrade := guestBootID(t, ctx, client)
-	runKatlctl(t, ctx, result, katlctl, "upgrade-after-repair", "node", "upgrade", node.Name, "--config", configPath, "--artifact", upgrade.Path)
+	runKatlctl(t, ctx, result, katlctl, "upgrade-after-repair", upgradeArgs...)
 	_ = client.Close()
 	return reconnectGuestAfterBoot(t, ctx, node, beforeUpgrade)
 }
