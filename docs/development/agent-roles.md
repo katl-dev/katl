@@ -9,12 +9,12 @@ tracks work that a new session needs to recover.
 
 Use `${XDG_STATE_HOME:-$HOME/.local/state}/katl-dev` for coordination state.
 Create the directory and its worktree root on first use. The coordinator reads
-the state on startup, and the orchestrator updates it as jobs start, finish,
-or change hands.
+the state on startup. The orchestrator and Release agent update it as their
+jobs start, finish, or change hands.
 
 | Path | Contents |
 | --- | --- |
-| `state.md` | Active orchestrator and agent identifiers, issue and PR links, worktree paths, running unit names and log paths, queue watch IDs, and the next action and owner. |
+| `state.md` | Active orchestrator and agent identifiers, open version milestones and their Release agent identifiers, issue and PR links, worktree paths, running unit names and log paths, queue watch IDs, and the next action and owner. |
 | `logs/` | Codex job reports, retained across session and worktree cleanup. |
 | `worktrees/` | Linked worktrees for scoped tasks and a trusted `origin/main` checkout for cleanup. |
 
@@ -51,27 +51,25 @@ the reasons for material scope changes. Bring decisions to the operator when
 the agreed policy and a sensible default cannot settle them, or when a
 destructive or external action requires authority that has yet to be granted.
 
-**Release cut.** Confirm the release scope with the orchestrator and use the
-[release milestone policy](#release-milestones) to settle scope changes after
-the cut.
+**Release hand-off.** Confirm the planned cut with the orchestrator. After the
+cut, route release decisions and any explicit operator authority to the
+[Release agent](#release).
 
 ## Orchestrator
 
-**Purpose.** Own delivery from brief to merge and release readiness. Decide
-scope, sequencing, and whether the evidence supports approval. Own diff
-review, commits, pushes, PR and queue actions, and authorized release steps.
+**Purpose.** Own delivery on `main` from brief to merge. Decide scope,
+sequencing, and whether the evidence supports approval. Own diff
+review, commits, pushes, and PR and queue actions on `main`.
 Delegate implementation, mechanical edits, rebases, conflict resolution,
 independent review, diagnosis, and hands-on journeys.
 
 **Brief.** Supply the goal and current release or milestone. Recover active
 work from the local checkpoint and derive scope and dependencies from GitHub.
-Carry forward the coordinator's constraints and any explicit queue or release
-authority.
+Carry forward the coordinator's constraints and any explicit queue authority.
 
 **Model.** Use Claude Opus with high effort.
 
-**Report.** Report to the coordinator if a blocker resolves, a release candidate
-is tagged or published, the final release is published, a permission is
+**Report.** Report to the coordinator if a blocker resolves, a permission is
 denied, a failure cannot be root-caused, a redesign is needed, or a decision
 requires operator authority. For each queue ejection, give the PR and reason
 from `katl-queue why PR`, whether the PR caused it or a flake did, and the fix
@@ -134,33 +132,74 @@ Apply the flake rule in AGENTS.md when a check fails independently of the PR.
 Use a separate fix issue for the flake, and on recurrence look for the common
 design cause before commissioning another narrow fix.
 
-**Release scope.** Use **Next release** for committed work and **Backlog** for
-uncommitted work. At the cut and through final publication, follow the
-[release milestone policy](#release-milestones). Evaluate every new finding
-against the post-cut rule and state the rule in delivery briefs. Carry
-release-branch fixes through `main` first.
-
-**Release cut.** When using a release branch, cut it at freeze. Confirm the
-journey and blocker gates in AGENTS.md and follow
-the [release procedure](releases.md) for candidate qualification before tagging
-and promoting a passing candidate at the same commit. At each cut and when
-queue waits dominate, use `katl-queue ci-cost --since <previous release date>`
+**CI cost.** When queue waits dominate, use
+`katl-queue ci-cost --since <previous release date>`
 to rank jobs by runner-minutes. Before reporting a recurring delay, check
 what the step verifies, what inputs changed, and whether it needs to run.
 File CI cost findings with the measurement window, run and failure counts,
 median duration, and total runner-minutes.
 
+**Main milestones.** Use **Next release** for committed work and **Backlog**
+for uncommitted work. After the cut, send findings relevant to the cut
+release to its Release agent for a scope decision. Deliver admitted fixes on
+`main` first and hand the merged revision back to the Release agent.
+
+**Release hand-off.** At the branch cut, start one Release agent for the
+release. Use its brief template to pass the version, branch and cut revision,
+planned scope and open blockers, and any explicit operator authority for
+that release. Record the agent and version milestone in the checkpoint and
+continue delivery on `main`. [Release agent brief](../../.claude/agents/katl-release.md#brief-template)
+
+## Release
+
+**Purpose.** Own one release from branch cut through publication and milestone
+closure. Start at the cut and work alongside the main-branch Orchestrator.
+
+**Brief.** Take the release version, branch and cut revision, planned scope
+and open blockers, and any explicit operator authority from the Orchestrator.
+
+**Model.** Use Claude Opus.
+
+**Report.** Tell the coordinator when a blocker resolves, a candidate is
+tagged or published, the final release or its security advisory is published,
+or a decision needs operator authority. Include the affected revision, the
+evidence, and the next action when a gate or a permission blocks progress.
+
+**Hand-off.** Take ownership at freeze, including the branch cut. Route
+admitted fixes through the Orchestrator on `main` first, then carry the merged
+fixes to the release branch. Keep the milestone and checkpoint current so the
+coordinator can recover the release and its owner.
+
+**Qualification and publication.** At the cut, use the CI cost check described
+under [Orchestrator](#orchestrator). Run the outstanding-journey query in
+AGENTS.md and confirm that no journey release blockers remain before cutting
+a candidate. Qualify the candidate from the release branch. Review the
+generated `RELEASE_NOTES.md` for the exact version before each tag that
+triggers publication. Tag the release candidate and verify its published
+run, then promote the passing candidate by tagging the final version at the
+same commit. Verify final publication and publish the security advisory when
+one applies. [Release procedure](releases.md)
+
+**Authority.** Obtain the operator's explicit authority for each release
+before tagging or triggering publication, including candidate and final
+publication and any security advisory. Confirm which actions the authority
+covers and ask the coordinator for any missing authority. Never infer it
+from a previous release, the hand-off, or a passing gate.
+
 ### Release milestones
 
-At each release branch cut, create a milestone named for the release
-(`vX.Y.Z`) and reserve it for work shipping from that branch. Move the release's
-open blockers and their fix PRs for both `main` and the release branch into it.
-Close the milestone when the final release is published.
+At the branch cut, the Release agent creates a milestone named for the
+release (`vX.Y.Z`) and decides its scope. Reserve it for work shipping from
+that branch and move the release's open blockers and their fix PRs for both
+`main` and the release branch into it. Close the milestone when the final
+release is published.
 
-After the cut, add a new finding only if it causes data loss, an unreachable
-node, a wrong-target operation, or a misleading security outcome in shipped
-code, or if it is a release artifact defect involving the release notes,
-candidate, or tag run. Put all other findings in **Next release**.
+The Release agent applies this rule to every new finding after the cut. Add
+it only if it causes data loss, an unreachable node, a wrong-target operation,
+or a misleading security outcome in shipped code, or if it is a release
+artifact defect involving the release notes, candidate, or tag run. Put all
+other findings in **Next release**. Include the admission rule in briefs for
+fixes going into the release.
 
 ## Delivery
 
