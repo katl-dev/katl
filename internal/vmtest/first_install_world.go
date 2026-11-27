@@ -798,11 +798,31 @@ func addExternalConfigContentLiterals(values map[string]bool, content string) {
 		return r == '\n' || r == '\r' || r == '\t' || r == ' ' || r == ',' || r == '[' || r == ']'
 	}) {
 		_, value, hasValue := strings.Cut(field, "=")
-		if !hasValue {
+		if !hasValue || configVocabularyWord(value) {
 			continue
 		}
 		addExternalConfigLiteral(values, value)
 	}
+}
+
+// configVocabularyWord reports whether a host-configuration value is a bare
+// word such as the networkd keyword "routable". Such words are shared
+// vocabulary that the base image also carries, so finding one in a generic
+// artifact says nothing about this node, and whether a raw scan sees it
+// depends on unrelated image layout. Node-identifying values (addresses,
+// prefixes, MACs, DNS names, keys, IDs and paths) all contain a digit, dot,
+// colon, slash or similar, so they are kept.
+func configVocabularyWord(value string) bool {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r == '-' || r == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func addExternalConfigLiteral(values map[string]bool, value string) {
