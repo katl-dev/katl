@@ -257,16 +257,10 @@ func moveRun(request func(*moveWorld) bootMoveRequest) func(*moveWorld, *bootMov
 	return func(w *moveWorld, m *bootMover) (bootMoveResult, error) { return m.move(request(w)) }
 }
 
-func failRequest(w *moveWorld) bootMoveRequest {
-	selection := resolvedTrial(w)
-	selection.PersistentDefaultPromotion = ""
-	selection.FailedBootGenerationID = "gen2"
-	return bootMoveRequest{
-		OperationID: "fail-apply-7", ExpectedRevision: 5, Source: "gen2", Destination: "gen1",
-		Selection: selection, Trial: trialFail,
-		StatusChanges: []bootStatusChange{{GenerationID: "gen2", Reason: "katl-boot-health-deadline-expired",
-			CommitState: "candidate", BootState: "failed", HealthState: "unhealthy"}},
-	}
+const trialDeadlineReason = "katl-boot-health-deadline-expired"
+
+func failMove(_ *moveWorld, m *bootMover) (bootMoveResult, error) {
+	return m.failTrial(trialDeadlineReason)
 }
 
 func promoteRequest(w *moveWorld) bootMoveRequest {
@@ -393,7 +387,7 @@ func moveOps() []moveOp {
 	}, {
 		name:    "fail with fallback",
 		setup:   armAndBootCandidate,
-		run:     moveRun(failRequest),
+		run:     failMove,
 		steps:   []bootMoveStep{stepIntentWritten, stepStatusWritten, stepReadBack, stepRebootSpent, stepPublished, stepResolved},
 		issuing: failed,
 		later:   map[string]moveOutcome{"gen1": failedLater, "gen2": failedLater},
@@ -406,14 +400,7 @@ func moveOps() []moveOp {
 				w.t.Fatal(err)
 			}
 		},
-		run: moveRun(func(w *moveWorld) bootMoveRequest {
-			request := failRequest(w)
-			request.Destination = ""
-			request.Selection.DefaultGenerationID, request.Selection.DefaultBootEntry = "gen2", "loader/entries/katl-gen2.conf"
-			request.Selection.PreviousKnownGoodGenerationID, request.Selection.PreviousKnownGoodBootEntry = "", ""
-			request.Selection.RecoveryRequired = true
-			return request
-		}),
+		run:     failMove,
 		steps:   []bootMoveStep{stepIntentWritten, stepStatusWritten, stepOneShotCleared, stepDefaultSet, stepReadBack, stepPublished, stepResolved},
 		issuing: recovery,
 		// The fallback cannot activate without its UKI, so a boot of it changes nothing.
@@ -537,6 +524,8 @@ func TestBootMoveSteps(t *testing.T) {
 				t.Fatalf("resolved = %t, want %t", result.Resolved, !op.issuing.authority)
 			}
 			assertMoveOutcome(t, w, op.issuing)
+			assertMoveInvariants(t, w)
+			assertReconcileUnchanged(t, w)
 		})
 	}
 }
@@ -657,6 +646,14 @@ func TestBootMoveEFIFaults(t *testing.T) {
 				if fault == "read" && after.intent != before.intent {
 					t.Fatalf("intent %q written without an EFI observation", after.intent)
 				}
+				if fault == "read" && (op.name == "fail with fallback" || op.name == "fail without fallback") {
+					generation := "gen1"
+					if op.name == "fail without fallback" {
+						generation = "gen2"
+					}
+					assertErrorContains(t, err, "before operation fail-apply-7 for generation "+generation,
+						"The boot target is unchanged", "Restore access to efivarfs and retry")
+				}
 
 				w.efi.fault, w.efi.written = "", false
 				result, err = op.run(w, w.mover(nil))
@@ -689,9 +686,10 @@ func TestBootMoveAdmission(t *testing.T) {
 		writeBootHealthSelection(t, w.root, selection)
 
 		_, err := w.mover(nil).reconcile()
-		if !errors.Is(err, ErrBootMoveBlocked) || !strings.Contains(err.Error(), "revision 9") {
+		if !errors.Is(err, ErrBootMoveBlocked) {
 			t.Fatalf("reconcile = %v", err)
 		}
+		assertErrorContains(t, err, "revision 9", "for generation gen1", "Boot state is unchanged", "preserve "+bootMovePath)
 		got := w.observe()
 		if got.selection.Revision != 9 || got.selection.Trial != "" || got.intent != "apply-7" {
 			t.Fatalf("conflicting selection replaced: %+v", got)
@@ -785,21 +783,30 @@ func TestBootMoveAdmission(t *testing.T) {
 		if _, err := w.mover(nil).move(armRequest(w)); err != nil {
 			t.Fatal(err)
 		}
-		request := failRequest(w)
-		assertMoveRefused(t, w, request, "needs a trial armed for running generation gen1")
+		assertUnboundFailure(t, w, "gen1")
 	})
 	t.Run("fail on first install", func(t *testing.T) {
 		w := newMoveWorld(t)
-		request := failRequest(w)
-		request.ExpectedRevision = 4
-		assertMoveRefused(t, w, request, "needs a trial armed")
+		selection := w.selection()
+		selection.PendingHealthValidation = true
+		selection.PersistentDefaultPromotion = DefaultPromotionPending
+		writeBootHealthSelection(t, w.root, selection)
+		assertUnboundFailure(t, w, "gen1")
+	})
+	t.Run("fail on ordinary boot", func(t *testing.T) {
+		assertUnboundFailure(t, newMoveWorld(t), "gen1")
+	})
+	t.Run("caller-built failure", func(t *testing.T) {
+		w := newMoveWorld(t)
+		assertMoveRefused(t, w, bootMoveRequest{Trial: trialFail}, "trial failures must use failTrial")
 	})
 	t.Run("unbootable target", func(t *testing.T) {
 		w := newMoveWorld(t)
 		if err := os.Remove(filepath.Join(w.root, "efi/EFI/Linux/katl-gen2.efi")); err != nil {
 			t.Fatal(err)
 		}
-		assertMoveRefused(t, w, armRequest(w), "cannot select generation gen2")
+		assertMoveRefused(t, w, armRequest(w), "cannot select generation gen2", "The boot target is unchanged",
+			"Restore the named artifact", "katlctl node generations list")
 	})
 }
 
@@ -835,16 +842,38 @@ func TestBootMoveImportsOnlyLegacyTrials(t *testing.T) {
 	}
 }
 
-func assertMoveRefused(t *testing.T, w *moveWorld, request bootMoveRequest, detail string) {
+func assertMoveRefused(t *testing.T, w *moveWorld, request bootMoveRequest, details ...string) {
+	t.Helper()
+	assertBootMoveRefused(t, w, func() (bootMoveResult, error) { return w.mover(nil).move(request) }, details...)
+}
+
+func assertUnboundFailure(t *testing.T, w *moveWorld, running string) {
+	t.Helper()
+	assertBootMoveRefused(t, w, func() (bootMoveResult, error) { return w.mover(nil).failTrial(trialDeadlineReason) },
+		"needs a trial armed for running generation "+running, "without changing the boot target", "katlctl node status")
+}
+
+func assertBootMoveRefused(t *testing.T, w *moveWorld, run func() (bootMoveResult, error), details ...string) {
 	t.Helper()
 	before := snapshotBootFiles(t, filepath.Join(w.root, "var"))
 	efi := w.efi.entries
-	result, err := w.mover(nil).move(request)
-	if err == nil || !strings.Contains(err.Error(), detail) || result != (bootMoveResult{}) {
-		t.Fatalf("move = %+v, %v; want refusal containing %q", result, err, detail)
+	w.efi.written = false
+	result, err := run()
+	if result != (bootMoveResult{}) {
+		t.Fatalf("refused move = %+v, %v", result, err)
 	}
-	if after := snapshotBootFiles(t, filepath.Join(w.root, "var")); !reflect.DeepEqual(before, after) || w.efi.entries != efi {
+	assertErrorContains(t, err, details...)
+	if after := snapshotBootFiles(t, filepath.Join(w.root, "var")); !reflect.DeepEqual(before, after) || w.efi.entries != efi || w.efi.written {
 		t.Fatal("refused move changed boot state")
+	}
+}
+
+func assertErrorContains(t *testing.T, err error, details ...string) {
+	t.Helper()
+	for _, detail := range details {
+		if err == nil || !strings.Contains(err.Error(), detail) {
+			t.Fatalf("error = %v, want %q", err, detail)
+		}
 	}
 }
 
@@ -859,6 +888,10 @@ func assertRefusedWithoutChange(t *testing.T, w *moveWorld, m *bootMover) {
 	result, err := m.reconcile()
 	if (intent != nil) != (err != nil) || result.RebootRequested {
 		t.Fatalf("reconcile on an unrecorded boot = %+v, %v with intent %v", result, err, intent != nil)
+	}
+	if err != nil {
+		assertErrorContains(t, err, "cannot reconcile boot for generation "+w.running,
+			"Boot state is unchanged", "boot a healthy generation from the boot menu")
 	}
 	if after := snapshotBootFiles(t, filepath.Join(w.root, "var")); !reflect.DeepEqual(before, after) || w.efi.entries != efi {
 		t.Fatal("reconciliation on an unrecorded boot changed boot state")
@@ -946,25 +979,337 @@ func TestBootMoveLegacyTrial(t *testing.T) {
 	}
 }
 
-func TestBootMoveUnconfirmedTrialWithoutFallback(t *testing.T) {
-	w := newMoveWorld(t)
+func armFromGen3(w *moveWorld) {
+	w.t.Helper()
 	// The arm runs on gen3, so a later boot of gen3 resolves the trial.
 	w.running = "gen3"
 	if _, err := w.mover(nil).move(armRequest(w)); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(filepath.Join(w.root, "efi/EFI/Linux/katl-gen1.efi")); err != nil {
-		t.Fatal(err)
+		w.t.Fatal(err)
 	}
 	w.reboot("b-2", "gen3")
+}
 
+func assertReconcileUnchanged(t *testing.T, w *moveWorld) {
+	t.Helper()
 	before := snapshotBootFiles(t, filepath.Join(w.root, "var"))
 	efi := w.efi.entries
-	_, err := w.mover(nil).reconcile()
-	if err == nil || !strings.Contains(err.Error(), "cannot select generation gen1") {
-		t.Fatalf("reconcile = %v; want refusal of the unbootable default", err)
+	w.efi.written = false
+	result, err := w.mover(nil).reconcile()
+	if err != nil || result.RebootRequested {
+		t.Fatalf("second reconciliation = %+v, %v", result, err)
 	}
-	if after := snapshotBootFiles(t, filepath.Join(w.root, "var")); !reflect.DeepEqual(before, after) || w.efi.entries != efi {
-		t.Fatal("refused resolution changed boot state")
+	if after := snapshotBootFiles(t, filepath.Join(w.root, "var")); !reflect.DeepEqual(before, after) || w.efi.entries != efi || w.efi.written {
+		t.Fatal("second reconciliation changed boot state")
 	}
+}
+
+func assertTrialResolution(t *testing.T, w *moveWorld, result bootMoveResult, want moveOutcome, defaultEntry, previousID, previousEntry string) {
+	t.Helper()
+	if !result.Resolved {
+		t.Fatal("trial resolution left an intent")
+	}
+	w.count(result)
+	assertMoveOutcome(t, w, want)
+	selection := w.selection()
+	if selection.DefaultBootEntry != defaultEntry ||
+		selection.PreviousKnownGoodGenerationID != previousID || selection.PreviousKnownGoodBootEntry != previousEntry {
+		t.Fatalf("default entry %q, previous known-good %q entry %q, want %q, %q and %q",
+			selection.DefaultBootEntry, selection.PreviousKnownGoodGenerationID, selection.PreviousKnownGoodBootEntry,
+			defaultEntry, previousID, previousEntry)
+	}
+	if selection.OneShot || selection.BootedOneShot || selection.PendingTransactionID != "" ||
+		selection.PersistentDefaultPromotion != "" || selection.BootCountedTrialPath != "" ||
+		selection.TargetBootEntry != "" || selection.TrialBootEntry != "" {
+		t.Fatalf("trial metadata remains in %+v", selection)
+	}
+	assertMoveInvariants(t, w)
+	assertReconcileUnchanged(t, w)
+}
+
+func TestBootMoveFailTrialFallbackArtifacts(t *testing.T) {
+	w := newMoveWorld(t)
+	armAndBootCandidate(w)
+	removeBootFixture(t, filepath.Join(w.root, "var/lib/katl/generations/gen1/sysext/kubernetes.raw"))
+
+	result, err := w.mover(nil).failTrial(trialDeadlineReason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := moveOutcome{
+		selection: selectionView{Revision: 6, Default: "gen2", Failed: "gen2", RecoveryRequired: true},
+		efi:       efiboot.Entries{Default: "katl-gen2.conf"},
+		statuses:  map[string]statusView{"gen1": gen1Good, "gen2": gen2FailedTrue, "gen3": gen3Good},
+	}
+	assertTrialResolution(t, w, result, want, "loader/entries/katl-gen2.conf", "", "")
+}
+
+func TestBootMoveFailTrialUsesDefault(t *testing.T) {
+	w := newMoveWorld(t)
+	request := armRequest(w)
+	request.Selection.PreviousKnownGoodGenerationID = "gen3"
+	request.Selection.PreviousKnownGoodBootEntry = "loader/entries/katl-gen3.conf"
+	if _, err := w.mover(nil).move(request); err != nil {
+		t.Fatal(err)
+	}
+	removeBootFixture(t, filepath.Join(w.root, "efi/EFI/Linux/katl-gen3.efi"))
+	w.reboot("b-2", "gen2")
+
+	result, err := w.mover(nil).failTrial(trialDeadlineReason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := moveOutcome{
+		selection: selectionView{Revision: 6, Default: "gen1", Failed: "gen2", Spent: "apply-7"},
+		efi:       efiboot.Entries{Default: "katl-gen1.conf"},
+		statuses:  map[string]statusView{"gen1": gen1Good, "gen2": gen2FailedTrue, "gen3": gen3Good},
+		reboots:   1,
+	}
+	assertTrialResolution(t, w, result, want, "loader/entries/katl-gen1.conf", "gen1", "loader/entries/katl-gen1.conf")
+}
+
+func TestBootMoveFailTrialRepeat(t *testing.T) {
+	for _, op := range moveOps() {
+		if op.name != "fail with fallback" && op.name != "fail without fallback" {
+			continue
+		}
+		t.Run(op.name, func(t *testing.T) {
+			w := newMoveWorld(t)
+			op.setup(w)
+
+			result, err := w.mover(nil).failTrial(trialDeadlineReason)
+			if err != nil || !result.Resolved {
+				t.Fatalf("failTrial = %+v, %v", result, err)
+			}
+			w.count(result)
+			assertMoveOutcome(t, w, op.issuing)
+			assertMoveInvariants(t, w)
+			assertReconcileUnchanged(t, w)
+
+			before := snapshotBootFiles(t, filepath.Join(w.root, "var"))
+			efi := w.efi.entries
+			w.efi.written = false
+			result, err = w.mover(nil).failTrial("a second health failure")
+			if err != nil || result != (bootMoveResult{Resolved: true}) {
+				t.Fatalf("repeated failure = %+v, %v", result, err)
+			}
+			if after := snapshotBootFiles(t, filepath.Join(w.root, "var")); !reflect.DeepEqual(before, after) || w.efi.entries != efi || w.efi.written {
+				t.Fatal("repeated failure changed boot state")
+			}
+		})
+	}
+}
+
+func TestBootMoveTrialVerificationRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		name, generation string
+		confirmed        bool
+	}{
+		{name: "confirmed fallback", generation: "gen1", confirmed: true},
+		{name: "unconfirmed fallback", generation: "gen1"},
+		{name: "unconfirmed running", generation: "gen3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newMoveWorld(t)
+			if tc.confirmed {
+				armAndBootCandidate(w)
+			} else {
+				armFromGen3(w)
+			}
+			fallbackUKI := filepath.Join(w.root, "efi/EFI/Linux/katl-gen1.efi")
+			removeBootFixture(t, fallbackUKI)
+			path := fallbackUKI
+			if tc.generation == "gen3" {
+				// Activation checks partition identity without opening its
+				// device. The full check must surface the inaccessible image.
+				path = bootDevicePath(w.root, "root-a")
+				removeBootFixture(t, path)
+			}
+			linkBootFixture(t, path, path)
+			// Resolving a published arm must leave even a drifted EFI
+			// projection alone until it can verify the new target.
+			w.efi.entries.Default = "katl-unrelated.conf"
+
+			owner := w.mover(nil)
+			run := owner.reconcile
+			if tc.confirmed {
+				run = func() (bootMoveResult, error) { return owner.failTrial(trialDeadlineReason) }
+			}
+			assertBootMoveRefused(t, w, run, "could not verify generation "+tc.generation,
+				"bootability indeterminate", path, "The trial stays pending and the boot target is unchanged",
+				"Restore read access", "Rebooting retries reconciliation",
+				"preserve the journal, then boot a healthy generation from the boot menu, or reinstall the node")
+			intent, err := readBootMoveIntent(w.root)
+			if err != nil || intent == nil || intent.OperationID != "apply-7" {
+				t.Fatalf("refused resolution lost its authority: %+v, %v", intent, err)
+			}
+		})
+	}
+}
+
+var unconfirmedOnGen3 = moveOutcome{
+	selection: selectionView{Revision: 6, Default: "gen3", Failed: "gen2", Spent: "apply-7"},
+	efi:       efiboot.Entries{Default: "katl-gen3.conf"},
+	statuses:  map[string]statusView{"gen1": gen1Good, "gen2": gen2Unconfirmed, "gen3": gen3Good},
+}
+
+func TestBootMoveUnconfirmedTrial(t *testing.T) {
+	for _, tc := range []struct {
+		name, defaultEntry, previousID, previousEntry string
+		modify                                        func(*moveWorld)
+		want                                          moveOutcome
+	}{
+		{
+			name: "running known-good", defaultEntry: "loader/entries/katl-gen3.conf",
+			previousID: "gen3", previousEntry: "loader/entries/katl-gen3.conf",
+			modify: func(w *moveWorld) {
+				removeBootFixture(w.t, filepath.Join(w.root, "efi/EFI/Linux/katl-gen1.efi"))
+			},
+			want: unconfirmedOnGen3,
+		},
+		{
+			name: "running not known-good", defaultEntry: "loader/entries/katl-gen3.conf",
+			modify: func(w *moveWorld) {
+				removeBootFixture(w.t, filepath.Join(w.root, "efi/EFI/Linux/katl-gen1.efi"))
+				spec, status, err := ReadGeneration(w.root, "gen3")
+				if err != nil {
+					w.t.Fatal(err)
+				}
+				status.BootState, status.HealthState = BootStateFailed, HealthStateUnhealthy
+				if err := WriteGenerationStatus(w.root, spec, status); err != nil {
+					w.t.Fatal(err)
+				}
+			},
+			want: moveOutcome{
+				selection: selectionView{Revision: 6, Default: "gen3", Failed: "gen2", Spent: "apply-7", RecoveryRequired: true},
+				efi:       efiboot.Entries{Default: "katl-gen3.conf"},
+				statuses: map[string]statusView{"gen1": gen1Good, "gen2": gen2Unconfirmed,
+					"gen3": {Commit: "committed", Boot: "failed", Health: "unhealthy"}},
+			},
+		},
+		{
+			name: "running missing extension", defaultEntry: "loader/entries/katl-gen3.conf",
+			modify: func(w *moveWorld) {
+				removeBootFixture(w.t, filepath.Join(w.root, "efi/EFI/Linux/katl-gen1.efi"))
+				// The running generation can activate without this extension
+				// check, but it cannot qualify as a bootable fallback.
+				removeBootFixture(w.t, filepath.Join(w.root, "var/lib/katl/generations/gen3/sysext/kubernetes.raw"))
+			},
+			want: moveOutcome{
+				selection: selectionView{Revision: 6, Default: "gen3", Failed: "gen2", Spent: "apply-7", RecoveryRequired: true},
+				efi:       efiboot.Entries{Default: "katl-gen3.conf"},
+				statuses:  map[string]statusView{"gen1": gen1Good, "gen2": gen2Unconfirmed, "gen3": gen3Good},
+			},
+		},
+		{
+			name: "recorded fallback usable", defaultEntry: "loader/entries/katl-gen1.conf",
+			previousID: "gen1", previousEntry: "loader/entries/katl-gen1.conf",
+			modify: func(*moveWorld) {},
+			want: moveOutcome{
+				selection: selectionView{Revision: 6, Default: "gen1", Failed: "gen2", Spent: "apply-7"},
+				efi:       efiboot.Entries{Default: "katl-gen1.conf"},
+				statuses:  map[string]statusView{"gen1": gen1Good, "gen2": gen2Unconfirmed, "gen3": gen3Good},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newMoveWorld(t)
+			armFromGen3(w)
+			tc.modify(w)
+
+			result, err := w.mover(nil).reconcile()
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertTrialResolution(t, w, result, tc.want, tc.defaultEntry, tc.previousID, tc.previousEntry)
+
+			if tc.name == "running known-good" {
+				request := bootMoveRequest{OperationID: "next-ordinary-move", ExpectedRevision: 6,
+					Source: "gen3", Destination: "gen3", Selection: w.selection()}
+				result, err := w.mover(nil).move(request)
+				if err != nil || result != (bootMoveResult{Resolved: true}) || w.selection().Revision != 7 {
+					t.Fatalf("ordinary move after resolution = %+v, %v; revision %d", result, err, w.selection().Revision)
+				}
+			}
+		})
+	}
+}
+
+func TestBootMoveUnconfirmedTrialFaults(t *testing.T) {
+	steps := []bootMoveStep{stepIntentWritten, stepStatusWritten, stepOneShotCleared, stepDefaultSet, stepReadBack, stepPublished, stepResolved}
+	for i, step := range steps {
+		for _, reboot := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/reboot=%t", step, reboot), func(t *testing.T) {
+				w := newMoveWorld(t)
+				armFromGen3(w)
+				removeBootFixture(t, filepath.Join(w.root, "efi/EFI/Linux/katl-gen1.efi"))
+
+				var seen []bootMoveStep
+				result, err := w.mover(crashAt(i+1, &seen)).reconcile()
+				if !errors.Is(err, errCrash) || result.RebootRequested || !slices.Equal(seen, steps[:i+1]) {
+					t.Fatalf("reconciliation at %s = %+v, %v, steps %v", step, result, err, seen)
+				}
+				if reboot {
+					w.reboot("b-3", "gen3")
+				}
+
+				result, err = w.mover(nil).reconcile()
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertTrialResolution(t, w, result, unconfirmedOnGen3, "loader/entries/katl-gen3.conf", "gen3", "loader/entries/katl-gen3.conf")
+			})
+		}
+	}
+}
+
+func TestBootMoveUnconfirmedEFIObservation(t *testing.T) {
+	w := newMoveWorld(t)
+	armFromGen3(w)
+	w.efi.fault = "read"
+
+	assertBootMoveRefused(t, w, w.mover(nil).reconcile,
+		"before resolving trial apply-7 for generation gen2", "The boot target is unchanged", "Restore access to efivarfs and retry")
+}
+
+func TestBootMoveLegacyEFIObservation(t *testing.T) {
+	w := newMoveWorld(t)
+	for _, op := range moveOps() {
+		if op.name == "migration" {
+			op.setup(w)
+		}
+	}
+	w.efi.fault = "read"
+
+	assertBootMoveRefused(t, w, w.mover(nil).reconcile,
+		"before importing legacy trial legacy-apply for generation gen2", "The boot target is unchanged", "Restore access to efivarfs and retry")
+}
+
+func TestBootMoveReadRefusals(t *testing.T) {
+	t.Run("boot identity", func(t *testing.T) {
+		w := newMoveWorld(t)
+		assertBootMoveRefused(t, w, func() (bootMoveResult, error) {
+			return w.moverWithCommandLine("ro", nil).failTrial(trialDeadlineReason)
+		}, "cannot identify the running generation", "Boot state is unchanged", "boot a healthy generation from the boot menu")
+	})
+	t.Run("intent", func(t *testing.T) {
+		w := newMoveWorld(t)
+		armFromGen3(w)
+		writeBootFixture(t, rootedPathUnchecked(w.root, bootMovePath), []byte("{"))
+		assertBootMoveRefused(t, w, w.mover(nil).reconcile, "boot state is unchanged for generation gen3",
+			"restore access to intact boot state or boot a runtime that supports this intent before retrying")
+	})
+	t.Run("selection", func(t *testing.T) {
+		w := newMoveWorld(t)
+		armFromGen3(w)
+		writeBootFixture(t, rootedPathUnchecked(w.root, bootStateDir+"/selection.json"), []byte("{"))
+		assertBootMoveRefused(t, w, w.mover(nil).reconcile, "cannot read boot selection for generation gen3",
+			"Boot state is unchanged", "Restore access to intact boot state and retry")
+	})
+	t.Run("generation record", func(t *testing.T) {
+		w := newMoveWorld(t)
+		request := invalidateRequest(w)
+		writeBootFixture(t, filepath.Join(w.root, "var/lib/katl/generations/gen3/status.json"), []byte("{"))
+		assertMoveRefused(t, w, request, "cannot read generation gen3",
+			"Boot state is unchanged", "Restore access to the generation record and retry")
+	})
 }

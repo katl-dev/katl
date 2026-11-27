@@ -85,25 +85,38 @@ func checkTrialFallback(root string, selection BootSelectionRecord, level bootab
 }
 
 func checkRecoveryFallback(root string, selection BootSelectionRecord, generationID string, level bootabilityLevel) bootability {
-	spec, status, err := ReadGeneration(root, generationID)
-	if errors.Is(err, os.ErrNotExist) {
-		return bootability{state: bootUnavailable, evidence: "fallback generation record is missing"}
-	}
-	if err != nil {
-		return bootability{state: bootIndeterminate, err: fmt.Errorf("read fallback generation %s health: %w", generationID, err)}
-	}
-	if !IsKnownGood(status) {
-		return bootability{state: bootUnavailable, evidence: "fallback generation is not known-good"}
-	}
+	check := bootabilityCheck{root: root}
+	entry := recoveryFallbackEntry(selection, generationID)
+	_, verdict := check.knownGoodFallback(generationID, &entry, level)
+	return verdict
+}
+
+func recoveryFallbackEntry(selection BootSelectionRecord, generationID string) string {
 	entry := strings.TrimSpace(selection.PreviousKnownGoodBootEntry)
 	if entry == "" && strings.TrimSpace(selection.DefaultGenerationID) == generationID {
 		entry = strings.TrimSpace(selection.DefaultBootEntry)
 	}
-	if entry == "" || entry != strings.TrimSpace(spec.Boot.LoaderEntryPath) {
-		return bootability{state: bootUnavailable, evidence: "fallback loader entry does not match the generation"}
+	return entry
+}
+
+// knownGoodFallback checks a candidate's own loader entry unless the selection
+// recorded a fallback entry for it, in which case the binding must match.
+func (check *bootabilityCheck) knownGoodFallback(generationID string, recordedEntry *string, level bootabilityLevel) (string, bootability) {
+	spec, status, err := ReadGeneration(check.root, generationID)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", bootability{state: bootUnavailable, evidence: "fallback generation record is missing"}
 	}
-	check := bootabilityCheck{root: root}
-	return check.check(spec, status, level)
+	if err != nil {
+		return "", bootability{state: bootIndeterminate, err: fmt.Errorf("read fallback generation %s health: %w", generationID, err)}
+	}
+	entry := spec.Boot.LoaderEntryPath
+	if !IsKnownGood(status) {
+		return entry, bootability{state: bootUnavailable, evidence: "fallback generation is not known-good"}
+	}
+	if recordedEntry != nil && (*recordedEntry == "" || *recordedEntry != strings.TrimSpace(entry)) {
+		return entry, bootability{state: bootUnavailable, evidence: "fallback loader entry does not match the generation"}
+	}
+	return entry, check.check(spec, status, level)
 }
 
 // ClearBootRecovery removes the current boot's ephemeral reboot authorization.
