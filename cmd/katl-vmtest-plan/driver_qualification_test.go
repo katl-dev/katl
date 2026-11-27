@@ -532,7 +532,7 @@ func newDriverRepo(t *testing.T) string {
 		key, value, _ := strings.Cut(entry, "=")
 		t.Setenv(key, value)
 	}
-	driverGit(t, "init", "-q", "-b", "main")
+	driverGit(t, "init", "-q", "-b", "main", "--object-format=sha1")
 	driverGit(t, "config", "core.fileMode", "true")
 
 	writeDriverInput(t, "scripts/fedora-release", string(releaseScript), 0o755)
