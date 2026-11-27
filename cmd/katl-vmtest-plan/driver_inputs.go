@@ -51,6 +51,7 @@ var driverInputs = []string{
 	"scripts/fedora-release",
 	"scripts/mkosi",
 	"scripts/mkosi-builder",
+	"scripts/retry",
 	"scripts/build-katlos-install-image",
 	".github/actions/mkosi-builder/**",
 	"mkosi.conf",

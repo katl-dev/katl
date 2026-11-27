@@ -230,6 +230,7 @@ func TestCIPlan(t *testing.T) {
 		{name: "release and image builder", paths: ".github/workflows/release-artifacts.yml\x00scripts/mkosi", vms: both},
 		{name: "builder pin", paths: "mkosi-builder.lock", vms: both},
 		{name: "builder owner", paths: "scripts/mkosi-builder", vms: both},
+		{name: "shell retry owner", paths: "scripts/retry", vms: both},
 		{name: "release and standard lock", paths: ".github/workflows/release-artifacts.yml\x00kernels/fedora-44/x86_64/standard.json", vms: both},
 		{name: "production and scenario", paths: ".github/workflows/production-vmtests.yml\x00internal/vmtest/release_lifecycle_test.go", vms: both},
 		{name: "production and shared VM action", paths: ".github/workflows/production-vmtests.yml\x00.github/actions/hosted-vmtest/action.yml", vms: both},

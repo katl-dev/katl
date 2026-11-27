@@ -121,8 +121,63 @@ func TestNoBuilderLayerCache(t *testing.T) {
 	}
 }
 
+var (
+	builderPublish = regexp.MustCompile(`mkosi-builder["']?\s+publish\b`)
+	imagePush      = regexp.MustCompile(`\b(docker|podman) push\b|--push\b|imagetools create\b|\boras push\b|\bskopeo copy\b|\bcrane (push|copy|tag)\b|push: true`)
+)
+
+// logicalLines returns a script's or workflow's lines with comments dropped
+// and backslash continuations joined, each with the number of its first line.
+func logicalLines(data string) (lines []string, numbers []int) {
+	var pending strings.Builder
+	start := 0
+	for i, line := range strings.Split(data, "\n") {
+		if pending.Len() == 0 {
+			if strings.HasPrefix(strings.TrimSpace(line), "#") {
+				continue
+			}
+			start = i + 1
+		}
+		if continued, ok := strings.CutSuffix(strings.TrimRight(line, " \t"), `\`); ok {
+			pending.WriteString(continued + " ")
+			continue
+		}
+		pending.WriteString(line)
+		lines, numbers = append(lines, pending.String()), append(numbers, start)
+		pending.Reset()
+	}
+	return lines, numbers
+}
+
+func TestLogicalLines(t *testing.T) {
+	lines, numbers := logicalLines("a \\\n  b\n# scripts/mkosi-builder publish push\n  # indented comment\nc\n")
+	if strings.Join(lines, "|") != "a    b|c|" || fmt.Sprint(numbers) != "[1 5 6]" {
+		t.Fatalf("lines = %q at %v", lines, numbers)
+	}
+}
+
+// grantsPackageWrite reports whether a permissions block lets a job write
+// packages.
+func grantsPackageWrite(t *testing.T, permissions yaml.Node) bool {
+	t.Helper()
+	if permissions.Kind == yaml.ScalarNode {
+		return permissions.Value == "write-all"
+	}
+	var scopes map[string]string
+	if err := permissions.Decode(&scopes); err != nil {
+		t.Fatal(err)
+	}
+	return scopes["packages"] == "write"
+}
+
 // Builder Image is the only workflow that publishes this package. It runs only
-// for main and never lets a pull request reach packages: write.
+// for main, only its publish job can write packages, and that job publishes
+// only through the owner. Reading or pulling the package is unrestricted.
+// Wrong behaviour this catches: a pull request or merge group reaching
+// packages: write, a second Builder Image job that can write packages, a
+// direct push beside the owner, and any other workflow, action or script that
+// publishes the builder, including through a quoted, continued or
+// variable-separated owner invocation.
 func TestBuilderPublication(t *testing.T) {
 	workflow, _ := readWorkflow(t, "mkosi-builder.yml")
 	var on map[string]yaml.Node
@@ -135,58 +190,63 @@ func TestBuilderPublication(t *testing.T) {
 	if _, ok := on["merge_group"]; ok {
 		t.Fatal("Builder Image must not run for merge groups")
 	}
-	publish := workflow.Jobs["publish"]
-	if publish.If != mainRef {
-		t.Fatalf("publish job condition = %q, want %q", publish.If, mainRef)
-	}
-	var permissions map[string]string
-	if err := publish.Permissions.Decode(&permissions); err != nil || permissions["packages"] != "write" {
-		t.Fatalf("publish permissions = %v (%v)", permissions, err)
-	}
 	if workflow.Permissions["packages"] != "" {
 		t.Fatal("only the publish job may write packages")
 	}
+	for name, job := range workflow.Jobs {
+		writes := grantsPackageWrite(t, job.Permissions)
+		if name == "publish" {
+			if !writes || job.If != mainRef {
+				t.Fatalf("publish job writes packages %t under condition %q, want true under %q", writes, job.If, mainRef)
+			}
+		} else if writes {
+			t.Errorf("Builder Image job %s grants packages: write; only publish may", name)
+		}
+	}
 
-	// No other workflow or action can push the package. A push is any line
-	// that publishes an image; it must not target the owner's repository, and
-	// nothing else may ask the owner to publish or name its repository, which
-	// is how a push through a variable would start.
 	output, err := exec.Command(filepath.Join(repoRoot(t), "scripts", "mkosi-builder"), "repository").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
 	repository := strings.TrimSpace(string(output))
-	pushes := regexp.MustCompile(`\b(docker|podman) push\b|--push\b|imagetools create\b|\boras push\b|\bskopeo copy\b|\bcrane (push|copy|tag)\b|push: true`)
+	const builderWorkflow, owner = ".github/workflows/mkosi-builder.yml", "scripts/mkosi-builder"
 	publishes := 0
-	err = fs.WalkDir(os.DirFS(repoRoot(t)), ".github", func(name string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() || (path.Ext(name) != ".yml" && path.Ext(name) != ".yaml") {
-			return err
-		}
-		for i, line := range strings.Split(string(mustReadFile(t, filepath.Join(repoRoot(t), name))), "\n") {
-			where := fmt.Sprintf("%s:%d", name, i+1)
-			if strings.Contains(line, "scripts/mkosi-builder publish") {
-				if name != ".github/workflows/mkosi-builder.yml" {
-					t.Errorf("%s publishes the builder outside Builder Image", where)
-				}
-				publishes++
+	scanned := map[string]bool{}
+	for _, dir := range []string{".github", "scripts"} {
+		err := fs.WalkDir(os.DirFS(repoRoot(t)), dir, func(name string, entry fs.DirEntry, err error) error {
+			if err != nil || entry.IsDir() || name == owner || path.Ext(name) == ".md" {
+				return err
 			}
-			if name == ".github/workflows/mkosi-builder.yml" {
-				if pushes.MatchString(line) {
+			if strings.HasPrefix(name, ".github/") && path.Ext(name) != ".yml" && path.Ext(name) != ".yaml" && !strings.HasPrefix(name, ".github/scripts/") {
+				return nil
+			}
+			scanned[name] = true
+			lines, numbers := logicalLines(string(mustReadFile(t, filepath.Join(repoRoot(t), name))))
+			for i, line := range lines {
+				where := fmt.Sprintf("%s:%d", name, numbers[i])
+				if builderPublish.MatchString(line) {
+					if name != builderWorkflow {
+						t.Errorf("%s publishes the builder outside Builder Image", where)
+					}
+					publishes++
+				}
+				if !imagePush.MatchString(line) {
+					continue
+				}
+				if name == builderWorkflow {
 					t.Errorf("%s pushes directly; Builder Image publishes only through scripts/mkosi-builder publish", where)
+				} else if strings.Contains(line, "mkosi-builder") || strings.Contains(line, repository) {
+					t.Errorf("%s pushes a builder image", where)
 				}
-				continue
 			}
-			if strings.Contains(line, repository) || strings.Contains(line, "scripts/mkosi-builder repository") {
-				t.Errorf("%s names the builder package; only Builder Image publishes it", where)
-			}
-			if pushes.MatchString(line) && strings.Contains(line, "mkosi-builder") {
-				t.Errorf("%s pushes a builder image", where)
-			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
 		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
+	}
+	if !scanned[".github/scripts/hosted-download"] || !scanned["scripts/mkosi"] {
+		t.Fatal("the scan missed .github/scripts or scripts")
 	}
 	if publishes != 1 {
 		t.Fatalf("Builder Image publishes %d times, want once", publishes)

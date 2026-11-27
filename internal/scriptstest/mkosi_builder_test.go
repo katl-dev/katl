@@ -1,6 +1,7 @@
 package scriptstest
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -22,7 +23,7 @@ const (
 func builderFixture(t *testing.T, release, containerfile string) string {
 	t.Helper()
 	repo, fixture := repoRoot(t), t.TempDir()
-	for name, mode := range map[string]os.FileMode{"scripts/mkosi-builder": 0o755, "scripts/fedora-release": 0o755, "containers-policy.json": 0o644} {
+	for name, mode := range map[string]os.FileMode{"scripts/mkosi-builder": 0o755, "scripts/retry": 0o755, "scripts/fedora-release": 0o755, "containers-policy.json": 0o644} {
 		path := filepath.Join(fixture, name)
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatal(err)
@@ -159,18 +160,28 @@ case "$1" in
     ;;
   tag) cp "$KATL_FAKE_STORE/$(key "$2")" "$KATL_FAKE_STORE/$(key "$3")" ;;
   run) printf 'mkosi 26\n' ;;
-  buildx)
-    ref="$4"
-    [[ -z "${KATL_FAKE_REGISTRY_ERROR:-}" ]] || { echo "ERROR: unexpected status: 502 Bad Gateway" >&2; exit 1; }
-    [[ -f "$KATL_FAKE_REMOTE/$(key "$ref")" ]] || { echo "ERROR: $ref: not found" >&2; exit 1; }
-    printf '{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"%s","size":1}' "$(cat "$KATL_FAKE_REMOTE/$(key "$ref")")"
-    ;;
   push)
     [[ -f "$KATL_FAKE_STORE/$(key "$name")" ]] || exit 1
-    printf 'sha256:%s' "$(sha256sum "$KATL_FAKE_STORE/$(key "$name")" | cut -c1-64)" > "$KATL_FAKE_REMOTE/$(key "$name")"
+    printf '{"manifest":"%s"}' "$(cat "$KATL_FAKE_STORE/$(key "$name")")" > "$KATL_FAKE_REMOTE/$(key "$name")"
     ;;
   *) exit 2 ;;
 esac
+`
+
+// fakeSkopeo serves the remote store and answers a missing reference as GHCR
+// does through skopeo. KATL_FAKE_MISSING overrides the error code a missing
+// reference gets, and KATL_FAKE_REGISTRY_ERROR replaces every answer with that
+// line, as for an outage or a denied token.
+const fakeSkopeo = `key() { printf '%s' "$1" | sha256sum | cut -c1-32; }
+printf 'skopeo %s\n' "$*" >> "$KATL_FAKE_CALLS"
+[[ "$1 $2" == "inspect --raw" ]] || exit 2
+ref="${3#docker://}"
+[[ -z "${KATL_FAKE_REGISTRY_ERROR:-}" ]] || { echo "Error: $KATL_FAKE_REGISTRY_ERROR" >&2; exit 1; }
+if [[ ! -f "$KATL_FAKE_REMOTE/$(key "$ref")" ]]; then
+  printf 'Error: parsing image name "%s": reading manifest %s in %s: %s\n' "$3" "${ref##*:}" "${ref%:*}" "${KATL_FAKE_MISSING:-manifest unknown}" >&2
+  exit 1
+fi
+cat "$KATL_FAKE_REMOTE/$(key "$ref")"
 `
 
 type fakeContainers struct {
@@ -187,6 +198,7 @@ func newFakeContainers(t *testing.T, runtime string) fakeContainers {
 		}
 	}
 	writeFakeExecutable(t, f.bin, runtime, fakeRuntime)
+	writeFakeExecutable(t, f.bin, "skopeo", fakeSkopeo)
 	return f
 }
 
@@ -376,13 +388,14 @@ func TestBuilderPrepareInCI(t *testing.T) {
 	const containerfile = "FROM scratch\n"
 	pinned := builderRepository + "@" + builderDigest
 	for _, tc := range []struct {
-		name, failures string
-		exit           int
-		pulls          int
-		alias          string
+		name, failures, attempts string
+		exit                     int
+		pulls                    int
+		alias                    string
 	}{
 		{name: "recovers", failures: "2", pulls: 3, alias: "pulled " + pinned},
 		{name: "keeps failing", failures: "99", exit: 1, pulls: 3, alias: "old image"},
+		{name: "malformed attempts override", attempts: "three", exit: 1, alias: "old image"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := builderFixture(t, "99", containerfile)
@@ -393,7 +406,7 @@ func TestBuilderPrepareInCI(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			record, exit := runBuilder(t, fixture, containers.env("GITHUB_ACTIONS=true", "KATL_FAKE_PULL_FAILURES="+tc.failures, "KATL_MKOSI_BUILDER_PULL_BACKOFF_SECONDS=0"), "prepare", "docker", alias)
+			record, exit := runBuilder(t, fixture, containers.env("GITHUB_ACTIONS=true", "KATL_FAKE_PULL_FAILURES="+tc.failures, "KATL_MKOSI_BUILDER_PULL_BACKOFF_SECONDS=0", "KATL_MKOSI_BUILDER_PULL_ATTEMPTS="+cmp.Or(tc.attempts, "3")), "prepare", "docker", alias)
 			if (exit == 0) != (tc.exit == 0) {
 				t.Fatalf("prepare exit %d, want %d: %s", exit, tc.exit, record)
 			}
@@ -414,47 +427,50 @@ func TestBuilderPrepareInCI(t *testing.T) {
 }
 
 // publish never overwrites a tag: a push reuses the content tag it finds, and
-// a refresh takes the first free dated tag. Wrong implementations this
-// separates: rebuilding a push over an existing content tag, moving the
-// content tag on refresh, overwriting the day's dated tag, and treating a
-// registry error as a missing tag.
+// a refresh takes the first free dated tag. Only the registry's
+// manifest-unknown and name-unknown codes mean a tag is missing. Wrong
+// implementations this separates: rebuilding a push over an existing content
+// tag, moving the content tag on refresh, overwriting the day's dated tag,
+// recording a digest other than the manifest's, and treating any other
+// registry error, even one that says "not found", as a missing tag.
 func TestBuilderPublish(t *testing.T) {
 	const containerfile = "FROM scratch\n"
 	content := builderRepository + ":" + contentTag("99", containerfile)
 	dated := content + "-20261127"
 	for _, tc := range []struct {
-		name, event  string
-		existing     []string
-		registryDown bool
-		target       string
-		published    bool
+		name, event   string
+		existing      []string
+		missing       string
+		registryError string
+		target        string
+		published     bool
 	}{
 		{name: "first push", event: "push", target: content, published: true},
+		{name: "first push to a new package", event: "push", missing: "name unknown", target: content, published: true},
 		{name: "push rerun", event: "push", existing: []string{content}, target: content},
 		{name: "refresh without content tag", event: "refresh", target: content, published: true},
 		{name: "refresh", event: "refresh", existing: []string{content}, target: dated, published: true},
 		{name: "second refresh", event: "refresh", existing: []string{content, dated}, target: dated + "-2", published: true},
 		{name: "third refresh", event: "refresh", existing: []string{content, dated, dated + "-2"}, target: dated + "-3", published: true},
-		{name: "registry error", event: "push", registryDown: true},
+		{name: "registry outage", event: "push", registryError: "reading manifest x in y: received unexpected HTTP status: 502 Bad Gateway"},
+		{name: "denied token", event: "push", registryError: "fetching manifest x in y: Requesting bearer token: received unexpected HTTP status: 403 Forbidden"},
+		{name: "404 without a registry code", event: "refresh", registryError: "reading manifest x in y: received unexpected HTTP status: 404 Not Found"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := builderFixture(t, "99", containerfile)
 			containers := newFakeContainers(t, "docker")
 			before := map[string]string{}
 			for i, ref := range tc.existing {
-				digest := fmt.Sprintf("sha256:%064d", i+1)
-				before[ref] = digest
-				if err := os.WriteFile(filepath.Join(containers.remote, keyFor(ref)), []byte(digest), 0o644); err != nil {
+				manifest := fmt.Sprintf(`{"manifest":"existing %d"}`, i)
+				before[ref] = manifest
+				if err := os.WriteFile(filepath.Join(containers.remote, keyFor(ref)), []byte(manifest), 0o644); err != nil {
 					t.Fatal(err)
 				}
 			}
-			env := containers.env("KATL_MKOSI_BUILDER_DATE=20261127")
-			if tc.registryDown {
-				env = append(env, "KATL_FAKE_REGISTRY_ERROR=1")
-			}
+			env := containers.env("KATL_MKOSI_BUILDER_DATE=20261127", "KATL_FAKE_MISSING="+tc.missing, "KATL_FAKE_REGISTRY_ERROR="+tc.registryError)
 
 			record, exit := runBuilder(t, fixture, env, "publish", tc.event)
-			if tc.registryDown {
+			if tc.registryError != "" {
 				if exit == 0 || len(containers.callsStartingWith(t, "build"))+len(containers.callsStartingWith(t, "push")) != 0 {
 					t.Fatalf("registry error published anyway: exit %d", exit)
 				}
@@ -469,15 +485,16 @@ func TestBuilderPublish(t *testing.T) {
 			if got := recordValue(record, "published"); got != fmt.Sprint(tc.published) {
 				t.Fatalf("published = %q, want %t", got, tc.published)
 			}
-			remote, err := os.ReadFile(filepath.Join(containers.remote, keyFor(tc.target)))
+			manifest, err := os.ReadFile(filepath.Join(containers.remote, keyFor(tc.target)))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got := recordValue(record, "digest"); got != string(remote) {
-				t.Fatalf("digest = %q, registry has %q", got, remote)
+			sum := sha256.Sum256(manifest)
+			if got, want := recordValue(record, "digest"), "sha256:"+hex.EncodeToString(sum[:]); got != want {
+				t.Fatalf("digest = %q, registry manifest has %q", got, want)
 			}
-			for ref, digest := range before {
-				if got := string(mustReadFile(t, filepath.Join(containers.remote, keyFor(ref)))); got != digest {
+			for ref, manifest := range before {
+				if got := string(mustReadFile(t, filepath.Join(containers.remote, keyFor(ref)))); got != manifest {
 					t.Fatalf("%s was overwritten", ref)
 				}
 			}

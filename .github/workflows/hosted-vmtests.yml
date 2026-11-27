@@ -310,9 +310,11 @@ jobs:
           ref: ${{ github.workflow_sha }}
           path: _build/workflow-actions
           persist-credentials: false
+          # hosted-download runs scripts/retry from this checkout.
           sparse-checkout: |
             .github/actions/setup-go
             .github/scripts
+            scripts
       - uses: ./_build/workflow-actions/.github/actions/setup-go
         if: inputs.ref != ''
         timeout-minutes: 10

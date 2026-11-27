@@ -21,6 +21,7 @@ on:
       - scripts/fedora-release
       - scripts/mkosi
       - scripts/mkosi-builder
+      - scripts/retry
   push:
     branches: [main]
     paths:
@@ -42,6 +43,7 @@ on:
       - scripts/fedora-release
       - scripts/mkosi
       - scripts/mkosi-builder
+      - scripts/retry
   workflow_dispatch:
     inputs:
       name:

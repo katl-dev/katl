@@ -22,7 +22,10 @@ on:
 permissions:
   contents: read
 
-# Serialises publication and its proposal; never cancelled.
+# Serialises publication and its proposal, so publish never races another run
+# for a free tag. A running publication is never cancelled; a pending run may
+# be replaced by a newer one, which publishes and proposes from the newer main;
+# a replaced refresh waits for the next schedule.
 concurrency:
   group: mkosi-builder-${{ github.ref }}
   cancel-in-progress: false
@@ -50,6 +53,10 @@ jobs:
           if [[ "$REFRESH" != true ]] && scripts/mkosi-builder pinned; then
             echo 'current=true' >> "$GITHUB_OUTPUT"
           fi
+      - name: Install skopeo
+        if: steps.pin.outputs.current != 'true'
+        # scripts/mkosi-builder publish reads registry error codes through skopeo.
+        run: command -v skopeo >/dev/null || .github/scripts/hosted-apt-install skopeo
       - uses: docker/login-action@v4
         if: steps.pin.outputs.current != 'true'
         with:
@@ -140,7 +147,8 @@ jobs:
         with:
           client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
           private-key: ${{ secrets.KATL_AUTOMATION_PRIVATE_KEY }}
-          permission-contents: read
+          # Superseding deletes the closed proposal's branch.
+          permission-contents: write
           permission-pull-requests: write
       - name: Describe the proposal
         run: |
@@ -168,4 +176,5 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           BRANCH: ${{ needs.propose.outputs.branch }}
-        run: go run ./cmd/katl-mkosi-builder supersede --branch "$BRANCH"
+          APP: ${{ steps.app-token.outputs.app-slug }}
+        run: go run ./cmd/katl-mkosi-builder supersede --branch "$BRANCH" --app "$APP" --run "$GITHUB_RUN_ID"

@@ -43,7 +43,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 			return supersede(ctx, args[1:], stdout, stderr)
 		}
 	}
-	return errors.New("usage: katl-mkosi-builder propose --lock FILE | supersede --branch BRANCH")
+	return errors.New("usage: katl-mkosi-builder propose --lock FILE | supersede --branch BRANCH --app SLUG --run ID")
 }
 
 // propose opens or advances the branch that commits a new pin. The lock is
@@ -98,20 +98,24 @@ func propose(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	return json.NewEncoder(stdout).Encode(map[string]any{"changed": true, "branch": branch, "commit": commit})
 }
 
-// supersede closes the earlier builder proposals once the proposal from branch
-// has a pull request, so only the newest pin waits for review.
+// supersede closes the older builder proposals once the proposal from branch
+// has a pull request, so only the newest pin waits for review. Only pull
+// requests the automation app opened count, and their age is the run that
+// described them.
 func supersede(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags := flag.NewFlagSet("katl-mkosi-builder supersede", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	branch := flags.String("branch", "", "proposal branch whose pull request replaces the others")
 	repository := flags.String("repository", os.Getenv("GITHUB_REPOSITORY"), "GitHub repository")
+	app := flags.String("app", "", "slug of the GitHub App that opens proposals")
+	runID := flags.Int64("run", 0, "workflow run that described the proposal from branch")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	if flags.NArg() != 0 || *repository == "" || !strings.HasPrefix(*branch, branchPrefix) {
-		return fmt.Errorf("supersede requires --repository and a --branch starting with %s", branchPrefix)
+	if flags.NArg() != 0 || *repository == "" || *app == "" || *runID <= 0 || !strings.HasPrefix(*branch, branchPrefix) {
+		return fmt.Errorf("supersede requires --repository, --app, --run and a --branch starting with %s", branchPrefix)
 	}
-	closed, err := automationpr.Supersede(ctx, *repository, branchPrefix, *branch)
+	closed, err := automationpr.Supersede(ctx, *repository, branchPrefix, *branch, *app+"[bot]", *runID)
 	if err != nil {
 		return err
 	}

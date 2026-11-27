@@ -134,6 +134,8 @@ Image builds run mkosi inside the image built from `Containerfile.mkosi`.
 **Builder Image** publishes that image as
 `ghcr.io/katl-dev/katl/mkosi-builder` and proposes its digest in
 `mkosi-builder.lock`; CI and `scripts/mkosi` pull exactly that digest.
+Builder Image is the only workflow that publishes this package; other
+workflows, actions and scripts may read or pull it.
 `scripts/mkosi-builder` owns the rule and the lock format.
 
 The content tag is `fedora-RELEASE-HASH`, where `RELEASE` is the Fedora
@@ -144,9 +146,9 @@ two values are its only inputs. The committed digest is current when the lock's
 makes the lock stale until a new image is published, and while it is stale
 every job builds `Containerfile.mkosi` itself, without a layer cache. When the
 lock is current, a CI job must run the pinned image, so that every job of a run
-uses the same builder: it makes three pull attempts with jittered
-exponential backoff and then fails. Only a local `scripts/mkosi` run falls back
-to building the file, with a warning. Each job's summary records the reference
+uses the same builder: it makes three pull attempts of at most ten minutes
+each, with jittered exponential backoff, and then fails. Only a local
+`scripts/mkosi` run falls back to building the file, with a warning. Each job's summary records the reference
 it ran, whether it was pulled or built, and its digest; the shared VM image job
 also keeps the record in its evidence.
 
@@ -155,12 +157,20 @@ pushes the content tag once, or reuses it when it already exists. The weekly
 schedule and manual dispatch rebuild on the current Fedora packages and push
 under a dated tag `fedora-RELEASE-HASH-YYYYMMDD`, leaving the content tag in
 place; a second refresh on one day takes the next free `-2`, `-3` suffix, so no
-tag is ever overwritten. A registry error other than a missing tag stops the
-run. In both cases a changed digest is proposed as an
-`automation/mkosi-builder-*` pull request, so the merge queue tests the new
-builder with the code that runs it, and earlier open builder proposals are
-closed with a comment naming the new one. A change to `Containerfile.mkosi`
-lands first with locally built builders, and the proposal follows its merge.
+tag is overwritten. That holds because the workflow's concurrency group runs
+one publication at a time. Publication reads the registry through `skopeo`,
+which reports the registry's error code: only `MANIFEST_UNKNOWN` or
+`NAME_UNKNOWN` means a tag is missing, and any other error stops the run. GHCR
+answers `MANIFEST_UNKNOWN` to the logged-in job for a package that does not
+exist yet, so the first publication creates it. In both cases a changed digest
+is proposed as an `automation/mkosi-builder-*` pull request, so the merge queue
+tests the new builder with the code that runs it. Only the newest open
+proposal stays open: the automation app's builder proposals are ordered by the
+workflow run that described them, and each older one gets a comment naming the
+newest, loses its branch and is closed. A rerun keeps its run's ID, so a rerun
+of an old run closes its own proposal rather than a newer one. A change to
+`Containerfile.mkosi` lands first with locally built builders, and the proposal
+follows its merge.
 
 GitHub creates a new container package as private. After the first
 publication, an organization owner must make the `katl/mkosi-builder` package
@@ -169,6 +179,22 @@ without credentials. Until then, CI fails on the first proposal pull request,
 because its jobs cannot pull the pin it introduces; that failure is the gate
 that keeps an unreachable pin out of `main`. Local builds fall back to building
 the image.
+
+## Retries
+
+Network-dependent steps retry through one owner per language. Go code uses
+`internal/retry`. Shell scripts use `scripts/retry`, which runs each attempt
+under a time limit, makes a bounded number of attempts with jittered
+exponential backoff, announces each retry as a workflow warning, and rejects a
+malformed attempt, timeout or backoff override before the first attempt.
+`.github/scripts/hosted-download` and `scripts/mkosi-builder` call it.
+
+The shell owner exists because those scripts cannot rely on a Go module. When
+a VM workflow tests an explicit source ref, it runs them from a sparse checkout
+of the workflow's own revision that holds only its actions and scripts and
+none of the repository's Go packages, so a script there cannot call
+`internal/retry`. That checkout must therefore include `scripts/` wherever it
+runs either script.
 
 ## Build caches
 

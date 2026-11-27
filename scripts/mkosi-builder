@@ -23,7 +23,8 @@
 # immutable image this checkout should run.
 set -euo pipefail
 
-repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="${KATL_REPO_ROOT:-$(dirname "$script_dir")}"
 repository=ghcr.io/katl-dev/katl/mkosi-builder
 lock_file="$repo_root/mkosi-builder.lock"
 
@@ -104,26 +105,24 @@ warn() {
     fi
 }
 
-# Pulls the pinned image with bounded, jittered exponential backoff. The owner
-# is a shell script that runs before any Go toolchain or module cache is
-# available, so it cannot use internal/retry; this loop is its only retry.
-# CI makes KATL_MKOSI_BUILDER_PULL_ATTEMPTS (default 3) attempts and sleeps a
-# random time in [b, 2b) between them, where b doubles from
-# KATL_MKOSI_BUILDER_PULL_BACKOFF_SECONDS (default 15). A local developer gets
-# one attempt, since the fallback is a local build.
+# Pulls the pinned image through scripts/retry, the shell retry owner: the
+# mkosi-builder action can run this script from a sparse checkout that holds
+# none of the repository's Go packages, so it cannot use internal/retry. CI
+# makes KATL_MKOSI_BUILDER_PULL_ATTEMPTS (default 3) attempts of at most
+# KATL_MKOSI_BUILDER_PULL_ATTEMPT_SECONDS (default 600) each, with backoff
+# from KATL_MKOSI_BUILDER_PULL_BACKOFF_SECONDS (default 15). A local
+# developer gets one attempt, since the fallback is a local build.
 pull_pinned() {
-    local runtime="$1" reference="$2" attempts backoff attempt
+    local runtime="$1" reference="$2" attempts=1
     local -a policy
     mapfile -t policy < <(signature_policy "$runtime")
-    attempts=1
     [[ "${GITHUB_ACTIONS:-}" != true ]] || attempts="${KATL_MKOSI_BUILDER_PULL_ATTEMPTS:-3}"
-    backoff="${KATL_MKOSI_BUILDER_PULL_BACKOFF_SECONDS:-15}"
-    for ((attempt = 1; ; attempt++)); do
-        "$runtime" pull "${policy[@]}" "$reference" >&2 && return 0
-        ((attempt < attempts)) || return 1
-        sleep "$((backoff + (backoff > 0 ? RANDOM % backoff : 0)))"
-        backoff=$((backoff * 2))
-    done
+    "$script_dir/retry" \
+        --attempts "$attempts" \
+        --timeout "${KATL_MKOSI_BUILDER_PULL_ATTEMPT_SECONDS:-600}" \
+        --backoff "${KATL_MKOSI_BUILDER_PULL_BACKOFF_SECONDS:-15}" \
+        --title 'mkosi builder' --what "pull $reference" \
+        -- "$runtime" pull "${policy[@]}" "$reference" >&2
 }
 
 prepare() {
@@ -172,20 +171,32 @@ prepare() {
 }
 
 # Sets digest to the registry digest of REF and returns 0, or returns 1 when
-# REF does not exist. Any other registry error stops publication rather than
-# being mistaken for a missing tag, which would rebuild and overwrite it. It
-# runs in the caller's shell so that stop is not lost in a subshell.
+# the registry reports REF missing. It runs in the caller's shell so that a
+# stop is not lost in a subshell.
+#
+# skopeo reports the registry's error code, which docker buildx imagetools
+# folds into a bare "not found". Only MANIFEST_UNKNOWN and NAME_UNKNOWN, which
+# skopeo renders as "manifest unknown" and "name unknown", mean the tag is
+# missing. GHCR answers MANIFEST_UNKNOWN for a missing tag and, to a client
+# with package write access, for a package that does not exist yet, so the
+# first publication proceeds. Any other error, such as the 403 an anonymous
+# client gets for a private or missing package, stops publication rather than
+# being mistaken for a missing tag, which would rebuild and overwrite it.
 remote_digest() {
-    local manifest error
+    local manifest error status=0
     digest=""
+    manifest="$(mktemp)"
     error="$(mktemp)"
-    if manifest="$(docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' 2>"$error")"; then
-        rm "$error"
-        digest="$(grep -o '"digest":"sha256:[0-9a-f]\{64\}"' <<<"$manifest" | head -n 1 | cut -d '"' -f 4)"
-        [[ -n "$digest" ]] || { echo "error: $1 has no manifest digest" >&2; exit 1; }
+    skopeo inspect --raw "docker://$1" >"$manifest" 2>"$error" || status=$?
+    if [[ $status == 0 ]]; then
+        [[ -s "$manifest" ]] || { echo "error: $1 has an empty manifest" >&2; exit 1; }
+        read -r digest _ < <(sha256sum "$manifest")
+        digest="sha256:$digest"
+        rm "$manifest" "$error"
         return 0
     fi
-    if grep -qi 'not found' "$error"; then
+    rm "$manifest"
+    if grep -Eq 'reading manifest [^ ]+ in [^ ]+: (manifest unknown|name unknown)' "$error"; then
         rm "$error"
         return 1
     fi
@@ -198,8 +209,11 @@ remote_digest() {
 # Publishes the builder for EVENT, push or refresh, and prints target=,
 # digest= and published=. A push publishes the content tag once and reuses it
 # when it exists, as on a rerun after a failed proposal. A refresh publishes
-# the content tag if it is missing, and otherwise a new dated tag. No tag is
-# ever overwritten: a second refresh on one day takes the next -N suffix.
+# the content tag if it is missing, and otherwise a new dated tag; a second
+# refresh on one day takes the next -N suffix. That no tag is overwritten
+# depends on Builder Image's concurrency group running one publication at a
+# time, because nothing else may push between the check for a free tag and the
+# push.
 publish() {
     local event="$1" tag target base digest suffix
     tag="$(content_tag)"

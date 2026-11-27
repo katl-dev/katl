@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -117,46 +119,138 @@ func gh(ctx context.Context, method, endpoint string, input, output any) ([]byte
 	return data, nil
 }
 
-// Supersede closes every other open pull request from a same-repository branch
-// named with prefix, commenting that the pull request from branch replaces it.
-// It returns the numbers it closed.
-func Supersede(ctx context.Context, repository, prefix, branch string) ([]int, error) {
-	api := "repos/" + repository
-	var pulls []struct {
-		Number int `json:"number"`
-		Head   struct {
-			Ref  string `json:"ref"`
-			Repo struct {
-				FullName string `json:"full_name"`
-			} `json:"repo"`
-		} `json:"head"`
+// pageSize is the largest page GitHub's list endpoints return.
+const pageSize = 100
+
+// list fetches every page of a GitHub list endpoint.
+func list[T any](ctx context.Context, endpoint string) ([]T, error) {
+	separator := "?"
+	if strings.Contains(endpoint, "?") {
+		separator = "&"
 	}
-	if _, err := gh(ctx, "GET", api+"/pulls?state=open&per_page=100", nil, &pulls); err != nil {
+	var all []T
+	for page := 1; ; page++ {
+		var items []T
+		if _, err := gh(ctx, "GET", fmt.Sprintf("%s%sper_page=%d&page=%d", endpoint, separator, pageSize, page), nil, &items); err != nil {
+			return nil, err
+		}
+		all = append(all, items...)
+		if len(items) < pageSize {
+			return all, nil
+		}
+	}
+}
+
+type pull struct {
+	Number int    `json:"number"`
+	Body   string `json:"body"`
+	User   struct {
+		Login string `json:"login"`
+		Type  string `json:"type"`
+	} `json:"user"`
+	Head struct {
+		Ref  string `json:"ref"`
+		Repo struct {
+			FullName string `json:"full_name"`
+		} `json:"repo"`
+	} `json:"head"`
+}
+
+// Supersede keeps only the newest open proposal among the same-repository pull
+// requests that author opened from branches named with prefix, and closes the
+// rest. A proposal's age is the workflow run that last described it: its
+// description must link to that run under repository's actions/runs. Run IDs
+// grow with each new run and a rerun keeps its run's ID, so a rerun of an old
+// run never closes a newer proposal; it closes its own instead. On a tie the
+// proposal from branch wins, since this run just published it. Proposals
+// without a run link cannot be ordered and stay open.
+//
+// Each superseded proposal gets one comment naming the survivor, loses its
+// branch, and is closed, in that order: deleting the branch also closes the
+// pull request, so a run that stops partway leaves the proposal open for the
+// next run to finish. It returns the numbers it closed.
+func Supersede(ctx context.Context, repository, prefix, branch, author string, run int64) ([]int, error) {
+	api := "repos/" + repository
+	pulls, err := list[pull](ctx, api+"/pulls?state=open")
+	if err != nil {
 		return nil, err
 	}
-	current := 0
-	var earlier []int
-	for _, pull := range pulls {
-		if pull.Head.Repo.FullName != repository || !strings.HasPrefix(pull.Head.Ref, prefix) {
+	link := regexp.MustCompile(`/` + regexp.QuoteMeta(repository) + `/actions/runs/([0-9]+)\b`)
+	type proposal struct {
+		pull
+		run int64
+	}
+	var current *proposal
+	var others []proposal
+	for _, p := range pulls {
+		if p.Head.Repo.FullName != repository || !strings.HasPrefix(p.Head.Ref, prefix) || p.User.Login != author || p.User.Type != "Bot" {
 			continue
 		}
-		if pull.Head.Ref == branch {
-			current = pull.Number
+		m := link.FindStringSubmatch(p.Body)
+		if m == nil {
+			continue
+		}
+		id, err := strconv.ParseInt(m[1], 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("pull request #%d links run %s: %w", p.Number, m[1], err)
+		}
+		if p.Head.Ref == branch {
+			current = &proposal{p, id}
 		} else {
-			earlier = append(earlier, pull.Number)
+			others = append(others, proposal{p, id})
 		}
 	}
-	if current == 0 {
-		return nil, fmt.Errorf("no open pull request from %s", branch)
+	if current == nil {
+		return nil, fmt.Errorf("no open pull request by %s from %s", author, branch)
 	}
-	for _, number := range earlier {
-		endpoint := fmt.Sprintf("%s/issues/%d/comments", api, number)
-		if _, err := gh(ctx, "POST", endpoint, map[string]string{"body": fmt.Sprintf("Superseded by #%d.", current)}, nil); err != nil {
-			return nil, err
-		}
-		if _, err := gh(ctx, "PATCH", fmt.Sprintf("%s/pulls/%d", api, number), map[string]string{"state": "closed"}, nil); err != nil {
-			return nil, err
+	if current.run != run {
+		return nil, fmt.Errorf("pull request #%d describes run %d, not run %d", current.Number, current.run, run)
+	}
+
+	survivor := *current
+	for _, p := range others {
+		if p.run > survivor.run || (p.run == survivor.run && survivor.Head.Ref != branch && p.Number > survivor.Number) {
+			survivor = p
 		}
 	}
-	return earlier, nil
+	var closed []int
+	for _, p := range append(others, *current) {
+		if p.Number == survivor.Number {
+			continue
+		}
+		if err := closeProposal(ctx, api, author, p.pull, fmt.Sprintf("Superseded by #%d.", survivor.Number)); err != nil {
+			return closed, err
+		}
+		closed = append(closed, p.Number)
+	}
+	return closed, nil
+}
+
+func closeProposal(ctx context.Context, api, author string, p pull, comment string) error {
+	comments, err := list[struct {
+		Body string `json:"body"`
+		User struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	}](ctx, fmt.Sprintf("%s/issues/%d/comments", api, p.Number))
+	if err != nil {
+		return err
+	}
+	commented := false
+	for _, c := range comments {
+		commented = commented || (c.User.Login == author && c.Body == comment)
+	}
+	if !commented {
+		if _, err := gh(ctx, "POST", fmt.Sprintf("%s/issues/%d/comments", api, p.Number), map[string]string{"body": comment}, nil); err != nil {
+			return err
+		}
+	}
+	// A branch that is already gone answers 422 (or 404); either way the
+	// proposal no longer has one.
+	if _, err := gh(ctx, "DELETE", api+"/git/refs/heads/"+p.Head.Ref, nil, nil); err != nil &&
+		!strings.Contains(err.Error(), "HTTP 422") && !strings.Contains(err.Error(), "HTTP 404") {
+		return err
+	}
+	_, err = gh(ctx, "PATCH", fmt.Sprintf("%s/pulls/%d", api, p.Number), map[string]string{"state": "closed"}, nil)
+	return err
 }
