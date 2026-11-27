@@ -131,62 +131,80 @@
           "check-fast"
           "hermetic"
         ];
-      shellFor =
+      # Tools that can change a test's verdict: tests, and the scripts they
+      # run, fail or skip without them. CI and the development shell share
+      # this list so a test sees the same tool versions in both.
+      testToolsFor =
+        pkgs: with pkgs; [
+          age
+          bashInteractive
+          bubblewrap
+          cacert
+          dosfstools
+          erofs-utils
+          gh
+          git
+          go
+          jq
+          kmod
+          kubectl
+          mtools
+          openssh
+          rpm
+          skopeo
+          sops
+          squashfsTools
+          systemdUkify
+          util-linux
+          xorriso
+          zstd
+        ];
+      testShellHookFor = pkgs: ''
+        # Run Go tests through scripts/hermetic -- go test ...
+        # Prepare the caches before the wrapper requires them as bind sources.
+        if katl_go_caches="$(${pkgs.go}/bin/go env GOCACHE GOMODCACHE)"; then
+          mapfile -t katl_go_cache_dirs <<< "$katl_go_caches"
+          for katl_go_cache in "''${katl_go_cache_dirs[@]}"; do
+            if [[ "$katl_go_cache" == /* ]]; then
+              mkdir -p -- "$katl_go_cache"
+            fi
+          done
+        fi
+        unset katl_go_caches katl_go_cache_dirs katl_go_cache
+        if katl_repo_root="$(${pkgs.git}/bin/git rev-parse --show-toplevel 2>/dev/null)"; then
+          source ${./scripts/dev-shell-env} "$katl_repo_root"
+        fi
+        unset katl_repo_root
+      '';
+      ciShellFor =
+        pkgs:
+        pkgs.mkShell {
+          packages = testToolsFor pkgs;
+          shellHook = testShellHookFor pkgs;
+        };
+      devShellFor =
         pkgs:
         pkgs.mkShell {
           packages =
-            (with pkgs; [
-              bashInteractive
-              bubblewrap
-              cacert
+            testToolsFor pkgs
+            ++ (with pkgs; [
               cpio
               curl
-              dosfstools
-              erofs-utils
               fish
-              gh
-              git
-              go
               gofumpt
-              jq
-              kubectl
               libvirt
-              mtools
               OVMFFull
-              openssh
               podman
               protobuf
               protoc-gen-go
               protoc-gen-go-grpc
               qemu_kvm
-              rpm
-              skopeo
-              squashfsTools
-              systemdUkify
-              util-linux
-              xorriso
               zsh
-              zstd
             ])
             ++ devToolsFor pkgs
             ++ [ (repoScriptFor pkgs "katl-queue") ];
 
-          shellHook = ''
-            # Run Go tests through scripts/hermetic -- go test ...
-            # Prepare the caches before the wrapper requires them as bind sources.
-            if katl_go_caches="$(${pkgs.go}/bin/go env GOCACHE GOMODCACHE)"; then
-              mapfile -t katl_go_cache_dirs <<< "$katl_go_caches"
-              for katl_go_cache in "''${katl_go_cache_dirs[@]}"; do
-                if [[ "$katl_go_cache" == /* ]]; then
-                  mkdir -p -- "$katl_go_cache"
-                fi
-              done
-            fi
-            unset katl_go_caches katl_go_cache_dirs katl_go_cache
-            if katl_repo_root="$(${pkgs.git}/bin/git rev-parse --show-toplevel 2>/dev/null)"; then
-              source ${./scripts/dev-shell-env} "$katl_repo_root"
-            fi
-            unset katl_repo_root
+          shellHook = testShellHookFor pkgs + ''
             source ${katlctlPackageFor pkgs}/share/bash-completion/completions/katlctl.bash
             export XDG_DATA_DIRS="${katlctlPackageFor pkgs}/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
             # FPATH replaces Zsh's built-in search path, so retain its stock functions.
@@ -233,7 +251,8 @@
           pkgs = pkgsFor system;
         in
         {
-          default = shellFor pkgs;
+          ci = ciShellFor pkgs;
+          default = devShellFor pkgs;
         }
       );
     };

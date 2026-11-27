@@ -220,6 +220,11 @@ and artifact-inspection tools used by VM tests. Image construction stays behind
 `scripts/mkosi`; mkosi and Fedora package installation run inside its builder
 container.
 
+`nix develop .#ci` enters a smaller shell holding only the tools that tests
+and the scripts they run look up. The default shell is that shell plus the
+interactive tools, VM host clients and checkout-backed commands, so a test
+sees the same tool versions in both.
+
 The shell puts checkout-backed commands on `PATH`. Find their references in
 the [development tool index](../dev/README.md).
 
