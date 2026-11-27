@@ -2,17 +2,16 @@ package main
 
 import (
 	"os"
-	"os/exec"
 	"testing"
 
 	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 func TestMain(m *testing.M) {
-	// TestVerifyReleaseImagesKeepsCallerPath re-executes this binary through
-	// sudo as the verifier; report which tool the child resolves.
+	// TestVerifierKeepsCallerPath re-executes this binary through sudo as the
+	// verifier; report where the child resolves the tool named as its runtime.
 	if len(os.Args) == 5 && os.Args[1] == "verify-release-extensions" {
-		resolved, err := exec.LookPath(os.Args[3])
+		resolved, err := workstationtest.LookupTool(os.Args[3])
 		if err != nil {
 			resolved = "missing: " + err.Error()
 		}

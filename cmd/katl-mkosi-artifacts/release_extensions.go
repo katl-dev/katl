@@ -226,6 +226,9 @@ func resolveReleaseExtension(release extensionrelease.Manifest, repository, layo
 
 func verifyReleaseImages(release, runtime, layout string, stdout, stderr io.Writer) error {
 	args := []string{"verify-release-extensions", release, runtime, layout}
+	if err := requireVerifierTools(); err != nil {
+		return err
+	}
 	if os.Geteuid() == 0 {
 		return runVerifyReleaseExtensions(args[1:])
 	}
@@ -235,12 +238,33 @@ func verifyReleaseImages(release, runtime, layout string, stdout, stderr io.Writ
 	}
 	// Elevate only read-only image inspection and module-index composition, not
 	// recipe execution. Local and CI builds use this same verification boundary.
-	// sudo replaces PATH with its secure_path, so pass the caller's PATH through
-	// env: the inspection tools are the development or ci shell's, not the host's.
+	// A command elevated through sudo gets the caller's whole PATH through env,
+	// the rule .github/scripts/hosted-vmtest-run also follows: sudo replaces
+	// PATH with its secure_path even with --preserve-env, and the verifier runs
+	// more than the shell tools it checks for, such as mountpoint.
 	command := exec.Command("sudo", append([]string{"--", "env", "PATH=" + os.Getenv("PATH"), executable}, args...)...)
 	command.Stdout = stdout
 	command.Stderr = stderr
 	return command.Run()
+}
+
+// verifierTools are the image inspection and module-index tools the verifier
+// needs from the development or ci shell rather than the host.
+var verifierTools = []string{"systemd-dissect", "depmod", "modinfo", "mksquashfs"}
+
+// requireVerifierTools tells a caller outside the development shell to enter
+// it, before anything is elevated.
+func requireVerifierTools() error {
+	var missing []string
+	for _, tool := range verifierTools {
+		if _, err := exec.LookPath(tool); err != nil {
+			missing = append(missing, tool)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("release extension verification needs %s on PATH; enter the development shell with nix develop", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 func runVerifyReleaseExtensions(args []string) (resultErr error) {
