@@ -7,6 +7,7 @@
 #   mkosi-builder lock DIGEST           print a lock pinning DIGEST for this tag
 #   mkosi-builder build RUNTIME NAME    build Containerfile.mkosi as NAME
 #   mkosi-builder prepare RUNTIME ALIAS make the builder available as ALIAS
+#   mkosi-builder publish push|refresh  build and push the image with docker
 #
 # The content tag is fedora-RELEASE-HASH, where HASH is the first 16 hex
 # digits of the SHA-256 of Containerfile.mkosi and RELEASE comes from
@@ -15,9 +16,9 @@
 #
 # mkosi-builder.lock is current when its tag equals this checkout's tag. A
 # missing or stale lock means the Containerfile changed and nothing is
-# published for it yet: prepare then builds the file locally. prepare also
-# builds locally when the pinned image cannot be pulled, and records which
-# happened. ALIAS points at the result for callers that run the builder by a
+# published for it yet: prepare then builds the file locally. When the pinned
+# image cannot be pulled, prepare fails in GitHub Actions and builds locally
+# with a warning elsewhere, and records which happened. ALIAS points at the result for callers that run the builder by a
 # fixed name; prepare prints the record, whose reference= line names the
 # immutable image this checkout should run.
 set -euo pipefail
@@ -27,7 +28,7 @@ repository=ghcr.io/katl-dev/katl/mkosi-builder
 lock_file="$repo_root/mkosi-builder.lock"
 
 usage() {
-    sed -n '3,8s/^#   //p' "${BASH_SOURCE[0]}" | sed 's/^/usage: /' >&2
+    sed -n '4,10s/^#   //p' "${BASH_SOURCE[0]}" | sed 's/^/usage: /' >&2
     exit 2
 }
 
@@ -103,9 +104,30 @@ warn() {
     fi
 }
 
+# Pulls the pinned image with bounded, jittered exponential backoff. The owner
+# is a shell script that runs before any Go toolchain or module cache is
+# available, so it cannot use internal/retry; this loop is its only retry.
+# CI makes KATL_MKOSI_BUILDER_PULL_ATTEMPTS (default 3) attempts and sleeps a
+# random time in [b, 2b) between them, where b doubles from
+# KATL_MKOSI_BUILDER_PULL_BACKOFF_SECONDS (default 15). A local developer gets
+# one attempt, since the fallback is a local build.
+pull_pinned() {
+    local runtime="$1" reference="$2" attempts backoff attempt
+    local -a policy
+    mapfile -t policy < <(signature_policy "$runtime")
+    attempts=1
+    [[ "${GITHUB_ACTIONS:-}" != true ]] || attempts="${KATL_MKOSI_BUILDER_PULL_ATTEMPTS:-3}"
+    backoff="${KATL_MKOSI_BUILDER_PULL_BACKOFF_SECONDS:-15}"
+    for ((attempt = 1; ; attempt++)); do
+        "$runtime" pull "${policy[@]}" "$reference" >&2 && return 0
+        ((attempt < attempts)) || return 1
+        sleep "$((backoff + (backoff > 0 ? RANDOM % backoff : 0)))"
+        backoff=$((backoff * 2))
+    done
+}
+
 prepare() {
     local runtime="$1" alias="$2" tag reference="" source digest="" id
-    local -a policy
     case "$runtime" in
         docker | podman) ;;
         *) echo "error: mkosi-builder prepare supports docker or podman, not $runtime" >&2; exit 2 ;;
@@ -115,12 +137,15 @@ prepare() {
     if [[ -n "$reference" ]]; then
         source=pinned
         digest="${reference#*@}"
-        if ! image_id "$runtime" "$reference" >/dev/null; then
-            mapfile -t policy < <(signature_policy "$runtime")
-            if ! "$runtime" pull "${policy[@]}" "$reference" >&2; then
-                warn "could not pull $reference; building Containerfile.mkosi locally instead"
-                reference=""
+        if ! image_id "$runtime" "$reference" >/dev/null && ! pull_pinned "$runtime" "$reference"; then
+            # CI must run the pinned builder, so jobs of one run agree and
+            # their evidence names it; only a developer may fall back.
+            if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
+                printf '::error title=mkosi builder::could not pull %s; make the package public or rerun once the registry is reachable\n' "$reference" >&2
+                exit 1
             fi
+            warn "could not pull $reference; building Containerfile.mkosi locally instead"
+            reference=""
         fi
     fi
     if [[ -z "$reference" ]]; then
@@ -146,7 +171,63 @@ prepare() {
     printf '%s\n' "$record"
 }
 
+# Sets digest to the registry digest of REF and returns 0, or returns 1 when
+# REF does not exist. Any other registry error stops publication rather than
+# being mistaken for a missing tag, which would rebuild and overwrite it. It
+# runs in the caller's shell so that stop is not lost in a subshell.
+remote_digest() {
+    local manifest error
+    digest=""
+    error="$(mktemp)"
+    if manifest="$(docker buildx imagetools inspect "$1" --format '{{json .Manifest}}' 2>"$error")"; then
+        rm "$error"
+        digest="$(grep -o '"digest":"sha256:[0-9a-f]\{64\}"' <<<"$manifest" | head -n 1 | cut -d '"' -f 4)"
+        [[ -n "$digest" ]] || { echo "error: $1 has no manifest digest" >&2; exit 1; }
+        return 0
+    fi
+    if grep -qi 'not found' "$error"; then
+        rm "$error"
+        return 1
+    fi
+    cat "$error" >&2
+    rm "$error"
+    echo "error: could not inspect $1" >&2
+    exit 1
+}
+
+# Publishes the builder for EVENT, push or refresh, and prints target=,
+# digest= and published=. A push publishes the content tag once and reuses it
+# when it exists, as on a rerun after a failed proposal. A refresh publishes
+# the content tag if it is missing, and otherwise a new dated tag. No tag is
+# ever overwritten: a second refresh on one day takes the next -N suffix.
+publish() {
+    local event="$1" tag target base digest suffix
+    tag="$(content_tag)"
+    target="$repository:$tag"
+    if remote_digest "$target"; then
+        if [[ "$event" == push ]]; then
+            printf 'target=%s\ndigest=%s\npublished=false\n' "$target" "$digest"
+            return 0
+        fi
+        base="$repository:$tag-${KATL_MKOSI_BUILDER_DATE:-$(date -u +%Y%m%d)}"
+        target="$base"
+        for ((suffix = 2; ; suffix++)); do
+            remote_digest "$target" || break
+            ((suffix <= 100)) || { echo "error: too many refreshes of $tag on one day" >&2; exit 1; }
+            target="$base-$suffix"
+        done
+    fi
+    build docker "$target" >&2
+    docker push "$target" >&2
+    remote_digest "$target" || { echo "error: $target is missing after push" >&2; exit 1; }
+    printf 'target=%s\ndigest=%s\npublished=true\n' "$target" "$digest"
+}
+
 case "${1:-}" in
+    publish)
+        [[ $# -eq 2 && ( "$2" == push || "$2" == refresh ) ]] || usage
+        publish "$2"
+        ;;
     repository)
         [[ $# -eq 1 ]] || usage
         printf '%s\n' "$repository"

@@ -116,3 +116,47 @@ func gh(ctx context.Context, method, endpoint string, input, output any) ([]byte
 	}
 	return data, nil
 }
+
+// Supersede closes every other open pull request from a same-repository branch
+// named with prefix, commenting that the pull request from branch replaces it.
+// It returns the numbers it closed.
+func Supersede(ctx context.Context, repository, prefix, branch string) ([]int, error) {
+	api := "repos/" + repository
+	var pulls []struct {
+		Number int `json:"number"`
+		Head   struct {
+			Ref  string `json:"ref"`
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
+		} `json:"head"`
+	}
+	if _, err := gh(ctx, "GET", api+"/pulls?state=open&per_page=100", nil, &pulls); err != nil {
+		return nil, err
+	}
+	current := 0
+	var earlier []int
+	for _, pull := range pulls {
+		if pull.Head.Repo.FullName != repository || !strings.HasPrefix(pull.Head.Ref, prefix) {
+			continue
+		}
+		if pull.Head.Ref == branch {
+			current = pull.Number
+		} else {
+			earlier = append(earlier, pull.Number)
+		}
+	}
+	if current == 0 {
+		return nil, fmt.Errorf("no open pull request from %s", branch)
+	}
+	for _, number := range earlier {
+		endpoint := fmt.Sprintf("%s/issues/%d/comments", api, number)
+		if _, err := gh(ctx, "POST", endpoint, map[string]string{"body": fmt.Sprintf("Superseded by #%d.", current)}, nil); err != nil {
+			return nil, err
+		}
+		if _, err := gh(ctx, "PATCH", fmt.Sprintf("%s/pulls/%d", api, number), map[string]string{"state": "closed"}, nil); err != nil {
+			return nil, err
+		}
+	}
+	return earlier, nil
+}

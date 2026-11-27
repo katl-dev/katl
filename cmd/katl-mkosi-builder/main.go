@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/katl-dev/katl/internal/automationpr"
 )
@@ -23,6 +24,9 @@ var updateCommit string
 // lockPath is the pin scripts/mkosi-builder reads; it also owns the format.
 const lockPath = "mkosi-builder.lock"
 
+// branchPrefix names every builder proposal branch.
+const branchPrefix = "automation/mkosi-builder-"
+
 func main() {
 	if err := run(context.Background(), os.Args[1:], os.Stdout, os.Stderr); err != nil {
 		fmt.Fprintln(os.Stderr, "katl-mkosi-builder:", err)
@@ -31,10 +35,15 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 || args[0] != "propose" {
-		return errors.New("usage: katl-mkosi-builder propose --lock FILE [--repository OWNER/NAME] [--base SHA]")
+	if len(args) > 0 {
+		switch args[0] {
+		case "propose":
+			return propose(ctx, args[1:], stdout, stderr)
+		case "supersede":
+			return supersede(ctx, args[1:], stdout, stderr)
+		}
 	}
-	return propose(ctx, args[1:], stdout, stderr)
+	return errors.New("usage: katl-mkosi-builder propose --lock FILE | supersede --branch BRANCH")
 }
 
 // propose opens or advances the branch that commits a new pin. The lock is
@@ -68,7 +77,7 @@ func propose(ctx context.Context, args []string, stdout, stderr io.Writer) error
 	}
 
 	identity := sha256.Sum256(content)
-	branch := "automation/mkosi-builder-" + hex.EncodeToString(identity[:8])
+	branch := branchPrefix + hex.EncodeToString(identity[:8])
 	commit, err := automationpr.Publish(ctx, automationpr.Proposal{
 		Repository: *repository,
 		Base:       *base,
@@ -87,4 +96,24 @@ func propose(ctx context.Context, args []string, stdout, stderr io.Writer) error
 		return err
 	}
 	return json.NewEncoder(stdout).Encode(map[string]any{"changed": true, "branch": branch, "commit": commit})
+}
+
+// supersede closes the earlier builder proposals once the proposal from branch
+// has a pull request, so only the newest pin waits for review.
+func supersede(ctx context.Context, args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("katl-mkosi-builder supersede", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	branch := flags.String("branch", "", "proposal branch whose pull request replaces the others")
+	repository := flags.String("repository", os.Getenv("GITHUB_REPOSITORY"), "GitHub repository")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *repository == "" || !strings.HasPrefix(*branch, branchPrefix) {
+		return fmt.Errorf("supersede requires --repository and a --branch starting with %s", branchPrefix)
+	}
+	closed, err := automationpr.Supersede(ctx, *repository, branchPrefix, *branch)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(stdout).Encode(map[string]any{"closed": closed})
 }

@@ -60,28 +60,14 @@ jobs:
         id: publish
         if: steps.pin.outputs.current != 'true'
         env:
-          TAG: ${{ steps.pin.outputs.tag }}
-        # The content tag is written once. A push whose tag already exists, such
-        # as a rerun after a failed proposal, reuses it; a refresh publishes
-        # under a dated tag instead of moving it.
+          EVENT: ${{ github.event_name == 'push' && 'push' || 'refresh' }}
+        # scripts/mkosi-builder owns which tag is pushed and never overwrites one.
         run: |
-          repository="$(scripts/mkosi-builder repository)"
-          target="$repository:$TAG"
-          build=true
-          if docker buildx imagetools inspect "$target" >/dev/null 2>&1; then
-            if [[ "$REFRESH" == true ]]; then
-              target="$repository:$TAG-$(date -u +%Y%m%d)"
-            else
-              build=false
-            fi
-          fi
-          if [[ "$build" == true ]]; then
-            scripts/mkosi-builder build docker "$target"
-            docker push "$target"
-          fi
-          digest="$(docker buildx imagetools inspect "$target" --format '{{json .Manifest}}' | jq -r .digest)"
-          echo "digest=$digest" >> "$GITHUB_OUTPUT"
-          printf 'Published `%s` as `%s@%s`.\n' "$target" "$repository" "$digest" >> "$GITHUB_STEP_SUMMARY"
+          scripts/mkosi-builder publish "$EVENT" > "$RUNNER_TEMP/publish.txt"
+          cat "$RUNNER_TEMP/publish.txt"
+          grep -E '^(target|digest)=' "$RUNNER_TEMP/publish.txt" >> "$GITHUB_OUTPUT"
+          printf 'Published `%s` with digest `%s`.\n' \
+            "$(sed -n 's/^target=//p' "$RUNNER_TEMP/publish.txt")" "$(sed -n 's/^digest=//p' "$RUNNER_TEMP/publish.txt")" >> "$GITHUB_STEP_SUMMARY"
       - name: Write the proposed pin
         id: lock
         if: steps.pin.outputs.current != 'true'
@@ -144,6 +130,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
+      - uses: ./.github/actions/setup-go
       - uses: actions/download-artifact@v8
         with:
           name: mkosi-builder-lock
@@ -177,3 +164,8 @@ jobs:
           commit: ${{ needs.propose.outputs.commit }}
           title: 'mkosi: pin the published builder image'
           body-file: body.md
+      - name: Close earlier builder proposals
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BRANCH: ${{ needs.propose.outputs.branch }}
+        run: go run ./cmd/katl-mkosi-builder supersede --branch "$BRANCH"

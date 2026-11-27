@@ -1,8 +1,10 @@
 package scriptstest
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"regexp"
@@ -119,8 +121,8 @@ func TestNoBuilderLayerCache(t *testing.T) {
 	}
 }
 
-// The publishing workflow is the only writer of the package, runs only for
-// main, and never lets a pull request reach packages: write.
+// Builder Image is the only workflow that publishes this package. It runs only
+// for main and never lets a pull request reach packages: write.
 func TestBuilderPublication(t *testing.T) {
 	workflow, _ := readWorkflow(t, "mkosi-builder.yml")
 	var on map[string]yaml.Node
@@ -145,18 +147,48 @@ func TestBuilderPublication(t *testing.T) {
 		t.Fatal("only the publish job may write packages")
 	}
 
-	// Every other workflow that touches the package only reads it.
-	entries, err := os.ReadDir(filepath.Join(repoRoot(t), ".github", "workflows"))
+	// No other workflow or action can push the package. A push is any line
+	// that publishes an image; it must not target the owner's repository, and
+	// nothing else may ask the owner to publish or name its repository, which
+	// is how a push through a variable would start.
+	output, err := exec.Command(filepath.Join(repoRoot(t), "scripts", "mkosi-builder"), "repository").Output()
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, entry := range entries {
-		if entry.Name() == "mkosi-builder.yml" || filepath.Ext(entry.Name()) != ".yml" {
-			continue
+	repository := strings.TrimSpace(string(output))
+	pushes := regexp.MustCompile(`\b(docker|podman) push\b|--push\b|imagetools create\b|\boras push\b|\bskopeo copy\b|\bcrane (push|copy|tag)\b|push: true`)
+	publishes := 0
+	err = fs.WalkDir(os.DirFS(repoRoot(t)), ".github", func(name string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() || (path.Ext(name) != ".yml" && path.Ext(name) != ".yaml") {
+			return err
 		}
-		data := string(mustReadFile(t, filepath.Join(repoRoot(t), ".github", "workflows", entry.Name())))
-		if strings.Contains(data, "katl/mkosi-builder") {
-			t.Errorf("%s names the builder package; only mkosi-builder.yml publishes it", entry.Name())
+		for i, line := range strings.Split(string(mustReadFile(t, filepath.Join(repoRoot(t), name))), "\n") {
+			where := fmt.Sprintf("%s:%d", name, i+1)
+			if strings.Contains(line, "scripts/mkosi-builder publish") {
+				if name != ".github/workflows/mkosi-builder.yml" {
+					t.Errorf("%s publishes the builder outside Builder Image", where)
+				}
+				publishes++
+			}
+			if name == ".github/workflows/mkosi-builder.yml" {
+				if pushes.MatchString(line) {
+					t.Errorf("%s pushes directly; Builder Image publishes only through scripts/mkosi-builder publish", where)
+				}
+				continue
+			}
+			if strings.Contains(line, repository) || strings.Contains(line, "scripts/mkosi-builder repository") {
+				t.Errorf("%s names the builder package; only Builder Image publishes it", where)
+			}
+			if pushes.MatchString(line) && strings.Contains(line, "mkosi-builder") {
+				t.Errorf("%s pushes a builder image", where)
+			}
 		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if publishes != 1 {
+		t.Fatalf("Builder Image publishes %d times, want once", publishes)
 	}
 }

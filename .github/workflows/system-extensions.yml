@@ -5,6 +5,7 @@ on:
     paths:
       - .github/workflows/system-extensions.yml
       - Containerfile.mkosi
+      - mkosi-builder.lock
       - mkosi.conf
       - cmd/katlctl/system_extension.go
       - extensions/**
@@ -19,11 +20,13 @@ on:
       - internal/sysextimage/**
       - scripts/fedora-release
       - scripts/mkosi
+      - scripts/mkosi-builder
   push:
     branches: [main]
     paths:
       - .github/workflows/system-extensions.yml
       - Containerfile.mkosi
+      - mkosi-builder.lock
       - mkosi.conf
       - cmd/katlctl/system_extension.go
       - extensions/**
@@ -38,6 +41,7 @@ on:
       - internal/sysextimage/**
       - scripts/fedora-release
       - scripts/mkosi
+      - scripts/mkosi-builder
   workflow_dispatch:
     inputs:
       name:

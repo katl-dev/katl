@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -144,6 +145,10 @@ case "$1" in
     ;;
   pull)
     [[ -z "${KATL_FAKE_PULL_FAILS:-}" ]] || exit 1
+    if [[ -n "${KATL_FAKE_PULL_FAILURES:-}" ]]; then
+      failed=$(cat "$KATL_FAKE_STORE/failed-pulls" 2>/dev/null || echo 0)
+      if ((failed < KATL_FAKE_PULL_FAILURES)); then echo $((failed + 1)) > "$KATL_FAKE_STORE/failed-pulls"; exit 1; fi
+    fi
     echo "pulled $name" > "$KATL_FAKE_STORE/$(key "$name")"
     ;;
   build)
@@ -154,19 +159,29 @@ case "$1" in
     ;;
   tag) cp "$KATL_FAKE_STORE/$(key "$2")" "$KATL_FAKE_STORE/$(key "$3")" ;;
   run) printf 'mkosi 26\n' ;;
+  buildx)
+    ref="$4"
+    [[ -z "${KATL_FAKE_REGISTRY_ERROR:-}" ]] || { echo "ERROR: unexpected status: 502 Bad Gateway" >&2; exit 1; }
+    [[ -f "$KATL_FAKE_REMOTE/$(key "$ref")" ]] || { echo "ERROR: $ref: not found" >&2; exit 1; }
+    printf '{"mediaType":"application/vnd.oci.image.manifest.v1+json","digest":"%s","size":1}' "$(cat "$KATL_FAKE_REMOTE/$(key "$ref")")"
+    ;;
+  push)
+    [[ -f "$KATL_FAKE_STORE/$(key "$name")" ]] || exit 1
+    printf 'sha256:%s' "$(sha256sum "$KATL_FAKE_STORE/$(key "$name")" | cut -c1-64)" > "$KATL_FAKE_REMOTE/$(key "$name")"
+    ;;
   *) exit 2 ;;
 esac
 `
 
 type fakeContainers struct {
-	bin, store, calls, context string
+	bin, store, calls, context, remote string
 }
 
 func newFakeContainers(t *testing.T, runtime string) fakeContainers {
 	t.Helper()
 	dir := t.TempDir()
-	f := fakeContainers{bin: filepath.Join(dir, "bin"), store: filepath.Join(dir, "store"), calls: filepath.Join(dir, "calls"), context: filepath.Join(dir, "context")}
-	for _, path := range []string{f.bin, f.store} {
+	f := fakeContainers{bin: filepath.Join(dir, "bin"), store: filepath.Join(dir, "store"), calls: filepath.Join(dir, "calls"), context: filepath.Join(dir, "context"), remote: filepath.Join(dir, "remote")}
+	for _, path := range []string{f.bin, f.store, f.remote} {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -178,7 +193,7 @@ func newFakeContainers(t *testing.T, runtime string) fakeContainers {
 func (f fakeContainers) env(extra ...string) []string {
 	return append([]string{
 		"PATH=" + f.bin + string(os.PathListSeparator) + os.Getenv("PATH"),
-		"KATL_FAKE_STORE=" + f.store, "KATL_FAKE_CALLS=" + f.calls, "KATL_FAKE_CONTEXT=" + f.context,
+		"KATL_FAKE_STORE=" + f.store, "KATL_FAKE_CALLS=" + f.calls, "KATL_FAKE_CONTEXT=" + f.context, "KATL_FAKE_REMOTE=" + f.remote,
 	}, extra...)
 }
 
@@ -349,5 +364,126 @@ func TestMkosiRunsResolvedBuilder(t *testing.T) {
 	}
 	if got := containers.image(t, "localhost/katl-mkosi-builder:fedora-99-go-squashfs"); got != "pulled "+builderRepository+"@"+builderDigest {
 		t.Fatalf("default alias resolves to %q", got)
+	}
+}
+
+// In CI a current pin must be the builder every job runs, so a pull that keeps
+// failing stops the job after bounded retries instead of building locally,
+// while one that recovers uses the pin. Wrong implementations this separates:
+// the local fallback leaking into CI, retrying without a bound, and giving up
+// after the first transient failure.
+func TestBuilderPrepareInCI(t *testing.T) {
+	const containerfile = "FROM scratch\n"
+	pinned := builderRepository + "@" + builderDigest
+	for _, tc := range []struct {
+		name, failures string
+		exit           int
+		pulls          int
+		alias          string
+	}{
+		{name: "recovers", failures: "2", pulls: 3, alias: "pulled " + pinned},
+		{name: "keeps failing", failures: "99", exit: 1, pulls: 3, alias: "old image"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := builderFixture(t, "99", containerfile)
+			writeBuilderLock(t, fixture, "tag="+contentTag("99", containerfile)+"\nimage="+pinned+"\n")
+			containers := newFakeContainers(t, "docker")
+			alias := "localhost/katl-mkosi-builder:alias"
+			if err := os.WriteFile(filepath.Join(containers.store, keyFor(alias)), []byte("old image\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			record, exit := runBuilder(t, fixture, containers.env("GITHUB_ACTIONS=true", "KATL_FAKE_PULL_FAILURES="+tc.failures, "KATL_MKOSI_BUILDER_PULL_BACKOFF_SECONDS=0"), "prepare", "docker", alias)
+			if (exit == 0) != (tc.exit == 0) {
+				t.Fatalf("prepare exit %d, want %d: %s", exit, tc.exit, record)
+			}
+			if got := len(containers.callsStartingWith(t, "pull")); got != tc.pulls {
+				t.Fatalf("pull attempts = %d, want %d", got, tc.pulls)
+			}
+			if builds := containers.callsStartingWith(t, "build"); len(builds) != 0 {
+				t.Fatalf("CI built the builder locally: %q", builds)
+			}
+			if got := containers.image(t, alias); got != tc.alias {
+				t.Fatalf("alias resolves to %q, want %q", got, tc.alias)
+			}
+			if tc.exit == 0 && recordValue(record, "source") != "pinned" {
+				t.Fatalf("record = %s", record)
+			}
+		})
+	}
+}
+
+// publish never overwrites a tag: a push reuses the content tag it finds, and
+// a refresh takes the first free dated tag. Wrong implementations this
+// separates: rebuilding a push over an existing content tag, moving the
+// content tag on refresh, overwriting the day's dated tag, and treating a
+// registry error as a missing tag.
+func TestBuilderPublish(t *testing.T) {
+	const containerfile = "FROM scratch\n"
+	content := builderRepository + ":" + contentTag("99", containerfile)
+	dated := content + "-20261127"
+	for _, tc := range []struct {
+		name, event  string
+		existing     []string
+		registryDown bool
+		target       string
+		published    bool
+	}{
+		{name: "first push", event: "push", target: content, published: true},
+		{name: "push rerun", event: "push", existing: []string{content}, target: content},
+		{name: "refresh without content tag", event: "refresh", target: content, published: true},
+		{name: "refresh", event: "refresh", existing: []string{content}, target: dated, published: true},
+		{name: "second refresh", event: "refresh", existing: []string{content, dated}, target: dated + "-2", published: true},
+		{name: "third refresh", event: "refresh", existing: []string{content, dated, dated + "-2"}, target: dated + "-3", published: true},
+		{name: "registry error", event: "push", registryDown: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := builderFixture(t, "99", containerfile)
+			containers := newFakeContainers(t, "docker")
+			before := map[string]string{}
+			for i, ref := range tc.existing {
+				digest := fmt.Sprintf("sha256:%064d", i+1)
+				before[ref] = digest
+				if err := os.WriteFile(filepath.Join(containers.remote, keyFor(ref)), []byte(digest), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			env := containers.env("KATL_MKOSI_BUILDER_DATE=20261127")
+			if tc.registryDown {
+				env = append(env, "KATL_FAKE_REGISTRY_ERROR=1")
+			}
+
+			record, exit := runBuilder(t, fixture, env, "publish", tc.event)
+			if tc.registryDown {
+				if exit == 0 || len(containers.callsStartingWith(t, "build"))+len(containers.callsStartingWith(t, "push")) != 0 {
+					t.Fatalf("registry error published anyway: exit %d", exit)
+				}
+				return
+			}
+			if exit != 0 {
+				t.Fatalf("publish exit %d", exit)
+			}
+			if got := recordValue(record, "target"); got != tc.target {
+				t.Fatalf("target = %q, want %q", got, tc.target)
+			}
+			if got := recordValue(record, "published"); got != fmt.Sprint(tc.published) {
+				t.Fatalf("published = %q, want %t", got, tc.published)
+			}
+			remote, err := os.ReadFile(filepath.Join(containers.remote, keyFor(tc.target)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := recordValue(record, "digest"); got != string(remote) {
+				t.Fatalf("digest = %q, registry has %q", got, remote)
+			}
+			for ref, digest := range before {
+				if got := string(mustReadFile(t, filepath.Join(containers.remote, keyFor(ref)))); got != digest {
+					t.Fatalf("%s was overwritten", ref)
+				}
+			}
+			if pushes := containers.callsStartingWith(t, "push"); tc.published != (len(pushes) == 1) {
+				t.Fatalf("pushes = %q", pushes)
+			}
+		})
 	}
 }

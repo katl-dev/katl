@@ -161,3 +161,64 @@ func TestPublishStopsOnLookupFailure(t *testing.T) {
 		t.Fatalf("calls after a failed lookup = %q", calls)
 	}
 }
+
+// Supersede closes only earlier same-repository proposals with the prefix,
+// each with a comment naming the replacement. Wrong implementations this
+// separates: closing the new proposal, closing other automation or fork
+// pull requests, and closing without saying what replaced it.
+func TestSupersede(t *testing.T) {
+	dir := t.TempDir()
+	pulls := `[
+ {"number":7,"head":{"ref":"automation/b-old","repo":{"full_name":"example/katl"}}},
+ {"number":8,"head":{"ref":"automation/kernels-x","repo":{"full_name":"example/katl"}}},
+ {"number":9,"head":{"ref":"automation/b-fork","repo":{"full_name":"fork/katl"}}},
+ {"number":10,"head":{"ref":"automation/b-older","repo":{"full_name":"example/katl"}}},
+ {"number":11,"head":{"ref":"automation/b-new","repo":{"full_name":"example/katl"}}}
+]`
+	script := `#!/usr/bin/env bash
+set -euo pipefail
+case "$3:$4" in
+ GET:repos/example/katl/pulls\?state=open*) printf '%s' "$FAKE_PULLS" ;;
+ POST:repos/example/katl/issues/*/comments) n="${4#repos/example/katl/issues/}"; cat > "$FAKE_DIR/comment-${n%/comments}" ;;
+ PATCH:repos/example/katl/pulls/*) cat > "$FAKE_DIR/close-${4##*/}" ;;
+ *) echo "unexpected GitHub call $3 $4" >&2; exit 1 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("FAKE_DIR", dir)
+	t.Setenv("FAKE_PULLS", pulls)
+
+	closed, err := Supersede(context.Background(), "example/katl", "automation/b-", "automation/b-new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(closed) != 2 || closed[0] != 7 || closed[1] != 10 {
+		t.Fatalf("closed = %v", closed)
+	}
+	for _, number := range []string{"7", "10"} {
+		var comment struct{ Body string }
+		decode(t, filepath.Join(dir, "comment-"+number), &comment)
+		if comment.Body != "Superseded by #11." {
+			t.Fatalf("comment on #%s = %q", number, comment.Body)
+		}
+		var state struct{ State string }
+		decode(t, filepath.Join(dir, "close-"+number), &state)
+		if state.State != "closed" {
+			t.Fatalf("#%s state = %q", number, state.State)
+		}
+	}
+	for _, number := range []string{"8", "9", "11"} {
+		if _, err := os.Stat(filepath.Join(dir, "close-"+number)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("#%s was closed", number)
+		}
+	}
+
+	// Without a pull request for the new proposal there is nothing to name,
+	// so nothing is closed.
+	if _, err := Supersede(context.Background(), "example/katl", "automation/b-", "automation/b-missing"); err == nil {
+		t.Fatal("superseded without a replacement pull request")
+	}
+}

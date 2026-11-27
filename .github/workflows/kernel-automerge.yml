@@ -11,7 +11,7 @@ permissions:
 
 # Serialises promotion per automation branch; never cancelled.
 concurrency:
-  group: kernel-promotion-${{ github.event.workflow_run.head_branch }}
+  group: automation-promotion-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: false
 
 jobs:

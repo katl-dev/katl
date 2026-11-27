@@ -142,24 +142,33 @@ of `Containerfile.mkosi`. The builder is built with an empty context, so those
 two values are its only inputs. The committed digest is current when the lock's
 `tag` equals the checkout's content tag. A change to either input therefore
 makes the lock stale until a new image is published, and while it is stale
-every job builds `Containerfile.mkosi` itself, without a layer cache. A job also
-builds it when the pinned image cannot be pulled, with a warning. Each job's
-summary records the reference it ran, whether it was pulled or built, and its
-digest; the shared VM image job also keeps the record in its evidence.
+every job builds `Containerfile.mkosi` itself, without a layer cache. When the
+lock is current, a CI job must run the pinned image, so that every job of a run
+uses the same builder: it makes three pull attempts with jittered
+exponential backoff and then fails. Only a local `scripts/mkosi` run falls back
+to building the file, with a warning. Each job's summary records the reference
+it ran, whether it was pulled or built, and its digest; the shared VM image job
+also keeps the record in its evidence.
 
 On a push to `main` that leaves the lock stale, **Builder Image** builds and
 pushes the content tag once, or reuses it when it already exists. The weekly
 schedule and manual dispatch rebuild on the current Fedora packages and push
 under a dated tag `fedora-RELEASE-HASH-YYYYMMDD`, leaving the content tag in
-place. In both cases a changed digest is proposed as an
+place; a second refresh on one day takes the next free `-2`, `-3` suffix, so no
+tag is ever overwritten. A registry error other than a missing tag stops the
+run. In both cases a changed digest is proposed as an
 `automation/mkosi-builder-*` pull request, so the merge queue tests the new
-builder with the code that runs it. A change to `Containerfile.mkosi` lands
-first with locally built builders, and the proposal follows its merge.
+builder with the code that runs it, and earlier open builder proposals are
+closed with a comment naming the new one. A change to `Containerfile.mkosi`
+lands first with locally built builders, and the proposal follows its merge.
 
 GitHub creates a new container package as private. After the first
 publication, an organization owner must make the `katl/mkosi-builder` package
 public in its package settings, so pull requests and local builds can pull it
-without credentials. Until then they build the image locally.
+without credentials. Until then, CI fails on the first proposal pull request,
+because its jobs cannot pull the pin it introduces; that failure is the gate
+that keeps an unreachable pin out of `main`. Local builds fall back to building
+the image.
 
 ## Build caches
 
