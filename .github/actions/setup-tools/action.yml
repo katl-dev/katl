@@ -1,6 +1,6 @@
 name: Set up the CI tool shell and restore the Go cache
 description: >-
-  Install Nix, realise the flake's ci shell and restore the shared Go cache
+  Install Nix, realise the flake's ci shell and restore the host Go cache
   for the shell's Go. Later steps run their commands through
   `nix develop --option builders '' .#ci -c`. Composite steps cannot carry
   timeout-minutes, so the calling step gives this action its budget: the
@@ -43,7 +43,7 @@ runs:
           echo "module=${go_env[1]}"
           echo "build=${go_env[2]}"
         } >> "$GITHUB_OUTPUT"
-    # The setup-go action owns the shared Go cache key and restore. Given the
+    # The setup-go action owns the host Go cache key and restore. Given the
     # shell's Go, it restores that Go's cache without installing another Go.
     - name: Restore Go cache
       id: cache

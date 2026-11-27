@@ -609,12 +609,13 @@ func (c *cacheChecker) unaccepted() []cacheViolation {
 	return result
 }
 
-// The setup-go action owns the shared Go cache key. Every other restore or
-// save of that family takes the key from the action's cache-key output, so a
-// change to the key cannot leave a second definition behind. The policy alone
-// would accept an inline copy that names the same key inputs.
+// The setup-go action owns the host Go cache key, and the policy family its
+// restore key falls in is the one under test. Every other restore or save of
+// that family takes the key from the action's cache-key output, so a change to
+// the key cannot leave a second definition behind. The policy alone would
+// accept an inline copy that names the same key inputs.
 func TestGoCacheKeyHasOneOwner(t *testing.T) {
-	const family, owner = "setup-go", "setup-go"
+	const owner = "setup-go"
 	root := filepath.Join(repoRoot(t), ".github")
 	policy, err := cachepolicy.Load(filepath.Join(root, "cache-policy.json"))
 	if err != nil {
@@ -622,6 +623,20 @@ func TestGoCacheKeyHasOneOwner(t *testing.T) {
 	}
 	c := &cacheChecker{policy: policy, workflows: map[string]map[string][]workflowStep{}, actions: map[string]cacheAction{}}
 	c.read(t, os.DirFS(root))
+
+	family := ""
+	for _, step := range c.actions[owner].steps {
+		if usedAction(step) != "actions/cache/restore" {
+			continue
+		}
+		literal, _, _ := strings.Cut(step.With["key"], "${{")
+		if match, ok := policy.Family(literal); ok {
+			family = match.Name
+		}
+	}
+	if family == "" {
+		t.Fatalf("the %s action restores no cache family the policy declares", owner)
+	}
 
 	definitions := 0
 	check := func(site cacheSite, steps []workflowStep) {

@@ -5,12 +5,13 @@
   "alert_bytes": 6000000000,
   "families": [
     {
-      "name": "setup-go",
-      "key_prefix": "setup-go-",
+      "name": "go-host",
+      "key_prefix": "go-host-",
       "contents": "Host Go module and build cache",
-      "key_inputs": ["steps.paths.outputs.platform", "steps.paths.outputs.version"],
+      "key_inputs": ["steps.paths.outputs.version", "steps.paths.outputs.week"],
       "savers": [{"workflow": "ci.yml", "job": "checks"}],
-      "budget_bytes": 417871788
+      "budget_bytes": 1000000000,
+      "max_generations": 2
     },
     {
       "name": "go-container",
