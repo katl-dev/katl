@@ -9,39 +9,41 @@ Find tool usage and setup in the [development tool index](../README.md).
 
 ## Model and effort
 
-| Role | Default |
+Each role belongs to a tier, and the tier table names the model for that
+tier. To change a tier's model, edit its row here and the `model:` line of the
+matching [agent definitions](../../.claude/agents/).
+
+| Tier | Model | Work |
+| --- | --- | --- |
+| Coordinate | Claude Opus | Coordination, release ownership, scope and approval decisions |
+| Implement | Claude Opus | Delivery, fix rounds and debugging |
+| Design and review | Claude Fable | Design-heavy briefs, contract reviews and independent code review |
+| Mechanical | Claude Sonnet | Rebases, gates, watching, journeys, planning and washup evidence |
+
+| Role | Tier |
 | --- | --- |
-| [Coordinator](roles/coordinator.md) | Claude Opus |
-| [Orchestrator](roles/orchestrator.md) | Claude Opus, high effort |
-| [Release](roles/release.md) | Claude Opus |
-| [Planner](roles/planner.md) | Claude Sonnet |
-| [Delivery](roles/delivery.md) | Codex `gpt-6.2-sol`, medium effort |
-| [Reviewer](roles/reviewer.md) | Codex `gpt-6.2-astra`, medium effort for ordinary code reviews and high effort for the independent review that gates auto-merge. |
-| [Debugger](roles/debugger.md) | Codex `gpt-6.2-astra`, high effort for hard debugging |
-| [Rebase](roles/rebase.md) | Codex `gpt-6.1-terra`, medium effort |
-| [Journey](roles/journey.md) | Claude Sonnet, medium effort |
-| [Washup](roles/washup.md) | Claude Sonnet |
+| [Coordinator](roles/coordinator.md) | Coordinate |
+| [Orchestrator](roles/orchestrator.md) | Coordinate, high effort |
+| [Release](roles/release.md) | Coordinate |
+| [Planner](roles/planner.md) | Mechanical |
+| [Delivery](roles/delivery.md) | Implement |
+| [Reviewer](roles/reviewer.md) | Design and review, high effort for the independent review that gates auto-merge |
+| [Debugger](roles/debugger.md) | Implement |
+| [Rebase](roles/rebase.md) | Mechanical |
+| [Journey](roles/journey.md) | Mechanical, medium effort |
+| [Washup](roles/washup.md) | Mechanical |
 
-Claude usage is scarce. Use Claude Opus for review only when Codex cannot do
-the job.
+Commission one independent code review per change, and file follow-up issues
+for edge-case findings. Reserve high effort for risky boot, disk, update,
+security or trust changes and for reviews that gate a hard-to-reverse merge.
 
-Use Astra at low effort for brief or contract reviews and narrow checks.
-For code review, reserve high effort for risky boot, disk, update, security,
-or trust changes and reviews that gate a hard-to-reverse merge. Astra costs
-several times as much as Sol, so commission one code review per change and
-file follow-up issues for edge-case findings. Use Codex `gpt-6.1-terra` at
-medium effort for review or diagnosis dominated by screenshots, images, or
-very large reads.
+## Codex backend
 
-Send rebases and conflict resolution to Codex `gpt-6.1-terra` at low or medium
-effort, or to a Claude Sonnet subagent, not to Sol. Keep Sol for
-implementation.
-
-## Launch Codex jobs
-
-Use `scripts/codex-role` from the task worktree. The repository's Claude
-permissions deny direct Codex launches. See the [launcher reference](../../scripts/README.md#codex-role)
-for job arguments, report recovery, and
+Codex jobs are not used by default. [`scripts/codex-role`](../../scripts/README.md#codex-role)
+remains available as an alternative backend for the delivery, reviewer,
+debugger and rebase roles when a brief asks for it. Launch it from the task
+worktree; the repository's Claude permissions deny direct Codex launches. See
+the launcher reference for job arguments, report recovery, and
 [GitHub credential setup](../../scripts/README.md#provision-github-read-access).
 
 ## Local state

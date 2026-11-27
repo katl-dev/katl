@@ -15,9 +15,10 @@ under [Orchestrator](orchestrator.md). Run the outstanding-journey query in
 AGENTS.md and confirm that no journey release blockers remain before cutting
 a candidate. Qualify the candidate from the release branch. Review the
 generated `RELEASE_NOTES.md` for the exact version before each tag that
-triggers publication. Tag the release candidate and verify its published
-run, then promote the passing candidate by tagging the final version at the
-same commit. Verify final publication.
+triggers publication. Publish the release candidate through the
+[tagging path](#tagging) and verify its published run, then promote the
+passing candidate to the final version at the same commit. Verify final
+publication.
 [Release procedure](../../../docs/development/releases.md)
 
 When a security advisory applies, publish it under the
@@ -28,6 +29,13 @@ before tagging or triggering publication, including candidate and final
 publication and any security advisory. Confirm which actions the authority
 covers and ask the coordinator for any missing authority. Never infer it
 from a previous release, the hand-off, or a passing gate.
+
+**Tagging.** Agents never push tags. Publish through the release action
+([#905](https://github.com/katl-dev/katl/issues/905)) once its setup is in
+place; until then, or if the action fails, the maintainer pushes the tag by
+hand as the fallback. Before the cut, record on the rc tag issue which path
+the release will use and that the maintainer is available for the
+fallback, so that a qualified candidate never waits for it.
 
 **Delivery.** Deliver the milestone's fixes under the Orchestrator's
 [parallel delivery](orchestrator.md#parallel-delivery) rule: start every
