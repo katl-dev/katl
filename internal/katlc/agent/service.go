@@ -56,6 +56,7 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	var deferredPromotions []string
 	if dispatcher == nil {
 		executor := NewExecutor(root, store, agentServer.AgentStartID)
+		executor.nodeBootHealth = agentServer.nodeBootHealth
 		deferredPromotions, err = executor.recoverLivePromotions(ctx, currentBootID())
 		if err != nil {
 			return err

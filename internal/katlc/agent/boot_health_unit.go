@@ -111,7 +111,7 @@ func (s *Server) failedBootHealthDependencies(ctx context.Context) []string {
 // nodeBootHealth refines the persisted boot health, which can describe an
 // earlier boot of the same generation, with this boot's systemd state.
 func (s *Server) nodeBootHealth(ctx context.Context) nodeBootHealth {
-	health := readNodeBootHealth(s.Root)
+	health := readPersistedBootHealth(s.Root)
 	if health.SelectedGenerationID == "" {
 		return health
 	}
@@ -121,6 +121,10 @@ func (s *Server) nodeBootHealth(ctx context.Context) nodeBootHealth {
 		diagnostics = append(diagnostics, health.Diagnostic)
 	}
 	switch run {
+	case bootHealthRunUnknown:
+		health.State = nodeBootHealthUnknown
+		diagnostics = append(diagnostics, "cannot read boot health for this boot from systemd")
+		health.Diagnostic = strings.Join(diagnostics, ". ")
 	case bootHealthRunSettling:
 		health.State = nodeBootHealthPending
 		health.Diagnostic = "boot health is running for this boot"

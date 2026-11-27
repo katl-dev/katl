@@ -894,6 +894,9 @@ func TestMutationPreconditionAcceptsCurrentLiveGenerationReportedByStatus(t *tes
 
 func TestNodeStatusReportsManualFallbackMismatch(t *testing.T) {
 	server := newTestServer(t)
+	server.RunBootHealthStatus = func(context.Context, []string, func(int)) ToolResult {
+		return ToolResult{Stdout: []byte(healthSucceeded)}
+	}
 	writeCleanGenerationZeroState(t, server.Root)
 	spec, _, err := generation.ReadGeneration(server.Root, "generation-0")
 	if err != nil {
@@ -935,10 +938,26 @@ func TestNodeStatusReportsManualFallbackMismatch(t *testing.T) {
 	if !strings.Contains(nodeStatus.GetBootHealthDiagnostic(), "does not match durable boot evidence") {
 		t.Fatalf("boot health diagnostic = %q", nodeStatus.GetBootHealthDiagnostic())
 	}
+
+	server.RunBootHealthStatus = func(context.Context, []string, func(int)) ToolResult {
+		return ToolResult{ExitStatus: 1}
+	}
+	nodeStatus, err = server.GetNodeStatus(t.Context(), &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nodeStatus.GetBootHealthState() != nodeBootHealthUnknown ||
+		!strings.Contains(nodeStatus.GetBootHealthDiagnostic(), "running generation generation-0 does not match durable boot evidence generation-1") ||
+		!strings.Contains(nodeStatus.GetBootHealthDiagnostic(), "cannot read boot health for this boot from systemd") {
+		t.Fatalf("boot health with unreadable systemd state = %s (%s)", nodeStatus.GetBootHealthState(), nodeStatus.GetBootHealthDiagnostic())
+	}
 }
 
 func TestNodeStatusReportsLivePromotedGenerationHealthy(t *testing.T) {
 	server := newTestServer(t)
+	server.RunBootHealthStatus = func(context.Context, []string, func(int)) ToolResult {
+		return ToolResult{Stdout: []byte(healthSucceeded)}
+	}
 	writeCleanGenerationZeroState(t, server.Root)
 	previousSpec, previousStatus, err := generation.ReadGeneration(server.Root, "generation-0")
 	if err != nil {
@@ -1062,7 +1081,7 @@ func TestSubmitOperationRecordsDestructiveReset(t *testing.T) {
 
 func TestSubmitOperationRecordsHostUpgrade(t *testing.T) {
 	server := newTestServer(t)
-	writeKnownGoodHostUpgradeSource(t, server.Root)
+	writeKnownGoodHostUpgradeSource(t, server)
 	var dispatched atomic.Int32
 	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
 		dispatched.Add(1)
@@ -1103,7 +1122,7 @@ func TestSubmitOperationRecordsHostUpgrade(t *testing.T) {
 
 func TestHostUpgradeOperationKindOwnsNewFields(t *testing.T) {
 	server := newTestServer(t)
-	writeKnownGoodHostUpgradeSource(t, server.Root)
+	writeKnownGoodHostUpgradeSource(t, server)
 	nodeStatus, err := server.GetNodeStatus(context.Background(), &agentapi.GetNodeStatusRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -1142,7 +1161,7 @@ func TestHostUpgradeOperationKindOwnsNewFields(t *testing.T) {
 
 func TestHostUpgradeHandoffAcceptsOpaqueConfiguration(t *testing.T) {
 	server := newTestServer(t)
-	writeKnownGoodHostUpgradeSource(t, server.Root)
+	writeKnownGoodHostUpgradeSource(t, server)
 	req := hostUpgradeSubmitRequest("req-target-prepared-configuration")
 	req.OperationKind = operationKindHostUpgradeHandoff
 	req.ExpectedCurrentGenerationId = "generation-0"
@@ -1155,7 +1174,7 @@ func TestHostUpgradeHandoffAcceptsOpaqueConfiguration(t *testing.T) {
 
 func TestHostUpgradeDryRunRejectsUnknownSourceWithoutRecord(t *testing.T) {
 	server := newTestServer(t)
-	writeKnownGoodHostUpgradeSource(t, server.Root)
+	writeKnownGoodHostUpgradeSource(t, server)
 	spec, generationStatus, err := generation.ReadGeneration(server.Root, "generation-0")
 	if err != nil {
 		t.Fatal(err)
@@ -1184,7 +1203,7 @@ func TestHostUpgradeDryRunRejectsUnknownSourceWithoutRecord(t *testing.T) {
 
 func TestHostUpgradeAcceptanceRejectsBootstrappedSourceWithoutKubernetesSysext(t *testing.T) {
 	server := newTestServer(t)
-	writeKnownGoodHostUpgradeSource(t, server.Root)
+	writeKnownGoodHostUpgradeSource(t, server)
 	adminConfig := filepath.Join(server.Root, "etc/kubernetes/admin.conf")
 	if err := os.MkdirAll(filepath.Dir(adminConfig), 0o755); err != nil {
 		t.Fatal(err)
@@ -1218,7 +1237,7 @@ func TestHostUpgradeAcceptanceRejectsBootstrappedSourceWithoutKubernetesSysext(t
 
 func TestHostUpgradeDryRunAllowsHealthySourceBeforeBootstrap(t *testing.T) {
 	server := newTestServer(t)
-	writeKnownGoodHostUpgradeSource(t, server.Root)
+	writeKnownGoodHostUpgradeSource(t, server)
 	req := hostUpgradeSubmitRequest("req-host-upgrade-pre-bootstrap")
 	req.DryRun = true
 
@@ -1238,44 +1257,52 @@ func TestHostUpgradeDryRunAllowsHealthySourceBeforeBootstrap(t *testing.T) {
 	}
 }
 
-func TestHostUpgradeRefusesFailedRunningBoot(t *testing.T) {
-	for _, dryRun := range []bool{true, false} {
-		t.Run(fmt.Sprintf("dry-run=%t", dryRun), func(t *testing.T) {
-			server := newTestServer(t)
-			writeKnownGoodHostUpgradeSource(t, server.Root)
-			unit := &healthUnit{}
-			unit.set(healthDependencyFailed)
-			server.RunBootHealthStatus = unit.runWithFailedSSH
-			server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error { return nil })
-			req := hostUpgradeSubmitRequest("req-host-upgrade-failed-boot")
-			req.DryRun = dryRun
+func TestHostUpgradeRequiresConfirmedBootHealth(t *testing.T) {
+	for _, tc := range []struct{ state, properties, reason string }{
+		{"failed", healthDependencyFailed, "sshd.service"},
+		{"pending", healthStalled, "has not finished for this boot"},
+		{"unknown", "", "cannot read boot health for this boot from systemd"},
+	} {
+		for _, dryRun := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/dry-run=%t", tc.state, dryRun), func(t *testing.T) {
+				server := newTestServer(t)
+				writeKnownGoodHostUpgradeSource(t, server)
+				unit := &healthUnit{}
+				unit.set(tc.properties)
+				server.RunBootHealthStatus = unit.runWithFailedSSH
+				server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error { return nil })
+				req := hostUpgradeSubmitRequest("req-host-upgrade-failed-boot")
+				req.DryRun = dryRun
 
-			_, err := server.SubmitOperation(t.Context(), req)
-			if status.Code(err) != codes.FailedPrecondition ||
-				!strings.Contains(err.Error(), "sshd.service") ||
-				!strings.Contains(err.Error(), "katlctl cluster apply") ||
-				!strings.Contains(err.Error(), "katlctl node reboot <node>") {
-				t.Fatalf("upgrade error = %v, want failed unit and repair guidance", err)
-			}
-			ids, err := server.Store.OperationIDs()
-			if err != nil || len(ids) != 0 {
-				t.Fatalf("operation IDs = %v, %v, want no accepted upgrade", ids, err)
-			}
-		})
+				_, err := server.SubmitOperation(t.Context(), req)
+				if status.Code(err) != codes.FailedPrecondition ||
+					!strings.Contains(err.Error(), tc.state) ||
+					!strings.Contains(err.Error(), tc.reason) ||
+					!strings.Contains(err.Error(), "katlctl node status <node>") ||
+					!strings.Contains(err.Error(), "katlctl cluster apply") ||
+					!strings.Contains(err.Error(), "katlctl node reboot <node>") {
+					t.Fatalf("upgrade error = %v, want %s health with %q and repair guidance", err, tc.state, tc.reason)
+				}
+				ids, err := server.Store.OperationIDs()
+				if err != nil || len(ids) != 0 {
+					t.Fatalf("operation IDs = %v, %v, want no accepted upgrade", ids, err)
+				}
+			})
+		}
 	}
 }
 
 func TestHostUpgradeRejectsDurableRollbackBeforeReboot(t *testing.T) {
 	server := newTestServer(t)
-	writeKnownGoodHostUpgradeSource(t, server.Root)
+	writeKnownGoodHostUpgradeSource(t, server)
 	writeProcCmdline(t, server.Root, "root=PARTUUID=22222222-2222-2222-2222-222222222222 rootfstype=squashfs ro katl.generation=failed-trial katl.root-slot=root-b")
 	req := hostUpgradeSubmitRequest("req-host-upgrade-before-rollback-reboot")
 	req.DryRun = true
 
 	_, err := server.SubmitOperation(context.Background(), req)
 	if status.Code(err) != codes.FailedPrecondition ||
-		!strings.Contains(err.Error(), `running kernel selected generation "failed-trial"`) ||
-		!strings.Contains(err.Error(), "reboot into the selected known-good generation") {
+		!strings.Contains(err.Error(), "running generation failed-trial does not match durable boot evidence generation-0") ||
+		!strings.Contains(err.Error(), "katlctl node reboot <node>") {
 		t.Fatalf("SubmitOperation() error = %v, want actionable boot-evidence refusal", err)
 	}
 	ids, listErr := server.Store.OperationIDs()
@@ -1325,8 +1352,9 @@ func hostUpgradeSubmitRequest(clientRequestID string) *agentapi.SubmitOperationR
 	}
 }
 
-func writeKnownGoodHostUpgradeSource(t *testing.T, root string) {
+func writeKnownGoodHostUpgradeSource(t *testing.T, server *testServer) {
 	t.Helper()
+	root := server.Root
 	writeCleanGenerationZeroState(t, root)
 	writeProcCmdline(t, root, "root=PARTUUID=11111111-1111-1111-1111-111111111111 rootfstype=squashfs ro katl.generation=generation-0 katl.root-slot=root-a")
 	spec, _, err := generation.ReadGeneration(root, "generation-0")
@@ -1346,6 +1374,9 @@ func writeKnownGoodHostUpgradeSource(t *testing.T, root string) {
 	if err := generation.WriteGenerationStatus(root, spec, generationStatus); err != nil {
 		t.Fatal(err)
 	}
+	unit := &healthUnit{}
+	unit.set(healthSucceeded)
+	server.RunBootHealthStatus = unit.run
 }
 
 func TestSubmitOperationRecordsKubernetesBundleRequest(t *testing.T) {

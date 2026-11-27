@@ -478,6 +478,14 @@ func TestWaitNodeBootHealthReportsPhaseChanges(t *testing.T) {
 			want: "reboot node=cp-1 agent-restarted\nreboot node=cp-1 boot-health-healthy\n",
 		},
 		{
+			name: "unreadable boot health recovers",
+			observations: []bootObservation{
+				{agentStart: "after", running: "gen-a", health: "unknown", diagnostic: "cannot read boot health for this boot from systemd", candidate: healthy},
+				{agentStart: "after", running: "gen-a", health: "healthy", candidate: healthy},
+			},
+			want: "reboot node=cp-1 agent-restarted\nreboot node=cp-1 boot-health-unknown\nreboot node=cp-1 boot-health-healthy\n",
+		},
+		{
 			name: "failing boot health",
 			observations: []bootObservation{
 				{agentStart: "before", running: "gen-a", health: "healthy", candidate: healthy},
@@ -518,6 +526,22 @@ func TestWaitNodeBootHealthReportsPhaseChanges(t *testing.T) {
 				t.Fatalf("progress:\n%s\nwant:\n%s", got, test.want)
 			}
 		})
+	}
+}
+
+func TestWaitNodeBootHealthTimeoutReportsLastDiagnostic(t *testing.T) {
+	const diagnostic = "cannot read boot health for this boot from systemd"
+	fake := &fakeKatlcAgentClient{nodeStatus: bootObservation{
+		agentStart: "after", running: "gen-a", health: "unknown", diagnostic: diagnostic,
+	}.status()}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	fake.onGetNodeStatus = cancel
+	installKatlcDial(t, nil, fake)
+
+	_, _, err := waitNodeBootHealth(ctx, bootWaitTarget{nodeName: "cp-1", endpoints: []string{"10.0.0.11:9443"}}, "before", "gen-a", nodeRecoveryRequirement{}, "reboot node=cp-1", &bytes.Buffer{})
+	if !errors.Is(err, context.Canceled) || !strings.Contains(err.Error(), diagnostic) {
+		t.Fatalf("wait error = %v, want context error with %q", err, diagnostic)
 	}
 }
 

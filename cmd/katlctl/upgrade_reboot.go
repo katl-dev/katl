@@ -36,6 +36,7 @@ const (
 	bootHealthHealthy = "healthy"
 	bootHealthPending = "pending"
 	bootHealthFailed  = "failed"
+	bootHealthUnknown = "unknown"
 )
 
 // runningGeneration is the generation the node booted. Active configuration
@@ -182,6 +183,8 @@ func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgen
 			phase("boot-health-healthy")
 		case bootHealthPending, "":
 			phase("boot-health-pending")
+		case bootHealthUnknown:
+			phase("boot-health-unknown")
 		}
 		observed.Status = status
 		observed.Endpoint = endpoint
@@ -193,10 +196,10 @@ func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgen
 
 		switch status.GetBootHealthState() {
 		case bootHealthHealthy:
-		case bootHealthPending, "":
-			return verifiedNodeBoot{}, false, nil
-		default:
+		case bootHealthFailed:
 			return verifiedNodeBoot{}, true, bootHealthFailure(ctx, conn.Client, target, targetGeneration, status)
+		default:
+			return verifiedNodeBoot{}, false, nil
 		}
 		running := runningGeneration(status)
 		if running == targetGeneration && !observed.healthyOn(targetGeneration) {
@@ -246,7 +249,7 @@ func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgen
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			if lastRecovery.Reason != "" {
+			if observed.Status.GetBootHealthState() == bootHealthHealthy && lastRecovery.Reason != "" {
 				return katlcAgentConnection{}, observed, nodeKubernetesRecoveryTimeoutError(nodeName, targetGeneration, lastRecovery.Reason, ctx.Err())
 			}
 			if observed.Status != nil {

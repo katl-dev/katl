@@ -166,3 +166,27 @@ func TestUpgradeAlreadyInstalledReportsFailedBoot(t *testing.T) {
 		t.Fatal("already-installed version caused a mutation")
 	}
 }
+
+func TestUpgradeAlreadyInstalledReportsUnknownBootHealth(t *testing.T) {
+	fake := readyHostUpgradeClient()
+	fake.generation.RuntimeVersion = "2026.9.0"
+	fake.generation.CommitState, fake.generation.BootState, fake.generation.HealthState = "committed", "good", "healthy"
+	fake.nodeStatus.BootHealthState = "unknown"
+	fake.nodeStatus.BootHealthDiagnostic = "cannot read boot health for this boot from systemd"
+	installKatlcDial(t, nil, fake)
+
+	var out, errs bytes.Buffer
+	if err := run(t.Context(), []string{"node", "upgrade", "cp-1", "--config", writeClusterConfig(t), "--version", "2026.9.0", "--output", "json"}, &out, &errs); err != nil {
+		t.Fatal(err)
+	}
+	var report hostUpgradeReport
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.BootHealth != "unknown" || report.BootHealthDiagnostic != fake.nodeStatus.GetBootHealthDiagnostic() {
+		t.Fatalf("same-version upgrade report = %s, want current boot health and diagnostic", out.String())
+	}
+	if fake.submitRequest != nil || len(fake.rebootRequests) != 0 {
+		t.Fatal("already-installed version caused a mutation")
+	}
+}

@@ -60,9 +60,6 @@ func (s *Server) validateHostUpgradePlan(ctx context.Context, req *agentapi.Host
 	if err != nil {
 		return fmt.Errorf("read current generation %q: %w", currentID, err)
 	}
-	if err := validateHostUpgradeBootEvidence(s.Root, currentID, previousSpec); err != nil {
-		return err
-	}
 	kubernetesState, err := s.kubernetesNodeState()
 	if err != nil {
 		return fmt.Errorf("inspect Kubernetes node state: %w", err)
@@ -70,12 +67,23 @@ func (s *Server) validateHostUpgradePlan(ctx context.Context, req *agentapi.Host
 	if err := katlosimage.ValidateHostUpgradeSource(previousSpec, previousStatus, kubernetesState.bootstrapped); err != nil {
 		return fmt.Errorf("%w; inspect the current generation, then recover it or wipe and reinstall this node before retrying the upgrade", err)
 	}
-	// A known-good source may have failed this boot. Preserve the inactive
+	// A known-good source may not have passed this boot. Preserve the inactive
 	// slot until the generation that would replace it as fallback is healthy.
-	if health := s.nodeBootHealth(ctx); health.State == nodeBootHealthFailed {
-		return fmt.Errorf("cannot replace the inactive root slot while the current boot has failed health checks. %s", health.Diagnostic)
+	if err := requireHostUpgradeBootHealth(ctx, s.nodeBootHealth); err != nil {
+		return err
 	}
-	return nil
+	return validateHostUpgradeBootEvidence(s.Root, currentID, previousSpec)
+}
+
+func requireHostUpgradeBootHealth(ctx context.Context, readHealth func(context.Context) nodeBootHealth) error {
+	health := nodeBootHealth{State: nodeBootHealthUnknown, Diagnostic: "current boot health reader is unavailable"}
+	if readHealth != nil {
+		health = readHealth(ctx)
+	}
+	if health.State == nodeBootHealthHealthy {
+		return nil
+	}
+	return fmt.Errorf("cannot replace the inactive root slot until current boot health is confirmed: %s (%s). Run 'katlctl node status <node>', then repair with 'katlctl cluster apply' or 'katlctl node reboot <node>'", health.State, health.Diagnostic)
 }
 
 func validateHostUpgradeBootEvidence(root, currentID string, current generation.GenerationSpec) error {
@@ -89,7 +97,9 @@ func validateHostUpgradeBootEvidence(root, currentID string, current generation.
 		return fmt.Errorf("read running generation from kernel command line: %w", err)
 	}
 	if bootedID != currentID {
-		health := readNodeBootHealth(root)
+		// The executor revalidates the durable source of a live promotion
+		// before writing. Admission checks current-boot health separately.
+		health := readPersistedBootHealth(root)
 		if health.State != nodeBootHealthHealthy {
 			return fmt.Errorf("running kernel selected generation %q is not healthy: %s; reboot into the selected known-good generation before retrying the upgrade", bootedID, health.Diagnostic)
 		}

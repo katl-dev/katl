@@ -511,11 +511,16 @@ spec:
 	if err := os.WriteFile(configPath, []byte(source), 0o600); err != nil {
 		t.Fatalf("write config apply enrollment ClusterConfig: %v", err)
 	}
+	saveVMTestManagementContext(t, ctx, result, katlctl, configPath)
+}
+
+func saveVMTestManagementContext(t *testing.T, ctx context.Context, result Result, katlctl katlctlRunner, configPath string) {
+	t.Helper()
 	identity, err := VMTestManagementIdentity(VMTestManagementClusterName)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := managementidentity.Write(filepath.Join(directory, "management", VMTestManagementClusterName+".katlkey"), identity); err != nil {
+	if err := managementidentity.Write(filepath.Join(filepath.Dir(katlctl.config), "management", VMTestManagementClusterName+".katlkey"), identity); err != nil {
 		t.Fatal(err)
 	}
 	runKatlctl(t, ctx, result, katlctl, "context-save", "context", "save", "--config", configPath)

@@ -57,6 +57,7 @@ type (
 )
 
 type Executor struct {
+	nodeBootHealth         func(context.Context) nodeBootHealth
 	observeUpgradeEtcd     func(context.Context, *operation.EtcdObservation) (*operation.EtcdObservation, error)
 	inspectUpgradeEtcd     func(context.Context, operation.OperationRecord, string) (*operation.EtcdUpgradeEvidence, error)
 	Root                   string
@@ -244,7 +245,7 @@ func (e *Executor) Execute(ctx context.Context, record operation.OperationRecord
 		runCtx, cancel := context.WithTimeout(ctx, hostUpgradeOperationTimeout)
 		defer cancel()
 		if record.OperationKind == operationKindHostUpgradeHandoff {
-			return e.executeHostUpgradeHandoff(runCtx, record)
+			return e.executeHostUpgradeHandoff(runCtx, record, e.resolveHostUpgradeOpaque, e.prepareUpgradeInNamespace)
 		}
 		return e.executeHostUpgrade(runCtx, record)
 	}

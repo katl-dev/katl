@@ -18,7 +18,10 @@ import (
 
 // The target release prepares a complete generation in a private state view
 // before the source mutates the inactive root slot or arms a boot trial.
-func (e *Executor) executeHostUpgradeHandoff(ctx context.Context, record operation.OperationRecord) (resultErr error) {
+func (e *Executor) executeHostUpgradeHandoff(
+	ctx context.Context, record operation.OperationRecord, resolve HostUpgradeResolver,
+	prepare func(context.Context, katlosimage.Payload, generation.UpgradeHandoff, string) (preparedUpgrade, error),
+) (resultErr error) {
 	if record.HostUpgradeRequest == nil {
 		return e.failHostUpgrade(record, "verify-katlos-image", fmt.Errorf("host upgrade request is required"))
 	}
@@ -59,7 +62,7 @@ func (e *Executor) executeHostUpgradeHandoff(ctx context.Context, record operati
 	if err := generation.ValidateMutationBase(e.Root, record.ExpectedCurrentGenerationID); err != nil {
 		return fail("verify-katlos-image", err)
 	}
-	payload, err = e.resolveHostUpgradeOpaque(ctx, request)
+	payload, err = resolve(ctx, request)
 	if err != nil {
 		return fail("verify-katlos-image", err)
 	}
@@ -127,7 +130,7 @@ func (e *Executor) executeHostUpgradeHandoff(ctx context.Context, record operati
 	if record.HostUpgradeRequest.ConfigYAML != "" {
 		handoff.ConfigurationSHA256 = hostUpgradeConfigurationDigest(record.HostUpgradeRequest.ConfigYAML)
 	}
-	prepared, err = e.prepareUpgradeInNamespace(ctx, payload, handoff, record.HostUpgradeRequest.ConfigYAML)
+	prepared, err = prepare(ctx, payload, handoff, record.HostUpgradeRequest.ConfigYAML)
 	if err != nil {
 		return fail("verify-katlos-image", fmt.Errorf("prepare target generation before reboot: %w", err))
 	}
@@ -153,22 +156,11 @@ func (e *Executor) executeHostUpgradeHandoff(ctx context.Context, record operati
 		return fail("verify-katlos-image", err)
 	}
 	phase = "stage-sysupdate-components"
-	updatedRecord, err := e.Store.Update(record.OperationID, "host-upgrade-handoff-mutation-start", "stage-sysupdate-components", func(current operation.OperationRecord) (operation.OperationRecord, error) {
-		current.Phase = "stage-sysupdate-components"
-		current.ExternalMutationStarted = true
-		current.MutationScopes = appendMissing(current.MutationScopes, "root-slot-labels", "runtime-root", "runtime-uki")
-		current.UpdatedAt = e.clock()
-		return current, nil
-	})
+	updatedRecord, err := e.beginHostUpgradeMutation(ctx, record.OperationID, "host-upgrade-handoff-mutation-start", slots.InactivePartUUID)
 	if err != nil {
 		return err
 	}
 	record = updatedRecord
-	if err := generation.InvalidateSlot(e.Root, slots.InactivePartUUID, e.clock(),
-		func(root, entry string) error { return e.SetBootDefault(ctx, root, entry) },
-		func(root, entry string) error { return e.SetBootOneshot(ctx, root, entry) }); err != nil {
-		return fail("stage-sysupdate-components", err)
-	}
 	if err := e.prepareSysupdateSlots(ctx, slots); err != nil {
 		return fail("stage-sysupdate-components", err)
 	}

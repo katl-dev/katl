@@ -2381,6 +2381,35 @@ func TestHostUpgradeReportsObservedRebootOutcomes(t *testing.T) {
 			t.Fatalf("report = %#v", report)
 		}
 	})
+
+	t.Run("unreadable current boot", func(t *testing.T) {
+		const diagnostic = "cannot read boot health for this boot from systemd"
+		fake := readyHostUpgradeClient()
+		fake.onReboot = func(request *agentapi.RebootRequest) {
+			fake.nodeStatus.AgentStartId = "after"
+			fake.nodeStatus.CurrentGenerationId = request.TargetGenerationId
+			fake.nodeStatus.BootHealthState = bootHealthUnknown
+			fake.nodeStatus.BootHealthDiagnostic = diagnostic
+			fake.generation = &agentapi.Generation{
+				GenerationId: request.TargetGenerationId,
+				HealthState:  generation.HealthStateUnhealthy,
+			}
+		}
+		installKatlcDial(t, nil, fake)
+
+		var stdout bytes.Buffer
+		err := run(t.Context(), []string{"node", "upgrade", "cp-1", "--version", "2026.9.0-beta.16", "--config", writeClusterConfig(t), "--timeout", "50ms", "--output", "json"}, &stdout, io.Discard)
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), diagnostic) {
+			t.Fatalf("upgrade error = %v, want timeout with %q", err, diagnostic)
+		}
+		var report hostUpgradeReport
+		if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+			t.Fatal(err)
+		}
+		if !report.Rebooted || report.BootHealth != bootHealthUnknown || report.BootHealthDiagnostic != diagnostic {
+			t.Fatalf("unreadable current boot report = %+v", report)
+		}
+	})
 }
 
 func readyWorkerKubernetesStatus() *agentapi.KubernetesStatus {
@@ -3151,6 +3180,7 @@ type fakeKatlcAgentClient struct {
 	generation              *agentapi.Generation
 	generationList          *agentapi.ListGenerationsResponse
 	generationRequest       *agentapi.GetGenerationRequest
+	generationErr           error
 	operationStatus         *agentapi.OperationStatus
 	operationRequest        *agentapi.GetOperationRequest
 	operations              *agentapi.ListOperationsResponse
@@ -3426,7 +3456,7 @@ func (c *fakeKatlcAgentClient) ListGenerations(context.Context, *agentapi.ListGe
 
 func (c *fakeKatlcAgentClient) GetGeneration(_ context.Context, req *agentapi.GetGenerationRequest, _ ...grpc.CallOption) (*agentapi.Generation, error) {
 	c.generationRequest = req
-	return c.generation, nil
+	return c.generation, c.generationErr
 }
 
 func writeConfigApplyFixture(t *testing.T, root string, fixture configApplyFixture) {

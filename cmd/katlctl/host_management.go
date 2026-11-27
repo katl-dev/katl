@@ -51,11 +51,13 @@ type hostStatusReport struct {
 	Endpoint             string                      `json:"endpoint"`
 	Health               string                      `json:"health"`
 	Generation           string                      `json:"generation"`
+	ActiveGeneration     string                      `json:"activeGeneration,omitempty"`
 	KatlOSVersion        string                      `json:"katlosVersion,omitempty"`
 	KatlOSFlavour        string                      `json:"katlosFlavour,omitempty"`
 	NextBoot             string                      `json:"nextBoot,omitempty"`
 	Activity             string                      `json:"activity"`
 	BootHealthDiagnostic string                      `json:"bootHealthDiagnostic,omitempty"`
+	GenerationNote       string                      `json:"generationNote,omitempty"`
 	Kubernetes           *kubernetesStatusReport     `json:"kubernetes,omitempty"`
 	APIProxy             *apiProxyStatusReport       `json:"apiProxy,omitempty"`
 	ControlPlaneEndpoint *controlPlaneEndpointReport `json:"controlPlaneEndpoint,omitempty"`
@@ -291,8 +293,9 @@ func runHostReboot(ctx context.Context, opts hostRebootOptions, stdout, stderr i
 		}
 	}
 
-	status, _, _, err := readHostState(session.ctx, session.client, node)
+	status, err := session.client.GetNodeStatus(session.ctx, &agentapi.GetNodeStatusRequest{})
 	if err != nil {
+		err = fmt.Errorf("read status from %s: %w", node, err)
 		if !desiredEndpoint.IsZero() && managementUnreachable(err) {
 			return fmt.Errorf("%w; %s", err, movedHint(node, desiredEndpoint, opts.target.clusterConfigPath))
 		}
@@ -459,14 +462,14 @@ func (shutdown *acknowledgedShutdown) waitUnreachable(ctx context.Context) error
 
 func readStatusReport(ctx context.Context, client agentapi.KatlcAgentClient, node string, endpoint inventory.HostPort, configPath string, credentials *managementidentity.ClientCredentials, observation *transport.ManagementObservation) (hostStatusReport, *agentapi.NodeStatus, error) {
 	status, current, observedAt, err := readHostState(ctx, client, node)
-	if err == nil {
-		return newHostStatusReport(node, endpoint.String(), status, current, observedAt), status, nil
+	if status != nil {
+		return newHostStatusReport(node, endpoint.String(), status, current, observedAt, err), status, nil
 	}
 
 	// The fallback belongs to status. A successful plaintext status read or a
 	// failed generation lookup after it gives no reason to change credentials.
 	configPath = strings.TrimSpace(configPath)
-	if errors.Is(err, transport.ErrManagementRPCInconclusive) || status != nil || credentials == nil || credentials.Authentication != managementidentity.TrustedNetwork ||
+	if errors.Is(err, transport.ErrManagementRPCInconclusive) || credentials == nil || credentials.Authentication != managementidentity.TrustedNetwork ||
 		configPath == "" || ctx.Err() != nil || !observation.PlaintextClosed() {
 		return hostStatusReport{}, nil, err
 	}
@@ -506,10 +509,10 @@ func readStatusReport(ctx context.Context, client agentapi.KatlcAgentClient, nod
 	}
 	defer conn.Close()
 	status, current, observedAt, retryErr = readHostState(ctx, conn.Client, node)
-	if retryErr != nil {
+	if status == nil {
 		return hostStatusReport{}, nil, fmt.Errorf("%w; using enable-mtls secrets: %v", err, retryErr)
 	}
-	report := newHostStatusReport(node, endpoint.String(), status, current, observedAt)
+	report := newHostStatusReport(node, endpoint.String(), status, current, observedAt, retryErr)
 	report.Management.addEnableMTLSGuidance(node, invocation)
 	return report, status, nil
 }
@@ -520,10 +523,7 @@ func readHostState(ctx context.Context, client agentapi.KatlcAgentClient, node s
 		return nil, nil, time.Time{}, fmt.Errorf("read status from %s: %w", node, err)
 	}
 	observedAt := time.Now()
-	generationID := strings.TrimSpace(status.GetCurrentGenerationId())
-	if status.GetBootHealthState() == "failed" && strings.TrimSpace(status.GetSelectedGenerationId()) != "" {
-		generationID = strings.TrimSpace(status.GetSelectedGenerationId())
-	}
+	generationID := statusGenerationID(status)
 	if generationID == "" {
 		return status, nil, observedAt, fmt.Errorf("%s did not report a current KatlOS generation", node)
 	}
@@ -534,7 +534,16 @@ func readHostState(ctx context.Context, client agentapi.KatlcAgentClient, node s
 	return status, current, observedAt, nil
 }
 
-func newHostStatusReport(node, endpoint string, status *agentapi.NodeStatus, current *agentapi.Generation, observedAt time.Time) hostStatusReport {
+func statusGenerationID(status *agentapi.NodeStatus) string {
+	switch status.GetBootHealthState() {
+	case bootHealthFailed, bootHealthUnknown:
+		return runningGeneration(status)
+	default:
+		return strings.TrimSpace(status.GetCurrentGenerationId())
+	}
+}
+
+func newHostStatusReport(node, endpoint string, status *agentapi.NodeStatus, current *agentapi.Generation, observedAt time.Time, generationErr error) hostStatusReport {
 	activity := "idle"
 	if status.GetOperationLockHeld() {
 		activity = "busy"
@@ -557,7 +566,14 @@ func newHostStatusReport(node, endpoint string, status *agentapi.NodeStatus, cur
 		ControlPlaneEndpoint: newControlPlaneEndpointReport(status.GetControlPlaneEndpoint()),
 		Management:           newManagementStatusReport(status.GetManagement(), observedAt),
 	}
-	if target := strings.TrimSpace(status.GetBootTargetGenerationId()); target != "" && target != current.GetGenerationId() {
+	if generationErr != nil {
+		report.Generation = statusGenerationID(status)
+		report.GenerationNote = generationErr.Error()
+	}
+	if active := strings.TrimSpace(status.GetCurrentGenerationId()); active != "" && active != report.Generation {
+		report.ActiveGeneration = active
+	}
+	if target := strings.TrimSpace(status.GetBootTargetGenerationId()); target != "" && target != report.Generation {
 		report.NextBoot = target
 	}
 	for _, volume := range status.GetVolumes() {
@@ -668,6 +684,12 @@ func writeHostStatus(stdout io.Writer, output string, report hostStatusReport, v
 	}
 	if report.BootHealthDiagnostic != "" {
 		w.row("", report.BootHealthDiagnostic)
+	}
+	if report.ActiveGeneration != "" {
+		w.row("", fmt.Sprintf("Active generation recorded on disk: %s", report.ActiveGeneration))
+	}
+	if report.GenerationNote != "" {
+		w.row("", "Note: "+report.GenerationNote)
 	}
 	if report.Kubernetes != nil && report.Kubernetes.FailureReason != "" {
 		w.row("", "", report.Kubernetes.FailureReason)
