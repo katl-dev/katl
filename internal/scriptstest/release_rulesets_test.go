@@ -96,7 +96,12 @@ func TestReleaseRulesetFinalTags(t *testing.T) {
 	for _, ref := range []string{"refs/tags/v2026.12.1", "refs/tags/v2027.1.0"} {
 		assertRulesetCoverage(t, ruleset, ref, true)
 	}
-	for _, ref := range []string{"refs/tags/v2026.12.1-rc.1", "refs/tags/v2026.12.1-rc.12"} {
+	for _, ref := range []string{
+		"refs/tags/v2026.12.1-rc.1",
+		"refs/tags/v2026.12.1-rc.12",
+		"refs/tags/v2026.12.1-alpha.1",
+		"refs/tags/v2026.12.1-beta.1",
+	} {
 		assertRulesetCoverage(t, ruleset, ref, false)
 	}
 
@@ -112,7 +117,14 @@ func TestReleaseRulesetFinalTags(t *testing.T) {
 func TestReleaseRulesetBranchCreation(t *testing.T) {
 	creation := readReleaseRuleset(t, branchCreationRuleset)
 	protection := readReleaseRuleset(t, releaseBranchRuleset)
-	assertRulesetCoverage(t, creation, "refs/heads/release/2026.12.1", true)
+	for _, ref := range []string{
+		"refs/heads/release/2026.12.1",
+		"refs/heads/release/2027.1.0",
+		"refs/heads/release/2026.12.x",
+	} {
+		assertRulesetCoverage(t, creation, ref, true)
+		assertRulesetCoverage(t, protection, ref, true)
+	}
 	for _, ref := range []string{
 		"refs/heads/rel/903-release-workflow",
 		"refs/heads/main",
