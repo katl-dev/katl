@@ -176,15 +176,25 @@ The Release workflow's decide job runs this and acts on its JSON output.
 run named by `GITHUB_RUN_ID` is not counted as an active run. It exits zero
 for every decision, a refusal included.
 
+## Check the release credential
+
+After cutting `release/<version>` and before dispatching a candidate or final
+release, pass the branch to `--ref`.
+
+```sh
+gh workflow run release-credential.yml --ref release/2026.12.0
+```
+
+Approve the `release` deployment and confirm that the run summary reports that
+the `katl-release` App minted a token scoped to this repository with Contents
+write permission and that the token read repository contents. Final
+publication is the first step that exercises the App's final-tag ruleset
+bypass.
+
 ## Publish a qualified bundle
 
 The Release workflow uses these commands after qualification. Submit release
 work through the [Release workflow](../../docs/internal/release-state-machine.md#actions).
-
-After cutting `release/<version>` and before the first final publication, run
-`gh workflow run release-credential.yml --ref release/<version>` with the final
-version in the branch name. Approve the `release` deployment and check that the
-run summary says "The katl-release credential is ready for final publication."
 
 ### `require-candidate`
 

@@ -355,6 +355,10 @@ exists. Green alone does not imply that: row 17 supersedes a green candidate.
 
 ## Releasable final
 
+After cutting `release/<version>`,
+[check the release credential](../../cmd/katl-release/README.md#check-the-release-credential)
+before dispatching a candidate or final release.
+
 The final rebuilds the bytes at the candidate's commit `C` because the
 bytes embed the version. The called build repeats the VM regression lanes
 for both flavours on every candidate and final.

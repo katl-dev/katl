@@ -1,6 +1,7 @@
 package scriptstest
 
 import (
+	"io/fs"
 	"maps"
 	"os"
 	"os/exec"
@@ -150,20 +151,15 @@ func TestReleaseCredential(t *testing.T) {
 		t.Errorf("%s references %d secrets, want only the release App private key", checkFile, len(refs))
 	}
 
-	allWorkflows(t, func(file string, workflow workflowFile) {
-		for id, job := range workflow.Jobs {
-			for _, step := range job.Steps {
-				if !strings.HasPrefix(step.Uses, "actions/create-github-app-token@") {
-					continue
-				}
-				for _, value := range step.With {
-					if strings.Contains(value, "KATL_RELEASE_APP_") {
-						t.Errorf("%s job %s mints a release App token outside the shared action", file, id)
-					}
-				}
-			}
-		}
-	})
+	checkDir := t.TempDir()
+	checkSummary := filepath.Join(checkDir, "summary")
+	if output, err := runReleaseStep(checkDir, job.Steps[2].Run, "GITHUB_STEP_SUMMARY="+checkSummary); err != nil {
+		t.Fatalf("credential check summary: %v: %s", err, output)
+	}
+	const wantSummary = "The katl-release App minted a token scoped to this repository with Contents write permission. The token read repository contents.\n"
+	if body, err := os.ReadFile(checkSummary); err != nil || string(body) != wantSummary {
+		t.Errorf("credential check summary = %q, %v", body, err)
+	}
 
 	workflow, _ := readReleaseWorkflow(t)
 	credential := -1
@@ -209,13 +205,76 @@ func TestReleaseCredential(t *testing.T) {
 	}
 }
 
+func TestReleaseAppReferences(t *testing.T) {
+	// TestReleaseCredential pins both references to the shared action's inputs.
+	// Any additional reference, including in a different YAML field, is invalid.
+	allowed := map[string]int{
+		"workflows/release-credential.yml":                         2,
+		"workflows/" + filepath.Base(releasestate.ReleaseWorkflow): 2,
+	}
+	root := os.DirFS(filepath.Join(repoRoot(t), ".github"))
+	err := fs.WalkDir(root, ".", func(path string, entry fs.DirEntry, err error) error {
+		if err != nil || entry.IsDir() {
+			return err
+		}
+		ext := filepath.Ext(path)
+		workflow := filepath.Dir(path) == "workflows" && (ext == ".yml" || ext == ".yaml")
+		if !workflow && entry.Name() != "action.yml" && entry.Name() != "action.yaml" {
+			return nil
+		}
+		data, err := fs.ReadFile(root, path)
+		if err != nil {
+			return err
+		}
+		var document any
+		if err := yaml.Unmarshal(data, &document); err != nil {
+			t.Fatalf("parse %s: %v", path, err)
+		}
+		if got, want := releaseAppReferences(document), allowed[path]; got != want {
+			t.Errorf("%s has %d KATL_RELEASE_APP_ references, want %d", path, got, want)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func releaseAppReferences(value any) int {
+	var count int
+	switch value := value.(type) {
+	case string:
+		return strings.Count(strings.ToUpper(value), "KATL_RELEASE_APP_")
+	case []any:
+		for _, item := range value {
+			count += releaseAppReferences(item)
+		}
+	case map[string]any:
+		for key, item := range value {
+			count += releaseAppReferences(key) + releaseAppReferences(item)
+		}
+	case map[any]any:
+		for key, item := range value {
+			count += releaseAppReferences(key) + releaseAppReferences(item)
+		}
+	}
+	return count
+}
+
 func TestReleaseCredentialScope(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "actions", "release-credential", "action.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var action struct {
-		Runs struct{ Steps []workflowStep }
+		Runs struct {
+			Steps []struct {
+				Name, Run, Uses string
+				Env, With       map[string]string
+				If              yaml.Node
+				ContinueOnError yaml.Node `yaml:"continue-on-error"`
+			}
+		}
 	}
 	if err := yaml.Unmarshal(data, &action); err != nil {
 		t.Fatal(err)
@@ -228,17 +287,73 @@ func TestReleaseCredentialScope(t *testing.T) {
 		"repositories":        "${{ github.event.repository.name }}",
 		"permission-contents": "write",
 	}
-	var mints int
+	var mints, checks int
+	var verify string
 	for _, step := range action.Runs.Steps {
+		if apiWrites(step.Run, "") {
+			t.Errorf("credential step %q makes a mutating API call", step.Name)
+		}
+		if step.ContinueOnError.Kind != 0 {
+			t.Errorf("credential step %q sets continue-on-error", step.Name)
+		}
+		if step.If.Kind != 0 && (step.Name != "Report a token mint failure" ||
+			step.If.Value != "failure() && steps.mint.outcome == 'failure'") {
+			t.Errorf("credential step %q is conditional", step.Name)
+		}
 		if strings.HasPrefix(step.Uses, "actions/create-github-app-token@") {
 			mints++
-			if !maps.Equal(step.With, want) || step.If != "" || step.ContinueOnError {
-				t.Errorf("mint step = %+v, want a mandatory token scoped to the release repository", step)
+			if !maps.Equal(step.With, want) || step.If.Kind != 0 {
+				t.Error("mint step must request a token scoped to the release repository")
+			}
+		}
+		if step.Env["GH_TOKEN"] == "${{ steps.mint.outputs.token }}" {
+			checks++
+			verify = step.Run
+			if step.If.Kind != 0 {
+				t.Error("repository scope and access verification must run after minting succeeds")
 			}
 		}
 	}
 	if mints != 1 {
 		t.Errorf("token mint steps = %d, want 1", mints)
+	}
+	if checks != 1 || verify == "" {
+		t.Fatal("want one verification step using the minted token")
+	}
+
+	const repo = "katl-dev/katl"
+	for _, tc := range []struct {
+		name, repos, readStatus, wantError string
+	}{
+		{name: "exact", repos: repo, readStatus: "0"},
+		{name: "extra repository", repos: repo + "\nkatl-dev/other", readStatus: "0", wantError: "must list only " + repo},
+		{name: "wrong repository", repos: "katl-dev/other", readStatus: "0", wantError: "must list only " + repo},
+		{name: "unreadable repository", repos: repo, readStatus: "1", wantError: "Could not read repository contents"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			const gh = `#!/bin/sh
+case "$*" in
+  "api --method GET --paginate /installation/repositories --jq .repositories[].full_name")
+    printf '%s\n' "$INSTALLATION_REPOSITORIES";;
+  "api --method GET /repos/$GITHUB_REPOSITORY/contents")
+    exit "$REPOSITORY_READ_STATUS";;
+  *) exit 2;;
+esac
+`
+			if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(gh), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			out, err := runReleaseStep(dir, verify, "PATH="+dir+":"+os.Getenv("PATH"), "GITHUB_REPOSITORY="+repo,
+				"INSTALLATION_REPOSITORIES="+tc.repos, "REPOSITORY_READ_STATUS="+tc.readStatus)
+			if tc.wantError == "" {
+				if err != nil {
+					t.Fatalf("verification failed: %v: %s", err, out)
+				}
+			} else if err == nil || !strings.Contains(string(out), tc.wantError) {
+				t.Fatalf("verification output = %q, %v, want error containing %q", out, err, tc.wantError)
+			}
+		})
 	}
 }
 
