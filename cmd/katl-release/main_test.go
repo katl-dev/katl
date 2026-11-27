@@ -187,7 +187,7 @@ func TestInspect(t *testing.T) {
 		{"wrong workflow", func(f *githubFixture) { f.run.Path = ".github/workflows/other.yml" }, "pushed KatlOS tag"},
 		{"bundle missing", func(f *githubFixture) { f.artifacts = nil }, "unavailable"},
 		{"bundle expired", func(f *githubFixture) { f.artifacts[0].Expired = true }, "expired"},
-		{"ambiguous", func(f *githubFixture) { f.artifacts = append(f.artifacts, f.artifacts[0]) }, "multiple final bundles"},
+		{"ambiguous", func(f *githubFixture) { f.artifacts = append(f.artifacts, f.artifacts[0]) }, "multiple matching release bundles"},
 		{"wrong commit", func(f *githubFixture) { f.run.Commit = strings.Repeat("a", 40) }, "unavailable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -238,10 +238,10 @@ func TestReleaseRunBundle(t *testing.T) {
 		{"candidate", "release/2026.12.1", "katl-2026.12.1-rc.2-x86_64-1234567890ab", "", ""},
 		{"final", "release/2026.12.1", "katl-2026.12.1-x86_64-1234567890ab", "", ""},
 		{"main", "main", "katl-2026.12.1-rc.2-x86_64-1234567890ab", "a dispatched Release run", ""},
-		{"other version", "release/2026.12.1", "katl-2026.12.10-rc.2-x86_64-1234567890ab", "unavailable", ""},
+		{"other version", "release/2026.12.1", "katl-2026.12.10-rc.2-x86_64-1234567890ab", "release bundle for v2026.12.1 at " + testCommit + " is unavailable", ""},
 		{"other stage", "release/2026.12.1", "katl-2026.12.1-beta.2-x86_64-1234567890ab", "unavailable", ""},
 		{"other commit", "release/2026.12.1", "katl-2026.12.1-rc.2-x86_64-111111111111", "unavailable", ""},
-		{"ambiguous", "release/2026.12.1", "katl-2026.12.1-rc.2-x86_64-1234567890ab", "multiple final bundles", "katl-2026.12.1-x86_64-1234567890ab"},
+		{"ambiguous", "release/2026.12.1", "katl-2026.12.1-rc.2-x86_64-1234567890ab", "multiple matching release bundles", "katl-2026.12.1-x86_64-1234567890ab"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture(t)

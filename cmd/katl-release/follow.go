@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,10 +43,10 @@ func release(ctx context.Context, args []string, stdout, stderr io.Writer, r *re
 	if err != nil {
 		return err
 	}
-	printDecision(stdout, r, d)
 	if d.Action == releasestate.Refuse {
 		return errors.New(d.Message)
 	}
+	printDecision(stdout, r, d)
 
 	version, _ := releasestate.ParseRef(ref)
 	branch := releasestate.Branch(version)
@@ -59,12 +60,14 @@ func release(ctx context.Context, args []string, stdout, stderr io.Writer, r *re
 	}
 	// A failed response can still mean GitHub accepted the dispatch.
 	// Repeating the write could start a second run.
-	if _, err := call("gh", dispatch...); err != nil {
-		return ghFailure("gh workflow run "+path.Base(releasestate.ReleaseWorkflow), err, stderrOf(err))
-	}
-	run, err := findDispatch(ctx, r, version, before.ID, d.Commit)
+	output, err := call("gh", dispatch...)
 	if err != nil {
-		return err
+		return fmt.Errorf("%w\nGitHub may have accepted the dispatch. Run scripts/katl-release status %s before dispatching again.",
+			ghFailure("gh workflow run "+path.Base(releasestate.ReleaseWorkflow), err, stderrOf(err)), version)
+	}
+	run, err := dispatchedRun(ctx, r, version, before.ID, d.Commit, string(output))
+	if err != nil {
+		return resumeWait(version, err)
 	}
 	return followRelease(ctx, r, version, run, stdout, stderr)
 }
@@ -72,6 +75,9 @@ func release(ctx context.Context, args []string, stdout, stderr io.Writer, r *re
 func waitRelease(ctx context.Context, args []string, stdout, stderr io.Writer, r *reader) error {
 	if len(args) != 1 {
 		return errors.New("usage: scripts/katl-release wait VERSION")
+	}
+	if err := r.requireReleaseWorkflow(ctx); err != nil {
+		return err
 	}
 	ref := releasestate.RefForVersion(args[0])
 	version, ok := releasestate.ParseRef(ref)
@@ -99,7 +105,7 @@ func (r *reader) dispatchedRuns(ctx context.Context, branch string) ([]restRun, 
 	}
 	var dispatched []restRun
 	for _, run := range runs {
-		if run.ID > 0 && run.Branch == branch && run.Path == releasestate.ReleaseWorkflow && run.Event == releaseEvent {
+		if run.isReleaseDispatch(branch) {
 			dispatched = append(dispatched, run)
 		}
 	}
@@ -117,11 +123,46 @@ func (r *reader) newestReleaseRun(ctx context.Context, branch string) (restRun, 
 	return newest, err
 }
 
+func (run restRun) isReleaseDispatch(branch string) bool {
+	return run.ID > 0 && run.Branch == branch && run.Path == releasestate.ReleaseWorkflow && run.Event == releaseEvent
+}
+
+func dispatchedRun(ctx context.Context, r *reader, version releaseversion.Version, after int64, commit, output string) (restRun, error) {
+	// gh prints the run URL on its own line when the dispatch response has one.
+	prefix := r.server + "/" + r.repository + "/actions/runs/"
+	for line := range strings.SplitSeq(output, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "https://") && !strings.HasPrefix(line, "http://") {
+			continue
+		}
+		number, ok := strings.CutPrefix(line, prefix)
+		id, err := strconv.ParseInt(number, 10, 64)
+		if !ok || err != nil || id <= 0 || strconv.FormatInt(id, 10) != number {
+			return restRun{}, fmt.Errorf("gh returned an invalid Release run URL %q", line)
+		}
+
+		var run restRun
+		if err := r.decode(ctx, r.repo(fmt.Sprintf("actions/runs/%d", id)), &run); err != nil {
+			return restRun{}, fmt.Errorf("read dispatched Release run %s: %w", line, err)
+		}
+		branch := releasestate.Branch(version)
+		if run.ID != id || !run.isReleaseDispatch(branch) || run.SHA != commit {
+			return restRun{}, fmt.Errorf("The dispatched run %s reported ID %d, branch %s, workflow %s, event %s and commit %s. Expected Release on %s at %s",
+				line, run.ID, run.Branch, run.Path, run.Event, run.SHA, branch, commit)
+		}
+		return run, nil
+	}
+	return findDispatch(ctx, r, version, after, commit)
+}
+
+func resumeWait(version releaseversion.Version, err error) error {
+	return fmt.Errorf("%w\nRun scripts/katl-release wait %s.", err, version)
+}
+
 func findDispatch(ctx context.Context, r *reader, version releaseversion.Version, after int64, commit string) (restRun, error) {
 	deadline, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	branch := releasestate.Branch(version)
-	recover := fmt.Sprintf("Run scripts/katl-release wait %s.", version)
 	backoff := retry.NewBackoff(2*time.Second, 15*time.Second)
 	var moved restRun
 	run, err := retry.Await(deadline, &backoff, func(ctx context.Context) (restRun, bool, error) {
@@ -145,7 +186,7 @@ func findDispatch(ctx context.Context, r *reader, version releaseversion.Version
 			}
 		}
 		if len(urls) > 1 {
-			return restRun{}, false, fmt.Errorf("Multiple Release runs for %s at %s appeared: %s. %s", version, commit, strings.Join(urls, ", "), recover)
+			return restRun{}, false, fmt.Errorf("Multiple Release runs for %s at %s appeared: %s", version, commit, strings.Join(urls, ", "))
 		}
 		return matching, matching.ID > 0, nil
 	}, nil)
@@ -153,10 +194,10 @@ func findDispatch(ctx context.Context, r *reader, version releaseversion.Version
 		return run, err
 	}
 	if moved.ID > 0 {
-		return restRun{}, fmt.Errorf("%s moved from %s to %s between the decision and dispatch. The Release run will refuse (row 3) if its commit differs from the branch head when Decide runs: %s. %s",
-			branch, commit, moved.SHA, moved.HTMLURL, recover)
+		return restRun{}, fmt.Errorf("%s moved from %s to %s between the decision and dispatch. The Release run will refuse (row 3) if its commit differs from the branch head when Decide runs: %s",
+			branch, commit, moved.SHA, moved.HTMLURL)
 	}
-	return restRun{}, fmt.Errorf("The dispatch was accepted but no Release run for %s at %s appeared. %s", version, commit, recover)
+	return restRun{}, fmt.Errorf("The dispatch was accepted but no Release run for %s at %s appeared.", version, commit)
 }
 
 type releaseProgress struct {
@@ -215,21 +256,24 @@ func followRelease(ctx context.Context, r *reader, version releaseversion.Versio
 		return run, run.Status == "completed", nil
 	}, nil)
 	if err != nil {
-		return err
+		return resumeWait(version, err)
 	}
 
 	ref := releasestate.Ref(version)
+	// The run detail is terminal even if the active-run listing still includes it.
+	readback := *r
+	readback.self = run.ID
 	if run.Conclusion != "success" {
-		return releaseFailure(ctx, r, ref, run, selected.HTMLURL, jobs)
+		return releaseFailure(ctx, &readback, version, run, selected.HTMLURL, jobs, stderr)
 	}
-	d, err := decide(ctx, r, ref, "", "")
+	d, err := decide(ctx, &readback, ref, "", "")
 	if err != nil {
-		return fmt.Errorf("The Release run succeeded, but %w (%s)", err, selected.HTMLURL)
+		return resumeWait(version, fmt.Errorf("The Release run succeeded, but %w (%s)", err, selected.HTMLURL))
 	}
-	return confirmRelease(stdout, version, selected, d)
+	return confirmRelease(stdout, stderr, r, version, run, d)
 }
 
-func releaseFailure(ctx context.Context, r *reader, ref string, run restRun, url string, jobs []restJob) error {
+func releaseFailure(ctx context.Context, r *reader, version releaseversion.Version, run restRun, url string, jobs []restJob, stderr io.Writer) error {
 	var failed []string
 	var refused bool
 	for _, job := range jobs {
@@ -247,41 +291,54 @@ func releaseFailure(ctx context.Context, r *reader, ref string, run restRun, url
 	}
 	failure := fmt.Errorf("Release run %s (%s)", outcome, url)
 	if refused {
-		d, err := decide(ctx, r, ref, run.SHA, "")
+		d, err := decide(ctx, r, releasestate.Ref(version), "", "")
 		if err != nil {
-			return errors.Join(failure, err)
+			return resumeWait(version, errors.Join(failure, fmt.Errorf("read the current release state: %w", err)))
 		}
-		if d.Action == releasestate.Refuse {
-			return errors.Join(failure, errors.New(d.Message))
+		fmt.Fprintln(stderr, "Current release decision without a retry reason:")
+		printDecision(stderr, r, d)
+		if d.Action != releasestate.Refuse {
+			fmt.Fprintln(stderr, "The run's refusal no longer applies.")
 		}
 	}
 	return failure
 }
 
-func confirmRelease(stdout io.Writer, version releaseversion.Version, run restRun, d releasestate.Decision) error {
+func confirmRelease(stdout, stderr io.Writer, r *reader, version releaseversion.Version, run restRun, d releasestate.Decision) error {
 	final := d.FinalRecord
 	isFinal := false
 	if final != nil {
 		target, err := runstatus.ParseAttemptURL(final.URL)
 		isFinal = err == nil && target.Attempt.Run == run.ID
 	}
+	rc := d.CandidateRecord
 	switch {
-	case isFinal && d.State == "released":
+	case isFinal && d.State == releasestate.StateReleased:
 		fmt.Fprintln(stdout, d.Message)
 		fmt.Fprintf(stdout, "%s sha256:%s\n", final.Tag, final.Digest)
 		return nil
-	case !isFinal && d.State == "superseded":
+	case !isFinal && d.State == releasestate.StateSuperseded:
 		fmt.Fprintf(stdout, "The Release run succeeded, and a new commit on %s supersedes its candidate: %s\n", releasestate.Branch(version), run.HTMLURL)
 		return nil
-	case !isFinal && (d.State == "final-start" || d.State == "extensions-already-published") &&
-		d.CandidateRecord != nil && d.CandidateRecord.Phase == releasestate.Qualified:
-		fmt.Fprintf(stdout, "Published %s sha256:%s\n", d.CandidateRecord.Tag, d.CandidateRecord.Digest)
-		return nil
-	default:
-		message := d.Message
-		if message == "" {
-			message = d.State
+	case !isFinal && (d.State == releasestate.StateFinalStart || d.State == releasestate.StateExtensionsAlreadyPublished) &&
+		rc != nil && rc.Phase == releasestate.Qualified:
+		if rc.Commit != run.SHA {
+			return fmt.Errorf("The Release run succeeded at %s (%s). The current candidate %s is at %s. Run scripts/katl-release status %s.",
+				run.SHA, run.HTMLURL, rc.Tag, rc.Commit, version)
 		}
-		return fmt.Errorf("The Release run succeeded, but %s (%s)", message, run.HTMLURL)
+		fmt.Fprintf(stdout, "Published %s sha256:%s\n", rc.Tag, rc.Digest)
+		if d.Message != "" {
+			fmt.Fprintf(stderr, "Warning: %s\n", d.Message)
+		}
+		return nil
+	case d.State == releasestate.StateCandidateIncomplete || d.State == releasestate.StateFinalUnapproved:
+		printDecision(stderr, r, d)
+		return fmt.Errorf("The Release run succeeded (%s). v%s qualified and still awaits publication. Run scripts/katl-release release %s to finish publication.",
+			run.HTMLURL, d.Version, version)
+	case d.Action == releasestate.Refuse:
+		return fmt.Errorf("The Release run succeeded, but %s (%s)", d.Message, run.HTMLURL)
 	}
+
+	printDecision(stderr, r, d)
+	return fmt.Errorf("The Release run succeeded (%s), but publication could not be confirmed. Run scripts/katl-release status %s", run.HTMLURL, version)
 }

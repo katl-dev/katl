@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -193,7 +194,7 @@ func TestReleaseRefusals(t *testing.T) {
 				dispatched = true
 				return nil, nil
 			})
-			if dispatched || err == nil || err.Error() != d.Message || !strings.Contains(out.String(), "Refusal: "+d.Message) {
+			if dispatched || err == nil || err.Error() != d.Message || strings.Contains(out.String(), d.Message) {
 				t.Fatalf("release = %v, dispatched = %t, output = %q; want %q without a dispatch", err, dispatched, out.String(), d.Message)
 			}
 		})
@@ -227,7 +228,7 @@ func TestReleaseDispatch(t *testing.T) {
 					t.Fatalf("dispatch = %q; want %q", got, tc.command)
 				}
 				f.pages[followQuery] = []any{runList(listedRun(5, readerHead), listedRun(9, readerHead))}
-				return nil, nil
+				return []byte("✓ Created workflow_dispatch event for release.yml at release/2026.12.1\n"), nil
 			})
 			if count != 1 || err == nil || !strings.Contains(err.Error(), "was cancelled ("+followURL+"9)") {
 				t.Fatalf("dispatch count %d, error = %v; want the outcome of run 9", count, err)
@@ -236,9 +237,84 @@ func TestReleaseDispatch(t *testing.T) {
 	}
 }
 
+func TestReleaseDispatchURL(t *testing.T) {
+	// Another run can match the listing filters without being our dispatch.
+	for _, tc := range []struct {
+		name, field string
+		value       any
+	}{
+		{name: "returned run"},
+		{"wrong branch", "head_branch", "release/2026.12.10"},
+		{"wrong workflow", "path", ".github/workflows/other.yml"},
+		{"wrong event", "event", "push"},
+		{"wrong commit", "head_sha", strings.Repeat("2", 40)},
+		{"wrong run ID", "id", 12},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := readerWorld(t)
+			f.pages[followTags] = []any{[]any{}}
+			f.pages[followQuery] = []any{runList(listedRun(5, readerHead))}
+			latestRun(f, 9, 1, "completed", "cancelled")
+			listJobs(f, 9, 1)
+			if tc.field != "" {
+				f.responses[repoPrefix+"actions/runs/9"].(map[string]any)[tc.field] = tc.value
+			}
+
+			var out strings.Builder
+			err := release(t.Context(), []string{followVersion}, &out, io.Discard, newTestReader(f), func(string, ...string) ([]byte, error) {
+				f.pages[followQuery] = []any{runList(listedRun(9, readerHead), listedRun(10, readerHead))}
+				return []byte(followURL + "9\n"), nil
+			})
+			if tc.field == "" {
+				assertErrorContains(t, err, "was cancelled ("+followURL+"9)")
+				return
+			}
+			assertErrorContains(t, err, "The dispatched run "+followURL+"9", fmt.Sprint(tc.value), "Run scripts/katl-release wait "+followVersion)
+			if strings.Contains(out.String(), followURL+"9") {
+				t.Fatalf("followed a mismatched run: %s", out.String())
+			}
+		})
+	}
+}
+
+func TestReleaseDispatchFailure(t *testing.T) {
+	f := readerWorld(t)
+	f.pages[followTags] = []any{[]any{}}
+	f.pages[followQuery] = []any{runList()}
+	responseErr := errors.New("connection reset")
+	attempts := 0
+
+	err := release(t.Context(), []string{followVersion}, io.Discard, io.Discard, newTestReader(f), func(string, ...string) ([]byte, error) {
+		attempts++
+		return nil, responseErr
+	})
+	assertErrorContains(t, err, "connection reset", "GitHub may have accepted the dispatch",
+		"Run scripts/katl-release status "+followVersion+" before dispatching again")
+	if attempts != 1 {
+		t.Fatalf("dispatch attempts = %d; want 1", attempts)
+	}
+}
+
+func TestReleaseDispatchLookupFailure(t *testing.T) {
+	for _, output := range []string{"", followURL + "9\n"} {
+		t.Run(fmt.Sprintf("dispatch stdout %q", output), func(t *testing.T) {
+			f := readerWorld(t)
+			f.pages[followTags] = []any{[]any{}}
+			f.pages[followQuery] = []any{runList()}
+			readErr := &apiError{status: 403, text: "GitHub denied the read"}
+			f.responses[repoPrefix+"actions/runs/9"] = readErr
+			err := release(t.Context(), []string{followVersion}, io.Discard, io.Discard, newTestReader(f), func(string, ...string) ([]byte, error) {
+				f.failures[followQuery] = []error{readErr}
+				return []byte(output), nil
+			})
+			assertErrorContains(t, err, readErr.Error(), "Run scripts/katl-release wait "+followVersion)
+		})
+	}
+}
+
 func TestFindDispatch(t *testing.T) {
 	// A previous run, another ref, or another commit is never adopted. An
-	// ambiguous or absent run terminates with a route back into wait.
+	// ambiguous or absent run is refused.
 	version, err := releaseversion.Parse(followVersion)
 	if err != nil {
 		t.Fatal(err)
@@ -283,11 +359,10 @@ func TestFindDispatch(t *testing.T) {
 					}
 					return
 				}
-				recover := "Run scripts/katl-release wait 2026.12.1."
 				want := map[string][]string{
-					"absent":    {"The dispatch was accepted but no Release run for 2026.12.1 at " + readerHead + " appeared. " + recover},
-					"ambiguous": {followURL + "9", followURL + "10", recover},
-					"moved":     {readerHead, otherCommit, "between the decision and dispatch", "will refuse (row 3)", followURL + "12", recover},
+					"absent":    {"The dispatch was accepted but no Release run for 2026.12.1 at " + readerHead + " appeared."},
+					"ambiguous": {followURL + "9", followURL + "10"},
+					"moved":     {readerHead, otherCommit, "between the decision and dispatch", "will refuse (row 3)", followURL + "12"},
 				}
 				assertErrorContains(t, err, want[mode]...)
 				if elapsed := time.Since(start); mode == "absent" && (elapsed < 100*time.Second || elapsed > 140*time.Second) {
@@ -301,7 +376,7 @@ func TestFindDispatch(t *testing.T) {
 func TestWaitFailures(t *testing.T) {
 	// A completed failed run needs the latest attempt's failed jobs, in
 	// listing order, or its cancellation. A skipped job is not a failure.
-	for _, concl := range []string{"failure", "cancelled", "refused"} {
+	for _, concl := range []string{"failure", "cancelled", "refused", "refusal cleared"} {
 		t.Run(concl, func(t *testing.T) {
 			f := readerWorld(t)
 			f.pages[followQuery] = []any{runList(listedRun(10, readerHead), listedRun(11, readerHead))}
@@ -314,20 +389,40 @@ func TestWaitFailures(t *testing.T) {
 			case "cancelled":
 				latestRun(f, 11, 2, "completed", "cancelled")
 				listJobs(f, 11, 2)
-			case "refused":
+			case "refused", "refusal cleared":
 				latestRun(f, 11, 2, "completed", "failure")
 				listJobs(f, 11, 2, listedJob(1, "Decide", "completed", "failure"))
 			}
+			if concl == "refusal cleared" {
+				head := strings.Repeat("2", 40)
+				f.pages[followTags] = []any{[]any{}}
+				f.pages[followBranch] = []any{[]any{map[string]any{"ref": followRef, "object": map[string]any{"sha": head, "type": "commit"}}}}
+			}
 
-			err := waitRelease(t.Context(), []string{followVersion}, io.Discard, io.Discard, newTestReader(f))
+			var progress strings.Builder
+			err := waitRelease(t.Context(), []string{followVersion}, io.Discard, &progress, newTestReader(f))
 			want := map[string]string{
-				"failure":   "Build / Production VM (lts), Record qualification",
-				"cancelled": "was cancelled",
-				"refused":   "v2026.12.1-rc.1 did not qualify at 111111111111: the run was cancelled",
+				"failure":         "Build / Production VM (lts), Record qualification",
+				"cancelled":       "was cancelled",
+				"refused":         "failed: Decide",
+				"refusal cleared": "failed: Decide",
 			}
 			assertErrorContains(t, err, want[concl], followURL+"11")
-			if strings.Contains(err.Error(), "Publish") || (concl == "refused" && !strings.Contains(err.Error(), "Decide")) {
+			if strings.Contains(err.Error(), "Publish") {
 				t.Fatalf("unexpected failed jobs: %v", err)
+			}
+			if concl == "refused" {
+				want := "Current release decision without a retry reason:"
+				detail := "Refusal: v2026.12.1-rc.1 did not qualify at 111111111111: the run was cancelled"
+				if !strings.Contains(progress.String(), want) || !strings.Contains(progress.String(), detail) {
+					t.Fatalf("progress = %q; want the current refusal", progress.String())
+				}
+			}
+			if concl == "refusal cleared" {
+				if !strings.Contains(progress.String(), "Next: candidate builds 2026.12.1-rc.1") ||
+					!strings.Contains(progress.String(), "The run's refusal no longer applies.") {
+					t.Fatalf("progress = %q; want the new decision and cleared refusal", progress.String())
+				}
 			}
 		})
 	}
@@ -338,6 +433,13 @@ func TestWaitNoRun(t *testing.T) {
 	f.pages[followQuery] = []any{runList()}
 	err := waitRelease(t.Context(), []string{followVersion}, io.Discard, io.Discard, newTestReader(f))
 	assertErrorContains(t, err, "No Release run for 2026.12.1", "Run scripts/katl-release release 2026.12.1.")
+}
+
+func TestWaitMissingWorkflow(t *testing.T) {
+	f := readerWorld(t)
+	f.responses[repoPrefix+"actions/workflows/release.yml"] = &apiError{status: 404, text: "Not Found"}
+	err := waitRelease(t.Context(), []string{followVersion}, io.Discard, io.Discard, newTestReader(f))
+	assertErrorContains(t, err, "the Release workflow is not installed on this repository")
 }
 
 func TestWaitApproval(t *testing.T) {
@@ -398,30 +500,55 @@ func TestWaitReadFailure(t *testing.T) {
 		endpoint := repoPrefix + "actions/runs/11"
 		f.failures[endpoint] = slices.Repeat([]error{&apiError{status: 502, text: "Bad Gateway (HTTP 502)"}}, readAttempts)
 		err := waitRelease(t.Context(), []string{followVersion}, io.Discard, io.Discard, newTestReader(f))
-		assertErrorContains(t, err, "Bad Gateway (HTTP 502)")
+		assertErrorContains(t, err, "Bad Gateway (HTTP 502)", "Run scripts/katl-release wait "+followVersion)
 		if len(f.failures[endpoint]) != 0 {
 			t.Fatal("reader did not retry transient failures")
 		}
 	})
 }
 
+func TestWaitReadbackFailure(t *testing.T) {
+	f, r, _, _ := releaseReadback(t, true, false, false)
+	f.pages[followQuery] = []any{runList(listedRun(7, readerHead))}
+	latestRun(f, 7, 1, "completed", "success")
+	f.failures[followReleases] = []error{&apiError{status: 403, text: "Release list denied"}}
+
+	err := waitRelease(t.Context(), []string{followVersion}, io.Discard, io.Discard, r)
+	assertErrorContains(t, err, "The Release run succeeded", "Release list denied", "Run scripts/katl-release wait "+followVersion)
+}
+
 func TestWaitCandidateReadback(t *testing.T) {
 	// A green run alone cannot confirm a candidate. The state machine must
 	// accept its actual release, or recognize the branch moved afterward.
 	for _, tc := range []struct {
-		name, failure string
+		name, failure, progress string
 	}{
-		{"published", ""},
-		{"extensions", ""},
-		{"superseded", ""},
-		{"changed digest", "The GitHub pre-release v2026.12.1-rc.1 disagrees with what the release action recorded"},
-		{"missing release", "candidate-incomplete"},
+		{name: "published"},
+		{name: "lagging active listing"},
+		{name: "extensions", progress: "Warning: Extension bundles for 2026.12.1 are already published with different contents."},
+		{name: "superseded"},
+		{name: "changed digest", failure: "The GitHub pre-release v2026.12.1-rc.1 disagrees with what the release action recorded"},
+		{name: "other commit", failure: "The current candidate v2026.12.1-rc.1 is at " + readerHead},
+		{name: "missing release", failure: "v2026.12.1-rc.1 qualified and still awaits publication. Run scripts/katl-release release 2026.12.1 to finish publication.",
+			progress: "Next: resume-candidate publishes 2026.12.1-rc.1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, r, rc, _ := releaseReadback(t, tc.name != "missing release", false, false)
-			f.pages[followQuery] = []any{runList(listedRun(7, readerHead))}
-			latestRun(f, 7, 1, "completed", "success")
+			runID, runCommit := int64(7), readerHead
+			if tc.name == "other commit" {
+				runID, runCommit = 10, strings.Repeat("2", 40)
+				listJobs(f, runID, 1)
+			}
+			listed := listedRun(runID, runCommit)
+			f.pages[followQuery] = []any{runList(listed)}
+			completed := listedRun(runID, runCommit)
+			completed["conclusion"] = "success"
+			f.responses[fmt.Sprint(repoPrefix, "actions/runs/", runID)] = completed
+
 			switch tc.name {
+			case "lagging active listing":
+				f.pages[runsQuery("in_progress")] = []any{runList(listed)}
+				f.responses[repoPrefix+"actions/runs/7/pending_deployments"] = []any{}
 			case "changed digest":
 				rc.sumsAsset["digest"] = "sha256:" + strings.Repeat("e", 64)
 			case "extensions":
@@ -433,10 +560,16 @@ func TestWaitCandidateReadback(t *testing.T) {
 				f.pages[followBranch] = []any{[]any{map[string]any{"ref": followRef, "object": map[string]any{"sha": other, "type": "commit"}}}}
 				f.responses[repoPrefix+"compare/"+readerHead+"..."+other+"?per_page=1"] = map[string]any{"status": "ahead"}
 			}
-			var out strings.Builder
-			err := waitRelease(t.Context(), []string{followVersion}, &out, io.Discard, r)
+			var out, progress strings.Builder
+			err := waitRelease(t.Context(), []string{followVersion}, &out, &progress, r)
+			if !strings.Contains(progress.String(), tc.progress) {
+				t.Fatalf("progress = %q; want %q", progress.String(), tc.progress)
+			}
 			if tc.failure != "" {
-				assertErrorContains(t, err, "The Release run succeeded, but "+tc.failure, followURL+"7")
+				assertErrorContains(t, err, "The Release run succeeded", tc.failure, fmt.Sprint(followURL, runID))
+				if strings.Contains(out.String(), "Published") {
+					t.Fatalf("claimed publication: %q", out.String())
+				}
 				return
 			}
 			want := "Published v2026.12.1-rc.1 sha256:" + rc.digest
@@ -454,12 +587,13 @@ func TestWaitFinalReadback(t *testing.T) {
 	// The final record can name an earlier attempt of the selected run. A
 	// qualified build alone does not establish that the final was published.
 	for _, tc := range []struct {
-		name, failure  string
-		tag, published bool
+		name, failure, progress string
+		tag, published          bool
 	}{
-		{"published", "", true, true},
-		{"tag only", "The GitHub release v2026.12.1 disagrees with what the release action recorded", true, false},
-		{"no final tag", "final-unapproved", false, false},
+		{name: "published", tag: true, published: true},
+		{name: "tag only", failure: "The GitHub release v2026.12.1 disagrees with what the release action recorded", tag: true},
+		{name: "no final tag", failure: "v2026.12.1 qualified and still awaits publication. Run scripts/katl-release release 2026.12.1 to finish publication.",
+			progress: "Next: final builds 2026.12.1 at " + readerHead + " from 2026.12.1-rc.1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f, r, _, final := releaseReadback(t, true, true, tc.tag)
@@ -469,10 +603,13 @@ func TestWaitFinalReadback(t *testing.T) {
 			f.pages[followQuery] = []any{runList(listedRun(8, readerHead))}
 			latestRun(f, 8, 3, "completed", "success")
 			listJobs(f, 8, 3)
-			var out strings.Builder
-			err := waitRelease(t.Context(), []string{followVersion}, &out, io.Discard, r)
+			var out, progress strings.Builder
+			err := waitRelease(t.Context(), []string{followVersion}, &out, &progress, r)
+			if !strings.Contains(progress.String(), tc.progress) {
+				t.Fatalf("progress = %q; want %q", progress.String(), tc.progress)
+			}
 			if tc.failure != "" {
-				assertErrorContains(t, err, "The Release run succeeded, but "+tc.failure, followURL+"8")
+				assertErrorContains(t, err, "The Release run succeeded", tc.failure, followURL+"8")
 				return
 			}
 			if err != nil || !strings.Contains(out.String(), final.digest) ||

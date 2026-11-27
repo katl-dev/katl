@@ -262,10 +262,11 @@ func inspect(id int64, call command) (candidate, error) {
 		return result, errors.New("run has no full source commit SHA")
 	}
 	name := releasestate.BundleName(version, run.Commit)
+	bundle := "release bundle " + name
 	if branch {
-		name = fmt.Sprintf("for %s at %s", version.Tag(), run.Commit)
+		bundle = fmt.Sprintf("release bundle for %s at %s", version.Tag(), run.Commit)
 	}
-	// A run can contain hundreds of intermediate artifacts; select only the final bundle.
+	// A run can contain hundreds of intermediate artifacts; select only the release bundle.
 	for page := 1; ; page++ {
 		var response struct{ Artifacts []artifact }
 		if err := api(call, fmt.Sprintf("actions/runs/%d/artifacts?per_page=100&page=%d", id, page), &response); err != nil {
@@ -281,7 +282,7 @@ func inspect(id int64, call command) (candidate, error) {
 				continue
 			}
 			if result.Artifact.ID != 0 {
-				return result, errors.New("run has multiple final bundles; resolve the ambiguity before qualification")
+				return result, errors.New("run has multiple matching release bundles; resolve the ambiguity before qualification")
 			}
 			result.Artifact = artifact
 		}
@@ -290,10 +291,10 @@ func inspect(id int64, call command) (candidate, error) {
 		}
 	}
 	if result.Artifact.ID == 0 {
-		return result, fmt.Errorf("final bundle %s is unavailable (run %s/%s); inspect %s", name, run.Status, run.Conclusion, run.URL)
+		return result, fmt.Errorf("%s is unavailable (run %s/%s); inspect %s", bundle, run.Status, run.Conclusion, run.URL)
 	}
 	if result.Artifact.Expired {
-		return result, errors.New("final bundle expired; a rebuilt candidate requires fresh qualification")
+		return result, errors.New("release bundle expired; a rebuilt candidate requires fresh qualification")
 	}
 	return result, nil
 }
