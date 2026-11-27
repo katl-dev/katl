@@ -4,6 +4,9 @@ Status: accepted.
 
 Date: 2026-07-11.
 
+Amended 2026-11-27: a release branch names the one version released from it,
+and release candidates start at `rc.1`.
+
 ## Context
 
 The v0.1 project milestone needs public development, alpha, beta,
@@ -36,6 +39,8 @@ changes; the version records its release line, not the current date.
 `dev.N` identifies development publications, `alpha.N` and `beta.N` communicate
 public API maturity, and `rc.N` identifies release candidates. Counters contain
 no leading zero and increment for materially different published artifacts.
+Release candidates start at `rc.1`. The grammar still accepts `rc.0`, but the
+release action never creates it and refuses a version that has one.
 The intended maturity sequence is:
 
 ```text
@@ -43,8 +48,8 @@ The intended maturity sequence is:
 2026.7.0-dev.1
 2026.7.0-alpha.1
 2026.7.0-beta.1
-2026.7.0-rc.0
 2026.7.0-rc.1
+2026.7.0-rc.2
 2026.7.0
 ```
 
@@ -57,9 +62,18 @@ accepts an optional `v`, removes it from embedded artifact metadata, and rejects
 months, leading-zero counters, other prerelease labels, and non-calendar
 versions. Manual workflow runs use the product version without the `v`.
 
-Release series branches, such as `release/2026.12.x`, carry no version. The
-version comes from the release candidate or final tag, or from the manual
-workflow input, and release tooling derives none from a branch name.
+A release branch is named `release/<version>` with a complete final version,
+such as `release/2026.12.1`, and exactly that version is released from it. The
+release action derives its version from the branch name: the final is
+`<version>` and its candidates are `<version>-rc.N`. It refuses every other
+branch name. A series branch such as `release/2026.12.x` names no single
+version, and a branch named for a prerelease, such as
+`release/2026.12.1-rc.1`, would make the candidate counter part of the branch.
+The [release state machine](../release-state-machine.md) defines what the
+action does with the version.
+
+Nothing else derives a version from a branch. Tag-triggered builds take it
+from the tag, and manually dispatched builds take it from the workflow input.
 
 SemVer compares textual prerelease identifiers lexically, which does not place
 `dev`, `alpha`, `beta`, and `rc` in Katl's maturity order. The release notes

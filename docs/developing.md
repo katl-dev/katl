@@ -479,8 +479,9 @@ because every release asset has an independent attestation.
 KatlOS release versions use `YYYY.M.PATCH` calendar versions with `-dev.N`,
 `-alpha.N`, `-beta.N`, and `-rc.N` prereleases. The first public alpha for the
 July 2026 line is `2026.7.0-alpha.1`; the stable identity is `2026.7.0`. Use
-tags such as `v2026.7.0-alpha.1`; release series branches such as
-`release/2026.12.x` carry no version. The workflow strips an optional `v` before embedding
+tags such as `v2026.7.0-alpha.1`. A release branch is named for the one final
+version released from it, such as `release/2026.12.1`; a series branch such as
+`release/2026.12.x` names no version. The workflow strips an optional `v` before embedding
 the version and rejects noncanonical versions. See
 `docs/internal/adrs/adr-009-katlos-calendar-versioning.md` for the policy.
 
