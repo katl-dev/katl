@@ -13,6 +13,7 @@ import (
 type observation struct {
 	Number      int
 	Title       string
+	Head        string
 	Merged      bool
 	MergeCommit string
 	Closed      bool
@@ -21,15 +22,20 @@ type observation struct {
 	Position    int
 	QueueState  string
 	Removal     *removalEvent
+	// FailedRequired lists the required checks that failed on the head,
+	// which keep the pull request out of the queue until the head changes.
+	FailedRequired []failedCheck
 }
 
 func observe(pr prResponse) observation {
 	obs := observation{
-		Number:    pr.Number,
-		Title:     pr.Title,
-		Merged:    pr.Merged,
-		Closed:    pr.State == "CLOSED",
-		AutoMerge: pr.AutoMergeRequest != nil,
+		Number:         pr.Number,
+		Title:          pr.Title,
+		Head:           pr.HeadRefOid,
+		Merged:         pr.Merged,
+		Closed:         pr.State == "CLOSED",
+		AutoMerge:      pr.AutoMergeRequest != nil,
+		FailedRequired: pr.failedRequiredChecks(),
 	}
 	if pr.MergeCommit != nil {
 		obs.MergeCommit = pr.MergeCommit.Oid
@@ -46,10 +52,17 @@ func observe(pr prResponse) observation {
 	return obs
 }
 
+// blocked reports whether failed required checks keep the pull request out
+// of the queue.
+func (o observation) blocked() bool {
+	return !o.Merged && !o.Closed && !o.InQueue && len(o.FailedRequired) > 0
+}
+
 // settled reports whether the pull request has left the queue for good: it
-// merged, closed, or is neither queued nor waiting to be.
+// merged, closed, cannot join until its head is fixed, or is neither queued
+// nor waiting to be.
 func (o observation) settled() bool {
-	return o.Merged || o.Closed || (!o.InQueue && !o.AutoMerge)
+	return o.Merged || o.Closed || o.blocked() || (!o.InQueue && !o.AutoMerge)
 }
 
 // removedSince reports a removal newer than prev's. GitHub also records a
@@ -61,22 +74,32 @@ func (o observation) removedSince(prev observation) bool {
 	return prev.Removal == nil || o.Removal.CreatedAt.After(prev.Removal.CreatedAt)
 }
 
-// describe is the line watch prints when it first sees a pull request.
-func describe(o observation) string {
+// describe is what watch prints when it first sees a pull request.
+func describe(o observation) []string {
 	switch {
 	case o.Merged:
-		return fmt.Sprintf("#%d merged as %s", o.Number, short(o.MergeCommit))
+		return []string{fmt.Sprintf("#%d merged as %s", o.Number, short(o.MergeCommit))}
 	case o.Closed:
-		return fmt.Sprintf("#%d closed without merging", o.Number)
+		return []string{fmt.Sprintf("#%d closed without merging", o.Number)}
 	case o.InQueue:
-		return fmt.Sprintf("#%d %s at position %d", o.Number, o.QueueState, o.Position)
+		return []string{fmt.Sprintf("#%d %s at position %d", o.Number, o.QueueState, o.Position)}
+	case o.blocked():
+		return blockedLines(o)
 	case o.AutoMerge:
-		return fmt.Sprintf("#%d auto-merge enabled, waiting for checks to join the queue", o.Number)
+		return []string{fmt.Sprintf("#%d auto-merge enabled, waiting for checks to join the queue", o.Number)}
 	case o.Removal != nil:
-		return fmt.Sprintf("#%d not queued; last removed %s: %s", o.Number, o.Removal.CreatedAt.Format(time.RFC3339), o.Removal.Reason)
+		return []string{fmt.Sprintf("#%d not queued; last removed %s: %s", o.Number, o.Removal.CreatedAt.Format(time.RFC3339), o.Removal.Reason)}
 	default:
-		return fmt.Sprintf("#%d not queued and auto-merge is off", o.Number)
+		return []string{fmt.Sprintf("#%d not queued and auto-merge is off", o.Number)}
 	}
+}
+
+func blockedLines(o observation) []string {
+	lines := []string{fmt.Sprintf("#%d required checks failed on head %s; it cannot join the queue until the head is fixed", o.Number, short(o.Head))}
+	for _, check := range o.FailedRequired {
+		lines = append(lines, fmt.Sprintf("#%d   %s %s %s", o.Number, strings.ToLower(check.Conclusion), check.Name, check.DetailsURL))
+	}
+	return lines
 }
 
 // transitions returns the lines watch prints for the change from prev to cur.
@@ -100,6 +123,8 @@ func transitions(prev, cur observation) []string {
 			line += "; it conflicts with an entry ahead and will be removed when the queue reaches it"
 		}
 		lines = append(lines, line)
+	case cur.blocked() && !prev.blocked():
+		lines = append(lines, blockedLines(cur)...)
 	case !cur.InQueue && prev.InQueue && !cur.removedSince(prev):
 		lines = append(lines, fmt.Sprintf("#%d left the queue", n))
 	case !cur.InQueue && !cur.AutoMerge && prev.AutoMerge && !prev.InQueue:
@@ -138,7 +163,7 @@ func follow(ctx context.Context, numbers []int, poll func(context.Context, []int
 			var active []int
 			for _, n := range numbers {
 				cur := observe(prs[n])
-				lines := []string{describe(cur)}
+				lines := describe(cur)
 				if prev, ok := seen[n]; ok {
 					lines = transitions(prev, cur)
 				}

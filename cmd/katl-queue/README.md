@@ -43,15 +43,18 @@ foreground. The default poll interval is one minute. With no PR numbers, the
 command follows the PRs that are queued or have auto-merge enabled at startup.
 It prints state changes and retries failed polls. An `UNMERGEABLE` entry
 conflicts with a PR ahead of it and stays in the queue until GitHub reaches
-it or it is dequeued. When all watched PRs settle, the command exits with
-status 1 if any failed to merge.
+it or it is dequeued. A PR whose required checks failed on its head cannot
+join the queue until the head is fixed, so it settles with the failing checks
+and their links. When all watched PRs settle, the command exits with status 1
+if any failed to merge.
 
 ### `why`
 
 Run `katl-queue why 123` after a queue removal. It reports the latest removal
 reason, failed merge-group checks and their links, and excerpts from failed
 job logs or available VM diagnostics. If the logs cannot be retrieved, use
-the reported check links to inspect the run in GitHub.
+the reported check links to inspect the run in GitHub. For a PR outside the
+queue, it also names any required checks that failed on the head.
 
 ## Keep a background wait
 

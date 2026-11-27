@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -173,5 +175,101 @@ func TestErrorExcerpts(t *testing.T) {
 	}
 	if len(got) != len(want) {
 		t.Errorf("excerpts has jobs %v, want %v", got, want)
+	}
+}
+
+func TestRequiredCheckFailure(t *testing.T) {
+	const head = "72dbe330e9d19bbb8a235919cbb7e6ace61c3fcc"
+	ci := func(conclusion string) string {
+		return `{"__typename": "CheckRun", "name": "CI", "conclusion": ` + conclusion +
+			`, "detailsUrl": "https://github.com/katl-dev/katl/actions/runs/1/job/2", "isRequired": true}`
+	}
+	waiting := []string{"#847 auto-merge enabled, waiting for checks to join the queue"}
+	tests := []struct {
+		name     string
+		oid      string
+		contexts []string
+		want     []string
+	}{
+		{
+			name:     "failed",
+			contexts: []string{ci(`"FAILURE"`)},
+			want: []string{
+				"#847 required checks failed on head 72dbe330e9d1; it cannot join the queue until the head is fixed",
+				"#847   failure CI https://github.com/katl-dev/katl/actions/runs/1/job/2",
+			},
+		},
+		{
+			name: "cancelled and timed out",
+			contexts: []string{
+				ci(`"CANCELLED"`),
+				`{"__typename": "CheckRun", "name": "VM", "conclusion": "TIMED_OUT", "detailsUrl": "https://example.test/vm", "isRequired": true}`,
+				`{"__typename": "StatusContext", "context": "legacy", "state": "ERROR", "targetUrl": "https://example.test/legacy", "isRequired": true}`,
+			},
+			want: []string{
+				"#847 required checks failed on head 72dbe330e9d1; it cannot join the queue until the head is fixed",
+				"#847   cancelled CI https://github.com/katl-dev/katl/actions/runs/1/job/2",
+				"#847   timed_out VM https://example.test/vm",
+				"#847   error legacy https://example.test/legacy",
+			},
+		},
+		{
+			name:     "pending",
+			contexts: []string{ci(`null`)},
+			want:     waiting,
+		},
+		{
+			name: "failed check not required",
+			contexts: []string{
+				ci(`null`),
+				`{"__typename": "CheckRun", "name": "Fast checks", "conclusion": "FAILURE", "detailsUrl": "https://example.test/fast", "isRequired": false}`,
+			},
+			want: waiting,
+		},
+		{
+			name:     "failure on an earlier commit",
+			oid:      "0000000000000000000000000000000000000000",
+			contexts: []string{ci(`"FAILURE"`)},
+			want:     waiting,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oid := tt.oid
+			if oid == "" {
+				oid = head
+			}
+			raw := `{"number": 847, "state": "OPEN", "headRefOid": "` + head + `",
+			  "autoMergeRequest": {"enabledAt": "2026-11-27T03:00:00Z"}, "mergeQueueEntry": null,
+			  "timelineItems": {"nodes": []},
+			  "headChecks": {"nodes": [{"commit": {"oid": "` + oid + `", "statusCheckRollup": {"contexts": {"nodes": [` +
+				strings.Join(tt.contexts, ",") + `]}}}}]}}`
+			var pr prResponse
+			if err := json.Unmarshal([]byte(raw), &pr); err != nil {
+				t.Fatal(err)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			poll := func(context.Context, []int) (map[int]prResponse, error) {
+				cancel()
+				return map[int]prResponse{847: pr}, nil
+			}
+			var out bytes.Buffer
+			err := follow(ctx, []int{847}, poll, 0, &out, io.Discard)
+
+			stamp := regexp.MustCompile(`(?m)^\d\d:\d\d:\d\d `)
+			if got := strings.Split(strings.TrimSuffix(stamp.ReplaceAllString(out.String(), ""), "\n"), "\n"); !slices.Equal(got, tt.want) {
+				t.Errorf("follow() printed:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(tt.want, "\n"))
+			}
+			wantErr := context.Canceled
+			if len(tt.want) > 1 {
+				wantErr = errConflict
+			}
+			if !errors.Is(err, wantErr) {
+				t.Errorf("follow() error = %v, want %v", err, wantErr)
+			}
+		})
 	}
 }
