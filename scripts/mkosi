@@ -110,7 +110,7 @@ cache_input_matches_target() {
         *_test.go | docs/*)
             return 1
             ;;
-        mkosi.conf | mkosi.conf.d/* | mkosi.kernel-lts/* | kernels/* | packages/* | Containerfile.mkosi | containers-policy.json | go.mod | go.sum | scripts/mkosi | scripts/fedora-release)
+        mkosi.conf | mkosi.conf.d/* | mkosi.kernel-lts/* | kernels/* | packages/* | Containerfile.mkosi | mkosi-builder.lock | containers-policy.json | go.mod | go.sum | scripts/mkosi | scripts/mkosi-builder | scripts/fedora-release)
             return 0
             ;;
         *.go)
@@ -572,19 +572,17 @@ image_exists() {
     esac
 }
 
-if ! image_exists; then
-    build_flags=(
-        build
-        --file "$repo_root/Containerfile.mkosi"
-        --tag "$image"
-        --build-arg "FEDORA_RELEASE=$fedora_release"
-    )
-
-    if [[ "$runtime" == podman ]]; then
-        build_flags+=(--signature-policy "$repo_root/containers-policy.json")
+# scripts/mkosi-builder owns which builder a checkout runs. An existing
+# KATL_MKOSI_IMAGE is used as given, and a missing one is prepared under that
+# name. Without it, the builder is prepared under the default alias that
+# sibling scripts run, and this script runs the immutable image it resolved.
+if [[ "$runtime" != direct ]]; then
+    if [[ -z "${KATL_MKOSI_IMAGE:-}" ]]; then
+        builder_record="$("$repo_root/scripts/mkosi-builder" prepare "$runtime" "$image")"
+        image="$(sed -n 's/^reference=//p' <<<"$builder_record")"
+    elif ! image_exists; then
+        "$repo_root/scripts/mkosi-builder" prepare "$runtime" "$image" >/dev/null
     fi
-
-    "$runtime" "${build_flags[@]}" "$repo_root"
 fi
 
 if [[ "${1:-}" == builder-version ]]; then

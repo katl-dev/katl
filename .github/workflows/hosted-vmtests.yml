@@ -147,10 +147,12 @@ jobs:
           ref: ${{ github.workflow_sha }}
           path: _build/workflow-actions
           persist-credentials: false
+          # The builder action runs scripts/mkosi-builder from this checkout.
           sparse-checkout: |
             .github/actions/setup-go
             .github/actions/image-caches
             .github/actions/mkosi-builder
+            scripts
       - uses: ./_build/workflow-actions/.github/actions/setup-go
         if: inputs.ref != ''
       - uses: ./.github/actions/setup-go
@@ -182,7 +184,7 @@ jobs:
       - name: Record builder identity
         id: builder
         run: |
-          cp mkosi.conf.d/ci-downloads.conf _build/hosted-evidence/
+          cp mkosi.conf.d/ci-downloads.conf _build/mkosi-builder.txt _build/hosted-evidence/
           version="$(scripts/mkosi builder-version)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           printf '%s\n' "$KATL_BUILD_COMMIT" > _build/hosted-evidence/source.txt

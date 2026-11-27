@@ -149,7 +149,7 @@ func bothVMFlavours(name string) bool {
 		}
 	}
 	switch name {
-	case "go.mod", "go.sum", "Containerfile.mkosi", "scripts/mkosi", "scripts/fedora-release",
+	case "go.mod", "go.sum", "Containerfile.mkosi", "mkosi-builder.lock", "scripts/mkosi", "scripts/mkosi-builder", "scripts/fedora-release",
 		"scripts/build-kernel-extension", "scripts/build-release-extensions", "scripts/assemble-release-extensions":
 		return true
 	}

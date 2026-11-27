@@ -1,0 +1,40 @@
+name: Open automation pull request
+description: Open or update the pull request for an automation branch at the commit its proposal created
+inputs:
+  token:
+    description: Token allowed to write pull requests
+    required: true
+  branch:
+    description: Proposal branch
+    required: true
+  commit:
+    description: Branch head the proposal reported
+    required: true
+  title:
+    description: Title for a new pull request
+    required: true
+  body-file:
+    description: Pull request description
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        BRANCH: ${{ inputs.branch }}
+        PROPOSED_COMMIT: ${{ inputs.commit }}
+        TITLE: ${{ inputs.title }}
+        BODY_FILE: ${{ inputs.body-file }}
+      # A branch that moved after the proposal is not the revision CI will
+      # qualify, so refuse it rather than describe the wrong commit.
+      run: |
+        actual="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$BRANCH" --jq .object.sha)"
+        [[ "$actual" == "$PROPOSED_COMMIT" ]] || { echo 'proposal branch changed after it was published; rerun the workflow' >&2; exit 1; }
+        number="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')"
+        if [[ -n "$number" ]]; then
+          gh pr edit "$number" --repo "$GITHUB_REPOSITORY" --base main --body-file "$BODY_FILE"
+        else
+          gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
+            --title "$TITLE" --body-file "$BODY_FILE"
+        fi

@@ -123,9 +123,43 @@ owns discovery and publication, rather than repeating the PR image build.
 Use **Hosted VM scenarios** to dispatch the complete suite for a source commit
 and kernel flavour. The default runner is `ubuntu-24.04`.
 `KATL_VMTEST_RUNNER` can select a supported hosted provider. Run output is deleted
-on success; small diagnostic artifacts expire after three days. All image
-builders share the same Docker layer cache; build input identities still
-control artifact and package-cache reuse.
+on success; small diagnostic artifacts expire after three days. Every image
+build runs the builder that `mkosi-builder.lock` pins, described under
+[Builder image](#builder-image); build input identities still control artifact
+and package-cache reuse.
+
+## Builder image
+
+Image builds run mkosi inside the image built from `Containerfile.mkosi`.
+**Builder Image** publishes that image as
+`ghcr.io/katl-dev/katl/mkosi-builder` and proposes its digest in
+`mkosi-builder.lock`; CI and `scripts/mkosi` pull exactly that digest.
+`scripts/mkosi-builder` owns the rule and the lock format.
+
+The content tag is `fedora-RELEASE-HASH`, where `RELEASE` is the Fedora
+release from `mkosi.conf` and `HASH` is the first 16 hex digits of the SHA-256
+of `Containerfile.mkosi`. The builder is built with an empty context, so those
+two values are its only inputs. The committed digest is current when the lock's
+`tag` equals the checkout's content tag. A change to either input therefore
+makes the lock stale until a new image is published, and while it is stale
+every job builds `Containerfile.mkosi` itself, without a layer cache. A job also
+builds it when the pinned image cannot be pulled, with a warning. Each job's
+summary records the reference it ran, whether it was pulled or built, and its
+digest; the shared VM image job also keeps the record in its evidence.
+
+On a push to `main` that leaves the lock stale, **Builder Image** builds and
+pushes the content tag once, or reuses it when it already exists. The weekly
+schedule and manual dispatch rebuild on the current Fedora packages and push
+under a dated tag `fedora-RELEASE-HASH-YYYYMMDD`, leaving the content tag in
+place. In both cases a changed digest is proposed as an
+`automation/mkosi-builder-*` pull request, so the merge queue tests the new
+builder with the code that runs it. A change to `Containerfile.mkosi` lands
+first with locally built builders, and the proposal follows its merge.
+
+GitHub creates a new container package as private. After the first
+publication, an organization owner must make the `katl/mkosi-builder` package
+public in its package settings, so pull requests and local builds can pull it
+without credentials. Until then they build the image locally.
 
 ## Build caches
 
@@ -152,8 +186,9 @@ For the affected flavour, it builds both boot artifacts and every release
 extension, verifies module composition, and exercises production DRBD upgrade,
 replication, and removal. The merge queue also runs the regression lanes.
 
-After pull-request CI succeeds, **Merge Qualified Kernels** enables native auto-merge only
-for the unchanged, same-repository, App-authored, kernel-lock-only revision.
+After pull-request CI succeeds, **Merge Qualified Automation** enables native auto-merge only
+for the unchanged, same-repository, App-authored, kernel-lock-only revision. It
+does the same for a builder proposal that changes only `mkosi-builder.lock`.
 Branch protection controls the merge. These virtual machines do not qualify
 NVIDIA hardware.
 

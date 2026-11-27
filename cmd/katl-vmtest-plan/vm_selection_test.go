@@ -30,6 +30,8 @@ func TestAffectedSelection(t *testing.T) {
 		{"mkosi documentation input", "shared VM input", []string{"mkosi.profiles/runtime/mkosi.extra/etc/README.md"}, allNames()},
 		{"packaging", "shared VM input", []string{".github/scripts/hosted-vmtest-package"}, allNames()},
 		{"Go module", "shared VM input", []string{"go.mod"}, allNames()},
+		{"builder pin", "shared VM input", []string{"mkosi-builder.lock"}, allNames()},
+		{"builder owner", "shared VM input", []string{"scripts/mkosi-builder"}, allNames()},
 		{"shared CLI binary", "unmapped path", []string{"cmd/katlctl/management_rotation.go"}, allNames()},
 		{"unknown path with docs", "unmapped path", []string{"some-new-file", "docs/change.md"}, allNames()},
 		{"unmapped fixture", "unmapped path", []string{"internal/other/testdata/change.md"}, allNames()},
