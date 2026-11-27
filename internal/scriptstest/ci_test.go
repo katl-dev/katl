@@ -3,6 +3,7 @@ package scriptstest
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path"
@@ -137,13 +138,14 @@ func TestCIGate(t *testing.T) {
 				"production":    map[string]string{"result": "skipped"},
 				"qualification": map[string]string{"result": "skipped"},
 				"bundle":        map[string]string{"result": "skipped"},
+				"oidc-probe":    map[string]string{"result": "skipped"},
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
 
 			command := exec.Command("bash", "-euo", "pipefail", "-c", script)
-			command.Env = append(os.Environ(), "NEEDS="+string(needs))
+			command.Env = append(os.Environ(), "NEEDS="+string(needs), "GITHUB_EVENT_NAME=pull_request")
 			output, err := command.CombinedOutput()
 			if (err == nil) != tc.pass {
 				t.Fatalf("CI passed = %v, want %v: %s", err == nil, tc.pass, output)
@@ -545,6 +547,52 @@ func TestDriverStatusPublication(t *testing.T) {
 	}
 }
 
+func TestMergeGroupOIDCGrant(t *testing.T) {
+	caller, _ := readWorkflow(t, "ci.yml")
+	probe, _ := readWorkflow(t, "oidc-probe.yml")
+	if got := caller.Jobs["oidc-probe"].Uses; got != "./.github/workflows/oidc-probe.yml" {
+		t.Errorf("OIDC probe calls %q", got)
+	}
+	var triggers map[string]any
+	if err := probe.On.Decode(&triggers); err != nil {
+		t.Fatal(err)
+	}
+	if _, callable := triggers["workflow_call"]; !callable || len(triggers) != 1 {
+		t.Errorf("OIDC probe triggers = %v, want only workflow_call", triggers)
+	}
+	if len(probe.Jobs) != 1 {
+		t.Errorf("OIDC probe has %d jobs, want 1", len(probe.Jobs))
+	}
+	want := map[string]string{"contents": "read", "id-token": "write"}
+	for _, scope := range []struct {
+		workflow workflowFile
+		granted  string
+	}{
+		{caller, "oidc-probe"},
+		{probe, "claims"},
+	} {
+		if _, set := scope.workflow.Permissions["id-token"]; set {
+			t.Error("OIDC permission must be scoped to a job")
+		}
+		if _, exists := scope.workflow.Jobs[scope.granted]; !exists {
+			t.Fatalf("missing OIDC job %s", scope.granted)
+		}
+		for name, job := range scope.workflow.Jobs {
+			var got map[string]string
+			if err := job.Permissions.Decode(&got); err != nil {
+				t.Fatal(err)
+			}
+			if name == scope.granted {
+				if !maps.Equal(got, want) {
+					t.Errorf("%s permissions = %v, want %v", name, got, want)
+				}
+			} else if _, set := got["id-token"]; set {
+				t.Errorf("%s has an unexpected OIDC permission", name)
+			}
+		}
+	}
+}
+
 // The required CI check must never pass because a planned job did not run, for
 // any event the workflow handles.
 func TestCIGatesPlannedJobs(t *testing.T) {
@@ -580,6 +628,7 @@ func TestCIGatesPlannedJobs(t *testing.T) {
 		"production":    "needs.plan.outputs.production-flavours != '[]'",
 		"bundle":        "needs.plan.outputs.production-flavours != '[]'",
 		"qualification": "needs.plan.outputs.production-flavours != '[]'",
+		"oidc-probe":    "github.event_name == 'merge_group'",
 	} {
 		if got := strings.TrimSpace(workflow.Jobs[name].If); got != want {
 			t.Errorf("%s condition = %q, want %q", name, got, want)
@@ -680,7 +729,7 @@ esac
 			if err != nil {
 				t.Fatal(err)
 			}
-			planned := map[string]bool{"plan": true, "checks": true, "nix": true}
+			planned := map[string]bool{"plan": true, "checks": true, "nix": true, "oidc-probe": tc.event == "merge_group"}
 			for _, line := range strings.Split(string(outputs), "\n") {
 				switch {
 				case strings.HasPrefix(line, "vm-flavours="):
@@ -708,18 +757,19 @@ esac
 					"production":    map[string]string{"result": results["production"]},
 					"qualification": map[string]string{"result": results["qualification"]},
 					"bundle":        map[string]string{"result": results["bundle"]},
+					"oidc-probe":    map[string]string{"result": results["oidc-probe"]},
 				})
 				if err != nil {
 					t.Fatal(err)
 				}
 				command := exec.Command("bash", "-euo", "pipefail", "-c", gate)
-				command.Env = append(os.Environ(), "NEEDS="+string(body))
+				command.Env = append(os.Environ(), "NEEDS="+string(body), "GITHUB_EVENT_NAME="+tc.event)
 				return command.Run() == nil
 			}
 			// A job runs when planned and is skipped otherwise.
 			healthy := func() map[string]string {
 				results := map[string]string{}
-				for _, job := range []string{"plan", "checks", "nix", "vms", "drivers", "production", "qualification", "bundle"} {
+				for _, job := range gating {
 					results[job] = "skipped"
 					if planned[job] {
 						results[job] = "success"
@@ -729,6 +779,13 @@ esac
 			}
 			if !needs(healthy()) {
 				t.Fatalf("CI failed although every planned job succeeded: %v", planned)
+			}
+			if !planned["oidc-probe"] {
+				results := healthy()
+				results["oidc-probe"] = "success"
+				if needs(results) {
+					t.Error("CI passed although the OIDC probe ran outside the merge group")
+				}
 			}
 			for job, isPlanned := range planned {
 				if !isPlanned {
@@ -1230,12 +1287,13 @@ func TestCIGateProduction(t *testing.T) {
 				"production":    map[string]string{"result": tc.production},
 				"qualification": map[string]string{"result": tc.qualification},
 				"bundle":        map[string]string{"result": tc.bundle},
+				"oidc-probe":    map[string]string{"result": "success"},
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
 			command := exec.Command("bash", "-euo", "pipefail", "-c", script)
-			command.Env = append(os.Environ(), "NEEDS="+string(needs))
+			command.Env = append(os.Environ(), "NEEDS="+string(needs), "GITHUB_EVENT_NAME=merge_group")
 			output, err := command.CombinedOutput()
 			if (err == nil) != tc.pass {
 				t.Fatalf("CI passed = %v, want %v: %s", err == nil, tc.pass, output)

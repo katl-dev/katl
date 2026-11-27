@@ -1,0 +1,25 @@
+name: OIDC Probe
+
+on:
+  workflow_call:
+
+jobs:
+  claims:
+    name: Read OIDC claims
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Request OIDC token and print selected claims
+        shell: bash
+        run: |
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL:?}" |
+            jq -e 'try (
+              .value | split(".")[1] | gsub("-"; "+") | gsub("_"; "/") | @base64d | fromjson |
+              {ref, sha, event_name, job_workflow_ref} |
+              select(all(.[]; type == "string" and length > 0))
+            ) catch error("Invalid OIDC token response")'

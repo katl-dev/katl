@@ -338,10 +338,19 @@ jobs:
       - uses: ./.github/actions/setup-go
       - uses: ./.github/actions/combine-flavours
 
+  # Prove merge-group OIDC for #990. Remove this probe in #935.
+  oidc-probe:
+    name: OIDC probe
+    if: github.event_name == 'merge_group'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/oidc-probe.yml
+
   result:
     name: CI${{ needs.plan.outputs.check-suffix && format(' {0}', needs.plan.outputs.check-suffix) || '' }}
     if: always()
-    needs: [plan, checks, nix, vms, drivers, production, qualification, bundle]
+    needs: [plan, checks, nix, vms, drivers, production, qualification, bundle, oidc-probe]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -349,8 +358,9 @@ jobs:
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |
-          jq -e '
+          jq -e --arg event "$GITHUB_EVENT_NAME" '
             .plan.result == "success" and .checks.result == "success" and .nix.result == "success" and
+            (."oidc-probe".result == (if $event == "merge_group" then "success" else "skipped" end)) and
             ([{flavours: .plan.outputs["vm-flavours"], result: .vms.result},
               {flavours: .plan.outputs["driver-flavours"], result: .drivers.result},
               {flavours: .plan.outputs["production-flavours"], result: .production.result},
