@@ -51,12 +51,24 @@ payload_version_from_package() {
     printf "v%s" "$version"
 }
 
+# A symlinked parent directory would resolve against the host rather than the
+# extracted tree, so the checks below would test the wrong file.
+no_symlinked_parent() {
+    local dir="${1%/*}"
+    while [[ -n "$dir" ]]; do
+        [[ ! -L "$root$dir" ]] || fail "sysext path $1 has a symlinked parent directory: $dir"
+        dir="${dir%/*}"
+    done
+}
+
 # A symlink in the image names a path inside the image, so test the link itself.
 has_path() {
+    no_symlinked_parent "$1"
     [[ -e "$root$1" || -L "$root$1" ]] || fail "missing sysext path: $1"
 }
 
 misses_path() {
+    no_symlinked_parent "$1"
     [[ ! -e "$root$1" && ! -L "$root$1" ]] || fail "unexpected sysext path: $1"
 }
 
@@ -149,6 +161,7 @@ do
 done
 
 release="$root/usr/lib/extension-release.d/extension-release.katl-kubernetes"
+no_symlinked_parent /usr/lib/extension-release.d/extension-release.katl-kubernetes
 [[ -f "$release" ]] || fail "missing sysext path: /usr/lib/extension-release.d/extension-release.katl-kubernetes"
 grep -Fxq "ID=katlos" "$release" || fail "extension-release missing ID=katlos"
 grep -Fxq "SYSEXT_LEVEL=katl-runtime-1" "$release" || fail "extension-release missing SYSEXT_LEVEL=katl-runtime-1"

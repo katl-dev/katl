@@ -1,5 +1,9 @@
 // Package sysextimage reads the file system of a system extension image on
 // a build or test host, without mounting it or elevating privileges.
+//
+// It owns only unprivileged extraction of a sysext's root partition;
+// internal/kernelmodule mounts kernel-extension sysexts with systemd-dissect
+// for depmod, which is a different contract.
 package sysextimage
 
 import (
@@ -36,7 +40,11 @@ func Extract(ctx context.Context, image, dir string) error {
 		return err
 	}
 	defer file.Close()
-	offset, size, err := rootPartition(file)
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	offset, size, err := rootPartition(file, info.Size())
 	if err != nil {
 		return fmt.Errorf("%s: %w", image, err)
 	}
@@ -91,21 +99,22 @@ func extractor(ctx context.Context) (string, error) {
 }
 
 // rootPartition returns the byte offset and size of the one x86-64 root
-// partition in the GPT of r.
-func rootPartition(r io.ReaderAt) (offset, size int64, err error) {
+// partition in the GPT of r, an image of imageSize bytes. The partition lies
+// within the image.
+func rootPartition(r io.ReaderAt, imageSize int64) (offset, size int64, err error) {
 	for _, sector := range sectorSizes {
 		header := make([]byte, sector)
 		if _, err := r.ReadAt(header, sector); err != nil && !errors.Is(err, io.EOF) {
 			return 0, 0, err
 		}
 		if string(header[:8]) == "EFI PART" {
-			return rootInTable(r, sector, header)
+			return rootInTable(r, imageSize, sector, header)
 		}
 	}
 	return 0, 0, errors.New("no GPT partition table")
 }
 
-func rootInTable(r io.ReaderAt, sector int64, header []byte) (offset, size int64, err error) {
+func rootInTable(r io.ReaderAt, imageSize, sector int64, header []byte) (offset, size int64, err error) {
 	le := binary.LittleEndian
 	headerSize := int64(le.Uint32(header[12:16]))
 	if headerSize < 92 || headerSize > sector {
@@ -117,14 +126,23 @@ func rootInTable(r io.ReaderAt, sector int64, header []byte) (offset, size int64
 		return 0, 0, errors.New("GPT header checksum mismatch")
 	}
 
-	entriesLBA := int64(le.Uint64(header[72:80]))
+	// Each LBA and size is bounded by the image before it is scaled, so
+	// crafted header fields cannot overflow an offset or an allocation.
+	imageSectors := uint64(imageSize / sector)
+	if myLBA := le.Uint64(header[24:32]); myLBA != 1 {
+		return 0, 0, fmt.Errorf("GPT header records its own LBA as %d, want 1", myLBA)
+	}
+	entriesLBA := le.Uint64(header[72:80])
+	if entriesLBA < 2 || entriesLBA >= imageSectors {
+		return 0, 0, fmt.Errorf("invalid GPT partition array LBA %d", entriesLBA)
+	}
 	count := int64(le.Uint32(header[80:84]))
 	entrySize := int64(le.Uint32(header[84:88]))
-	if entrySize < 128 || entrySize%8 != 0 || count*entrySize > 1<<20 {
+	if entrySize < 128 || entrySize > 4096 || entrySize%8 != 0 || count > (1<<20)/entrySize {
 		return 0, 0, fmt.Errorf("invalid GPT partition array of %d entries of %d bytes", count, entrySize)
 	}
 	entries := make([]byte, count*entrySize)
-	if _, err := r.ReadAt(entries, entriesLBA*sector); err != nil {
+	if _, err := r.ReadAt(entries, int64(entriesLBA)*sector); err != nil {
 		return 0, 0, fmt.Errorf("read GPT partition array: %w", err)
 	}
 	if crc32.ChecksumIEEE(entries) != le.Uint32(header[88:92]) {
@@ -138,11 +156,14 @@ func rootInTable(r io.ReaderAt, sector int64, header []byte) (offset, size int64
 			continue
 		}
 		roots++
-		first, last := int64(le.Uint64(entry[32:40])), int64(le.Uint64(entry[40:48]))
-		if first <= 0 || last < first {
+		first, last := le.Uint64(entry[32:40]), le.Uint64(entry[40:48])
+		if first == 0 || last < first {
 			return 0, 0, fmt.Errorf("invalid root partition extent %d-%d", first, last)
 		}
-		offset, size = first*sector, (last-first+1)*sector
+		if last >= imageSectors {
+			return 0, 0, fmt.Errorf("root partition extent %d-%d extends past the end of the %d-sector image", first, last, imageSectors)
+		}
+		offset, size = int64(first)*sector, int64(last-first+1)*sector
 	}
 	if roots != 1 {
 		return 0, 0, fmt.Errorf("expected one x86-64 root partition, found %d", roots)
