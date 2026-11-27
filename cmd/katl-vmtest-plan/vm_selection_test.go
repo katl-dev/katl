@@ -33,6 +33,8 @@ func TestAffectedSelection(t *testing.T) {
 		{"builder pin", "shared VM input", []string{"mkosi-builder.lock"}, allNames()},
 		{"builder owner", "shared VM input", []string{"scripts/mkosi-builder"}, allNames()},
 		{"shell retry owner", "shared VM input", []string{"scripts/retry"}, allNames()},
+		{"ci shell", "shared VM input", []string{"flake.lock", ".github/actions/setup-tools/action.yml"}, allNames()},
+		{"dev shell environment", "shared VM input", []string{"scripts/dev-shell-env"}, allNames()},
 		{"shared CLI binary", "unmapped path", []string{"cmd/katlctl/management_rotation.go"}, allNames()},
 		{"unknown path with docs", "unmapped path", []string{"some-new-file", "docs/change.md"}, allNames()},
 		{"unmapped fixture", "unmapped path", []string{"internal/other/testdata/change.md"}, allNames()},

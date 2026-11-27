@@ -54,6 +54,7 @@ func TestDriverDigestCandidate(t *testing.T) {
 		{"hosted tool setup", ".github/actions/setup-tools/action.yml", "name: Set up tools\n", both},
 		{"ci shell entry", ".github/scripts/ci-shell", "#!/bin/sh\nexec nix develop .#ci -c \"$@\"\n", both},
 		{"ci shell tools", "flake.lock", "{\"nodes\":{}}\n", both},
+		{"dev shell environment", "scripts/dev-shell-env", "export KATLCTL_CONFIG=/dev/null\n", both},
 		{"hosted package setup", ".github/scripts/hosted-apt-install", "#!/bin/sh\nexit 1\n", both},
 		{"hosted libvirt setup", ".github/actions/hosted-vmtest/action.yml", "name: Set up libvirt\n", both},
 		{"hosted test entrypoint", ".github/scripts/hosted-vmtest-run", "#!/bin/sh\nexit 0\n", both},

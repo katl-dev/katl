@@ -1,6 +1,9 @@
 package main
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 type vmMode string
 
@@ -126,10 +129,21 @@ func affectedSelection(paths []string, loadInputs func() (vmInputs, error)) vmSe
 	return vmSelection{result, "mapped fixture paths", mappedPaths}
 }
 
+// ciShellInputs define the flake's ci shell and how jobs enter it. The VM
+// lanes and driver qualification take their tools from that shell, so a change
+// to any of these files is an input to both.
+var ciShellInputs = []string{
+	".github/actions/setup-tools/action.yml",
+	".github/scripts/ci-shell",
+	"flake.nix",
+	"flake.lock",
+	"scripts/dev-shell-env",
+}
+
 func sharedVMPath(name string) bool {
 	for _, prefix := range []string{
 		"mkosi.", "mkosi/", "kernels/", "packages/",
-		".github/actions/hosted-vmtest/", ".github/actions/image-caches/", ".github/actions/mkosi-builder/", ".github/actions/setup-tools/", ".github/scripts/hosted-vmtest-",
+		".github/actions/hosted-vmtest/", ".github/actions/image-caches/", ".github/actions/mkosi-builder/", ".github/scripts/hosted-vmtest-",
 		"scripts/vmtest-", "cmd/katl-vmtest-plan/",
 	} {
 		if strings.HasPrefix(name, prefix) {
@@ -139,7 +153,6 @@ func sharedVMPath(name string) bool {
 	switch name {
 	case "go.mod", "go.sum", "Containerfile.mkosi", "mkosi-builder.lock", "containers-policy.json",
 		".github/scripts/hosted-apt-install", ".github/scripts/hosted-hermetic-setup",
-		".github/scripts/ci-shell", "flake.nix", "flake.lock",
 		".github/workflows/ci.yml", ".github/workflows/hosted-vmtests.yml",
 		".github/workflows/production-build.yml", ".github/workflows/production-vmtests.yml",
 		".github/workflows/kernel-qualification.yml", ".github/workflows/release-artifacts.yml",
@@ -147,6 +160,9 @@ func sharedVMPath(name string) bool {
 		"scripts/build-endpoint-advertiser-sysext", "scripts/bind-install-manifest-image", "scripts/build-kubernetes-sysext",
 		"scripts/check-kubernetes-sysext", "scripts/kubernetes-repoquery",
 		"scripts/hermetic", "scripts/job-environment":
+		return true
+	}
+	if slices.Contains(ciShellInputs, name) {
 		return true
 	}
 	_, dedicated := fixtureSuites[name]
