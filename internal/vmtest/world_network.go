@@ -63,7 +63,9 @@ func runLeaseDir() string {
 // hostStateDir is where the coordination entries live when the runner did not
 // pass their paths, as when go test runs without scripts/vmtest-run. Its
 // default keeps the names that runs from older checkouts use, so such a test
-// still coordinates with them.
+// still coordinates with them. The runner uses /tmp while this derives from
+// os.TempDir(), so such a test coordinates with runner-started runs only when
+// TMPDIR is unset.
 func hostStateDir() string {
 	if dir := os.Getenv("KATL_VMTEST_HOST_STATE_DIR"); dir != "" {
 		return dir

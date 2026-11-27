@@ -117,6 +117,20 @@ func TestSweepRemovesFreeLeasesNoObjectNames(t *testing.T) {
 	}
 }
 
+func TestSweepKeepsHeldLeaseNoObjectNames(t *testing.T) {
+	leases := useRunLeaseDir(t)
+	held := filepath.Join(leases, "held")
+	startLeaseHolder(t, held)
+
+	if err := sweep(context.Background(), newFakeLibvirt(t).virsh(), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Lstat(held); err != nil {
+		t.Errorf("lease a process holds was removed because no object names it: %v", err)
+	}
+}
+
 func TestSweepKeepsObjectsOfLeasesOutsideLeaseDir(t *testing.T) {
 	// A run from an older checkout keeps its lease in its run directory, which
 	// a sandboxed run cannot see; a lease that looks missing there may be live.

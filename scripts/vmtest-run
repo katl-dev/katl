@@ -892,10 +892,20 @@ acquire_vmtest_run_lease() {
         return 1
     fi
     prepare_host_coordination || return 1
-    if ! exec {run_lease_fd}>>"$run_lease" || ! "$flock_bin" -n "$run_lease_fd"; then
-        setup_failures+=("lock vmtest run lease failed: $run_lease; if another live run uses run id $run_id, choose a different KATL_VMTEST_RUN_ID")
-        return 1
-    fi
+    # A sweep may lock the file between its creation and our lock, and unlink
+    # it. Wait briefly for such a sweep, then keep the lease only if the path
+    # still names the locked file; otherwise reopen it.
+    for _ in 1 2 3 4 5; do
+        if ! exec {run_lease_fd}>>"$run_lease" || ! "$flock_bin" -w 5 "$run_lease_fd"; then
+            break
+        fi
+        if [[ "$run_lease" -ef /proc/$$/fd/$run_lease_fd ]]; then
+            return 0
+        fi
+        exec {run_lease_fd}>&-
+    done
+    setup_failures+=("lock vmtest run lease failed: $run_lease; if another live run uses run id $run_id, choose a different KATL_VMTEST_RUN_ID")
+    return 1
 }
 
 ipv4_to_int() {

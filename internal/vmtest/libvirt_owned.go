@@ -335,11 +335,11 @@ func removeFreeLeases(named map[string]bool, stderr io.Writer) {
 }
 
 // removeFreeLease deletes the lease file at path unless a process locks it.
-// The exclusive lock keeps a run from taking the lease while it is deleted,
+// The exclusive lock keeps a run from keeping the lease while it is deleted,
 // and the identity check keeps the deletion from hitting a file that replaced
-// it. A run that opened the lease just before the deletion and locks it after
-// holds a lease no sweep can see, which counts as held, so its objects leak
-// rather than being removed.
+// it. A runner that locks a lease after a sweep unlinked it sees that its path
+// no longer names the locked file and reopens it, so no run holds a lease
+// that a sweep cannot see.
 func removeFreeLease(path string) error {
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if errors.Is(err, fs.ErrNotExist) {

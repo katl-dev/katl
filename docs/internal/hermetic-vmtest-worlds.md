@@ -192,7 +192,9 @@ paths, and passes their resolved paths to the Go tests, which derive them
 only when no runner passed them. Every run's sweep then judges other runs'
 VMs and networks by their live leases, and concurrent runs share admission
 and subnet allocation. The ledger and lock keep the names that older runners
-resolve from the default `TMPDIR`. Input paths named by `KATL_*` variables
+resolve from the default `TMPDIR`. Go's fallback, used without the runner's
+exported paths, derives them from `os.TempDir()` while the runner uses `/tmp`,
+so it coordinates with runner-started runs only when `TMPDIR` is unset. Input paths named by `KATL_*` variables
 under `/tmp` or the home directory are bound read-only.
 
 A sweep removes an object only when the lease it names is a file in the shared
