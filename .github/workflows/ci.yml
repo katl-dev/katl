@@ -222,9 +222,10 @@ jobs:
           -shellcheck=
           -ignore 'input "(app-id|client-id)".*action "actions/create-github-app-token@v3"'
 
-      - name: Save shared Go cache
+      - name: Save host Go cache
         if: github.ref == 'refs/heads/main' && steps.tools.outputs.cache-hit != 'true'
         timeout-minutes: 5
+        continue-on-error: true
         uses: actions/cache/save@v6
         with:
           path: |

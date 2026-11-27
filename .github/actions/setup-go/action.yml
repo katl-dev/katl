@@ -1,9 +1,9 @@
 name: Set up Go and restore its cache
 description: >-
-  Install the Go version in go.mod and restore the shared Go cache. A caller
+  Install the Go version in go.mod and restore the host Go cache. A caller
   that already provides Go passes its version and cache paths instead, and
   the action restores the cache for that Go without installing one. This
-  action owns the shared Go cache key, so every restore and the saver that
+  action owns the host Go cache key, so every restore and the saver that
   uses its cache-key output agree on it.
 inputs:
   go-version:
@@ -31,7 +31,6 @@ outputs:
 runs:
   using: composite
   steps:
-    # Keep the setup-go v6 cache key and path order so existing entries can be restored.
     - uses: actions/setup-go@v6
       id: go
       if: inputs.go-version == ''
@@ -65,13 +64,21 @@ runs:
           echo "version=$version"
           echo "module=$module"
           echo "build=$build"
-          echo "platform=${RUNNER_OS}-${RUNNER_ARCH,,}-${ImageOS-undefined}"
+          echo "week=$(date -u +%G-W%V)"
         } >> "$GITHUB_OUTPUT"
+    # The key changes only with the Go version, go.sum or the ISO week; the
+    # week bounds how much stale build output one entry accumulates. There are
+    # no restore-keys: warming from last week's entry and saving it again
+    # would carry that output forward indefinitely. A slow or failed restore
+    # costs a cold build, never the job.
     - name: Restore Go cache
       id: cache
+      continue-on-error: true
       uses: actions/cache/restore@v6
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: "5"
       with:
         path: |
           ${{ steps.paths.outputs.module }}
           ${{ steps.paths.outputs.build }}
-        key: setup-go-${{ steps.paths.outputs.platform }}-go-${{ steps.paths.outputs.version }}-${{ hashFiles('go.mod') }}
+        key: go-host-${{ runner.os }}-${{ runner.arch }}-${{ steps.paths.outputs.version }}-${{ hashFiles('go.sum') }}-${{ steps.paths.outputs.week }}
