@@ -26,11 +26,15 @@ const releaseExtensionModulesFile = "modules.json"
 // KatlOS install image for that image's own runtime, so that a node installed
 // from the image can merge them and load their modules. It reads only the
 // image's bytes and composes them with the release build's verification.
-func runComposeReleaseExtensions(args []string, stdout, stderr io.Writer) (resultErr error) {
+func runComposeReleaseExtensions(args []string, stdout, stderr io.Writer, cfg config) (resultErr error) {
 	if len(args) != 2 {
 		return fmt.Errorf("compose-release-extensions requires INSTALL_IMAGE OUTPUT")
 	}
 	image, output := args[0], args[1]
+	recipes, err := releaseRecipes(cfg.RepoRoot)
+	if err != nil {
+		return err
+	}
 	metadata, err := katlosimage.ReadArtifactMetadata(image+".json", katlosimage.RoleInstall)
 	if err != nil {
 		return err
@@ -57,9 +61,29 @@ func runComposeReleaseExtensions(args []string, stdout, stderr io.Writer) (resul
 	if err != nil {
 		return err
 	}
+	return composeReleaseExtensions(ctx, payload, recipes, output, func(operands []string) error {
+		return elevateReleaseVerification(operands, stdout, stderr)
+	})
+}
+
+// composeReleaseExtensions composes an extracted image's release extension
+// closure into output through compose, which takes verify-release-extensions'
+// operands, and writes the module inventory beside the composed images. The
+// closure must hold exactly the release extensions that the recipes declare,
+// so that an extension missing from the image cannot pass qualification by
+// never being loaded.
+func composeReleaseExtensions(ctx context.Context, payload katlosimage.Payload, recipes map[string]kernelRecipe, output string, compose func(operands []string) error) error {
 	release := payload.Index.ExtensionRelease
 	if release == nil || len(release.Extensions) == 0 {
-		return fmt.Errorf("%s advertises no release extensions", image)
+		return fmt.Errorf("image advertises no release extensions")
+	}
+	declared := make([]string, 0, len(recipes))
+	for _, recipe := range recipes {
+		declared = append(declared, recipe.Repository)
+	}
+	slices.Sort(declared)
+	if advertised := slices.Sorted(maps.Keys(release.Extensions)); !slices.Equal(advertised, declared) {
+		return fmt.Errorf("image advertises release extensions %v, the release declares %v", advertised, declared)
 	}
 
 	contracts := map[string]kernelmodule.Contract{}
@@ -78,10 +102,10 @@ func runComposeReleaseExtensions(args []string, stdout, stderr io.Writer) (resul
 		}
 	}
 	if len(contracts) == 0 {
-		return fmt.Errorf("%s release extensions ship no kernel modules", image)
+		return fmt.Errorf("image release extensions ship no kernel modules")
 	}
 
-	manifestPath := filepath.Join(root, "release-extensions.json")
+	manifestPath := filepath.Join(payload.Root, "release-extensions.json")
 	data, err := json.Marshal(release)
 	if err != nil {
 		return err
@@ -89,7 +113,7 @@ func runComposeReleaseExtensions(args []string, stdout, stderr io.Writer) (resul
 	if err := os.WriteFile(manifestPath, data, 0o644); err != nil {
 		return err
 	}
-	if err := elevateReleaseVerification([]string{manifestPath, filepath.Join(root, payload.Runtime.Path), filepath.Join(root, katlosimage.ExtensionLayoutPath), output}, stdout, stderr); err != nil {
+	if err := compose([]string{manifestPath, filepath.Join(payload.Root, payload.Runtime.Path), filepath.Join(payload.Root, katlosimage.ExtensionLayoutPath), output}); err != nil {
 		return err
 	}
 	data, err = json.MarshalIndent(contracts, "", "  ")

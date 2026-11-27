@@ -104,9 +104,16 @@ Both standard and LTS flavours must pass:
   the source generation, preserving machine identity. These tests use the
   production images without a VM test agent.
 - Loading of every module that each release extension ships, on the installed
-  candidate runtime with that extension merged. NVIDIA modules may stop because
-  no GPU is present; any other load failure, such as an unknown symbol or an
-  invalid module format, fails the candidate and names the module.
+  candidate runtime with that extension merged. The candidate's extension
+  closure must hold exactly the extensions that the release recipes declare.
+  Any load failure, such as an unknown symbol or an invalid module format,
+  fails the candidate and names the module. The one exception is NVIDIA: the
+  runner has no GPU, so `nvidia` stops with "No such device" after its symbols
+  and format are checked, which proves that the root module fits its runtime.
+  `nvidia_uvm`, `nvidia_modeset` and `nvidia_drm` stop because `nvidia` does
+  not load, before their own symbols are resolved, so qualification does not
+  prove that they fit. [#927](https://github.com/katl-dev/katl/issues/927)
+  tracks checking their symbols offline during composition.
 
 Each flavour is built by the reusable `production-build.yml` workflow. Its own
 Production VM job (`qualification-standard`, `qualification-lts`) qualifies the
@@ -150,6 +157,25 @@ This diagnostic run reuses the immutable bundle and ignores VERSION, which
 the dispatch form requires. Production VM runs once per flavour using the
 upgrade baseline pinned at the commit that produced the bundle.
 Tag promotion still requires all gates in the tag's own build run.
+
+To run `TestReleaseLifecycle` locally against a downloaded bundle, first
+compose each flavour's release extensions for its own install image into
+`KATL_VMTEST_RELEASE_EXTENSIONS_DIR`. The command takes the install image and
+a flavour directory that must not exist yet, and checks the image's extension
+closure against the recipes in the checkout:
+
+```sh
+mkdir -p _build/release-extensions
+nix develop -c go run ./cmd/katl-mkosi-artifacts compose-release-extensions \
+  _build/releases/2026.12.1/katlos-install-2026.12.1-x86_64.squashfs \
+  _build/release-extensions/standard
+export KATL_VMTEST_RELEASE_EXTENSIONS_DIR="$PWD/_build/release-extensions"
+```
+
+Use the `katlos-lts-install-*.squashfs` image and an `lts` directory for the
+LTS flavour, with `KATL_FLAVOUR=lts`. Composition mounts the extension images,
+so it currently needs root or systemd-mountfsd;
+[#926](https://github.com/katl-dev/katl/issues/926) tracks removing that need.
 
 Guest disks are excluded from retained artifacts. Fix the defect and
 repeat the affected gates; a rebuilt candidate must qualify its own bytes. Do

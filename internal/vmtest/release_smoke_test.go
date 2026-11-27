@@ -89,7 +89,10 @@ func runReleaseLifecycle(t *testing.T, source, candidate, extensionsDir string, 
 	}
 	var extensions releaseExtensions
 	if !upgrade {
-		extensions = readReleaseExtensions(t, filepath.Join(extensionsDir, first(os.Getenv("KATL_FLAVOUR"), "standard")))
+		composed := filepath.Join(extensionsDir, first(os.Getenv("KATL_FLAVOUR"), "standard"))
+		if extensions, err = readReleaseExtensions(composed); err != nil {
+			t.Fatalf("compose the candidate's release extensions first with `go run ./cmd/katl-mkosi-artifacts compose-release-extensions %s %s` (see docs/development/releases.md): %v", image, composed, err)
+		}
 	}
 	indexPath := filepath.Join(t.TempDir(), "artifacts.json")
 	if err := writeJSON(indexPath, mkosiArtifactIndex{Artifacts: []mkosiArtifact{{Kind: "katlos-install-image", Path: image, MetadataPath: image + ".json"}}}); err != nil {

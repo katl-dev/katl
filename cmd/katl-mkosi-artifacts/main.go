@@ -74,7 +74,7 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 	case "verify-release-extensions":
 		return elevateReleaseVerification(args, stdout, stderr)
 	case "compose-release-extensions":
-		return runComposeReleaseExtensions(args, stdout, stderr)
+		return runComposeReleaseExtensions(args, stdout, stderr, cfg)
 	case "build-kernel-extension":
 		return runBuildKernelExtension(args, stdout, stderr, cfg)
 	case "publish-release-extensions":

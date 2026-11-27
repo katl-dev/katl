@@ -25,7 +25,9 @@ combines the two flavours with `katl-release-artifacts combine`, as the release
 workflow does. Production VM then installs each flavour's assembled bytes, reboots,
 upgrades from the previous stable release, and rolls back through `TestReleaseLifecycle`
 with no test agent, as the release does. On the installed candidate it merges each
-release extension from the same bytes and loads every module it ships. It starts when the builds end and runs
+release extension from the same bytes and loads every module it ships. Without a GPU the
+other NVIDIA modules stop when `nvidia` does, so only `nvidia` is proven to fit its runtime
+([#927](https://github.com/katl-dev/katl/issues/927)). It starts when the builds end and runs
 alongside the VM regression lanes, which remain the longer path. CI requires all of
 these jobs whenever the plan selects them. A change
 that breaks a release check or the production lifecycle therefore fails before merge

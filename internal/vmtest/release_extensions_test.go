@@ -38,24 +38,23 @@ type releaseModule struct {
 // compose-release-extensions` wrote for the candidate's install image. The
 // composition needs mount privileges that a VM test does not have, so it runs
 // before the test.
-func readReleaseExtensions(t *testing.T, dir string) releaseExtensions {
-	t.Helper()
+func readReleaseExtensions(dir string) (releaseExtensions, error) {
+	var extensions releaseExtensions
 	data, err := os.ReadFile(filepath.Join(dir, "modules.json"))
 	if err != nil {
-		t.Fatalf("compose the candidate's release extensions with katl-mkosi-artifacts compose-release-extensions: %v", err)
+		return extensions, err
 	}
 	var contracts map[string]kernelmodule.Contract
 	if err := json.Unmarshal(data, &contracts); err != nil {
-		t.Fatal(err)
+		return extensions, fmt.Errorf("%s: %w", dir, err)
 	}
-	var extensions releaseExtensions
 	for _, repository := range slices.Sorted(maps.Keys(contracts)) {
 		contract := contracts[repository]
 		if err := contract.Validate(); err != nil {
-			t.Fatalf("release extension %s: %v", repository, err)
+			return extensions, fmt.Errorf("release extension %s: %w", repository, err)
 		}
 		if extensions.kernel != "" && extensions.kernel != contract.Target.Release {
-			t.Fatalf("release extensions target kernels %q and %q", extensions.kernel, contract.Target.Release)
+			return extensions, fmt.Errorf("release extensions target kernels %q and %q", extensions.kernel, contract.Target.Release)
 		}
 		extensions.kernel = contract.Target.Release
 		for _, module := range contract.Modules {
@@ -63,13 +62,13 @@ func readReleaseExtensions(t *testing.T, dir string) releaseExtensions {
 		}
 	}
 	if len(extensions.modules) == 0 {
-		t.Fatalf("%s lists no release extension modules", dir)
+		return extensions, fmt.Errorf("%s lists no release extension modules", dir)
 	}
 	extensions.images, err = filepath.Glob(filepath.Join(dir, "*.raw"))
 	if err != nil || len(extensions.images) == 0 {
-		t.Fatalf("%s holds no composed images: %v", dir, err)
+		return extensions, fmt.Errorf("%s holds no composed images: %v", dir, err)
 	}
-	return extensions
+	return extensions, nil
 }
 
 // loadReleaseExtensions merges the composed images through /run/extensions,
@@ -104,8 +103,16 @@ func loadReleaseExtensions(extensions releaseExtensions, run func(command string
 		return fmt.Errorf("merge release extensions: %v: %s", err, output)
 	}
 
+	// The production image has no test agent, so these checks run over SSH as
+	// an independent oracle for kernelmodule.LoadRequired's rule: the selected
+	// file has the contract's digest, modinfo resolves the module to it, and
+	// the loaded module is that file.
 	for _, module := range extensions.modules {
 		name, path := shellQuote(module.Name), shellQuote("/"+module.Path)
+		digest, err := run("sha256sum -- "+path, nil)
+		if fields := strings.Fields(digest); err != nil || len(fields) == 0 || fields[0] != module.SHA256 {
+			return fmt.Errorf("%s module %s file %s does not have its contract digest %s: %q: %v", module.repository, module.Name, module.Path, module.SHA256, digest, err)
+		}
 		providers, err := run("readlink -f \"$(modinfo -F filename -- "+name+")\" "+path, nil)
 		if lines := strings.Split(providers, "\n"); err != nil || len(lines) != 2 || lines[0] != lines[1] {
 			return fmt.Errorf("%s module %s does not resolve to its extension file %s: %q: %v", module.repository, module.Name, module.Path, providers, err)
@@ -132,8 +139,11 @@ func loadReleaseExtensions(extensions releaseExtensions, run func(command string
 // moduleLoadFailure returns nil for a successful load and for a device-bound
 // module that stopped only because its device is absent. Loading resolves
 // symbols and checks the module format before a module probes for devices, so
-// that stop still proves the module fits its runtime. A module that depends on
-// such a module stops at the same point.
+// that stop proves the module itself fits its runtime. Without a GPU that
+// holds only for the root nvidia module: nvidia_uvm, nvidia_modeset and
+// nvidia_drm stop when modprobe fails to load nvidia, before their own
+// symbols are resolved, so their fit is not proven here. #927 tracks checking
+// their symbols offline during composition.
 func moduleLoadFailure(repository, module, output string, err error) error {
 	if err == nil {
 		return nil
@@ -184,6 +194,71 @@ func TestModuleLoadFailure(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), "nvidia_uvm") || !strings.Contains(err.Error(), test.output) {
 				t.Fatalf("error = %v, want the module and the loader output", err)
+			}
+		})
+	}
+}
+
+func TestReadReleaseExtensions(t *testing.T) {
+	contract := func(kernel, module string) kernelmodule.Contract {
+		return kernelmodule.Contract{
+			Target: kernelmodule.Target{Release: kernel, RuntimeSHA256: strings.Repeat("a", 64)},
+			Modules: []kernelmodule.Module{{
+				Name:   module,
+				Path:   "usr/lib/modules/" + kernel + "/extra/" + module + ".ko",
+				SHA256: strings.Repeat("b", 64),
+			}},
+		}
+	}
+	const drbd, nvidia = "ghcr.io/katl-dev/katl/extensions/drbd9", "ghcr.io/katl-dev/katl/extensions/nvidia"
+	for _, test := range []struct {
+		name      string
+		contracts map[string]kernelmodule.Contract
+		images    []string
+		refusal   string
+	}{
+		{"composed", map[string]kernelmodule.Contract{drbd: contract("6.18.1", "drbd"), nvidia: contract("6.18.1", "nvidia")}, []string{"drbd9.raw", "katl-modules.raw"}, ""},
+		{"not composed", nil, nil, "modules.json"},
+		{"different kernels", map[string]kernelmodule.Contract{drbd: contract("6.18.1", "drbd"), nvidia: contract("6.18.2", "nvidia")}, []string{"drbd9.raw"}, "target kernels"},
+		{"no modules", map[string]kernelmodule.Contract{}, []string{"drbd9.raw"}, "lists no release extension modules"},
+		{"no images", map[string]kernelmodule.Contract{drbd: contract("6.18.1", "drbd")}, nil, "holds no composed images"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if test.contracts != nil {
+				data, err := json.Marshal(test.contracts)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(dir, "modules.json"), data, 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, image := range test.images {
+				if err := os.WriteFile(filepath.Join(dir, image), []byte(image), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			extensions, err := readReleaseExtensions(dir)
+			if test.refusal != "" {
+				if err == nil || !strings.Contains(err.Error(), test.refusal) {
+					t.Fatalf("error = %v, want %q", err, test.refusal)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if extensions.kernel != "6.18.1" || len(extensions.images) != 2 {
+				t.Fatalf("extensions = %+v", extensions)
+			}
+			loaded := map[string]string{}
+			for _, module := range extensions.modules {
+				loaded[module.Name] = module.repository
+			}
+			if len(loaded) != 2 || loaded["drbd"] != drbd || loaded["nvidia"] != nvidia {
+				t.Fatalf("modules by extension = %v", loaded)
 			}
 		})
 	}
