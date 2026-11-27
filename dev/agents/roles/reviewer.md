@@ -16,3 +16,8 @@ independent review that gates auto-merge, as the
 the PR with its head SHA and base revision. Include the issue, acceptance
 criteria, any operator workflow, the risk or question to review, and
 available gate evidence.
+
+**Findings.** Report findings within the PR's scope as changes to make in the
+PR. For a finding outside that scope, name the existing issue it belongs to,
+or propose a new issue with acceptance criteria and a priority under the
+[issue intake rules](../README.md#issue-intake).
