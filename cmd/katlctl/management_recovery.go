@@ -22,6 +22,17 @@ import (
 
 var runManagementAuthoritySSH = sshManagementAuthority
 
+// reloadOnlyAuthority is the expected authority of a recovery retry on a node
+// whose disk already holds the replacement. No CA certificate has an all-zero
+// SHA-256 fingerprint, so it never matches an installed authority, and the
+// node helper accepts the request only when the installed authority is the
+// replacement. It reports that as already rotated and reloads the agent under
+// the mutation lock and active-operation guard; any other installed authority
+// differs from both and is refused. Helpers that reject an expected
+// authority equal to the replacement, such as v2026.11.5, take this same path
+// for any other.
+const reloadOnlyAuthority = "0000000000000000000000000000000000000000000000000000000000000000"
+
 func newManagementIdentityRecoverCommand(stdout, stderr io.Writer) *cobra.Command {
 	opts := managementRotationOptions{sshPort: 22, timeout: 2 * time.Minute}
 	command := &cobra.Command{
@@ -167,9 +178,9 @@ func runManagementIdentityRecover(ctx context.Context, opts managementRotationOp
 				return fmt.Errorf("%s: %w; keep %s and rerun the same command", node.name,
 					managementConfirmationError("the node accepts the replacement authority", "the previous authority", err), outputPath)
 			}
-			// The disk already has the replacement. Bind the SSH retry to
-			// that same authority so it can only reload, even if disk state changes.
-			if err := node.prepareRotation(installed[node.name], next); err != nil {
+			// The disk already has the replacement. Bind the SSH retry so it
+			// can only reload, even if disk state changes.
+			if err := node.prepareRotation(reloadOnlyAuthority, next); err != nil {
 				return err
 			}
 			fmt.Fprintf(stderr, "Reloading the installed management authority on %s\n", node.name)
