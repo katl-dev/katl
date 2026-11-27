@@ -207,9 +207,14 @@ func (s *store) bind(e entry) (*directory, error) {
 	return dir, nil
 }
 
-// walk visits children after descendants, opening every directory without
-// following symlinks or mount points. Non-directory names are never opened.
-func (s *store) walk(dir *directory, visit func(*directory, string, *directory) error) error {
+// walk optionally prepares each bound directory before visiting its contents.
+// It visits children after descendants without following symlinks or mounts.
+func (s *store) walk(dir *directory, prepare func(*directory) error, visit func(*directory, string, *directory) error) error {
+	if prepare != nil {
+		if err := prepare(dir); err != nil {
+			return err
+		}
+	}
 	children, err := dir.file.ReadDir(-1)
 	if err != nil {
 		return err
@@ -225,7 +230,7 @@ func (s *store) walk(dir *directory, visit func(*directory, string, *directory) 
 			if err != nil {
 				return err
 			}
-			err = s.walk(subdir, visit)
+			err = s.walk(subdir, prepare, visit)
 		}
 		if err == nil {
 			err = visit(dir, name, subdir)
@@ -248,7 +253,7 @@ func (s *store) size(e entry) (int64, error) {
 	}
 	defer s.closePath(dir)
 	var size int64
-	err = s.walk(dir, func(parent *directory, name string, child *directory) error {
+	err = s.walk(dir, nil, func(parent *directory, name string, child *directory) error {
 		if child != nil {
 			return nil
 		}
@@ -261,7 +266,16 @@ func (s *store) size(e entry) (int64, error) {
 	return size, err
 }
 
-func (s *store) create(entries []entry, id string) (string, error) {
+func (s *store) measure(e entry, diagnostics io.Writer) (int64, bool) {
+	size, err := s.size(e)
+	if err != nil {
+		fmt.Fprintf(diagnostics, "could not measure evidence entry %q: %v\n", filepath.Join(s.location, e.path), err)
+		return 0, false
+	}
+	return size, true
+}
+
+func (s *store) create(entries []entry, id string, diagnostics io.Writer) (string, error) {
 	if !validID(id) {
 		return "", fmt.Errorf("invalid evidence entry %q; use owner/name", id)
 	}
@@ -270,10 +284,7 @@ func (s *store) create(entries []entry, id string) (string, error) {
 		if e.id == id {
 			return "", fmt.Errorf("entry %q already exists; run katl-dev-evidence list for its path", id)
 		}
-		size, err := s.size(e)
-		if err != nil {
-			return "", err
-		}
+		size, _ := s.measure(e, diagnostics)
 		total += size
 	}
 	if total > defaultBudget {
@@ -329,7 +340,7 @@ func (s *store) remove(e entry) error {
 		return err
 	}
 	defer s.closePath(dir)
-	if err := s.walk(dir, func(parent *directory, name string, child *directory) error {
+	if err := s.walk(dir, (*directory).makeWritable, func(parent *directory, name string, child *directory) error {
 		if child != nil {
 			return child.remove()
 		}

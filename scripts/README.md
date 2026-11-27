@@ -175,11 +175,18 @@ path. You can refer to an entry by its stable `owner/name` ID or by
 its current absolute path.
 
 When you finish with an entry, run `katl-dev-evidence release 822/ci-logs`.
+If the pin is still active, `release` reports when it expires. To delete
+the entry before then, run `katl-dev-evidence release 822/ci-logs --force`.
+`release` can remove read-only directory trees that you own.
 Use `katl-dev-evidence prune` to trim the store to its default budget of
 50 GiB, or supply a separate target with `--budget 20GiB`. Pruning counts
 pinned data toward the budget and removes unpinned entries oldest first.
 If the store is over its default budget, `new` directs you to release
 evidence before allocating another entry.
+
+When `list` or `new` cannot measure an entry, it reports the error and
+continues. `list` shows `unknown` in the size column for that entry, and
+`new` checks the budget using the entries it could measure.
 
 `release` and `prune` report mounted directories and leave their contents alone. If
 an expired pin's original path has been recreated, `prune` reports both

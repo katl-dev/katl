@@ -57,6 +57,27 @@ func (d *directory) remove() error {
 	return unix.Unlinkat(d.parent.fd(), d.name, unix.AT_REMOVEDIR)
 }
 
+func (d *directory) makeWritable() error {
+	var stat unix.Stat_t
+	if err := unix.Fstat(d.fd(), &stat); err != nil {
+		return err
+	}
+	if stat.Mode&unix.S_IWUSR != 0 || int(stat.Uid) != os.Geteuid() {
+		return nil
+	}
+
+	// Unlinking requires write access to the containing directory. Changing
+	// only the bound directory avoids modifying symlink targets or hard links.
+	if err := d.check(); err != nil {
+		return err
+	}
+	mode := uint32(stat.Mode) & 0o7777
+	if err := unix.Fchmod(d.fd(), mode|unix.S_IWUSR); err != nil {
+		return fmt.Errorf("make directory %q writable: %w", d.path, err)
+	}
+	return nil
+}
+
 func bindDirectory(fd int, path string, parent *directory, name string, deviceOf func(unix.Stat_t) uint64) (*directory, error) {
 	file := os.NewFile(uintptr(fd), path)
 	var stat unix.Stat_t

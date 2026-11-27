@@ -21,11 +21,12 @@ const usage = `Usage:
   katl-dev-evidence new <owner>/<name>
   katl-dev-evidence list
   katl-dev-evidence keep <entry> --until <YYYY-MM-DD>
-  katl-dev-evidence release <entry>
+  katl-dev-evidence release <entry> [--force]
   katl-dev-evidence prune [--budget <size>]
 
 Entries can be addressed by owner/name or their current absolute path.
 Keep prints the new path and protects the entry through the given local date.
+Release requires --force to remove an entry before its pin expires.
 Prune returns expired pins to ordinary aging and removes the oldest unpinned
 entries as needed to meet the budget (default 50GiB). Sizes are whole bytes
 or use B, KiB, MiB, GiB, or TiB. Accounting uses logical file sizes.
@@ -33,14 +34,14 @@ The store is in .local/state/katl-dev/evidence under your passwd home directory.
 `
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout, time.Now()); err != nil {
+	if err := run(os.Args[1:], os.Stdout, os.Stderr, time.Now()); err != nil {
 		fmt.Fprintf(os.Stderr, "katl-dev-evidence: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(args []string, out io.Writer, now time.Time) error {
-	return runWithStore(args, out, now, func() (*store, error) {
+func run(args []string, out, diagnostics io.Writer, now time.Time) error {
+	return runWithStore(args, out, diagnostics, now, func() (*store, error) {
 		location, err := evidenceRoot()
 		if err != nil {
 			return nil, err
@@ -49,7 +50,7 @@ func run(args []string, out io.Writer, now time.Time) error {
 	})
 }
 
-func runWithStore(args []string, out io.Writer, now time.Time, open func() (*store, error)) error {
+func runWithStore(args []string, out, diagnostics io.Writer, now time.Time, open func() (*store, error)) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
 		_, err := io.WriteString(out, usage)
 		return err
@@ -60,13 +61,17 @@ func runWithStore(args []string, out io.Writer, now time.Time, open func() (*sto
 	flags.SetOutput(io.Discard)
 	wantArgs := 0
 	var until, budgetText string
+	var force bool
 	switch command {
-	case "new", "release":
+	case "new":
 		wantArgs = 1
 	case "list":
 	case "keep":
 		wantArgs = 1
 		flags.StringVar(&until, "until", "", "local date (YYYY-MM-DD)")
+	case "release":
+		wantArgs = 1
+		flags.BoolVar(&force, "force", false, "allow releasing an unexpired pin")
 	case "prune":
 		flags.StringVar(&budgetText, "budget", "", "maximum total size")
 	default:
@@ -123,14 +128,14 @@ func runWithStore(args []string, out io.Writer, now time.Time, open func() (*sto
 
 	switch command {
 	case "new":
-		name, err := store.create(entries, flags.Arg(0))
+		name, err := store.create(entries, flags.Arg(0), diagnostics)
 		if err != nil {
 			return err
 		}
 		_, err = fmt.Fprintln(out, name)
 		return err
 	case "list":
-		return store.list(out, entries, now)
+		return store.list(out, diagnostics, entries, now)
 	case "keep":
 		// Store the date itself in the path so one rename commits the payload
 		// and its deadline together.
@@ -141,6 +146,9 @@ func runWithStore(args []string, out io.Writer, now time.Time, open func() (*sto
 		_, err := fmt.Fprintln(out, filepath.Join(store.location, destination))
 		return err
 	case "release":
+		if now.Before(selected.deadline) && !force {
+			return fmt.Errorf("evidence entry %q is pinned until %s. Use --force to release it early", selected.id, selected.deadline.Format(time.RFC3339))
+		}
 		return store.remove(selected)
 	case "prune":
 		return errors.Join(scanErr, store.prune(out, entries, now, budget))
@@ -181,21 +189,21 @@ func parseBudget(value string) (int64, error) {
 	return size * units, nil
 }
 
-func (s *store) list(out io.Writer, entries []entry, now time.Time) error {
+func (s *store) list(out, diagnostics io.Writer, entries []entry, now time.Time) error {
 	table := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(table, "OWNER\tENTRY\tBYTES\tAGE\tPINNED THROUGH\tPATH")
 	for _, e := range entries {
-		size, err := s.size(e)
-		if err != nil {
-			return err
+		bytes := "unknown"
+		if size, ok := s.measure(e, diagnostics); ok {
+			bytes = strconv.FormatInt(size, 10)
 		}
 		date := "-"
 		if now.Before(e.deadline) {
 			date = e.deadline.AddDate(0, 0, -1).Format(time.DateOnly)
 		}
 		age := max(now.Sub(e.modified), 0).Truncate(time.Second)
-		fmt.Fprintf(table, "%s\t%s\t%d\t%s\t%s\t%s\n",
-			filepath.Dir(e.id), filepath.Base(e.id), size, age, date, filepath.Join(s.location, e.path))
+		fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			filepath.Dir(e.id), filepath.Base(e.id), bytes, age, date, filepath.Join(s.location, e.path))
 	}
 	return table.Flush()
 }
