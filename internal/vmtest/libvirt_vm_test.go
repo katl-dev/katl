@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -760,52 +761,47 @@ esac
 }
 
 func TestLibvirtVMExecutorBoundsCleanup(t *testing.T) {
-	tmp := t.TempDir()
-	virsh := filepath.Join(tmp, "virsh")
-	writeExecutable(t, virsh, `#!/usr/bin/env bash
-set -euo pipefail
-if [[ "${1:-}" == "-c" ]]; then
-    shift 2
-fi
-case "${1:-}" in
-    define|start|undefine)
-        exit 0
-        ;;
-    domstate)
-        printf 'running\n'
-        exit 0
-        ;;
-    destroy)
-        sleep 1
-        exit 0
-        ;;
-    *)
-        exit 40
-        ;;
-esac
-`)
-	xmlPath := filepath.Join(tmp, "domain.xml")
-	if err := os.WriteFile(xmlPath, []byte("<domain/>"), 0o644); err != nil {
-		t.Fatalf("write domain XML: %v", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		const cleanupBudget = 5 * time.Millisecond
+		var cleaned []string
+		executor := LibvirtVMExecutor{
+			CleanupTimeout: cleanupBudget,
+			runVirsh: func(commandCtx context.Context, args ...string) (string, error) {
+				switch args[0] {
+				case "define", "start":
+					return "", commandCtx.Err()
+				case "domstate":
+					<-commandCtx.Done()
+					return "", commandCtx.Err()
+				case "destroy", "undefine":
+					cleaned = append(cleaned, args[0])
+					if commandCtx.Err() != nil {
+						t.Fatalf("%s inherited the expired run context", args[0])
+					}
+					if deadline, ok := commandCtx.Deadline(); !ok || time.Until(deadline) != cleanupBudget {
+						t.Fatalf("%s deadline = %v (set: %t), want a fresh %s budget", args[0], deadline, ok, cleanupBudget)
+					}
+					<-commandCtx.Done()
+					if !errors.Is(commandCtx.Err(), context.DeadlineExceeded) {
+						t.Fatalf("%s ended with %v, want deadline exceeded", args[0], commandCtx.Err())
+					}
+					return "", commandCtx.Err()
+				default:
+					t.Fatalf("unexpected virsh command: %v", args)
+					return "", nil
+				}
+			},
+		}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
-	started := time.Now()
-	err := LibvirtVMExecutor{
-		VirshPath:      virsh,
-		URI:            "qemu:///system",
-		DomainName:     "katl-run-1",
-		DomainXMLFile:  xmlPath,
-		PollInterval:   time.Millisecond,
-		CleanupTimeout: 5 * time.Millisecond,
-	}.Run(ctx, "", nil, nil)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Run() error = %v, want deadline", err)
-	}
-	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
-		t.Fatalf("cleanup was not bounded, elapsed %s", elapsed)
-	}
+		if err := executor.Run(ctx, "", nil, nil); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Run() error = %v, want deadline", err)
+		}
+		if strings.Join(cleaned, " ") != "destroy undefine" {
+			t.Fatalf("cleanup commands = %v, want destroy then undefine", cleaned)
+		}
+	})
 }
 
 func TestPlanVMRejectsSelfBackingSnapshot(t *testing.T) {
@@ -1357,26 +1353,28 @@ func TestVMTimeout(t *testing.T) {
 }
 
 func TestVMSerialIdleTimeout(t *testing.T) {
-	result, config := vmFixture(t)
-	config.Expect = "runtime ready"
-	config.PollInterval = time.Millisecond
-	config.SerialIdleTimeout = 5 * time.Millisecond
-	runner := VMRunner{
-		Executor: vmExec{write: "Boot0002\n", waitForCancel: true},
-		probe: probe{
-			lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
-			stat:     os.Stat,
-			access:   func(string) error { return nil },
-		},
-	}
+	synctest.Test(t, func(t *testing.T) {
+		result, config := vmFixture(t)
+		config.Expect = "runtime ready"
+		config.PollInterval = time.Millisecond
+		config.SerialIdleTimeout = 5 * time.Millisecond
+		runner := VMRunner{
+			Executor: vmExec{write: "Boot0002\n", waitForCancel: true},
+			probe: probe{
+				lookPath: func(string) (string, error) { return "/usr/bin/virsh", nil },
+				stat:     os.Stat,
+				access:   func(string) error { return nil },
+			},
+		}
 
-	result = runner.Run(context.Background(), result, config)
-	if result.Status != StatusFailed {
-		t.Fatalf("Status = %q", result.Status)
-	}
-	if !strings.Contains(result.FailureSummary, "libvirt domain serial idle timed out") || !strings.Contains(result.FailureSummary, "Boot0002") {
-		t.Fatalf("FailureSummary = %q", result.FailureSummary)
-	}
+		result = runner.Run(context.Background(), result, config)
+		if result.Status != StatusFailed {
+			t.Fatalf("Status = %q", result.Status)
+		}
+		if !strings.Contains(result.FailureSummary, "libvirt domain serial idle timed out") || !strings.Contains(result.FailureSummary, "Boot0002") {
+			t.Fatalf("FailureSummary = %q", result.FailureSummary)
+		}
+	})
 }
 
 func TestLibvirtTimeoutSummaryWithoutSerial(t *testing.T) {

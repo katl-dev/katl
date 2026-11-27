@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
@@ -374,19 +375,21 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 }
 
 func TestWaitNodeBootHealthTimeoutExplainsPendingBoot(t *testing.T) {
-	fake := &fakeKatlcAgentClient{
-		nodeStatus: bootObservation{agentStart: "after", running: "gen-a", health: "pending", diagnostic: "katl-boot-health.service has not finished for this boot; inspect the units it requires"}.status(),
-		generation: &agentapi.Generation{GenerationId: "gen-a"},
-	}
-	installKatlcDial(t, nil, fake)
-	fastBootHealthPolls(t)
+	synctest.Test(t, func(t *testing.T) {
+		fake := &fakeKatlcAgentClient{
+			nodeStatus: bootObservation{agentStart: "after", running: "gen-a", health: "pending", diagnostic: "katl-boot-health.service has not finished for this boot; inspect the units it requires"}.status(),
+			generation: &agentapi.Generation{GenerationId: "gen-a"},
+		}
+		installKatlcDial(t, nil, fake)
+		fastBootHealthPolls(t)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
-	_, _, err := waitNodeBootHealth(ctx, bootWaitTarget{nodeName: "cp-1", endpoints: []string{"10.0.0.11:9443"}}, "before", "gen-a", nodeRecoveryRequirement{}, "reboot node=cp-1", io.Discard)
-	if err == nil || !strings.Contains(err.Error(), "did not finish boot health on generation gen-a: katl-boot-health.service has not finished") || !strings.Contains(err.Error(), "katlctl node status cp-1") {
-		t.Fatalf("error = %v", err)
-	}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		_, _, err := waitNodeBootHealth(ctx, bootWaitTarget{nodeName: "cp-1", endpoints: []string{"10.0.0.11:9443"}}, "before", "gen-a", nodeRecoveryRequirement{}, "reboot node=cp-1", io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "did not finish boot health on generation gen-a: katl-boot-health.service has not finished") || !strings.Contains(err.Error(), "katlctl node status cp-1") {
+			t.Fatalf("error = %v", err)
+		}
+	})
 }
 
 func fastBootHealthPolls(t *testing.T) {
@@ -461,21 +464,23 @@ func TestCurrentHostUpgradeAcceptsPreservedPreCNIState(t *testing.T) {
 }
 
 func TestWaitNodeKubernetesRecoveryTimeoutIsActionable(t *testing.T) {
-	fake := &fakeKatlcAgentClient{nodeStatus: &agentapi.NodeStatus{Kubernetes: &agentapi.KubernetesStatus{
-		State: "waiting-for-control-plane", Role: "control-plane", KubeletActive: true, NodeReady: true,
-		FailureReason: "local etcd component is not running",
-	}}}
-	installKatlcDial(t, nil, fake)
-	previousPollInterval := upgradeRebootPollInterval
-	upgradeRebootPollInterval = time.Millisecond
-	t.Cleanup(func() { upgradeRebootPollInterval = previousPollInterval })
+	synctest.Test(t, func(t *testing.T) {
+		fake := &fakeKatlcAgentClient{nodeStatus: &agentapi.NodeStatus{Kubernetes: &agentapi.KubernetesStatus{
+			State: "waiting-for-control-plane", Role: "control-plane", KubeletActive: true, NodeReady: true,
+			FailureReason: "local etcd component is not running",
+		}}}
+		installKatlcDial(t, nil, fake)
+		previousPollInterval := upgradeRebootPollInterval
+		upgradeRebootPollInterval = time.Millisecond
+		t.Cleanup(func() { upgradeRebootPollInterval = previousPollInterval })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
-	_, _, err := waitNodeKubernetesRecovery(ctx, "cp-1", "10.0.0.11:9443", nodeRecoveryRequirement{KubernetesConfigured: true}, "upgrade node=cp-1", &bytes.Buffer{})
-	if err == nil || !strings.Contains(err.Error(), "local etcd component is not running") || !strings.Contains(err.Error(), "do not schedule workloads") || !strings.Contains(err.Error(), "katlctl node status") {
-		t.Fatalf("error = %v", err)
-	}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+		defer cancel()
+		_, _, err := waitNodeKubernetesRecovery(ctx, "cp-1", "10.0.0.11:9443", nodeRecoveryRequirement{KubernetesConfigured: true}, "upgrade node=cp-1", &bytes.Buffer{})
+		if err == nil || !strings.Contains(err.Error(), "local etcd component is not running") || !strings.Contains(err.Error(), "do not schedule workloads") || !strings.Contains(err.Error(), "katlctl node status") {
+			t.Fatalf("error = %v", err)
+		}
+	})
 }
 
 func TestWaitNodeBootHealthReportsPhaseChanges(t *testing.T) {

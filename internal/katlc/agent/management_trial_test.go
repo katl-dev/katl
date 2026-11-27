@@ -177,26 +177,24 @@ func isTimerStop(argv []string, trialID string) bool {
 // management state selects, and returns its address.
 func (n *managementTrialNode) serve(t *testing.T) string {
 	t.Helper()
-	probe, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	address := probe.Addr().String()
-	probe.Close()
-
 	ctx, cancel := context.WithCancel(t.Context())
-	ready := make(chan struct{})
+	ready := make(chan string, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- n.server.serveManagement(ctx, "tcp", address, func() error { close(ready); return nil })
+		done <- n.server.serveManagement(ctx, "tcp", "127.0.0.1:0", func(address net.Addr) error {
+			ready <- address.String()
+			return nil
+		})
 	}()
 	t.Cleanup(func() { cancel(); <-done })
 	select {
-	case <-ready:
+	case address := <-ready:
+		return address
 	case err := <-done:
+		done <- err
 		t.Fatalf("serve = %v", err)
+		return ""
 	}
-	return address
 }
 
 // trialClient presents the replacement authority's operator certificate.

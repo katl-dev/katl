@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/nettest"
 	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 )
 
@@ -136,26 +137,42 @@ func TestStartInstalledRuntimeNodeWaitsForManagementEndpoint(t *testing.T) {
 		t.Fatalf("Plan() error = %v", err)
 	}
 
-	// Any loopback address works on Linux; a distinctive one keeps port 9443
-	// free of other listeners.
-	const address = "127.83.41.7"
+	port := nettest.ReservePort(t)
+	const address = "127.0.0.1"
 	const mac = "52:54:00:83:41:07"
-	leased := filepath.Join(root, "leased")
 	virsh := filepath.Join(root, "virsh")
 	writeExecutable(t, virsh, `#!/usr/bin/env bash
-for arg in "$@"; do
-  if [[ $arg == net-dhcp-leases ]]; then
-    touch '`+leased+`'
-    printf ' 2099-01-01 00:00:00   `+mac+`   ipv4   `+address+`/24   cp-1   -\n'
-  fi
-done
+printf ' 2099-01-01 00:00:00   `+mac+`   ipv4   `+address+`/24   cp-1   -\n'
 `)
 	_, vmConfig := vmFixture(t)
 	vmConfig.Expect = runtimeBootSignal
 	vmConfig.Timeout = time.Minute
 	vmConfig.VSock = VSockConfig{Enabled: true, GuestCID: 62002}
 	vmConfig.Network.MAC = mac
+	dialAttempts := 0
+	connected := false
 	runner := VMRunner{
+		managementDial: func(ctx context.Context, network, endpoint string) (net.Conn, error) {
+			if endpoint != net.JoinHostPort(address, "9443") {
+				t.Errorf("management probe for %s, want the leased address and management port", endpoint)
+			}
+			dialAttempts++
+			conn, err := (&net.Dialer{}).DialContext(ctx, network, port.Endpoint)
+			if err == nil {
+				connected = true
+			}
+			if dialAttempts == 1 {
+				if err == nil {
+					t.Error("management connection succeeded before the listener started")
+				}
+				listener, listenErr := port.Listen()
+				if listenErr != nil {
+					t.Fatalf("listen as the node agent: %v", listenErr)
+				}
+				t.Cleanup(func() { _ = listener.Close() })
+			}
+			return conn, err
+		},
 		Executor: longRunningVMExec{ready: runtimeBootSignal},
 		AgentConnector: func(context.Context, VSockPlan, string) (AgentHealthClient, error) {
 			return fakeHealthClient{}, nil
@@ -173,50 +190,28 @@ done
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	type started struct {
-		node RunningInstalledRuntimeNode
-		err  error
-	}
-	done := make(chan started, 1)
-	go func() {
-		node, err := StartInstalledRuntimeNode(ctx, parent, InstalledRuntimeNodeConfig{
-			Name: "cp-1",
-			Runtime: InstalledRuntimeConfig{
-				Disk:            disk,
-				DiskFormat:      DiskRaw,
-				ESPArtifacts:    esp,
-				FixtureManifest: fixtureManifest,
-				NodeMetadata:    nodeMetadata,
-				VM:              vmConfig,
-			},
-		}, runner)
-		done <- started{node, err}
-	}()
-	// Nothing listens yet, so the node must not be returned as usable.
-	select {
-	case got := <-done:
-		_ = got.node.Stop()
-		t.Fatalf("StartInstalledRuntimeNode() returned before the management endpoint listened: %v", got.err)
-	case <-time.After(time.Second):
-	}
-	if _, err := os.Stat(leased); err != nil {
-		t.Fatalf("StartInstalledRuntimeNode() has not read the lease: %v", err)
-	}
-	listener, err := net.Listen("tcp", net.JoinHostPort(address, "9443"))
+	node, err := StartInstalledRuntimeNode(ctx, parent, InstalledRuntimeNodeConfig{
+		Name: "cp-1",
+		Runtime: InstalledRuntimeConfig{
+			Disk:            disk,
+			DiskFormat:      DiskRaw,
+			ESPArtifacts:    esp,
+			FixtureManifest: fixtureManifest,
+			NodeMetadata:    nodeMetadata,
+			VM:              vmConfig,
+		},
+	}, runner)
 	if err != nil {
-		t.Fatalf("listen as the node's katlc agent: %v", err)
+		t.Fatalf("StartInstalledRuntimeNode() error = %v", err)
 	}
-	defer listener.Close()
-
-	got := <-done
-	if got.err != nil {
-		t.Fatalf("StartInstalledRuntimeNode() error = %v", got.err)
-	}
-	if got.node.Result.IPAddress != address {
-		t.Fatalf("node address = %q, want %s", got.node.Result.IPAddress, address)
-	}
-	if err := got.node.Stop(); err != context.Canceled {
+	if err := node.Stop(); err != context.Canceled {
 		t.Fatalf("Stop() error = %v, want context.Canceled", err)
+	}
+	if !connected {
+		t.Error("node returned without accepting a management connection")
+	}
+	if node.Result.IPAddress != address {
+		t.Fatalf("node address = %q, want %s", node.Result.IPAddress, address)
 	}
 }
 

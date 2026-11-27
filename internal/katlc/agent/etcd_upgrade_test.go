@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/operation"
@@ -284,105 +285,107 @@ func TestPreparedUpgradePreservesArtifact(t *testing.T) {
 func TestEtcdFailureStopsUpgrade(t *testing.T) {
 	for _, failure := range []string{"cannot start", "old process still running"} {
 		t.Run(failure, func(t *testing.T) {
-			root, store, original, now := kubeadmUpgradeFixture(t, "apply")
-			evidence := testUpgradeEtcdEvidence()
-			evidence.SourceImage = "registry.k8s.io/etcd:3.6.5-0"
-			evidence.TargetImage = "registry.k8s.io/etcd:3.6.5-1"
-			evidence.ImageChanges = true
-			prepared, err := store.Read("prepared-1")
-			if err != nil {
-				t.Fatal(err)
-			}
-			evidence.Snapshot = prepared.KubeadmUpgradeEvidence.Etcd.Snapshot
-			prepared.OperationID = "prepared-failure"
-			prepared.KubeadmUpgradeEvidence.Etcd = evidence
-			if _, err := store.Create(prepared, "etcd-prepared", now); err != nil {
-				t.Fatal(err)
-			}
-			request := *original.KubernetesSysextUpdate
-			request.PreparedOperationID = prepared.OperationID
-			original.OperationID = "upgrade-failure"
-			original.KubernetesSysextUpdate = &request
-			record, err := store.Create(original, "accepted", now)
-			if err != nil {
-				t.Fatal(err)
-			}
-			manifest := filepath.Join(root, "etc/kubernetes/manifests/etcd.yaml")
-			writeTestFile(t, manifest, "apiVersion: v1\nkind: Pod\nspec:\n  containers:\n    - name: etcd\n      image: registry.k8s.io/etcd:3.6.5-0\n")
-			executor := newUpgradeExecutor(root, store)
-			executor.inspectUpgradeEtcd = func(context.Context, operation.OperationRecord, string) (*operation.EtcdUpgradeEvidence, error) {
-				return evidence, nil
-			}
-			executor.observeUpgradeEtcd = func(context.Context, *operation.EtcdObservation) (*operation.EtcdObservation, error) {
-				observed := testUpgradeEtcdEvidence().Before
+			synctest.Test(t, func(t *testing.T) {
+				root, store, original, now := kubeadmUpgradeFixture(t, "apply")
+				evidence := testUpgradeEtcdEvidence()
+				evidence.SourceImage = "registry.k8s.io/etcd:3.6.5-0"
+				evidence.TargetImage = "registry.k8s.io/etcd:3.6.5-1"
+				evidence.ImageChanges = true
+				prepared, err := store.Read("prepared-1")
+				if err != nil {
+					t.Fatal(err)
+				}
+				evidence.Snapshot = prepared.KubeadmUpgradeEvidence.Etcd.Snapshot
+				prepared.OperationID = "prepared-failure"
+				prepared.KubeadmUpgradeEvidence.Etcd = evidence
+				if _, err := store.Create(prepared, "etcd-prepared", now); err != nil {
+					t.Fatal(err)
+				}
+				request := *original.KubernetesSysextUpdate
+				request.PreparedOperationID = prepared.OperationID
+				original.OperationID = "upgrade-failure"
+				original.KubernetesSysextUpdate = &request
+				record, err := store.Create(original, "accepted", now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				manifest := filepath.Join(root, "etc/kubernetes/manifests/etcd.yaml")
+				writeTestFile(t, manifest, "apiVersion: v1\nkind: Pod\nspec:\n  containers:\n    - name: etcd\n      image: registry.k8s.io/etcd:3.6.5-0\n")
+				executor := newUpgradeExecutor(root, store)
+				executor.inspectUpgradeEtcd = func(context.Context, operation.OperationRecord, string) (*operation.EtcdUpgradeEvidence, error) {
+					return evidence, nil
+				}
+				executor.observeUpgradeEtcd = func(context.Context, *operation.EtcdObservation) (*operation.EtcdObservation, error) {
+					observed := testUpgradeEtcdEvidence().Before
+					if target, err := os.Readlink(filepath.Join(root, "run/extensions/katl-kubernetes.raw")); err == nil && failure == "old process still running" && !strings.Contains(target, "/gen1/") {
+						t.Fatalf("restored source Kubernetes sysext after mutation: %s", target)
+					}
+					data, err := os.ReadFile(manifest)
+					if err != nil {
+						return observed, err
+					}
+					if bytes.Contains(data, []byte(evidence.TargetImage)) && failure == "cannot start" {
+						observed.LocalImage = ""
+						observed.LocalContainerID = ""
+						observed.Members[0].Healthy = false
+						observed.Members[0].Error = "etcd startup failed"
+						return observed, errors.New("etcd startup failed")
+					}
+					return observed, nil
+				}
+				var commands []string
+				executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+					joined := strings.Join(argv, " ")
+					commands = append(commands, joined)
+					switch {
+					case strings.Contains(joined, "kubeadm version"):
+						return ToolResult{Stdout: []byte("v1.36.2\n")}
+					case strings.Contains(joined, "get configmap kubeadm-config"):
+						return ToolResult{Stdout: []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n")}
+					case strings.Contains(joined, "get endpoints kubernetes"):
+						return ToolResult{Stdout: testKubeAPIServerEndpoints("10.0.0.1")}
+					case strings.Contains(joined, "kubelet --version"):
+						return ToolResult{Stdout: []byte("Kubernetes v1.36.2\n")}
+					case strings.Contains(joined, "kubeadm upgrade apply"):
+						data := []byte("apiVersion: v1\nkind: Pod\nspec:\n  containers:\n    - name: etcd\n      image: " + evidence.TargetImage + "\n")
+						if err := os.WriteFile(manifest, data, 0o600); err != nil {
+							return ToolResult{Err: err, ExitStatus: 1}
+						}
+						if failure == "cannot start" {
+							return ToolResult{Err: errors.New("etcd startup failed"), ExitStatus: 1}
+						}
+					}
+					return ToolResult{}
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+				defer cancel()
+				if err := executor.Execute(ctx, record); err == nil {
+					t.Fatal("failed or unobserved restart succeeded")
+				}
+				failed, err := store.Read(record.OperationID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !failed.RecoveryRequired || !failed.Terminal || failed.PostMutationRollbackAllowed || failed.HostRollback != "" || failed.Result != operation.ResultFailedNeedsRepair {
+					t.Fatalf("failure = %+v", failed)
+				}
+				for _, command := range commands {
+					if strings.Contains(command, "snapshot restore") {
+						t.Fatalf("advanced or reverted after etcd failure: %s", command)
+					}
+				}
 				if target, err := os.Readlink(filepath.Join(root, "run/extensions/katl-kubernetes.raw")); err == nil && failure == "old process still running" && !strings.Contains(target, "/gen1/") {
 					t.Fatalf("restored source Kubernetes sysext after mutation: %s", target)
 				}
 				data, err := os.ReadFile(manifest)
-				if err != nil {
-					return observed, err
+				if err != nil || !bytes.Contains(data, []byte(evidence.TargetImage)) {
+					t.Fatalf("target etcd manifest was reverted: %s, %v", data, err)
 				}
-				if bytes.Contains(data, []byte(evidence.TargetImage)) && failure == "cannot start" {
-					observed.LocalImage = ""
-					observed.LocalContainerID = ""
-					observed.Members[0].Healthy = false
-					observed.Members[0].Error = "etcd startup failed"
-					return observed, errors.New("etcd startup failed")
+				observed := failed.KubeadmUpgradeEvidence.Etcd.After
+				if observed == nil || len(observed.Members) != 3 || !observed.Members[1].Healthy || !observed.Members[2].Healthy {
+					t.Fatalf("missing surviving-voter evidence: %+v", observed)
 				}
-				return observed, nil
-			}
-			var commands []string
-			executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
-				joined := strings.Join(argv, " ")
-				commands = append(commands, joined)
-				switch {
-				case strings.Contains(joined, "kubeadm version"):
-					return ToolResult{Stdout: []byte("v1.36.2\n")}
-				case strings.Contains(joined, "get configmap kubeadm-config"):
-					return ToolResult{Stdout: []byte("apiVersion: kubeadm.k8s.io/v1beta4\nkind: ClusterConfiguration\n")}
-				case strings.Contains(joined, "get endpoints kubernetes"):
-					return ToolResult{Stdout: testKubeAPIServerEndpoints("10.0.0.1")}
-				case strings.Contains(joined, "kubelet --version"):
-					return ToolResult{Stdout: []byte("Kubernetes v1.36.2\n")}
-				case strings.Contains(joined, "kubeadm upgrade apply"):
-					data := []byte("apiVersion: v1\nkind: Pod\nspec:\n  containers:\n    - name: etcd\n      image: " + evidence.TargetImage + "\n")
-					if err := os.WriteFile(manifest, data, 0o600); err != nil {
-						return ToolResult{Err: err, ExitStatus: 1}
-					}
-					if failure == "cannot start" {
-						return ToolResult{Err: errors.New("etcd startup failed"), ExitStatus: 1}
-					}
-				}
-				return ToolResult{}
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-			defer cancel()
-			if err := executor.Execute(ctx, record); err == nil {
-				t.Fatal("failed or unobserved restart succeeded")
-			}
-			failed, err := store.Read(record.OperationID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !failed.RecoveryRequired || !failed.Terminal || failed.PostMutationRollbackAllowed || failed.HostRollback != "" || failed.Result != operation.ResultFailedNeedsRepair {
-				t.Fatalf("failure = %+v", failed)
-			}
-			for _, command := range commands {
-				if strings.Contains(command, "snapshot restore") {
-					t.Fatalf("advanced or reverted after etcd failure: %s", command)
-				}
-			}
-			if target, err := os.Readlink(filepath.Join(root, "run/extensions/katl-kubernetes.raw")); err == nil && failure == "old process still running" && !strings.Contains(target, "/gen1/") {
-				t.Fatalf("restored source Kubernetes sysext after mutation: %s", target)
-			}
-			data, err := os.ReadFile(manifest)
-			if err != nil || !bytes.Contains(data, []byte(evidence.TargetImage)) {
-				t.Fatalf("target etcd manifest was reverted: %s, %v", data, err)
-			}
-			observed := failed.KubeadmUpgradeEvidence.Etcd.After
-			if observed == nil || len(observed.Members) != 3 || !observed.Members[1].Healthy || !observed.Members[2].Healthy {
-				t.Fatalf("missing surviving-voter evidence: %+v", observed)
-			}
+			})
 		})
 	}
 }

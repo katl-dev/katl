@@ -1,7 +1,10 @@
 package scriptstest
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"io"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -16,18 +19,23 @@ func TestRunInGroupKillsDescendants(t *testing.T) {
 	cases := []struct {
 		name     string
 		script   string
-		timeout  time.Duration
 		timedOut bool
 	}{
-		{"timeout", `sleep 600 & echo $!; wait`, 500 * time.Millisecond, true},
-		{"exit", `sleep 600 & echo $!`, 10 * time.Second, false},
+		{"timeout", `sleep 600 >/dev/null 2>&1 & echo $!; wait`, true},
+		{"exit", `sleep 600 >/dev/null 2>&1 & echo $!`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			var pid int
 			t.Run("run", func(t *testing.T) {
-				out, err := runInGroup(t, exec.Command("bash", "-c", tc.script), tc.timeout)
-				if errors.Is(err, errScriptTimeout) != tc.timedOut {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				var output io.Writer = io.Discard
+				if tc.timedOut {
+					output = &expireOnPID{expire: cancel}
+				}
+				out, err := runInGroupContext(t, ctx, exec.Command("bash", "-c", tc.script), 10*time.Second, output)
+				if tc.timedOut && !errors.Is(err, errScriptTimeout) || !tc.timedOut && err != nil {
 					t.Fatalf("err = %v, timedOut want %v", err, tc.timedOut)
 				}
 				var perr error
@@ -49,4 +57,17 @@ func TestRunInGroupKillsDescendants(t *testing.T) {
 			}
 		})
 	}
+}
+
+// expireOnPID triggers the timeout branch after the shell has reported the
+// descendant that cleanup must kill.
+type expireOnPID struct {
+	expire func()
+}
+
+func (w *expireOnPID) Write(data []byte) (int, error) {
+	if bytes.IndexByte(data, '\n') >= 0 {
+		w.expire()
+	}
+	return len(data), nil
 }

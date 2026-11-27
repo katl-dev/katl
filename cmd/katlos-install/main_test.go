@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer"
@@ -22,6 +23,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/disk"
 	"github.com/katl-dev/katl/internal/installer/handoff"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
+	"github.com/katl-dev/katl/internal/nettest"
 )
 
 func TestAutomaticRetryGuidance(t *testing.T) {
@@ -566,42 +568,44 @@ kind: InitConfiguration
 }
 
 func TestBootWait(t *testing.T) {
-	previousNotify := notifySystemd
-	t.Cleanup(func() { notifySystemd = previousNotify })
-	var notifications []string
-	notifySystemd = func(payload string) error {
-		notifications = append(notifications, payload)
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		previousNotify := notifySystemd
+		t.Cleanup(func() { notifySystemd = previousNotify })
+		var notifications []string
+		notifySystemd = func(payload string) error {
+			notifications = append(notifications, payload)
+			return nil
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
 
-	runDir := filepath.Join(t.TempDir(), "run")
-	etcDir := filepath.Join(t.TempDir(), "etc")
-	var stdout bytes.Buffer
-	err := runBootWithHandoff(ctx, runDir, etcDir, "127.0.0.1:0", &stdout, func(ctx context.Context, gotRunDir, gotAddr string, stdout io.Writer, initial *installer.BootInput) error {
-		if initial != nil {
-			t.Fatal("waiting boot started an automatic install")
+		runDir := filepath.Join(t.TempDir(), "run")
+		etcDir := filepath.Join(t.TempDir(), "etc")
+		var stdout bytes.Buffer
+		err := runBootWithHandoff(ctx, runDir, etcDir, "127.0.0.1:0", &stdout, func(ctx context.Context, gotRunDir, gotAddr string, stdout io.Writer, initial *installer.BootInput) error {
+			if initial != nil {
+				t.Fatal("waiting boot started an automatic install")
+			}
+			if gotRunDir != runDir {
+				t.Fatalf("run dir = %q, want %q", gotRunDir, runDir)
+			}
+			if gotAddr != "127.0.0.1:0" {
+				t.Fatalf("handoff addr = %q", gotAddr)
+			}
+			fmt.Fprintln(stdout, "katlos-install waiting for config at http://127.0.0.1:0/v1/install")
+			<-ctx.Done()
+			return ctx.Err()
+		})
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("runBoot() error = %v, want deadline", err)
 		}
-		if gotRunDir != runDir {
-			t.Fatalf("run dir = %q, want %q", gotRunDir, runDir)
+		if got := stdout.String(); !strings.Contains(got, "waiting for config") {
+			t.Fatalf("stdout = %q, want handoff announcement", got)
 		}
-		if gotAddr != "127.0.0.1:0" {
-			t.Fatalf("handoff addr = %q", gotAddr)
+		if len(notifications) < 2 || !strings.Contains(notifications[0], "STATUS=reading installer boot inputs") || !strings.Contains(notifications[1], "READY=1\nSTATUS=configuration handoff mode selected") {
+			t.Fatalf("notifications = %#v", notifications)
 		}
-		fmt.Fprintln(stdout, "katlos-install waiting for config at http://127.0.0.1:0/v1/install")
-		<-ctx.Done()
-		return ctx.Err()
 	})
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("runBoot() error = %v, want deadline", err)
-	}
-	if got := stdout.String(); !strings.Contains(got, "waiting for config") {
-		t.Fatalf("stdout = %q, want handoff announcement", got)
-	}
-	if len(notifications) < 2 || !strings.Contains(notifications[0], "STATUS=reading installer boot inputs") || !strings.Contains(notifications[1], "READY=1\nSTATUS=configuration handoff mode selected") {
-		t.Fatalf("notifications = %#v", notifications)
-	}
 }
 
 func TestHandoffAnnouncementBaseURLKeepsExplicitAddress(t *testing.T) {
@@ -675,25 +679,27 @@ func TestMaterializeHandoffPayloadsCopiesSeedMedia(t *testing.T) {
 }
 
 func TestBootHold(t *testing.T) {
-	root := t.TempDir()
-	runDir := filepath.Join(root, "run")
-	if err := os.MkdirAll(runDir, 0o755); err != nil {
-		t.Fatalf("MkdirAll() error = %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(runDir, "install-input.json"), []byte(`{"holdForDebug":true}`), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		runDir := filepath.Join(root, "run")
+		if err := os.MkdirAll(runDir, 0o755); err != nil {
+			t.Fatalf("MkdirAll() error = %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(runDir, "install-input.json"), []byte(`{"holdForDebug":true}`), 0o644); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
 
-	var stdout bytes.Buffer
-	err := runBoot(ctx, runDir, filepath.Join(root, "etc"), "127.0.0.1:0", &stdout)
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("runBoot() error = %v, want deadline", err)
-	}
-	if got := stdout.String(); !strings.Contains(got, "debug hold active") {
-		t.Fatalf("stdout = %q, want debug hold log", got)
-	}
+		var stdout bytes.Buffer
+		err := runBoot(ctx, runDir, filepath.Join(root, "etc"), "127.0.0.1:0", &stdout)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("runBoot() error = %v, want deadline", err)
+		}
+		if got := stdout.String(); !strings.Contains(got, "debug hold active") {
+			t.Fatalf("stdout = %q, want debug hold log", got)
+		}
+	})
 }
 
 func TestWaitForInstallerRebootBlocksUntilShutdown(t *testing.T) {
@@ -739,14 +745,7 @@ func assertFile(t *testing.T, path, want string) {
 }
 
 func TestFetchBundleURLNamesConnectCause(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	address := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatalf("close listener: %v", err)
-	}
+	address := nettest.ReservePort(t).Endpoint
 	blocked := make(chan struct{})
 	hang := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-blocked }))
 	t.Cleanup(func() {

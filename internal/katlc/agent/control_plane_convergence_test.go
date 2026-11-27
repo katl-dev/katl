@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/operation"
@@ -31,52 +32,54 @@ func TestControlPlaneManifestConvergence(t *testing.T) {
 		{name: "formatting preserves native identity", hash: "before-api", conditions: ready, formatOnly: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			store := operation.Store{Root: filepath.Join(root, "operations")}
-			record := operation.OperationRecord{OperationID: "configure", KubeadmControlPlaneConfig: &operation.KubeadmControlPlaneConfig{NodeName: "cp-1"}}
-			for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
-				before := "apiVersion: v1\nkind: Pod\nmetadata:\n  name: " + component + "\nspec:\n  containers:\n  - name: " + component + "\n    image: example.invalid/component:v1\n"
-				after := before
-				if component == "kube-apiserver" {
-					if tc.formatOnly {
-						after = "# Rendered with different formatting\nkind: Pod\napiVersion: v1\nmetadata: {name: kube-apiserver}\nspec:\n  containers: [{image: example.invalid/component:v1, name: kube-apiserver}]\n"
-					} else {
-						after = strings.Replace(before, "component:v1", "component:v2", 1)
+			synctest.Test(t, func(t *testing.T) {
+				root := t.TempDir()
+				store := operation.Store{Root: filepath.Join(root, "operations")}
+				record := operation.OperationRecord{OperationID: "configure", KubeadmControlPlaneConfig: &operation.KubeadmControlPlaneConfig{NodeName: "cp-1"}}
+				for _, component := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler"} {
+					before := "apiVersion: v1\nkind: Pod\nmetadata:\n  name: " + component + "\nspec:\n  containers:\n  - name: " + component + "\n    image: example.invalid/component:v1\n"
+					after := before
+					if component == "kube-apiserver" {
+						if tc.formatOnly {
+							after = "# Rendered with different formatting\nkind: Pod\napiVersion: v1\nmetadata: {name: kube-apiserver}\nspec:\n  containers: [{image: example.invalid/component:v1, name: kube-apiserver}]\n"
+						} else {
+							after = strings.Replace(before, "component:v1", "component:v2", 1)
+						}
 					}
+					writeKubernetesStatusFile(t, root, "operations/configure/manifest-backup/"+component+".yaml", before)
+					writeKubernetesStatusFile(t, root, "etc/kubernetes/manifests/"+component+".yaml", after)
 				}
-				writeKubernetesStatusFile(t, root, "operations/configure/manifest-backup/"+component+".yaml", before)
-				writeKubernetesStatusFile(t, root, "etc/kubernetes/manifests/"+component+".yaml", after)
-			}
-			before := map[string]controlPlaneMirror{
-				"kube-apiserver.yaml":          {hash: "before-api", containersReady: true},
-				"kube-controller-manager.yaml": {hash: "controller", containersReady: true},
-				"kube-scheduler.yaml":          {hash: "scheduler", containersReady: true},
-			}
-			api := mirrorPod("kube-apiserver", tc.hash, tc.conditions)
-			if tc.deleting {
-				api = strings.Replace(api, `"metadata":{`, `"metadata":{"deletionTimestamp":"2026-01-01T00:00:00Z",`, 1)
-			}
-			pods := mirrorList(
-				api,
-				mirrorPod("kube-controller-manager", "controller", ready),
-				mirrorPod("kube-scheduler", "scheduler", ready),
-			)
-			// Bound a failed convergence without asserting polling intervals or
-			// elapsed time. The native response itself remains successful.
-			ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
-			defer cancel()
-			executor := Executor{Root: root, Store: store, RunTool: func(context.Context, []string, func(int)) ToolResult {
-				return ToolResult{Stdout: []byte(pods)}
-			}}
+				before := map[string]controlPlaneMirror{
+					"kube-apiserver.yaml":          {hash: "before-api", containersReady: true},
+					"kube-controller-manager.yaml": {hash: "controller", containersReady: true},
+					"kube-scheduler.yaml":          {hash: "scheduler", containersReady: true},
+				}
+				api := mirrorPod("kube-apiserver", tc.hash, tc.conditions)
+				if tc.deleting {
+					api = strings.Replace(api, `"metadata":{`, `"metadata":{"deletionTimestamp":"2026-01-01T00:00:00Z",`, 1)
+				}
+				pods := mirrorList(
+					api,
+					mirrorPod("kube-controller-manager", "controller", ready),
+					mirrorPod("kube-scheduler", "scheduler", ready),
+				)
+				// Bound a failed convergence without asserting polling intervals or
+				// elapsed time. The native response itself remains successful.
+				ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+				defer cancel()
+				executor := Executor{Root: root, Store: store, RunTool: func(context.Context, []string, func(int)) ToolResult {
+					return ToolResult{Stdout: []byte(pods)}
+				}}
 
-			err := executor.waitControlPlaneManifests(ctx, record, before)
-			if tc.wantError {
-				if !errors.Is(err, context.DeadlineExceeded) {
-					t.Fatalf("unconverged native pod was accepted or lost cancellation: %v", err)
+				err := executor.waitControlPlaneManifests(ctx, record, before)
+				if tc.wantError {
+					if !errors.Is(err, context.DeadlineExceeded) {
+						t.Fatalf("unconverged native pod was accepted or lost cancellation: %v", err)
+					}
+				} else if err != nil {
+					t.Fatalf("converged native manifests rejected: %v", err)
 				}
-			} else if err != nil {
-				t.Fatalf("converged native manifests rejected: %v", err)
-			}
+			})
 		})
 	}
 }

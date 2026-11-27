@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
@@ -938,33 +939,35 @@ func TestTransportRunnerWaitsForControlPlaneJoinReady(t *testing.T) {
 }
 
 func TestTransportRunnerWaitControlPlaneJoinReadyRequiresEtcdMember(t *testing.T) {
-	transport := newFakeTransport()
-	transport.commands[commandKey("kubectl", "--kubeconfig", adminKubeconfigPath, "get", "--raw=/readyz")] = readiness.CommandResult{ExitStatus: 0, Stdout: "ok\n"}
-	transport.commands[commandKey("kubectl", "--kubeconfig", adminKubeconfigPath, "get", "node", "cp-2")] = readiness.CommandResult{ExitStatus: 0, Stdout: "cp-2\n"}
-	for _, name := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler", "etcd"} {
-		transport.commands[commandKey("crictl", "ps", "--name", name, "--state", "Running", "--quiet")] = readiness.CommandResult{ExitStatus: 0, Stdout: name + "-container\n"}
-	}
-	transport.commands[commandKey(etcdctlArgs("etcd-container", "endpoint", "health", "--cluster", "--write-out=json")...)] = readiness.CommandResult{
-		ExitStatus: 0,
-		Stdout:     `[{"endpoint":"https://127.0.0.1:2379","health":true}]`,
-	}
-	transport.commands[commandKey(etcdctlArgs("etcd-container", "endpoint", "status", "--cluster", "--write-out=json")...)] = readiness.CommandResult{
-		ExitStatus: 0,
-		Stdout:     `[{"Endpoint":"https://127.0.0.1:2379","Status":{"header":{"member_id":"a1"},"version":"3.5.12","leader":"a1"}}]`,
-	}
-	transport.commands[commandKey(etcdctlArgs("etcd-container", "member", "list", "--write-out=json")...)] = readiness.CommandResult{
-		ExitStatus: 0,
-		Stdout:     `{"members":[{"ID":"a1","name":"cp-1"}]}`,
-	}
+	synctest.Test(t, func(t *testing.T) {
+		transport := newFakeTransport()
+		transport.commands[commandKey("kubectl", "--kubeconfig", adminKubeconfigPath, "get", "--raw=/readyz")] = readiness.CommandResult{ExitStatus: 0, Stdout: "ok\n"}
+		transport.commands[commandKey("kubectl", "--kubeconfig", adminKubeconfigPath, "get", "node", "cp-2")] = readiness.CommandResult{ExitStatus: 0, Stdout: "cp-2\n"}
+		for _, name := range []string{"kube-apiserver", "kube-controller-manager", "kube-scheduler", "etcd"} {
+			transport.commands[commandKey("crictl", "ps", "--name", name, "--state", "Running", "--quiet")] = readiness.CommandResult{ExitStatus: 0, Stdout: name + "-container\n"}
+		}
+		transport.commands[commandKey(etcdctlArgs("etcd-container", "endpoint", "health", "--cluster", "--write-out=json")...)] = readiness.CommandResult{
+			ExitStatus: 0,
+			Stdout:     `[{"endpoint":"https://127.0.0.1:2379","health":true}]`,
+		}
+		transport.commands[commandKey(etcdctlArgs("etcd-container", "endpoint", "status", "--cluster", "--write-out=json")...)] = readiness.CommandResult{
+			ExitStatus: 0,
+			Stdout:     `[{"Endpoint":"https://127.0.0.1:2379","Status":{"header":{"member_id":"a1"},"version":"3.5.12","leader":"a1"}}]`,
+		}
+		transport.commands[commandKey(etcdctlArgs("etcd-container", "member", "list", "--write-out=json")...)] = readiness.CommandResult{
+			ExitStatus: 0,
+			Stdout:     `{"members":[{"ID":"a1","name":"cp-1"}]}`,
+		}
 
-	err := (TransportRunner{Transport: transport, APITimeout: time.Millisecond, APIPollInterval: time.Millisecond}).WaitControlPlaneJoinReady(
-		context.Background(),
-		validPlannedNode(t, "cp-1", inventory.ActionInit),
-		validPlannedNode(t, "cp-2", inventory.ActionControlPlaneJoin),
-	)
-	if err == nil || !strings.Contains(err.Error(), "member cp-2 is missing") {
-		t.Fatalf("WaitControlPlaneJoinReady() error = %v, want missing member", err)
-	}
+		err := (TransportRunner{Transport: transport, APITimeout: time.Millisecond, APIPollInterval: time.Millisecond}).WaitControlPlaneJoinReady(
+			context.Background(),
+			validPlannedNode(t, "cp-1", inventory.ActionInit),
+			validPlannedNode(t, "cp-2", inventory.ActionControlPlaneJoin),
+		)
+		if err == nil || !strings.Contains(err.Error(), "member cp-2 is missing") {
+			t.Fatalf("WaitControlPlaneJoinReady() error = %v, want missing member", err)
+		}
+	})
 }
 
 func TestTransportRunnerWaitsForAPIReady(t *testing.T) {
@@ -1187,44 +1190,46 @@ func TestKubectlBootstrapRunnerRunsPreWaitBeforeManifests(t *testing.T) {
 }
 
 func TestKubectlBootstrapRunnerStopsWhenPreWaitFails(t *testing.T) {
-	commands := &fakeKubectlCommandRunner{
-		defaultResult: &readiness.CommandResult{ExitStatus: 1, Stderr: "stable endpoint still not ready"},
-		results: []readiness.CommandResult{
-			{ExitStatus: 1, Stderr: "stable endpoint not ready"},
-			{ExitStatus: 1, Stderr: "stable endpoint still not ready"},
-		},
-	}
-	_, err := (KubectlBootstrapRunner{
-		CommandRunner: commands,
-		TempDir:       t.TempDir(),
-		Timeout:       2 * time.Millisecond,
-		PollInterval:  time.Millisecond,
-		ProbeTimeout:  time.Millisecond,
-	}).RunUserBootstrap(context.Background(), BootstrapRequest{
-		Server:         "10.0.0.11:6443",
-		StableEndpoint: "api.stable.test:6443",
-		Credentials: AdminCredentials{
-			CertificateAuthorityData: testCA,
-			ClientCertificateData:    testCert,
-			ClientKeyData:            testKey,
-		},
-		PreWaits: []BootstrapWait{{Kind: BootstrapWaitStableEndpoint, Name: "api.stable.test:6443"}},
-		Manifests: []BootstrapManifest{{
-			Path:    "01-cni.yaml",
-			Content: []byte(validBootstrapManifest("cni")),
-		}},
-	})
-	if err == nil {
-		t.Fatal("RunUserBootstrap() error = nil, want pre-wait failure")
-	}
-	if len(commands.calls) == 0 {
-		t.Fatal("kubectl calls = 0, want readiness polling")
-	}
-	for _, call := range commands.calls {
-		if got := call[5:]; !reflect.DeepEqual(got, []string{"get", "--raw=/readyz"}) {
-			t.Fatalf("kubectl call = %#v, want only stable endpoint probes before failure", call)
+	synctest.Test(t, func(t *testing.T) {
+		commands := &fakeKubectlCommandRunner{
+			defaultResult: &readiness.CommandResult{ExitStatus: 1, Stderr: "stable endpoint still not ready"},
+			results: []readiness.CommandResult{
+				{ExitStatus: 1, Stderr: "stable endpoint not ready"},
+				{ExitStatus: 1, Stderr: "stable endpoint still not ready"},
+			},
 		}
-	}
+		_, err := (KubectlBootstrapRunner{
+			CommandRunner: commands,
+			TempDir:       t.TempDir(),
+			Timeout:       2 * time.Millisecond,
+			PollInterval:  time.Millisecond,
+			ProbeTimeout:  time.Millisecond,
+		}).RunUserBootstrap(context.Background(), BootstrapRequest{
+			Server:         "10.0.0.11:6443",
+			StableEndpoint: "api.stable.test:6443",
+			Credentials: AdminCredentials{
+				CertificateAuthorityData: testCA,
+				ClientCertificateData:    testCert,
+				ClientKeyData:            testKey,
+			},
+			PreWaits: []BootstrapWait{{Kind: BootstrapWaitStableEndpoint, Name: "api.stable.test:6443"}},
+			Manifests: []BootstrapManifest{{
+				Path:    "01-cni.yaml",
+				Content: []byte(validBootstrapManifest("cni")),
+			}},
+		})
+		if err == nil {
+			t.Fatal("RunUserBootstrap() error = nil, want pre-wait failure")
+		}
+		if len(commands.calls) == 0 {
+			t.Fatal("kubectl calls = 0, want readiness polling")
+		}
+		for _, call := range commands.calls {
+			if got := call[5:]; !reflect.DeepEqual(got, []string{"get", "--raw=/readyz"}) {
+				t.Fatalf("kubectl call = %#v, want only stable endpoint probes before failure", call)
+			}
+		}
+	})
 }
 
 func TestKubectlBootstrapRunnerPollsAndRedactsWaitFailures(t *testing.T) {
@@ -1259,30 +1264,32 @@ func TestKubectlBootstrapRunnerPollsAndRedactsWaitFailures(t *testing.T) {
 	})
 
 	t.Run("redacts terminal failures", func(t *testing.T) {
-		commands := &fakeKubectlCommandRunner{
-			defaultResult: &readiness.CommandResult{ExitStatus: 1, Stderr: "wait failed with token " + secret},
-		}
-		_, err := (KubectlBootstrapRunner{
-			CommandRunner: commands,
-			TempDir:       t.TempDir(),
-			Timeout:       2 * time.Millisecond,
-			PollInterval:  time.Millisecond,
-			ProbeTimeout:  time.Millisecond,
-		}).RunUserBootstrap(context.Background(), BootstrapRequest{
-			Server: "10.0.0.11:6443",
-			Credentials: AdminCredentials{
-				CertificateAuthorityData: testCA,
-				ClientCertificateData:    testCert,
-				ClientKeyData:            testKey,
-			},
-			Waits: []BootstrapWait{{Kind: BootstrapWaitResourceExists, Namespace: "kube-system", Name: "daemonset/cilium"}},
+		synctest.Test(t, func(t *testing.T) {
+			commands := &fakeKubectlCommandRunner{
+				defaultResult: &readiness.CommandResult{ExitStatus: 1, Stderr: "wait failed with token " + secret},
+			}
+			_, err := (KubectlBootstrapRunner{
+				CommandRunner: commands,
+				TempDir:       t.TempDir(),
+				Timeout:       2 * time.Millisecond,
+				PollInterval:  time.Millisecond,
+				ProbeTimeout:  time.Millisecond,
+			}).RunUserBootstrap(context.Background(), BootstrapRequest{
+				Server: "10.0.0.11:6443",
+				Credentials: AdminCredentials{
+					CertificateAuthorityData: testCA,
+					ClientCertificateData:    testCert,
+					ClientKeyData:            testKey,
+				},
+				Waits: []BootstrapWait{{Kind: BootstrapWaitResourceExists, Namespace: "kube-system", Name: "daemonset/cilium"}},
+			})
+			if err == nil {
+				t.Fatal("RunUserBootstrap() error = nil, want wait failure")
+			}
+			if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
+				t.Fatalf("error = %q, want redacted token", err.Error())
+			}
 		})
-		if err == nil {
-			t.Fatal("RunUserBootstrap() error = nil, want wait failure")
-		}
-		if strings.Contains(err.Error(), secret) || !strings.Contains(err.Error(), "[REDACTED BOOTSTRAP TOKEN]") {
-			t.Fatalf("error = %q, want redacted token", err.Error())
-		}
 	})
 }
 

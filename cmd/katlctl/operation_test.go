@@ -8,6 +8,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -256,15 +257,17 @@ func TestFollowOperationFallsBackToPolling(t *testing.T) {
 }
 
 func TestFollowOperationTimeoutReturnsLastStatus(t *testing.T) {
-	current := &agentapi.OperationStatus{OperationId: "operation-1", OperationKind: "bootstrap-init", Phase: "kubeadm-init"}
-	client := &fakeOperationClient{watchErrs: []error{errors.New("stream unavailable")}, statuses: []*agentapi.OperationStatus{current}}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
-	defer cancel()
+	synctest.Test(t, func(t *testing.T) {
+		current := &agentapi.OperationStatus{OperationId: "operation-1", OperationKind: "bootstrap-init", Phase: "kubeadm-init"}
+		client := &fakeOperationClient{watchErrs: []error{errors.New("stream unavailable")}, statuses: []*agentapi.OperationStatus{current}}
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
 
-	status, err := followOperation(ctx, client, &agentapi.GetOperationRequest{OperationId: "operation-1"}, current, io.Discard)
-	if !errors.Is(err, context.DeadlineExceeded) || status != current {
-		t.Fatalf("status=%#v error=%v", status, err)
-	}
+		status, err := followOperation(ctx, client, &agentapi.GetOperationRequest{OperationId: "operation-1"}, current, io.Discard)
+		if !errors.Is(err, context.DeadlineExceeded) || status != current {
+			t.Fatalf("status=%#v error=%v", status, err)
+		}
+	})
 }
 
 func TestOperationStatusValidatesFlags(t *testing.T) {

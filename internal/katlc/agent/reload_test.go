@@ -81,21 +81,20 @@ func hangup(t *testing.T) {
 // returns its address once it reports READY=1.
 func (n *managementTrialNode) serveUnderSystemd(t *testing.T, notices systemdNotifications) string {
 	t.Helper()
-	probe, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	address := probe.Addr().String()
-	probe.Close()
-
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- n.server.serveReloadable(ctx, "tcp", address, notifyReady) }()
+	bound := make(chan string, 1)
+	go func() {
+		done <- n.server.serveReloadable(ctx, "tcp", "127.0.0.1:0", func(address net.Addr) error {
+			bound <- address.String()
+			return notifyReady()
+		})
+	}()
 	t.Cleanup(func() { cancel(); <-done })
 	if ready := notices.next(t); ready["READY"] != "1" {
 		t.Fatalf("first notification = %v, want READY=1", ready)
 	}
-	return address
+	return <-bound
 }
 
 // A revert made outside the agent, by the systemd timer or the console, takes

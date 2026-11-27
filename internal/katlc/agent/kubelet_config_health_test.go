@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/operation"
@@ -22,6 +23,12 @@ const (
 	configReadyCRI    = `{"status":{"conditions":[{"type":"RuntimeReady","status":true},{"type":"NetworkReady","status":true}]}}`
 	configPendingCRI  = `{"status":{"conditions":[{"type":"RuntimeReady","status":true},{"type":"NetworkReady","status":false,"reason":"NetworkPluginNotReady","message":"Network plugin returns error: cni plugin not initialized"}]}}`
 )
+
+// kubeletFixtureNow returns a wall time after the fixture heartbeats, including
+// when the test's timers run on synctest's clock.
+func kubeletFixtureNow() time.Time {
+	return time.Date(2026, time.January, 1, 0, 0, 3, 0, time.UTC)
+}
 
 func readyKubeletHealthProbe(argv []string) (ToolResult, bool) {
 	if result, ok := controlPlaneMirrorProbe(argv); ok {
@@ -97,70 +104,72 @@ func TestKubeletConfigHealth(t *testing.T) {
 		{name: "configuration activated after startup", baseline: "cni-uninitialized", node: configPendingNode, cri: configPendingCRI, confext: true, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			writeKubernetesStatusFile(t, root, "etc/hostname", "worker-1\n")
-			writeKubernetesStatusFile(t, root, "etc/kubernetes/kubelet.conf", "kubelet\n")
-			writeKubeletStartup(t, root)
-			if tc.missing {
-				if err := os.Remove(filepath.Join(root, "run/katl/kubelet-startup.json")); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if tc.malformed {
-				writeKubernetesStatusFile(t, root, "run/katl/kubelet-startup.json", "{")
-			}
-			if tc.confext {
-				link := filepath.Join(root, "run/confexts/zzzz-katl-node")
-				if err := os.Remove(link); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink("/var/lib/katl/generations/2/confext", link); err != nil {
-					t.Fatal(err)
-				}
-			}
-			request := &operation.KubeadmControlPlaneConfig{Component: "kubelet", NodeName: "worker-1", ReadinessRequirement: tc.baseline}
-			store, record := kubeletHealthOperation(t, root, request)
-			serviceReads := 0
-			executor := &Executor{Root: root, Store: store, RunTool: func(_ context.Context, argv []string, _ func(int)) ToolResult {
-				switch {
-				case argv[0] == "/usr/bin/crictl":
-					if tc.criFailure {
-						return ToolResult{Err: fmt.Errorf("CRI unavailable"), ExitStatus: 1}
+			synctest.Test(t, func(t *testing.T) {
+				root := t.TempDir()
+				writeKubernetesStatusFile(t, root, "etc/hostname", "worker-1\n")
+				writeKubernetesStatusFile(t, root, "etc/kubernetes/kubelet.conf", "kubelet\n")
+				writeKubeletStartup(t, root)
+				if tc.missing {
+					if err := os.Remove(filepath.Join(root, "run/katl/kubelet-startup.json")); err != nil {
+						t.Fatal(err)
 					}
-					return ToolResult{Stdout: []byte(tc.cri)}
-				case argv[0] == "/usr/bin/kubectl":
-					if tc.nodeFailure {
-						return ToolResult{Stdout: []byte(tc.node), ExitStatus: 1}
-					}
-					return ToolResult{Stdout: []byte(tc.node)}
-				case argv[0] == "/usr/bin/systemctl" && slices.Contains(argv, "show"):
-					serviceReads++
-					if tc.inactive {
-						return ToolResult{Stdout: []byte("ActiveState=inactive\nMainPID=0\nInvocationID=\n")}
-					}
-					result, _ := readyKubeletHealthProbe(argv)
-					if tc.race && serviceReads > 1 {
-						result.Stdout = []byte("ActiveState=active\nMainPID=124\nInvocationID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n")
-					}
-					return result
-				default:
-					t.Fatalf("unexpected health command: %s", strings.Join(argv, " "))
-					return ToolResult{}
 				}
-			}}
+				if tc.malformed {
+					writeKubernetesStatusFile(t, root, "run/katl/kubelet-startup.json", "{")
+				}
+				if tc.confext {
+					link := filepath.Join(root, "run/confexts/zzzz-katl-node")
+					if err := os.Remove(link); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink("/var/lib/katl/generations/2/confext", link); err != nil {
+						t.Fatal(err)
+					}
+				}
+				request := &operation.KubeadmControlPlaneConfig{Component: "kubelet", NodeName: "worker-1", ReadinessRequirement: tc.baseline}
+				store, record := kubeletHealthOperation(t, root, request)
+				serviceReads := 0
+				executor := &Executor{Root: root, Store: store, Now: kubeletFixtureNow, RunTool: func(_ context.Context, argv []string, _ func(int)) ToolResult {
+					switch {
+					case argv[0] == "/usr/bin/crictl":
+						if tc.criFailure {
+							return ToolResult{Err: fmt.Errorf("CRI unavailable"), ExitStatus: 1}
+						}
+						return ToolResult{Stdout: []byte(tc.cri)}
+					case argv[0] == "/usr/bin/kubectl":
+						if tc.nodeFailure {
+							return ToolResult{Stdout: []byte(tc.node), ExitStatus: 1}
+						}
+						return ToolResult{Stdout: []byte(tc.node)}
+					case argv[0] == "/usr/bin/systemctl" && slices.Contains(argv, "show"):
+						serviceReads++
+						if tc.inactive {
+							return ToolResult{Stdout: []byte("ActiveState=inactive\nMainPID=0\nInvocationID=\n")}
+						}
+						result, _ := readyKubeletHealthProbe(argv)
+						if tc.race && serviceReads > 1 {
+							result.Stdout = []byte("ActiveState=active\nMainPID=124\nInvocationID=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n")
+						}
+						return result
+					default:
+						t.Fatalf("unexpected health command: %s", strings.Join(argv, " "))
+						return ToolResult{}
+					}
+				}}
 
-			ctx := context.Background()
-			if tc.wantError {
-				// Bound the unsuccessful convergence loop; successful health has
-				// no wall-clock requirement and may include durable store writes.
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, 30*time.Millisecond)
-				defer cancel()
-			}
-			result := executor.runKubeletConfigHealth(ctx, record)
-			if gotError := result.Err != nil || result.ExitStatus != 0; gotError != tc.wantError {
-				t.Fatalf("health result = %#v, want error %v", result, tc.wantError)
-			}
+				ctx := context.Background()
+				if tc.wantError {
+					// Bound the unsuccessful convergence loop; successful health has
+					// no wall-clock requirement and may include durable store writes.
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, 30*time.Millisecond)
+					defer cancel()
+				}
+				result := executor.runKubeletConfigHealth(ctx, record)
+				if gotError := result.Err != nil || result.ExitStatus != 0; gotError != tc.wantError {
+					t.Fatalf("health result = %#v, want error %v", result, tc.wantError)
+				}
+			})
 		})
 	}
 }
@@ -178,68 +187,71 @@ func TestKubeletControlPlaneHealth(t *testing.T) {
 		{name: "pod observation unavailable", podReady: "True", containersReady: "True", podFailure: true, wantError: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			writeKubernetesStatusFile(t, root, "etc/hostname", "cp-1\n")
-			writeKubernetesStatusFile(t, root, "etc/kubernetes/kubelet.conf", "kubelet\n")
-			writeKubeletStartup(t, root)
-			writeKubernetesStatusFile(t, root, "etc/kubernetes/admin.conf", "admin\n")
-			writeKubernetesStatusFile(t, root, "etc/kubernetes/manifests/kube-apiserver.yaml", "spec:\n  containers:\n    - name: kube-apiserver\n      command:\n        - kube-apiserver\n        - --advertise-address=192.0.2.10\n        - --secure-port=6443\n")
-			request := &operation.KubeadmControlPlaneConfig{Component: "kubelet", NodeName: "cp-1", ReadinessRequirement: "cni-uninitialized"}
-			store, record := kubeletHealthOperation(t, root, request)
-			executor := &Executor{
-				Root:  root,
-				Store: store,
-				RunTool: func(_ context.Context, argv []string, _ func(int)) ToolResult {
-					if argv[0] == "/usr/bin/systemctl" {
-						result, _ := readyKubeletHealthProbe(argv)
-						return result
-					}
-					if tc.apiFailure && slices.Contains(argv, "--raw=/readyz") {
-						return ToolResult{ExitStatus: 1}
-					}
-					if _, ok := controlPlaneMirrorProbe(argv); ok {
-						if tc.podFailure {
-							return ToolResult{Err: fmt.Errorf("API connection failed"), ExitStatus: 1}
+			synctest.Test(t, func(t *testing.T) {
+				root := t.TempDir()
+				writeKubernetesStatusFile(t, root, "etc/hostname", "cp-1\n")
+				writeKubernetesStatusFile(t, root, "etc/kubernetes/kubelet.conf", "kubelet\n")
+				writeKubeletStartup(t, root)
+				writeKubernetesStatusFile(t, root, "etc/kubernetes/admin.conf", "admin\n")
+				writeKubernetesStatusFile(t, root, "etc/kubernetes/manifests/kube-apiserver.yaml", "spec:\n  containers:\n    - name: kube-apiserver\n      command:\n        - kube-apiserver\n        - --advertise-address=192.0.2.10\n        - --secure-port=6443\n")
+				request := &operation.KubeadmControlPlaneConfig{Component: "kubelet", NodeName: "cp-1", ReadinessRequirement: "cni-uninitialized"}
+				store, record := kubeletHealthOperation(t, root, request)
+				executor := &Executor{
+					Root:  root,
+					Store: store,
+					Now:   kubeletFixtureNow,
+					RunTool: func(_ context.Context, argv []string, _ func(int)) ToolResult {
+						if argv[0] == "/usr/bin/systemctl" {
+							result, _ := readyKubeletHealthProbe(argv)
+							return result
 						}
-						conditions := fmt.Sprintf(`[{"type":"Ready","status":%q},{"type":"ContainersReady","status":%q}]`, tc.podReady, tc.containersReady)
-						return ToolResult{Stdout: []byte(mirrorList(
-							mirrorPod("etcd", "etcd", conditions),
-							mirrorPod("kube-apiserver", "api", conditions),
-							mirrorPod("kube-controller-manager", "controller", conditions),
-							mirrorPod("kube-scheduler", "scheduler", conditions),
-						))}
-					}
-					if argv[0] == "/usr/bin/crictl" {
-						return ToolResult{Stdout: []byte(configPendingCRI)}
-					}
-					if argv[0] == "/usr/bin/kubectl" && slices.Contains(argv, "node") {
-						return ToolResult{Stdout: []byte(strings.ReplaceAll(configPendingNode, "worker-1", "cp-1"))}
-					}
-					if slices.Contains(argv, "wait") {
-						condition := tc.podReady
-						if slices.Contains(argv, "--for=condition=ContainersReady") {
-							condition = tc.containersReady
-						}
-						if condition != "True" {
+						if tc.apiFailure && slices.Contains(argv, "--raw=/readyz") {
 							return ToolResult{ExitStatus: 1}
 						}
-					}
-					return ToolResult{}
-				},
-			}
+						if _, ok := controlPlaneMirrorProbe(argv); ok {
+							if tc.podFailure {
+								return ToolResult{Err: fmt.Errorf("API connection failed"), ExitStatus: 1}
+							}
+							conditions := fmt.Sprintf(`[{"type":"Ready","status":%q},{"type":"ContainersReady","status":%q}]`, tc.podReady, tc.containersReady)
+							return ToolResult{Stdout: []byte(mirrorList(
+								mirrorPod("etcd", "etcd", conditions),
+								mirrorPod("kube-apiserver", "api", conditions),
+								mirrorPod("kube-controller-manager", "controller", conditions),
+								mirrorPod("kube-scheduler", "scheduler", conditions),
+							))}
+						}
+						if argv[0] == "/usr/bin/crictl" {
+							return ToolResult{Stdout: []byte(configPendingCRI)}
+						}
+						if argv[0] == "/usr/bin/kubectl" && slices.Contains(argv, "node") {
+							return ToolResult{Stdout: []byte(strings.ReplaceAll(configPendingNode, "worker-1", "cp-1"))}
+						}
+						if slices.Contains(argv, "wait") {
+							condition := tc.podReady
+							if slices.Contains(argv, "--for=condition=ContainersReady") {
+								condition = tc.containersReady
+							}
+							if condition != "True" {
+								return ToolResult{ExitStatus: 1}
+							}
+						}
+						return ToolResult{}
+					},
+				}
 
-			ctx := context.Background()
-			if tc.wantError {
-				// Bound the unsuccessful convergence loop; successful health has
-				// no wall-clock requirement and may include durable store writes.
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, 30*time.Millisecond)
-				defer cancel()
-			}
-			result := executor.runKubeletConfigHealth(ctx, record)
-			if gotError := result.Err != nil || result.ExitStatus != 0; gotError != tc.wantError {
-				t.Fatalf("health result = %#v, want error %t", result, tc.wantError)
-			}
+				ctx := context.Background()
+				if tc.wantError {
+					// Bound the unsuccessful convergence loop; successful health has
+					// no wall-clock requirement and may include durable store writes.
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, 30*time.Millisecond)
+					defer cancel()
+				}
+				result := executor.runKubeletConfigHealth(ctx, record)
+				if gotError := result.Err != nil || result.ExitStatus != 0; gotError != tc.wantError {
+					t.Fatalf("health result = %#v, want error %t", result, tc.wantError)
+				}
+			})
 		})
 	}
 }
@@ -297,57 +309,61 @@ func kubeletHealthOperation(t *testing.T, root string, request *operation.Kubead
 }
 
 func TestKubeletConfigHealthTightensReadiness(t *testing.T) {
-	root := t.TempDir()
-	writeKubernetesStatusFile(t, root, "etc/kubernetes/kubelet.conf", "kubelet\n")
-	writeKubeletStartup(t, root)
-	store, record := kubeletHealthOperation(t, root, &operation.KubeadmControlPlaneConfig{
-		Component: "kubelet", NodeName: "worker-1", ReadinessRequirement: "cni-uninitialized",
-	})
-	executor := NewExecutor(root, store, "agent-1")
-	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
-		result, ok := readyKubeletHealthProbe(argv)
-		if !ok {
-			t.Fatalf("unexpected command %v", argv)
-		}
-		return result
-	}
-	if result := executor.runKubeletConfigHealth(context.Background(), record); result.Err != nil || result.ExitStatus != 0 {
-		t.Fatalf("Ready post-health failed: %+v", result)
-	}
-
-	reopened, err := operation.NewStore(store.Root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	persisted, err := reopened.Read(record.OperationID)
-	if err != nil || persisted.KubeadmControlPlaneConfig.ReadinessRequirement != "ready" {
-		t.Fatalf("Ready observation was not durable: %+v, %v", persisted, err)
-	}
-	// A later phase or reconstructed retry must honor the durable requirement,
-	// even if its caller retained the earlier CNI-pending operation snapshot.
-	staleRequest := *record.KubeadmControlPlaneConfig
-	staleRequest.ReadinessRequirement = "cni-uninitialized"
-	record.KubeadmControlPlaneConfig = &staleRequest
-	executor = NewExecutor(root, reopened, "agent-2")
-	executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
-		switch argv[0] {
-		case "/usr/bin/kubectl":
-			return ToolResult{Stdout: []byte(configPendingNode)}
-		case "/usr/bin/crictl":
-			return ToolResult{Stdout: []byte(configPendingCRI)}
-		default:
+	synctest.Test(t, func(t *testing.T) {
+		root := t.TempDir()
+		writeKubernetesStatusFile(t, root, "etc/kubernetes/kubelet.conf", "kubelet\n")
+		writeKubeletStartup(t, root)
+		store, record := kubeletHealthOperation(t, root, &operation.KubeadmControlPlaneConfig{
+			Component: "kubelet", NodeName: "worker-1", ReadinessRequirement: "cni-uninitialized",
+		})
+		executor := NewExecutor(root, store, "agent-1")
+		executor.Now = kubeletFixtureNow
+		executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 			result, ok := readyKubeletHealthProbe(argv)
 			if !ok {
-				t.Fatalf("unexpected health command %v", argv)
+				t.Fatalf("unexpected command %v", argv)
 			}
 			return result
 		}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
-	if result := executor.runKubeletConfigHealth(ctx, record); result.Err == nil && result.ExitStatus == 0 {
-		t.Fatal("a stale pre-CNI snapshot weakened the recorded Ready requirement")
-	}
+		if result := executor.runKubeletConfigHealth(context.Background(), record); result.Err != nil || result.ExitStatus != 0 {
+			t.Fatalf("Ready post-health failed: %+v", result)
+		}
+
+		reopened, err := operation.NewStore(store.Root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		persisted, err := reopened.Read(record.OperationID)
+		if err != nil || persisted.KubeadmControlPlaneConfig.ReadinessRequirement != "ready" {
+			t.Fatalf("Ready observation was not durable: %+v, %v", persisted, err)
+		}
+		// A later phase or reconstructed retry must honor the durable requirement,
+		// even if its caller retained the earlier CNI-pending operation snapshot.
+		staleRequest := *record.KubeadmControlPlaneConfig
+		staleRequest.ReadinessRequirement = "cni-uninitialized"
+		record.KubeadmControlPlaneConfig = &staleRequest
+		executor = NewExecutor(root, reopened, "agent-2")
+		executor.Now = kubeletFixtureNow
+		executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+			switch argv[0] {
+			case "/usr/bin/kubectl":
+				return ToolResult{Stdout: []byte(configPendingNode)}
+			case "/usr/bin/crictl":
+				return ToolResult{Stdout: []byte(configPendingCRI)}
+			default:
+				result, ok := readyKubeletHealthProbe(argv)
+				if !ok {
+					t.Fatalf("unexpected health command %v", argv)
+				}
+				return result
+			}
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+		defer cancel()
+		if result := executor.runKubeletConfigHealth(ctx, record); result.Err == nil && result.ExitStatus == 0 {
+			t.Fatal("a stale pre-CNI snapshot weakened the recorded Ready requirement")
+		}
+	})
 }
 
 func TestKubeletReadinessRecapture(t *testing.T) {
