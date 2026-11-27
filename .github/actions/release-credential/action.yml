@@ -28,6 +28,16 @@ runs:
       shell: bash
       run: |
         echo "::error::Could not mint the katl-release token. Check the release environment's App ID variable and private key secret, and confirm that the App is installed on this repository with Contents write permission."
+    - name: Verify the release App slug
+      shell: bash
+      env:
+        APP_SLUG: ${{ steps.mint.outputs.app-slug }}
+        EXPECTED_APP_SLUG: katl-release
+      run: |
+        if [[ "$APP_SLUG" != "$EXPECTED_APP_SLUG" ]]; then
+          printf '::error::The release App slug is "%s", but release-artifacts.yml skips legacy tag-push runs only for "%s[bot]"; rename the App or update that guard.\n' "$APP_SLUG" "$EXPECTED_APP_SLUG"
+          exit 1
+        fi
     - name: Verify installation scope and repository access
       shell: bash
       env:

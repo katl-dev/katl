@@ -261,25 +261,42 @@ func releaseAppReferences(value any) int {
 	return count
 }
 
-func TestReleaseCredentialScope(t *testing.T) {
+type releaseCredentialStep struct {
+	Name, Run, Uses string
+	Env, With       map[string]string
+	If              yaml.Node
+	ContinueOnError yaml.Node `yaml:"continue-on-error"`
+}
+
+func releaseCredentialSteps(t *testing.T) []releaseCredentialStep {
+	t.Helper()
 	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "actions", "release-credential", "action.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var action struct {
 		Runs struct {
-			Steps []struct {
-				Name, Run, Uses string
-				Env, With       map[string]string
-				If              yaml.Node
-				ContinueOnError yaml.Node `yaml:"continue-on-error"`
-			}
+			Steps []releaseCredentialStep
 		}
 	}
 	if err := yaml.Unmarshal(data, &action); err != nil {
 		t.Fatal(err)
 	}
+	return action.Runs.Steps
+}
 
+func expectedReleaseAppSlug(t *testing.T) string {
+	t.Helper()
+	for _, step := range releaseCredentialSteps(t) {
+		if slug := step.Env["EXPECTED_APP_SLUG"]; slug != "" {
+			return slug
+		}
+	}
+	t.Fatal("release credential action has no expected App slug")
+	return ""
+}
+
+func TestReleaseCredentialScope(t *testing.T) {
 	want := map[string]string{
 		"app-id":              "${{ inputs.app-id }}",
 		"private-key":         "${{ inputs.private-key }}",
@@ -289,7 +306,7 @@ func TestReleaseCredentialScope(t *testing.T) {
 	}
 	var mints, checks int
 	var verify string
-	for _, step := range action.Runs.Steps {
+	for _, step := range releaseCredentialSteps(t) {
 		if apiWrites(step.Run, "") {
 			t.Errorf("credential step %q makes a mutating API call", step.Name)
 		}

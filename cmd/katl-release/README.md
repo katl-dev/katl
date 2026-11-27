@@ -185,11 +185,12 @@ release, pass the branch to `--ref`.
 gh workflow run release-credential.yml --ref release/2026.12.0
 ```
 
-Approve the `release` deployment and confirm that the run summary reports that
-the `katl-release` App minted a token scoped to this repository with Contents
-write permission and that the token read repository contents. Final
-publication is the first step that exercises the App's final-tag ruleset
-bypass.
+Approve the `release` deployment and confirm that the run succeeds. The check
+verifies that the App slug gives the bot identity that `release-artifacts.yml`
+skips on tag pushes. The run summary reports that the App minted a token scoped to
+this repository with Contents write permission and that the token read
+repository contents. Final publication is the first step that exercises the
+App's final-tag ruleset bypass.
 
 ## Publish a qualified bundle
 
