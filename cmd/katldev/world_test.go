@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
@@ -726,22 +727,24 @@ func TestStopDomain(t *testing.T) {
 }
 
 func TestStopDomainTimesOut(t *testing.T) {
-	manager := installerManager{stdout: io.Discard, stderr: io.Discard}
-	manager.runVirsh = func(_ context.Context, _ string, args ...string) ([]byte, error) {
-		switch args[0] {
-		case "list":
-			return []byte("katl-dev-test\n"), nil
-		case "metadata":
-			return []byte(`<vmtest xmlns="https://katlos.io/xmlns/vmtest/1">owner</vmtest>`), nil
-		case "domstate":
-			return []byte("running"), nil
+	synctest.Test(t, func(t *testing.T) {
+		manager := installerManager{stdout: io.Discard, stderr: io.Discard}
+		manager.runVirsh = func(_ context.Context, _ string, args ...string) ([]byte, error) {
+			switch args[0] {
+			case "list":
+				return []byte("katl-dev-test\n"), nil
+			case "metadata":
+				return []byte(`<vmtest xmlns="https://katlos.io/xmlns/vmtest/1">owner</vmtest>`), nil
+			case "domstate":
+				return []byte("running"), nil
+			}
+			return nil, nil
 		}
-		return nil, nil
-	}
-	err := manager.stopDomain(context.Background(), installerState{DomainName: "katl-dev-test"}, "owner", 10*time.Millisecond, false)
-	if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "--timeout") {
-		t.Fatalf("error = %v, want deadline with --timeout guidance", err)
-	}
+		err := manager.stopDomain(context.Background(), installerState{DomainName: "katl-dev-test"}, "owner", 10*time.Millisecond, false)
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "--timeout") {
+			t.Fatalf("error = %v, want deadline with --timeout guidance", err)
+		}
+	})
 }
 
 func TestLibvirtGuestsWarning(t *testing.T) {

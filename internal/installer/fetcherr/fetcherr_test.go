@@ -10,6 +10,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/katl-dev/katl/internal/nettest"
 )
 
 const (
@@ -30,15 +32,7 @@ func withSecrets(t *testing.T, rawURL string) string {
 
 func closedPortURL(t *testing.T) string {
 	t.Helper()
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	address := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatalf("close listener: %v", err)
-	}
-	return "http://" + address
+	return "http://" + nettest.ReservePort(t).Endpoint
 }
 
 // nxdomainResolverTransport resolves every name through a local DNS server

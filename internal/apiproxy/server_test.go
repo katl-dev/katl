@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -136,17 +137,10 @@ func TestForwardCancellation(t *testing.T) {
 func TestRunShutdown(t *testing.T) {
 	started := make(chan struct{}, 2)
 	release := make(chan struct{})
-	api := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	api := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		started <- struct{}{}
 		<-release
 	}))
-	api.Listener.Close()
-	listener, err := net.Listen("tcp", "127.0.0.1:6443")
-	if err != nil {
-		t.Fatal(err)
-	}
-	api.Listener = listener
-	api.StartTLS()
 	defer api.Close()
 	defer close(release)
 	dir := t.TempDir()
@@ -154,16 +148,25 @@ func TestRunShutdown(t *testing.T) {
 	if err := os.WriteFile(caPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: api.Certificate().Raw}), 0600); err != nil {
 		t.Fatal(err)
 	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
 	server := Server{Config: Config{
-		TLSName: "example.com", CAFile: caPath, CheckTimeout: time.Minute,
+		TLSName: "example.com", CAFile: caPath, CheckTimeout: time.Minute, CheckInterval: time.Minute,
 		CanonicalEndpoint: api.Listener.Addr().String(),
-		Listeners:         []Listener{{Address: "127.0.0.1:7445", Exposure: ExposureNodeLocal}},
+		Listeners:         []Listener{{Address: listener.Addr().String(), Exposure: ExposureNodeLocal}},
 		Backends:          []Backend{{Name: "cp-1", Address: api.Listener.Addr().String(), Local: true}},
 	}, StatusPath: filepath.Join(dir, "status.json")}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- server.Run(ctx) }()
+	go func() {
+		done <- server.run(ctx, func(context.Context, string, string) (net.Listener, error) {
+			return listener, nil
+		})
+	}()
 	for range 2 {
 		select {
 		case <-started:
@@ -193,9 +196,7 @@ func TestRunShutdown(t *testing.T) {
 	if status.Canonical.LastChecked.IsZero() || len(status.Backends) != 1 || status.Backends[0].LastChecked.IsZero() {
 		t.Fatalf("Run returned before checks recorded their final status: %s", data)
 	}
-	listener, err = net.Listen("tcp", "127.0.0.1:7445")
-	if err != nil {
-		t.Fatalf("Run returned without releasing listener: %v", err)
+	if err := listener.(*net.TCPListener).SetDeadline(time.Now()); !errors.Is(err, net.ErrClosed) {
+		t.Fatalf("proxy returned with the listener still open: SetDeadline() = %v", err)
 	}
-	listener.Close()
 }

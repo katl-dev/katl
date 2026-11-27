@@ -108,7 +108,7 @@ func StartInstalledRuntimeNode(ctx context.Context, parent Result, config Instal
 			return failWithDebug(fmt.Errorf("libvirt lease address %q: %w", lease.IPAddress, err))
 		}
 		management := inventory.ManagementAddress{Host: inventory.HostFromAddr(address)}
-		if err := WaitManagementEndpoint(handle.ctx, name, management.Endpoint().AddrPort(), managementStartupTimeout); err != nil {
+		if err := waitManagementEndpoint(handle.ctx, name, management.Endpoint().AddrPort(), managementStartupTimeout, runner.managementDial); err != nil {
 			return failWithDebug(err)
 		}
 	}
@@ -149,6 +149,15 @@ func (r VMRunner) waitBootComplete(ctx context.Context, result Result, plan VSoc
 // WaitManagementEndpoint waits until the node's katlc agent accepts TCP
 // connections at endpoint, as katlctl first observes it.
 func WaitManagementEndpoint(ctx context.Context, node string, endpoint netip.AddrPort, timeout time.Duration) error {
+	return waitManagementEndpoint(ctx, node, endpoint, timeout, nil)
+}
+
+type managementDialFunc func(context.Context, string, string) (net.Conn, error)
+
+func waitManagementEndpoint(ctx context.Context, node string, endpoint netip.AddrPort, timeout time.Duration, dial managementDialFunc) error {
+	if dial == nil {
+		dial = (&net.Dialer{}).DialContext
+	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	ticker := time.NewTicker(250 * time.Millisecond)
@@ -156,7 +165,7 @@ func WaitManagementEndpoint(ctx context.Context, node string, endpoint netip.Add
 	var lastErr error
 	for {
 		dialCtx, dialCancel := context.WithTimeout(ctx, 2*time.Second)
-		conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", endpoint.String())
+		conn, err := dial(dialCtx, "tcp", endpoint.String())
 		dialCancel()
 		if err == nil {
 			return conn.Close()

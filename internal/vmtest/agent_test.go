@@ -310,35 +310,37 @@ func TestAgentResponseError(t *testing.T) {
 }
 
 func TestAgentClientHonorsRequestTimeout(t *testing.T) {
-	serverConn, clientConn := net.Pipe()
-	server := NewAgentServer("test-version")
-	server.CommandRunner = delayedAgentRunner{
-		delay: 40 * time.Millisecond,
-		result: &vmtestpb.CommandResult{
-			ExitStatus: 0,
-			Stdout:     []byte("ok\n"),
-		},
-	}
-	done := make(chan error, 1)
-	go func() {
-		done <- server.Serve(context.Background(), serverConn)
-	}()
+	synctest.Test(t, func(t *testing.T) {
+		serverConn, clientConn := net.Pipe()
+		server := NewAgentServer("test-version")
+		server.CommandRunner = delayedAgentRunner{
+			delay: 40 * time.Millisecond,
+			result: &vmtestpb.CommandResult{
+				ExitStatus: 0,
+				Stdout:     []byte("ok\n"),
+			},
+		}
+		done := make(chan error, 1)
+		go func() {
+			done <- server.Serve(context.Background(), serverConn)
+		}()
 
-	client := NewAgentClient(clientConn, "")
-	client.DefaultTimeout = 5 * time.Millisecond
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancel()
-	result, err := client.RunCommand(ctx, &vmtestpb.RunCommandRequest{Argv: []string{"true"}})
-	if err != nil {
-		t.Fatalf("RunCommand() error = %v", err)
-	}
-	if string(result.Stdout) != "ok\n" {
-		t.Fatalf("stdout = %q", result.Stdout)
-	}
-	_ = client.Close()
-	if err := <-done; err != nil {
-		t.Fatalf("Serve() error = %v", err)
-	}
+		client := NewAgentClient(clientConn, "")
+		client.DefaultTimeout = 5 * time.Millisecond
+		ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		defer cancel()
+		result, err := client.RunCommand(ctx, &vmtestpb.RunCommandRequest{Argv: []string{"true"}})
+		if err != nil {
+			t.Fatalf("RunCommand() error = %v", err)
+		}
+		if string(result.Stdout) != "ok\n" {
+			t.Fatalf("stdout = %q", result.Stdout)
+		}
+		_ = client.Close()
+		if err := <-done; err != nil {
+			t.Fatalf("Serve() error = %v", err)
+		}
+	})
 }
 
 func TestVMRunnerChecksAgentAfterSerial(t *testing.T) {

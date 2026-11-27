@@ -18,7 +18,6 @@ import (
 
 	"github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/managementidentity"
-	"github.com/katl-dev/katl/internal/nettest"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -254,30 +253,32 @@ func TestManagementCallRefusedGivesGuidance(t *testing.T) {
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			shortWait(t, test.bound)
-			progress := &gatedProgress{}
-			ctx, cancel := context.WithTimeout(WithManagementProgress(context.Background(), progress), test.deadline)
-			defer cancel()
-			endpoint := nettest.ReservePort(t).Endpoint
-			client := dialManagement(ctx, t, endpoint, insecure.NewCredentials(), nil)
+			synctest.Test(t, func(t *testing.T) {
+				shortWait(t, test.bound)
+				progress := &gatedProgress{}
+				ctx, cancel := context.WithTimeout(WithManagementProgress(context.Background(), progress), test.deadline)
+				defer cancel()
+				const endpoint = "node.test:9443"
+				client := dialManagement(ctx, t, endpoint, insecure.NewCredentials(), &atomic.Bool{})
 
-			start := time.Now()
-			_, err := client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
+				start := time.Now()
+				_, err := client.GetNodeStatus(ctx, &agentapi.GetNodeStatusRequest{})
 
-			if err == nil {
-				t.Fatal("call succeeded with nothing listening")
-			}
-			if time.Since(start) > 5*time.Second {
-				t.Fatalf("call took %s, want it bounded", time.Since(start))
-			}
-			for _, want := range []string{"cp-1", endpoint, "refused connections", "systemctl status katlc-agent", "rerun", test.wantInErr} {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("error lacks %q: %v", want, err)
+				if err == nil {
+					t.Fatal("call succeeded with nothing listening")
 				}
-			}
-			if progress.String() == "" {
-				t.Error("no progress before giving up")
-			}
+				if time.Since(start) > 5*time.Second {
+					t.Fatalf("call took %s, want it bounded", time.Since(start))
+				}
+				for _, want := range []string{"cp-1", endpoint, "refused connections", "systemctl status katlc-agent", "rerun", test.wantInErr} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error lacks %q: %v", want, err)
+					}
+				}
+				if progress.String() == "" {
+					t.Error("no progress before giving up")
+				}
+			})
 		})
 	}
 }
@@ -549,33 +550,25 @@ func serveMutualTLS(t *testing.T, agent *countingAgent) (string, managementident
 }
 
 // The dial owner tells a trusted-network client that the node requires mTLS
-// at once, with or without the wait, while a refused endpoint still waits and
-// an mTLS client reaches the node.
+// immediately, with or without the wait, while an mTLS client reaches it.
 func TestManagementDialOutcomes(t *testing.T) {
 	trustedNetwork := managementidentity.ClientCredentials{Authentication: managementidentity.TrustedNetwork}
 	tests := map[string]struct {
-		refused   bool
 		mutualTLS bool
 		noWait    bool
 		stream    bool
 		wantErr   string
-		wantWait  bool
 	}{
 		"trusted-network client, mTLS node":                 {wantErr: "likely serves mTLS"},
 		"trusted-network client, mTLS node, nowait":         {noWait: true, wantErr: "likely serves mTLS"},
 		"trusted-network client, mTLS node, stream":         {stream: true, wantErr: "likely serves mTLS"},
 		"trusted-network client, mTLS node, stream, nowait": {stream: true, noWait: true, wantErr: "likely serves mTLS"},
-		"trusted-network client, refused endpoint":          {refused: true, wantErr: "refused connections", wantWait: true},
 		"mTLS client, mTLS node":                            {mutualTLS: true},
 	}
 	for name, test := range tests {
 		t.Run(name, func(t *testing.T) {
-			shortWait(t, 300*time.Millisecond)
 			agent := &countingAgent{}
 			endpoint, client := serveMutualTLS(t, agent)
-			if test.refused {
-				endpoint = nettest.ReservePort(t).Endpoint
-			}
 			identity := trustedNetwork
 			if test.mutualTLS {
 				identity = client
@@ -615,14 +608,11 @@ func TestManagementDialOutcomes(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
 				t.Fatalf("error = %v, want it to contain %q", err, test.wantErr)
 			}
-			if !test.refused && strings.Contains(err.Error(), "refused connections") {
+			if strings.Contains(err.Error(), "refused connections") {
 				t.Errorf("mTLS node reported as refusing connections: %v", err)
 			}
-			if test.refused && strings.Contains(err.Error(), "mTLS") {
-				t.Errorf("refused endpoint reported as requiring mTLS: %v", err)
-			}
-			if waited := progress.String() != ""; waited != test.wantWait {
-				t.Errorf("waited = %v, want %v; progress:\n%s", waited, test.wantWait, progress.String())
+			if progress.String() != "" {
+				t.Errorf("waited after an authentication failure:\n%s", progress.String())
 			}
 		})
 	}

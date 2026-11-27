@@ -387,30 +387,20 @@ func TestScenarioReleaseFreesReservation(t *testing.T) {
 	t.Setenv(admissionMemoryEnv, "4096")
 	first := world.NewScenario(t, "first")
 
-	blocked := make(chan error, 1)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-		defer cancel()
-		other := world
-		other.RunID = "other-run"
-		scenario, err := other.planScenario("second")
-		if err == nil {
-			err = scenario.admit(ctx)
-		}
-		blocked <- err
-	}()
-	if err := <-blocked; !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("second scenario error = %v, want it to wait while the first holds capacity", err)
-	}
-
-	first.Release()
-
 	other := world
 	other.RunID = "other-run"
 	scenario, err := other.planScenario("second")
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Millisecond)
+	defer cancel()
+	if err := scenario.admit(ctx); !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "first") {
+		t.Fatalf("second scenario error = %v, want it to wait while the first holds capacity", err)
+	}
+
+	first.Release()
+
 	if err := scenario.admit(context.Background()); err != nil {
 		t.Fatalf("admit after release error = %v", err)
 	}

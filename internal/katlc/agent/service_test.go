@@ -79,13 +79,6 @@ func TestParseListenAcceptsTCPOnly(t *testing.T) {
 }
 
 func TestServeNotifiesReadyOnceListening(t *testing.T) {
-	probe, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	address := probe.Addr().String()
-	probe.Close()
-
 	socketPath := filepath.Join(t.TempDir(), "notify")
 	notify, err := net.ListenPacket("unixgram", socketPath)
 	if err != nil {
@@ -110,9 +103,14 @@ func TestServeNotifiesReadyOnceListening(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	bound := make(chan string, 1)
 	done := make(chan error, 1)
 	go func() {
-		done <- Serve(ctx, ServeConfig{Root: root, Listen: "tcp://" + address, Dispatcher: &shutdownTestDispatcher{called: make(chan struct{})}})
+		done <- serve(ctx, ServeConfig{Root: root, Listen: "tcp://127.0.0.1:0", Dispatcher: &shutdownTestDispatcher{called: make(chan struct{})}}, func(address net.Addr) error {
+			bound <- address.String()
+			return notifyReady()
+		})
 	}()
 
 	if err := notify.SetReadDeadline(time.Now().Add(10 * time.Second)); err != nil {
@@ -128,7 +126,7 @@ func TestServeNotifiesReadyOnceListening(t *testing.T) {
 	}
 
 	// The endpoint must already accept connections when readiness is reported.
-	conn, err := net.DialTimeout("tcp", address, time.Second)
+	conn, err := net.DialTimeout("tcp", <-bound, time.Second)
 	if err != nil {
 		t.Fatalf("endpoint refused after READY=1: %v", err)
 	}

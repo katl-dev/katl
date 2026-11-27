@@ -2,8 +2,10 @@ package scriptstest
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -649,8 +651,14 @@ var errScriptTimeout = errors.New("script timed out")
 // descendant of cmd, such as a flock waiter, outlives the test.
 func runInGroup(t *testing.T, cmd *exec.Cmd, timeout time.Duration) ([]byte, error) {
 	t.Helper()
+	return runInGroupContext(t, t.Context(), cmd, timeout, io.Discard)
+}
+
+func runInGroupContext(t *testing.T, ctx context.Context, cmd *exec.Cmd, timeout time.Duration, output io.Writer) ([]byte, error) {
+	t.Helper()
 	var out bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &out, &out
+	combined := io.MultiWriter(&out, output)
+	cmd.Stdout, cmd.Stderr = combined, combined
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.WaitDelay = 5 * time.Second
 	if err := cmd.Start(); err != nil {
@@ -660,12 +668,14 @@ func runInGroup(t *testing.T, cmd *exec.Cmd, timeout time.Duration) ([]byte, err
 	killGroup := func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) }
 	t.Cleanup(killGroup)
 
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
 	select {
 	case err := <-done:
 		return out.Bytes(), err
-	case <-time.After(timeout):
+	case <-ctx.Done():
 		killGroup()
 		<-done
 		return out.Bytes(), errScriptTimeout

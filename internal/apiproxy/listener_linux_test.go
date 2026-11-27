@@ -3,6 +3,7 @@ package apiproxy
 import (
 	"context"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,16 +11,18 @@ import (
 )
 
 func TestListenBeforeAddressAssignment(t *testing.T) {
-	for _, address := range []string{"192.0.2.123:7445", "[2001:db8::123]:7445"} {
+	for _, address := range []string{"192.0.2.123:0", "[2001:db8::123]:0"} {
 		t.Run(address, func(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			server := Server{
 				Config: Config{
-					TLSName: "api.example.test",
+					TLSName:       "api.example.test",
+					CheckInterval: DefaultInterval, CheckTimeout: DefaultTimeout,
+					CanonicalEndpoint: "api.example.test:6443", CAFile: DefaultCAFile,
 					Listeners: []Listener{
 						{Address: address, Exposure: ExposureWorkstation},
-						{Address: "127.0.0.1:7445", Exposure: ExposureNodeLocal},
+						{Address: "127.0.0.1:0", Exposure: ExposureNodeLocal},
 					},
 					Backends: []Backend{{Name: "cp-1", Address: "127.0.0.1:6443", Local: true}},
 				},
@@ -27,9 +30,17 @@ func TestListenBeforeAddressAssignment(t *testing.T) {
 			}
 			result := make(chan error, 1)
 			done := make(chan struct{})
+			listenConfig := net.ListenConfig{Control: configureListener}
+			nodeLocal := make(chan netip.AddrPort, 1)
 			go func() {
 				defer close(done)
-				result <- server.Run(ctx)
+				result <- server.run(ctx, func(ctx context.Context, network, address string) (net.Listener, error) {
+					listener, err := listenConfig.Listen(ctx, network, address)
+					if err == nil && address == "127.0.0.1:0" {
+						nodeLocal <- listener.Addr().(*net.TCPAddr).AddrPort()
+					}
+					return listener, err
+				})
 			}()
 			t.Cleanup(func() {
 				cancel()
@@ -53,17 +64,15 @@ func TestListenBeforeAddressAssignment(t *testing.T) {
 					if _, err := os.Stat(server.StatusPath); err != nil {
 						continue
 					}
-					conn, err := net.DialTimeout("tcp", "127.0.0.1:7445", time.Second)
+					bound := <-nodeLocal
+					if bound.Addr() != netip.MustParseAddr("127.0.0.1") {
+						t.Fatalf("node-local listener bound to %s, want loopback", bound)
+					}
+					conn, err := net.DialTimeout("tcp", bound.String(), time.Second)
 					if err != nil {
 						t.Fatalf("node-local listener unavailable: %v", err)
 					}
 					conn.Close()
-
-					unexpected, err := net.DialTimeout("tcp", "127.0.0.2:7445", time.Second)
-					if err == nil {
-						unexpected.Close()
-						t.Fatal("proxy accepts connections on an unconfigured address")
-					}
 
 					cancel()
 					if err := <-result; err != nil {

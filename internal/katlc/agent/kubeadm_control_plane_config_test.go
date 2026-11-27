@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/katl-dev/katl/internal/generation"
@@ -925,15 +926,17 @@ func TestKubeletNoChangeHealth(t *testing.T) {
 		}
 		return ToolResult{}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-	defer cancel()
-	if err := executor.Execute(ctx, unhealthy); err == nil {
-		t.Fatal("matching config on an unhealthy kubelet was reported successful")
-	}
-	failed, err := store.Read(unhealthy.OperationID)
-	if err != nil || failed.Result == operation.ResultSucceeded || failed.Phase != "post-kubelet-health" || !failed.MutatingToolRan {
-		t.Fatalf("unhealthy result = %#v, error = %v", failed, err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		if err := executor.Execute(ctx, unhealthy); err == nil {
+			t.Fatal("matching config on an unhealthy kubelet was reported successful")
+		}
+		failed, err := store.Read(unhealthy.OperationID)
+		if err != nil || failed.Result == operation.ResultSucceeded || failed.Phase != "post-kubelet-health" || !failed.MutatingToolRan {
+			t.Fatalf("unhealthy result = %#v, error = %v", failed, err)
+		}
+	})
 }
 
 func TestKubeletContextRestart(t *testing.T) {
@@ -948,129 +951,132 @@ func TestKubeletContextRestart(t *testing.T) {
 		{name: "missing evidence cannot grant CNI", missing: true, pending: true, wantFailure: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root := t.TempDir()
-			writeKubeletStartup(t, root)
-			writeKubernetesStatusFile(t, root, "etc/kubernetes/kubelet.conf", "kubelet\n")
-			desired := "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 111\nhealthzPort: 0\n"
-			writeKubernetesStatusFile(t, root, "etc/katl/kubeadm/worker/config.yaml", desired)
-			writeKubernetesStatusFile(t, root, "var/lib/kubelet/config.yaml", desired)
-			if tc.missing {
-				if err := os.Remove(filepath.Join(root, "run/katl/kubelet-startup.json")); err != nil {
-					t.Fatal(err)
+			synctest.Test(t, func(t *testing.T) {
+				root := t.TempDir()
+				writeKubeletStartup(t, root)
+				writeKubernetesStatusFile(t, root, "etc/kubernetes/kubelet.conf", "kubelet\n")
+				desired := "apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nmaxPods: 111\nhealthzPort: 0\n"
+				writeKubernetesStatusFile(t, root, "etc/katl/kubeadm/worker/config.yaml", desired)
+				writeKubernetesStatusFile(t, root, "var/lib/kubelet/config.yaml", desired)
+				if tc.missing {
+					if err := os.Remove(filepath.Join(root, "run/katl/kubelet-startup.json")); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					link := filepath.Join(root, "run/confexts/zzzz-katl-node")
+					if err := os.Remove(link); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink("/var/lib/katl/generations/2/confext", link); err != nil {
+						t.Fatal(err)
+					}
 				}
-			} else {
-				link := filepath.Join(root, "run/confexts/zzzz-katl-node")
-				if err := os.Remove(link); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.Symlink("/var/lib/katl/generations/2/confext", link); err != nil {
-					t.Fatal(err)
-				}
-			}
-			store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			body := controlPlaneConfigFromProto(validControlPlaneConfigRequest())
-			body.Component, body.NodeName, body.ConfigName = "kubelet", "worker-1", "worker"
-			body.ConfigPath = "/etc/katl/kubeadm/worker/config.yaml"
-			body.CoordinatorUpload = false
-			body.KubernetesPayloadVersion = "v1.36.1"
-			body.KubernetesPayloadSHA256 = strings.Repeat("c", 64)
-			body.DesiredConfigSHA256, err = kubeadmplan.CanonicalKubeletConfigurationSHA256([]byte(desired))
-			if err != nil {
-				t.Fatal(err)
-			}
-			writeKubeletRefreshInputs(t, root, body, desired, nil)
-			invocation := "0123456789abcdef0123456789abcdef"
-			node, cri := configPendingNode, configPendingCRI
-			restarts := 0
-			wantRequirement := "cni-uninitialized"
-			if tc.missing {
-				wantRequirement = "ready"
-			}
-
-			for attempt := 0; attempt < 2; attempt++ {
-				request := body
-				record, err := store.Create(operation.OperationRecord{
-					OperationID: fmt.Sprintf("context-restart-%d", attempt), OperationKind: OperationKindKubeadmControlPlaneConfig,
-					Scope: "kubeadm-state", RequestDigest: strings.Repeat("a", 64), Phase: "accepted", KubeadmControlPlaneConfig: &request,
-				}, "accepted", time.Now().UTC())
+				store, err := operation.NewStore(filepath.Join(root, "var/lib/katl/operations"))
 				if err != nil {
 					t.Fatal(err)
 				}
-				reopened, err := operation.NewStore(store.Root)
+				body := controlPlaneConfigFromProto(validControlPlaneConfigRequest())
+				body.Component, body.NodeName, body.ConfigName = "kubelet", "worker-1", "worker"
+				body.ConfigPath = "/etc/katl/kubeadm/worker/config.yaml"
+				body.CoordinatorUpload = false
+				body.KubernetesPayloadVersion = "v1.36.1"
+				body.KubernetesPayloadSHA256 = strings.Repeat("c", 64)
+				body.DesiredConfigSHA256, err = kubeadmplan.CanonicalKubeletConfigurationSHA256([]byte(desired))
 				if err != nil {
 					t.Fatal(err)
 				}
-				executor := NewExecutor(root, reopened, fmt.Sprintf("agent-%d", attempt))
-				executor.Async = false
-				executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
-					if writeKubeletPreview(t, root, argv, desired) || (argv[0] == "/usr/bin/kubeadm" && slices.Contains(argv, "validate")) {
-						return ToolResult{}
-					}
-					switch {
-					case argv[0] == "/usr/bin/systemctl" && slices.Contains(argv, "show"):
-						return ToolResult{Stdout: []byte("ActiveState=active\nMainPID=123\nInvocationID=" + invocation + "\n")}
-					case argv[0] == "/usr/bin/kubectl" && slices.Contains(argv, "node"):
-						return ToolResult{Stdout: []byte(node)}
-					case argv[0] == "/usr/bin/crictl":
-						return ToolResult{Stdout: []byte(cri)}
-					case argv[0] == "/usr/bin/systemctl" && slices.Contains(argv, "restart"):
-						persisted, err := reopened.Read(record.OperationID)
-						if err != nil {
-							t.Fatal(err)
-						}
-						if persisted.KubeadmControlPlaneConfig.ReadinessRequirement != wantRequirement {
-							t.Fatalf("restart began without its verified readiness requirement: %+v", persisted.KubeadmControlPlaneConfig)
-						}
-						restarts++
-						invocation = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-						target := "/var/lib/katl/generations/2/confext"
-						if tc.missing {
-							target = "/var/lib/katl/generations/1/confext"
-						}
-						writeKubernetesStatusFile(t, root, "run/katl/kubelet-startup.json", fmt.Sprintf(`{"invocationID":%q,"bootID":"boot-1","confextTarget":%q,"notBefore":"2026-01-01T00:00:02Z"}`, invocation, target))
-						node, cri = configReadyNode, configReadyCRI
-						if tc.pending {
-							node, cri = configPendingNode, configPendingCRI
-						}
-						node = strings.Replace(node, "00:00:01Z", "00:00:02Z", 1)
-						return ToolResult{}
-					default:
-						t.Fatalf("matching native configuration must not be rewritten: %v", argv)
-						return ToolResult{}
-					}
+				writeKubeletRefreshInputs(t, root, body, desired, nil)
+				invocation := "0123456789abcdef0123456789abcdef"
+				node, cri := configPendingNode, configPendingCRI
+				restarts := 0
+				wantRequirement := "cni-uninitialized"
+				if tc.missing {
+					wantRequirement = "ready"
 				}
 
-				ctx := context.Background()
-				cancel := func() {}
-				if tc.wantFailure {
-					ctx, cancel = context.WithTimeout(ctx, 100*time.Millisecond)
-				}
-				err = executor.Execute(ctx, record)
-				cancel()
-				completed, readErr := reopened.Read(record.OperationID)
-				if readErr != nil {
-					t.Fatal(readErr)
-				}
-				if tc.wantFailure {
-					if err == nil || completed.Result != operation.ResultFailedNeedsRepair || completed.Phase != "post-kubelet-health" || restarts != 1 {
-						t.Fatalf("missing evidence authorized pre-CNI success: result=%+v restarts=%d error=%v", completed, restarts, err)
+				for attempt := 0; attempt < 2; attempt++ {
+					request := body
+					record, err := store.Create(operation.OperationRecord{
+						OperationID: fmt.Sprintf("context-restart-%d", attempt), OperationKind: OperationKindKubeadmControlPlaneConfig,
+						Scope: "kubeadm-state", RequestDigest: strings.Repeat("a", 64), Phase: "accepted", KubeadmControlPlaneConfig: &request,
+					}, "accepted", time.Now().UTC())
+					if err != nil {
+						t.Fatal(err)
 					}
-					return
+					reopened, err := operation.NewStore(store.Root)
+					if err != nil {
+						t.Fatal(err)
+					}
+					executor := NewExecutor(root, reopened, fmt.Sprintf("agent-%d", attempt))
+					executor.Now = kubeletFixtureNow
+					executor.Async = false
+					executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
+						if writeKubeletPreview(t, root, argv, desired) || (argv[0] == "/usr/bin/kubeadm" && slices.Contains(argv, "validate")) {
+							return ToolResult{}
+						}
+						switch {
+						case argv[0] == "/usr/bin/systemctl" && slices.Contains(argv, "show"):
+							return ToolResult{Stdout: []byte("ActiveState=active\nMainPID=123\nInvocationID=" + invocation + "\n")}
+						case argv[0] == "/usr/bin/kubectl" && slices.Contains(argv, "node"):
+							return ToolResult{Stdout: []byte(node)}
+						case argv[0] == "/usr/bin/crictl":
+							return ToolResult{Stdout: []byte(cri)}
+						case argv[0] == "/usr/bin/systemctl" && slices.Contains(argv, "restart"):
+							persisted, err := reopened.Read(record.OperationID)
+							if err != nil {
+								t.Fatal(err)
+							}
+							if persisted.KubeadmControlPlaneConfig.ReadinessRequirement != wantRequirement {
+								t.Fatalf("restart began without its verified readiness requirement: %+v", persisted.KubeadmControlPlaneConfig)
+							}
+							restarts++
+							invocation = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+							target := "/var/lib/katl/generations/2/confext"
+							if tc.missing {
+								target = "/var/lib/katl/generations/1/confext"
+							}
+							writeKubernetesStatusFile(t, root, "run/katl/kubelet-startup.json", fmt.Sprintf(`{"invocationID":%q,"bootID":"boot-1","confextTarget":%q,"notBefore":"2026-01-01T00:00:02Z"}`, invocation, target))
+							node, cri = configReadyNode, configReadyCRI
+							if tc.pending {
+								node, cri = configPendingNode, configPendingCRI
+							}
+							node = strings.Replace(node, "00:00:01Z", "00:00:02Z", 1)
+							return ToolResult{}
+						default:
+							t.Fatalf("matching native configuration must not be rewritten: %v", argv)
+							return ToolResult{}
+						}
+					}
+
+					ctx := context.Background()
+					cancel := func() {}
+					if tc.wantFailure {
+						ctx, cancel = context.WithTimeout(ctx, 100*time.Millisecond)
+					}
+					err = executor.Execute(ctx, record)
+					cancel()
+					completed, readErr := reopened.Read(record.OperationID)
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					if tc.wantFailure {
+						if err == nil || completed.Result != operation.ResultFailedNeedsRepair || completed.Phase != "post-kubelet-health" || restarts != 1 {
+							t.Fatalf("missing evidence authorized pre-CNI success: result=%+v restarts=%d error=%v", completed, restarts, err)
+						}
+						return
+					}
+					if err != nil || !completed.Terminal || completed.Result != operation.ResultSucceeded || restarts != 1 {
+						t.Fatalf("attempt %d: result=%+v restarts=%d error=%v", attempt, completed, restarts, err)
+					}
+					if completed.MutatingToolRan != (attempt == 0) {
+						t.Fatalf("attempt %d mutation=%v", attempt, completed.MutatingToolRan)
+					}
+					data, err := os.ReadFile(filepath.Join(root, "var/lib/kubelet/config.yaml"))
+					if err != nil || string(data) != desired {
+						t.Fatalf("native configuration changed: %q, %v", data, err)
+					}
 				}
-				if err != nil || !completed.Terminal || completed.Result != operation.ResultSucceeded || restarts != 1 {
-					t.Fatalf("attempt %d: result=%+v restarts=%d error=%v", attempt, completed, restarts, err)
-				}
-				if completed.MutatingToolRan != (attempt == 0) {
-					t.Fatalf("attempt %d mutation=%v", attempt, completed.MutatingToolRan)
-				}
-				data, err := os.ReadFile(filepath.Join(root, "var/lib/kubelet/config.yaml"))
-				if err != nil || string(data) != desired {
-					t.Fatalf("native configuration changed: %q, %v", data, err)
-				}
-			}
+			})
 		})
 	}
 }

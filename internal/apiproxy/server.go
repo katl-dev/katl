@@ -47,14 +47,20 @@ type Server struct {
 }
 
 func (s *Server) Run(ctx context.Context) error {
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	var workers sync.WaitGroup
 	config, err := Normalize(s.Config)
 	if err != nil {
 		return err
 	}
 	s.Config = config
+	listenConfig := net.ListenConfig{Control: configureListener}
+	return s.run(ctx, listenConfig.Listen)
+}
+
+func (s *Server) run(ctx context.Context, listen func(context.Context, string, string) (net.Listener, error)) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var workers sync.WaitGroup
+	config := s.Config
 	if s.StatusPath == "" {
 		s.StatusPath = StatusPath
 	}
@@ -63,9 +69,8 @@ func (s *Server) Run(ctx context.Context) error {
 	_ = os.Remove(s.StatusPath)
 
 	listeners := make([]net.Listener, 0, len(config.Listeners))
-	listenConfig := net.ListenConfig{Control: configureListener}
 	for _, configured := range config.Listeners {
-		listener, err := listenConfig.Listen(ctx, "tcp", configured.Address)
+		listener, err := listen(ctx, "tcp", configured.Address)
 		if err != nil {
 			for _, opened := range listeners {
 				_ = opened.Close()

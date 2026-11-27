@@ -210,6 +210,7 @@ type LibvirtVMExecutor struct {
 	PreserveNVRAM     bool
 	Preservation      *DomainPreservation
 	captureFailure    func(context.Context, uint32)
+	runVirsh          func(context.Context, ...string) (string, error)
 }
 
 type DomainPreservation struct {
@@ -414,6 +415,9 @@ func (e LibvirtVMExecutor) virsh(ctx context.Context, args ...string) error {
 }
 
 func (e LibvirtVMExecutor) virshOutput(ctx context.Context, args ...string) (string, error) {
+	if e.runVirsh != nil {
+		return e.runVirsh(ctx, args...)
+	}
 	cmd := e.virshCommand(ctx, args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -489,6 +493,9 @@ type VMRunner struct {
 
 	// guestConnector replaces the vmtest agent transport in tests.
 	guestConnector func(ctx context.Context, plan VSockPlan, transcript string) (guestConn, error)
+
+	// managementDial replaces the TCP dial used for installed-node readiness.
+	managementDial managementDialFunc
 }
 
 type guestConn interface {

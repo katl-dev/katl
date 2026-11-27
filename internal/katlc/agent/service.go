@@ -35,6 +35,10 @@ type dispatcherShutdown interface {
 const dispatcherShutdownTimeout = 30 * time.Second
 
 func Serve(ctx context.Context, config ServeConfig) error {
+	return serve(ctx, config, func(net.Addr) error { return notifyReady() })
+}
+
+func serve(ctx context.Context, config ServeConfig, ready func(net.Addr) error) error {
 	root := strings.TrimSpace(config.Root)
 	if root == "" {
 		root = "/"
@@ -77,7 +81,7 @@ func Serve(ctx context.Context, config ServeConfig) error {
 	maintenanceDone := make(chan struct{})
 	defer func() { stopMaintenance(); <-maintenanceDone }()
 	go func() { defer close(maintenanceDone); agentServer.maintainGenerations(maintenanceCtx, 5*time.Second) }()
-	err = agentServer.serveReloadable(ctx, network, address, notifyReady)
+	err = agentServer.serveReloadable(ctx, network, address, ready)
 	return errors.Join(err, shutdownDispatcher(dispatcher))
 }
 
@@ -85,7 +89,7 @@ func Serve(ctx context.Context, config ServeConfig) error {
 // katlc-agent.service is Type=notify-reload: systemd sends SIGHUP when an
 // on-node command changed management state. The handler is registered before
 // READY=1 so a reload never meets the default action, which ends the process.
-func (s *Server) serveReloadable(ctx context.Context, network, address string, ready func() error) error {
+func (s *Server) serveReloadable(ctx context.Context, network, address string, ready func(net.Addr) error) error {
 	hangups := make(chan os.Signal, 1)
 	signal.Notify(hangups, syscall.SIGHUP)
 	defer signal.Stop(hangups)
@@ -110,7 +114,7 @@ func (s *Server) serveReloadable(ctx context.Context, network, address string, r
 // agent after an on-node change, it re-serves on the same address in this
 // process, so a credential switch does not interrupt operations the agent
 // runs.
-func (s *Server) serveManagement(ctx context.Context, network, address string, ready func() error) error {
+func (s *Server) serveManagement(ctx context.Context, network, address string, ready func(net.Addr) error) error {
 	clock := s.trialClock()
 	for first := true; ; first = false {
 		s.management.drain()
@@ -145,7 +149,7 @@ func (s *Server) serveManagement(ctx context.Context, network, address string, r
 		go func() { errc <- server.Serve(listener) }()
 		// The listener is bound, so connections made from here on are accepted.
 		if first {
-			if err := ready(); err != nil {
+			if err := ready(listener.Addr()); err != nil {
 				server.Stop()
 				return err
 			}

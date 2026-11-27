@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"google.golang.org/grpc"
@@ -125,16 +124,21 @@ func TestJournalFailures(t *testing.T) {
 	if _, err := stream.Recv(); status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "invalid time filter") {
 		t.Fatalf("native diagnostic: %v", err)
 	}
-	if err := os.WriteFile(script, []byte("#!/bin/sh\nexec sleep 60\n"), 0o700); err != nil {
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nprintf 'following\\n'\nexec sleep 60\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	stream, err = client.ReadJournal(ctx, &agentapi.JournalRequest{Follow: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := stream.Recv(); status.Code(err) != codes.DeadlineExceeded {
-		t.Fatalf("follow deadline: %v", err)
+	entry, err := stream.Recv()
+	if err != nil || entry.GetLine() != "following" {
+		t.Fatalf("follow started with %v, %v", entry, err)
+	}
+	cancel()
+	if _, err := stream.Recv(); status.Code(err) != codes.Canceled {
+		t.Fatalf("follow cancellation: %v", err)
 	}
 }
