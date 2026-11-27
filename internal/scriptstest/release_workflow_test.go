@@ -497,23 +497,28 @@ func TestWorkflowsRunPatternsAreCheckable(t *testing.T) {
 	}
 
 	var patterns int
-	for _, name := range workflowNames(t) {
-		for jobName, job := range readWorkflowSteps(t, name) {
-			for _, step := range job.Steps {
-				if !strings.Contains(step.Run, "hosted-vmtest-run") {
-					continue
-				}
-				for _, match := range hostedRunPattern.FindAllStringSubmatch(step.Run, -1) {
-					pattern := strings.ReplaceAll(match[1]+match[2], "$TEST_NAMES", "TestAlpha|TestBeta")
-					patterns++
-					cmd := exec.Command(checker, "-log", log, "-run", pattern)
-					if err := cmd.Run(); err == nil {
-						t.Errorf("%s job %s: -run %q selects no test katl-vmtest-ran can require", name, jobName, pattern)
-					}
-				}
+	check := func(where, script string) {
+		if !strings.Contains(script, "hosted-vmtest-run") {
+			return
+		}
+		for _, match := range hostedRunPattern.FindAllStringSubmatch(script, -1) {
+			pattern := strings.ReplaceAll(match[1]+match[2], "$TEST_NAMES", "TestAlpha|TestBeta")
+			patterns++
+			cmd := exec.Command(checker, "-log", log, "-run", pattern)
+			if err := cmd.Run(); err == nil {
+				t.Errorf("%s: -run %q selects no test katl-vmtest-ran can require", where, pattern)
 			}
 		}
 	}
+	for _, name := range workflowNames(t) {
+		for jobName, job := range readWorkflowSteps(t, name) {
+			for _, step := range job.Steps {
+				check(name+" job "+jobName, step.Run)
+			}
+		}
+	}
+	const producer = ".github/scripts/hosted-vmtest-build"
+	check(producer, string(mustReadFile(t, filepath.Join(repoRoot(t), producer))))
 	if patterns == 0 {
 		t.Fatal("no hosted-vmtest-run -run patterns found")
 	}

@@ -138,11 +138,11 @@ func sharedVMPath(name string) bool {
 	}
 	switch name {
 	case "go.mod", "go.sum", "Containerfile.mkosi", "containers-policy.json",
-		".github/scripts/hosted-apt-install", ".github/scripts/hosted-hermetic-setup",
+		".github/scripts/hosted-apt-install", ".github/scripts/hosted-hermetic-setup", ".github/scripts/hosted-vmtest-build",
 		".github/workflows/ci.yml", ".github/workflows/hosted-vmtests.yml",
 		".github/workflows/production-build.yml", ".github/workflows/production-vmtests.yml",
 		".github/workflows/kernel-qualification.yml", ".github/workflows/release-artifacts.yml",
-		"scripts/mkosi", "scripts/fedora-release", "scripts/build-installer-iso", "scripts/build-katlos-install-image",
+		"scripts/mkosi", "scripts/fedora-release", "scripts/build-installer-iso", "scripts/package-installer-iso", "scripts/build-katlos-install-image",
 		"scripts/build-endpoint-advertiser-sysext", "scripts/bind-install-manifest-image", "scripts/build-kubernetes-sysext",
 		"scripts/check-kubernetes-sysext", "scripts/kubernetes-repoquery",
 		"scripts/hermetic", "scripts/job-environment":

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+cd "$repo_root"
+
+# Pair verification needs metadata for the current UKI. The final index also
+# includes the ISO, so regenerate it only after the ISO has been written.
+iso="${KATL_INSTALLER_ISO:-${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}/katl-installer.iso}"
+rm -f -- "$iso" "$iso.sha256" "$iso.json"
+go run ./cmd/katl-mkosi-artifacts write-installer-artifacts >/dev/null
+KATL_INSTALLER_ISO="$iso" scripts/build-installer-iso >/dev/null
+KATL_INSTALLER_ISO="$iso" go run ./cmd/katl-mkosi-artifacts write >/dev/null

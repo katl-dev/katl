@@ -124,7 +124,7 @@ cache_input_matches_target() {
     case "$target" in
         installer | installer-iso)
             case "$path" in
-                mkosi.profiles/installer-image/* | scripts/build-installer-iso)
+                mkosi.profiles/installer-image/* | scripts/build-installer-iso | scripts/package-installer-iso)
                     return 0
                     ;;
             esac
@@ -715,11 +715,8 @@ else
 			shift
 			"$repo_root/scripts/mkosi" build-runtime
 			"$repo_root/scripts/build-endpoint-advertiser-sysext"
-			# Local upgrade images also need the CLI's four-digit version year.
-			KATL_KATLOS_IMAGE_ROLE=upgrade \
-				KATL_VERSION="${KATL_UPGRADE_VERSION:-${KATL_VERSION:-0000.0.0-dev.1}}" \
 				KATL_BUILD_COMMIT="$build_commit" \
-				"$repo_root/scripts/build-katlos-install-image" "$@"
+					"$repo_root/scripts/build-katlos-install-image" --upgrade "$@"
 			exit $?
 			;;
         installer-image | runtime)
@@ -1121,24 +1118,11 @@ set +e
             status=1
         fi
     fi
-    if [[ "$status" -eq 0 && "${KATL_EMIT_INSTALLER_ISO:-0}" == 1 ]]; then
-        iso=_build/mkosi/katl-installer.iso
-        rm -f "$iso" "$iso.sha256" "$iso.json"
-        # Pair verification must read metadata for the boot artifacts just built.
-        if ! mkosi_artifacts write-installer-artifacts >/dev/null; then
-            status=1
-        elif ! KATL_REPO_ROOT=/work KATL_INSTALLER_ISO="$iso" scripts/build-installer-iso >/dev/null; then
-            status=1
-        else
-            export KATL_INSTALLER_ISO="$iso"
-        fi
-    fi
-    if [[ "$status" -eq 0 && -n "${KATL_INSTALLER_PACKAGE_SET:-}" ]]; then
-        metadata_command=write-installer-artifacts
+    if [[ "$status" -eq 0 ]]; then
         if [[ "${KATL_EMIT_INSTALLER_ISO:-0}" == 1 ]]; then
-            metadata_command=write
-        fi
-        if ! mkosi_artifacts "$metadata_command" >/dev/null; then
+            scripts/package-installer-iso || status=1
+        elif [[ -n "${KATL_INSTALLER_PACKAGE_SET:-}" ]] &&
+            ! mkosi_artifacts write-installer-artifacts >/dev/null; then
             status=1
         fi
     fi
