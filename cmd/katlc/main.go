@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/deadline"
 	"github.com/katl-dev/katl/internal/katlc/agent"
 )
 
@@ -85,6 +86,16 @@ func runAgent(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 		return runAgentRotateManagement(ctx, args[1:], os.Stdin, stdout, stderr)
 	case "management-trial":
 		return runAgentManagementTrial(ctx, args[1:], stdout, stderr)
+	case "expire-deadline":
+		if len(args) != 2 {
+			return fmt.Errorf("expire-deadline requires one deadline instance")
+		}
+		return deadline.Expire(args[1])
+	case "run-extension-activation":
+		if len(args) < 2 {
+			return fmt.Errorf("run-extension-activation requires a command")
+		}
+		return deadline.Run(ctx, deadline.ExtensionActivation, args[1:], stdout, stderr)
 	default:
 		return fmt.Errorf("unsupported agent command %q", args[0])
 	}

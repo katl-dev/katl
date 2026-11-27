@@ -88,6 +88,7 @@ go build \
 mkdir -p "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants"
 ln -sf ../katl-console.service "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants/katl-console.service"
 install -m 0644 "$repo/mkosi.profiles/runtime/katl-endpoint-activate.service" "$DESTDIR/usr/lib/systemd/system/"
+install -m 0644 "$repo"/internal/systemdunit/units/* "$DESTDIR/usr/lib/systemd/system/"
 ln -sf ../katl-endpoint-activate.service "$DESTDIR/usr/lib/systemd/system/multi-user.target.wants/katl-endpoint-activate.service"
 
 mkdir -p "$DESTDIR/etc/systemd/system"
@@ -149,21 +150,8 @@ if [[ "$vmtest_image_support" == 1 ]]; then
         -ldflags="-s -w -X main.version=$version -X main.commit=$commit -X main.date=$date" \
         -o "$DESTDIR/usr/lib/katl/vmtest/katl-vmtest-agent" \
         ./cmd/katl-vmtest-agent
-
-    install -Dm0644 "$repo/internal/vmtest/image/10-vmtest-management-expiry.conf" \
-        "$DESTDIR/usr/lib/systemd/system/katl-boot-health.service.d/10-vmtest-management-expiry.conf"
-    CGO_ENABLED=0 \
-    GOOS=linux \
-    GOARCH=amd64 \
-    GOCACHE="$builddir/go-build" \
-    GOMODCACHE="$gomodcache" \
-    go build \
-        -trimpath \
-        -buildvcs=false \
-        -tags=katl_vmtest \
-        -ldflags="-s -w" \
-        -o "$DESTDIR/usr/lib/katl/vmtest/katl-boot-health" \
-        ./cmd/katl-boot-health
+    install -Dm0644 "$repo/internal/vmtest/image/90-vmtest-management-link.conf" \
+        "$DESTDIR/usr/lib/systemd/system/katl-deadline-management-link@.timer.d/90-vmtest-management-link.conf"
 fi
 
 CGO_ENABLED=0 \

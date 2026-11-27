@@ -218,12 +218,3 @@ spec:
 	}
 	return guest, client
 }
-
-func assertExtensionActivationProductionTimeout(t *testing.T, ctx context.Context, guest *GuestControl, phase string) {
-	t.Helper()
-	got := guestCommandOutput(t, ctx, guest, "extension-activation-timeout-"+phase,
-		"systemctl", "show", "--property=TimeoutStartUSec", "--value", "katl-system-extensions-activate.service")
-	if strings.TrimSpace(got) != "3min" {
-		t.Fatalf("%s extension activation TimeoutStartUSec = %q, want 3min", phase, strings.TrimSpace(got))
-	}
-}

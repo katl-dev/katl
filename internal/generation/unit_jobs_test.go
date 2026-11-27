@@ -6,6 +6,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/systemdunit"
 )
 
 // runtimeUnits is the runtime image's unit graph as systemd assembles it from
@@ -26,20 +28,26 @@ func loadRuntimeUnits(t *testing.T) runtimeUnits {
 		}
 		units.directives[unit][key] = append(units.directives[unit][key], values...)
 	}
-	parse := func(unit, path string) error {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
+	parse := func(unit string, data []byte) {
 		for _, line := range strings.Split(string(data), "\n") {
 			key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
 			if ok && !strings.HasPrefix(key, "#") {
 				add(unit, strings.TrimSpace(key), strings.Fields(value)...)
 			}
 		}
-		return nil
 	}
-	err := filepath.WalkDir(systemdRoot, func(path string, entry os.DirEntry, err error) error {
+	shared, err := systemdunit.RuntimeUnits.ReadDir("units")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, unit := range shared {
+		data, err := systemdunit.RuntimeUnits.ReadFile("units/" + unit.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		parse(unit.Name(), data)
+	}
+	err = filepath.WalkDir(systemdRoot, func(path string, entry os.DirEntry, err error) error {
 		if err != nil || entry.IsDir() {
 			return err
 		}
@@ -48,15 +56,22 @@ func loadRuntimeUnits(t *testing.T) runtimeUnits {
 		dir = strings.TrimSuffix(dir, "/")
 		switch {
 		case dir == "":
-			return parse(name, path)
 		case strings.HasSuffix(dir, ".d") && strings.HasSuffix(name, ".conf"):
-			return parse(strings.TrimSuffix(dir, ".d"), path)
+			name = strings.TrimSuffix(dir, ".d")
 		case strings.HasSuffix(dir, ".wants"):
 			add(strings.TrimSuffix(dir, ".wants"), "Wants", name)
+			return nil
 		case strings.HasSuffix(dir, ".requires"):
 			add(strings.TrimSuffix(dir, ".requires"), "Requires", name)
+			return nil
+		default:
+			return nil
 		}
-		return nil
+		data, err := os.ReadFile(path)
+		if err == nil {
+			parse(name, data)
+		}
+		return err
 	})
 	if err != nil {
 		t.Fatal(err)

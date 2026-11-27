@@ -131,7 +131,7 @@ printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 		t.Fatalf("changed included binary did not invoke fake podman")
 	}
 
-	t.Run("instrumented boot health", func(t *testing.T) {
+	t.Run("instrumented guest agent", func(t *testing.T) {
 		build := func() string {
 			t.Helper()
 			cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "build-runtime")
@@ -149,10 +149,10 @@ printf '%s\n' "$*" >> "$KATL_FAKE_PODMAN_ARGS"
 			t.Fatalf("unchanged instrumented runtime missed cache:\n%s", output)
 		}
 
-		probe := filepath.Join(repo, "cmd", "katl-boot-health", "cache_identity_probe.go")
-		writeTemporaryFile(t, probe, "//go:build katl_vmtest\n\npackage main\n\nfunc init() { println(\"changed instrumented boot health\") }\n")
+		probe := filepath.Join(repo, "cmd", "katl-vmtest-agent", "cache_identity_probe.go")
+		writeTemporaryFile(t, probe, "package main\n\nfunc init() { println(\"changed instrumented guest agent\") }\n")
 		if output := build(); strings.Contains(output, hit) {
-			t.Fatalf("instrumented-only boot-health edit hit cache:\n%s", output)
+			t.Fatalf("instrumented-only guest agent edit hit cache:\n%s", output)
 		}
 	})
 }

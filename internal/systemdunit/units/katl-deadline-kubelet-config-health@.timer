@@ -1,0 +1,11 @@
+[Unit]
+Description=Katl kubelet-config-health deadline (%i)
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Timer]
+OnActiveSec=2min
+AccuracySec=1s
+RemainAfterElapse=no
+Unit=katl-deadline-expire@%i.service

@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/deadline"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/kubeletstartup"
 )
@@ -125,13 +126,27 @@ func (e *Executor) awaitKubeletObservation(ctx context.Context, request *operati
 	}
 }
 
+// armDeadline starts a systemd deadline timer. Unit tests replace it so they
+// do not start timers on the test host.
+var armDeadline = deadline.Arm
+
+// armKubeletHealth bounds post-apply kubelet health with the operation's
+// kubelet-config-health timer, which owns the deadline's duration.
+func armKubeletHealth(ctx context.Context, record operation.OperationRecord) (context.Context, context.CancelFunc, error) {
+	return armDeadline(ctx, deadline.KubeletConfigHealth,
+		fmt.Sprintf("operation=%s rollout=%s", record.OperationID, record.KubeadmControlPlaneConfig.RolloutID))
+}
+
 func (e *Executor) runKubeletConfigHealth(ctx context.Context, record operation.OperationRecord) ToolResult {
 	stored, err := e.Store.Read(record.OperationID)
 	if err != nil {
 		return ToolResult{Err: fmt.Errorf("read kubelet readiness requirement: %w", err), ExitStatus: 1}
 	}
 	record.KubeadmControlPlaneConfig.ReadinessRequirement = stored.KubeadmControlPlaneConfig.ReadinessRequirement
-	healthCtx, cancel := context.WithTimeout(ctx, postKubeadmHealthTimeout)
+	healthCtx, cancel, err := armKubeletHealth(ctx, stored)
+	if err != nil {
+		return ToolResult{Err: err, ExitStatus: 1}
+	}
 	defer cancel()
 	var lastErr error
 	for {
@@ -167,7 +182,7 @@ func (e *Executor) runKubeletConfigHealth(ctx context.Context, record operation.
 		lastErr = err
 		select {
 		case <-healthCtx.Done():
-			return ToolResult{Err: errors.Join(err, healthCtx.Err()), ExitStatus: 1}
+			return ToolResult{Err: errors.Join(err, context.Cause(healthCtx)), ExitStatus: 1}
 		case <-time.After(time.Second):
 		}
 	}

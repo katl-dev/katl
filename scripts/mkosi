@@ -121,14 +121,14 @@ cache_input_matches_target() {
             ;;
         runtime)
             case "$path" in
-                mkosi.profiles/runtime/*)
+                mkosi.profiles/runtime/* | internal/systemdunit/units/*)
                     return 0
                     ;;
             esac
             ;;
         katlos-install-image)
             case "$path" in
-                scripts/build-katlos-install-image | scripts/build-endpoint-advertiser-sysext | mkosi.profiles/endpoint-advertiser-sysext/* | mkosi.profiles/installer-image/* | mkosi.profiles/runtime/*)
+                scripts/build-katlos-install-image | scripts/build-endpoint-advertiser-sysext | mkosi.profiles/endpoint-advertiser-sysext/* | mkosi.profiles/installer-image/* | mkosi.profiles/runtime/* | internal/systemdunit/units/*)
                     return 0
                     ;;
             esac
@@ -158,7 +158,6 @@ target_go_binaries() {
             printf '%s\t%s\t%s\n' "included-binary:/usr/bin/katl-console" "./cmd/katl-console" "versioned"
             if [[ "$vmtest_image_support" == 1 ]]; then
                 printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/vmtest/katl-vmtest-agent" "./cmd/katl-vmtest-agent" "versioned"
-                printf '%s\t%s\t%s\t%s\n' "included-binary:/usr/lib/katl/vmtest/katl-boot-health" "./cmd/katl-boot-health" "plain" "katl_vmtest"
             fi
             printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-generation-activate" "./cmd/katl-generation-activate" "plain"
             printf '%s\t%s\t%s\n' "included-binary:/usr/lib/katl/runtime/katl-host-config-activate" "./cmd/katl-host-config-activate" "plain"
@@ -193,8 +192,8 @@ go_binary_identity() {
                 GOOS=linux \
                 GOARCH=amd64 \
                 GOAMD64=v1 \
-                GOEXPERIMENT= \
-                GOFLAGS= \
+                GOEXPERIMENT='' \
+                GOFLAGS='' \
                 GOTOOLCHAIN=local \
                 GOCACHE="$go_build_cache" \
                 GOMODCACHE="$go_mod_cache" \
@@ -288,9 +287,9 @@ cache_fingerprint() {
                     path="$(katlos_image_output).json"
                     if [[ -f "$path" ]]; then
                         read -r file_digest _ < <(sha256sum "$path")
-                        printf 'generated %s %s\n' "${path#$repo_root/}" "$file_digest"
+                        printf 'generated %s %s\n' "${path#"$repo_root"/}" "$file_digest"
                     else
-                        printf 'missing %s\n' "${path#$repo_root/}"
+                        printf 'missing %s\n' "${path#"$repo_root"/}"
                     fi
                     ;;
             esac
@@ -874,8 +873,8 @@ if [[ -t 0 && -t 1 ]]; then
     run_flags+=(--interactive --tty)
 fi
 
-# shellcheck disable=SC2016
 set +e
+# shellcheck disable=SC2016
 "$runtime" "${run_flags[@]}" "$image" bash -lc '
     set -uo pipefail
     log=$(mktemp)

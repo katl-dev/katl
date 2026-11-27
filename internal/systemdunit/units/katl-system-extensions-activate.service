@@ -13,9 +13,16 @@ Before=shutdown.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+# ProtectSystem=strict makes /run read-only here; this keeps the deadline
+# marker directory writable for the supervisor.
+RuntimeDirectory=katl/deadlines
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
 StandardOutput=journal+console
 SyslogIdentifier=katl-system-extensions-activate
 # Boot reaches sysinit.target only after this unit; a stall must fail
-# so networking and management start and boot health can recover.
-TimeoutStartSec=3min
-ExecStart=/usr/lib/katl/runtime/katl-host-config-activate --root=/ --phase=units
+# so networking and management start and boot health can recover. The
+# extension-activation timer owns that deadline. This longer timeout only
+# backstops a stall before the supervisor arms it, or when it cannot.
+TimeoutStartSec=5min
+ExecStart=/usr/bin/katlc agent run-extension-activation /usr/lib/katl/runtime/katl-host-config-activate --root=/ --phase=units

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -124,6 +125,14 @@ func TestRunPromotesTrialAfterManagementReadError(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		oldRead := readNetworkctlState
 		t.Cleanup(func() { readNetworkctlState = oldRead })
+		oldWait := waitForManagementNetwork
+		t.Cleanup(func() { waitForManagementNetwork = oldWait })
+		// The timeout stands in for the management-link deadline timer.
+		waitForManagementNetwork = func(ctx context.Context) error {
+			ctx, stop := context.WithTimeout(ctx, 90*time.Second)
+			defer stop()
+			return awaitManagementNetwork(ctx)
+		}
 		started := time.Now()
 		readNetworkctlState = func(context.Context) ([]byte, error) {
 			if time.Since(started) < time.Minute {
@@ -152,43 +161,49 @@ func TestRunPromotesTrialAfterManagementReadError(t *testing.T) {
 }
 
 func TestRunDoesNotPromoteWithoutManagementNetwork(t *testing.T) {
-	root := t.TempDir()
-	now := time.Date(2026, 6, 15, 17, 30, 0, 0, time.UTC)
-	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
-	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
-		APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind,
-		DefaultGenerationID: "gen0", BootedGenerationID: "gen0",
-		DefaultBootEntry: "loader/entries/katl-gen0.conf", BootedBootEntry: "loader/entries/katl-gen0.conf",
-		UpdatedAt: now.Add(-30 * time.Minute),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen0\n")
-	oldWait := waitForManagementNetwork
-	waitForManagementNetwork = func(context.Context) error { return errors.New("no usable address") }
-	t.Cleanup(func() { waitForManagementNetwork = oldWait })
+	for _, tc := range []struct {
+		name, want string
+		wait       error
+	}{
+		{"offline", "management network unavailable: no usable address", errors.New("no usable address")},
+		// An unarmed deadline still rejects the trial, but must not be
+		// reported as an offline link.
+		{"deadline not armed", "management network deadline not armed: systemctl start failed",
+			fmt.Errorf("%w: %w", errManagementDeadlineNotArmed, errors.New("systemctl start failed"))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			now := time.Date(2026, 6, 15, 17, 30, 0, 0, time.UTC)
+			writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
+			if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
+				APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind,
+				DefaultGenerationID: "gen0", BootedGenerationID: "gen0",
+				DefaultBootEntry: "loader/entries/katl-gen0.conf", BootedBootEntry: "loader/entries/katl-gen0.conf",
+				UpdatedAt: now.Add(-30 * time.Minute),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen0\n")
+			oldWait := waitForManagementNetwork
+			waitForManagementNetwork = func(context.Context) error { return tc.wait }
+			t.Cleanup(func() { waitForManagementNetwork = oldWait })
 
-	var stdout bytes.Buffer
-	err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, &stdout)
-	if err == nil || !strings.Contains(err.Error(), "no usable address") {
-		t.Fatalf("run() error = %v", err)
-	}
-	if !strings.Contains(stdout.String(), "result=failure") || !strings.Contains(stdout.String(), "promoted=false") {
-		t.Fatalf("stdout = %q", stdout.String())
-	}
-	_, status, err := generation.ReadGeneration(root, "gen0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if status.BootState != generation.BootStateFailed {
-		t.Fatalf("boot state = %q, want failed", status.BootState)
-	}
-}
-
-func TestManagementNetworkTimingDefaults(t *testing.T) {
-	if managementTiming.trialTimeout != 90*time.Second || managementTiming.initialDelay != time.Second {
-		t.Fatalf("management network trial timeout = %s, initial retry delay = %s, want 90s and 1s",
-			managementTiming.trialTimeout, managementTiming.initialDelay)
+			var stdout bytes.Buffer
+			err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, &stdout)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("run() error = %v, want %q", err, tc.want)
+			}
+			if !strings.Contains(stdout.String(), "result=failure") || !strings.Contains(stdout.String(), "promoted=false") {
+				t.Fatalf("stdout = %q", stdout.String())
+			}
+			_, status, err := generation.ReadGeneration(root, "gen0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status.BootState != generation.BootStateFailed {
+				t.Fatalf("boot state = %q, want failed", status.BootState)
+			}
+		})
 	}
 }
 
@@ -207,10 +222,26 @@ func TestManagementNetworkAcceptsOnlineReadAtDeadline(t *testing.T) {
 			return []byte(`{"Interfaces":[{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}]}`), nil
 		}
 
-		timing := managementTiming
-		timing.managementExpiryHooks = managementExpiryHooks{}
-		if err := timing.wait(t.Context()); err != nil {
+		ctx, stop := context.WithTimeout(t.Context(), 2*time.Second)
+		defer stop()
+		if err := awaitManagementNetwork(ctx); err != nil {
 			t.Fatalf("management network wait rejected a successful online read: %v", err)
+		}
+	})
+}
+
+func TestManagementNetworkReportsLastOfflineLinkAtExpiry(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		oldRead := readNetworkctlState
+		t.Cleanup(func() { readNetworkctlState = oldRead })
+		readNetworkctlState = func(ctx context.Context) ([]byte, error) {
+			return []byte(`{"Interfaces":[{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"offline"}]}`), nil
+		}
+		ctx, stop := context.WithTimeout(t.Context(), time.Second)
+		defer stop()
+		err := awaitManagementNetwork(ctx)
+		if err == nil || !strings.Contains(err.Error(), "systemd-networkd reports required link management0 not online") {
+			t.Fatalf("management network expiry = %v, want named offline link", err)
 		}
 	})
 }

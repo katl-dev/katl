@@ -137,6 +137,10 @@ func runPreCNIClusterApply(t *testing.T, ctx context.Context, smoke operationBac
 	}
 	katlctl := buildKatlctlCommand(t, ctx, katlRepoRoot(t), contextPath)
 	var appliedGenerations map[string]string
+	agentCursor, err := kubeletNodeJournalCursor(ctx, smoke.Inputs.SSHPrivateKey, addresses[kubeletFaultNode], kubeletFaultNode, "katlc-agent.service")
+	if err != nil {
+		return err
+	}
 	for _, label := range []string{"apply", "repeat"} {
 		stdout, stderr, err := runProofKatlctl(ctx, katlctl, dir, label, "cluster", "apply", "--config", configPath, "-o", "json")
 		if err != nil {
@@ -154,6 +158,11 @@ func runPreCNIClusterApply(t *testing.T, ctx context.Context, smoke operationBac
 		}
 		if report.Result != "succeeded" || report.RebootRequired || len(report.NodePlans) != 2 {
 			return fmt.Errorf("unexpected pre-CNI %s result: %s", label, stdout)
+		}
+		if label == "apply" {
+			if err := assertKubeletHealthTimerArmed(ctx, smoke.Inputs.SSHPrivateKey, addresses[kubeletFaultNode], kubeletFaultNode, agentCursor); err != nil {
+				return err
+			}
 		}
 		if label == "repeat" {
 			for _, plan := range report.NodePlans {
@@ -381,13 +390,8 @@ func runPreCNIKubeletFailure(ctx context.Context, katlctl katlctlRunner, dir, na
 		return err
 	}
 
-	stdout, stderr, applyErr := runProofKatlctl(ctx, katlctl, dir, name, "cluster", "apply", "--config", badConfig, "--node", "cp-1", "-o", "json")
-	var failed struct{ Result, NextAction string }
-	if err := json.Unmarshal(stdout, &failed); err != nil {
-		return fmt.Errorf("%s failure report: %w: %s", name, err, stderr)
-	}
-	if applyErr == nil || failed.Result != "partial" || strings.TrimSpace(failed.NextAction) == "" {
-		return fmt.Errorf("%s did not report incomplete configuration with recovery guidance: %s %s", name, stdout, stderr)
+	if err := applyPreCNIKubeletFault(ctx, katlctl, dir, name, diagnostic, badConfig, privateKey, address); err != nil {
+		return err
 	}
 
 	// Preserve the actual failure before repair. A CLI error alone could merely
@@ -404,9 +408,6 @@ func runPreCNIKubeletFailure(ctx context.Context, katlctl katlctlRunner, dir, na
 		}
 		if err := os.WriteFile(filepath.Join(dir, name+"-failed-"+probe.suffix), data, 0o600); err != nil {
 			return err
-		}
-		if probe.suffix == "journal.txt" && !strings.Contains(string(data), diagnostic) {
-			return fmt.Errorf("%s did not reach the intended native startup failure: %s", name, data)
 		}
 		if probe.suffix == "checkpoint.json" && !bytes.Equal(checkpoint, data) {
 			return fmt.Errorf("%s changed the existing CPU-manager checkpoint", name)
@@ -483,12 +484,16 @@ func runPreCNIKubeletFailure(ctx context.Context, katlctl katlctlRunner, dir, na
 func readKubeletNode(ctx context.Context, privateKey, address, node, command string) ([]byte, error) {
 	probe, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(probe, "ssh", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=5", "-i", privateKey, "root@"+address, command)
+	cmd := kubeletNodeCommand(probe, privateKey, address, command)
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("observe %s %s: %w", node, command, err)
 	}
 	return data, nil
+}
+
+func kubeletNodeCommand(ctx context.Context, privateKey, address, command string) *exec.Cmd {
+	return exec.CommandContext(ctx, "ssh", "-F", "/dev/null", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "ConnectTimeout=5", "-i", privateKey, "root@"+address, command)
 }
 
 type configuredKubelet struct {

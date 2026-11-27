@@ -441,7 +441,6 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-host-config-prepare.service"), assets.HostConfigPrepare)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-host-config-verify.service"), assets.HostConfigVerify)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-system-extensions-reload.service"), assets.ExtensionReload)
-	assertRepoFile(t, filepath.Join(systemdRoot, "katl-system-extensions-activate.service"), assets.ExtensionActivate)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-configured-units-check.service"), assets.ConfiguredUnitsCheck)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-volumes.target"), assets.VolumesTarget)
 	assertRepoFile(t, filepath.Join(systemdRoot, "katl-volumes-activate.service"), assets.VolumesActivate)
@@ -585,6 +584,10 @@ func stateVerifyUnits() []string {
 		"/etc/systemd/system/katl-host-config-verify.service",
 		"/etc/systemd/system/katl-system-extensions-reload.service",
 		"/etc/systemd/system/katl-system-extensions-activate.service",
+		"/etc/systemd/system/katl-deadline-expire@verify.service",
+		"/etc/systemd/system/katl-deadline-extension-activation@verify.timer",
+		"/etc/systemd/system/katl-deadline-kubelet-config-health@verify.timer",
+		"/etc/systemd/system/katl-deadline-management-link@verify.timer",
 		"/etc/systemd/system/katl-configured-units-check.service",
 		"/etc/systemd/system/katl-volumes-activate.service",
 		"/etc/systemd/system/katl-kubeadm-ready.target",

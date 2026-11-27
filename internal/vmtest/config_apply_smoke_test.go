@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/tls"
 	_ "embed"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -779,15 +778,16 @@ func runConfigApplyModeSmoke(t *testing.T, ctx context.Context, node *RunningIns
 		map[string]string{"usr/lib/systemd/system/vmtest-required.service": "[Unit]\nDescription=Fail a unit required for boot health\n[Service]\nType=oneshot\nExecStart=/usr/bin/false\n[Install]\nWantedBy=multi-user.target\n"},
 		"      units:\n        - name: vmtest-required.service\n          enable: true\n          requiredForBootHealth: true\n",
 		"Failed to start katl-configured-units-check.service")
-	// A stall before sysinit.target must time out so that networking,
-	// management, and boot health still run and reject the trial.
-	assertExtensionActivationProductionTimeout(t, ctx, guest, "before-stall")
+	// A stall before sysinit.target must fail so management can start and
+	// boot health can reject the trial.
 	guest, client = runExtensionBootHealthSmoke(t, ctx, node, guest, client, result, katlctl, endpoint, optionalGeneration, "vmtest-stall", "28",
-		map[string]string{"usr/lib/systemd/system/katl-system-extensions-activate.service.d/50-vmtest-stall.conf": extensionActivationStallDropIn}, "",
-		"vmtest stall: TimeoutStartUSec=[5s]",
-		"katl-system-extensions-activate.service: start-pre operation timed out",
-		"katl-system-extensions-activate.service: Failed with result 'timeout'")
-	assertExtensionActivationProductionTimeout(t, ctx, guest, "after-fallback")
+		map[string]string{
+			"usr/lib/systemd/system/katl-system-extensions-activate.service.d/50-vmtest-stall.conf":     extensionActivationStallDropIn,
+			"usr/lib/systemd/system/katl-deadline-extension-activation@.timer.d/90-vmtest-disable.conf": DeadlineTimerDisabled,
+		}, "",
+		"vmtest stall: configured unit activation blocked",
+		"extension-activation: context deadline exceeded",
+		"katl-system-extensions-activate.service: Failed with result 'exit-code'")
 	assertBootstrappedKubernetesSysextChangeRejected(t, ctx, guest, endpoint)
 	guest, client = runBootMoveReaderSmoke(t, ctx, node, guest, client, result, katlctl, endpoint, optionalGeneration)
 	shutdownGuestThroughKatlctl(t, ctx, result, katlctl, endpoint, node, client)
@@ -908,6 +908,8 @@ func runOptionalUnitFailureSmoke(t *testing.T, ctx context.Context, node *Runnin
 	if !generation.IsKnownGood(candidateStatus) {
 		t.Fatalf("optional-unit generation status = %#v, want good/healthy", candidateStatus)
 	}
+	assertDeadlineTimerStarted(t, ctx, guest, "katl-boot-health.service", "management-link")
+	assertDeadlineTimerStarted(t, ctx, guest, "katl-system-extensions-activate.service", "extension-activation")
 	for _, unit := range []string{"vmtest-optional-failure.service", "vmtest-optional-early-failure.service"} {
 		if got := strings.TrimSpace(guestCommandOutput(t, ctx, guest, "optional-unit-result-"+unit, "systemctl", "show", "--property=Result", "--value", unit)); got != "exit-code" {
 			t.Fatalf("optional unit %s result = %q, want exit-code", unit, got)
@@ -923,6 +925,26 @@ func runOptionalUnitFailureSmoke(t *testing.T, ctx context.Context, node *Runnin
 		t.Fatalf("katlctl status does not show promoted generation %s:\n%s", candidate, statusOutput)
 	}
 	return guest, client
+}
+
+// assertDeadlineTimerStarted checks that the deadline the owning service
+// armed in this boot was started as a timer by PID 1, independent of the
+// owner's own log.
+func assertDeadlineTimerStarted(t *testing.T, ctx context.Context, guest *GuestControl, owner, kind string) {
+	t.Helper()
+	armed := strings.TrimSpace(guestCommandOutput(t, ctx, guest, kind+"-deadline-armed",
+		"journalctl", "-b", "-u", owner, "--no-pager", "-q", "-o", "cat", "--grep=^armed "+kind+" deadline "))
+	lines := strings.Split(armed, "\n")
+	fields := strings.Fields(lines[len(lines)-1])
+	if len(lines) != 1 || len(fields) < 4 || len(fields[3]) != 32 {
+		t.Fatalf("%s did not arm one %s deadline in this boot: %q", owner, kind, armed)
+	}
+	timer := "katl-deadline-" + kind + "@" + fields[3] + ".timer"
+	started := guestCommandOutput(t, ctx, guest, kind+"-deadline-started",
+		"journalctl", "-b", "_PID=1", "UNIT="+timer, "--no-pager", "-q", "-o", "cat")
+	if !strings.Contains(started, "Started") {
+		t.Fatalf("PID 1 did not start %s:\n%s", timer, started)
+	}
 }
 
 func runOrdinaryBootFailureSmoke(t *testing.T, ctx context.Context, node *RunningInstalledRuntimeNode, guest *GuestControl, client *AgentClient, result Result, katlctl katlctlRunner, generationID string) (*GuestControl, *AgentClient) {
@@ -1031,18 +1053,15 @@ func runManagementNetworkFailureSmoke(t *testing.T, ctx context.Context, node *R
 		t.Fatalf("boot %s is running generation %s, want candidate %s", candidateBootID, booted, candidate)
 	}
 
-	invocation := waitForManagementNetworkExpiryArm(t, ctx, candidateGuest, candidateBootID, rebootDone)
+	invocation := waitForManagementNetworkExpiryArm(t, candidateCtx, candidateGuest, candidateBootID)
 	assertRequiredManagementLinkOffline(t, ctx, candidateGuest)
-	select {
-	case <-rebootDone:
-		t.Fatalf("katlctl reboot completed before management network expiry: %v", rebootErr)
-	default:
+	timer := "katl-deadline-management-link@" + invocation + ".timer"
+	if state := strings.TrimSpace(guestCommandOutput(t, candidateCtx, candidateGuest, "management-network-timer-state",
+		"systemctl", "show", "--property=ActiveState", "--value", timer)); state != "inactive" {
+		t.Fatalf("candidate timer state = %q, want inactive", state)
 	}
-	// Write to this invocation's armed FIFO. A stale or missing reader fails
-	// immediately, without leaving a request for another invocation.
 	guestCommand(t, ctx, candidateGuest, "expire-management-network",
-		"dd", "if=/dev/zero", "of=/run/katl-vmtest-boot-health/"+invocation,
-		"bs=1", "count=1", "oflag=nonblock", "conv=nocreat", "status=none")
+		"systemctl", "start", "--no-block", DeadlineExpiryUnit(invocation))
 
 	<-rebootDone
 	if rebootErr == nil || !strings.Contains(rebootErr.Error(), "rejected generation "+candidate+" during boot health and returned on generation "+fallbackGeneration) {
@@ -1059,11 +1078,8 @@ func runManagementNetworkFailureSmoke(t *testing.T, ctx context.Context, node *R
 		t.Fatalf("management-network candidate status = %#v, want failed/unhealthy", candidateStatus)
 	}
 	journalBoot := "--boot=" + strings.ReplaceAll(candidateBootID, "-", "")
-	guestCommand(t, ctx, guest, "management-network-injected-expiry-journal", "journalctl", journalBoot,
-		"--unit=katl-boot-health.service", "--no-pager", "--grep=^vmtest management network expiry injected$",
-		"_SYSTEMD_INVOCATION_ID="+invocation)
 	healthJournal := guestCommandOutput(t, ctx, guest, "management-network-health-journal", "journalctl", journalBoot, "--no-pager", "-u", "katl-boot-health.service")
-	if !containsAll(healthJournal, "generation="+candidate+" result=failure", "configured management network is not ready after 90 seconds", "systemd-networkd reports required link vmtest-mgmt") {
+	if !containsAll(healthJournal, "generation="+candidate+" result=failure", "management network unavailable: configured management network deadline expired: ", "systemd-networkd reports required link vmtest-mgmt ") {
 		t.Fatalf("boot-health journal for boot %s lacks the named-link deadline failure:\n%s", candidateBootID, healthJournal)
 	}
 	recoveryJournal := guestCommandOutput(t, ctx, guest, "management-network-recovery-journal", "journalctl", journalBoot, "--no-pager", "-u", "katl-boot-recovery.service")
@@ -1103,46 +1119,56 @@ func discoverGuestBoot(ctx context.Context, node *RunningInstalledRuntimeNode, p
 	}
 }
 
-func waitForManagementNetworkExpiryArm(t *testing.T, ctx context.Context, guest *GuestControl, bootID string, rebootDone <-chan struct{}) string {
+func waitForManagementNetworkExpiryArm(t *testing.T, ctx context.Context, guest *GuestControl, bootID string) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	ticker := time.NewTicker(250 * time.Millisecond)
-	defer ticker.Stop()
+
+	// Read this boot's whole journal on each poll because boot health can
+	// enter the wait before the guest control connection is ready.
+	argv := []string{"journalctl", "--boot=" + strings.ReplaceAll(bootID, "-", ""), "--unit=katl-boot-health.service", "--no-pager", "--output=cat"}
 	for {
 		record, err := guest.RunCommand(ctx, GuestCommandRequest{
-			Name: "management-network-expiry-armed",
-			Argv: []string{"journalctl", "--boot=" + strings.ReplaceAll(bootID, "-", ""), "--unit=katl-boot-health.service", "--output=json", "--lines=1", "--no-pager",
-				"--grep=^vmtest management network expiry armed: .*systemd-networkd reports required link vmtest-mgmt "},
-			AllowFailure: true, // journalctl exits 1 when no event has matched yet.
+			Name:         "management-network-expiry-arm",
+			Argv:         argv,
+			StdoutLimit:  1 << 20,
+			AllowFailure: true,
 		})
-		if err != nil {
-			t.Fatalf("read expiry arm event for candidate boot %s: %v", bootID, err)
-		}
-		if record.ExitStatus == 0 {
-			var entry struct {
-				Invocation string `json:"_SYSTEMD_INVOCATION_ID"`
+		if err == nil && record.ExitStatus == 0 {
+			if instance, ok := managementLinkDeadlineWaiting(readFile(t, record.Stdout)); ok {
+				if len(instance) != 32 {
+					t.Fatalf("boot %s has no management-link deadline invocation: %q", bootID, instance)
+				}
+				return instance
 			}
-			output := readFile(t, record.Stdout)
-			if err := json.Unmarshal([]byte(output), &entry); err != nil {
-				t.Fatalf("decode expiry arm event: %v\n%s", err, output)
-			}
-			if id, err := hex.DecodeString(entry.Invocation); err != nil || len(id) != 16 {
-				t.Fatalf("expiry arm event has invalid invocation ID: %q", entry.Invocation)
-			}
-			return entry.Invocation
 		}
-		if stderr := readFile(t, record.Stderr); record.ExitStatus != 1 || strings.TrimSpace(stderr) != "" {
-			t.Fatalf("read expiry arm event for candidate boot %s: journalctl exited %d\n%s", bootID, record.ExitStatus, stderr)
-		}
+
 		select {
-		case <-rebootDone:
-			t.Fatalf("katlctl reboot completed before boot-health armed expiry on candidate boot %s", bootID)
 		case <-ctx.Done():
-			t.Fatalf("boot-health did not arm expiry for vmtest-mgmt on candidate boot %s: %v", bootID, ctx.Err())
-		case <-ticker.C:
+			t.Fatalf("boot %s did not arm the management-link deadline and wait for vmtest-mgmt: %v (last command error: %v)", bootID, ctx.Err(), err)
+		case <-time.After(500 * time.Millisecond):
 		}
 	}
+}
+
+// managementLinkDeadlineWaiting returns the deadline instance armed before boot
+// health first reported waiting for the required vmtest-mgmt link.
+func managementLinkDeadlineWaiting(journal string) (string, bool) {
+	const (
+		armed   = "armed management-link deadline "
+		waiting = "waiting for management network: "
+		offline = "systemd-networkd reports required link vmtest-mgmt "
+	)
+	instance := ""
+	for _, message := range strings.Split(journal, "\n") {
+		switch {
+		case strings.HasPrefix(message, armed):
+			instance = message[strings.LastIndex(message, " ")+1:]
+		case strings.HasPrefix(message, waiting) && strings.Contains(message, offline):
+			return instance, true
+		}
+	}
+	return "", false
 }
 
 func assertRequiredManagementLinkOffline(t *testing.T, ctx context.Context, guest *GuestControl) {

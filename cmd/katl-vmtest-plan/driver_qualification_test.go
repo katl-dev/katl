@@ -57,6 +57,7 @@ func TestDriverDigestCandidate(t *testing.T) {
 		{"sysext compatibility", testOSRelease, "ID=katlos\nSYSEXT_LEVEL=katl-runtime-2\n", both},
 		{"mkosi architecture", "mkosi.conf", "[Distribution]\nRelease=45\nArchitecture=arm64\n[Build]\nCacheDirectory=cache\n", both},
 		{"driver activation", testActivation, "package generation\nconst activation = \"refresh systemd-sysext\"\n", both},
+		{"extension activation unit", "internal/systemdunit/units/katl-system-extensions-activate.service", "[Service]\nExecStart=/usr/bin/false\n", both},
 		{"candidate sysext staging", testRuntimeApply, "package configapply\nconst sysextDir = \"wrong-extensions\"\n", both},
 		{"installer kernel modules", testInstaller, "[Content]\nKernelModules=\n        /drivers/block/\n", both},
 		{"DRBD guest helper", testGuestHelper, "package vmtest\nconst readFile = \"new helper\"\n", both},

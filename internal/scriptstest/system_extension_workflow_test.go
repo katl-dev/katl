@@ -33,14 +33,15 @@ func TestSystemExtensionPublication(t *testing.T) {
 		t.Fatal(err)
 	}
 	for path, needsRelease := range map[string]bool{
-		"extensions/bird/extension.env":                   true,
-		"extensions/bird/bird.conf":                       true,
-		"mkosi.profiles/system-extension-bird/mkosi.conf": true,
-		"mkosi.profiles/runtime/mkosi.conf":               true,
-		"Containerfile.mkosi":                             true,
-		"scripts/build-system-extension":                  true,
-		".github/workflows/system-extensions.yml":         false,
-		"cmd/katlctl/system_extension.go":                 false,
+		"extensions/bird/extension.env":                                      true,
+		"extensions/bird/bird.conf":                                          true,
+		"mkosi.profiles/system-extension-bird/mkosi.conf":                    true,
+		"mkosi.profiles/runtime/mkosi.conf":                                  true,
+		"internal/systemdunit/units/katl-system-extensions-activate.service": true,
+		"Containerfile.mkosi":                                                true,
+		"scripts/build-system-extension":                                     true,
+		".github/workflows/system-extensions.yml":                            false,
+		"cmd/katlctl/system_extension.go":                                    false,
 	} {
 		if got := pattern.MatchString(path); got != needsRelease {
 			t.Errorf("recipe classification of %s = %t, want %t", path, got, needsRelease)

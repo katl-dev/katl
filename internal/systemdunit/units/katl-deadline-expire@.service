@@ -1,0 +1,9 @@
+[Unit]
+Description=Expire Katl deadline %i
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/katlc agent expire-deadline %i

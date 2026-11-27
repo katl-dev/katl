@@ -227,6 +227,10 @@ for path in \
     /usr/lib/systemd/system/katl-generation-activate.service \
     /usr/lib/systemd/system/katl-system-extensions-reload.service \
     /usr/lib/systemd/system/katl-system-extensions-activate.service \
+    /usr/lib/systemd/system/katl-deadline-expire@.service \
+    /usr/lib/systemd/system/katl-deadline-extension-activation@.timer \
+    /usr/lib/systemd/system/katl-deadline-kubelet-config-health@.timer \
+    /usr/lib/systemd/system/katl-deadline-management-link@.timer \
     /usr/lib/systemd/system/katl-volumes.target \
     /usr/lib/systemd/system/katl-volumes-activate.service \
     /usr/lib/systemd/system/katl-kubeadm-ready.target \
@@ -268,7 +272,10 @@ for path in \
     /usr/lib/sysimage/rpm \
     /var/lib/rpm-state \
     /usr/lib/katl/vmtest \
-    /usr/lib/systemd/system/katl-boot-health.service.d/10-vmtest-management-expiry.conf \
+    /usr/lib/systemd/system/katl-deadline-management-link@.timer.d/90-vmtest-management-link.conf \
+    /usr/lib/systemd/system/katl-deadline-extension-activation@.timer.d/90-vmtest-disable.conf \
+    /usr/lib/systemd/system/katl-deadline-kubelet-config-health@.timer.d/90-vmtest-disable.conf \
+    /usr/lib/systemd/system/katl-system-extensions-activate.service.d/50-vmtest-stall.conf \
     /usr/lib/systemd/system/katl-vmtest-agent-ready.target \
     /usr/lib/systemd/system/katl-vmtest-agent.service \
     /usr/lib/systemd/system/katl-vmtest-debug-shell.service \
@@ -278,15 +285,6 @@ for path in \
 do
     misses_path "$path"
 done
-
-if unsquashfs -cat "$artifact" usr/lib/katl/runtime/katl-boot-health |
-    LC_ALL=C grep -aF 'vmtest management network expiry ' >/dev/null; then
-    fail "production boot-health binary contains the VM-test management network expiry control"
-else
-    binary_scan=("${PIPESTATUS[@]}")
-    (( binary_scan[0] == 0 && binary_scan[1] == 1 )) ||
-        fail "could not inspect the production boot-health binary"
-fi
 
 if grep -Eq 'squashfs-root/usr/lib/modules/[^/[:space:]]+/(System[.]map|vmlinuz)([[:space:]]|$)' <<<"$runtime_inventory"; then
     fail "runtime image contains duplicate kernel build artifacts"
