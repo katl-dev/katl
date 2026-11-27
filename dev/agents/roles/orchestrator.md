@@ -54,7 +54,11 @@ defect: start it in the same cycle.
 
 Run `katl-queue status` each cycle and on resume. If an open,
 ready PR is in none of the [required states](../../../AGENTS.md#task-and-delivery-workflow),
-fix it immediately. [#795](https://github.com/katl-dev/katl/issues/795) tracks
+fix it immediately. In the same cycle, check every `Hold:` line against the
+PR, issue or precondition it names and remove it when that has cleared, and
+treat a PR with auto-merge on and a failed required check as an ejection.
+Keep this cycle running while a release is being cut; the Release agent
+owns the cut. [#795](https://github.com/katl-dev/katl/issues/795) tracks
 reporting those PRs as `unexplained` in `katl-queue status`. After an ejection
 attributed to a main-breaking issue, add `Hold: after #N (reason)` at the top
 of the ejected PR's body, using the issue number and the cause of the hold.
@@ -68,7 +72,11 @@ another session can resume it. Use `katl-queue watch PR` without the watcher.
 Run added or modified VM tests locally with
 `scripts/vmtest-run --flavour standard,lts`. To exercise CI's affected groups
 on both flavours from the same checkout, use `scripts/vmtest-run --affected`.
-Take each result from its own run's `test-summary.txt`.
+Take each result from its own run's `test-summary.txt`. After a PR-caused
+ejection, rerun the group that failed on both flavours before re-enqueueing.
+Run every affected group locally only when the change touches shared VM
+infrastructure or the hosted build path, because the queue runs them all.
+Read a failed run's evidence before cleaning its directory.
 
 Classify each gate failure as a defect in the gate, such as a revision gate
 rejecting identical output, or as real evidence, such as a race the gate

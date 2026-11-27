@@ -60,6 +60,12 @@ jobs start, finish, or change hands.
 
 Reconcile the checkpoint with running jobs and GitHub before acting on it.
 
+Read `AGENTS.md` and `dev/agents`, and run `katl-queue`, `katl-release`,
+`katl-dev-evidence` and the cleanup scripts, from a worktree at the current
+`origin/main`. A checkout that a session happens to start in may be many
+commits behind; refresh it or use a fresh detached worktree under
+`worktrees/` before acting.
+
 Create every worktree under `worktrees/`. Never keep a worktree, or anything
 else needed for more than a day, under `/tmp`, including the session
 scratchpad. Hosts age out files under `/tmp`: a typical systemd-tmpfiles rule
@@ -115,15 +121,19 @@ The coordinator confirms the planned cut with the orchestrator. At freeze,
 start one Release agent to own the release from the branch cut. The
 orchestrator passes the version, branch and cut revision, scope and open
 blockers, and any explicit maintainer authority with the
-[Release brief template](briefs/release.md).
+[Release brief template](briefs/release.md). The orchestrator does not take
+the Release role; it keeps delivery and its queue cycle running on `main`.
 
-1. Merge every release blocker into `main`.
+1. Merge every release blocker into `main`. While the last blockers are in
+   the queue, dispatch a non-publishing candidate from `main` and fix what
+   it finds, so that the release-only jobs have run on current inputs before
+   the cut.
 2. Fetch `origin/main` at the cut and create a branch for this version from
    that exact SHA, for example `release/2026.12.1`. Push `release/<version>`
-   and start candidate qualification from it.
-3. Create milestone `v<version>` and move every issue in **Next release**,
-   open or closed, into it unless there is a compelling reason to leave it
-   out. Move open PRs as well, subject to the same exclusions. Use the
+   and start candidate qualification from the branch, never from `main`.
+3. Create milestone `v<version>` and move into it every **Next release**
+   issue whose fix is on the branch. Open issues and open PRs stay in
+   **Next release** unless they block this release. Use the
    [flake rule](roles/release.md#flakes) for flakes found around the cut.
    Record the milestone and its Release agent in the checkpoint.
 4. Open two issues in the milestone, `Tag v<version>-rc.1` and `Tag v<version>`.

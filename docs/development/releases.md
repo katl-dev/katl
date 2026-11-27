@@ -29,7 +29,12 @@ publication under the
 3. Cut `release/<version>` from the selected `main` commit SHA, using the
    final version for the branch name. Dispatch qualification from that branch and
    wait for it to pass. Production-image checks run only in this workflow, so
-   qualify the commit before tagging it.
+   qualify the commit before tagging it. Dispatch only after the branch
+   exists, with `--ref release/<version>`. Until
+   [#863](https://github.com/katl-dev/katl/issues/863) loads the modules in
+   the workflow, check each extension of the passing candidate against its
+   runtime (kernel release, bound runtime digest, and unresolved symbols)
+   and record the result on the rc tag issue.
 
    ```sh
    gh workflow run release-artifacts.yml --ref release/2026.12.1 -f version=2026.12.1-rc.1
