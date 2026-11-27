@@ -60,9 +60,16 @@ jobs start, finish, or change hands.
 
 Reconcile the checkpoint with running jobs and GitHub before acting on it.
 
+Create every worktree under `worktrees/`. Never keep a worktree, or anything
+else needed for more than a day, under `/tmp`, including the session
+scratchpad. Hosts age out files under `/tmp`: a typical systemd-tmpfiles rule
+deletes every entry not modified for two days. A long-lived worktree there loses
+its untouched tracked files and then its `.git` link, while recently edited
+files survive, so the damage is easy to miss.
+
 ### Retain investigation evidence
 
-Keep only small, transient files in the session scratchpad. Store retained
+Keep only small, same-day files in the session scratchpad. Store retained
 evidence larger than about 100 MB, such as harness state or downloaded CI
 logs, in an entry allocated by `katl-dev-evidence new <owner>/<name>`.
 Use the issue number as the owner for issue-scoped work and include the
