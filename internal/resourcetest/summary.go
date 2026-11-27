@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/gotestlog"
 )
 
 const SummaryKind = "ResourceTestSummary"
@@ -60,14 +62,6 @@ type GoTestFailure struct {
 type MissingPrerequisite struct {
 	Name   string `json:"name"`
 	Detail string `json:"detail"`
-}
-
-type goTestEvent struct {
-	Action  string  `json:"Action"`
-	Package string  `json:"Package"`
-	Test    string  `json:"Test,omitempty"`
-	Output  string  `json:"Output,omitempty"`
-	Elapsed float64 `json:"Elapsed,omitempty"`
 }
 
 type scenarioArtifact struct {
@@ -140,7 +134,7 @@ func EncodeSummary(w io.Writer, summary Summary) error {
 	return encoder.Encode(summary)
 }
 
-func aggregateScenario(item ScenarioSummary, runID string, scenario Scenario, events map[string]goTestEvent, readFile func(string) ([]byte, error)) ScenarioSummary {
+func aggregateScenario(item ScenarioSummary, runID string, scenario Scenario, events map[string]gotestlog.Event, readFile func(string) ([]byte, error)) ScenarioSummary {
 	if scenario.ResultPath == "" {
 		item.Status = StatusSetupFailed
 		item.FailureSummary = firstNonEmpty(item.FailureSummary, "resource scenario is missing resultPath")
@@ -222,8 +216,8 @@ func recordScenario(summary *Summary, item ScenarioSummary) {
 	}
 }
 
-func parseGoTestJSON(r io.Reader) (map[string]goTestEvent, []GoTestFailure, error) {
-	events := map[string]goTestEvent{}
+func parseGoTestJSON(r io.Reader) (map[string]gotestlog.Event, []GoTestFailure, error) {
+	events := map[string]gotestlog.Event{}
 	var failures []GoTestFailure
 	if r == nil {
 		return events, failures, nil
@@ -235,12 +229,12 @@ func parseGoTestJSON(r io.Reader) (map[string]goTestEvent, []GoTestFailure, erro
 		if line == "" {
 			continue
 		}
-		var event goTestEvent
+		var event gotestlog.Event
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			return nil, nil, fmt.Errorf("decode go test JSON: %w", err)
 		}
-		switch event.Action {
-		case "pass", "fail", "skip":
+		switch {
+		case event.IsResult():
 			key := goTestKey(event.Package, event.Test)
 			last := events[key]
 			if last.Output != "" && event.Output == "" {
@@ -250,7 +244,7 @@ func parseGoTestJSON(r io.Reader) (map[string]goTestEvent, []GoTestFailure, erro
 			if event.Action == "fail" {
 				failures = append(failures, GoTestFailure{Package: event.Package, Test: event.Test, Action: event.Action})
 			}
-		case "output":
+		case event.Action == "output":
 			key := goTestKey(event.Package, event.Test)
 			last := events[key]
 			last.Package = event.Package

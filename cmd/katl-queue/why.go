@@ -8,6 +8,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/katl-dev/katl/internal/gotestlog"
 )
 
 var (
@@ -132,33 +134,169 @@ func errorExcerpts(log []byte, limit int) map[string][]string {
 	return excerpts
 }
 
-// testLogExcerpt picks failure lines from a go test log, which is either plain
-// text or the `go test -json` event stream.
+// testLogExcerpt ranks output only after associating it with a failure: a
+// failed test, or a failed package, which owns its package-level output and
+// the output of tests that never reported a result.
 func testLogExcerpt(log []byte, limit int) []string {
-	var lines []string
+	var structured jsonTestLog
+	var plain textTestLog
+	var failed []string
 	scanner := bufio.NewScanner(bytes.NewReader(log))
 	scanner.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if strings.HasPrefix(line, "{") {
-			var event struct{ Output string }
-			if json.Unmarshal([]byte(line), &event) == nil {
-				lines = append(lines, strings.Split(event.Output, "\n")...)
-				continue
+		if output, ok := structured.add(line); ok {
+			failed = append(failed, output...)
+			continue
+		}
+		failed = append(failed, plain.add(line)...)
+	}
+
+	excerpt := rankExcerpt(failed, limit)
+	if len(excerpt) > 0 && rankLine(excerpt[0]) >= rankGeneric {
+		return nil
+	}
+	return excerpt
+}
+
+// jsonTestID names an output owner in a go test -json stream. An empty name
+// is the package itself; build output is owned by its import path.
+type jsonTestID struct{ pkg, name string }
+
+type jsonTestLog struct {
+	pending map[jsonTestID][]string
+	order   []jsonTestID
+}
+
+// add reports whether line is a go test -json event and returns newly
+// confirmed failure output.
+func (l *jsonTestLog) add(line string) ([]string, bool) {
+	if !strings.HasPrefix(line, "{") {
+		return nil, false
+	}
+	var event gotestlog.Event
+	if json.Unmarshal([]byte(line), &event) != nil || event.Action == "" {
+		return nil, false
+	}
+
+	switch {
+	case event.Action == "output" || event.Action == "build-output":
+		id := jsonTestID{event.Package, event.Test}
+		if event.Action == "build-output" {
+			id = jsonTestID{pkg: event.ImportPath}
+		}
+		if l.pending == nil {
+			l.pending = map[jsonTestID][]string{}
+		}
+		if _, ok := l.pending[id]; !ok && !slices.Contains(l.order, id) {
+			l.order = append(l.order, id)
+		}
+		l.pending[id] = append(l.pending[id], strings.Split(strings.TrimSuffix(event.Output, "\n"), "\n")...)
+	case event.IsResult() && event.Test != "":
+		id := jsonTestID{event.Package, event.Test}
+		output := l.pending[id]
+		delete(l.pending, id)
+		if event.Action == "fail" {
+			return output, true
+		}
+	case event.IsResult():
+		owned := func(id jsonTestID) bool {
+			return id.pkg == event.Package || (event.FailedBuild != "" && id.pkg == event.FailedBuild)
+		}
+		var output []string
+		for _, id := range l.order {
+			if lines, ok := l.pending[id]; ok && owned(id) {
+				output = append(output, lines...)
+				delete(l.pending, id)
 			}
 		}
-		lines = append(lines, line)
-	}
-	var tests []string
-	for _, line := range rankExcerpt(lines, len(lines)) {
-		if rankLine(line) < rankGeneric {
-			tests = append(tests, line)
+		l.order = slices.DeleteFunc(l.order, owned)
+		if event.Action == "fail" {
+			return output, true
 		}
 	}
-	if len(tests) > limit {
-		tests = tests[:limit]
+	return nil, true
+}
+
+type textTestResult struct {
+	indent int
+	failed bool
+}
+
+// textTestLog follows one package at a time: go test prints a package's
+// output before its "ok" or "FAIL" line.
+type textTestLog struct {
+	active  string
+	pending map[string][]string
+	order   []string
+	results []textTestResult
+	// unindented holds column-0 lines, such as panics, build errors and
+	// TestMain output, which belong to the package if it fails.
+	unindented []string
+}
+
+// add returns newly confirmed failure output. Verbose output can arrive
+// before a result, while buffered output follows its result at a deeper
+// indentation. A nested result owns only its own indented output.
+func (l *textTestLog) add(line string) []string {
+	if control, ok := strings.CutPrefix(line, "=== "); ok {
+		action, name, _ := strings.Cut(control, " ")
+		switch action {
+		case "RUN", "CONT", "NAME":
+			l.active = strings.TrimSpace(name)
+		case "PAUSE":
+			l.active = ""
+		}
+		l.results = l.results[:0]
+		return nil
 	}
-	return tests
+
+	trimmed := strings.TrimLeft(line, " \t")
+	indent := len(line) - len(trimmed)
+	for len(l.results) > 0 && l.results[len(l.results)-1].indent >= indent {
+		l.results = l.results[:len(l.results)-1]
+	}
+	if result, offset := gotestlog.MatchTextResult(line); offset == indent {
+		l.active = ""
+		failed := result.Action == "fail"
+		l.results = append(l.results, textTestResult{indent, failed})
+		output := l.pending[result.Test]
+		delete(l.pending, result.Test)
+		if failed {
+			return append(output, trimmed)
+		}
+		return nil
+	}
+
+	if strings.HasPrefix(line, "ok\t") || strings.HasPrefix(line, "ok  \t") {
+		*l = textTestLog{}
+		return nil
+	}
+	if packageFailLine.MatchString(line) {
+		output := l.unindented
+		for _, name := range l.order {
+			output = append(output, l.pending[name]...)
+		}
+		*l = textTestLog{}
+		return append(output, line)
+	}
+
+	if indent == 0 {
+		l.unindented = append(l.unindented, line)
+	}
+	if len(l.results) > 0 && l.results[len(l.results)-1].failed {
+		return []string{trimmed}
+	}
+	if l.active != "" {
+		if l.pending == nil {
+			l.pending = map[string][]string{}
+		}
+		if _, ok := l.pending[l.active]; !ok && !slices.Contains(l.order, l.active) {
+			l.order = append(l.order, l.active)
+		}
+		l.pending[l.active] = append(l.pending[l.active], trimmed)
+	}
+	return nil
 }
 
 var testLogName = regexp.MustCompile(`^go-test\.(log|jsonl)$`)

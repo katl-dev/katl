@@ -2056,12 +2056,13 @@ func TestVMTestRunNestedScenario(t *testing.T) {
 // copyRunCheck gives a stand-in repo the helper vmtest-run runs after go test.
 func copyRunCheck(t *testing.T, realRepo, repo string) {
 	t.Helper()
-	dir := filepath.Join(repo, "cmd", "katl-vmtest-ran")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{"go.mod", "cmd/katl-vmtest-ran/main.go", "internal/gotestlog/event.go"} {
+		dst := filepath.Join(repo, name)
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		copyScript(t, filepath.Join(realRepo, name), dst)
 	}
-	copyScript(t, filepath.Join(realRepo, "go.mod"), filepath.Join(repo, "go.mod"))
-	copyScript(t, filepath.Join(realRepo, "cmd", "katl-vmtest-ran", "main.go"), filepath.Join(dir, "main.go"))
 }
 
 func TestVMTestCleanReleasesRecordedNetworks(t *testing.T) {
