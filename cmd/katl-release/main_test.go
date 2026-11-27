@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -44,9 +43,6 @@ func newFixture(t *testing.T) *githubFixture {
 
 func (f *githubFixture) call(name string, args ...string) ([]byte, error) {
 	f.t.Helper()
-	if name == "scripts/katl-release-artifacts" {
-		return exec.Command(filepath.Join("..", "..", name), args...).CombinedOutput()
-	}
 	if name != "gh" || len(args) == 0 {
 		f.t.Fatalf("unexpected command %s %q", name, args)
 	}

@@ -3951,3 +3951,16 @@ func TestClusterBootstrapWarnsDerivedEndpoint(t *testing.T) {
 		})
 	}
 }
+
+// --version names a published release, so it takes the release grammar; a
+// local build's version is accepted only from its image metadata.
+func TestReleaseVersion(t *testing.T) {
+	for input, want := range map[string]bool{
+		"2026.7.0": true, "v2026.7.0-rc.1": true, " 2026.9.0-beta.16 ": true,
+		"2026.7.0-local.1a2b3c4": false, "2026.13.0": false, "2026.07.0": false, "cp-1": false,
+	} {
+		if got := isReleaseVersion(input); got != want {
+			t.Errorf("isReleaseVersion(%q) = %v, want %v", input, got, want)
+		}
+	}
+}

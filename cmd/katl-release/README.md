@@ -142,6 +142,71 @@ the command writes on `GITHUB_SHA` and refuses unless `GITHUB_REF` is
 `refs/heads/release/<final version>` for the version given, such as
 `refs/heads/release/2026.12.0` for `2026.12.0-rc.1`.
 
+## Release state
+
+The [release state machine](../../docs/internal/release-state-machine.md)
+defines both commands below. They share one decision, read from Git and
+GitHub on every call; a read that fails stops the command without a
+decision.
+
+### `status`
+
+```sh
+scripts/katl-release status 2026.12.1
+```
+
+Read-only. Prints the state of `release/2026.12.1`, the step a dispatch
+without a retry reason would take or the refusal it would give, the
+candidate's and final's records with their run attempts and digests, and a
+pending approval with its URL. Statuses that look like records but fail the
+trust rule are listed as warnings. On a repository without the Release
+workflow it fails, saying so. Run it from a checkout of the release
+branch's head, because the workflow decides with that branch's own
+`katl-release`.
+
+### `next`
+
+```sh
+scripts/katl-release next --ref "$GITHUB_REF" --dispatch "$GITHUB_SHA" --retry "$RETRY"
+```
+
+The Release workflow's decide job runs this and acts on its JSON output.
+`--ref` and `--dispatch` default to `GITHUB_REF` and `GITHUB_SHA`, and the
+run named by `GITHUB_RUN_ID` is not counted as an active run. It exits zero
+for every decision, a refusal included.
+
+## Version grammar
+
+These commands let scripts use the one owner of the
+[calendar version](../../docs/internal/adrs/adr-009-katlos-calendar-versioning.md)
+grammar instead of a pattern of their own.
+
+### `version`
+
+```sh
+scripts/katl-release version 2026.12.1-rc.1
+```
+
+Fails, naming the problem, unless the argument is a canonical version
+without the `v` prefix.
+
+### `stable-tags`
+
+```sh
+scripts/katl-release stable-tags v2026.12.1 v2026.12.1-rc.1 nightly
+```
+
+Prints the arguments that are final release tags, in their order.
+
+### `bundle-name`
+
+```sh
+scripts/katl-release bundle-name 2026.12.1-rc.1 "$GITHUB_SHA"
+```
+
+Prints the name of the bundle artifact that a build of the version at that
+full commit uploads, such as `katl-2026.12.1-rc.1-x86_64-0123456789ab`.
+
 ## State and logs
 
 GitHub Actions holds the run logs, artifact metadata, and final bundle.

@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+
+	"github.com/katl-dev/katl/internal/releaseversion"
 )
 
 const (
@@ -15,11 +17,7 @@ const (
 )
 const ciWorkflowPath = ".github/workflows/ci.yml"
 
-var (
-	candidateVersion = regexp.MustCompile(`^[0-9]{4}\.[0-9]+\.[0-9]+-rc\.[0-9]+$`)
-	finalVersion     = regexp.MustCompile(`^[0-9]{4}\.[0-9]+\.[0-9]+$`)
-	fullSHA          = regexp.MustCompile(`^[0-9a-f]{40}$`)
-)
+var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 // regression decides whether a release run repeats the VM regression lanes.
 // Only the rc and final versions can skip them, and only when CI has already
@@ -35,11 +33,12 @@ func regression(args []string, stdout, stderr io.Writer, call command) error {
 	if !fullSHA.MatchString(commit) {
 		return errors.New("COMMIT must be the full source commit SHA")
 	}
-	if err := validateVersion(version, call); err != nil {
+	parsed, err := validateVersion(version)
+	if err != nil {
 		return fmt.Errorf("invalid release version: %w", err)
 	}
 
-	final := finalVersion.MatchString(version)
+	final := parsed.IsFinal()
 	if final {
 		rc, err := candidateRun(version, commit, call)
 		if err != nil {
@@ -47,7 +46,7 @@ func regression(args []string, stdout, stderr io.Writer, call command) error {
 		}
 		fmt.Fprintf(stderr, "Release candidate %s succeeded at %s: %s\n", rc.Tag, commit, rc.URL)
 	}
-	if !final && !candidateVersion.MatchString(version) {
+	if !final && parsed.Stage != releaseversion.Candidate {
 		fmt.Fprintf(stderr, "%s is not a release candidate or final version; running the regression lanes.\n", version)
 		fmt.Fprintln(stdout, "run")
 		return nil
@@ -77,9 +76,9 @@ func candidateRun(version, commit string, call command) (workflowRun, error) {
 	if err != nil {
 		return workflowRun{}, fmt.Errorf("cannot look up the release candidate of %s: %w", version, err)
 	}
-	prefix := "v" + version + "-rc."
 	for _, run := range runs {
-		if strings.HasPrefix(run.Tag, prefix) && candidateVersion.MatchString(strings.TrimPrefix(run.Tag, "v")) && run.Path == workflow {
+		tag, err := releaseversion.ParseTag(run.Tag)
+		if err == nil && tag.Stage == releaseversion.Candidate && tag.Base().String() == version && run.Path == workflow {
 			return run, nil
 		}
 	}

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,9 +13,6 @@ import (
 type regressionAPI map[string]any
 
 func (a regressionAPI) call(name string, args ...string) ([]byte, error) {
-	if name == "scripts/katl-release-artifacts" {
-		return exec.Command(filepath.Join("..", "..", name), args...).CombinedOutput()
-	}
 	value, ok := a["repos/"+repository+"/"+strings.TrimPrefix(args[1], "repos/"+repository+"/")]
 	if name != "gh" || args[0] != "api" || !ok {
 		return nil, fmt.Errorf("unavailable: %q", args)

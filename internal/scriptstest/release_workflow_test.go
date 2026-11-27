@@ -764,7 +764,7 @@ func TestReleaseIdentityVersion(t *testing.T) {
 			command.Dir = repoRoot(t)
 			command.Env = append(gittest.Env(os.Environ(), dir), "PREVIOUS_TAG=v2026.11.5",
 				"GITHUB_EVENT_NAME="+tt.event, "GITHUB_REF_TYPE="+tt.refType, "GITHUB_REF_NAME="+tt.refName, "MANUAL_VERSION="+tt.manual,
-				"GITHUB_OUTPUT="+outputs, "GITHUB_SHA=0123456789abcdef0123456789abcdef01234567", "KATL_ARCHITECTURE=x86_64")
+				"GITHUB_OUTPUT="+outputs, "GITHUB_SHA=0123456789abcdef0123456789abcdef01234567")
 			if output, err := command.CombinedOutput(); err != nil {
 				t.Fatalf("identity step failed: %v\n%s", err, output)
 			}

@@ -74,6 +74,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: ./.github/actions/setup-go
       - id: bundle
         env:
           GH_TOKEN: ${{ github.token }}
@@ -153,15 +154,13 @@ jobs:
       previous-tag: ${{ steps.previous.outputs.tag }}
       regression: ${{ steps.regression.outputs.decision }}
 
-    env:
-      KATL_ARCHITECTURE: x86_64
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: ./.github/actions/setup-go
 
       - name: Resolve supported upgrade source
         id: previous
@@ -192,13 +191,11 @@ jobs:
           version="$(scripts/katl-release-artifacts version \
             "$event" "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" \
             "$MANUAL_VERSION")"
-          short_sha="${GITHUB_SHA:0:12}"
-          artifact_name="katl-${version}-${KATL_ARCHITECTURE}-${short_sha}"
+          artifact_name="$(scripts/katl-release bundle-name "$version" "$GITHUB_SHA")"
           {
             echo "version=$version"
             echo "artifact-name=$artifact_name"
           } >> "$GITHUB_OUTPUT"
-      - uses: ./.github/actions/setup-go
       # Only tag pushes may skip the regression lanes; scheduled, dispatched and
       # called runs always repeat them, because an empty decision runs the lanes. A final
       # tag fails here unless a release candidate of it already

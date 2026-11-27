@@ -6,10 +6,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/runstatus"
 )
 
 func (plan *ciPlan) selectDrivers(
@@ -97,10 +98,7 @@ const driverStatusPrefix = "katl/driver-qualification/"
 type driverStatus struct {
 	State, Description, TargetURL string
 	CreatedAt                     time.Time
-	Creator                       struct {
-		Login, Type string
-		DatabaseID  int
-	}
+	Creator                       runstatus.Creator
 }
 
 type commitDriverStatuses struct {
@@ -314,65 +312,46 @@ func githubDriverStatuses(ctx context.Context, owner, repo string, commits []str
 	return statuses, nil
 }
 
-var driverRunPath = regexp.MustCompile(`^([1-9][0-9]*)/attempts/([1-9][0-9]*)$`)
+// driverOrigin accepts CI runs of main: pushes, schedules and dispatches on main
+// itself, and merge groups that target main.
+func driverOrigin(repo string) runstatus.Origin {
+	main := func(branch string) bool { return branch == "main" }
+	return runstatus.Origin{Repository: repo, Workflow: ".github/workflows/ci.yml", Events: map[string]func(string) bool{
+		"push": main, "schedule": main, "workflow_dispatch": main,
+		"merge_group": func(branch string) bool {
+			group, ok := strings.CutPrefix(branch, "gh-readonly-queue/main/")
+			return ok && group != ""
+		},
+	}}
+}
+
+func ghAPI(ctx context.Context, endpoint string) ([]byte, error) {
+	return exec.CommandContext(ctx, "gh", "api", endpoint).Output()
+}
 
 func verifyDriverPublisher(ctx context.Context, repo, sha, flavour string, status driverStatus) (driverProducer, error) {
-	// GitHub exposes this account as github-actions[bot] in REST and
-	// github-actions in GraphQL. A user with a similar name is a different actor.
-	if status.Creator.Type != "Bot" || status.Creator.Login != "github-actions" || status.Creator.DatabaseID != 41898282 {
+	if !status.Creator.IsActionsBot() {
 		return driverProducer{}, nil
 	}
 	server := os.Getenv("GITHUB_SERVER_URL")
 	if server == "" {
 		server = "https://github.com"
 	}
-	marker, ok := strings.CutPrefix(status.TargetURL, server+"/"+repo+"/actions/runs/")
-	if !ok || !driverRunPath.MatchString(marker) {
+	target, err := runstatus.ParseAttemptURL(status.TargetURL)
+	if err != nil || target.Server != server || target.Repository != repo {
 		return driverProducer{}, nil
 	}
+	attempt := target.Attempt
 
-	attempt := "repos/" + repo + "/actions/runs/" + marker
-	command := exec.CommandContext(ctx, "gh", "api", attempt)
-	output, err := command.Output()
+	run, err := runstatus.Read(ctx, ghAPI, repo, attempt)
 	if err != nil {
 		return driverProducer{}, fmt.Errorf("verify driver qualification run: %w", err)
 	}
-	var run struct {
-		ID          int64
-		Attempt     int    `json:"run_attempt"`
-		Branch      string `json:"head_branch"`
-		SHA         string `json:"head_sha"`
-		Path, Event string
-		StartedAt   time.Time `json:"run_started_at"`
-		Repository  struct {
-			FullName string `json:"full_name"`
-		}
-		HeadRepository struct {
-			FullName string `json:"full_name"`
-		} `json:"head_repository"`
-	}
-	if err := json.Unmarshal(output, &run); err != nil {
-		return driverProducer{}, fmt.Errorf("decode driver qualification run: %w", err)
-	}
-	if marker != fmt.Sprintf("%d/attempts/%d", run.ID, run.Attempt) ||
-		run.SHA != sha || run.Path != ".github/workflows/ci.yml" ||
-		!strings.EqualFold(run.Repository.FullName, repo) || !strings.EqualFold(run.HeadRepository.FullName, repo) {
+	if !driverOrigin(repo).Produced(run, attempt, sha) {
 		return driverProducer{}, nil
 	}
-	switch run.Event {
-	case "push", "schedule", "workflow_dispatch":
-		if run.Branch != "main" {
-			return driverProducer{}, nil
-		}
-	case "merge_group":
-		if branch, ok := strings.CutPrefix(run.Branch, "gh-readonly-queue/main/"); !ok || branch == "" {
-			return driverProducer{}, nil
-		}
-	default:
-		return driverProducer{}, nil
-	}
-	command = exec.CommandContext(ctx, "gh", "api", attempt+"/jobs?per_page=100", "--paginate", "--slurp")
-	output, err = command.Output()
+	command := exec.CommandContext(ctx, "gh", "api", runstatus.AttemptEndpoint(repo, attempt)+"/jobs?per_page=100", "--paginate", "--slurp")
+	output, err := command.Output()
 	if err != nil {
 		return driverProducer{}, fmt.Errorf("list driver qualification jobs: %w", err)
 	}

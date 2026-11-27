@@ -74,7 +74,7 @@ func taggedReleaseReference(ref string, target extensionrelease.Target, bundle s
 	if err != nil {
 		return "", err
 	}
-	tag := fmt.Sprintf("v%s-%s-%s-%s-%s", target.Version, target.Flavour, target.Architecture, bundle.Name, bundle.PayloadVersion)
+	tag := target.ReleaseTag(bundle.Name, bundle.PayloadVersion)
 	qualified := fmt.Sprintf("%s:%s@%s", parsed.Name(), tag, payloadbundle.ManifestDigest(parsed))
 	if _, err := payloadbundle.ParseReference(qualified); err != nil {
 		return "", fmt.Errorf("invalid release extension tag %q: %w", tag, err)

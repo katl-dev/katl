@@ -356,9 +356,11 @@ func TestCIProseReleaseNotes(t *testing.T) {
 
 	tools := t.TempDir()
 	planner := buildCommand(t, tools, "katl-vmtest-plan")
+	releaseTool := buildCommand(t, tools, "katl-release")
 	writeFakeExecutable(t, tools, "go", `
 case "$2" in
   ./cmd/katl-vmtest-plan) shift 2; exec "$PLANNER" "$@" ;;
+  ./cmd/katl-release) shift 2; exec "$RELEASE_TOOL" "$@" ;;
   ./cmd/katl-kubernetes-release) printf '{"include":[]}\n' ;;
   *) exit 2 ;;
 esac
@@ -390,7 +392,7 @@ esac
 			runGit(t, dir, "commit", "--quiet", "-m", "docs: update", "-m", tc.trailers)
 			outputs := filepath.Join(dir, "output")
 			env := append(gittest.Env(environmentWithout("KATL_RELEASE_TARGET"), dir),
-				"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"), "PLANNER="+planner,
+				"PATH="+tools+string(os.PathListSeparator)+os.Getenv("PATH"), "PLANNER="+planner, "RELEASE_TOOL="+releaseTool,
 				"GITHUB_EVENT_NAME=merge_group", "BASE_SHA="+base, "GITHUB_OUTPUT="+outputs,
 				"GITHUB_STEP_SUMMARY="+filepath.Join(dir, "summary"), "KATL_REPO_ROOT="+dir)
 			command := exec.Command("bash", "-e", "-c", plan)
