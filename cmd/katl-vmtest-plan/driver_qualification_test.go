@@ -61,6 +61,7 @@ func TestDriverDigestCandidate(t *testing.T) {
 		{"candidate sysext staging", testRuntimeApply, "package configapply\nconst sysextDir = \"wrong-extensions\"\n", both},
 		{"installer kernel modules", testInstaller, "[Content]\nKernelModules=\n        /drivers/block/\n", both},
 		{"DRBD guest helper", testGuestHelper, "package vmtest\nconst readFile = \"new helper\"\n", both},
+		{"hermetic runner", "scripts/hermetic", "#!/bin/sh\nexec bwrap -- \"$@\"\n", both},
 		{"boot selection helper", testBootRecords, "package vmtest\nfunc bootSelectionFromGuest() string { return \"new-record\" }\n", both},
 		{"sysupdate smoke only", testSysupdate, "package vmtest\nfunc TestInstalledRuntimeSysupdateRootUKITransfer(t *testing.T) { t.Fatal(\"transfer failed\") }\n", nil},
 		{"activation security symlink target", testSecurity, "[Service]\nNoNewPrivileges=no\n", both},

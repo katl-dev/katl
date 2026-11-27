@@ -24,6 +24,7 @@ fi
 export KATL_VMTEST_WORLD_MANIFEST="$world_manifest"
 export KATL_VMTEST_RUN=1
 export KATL_VMTEST_WORLD_STRICT=1
+export KATLCTL_CONFIG="$run_dir/katlctl.yaml"
 
 set +e
 "$@"

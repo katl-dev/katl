@@ -103,7 +103,16 @@ var driverInputs = []string{
 	// Driver invocation, the DRBD workload and the helpers it uses to install
 	// fixtures, control guests and observe the generation and disk state.
 	qualificationWorkflow,
+	".github/actions/hosted-vmtest/action.yml",
+	".github/scripts/hosted-hermetic-setup",
+	".github/scripts/hosted-vmtest-go",
+	".github/scripts/hosted-vmtest-run",
+	"scripts/hermetic",
+	"scripts/job-environment",
+	"scripts/vmtest-exec",
+	"scripts/vmtest-run",
 	"mkosi.profiles/vmtest-drbd-tools/**",
+	"internal/vmtest/admission.go",
 	"internal/vmtest/drbd_smoke_test.go",
 	"internal/vmtest/agent_client.go",
 	"internal/vmtest/config_apply_smoke_test.go",
@@ -123,6 +132,7 @@ var driverInputs = []string{
 	"internal/vmtest/vmtest.go",
 	"internal/vmtest/world.go",
 	"internal/vmtest/world_fixtures.go",
+	"internal/vmtest/world_network.go",
 	"internal/vmtest/world_scenario.go",
 }
 

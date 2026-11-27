@@ -190,20 +190,25 @@ func runVirsh(uri string) virshFunc {
 	}
 }
 
-// leaseHeld reports whether a live run holds the lease at path. A missing
-// lease is free: runs delete theirs, or never created it. A lease that cannot
-// be read belongs to another user's run and counts as held, so a sweep never
-// removes what it cannot judge.
+// leaseHeld reports whether a live run holds the lease at path. Only a lease
+// file that exists in runLeaseDir and that no process locks is free. Any lease
+// this sandbox cannot judge counts as held, so a sweep leaks what it cannot
+// judge rather than removing a live run's objects: a missing lease may belong
+// to a run under another private /tmp, which writes it at the same path out of
+// this sandbox's sight; a lease outside runLeaseDir may be invisible for the
+// same reason, as the leases of runs from older checkouts are; and a lease
+// that cannot be read belongs to another user's run.
 func leaseHeld(path string) (bool, error) {
+	if filepath.Dir(filepath.Clean(path)) != runLeaseDir() {
+		return true, nil
+	}
 	// O_NONBLOCK keeps a FIFO from blocking the open and O_NOFOLLOW keeps a
 	// symlink from redirecting the probe. The descriptor is a separate open
 	// file description, so the probe conflicts with the holder even inside the
 	// holder's own process.
 	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return false, nil
-	case errors.Is(err, fs.ErrPermission), errors.Is(err, unix.ELOOP):
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, fs.ErrPermission), errors.Is(err, unix.ELOOP):
 		return true, nil
 	case err != nil:
 		return false, err
@@ -253,35 +258,42 @@ func vmtestMetadataOf(ctx context.Context, virsh virshFunc, args ...string) (Lib
 // sweep removes the vmtest domains and networks whose run has ended. An object
 // belongs to the run whose lease its metadata names, and is removed once that
 // lease is free. An object without a lease has no owner to ask, so it stays.
+// Runs leave their lease file behind, so the sweep then deletes the free lease
+// files that no remaining object names.
 func sweep(ctx context.Context, virsh virshFunc, stderr io.Writer) error {
 	// Removal is best effort: a finished run's leftovers must not fail the
 	// scenario that sweeps them, and the next sweep retries them.
 	fail := func(kind, name string, err error) {
 		fmt.Fprintf(stderr, "vmtest cleanup: remove libvirt %s %s failed; a later run retries: %v\n", kind, name, err)
 	}
+	// The leases that objects still name after this sweep.
+	named := map[string]bool{}
+	reap := func(kind, name string, metadata LibvirtMetadata, remove func() error) {
+		if metadata.Lease == "" {
+			return
+		}
+		held, err := leaseHeld(metadata.Lease)
+		if err != nil || held {
+			named[filepath.Clean(metadata.Lease)] = true
+			if err != nil {
+				fail(kind, name, err)
+			}
+			return
+		}
+		fmt.Fprintf(stderr, "vmtest cleanup: removing libvirt %s %s left by a finished run\n", kind, name)
+		if err := remove(); err != nil {
+			named[filepath.Clean(metadata.Lease)] = true
+			fail(kind, name, err)
+		}
+	}
+
 	output, err := virsh(ctx, "list", "--all", "--name")
 	if err != nil {
 		return err
 	}
 	for _, domain := range strings.Fields(string(output)) {
-		metadata, ok := domainMetadataOf(ctx, virsh, domain)
-		if !ok {
-			continue
-		}
-		if metadata.Lease == "" {
-			continue
-		}
-		held, err := leaseHeld(metadata.Lease)
-		if err != nil {
-			fail("domain", domain, err)
-			continue
-		}
-		if held {
-			continue
-		}
-		fmt.Fprintf(stderr, "vmtest cleanup: removing libvirt domain %s left by a finished run\n", domain)
-		if err := RemoveDomain(ctx, virsh, domain); err != nil {
-			fail("domain", domain, err)
+		if metadata, ok := domainMetadataOf(ctx, virsh, domain); ok {
+			reap("domain", domain, metadata, func() error { return RemoveDomain(ctx, virsh, domain) })
 		}
 	}
 
@@ -290,22 +302,75 @@ func sweep(ctx context.Context, virsh virshFunc, stderr io.Writer) error {
 		return err
 	}
 	for _, network := range strings.Fields(string(output)) {
-		metadata, ok := networkMetadataOf(ctx, virsh, network)
-		if !ok || metadata.Lease == "" {
+		if metadata, ok := networkMetadataOf(ctx, virsh, network); ok {
+			reap("network", network, metadata, func() error { return removeNetwork(ctx, virsh, network) })
+		}
+	}
+
+	removeFreeLeases(named, stderr)
+	return nil
+}
+
+// removeFreeLeases deletes the lease files in runLeaseDir that no process
+// locks and that no name in named refers to. Deletion is best effort; a lease
+// left behind only means a later sweep looks at it again.
+func removeFreeLeases(named map[string]bool, stderr io.Writer) {
+	dir := runLeaseDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if !errors.Is(err, fs.ErrNotExist) {
+			fmt.Fprintf(stderr, "vmtest cleanup: read run leases failed: %v\n", err)
+		}
+		return
+	}
+	for _, entry := range entries {
+		path := filepath.Join(dir, entry.Name())
+		if !entry.Type().IsRegular() || named[path] {
 			continue
 		}
-		held, err := leaseHeld(metadata.Lease)
-		if err != nil {
-			fail("network", network, err)
-			continue
+		if err := removeFreeLease(path); err != nil {
+			fmt.Fprintf(stderr, "vmtest cleanup: remove run lease %s failed: %v\n", path, err)
 		}
-		if held {
-			continue
+	}
+}
+
+// removeFreeLease deletes the lease file at path unless a process locks it.
+// The exclusive lock keeps a run from keeping the lease while it is deleted,
+// and the identity check keeps the deletion from hitting a file that replaced
+// it. A runner that locks a lease after a sweep unlinked it sees that its path
+// no longer names the locked file and reopens it, so no run holds a lease
+// that a sweep cannot see.
+func removeFreeLease(path string) error {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer unix.Close(fd)
+	err = unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
+	if errors.Is(err, unix.EWOULDBLOCK) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var locked, current unix.Stat_t
+	if err := unix.Fstat(fd, &locked); err != nil {
+		return err
+	}
+	if err := unix.Lstat(path, &current); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
 		}
-		fmt.Fprintf(stderr, "vmtest cleanup: removing libvirt network %s left by a finished run\n", network)
-		if err := removeNetwork(ctx, virsh, network); err != nil {
-			fail("network", network, err)
-		}
+		return err
+	}
+	if locked.Dev != current.Dev || locked.Ino != current.Ino || locked.Mode&unix.S_IFMT != unix.S_IFREG {
+		return nil
+	}
+	if err := unix.Unlink(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
 	}
 	return nil
 }
@@ -381,7 +446,7 @@ var ErrScenarioPlanned = errors.New("scenario already planned in this run")
 // is skipped on the next attempt. The returned network has its CIDR and
 // gateway set.
 func createNetwork(ctx context.Context, virsh virshFunc, lockPath string, network OwnedNetwork, definition string) (OwnedNetwork, error) {
-	unlock, err := lockFile(ctx, lockPath)
+	unlock, err := flockFile(ctx, lockPath)
 	if err != nil {
 		return OwnedNetwork{}, err
 	}

@@ -24,7 +24,8 @@ runs:
       run: |
         .github/scripts/hosted-apt-install \
           qemu-system-x86 qemu-utils libvirt-daemon-system libvirt-clients \
-            ovmf mtools fdisk jq acl dnsmasq-base squashfs-tools dosfstools podman
+            ovmf mtools fdisk jq acl dnsmasq-base squashfs-tools dosfstools \
+            bubblewrap erofs-utils skopeo
         # A provider kernel may compile these drivers in without shipping module metadata.
         if [[ ! -c /dev/vhost-vsock ]]; then sudo modprobe vhost_vsock; fi
         if [[ ! -c /dev/net/tun ]]; then sudo modprobe tun; fi
@@ -47,14 +48,22 @@ runs:
         if ! virsh -c qemu:///system pool-list --name | grep -Fxq default; then
           virsh -c qemu:///system pool-start default
         fi
-    - name: Prepare Kubernetes fixture tools
+    - name: Prepare hermetic runner and fixture tools on ARC
       if: inputs.prepared == 'true'
       shell: bash
       run: |
-        # The initial ARC image has Docker; Kubernetes fixture archives also require Podman.
-        if ! command -v podman >/dev/null; then
-          .github/scripts/hosted-apt-install podman
+        packages=()
+        for tool_package in bwrap:bubblewrap fsck.erofs:erofs-utils skopeo:skopeo; do
+          if ! command -v "${tool_package%:*}" >/dev/null; then
+            packages+=("${tool_package#*:}")
+          fi
+        done
+        if (( ${#packages[@]} )); then
+          .github/scripts/hosted-apt-install "${packages[@]}"
         fi
+    - name: Enable hermetic VM tests
+      shell: bash
+      run: .github/scripts/hosted-hermetic-setup
     - name: Verify host capabilities
       shell: bash
       run: |
@@ -64,7 +73,6 @@ runs:
         done
         test -r "$KATL_OVMF_CODE"
         test -r "$KATL_OVMF_VARS"
-        command -v podman
         command -v kubectl
         docker info > _build/hosted-evidence/docker.txt
         {

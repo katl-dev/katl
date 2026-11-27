@@ -160,6 +160,8 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 		return runJoinInitrd(args, stdout, stderr, cfg)
 	case "verify-initrd":
 		return runVerifyInitrd(args, stdout, stderr, cfg)
+	case "extract-sysext":
+		return runExtractSysext(args)
 	case "verify-uki-initrd":
 		return runVerifyUKIInitrd(args, stdout, stderr, cfg)
 	case "verify-firmware-packages":

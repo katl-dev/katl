@@ -132,11 +132,11 @@ func TestAdmissionReapsBeforeEveryAttempt(t *testing.T) {
 
 func TestPlanScenarioSweepsFinishedRunsEachTime(t *testing.T) {
 	world, fake := ownedScenarioWorld(t)
-	gone := filepath.Join(t.TempDir(), "removed", "lease")
 
 	for i, name := range []string{"first", "second"} {
 		// A run that ended after the previous scenario was planned.
 		domain := fmt.Sprintf("orphan-%d", i)
+		gone := finishedLease(t, runLeaseDir(), domain)
 		fake.addDomain(t, domain, vmtestMetadataFor(gone), "default")
 
 		scenario := world.NewScenario(t, name)

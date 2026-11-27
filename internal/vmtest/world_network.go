@@ -34,8 +34,43 @@ func sweepFinishedRuns(ctx context.Context, virsh virshFunc) {
 	}
 }
 
+// scripts/vmtest-run owns where runs coordinate and passes the resolved paths
+// of the network creation lock and the run lease directory, as it does the
+// admission ledger's.
+const (
+	networkLockEnv = "KATL_VMTEST_NETWORK_LOCK"
+	runLeaseDirEnv = "KATL_VMTEST_RUN_LEASE_DIR"
+)
+
+// networkCreationLock is the lock file that serializes choosing a subnet and
+// creating a network across runs.
 func networkCreationLock() string {
-	return filepath.Join(os.TempDir(), fmt.Sprintf("katl-vmtest-networks-%d", os.Getuid()))
+	if path := os.Getenv(networkLockEnv); path != "" {
+		return path
+	}
+	return filepath.Join(hostStateDir(), fmt.Sprintf("katl-vmtest-networks-%d.lock", os.Getuid()))
+}
+
+// runLeaseDir holds the lease of every run of this user on the host, so a
+// sweep can judge every run's objects from inside its own sandbox.
+func runLeaseDir() string {
+	if dir := os.Getenv(runLeaseDirEnv); dir != "" {
+		return dir
+	}
+	return filepath.Join(hostStateDir(), fmt.Sprintf("katl-vmtest-leases-%d", os.Getuid()))
+}
+
+// hostStateDir is where the coordination entries live when the runner did not
+// pass their paths, as when go test runs without scripts/vmtest-run. Its
+// default keeps the names that runs from older checkouts use, so such a test
+// still coordinates with them. The runner uses /tmp while this derives from
+// os.TempDir(), so such a test coordinates with runner-started runs only when
+// TMPDIR is unset.
+func hostStateDir() string {
+	if dir := os.Getenv("KATL_VMTEST_HOST_STATE_DIR"); dir != "" {
+		return dir
+	}
+	return os.TempDir()
 }
 
 // createNetwork gives the scenario its own libvirt network, owned by the run

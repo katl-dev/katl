@@ -130,12 +130,12 @@ func availableMemoryMiB() (int, error) {
 }
 
 // AdmissionDir returns the host's ledger of reservations. Every run of the
-// same user on the host shares it.
+// same user on the host shares it, even with private temporary directories.
 func AdmissionDir() string {
 	if dir := os.Getenv(admissionDirEnv); dir != "" {
 		return dir
 	}
-	return filepath.Join(os.TempDir(), fmt.Sprintf("katl-vmtest-admission-%d", os.Getuid()))
+	return filepath.Join(hostStateDir(), fmt.Sprintf("katl-vmtest-admission-%d", os.Getuid()))
 }
 
 // reservationRecord is the content of a reservation file; it describes the

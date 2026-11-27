@@ -183,9 +183,45 @@ go test -exec scripts/vmtest-exec ./internal/vmtest/scenarios \
   -run '^TestTwoNodeKubeadmJoinSmoke$' -count=1
 ```
 
-The VM runner invokes Go directly so fixture staging can use `sudo`.
-See [#764](https://github.com/katl-dev/katl/issues/764) for sudo-free staging
-and VM wrapper integration.
+The VM runner invokes Go through `scripts/hermetic`. The wrapper masks the
+operator's home and binds the run directory and fixture cache. The run
+directory also holds temporary guest inputs so host libvirt can open them.
+The runner also binds the per-user coordination entries in host `/tmp`, the
+admission ledger, the network creation lock and the run leases, at their host
+paths, and passes their resolved paths to the Go tests, which derive them
+only when no runner passed them. Every run's sweep then judges other runs'
+VMs and networks by their live leases, and concurrent runs share admission
+and subnet allocation. The ledger and lock keep the names that older runners
+resolve from the default `TMPDIR`. Go's fallback, used without the runner's
+exported paths, derives them from `os.TempDir()` while the runner uses `/tmp`,
+so it coordinates with runner-started runs only when `TMPDIR` is unset. Input paths named by `KATL_*` variables
+under `/tmp` or the home directory are bound read-only.
+
+A sweep removes an object only when the lease it names is a file in the shared
+lease directory that no process locks. Whatever it cannot judge counts as
+held, so a mistake leaks objects rather than removing a live run's VMs. A
+missing lease is held, because a run started under another private `/tmp`,
+such as `scripts/hermetic -- scripts/vmtest-run` or a `PrivateTmp=yes` unit,
+writes its lease at the same path out of this run's sight. A lease outside
+the shared directory is held for the same reason, as the leases of runs from
+older checkouts are. A run therefore never deletes its own lease; a sweep
+deletes free lease files once no remaining object names them.
+
+When a reboot clears `/tmp`, the leases of the runs before it are gone and no
+sweep removes their objects. `scripts/vmtest-clean <run-dir>` still removes
+them: it removes the domains its run directory records and releases their
+networks by ownership metadata, without asking whether the lease is live. A
+run directory under `/tmp`, the default, is cleared by the same reboot; its
+leftovers must then be removed by hand with `virsh`, as for objects that
+predate leases.
+
+Test fixtures that a nested hermetic job must read, such as fake tools for a
+`scripts/vmtest-run` started from a test, cannot live in `t.TempDir()`,
+because the nested sandbox masks `/tmp`. `workstationtest.WorktreeTempDir`
+creates them under `_build/test-fixtures` in the worktree, which every job
+binds. Each directory is still fresh per test and removed when the test ends;
+each holds an owner lock for its test's lifetime, so a later call removes the
+directories that killed tests left behind.
 
 `scripts/vmtest-exec` is an implementation detail of `scripts/vmtest-run`, not
 a second developer entrypoint. It should fail when invoked without a world
@@ -202,7 +238,9 @@ controls with Go's usual meaning.
 
 The two-node kubeadm smoke stages source-controlled test-owned bootstrap
 fixtures from `internal/vmtest/scenarios/testdata/bootstrap`. The harness
-installs a test-owned CNI, imports scratch workload images built from local
+extracts kubeadm from the Kubernetes sysext in userspace, uses its image list
+to build an OCI archive from the registry, and imports the archive into the
+guests. It installs a test-owned CNI, imports scratch workload images built from local
 test binaries, waits for nodes to become Ready before applying workloads, and
 then proves cross-node Service traffic with a small client/server workload. This
 is VM test scaffolding only; it does not make Katl select a production CNI, DNS,

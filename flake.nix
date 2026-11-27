@@ -160,6 +160,7 @@
               protoc-gen-go-grpc
               qemu_kvm
               rpm
+              skopeo
               squashfsTools
               systemdUkify
               util-linux

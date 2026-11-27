@@ -419,7 +419,12 @@ func lockLeaseFile(path string) (func(), error) {
 
 // lockFile takes an exclusive flock on path+".lock", waiting until ctx ends.
 func lockFile(ctx context.Context, path string) (func(), error) {
-	lockPath := path + ".lock"
+	return flockFile(ctx, path+".lock")
+}
+
+// flockFile takes an exclusive flock on the file at lockPath, creating it if
+// needed and waiting until ctx ends.
+func flockFile(ctx context.Context, lockPath string) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return nil, err
 	}

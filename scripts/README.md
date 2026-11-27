@@ -119,7 +119,7 @@ temporary directories and an allowlisted environment. The wrapper needs
 Linux user namespaces and `bwrap`, which the development shell provides.
 
 ```text
-scripts/hermetic [--bind DIR | --ro-bind DIR | --env NAME]... -- CMD [ARGS...]
+scripts/hermetic [--bind PATH | --ro-bind PATH | --env NAME]... -- CMD [ARGS...]
 ```
 
 From a Git worktree, run the unit and golden gate.
@@ -130,8 +130,8 @@ scripts/hermetic --ro-bind /tmp/katl-test-inputs --env TEST_FIXTURE -- go test .
 ```
 
 The second example makes an existing fixture directory visible and passes
-`TEST_FIXTURE` if you exported it. Repeat `--ro-bind DIR` or
-`--bind DIR` for extra read-only or writable directories, and repeat
+`TEST_FIXTURE` if you exported it. Repeat `--ro-bind PATH` or
+`--bind PATH` for extra read-only or writable directories or files, and repeat
 `--env NAME` for exported variables. Put command arguments after the
 required `--`.
 
@@ -139,16 +139,15 @@ The checkout, linked Git metadata when needed, and Go build and module
 caches are writable. The [job environment](job-environment) sets Go
 telemetry off and requires `KATLCTL_CONFIG` to resolve inside the
 worktree, defaulting to `_build/katlctl/config.yaml` if unset. The
-wrapper refuses missing directories, binds that expose all of `/tmp`
+wrapper refuses missing paths, binds that expose all of `/tmp`
 or the home directory, and invalid environment variable names.
 
 Output and exit status come from the command. The wrapper creates no
 report file. If `bwrap` is missing, enter the development shell. If
 Bubblewrap cannot create a user namespace, check whether the host permits
-unprivileged user namespaces. Run `scripts/check-fast` directly because
-it invokes this wrapper itself. For enabled VM tests, use
-[`vmtest-run`](#vmtest-run) directly because fixture staging still needs
-`sudo`. [Sudo-free staging work](https://github.com/katl-dev/katl/issues/764)
+unprivileged user namespaces. Run `scripts/check-fast` and
+[`vmtest-run`](#vmtest-run) directly. Both invoke this wrapper for their Go
+tests.
 
 ## `katl-dev-evidence`
 
@@ -252,7 +251,11 @@ if it selects a different output directory. Remove explicit path
 overrides or `KATL_ALLOW_STALE_INSTALLER_ARTIFACTS` before rerunning.
 Use `default` or `install` for installed-runtime tests so they have
 the KatlOS install image. Avoid concurrent `katldev` image builds in
-the same checkout while a run reads artifacts from it.
+the same checkout while a run reads artifacts from it. Kubernetes scenarios
+extract kubeadm from the sysext with `fsck.erofs --extract` and use
+Skopeo to cache the images it lists as an OCI archive. The development shell
+provides both tools, as does Ubuntu 24.04 with `erofs-utils` and `skopeo`.
+A cold image cache requires access to the Kubernetes container registry.
 
 Use a host with system libvirt access, an active network and storage pool
 (both named `default` unless overridden), and permission to define
@@ -269,8 +272,9 @@ see [capable-host gates](#capable-host-gates).
 
 The runner prints the run ID and directory, by default
 `${TMPDIR:-/tmp}/katl-vmtest/RUN-ID`, and stores the fixture cache in
-`_build/vmtest` by default. Each run has private home and XDG directories
-and a separate `katlctl.yaml`. VM tests use `vmtest.Katlctl.Command`
+`_build/vmtest` by default. Go runs with a masked home and a temporary
+directory inside the run, which keeps guest inputs visible to host libvirt.
+The test launcher sets a run-local `katlctl.yaml`. VM tests use `vmtest.Katlctl.Command`
 to give each test its own config and home.
 
 Inspect `run.json` for the revision, uncommitted diff digest, and result,
