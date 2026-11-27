@@ -296,18 +296,32 @@ func TestReleaseDispatchFailure(t *testing.T) {
 }
 
 func TestReleaseDispatchLookupFailure(t *testing.T) {
-	for _, output := range []string{"", followURL + "9\n"} {
-		t.Run(fmt.Sprintf("dispatch stdout %q", output), func(t *testing.T) {
+	const invalidURL = "gh returned an invalid Release run URL"
+	for _, tc := range []struct {
+		name, output, wantError string
+	}{
+		{"no URL", "", "GitHub denied the run list"},
+		{"run URL", followURL + "9\n", "read dispatched Release run " + followURL + "9: GitHub denied the run read"},
+		{"foreign host", "https://other.example/katl-dev/katl/actions/runs/9", invalidURL},
+		{"foreign repository", "https://github.com/katl-dev/other/actions/runs/9", invalidURL},
+		{"attempt", followURL + "9/attempts/1", invalidURL},
+		{"signed ID", followURL + "+9", invalidURL},
+		{"leading zero", followURL + "09", invalidURL},
+		{"missing ID", followURL, invalidURL},
+		{"query string", followURL + "9?check_suite_focus=true", invalidURL},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			f := readerWorld(t)
 			f.pages[followTags] = []any{[]any{}}
 			f.pages[followQuery] = []any{runList()}
-			readErr := &apiError{status: 403, text: "GitHub denied the read"}
-			f.responses[repoPrefix+"actions/runs/9"] = readErr
+			f.responses[repoPrefix+"actions/runs/9"] = &apiError{status: 403, text: "GitHub denied the run read"}
+
 			err := release(t.Context(), []string{followVersion}, io.Discard, io.Discard, newTestReader(f), func(string, ...string) ([]byte, error) {
-				f.failures[followQuery] = []error{readErr}
-				return []byte(output), nil
+				f.failures[followQuery] = []error{&apiError{status: 403, text: "GitHub denied the run list"}}
+				return []byte(tc.output), nil
 			})
-			assertErrorContains(t, err, readErr.Error(), "Run scripts/katl-release wait "+followVersion)
+
+			assertErrorContains(t, err, tc.wantError, "Run scripts/katl-release wait "+followVersion)
 		})
 	}
 }
