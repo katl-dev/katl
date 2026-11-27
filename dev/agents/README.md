@@ -41,9 +41,9 @@ security or trust changes and for reviews that gate a hard-to-reverse merge.
 
 Codex jobs are not used by default. [`scripts/codex-role`](../../scripts/README.md#codex-role)
 remains available as an alternative backend for the delivery, reviewer,
-debugger and rebase roles when a brief asks for it. Launch it from the task
-worktree; the repository's Claude permissions deny direct Codex launches. See
-the launcher reference for job arguments, report recovery, and
+debugger and rebase roles when a brief asks for it. Use `scripts/codex-role`
+from the task worktree; the repository's Claude permissions deny direct Codex
+launches. See the launcher reference for job arguments, report recovery, and
 [GitHub credential setup](../../scripts/README.md#provision-github-read-access).
 
 ## Local state
