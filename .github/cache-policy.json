@@ -8,7 +8,7 @@
       "name": "setup-go",
       "key_prefix": "setup-go-",
       "contents": "Host Go module and build cache",
-      "key_inputs": ["steps.paths.outputs.platform", "steps.go.outputs.go-version"],
+      "key_inputs": ["steps.paths.outputs.platform", "steps.paths.outputs.version"],
       "savers": [{"workflow": "ci.yml", "job": "checks"}],
       "budget_bytes": 417871788
     },

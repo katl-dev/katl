@@ -9,16 +9,16 @@ description: >-
 outputs:
   module-cache:
     description: Go module cache path
-    value: ${{ steps.shell.outputs.module }}
+    value: ${{ steps.cache.outputs.module-cache }}
   build-cache:
     description: Go build cache path
-    value: ${{ steps.shell.outputs.build }}
+    value: ${{ steps.cache.outputs.build-cache }}
   cache-hit:
     description: Whether the primary key matched
     value: ${{ steps.cache.outputs.cache-hit }}
   cache-key:
     description: Primary Go cache key
-    value: ${{ steps.cache.outputs.cache-primary-key }}
+    value: ${{ steps.cache.outputs.cache-key }}
 runs:
   using: composite
   steps:
@@ -42,15 +42,13 @@ runs:
           echo "version=${go_env[0]#go}"
           echo "module=${go_env[1]}"
           echo "build=${go_env[2]}"
-          echo "platform=${RUNNER_OS}-${RUNNER_ARCH,,}-${ImageOS-undefined}"
         } >> "$GITHUB_OUTPUT"
-    # The key matches the setup-go action's, with the Go version taken from
-    # the shell rather than go.mod.
+    # The setup-go action owns the shared Go cache key and restore. Given the
+    # shell's Go, it restores that Go's cache without installing another Go.
     - name: Restore Go cache
       id: cache
-      uses: actions/cache/restore@v6
+      uses: ./.github/actions/setup-go
       with:
-        path: |
-          ${{ steps.shell.outputs.module }}
-          ${{ steps.shell.outputs.build }}
-        key: setup-go-${{ steps.shell.outputs.platform }}-go-${{ steps.shell.outputs.version }}-${{ hashFiles('go.mod') }}
+        go-version: ${{ steps.shell.outputs.version }}
+        module-cache: ${{ steps.shell.outputs.module }}
+        build-cache: ${{ steps.shell.outputs.build }}
