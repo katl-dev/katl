@@ -33,7 +33,9 @@ var (
 	expression     = regexp.MustCompile(`\$\{\{\s*(.*?)\s*\}\}`)
 	stepOutput     = regexp.MustCompile(`^steps\.([\w-]+)\.outputs\.([\w-]+)$`)
 	githubContext  = regexp.MustCompile(`(^|[^\w.])github\.`)
-	ghaCacheScope  = regexp.MustCompile(`scope=([\w.-]+)`)
+	hashFilesCall  = regexp.MustCompile(`^hashFiles\([^()]*\)$`)
+	ghaCacheScope  = regexp.MustCompile(`scope=([^,\s'"]*)`)
+	literalScope   = regexp.MustCompile(`^[\w.-]+$`)
 	localActionUse = regexp.MustCompile(`^\./(?:_build/workflow-actions/)?\.github/actions/([^/@]+)$`)
 )
 
@@ -67,17 +69,21 @@ func TestCachePolicyRules(t *testing.T) {
 		// family reports rpm- as undeclared.
 		{fixture: "conforming"},
 		// Treating a key that begins with an expression as matching no
-		// family would report undeclared-family instead.
+		// family would report undeclared-family instead. Treating a scope
+		// expression as no scope reports Layers as undeclared scope=buildkit.
 		{fixture: "unresolvable-key", want: []string{
+			"unresolvable-key - ci.yml job j step Layers",
 			"unresolvable-key - ci.yml job j step Restore",
 			"unresolvable-key - ci.yml job j step Save",
 		}},
 		// Checking only the first flavour misses rpm-lts-; ignoring
-		// restore-keys misses Mixed; skipping type=gha misses Layers.
+		// restore-keys misses Mixed; skipping type=gha misses Layers; treating
+		// a missing scope as unresolvable misses buildkit's default scope.
 		{fixture: "undeclared-family", want: []string{
 			"undeclared-family other- ci.yml job j step Other",
 			"undeclared-family rpm-lts- ci.yml job j step RPMs",
 			"undeclared-family rpm-standard- ci.yml job j step Mixed",
+			"undeclared-family scope=buildkit ci.yml job j step Default scope",
 			"undeclared-family scope=other ci.yml job j step Layers",
 		}},
 		// The fixture declares its github expressions as key inputs, which
@@ -85,8 +91,11 @@ func TestCachePolicyRules(t *testing.T) {
 		// resolved github.sha; matching only github.* accepts
 		// needs.plan.outputs.source; matching only a leading github. misses
 		// format(); flagging every non-literal rejects the declared week input.
+		// Exempting any expression that starts with hashFiles( accepts job
+		// hash's disjunction; exempting none rejects job week's hashFiles call.
 		{fixture: "commit-in-key", want: []string{
 			"commit-in-key go ci.yml job format step Restore",
+			"commit-in-key go ci.yml job hash step Restore",
 			"commit-in-key go ci.yml job sha step Restore",
 			"commit-in-key go ci.yml job sha step Save",
 			"commit-in-key go ci.yml job source step Restore",
@@ -116,6 +125,12 @@ func TestCachePolicyRules(t *testing.T) {
 			"multiple-savers go ci.yml job b step Save Go",
 			"multiple-savers kernel ci.yml job f step Save kernel",
 			"stale-saver kernel ci.yml job a step -",
+		}},
+		// Reading every YAML file under actions lets zz-other.yml replace
+		// builder's steps, reporting builder stale, and reads nested as an
+		// action whose save is undeclared.
+		{fixture: "action-files", want: []string{
+			"save-off-main - action builder step Save",
 		}},
 		{fixture: "stale-saver", want: []string{
 			"stale-saver go action unused step -",
@@ -228,47 +243,65 @@ func checkCachePolicy(t *testing.T, root fs.FS, policy *cachepolicy.Policy) []ca
 
 func (c *cacheChecker) read(t *testing.T, root fs.FS) {
 	t.Helper()
-	for _, dir := range []string{"workflows", "actions"} {
-		err := fs.WalkDir(root, dir, func(name string, entry fs.DirEntry, err error) error {
-			if name == dir && errors.Is(err, fs.ErrNotExist) {
-				return fs.SkipDir
-			}
-			if err != nil {
-				return err
-			}
-			ext := path.Ext(name)
-			if entry.IsDir() || (ext != ".yml" && ext != ".yaml") {
-				return nil
-			}
-			data, err := fs.ReadFile(root, name)
-			if err != nil {
-				return err
+	parse := func(name string, file any) {
+		data, err := fs.ReadFile(root, name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := yaml.Unmarshal(data, file); err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+	}
+
+	err := fs.WalkDir(root, "workflows", func(name string, entry fs.DirEntry, err error) error {
+		if name == "workflows" && errors.Is(err, fs.ErrNotExist) {
+			return fs.SkipDir
+		}
+		if err != nil {
+			return err
+		}
+		ext := path.Ext(name)
+		if entry.IsDir() || (ext != ".yml" && ext != ".yaml") {
+			return nil
+		}
+		var file struct {
+			Jobs map[string]struct{ Steps []workflowStep } `yaml:"jobs"`
+		}
+		parse(name, &file)
+		jobs := map[string][]workflowStep{}
+		for job, config := range file.Jobs {
+			jobs[job] = config.Steps
+		}
+		c.workflows[path.Base(name)] = jobs
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A composite action is the action.yml, else action.yaml, directly in
+	// its own directory, as the runner resolves a local action. Other files
+	// and nested directories are not that action.
+	for _, metadata := range []string{"action.yml", "action.yaml"} {
+		names, err := fs.Glob(root, path.Join("actions", "*", metadata))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range names {
+			actionName := path.Base(path.Dir(name))
+			if _, ok := c.actions[actionName]; ok {
+				continue
 			}
 			var file struct {
-				Jobs    map[string]struct{ Steps []workflowStep } `yaml:"jobs"`
-				Outputs map[string]struct{ Value string }         `yaml:"outputs"`
-				Runs    struct{ Steps []workflowStep }            `yaml:"runs"`
+				Outputs map[string]struct{ Value string } `yaml:"outputs"`
+				Runs    struct{ Steps []workflowStep }    `yaml:"runs"`
 			}
-			if err := yaml.Unmarshal(data, &file); err != nil {
-				t.Fatalf("parse %s: %v", name, err)
-			}
-			if dir == "workflows" {
-				jobs := map[string][]workflowStep{}
-				for job, config := range file.Jobs {
-					jobs[job] = config.Steps
-				}
-				c.workflows[path.Base(name)] = jobs
-				return nil
-			}
+			parse(name, &file)
 			action := cacheAction{outputs: map[string]string{}, steps: file.Runs.Steps}
 			for output, config := range file.Outputs {
 				action.outputs[output] = config.Value
 			}
-			c.actions[path.Base(path.Dir(name))] = action
-			return nil
-		})
-		if err != nil {
-			t.Fatal(err)
+			c.actions[actionName] = action
 		}
 	}
 }
@@ -441,7 +474,7 @@ func (c *cacheChecker) checkKeyInputs(site cacheSite, label string, family cache
 		inner := match[1]
 		switch {
 		case githubContext.MatchString(inner):
-		case inner == "runner.os", inner == "runner.arch", strings.HasPrefix(inner, "hashFiles("):
+		case inner == "runner.os", inner == "runner.arch", hashFilesCall.MatchString(inner):
 			continue
 		case slices.Contains(family.KeyInputs, inner):
 			continue
@@ -451,10 +484,15 @@ func (c *cacheChecker) checkKeyInputs(site cacheSite, label string, family cache
 }
 
 // checkScope maps a docker type=gha cache, which names no key, to the
-// families that declare its scope.
+// families that declare its scope. Without scope=, buildkit uses its default
+// scope; a scope that is not a literal names no family before the run.
 func (c *cacheChecker) checkScope(site cacheSite, label, value string, save bool) {
 	scope := "buildkit"
 	if match := ghaCacheScope.FindStringSubmatch(value); match != nil {
+		if !literalScope.MatchString(match[1]) {
+			c.report(ruleUnresolvableKey, "-", site, label, fmt.Sprintf("type=gha cache %q has a scope that is not a literal", value))
+			return
+		}
 		scope = match[1]
 	}
 	found := false

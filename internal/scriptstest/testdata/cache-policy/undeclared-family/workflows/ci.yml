@@ -28,3 +28,7 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           cache-from: type=gha,scope=other
+      - name: Default scope
+        uses: docker/build-push-action@v7
+        with:
+          cache-from: type=gha

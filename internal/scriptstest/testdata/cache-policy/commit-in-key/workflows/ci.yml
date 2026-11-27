@@ -38,4 +38,12 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: go
-          key: go-${{ steps.week.outputs.week }}-${{ runner.os }}-${{ runner.arch }}
+          key: go-${{ steps.week.outputs.week }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'go.mod') }}
+  hash:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Restore
+        uses: actions/cache/restore@v6
+        with:
+          path: go
+          key: go-${{ hashFiles('go.sum') || needs.plan.outputs.source }}

@@ -21,3 +21,7 @@ jobs:
         with:
           path: go
           key: go-${{ hashFiles('go.sum') }}
+      - name: Layers
+        uses: docker/build-push-action@v7
+        with:
+          cache-from: type=gha,scope=${{ inputs.scope }}
