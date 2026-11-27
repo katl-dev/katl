@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"strconv"
 
 	"github.com/katl-dev/katl/internal/releasestate"
@@ -21,7 +22,7 @@ func parseRecord(context, state, description, target string) (*releasestate.Reco
 	return nil, errRecordsUnreadable
 }
 
-func newGitHubReader() *reader {
+func newGitHubReader(call command) *reader {
 	server := os.Getenv("GITHUB_SERVER_URL")
 	if server == "" {
 		server = "https://github.com"
@@ -31,7 +32,8 @@ func newGitHubReader() *reader {
 		repo = repository
 	}
 	self, _ := strconv.ParseInt(os.Getenv("GITHUB_RUN_ID"), 10, 64)
-	return &reader{server: server, repository: repo, read: ghRead, parse: parseRecord, self: self}
+	return &reader{server: server, repository: repo, read: ghRead, parse: parseRecord, self: self,
+		provenance: &provenance{call: call, repository: repo}}
 }
 
 // nextDecision is what the decide job reads from katl-release next.
@@ -84,6 +86,14 @@ func decide(ctx context.Context, r *reader, ref, dispatch, retryReason string) (
 func status(ctx context.Context, args []string, stdout io.Writer, r *reader) error {
 	if len(args) != 1 {
 		return errors.New("usage: scripts/katl-release status VERSION")
+	}
+	// Without the workflow every run listing fails with GitHub's bare 404.
+	_, err := r.get(ctx, r.repo("actions/workflows/"+path.Base(releasestate.ReleaseWorkflow)), false, "")
+	if notFound(err) {
+		return errors.New("the Release workflow is not installed on this repository")
+	}
+	if err != nil {
+		return fmt.Errorf("cannot read the release state, so nothing was decided: %w", err)
 	}
 	d, err := decide(ctx, r, "refs/heads/release/"+args[0], "", "")
 	if err != nil {

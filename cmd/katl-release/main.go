@@ -19,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/katl-dev/katl/internal/flavour"
+	"github.com/katl-dev/katl/internal/releasestate"
 	"github.com/katl-dev/katl/internal/releaseversion"
 )
 
@@ -41,7 +42,7 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer, call command) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify TAG COMMIT DIRECTORY\n       scripts/katl-release checksums DIRECTORY\n       scripts/katl-release equivalent BUNDLE FLAVOUR=SHA256SUMS...\n       scripts/katl-release regression VERSION COMMIT\n       scripts/katl-release next [--ref REF] [--dispatch COMMIT] [--retry REASON]\n       scripts/katl-release status VERSION\n       scripts/katl-release version VERSION\n       scripts/katl-release stable-tags [TAG...]\n       scripts/katl-release record VERSION building|failed|qualified [DIGEST]\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
+		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify TAG COMMIT DIRECTORY\n       scripts/katl-release checksums DIRECTORY\n       scripts/katl-release equivalent BUNDLE FLAVOUR=SHA256SUMS...\n       scripts/katl-release regression VERSION COMMIT\n       scripts/katl-release next [--ref REF] [--dispatch COMMIT] [--retry REASON]\n       scripts/katl-release status VERSION\n       scripts/katl-release version VERSION\n       scripts/katl-release stable-tags [TAG...]\n       scripts/katl-release bundle-name VERSION COMMIT\n       scripts/katl-release record VERSION building|failed|qualified [DIGEST]\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
 		return nil
 	}
 	if args[0] == "prepare" {
@@ -53,14 +54,14 @@ func run(args []string, stdout, stderr io.Writer, call command) error {
 	if args[0] == "record" {
 		return record(args[1:], stderr, call)
 	}
-	if args[0] == "version" || args[0] == "stable-tags" {
+	if args[0] == "version" || args[0] == "stable-tags" || args[0] == "bundle-name" {
 		return versionCommand(args, stdout)
 	}
 	if args[0] == "next" {
-		return next(context.Background(), args[1:], stdout, newGitHubReader())
+		return next(context.Background(), args[1:], stdout, newGitHubReader(call))
 	}
 	if args[0] == "status" {
-		return status(context.Background(), args[1:], stdout, newGitHubReader())
+		return status(context.Background(), args[1:], stdout, newGitHubReader(call))
 	}
 	if args[0] == "verify" {
 		return verify(args[1:], stderr, call)
@@ -206,13 +207,14 @@ func inspect(id int64, call command) (candidate, error) {
 	if run.ID != id || run.Attempt < 1 || run.Event != "push" || run.Path != workflow || !strings.HasPrefix(run.Tag, "v") {
 		return result, errors.New("select a pushed KatlOS tag run from release-artifacts.yml, not a branch or manual build")
 	}
-	if _, err := validateVersion(strings.TrimPrefix(run.Tag, "v")); err != nil {
+	version, err := validateVersion(strings.TrimPrefix(run.Tag, "v"))
+	if err != nil {
 		return result, fmt.Errorf("run is not a KatlOS release: %w", err)
 	}
 	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(run.Commit) {
 		return result, errors.New("run has no full source commit SHA")
 	}
-	name := "katl-" + run.Tag[1:] + "-x86_64-" + run.Commit[:12]
+	name := releasestate.BundleName(version, run.Commit)
 	// A run can contain hundreds of intermediate artifacts; select only the final bundle.
 	for page := 1; ; page++ {
 		var response struct{ Artifacts []artifact }
@@ -273,33 +275,65 @@ func verifyBundle(dir, tag, commit string, stderr io.Writer, call command) error
 		return err
 	}
 
-	// Without a trusted root, every gh attestation verify initializes the
-	// Sigstore TUF trust root on its own, and any one of those initializations
-	// can fail. Fetch the TUF-verified root once and verify every file against
-	// it. The file stays outside dir so it cannot join the published bundle.
-	root, err := call("gh", "attestation", "trusted-root")
-	if err != nil {
-		return fmt.Errorf("fetch Sigstore trusted root; check network access to tuf-repo-cdn.sigstore.dev and tuf-repo.github.com: %w", err)
-	}
-	scratch, err := os.MkdirTemp("", "katl-release-")
-	if err != nil {
-		return err
-	}
-	defer os.RemoveAll(scratch)
-	trustedRoot := filepath.Join(scratch, "trusted_root.jsonl")
-	if err := os.WriteFile(trustedRoot, root, 0o600); err != nil {
-		return err
-	}
-
+	p := &provenance{call: call, repository: repository}
+	defer p.close()
 	for _, name := range append(names, "SHA256SUMS") {
 		fmt.Fprintln(stderr, "Verifying provenance:", name)
-		if _, err := call("gh", "attestation", "verify", filepath.Join(dir, name), "--repo", repository,
-			"--signer-workflow", repository+"/"+workflow, "--source-ref", "refs/tags/"+tag,
-			"--source-digest", commit, "--custom-trusted-root", trustedRoot); err != nil {
-			return fmt.Errorf("provenance verification failed for %s; check gh attestation verify and network access: %w", name, err)
+		if _, err := p.verify(filepath.Join(dir, name), "refs/tags/"+tag, commit); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+// provenance verifies files against their attestations from
+// release-artifacts.yml with gh attestation verify.
+type provenance struct {
+	call       command
+	repository string
+	// scratch holds the trusted root once it is fetched.
+	scratch, root string
+}
+
+// verify checks that file is attested by release-artifacts.yml at commit on
+// sourceRef, and returns the verified attestations as gh's JSON.
+func (p *provenance) verify(file, sourceRef, commit string) ([]byte, error) {
+	if p.root == "" {
+		// Without a trusted root, every gh attestation verify initializes the
+		// Sigstore TUF trust root on its own, and any one of those
+		// initializations can fail. Fetch the TUF-verified root once and verify
+		// every file against it. The file stays outside any bundle directory so
+		// it cannot join the published bundle.
+		root, err := p.call("gh", "attestation", "trusted-root")
+		if err != nil {
+			return nil, fmt.Errorf("fetch Sigstore trusted root; check network access to tuf-repo-cdn.sigstore.dev and tuf-repo.github.com: %w", err)
+		}
+		scratch, err := os.MkdirTemp("", "katl-release-")
+		if err != nil {
+			return nil, err
+		}
+		p.scratch = scratch
+		if err := os.WriteFile(filepath.Join(scratch, "trusted_root.jsonl"), root, 0o600); err != nil {
+			return nil, err
+		}
+		p.root = filepath.Join(scratch, "trusted_root.jsonl")
+	}
+	out, err := p.call("gh", "attestation", "verify", file, "--repo", p.repository,
+		"--signer-workflow", p.repository+"/"+workflow, "--source-ref", sourceRef,
+		"--source-digest", commit, "--custom-trusted-root", p.root, "--format", "json")
+	if err != nil {
+		return nil, fmt.Errorf("provenance verification failed for %s; check gh attestation verify and network access: %w", filepath.Base(file), err)
+	}
+	return out, nil
+}
+
+// close removes the trusted root; the next verification fetches it again.
+func (p *provenance) close() {
+	if p == nil || p.scratch == "" {
+		return
+	}
+	os.RemoveAll(p.scratch)
+	p.scratch, p.root = "", ""
 }
 
 // parseChecksums reads the SHA256SUMS file at path into a name-to-digest map.

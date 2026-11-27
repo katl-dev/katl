@@ -58,13 +58,15 @@ type Job struct {
 
 // Attempt is a run attempt that a status names.
 type Attempt struct {
-	Run       runstatus.Run
-	Jobs      []Job
+	Run  runstatus.Run
+	Jobs []Job
+	// Artifacts are the names of the artifacts this attempt uploaded, not
+	// those of the run's other attempts.
 	Artifacts []string
 }
 
-// Attestation is the identity in one build-provenance attestation's
-// certificate, with the digests of its subjects.
+// Attestation is the verified identity of one build-provenance attestation
+// of a published SHA256SUMS, with the digests of its subjects.
 type Attestation struct {
 	Subjects []string
 	// SignerWorkflow is the workflow that signed, ConfigWorkflow the one the
@@ -121,9 +123,11 @@ type Inputs struct {
 	Tags []Tag
 	// Ancestry holds the pairs AncestryQueries names: whether the first commit
 	// is the second or one of its ancestors.
-	Ancestry     map[[2]string]bool
-	Statuses     map[string][]Status
-	Attempts     map[runstatus.Attempt]Attempt
+	Ancestry map[[2]string]bool
+	Statuses map[string][]Status
+	Attempts map[runstatus.Attempt]Attempt
+	// Attestations are by SHA256SUMS digest, verified only for a published
+	// SHA256SUMS whose digest a qualified record of its tag names.
 	Attestations map[string][]Attestation
 	// Releases are the published releases of the version's tags, by tag.
 	Releases            map[string]Release

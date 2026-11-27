@@ -81,7 +81,13 @@ hexadecimal digits. It equals the asset digest GitHub reports for a published
 
 Publication is not recorded. A candidate or a final is **published** when its
 record is `qualified` and its published release matches the record, so the
-release itself is the evidence and no later write can claim it.
+release itself is the evidence and no later write can claim it. A release
+matches its record when it has the record's pre-release flag, its
+`SHA256SUMS` asset has the recorded digest and verifies with
+`gh attestation verify` against `release-artifacts.yml` as called by the
+record's run attempt, at the record's commit on `refs/heads/release/V`, and
+its other assets are exactly the files that `SHA256SUMS` lists, each uploaded
+with the digest it gives.
 
 One attempt moves from `building` to `failed` or to `qualified`. A job that
 cannot write `failed`, for example because the run was cancelled, leaves
@@ -109,13 +115,23 @@ A status is a record only when all of these hold:
 4. Its state and description form one of the three pairs.
 5. The named attempt did what the status says. A `qualified` status is a
    record only when that attempt's **Release validation** job concluded
-   `success`, and the `SHA256SUMS` with the recorded digest has an
-   attestation from `release-artifacts.yml` as called by that run attempt, at
-   this commit on `refs/heads/release/V`, and that attempt built the version
-   the context names: its bundle artifact is
-   `katl-<version>-x86_64-<first 12 of the commit>`. A `failed` status is a
-   record only
-   when that attempt completed without that success.
+   `success` and that attempt built the version the context names: it
+   uploaded the bundle artifact
+   `katl-<version>-x86_64-<first 12 of the commit>`. GitHub lists a run's
+   artifacts without their attempt, so an attempt's artifacts are those
+   created from its start until the next attempt of the run started. A
+   `failed` status is a record only when that attempt completed without that
+   success.
+
+The trust rule does not verify the attestation of a `qualified` record's
+`SHA256SUMS`, because `next` has those bytes only once they are published.
+`next` verifies it where a release is published whose `SHA256SUMS` asset has
+the digest of a qualified record of that tag on the tag's commit: it
+downloads that asset and verifies it as the definition of a matching release
+above requires. A verification that fails stops the decision, like any read
+that fails. For a qualified record with no published release, rows 21 and 26,
+`next` does not require the attestation; the acting job verifies the bytes
+and their attestation before it publishes anything.
 
 The lookup lists every status of the commit, following pagination, and not
 only the latest status of each context. The record for a context is that of
@@ -126,9 +142,12 @@ record and a tagged final's stand whatever is written afterwards; if several
 attempts qualified, the most recently started of them holds the record.
 
 Statuses that fail the rule are ignored, and `status` lists them as warnings.
-Step 5 is what keeps a status from standing in for work: bytes become
-publishable only through an attempt that validated and attested them, whoever
-wrote the status. Steps 1 to 4 alone do not establish that the named attempt
+Step 5 and the attestation checks are what keep a status from standing in
+for work: bytes become publishable only through an attempt that validated and
+attested them, whoever wrote the status. A `qualified` status that passes the
+rule without an attestation behind it can make row 21 apply on its commit;
+the acting job then refuses to publish, and the status holds row 21 on that
+commit until a new commit clears it through row 17. Steps 1 to 4 alone do not establish that the named attempt
 wrote a `building` status. The most such a status can do is make the action
 refuse with row 19 or row 24, which a retry or a new commit clears, or make
 row 19 apply in place of row 8 to a tag the action did not create, where a
@@ -317,8 +336,9 @@ timeout.
 2. its pre-release is published and matches the record.
 
 `katl-release next` checks both. Check 1 includes the trust rule, so `next`
-itself confirms that **Release validation** succeeded in the recorded attempt
-and that the recorded `SHA256SUMS` is attested by that attempt's build. The
+itself confirms that **Release validation** succeeded in the recorded attempt,
+and check 2 includes verifying that the published `SHA256SUMS` is attested by
+that attempt's build. The
 candidate workflow establishes the rest before it writes `qualified`:
 
 - **Release validation** covers unit checks, the bundle, Production VM on
@@ -438,10 +458,12 @@ These are the choices the design makes where another reading was available.
 - **Tags are checked as a set.** A tag off the branch, a branch behind its
   tags and a head that is not a descendant are one condition, and candidates
   must also be in ancestry order.
-- **`next` verifies one attestation, not the release.** It checks the
-  attestation of the recorded `SHA256SUMS` and compares the release's asset
-  digests with that file. Verifying every asset's attestation needs the
-  bytes and stays with the workflow.
+- **`next` verifies one attestation, not the release.** For a published
+  release that carries a qualified record's `SHA256SUMS`, it verifies the
+  attestation of that file and compares the release's asset digests with it.
+  Verifying every asset's attestation needs the bytes and stays with the
+  workflow, which also verifies before publishing a qualified build that
+  `next` resumes or replaces without one.
 - **Re-running failed jobs does not act.** It would rebuild on a stale
   decision with no recorded reason.
 - **Candidates start at `rc.1`.** The grammar still accepts `rc.0`, and the
@@ -456,10 +478,10 @@ a fact that does not hold reopens the part of the design that names it.
 - Publishing a draft release with the App's token creates the reserved tag
   `vV` at the draft's target commit in the same request.
 - An attestation's certificate identifies the run attempt that called
-  `release-artifacts.yml`, which trust step 5 compares with the record.
+  `release-artifacts.yml`, which `next` compares with the record of a
+  published release. `gh attestation verify --format json` reports it as
+  `runInvocationURI`.
 - Whether a published immutable release can be deleted, which decides
   whether the first case of row 10 can arise at all.
 - The registry can list the extension references of a version with their
   digests, which row 22 and check 7 read.
-- An attestation can be fetched by the digest of `SHA256SUMS` without the
-  file, which `next` needs for trust step 5.

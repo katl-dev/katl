@@ -32,9 +32,9 @@ func (in Inputs) releaseOrigin(version releaseversion.Version) runstatus.Origin 
 	}}
 }
 
-// bundleName is the artifact a build of the tag's version at commit uploads.
-func bundleName(tag, commit string) string {
-	return "katl-" + strings.TrimPrefix(tag, "v") + "-x86_64-" + commit[:min(12, len(commit))]
+// BundleName is the artifact a build of the version at commit uploads.
+func BundleName(version releaseversion.Version, commit string) string {
+	return "katl-" + version.String() + "-x86_64-" + short(commit)
 }
 
 // validation returns the conclusion of the attempt's Release validation job,
@@ -79,11 +79,12 @@ func (in Inputs) verify(version releaseversion.Version, tag, commit string, stat
 		if validation(attempt) != "success" {
 			return trusted{}, fmt.Sprintf("Release validation did not succeed in run attempt %s", record.Attempt)
 		}
-		if !slices.Contains(attempt.Artifacts, bundleName(tag, commit)) {
-			return trusted{}, fmt.Sprintf("run attempt %s has no bundle %s", record.Attempt, bundleName(tag, commit))
+		built, err := releaseversion.ParseTag(tag)
+		if err != nil {
+			return trusted{}, err.Error()
 		}
-		if !in.attested(version, commit, record) {
-			return trusted{}, fmt.Sprintf("SHA256SUMS sha256:%s has no attestation from run attempt %s", record.Digest, record.Attempt)
+		if bundle := BundleName(built, commit); !slices.Contains(attempt.Artifacts, bundle) {
+			return trusted{}, fmt.Sprintf("run attempt %s has no bundle %s", record.Attempt, bundle)
 		}
 	default:
 		return trusted{}, fmt.Sprintf("its phase %q is not a record phase", record.Phase)
@@ -93,8 +94,9 @@ func (in Inputs) verify(version releaseversion.Version, tag, commit string, stat
 
 // attested reports whether the record's SHA256SUMS has an attestation from
 // release-artifacts.yml as the record's attempt called it, at commit on the
-// version's branch.
-func (in Inputs) attested(version releaseversion.Version, commit string, record Record) bool {
+// version's branch. The reader verifies attestations only for a published
+// SHA256SUMS, so a record without a published release has none.
+func (in Inputs) attested(version releaseversion.Version, record *trusted) bool {
 	ref := "refs/heads/" + Branch(version)
 	workflow := func(path string) string { return in.Server + "/" + in.Repository + "/" + path + "@" + ref }
 	for _, attestation := range in.Attestations[record.Digest] {
@@ -102,7 +104,7 @@ func (in Inputs) attested(version releaseversion.Version, commit string, record 
 			attestation.SignerWorkflow == workflow(artifactsWorkflow) &&
 			attestation.ConfigWorkflow == workflow(ReleaseWorkflow) &&
 			attestation.Invocation == record.Attempt.URL(in.Server, in.Repository) &&
-			attestation.SourceDigest == commit && attestation.SourceRef == ref {
+			attestation.SourceDigest == record.Commit && attestation.SourceRef == ref {
 			return true
 		}
 	}
@@ -156,10 +158,12 @@ func progress(phase Phase) int {
 }
 
 // matches reports whether a published release carries exactly the record's
-// bytes: the right pre-release flag, its SHA256SUMS with the recorded digest,
-// and only the files SHA256SUMS lists, each with the digest it gives.
-func matches(release Release, record *trusted, prerelease bool) bool {
-	if release.Prerelease != prerelease || release.Sums == nil || record == nil || record.Phase != Qualified {
+// bytes: the right pre-release flag, its SHA256SUMS with the recorded digest
+// and attested by the record's attempt, and only the files SHA256SUMS lists,
+// each with the digest it gives.
+func (in Inputs) matches(version releaseversion.Version, release Release, record *trusted, prerelease bool) bool {
+	if release.Prerelease != prerelease || release.Sums == nil || record == nil || record.Phase != Qualified ||
+		!in.attested(version, record) {
 		return false
 	}
 	want := map[string]string{"SHA256SUMS": record.Digest}

@@ -177,7 +177,7 @@ func Decide(in Inputs) (Decision, error) {
 		switch {
 		case !published:
 			reason = "the tag exists and no release is published for it"
-		case !matches(release, finalRecord, false):
+		case !in.matches(version, release, finalRecord, false):
 			reason = fmt.Sprintf("it does not match the recorded sha256:%s", finalRecord.Digest)
 		}
 		if reason != "" {
@@ -224,7 +224,7 @@ func Decide(in Inputs) (Decision, error) {
 	switch {
 	case prePublished && latest.Phase != Qualified:
 		return set(18, "prerelease-contradicts-record", Refuse, preContradicts, V, N, fmt.Sprintf("it is published, and no Release run qualified v%s-rc.%d", V, N), V, V, K), nil
-	case prePublished && !matches(pre, latest, true):
+	case prePublished && !in.matches(version, pre, latest, true):
 		return set(18, "prerelease-contradicts-record", Refuse, preContradicts, V, N, fmt.Sprintf("it does not match the recorded sha256:%s", latest.Digest), V, V, K), nil
 	}
 	candidateVersion := version.Candidate(N).String()

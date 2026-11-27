@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/releaseversion"
 	"github.com/katl-dev/katl/internal/runstatus"
 )
 
@@ -90,7 +91,8 @@ func (w *world) build(tag string, at int, phase Phase) runstatus.Attempt {
 			Invocation:     attempt.URL(testServer, testRepo), SourceDigest: sha, SourceRef: ref,
 		})
 	}
-	w.attempts[attempt] = &Attempt{Run: run, Jobs: jobs, Artifacts: []string{bundleName(tag, sha)}}
+	built, _ := releaseversion.ParseTag(tag)
+	w.attempts[attempt] = &Attempt{Run: run, Jobs: jobs, Artifacts: []string{BundleName(built, sha)}}
 	w.last.commit, w.last.index = sha, len(w.in.Statuses[sha])
 	w.in.Statuses[sha] = append(w.in.Statuses[sha], Status{
 		Context: "katl/release/" + tag, Creator: bot, TargetURL: attempt.URL(testServer, testRepo), Record: record,

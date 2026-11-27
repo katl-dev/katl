@@ -67,6 +67,10 @@ func TestDecide(t *testing.T) {
 			11, Refuse, "v2026.12.1 is waiting for approval at " + h1 + ", and release/2026.12.1 has moved to " + h2 + ": " + runURL + "900. Reject the approval; the next dispatch then tags v2026.12.1-rc.2 at the head. Approving it publishes nothing, because the publish job refuses a branch that moved."},
 		{"12 approval pending", func() *world { return green(1).active(true) },
 			12, Refuse, "v2026.12.1 is waiting for approval: " + runURL + "900. Approve or reject it there."},
+		// With the final tagged, a new commit cannot supersede the approval:
+		// row 11 needs an untagged final.
+		{"12 approval pending after the final", func() *world { return released(1, 2).active(true) },
+			12, Refuse, "v2026.12.1 is waiting for approval: " + runURL + "900. Approve or reject it there."},
 		{"13 run active", func() *world { return newWorld(1).active(false) },
 			13, Refuse, "A Release run for 2026.12.1 is in progress: " + runURL + "900. Wait for it to finish, then run scripts/katl-release status 2026.12.1."},
 		{"14 released", func() *world { return released(1, 1) },

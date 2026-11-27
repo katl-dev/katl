@@ -159,7 +159,8 @@ Read-only. Prints the state of `release/2026.12.1`, the step a dispatch
 without a retry reason would take or the refusal it would give, the
 candidate's and final's records with their run attempts and digests, and a
 pending approval with its URL. Statuses that look like records but fail the
-trust rule are listed as warnings. Run it from a checkout of the release
+trust rule are listed as warnings. On a repository without the Release
+workflow it fails, saying so. Run it from a checkout of the release
 branch's head, because the workflow decides with that branch's own
 `katl-release`.
 
@@ -196,6 +197,15 @@ scripts/katl-release stable-tags v2026.12.1 v2026.12.1-rc.1 nightly
 ```
 
 Prints the arguments that are final release tags, in their order.
+
+### `bundle-name`
+
+```sh
+scripts/katl-release bundle-name 2026.12.1-rc.1 "$GITHUB_SHA"
+```
+
+Prints the name of the bundle artifact that a build of the version at that
+full commit uploads, such as `katl-2026.12.1-rc.1-x86_64-0123456789ab`.
 
 ## State and logs
 

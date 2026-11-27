@@ -19,6 +19,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 	"github.com/katl-dev/katl/internal/kubernetesrelease"
+	"github.com/katl-dev/katl/internal/releaseversion"
 	"github.com/spf13/cobra"
 )
 
@@ -40,10 +41,10 @@ type kubernetesBuildArtifact struct {
 	SizeBytes      int64
 }
 
-var (
-	katlOSBuildVersionPattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$`)
-	katlOSBaseVersionPattern  = regexp.MustCompile(`^([0-9]{4}\.[0-9]+\.[0-9]+)(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$`)
-)
+// katlOSBuildVersionPattern accepts the version a development build embeds.
+// Local builds use versions such as 2026.7.0-local.1a2b3c4 that are never
+// released, so it is wider than the release grammar of internal/releaseversion.
+var katlOSBuildVersionPattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$`)
 
 func newBuildCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	cmd := &cobra.Command{
@@ -230,16 +231,16 @@ func resolveKatlOSBuildVersion(repoRoot, requested string) (string, error) {
 }
 
 func localKatlOSBuildVersion(tag, revision string) (string, error) {
-	tag = strings.TrimPrefix(strings.TrimSpace(tag), "v")
-	matches := katlOSBaseVersionPattern.FindStringSubmatch(tag)
-	if len(matches) != 2 {
+	tag = strings.TrimSpace(tag)
+	released, err := releaseversion.ParseTag(tag)
+	if err != nil {
 		return "", fmt.Errorf("nearest KatlOS tag %q is not a supported calendar version; use --version to set one explicitly", tag)
 	}
 	revision = strings.TrimSpace(revision)
 	if len(revision) < 7 {
 		return "", fmt.Errorf("checkout revision %q is too short to identify a local build", revision)
 	}
-	return matches[1] + "-local." + revision[:7], nil
+	return released.Base().String() + "-local." + revision[:7], nil
 }
 
 func runBuildCommand(ctx context.Context, dir, name string, args, environment []string, stdout, stderr io.Writer) error {

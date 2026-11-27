@@ -3,13 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
-	"crypto/x509"
-	"encoding/asn1"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
+	"os"
 	"os/exec"
 	"path"
 	"regexp"
@@ -25,10 +23,14 @@ import (
 	"github.com/katl-dev/katl/internal/runstatus"
 )
 
-// apiError is a GitHub API response with an HTTP status.
+// apiError is a failed gh api call with the HTTP status gh reported, or
+// status 0 when it reported none.
 type apiError struct {
 	status int
-	text   string
+	// network is set for a failure without a status that never reached
+	// GitHub, such as a refused connection or a timeout.
+	network bool
+	text    string
 }
 
 func (e *apiError) Error() string { return e.text }
@@ -39,17 +41,31 @@ func notFound(err error) bool {
 }
 
 // transient reports whether a failed read may succeed when repeated: a
-// network failure, a server error or a rate limit, but not a refusal.
+// network failure, a server error or a rate limit, but not a refusal, a
+// missing gh or missing credentials.
 func transient(err error) bool {
 	var api *apiError
-	if !errors.As(err, &api) || api.status == 0 {
+	if !errors.As(err, &api) {
+		return false
+	}
+	switch {
+	case api.status == 0:
+		return api.network
+	case api.status >= 500, api.status == 429:
 		return true
 	}
-	return api.status >= 500 || api.status == 429 ||
-		(api.status == 403 && strings.Contains(strings.ToLower(api.text), "rate limit"))
+	return api.status == 403 && strings.Contains(strings.ToLower(api.text), "rate limit")
 }
 
-var httpStatus = regexp.MustCompile(`\(HTTP ([0-9]{3})\)`)
+var (
+	httpStatus = regexp.MustCompile(`\(HTTP ([0-9]{3})\)`)
+	// networkFailure matches what gh and Go's HTTP client print when a request
+	// gets no response.
+	networkFailure = regexp.MustCompile(`(?i)error connecting to|dial tcp|i/o timeout|connection reset|connection refused|no such host|TLS handshake timeout|timeout awaiting response|unexpected EOF`)
+)
+
+// ghAuthRequired is gh's exit status when it has no credentials.
+const ghAuthRequired = 4
 
 // ghRead runs gh api for one GET and classifies its failure from the status
 // gh reports. With paginate, every page is read and returned as one array.
@@ -68,12 +84,19 @@ func ghRead(ctx context.Context, endpoint string, paginate bool, accept string) 
 	if err == nil {
 		return out, nil
 	}
-	text := fmt.Sprintf("gh api %s: %v: %s", endpoint, err, strings.TrimSpace(stderr.String()))
+	if errors.Is(err, exec.ErrNotFound) {
+		return nil, fmt.Errorf("gh api %s: install the GitHub CLI: %w", endpoint, err)
+	}
+	message := strings.TrimSpace(stderr.String())
+	text := fmt.Sprintf("gh api %s: %v: %s", endpoint, err, message)
+	if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && exit.ExitCode() == ghAuthRequired {
+		return nil, &apiError{text: text + " (run gh auth login or set GH_TOKEN)"}
+	}
 	status := 0
-	if match := httpStatus.FindStringSubmatch(stderr.String()); match != nil {
+	if match := httpStatus.FindStringSubmatch(message); match != nil {
 		status, _ = strconv.Atoi(match[1])
 	}
-	return nil, &apiError{status: status, text: text}
+	return nil, &apiError{status: status, network: status == 0 && networkFailure.MatchString(message), text: text}
 }
 
 // reader gathers the state machine's inputs from GitHub. Every read is
@@ -84,6 +107,8 @@ type reader struct {
 	read               func(ctx context.Context, endpoint string, paginate bool, accept string) ([]byte, error)
 	// parse reads a status in the release record format.
 	parse func(context, state, description, target string) (*releasestate.Record, error)
+	// provenance verifies the attestation of a published SHA256SUMS.
+	provenance *provenance
 	// self is the run making the decision, excluded from the active runs.
 	self int64
 	// delay is the first retry delay; zero means the default.
@@ -159,6 +184,7 @@ func (r *reader) Read(ctx context.Context, ref, dispatch, retryReason string) (r
 	if !ok {
 		return in, nil
 	}
+	defer r.provenance.close()
 	head, err := r.refs(ctx, "heads/"+releasestate.Branch(version))
 	if err != nil {
 		return in, err
@@ -188,6 +214,7 @@ func (r *reader) Read(ctx context.Context, ref, dispatch, retryReason string) (r
 		in.Tags = append(in.Tags, releasestate.Tag{Name: name, Commit: commit})
 	}
 	for _, pair := range releasestate.AncestryQueries(version, in.Head, in.Tags) {
+		// GitHub compares base...head: "ahead" means head descends from base.
 		var comparison struct{ Status string }
 		if err := r.decode(ctx, r.repo("compare/"+pair[0]+"..."+pair[1]+"?per_page=1"), &comparison); err != nil {
 			return in, err
@@ -252,8 +279,8 @@ type restStatus struct {
 	} `json:"creator"`
 }
 
-// records reads every status of the tagged commits, the run attempts that
-// release records name, and the attestations of qualified digests.
+// records reads every status of the tagged commits and the run attempts that
+// release records name.
 func (r *reader) records(ctx context.Context, version releaseversion.Version, in *releasestate.Inputs) error {
 	var commits []string
 	for _, tag := range in.Tags {
@@ -294,32 +321,40 @@ func (r *reader) records(ctx context.Context, version releaseversion.Version, in
 			if err := r.attempt(ctx, record.Attempt, in); err != nil {
 				return err
 			}
-			if record.Phase == releasestate.Qualified {
-				if err := r.attestations(ctx, record.Digest, in); err != nil {
-					return err
-				}
-			}
 		}
 	}
 	return nil
 }
 
-// attempt reads a run attempt with its jobs and artifacts. An attempt that
-// does not exist leaves the status unverified rather than failing the read,
-// so a status naming a made-up run cannot block the release.
+// attempt reads a run attempt with its jobs and the artifacts it uploaded.
+// An attempt that does not exist leaves the status unverified rather than
+// failing the read, so a status naming a made-up run cannot block the
+// release.
 func (r *reader) attempt(ctx context.Context, attempt runstatus.Attempt, in *releasestate.Inputs) error {
 	if _, done := in.Attempts[attempt]; done {
 		return nil
 	}
-	run, err := runstatus.Read(ctx, func(ctx context.Context, endpoint string) ([]byte, error) {
-		return r.get(ctx, endpoint, false, "")
-	}, r.repository, attempt)
+	get := func(ctx context.Context, endpoint string) ([]byte, error) { return r.get(ctx, endpoint, false, "") }
+	run, err := runstatus.Read(ctx, get, r.repository, attempt)
 	if notFound(err) {
 		return nil
 	}
 	if err != nil {
 		return err
 	}
+	// GitHub lists a run's artifacts without the attempt that uploaded them.
+	// Attempts of one run follow each other, so an attempt's artifacts are
+	// those created from its start until the next attempt starts.
+	var until time.Time
+	following, err := runstatus.Read(ctx, get, r.repository, runstatus.Attempt{Run: attempt.Run, Number: attempt.Number + 1})
+	switch {
+	case notFound(err):
+	case err != nil:
+		return err
+	default:
+		until = following.StartedAt
+	}
+
 	read := releasestate.Attempt{Run: run}
 	type jobsPage struct {
 		Jobs []struct{ Name, Conclusion string } `json:"jobs"`
@@ -333,7 +368,8 @@ func (r *reader) attempt(ctx context.Context, attempt runstatus.Attempt, in *rel
 	}
 	type artifactsPage struct {
 		Artifacts []struct {
-			Name        string `json:"name"`
+			Name        string    `json:"name"`
+			CreatedAt   time.Time `json:"created_at"`
 			WorkflowRun struct {
 				ID int64 `json:"id"`
 			} `json:"workflow_run"`
@@ -341,7 +377,8 @@ func (r *reader) attempt(ctx context.Context, attempt runstatus.Attempt, in *rel
 	}
 	if err := pages(ctx, r, r.repo(fmt.Sprintf("actions/runs/%d/artifacts?per_page=100", attempt.Run)), func(page artifactsPage) {
 		for _, artifact := range page.Artifacts {
-			if artifact.WorkflowRun.ID == attempt.Run {
+			if artifact.WorkflowRun.ID == attempt.Run && !artifact.CreatedAt.Before(run.StartedAt) &&
+				(until.IsZero() || artifact.CreatedAt.Before(until)) {
 				read.Artifacts = append(read.Artifacts, artifact.Name)
 			}
 		}
@@ -350,106 +387,6 @@ func (r *reader) attempt(ctx context.Context, attempt runstatus.Attempt, in *rel
 	}
 	in.Attempts[attempt] = read
 	return nil
-}
-
-// Fulcio certificate extensions that identify a GitHub Actions signer.
-var (
-	oidSignerWorkflow = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 9}
-	oidSourceDigest   = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 13}
-	oidSourceRef      = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 14}
-	oidConfigWorkflow = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 18}
-	oidInvocation     = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 21}
-)
-
-// attestations reads the attestations GitHub stores for a digest and the
-// identity their certificates name. This reads the identity only: verifying
-// the signatures needs the attested bytes, which the acting jobs verify with
-// gh attestation verify before anything is published.
-func (r *reader) attestations(ctx context.Context, digest string, in *releasestate.Inputs) error {
-	if _, done := in.Attestations[digest]; done {
-		return nil
-	}
-	in.Attestations[digest] = nil
-	type attestationsPage struct {
-		Attestations []struct {
-			Bundle struct {
-				VerificationMaterial struct {
-					Certificate struct {
-						RawBytes string `json:"rawBytes"`
-					} `json:"certificate"`
-					Chain struct {
-						Certificates []struct {
-							RawBytes string `json:"rawBytes"`
-						} `json:"certificates"`
-					} `json:"x509CertificateChain"`
-				} `json:"verificationMaterial"`
-				Envelope struct {
-					Payload string `json:"payload"`
-				} `json:"dsseEnvelope"`
-			} `json:"bundle"`
-		} `json:"attestations"`
-	}
-	var listed attestationsPage
-	err := r.decode(ctx, r.repo("attestations/sha256:"+digest+"?per_page=100"), &listed)
-	if notFound(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	for _, item := range listed.Attestations {
-		raw := item.Bundle.VerificationMaterial.Certificate.RawBytes
-		if raw == "" && len(item.Bundle.VerificationMaterial.Chain.Certificates) > 0 {
-			raw = item.Bundle.VerificationMaterial.Chain.Certificates[0].RawBytes
-		}
-		attestation, ok := decodeAttestation(raw, item.Bundle.Envelope.Payload)
-		if ok {
-			in.Attestations[digest] = append(in.Attestations[digest], attestation)
-		}
-	}
-	return nil
-}
-
-func decodeAttestation(certificate, payload string) (releasestate.Attestation, bool) {
-	der, err := base64.StdEncoding.DecodeString(certificate)
-	if err != nil {
-		return releasestate.Attestation{}, false
-	}
-	cert, err := x509.ParseCertificate(der)
-	if err != nil {
-		return releasestate.Attestation{}, false
-	}
-	var attestation releasestate.Attestation
-	fields := map[string]*string{
-		oidSignerWorkflow.String(): &attestation.SignerWorkflow, oidConfigWorkflow.String(): &attestation.ConfigWorkflow,
-		oidInvocation.String(): &attestation.Invocation, oidSourceDigest.String(): &attestation.SourceDigest,
-		oidSourceRef.String(): &attestation.SourceRef,
-	}
-	for _, extension := range cert.Extensions {
-		if field, ok := fields[extension.Id.String()]; ok {
-			if _, err := asn1.UnmarshalWithParams(extension.Value, field, "utf8"); err != nil {
-				return releasestate.Attestation{}, false
-			}
-		}
-	}
-	statement, err := base64.StdEncoding.DecodeString(payload)
-	if err != nil {
-		return releasestate.Attestation{}, false
-	}
-	var parsed struct {
-		Subject []struct {
-			Digest struct {
-				SHA256 string `json:"sha256"`
-			} `json:"digest"`
-		} `json:"subject"`
-	}
-	if err := json.Unmarshal(statement, &parsed); err != nil {
-		return releasestate.Attestation{}, false
-	}
-	for _, subject := range parsed.Subject {
-		attestation.Subjects = append(attestation.Subjects, subject.Digest.SHA256)
-	}
-	return attestation, true
 }
 
 type restRelease struct {
@@ -466,14 +403,16 @@ type restRelease struct {
 }
 
 // releases reads the published releases of the version's tags, with the
-// content of each one's SHA256SUMS.
+// content of each one's SHA256SUMS, and verifies the attestation of a
+// SHA256SUMS that a qualified record names.
 func (r *reader) releases(ctx context.Context, version releaseversion.Version, in *releasestate.Inputs) error {
 	var listed []restRelease
 	if err := pages(ctx, r, r.repo("releases?per_page=100"), func(page []restRelease) { listed = append(listed, page...) }); err != nil {
 		return err
 	}
 	for _, release := range listed {
-		if release.Draft || !slices.ContainsFunc(in.Tags, func(tag releasestate.Tag) bool { return tag.Name == release.TagName }) {
+		tag := slices.IndexFunc(in.Tags, func(tag releasestate.Tag) bool { return tag.Name == release.TagName })
+		if release.Draft || tag < 0 {
 			continue
 		}
 		read := releasestate.Release{URL: release.HTMLURL, Prerelease: release.Prerelease}
@@ -491,8 +430,83 @@ func (r *reader) releases(ctx context.Context, version releaseversion.Version, i
 			if sums, err := decodeChecksums(body); err == nil {
 				read.Sums = sums
 			}
+			if err := r.attest(version, in, in.Tags[tag], asset.Digest, body); err != nil {
+				return err
+			}
 		}
 		in.Releases[release.TagName] = read
+	}
+	return nil
+}
+
+// attest verifies the attestation of a published SHA256SUMS when a qualified
+// record of its tag, on the tag's commit, names its digest. Only such a
+// release can match a record, so no other attestation is read.
+func (r *reader) attest(version releaseversion.Version, in *releasestate.Inputs, tag releasestate.Tag, assetDigest string, sums []byte) error {
+	digest, ok := strings.CutPrefix(assetDigest, "sha256:")
+	if !ok {
+		return nil
+	}
+	if _, done := in.Attestations[digest]; done {
+		return nil
+	}
+	named := slices.ContainsFunc(in.Statuses[tag.Commit], func(status releasestate.Status) bool {
+		record := status.Record
+		return record != nil && status.Creator.IsActionsBot() && record.Tag == tag.Name &&
+			record.Phase == releasestate.Qualified && record.Digest == digest
+	})
+	if !named {
+		return nil
+	}
+
+	file, err := os.CreateTemp("", "katl-release-SHA256SUMS-")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	_, writeErr := file.Write(sums)
+	if err := errors.Join(writeErr, file.Close()); err != nil {
+		return err
+	}
+	out, err := r.provenance.verify(file.Name(), "refs/heads/"+releasestate.Branch(version), tag.Commit)
+	if err != nil {
+		return fmt.Errorf("SHA256SUMS of %s: %w", tag.Name, err)
+	}
+	var verified []struct {
+		VerificationResult struct {
+			Signature struct {
+				Certificate struct {
+					BuildSignerURI         string `json:"buildSignerURI"`
+					BuildConfigURI         string `json:"buildConfigURI"`
+					RunInvocationURI       string `json:"runInvocationURI"`
+					SourceRepositoryDigest string `json:"sourceRepositoryDigest"`
+					SourceRepositoryRef    string `json:"sourceRepositoryRef"`
+				} `json:"certificate"`
+			} `json:"signature"`
+			Statement struct {
+				Subject []struct {
+					Digest struct {
+						SHA256 string `json:"sha256"`
+					} `json:"digest"`
+				} `json:"subject"`
+			} `json:"statement"`
+		} `json:"verificationResult"`
+	}
+	if err := json.Unmarshal(out, &verified); err != nil {
+		return fmt.Errorf("decode gh attestation verify output for SHA256SUMS of %s: %w", tag.Name, err)
+	}
+	in.Attestations[digest] = []releasestate.Attestation{}
+	for _, result := range verified {
+		certificate := result.VerificationResult.Signature.Certificate
+		attestation := releasestate.Attestation{
+			SignerWorkflow: certificate.BuildSignerURI, ConfigWorkflow: certificate.BuildConfigURI,
+			Invocation: certificate.RunInvocationURI, SourceDigest: certificate.SourceRepositoryDigest,
+			SourceRef: certificate.SourceRepositoryRef,
+		}
+		for _, subject := range result.VerificationResult.Statement.Subject {
+			attestation.Subjects = append(attestation.Subjects, subject.Digest.SHA256)
+		}
+		in.Attestations[digest] = append(in.Attestations[digest], attestation)
 	}
 	return nil
 }

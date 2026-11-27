@@ -40,6 +40,7 @@ import (
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/katl-dev/katl/internal/kubernetesidentity"
 	"github.com/katl-dev/katl/internal/managementidentity"
+	"github.com/katl-dev/katl/internal/releaseversion"
 	"github.com/katl-dev/katl/internal/vmtest"
 	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 	"github.com/spf13/cobra"
@@ -353,7 +354,11 @@ type hostUpgradeArtifact struct {
 	SizeBytes    uint64
 }
 
-var katlOSReleasePattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$`)
+// katlOSBuildVersionPattern accepts the version a local upgrade image
+// declares. Local builds embed versions such as 2026.7.0-local.1a2b3c4 that
+// are never released, so it is wider than the release grammar of
+// internal/releaseversion, which --version takes.
+var katlOSBuildVersionPattern = regexp.MustCompile(`^[0-9]{4}\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z][0-9A-Za-z.-]*)?$`)
 
 func newHostUpgradeCommand(ctx context.Context, stdout, stderr io.Writer) *cobra.Command {
 	opts := hostUpgradeOptions{actor: "katlctl node upgrade", waitTimeout: 30 * time.Minute, output: "text"}
@@ -370,14 +375,14 @@ Use --version VERSION for a published release, or --artifact for an upgrade imag
 				if len(args) > 1 {
 					return fmt.Errorf("--version and --artifact accept at most one positional NODE")
 				}
-				if len(args) == 1 && opts.artifact != "" && katlOSReleasePattern.MatchString(strings.TrimPrefix(strings.TrimSpace(args[0]), "v")) {
+				if len(args) == 1 && opts.artifact != "" && isReleaseVersion(args[0]) {
 					return fmt.Errorf("VERSION cannot be combined with --artifact; pass NODE as the positional argument or with --node")
 				}
 				if err := selectHostNode(command, &opts.target.nodeName, args); err != nil {
 					return err
 				}
 			} else {
-				if len(args) == 0 || !katlOSReleasePattern.MatchString(strings.TrimPrefix(strings.TrimSpace(args[0]), "v")) {
+				if len(args) == 0 || !isReleaseVersion(args[0]) {
 					return fmt.Errorf("--version VERSION or --artifact is required; for example: katlctl node upgrade NODE --version VERSION --config cluster.yaml")
 				}
 				opts.version = args[0]
@@ -438,7 +443,7 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 		}
 		opts.flavour = artifact.Flavour
 	} else {
-		version, err := katlOSVersion(opts.version)
+		version, err := releaseVersion(opts.version)
 		if err != nil {
 			return err
 		}
@@ -766,12 +771,19 @@ func writeHostUpgradeReport(stdout io.Writer, output string, report hostUpgradeR
 	return err
 }
 
-func katlOSVersion(input string) (string, error) {
+// releaseVersion reads a published KatlOS release, with or without its v
+// prefix.
+func releaseVersion(input string) (string, error) {
 	version := strings.TrimPrefix(strings.TrimSpace(input), "v")
-	if !katlOSReleasePattern.MatchString(version) {
-		return "", fmt.Errorf("VERSION %q must look like 2026.7.0-alpha.9", input)
+	if _, err := releaseversion.Parse(version); err != nil {
+		return "", fmt.Errorf("VERSION %q must be a KatlOS release such as 2026.7.0 or 2026.7.0-alpha.9", input)
 	}
 	return version, nil
+}
+
+func isReleaseVersion(input string) bool {
+	_, err := releaseVersion(input)
+	return err == nil
 }
 
 func nodeArtifactArchitecture(current *agentapi.Generation) (string, error) {
@@ -823,9 +835,9 @@ func readHostUpgradeArtifact(path string) (hostUpgradeArtifact, error) {
 	if err := metadata.VerifyFile(absolute); err != nil {
 		return hostUpgradeArtifact{}, err
 	}
-	version, err := katlOSVersion(metadata.Version)
-	if err != nil {
-		return hostUpgradeArtifact{}, fmt.Errorf("metadata version: %w", err)
+	version := strings.TrimPrefix(strings.TrimSpace(metadata.Version), "v")
+	if !katlOSBuildVersionPattern.MatchString(version) {
+		return hostUpgradeArtifact{}, fmt.Errorf("metadata version: VERSION %q must look like 2026.7.0-local.1a2b3c4", metadata.Version)
 	}
 	kernelFlavour, err := flavour.Normalize(metadata.Flavour)
 	if err != nil {

@@ -1,15 +1,18 @@
 package releasestate
 
 import (
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/releaseversion"
 )
 
 // TestTrust spoils one fact of rc.1's only record. A status that fails the
 // rule is not a record, so rc.1 reads as a tag the action did not create,
 // and status shows why it was ignored.
 func TestTrust(t *testing.T) {
-	const tag = "v2026.12.1-rc.1"
+	final, _ := releaseversion.Parse("2026.12.1")
 	for _, tc := range []struct {
 		name    string
 		phase   Phase
@@ -32,18 +35,7 @@ func TestTrust(t *testing.T) {
 		{"fork head", Qualified, func(w *world) { w.attempt().Run.HeadRepository.FullName = "fork/katl" }, "is not a dispatched Release run"},
 		{"validation failed", Qualified, func(w *world) { w.attempt().Jobs[1].Conclusion = "failure" }, "Release validation did not succeed"},
 		{"validation missing", Qualified, func(w *world) { w.attempt().Jobs = w.attempt().Jobs[:1] }, "Release validation did not succeed"},
-		{"other version's bundle", Qualified, func(w *world) { w.attempt().Artifacts = []string{bundleName("v2026.12.1", commit(1))} }, "has no bundle katl-2026.12.1-rc.1-x86_64-" + h1},
-		{"unattested digest", Qualified, func(w *world) { w.in.Attestations = nil }, "has no attestation"},
-		{"attested by another attempt", Qualified, func(w *world) {
-			w.attestation().Invocation = testServer + "/" + testRepo + "/actions/runs/101/attempts/2"
-		}, "has no attestation"},
-		{"attested from a tag", Qualified, func(w *world) {
-			w.attestation().SignerWorkflow = testServer + "/" + testRepo + "/" + artifactsWorkflow + "@refs/tags/" + tag
-		}, "has no attestation"},
-		{"attested outside release.yml", Qualified, func(w *world) {
-			w.attestation().ConfigWorkflow = testServer + "/" + testRepo + "/.github/workflows/ci.yml@refs/heads/release/2026.12.1"
-		}, "has no attestation"},
-		{"attested at another commit", Qualified, func(w *world) { w.attestation().SourceDigest = commit(2) }, "has no attestation"},
+		{"other version's bundle", Qualified, func(w *world) { w.attempt().Artifacts = []string{BundleName(final, commit(1))} }, "has no bundle katl-2026.12.1-rc.1-x86_64-" + h1},
 		{"failed while validation succeeded", Failed, func(w *world) { w.attempt().Jobs[1].Conclusion = "success" }, "did not end without qualifying"},
 		{"failed while still running", Failed, func(w *world) { w.attempt().Run.Status = "in_progress" }, "did not end without qualifying"},
 	} {
@@ -61,7 +53,106 @@ func TestTrust(t *testing.T) {
 	}
 }
 
+// TestUnpublishedNeedsNoAttestation covers the qualified records that next
+// acts on before anything is published: the acting job verifies the bytes, so
+// a missing attestation does not change the decision.
+func TestUnpublishedNeedsNoAttestation(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		world func() *world
+		row   int
+	}{
+		{"candidate incomplete", func() *world { return newWorld(1).candidate(1, 1, Qualified) }, 21},
+		{"final unapproved", func() *world { w := green(1); w.build("v2026.12.1", 1, Qualified); return w }, 26},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := tc.world()
+			delete(w.in.Attestations, w.status().Record.Digest)
+			got, err := Decide(w.inputs())
+			if err != nil || got.Row != tc.row || len(got.Warnings) != 0 {
+				t.Fatalf("row %d %v, %v, want row %d without warnings", got.Row, got.Warnings, err, tc.row)
+			}
+		})
+	}
+}
+
+// TestReleaseMatchesRecord spoils one fact of a published release whose
+// record qualified. A release that differs from its record is refused, never
+// taken as published.
+func TestReleaseMatchesRecord(t *testing.T) {
+	const rc = "v2026.12.1-rc.1"
+	asset := func(w *world, tag, name string) *Asset {
+		assets := w.in.Releases[tag].Assets
+		return &assets[slices.IndexFunc(assets, func(a Asset) bool { return a.Name == name })]
+	}
+	release := func(w *world, tag string, change func(*Release)) {
+		r := w.in.Releases[tag]
+		change(&r)
+		w.in.Releases[tag] = r
+	}
+	branchRef := "refs/heads/release/2026.12.1"
+	for _, tc := range []struct {
+		name  string
+		final bool
+		spoil func(w *world, tag string)
+	}{
+		{"extra asset", false, func(w *world, tag string) {
+			release(w, tag, func(r *Release) {
+				r.Assets = append(r.Assets, Asset{Name: "extra", Uploaded: true, Digest: "sha256:" + digestOf("extra")})
+			})
+		}},
+		{"listed file missing", false, func(w *world, tag string) {
+			release(w, tag, func(r *Release) { r.Sums["katl-installer.efi"] = digestOf("efi") })
+		}},
+		{"asset digest differs from SHA256SUMS", false, func(w *world, tag string) { asset(w, tag, "katlctl").Digest = "sha256:" + digestOf("other") }},
+		{"asset not uploaded", false, func(w *world, tag string) { asset(w, tag, "katlctl").Uploaded = false }},
+		{"SHA256SUMS unread", false, func(w *world, tag string) { release(w, tag, func(r *Release) { r.Sums = nil }) }},
+		// A listing that names SHA256SUMS with the recorded digest would match
+		// if SHA256SUMS were taken as just another listed file.
+		{"SHA256SUMS lists itself", false, func(w *world, tag string) {
+			release(w, tag, func(r *Release) { r.Sums["SHA256SUMS"] = w.digests[tag] })
+		}},
+		{"SHA256SUMS differs from the record", false, func(w *world, tag string) { asset(w, tag, "SHA256SUMS").Digest = "sha256:" + digestOf("other") }},
+		{"unattested", false, func(w *world, tag string) { w.in.Attestations = nil }},
+		{"attested by another attempt", false, func(w *world, tag string) {
+			w.attestation().Invocation = testServer + "/" + testRepo + "/actions/runs/101/attempts/2"
+		}},
+		{"signed from a tag", false, func(w *world, tag string) {
+			w.attestation().SignerWorkflow = testServer + "/" + testRepo + "/" + artifactsWorkflow + "@refs/tags/" + tag
+		}},
+		{"started outside release.yml", false, func(w *world, tag string) {
+			w.attestation().ConfigWorkflow = testServer + "/" + testRepo + "/.github/workflows/ci.yml@" + branchRef
+		}},
+		{"attested at another commit", false, func(w *world, tag string) { w.attestation().SourceDigest = commit(2) }},
+		{"attested from another ref", false, func(w *world, tag string) { w.attestation().SourceRef = "refs/tags/" + tag }},
+		{"attested for other subjects", false, func(w *world, tag string) { w.attestation().Subjects = []string{digestOf("other")} }},
+		{"final unattested", true, func(w *world, tag string) { w.in.Attestations[w.digests[tag]] = nil }},
+		{"final attested from another ref", true, func(w *world, tag string) { w.attestation().SourceRef = "refs/heads/main" }},
+		{"final asset not uploaded", true, func(w *world, tag string) { asset(w, tag, "katlctl").Uploaded = false }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, tag, matching, row := green(1), rc, 23, 18
+			if tc.final {
+				w, tag, matching, row = released(1, 1), "v2026.12.1", 14, 10
+			}
+			if got, err := Decide(w.inputs()); err != nil || got.Row != matching {
+				t.Fatalf("before spoiling: row %d (%s) %v, %v, want row %d", got.Row, got.State, got.Warnings, err, matching)
+			}
+
+			tc.spoil(w, tag)
+			got, err := Decide(w.inputs())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Row != row || !strings.Contains(got.Message, "does not match the recorded sha256:"+w.digests[tag]) {
+				t.Fatalf("row %d (%s): %s, want row %d naming the recorded digest", got.Row, got.State, got.Message, row)
+			}
+		})
+	}
+}
+
 // TestRecordSelection covers which of several records of one context holds.
+// GitHub lists statuses newest first, so each case holds in both orders.
 func TestRecordSelection(t *testing.T) {
 	const rc = "v2026.12.1-rc.1"
 	for _, tc := range []struct {
@@ -100,14 +191,23 @@ func TestRecordSelection(t *testing.T) {
 			return w
 		}, 21},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := Decide(tc.world().inputs())
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got.Row != tc.row {
-				t.Fatalf("row %d (%s): %s %v, want row %d", got.Row, got.State, got.Message, got.Warnings, tc.row)
-			}
-		})
+		for _, order := range []string{"oldest first", "newest first"} {
+			t.Run(tc.name+"/"+order, func(t *testing.T) {
+				in := tc.world().inputs()
+				if order == "newest first" {
+					for commit, statuses := range in.Statuses {
+						in.Statuses[commit] = slices.Clone(statuses)
+						slices.Reverse(in.Statuses[commit])
+					}
+				}
+				got, err := Decide(in)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got.Row != tc.row {
+					t.Fatalf("row %d (%s): %s %v, want row %d", got.Row, got.State, got.Message, got.Warnings, tc.row)
+				}
+			})
+		}
 	}
 }

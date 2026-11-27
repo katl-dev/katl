@@ -147,9 +147,6 @@ jobs:
       previous-tag: ${{ steps.previous.outputs.tag }}
       regression: ${{ steps.regression.outputs.decision }}
 
-    env:
-      KATL_ARCHITECTURE: x86_64
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -187,8 +184,7 @@ jobs:
           version="$(scripts/katl-release-artifacts version \
             "$event" "$GITHUB_REF_TYPE" "$GITHUB_REF_NAME" \
             "$MANUAL_VERSION")"
-          short_sha="${GITHUB_SHA:0:12}"
-          artifact_name="katl-${version}-${KATL_ARCHITECTURE}-${short_sha}"
+          artifact_name="$(scripts/katl-release bundle-name "$version" "$GITHUB_SHA")"
           {
             echo "version=$version"
             echo "artifact-name=$artifact_name"
