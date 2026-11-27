@@ -39,7 +39,7 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer, call command) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify TAG COMMIT DIRECTORY\n       scripts/katl-release checksums DIRECTORY\n       scripts/katl-release equivalent BUNDLE FLAVOUR=SHA256SUMS...\n       scripts/katl-release regression VERSION COMMIT\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
+		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify TAG COMMIT DIRECTORY\n       scripts/katl-release checksums DIRECTORY\n       scripts/katl-release equivalent BUNDLE FLAVOUR=SHA256SUMS...\n       scripts/katl-release regression VERSION COMMIT\n       scripts/katl-release record VERSION building|failed|qualified [DIGEST]\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
 		return nil
 	}
 	if args[0] == "prepare" {
@@ -47,6 +47,9 @@ func run(args []string, stdout, stderr io.Writer, call command) error {
 	}
 	if args[0] == "regression" {
 		return regression(args[1:], stdout, stderr, call)
+	}
+	if args[0] == "record" {
+		return record(args[1:], stderr, call)
 	}
 	if args[0] == "verify" {
 		return verify(args[1:], stderr, call)
