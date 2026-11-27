@@ -3,8 +3,11 @@ name: Builder Image
 # Publishes Containerfile.mkosi to GHCR and proposes the committed pin that
 # every image build pulls. A push publishes the content tag once; a scheduled
 # or dispatched refresh rebuilds on the current Fedora packages under a dated
-# tag. Either way the new digest reaches builds only through a reviewed pull
-# request, so the merge queue tests it with the code that uses it.
+# tag. Either way, the new digest reaches builds through a katl-bot pull
+# request from automation/mkosi-builder-*. After CI qualifies the revision,
+# Merge Qualified Automation verifies the author and checks that only
+# mkosi-builder.lock changed, then uses the App token to enable auto-merge.
+# The merge queue tests the pin with the code that uses it.
 on:
   push:
     branches: [main]
