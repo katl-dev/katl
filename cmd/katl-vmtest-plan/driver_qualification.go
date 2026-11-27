@@ -337,10 +337,11 @@ func verifyDriverPublisher(ctx context.Context, repo, sha, flavour string, statu
 	if server == "" {
 		server = "https://github.com"
 	}
-	attempt, ok := runstatus.ParseAttemptURL(server, repo, status.TargetURL)
-	if !ok {
+	target, err := runstatus.ParseAttemptURL(status.TargetURL)
+	if err != nil || target.Server != server || target.Repository != repo {
 		return driverProducer{}, nil
 	}
+	attempt := target.Attempt
 
 	run, err := runstatus.Read(ctx, ghAPI, repo, attempt)
 	if err != nil {

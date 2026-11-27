@@ -67,7 +67,7 @@ func (a *statusAPI) call(name string, args ...string) ([]byte, error) {
 
 // echoStatus renders the answer GitHub gives to a status POST.
 func echoStatus(fields map[string]string) []byte {
-	body := map[string]any{"id": 1, "creator": map[string]string{"login": "github-actions[bot]"}}
+	body := map[string]any{"id": 1, "creator": map[string]any{"login": "github-actions[bot]", "id": 41898282, "type": "Bot"}}
 	for key, value := range fields {
 		body[key] = value
 	}
@@ -160,6 +160,13 @@ func TestRecordRequiresStoredStatus(t *testing.T) {
 			return echoStatus(f)
 		}},
 		{"malformed body", func(map[string]string) []byte { return []byte(`{"id":1,"state":`) }},
+		// GitHub echoes whoever the token writes as; only the Actions bot writes a record.
+		{"user named like the bot", func(f map[string]string) []byte {
+			return []byte(strings.Replace(string(echoStatus(f)), `"type":"Bot"`, `"type":"User"`, 1))
+		}},
+		{"App token", func(f map[string]string) []byte {
+			return []byte(strings.Replace(string(echoStatus(f)), `"id":41898282,"login":"github-actions[bot]"`, `"id":7,"login":"katl-release[bot]"`, 1))
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			actionsEnv(t)

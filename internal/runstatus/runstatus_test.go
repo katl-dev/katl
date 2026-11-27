@@ -22,22 +22,50 @@ func TestCreatorIsActionsBot(t *testing.T) {
 	}
 }
 
-func TestParseAttemptURL(t *testing.T) {
-	const server, repo = "https://github.com", "katl-dev/katl"
-	got, ok := ParseAttemptURL(server, repo, "https://github.com/katl-dev/katl/actions/runs/123/attempts/2")
-	if !ok || got != (Attempt{Run: 123, Number: 2}) || got.URL(server, repo) != "https://github.com/katl-dev/katl/actions/runs/123/attempts/2" {
-		t.Fatalf("ParseAttemptURL = %+v, %v", got, ok)
+func TestRESTCreator(t *testing.T) {
+	if got := RESTCreator("github-actions[bot]", "Bot", 41898282); !got.IsActionsBot() {
+		t.Errorf("REST's Actions bot = %+v, want the Actions bot", got)
 	}
+	// Only a bot's login carries the suffix; a user named so stays distinct.
+	if got := RESTCreator("github-actions[bot]", "User", 41898282); got.Login != "github-actions[bot]" || got.IsActionsBot() {
+		t.Errorf("user = %+v, want the login unchanged and not the bot", got)
+	}
+}
+
+func TestParseAttemptURL(t *testing.T) {
+	for target, want := range map[string]AttemptURL{
+		"https://github.com/katl-dev/katl/actions/runs/123/attempts/2": {Server: "https://github.com", Repository: "katl-dev/katl", Attempt: Attempt{Run: 123, Number: 2}},
+		// The caller compares server and repository with its own.
+		"https://ghe.example.test:8443/fork/katl/actions/runs/7/attempts/1": {Server: "https://ghe.example.test:8443", Repository: "fork/katl", Attempt: Attempt{Run: 7, Number: 1}},
+	} {
+		got, err := ParseAttemptURL(target)
+		if err != nil || got != want {
+			t.Errorf("ParseAttemptURL(%q) = %+v, %v, want %+v", target, got, err, want)
+		}
+		if rendered, err := want.String(); err != nil || rendered != target {
+			t.Errorf("%+v.String() = %q, %v, want %q", want, rendered, err, target)
+		}
+	}
+
 	for _, target := range []string{
 		"https://github.com/katl-dev/katl/actions/runs/123",
 		"https://github.com/katl-dev/katl/actions/runs/123/attempts/0",
 		"https://github.com/katl-dev/katl/actions/runs/0123/attempts/1",
+		"https://github.com/katl-dev/katl/actions/runs/123/attempts/+1",
 		"https://github.com/katl-dev/katl/actions/runs/123/attempts/1/jobs",
-		"https://github.com/fork/katl/actions/runs/123/attempts/1",
+		"https://github.com/katl-dev/katl/actions/runs/123/job/5",
+		"https://github.com/katl-dev/katl/actions/runs/123/attempts/1/",
+		"https://github.com/katl-dev/katl/actions/runs/123/attempts/1?check_suite_focus=true",
+		"https://github.com/katl-dev/katl/actions/runs/123/attempts/1#summary",
 		"http://github.com/katl-dev/katl/actions/runs/123/attempts/1",
+		"github.com/katl-dev/katl/actions/runs/123/attempts/1",
+		"https://bot@github.com/katl-dev/katl/actions/runs/123/attempts/1",
+		"https://github.com/x/katl-dev/katl/actions/runs/123/attempts/1",
+		"https://github.com/katl%2Ddev/katl/actions/runs/123/attempts/1",
 		"https://github.com/katl-dev/katl/actions/runs/99999999999999999999/attempts/1",
+		"",
 	} {
-		if got, ok := ParseAttemptURL(server, repo, target); ok {
+		if got, err := ParseAttemptURL(target); err == nil {
 			t.Errorf("ParseAttemptURL(%q) = %+v", target, got)
 		}
 	}

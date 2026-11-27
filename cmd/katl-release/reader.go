@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/extensionrelease"
+	"github.com/katl-dev/katl/internal/releaserecord"
 	"github.com/katl-dev/katl/internal/releasestate"
 	"github.com/katl-dev/katl/internal/releaseversion"
 	"github.com/katl-dev/katl/internal/retry"
@@ -105,8 +106,6 @@ func ghRead(ctx context.Context, endpoint string, paginate bool, accept string) 
 type reader struct {
 	server, repository string
 	read               func(ctx context.Context, endpoint string, paginate bool, accept string) ([]byte, error)
-	// parse reads a status in the release record format.
-	parse func(context, state, description, target string) (*releasestate.Record, error)
 	// provenance verifies the attestation of a published SHA256SUMS.
 	provenance *provenance
 	// self is the run making the decision, excluded from the active runs.
@@ -190,7 +189,7 @@ func (r *reader) Read(ctx context.Context, ref, dispatch, retryReason string) (r
 		return in, err
 	}
 	for _, branch := range head {
-		if branch.Ref == "refs/heads/"+releasestate.Branch(version) {
+		if branch.Ref == releasestate.Ref(version) {
 			in.Head = branch.Object.SHA
 		}
 	}
@@ -267,12 +266,10 @@ func (r *reader) peel(ctx context.Context, ref gitRef) (string, error) {
 	return "", fmt.Errorf("%s does not peel to a commit", ref.Ref)
 }
 
+// restStatus is a commit status as REST lists it, with its creator.
 type restStatus struct {
-	Context     string `json:"context"`
-	State       string `json:"state"`
-	Description string `json:"description"`
-	TargetURL   string `json:"target_url"`
-	Creator     struct {
+	releaserecord.Status
+	Creator struct {
 		Login string `json:"login"`
 		ID    int    `json:"id"`
 		Type  string `json:"type"`
@@ -288,7 +285,7 @@ func (r *reader) records(ctx context.Context, version releaseversion.Version, in
 			commits = append(commits, tag.Commit)
 		}
 	}
-	prefix := "katl/release/" + version.Tag()
+	prefix := releaserecord.Context(version.String())
 	for _, commit := range commits {
 		var listed []restStatus
 		if err := pages(ctx, r, r.repo("commits/"+commit+"/statuses?per_page=100"), func(page []restStatus) { listed = append(listed, page...) }); err != nil {
@@ -298,27 +295,21 @@ func (r *reader) records(ctx context.Context, version releaseversion.Version, in
 			if raw.Context != prefix && !strings.HasPrefix(raw.Context, prefix+"-rc.") {
 				continue
 			}
-			status := releasestate.Status{Context: raw.Context, TargetURL: raw.TargetURL, Creator: runstatus.Creator{
-				Login: raw.Creator.Login, Type: raw.Creator.Type, DatabaseID: raw.Creator.ID,
-			}}
-			// REST names bots with a [bot] suffix that GraphQL and the trust rule omit.
-			if status.Creator.Type == "Bot" {
-				status.Creator.Login = strings.TrimSuffix(status.Creator.Login, "[bot]")
-			}
-			record, err := r.parse(raw.Context, raw.State, raw.Description, raw.TargetURL)
-			if errors.Is(err, errRecordsUnreadable) {
-				return err
-			}
+			status := releasestate.Status{Context: raw.Context, TargetURL: raw.TargetURL,
+				Creator: runstatus.RESTCreator(raw.Creator.Login, raw.Creator.Type, raw.Creator.ID)}
+			parsed, err := releaserecord.Parse(raw.Status)
 			if err != nil {
 				status.Problem = err.Error()
 			} else {
-				status.Record = record
+				status.Record = &releasestate.Record{Tag: "v" + parsed.Version, Phase: releasestate.Phase(parsed.Phase), Digest: parsed.Digest,
+					Attempt: runstatus.Attempt{Run: parsed.Run.ID, Number: parsed.Run.Attempt}}
 			}
 			in.Statuses[commit] = append(in.Statuses[commit], status)
-			if record == nil || !status.Creator.IsActionsBot() {
+			// Only a record of a run in this repository names an attempt to read.
+			if status.Record == nil || !status.Creator.IsActionsBot() || parsed.Run.Server != r.server || parsed.Run.Repository != r.repository {
 				continue
 			}
-			if err := r.attempt(ctx, record.Attempt, in); err != nil {
+			if err := r.attempt(ctx, status.Record.Attempt, in); err != nil {
 				return err
 			}
 		}
@@ -468,7 +459,7 @@ func (r *reader) attest(version releaseversion.Version, in *releasestate.Inputs,
 	if err := errors.Join(writeErr, file.Close()); err != nil {
 		return err
 	}
-	out, err := r.provenance.verify(file.Name(), "refs/heads/"+releasestate.Branch(version), tag.Commit)
+	out, err := r.provenance.verify(file.Name(), releasestate.Ref(version), tag.Commit)
 	if err != nil {
 		return fmt.Errorf("SHA256SUMS of %s: %w", tag.Name, err)
 	}

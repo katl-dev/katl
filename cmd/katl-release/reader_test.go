@@ -64,24 +64,6 @@ func (f *fakeGitHub) read(_ context.Context, endpoint string, paginate bool, acc
 	return json.Marshal(value)
 }
 
-// fakeParse stands in for internal/releaserecord.
-func fakeParse(context, state, description, target string) (*releasestate.Record, error) {
-	attempt, ok := runstatus.ParseAttemptURL("https://github.com", "katl-dev/katl", target)
-	record := &releasestate.Record{Tag: strings.TrimPrefix(context, "katl/release/"), Attempt: attempt}
-	digest, qualified := strings.CutPrefix(description, "qualified sha256:")
-	switch {
-	case !ok:
-		return nil, errors.New("not a record")
-	case state == "pending" && description == "building":
-		record.Phase = releasestate.Building
-	case state == "success" && qualified:
-		record.Phase, record.Digest = releasestate.Qualified, digest
-	default:
-		return nil, errors.New("not a record")
-	}
-	return record, nil
-}
-
 const repoPrefix = "repos/katl-dev/katl/"
 
 var botCreator = map[string]any{"login": "github-actions[bot]", "id": 41898282, "type": "Bot"}
@@ -151,7 +133,7 @@ func readerWorld(t *testing.T) *fakeGitHub {
 }
 
 func newTestReader(f *fakeGitHub) *reader {
-	return &reader{server: "https://github.com", repository: "katl-dev/katl", read: f.read, parse: fakeParse, delay: time.Millisecond}
+	return &reader{server: "https://github.com", repository: "katl-dev/katl", read: f.read, delay: time.Millisecond}
 }
 
 func TestReaderRead(t *testing.T) {
@@ -474,14 +456,6 @@ func TestGHRead(t *testing.T) {
 			t.Fatalf("err = %v, want a permanent exec.ErrNotFound", err)
 		}
 	})
-}
-
-func TestReaderWithoutRecordParser(t *testing.T) {
-	r := newTestReader(readerWorld(t))
-	r.parse = parseRecord
-	if _, err := r.Read(context.Background(), "refs/heads/release/2026.12.1", readerHead, ""); !errors.Is(err, errRecordsUnreadable) {
-		t.Fatalf("err = %v, want the read to stop at the first record", err)
-	}
 }
 
 func TestNextAndStatus(t *testing.T) {

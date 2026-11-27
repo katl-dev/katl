@@ -12,10 +12,10 @@ package releaserecord
 import (
 	"errors"
 	"fmt"
-	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
+
+	"github.com/katl-dev/katl/internal/runstatus"
 )
 
 // Phase is how far a build attempt got.
@@ -50,7 +50,6 @@ var ErrNotRecord = errors.New("not a release record")
 
 var (
 	digestPattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	namePattern   = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 )
 
 // Run names the run attempt that builds the bytes and writes the record.
@@ -69,25 +68,7 @@ type Run struct {
 
 // URL renders the run attempt's URL, which is a record's target URL.
 func (r Run) URL() (string, error) {
-	// The server must be exactly scheme://host[:port] as Parse renders it
-	// back from a target URL, so that every rendered record parses to itself.
-	server, err := url.Parse(r.Server)
-	if err != nil || server.Scheme != "https" || server.Host == "" || strings.HasSuffix(server.Host, ":") ||
-		server.Scheme+"://"+server.Host != r.Server {
-		return "", fmt.Errorf("server %q is not exactly https://host or https://host:port", r.Server)
-	}
-	owner, name, ok := strings.Cut(r.Repository, "/")
-	if !ok || !validName(owner) || !validName(name) {
-		return "", fmt.Errorf("repository %q is not owner/name", r.Repository)
-	}
-	if r.ID <= 0 || r.Attempt <= 0 {
-		return "", fmt.Errorf("run %d attempt %d is not a positive run ID and attempt", r.ID, r.Attempt)
-	}
-	return fmt.Sprintf("%s/%s/actions/runs/%d/attempts/%d", r.Server, r.Repository, r.ID, r.Attempt), nil
-}
-
-func validName(name string) bool {
-	return namePattern.MatchString(name) && name != "." && name != ".."
+	return runstatus.AttemptURL{Server: r.Server, Repository: r.Repository, Attempt: runstatus.Attempt{Run: r.ID, Number: r.Attempt}}.String()
 }
 
 // Record is what one build attempt reached for one release version.
@@ -196,32 +177,9 @@ func Parse(status Status) (Record, error) {
 
 // parseRun accepts exactly the URL that Run.URL renders.
 func parseRun(target string) (Run, error) {
-	invalid := fmt.Errorf("target URL %q is not a run attempt URL", target)
-	parsed, err := url.Parse(target)
+	u, err := runstatus.ParseAttemptURL(target)
 	if err != nil {
-		return Run{}, invalid
+		return Run{}, err
 	}
-	segments := strings.Split(parsed.Path, "/")
-	if len(segments) != 8 || segments[0] != "" || segments[3] != "actions" || segments[4] != "runs" || segments[6] != "attempts" {
-		return Run{}, invalid
-	}
-	id, idErr := strconv.ParseInt(segments[5], 10, 64)
-	attempt, attemptErr := strconv.Atoi(segments[7])
-	if idErr != nil || attemptErr != nil {
-		return Run{}, invalid
-	}
-	run := Run{
-		Server:     parsed.Scheme + "://" + parsed.Host,
-		Repository: segments[1] + "/" + segments[2],
-		ID:         id,
-		Attempt:    attempt,
-	}
-
-	// Rendering the parsed run again rejects everything the segments alone
-	// do not: another scheme, credentials, a query, escapes, signs and
-	// leading zeros.
-	if rendered, err := run.URL(); err != nil || rendered != target {
-		return Run{}, invalid
-	}
-	return run, nil
+	return Run{Server: u.Server, Repository: u.Repository, ID: u.Attempt.Run, Attempt: u.Attempt.Number}, nil
 }

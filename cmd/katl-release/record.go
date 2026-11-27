@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/releaserecord"
+	"github.com/katl-dev/katl/internal/releasestate"
 	"github.com/katl-dev/katl/internal/releaseversion"
 	"github.com/katl-dev/katl/internal/retry"
+	"github.com/katl-dev/katl/internal/runstatus"
 )
 
 const recordUsage = "usage: scripts/katl-release record VERSION building|failed|qualified [DIGEST]"
@@ -54,7 +56,7 @@ func record(args []string, stderr io.Writer, call command) error {
 	if err != nil {
 		return err
 	}
-	if branch := "refs/heads/release/" + parsed.Base().String(); attempt.ref != branch {
+	if branch := releasestate.Ref(parsed.Base()); attempt.ref != branch {
 		return fmt.Errorf("%s is recorded only by a run on %s, and this run is on %q", version, branch, attempt.ref)
 	}
 	entry := releaserecord.Record{Version: version, Phase: phase, Run: attempt.run}
@@ -79,12 +81,17 @@ func record(args []string, stderr io.Writer, call command) error {
 			fmt.Fprintf(stderr, "Writing %s on %s failed: %v\n", status.Context, commit, err)
 			return err
 		}
-		var written releaserecord.Status
+		var written restStatus
 		if err := json.Unmarshal(out, &written); err != nil {
 			return fmt.Errorf("%w: decode the answer: %v", errUnconfirmed, err)
 		}
-		if written != status {
-			return fmt.Errorf("%w: GitHub stored %+v, not %+v", errUnconfirmed, written, status)
+		if written.Status != status {
+			return fmt.Errorf("%w: GitHub stored %+v, not %+v", errUnconfirmed, written.Status, status)
+		}
+		// Only a status the Actions bot created is a record, so a token that
+		// writes as anyone else has written nothing the release reads.
+		if creator := runstatus.RESTCreator(written.Creator.Login, written.Creator.Type, written.Creator.ID); !creator.IsActionsBot() {
+			return fmt.Errorf("%w: it was created by %s, not the GitHub Actions bot; write records with the workflow token", errUnconfirmed, written.Creator.Login)
 		}
 		return nil
 	}, func(err error) bool { return !errors.Is(err, errUnconfirmed) })

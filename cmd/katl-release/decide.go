@@ -14,14 +14,6 @@ import (
 	"github.com/katl-dev/katl/internal/releasestate"
 )
 
-// errRecordsUnreadable stops a decision until internal/releaserecord, the
-// only parser of release records, is part of this command.
-var errRecordsUnreadable = errors.New("release records cannot be read yet: internal/releaserecord is not part of this build")
-
-func parseRecord(context, state, description, target string) (*releasestate.Record, error) {
-	return nil, errRecordsUnreadable
-}
-
 func newGitHubReader(call command) *reader {
 	server := os.Getenv("GITHUB_SERVER_URL")
 	if server == "" {
@@ -32,7 +24,7 @@ func newGitHubReader(call command) *reader {
 		repo = repository
 	}
 	self, _ := strconv.ParseInt(os.Getenv("GITHUB_RUN_ID"), 10, 64)
-	return &reader{server: server, repository: repo, read: ghRead, parse: parseRecord, self: self,
+	return &reader{server: server, repository: repo, read: ghRead, self: self,
 		provenance: &provenance{call: call, repository: repo}}
 }
 

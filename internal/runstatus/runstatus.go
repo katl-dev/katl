@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -23,6 +24,15 @@ const actionsBotID = 41898282
 type Creator struct {
 	Login, Type string
 	DatabaseID  int
+}
+
+// RESTCreator is the creator as REST reports it: a bot's login there carries
+// a [bot] suffix that GraphQL and Creator omit.
+func RESTCreator(login, kind string, id int) Creator {
+	if kind == "Bot" {
+		login = strings.TrimSuffix(login, "[bot]")
+	}
+	return Creator{Login: login, Type: kind, DatabaseID: id}
 }
 
 // IsActionsBot reports whether the creator is the GitHub Actions bot, the
@@ -44,28 +54,67 @@ func (a Attempt) URL(server, repository string) string {
 	return server + "/" + repository + "/actions/runs/" + a.String()
 }
 
-var attemptPath = regexp.MustCompile(`^([1-9][0-9]*)/attempts/([1-9][0-9]*)$`)
+// AttemptURL is a run attempt with the server and repository whose page names
+// it.
+type AttemptURL struct {
+	// Server is exactly https://host or https://host:port.
+	Server string
+	// Repository is owner/name.
+	Repository string
+	Attempt    Attempt
+}
 
-// ParseAttemptURL reads a run-attempt URL of the repository on the server. It
-// accepts nothing else, so a target cannot name another repository's run.
-func ParseAttemptURL(server, repository, target string) (Attempt, bool) {
-	marker, ok := strings.CutPrefix(target, server+"/"+repository+"/actions/runs/")
-	if !ok {
-		return Attempt{}, false
+var namePattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+func validName(name string) bool {
+	return namePattern.MatchString(name) && name != "." && name != ".."
+}
+
+// String renders the attempt's page, failing for a server, repository or
+// attempt that is not of the form ParseAttemptURL accepts.
+func (u AttemptURL) String() (string, error) {
+	server, err := url.Parse(u.Server)
+	if err != nil || server.Scheme != "https" || server.Host == "" || strings.HasSuffix(server.Host, ":") ||
+		server.Scheme+"://"+server.Host != u.Server {
+		return "", fmt.Errorf("server %q is not exactly https://host or https://host:port", u.Server)
 	}
-	match := attemptPath.FindStringSubmatch(marker)
-	if match == nil {
-		return Attempt{}, false
+	owner, name, ok := strings.Cut(u.Repository, "/")
+	if !ok || !validName(owner) || !validName(name) {
+		return "", fmt.Errorf("repository %q is not owner/name", u.Repository)
 	}
-	run, err := strconv.ParseInt(match[1], 10, 64)
+	if u.Attempt.Run <= 0 || u.Attempt.Number <= 0 {
+		return "", fmt.Errorf("run %d attempt %d is not a positive run ID and attempt", u.Attempt.Run, u.Attempt.Number)
+	}
+	return u.Attempt.URL(u.Server, u.Repository), nil
+}
+
+// ParseAttemptURL reads exactly the URL that String renders. The caller
+// compares the server and repository with its own, so a target cannot name
+// another repository's run.
+func ParseAttemptURL(target string) (AttemptURL, error) {
+	invalid := fmt.Errorf("target URL %q is not a run attempt URL", target)
+	parsed, err := url.Parse(target)
 	if err != nil {
-		return Attempt{}, false
+		return AttemptURL{}, invalid
 	}
-	number, err := strconv.Atoi(match[2])
-	if err != nil {
-		return Attempt{}, false
+	segments := strings.Split(parsed.Path, "/")
+	if len(segments) != 8 || segments[0] != "" || segments[3] != "actions" || segments[4] != "runs" || segments[6] != "attempts" {
+		return AttemptURL{}, invalid
 	}
-	return Attempt{Run: run, Number: number}, true
+	run, runErr := strconv.ParseInt(segments[5], 10, 64)
+	number, numberErr := strconv.Atoi(segments[7])
+	if runErr != nil || numberErr != nil {
+		return AttemptURL{}, invalid
+	}
+	u := AttemptURL{Server: parsed.Scheme + "://" + parsed.Host, Repository: segments[1] + "/" + segments[2], Attempt: Attempt{Run: run, Number: number}}
+
+	// Rendering the parsed URL again rejects everything the segments alone do
+	// not: another scheme, credentials, a query, escapes, signs and leading
+	// zeros.
+	if rendered, err := u.String(); err != nil || rendered != target {
+		return AttemptURL{}, invalid
+	}
+	return u, nil
 }
 
 // Run is one run attempt as GitHub reports it.

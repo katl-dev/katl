@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/releaserecord"
 	"github.com/katl-dev/katl/internal/releaseversion"
 	"github.com/katl-dev/katl/internal/runstatus"
 )
@@ -20,9 +21,6 @@ type trusted struct {
 	Commit  string
 	attempt Attempt
 }
-
-// recordContext is the status context of a tag's record.
-func recordContext(tag string) string { return "katl/release/" + tag }
 
 // releaseOrigin accepts dispatched Release runs on the version's branch.
 func (in Inputs) releaseOrigin(version releaseversion.Version) runstatus.Origin {
@@ -62,7 +60,8 @@ func (in Inputs) verify(version releaseversion.Version, tag, commit string, stat
 		return trusted{}, status.Problem
 	}
 	record := *status.Record
-	if attempt, ok := runstatus.ParseAttemptURL(in.Server, in.Repository, status.TargetURL); !ok || attempt != record.Attempt || record.Tag != tag {
+	if target, err := runstatus.ParseAttemptURL(status.TargetURL); err != nil || target.Server != in.Server ||
+		target.Repository != in.Repository || target.Attempt != record.Attempt || record.Tag != tag {
 		return trusted{}, "its target is not a run attempt of " + in.Repository
 	}
 	attempt, ok := in.Attempts[record.Attempt]
@@ -97,7 +96,7 @@ func (in Inputs) verify(version releaseversion.Version, tag, commit string, stat
 // version's branch. The reader verifies attestations only for a published
 // SHA256SUMS, so a record without a published release has none.
 func (in Inputs) attested(version releaseversion.Version, record *trusted) bool {
-	ref := "refs/heads/" + Branch(version)
+	ref := Ref(version)
 	workflow := func(path string) string { return in.Server + "/" + in.Repository + "/" + path + "@" + ref }
 	for _, attestation := range in.Attestations[record.Digest] {
 		if slices.Contains(attestation.Subjects, record.Digest) &&
@@ -117,7 +116,7 @@ func (in Inputs) attested(version releaseversion.Version, record *trusted) bool 
 func (in Inputs) record(version releaseversion.Version, tag, commit string, replaceable bool, warnings *[]string) *trusted {
 	var records []trusted
 	for _, status := range in.Statuses[commit] {
-		if status.Context != recordContext(tag) {
+		if status.Context != releaserecord.Context(strings.TrimPrefix(tag, "v")) {
 			continue
 		}
 		record, problem := in.verify(version, tag, commit, status)

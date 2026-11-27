@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/releaserecord"
 	"github.com/katl-dev/katl/internal/releaseversion"
 	"github.com/katl-dev/katl/internal/runstatus"
 )
@@ -23,12 +24,12 @@ const (
 const branchPrefix = "refs/heads/release/"
 
 // Phase is what one build attempt reached, as its record states.
-type Phase string
+type Phase = releaserecord.Phase
 
 const (
-	Building  Phase = "building"
-	Failed    Phase = "failed"
-	Qualified Phase = "qualified"
+	Building  = releaserecord.Building
+	Failed    = releaserecord.Failed
+	Qualified = releaserecord.Qualified
 )
 
 // Record is a status in the release record format, as releaserecord parses
@@ -150,6 +151,9 @@ func ParseRef(ref string) (releaseversion.Version, bool) {
 
 // Branch is the release branch of a version, without refs/heads/.
 func Branch(version releaseversion.Version) string { return "release/" + version.String() }
+
+// Ref is the full ref of the version's release branch.
+func Ref(version releaseversion.Version) string { return branchPrefix + version.String() }
 
 // IsVersionTag reports whether a tag is an input of the version: its final
 // tag or one named v<V>-rc.<suffix>.
