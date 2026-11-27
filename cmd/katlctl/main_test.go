@@ -2410,6 +2410,37 @@ func TestHostUpgradeReportsObservedRebootOutcomes(t *testing.T) {
 			t.Fatalf("unreadable current boot report = %+v", report)
 		}
 	})
+
+	t.Run("target keeps running with required link down", func(t *testing.T) {
+		const diagnostic = "systemd-networkd reports required link enp1s0 not online (kernel carrier: down)"
+		fake := readyHostUpgradeClient()
+		fake.onReboot = func(request *agentapi.RebootRequest) {
+			fake.nodeStatus.AgentStartId = "after"
+			fake.nodeStatus.CurrentGenerationId = request.TargetGenerationId
+			fake.nodeStatus.BootHealthState = bootHealthUnhealthy
+			fake.nodeStatus.BootHealthDiagnostic = diagnostic
+			fake.generation = &agentapi.Generation{
+				GenerationId: request.TargetGenerationId,
+				CommitState:  generation.CommitStateCommitted,
+				BootState:    generation.BootStateGood,
+				HealthState:  generation.HealthStateHealthy,
+			}
+		}
+		installKatlcDial(t, nil, fake)
+
+		var stdout bytes.Buffer
+		err := run(t.Context(), []string{"node", "upgrade", "cp-1", "--version", "2026.9.0-beta.16", "--config", writeClusterConfig(t), "--timeout", "50ms", "--output", "json"}, &stdout, io.Discard)
+		if !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), diagnostic) {
+			t.Fatalf("upgrade error = %v, want timeout with %q", err, diagnostic)
+		}
+		var report hostUpgradeReport
+		if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+			t.Fatal(err)
+		}
+		if report.Result != "failed" || !report.Rebooted || report.BootHealth != "unhealthy" || report.BootHealthDiagnostic != diagnostic {
+			t.Fatalf("unhealthy current boot report = %+v", report)
+		}
+	})
 }
 
 func readyWorkerKubernetesStatus() *agentapi.KubernetesStatus {

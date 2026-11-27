@@ -167,6 +167,9 @@ type alertSpec struct {
 
 func activeAlerts(snapshot *Snapshot) []alertSpec {
 	alerts := make([]alertSpec, 0, 7)
+	if snapshot.BootHealth.Diagnostic != "" {
+		alerts = append(alerts, alertSpec{label: "Boot health", value: snapshot.BootHealth.Diagnostic, style: styleWarn})
+	}
 	if strings.TrimSpace(snapshot.LastError) != "" {
 		alerts = append(alerts, alertSpec{label: "Error", value: snapshot.LastError, style: styleBad})
 	}

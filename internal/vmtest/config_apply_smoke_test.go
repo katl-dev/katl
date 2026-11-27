@@ -1063,7 +1063,7 @@ func runManagementNetworkFailureSmoke(t *testing.T, ctx context.Context, node *R
 		"--unit=katl-boot-health.service", "--no-pager", "--grep=^vmtest management network expiry injected$",
 		"_SYSTEMD_INVOCATION_ID="+invocation)
 	healthJournal := guestCommandOutput(t, ctx, guest, "management-network-health-journal", "journalctl", journalBoot, "--no-pager", "-u", "katl-boot-health.service")
-	if !containsAll(healthJournal, "generation="+candidate+" result=failure", "management network unavailable: configured management network is not ready after 90 seconds: required links are not online: vmtest-mgmt") {
+	if !containsAll(healthJournal, "generation="+candidate+" result=failure", "configured management network is not ready after 90 seconds", "systemd-networkd reports required link vmtest-mgmt") {
 		t.Fatalf("boot-health journal for boot %s lacks the named-link deadline failure:\n%s", candidateBootID, healthJournal)
 	}
 	recoveryJournal := guestCommandOutput(t, ctx, guest, "management-network-recovery-journal", "journalctl", journalBoot, "--no-pager", "-u", "katl-boot-recovery.service")
@@ -1113,7 +1113,7 @@ func waitForManagementNetworkExpiryArm(t *testing.T, ctx context.Context, guest 
 		record, err := guest.RunCommand(ctx, GuestCommandRequest{
 			Name: "management-network-expiry-armed",
 			Argv: []string{"journalctl", "--boot=" + strings.ReplaceAll(bootID, "-", ""), "--unit=katl-boot-health.service", "--output=json", "--lines=1", "--no-pager",
-				"--grep=^vmtest management network expiry armed: required links are not online: vmtest-mgmt(,|$)"},
+				"--grep=^vmtest management network expiry armed: .*systemd-networkd reports required link vmtest-mgmt "},
 			AllowFailure: true, // journalctl exits 1 when no event has matched yet.
 		})
 		if err != nil {

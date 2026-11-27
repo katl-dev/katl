@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/katl-dev/katl/internal/boothealth"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/bootstrapplan"
@@ -27,6 +28,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/kubeadmconfig"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/installer/systemextensionbundle"
+	"github.com/katl-dev/katl/internal/kernelcmdline"
 	"github.com/katl-dev/katl/internal/kubernetesidentity"
 )
 
@@ -57,7 +59,7 @@ type (
 )
 
 type Executor struct {
-	nodeBootHealth         func(context.Context) nodeBootHealth
+	nodeBootHealth         func(context.Context) boothealth.Status
 	observeUpgradeEtcd     func(context.Context, *operation.EtcdObservation) (*operation.EtcdObservation, error)
 	inspectUpgradeEtcd     func(context.Context, operation.OperationRecord, string) (*operation.EtcdUpgradeEvidence, error)
 	Root                   string
@@ -103,7 +105,7 @@ func NewExecutor(root string, store operation.Store, agentStartID string) *Execu
 		RunPostHealth:        runPostKubeadmHealthCommand,
 		RunEndpointLifecycle: runChildProcess,
 		RunPoweroff:          runChildProcess,
-		MountBootRoot:        mountRuntimeBootRoot,
+		MountBootRoot:        runtimeBootRootMounter(root),
 		BundleClient:         http.DefaultClient,
 		AvailableStorage:     filesystemAvailable,
 		WaitBeforeKubeadm:    waitForContext,
@@ -1300,14 +1302,18 @@ func bootstrapJoinOperation(kind string) bool {
 	return kind == bootstrapplan.OperationKindJoinWorker || kind == bootstrapplan.OperationKindJoinControlPlane
 }
 
-func mountRuntimeBootRoot(ctx context.Context, bootRoot string) error {
-	cmdline, err := os.ReadFile("/proc/cmdline")
-	if err != nil {
-		return fmt.Errorf("read kernel command line: %w", err)
+// runtimeBootRootMounter mounts the ESP of the runtime beneath root, choosing
+// how from that runtime's kernel command line.
+func runtimeBootRootMounter(root string) BootRootMounter {
+	return func(ctx context.Context, bootRoot string) error {
+		options, err := kernelcmdline.ReadCurrent(root)
+		if err != nil {
+			return fmt.Errorf("read kernel command line: %w", err)
+		}
+		return bootRootMounter{installed: installedCommandLine(strings.Join(options, " ")), run: func(ctx context.Context, argv []string) ToolResult {
+			return runChildProcess(ctx, argv, nil)
+		}}.mount(ctx, bootRoot)
 	}
-	return bootRootMounter{installed: installedCommandLine(string(cmdline)), run: func(ctx context.Context, argv []string) ToolResult {
-		return runChildProcess(ctx, argv, nil)
-	}}.mount(ctx, bootRoot)
 }
 
 // installedCommandLine reports whether the kernel booted an installed root

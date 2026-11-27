@@ -36,6 +36,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/kubernetesidentity"
+	"github.com/katl-dev/katl/internal/managementnetwork"
 	"golang.org/x/sys/unix"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -108,6 +109,7 @@ type Server struct {
 	efiStatfs                func(int, *unix.Statfs_t) error
 	RunShutdown              ToolRunner
 	RunBootHealthStatus      ToolRunner
+	readManagementNetwork    func(context.Context) ([]byte, error)
 	RunManagementTrial       ToolRunner
 	ManagementTrialClock     nodeidentity.TrialClock
 	Now                      func() time.Time
@@ -126,7 +128,7 @@ func NewServer(root string, store operation.Store) *Server {
 	now := time.Now().UTC()
 	startID, _ := randomID("agent")
 	return &Server{
-		MountBootRoot:            mountRuntimeBootRoot,
+		MountBootRoot:            runtimeBootRootMounter(root),
 		SetBootDefault:           setBootDefault,
 		SetBootOneshot:           setBootOneshot,
 		Root:                     strings.TrimSpace(root),
@@ -145,6 +147,7 @@ func NewServer(root string, store operation.Store) *Server {
 		efiStatfs:                unix.Fstatfs,
 		RunShutdown:              runChildProcess,
 		RunBootHealthStatus:      runChildProcess,
+		readManagementNetwork:    managementnetwork.ReadState,
 		RunManagementTrial:       runChildProcess,
 		Now:                      func() time.Time { return time.Now().UTC() },
 		OperationID:              defaultOperationID,

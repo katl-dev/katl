@@ -324,6 +324,55 @@ controlPlane:
 	}
 }
 
+// Catches a fix that only stop-lists "routable": the other enumeration
+// keywords would still be collected and could match base-image vocabulary.
+func TestExternalConfigContentLiteralsSkipVocabulary(t *testing.T) {
+	content := "[Match]\nType=ether\n\n[Link]\nRequiredForOnline=routable\nActivationPolicy=always-up\nMACAddressPolicy=persistent\n\n[Network]\nKeepConfiguration=dhcp-on-stop\nIgnoreCarrierLoss=degraded-carrier\n\n[Bond]\nMode=active-backup\n"
+	values := map[string]bool{}
+	addExternalConfigContentLiterals(values, content)
+	literals := make([]string, 0, len(values))
+	for value := range values {
+		literals = append(literals, value)
+	}
+	if len(literals) != 0 {
+		t.Fatalf("content literals = %#v, want none from configuration vocabulary", literals)
+	}
+
+	artifact := writeFixtureFile(t, filepath.Join(t.TempDir(), "installer.img"), "networkd\x00routable\x00always-up\x00persistent\x00dhcp-on-stop\x00degraded-carrier\x00active-backup\x00")
+	if err := scanGenericInstallerArtifact(artifact, literals); err != nil {
+		t.Fatalf("scanGenericInstallerArtifact(vocabulary) error = %v", err)
+	}
+}
+
+// Catches an over-narrow rule, such as keeping only values that parse as
+// addresses, which would miss a hostname or key in the same file.
+func TestExternalConfigContentLiteralsDetectIdentity(t *testing.T) {
+	const (
+		address  = "198.51.100.7/24"
+		hostname = "edge-node-17.lab.example"
+		sshKey   = "ssh.authorized_keys.root:AAAAC3NzaC1lZDI1NTE5AAAAIGxlYWsta2V5LWZvci10ZXN0LW9ubHktMDEyMzQ1"
+	)
+	content := "[Link]\nRequiredForOnline=routable\n\n[Network]\nAddress=" + address + "\n\n[DHCPv4]\nHostname=" + hostname + "\n\n[Service]\nSetCredential=" + sshKey + "\n"
+	values := map[string]bool{}
+	addExternalConfigContentLiterals(values, content)
+	literals := make([]string, 0, len(values))
+	for value := range values {
+		literals = append(literals, value)
+	}
+
+	dir := t.TempDir()
+	for _, leaked := range []string{address, hostname, sshKey} {
+		if !stringSliceContains(literals, leaked) {
+			t.Fatalf("content literals missing %q from %#v", leaked, literals)
+		}
+		artifact := writeFixtureFile(t, filepath.Join(dir, "installer.img"), "routable\x00leaked "+leaked+"\x00")
+		err := scanGenericInstallerArtifact(artifact, literals)
+		if err == nil || !strings.Contains(err.Error(), leaked) {
+			t.Fatalf("scanGenericInstallerArtifact(%q) error = %v, want leak of %q", leaked, err, leaked)
+		}
+	}
+}
+
 func TestScanExternalConfigAvoidsShortHostnameSubstrings(t *testing.T) {
 	values := map[string]bool{}
 	addHostnameLiterals(values, "cp-1")

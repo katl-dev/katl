@@ -21,6 +21,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/katl-dev/katl/internal/boothealth"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/apivip"
@@ -932,7 +933,7 @@ func TestNodeStatusReportsManualFallbackMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if nodeStatus.GetCurrentGenerationId() != "generation-1" || nodeStatus.GetSelectedGenerationId() != "generation-0" || nodeStatus.GetBootHealthState() != nodeBootHealthFailed {
+	if nodeStatus.GetCurrentGenerationId() != "generation-1" || nodeStatus.GetSelectedGenerationId() != "generation-0" || nodeStatus.GetBootHealthState() != boothealth.Failed {
 		t.Fatalf("node status = %#v, want active generation-1, selected generation-0, failed boot health", nodeStatus)
 	}
 	if !strings.Contains(nodeStatus.GetBootHealthDiagnostic(), "does not match durable boot evidence") {
@@ -946,7 +947,7 @@ func TestNodeStatusReportsManualFallbackMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if nodeStatus.GetBootHealthState() != nodeBootHealthUnknown ||
+	if nodeStatus.GetBootHealthState() != boothealth.Unknown ||
 		!strings.Contains(nodeStatus.GetBootHealthDiagnostic(), "running generation generation-0 does not match durable boot evidence generation-1") ||
 		!strings.Contains(nodeStatus.GetBootHealthDiagnostic(), "cannot read boot health for this boot from systemd") {
 		t.Fatalf("boot health with unreadable systemd state = %s (%s)", nodeStatus.GetBootHealthState(), nodeStatus.GetBootHealthDiagnostic())
@@ -1003,7 +1004,7 @@ func TestNodeStatusReportsLivePromotedGenerationHealthy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if nodeStatus.GetCurrentGenerationId() != "generation-1" || nodeStatus.GetBootTargetGenerationId() != "generation-1" || nodeStatus.GetSelectedGenerationId() != "generation-0" || nodeStatus.GetBootHealthState() != nodeBootHealthHealthy || nodeStatus.GetBootHealthDiagnostic() != "" {
+	if nodeStatus.GetCurrentGenerationId() != "generation-1" || nodeStatus.GetBootTargetGenerationId() != "generation-1" || nodeStatus.GetSelectedGenerationId() != "generation-0" || nodeStatus.GetBootHealthState() != boothealth.Healthy || nodeStatus.GetBootHealthDiagnostic() != "" {
 		t.Fatalf("live-promoted node status = %#v", nodeStatus)
 	}
 }
@@ -1258,10 +1259,11 @@ func TestHostUpgradeDryRunAllowsHealthySourceBeforeBootstrap(t *testing.T) {
 }
 
 func TestHostUpgradeRequiresConfirmedBootHealth(t *testing.T) {
-	for _, tc := range []struct{ state, properties, reason string }{
-		{"failed", healthDependencyFailed, "sshd.service"},
-		{"pending", healthStalled, "has not finished for this boot"},
-		{"unknown", "", "cannot read boot health for this boot from systemd"},
+	for _, tc := range []struct{ state, properties, reason, network string }{
+		{state: "failed", properties: healthDependencyFailed, reason: "sshd.service"},
+		{state: "pending", properties: healthStalled, reason: "has not finished for this boot"},
+		{state: "unknown", reason: "cannot read boot health for this boot from systemd"},
+		{state: "unhealthy", properties: healthSucceeded, reason: "required link management0 lacks its required address", network: addresslessManagementNetwork},
 	} {
 		for _, dryRun := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/dry-run=%t", tc.state, dryRun), func(t *testing.T) {
@@ -1270,6 +1272,11 @@ func TestHostUpgradeRequiresConfirmedBootHealth(t *testing.T) {
 				unit := &healthUnit{}
 				unit.set(tc.properties)
 				server.RunBootHealthStatus = unit.runWithFailedSSH
+				if tc.network != "" {
+					server.readManagementNetwork = func(context.Context) ([]byte, error) {
+						return []byte(tc.network), nil
+					}
+				}
 				server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error { return nil })
 				req := hostUpgradeSubmitRequest("req-host-upgrade-failed-boot")
 				req.DryRun = dryRun
@@ -1279,8 +1286,7 @@ func TestHostUpgradeRequiresConfirmedBootHealth(t *testing.T) {
 					!strings.Contains(err.Error(), tc.state) ||
 					!strings.Contains(err.Error(), tc.reason) ||
 					!strings.Contains(err.Error(), "katlctl node status <node>") ||
-					!strings.Contains(err.Error(), "katlctl cluster apply") ||
-					!strings.Contains(err.Error(), "katlctl node reboot <node>") {
+					strings.Contains(err.Error(), "katlctl node reboot <node>") != (tc.state != "unhealthy") {
 					t.Fatalf("upgrade error = %v, want %s health with %q and repair guidance", err, tc.state, tc.reason)
 				}
 				ids, err := server.Store.OperationIDs()
@@ -3770,6 +3776,7 @@ func newTestServer(t *testing.T) *testServer {
 	}
 	// Tests opt in to a boot health unit; the host running them has none.
 	server.RunBootHealthStatus = nil
+	server.readManagementNetwork = readReadyManagementNetwork
 	server.EnrollmentID = testEnrollmentID
 	server.InventoryNodeName = testInventoryNodeName
 	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)

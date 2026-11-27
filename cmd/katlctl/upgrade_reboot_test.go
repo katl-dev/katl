@@ -196,12 +196,13 @@ func TestWaitNodeBootHealthWaitsForKubernetesRecovery(t *testing.T) {
 
 // bootObservation is what the node reports at one poll after a reboot request.
 type bootObservation struct {
-	agentStart string
-	running    string
-	health     string
-	diagnostic string
-	nextBoot   string
-	candidate  string
+	agentStart    string
+	running       string
+	health        string
+	diagnostic    string
+	nextBoot      string
+	candidate     string
+	candidateBoot string
 }
 
 func (o bootObservation) status() *agentapi.NodeStatus {
@@ -226,6 +227,7 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 		// settled is the observation the wait must end on.
 		settled         int
 		err             []string
+		progress        []string
 		noRebootAdvice  bool
 		nextUnavailable string
 	}{
@@ -237,6 +239,16 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 				{agentStart: "after", running: "gen-a", health: "healthy", candidate: healthy},
 			},
 			settled: 2,
+		},
+		{
+			name: "reboot waits for management link recovery",
+			observations: []bootObservation{
+				{agentStart: "after", running: "gen-a", health: "unhealthy", diagnostic: "systemd-networkd reports required link enp1s0 not online", candidate: healthy},
+				{agentStart: "after", running: "gen-a", health: "unknown", candidate: healthy},
+				{agentStart: "after", running: "gen-a", health: "healthy", candidate: healthy},
+			},
+			settled:  2,
+			progress: []string{"systemd-networkd", "enp1s0"},
 		},
 		{
 			name: "failed boot of a previously healthy generation",
@@ -271,10 +283,23 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 			observations: []bootObservation{
 				{agentStart: "trial", running: "gen-a", health: "pending", nextBoot: "gen-old", candidate: unhealthy},
 				{agentStart: "fallback", running: "gen-old", health: "pending", candidate: unhealthy},
-				{agentStart: "fallback", running: "gen-old", health: "healthy", candidate: unhealthy},
 			},
-			settled: 2,
+			settled: 1,
 			err:     []string{"rejected generation gen-a during boot health and returned on generation gen-old"},
+		},
+		{
+			name: "fallback lost a management link",
+			observations: []bootObservation{
+				{agentStart: "fallback", running: "gen-old", health: "unhealthy", diagnostic: "systemd-networkd reports required link enp1s0 not online", candidate: unhealthy},
+			},
+			err: []string{"rejected generation gen-a during boot health and returned on generation gen-old"},
+		},
+		{
+			name: "fallback with a recorded boot failure on the trial",
+			observations: []bootObservation{
+				{agentStart: "fallback", running: "gen-old", health: "unhealthy", candidate: generation.HealthStateUnknown, candidateBoot: generation.BootStateFailed},
+			},
+			err: []string{"rejected generation gen-a during boot health and returned on generation gen-old"},
 		},
 		{
 			name: "failed fallback boot",
@@ -304,8 +329,8 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 					Generations:          []*agentapi.Generation{{GenerationId: current.nextBoot, UnavailableReason: test.nextUnavailable}},
 				}
 				fake.generation = &agentapi.Generation{GenerationId: "gen-a", CommitState: generation.CommitStateCommitted, BootState: generation.BootStateGood, HealthState: current.candidate}
-				if current.candidate == unhealthy {
-					fake.generation.BootState = generation.BootStateFailed
+				if current.candidateBoot != "" {
+					fake.generation.BootState = current.candidateBoot
 				}
 			}
 			installKatlcDial(t, nil, fake)
@@ -313,8 +338,14 @@ func TestWaitNodeBootHealthFollowsCurrentBoot(t *testing.T) {
 
 			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 			defer cancel()
-			_, verified, err := waitNodeBootHealth(ctx, bootWaitTarget{nodeName: "cp-1", endpoints: []string{"10.0.0.11:9443"}, flags: " --config cluster.yaml"}, "before", "gen-a", nodeRecoveryRequirement{}, "reboot node=cp-1", io.Discard)
+			var progress strings.Builder
+			_, verified, err := waitNodeBootHealth(ctx, bootWaitTarget{nodeName: "cp-1", endpoints: []string{"10.0.0.11:9443"}, flags: " --config cluster.yaml"}, "before", "gen-a", nodeRecoveryRequirement{}, "reboot node=cp-1", &progress)
 
+			for _, want := range test.progress {
+				if !strings.Contains(progress.String(), want) {
+					t.Errorf("progress = %q, want %q", progress.String(), want)
+				}
+			}
 			if errors.Is(err, context.DeadlineExceeded) {
 				t.Fatalf("wait timed out: %v", err)
 			}
@@ -373,6 +404,7 @@ func TestObservedBootHealth(t *testing.T) {
 		want   string
 	}{
 		{name: "another generation is running", status: &agentapi.NodeStatus{CurrentGenerationId: "gen-a", SelectedGenerationId: "trial", BootHealthState: "failed"}, want: "unknown"},
+		{name: "another generation is running with a link down", status: &agentapi.NodeStatus{CurrentGenerationId: "gen-a", SelectedGenerationId: "fallback", BootHealthState: "unhealthy"}, want: "unknown"},
 		{name: "running boot failed", status: &agentapi.NodeStatus{CurrentGenerationId: "gen-a", SelectedGenerationId: "gen-a", BootHealthState: "failed"}, want: "failed"},
 		{name: "running boot pending", status: &agentapi.NodeStatus{CurrentGenerationId: "gen-a", SelectedGenerationId: "gen-a", BootHealthState: "pending"}, want: "unknown"},
 		{name: "running boot healthy", status: &agentapi.NodeStatus{CurrentGenerationId: "gen-a", SelectedGenerationId: "gen-a", BootHealthState: "healthy"}, want: "healthy"},

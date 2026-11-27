@@ -19,22 +19,29 @@ The target is generation-scoped. The required local services depend on the
 selected generation's capability profile.
 
 Management-network readiness is also local and generation-scoped. For a
-generation that has not previously passed boot health, Katl reads
-systemd-networkd's effective link state and requires:
+generation that has yet to pass boot health, Katl reads systemd-networkd's
+effective link state. Every managed link with `RequiredForOnline` enabled must
+have carrier and report `OnlineState=online`, which reflects the link's
+operational range and address-family policy. At least one required link must
+be operationally `routable`.
 
-```text
-at least one networkd-managed link with RequiredForOnline enabled
-every such required link in networkd's online state
-at least one such required link in the routable operational state
-```
+| Minimum | Address state required in addition to carrier |
+| --- | --- |
+| `carrier` or lower, or `enslaved` (the default for bond ports) | Any |
+| `degraded` | `degraded` or `routable` |
+| `routable` | `routable` |
 
-The generated DHCP fallback marks its physical Ethernet links
-`RequiredForOnline=routable`. Native networkd configuration may explicitly
-exclude a secondary link with `RequiredForOnline=no`. Unmanaged workload links
-and excluded secondary links cannot satisfy the routable-link requirement or
-hide an offline required link. This check proves the configured local path is
-usable; it does not depend on a particular workstation, gateway, or other
-remote client answering a probe.
+When networkd reports an explicit `RequiredOperationalStateForOnline` range,
+Katl also checks the minimum against `AddressState`. If the range is omitted,
+`OnlineState` reflects the device-specific default. The generated DHCP fallback sets
+`RequiredForOnline=routable` for physical Ethernet. In native networkd
+configuration, set `RequiredForOnline=routable` on the interface carrying the
+management address if it must have a routable address. Bond and bridge ports
+can qualify with carrier alone. Set `RequiredForOnline=no` for optional links.
+Katl counts only required, managed links toward readiness.
+
+Trial boot retries unreadable networkctl state within the same 90-second
+deadline it uses for links that have yet to qualify.
 
 Systemd owns required-service qualification. The boot-health unit has explicit
 `Requires=` and `After=` dependencies for Katl's baseline management services,
@@ -55,10 +62,15 @@ rebinds a replaced volume. Boot health therefore orders after the unit with
 while the unit is failed in the running boot, and the volume status names each
 unmounted volume, the cause and the remedy.
 
-A generation already recorded as `good` and `healthy` does not repeat network
-qualification during an ordinary boot. This preserves a known-good local
-fallback during a transient network outage; required-service dependencies still
-apply on every boot.
+Required-service dependencies apply on every boot. During an ordinary boot of a
+known-good generation, the boot service can complete while a management link is
+down, preserving the generation as a local fallback. After boot health settles,
+`katlctl node status` and the operator console read current-boot health using
+the same networkd criteria as trial boot health. Both report unhealthy boot
+health, name the offline required link and show repair guidance. After the link
+recovers, both show the restored boot health if the other checks pass. These
+observations leave the boot selection and generation records intact, so
+operators can still apply a repair or request a reboot.
 
 For generation 0, "machine identity available" means PID 1 received the
 install-generated value through `systemd.machine_id=`, `/etc/machine-id`

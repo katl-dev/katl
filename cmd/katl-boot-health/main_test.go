@@ -67,8 +67,7 @@ func TestRunPromotesGenerationFromCommandLine(t *testing.T) {
 	}
 }
 
-func TestRunPromotesTrialAndSetsBootDefault(t *testing.T) {
-	stubManagementNetwork(t)
+func TestRunPromotesTrialAfterManagementReadError(t *testing.T) {
 	root := t.TempDir()
 	now := time.Date(2026, 6, 15, 17, 0, 0, 0, time.UTC)
 	writeCommandGeneration(t, root, "gen0", now.Add(-2*time.Hour))
@@ -122,9 +121,21 @@ func TestRunPromotesTrialAndSetsBootDefault(t *testing.T) {
 	t.Cleanup(func() { bootDefaultCommand = oldBootDefault })
 
 	var stdout bytes.Buffer
-	if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result", generation.BootHealthSuccess}, &stdout); err != nil {
-		t.Fatalf("run() error = %v", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		oldRead := readNetworkctlState
+		t.Cleanup(func() { readNetworkctlState = oldRead })
+		started := time.Now()
+		readNetworkctlState = func(context.Context) ([]byte, error) {
+			if time.Since(started) < time.Minute {
+				return nil, errors.New("networkctl temporarily unavailable")
+			}
+			return []byte(`{"Interfaces":[{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["routable","routable"],"OnlineState":"online","CarrierState":"carrier","AddressState":"routable","OperationalState":"routable"}]}`), nil
+		}
+
+		if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, &stdout); err != nil {
+			t.Fatalf("run() after %s: %v (%s)", time.Since(started), err, &stdout)
+		}
+	})
 	if gotRoot != root || gotEntry != "loader/entries/katl-gen1.conf" {
 		t.Fatalf("boot default call = (%q, %q), want (%q, loader/entries/katl-gen1.conf)", gotRoot, gotEntry, root)
 	}
@@ -175,9 +186,9 @@ func TestRunDoesNotPromoteWithoutManagementNetwork(t *testing.T) {
 }
 
 func TestManagementNetworkTimingDefaults(t *testing.T) {
-	if managementTiming.trialTimeout != 90*time.Second || managementTiming.pollInterval != time.Second {
-		t.Fatalf("management network trial timeout = %s, poll interval = %s, want 90s and 1s",
-			managementTiming.trialTimeout, managementTiming.pollInterval)
+	if managementTiming.trialTimeout != 90*time.Second || managementTiming.initialDelay != time.Second {
+		t.Fatalf("management network trial timeout = %s, initial retry delay = %s, want 90s and 1s",
+			managementTiming.trialTimeout, managementTiming.initialDelay)
 	}
 }
 
@@ -193,7 +204,7 @@ func TestManagementNetworkAcceptsOnlineReadAtDeadline(t *testing.T) {
 			}
 			// Deliver the completed online observation after the deadline is visible.
 			<-ctx.Done()
-			return []byte(`{"Interfaces":[{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable"}]}`), nil
+			return []byte(`{"Interfaces":[{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}]}`), nil
 		}
 
 		timing := managementTiming
@@ -202,56 +213,6 @@ func TestManagementNetworkAcceptsOnlineReadAtDeadline(t *testing.T) {
 			t.Fatalf("management network wait rejected a successful online read: %v", err)
 		}
 	})
-}
-
-func TestManagementNetworkReadyUsesConfiguredRequiredLinks(t *testing.T) {
-	for _, test := range []struct {
-		name       string
-		links      string
-		ready      bool
-		wantReason string
-	}{
-		{
-			name:  "required management link",
-			links: `{"Interfaces":[{"Name":"enp1s0","NetworkFile":"/etc/systemd/network/10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable"}]}`,
-			ready: true,
-		},
-		{
-			name:       "workload address cannot mask offline management",
-			links:      `{"Interfaces":[{"Name":"enp1s0","NetworkFile":"/etc/systemd/network/10-lan.network","RequiredForOnline":true,"OnlineState":"offline","OperationalState":"no-carrier"},{"Name":"cni0","OnlineState":null,"OperationalState":"routable"}]}`,
-			wantReason: "enp1s0",
-		},
-		{
-			name:       "workload address cannot supply required route",
-			links:      `{"Interfaces":[{"Name":"enp1s0","NetworkFile":"/etc/systemd/network/10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"degraded"},{"Name":"cni0","OnlineState":null,"OperationalState":"routable"}]}`,
-			wantReason: "no required link is routable",
-		},
-		{
-			name:  "optional secondary link is ignored",
-			links: `{"Interfaces":[{"Name":"enp1s0","NetworkFile":"/etc/systemd/network/10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable"},{"Name":"enp2s0","NetworkFile":"/etc/systemd/network/20-secondary.network","RequiredForOnline":false,"OnlineState":"offline","OperationalState":"no-carrier"}]}`,
-			ready: true,
-		},
-		{
-			name:       "required secondary link blocks readiness",
-			links:      `{"Interfaces":[{"Name":"enp1s0","NetworkFile":"/etc/systemd/network/10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable"},{"Name":"enp2s0","NetworkFile":"/etc/systemd/network/20-secondary.network","RequiredForOnline":true,"OnlineState":"offline","OperationalState":"no-carrier"}]}`,
-			wantReason: "enp2s0",
-		},
-		{
-			name:       "no configured management link",
-			links:      `{"Interfaces":[{"Name":"cni0","OnlineState":null,"OperationalState":"routable"}]}`,
-			wantReason: "no systemd-networkd link",
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			ready, reason, err := managementNetworkReady([]byte(test.links))
-			if err != nil {
-				t.Fatalf("managementNetworkReady() error = %v", err)
-			}
-			if ready != test.ready || !strings.Contains(reason, test.wantReason) {
-				t.Fatalf("managementNetworkReady() = %t, %q, want %t, reason containing %q", ready, reason, test.ready, test.wantReason)
-			}
-		})
-	}
 }
 
 func TestRunKeepsKnownGoodGenerationOnNetworkOutage(t *testing.T) {

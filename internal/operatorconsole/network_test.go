@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/boothealth"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
@@ -91,9 +91,9 @@ func TestNetworkAlignment(t *testing.T) {
 
 func TestBootstrapGuidance(t *testing.T) {
 	snapshot := Snapshot{
-		Mode:             ModeRuntime,
-		State:            installstatus.StateWaitingForClusterBootstrap,
-		GenerationHealth: generation.HealthStateHealthy,
+		Mode:       ModeRuntime,
+		State:      installstatus.StateWaitingForClusterBootstrap,
+		BootHealth: boothealth.Status{State: boothealth.Healthy},
 	}
 	model := NewDashboardModel(&snapshot)
 	if model.Host.State != PresentationProgressing || model.Host.Label != "Waiting for cluster bootstrap" {

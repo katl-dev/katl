@@ -661,6 +661,9 @@ func runHostUpgrade(ctx context.Context, opts hostUpgradeOptions, stdout, stderr
 }
 
 func observedBootHealth(verified verifiedNodeBoot, targetGeneration string) string {
+	if verified.Status.GetBootHealthState() == bootHealthUnhealthy && runningGeneration(verified.Status) == targetGeneration {
+		return bootHealthUnhealthy
+	}
 	if verified.Status.GetBootHealthState() == bootHealthUnknown || verified.Generation == nil {
 		return bootHealthUnknown
 	}

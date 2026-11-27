@@ -33,10 +33,11 @@ func (boot verifiedNodeBoot) healthyOn(generationID string) bool {
 
 // Boot health states reported by the node agent for its running boot.
 const (
-	bootHealthHealthy = "healthy"
-	bootHealthPending = "pending"
-	bootHealthFailed  = "failed"
-	bootHealthUnknown = "unknown"
+	bootHealthHealthy   = "healthy"
+	bootHealthPending   = "pending"
+	bootHealthFailed    = "failed"
+	bootHealthUnknown   = "unknown"
+	bootHealthUnhealthy = "unhealthy"
 )
 
 // runningGeneration is the generation the node booted. Active configuration
@@ -185,6 +186,12 @@ func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgen
 			phase("boot-health-pending")
 		case bootHealthUnknown:
 			phase("boot-health-unknown")
+		case bootHealthUnhealthy:
+			progress := "boot-health-unhealthy"
+			if reason := strings.TrimSpace(status.GetBootHealthDiagnostic()); reason != "" {
+				progress += " (" + reason + ")"
+			}
+			phase(progress)
 		}
 		observed.Status = status
 		observed.Endpoint = endpoint
@@ -194,14 +201,18 @@ func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgen
 		}
 		observed.Generation = candidate
 
-		switch status.GetBootHealthState() {
-		case bootHealthHealthy:
-		case bootHealthFailed:
+		if status.GetBootHealthState() == bootHealthFailed {
 			return verifiedNodeBoot{}, true, bootHealthFailure(ctx, conn.Client, target, targetGeneration, status)
-		default:
-			return verifiedNodeBoot{}, false, nil
 		}
 		running := runningGeneration(status)
+		// Rejection is durable even while the fallback is still settling.
+		if running != "" && running != targetGeneration &&
+			(candidate.GetBootState() == generation.BootStateFailed || candidate.GetHealthState() == generation.HealthStateUnhealthy) {
+			return verifiedNodeBoot{}, true, fmt.Errorf("node %s rejected generation %s during boot health and returned on generation %s", nodeName, targetGeneration, running)
+		}
+		if status.GetBootHealthState() != bootHealthHealthy {
+			return verifiedNodeBoot{}, false, nil
+		}
 		if running == targetGeneration && !observed.healthyOn(targetGeneration) {
 			return verifiedNodeBoot{}, false, nil
 		}
@@ -217,9 +228,6 @@ func waitNodeBootHealth(ctx context.Context, target bootWaitTarget, previousAgen
 			return verifiedNodeBoot{}, false, nil
 		}
 		if running != targetGeneration {
-			if candidate.GetHealthState() == generation.HealthStateUnhealthy {
-				return verifiedNodeBoot{}, true, fmt.Errorf("node %s rejected generation %s during boot health and returned on generation %s", nodeName, targetGeneration, running)
-			}
 			return verifiedNodeBoot{}, true, fmt.Errorf("node %s booted generation %s instead of %s; inspect %s, select the intended generation with %s, then reboot again", nodeName, running, targetGeneration, target.command("generations list"), target.command("generations select GENERATION"))
 		}
 		return verifiedNodeBoot{Status: status, Generation: candidate, Endpoint: endpoint}, true, nil

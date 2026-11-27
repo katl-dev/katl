@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/boothealth"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
@@ -40,6 +42,17 @@ const (
 		"Id=katl-boot-health.service\nLoadState=not-found\nActiveState=inactive\nJob=\n\n" +
 		"Id=katl-boot-complete.target\nLoadState=not-found\nActiveState=inactive\nJob=\n"
 )
+
+const readyManagementLink = `{"Interfaces":[{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}]}`
+
+func readReadyManagementNetwork(context.Context) ([]byte, error) {
+	return []byte(readyManagementLink), nil
+}
+
+const addresslessManagementNetwork = `{"Interfaces":[
+	{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["routable","routable"],"OnlineState":"online","OperationalState":"carrier","CarrierState":"carrier","AddressState":"off"},
+	{"Name":"management1","NetworkFile":"20-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}
+]}`
 
 // healthUnit fakes systemd's view of katl-boot-health.service.
 type healthUnit struct{ properties atomic.Value }
@@ -96,20 +109,107 @@ func knownGoodNode(t *testing.T, unitProperties string) (*testServer, *healthUni
 	return server, unit
 }
 
+func TestNodeStatusTracksRequiredManagementLink(t *testing.T) {
+	for _, tc := range []struct {
+		name, network string
+	}{
+		{name: "carrier lost", network: `{"Interfaces":[
+			{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"offline","OperationalState":"no-carrier","CarrierState":"no-carrier","AddressState":"routable"},
+			{"Name":"management1","NetworkFile":"20-lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}
+		]}`},
+		{name: "address lost", network: addresslessManagementNetwork},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server, _ := knownGoodNode(t, healthSucceeded)
+			writeRebootEFIDefault(t, server.Server)
+			efi := rootedPath(server.Root, efiVarsPath)
+			writeTestEFIVariable(t, efi, "LoaderEntryOneShot", "katl-generation-0.conf")
+			server.SetBootDefault = func(_ context.Context, _, entry string) error {
+				writeTestEFIVariable(t, efi, "LoaderEntryDefault", entry)
+				return nil
+			}
+			server.SetBootOneshot = func(_ context.Context, _, entry string) error {
+				writeTestEFIVariable(t, efi, "LoaderEntryOneShot", entry)
+				return nil
+			}
+			server.RunReboot = func(context.Context, []string, func(int)) ToolResult {
+				t.Fatal("a management link outage requested a reboot")
+				return ToolResult{}
+			}
+			files := []string{
+				filepath.Join(server.Root, "var/lib/katl/boot/selection.json"),
+				filepath.Join(server.Root, "var/lib/katl/generations/generation-0/status.json"),
+				filepath.Join(efi, "LoaderEntryDefault"+loaderVarGUID),
+				filepath.Join(efi, "LoaderEntryOneShot"+loaderVarGUID),
+			}
+			type snapshot struct {
+				data []byte
+				info os.FileInfo
+			}
+			readFiles := func() []snapshot {
+				t.Helper()
+				var snapshots []snapshot
+				for _, path := range files {
+					data, err := os.ReadFile(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					info, err := os.Stat(path)
+					if err != nil {
+						t.Fatal(err)
+					}
+					snapshots = append(snapshots, snapshot{data, info})
+				}
+				return snapshots
+			}
+			before := readFiles()
+
+			// A second routable link must not hide the required link's outage.
+			network := tc.network
+			server.readManagementNetwork = func(context.Context) ([]byte, error) { return []byte(network), nil }
+			for _, want := range []string{boothealth.Unhealthy, boothealth.Healthy} {
+				report, err := server.GetNodeStatus(t.Context(), &agentapi.GetNodeStatusRequest{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				diagnostic := report.GetBootHealthDiagnostic()
+				if report.GetBootHealthState() != want {
+					t.Fatalf("boot health = %s (%s), want %s", report.GetBootHealthState(), diagnostic, want)
+				}
+				if want == boothealth.Unhealthy && (!strings.Contains(diagnostic, "management0") ||
+					!strings.Contains(diagnostic, "systemd-networkd") || strings.Contains(diagnostic, "cable") ||
+					strings.Contains(diagnostic, "switch port") || strings.Contains(diagnostic, "lost carrier") || strings.Contains(diagnostic, "link down") || !strings.Contains(diagnostic, "katlctl node status")) {
+					t.Fatalf("boot health diagnostic = %q, want link and repair guidance", diagnostic)
+				}
+				if want == boothealth.Healthy && diagnostic != "" {
+					t.Fatalf("recovered boot health diagnostic = %q, want empty", diagnostic)
+				}
+				for i, after := range readFiles() {
+					if !bytes.Equal(before[i].data, after.data) || !os.SameFile(before[i].info, after.info) ||
+						!before[i].info.ModTime().Equal(after.info.ModTime()) {
+						t.Fatalf("%s changed while reporting boot health %s", files[i], want)
+					}
+				}
+				network = readyManagementLink
+			}
+		})
+	}
+}
+
 func TestNodeStatusBootHealthFollowsCurrentBoot(t *testing.T) {
 	for _, tc := range []struct {
 		name, unit, want string
 	}{
-		{name: "settling", unit: healthSettling, want: nodeBootHealthPending},
-		{name: "succeeded", unit: healthSucceeded, want: nodeBootHealthHealthy},
-		{name: "failed", unit: healthFailed, want: nodeBootHealthFailed},
-		{name: "dependency failed", unit: healthDependencyFailed, want: nodeBootHealthFailed},
+		{name: "settling", unit: healthSettling, want: boothealth.Pending},
+		{name: "succeeded", unit: healthSucceeded, want: boothealth.Healthy},
+		{name: "failed", unit: healthFailed, want: boothealth.Failed},
+		{name: "dependency failed", unit: healthDependencyFailed, want: boothealth.Failed},
 		// Boot health passes because the generation is sound, but the node
 		// still reports the volumes the activation check left unmounted.
-		{name: "volumes refused", unit: healthSucceeded + "\n\nId=katl-volumes-activate.service\nLoadState=loaded\nActiveState=failed\nJob=\n", want: nodeBootHealthFailed},
-		{name: "settle timed out", unit: healthStalled, want: nodeBootHealthPending},
-		{name: "units unavailable", unit: healthUnitsMissing, want: nodeBootHealthUnknown},
-		{name: "query failed", want: nodeBootHealthUnknown},
+		{name: "volumes refused", unit: healthSucceeded + "\n\nId=katl-volumes-activate.service\nLoadState=loaded\nActiveState=failed\nJob=\n", want: boothealth.Failed},
+		{name: "settle timed out", unit: healthStalled, want: boothealth.Pending},
+		{name: "units unavailable", unit: healthUnitsMissing, want: boothealth.Unknown},
+		{name: "query failed", want: boothealth.Unknown},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server, _ := knownGoodNode(t, tc.unit)
@@ -188,7 +288,7 @@ func TestNodeStatusReportsFailedBootDependencies(t *testing.T) {
 			}
 			server.RunBootHealthStatus = func(ctx context.Context, argv []string, progress func(int)) ToolResult {
 				switch {
-				case slices.Contains(argv, "--property=Requires") && slices.Contains(argv, bootHealthUnit):
+				case slices.Contains(argv, "--property=Requires") && slices.Contains(argv, "katl-boot-health.service"):
 					return ToolResult{Stdout: []byte("sshd.service systemd-networkd.service\n")}
 				case slices.Contains(argv, "--property=Id,ActiveState") && slices.Contains(argv, "sshd.service"):
 					state := "active"
@@ -206,7 +306,7 @@ func TestNodeStatusReportsFailedBootDependencies(t *testing.T) {
 				t.Fatal(err)
 			}
 			diagnostic := nodeStatus.GetBootHealthDiagnostic()
-			if nodeStatus.GetBootHealthState() != nodeBootHealthFailed ||
+			if nodeStatus.GetBootHealthState() != boothealth.Failed ||
 				!strings.Contains(diagnostic, tc.details) ||
 				!strings.Contains(diagnostic, "katlctl cluster apply") ||
 				!strings.Contains(diagnostic, "katlctl node reboot <node>") {
