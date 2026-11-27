@@ -215,6 +215,13 @@ a family from a job the policy does not name. The policy lists the existing
 exceptions as known violations, and an exception that no longer occurs fails
 the test, so the list only shrinks.
 
+The daily **CI health** workflow runs `katl-queue cache --apply` from `main`.
+It deletes entries saved off `main`, entries matching no family, and keys
+beyond a family's generation limit, writes usage per family to the job
+summary, and fails when what remains exceeds a family's budget or the
+policy's alert threshold. Run `katl-queue cache` locally to see the same
+report without deleting anything.
+
 ## Kernel updates
 
 **Kernel Updates** captures signature-verified RPM sets, retains the immutable

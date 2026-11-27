@@ -60,9 +60,14 @@ Commands:
   ci-cost [--since DATE] [--workflow NAME] [--limit N] [--json]
                     report runner-minutes, runner wait, merge-group wall time
                     and failing jobs across completed workflow runs
+  cache [--apply] [--json]
+                    report Actions cache usage against .github/cache-policy.json;
+                    --apply deletes the entries outside policy
 
 plan and autopilot only report unless given --apply, which needs --milestone.
 prune-runs only reports unless given --apply.
+cache exits 1 when usage that remains exceeds a family budget or the alert
+threshold.
 
 A "Hold: <reason>" line in a PR body holds the PR out of the queue. The
 orchestrator adds it while a PR awaits VM gates or a journey, and deletes it
@@ -119,6 +124,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	}
 	if command == "review" {
 		return reviewCommand(ctx, args, stdout)
+	}
+	if command == "cache" {
+		return cacheCommand(ctx, flags, args, stdout, stderr)
 	}
 	interval := time.Minute
 	var (

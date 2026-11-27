@@ -66,14 +66,14 @@ func TestValidate(t *testing.T) {
 			if !strings.Contains(validPolicy, tc.old) {
 				t.Fatalf("fixture lacks %q", tc.old)
 			}
-			_, err := parse([]byte(strings.Replace(validPolicy, tc.old, tc.new, 1)))
+			_, err := Parse([]byte(strings.Replace(validPolicy, tc.old, tc.new, 1)))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("parse() error = %v, want %q", err, tc.want)
+				t.Fatalf("Parse() error = %v, want %q", err, tc.want)
 			}
 		})
 	}
 
-	if _, err := parse([]byte(validPolicy)); err != nil {
+	if _, err := Parse([]byte(validPolicy)); err != nil {
 		t.Fatalf("valid policy: %v", err)
 	}
 }
@@ -83,16 +83,16 @@ func TestValidateDefersBudgetForCommitKeys(t *testing.T) {
 	overBudget := strings.Replace(validPolicy, `"budget_bytes": 300`, `"budget_bytes": 1`, 1)
 	deferred := strings.Replace(overBudget, `"rule": "multiple-savers"`, `"rule": "commit-in-key"`, 1)
 
-	if _, err := parse([]byte(deferred)); err != nil {
+	if _, err := Parse([]byte(deferred)); err != nil {
 		t.Fatalf("commit-keyed policy: %v", err)
 	}
-	if _, err := parse([]byte(overBudget)); err == nil {
+	if _, err := Parse([]byte(overBudget)); err == nil {
 		t.Fatal("multiple-savers entry deferred the budget sum")
 	}
 }
 
 func TestFamily(t *testing.T) {
-	policy, err := parse([]byte(validPolicy))
+	policy, err := Parse([]byte(validPolicy))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -248,6 +248,21 @@ connections are retried with backoff, so one failed request does not abort a
 long report; an error that persists, or any other error, ends the command and
 names the request.
 
+### `cache`
+
+Run `katl-queue cache` from the checkout root to compare the repository's
+Actions cache entries with [`.github/cache-policy.json`](../../.github/cache-policy.json).
+It prints each family's usage against its budget and lists the entries outside
+policy: those saved off the policy's save ref, those matching no family, and
+keys beyond a family's `max_generations`, where the keys restored most recently
+are kept. Add `--apply` to delete those entries, each reported on standard
+error as it happens; it refuses unless the local policy file matches the
+default branch's copy exactly. Add `--json` for
+structured output. The command exits with status 1 when the entries that
+remain exceed a family's budget or the policy's alert threshold. The
+[CI health workflow](../../.github/workflows/ci-health.yml) runs it daily with
+`--apply`.
+
 ### `help`
 
 Run `katl-queue --help` or `katl-queue help` for the command list. Run
