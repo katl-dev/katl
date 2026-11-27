@@ -179,10 +179,10 @@ for every decision, a refusal included.
 ## Check the release credential
 
 After cutting `release/<version>` and before dispatching a candidate or final
-release, pass the branch to `--ref`.
+release, run the credential check with the release branch as `--ref`.
 
 ```sh
-gh workflow run release-credential.yml --ref release/2026.12.0
+gh workflow run release-credential.yml --ref release/2026.12.1
 ```
 
 Approve the `release` deployment and confirm that the run succeeds. The check
