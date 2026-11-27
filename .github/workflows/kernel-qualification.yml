@@ -77,6 +77,12 @@ jobs:
         with:
           path: _build/mkosi/kernel-sources
           key: katl-kernel-sources-v1-${{ hashFiles('extensions/*/recipe.json') }}
+      - name: Restore image build caches
+        uses: ./.github/actions/image-caches
+        timeout-minutes: 5
+        continue-on-error: true
+        with:
+          flavour: ${{ inputs.flavour }}
       - uses: ./.github/actions/mkosi-builder
         with:
           image: ${{ env.KATL_MKOSI_IMAGE }}

@@ -149,6 +149,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: |
             .github/actions/setup-go
+            .github/actions/image-caches
             .github/actions/mkosi-builder
       - uses: ./_build/workflow-actions/.github/actions/setup-go
         if: inputs.ref != ''
@@ -157,17 +158,19 @@ jobs:
       - uses: ./.github/actions/hosted-vmtest
         with:
           prepared: ${{ needs.plan.outputs.prepared }}
-      - uses: actions/cache/restore@v6
-        id: build-cache
+      - uses: ./_build/workflow-actions/.github/actions/image-caches
+        if: inputs.ref != ''
+        timeout-minutes: 5
+        continue-on-error: true
         with:
-          path: |
-            _build/go-mod
-            _build/go-cache
-            _build/mkosi/package-cache
-          key: hosted-vmtest-build-${{ env.KATL_FLAVOUR }}-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi', 'mkosi.conf', 'mkosi.profiles/**/mkosi.conf', 'kernels/**') }}-${{ needs.plan.outputs.source }}
-          restore-keys: |
-            hosted-vmtest-build-${{ env.KATL_FLAVOUR }}-${{ runner.os }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi', 'mkosi.conf', 'mkosi.profiles/**/mkosi.conf', 'kernels/**') }}-
-            hosted-vmtest-build-${{ env.KATL_FLAVOUR }}-${{ runner.os }}-
+          flavour: ${{ env.KATL_FLAVOUR }}
+      - uses: ./.github/actions/image-caches
+        id: caches
+        if: inputs.ref == ''
+        timeout-minutes: 5
+        continue-on-error: true
+        with:
+          flavour: ${{ env.KATL_FLAVOUR }}
       - uses: ./_build/workflow-actions/.github/actions/mkosi-builder
         if: inputs.ref != ''
         with:
@@ -252,14 +255,21 @@ jobs:
             _build/hosted-agent/**/stderr
             _build/hosted-agent/**/*-network-evidence/**
           retention-days: 3
-      - uses: actions/cache/save@v6
-        if: github.ref == 'refs/heads/main' && always() && steps.runtime.outcome == 'success' && steps.build-cache.outputs.cache-hit != 'true'
+      # This job is the only saver of the image build caches, and only on
+      # scheduled runs: it builds every image, so its caches hold what every
+      # restorer needs. The Go cache is flavour-independent; standard saves it.
+      - name: Save container Go cache
+        if: github.ref == 'refs/heads/main' && github.event_name == 'schedule' && env.KATL_FLAVOUR == 'standard' && always() && steps.runtime.outcome == 'success' && steps.caches.outcome == 'success' && steps.caches.outputs.go-hit != 'true'
+        uses: actions/cache/save@v6
         with:
-          path: |
-            _build/go-mod
-            _build/go-cache
-            _build/mkosi/package-cache
-          key: ${{ steps.build-cache.outputs.cache-primary-key }}
+          path: ${{ steps.caches.outputs.go-paths }}
+          key: ${{ steps.caches.outputs.go-key }}
+      - name: Save mkosi RPM cache
+        if: github.ref == 'refs/heads/main' && github.event_name == 'schedule' && always() && steps.runtime.outcome == 'success' && steps.caches.outcome == 'success' && steps.caches.outputs.rpm-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ steps.caches.outputs.rpm-path }}
+          key: ${{ steps.caches.outputs.rpm-key }}
 
   scenarios:
     name: VM / ${{ matrix.name }}

@@ -103,6 +103,7 @@ var driverInputs = []string{
 	// propagate its exit status to the qualification job.
 	qualificationWorkflow,
 	".github/actions/setup-go/action.yml",
+	".github/actions/image-caches/action.yml",
 	".github/actions/hosted-vmtest/action.yml",
 	".github/scripts/hosted-apt-install",
 	".github/scripts/hosted-hermetic-setup",

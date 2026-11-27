@@ -32,6 +32,7 @@ func TestHostedInputInventory(t *testing.T) {
 	hostedSources := []string{
 		".github/workflows/hosted-vmtests.yml",
 		".github/actions/hosted-vmtest/action.yml",
+		".github/actions/image-caches/action.yml",
 		".github/actions/mkosi-builder/action.yml",
 		".github/scripts/hosted-hermetic-setup",
 		"scripts/mkosi",

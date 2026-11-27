@@ -152,17 +152,15 @@ jobs:
             ./cmd/katl-publish-kubernetes-sysext ./internal/kubernetesrelease \
             ./internal/installer/kubernetesbundle ./internal/installer/kubernetescompat \
             ./internal/installer/sysextcatalog ./internal/installer/payloadbundle -count=1
-      - name: Restore build caches
-        id: build-cache
+      # The bundle's runtime is the standard flavour, which scripts/mkosi
+      # builds when no flavour is set.
+      - name: Restore image build caches
         if: steps.candidate.outputs.exists != 'true'
-        uses: actions/cache/restore@v6
+        uses: ./.github/actions/image-caches
+        timeout-minutes: 5
+        continue-on-error: true
         with:
-          path: |
-            _build/go-mod
-            _build/go-cache
-            _build/mkosi/package-cache
-          key: kubernetes-${{ runner.os }}-${{ env.ARTIFACT_VERSION }}
-          restore-keys: kubernetes-${{ runner.os }}-
+          flavour: standard
       - name: Build compatible runtime and Kubernetes sysext
         if: steps.candidate.outputs.exists != 'true'
         run: |
@@ -247,13 +245,3 @@ jobs:
           go run ./cmd/katl-kubernetes-release promote \
             --payload-version "$PAYLOAD_VERSION" --artifact-version "$ARTIFACT_VERSION" \
             --manifest-digest "$MANIFEST_DIGEST" | tee -a "$GITHUB_STEP_SUMMARY"
-
-      - name: Save build caches
-        if: github.ref == 'refs/heads/main' && steps.candidate.outputs.exists != 'true' && steps.build-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: |
-            _build/go-mod
-            _build/go-cache
-            _build/mkosi/package-cache
-          key: ${{ steps.build-cache.outputs.cache-primary-key }}
