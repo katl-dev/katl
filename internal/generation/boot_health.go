@@ -559,27 +559,9 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 		return BootHealthResult{}, err
 	}
 	originalDefaultEntry := selection.DefaultBootEntry
-	previousID := strings.TrimSpace(selection.PreviousKnownGoodGenerationID)
-	if (selection.OneShot || previousID == "") && selection.DefaultGenerationID != generationID {
-		previousID = strings.TrimSpace(selection.DefaultGenerationID)
-		selection.PreviousKnownGoodGenerationID = previousID
-		selection.PreviousKnownGoodBootEntry = originalDefaultEntry
-	}
-	var fallbackProblem string
-	if previousID != "" {
-		fallback := bootability{state: bootUnavailable, evidence: "fallback is the failed generation"}
-		if previousID != generationID {
-			fallback = checkRecoveryFallback(root, selection, previousID, bootFiles)
-		}
-		if fallback.state == bootIndeterminate {
-			return BootHealthResult{}, fmt.Errorf("check fallback before changing the boot target: %w. Preserve boot diagnostics and recover from the console", fallback.problem())
-		}
-		if fallback.state == bootUnavailable {
-			fallbackProblem = fmt.Sprintf("generation %s %v. The boot default was left unchanged. Preserve boot diagnostics and recover from the console", previousID, fallback.problem())
-			previousID = ""
-			selection.PreviousKnownGoodGenerationID = ""
-			selection.PreviousKnownGoodBootEntry = ""
-		}
+	selection, fallbackProblem, err := failedTrialSelection(root, selection, generationID)
+	if err != nil {
+		return BootHealthResult{}, err
 	}
 
 	if status.BootState != BootStateFailed || status.HealthState != HealthStateUnhealthy {
@@ -597,26 +579,6 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 		if err := WriteGenerationStatus(root, spec, updatedStatus); err != nil {
 			return BootHealthResult{}, err
 		}
-	}
-	selection.OneShot = false
-	selection.BootedOneShot = false
-	selection.FailedBootGenerationID = generationID
-	selection.TargetBootGenerationID = ""
-	selection.TrialGenerationID = ""
-	selection.TargetBootEntry = ""
-	selection.TrialBootEntry = ""
-	selection.PendingTransactionID = ""
-	selection.PendingHealthValidation = false
-	selection.PersistentDefaultPromotion = ""
-	selection.BootCountedTrialPath = ""
-	if previousID != "" {
-		selection.DefaultGenerationID = previousID
-		selection.RecoveryRequired = false
-		if strings.TrimSpace(selection.PreviousKnownGoodBootEntry) != "" {
-			selection.DefaultBootEntry = selection.PreviousKnownGoodBootEntry
-		}
-	} else {
-		selection.RecoveryRequired = true
 	}
 	selection.UpdatedAt = now.UTC()
 	if !selection.RecoveryRequired && selection.DefaultBootEntry != originalDefaultEntry {
@@ -648,6 +610,57 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 		BootDefaultEntry:  selection.DefaultBootEntry,
 		FallbackProblem:   fallbackProblem,
 	}, nil
+}
+
+// failedTrialSelection is the selection after the trial of generationID
+// fails: the trial pointers are cleared and the default moves to a fallback
+// that passes the recovery check, or recoveryRequired is set when none does.
+// An indeterminate fallback check is an error, so nothing changes.
+func failedTrialSelection(root string, selection BootSelectionRecord, generationID string) (BootSelectionRecord, string, error) {
+	previousID := strings.TrimSpace(selection.PreviousKnownGoodGenerationID)
+	if (selection.OneShot || previousID == "") && selection.DefaultGenerationID != generationID {
+		previousID = strings.TrimSpace(selection.DefaultGenerationID)
+		selection.PreviousKnownGoodGenerationID = previousID
+		selection.PreviousKnownGoodBootEntry = selection.DefaultBootEntry
+	}
+	var fallbackProblem string
+	if previousID != "" {
+		fallback := bootability{state: bootUnavailable, evidence: "fallback is the failed generation"}
+		if previousID != generationID {
+			fallback = checkRecoveryFallback(root, selection, previousID, bootFiles)
+		}
+		if fallback.state == bootIndeterminate {
+			return BootSelectionRecord{}, "", fmt.Errorf("check fallback before changing the boot target: %w. Preserve boot diagnostics and recover from the console", fallback.problem())
+		}
+		if fallback.state == bootUnavailable {
+			fallbackProblem = fmt.Sprintf("generation %s %v. The boot default was left unchanged. Preserve boot diagnostics and recover from the console", previousID, fallback.problem())
+			previousID = ""
+			selection.PreviousKnownGoodGenerationID = ""
+			selection.PreviousKnownGoodBootEntry = ""
+		}
+	}
+
+	selection.OneShot = false
+	selection.BootedOneShot = false
+	selection.FailedBootGenerationID = generationID
+	selection.TargetBootGenerationID = ""
+	selection.TrialGenerationID = ""
+	selection.TargetBootEntry = ""
+	selection.TrialBootEntry = ""
+	selection.PendingTransactionID = ""
+	selection.PendingHealthValidation = false
+	selection.PersistentDefaultPromotion = ""
+	selection.BootCountedTrialPath = ""
+	if previousID != "" {
+		selection.DefaultGenerationID = previousID
+		selection.RecoveryRequired = false
+		if strings.TrimSpace(selection.PreviousKnownGoodBootEntry) != "" {
+			selection.DefaultBootEntry = selection.PreviousKnownGoodBootEntry
+		}
+	} else {
+		selection.RecoveryRequired = true
+	}
+	return selection, fallbackProblem, nil
 }
 
 func inferBootedSelection(selection BootSelectionRecord, spec GenerationSpec, generationID string, commandLine string) BootSelectionRecord {

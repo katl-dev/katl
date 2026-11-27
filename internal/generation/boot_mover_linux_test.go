@@ -153,6 +153,7 @@ type moveOp struct {
 
 type moveOutcome struct {
 	refused   bool // an outstanding intent refuses this boot, and nothing changes
+	authority bool // a trial authority remains, so the move is not resolved
 	selection selectionView
 	intent    string
 	efi       efiboot.Entries
@@ -268,10 +269,35 @@ func failRequest(w *moveWorld) bootMoveRequest {
 	}
 }
 
+func promoteRequest(w *moveWorld) bootMoveRequest {
+	selection := resolvedTrial(w)
+	selection.DefaultGenerationID, selection.DefaultBootEntry = "gen2", "loader/entries/katl-gen2.conf"
+	return bootMoveRequest{
+		OperationID: "promote-apply-7", ExpectedRevision: 5, Source: "gen2", Destination: "gen2",
+		Selection: selection, Trial: trialPromote,
+		StatusChanges: []bootStatusChange{
+			{GenerationID: "gen2", Reason: "boot health passed", CommitState: "committed", BootState: "good", HealthState: "healthy"},
+			{GenerationID: "gen1", Reason: "superseded by gen2", CommitState: "superseded", BootState: "good", HealthState: "healthy"},
+		},
+	}
+}
+
+func invalidateRequest(w *moveWorld) bootMoveRequest {
+	selection := w.selection()
+	selection.TargetBootGenerationID, selection.TargetBootEntry = "", ""
+	selection.OneShot = false
+	return bootMoveRequest{
+		OperationID: "invalidate-gen3", ExpectedRevision: 4, Source: "gen3", Destination: "gen1", Selection: selection,
+		StatusChanges: []bootStatusChange{{GenerationID: "gen3", Reason: "OS slot has been replaced",
+			CommitState: "committed", BootState: "good", HealthState: "healthy", UnavailableReason: new("OS slot has been replaced")}},
+	}
+}
+
 func moveOps() []moveOp {
 	armDone := moveOutcome{
 		selection: selectionView{Revision: 5, Default: "gen1", Trial: "gen2", Pending: true},
 		intent:    "apply-7",
+		authority: true,
 		efi:       efiboot.Entries{Default: "katl-gen1.conf", OneShot: "katl-gen2.conf"},
 		statuses:  map[string]statusView{"gen1": gen1Good, "gen2": gen2Armed, "gen3": gen3Good},
 	}
@@ -335,14 +361,15 @@ func moveOps() []moveOp {
 			Unavailable: "OS slot has been replaced", Events: []string{"invalidate-gen3: OS slot has been replaced"}}},
 	}
 	legacyTrial := statusView{Commit: "candidate", Boot: "trying", Health: "unknown"}
+	// The import keeps the authority in memory and writes nothing.
 	imported := moveOutcome{
-		selection: selectionView{Revision: 1, Default: "gen1", Trial: "gen2", Pending: true},
-		intent:    "legacy-apply",
+		selection: selectionView{Default: "gen1", Trial: "gen2", Pending: true},
+		authority: true,
 		efi:       efiboot.Entries{Default: "katl-gen1.conf"},
 		statuses:  map[string]statusView{"gen1": gen1Good, "gen2": legacyTrial, "gen3": gen3Good},
 	}
 	importedUnconfirmed := moveOutcome{
-		selection: selectionView{Revision: 2, Default: "gen1", Failed: "gen2", Spent: "legacy-apply"},
+		selection: selectionView{Revision: 1, Default: "gen1", Failed: "gen2", Spent: "legacy-apply"},
 		efi:       efiboot.Entries{Default: "katl-gen1.conf"},
 		statuses: map[string]statusView{"gen1": gen1Good, "gen3": gen3Good, "gen2": {Commit: "candidate", Boot: "failed", Health: "unhealthy",
 			Events: []string{"unconfirmed-legacy-apply: boot trial ended without health confirmation"}}},
@@ -357,20 +384,9 @@ func moveOps() []moveOp {
 		issuing: armDone,
 		later:   map[string]moveOutcome{"gen1": armUnconfirmed, "gen2": armBound},
 	}, {
-		name:  "promote",
-		setup: armAndBootCandidate,
-		run: moveRun(func(w *moveWorld) bootMoveRequest {
-			selection := resolvedTrial(w)
-			selection.DefaultGenerationID, selection.DefaultBootEntry = "gen2", "loader/entries/katl-gen2.conf"
-			return bootMoveRequest{
-				OperationID: "promote-apply-7", ExpectedRevision: 5, Source: "gen2", Destination: "gen2",
-				Selection: selection, Trial: trialPromote,
-				StatusChanges: []bootStatusChange{
-					{GenerationID: "gen2", Reason: "boot health passed", CommitState: "committed", BootState: "good", HealthState: "healthy"},
-					{GenerationID: "gen1", Reason: "superseded by gen2", CommitState: "superseded", BootState: "good", HealthState: "healthy"},
-				},
-			}
-		}),
+		name:    "promote",
+		setup:   armAndBootCandidate,
+		run:     moveRun(promoteRequest),
 		steps:   []bootMoveStep{stepIntentWritten, stepStatusWritten, stepStatusWritten, stepOneShotCleared, stepDefaultSet, stepReadBack, stepPublished, stepResolved},
 		issuing: promoted,
 		later:   map[string]moveOutcome{"gen1": promoted, "gen2": promoted},
@@ -454,16 +470,7 @@ func moveOps() []moveOp {
 			writeBootHealthSelection(w.t, w.root, selection)
 			w.efi.entries.OneShot = "katl-gen3.conf"
 		},
-		run: moveRun(func(w *moveWorld) bootMoveRequest {
-			selection := w.selection()
-			selection.TargetBootGenerationID, selection.TargetBootEntry = "", ""
-			selection.OneShot = false
-			return bootMoveRequest{
-				OperationID: "invalidate-gen3", ExpectedRevision: 4, Source: "gen3", Destination: "gen1", Selection: selection,
-				StatusChanges: []bootStatusChange{{GenerationID: "gen3", Reason: "OS slot has been replaced",
-					CommitState: "committed", BootState: "good", HealthState: "healthy", UnavailableReason: new("OS slot has been replaced")}},
-			}
-		}),
+		run:     moveRun(invalidateRequest),
 		steps:   []bootMoveStep{stepIntentWritten, stepStatusWritten, stepOneShotCleared, stepDefaultSet, stepReadBack, stepPublished, stepResolved},
 		issuing: invalidated,
 		later:   map[string]moveOutcome{"gen1": invalidated, "gen3": invalidated},
@@ -490,7 +497,6 @@ func moveOps() []moveOp {
 			w.bootID, w.running = "b-2", "gen2"
 		},
 		run:     func(_ *moveWorld, m *bootMover) (bootMoveResult, error) { return m.reconcile() },
-		steps:   []bootMoveStep{stepIntentWritten, stepReadBack, stepPublished},
 		issuing: imported,
 		later:   map[string]moveOutcome{"gen1": importedUnconfirmed, "gen2": imported},
 	}}
@@ -527,8 +533,8 @@ func TestBootMoveSteps(t *testing.T) {
 			if !slices.Equal(seen, op.steps) {
 				t.Fatalf("steps = %v, want %v", seen, op.steps)
 			}
-			if result.Resolved != (op.issuing.intent == "") {
-				t.Fatalf("resolved = %t with intent %q", result.Resolved, op.issuing.intent)
+			if result.Resolved != !op.issuing.authority {
+				t.Fatalf("resolved = %t, want %t", result.Resolved, !op.issuing.authority)
 			}
 			assertMoveOutcome(t, w, op.issuing)
 		})
@@ -592,6 +598,9 @@ func TestBootMoveFaults(t *testing.T) {
 						t.Fatal(err)
 					}
 					w.count(result)
+					if result.Resolved != !want.authority {
+						t.Fatalf("resolved = %t, want %t", result.Resolved, !want.authority)
+					}
 					assertMoveOutcome(t, w, want)
 					assertMoveInvariants(t, w)
 
@@ -627,8 +636,10 @@ func TestBootMoveEFIFaults(t *testing.T) {
 					w.efi.fault, checkpoint = fault, nil
 				}
 				result, err := op.run(w, w.mover(checkpoint))
-				if fault != "read" && fault != "indeterminate" && !slices.Contains(op.steps, stepOneShotCleared) {
-					// The projection already matched, so EFI was not written.
+				matched := fault != "read" && fault != "indeterminate" && !slices.Contains(op.steps, stepOneShotCleared)
+				if matched || (fault == "indeterminate" && len(op.steps) == 0) {
+					// The projection already matched, or no intent became
+					// durable, so EFI was not written.
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -681,8 +692,13 @@ func TestBootMoveAdmission(t *testing.T) {
 		if !errors.Is(err, ErrBootMoveBlocked) || !strings.Contains(err.Error(), "revision 9") {
 			t.Fatalf("reconcile = %v", err)
 		}
-		if got := w.observe(); got.selection.Revision != 9 || got.selection.Trial != "" || got.intent != "apply-7" {
+		got := w.observe()
+		if got.selection.Revision != 9 || got.selection.Trial != "" || got.intent != "apply-7" {
 			t.Fatalf("conflicting selection replaced: %+v", got)
+		}
+		want := map[string]statusView{"gen1": gen1Good, "gen2": gen2Staged, "gen3": gen3Good}
+		if !reflect.DeepEqual(got.statuses, want) || got.efi != (efiboot.Entries{Default: "katl-gen1.conf"}) {
+			t.Fatalf("conflicting writer: statuses %+v, EFI %+v", got.statuses, got.efi)
 		}
 	})
 	t.Run("repeat after resolution", func(t *testing.T) {
@@ -692,10 +708,70 @@ func TestBootMoveAdmission(t *testing.T) {
 			t.Fatal(err)
 		}
 		result, err := op.run(w, w.mover(nil))
-		if err != nil || result.RebootRequested {
+		if err != nil || result != (bootMoveResult{Resolved: true}) {
 			t.Fatalf("repeat = %+v, %v", result, err)
 		}
 		assertMoveOutcome(t, w, op.issuing)
+	})
+	t.Run("stale move with an equal selection", func(t *testing.T) {
+		w := newMoveWorld(t)
+		if _, err := w.mover(nil).move(invalidateRequest(w)); err != nil {
+			t.Fatal(err)
+		}
+		// A second InvalidateSlot from revision 4 publishes the same selection.
+		request := invalidateRequest(w)
+		request.OperationID, request.Source = "invalidate-gen2", "gen2"
+		request.StatusChanges = []bootStatusChange{{GenerationID: "gen2", Reason: "OS slot has been replaced",
+			CommitState: "candidate", BootState: "pending", HealthState: "unknown", UnavailableReason: new("OS slot has been replaced")}}
+		assertMoveRefused(t, w, request, "revision is 5, not 4")
+	})
+	t.Run("reused operation ID", func(t *testing.T) {
+		w := newMoveWorld(t)
+		spec, status, err := ReadGeneration(w.root, "gen3")
+		if err != nil {
+			t.Fatal(err)
+		}
+		status.StatusTransitions = append(status.StatusTransitions, StatusTransition{At: status.UpdatedAt, OperationID: "invalidate-gen3",
+			Reason: "an earlier move", CommitState: status.CommitState, BootState: status.BootState, HealthState: status.HealthState})
+		if err := WriteGenerationStatus(w.root, spec, status); err != nil {
+			t.Fatal(err)
+		}
+		assertMoveRefused(t, w, invalidateRequest(w), "operation ID invalidate-gen3 already appears in generation gen3 status")
+	})
+	t.Run("arm moves the default", func(t *testing.T) {
+		w := newMoveWorld(t)
+		request := armRequest(w)
+		request.Selection.DefaultGenerationID, request.Selection.DefaultBootEntry = "gen3", "loader/entries/katl-gen3.conf"
+		assertMoveRefused(t, w, request, "must keep default gen1")
+	})
+	t.Run("promotion of another generation", func(t *testing.T) {
+		w := newMoveWorld(t)
+		armAndBootCandidate(w)
+		request := promoteRequest(w)
+		request.Selection.DefaultGenerationID, request.Selection.DefaultBootEntry = "gen3", "loader/entries/katl-gen3.conf"
+		assertMoveRefused(t, w, request, "must publish candidate gen2 as the default")
+	})
+	t.Run("trial selection without arming", func(t *testing.T) {
+		w := newMoveWorld(t)
+		selection := w.selection()
+		selection.DefaultGenerationID, selection.DefaultBootEntry = "gen3", "loader/entries/katl-gen3.conf"
+		selection.TargetBootGenerationID, selection.TargetBootEntry = "gen3", "loader/entries/katl-gen3.conf"
+		selection.PendingTransactionID = "select-gen3"
+		selection.PendingHealthValidation = true
+		selection.PersistentDefaultPromotion = DefaultPromotionPending
+		request := bootMoveRequest{OperationID: "select-gen3", ExpectedRevision: 4, Source: "gen1", Destination: "gen3", Selection: selection, OneShot: "gen3"}
+		assertMoveRefused(t, w, request, "does not arm a trial")
+	})
+	t.Run("one-shot for a third generation", func(t *testing.T) {
+		w := newMoveWorld(t)
+		selection := w.selection()
+		selection.TargetBootGenerationID, selection.TargetBootEntry = "gen3", "loader/entries/katl-gen3.conf"
+		selection.OneShot = true
+		writeBootHealthSelection(t, w.root, selection)
+		w.efi.entries.OneShot = "katl-gen3.conf"
+		// Booted from the menu while the one-shot for gen3 is still selected.
+		w.running = "gen2"
+		assertMoveRefused(t, w, invalidateRequest(w), "one-shot boot of generation gen3 is selected")
 	})
 	t.Run("move during trial", func(t *testing.T) {
 		w := newMoveWorld(t)
@@ -749,7 +825,7 @@ func TestBootMoveImportsOnlyLegacyTrials(t *testing.T) {
 			writeBootHealthSelection(t, w.root, selection)
 			before := snapshotBootFiles(t, filepath.Join(w.root, "var"))
 			result, err := w.mover(nil).reconcile()
-			if err != nil || result != (bootMoveResult{}) {
+			if err != nil || result != (bootMoveResult{Resolved: true}) {
 				t.Fatalf("reconcile = %+v, %v", result, err)
 			}
 			if after := snapshotBootFiles(t, filepath.Join(w.root, "var")); !reflect.DeepEqual(before, after) {
@@ -791,6 +867,7 @@ func assertRefusedWithoutChange(t *testing.T, w *moveWorld, m *bootMover) {
 
 func assertMoveOutcome(t *testing.T, w *moveWorld, want moveOutcome) {
 	t.Helper()
+	want.authority = false // observed through the move's result, not on disk
 	got := w.observe()
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("outcome:\n got %+v\nwant %+v", got, want)
@@ -838,5 +915,56 @@ func assertMoveInvariants(t *testing.T, w *moveWorld) {
 	}
 	if w.reboots > 1 {
 		t.Fatalf("%d automatic reboots for one trial", w.reboots)
+	}
+}
+
+func TestBootMoveLegacyTrial(t *testing.T) {
+	migration := moveOps()[slices.IndexFunc(moveOps(), func(op moveOp) bool { return op.name == "migration" })]
+	for id, want := range migration.later {
+		t.Run("boot "+id, func(t *testing.T) {
+			w := newMoveWorld(t)
+			migration.setup(w)
+			before := snapshotBootFiles(t, filepath.Join(w.root, "var"))
+			result, err := w.mover(nil).reconcile()
+			if err != nil || result != (bootMoveResult{}) {
+				t.Fatalf("reconcile = %+v, %v", result, err)
+			}
+			if _, err := os.Stat(rootedPathUnchecked(w.root, bootMovePath)); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("legacy import wrote an intent: %v", err)
+			}
+			if after := snapshotBootFiles(t, filepath.Join(w.root, "var")); !reflect.DeepEqual(before, after) {
+				t.Fatal("legacy import changed boot state")
+			}
+
+			w.reboot("b-3", id)
+			result, err = w.mover(nil).reconcile()
+			if err != nil || result.Resolved != !want.authority || result.RebootRequested {
+				t.Fatalf("reconcile on %s = %+v, %v", id, result, err)
+			}
+			assertMoveOutcome(t, w, want)
+		})
+	}
+}
+
+func TestBootMoveUnconfirmedTrialWithoutFallback(t *testing.T) {
+	w := newMoveWorld(t)
+	// The arm runs on gen3, so a later boot of gen3 resolves the trial.
+	w.running = "gen3"
+	if _, err := w.mover(nil).move(armRequest(w)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(w.root, "efi/EFI/Linux/katl-gen1.efi")); err != nil {
+		t.Fatal(err)
+	}
+	w.reboot("b-2", "gen3")
+
+	before := snapshotBootFiles(t, filepath.Join(w.root, "var"))
+	efi := w.efi.entries
+	_, err := w.mover(nil).reconcile()
+	if err == nil || !strings.Contains(err.Error(), "cannot select generation gen1") {
+		t.Fatalf("reconcile = %v; want refusal of the unbootable default", err)
+	}
+	if after := snapshotBootFiles(t, filepath.Join(w.root, "var")); !reflect.DeepEqual(before, after) || w.efi.entries != efi {
+		t.Fatal("refused resolution changed boot state")
 	}
 }
