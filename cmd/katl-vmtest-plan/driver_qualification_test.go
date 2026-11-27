@@ -50,6 +50,15 @@ func TestDriverDigestCandidate(t *testing.T) {
 		{"os-release branding", testOSRelease, "ID=katlos\nSYSEXT_LEVEL=katl-runtime-1\nPRETTY_NAME=KatlOS\n", nil},
 		{"mkosi cache location", "mkosi.conf", "[Distribution]\nRelease=45\n[Build]\nCacheDirectory=new-cache\n", nil},
 		{"workflow diagnostics", qualificationWorkflow, testWorkflow("drbd", "upload-new-logs"), nil},
+		{"hosted diagnostics collector", ".github/scripts/hosted-vmtest-diagnostics", "#!/bin/sh\nprintf '%s\\n' 'Collecting VM diagnostics'\n", nil},
+		{"hosted Go setup", ".github/actions/setup-go/action.yml", "name: Set up Go\n", both},
+		{"hosted package setup", ".github/scripts/hosted-apt-install", "#!/bin/sh\nexit 1\n", both},
+		{"hosted libvirt setup", ".github/actions/hosted-vmtest/action.yml", "name: Set up libvirt\n", both},
+		{"hosted test entrypoint", ".github/scripts/hosted-vmtest-run", "#!/bin/sh\nexit 0\n", both},
+		{"hosted Go test wrapper", ".github/scripts/hosted-vmtest-go", "#!/bin/sh\nexit 0\n", both},
+		{"hosted test result wrapper", ".github/scripts/hosted-vmtest-measure", "#!/bin/sh\nexit 0\n", both},
+		{"VM test runner", "scripts/vmtest-run", "#!/bin/sh\nexit 0\n", both},
+		{"VM test executable wrapper", "scripts/vmtest-exec", "#!/bin/sh\nexit 0\n", both},
 		{"kernel lock", testStandardLock, "updated standard lock\n", []string{"standard"}},
 		{"extension recipe", testRecipe, "{\"version\":\"9.3.5\"}\n", both},
 		{"new extension recipe", "extensions/new/recipe.json", "{\"version\":\"1\"}\n", both},
@@ -555,6 +564,7 @@ func newDriverRepo(t *testing.T) string {
 	}
 	writeDriverInput(t, testBIRDReadme, "BIRD documentation\n", 0o644)
 	writeDriverInput(t, qualificationWorkflow, testWorkflow("drbd", "upload-logs"), 0o644)
+	writeDriverInput(t, ".github/scripts/hosted-apt-install", "#!/bin/sh\nsudo apt-get install \"$@\"\n", 0o644)
 	return commitDriverRepo(t)
 }
 
