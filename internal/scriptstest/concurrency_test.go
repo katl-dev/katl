@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -81,7 +82,8 @@ var expressionPattern = regexp.MustCompile(`\$\{\{(.*?)\}\}`)
 
 // expandExpressions substitutes each ${{ }} in text with its value under the
 // given context. Values are strings or booleans; empty strings and false are
-// falsy, and || and && return an operand as GitHub Actions does.
+// falsy, and || and && return an operand as GitHub Actions does. > compares
+// operands as integers, with an empty value as zero, and always() is true.
 func expandExpressions(t *testing.T, text string, ctx map[string]string) string {
 	t.Helper()
 	return expressionPattern.ReplaceAllStringFunc(text, func(match string) string {
@@ -145,7 +147,15 @@ func (p *expressionParser) equal() any {
 	if p.take("==") {
 		return v == p.primary()
 	}
+	if p.take(">") {
+		return integer(v) > integer(p.primary())
+	}
 	return v
+}
+
+func integer(v any) int {
+	n, _ := strconv.Atoi(fmt.Sprint(v))
+	return n
 }
 
 func (p *expressionParser) primary() any {
@@ -153,6 +163,9 @@ func (p *expressionParser) primary() any {
 		v := p.or()
 		p.take(")")
 		return v
+	}
+	if p.take("!") {
+		return !truthy(p.primary())
 	}
 	p.skip()
 	if p.take("'") {
@@ -166,6 +179,9 @@ func (p *expressionParser) primary() any {
 		p.pos++
 	}
 	name := p.src[start:p.pos]
+	if name == "always" && p.take("()") {
+		return true
+	}
 	if name != "" && name[0] >= '0' && name[0] <= '9' {
 		return name
 	}

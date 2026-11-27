@@ -18,6 +18,35 @@ on:
         description: Requalify a final bundle from this run without rebuilding; zero builds a new candidate
         type: number
         default: 0
+  # The release workflow calls this one to build and qualify a version it
+  # derived, and publishes the result itself; the called path publishes
+  # nothing. The publication jobs below stay skipped, but GitHub checks every
+  # job's permissions against the caller's grant before any job starts, so the
+  # calling job grants actions: read, attestations: write, contents: write,
+  # id-token: write and packages: write. The called path builds github.sha:
+  # commit must name it, and the caller tags that commit. It uploads its
+  # artifacts under the katl- prefix into the caller's run, so the caller makes
+  # one call per run and uploads no artifact of its own under that prefix.
+  workflow_call:
+    inputs:
+      version:
+        description: Version the caller derived (<version> or <version>-rc.N)
+        type: string
+        required: true
+      commit:
+        description: Full SHA of the commit to build; must equal github.sha
+        type: string
+        required: true
+    outputs:
+      artifact:
+        description: Name of the bundle artifact in the caller's run
+        value: ${{ jobs.identity.outputs.artifact-name }}
+      sha256sums:
+        description: SHA-256 digest of the bundle's SHA256SUMS
+        value: ${{ jobs.bundle.outputs.sha256sums }}
+      validation:
+        description: Outcome of Release validation (success or failure)
+        value: ${{ jobs.release-validation.outputs.result }}
 
 permissions:
   contents: read
@@ -26,9 +55,10 @@ permissions:
 # Tag pushes queue per ref so publication is serialised and never
 # cancelled. Dispatches publish nothing, so each gets its own group. The
 # nightly candidate has a group of its own, so it never queues behind or ahead
-# of a tag or a dispatch.
+# of a tag or a dispatch. A called run's github context is its caller's, so it
+# takes a group of its own per run, suffixed so it never equals the caller's.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}
+  group: ${{ github.workflow }}-${{ inputs.commit && github.run_id || github.event_name == 'schedule' && 'nightly' || github.event_name == 'workflow_dispatch' && github.run_id || github.ref }}${{ inputs.commit && '-call' || '' }}
   cancel-in-progress: false
 
 jobs:
@@ -138,8 +168,17 @@ jobs:
         env:
           MANUAL_VERSION: ${{ inputs.version }}
           PREVIOUS_TAG: ${{ steps.previous.outputs.tag }}
+          CALLED_COMMIT: ${{ inputs.commit }}
         run: |
           event="$GITHUB_EVENT_NAME"
+          # A called run reports its caller's event; the caller supplies the version.
+          if [[ -n "${CALLED_COMMIT:-}" ]]; then
+            if [[ "$CALLED_COMMIT" != "$GITHUB_SHA" ]]; then
+              echo "::error::called to build $CALLED_COMMIT, but this run builds $GITHUB_SHA"
+              exit 1
+            fi
+            event=workflow_call
+          fi
           if [[ "$event" == schedule ]]; then
             MANUAL_VERSION="$(scripts/katl-release-artifacts dev-version "$PREVIOUS_TAG")"
           fi
@@ -153,12 +192,12 @@ jobs:
             echo "artifact-name=$artifact_name"
           } >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/setup-go
-      # Only tag pushes may skip the regression lanes; scheduled and dispatched
-      # runs always repeat them, because an empty decision runs the lanes. A final
+      # Only tag pushes may skip the regression lanes; scheduled, dispatched and
+      # called runs always repeat them, because an empty decision runs the lanes. A final
       # tag fails here unless a release candidate of it already
       # succeeded at this commit.
       - name: Decide VM regression
-        if: github.event_name == 'push' && github.ref_type == 'tag'
+        if: github.event_name == 'push' && github.ref_type == 'tag' && !inputs.commit
         id: regression
         env:
           GH_TOKEN: ${{ github.token }}
@@ -198,6 +237,8 @@ jobs:
       attestations: write
       contents: read
       id-token: write
+    outputs:
+      sha256sums: ${{ steps.digest.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -205,10 +246,16 @@ jobs:
       - uses: ./.github/actions/setup-go
       - uses: ./.github/actions/combine-flavours
       - name: Attest staged release artifacts
-        if: github.event_name == 'push' && github.ref_type == 'tag'
+        if: github.event_name == 'push' && github.ref_type == 'tag' || inputs.commit
         uses: actions/attest@v4
         with:
           subject-path: dist/*
+      - name: Digest release checksums
+        id: digest
+        if: inputs.commit
+        run: |
+          digest="$(sha256sum dist/SHA256SUMS)"
+          echo "sha256=${digest%% *}" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
         with:
           name: ${{ needs.identity.outputs.artifact-name }}
@@ -273,8 +320,11 @@ jobs:
       - qualified-bytes
       - unit
     runs-on: ubuntu-24.04
+    outputs:
+      result: ${{ steps.verdict.outcome }}
     steps:
-      - env:
+      - id: verdict
+        env:
           UNIT: ${{ needs.unit.result }}
           REGRESSION_DECISION: ${{ needs.identity.outputs.regression }}
           BUNDLE: ${{ needs.bundle.result }}
@@ -297,7 +347,7 @@ jobs:
 
   publish-extensions:
     name: Publish Kernel Extensions
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag' && !inputs.commit
     needs: [build-standard, build-lts, release-validation]
     runs-on: ubuntu-24.04
     permissions:
@@ -327,7 +377,7 @@ jobs:
 
   publish-tag:
     name: Publish GitHub Release Assets
-    if: github.event_name == 'push' && github.ref_type == 'tag'
+    if: github.event_name == 'push' && github.ref_type == 'tag' && !inputs.commit
     needs:
       - identity
       - bundle
