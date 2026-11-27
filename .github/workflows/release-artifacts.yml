@@ -110,7 +110,7 @@ jobs:
 
   unit:
     name: Release unit tests
-    if: inputs.qualify_run == 0
+    if: inputs.qualify_run == 0 && (inputs.commit || github.event_name != 'push' || github.actor != 'katl-release[bot]')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -146,7 +146,8 @@ jobs:
 
   identity:
     name: Resolve Release Identity
-    if: inputs.qualify_run == 0
+    # The Release workflow already built, qualified and published tags made by the release App.
+    if: inputs.qualify_run == 0 && (inputs.commit || github.event_name != 'push' || github.actor != 'katl-release[bot]')
     runs-on: ubuntu-24.04
     outputs:
       artifact-name: ${{ steps.release.outputs.artifact-name }}
@@ -180,7 +181,7 @@ jobs:
           # A called run reports its caller's event; the caller supplies the version.
           if [[ -n "${CALLED_COMMIT:-}" ]]; then
             if [[ "$CALLED_COMMIT" != "$GITHUB_SHA" ]]; then
-              echo "::error::called to build $CALLED_COMMIT, but this run builds $GITHUB_SHA"
+              echo "::error::called to build $CALLED_COMMIT, but this run builds $GITHUB_SHA. Dispatch the Release workflow on the release branch whose head is $CALLED_COMMIT."
               exit 1
             fi
             event=workflow_call
@@ -314,7 +315,7 @@ jobs:
 
   release-validation:
     name: Release validation
-    if: always() && inputs.qualify_run == 0
+    if: always() && inputs.qualify_run == 0 && (inputs.commit || github.event_name != 'push' || github.actor != 'katl-release[bot]')
     needs:
       - identity
       - bundle

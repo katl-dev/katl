@@ -165,33 +165,39 @@ func (in Inputs) matches(version releaseversion.Version, release Release, record
 		return false, "no Release run qualified it"
 	}
 	mismatch := fmt.Sprintf("it does not match the recorded sha256:%s", record.Digest)
-	if release.Prerelease != prerelease || release.Sums == nil {
-		return false, mismatch
-	}
-	want := map[string]string{"SHA256SUMS": record.Digest}
-	for name, digest := range release.Sums {
-		if name == "SHA256SUMS" {
-			return false, mismatch
-		}
-		want[name] = digest
-	}
-	if len(release.Assets) != len(want) {
-		return false, mismatch
-	}
-	for _, asset := range release.Assets {
-		digest, ok := want[asset.Name]
-		if !ok || !asset.Uploaded || asset.Digest != "sha256:"+digest {
-			return false, mismatch
-		}
-		delete(want, asset.Name)
-	}
-	if len(want) != 0 {
+	if release.Prerelease != prerelease || !release.MatchesAssets(record.Digest) {
 		return false, mismatch
 	}
 	if !in.attested(version, record) {
 		return false, "the SHA256SUMS is not attested by the recorded run attempt " + record.Attempt.URL(in.Server, in.Repository)
 	}
 	return true, ""
+}
+
+// MatchesAssets checks that the uploaded assets have exactly the names and
+// digests given by SHA256SUMS, including the digest of SHA256SUMS itself.
+func (r Release) MatchesAssets(digest string) bool {
+	if r.Sums == nil {
+		return false
+	}
+	want := map[string]string{"SHA256SUMS": digest}
+	for name, digest := range r.Sums {
+		if name == "SHA256SUMS" {
+			return false
+		}
+		want[name] = digest
+	}
+	if len(r.Assets) != len(want) {
+		return false
+	}
+	for _, asset := range r.Assets {
+		digest, ok := want[asset.Name]
+		if !ok || !asset.Uploaded || asset.Digest != "sha256:"+digest {
+			return false
+		}
+		delete(want, asset.Name)
+	}
+	return len(want) == 0
 }
 
 // outcome describes how a record's attempt ended without qualifying.

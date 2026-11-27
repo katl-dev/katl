@@ -50,7 +50,7 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer, call command) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify TAG COMMIT DIRECTORY\n       scripts/katl-release checksums DIRECTORY\n       scripts/katl-release equivalent BUNDLE FLAVOUR=SHA256SUMS...\n       scripts/katl-release regression VERSION COMMIT\n       scripts/katl-release next [--ref REF] [--dispatch COMMIT] [--retry REASON]\n       scripts/katl-release status VERSION\n       scripts/katl-release version VERSION\n       scripts/katl-release stable-tags [TAG...]\n       scripts/katl-release bundle-name VERSION COMMIT\n       scripts/katl-release record VERSION building|failed|qualified [DIGEST]\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
+		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify [--branch] TAG COMMIT DIRECTORY\n       scripts/katl-release checksums DIRECTORY\n       scripts/katl-release equivalent BUNDLE FLAVOUR=SHA256SUMS...\n       scripts/katl-release regression VERSION COMMIT\n       scripts/katl-release next [--ref REF] [--dispatch COMMIT] [--retry REASON]\n       scripts/katl-release status VERSION\n       scripts/katl-release version VERSION\n       scripts/katl-release stable-tags [TAG...]\n       scripts/katl-release bundle-name VERSION COMMIT\n       scripts/katl-release draft VERSION COMMIT DIRECTORY\n       scripts/katl-release publish VERSION COMMIT DIRECTORY\n       scripts/katl-release confirm-final VERSION COMMIT DIGEST\n       scripts/katl-release tag-name VERSION\n       scripts/katl-release candidate-artifacts VERSION COMMIT RUN ATTEMPT\n       scripts/katl-release record VERSION building|failed|qualified [DIGEST]\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
 		return nil
 	}
 	if args[0] == "prepare" {
@@ -62,7 +62,7 @@ func run(args []string, stdout, stderr io.Writer, call command) error {
 	if args[0] == "record" {
 		return record(args[1:], stderr, call)
 	}
-	if args[0] == "version" || args[0] == "stable-tags" || args[0] == "bundle-name" {
+	if args[0] == "version" || args[0] == "stable-tags" || args[0] == "bundle-name" || args[0] == "tag-name" {
 		return versionCommand(args, stdout)
 	}
 	if args[0] == "next" {
@@ -70,6 +70,14 @@ func run(args []string, stdout, stderr io.Writer, call command) error {
 	}
 	if args[0] == "status" {
 		return status(context.Background(), args[1:], stdout, newGitHubReader(call))
+	}
+	switch args[0] {
+	case "draft", "publish":
+		return runPublication(context.Background(), args, stderr, newGitHubReader(call), call)
+	case "confirm-final":
+		return confirmFinal(context.Background(), args[1:], newGitHubReader(call))
+	case "candidate-artifacts":
+		return candidateArtifacts(context.Background(), args[1:], stdout, newGitHubReader(call))
 	}
 	if args[0] == "verify" {
 		return verify(args[1:], stderr, call)
@@ -105,21 +113,30 @@ func run(args []string, stdout, stderr io.Writer, call command) error {
 // verify checks a release bundle that is already on disk, such as the bundle
 // the tag workflow is about to publish.
 func verify(args []string, stderr io.Writer, call command) error {
+	branch := len(args) > 0 && args[0] == "--branch"
+	if branch {
+		args = args[1:]
+	}
 	if len(args) != 3 {
-		return errors.New("usage: scripts/katl-release verify TAG COMMIT DIRECTORY")
+		return errors.New("usage: scripts/katl-release verify [--branch] TAG COMMIT DIRECTORY")
 	}
 	tag, commit, dir := args[0], args[1], args[2]
 	if !strings.HasPrefix(tag, "v") {
 		return errors.New("TAG must be a KatlOS release tag such as v2026.10.2")
 	}
-	if _, err := validateVersion(tag[1:]); err != nil {
+	version, err := validateVersion(tag[1:])
+	if err != nil {
 		return fmt.Errorf("TAG is not a KatlOS release: %w", err)
 	}
-	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(commit) {
+	if !fullSHA.MatchString(commit) {
 		return errors.New("COMMIT must be the tag's full source commit SHA")
 	}
 
-	if err := verifyBundle(dir, tag, commit, stderr, call); err != nil {
+	sourceRef := "refs/tags/" + tag
+	if branch {
+		sourceRef = releasestate.Ref(version.Base())
+	}
+	if err := verifyBundle(dir, sourceRef, commit, stderr, call); err != nil {
 		return err
 	}
 	fmt.Fprintln(stderr, "Integrity and provenance verified.")
@@ -260,7 +277,7 @@ func download(release candidate, dir string, stderr io.Writer, call command) err
 	if _, err := call("gh", "run", "download", strconv.FormatInt(release.Run.ID, 10), "--repo", repository, "--name", release.Artifact.Name, "--dir", dir); err != nil {
 		return fmt.Errorf("download failed; retained %s for inspection: %w", dir, err)
 	}
-	if err := verifyBundle(dir, release.Run.Tag, release.Run.Commit, stderr, call); err != nil {
+	if err := verifyBundle(dir, "refs/tags/"+release.Run.Tag, release.Run.Commit, stderr, call); err != nil {
 		return err
 	}
 	// Reruns can replace artifacts under the same name. Qualification belongs to one attempt and artifact ID.
@@ -276,8 +293,8 @@ func download(release candidate, dir string, stderr io.Writer, call command) err
 }
 
 // verifyBundle checks every file in dir against SHA256SUMS and against the
-// release workflow's attestation for tag and commit.
-func verifyBundle(dir, tag, commit string, stderr io.Writer, call command) error {
+// release workflow's attestation for the source ref and commit.
+func verifyBundle(dir, sourceRef, commit string, stderr io.Writer, call command) error {
 	names, err := verifyChecksums(dir)
 	if err != nil {
 		return err
@@ -287,7 +304,7 @@ func verifyBundle(dir, tag, commit string, stderr io.Writer, call command) error
 	defer p.close()
 	for _, name := range append(names, "SHA256SUMS") {
 		fmt.Fprintln(stderr, "Verifying provenance:", name)
-		if _, err := p.verify(filepath.Join(dir, name), "refs/tags/"+tag, commit); err != nil {
+		if _, err := p.verify(filepath.Join(dir, name), sourceRef, commit); err != nil {
 			return err
 		}
 	}

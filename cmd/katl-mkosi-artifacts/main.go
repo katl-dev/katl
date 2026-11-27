@@ -75,6 +75,8 @@ func run(args []string, stdout, stderr io.Writer, environ []string) error {
 		return runVerifyReleaseExtensions(args)
 	case "build-kernel-extension":
 		return runBuildKernelExtension(args, stdout, stderr, cfg)
+	case "match-release-extensions":
+		return runMatchReleaseExtensions(args)
 	case "publish-release-extensions":
 		return runPublishReleaseExtensions(args, stdout)
 	case "compile-drbd":
@@ -192,6 +194,7 @@ const usage = `Usage: katl-mkosi-artifacts [write [INDEX]]
        katl-mkosi-artifacts assemble-release-extensions
        katl-mkosi-artifacts verify-release-extensions MANIFEST RUNTIME OCI_LAYOUT
        katl-mkosi-artifacts build-kernel-extension NAME
+       katl-mkosi-artifacts match-release-extensions BUNDLE FLAVOUR MANIFEST OCI_LAYOUT
        katl-mkosi-artifacts publish-release-extensions MANIFEST OCI_LAYOUT
        katl-mkosi-artifacts compile-drbd --sources DIR --destination DIR --output DIR --work DIR
        katl-mkosi-artifacts compile-nvidia --sources DIR --destination DIR --output DIR --work DIR

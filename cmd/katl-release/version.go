@@ -19,6 +19,13 @@ func versionCommand(args []string, stdout io.Writer) error {
 	case len(args) == 2 && args[0] == "version":
 		_, err := releaseversion.Parse(args[1])
 		return err
+	case len(args) == 2 && args[0] == "tag-name":
+		version, err := validateVersion(args[1])
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(stdout, version.Tag())
+		return err
 	case len(args) >= 1 && args[0] == "stable-tags":
 		for _, tag := range args[1:] {
 			if version, err := releaseversion.ParseTag(tag); err == nil && version.IsFinal() {
@@ -37,5 +44,5 @@ func versionCommand(args []string, stdout io.Writer) error {
 		_, err = fmt.Fprintln(stdout, releasestate.BundleName(version, args[2]))
 		return err
 	}
-	return errors.New("usage: scripts/katl-release version VERSION\n       scripts/katl-release stable-tags [TAG...]\n       scripts/katl-release bundle-name VERSION COMMIT")
+	return errors.New("usage: scripts/katl-release version VERSION\n       scripts/katl-release tag-name VERSION\n       scripts/katl-release stable-tags [TAG...]\n       scripts/katl-release bundle-name VERSION COMMIT")
 }

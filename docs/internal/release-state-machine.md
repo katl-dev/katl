@@ -1,8 +1,7 @@
 # Release State Machine
 
-Status: decided, not yet implemented. Until the release action
-replaces it, [Release KatlOS](../development/releases.md) describes the
-procedure in force.
+The **Release** workflow implements this design. The legacy tag-triggered
+procedure is documented in [Release KatlOS](../development/releases.md).
 
 One GitHub workflow, **Release** (`release.yml`), is dispatched on a release
 branch and takes the next step of that version's release. It tags and
@@ -300,9 +299,8 @@ extension bundles, and publishes the draft last, which creates the tag. A
 missing final tag therefore proves no final release is public, and an
 existing one proves the release was published whole. No state has a final tag
 waiting for its release, so the final is never resumed from an earlier run.
-This relies on no workflow starting on a tag push: the tag trigger of
-`release-artifacts.yml` is removed before the rule that reserves final tags
-is applied.
+The legacy tag-triggered jobs skip tags made by the `katl-release` App
+because Release has already qualified and published those versions.
 
 **Retry never touches published bytes.** Retry exists only in rows 20 and 25,
 where the record is `building` or `failed`. A `qualified` candidate is only
@@ -357,17 +355,14 @@ exists. Green alone does not imply that: row 17 supersedes a green candidate.
 
 ## Releasable final
 
-The final build at `C` rebuilds the bytes, because they embed the version.
-What it keeps from the candidate is the commit.
-`katl-release regression` remains the one owner of whether a release build
-repeats the VM regression lanes, and the final skips them only on that
-command's decision. Its rule is unchanged: the final skips the lanes only
-when the merge queue produced `C` and ran every VM job of both flavours, and
-otherwise repeats them, even when the candidate ran them itself. The command
-requires a candidate of `V` at `C` and finds it from the trusted record
-instead of from a tag-push run. The called path of
-`release-artifacts.yml` must run that decision for the version it is given;
-`release.yml` passes no instruction to skip.
+The final rebuilds the bytes at the candidate's commit `C` because the
+bytes embed the version. The called build repeats the VM regression lanes
+for both flavours on every candidate and final.
+
+The final **Publish** job waits for approval in the `release`
+environment. The run summary shows the candidate, commit, checksums and
+rendered notes before review. After approval, the job uses the
+`katl-release` App to draft and publish the final release and its tag.
 
 The final may be published when all of these hold. The publish job checks
 them after approval and before it creates anything, on the bytes it is about
@@ -387,8 +382,8 @@ to publish.
 5. Every file has an attestation from the release build for `C` on
    `release/V`.
 6. The extension publication inputs of both flavours match the bundle.
-7. No extension reference for `V` exists in the registry with a digest other
-   than the one about to be pushed. If one does, the job fails with:
+7. No extension reference for `V` exists in the registry. If one does, the
+   job fails with:
    `Extension bundles for <V> are already published with different contents.
    Published bytes are never replaced. Have a repository administrator delete
    those package versions if no release uses them and dispatch again;
@@ -406,13 +401,11 @@ reference exists before this attempt pushes one, which happens after an
 earlier final attempt failed between pushing the extension bundles and
 publishing the draft, or when a reference was created outside the action.
 
-Final tags, `v*` without a suffix, can be created only by that App, and the
-App's key is available only to a job that runs in the `release` environment
-on a release branch. The guarantee is therefore that a final tag and its
-release exist only after an approval in that environment. It is the approval
-that is guaranteed, not the identity of the job: a reviewer approves the
-workflow as it stands at the release branch's head, so the protection of
-release branches is part of the gate.
+The environment requires approval and accepts only release branches.
+A reviewer approves the workflow at the dispatched commit, so release
+branch protection is part of the gate. Repository-wide enforcement also
+requires the tag ruleset to reserve final tag creation to the
+`katl-release` App.
 
 `katl-release next` chooses the final from the green and promotable checks
 and row 22. It cannot check 2 to 6 because the final's bytes do not exist

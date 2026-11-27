@@ -1,0 +1,405 @@
+package scriptstest
+
+import (
+	"maps"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/katl-dev/katl/internal/releasestate"
+	"gopkg.in/yaml.v3"
+)
+
+func readReleaseWorkflow(t *testing.T) (workflowFile, string) {
+	t.Helper()
+	return readWorkflow(t, filepath.Base(releasestate.ReleaseWorkflow))
+}
+
+func allWorkflows(t *testing.T, visit func(string, workflowFile)) {
+	t.Helper()
+	dir := filepath.Join(repoRoot(t), filepath.Dir(releasestate.ReleaseWorkflow))
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() && (filepath.Ext(entry.Name()) == ".yml" || filepath.Ext(entry.Name()) == ".yaml") {
+			workflow, _ := readWorkflow(t, entry.Name())
+			visit(entry.Name(), workflow)
+		}
+	}
+}
+
+// A second protected job or an environment on a candidate would create
+// another approval wait or expose the release environment to unattended jobs.
+func TestReleaseEnvironment(t *testing.T) {
+	var got []string
+	allWorkflows(t, func(file string, workflow workflowFile) {
+		for id, job := range workflow.Jobs {
+			switch job.Environment.Kind {
+			case yaml.ScalarNode:
+				if job.Environment.Value == releasestate.ReleaseEnvironment {
+					got = append(got, file+":"+id)
+				}
+			case yaml.MappingNode:
+				var env struct{ Name string }
+				if err := job.Environment.Decode(&env); err != nil {
+					t.Fatal(err)
+				}
+				if env.Name == releasestate.ReleaseEnvironment {
+					got = append(got, file+":"+id)
+				}
+			}
+			if file == filepath.Base(releasestate.ReleaseWorkflow) && id != "publish" && job.Environment.Kind != 0 {
+				t.Errorf("%s has an environment and must run without approval", id)
+			}
+		}
+	})
+	if want := []string{filepath.Base(releasestate.ReleaseWorkflow) + ":publish"}; !slices.Equal(got, want) {
+		t.Errorf("jobs in %s = %v, want %v", releasestate.ReleaseEnvironment, got, want)
+	}
+}
+
+var (
+	releaseCommand = regexp.MustCompile(`\b(?:katl-release[ \t]+(?:draft|publish)|gh[ \t]+release[ \t]+(?:create|edit|upload|delete))\b`)
+	apiCommand     = regexp.MustCompile(`\bgh[ \t]+api\b`)
+	apiMutation    = regexp.MustCompile(`(?:--method(?:[ \t]+|=)|-X[ \t]*)(?:POST|PATCH|PUT|DELETE)\b|[ \t](?:-[fF]|--(?:raw-)?field|--input)(?:[ \t=]|$)`)
+	apiGet         = regexp.MustCompile(`(?:--method(?:[ \t]+|=)|-X[ \t]*)GET\b`)
+)
+
+func apiWrites(run, path string) bool {
+	for _, line := range strings.Split(strings.ReplaceAll(run, "\\\n", " "), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "#") && strings.Contains(line, path) &&
+			apiCommand.MatchString(line) && apiMutation.MatchString(line) && !apiGet.MatchString(line) {
+			return true
+		}
+	}
+	return false
+}
+
+func writesRelease(step workflowStep) bool {
+	for _, action := range []string{"softprops/action-gh-release@", "ncipollo/release-action@", "actions/create-release@"} {
+		if strings.HasPrefix(step.Uses, action) {
+			return true
+		}
+	}
+	return releaseCommand.MatchString(step.Run) || apiWrites(step.Run, "/releases")
+}
+
+// A publication command elsewhere bypasses the workflow's approval boundary.
+func TestReleaseWriters(t *testing.T) {
+	var got []string
+	allWorkflows(t, func(file string, workflow workflowFile) {
+		for id, job := range workflow.Jobs {
+			if slices.ContainsFunc(job.Steps, writesRelease) {
+				got = append(got, file+":"+id)
+			}
+		}
+	})
+	slices.Sort(got)
+	release := filepath.Base(releasestate.ReleaseWorkflow)
+	want := []string{"release-artifacts.yml:publish-tag", release + ":publish", release + ":publish-candidate"}
+	if !slices.Equal(got, want) {
+		t.Errorf("release writers = %v, want %v", got, want)
+	}
+}
+
+// Every final release mutation uses the single, repository-scoped App token.
+// An optional App step, a workflow-token fallback or a wider scope fails here.
+func TestReleaseCredential(t *testing.T) {
+	workflow, _ := readReleaseWorkflow(t)
+	credential := -1
+	writes := 0
+	for i, step := range workflow.Jobs["publish"].Steps {
+		if strings.HasPrefix(step.Uses, "actions/create-github-app-token@") && step.ID != "credential" {
+			t.Error("another App token is created in publish")
+		}
+		if step.ID == "credential" {
+			if credential != -1 {
+				t.Fatal("more than one credential step")
+			}
+			credential = i
+			want := map[string]string{
+				"app-id":       "${{ vars.KATL_RELEASE_APP_ID }}",
+				"private-key":  "${{ secrets.KATL_RELEASE_APP_PRIVATE_KEY }}",
+				"owner":        "${{ github.repository_owner }}",
+				"repositories": "${{ github.event.repository.name }}",
+			}
+			if step.Uses != "actions/create-github-app-token@v3" || !maps.Equal(step.With, want) ||
+				step.Run != "" || step.If != "" || step.ContinueOnError {
+				t.Errorf("credential step = %+v, want a mandatory, repository-scoped App token", step)
+			}
+		}
+		if writesRelease(step) || apiWrites(step.Run, "/git/refs") {
+			writes++
+			if credential < 0 || i <= credential || step.Env["GH_TOKEN"] != "${{ steps.credential.outputs.token }}" ||
+				strings.Contains(step.Run, "github.token") {
+				t.Errorf("%s does not use the preceding App token", step.Name)
+			}
+		}
+	}
+	if credential == -1 || writes == 0 {
+		t.Fatalf("credential step or release writes missing")
+	}
+	steps := workflow.Jobs["publish"].Steps
+	if credential+1 >= len(steps) {
+		t.Fatal("missing publishing credential summary")
+	}
+	dir := t.TempDir()
+	summary := filepath.Join(dir, "summary")
+	if output, err := runReleaseStep(dir, steps[credential+1].Run, "GITHUB_STEP_SUMMARY="+summary); err != nil {
+		t.Fatalf("credential summary: %v: %s", err, output)
+	}
+	if body, err := os.ReadFile(summary); err != nil || string(body) != "Publishing credential: katl-release App.\n" {
+		t.Errorf("credential summary = %q, %v", body, err)
+	}
+	for _, step := range workflow.Jobs["qualify"].Steps {
+		if writesRelease(step) || apiWrites(step.Run, "/git/refs") {
+			t.Errorf("qualification step %s mutates a release or tag before approval", step.Name)
+		}
+	}
+}
+
+// These paths catch unattended final publication, resumes that rebuild,
+// refusals that act and failed qualification that still reaches publication.
+func TestReleaseActions(t *testing.T) {
+	workflow, source := readReleaseWorkflow(t)
+	if workflow.Name != "Release" || !maps.Equal(workflow.Permissions, map[string]string{"contents": "read"}) {
+		t.Fatalf("workflow name or default permissions differ from the release interface")
+	}
+	for _, forbidden := range []string{"katl/release/", "refs/heads/release/"} {
+		if strings.Contains(source, forbidden) {
+			t.Errorf("workflow owns a release state name: %s", forbidden)
+		}
+	}
+	for id, name := range map[string]string{
+		"decide": "Decide", "start": "Record build start", "build": "Build", "qualify": "Record qualification",
+		"publish-candidate": "Publish pre-release", "publish": "Publish",
+	} {
+		if got := workflow.Jobs[id].Name; got != name {
+			t.Errorf("%s name = %q, want %q", id, got, name)
+		}
+	}
+	for _, tc := range []struct {
+		action, start, qualify string
+		want                   []string
+	}{
+		{"candidate", "success", "success", []string{"build", "decide", "publish-candidate", "qualify", "start"}},
+		{"retry-candidate", "success", "success", []string{"build", "decide", "publish-candidate", "qualify", "start"}},
+		{"resume-candidate", "skipped", "skipped", []string{"decide", "publish-candidate"}},
+		{"final", "success", "success", []string{"build", "decide", "publish", "qualify", "start"}},
+		{"retry-final", "success", "success", []string{"build", "decide", "publish", "qualify", "start"}},
+		{"refuse", "skipped", "skipped", []string{"decide"}},
+		{"candidate", "success", "failure", []string{"build", "decide", "qualify", "start"}},
+	} {
+		t.Run(tc.action+"/"+tc.qualify, func(t *testing.T) {
+			ctx := map[string]string{
+				"needs.decide.outputs.action": tc.action, "needs.decide.outputs.attempt": "1", "github.run_attempt": "1",
+				"needs.decide.result": "success", "needs.start.result": tc.start, "needs.qualify.result": tc.qualify,
+			}
+			if tc.action == "refuse" {
+				ctx["needs.decide.result"] = "failure"
+			}
+			if got := jobsRun(t, workflow, ctx); !slices.Equal(got, tc.want) {
+				t.Errorf("jobs = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// A partial rerun carries earlier outputs but cannot start, rebuild,
+// qualify or publish until it makes a decision of its own.
+func TestReleaseAttemptGuard(t *testing.T) {
+	workflow, _ := readReleaseWorkflow(t)
+	ctx := map[string]string{"needs.decide.outputs.action": "final", "needs.decide.outputs.attempt": "1", "github.run_attempt": "2"}
+	if conditionHolds(t, workflow.Jobs["build"].If, ctx) {
+		t.Fatal("the build accepts a stale decision")
+	}
+	dir := t.TempDir()
+	for _, id := range []string{"start", "qualify", "publish-candidate", "publish"} {
+		t.Run(id, func(t *testing.T) {
+			steps := workflow.Jobs[id].Steps
+			if len(steps) == 0 || steps[0].If != "" || steps[0].ContinueOnError {
+				t.Fatal("missing unconditional first step")
+			}
+			asNew := expandExpressions(t, steps[0].Env["DECISION_ATTEMPT"], ctx)
+			out, err := runReleaseStep(dir, steps[0].Run, "DECISION_ATTEMPT="+asNew, "GITHUB_RUN_ATTEMPT=2")
+			if err == nil || string(out) != "This attempt has no decision of its own. Dispatch the release action again.\n" {
+				t.Errorf("first step = %q, %v, want stale decision refusal", out, err)
+			}
+			if out, err := runReleaseStep(dir, steps[0].Run, "DECISION_ATTEMPT=2", "GITHUB_RUN_ATTEMPT=2"); err != nil {
+				t.Errorf("first step refuses its own decision: %v: %s", err, out)
+			}
+		})
+	}
+}
+
+// A change to the caller's grants, inputs or call count can invalidate every
+// build or make independent calls collide on artifact names.
+func TestReleaseBuildCall(t *testing.T) {
+	workflow, _ := readReleaseWorkflow(t)
+	const called = "./.github/workflows/release-artifacts.yml"
+	var calls []string
+	for id, job := range workflow.Jobs {
+		if job.Uses == called {
+			calls = append(calls, id)
+		}
+	}
+	if !slices.Equal(calls, []string{"build"}) {
+		t.Fatalf("calls of %s = %v, want [build]", called, calls)
+	}
+	build := workflow.Jobs["build"]
+	requireNeeds(t, workflow, [][2]string{{"build", "decide"}, {"build", "start"}})
+	if want := (map[string]string{"version": "${{ needs.decide.outputs.version }}", "commit": "${{ needs.decide.outputs.commit }}"}); !maps.Equal(build.With, want) {
+		t.Errorf("build inputs = %v, want %v", build.With, want)
+	}
+	var permissions map[string]string
+	if err := build.Permissions.Decode(&permissions); err != nil {
+		t.Fatal(err)
+	}
+	if want := (map[string]string{"actions": "read", "attestations": "write", "contents": "write", "id-token": "write", "packages": "write"}); !maps.Equal(permissions, want) {
+		t.Errorf("build permissions = %v, want %v", permissions, want)
+	}
+
+	var trigger struct {
+		Dispatch struct{ Inputs map[string]yaml.Node } `yaml:"workflow_dispatch"`
+	}
+	artifacts, _ := readWorkflow(t, filepath.Base(called))
+	if err := artifacts.On.Decode(&trigger); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := trigger.Dispatch.Inputs["commit"]; ok {
+		t.Error("release-artifacts.yml accepts a commit in workflow_dispatch, which would make it look like a call")
+	}
+}
+
+func runReleaseStep(dir, script string, env ...string) ([]byte, error) {
+	cmd := exec.Command("bash", "-euo", "pipefail", "-c", script)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), env...)
+	return cmd.CombinedOutput()
+}
+
+// A cancelled build can return empty outputs. Only a verifiably successful
+// response proceeds, and a failure record cannot follow a successful write.
+func TestReleaseQualification(t *testing.T) {
+	workflow, _ := readReleaseWorkflow(t)
+	qualify := workflow.Jobs["qualify"]
+	if !strings.Contains(qualify.If, "always()") {
+		t.Error("qualify skips failed or cancelled builds")
+	}
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	artifact := "katl-2026.12.0-x86_64-0123456789ab"
+	stub := "#!/bin/sh\n[ \"$*\" = 'bundle-name 2026.12.0 " + calledCommit + "' ] || exit 5\necho '" + artifact + "'\n"
+	if err := os.WriteFile(filepath.Join(dir, "scripts", "katl-release"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	validation, qualified, failed := workflowStep{}, -1, -1
+	for i, step := range qualify.Steps {
+		switch {
+		case step.ID == "validation":
+			validation = step
+		case strings.Contains(step.Run, `record "$VERSION" qualified`):
+			qualified = i
+			if !strings.HasSuffix(strings.TrimSpace(step.Run), `scripts/katl-release record "$VERSION" qualified "$DIGEST"`) {
+				t.Error("the qualified write is followed by more operations")
+			}
+		case strings.Contains(step.Run, `record "$VERSION" failed`):
+			failed = i
+			if step.If != "failure() && steps.qualification.outcome != 'success' && needs.decide.outputs.attempt == github.run_attempt" {
+				t.Errorf("the failed write can run on a completed qualification or stale decision: %s", step.If)
+			}
+		}
+	}
+	if validation.Run == "" || qualified < 0 || failed != qualified+1 || failed != len(qualify.Steps)-1 {
+		t.Fatal("missing validation or qualification outcomes, or steps run after the qualified/failed writes")
+	}
+	if got := validation.Env; !maps.Equal(got, map[string]string{
+		"VALIDATION": "${{ needs.build.outputs.validation }}", "DIGEST": "${{ needs.build.outputs.sha256sums }}", "ARTIFACT": "${{ needs.build.outputs.artifact }}",
+	}) {
+		t.Errorf("validation inputs = %v", got)
+	}
+	for _, verdict := range []string{"success", "failure", ""} {
+		for _, digest := range []string{strings.Repeat("1", 64), "", "invalid"} {
+			for _, name := range []string{artifact, "wrong-artifact"} {
+				out, err := runReleaseStep(dir, validation.Run, "VALIDATION="+verdict, "DIGEST="+digest, "ARTIFACT="+name,
+					"VERSION=2026.12.0", "COMMIT="+calledCommit, "GITHUB_STEP_SUMMARY="+filepath.Join(dir, "summary"))
+				if want := verdict == "success" && len(digest) == 64 && name == artifact; (err == nil) != want {
+					t.Errorf("validation %q, %q, %q = %v: %s, want success=%v", verdict, digest, name, err, out, want)
+				}
+			}
+		}
+	}
+}
+
+// A candidate tag without its building record looks foreign, and a retry
+// must use the tag it already has.
+func TestReleaseCandidateTag(t *testing.T) {
+	workflow, _ := readReleaseWorkflow(t)
+	record, tag := -1, -1
+	for i, step := range workflow.Jobs["start"].Steps {
+		if strings.Contains(step.Run, `record "$VERSION" building`) {
+			record = i
+		}
+		if apiWrites(step.Run, "/git/refs") {
+			tag = i
+			for _, action := range []string{"candidate", "retry-candidate", "resume-candidate", "final", "retry-final", "refuse"} {
+				if got, want := conditionHolds(t, step.If, map[string]string{"needs.decide.outputs.action": action}), action == "candidate"; got != want {
+					t.Errorf("create tag for %s = %v, want %v", action, got, want)
+				}
+			}
+		}
+	}
+	if record < 0 || tag <= record {
+		t.Fatalf("start must record building before creating a tag")
+	}
+}
+
+// All local and draft checks finish before registry writes, after which only
+// the publication step can act.
+func TestReleasePublicationOrder(t *testing.T) {
+	workflow, _ := readReleaseWorkflow(t)
+	for _, id := range []string{"publish-candidate", "publish"} {
+		var got []string
+		for _, step := range workflow.Jobs[id].Steps {
+			for _, command := range []string{"match-release-extensions", "katl-release draft", "publish-release-extensions", "katl-release publish"} {
+				if strings.Contains(step.Run, command) {
+					got = append(got, command)
+				}
+			}
+		}
+		want := []string{"match-release-extensions", "katl-release draft", "publish-release-extensions", "katl-release publish"}
+		if !slices.Equal(got, want) {
+			t.Errorf("%s steps = %v, want %v", id, got, want)
+		}
+	}
+}
+
+// A version holds its own concurrency group through approval and publication.
+func TestReleaseConcurrency(t *testing.T) {
+	workflow, _ := readReleaseWorkflow(t)
+	var concurrency struct {
+		Group  string
+		Cancel string `yaml:"cancel-in-progress"`
+	}
+	if err := workflow.Concurrency.Decode(&concurrency); err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []string{"2026.12.0", "2026.12.1"} {
+		ref := "refs/heads/release/" + version
+		if got, want := expandExpressions(t, concurrency.Group, map[string]string{"github.ref": ref}), "release-"+ref; got != want {
+			t.Errorf("group = %q, want %q", got, want)
+		}
+	}
+	if concurrency.Cancel != "false" {
+		t.Errorf("cancel-in-progress = %q, want false", concurrency.Cancel)
+	}
+}

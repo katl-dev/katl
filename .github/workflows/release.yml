@@ -1,0 +1,373 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      retry:
+        description: Reason for retrying a build that did not qualify
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  decide:
+    name: Decide
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      statuses: read
+      packages: read
+      attestations: read
+      deployments: read
+    outputs:
+      action: ${{ steps.decision.outputs.action }}
+      state: ${{ steps.decision.outputs.state }}
+      version: ${{ steps.decision.outputs.version }}
+      commit: ${{ steps.decision.outputs.commit }}
+      candidate: ${{ steps.decision.outputs.candidate }}
+      reason: ${{ steps.decision.outputs.reason }}
+      build-run: ${{ steps.decision.outputs.build-run }}
+      build-attempt: ${{ steps.decision.outputs.build-attempt }}
+      digest: ${{ steps.decision.outputs.digest }}
+      attempt: ${{ steps.decision.outputs.attempt }}
+    steps:
+      - &checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - &setup-go
+        uses: ./.github/actions/setup-go
+      - name: Decide the release action
+        id: decision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RETRY: ${{ inputs.retry }}
+        run: |
+          decision="$(scripts/katl-release next --retry "$RETRY")"
+          action="$(jq -r '.action' <<< "$decision")"
+          if [[ "$action" == refuse ]]; then
+            jq -r '.message' <<< "$decision" >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          commit="$(jq -r '.commit' <<< "$decision")"
+          if [[ ! "$commit" =~ ^[0-9a-f]{40}$ || "$commit" != "$GITHUB_SHA" ]]; then
+            echo "The decision names commit $commit, but this run builds $GITHUB_SHA. Dispatch the release action again." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          reason="$(jq -r '.reason // ""' <<< "$decision")"
+          if [[ -n "$reason" ]]; then
+            printf 'Retry reason: %s\n' "$reason" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          delimiter="$(cat /proc/sys/kernel/random/uuid)"
+          {
+            jq -r 'to_entries[] | select(.key | IN("action", "state", "version", "commit", "candidate", "build_run", "build_attempt", "digest")) | "\(.key | gsub("_"; "-"))=\(.value)"' <<< "$decision"
+            printf 'attempt=%s\nreason<<%s\n%s\n%s\n' "$GITHUB_RUN_ATTEMPT" "$delimiter" "$reason" "$delimiter"
+          } >> "$GITHUB_OUTPUT"
+
+  start:
+    name: Record build start
+    needs: decide
+    if: >-
+      needs.decide.outputs.action == 'candidate' || needs.decide.outputs.action == 'retry-candidate' ||
+      needs.decide.outputs.action == 'final' || needs.decide.outputs.action == 'retry-final'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      statuses: write
+    env:
+      VERSION: ${{ needs.decide.outputs.version }}
+    steps:
+      - &attempt-guard
+        name: Require a decision from this attempt
+        env:
+          DECISION_ATTEMPT: ${{ needs.decide.outputs.attempt }}
+        run: |
+          if [[ "$DECISION_ATTEMPT" != "$GITHUB_RUN_ATTEMPT" ]]; then
+            echo "This attempt has no decision of its own. Dispatch the release action again."
+            exit 1
+          fi
+      - *checkout
+      - *setup-go
+      - name: Record the start of the build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/katl-release record "$VERSION" building
+      - name: Create the candidate tag
+        if: needs.decide.outputs.action == 'candidate'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ needs.decide.outputs.commit }}
+        run: |
+          tag="$(scripts/katl-release tag-name "$VERSION")"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$tag" -f sha="$COMMIT"
+
+  build:
+    name: Build
+    needs: [decide, start]
+    if: >-
+      needs.decide.outputs.attempt == github.run_attempt &&
+      (needs.decide.outputs.action == 'candidate' || needs.decide.outputs.action == 'retry-candidate' ||
+      needs.decide.outputs.action == 'final' || needs.decide.outputs.action == 'retry-final')
+    uses: ./.github/workflows/release-artifacts.yml
+    with:
+      version: ${{ needs.decide.outputs.version }}
+      commit: ${{ needs.decide.outputs.commit }}
+    permissions:
+      actions: read
+      attestations: write
+      contents: write
+      id-token: write
+      packages: write
+
+  qualify:
+    name: Record qualification
+    needs: [decide, start, build]
+    if: >-
+      always() && needs.start.result == 'success' &&
+      (needs.decide.outputs.action == 'candidate' || needs.decide.outputs.action == 'retry-candidate' ||
+      needs.decide.outputs.action == 'final' || needs.decide.outputs.action == 'retry-final')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+      statuses: write
+    env:
+      VERSION: ${{ needs.decide.outputs.version }}
+      COMMIT: ${{ needs.decide.outputs.commit }}
+    outputs:
+      digest: ${{ steps.qualification.outputs.digest }}
+    steps:
+      - *attempt-guard
+      - *checkout
+      - *setup-go
+      - name: Require a validated bundle
+        id: validation
+        env:
+          VALIDATION: ${{ needs.build.outputs.validation }}
+          DIGEST: ${{ needs.build.outputs.sha256sums }}
+          ARTIFACT: ${{ needs.build.outputs.artifact }}
+        run: |
+          if [[ "$VALIDATION" != success || ! "$DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "The build did not return successful Release validation and a bundle checksum digest. Check the Build jobs." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          expected="$(scripts/katl-release bundle-name "$VERSION" "$COMMIT")"
+          if [[ "$ARTIFACT" != "$expected" ]]; then
+            echo "The build did not return the expected bundle $expected. Check the Build jobs." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+      - name: Download the validated bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.build.outputs.artifact }}
+          path: dist
+      - name: Verify, summarize and record qualification
+        id: qualification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DIGEST: ${{ needs.build.outputs.sha256sums }}
+          CANDIDATE: ${{ needs.decide.outputs.candidate }}
+          ACTION: ${{ needs.decide.outputs.action }}
+        run: |
+          tag="$(scripts/katl-release tag-name "$VERSION")"
+          scripts/katl-release verify --branch "$tag" "$COMMIT" dist
+          actual="$(sha256sum dist/SHA256SUMS)"
+          if [[ "${actual%% *}" != "$DIGEST" ]]; then
+            echo "The downloaded bundle differs from the validated bundle. Check the Build artifacts." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          {
+            printf '## Qualified KatlOS %s\n\nCommit: `%s`\n\n' "$VERSION" "$COMMIT"
+            if [[ "$ACTION" == final || "$ACTION" == retry-final ]]; then
+              printf 'Follows candidate %s.\n\n' "$CANDIDATE"
+            fi
+            printf 'SHA256SUMS digest: `%s`\n' "$DIGEST"
+            if [[ "$ACTION" == final || "$ACTION" == retry-final ]]; then
+              printf '\n```text\n'
+              cat dist/SHA256SUMS
+              printf '```\n\n'
+              cat dist/RELEASE_NOTES.md
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
+          scripts/katl-release record "$VERSION" qualified "$DIGEST"
+      - name: Record failure before qualification
+        if: failure() && steps.qualification.outcome != 'success' && needs.decide.outputs.attempt == github.run_attempt
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/katl-release record "$VERSION" failed
+
+  publish-candidate:
+    name: Publish pre-release
+    needs: [decide, qualify]
+    if: >-
+      always() && needs.decide.result == 'success' &&
+      (needs.decide.outputs.action == 'resume-candidate' ||
+      ((needs.decide.outputs.action == 'candidate' || needs.decide.outputs.action == 'retry-candidate') &&
+      needs.qualify.result == 'success'))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+      attestations: read
+    env:
+      VERSION: ${{ needs.decide.outputs.version }}
+      COMMIT: ${{ needs.decide.outputs.commit }}
+      DIGEST: ${{ needs.decide.outputs.digest || needs.qualify.outputs.digest }}
+    steps:
+      - *attempt-guard
+      - *checkout
+      - *setup-go
+      - &bundle-name
+        name: Resolve the bundle name
+        id: bundle
+        run: |
+          name="$(scripts/katl-release bundle-name "$VERSION" "$COMMIT")"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - name: Find artifacts of the recorded build attempt
+        id: recorded
+        if: needs.decide.outputs.action == 'resume-candidate'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN: ${{ needs.decide.outputs.build-run }}
+          BUILD_ATTEMPT: ${{ needs.decide.outputs.build-attempt }}
+        run: |
+          artifacts="$(scripts/katl-release candidate-artifacts "$VERSION" "$COMMIT" "$BUILD_RUN" "$BUILD_ATTEMPT")"
+          jq -r '"bundle=\(.bundle)\nextensions=\(.standard),\(.lts)"' <<< "$artifacts" >> "$GITHUB_OUTPUT"
+      - name: Download the candidate bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ steps.recorded.outputs.bundle == '' && steps.bundle.outputs.name || '' }}
+          artifact-ids: ${{ steps.recorded.outputs.bundle }}
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.decide.outputs.build-run || github.run_id }}
+          path: dist
+      - &check-digest
+        name: Confirm the qualified bundle digest
+        run: |
+          actual="$(sha256sum dist/SHA256SUMS)"
+          if [[ ! "$DIGEST" =~ ^[0-9a-f]{64}$ || "${actual%% *}" != "$DIGEST" ]]; then
+            echo "The downloaded bundle differs from the qualified bundle. Check the recorded build artifacts."
+            exit 1
+          fi
+      - name: Download candidate extension publication inputs
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ${{ steps.recorded.outputs.extensions == '' && format('katl-extension-bundles-*-{0}', github.sha) || '' }}
+          artifact-ids: ${{ steps.recorded.outputs.extensions }}
+          github-token: ${{ github.token }}
+          run-id: ${{ needs.decide.outputs.build-run || github.run_id }}
+          path: artifacts
+      - &check-extensions
+        name: Compare extension inputs with the bundle
+        run: |
+          for flavour in standard lts; do
+            directory="artifacts/katl-extension-bundles-${flavour}-${COMMIT}"
+            go run ./cmd/katl-mkosi-artifacts match-release-extensions dist "$flavour" \
+              "$directory/release-extensions.json" "$directory/extension-bundles"
+          done
+      - name: Draft the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/katl-release draft "$VERSION" "$COMMIT" dist
+      - &registry-login
+        name: Authenticate registry publication
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+      - &push-extensions
+        name: Publish qualified extension bundles
+        run: |
+          for flavour in standard lts; do
+            directory="artifacts/katl-extension-bundles-${flavour}-${COMMIT}"
+            go run ./cmd/katl-mkosi-artifacts publish-release-extensions \
+              "$directory/release-extensions.json" "$directory/extension-bundles"
+          done
+      - name: Publish the pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/katl-release publish "$VERSION" "$COMMIT" dist
+
+  publish:
+    name: Publish
+    needs: [decide, qualify]
+    if: needs.decide.outputs.action == 'final' || needs.decide.outputs.action == 'retry-final'
+    runs-on: ubuntu-24.04
+    environment: release
+    permissions:
+      contents: write
+      packages: write
+      actions: read
+      attestations: read
+      statuses: read
+      deployments: read
+    env:
+      VERSION: ${{ needs.decide.outputs.version }}
+      COMMIT: ${{ needs.decide.outputs.commit }}
+      DIGEST: ${{ needs.qualify.outputs.digest }}
+    steps:
+      - *attempt-guard
+      - name: Select the publishing credential
+        id: credential
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ vars.KATL_RELEASE_APP_ID }}
+          private-key: ${{ secrets.KATL_RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+      - name: Summarize the publishing credential
+        run: |
+          echo "Publishing credential: katl-release App." >> "$GITHUB_STEP_SUMMARY"
+      - *checkout
+      - *setup-go
+      - name: Confirm the final decision after approval
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/katl-release confirm-final "$VERSION" "$COMMIT" "$DIGEST"
+      - *bundle-name
+      - name: Download the qualified bundle
+        uses: actions/download-artifact@v8
+        with:
+          name: ${{ steps.bundle.outputs.name }}
+          path: dist
+      - *check-digest
+      - name: Download both qualification records
+        uses: actions/download-artifact@v8
+        with:
+          pattern: katl-qualified-*-${{ github.sha }}
+          path: evidence
+      - name: Confirm the bytes qualified by Production VM
+        run: |
+          scripts/katl-release equivalent dist \
+            "standard=evidence/katl-qualified-standard-$COMMIT/SHA256SUMS" \
+            "lts=evidence/katl-qualified-lts-$COMMIT/SHA256SUMS"
+      - name: Download final extension publication inputs
+        uses: actions/download-artifact@v8
+        with:
+          pattern: katl-extension-bundles-*-${{ github.sha }}
+          path: artifacts
+      - *check-extensions
+      - name: Draft the final release
+        env:
+          GH_TOKEN: ${{ steps.credential.outputs.token }}
+        run: scripts/katl-release draft "$VERSION" "$COMMIT" dist
+      - *registry-login
+      - *push-extensions
+      - name: Publish the final release and tag
+        env:
+          GH_TOKEN: ${{ steps.credential.outputs.token }}
+        run: scripts/katl-release publish "$VERSION" "$COMMIT" dist

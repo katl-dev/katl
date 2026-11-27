@@ -71,6 +71,41 @@ func TestCollectReleaseExtensionInventory(t *testing.T) {
 		t.Fatalf("extension versions = %#v", inventory.Extensions)
 	}
 
+	t.Run("publication matches the qualified inventory", func(t *testing.T) {
+		dir := t.TempDir()
+		input := filepath.Join(dir, "release-extensions.json")
+		if err := writeJSON(input, release, dir); err != nil {
+			t.Fatal(err)
+		}
+		qualified := releaseExtensionInventory{
+			SchemaVersion: 1, ArtifactKind: "katl.release-extension-inventory.v1",
+			Version: "2026.9.0", Architecture: "x86_64", Flavour: "lts", RuntimeInterface: "katl-runtime-1",
+			KernelRelease: "6.18.1", RuntimeSHA256: strings.Repeat("a", 64),
+			Extensions: []releaseExtensionVersion{
+				{"alpha", "1.2.3", "registry.invalid/extensions/alpha", release.Extensions["registry.invalid/extensions/alpha"]},
+				{"zeta", "2.0.0", "registry.invalid/extensions/zeta", release.Extensions["registry.invalid/extensions/zeta"]},
+			},
+		}
+		args := []string{dir, "lts", input, layout}
+		if err := runMatchReleaseExtensions(args); err == nil {
+			t.Fatal("accepted extension inputs without a qualified inventory")
+		}
+		qualifiedPath := filepath.Join(dir, "katl-runtime-lts.extensions.json")
+		if err := writeJSON(qualifiedPath, qualified, dir); err != nil {
+			t.Fatal(err)
+		}
+		if err := runMatchReleaseExtensions(args); err != nil {
+			t.Fatalf("matching inputs: %v", err)
+		}
+		qualified.Extensions[0].Reference = "registry.invalid/extensions/alpha@sha256:" + strings.Repeat("9", 64)
+		if err := writeJSON(qualifiedPath, qualified, dir); err != nil {
+			t.Fatal(err)
+		}
+		if err := runMatchReleaseExtensions(args); err == nil || !strings.Contains(err.Error(), "differ from") {
+			t.Fatalf("a different qualified reference was accepted: %v", err)
+		}
+	})
+
 	release.Target.Version = "2026.9.1"
 	if _, err := collectReleaseExtensionInventory(release, layout); err == nil || !strings.Contains(err.Error(), "artifact version") {
 		t.Fatalf("mismatched release error = %v", err)
