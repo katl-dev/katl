@@ -449,10 +449,11 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	history := stageHistory(t)
 	cmd := exec.Command(filepath.Join(repo, "scripts", "katl-release-artifacts"), "stage", version, output)
-	cmd.Dir = repo
+	cmd.Dir = history
 	cmd.Env = append(
-		os.Environ(),
+		gittest.Env(environmentWithout("KATL_RELEASE_TARGET"), history),
 		"KATL_MKOSI_BUILD_DIR="+buildDir,
 		"KATL_ARCHITECTURE=x86_64",
 	)
@@ -493,7 +494,7 @@ func TestKatlReleaseArtifactStage(t *testing.T) {
 		}
 	}
 	releaseNotes := string(mustReadFile(t, filepath.Join(output, "RELEASE_NOTES.md")))
-	for _, value := range []string{"## Packages", "| Kernel | `6.19.1-1.fc44.x86_64` |", "| systemd | `259.9-1.fc44.x86_64` |", "| drbd9 | `9.3.4` |", "## Support", "SUPPORT.md", "## Changes", "## Verify", "[PROVENANCE.md]("} {
+	for _, value := range []string{"## Packages", "| Kernel | `6.19.1-1.fc44.x86_64` |", "| systemd | `259.9-1.fc44.x86_64` |", "| drbd9 | `9.3.4` |", "## Support", "SUPPORT.md", "## Changes", "**runtime:** prepare 2026.7.0", "## Verify", "[PROVENANCE.md](", "v2026.6.2...v2026.7.0-rc.0"} {
 		if !strings.Contains(releaseNotes, value) {
 			t.Fatalf("release notes missing %q: %q", value, releaseNotes)
 		}
@@ -715,8 +716,9 @@ func TestKatlReleaseLTSStage(t *testing.T) {
 	writeReleaseExtensionInventory(t, buildDir, "lts")
 	output := filepath.Join(t.TempDir(), "dist")
 	cmd := exec.Command(filepath.Join(repo, "scripts/katl-release-artifacts"), "stage", "2026.7.0-rc.0", output)
-	cmd.Dir = repo
-	cmd.Env = append(os.Environ(), "KATL_FLAVOUR=lts", "KATL_MKOSI_BUILD_DIR="+buildDir, "KATL_ARCHITECTURE=x86_64")
+	history := stageHistory(t)
+	cmd.Dir = history
+	cmd.Env = append(gittest.Env(environmentWithout("KATL_RELEASE_TARGET"), history), "KATL_FLAVOUR=lts", "KATL_MKOSI_BUILD_DIR="+buildDir, "KATL_ARCHITECTURE=x86_64")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("stage: %v\n%s", err, out)
 	}
@@ -1014,6 +1016,26 @@ func TestMkosiBuilderActionOutputIsIgnored(t *testing.T) {
 }
 
 const productionBaselineFile = "scripts/production-upgrade-baseline.txt"
+
+// stageHistory returns a repository whose history stands in for the checkout's
+// when stage renders release notes, so the result does not depend on which tags
+// the checkout fetched.
+func stageHistory(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, productionBaselineFile), []byte("v2026.6.2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", productionBaselineFile)
+	runGit(t, dir, "commit", "--quiet", "-m", "release: publish 2026.6.2")
+	runGit(t, dir, "tag", "v2026.6.2")
+	runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "runtime: prepare 2026.7.0")
+	return dir
+}
 
 func writeReleaseScriptFixture(t *testing.T, dir, baseline string) {
 	t.Helper()
