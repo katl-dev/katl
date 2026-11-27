@@ -47,25 +47,21 @@ func TestSystemExtensionPublication(t *testing.T) {
 			t.Errorf("recipe classification of %s = %t, want %t", path, got, needsRelease)
 		}
 	}
-	var revision, publication string
+	var publication string
 	for _, step := range bird.Steps {
-		switch step.ID {
-		case "revision":
-			revision = step.Run
-		case "publication":
+		if step.ID == "publication" {
 			publication = step.Run
 		}
 	}
-	if revision == "" || publication == "" {
-		t.Fatal("revision or publication decision missing")
+	if publication == "" {
+		t.Fatal("publication decision missing")
 	}
 
 	for _, tc := range []struct {
 		name, changed, previous, current, event, manual string
-		wantError, wantPublish                          bool
+		wantPublish                                     bool
 	}{
-		{name: "unchanged recipe", changed: "extensions/bird/bird.conf", previous: "v1", current: "v1", event: "pull_request", wantError: true},
-		{name: "advanced recipe", changed: "extensions/bird/bird.conf", previous: "v1", current: "v2", event: "pull_request"},
+		{name: "pull request", changed: "extensions/bird/bird.conf", previous: "v1", current: "v2", event: "pull_request"},
 		{name: "unrelated change", changed: "docs/README.md", previous: "v1", current: "v1", event: "push"},
 		{name: "test change", changed: "extensions/bird/bird_test.go", previous: "v1", current: "v1", event: "push"},
 		{name: "push recipe", changed: "extensions/bird/bird.conf", previous: "v1", current: "v2", event: "push", wantPublish: true},
@@ -88,7 +84,6 @@ func TestSystemExtensionPublication(t *testing.T) {
 			}
 			runGit(t, dir, "add", ".")
 			runGit(t, dir, "commit", "--quiet", "-m", "initial recipe")
-			base := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
 			if tc.changed != "" {
 				changedPath := filepath.Join(dir, tc.changed)
 				if err := os.MkdirAll(filepath.Dir(changedPath), 0o755); err != nil {
@@ -109,17 +104,9 @@ func TestSystemExtensionPublication(t *testing.T) {
 			outputPath := filepath.Join(dir, "output")
 			env := append(gittest.Env(os.Environ(), dir),
 				"KATL_BIRD_RECIPE_PATTERN="+bird.Env["KATL_BIRD_RECIPE_PATTERN"],
-				"BASE_SHA="+base, "GITHUB_SHA="+head, "GITHUB_OUTPUT="+outputPath,
+				"GITHUB_SHA="+head, "GITHUB_OUTPUT="+outputPath,
 				"EVENT_NAME="+tc.event, "MANUAL_PUBLISH="+tc.manual,
 			)
-			if tc.event == "pull_request" {
-				cmd := exec.Command("bash", "-euo", "pipefail", "-c", revision)
-				cmd.Dir, cmd.Env = dir, env
-				output, err := cmd.CombinedOutput()
-				if (err != nil) != tc.wantError {
-					t.Fatalf("revision exit = %v, want error=%t:\n%s", err, tc.wantError, output)
-				}
-			}
 			cmd := exec.Command("bash", "-euo", "pipefail", "-c", publication)
 			cmd.Dir, cmd.Env = dir, env
 			output, err := cmd.CombinedOutput()

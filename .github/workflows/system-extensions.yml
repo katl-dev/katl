@@ -74,23 +74,14 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-      - name: Require an immutable revision for recipe changes
+      - name: Require a new extension version for changed build inputs
         id: revision
         if: ${{ github.event_name == 'pull_request' }}
         shell: bash
         env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          changed="$(git diff --name-only "$BASE_SHA"...HEAD | grep -Ev '_test\.go$' || true)"
-          if ! grep -Eq "$KATL_BIRD_RECIPE_PATTERN" <<<"$changed"; then
-            exit 0
-          fi
-          previous_version="$(git show "$BASE_SHA:extensions/bird/extension.env" | sed -n 's/^KATL_EXTENSION_ARTIFACT_VERSION=//p')"
-          source extensions/bird/extension.env
-          if [[ "$KATL_EXTENSION_ARTIFACT_VERSION" == "$previous_version" ]]; then
-            echo "error: BIRD extension recipe changed without advancing KATL_EXTENSION_ARTIFACT_VERSION" >&2
-            exit 1
-          fi
+        run: go run ./cmd/katl-vmtest-plan extensions --base-ref "$BASE_REF" --base "$BASE_SHA" --head HEAD
       - name: Set reproducible inputs
         shell: bash
         run: |
