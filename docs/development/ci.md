@@ -70,7 +70,8 @@ general VM regression.
 
 The required check names the base CI tested. A pull request into a release
 series branch publishes `CI (release)`; every other event publishes `CI`, and the
-release branch ruleset waits for `CI (release)`. A rerun replays the original
+release branch ruleset waits for `CI (release)`
+([release rulesets](release-rulesets.md)). A rerun replays the original
 event, so it keeps the name of the base it tested. After a pull request is
 retargeted onto a release branch it therefore has no `CI (release)` result:
 open release pull requests with `gh pr create --base release/...`, or close and

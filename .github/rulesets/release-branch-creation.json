@@ -1,0 +1,25 @@
+{
+  "name": "release branch creation",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "exclude": [],
+      "include": [
+        "refs/heads/release/[0-9]*"
+      ]
+    }
+  },
+  "bypass_actors": [
+    {
+      "actor_id": 5958368,
+      "actor_type": "Integration",
+      "bypass_mode": "always"
+    }
+  ],
+  "rules": [
+    {
+      "type": "creation"
+    }
+  ]
+}
