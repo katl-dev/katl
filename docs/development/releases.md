@@ -103,6 +103,10 @@ Both standard and LTS flavours must pass:
 - Upgrade from the pinned stable release to the candidate and rollback to
   the source generation, preserving machine identity. These tests use the
   production images without a VM test agent.
+- Loading of every module that each release extension ships, on the installed
+  candidate runtime with that extension merged. NVIDIA modules may stop because
+  no GPU is present; any other load failure, such as an unknown symbol or an
+  invalid module format, fails the candidate and names the module.
 
 Each flavour is built by the reusable `production-build.yml` workflow. Its own
 Production VM job (`qualification-standard`, `qualification-lts`) qualifies the

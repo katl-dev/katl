@@ -50,9 +50,9 @@ jobs:
     # Every step has a budget so that go test's -timeout 75m, inside its
     # 80-minute step, fires before this timeout whenever setup stays within
     # budget: checkout 5, Go 10, host 15, candidate 20, previous release 20,
-    # checksums 5, qualification 80, qualified sums 5, diagnostics 5 and
-    # evidence 10 sum to 175 minutes.
-    timeout-minutes: 180
+    # checksums 5, extension composition 10, qualification 80, qualified sums
+    # 5, diagnostics 5 and evidence 10 sum to 185 minutes.
+    timeout-minutes: 190
     env:
       KATL_FLAVOUR: ${{ inputs.flavour }}
       KATL_VMTEST_KVM: 'on'
@@ -63,6 +63,7 @@ jobs:
       KATL_VMTEST_GO: ${{ github.workspace }}/.github/scripts/hosted-vmtest-go
       KATL_VMTEST_RELEASE_DIR: ${{ github.workspace }}/dist
       KATL_VMTEST_PREVIOUS_RELEASE_DIR: ${{ github.workspace }}/previous
+      KATL_VMTEST_RELEASE_EXTENSIONS_DIR: ${{ github.workspace }}/_build/release-extensions
       KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/production-vmtest
     steps:
       - uses: actions/checkout@v7
@@ -94,6 +95,18 @@ jobs:
           scripts/katl-release checksums dist
           scripts/katl-release checksums previous
           printf 'Upgrade source: %s\n' "$PREVIOUS_TAG" >> "$GITHUB_STEP_SUMMARY"
+      # Composing needs mount privileges, which the VM test sandbox withholds.
+      # It uses the release build's own extension verification.
+      - name: Compose the candidate's release extensions for its runtime
+        timeout-minutes: 10
+        run: |
+          .github/scripts/hosted-apt-install systemd-container kmod
+          prefix=katlos
+          if [[ "$KATL_FLAVOUR" == lts ]]; then prefix=katlos-lts; fi
+          images=(dist/"$prefix"-install-*.squashfs)
+          mkdir -p "$KATL_VMTEST_RELEASE_EXTENSIONS_DIR"
+          go run ./cmd/katl-mkosi-artifacts compose-release-extensions \
+            "${images[@]}" "$KATL_VMTEST_RELEASE_EXTENSIONS_DIR/$KATL_FLAVOUR"
       - name: Qualify production installation, reboot, upgrade, and rollback
         timeout-minutes: 80
         run: |
