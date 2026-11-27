@@ -329,11 +329,14 @@ exists. Green alone does not imply that: row 17 supersedes a green candidate.
 ## Releasable final
 
 The final build at `C` rebuilds the bytes, because they embed the version.
-What it keeps from the candidate is the commit and the regression evidence.
+What it keeps from the candidate is the commit.
 `katl-release regression` remains the one owner of whether a release build
 repeats the VM regression lanes, and the final skips them only on that
-command's decision. The command finds the candidate of `V` at `C` from its
-trusted record instead of from a tag-push run. The called path of
+command's decision. Its rule is unchanged: the final skips the lanes only
+when the merge queue produced `C` and ran every VM job of both flavours, and
+otherwise repeats them, even when the candidate ran them itself. The command
+requires a candidate of `V` at `C` and finds it from the trusted record
+instead of from a tag-push run. The called path of
 `release-artifacts.yml` must run that decision for the version it is given;
 `release.yml` passes no instruction to skip.
 
