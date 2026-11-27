@@ -1,0 +1,29 @@
+on: push
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Restore
+        id: go
+        uses: actions/cache/restore@v6
+        with:
+          path: go
+          key: go-${{ github.sha }}
+      - name: Save
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: go
+          key: ${{ steps.go.outputs.cache-primary-key }}
+  b:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: ./.github/actions/builder
+  c:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Restore
+        uses: actions/cache/restore@v6
+        with:
+          path: go
+          key: go-${{ github.sha }}

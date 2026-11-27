@@ -1,0 +1,27 @@
+on:
+  workflow_call:
+    inputs:
+      flavour:
+        type: string
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+    steps:
+      - name: Restore RPMs
+        id: rpm
+        uses: actions/cache/restore@v6
+        with:
+          path: rpms
+          key: rpm-${{ inputs.flavour }}-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('kernels/**') }}
+          restore-keys: |
+            rpm-${{ inputs.flavour }}-${{ runner.os }}-
+      - uses: ./.github/actions/builder
+      - name: Save RPMs
+        if: ${{ github.ref == 'refs/heads/main' && steps.rpm.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: rpms
+          key: ${{ steps.rpm.outputs.cache-primary-key }}

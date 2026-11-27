@@ -405,7 +405,7 @@ func requireQualified(dir string, flavours []string) error {
 			qualified[file] = true
 		}
 	}
-	for _, name := range []string{flavour.Standard, flavour.LTS} {
+	for _, name := range flavour.Supported() {
 		if !seen[name] {
 			return fmt.Errorf("no qualified checksums for %s", name)
 		}

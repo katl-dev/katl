@@ -1,0 +1,8 @@
+name: Builder
+runs:
+  using: composite
+  steps:
+    - uses: docker/build-push-action@v7
+      with:
+        cache-from: type=gha,scope=builder
+        cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,scope=builder,mode=max' || '' }}

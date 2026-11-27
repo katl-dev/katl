@@ -1,0 +1,34 @@
+on: push
+jobs:
+  j:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        flavour: [standard, lts]
+    steps:
+      - name: Other
+        uses: actions/cache/restore@v6
+        with:
+          path: other
+          key: other-${{ runner.os }}
+      - name: RPMs
+        uses: actions/cache/restore@v6
+        with:
+          path: rpms
+          key: rpm-${{ matrix.flavour }}-${{ runner.os }}
+      - name: Mixed
+        uses: actions/cache/restore@v6
+        with:
+          path: go
+          key: go-${{ runner.os }}
+          restore-keys: |
+            go-
+            rpm-standard-
+      - name: Layers
+        uses: docker/build-push-action@v7
+        with:
+          cache-from: type=gha,scope=other
+      - name: Default scope
+        uses: docker/build-push-action@v7
+        with:
+          cache-from: type=gha

@@ -1,0 +1,11 @@
+name: Builder
+runs:
+  using: composite
+  steps:
+    - uses: docker/setup-buildx-action@v4
+      with:
+        cache-binary: ${{ github.ref == 'refs/heads/main' }}
+    - uses: docker/build-push-action@v7
+      with:
+        cache-from: type=gha,scope=builder
+        cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,scope=builder,mode=max' || '' }}

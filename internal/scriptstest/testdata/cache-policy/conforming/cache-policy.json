@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "save_ref": "refs/heads/main",
+  "budget_bytes": 400,
+  "alert_bytes": 500,
+  "families": [
+    {"name": "go", "key_prefix": "go-", "contents": "Go", "key_inputs": ["steps.paths.outputs.platform"], "savers": [{"workflow": "ci.yml", "job": "checks"}], "budget_bytes": 100},
+    {"name": "rpm-standard", "key_prefix": "rpm-standard-", "contents": "RPMs", "savers": [{"workflow": "build.yml", "job": "build"}], "budget_bytes": 100},
+    {"name": "rpm-lts", "key_prefix": "rpm-lts-", "contents": "RPMs", "savers": [{"workflow": "build.yml", "job": "build"}], "budget_bytes": 100},
+    {"name": "builder", "key_prefix": "buildkit-blob-", "gha_scope": "builder", "contents": "Layers", "savers": [{"action": "builder"}], "budget_bytes": 100}
+  ],
+  "known_violations": []
+}

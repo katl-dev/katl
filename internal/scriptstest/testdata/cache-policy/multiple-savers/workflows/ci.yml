@@ -1,0 +1,53 @@
+on: push
+jobs:
+  a:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Save Go
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: go
+          key: go-x
+  b:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Save Go
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: go
+          key: go-x
+  c:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: ./.github/actions/builder
+  # Matrix legs share one saver, the job that writes the step.
+  d:
+    runs-on: ubuntu-24.04
+    strategy:
+      matrix:
+        flavour: [standard, lts]
+    steps:
+      - name: Restore RPMs
+        id: rpm
+        uses: actions/cache/restore@v6
+        with:
+          path: rpms
+          key: rpm-${{ matrix.flavour }}-x
+      - name: Save RPMs
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: rpms
+          key: ${{ steps.rpm.outputs.cache-primary-key }}
+  # The only saver, but not the declared one.
+  f:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Save kernel
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: kernel
+          key: kernel-x

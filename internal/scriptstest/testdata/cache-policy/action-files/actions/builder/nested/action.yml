@@ -1,0 +1,9 @@
+name: nested
+runs:
+  using: composite
+  steps:
+    - name: Save
+      uses: actions/cache/save@v6
+      with:
+        path: go
+        key: go-${{ runner.os }}

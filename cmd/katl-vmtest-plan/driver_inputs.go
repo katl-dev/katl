@@ -17,7 +17,7 @@ import (
 // Bump when changing the digest format or the interpretation of its inputs.
 const driverDigestVersion = "v5"
 
-var kernelFlavours = []string{flavour.Standard, flavour.LTS}
+var kernelFlavours = flavour.Supported()
 
 const qualificationWorkflow = ".github/workflows/kernel-qualification.yml"
 
