@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+measure() {
+    .github/scripts/hosted-vmtest-measure "$@"
+}
+
+prove_agent() {
+    measure agent .github/scripts/hosted-vmtest-run \
+        --artifact-set=runtime --no-rebuild ./internal/vmtest \
+        -run '^TestDirectRuntimeVMTestAgentSmoke$' -count=1 -json -timeout 8m
+}
+
+stage_kubernetes() {
+    docker run --rm --volume "$GITHUB_WORKSPACE:/work" --workdir /work \
+        --env KATL_KUBERNETES_MINOR --env KATL_KUBERNETES_PAYLOAD_VERSION \
+        --env KATL_KUBERNETES_KUBEADM_VERSION --env KATL_KUBERNETES_KUBELET_VERSION \
+        --env KATL_KUBERNETES_KUBECTL_VERSION --env KATL_KUBERNETES_CRITOOLS_VERSION \
+        "$KATL_MKOSI_IMAGE" scripts/check-kubernetes-sysext
+    go run ./cmd/katl-publish-kubernetes-sysext --output-dir _build/kubernetes-bundle \
+        > _build/hosted-evidence/kubernetes-bundle.txt
+}
+
+if [[ "${1:-}" == --serial || ! -x scripts/package-installer-iso ]]; then
+    # An explicit source ref can predate the split between boot and ISO assembly.
+    measure build-runtime scripts/mkosi build-runtime
+    prove_agent
+    measure build-install scripts/mkosi build-installer-iso
+    measure build-upgrade scripts/mkosi build-katlos-upgrade-image
+    measure build-kubernetes scripts/build-kubernetes-sysext
+    stage_kubernetes
+    exit
+fi
+
+repo="$PWD"
+build="$repo/_build/mkosi"
+work="$(mktemp -d "$repo/_build/hosted-build.XXXXXX")"
+installer="$work/installer"
+rpm_cache="$build/package-cache"
+go_mod="$repo/_build/go-mod"
+go_cache="$repo/_build/go-cache"
+mkdir -p "$rpm_cache/cache" "$go_mod" "$go_cache" \
+    "$installer/package-cache/cache" "$work/go-mod" "$work/go-cache"
+
+# mkosi replaces incremental trees in place and can write the RPM download
+# cache. Give the installer its own storage and seed it before either build
+# writes to the restored caches.
+cp -a --reflink=auto "$rpm_cache/cache/." "$installer/package-cache/cache/"
+cp -a --reflink=auto "$go_mod/." "$work/go-mod/"
+cp -a --reflink=auto "$go_cache/." "$work/go-cache/"
+
+build_installer() {
+    KATL_MKOSI_BUILD_DIR="$installer" \
+        KATL_GO_MOD_CACHE="$work/go-mod" KATL_GO_BUILD_CACHE="$work/go-cache" \
+        measure build-installer-boot scripts/mkosi build-installer
+}
+
+assemble_iso() {
+    # The installer UKI, kernel and initrd are complete in the isolated tree.
+    # Publish them at their canonical paths before writing the combined index.
+    mv -- "$installer"/katl-installer.* "$build/" || return
+    measure package-installer-iso docker run --rm \
+        --user "$(id -u):$(id -g)" --volume "$repo:/work" --workdir /work \
+        --env KATL_BUILD_COMMIT --env KATL_FLAVOUR --env KATL_VERSION --env SOURCE_DATE_EPOCH \
+        --env GOMODCACHE=/work/_build/go-mod --env GOCACHE=/work/_build/go-cache \
+        "$KATL_MKOSI_IMAGE" scripts/package-installer-iso
+}
+
+# Join every job in a phase even if one fails, so diagnostics see complete logs
+# and a failed build cannot race with cache saving or artifact publication.
+wait_for_builds() {
+    local pid status=0
+    for pid; do
+        wait "$pid" || status=$?
+    done
+    return "$status"
+}
+
+build_installer &
+installer_pid=$!
+if ! measure build-runtime scripts/mkosi build-runtime; then
+    wait "$installer_pid" || true
+    exit 1
+fi
+
+prove_agent &
+agent_pid=$!
+# Both extensions use the runtime as their mkosi base tree. They share one
+# mkosi lock, so build the common lifecycle dependency first, then let the
+# Kubernetes build overlap assembly, which only reads the lifecycle inputs.
+if ! measure build-endpoint-advertiser scripts/build-endpoint-advertiser-sysext; then
+    wait_for_builds "$installer_pid" "$agent_pid" || true
+    exit 1
+fi
+measure build-upgrade scripts/build-katlos-install-image --upgrade &
+upgrade_pid=$!
+measure build-install scripts/build-katlos-install-image &
+install_pid=$!
+if ! measure build-kubernetes scripts/build-kubernetes-sysext; then
+    wait_for_builds "$installer_pid" "$agent_pid" "$upgrade_pid" "$install_pid" || true
+    exit 1
+fi
+stage_kubernetes &
+kubernetes_pid=$!
+if ! wait_for_builds "$installer_pid" "$agent_pid" "$install_pid" || ! assemble_iso; then
+    wait_for_builds "$kubernetes_pid" "$upgrade_pid" || true
+    exit 1
+fi
+wait_for_builds "$kubernetes_pid" "$upgrade_pid"
+
+if [[ "${GITHUB_EVENT_NAME:-}" == schedule ]]; then
+    # DNF can leave cache subdirectories owned by the container. Merge after
+    # all writers finish and keep the primary copy of any existing entry.
+    docker run --rm --volume "$work:/installer:ro" --volume "$repo/_build:/output" \
+        "$KATL_MKOSI_IMAGE" bash -ec '
+            cp -a --update=none /installer/installer/package-cache/cache/. /output/mkosi/package-cache/cache/
+            cp -a --update=none /installer/go-mod/. /output/go-mod/
+            cp -a --update=none /installer/go-cache/. /output/go-cache/
+        '
+fi

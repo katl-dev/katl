@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${1:-}" == --upgrade ]]; then
+    shift
+    export KATL_KATLOS_IMAGE_ROLE=upgrade
+    # Local upgrade images also need the CLI's four-digit version year.
+    export KATL_VERSION="${KATL_UPGRADE_VERSION:-${KATL_VERSION:-0000.0.0-dev.1}}"
+fi
+
 repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
 if [[ "$build_dir" != /* ]]; then
