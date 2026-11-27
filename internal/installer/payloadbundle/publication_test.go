@@ -10,13 +10,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/katl-dev/katl/internal/retry"
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/registry/remote"
@@ -28,24 +28,24 @@ func TestPublishLayout(t *testing.T) {
 		status    int
 		wantError string
 		deadline  bool
-		maxJitter bool
+		late      bool
 	}{
 		{name: "transient 404", status: http.StatusNotFound},
 		{name: "transient 503", status: http.StatusServiceUnavailable},
-		{name: "persistent 404 with minimum jitter", status: http.StatusNotFound, wantError: "not found", deadline: true},
-		{name: "persistent 404 with maximum jitter", status: http.StatusNotFound, wantError: "not found", deadline: true, maxJitter: true},
+		{name: "persistent 404", status: http.StatusNotFound, wantError: "not found", deadline: true},
+		{name: "late success", status: http.StatusNotFound, wantError: "not found", late: true},
 		{name: "wrong digest", status: http.StatusOK, wantError: "observed digest"},
 		{name: "auth failure", status: http.StatusForbidden, wantError: "Forbidden"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				testPublishLayout(t, tc.status, tc.wantError, tc.deadline, tc.maxJitter)
+				testPublishLayout(t, tc.status, tc.wantError, tc.deadline, tc.late)
 			})
 		})
 	}
 }
 
-func testPublishLayout(t *testing.T, firstStatus int, wantError string, deadline, maxJitter bool) {
+func testPublishLayout(t *testing.T, firstStatus int, wantError string, deadline, late bool) {
 	t.Helper()
 	ctx := t.Context()
 	directory := t.TempDir()
@@ -77,7 +77,7 @@ func testPublishLayout(t *testing.T, firstStatus int, wantError string, deadline
 	writes := 0
 	requests := 0
 	manifestPuts := map[string]int{}
-	var retentionReads []time.Time
+	retentionReads := 0
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -115,13 +115,16 @@ func testPublishLayout(t *testing.T, firstStatus int, wantError string, deadline
 			}
 			data, ok := objects[pin]
 			if path == "manifests/"+tag && manifestPuts[tag] > 0 {
-				retentionReads = append(retentionReads, time.Now())
-				if deadline || len(retentionReads) == 1 {
+				retentionReads++
+				if deadline || retentionReads == 1 {
 					if firstStatus != http.StatusOK {
 						w.WriteHeader(firstStatus)
 						return
 					}
 					pin, data, ok = conflict, conflictingData, true
+				}
+				if late && retentionReads == 2 {
+					time.Sleep(time.Second)
 				}
 			}
 			if !ok {
@@ -155,15 +158,11 @@ func testPublishLayout(t *testing.T, firstStatus int, wantError string, deadline
 	}
 	aliased := request
 	aliased.Reference = repositoryName + ":" + alias + "@" + packed.ManifestDigest
-	randomN := func(n int64) int64 {
-		if maxJitter {
-			return n - 1
-		}
-		return 0
-	}
-
 	start := time.Now()
-	published, err := publishLayout(ctx, aliased, randomN)
+	if late {
+		ctx = publicationDeadline{Context: ctx, at: start.Add(time.Second)}
+	}
+	published, err := PublishLayout(ctx, aliased)
 	if wantError != "" {
 		for _, detail := range []string{repositoryName + ":" + tag, packed.ManifestDigest, wantError} {
 			if err == nil || !strings.Contains(err.Error(), detail) {
@@ -180,21 +179,15 @@ func testPublishLayout(t *testing.T, firstStatus int, wantError string, deadline
 			if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) != 30*time.Second {
 				t.Fatalf("publication took %s and returned %v, want deadline after 30s", time.Since(start), err)
 			}
-			var delays []time.Duration
-			for i := 1; i < len(retentionReads); i++ {
-				delays = append(delays, retentionReads[i].Sub(retentionReads[i-1]))
+			if retentionReads < 2 {
+				t.Errorf("persistent failure made %d retention reads, want retries", retentionReads)
 			}
-			want := []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second,
-				4 * time.Second, 4 * time.Second, 4 * time.Second, 4 * time.Second, 4 * time.Second, 4 * time.Second}
-			if maxJitter {
-				want = []time.Duration{500*time.Millisecond - 1, time.Second - 1, 2*time.Second - 1,
-					4*time.Second - 1, 8*time.Second - 1, 8*time.Second - 1}
+		} else if late {
+			if !errors.Is(err, retry.ErrInconclusive) || !errors.Is(err, context.DeadlineExceeded) || retentionReads != 2 {
+				t.Errorf("publication made %d retention reads and returned %v, want inconclusive after second read", retentionReads, err)
 			}
-			if !slices.Equal(delays, want) {
-				t.Errorf("backoff delays = %v, want %v", delays, want)
-			}
-		} else if len(retentionReads) != 1 || time.Since(start) != 0 {
-			t.Errorf("terminal read took %s with %d reads, want one immediate read", time.Since(start), len(retentionReads))
+		} else if retentionReads != 1 || time.Since(start) != 0 {
+			t.Errorf("terminal read took %s with %d reads, want one immediate read", time.Since(start), retentionReads)
 		}
 		return
 	}
@@ -203,8 +196,8 @@ func testPublishLayout(t *testing.T, firstStatus int, wantError string, deadline
 		t.Fatalf("initial publication: %+v, %v", published, err)
 	}
 	initialWrites := writes
-	if manifestPuts[tag] != 1 || manifestPuts[alias] != 1 || len(retentionReads) != 2 {
-		t.Errorf("manifest PUTs = %v, retention reads = %d, want one PUT per tag and two retention reads", manifestPuts, len(retentionReads))
+	if manifestPuts[tag] != 1 || manifestPuts[alias] != 1 || retentionReads != 2 {
+		t.Errorf("manifest PUTs = %v, retention reads = %d, want one PUT per tag and two retention reads", manifestPuts, retentionReads)
 	}
 	published, err = PublishLayout(ctx, aliased)
 	if err != nil || published.ManifestDigest != packed.ManifestDigest || !published.Existing {
@@ -276,6 +269,14 @@ func testPublishLayout(t *testing.T, firstStatus int, wantError string, deadline
 		t.Fatal("contacted registry before verifying local qualification inputs")
 	}
 }
+
+// Model a deadline that has passed before the context delivers cancellation.
+type publicationDeadline struct {
+	context.Context
+	at time.Time
+}
+
+func (d publicationDeadline) Deadline() (time.Time, bool) { return d.at, true }
 
 type registryTransport struct {
 	handler http.Handler
