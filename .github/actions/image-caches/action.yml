@@ -1,0 +1,81 @@
+name: Restore image build caches
+description: >-
+  Restore the container Go cache and the flavour's mkosi RPM cache at the
+  paths scripts/mkosi mounts. Only the VM images job saves them, from the paths
+  and keys this action reports.
+inputs:
+  flavour:
+    description: Kernel flavour whose RPM cache to restore (standard or lts)
+    required: true
+outputs:
+  go-paths:
+    description: Container Go cache paths
+    value: ${{ steps.paths.outputs.go }}
+  go-key:
+    description: Primary container Go cache key
+    value: ${{ steps.go.outputs.cache-primary-key }}
+  go-hit:
+    description: Whether the container Go cache key matched exactly
+    value: ${{ steps.go.outputs.cache-hit }}
+  rpm-path:
+    description: RPM cache path
+    value: ${{ steps.paths.outputs.rpm }}
+  rpm-key:
+    description: Primary RPM cache key
+    value: ${{ steps.rpm.outputs.cache-primary-key }}
+  rpm-hit:
+    description: Whether the RPM cache key matched exactly
+    value: ${{ steps.rpm.outputs.cache-hit }}
+runs:
+  using: composite
+  steps:
+    # scripts/mkosi mounts these paths into the builder container.
+    - name: Resolve cache paths
+      id: paths
+      shell: bash
+      run: |
+        {
+          printf 'go<<EOF\n_build/go-mod\n_build/go-cache\nEOF\n'
+          echo 'rpm=_build/mkosi/package-cache'
+        } >> "$GITHUB_OUTPUT"
+    # The week bounds how long the Go build cache accumulates entries, and how
+    # far the RPM cache falls behind the moving Fedora repositories, before a
+    # fresh generation starts.
+    - name: Resolve cache week
+      id: week
+      shell: bash
+      run: echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+    # The RPM set follows the Fedora release (in mkosi.conf), the flavour's
+    # kernel lock and the mkosi package configuration.
+    - name: Resolve RPM cache inputs
+      id: packages
+      shell: bash
+      env:
+        FLAVOUR: ${{ inputs.flavour }}
+      run: |
+        case "$FLAVOUR" in standard | lts) ;; *) echo "unsupported flavour: $FLAVOUR" >&2; exit 1 ;; esac
+        lock="kernels/fedora-$(scripts/fedora-release)/x86_64/$FLAVOUR.json"
+        digest="$(LC_ALL=C sha256sum \
+          mkosi.conf \
+          mkosi.profiles/*/mkosi.conf \
+          mkosi.profiles/kubernetes-sysext/kubernetes.env \
+          "$lock" | sha256sum | cut -d ' ' -f 1)"
+        echo "digest=$digest" >> "$GITHUB_OUTPUT"
+    # A restore that fails costs a cold build, not the job.
+    - name: Restore container Go cache
+      id: go
+      continue-on-error: true
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ steps.paths.outputs.go }}
+        key: go-container-${{ steps.week.outputs.week }}-${{ hashFiles('go.sum', 'Containerfile.mkosi') }}
+        restore-keys: go-container-${{ steps.week.outputs.week }}-
+    # Without a fallback key a new generation starts empty, so RPMs that the
+    # inputs or the repositories no longer select do not carry forward.
+    - name: Restore mkosi RPM cache
+      id: rpm
+      continue-on-error: true
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ steps.paths.outputs.rpm }}
+        key: rpm-${{ inputs.flavour }}-${{ steps.week.outputs.week }}-${{ steps.packages.outputs.digest }}

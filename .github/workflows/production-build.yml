@@ -66,43 +66,12 @@ jobs:
       - name: Set up Go
         uses: ./.github/actions/setup-go
 
-      - name: Restore Katl Go build caches
-        id: go-cache
-        uses: actions/cache/restore@v6
+      - name: Restore image build caches
+        uses: ./.github/actions/image-caches
+        timeout-minutes: 5
+        continue-on-error: true
         with:
-          path: |
-            _build/go-mod
-            _build/go-cache
-          key: katl-go-runtime-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi') }}-${{ github.sha }}
-          restore-keys: |
-            katl-go-runtime-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi') }}-
-            katl-go-runtime-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-
-
-      - name: Resolve mkosi cache identity
-        id: mkosi-cache
-        shell: bash
-        run: |
-          digest="$({
-            sha256sum \
-              Containerfile.mkosi \
-              mkosi.conf \
-              "kernels/fedora-$(scripts/fedora-release)/x86_64/$KATL_FLAVOUR.json" \
-              mkosi.profiles/installer-image/mkosi.conf \
-              mkosi.profiles/kubernetes-sysext/kubernetes.env \
-              mkosi.profiles/kubernetes-sysext/mkosi.conf \
-              mkosi.profiles/runtime/mkosi.conf \
-              scripts/fedora-release
-          } | sha256sum | cut -d ' ' -f 1)"
-          echo "key=$digest" >> "$GITHUB_OUTPUT"
-
-      - name: Restore mkosi package cache
-        id: package-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: _build/mkosi/package-cache
-          key: katl-mkosi-packages-runtime-${{ inputs.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ steps.mkosi-cache.outputs.key }}-${{ github.sha }}
-          restore-keys: |
-            katl-mkosi-packages-runtime-${{ inputs.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ steps.mkosi-cache.outputs.key }}-
+          flavour: ${{ inputs.flavour }}
 
       - name: Prepare cached builder
         uses: ./.github/actions/mkosi-builder
@@ -164,23 +133,6 @@ jobs:
           inventory="$(go run ./cmd/katl-mkosi-artifacts inventory-release-extensions)"
           echo "extensions=$(jq -c .extension <<<"$inventory")" >> "$GITHUB_OUTPUT"
 
-      - name: Save Katl Go build caches
-        if: github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: |
-            _build/go-mod
-            _build/go-cache
-          key: ${{ steps.go-cache.outputs.cache-primary-key }}
-
-      - name: Save mkosi package cache
-        if: github.ref == 'refs/heads/main' && steps.package-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: _build/mkosi/package-cache
-          key: ${{ steps.package-cache.outputs.cache-primary-key }}
-
-
   installer:
     name: Build And Verify Installer
     runs-on: ubuntu-24.04
@@ -206,43 +158,12 @@ jobs:
       - name: Set up Go
         uses: ./.github/actions/setup-go
 
-      - name: Restore Katl Go build caches
-        id: go-cache
-        uses: actions/cache/restore@v6
+      - name: Restore image build caches
+        uses: ./.github/actions/image-caches
+        timeout-minutes: 5
+        continue-on-error: true
         with:
-          path: |
-            _build/go-mod
-            _build/go-cache
-          key: katl-go-installer-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi') }}-${{ github.sha }}
-          restore-keys: |
-            katl-go-installer-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ hashFiles('go.mod', 'go.sum', 'Containerfile.mkosi') }}-
-            katl-go-installer-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-
-
-      - name: Resolve mkosi cache identity
-        id: mkosi-cache
-        shell: bash
-        run: |
-          digest="$({
-            sha256sum \
-              Containerfile.mkosi \
-              mkosi.conf \
-              "kernels/fedora-$(scripts/fedora-release)/x86_64/$KATL_FLAVOUR.json" \
-              mkosi.profiles/installer-image/mkosi.conf \
-              mkosi.profiles/kubernetes-sysext/kubernetes.env \
-              mkosi.profiles/kubernetes-sysext/mkosi.conf \
-              mkosi.profiles/runtime/mkosi.conf \
-              scripts/fedora-release
-          } | sha256sum | cut -d ' ' -f 1)"
-          echo "key=$digest" >> "$GITHUB_OUTPUT"
-
-      - name: Restore mkosi package cache
-        id: package-cache
-        uses: actions/cache/restore@v6
-        with:
-          path: _build/mkosi/package-cache
-          key: katl-mkosi-packages-installer-${{ inputs.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ steps.mkosi-cache.outputs.key }}-${{ github.sha }}
-          restore-keys: |
-            katl-mkosi-packages-installer-${{ inputs.flavour }}-${{ runner.os }}-${{ env.KATL_ARCHITECTURE }}-${{ steps.mkosi-cache.outputs.key }}-
+          flavour: ${{ inputs.flavour }}
 
       - name: Prepare cached builder
         uses: ./.github/actions/mkosi-builder
@@ -280,24 +201,6 @@ jobs:
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
-
-      - name: Save Katl Go build caches
-        if: github.ref == 'refs/heads/main' && steps.go-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: |
-            _build/go-mod
-            _build/go-cache
-          key: ${{ steps.go-cache.outputs.cache-primary-key }}
-
-      - name: Save mkosi package cache
-        if: github.ref == 'refs/heads/main' && steps.package-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v6
-        with:
-          path: _build/mkosi/package-cache
-          key: ${{ steps.package-cache.outputs.cache-primary-key }}
-
-
 
   extensions:
     name: Build Extension (${{ matrix.extension }})

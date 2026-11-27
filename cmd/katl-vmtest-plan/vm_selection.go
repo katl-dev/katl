@@ -129,7 +129,7 @@ func affectedSelection(paths []string, loadInputs func() (vmInputs, error)) vmSe
 func sharedVMPath(name string) bool {
 	for _, prefix := range []string{
 		"mkosi.", "mkosi/", "kernels/", "packages/",
-		".github/actions/hosted-vmtest/", ".github/actions/mkosi-builder/", ".github/scripts/hosted-vmtest-",
+		".github/actions/hosted-vmtest/", ".github/actions/image-caches/", ".github/actions/mkosi-builder/", ".github/scripts/hosted-vmtest-",
 		"scripts/vmtest-", "cmd/katl-vmtest-plan/",
 	} {
 		if strings.HasPrefix(name, prefix) {
