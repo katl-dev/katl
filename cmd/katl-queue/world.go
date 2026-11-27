@@ -4,11 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/queuemarker"
 )
 
 // openPR is an open pull request as the planner and autopilot see it.
@@ -60,28 +61,6 @@ type world struct {
 
 const needsRebaseLabel = "needs-rebase"
 
-// marker is a hidden line in a katl-queue comment. It lets a later pass
-// recognise what the comment records without parsing its text.
-type marker struct {
-	Kind, Value string
-}
-
-func (m marker) String() string {
-	return "<!-- katl-queue:" + m.Kind + " " + m.Value + " -->"
-}
-
-var markerLine = regexp.MustCompile(`^<!-- katl-queue:([a-z-]+) (\S+) -->$`)
-
-func parseMarkers(text string) []marker {
-	var out []marker
-	for _, line := range strings.Split(text, "\n") {
-		if m := markerLine.FindStringSubmatch(strings.TrimSpace(line)); m != nil {
-			out = append(out, marker{Kind: m[1], Value: m[2]})
-		}
-	}
-	return out
-}
-
 // eligible reports whether katl-queue may manage the pull request. Release
 // branches and pull requests targeting them are never touched, and forks
 // cannot be pushed to.
@@ -131,20 +110,20 @@ func (pr openPR) removalKind() removalKind {
 // it: katl-queue rebases only pull requests the removal no longer holds, and
 // a head that differs from the recorded one is a settled removal whichever
 // push produced it.
-func removalMarker(removalID, head string) marker {
-	return marker{Kind: "removal", Value: removalID + "@" + head}
+func removalMarker(removalID, head string) queuemarker.Marker {
+	return queuemarker.Marker{Kind: "removal", Value: removalID + "@" + head}
 }
 
 // dequeueMarker records, before katl-queue dequeues a pull request, the head
 // it had.
-func dequeueMarker(head string) marker {
-	return marker{Kind: "dequeue", Value: head}
+func dequeueMarker(head string) queuemarker.Marker {
+	return queuemarker.Marker{Kind: "dequeue", Value: head}
 }
 
 // optionalMarker tags a comment that reported the failing optional checks of
 // a head, so each head is reported once.
-func optionalMarker(head string) marker {
-	return marker{Kind: "optional", Value: head}
+func optionalMarker(head string) queuemarker.Marker {
+	return queuemarker.Marker{Kind: "optional", Value: head}
 }
 
 // settle reads the markers katl-queue left on the pull request to decide
@@ -152,7 +131,7 @@ func optionalMarker(head string) marker {
 // A removal that katl-queue has not recorded holds the pull request unless
 // GitHub records a push after it; without that record katl-queue cannot tell
 // whether the head changed, so it holds.
-func (pr *openPR) settle(marks []marker) {
+func (pr *openPR) settle(marks []queuemarker.Marker) {
 	for _, m := range marks {
 		switch m.Kind {
 		case "removal":

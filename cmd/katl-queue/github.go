@@ -19,7 +19,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/queuemarker"
 	"github.com/katl-dev/katl/internal/retry"
+	"github.com/katl-dev/katl/internal/reviewrecord"
 )
 
 const (
@@ -670,20 +672,101 @@ func (g *gh) disableAutoMerge(ctx context.Context, number int) error {
 	return err
 }
 
+func (g *gh) reviewTarget(ctx context.Context, number int) (reviewTarget, error) {
+	query := fmt.Sprintf(`query($owner: String!, $name: String!) {
+  viewer { login }
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: %d) { state headRefOid }
+  }
+}`, number)
+	raw, err := g.read(ctx, "graphql", "-f", "query="+query, "-F", "owner="+g.owner, "-F", "name="+g.name)
+	if err != nil {
+		return reviewTarget{}, err
+	}
+	var resp struct {
+		Viewer struct {
+			Login string
+		}
+		Repository struct {
+			PullRequest *prResponse
+		}
+	}
+	if err := decodeGraphQL(raw, &resp); err != nil {
+		return reviewTarget{}, err
+	}
+	pr := resp.Repository.PullRequest
+	if pr == nil {
+		return reviewTarget{}, fmt.Errorf("pull request #%d not found; check the PR number and repository", number)
+	}
+	return reviewTarget{state: pr.State, head: pr.HeadRefOid, viewer: resp.Viewer.Login}, nil
+}
+
+func (g *gh) mergeBase(ctx context.Context, base, head string) (string, error) {
+	endpoint := fmt.Sprintf("%s/compare/%s...%s?per_page=1", g.repoPath(), base, head)
+	out, err := g.read(ctx, endpoint, "--jq", ".merge_base_commit.sha")
+	if err != nil {
+		return "", err
+	}
+	oid := strings.TrimSpace(string(out))
+	if oid == "" || oid == "null" {
+		return "", errors.New("GitHub comparison returned no merge base")
+	}
+	return oid, nil
+}
+
+// comments reads issue comments, which GitHub also uses for the PR conversation.
+func (g *gh) comments(ctx context.Context, number int) ([]reviewrecord.Comment, error) {
+	raw, err := g.read(ctx, "--paginate", "--slurp", fmt.Sprintf("%s/issues/%d/comments?per_page=100", g.repoPath(), number))
+	if err != nil {
+		return nil, err
+	}
+	var pages [][]struct {
+		ID                int64  `json:"id"`
+		Body              string `json:"body"`
+		AuthorAssociation string `json:"author_association"`
+		User              struct {
+			Login string `json:"login"`
+		} `json:"user"`
+	}
+	if err := decodeJSON(raw, &pages); err != nil {
+		return nil, err
+	}
+	var comments []reviewrecord.Comment
+	for _, page := range pages {
+		for _, c := range page {
+			comments = append(comments, reviewrecord.Comment{
+				ID: c.ID, Author: c.User.Login, Body: c.Body,
+				Member: c.AuthorAssociation == "MEMBER" || c.AuthorAssociation == "OWNER",
+			})
+		}
+	}
+	return comments, nil
+}
+
+func (g *gh) comment(ctx context.Context, number int, body string) error {
+	_, err := runGH(ctx, "pr", "comment", fmt.Sprint(number), "--body", body, "--repo", g.repo())
+	return err
+}
+
 // markers lists the markers in every comment on a pull request that the
 // authenticated user wrote. Comments from anyone else are ignored, so a
 // quoted or forged marker cannot suppress or trigger an action. It needs a
 // snapshot to have identified the user.
-func (g *gh) markers(ctx context.Context, number int) ([]marker, error) {
+func (g *gh) markers(ctx context.Context, number int) ([]queuemarker.Marker, error) {
 	if g.viewer == "" {
 		return nil, errors.New("the authenticated user is unknown; read a snapshot first")
 	}
-	filter := fmt.Sprintf(`.[] | select(.user.login == %q) | .body`, g.viewer)
-	out, err := runGH(ctx, "api", "--paginate", fmt.Sprintf("repos/%s/%s/issues/%d/comments", g.owner, g.name, number), "--jq", filter)
+	comments, err := g.comments(ctx, number)
 	if err != nil {
 		return nil, err
 	}
-	return parseMarkers(string(out)), nil
+	var markers []queuemarker.Marker
+	for _, c := range comments {
+		if c.Author == g.viewer {
+			markers = append(markers, queuemarker.Parse(c.Body)...)
+		}
+	}
+	return markers, nil
 }
 
 // checkFailures names the checks failing on a pull request's latest commit.

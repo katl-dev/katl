@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -57,9 +58,14 @@ func (s *scratchObjects) Close() error {
 }
 
 func (s *scratchObjects) git(ctx context.Context, args ...string) (string, error) {
+	return s.gitWithInput(ctx, nil, args...)
+}
+
+func (s *scratchObjects) gitWithInput(ctx context.Context, stdin io.Reader, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", append(append(append([]string(nil), s.config...), "-c", "gc.auto=0", "-c", "maintenance.auto=false"), args...)...)
 	cmd.Dir = s.repo
 	cmd.Env = s.env
+	cmd.Stdin = stdin
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()

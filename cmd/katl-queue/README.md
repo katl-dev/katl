@@ -49,6 +49,51 @@ that PR merges, or run `katl-queue enqueue 123 --allow-pending-conflict` to
 enable auto-merge anyway and accept that the queue removes whichever PR joins
 second.
 
+### `review`
+
+After reviewing a pull request, save the verdict in a JSON file. Use the
+reviewed head and its base commit as full 40-character SHAs. The base must
+be an ancestor of the reviewed head.
+
+```json
+{
+  "version": 1,
+  "pr": 123,
+  "head": "0123456789abcdef0123456789abcdef01234567",
+  "base": "123456789abcdef0123456789abcdef012345678",
+  "verdict": "changes-requested",
+  "summary": "Fix the recovery path before merging.",
+  "findings": [
+    {
+      "severity": "blocker",
+      "path": "internal/worker/worker.go",
+      "line": 41,
+      "title": "Preserve state when a write fails",
+      "body": "Keep the previous state available so the operation can be retried."
+    }
+  ]
+}
+```
+
+Use version `1` and a verdict of `approved` or `changes-requested`. The
+summary and each finding's title and body are required. Finding severity
+must be `blocker`, `major`, `minor`, or `note`. The `path` and `line` are
+optional. A `changes-requested` verdict requires at least one finding, and
+an `approved` verdict cannot include a blocker. Use `"findings": []` for an
+approval without findings.
+
+From the Katl checkout, run `katl-queue review post 123 verdict.json` with
+GitHub comment access. The command verifies the open PR and its current
+head, then posts one comment with the verdict, summary, and findings in
+severity order. If the head has changed, review the current head and update
+the file. Repeating a post for the same verdict file reports that the
+review is already recorded if its comment is still the newest review for
+that head. A subsequent verdict can supersede it.
+
+The review record is advisory. Record selection considers comments from
+repository members and owners. A review can carry forward to another head
+when the PR diff has the same `git patch-id --stable` as the reviewed diff.
+
 ### `watch`
 
 Run `katl-queue watch --interval 30s 123 124` to follow two PRs in the

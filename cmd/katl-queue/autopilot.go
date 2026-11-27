@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/queuemarker"
 )
 
 // httpsCredential makes git authenticate to GitHub over HTTPS through the
@@ -191,7 +193,7 @@ type effects interface {
 	RemoveLabel(ctx context.Context, number int, label string) error
 	Comment(ctx context.Context, number int, body string) error
 	// Markers lists the markers in the comments katl-queue wrote.
-	Markers(ctx context.Context, number int) ([]marker, error)
+	Markers(ctx context.Context, number int) ([]queuemarker.Marker, error)
 	// Why returns the katl-queue why report for a pull request.
 	Why(ctx context.Context, number int) (string, error)
 	// Rebase rebases head onto the base branch and pushes the result with
@@ -268,7 +270,7 @@ func applyRebase(ctx context.Context, fx effects, a action, out io.Writer) error
 	if err != nil {
 		return err
 	}
-	conflict := marker{"needs-rebase", a.Head}
+	conflict := queuemarker.Marker{Kind: "needs-rebase", Value: a.Head}
 	if slices.Contains(marks, conflict) {
 		return nil
 	}
@@ -321,11 +323,10 @@ func (e ghEffects) RemoveLabel(ctx context.Context, number int, label string) er
 }
 
 func (e ghEffects) Comment(ctx context.Context, number int, body string) error {
-	_, err := runGH(ctx, append([]string{"pr", "comment", fmt.Sprint(number), "--body", body}, e.repoArgs()...)...)
-	return err
+	return e.g.comment(ctx, number, body)
 }
 
-func (e ghEffects) Markers(ctx context.Context, number int) ([]marker, error) {
+func (e ghEffects) Markers(ctx context.Context, number int) ([]queuemarker.Marker, error) {
 	return e.g.markers(ctx, number)
 }
 
