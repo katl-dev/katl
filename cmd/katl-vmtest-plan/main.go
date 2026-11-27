@@ -63,6 +63,9 @@ func dispatch(args []string) error {
 	if len(args) > 0 && args[0] == "gate" {
 		return runGate(args[1:], os.Stdout, os.Stderr)
 	}
+	if len(args) > 0 && args[0] == "extensions" {
+		return runExtensions(args[1:], os.Stdout, os.Stderr)
+	}
 	return run(args, os.Stdin, os.Stdout)
 }
 
