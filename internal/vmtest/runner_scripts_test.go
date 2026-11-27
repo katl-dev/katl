@@ -10,11 +10,13 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 func TestVMTestRunInjectsWorld(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	buildDir := filepath.Join(repo, "_build")
@@ -82,7 +84,7 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 	if world.CacheDir != filepath.Join(repo, "_build", "vmtest") {
 		t.Fatalf("world cache dir = %q", world.CacheDir)
 	}
-	if world.Lease != filepath.Join(runDir, "lease") {
+	if world.Lease != filepath.Join(runLeaseDir(), "run-1") {
 		t.Fatalf("world lease = %q", world.Lease)
 	}
 	if world.RunIndex != filepath.Join(runDir, "run.json") {
@@ -188,7 +190,7 @@ func TestVMTestRunInjectsWorld(t *testing.T) {
 
 func TestVMTestRunHonorsPackageParallelismOverride(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run")
@@ -246,7 +248,7 @@ func TestVMTestRunDebugOnFailurePolicy(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := scriptTestRepoRoot(t)
-			tmp := t.TempDir()
+			tmp := workstationtest.WorktreeTempDir(t, repo)
 			fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 			host := writeFakeHostTools(t, tmp, true)
 			runDir := filepath.Join(tmp, "run")
@@ -299,7 +301,7 @@ func TestVMTestRunDebugOnFailurePolicy(t *testing.T) {
 
 func TestVMTestRunRejectsStaleInstallerArtifactBypass(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run-stale-installer")
@@ -348,7 +350,7 @@ func TestVMTestRunRejectsExplicitInstallerArtifacts(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := scriptTestRepoRoot(t)
-			tmp := t.TempDir()
+			tmp := workstationtest.WorktreeTempDir(t, repo)
 			fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 			host := writeFakeHostTools(t, tmp, true)
 			runDir := filepath.Join(tmp, "run-explicit-"+strings.ReplaceAll(tt.name, " ", "-"))
@@ -397,7 +399,7 @@ func TestVMTestRunBuildsDefaultArtifacts(t *testing.T) {
 		t.Fatalf("MkdirAll(scripts) error = %v", err)
 	}
 	copyScript(t, filepath.Join(realRepo, "scripts", "vmtest-run"), filepath.Join(repo, "scripts", "vmtest-run"))
-	copyRunCheck(t, realRepo, repo)
+	copyRunnerTools(t, realRepo, repo)
 	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
@@ -413,7 +415,7 @@ export KATL_VMTEST_WORLD_STRICT=1
 exec "$@"
 `)
 
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run")
@@ -476,7 +478,7 @@ func TestVMTestRunRecordsCacheResolvedArtifacts(t *testing.T) {
 		t.Fatalf("MkdirAll(scripts) error = %v", err)
 	}
 	copyScript(t, filepath.Join(realRepo, "scripts", "vmtest-run"), filepath.Join(repo, "scripts", "vmtest-run"))
-	copyRunCheck(t, realRepo, repo)
+	copyRunnerTools(t, realRepo, repo)
 	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
@@ -500,7 +502,7 @@ export KATL_VMTEST_WORLD_STRICT=1
 exec "$@"
 `)
 
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run")
@@ -557,7 +559,7 @@ func TestVMTestRunRecordsRuntimeOnlyCacheProvenance(t *testing.T) {
 		t.Fatalf("MkdirAll(scripts) error = %v", err)
 	}
 	copyScript(t, filepath.Join(realRepo, "scripts", "vmtest-run"), filepath.Join(repo, "scripts", "vmtest-run"))
-	copyRunCheck(t, realRepo, repo)
+	copyRunnerTools(t, realRepo, repo)
 	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
@@ -593,7 +595,7 @@ exec "$@"
 		t.Fatal(err)
 	}
 
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run")
@@ -664,7 +666,7 @@ func TestVMTestRunCanDisableDefaultArtifactBuilds(t *testing.T) {
 		t.Fatalf("MkdirAll(scripts) error = %v", err)
 	}
 	copyScript(t, filepath.Join(realRepo, "scripts", "vmtest-run"), filepath.Join(repo, "scripts", "vmtest-run"))
-	copyRunCheck(t, realRepo, repo)
+	copyRunnerTools(t, realRepo, repo)
 	writeExecutable(t, filepath.Join(repo, "scripts", "mkosi"), `#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "$KATL_FAKE_MKOSI_ARGS"
@@ -676,7 +678,7 @@ export KATL_VMTEST_WORLD_STRICT=1
 exec "$@"
 `)
 
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run")
@@ -725,7 +727,7 @@ exec "$@"
 
 func TestVMTestRunForwardsJSONFlag(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run")
@@ -772,7 +774,7 @@ func TestVMTestRunForwardsJSONFlag(t *testing.T) {
 
 func TestVMTestRunPreservesArbitraryGoTestArgs(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run")
@@ -908,7 +910,7 @@ func TestVMTestRunRecordsLibvirtHostGapsAndExecsGo(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			repo := scriptTestRepoRoot(t)
-			tmp := t.TempDir()
+			tmp := workstationtest.WorktreeTempDir(t, repo)
 			fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 			host := writeFakeHostTools(t, tmp, true)
 			runDir := filepath.Join(tmp, "run")
@@ -973,7 +975,7 @@ func TestVMTestRunRecordsLibvirtHostGapsAndExecsGo(t *testing.T) {
 
 func TestVMTestRunDoesNotDefaultFlagOnlyArgs(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run")
@@ -1015,7 +1017,7 @@ func TestVMTestRunDoesNotDefaultFlagOnlyArgs(t *testing.T) {
 
 func TestVMTestRunFailsWhenNoScenarioResultIsWritten(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run")
@@ -1049,7 +1051,7 @@ func TestVMTestRunFailsWhenNoScenarioResultIsWritten(t *testing.T) {
 
 func TestVMTestRunRemovesPassedRunDirByDefault(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run-default-cleanup")
@@ -1083,7 +1085,7 @@ func TestVMTestRunRemovesPassedRunDirByDefault(t *testing.T) {
 
 func TestVMTestRunKeepNeverRemovesFailedRunDir(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run-failed-cleanup")
@@ -1117,7 +1119,7 @@ func TestVMTestRunKeepNeverRemovesFailedRunDir(t *testing.T) {
 
 func TestVMTestRunKeepsFailedRunDirByDefault(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run-failed-kept")
@@ -1150,7 +1152,7 @@ func TestVMTestRunKeepsFailedRunDirByDefault(t *testing.T) {
 
 func TestVMTestRunPrintsPreservedDebugTargets(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run-debug-output")
@@ -1435,7 +1437,7 @@ func TestVMTestCleanRefusesUnsafeDomain(t *testing.T) {
 
 func TestVMTestRunAcceptsNestedWorldScenarioResult(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run")
@@ -1470,7 +1472,7 @@ func TestVMTestRunAcceptsNestedWorldScenarioResult(t *testing.T) {
 
 func TestVMTestRunInvalidCIDRSetupFailed(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run")
@@ -1517,7 +1519,7 @@ func TestVMTestRunInvalidCIDRSetupFailed(t *testing.T) {
 
 func writeFakeGoTools(t *testing.T, dir string) (string, string) {
 	t.Helper()
-	fakeGo := filepath.Join(dir, "go")
+	fakeGo := filepath.Join(dir, "fake-go")
 	fakeChild := filepath.Join(dir, "fake-test-binary")
 	writeExecutable(t, fakeGo, `#!/usr/bin/env bash
 set -euo pipefail
@@ -2025,7 +2027,7 @@ func exitCode(err error) int {
 }
 func TestVMTestRunNestedScenario(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	cmd := exec.Command(filepath.Join(repo, "scripts", "vmtest-run"), "./internal/vmtest")
@@ -2053,10 +2055,13 @@ func TestVMTestRunNestedScenario(t *testing.T) {
 	}
 }
 
-// copyRunCheck gives a stand-in repo the helper vmtest-run runs after go test.
-func copyRunCheck(t *testing.T, realRepo, repo string) {
+// copyRunnerTools gives a stand-in repo the helpers vmtest-run runs around go test.
+func copyRunnerTools(t *testing.T, realRepo, repo string) {
 	t.Helper()
-	for _, name := range []string{"go.mod", "cmd/katl-vmtest-ran/main.go", "internal/gotestlog/event.go"} {
+	if output, err := exec.Command("git", "-C", repo, "init", "--quiet").CombinedOutput(); err != nil {
+		t.Fatalf("initialize runner worktree: %v: %s", err, output)
+	}
+	for _, name := range []string{"scripts/hermetic", "scripts/job-environment", "go.mod", "cmd/katl-vmtest-ran/main.go", "internal/gotestlog/event.go"} {
 		dst := filepath.Join(repo, name)
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			t.Fatal(err)
@@ -2302,7 +2307,7 @@ func TestVMTestCleanGoneDomainIsNotAFailure(t *testing.T) {
 
 func TestVMTestRunRecordsPinnedArtifacts(t *testing.T) {
 	repo := scriptTestRepoRoot(t)
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	fakeGo, fakeChild := writeFakeGoTools(t, tmp)
 	host := writeFakeHostTools(t, tmp, true)
 	runDir := filepath.Join(tmp, "run")

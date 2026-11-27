@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 func TestVMTestArtifactOwnership(t *testing.T) {
@@ -105,7 +107,7 @@ exit 17
 
 func TestVMTestRunLeavesDomainsAlone(t *testing.T) {
 	repo := repoRoot(t)
-	tmp := t.TempDir()
+	tmp := workstationtest.WorktreeTempDir(t, repo)
 	logPath := filepath.Join(tmp, "commands.log")
 	binDir := filepath.Join(tmp, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
@@ -331,7 +333,7 @@ func TestVMTestRunRefusesPackageParallelism(t *testing.T) {
 		{name: "after args", args: []string{"-args", "-p", "8"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tmp := t.TempDir()
+			tmp := workstationtest.WorktreeTempDir(t, repo)
 			logPath := filepath.Join(tmp, "commands.log")
 			if err := os.WriteFile(logPath, nil, 0o644); err != nil {
 				t.Fatal(err)

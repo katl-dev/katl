@@ -16,7 +16,7 @@ while [[ $# -ge 2 ]]; do
     esac
     shift 2
 done
-[[ "${1-}" == -- && $# -ge 2 ]] || fail 'usage: scripts/hermetic [--bind DIR | --ro-bind DIR | --env NAME]... -- CMD [ARGS...]'
+[[ "${1-}" == -- && $# -ge 2 ]] || fail 'usage: scripts/hermetic [--bind PATH | --ro-bind PATH | --env NAME]... -- CMD [ARGS...]'
 shift
 
 command -v bwrap >/dev/null || fail 'bwrap is required; enter the development shell with nix develop'
@@ -43,8 +43,8 @@ args=(--dev-bind / / --unshare-user --clearenv --tmpfs /tmp)
 binds=("${default_binds[@]}" --bind "${job_env[GOCACHE]}" --bind "${job_env[GOMODCACHE]}" "${binds[@]}")
 for ((i = 0; i < ${#binds[@]}; i += 2)); do
     dir="${binds[i + 1]}"
-    path="$(realpath -e -- "$dir")" && [[ -d "$path" ]] ||
-        fail "bind directory does not exist: $dir"
+    path="$(realpath -e -- "$dir")" && [[ -d "$path" || -f "$path" ]] ||
+        fail "bind path is not an existing directory or regular file: $dir"
     if [[ "$home" == "$path" || "$home" == "${path%/}/"* ]]; then
         fail "bind would expose all of HOME: $dir"
     fi

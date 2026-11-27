@@ -13,6 +13,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 // The helper is an actual process beneath the runner, with native inherited
@@ -96,8 +98,9 @@ type lockRun struct {
 }
 
 type lockFixture struct {
-	root string
-	env  []string
+	root  string
+	lease string
+	env   []string
 }
 
 func newLockFixture(t *testing.T) lockFixture {
@@ -106,9 +109,17 @@ func newLockFixture(t *testing.T) lockFixture {
 		t.Fatal(err)
 	}
 	t.Helper()
-	root := t.TempDir()
-	binary, err := os.Executable()
+	root := workstationtest.WorktreeTempDir(t, repoRoot(t))
+	executable, err := os.Executable()
 	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(executable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(root, "scriptstest")
+	if err := os.WriteFile(binary, data, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"work", "retention"} {
@@ -120,7 +131,9 @@ func newLockFixture(t *testing.T) lockFixture {
 		writeExecutable(t, filepath.Join(root, mode), "#!/usr/bin/env bash\nexport KATL_LOCK_PROCESS="+mode+"\nexec \"$KATL_LOCK_TEST_BINARY\" -test.run='^TestVMTestLockProcess$' -- \"$@\"\n")
 	}
 	writeExecutable(t, filepath.Join(root, "tool"), "#!/usr/bin/env bash\nexit 0\n")
-	return lockFixture{root: root, env: append(os.Environ(),
+	runID := "lock-" + filepath.Base(root)
+	lease := filepath.Join(os.Getenv("KATL_VMTEST_HOST_STATE_DIR"), fmt.Sprintf("katl-vmtest-leases-%d", os.Getuid()), runID)
+	return lockFixture{root: root, lease: lease, env: append(os.Environ(), "KATL_VMTEST_RUN_ID="+runID,
 		"KATL_LOCK_FIXTURE="+root, "KATL_LOCK_TEST_BINARY="+binary,
 		"KATL_VMTEST_RESOURCE_GO="+realGo, "KATL_VMTEST_GO="+filepath.Join(root, "go"), "KATL_VMTEST_VIRSH="+filepath.Join(root, "virsh"),
 		"KATL_VMTEST_IMAGE_TOOL="+filepath.Join(root, "tool"), "KATL_VMTEST_KUBECTL="+filepath.Join(root, "tool"),
@@ -195,7 +208,7 @@ func (f lockFixture) release(t *testing.T, name string) {
 // until it exits.
 func (f lockFixture) held(t *testing.T, want bool) {
 	t.Helper()
-	contended(t, filepath.Join(f.root, "run", "lease"), want)
+	contended(t, f.lease, want)
 }
 
 // contended checks with a native flock whether a live process holds path. A
@@ -290,7 +303,7 @@ func TestVMTestRunLeaseExported(t *testing.T) {
 	r := f.start(t, 0)
 	f.wait(t, "work.ready")
 
-	lease := filepath.Join(f.root, "run", "lease")
+	lease := f.lease
 	exported, err := os.ReadFile(filepath.Join(f.root, "go-env.txt"))
 	if err != nil {
 		t.Fatal(err)

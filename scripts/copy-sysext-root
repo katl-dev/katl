@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# != 2 ]]; then
+    echo "usage: scripts/copy-sysext-root IMAGE ROOT_IMAGE" >&2
+    exit 2
+fi
+
+# An image file carries no sector size, and sfdisk reads a GPT written with
+# another size as a protective MBR, so probe the sizes images use. Without
+# --sector-size every probe would fail and read as a missing partition table.
+if ! command -v sfdisk >/dev/null 2>&1; then
+    echo "sfdisk is required to read $1; install util-linux or run inside nix develop" >&2
+    exit 1
+fi
+if [[ "$(sfdisk --help 2>&1 || true)" != *--sector-size* ]]; then
+    echo "sfdisk $(command -v sfdisk) does not support --sector-size; use a newer util-linux, such as the one nix develop provides" >&2
+    exit 1
+fi
+geometry=""
+for sector_size in 512 4096; do
+    table="$(sfdisk --sector-size "$sector_size" --json -- "$1" 2>/dev/null)" || continue
+    [[ "$(jq -r '.partitiontable.label' <<<"$table")" == gpt ]] || continue
+    # Select by GPT type so unrelated partitions and their order are immaterial.
+    if ! geometry="$(jq -er '
+        .partitiontable
+        | .sectorsize as $sector
+        | [.partitions[] | select((.type | ascii_downcase) == "4f68bce3-e8cd-4db1-96e7-fbcaf984b709")]
+        | select(length == 1)
+        | .[0] | [$sector, .start, .size] | @tsv
+    ' <<<"$table")"; then
+        printf 'expected one x86-64 root partition in %s\n' "$1" >&2
+        exit 1
+    fi
+    break
+done
+if [[ -z "$geometry" ]]; then
+    printf 'no GPT partition table in %s\n' "$1" >&2
+    exit 1
+fi
+read -r sector start size <<<"$geometry"
+if [[ ! "$sector" =~ ^[1-9][0-9]*$ || ! "$start" =~ ^[1-9][0-9]*$ || ! "$size" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'invalid root partition geometry in %s\n' "$1" >&2
+    exit 1
+fi
+exec dd if="$1" of="$2" bs=1M iflag=skip_bytes,count_bytes skip="$((sector * start))" count="$((sector * size))" conv=sparse status=none

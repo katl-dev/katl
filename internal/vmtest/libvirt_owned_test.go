@@ -30,11 +30,8 @@ func vmtestMetadataFor(lease string) string {
 
 func TestSweepReapsKilledRun(t *testing.T) {
 	fake := newFakeLibvirt(t)
-	leases := t.TempDir()
-	live, killed := filepath.Join(leases, "live", "lease"), filepath.Join(leases, "killed", "lease")
-	for _, path := range []string{live, killed} {
-		mkdirForFile(t, path)
-	}
+	leases := useRunLeaseDir(t)
+	live, killed := filepath.Join(leases, "live"), filepath.Join(leases, "killed")
 	startLeaseHolder(t, live)
 	holder := startLeaseHolder(t, killed)
 
@@ -64,17 +61,80 @@ func TestSweepReapsKilledRun(t *testing.T) {
 	}
 }
 
-func TestSweepIgnoresMissingLease(t *testing.T) {
-	// A finished run that removed its run directory leaves no lease to hold.
+func TestSweepKeepsObjectsOfMissingLease(t *testing.T) {
+	// A run under another private /tmp writes its lease at this path, but out
+	// of this sandbox's sight, so a lease that looks missing may be live.
+	missing := filepath.Join(useRunLeaseDir(t), "unseen")
 	fake := newFakeLibvirt(t)
-	fake.addDomain(t, "gone", vmtestMetadataFor(filepath.Join(t.TempDir(), "removed", "lease")), "default")
+	fake.addDomain(t, "unseen", vmtestMetadataFor(missing), "net-unseen")
+	fake.addNetwork(t, OwnedNetwork{Name: "net-unseen", Owner: vmtestMetadata, Lease: missing, CIDR: "10.200.1.0/24", Gateway: "10.200.1.1"})
 
 	if err := sweep(context.Background(), fake.virsh(), io.Discard); err != nil {
 		t.Fatal(err)
 	}
 
-	if got := fake.objects(t, "domains"); len(got) != 0 {
-		t.Fatalf("domains = %v, want none", got)
+	if got := fake.objects(t, "domains"); !slices.Equal(got, []string{"unseen"}) {
+		t.Fatalf("domains = %v, want the domain of the unseen lease kept", got)
+	}
+	if got := fake.objects(t, "networks"); !slices.Equal(got, []string{"net-unseen"}) {
+		t.Fatalf("networks = %v, want the network of the unseen lease kept", got)
+	}
+}
+
+func TestSweepRemovesFreeLeasesNoObjectNames(t *testing.T) {
+	leases := useRunLeaseDir(t)
+	live := filepath.Join(leases, "live")
+	startLeaseHolder(t, live)
+	finished := finishedLease(t, leases, "finished")
+	stuck := finishedLease(t, leases, "stuck")
+	idle := finishedLease(t, leases, "idle")
+	fake := newFakeLibvirt(t)
+	for name, lease := range map[string]string{"live": live, "finished": finished, "stuck": stuck} {
+		fake.addDomain(t, "domain-"+name, vmtestMetadataFor(lease), "default")
+	}
+	// The stuck run's domain cannot be removed, so its lease must stay for a
+	// later sweep to judge it.
+	virsh := func(ctx context.Context, args ...string) ([]byte, error) {
+		if args[0] == "undefine" && args[1] == "domain-stuck" {
+			return nil, errors.New("error: operation failed")
+		}
+		return fake.virsh()(ctx, args...)
+	}
+
+	if err := sweep(context.Background(), virsh, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, gone := range []string{finished, idle} {
+		if _, err := os.Lstat(gone); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("free lease %s that no object names survived the sweep: %v", gone, err)
+		}
+	}
+	for _, kept := range []string{live, stuck} {
+		if _, err := os.Lstat(kept); err != nil {
+			t.Errorf("lease %s, which a process holds or an object still names, was removed: %v", kept, err)
+		}
+	}
+}
+
+func TestSweepKeepsObjectsOfLeasesOutsideLeaseDir(t *testing.T) {
+	// A run from an older checkout keeps its lease in its run directory, which
+	// a sandboxed run cannot see; a lease that looks missing there may be live.
+	useRunLeaseDir(t)
+	fake := newFakeLibvirt(t)
+	elsewhere := filepath.Join(t.TempDir(), "katl-vmtest", "old-run", "lease")
+	fake.addDomain(t, "old-run", vmtestMetadataFor(elsewhere), "net-old-run")
+	fake.addNetwork(t, OwnedNetwork{Name: "net-old-run", Owner: vmtestMetadata, Lease: elsewhere, CIDR: "10.200.1.0/24", Gateway: "10.200.1.1"})
+
+	if err := sweep(context.Background(), fake.virsh(), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := fake.objects(t, "domains"); !slices.Equal(got, []string{"old-run"}) {
+		t.Fatalf("domains = %v, want the old run's domain kept", got)
+	}
+	if got := fake.objects(t, "networks"); !slices.Equal(got, []string{"net-old-run"}) {
+		t.Fatalf("networks = %v, want the old run's network kept", got)
 	}
 }
 
@@ -82,7 +142,7 @@ func TestSweepToleratesObjectsRemovedMidSweep(t *testing.T) {
 	// A second sweeper removes objects between this sweep's listing and its
 	// removal, which must neither fail the sweep nor the scenario.
 	fake := newFakeLibvirt(t)
-	gone := filepath.Join(t.TempDir(), "removed", "lease")
+	gone := finishedLease(t, useRunLeaseDir(t), "removed")
 	fake.addDomain(t, "vanishing", vmtestMetadataFor(gone), "net-vanishing")
 	fake.addNetwork(t, OwnedNetwork{Name: "net-vanishing", Owner: vmtestMetadata, Lease: gone, CIDR: "10.200.1.0/24", Gateway: "10.200.1.1"})
 	fake.addDomain(t, "stays", vmtestMetadataFor(gone), "net-stays")
@@ -106,7 +166,7 @@ func TestSweepToleratesObjectsRemovedMidSweep(t *testing.T) {
 
 func TestSweepContinuesAfterRemovalFailure(t *testing.T) {
 	fake := newFakeLibvirt(t)
-	gone := filepath.Join(t.TempDir(), "removed", "lease")
+	gone := finishedLease(t, useRunLeaseDir(t), "removed")
 	fake.addDomain(t, "first", vmtestMetadataFor(gone), "default")
 	fake.addDomain(t, "second", vmtestMetadataFor(gone), "default")
 	// Undefining the first fails for a reason other than being gone.
@@ -131,7 +191,7 @@ func TestSweepContinuesAfterRemovalFailure(t *testing.T) {
 }
 
 func TestLeaseHeldDoesNotReapOddLeasePaths(t *testing.T) {
-	dir := t.TempDir()
+	dir := useRunLeaseDir(t)
 	fifo := filepath.Join(dir, "fifo")
 	if err := unix.Mkfifo(fifo, 0o600); err != nil {
 		t.Fatal(err)
@@ -167,11 +227,36 @@ func TestLeaseHeldDoesNotReapOddLeasePaths(t *testing.T) {
 	}
 }
 
-func mkdirForFile(t *testing.T, path string) {
+// useRunLeaseDir gives the test its own host coordination directory and
+// returns the lease directory in it.
+func useRunLeaseDir(t *testing.T) string {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	useHostStateDir(t)
+	dir := runLeaseDir()
+	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	return dir
+}
+
+// useHostStateDir gives the test its own host coordination directory, in
+// place of any paths that a surrounding vmtest run passes.
+func useHostStateDir(t *testing.T) {
+	t.Helper()
+	t.Setenv("KATL_VMTEST_HOST_STATE_DIR", t.TempDir())
+	t.Setenv(runLeaseDirEnv, "")
+	t.Setenv(networkLockEnv, "")
+}
+
+// finishedLease creates the lease file of a run that has ended: it exists and
+// no process holds it.
+func finishedLease(t *testing.T, dir, name string) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
 }
 
 // ownedScenarioWorld returns a world with a held run lease, fake libvirt, and
@@ -185,7 +270,7 @@ func ownedScenarioWorld(t *testing.T) (World, fakeLibvirt) {
 	useHostMemory(t, 64<<10, 48<<10)
 	fake := newFakeLibvirt(t)
 	world := testWorld(t)
-	world.Lease = filepath.Join(t.TempDir(), "lease")
+	world.Lease = filepath.Join(useRunLeaseDir(t), world.RunID)
 	startLeaseHolder(t, world.Lease)
 	world.Libvirt.URI = "qemu:///fixture"
 	return world, fake

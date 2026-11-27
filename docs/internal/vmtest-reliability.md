@@ -57,7 +57,7 @@ Product journeys keep exercising IPv4 DHCP, the common home-lab path, so a gate 
 
 ## Ownership and admission
 
-`scripts/vmtest-run` holds a lock on `<run>/lease` for the whole run. Domains, networks and volumes carry the run ID and lease path in libvirt metadata, read by one metadata parser. The sweep at run start reaps only resources whose lease is free. vsock CIDs are assigned by libvirt with `cid auto='yes'` and read back after the domain starts.
+`scripts/vmtest-run` holds a lock on its lease in the user's shared lease directory for the whole run. Domains, networks and volumes carry the run ID and lease path in libvirt metadata, read by one metadata parser. The sweep at run start reaps only resources whose lease file exists there and is unlocked; a missing lease counts as held, and the sweep deletes free leases that nothing names. vsock CIDs are assigned by libvirt with `cid auto='yes'` and read back after the domain starts.
 
 Admission replaces the host lock. A scenario reserves its declared nodes' total vCPU and memory at once against the host's CPUs and memory, minus a reserve. Each reservation is a file held under a lock, so a killed process frees its reservation and the ledger is derived from the files that remain. A demand the host can never meet ends immediately as inconclusive rather than waiting.
 

@@ -143,17 +143,24 @@ not leave domains running after the test returns.
 
 ## Ownership
 
-`scripts/vmtest-run` holds an exclusive flock on `<run dir>/lease` for the
-whole run and records the path in the world manifest as `lease`. The kernel
-releases it however the runner ends. Libvirt domains and networks that the run
-creates carry the run ID and the lease path in their `katl/vmtest` metadata, as
-`run` and `lease` attributes.
+`scripts/vmtest-run` holds an exclusive flock on a lease file named after the
+run in the user's shared lease directory (`/tmp/katl-vmtest-leases-<uid>` by
+default) for the whole run, and records the path in the world manifest as
+`lease`. The kernel releases it however the runner ends; the runner never
+deletes the file. Libvirt domains and networks that the run creates carry the
+run ID and the lease path in their `katl/vmtest` metadata, as `run` and
+`lease` attributes.
 
 The first scenario of each test process removes the vmtest domains and networks
-whose lease nobody holds: they belong to runs that have ended, including domains
-preserved for debugging. It never touches objects with other metadata, such as
-katldev worlds, or vmtest objects that name no lease and so have no owner to
-ask.
+whose lease file exists in the shared lease directory and is locked by no
+process: they belong to runs that have ended, including domains preserved for
+debugging. It then deletes the free lease files that no remaining object
+names. A missing lease, or one outside the shared directory, counts as held,
+because it may belong to a run whose private `/tmp` hides it. The sweep never
+touches objects with other metadata, such as katldev worlds, or vmtest objects
+that name no lease and so have no owner to ask.
+[Hermetic VM test worlds](hermetic-vmtest-worlds.md) describes the leftovers
+this leaves after a reboot and how `scripts/vmtest-clean` removes them.
 
 ## Admission
 

@@ -74,9 +74,7 @@ runtime_has_path() {
 }
 
 need awk
-need dd
 need dump.erofs
-need fdisk
 need fsck.erofs
 need grep
 need jq
@@ -132,13 +130,10 @@ jq -e \
       and .sha256 == $sha' "$metadata" >/dev/null ||
     fail "Kubernetes sysext metadata does not match artifact"
 
-read -r start sectors < <(fdisk -l "$artifact" | awk -v name="$(basename "$artifact")" '$1 ~ name "1$" {print $2, $4; exit}')
-[[ -n "${start:-}" && -n "${sectors:-}" ]] || fail "root partition not found in $artifact"
-
 tmpdir="$(mktemp -d)"
 trap 'rm -rf "$tmpdir"' EXIT
 part="$tmpdir/katl-kubernetes.erofs"
-dd if="$artifact" of="$part" bs=512 skip="$start" count="$sectors" status=none
+"$(dirname -- "${BASH_SOURCE[0]}")/copy-sysext-root" "$artifact" "$part"
 fsck.erofs "$part"
 
 for path in \

@@ -39,9 +39,23 @@ vmtest_artifacts_json="[]"
 vmtest_artifact_inputs_json="{}"
 debug_targets_artifact="$run_dir/preserved-vm-debug.txt"
 lease_file="$network_dir/leases.json"
+# Runs coordinate through the admission ledger, the network creation lock and
+# the run leases in this directory. The entry names are the ones that runs
+# from older checkouts, which do not sandbox go test, resolve from the default
+# TMPDIR, so both kinds of run share them. The runner owns these paths and
+# passes them to internal/vmtest resolved.
+host_state_dir="${KATL_VMTEST_HOST_STATE_DIR:-/tmp}"
+admission_dir="${KATL_VMTEST_ADMISSION_DIR:-$host_state_dir/katl-vmtest-admission-$UID}"
+network_lock="$host_state_dir/katl-vmtest-networks-$UID.lock"
+run_lease_dir="$host_state_dir/katl-vmtest-leases-$UID"
 # Held for the whole run: libvirt objects name it as their owner, and the kernel
-# frees it however the runner ends.
-run_lease="$run_dir/lease"
+# frees it however the runner ends. Every run's sweep judges every other run's
+# objects by these leases, so they live in the shared directory rather than in
+# a run directory that other runs' sandboxes cannot see. A run never deletes
+# its lease: a missing lease reads as held, because a run under another
+# private /tmp writes it out of sight, so only a sweep deletes a free lease
+# once no object names it.
+run_lease="$run_lease_dir/$run_id"
 libvirt_uri="${KATL_VMTEST_LIBVIRT_URI:-qemu:///system}"
 libvirt_network="${KATL_VMTEST_LIBVIRT_NETWORK:-default}"
 libvirt_storage_pool="${KATL_VMTEST_LIBVIRT_STORAGE_POOL:-default}"
@@ -852,13 +866,34 @@ probe_capabilities() {
     probe_fixture_tool_capabilities
 }
 
+# prepare_host_coordination creates the shared coordination entries, owned by
+# this user and private to it, so another user cannot plant or read them.
+prepare_host_coordination() {
+    local dir
+    for dir in "$admission_dir" "$run_lease_dir"; do
+        if ! (umask 077; mkdir -p -- "$dir") || [[ -L "$dir" || ! -O "$dir" ]]; then
+            setup_failures+=("cannot use vmtest host coordination directory $dir; it must be a directory owned by $(id -un)")
+            return 1
+        fi
+    done
+    if ! (umask 077; : >>"$network_lock") || [[ -L "$network_lock" || ! -f "$network_lock" || ! -O "$network_lock" ]]; then
+        setup_failures+=("cannot use vmtest network creation lock $network_lock; it must be a regular file owned by $(id -un)")
+        return 1
+    fi
+}
+
 acquire_vmtest_run_lease() {
     if ! have_command "$flock_bin"; then
         setup_failures+=("flock is required to hold the run lease")
         return 1
     fi
+    if [[ -z "$run_id" || "$run_id" == */* || "$run_id" == . || "$run_id" == .. ]]; then
+        setup_failures+=("KATL_VMTEST_RUN_ID must be a single path component, got: $run_id")
+        return 1
+    fi
+    prepare_host_coordination || return 1
     if ! exec {run_lease_fd}>>"$run_lease" || ! "$flock_bin" -n "$run_lease_fd"; then
-        setup_failures+=("lock vmtest run lease failed: $run_lease")
+        setup_failures+=("lock vmtest run lease failed: $run_lease; if another live run uses run id $run_id, choose a different KATL_VMTEST_RUN_ID")
         return 1
     fi
 }
@@ -1335,7 +1370,7 @@ cleanup_run_dir() {
 }
 
 print_preserved_debug_targets() {
-    local tmp result line printed=0
+    local tmp result printed=0
     tmp="$(mktemp "$run_dir/preserved-vm-debug.XXXXXX")"
     {
         find "$scenario_dir" -mindepth 2 -maxdepth 8 -name result.json -print 2>/dev/null || true
@@ -1471,49 +1506,48 @@ export KATL_VMTEST_LIBVIRT_STORAGE_PATH="$libvirt_storage_path"
 export KATL_VMTEST_LIBVIRT_DOMAIN_PREFIX="$libvirt_domain_prefix"
 export KATL_VMTEST_DEBUG_ON_FAILURE="$debug_on_failure_effective"
 export KATL_VMTEST_RESOURCE_MANIFEST="$resource_manifest"
-export KATLCTL_CONFIG="$run_dir/katlctl.yaml"
-
-# run_env is the complete environment of go test and of the tools the harness
-# runs for it. Nothing else is inherited, so the operator's home directory,
-# credentials and katlctl configuration cannot influence a gate. HOME and the
-# XDG directories live in the run; the Go caches stay the caller's so the run
-# does not start cold. Rootless podman, which the tests and mkosi use, would
-# otherwise create a fresh image store under the run's XDG_DATA_HOME, so
-# CONTAINERS_STORAGE_CONF points it at the caller's storage, and
-# XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS give it the caller's user session
-# for the systemd cgroup manager.
-run_home="$run_dir/home"
-mkdir -p "$run_home/.config" "$run_home/.cache" "$run_home/.local/share" "$run_home/.local/state"
-caller_home="${HOME:-/nonexistent}"
-containers_storage_conf="${CONTAINERS_STORAGE_CONF:-${XDG_CONFIG_HOME:-$caller_home/.config}/containers/storage.conf}"
-if [[ ! -f "$containers_storage_conf" ]]; then
-    containers_storage_conf="$run_dir/containers-storage.conf"
-    printf '[storage]\ngraphroot = "%s/containers/storage"\nrunroot = "%s/containers"\n' \
-        "${XDG_DATA_HOME:-$caller_home/.local/share}" "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}" \
-        >"$containers_storage_conf"
-fi
-run_env=(
-    "CONTAINERS_STORAGE_CONF=$containers_storage_conf"
-    "HOME=$run_home"
-    "XDG_CONFIG_HOME=$run_home/.config"
-    "XDG_CACHE_HOME=$run_home/.cache"
-    "XDG_DATA_HOME=$run_home/.local/share"
-    "XDG_STATE_HOME=$run_home/.local/state"
-    "GOPATH=${GOPATH:-$caller_home/go}"
-    "GOCACHE=${GOCACHE:-${XDG_CACHE_HOME:-$caller_home/.cache}/go-build}"
-    "GOMODCACHE=${GOMODCACHE:-${GOPATH:-$caller_home/go}/pkg/mod}"
-)
-for name in PATH LANG LC_ALL TERM TZ TMPDIR \
-    GOROOT GOFLAGS GOPROXY GOSUMDB GONOSUMDB GONOPROXY GOPRIVATE GOTOOLCHAIN GOWORK \
-    CGO_ENABLED CC CXX KATLCTL_CONFIG XDG_RUNTIME_DIR DBUS_SESSION_BUS_ADDRESS; do
-    if [[ -n "${!name+x}" ]]; then
-        run_env+=("$name=${!name}")
-    fi
+# libvirt runs on the host and opens guest paths itself. Keep the world,
+# fixture cache and any guest inputs placed in TMPDIR visible on both sides.
+mkdir -p "$run_dir/tmp"
+export KATL_VMTEST_HOST_STATE_DIR="$host_state_dir"
+export KATL_VMTEST_ADMISSION_DIR="$admission_dir"
+export KATL_VMTEST_NETWORK_LOCK="$network_lock"
+export KATL_VMTEST_RUN_LEASE_DIR="$run_lease_dir"
+# Every run binds the shared coordination entries at their host paths, so
+# runs in other sandboxes and runs without one see the same ledger, lock and
+# leases.
+writable_binds=("$run_dir" "$cache_dir" "$admission_dir" "$run_lease_dir" "$network_lock")
+hermetic_args=()
+for path in "${writable_binds[@]}"; do
+    hermetic_args+=(--bind "$path")
 done
+go_env_args=()
+for name in LANG LC_ALL TZ GOPATH \
+    GOROOT GOFLAGS GOPROXY GOSUMDB GONOSUMDB GONOPROXY GOPRIVATE GOTOOLCHAIN GOWORK \
+    CGO_ENABLED; do
+    go_env_args+=(--env "$name")
+done
+hermetic_args+=(--env TMPDIR "${go_env_args[@]}")
 # KATL_ is the harness's own namespace: artifact inputs and VM test settings.
+# The sandbox masks /tmp and the home directory, so an input path there is
+# bound read-only at the same path. A path inside a writable bind is already
+# visible, and one that contains a writable bind, such as the coordination
+# directory, keeps only what is bound beneath it.
+caller_home="$(realpath -m -- "${HOME:-/nonexistent}")"
 while IFS= read -r name; do
-    run_env+=("$name=${!name}")
-done < <(compgen -v KATL_ || true)
+    hermetic_args+=(--env "$name")
+    input="${!name}"
+    [[ "$input" == /* && ( -f "$input" || -d "$input" ) ]] || continue
+    resolved="$(realpath -e -- "$input")"
+    [[ "$resolved" == /tmp/* || "$resolved" == "$caller_home"/* ]] || continue
+    for path in "$repo_root" "${writable_binds[@]}"; do
+        path="$(realpath -m -- "$path")"
+        if [[ "$resolved" == "$path" || "$resolved" == "$path"/* || "$path" == "$resolved"/* ]]; then
+            continue 2
+        fi
+    done
+    hermetic_args+=(--ro-bind "$input")
+done < <(compgen -e KATL_ || true)
 
 final_status="go-test"
 write_run_index "$final_status" "$@"
@@ -1543,7 +1577,8 @@ if ! has_go_test_json "$@"; then
 fi
 (cd "$repo_root" && "$resource_go_bin" run ./cmd/katl-vmtest-health start -out "$run_dir/host-health-start.json") >&2 || true
 set +e
-env -i "${run_env[@]}" "$go_bin" test -exec "$repo_root/scripts/vmtest-exec" "${go_test_args[@]}" "$@" >"$go_test_log" 2>&1
+KATLCTL_CONFIG='' TMPDIR="$run_dir/tmp" "$repo_root/scripts/hermetic" "${hermetic_args[@]}" \
+    -- "$go_bin" test -exec "$repo_root/scripts/vmtest-exec" "${go_test_args[@]}" "$@" >"$go_test_log" 2>&1
 exit_code=$?
 set -e
 if [[ "$exit_code" -ne 0 ]]; then
@@ -1560,7 +1595,8 @@ if [[ "$exit_code" -ne 0 ]]; then
 fi
 # go test exits 0 when -run matches nothing, so confirm the requested tests
 # reported a pass.
-if ! (cd "$repo_root" && env -i "${run_env[@]}" "$resource_go_bin" run ./cmd/katl-vmtest-ran -log "$go_test_log" -- "$@") >&2; then
+if ! (cd "$repo_root" && KATLCTL_CONFIG='' "$repo_root/scripts/hermetic" --ro-bind "$run_dir" "${go_env_args[@]}" \
+    -- "$resource_go_bin" run ./cmd/katl-vmtest-ran -log "$go_test_log" -- "$@") >&2; then
     write_run_index "tests-not-run" "$@"
     record_host_health fail
     write_test_summary

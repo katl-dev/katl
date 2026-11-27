@@ -91,6 +91,20 @@ func Run(m *testing.M, pathCheck *func(string) error) (status int) {
 		}
 	}
 
+	// A test that starts scripts/vmtest-run must not take leases or locks in
+	// the host's coordination directory, but a VM run's tests must keep using
+	// the one their runner bound.
+	if os.Getenv("KATL_VMTEST_HOST_STATE_DIR") == "" {
+		hostState := filepath.Join(dir, "vmtest-host")
+		if err := os.Mkdir(hostState, 0o700); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if err := os.Setenv("KATL_VMTEST_HOST_STATE_DIR", hostState); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+	}
 	if err := disableGoTelemetry(nil); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

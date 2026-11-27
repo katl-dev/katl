@@ -2,18 +2,28 @@ package scriptstest
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 const evidenceFakeGo = `#!/usr/bin/env bash
 if [[ -n "$KATL_SCRIPTTEST_ENV_DUMP" ]]; then
   { printf "ARGS %s\n" "$*"; env; } >"$KATL_SCRIPTTEST_ENV_DUMP"
-  cat "$CONTAINERS_STORAGE_CONF" >"$KATL_SCRIPTTEST_ENV_DUMP.storage"
+  [[ ! -e "$HOME/operator-context" ]] || exit 10
+  # The unrelated path travels outside the environment, which names inputs.
+  unbound="$(<"$KATL_SCRIPTTEST_ENV_DUMP.unbound")"
+  [[ -n "$unbound" && ! -e "$unbound" ]] || exit 11
+  [[ -d "$KATL_VMTEST_HOST_STATE_DIR" && -d "$KATL_VMTEST_CACHE_DIR" ]] || exit 12
+  [[ "$(<"$KATL_SCRIPTTEST_INPUT")" == "input artifact" ]] || exit 13
+  ! (printf changed >>"$KATL_SCRIPTTEST_INPUT") 2>/dev/null || exit 14
+  printf 'guest input\n' >"$TMPDIR/guest-input"
 fi
 node="$KATL_VMTEST_RUN_DIR/scenarios/smoke/nodes/n1"
 mkdir -p "$node/disks" "$node/vm"
@@ -48,7 +58,7 @@ func runEvidenceVMTest(t *testing.T, tmpDir, runID string, fail bool) (string, s
 func runEvidenceVMTestPattern(t *testing.T, tmpDir, runID, pattern string, fail bool) (string, string, bool) {
 	t.Helper()
 	repo := repoRoot(t)
-	work := t.TempDir()
+	work := workstationtest.WorktreeTempDir(t, repo)
 	writeExecutable(t, filepath.Join(work, "fake-go"), evidenceFakeGo)
 	writeExecutable(t, filepath.Join(work, "fake-tool"), "#!/usr/bin/env bash\nexit 0\n")
 	writeExecutable(t, filepath.Join(work, "fake-virsh"), `#!/usr/bin/env bash
@@ -73,7 +83,7 @@ esac
 		"KATL_VMTEST_KUBECTL="+filepath.Join(work, "fake-tool"),
 		"KATL_VMTEST_VIRSH="+filepath.Join(work, "fake-virsh"),
 		"KATL_VMTEST_RUN_ID="+runID,
-		"KATL_VMTEST_CACHE_DIR="+filepath.Join(work, "cache"),
+		"KATL_VMTEST_CACHE_DIR="+filepath.Join(tmpDir, "cache"),
 	)
 	if fail {
 		cmd.Env = append(cmd.Env, "KATL_SCRIPTTEST_FAIL=1")
@@ -265,25 +275,27 @@ func TestVMTestRunRecordsHostHealth(t *testing.T) {
 	}
 }
 
-func TestVMTestRunEnvironmentIsAllowlisted(t *testing.T) {
+func TestVMTestRunIsolatesWorkstationAndSharesRunDirectory(t *testing.T) {
 	poisoned := t.TempDir()
-	callerData := filepath.Join(t.TempDir(), "data")
-	runtimeDir := t.TempDir()
-	dump := filepath.Join(t.TempDir(), "go-env.txt")
-	goCache := filepath.Join(t.TempDir(), "go-build")
+	writeArtifact(t, poisoned, "operator-context", "operator configuration")
+	unbound := writeArtifact(t, t.TempDir(), "unrelated", "unrelated temporary file")
+	// An explicit input outside the worktree, such as a published bundle.
+	input := writeArtifact(t, t.TempDir(), "bundle", "input artifact")
+	dump := filepath.Join(workstationtest.WorktreeTempDir(t, repoRoot(t)), "go-env.txt")
+	writeArtifact(t, filepath.Dir(dump), "go-env.txt.unbound", unbound)
+	goCache := os.Getenv("GOCACHE")
 	t.Setenv("KATL_SCRIPTTEST_ENV_DUMP", dump)
+	t.Setenv("KATL_SCRIPTTEST_INPUT", input)
 	t.Setenv("HOME", poisoned)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(poisoned, "config"))
-	t.Setenv("XDG_DATA_HOME", callerData)
-	t.Setenv("XDG_RUNTIME_DIR", runtimeDir)
-	t.Setenv("CONTAINERS_STORAGE_CONF", "")
+	t.Setenv("XDG_DATA_HOME", filepath.Join(poisoned, "data"))
+	t.Setenv("XDG_RUNTIME_DIR", filepath.Join(poisoned, "runtime"))
+	t.Setenv("CONTAINERS_STORAGE_CONF", filepath.Join(poisoned, "storage.conf"))
 	t.Setenv("SSH_AUTH_SOCK", filepath.Join(poisoned, "agent.sock"))
 	t.Setenv("GH_TOKEN", "poisoned-token")
 	t.Setenv("KATLCTL_CONTEXT", "poisoned-cluster")
-	t.Setenv("GOCACHE", goCache)
-	t.Setenv("GOPATH", filepath.Join(t.TempDir(), "go"))
-	t.Setenv("GOMODCACHE", filepath.Join(t.TempDir(), "mod"))
 
+	t.Setenv("KATL_VMTEST_KEEP", "always")
 	runDir, output, ok := runEvidenceVMTest(t, t.TempDir(), "env-run", false)
 	if !ok {
 		t.Fatalf("vmtest-run failed:\n%s", output)
@@ -303,33 +315,16 @@ func TestVMTestRunEnvironmentIsAllowlisted(t *testing.T) {
 		}
 	}
 
-	for name, value := range env {
-		if strings.Contains(value, poisoned) && !strings.HasPrefix(name, "KATL_") {
-			t.Errorf("go test saw %s=%s from the caller's home", name, value)
-		}
-	}
-	for _, name := range []string{"SSH_AUTH_SOCK", "GH_TOKEN", "KATLCTL_CONTEXT"} {
+	for _, name := range []string{"SSH_AUTH_SOCK", "GH_TOKEN", "KATLCTL_CONTEXT", "CONTAINERS_STORAGE_CONF", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"} {
 		if v, found := env[name]; found {
 			t.Errorf("go test inherited %s=%q", name, v)
 		}
 	}
-	for _, name := range []string{"HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME"} {
-		if !strings.HasPrefix(env[name], filepath.Join(runDir, "home")) {
-			t.Errorf("go test saw %s=%q, want a directory in the run", name, env[name])
-		}
+	if env["HOME"] != poisoned {
+		t.Errorf("HOME = %q, want masked caller home at %q", env["HOME"], poisoned)
 	}
-	if env["XDG_RUNTIME_DIR"] != runtimeDir {
-		t.Errorf("XDG_RUNTIME_DIR = %q, want the caller's %q", env["XDG_RUNTIME_DIR"], runtimeDir)
-	}
-	conf, err := os.ReadFile(dump + ".storage")
-	if err != nil {
-		t.Fatalf("container storage config seen by go test is unreadable: %v", err)
-	}
-	if want := filepath.Join(callerData, "containers", "storage"); !strings.Contains(string(conf), want) {
-		t.Errorf("container storage config = %q, want graphroot %q in the caller's data dir", conf, want)
-	}
-	if strings.Contains(string(conf), filepath.Join(runDir, "home")) {
-		t.Errorf("container storage config places storage in the run home: %q", conf)
+	if input, err := os.ReadFile(filepath.Join(runDir, "tmp", "guest-input")); err != nil || string(input) != "guest input\n" {
+		t.Errorf("guest input must be visible to the host, got %q, %v", input, err)
 	}
 	if env["GOCACHE"] != goCache {
 		t.Errorf("GOCACHE = %q, want the caller's %q so the run keeps a warm build cache", env["GOCACHE"], goCache)
@@ -364,5 +359,43 @@ func TestVMTestRunRecordsSourceInRunIndex(t *testing.T) {
 	}
 	if index.Revision != strings.TrimSpace(string(head)) {
 		t.Errorf("run.json revision = %q, want %q", index.Revision, head)
+	}
+}
+
+func TestVMTestRunChecksTestsRanInHermeticJob(t *testing.T) {
+	realGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	poisoned := t.TempDir()
+	writeArtifact(t, poisoned, "operator-context", "operator configuration")
+	t.Setenv("HOME", poisoned)
+	t.Setenv("GH_TOKEN", "poisoned-token")
+	// The sandbox passes no KATL_ settings to the checker, so the wrapper names
+	// its record directly. The worktree is bound into every hermetic job.
+	work := workstationtest.WorktreeTempDir(t, repoRoot(t))
+	record := filepath.Join(work, "checker-env.txt")
+	resourceGo := filepath.Join(work, "resource-go")
+	writeExecutable(t, resourceGo, fmt.Sprintf(`#!/usr/bin/env bash
+if [[ "$2" == ./cmd/katl-vmtest-ran ]]; then
+  { env; [[ ! -e "$HOME/operator-context" ]] || echo CALLER_HOME_VISIBLE; } >'%s'
+fi
+exec '%s' "$@"
+`, record, realGo))
+	t.Setenv("KATL_VMTEST_RESOURCE_GO", resourceGo)
+
+	_, output, ok := runEvidenceVMTest(t, t.TempDir(), "ran-run", false)
+	if !ok {
+		t.Fatalf("vmtest-run failed:\n%s", output)
+	}
+
+	raw, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("katl-vmtest-ran did not run: %v", err)
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		if line == "CALLER_HOME_VISIBLE" || strings.HasPrefix(line, "GH_TOKEN=") {
+			t.Errorf("katl-vmtest-ran ran with the caller's environment: %s", line)
+		}
 	}
 }

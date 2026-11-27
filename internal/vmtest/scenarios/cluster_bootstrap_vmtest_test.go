@@ -1685,11 +1685,13 @@ func twoNodeHostToolPrereqs(lookPath func(string) (string, error)) []vmtest.Miss
 			Detail: "required for host-side kubeconfig verification: " + err.Error(),
 		})
 	}
-	if _, err := lookPath("podman"); err != nil {
-		missing = append(missing, vmtest.MissingPrerequisite{
-			Name:   "podman",
-			Detail: "required to cache Kubernetes VM image fixtures: " + err.Error(),
-		})
+	for _, tool := range []string{"dump.erofs", "skopeo"} {
+		if _, err := lookPath(tool); err != nil {
+			missing = append(missing, vmtest.MissingPrerequisite{
+				Name:   tool,
+				Detail: "required to stage Kubernetes VM image fixtures: " + err.Error(),
+			})
+		}
 	}
 	return missing
 }
@@ -2321,12 +2323,12 @@ func ensureKubernetesImageFixture(ctx context.Context, repo, kubernetesVersion s
 	}
 	defer func() { _ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) }()
 
-	archivePath := filepath.Join(cacheDir, "kubernetes-images.tar")
+	archivePath := filepath.Join(cacheDir, "kubernetes-images.oci.tar")
 	manifestPath := filepath.Join(cacheDir, "manifest.json")
 	if valid, err := validKubernetesImageFixture(archivePath, manifestPath, kubernetesVersion, images); err != nil {
 		return nodeImageFixture{}, err
 	} else if !valid {
-		if err := buildKubernetesImageFixture(ctx, archivePath, manifestPath, kubernetesVersion, images); err != nil {
+		if err := buildKubernetesImageFixture(ctx, repo, archivePath, manifestPath, kubernetesVersion, images); err != nil {
 			return nodeImageFixture{}, err
 		}
 	}
@@ -2352,12 +2354,21 @@ func kubernetesImageReferences(ctx context.Context, repo, version string) ([]str
 			return nil, err
 		}
 		defer os.RemoveAll(directory)
-		kubeadm := filepath.Join(directory, "kubeadm")
-		// Extract read-only instead of mounting a tool view or encoding kubeadm's
-		// etcd/addon version mapping in the fixture builder.
-		command := exec.CommandContext(ctx, "sudo", "systemd-dissect", "--copy-from", image, "/usr/bin/kubeadm", kubeadm)
+		part := filepath.Join(directory, "root.erofs")
+		command := exec.CommandContext(ctx, filepath.Join(repo, "scripts/copy-sysext-root"), image, part)
 		if output, err := command.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("extract %s kubeadm: %w: %s", version, err, output)
+			return nil, fmt.Errorf("read %s sysext root: %w: %s", version, err, output)
+		}
+		var stderr bytes.Buffer
+		command = exec.CommandContext(ctx, "dump.erofs", "--cat", "--path=/usr/bin/kubeadm", part)
+		command.Stderr = &stderr
+		binary, err := command.Output()
+		if err != nil {
+			return nil, fmt.Errorf("extract %s kubeadm: %w: %s", version, err, stderr.Bytes())
+		}
+		kubeadm := filepath.Join(directory, "kubeadm")
+		if err := os.WriteFile(kubeadm, binary, 0o700); err != nil {
+			return nil, err
 		}
 		return kubeadmImageReferences(ctx, kubeadm, version)
 	}
@@ -2409,21 +2420,25 @@ func validKubernetesImageFixture(archivePath, manifestPath, kubernetesVersion st
 	return digest == manifest.ArchiveSHA256, nil
 }
 
-func buildKubernetesImageFixture(ctx context.Context, archivePath, manifestPath, kubernetesVersion string, images []string) error {
-	podman, err := exec.LookPath("podman")
+func buildKubernetesImageFixture(ctx context.Context, repo, archivePath, manifestPath, kubernetesVersion string, images []string) error {
+	work, err := os.MkdirTemp(filepath.Dir(archivePath), ".oci-")
 	if err != nil {
-		return fmt.Errorf("find podman for Kubernetes image fixtures: %w", err)
+		return err
 	}
+	defer os.RemoveAll(work)
+	layout := filepath.Join(work, "layout")
+	policy := filepath.Join(repo, "containers-policy.json")
 	for _, image := range images {
-		cmd := exec.CommandContext(ctx, podman, "pull", "--quiet", image)
+		// Keep the full kubeadm reference on each descriptor so ctr imports
+		// the image under the name the guest will request.
+		cmd := exec.CommandContext(ctx, "skopeo", "--policy", policy, "--override-os", "linux", "--override-arch", "amd64",
+			"copy", "--quiet", "--src-no-creds", "--retry-times", "3", "docker://"+image, "oci:"+layout+":"+image)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("cache Kubernetes image %s: %w\n%s", image, err, output)
 		}
 	}
-	temporaryArchive := archivePath + ".tmp-" + strconv.Itoa(os.Getpid())
-	defer os.Remove(temporaryArchive)
-	args := append([]string{"save", "--quiet", "--multi-image-archive", "--output", temporaryArchive}, images...)
-	cmd := exec.CommandContext(ctx, podman, args...)
+	temporaryArchive := filepath.Join(work, "images.tar")
+	cmd := exec.CommandContext(ctx, "tar", "-C", layout, "-cf", temporaryArchive, "oci-layout", "index.json", "blobs")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("save Kubernetes %s image fixture: %w\n%s", kubernetesVersion, err, output)
 	}
@@ -2452,8 +2467,7 @@ func buildKubernetesImageFixture(ctx context.Context, archivePath, manifestPath,
 		return err
 	}
 	data = append(data, '\n')
-	temporaryManifest := manifestPath + ".tmp-" + strconv.Itoa(os.Getpid())
-	defer os.Remove(temporaryManifest)
+	temporaryManifest := filepath.Join(work, "manifest.json")
 	if err := os.WriteFile(temporaryManifest, data, 0o644); err != nil {
 		return err
 	}
@@ -4696,7 +4710,7 @@ func TestTwoNodeHostToolPrereqsUseSelectedKubectl(t *testing.T) {
 	if len(missing) != 0 {
 		t.Fatalf("missing prereqs = %#v", missing)
 	}
-	if strings.Join(checked, ",") != "/tmp/selected-kubectl,podman" {
+	if !slices.Contains(checked, "/tmp/selected-kubectl") {
 		t.Fatalf("checked tools = %q", checked)
 	}
 }
