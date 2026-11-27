@@ -95,7 +95,7 @@
       "contents": "Container Go module and build cache and mkosi RPM cache, one key per maintained Kubernetes version",
       "key_inputs": ["env.ARTIFACT_VERSION"],
       "savers": [{"workflow": "kubernetes-bundles.yml", "job": "build"}],
-      "budget_bytes": 0
+      "budget_bytes": 4950000000
     },
     {
       "name": "builder-blobs",
