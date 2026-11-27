@@ -285,6 +285,14 @@ on main. Before enabling it, enforce trusted workflow/ref admission
 vsock CIDs share the host kernel. Qualify the deployed pool manually before
 setting `KATL_VMTEST_MAIN_RUNNER=katl-vmtest`.
 
+The VM jobs take their tools from the flake's ci shell, so a `katl-vmtest`
+runner has two further requirements. It must be able to run
+`cachix/install-nix-action`, which setup-tools runs through
+`.github/actions/install-nix`. The ci shell's Bubblewrap must also pass the
+nested user-namespace probe in `.github/scripts/hosted-hermetic-setup`
+unaided: that script grants an AppArmor exception only on GitHub-hosted
+runners, and fails on any other runner whose probe fails.
+
 ## Release promotion
 
 **Katl Release Artifacts** runs on tags, manual dispatch, and nightly on main.

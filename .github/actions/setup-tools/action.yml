@@ -25,6 +25,19 @@ outputs:
 runs:
   using: composite
   steps:
+    # A dispatch for an explicit source ref takes this action from the
+    # workflow's revision, but the local actions and scripts it names, the
+    # shell and the shell's entry point all resolve in the source checkout.
+    # ci-shell arrived after install-nix, setup-go's go-version input,
+    # scripts/retry and devShells.ci, so a source that has it has them all.
+    # The check therefore runs first and needs neither Nix nor the network.
+    - name: Check the source has the ci shell
+      shell: bash
+      run: |
+        if [[ ! -x .github/scripts/ci-shell || ! -f flake.nix ]]; then
+          echo "::error::source ref predates the flake's ci shell; dispatch this workflow from that ref's branch"
+          exit 1
+        fi
     - name: Install Nix
       uses: ./.github/actions/install-nix
     - name: Realise the ci shell

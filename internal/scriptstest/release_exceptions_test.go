@@ -38,6 +38,7 @@ var releaseExceptions = []releaseException{
 
 	{workflowSite{".github/actions/setup-go/action.yml", "(composite)", "Resolve Go cache"}, "gap", 935, "", []string{"shell"}},
 
+	{workflowSite{".github/actions/setup-tools/action.yml", "(composite)", "Check the source has the ci shell"}, "gap", 989, "", []string{"shell"}},
 	{workflowSite{".github/actions/setup-tools/action.yml", "(composite)", "Realise the ci shell"}, "gap", 989, "", []string{"shell"}},
 
 	// The release call runs the old standalone VM path without the CI plan.

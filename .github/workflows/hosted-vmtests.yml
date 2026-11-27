@@ -65,7 +65,9 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
-      # An explicit source ref can predate the cache policy in this workflow.
+      # An explicit source ref takes its actions from this workflow's revision.
+      # The ci shell still comes from that ref, and setup-tools rejects a ref
+      # that predates it.
       - uses: actions/checkout@v7
         timeout-minutes: 2
         if: inputs.scenarios == '' && inputs.ref != ''
@@ -152,7 +154,9 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.source }}
           persist-credentials: false
-      # An explicit source ref can predate the cache policy in this workflow.
+      # An explicit source ref takes its actions from this workflow's revision.
+      # The ci shell still comes from that ref, and setup-tools rejects a ref
+      # that predates it.
       - uses: actions/checkout@v7
         timeout-minutes: 2
         if: inputs.ref != ''
@@ -328,7 +332,9 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.source }}
           persist-credentials: false
-      # An explicit source ref can predate the cache and download policy in this workflow.
+      # An explicit source ref takes its actions and download scripts from this
+      # workflow's revision. The ci shell still comes from that ref, and
+      # setup-tools rejects a ref that predates it.
       - uses: actions/checkout@v7
         if: inputs.ref != ''
         timeout-minutes: 2

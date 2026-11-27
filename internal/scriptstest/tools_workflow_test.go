@@ -16,10 +16,9 @@ import (
 )
 
 const (
-	setupTools  = ".github/actions/setup-tools"
-	ciShell     = ".github/scripts/ci-shell"
-	ciShellRun  = "bash " + ciShell + " bash --noprofile --norc -eo pipefail {0}"
-	diagnostics = ".github/scripts/hosted-vmtest-diagnostics"
+	setupTools = ".github/actions/setup-tools"
+	ciShell    = ".github/scripts/ci-shell"
+	ciShellRun = "bash " + ciShell + " bash --noprofile --norc -eo pipefail {0}"
 )
 
 // Host services stay on the runner's packages; every command-line tool comes
@@ -51,54 +50,162 @@ func readToolJobs(t *testing.T, name string) map[string]toolJob {
 	return workflow.Jobs
 }
 
-func usesSetupTools(step workflowStep) bool {
-	action, _, _ := strings.Cut(step.Uses, "@")
-	// A run for an explicit source ref takes the action from the workflow's
-	// own revision, checked out under _build/workflow-actions.
-	return action == "./"+setupTools || action == "./_build/workflow-actions/"+setupTools
+func readActionSteps(t *testing.T, action string) []workflowStep {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), action, "action.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file struct {
+		Runs struct{ Steps []workflowStep } `yaml:"runs"`
+	}
+	if err := yaml.Unmarshal(data, &file); err != nil {
+		t.Fatalf("parse %s: %v", action, err)
+	}
+	return file.Runs.Steps
 }
 
-// Jobs that run Go tests, VM tests or image builds take their Go and test
-// tools from the flake's ci shell, so a test sees the versions it sees in the
-// development shell.
-func TestToolJobsUseCIShell(t *testing.T) {
-	jobs := []struct{ workflow, job string }{
-		{"ci.yml", "checks"},
-		{"release-artifacts.yml", "unit"},
-		{"hosted-vmtests.yml", "images"},
-		{"hosted-vmtests.yml", "scenarios"},
-		{"production-vmtests.yml", "qualification"},
-		{"kernel-qualification.yml", "drivers"},
-	}
-	for _, tc := range jobs {
-		t.Run(tc.workflow+"/"+tc.job, func(t *testing.T) {
-			job, ok := readToolJobs(t, tc.workflow)[tc.job]
-			if !ok {
-				t.Fatalf("%s has no job %s", tc.workflow, tc.job)
-			}
-			if job.Defaults.Run.Shell != ciShellRun {
-				t.Errorf("default run shell = %q, want %q", job.Defaults.Run.Shell, ciShellRun)
-			}
+// usesAction reports whether step uses the repository's action at dir. A run
+// for an explicit source ref takes the action from the workflow's own
+// revision, checked out under _build/workflow-actions.
+func usesAction(step workflowStep, dir string) bool {
+	action, _, _ := strings.Cut(step.Uses, "@")
+	return action == "./"+dir || action == "./_build/workflow-actions/"+dir
+}
 
+func usesSetupTools(step workflowStep) bool {
+	return usesAction(step, setupTools)
+}
+
+var aptInstall = regexp.MustCompile(`hosted-apt-install|\bapt-get\b|\bapt\s+install\b`)
+
+// hostToolSetup describes a step that would give a job tools from outside the
+// ci shell, or returns "".
+func hostToolSetup(step workflowStep) string {
+	action, _, _ := strings.Cut(step.Uses, "@")
+	switch {
+	case action == "actions/setup-go" || strings.HasSuffix(action, "/.github/actions/setup-go"):
+		return "uses " + step.Uses + "; the ci shell provides Go"
+	case aptInstall.MatchString(step.Run):
+		return "installs packages with apt; the ci shell provides tools"
+	}
+	return ""
+}
+
+// The plan job sets up tools only when it computes the plan itself, and runs
+// only the planner in the shell; TestVMPlanRunsPlannerInCIShell covers it.
+var ciShellExceptions = []string{"hosted-vmtests.yml/plan"}
+
+// ciShellJobs must set up the ci shell. Discovery checks every job that does,
+// but a job that went back to setup-go would no longer be discovered.
+var ciShellJobs = []string{
+	"ci.yml/checks",
+	"hosted-vmtests.yml/plan",
+	"hosted-vmtests.yml/images",
+	"hosted-vmtests.yml/scenarios",
+	"kernel-qualification.yml/drivers",
+	"production-vmtests.yml/qualification",
+	"release-artifacts.yml/unit",
+}
+
+// Every job that sets up the ci shell takes its Go and test tools from it, so
+// a test sees the versions it sees in the development shell.
+func TestToolJobsUseCIShell(t *testing.T) {
+	workflows, err := filepath.Glob(filepath.Join(repoRoot(t), ".github", "workflows", "*.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found []string
+	for _, workflow := range workflows {
+		for name, job := range readToolJobs(t, filepath.Base(workflow)) {
+			id := filepath.Base(workflow) + "/" + name
 			setup := slices.IndexFunc(job.Steps, usesSetupTools)
 			if setup < 0 {
-				t.Fatalf("no step uses %s", setupTools)
+				continue
 			}
-			for i, step := range job.Steps {
-				action, _, _ := strings.Cut(step.Uses, "@")
-				switch {
-				case action == "actions/setup-go" || strings.HasSuffix(action, "/.github/actions/setup-go"):
-					t.Errorf("step %d uses %s; the ci shell provides Go", i, step.Uses)
-				case strings.Contains(step.Run, "hosted-apt-install"):
-					t.Errorf("step %d installs packages with apt; the ci shell provides tools", i)
-				case step.Run != "" && i < setup:
-					t.Errorf("step %d runs before %s", i, setupTools)
+			found = append(found, id)
+			if slices.Contains(ciShellExceptions, id) {
+				continue
+			}
+			t.Run(id, func(t *testing.T) {
+				if job.Defaults.Run.Shell != ciShellRun {
+					t.Errorf("default run shell = %q, want %q", job.Defaults.Run.Shell, ciShellRun)
 				}
-				// Diagnostics need no tools and must still run when the shell
-				// could not be realised.
-				if step.Shell != "" && (step.Shell != "bash" || strings.TrimSpace(step.Run) != diagnostics) {
-					t.Errorf("step %d overrides the ci shell with %q; only %s may", i, step.Shell, diagnostics)
+				for i, step := range job.Steps {
+					if problem := hostToolSetup(step); problem != "" {
+						t.Errorf("step %d %s", i, problem)
+					}
+					if step.Run != "" && i < setup {
+						t.Errorf("step %d runs before %s", i, setupTools)
+					}
+					// A step that runs after a failure may follow a shell that
+					// could not be realised, so it runs in plain bash; every other
+					// step runs in the ci shell.
+					always := strings.Contains(step.If, "always()")
+					if step.Run != "" && always && step.Shell != "bash" {
+						t.Errorf("step %d runs on failure with shell %q, want bash", i, step.Shell)
+					}
+					if step.Shell != "" && !always {
+						t.Errorf("step %d overrides the ci shell with %q", i, step.Shell)
+					}
 				}
+			})
+		}
+	}
+	for _, id := range ciShellJobs {
+		if !slices.Contains(found, id) {
+			t.Errorf("%s does not use %s", id, setupTools)
+		}
+	}
+
+	// The image jobs also run the mkosi builder action's steps.
+	t.Run("mkosi-builder", func(t *testing.T) {
+		for i, step := range readActionSteps(t, ".github/actions/mkosi-builder") {
+			if problem := hostToolSetup(step); problem != "" {
+				t.Errorf("step %d %s", i, problem)
+			}
+		}
+	})
+}
+
+// setup-tools resolves its local actions, scripts and shell in the source
+// checkout, even when it comes from the workflow's revision. A source ref that
+// predates the ci shell fails with guidance before anything resolves there,
+// instead of with a missing action, script or flake attribute.
+func TestSetupToolsRejectsSourceWithoutCIShell(t *testing.T) {
+	const predates = "::error::source ref predates the flake's ci shell; dispatch this workflow from that ref's branch"
+	steps := readActionSteps(t, setupTools)
+	check := slices.IndexFunc(steps, func(step workflowStep) bool { return strings.Contains(step.Run, predates) })
+	if check != 0 {
+		t.Fatalf("setup-tools checks the source at step %d, want 0", check)
+	}
+	bash := workstationtest.Tool(t, "bash")
+
+	for _, tc := range []struct {
+		name    string
+		files   []string
+		wantErr bool
+	}{
+		{"current", []string{ciShell, "flake.nix"}, false},
+		{"no entry script", []string{"flake.nix"}, true},
+		{"no flake", []string{ciShell}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			work := t.TempDir()
+			for _, file := range tc.files {
+				if err := os.MkdirAll(filepath.Dir(filepath.Join(work, file)), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				writeExecutable(t, filepath.Join(work, file), "#!/bin/sh\n")
+			}
+
+			// An empty PATH shows the check runs before Nix is installed.
+			cmd := exec.Command(bash, "--noprofile", "--norc", "-eo", "pipefail", "-c", steps[check].Run)
+			cmd.Dir = work
+			cmd.Env = []string{"PATH=" + t.TempDir()}
+			output, err := cmd.CombinedOutput()
+			if gotErr := err != nil; gotErr != tc.wantErr || strings.Contains(string(output), predates) != tc.wantErr {
+				t.Fatalf("check failed = %v, want %v\n%s", gotErr, tc.wantErr, output)
 			}
 		})
 	}
@@ -131,19 +238,8 @@ func TestVMPlanRunsPlannerInCIShell(t *testing.T) {
 // The VM host action installs only host services, and grants user namespaces
 // to the Bubblewrap that the ci shell resolves.
 func TestHostedVMTestInstallsOnlyHostServices(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github", "actions", "hosted-vmtest", "action.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var action struct {
-		Runs struct{ Steps []workflowStep } `yaml:"runs"`
-	}
-	if err := yaml.Unmarshal(data, &action); err != nil {
-		t.Fatal(err)
-	}
-
 	var installs, hermetic int
-	for _, step := range action.Runs.Steps {
+	for _, step := range readActionSteps(t, ".github/actions/hosted-vmtest") {
 		script := strings.ReplaceAll(step.Run, "\\\n", " ")
 		for _, line := range strings.Split(script, "\n") {
 			fields := strings.Fields(line)
@@ -172,22 +268,54 @@ func TestHostedVMTestInstallsOnlyHostServices(t *testing.T) {
 // any working directory, and disables remote builders.
 func TestCIShellRunsCommandInFlakeShell(t *testing.T) {
 	root := repoRoot(t)
-	bin := t.TempDir()
 	record := filepath.Join(t.TempDir(), "nix-args")
-	writeExecutable(t, filepath.Join(bin, "nix"), "#!/bin/sh\nprintf '%s\\n' \"$@\" > \""+record+"\"\n")
+	output := runCIShell(t, record, "printf", "%s\\n", "go", "test ./...")
 
-	cmd := exec.Command(filepath.Join(root, ciShell), "go", "test", "./...")
-	cmd.Dir = t.TempDir()
-	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("ci-shell: %v\n%s", err, output)
-	}
-
-	want := []string{"develop", "--option", "builders", "", root + "#ci", "-c", "go", "test", "./..."}
+	want := []string{"develop", "--option", "builders", "", root + "#ci"}
 	got := strings.Split(strings.TrimSuffix(string(mustReadFile(t, record)), "\n"), "\n")
 	if !slices.Equal(got, want) {
 		t.Fatalf("nix arguments = %q, want %q", got, want)
 	}
+	if output != "go\ntest ./...\n" {
+		t.Fatalf("command output = %q, want its arguments unchanged", output)
+	}
+}
+
+// The development shell exports SOURCE_DATE_EPOCH, but production build runs
+// without it, so a command in the ci shell builds in the release's mode
+// whether the variable comes from the shell or from the job.
+func TestCIShellDropsSourceDateEpoch(t *testing.T) {
+	t.Setenv("SOURCE_DATE_EPOCH", "1700000000")
+	output := runCIShell(t, filepath.Join(t.TempDir(), "nix-args"), "sh", "-c", `printf %s "${SOURCE_DATE_EPOCH-unset}"`)
+	if output != "unset" {
+		t.Fatalf("SOURCE_DATE_EPOCH in the ci shell = %q, want unset", output)
+	}
+}
+
+// runCIShell runs a command through ci-shell with a nix that records its
+// arguments before -c and, like nix develop, exports SOURCE_DATE_EPOCH to the
+// command after it. It returns the command's output.
+func runCIShell(t *testing.T, record string, command ...string) string {
+	t.Helper()
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "nix"), `#!/bin/sh
+: > "`+record+`"
+while [ "$#" -gt 0 ] && [ "$1" != -c ]; do
+    printf '%s\n' "$1" >> "`+record+`"
+    shift
+done
+shift
+SOURCE_DATE_EPOCH=315532800 exec "$@"
+`)
+
+	cmd := exec.Command(filepath.Join(repoRoot(t), ciShell), command...)
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("ci-shell: %v", err)
+	}
+	return string(output)
 }
 
 // hosted-vmtest-run re-enters the job user through sudo to refresh its
