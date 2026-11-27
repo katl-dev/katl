@@ -190,6 +190,9 @@ and closable. Every role that files or triages issues follows these rules.
   as a `Closes when:` line, and close the issue when the condition holds.
 - Group a category, such as recurring flakes, with a label rather than an
   umbrella issue. File each member as its own issue.
+- Plan every `priority: p1` issue into the next or the following version
+  milestone. `Planned:` milestones and Backlog hold p2 and below, so lower a
+  p1 that neither version will take.
 
 ## Reporting
 
