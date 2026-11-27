@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/gittest"
+	"github.com/katl-dev/katl/internal/queuemarker"
 )
 
 // decideFixture is a main that moved past oldBase, so that a pull request
@@ -86,14 +87,14 @@ const (
 func removedWith(r removalEvent, rec recording) func(*openPR) {
 	return func(p *openPR) {
 		p.Removal = &r
-		var marks []marker
+		var marks []queuemarker.Marker
 		switch rec {
 		case recordedAtHead:
-			marks = []marker{removalMarker(r.ID, p.Head)}
+			marks = []queuemarker.Marker{removalMarker(r.ID, p.Head)}
 		case recordedBefore:
-			marks = []marker{removalMarker(r.ID, "0ld")}
+			marks = []queuemarker.Marker{removalMarker(r.ID, "0ld")}
 		case dequeuedBySelf:
-			marks = []marker{dequeueMarker(p.Head)}
+			marks = []queuemarker.Marker{dequeueMarker(p.Head)}
 		}
 		p.settle(marks)
 	}
@@ -236,9 +237,9 @@ func TestParseMarkers(t *testing.T) {
 	text := "hello\n<!-- katl-queue:rebased abc123 -->\n  <!-- katl-queue:ejection 2026-01-01T01:00:00Z -->  \n" +
 		"quoted <!-- katl-queue:rebased nope --> inline\n<!-- other:rebased x -->\n"
 
-	got := parseMarkers(text)
+	got := queuemarker.Parse(text)
 
-	want := []marker{{"rebased", "abc123"}, {"ejection", "2026-01-01T01:00:00Z"}}
+	want := []queuemarker.Marker{{Kind: "rebased", Value: "abc123"}, {Kind: "ejection", Value: "2026-01-01T01:00:00Z"}}
 	if !slices.Equal(got, want) {
 		t.Errorf("parseMarkers = %v, want %v", got, want)
 	}
@@ -326,7 +327,7 @@ func TestApplyScope(t *testing.T) {
 type recorder struct {
 	calls         []string
 	rebase        map[string]rebaseResult
-	markers       []marker
+	markers       []queuemarker.Marker
 	failEnqueueOf int
 	failLabel     bool
 }
@@ -365,7 +366,9 @@ func (r *recorder) Comment(_ context.Context, n int, body string) error {
 	r.record("comment %d %s", n, strings.ReplaceAll(strings.TrimSpace(body), "\n", " | "))
 	return nil
 }
-func (r *recorder) Markers(_ context.Context, n int) ([]marker, error) { return r.markers, nil }
+func (r *recorder) Markers(_ context.Context, n int) ([]queuemarker.Marker, error) {
+	return r.markers, nil
+}
 func (r *recorder) Why(_ context.Context, n int) (string, error) {
 	return fmt.Sprintf("#%d removed", n), nil
 }
@@ -461,7 +464,7 @@ func TestApplyConflictComment(t *testing.T) {
 	})
 
 	t.Run("already explained for this head", func(t *testing.T) {
-		fx := &recorder{rebase: result, markers: []marker{{"needs-rebase", "c0ffee"}}}
+		fx := &recorder{rebase: result, markers: []queuemarker.Marker{{Kind: "needs-rebase", Value: "c0ffee"}}}
 
 		err := apply(context.Background(), fx, []action{conflicting}, &strings.Builder{})
 
@@ -471,7 +474,7 @@ func TestApplyConflictComment(t *testing.T) {
 	})
 
 	t.Run("head changed since", func(t *testing.T) {
-		fx := &recorder{rebase: result, markers: []marker{{"needs-rebase", "old"}}}
+		fx := &recorder{rebase: result, markers: []queuemarker.Marker{{Kind: "needs-rebase", Value: "old"}}}
 
 		err := apply(context.Background(), fx, []action{conflicting}, &strings.Builder{})
 

@@ -47,6 +47,8 @@ Commands:
                     katl-queue wait PR.
   watches           list registered watches and recent results from watchd
   why PR            explain why a Katl PR was removed from the queue
+  review post PR FILE
+                    record a review verdict on the pull request
   plan [--milestone M] [--apply | --next]
                     order ready PRs for the queue, holding conflicting ones;
                     --apply makes an autopilot pass, --next lists startable issues
@@ -114,6 +116,9 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 	if command == "ci-cost" {
 		return ciCostCommand(ctx, flags, args, stdout)
+	}
+	if command == "review" {
+		return reviewCommand(ctx, args, stdout)
 	}
 	interval := time.Minute
 	var (

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/katl-dev/katl/internal/queuemarker"
 )
 
 func removalBy(id, reason, actor string) removalEvent {
@@ -27,30 +29,30 @@ func TestSettleRemoval(t *testing.T) {
 		name        string
 		removal     removalEvent
 		head        string
-		marks       []marker
+		marks       []queuemarker.Marker
 		wantEjected bool
 	}{
-		{name: "no push", removal: failed, head: "A", marks: []marker{removalMarker("r2", "A")}, wantEjected: true},
+		{name: "no push", removal: failed, head: "A", marks: []queuemarker.Marker{removalMarker("r2", "A")}, wantEjected: true},
 		// The author pushed B, then katl-queue rebased it to C. Whatever
 		// produced the head, it is not the one the removal was observed at.
-		{name: "author push then rebase", removal: failed, head: "C", marks: []marker{removalMarker("r2", "A")}},
-		{name: "author push", removal: failed, head: "B", marks: []marker{removalMarker("r2", "A")}},
+		{name: "author push then rebase", removal: failed, head: "C", marks: []queuemarker.Marker{removalMarker("r2", "A")}},
+		{name: "author push", removal: failed, head: "B", marks: []queuemarker.Marker{removalMarker("r2", "A")}},
 		// Without a record, whether the author already pushed is unknowable,
 		// so the removal holds unless a push after it is recorded.
 		{name: "push before the record existed", removal: failed, head: "B", wantEjected: true},
 		{
 			name: "latest of several removals recorded", removal: failed, head: "B",
-			marks: []marker{removalMarker("r1", "A"), removalMarker("r2", "B")}, wantEjected: true,
+			marks: []queuemarker.Marker{removalMarker("r1", "A"), removalMarker("r2", "B")}, wantEjected: true,
 		},
 		{
 			name: "several removals, latest settled", removal: failed, head: "C",
-			marks: []marker{removalMarker("r1", "C"), removalMarker("r2", "B")},
+			marks: []queuemarker.Marker{removalMarker("r1", "C"), removalMarker("r2", "B")},
 		},
 		{
 			// An earlier removal recorded at the current head says nothing
 			// about the latest one.
 			name: "several removals, latest not yet recorded", removal: failed, head: "C",
-			marks: []marker{removalMarker("r1", "C")}, wantEjected: true,
+			marks: []queuemarker.Marker{removalMarker("r1", "C")}, wantEjected: true,
 		},
 		{name: "timed out", removal: removalBy("r2", "checks_timed_out", "github-merge-queue"), head: "A", wantEjected: true},
 		{name: "merge conflict removal", removal: removalBy("r2", "merge_conflict", "github-merge-queue"), head: "A"},
@@ -72,8 +74,8 @@ func TestSettleRemoval(t *testing.T) {
 		held := openPR{candidate: candidate{Head: "A"}, Removal: &manual}
 		settled := openPR{candidate: candidate{Head: "B"}, Removal: &manual}
 
-		held.settle([]marker{removalMarker("r3", "A")})
-		settled.settle([]marker{removalMarker("r3", "A")})
+		held.settle([]queuemarker.Marker{removalMarker("r3", "A")})
+		settled.settle([]queuemarker.Marker{removalMarker("r3", "A")})
 
 		if !held.Dequeued || held.Ejected {
 			t.Errorf("unchanged head: Dequeued, Ejected = %v, %v; want true, false", held.Dequeued, held.Ejected)
@@ -101,8 +103,8 @@ func TestSettleRemoval(t *testing.T) {
 		held := openPR{candidate: candidate{Head: "A"}, Removal: &manual}
 		settled := openPR{candidate: candidate{Head: "B"}, Removal: &manual}
 
-		held.settle([]marker{dequeueMarker("A")})
-		settled.settle([]marker{dequeueMarker("A"), removalMarker("r3", "A")})
+		held.settle([]queuemarker.Marker{dequeueMarker("A")})
+		settled.settle([]queuemarker.Marker{dequeueMarker("A"), removalMarker("r3", "A")})
 
 		if !held.SelfDequeued || held.Dequeued || held.Ejected || held.unrecorded() {
 			t.Errorf("unchanged head: %+v; want held, and neither recorded nor explained", held)
@@ -116,7 +118,7 @@ func TestSettleRemoval(t *testing.T) {
 		manual := removalBy("r3", "manual", viewer)
 		pr := openPR{candidate: candidate{Head: "B"}, Removal: &manual}
 
-		pr.settle([]marker{dequeueMarker("A")})
+		pr.settle([]queuemarker.Marker{dequeueMarker("A")})
 
 		if pr.SelfDequeued || !pr.Dequeued {
 			t.Errorf("SelfDequeued, Dequeued = %v, %v; want false, true: a marker covers one head", pr.SelfDequeued, pr.Dequeued)
@@ -126,9 +128,9 @@ func TestSettleRemoval(t *testing.T) {
 	t.Run("optional report", func(t *testing.T) {
 		pr := openPR{candidate: candidate{Head: "A"}}
 
-		pr.settle([]marker{optionalMarker("A"), optionalMarker("old")})
+		pr.settle([]queuemarker.Marker{optionalMarker("A"), optionalMarker("old")})
 		other := openPR{candidate: candidate{Head: "B"}}
-		other.settle([]marker{optionalMarker("A")})
+		other.settle([]queuemarker.Marker{optionalMarker("A")})
 
 		if !pr.OptionalReported || other.OptionalReported {
 			t.Errorf("OptionalReported = %v, %v; want true, false: a report covers one head", pr.OptionalReported, other.OptionalReported)
