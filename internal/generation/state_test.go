@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 func TestRenderState(t *testing.T) {
@@ -499,9 +501,7 @@ func TestStateUnitsVerify(t *testing.T) {
 	if os.Getenv("KATL_VERIFY_SYSTEMD_UNITS") != "1" {
 		t.Skip("set KATL_VERIFY_SYSTEMD_UNITS=1 to run systemd-analyze verify")
 	}
-	if _, err := exec.LookPath("systemd-analyze"); err != nil {
-		t.Skip("systemd-analyze not available")
-	}
+	workstationtest.Tool(t, "systemd-analyze")
 	root := t.TempDir()
 	writeStateVerifyFixture(t, root)
 

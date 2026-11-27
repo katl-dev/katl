@@ -9,15 +9,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 func TestBuildInstallerISO(t *testing.T) {
 	repo := repoRoot(t)
 	tmp := t.TempDir()
 	for _, tool := range []string{"mkfs.vfat", "mcopy", "mmd", "xorriso"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("real ISO test requires %s: %v", tool, err)
-		}
+		workstationtest.Tool(t, tool)
 	}
 	installer := writeArtifact(t, tmp, "katl-installer.efi", "installer")
 	if err := os.WriteFile(installer+".json", []byte(`{"version":"2026.7.0-dev.1","architecture":"x86_64"}`), 0o644); err != nil {

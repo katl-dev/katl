@@ -6,12 +6,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 type fakeCICost struct {
@@ -152,10 +153,7 @@ func TestCICostFailingJob(t *testing.T) {
 // log. The first failTimes reads of failEndpoint print failStderr and fail.
 func fakeGH(t *testing.T, routes map[string]string, failEndpoint string, failTimes int, failStderr string) (log string) {
 	t.Helper()
-	sh, err := exec.LookPath("sh")
-	if err != nil {
-		t.Fatal(err)
-	}
+	sh := workstationtest.Tool(t, "sh")
 	dir := t.TempDir()
 	log = filepath.Join(dir, "calls.log")
 

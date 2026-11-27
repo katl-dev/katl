@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -20,7 +19,6 @@ import (
 
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
-	"github.com/katl-dev/katl/internal/sysextimage"
 	"github.com/katl-dev/katl/internal/vmtest"
 	"gopkg.in/yaml.v3"
 )
@@ -117,8 +115,7 @@ func wipeReinstallWorldSmokeRunNamed(t *testing.T, scenarioName string) (operati
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
-	missing := twoNodeHostToolPrereqs(exec.LookPath, sysextimage.CheckExtractor)
-	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node cluster wipe bootstrap smoke prerequisites missing", missing)
+	requireScenarioHostTools(t, run.Runner, run.Scenario, run.Result, "two-node cluster wipe bootstrap smoke prerequisites missing")
 	return run, true
 }
 

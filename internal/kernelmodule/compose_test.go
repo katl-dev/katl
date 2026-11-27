@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 func TestCompositionUsesSelectedProvider(t *testing.T) {
@@ -34,9 +36,7 @@ func TestCompositionUsesSelectedProvider(t *testing.T) {
 	if string(data) != "extra/example.ko:\n" {
 		t.Fatalf("module dependency index = %q", data)
 	}
-	if _, err := exec.LookPath("modprobe"); err != nil {
-		t.Fatal(err)
-	}
+	workstationtest.Tool(t, "modprobe")
 	// Consult the runtime consumer's binary index reader as well as depmod's
 	// text output. --show-depends never inserts the fixture into the kernel.
 	resolved, err := exec.Command("modprobe", "-C", "/dev/null", "-d", layer, "-S", "6.12.1", "--show-depends", "example").CombinedOutput()
@@ -207,9 +207,7 @@ func TestCompositionRejectsDuplicateProviders(t *testing.T) {
 func compositionFixture(t *testing.T) (string, mountedBundle) {
 	t.Helper()
 	for _, tool := range []string{"cc", "modinfo", "depmod", "modprobe"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("module composition requires %s: %v", tool, err)
-		}
+		workstationtest.Tool(t, tool)
 	}
 	base, extension := t.TempDir(), t.TempDir()
 	for _, file := range []string{"modules.builtin", "modules.builtin.modinfo", "modules.order"} {

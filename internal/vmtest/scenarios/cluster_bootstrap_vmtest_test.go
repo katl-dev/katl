@@ -38,6 +38,7 @@ import (
 	"github.com/katl-dev/katl/internal/sysextimage"
 	"github.com/katl-dev/katl/internal/vmtest"
 	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 func TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke(t *testing.T) {
@@ -129,8 +130,7 @@ func operationBackedWorldSmokeRun(t *testing.T, scenarioName string, upgrade boo
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
-	missing := twoNodeHostToolPrereqs(exec.LookPath, sysextimage.CheckExtractor)
-	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node operation-backed bootstrap smoke prerequisites missing", missing)
+	requireScenarioHostTools(t, run.Runner, run.Scenario, run.Result, "two-node operation-backed bootstrap smoke prerequisites missing")
 	return run, true
 }
 
@@ -1512,8 +1512,7 @@ func twoNodeWorldSmokeRun(t *testing.T) (twoNodeSmokeRun, bool) {
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
-	missing := twoNodeHostToolPrereqs(exec.LookPath, sysextimage.CheckExtractor)
-	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node kubeadm join smoke prerequisites missing", missing)
+	requireScenarioHostTools(t, run.Runner, run.Scenario, run.Result, "two-node kubeadm join smoke prerequisites missing")
 	return run, true
 }
 
@@ -1687,6 +1686,12 @@ func planStartedVMResult(t *testing.T, runner vmtest.Runner, scenario vmtest.Sce
 	}
 	result.Started = time.Now().UTC()
 	return result
+}
+
+func requireScenarioHostTools(t *testing.T, runner vmtest.Runner, scenario vmtest.Scenario, result vmtest.Result, prefix string) {
+	t.Helper()
+	missing := twoNodeHostToolPrereqs(workstationtest.LookupTool, sysextimage.CheckExtractor)
+	requireSmokePrereqs(t, runner, scenario, result, prefix, missing)
 }
 
 func twoNodeHostToolPrereqs(lookPath func(string) (string, error), checkExtractor func(context.Context) error) []vmtest.MissingPrerequisite {

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/katl-dev/katl/internal/workstationtest"
 	"google.golang.org/grpc/codes"
 	grpcstatus "google.golang.org/grpc/status"
 )
@@ -190,7 +191,7 @@ func runtimePath(t *testing.T) string {
 		if name == "sfdisk" {
 			continue
 		}
-		if host, err := exec.LookPath(name); err == nil {
+		if host, err := workstationtest.LookupTool(name); err == nil {
 			if err := os.Symlink(host, filepath.Join(dir, name)); err != nil {
 				t.Fatal(err)
 			}

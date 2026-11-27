@@ -13,17 +13,15 @@ import (
 	"testing"
 
 	"github.com/katl-dev/katl/internal/installer/artifact"
+	"github.com/katl-dev/katl/internal/workstationtest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 func TestKubernetesImageReferencesFromSysext(t *testing.T) {
 	// The fixture needs mkfs.erofs and an sfdisk with --sector-size, such as
-	// the development shell provides, and reading it needs fsck.erofs. Skip
-	// only when a tool is absent, so an outdated one still fails.
+	// the development shell provides, and reading it needs fsck.erofs.
 	for _, tool := range []string{"mkfs.erofs", "fsck.erofs", "sfdisk"} {
-		if _, err := exec.LookPath(tool); err != nil {
-			t.Skipf("Kubernetes sysext fixtures require %s from nix develop: %v", tool, err)
-		}
+		workstationtest.Tool(t, tool)
 	}
 	const root = "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709"
 	for _, tc := range []struct {
@@ -121,10 +119,7 @@ func writeSysextFixture(t *testing.T, version, image string, sectorSize int, lay
 }
 
 func TestKubernetesFixtureArchiveRetainsImageReferences(t *testing.T) {
-	skopeo, err := exec.LookPath("skopeo")
-	if err != nil {
-		t.Skipf("skopeo unavailable: %v", err)
-	}
+	skopeo := workstationtest.Tool(t, "skopeo")
 	dir := t.TempDir()
 	source := filepath.Join(dir, "source.tar")
 	binary := filepath.Join(dir, "binary")

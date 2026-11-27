@@ -14,6 +14,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/configbundle"
 	installmanifest "github.com/katl-dev/katl/internal/installer/manifest"
+	"github.com/katl-dev/katl/internal/workstationtest"
 	"gopkg.in/yaml.v3"
 )
 
@@ -437,9 +438,7 @@ func TestScanGenericInstallerArtifactChecksGzipPayload(t *testing.T) {
 }
 
 func TestScanGenericInstallerArtifactChecksZstdPayload(t *testing.T) {
-	if _, err := exec.LookPath("zstd"); err != nil {
-		t.Skip("zstd not available")
-	}
+	workstationtest.Tool(t, "zstd")
 	cmd := exec.Command("zstd", "-q", "-c")
 	cmd.Stdin = strings.NewReader("installer payload leaked cp-zstd-1")
 	compressed, err := cmd.Output()
@@ -454,12 +453,8 @@ func TestScanGenericInstallerArtifactChecksZstdPayload(t *testing.T) {
 }
 
 func TestScanGenericInstallerArtifactChecksSquashFSPayload(t *testing.T) {
-	if _, err := exec.LookPath("mksquashfs"); err != nil {
-		t.Skip("mksquashfs not available")
-	}
-	if _, err := exec.LookPath("unsquashfs"); err != nil {
-		t.Skip("unsquashfs not available")
-	}
+	workstationtest.Tool(t, "mksquashfs")
+	workstationtest.Tool(t, "unsquashfs")
 	root := t.TempDir()
 	writeFixtureFile(t, filepath.Join(root, "etc", "katl", "leak.txt"), "installer payload leaked cp-squash-1")
 	image := filepath.Join(t.TempDir(), "katlos-install.squashfs")

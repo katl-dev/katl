@@ -1708,6 +1708,7 @@ exit "${KATL_FAKE_CHILD_EXIT:-0}"
 }
 
 type fakeHostTools struct {
+	goPath       string
 	imageTool    string
 	virsh        string
 	ovmfCode     string
@@ -1721,6 +1722,7 @@ type fakeHostTools struct {
 func writeFakeHostTools(t *testing.T, dir string, _ bool) fakeHostTools {
 	t.Helper()
 	tools := fakeHostTools{
+		goPath:       workstationtest.Tool(t, "go"),
 		imageTool:    filepath.Join(dir, "qemu-img"),
 		virsh:        filepath.Join(dir, "virsh"),
 		ovmfCode:     filepath.Join(dir, "OVMF_CODE.fd"),
@@ -1850,10 +1852,6 @@ printf 'manifest: %s\nmode: record\nartifacts: 1\npackageSets: 1\n' "$manifest"
 }
 
 func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string {
-	realGo, err := exec.LookPath("go")
-	if err != nil {
-		realGo = "go"
-	}
 	// Runner tests must not silently inherit artifact selection from a parent
 	// vmtest-run invocation. Tests that need published bundles can add them back
 	// explicitly through extra.
@@ -1876,7 +1874,7 @@ func appendHostEnv(env []string, tools fakeHostTools, extra ...string) []string 
 		"KATL_VMTEST_VSOCK_DEVICE="+tools.vsock,
 		"KATL_VMTEST_KUBECTL="+tools.kubectl,
 		"KATL_VMTEST_RESOURCE_LOCK="+tools.resourceLock,
-		"KATL_VMTEST_RESOURCE_GO="+realGo,
+		"KATL_VMTEST_RESOURCE_GO="+tools.goPath,
 		"KATL_VMTEST_MKOSI_VERSION=26",
 		"KATL_VMTEST_AUTO_REBUILD=0",
 		"KATL_FAKE_CHILD_WORLD_SCENARIO=fake vm scenario",

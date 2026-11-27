@@ -7,6 +7,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 func TestReleaseRequiresAbsence(t *testing.T) {
@@ -47,9 +49,7 @@ func TestReleaseRequiresAbsence(t *testing.T) {
 }
 
 func TestNativeMountpointAbsence(t *testing.T) {
-	if _, err := exec.LookPath("mountpoint"); err != nil {
-		t.Skip("native absence regression requires mountpoint")
-	}
+	workstationtest.Tool(t, "mountpoint")
 	commands := nativeProbeCommands{t: t}
 	root := t.TempDir()
 	if err := Unmount(commands, root); err != nil {

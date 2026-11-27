@@ -24,6 +24,7 @@ import (
 	"github.com/katl-dev/katl/internal/managementidentity"
 	"github.com/katl-dev/katl/internal/nettest"
 	"github.com/katl-dev/katl/internal/nodeidentity"
+	"github.com/katl-dev/katl/internal/workstationtest"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
@@ -726,9 +727,7 @@ func TestManagementRotationPreflightLeavesInstalledTrustUntouched(t *testing.T) 
 
 func TestEncryptedManagementRotationCandidate(t *testing.T) {
 	for _, command := range []string{"sops", "age-keygen"} {
-		if _, err := exec.LookPath(command); err != nil {
-			t.Skip("requires SOPS and age")
-		}
+		workstationtest.Tool(t, command)
 	}
 	dir := t.TempDir()
 	keyPath := filepath.Join(dir, "age.key")

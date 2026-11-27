@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/katl-dev/katl/internal/gittest"
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 // fixture is a clone of a bare origin with main pushed, plus helpers to add
@@ -610,9 +611,7 @@ func TestCheckWorktreeRefusesItsOwnCheckout(t *testing.T) {
 }
 
 func TestWorktreeRemovesSubuidOwnedOutput(t *testing.T) {
-	if err := exec.Command("podman", "unshare", "true").Run(); err != nil {
-		t.Skipf("rootless podman is unavailable: %v", err)
-	}
+	requireRootlessPodman(t)
 	f := newFixture(t)
 	wt := f.worktree("feature")
 	f.git(wt, "push", "--quiet", "origin", "feature")
@@ -687,10 +686,7 @@ func TestCheckWorktreeRefusesRegistrationOutsideWorktrees(t *testing.T) {
 // `worktree remove` runs on and then fails.
 func failingGit(t *testing.T, onRemove string) {
 	t.Helper()
-	real, err := exec.LookPath("git")
-	if err != nil {
-		t.Fatal(err)
-	}
+	real := workstationtest.Tool(t, "git")
 	dir := t.TempDir()
 	script := "#!/bin/sh\nfor a; do last=$a; done\ncase \" $* \" in\n*\" worktree remove \"*) " + onRemove + "; exit 1;; esac\nexec " + real + " \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(dir, "git"), []byte(script), 0o755); err != nil {

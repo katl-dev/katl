@@ -13,14 +13,13 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 func TestCodexRoleExec(t *testing.T) {
 	repo := repoRoot(t)
-	devGH, err := exec.LookPath("gh")
-	if err != nil {
-		t.Fatalf("find gh on the development shell PATH: %v", err)
-	}
+	devGH := workstationtest.Tool(t, "gh")
 	bin := t.TempDir()
 	fakeCodexSystemd(t, bin)
 	path := bin + string(os.PathListSeparator) + os.Getenv("PATH")

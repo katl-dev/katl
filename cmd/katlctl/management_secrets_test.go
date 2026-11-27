@@ -18,6 +18,7 @@ import (
 	"github.com/katl-dev/katl/internal/katlc/transport"
 	"github.com/katl-dev/katl/internal/katlctl/workstation"
 	"github.com/katl-dev/katl/internal/managementidentity"
+	"github.com/katl-dev/katl/internal/workstationtest"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"gopkg.in/yaml.v3"
@@ -127,9 +128,7 @@ func TestProjectSecretsSurviveContextLoss(t *testing.T) {
 
 func TestEncryptedProjectSecrets(t *testing.T) {
 	for _, command := range []string{"sops", "age-keygen"} {
-		if _, err := exec.LookPath(command); err != nil {
-			t.Skip("requires SOPS and age for the encrypted-file integration check")
-		}
+		workstationtest.Tool(t, command)
 	}
 	configPath := writeClusterConfig(t)
 	createTestManagementSecrets(t, configPath)

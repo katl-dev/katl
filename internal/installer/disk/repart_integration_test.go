@@ -10,21 +10,17 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/workstationtest"
 )
 
 func TestVolumeRepartDefinitionCreatesPartition(t *testing.T) {
 	if os.Getenv("KATL_VERIFY_REPART") != "1" {
 		t.Skip("set KATL_VERIFY_REPART=1 to run systemd-repart")
 	}
-	if _, err := exec.LookPath("systemd-repart"); err != nil {
-		t.Skip("systemd-repart not available")
-	}
-	if _, err := exec.LookPath("sfdisk"); err != nil {
-		t.Skip("sfdisk not available")
-	}
-	if _, err := exec.LookPath("mkfs.ext4"); err != nil {
-		t.Skip("mkfs.ext4 not available")
-	}
+	workstationtest.Tool(t, "systemd-repart")
+	workstationtest.Tool(t, "sfdisk")
+	workstationtest.Tool(t, "mkfs.ext4")
 
 	dir := t.TempDir()
 	image := filepath.Join(dir, "volume.raw")

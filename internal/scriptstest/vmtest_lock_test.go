@@ -104,10 +104,7 @@ type lockFixture struct {
 }
 
 func newLockFixture(t *testing.T) lockFixture {
-	realGo, err := exec.LookPath("go")
-	if err != nil {
-		t.Fatal(err)
-	}
+	realGo := workstationtest.Tool(t, "go")
 	t.Helper()
 	root := workstationtest.WorktreeTempDir(t, repoRoot(t))
 	executable, err := os.Executable()
