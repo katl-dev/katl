@@ -12,6 +12,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/katl-dev/katl/internal/gotestlog"
 )
 
 func main() {
@@ -32,11 +34,6 @@ func main() {
 	}
 }
 
-// textResult matches anywhere in the line: other writers to go test's stdout can
-// leave an unterminated line that the result is appended to. The duration
-// distinguishes a result from other text mentioning one.
-var textResult = regexp.MustCompile(`--- (PASS|FAIL|SKIP): (\S+) \([0-9.]+s\)`)
-
 // parseOutcomes returns the terminal action of each top-level test. Subtests
 // are not evidence that the test they belong to ran to completion.
 func parseOutcomes(r io.Reader) map[string]string {
@@ -45,23 +42,14 @@ func parseOutcomes(r io.Reader) map[string]string {
 	scanner.Buffer(make([]byte, 0, 1<<20), 16<<20)
 	for scanner.Scan() {
 		line := scanner.Text()
-		var name, action string
-		if m := textResult.FindStringSubmatch(line); m != nil {
-			action, name = strings.ToLower(m[1]), m[2]
-		} else if strings.HasPrefix(line, "{") {
-			var event struct{ Action, Test string }
+		event, offset := gotestlog.MatchTextResult(line)
+		if offset < 0 && strings.HasPrefix(line, "{") {
 			if json.Unmarshal([]byte(line), &event) != nil {
 				continue
 			}
-			action, name = event.Action, event.Test
 		}
-		switch action {
-		case "pass", "fail", "skip":
-		default:
-			continue
-		}
-		if name != "" && !strings.Contains(name, "/") {
-			outcomes[name] = action
+		if event.IsResult() && event.Test != "" && !strings.Contains(event.Test, "/") {
+			outcomes[event.Test] = event.Action
 		}
 	}
 	return outcomes

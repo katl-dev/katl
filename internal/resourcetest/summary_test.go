@@ -190,11 +190,11 @@ func resultReader(path string, result scenarioArtifact, err error) func(string) 
 }
 
 func goTestEventLine(action, pkg, test, output string) string {
-	data, err := json.Marshal(goTestEvent{
-		Action:  action,
-		Package: pkg,
-		Test:    test,
-		Output:  output,
+	data, err := json.Marshal(map[string]string{
+		"Action":  action,
+		"Package": pkg,
+		"Test":    test,
+		"Output":  output,
 	})
 	if err != nil {
 		panic(err)
