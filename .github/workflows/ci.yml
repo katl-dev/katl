@@ -194,35 +194,43 @@ jobs:
     name: Fast checks
     needs: plan
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v7
+        timeout-minutes: 2
         with:
           fetch-depth: 0
           persist-credentials: false
-      - uses: ./.github/actions/setup-go
-        id: go
-      - run: .github/scripts/hosted-apt-install bubblewrap dosfstools mtools xorriso squashfs-tools
-      - run: .github/scripts/hosted-hermetic-setup
+      - name: Set up tools
+        id: tools
+        uses: ./.github/actions/setup-tools
+        timeout-minutes: 10
+      - name: Allow Bubblewrap user namespaces
+        timeout-minutes: 2
+        run: nix develop --option builders '' .#ci -c .github/scripts/hosted-hermetic-setup
       - name: Run fast checks
+        timeout-minutes: 12
         env:
           COMPARISON: ${{ needs.plan.outputs.range }}
-        run: scripts/check-fast "$COMPARISON"
+        run: nix develop --option builders '' .#ci -c scripts/check-fast "$COMPARISON"
       - name: Validate workflows
+        timeout-minutes: 3
         # This actionlint release predates the App action's client-id input.
         run: >-
+          nix develop --option builders '' .#ci -c
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           -shellcheck=
           -ignore 'input "(app-id|client-id)".*action "actions/create-github-app-token@v3"'
 
       - name: Save shared Go cache
-        if: github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.tools.outputs.cache-hit != 'true'
+        timeout-minutes: 5
         uses: actions/cache/save@v6
         with:
           path: |
-            ${{ steps.go.outputs.module-cache }}
-            ${{ steps.go.outputs.build-cache }}
-          key: ${{ steps.go.outputs.cache-key }}
+            ${{ steps.tools.outputs.module-cache }}
+            ${{ steps.tools.outputs.build-cache }}
+          key: ${{ steps.tools.outputs.cache-key }}
 
   nix:
     name: Nix katlctl
@@ -232,12 +240,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: cachix/install-nix-action@v31
+      - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
         with:
           github_access_token: ${{ github.token }}
           enable_kvm: false
       - name: Build katlctl flake package
-        run: nix build .#katlctl --out-link _build/katlctl --print-build-logs
+        run: nix build --option builders '' .#katlctl --out-link _build/katlctl --print-build-logs
       - name: Verify packaged CLI and completions
         run: |
           _build/katlctl/bin/katlctl --help

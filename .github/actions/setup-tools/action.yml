@@ -1,0 +1,56 @@
+name: Set up the CI tool shell and restore the Go cache
+description: >-
+  Install Nix, realise the flake's ci shell and restore the shared Go cache
+  for the shell's Go. Later steps run their commands through
+  `nix develop --option builders '' .#ci -c`. Composite steps cannot carry
+  timeout-minutes, so the calling step gives this action its budget: the
+  shell realisation is limited to 300 s, and 10 minutes covers it with the
+  Nix install and the cache restore.
+outputs:
+  module-cache:
+    description: Go module cache path
+    value: ${{ steps.shell.outputs.module }}
+  build-cache:
+    description: Go build cache path
+    value: ${{ steps.shell.outputs.build }}
+  cache-hit:
+    description: Whether the primary key matched
+    value: ${{ steps.cache.outputs.cache-hit }}
+  cache-key:
+    description: Primary Go cache key
+    value: ${{ steps.cache.outputs.cache-primary-key }}
+runs:
+  using: composite
+  steps:
+    # The installer verifies the Nix release tarball it downloads. The shell
+    # substitutes only from cache.nixos.org, so no binary cache credential is
+    # needed, and no step needs KVM.
+    - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      with:
+        enable_kvm: false
+        extra_nix_config: |
+          substituters = https://cache.nixos.org/
+    - name: Realise the ci shell
+      id: shell
+      shell: bash
+      run: |
+        # The first entry downloads the shell's closure, so it carries the
+        # time limit; Nix retries individual substitutions within it.
+        go_env="$(timeout --kill-after=30s 300s nix develop --option builders '' .#ci -c go env GOVERSION GOMODCACHE GOCACHE)"
+        mapfile -t go_env <<< "$go_env"
+        {
+          echo "version=${go_env[0]#go}"
+          echo "module=${go_env[1]}"
+          echo "build=${go_env[2]}"
+          echo "platform=${RUNNER_OS}-${RUNNER_ARCH,,}-${ImageOS-undefined}"
+        } >> "$GITHUB_OUTPUT"
+    # The key matches the setup-go action's, with the Go version taken from
+    # the shell rather than go.mod.
+    - name: Restore Go cache
+      id: cache
+      uses: actions/cache/restore@v6
+      with:
+        path: |
+          ${{ steps.shell.outputs.module }}
+          ${{ steps.shell.outputs.build }}
+        key: setup-go-${{ steps.shell.outputs.platform }}-go-${{ steps.shell.outputs.version }}-${{ hashFiles('go.mod') }}
