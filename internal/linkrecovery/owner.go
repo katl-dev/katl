@@ -40,6 +40,8 @@ type grace struct {
 	stop context.CancelFunc
 }
 
+const retryUnattempted = "Retry with 'systemctl restart katl-link-recovery' on the node. If the link stays offline, reboot from the node's console with 'systemctl reboot'"
+
 // Run watches the required links until ctx ends. read returns systemd-networkd
 // link state as 'networkctl list --json=short' prints it.
 func Run(ctx context.Context, read func(context.Context) ([]byte, error), events io.Writer) error {
@@ -67,12 +69,12 @@ func Run(ctx context.Context, read func(context.Context) ([]byte, error), events
 		case err != nil && ctx.Err() == nil:
 			// Unreadable state neither starts nor ends a grace period.
 			if err.Error() != lastErr {
-				fmt.Fprintf(events, "cannot read required link state: %v\n", err)
+				fmt.Fprintf(events, "cannot read required link state: %v. Check 'networkctl list' and 'journalctl -b -u systemd-networkd' on the node\n", err)
 				lastErr = err.Error()
 			}
 		case err == nil:
 			lastErr = ""
-			o.observe(ctx, observation.CarrierDisagreements)
+			o.observe(ctx, observation)
 		}
 		timer := time.NewTimer(backoff.Next())
 		select {
@@ -86,7 +88,8 @@ func Run(ctx context.Context, read func(context.Context) ([]byte, error), events
 
 // observe updates the grace periods from the links that currently disagree
 // and reconfigures each link whose grace period elapsed while it disagreed.
-func (o *owner) observe(ctx context.Context, disagreements []string) {
+func (o *owner) observe(ctx context.Context, observation managementnetwork.Observation) {
+	disagreements := observation.CarrierDisagreements
 	if o.graces == nil {
 		o.graces = map[string]grace{}
 		o.settled = map[string]bool{}
@@ -95,6 +98,9 @@ func (o *owner) observe(ctx context.Context, disagreements []string) {
 		if !slices.Contains(disagreements, link) {
 			grace.stop()
 			delete(o.graces, link)
+			if slices.Contains(observation.LinksWithCarrier, link) {
+				fmt.Fprintf(o.events, "required link %s: networkd reports carrier again; not reconfiguring\n", link)
+			}
 		}
 	}
 	for _, link := range disagreements {
@@ -116,7 +122,7 @@ func (o *owner) observe(ctx context.Context, disagreements []string) {
 		}
 		grace.stop()
 		delete(o.graces, link)
-		if errors.Is(context.Cause(grace.ctx), context.DeadlineExceeded) {
+		if ctx.Err() == nil && errors.Is(context.Cause(grace.ctx), context.DeadlineExceeded) {
 			o.settled[link] = true
 			o.attempt(ctx, link)
 		}
@@ -127,7 +133,7 @@ func (o *owner) arm(ctx context.Context, link string) {
 	ctx, stop, err := o.armGrace(ctx, link)
 	if err != nil {
 		o.settled[link] = true
-		fmt.Fprintf(o.events, "required link %s: %s; cannot start the grace period, so not reconfiguring it in this run: %v\n", link, presentSymptom, err)
+		fmt.Fprintf(o.events, "required link %s: %s; cannot start the grace period, so not reconfiguring it in this run: %v. %s\n", link, presentSymptom, err, retryUnattempted)
 		return
 	}
 	o.graces[link] = grace{ctx: ctx, stop: stop}
@@ -138,7 +144,7 @@ func (o *owner) attempt(ctx context.Context, link string) {
 	record := Record{Link: link, At: o.now(), Outcome: Attempted}
 	claimed, err := claim(o.dir, record)
 	if err != nil {
-		fmt.Fprintf(o.events, "required link %s: not reconfiguring after %s: %v\n", link, symptom, err)
+		fmt.Fprintf(o.events, "required link %s: not reconfiguring after %s: %v. %s\n", link, symptom, err, retryUnattempted)
 		return
 	}
 	if !claimed {
@@ -167,7 +173,8 @@ func (o *owner) stop() {
 // networkctlReconfigure leaves the link out of its error, which the record
 // already names.
 func networkctlReconfigure(ctx context.Context, link string) error {
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	// Finish the claimed attempt and record its result even if the service stops.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
 	defer cancel()
 	output, err := exec.CommandContext(ctx, "networkctl", "reconfigure", link).CombinedOutput()
 	if err != nil {

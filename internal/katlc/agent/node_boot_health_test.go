@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -432,6 +433,22 @@ func TestNodeStatusReportsLinkRecovery(t *testing.T) {
 		}
 	}
 
+	snapshot := func() map[string]string {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		files := make(map[string]string, len(entries))
+		for _, entry := range entries {
+			data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			files[entry.Name()] = string(data)
+		}
+		return files
+	}
+	before := snapshot()
 	report, err := server.GetNodeStatus(t.Context(), &agentapi.GetNodeStatusRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -454,5 +471,31 @@ func TestNodeStatusReportsLinkRecovery(t *testing.T) {
 	}
 	if strings.Contains(diagnostic, "management1 was reconfigured") {
 		t.Fatalf("boot health diagnostic = %q reports the failed reconfiguration as done", diagnostic)
+	}
+	if after := snapshot(); !maps.Equal(before, after) {
+		t.Fatalf("node status changed the record directory: %v -> %v", before, after)
+	}
+}
+
+func TestNodeStatusReportsUnreadableLinkRecoveryRecord(t *testing.T) {
+	server, _ := knownGoodNode(t, healthSucceeded)
+	server.readManagementNetwork = readReadyManagementNetwork
+	dir := filepath.Join(server.Root, "run/katl/link-recovery")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "management0"), []byte("{"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	report, err := server.GetNodeStatus(t.Context(), &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnostic := report.GetBootHealthDiagnostic()
+	for _, want := range []string{"Cannot read link recovery records", "management0", "journalctl -b -u katl-link-recovery"} {
+		if !strings.Contains(diagnostic, want) {
+			t.Fatalf("boot health diagnostic = %q, want %q", diagnostic, want)
+		}
 	}
 }

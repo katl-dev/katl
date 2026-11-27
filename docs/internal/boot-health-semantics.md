@@ -78,8 +78,9 @@ including across restarts of the service, whose runtime directory is
 preserved. Every report derives from the record's description, a sentence
 that names the link once and ends with the next step: none while the node is
 healthy after a reconfiguration, and otherwise inspecting the service's
-journal and rebooting the node with `katlctl node reboot` if the link stays
-offline.
+journal. If the link stays offline, the description directs you to run
+`systemctl reboot` from the node's console. The remote
+`katlctl node reboot <node>` command requires a working management link.
 
 - The service writes the description to its journal and console.
 - Live boot health appends it to the boot-health diagnostic, so

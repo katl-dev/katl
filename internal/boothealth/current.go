@@ -198,9 +198,11 @@ func (r Reader) Read(ctx context.Context) Status {
 // outcome, so node status reports them even once the link is online.
 func withLinkRecovery(diagnostic, root string) string {
 	records, err := linkrecovery.Read(filepath.Join(root, linkrecovery.Dir))
-	summary := linkrecovery.Summary(records)
+	var summary string
 	if err != nil {
 		summary = err.Error()
+	} else {
+		summary = linkrecovery.Summary(records)
 	}
 	if summary == "" {
 		return diagnostic

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"strings"
@@ -264,12 +265,31 @@ func TestManagementNetworkExpiryReportsLinkRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 
+		snapshot := func() map[string]string {
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			files := make(map[string]string, len(entries))
+			for _, entry := range entries {
+				data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
+				if err != nil {
+					t.Fatal(err)
+				}
+				files[entry.Name()] = string(data)
+			}
+			return files
+		}
+		before := snapshot()
 		ctx, stop := context.WithTimeout(t.Context(), time.Second)
 		defer stop()
 		err := awaitManagementNetwork(ctx)
 		if err == nil || !strings.Contains(err.Error(), "Required link management0 could not be reconfigured") ||
 			!strings.Contains(err.Error(), "access denied") || strings.Contains(err.Error(), "was reconfigured") {
 			t.Fatalf("management network expiry = %v, want the failed reconfiguration of management0", err)
+		}
+		if after := snapshot(); !maps.Equal(before, after) {
+			t.Fatalf("management network expiry changed the record directory: %v -> %v", before, after)
 		}
 	})
 }

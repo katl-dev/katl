@@ -11,11 +11,12 @@ import (
 func TestObserveCarrierDisagreements(t *testing.T) {
 	const noCarrier = `{"Name":"enp1s0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"offline","OperationalState":"no-carrier","CarrierState":"no-carrier","AddressState":"off"}`
 	for _, tc := range []struct {
-		name      string
-		link      string
-		carrier   string
-		operstate string
-		want      []string
+		name        string
+		link        string
+		carrier     string
+		operstate   string
+		want        []string
+		withCarrier []string
 	}{
 		{name: "networkd disagrees with kernel", link: noCarrier, carrier: "1\n", operstate: "up\n", want: []string{"enp1s0"}},
 		{name: "kernel reports no carrier", link: noCarrier, carrier: "0\n", operstate: "down\n"},
@@ -32,9 +33,9 @@ func TestObserveCarrierDisagreements(t *testing.T) {
 			carrier: "1\n", operstate: "up\n",
 		},
 		{
-			name:    "networkd sees carrier while awaiting an address",
-			link:    `{"Name":"enp1s0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"offline","OperationalState":"carrier","CarrierState":"carrier","AddressState":"off"}`,
-			carrier: "1\n", operstate: "up\n",
+			name:        "networkd sees carrier while awaiting an address",
+			link:        `{"Name":"enp1s0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"offline","OperationalState":"carrier","CarrierState":"carrier","AddressState":"off"}`,
+			withCarrier: []string{"enp1s0"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,6 +64,9 @@ func TestObserveCarrierDisagreements(t *testing.T) {
 			}
 			if !slices.Equal(got.CarrierDisagreements, tc.want) {
 				t.Fatalf("CarrierDisagreements = %q, want %q", got.CarrierDisagreements, tc.want)
+			}
+			if !slices.Equal(got.LinksWithCarrier, tc.withCarrier) {
+				t.Fatalf("LinksWithCarrier = %q, want %q", got.LinksWithCarrier, tc.withCarrier)
 			}
 		})
 	}

@@ -39,6 +39,9 @@ type Observation struct {
 	// CarrierDisagreements lists unready required links that systemd-networkd
 	// reports without carrier while sysfs reports carrier and operstate up.
 	CarrierDisagreements []string
+	// LinksWithCarrier lists required links that systemd-networkd reports
+	// with carrier, including links still waiting for an address.
+	LinksWithCarrier []string
 }
 
 // PollBackoff paces repeated reads of networkd state by every watcher of the
@@ -83,6 +86,9 @@ func observe(ctx context.Context, read func(context.Context) ([]byte, error), sy
 			continue
 		}
 		required = append(required, link.Name)
+		if link.hasCarrier() && !link.reportsNoCarrier() {
+			observation.LinksWithCarrier = append(observation.LinksWithCarrier, link.Name)
+		}
 		if reason := link.unready(); reason != "" {
 			carrier := kernelCarrier(sysfs, link.Name)
 			reasons = append(reasons, fmt.Sprintf("%s (carrier: %s, address: %s) (kernel carrier: %s)",
@@ -144,6 +150,10 @@ func (link networkctlLink) meetsCarrierMinimum() bool {
 			return true
 		}
 	}
+	return link.hasCarrier()
+}
+
+func (link networkctlLink) hasCarrier() bool {
 	return slices.Contains([]string{"carrier", "degraded-carrier", "enslaved"}, link.CarrierState)
 }
 

@@ -42,11 +42,13 @@ type Record struct {
 const (
 	symptom        = "systemd-networkd reported no carrier while sysfs reported carrier up"
 	presentSymptom = "systemd-networkd reports no carrier while sysfs reports carrier up"
+	inspectJournal = "Inspect 'journalctl -b -u katl-link-recovery' on the node"
+	readError      = "Cannot read link recovery records: %w. " + inspectJournal
 )
 
 // nextStep follows an attempt whose success is not known. It matches the
 // next steps of other boot-health diagnostics.
-const nextStep = "Inspect 'journalctl -b -u katl-link-recovery' on the node. If the link stays offline, reboot from the node's console with 'systemctl reboot'; 'katlctl node reboot <node>' works only while another management link reaches the node"
+const nextStep = inspectJournal + ". If the link stays offline, reboot from the node's console with 'systemctl reboot'; 'katlctl node reboot <node>' works only while another management link reaches the node"
 
 // String describes the record for an operator as a sentence, naming the link
 // once and ending with what to do next.
@@ -78,7 +80,7 @@ func Read(dir string) ([]Record, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read link recovery records: %w", err)
+		return nil, fmt.Errorf(readError, err)
 	}
 	var records []Record
 	for _, entry := range entries {
@@ -87,13 +89,13 @@ func Read(dir string) ([]Record, error) {
 		}
 		data, err := os.ReadFile(filepath.Join(dir, entry.Name()))
 		if err != nil {
-			return nil, fmt.Errorf("read link recovery record: %w", err)
+			return nil, fmt.Errorf(readError, err)
 		}
 		record := Record{Link: entry.Name(), Outcome: Attempted}
 		// A claim interrupted before its first write leaves an empty record.
 		if len(data) > 0 {
 			if err := json.Unmarshal(data, &record); err != nil {
-				return nil, fmt.Errorf("decode link recovery record %s: %w", entry.Name(), err)
+				return nil, fmt.Errorf(readError, fmt.Errorf("decode %s: %w", entry.Name(), err))
 			}
 		}
 		record.Link = entry.Name()

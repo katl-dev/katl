@@ -12,6 +12,8 @@ After=systemd-networkd.service
 Type=exec
 Restart=on-failure
 RestartSec=5s
+# Signal only the owner on stop so its bounded networkctl command can finish.
+KillMode=mixed
 # ProtectSystem=strict makes /run read-only; these are the only paths the
 # service writes. The records must outlive a restart, so one attempt per link
 # holds for the whole boot. The grace-period deadline markers share
