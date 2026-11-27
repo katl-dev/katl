@@ -3,10 +3,12 @@ description: Download the assembled flavours of this commit and merge them into 
 runs:
   using: composite
   steps:
-    - uses: actions/download-artifact@v8
-      with:
-        pattern: katl-assembled-*-${{ github.sha }}
-        path: flavours
+    - name: Download assembled flavours
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        FLAVOURS: katl-assembled-*-${{ github.sha }}
+      run: .github/scripts/hosted-download artifacts "$FLAVOURS" flavours
     - name: Combine flavours
       shell: bash
       run: |

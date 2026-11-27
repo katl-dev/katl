@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: read
+  actions: read # hosted-download reads this run's candidates and locks.
 
 # Serialises updates to a flavour's committed kernel inputs; never cancelled.
 concurrency:
@@ -28,7 +29,7 @@ jobs:
   capture:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 65
     outputs:
       fedora-release: ${{ steps.capture.outputs.fedora-release }}
       matches-base: ${{ steps.capture.outputs.matches-base }}
@@ -39,13 +40,17 @@ jobs:
       FEDORA_RELEASE: ${{ inputs.fedora-release }}
     steps:
       - uses: actions/checkout@v7
+        timeout-minutes: 5
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
+        timeout-minutes: 10
       - uses: ./.github/actions/mkosi-builder
+        timeout-minutes: 20
         with:
           image: ${{ env.KATL_MKOSI_IMAGE }}
       - name: Capture signed kernel RPMs once
+        timeout-minutes: 15
         id: capture
         run: |
           base_release="$(scripts/fedora-release)"
@@ -62,6 +67,7 @@ jobs:
             fi
           } >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@v7
+        timeout-minutes: 10
         with:
           name: kernel-candidates-${{ inputs.flavour }}
           path: _build/kernel-candidates/${{ inputs.flavour }}
@@ -70,29 +76,38 @@ jobs:
           if-no-files-found: error
 
   publish:
-    timeout-minutes: 30
+    timeout-minutes: 50
     needs: capture
     runs-on: ubuntu-24.04
     permissions:
       contents: read
+      actions: read
       packages: write
     steps:
       # Publication executes only helper code from the trusted workflow source.
       - uses: actions/checkout@v7
+        timeout-minutes: 5
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-      - uses: actions/download-artifact@v8
-        with:
-          name: kernel-candidates-${{ inputs.flavour }}
-          path: _build/kernel-candidates/${{ inputs.flavour }}
+        timeout-minutes: 10
+      - name: Download captured candidates
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KATL_DOWNLOAD_ATTEMPT_SECONDS: 180
+          CANDIDATES: kernel-candidates-${{ inputs.flavour }}
+          DEST: _build/kernel-candidates/${{ inputs.flavour }}
+        run: .github/scripts/hosted-download artifact "$CANDIDATES" "$DEST"
       - uses: docker/login-action@v4
+        timeout-minutes: 5
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
       - name: Retain the signed RPM bytes
+        timeout-minutes: 15
         # Native OCI idempotence also repairs interrupted publication on reruns.
         run: |
           go run ./cmd/katl-kernel-release publish \
@@ -100,20 +115,27 @@ jobs:
             --layout "_build/kernel-candidates/$KATL_FLAVOUR/layout"
 
   verify:
-    timeout-minutes: 15
+    timeout-minutes: 55
     needs: [capture, publish]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+        timeout-minutes: 5
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-      - uses: actions/download-artifact@v8
-        with:
-          name: kernel-candidates-${{ inputs.flavour }}
-          path: _build/kernel-candidates/${{ inputs.flavour }}
+        timeout-minutes: 10
+      - name: Download captured candidates
+        timeout-minutes: 10
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KATL_DOWNLOAD_ATTEMPT_SECONDS: 180
+          CANDIDATES: kernel-candidates-${{ inputs.flavour }}
+          DEST: _build/kernel-candidates/${{ inputs.flavour }}
+        run: .github/scripts/hosted-download artifact "$CANDIDATES" "$DEST"
       - name: Verify anonymous availability of every retained RPM
+        timeout-minutes: 10
         run: |
           go run ./cmd/katl-kernel-release verify \
             --lock "_build/kernel-candidates/$KATL_FLAVOUR/lock.json" \
@@ -121,12 +143,14 @@ jobs:
           mkdir -p _build/kernel-locks
           cp "_build/kernel-candidates/$KATL_FLAVOUR/lock.json" "_build/kernel-locks/$KATL_FLAVOUR.json"
       - uses: actions/upload-artifact@v7
+        timeout-minutes: 10
         with:
           name: kernel-lock-fedora-${{ needs.capture.outputs.fedora-release }}-${{ inputs.flavour }}
           path: _build/kernel-locks/${{ inputs.flavour }}.json
           retention-days: 7
           if-no-files-found: error
       - name: Record prepared inputs
+        timeout-minutes: 3
         env:
           FEDORA_RELEASE: ${{ needs.capture.outputs.fedora-release }}
           MATCHES_BASE: ${{ needs.capture.outputs.matches-base }}
@@ -140,7 +164,7 @@ jobs:
             "$GITHUB_RUN_ID" "$GITHUB_REPOSITORY" "$FEDORA_RELEASE" "$KATL_FLAVOUR" "$FEDORA_RELEASE" >> "$GITHUB_STEP_SUMMARY"
 
   propose:
-    timeout-minutes: 10
+    timeout-minutes: 35
     if: needs.capture.outputs.matches-base == 'true'
     needs: [capture, verify]
     runs-on: ubuntu-24.04
@@ -150,20 +174,28 @@ jobs:
       commit: ${{ steps.propose.outputs.commit }}
     steps:
       - uses: actions/checkout@v7
+        timeout-minutes: 5
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-      - uses: actions/download-artifact@v8
-        with:
-          name: kernel-lock-fedora-${{ needs.capture.outputs.fedora-release }}-${{ inputs.flavour }}
-          path: _build/kernel-locks/${{ inputs.flavour }}
+        timeout-minutes: 10
+      - name: Download the verified lock
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KATL_DOWNLOAD_ATTEMPT_SECONDS: 60
+          LOCK: kernel-lock-fedora-${{ needs.capture.outputs.fedora-release }}-${{ inputs.flavour }}
+          DEST: _build/kernel-locks/${{ inputs.flavour }}
+        run: .github/scripts/hosted-download artifact "$LOCK" "$DEST"
       - uses: actions/create-github-app-token@v3
+        timeout-minutes: 5
         id: app-token
         with:
           client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
           private-key: ${{ secrets.KATL_AUTOMATION_PRIVATE_KEY }}
           permission-contents: write
       - id: propose
+        timeout-minutes: 5
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
@@ -174,20 +206,26 @@ jobs:
           jq -r 'to_entries[] | "\(.key)=\(.value)"' proposal.json >> "$GITHUB_OUTPUT"
 
   pull-request:
-    timeout-minutes: 10
+    timeout-minutes: 25
     if: needs.propose.outputs.changed == 'true'
     needs: [capture, propose]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
+        timeout-minutes: 5
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: actions/download-artifact@v8
-        with:
-          name: kernel-lock-fedora-${{ needs.capture.outputs.fedora-release }}-${{ inputs.flavour }}
-          path: _build/kernel-locks/${{ inputs.flavour }}
+      - name: Download the verified lock
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KATL_DOWNLOAD_ATTEMPT_SECONDS: 60
+          LOCK: kernel-lock-fedora-${{ needs.capture.outputs.fedora-release }}-${{ inputs.flavour }}
+          DEST: _build/kernel-locks/${{ inputs.flavour }}
+        run: .github/scripts/hosted-download artifact "$LOCK" "$DEST"
       - uses: actions/create-github-app-token@v3
+        timeout-minutes: 5
         id: app-token
         with:
           client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
@@ -195,6 +233,7 @@ jobs:
           permission-contents: read
           permission-pull-requests: write
       - name: Describe the proposal
+        timeout-minutes: 2
         env:
           PROPOSED_COMMIT: ${{ needs.propose.outputs.commit }}
         run: |
@@ -209,6 +248,7 @@ jobs:
             echo 'CI requires driver qualification (extension composition and the production DRBD tests) on this pull request and again in the merge queue, where the boot, lifecycle, and cluster VM tests also run, before merge. NVIDIA hardware behavior requires separate hardware qualification.'
           } > body.md
       - name: Open the proposal for CI
+        timeout-minutes: 3
         uses: ./.github/actions/automation-pull-request
         with:
           token: ${{ steps.app-token.outputs.token }}

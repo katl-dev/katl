@@ -25,18 +25,21 @@ jobs:
   plan:
     name: Plan Supported Bundles
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 25
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       publish: ${{ steps.plan.outputs.publish }}
       build: ${{ steps.plan.outputs.build }}
     steps:
       - uses: actions/checkout@v7
+        timeout-minutes: 5
         with:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-go
+        timeout-minutes: 10
       - name: Resolve release matrix
+        timeout-minutes: 5
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
@@ -67,7 +70,7 @@ jobs:
     if: needs.plan.outputs.build == 'true'
     needs: plan
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
     strategy:
       fail-fast: false
       matrix:
@@ -88,10 +91,13 @@ jobs:
       PUBLISH: ${{ needs.plan.outputs.publish }}
     steps:
       - uses: actions/checkout@v7
+        timeout-minutes: 5
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
+        timeout-minutes: 10
       - name: Inspect published upstream release
+        timeout-minutes: 5
         id: release
         run: |
           if [[ "$PUBLISH" == true ]]; then
@@ -102,9 +108,11 @@ jobs:
           fi
           echo "exists=$(jq -r .exists release.json)" >> "$GITHUB_OUTPUT"
       - name: Build package query environment
+        timeout-minutes: 15
         if: steps.release.outputs.exists != 'true'
         run: docker build --build-arg "FEDORA_RELEASE=$(scripts/fedora-release)" --tag "$KATL_MKOSI_IMAGE" --file Containerfile.mkosi .
       - name: Resolve locked candidate
+        timeout-minutes: 5
         if: steps.release.outputs.exists != 'true'
         run: |
           go run ./cmd/katl-kubernetes-release candidate \
@@ -123,6 +131,7 @@ jobs:
           ' candidate.json >> "$GITHUB_ENV"
           echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_ENV"
       - name: Log in to GHCR
+        timeout-minutes: 5
         if: env.PUBLISH == 'true'
         uses: docker/login-action@v4
         with:
@@ -130,6 +139,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
       - name: Resume existing candidate
+        timeout-minutes: 5
         id: candidate
         run: |
           if [[ "${{ steps.release.outputs.exists }}" == true ]]; then
@@ -147,6 +157,7 @@ jobs:
             echo "digest=$(jq -r '.digest // empty' existing.json)"
           } >> "$GITHUB_OUTPUT"
       - name: Run producer tests
+        timeout-minutes: 15
         run: |
           go test ./cmd/katl-kubernetes-release ./cmd/katl-kubernetes-metadata \
             ./cmd/katl-publish-kubernetes-sysext ./internal/kubernetesrelease \
@@ -162,11 +173,13 @@ jobs:
         with:
           flavour: standard
       - name: Build compatible runtime and Kubernetes sysext
+        timeout-minutes: 30
         if: steps.candidate.outputs.exists != 'true'
         run: |
           scripts/mkosi build-runtime
           scripts/build-kubernetes-sysext
       - name: Verify built runtime and Kubernetes sysext
+        timeout-minutes: 10
         if: steps.candidate.outputs.exists != 'true'
         run: |
           docker run --rm --volume "$GITHUB_WORKSPACE:/work" --workdir /work \
@@ -176,6 +189,7 @@ jobs:
             --env KATL_KUBERNETES_CRITOOLS_VERSION "$KATL_MKOSI_IMAGE" \
             bash -euo pipefail -c 'scripts/check-runtime-root; scripts/check-kubernetes-sysext'
       - name: Stage Kubernetes payload bundle
+        timeout-minutes: 10
         if: steps.candidate.outputs.exists != 'true'
         run: |
           go run ./cmd/katl-publish-kubernetes-sysext \
@@ -188,6 +202,7 @@ jobs:
             --annotation "dev.katl.kubernetes.payload.version=${PAYLOAD_VERSION}" \
             > staged.txt
       - name: Retain candidate build evidence
+        timeout-minutes: 10
         if: steps.candidate.outputs.exists != 'true'
         uses: actions/upload-artifact@v7
         with:
@@ -198,6 +213,7 @@ jobs:
             staged.txt
           if-no-files-found: error
       - name: Publish immutable OCI bundle
+        timeout-minutes: 10
         if: env.PUBLISH == 'true' && steps.candidate.outputs.exists != 'true'
         run: |
           digest_tag="$(awk '$1 == "oci-manifest-tag:" {print $2}' staged.txt)"
@@ -212,6 +228,7 @@ jobs:
             --annotation "org.opencontainers.image.url=${KUBERNETES_RELEASE_URL}" \
             --annotation "dev.katl.kubernetes.payload.version=${PAYLOAD_VERSION}"
       - name: Resolve published identity
+        timeout-minutes: 5
         if: env.PUBLISH == 'true' && steps.candidate.outputs.promoted != 'true'
         id: published
         run: |
@@ -220,6 +237,7 @@ jobs:
           jq -e '.exists == true' published.json
           echo "digest=$(jq -r .digest published.json)" >> "$GITHUB_OUTPUT"
       - name: Attest published OCI manifest
+        timeout-minutes: 5
         if: env.PUBLISH == 'true' && steps.candidate.outputs.promoted != 'true'
         uses: actions/attest@v4
         with:
@@ -227,6 +245,7 @@ jobs:
           subject-digest: ${{ steps.published.outputs.digest }}
           push-to-registry: true
       - name: Verify public bundle and provenance
+        timeout-minutes: 10
         if: env.PUBLISH == 'true' && steps.candidate.outputs.promoted != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -238,6 +257,7 @@ jobs:
             --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/kubernetes-bundles.yml" \
             --source-ref refs/heads/main
       - name: Promote compatible bundle
+        timeout-minutes: 5
         if: env.PUBLISH == 'true'
         env:
           MANIFEST_DIGEST: ${{ steps.published.outputs.digest || steps.candidate.outputs.digest }}

@@ -76,11 +76,14 @@ jobs:
       KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:go-squashfs
     steps:
       - uses: actions/checkout@v7
+        timeout-minutes: 5
         with:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-go
+        timeout-minutes: 10
       - name: Require a new extension version for changed build inputs
+        timeout-minutes: 3
         id: revision
         if: ${{ github.event_name == 'pull_request' }}
         shell: bash
@@ -91,11 +94,13 @@ jobs:
         # not counted as the pull request's.
         run: go run ./cmd/katl-vmtest-plan extensions --base-ref "$BASE_REF" --base HEAD^1 --head HEAD
       - name: Set reproducible inputs
+        timeout-minutes: 3
         shell: bash
         run: |
           echo "SOURCE_DATE_EPOCH=$(git show -s --format=%ct "$GITHUB_SHA")" >> "$GITHUB_ENV"
           echo "KATL_BUILD_COMMIT=$GITHUB_SHA" >> "$GITHUB_ENV"
       - name: Determine immutable publication intent
+        timeout-minutes: 3
         id: publication
         shell: bash
         env:
@@ -113,6 +118,7 @@ jobs:
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
       - name: Build and verify generic BIRD extension
+        timeout-minutes: 30
         shell: bash
         run: |
           scripts/mkosi build-runtime
@@ -135,6 +141,7 @@ jobs:
             --created-at "$created_at" \
             --sysext "_build/mkosi/katl-bird.raw"
       - uses: actions/upload-artifact@v7
+        timeout-minutes: 10
         if: ${{ steps.publication.outputs.publish == 'true' }}
         with:
           name: katl-bird-extension-${{ github.sha }}
@@ -146,28 +153,36 @@ jobs:
     needs: bird
     if: ${{ needs.bird.outputs.publish == 'true' }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     permissions:
       contents: read
+      actions: read # hosted-download reads the build's artifact.
       packages: write
     env:
       KATL_ARCHITECTURE: x86_64
     steps:
       - uses: actions/checkout@v7
+        timeout-minutes: 5
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-      - uses: actions/download-artifact@v8
-        with:
-          name: katl-bird-extension-${{ github.sha }}
-          path: _build/mkosi
+        timeout-minutes: 10
+      - name: Download the BIRD extension
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KATL_DOWNLOAD_ATTEMPT_SECONDS: 60
+          EXTENSION: katl-bird-extension-${{ github.sha }}
+        run: .github/scripts/hosted-download artifact "$EXTENSION" _build/mkosi
       - name: Log in to GHCR
+        timeout-minutes: 5
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ github.token }}
       - name: Publish through the common payload-bundle publisher
+        timeout-minutes: 10
         shell: bash
         run: |
           source extensions/bird/extension.env

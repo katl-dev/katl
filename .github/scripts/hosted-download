@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
-# Downloads a large workflow input with a bounded attempt and jittered
-# exponential backoff, so one stalled transfer cannot consume a job's budget.
+# Downloads a workflow input with a bounded attempt and jittered exponential
+# backoff, so one stalled transfer cannot consume a job's budget.
 #
 #   hosted-download artifact NAME DEST [RUN_ID]
+#   hosted-download artifacts PATTERN DEST [RUN_ID]
 #   hosted-download release TAG DEST
 #
-# scripts/retry runs every attempt under KATL_DOWNLOAD_ATTEMPT_SECONDS
-# (default 360), kills one that ignores SIGTERM KATL_DOWNLOAD_KILL_AFTER_SECONDS
-# (default 5) later, and makes KATL_DOWNLOAD_ATTEMPTS (default 3) attempts,
-# sleeping between them for a random time in [b, 2b) where b doubles from
-# KATL_DOWNLOAD_BACKOFF_SECONDS (default 15). With the defaults the worst case
-# is 3 * (360 + 5) s + (15..30 s) + (30..60 s) < 20 minutes, which is why
-# callers give the step 20 minutes. scripts/retry reports the final failure.
+# An artifact's files land directly in DEST. Every artifact matching PATTERN
+# lands in DEST/<artifact name>, as actions/download-artifact places them. DEST
+# may already exist: a completed download is merged into it, and the owner
+# fails rather than replace a path that is already there.
+#
+# scripts/retry bounds each attempt and allows five seconds by default
+# before SIGKILL. The default backoff starts at 1/24 of the attempt limit.
+# The three-attempt step budgets are 20 minutes for 360-second attempts,
+# 10 for 180 and 5 for 60.
 set -euo pipefail
 
 usage() {
-    echo 'usage: hosted-download artifact NAME DEST [RUN_ID] | release TAG DEST' >&2
+    echo 'usage: hosted-download artifact NAME DEST [RUN_ID] | artifacts PATTERN DEST [RUN_ID] | release TAG DEST' >&2
     exit 2
 }
 
@@ -24,37 +27,29 @@ fail() {
     exit 1
 }
 
-# One attempt, run by scripts/retry under its time limit. It writes into its
-# own staging directory and moves only a complete download to DEST, so a
-# partial or interrupted transfer never reaches the caller. staging is global
-# so the EXIT trap still sees it after the function returns. Once DEST is
-# complete the attempt ignores SIGTERM, so a late timeout cannot report a
-# finished download as failed.
-attempt() {
-    local dest="$1"
-    shift
-    staging=$(mktemp -d "$dest.attempt-XXXXXX")
-    trap 'rm -rf -- "$staging"' EXIT
-    trap 'exit 143' TERM
-    "$@" --dir "$staging"
-    trap '' TERM
-    mv -T -- "$staging" "$dest"
-    trap - EXIT
-}
-
+# The parent owns cleanup even if the downloader is killed. Each attempt
+# starts with empty staging, and files are delivered only after retry succeeds.
 if [[ "${1:-}" == --attempt ]]; then
-    shift
-    attempt "$@"
-    exit 0
+    staging=$2
+    shift 2
+    rm -rf -- "$staging"
+    mkdir -- "$staging"
+    exec "$@" --dir "$staging"
 fi
 
 [[ $# -ge 3 ]] || usage
 kind=$1 subject=$2 dest=$3
 case "$kind" in
-    artifact)
+    artifact | artifacts)
         [[ $# -le 4 ]] || usage
         run_id=${4:-${GITHUB_RUN_ID:?}}
-        what="artifact $subject from run $run_id"
+        if [[ "$kind" == artifact ]]; then
+            what="artifact $subject from run $run_id"
+            select=(--name "$subject")
+        else
+            what="artifacts matching $subject from run $run_id"
+            select=(--pattern "$subject")
+        fi
         ;;
     release)
         [[ $# -eq 3 ]] || usage
@@ -63,25 +58,54 @@ case "$kind" in
     *) usage ;;
 esac
 
+attempt_seconds=${KATL_DOWNLOAD_ATTEMPT_SECONDS:-360}
+backoff=${KATL_DOWNLOAD_BACKOFF_SECONDS:-0}
+if [[ -z "${KATL_DOWNLOAD_BACKOFF_SECONDS:-}" && "$attempt_seconds" =~ ^[0-9]+$ ]]; then
+    backoff=$((10#$attempt_seconds / 24))
+fi
 repo=${GITHUB_REPOSITORY:?}
 command -v gh >/dev/null || fail 'gh is not installed on this runner'
 
 mkdir -p "$(dirname -- "$dest")"
-[[ ! -e "$dest" ]] || fail "destination $dest already exists"
+[[ ! -e "$dest" || -d "$dest" ]] || fail "destination $dest is not a directory"
 
-if [[ "$kind" == artifact ]]; then
-    command=(gh run download "$run_id" --repo "$repo" --name "$subject")
-else
+deliver() {
+    local staging=$1
+    if [[ ! -e "$dest" ]]; then
+        mv -T -- "$staging" "$dest"
+        return
+    fi
+    local path collisions=()
+    while IFS= read -r -d '' path; do
+        path=${path#"$staging"/}
+        # Directories present on both sides merge; any other existing path
+        # would be replaced.
+        if [[ -e "$dest/$path" || -L "$dest/$path" ]] && ! [[ -d "$staging/$path" && -d "$dest/$path" ]]; then
+            collisions+=("$dest/$path")
+        fi
+    done < <(find "$staging" -mindepth 1 -print0)
+    if ((${#collisions[@]} > 0)); then
+        rm -rf -- "$staging"
+        fail "would replace ${collisions[*]}"
+    fi
+    # Hard links keep the merge cheap: staging and DEST are on one filesystem.
+    cp -a --link -- "$staging/." "$dest/"
+    rm -rf -- "$staging"
+}
+
+if [[ "$kind" == release ]]; then
     command=(gh release download "$subject" --repo "$repo")
+else
+    command=(gh run download "$run_id" --repo "$repo" "${select[@]}")
 fi
 
-# An attempt killed with SIGKILL cannot run its own EXIT trap, so its staging
-# directory is removed here once scripts/retry returns.
-trap 'rm -rf -- "$dest".attempt-*' EXIT
+scratch=$(mktemp -d "$dest.attempt-XXXXXX")
+trap 'rm -rf -- "$scratch"' EXIT
 "$(dirname -- "${BASH_SOURCE[0]}")/../../scripts/retry" \
     --attempts "${KATL_DOWNLOAD_ATTEMPTS:-3}" \
-    --timeout "${KATL_DOWNLOAD_ATTEMPT_SECONDS:-360}" \
+    --timeout "$attempt_seconds" \
     --kill-after "${KATL_DOWNLOAD_KILL_AFTER_SECONDS:-5}" \
-    --backoff "${KATL_DOWNLOAD_BACKOFF_SECONDS:-15}" \
+    --backoff "$backoff" \
     --title 'Download' --what "hosted-download: $what" \
-    -- "${BASH_SOURCE[0]}" --attempt "$dest" "${command[@]}"
+    -- "${BASH_SOURCE[0]}" --attempt "$scratch/download" "${command[@]}"
+deliver "$scratch/download"

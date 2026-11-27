@@ -70,7 +70,7 @@ runs:
     # week bounds how much stale build output one entry accumulates. There are
     # no restore-keys: warming from last week's entry and saving it again
     # would carry that output forward indefinitely. A slow or failed restore
-    # costs a cold build, never the job.
+    # costs a cold build, never the job. The caller sets the step budget.
     - name: Restore Go cache
       id: cache
       continue-on-error: true

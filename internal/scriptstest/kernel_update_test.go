@@ -40,10 +40,7 @@ func TestKernelUpdateIsolation(t *testing.T) {
 	var pipeline struct {
 		Concurrency struct{ Group string }
 		Jobs        map[string]struct {
-			Steps []struct {
-				Uses string
-				With map[string]string
-			}
+			Steps []workflowStep
 		}
 	}
 	if err := yaml.Unmarshal(data, &pipeline); err != nil {
@@ -54,8 +51,13 @@ func TestKernelUpdateIsolation(t *testing.T) {
 	}
 	for name, job := range pipeline.Jobs {
 		for _, step := range job.Steps {
-			if strings.HasPrefix(step.Uses, "actions/upload-artifact@") || strings.HasPrefix(step.Uses, "actions/download-artifact@") {
-				if !strings.Contains(step.With["name"], "inputs.flavour") || !strings.Contains(step.With["path"], "inputs.flavour") {
+			artifact, path := step.With["name"], step.With["path"]
+			_, subject, dest, downloads := hostedDownload(step)
+			if downloads {
+				artifact, path = subject, dest
+			}
+			if strings.HasPrefix(step.Uses, "actions/upload-artifact@") || downloads {
+				if !strings.Contains(artifact, "inputs.flavour") || !strings.Contains(path, "inputs.flavour") {
 					t.Fatalf("%s shares candidate artifacts between flavours", name)
 				}
 			}
