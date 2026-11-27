@@ -47,7 +47,12 @@ jobs:
   qualification:
     name: Production VM (${{ inputs.flavour }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 80
+    # Every step has a budget so that go test's -timeout 75m, inside its
+    # 80-minute step, fires before this timeout whenever setup stays within
+    # budget: checkout 5, Go 10, host 15, candidate 20, previous release 20,
+    # checksums 5, qualification 80, qualified sums 5, diagnostics 5 and
+    # evidence 10 sum to 175 minutes.
+    timeout-minutes: 180
     env:
       KATL_FLAVOUR: ${{ inputs.flavour }}
       KATL_VMTEST_KVM: 'on'
@@ -61,32 +66,43 @@ jobs:
       KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/production-vmtest
     steps:
       - uses: actions/checkout@v7
+        timeout-minutes: 5
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
+        timeout-minutes: 10
       - uses: ./.github/actions/hosted-vmtest
-      - uses: actions/download-artifact@v8
-        with:
-          name: ${{ inputs.artifact-name }}
-          run-id: ${{ inputs.run-id > 0 && inputs.run-id || github.run_id }}
-          github-token: ${{ github.token }}
-          path: dist
-      - name: Verify candidate and download the previous stable release
+        timeout-minutes: 15
+      - name: Download the candidate bundle
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE: ${{ inputs.artifact-name }}
+          BUNDLE_RUN: ${{ inputs.run-id > 0 && inputs.run-id || github.run_id }}
+        run: .github/scripts/hosted-download artifact "$BUNDLE" dist "$BUNDLE_RUN"
+      - name: Download the previous stable release
+        timeout-minutes: 20
         env:
           GH_TOKEN: ${{ github.token }}
           PREVIOUS_TAG: ${{ inputs.previous-tag }}
+        run: .github/scripts/hosted-download release "$PREVIOUS_TAG" previous
+      - name: Verify candidate and previous release checksums
+        timeout-minutes: 5
+        env:
+          PREVIOUS_TAG: ${{ inputs.previous-tag }}
         run: |
           scripts/katl-release checksums dist
-          gh release download "$PREVIOUS_TAG" --repo "$GITHUB_REPOSITORY" --dir previous
           scripts/katl-release checksums previous
           printf 'Upgrade source: %s\n' "$PREVIOUS_TAG" >> "$GITHUB_STEP_SUMMARY"
       - name: Qualify production installation, reboot, upgrade, and rollback
+        timeout-minutes: 80
         run: |
           .github/scripts/hosted-vmtest-measure production .github/scripts/hosted-vmtest-run \
             --artifact-set=none --no-rebuild ./internal/vmtest \
             -run '^TestReleaseLifecycle$' -count=1 -json -timeout 75m
       - uses: actions/upload-artifact@v7
         if: success() && inputs.run-id == 0
+        timeout-minutes: 5
         with:
           name: katl-qualified-${{ inputs.flavour }}-${{ github.sha }}
           overwrite: true
@@ -95,9 +111,11 @@ jobs:
           retention-days: 30
       - name: Collect diagnostics
         if: always()
+        timeout-minutes: 5
         run: .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
         if: always()
+        timeout-minutes: 10
         with:
           name: production-vmtest-${{ inputs.flavour }}-${{ github.run_id }}
           path: |

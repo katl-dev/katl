@@ -265,7 +265,15 @@ jobs:
     name: VM / ${{ matrix.name }}
     needs: [plan, images]
     runs-on: ${{ needs.plan.outputs.runner }}
-    timeout-minutes: 90
+    # Every step has a budget so that go test's -timeout 75m, inside its
+    # 80-minute step, fires before this timeout whenever setup stays within
+    # budget: checkouts 5 + 5, the two alternative Go setups 10 + 10, host 15,
+    # inputs 20, import 5, derive 5, scenarios 80, diagnostics 5 and evidence
+    # 10 sum to 170 minutes.
+    timeout-minutes: 175
+    permissions:
+      contents: read
+      actions: read # hosted-download reads this run's inputs artifact.
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -278,30 +286,41 @@ jobs:
       ARTIFACT_SET: install
     steps:
       - uses: actions/checkout@v7
+        timeout-minutes: 5
         with:
           ref: ${{ needs.plan.outputs.source }}
           persist-credentials: false
-      # An explicit source ref can predate the cache policy in this workflow.
+      # An explicit source ref can predate the cache and download policy in this workflow.
       - uses: actions/checkout@v7
         if: inputs.ref != ''
+        timeout-minutes: 5
         with:
           ref: ${{ github.workflow_sha }}
           path: _build/workflow-actions
           persist-credentials: false
           sparse-checkout: |
             .github/actions/setup-go
+            .github/scripts
       - uses: ./_build/workflow-actions/.github/actions/setup-go
         if: inputs.ref != ''
+        timeout-minutes: 10
       - uses: ./.github/actions/setup-go
         if: inputs.ref == ''
+        timeout-minutes: 10
       - uses: ./.github/actions/hosted-vmtest
+        timeout-minutes: 15
         with:
           prepared: ${{ needs.plan.outputs.prepared }}
-      - uses: actions/download-artifact@v8
-        with:
-          name: hosted-vmtest-${{ env.KATL_FLAVOUR }}-inputs-${{ needs.plan.outputs.source }}
-          path: _build/import
+      - name: Download VM inputs
+        timeout-minutes: 20
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUTS: hosted-vmtest-${{ env.KATL_FLAVOUR }}-inputs-${{ needs.plan.outputs.source }}
+          WORKFLOW_SCRIPTS: ${{ inputs.ref != '' && '_build/workflow-actions/.github/scripts' || '.github/scripts' }}
+        run: |
+          "$WORKFLOW_SCRIPTS/hosted-download" artifact "$INPUTS" _build/import
       - name: Verify and import producer inputs
+        timeout-minutes: 5
         run: |
           test "$(cat _build/import/source.txt)" = "$KATL_BUILD_COMMIT"
           test "$(cat _build/import/mkosi-version.txt)" = "$KATL_VMTEST_MKOSI_VERSION"
@@ -310,6 +329,7 @@ jobs:
           cp _build/import/{source.txt,mkosi-version.txt,inputs.sha256} _build/hosted-evidence/
           rm _build/import/inputs.tar
       - name: Derive component and proof inputs from the install image
+        timeout-minutes: 5
         run: |
           images=(_build/mkosi/katlos-install-*-x86_64.squashfs)
           test "${#images[@]}" = 1
@@ -321,16 +341,19 @@ jobs:
             _build/mkosi/katl-runtime.efi
           (cd _build/mkosi && sha256sum --check katl-runtime-root.squashfs.sha256 katl-runtime.efi.sha256)
       - name: Run existing scenarios
+        timeout-minutes: 80
         run: |
           .github/scripts/hosted-vmtest-measure scenarios .github/scripts/hosted-vmtest-run \
             --artifact-set="$ARTIFACT_SET" --no-rebuild "$TEST_PACKAGE" \
             -run "^($TEST_NAMES)$" -count=1 -json -timeout 75m
       - name: Collect host diagnostics
         if: always()
+        timeout-minutes: 5
         run: |
           .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
         if: always()
+        timeout-minutes: 10
         with:
           name: hosted-vmtest-${{ env.KATL_FLAVOUR }}-${{ matrix.name }}-evidence-${{ github.run_id }}
           path: |

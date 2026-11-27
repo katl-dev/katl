@@ -253,6 +253,9 @@ jobs:
       fail-fast: false
       matrix:
         flavour: ${{ fromJSON(needs.plan.outputs.vm-flavours) }}
+    permissions:
+      contents: read
+      actions: read
     uses: ./.github/workflows/hosted-vmtests.yml
     with:
       flavour: ${{ matrix.flavour }}
