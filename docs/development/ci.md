@@ -130,12 +130,18 @@ control artifact and package-cache reuse.
 ## Build caches
 
 Only runs on `refs/heads/main` save GitHub Actions caches, whatever the
-event. Pushes to `main` refresh the Go module and build caches through the
-fast checks, and the scheduled nightly candidate on `main` refreshes the
-hosted VM, production build and Kubernetes bundle caches. Every other ref
-(pull requests, merge groups, release branches and other branches) only
-restores, because no other ref can restore what those runs would save. On a
-cache miss they rebuild the missing inputs.
+event. Every other ref (pull requests, merge groups, release branches and other
+branches) only restores, because no other ref can restore what those runs would
+save. On a cache miss they rebuild the missing inputs.
+
+[`.github/cache-policy.json`](../../.github/cache-policy.json) declares every
+cache family: its key prefix, the jobs that save it, its size budget and how
+many generations it keeps. `TestActionsCachesFollowPolicy` in
+`internal/scriptstest` fails when a workflow or composite action uses a cache
+the policy does not declare, keys a cache by commit, saves off `main`, or saves
+a family from a job the policy does not name. The policy lists the existing
+exceptions as known violations, and an exception that no longer occurs fails
+the test, so the list only shrinks.
 
 ## Kernel updates
 

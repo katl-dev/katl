@@ -1,0 +1,17 @@
+on: push
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: ./_build/workflow-actions/.github/actions/setup
+        id: go
+      - name: Save Go cache
+        if: github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: go
+          key: ${{ steps.go.outputs.cache-key }}
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: ./.github/actions/setup

@@ -1,0 +1,23 @@
+on: push
+jobs:
+  j:
+    runs-on: ubuntu-24.04
+    steps:
+      - id: prepare
+        run: echo "key=go-a" >> "$GITHUB_OUTPUT"
+      - name: Restore
+        uses: actions/cache/restore@v6
+        with:
+          path: go
+          key: ${{ steps.prepare.outputs.key }}
+      - name: Save
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: go
+          key: ${{ steps.missing.outputs.cache-primary-key }}
+      - name: Restore literal
+        uses: actions/cache/restore@v6
+        with:
+          path: go
+          key: go-${{ hashFiles('go.sum') }}

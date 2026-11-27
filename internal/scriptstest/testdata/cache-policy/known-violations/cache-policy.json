@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "save_ref": "refs/heads/main",
+  "budget_bytes": 1000,
+  "alert_bytes": 1000,
+  "families": [
+    {"name": "go", "key_prefix": "go-", "contents": "Go", "savers": [{"workflow": "ci.yml", "job": "a"}], "budget_bytes": 100},
+    {"name": "builder", "key_prefix": "buildkit-blob-", "gha_scope": "builder", "contents": "Layers", "savers": [{"action": "builder"}], "budget_bytes": 100}
+  ],
+  "known_violations": [
+    {"family": "go", "rule": "commit-in-key", "workflow": "ci.yml", "job": "a"},
+    {"family": "builder", "rule": "multiple-savers", "action": "builder"},
+    {"family": "go", "rule": "multiple-savers", "workflow": "ci.yml", "job": "c"}
+  ]
+}

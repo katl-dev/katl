@@ -1,0 +1,21 @@
+on: push
+jobs:
+  j:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Main
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: go
+          key: go-a
+      - name: Trunk
+        if: github.ref == 'refs/heads/trunk' && steps.go.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: go
+          key: go-a
+      - name: Export
+        uses: docker/build-push-action@v7
+        with:
+          cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,scope=builder' || '' }}

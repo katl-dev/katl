@@ -1,0 +1,41 @@
+on: push
+jobs:
+  sha:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Restore
+        id: go
+        uses: actions/cache/restore@v6
+        with:
+          path: go
+          key: go-${{ hashFiles('go.sum') }}-${{ github.sha }}
+      - name: Save
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: go
+          key: ${{ steps.go.outputs.cache-primary-key }}
+  source:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Restore
+        uses: actions/cache/restore@v6
+        with:
+          path: go
+          key: go-${{ needs.plan.outputs.source }}
+  format:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Restore
+        uses: actions/cache/restore@v6
+        with:
+          path: go
+          key: go-${{ format('{0}', github.event.after) }}
+  week:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Restore
+        uses: actions/cache/restore@v6
+        with:
+          path: go
+          key: go-${{ steps.week.outputs.week }}-${{ runner.os }}-${{ runner.arch }}

@@ -8,6 +8,11 @@ const (
 	LTS      = "lts"
 )
 
+// Supported lists every flavour Katl builds.
+func Supported() []string {
+	return []string{Standard, LTS}
+}
+
 // Normalize treats images produced before flavour selection as standard images.
 func Normalize(value string) (string, error) {
 	switch value {

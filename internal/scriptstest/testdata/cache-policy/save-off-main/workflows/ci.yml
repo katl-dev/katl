@@ -1,0 +1,46 @@
+on: push
+jobs:
+  j:
+    # A job guard does not protect a step: the step's own condition must.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Unguarded
+        if: steps.go.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: go
+          key: go-a
+      - name: Disjunction
+        if: github.ref == 'refs/heads/main' || github.event_name == 'push'
+        uses: actions/cache/save@v6
+        with:
+          path: go
+          key: go-a
+      - name: Trailing guard
+        if: always() && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v6
+        with:
+          path: go
+          key: go-a
+      - name: Combined
+        uses: actions/cache@v6
+        with:
+          path: go
+          key: go-a
+      - name: Setup Go
+        uses: actions/setup-go@v6
+      - name: Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          cache-binary: true
+      - name: Export
+        uses: docker/build-push-action@v7
+        with:
+          cache-to: type=gha,scope=builder,mode=max
+      - name: Guarded
+        if: github.ref == 'refs/heads/main' && steps.go.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: go
+          key: go-a

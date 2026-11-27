@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "save_ref": "refs/heads/main",
+  "budget_bytes": 5000000000,
+  "alert_bytes": 6000000000,
+  "families": [
+    {
+      "name": "setup-go",
+      "key_prefix": "setup-go-",
+      "contents": "Host Go module and build cache",
+      "key_inputs": ["steps.paths.outputs.platform", "steps.go.outputs.go-version"],
+      "savers": [{"workflow": "ci.yml", "job": "checks"}],
+      "budget_bytes": 417871788
+    },
+    {
+      "name": "hosted-vmtest-build-standard",
+      "key_prefix": "hosted-vmtest-build-standard-",
+      "contents": "Container Go module and build cache and mkosi RPM cache for standard VM test images",
+      "savers": [{"workflow": "hosted-vmtests.yml", "job": "images"}],
+      "budget_bytes": 1238089013,
+      "max_generations": 1
+    },
+    {
+      "name": "hosted-vmtest-build-lts",
+      "key_prefix": "hosted-vmtest-build-lts-",
+      "contents": "Container Go module and build cache and mkosi RPM cache for LTS VM test images",
+      "savers": [{"workflow": "hosted-vmtests.yml", "job": "images"}],
+      "budget_bytes": 1238123658,
+      "max_generations": 1
+    },
+    {
+      "name": "katl-go-runtime",
+      "key_prefix": "katl-go-runtime-",
+      "contents": "Container Go module and build cache for the production runtime",
+      "key_inputs": ["env.KATL_ARCHITECTURE"],
+      "savers": [{"workflow": "production-build.yml", "job": "runtime"}],
+      "budget_bytes": 571551230,
+      "max_generations": 1
+    },
+    {
+      "name": "katl-go-installer",
+      "key_prefix": "katl-go-installer-",
+      "contents": "Container Go module and build cache for the production installer",
+      "key_inputs": ["env.KATL_ARCHITECTURE"],
+      "savers": [{"workflow": "production-build.yml", "job": "installer"}],
+      "budget_bytes": 228102130,
+      "max_generations": 1
+    },
+    {
+      "name": "katl-mkosi-packages-runtime-standard",
+      "key_prefix": "katl-mkosi-packages-runtime-standard-",
+      "contents": "mkosi RPM cache for the standard production runtime",
+      "key_inputs": ["env.KATL_ARCHITECTURE", "steps.mkosi-cache.outputs.key"],
+      "savers": [{"workflow": "production-build.yml", "job": "runtime"}],
+      "budget_bytes": 366832727,
+      "max_generations": 1
+    },
+    {
+      "name": "katl-mkosi-packages-runtime-lts",
+      "key_prefix": "katl-mkosi-packages-runtime-lts-",
+      "contents": "mkosi RPM cache for the LTS production runtime",
+      "key_inputs": ["env.KATL_ARCHITECTURE", "steps.mkosi-cache.outputs.key"],
+      "savers": [{"workflow": "production-build.yml", "job": "runtime"}],
+      "budget_bytes": 366830964,
+      "max_generations": 1
+    },
+    {
+      "name": "katl-mkosi-packages-installer-standard",
+      "key_prefix": "katl-mkosi-packages-installer-standard-",
+      "contents": "mkosi RPM cache for the standard production installer",
+      "key_inputs": ["env.KATL_ARCHITECTURE", "steps.mkosi-cache.outputs.key"],
+      "savers": [{"workflow": "production-build.yml", "job": "installer"}],
+      "budget_bytes": 197099272,
+      "max_generations": 1
+    },
+    {
+      "name": "katl-mkosi-packages-installer-lts",
+      "key_prefix": "katl-mkosi-packages-installer-lts-",
+      "contents": "mkosi RPM cache for the LTS production installer",
+      "key_inputs": ["env.KATL_ARCHITECTURE", "steps.mkosi-cache.outputs.key"],
+      "savers": [{"workflow": "production-build.yml", "job": "installer"}],
+      "budget_bytes": 197146543,
+      "max_generations": 1
+    },
+    {
+      "name": "katl-kernel-sources",
+      "key_prefix": "katl-kernel-sources-",
+      "contents": "Pinned release extension sources",
+      "savers": [{"workflow": "kernel-qualification.yml", "job": "drivers"}],
+      "budget_bytes": 543651450
+    },
+    {
+      "name": "kubernetes",
+      "key_prefix": "kubernetes-",
+      "contents": "Container Go module and build cache and mkosi RPM cache, one key per maintained Kubernetes version",
+      "key_inputs": ["env.ARTIFACT_VERSION"],
+      "savers": [{"workflow": "kubernetes-bundles.yml", "job": "build"}],
+      "budget_bytes": 0
+    },
+    {
+      "name": "builder-blobs",
+      "gha_scope": "mkosi-builder",
+      "key_prefix": "buildkit-blob-",
+      "contents": "mkosi builder image layers",
+      "savers": [{"action": "mkosi-builder"}],
+      "budget_bytes": 1512453065
+    },
+    {
+      "name": "builder-index",
+      "gha_scope": "mkosi-builder",
+      "key_prefix": "index-mkosi-builder-",
+      "contents": "mkosi builder image layer index",
+      "savers": [{"action": "mkosi-builder"}],
+      "budget_bytes": 117504,
+      "max_generations": 1
+    }
+  ],
+  "known_violations": [
+    {"family": "hosted-vmtest-build-standard", "rule": "commit-in-key", "workflow": "hosted-vmtests.yml", "job": "images"},
+    {"family": "hosted-vmtest-build-lts", "rule": "commit-in-key", "workflow": "hosted-vmtests.yml", "job": "images"},
+    {"family": "katl-go-runtime", "rule": "commit-in-key", "workflow": "production-build.yml", "job": "runtime"},
+    {"family": "katl-go-installer", "rule": "commit-in-key", "workflow": "production-build.yml", "job": "installer"},
+    {"family": "katl-mkosi-packages-runtime-standard", "rule": "commit-in-key", "workflow": "production-build.yml", "job": "runtime"},
+    {"family": "katl-mkosi-packages-runtime-lts", "rule": "commit-in-key", "workflow": "production-build.yml", "job": "runtime"},
+    {"family": "katl-mkosi-packages-installer-standard", "rule": "commit-in-key", "workflow": "production-build.yml", "job": "installer"},
+    {"family": "katl-mkosi-packages-installer-lts", "rule": "commit-in-key", "workflow": "production-build.yml", "job": "installer"},
+    {"family": "builder-blobs", "rule": "multiple-savers", "action": "mkosi-builder"},
+    {"family": "builder-index", "rule": "multiple-savers", "action": "mkosi-builder"}
+  ]
+}
