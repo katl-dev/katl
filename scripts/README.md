@@ -177,7 +177,9 @@ its current absolute path.
 When you finish with an entry, run `katl-dev-evidence release 822/ci-logs`.
 If the pin is still active, `release` reports when it expires. To delete
 the entry before then, run `katl-dev-evidence release 822/ci-logs --force`.
-`release` can remove read-only directory trees that you own.
+`release` and `prune` remove read-only directory trees that you own. They
+refuse a path that another user owns, such as one a rootless container
+created, and name that path and its owner.
 Use `katl-dev-evidence prune` to trim the store to its default budget of
 50 GiB, or supply a separate target with `--budget 20GiB`. Pruning counts
 pinned data toward the budget and removes unpinned entries oldest first.

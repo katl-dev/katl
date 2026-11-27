@@ -203,44 +203,127 @@ func TestReleasePin(t *testing.T) {
 	assertMissing(t, ordinary)
 }
 
-func TestReleaseReadOnlyTree(t *testing.T) {
-	fixture := newEvidenceFixture(t)
-	entry := fixture.runOK(t, testDate, "new", "822/read-only")
-	child := filepath.Join(entry, "child")
-	leaf := filepath.Join(child, "leaf")
-	makeDir(t, leaf)
-	outside := t.TempDir()
-	payload := writePayload(t, outside, "outside")
-	if err := os.Chmod(payload, 0o444); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Link(payload, filepath.Join(leaf, "hard-link")); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, filepath.Join(child, "symlink")); err != nil {
-		t.Fatal(err)
-	}
-	for _, dir := range []string{leaf, child, entry, outside} {
-		if err := os.Chmod(dir, 0o555); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			if err := os.Chmod(dir, 0o700); err != nil && !errors.Is(err, os.ErrNotExist) {
-				t.Error(err)
+// removalCommands are the commands that remove entries; both must apply the
+// same removal policy.
+var removalCommands = map[string][]string{
+	"release": {"release", "822/entry"},
+	"prune":   {"prune", "--budget", "0"},
+}
+
+func TestRemoveRestrictedTree(t *testing.T) {
+	for command, args := range removalCommands {
+		t.Run(command, func(t *testing.T) {
+			fixture := newEvidenceFixture(t)
+			entry := fixture.runOK(t, testDate, "new", "822/entry")
+			outside := t.TempDir()
+			target := writePayload(t, outside, "outside")
+			if err := os.Symlink(outside, filepath.Join(entry, "symlink")); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Link(target, filepath.Join(entry, "hard-link")); err != nil {
+				t.Fatal(err)
+			}
+			readOnly := writePayload(t, entry, "read-only")
+			modes := []struct {
+				path string
+				mode os.FileMode
+			}{
+				{target, 0o444},
+				{outside, 0o555},
+				{readOnly, 0o444},
+			}
+			// Deepest first, so each directory can still be populated.
+			for _, dir := range []struct {
+				name string
+				mode os.FileMode
+			}{
+				{"a/b/c", 0o500},
+				{"a/b", 0o700},
+				{"a", 0o555},
+				{"private", 0o700},
+				{".", 0o555},
+			} {
+				path := filepath.Join(entry, dir.name)
+				makeDir(t, path)
+				if dir.name != "." {
+					writePayload(t, path, dir.name)
+				}
+				modes = append(modes, struct {
+					path string
+					mode os.FileMode
+				}{path, dir.mode})
+			}
+			for _, m := range modes {
+				if err := os.Chmod(m.path, m.mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			// Leave anything a failed removal keeps removable by t.TempDir.
+			t.Cleanup(func() {
+				for _, m := range modes {
+					if err := os.Chmod(m.path, 0o700); err != nil && !errors.Is(err, os.ErrNotExist) {
+						t.Error(err)
+					}
+				}
+			})
+
+			if err := fixture.run(args, &bytes.Buffer{}, testDate); err != nil {
+				t.Fatalf("%v: %v", args, err)
+			}
+			assertMissing(t, entry)
+			checkPayload(t, target, "outside")
+			for _, m := range modes[:2] {
+				info, err := os.Stat(m.path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if info.Mode().Perm() != m.mode {
+					t.Errorf("%s changed mode of %q to %o, want %o", command, m.path, info.Mode().Perm(), m.mode)
+				}
 			}
 		})
 	}
+}
 
-	fixture.runOK(t, testDate, "release", "822/read-only")
-	assertMissing(t, entry)
-	checkPayload(t, payload, "outside")
-	for path, mode := range map[string]os.FileMode{outside: 0o555, payload: 0o444} {
-		info, err := os.Stat(path)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if info.Mode().Perm() != mode {
-			t.Errorf("release changed mode of %q to %o, want %o", path, info.Mode().Perm(), mode)
+func TestRemoveRefusesForeignOwner(t *testing.T) {
+	const foreignUID = 4242
+	for _, kind := range []string{"directory", "file"} {
+		for command, args := range removalCommands {
+			t.Run(kind+"/"+command, func(t *testing.T) {
+				fixture := newEvidenceFixture(t)
+				entry := fixture.runOK(t, testDate, "new", "822/entry")
+				foreign := filepath.Join(entry, "nested", "foreign")
+				makeDir(t, filepath.Dir(foreign))
+				if kind == "directory" {
+					makeDir(t, foreign)
+					writePayload(t, foreign, "inside")
+				} else if err := os.WriteFile(foreign, []byte("foreign"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				var stat unix.Stat_t
+				if err := unix.Lstat(foreign, &stat); err != nil {
+					t.Fatal(err)
+				}
+				fixture.ownerOf = func(s unix.Stat_t) uint32 {
+					if identity(s) == identity(stat) {
+						return foreignUID
+					}
+					return s.Uid
+				}
+
+				err := fixture.run(args, &bytes.Buffer{}, testDate)
+				if err == nil {
+					t.Fatalf("%v removed a path owned by uid %d", args, foreignUID)
+				}
+				for _, want := range []string{foreign, "uid 4242", "run the command again"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Errorf("error %q does not mention %q", err, want)
+					}
+				}
+				if _, err := os.Lstat(foreign); err != nil {
+					t.Errorf("%s did not keep the foreign path: %v", command, err)
+				}
+			})
 		}
 	}
 }
@@ -288,6 +371,7 @@ type evidenceFixture struct {
 	location     string
 	beforeRemove func()
 	deviceOf     func(unix.Stat_t) uint64
+	ownerOf      func(unix.Stat_t) uint32
 }
 
 func newEvidenceFixture(t *testing.T) evidenceFixture {
@@ -312,6 +396,9 @@ func (f evidenceFixture) runWithDiagnostics(args []string, out, diagnostics io.W
 		s.beforeRemove = f.beforeRemove
 		if f.deviceOf != nil {
 			s.deviceOf = f.deviceOf
+		}
+		if f.ownerOf != nil {
+			s.ownerOf = f.ownerOf
 		}
 		return s, nil
 	})

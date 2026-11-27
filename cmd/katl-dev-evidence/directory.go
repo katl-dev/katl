@@ -33,8 +33,10 @@ func (d *directory) fd() int {
 
 func (d *directory) stat(name string) (unix.Stat_t, error) {
 	var stat unix.Stat_t
-	err := unix.Fstatat(d.fd(), name, &stat, unix.AT_SYMLINK_NOFOLLOW)
-	return stat, err
+	if err := unix.Fstatat(d.fd(), name, &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		return stat, fmt.Errorf("stat %q: %w", filepath.Join(d.path, name), err)
+	}
+	return stat, nil
 }
 
 func (d *directory) check() error {
@@ -54,26 +56,8 @@ func (d *directory) remove() error {
 	if err := d.check(); err != nil {
 		return err
 	}
-	return unix.Unlinkat(d.parent.fd(), d.name, unix.AT_REMOVEDIR)
-}
-
-func (d *directory) makeWritable() error {
-	var stat unix.Stat_t
-	if err := unix.Fstat(d.fd(), &stat); err != nil {
-		return err
-	}
-	if stat.Mode&unix.S_IWUSR != 0 || int(stat.Uid) != os.Geteuid() {
-		return nil
-	}
-
-	// Unlinking requires write access to the containing directory. Changing
-	// only the bound directory avoids modifying symlink targets or hard links.
-	if err := d.check(); err != nil {
-		return err
-	}
-	mode := uint32(stat.Mode) & 0o7777
-	if err := unix.Fchmod(d.fd(), mode|unix.S_IWUSR); err != nil {
-		return fmt.Errorf("make directory %q writable: %w", d.path, err)
+	if err := unix.Unlinkat(d.parent.fd(), d.name, unix.AT_REMOVEDIR); err != nil {
+		return fmt.Errorf("remove directory %q: %w", d.path, err)
 	}
 	return nil
 }
@@ -83,7 +67,7 @@ func bindDirectory(fd int, path string, parent *directory, name string, deviceOf
 	var stat unix.Stat_t
 	if err := unix.Fstat(fd, &stat); err != nil {
 		file.Close()
-		return nil, err
+		return nil, fmt.Errorf("stat %q: %w", path, err)
 	}
 	if parent != nil && deviceOf(stat) != parent.id.device {
 		file.Close()
