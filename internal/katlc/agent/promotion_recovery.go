@@ -8,6 +8,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/operation"
+	"github.com/katl-dev/katl/internal/kernelcmdline"
 )
 
 // Recovery derives eligibility from the durable health receipt written before
@@ -52,7 +53,7 @@ func (e *Executor) recoverLivePromotions(ctx context.Context, bootID string) ([]
 		// durable booted generation can still describe an earlier boot.
 		sameBoot := len(record.Invocations) > 0 && bootID != "" && record.Invocations[len(record.Invocations)-1].BootID == bootID
 		if !sameBoot {
-			commandLine, err := readCurrentKernelCommandLine(e.Root)
+			commandLine, err := kernelcmdline.ReadCurrent(e.Root)
 			if err != nil {
 				continue
 			}

@@ -14,6 +14,7 @@ import (
 
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/managementnetwork"
+	"github.com/katl-dev/katl/internal/retry"
 )
 
 func main() {
@@ -121,13 +122,13 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 
 type managementNetworkTiming struct {
 	trialTimeout time.Duration
-	pollInterval time.Duration
+	initialDelay time.Duration
 	managementExpiryHooks
 }
 
 var managementTiming = managementNetworkTiming{
 	trialTimeout: 90 * time.Second,
-	pollInterval: time.Second,
+	initialDelay: time.Second,
 }
 
 var waitForManagementNetwork = func(ctx context.Context) error {
@@ -139,8 +140,7 @@ func (timing managementNetworkTiming) wait(ctx context.Context) error {
 	deadlineCtx, cancel := context.WithTimeout(ctx, timing.trialTimeout)
 	healthCtx, stop, expiry := timing.managementExpiryHooks.start(deadlineCtx, cancel)
 	defer stop()
-	ticker := time.NewTicker(timing.pollInterval)
-	defer ticker.Stop()
+	backoff := retry.NewBackoff(timing.initialDelay, 5*time.Second)
 	lastReason := "network state has not been observed"
 	for healthCtx.Err() == nil {
 		// A completed online observation wins even if the read's context expired.
@@ -156,9 +156,11 @@ func (timing managementNetworkTiming) wait(ctx context.Context) error {
 			lastReason = reason
 			expiry.observeOffline(reason)
 		}
+		timer := time.NewTimer(backoff.Next())
 		select {
 		case <-healthCtx.Done():
-		case <-ticker.C:
+			timer.Stop()
+		case <-timer.C:
 		}
 	}
 	cause := context.Cause(healthCtx)

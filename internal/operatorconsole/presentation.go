@@ -3,7 +3,7 @@ package operatorconsole
 import (
 	"strings"
 
-	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/boothealth"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
 
@@ -39,6 +39,9 @@ func presentHost(snapshot *Snapshot) Presentation {
 	if snapshot.StatusStale {
 		return Presentation{State: PresentationUnknown, Label: "Unknown (stale status)"}
 	}
+	if snapshot.BootHealth.State == boothealth.Unhealthy {
+		return Presentation{State: PresentationDegraded, Label: "Unhealthy"}
+	}
 	if snapshot.StatusError != "" || snapshot.GenerationError != "" {
 		return Presentation{State: PresentationUnknown, Label: "Unknown"}
 	}
@@ -48,14 +51,14 @@ func presentHost(snapshot *Snapshot) Presentation {
 	if snapshot.LastError != "" {
 		return Presentation{State: PresentationDegraded, Label: "Degraded"}
 	}
-	switch strings.ToLower(strings.TrimSpace(snapshot.GenerationHealth)) {
-	case generation.HealthStateUnhealthy:
-		return Presentation{State: PresentationFailed, Label: "Generation failed"}
-	case generation.HealthStateDeferred:
-		return Presentation{State: PresentationProgressing, Label: "Health deferred"}
-	case generation.HealthStateUnknown:
+	switch snapshot.BootHealth.State {
+	case boothealth.Failed:
+		return Presentation{State: PresentationFailed, Label: "Needs repair"}
+	case boothealth.Pending:
+		return Presentation{State: PresentationProgressing, Label: "Boot health pending"}
+	case boothealth.Unknown:
 		return Presentation{State: PresentationUnknown, Label: "Health unknown"}
-	case generation.HealthStateHealthy:
+	case boothealth.Healthy:
 		switch snapshot.State {
 		case installstatus.StateWaitingForClusterBootstrap:
 			if !snapshot.KubernetesConfigured {

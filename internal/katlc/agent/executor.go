@@ -18,6 +18,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/katl-dev/katl/internal/boothealth"
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/bootstrapplan"
@@ -57,7 +58,7 @@ type (
 )
 
 type Executor struct {
-	nodeBootHealth         func(context.Context) nodeBootHealth
+	nodeBootHealth         func(context.Context) boothealth.Status
 	observeUpgradeEtcd     func(context.Context, *operation.EtcdObservation) (*operation.EtcdObservation, error)
 	inspectUpgradeEtcd     func(context.Context, operation.OperationRecord, string) (*operation.EtcdUpgradeEvidence, error)
 	Root                   string

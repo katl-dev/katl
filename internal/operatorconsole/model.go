@@ -1,6 +1,10 @@
 package operatorconsole
 
-import "time"
+import (
+	"time"
+
+	"github.com/katl-dev/katl/internal/boothealth"
+)
 
 const HandoffPath = "/run/katl/console/handoff.json"
 
@@ -20,6 +24,7 @@ type Snapshot struct {
 	InstallProgress      string
 	Generation           string
 	GenerationHealth     string
+	BootHealth           boothealth.Status
 	CurrentSoftware      Software
 	NextBootSoftware     Software
 	LiveSoftware         Software

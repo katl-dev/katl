@@ -129,7 +129,7 @@ func TestRunPromotesTrialAfterManagementReadError(t *testing.T) {
 			if time.Since(started) < time.Minute {
 				return nil, errors.New("networkctl temporarily unavailable")
 			}
-			return []byte(`{"Interfaces":[{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["routable","routable"],"CarrierState":"carrier","AddressState":"routable","OperationalState":"routable"}]}`), nil
+			return []byte(`{"Interfaces":[{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["routable","routable"],"OnlineState":"online","CarrierState":"carrier","AddressState":"routable","OperationalState":"routable"}]}`), nil
 		}
 
 		if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, &stdout); err != nil {
@@ -186,9 +186,9 @@ func TestRunDoesNotPromoteWithoutManagementNetwork(t *testing.T) {
 }
 
 func TestManagementNetworkTimingDefaults(t *testing.T) {
-	if managementTiming.trialTimeout != 90*time.Second || managementTiming.pollInterval != time.Second {
-		t.Fatalf("management network trial timeout = %s, poll interval = %s, want 90s and 1s",
-			managementTiming.trialTimeout, managementTiming.pollInterval)
+	if managementTiming.trialTimeout != 90*time.Second || managementTiming.initialDelay != time.Second {
+		t.Fatalf("management network trial timeout = %s, initial retry delay = %s, want 90s and 1s",
+			managementTiming.trialTimeout, managementTiming.initialDelay)
 	}
 }
 

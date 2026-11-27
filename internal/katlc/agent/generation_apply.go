@@ -1173,20 +1173,12 @@ func currentGenerationFromSelection(root string, selection generation.BootSelect
 }
 
 func inheritCurrentKernelCommandLine(root string, record generation.Record, replaced []string) generation.Record {
-	options, err := readCurrentKernelCommandLine(root)
+	options, err := kernelcmdline.ReadCurrent(root)
 	if err != nil {
 		return record
 	}
 	record.KernelCommandLine = kernelcmdline.MergeCurrent(record.KernelCommandLine, options, replaced)
 	return record
-}
-
-func readCurrentKernelCommandLine(root string) ([]string, error) {
-	data, err := os.ReadFile(filepath.Join(runtimeRoot(root), "proc/cmdline"))
-	if err != nil {
-		return nil, err
-	}
-	return strings.Fields(string(data)), nil
 }
 
 func mergeKernelCommandLine(base []string, current []string) []string {

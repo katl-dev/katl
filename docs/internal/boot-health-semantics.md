@@ -21,9 +21,9 @@ selected generation's capability profile.
 Management-network readiness is also local and generation-scoped. For a
 generation that has yet to pass boot health, Katl reads systemd-networkd's
 effective link state. Every managed link with `RequiredForOnline` enabled must
-have carrier and meet the minimum that networkd reports in
-`RequiredOperationalStateForOnline`. At least one required link must be
-operationally `routable`.
+have carrier and report `OnlineState=online`, which reflects the link's
+operational range and address-family policy. At least one required link must
+be operationally `routable`.
 
 | Minimum | Address state required in addition to carrier |
 | --- | --- |
@@ -31,9 +31,9 @@ operationally `routable`.
 | `degraded` | `degraded` or `routable` |
 | `routable` | `routable` |
 
-Katl uses networkd's `CarrierState` and `AddressState` to evaluate the minimum,
-so a link that reports `OnlineState=online` before it acquires an address can
-still be pending. The generated DHCP fallback sets
+When networkd reports an explicit `RequiredOperationalStateForOnline` range,
+Katl also checks the minimum against `AddressState`. If the range is omitted,
+`OnlineState` reflects the device-specific default. The generated DHCP fallback sets
 `RequiredForOnline=routable` for physical Ethernet. In native networkd
 configuration, set `RequiredForOnline=routable` on the interface carrying the
 management address if it must have a routable address. Bond and bridge ports
@@ -65,12 +65,12 @@ unmounted volume, the cause and the remedy.
 Required-service dependencies apply on every boot. During an ordinary boot of a
 known-good generation, the boot service can complete while a management link is
 down, preserving the generation as a local fallback. After boot health settles,
-`katlctl node status` checks current management readiness using the same
-networkd criteria as trial boot health. It reports `unhealthy` and names an offline
-required link when carrier or address loss makes the link unavailable. The next
-status read after the network recovers reports the node healthy if the other health
-checks pass. These observations leave the boot selection and generation records
-intact, so operators can still apply a repair or request a reboot.
+`katlctl node status` and the operator console read current-boot health using
+the same networkd criteria as trial boot health. Both report unhealthy boot
+health, name the offline required link and show repair guidance. After the link
+recovers, both show the restored boot health if the other checks pass. These
+observations leave the boot selection and generation records intact, so
+operators can still apply a repair or request a reboot.
 
 For generation 0, "machine identity available" means PID 1 received the
 install-generated value through `systemd.machine_id=`, `/etc/machine-id`

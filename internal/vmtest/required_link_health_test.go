@@ -76,6 +76,9 @@ LinkLocalAddressing=no
 	guestCommand(t, ctx, guest, "load-required-link-config", "networkctl", "reload")
 
 	plan := node.handle.Plan
+	if !run.Scenario.owned || plan.LibvirtNetwork != run.Scenario.ownedNetwork().Name {
+		t.Fatal("required link health requires a scenario-owned network")
+	}
 	virsh := LibvirtVMExecutor{VirshPath: plan.VirshPath, URI: plan.LibvirtURI}
 	if err := virsh.virsh(ctx, "attach-interface", plan.DomainName, "network", plan.LibvirtNetwork, "--mac", mac, "--model", "virtio", "--live"); err != nil {
 		t.Fatal(err)
@@ -117,6 +120,28 @@ LinkLocalAddressing=no
 	}
 	waitStatus("carrier-up", "OK")
 
+	waitConsole := func(phase, state string, diagnostic bool) {
+		t.Helper()
+		consoleCtx, stop := context.WithTimeout(ctx, 20*time.Second)
+		defer stop()
+		backoff := retry.NewBackoff(250*time.Millisecond, time.Second)
+		rendered, err := retry.Await(consoleCtx, &backoff, func(ctx context.Context) (string, bool, error) {
+			text := readGuestFile(t, ctx, guest, "/run/katl/console/rendered.txt")
+			compact := strings.Join(strings.Fields(text), "")
+			matches := strings.Contains(compact, "State:"+state)
+			if diagnostic {
+				matches = matches && containsAll(compact, "systemd-networkdreportsrequiredlink"+link+"notonline", "Checkthelinkandthenode'snetworkconfiguration")
+			} else {
+				matches = matches && !strings.Contains(compact, "Boothealth:")
+			}
+			return text, matches, nil
+		}, nil)
+		if err != nil {
+			t.Fatalf("%s: waiting for console state %s (link diagnostic=%t): %v\n%s", phase, state, diagnostic, err, rendered)
+		}
+	}
+	waitConsole("carrier-up", "Waitingforclusterbootstrap", false)
+
 	bootID := guestBootID(t, ctx, client)
 	const selectionPath = "/var/lib/katl/boot/selection.json"
 	selection := readGuestFile(t, ctx, guest, selectionPath)
@@ -154,7 +179,10 @@ bootctl --no-pager list --json=short`)
 		t.Fatal(err)
 	}
 	waitRequiredLinkCarrier(t, ctx, guest, mac, false)
-	waitStatus("carrier-lost", "unhealthy")
+	if diagnostic := waitStatus("carrier-lost", "unhealthy"); !strings.Contains(diagnostic, "kernel carrier: down") {
+		t.Fatalf("carrier loss diagnostic = %q, want the kernel to report no carrier on %s", diagnostic, link)
+	}
+	waitConsole("carrier-lost", "Unhealthy", true)
 	assertBootUnchanged("efi-during-loss")
 
 	if err := virsh.virsh(ctx, "domif-setlink", plan.DomainName, mac, "up"); err != nil {
@@ -162,6 +190,7 @@ bootctl --no-pager list --json=short`)
 	}
 	waitOnline()
 	waitStatus("carrier-restored", "OK")
+	waitConsole("carrier-restored", "Waitingforclusterbootstrap", false)
 	assertBootUnchanged("efi-after-recovery")
 
 	guestCommand(t, ctx, guest, "remove-required-link-address", "ip", "address", "del", address, "dev", link)

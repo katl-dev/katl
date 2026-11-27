@@ -39,6 +39,11 @@ func TestReadyUsesConfiguredRequiredLinks(t *testing.T) {
 			wantReason: "enp2s0",
 		},
 		{
+			name:       "unknown explicit minimum leaves readiness unconfirmed",
+			links:      `{"Interfaces":[{"Name":"enp1s0","NetworkFile":"lan.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["future-state","routable"],"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}]}`,
+			wantReason: `unrecognised required operational minimum "future-state"`,
+		},
+		{
 			name:       "no configured management link",
 			links:      `{"Interfaces":[{"Name":"cni0","OnlineState":null,"OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}]}`,
 			wantReason: "no systemd-networkd link",

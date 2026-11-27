@@ -1,173 +1,35 @@
 package agent
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"slices"
-	"strings"
+	"errors"
+	"fmt"
 	"time"
 
-	"github.com/katl-dev/katl/internal/managementnetwork"
+	"github.com/katl-dev/katl/internal/boothealth"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
-const (
-	bootHealthUnit          = "katl-boot-health.service"
-	bootCompleteTarget      = "katl-boot-complete.target"
-	bootHealthSettledTarget = "katl-boot-health-settled.target"
-	volumesActivateUnit     = "katl-volumes-activate.service"
-)
-
-// bootHealthRun is boot health's progress in the running boot. systemd unit
-// state is boot-scoped, so it cannot describe an earlier boot.
-type bootHealthRun int
-
-const (
-	// bootHealthRunUnknown means systemd did not describe the units, as on a
-	// host that is not running KatlOS.
-	bootHealthRunUnknown bootHealthRun = iota
-	// bootHealthRunSettling means the settle target still has a start job.
-	bootHealthRunSettling
-	// bootHealthRunStalled means the settle target gave up waiting while boot
-	// health is still queued or running.
-	bootHealthRunStalled
-	// bootHealthRunSkipped means boot health's start job finished without
-	// running it, typically because a required unit failed.
-	bootHealthRunSkipped
-	bootHealthRunFailed
-	bootHealthRunSucceeded
-)
-
-// Volume activation is independent of the generation's boot health check.
-func (s *Server) readBootHealthRun(ctx context.Context) (run bootHealthRun, volumesFailed bool) {
-	if s.RunBootHealthStatus == nil {
-		return bootHealthRunUnknown, false
-	}
-	result := s.RunBootHealthStatus(ctx, []string{"/usr/bin/systemctl", "show", bootHealthSettledTarget, bootHealthUnit, bootCompleteTarget, volumesActivateUnit, "--property=Id,LoadState,ActiveState,Job"}, nil)
-	if result.Err != nil || result.ExitStatus != 0 {
-		return bootHealthRunUnknown, false
-	}
-	units := systemdUnitProperties(result.Stdout)
-	settled, health, complete := units[bootHealthSettledTarget], units[bootHealthUnit], units[bootCompleteTarget]
-	volumesFailed = units[volumesActivateUnit]["ActiveState"] == "failed"
-	switch {
-	case settled["LoadState"] != "loaded":
-		return bootHealthRunUnknown, false
-	case settled["Job"] != "":
-		return bootHealthRunSettling, false
-	case health["ActiveState"] == "failed":
-		return bootHealthRunFailed, volumesFailed
-	// An inactive oneshot does not show whether it ran; the target it orders
-	// before becomes active only after it succeeds.
-	case complete["ActiveState"] == "active":
-		return bootHealthRunSucceeded, volumesFailed
-	case health["Job"] != "" || health["ActiveState"] == "activating":
-		return bootHealthRunStalled, volumesFailed
-	default:
-		return bootHealthRunSkipped, volumesFailed
+func (s *Server) bootHealthReader() boothealth.Reader {
+	return boothealth.Reader{
+		Root: s.Root,
+		RunCommand: func(ctx context.Context, argv []string) ([]byte, error) {
+			if s.RunBootHealthStatus == nil {
+				return nil, errors.New("systemctl runner is unavailable")
+			}
+			result := s.RunBootHealthStatus(ctx, argv, nil)
+			if result.Err == nil && result.ExitStatus != 0 {
+				result.Err = fmt.Errorf("systemctl exited with status %d", result.ExitStatus)
+			}
+			return result.Stdout, result.Err
+		},
+		ReadNetwork: s.readManagementNetwork,
 	}
 }
 
-func systemdUnitProperties(output []byte) map[string]map[string]string {
-	units := map[string]map[string]string{}
-	var current map[string]string
-	scanner := bufio.NewScanner(bytes.NewReader(output))
-	for scanner.Scan() {
-		key, value, ok := strings.Cut(scanner.Text(), "=")
-		if !ok {
-			current = nil
-			continue
-		}
-		if current == nil {
-			current = map[string]string{}
-		}
-		current[key] = strings.TrimSpace(value)
-		if key == "Id" {
-			units[current[key]] = current
-		}
-	}
-	return units
-}
-
-func (s *Server) failedBootHealthDependencies(ctx context.Context) []string {
-	requires := s.RunBootHealthStatus(ctx, []string{"/usr/bin/systemctl", "show", "--property=Requires", "--value", bootHealthUnit}, nil)
-	required := strings.Fields(string(requires.Stdout))
-	if requires.Err != nil || requires.ExitStatus != 0 || len(required) == 0 {
-		return nil
-	}
-	states := s.RunBootHealthStatus(ctx, append([]string{"/usr/bin/systemctl", "show", "--property=Id,ActiveState", "--"}, required...), nil)
-	// systemctl can report a missing unit alongside properties of loaded units.
-	var failed []string
-	for unit, properties := range systemdUnitProperties(states.Stdout) {
-		if properties["ActiveState"] == "failed" {
-			failed = append(failed, unit)
-		}
-	}
-	slices.Sort(failed)
-	return failed
-}
-
-// nodeBootHealth refines the persisted boot health, which can describe an
-// earlier boot of the same generation, with this boot's systemd state.
-func (s *Server) nodeBootHealth(ctx context.Context) nodeBootHealth {
-	health := readPersistedBootHealth(s.Root)
-	if health.SelectedGenerationID == "" {
-		return health
-	}
-	run, volumesFailed := s.readBootHealthRun(ctx)
-	var diagnostics []string
-	if health.State == nodeBootHealthFailed || health.State == nodeBootHealthUnknown {
-		diagnostics = append(diagnostics, health.Diagnostic)
-	}
-	switch run {
-	case bootHealthRunUnknown:
-		health.State = nodeBootHealthUnknown
-		diagnostics = append(diagnostics, "cannot read boot health for this boot from systemd")
-		health.Diagnostic = strings.Join(diagnostics, ". ")
-	case bootHealthRunSettling:
-		health.State = nodeBootHealthPending
-		health.Diagnostic = "boot health is running for this boot"
-	case bootHealthRunStalled:
-		health.State = nodeBootHealthPending
-		health.Diagnostic = bootHealthUnit + " has not finished for this boot; inspect the units it requires"
-	}
-	if volumesFailed {
-		diagnostics = append(diagnostics, volumesActivateUnit+" failed in this boot, so volumes are unmounted. See the volume status and boot journal")
-	}
-	if run == bootHealthRunFailed || run == bootHealthRunSkipped {
-		unitDiagnostic := bootHealthUnit + " failed in this boot"
-		if run == bootHealthRunSkipped {
-			unitDiagnostic = bootHealthUnit + " did not run in this boot"
-		}
-		if failed := s.failedBootHealthDependencies(ctx); len(failed) > 0 {
-			unitDiagnostic += ". Required units failed: " + strings.Join(failed, ", ") + ". Run 'systemctl --failed' on the node"
-		} else {
-			unitDiagnostic += ". Inspect 'journalctl -b -u katl-boot-health' on the node"
-		}
-		diagnostics = append(diagnostics, unitDiagnostic+". Fix the cause, for example with 'katlctl cluster apply', then run 'katlctl node reboot <node>'")
-	}
-	if volumesFailed || run == bootHealthRunFailed || run == bootHealthRunSkipped {
-		health.State = nodeBootHealthFailed
-		health.Diagnostic = strings.Join(diagnostics, ". ")
-	}
-	if run == bootHealthRunSucceeded && health.State == nodeBootHealthHealthy {
-		// A live observation reports reachability without changing boot selection.
-		probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		defer cancel()
-		ready, reason, err := managementnetwork.Ready(probeCtx, s.readManagementNetwork)
-		switch {
-		case err != nil:
-			health.State = nodeBootHealthUnknown
-			health.Diagnostic = "cannot read management link state from systemd-networkd: " + err.Error()
-		case !ready:
-			health.State = nodeBootHealthUnhealthy
-			health.Diagnostic = "management network unavailable: " + reason +
-				". Check the link and the node's network configuration, then run 'katlctl node status <node>' again"
-		}
-	}
-	return health
+func (s *Server) nodeBootHealth(ctx context.Context) boothealth.Status {
+	return s.bootHealthReader().Read(ctx)
 }
 
 // Boot health normally settles seconds after the agent starts. An unproven
@@ -191,7 +53,8 @@ func (s *Server) awaitBootHealth(ctx context.Context) error {
 	if callerDeadline, ok := ctx.Deadline(); ok && callerDeadline.Add(-bootHealthReplyMargin).Before(deadline) {
 		deadline = callerDeadline.Add(-bootHealthReplyMargin)
 	}
-	for run, _ := s.readBootHealthRun(ctx); run == bootHealthRunSettling; run, _ = s.readBootHealthRun(ctx) {
+	reader := s.bootHealthReader()
+	for reader.Settling(ctx) {
 		if !time.Now().Before(deadline) {
 			return status.Error(codes.Unavailable, "node is completing boot health for this boot; retry when `katlctl node status` no longer reports health pending")
 		}

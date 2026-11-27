@@ -63,7 +63,7 @@ func TestManagementNetworkExpiryPreservesOfflineReason(t *testing.T) {
 			var expire func()
 			var reported bool
 			timing := managementTiming
-			timing.pollInterval = time.Millisecond
+			timing.initialDelay = time.Millisecond
 			timing.reportInjectedExpiry = func() { reported = true }
 			timing.trialExpiry = func(trigger func()) (func(string), func()) {
 				expire = trigger

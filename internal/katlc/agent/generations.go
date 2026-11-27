@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/katl-dev/katl/internal/boothealth"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/configapply"
 	"github.com/katl-dev/katl/internal/installer/operation"
@@ -182,7 +183,7 @@ func (s *Server) pruneGenerations(ctx context.Context) (bool, error) {
 	if selection.PendingHealthValidation || selection.RecoveryRequired {
 		return false, nil
 	}
-	if s.nodeBootHealth(ctx).State != nodeBootHealthHealthy {
+	if s.nodeBootHealth(ctx).State != boothealth.Healthy {
 		return false, nil
 	}
 	policy, err := s.generationRetention()

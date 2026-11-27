@@ -21,6 +21,7 @@ import (
 	"time"
 	"unicode/utf16"
 
+	"github.com/katl-dev/katl/internal/boothealth"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer"
 	"github.com/katl-dev/katl/internal/installer/apivip"
@@ -932,7 +933,7 @@ func TestNodeStatusReportsManualFallbackMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if nodeStatus.GetCurrentGenerationId() != "generation-1" || nodeStatus.GetSelectedGenerationId() != "generation-0" || nodeStatus.GetBootHealthState() != nodeBootHealthFailed {
+	if nodeStatus.GetCurrentGenerationId() != "generation-1" || nodeStatus.GetSelectedGenerationId() != "generation-0" || nodeStatus.GetBootHealthState() != boothealth.Failed {
 		t.Fatalf("node status = %#v, want active generation-1, selected generation-0, failed boot health", nodeStatus)
 	}
 	if !strings.Contains(nodeStatus.GetBootHealthDiagnostic(), "does not match durable boot evidence") {
@@ -946,7 +947,7 @@ func TestNodeStatusReportsManualFallbackMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if nodeStatus.GetBootHealthState() != nodeBootHealthUnknown ||
+	if nodeStatus.GetBootHealthState() != boothealth.Unknown ||
 		!strings.Contains(nodeStatus.GetBootHealthDiagnostic(), "running generation generation-0 does not match durable boot evidence generation-1") ||
 		!strings.Contains(nodeStatus.GetBootHealthDiagnostic(), "cannot read boot health for this boot from systemd") {
 		t.Fatalf("boot health with unreadable systemd state = %s (%s)", nodeStatus.GetBootHealthState(), nodeStatus.GetBootHealthDiagnostic())
@@ -1003,7 +1004,7 @@ func TestNodeStatusReportsLivePromotedGenerationHealthy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if nodeStatus.GetCurrentGenerationId() != "generation-1" || nodeStatus.GetBootTargetGenerationId() != "generation-1" || nodeStatus.GetSelectedGenerationId() != "generation-0" || nodeStatus.GetBootHealthState() != nodeBootHealthHealthy || nodeStatus.GetBootHealthDiagnostic() != "" {
+	if nodeStatus.GetCurrentGenerationId() != "generation-1" || nodeStatus.GetBootTargetGenerationId() != "generation-1" || nodeStatus.GetSelectedGenerationId() != "generation-0" || nodeStatus.GetBootHealthState() != boothealth.Healthy || nodeStatus.GetBootHealthDiagnostic() != "" {
 		t.Fatalf("live-promoted node status = %#v", nodeStatus)
 	}
 }

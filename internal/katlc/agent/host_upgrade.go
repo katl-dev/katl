@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/boothealth"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/operation"
@@ -76,16 +77,16 @@ func (s *Server) validateHostUpgradePlan(ctx context.Context, req *agentapi.Host
 	return validateHostUpgradeBootEvidence(s.Root, currentID, previousSpec)
 }
 
-func requireHostUpgradeBootHealth(ctx context.Context, readHealth func(context.Context) nodeBootHealth) error {
-	health := nodeBootHealth{State: nodeBootHealthUnknown, Diagnostic: "current boot health reader is unavailable"}
+func requireHostUpgradeBootHealth(ctx context.Context, readHealth func(context.Context) boothealth.Status) error {
+	health := boothealth.Status{State: boothealth.Unknown, Diagnostic: "current boot health reader is unavailable"}
 	if readHealth != nil {
 		health = readHealth(ctx)
 	}
-	if health.State == nodeBootHealthHealthy {
+	if health.State == boothealth.Healthy {
 		return nil
 	}
 	message := fmt.Sprintf("cannot replace the inactive root slot until current boot health is confirmed: %s (%s)", health.State, health.Diagnostic)
-	if health.State != nodeBootHealthUnhealthy {
+	if health.State != boothealth.Unhealthy {
 		message += ". Run 'katlctl node status <node>', then repair with 'katlctl cluster apply' or 'katlctl node reboot <node>'"
 	}
 	return errors.New(message)
@@ -104,8 +105,8 @@ func validateHostUpgradeBootEvidence(root, currentID string, current generation.
 	if bootedID != currentID {
 		// The executor revalidates the durable source of a live promotion
 		// before writing. Admission checks current-boot health separately.
-		health := readPersistedBootHealth(root)
-		if health.State != nodeBootHealthHealthy {
+		health := boothealth.ReadPersisted(root)
+		if health.State != boothealth.Healthy {
 			return fmt.Errorf("running kernel selected generation %q is not healthy: %s; reboot into the selected known-good generation before retrying the upgrade", bootedID, health.Diagnostic)
 		}
 		booted, _, err := generation.ReadGeneration(root, bootedID)

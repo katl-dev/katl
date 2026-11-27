@@ -404,6 +404,7 @@ func TestObservedBootHealth(t *testing.T) {
 		want   string
 	}{
 		{name: "another generation is running", status: &agentapi.NodeStatus{CurrentGenerationId: "gen-a", SelectedGenerationId: "trial", BootHealthState: "failed"}, want: "unknown"},
+		{name: "another generation is running with a link down", status: &agentapi.NodeStatus{CurrentGenerationId: "gen-a", SelectedGenerationId: "fallback", BootHealthState: "unhealthy"}, want: "unknown"},
 		{name: "running boot failed", status: &agentapi.NodeStatus{CurrentGenerationId: "gen-a", SelectedGenerationId: "gen-a", BootHealthState: "failed"}, want: "failed"},
 		{name: "running boot pending", status: &agentapi.NodeStatus{CurrentGenerationId: "gen-a", SelectedGenerationId: "gen-a", BootHealthState: "pending"}, want: "unknown"},
 		{name: "running boot healthy", status: &agentapi.NodeStatus{CurrentGenerationId: "gen-a", SelectedGenerationId: "gen-a", BootHealthState: "healthy"}, want: "healthy"},

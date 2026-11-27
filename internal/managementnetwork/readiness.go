@@ -18,13 +18,14 @@ type networkctlState struct {
 }
 
 type networkctlLink struct {
-	Name                     string    `json:"Name"`
-	OperationalState         string    `json:"OperationalState"`
-	CarrierState             string    `json:"CarrierState"`
-	AddressState             string    `json:"AddressState"`
-	NetworkFile              string    `json:"NetworkFile"`
-	RequiredForOnline        bool      `json:"RequiredForOnline"`
-	RequiredOperationalState [2]string `json:"RequiredOperationalStateForOnline"`
+	Name                     string     `json:"Name"`
+	OperationalState         string     `json:"OperationalState"`
+	CarrierState             string     `json:"CarrierState"`
+	AddressState             string     `json:"AddressState"`
+	OnlineState              string     `json:"OnlineState"`
+	NetworkFile              string     `json:"NetworkFile"`
+	RequiredForOnline        bool       `json:"RequiredForOnline"`
+	RequiredOperationalState *[2]string `json:"RequiredOperationalStateForOnline"`
 }
 
 // Ready checks one networkd snapshot for configured management readiness.
@@ -46,10 +47,14 @@ func Ready(ctx context.Context, read func(context.Context) ([]byte, error)) (boo
 			continue
 		}
 		required = append(required, link.Name)
-		if !slices.Contains([]string{"carrier", "degraded-carrier", "enslaved"}, link.CarrierState) ||
-			!link.meetsAddressMinimum() {
-			reasons = append(reasons, fmt.Sprintf("systemd-networkd reports required link %s not online (carrier: %s, address: %s) (kernel carrier: %s)",
-				link.Name, cmp.Or(link.CarrierState, "unknown"), cmp.Or(link.AddressState, "unknown"), kernelCarrier(link.Name)))
+		addressReady, knownMinimum := link.meetsAddressMinimum()
+		if link.OnlineState != "online" || !slices.Contains([]string{"carrier", "degraded-carrier", "enslaved"}, link.CarrierState) || !addressReady {
+			reason := fmt.Sprintf("systemd-networkd reports required link %s not online (carrier: %s, address: %s) (kernel carrier: %s)",
+				link.Name, cmp.Or(link.CarrierState, "unknown"), cmp.Or(link.AddressState, "unknown"), kernelCarrier(link.Name))
+			if !knownMinimum {
+				reason += fmt.Sprintf(" (unrecognised required operational minimum %q)", link.RequiredOperationalState[0])
+			}
+			reasons = append(reasons, reason)
 		}
 		if link.OperationalState == "routable" {
 			routable = true
@@ -86,14 +91,20 @@ func kernelCarrier(name string) string {
 	}
 }
 
-func (link networkctlLink) meetsAddressMinimum() bool {
+func (link networkctlLink) meetsAddressMinimum() (ready, knownMinimum bool) {
+	// networkd applies device-specific defaults before publishing OnlineState.
+	if link.RequiredOperationalState == nil {
+		return true, true
+	}
 	switch link.RequiredOperationalState[0] {
 	case "routable":
-		return link.AddressState == "routable"
+		return link.AddressState == "routable", true
 	case "degraded":
-		return link.AddressState == "degraded" || link.AddressState == "routable"
+		return link.AddressState == "degraded" || link.AddressState == "routable", true
+	case "missing", "off", "no-carrier", "dormant", "degraded-carrier", "carrier", "enslaved":
+		return true, true
 	default:
-		return true
+		return false, false
 	}
 }
 

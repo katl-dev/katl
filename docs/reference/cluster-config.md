@@ -299,9 +299,10 @@ To make a host bridge, bond, VLAN, or tunnel part of the node's own network,
 declare its native networkd units; the operator units then replace the fallback
 and own that topology explicitly.
 
-Boot health requires every managed link with `RequiredForOnline` enabled to have
-carrier and meet the address requirement set by its networkd minimum. At least
-one required link must be routable. In the `[Link]` section, use
+Boot health requires every managed link with `RequiredForOnline` enabled to
+have carrier, report online in networkd, and meet the address requirement for
+its configured minimum. At least one required link must be routable. In the
+`[Link]` section, use
 `RequiredForOnline=routable` for a link that must have a routable address and
 `RequiredForOnline=no` for an optional link.
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/boothealth"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/installer"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
@@ -28,6 +29,7 @@ type Collector struct {
 	DefaultRouteInterface func() (string, error)
 	InterfaceVRFs         func(context.Context) (map[string]string, error)
 	InstallerService      func(context.Context) (InstallerService, error)
+	ReadBootHealth        func(context.Context) boothealth.Status
 	ProbeControlPlanePods func(context.Context) (ControlPlanePodStatuses, error)
 	probeCluster          func(context.Context, string) (clusterStatus, error)
 	Now                   func() time.Time
@@ -147,16 +149,24 @@ func (c Collector) collectInstaller(snapshot *Snapshot, now time.Time) {
 func (c Collector) collectRuntime(snapshot *Snapshot, now time.Time) {
 	snapshot.KubernetesConfigured = fileExists(rooted(c.Root, "/etc/kubernetes/kubelet.conf"))
 	c.collectGeneration(snapshot)
+	readHealth := c.ReadBootHealth
+	if readHealth == nil {
+		readHealth = (boothealth.Reader{Root: cleanRoot(c.Root)}).Read
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	snapshot.BootHealth = readHealth(ctx)
+	cancel()
+
 	c.collectKubernetes(snapshot, now)
 	snapshot.State = "starting-runtime"
-	switch snapshot.GenerationHealth {
-	case generation.HealthStateHealthy:
+	switch snapshot.BootHealth.State {
+	case boothealth.Healthy, boothealth.Unhealthy:
 		if snapshot.KubernetesConfigured {
 			snapshot.State = installstatus.StateKubeadmReady
 		} else {
 			snapshot.State = installstatus.StateWaitingForClusterBootstrap
 		}
-	case generation.HealthStateUnhealthy:
+	case boothealth.Failed:
 		snapshot.State = installstatus.StateRuntimeFailedNeedsRepair
 	}
 }

@@ -2,6 +2,8 @@ package kernelcmdline
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -152,4 +154,16 @@ func Protected(option string) bool {
 		}
 	}
 	return false
+}
+
+// ReadCurrent reads the running kernel command line as arguments.
+func ReadCurrent(root string) ([]string, error) {
+	if root = strings.TrimSpace(root); root == "" {
+		root = "/"
+	}
+	data, err := os.ReadFile(filepath.Join(root, "proc/cmdline"))
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(string(data)), nil
 }

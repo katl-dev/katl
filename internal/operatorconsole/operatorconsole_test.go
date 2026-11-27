@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/katl-dev/katl/internal/boothealth"
 	"github.com/katl-dev/katl/internal/generation"
 	installstatus "github.com/katl-dev/katl/internal/installer/status"
 )
@@ -287,16 +288,16 @@ func TestRuntimePresentationStatesFailClosed(t *testing.T) {
 		want   PresentationState
 		style  Style
 	}{
-		{name: "healthy", state: installstatus.StateKubeadmReady, health: generation.HealthStateHealthy, want: PresentationHealthy, style: styleGood},
-		{name: "deferred", state: installstatus.StateKubeadmReady, health: generation.HealthStateDeferred, want: PresentationProgressing, style: styleWarn},
-		{name: "unknown health", state: installstatus.StateKubeadmReady, health: generation.HealthStateUnknown, want: PresentationUnknown, style: styleDim},
+		{name: "healthy", state: installstatus.StateKubeadmReady, health: boothealth.Healthy, want: PresentationHealthy, style: styleGood},
+		{name: "pending", state: installstatus.StateKubeadmReady, health: boothealth.Pending, want: PresentationProgressing, style: styleWarn},
+		{name: "unknown health", state: installstatus.StateKubeadmReady, health: boothealth.Unknown, want: PresentationUnknown, style: styleDim},
 		{name: "unfamiliar health", state: installstatus.StateKubeadmReady, health: "mystery", want: PresentationUnknown, style: styleDim},
 		{name: "unfamiliar state", state: "future-runtime-state", health: generation.HealthStateHealthy, want: PresentationUnknown, style: styleDim},
 		{name: "stale", state: installstatus.StateKubeadmReady, health: generation.HealthStateHealthy, stale: true, want: PresentationUnknown, style: styleDim},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			presentation := NewDashboardModel(&Snapshot{Mode: ModeRuntime, State: test.state, GenerationHealth: test.health, StatusStale: test.stale}).Host
+			presentation := NewDashboardModel(&Snapshot{Mode: ModeRuntime, State: test.state, BootHealth: boothealth.Status{State: test.health}, StatusStale: test.stale}).Host
 			if presentation.State != test.want {
 				t.Fatalf("presentation = %#v, want %q", presentation, test.want)
 			}
@@ -444,6 +445,9 @@ func TestCollectorDerivesRuntimeState(t *testing.T) {
 			collector := Collector{
 				Mode: ModeRuntime, Root: root,
 				Interfaces: func() ([]net.Interface, error) { return nil, nil },
+				ReadBootHealth: func(context.Context) boothealth.Status {
+					return boothealth.Status{State: boothealth.Healthy}
+				},
 			}
 			var snapshot Snapshot
 
@@ -464,6 +468,60 @@ func TestCollectorDerivesRuntimeState(t *testing.T) {
 				t.Fatalf("configured runtime = %+v", snapshot)
 			}
 		})
+	}
+}
+
+func TestConsoleReportsRequiredLinkRecovery(t *testing.T) {
+	root := t.TempDir()
+	now := time.Now()
+	testConsoleGeneration(t, root, "0", "2026.11.0", "", now)
+	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
+		APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind,
+		DefaultGenerationID: "0", BootedGenerationID: "0", UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for path, content := range map[string]string{
+		"proc/cmdline":                "katl.generation=0\n",
+		"etc/kubernetes/kubelet.conf": "configured\n",
+	} {
+		path = filepath.Join(root, path)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	link := `{"Interfaces":[{"Name":"management0","NetworkFile":"lan.network","RequiredForOnline":true,"OnlineState":"offline","OperationalState":"carrier","CarrierState":"carrier","AddressState":"off"}]}`
+	reader := boothealth.Reader{
+		Root: root,
+		RunCommand: func(context.Context, []string) ([]byte, error) {
+			return []byte("Id=katl-boot-health-settled.target\nLoadState=loaded\nActiveState=active\nJob=\n\n" +
+				"Id=katl-boot-complete.target\nLoadState=loaded\nActiveState=active\n"), nil
+		},
+		ReadNetwork: func(context.Context) ([]byte, error) { return []byte(link), nil },
+	}
+	collector := Collector{
+		Mode: ModeRuntime, Root: root,
+		Interfaces:     func() ([]net.Interface, error) { return nil, nil },
+		ReadBootHealth: reader.Read,
+	}
+	var snapshot Snapshot
+	collector.Collect(&snapshot)
+	loss := string(renderDashboard(&snapshot, nil, 80, 25, false))
+	for _, want := range []string{"State:Unhealthy", "systemd-networkdreportsrequiredlinkmanagement0notonline", "Checkthelinkandthenode'snetworkconfiguration"} {
+		if !containsIgnoringLayout(loss, want) {
+			t.Fatalf("console during required link loss lacks %q:\n%s", want, loss)
+		}
+	}
+
+	link = `{"Interfaces":[{"Name":"management0","NetworkFile":"lan.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}]}`
+	collector.Collect(&snapshot)
+	recovered := string(renderDashboard(&snapshot, nil, 80, 25, false))
+	if !containsIgnoringLayout(recovered, "State:Healthy") || containsIgnoringLayout(recovered, "Boothealth:") {
+		t.Fatalf("console after required link recovery:\n%s", recovered)
 	}
 }
 
@@ -980,7 +1038,7 @@ func TestRenderKatlOSHealthAndColour(t *testing.T) {
 		CurrentSoftware:  Software{Generation: "0", KatlOSVersion: "2026.7.0-beta.4"},
 		NextBootSoftware: Software{Generation: "0"},
 		LiveSoftware:     Software{Generation: "0"},
-		GenerationHealth: "healthy",
+		BootHealth:       boothealth.Status{State: boothealth.Healthy},
 		CurrentStep:      "Reboot",
 	}
 	plain := string(renderDashboard(&snapshot, nil, 80, 15, false))
@@ -1009,7 +1067,7 @@ func TestRenderRuntimeUsesNestedStatusAndJournalPanes(t *testing.T) {
 		KubernetesConfigured: true,
 		Hostname:             "cp-1",
 		State:                installstatus.StateWaitingForClusterBootstrap,
-		GenerationHealth:     "healthy",
+		BootHealth:           boothealth.Status{State: boothealth.Healthy},
 		ControlPlane:         true,
 		ControlPlaneEndpoint: "172.31.250.1:6443",
 		ControlPlanePods:     initialControlPlanePods(KubernetesPodRunning),
@@ -1062,7 +1120,7 @@ func TestRenderRuntimeStacksPanesAtNarrowWidths(t *testing.T) {
 		KubernetesConfigured: true,
 		Hostname:             hostname,
 		State:                installstatus.StateWaitingForClusterBootstrap,
-		GenerationHealth:     "healthy",
+		BootHealth:           boothealth.Status{State: boothealth.Healthy},
 	}
 	plain := string(renderDashboard(&snapshot, nil, 40, 60, false))
 	colored := string(renderDashboard(&snapshot, nil, 40, 60, true))
@@ -1607,7 +1665,7 @@ func TestRendererBoundsArbitraryContentAtSupportedWidths(t *testing.T) {
 		CurrentSoftware:      Software{Generation: string([]byte{'g', 'e', 'n', 0xff}), KatlOSVersion: strings.Repeat("version", 20)},
 		NextBootSoftware:     Software{Generation: string([]byte{'g', 'e', 'n', 0xff}), KatlOSVersion: strings.Repeat("version", 20)},
 		LiveSoftware:         Software{Generation: string([]byte{'g', 'e', 'n', 0xff}), KatlOSVersion: strings.Repeat("version", 20), KubernetesVersion: strings.Repeat("v1.36.1", 20)},
-		GenerationHealth:     "healthy",
+		BootHealth:           boothealth.Status{State: boothealth.Healthy},
 		KubernetesConfigured: true,
 		ControlPlane:         true,
 		ControlPlaneEndpoint: strings.Repeat("api.control-plane.example.test:", 12) + "6443",

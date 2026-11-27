@@ -17,7 +17,8 @@ func TestReadyUsesNetworkdMinimum(t *testing.T) {
 
 	const other = `{"Name":"enp3s0","NetworkFile":"other.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["routable","routable"],"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}`
 	const member = `{"Name":"enp1s0","NetworkFile":"member.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["carrier","routable"],"OnlineState":"online","OperationalState":"enslaved","CarrierState":"enslaved","AddressState":"off"}`
-	const defaultBondMember = `{"Name":"enp1s0","NetworkFile":"member.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["enslaved","enslaved"],"OnlineState":"online","OperationalState":"enslaved","CarrierState":"enslaved","AddressState":"off"}`
+	const defaultBondMember = `{"Name":"enp1s0","NetworkFile":"member.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"enslaved","CarrierState":"enslaved","AddressState":"off"}`
+	const unenslavedMember = `{"Name":"enp1s0","NetworkFile":"member.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["enslaved","enslaved"],"OnlineState":"offline","OperationalState":"carrier","CarrierState":"carrier","AddressState":"off"}`
 	const bond = `{"Name":"bond0","NetworkFile":"bond.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["routable","routable"],"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}`
 	const bondWithoutAddress = `{"Name":"bond0","NetworkFile":"bond.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["routable","routable"],"OnlineState":"online","OperationalState":"carrier","CarrierState":"carrier","AddressState":"off"}`
 	const managementWithoutAddress = `{"Name":"enp2s0","NetworkFile":"management.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["routable","routable"],"OnlineState":"online","OperationalState":"carrier","CarrierState":"carrier","AddressState":"off"}`
@@ -30,10 +31,26 @@ func TestReadyUsesNetworkdMinimum(t *testing.T) {
 		unavailable string
 	}{
 		{name: "addressless bond member", links: []string{member, bond}},
-		{name: "addressless bond member with networkd default", links: []string{defaultBondMember, bond}},
+		{name: "addressless bond member with omitted range", links: []string{defaultBondMember, bond}},
+		{name: "carrier on an unenslaved member", links: []string{unenslavedMember, bond}, unavailable: "enp1s0"},
 		{name: "bond lost its address", links: []string{member, bondWithoutAddress, other}, unavailable: "bond0"},
 		{name: "management online without an address", links: []string{managementWithoutAddress, other}, unavailable: "enp2s0"},
 		{name: "IPv6-only management", links: []string{managementIPv6}},
+		{
+			name: "IPv4 loss with routable IPv6",
+			links: []string{
+				`{"Name":"enp2s0","NetworkFile":"management.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["routable","routable"],"RequiredFamilyForOnline":"ipv4","OnlineState":"offline","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable","IPv4AddressState":"off","IPv6AddressState":"routable"}`,
+			},
+			unavailable: "enp2s0",
+		},
+		{
+			name: "addressless Ethernet with omitted range",
+			links: []string{
+				`{"Name":"enp2s0","Type":"ether","NetworkFile":"management.network","RequiredForOnline":true,"OnlineState":"offline","OperationalState":"carrier","CarrierState":"carrier","AddressState":"off"}`,
+				other,
+			},
+			unavailable: "enp2s0",
+		},
 		{name: "RA on a carrier-only link", links: []string{raWithoutAddress, other}},
 		{
 			name: "degraded minimum rejects no address",
@@ -46,7 +63,7 @@ func TestReadyUsesNetworkdMinimum(t *testing.T) {
 		{
 			name: "degraded minimum accepts link-local address",
 			links: []string{
-				`{"Name":"enp2s0","NetworkFile":"management.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["degraded","routable"],"OnlineState":"offline","OperationalState":"degraded","CarrierState":"carrier","AddressState":"degraded"}`,
+				`{"Name":"enp2s0","NetworkFile":"management.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["degraded","routable"],"OnlineState":"online","OperationalState":"degraded","CarrierState":"carrier","AddressState":"degraded"}`,
 				other,
 			},
 		},
