@@ -38,6 +38,7 @@ The decision takes these inputs for a version `V`.
 | Final release | The published GitHub release for `vV`, with its pre-release flag and assets. |
 | Active run | A run of `release.yml` on `release/V` whose status is `queued`, `in_progress`, `waiting` or `requested`, other than the run making the decision. A run that only waits for the concurrency group has status `pending` and does not count. If there are several, the oldest. |
 | Approval pending | The active run has a pending deployment to the `release` environment. |
+| Extension references | The extension bundle references that exist for version `V` in the registry. |
 
 Tags of `V` with any other suffix are not inputs. The action neither reads nor
 refuses them.
@@ -110,7 +111,10 @@ A status is a record only when all of these hold:
    record only when that attempt's **Release validation** job concluded
    `success`, and the `SHA256SUMS` with the recorded digest has an
    attestation from `release-artifacts.yml` as called by that run attempt, at
-   this commit on `refs/heads/release/V`. A `failed` status is a record only
+   this commit on `refs/heads/release/V`, and that attempt built the version
+   the context names: its bundle artifact is
+   `katl-<version>-x86_64-<first 12 of the commit>`. A `failed` status is a
+   record only
    when that attempt completed without that success.
 
 The lookup lists every status of the commit, following pagination, and not
@@ -126,7 +130,7 @@ Step 5 is what keeps a status from standing in for work: bytes become
 publishable only through an attempt that validated and attested them, whoever
 wrote the status. Steps 1 to 4 alone do not establish that the named attempt
 wrote a `building` status. The most such a status can do is make the action
-refuse with row 19 or row 23, which a retry or a new commit clears, or make
+refuse with row 19 or row 24, which a retry or a new commit clears, or make
 row 19 apply in place of row 8 to a tag the action did not create, where a
 retry builds and qualifies it like any candidate. No status can cause a
 publication, replace published bytes, or stop a version for good.
@@ -195,9 +199,9 @@ published.
 
 ### No final tag
 
-Every row below requires that no final tag exists. Rows 17 to 25 also require
+Every row below requires that no final tag exists. Rows 17 to 26 also require
 a candidate: `C` is the commit of the highest, `vV-rc.N`, and `p` the phase
-of its record. Rows 22 to 25 require `rc.N` to be published and take `q` from
+of its record. Rows 22 to 26 require `rc.N` to be published and take `q` from
 the final's record on `C`.
 
 | # | State | Guard | Action or refusal |
@@ -208,13 +212,14 @@ the final's record on `C`.
 | 19 | `candidate-failed` | No final tag, a candidate exists, `H` is `C`, `p` is `building` or `failed`, and the retry reason is empty. `<url>` is the record's target. | `v<V>-rc.<N> did not qualify at <C>: <outcome> (<url>). Push a fix to release/<V>; the next dispatch then tags v<V>-rc.<K>. If the source is not at fault, dispatch again with a retry reason to rebuild v<V>-rc.<N>.` |
 | 20 | `candidate-retry` | No final tag, a candidate exists, `H` is `C`, `p` is `building` or `failed`, and there is a retry reason. | `retry-candidate`: rebuild and requalify `vV-rc.N` at `C` under the existing tag, then publish it. |
 | 21 | `candidate-incomplete` | No final tag, a candidate exists, `H` is `C`, `p` is `qualified`, no pre-release is published, and the retry reason is empty. | `resume-candidate`: publish the bytes of the recorded build attempt. Never rebuild. |
-| 22 | `final-start` | No final tag, `H` is `C`, `rc.N` is published, the final has no record on `C`, and the retry reason is empty. | `final`: build and qualify `V` at `C`, wait for approval, then publish the tag and the release together. |
-| 23 | `final-failed` | No final tag, `H` is `C`, `rc.N` is published, `q` is `building` or `failed`, and the retry reason is empty. `<url>` is the final record's target. | `v<V> did not qualify at <C>: <outcome> (<url>). v<V>-rc.<N> is still green. If the source is at fault, push a fix to release/<V>; the next dispatch then tags v<V>-rc.<K>. Otherwise dispatch again with a retry reason to rebuild v<V>.` |
-| 24 | `final-retry` | No final tag, `H` is `C`, `rc.N` is published, `q` is `building` or `failed`, and there is a retry reason. | `retry-final`: as `final`, recording the reason. |
-| 25 | `final-unapproved` | No final tag, `H` is `C`, `rc.N` is published, `q` is `qualified`, and the retry reason is empty. The earlier final qualified and published nothing: its approval was rejected or timed out, or its run ended before publication. | `final`: as row 22. |
-| 26 | `retry-not-applicable` | Everything else, which is a retry reason in the state of row 16, 17, 21, 22 or 25. `<step>` is `tag v<V>-rc.1 at <H>` for row 16, `tag v<V>-rc.<K> at <H>` for 17, `finish publishing v<V>-rc.<N>` for 21, and `build v<V> at <C> for approval` for 22 and 25. | `There is nothing to retry for <V>: a dispatch without a retry reason would <step>. Dispatch again without one.` |
+| 22 | `extensions-already-published` | No final tag, `H` is `C`, `rc.N` is published, and an extension reference for `V` exists. A final build would produce different bytes and could not publish them, so the action refuses before building, whatever the final's record and the retry reason. | `Extension bundles for <V> are already published with different contents. Published bytes are never replaced. Have a repository administrator delete those package versions if no release uses them and dispatch again; otherwise abandon <V> and cut the next version.` |
+| 23 | `final-start` | No final tag, `H` is `C`, `rc.N` is published, the final has no record on `C`, and the retry reason is empty. | `final`: build and qualify `V` at `C`, wait for approval, then publish the tag and the release together. |
+| 24 | `final-failed` | No final tag, `H` is `C`, `rc.N` is published, `q` is `building` or `failed`, and the retry reason is empty. `<url>` is the final record's target. | `v<V> did not qualify at <C>: <outcome> (<url>). v<V>-rc.<N> is still green. If the source is at fault, push a fix to release/<V>; the next dispatch then tags v<V>-rc.<K>. Otherwise dispatch again with a retry reason to rebuild v<V>.` |
+| 25 | `final-retry` | No final tag, `H` is `C`, `rc.N` is published, `q` is `building` or `failed`, and there is a retry reason. | `retry-final`: as `final`, recording the reason. |
+| 26 | `final-unapproved` | No final tag, `H` is `C`, `rc.N` is published, `q` is `qualified`, and the retry reason is empty. The earlier final qualified and published nothing: its approval was rejected or timed out, or its run ended before publication. | `final`: as row 23. |
+| 27 | `retry-not-applicable` | Everything else, which is a retry reason in the state of row 16, 17, 21, 23 or 26. `<step>` is `tag v<V>-rc.1 at <H>` for row 16, `tag v<V>-rc.<K> at <H>` for 17, `finish publishing v<V>-rc.<N>` for 21, and `build v<V> at <C> for approval` for 23 and 26. | `There is nothing to retry for <V>: a dispatch without a retry reason would <step>. Dispatch again without one.` |
 
-Rows 19 and 23 do not judge whether a failure was external. That judgement
+Rows 19 and 24 do not judge whether a failure was external. That judgement
 follows the repository's flake rule, and whoever dispatches the retry records
 it as the reason.
 
@@ -251,7 +256,7 @@ Row 16 has no candidate to collide with, row 17 requires `H` to differ from
 strict ancestor of `C`. A retry reuses its tag.
 
 **The final tag goes only on a commit that carries a green candidate.** Rows
-22, 24 and 25 are the only ones that lead to a final tag, and each requires
+23, 25 and 26 are the only ones that lead to a final tag, and each requires
 `rc.N` published with `C` equal to `H`. The publish job checks it again after
 approval.
 
@@ -276,7 +281,7 @@ This relies on no workflow starting on a tag push: the tag trigger of
 `release-artifacts.yml` is removed before the rule that reserves final tags
 is applied.
 
-**Retry never touches published bytes.** Retry exists only in rows 20 and 24,
+**Retry never touches published bytes.** Retry exists only in rows 20 and 25,
 where the record is `building` or `failed`. A `qualified` candidate is only
 ever published from its recorded attempt, which is idempotent. A `qualified`
 final without its tag is rebuilt, and check 7 of
@@ -366,10 +371,16 @@ to publish.
    otherwise abandon <V> and cut the next version.`
 
 The job then creates the draft release with the `katl-release` App's token,
-uploads the bundle, pushes the extension bundles, publishes the draft, and
-reads the published `SHA256SUMS` back to compare it. Check 7 fires only after
-an earlier final attempt failed between pushing the extension bundles and
-publishing the draft.
+uploads the bundle, pushes the extension bundles, confirms that the draft's
+assets still have the digests `SHA256SUMS` gives, and publishes it with one
+request that sets the tag `vV` and the target `C`; it then reads back the
+tag's commit and the published `SHA256SUMS`.
+
+Check 7 also runs before the final is built, as row 22: `next` refuses to
+start a final while any extension reference for `V` exists. Both fire when a
+reference exists before this attempt pushes one, which happens after an
+earlier final attempt failed between pushing the extension bundles and
+publishing the draft, or when a reference was created outside the action.
 
 Final tags, `v*` without a suffix, can be created only by that App, and the
 App's key is available only to a job that runs in the `release` environment
@@ -380,8 +391,8 @@ workflow as it stands at the release branch's head, so the protection of
 release branches is part of the gate.
 
 `katl-release next` chooses the final from the green and promotable checks
-alone. It cannot check 2 to 7 because the final's bytes do not exist when it
-decides.
+and row 22. It cannot check 2 to 6 because the final's bytes do not exist
+when it decides.
 
 ## Decisions
 
@@ -435,3 +446,20 @@ These are the choices the design makes where another reading was available.
   decision with no recorded reason.
 - **Candidates start at `rc.1`.** The grammar still accepts `rc.0`, and the
   action refuses a version that has one.
+
+## To verify during implementation
+
+The design assumes these facts about GitHub. The state machine and the
+release workflow confirm each against the service before relying on it, and
+a fact that does not hold reopens the part of the design that names it.
+
+- Publishing a draft release with the App's token creates the reserved tag
+  `vV` at the draft's target commit in the same request.
+- An attestation's certificate identifies the run attempt that called
+  `release-artifacts.yml`, which trust step 5 compares with the record.
+- Whether a published immutable release can be deleted, which decides
+  whether the first case of row 10 can arise at all.
+- The registry can list the extension references of a version with their
+  digests, which row 22 and check 7 read.
+- An attestation can be fetched by the digest of `SHA256SUMS` without the
+  file, which `next` needs for trust step 5.
