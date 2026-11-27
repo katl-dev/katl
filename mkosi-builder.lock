@@ -1,0 +1,3 @@
+# Written by the Builder Image workflow; see scripts/mkosi-builder.
+tag=fedora-45-9179d49cab0f6efa
+image=ghcr.io/katl-dev/katl/mkosi-builder@sha256:e8723d7f1ccd0b727cb54698c31e0ef450190c620d039315b9f3d16b3fae39d6
