@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"os/exec"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -34,9 +32,6 @@ type statusAPI struct {
 }
 
 func (a *statusAPI) call(name string, args ...string) ([]byte, error) {
-	if name == "scripts/katl-release-artifacts" {
-		return exec.Command(filepath.Join("..", "..", name), args...).CombinedOutput()
-	}
 	if name != "gh" || len(args) == 0 || args[0] != "api" {
 		return nil, errors.New("unexpected command " + name)
 	}

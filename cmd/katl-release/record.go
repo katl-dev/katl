@@ -8,10 +8,10 @@ import (
 	"io"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/katl-dev/katl/internal/releaserecord"
+	"github.com/katl-dev/katl/internal/releaseversion"
 	"github.com/katl-dev/katl/internal/retry"
 )
 
@@ -39,10 +39,11 @@ func record(args []string, stderr io.Writer, call command) error {
 		return errors.New(recordUsage)
 	}
 	version, phase := args[0], releaserecord.Phase(args[1])
-	if err := validateVersion(version, call); err != nil {
+	parsed, err := validateVersion(version)
+	if err != nil {
 		return fmt.Errorf("invalid release version: %w", err)
 	}
-	if !finalVersion.MatchString(version) && !candidateVersion.MatchString(version) {
+	if !parsed.IsFinal() && parsed.Stage != releaseversion.Candidate {
 		return fmt.Errorf("%s is neither a release candidate nor a final version", version)
 	}
 	if (phase == releaserecord.Qualified) != (len(args) == 3) {
@@ -53,8 +54,7 @@ func record(args []string, stderr io.Writer, call command) error {
 	if err != nil {
 		return err
 	}
-	final, _, _ := strings.Cut(version, "-")
-	if branch := "refs/heads/release/" + final; attempt.ref != branch {
+	if branch := "refs/heads/release/" + parsed.Base().String(); attempt.ref != branch {
 		return fmt.Errorf("%s is recorded only by a run on %s, and this run is on %q", version, branch, attempt.ref)
 	}
 	entry := releaserecord.Record{Version: version, Phase: phase, Run: attempt.run}

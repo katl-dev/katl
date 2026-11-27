@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -18,6 +19,7 @@ import (
 	"strings"
 
 	"github.com/katl-dev/katl/internal/flavour"
+	"github.com/katl-dev/katl/internal/releaseversion"
 )
 
 const repository = "katl-dev/katl"
@@ -39,7 +41,7 @@ func main() {
 
 func run(args []string, stdout, stderr io.Writer, call command) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify TAG COMMIT DIRECTORY\n       scripts/katl-release checksums DIRECTORY\n       scripts/katl-release equivalent BUNDLE FLAVOUR=SHA256SUMS...\n       scripts/katl-release regression VERSION COMMIT\n       scripts/katl-release record VERSION building|failed|qualified [DIGEST]\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
+		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify TAG COMMIT DIRECTORY\n       scripts/katl-release checksums DIRECTORY\n       scripts/katl-release equivalent BUNDLE FLAVOUR=SHA256SUMS...\n       scripts/katl-release regression VERSION COMMIT\n       scripts/katl-release next [--ref REF] [--dispatch COMMIT] [--retry REASON]\n       scripts/katl-release status VERSION\n       scripts/katl-release version VERSION\n       scripts/katl-release stable-tags [TAG...]\n       scripts/katl-release record VERSION building|failed|qualified [DIGEST]\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
 		return nil
 	}
 	if args[0] == "prepare" {
@@ -50,6 +52,15 @@ func run(args []string, stdout, stderr io.Writer, call command) error {
 	}
 	if args[0] == "record" {
 		return record(args[1:], stderr, call)
+	}
+	if args[0] == "version" || args[0] == "stable-tags" {
+		return versionCommand(args, stdout)
+	}
+	if args[0] == "next" {
+		return next(context.Background(), args[1:], stdout, newGitHubReader())
+	}
+	if args[0] == "status" {
+		return status(context.Background(), args[1:], stdout, newGitHubReader())
 	}
 	if args[0] == "verify" {
 		return verify(args[1:], stderr, call)
@@ -92,7 +103,7 @@ func verify(args []string, stderr io.Writer, call command) error {
 	if !strings.HasPrefix(tag, "v") {
 		return errors.New("TAG must be a KatlOS release tag such as v2026.10.2")
 	}
-	if err := validateVersion(tag[1:], call); err != nil {
+	if _, err := validateVersion(tag[1:]); err != nil {
 		return fmt.Errorf("TAG is not a KatlOS release: %w", err)
 	}
 	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(commit) {
@@ -114,12 +125,11 @@ func api(call command, endpoint string, value any) error {
 	return json.Unmarshal(data, value)
 }
 
-func validateVersion(version string, call command) error {
+func validateVersion(version string) (releaseversion.Version, error) {
 	if strings.HasPrefix(version, "v") {
-		return errors.New("use the embedded version without the v prefix")
+		return releaseversion.Version{}, errors.New("use the embedded version without the v prefix")
 	}
-	_, err := call("scripts/katl-release-artifacts", "version", "workflow_dispatch", "branch", "main", version)
-	return err
+	return releaseversion.Parse(version)
 }
 
 func prepare(args []string, stdout, stderr io.Writer, call command) error {
@@ -133,7 +143,7 @@ func prepare(args []string, stdout, stderr io.Writer, call command) error {
 		return errors.New("usage: scripts/katl-release prepare [--ref main] VERSION")
 	}
 	version := flags.Arg(0)
-	if err := validateVersion(version, call); err != nil {
+	if _, err := validateVersion(version); err != nil {
 		return fmt.Errorf("invalid release version: %w", err)
 	}
 	var source struct{ SHA string }
@@ -196,7 +206,7 @@ func inspect(id int64, call command) (candidate, error) {
 	if run.ID != id || run.Attempt < 1 || run.Event != "push" || run.Path != workflow || !strings.HasPrefix(run.Tag, "v") {
 		return result, errors.New("select a pushed KatlOS tag run from release-artifacts.yml, not a branch or manual build")
 	}
-	if err := validateVersion(strings.TrimPrefix(run.Tag, "v"), call); err != nil {
+	if _, err := validateVersion(strings.TrimPrefix(run.Tag, "v")); err != nil {
 		return result, fmt.Errorf("run is not a KatlOS release: %w", err)
 	}
 	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(run.Commit) {
@@ -298,6 +308,11 @@ func parseChecksums(path string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
+	return decodeChecksums(data)
+}
+
+// decodeChecksums reads SHA256SUMS content into a name-to-digest map.
+func decodeChecksums(data []byte) (map[string]string, error) {
 	sums := make(map[string]string)
 	for _, line := range strings.Split(strings.TrimSuffix(string(data), "\n"), "\n") {
 		if len(line) < 67 || line[64:66] != "  " {

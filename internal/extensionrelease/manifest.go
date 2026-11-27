@@ -94,3 +94,20 @@ func (manifest Manifest) Resolve(target Target, repository string) (string, erro
 	}
 	return ref, nil
 }
+
+// ReleaseTag is the registry tag of an extension bundle published with the
+// target's KatlOS release.
+func (target Target) ReleaseTag(name, payloadVersion string) string {
+	return fmt.Sprintf("v%s-%s-%s-%s-%s", target.Version, target.Flavour, target.Architecture, name, payloadVersion)
+}
+
+// IsReleaseTagOf reports whether a registry tag is one that ReleaseTag gives
+// for the KatlOS version, of any flavour. Tags of the version's candidates
+// carry their own version and are not.
+func IsReleaseTagOf(tag, version string) bool {
+	rest, ok := strings.CutPrefix(tag, "v"+version+"-")
+	if !ok {
+		return false
+	}
+	return strings.HasPrefix(rest, flavour.Standard+"-") || strings.HasPrefix(rest, flavour.LTS+"-")
+}

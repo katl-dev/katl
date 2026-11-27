@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+source_root="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+repo_root="${KATL_REPO_ROOT:-$source_root}"
 build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
 architecture="${KATL_ARCHITECTURE:-$(uname -m)}"
 go_command="${KATL_RELEASE_GO:-go}"
@@ -27,9 +28,17 @@ EOF
     exit 2
 }
 
-is_katlos_tag() {
-    local tag="$1"
-    [[ "$tag" =~ ^v[0-9]{4}\.([1-9]|1[0-2])\.(0|[1-9][0-9]*)(-(dev|alpha|beta|rc)\.(0|[1-9][0-9]*))?$ ]]
+# The version grammar belongs to internal/releaseversion. It is built from this
+# script's own checkout, which KATL_REPO_ROOT may not be.
+release_tool() {
+    (cd "$source_root" && "$go_command" run ./cmd/katl-release "$@")
+}
+
+# Prints the final release tags among newline-separated tags, in their order.
+stable_tags() {
+    local -a tags
+    mapfile -t tags <<<"$1"
+    release_tool stable-tags "${tags[@]}"
 }
 
 # Prints the last reader note, or skip if every Release-Note asks to skip.
@@ -74,8 +83,9 @@ release_notes_base() {
     fi
 
     tags="$(git tag --list 'v[0-9]*' --sort=-version:refname)" || return
+    tags="$(stable_tags "$tags")" || exit 1
     while IFS= read -r tag; do
-        is_stable_tag "$tag" && stable_tag_precedes "$tag" "$final_tag" || continue
+        [[ -n "$tag" ]] && stable_tag_precedes "$tag" "$final_tag" || continue
         earlier_tags+=("$tag")
     done <<< "$tags"
     (("${#earlier_tags[@]}" > 0)) || return 0
@@ -84,8 +94,9 @@ release_notes_base() {
     releases="$(gh api --paginate "repos/$repository/releases?per_page=100" |
         jq -r '.[] | select(.draft == false and .prerelease == false) | .tag_name')" ||
         fail "cannot list published releases for $repository"
+    releases="$(stable_tags "$releases")" || exit 1
     while IFS= read -r tag; do
-        is_stable_tag "$tag" && published_tags["$tag"]=1
+        [[ -z "$tag" ]] || published_tags["$tag"]=1
     done <<< "$releases"
 
     for tag in "${earlier_tags[@]}"; do
@@ -193,11 +204,7 @@ generate_release_notes() {
 }
 
 validate_version() {
-    local version="$1"
-    [[ -n "$version" ]] || fail "release version is empty"
-    ((${#version} <= 80)) || fail "release version is longer than 80 characters"
-    [[ "$version" =~ ^[0-9]{4}\.([1-9]|1[0-2])\.(0|[1-9][0-9]*)(-(dev|alpha|beta|rc)\.(0|[1-9][0-9]*))?$ ]] ||
-        fail "release version is not canonical KatlOS CalVer (YYYY.M.PATCH[-dev.N|-alpha.N|-beta.N|-rc.N]): $version"
+    release_tool version "$1" || exit 1
 }
 
 verify_artifact() {
@@ -311,7 +318,9 @@ version_for_ref() {
 # Succeeds for a final release tag, such as v2026.11.4, and fails for the
 # development, alpha, beta and release-candidate tags.
 is_stable_tag() {
-    is_katlos_tag "$1" && [[ "$1" != *-* ]]
+    local stable
+    stable="$(release_tool stable-tags "$1")" || exit 1
+    [[ -n "$stable" ]]
 }
 
 production_upgrade_baseline() {
@@ -333,11 +342,14 @@ previous_stable_tag() {
     git rev-parse --verify --quiet "$base^{commit}" >/dev/null ||
         fail "base ref does not exist: $base"
 
-    while IFS= read -r candidate; do
-        is_stable_tag "$candidate" || continue
+    candidate="$(git tag --merged "$base" --list 'v[0-9]*' --sort=-version:refname)" ||
+        fail "cannot list the tags merged into $base"
+    candidate="$(stable_tags "$candidate")" || exit 1
+    candidate="${candidate%%$'\n'*}"
+    if [[ -n "$candidate" ]]; then
         printf '%s\n' "$candidate"
         return
-    done < <(git tag --merged "$base" --list 'v[0-9]*' --sort=-version:refname)
+    fi
 
     fail "no stable release tag is reachable from $base"
 }

@@ -112,3 +112,27 @@ func TestRepositoryMapping(t *testing.T) {
 		t.Fatal("accepted a mapping to another repository")
 	}
 }
+
+func TestReleaseTag(t *testing.T) {
+	target := Target{Version: "2026.12.1", Flavour: "lts", Architecture: "x86_64"}
+	tag := target.ReleaseTag("drbd9", "9.3.4")
+	if tag != "v2026.12.1-lts-x86_64-drbd9-9.3.4" {
+		t.Fatalf("ReleaseTag = %q", tag)
+	}
+	for _, tc := range []struct {
+		tag     string
+		version string
+		want    bool
+	}{
+		{tag, "2026.12.1", true},
+		{"v2026.12.1-standard-x86_64-bird-3.1", "2026.12.1", true},
+		{"v2026.12.1-rc.1-lts-x86_64-drbd9-9.3.4", "2026.12.1", false},
+		{"v2026.12.10-lts-x86_64-drbd9-9.3.4", "2026.12.1", false},
+		{"manifest-sha256-523c", "2026.12.1", false},
+		{"v2026.12.1-rc.1-lts-x86_64-drbd9-9.3.4", "2026.12.1-rc.1", true},
+	} {
+		if got := IsReleaseTagOf(tc.tag, tc.version); got != tc.want {
+			t.Errorf("IsReleaseTagOf(%q, %q) = %v, want %v", tc.tag, tc.version, got, tc.want)
+		}
+	}
+}

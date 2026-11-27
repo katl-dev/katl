@@ -74,6 +74,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: ./.github/actions/setup-go
       - id: bundle
         env:
           GH_TOKEN: ${{ github.token }}
@@ -155,6 +156,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+      - uses: ./.github/actions/setup-go
 
       - name: Resolve supported upgrade source
         id: previous
@@ -191,7 +193,6 @@ jobs:
             echo "version=$version"
             echo "artifact-name=$artifact_name"
           } >> "$GITHUB_OUTPUT"
-      - uses: ./.github/actions/setup-go
       # Only tag pushes may skip the regression lanes; scheduled, dispatched and
       # called runs always repeat them, because an empty decision runs the lanes. A final
       # tag fails here unless a release candidate of it already
