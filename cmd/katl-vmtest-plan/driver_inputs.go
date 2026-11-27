@@ -1,8 +1,6 @@
 package main
 
 import (
-	"bytes"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -11,6 +9,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/buildinputs"
 	"github.com/katl-dev/katl/internal/flavour"
 	"gopkg.in/yaml.v3"
 )
@@ -151,35 +150,7 @@ func kernelLockFlavour(name string) string {
 	return ""
 }
 
-func sharedDriverInput(name string) bool {
-	if strings.HasSuffix(name, ".md") {
-		return false
-	}
-	for _, pattern := range driverInputs {
-		// A terminal /** includes the whole subtree. path.Match handles the
-		// remaining pattern, including the recipe and profile directory names.
-		candidate := name
-		if base, recursive := strings.CutSuffix(pattern, "/**"); recursive {
-			pattern = base
-			depth := strings.Count(pattern, "/") + 1
-			parts := strings.SplitN(name, "/", depth+1)
-			if len(parts) <= depth {
-				continue
-			}
-			candidate = strings.Join(parts[:depth], "/")
-		}
-		if matched, _ := path.Match(pattern, candidate); matched {
-			return true
-		}
-	}
-	return false
-}
-
 func committedDriverDigests() (map[string]string, error) {
-	tree, err := gitOutput("ls-tree", "-rz", "--full-tree", "HEAD")
-	if err != nil {
-		return nil, err
-	}
 	// Use the release selector used by the builder. CI checks out the candidate
 	// before planning, so the active Fedora release comes from that same tree.
 	root, err := gitOutput("rev-parse", "--show-toplevel")
@@ -195,88 +166,18 @@ func committedDriverDigests() (map[string]string, error) {
 	}
 	lockDir := "kernels/fedora-" + strings.TrimSpace(string(release)) + "/x86_64/"
 
-	type input struct{ name, mode, content string }
-	files := map[string]input{}
-	var selected []string
-	locks := map[string]input{}
-	for line := range bytes.SplitSeq(bytes.TrimSuffix(tree, []byte{0}), []byte{0}) {
-		metadata, name, ok := strings.Cut(string(line), "\t")
-		fields := strings.Fields(metadata)
-		if !ok || len(fields) != 3 {
-			return nil, fmt.Errorf("invalid git tree entry %q", line)
-		}
-		file := input{name: name, mode: fields[0], content: fields[2]}
-		files[name] = file
-		if flavour := kernelLockFlavour(name); flavour != "" && name == lockDir+flavour+".json" {
-			locks[flavour] = file
-		} else if sharedDriverInput(name) {
-			selected = append(selected, name)
-		}
-	}
-
-	var shared []input
-	// Follow selected links through the committed tree. Keep link blobs as
-	// inputs too, so changing the destination is itself observable.
-	seen := map[string]bool{}
-	for i := 0; i < len(selected); i++ {
-		name := selected[i]
-		if seen[name] {
-			continue
-		}
-		seen[name] = true
-		file := files[name]
-		switch file.mode {
-		case "120000":
-			link, err := gitOutput("cat-file", "blob", file.content)
-			if err != nil {
-				return nil, err
-			}
-			target := path.Join(path.Dir(name), string(link))
-			if !path.IsAbs(string(link)) && target != ".." && !strings.HasPrefix(target, "../") {
-				if _, ok := files[target]; ok {
-					selected = append(selected, target)
-				} else {
-					for child := range files {
-						if target == "." || strings.HasPrefix(child, target+"/") {
-							selected = append(selected, child)
-						}
-					}
-				}
-			}
-		case "100644", "100755":
-			if project := driverInputProjection(name); project != nil {
-				data, err := gitOutput("cat-file", "blob", file.content)
-				if err != nil {
-					return nil, err
-				}
-				projected, err := project(data)
-				if err != nil {
-					return nil, fmt.Errorf("project driver input %q: %w", name, err)
-				}
-				file.content = fmt.Sprintf("%x", sha256.Sum256(projected))
-			}
-		default:
-			return nil, fmt.Errorf("driver input %q is not a Git blob", name)
-		}
-		shared = append(shared, file)
-	}
-
-	digests := map[string]string{}
+	locks := map[string]string{}
 	for _, flavour := range kernelFlavours {
-		lock, ok := locks[flavour]
-		if !ok || (lock.mode != "100644" && lock.mode != "100755") {
-			continue
-		}
-		inputs := append(slices.Clone(shared), lock)
-		slices.SortFunc(inputs, func(a, b input) int { return strings.Compare(a.name, b.name) })
-		hash := sha256.New()
-		fmt.Fprintf(hash, "katl-driver-qualification\x00%s\x00%s\x00", driverDigestVersion, flavour)
-		for _, input := range inputs {
-			fmt.Fprintf(hash, "%s\x00%s\x00%s\x00", input.name, input.mode, input.content)
-		}
-		digests[flavour] = fmt.Sprintf("%s:%x", driverDigestVersion, hash.Sum(nil))
+		locks[flavour] = lockDir + flavour + ".json"
 	}
-	return digests, nil
+	return buildinputs.Digests(fedoraRelease.Dir, "HEAD", buildinputs.Spec{
+		Domain:  "katl-driver-qualification",
+		Version: driverDigestVersion,
+		Include: driverInputs,
+		Exclude: []string{".md"},
+		Salts:   locks,
+		Project: driverInputProjection,
+	})
 }
 
 func driverInputProjection(name string) func([]byte) ([]byte, error) {
