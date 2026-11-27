@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -34,6 +35,7 @@ type store struct {
 
 	beforeRemove func()
 	deviceOf     func(unix.Stat_t) uint64
+	ownerOf      func(unix.Stat_t) uint32
 }
 
 func openStore(location string) (*store, error) {
@@ -64,6 +66,7 @@ func openStore(location string) (*store, error) {
 		root:     root,
 		dir:      &directory{file: file, id: identity(stat), path: location},
 		deviceOf: func(stat unix.Stat_t) uint64 { return uint64(stat.Dev) },
+		ownerOf:  func(stat unix.Stat_t) uint32 { return stat.Uid },
 	}, nil
 }
 
@@ -340,11 +343,22 @@ func (s *store) remove(e entry) error {
 		return err
 	}
 	defer s.closePath(dir)
-	if err := s.walk(dir, (*directory).makeWritable, func(parent *directory, name string, child *directory) error {
+	if err := s.walk(dir, s.prepareRemoval, func(parent *directory, name string, child *directory) error {
 		if child != nil {
 			return child.remove()
 		}
-		return unix.Unlinkat(parent.fd(), name, 0)
+		stat, err := parent.stat(name)
+		if err != nil {
+			return err
+		}
+		path := filepath.Join(parent.path, name)
+		if err := s.checkOwner(path, stat); err != nil {
+			return err
+		}
+		if err := unix.Unlinkat(parent.fd(), name, 0); err != nil {
+			return fmt.Errorf("remove %q: %w", path, err)
+		}
+		return nil
 	}); err != nil {
 		return err
 	}
@@ -353,6 +367,44 @@ func (s *store) remove(e entry) error {
 	}
 	s.tidyPinParents(e, dir)
 	return nil
+}
+
+// prepareRemoval lets removal unlink the children of a bound directory the
+// caller owns. Changing only the bound directory avoids modifying symlink
+// targets or hard links.
+func (s *store) prepareRemoval(dir *directory) error {
+	var stat unix.Stat_t
+	if err := unix.Fstat(dir.fd(), &stat); err != nil {
+		return fmt.Errorf("stat %q: %w", dir.path, err)
+	}
+	if err := s.checkOwner(dir.path, stat); err != nil {
+		return err
+	}
+	if stat.Mode&unix.S_IWUSR != 0 {
+		return nil
+	}
+	if err := dir.check(); err != nil {
+		return err
+	}
+	mode := uint32(stat.Mode) & 0o7777
+	if err := unix.Fchmod(dir.fd(), mode|unix.S_IWUSR); err != nil {
+		return fmt.Errorf("make directory %q writable: %w", dir.path, err)
+	}
+	return nil
+}
+
+// checkOwner refuses to remove a path another user owns, such as one a
+// rootless container created under a subordinate uid.
+func (s *store) checkOwner(path string, stat unix.Stat_t) error {
+	owner := s.ownerOf(stat)
+	if int(owner) == os.Geteuid() {
+		return nil
+	}
+	name := fmt.Sprint("uid ", owner)
+	if u, err := user.LookupId(fmt.Sprint(owner)); err == nil {
+		name = fmt.Sprintf("%s (uid %d)", u.Username, owner)
+	}
+	return fmt.Errorf("refusing to remove %q: it is owned by %s, not by you; have that user remove it, then run the command again", path, name)
 }
 
 func (s *store) tidyPinParents(e entry, dir *directory) {
