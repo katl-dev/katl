@@ -28,7 +28,7 @@ following AGENTS.md. Write it before enabling auto-merge and update it after
 every fix round so it describes the final change. Post gate results, reviews,
 the operator workflow, and journey evidence as PR comments.
 
-**Codex jobs.** When a brief asks for the [Codex backend](../README.md#codex-backend),
+**Codex jobs.** For implement-tier work and when a brief asks for [Codex](../README.md#codex-jobs),
 use `scripts/codex-role` from the task worktree. Launch it as a tracked
 background command with the harness's `run_in_background`
 and record the unit name and printed log path in the local state. See

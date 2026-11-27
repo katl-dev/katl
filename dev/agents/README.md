@@ -15,8 +15,8 @@ matching [agent definitions](../../.claude/agents/).
 
 | Tier | Model | Work |
 | --- | --- | --- |
-| Coordinate | Claude Opus | Coordination, release ownership, scope and approval decisions |
-| Implement | Claude Opus | Delivery, fix rounds and debugging |
+| Coordinate | Claude Opus | Orchestration, release ownership, scope and approval decisions |
+| Implement | Codex `gpt-6.2-sol` through [`scripts/codex-role`](../../scripts/README.md#codex-role), medium effort, high for multi-file or subtle work; Claude Opus when Codex is not available | Delivery, fix rounds and debugging |
 | Design and review | Claude Fable | Design-heavy briefs, contract reviews and independent code review |
 | Mechanical | Claude Sonnet | Rebases, gates, watching, journeys, planning and washup evidence |
 
@@ -37,13 +37,16 @@ Commission one independent code review per change, and file follow-up issues
 for edge-case findings. Reserve high effort for risky boot, disk, update,
 security or trust changes and for reviews that gate a hard-to-reverse merge.
 
-## Codex backend
+Send fix rounds on one PR to the same implementer job or session while its
+context is modest. Start a fresh agent for a new PR, or when the context has
+grown large.
 
-Codex jobs are not used by default. [`scripts/codex-role`](../../scripts/README.md#codex-role)
-remains available as an alternative backend for the delivery, reviewer,
-debugger and rebase roles when a brief asks for it. Use `scripts/codex-role`
+## Codex jobs
+
+The implement tier runs through `scripts/codex-role`. Use `scripts/codex-role`
 from the task worktree; the repository's Claude permissions deny direct Codex
-launches. See the launcher reference for job arguments, report recovery, and
+launches. See the [launcher reference](../../scripts/README.md#codex-role) for
+job arguments, report recovery, and
 [GitHub credential setup](../../scripts/README.md#provision-github-read-access).
 
 ## Local state

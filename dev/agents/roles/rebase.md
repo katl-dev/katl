@@ -1,7 +1,7 @@
 # Rebase
 
 Follow the [shared agent workflow](../README.md) for hand-offs
-and reporting. When a brief asks for the [Codex backend](../README.md#codex-backend),
+and reporting. When a brief asks for [Codex](../README.md#codex-jobs),
 see the [launcher reference](../../../scripts/README.md#codex-role) for the
 rebase role's launch options and defaults.
 
