@@ -5,7 +5,9 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"errors"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -462,6 +464,225 @@ func TestManagementIdentityRecoverResumesInterruptedReload(t *testing.T) {
 	}
 	if stdout, stderr, err := w.recover(t, "--output", output); err != nil || !strings.Contains(stdout, "nothing to recover") {
 		t.Fatalf("repeat recover = %v\n%s%s", err, stdout, stderr)
+	}
+}
+
+// olderRotationHelper answers rotate-management as the v2026.11.5 katlc does
+// (internal/nodeidentity/rotation.go and cmd/katlc/management_rotation.go at
+// that tag): it rejects an expected authority equal to the replacement,
+// refuses an installed authority that is neither, installs only when the
+// expected authority is installed, and reloads after every accepted request.
+// beforeReload runs just before the reload.
+type olderRotationHelper struct {
+	node         *recoveryNode
+	reloads      int
+	beforeReload func()
+}
+
+func (h *olderRotationHelper) rotate(t *testing.T, request nodeidentity.ManagementRotation, dryRun bool) (nodeidentity.ManagementRotationStatus, error) {
+	t.Helper()
+	next, err := managementidentity.CAFingerprint(request.Replacement.CACertificate)
+	if err != nil {
+		return nodeidentity.ManagementRotationStatus{}, err
+	}
+	if _, err := hex.DecodeString(request.ExpectedAuthority); err != nil || len(request.ExpectedAuthority) != 64 {
+		return nodeidentity.ManagementRotationStatus{}, errors.New("expected authority fingerprint is invalid")
+	}
+	if request.ExpectedAuthority == next {
+		return nodeidentity.ManagementRotationStatus{}, errors.New("replacement authority must differ from the installed authority")
+	}
+	installed, err := nodeidentity.InspectManagementAuthority(h.node.root)
+	if err != nil {
+		return nodeidentity.ManagementRotationStatus{}, err
+	}
+	current := installed.Authority
+	if current != request.ExpectedAuthority && current != next {
+		return nodeidentity.ManagementRotationStatus{}, fmt.Errorf("installed management authority %s differs from both expected and replacement authorities", current)
+	}
+	if current == next {
+		ca, cert, key, err := nodeidentity.ManagementCredentialsPaths(h.node.root)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for path, want := range map[string]string{ca: request.Replacement.CACertificate, cert: request.Replacement.ServerCertificate, key: request.Replacement.ServerPrivateKey} {
+			if got, err := os.ReadFile(path); err != nil || string(got) != want {
+				return nodeidentity.ManagementRotationStatus{}, errors.New("installed credentials differ from replacement material under the same authority")
+			}
+		}
+	}
+	status := nodeidentity.ManagementRotationStatus{
+		NodeName: request.NodeName, MachineID: installed.MachineID,
+		CurrentAuthority: current, NextAuthority: next, AlreadyRotated: current == next,
+	}
+	if dryRun {
+		return status, nil
+	}
+	if !status.AlreadyRotated {
+		h.node.applied++
+		if status, err = nodeidentity.RotateManagementIdentity(h.node.root, request); err != nil {
+			return status, err
+		}
+	}
+	if h.beforeReload != nil {
+		h.beforeReload()
+	}
+	h.reloads++
+	h.node.start(t)
+	return status, nil
+}
+
+// useOlderHelper routes rotation requests for node to an older helper and
+// leaves the other nodes on the current one.
+func useOlderHelper(t *testing.T, node *recoveryNode) *olderRotationHelper {
+	t.Helper()
+	helper := &olderRotationHelper{node: node}
+	current := runManagementRotationSSH
+	t.Cleanup(func() { runManagementRotationSSH = current })
+	runManagementRotationSSH = func(ctx context.Context, target managementRotationNode, opts managementRotationOptions, dryRun bool) (nodeidentity.ManagementRotationStatus, error) {
+		if target.name != node.name {
+			return current(ctx, target, opts, dryRun)
+		}
+		return helper.rotate(t, target.request, dryRun)
+	}
+	return helper
+}
+
+// requireMTLS completes a TLS 1.3 session with node as the operator of
+// bundle and checks that the node's server speaks first, which it does only
+// after accepting the client certificate.
+func requireMTLS(t *testing.T, node *recoveryNode, bundle managementidentity.Bundle) {
+	t.Helper()
+	roots := x509.NewCertPool()
+	roots.AppendCertsFromPEM([]byte(bundle.CertificateAuthority.Certificate))
+	operator, err := tls.X509KeyPair([]byte(bundle.Operator.Certificate), []byte(bundle.Operator.PrivateKey))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := tls.Dial("tcp", node.endpoint, &tls.Config{
+		RootCAs: roots, ServerName: node.name, Certificates: []tls.Certificate{operator},
+		MinVersion: tls.VersionTLS13, NextProtos: []string{"h2"},
+	})
+	if err != nil {
+		t.Fatalf("%s: TLS handshake: %v", node.name, err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")); err != nil {
+		t.Fatalf("%s: %v", node.name, err)
+	}
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	if _, err := conn.Read(make([]byte, 1)); err != nil {
+		t.Fatalf("%s refused the operator certificate: %v", node.name, err)
+	}
+}
+
+func TestManagementIdentityRecoverOlderNodeReloadsOnRerun(t *testing.T) {
+	w := newRecoveryWorldOf(t, "cp-1", "wk-1")
+	older := w.nodes[1]
+	older.interruptReload = true
+	output := filepath.Join(filepath.Dir(w.configPath), "next.yaml")
+	before, err := os.ReadFile(w.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := w.recover(t, "--output", output); err == nil || !strings.Contains(err.Error(), "connection reset before reload") {
+		t.Fatalf("interrupted recover = %v", err)
+	}
+	saved, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bundle, err := readManagementIdentity(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	helper := useOlderHelper(t, older)
+	helper.beforeReload = func() {
+		if during, err := os.ReadFile(w.configPath); err != nil || !bytes.Equal(before, during) {
+			t.Errorf("ClusterConfig changed before %s served the replacement: %v", older.name, err)
+		}
+	}
+	stdout, stderr, err := w.recover(t, "--output", output)
+	if err != nil || !strings.Contains(stdout, "Recovered management trust") {
+		t.Fatalf("rerun recover = %v\n%s%s", err, stdout, stderr)
+	}
+	if helper.reloads != 1 || older.applied != 1 {
+		t.Fatalf("older helper reloaded %d and installed %d times on rerun, want one reload and no install", helper.reloads, older.applied-1)
+	}
+	for _, n := range w.nodes {
+		requireMTLS(t, n, bundle)
+	}
+
+	if after, err := os.ReadFile(output); err != nil || !bytes.Equal(saved, after) {
+		t.Fatalf("rerun replaced the saved authority: %v", err)
+	}
+	if files, err := os.ReadDir(filepath.Dir(output)); err != nil || len(files) != 2 {
+		t.Fatalf("rerun left files %v, %v; want only the ClusterConfig and %s", files, err, filepath.Base(output))
+	}
+	if after, err := os.ReadFile(w.configPath); err != nil || !strings.Contains(string(after), "managementIdentity: next.yaml") {
+		t.Fatalf("verified recovery did not publish its secrets reference: %v", err)
+	}
+}
+
+func TestManagementIdentityRecoverOlderNodeRefusesUnrelatedAuthority(t *testing.T) {
+	w := newRecoveryWorld(t)
+	w.node.interruptReload = true
+	output := filepath.Join(filepath.Dir(w.configPath), "next.yaml")
+	if _, _, err := w.recover(t, "--output", output); err == nil {
+		t.Fatal("interrupted recover succeeded")
+	}
+	bundle, err := readManagementIdentity(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := managementidentity.CAFingerprint(bundle.CertificateAuthority.Certificate)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// After inspection reports the replacement, the disk moves to an
+	// authority unrelated to this recovery.
+	inspected, err := nodeidentity.InspectManagementAuthority(w.node.root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelated, err := managementidentity.Generate(managementidentity.GenerateOptions{ClusterName: "lab", Now: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	unrelatedCredentials, _, err := managementidentity.EnsureNode(&unrelated, w.node.name, time.Now(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nodeidentity.RotateManagementIdentity(w.node.root, nodeidentity.ManagementRotation{
+		NodeName: w.node.name, ExpectedAuthority: replacement, Replacement: unrelatedCredentials,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	unrelatedAuthority, err := managementidentity.CAFingerprint(unrelated.CertificateAuthority.Certificate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runManagementAuthoritySSH = func(context.Context, managementRotationNode, managementRotationOptions) (nodeidentity.ManagementAuthorityStatus, error) {
+		return inspected, nil
+	}
+	before, err := os.ReadFile(w.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	helper := useOlderHelper(t, w.node)
+	if _, _, err := w.recover(t, "--output", output); err == nil || !strings.Contains(err.Error(), "differs from both") {
+		t.Fatalf("recover over an unrelated authority = %v", err)
+	}
+	if helper.reloads != 0 {
+		t.Fatalf("older helper reloaded %d times over an unrelated authority", helper.reloads)
+	}
+	if installed, err := nodeidentity.InspectManagementAuthority(w.node.root); err != nil || installed.Authority != unrelatedAuthority {
+		t.Fatalf("node authority = %+v, %v; want the unrelated %s", installed, err, unrelatedAuthority)
+	}
+	if after, err := os.ReadFile(w.configPath); err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("refused recovery changed ClusterConfig: %v", err)
 	}
 }
 

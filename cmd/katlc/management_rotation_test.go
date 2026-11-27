@@ -130,3 +130,70 @@ func TestAgentManagementAuthorityReportsInstalledAuthority(t *testing.T) {
 		t.Fatalf("status = %+v, %v; want authority %s", status, err, want)
 	}
 }
+
+func TestRotateManagementOnNodeUnknownExpectedAuthorityOnlyReloads(t *testing.T) {
+	root := t.TempDir()
+	machineID, err := nodeidentity.WriteMachineID(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nodeidentity.WriteEnrollment(root, "cp-1", machineID, nil); err != nil {
+		t.Fatal(err)
+	}
+	old := rotationTestNodeIdentity(t)
+	next := rotationTestNodeIdentity(t)
+	if err := nodeidentity.WriteManagementIdentity(root, "cp-1", old); err != nil {
+		t.Fatal(err)
+	}
+	var actions []string
+	service := func(_ context.Context, action string) error {
+		actions = append(actions, action)
+		return nil
+	}
+	reloadOnly, err := json.Marshal(nodeidentity.ManagementRotation{
+		NodeName: "cp-1", ExpectedMachineID: machineID, ExpectedAuthority: strings.Repeat("0", 64), Replacement: next,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := filepath.Join(root, "var/lib/katl/identity/management/active")
+
+	// With the previous authority still installed, the request cannot install
+	// the replacement or reload.
+	err = rotateManagementOnNode(t.Context(), root, false, bytes.NewReader(reloadOnly), new(bytes.Buffer), service)
+	if err == nil || !strings.Contains(err.Error(), "differs from both") || len(actions) != 0 {
+		t.Fatalf("reload-only request on the previous authority = %v, service %v", err, actions)
+	}
+	if _, err := os.Lstat(active); !os.IsNotExist(err) {
+		t.Fatalf("refused request changed active identity: %v", err)
+	}
+
+	oldFingerprint, err := managementidentity.CAFingerprint(old.CACertificate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nodeidentity.RotateManagementIdentity(root, nodeidentity.ManagementRotation{
+		NodeName: "cp-1", ExpectedMachineID: machineID, ExpectedAuthority: oldFingerprint, Replacement: next,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	installed, err := os.Lstat(active)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	if err := rotateManagementOnNode(t.Context(), root, false, bytes.NewReader(reloadOnly), &output, service); err != nil {
+		t.Fatalf("reload-only request on the installed replacement: %v", err)
+	}
+	if strings.Join(actions, " ") != "reload-or-restart is-active" {
+		t.Fatalf("service actions = %v, want a reload and an activity check", actions)
+	}
+	if after, err := os.Lstat(active); err != nil || !os.SameFile(installed, after) {
+		t.Fatalf("reload-only request replaced the active identity: %v", err)
+	}
+	var status nodeidentity.ManagementRotationStatus
+	if err := json.Unmarshal(output.Bytes(), &status); err != nil || !status.AlreadyRotated {
+		t.Fatalf("status = %s, %v", &output, err)
+	}
+}

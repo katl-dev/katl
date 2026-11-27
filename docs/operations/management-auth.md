@@ -392,7 +392,13 @@ If recovery reports `could not confirm the node accepts the replacement
 authority; the node may still trust the previous authority`, keep the
 replacement file and rerun the same command. Recovery verifies access to each
 node before continuing, including nodes that already report the replacement
-authority over SSH. It updates the configuration only after all nodes pass.
+authority over SSH. A node whose recovery stopped after it installed the
+replacement but before its agent reloaded, including a node that still runs
+v2026.11.5, is reloaded with the replacement it already holds; the rerun
+prints `Reloading the installed management authority on <node>` and creates
+no other authority. The reload refuses while a node operation is active, so
+wait for that operation to finish and rerun. Recovery updates the
+configuration only after all nodes pass.
 To recover with a different authority, move the new secrets file aside first.
 A file that already exists at the target path is used as the replacement.
 

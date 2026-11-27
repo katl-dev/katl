@@ -83,10 +83,21 @@ confirmation reply can be resolved by a fresh committed status through the
 replacement credentials.
 
 If recovery observes the replacement installed over SSH and cannot reach the
-listener over mTLS, it reruns the pinned SSH rotation command with the installed
-authority as the expected replacement. That request can only reload the
-already installed credentials. Recovery still checks the listener after reload
-before publishing the new secrets reference.
+listener over mTLS, it reruns the pinned SSH rotation command with an all-zero
+expected authority. No CA certificate has that fingerprint, so the helper
+accepts the request only when the replacement is the installed authority. It
+reports that as already rotated and, under the executor's mutation lock and
+after refusing active node operations, reloads the agent. Any other installed
+authority differs from both the expected and the replacement authority and is
+refused, so the request can only reload the already installed credentials.
+Recovery still checks the listener after reload before publishing the new
+secrets reference.
+
+Helpers that reject an expected authority equal to the replacement, such as
+the one in v2026.11.5, take the management-identity lock before rejecting it.
+They apply the same already-rotated rule to any other expected authority, so the all-zero request reloads those nodes through the same
+guarded path, and rerunning the same `recover` command finishes recovery on
+a mixed cluster.
 
 A node can use compatibility behavior when its initial timely status omits
 the report. Once it provides a report, later omissions stop verification.
