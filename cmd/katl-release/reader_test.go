@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -232,47 +233,93 @@ func TestReaderAncestry(t *testing.T) {
 
 // TestReaderAttemptArtifacts lists a run whose two attempts each uploaded a
 // bundle. GitHub lists both under the run, so each attempt keeps only what it
-// created between its start and the next attempt's.
+// created from its start until the next attempt's.
 func TestReaderAttemptArtifacts(t *testing.T) {
-	f := readerWorld(t)
-	f.responses[repoPrefix+"actions/runs/5/attempts/2"] = runAttempt(5, 2, readerHead, "2026-12-01T01:00:00Z")
-	f.responses[repoPrefix+"actions/runs/5/attempts/3"] = &apiError{status: 404, text: "gh: Not Found (HTTP 404)"}
-	f.pages[repoPrefix+"actions/runs/5/attempts/2/jobs?per_page=100"] = []any{map[string]any{"jobs": []any{}}}
-	artifact := func(name string, run int, created string) map[string]any {
-		return map[string]any{"name": name, "created_at": created, "workflow_run": map[string]any{"id": run}}
+	world := func(t *testing.T) *fakeGitHub {
+		f := readerWorld(t)
+		f.responses[repoPrefix+"actions/runs/5/attempts/2"] = runAttempt(5, 2, readerHead, "2026-12-01T01:00:00Z")
+		f.responses[repoPrefix+"actions/runs/5/attempts/3"] = &apiError{status: 404, text: "gh: Not Found (HTTP 404)"}
+		f.pages[repoPrefix+"actions/runs/5/attempts/2/jobs?per_page=100"] = []any{map[string]any{"jobs": []any{}}}
+		artifact := func(name string, run int, created string) map[string]any {
+			return map[string]any{"name": name, "created_at": created, "workflow_run": map[string]any{"id": run}}
+		}
+		// The boundary artifact was created at the instant attempt 2 started.
+		f.pages[repoPrefix+"actions/runs/5/artifacts?per_page=100"] = []any{map[string]any{"artifacts": []any{
+			artifact("second", 5, "2026-12-01T01:30:00Z"),
+			artifact("boundary", 5, "2026-12-01T01:00:00Z"),
+			artifact("first", 5, "2026-12-01T00:30:00Z"),
+			artifact("other run", 4, "2026-12-01T00:40:00Z"),
+		}}}
+		return f
 	}
-	f.pages[repoPrefix+"actions/runs/5/artifacts?per_page=100"] = []any{map[string]any{"artifacts": []any{
-		artifact("second", 5, "2026-12-01T01:30:00Z"),
-		artifact("first", 5, "2026-12-01T00:30:00Z"),
-		artifact("other run", 4, "2026-12-01T00:40:00Z"),
-	}}}
+	read := func(f *fakeGitHub, attempts ...runstatus.Attempt) (releasestate.Inputs, error) {
+		r := newTestReader(f)
+		in := releasestate.Inputs{Attempts: map[runstatus.Attempt]releasestate.Attempt{}}
+		for _, attempt := range attempts {
+			if err := r.attempt(context.Background(), attempt, &in); err != nil {
+				return in, err
+			}
+		}
+		return in, nil
+	}
+	first, second := runstatus.Attempt{Run: 5, Number: 1}, runstatus.Attempt{Run: 5, Number: 2}
 
-	r := newTestReader(f)
-	in := releasestate.Inputs{Attempts: map[runstatus.Attempt]releasestate.Attempt{}}
-	for _, attempt := range []runstatus.Attempt{{Run: 5, Number: 1}, {Run: 5, Number: 2}} {
-		if err := r.attempt(context.Background(), attempt, &in); err != nil {
+	t.Run("bounded by the next start", func(t *testing.T) {
+		in, err := read(world(t), first, second)
+		if err != nil {
 			t.Fatal(err)
 		}
-	}
-	for attempt, want := range map[runstatus.Attempt][]string{{Run: 5, Number: 1}: {"first"}, {Run: 5, Number: 2}: {"second"}} {
-		if got := in.Attempts[attempt].Artifacts; !reflect.DeepEqual(got, want) {
-			t.Errorf("attempt %s artifacts = %q, want %q", attempt, got, want)
+		for attempt, want := range map[runstatus.Attempt][]string{first: {"first"}, second: {"second", "boundary"}} {
+			if got := in.Attempts[attempt].Artifacts; !reflect.DeepEqual(got, want) {
+				t.Errorf("attempt %s artifacts = %q, want %q", attempt, got, want)
+			}
 		}
+	})
+
+	// A next attempt that cannot be read is not a missing one: taking it as
+	// no upper bound would credit attempt 1 with attempt 2's bundle.
+	t.Run("next attempt unreadable", func(t *testing.T) {
+		f := world(t)
+		failure := &apiError{status: 502, text: "gh: Bad Gateway (HTTP 502)"}
+		f.failures[repoPrefix+"actions/runs/5/attempts/2"] = slices.Repeat([]error{failure}, readAttempts)
+		if in, err := read(f, first); err == nil {
+			t.Fatalf("artifacts = %q, want the failed read of attempt 2", in.Attempts[first].Artifacts)
+		}
+	})
+
+	for _, tc := range []struct{ name, endpoint string }{
+		{"own start missing", "actions/runs/5/attempts/1"},
+		{"next start missing", "actions/runs/5/attempts/2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := world(t)
+			f.responses[repoPrefix+tc.endpoint].(map[string]any)["run_started_at"] = nil
+			in, err := read(f, first)
+			if err == nil || !strings.Contains(err.Error(), "no start time") {
+				t.Fatalf("artifacts = %q, %v; want an error naming the missing start time", in.Attempts[first].Artifacts, err)
+			}
+		})
 	}
 }
 
 // fakeProvenance answers gh attestation for one SHA256SUMS: it verifies
-// only that content, for the record's commit on the release branch.
+// only that content, for the record's commit on the release branch. Each
+// subcommand first fails with its queued failures, in order.
 type fakeProvenance struct {
 	t        *testing.T
 	sums     []byte
 	output   string
+	failures map[string][]error
 	verified int
 }
 
 func (p *fakeProvenance) call(name string, args ...string) ([]byte, error) {
 	if name != "gh" || len(args) < 2 || args[0] != "attestation" {
 		p.t.Fatalf("unexpected command %s %q", name, args)
+	}
+	if queue := p.failures[args[1]]; len(queue) > 0 {
+		p.failures[args[1]] = queue[1:]
+		return nil, queue[0]
 	}
 	if args[1] == "trusted-root" {
 		return []byte(testTrustedRoot), nil
@@ -292,6 +339,10 @@ func (p *fakeProvenance) call(name string, args ...string) ([]byte, error) {
 	return []byte(p.output), nil
 }
 
+// ghExit is gh exiting non-zero after printing stderr, as the command
+// runner reports it.
+func ghExit(stderr string) error { return &exec.ExitError{Stderr: []byte(stderr)} }
+
 // TestReaderReleases publishes rc.1 from a qualified build. The reader
 // downloads its SHA256SUMS, verifies its attestation and skips the draft and
 // the release of another version.
@@ -301,69 +352,123 @@ func TestReaderReleases(t *testing.T) {
 	digest := hex.EncodeToString(sum[:])
 	invocation := "https://github.com/katl-dev/katl/actions/runs/7/attempts/1"
 	branch := "@refs/heads/release/2026.12.1"
-
-	f := readerWorld(t)
-	statuses := f.pages[repoPrefix+"commits/"+readerHead+"/statuses?per_page=100"]
-	f.pages[repoPrefix+"commits/"+readerHead+"/statuses?per_page=100"] = append([]any{[]any{
-		map[string]any{"context": "katl/release/v2026.12.1-rc.1", "state": "success", "description": "qualified sha256:" + digest,
-			"target_url": invocation, "creator": botCreator},
-	}}, statuses...)
-	qualified := runAttempt(7, 1, readerHead, "2026-12-01T02:00:00Z")
-	qualified["conclusion"] = "success"
-	f.responses[repoPrefix+"actions/runs/7/attempts/1"] = qualified
-	f.responses[repoPrefix+"actions/runs/7/attempts/2"] = &apiError{status: 404, text: "gh: Not Found (HTTP 404)"}
-	f.pages[repoPrefix+"actions/runs/7/attempts/1/jobs?per_page=100"] = []any{map[string]any{"jobs": []any{
-		map[string]any{"name": "Build / Release validation", "conclusion": "success"},
-	}}}
-	f.pages[repoPrefix+"actions/runs/7/artifacts?per_page=100"] = []any{map[string]any{"artifacts": []any{
-		map[string]any{"name": "katl-2026.12.1-rc.1-x86_64-111111111111", "created_at": "2026-12-01T02:30:00Z", "workflow_run": map[string]any{"id": 7}},
-	}}}
-	release := func(tag string, draft bool, sumsAsset int) map[string]any {
-		return map[string]any{"tag_name": tag, "draft": draft, "prerelease": true, "html_url": "https://github.com/katl-dev/katl/releases/tag/" + tag,
-			"assets": []any{
-				map[string]any{"id": sumsAsset, "name": "SHA256SUMS", "state": "uploaded", "digest": "sha256:" + digest},
-				map[string]any{"id": 12, "name": "katlctl", "state": "uploaded", "digest": "sha256:" + strings.Repeat("c", 64)},
-			}}
-	}
-	// Downloading the draft's or the other version's SHA256SUMS fails the test.
-	f.pages[repoPrefix+"releases?per_page=100"] = []any{
-		[]any{release("v2026.12.1-rc.1", true, 98), release("v2026.12.10", false, 99)},
-		[]any{release("v2026.12.1-rc.1", false, 11)},
-	}
-	f.raw[repoPrefix+"releases/assets/11"] = sums
-
-	attestations := &fakeProvenance{t: t, sums: sums, output: `[{"verificationResult":{
+	verifiedJSON := `[{"verificationResult":{
 		"signature":{"certificate":{
 			"buildSignerURI":"https://github.com/katl-dev/katl/.github/workflows/release-artifacts.yml` + branch + `",
 			"buildConfigURI":"https://github.com/katl-dev/katl/.github/workflows/release.yml` + branch + `",
 			"runInvocationURI":"` + invocation + `",
 			"sourceRepositoryDigest":"` + readerHead + `",
 			"sourceRepositoryRef":"refs/heads/release/2026.12.1"}},
-		"statement":{"subject":[{"name":"SHA256SUMS","digest":{"sha256":"` + digest + `"}},{"name":"katlctl","digest":{"sha256":"` + strings.Repeat("c", 64) + `"}}]}}}]`}
-	r := newTestReader(f)
-	r.provenance = &provenance{call: attestations.call, repository: "katl-dev/katl"}
+		"statement":{"subject":[{"name":"SHA256SUMS","digest":{"sha256":"` + digest + `"}},{"name":"katlctl","digest":{"sha256":"` + strings.Repeat("c", 64) + `"}}]}}}]`
 
-	in, err := r.Read(context.Background(), "refs/heads/release/2026.12.1", readerHead, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(in.Releases) != 1 || !reflect.DeepEqual(in.Releases["v2026.12.1-rc.1"].Sums, map[string]string{"katlctl": strings.Repeat("c", 64)}) {
-		t.Fatalf("releases = %+v, want rc.1's published release with its SHA256SUMS content", in.Releases)
-	}
-	want := []releasestate.Attestation{{
-		Subjects:       []string{digest, strings.Repeat("c", 64)},
-		SignerWorkflow: "https://github.com/katl-dev/katl/.github/workflows/release-artifacts.yml" + branch,
-		ConfigWorkflow: "https://github.com/katl-dev/katl/.github/workflows/release.yml" + branch,
-		Invocation:     invocation, SourceDigest: readerHead, SourceRef: "refs/heads/release/2026.12.1",
-	}}
-	if got := in.Attestations[digest]; attestations.verified != 1 || !reflect.DeepEqual(got, want) {
-		t.Fatalf("attestations = %+v after %d verifications, want %+v from one", got, attestations.verified, want)
+	world := func(t *testing.T) (*reader, *fakeProvenance) {
+		f := readerWorld(t)
+		statuses := f.pages[repoPrefix+"commits/"+readerHead+"/statuses?per_page=100"]
+		f.pages[repoPrefix+"commits/"+readerHead+"/statuses?per_page=100"] = append([]any{[]any{
+			map[string]any{"context": "katl/release/v2026.12.1-rc.1", "state": "success", "description": "qualified sha256:" + digest,
+				"target_url": invocation, "creator": botCreator},
+		}}, statuses...)
+		qualified := runAttempt(7, 1, readerHead, "2026-12-01T02:00:00Z")
+		qualified["conclusion"] = "success"
+		f.responses[repoPrefix+"actions/runs/7/attempts/1"] = qualified
+		f.responses[repoPrefix+"actions/runs/7/attempts/2"] = &apiError{status: 404, text: "gh: Not Found (HTTP 404)"}
+		f.pages[repoPrefix+"actions/runs/7/attempts/1/jobs?per_page=100"] = []any{map[string]any{"jobs": []any{
+			map[string]any{"name": "Build / Release validation", "conclusion": "success"},
+		}}}
+		f.pages[repoPrefix+"actions/runs/7/artifacts?per_page=100"] = []any{map[string]any{"artifacts": []any{
+			map[string]any{"name": "katl-2026.12.1-rc.1-x86_64-111111111111", "created_at": "2026-12-01T02:30:00Z", "workflow_run": map[string]any{"id": 7}},
+		}}}
+		release := func(tag string, draft bool, sumsAsset int) map[string]any {
+			return map[string]any{"tag_name": tag, "draft": draft, "prerelease": true, "html_url": "https://github.com/katl-dev/katl/releases/tag/" + tag,
+				"assets": []any{
+					map[string]any{"id": sumsAsset, "name": "SHA256SUMS", "state": "uploaded", "digest": "sha256:" + digest},
+					map[string]any{"id": 12, "name": "katlctl", "state": "uploaded", "digest": "sha256:" + strings.Repeat("c", 64)},
+				}}
+		}
+		// Downloading the draft's or the other version's SHA256SUMS fails the test.
+		f.pages[repoPrefix+"releases?per_page=100"] = []any{
+			[]any{release("v2026.12.1-rc.1", true, 98), release("v2026.12.10", false, 99)},
+			[]any{release("v2026.12.1-rc.1", false, 11)},
+		}
+		f.raw[repoPrefix+"releases/assets/11"] = sums
+
+		attestations := &fakeProvenance{t: t, sums: sums, output: verifiedJSON, failures: map[string][]error{}}
+		r := newTestReader(f)
+		r.provenance = &provenance{call: attestations.call, repository: "katl-dev/katl"}
+		return r, attestations
 	}
 
-	// The final's extension reference holds the green candidate at row 22,
-	// which is past the check that the pre-release matches its record.
-	if d, err := releasestate.Decide(in); err != nil || d.Row != 22 {
-		t.Fatalf("decision row %d (%s): %s, %v, want row 22", d.Row, d.State, d.Message, err)
+	// A transient failure of either gh attestation command is retried.
+	for name, flaky := range map[string]string{"verified": "", "trusted root retried": "trusted-root", "verify retried": "verify"} {
+		t.Run(name, func(t *testing.T) {
+			r, attestations := world(t)
+			if flaky != "" {
+				attestations.failures[flaky] = []error{ghExit("Get \"https://tuf-repo-cdn.sigstore.dev/timestamp.json\": dial tcp: i/o timeout")}
+			}
+			in, err := r.Read(context.Background(), "refs/heads/release/2026.12.1", readerHead, "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(in.Releases) != 1 || !reflect.DeepEqual(in.Releases["v2026.12.1-rc.1"].Sums, map[string]string{"katlctl": strings.Repeat("c", 64)}) {
+				t.Fatalf("releases = %+v, want rc.1's published release with its SHA256SUMS content", in.Releases)
+			}
+			want := []releasestate.Attestation{{
+				Subjects:       []string{digest, strings.Repeat("c", 64)},
+				SignerWorkflow: "https://github.com/katl-dev/katl/.github/workflows/release-artifacts.yml" + branch,
+				ConfigWorkflow: "https://github.com/katl-dev/katl/.github/workflows/release.yml" + branch,
+				Invocation:     invocation, SourceDigest: readerHead, SourceRef: "refs/heads/release/2026.12.1",
+			}}
+			if got := in.Attestations[digest]; attestations.verified != 1 || !reflect.DeepEqual(got, want) {
+				t.Fatalf("attestations = %+v after %d verifications, want %+v from one", got, attestations.verified, want)
+			}
+
+			// The final's extension reference holds the green candidate at row 22,
+			// which is past the check that the pre-release matches its record.
+			if d, err := releasestate.Decide(in); err != nil || d.Row != 22 {
+				t.Fatalf("decision row %d (%s): %s, %v, want row 22", d.Row, d.State, d.Message, err)
+			}
+		})
+	}
+
+	// An attestation that was not verified stops the decision. A refusal by
+	// gh says the release must not be published; any other failure says only
+	// that the verification could not run.
+	offline := ghExit("Get \"https://tuf-repo-cdn.sigstore.dev/timestamp.json\": dial tcp: i/o timeout")
+	unverified := "could not verify the attestation of the published SHA256SUMS of v2026.12.1-rc.1"
+	unattested := "the published SHA256SUMS of v2026.12.1-rc.1 has no valid attestation from release-artifacts.yml at " + readerHead + " on refs/heads/release/2026.12.1"
+	for _, tc := range []struct {
+		name  string
+		spoil func(*fakeProvenance)
+		want  string
+	}{
+		{"verify refused", func(p *fakeProvenance) {
+			p.failures["verify"] = []error{ghExit("Error: verifying with issuer \"sigstore.dev\": no matching attestations")}
+		}, unattested},
+		{"verify offline", func(p *fakeProvenance) { p.failures["verify"] = slices.Repeat([]error{offline}, readAttempts) }, unverified},
+		{"gh missing", func(p *fakeProvenance) {
+			p.failures["verify"] = []error{&exec.Error{Name: "gh", Err: exec.ErrNotFound}}
+		}, unverified},
+		{"trusted root offline", func(p *fakeProvenance) { p.failures["trusted-root"] = slices.Repeat([]error{offline}, readAttempts) }, unverified},
+		{"trusted root refused", func(p *fakeProvenance) {
+			p.failures["trusted-root"] = []error{ghExit("Error: failed to verify TUF metadata: invalid signature")}
+		}, unverified},
+		{"output not JSON", func(p *fakeProvenance) { p.output = "✓ Verification succeeded!" }, unverified},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, attestations := world(t)
+			tc.spoil(attestations)
+			d, err := decide(context.Background(), r, "refs/heads/release/2026.12.1", readerHead, "")
+			if err == nil || d.Row != 0 || d.Action != "" {
+				t.Fatalf("decision row %d (%s), %v; want no decision", d.Row, d.Action, err)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want %q", err, tc.want)
+			}
+			other := map[string]string{unverified: unattested, unattested: unverified}[tc.want]
+			if strings.Contains(err.Error(), other) {
+				t.Fatalf("err = %v, also claims %q", err, other)
+			}
+		})
 	}
 }
 

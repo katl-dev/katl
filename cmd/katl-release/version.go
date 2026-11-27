@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"regexp"
 
 	"github.com/katl-dev/katl/internal/releasestate"
 	"github.com/katl-dev/katl/internal/releaseversion"
@@ -32,7 +31,7 @@ func versionCommand(args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(args[2]) {
+		if !fullSHA.MatchString(args[2]) {
 			return errors.New("COMMIT must be a full commit SHA")
 		}
 		_, err = fmt.Fprintln(stdout, releasestate.BundleName(version, args[2]))

@@ -163,3 +163,17 @@ func (w *world) attestation() *Attestation {
 	digest := w.status().Record.Digest
 	return &w.in.Attestations[digest][len(w.in.Attestations[digest])-1]
 }
+
+// renumber makes the most recent build the attempt to, keeping its start.
+func (w *world) renumber(to runstatus.Attempt) {
+	from := runstatus.Attempt{Run: w.run, Number: 1}
+	attempt := w.attempts[from]
+	delete(w.attempts, from)
+	attempt.Run.ID, attempt.Run.Attempt = to.Run, to.Number
+	w.attempts[to] = attempt
+	status := w.status()
+	status.Record.Attempt, status.TargetURL = to, to.URL(testServer, testRepo)
+	if status.Record.Phase == Qualified {
+		w.attestation().Invocation = to.URL(testServer, testRepo)
+	}
+}

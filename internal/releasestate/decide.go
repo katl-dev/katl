@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/releaserecord"
 	"github.com/katl-dev/katl/internal/runstatus"
 )
 
@@ -126,7 +127,7 @@ func Decide(in Inputs) (Decision, error) {
 	for i, c := range valid {
 		record := in.record(version, c.tag.Name, c.tag.Commit, false, &warnings)
 		if record == nil {
-			d := refuse(8, "candidate-foreign", "%s has no status katl/release/%s from a Release run on release/%s at %s, so the release action did not create it. "+removeOrAbandon, c.tag.Name, c.tag.Name, V, short(c.tag.Commit), c.tag.Name, V)
+			d := refuse(8, "candidate-foreign", "%s has no status %s from a Release run on release/%s at %s, so the release action did not create it. "+removeOrAbandon, c.tag.Name, releaserecord.Context(strings.TrimPrefix(c.tag.Name, "v")), V, short(c.tag.Commit), c.tag.Name, V)
 			d.Warnings = warnings
 			return d, nil
 		}
@@ -173,12 +174,10 @@ func Decide(in Inputs) (Decision, error) {
 		if reason != "" {
 			return set(9, "final-foreign", Refuse, "v%s at %s was not created by the release action: %s. "+removeOrAbandon, V, short(X), reason, version.Tag(), V), nil
 		}
-		release, published := in.Releases[version.Tag()]
-		switch {
-		case !published:
+		if release, published := in.Releases[version.Tag()]; !published {
 			reason = "the tag exists and no release is published for it"
-		case !in.matches(version, release, finalRecord, false):
-			reason = fmt.Sprintf("it does not match the recorded sha256:%s", finalRecord.Digest)
+		} else if ok, mismatch := in.matches(version, release, finalRecord, false); !ok {
+			reason = mismatch
 		}
 		if reason != "" {
 			return set(10, "final-contradicts-record", Refuse, "The GitHub release v%s disagrees with what the release action recorded: %s. Published bytes are never replaced. Nothing was changed. If the release was edited or deleted by mistake, undo that and dispatch again; otherwise abandon %s and cut the next version.", V, reason, V), nil
@@ -221,11 +220,13 @@ func Decide(in Inputs) (Decision, error) {
 	}
 
 	pre, prePublished := in.Releases[rcTag]
-	switch {
-	case prePublished && latest.Phase != Qualified:
+	if prePublished && latest.Phase != Qualified {
 		return set(18, "prerelease-contradicts-record", Refuse, preContradicts, V, N, fmt.Sprintf("it is published, and no Release run qualified v%s-rc.%d", V, N), V, V, K), nil
-	case prePublished && !in.matches(version, pre, latest, true):
-		return set(18, "prerelease-contradicts-record", Refuse, preContradicts, V, N, fmt.Sprintf("it does not match the recorded sha256:%s", latest.Digest), V, V, K), nil
+	}
+	if prePublished {
+		if ok, mismatch := in.matches(version, pre, latest, true); !ok {
+			return set(18, "prerelease-contradicts-record", Refuse, preContradicts, V, N, mismatch, V, V, K), nil
+		}
 	}
 	candidateVersion := version.Candidate(N).String()
 	if latest.Phase != Qualified {

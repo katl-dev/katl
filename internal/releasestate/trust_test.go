@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/katl-dev/katl/internal/releaseversion"
+	"github.com/katl-dev/katl/internal/runstatus"
 )
 
 // TestTrust spoils one fact of rc.1's only record. A status that fails the
@@ -91,44 +92,48 @@ func TestReleaseMatchesRecord(t *testing.T) {
 		w.in.Releases[tag] = r
 	}
 	branchRef := "refs/heads/release/2026.12.1"
+	// A release whose bytes match the record but whose attestation does not
+	// is refused for its attestation, not reported as a digest mismatch.
+	const digest, attestation = false, true
 	for _, tc := range []struct {
-		name  string
-		final bool
-		spoil func(w *world, tag string)
+		name       string
+		final      bool
+		unattested bool
+		spoil      func(w *world, tag string)
 	}{
-		{"extra asset", false, func(w *world, tag string) {
+		{"extra asset", false, digest, func(w *world, tag string) {
 			release(w, tag, func(r *Release) {
 				r.Assets = append(r.Assets, Asset{Name: "extra", Uploaded: true, Digest: "sha256:" + digestOf("extra")})
 			})
 		}},
-		{"listed file missing", false, func(w *world, tag string) {
+		{"listed file missing", false, digest, func(w *world, tag string) {
 			release(w, tag, func(r *Release) { r.Sums["katl-installer.efi"] = digestOf("efi") })
 		}},
-		{"asset digest differs from SHA256SUMS", false, func(w *world, tag string) { asset(w, tag, "katlctl").Digest = "sha256:" + digestOf("other") }},
-		{"asset not uploaded", false, func(w *world, tag string) { asset(w, tag, "katlctl").Uploaded = false }},
-		{"SHA256SUMS unread", false, func(w *world, tag string) { release(w, tag, func(r *Release) { r.Sums = nil }) }},
+		{"asset digest differs from SHA256SUMS", false, digest, func(w *world, tag string) { asset(w, tag, "katlctl").Digest = "sha256:" + digestOf("other") }},
+		{"asset not uploaded", false, digest, func(w *world, tag string) { asset(w, tag, "katlctl").Uploaded = false }},
+		{"SHA256SUMS unread", false, digest, func(w *world, tag string) { release(w, tag, func(r *Release) { r.Sums = nil }) }},
 		// A listing that names SHA256SUMS with the recorded digest would match
 		// if SHA256SUMS were taken as just another listed file.
-		{"SHA256SUMS lists itself", false, func(w *world, tag string) {
+		{"SHA256SUMS lists itself", false, digest, func(w *world, tag string) {
 			release(w, tag, func(r *Release) { r.Sums["SHA256SUMS"] = w.digests[tag] })
 		}},
-		{"SHA256SUMS differs from the record", false, func(w *world, tag string) { asset(w, tag, "SHA256SUMS").Digest = "sha256:" + digestOf("other") }},
-		{"unattested", false, func(w *world, tag string) { w.in.Attestations = nil }},
-		{"attested by another attempt", false, func(w *world, tag string) {
+		{"SHA256SUMS differs from the record", false, digest, func(w *world, tag string) { asset(w, tag, "SHA256SUMS").Digest = "sha256:" + digestOf("other") }},
+		{"unattested", false, attestation, func(w *world, tag string) { w.in.Attestations = nil }},
+		{"attested by another attempt", false, attestation, func(w *world, tag string) {
 			w.attestation().Invocation = testServer + "/" + testRepo + "/actions/runs/101/attempts/2"
 		}},
-		{"signed from a tag", false, func(w *world, tag string) {
+		{"signed from a tag", false, attestation, func(w *world, tag string) {
 			w.attestation().SignerWorkflow = testServer + "/" + testRepo + "/" + artifactsWorkflow + "@refs/tags/" + tag
 		}},
-		{"started outside release.yml", false, func(w *world, tag string) {
+		{"started outside release.yml", false, attestation, func(w *world, tag string) {
 			w.attestation().ConfigWorkflow = testServer + "/" + testRepo + "/.github/workflows/ci.yml@" + branchRef
 		}},
-		{"attested at another commit", false, func(w *world, tag string) { w.attestation().SourceDigest = commit(2) }},
-		{"attested from another ref", false, func(w *world, tag string) { w.attestation().SourceRef = "refs/tags/" + tag }},
-		{"attested for other subjects", false, func(w *world, tag string) { w.attestation().Subjects = []string{digestOf("other")} }},
-		{"final unattested", true, func(w *world, tag string) { w.in.Attestations[w.digests[tag]] = nil }},
-		{"final attested from another ref", true, func(w *world, tag string) { w.attestation().SourceRef = "refs/heads/main" }},
-		{"final asset not uploaded", true, func(w *world, tag string) { asset(w, tag, "katlctl").Uploaded = false }},
+		{"attested at another commit", false, attestation, func(w *world, tag string) { w.attestation().SourceDigest = commit(2) }},
+		{"attested from another ref", false, attestation, func(w *world, tag string) { w.attestation().SourceRef = "refs/tags/" + tag }},
+		{"attested for other subjects", false, attestation, func(w *world, tag string) { w.attestation().Subjects = []string{digestOf("other")} }},
+		{"final unattested", true, attestation, func(w *world, tag string) { w.in.Attestations[w.digests[tag]] = nil }},
+		{"final attested from another ref", true, attestation, func(w *world, tag string) { w.attestation().SourceRef = "refs/heads/main" }},
+		{"final asset not uploaded", true, digest, func(w *world, tag string) { asset(w, tag, "katlctl").Uploaded = false }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w, tag, matching, row := green(1), rc, 23, 18
@@ -144,8 +149,12 @@ func TestReleaseMatchesRecord(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if got.Row != row || !strings.Contains(got.Message, "does not match the recorded sha256:"+w.digests[tag]) {
-				t.Fatalf("row %d (%s): %s, want row %d naming the recorded digest", got.Row, got.State, got.Message, row)
+			want := "it does not match the recorded sha256:" + w.digests[tag]
+			if tc.unattested {
+				want = "the SHA256SUMS is not attested by the recorded run attempt " + w.status().Record.Attempt.URL(testServer, testRepo)
+			}
+			if got.Row != row || !strings.Contains(got.Message, want) {
+				t.Fatalf("row %d (%s): %s, want row %d with %q", got.Row, got.State, got.Message, row, want)
 			}
 		})
 	}
@@ -168,6 +177,17 @@ func TestRecordSelection(t *testing.T) {
 		{"later qualified candidate holds", func() *world {
 			w := newWorld(1).candidate(1, 1, Qualified).publish(rc, true)
 			w.build(rc, 1, Qualified)
+			return w
+		}, 18},
+		// Records order by start, not by run number: a rerun of run 100 that
+		// starts after run 101 holds the record, so the pre-release published
+		// from run 101 shows as a mismatch.
+		{"rerun of an earlier run holds", func() *world {
+			w := newWorld(1)
+			w.run = 100
+			w.candidate(1, 1, Qualified).publish(rc, true)
+			w.build(rc, 1, Qualified)
+			w.renumber(runstatus.Attempt{Run: 100, Number: 2})
 			return w
 		}, 18},
 		// An untagged final's qualified record gives way to a later attempt.

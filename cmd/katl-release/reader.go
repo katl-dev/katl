@@ -24,14 +24,16 @@ import (
 	"github.com/katl-dev/katl/internal/runstatus"
 )
 
-// apiError is a failed gh api call with the HTTP status gh reported, or
+// apiError is a failed gh command with the HTTP status gh reported, or
 // status 0 when it reported none.
 type apiError struct {
 	status int
 	// network is set for a failure without a status that never reached
 	// GitHub, such as a refused connection or a timeout.
 	network bool
-	text    string
+	// auth is set when gh has no credentials.
+	auth bool
+	text string
 }
 
 func (e *apiError) Error() string { return e.text }
@@ -85,19 +87,26 @@ func ghRead(ctx context.Context, endpoint string, paginate bool, accept string) 
 	if err == nil {
 		return out, nil
 	}
+	return nil, ghFailure("gh api "+endpoint, err, stderr.String())
+}
+
+// ghFailure classifies a failed gh command from its exit status and what it
+// printed on stderr: an *apiError with the HTTP status gh reported, or an
+// error wrapping exec.ErrNotFound when gh is not installed.
+func ghFailure(command string, err error, stderr string) error {
 	if errors.Is(err, exec.ErrNotFound) {
-		return nil, fmt.Errorf("gh api %s: install the GitHub CLI: %w", endpoint, err)
+		return fmt.Errorf("%s: install the GitHub CLI: %w", command, err)
 	}
-	message := strings.TrimSpace(stderr.String())
-	text := fmt.Sprintf("gh api %s: %v: %s", endpoint, err, message)
+	message := strings.TrimSpace(stderr)
+	text := fmt.Sprintf("%s: %v: %s", command, err, message)
 	if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && exit.ExitCode() == ghAuthRequired {
-		return nil, &apiError{text: text + " (run gh auth login or set GH_TOKEN)"}
+		return &apiError{auth: true, text: text + " (run gh auth login or set GH_TOKEN)"}
 	}
 	status := 0
 	if match := httpStatus.FindStringSubmatch(message); match != nil {
 		status, _ = strconv.Atoi(match[1])
 	}
-	return nil, &apiError{status: status, network: status == 0 && networkFailure.MatchString(message), text: text}
+	return &apiError{status: status, network: status == 0 && networkFailure.MatchString(message), text: text}
 }
 
 // reader gathers the state machine's inputs from GitHub. Every read is
@@ -118,17 +127,22 @@ const readAttempts = 6
 
 func (r *reader) get(ctx context.Context, endpoint string, paginate bool, accept string) ([]byte, error) {
 	var body []byte
+	err := r.retry(ctx, func(ctx context.Context) error {
+		var err error
+		body, err = r.read(ctx, endpoint, paginate, accept)
+		return err
+	})
+	return body, err
+}
+
+// retry runs one read with backoff while it fails transiently.
+func (r *reader) retry(ctx context.Context, read func(context.Context) error) error {
 	delay := r.delay
 	if delay == 0 {
 		delay = 2 * time.Second
 	}
 	backoff := retry.NewBackoff(delay, 15*delay)
-	err := backoff.DoAttempts(ctx, readAttempts, func(ctx context.Context) error {
-		var err error
-		body, err = r.read(ctx, endpoint, paginate, accept)
-		return err
-	}, transient)
-	return body, err
+	return backoff.DoAttempts(ctx, readAttempts, read, transient)
 }
 
 func (r *reader) repo(path string) string { return "repos/" + r.repository + "/" + path }
@@ -335,13 +349,22 @@ func (r *reader) attempt(ctx context.Context, attempt runstatus.Attempt, in *rel
 	}
 	// GitHub lists a run's artifacts without the attempt that uploaded them.
 	// Attempts of one run follow each other, so an attempt's artifacts are
-	// those created from its start until the next attempt starts.
+	// those created from its start until the next attempt starts. Without
+	// either start the bounds are unknown, and guessing them could credit an
+	// attempt with another's bundle.
+	if run.StartedAt.IsZero() {
+		return fmt.Errorf("run attempt %s has no start time, so its artifacts cannot be attributed", attempt)
+	}
+	next := runstatus.Attempt{Run: attempt.Run, Number: attempt.Number + 1}
 	var until time.Time
-	following, err := runstatus.Read(ctx, get, r.repository, runstatus.Attempt{Run: attempt.Run, Number: attempt.Number + 1})
+	following, err := runstatus.Read(ctx, get, r.repository, next)
+	bounded := err == nil
 	switch {
 	case notFound(err):
 	case err != nil:
 		return err
+	case following.StartedAt.IsZero():
+		return fmt.Errorf("run attempt %s has no start time, so the artifacts of %s cannot be attributed", next, attempt)
 	default:
 		until = following.StartedAt
 	}
@@ -369,7 +392,7 @@ func (r *reader) attempt(ctx context.Context, attempt runstatus.Attempt, in *rel
 	if err := pages(ctx, r, r.repo(fmt.Sprintf("actions/runs/%d/artifacts?per_page=100", attempt.Run)), func(page artifactsPage) {
 		for _, artifact := range page.Artifacts {
 			if artifact.WorkflowRun.ID == attempt.Run && !artifact.CreatedAt.Before(run.StartedAt) &&
-				(until.IsZero() || artifact.CreatedAt.Before(until)) {
+				(!bounded || artifact.CreatedAt.Before(until)) {
 				read.Artifacts = append(read.Artifacts, artifact.Name)
 			}
 		}
@@ -421,7 +444,7 @@ func (r *reader) releases(ctx context.Context, version releaseversion.Version, i
 			if sums, err := decodeChecksums(body); err == nil {
 				read.Sums = sums
 			}
-			if err := r.attest(version, in, in.Tags[tag], asset.Digest, body); err != nil {
+			if err := r.attest(ctx, version, in, in.Tags[tag], asset.Digest, body); err != nil {
 				return err
 			}
 		}
@@ -433,7 +456,7 @@ func (r *reader) releases(ctx context.Context, version releaseversion.Version, i
 // attest verifies the attestation of a published SHA256SUMS when a qualified
 // record of its tag, on the tag's commit, names its digest. Only such a
 // release can match a record, so no other attestation is read.
-func (r *reader) attest(version releaseversion.Version, in *releasestate.Inputs, tag releasestate.Tag, assetDigest string, sums []byte) error {
+func (r *reader) attest(ctx context.Context, version releaseversion.Version, in *releasestate.Inputs, tag releasestate.Tag, assetDigest string, sums []byte) error {
 	digest, ok := strings.CutPrefix(assetDigest, "sha256:")
 	if !ok {
 		return nil
@@ -459,9 +482,24 @@ func (r *reader) attest(version releaseversion.Version, in *releasestate.Inputs,
 	if err := errors.Join(writeErr, file.Close()); err != nil {
 		return err
 	}
-	out, err := r.provenance.verify(file.Name(), releasestate.Ref(version), tag.Commit)
+	// Every failure stops the read: a SHA256SUMS that was not verified must
+	// read neither as unpublished nor as contradicting its record.
+	unverifiable := func(err error) error {
+		return fmt.Errorf("could not verify the attestation of the published SHA256SUMS of %s, because GitHub, Sigstore or gh failed; try again: %w", tag.Name, err)
+	}
+	ref := releasestate.Ref(version)
+	var out []byte
+	err = r.retry(ctx, func(context.Context) error {
+		var err error
+		out, err = r.provenance.verify(file.Name(), ref, tag.Commit)
+		return err
+	})
+	if errors.Is(err, errUnattested) {
+		return fmt.Errorf("the published SHA256SUMS of %s has no valid attestation from %s at %s on %s; do not publish anything for it, and investigate how the release was created: %w",
+			tag.Name, path.Base(workflow), tag.Commit, ref, err)
+	}
 	if err != nil {
-		return fmt.Errorf("SHA256SUMS of %s: %w", tag.Name, err)
+		return unverifiable(err)
 	}
 	var verified []struct {
 		VerificationResult struct {
@@ -484,7 +522,7 @@ func (r *reader) attest(version releaseversion.Version, in *releasestate.Inputs,
 		} `json:"verificationResult"`
 	}
 	if err := json.Unmarshal(out, &verified); err != nil {
-		return fmt.Errorf("decode gh attestation verify output for SHA256SUMS of %s: %w", tag.Name, err)
+		return unverifiable(fmt.Errorf("decode gh attestation verify output: %w", err))
 	}
 	in.Attestations[digest] = []releasestate.Attestation{}
 	for _, result := range verified {

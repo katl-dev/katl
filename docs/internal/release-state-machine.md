@@ -87,7 +87,9 @@ matches its record when it has the record's pre-release flag, its
 `gh attestation verify` against `release-artifacts.yml` as called by the
 record's run attempt, at the record's commit on `refs/heads/release/V`, and
 its other assets are exactly the files that `SHA256SUMS` lists, each uploaded
-with the digest it gives.
+with the digest it gives. A verification that `gh attestation verify` could not
+complete, or that it completed and refused, fails the read: neither is
+taken as a release that contradicts its record.
 
 One attempt moves from `building` to `failed` or to `qualified`. A job that
 cannot write `failed`, for example because the run was cancelled, leaves
@@ -119,7 +121,9 @@ A status is a record only when all of these hold:
    uploaded the bundle artifact
    `katl-<version>-x86_64-<first 12 of the commit>`. GitHub lists a run's
    artifacts without their attempt, so an attempt's artifacts are those
-   created from its start until the next attempt of the run started. A
+   created from its start until the next attempt of the run started; an
+   attempt whose start, or whose next attempt's start, GitHub does not
+   report fails the read rather than guessing the bounds. A
    `failed` status is a record only when that attempt completed without that
    success.
 
@@ -191,7 +195,7 @@ These rows refuse and never act.
 | 7 | `candidates-misordered` | For some `n`, the commit of `rc.<n>` is not a strict ancestor of the commit of `rc.<n+1>`. Two candidates on one commit are this case. `<a>` and `<b>` are the first such pair and `<ca>` and `<cb>` their commits. | `<a> at <ca> and <b> at <cb> are out of order: each candidate is on a later commit than the one before it, and no commit carries two. Nothing was changed. Have a repository administrator remove <b> if it was created by mistake, or abandon <V> and cut the next version.` |
 | 8 | `candidate-foreign` | A candidate tag has no record. `<tag>` is the lowest such candidate and `<commit>` its commit. | `<tag> has no status katl/release/<tag> from a Release run on release/<V> at <commit>, so the release action did not create it. Nothing was changed. Have a repository administrator remove <tag> if it was created by mistake, or abandon <V> and cut the next version.` |
 | 9 | `final-foreign` | The final tag exists and one of these holds, taken in order. There is no candidate, or `X` is not `C`: `<reason>` is `the final goes on the commit of the latest candidate, and that is not <X>`. `p` is not `qualified`: `v<V>-rc.<N> at that commit never qualified`. The final has no record on `X`, or `q` is not `qualified`: `no Release run on release/<V> qualified v<V> at that commit`. | `v<V> at <X> was not created by the release action: <reason>. Nothing was changed. Have a repository administrator remove v<V> if it was created by mistake, or abandon <V> and cut the next version.` |
-| 10 | `final-contradicts-record` | The final tag exists and one of these holds, taken in order. No release is published for it: `<reason>` is `the tag exists and no release is published for it`. The published final release does not match the final's record: `it does not match the recorded sha256:<digest>`, with the record's digest. | `The GitHub release v<V> disagrees with what the release action recorded: <reason>. Published bytes are never replaced. Nothing was changed. If the release was edited or deleted by mistake, undo that and dispatch again; otherwise abandon <V> and cut the next version.` |
+| 10 | `final-contradicts-record` | The final tag exists and one of these holds, taken in order. No release is published for it: `<reason>` is `the tag exists and no release is published for it`. The published final release does not carry the final's recorded bytes: `it does not match the recorded sha256:<digest>`, with the record's digest. The published final release carries those bytes, but its `SHA256SUMS` is not attested by the record's run attempt: `the SHA256SUMS is not attested by the recorded run attempt <url>`. | `The GitHub release v<V> disagrees with what the release action recorded: <reason>. Published bytes are never replaced. Nothing was changed. If the release was edited or deleted by mistake, undo that and dispatch again; otherwise abandon <V> and cut the next version.` |
 
 The action publishes the final tag and its release in one step, so row 10's
 first case arises only when a published release was deleted afterwards. Its
@@ -227,7 +231,7 @@ the final's record on `C`.
 | --- | --- | --- | --- |
 | 16 | `first-candidate` | No final tag, no candidate tag, and the retry reason is empty. | `candidate`: tag `vV-rc.1` at `H`, build, qualify and publish it as a pre-release. |
 | 17 | `superseded` | No final tag, a candidate exists, `H` is not `C`, and the retry reason is empty. Neither the candidate's record nor its pre-release is consulted: a new commit supersedes a published candidate, a failed one, one whose publication never finished and one whose pre-release disagrees with its record. | `candidate`: tag `vV-rc.<K>` at `H`, build, qualify and publish it as a pre-release. |
-| 18 | `prerelease-contradicts-record` | No final tag, a candidate exists, `H` is `C`, and one of these holds, taken in order. The pre-release is published and `p` is `building` or `failed`: `<reason>` is `it is published, and no Release run qualified v<V>-rc.<N>`. `p` is `qualified` and the published pre-release does not match the record: `it does not match the recorded sha256:<digest>`, with the record's digest. | `The GitHub pre-release v<V>-rc.<N> disagrees with what the release action recorded: <reason>. Published bytes are never replaced. Nothing was changed. Restore the pre-release flag if it was edited; otherwise push a commit to release/<V>, and the next dispatch tags v<V>-rc.<K>.` |
+| 18 | `prerelease-contradicts-record` | No final tag, a candidate exists, `H` is `C`, and one of these holds, taken in order. The pre-release is published and `p` is `building` or `failed`: `<reason>` is `it is published, and no Release run qualified v<V>-rc.<N>`. `p` is `qualified` and the published pre-release does not carry the recorded bytes: `it does not match the recorded sha256:<digest>`, with the record's digest. `p` is `qualified` and the published pre-release carries those bytes, but its `SHA256SUMS` is not attested by the record's run attempt: `the SHA256SUMS is not attested by the recorded run attempt <url>`. | `The GitHub pre-release v<V>-rc.<N> disagrees with what the release action recorded: <reason>. Published bytes are never replaced. Nothing was changed. Restore the pre-release flag if it was edited; otherwise push a commit to release/<V>, and the next dispatch tags v<V>-rc.<K>.` |
 | 19 | `candidate-failed` | No final tag, a candidate exists, `H` is `C`, `p` is `building` or `failed`, and the retry reason is empty. `<url>` is the record's target. | `v<V>-rc.<N> did not qualify at <C>: <outcome> (<url>). Push a fix to release/<V>; the next dispatch then tags v<V>-rc.<K>. If the source is not at fault, dispatch again with a retry reason to rebuild v<V>-rc.<N>.` |
 | 20 | `candidate-retry` | No final tag, a candidate exists, `H` is `C`, `p` is `building` or `failed`, and there is a retry reason. | `retry-candidate`: rebuild and requalify `vV-rc.N` at `C` under the existing tag, then publish it. |
 | 21 | `candidate-incomplete` | No final tag, a candidate exists, `H` is `C`, `p` is `qualified`, no pre-release is published, and the retry reason is empty. | `resume-candidate`: publish the bytes of the recorded build attempt. Never rebuild. |

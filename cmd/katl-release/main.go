@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -26,13 +27,20 @@ import (
 const repository = "katl-dev/katl"
 const workflow = ".github/workflows/release-artifacts.yml"
 
+// command runs a program and returns its stdout. A program that exits
+// non-zero fails with an *exec.ExitError that carries its stderr.
 type command func(string, ...string) ([]byte, error)
 
 func main() {
 	call := func(name string, args ...string) ([]byte, error) {
 		cmd := exec.Command(name, args...)
-		cmd.Stderr = os.Stderr
-		return cmd.Output()
+		var stderr bytes.Buffer
+		cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
+		out, err := cmd.Output()
+		if exit := (*exec.ExitError)(nil); errors.As(err, &exit) {
+			exit.Stderr = stderr.Bytes()
+		}
+		return out, err
 	}
 	if err := run(os.Args[1:], os.Stdout, os.Stderr, call); err != nil {
 		fmt.Fprintln(os.Stderr, "katl-release:", err)
@@ -295,8 +303,14 @@ type provenance struct {
 	scratch, root string
 }
 
+// errUnattested marks a verification that gh attestation verify completed
+// and refused, as opposed to one it could not complete.
+var errUnattested = errors.New("gh attestation verify found no valid attestation")
+
 // verify checks that file is attested by release-artifacts.yml at commit on
-// sourceRef, and returns the verified attestations as gh's JSON.
+// sourceRef, and returns the verified attestations as gh's JSON. A failure
+// is classified as ghFailure classifies it, and wraps errUnattested when gh
+// ran and refused the file rather than failing to reach GitHub or Sigstore.
 func (p *provenance) verify(file, sourceRef, commit string) ([]byte, error) {
 	if p.root == "" {
 		// Without a trusted root, every gh attestation verify initializes the
@@ -306,7 +320,8 @@ func (p *provenance) verify(file, sourceRef, commit string) ([]byte, error) {
 		// it cannot join the published bundle.
 		root, err := p.call("gh", "attestation", "trusted-root")
 		if err != nil {
-			return nil, fmt.Errorf("fetch Sigstore trusted root; check network access to tuf-repo-cdn.sigstore.dev and tuf-repo.github.com: %w", err)
+			return nil, fmt.Errorf("fetch Sigstore trusted root; check network access to tuf-repo-cdn.sigstore.dev and tuf-repo.github.com: %w",
+				ghFailure("gh attestation trusted-root", err, stderrOf(err)))
 		}
 		scratch, err := os.MkdirTemp("", "katl-release-")
 		if err != nil {
@@ -322,9 +337,22 @@ func (p *provenance) verify(file, sourceRef, commit string) ([]byte, error) {
 		"--signer-workflow", p.repository+"/"+workflow, "--source-ref", sourceRef,
 		"--source-digest", commit, "--custom-trusted-root", p.root, "--format", "json")
 	if err != nil {
-		return nil, fmt.Errorf("provenance verification failed for %s; check gh attestation verify and network access: %w", filepath.Base(file), err)
+		failure := ghFailure("gh attestation verify", err, stderrOf(err))
+		var api *apiError
+		if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && errors.As(failure, &api) && !transient(api) && !api.auth && api.status != 401 {
+			failure = fmt.Errorf("%w: %w", errUnattested, failure)
+		}
+		return nil, fmt.Errorf("provenance verification failed for %s; check gh attestation verify and network access: %w", filepath.Base(file), failure)
 	}
 	return out, nil
+}
+
+// stderrOf is what a command that exited non-zero printed on stderr.
+func stderrOf(err error) string {
+	if exit := (*exec.ExitError)(nil); errors.As(err, &exit) {
+		return string(exit.Stderr)
+	}
+	return ""
 }
 
 // close removes the trusted root; the next verification fetches it again.

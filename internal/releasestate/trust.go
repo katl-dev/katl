@@ -159,30 +159,39 @@ func progress(phase Phase) int {
 // matches reports whether a published release carries exactly the record's
 // bytes: the right pre-release flag, its SHA256SUMS with the recorded digest
 // and attested by the record's attempt, and only the files SHA256SUMS lists,
-// each with the digest it gives.
-func (in Inputs) matches(version releaseversion.Version, release Release, record *trusted, prerelease bool) bool {
-	if release.Prerelease != prerelease || release.Sums == nil || record == nil || record.Phase != Qualified ||
-		!in.attested(version, record) {
-		return false
+// each with the digest it gives. When it does not, the reason says which.
+func (in Inputs) matches(version releaseversion.Version, release Release, record *trusted, prerelease bool) (bool, string) {
+	if record == nil || record.Phase != Qualified {
+		return false, "no Release run qualified it"
+	}
+	mismatch := fmt.Sprintf("it does not match the recorded sha256:%s", record.Digest)
+	if release.Prerelease != prerelease || release.Sums == nil {
+		return false, mismatch
 	}
 	want := map[string]string{"SHA256SUMS": record.Digest}
 	for name, digest := range release.Sums {
 		if name == "SHA256SUMS" {
-			return false
+			return false, mismatch
 		}
 		want[name] = digest
 	}
 	if len(release.Assets) != len(want) {
-		return false
+		return false, mismatch
 	}
 	for _, asset := range release.Assets {
 		digest, ok := want[asset.Name]
 		if !ok || !asset.Uploaded || asset.Digest != "sha256:"+digest {
-			return false
+			return false, mismatch
 		}
 		delete(want, asset.Name)
 	}
-	return len(want) == 0
+	if len(want) != 0 {
+		return false, mismatch
+	}
+	if !in.attested(version, record) {
+		return false, "the SHA256SUMS is not attested by the recorded run attempt " + record.Attempt.URL(in.Server, in.Repository)
+	}
+	return true, ""
 }
 
 // outcome describes how a record's attempt ended without qualifying.
