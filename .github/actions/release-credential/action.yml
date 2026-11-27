@@ -1,0 +1,44 @@
+name: Verify the release App credential
+description: Mint the repository-scoped katl-release token and verify its read access.
+inputs:
+  app-id:
+    description: ID of the katl-release GitHub App
+    required: true
+  private-key:
+    description: Private key of the katl-release GitHub App
+    required: true
+outputs:
+  token:
+    description: Installation token for the release repository
+    value: ${{ steps.mint.outputs.token }}
+runs:
+  using: composite
+  steps:
+    - name: Mint the katl-release token
+      id: mint
+      uses: actions/create-github-app-token@v3
+      with:
+        app-id: ${{ inputs.app-id }}
+        private-key: ${{ inputs.private-key }}
+        owner: ${{ github.repository_owner }}
+        repositories: ${{ github.event.repository.name }}
+        permission-contents: write
+    - name: Report a token mint failure
+      if: failure() && steps.mint.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "::error::Could not mint the katl-release token. Check the KATL_RELEASE_APP_ID variable and KATL_RELEASE_APP_PRIVATE_KEY secret in the release environment, and confirm that the App is installed on this repository with Contents write permission."
+    - name: Verify installation scope and repository access
+      shell: bash
+      env:
+        GH_TOKEN: ${{ steps.mint.outputs.token }}
+      run: |
+        if ! repositories="$(gh api --method GET --paginate /installation/repositories --jq '.repositories[].full_name')" ||
+          ! grep -Fxiq -- "$GITHUB_REPOSITORY" <<< "$repositories"; then
+          echo "::error::Could not verify katl-release installation scope. Check that the App installation includes $GITHUB_REPOSITORY."
+          exit 1
+        fi
+        if ! gh api --method GET "/repos/$GITHUB_REPOSITORY/contents" > /dev/null; then
+          echo "::error::Could not read repository contents with the katl-release token. Check that the App installation on $GITHUB_REPOSITORY has approved Contents write permission."
+          exit 1
+        fi

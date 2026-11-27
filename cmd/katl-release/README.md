@@ -181,6 +181,11 @@ for every decision, a refusal included.
 The Release workflow uses these commands after qualification. Submit release
 work through the [Release workflow](../../docs/internal/release-state-machine.md#actions).
 
+After cutting `release/<version>` and before the first final publication, run
+`gh workflow run release-credential.yml --ref release/<version>` with the final
+version in the branch name. Approve the `release` deployment and check that the
+run summary says "The katl-release credential is ready for final publication."
+
 ### `require-candidate`
 
 ```sh
