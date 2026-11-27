@@ -10,7 +10,10 @@ import (
 	"testing"
 )
 
-func TestHermeticHidesHome(t *testing.T) {
+// requireUserNamespaces skips the test on hosts where Bubblewrap cannot
+// create a user namespace.
+func requireUserNamespaces(t *testing.T) {
+	t.Helper()
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
 		t.Fatalf("find bwrap (enter nix develop): %v", err)
@@ -22,6 +25,10 @@ func TestHermeticHidesHome(t *testing.T) {
 		}
 		t.Fatalf("probe Bubblewrap namespaces: %v\n%s", err, msg)
 	}
+}
+
+func TestHermeticHidesHome(t *testing.T) {
+	requireUserNamespaces(t)
 
 	script := filepath.Join(repoRoot(t), "scripts/hermetic")
 	home := t.TempDir()
@@ -123,6 +130,23 @@ func TestHermeticHidesHome(t *testing.T) {
 	cmd.Env = append(os.Environ(), "KATLCTL_CONFIG=custom.yaml")
 	if output, err := cmd.CombinedOutput(); err != nil || string(output) != filepath.Join(worktree, "custom.yaml")+"\n" {
 		t.Fatalf("worktree config: got %v\n%s", err, output)
+	}
+}
+
+// Root-owned host files appear unowned inside the user namespace, so an SSH
+// client that read the host's ssh_config would refuse the files it includes.
+func TestHermeticHidesHostSSHConfig(t *testing.T) {
+	requireUserNamespaces(t)
+	if _, err := os.Stat("/etc/ssh/ssh_config"); err != nil {
+		t.Skipf("host has no system SSH client configuration to hide: %v", err)
+	}
+	t.Setenv("KATLCTL_CONFIG", "")
+
+	repo := repoRoot(t)
+	cmd := exec.Command(filepath.Join(repo, "scripts/hermetic"), "--", "sh", "-ec", `test -z "$(ls -A /etc/ssh)"`)
+	cmd.Dir = repo
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("host /etc/ssh is visible under hermetic: %v\n%s", err, output)
 	}
 }
 

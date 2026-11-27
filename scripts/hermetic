@@ -39,6 +39,10 @@ esac
 # A separate user namespace blocks access through host processes' /proc roots.
 args=(--dev-bind / / --unshare-user --clearenv --tmpfs /tmp)
 [[ "$home" == /tmp ]] || args+=(--tmpfs "$home")
+# The host's SSH client configuration is operator environment, and OpenSSH
+# refuses the files it includes because root-owned files appear unowned in the
+# user namespace. Jobs pass the SSH options they need on the command line.
+[[ ! -d /etc/ssh ]] || args+=(--tmpfs /etc/ssh)
 # Overlay the private directories before restoring individual host paths.
 binds=("${default_binds[@]}" --bind "${job_env[GOCACHE]}" --bind "${job_env[GOMODCACHE]}" "${binds[@]}")
 for ((i = 0; i < ${#binds[@]}; i += 2)); do
