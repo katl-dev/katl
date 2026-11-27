@@ -58,6 +58,12 @@ func (o observation) blocked() bool {
 	return !o.Merged && !o.Closed && !o.InQueue && len(o.FailedRequired) > 0
 }
 
+// unmergeable reports whether the queue found the entry conflicts with one
+// ahead of it.
+func (o observation) unmergeable() bool {
+	return o.InQueue && o.QueueState == "UNMERGEABLE"
+}
+
 // settled reports whether the pull request has left the queue for good: it
 // merged, closed, cannot join until its head is fixed, or is neither queued
 // nor waiting to be.
@@ -148,8 +154,9 @@ func removalLines(n int, r removalEvent) []string {
 // follow polls the pull requests and prints a line for each state change
 // until every one has settled. A failed poll is reported and retried, so a
 // transient GitHub or network failure does not end the watch. It returns
-// errConflict when any pull request settled without merging.
-func follow(ctx context.Context, numbers []int, poll func(context.Context, []int) (map[int]prResponse, error), interval time.Duration, out, errOut io.Writer) error {
+// errConflict when any pull request settled without merging. When a pull
+// request becomes unmergeable, explain, if set, says what it conflicts with.
+func follow(ctx context.Context, numbers []int, poll func(context.Context, []int) (map[int]prResponse, error), explain func(context.Context, int) ([]string, error), interval time.Duration, out, errOut io.Writer) error {
 	seen := map[int]observation{}
 	unmerged := false
 	for {
@@ -164,8 +171,16 @@ func follow(ctx context.Context, numbers []int, poll func(context.Context, []int
 			for _, n := range numbers {
 				cur := observe(prs[n])
 				lines := describe(cur)
-				if prev, ok := seen[n]; ok {
+				prev, ok := seen[n]
+				if ok {
 					lines = transitions(prev, cur)
+				}
+				if explain != nil && cur.unmergeable() && (!ok || !prev.unmergeable() || prev.Head != cur.Head) {
+					cause, err := explain(ctx, n)
+					if err != nil {
+						fmt.Fprintf(errOut, "%s katl-queue: could not name the entry #%d conflicts with: %v\n", stamp(), n, err)
+					}
+					lines = append(lines, cause...)
 				}
 				for _, line := range lines {
 					fmt.Fprintf(out, "%s %s\n", stamp(), line)
