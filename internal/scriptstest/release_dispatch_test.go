@@ -128,7 +128,11 @@ func TestReleaseCredential(t *testing.T) {
 	}
 
 	check, source := readWorkflow(t, checkFile)
-	if check.On.Kind != yaml.ScalarNode || check.On.Value != "workflow_dispatch" ||
+	var events map[string]any
+	if err := check.On.Decode(&events); err != nil {
+		t.Fatal(err)
+	}
+	if _, manual := events["workflow_dispatch"]; !manual || len(events) != 1 ||
 		!maps.Equal(check.Permissions, map[string]string{"contents": "read"}) {
 		t.Error("credential check must be dispatch-only with contents: read")
 	}
