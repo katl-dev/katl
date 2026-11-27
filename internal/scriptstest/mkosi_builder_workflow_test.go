@@ -21,6 +21,9 @@ var adHocBuilders = map[string]bool{
 	"kubernetes-bundles.yml build": true,
 }
 
+// mainOnly is the job condition that limits builder publication to main.
+const mainOnly = "github.ref == 'refs/heads/main'"
+
 var (
 	builderImageReference = regexp.MustCompile(`\$\{?KATL_MKOSI_IMAGE\}?`)
 	builderBuild          = regexp.MustCompile(`\b(docker|podman) (buildx )?build\b`)
@@ -196,8 +199,8 @@ func TestBuilderPublication(t *testing.T) {
 	for name, job := range workflow.Jobs {
 		writes := grantsPackageWrite(t, job.Permissions)
 		if name == "publish" {
-			if !writes || job.If != mainRef {
-				t.Fatalf("publish job writes packages %t under condition %q, want true under %q", writes, job.If, mainRef)
+			if !writes || job.If != mainOnly {
+				t.Fatalf("publish job writes packages %t under condition %q, want true under %q", writes, job.If, mainOnly)
 			}
 		} else if writes {
 			t.Errorf("Builder Image job %s grants packages: write; only publish may", name)
