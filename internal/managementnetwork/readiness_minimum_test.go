@@ -2,19 +2,11 @@ package managementnetwork
 
 import (
 	"context"
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestReadyUsesNetworkdMinimum(t *testing.T) {
-	raUnit := filepath.Join(t.TempDir(), "ra.network")
-	if err := os.WriteFile(raUnit, []byte("[Link]\nRequiredForOnline=carrier\n\n[Network]\nIPv6AcceptRA=yes\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
 	const other = `{"Name":"enp3s0","NetworkFile":"other.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["routable","routable"],"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable"}`
 	const member = `{"Name":"enp1s0","NetworkFile":"member.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["carrier","routable"],"OnlineState":"online","OperationalState":"enslaved","CarrierState":"enslaved","AddressState":"off"}`
 	const defaultBondMember = `{"Name":"enp1s0","NetworkFile":"member.network","RequiredForOnline":true,"OnlineState":"online","OperationalState":"enslaved","CarrierState":"enslaved","AddressState":"off"}`
@@ -23,7 +15,7 @@ func TestReadyUsesNetworkdMinimum(t *testing.T) {
 	const bondWithoutAddress = `{"Name":"bond0","NetworkFile":"bond.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["routable","routable"],"OnlineState":"online","OperationalState":"carrier","CarrierState":"carrier","AddressState":"off"}`
 	const managementWithoutAddress = `{"Name":"enp2s0","NetworkFile":"management.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["routable","routable"],"OnlineState":"online","OperationalState":"carrier","CarrierState":"carrier","AddressState":"off"}`
 	const managementIPv6 = `{"Name":"enp2s0","NetworkFile":"management.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["routable","routable"],"OnlineState":"online","OperationalState":"routable","CarrierState":"carrier","AddressState":"routable","IPv4AddressState":"off","IPv6AddressState":"routable"}`
-	raWithoutAddress := fmt.Sprintf(`{"Name":"enp1s0","NetworkFile":%q,"RequiredForOnline":true,"RequiredOperationalStateForOnline":["carrier","routable"],"OnlineState":"online","OperationalState":"carrier","CarrierState":"carrier","AddressState":"off"}`, raUnit)
+	const raWithoutAddress = `{"Name":"enp1s0","NetworkFile":"ra.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["carrier","routable"],"OnlineState":"online","OperationalState":"carrier","CarrierState":"carrier","AddressState":"off"}`
 
 	for _, tc := range []struct {
 		name        string
@@ -53,6 +45,21 @@ func TestReadyUsesNetworkdMinimum(t *testing.T) {
 		},
 		{name: "RA on a carrier-only link", links: []string{raWithoutAddress, other}},
 		{
+			name: "carrier minimum rejects no carrier",
+			links: []string{
+				`{"Name":"enp2s0","NetworkFile":"management.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["carrier","routable"],"OnlineState":"online","OperationalState":"no-carrier","CarrierState":"no-carrier","AddressState":"off"}`,
+				other,
+			},
+			unavailable: "enp2s0",
+		},
+		{
+			name: "no-carrier minimum accepts no carrier",
+			links: []string{
+				`{"Name":"enp2s0","NetworkFile":"management.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["no-carrier","routable"],"OnlineState":"online","OperationalState":"no-carrier","CarrierState":"no-carrier","AddressState":"off"}`,
+				other,
+			},
+		},
+		{
 			name: "degraded minimum rejects no address",
 			links: []string{
 				`{"Name":"enp2s0","NetworkFile":"management.network","RequiredForOnline":true,"RequiredOperationalStateForOnline":["degraded","routable"],"OnlineState":"online","OperationalState":"carrier","CarrierState":"carrier","AddressState":"off"}`,
@@ -77,14 +84,14 @@ func TestReadyUsesNetworkdMinimum(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ready, reason, err := Ready(t.Context(), func(context.Context) ([]byte, error) {
+			got, reason, err := ready(t.Context(), func(context.Context) ([]byte, error) {
 				return []byte(`{"Interfaces":[` + strings.Join(tc.links, ",") + `]}`), nil
-			})
+			}, t.TempDir())
 			if err != nil {
 				t.Fatalf("Ready() error = %v", err)
 			}
-			if wantReady := tc.unavailable == ""; ready != wantReady || !strings.Contains(reason, tc.unavailable) {
-				t.Fatalf("Ready() = %t, %q, want %t, reason naming %q", ready, reason, wantReady, tc.unavailable)
+			if wantReady := tc.unavailable == ""; got != wantReady || !strings.Contains(reason, tc.unavailable) {
+				t.Fatalf("Ready() = %t, %q, want %t, reason naming %q", got, reason, wantReady, tc.unavailable)
 			}
 		})
 	}

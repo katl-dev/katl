@@ -128,7 +128,7 @@ func NewServer(root string, store operation.Store) *Server {
 	now := time.Now().UTC()
 	startID, _ := randomID("agent")
 	return &Server{
-		MountBootRoot:            mountRuntimeBootRoot,
+		MountBootRoot:            runtimeBootRootMounter(root),
 		SetBootDefault:           setBootDefault,
 		SetBootOneshot:           setBootOneshot,
 		Root:                     strings.TrimSpace(root),

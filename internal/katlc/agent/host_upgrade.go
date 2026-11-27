@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -14,6 +12,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/katlosimage"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/kernelcmdline"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -93,11 +92,11 @@ func requireHostUpgradeBootHealth(ctx context.Context, readHealth func(context.C
 }
 
 func validateHostUpgradeBootEvidence(root, currentID string, current generation.GenerationSpec) error {
-	data, err := os.ReadFile(filepath.Join(runtimeRoot(root), "proc/cmdline"))
+	options, err := kernelcmdline.ReadCurrent(root)
 	if err != nil {
 		return fmt.Errorf("read running kernel command line: %w", err)
 	}
-	commandLine := string(data)
+	commandLine := strings.Join(options, " ")
 	bootedID, err := generation.SelectedGenerationFromCommandLine(commandLine)
 	if err != nil {
 		return fmt.Errorf("read running generation from kernel command line: %w", err)
