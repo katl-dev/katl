@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Runs a command with the host tools of the flake's ci shell, so a CI step sees
+# the tool versions the development shell gives a local run. Jobs name it in
+# their default run shell; setup-tools must have realised the shell first.
+set -euo pipefail
+
+[[ $# -gt 0 ]] || { echo 'usage: ci-shell COMMAND [ARGS...]' >&2; exit 2; }
+
+root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
+# Hosted runners have no remote builders; an inherited builders setting would
+# send the shell's realisation to a machine the job cannot reach.
+exec nix develop --option builders '' "$root#ci" -c "$@"

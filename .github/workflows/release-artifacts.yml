@@ -117,6 +117,9 @@ jobs:
     if: inputs.qualify_run == 0 && (inputs.commit || github.event_name != 'push' || github.actor != 'katl-release[bot]')
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash .github/scripts/ci-shell bash --noprofile --norc -eo pipefail {0}
     steps:
       - uses: actions/checkout@v7
         timeout-minutes: 2
@@ -127,10 +130,10 @@ jobs:
         timeout-minutes: 14
       - name: Allow Bubblewrap user namespaces
         timeout-minutes: 2
-        run: nix develop --option builders '' .#ci -c .github/scripts/hosted-hermetic-setup
+        run: .github/scripts/hosted-hermetic-setup
       - name: Run fast checks
         timeout-minutes: 10
-        run: nix develop --option builders '' .#ci -c scripts/check-fast
+        run: scripts/check-fast
 
   # Release candidates and final releases repeat the regression lanes only when
   # CI has not already passed them at this commit (scripts/katl-release

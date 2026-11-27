@@ -66,14 +66,18 @@ jobs:
       KATL_OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
       KATL_VMTEST_GO: ${{ github.workspace }}/.github/scripts/hosted-vmtest-go
       KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/kernel-journey
+    defaults:
+      run:
+        shell: bash .github/scripts/ci-shell bash --noprofile --norc -eo pipefail {0}
     steps:
       - uses: actions/checkout@v7
         timeout-minutes: 2
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - uses: ./.github/actions/setup-go
-        timeout-minutes: 2
+      - name: Set up tools
+        uses: ./.github/actions/setup-tools
+        timeout-minutes: 14
       - name: Restore pinned extension sources
         timeout-minutes: 5
         continue-on-error: true
@@ -100,9 +104,6 @@ jobs:
           test -f "$lock"
           echo "KATL_KERNEL_LOCK=$GITHUB_WORKSPACE/$lock" >> "$GITHUB_ENV"
           echo "KATL_VERSION=$(date -u +%Y.%-m).0-dev.0" >> "$GITHUB_ENV"
-      - name: Install module inspection tools
-        timeout-minutes: 2
-        run: .github/scripts/hosted-apt-install systemd-container kmod squashfs-tools
       - name: Build both boot artifacts and every release recipe
         timeout-minutes: 34
         run: |
@@ -155,6 +156,7 @@ jobs:
         timeout-minutes: 2
         id: diagnostics
         if: always()
+        shell: bash
         run: .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
         timeout-minutes: 2

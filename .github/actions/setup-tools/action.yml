@@ -2,12 +2,13 @@ name: Set up the CI tool shell and restore the Go cache
 description: >-
   Install Nix, realise the flake's ci shell and restore the host Go cache
   for the shell's Go. Later steps run their commands through
-  `nix develop --option builders '' .#ci -c`. Composite steps cannot carry
-  timeout-minutes, so the calling step gives this action its budget of 14
-  minutes. The shell realisation makes at most 3 attempts of 120 s, each
-  killed 10 s after its limit, with backoffs below 20 s and 40 s between
-  them, so it gives up within 450 s. The Go cache restore may use its own 5-minute
-  segment download limit, which leaves the Nix install about a minute.
+  `.github/scripts/ci-shell`, normally as the job's default run shell.
+  Composite steps cannot carry timeout-minutes, so the calling step gives
+  this action its budget of 14 minutes. The shell realisation makes at most
+  3 attempts of 120 s, each killed 10 s after its limit, with backoffs below
+  20 s and 40 s between them, so it gives up within 450 s. The Go cache
+  restore may use its own 5-minute segment download limit, which leaves the
+  Nix install about a minute.
 outputs:
   module-cache:
     description: Go module cache path
@@ -39,7 +40,7 @@ runs:
         go_env="$(scripts/retry --attempts 3 --timeout 120 --kill-after 10 --backoff 10 \
           --title 'ci shell' --what 'Realising the ci shell' \
           --hint 'cache.nixos.org substitution failed or stalled; rerun the job, and check https://status.nixos.org if it persists' \
-          -- nix develop --option builders '' .#ci -c go env GOVERSION GOMODCACHE GOCACHE)"
+          -- .github/scripts/ci-shell go env GOVERSION GOMODCACHE GOCACHE)"
         mapfile -t go_env <<< "$go_env"
         if [[ ${#go_env[@]} != 3 ]]; then
           echo "::error title=ci shell::go env printed ${#go_env[@]} lines, not 3: ${go_env[*]}"

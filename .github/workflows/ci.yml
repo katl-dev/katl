@@ -201,6 +201,9 @@ jobs:
     needs: plan
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    defaults:
+      run:
+        shell: bash .github/scripts/ci-shell bash --noprofile --norc -eo pipefail {0}
     steps:
       - uses: actions/checkout@v7
         timeout-minutes: 2
@@ -213,17 +216,16 @@ jobs:
         timeout-minutes: 14
       - name: Allow Bubblewrap user namespaces
         timeout-minutes: 2
-        run: nix develop --option builders '' .#ci -c .github/scripts/hosted-hermetic-setup
+        run: .github/scripts/hosted-hermetic-setup
       - name: Run fast checks
         timeout-minutes: 10
         env:
           COMPARISON: ${{ needs.plan.outputs.range }}
-        run: nix develop --option builders '' .#ci -c scripts/check-fast "$COMPARISON"
+        run: scripts/check-fast "$COMPARISON"
       - name: Validate workflows
         timeout-minutes: 2
         # This actionlint release predates the App action's client-id input.
         run: >-
-          nix develop --option builders '' .#ci -c
           go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
           -shellcheck=
           -ignore 'input "(app-id|client-id)".*action "actions/create-github-app-token@v3"'

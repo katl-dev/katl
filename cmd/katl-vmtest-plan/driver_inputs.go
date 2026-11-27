@@ -105,6 +105,10 @@ var driverInputs = []string{
 	// Hosted provisioning and the entrypoints that launch the DRBD test and
 	// propagate its exit status to the qualification job.
 	qualificationWorkflow,
+	".github/actions/setup-tools/action.yml",
+	".github/scripts/ci-shell",
+	"flake.nix",
+	"flake.lock",
 	".github/actions/setup-go/action.yml",
 	".github/actions/image-caches/action.yml",
 	".github/actions/hosted-vmtest/action.yml",

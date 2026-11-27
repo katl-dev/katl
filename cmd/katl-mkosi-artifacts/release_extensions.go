@@ -235,7 +235,9 @@ func verifyReleaseImages(release, runtime, layout string, stdout, stderr io.Writ
 	}
 	// Elevate only read-only image inspection and module-index composition, not
 	// recipe execution. Local and CI builds use this same verification boundary.
-	command := exec.Command("sudo", append([]string{"--", executable}, args...)...)
+	// sudo replaces PATH with its secure_path, so pass the caller's PATH through
+	// env: the inspection tools are the development or ci shell's, not the host's.
+	command := exec.Command("sudo", append([]string{"--", "env", "PATH=" + os.Getenv("PATH"), executable}, args...)...)
 	command.Stdout = stdout
 	command.Stderr = stderr
 	return command.Run()
