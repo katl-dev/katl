@@ -154,6 +154,32 @@ Do not override verification. Correct the address or use `katlctl context rebind
 saving it. Do not solve reachability by exposing port `9443` to an untrusted
 network or disabling TLS verification.
 
+## Required link reconfigured
+
+If systemd-networkd reports no carrier on a required link for 20 seconds while
+sysfs reports carrier up (`carrier=1`, `operstate` up), the link gets no DHCP
+lease. KatlOS then reconfigures that link once per boot, and the boot-health
+diagnostic in `katlctl node status` reports the attempt for the rest of the
+boot, for example:
+
+```text
+Required link enp1s0 was reconfigured once in this boot after systemd-networkd reported no carrier while sysfs reported carrier up. No action is needed while the node is healthy
+```
+
+If the node is healthy, no action is needed. If the line says the link could
+not be reconfigured, or that the result was not recorded, read the
+link-recovery journal:
+
+```sh
+katlctl node logs cp-1 --config ./cluster.yaml -u katl-link-recovery.service
+```
+
+If the agent is unreachable, run `journalctl -b -u katl-link-recovery` on the
+console instead. If the link stays offline, reboot the node with
+`katlctl node reboot cp-1 --config ./cluster.yaml`, or from the console when
+the link carries the only management path. KatlOS makes no second attempt in
+the same boot.
+
 ## Reporting
 
 Follow the [support-boundary reporting checklist](../support.md#report-a-problem).

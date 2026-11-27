@@ -145,7 +145,7 @@ func TestAffectedGate(t *testing.T) {
 	const wantGroups = "./internal/vmtest/scenarios\t^(TestWorkerReaddress)$\n" +
 		"./internal/vmtest/scenarios\t^(TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke)$\n" +
 		"./internal/vmtest/scenarios\t^(TestExternalWorkerJoin)$\n" +
-		"./internal/vmtest\t^(TestInstalledRuntimeRequiredLinkHealth|TestInstalledRuntimeConfigApplyModesSmoke|TestInstalledRuntimeServiceSecuritySmoke|TestInstalledRuntimeCarrierRecovery)$\n"
+		"./internal/vmtest\t^(TestInstalledRuntimeRequiredLinkHealth|TestInstalledRuntimeConfigApplyModesSmoke|TestInstalledRuntimeServiceSecuritySmoke|TestInstalledRuntimeCarrierRecovery|TestInstalledRuntimeLinkRecovery)$\n"
 	for _, kernel := range []string{"standard", "lts"} {
 		build, _, err := gateDirs(kernel)
 		if err != nil {

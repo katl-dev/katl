@@ -11,6 +11,9 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
+
+	"github.com/katl-dev/katl/internal/retry"
 )
 
 type networkctlState struct {
@@ -28,24 +31,54 @@ type networkctlLink struct {
 	RequiredOperationalState *[2]string `json:"RequiredOperationalStateForOnline"`
 }
 
+// Observation is one networkd snapshot evaluated for management readiness.
+type Observation struct {
+	Ready bool
+	// Reason names the failed checks when the snapshot is not ready.
+	Reason string
+	// CarrierDisagreements lists unready required links that systemd-networkd
+	// reports without carrier while sysfs reports carrier and operstate up.
+	CarrierDisagreements []string
+	// LinksWithCarrier lists required links that systemd-networkd reports
+	// with carrier, including links still waiting for an address.
+	LinksWithCarrier []string
+}
+
+// PollBackoff paces repeated reads of networkd state by every watcher of the
+// management links.
+func PollBackoff() retry.Backoff {
+	return retry.NewBackoff(time.Second, 5*time.Second)
+}
+
 // Ready checks one networkd snapshot for configured management readiness.
 func Ready(ctx context.Context, read func(context.Context) ([]byte, error)) (bool, string, error) {
 	return ready(ctx, read, "/sys")
 }
 
-// ready evaluates a snapshot, reading each required link's kernel carrier
-// beneath sysfs for the diagnostic.
+// Observe evaluates one networkd snapshot against the kernel's link state.
+func Observe(ctx context.Context, read func(context.Context) ([]byte, error)) (Observation, error) {
+	return observe(ctx, read, "/sys")
+}
+
 func ready(ctx context.Context, read func(context.Context) ([]byte, error), sysfs string) (bool, string, error) {
+	observation, err := observe(ctx, read, sysfs)
+	return observation.Ready, observation.Reason, err
+}
+
+// observe evaluates a snapshot, reading each unready required link's kernel
+// state beneath sysfs.
+func observe(ctx context.Context, read func(context.Context) ([]byte, error), sysfs string) (Observation, error) {
 	data, err := read(ctx)
 	if err != nil {
-		return false, "", err
+		return Observation{}, err
 	}
 
 	var state networkctlState
 	if err := json.Unmarshal(data, &state); err != nil {
-		return false, "", fmt.Errorf("decode networkctl state: %w", err)
+		return Observation{}, fmt.Errorf("decode networkctl state: %w", err)
 	}
 
+	var observation Observation
 	var required, reasons []string
 	routable := false
 	for _, link := range state.Interfaces {
@@ -53,24 +86,36 @@ func ready(ctx context.Context, read func(context.Context) ([]byte, error), sysf
 			continue
 		}
 		required = append(required, link.Name)
+		if link.hasCarrier() && !link.reportsNoCarrier() {
+			observation.LinksWithCarrier = append(observation.LinksWithCarrier, link.Name)
+		}
 		if reason := link.unready(); reason != "" {
+			carrier := kernelCarrier(sysfs, link.Name)
 			reasons = append(reasons, fmt.Sprintf("%s (carrier: %s, address: %s) (kernel carrier: %s)",
-				reason, cmp.Or(link.CarrierState, "unknown"), cmp.Or(link.AddressState, "unknown"), kernelCarrier(sysfs, link.Name)))
+				reason, cmp.Or(link.CarrierState, "unknown"), cmp.Or(link.AddressState, "unknown"), carrier))
+			if link.reportsNoCarrier() && carrier == "up" && readLinkAttribute(sysfs, link.Name, "operstate") == "up" {
+				observation.CarrierDisagreements = append(observation.CarrierDisagreements, link.Name)
+			}
 		}
 		if link.OperationalState == "routable" {
 			routable = true
 		}
 	}
-	if len(required) == 0 {
-		return false, "no systemd-networkd link is required for online", nil
+	switch {
+	case len(required) == 0:
+		observation.Reason = "no systemd-networkd link is required for online"
+	case len(reasons) > 0:
+		observation.Reason = strings.Join(reasons, ". ")
+	case !routable:
+		observation.Reason = "systemd-networkd reports no routable required link among " + strings.Join(required, ", ")
+	default:
+		observation.Ready = true
 	}
-	if len(reasons) > 0 {
-		return false, strings.Join(reasons, ". "), nil
-	}
-	if !routable {
-		return false, "systemd-networkd reports no routable required link among " + strings.Join(required, ", "), nil
-	}
-	return true, "", nil
+	return observation, nil
+}
+
+func (link networkctlLink) reportsNoCarrier() bool {
+	return link.CarrierState == "no-carrier" || link.OperationalState == "no-carrier"
 }
 
 // unready names the first check the link fails, or returns "" when it is
@@ -105,19 +150,16 @@ func (link networkctlLink) meetsCarrierMinimum() bool {
 			return true
 		}
 	}
+	return link.hasCarrier()
+}
+
+func (link networkctlLink) hasCarrier() bool {
 	return slices.Contains([]string{"carrier", "degraded-carrier", "enslaved"}, link.CarrierState)
 }
 
 func kernelCarrier(sysfs, name string) string {
-	if !filepath.IsLocal(name) || filepath.Base(name) != name {
-		return "unknown"
-	}
-	data, err := os.ReadFile(filepath.Join(sysfs, "class/net", name, "carrier"))
-	if err != nil {
-		// An administratively down interface can return EINVAL.
-		return "unknown"
-	}
-	switch strings.TrimSpace(string(data)) {
+	// An administratively down interface can fail the read with EINVAL.
+	switch readLinkAttribute(sysfs, name, "carrier") {
 	case "1":
 		return "up"
 	case "0":
@@ -125,6 +167,19 @@ func kernelCarrier(sysfs, name string) string {
 	default:
 		return "unknown"
 	}
+}
+
+// readLinkAttribute returns a link's trimmed sysfs attribute, or "" when it
+// cannot be read.
+func readLinkAttribute(sysfs, name, attribute string) string {
+	if !filepath.IsLocal(name) || filepath.Base(name) != name {
+		return ""
+	}
+	data, err := os.ReadFile(filepath.Join(sysfs, "class/net", name, attribute))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }
 
 func (link networkctlLink) meetsAddressMinimum() (ready, knownMinimum bool) {

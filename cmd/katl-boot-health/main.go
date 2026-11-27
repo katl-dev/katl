@@ -14,8 +14,8 @@ import (
 
 	"github.com/katl-dev/katl/internal/deadline"
 	"github.com/katl-dev/katl/internal/generation"
+	"github.com/katl-dev/katl/internal/linkrecovery"
 	"github.com/katl-dev/katl/internal/managementnetwork"
-	"github.com/katl-dev/katl/internal/retry"
 )
 
 func main() {
@@ -138,7 +138,7 @@ var waitForManagementNetwork = func(ctx context.Context) error {
 }
 
 func awaitManagementNetwork(healthCtx context.Context) error {
-	backoff := retry.NewBackoff(time.Second, 5*time.Second)
+	backoff := managementnetwork.PollBackoff()
 	lastReason := "network state has not been observed"
 	for healthCtx.Err() == nil {
 		// A completed online observation wins even if the read's context expired.
@@ -165,10 +165,18 @@ func awaitManagementNetwork(healthCtx context.Context) error {
 	if !errors.Is(cause, context.DeadlineExceeded) {
 		return cause
 	}
+	// The link-recovery owner records any reconfiguration in this boot.
+	if records, err := linkrecovery.Read(linkRecoveryDir); err != nil {
+		lastReason += "; " + err.Error()
+	} else if summary := linkrecovery.Summary(records); summary != "" {
+		lastReason += "; " + summary
+	}
 	return fmt.Errorf("configured management network deadline expired: %s", lastReason)
 }
 
 var readNetworkctlState = managementnetwork.ReadState
+
+var linkRecoveryDir = linkrecovery.Dir
 
 func markConfigApplyBootActive(root, generationID string, now time.Time) error {
 	path, err := generation.ConfigApplyStatusPath(root, generationID)

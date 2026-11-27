@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"context"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/linkrecovery"
 	"github.com/katl-dev/katl/internal/managementnetwork"
 )
 
@@ -188,5 +190,25 @@ func (r Reader) Read(ctx context.Context) Status {
 				". Check the link and the node's network configuration, then run 'katlctl node status <node>' again"
 		}
 	}
+	health.Diagnostic = withLinkRecovery(health.Diagnostic, r.Root)
 	return health
+}
+
+// withLinkRecovery adds this boot's link reconfigurations, whatever their
+// outcome, so node status reports them even once the link is online.
+func withLinkRecovery(diagnostic, root string) string {
+	records, err := linkrecovery.Read(filepath.Join(root, linkrecovery.Dir))
+	var summary string
+	if err != nil {
+		summary = err.Error()
+	} else {
+		summary = linkrecovery.Summary(records)
+	}
+	if summary == "" {
+		return diagnostic
+	}
+	if diagnostic == "" {
+		return summary
+	}
+	return diagnostic + ". " + summary
 }

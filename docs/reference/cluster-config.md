@@ -305,6 +305,10 @@ its configured minimum. At least one required link must be routable. In the
 `[Link]` section, use
 `RequiredForOnline=routable` for a link that must have a routable address and
 `RequiredForOnline=no` for an optional link.
+If systemd-networkd keeps reporting no carrier on a required link while sysfs
+reports carrier up, KatlOS may reconfigure that link once per boot, including
+links declared in native networkd units; a link with `RequiredForOnline=no` is
+never reconfigured ([troubleshooting](../operations/troubleshoot.md#required-link-reconfigured)).
 
 ### Virtual network devices
 

@@ -526,6 +526,8 @@ func defaultAgentFilePaths() []string {
 		"/etc/os-release",
 		"/run/confexts/",
 		"/proc/cmdline",
+		// A process's credentials and capabilities, for sandbox assertions.
+		"/proc/*/status",
 		"/sys/class/net/",
 		"/sys/module/",
 		"/run/katl/",
@@ -558,6 +560,14 @@ func commandAllowed(command string, allowed map[string]bool) bool {
 
 func pathAllowed(path string, allowed []string) bool {
 	for _, entry := range allowed {
+		// A pattern entry matches one path element per "*", as in
+		// filepath.Match.
+		if strings.Contains(entry, "*") {
+			if matched, _ := filepath.Match(entry, path); matched {
+				return true
+			}
+			continue
+		}
 		prefix := strings.HasSuffix(entry, string(os.PathSeparator))
 		entry = filepath.Clean(entry)
 		if prefix {

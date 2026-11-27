@@ -139,6 +139,8 @@ printf 'fake binary\n' > "$output"
 		"katl-deadline-extension-activation@.timer":  "OnActiveSec=3min\n",
 		"katl-deadline-kubelet-config-health@.timer": "OnActiveSec=2min\n",
 		"katl-deadline-management-link@.timer":       "OnActiveSec=90s\n",
+		"katl-deadline-management-carrier@.timer":    "OnActiveSec=20s\n",
+		"katl-link-recovery.service":                 "agent recover-links",
 	} {
 		data, err := os.ReadFile(filepath.Join(production, "usr", "lib", "systemd", "system", unit))
 		if err != nil || !strings.Contains(string(data), expected) {

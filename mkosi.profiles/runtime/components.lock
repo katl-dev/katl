@@ -1195,6 +1195,7 @@ system-unit katl-configured-units-check.service
 system-unit katl-deadline-expire@.service
 system-unit katl-deadline-extension-activation@.timer
 system-unit katl-deadline-kubelet-config-health@.timer
+system-unit katl-deadline-management-carrier@.timer
 system-unit katl-deadline-management-link@.timer
 system-unit katl-console.service
 system-unit katl-endpoint-activate.service
@@ -1203,6 +1204,7 @@ system-unit katl-host-config-prepare.service
 system-unit katl-host-config-verify.service
 system-unit katl-kubeadm-activate.service
 system-unit katl-kubeadm-ready.target
+system-unit katl-link-recovery.service
 system-unit katl-runtime-boot-signal.service
 system-unit katl-ssh-host-keys.service
 system-unit katl-state-projection-check.service

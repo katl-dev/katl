@@ -1,0 +1,11 @@
+[Unit]
+Description=Katl management-carrier grace period (%i)
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Timer]
+OnActiveSec=20s
+AccuracySec=1s
+RemainAfterElapse=no
+Unit=katl-deadline-expire@%i.service
