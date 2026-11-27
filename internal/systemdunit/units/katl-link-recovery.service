@@ -1,0 +1,27 @@
+[Unit]
+Description=Recover required Katl management links
+Documentation=man:systemd.service(5)
+# Runs on every boot, whatever the generation's boot-health state:
+# systemd-networkd can report no carrier on a required link while sysfs
+# reports carrier up at any time after the link comes up. Boot health only
+# reads this service's records.
+Wants=systemd-networkd.service
+After=systemd-networkd.service
+
+[Service]
+Type=exec
+Restart=on-failure
+RestartSec=5s
+# ProtectSystem=strict makes /run read-only; these are the only paths the
+# service writes. The records must outlive a restart, so one attempt per link
+# holds for the whole boot. The grace-period deadline markers share
+# katl/deadlines with other supervisors, which also keep it private.
+RuntimeDirectory=katl/link-recovery katl/deadlines
+RuntimeDirectoryMode=0700
+RuntimeDirectoryPreserve=yes
+StandardOutput=journal+console
+SyslogIdentifier=katl-link-recovery
+ExecStart=/usr/bin/katlc agent recover-links
+
+[Install]
+WantedBy=multi-user.target

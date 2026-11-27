@@ -43,6 +43,68 @@ Katl counts only required, managed links toward readiness.
 Trial boot retries unreadable networkctl state within the same 90-second
 deadline it uses for links that have yet to qualify.
 
+### Required link without carrier in networkd
+
+A required link can be left with systemd-networkd reporting no carrier while
+sysfs reports carrier up (`carrier=1`, `operstate` up), and the link then gets
+no DHCP lease ([#529](https://github.com/katl-dev/katl/issues/529)). That
+state can begin at any time after the link comes up, on a trial boot or a
+known-good one, so the response belongs to `katl-link-recovery.service`
+(`katlc agent recover-links`, implemented in `internal/linkrecovery`), which
+runs for the whole of every boot whatever the generation's boot-health state
+([#811](https://github.com/katl-dev/katl/issues/811)). It polls networkd with
+the backoff that `internal/managementnetwork` gives every watcher of the
+management links, including the trial-boot wait, and the readiness snapshot
+there reports each unready required link in that state. Required links are the
+same set readiness counts: links networkd manages with `RequiredForOnline`
+enabled. A link outside that set is never touched.
+
+When the service first sees a link in that state, it starts the link's
+20-second `katl-deadline-management-carrier@.timer` grace period and logs a
+line naming the link and the grace length. If the state persists until the
+grace period elapses, the service runs `networkctl reconfigure <link>` once.
+Each link has its own grace period. If networkd reports carrier before the
+grace period elapses, the grace period ends, and a new one starts only if the
+state returns. When sysfs also reports no carrier, the link is not
+reconfigured, and a link whose grace period cannot be started is not
+reconfigured in that run of the service.
+
+The record under `/run/katl/link-recovery/<link>` is the only account of an
+attempt. The service claims it by exclusive creation before running
+networkctl, then stores the outcome: reconfigured, or failed with networkctl's
+error. A claim whose outcome was never stored reads as attempted with no
+recorded result. The record limits each link to one attempt per boot,
+including across restarts of the service, whose runtime directory is
+preserved. Every report derives from the record's description, a sentence
+that names the link once and ends with the next step: none while the node is
+healthy after a reconfiguration, and otherwise inspecting the service's
+journal and rebooting the node with `katlctl node reboot` if the link stays
+offline.
+
+- The service writes the description to its journal and console.
+- Live boot health appends it to the boot-health diagnostic, so
+  `katlctl node status` and the node console show a reconfiguration, whether
+  it succeeded or failed, even when the node is healthy.
+- If the link is still not online when the trial-boot management-link
+  deadline expires, the trial fails as for any offline link, and the failure
+  reason includes the description.
+
+Neither boot-health path reconfigures links itself.
+
+The VM cannot reproduce on demand the state in which systemd-networkd reports
+no carrier while sysfs reports carrier up. The grace period is a deadline
+timer, so a VM test can disable it with a drop-in and start the expiry unit
+after the service logs that the grace period started. To present the state on
+a healthy node, the VM test installs a drop-in that puts a test-owned
+`networkctl` first in the service's `PATH`. It logs the calling process and
+arguments of every call, prints a recorded link state for `networkctl list`,
+and runs the real `/usr/bin/networkctl` for everything else, so the
+reconfiguration runs unchanged under the shipped sandbox. The test asserts
+that only the first process of the service reconfigured the link, once, and
+that the process had no effective capabilities. The service has no test-only
+input; the drop-in and the wrapper exist only under `/run` and
+`/var/lib/katl/test-artifacts` while the test runs.
+
 Systemd owns required-service qualification. The boot-health unit has explicit
 `Requires=` and `After=` dependencies for Katl's baseline management services,
 and selected system extensions add generation-scoped requirements through

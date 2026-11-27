@@ -413,3 +413,46 @@ func TestMutationWaitsForBootHealth(t *testing.T) {
 		}
 	})
 }
+
+// Node status reports each link reconfiguration in this boot, whatever its
+// outcome, while the node stays healthy.
+func TestNodeStatusReportsLinkRecovery(t *testing.T) {
+	server, _ := knownGoodNode(t, healthSucceeded)
+	server.readManagementNetwork = readReadyManagementNetwork
+	dir := filepath.Join(server.Root, "run/katl/link-recovery")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for link, record := range map[string]string{
+		"management0": `{"link":"management0","at":"2026-11-27T06:00:00Z","outcome":"reconfigured"}`,
+		"management1": `{"link":"management1","at":"2026-11-27T06:01:00Z","outcome":"failed","error":"networkctl reconfigure: exit status 1: access denied"}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, link), []byte(record), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	report, err := server.GetNodeStatus(t.Context(), &agentapi.GetNodeStatusRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnostic := report.GetBootHealthDiagnostic()
+	if report.GetBootHealthState() != boothealth.Healthy {
+		t.Fatalf("boot health = %s (%s), want healthy", report.GetBootHealthState(), diagnostic)
+	}
+	for _, want := range []string{
+		"Required link management0 was reconfigured once in this boot",
+		"Required link management1 could not be reconfigured",
+		"access denied",
+	} {
+		if !strings.Contains(diagnostic, want) {
+			t.Fatalf("boot health diagnostic = %q, want %q", diagnostic, want)
+		}
+	}
+	if strings.Contains(diagnostic, ". required") {
+		t.Fatalf("boot health diagnostic = %q starts a joined sentence in lowercase", diagnostic)
+	}
+	if strings.Contains(diagnostic, "management1 was reconfigured") {
+		t.Fatalf("boot health diagnostic = %q reports the failed reconfiguration as done", diagnostic)
+	}
+}

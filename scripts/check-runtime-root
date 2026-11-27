@@ -230,7 +230,12 @@ for path in \
     /usr/lib/systemd/system/katl-deadline-expire@.service \
     /usr/lib/systemd/system/katl-deadline-extension-activation@.timer \
     /usr/lib/systemd/system/katl-deadline-kubelet-config-health@.timer \
+    /usr/lib/systemd/system/katl-deadline-management-carrier@.timer \
     /usr/lib/systemd/system/katl-deadline-management-link@.timer \
+    /usr/lib/systemd/system/katl-link-recovery.service \
+    /usr/lib/systemd/system/katl-link-recovery.service.d/10-security.conf \
+    /usr/lib/systemd/system/katl-link-recovery.service.d/20-security.conf \
+    /usr/lib/systemd/system/multi-user.target.wants/katl-link-recovery.service \
     /usr/lib/systemd/system/katl-volumes.target \
     /usr/lib/systemd/system/katl-volumes-activate.service \
     /usr/lib/systemd/system/katl-kubeadm-ready.target \

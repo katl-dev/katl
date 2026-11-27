@@ -16,12 +16,15 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/katl-dev/katl/internal/systemdunit"
 )
 
 type Kind string
 
 const (
 	ManagementLink      Kind = "management-link"
+	ManagementCarrier   Kind = "management-carrier" // grace before reconfiguring a link without carrier in networkd
 	KubeletConfigHealth Kind = "kubelet-config-health"
 	ExtensionActivation Kind = "extension-activation"
 )
@@ -47,6 +50,31 @@ var production = scheduler{dir: "/run/katl/deadlines", systemctl: systemctl, std
 func Arm(parent context.Context, kind Kind, subject string) (context.Context, context.CancelFunc, error) {
 	ctx, stop, _, err := production.start(parent, kind, subject)
 	return ctx, stop, err
+}
+
+// Period returns how long an instance of the kind runs before it expires, as
+// OnActiveSec= in the kind's shipped timer sets it.
+func Period(kind Kind) (time.Duration, error) {
+	timer := fmt.Sprintf("katl-deadline-%s@.timer", kind)
+	unit, err := systemdunit.RuntimeUnits.ReadFile("units/" + timer)
+	if err != nil {
+		return 0, fmt.Errorf("read %s: %w", timer, err)
+	}
+	for line := range strings.Lines(string(unit)) {
+		value, ok := strings.CutPrefix(strings.TrimSpace(line), "OnActiveSec=")
+		if !ok {
+			continue
+		}
+		// The timers use systemd time spans in the units Go also accepts,
+		// apart from "min".
+		span := strings.ReplaceAll(strings.ReplaceAll(value, " ", ""), "min", "m")
+		period, err := time.ParseDuration(span)
+		if err != nil {
+			return 0, fmt.Errorf("%s: OnActiveSec=%s: %w", timer, value, err)
+		}
+		return period, nil
+	}
+	return 0, fmt.Errorf("%s sets no OnActiveSec=", timer)
 }
 
 func (s scheduler) start(parent context.Context, kind Kind, subject string) (context.Context, context.CancelFunc, string, error) {

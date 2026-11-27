@@ -56,6 +56,7 @@ func TestArmStartsShippedTimer(t *testing.T) {
 		ManagementLink:      "katl-deadline-management-link@.timer",
 		KubeletConfigHealth: "katl-deadline-kubelet-config-health@.timer",
 		ExtensionActivation: "katl-deadline-extension-activation@.timer",
+		ManagementCarrier:   "katl-deadline-management-carrier@.timer",
 	} {
 		t.Run(string(kind), func(t *testing.T) {
 			unit, err := systemdunit.RuntimeUnits.ReadFile("units/" + timer)
@@ -99,6 +100,23 @@ func TestArmStartsShippedTimer(t *testing.T) {
 				t.Fatalf("completion ran %q, want stop %s", calls, instance)
 			}
 		})
+	}
+}
+
+// Each kind's period is its shipped timer's, including spans in minutes.
+func TestPeriod(t *testing.T) {
+	for kind, want := range map[Kind]time.Duration{
+		ManagementLink:      90 * time.Second,
+		ManagementCarrier:   20 * time.Second,
+		KubeletConfigHealth: 2 * time.Minute,
+		ExtensionActivation: 3 * time.Minute,
+	} {
+		if got, err := Period(kind); err != nil || got != want {
+			t.Errorf("Period(%s) = %v, %v, want %v", kind, got, err, want)
+		}
+	}
+	if _, err := Period("unshipped"); err == nil {
+		t.Error("Period of a kind without a timer succeeded")
 	}
 }
 

@@ -96,6 +96,11 @@ func runAgent(ctx context.Context, args []string, stdout, stderr io.Writer) erro
 			return fmt.Errorf("run-extension-activation requires a command")
 		}
 		return deadline.Run(ctx, deadline.ExtensionActivation, args[1:], stdout, stderr)
+	case "recover-links":
+		if len(args) != 1 {
+			return fmt.Errorf("recover-links takes no arguments")
+		}
+		return runAgentRecoverLinks(ctx, stderr)
 	default:
 		return fmt.Errorf("unsupported agent command %q", args[0])
 	}

@@ -251,6 +251,20 @@ func TestAgentModuleInspection(t *testing.T) {
 	}
 }
 
+// A process's status is readable, but nothing else beneath its /proc entry.
+func TestAgentProcessStatusInspection(t *testing.T) {
+	for _, path := range []string{"/proc/1/status", "/proc/4242/status"} {
+		if !pathAllowed(path, defaultAgentFilePaths()) || pathAllowed(path, defaultAgentWritePaths()) {
+			t.Fatalf("%s must be readable but not writable through the file API", path)
+		}
+	}
+	for _, path := range []string{"/proc/1/environ", "/proc/1/task/1/status", "/proc/status", "/proc/1/status/x"} {
+		if pathAllowed(path, defaultAgentFilePaths()) {
+			t.Fatalf("%s is read-allowlisted", path)
+		}
+	}
+}
+
 func TestAgentDefaultAllowlistSupportsBootstrapReadiness(t *testing.T) {
 	for _, command := range []string{"blkid", "chmod", "crictl", "ctr", "dd", "find", "findmnt", "install", "katlc", "kubeadm", "kubectl", "kubelet", "lsmod", "modprobe", "mount", "partx", "sfdisk", "sha256sum", "sshd", "systemd-sysupdate", "test", "udevadm"} {
 		if !commandAllowed(command, defaultAgentCommands()) {

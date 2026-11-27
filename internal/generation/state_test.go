@@ -551,19 +551,21 @@ func writeStateVerifyFixture(t *testing.T, root string) {
 			t.Fatalf("chmod %s fixture: %v", fixture, err)
 		}
 	}
-	// The activation gate runs under the shipped sandbox, so verify it with
-	// the drop-ins the image installs.
-	dropIns := filepath.Join(repoRoot(t), "mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system/katl-volumes-activate.service.d")
-	entries, err := os.ReadDir(dropIns)
-	if err != nil {
-		t.Fatalf("read volume activation drop-ins: %v", err)
-	}
-	for _, entry := range entries {
-		data, err := os.ReadFile(filepath.Join(dropIns, entry.Name()))
+	// These services run under the shipped sandbox, so verify them with the
+	// drop-ins the image installs.
+	for _, unit := range []string{"katl-volumes-activate.service", "katl-link-recovery.service"} {
+		dropIns := filepath.Join(repoRoot(t), "mkosi.profiles/runtime/mkosi.extra/usr/lib/systemd/system", unit+".d")
+		entries, err := os.ReadDir(dropIns)
 		if err != nil {
-			t.Fatal(err)
+			t.Fatalf("read %s drop-ins: %v", unit, err)
 		}
-		writeUnit(t, root, "usr/lib/systemd/system/katl-volumes-activate.service.d/"+entry.Name(), string(data))
+		for _, entry := range entries {
+			data, err := os.ReadFile(filepath.Join(dropIns, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeUnit(t, root, "usr/lib/systemd/system/"+unit+".d/"+entry.Name(), string(data))
+		}
 	}
 }
 
@@ -587,7 +589,9 @@ func stateVerifyUnits() []string {
 		"/etc/systemd/system/katl-deadline-expire@verify.service",
 		"/etc/systemd/system/katl-deadline-extension-activation@verify.timer",
 		"/etc/systemd/system/katl-deadline-kubelet-config-health@verify.timer",
+		"/etc/systemd/system/katl-deadline-management-carrier@verify.timer",
 		"/etc/systemd/system/katl-deadline-management-link@verify.timer",
+		"/etc/systemd/system/katl-link-recovery.service",
 		"/etc/systemd/system/katl-configured-units-check.service",
 		"/etc/systemd/system/katl-volumes-activate.service",
 		"/etc/systemd/system/katl-kubeadm-ready.target",

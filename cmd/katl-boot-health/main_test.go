@@ -123,6 +123,7 @@ func TestRunPromotesTrialAfterManagementReadError(t *testing.T) {
 
 	var stdout bytes.Buffer
 	synctest.Test(t, func(t *testing.T) {
+		isolateLinkRecoveryRecords(t)
 		oldRead := readNetworkctlState
 		t.Cleanup(func() { readNetworkctlState = oldRead })
 		oldWait := waitForManagementNetwork
@@ -209,6 +210,7 @@ func TestRunDoesNotPromoteWithoutManagementNetwork(t *testing.T) {
 
 func TestManagementNetworkAcceptsOnlineReadAtDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		isolateLinkRecoveryRecords(t)
 		oldRead := readNetworkctlState
 		t.Cleanup(func() { readNetworkctlState = oldRead })
 		reads := 0
@@ -232,6 +234,7 @@ func TestManagementNetworkAcceptsOnlineReadAtDeadline(t *testing.T) {
 
 func TestManagementNetworkReportsLastOfflineLinkAtExpiry(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
+		isolateLinkRecoveryRecords(t)
 		oldRead := readNetworkctlState
 		t.Cleanup(func() { readNetworkctlState = oldRead })
 		readNetworkctlState = func(ctx context.Context) ([]byte, error) {
@@ -242,6 +245,31 @@ func TestManagementNetworkReportsLastOfflineLinkAtExpiry(t *testing.T) {
 		err := awaitManagementNetwork(ctx)
 		if err == nil || !strings.Contains(err.Error(), "systemd-networkd reports required link management0 not online") {
 			t.Fatalf("management network expiry = %v, want named offline link", err)
+		}
+	})
+}
+
+// The failure reason reports the link-recovery owner's record as it stands,
+// so a failed reconfiguration is not reported as a successful one.
+func TestManagementNetworkExpiryReportsLinkRecovery(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		dir := isolateLinkRecoveryRecords(t)
+		oldRead := readNetworkctlState
+		t.Cleanup(func() { readNetworkctlState = oldRead })
+		readNetworkctlState = func(ctx context.Context) ([]byte, error) {
+			return []byte(`{"Interfaces":[{"Name":"management0","NetworkFile":"10-lan.network","RequiredForOnline":true,"OnlineState":"offline","OperationalState":"no-carrier","CarrierState":"no-carrier"}]}`), nil
+		}
+		record := `{"link":"management0","at":"2026-11-27T06:00:00Z","outcome":"failed","error":"networkctl reconfigure: exit status 1: access denied"}`
+		if err := os.WriteFile(filepath.Join(dir, "management0"), []byte(record), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		ctx, stop := context.WithTimeout(t.Context(), time.Second)
+		defer stop()
+		err := awaitManagementNetwork(ctx)
+		if err == nil || !strings.Contains(err.Error(), "Required link management0 could not be reconfigured") ||
+			!strings.Contains(err.Error(), "access denied") || strings.Contains(err.Error(), "was reconfigured") {
+			t.Fatalf("management network expiry = %v, want the failed reconfiguration of management0", err)
 		}
 	})
 }
@@ -515,4 +543,14 @@ func stubManagementNetwork(t *testing.T) {
 	oldWait := waitForManagementNetwork
 	waitForManagementNetwork = func(context.Context) error { return nil }
 	t.Cleanup(func() { waitForManagementNetwork = oldWait })
+}
+
+// isolateLinkRecoveryRecords points the record reader at an empty directory,
+// so no test reads the host's /run/katl/link-recovery.
+func isolateLinkRecoveryRecords(t *testing.T) string {
+	t.Helper()
+	old := linkRecoveryDir
+	linkRecoveryDir = t.TempDir()
+	t.Cleanup(func() { linkRecoveryDir = old })
+	return linkRecoveryDir
 }
