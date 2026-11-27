@@ -102,7 +102,7 @@ jobs:
               fi
               prepared=true
               ;;
-            ubuntu-24.04|blacksmith-2vcpu-ubuntu-2404|blacksmith-4vcpu-ubuntu-2404|blacksmith-8vcpu-ubuntu-2404) ;;
+            ubuntu-24.04) ;;
             *) echo "::error::Unsupported VM runner: $runner"; exit 1 ;;
           esac
           echo "runner=$runner" >> "$GITHUB_OUTPUT"
