@@ -1,0 +1,27 @@
+{
+  "name": "final release tags",
+  "target": "tag",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "exclude": [
+        "refs/tags/v*-*"
+      ],
+      "include": [
+        "refs/tags/v*"
+      ]
+    }
+  },
+  "bypass_actors": [
+    {
+      "actor_id": 5958368,
+      "actor_type": "Integration",
+      "bypass_mode": "always"
+    }
+  ],
+  "rules": [
+    {
+      "type": "creation"
+    }
+  ]
+}
