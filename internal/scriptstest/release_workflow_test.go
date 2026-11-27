@@ -85,7 +85,6 @@ const (
 	productionBuild    = "production-build.yml"
 	runtimeInputsName  = "katl-runtime-${{ inputs.flavour }}-${{ github.sha }}"
 	bundlesArtifact    = "katl-extension-bundles-${{ inputs.flavour }}-${{ github.sha }}"
-	tagPushCondition   = "github.event_name == 'push' && github.ref_type == 'tag'"
 	extensionsMatrixFn = "${{ fromJSON(needs.runtime.outputs.extensions) }}"
 )
 
@@ -313,8 +312,13 @@ func TestReleasePublishesKernelExtensions(t *testing.T) {
 	})
 	for _, name := range []string{"publish-extensions", "publish-tag"} {
 		job := workflow.Jobs[name]
-		if job.If != tagPushCondition || job.ContinueOnError {
-			t.Errorf("%s must run only on tag pushes and block release assets on failure", name)
+		if job.ContinueOnError {
+			t.Errorf("%s must block release assets on failure", name)
+		}
+		for trigger, ctx := range releaseTriggers {
+			if got, want := conditionHolds(t, job.If, ctx), trigger == "tag" || trigger == "tag, CI passed"; got != want {
+				t.Errorf("%s runs on %s = %v, want %v: only tag pushes publish", name, trigger, got, want)
+			}
 		}
 	}
 	found := false
@@ -338,8 +342,11 @@ func TestReleaseKeepsAttestationAndBuildsOutOfLine(t *testing.T) {
 	for _, step := range workflow.Jobs["bundle"].Steps {
 		if strings.HasPrefix(step.Uses, "actions/attest@") {
 			attested = true
-			if step.If != tagPushCondition {
-				t.Errorf("attestation condition = %q, want tag pushes only", step.If)
+			for trigger, ctx := range releaseTriggers {
+				want := strings.HasPrefix(trigger, "tag") || strings.HasPrefix(trigger, "call")
+				if got := conditionHolds(t, step.If, ctx); got != want {
+					t.Errorf("attestation on %s = %v, want %v: tag pushes and calls attest the bytes they hand to publication", trigger, got, want)
+				}
 			}
 		}
 	}
@@ -572,8 +579,13 @@ func TestReleaseRegressionFollowsDecision(t *testing.T) {
 			continue
 		}
 		decided = true
-		if step.If != tagPushCondition || step.Env["GH_TOKEN"] != "${{ github.token }}" || !strings.Contains(step.Run, `"$GITHUB_SHA"`) || !strings.Contains(step.Run, "decision=") {
-			t.Errorf("decision step must run only for tag pushes, read the workflow token and judge the tagged commit: %+v", step)
+		if step.Env["GH_TOKEN"] != "${{ github.token }}" || !strings.Contains(step.Run, `"$GITHUB_SHA"`) || !strings.Contains(step.Run, "decision=") {
+			t.Errorf("decision step must read the workflow token and judge the tagged commit: %+v", step)
+		}
+		for trigger, ctx := range releaseTriggers {
+			if got, want := conditionHolds(t, step.If, ctx), strings.HasPrefix(trigger, "tag"); got != want {
+				t.Errorf("VM regression decision on %s = %v, want %v: only tag pushes may skip the lanes", trigger, got, want)
+			}
 		}
 	}
 	if !decided {
