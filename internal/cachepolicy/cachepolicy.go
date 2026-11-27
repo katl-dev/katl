@@ -70,14 +70,15 @@ func Load(path string) (*Policy, error) {
 	if err != nil {
 		return nil, err
 	}
-	policy, err := parse(data)
+	policy, err := Parse(data)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	return policy, nil
 }
 
-func parse(data []byte) (*Policy, error) {
+// Parse validates the content of a policy file.
+func Parse(data []byte) (*Policy, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var policy Policy

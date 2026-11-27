@@ -1,0 +1,51 @@
+name: CI health
+
+# Reports Actions cache usage against .github/cache-policy.json, deletes the
+# entries outside it, and fails when what remains exceeds a family's budget or
+# the alert threshold. It acts only from the default branch, whose policy the
+# command requires the checkout to match before it deletes anything.
+on:
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-health
+  cancel-in-progress: false
+
+jobs:
+  cache:
+    name: Cache
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      actions: write
+      contents: read
+    # This job restores and saves no cache: it would otherwise prune and
+    # measure its own entries.
+    steps:
+      - uses: actions/checkout@v7
+        timeout-minutes: 5
+        with:
+          ref: main
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        timeout-minutes: 5
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build katl-queue
+        timeout-minutes: 10
+        run: go build -o "$RUNNER_TEMP/katl-queue" ./cmd/katl-queue
+      - name: Prune caches outside policy
+        timeout-minutes: 5
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -o pipefail
+          "$RUNNER_TEMP/katl-queue" cache --apply | tee -a "$GITHUB_STEP_SUMMARY"
