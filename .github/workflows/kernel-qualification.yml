@@ -104,13 +104,13 @@ jobs:
         timeout-minutes: 2
         run: .github/scripts/hosted-apt-install systemd-container kmod squashfs-tools
       - name: Build both boot artifacts and every release recipe
-        timeout-minutes: 35
+        timeout-minutes: 34
         run: |
           scripts/mkosi build-runtime
           scripts/mkosi build-installer
           scripts/build-release-extensions
       - name: Save pinned extension sources
-        timeout-minutes: 5
+        timeout-minutes: 2
         if: github.ref == 'refs/heads/main' && steps.extension-sources.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:

@@ -590,7 +590,7 @@ func TestReleaseUploadGuardsPublishedAssets(t *testing.T) {
 			}
 			found = true
 			upload := strings.Index(step.Run, "gh release upload")
-			download := strings.Index(step.Run, "gh release download")
+			download := strings.Index(step.Run, "hosted-download release")
 			compare := strings.Index(step.Run, "cmp -s")
 			fail := strings.Index(step.Run, "exit 1")
 			if download < 0 || compare < download || fail < compare || upload < fail {

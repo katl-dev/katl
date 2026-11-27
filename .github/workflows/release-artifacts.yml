@@ -116,7 +116,7 @@ jobs:
     name: Release unit tests
     if: inputs.qualify_run == 0 && (inputs.commit || github.event_name != 'push' || github.actor != 'katl-release[bot]')
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
         timeout-minutes: 2
@@ -129,7 +129,7 @@ jobs:
         timeout-minutes: 2
         run: nix develop --option builders '' .#ci -c .github/scripts/hosted-hermetic-setup
       - name: Run fast checks
-        timeout-minutes: 12
+        timeout-minutes: 10
         run: nix develop --option builders '' .#ci -c scripts/check-fast
 
   # Release candidates and final releases repeat the regression lanes only when
@@ -250,7 +250,7 @@ jobs:
     name: Bundle Kernel Flavours
     needs: [identity, build-standard, build-lts]
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     permissions:
       actions: read # combine-flavours downloads with hosted-download.
       attestations: write
@@ -266,7 +266,7 @@ jobs:
       - uses: ./.github/actions/setup-go
         timeout-minutes: 2
       - uses: ./.github/actions/combine-flavours
-        timeout-minutes: 10
+        timeout-minutes: 21
       - name: Attest staged release artifacts
         timeout-minutes: 2
         if: github.event_name == 'push' && github.ref_type == 'tag' || inputs.commit
@@ -454,10 +454,11 @@ jobs:
         run: scripts/katl-release verify "$GITHUB_REF_NAME" "$GITHUB_SHA" dist
 
       - name: Publish tag release
-        timeout-minutes: 3
+        timeout-minutes: 7
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          KATL_DOWNLOAD_ATTEMPT_SECONDS: 60
           KATL_VERSION: ${{ needs.identity.outputs.version }}
         run: |
           prerelease=()
@@ -476,8 +477,7 @@ jobs:
               --jq '[.assets[].name] | index("SHA256SUMS") != null')
             if [[ "$published_sums" == true ]]; then
               sums_dir=$(mktemp -d)
-              gh release download --repo "$GITHUB_REPOSITORY" \
-                "$GITHUB_REF_NAME" --pattern SHA256SUMS --dir "$sums_dir"
+              .github/scripts/hosted-download release "$GITHUB_REF_NAME" "$sums_dir" SHA256SUMS
               if ! cmp -s "$sums_dir/SHA256SUMS" dist/SHA256SUMS; then
                 echo "::error::release $GITHUB_REF_NAME is already published with different contents; cut a new tag instead of re-running this one"
                 exit 1

@@ -16,6 +16,7 @@ import (
 )
 
 var goTestTimeout = regexp.MustCompile(`-timeout (\d+)m\b`)
+var directDownload = regexp.MustCompile(`(?m)^[ \t]*gh[ \t]+(run|release)[ \t]+download\b`)
 
 type budgetStep struct {
 	Name            string            `yaml:"name"`
@@ -25,6 +26,17 @@ type budgetStep struct {
 	Env             map[string]string `yaml:"env"`
 	Timeout         int               `yaml:"timeout-minutes"`
 	ContinueOnError string            `yaml:"continue-on-error"`
+}
+
+type budgetFile struct {
+	Jobs map[string]struct {
+		Uses    string       `yaml:"uses"`
+		Timeout int          `yaml:"timeout-minutes"`
+		Steps   []budgetStep `yaml:"steps"`
+	} `yaml:"jobs"`
+	Runs struct {
+		Steps []budgetStep `yaml:"steps"`
+	} `yaml:"runs"`
 }
 
 func (s budgetStep) label(i int) string {
@@ -37,21 +49,19 @@ func (s budgetStep) label(i int) string {
 	return "step " + strconv.Itoa(i)
 }
 
+func (s budgetStep) downloadBudget() int {
+	if strings.Contains(s.Run, "hosted-download") {
+		return downloadWorstCase(s.Env)
+	}
+	return 0
+}
+
 // budgetViolations reports how a workflow or composite action breaks the time
 // budget policy: every artifact download goes through hosted-download, every
 // job step has a timeout that fits the job's, go test's own timeout fires
 // before its step's and job's, and a cache restore that stalls is a miss.
-func budgetViolations(data []byte) ([]string, error) {
-	var file struct {
-		Jobs map[string]struct {
-			Uses    string       `yaml:"uses"`
-			Timeout int          `yaml:"timeout-minutes"`
-			Steps   []budgetStep `yaml:"steps"`
-		} `yaml:"jobs"`
-		Runs struct {
-			Steps []budgetStep `yaml:"steps"`
-		} `yaml:"runs"`
-	}
+func budgetViolations(data []byte, compositeDownloads map[string]int) ([]string, error) {
+	var file budgetFile
 	if err := yaml.Unmarshal(data, &file); err != nil {
 		return nil, err
 	}
@@ -60,6 +70,9 @@ func budgetViolations(data []byte) ([]string, error) {
 	common := func(where string, i int, s budgetStep) {
 		if strings.HasPrefix(s.Uses, "actions/download-artifact@") {
 			violations = append(violations, fmt.Sprintf("%s: %s downloads with %s; use .github/scripts/hosted-download", where, s.label(i), s.Uses))
+		}
+		if command := strings.TrimSpace(directDownload.FindString(s.Run)); command != "" {
+			violations = append(violations, fmt.Sprintf("%s: %s downloads with %s; use .github/scripts/hosted-download", where, s.label(i), command))
 		}
 		if strings.HasPrefix(s.Uses, "actions/cache/restore@") && s.ContinueOnError != "true" {
 			violations = append(violations, fmt.Sprintf("%s: cache restore %s must continue on error so a stall is a miss", where, s.label(i)))
@@ -86,10 +99,8 @@ func budgetViolations(data []byte) ([]string, error) {
 			if strings.HasPrefix(s.Uses, "actions/cache/restore@") && s.Timeout > cacheRestoreMinutes {
 				violations = append(violations, fmt.Sprintf("%s: cache restore %s has %d minutes; a restore gets at most %d", where, label, s.Timeout, cacheRestoreMinutes))
 			}
-			if strings.Contains(s.Run, "hosted-download") {
-				if need := downloadWorstCase(s.Env); s.Timeout*60 <= need {
-					violations = append(violations, fmt.Sprintf("%s: %s has %d minutes for downloads that may take %d seconds", where, label, s.Timeout, need))
-				}
+			if need := s.downloadBudget() + compositeDownloads[s.Uses]; need > 0 && s.Timeout*60 <= need {
+				violations = append(violations, fmt.Sprintf("%s: %s has %d minutes for downloads that may take %d seconds", where, label, s.Timeout, need))
 			}
 			if m := goTestTimeout.FindStringSubmatch(s.Run); m != nil {
 				minutes, _ := strconv.Atoi(m[1])
@@ -165,8 +176,8 @@ func hostedDownload(step workflowStep) (kind, subject, dest string, ok bool) {
 }
 
 // downloadWorstCase is the longest hosted-download may run with a step's
-// settings, as its header states: every attempt runs to its limit, and the
-// sleeps between them stay below twice their doubling base.
+// settings, as its header states: each attempt can use its limit plus the
+// SIGTERM grace period. Sleeps stay below twice their doubling base.
 func downloadWorstCase(env map[string]string) int {
 	setting := func(name string, fallback int) int {
 		if v, err := strconv.Atoi(env[name]); err == nil {
@@ -177,7 +188,7 @@ func downloadWorstCase(env map[string]string) int {
 	limit := setting("KATL_DOWNLOAD_ATTEMPT_SECONDS", 360)
 	attempts := setting("KATL_DOWNLOAD_ATTEMPTS", 3)
 	backoff := setting("KATL_DOWNLOAD_BACKOFF_SECONDS", limit/24)
-	worst := attempts * limit
+	worst := attempts * (limit + setting("KATL_DOWNLOAD_KILL_AFTER_SECONDS", 5))
 	for gap := 1; gap < attempts; gap++ {
 		worst += 2 * backoff << (gap - 1)
 	}
@@ -273,12 +284,23 @@ func TestWorkflowBudgets(t *testing.T) {
 		for _, v := range violations {
 			t.Error(v)
 		}
+		compositeDownloads := map[string]int{}
+		for _, path := range actions {
+			var action budgetFile
+			if err := yaml.Unmarshal(mustReadFile(t, path), &action); err != nil {
+				t.Fatalf("parse %s: %v", path, err)
+			}
+			rel, _ := filepath.Rel(root, filepath.Dir(path))
+			for _, step := range action.Runs.Steps {
+				compositeDownloads["./"+rel] += step.downloadBudget()
+			}
+		}
 		paths = append(paths, actions...)
 		if len(paths) < 10 {
 			t.Fatalf("found only %d workflows and actions", len(paths))
 		}
 		for _, path := range paths {
-			violations, err := budgetViolations(mustReadFile(t, path))
+			violations, err := budgetViolations(mustReadFile(t, path), compositeDownloads)
 			if err != nil {
 				t.Fatalf("parse %s: %v", path, err)
 			}
@@ -312,6 +334,12 @@ func TestWorkflowBudgets(t *testing.T) {
   steps:
     - uses: actions/download-artifact@v8
 `, "use .github/scripts/hosted-download"},
+		{"direct release download", budgeted + `      - timeout-minutes: 2
+        run: |
+          if test -d dist; then
+            gh release download v1 --pattern SHA256SUMS
+          fi
+`, "downloads with gh release download; use .github/scripts/hosted-download"},
 		{"step without a timeout", budgeted + `      - run: make
 `, "step 2 has no timeout-minutes"},
 		{"job without a timeout", strings.Replace(budgeted, "    timeout-minutes: 30\n", "", 1), "job build: no timeout-minutes"},
@@ -324,7 +352,7 @@ func TestWorkflowBudgets(t *testing.T) {
 		{"go test timeout beyond the job's", strings.Replace(budgeted, "30", "60", 1) + `      - run: go test -timeout 36m ./...
         timeout-minutes: 37
 `, "job timeout 60 does not exceed setup 25 plus go test -timeout 36m"},
-		{"download step shorter than its attempts", strings.Replace(budgeted, "timeout-minutes: 20", "timeout-minutes: 15", 1), "has 15 minutes for downloads that may take 1170 seconds"},
+		{"download step shorter than its attempts", strings.Replace(budgeted, "timeout-minutes: 20", "timeout-minutes: 15", 1), "has 15 minutes for downloads that may take 1185 seconds"},
 		{"cache restore failing the job", budgeted + `      - uses: actions/cache/restore@v6
         timeout-minutes: 5
 `, "must continue on error"},
@@ -341,7 +369,7 @@ func TestWorkflowBudgets(t *testing.T) {
 `, "has 10 minutes; a restore gets at most 5"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			violations, err := budgetViolations([]byte(tc.workflow))
+			violations, err := budgetViolations([]byte(tc.workflow), nil)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -350,6 +378,24 @@ func TestWorkflowBudgets(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("composite download exceeds its caller's budget", func(t *testing.T) {
+		workflow := `jobs:
+  build:
+    timeout-minutes: 30
+    steps:
+      - uses: ./.github/actions/combine
+        timeout-minutes: 11
+`
+		violations, err := budgetViolations([]byte(workflow), map[string]int{"./.github/actions/combine": 1185})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "job build: ./.github/actions/combine has 11 minutes for downloads that may take 1185 seconds"
+		if !slices.Equal(violations, []string{want}) {
+			t.Errorf("violations %q, want %q", violations, want)
+		}
+	})
 
 	t.Run("queued jobs", func(t *testing.T) {
 		long := `
@@ -385,7 +431,7 @@ jobs:
         if: ${{ inputs.ref == '' }}
         timeout-minutes: 3
 `
-		violations, err := budgetViolations([]byte(workflow))
+		violations, err := budgetViolations([]byte(workflow), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -406,7 +452,7 @@ jobs:
   call:
     uses: ./.github/workflows/other.yml
 `
-		violations, err := budgetViolations([]byte(workflow))
+		violations, err := budgetViolations([]byte(workflow), nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -577,6 +623,7 @@ esac
 			{[]string{"artifact", "inputs-abc", "out", "7"}, "run download 7 --repo katl-dev/katl --name inputs-abc --dir "},
 			{[]string{"artifacts", "katl-qualified-*", "out"}, "run download 42 --repo katl-dev/katl --pattern katl-qualified-* --dir "},
 			{[]string{"release", "v1.0.0", "out"}, "release download v1.0.0 --repo katl-dev/katl --dir "},
+			{[]string{"release", "v1.0.0", "out", "SHA256SUMS"}, "release download v1.0.0 --repo katl-dev/katl --pattern SHA256SUMS --dir "},
 		} {
 			dir, stderr, err := run(t, []string{"ok"}, tc.args...)
 			if err != nil {

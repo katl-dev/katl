@@ -70,7 +70,7 @@ jobs:
     if: needs.plan.outputs.build == 'true'
     needs: plan
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:

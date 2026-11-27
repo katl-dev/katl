@@ -4,7 +4,7 @@
 #
 #   hosted-download artifact NAME DEST [RUN_ID]
 #   hosted-download artifacts PATTERN DEST [RUN_ID]
-#   hosted-download release TAG DEST
+#   hosted-download release TAG DEST [PATTERN]
 #
 # An artifact's files land directly in DEST. Every artifact matching PATTERN
 # lands in DEST/<artifact name>, as actions/download-artifact places them. DEST
@@ -18,7 +18,7 @@
 set -euo pipefail
 
 usage() {
-    echo 'usage: hosted-download artifact NAME DEST [RUN_ID] | artifacts PATTERN DEST [RUN_ID] | release TAG DEST' >&2
+    echo 'usage: hosted-download artifact NAME DEST [RUN_ID] | artifacts PATTERN DEST [RUN_ID] | release TAG DEST [PATTERN]' >&2
     exit 2
 }
 
@@ -52,8 +52,13 @@ case "$kind" in
         fi
         ;;
     release)
-        [[ $# -eq 3 ]] || usage
+        [[ $# -le 4 ]] || usage
         what="release $subject"
+        select=()
+        if [[ $# -eq 4 ]]; then
+            what="assets matching $4 from release $subject"
+            select=(--pattern "$4")
+        fi
         ;;
     *) usage ;;
 esac
@@ -94,7 +99,7 @@ deliver() {
 }
 
 if [[ "$kind" == release ]]; then
-    command=(gh release download "$subject" --repo "$repo")
+    command=(gh release download "$subject" --repo "$repo" "${select[@]}")
 else
     command=(gh run download "$run_id" --repo "$repo" "${select[@]}")
 fi
