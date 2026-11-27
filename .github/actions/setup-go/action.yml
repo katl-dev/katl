@@ -1,5 +1,20 @@
 name: Set up Go and restore its cache
-description: Install the Go version in go.mod and restore the shared Go cache
+description: >-
+  Install the Go version in go.mod and restore the shared Go cache. A caller
+  that already provides Go passes its version and cache paths instead, and
+  the action restores the cache for that Go without installing one. This
+  action owns the shared Go cache key, so every restore and the saver that
+  uses its cache-key output agree on it.
+inputs:
+  go-version:
+    description: Version of a Go the caller already provides; empty installs the go.mod version
+    default: ""
+  module-cache:
+    description: GOMODCACHE of the caller's Go; required with go-version
+    default: ""
+  build-cache:
+    description: GOCACHE of the caller's Go; required with go-version
+    default: ""
 outputs:
   module-cache:
     description: Go module cache path
@@ -19,17 +34,35 @@ runs:
     # Keep the setup-go v6 cache key and path order so existing entries can be restored.
     - uses: actions/setup-go@v6
       id: go
+      if: inputs.go-version == ''
       with:
         go-version-file: go.mod
         cache: false
     - name: Resolve Go cache
       id: paths
       shell: bash
+      env:
+        GIVEN_VERSION: ${{ inputs.go-version }}
+        GIVEN_MODULE: ${{ inputs.module-cache }}
+        GIVEN_BUILD: ${{ inputs.build-cache }}
+        INSTALLED_VERSION: ${{ steps.go.outputs.go-version }}
       run: |
-        module="$(go env GOMODCACHE)"
-        build="$(go env GOCACHE)"
+        if [[ -n "$GIVEN_VERSION" ]]; then
+          if [[ -z "$GIVEN_MODULE" || -z "$GIVEN_BUILD" ]]; then
+            echo "::error::go-version requires module-cache and build-cache"
+            exit 1
+          fi
+          version="$GIVEN_VERSION"
+          module="$GIVEN_MODULE"
+          build="$GIVEN_BUILD"
+        else
+          version="$INSTALLED_VERSION"
+          module="$(go env GOMODCACHE)"
+          build="$(go env GOCACHE)"
+        fi
         mkdir -p -- "$module" "$build"
         {
+          echo "version=$version"
           echo "module=$module"
           echo "build=$build"
           echo "platform=${RUNNER_OS}-${RUNNER_ARCH,,}-${ImageOS-undefined}"
@@ -41,4 +74,4 @@ runs:
         path: |
           ${{ steps.paths.outputs.module }}
           ${{ steps.paths.outputs.build }}
-        key: setup-go-${{ steps.paths.outputs.platform }}-go-${{ steps.go.outputs.go-version }}-${{ hashFiles('go.mod') }}
+        key: setup-go-${{ steps.paths.outputs.platform }}-go-${{ steps.paths.outputs.version }}-${{ hashFiles('go.mod') }}
