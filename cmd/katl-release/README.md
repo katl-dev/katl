@@ -123,6 +123,21 @@ missing, the command fails. Qualify an RC on that commit before rerunning
 the final release workflow. Production VM qualification remains part of
 the tag workflow.
 
+### `record`
+
+```sh
+scripts/katl-release record 2026.12.0-rc.1 "$GITHUB_SHA" qualified "$SHA256SUMS_DIGEST"
+```
+
+The Release workflow uses this command to write the
+[release record](../../docs/internal/release-state-machine.md#records) of a
+candidate or final version on the commit it is built from. The phase is
+`building`, `failed` or `qualified`; only `qualified` takes the SHA-256 of the
+bundle's `SHA256SUMS` as 64 lowercase hexadecimal digits. The command reads
+the run attempt from `GITHUB_SERVER_URL`, `GITHUB_REPOSITORY`,
+`GITHUB_RUN_ID` and `GITHUB_RUN_ATTEMPT`, so it runs only in GitHub Actions,
+and it writes with the workflow token, which needs `statuses: write`.
+
 ## State and logs
 
 GitHub Actions holds the run logs, artifact metadata, and final bundle.
