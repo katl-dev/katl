@@ -16,7 +16,7 @@ import (
 )
 
 // Bump when changing the digest format or the interpretation of its inputs.
-const driverDigestVersion = "v4"
+const driverDigestVersion = "v5"
 
 var kernelFlavours = []string{flavour.Standard, flavour.LTS}
 
@@ -100,17 +100,23 @@ var driverInputs = []string{
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/katl/systemd/activation-security.conf",
 	"mkosi.profiles/runtime/mkosi.extra/usr/lib/katl/configuration-capabilities-v1",
 
-	// Driver invocation, the DRBD workload and the helpers it uses to install
-	// fixtures, control guests and observe the generation and disk state.
+	// Hosted provisioning and the entrypoints that launch the DRBD test and
+	// propagate its exit status to the qualification job.
 	qualificationWorkflow,
+	".github/actions/setup-go/action.yml",
 	".github/actions/hosted-vmtest/action.yml",
+	".github/scripts/hosted-apt-install",
 	".github/scripts/hosted-hermetic-setup",
 	".github/scripts/hosted-vmtest-go",
+	".github/scripts/hosted-vmtest-measure",
 	".github/scripts/hosted-vmtest-run",
+	"scripts/vmtest-run",
 	"scripts/hermetic",
 	"scripts/job-environment",
 	"scripts/vmtest-exec",
-	"scripts/vmtest-run",
+
+	// The DRBD workload and the helpers it uses to install fixtures, control
+	// guests and observe the generation and disk state.
 	"mkosi.profiles/vmtest-drbd-tools/**",
 	"internal/vmtest/admission.go",
 	"internal/vmtest/drbd_smoke_test.go",
