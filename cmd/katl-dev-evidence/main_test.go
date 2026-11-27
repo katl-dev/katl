@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -107,6 +108,143 @@ func TestNewOverBudget(t *testing.T) {
 	fixture.runOK(t, testDate, "new", "822/at-budget")
 }
 
+func TestSizeWalkFailure(t *testing.T) {
+	fixture := newEvidenceFixture(t)
+	first := fixture.runOK(t, testDate, "new", "822/a-good")
+	bad := fixture.runOK(t, testDate, "new", "822/b-unreadable")
+	last := fixture.runOK(t, testDate, "new", "822/c-good")
+	writePayload(t, first, "first")
+	lastFile := writePayload(t, last, "last")
+	unreadable := filepath.Join(bad, "nested")
+	makeDir(t, unreadable)
+	if err := os.Chmod(unreadable, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(unreadable, 0o700); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := os.ReadDir(unreadable); err == nil {
+		t.Skip("test requires the caller to be denied access to a mode 000 directory")
+	} else if !errors.Is(err, os.ErrPermission) {
+		t.Fatal(err)
+	}
+
+	for _, args := range [][]string{{"list"}, {"new", "822/created"}} {
+		t.Run(args[0], func(t *testing.T) {
+			var out, diagnostics bytes.Buffer
+			if err := fixture.runWithDiagnostics(args, &out, &diagnostics, testDate); err != nil {
+				t.Fatal(err)
+			}
+			if message := diagnostics.String(); !strings.Contains(message, bad) || !strings.Contains(message, os.ErrPermission.Error()) {
+				t.Fatalf("expected an entry-specific permission error, got %q", message)
+			}
+			switch args[0] {
+			case "list":
+				rows := make(map[string]string)
+				for _, line := range strings.Split(strings.TrimSpace(out.String()), "\n")[1:] {
+					if fields := strings.Fields(line); len(fields) >= 3 {
+						rows[fields[0]+"/"+fields[1]] = fields[2]
+					}
+				}
+				for id, size := range map[string]string{"822/a-good": "5", "822/b-unreadable": "unknown", "822/c-good": "4"} {
+					if rows[id] != size {
+						t.Errorf("want %s to report %s bytes, got:\n%s", id, size, &out)
+					}
+				}
+			case "new":
+				created := filepath.Join(fixture.location, "822", "created")
+				if got := strings.TrimSpace(out.String()); got != created {
+					t.Fatalf("new printed %q, want %q", got, created)
+				}
+				if info, err := os.Stat(created); err != nil || !info.IsDir() {
+					t.Fatalf("new did not create the entry directory: %v", err)
+				}
+
+				// The failed entry must not hide measured bytes later in the scan.
+				if err := os.Truncate(lastFile, 50<<30+1); err != nil {
+					t.Fatal(err)
+				}
+				err := fixture.run([]string{"new", "822/blocked"}, &out, testDate)
+				if err == nil || !strings.Contains(err.Error(), "over budget") {
+					t.Fatalf("new with measured bytes over budget: %v", err)
+				}
+				assertMissing(t, filepath.Join(fixture.location, "822", "blocked"))
+			}
+		})
+	}
+}
+
+func TestReleasePin(t *testing.T) {
+	fixture := newEvidenceFixture(t)
+	const until = "2026-11-26"
+	deadline := time.Date(2026, 11, 27, 0, 0, 0, 0, time.UTC)
+	entry := fixture.runOK(t, testDate, "new", "822/pinned")
+	writePayload(t, entry, "pinned")
+	pinned := fixture.runOK(t, testDate, "keep", entry, "--until", until)
+	entry = fixture.runOK(t, testDate, "new", "822/expiring")
+	expiring := fixture.runOK(t, testDate, "keep", entry, "--until", until)
+
+	beforeExpiry := deadline.Add(-time.Nanosecond)
+	err := fixture.run([]string{"release", "822/pinned"}, &bytes.Buffer{}, beforeExpiry)
+	if err == nil || !strings.Contains(err.Error(), "822/pinned") ||
+		!strings.Contains(err.Error(), deadline.Format(time.RFC3339)) || !strings.Contains(err.Error(), "--force") {
+		t.Fatalf("release of an active pin: %v", err)
+	}
+	checkPayload(t, filepath.Join(pinned, "payload"), "pinned")
+
+	fixture.runOK(t, beforeExpiry, "release", pinned, "--force")
+	assertMissing(t, pinned)
+	fixture.runOK(t, deadline, "release", "822/expiring")
+	assertMissing(t, expiring)
+	ordinary := fixture.runOK(t, testDate, "new", "822/ordinary")
+	fixture.runOK(t, testDate, "release", "822/ordinary")
+	assertMissing(t, ordinary)
+}
+
+func TestReleaseReadOnlyTree(t *testing.T) {
+	fixture := newEvidenceFixture(t)
+	entry := fixture.runOK(t, testDate, "new", "822/read-only")
+	child := filepath.Join(entry, "child")
+	leaf := filepath.Join(child, "leaf")
+	makeDir(t, leaf)
+	outside := t.TempDir()
+	payload := writePayload(t, outside, "outside")
+	if err := os.Chmod(payload, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Link(payload, filepath.Join(leaf, "hard-link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(child, "symlink")); err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{leaf, child, entry, outside} {
+		if err := os.Chmod(dir, 0o555); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if err := os.Chmod(dir, 0o700); err != nil && !errors.Is(err, os.ErrNotExist) {
+				t.Error(err)
+			}
+		})
+	}
+
+	fixture.runOK(t, testDate, "release", "822/read-only")
+	assertMissing(t, entry)
+	checkPayload(t, payload, "outside")
+	for path, mode := range map[string]os.FileMode{outside: 0o555, payload: 0o444} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != mode {
+			t.Errorf("release changed mode of %q to %o, want %o", path, info.Mode().Perm(), mode)
+		}
+	}
+}
+
 func TestReleaseConfinesPaths(t *testing.T) {
 	fixture := newEvidenceFixture(t)
 	root := fixture.location
@@ -162,7 +300,11 @@ func newEvidenceFixture(t *testing.T) evidenceFixture {
 }
 
 func (f evidenceFixture) run(args []string, out *bytes.Buffer, now time.Time) error {
-	return runWithStore(args, out, now, func() (*store, error) {
+	return f.runWithDiagnostics(args, out, io.Discard, now)
+}
+
+func (f evidenceFixture) runWithDiagnostics(args []string, out, diagnostics io.Writer, now time.Time) error {
+	return runWithStore(args, out, diagnostics, now, func() (*store, error) {
 		s, err := openStore(f.location)
 		if err != nil {
 			return nil, err
