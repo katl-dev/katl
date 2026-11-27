@@ -214,3 +214,56 @@ func TestStatusRejects(t *testing.T) {
 		})
 	}
 }
+
+// TestStatusParsesBack checks over a generated set that every record Status
+// accepts parses back to itself. It catches a Status that renders a server
+// spelling Parse normalises or refuses, such as an upper-case scheme or an
+// empty port.
+func TestStatusParsesBack(t *testing.T) {
+	servers := []string{
+		"https://github.com", "HTTPS://github.com", "Https://github.com", "https://GitHub.com",
+		"https://ghe.example.test:8443", "https://ghe.example.test:0443", "https://ghe.example.test:",
+		"https://[::1]:443", "https://github.com/", "https://github.com?", "https://github.com#",
+		"https://bot@github.com", "https://git%68ub.com", "http://github.com", "github.com",
+	}
+	repositories := []string{"katl-dev/katl", "Katl.Dev/katl_1", "a/b/c", "./katl", "katl"}
+	runs := [][2]int64{{9876543210, 3}, {1, 1}, {0, 1}, {1, 0}}
+	records := []releaserecord.Record{
+		{Version: "2026.12.1-rc.3", Phase: releaserecord.Building},
+		{Version: "2026.12.1", Phase: releaserecord.Failed},
+		{Version: "2026.12.1", Phase: releaserecord.Qualified, Digest: digest},
+	}
+
+	accepted := map[string]bool{}
+	for _, server := range servers {
+		for _, repository := range repositories {
+			for _, ids := range runs {
+				for _, record := range records {
+					record.Run = releaserecord.Run{Server: server, Repository: repository, ID: ids[0], Attempt: int(ids[1])}
+					status, err := record.Status()
+					if err != nil {
+						continue
+					}
+					accepted[server] = true
+					got, err := releaserecord.Parse(status)
+					if err != nil {
+						t.Errorf("Parse(Status(%+v)) = %v", record, err)
+					} else if got != record {
+						t.Errorf("Parse(Status(%+v)) = %+v", record, got)
+					}
+				}
+			}
+		}
+	}
+
+	for _, server := range []string{"https://github.com", "https://GitHub.com", "https://ghe.example.test:8443", "https://[::1]:443"} {
+		if !accepted[server] {
+			t.Errorf("Status refused every record on %q", server)
+		}
+	}
+	for _, server := range []string{"HTTPS://github.com", "https://ghe.example.test:"} {
+		if accepted[server] {
+			t.Errorf("Status accepted a record on %q", server)
+		}
+	}
+}

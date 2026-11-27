@@ -54,6 +54,10 @@ var (
 )
 
 // Run names the run attempt that builds the bytes and writes the record.
+//
+// A parsed Run is only what the target URL says. The caller compares Server
+// and Repository with its own server and repository (trust step 2), checks
+// the named run attempt (step 3) and checks the status's creator (step 1).
 type Run struct {
 	// Server is the GitHub server URL, such as https://github.com.
 	Server string
@@ -65,10 +69,12 @@ type Run struct {
 
 // URL renders the run attempt's URL, which is a record's target URL.
 func (r Run) URL() (string, error) {
+	// The server must be exactly scheme://host[:port] as Parse renders it
+	// back from a target URL, so that every rendered record parses to itself.
 	server, err := url.Parse(r.Server)
-	if err != nil || server.Scheme != "https" || server.Host == "" || server.User != nil ||
-		server.Path != "" || server.RawQuery != "" || server.ForceQuery || server.Fragment != "" || server.Opaque != "" {
-		return "", fmt.Errorf("server %q is not an https server URL without a path", r.Server)
+	if err != nil || server.Scheme != "https" || server.Host == "" || strings.HasSuffix(server.Host, ":") ||
+		server.Scheme+"://"+server.Host != r.Server {
+		return "", fmt.Errorf("server %q is not exactly https://host or https://host:port", r.Server)
 	}
 	owner, name, ok := strings.Cut(r.Repository, "/")
 	if !ok || !validName(owner) || !validName(name) {
@@ -87,7 +93,10 @@ func validName(name string) bool {
 // Record is what one build attempt reached for one release version.
 type Record struct {
 	// Version is the release version without the v prefix: a candidate such
-	// as 2026.12.1-rc.2 or a final such as 2026.12.1.
+	// as 2026.12.1-rc.2 or a final such as 2026.12.1. A parsed Version is the
+	// opaque text after v in the context. Readers look a record up by
+	// Context(v) for a version v from internal/releaseversion rather than
+	// trusting a parsed Version.
 	Version string
 	Phase   Phase
 	// Digest is the SHA-256 of the bundle's SHA256SUMS as 64 lowercase
@@ -146,6 +155,12 @@ func (r Record) description() (string, error) {
 // Parse reads a commit status as a record. It returns ErrNotRecord for a
 // context outside katl/release/, and another error for a status in that
 // namespace that is not exactly a record.
+//
+// Parse checks the format only (trust step 4 and the form of step 2). The
+// caller compares Run.Server and Run.Repository with its own server and
+// repository (step 2) and checks the status's creator (step 1). The parsed
+// Version is opaque text: readers look a record up by Context(v) for a
+// version v from internal/releaseversion, never by trusting Version.
 func Parse(status Status) (Record, error) {
 	rest, ok := strings.CutPrefix(status.Context, contextPrefix)
 	if !ok {
