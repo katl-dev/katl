@@ -51,12 +51,9 @@ fi
 source "$manifest"
 cd "$repo_root"
 
-profile="$repo_root/mkosi.profiles/kubernetes-sysext/mkosi.conf"
-repo_file="$repo_root/mkosi.profiles/kubernetes-sysext/mkosi.sandbox/etc/yum.repos.d/kubernetes.repo"
 runtime_artifact="$build_dir/katl-runtime-root.squashfs"
 runtime_metadata="$runtime_artifact.json"
 runtime_package_db="$build_dir/katl-runtime-root/usr/lib/sysimage/rpm"
-base_artifact="$build_dir/katl-kubernetes.raw"
 artifact="$build_dir/$output_name.raw"
 stamp="$build_dir/.katl-stamps/kubernetes-sysext-$output_name.sha256"
 build_commit="${KATL_BUILD_COMMIT:-${KATL_VERSION:-0.0.0-dev}}"
@@ -169,38 +166,24 @@ if [[ "$use_cache" == 1 && -f "$stamp" ]] && artifact_is_valid; then
     fi
 fi
 
-repo_backup="$(mktemp)"
-profile_backup="$(mktemp)"
+mkdir -p "$build_dir"
+# mkosi names the extension-release file after the profile's Output, which must
+# stay katl-kubernetes for every output name. Each build therefore writes into a
+# private output directory and the artifact is moved to its name, so another
+# output's image is never replaced. mkosi sees both private trees under the
+# selected build directory at its canonical container path.
+repo_tree="$(mktemp -d "$build_dir/.kubernetes-repo.XXXXXX")"
+output_tree="$(mktemp -d "$build_dir/.kubernetes-output.XXXXXX")"
+repo_file="$repo_tree/etc/yum.repos.d/kubernetes.repo"
 log="$(mktemp)"
-cp "$repo_file" "$repo_backup"
-cp "$profile" "$profile_backup"
-
-restore_build_files() {
-    if [[ -f "$repo_backup" ]]; then
-        cp "$repo_backup" "$repo_file"
-        rm -f "$repo_backup"
-    fi
-    if [[ -f "$profile_backup" ]]; then
-        cp "$profile_backup" "$profile"
-        rm -f "$profile_backup"
-    fi
-}
-# mkosi always writes the profile's Output, katl-kubernetes.raw. A build for
-# another output name borrows that path, so the existing default artifact is set
-# aside until the new build has been moved to its own name.
-base_stash=""
-restore_base_artifact() {
-    if [[ -n "$base_stash" && -e "$base_stash" ]]; then
-        mv -f "$base_stash" "$base_artifact"
-    fi
-    base_stash=""
-}
-trap 'restore_build_files; restore_base_artifact; rm -f "$log"' EXIT
-
-mkdir -p "$(dirname "$repo_file")" "$build_dir"
-if [[ "$artifact" != "$base_artifact" && -e "$base_artifact" ]]; then
-    base_stash="$(mktemp -p "$build_dir" .katl-kubernetes-base.XXXXXX)"
-    mv -f "$base_artifact" "$base_stash"
+# The trees are private to this build; cleanup never changes its result.
+trap 'rm -rf -- "$repo_tree" "$output_tree" "$log" || true' EXIT
+mkdir -p "$(dirname "$repo_file")"
+visible_repo_tree="$repo_tree"
+visible_output_tree="$output_tree"
+if [[ "${KATL_CONTAINER_RUNTIME:-}" != direct ]]; then
+    visible_repo_tree="/work/_build/mkosi/${repo_tree##*/}"
+    visible_output_tree="/work/_build/mkosi/${output_tree##*/}"
 fi
 cat >"$repo_file" <<EOF
 [${KATL_KUBERNETES_REPO_ID}]
@@ -212,6 +195,7 @@ repo_gpgcheck=1
 gpgkey=${KATL_KUBERNETES_REPO_GPGKEY}
 EOF
 
+packages=()
 for package in kubeadm kubelet kubectl cri-tools; do
     case "$package" in
         kubeadm) version="$KATL_KUBERNETES_KUBEADM_VERSION" ;;
@@ -220,7 +204,7 @@ for package in kubeadm kubelet kubectl cri-tools; do
         cri-tools) version="$KATL_KUBERNETES_CRITOOLS_VERSION" ;;
     esac
     version="${version%.x86_64}.x86_64"
-    sed -i -E "s#^([[:space:]]*)${package}-[^[:space:]]+#\\1${package}-${version}#" "$profile"
+    packages+=(--package "$package-$version")
 done
 
 rm -f "$artifact" "$artifact.json" "$artifact.sha256"
@@ -234,22 +218,19 @@ set +e
     --environment "KATL_KUBERNETES_KUBELET_VERSION=$KATL_KUBERNETES_KUBELET_VERSION" \
     --environment "KATL_KUBERNETES_KUBECTL_VERSION=$KATL_KUBERNETES_KUBECTL_VERSION" \
     --environment "KATL_KUBERNETES_CRITOOLS_VERSION=$KATL_KUBERNETES_CRITOOLS_VERSION" \
-    --profile kubernetes-sysext \
+    --profile kubernetes-sysext --output-directory "$visible_output_tree" \
+    --sandbox-tree "$visible_repo_tree" "${packages[@]}" \
     -f build 2>&1 | tee "$log"
 build_status=("${PIPESTATUS[@]}")
 set -e
-restore_build_files
 if [[ "${build_status[0]}" -ne 0 || "${build_status[1]}" -ne 0 ]]; then
     exit 1
 fi
-if [[ ! -f "$base_artifact" ]]; then
-    echo "error: Kubernetes sysext artifact not found: $base_artifact" >&2
+if [[ ! -f "$output_tree/katl-kubernetes.raw" ]]; then
+    echo "error: Kubernetes sysext artifact not found: $output_tree/katl-kubernetes.raw" >&2
     exit 1
 fi
-if [[ "$artifact" != "$base_artifact" ]]; then
-    mv -f "$base_artifact" "$artifact"
-    restore_base_artifact
-fi
+mv -f "$output_tree/katl-kubernetes.raw" "$artifact"
 
 KATL_BUILD_COMMIT="$build_commit" \
 KATL_ARCHITECTURE="$architecture" \

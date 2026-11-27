@@ -1392,7 +1392,10 @@ func threeControlPlaneNodeConfigForRun(run threeControlPlaneSmokeRun, name, disk
 func stageThreeControlPlaneKubernetesPayloadBundles(repo string, result vmtest.Result, selectedVersion string, upgrade bool) (threeControlPlaneKubernetesPayloadBundle, error) {
 	selectedVersion = firstString(strings.TrimSpace(selectedVersion), "v1.36.1")
 
-	artifactPath, baseMetadataPath := kubernetesSourceSysext(repo, upgrade)
+	artifactPath, baseMetadataPath, err := kubernetesSourceSysext(repo, upgrade)
+	if err != nil {
+		return threeControlPlaneKubernetesPayloadBundle{}, err
+	}
 	baseMeta, err := artifact.ReadLocal(baseMetadataPath)
 	if err != nil {
 		return threeControlPlaneKubernetesPayloadBundle{}, fmt.Errorf("read Kubernetes sysext metadata %s: %w", baseMetadataPath, err)

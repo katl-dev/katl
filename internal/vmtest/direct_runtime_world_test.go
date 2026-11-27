@@ -42,7 +42,7 @@ func planDirectRuntimeWorldRun(world World, name, repo string, kvm KVMPolicy) (d
 		return directRuntimeWorldRun{}, err
 	}
 	run := directRuntimeWorldRun{Scenario: scenario}
-	input, err := resolveDirectRuntimeWorldInput(repo, directRuntimeWorldInput{
+	input, err := resolveDirectRuntimeWorldInput(world, repo, directRuntimeWorldInput{
 		RuntimeRoot: strings.TrimSpace(os.Getenv("KATL_RUNTIME_ARTIFACT")),
 		Kernel:      strings.TrimSpace(os.Getenv("KATL_RUNTIME_KERNEL")),
 		Initrd:      strings.TrimSpace(os.Getenv("KATL_RUNTIME_INITRD")),
@@ -71,8 +71,16 @@ func planDirectRuntimeWorldRun(world World, name, repo string, kvm KVMPolicy) (d
 	return run, nil
 }
 
-func resolveDirectRuntimeWorldInput(repo string, input directRuntimeWorldInput) (directRuntimeWorldInput, error) {
-	index := defaultLocalMkosiArtifacts(repo, filepath.Join(repo, "_build", "mkosi"))
+func resolveDirectRuntimeWorldInput(world World, repo string, input directRuntimeWorldInput) (directRuntimeWorldInput, error) {
+	if input.RuntimeRoot == "" {
+		for _, artifact := range world.Artifacts {
+			if artifact.Kind == "runtime-root" {
+				input.RuntimeRoot = artifact.Path
+				return input, nil
+			}
+		}
+	}
+	index := defaultLocalMkosiArtifacts(repo, world.MkosiDir(repo))
 	if indexPath := explicitMkosiArtifactIndexPath(); indexPath != "" {
 		var err error
 		index, err = readMkosiArtifactIndex(indexPath, repo)
@@ -80,7 +88,7 @@ func resolveDirectRuntimeWorldInput(repo string, input directRuntimeWorldInput) 
 			return input, err
 		}
 	}
-	if strings.TrimSpace(input.RuntimeRoot) == "" {
+	if input.RuntimeRoot == "" {
 		if artifact, ok := index.artifact("runtime-root"); ok {
 			input.RuntimeRoot = artifact.Path
 		}

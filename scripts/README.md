@@ -232,6 +232,8 @@ KATL_VMTEST_KEEP=always scripts/vmtest-run ./internal/vmtest \
 | Runner option | Effect |
 | --- | --- |
 | `-h`, `--help` | Print usage and exit. |
+| `--flavour=LIST` | Run a local gate for `standard`, `lts`, or `standard,lts`. |
+| `--affected` | Run the groups CI's affected-suite planner selects. Defaults to both kernel flavours. |
 | `--no-rebuild`, `--no-auto-rebuild` | Use existing artifacts without running the default build steps. |
 | `--rebuild`, `--auto-rebuild` | Enable the default build steps. Use `--rebuild=BOOL` or `--auto-rebuild=BOOL` to set the policy explicitly. |
 | `--artifact-set=SET` | Select `default` or `install` for install and lifecycle artifacts, `runtime` for direct-runtime tests, or `none` to skip the default build targets. `--runtime-artifacts` selects `runtime`. |
@@ -245,13 +247,14 @@ get 90 minutes. The runner serializes packages and rejects `-p` above
 1 because its resource admission depends on that ordering. To run
 packages concurrently, use separate invocations.
 
-For artifact sets other than `none`, the runner requires the checkout's canonical `_build/mkosi` output
-directory and current artifact provenance. Unset `KATL_MKOSI_BUILD_DIR`
-if it selects a different output directory. Remove explicit path
-overrides or `KATL_ALLOW_STALE_INSTALLER_ARTIFACTS` before rerunning.
+Single runs use the checkout's `_build/mkosi` unless
+`KATL_MKOSI_BUILD_DIR` selects another directory. The runner uses that
+directory for both building and verifying current artifacts. Remove
+individual artifact path overrides or
+`KATL_ALLOW_STALE_INSTALLER_ARTIFACTS` before rerunning.
 Use `default` or `install` for installed-runtime tests so they have
-the KatlOS install image. Avoid concurrent `katldev` image builds in
-the same checkout while a run reads artifacts from it. Kubernetes scenarios
+the KatlOS install image. Wait for a run to finish before starting a
+`katldev` image build that uses the same directory. Kubernetes scenarios
 extract kubeadm from the sysext with `fsck.erofs --extract` and use
 Skopeo to cache the images it lists as an OCI archive. The development shell
 provides both tools, as does Ubuntu 24.04 with `erofs-utils` and `skopeo`.
@@ -267,6 +270,40 @@ capabilities in `host-capabilities.json`. To select a different libvirt
 setup, set `KATL_VMTEST_LIBVIRT_URI`, `KATL_VMTEST_LIBVIRT_NETWORK`, or
 `KATL_VMTEST_LIBVIRT_STORAGE_POOL`. For the focused scenario commands,
 see [capable-host gates](#capable-host-gates).
+
+### Gate both kernel flavours
+
+From one checkout, run the same focused test on standard and LTS in parallel.
+
+```sh
+KATL_VMTEST_KEEP=always scripts/vmtest-run --flavour standard,lts \
+  ./internal/vmtest -run '^TestFirstInstallTargetDiskBootSmoke$' -count=1
+```
+
+To run the groups CI's affected-suite planner selects, commit your changes and
+ensure your local `origin/main` is up to date. The gate compares `HEAD` with
+the merge base of the two revisions, and refuses to start while the working
+tree has uncommitted changes, because the runs would test changes the plan
+does not see.
+
+```sh
+KATL_VMTEST_KEEP=always scripts/vmtest-run --affected
+```
+
+The affected gate runs each selected package and test pattern on both flavours
+and exits successfully without starting a run if the plan is empty. Pass
+`--flavour standard` or `--flavour lts` to select one flavour. Each flavour
+reuses its own build directory, `_build/gate/FLAVOUR/mkosi`, and fixture
+cache, `_build/gate/FLAVOUR/vmtest`, so `katldev` builds into `_build/mkosi`
+do not affect a gate. The gate holds scripts/mkosi's build lock for each
+build directory until its runs finish, and refuses to start if another gate
+or build holds it. Leave the build, cache and run identity overrides unset so
+the gate can allocate them. Gates build in a container; `KATL_CONTAINER_RUNTIME=direct`
+supports only `_build/mkosi`.
+
+The combined summary lists the run IDs and test outcomes by flavour. If a group
+fails, the gate finishes the remaining groups and returns a failure. For each
+run ID, check the retained `test-summary.txt` for the tests the gate reports.
 
 ### Read run evidence
 

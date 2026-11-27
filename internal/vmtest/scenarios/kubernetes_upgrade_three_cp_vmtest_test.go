@@ -22,7 +22,11 @@ func runThreeControlPlaneUpgradeProof(t *testing.T, ctx context.Context, result 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	localArtifact := filepath.Join(katlRepoRoot(t), "_build/mkosi/katl-kubernetes-upgrade.raw")
+	buildDir, err := vmtest.MkosiBuildDir(katlRepoRoot(t))
+	if err != nil {
+		return err
+	}
+	localArtifact := filepath.Join(buildDir, "katl-kubernetes-upgrade.raw")
 	metadata, err := artifact.ReadLocal(localArtifact + ".json")
 	if err != nil {
 		return err

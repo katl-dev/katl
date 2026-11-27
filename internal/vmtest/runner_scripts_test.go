@@ -571,7 +571,8 @@ export KATL_VMTEST_RUN=1
 export KATL_VMTEST_WORLD_STRICT=1
 exec "$@"
 `)
-	runtimePath := filepath.Join(repo, "_build", "mkosi", "katl-runtime-root.squashfs")
+	buildDir := filepath.Join(repo, "_build", "gate", "lts", "mkosi")
+	runtimePath := filepath.Join(buildDir, "katl-runtime-root.squashfs")
 	if err := os.MkdirAll(filepath.Dir(runtimePath), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -590,7 +591,7 @@ exec "$@"
 	if err != nil {
 		t.Fatal(err)
 	}
-	indexPath := filepath.Join(repo, "_build", "mkosi", "artifacts.json")
+	indexPath := filepath.Join(buildDir, "artifacts.json")
 	if err := os.WriteFile(indexPath, indexData, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -611,6 +612,7 @@ exec "$@"
 		"KATL_FAKE_MKOSI_ARGS="+mkosiArgsPath,
 		"KATL_VMTEST_RUN_ID=run-runtime-only",
 		"KATL_VMTEST_RUN_DIR="+runDir,
+		"KATL_MKOSI_BUILD_DIR="+buildDir,
 		"TMPDIR="+tmp,
 	)
 	for _, name := range []string{
@@ -644,8 +646,16 @@ exec "$@"
 	if world.ArtifactSet != "runtime" {
 		t.Fatalf("world artifact set = %q", world.ArtifactSet)
 	}
-	if len(world.Artifacts) != 1 || world.Artifacts[0].Kind != "runtime-root" || world.Artifacts[0].Digest != runtimeSHA || world.Artifacts[0].Action != "cache-resolved" {
+	if world.MkosiBuildDir != buildDir {
+		t.Fatalf("world build directory = %q, want the runner's %q", world.MkosiBuildDir, buildDir)
+	}
+	if len(world.Artifacts) != 1 || world.Artifacts[0].Kind != "runtime-root" || world.Artifacts[0].Path != runtimePath ||
+		world.Artifacts[0].Digest != runtimeSHA || world.Artifacts[0].Action != "cache-resolved" {
 		t.Fatalf("world artifacts = %#v", world.Artifacts)
+	}
+	input, err := resolveDirectRuntimeWorldInput(world, repo, directRuntimeWorldInput{})
+	if err != nil || input.RuntimeRoot != runtimePath {
+		t.Fatalf("direct boot input = %q, %v, want the recorded runtime %q", input.RuntimeRoot, err, runtimePath)
 	}
 	if world.ArtifactInputs == nil || len(world.ArtifactInputs.Tools) != 1 || world.ArtifactInputs.Tools[0].Name != "mkosi-artifact-index" || world.ArtifactInputs.Tools[0].SHA256 == "" {
 		t.Fatalf("world artifact inputs = %#v", world.ArtifactInputs)
@@ -2359,10 +2369,41 @@ func TestVMTestRunRecordsPinnedArtifacts(t *testing.T) {
 
 func TestWorldMkosiDir(t *testing.T) {
 	repo := "/repo"
+	// The world binds the directory; the environment of a test process does not.
+	t.Setenv("KATL_MKOSI_BUILD_DIR", "/elsewhere")
 	if got := (World{ArtifactDir: "/run/artifacts"}).MkosiDir(repo); got != "/repo/_build/mkosi" {
 		t.Fatalf("unpinned MkosiDir = %q, want the checkout build directory", got)
 	}
-	if got := (World{ArtifactDir: "/run/artifacts", ArtifactsPinned: true}).MkosiDir(repo); got != "/run/artifacts" {
+	if got := (World{ArtifactDir: "/run/artifacts", MkosiBuildDir: "/build/lts"}).MkosiDir(repo); got != "/build/lts" {
+		t.Fatalf("unpinned MkosiDir = %q, want the runner's selected build directory", got)
+	}
+	if got := (World{ArtifactDir: "/run/artifacts", ArtifactsPinned: true, MkosiBuildDir: "/build/lts"}).MkosiDir(repo); got != "/run/artifacts" {
 		t.Fatalf("pinned MkosiDir = %q, want the run's artifact directory", got)
+	}
+
+	t.Setenv(WorldManifestEnv, "")
+	if got, err := MkosiBuildDir(repo); err != nil || got != "/repo/_build/mkosi" {
+		t.Fatalf("MkosiBuildDir outside a run = %q, %v; want the checkout build directory", got, err)
+	}
+	world := testWorld(t)
+	world.MkosiBuildDir = "/build/lts"
+	manifest := filepath.Join(world.RunDir, "world.json")
+	data, err := json.Marshal(world)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifest, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(WorldManifestEnv, manifest)
+	if got, err := MkosiBuildDir(repo); err != nil || got != "/build/lts" {
+		t.Fatalf("MkosiBuildDir in a run = %q, %v; want the world's build directory", got, err)
+	}
+
+	// A run whose world cannot be read must not fall back to the checkout's
+	// build directory, which may hold another flavour's outputs.
+	t.Setenv(WorldManifestEnv, filepath.Join(world.RunDir, "missing.json"))
+	if got, err := MkosiBuildDir(repo); err == nil {
+		t.Fatalf("MkosiBuildDir with an unreadable world = %q, want an error", got)
 	}
 }

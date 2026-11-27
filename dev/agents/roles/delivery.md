@@ -23,9 +23,8 @@ references to anything removed or renamed. Run the matching tests. Pass the
 issue's kind, area, milestone, and applicable workflow labels to the
 orchestrator. Report the focused local VM command required by AGENTS.md,
 including its Go package, `-run`, and `-count=1`. For added or modified VM
-tests, give the command for each kernel flavour. Use `KATL_FLAVOUR=lts` with
-`scripts/vmtest-run` in a second worktree at the same revision, since each
-worktree's `_build/mkosi` serves one flavour.
+tests, use `scripts/vmtest-run --flavour standard,lts` to cover both kernel
+flavours from the delivery worktree.
 
 Keep the scratchpad for small, transient files. Use the
 [evidence store](../README.md#retain-investigation-evidence) for evidence over

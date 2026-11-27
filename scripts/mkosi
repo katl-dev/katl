@@ -39,6 +39,16 @@ stamp_dir="$build_dir/.katl-stamps"
 # directory that uses it. mkosi replaces its cache in place without locking.
 build_lock="$(dirname "$cache_dir")/.katl-mkosi.lock"
 build_lock_timeout=5400
+# Callers that hold the lock across several builds, such as the VM test gate,
+# ask for its path rather than deriving it.
+if [[ "${1:-}" == lock-path ]]; then
+    if [[ $# -ne 1 ]]; then
+        echo "error: lock-path does not accept arguments" >&2
+        exit 2
+    fi
+    printf '%s\n' "$build_lock"
+    exit 0
+fi
 go_mod_cache="${KATL_GO_MOD_CACHE:-$repo_root/_build/go-mod}"
 go_build_cache="${KATL_GO_BUILD_CACHE:-$repo_root/_build/go-cache}"
 mkosi_env=(--environment "KATL_FLAVOUR=$flavour" --environment "KATL_BUILD_COMMIT=$build_commit")
@@ -1136,9 +1146,12 @@ set +e
         find /mkosi-cache /mkosi-package-cache _build/mkosi/builddir _build/mkosi/workspace -type d -exec chmod u+rwx,go+rx {} + 2>/dev/null || true
         # A previous build may own artifacts in a different user namespace.
         # Only normalize outputs written by this invocation.
+        # scripts/build-kubernetes-sysext builds into a private output
+        # directory and moves the image to its final name afterwards.
         for output in \
             _build/mkosi/artifacts.json \
             _build/mkosi/katl-* \
+            _build/mkosi/.kubernetes-output.*/katl-* \
             _build/mkosi/*.json \
             _build/mkosi/*.sha256 \
             _build/mkosi/*.packages.tsv; do

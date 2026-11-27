@@ -763,7 +763,11 @@ type builtUpgradeImage struct {
 
 func discoverBuiltUpgradeImage(t *testing.T, baseVersion string) builtUpgradeImage {
 	t.Helper()
-	runtimeData, err := os.ReadFile(filepath.Join(repoRoot(t), "_build", "mkosi", "katl-runtime-root.squashfs.json"))
+	buildDir, err := MkosiBuildDir(repoRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeData, err := os.ReadFile(filepath.Join(buildDir, "katl-runtime-root.squashfs.json"))
 	if err != nil {
 		t.Fatalf("read current runtime artifact metadata: %v", err)
 	}
@@ -774,7 +778,7 @@ func discoverBuiltUpgradeImage(t *testing.T, baseVersion string) builtUpgradeIma
 	if err := json.Unmarshal(runtimeData, &runtimeMetadata); err != nil || runtimeMetadata.BuildID == "" || runtimeMetadata.SHA256 == "" {
 		t.Fatalf("decode current runtime artifact identity: %v", err)
 	}
-	matches, err := filepath.Glob(filepath.Join(repoRoot(t), "_build", "mkosi", "katlos-upgrade-*-x86_64.squashfs.json"))
+	matches, err := filepath.Glob(filepath.Join(buildDir, "katlos-upgrade-*-x86_64.squashfs.json"))
 	if err != nil {
 		t.Fatalf("discover KatlOS upgrade image metadata: %v", err)
 	}

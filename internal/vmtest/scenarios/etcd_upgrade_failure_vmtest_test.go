@@ -27,7 +27,11 @@ func runEtcdUpgradeFailureProof(t *testing.T, ctx context.Context, result vmtest
 	}
 	cp1 := nodeByName(nodes, "cp-1")
 	repo := katlRepoRoot(t)
-	localArtifact := filepath.Join(repo, "_build/mkosi/katl-kubernetes-upgrade.raw")
+	buildDir, err := vmtest.MkosiBuildDir(repo)
+	if err != nil {
+		return err
+	}
+	localArtifact := filepath.Join(buildDir, "katl-kubernetes-upgrade.raw")
 	metadata, err := artifact.ReadLocal(localArtifact + ".json")
 	if err != nil {
 		return err
