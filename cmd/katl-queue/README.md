@@ -158,14 +158,33 @@ command.
 
 ### `ci-cost`
 
-Run `katl-queue ci-cost --workflow ci.yml --limit 10` to rank job names and
-job prefixes by runner-minutes. It includes timed attempts from completed
-workflow runs, including retries, and omits skipped jobs. The default
-workflow is `ci.yml` and the default window starts seven days ago.
-`--workflow` accepts a filename, display name, or ID. Set
-`--since 2026-11-01` for an inclusive date starting at midnight UTC. A
-`--limit` of zero shows all rows in each ranking. Add `--json` for structured
-output. If a display name is ambiguous, use the workflow filename or ID.
+Run `katl-queue ci-cost --limit 10` to report CI cost and queue time across
+every workflow for the last seven days. Set `--since 2026-11-01` for an
+inclusive start date at midnight UTC, or `--workflow ci.yml` to report one
+workflow; `--workflow` accepts a filename, display name, or ID, and an
+ambiguous display name needs the filename or ID. Add `--json` for structured
+output. The report covers completed runs created in the window and has five
+tables:
+
+- Each workflow's runs, failed and cancelled runs, runner-minutes, and runner
+  wait: the 50th and 90th percentiles and the maximum of the time from a job
+  being queued to its start.
+- Each workflow's merge-group runs by conclusion, with the 50th and 90th
+  percentile wall time of successful ones, from creation to completion.
+- Failed and cancelled merge-group runs counted by the first job of their last
+  attempt to finish unsuccessfully. A job that hit its time limit shows as
+  cancelled under its own name. A group cancelled from outside, for example
+  when the queue replaced it, shows whichever job stopped first.
+- Job names and job prefixes ranked by runner-minutes, per workflow. These
+  include timed attempts from reruns and omit skipped jobs and jobs that never
+  reached a runner.
+
+Percentiles are nearest-rank, so each is a duration that occurred. A `--limit`
+of zero shows all rows in each ranking; the limit applies to the
+failing-job, job and prefix rankings. GitHub server errors and dropped
+connections are retried with backoff, so one failed request does not abort a
+long report; an error that persists, or any other error, ends the command and
+names the request.
 
 ### `help`
 

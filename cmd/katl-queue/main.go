@@ -51,7 +51,8 @@ Commands:
   prune-runs [--apply]
                     cancel CI runs of merge groups the queue no longer holds
   ci-cost [--since DATE] [--workflow NAME] [--limit N] [--json]
-                    rank jobs in completed workflow runs by runner-minutes
+                    report runner-minutes, runner wait, merge-group wall time
+                    and failing jobs across completed workflow runs
 
 plan and autopilot only report unless given --apply, which needs --milestone.
 prune-runs only reports unless given --apply.
