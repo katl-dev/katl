@@ -54,7 +54,7 @@ func runCommand(ctx context.Context, name string, args ...string) ([]byte, error
 
 func run(args []string, stdout, stderr io.Writer, call command) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify [--branch] TAG COMMIT DIRECTORY\n       scripts/katl-release checksums DIRECTORY\n       scripts/katl-release equivalent BUNDLE FLAVOUR=SHA256SUMS...\n       scripts/katl-release regression VERSION COMMIT\n       scripts/katl-release next [--ref REF] [--dispatch COMMIT] [--retry REASON]\n       scripts/katl-release status VERSION\n       scripts/katl-release version VERSION\n       scripts/katl-release require-candidate VERSION\n       scripts/katl-release stable-tags [TAG...]\n       scripts/katl-release bundle-name VERSION COMMIT\n       scripts/katl-release draft VERSION COMMIT DIRECTORY\n       scripts/katl-release publish VERSION COMMIT DIRECTORY\n       scripts/katl-release confirm-final VERSION COMMIT DIGEST\n       scripts/katl-release tag-name VERSION\n       scripts/katl-release candidate-artifacts VERSION COMMIT RUN ATTEMPT\n       scripts/katl-release record VERSION building|failed|qualified [DIGEST]\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
+		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify [--branch] TAG COMMIT DIRECTORY\n       scripts/katl-release checksums DIRECTORY\n       scripts/katl-release equivalent BUNDLE FLAVOUR=SHA256SUMS...\n       scripts/katl-release regression VERSION COMMIT\n       scripts/katl-release next [--ref REF] [--dispatch COMMIT] [--retry REASON]\n       scripts/katl-release status VERSION\n       scripts/katl-release release VERSION [--retry REASON]\n       scripts/katl-release wait VERSION\n       scripts/katl-release version VERSION\n       scripts/katl-release require-candidate VERSION\n       scripts/katl-release stable-tags [TAG...]\n       scripts/katl-release bundle-name VERSION COMMIT\n       scripts/katl-release draft VERSION COMMIT DIRECTORY\n       scripts/katl-release publish VERSION COMMIT DIRECTORY\n       scripts/katl-release confirm-final VERSION COMMIT DIGEST\n       scripts/katl-release tag-name VERSION\n       scripts/katl-release candidate-artifacts VERSION COMMIT RUN ATTEMPT\n       scripts/katl-release record VERSION building|failed|qualified [DIGEST]\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
 		return nil
 	}
 	if args[0] == "prepare" {
@@ -76,6 +76,10 @@ func run(args []string, stdout, stderr io.Writer, call command) error {
 		return status(context.Background(), args[1:], stdout, newGitHubReader(call))
 	}
 	switch args[0] {
+	case "release":
+		return release(context.Background(), args[1:], stdout, stderr, newGitHubReader(call), call)
+	case "wait":
+		return waitRelease(context.Background(), args[1:], stdout, stderr, newGitHubReader(call))
 	case "draft", "publish":
 		return runPublication(context.Background(), args, stderr, newGitHubReader(call), runCommand)
 	case "confirm-final":
@@ -98,7 +102,7 @@ func run(args []string, stdout, stderr io.Writer, call command) error {
 	}
 	id, err := strconv.ParseInt(args[1], 10, 64)
 	if err != nil || id <= 0 {
-		return errors.New("RUN_ID must be a positive integer from the tag's Actions run URL")
+		return errors.New("RUN_ID must be a positive integer from the Actions run URL")
 	}
 	candidate, err := inspect(id, call)
 	if err != nil {
@@ -223,8 +227,9 @@ type artifact struct {
 }
 
 type candidate struct {
-	Run      workflowRun `json:"run"`
-	Artifact artifact    `json:"artifact"`
+	Run       workflowRun `json:"run"`
+	Artifact  artifact    `json:"artifact"`
+	sourceRef string
 }
 
 func inspect(id int64, call command) (candidate, error) {
@@ -233,17 +238,33 @@ func inspect(id int64, call command) (candidate, error) {
 		return result, err
 	}
 	run := result.Run
-	if run.ID != id || run.Attempt < 1 || run.Event != "push" || run.Path != workflow || !strings.HasPrefix(run.Tag, "v") {
-		return result, errors.New("select a pushed KatlOS tag run from release-artifacts.yml, not a branch or manual build")
+	refusal := errors.New("select a pushed KatlOS tag run from release-artifacts.yml or a dispatched Release run on a version's release branch")
+	if run.ID != id || run.Attempt < 1 {
+		return result, refusal
 	}
-	version, err := validateVersion(strings.TrimPrefix(run.Tag, "v"))
-	if err != nil {
-		return result, fmt.Errorf("run is not a KatlOS release: %w", err)
+	branchVersion, branch := releasestate.ParseRef("refs/heads/" + run.Tag)
+	var version releaseversion.Version
+	switch {
+	case run.Event == releaseEvent && run.Path == releasestate.ReleaseWorkflow && branch:
+		version = branchVersion
+		result.sourceRef = releasestate.Ref(version)
+	case run.Event == "push" && run.Path == workflow && strings.HasPrefix(run.Tag, "v"):
+		var err error
+		version, err = releaseversion.ParseTag(run.Tag)
+		if err != nil {
+			return result, fmt.Errorf("run is not a KatlOS release: %w", err)
+		}
+		result.sourceRef = "refs/tags/" + run.Tag
+	default:
+		return result, refusal
 	}
-	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(run.Commit) {
+	if !fullSHA.MatchString(run.Commit) {
 		return result, errors.New("run has no full source commit SHA")
 	}
 	name := releasestate.BundleName(version, run.Commit)
+	if branch {
+		name = fmt.Sprintf("for %s at %s", version.Tag(), run.Commit)
+	}
 	// A run can contain hundreds of intermediate artifacts; select only the final bundle.
 	for page := 1; ; page++ {
 		var response struct{ Artifacts []artifact }
@@ -251,7 +272,12 @@ func inspect(id int64, call command) (candidate, error) {
 			return result, err
 		}
 		for _, artifact := range response.Artifacts {
-			if artifact.Name != name {
+			if branch {
+				built, ok := releasestate.BundleVersion(artifact.Name, run.Commit)
+				if !ok || built.Base() != version || (!built.IsFinal() && built.Stage != releaseversion.Candidate) {
+					continue
+				}
+			} else if artifact.Name != name {
 				continue
 			}
 			if result.Artifact.ID != 0 {
@@ -281,7 +307,7 @@ func download(release candidate, dir string, stderr io.Writer, call command) err
 	if _, err := call("gh", "run", "download", strconv.FormatInt(release.Run.ID, 10), "--repo", repository, "--name", release.Artifact.Name, "--dir", dir); err != nil {
 		return fmt.Errorf("download failed; retained %s for inspection: %w", dir, err)
 	}
-	if err := verifyBundle(dir, "refs/tags/"+release.Run.Tag, release.Run.Commit, stderr, call); err != nil {
+	if err := verifyBundle(dir, release.sourceRef, release.Run.Commit, stderr, call); err != nil {
 		return err
 	}
 	// Reruns can replace artifacts under the same name. Qualification belongs to one attempt and artifact ID.
@@ -289,7 +315,8 @@ func download(release candidate, dir string, stderr io.Writer, call command) err
 	if err != nil {
 		return err
 	}
-	if current.Run.Attempt != release.Run.Attempt || current.Run.Commit != release.Run.Commit || current.Artifact != release.Artifact {
+	if current.Run.Attempt != release.Run.Attempt || current.Run.Commit != release.Run.Commit ||
+		current.sourceRef != release.sourceRef || current.Artifact != release.Artifact {
 		return errors.New("candidate changed during verification; download into a fresh directory and qualify again")
 	}
 	fmt.Fprintln(stderr, "Integrity and provenance verified. Release validation must pass before publication.")

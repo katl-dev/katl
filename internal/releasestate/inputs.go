@@ -153,7 +153,11 @@ func ParseRef(ref string) (releaseversion.Version, bool) {
 func Branch(version releaseversion.Version) string { return "release/" + version.String() }
 
 // Ref is the full ref of the version's release branch.
-func Ref(version releaseversion.Version) string { return branchPrefix + version.String() }
+func Ref(version releaseversion.Version) string { return RefForVersion(version.String()) }
+
+// RefForVersion preserves the requested version for the decision's refusal
+// when the version does not name a release branch.
+func RefForVersion(version string) string { return branchPrefix + version }
 
 // IsVersionTag reports whether a tag is an input of the version: its final
 // tag or one named v<V>-rc.<suffix>.

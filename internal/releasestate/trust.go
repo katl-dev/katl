@@ -32,7 +32,22 @@ func (in Inputs) releaseOrigin(version releaseversion.Version) runstatus.Origin 
 
 // BundleName is the artifact a build of the version at commit uploads.
 func BundleName(version releaseversion.Version, commit string) string {
-	return "katl-" + version.String() + "-x86_64-" + short(commit)
+	return bundlePrefix + version.String() + bundleSuffix(commit)
+}
+
+const bundlePrefix = "katl-"
+
+func bundleSuffix(commit string) string { return "-x86_64-" + short(commit) }
+
+// BundleVersion reads the version from a bundle artifact name for commit.
+func BundleVersion(name, commit string) (releaseversion.Version, bool) {
+	name, prefixed := strings.CutPrefix(name, bundlePrefix)
+	name, suffixed := strings.CutSuffix(name, bundleSuffix(commit))
+	if !prefixed || !suffixed {
+		return releaseversion.Version{}, false
+	}
+	version, err := releaseversion.Parse(name)
+	return version, err == nil
 }
 
 // validation returns the conclusion of the attempt's Release validation job,
