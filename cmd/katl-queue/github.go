@@ -294,6 +294,9 @@ type prResponse struct {
 	Pushes struct {
 		Nodes []pushEvent `json:"nodes"`
 	} `json:"pushes"`
+	// HeadChecks is the latest commit and its checks, which watch and why
+	// read.
+	HeadChecks headCommits `json:"headChecks"`
 
 	ID                      string      `json:"id"`
 	Body                    string      `json:"body"`
@@ -338,6 +341,17 @@ type removalEvent struct {
 	} `json:"beforeCommit"`
 }
 
+// failedRequiredChecks lists the required checks that failed on the head. A
+// latest commit other than the head proves nothing about it.
+func (pr prResponse) failedRequiredChecks() []failedCheck {
+	nodes := pr.HeadChecks.Nodes
+	if len(nodes) != 1 || nodes[0].Commit.Oid != pr.HeadRefOid || nodes[0].Commit.StatusCheckRollup == nil {
+		return nil
+	}
+	required, _ := unsuccessfulChecks(nodes[0].Commit.StatusCheckRollup.Contexts.Nodes)
+	return required
+}
+
 // mergeRecord reports whether the event is the removal GitHub records, with
 // reason "merged", when an entry merges. It is not a removal from the queue.
 func (r removalEvent) mergeRecord() bool { return r.Reason == "merged" }
@@ -365,7 +379,7 @@ func (g *gh) pullRequests(ctx context.Context, numbers []int) (map[int]prRespons
 	var query strings.Builder
 	query.WriteString("query($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n")
 	for _, n := range numbers {
-		fmt.Fprintf(&query, "    pr%d: pullRequest(number: %d) { ...watched }\n", n, n)
+		fmt.Fprintf(&query, "    pr%d: pullRequest(number: %d) { ...watched headChecks: %s }\n", n, n, headChecks(n))
 	}
 	query.WriteString("  }\n}\n")
 	query.WriteString(prFragment)
@@ -614,8 +628,6 @@ type checkFailures struct {
 }
 
 // pullRequestChecks reads the failing checks of pull requests by number.
-// Whether a check is required depends on the pull request, so each is asked
-// for under its own number.
 func (g *gh) pullRequestChecks(ctx context.Context, numbers []int) (map[int]checkFailures, error) {
 	if len(numbers) == 0 {
 		return map[int]checkFailures{}, nil
@@ -623,12 +635,7 @@ func (g *gh) pullRequestChecks(ctx context.Context, numbers []int) (map[int]chec
 	var query strings.Builder
 	query.WriteString("query($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n")
 	for _, n := range numbers {
-		fmt.Fprintf(&query, `    pr%[1]d: pullRequest(number: %[1]d) { commits(last: 1) { nodes { commit { statusCheckRollup { contexts(first: 100) { nodes {
-      __typename
-      ... on CheckRun { name conclusion startedAt completedAt isRequired(pullRequestNumber: %[1]d) }
-      ... on StatusContext { context state isRequired(pullRequestNumber: %[1]d) }
-    } } } } } } }
-`, n)
+		fmt.Fprintf(&query, "    pr%d: pullRequest(number: %d) { commits: %s }\n", n, n, headChecks(n))
 	}
 	query.WriteString("  }\n}\n")
 
@@ -642,17 +649,7 @@ func (g *gh) pullRequestChecks(ctx context.Context, numbers []int) (map[int]chec
 func decodeCheckFailures(raw []byte, numbers []int) (map[int]checkFailures, error) {
 	var resp struct {
 		Repository map[string]*struct {
-			Commits struct {
-				Nodes []struct {
-					Commit struct {
-						StatusCheckRollup *struct {
-							Contexts struct {
-								Nodes []checkContext `json:"nodes"`
-							} `json:"contexts"`
-						} `json:"statusCheckRollup"`
-					} `json:"commit"`
-				} `json:"nodes"`
-			} `json:"commits"`
+			Commits headCommits `json:"commits"`
 		} `json:"repository"`
 	}
 	if err := decodeGraphQL(raw, &resp); err != nil {
@@ -665,23 +662,69 @@ func decodeCheckFailures(raw []byte, numbers []int) (map[int]checkFailures, erro
 		if pr == nil || len(pr.Commits.Nodes) == 0 || pr.Commits.Nodes[0].Commit.StatusCheckRollup == nil {
 			continue
 		}
+		required, optional := unsuccessfulChecks(pr.Commits.Nodes[0].Commit.StatusCheckRollup.Contexts.Nodes)
+		// Planning counts only checks that ran to a failure, not cancelled ones.
+		ran := func(c failedCheck) bool { return c.Conclusion != "CANCELLED" }
 		var failures checkFailures
-		for _, c := range latestContexts(pr.Commits.Nodes[0].Commit.StatusCheckRollup.Contexts.Nodes) {
-			name, failed := c.Name, slices.Contains([]string{"FAILURE", "TIMED_OUT", "STARTUP_FAILURE"}, c.Conclusion)
-			if c.Type == "StatusContext" {
-				name, failed = c.Context, c.State == "FAILURE" || c.State == "ERROR"
+		for _, c := range required {
+			if ran(c) {
+				failures.Required = append(failures.Required, c.Name)
 			}
-			switch {
-			case !failed:
-			case c.IsRequired:
-				failures.Required = append(failures.Required, name)
-			default:
-				failures.Optional = append(failures.Optional, name)
+		}
+		for _, c := range optional {
+			if ran(c) {
+				failures.Optional = append(failures.Optional, c.Name)
 			}
 		}
 		out[n] = failures
 	}
 	return out, nil
+}
+
+// headChecks selects the checks on a pull request's latest commit. Whether a
+// check is required depends on the pull request, so the selection names it.
+func headChecks(number int) string {
+	return fmt.Sprintf(`commits(last: 1) { nodes { commit { oid statusCheckRollup { contexts(first: 100) { nodes {
+      __typename
+      ... on CheckRun { name conclusion startedAt completedAt detailsUrl isRequired(pullRequestNumber: %[1]d) }
+      ... on StatusContext { context state targetUrl isRequired(pullRequestNumber: %[1]d) }
+    } } } } } }`, number)
+}
+
+// headCommits is what headChecks reads.
+type headCommits struct {
+	Nodes []struct {
+		Commit struct {
+			Oid               string `json:"oid"`
+			StatusCheckRollup *struct {
+				Contexts struct {
+					Nodes []checkContext `json:"nodes"`
+				} `json:"contexts"`
+			} `json:"statusCheckRollup"`
+		} `json:"commit"`
+	} `json:"nodes"`
+}
+
+// unsuccessfulChecks picks the latest checks that concluded unsuccessfully,
+// split by whether the repository's rules require them to merge. A failed
+// required check keeps GitHub from adding the pull request to the queue.
+func unsuccessfulChecks(all []checkContext) (required, optional []failedCheck) {
+	for _, c := range latestContexts(all) {
+		check := failedCheck{Name: c.Name, Conclusion: c.Conclusion, DetailsURL: c.DetailsURL}
+		failed := slices.Contains([]string{"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "CANCELLED"}, c.Conclusion)
+		if c.Type == "StatusContext" {
+			check = failedCheck{Name: c.Context, Conclusion: c.State, DetailsURL: c.TargetURL}
+			failed = c.State == "FAILURE" || c.State == "ERROR"
+		}
+		switch {
+		case !failed:
+		case c.IsRequired:
+			required = append(required, check)
+		default:
+			optional = append(optional, check)
+		}
+	}
+	return required, optional
 }
 
 // pushEvent is a force-push, or a commit added to the branch.
@@ -713,10 +756,12 @@ type checkContext struct {
 	Type        string    `json:"__typename"`
 	Name        string    `json:"name"`
 	Conclusion  string    `json:"conclusion"`
+	DetailsURL  string    `json:"detailsUrl"`
 	StartedAt   time.Time `json:"startedAt"`
 	CompletedAt time.Time `json:"completedAt"`
 	Context     string    `json:"context"`
 	State       string    `json:"state"`
+	TargetURL   string    `json:"targetUrl"`
 	IsRequired  bool      `json:"isRequired"`
 }
 

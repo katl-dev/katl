@@ -458,7 +458,9 @@ func why(ctx context.Context, g *gh, number int, out io.Writer) error {
 	}
 	obs := observe(pr)
 	if obs.Merged || obs.Removal == nil {
-		fmt.Fprintln(out, describe(obs))
+		for _, line := range describe(obs) {
+			fmt.Fprintln(out, line)
+		}
 		if !obs.Merged {
 			fmt.Fprintf(out, "#%d has not been removed from the merge queue\n", number)
 		}
@@ -467,8 +469,10 @@ func why(ctx context.Context, g *gh, number int, out io.Writer) error {
 
 	removal := *obs.Removal
 	fmt.Fprintf(out, "#%d removed from the queue at %s: %s\n", number, removal.CreatedAt.Format(time.RFC3339), removal.Reason)
-	if obs.InQueue {
-		fmt.Fprintf(out, "since then: %s\n", describe(obs))
+	if obs.InQueue || obs.blocked() {
+		for _, line := range describe(obs) {
+			fmt.Fprintf(out, "since then: %s\n", line)
+		}
 	}
 	checks := removal.failedChecks()
 	if len(checks) == 0 {
