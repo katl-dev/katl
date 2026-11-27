@@ -194,8 +194,7 @@ published.
 Admission enforces the rules that keep trial authority with the owner rather
 than with caller convention:
 
-- An arm keeps the published default; only promotion moves it to the
-  candidate.
+- An arm keeps the published default until the trial resolves.
 - A promotion publishes the bound candidate as the default.
 - A move that does not arm a trial may not publish a selection that the
   reader would classify as a legacy trial: pending health validation and a
@@ -203,8 +202,9 @@ than with caller convention:
 
 An authority survives publication and the reboot, because it is the only
 durable record that arms recovery. While it exists, only a move that resolves
-it is admitted. That move replaces the authority with its own intent, which
-uses the authority's `trialID` as its `reboot.trialID`.
+it is admitted. That move replaces the authority with its own intent. If the
+resolution records reboot eligibility, it uses the authority's `trialID`
+as its `reboot.trialID`.
 
 `bootID` names the boot that began the move, so it is never compared with the
 candidate's boot ID. Activation binds the authority to a boot when that boot
@@ -212,22 +212,47 @@ is not the boot that began the move and the kernel-selected generation is the
 destination. It must also pass the activation check. A health result can
 resolve only a bound authority.
 
-Three outcomes resolve an authority:
+Promotion publishes the candidate as the default without granting a reboot.
 
-- **Promotion** publishes the candidate as the default, with an ineligible
-  reboot.
-- **Failure** publishes the fallback, or `recoveryRequired` when no bootable
-  fallback remains. A failure with a fallback spends the trial's reboot. A
-  failure without one has no destination and no reboot.
-- **An unconfirmed trial** is resolved by reconciliation when the authority is
-  published and a later boot runs another recorded target. The trial has
-  then ended, whether the candidate failed before confirming or firmware
-  never booted it. Reconciliation marks the candidate's boot `failed`, and
-  computes the selection with the same failure rule as a failed trial: the
-  fallback becomes the default when it passes the recovery check, and
-  `recoveryRequired` is set otherwise. It spends the reboot without
-  dispatching it. A next target that is neither bootable nor running stops
-  the resolution without changes, with the authority in place.
+A health failure or deadline on a boot bound to the authority ends a confirmed
+trial of candidate `C`. `failTrial` is the owner's only entry point for this
+failure. It derives the operation ID by prefixing the authority's trial ID
+with `fail-`, so repeat triggers can finish the same move without spending
+another reboot. When reconciliation finds a published authority on a later
+boot of a different recorded generation `R`, it resolves the trial as
+unconfirmed under the operation ID `unconfirmed-<trialID>`. It records the
+reboot as spent without requesting one.
+
+Both paths check each distinct fallback candidate at most once in this order:
+
+1. `F`, the recorded previous known-good generation. Use the published
+   default if the pointer is empty or the selection is a one-shot, provided
+   the default differs from `C`.
+2. `D`, the published default, if it differs from both `C` and `F`.
+3. `R`, the running generation, for an unconfirmed trial if it differs from
+   `F` and `D`.
+
+A usable fallback differs from `C`, is
+[known-good](rollback-selection-rules.md#known-good-rule), and passes the full
+bootability check. For `F`, the recorded fallback entry must agree with the
+generation spec. `D` and `R` use their own spec entries. An unavailable
+candidate allows the next check. An indeterminate candidate stops the walk
+with the authority still pending and the boot target unchanged.
+
+| Trial | Candidate outcome | Published default | `recoveryRequired` | Destination | Reboot |
+| --- | --- | --- | --- | --- | --- |
+| Confirmed | `F` or `D` usable | First usable candidate | False | Published default | One if unspent |
+| Confirmed | All unavailable or absent | `C`, which is running | True | Empty | None |
+| Unconfirmed | `F` or `D` usable | First usable candidate | False | Published default | None |
+| Unconfirmed | `F` and `D` unavailable or absent, `R` usable | `R` | False | `R` | None |
+| Unconfirmed | All unavailable or absent | `R`, which is running | True | Empty | None |
+| Either | First indeterminate check | Unchanged | Unchanged | — | None |
+
+Every completed resolution marks `C` failed and unhealthy, records it as
+the failed boot, and clears the trial and one-shot state. The selection's
+previous-known-good pointers name the usable fallback, or are cleared when
+recovery is required. The default entry follows the selected generation's
+loader binding and EFI follows the published selection.
 
 Binding is derived, not recorded: every boot of the candidate that is not the
 issuing boot binds the authority again, so the candidate may run more than
@@ -314,6 +339,8 @@ which expects the legacy selection's revision.
   when the operator cancels a next-boot change, has no move today: while the
   authority exists only a resolving move is admitted. #820 must define that
   workflow.
+- No move clears `recoveryRequired`. #963 must define the supported recovery
+  workflow before the writer cutover.
 
 ### Notes for #820
 
@@ -322,6 +349,18 @@ which expects the legacy selection's revision.
 - The owner keeps an existing `committedAt` when a status change commits a
   generation, while the live promotion path in `boot_health.go` overwrites
   it. #820 must choose one rule when it moves that path to the owner.
+- The legacy failure adapter preserves three rules until the production writer
+  cutover. **No EFI write without a fallback** keeps the published default
+  when recovery is required because the legacy writer leaves EFI unwritten
+  in that branch. The **`bootFiles` check level** keeps the legacy
+  loader-entry and UKI checks. **Candidate `F` only** keeps the legacy
+  fallback set even when a distinct `D` is usable. #963 removes all three
+  with the legacy writer and removes the matching “keeps the default”
+  sentence from [boot health semantics](boot-health-semantics.md).
+  The `recordedFallbackOnly` flag also preserves the exact loader entry and
+  previous-known-good pointer values in the legacy record without rewriting
+  them from the spec, clearing the pointers only when a recorded fallback is
+  rejected, and #963 removes this behavior alongside those three rules.
 - An arm interrupted before its one-shot is written resolves on a later boot
   with the same reason as a trial that firmware booted, because firmware
   consumes the one-shot on every boot and the state cannot tell the two
