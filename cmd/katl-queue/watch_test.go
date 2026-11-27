@@ -126,7 +126,7 @@ func TestFollow(t *testing.T) {
 	}
 
 	var out, errOut bytes.Buffer
-	err := follow(context.Background(), []int{488, 457}, poll, 0, &out, &errOut)
+	err := follow(context.Background(), []int{488, 457}, poll, nil, 0, &out, &errOut)
 	if !errors.Is(err, errConflict) {
 		t.Errorf("follow() error = %v, want errConflict because #488 left without merging", err)
 	}
@@ -257,7 +257,7 @@ func TestRequiredCheckFailure(t *testing.T) {
 				return map[int]prResponse{847: pr}, nil
 			}
 			var out bytes.Buffer
-			err := follow(ctx, []int{847}, poll, 0, &out, io.Discard)
+			err := follow(ctx, []int{847}, poll, nil, 0, &out, io.Discard)
 
 			stamp := regexp.MustCompile(`(?m)^\d\d:\d\d:\d\d `)
 			if got := strings.Split(strings.TrimSuffix(stamp.ReplaceAllString(out.String(), ""), "\n"), "\n"); !slices.Equal(got, tt.want) {

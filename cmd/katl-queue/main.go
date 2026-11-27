@@ -28,8 +28,13 @@ const usage = `usage: katl-queue <command> [arguments]
 
 Commands:
   status            list merge-queue entries and PRs waiting to join
-  check PR          simulate merging PR over main and the queue ahead of it
-  enqueue PR        check PR, then enable auto-merge so it joins the queue
+  check PR          simulate merging PR over main and the queue ahead of it,
+                    and against each PR waiting to join the queue, in either order
+  enqueue PR [--allow-pending-conflict]
+                    check PR, then enable auto-merge so it joins the queue;
+                    --allow-pending-conflict enqueues it despite a conflict with
+                    a PR waiting to join, accepting that the queue removes
+                    whichever of the two joins second
   watch [PR...]     report queue state changes until the PRs merge or leave
                     (default: everything queued or with auto-merge enabled)
   watchd [--interval 60s] [--notify]
@@ -114,7 +119,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	var (
 		milestone                string
 		applyChanges, next, once bool
-		notify                   bool
+		notify, allowPending     bool
 		resume                   string
 		timeout                  time.Duration
 	)
@@ -123,6 +128,12 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 		flags.DurationVar(&interval, "interval", interval, "time between polls")
 		if command == "watchd" {
 			flags.BoolVar(&notify, "notify", false, "send desktop notifications for merges and failures")
+		}
+	case "enqueue":
+		flags.BoolVar(&allowPending, allowPendingFlag, false, "enqueue despite a conflict with a PR waiting to join the queue")
+		// flag stops at the first positional argument. Accept PR before flags.
+		if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+			args = append(slices.Clone(args[1:]), args[0])
 		}
 	case "wait":
 		flags.StringVar(&resume, "resume", "", "reattach to one attempt without re-evaluating its verdict; after every push, start a fresh katl-queue wait PR")
@@ -228,10 +239,13 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer) error {
 	case "status":
 		return status(ctx, g, stdout)
 	case "check":
-		_, err := check(ctx, g, numbers[0], stdout)
+		_, pending, err := check(ctx, g, numbers[0], stdout)
+		if err == nil && len(pending) > 0 {
+			return errConflict
+		}
 		return err
 	case "enqueue":
-		return enqueue(ctx, g, numbers[0], stdout)
+		return enqueue(ctx, g, numbers[0], allowPending, stdout)
 	case "watch":
 		return watch(ctx, g, numbers, interval, stdout, stderr)
 	case "plan":
@@ -305,46 +319,44 @@ func since(t, now time.Time) string {
 	return fmt.Sprintf("%s (%s ago)", t.UTC().Format("2006-01-02 15:04Z"), text)
 }
 
-// check simulates merging the pull request and reports the outcome. It
-// returns errConflict, after reporting it, when the simulation conflicts.
-func check(ctx context.Context, g *gh, number int, out io.Writer) (queueSnapshot, error) {
+// check simulates merging the pull request over the queue and against each
+// pull request waiting to join it, and reports the outcome. It returns
+// errConflict, after reporting it, when the pull request conflicts with the
+// base or the queue, and otherwise the conflicts with waiting pull requests.
+func check(ctx context.Context, g *gh, number int, out io.Writer) (queueSnapshot, []pendingConflict, error) {
 	snap, err := g.snapshot(ctx)
 	if err != nil {
-		return snap, err
+		return snap, nil, err
 	}
 	pr, err := g.pullRequest(ctx, number)
 	if err != nil {
-		return snap, err
+		return snap, nil, err
 	}
 	if pr.Merged || pr.State != "OPEN" {
-		return snap, fmt.Errorf("#%d is %s", number, strings.ToLower(pr.State))
+		return snap, nil, fmt.Errorf("#%d is %s", number, strings.ToLower(pr.State))
 	}
 
-	queue := make([]queuedPR, 0, len(snap.Entries))
-	oids := []string{snap.BaseOid, pr.HeadRefOid}
-	for _, e := range snap.Entries {
-		queue = append(queue, queuedPR{Number: e.PullRequest.Number, Head: e.PullRequest.HeadRefOid})
-		oids = append(oids, e.PullRequest.HeadRefOid)
-	}
-
-	objects, err := newScratchObjects(".", os.Environ())
+	objects, err := queueObjects(ctx, snap, pr.HeadRefOid)
 	if err != nil {
-		return snap, err
+		return snap, nil, err
 	}
 	defer objects.Close()
-	if err := objects.fetch(ctx, "origin", oids...); err != nil {
-		return snap, err
-	}
-	sim, err := simulate(ctx, objects, snap.BaseOid, queue, queuedPR{Number: number, Head: pr.HeadRefOid})
+	candidate := queuedPR{Number: number, Head: pr.HeadRefOid}
+	sim, err := simulate(ctx, objects, snap.BaseOid, queueOf(snap), candidate)
 	if err != nil {
-		return snap, err
+		return snap, nil, err
 	}
-
 	reportSimulation(out, snap, number, pr.HeadRefOid, sim)
 	if !sim.clean() {
-		return snap, errConflict
+		return snap, nil, errConflict
 	}
-	return snap, nil
+
+	pending, err := pendingConflicts(ctx, objects, snap, candidate)
+	if err != nil {
+		return snap, nil, err
+	}
+	reportPendingConflicts(out, number, pending)
+	return snap, pending, nil
 }
 
 func reportSimulation(out io.Writer, snap queueSnapshot, number int, head string, sim simulation) {
@@ -377,8 +389,8 @@ func reportSimulation(out io.Writer, snap queueSnapshot, number int, head string
 	}
 }
 
-func enqueue(ctx context.Context, g *gh, number int, out io.Writer) error {
-	snap, err := check(ctx, g, number, out)
+func enqueue(ctx context.Context, g *gh, number int, allowPending bool, out io.Writer) error {
+	snap, pending, err := check(ctx, g, number, out)
 	if errors.Is(err, errConflict) {
 		fmt.Fprintf(out, "refusing to enqueue #%d\n", number)
 	}
@@ -390,6 +402,9 @@ func enqueue(ctx context.Context, g *gh, number int, out io.Writer) error {
 			fmt.Fprintf(out, "#%d is already queued at position %d (%s)\n", number, e.Position, e.State)
 			return nil
 		}
+	}
+	if err := admitPending(out, number, pending, allowPending); err != nil {
+		return err
 	}
 
 	if err := g.enableAutoMerge(ctx, number); err != nil {
@@ -438,7 +453,14 @@ func watch(ctx context.Context, g *gh, numbers []int, interval time.Duration, ou
 		}
 	}
 
-	return follow(ctx, numbers, g.pullRequests, interval, out, errOut)
+	explain := func(ctx context.Context, number int) ([]string, error) {
+		var report strings.Builder
+		if err := reportUnmergeable(ctx, g, number, &report); err != nil {
+			return nil, err
+		}
+		return strings.Split(strings.TrimSuffix(report.String(), "\n"), "\n"), nil
+	}
+	return follow(ctx, numbers, g.pullRequests, explain, interval, out, errOut)
 }
 
 func sleep(ctx context.Context, d time.Duration) bool {
@@ -462,6 +484,7 @@ func why(ctx context.Context, g *gh, number int, out io.Writer) error {
 		for _, line := range describe(obs) {
 			fmt.Fprintln(out, line)
 		}
+		whyUnmergeable(ctx, g, obs, out)
 		if !obs.Merged {
 			fmt.Fprintf(out, "#%d has not been removed from the merge queue\n", number)
 		}
@@ -474,6 +497,7 @@ func why(ctx context.Context, g *gh, number int, out io.Writer) error {
 		for _, line := range describe(obs) {
 			fmt.Fprintf(out, "since then: %s\n", line)
 		}
+		whyUnmergeable(ctx, g, obs, out)
 	}
 	checks := removal.failedChecks()
 	if len(checks) == 0 {
@@ -525,6 +549,18 @@ func why(ctx context.Context, g *gh, number int, out io.Writer) error {
 		}
 	}
 	return nil
+}
+
+// whyUnmergeable names the entry ahead that an unmergeable entry conflicts
+// with. Naming it needs a checkout to simulate in, so a failure is reported
+// rather than ending the explanation.
+func whyUnmergeable(ctx context.Context, g *gh, obs observation, out io.Writer) {
+	if !obs.unmergeable() {
+		return
+	}
+	if err := reportUnmergeable(ctx, g, obs.Number, out); err != nil {
+		fmt.Fprintf(out, "could not name the entry #%d conflicts with; run why from the Katl checkout: %v\n", obs.Number, err)
+	}
 }
 
 // reportArtifactFailures prints go test failures from the diagnostics

@@ -28,6 +28,14 @@ conflicts with the base branch, rebase onto the reported `origin` branch.
 If it conflicts with a PR ahead of it, wait for that PR to merge and check
 again.
 
+When the PR merges cleanly over the queue, the check also simulates it
+against each PR that has auto-merge enabled but has not yet joined the queue.
+Either may join first, depending on when its checks finish, so both orders
+are simulated. A conflict in either order exits with status 1 and names the
+waiting PR and the conflicting paths: the queue removes whichever of the two
+joins second. A waiting PR that already conflicts with the queue is left to
+the queue and not reported.
+
 ### `enqueue`
 
 Run `katl-queue enqueue 123` when the PR is authorized to merge. The command
@@ -36,6 +44,11 @@ it reports its position. Otherwise it enables auto-merge. GitHub admits the
 PR once its required checks pass. Use `status` or a watch to see whether
 admission has happened.
 
+A conflict with a PR waiting to join the queue also refuses. Rebase after
+that PR merges, or run `katl-queue enqueue 123 --allow-pending-conflict` to
+enable auto-merge anyway and accept that the queue removes whichever PR joins
+second.
+
 ### `watch`
 
 Run `katl-queue watch --interval 30s 123 124` to follow two PRs in the
@@ -43,7 +56,9 @@ foreground. The default poll interval is one minute. With no PR numbers, the
 command follows the PRs that are queued or have auto-merge enabled at startup.
 It prints state changes and retries failed polls. An `UNMERGEABLE` entry
 conflicts with a PR ahead of it and stays in the queue until GitHub reaches
-it or it is dequeued. A PR whose required checks failed on its head cannot
+it or it is dequeued. When a watched PR becomes `UNMERGEABLE`, the watch
+simulates it over the entries ahead of it and names the entry it conflicts
+with and the conflicting paths. A PR whose required checks failed on its head cannot
 join the queue until the head is fixed, so it settles with the failing checks
 and their links. When all watched PRs settle, the command exits with status 1
 if any failed to merge.
@@ -54,7 +69,9 @@ Run `katl-queue why 123` after a queue removal. It reports the latest removal
 reason, failed merge-group checks and their links, and excerpts from failed
 job logs or available VM diagnostics. If the logs cannot be retrieved, use
 the reported check links to inspect the run in GitHub. For a PR outside the
-queue, it also names any required checks that failed on the head.
+queue, it also names any required checks that failed on the head. For an
+`UNMERGEABLE` entry, it names the entry ahead that it conflicts with and the
+conflicting paths; this simulation needs the Katl checkout, so run `why` there.
 
 ## Keep a background wait
 
