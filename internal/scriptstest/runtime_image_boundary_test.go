@@ -1,11 +1,14 @@
 package scriptstest
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/katl-dev/katl/internal/systemdunit"
 )
 
 func TestRuntimeSysctlOwnership(t *testing.T) {
@@ -130,6 +133,33 @@ printf 'fake binary\n' > "$output"
 		}
 	}
 	assertRuntimeServicePolicy(t, production)
+	for unit, expected := range map[string]string{
+		"katl-system-extensions-activate.service":    "agent run-extension-activation",
+		"katl-deadline-expire@.service":              "agent expire-deadline %i",
+		"katl-deadline-extension-activation@.timer":  "OnActiveSec=3min\n",
+		"katl-deadline-kubelet-config-health@.timer": "OnActiveSec=2min\n",
+		"katl-deadline-management-link@.timer":       "OnActiveSec=90s\n",
+	} {
+		data, err := os.ReadFile(filepath.Join(production, "usr", "lib", "systemd", "system", unit))
+		if err != nil || !strings.Contains(string(data), expected) {
+			t.Errorf("runtime unit %s lacks %q: %v", unit, expected, err)
+		}
+	}
+	// The image and the generation renderer share one unit source.
+	shared, err := systemdunit.RuntimeUnits.ReadDir("units")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range shared {
+		want, err := systemdunit.RuntimeUnits.ReadFile("units/" + entry.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(production, "usr", "lib", "systemd", "system", entry.Name()))
+		if err != nil || !bytes.Equal(got, want) {
+			t.Errorf("runtime image %s differs from the embedded unit: %v", entry.Name(), err)
+		}
+	}
 
 	instrumented := filepath.Join(t.TempDir(), "instrumented")
 	runRuntimeBuild(t, repo, bin, instrumented, "1")
@@ -195,9 +225,8 @@ func runRuntimeBuild(t *testing.T, repo, bin, dest, support string) {
 func vmtestRuntimePaths(root string) []string {
 	return []string{
 		filepath.Join(root, "usr", "lib", "katl", "vmtest"),
-		filepath.Join(root, "usr", "lib", "katl", "vmtest", "katl-boot-health"),
 		filepath.Join(root, "usr", "lib", "katl", "vmtest", "katl-vmtest-agent"),
-		filepath.Join(root, "usr", "lib", "systemd", "system", "katl-boot-health.service.d", "10-vmtest-management-expiry.conf"),
+		filepath.Join(root, "usr", "lib", "systemd", "system", "katl-deadline-management-link@.timer.d", "90-vmtest-management-link.conf"),
 		filepath.Join(root, "usr", "lib", "systemd", "system", "katl-vmtest-agent-ready.target"),
 		filepath.Join(root, "usr", "lib", "systemd", "system", "katl-vmtest-agent.service"),
 		filepath.Join(root, "usr", "lib", "systemd", "system", "katl-vmtest-debug-shell.service"),

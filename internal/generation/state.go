@@ -6,6 +6,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+
+	"github.com/katl-dev/katl/internal/systemdunit"
 )
 
 const (
@@ -76,13 +78,17 @@ func RenderState(request StateRequest) (StateAssets, error) {
 		return StateAssets{}, err
 	}
 	dirs := stateDirs()
+	extensionActivate, err := systemdunit.RuntimeUnits.ReadFile("units/katl-system-extensions-activate.service")
+	if err != nil {
+		return StateAssets{}, err
+	}
 	assets := StateAssets{
 		EtcKubernetesMount:   kubernetesMount,
 		GenerationActivate:   renderGenerationActivateService(),
 		HostConfigPrepare:    renderHostConfigPrepareService(),
 		HostConfigVerify:     renderHostConfigVerifyService(),
 		ExtensionReload:      renderSystemExtensionReloadService(),
-		ExtensionActivate:    renderSystemExtensionActivateService(),
+		ExtensionActivate:    string(extensionActivate),
 		ConfiguredUnitsCheck: renderConfiguredUnitsCheckService(),
 		VolumesTarget:        renderVolumesTarget(),
 		VolumesActivate:      renderVolumesActivateService(),
@@ -290,33 +296,6 @@ func renderSystemExtensionReloadService() string {
 		"# so networking and management start and boot health can recover.",
 		"TimeoutStartSec=90s",
 		"ExecStart=/usr/bin/systemctl daemon-reload",
-		"",
-	}, "\n")
-}
-
-func renderSystemExtensionActivateService() string {
-	return strings.Join([]string{
-		"[Unit]",
-		"Description=Activate configured systemd units",
-		"Documentation=man:systemd.service(5)",
-		"DefaultDependencies=no",
-		"Requires=katl-system-extensions-reload.service katl-host-config-verify.service",
-		"After=katl-system-extensions-reload.service katl-host-config-verify.service",
-		"# Queue configured units while the services they may order themselves",
-		"# before are still waiting, so native Before= ordering holds.",
-		"Before=sysinit.target network-pre.target systemd-networkd.service katl-boot-health.service",
-		"Conflicts=shutdown.target",
-		"Before=shutdown.target",
-		"",
-		"[Service]",
-		"Type=oneshot",
-		"RemainAfterExit=yes",
-		"StandardOutput=journal+console",
-		"SyslogIdentifier=katl-system-extensions-activate",
-		"# Boot reaches sysinit.target only after this unit; a stall must fail",
-		"# so networking and management start and boot health can recover.",
-		"TimeoutStartSec=3min",
-		"ExecStart=/usr/lib/katl/runtime/katl-host-config-activate --root=/ --phase=units",
 		"",
 	}, "\n")
 }
@@ -635,8 +614,18 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 	if err := writeFile(root, "etc/systemd/system/katl-system-extensions-reload.service", assets.ExtensionReload, 0o644); err != nil {
 		return StateAssets{}, err
 	}
-	if err := writeFile(root, "etc/systemd/system/katl-system-extensions-activate.service", assets.ExtensionActivate, 0o644); err != nil {
+	units, err := systemdunit.RuntimeUnits.ReadDir("units")
+	if err != nil {
 		return StateAssets{}, err
+	}
+	for _, unit := range units {
+		data, err := systemdunit.RuntimeUnits.ReadFile("units/" + unit.Name())
+		if err != nil {
+			return StateAssets{}, err
+		}
+		if err := writeFile(root, "etc/systemd/system/"+unit.Name(), string(data), 0o644); err != nil {
+			return StateAssets{}, err
+		}
 	}
 	if err := writeFile(root, "etc/systemd/system/katl-configured-units-check.service", assets.ConfiguredUnitsCheck, 0o644); err != nil {
 		return StateAssets{}, err

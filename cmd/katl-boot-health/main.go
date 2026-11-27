@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/deadline"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/managementnetwork"
 	"github.com/katl-dev/katl/internal/retry"
@@ -63,6 +64,11 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 			if err := waitForManagementNetwork(ctx); err != nil {
 				requestedResult = generation.BootHealthFailure
 				requestedReason = "management network unavailable: " + err.Error()
+				if errors.Is(err, errManagementDeadlineNotArmed) {
+					// Without its deadline the link check never ran, so the
+					// trial is unproven rather than offline.
+					requestedReason = err.Error()
+				}
 				forceFailure = true
 			}
 		}
@@ -120,27 +126,19 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 	return nil
 }
 
-type managementNetworkTiming struct {
-	trialTimeout time.Duration
-	initialDelay time.Duration
-	managementExpiryHooks
-}
-
-var managementTiming = managementNetworkTiming{
-	trialTimeout: 90 * time.Second,
-	initialDelay: time.Second,
-}
+var errManagementDeadlineNotArmed = errors.New("management network deadline not armed")
 
 var waitForManagementNetwork = func(ctx context.Context) error {
-	return managementTiming.wait(ctx)
+	healthCtx, stop, err := deadline.Arm(ctx, deadline.ManagementLink, "")
+	if err != nil {
+		return fmt.Errorf("%w: %w", errManagementDeadlineNotArmed, err)
+	}
+	defer stop()
+	return awaitManagementNetwork(healthCtx)
 }
 
-func (timing managementNetworkTiming) wait(ctx context.Context) error {
-	// The trial bounds both networkctl and the wait between observations.
-	deadlineCtx, cancel := context.WithTimeout(ctx, timing.trialTimeout)
-	healthCtx, stop, expiry := timing.managementExpiryHooks.start(deadlineCtx, cancel)
-	defer stop()
-	backoff := retry.NewBackoff(timing.initialDelay, 5*time.Second)
+func awaitManagementNetwork(healthCtx context.Context) error {
+	backoff := retry.NewBackoff(time.Second, 5*time.Second)
 	lastReason := "network state has not been observed"
 	for healthCtx.Err() == nil {
 		// A completed online observation wins even if the read's context expired.
@@ -152,9 +150,9 @@ func (timing managementNetworkTiming) wait(ctx context.Context) error {
 			lastReason = err.Error()
 		} else if ready {
 			return nil
-		} else {
+		} else if lastReason != reason {
+			fmt.Fprintf(os.Stderr, "waiting for management network: %s\n", reason)
 			lastReason = reason
-			expiry.observeOffline(reason)
 		}
 		timer := time.NewTimer(backoff.Next())
 		select {
@@ -167,8 +165,7 @@ func (timing managementNetworkTiming) wait(ctx context.Context) error {
 	if !errors.Is(cause, context.DeadlineExceeded) {
 		return cause
 	}
-	expiry.report(cause)
-	return fmt.Errorf("configured management network is not ready after %g seconds: %s", timing.trialTimeout.Seconds(), lastReason)
+	return fmt.Errorf("configured management network deadline expired: %s", lastReason)
 }
 
 var readNetworkctlState = managementnetwork.ReadState

@@ -1,0 +1,11 @@
+[Unit]
+Description=Katl management-link deadline (%i)
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
+
+[Timer]
+OnActiveSec=90s
+AccuracySec=1s
+RemainAfterElapse=no
+Unit=katl-deadline-expire@%i.service
