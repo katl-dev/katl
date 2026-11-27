@@ -141,7 +141,10 @@ func operationBackedFreshFixtureWorld(world vmtest.World) vmtest.World {
 
 func operationBackedKubernetesVersion(t *testing.T, repo string, upgrade bool) string {
 	t.Helper()
-	_, sourceMetadata := kubernetesSourceSysext(repo, upgrade)
+	_, sourceMetadata, err := kubernetesSourceSysext(repo, upgrade)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if version := firstString(os.Getenv("KATL_KUBERNETES_VERSION"), os.Getenv("KATL_KUBERNETES_PAYLOAD_VERSION")); version != "" {
 		return version
 	}
@@ -869,7 +872,11 @@ func upgradeFixtureVersion(repo string) (string, error) {
 	if strings.TrimSpace(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_BUNDLE")) != "" {
 		return publishedKubernetesUpgradeVersion(os.Getenv("KATL_VMTEST_KUBERNETES_UPGRADE_VERSION"))
 	}
-	metadata, err := artifact.ReadLocal(filepath.Join(repo, "_build/mkosi/katl-kubernetes-upgrade.raw.json"))
+	buildDir, err := vmtest.MkosiBuildDir(repo)
+	if err != nil {
+		return "", err
+	}
+	metadata, err := artifact.ReadLocal(filepath.Join(buildDir, "katl-kubernetes-upgrade.raw.json"))
 	if err != nil {
 		return "", err
 	}
@@ -890,7 +897,11 @@ func runKubernetesUpgradeCLIProof(t *testing.T, ctx context.Context, repoRoot, b
 	artifactArgs := []string{"--bundle", bundle}
 	var localMetadata artifact.LocalMeta
 	if bundle == "" {
-		localArtifact := filepath.Join(repoRoot, "_build/mkosi/katl-kubernetes-upgrade.raw")
+		buildDir, err := vmtest.MkosiBuildDir(repoRoot)
+		if err != nil {
+			return err
+		}
+		localArtifact := filepath.Join(buildDir, "katl-kubernetes-upgrade.raw")
 		localMetadata, err = artifact.ReadLocal(localArtifact + ".json")
 		if err != nil {
 			return err
@@ -2342,7 +2353,11 @@ func ensureKubernetesImageFixture(ctx context.Context, repo, kubernetesVersion s
 }
 
 func kubernetesImageReferences(ctx context.Context, repo, version string) ([]string, error) {
-	paths, err := filepath.Glob(filepath.Join(repo, "_build/mkosi/katl-kubernetes*.raw.json"))
+	buildDir, err := vmtest.MkosiBuildDir(repo)
+	if err != nil {
+		return nil, err
+	}
+	paths, err := filepath.Glob(filepath.Join(buildDir, "katl-kubernetes*.raw.json"))
 	if err != nil {
 		return nil, err
 	}

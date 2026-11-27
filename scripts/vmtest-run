@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-repo_root="${KATL_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="${KATL_REPO_ROOT:-$(dirname "$script_dir")}"
+mkosi_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
+[[ "$mkosi_dir" == /* ]] || mkosi_dir="$repo_root/$mkosi_dir"
 go_bin="${KATL_VMTEST_GO:-go}"
 image_tool="${KATL_VMTEST_IMAGE_TOOL:-qemu-img}"
 virsh_bin="${KATL_VMTEST_VIRSH:-virsh}"
@@ -94,6 +97,9 @@ go_test_input_args=()
 missing_capabilities=()
 setup_failures=()
 help_requested=0
+gate_requested=0
+gate_flavour=""
+affected=0
 declare -A artifact_build_actions=()
 
 vmtest_requests_kubernetes_upgrade() {
@@ -143,6 +149,8 @@ usage: scripts/vmtest-run [vmtest-run options] [go test args]
 
 Options:
   -h, --help                    Show this help and exit.
+  --flavour=<list>              Run a local gate for standard, lts, or both.
+  --affected                    Run CI's affected groups on both flavours.
   --no-rebuild, --no-auto-rebuild
                                 Do not build missing default artifacts.
   --rebuild, --auto-rebuild     Build missing default artifacts.
@@ -340,6 +348,27 @@ parse_runner_args() {
             -h | --help)
                 help_requested=1
                 ;;
+            --flavour)
+                if [[ "$#" -lt 2 || -z "$2" || "$2" == -* ]]; then
+                    printf 'error: --flavour requires standard, lts, or standard,lts\n' >&2
+                    exit 2
+                fi
+                gate_requested=1
+                gate_flavour="$2"
+                shift
+                ;;
+            --flavour=*)
+                gate_requested=1
+                gate_flavour="${arg#*=}"
+                if [[ -z "$gate_flavour" ]]; then
+                    printf 'error: --flavour requires standard, lts, or standard,lts\n' >&2
+                    exit 2
+                fi
+                ;;
+            --affected)
+                gate_requested=1
+                affected=1
+                ;;
             --no-rebuild | --no-auto-rebuild)
                 auto_rebuild=0
                 ;;
@@ -411,10 +440,10 @@ validate_current_artifact_inputs() {
     if [[ "$artifact_set" == none ]]; then
         return 0
     fi
-    local build_dir="${KATL_MKOSI_BUILD_DIR:-$repo_root/_build/mkosi}"
-    [[ "$build_dir" == /* ]] || build_dir="$repo_root/$build_dir"
-    if [[ "$(realpath -m -- "$build_dir")" != "$(realpath -m -- "$repo_root/_build/mkosi")" ]]; then
-        setup_failures+=("scripts/vmtest-run requires the canonical _build/mkosi output directory so builds, provenance and VM consumers use the same artifacts; unset KATL_MKOSI_BUILD_DIR")
+    # scripts/mkosi's direct mode writes some outputs to _build/mkosi and uses a
+    # workspace shared by every build directory.
+    if [[ "${KATL_CONTAINER_RUNTIME:-}" == direct && "$(realpath -m -- "$mkosi_dir")" != "$(realpath -m -- "$repo_root/_build/mkosi")" ]]; then
+        setup_failures+=("KATL_CONTAINER_RUNTIME=direct is not supported with KATL_MKOSI_BUILD_DIR=$mkosi_dir; unset KATL_MKOSI_BUILD_DIR or use a container runtime")
     fi
     local override
     for override in \
@@ -542,19 +571,21 @@ build_default_artifacts() {
 }
 
 verify_kubernetes_upgrade_artifacts() {
-	local base="$repo_root/_build/mkosi/katl-kubernetes-upgrade-source.raw"
-	local target="$repo_root/_build/mkosi/katl-kubernetes-upgrade.raw"
+	local base="$mkosi_dir/katl-kubernetes-upgrade-source.raw"
+	local target="$mkosi_dir/katl-kubernetes-upgrade.raw"
 	local upgrade_source_payload="${KATL_KUBERNETES_UPGRADE_SOURCE_PAYLOAD_VERSION:-v1.36.0}"
 	local upgrade_target_payload="${KATL_KUBERNETES_UPGRADE_PAYLOAD_VERSION:-v1.36.1}"
 	printf 'vmtest verifying source Kubernetes sysext independently: %s\n' "$base" >&2
-	KATL_KUBERNETES_PAYLOAD_VERSION="${KATL_KUBERNETES_UPGRADE_SOURCE_PAYLOAD_VERSION:-v1.36.0}" \
+	KATL_RUNTIME_ROOT="$mkosi_dir/katl-runtime-root" \
+		KATL_KUBERNETES_PAYLOAD_VERSION="${KATL_KUBERNETES_UPGRADE_SOURCE_PAYLOAD_VERSION:-v1.36.0}" \
 		KATL_KUBERNETES_MINOR="${upgrade_source_payload%.*}" \
 		KATL_KUBERNETES_KUBEADM_VERSION="${KATL_KUBERNETES_UPGRADE_SOURCE_KUBEADM_VERSION:-0:1.36.0-150500.1.1}" \
 		KATL_KUBERNETES_KUBELET_VERSION="${KATL_KUBERNETES_UPGRADE_SOURCE_KUBELET_VERSION:-0:1.36.0-150500.1.1}" \
 		KATL_KUBERNETES_KUBECTL_VERSION="${KATL_KUBERNETES_UPGRADE_SOURCE_KUBECTL_VERSION:-0:1.36.0-150500.1.1}" \
 		"$repo_root/scripts/check-kubernetes-sysext" "$base"
 	printf 'vmtest verifying target Kubernetes sysext independently: %s\n' "$target" >&2
-	KATL_KUBERNETES_PAYLOAD_VERSION="${KATL_KUBERNETES_UPGRADE_PAYLOAD_VERSION:-v1.36.1}" \
+	KATL_RUNTIME_ROOT="$mkosi_dir/katl-runtime-root" \
+		KATL_KUBERNETES_PAYLOAD_VERSION="${KATL_KUBERNETES_UPGRADE_PAYLOAD_VERSION:-v1.36.1}" \
 		KATL_KUBERNETES_MINOR="${upgrade_target_payload%.*}" \
 		KATL_KUBERNETES_KUBEADM_VERSION="${KATL_KUBERNETES_UPGRADE_KUBEADM_VERSION:-0:1.36.1-150500.1.1}" \
 		KATL_KUBERNETES_KUBELET_VERSION="${KATL_KUBERNETES_UPGRADE_KUBELET_VERSION:-0:1.36.1-150500.1.1}" \
@@ -651,6 +682,7 @@ prepare_resource_manifest() {
         -run-id "$run_id" \
 		-git-revision "$revision" \
 		-pin-dir "$artifact_dir" \
+        -mkosi-dir "$mkosi_record_dir" \
 		-mkosi-version "$mkosi_version"; then
         setup_failures+=("record vmtest resource manifest failed")
         return 1
@@ -672,14 +704,14 @@ prepare_resource_manifest() {
               name,
               kind,
               path: abs_path($repoRoot),
-              repoPath: (if (.path | startswith($artifactDir + "/")) then ("_build/mkosi/" + (.path | split("/") | last)) else .path end),
+              repoPath: (if (.path | startswith($artifactDir + "/")) then ($mkosiDir + "/" + (.path | split("/") | last)) else .path end),
               pinned: (.path | startswith($artifactDir + "/")),
               sha256,
               sizeBytes,
               source: "resource-test-manifest",
               action: action_for($actions)
             })
-        ' --arg repoRoot "$repo_root" --arg artifactDir "$artifact_dir" --argjson actions "$(artifact_build_actions_json)" "$resource_manifest"
+        ' --arg repoRoot "$repo_root" --arg artifactDir "$artifact_dir" --arg mkosiDir "$mkosi_record_dir" --argjson actions "$(artifact_build_actions_json)" "$resource_manifest"
 	)"
 	vmtest_artifact_inputs_json="$(
 		jq -c '
@@ -699,7 +731,7 @@ prepare_resource_manifest() {
 }
 
 prepare_runtime_artifact_provenance() {
-    local index="$repo_root/_build/mkosi/artifacts.json"
+    local index="$mkosi_dir/artifacts.json"
     if [[ ! -f "$index" ]]; then
         setup_failures+=("runtime artifact index is missing after build-runtime: $index")
         return 1
@@ -707,15 +739,17 @@ prepare_runtime_artifact_provenance() {
     local action="${artifact_build_actions[build-runtime]:-validated}"
     vmtest_artifacts_json="$(
         jq -ce '
-          def abs_path($repo):
-            if (.path | startswith("/")) then .path else ($repo + "/" + .path) end;
+          # The container writes the index with paths under its bind mount.
+          def host_path:
+            if (.path | startswith("_build/mkosi/")) then ($mkosiDir + "/" + (.path | ltrimstr("_build/mkosi/")))
+            elif (.path | startswith("/")) then .path else ($repoRoot + "/" + .path) end;
           [.artifacts[]
             | select(.kind == "runtime-root" or .kind == "runtime-uki")
             | {
                 name: .kind,
                 kind,
-                path: abs_path($repoRoot),
-                repoPath: .path,
+                path: host_path,
+                repoPath: (host_path | ltrimstr($repoRoot + "/")),
                 sha256,
                 sizeBytes,
                 source: "mkosi-artifact-index",
@@ -723,7 +757,7 @@ prepare_runtime_artifact_provenance() {
               }]
           | if any(.[]; .kind == "runtime-root") then .
             else error("runtime-root is missing from mkosi artifact index") end
-        ' --arg repoRoot "$repo_root" --arg action "$action" "$index"
+        ' --arg repoRoot "$repo_root" --arg mkosiDir "$mkosi_dir" --arg action "$action" "$index"
     )" || {
         setup_failures+=("runtime artifact index is invalid: $index")
         return 1
@@ -1068,6 +1102,7 @@ write_world() {
         --arg lease "$run_lease" \
         --arg cacheDir "$cache_dir" \
         --arg artifactDir "$artifact_dir" \
+        --arg mkosiBuildDir "$mkosi_dir" \
         --arg scenarioDir "$scenario_dir" \
         --arg runIndex "$run_index" \
         --arg goTestLog "$go_test_log" \
@@ -1108,6 +1143,7 @@ write_world() {
           cacheDir: $cacheDir,
           artifactDir: $artifactDir,
           artifactsPinned: ($vmtestArtifacts | length > 0 and all($vmtestArtifacts[]; .pinned == true)),
+          mkosiBuildDir: $mkosiBuildDir,
           scenarioDir: $scenarioDir,
           runIndex: $runIndex,
           goTestLog: $goTestLog,
@@ -1193,6 +1229,8 @@ write_run_index() {
         --arg debugOnFailure "$debug_on_failure_effective" \
         --arg leaseFile "$lease_file" \
         --arg status "$status" \
+        --arg flavour "${KATL_FLAVOUR:-standard}" \
+        --arg mkosiBuildDir "$mkosi_dir" \
         --arg setupFailures "$setup_failure_text" \
         --argjson missingCapabilities "$missing_capabilities_json" \
         --args \
@@ -1219,6 +1257,8 @@ write_run_index() {
           debugShell: ($debugOnFailure == "1"),
           networkLeaseFile: $leaseFile,
           status: $status,
+          flavour: $flavour,
+          mkosiBuildDir: $mkosiBuildDir,
           missingCapabilities: $missingCapabilities,
           goTestArgs: $ARGS.positional,
           setupFailures: ($setupFailures | split("\n") | map(select(length > 0)))
@@ -1438,11 +1478,25 @@ if [[ "$help_requested" == 1 ]]; then
     usage
     exit 0
 fi
+if [[ "$gate_requested" == 1 ]]; then
+    gate_args=(gate --runner "$script_dir/vmtest-run" --id "$run_id" --flavour "$gate_flavour")
+    if [[ "$affected" == 1 ]]; then
+        gate_args+=(--affected)
+    fi
+    export KATL_REPO_ROOT="$repo_root" KATL_VMTEST_ARTIFACT_SET="$artifact_set"
+    export KATL_VMTEST_AUTO_REBUILD="$auto_rebuild" KATL_VMTEST_DEBUG_ON_FAILURE="$debug_on_failure_policy"
+    cd "$repo_root"
+    exec "$resource_go_bin" run ./cmd/katl-vmtest-plan "${gate_args[@]}" -- "${go_test_input_args[@]}"
+fi
 set -- "${go_test_input_args[@]}"
 reject_package_parallelism "$@"
 
 need jq
 need realpath
+mkosi_record_dir="${mkosi_dir#"$repo_root/"}"
+if [[ -n "${KATL_MKOSI_BUILD_DIR:-}" ]]; then
+    export KATL_MKOSI_BUILD_DIR="$mkosi_dir"
+fi
 mkdir -p "$cache_dir" "$artifact_dir" "$scenario_dir" "$network_dir"
 if [[ "$run_dir_preexisting" == 0 ]]; then
     printf '%s\n' "$run_id" >"$run_owner_marker"
@@ -1525,8 +1579,10 @@ export KATL_VMTEST_NETWORK_LOCK="$network_lock"
 export KATL_VMTEST_RUN_LEASE_DIR="$run_lease_dir"
 # Every run binds the shared coordination entries at their host paths, so
 # runs in other sandboxes and runs without one see the same ledger, lock and
-# leases.
-writable_binds=("$run_dir" "$cache_dir" "$admission_dir" "$run_lease_dir" "$network_lock")
+# leases. The world's mkosi build directory may lie outside the worktree, as a
+# gate's does.
+mkdir -p "$mkosi_dir"
+writable_binds=("$run_dir" "$cache_dir" "$admission_dir" "$run_lease_dir" "$network_lock" "$mkosi_dir")
 hermetic_args=()
 for path in "${writable_binds[@]}"; do
     hermetic_args+=(--bind "$path")
@@ -1617,7 +1673,7 @@ if ! (cd "$repo_root" && KATLCTL_CONFIG='' "$repo_root/scripts/hermetic" --ro-bi
     fi
     exit 5
 fi
-if [[ "$exit_code" -eq 0 && ( "$require_scenario_result" == 1 || "$require_scenario_result" == true ) ]]; then
+if [[ "$require_scenario_result" == 1 || "$require_scenario_result" == true ]]; then
     if ! find "$scenario_dir" -mindepth 2 -maxdepth 8 -name result.json -print -quit | grep -q .; then
         write_run_index "no-scenario-result" "$@"
         record_host_health fail
@@ -1642,5 +1698,5 @@ if ! cleanup_run_dir "passed"; then
     exit 4
 fi
 printf 'vmtest passed\n' >&2
-exit "$exit_code"
+exit 0
 )

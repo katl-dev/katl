@@ -13,15 +13,16 @@ import (
 
 func TestVMTestArtifactOwnership(t *testing.T) {
 	for _, tc := range []struct {
-		name, directory, override, artifactSet string
-		rejected                               bool
+		name, directory, override, artifactSet, runtime string
+		rejected                                        bool
 	}{
 		{name: "default"},
 		{name: "canonical", directory: "canonical"},
 		{name: "relative canonical", directory: "_build/mkosi"},
 		{name: "canonical alias", directory: "alias"},
-		{name: "different build root", directory: "alternate", rejected: true},
-		{name: "runtime build root", directory: "alternate", artifactSet: "runtime", rejected: true},
+		{name: "different build root", directory: "alternate"},
+		{name: "direct build root", directory: "alternate", runtime: "direct", rejected: true},
+		{name: "direct canonical", directory: "canonical", runtime: "direct"},
 		{name: "installer output", override: "KATL_INSTALLER_ISO", rejected: true},
 		{name: "runtime boot output", override: "KATL_RUNTIME_UKI", rejected: true},
 		{name: "runtime index", artifactSet: "runtime", override: "KATL_MKOSI_ARTIFACT_INDEX", rejected: true},
@@ -51,8 +52,10 @@ printf current > "$output/katl-runtime-root.squashfs"
 				t.Fatal(err)
 			}
 			writeExecutable(t, filepath.Join(root, "resource-lock"), `#!/usr/bin/env bash
+set -euo pipefail
+while [[ "$1" != -mkosi-dir ]]; do shift; done
 printf 'record ' >> "$KATL_SCRIPTTEST_LOG"
-cat "$KATL_REPO_ROOT/_build/mkosi/katl-runtime-root.squashfs" >> "$KATL_SCRIPTTEST_LOG"
+cat "$2/katl-runtime-root.squashfs" >> "$KATL_SCRIPTTEST_LOG"
 printf '\n' >> "$KATL_SCRIPTTEST_LOG"
 exit 17
 `)
@@ -82,6 +85,9 @@ exit 17
 				"KATL_VMTEST_CACHE_DIR="+filepath.Join(root, "cache"),
 				"KATL_SCRIPTTEST_LOG="+filepath.Join(root, "commands.log"),
 			)
+			if tc.runtime != "" {
+				cmd.Env = append(cmd.Env, "KATL_CONTAINER_RUNTIME="+tc.runtime)
+			}
 			if tc.override != "" {
 				cmd.Env = append(cmd.Env, tc.override+"="+filepath.Join(root, "alternate-output"))
 			}
@@ -95,11 +101,11 @@ exit 17
 				if !os.IsNotExist(logErr) {
 					t.Fatalf("unsupported input reached build or provenance recording: %q, %v", log, logErr)
 				}
-				if !strings.Contains(string(output), "not supported") && !strings.Contains(string(output), "requires the canonical") {
+				if !strings.Contains(string(output), "not supported") {
 					t.Fatalf("missing input diagnostic: %s", output)
 				}
 			} else if logErr != nil || !strings.HasSuffix(string(log), "record current\n") {
-				t.Fatalf("canonical build and provenance did not agree: %q, %v: %s", log, logErr, output)
+				t.Fatalf("build and provenance did not agree: %q, %v: %s", log, logErr, output)
 			}
 		})
 	}
@@ -226,7 +232,8 @@ func writeExecutable(t *testing.T, path string, content string) {
 }
 
 func TestVMTestRunKubernetesUpgradeSource(t *testing.T) {
-	const upgradeSource = "_build/mkosi/katl-kubernetes-upgrade-source.raw"
+	const buildOutput = "_build/gate/lts/mkosi"
+	const upgradeSource = buildOutput + "/katl-kubernetes-upgrade-source.raw"
 	for _, tc := range []struct {
 		name, run   string
 		wantSource  bool
@@ -236,14 +243,14 @@ func TestVMTestRunKubernetesUpgradeSource(t *testing.T) {
 			name:        "upgrade with bootstrap",
 			run:         "TestKubeadmUpgradeOperationSmoke|TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke",
 			wantSource:  true,
-			wantChecked: []string{upgradeSource, "_build/mkosi/katl-kubernetes-upgrade.raw"},
+			wantChecked: []string{upgradeSource, buildOutput + "/katl-kubernetes-upgrade.raw"},
 		},
 		{name: "bootstrap only", run: "TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke"},
 		{
 			name:        "upgrade only",
 			run:         "TestKubeadmUpgradeOperationSmoke",
 			wantSource:  true,
-			wantChecked: []string{upgradeSource, "_build/mkosi/katl-kubernetes-upgrade.raw"},
+			wantChecked: []string{upgradeSource, buildOutput + "/katl-kubernetes-upgrade.raw"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -254,19 +261,20 @@ func TestVMTestRunKubernetesUpgradeSource(t *testing.T) {
 			}
 			writeExecutable(t, filepath.Join(scripts, "mkosi"), `#!/usr/bin/env bash
 if [[ "$1" == builder-version ]]; then echo 26; exit 0; fi
-mkdir -p "$KATL_REPO_ROOT/_build/mkosi"
-printf current > "$KATL_REPO_ROOT/_build/mkosi/katl-runtime-root.squashfs"
+mkdir -p "$KATL_MKOSI_BUILD_DIR"
+printf current > "$KATL_MKOSI_BUILD_DIR/katl-runtime-root.squashfs"
 `)
 			// The fake records the payload version it was asked to build into the
 			// artifact metadata, as the real builder does.
 			writeExecutable(t, filepath.Join(scripts, "build-kubernetes-sysext"), `#!/usr/bin/env bash
 name=katl-kubernetes
 [[ "$1" == --output ]] && name="$2"
-mkdir -p "$KATL_REPO_ROOT/_build/mkosi"
-printf sysext > "$KATL_REPO_ROOT/_build/mkosi/$name.raw"
-printf '{"payloadVersion":"%s"}\n' "${KATL_KUBERNETES_PAYLOAD_VERSION:-default}" > "$KATL_REPO_ROOT/_build/mkosi/$name.raw.json"
+mkdir -p "$KATL_MKOSI_BUILD_DIR"
+printf sysext > "$KATL_MKOSI_BUILD_DIR/$name.raw"
+printf '{"payloadVersion":"%s"}\n' "${KATL_KUBERNETES_PAYLOAD_VERSION:-default}" > "$KATL_MKOSI_BUILD_DIR/$name.raw.json"
 `)
 			writeExecutable(t, filepath.Join(scripts, "check-kubernetes-sysext"), `#!/usr/bin/env bash
+[[ "$KATL_RUNTIME_ROOT" == "$KATL_MKOSI_BUILD_DIR/katl-runtime-root" ]] || exit 1
 printf '%s\n' "${1#"$KATL_REPO_ROOT/"}" >> "$KATL_SCRIPTTEST_CHECKED"
 `)
 			writeExecutable(t, filepath.Join(root, "resource-lock"), "#!/usr/bin/env bash\nexit 17\n")
@@ -276,7 +284,7 @@ printf '%s\n' "${1#"$KATL_REPO_ROOT/"}" >> "$KATL_SCRIPTTEST_CHECKED"
 			cmd.Dir = root
 			cmd.Env = append(os.Environ(),
 				"KATL_REPO_ROOT="+root,
-				"KATL_MKOSI_BUILD_DIR="+filepath.Join(root, "_build/mkosi"),
+				"KATL_MKOSI_BUILD_DIR="+filepath.Join(root, buildOutput),
 				"KATL_VMTEST_RESOURCE_LOCK="+filepath.Join(root, "resource-lock"),
 				"KATL_VMTEST_RUN_DIR="+filepath.Join(root, "run"),
 				"KATL_VMTEST_CACHE_DIR="+filepath.Join(root, "cache"),
@@ -292,7 +300,7 @@ printf '%s\n' "${1#"$KATL_REPO_ROOT/"}" >> "$KATL_SCRIPTTEST_CHECKED"
 				t.Fatalf("exit = %v, want setup failure after the build: %s", err, output)
 			}
 
-			defaultMetadata, err := os.ReadFile(filepath.Join(root, "_build/mkosi/katl-kubernetes.raw.json"))
+			defaultMetadata, err := os.ReadFile(filepath.Join(root, buildOutput, "katl-kubernetes.raw.json"))
 			if err != nil || !strings.Contains(string(defaultMetadata), `"default"`) {
 				t.Fatalf("default payload metadata = %q, %v; want the default payload: %s", defaultMetadata, err, output)
 			}

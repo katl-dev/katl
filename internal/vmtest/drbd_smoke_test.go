@@ -42,7 +42,11 @@ func TestInstalledRuntimeDRBDReplication(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolsImage := first(os.Getenv("KATL_VMTEST_DRBD_TOOLS_IMAGE"), filepath.Join(repoRoot(t), "_build", "mkosi", "katl-vmtest-drbd-tools.raw"))
+	buildDir, err := MkosiBuildDir(repoRoot(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolsImage := first(os.Getenv("KATL_VMTEST_DRBD_TOOLS_IMAGE"), filepath.Join(buildDir, "katl-vmtest-drbd-tools.raw"))
 	if _, err := os.Stat(toolsImage); err != nil {
 		t.Fatalf("build test tools with scripts/mkosi --profile vmtest-drbd-tools -f build: %v", err)
 	}

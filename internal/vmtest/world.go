@@ -29,7 +29,9 @@ type World struct {
 	ArtifactDir string `json:"artifactDir"`
 	// ArtifactsPinned reports that ArtifactDir holds this run's copy of the mkosi
 	// outputs, bound before the first VM started.
-	ArtifactsPinned  bool                   `json:"artifactsPinned,omitempty"`
+	ArtifactsPinned bool `json:"artifactsPinned,omitempty"`
+	// MkosiBuildDir is the build directory the runner selected for this run.
+	MkosiBuildDir    string                 `json:"mkosiBuildDir,omitempty"`
 	ScenarioDir      string                 `json:"scenarioDir"`
 	RunIndex         string                 `json:"runIndex,omitempty"`
 	GoTestLog        string                 `json:"goTestLog,omitempty"`
@@ -197,6 +199,9 @@ func ValidateWorld(world World) error {
 	if world.Lease != "" && !filepath.IsAbs(world.Lease) {
 		return fmt.Errorf("lease must be an absolute path: %s", world.Lease)
 	}
+	if world.MkosiBuildDir != "" && !filepath.IsAbs(world.MkosiBuildDir) {
+		return fmt.Errorf("mkosiBuildDir must be an absolute path: %s", world.MkosiBuildDir)
+	}
 	if strings.TrimSpace(world.RunIndex) != "" && !filepath.IsAbs(world.RunIndex) {
 		return fmt.Errorf("runIndex must be an absolute path: %s", world.RunIndex)
 	}
@@ -359,11 +364,33 @@ func validWorldStatus(status WorldStatus) bool {
 
 // MkosiDir is the directory VM tests read mkosi outputs from. A run that
 // pinned its artifacts reads its own copy, so a build in another worktree
-// cannot change what the run boots; otherwise it is the checkout's build
+// cannot change what the run boots; otherwise it is the run's build
 // directory.
 func (world World) MkosiDir(repo string) string {
 	if world.ArtifactsPinned {
 		return world.ArtifactDir
 	}
+	return world.buildDir(repo)
+}
+
+func (world World) buildDir(repo string) string {
+	if world.MkosiBuildDir != "" {
+		return world.MkosiBuildDir
+	}
 	return filepath.Join(repo, "_build", "mkosi")
+}
+
+// MkosiBuildDir is the build directory bound in the current run's world, or
+// the checkout's default build directory outside a run. Inside a run an
+// unreadable world is an error: falling back would read another build's
+// outputs.
+func MkosiBuildDir(repo string) (string, error) {
+	if os.Getenv(WorldManifestEnv) == "" {
+		return World{}.buildDir(repo), nil
+	}
+	world, err := LoadWorldFromEnv()
+	if err != nil {
+		return "", fmt.Errorf("read the run's mkosi build directory: %w", err)
+	}
+	return world.buildDir(repo), nil
 }

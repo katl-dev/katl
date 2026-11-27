@@ -53,10 +53,17 @@ var groups = []group{
 }
 
 func main() {
-	if err := run(os.Args[1:], os.Stdin, os.Stdout); err != nil {
+	if err := dispatch(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func dispatch(args []string) error {
+	if len(args) > 0 && args[0] == "gate" {
+		return runGate(args[1:], os.Stdout, os.Stderr)
+	}
+	return run(args, os.Stdin, os.Stdout)
 }
 
 func run(args []string, input io.Reader, output io.Writer) error {
@@ -86,25 +93,11 @@ func run(args []string, input io.Reader, output io.Writer) error {
 	}
 	selected := groups
 	if *changed || *ci {
-		data, err := io.ReadAll(input)
+		paths, err := readChangedPaths(input)
 		if err != nil {
 			return err
 		}
-		var paths []string
-		if len(data) > 0 {
-			if data[len(data)-1] != 0 {
-				return fmt.Errorf("changed paths must be NUL-terminated; use git diff --name-only --no-renames -z")
-			}
-			paths = strings.Split(string(bytes.TrimSuffix(data, []byte{0})), "\x00")
-		}
-		for _, name := range paths {
-			if name == "." || strings.HasPrefix(name, "/") || strings.HasPrefix(name, "../") || path.Clean(name) != name {
-				return fmt.Errorf("changed path must be repository-relative: %q", name)
-			}
-		}
-		decision, shadow := planVMs(paths, mode, func() (vmInputs, error) {
-			return sharedVMInputs(*base)
-		})
+		decision, shadow := selectVMs(paths, mode, *base)
 		if *ci {
 			plan := planCI(paths, *regression || mode == alwaysVMs, decision, shadow)
 			plan.ProductionFlavours = productionFlavours(paths, *production)
@@ -116,6 +109,29 @@ func run(args []string, input io.Reader, output io.Writer) error {
 	return json.NewEncoder(output).Encode(struct {
 		Include []group `json:"include"`
 	}{batchGroups(selected)})
+}
+
+func readChangedPaths(input io.Reader) ([]string, error) {
+	data, err := io.ReadAll(input)
+	if err != nil || len(data) == 0 {
+		return nil, err
+	}
+	if data[len(data)-1] != 0 {
+		return nil, fmt.Errorf("changed paths must be NUL-terminated; use git diff --name-only --no-renames -z")
+	}
+	paths := strings.Split(string(bytes.TrimSuffix(data, []byte{0})), "\x00")
+	for _, name := range paths {
+		if name == "." || strings.HasPrefix(name, "/") || strings.HasPrefix(name, "../") || path.Clean(name) != name {
+			return nil, fmt.Errorf("changed path must be repository-relative: %q", name)
+		}
+	}
+	return paths, nil
+}
+
+func selectVMs(paths []string, mode vmMode, base string) (vmSelection, *vmSelection) {
+	return planVMs(paths, mode, func() (vmInputs, error) {
+		return sharedVMInputs(base)
+	})
 }
 
 // bothVMFlavours preserves the path policy for general VM coverage. Driver
