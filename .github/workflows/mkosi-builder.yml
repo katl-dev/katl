@@ -1,0 +1,187 @@
+name: Builder Image
+
+# Publishes Containerfile.mkosi to GHCR and proposes the committed pin that
+# every image build pulls. A push publishes the content tag once; a scheduled
+# or dispatched refresh rebuilds on the current Fedora packages under a dated
+# tag. Either way the new digest reaches builds only through a reviewed pull
+# request, so the merge queue tests it with the code that uses it.
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/mkosi-builder.yml
+      - Containerfile.mkosi
+      - mkosi.conf
+      - mkosi-builder.lock
+      - scripts/fedora-release
+      - scripts/mkosi-builder
+  schedule:
+    - cron: '17 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialises publication and its proposal, so publish never races another run
+# for a free tag. A running publication is never cancelled; a pending run may
+# be replaced by a newer one, which publishes and proposes from the newer main;
+# a replaced refresh waits for the next schedule.
+concurrency:
+  group: mkosi-builder-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      changed: ${{ steps.lock.outputs.changed }}
+    env:
+      REFRESH: ${{ github.event_name != 'push' }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check the committed pin
+        id: pin
+        run: |
+          echo "tag=$(scripts/mkosi-builder tag)" >> "$GITHUB_OUTPUT"
+          if [[ "$REFRESH" != true ]] && scripts/mkosi-builder pinned; then
+            echo 'current=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install skopeo
+        if: steps.pin.outputs.current != 'true'
+        # scripts/mkosi-builder publish reads registry error codes through skopeo.
+        run: command -v skopeo >/dev/null || .github/scripts/hosted-apt-install skopeo
+      - uses: docker/login-action@v4
+        if: steps.pin.outputs.current != 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      - name: Publish the builder
+        id: publish
+        if: steps.pin.outputs.current != 'true'
+        env:
+          EVENT: ${{ github.event_name == 'push' && 'push' || 'refresh' }}
+        # scripts/mkosi-builder owns which tag is pushed and never overwrites one.
+        run: |
+          scripts/mkosi-builder publish "$EVENT" > "$RUNNER_TEMP/publish.txt"
+          cat "$RUNNER_TEMP/publish.txt"
+          grep -E '^(target|digest)=' "$RUNNER_TEMP/publish.txt" >> "$GITHUB_OUTPUT"
+          printf 'Published `%s` with digest `%s`.\n' \
+            "$(sed -n 's/^target=//p' "$RUNNER_TEMP/publish.txt")" "$(sed -n 's/^digest=//p' "$RUNNER_TEMP/publish.txt")" >> "$GITHUB_STEP_SUMMARY"
+      - name: Write the proposed pin
+        id: lock
+        if: steps.pin.outputs.current != 'true'
+        env:
+          DIGEST: ${{ steps.publish.outputs.digest }}
+        run: |
+          mkdir -p _build/mkosi-builder
+          scripts/mkosi-builder lock "$DIGEST" > _build/mkosi-builder/mkosi-builder.lock
+          if cmp -s _build/mkosi-builder/mkosi-builder.lock mkosi-builder.lock; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'changed=true' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@v7
+        if: steps.lock.outputs.changed == 'true'
+        with:
+          name: mkosi-builder-lock
+          path: _build/mkosi-builder/mkosi-builder.lock
+          retention-days: 7
+          if-no-files-found: error
+
+  propose:
+    timeout-minutes: 10
+    if: needs.publish.outputs.changed == 'true'
+    needs: publish
+    runs-on: ubuntu-24.04
+    outputs:
+      changed: ${{ steps.propose.outputs.changed }}
+      branch: ${{ steps.propose.outputs.branch }}
+      commit: ${{ steps.propose.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+      - uses: actions/download-artifact@v8
+        with:
+          name: mkosi-builder-lock
+          path: _build/mkosi-builder
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
+          private-key: ${{ secrets.KATL_AUTOMATION_PRIVATE_KEY }}
+          permission-contents: write
+      - id: propose
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          go run ./cmd/katl-mkosi-builder propose --lock _build/mkosi-builder/mkosi-builder.lock > proposal.json
+          jq -r 'to_entries[] | "\(.key)=\(.value)"' proposal.json >> "$GITHUB_OUTPUT"
+
+  pull-request:
+    timeout-minutes: 10
+    if: needs.propose.outputs.changed == 'true'
+    needs: propose
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+      - uses: actions/download-artifact@v8
+        with:
+          name: mkosi-builder-lock
+          path: _build/mkosi-builder
+      - uses: actions/create-github-app-token@v3
+        id: app-token
+        with:
+          client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
+          private-key: ${{ secrets.KATL_AUTOMATION_PRIVATE_KEY }}
+          permission-contents: read
+          permission-pull-requests: write
+      - name: Describe the proposal
+        run: |
+          {
+            echo 'Pin the mkosi builder image that every image build pulls.'
+            echo
+            echo '```'
+            grep -v '^#' _build/mkosi-builder/mkosi-builder.lock
+            echo '```'
+            echo
+            printf 'Published from `%s` by [Builder Image](%s/%s/actions/runs/%s).\n' \
+              "$GITHUB_SHA" "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            echo
+            echo 'CI builds and tests every image with this builder on this pull request and again in the merge queue before merge.'
+          } > body.md
+      - name: Open the proposal for CI
+        uses: ./.github/actions/automation-pull-request
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+          branch: ${{ needs.propose.outputs.branch }}
+          commit: ${{ needs.propose.outputs.commit }}
+          title: 'mkosi: pin the published builder image'
+          body-file: body.md
+      - uses: actions/create-github-app-token@v3
+        id: supersede-token
+        with:
+          client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
+          private-key: ${{ secrets.KATL_AUTOMATION_PRIVATE_KEY }}
+          # Superseding deletes the closed proposal's branch.
+          permission-contents: write
+          permission-pull-requests: write
+      - name: Close earlier builder proposals
+        env:
+          GH_TOKEN: ${{ steps.supersede-token.outputs.token }}
+          BRANCH: ${{ needs.propose.outputs.branch }}
+          APP: ${{ steps.supersede-token.outputs.app-slug }}
+        run: go run ./cmd/katl-mkosi-builder supersede --branch "$BRANCH" --app "$APP" --run "$GITHUB_RUN_ID"

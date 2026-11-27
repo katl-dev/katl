@@ -1,9 +1,19 @@
 name: Prepare mkosi builder
-description: Load the builder image using a shared Docker layer cache
+description: Pull the builder that mkosi-builder.lock pins, or build Containerfile.mkosi when it pins none
 inputs:
   image:
     description: Local image tag consumed by scripts/mkosi
     required: true
+outputs:
+  reference:
+    description: Immutable image the job runs
+    value: ${{ steps.builder.outputs.reference }}
+  source:
+    description: pinned when the committed digest was pulled, built when Containerfile.mkosi was built locally
+    value: ${{ steps.builder.outputs.source }}
+  digest:
+    description: Pinned registry digest; empty for a local build
+    value: ${{ steps.builder.outputs.digest }}
 runs:
   using: composite
   steps:
@@ -23,22 +33,17 @@ runs:
         SandboxTrees=$action_dir/dnf5:/usr/bin/dnf5
         SandboxTrees=/usr/bin/dnf5:/usr/libexec/katl-dnf5
         EOF
-    - id: fedora
+    - id: builder
       shell: bash
-      run: echo "release=$(scripts/fedora-release)" >> "$GITHUB_OUTPUT"
-    - uses: docker/setup-buildx-action@v4
-      with:
-        cache-binary: ${{ github.ref == 'refs/heads/main' }}
-    - uses: docker/build-push-action@v7
       env:
-        DOCKER_BUILD_RECORD_UPLOAD: "false"
-      with:
-        context: .
-        file: Containerfile.mkosi
-        load: true
-        tags: ${{ inputs.image }}
-        build-args: FEDORA_RELEASE=${{ steps.fedora.outputs.release }}
-        # Refresh the Fedora base; unchanged layers reuse the cached tools.
-        pull: true
-        cache-from: type=gha,scope=mkosi-builder
-        cache-to: ${{ github.ref == 'refs/heads/main' && 'type=gha,scope=mkosi-builder,mode=max' || '' }}
+        IMAGE: ${{ inputs.image }}
+        KATL_REPO_ROOT: ${{ github.workspace }}
+      # The action's own copy of the owner resolves the checked-out source, so
+      # a source revision that predates the pin builds its own Containerfile.
+      # The record also goes to the job summary as the job's builder evidence.
+      run: |
+        mkdir -p _build
+        "$GITHUB_ACTION_PATH/../../../scripts/mkosi-builder" prepare "${KATL_CONTAINER_RUNTIME:-docker}" "$IMAGE" \
+          > _build/mkosi-builder.txt
+        cat _build/mkosi-builder.txt
+        grep -E '^(reference|source|digest)=' _build/mkosi-builder.txt >> "$GITHUB_OUTPUT"

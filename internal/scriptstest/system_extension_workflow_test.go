@@ -39,6 +39,7 @@ func TestSystemExtensionPublication(t *testing.T) {
 		"mkosi.profiles/runtime/mkosi.conf":                                  true,
 		"internal/systemdunit/units/katl-system-extensions-activate.service": true,
 		"Containerfile.mkosi":                                                true,
+		"mkosi-builder.lock":                                                 false,
 		"scripts/build-system-extension":                                     true,
 		".github/workflows/system-extensions.yml":                            false,
 		"cmd/katlctl/system_extension.go":                                    false,

@@ -1,22 +1,22 @@
-name: Merge Qualified Kernels
+name: Merge Qualified Automation
 
 on:
   workflow_run:
     workflows: [CI]
-    branches: [automation/kernels-**]
+    branches: [automation/kernels-**, automation/mkosi-builder-**]
     types: [completed]
 
 permissions:
   contents: read
 
-# Serialises promotion per kernel update branch; never cancelled.
+# Serialises promotion per automation branch; never cancelled.
 concurrency:
-  group: kernel-promotion-${{ github.event.workflow_run.head_branch }}
+  group: automation-promotion-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: false
 
 jobs:
   merge:
-    if: startsWith(github.event.workflow_run.head_branch, 'automation/kernels-') && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository
+    if: (startsWith(github.event.workflow_run.head_branch, 'automation/kernels-') || startsWith(github.event.workflow_run.head_branch, 'automation/mkosi-builder-')) && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -30,7 +30,7 @@ jobs:
           permission-checks: read
           permission-actions: read
       # Never check out or execute the proposal in this privileged workflow.
-      - name: Enable auto-merge for the qualified kernel-only revision
+      - name: Enable auto-merge for the qualified automation-only revision
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
@@ -38,7 +38,12 @@ jobs:
           BRANCH: ${{ github.event.workflow_run.head_branch }}
           QUALIFIED_SHA: ${{ github.event.workflow_run.head_sha }}
         run: |
-          [[ "$BRANCH" == automation/kernels-* ]]
+          # Each automation branch may change only the files it owns.
+          case "$BRANCH" in
+            automation/kernels-*) allowed='^kernels/fedora-[0-9]+/x86_64/(standard|lts)\.json$' limit=2 ;;
+            automation/mkosi-builder-*) allowed='^mkosi-builder\.lock$' limit=1 ;;
+            *) exit 1 ;;
+          esac
           proposal="$(gh pr list --head "$BRANCH" --base main --state open --limit 1 --json number,headRefOid,author,isCrossRepository,state --jq '.[0]')"
           [[ "$(jq -r '.headRefOid' <<< "$proposal")" == "$QUALIFIED_SHA" ]] || exit 0
           [[ "$(jq -r '.author.login' <<< "$proposal")" == "$EXPECTED_AUTHOR" ]]
@@ -46,9 +51,9 @@ jobs:
           [[ "$(jq -r .state <<< "$proposal")" == OPEN ]] || exit 0
           number="$(jq -r .number <<< "$proposal")"
           gh pr view "$number" --json changedFiles,files > files.json
-          jq -e '.changedFiles > 0 and .changedFiles <= 2 and .changedFiles == (.files | length)' files.json
+          jq -e --argjson limit "$limit" '.changedFiles > 0 and .changedFiles <= $limit and .changedFiles == (.files | length)' files.json
           while IFS= read -r file; do
-            [[ "$file" =~ ^kernels/fedora-[0-9]+/x86_64/(standard|lts)\.json$ ]]
+            [[ "$file" =~ $allowed ]]
           done < <(jq -r '.files[].path' files.json)
           # Native required checks and the merge queue control the merge.
           gh pr merge "$number" --auto --squash --match-head-commit "$QUALIFIED_SHA"

@@ -46,9 +46,12 @@ var driverInputs = []string{
 
 	// Kernel export, the mkosi toolchain, and install and upgrade image assembly.
 	"Containerfile.mkosi",
+	"mkosi-builder.lock",
 	"containers-policy.json",
 	"scripts/fedora-release",
 	"scripts/mkosi",
+	"scripts/mkosi-builder",
+	"scripts/retry",
 	"scripts/build-katlos-install-image",
 	".github/actions/mkosi-builder/**",
 	"mkosi.conf",

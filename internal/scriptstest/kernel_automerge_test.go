@@ -11,7 +11,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestKernelPromotion(t *testing.T) {
+func TestAutomationPromotion(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/kernel-automerge.yml"))
 	if err != nil {
 		t.Fatal(err)
@@ -29,8 +29,8 @@ func TestKernelPromotion(t *testing.T) {
 		scripts = append(scripts, step.Run)
 	}
 	for _, tc := range []struct {
-		name, author, head, state, file, actions string
-		fork, truncated                          bool
+		name, branch, author, head, state, file, actions string
+		fork, truncated                                  bool
 	}{
 		{name: "ready", actions: "merge\n"},
 		{name: "merged", state: "MERGED"},
@@ -40,10 +40,18 @@ func TestKernelPromotion(t *testing.T) {
 		{name: "fork", fork: true},
 		{name: "unrelated file", file: ".github/workflows/release-artifacts.yml"},
 		{name: "truncated files", truncated: true},
+		{name: "builder pin", branch: "automation/mkosi-builder-test", file: "mkosi-builder.lock", actions: "merge\n"},
+		{name: "builder branch with a kernel lock", branch: "automation/mkosi-builder-test"},
+		{name: "kernel branch with the builder pin", file: "mkosi-builder.lock"},
+		{name: "builder branch with two files", branch: "automation/mkosi-builder-test", file: "mkosi-builder.lock", truncated: true},
+		{name: "other automation branch", branch: "automation/other-test", file: "mkosi-builder.lock"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			directory := t.TempDir()
-			author, head, state := "app/katl-automation", "qualified", "OPEN"
+			branch, author, head, state := "automation/kernels-test", "app/katl-automation", "qualified", "OPEN"
+			if tc.branch != "" {
+				branch = tc.branch
+			}
 			if tc.author != "" {
 				author = tc.author
 			}
@@ -94,7 +102,7 @@ esac
 			command := exec.Command("bash", "-euo", "pipefail", "-c", strings.Join(scripts, "\n"))
 			command.Dir = directory
 			command.Env = append(os.Environ(), "PATH="+directory+string(os.PathListSeparator)+os.Getenv("PATH"),
-				"GH_REPO=katl-dev/katl", "BRANCH=automation/kernels-test", "QUALIFIED_SHA=qualified",
+				"GH_REPO=katl-dev/katl", "BRANCH="+branch, "QUALIFIED_SHA=qualified",
 				"EXPECTED_AUTHOR=app/katl-automation")
 			output, runErr := command.CombinedOutput()
 			actions, err := os.ReadFile(filepath.Join(directory, "actions"))

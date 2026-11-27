@@ -1,0 +1,280 @@
+#!/usr/bin/env bash
+# Owns which mkosi builder image a checkout uses.
+#
+#   mkosi-builder repository            print the published package
+#   mkosi-builder tag                   print this checkout's content tag
+#   mkosi-builder pinned                print the committed digest if it is current
+#   mkosi-builder lock DIGEST           print a lock pinning DIGEST for this tag
+#   mkosi-builder build RUNTIME NAME    build Containerfile.mkosi as NAME
+#   mkosi-builder prepare RUNTIME ALIAS make the builder available as ALIAS
+#   mkosi-builder publish push|refresh  build and push the image with docker
+#
+# The content tag is fedora-RELEASE-HASH, where HASH is the first 16 hex
+# digits of the SHA-256 of Containerfile.mkosi and RELEASE comes from
+# scripts/fedora-release. The build context is empty, so the Containerfile and
+# the release are its only inputs.
+#
+# mkosi-builder.lock is current when its tag equals this checkout's tag. A
+# missing or stale lock means the Containerfile changed and nothing is
+# published for it yet: prepare then builds the file locally. When the pinned
+# image cannot be pulled, prepare fails in GitHub Actions and builds locally
+# with a warning elsewhere, and records which happened. ALIAS points at the result for callers that run the builder by a
+# fixed name; prepare prints the record, whose reference= line names the
+# immutable image this checkout should run.
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="${KATL_REPO_ROOT:-$(dirname "$script_dir")}"
+repository=ghcr.io/katl-dev/katl/mkosi-builder
+lock_file="$repo_root/mkosi-builder.lock"
+
+usage() {
+    sed -n '4,10s/^#   //p' "${BASH_SOURCE[0]}" | sed 's/^/usage: /' >&2
+    exit 2
+}
+
+content_tag() {
+    local release digest
+    release="$("$repo_root/scripts/fedora-release")"
+    read -r digest _ < <(sha256sum "$repo_root/Containerfile.mkosi")
+    printf 'fedora-%s-%s\n' "$release" "${digest:0:16}"
+}
+
+# Prints the pinned reference and returns 0 when the lock is current, or 1 when
+# it is missing or stale. A malformed lock exits 3 rather than letting a typo
+# silently select a local build.
+pinned_reference() {
+    local key value tag="" image=""
+    [[ -f "$lock_file" ]] || return 1
+    while IFS='=' read -r key value || [[ -n "$key" ]]; do
+        case "$key" in
+            '' | '#'*) ;;
+            tag) tag="$value" ;;
+            image) image="$value" ;;
+            *) echo "error: mkosi-builder.lock has unknown key: $key" >&2; exit 3 ;;
+        esac
+    done < "$lock_file"
+    if [[ ! "$tag" =~ ^fedora-[0-9]+-[0-9a-f]{16}$ || "$image" != "$repository@sha256:"* ||
+        ! "${image#"$repository"@sha256:}" =~ ^[0-9a-f]{64}$ ]]; then
+        echo "error: mkosi-builder.lock must set tag=fedora-RELEASE-HASH and image=$repository@sha256:DIGEST" >&2
+        exit 3
+    fi
+    [[ "$tag" == "$(content_tag)" ]] || return 1
+    printf '%s\n' "$image"
+}
+
+# Sets reference to the current pin, or to empty when there is none.
+resolve_pin() {
+    local status=0
+    reference="$(pinned_reference)" || status=$?
+    case "$status" in
+        0) ;;
+        1) reference="" ;;
+        *) exit "$status" ;;
+    esac
+}
+
+signature_policy() {
+    [[ "$1" != podman ]] || printf '%s\n' --signature-policy "$repo_root/containers-policy.json"
+}
+
+build() {
+    local runtime="$1" name="$2" context status=0
+    local -a policy
+    mapfile -t policy < <(signature_policy "$runtime")
+    context="$(mktemp -d)"
+    "$runtime" build "${policy[@]}" \
+        --file "$repo_root/Containerfile.mkosi" \
+        --build-arg "FEDORA_RELEASE=$("$repo_root/scripts/fedora-release")" \
+        --label "org.opencontainers.image.source=https://github.com/katl-dev/katl" \
+        --tag "$name" \
+        "$context" || status=$?
+    rmdir "$context"
+    return "$status"
+}
+
+image_id() {
+    "$1" image inspect --format '{{.Id}}' "$2" 2>/dev/null
+}
+
+warn() {
+    if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
+        printf '::warning title=mkosi builder::%s\n' "$1" >&2
+    else
+        printf 'warning: %s\n' "$1" >&2
+    fi
+}
+
+# Pulls the pinned image through scripts/retry, the shell retry owner: the
+# mkosi-builder action can run this script from a sparse checkout that holds
+# none of the repository's Go packages, so it cannot use internal/retry. CI
+# makes KATL_MKOSI_BUILDER_PULL_ATTEMPTS (default 3) attempts of at most
+# KATL_MKOSI_BUILDER_PULL_ATTEMPT_SECONDS (default 600) each, with backoff
+# from KATL_MKOSI_BUILDER_PULL_BACKOFF_SECONDS (default 15). A local
+# developer gets one attempt, since the fallback is a local build.
+pull_pinned() {
+    local runtime="$1" reference="$2" attempts=1
+    local -a policy
+    mapfile -t policy < <(signature_policy "$runtime")
+    [[ "${GITHUB_ACTIONS:-}" != true ]] || attempts="${KATL_MKOSI_BUILDER_PULL_ATTEMPTS:-3}"
+    "$script_dir/retry" \
+        --attempts "$attempts" \
+        --timeout "${KATL_MKOSI_BUILDER_PULL_ATTEMPT_SECONDS:-600}" \
+        --backoff "${KATL_MKOSI_BUILDER_PULL_BACKOFF_SECONDS:-15}" \
+        --title 'mkosi builder' --what "pull $reference" \
+        --hint 'make the package public or rerun once the registry is reachable' \
+        -- "$runtime" pull "${policy[@]}" "$reference" >&2
+}
+
+prepare() {
+    local runtime="$1" alias="$2" tag reference="" source digest="" id
+    case "$runtime" in
+        docker | podman) ;;
+        *) echo "error: mkosi-builder prepare supports docker or podman, not $runtime" >&2; exit 2 ;;
+    esac
+    tag="$(content_tag)"
+    resolve_pin
+    if [[ -n "$reference" ]]; then
+        source=pinned
+        digest="${reference#*@}"
+        local status=0
+        image_id "$runtime" "$reference" >/dev/null || pull_pinned "$runtime" "$reference" || status=$?
+        # scripts/retry has reported why the pull failed. A usage error is
+        # never a reason to fall back. CI must run the pinned builder, so jobs
+        # of one run agree and their evidence names it; only a developer may
+        # fall back.
+        if [[ $status == 2 ]]; then
+            exit 2
+        elif [[ $status != 0 ]]; then
+            [[ "${GITHUB_ACTIONS:-}" != true ]] || exit 1
+            warn "could not pull $reference; building Containerfile.mkosi locally instead"
+            reference=""
+        fi
+    fi
+    if [[ -z "$reference" ]]; then
+        source=built
+        digest=""
+        reference="localhost/katl-mkosi-builder:$tag"
+        if ! image_id "$runtime" "$reference" >/dev/null; then
+            echo "building Containerfile.mkosi as $reference" >&2
+            build "$runtime" "$reference" >&2
+        fi
+    fi
+
+    id="$(image_id "$runtime" "$reference")"
+    if [[ "$(image_id "$runtime" "$alias" || true)" != "$id" ]]; then
+        "$runtime" tag "$reference" "$alias" >&2
+    fi
+
+    local record
+    record="$(printf 'reference=%s\nsource=%s\ntag=%s\ndigest=%s\nid=%s\n' "$reference" "$source" "$tag" "$digest" "$id")"
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+        printf '### mkosi builder\n\n```\n%s\n```\n' "$record" >> "$GITHUB_STEP_SUMMARY"
+    fi
+    printf '%s\n' "$record"
+}
+
+# Sets digest to the registry digest of REF and returns 0, or returns 1 when
+# the registry reports REF missing. It runs in the caller's shell so that a
+# stop is not lost in a subshell.
+#
+# skopeo reports the registry's error code, which docker buildx imagetools
+# folds into a bare "not found". Only MANIFEST_UNKNOWN and NAME_UNKNOWN, which
+# skopeo renders as "manifest unknown" and "name unknown", mean the tag is
+# missing. GHCR answers MANIFEST_UNKNOWN for a missing tag and, to a client
+# with package write access, for a package that does not exist yet, so the
+# first publication proceeds. Any other error, such as the 403 an anonymous
+# client gets for a private or missing package, stops publication rather than
+# being mistaken for a missing tag, which would rebuild and overwrite it.
+remote_digest() {
+    local manifest error status=0
+    digest=""
+    manifest="$(mktemp)"
+    error="$(mktemp)"
+    skopeo inspect --raw "docker://$1" >"$manifest" 2>"$error" || status=$?
+    if [[ $status == 0 ]]; then
+        [[ -s "$manifest" ]] || { echo "error: $1 has an empty manifest" >&2; exit 1; }
+        read -r digest _ < <(sha256sum "$manifest")
+        digest="sha256:$digest"
+        rm "$manifest" "$error"
+        return 0
+    fi
+    rm "$manifest"
+    if grep -Eq 'reading manifest [^ ]+ in [^ ]+: (manifest unknown|name unknown)' "$error"; then
+        rm "$error"
+        return 1
+    fi
+    cat "$error" >&2
+    rm "$error"
+    echo "error: could not inspect $1" >&2
+    exit 1
+}
+
+# Publishes the builder for EVENT, push or refresh, and prints target=,
+# digest= and published=. A push publishes the content tag once and reuses it
+# when it exists, as on a rerun after a failed proposal. A refresh publishes
+# the content tag if it is missing, and otherwise a new dated tag; a second
+# refresh on one day takes the next -N suffix. That no tag is overwritten
+# depends on Builder Image's concurrency group running one publication at a
+# time, because nothing else may push between the check for a free tag and the
+# push.
+publish() {
+    local event="$1" tag target base digest suffix
+    tag="$(content_tag)"
+    target="$repository:$tag"
+    if remote_digest "$target"; then
+        if [[ "$event" == push ]]; then
+            printf 'target=%s\ndigest=%s\npublished=false\n' "$target" "$digest"
+            return 0
+        fi
+        base="$repository:$tag-${KATL_MKOSI_BUILDER_DATE:-$(date -u +%Y%m%d)}"
+        target="$base"
+        for ((suffix = 2; ; suffix++)); do
+            remote_digest "$target" || break
+            ((suffix <= 100)) || { echo "error: too many refreshes of $tag on one day" >&2; exit 1; }
+            target="$base-$suffix"
+        done
+    fi
+    build docker "$target" >&2
+    docker push "$target" >&2
+    remote_digest "$target" || { echo "error: $target is missing after push" >&2; exit 1; }
+    printf 'target=%s\ndigest=%s\npublished=true\n' "$target" "$digest"
+}
+
+case "${1:-}" in
+    publish)
+        [[ $# -eq 2 && ( "$2" == push || "$2" == refresh ) ]] || usage
+        publish "$2"
+        ;;
+    repository)
+        [[ $# -eq 1 ]] || usage
+        printf '%s\n' "$repository"
+        ;;
+    tag)
+        [[ $# -eq 1 ]] || usage
+        content_tag
+        ;;
+    pinned)
+        [[ $# -eq 1 ]] || usage
+        reference=""
+        resolve_pin
+        [[ -n "$reference" ]] || { echo "mkosi-builder.lock does not pin $(content_tag)" >&2; exit 1; }
+        printf '%s\n' "$reference"
+        ;;
+    lock)
+        [[ $# -eq 2 && "$2" =~ ^sha256:[0-9a-f]{64}$ ]] || usage
+        printf '# Written by the Builder Image workflow; see scripts/mkosi-builder.\ntag=%s\nimage=%s@%s\n' \
+            "$(content_tag)" "$repository" "$2"
+        ;;
+    build)
+        [[ $# -eq 3 ]] || usage
+        build "$2" "$3"
+        ;;
+    prepare)
+        [[ $# -eq 3 ]] || usage
+        prepare "$2" "$3"
+        ;;
+    *)
+        usage
+        ;;
+esac

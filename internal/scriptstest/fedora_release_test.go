@@ -8,48 +8,29 @@ import (
 	"testing"
 )
 
+// Without a current pin, scripts/mkosi builds the builder for the Fedora
+// release that mkosi.conf selects.
 func TestBuilderRelease(t *testing.T) {
 	repo := repoRoot(t)
-	fixture := t.TempDir()
-	scripts := filepath.Join(fixture, "scripts")
-	if err := os.MkdirAll(scripts, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	helper, err := os.ReadFile(filepath.Join(repo, "scripts", "fedora-release"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(scripts, "fedora-release"), helper, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(fixture, "mkosi.conf"), []byte("[Distribution]\nRelease=99\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	fixture := builderFixture(t, "99", "FROM scratch\n")
+	containers := newFakeContainers(t, "podman")
 
-	bin := t.TempDir()
-	argsPath := filepath.Join(fixture, "container-args")
-	writeFakeExecutable(t, bin, "podman", `case "$1" in
- image) exit 1 ;;
- build) printf '%s\n' "$@" > "$KATL_FAKE_PODMAN_ARGS" ;;
- run) printf 'mkosi 26\n' ;;
- *) exit 1 ;;
-esac
-`)
 	cmd := exec.Command(filepath.Join(repo, "scripts", "mkosi"), "builder-version")
 	cmd.Dir = t.TempDir()
-	cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"), "KATL_REPO_ROOT="+fixture, "KATL_CONTAINER_RUNTIME=podman", "KATL_MKOSI_IMAGE=", "KATL_FAKE_PODMAN_ARGS="+argsPath)
+	cmd.Env = append(os.Environ(), containers.env("KATL_REPO_ROOT="+fixture, "KATL_CONTAINER_RUNTIME=podman", "KATL_MKOSI_IMAGE=", "GITHUB_STEP_SUMMARY=")...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("builder-version: %v\n%s", err, output)
 	}
 
-	args, err := os.ReadFile(argsPath)
-	if err != nil {
-		t.Fatal(err)
+	builds := containers.callsStartingWith(t, "build")
+	want := []string{"--build-arg FEDORA_RELEASE=99", "--tag localhost/katl-mkosi-builder:" + contentTag("99", "FROM scratch\n")}
+	if len(builds) != 1 {
+		t.Fatalf("builds = %q", builds)
 	}
-	for _, want := range []string{"--build-arg\nFEDORA_RELEASE=99\n", "--tag\nlocalhost/katl-mkosi-builder:fedora-99-go-squashfs\n"} {
-		if !strings.Contains(string(args), want) {
-			t.Fatalf("builder does not use selected release: %s", args)
+	for _, arg := range want {
+		if !strings.Contains(builds[0], arg) {
+			t.Fatalf("builder does not use selected release: %s", builds[0])
 		}
 	}
 }

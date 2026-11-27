@@ -1,0 +1,7 @@
+mkosi: pin the published builder image
+
+Run image builds in the builder image that the Builder Image workflow
+published for the current Containerfile.mkosi. CI and scripts/mkosi pull
+it by this digest.
+
+Release-Note: skip

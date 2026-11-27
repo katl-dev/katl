@@ -416,7 +416,7 @@ Fast checks skip mkosi builds, libvirt/KVM setup, VM scenarios, and publishing.
 
 ## Fedora package inputs
 
-The selected Fedora base release is set in `mkosi.conf`. The builder image,
+The selected Fedora base release is set in `mkosi.conf`. The builder image tag,
 runtime identity, and build cache derive from it. Builds consume signed Fedora
 repositories without committing the complete transitive package closure as
 source policy.
@@ -469,10 +469,10 @@ and upgrade images concurrently, builds `katlctl`, assembles the installer ISO,
 and stages the flavour's release set. Each flavour's Production VM qualification
 starts as soon as its own build ends, and a final job in Release Artifacts attests
 the combined bundle. Runtime and installer jobs each own
-separate Go, mkosi package, and Docker builder-layer caches, avoiding competing
+separate Go and mkosi package caches, avoiding competing
 writes. Go and package caches save a fresh snapshot per source commit and restore
-the latest compatible snapshot. The builder is loaded through Docker Buildx;
-it checks for an updated Fedora base and reuses unchanged tool-install layers.
+the latest compatible snapshot. Every job pulls the builder image that
+`mkosi-builder.lock` pins; see [Builder image](development/ci.md#builder-image).
 Mkosi incremental filesystem caches and finished release images are not reused
 between runs. Published-asset provenance checks use bounded concurrency
 because every release asset has an independent attestation.

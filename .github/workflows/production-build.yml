@@ -73,7 +73,7 @@ jobs:
         with:
           flavour: ${{ inputs.flavour }}
 
-      - name: Prepare cached builder
+      - name: Prepare pinned builder
         uses: ./.github/actions/mkosi-builder
         with:
           image: ${{ env.KATL_MKOSI_IMAGE }}
@@ -165,7 +165,7 @@ jobs:
         with:
           flavour: ${{ inputs.flavour }}
 
-      - name: Prepare cached builder
+      - name: Prepare pinned builder
         uses: ./.github/actions/mkosi-builder
         with:
           image: ${{ env.KATL_MKOSI_IMAGE }}
@@ -281,7 +281,7 @@ jobs:
       - name: Set up Go
         uses: ./.github/actions/setup-go
 
-      - name: Prepare cached builder
+      - name: Prepare pinned builder
         uses: ./.github/actions/mkosi-builder
         with:
           image: ${{ env.KATL_MKOSI_IMAGE }}

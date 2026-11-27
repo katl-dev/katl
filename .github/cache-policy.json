@@ -46,27 +46,7 @@
       "contents": "Pinned release extension sources",
       "savers": [{"workflow": "kernel-qualification.yml", "job": "drivers"}],
       "budget_bytes": 543651450
-    },
-    {
-      "name": "builder-blobs",
-      "gha_scope": "mkosi-builder",
-      "key_prefix": "buildkit-blob-",
-      "contents": "mkosi builder image layers",
-      "savers": [{"action": "mkosi-builder"}],
-      "budget_bytes": 1512453065
-    },
-    {
-      "name": "builder-index",
-      "gha_scope": "mkosi-builder",
-      "key_prefix": "index-mkosi-builder-",
-      "contents": "mkosi builder image layer index",
-      "savers": [{"action": "mkosi-builder"}],
-      "budget_bytes": 2072,
-      "max_generations": 1
     }
   ],
-  "known_violations": [
-    {"family": "builder-blobs", "rule": "multiple-savers", "action": "mkosi-builder"},
-    {"family": "builder-index", "rule": "multiple-savers", "action": "mkosi-builder"}
-  ]
+  "known_violations": []
 }
