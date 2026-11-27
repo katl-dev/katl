@@ -65,13 +65,14 @@ var validationInputs = []string{
 func definition(name string) string { return "extensions/" + name + "/extension.env" }
 
 // Read returns the state of extension name at revision in the repository at
-// repo. A definition that is not plain KEY=value lines is an error.
+// repo. A definition that is not plain KEY=value lines, or whose version is
+// not <payload>-katl.<N>, is an error.
 func Read(repo, revision, name string) (State, error) {
 	state := State{Name: name}
 	if !validName.MatchString(name) {
 		return state, fmt.Errorf("invalid extension name %q", name)
 	}
-	listed, err := git(repo, "ls-tree", "--name-only", revision, "--", definition(name))
+	listed, err := git(repo, "ls-tree", "--full-tree", "--name-only", revision, "--", definition(name))
 	if err != nil {
 		return state, err
 	}
@@ -92,6 +93,11 @@ func Read(repo, revision, name string) (State, error) {
 	state.Version = values["KATL_EXTENSION_ARTIFACT_VERSION"]
 	if state.Version == "" {
 		return state, fmt.Errorf("%s at %s: KATL_EXTENSION_ARTIFACT_VERSION is not set", definition(name), revision)
+	}
+	// A version outside the grammar cannot be ordered, so a definition
+	// introduced with one could never advance.
+	if !artifactVersion.MatchString(state.Version) {
+		return state, fmt.Errorf("%s at %s: KATL_EXTENSION_ARTIFACT_VERSION %q is not <payload>-katl.<N>", definition(name), revision, state.Version)
 	}
 	state.Present = true
 
@@ -150,7 +156,7 @@ func Names(repo string, revisions ...string) ([]string, error) {
 	seen := map[string]bool{}
 	var names []string
 	for _, revision := range revisions {
-		listed, err := git(repo, "ls-tree", "-rz", "--name-only", revision, "--", "extensions/")
+		listed, err := git(repo, "ls-tree", "-rz", "--full-tree", "--name-only", revision, "--", "extensions/")
 		if err != nil {
 			return nil, err
 		}

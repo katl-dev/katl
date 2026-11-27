@@ -62,28 +62,118 @@ func TestDecide(t *testing.T) {
 	}
 }
 
+const birdDefinition = "KATL_EXTENSION_NAME=bird\n" +
+	"KATL_EXTENSION_ARTIFACT_VERSION=v3.4.0-katl.7\n" +
+	"KATL_EXTENSION_PAYLOAD_VERSION=v3.4.0\n" +
+	"KATL_EXTENSION_RUNTIME_INTERFACE=katl-runtime-1\n"
+
+func TestReadDefinition(t *testing.T) {
+	repo := newRepo(t)
+	writeFile(t, repo, "extensions/bird/extension.env", birdDefinition)
+	commit(t, repo)
+
+	state, err := Read(repo, "HEAD", "bird")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Present || state.Version != "v3.4.0-katl.7" {
+		t.Errorf("Read = %+v, want present at v3.4.0-katl.7", state)
+	}
+}
+
 // Wrong: parsing the definition more leniently than a shell would assign it,
-// so the gate and the build read different versions.
+// so the gate and the build read different values. Each line assigns
+// KATL_EXTENSION_PAYLOAD_VERSION, which Read neither requires nor sees
+// assigned elsewhere, so only the plain-line rule can reject it.
 func TestReadRejectsNonPlainDefinition(t *testing.T) {
 	for _, line := range []string{
-		`KATL_EXTENSION_ARTIFACT_VERSION="v1.0.0-katl.1"`,
-		`export KATL_EXTENSION_ARTIFACT_VERSION=v1.0.0-katl.1`,
-		`KATL_EXTENSION_ARTIFACT_VERSION=v1.0.0-katl.$(id -u)`,
-		`KATL_EXTENSION_ARTIFACT_VERSION=v1.0.0-katl.${REV}`,
-		`KATL_EXTENSION_ARTIFACT_VERSION=v1.0.0-katl.1 # pinned`,
-		`KATL_EXTENSION_ARTIFACT_VERSION =v1.0.0-katl.1`,
+		`KATL_EXTENSION_PAYLOAD_VERSION="v3.4.0"`,
+		`export KATL_EXTENSION_PAYLOAD_VERSION=v3.4.0`,
+		`KATL_EXTENSION_PAYLOAD_VERSION=v3.$(id -u)`,
+		`KATL_EXTENSION_PAYLOAD_VERSION=v3.${REV}`,
+		`KATL_EXTENSION_PAYLOAD_VERSION=v3.4.0 # pinned`,
+		`KATL_EXTENSION_PAYLOAD_VERSION =v3.4.0`,
 		`# comment`,
-		`KATL_EXTENSION_ARTIFACT_VERSION=v1.0.0-katl.2`,
 	} {
 		t.Run(line, func(t *testing.T) {
 			repo := newRepo(t)
-			writeFile(t, repo, "extensions/bird/extension.env", "KATL_EXTENSION_NAME=bird\nKATL_EXTENSION_ARTIFACT_VERSION=v1.0.0-katl.1\n"+line+"\n")
+			writeFile(t, repo, "extensions/bird/extension.env", "KATL_EXTENSION_NAME=bird\nKATL_EXTENSION_ARTIFACT_VERSION=v3.4.0-katl.7\n"+line+"\n")
 			commit(t, repo)
 
 			if state, err := Read(repo, "HEAD", "bird"); err == nil {
 				t.Errorf("Read accepted %q as %+v", line, state)
 			}
 		})
+	}
+}
+
+// Wrong: letting a later assignment win, as a shell would, so the gate reads
+// one version and a reader taking the first assignment reads another.
+func TestReadRejectsDuplicateKey(t *testing.T) {
+	repo := newRepo(t)
+	writeFile(t, repo, "extensions/bird/extension.env", birdDefinition+"KATL_EXTENSION_ARTIFACT_VERSION=v3.4.0-katl.8\n")
+	commit(t, repo)
+
+	if state, err := Read(repo, "HEAD", "bird"); err == nil {
+		t.Errorf("Read accepted a second version assignment as %+v", state)
+	}
+}
+
+// Wrong: accepting any plain version, so an extension introduced with an
+// unorderable version can never advance.
+func TestReadVersion(t *testing.T) {
+	for _, tc := range []struct {
+		version string
+		valid   bool
+	}{
+		{"v3.4.0-katl.7", true},
+		{"3.4-katl.1", true},
+		{"v3.4.0", false},
+		{"v3.4.0-katl.", false},
+		{"v3.4.0-katl.7b", false},
+		{"v3.4.0-rc1-katl.1", false},
+		{"latest", false},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			repo := newRepo(t)
+			writeFile(t, repo, "extensions/bird/extension.env", "KATL_EXTENSION_NAME=bird\nKATL_EXTENSION_ARTIFACT_VERSION="+tc.version+"\n")
+			commit(t, repo)
+
+			state, err := Read(repo, "HEAD", "bird")
+			switch {
+			case tc.valid && err != nil:
+				t.Errorf("Read rejected %s: %v", tc.version, err)
+			case tc.valid && state.Version != tc.version:
+				t.Errorf("Read version = %q, want %q", state.Version, tc.version)
+			case !tc.valid && err == nil:
+				t.Errorf("Read accepted %s as %+v", tc.version, state)
+			}
+		})
+	}
+}
+
+// Wrong: listing paths relative to the working directory, so a caller in a
+// subdirectory finds no definition and decides None.
+func TestReadFromSubdirectory(t *testing.T) {
+	repo := newRepo(t)
+	writeFile(t, repo, "extensions/bird/extension.env", birdDefinition)
+	writeFile(t, repo, "docs/extensions.md", "notes\n")
+	commit(t, repo)
+	subdirectory := filepath.Join(repo, "docs")
+
+	names, err := Names(subdirectory, "HEAD")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || names[0] != "bird" {
+		t.Errorf("Names = %q, want [bird]", names)
+	}
+	state, err := Read(subdirectory, "HEAD", "bird")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !state.Present {
+		t.Errorf("Read = %+v, want present", state)
 	}
 }
 

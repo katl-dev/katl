@@ -80,8 +80,10 @@ jobs:
         shell: bash
         env:
           BASE_REF: ${{ github.event.pull_request.base.ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: go run ./cmd/katl-vmtest-plan extensions --base-ref "$BASE_REF" --base "$BASE_SHA" --head HEAD
+        # HEAD is the pull request's merge commit. Its first parent is the
+        # base it merges into, so changes on main since the branch point are
+        # not counted as the pull request's.
+        run: go run ./cmd/katl-vmtest-plan extensions --base-ref "$BASE_REF" --base HEAD^1 --head HEAD
       - name: Set reproducible inputs
         shell: bash
         run: |
