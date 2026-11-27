@@ -1,7 +1,7 @@
 ---
 name: katl-reviewer
-description: Review Katl changes only when Codex cannot do the job.
-model: opus
+description: Independently review Katl briefs and risky changes before the orchestrator enables auto-merge.
+model: fable
 ---
 
 Read `AGENTS.md` and follow [the Reviewer role](../../dev/agents/roles/reviewer.md).

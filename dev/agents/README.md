@@ -9,39 +9,44 @@ Find tool usage and setup in the [development tool index](../README.md).
 
 ## Model and effort
 
-| Role | Default |
+Each role belongs to a tier, and the tier table names the model for that
+tier. To change a tier's model, edit its row here and the `model:` line of the
+matching [agent definitions](../../.claude/agents/).
+
+| Tier | Model | Work |
+| --- | --- | --- |
+| Coordinate | Claude Opus | Orchestration, release ownership, scope and approval decisions |
+| Implement | Codex `gpt-6.2-sol` through [`scripts/codex-role`](../../scripts/README.md#codex-role), medium effort, high for multi-file or subtle work; Claude Opus when Codex is not available | Delivery, fix rounds and debugging |
+| Design and review | Claude Fable | Design-heavy briefs, contract reviews and independent code review |
+| Mechanical | Claude Sonnet | Rebases, gates, watching, journeys, planning and washup evidence |
+
+| Role | Tier |
 | --- | --- |
-| [Coordinator](roles/coordinator.md) | Claude Opus |
-| [Orchestrator](roles/orchestrator.md) | Claude Opus, high effort |
-| [Release](roles/release.md) | Claude Opus |
-| [Planner](roles/planner.md) | Claude Sonnet |
-| [Delivery](roles/delivery.md) | Codex `gpt-6.2-sol`, medium effort |
-| [Reviewer](roles/reviewer.md) | Codex `gpt-6.2-astra`, medium effort for ordinary code reviews and high effort for the independent review that gates auto-merge. |
-| [Debugger](roles/debugger.md) | Codex `gpt-6.2-astra`, high effort for hard debugging |
-| [Rebase](roles/rebase.md) | Codex `gpt-6.1-terra`, medium effort |
-| [Journey](roles/journey.md) | Claude Sonnet, medium effort |
-| [Washup](roles/washup.md) | Claude Sonnet |
+| [Coordinator](roles/coordinator.md) | Coordinate |
+| [Orchestrator](roles/orchestrator.md) | Coordinate, high effort |
+| [Release](roles/release.md) | Coordinate |
+| [Planner](roles/planner.md) | Mechanical |
+| [Delivery](roles/delivery.md) | Implement |
+| [Reviewer](roles/reviewer.md) | Design and review, high effort for the independent review that gates auto-merge |
+| [Debugger](roles/debugger.md) | Implement |
+| [Rebase](roles/rebase.md) | Mechanical |
+| [Journey](roles/journey.md) | Mechanical, medium effort |
+| [Washup](roles/washup.md) | Mechanical |
 
-Claude usage is scarce. Use Claude Opus for review only when Codex cannot do
-the job.
+Commission one independent code review per change, and file follow-up issues
+for edge-case findings. Reserve high effort for risky boot, disk, update,
+security or trust changes and for reviews that gate a hard-to-reverse merge.
 
-Use Astra at low effort for brief or contract reviews and narrow checks.
-For code review, reserve high effort for risky boot, disk, update, security,
-or trust changes and reviews that gate a hard-to-reverse merge. Astra costs
-several times as much as Sol, so commission one code review per change and
-file follow-up issues for edge-case findings. Use Codex `gpt-6.1-terra` at
-medium effort for review or diagnosis dominated by screenshots, images, or
-very large reads.
+Send fix rounds on one PR to the same implementer job or session while its
+context is modest. Start a fresh agent for a new PR, or when the context has
+grown large.
 
-Send rebases and conflict resolution to Codex `gpt-6.1-terra` at low or medium
-effort, or to a Claude Sonnet subagent, not to Sol. Keep Sol for
-implementation.
+## Codex jobs
 
-## Launch Codex jobs
-
-Use `scripts/codex-role` from the task worktree. The repository's Claude
-permissions deny direct Codex launches. See the [launcher reference](../../scripts/README.md#codex-role)
-for job arguments, report recovery, and
+The implement tier runs through `scripts/codex-role`. Use `scripts/codex-role`
+from the task worktree; the repository's Claude permissions deny direct Codex
+launches. See the [launcher reference](../../scripts/README.md#codex-role) for
+job arguments, report recovery, and
 [GitHub credential setup](../../scripts/README.md#provision-github-read-access).
 
 ## Local state
@@ -59,6 +64,12 @@ jobs start, finish, or change hands.
 | `evidence/` | Retained investigation evidence, managed by the [evidence tool](../../scripts/README.md#katl-dev-evidence) under `~/.local/state/katl-dev` in the passwd home. |
 
 Reconcile the checkpoint with running jobs and GitHub before acting on it.
+
+Read `AGENTS.md` and `dev/agents`, and run `katl-queue`, `katl-release`,
+`katl-dev-evidence` and the cleanup scripts, from a worktree at the current
+`origin/main`. A checkout that a session happens to start in may be many
+commits behind; refresh it or use a fresh detached worktree under
+`worktrees/` before acting.
 
 Create every worktree under `worktrees/`. Never keep a worktree, or anything
 else needed for more than a day, under `/tmp`, including the session
@@ -115,15 +126,19 @@ The coordinator confirms the planned cut with the orchestrator. At freeze,
 start one Release agent to own the release from the branch cut. The
 orchestrator passes the version, branch and cut revision, scope and open
 blockers, and any explicit maintainer authority with the
-[Release brief template](briefs/release.md).
+[Release brief template](briefs/release.md). The orchestrator does not take
+the Release role; it keeps delivery and its queue cycle running on `main`.
 
-1. Merge every release blocker into `main`.
+1. Merge every release blocker into `main`. While the last blockers are in
+   the queue, dispatch a non-publishing candidate from `main` and fix what
+   it finds, so that the release-only jobs have run on current inputs before
+   the cut.
 2. Fetch `origin/main` at the cut and create a branch for this version from
    that exact SHA, for example `release/2026.12.1`. Push `release/<version>`
-   and start candidate qualification from it.
-3. Create milestone `v<version>` and move every issue in **Next release**,
-   open or closed, into it unless there is a compelling reason to leave it
-   out. Move open PRs as well, subject to the same exclusions. Use the
+   and start candidate qualification from the branch, never from `main`.
+3. Create milestone `v<version>` and move into it every **Next release**
+   issue whose fix is on the branch. Open issues and open PRs stay in
+   **Next release** unless they block this release. Use the
    [flake rule](roles/release.md#flakes) for flakes found around the cut.
    Record the milestone and its Release agent in the checkpoint.
 4. Open two issues in the milestone, `Tag v<version>-rc.1` and `Tag v<version>`.

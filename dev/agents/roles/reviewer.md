@@ -8,10 +8,9 @@ workflow and single ownership first, then assess correctness, failure and
 recovery behavior, and the evidence for the change. Leave fixes and queue
 actions to their owners.
 
-**Auto-merge review.** Use Codex `gpt-6.2-astra` at high effort for the
-independent review that gates auto-merge. See the
-[launcher reference](../../../scripts/README.md#codex-role) for launch options.
-Use Claude Opus only when Codex cannot do the job.
+**Auto-merge review.** Use the design and review tier at high effort for the
+independent review that gates auto-merge, as the
+[model table](../README.md#model-and-effort) defines it.
 
 **Brief.** Supply the review target, either the pre-implementation brief or
 the PR with its head SHA and base revision. Include the issue, acceptance

@@ -1,8 +1,9 @@
 # Rebase
 
 Follow the [shared agent workflow](../README.md) for hand-offs
-and reporting. See the [launcher reference](../../../scripts/README.md#codex-role)
-for the rebase role's launch options and defaults.
+and reporting. When a brief asks for [Codex](../README.md#codex-jobs),
+see the [launcher reference](../../../scripts/README.md#codex-role) for the
+rebase role's launch options and defaults.
 
 Rebase the specified PR branch onto the revision in the brief and resolve
 conflicts while preserving the intent of both sets of changes. Check the

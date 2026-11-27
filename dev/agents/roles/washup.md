@@ -15,8 +15,9 @@ and publication events. Gather queue ejections and their causes, using
 Include `katl-queue ci-cost` figures for the review window. Use queue and CI
 history to report p90 elapsed time from first enqueue to merge, including time
 spent on requeues, and merge-group runner-minutes per merged PR, counting
-failed and cancelled attempts. Commission an independent Codex
-`gpt-6.2-astra` critique of the release process and include its findings.
+failed and cancelled attempts. Commission an independent critique of the
+release process from the design and review tier in the
+[model table](../README.md#model-and-effort), and include its findings.
 
 **Report.** Give the Coordinator and Release agent the timeline, findings,
 supporting evidence, and any gaps that limit the conclusions. Use the
