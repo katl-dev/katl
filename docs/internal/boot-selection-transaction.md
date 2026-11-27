@@ -357,6 +357,10 @@ which expects the legacy selection's revision.
   fallback set even when a distinct `D` is usable. #963 removes all three
   with the legacy writer and removes the matching “keeps the default”
   sentence from [boot health semantics](boot-health-semantics.md).
+  The `recordedFallbackOnly` flag also preserves the exact loader entry and
+  previous-known-good pointer values in the legacy record without rewriting
+  them from the spec, clearing the pointers only when a recorded fallback is
+  rejected, and #963 removes this behavior alongside those three rules.
 - An arm interrupted before its one-shot is written resolves on a later boot
   with the same reason as a trial that firmware booted, because firmware
   consumes the one-shot on every boot and the state cannot tell the two

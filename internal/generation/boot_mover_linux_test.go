@@ -1067,6 +1067,29 @@ func TestBootMoveFailTrialUsesDefault(t *testing.T) {
 	assertTrialResolution(t, w, result, want, "loader/entries/katl-gen1.conf", "gen1", "loader/entries/katl-gen1.conf")
 }
 
+func TestBootMoveFailTrialPrefersRecordedFallback(t *testing.T) {
+	w := newMoveWorld(t)
+	request := armRequest(w)
+	request.Selection.PreviousKnownGoodGenerationID = "gen3"
+	request.Selection.PreviousKnownGoodBootEntry = "loader/entries/katl-gen3.conf"
+	if _, err := w.mover(nil).move(request); err != nil {
+		t.Fatal(err)
+	}
+	w.reboot("b-2", "gen2")
+
+	result, err := w.mover(nil).failTrial(trialDeadlineReason)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := moveOutcome{
+		selection: selectionView{Revision: 6, Default: "gen3", Failed: "gen2", Spent: "apply-7"},
+		efi:       efiboot.Entries{Default: "katl-gen3.conf"},
+		statuses:  map[string]statusView{"gen1": gen1Good, "gen2": gen2FailedTrue, "gen3": gen3Good},
+		reboots:   1,
+	}
+	assertTrialResolution(t, w, result, want, "loader/entries/katl-gen3.conf", "gen3", "loader/entries/katl-gen3.conf")
+}
+
 func TestBootMoveFailTrialRepeat(t *testing.T) {
 	for _, op := range moveOps() {
 		if op.name != "fail with fallback" && op.name != "fail without fallback" {
@@ -1232,6 +1255,30 @@ func TestBootMoveUnconfirmedTrial(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestBootMoveUnconfirmedTrialPrefersDefault(t *testing.T) {
+	w := newMoveWorld(t)
+	w.running = "gen3"
+	request := armRequest(w)
+	request.Selection.PreviousKnownGoodGenerationID = "outside"
+	request.Selection.PreviousKnownGoodBootEntry = "loader/entries/katl-outside.conf"
+	if _, err := w.mover(nil).move(request); err != nil {
+		t.Fatal(err)
+	}
+	removeBootFixture(t, filepath.Join(w.root, "efi/EFI/Linux/katl-outside.efi"))
+	w.reboot("b-2", "gen3")
+
+	result, err := w.mover(nil).reconcile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := moveOutcome{
+		selection: selectionView{Revision: 6, Default: "gen1", Failed: "gen2", Spent: "apply-7"},
+		efi:       efiboot.Entries{Default: "katl-gen1.conf"},
+		statuses:  map[string]statusView{"gen1": gen1Good, "gen2": gen2Unconfirmed, "gen3": gen3Good},
+	}
+	assertTrialResolution(t, w, result, want, "loader/entries/katl-gen1.conf", "gen1", "loader/entries/katl-gen1.conf")
 }
 
 func TestBootMoveUnconfirmedTrialFaults(t *testing.T) {

@@ -616,9 +616,9 @@ func failBootedGeneration(request BootHealthRequest, generationID string, now ti
 func failedTrialSelection(root string, selection BootSelectionRecord, generationID string) (BootSelectionRecord, string, error) {
 	// Use bootFiles to preserve the legacy artifact checks until the writer cutover.
 	// Check only F to preserve the legacy fallback set until the writer cutover.
-	failure, err := resolveFailedTrial(root, selection, generationID, generationID, "", bootFiles, true)
-	if err != nil {
-		return BootSelectionRecord{}, "", fmt.Errorf("check fallback before changing the boot target: %w. Preserve boot diagnostics and recover from the console", err)
+	failure, verificationErr := resolveFailedTrial(root, selection, generationID, generationID, "", bootFiles, true)
+	if verificationErr != nil {
+		return BootSelectionRecord{}, "", fmt.Errorf("check fallback before changing the boot target: %w. Preserve boot diagnostics and recover from the console", verificationErr.cause)
 	}
 	if failure.selection.RecoveryRequired {
 		// Without a fallback the legacy writer leaves EFI unwritten, so keep its published default.

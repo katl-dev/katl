@@ -175,9 +175,9 @@ func (m *bootMover) failTrial(reason string) (bootMoveResult, error) {
 		if err != nil {
 			return err
 		}
-		failure, err := resolveFailedTrial(m.root, selection, running, running, spec.Boot.LoaderEntryPath, bootFull, false)
-		if err != nil {
-			return fmt.Errorf("operation %s: %w", operationID, failedTrialVerificationError(failure, err))
+		failure, verificationErr := resolveFailedTrial(m.root, selection, running, running, spec.Boot.LoaderEntryPath, bootFull, false)
+		if verificationErr != nil {
+			return fmt.Errorf("operation %s: %w", operationID, verificationErr)
 		}
 		request := bootMoveRequest{
 			OperationID: operationID, ExpectedRevision: selection.Revision, Source: running, Destination: failure.destination,
@@ -348,6 +348,9 @@ func (m *bootMover) admit(request bootMoveRequest, selection BootSelectionRecord
 			return bootMoveIntent{}, fmt.Errorf("operation %s: %w", request.OperationID, err)
 		}
 		if carriesOperation(status, request.OperationID) {
+			if request.Trial == trialFail {
+				return bootMoveIntent{}, fmt.Errorf("trial failure operation ID %s already appears in generation %s status. Preserve the journal and boot state from the node console for diagnosis", request.OperationID, change.GenerationID)
+			}
 			return bootMoveIntent{}, fmt.Errorf("operation ID %s already appears in generation %s status; give the move a new operation ID", request.OperationID, change.GenerationID)
 		}
 	}
@@ -552,9 +555,9 @@ func (m *bootMover) unconfirmedTrial(authority *bootMoveIntent, running, running
 		return bootMoveIntent{}, err
 	}
 
-	failure, err := resolveFailedTrial(m.root, selection, candidate, running, runningEntry, bootFull, false)
-	if err != nil {
-		return bootMoveIntent{}, fmt.Errorf("resolve trial %s: %w", trialID, failedTrialVerificationError(failure, err))
+	failure, verificationErr := resolveFailedTrial(m.root, selection, candidate, running, runningEntry, bootFull, false)
+	if verificationErr != nil {
+		return bootMoveIntent{}, fmt.Errorf("resolve trial %s: %w", trialID, verificationErr)
 	}
 	desired := failure.selection
 	desired.Revision = selection.Revision + 1
@@ -606,11 +609,22 @@ type failedTrialRejection struct {
 	verdict      bootability
 }
 
+type failedTrialVerificationError struct {
+	generationID string
+	cause        error
+}
+
+func (e *failedTrialVerificationError) Error() string {
+	return fmt.Sprintf("could not verify generation %s: %v. The trial stays pending and the boot target is unchanged. Restore read access to the path or device in the error and retry. Rebooting retries reconciliation. If the error persists, preserve the journal, then boot a healthy generation from the boot menu, or reinstall the node", e.generationID, e.cause)
+}
+
+func (e *failedTrialVerificationError) Unwrap() error { return e.cause }
+
 // resolveFailedTrial chooses the first usable recorded target. An unavailable
 // target permits another check, while an indeterminate target keeps the trial
 // pending. Without a usable target, the owner can keep only the running boot.
 func resolveFailedTrial(root string, selection BootSelectionRecord, candidate, running, runningEntry string,
-	level bootabilityLevel, recordedFallbackOnly bool) (failedTrialResolution, error) {
+	level bootabilityLevel, recordedFallbackOnly bool) (failedTrialResolution, *failedTrialVerificationError) {
 	fallback := strings.TrimSpace(selection.PreviousKnownGoodGenerationID)
 	if (selection.OneShot || fallback == "") && selection.DefaultGenerationID != candidate {
 		fallback = strings.TrimSpace(selection.DefaultGenerationID)
@@ -645,11 +659,11 @@ func resolveFailedTrial(root string, selection BootSelectionRecord, candidate, r
 		if id != candidate {
 			entry, verdict = check.knownGoodFallback(id, entryBinding, level)
 		}
+		if verdict.state == bootIndeterminate {
+			return result, &failedTrialVerificationError{generationID: id, cause: verdict.problem()}
+		}
 		if verdict.state != bootable {
 			result.rejected = append(result.rejected, failedTrialRejection{generationID: id, verdict: verdict})
-			if verdict.state == bootIndeterminate {
-				return result, verdict.problem()
-			}
 			continue
 		}
 
@@ -687,11 +701,6 @@ func resolveFailedTrial(root string, selection BootSelectionRecord, candidate, r
 	selection.BootCountedTrialPath = ""
 	result.selection = selection
 	return result, nil
-}
-
-func failedTrialVerificationError(failure failedTrialResolution, err error) error {
-	id := failure.rejected[len(failure.rejected)-1].generationID
-	return fmt.Errorf("could not verify generation %s: %w. The trial stays pending and the boot target is unchanged. Restore read access to the path or device in the error and retry. Rebooting retries reconciliation. If the error persists, preserve the journal, then boot a healthy generation from the boot menu, or reinstall the node", id, err)
 }
 
 // complete carries a durable intent from its first unfinished step. It
