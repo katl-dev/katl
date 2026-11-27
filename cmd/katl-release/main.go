@@ -339,7 +339,9 @@ func (p *provenance) verify(file, sourceRef, commit string) ([]byte, error) {
 	if err != nil {
 		failure := ghFailure("gh attestation verify", err, stderrOf(err))
 		var api *apiError
-		if exit := (*exec.ExitError)(nil); errors.As(err, &exit) && errors.As(failure, &api) && !transient(api) && !api.auth && api.status != 401 {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && errors.As(failure, &api) &&
+			!api.auth && !api.network && (api.status == 0 || api.status == 404) {
 			failure = fmt.Errorf("%w: %w", errUnattested, failure)
 		}
 		return nil, fmt.Errorf("provenance verification failed for %s; check gh attestation verify and network access: %w", filepath.Base(file), failure)

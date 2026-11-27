@@ -61,10 +61,11 @@ func transient(err error) bool {
 }
 
 var (
-	httpStatus = regexp.MustCompile(`\(HTTP ([0-9]{3})\)`)
+	// gh api prints "(HTTP 404)"; gh attestation prints "HTTP 404:".
+	httpStatus = regexp.MustCompile(`\bHTTP ([0-9]{3})(?:\)|:)`)
 	// networkFailure matches what gh and Go's HTTP client print when a request
 	// gets no response.
-	networkFailure = regexp.MustCompile(`(?i)error connecting to|dial tcp|i/o timeout|connection reset|connection refused|no such host|TLS handshake timeout|timeout awaiting response|unexpected EOF`)
+	networkFailure = regexp.MustCompile(`(?i)error connecting to|dial tcp|i/o timeout|connection reset|connection refused|no such host|TLS handshake timeout|timeout awaiting response|context deadline exceeded|Client\.Timeout exceeded while awaiting headers|unexpected EOF`)
 )
 
 // ghAuthRequired is gh's exit status when it has no credentials.
@@ -358,7 +359,6 @@ func (r *reader) attempt(ctx context.Context, attempt runstatus.Attempt, in *rel
 	next := runstatus.Attempt{Run: attempt.Run, Number: attempt.Number + 1}
 	var until time.Time
 	following, err := runstatus.Read(ctx, get, r.repository, next)
-	bounded := err == nil
 	switch {
 	case notFound(err):
 	case err != nil:
@@ -392,7 +392,7 @@ func (r *reader) attempt(ctx context.Context, attempt runstatus.Attempt, in *rel
 	if err := pages(ctx, r, r.repo(fmt.Sprintf("actions/runs/%d/artifacts?per_page=100", attempt.Run)), func(page artifactsPage) {
 		for _, artifact := range page.Artifacts {
 			if artifact.WorkflowRun.ID == attempt.Run && !artifact.CreatedAt.Before(run.StartedAt) &&
-				(!bounded || artifact.CreatedAt.Before(until)) {
+				(until.IsZero() || artifact.CreatedAt.Before(until)) {
 				read.Artifacts = append(read.Artifacts, artifact.Name)
 			}
 		}

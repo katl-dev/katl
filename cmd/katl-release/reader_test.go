@@ -398,12 +398,22 @@ func TestReaderReleases(t *testing.T) {
 		return r, attestations
 	}
 
-	// A transient failure of either gh attestation command is retried.
-	for name, flaky := range map[string]string{"verified": "", "trusted root retried": "trusted-root", "verify retried": "verify"} {
-		t.Run(name, func(t *testing.T) {
+	attestationURL := " (https://api.github.com/repos/katl-dev/katl/attestations/sha256:" + digest + ")"
+	offline := ghExit("Get \"https://tuf-repo-cdn.sigstore.dev/timestamp.json\": dial tcp: i/o timeout")
+	for _, tc := range []struct {
+		name, command string
+		failure       error
+	}{
+		{name: "verified"},
+		{"trusted root retried", "trusted-root", offline},
+		{"verify retried", "verify", offline},
+		// A gateway error must get another attempt instead of stopping the decision.
+		{"verify gateway error retried", "verify", ghExit("Error: HTTP 502: Bad Gateway" + attestationURL)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			r, attestations := world(t)
-			if flaky != "" {
-				attestations.failures[flaky] = []error{ghExit("Get \"https://tuf-repo-cdn.sigstore.dev/timestamp.json\": dial tcp: i/o timeout")}
+			if tc.failure != nil {
+				attestations.failures[tc.command] = []error{tc.failure}
 			}
 			in, err := r.Read(context.Background(), "refs/heads/release/2026.12.1", readerHead, "")
 			if err != nil {
@@ -433,7 +443,6 @@ func TestReaderReleases(t *testing.T) {
 	// An attestation that was not verified stops the decision. A refusal by
 	// gh says the release must not be published; any other failure says only
 	// that the verification could not run.
-	offline := ghExit("Get \"https://tuf-repo-cdn.sigstore.dev/timestamp.json\": dial tcp: i/o timeout")
 	unverified := "could not verify the attestation of the published SHA256SUMS of v2026.12.1-rc.1"
 	unattested := "the published SHA256SUMS of v2026.12.1-rc.1 has no valid attestation from release-artifacts.yml at " + readerHead + " on refs/heads/release/2026.12.1"
 	for _, tc := range []struct {
@@ -444,6 +453,16 @@ func TestReaderReleases(t *testing.T) {
 		{"verify refused", func(p *fakeProvenance) {
 			p.failures["verify"] = []error{ghExit("Error: verifying with issuer \"sigstore.dev\": no matching attestations")}
 		}, unattested},
+		// An authentication or permission error must not look like a rejected attestation.
+		{"verify bad credentials", func(p *fakeProvenance) {
+			p.failures["verify"] = []error{ghExit("Error: HTTP 401: Bad credentials" + attestationURL)}
+		}, unverified},
+		{"verify forbidden", func(p *fakeProvenance) {
+			p.failures["verify"] = []error{ghExit("Error: HTTP 403: Resource not accessible by integration" + attestationURL)}
+		}, unverified},
+		{"verify forbidden with parenthesized status", func(p *fakeProvenance) {
+			p.failures["verify"] = []error{ghExit("gh: Resource not accessible by integration (HTTP 403)")}
+		}, unverified},
 		{"verify offline", func(p *fakeProvenance) { p.failures["verify"] = slices.Repeat([]error{offline}, readAttempts) }, unverified},
 		{"gh missing", func(p *fakeProvenance) {
 			p.failures["verify"] = []error{&exec.Error{Name: "gh", Err: exec.ErrNotFound}}
@@ -525,6 +544,32 @@ func TestTransient(t *testing.T) {
 		if got := transient(tc.err); got != tc.want {
 			t.Errorf("%s: transient = %v, want %v", tc.name, got, tc.want)
 		}
+	}
+}
+
+func TestGHFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name, stderr string
+		status       int
+		network      bool
+	}{
+		// Both spellings must carry an HTTP status into the retry and refusal checks.
+		{name: "api status", stderr: "gh: Not Found (HTTP 404)", status: 404},
+		{name: "attestation status", stderr: "Error: HTTP 401: Bad credentials (https://api.github.com/repos/katl-dev/katl/attestations/sha256:deadbeef)", status: 401},
+		// Timeouts without an HTTP response must be eligible for retry.
+		{name: "context deadline", stderr: "Get \"https://api.github.com\": context deadline exceeded", network: true},
+		{name: "client timeout", stderr: "Get \"https://api.github.com\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)", network: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ghFailure("gh", ghExit(tc.stderr), tc.stderr)
+			var api *apiError
+			if !errors.As(err, &api) {
+				t.Fatalf("expected an API error, got %v", err)
+			}
+			if api.status != tc.status || api.network != tc.network {
+				t.Fatalf("status = %d, network = %v, want status = %d, network = %v", api.status, api.network, tc.status, tc.network)
+			}
+		})
 	}
 }
 
