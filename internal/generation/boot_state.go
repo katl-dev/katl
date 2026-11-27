@@ -129,12 +129,20 @@ func readLegacyBootState(root, runningID string, readEFI func(string) (efiboot.E
 		}
 		state.generations[id] = bootGenerationState{spec: spec, status: status, err: err}
 	}
-	// Generation 0 and manual selections can be pending without a change-triggered trial.
-	trialID := cmp.Or(selection.TrialGenerationID, selection.TargetBootGenerationID)
-	trial := state.generations[trialID]
-	if selection.PendingHealthValidation && selection.PendingTransactionID != "" && trial.spec.PreviousGenerationID != "" {
-		state.trialGenerationID = trialID
-	}
+	state.trialGenerationID = legacyTrialID(selection, func(id string) string {
+		return state.generations[id].spec.PreviousGenerationID
+	})
 	state.efi, state.efiErr = readEFI(root)
 	return state, nil
+}
+
+// legacyTrialID names the generation that a selection without an intent arms
+// as a change-triggered trial, or returns "" when it arms none. Generation 0
+// and manual selections can be pending without a change-triggered trial.
+func legacyTrialID(selection BootSelectionRecord, previousGenerationID func(string) string) string {
+	trialID := cmp.Or(selection.TrialGenerationID, selection.TargetBootGenerationID)
+	if trialID != "" && selection.PendingHealthValidation && selection.PendingTransactionID != "" && previousGenerationID(trialID) != "" {
+		return trialID
+	}
+	return ""
 }

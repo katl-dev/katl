@@ -119,6 +119,214 @@ interrupted live promotion receipts eligible for recovery at a later startup
 after a runtime capable of reconciliation completes the move. A missing
 intent uses the existing boot health and selection path.
 
+## Boot move owner
+
+One owner in `internal/generation` writes boot moves. Production writers
+keep the legacy flow in Transaction Flow below until they move to this owner.
+Every step runs under the boot-state lock, in this order:
+
+1. Reconcile any outstanding intent, then admit the move. A stale
+   `expectedSelectionRevision` is rejected. Repeating a move that was already
+   published and resolved changes nothing and reports it resolved. A repeat
+   is recognised only when the next revision holds its selection and every
+   generation it changes carries its operation ID, so a different move with
+   an equal selection is rejected as stale. An operation ID that already
+   appears in a target generation's transitions is refused, as is a move
+   while a one-shot for a generation other than the running one or the
+   default is selected, because the intent could not record it.
+2. Durably write the intent. Before writing, the owner validates the intent
+   with the v1 reader's rules and checks the status transitions and the
+   bootability of every target that is not the running generation.
+3. Check the revision in `selection.json`: it must be the expected revision,
+   or the intent's desired selection already published. On a conflict the
+   move stops before it changes status, EFI or reboot eligibility.
+4. Project `statusChanges`. A generation whose transitions already carry the
+   intent's operation ID was projected by this move and is skipped.
+5. If EFI differs from the projection, or EFI cannot be read, clear
+   `LoaderEntryOneShot`, set `LoaderEntryDefault`, then set the desired
+   one-shot. The owner then reads both variables back. A read error or a
+   mismatch stops the move with the intent in place.
+6. Spend reboot eligibility, if the move has any, by rewriting the same
+   intent with `reboot.spent` and `desiredSelection.spentRecoveryTrialID` set.
+7. Publish `desiredSelection`, unless it is already published.
+8. Resolve the intent by removing it, unless the intent is a trial
+   authority. Only after this step can the caller overwrite a slot or
+   remove a loader entry.
+
+The owner requests a reboot only from a call that spent eligibility in step 6,
+on the boot that began the move, when the running generation is not the
+move's next target. A crash between the spend and the dispatch leaves zero
+reboots for that trial, and a retry never requests a second one.
+
+The projection depends on the boot. On the boot that began the move, it is
+the desired default and the desired one-shot. Once that boot has ended, the
+desired one-shot counts as delivered: firmware boots a one-shot at most once,
+so reconciliation accepts it as consumed and never arms it again. If the
+variable still holds the desired entry, the owner leaves it. Any other
+one-shot is cleared.
+
+Reconciliation runs at activation of every boot, before another move is
+admitted, and before a target is reported as selected. It first validates
+the running generation with the activation check, which requires one of the
+four recorded targets with a matching root PARTUUID, then completes the
+intent from its first unfinished step. A conflicting selection revision, an
+unrelated running generation or a wrong root PARTUUID stops reconciliation
+without changes. With no intent, reconciliation imports a legacy trial as an
+in-memory trial authority (see Migration below). Generation 0 and manual selections
+have no legacy trial and import nothing.
+
+Every transition that a timer or a fault causes, such as a deadline expiry,
+a health failure, or a trial that ended without confirmation, is a move.
+Each records a status transition carrying its operation ID, reason and time,
+so tests observe the event in `status.json` rather than on a wall clock. The
+owner takes its clock as an input. The deadlines that trigger these moves are
+unchanged: the 90-second management-link check in `katl-boot-health` and the
+10-minute `katl-boot-deadman.timer`.
+
+## Trial authority lifetime
+
+A trial authority is an intent whose reboot is eligible and unspent and
+whose `desiredSelection.trialGenerationID` equals `destinationGenerationID`.
+Only the arm move creates a durable one; a legacy import holds one in memory
+(see Migration below). Every other intent resolves when its selection is
+published.
+
+Admission enforces the rules that keep trial authority with the owner rather
+than with caller convention:
+
+- An arm keeps the published default; only promotion moves it to the
+  candidate.
+- A promotion publishes the bound candidate as the default.
+- A move that does not arm a trial may not publish a selection that the
+  reader would classify as a legacy trial: pending health validation and a
+  `pendingTransactionID` for a generation with a predecessor.
+
+An authority survives publication and the reboot, because it is the only
+durable record that arms recovery. While it exists, only a move that resolves
+it is admitted. That move replaces the authority with its own intent, which
+uses the authority's `trialID` as its `reboot.trialID`.
+
+`bootID` names the boot that began the move, so it is never compared with the
+candidate's boot ID. Activation binds the authority to a boot when that boot
+is not the boot that began the move and the kernel-selected generation is the
+destination. It must also pass the activation check. A health result can
+resolve only a bound authority.
+
+Three outcomes resolve an authority:
+
+- **Promotion** publishes the candidate as the default, with an ineligible
+  reboot.
+- **Failure** publishes the fallback, or `recoveryRequired` when no bootable
+  fallback remains. A failure with a fallback spends the trial's reboot. A
+  failure without one has no destination and no reboot.
+- **An unconfirmed trial** is resolved by reconciliation when the authority is
+  published and a later boot runs another recorded target. The trial has
+  then ended, whether the candidate failed before confirming or firmware
+  never booted it. Reconciliation marks the candidate's boot `failed`, and
+  computes the selection with the same failure rule as a failed trial: the
+  fallback becomes the default when it passes the recovery check, and
+  `recoveryRequired` is set otherwise. It spends the reboot without
+  dispatching it. A next target that is neither bootable nor running stops
+  the resolution without changes, with the authority in place.
+
+Binding is derived, not recorded: every boot of the candidate that is not the
+issuing boot binds the authority again, so the candidate may run more than
+once before a health result resolves the trial. What the owner guarantees is
+at most one automatic reboot per trial, because the spend is durable before
+the selection is published and before any reboot is requested.
+
+An interrupted arm whose issuing boot has ended follows the same rule. It
+completes, then resolves as unconfirmed unless the candidate is running.
+
+### Lifecycle example
+
+Generation `gen1` is the default. On boot `b-1`, the arm move writes the
+intent below, sets `LoaderEntryDefault` to `katl-gen1.conf`, sets
+`LoaderEntryOneShot` to `katl-gen2.conf`, verifies both, and publishes
+revision 5. The authority remains.
+
+```json
+{"operationID": "apply-7", "bootID": "b-1", "expectedSelectionRevision": 4,
+ "sourceGenerationID": "gen1", "destinationGenerationID": "gen2",
+ "priorDefault": {"generationID": "gen1", "entry": "katl-gen1.conf"},
+ "priorOneShot": {"generationID": "", "entry": ""},
+ "desiredDefault": {"generationID": "gen1", "entry": "katl-gen1.conf"},
+ "desiredOneShot": {"generationID": "gen2", "entry": "katl-gen2.conf"},
+ "desiredSelection": {"revision": 5, "defaultGenerationID": "gen1",
+   "trialGenerationID": "gen2", "previousKnownGoodGenerationID": "gen1",
+   "pendingTransactionID": "apply-7", "pendingHealthValidation": true, "...": "..."},
+ "statusChanges": [{"generationID": "gen2", "bootState": "pending", "...": "..."}],
+ "reboot": {"trialID": "apply-7", "eligible": true, "spent": false}}
+```
+
+The managed reboot starts boot `b-2`. Firmware consumes the one-shot and
+boots `gen2`. Activation reconciles: the issuing boot has ended, so the empty
+one-shot matches, and `gen2` is the destination, so the authority binds to
+`b-2`.
+
+The health check on `b-2` fails. The failure move replaces the authority:
+
+```json
+{"operationID": "fail-apply-7", "bootID": "b-2", "expectedSelectionRevision": 5,
+ "sourceGenerationID": "gen2", "destinationGenerationID": "gen1",
+ "priorDefault": {"generationID": "gen1", "entry": "katl-gen1.conf"},
+ "priorOneShot": {"generationID": "gen2", "entry": ""},
+ "desiredDefault": {"generationID": "gen1", "entry": "katl-gen1.conf"},
+ "desiredOneShot": {"generationID": "", "entry": ""},
+ "desiredSelection": {"revision": 6, "defaultGenerationID": "gen1",
+   "failedBootGenerationID": "gen2", "...": "..."},
+ "statusChanges": [{"generationID": "gen2", "bootState": "failed",
+   "healthState": "unhealthy", "reason": "katl-boot-health-deadline-expired", "...": "..."}],
+ "reboot": {"trialID": "apply-7", "eligible": true, "spent": false}}
+```
+
+The process crashes after it verifies EFI and before it spends the reboot.
+`katl-boot-recovery.service` runs as the OnFailure retry on `b-2`. It
+reconciles the same intent, skips the status already projected under
+`fail-apply-7`, finds EFI matching, rewrites the intent with `"spent": true`
+and `"spentRecoveryTrialID": "apply-7"`, publishes revision 6, removes the
+intent, and requests one reboot into `gen1`. If the crash had come after the
+spend, the retry would publish and resolve without a reboot, leaving `gen1`
+as the next boot. Revision 6 keeps `spentRecoveryTrialID`, so later retries
+on `b-2` also request no reboot.
+
+### Migration
+
+A legacy trial has a staged generation with a predecessor, a trial or next
+pointer, pending health validation and a `pendingTransactionID`. It is
+imported as a trial authority. Its operation ID and trial ID are the
+`pendingTransactionID`. Its `bootID` is `legacy-import`, which is never a
+kernel boot ID, because the boot that armed the trial is unknown. The import
+observes EFI for the prior entries. An EFI read error refuses the import.
+
+A legacy import writes no intent and publishes nothing in this release. A
+rollback target may run the reader-only release, which refuses any intent it
+cannot complete, so a durable import would leave that release unable to
+boot the node's own legacy trial. The import therefore keeps the authority in
+memory, and each reconciliation derives it again from the unchanged legacy
+selection. The authority becomes durable only in the intent of the move that
+resolves it: a promotion, a failure, or an unconfirmed-trial resolution,
+which expects the legacy selection's revision.
+
+### Open questions
+
+- Withdrawing or superseding an armed trial before its reboot, for example
+  when the operator cancels a next-boot change, has no move today: while the
+  authority exists only a resolving move is admitted. #820 must define that
+  workflow.
+
+### Notes for #820
+
+- `removeBootMoveIntent` is kept as written; review it when production
+  callers start resolving intents.
+- The owner keeps an existing `committedAt` when a status change commits a
+  generation, while the live promotion path in `boot_health.go` overwrites
+  it. #820 must choose one rule when it moves that path to the owner.
+- An arm interrupted before its one-shot is written resolves on a later boot
+  with the same reason as a trial that firmware booted, because firmware
+  consumes the one-shot on every boot and the state cannot tell the two
+  apart.
+
 ## Transaction Flow
 
 To try a new candidate generation:
