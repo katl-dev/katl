@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+artifact=_build/mkosi/katl-bird.raw
+
+version_at() (
+    local definition
+    definition="$(git show "$1:extensions/bird/extension.env")"
+    # shellcheck disable=SC1091
+    source /dev/stdin <<<"$definition"
+    printf '%s\n' "${KATL_EXTENSION_ARTIFACT_VERSION:?}"
+)
+
+pack() (
+    # shellcheck disable=SC1091
+    source extensions/bird/extension.env
+    local created_at
+    created_at="$(date --utc --date="@${SOURCE_DATE_EPOCH:?}" +%Y-%m-%dT%H:%M:%SZ)"
+    KATLCTL_CONFIG="$PWD/_build/katlctl-ci.yaml" go run -buildvcs=false ./cmd/katlctl system-extension publish \
+        "$@" \
+        --name "$KATL_EXTENSION_NAME" \
+        --artifact-version "$KATL_EXTENSION_ARTIFACT_VERSION" \
+        --payload-version "$KATL_EXTENSION_PAYLOAD_VERSION" \
+        --architecture "${KATL_ARCHITECTURE:?}" \
+        --runtime-interface "$KATL_EXTENSION_RUNTIME_INTERFACE" \
+        --created-at "$created_at" \
+        --sysext "$artifact"
+)
+
+build() (
+    local fingerprint="$1" pinned_metadata="${2:-}"
+    scripts/mkosi build-runtime
+    if [[ -n "$fingerprint" ]]; then
+        # mkosi records the overlay's RPM transaction, including dependencies.
+        # Build it fresh so the manifest describes this transaction.
+        (set -o noclobber; cat > mkosi.local.conf <<'CONFIG'
+[Output]
+ManifestFormat=json
+
+[Content]
+FinalizeScripts=_build/mkosi/ci-bird-recipe
+
+[Build]
+Incremental=no
+CONFIG
+        )
+        trap 'rm -f mkosi.local.conf _build/mkosi/ci-bird-recipe' EXIT
+        if [[ -n "$pinned_metadata" ]]; then
+            # Resolve against the repository metadata that the head's overlay
+            # build synced into the shared cache, so both transactions see the
+            # same repository snapshot.
+            printf 'CacheOnly=metadata\n' >> mkosi.local.conf
+        fi
+        # Capture the resolved settings from this build with its actual flags.
+        cat > _build/mkosi/ci-bird-recipe <<'SCRIPT'
+#!/bin/sh
+set -eu
+cp "$MKOSI_CONFIG" "$OUTPUTDIR/katl-bird-recipe.json"
+SCRIPT
+        chmod +x _build/mkosi/ci-bird-recipe
+    fi
+    scripts/build-system-extension bird
+    docker run --rm --privileged \
+        --volume "$PWD:/work" \
+        --workdir /work \
+        --env KATL_REPO_ROOT=/work \
+        "$KATL_MKOSI_IMAGE" \
+        scripts/check-system-extension bird
+    local packed
+    packed="$(pack --pack-only)"
+    printf '%s\n' "$packed"
+
+    if [[ -n "$fingerprint" ]]; then
+        {
+            # The resolved settings that shape the overlay's content, the
+            # builder's filesystem/config, the RPM transaction, and the packed
+            # overlay with its OCI metadata. Build wiring, such as cache
+            # locations, environment and this gate's own settings, is omitted.
+            printf 'recipe: '
+            jq -ecS '
+                with_entries(select(.key | IN(
+                    "Architecture", "BaseTrees", "BuildScripts", "CleanPackageMetadata",
+                    "CompressLevel", "CompressOutput", "Distribution", "ExtraTrees",
+                    "FinalizeScripts", "Format", "ImageId", "ImageVersion", "Mirror",
+                    "Overlay", "Packages", "PostInstallationScripts", "PostOutputScripts",
+                    "PrepareScripts", "Release", "RemoveFiles", "RemovePackages",
+                    "Repositories", "SELinuxRelabel", "Seed", "SkeletonTrees", "Snapshot",
+                    "SourceDateEpoch", "SplitArtifacts", "Verity", "VolatilePackages",
+                    "WithDocs", "WithRecommends"
+                )))
+                | if has("FinalizeScripts") then
+                    .FinalizeScripts |= map(select(tostring | endswith("/ci-bird-recipe") | not))
+                  else . end
+            ' _build/mkosi/katl-bird-recipe.json | sha256sum
+            printf 'toolchain: '
+            docker image inspect --format '{{json .RootFS.Layers}} {{json .Config}}' "$KATL_MKOSI_IMAGE" | sha256sum
+            printf 'packages: '
+            jq -ecS '.packages | sort_by(.type, .name, .version, .architecture)' \
+                "${artifact%.raw}.manifest" | sha256sum
+            printf '%s\n' "$packed"
+        } > "$fingerprint"
+    fi
+)
+
+case "${1:-}" in
+    version)
+        version_at "${2:?provide a Git revision}"
+        ;;
+    build)
+        base="${2:-}"
+        if [[ -n "$base" ]]; then
+            previous_version="$(version_at "$base")"
+            version="$(version_at HEAD)"
+            if [[ "$previous_version" == "$version" ]]; then
+                comparison="$(mktemp -d "${RUNNER_TEMP:?}/bird-comparison.XXXXXX")"
+                # Both producers get the same build commit, timestamp, image
+                # cache, which holds the synced repository metadata, and
+                # package cache. The base keeps its own build and builder.
+                export KATL_MKOSI_CACHE_DIR="$comparison/cache"
+                export KATL_MKOSI_PACKAGE_CACHE_DIR="$comparison/packages"
+                build "$comparison/head"
+                git worktree add --detach "$comparison/base" "$base"
+                (
+                    cd "$comparison/base"
+                    export KATL_MKOSI_IMAGE="${KATL_MKOSI_IMAGE}-base"
+                    build "$comparison/base-fingerprint" pinned
+                )
+                if diff -u "$comparison/base-fingerprint" "$comparison/head"; then
+                    exit 0
+                else
+                    status=$?
+                    if [[ "$status" == 1 ]]; then
+                        echo "::error::BIRD build inputs changed since $base under artifact version $version, which is already taken. Advance KATL_EXTENSION_ARTIFACT_VERSION in extensions/bird/extension.env so the change is published." >&2
+                    fi
+                    exit "$status"
+                fi
+            fi
+        fi
+        build ""
+        ;;
+    publish)
+        version="$(version_at HEAD)"
+        pack --ref "ghcr.io/katl-dev/katl/extensions/bird:$version"
+        ;;
+    *)
+        echo "usage: scripts/ci-bird-extension {version REV|build [BASE_SHA]|publish}" >&2
+        exit 2
+        ;;
+esac

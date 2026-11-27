@@ -8,121 +8,215 @@ import (
 	"strings"
 	"testing"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/katl-dev/katl/internal/gittest"
 )
 
-func TestSystemExtensionPublication(t *testing.T) {
-	contents, err := os.ReadFile(filepath.Join(repoRoot(t), ".github/workflows/system-extensions.yml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var workflow struct {
-		Jobs map[string]struct {
-			Env   map[string]string                `yaml:"env"`
-			Steps []struct{ ID, Run, Uses string } `yaml:"steps"`
-		} `yaml:"jobs"`
-	}
-	if err := yaml.Unmarshal(contents, &workflow); err != nil {
-		t.Fatal(err)
-	}
-	bird := workflow.Jobs["bird"]
-	pattern, err := regexp.Compile(bird.Env["KATL_BIRD_RECIPE_PATTERN"])
-	if err != nil {
-		t.Fatal(err)
-	}
-	for path, needsRelease := range map[string]bool{
-		"extensions/bird/extension.env":                   true,
-		"extensions/bird/bird.conf":                       true,
-		"mkosi.profiles/system-extension-bird/mkosi.conf": true,
-		"mkosi.profiles/runtime/mkosi.conf":               true,
-		"Containerfile.mkosi":                             true,
-		"scripts/build-system-extension":                  true,
-		".github/workflows/system-extensions.yml":         false,
-		"cmd/katlctl/system_extension.go":                 false,
+func TestSystemExtensionRevision(t *testing.T) {
+	revision := birdRevisionStep(t)
+
+	for _, tc := range []struct {
+		name, path, contents string
+		advance, wantBump    bool
+	}{
+		{name: "runtime wiring", path: "mkosi.profiles/runtime/mkosi.build", contents: "refactor\n"},
+		{name: "documentation", path: "extensions/bird/README.md", contents: "updated\n"},
+		{name: "build wiring", path: "recipe.json", contents: `{"Packages":["bird"],"Environment":{"KATL_EXTRA":"1"},"CacheDirectory":"/elsewhere"}`},
+		{name: "recipe", path: "recipe.json", contents: "{\"Packages\":[\"bird\",\"dep\"]}\n", wantBump: true},
+		{name: "toolchain", path: "builder", contents: "different layer\n", wantBump: true},
+		{name: "RPM resolution", path: "packages.json", contents: `{"packages":[{"type":"rpm","name":"bird","version":"3.4.0-2","architecture":"x86_64"}]}`, wantBump: true},
+		{name: "overlay bytes", path: "overlay", contents: "different unit\n", wantBump: true},
+		{name: "publication metadata", path: "extensions/bird/extension.env", contents: birdDefinition("v1", "v3.4.1"), wantBump: true},
+		{name: "advanced version", path: "overlay", contents: "different unit\n", advance: true},
 	} {
-		if got := pattern.MatchString(path); got != needsRelease {
-			t.Errorf("recipe classification of %s = %t, want %t", path, got, needsRelease)
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newBirdRepo(t)
+			base := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+			writeBirdFile(t, dir, tc.path, tc.contents, 0o644)
+			if tc.advance {
+				writeBirdFile(t, dir, "extensions/bird/extension.env", birdDefinition("v2", "v3.4.0"), 0o644)
+			}
+			runGit(t, dir, "add", ".")
+			runGit(t, dir, "commit", "--quiet", "-m", "change extension")
+			// The pull request's previous head shares its fingerprint, so only
+			// a comparison against the base exposes the change.
+			previousHead := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+			runGit(t, dir, "commit", "--quiet", "--allow-empty", "-m", "push to the pull request")
+
+			output, err := runBirdRevision(t, dir, revision, map[string]string{
+				"${{ github.event.pull_request.base.sha }}": base,
+				"${{ github.event.before }}":                previousHead,
+			})
+			if tc.wantBump {
+				if err == nil || !strings.Contains(string(output), "Advance KATL_EXTENSION_ARTIFACT_VERSION") {
+					t.Fatalf("expected revision error, got %v:\n%s", err, output)
+				}
+			} else if err != nil {
+				t.Fatalf("revision check: %v\n%s", err, output)
+			}
+		})
+	}
+}
+
+// Two pull requests can each advance the artifact version to the same value.
+// Each passes against its own base, so the push of the second must compare
+// against the first, which main already published under that version.
+func TestSystemExtensionRevisionAfterMerge(t *testing.T) {
+	revision := birdRevisionStep(t)
+
+	for _, tc := range []struct {
+		name, path, contents string
+		wantBump             bool
+	}{
+		{name: "second overlay change", path: "overlay", contents: "second change\n", wantBump: true},
+		{name: "second documentation change", path: "extensions/bird/README.md", contents: "second change\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := newBirdRepo(t)
+			published := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+
+			writeBirdFile(t, dir, "overlay", "first change\n", 0o644)
+			writeBirdFile(t, dir, "extensions/bird/extension.env", birdDefinition("v2", "v3.4.0"), 0o644)
+			runGit(t, dir, "commit", "--quiet", "-am", "first change")
+			first := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+			push := map[string]string{
+				"${{ github.event.pull_request.base.sha }}": "",
+				"${{ github.event.before }}":                published,
+			}
+			if output, err := runBirdRevision(t, dir, revision, push); err != nil {
+				t.Fatalf("push of the first change: %v\n%s", err, output)
+			}
+
+			writeBirdFile(t, dir, tc.path, tc.contents, 0o644)
+			runGit(t, dir, "add", ".")
+			runGit(t, dir, "commit", "--quiet", "-m", "second change")
+			push["${{ github.event.before }}"] = first
+			output, err := runBirdRevision(t, dir, revision, push)
+			if tc.wantBump {
+				if err == nil || !strings.Contains(string(output), "Advance KATL_EXTENSION_ARTIFACT_VERSION") {
+					t.Fatalf("expected revision error, got %v:\n%s", err, output)
+				}
+			} else if err != nil {
+				t.Fatalf("push of the second change: %v\n%s", err, output)
+			}
+		})
+	}
+}
+
+func birdRevisionStep(t *testing.T) workflowStep {
+	t.Helper()
+	workflow, _ := readWorkflow(t, "system-extensions.yml")
+	for _, step := range workflow.Jobs["bird"].Steps {
+		if step.ID == "revision" {
+			return step
 		}
 	}
-	var revision, publication string
-	for _, step := range bird.Steps {
-		switch step.ID {
-		case "revision":
-			revision = step.Run
-		case "publication":
+	t.Fatal("missing revision check")
+	return workflowStep{}
+}
+
+// newBirdRepo commits a published BIRD extension whose producer, builder and
+// publisher are stubs that report the fingerprinted inputs from plain files.
+func newBirdRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	runGit(t, dir, "init", "--quiet")
+	writeBirdFile(t, dir, "extensions/bird/extension.env", birdDefinition("v1", "v3.4.0"), 0o644)
+	writeBirdFile(t, dir, "scripts/ci-bird-extension", string(mustReadFile(t, filepath.Join(repoRoot(t), "scripts/ci-bird-extension"))), 0o755)
+	writeBirdFile(t, dir, "recipe.json", `{"Packages":["bird"],"Environment":{},"CacheDirectory":"/cache"}`, 0o644)
+	writeBirdFile(t, dir, "builder", "builder layer\n", 0o644)
+	writeBirdFile(t, dir, "packages.json", `{"packages":[{"type":"rpm","name":"bird","version":"3.4.0-1","architecture":"x86_64"}]}`, 0o644)
+	writeBirdFile(t, dir, "overlay", "unit\n", 0o644)
+	writeBirdFile(t, dir, "scripts/mkosi", `#!/usr/bin/env bash
+set -eu
+mkdir -p _build/mkosi
+`, 0o755)
+	writeBirdFile(t, dir, "scripts/build-system-extension", `#!/usr/bin/env bash
+set -eu
+mkdir -p _build/mkosi
+cp overlay _build/mkosi/katl-bird.raw
+cp packages.json _build/mkosi/katl-bird.manifest
+cp recipe.json _build/mkosi/katl-bird-recipe.json
+`, 0o755)
+	writeBirdFile(t, dir, "bin/docker", `#!/usr/bin/env bash
+set -eu
+if [[ "$1" == image ]]; then cat builder; fi
+`, 0o755)
+	writeBirdFile(t, dir, "bin/go", `#!/usr/bin/env bash
+set -eu
+printf 'packed: '
+{ printf '%s\n' "$@"; cat _build/mkosi/katl-bird.raw; } | sha256sum
+`, 0o755)
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "--quiet", "-m", "initial extension")
+	return dir
+}
+
+// runBirdRevision runs the revision step with its env expressions resolved
+// from the given GitHub event context.
+func runBirdRevision(t *testing.T, dir string, step workflowStep, event map[string]string) ([]byte, error) {
+	t.Helper()
+	cmd := exec.Command("bash", "-euo", "pipefail", "-c", step.Run)
+	cmd.Dir = dir
+	cmd.Env = append(gittest.Env(os.Environ(), dir),
+		"PATH="+filepath.Join(dir, "bin")+":"+os.Getenv("PATH"),
+		"RUNNER_TEMP="+t.TempDir(), "KATL_MKOSI_IMAGE=test-builder",
+		"KATL_ARCHITECTURE=x86_64", "SOURCE_DATE_EPOCH=1780000000",
+	)
+	for name, expression := range step.Env {
+		value, ok := event[expression]
+		if !ok {
+			t.Fatalf("revision step env %s=%s has no value in the simulated event", name, expression)
+		}
+		cmd.Env = append(cmd.Env, name+"="+value)
+	}
+	return cmd.CombinedOutput()
+}
+
+func TestSystemExtensionPublication(t *testing.T) {
+	workflow, _ := readWorkflow(t, "system-extensions.yml")
+	var publication string
+	for _, step := range workflow.Jobs["bird"].Steps {
+		if step.ID == "publication" {
 			publication = step.Run
 		}
 	}
-	if revision == "" || publication == "" {
-		t.Fatal("revision or publication decision missing")
+	if publication == "" {
+		t.Fatal("missing publication decision")
 	}
 
 	for _, tc := range []struct {
-		name, changed, previous, current, event, manual string
-		wantError, wantPublish                          bool
+		name, event, version, manual string
+		wantPublish                  bool
 	}{
-		{name: "unchanged recipe", changed: "extensions/bird/bird.conf", previous: "v1", current: "v1", event: "pull_request", wantError: true},
-		{name: "advanced recipe", changed: "extensions/bird/bird.conf", previous: "v1", current: "v2", event: "pull_request"},
-		{name: "unrelated change", changed: "docs/README.md", previous: "v1", current: "v1", event: "push"},
-		{name: "test change", changed: "extensions/bird/bird_test.go", previous: "v1", current: "v1", event: "push"},
-		{name: "push recipe", changed: "extensions/bird/bird.conf", previous: "v1", current: "v2", event: "push", wantPublish: true},
-		{name: "manual publish", event: "workflow_dispatch", manual: "true", wantPublish: true},
-		{name: "manual dry run", event: "workflow_dispatch", manual: "false"},
+		{name: "same revision on push", event: "push", version: "v1"},
+		{name: "advanced revision on push", event: "push", version: "v2", wantPublish: true},
+		{name: "advanced revision on pull request", event: "pull_request", version: "v2"},
+		{name: "manual publish", event: "workflow_dispatch", version: "v1", manual: "true", wantPublish: true},
+		{name: "manual dry run", event: "workflow_dispatch", version: "v1"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			runGit(t, dir, "init", "--quiet")
-			if err := os.MkdirAll(filepath.Join(dir, "extensions/bird"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			previous := tc.previous
-			if previous == "" {
-				previous = "v1"
-			}
-			versionPath := filepath.Join(dir, "extensions/bird/extension.env")
-			if err := os.WriteFile(versionPath, []byte("KATL_EXTENSION_ARTIFACT_VERSION="+previous+"\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
+			writeBirdFile(t, dir, "scripts/ci-bird-extension", string(mustReadFile(t, filepath.Join(repoRoot(t), "scripts/ci-bird-extension"))), 0o755)
+			writeBirdFile(t, dir, "extensions/bird/extension.env", birdDefinition("v1", "v3.4.0"), 0o644)
 			runGit(t, dir, "add", ".")
-			runGit(t, dir, "commit", "--quiet", "-m", "initial recipe")
-			base := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
-			if tc.changed != "" {
-				changedPath := filepath.Join(dir, tc.changed)
-				if err := os.MkdirAll(filepath.Dir(changedPath), 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(changedPath, []byte("changed\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				if tc.current != tc.previous {
-					if err := os.WriteFile(versionPath, []byte("KATL_EXTENSION_ARTIFACT_VERSION="+tc.current+"\n"), 0o644); err != nil {
-						t.Fatal(err)
-					}
-				}
-				runGit(t, dir, "add", ".")
-				runGit(t, dir, "commit", "--quiet", "-m", "change recipe")
-			}
+			runGit(t, dir, "commit", "--quiet", "-m", "published revision")
+			before := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+			writeBirdFile(t, dir, "extensions/bird/extension.env", birdDefinition(tc.version, "v3.4.0"), 0o644)
+			runGit(t, dir, "commit", "--quiet", "--allow-empty", "-am", "build revision")
+			writeBirdFile(t, dir, "scripts/mkosi", "unrelated wiring change\n", 0o644)
+			runGit(t, dir, "add", ".")
+			runGit(t, dir, "commit", "--quiet", "-m", "change shared build script")
 			head := strings.TrimSpace(runGit(t, dir, "rev-parse", "HEAD"))
+
 			outputPath := filepath.Join(dir, "output")
-			env := append(gittest.Env(os.Environ(), dir),
-				"KATL_BIRD_RECIPE_PATTERN="+bird.Env["KATL_BIRD_RECIPE_PATTERN"],
-				"BASE_SHA="+base, "GITHUB_SHA="+head, "GITHUB_OUTPUT="+outputPath,
+			cmd := exec.Command("bash", "-euo", "pipefail", "-c", publication)
+			cmd.Dir = dir
+			cmd.Env = append(gittest.Env(os.Environ(), dir),
+				"BEFORE_SHA="+before, "GITHUB_SHA="+head, "GITHUB_OUTPUT="+outputPath,
 				"EVENT_NAME="+tc.event, "MANUAL_PUBLISH="+tc.manual,
 			)
-			if tc.event == "pull_request" {
-				cmd := exec.Command("bash", "-euo", "pipefail", "-c", revision)
-				cmd.Dir, cmd.Env = dir, env
-				output, err := cmd.CombinedOutput()
-				if (err != nil) != tc.wantError {
-					t.Fatalf("revision exit = %v, want error=%t:\n%s", err, tc.wantError, output)
-				}
-			}
-			cmd := exec.Command("bash", "-euo", "pipefail", "-c", publication)
-			cmd.Dir, cmd.Env = dir, env
-			output, err := cmd.CombinedOutput()
-			if err != nil {
+			if output, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("publication decision: %v\n%s", err, output)
 			}
 			got := string(mustReadFile(t, outputPath))
@@ -134,6 +228,24 @@ func TestSystemExtensionPublication(t *testing.T) {
 				t.Fatalf("publication = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+func birdDefinition(artifact, payload string) string {
+	return "KATL_EXTENSION_NAME=bird\n" +
+		"KATL_EXTENSION_ARTIFACT_VERSION=" + artifact + "\n" +
+		"KATL_EXTENSION_PAYLOAD_VERSION=" + payload + "\n" +
+		"KATL_EXTENSION_RUNTIME_INTERFACE=katl-runtime-1\n"
+}
+
+func writeBirdFile(t *testing.T, dir, path, content string, mode os.FileMode) {
+	t.Helper()
+	file := filepath.Join(dir, path)
+	if err := os.MkdirAll(filepath.Dir(file), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file, []byte(content), mode); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -184,15 +296,14 @@ func TestSystemExtensionPublishJob(t *testing.T) {
 		t.Errorf("publish job downloads artifact %q, build uploads %q", downloaded, uploaded)
 	}
 	for _, step := range publish.Steps {
-		if strings.Contains(step.Run, "scripts/mkosi") || strings.Contains(step.Run, "build-system-extension") {
+		if strings.Contains(step.Run, "scripts/mkosi") || strings.Contains(step.Run, "build-system-extension") ||
+			strings.Contains(step.Run, "ci-bird-extension build") {
 			t.Errorf("publish job rebuilds the bundle: %q", step.Run)
 		}
 	}
 }
 
-// Every recipe input that decides whether a revision must be published has to
-// start the workflow, or the change is never built, checked or published.
-func TestSystemExtensionTriggerCoversRecipe(t *testing.T) {
+func TestSystemExtensionTriggers(t *testing.T) {
 	workflow, _ := readWorkflow(t, "system-extensions.yml")
 
 	var on struct {
@@ -206,15 +317,20 @@ func TestSystemExtensionTriggerCoversRecipe(t *testing.T) {
 		t.Errorf("pull_request paths %v differ from push paths %v", on.PullRequest.Paths, on.Push.Paths)
 	}
 
-	pattern := workflow.Jobs["bird"].Env["KATL_BIRD_RECIPE_PATTERN"]
-	body := strings.TrimSuffix(strings.TrimPrefix(pattern, "^("), ")")
-	for _, alt := range strings.Split(body, "|") {
-		sample := strings.ReplaceAll(strings.TrimSuffix(alt, "$"), `\.`, ".")
-		if !strings.HasSuffix(alt, "$") {
-			sample += "file"
-		}
-		if !pathTriggers(on.Push.Paths, sample) {
-			t.Errorf("recipe input %s (from %q) does not trigger the workflow", sample, alt)
+	for _, path := range []string{
+		"Containerfile.mkosi",
+		"extensions/bird/extension.env",
+		"mkosi.conf",
+		"mkosi.conf.d/example.conf",
+		"mkosi.profiles/runtime/mkosi.build",
+		"mkosi.profiles/system-extension-bird/mkosi.conf",
+		"scripts/build-system-extension",
+		"scripts/ci-bird-extension",
+		"scripts/fedora-release",
+		"scripts/mkosi",
+	} {
+		if !pathTriggers(on.Push.Paths, path) {
+			t.Errorf("%s does not trigger the workflow", path)
 		}
 	}
 }

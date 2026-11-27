@@ -6,14 +6,19 @@ on:
       - .github/workflows/system-extensions.yml
       - Containerfile.mkosi
       - mkosi.conf
+      - mkosi.conf.d/**
+      - mkosi.extra/**
       - cmd/katlctl/system_extension.go
       - extensions/**
       - mkosi.profiles/runtime/**
       - mkosi.profiles/system-extension-*/**
       - internal/installer/payloadbundle/**
       - internal/installer/systemextensionbundle/**
+      - kernels/**
+      - packages/**
       - scripts/build-system-extension
       - scripts/check-system-extension
+      - scripts/ci-bird-extension
       - scripts/fedora-release
       - scripts/mkosi
   push:
@@ -22,14 +27,19 @@ on:
       - .github/workflows/system-extensions.yml
       - Containerfile.mkosi
       - mkosi.conf
+      - mkosi.conf.d/**
+      - mkosi.extra/**
       - cmd/katlctl/system_extension.go
       - extensions/**
       - mkosi.profiles/runtime/**
       - mkosi.profiles/system-extension-*/**
       - internal/installer/payloadbundle/**
       - internal/installer/systemextensionbundle/**
+      - kernels/**
+      - packages/**
       - scripts/build-system-extension
       - scripts/check-system-extension
+      - scripts/ci-bird-extension
       - scripts/fedora-release
       - scripts/mkosi
   workflow_dispatch:
@@ -58,7 +68,6 @@ jobs:
     outputs:
       publish: ${{ steps.publication.outputs.publish }}
     env:
-      KATL_BIRD_RECIPE_PATTERN: '^(Containerfile\.mkosi$|extensions/bird/|mkosi\.conf$|mkosi\.profiles/runtime/|mkosi\.profiles/system-extension-bird/|scripts/build-system-extension$|scripts/fedora-release$|scripts/mkosi$)'
       KATL_ARCHITECTURE: x86_64
       KATL_CONTAINER_RUNTIME: docker
       KATL_MKOSI_IMAGE: localhost/katl-mkosi-builder:go-squashfs
@@ -68,23 +77,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-      - name: Require an immutable revision for recipe changes
-        id: revision
-        if: ${{ github.event_name == 'pull_request' }}
-        shell: bash
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          changed="$(git diff --name-only "$BASE_SHA"...HEAD | grep -Ev '_test\.go$' || true)"
-          if ! grep -Eq "$KATL_BIRD_RECIPE_PATTERN" <<<"$changed"; then
-            exit 0
-          fi
-          previous_version="$(git show "$BASE_SHA:extensions/bird/extension.env" | sed -n 's/^KATL_EXTENSION_ARTIFACT_VERSION=//p')"
-          source extensions/bird/extension.env
-          if [[ "$KATL_EXTENSION_ARTIFACT_VERSION" == "$previous_version" ]]; then
-            echo "error: BIRD extension recipe changed without advancing KATL_EXTENSION_ARTIFACT_VERSION" >&2
-            exit 1
-          fi
       - name: Set reproducible inputs
         shell: bash
         run: |
@@ -96,39 +88,29 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           MANUAL_PUBLISH: ${{ inputs.publish || false }}
+          BEFORE_SHA: ${{ github.event.before }}
         run: |
           publish=false
           if [[ "$EVENT_NAME" == "workflow_dispatch" && "$MANUAL_PUBLISH" == "true" ]]; then
             publish=true
           elif [[ "$EVENT_NAME" == "push" ]]; then
-            changed="$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" | grep -Ev '_test\.go$' || true)"
-            if grep -Eq "$KATL_BIRD_RECIPE_PATTERN" <<<"$changed"; then
+            previous_version="$(scripts/ci-bird-extension version "$BEFORE_SHA")"
+            version="$(scripts/ci-bird-extension version "$GITHUB_SHA")"
+            if [[ "$previous_version" != "$version" ]]; then
               publish=true
             fi
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
-      - name: Build and verify generic BIRD extension
+      - name: Build and verify the BIRD extension and its immutable revision
+        id: revision
         shell: bash
-        run: |
-          scripts/mkosi build-runtime
-          scripts/build-system-extension bird
-          docker run --rm --privileged \
-            --volume "$GITHUB_WORKSPACE:/work" \
-            --workdir /work \
-            --env KATL_REPO_ROOT=/work \
-            "$KATL_MKOSI_IMAGE" \
-            scripts/check-system-extension bird
-          source extensions/bird/extension.env
-          created_at="$(date --utc --date="@${SOURCE_DATE_EPOCH}" +%Y-%m-%dT%H:%M:%SZ)"
-          go run ./cmd/katlctl system-extension publish \
-            --pack-only \
-            --name "$KATL_EXTENSION_NAME" \
-            --artifact-version "$KATL_EXTENSION_ARTIFACT_VERSION" \
-            --payload-version "$KATL_EXTENSION_PAYLOAD_VERSION" \
-            --architecture "$KATL_ARCHITECTURE" \
-            --runtime-interface "$KATL_EXTENSION_RUNTIME_INTERFACE" \
-            --created-at "$created_at" \
-            --sysext "_build/mkosi/katl-bird.raw"
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        # A push compares against the previous main, so a change merged under
+        # an artifact version that main already published fails instead of
+        # going unpublished.
+        run: scripts/ci-bird-extension build "${PR_BASE_SHA:-$BEFORE_SHA}"
       - uses: actions/upload-artifact@v7
         if: ${{ steps.publication.outputs.publish == 'true' }}
         with:
@@ -165,14 +147,6 @@ jobs:
       - name: Publish through the common payload-bundle publisher
         shell: bash
         run: |
-          source extensions/bird/extension.env
-          created_at="$(date --utc --date="@$(git show -s --format=%ct "$GITHUB_SHA")" +%Y-%m-%dT%H:%M:%SZ)"
-          go run ./cmd/katlctl system-extension publish \
-            --ref "ghcr.io/katl-dev/katl/extensions/bird:${KATL_EXTENSION_ARTIFACT_VERSION}" \
-            --name "$KATL_EXTENSION_NAME" \
-            --artifact-version "$KATL_EXTENSION_ARTIFACT_VERSION" \
-            --payload-version "$KATL_EXTENSION_PAYLOAD_VERSION" \
-            --architecture "$KATL_ARCHITECTURE" \
-            --runtime-interface "$KATL_EXTENSION_RUNTIME_INTERFACE" \
-            --created-at "$created_at" \
-            --sysext "_build/mkosi/katl-bird.raw"
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$GITHUB_SHA")"
+          export SOURCE_DATE_EPOCH
+          scripts/ci-bird-extension publish
