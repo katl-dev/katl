@@ -147,8 +147,7 @@ jobs:
         with:
           client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
           private-key: ${{ secrets.KATL_AUTOMATION_PRIVATE_KEY }}
-          # Superseding deletes the closed proposal's branch.
-          permission-contents: write
+          permission-contents: read
           permission-pull-requests: write
       - name: Describe the proposal
         run: |
@@ -172,9 +171,17 @@ jobs:
           commit: ${{ needs.propose.outputs.commit }}
           title: 'mkosi: pin the published builder image'
           body-file: body.md
+      - uses: actions/create-github-app-token@v3
+        id: supersede-token
+        with:
+          client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
+          private-key: ${{ secrets.KATL_AUTOMATION_PRIVATE_KEY }}
+          # Superseding deletes the closed proposal's branch.
+          permission-contents: write
+          permission-pull-requests: write
       - name: Close earlier builder proposals
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.supersede-token.outputs.token }}
           BRANCH: ${{ needs.propose.outputs.branch }}
-          APP: ${{ steps.app-token.outputs.app-slug }}
+          APP: ${{ steps.supersede-token.outputs.app-slug }}
         run: go run ./cmd/katl-mkosi-builder supersede --branch "$BRANCH" --app "$APP" --run "$GITHUB_RUN_ID"

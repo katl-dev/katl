@@ -122,6 +122,7 @@ pull_pinned() {
         --timeout "${KATL_MKOSI_BUILDER_PULL_ATTEMPT_SECONDS:-600}" \
         --backoff "${KATL_MKOSI_BUILDER_PULL_BACKOFF_SECONDS:-15}" \
         --title 'mkosi builder' --what "pull $reference" \
+        --hint 'make the package public or rerun once the registry is reachable' \
         -- "$runtime" pull "${policy[@]}" "$reference" >&2
 }
 
@@ -136,13 +137,16 @@ prepare() {
     if [[ -n "$reference" ]]; then
         source=pinned
         digest="${reference#*@}"
-        if ! image_id "$runtime" "$reference" >/dev/null && ! pull_pinned "$runtime" "$reference"; then
-            # CI must run the pinned builder, so jobs of one run agree and
-            # their evidence names it; only a developer may fall back.
-            if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
-                printf '::error title=mkosi builder::could not pull %s; make the package public or rerun once the registry is reachable\n' "$reference" >&2
-                exit 1
-            fi
+        local status=0
+        image_id "$runtime" "$reference" >/dev/null || pull_pinned "$runtime" "$reference" || status=$?
+        # scripts/retry has reported why the pull failed. A usage error is
+        # never a reason to fall back. CI must run the pinned builder, so jobs
+        # of one run agree and their evidence names it; only a developer may
+        # fall back.
+        if [[ $status == 2 ]]; then
+            exit 2
+        elif [[ $status != 0 ]]; then
+            [[ "${GITHUB_ACTIONS:-}" != true ]] || exit 1
             warn "could not pull $reference; building Containerfile.mkosi locally instead"
             reference=""
         fi

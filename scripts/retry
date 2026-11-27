@@ -3,62 +3,72 @@
 # exponential backoff. It is the retry owner for shell; see "Retries" in
 # docs/development/ci.md.
 #
-#   retry --attempts N --backoff SECONDS --timeout SECONDS --title TITLE --what WHAT -- COMMAND [ARG...]
+#   retry --attempts N --backoff SECONDS --timeout SECONDS [--kill-after SECONDS]
+#         --title TITLE --what WHAT [--hint HINT] -- COMMAND [ARG...]
 #
-# Every attempt runs COMMAND under a limit of --timeout seconds, then up to
+# Every attempt runs COMMAND under a limit of --timeout seconds, killing it
+# --kill-after seconds (default 30) later if it ignores SIGTERM, then up to
 # --attempts attempts are made, sleeping between them for a random time in
 # [b, 2b) where b doubles from --backoff. A retry is announced as a warning,
-# a workflow annotation titled TITLE in GitHub Actions. It exits 0 when an
-# attempt succeeds and 1 when the last attempt fails; the caller decides
-# whether that is an error.
+# and the last failure as an error that carries its reason and HINT: workflow
+# annotations titled TITLE in GitHub Actions. It exits 0 when an attempt
+# succeeds, 1 when the last attempt fails, and 2 on a usage error such as a
+# malformed limit, which it reports before the first attempt.
 set -euo pipefail
 
 usage() {
-    echo "usage: retry --attempts N --backoff SECONDS --timeout SECONDS --title TITLE --what WHAT -- COMMAND [ARG...]" >&2
+    echo "usage: retry --attempts N --backoff SECONDS --timeout SECONDS [--kill-after SECONDS] --title TITLE --what WHAT [--hint HINT] -- COMMAND [ARG...]" >&2
     exit 2
 }
 
-attempts="" backoff="" attempt_seconds="" title="" what=""
+attempts="" backoff="" attempt_seconds="" kill_after=30 title="" what="" hint=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --attempts) [[ $# -ge 2 ]] || usage; attempts="$2"; shift 2 ;;
         --backoff) [[ $# -ge 2 ]] || usage; backoff="$2"; shift 2 ;;
         --timeout) [[ $# -ge 2 ]] || usage; attempt_seconds="$2"; shift 2 ;;
+        --kill-after) [[ $# -ge 2 ]] || usage; kill_after="$2"; shift 2 ;;
         --title) [[ $# -ge 2 ]] || usage; title="$2"; shift 2 ;;
         --what) [[ $# -ge 2 ]] || usage; what="$2"; shift 2 ;;
+        --hint) [[ $# -ge 2 ]] || usage; hint="$2"; shift 2 ;;
         --) shift; break ;;
         *) usage ;;
     esac
 done
 [[ $# -gt 0 && -n "$title" && -n "$what" ]] || usage
 
+# annotate LEVEL MESSAGE reports MESSAGE as a workflow annotation in GitHub
+# Actions and as a LEVEL-prefixed line elsewhere.
+annotate() {
+    if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
+        printf '::%s title=%s::%s\n' "$1" "$title" "$2" >&2
+    else
+        printf '%s: %s\n' "$1" "$2" >&2
+    fi
+}
+
 # Callers pass environment overrides straight through, so a malformed value is
-# reported here instead of failing inside arithmetic or timeout.
+# reported here as a usage error, instead of failing inside arithmetic or
+# timeout or reading as a failed attempt.
 number() {
     local name="$1" value="$2" minimum="$3"
     if [[ ! "$value" =~ ^[0-9]+$ ]] || ((10#$value < minimum)); then
-        echo "error: $what: $name must be an integer of at least $minimum, not '$value'" >&2
+        annotate error "$what: usage error: $name must be an integer of at least $minimum, not '$value'"
         exit 2
     fi
 }
 number --attempts "$attempts" 1
 number --backoff "$backoff" 0
 number --timeout "$attempt_seconds" 1
-attempts=$((10#$attempts)) backoff=$((10#$backoff)) attempt_seconds=$((10#$attempt_seconds))
-
-warn() {
-    if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
-        printf '::warning title=%s::%s\n' "$title" "$1" >&2
-    else
-        printf 'warning: %s\n' "$1" >&2
-    fi
-}
+number --kill-after "$kill_after" 1
+attempts=$((10#$attempts)) backoff=$((10#$backoff))
+attempt_seconds=$((10#$attempt_seconds)) kill_after=$((10#$kill_after))
 
 for ((attempt = 1; ; attempt++)); do
     echo "$what, attempt $attempt/$attempts (limit ${attempt_seconds}s)" >&2
     started=$SECONDS
     status=0
-    timeout --kill-after=30s "${attempt_seconds}s" "$@" || status=$?
+    timeout --kill-after="${kill_after}s" "${attempt_seconds}s" "$@" || status=$?
     if [[ $status == 0 ]]; then
         echo "$what finished in $((SECONDS - started))s" >&2
         exit 0
@@ -70,11 +80,11 @@ for ((attempt = 1; ; attempt++)); do
         reason="exited $status after $((SECONDS - started))s"
     fi
     if ((attempt >= attempts)); then
-        echo "$what: attempt $attempt/$attempts $reason; giving up" >&2
+        annotate error "$what: attempt $attempt/$attempts $reason; giving up${hint:+; $hint}"
         exit 1
     fi
     delay=$((backoff + RANDOM % (backoff > 0 ? backoff : 1)))
-    warn "$what: attempt $attempt/$attempts $reason; retrying in ${delay}s"
+    annotate warning "$what: attempt $attempt/$attempts $reason; retrying in ${delay}s"
     sleep "$delay"
     backoff=$((backoff * 2))
 done

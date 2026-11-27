@@ -382,8 +382,9 @@ func TestMkosiRunsResolvedBuilder(t *testing.T) {
 // In CI a current pin must be the builder every job runs, so a pull that keeps
 // failing stops the job after bounded retries instead of building locally,
 // while one that recovers uses the pin. Wrong implementations this separates:
-// the local fallback leaking into CI, retrying without a bound, and giving up
-// after the first transient failure.
+// the local fallback leaking into CI, retrying without a bound, giving up
+// after the first transient failure, or treating a malformed override as a
+// failed pull.
 func TestBuilderPrepareInCI(t *testing.T) {
 	const containerfile = "FROM scratch\n"
 	pinned := builderRepository + "@" + builderDigest
@@ -395,7 +396,7 @@ func TestBuilderPrepareInCI(t *testing.T) {
 	}{
 		{name: "recovers", failures: "2", pulls: 3, alias: "pulled " + pinned},
 		{name: "keeps failing", failures: "99", exit: 1, pulls: 3, alias: "old image"},
-		{name: "malformed attempts override", attempts: "three", exit: 1, alias: "old image"},
+		{name: "malformed attempts override", attempts: "three", exit: 2, alias: "old image"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fixture := builderFixture(t, "99", containerfile)
@@ -407,7 +408,7 @@ func TestBuilderPrepareInCI(t *testing.T) {
 			}
 
 			record, exit := runBuilder(t, fixture, containers.env("GITHUB_ACTIONS=true", "KATL_FAKE_PULL_FAILURES="+tc.failures, "KATL_MKOSI_BUILDER_PULL_BACKOFF_SECONDS=0", "KATL_MKOSI_BUILDER_PULL_ATTEMPTS="+cmp.Or(tc.attempts, "3")), "prepare", "docker", alias)
-			if (exit == 0) != (tc.exit == 0) {
+			if exit != tc.exit {
 				t.Fatalf("prepare exit %d, want %d: %s", exit, tc.exit, record)
 			}
 			if got := len(containers.callsStartingWith(t, "pull")); got != tc.pulls {

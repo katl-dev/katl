@@ -110,7 +110,7 @@ cache_input_matches_target() {
         *_test.go | docs/*)
             return 1
             ;;
-        mkosi.conf | mkosi.conf.d/* | mkosi.kernel-lts/* | kernels/* | packages/* | Containerfile.mkosi | mkosi-builder.lock | containers-policy.json | go.mod | go.sum | scripts/mkosi | scripts/mkosi-builder | scripts/fedora-release)
+        mkosi.conf | mkosi.conf.d/* | mkosi.kernel-lts/* | kernels/* | packages/* | Containerfile.mkosi | mkosi-builder.lock | containers-policy.json | go.mod | go.sum | scripts/mkosi | scripts/mkosi-builder | scripts/retry | scripts/fedora-release)
             return 0
             ;;
         *.go)

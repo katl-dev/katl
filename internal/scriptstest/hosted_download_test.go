@@ -90,7 +90,9 @@ func TestHostedDownload(t *testing.T) {
 	script := filepath.Join(repoRoot(t), ".github", "scripts", "hosted-download")
 
 	// The fake gh behaves per attempt as listed in its plan file: "ok" writes a
-	// complete payload, "partial" writes a fragment and fails, "stall" hangs.
+	// complete payload, "partial" writes a fragment and fails, "stall" hangs,
+	// and "deaf" writes a fragment and hangs ignoring SIGTERM, so only SIGKILL
+	// ends it.
 	run := func(t *testing.T, plan []string, args ...string) (string, string, error) {
 		t.Helper()
 		dir := t.TempDir()
@@ -110,16 +112,19 @@ case "$mode" in
     ok) printf complete > "$out/payload" ;;
     partial) printf frag > "$out/fragment"; exit 1 ;;
     stall) exec sleep 60 ;;
+    deaf) trap '' TERM; printf frag > "$out/fragment"; sleep 60 ;;
 esac
 `)
 		cmd := exec.Command(script, args...)
 		cmd.Dir = dir
 		cmd.Env = append(os.Environ(),
 			"PATH="+bin+":"+os.Getenv("PATH"),
+			"GITHUB_ACTIONS=true",
 			"GITHUB_REPOSITORY=katl-dev/katl",
 			"GITHUB_RUN_ID=42",
 			"KATL_DOWNLOAD_ATTEMPTS=2",
 			"KATL_DOWNLOAD_ATTEMPT_SECONDS=1",
+			"KATL_DOWNLOAD_KILL_AFTER_SECONDS=1",
 			"KATL_DOWNLOAD_BACKOFF_SECONDS=0",
 		)
 		var stderr strings.Builder
@@ -159,6 +164,20 @@ esac
 		}
 	})
 
+	t.Run("removes a killed attempt's staging", func(t *testing.T) {
+		dir, stderr, err := run(t, []string{"deaf", "ok"}, "artifact", "inputs-abc", "out")
+		if err != nil {
+			t.Fatalf("download failed: %v\n%s", err, stderr)
+		}
+		if got := string(mustReadFile(t, filepath.Join(dir, "out", "payload"))); got != "complete" {
+			t.Errorf("payload = %q", got)
+		}
+		siblings, _ := filepath.Glob(filepath.Join(dir, "out.*"))
+		if len(siblings) != 0 {
+			t.Errorf("killed attempt left staging behind: %v", siblings)
+		}
+	})
+
 	t.Run("gives up within its attempt budget", func(t *testing.T) {
 		started := time.Now()
 		dir, stderr, err := run(t, []string{"stall", "stall", "ok"}, "artifact", "inputs-abc", "out", "7")
@@ -168,8 +187,8 @@ esac
 		if elapsed := time.Since(started); elapsed > 20*time.Second {
 			t.Errorf("two 1-second attempts took %s", elapsed)
 		}
-		if !strings.Contains(stderr, "::error") || !strings.Contains(stderr, "artifact inputs-abc from run 7") {
-			t.Errorf("failure does not name the artifact in an error annotation:\n%s", stderr)
+		if !strings.Contains(stderr, "::error title=Download::hosted-download: artifact inputs-abc from run 7: attempt 2/2 timed out after 1s; giving up") {
+			t.Errorf("failure does not name the artifact and the reason in an error annotation:\n%s", stderr)
 		}
 		if _, err := os.Stat(filepath.Join(dir, "out")); !os.IsNotExist(err) {
 			t.Errorf("failed download left a destination: %v", err)

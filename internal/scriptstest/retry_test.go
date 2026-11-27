@@ -5,19 +5,23 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 )
 
 // scripts/retry is the shell retry owner. Wrong implementations this
-// separates: retrying without a per-attempt limit, making more or fewer
-// attempts than asked, retrying silently, and passing a malformed override
-// through to arithmetic or to the command.
+// separates: retrying without a per-attempt limit, waiting on an attempt that
+// ignores SIGTERM, making more or fewer attempts than asked, retrying
+// silently, giving up without saying why, and passing a malformed override
+// through to arithmetic or to the command, or reporting it as a failed
+// attempt.
 func TestRetry(t *testing.T) {
 	script := filepath.Join(repoRoot(t), "scripts", "retry")
 
-	// The command fails, stalls or succeeds per attempt as its plan lists.
+	// The command fails, stalls or succeeds per attempt as its plan lists; a
+	// "deaf" attempt stalls ignoring SIGTERM.
 	run := func(t *testing.T, plan []string, args ...string) (int, string, int) {
 		t.Helper()
 		dir := t.TempDir()
@@ -28,10 +32,11 @@ func TestRetry(t *testing.T) {
 case "$(sed -n "$(wc -l < "$1/calls")p" "$1/plan")" in
     ok) exit 0 ;;
     stall) exec sleep 60 ;;
+    deaf) trap '' TERM; sleep 60 ;;
     *) exit 3 ;;
 esac
 `)
-		cmd := exec.Command(script, append(args, "--title", "Fetch retry", "--what", "fetch thing", "--", command, dir)...)
+		cmd := exec.Command(script, slices.Concat(args, []string{"--title", "Fetch retry", "--what", "fetch thing", "--", command, dir})...)
 		cmd.Env = append(os.Environ(), "GITHUB_ACTIONS=true")
 		var stderr strings.Builder
 		cmd.Stderr = &stderr
@@ -49,7 +54,7 @@ esac
 		}
 		return exit, stderr.String(), calls
 	}
-	limits := []string{"--attempts", "3", "--backoff", "0", "--timeout", "1"}
+	limits := []string{"--attempts", "3", "--backoff", "0", "--timeout", "1", "--kill-after", "1"}
 
 	t.Run("retries until an attempt succeeds", func(t *testing.T) {
 		exit, stderr, calls := run(t, []string{"fail", "ok"}, limits...)
@@ -62,26 +67,31 @@ esac
 	})
 
 	t.Run("bounds each attempt", func(t *testing.T) {
-		started := time.Now()
-		exit, stderr, calls := run(t, []string{"stall", "ok"}, limits...)
-		if exit != 0 || calls != 2 {
-			t.Fatalf("exit %d after %d attempts:\n%s", exit, calls, stderr)
-		}
-		if elapsed := time.Since(started); elapsed > 20*time.Second {
-			t.Errorf("a 1-second attempt limit took %s", elapsed)
-		}
-		if !strings.Contains(stderr, "timed out after 1s") {
-			t.Errorf("stalled attempt not reported as a timeout:\n%s", stderr)
+		for _, stall := range []string{"stall", "deaf"} {
+			started := time.Now()
+			exit, stderr, calls := run(t, []string{stall, "ok"}, limits...)
+			if exit != 0 || calls != 2 {
+				t.Fatalf("%s: exit %d after %d attempts:\n%s", stall, exit, calls, stderr)
+			}
+			if elapsed := time.Since(started); elapsed > 20*time.Second {
+				t.Errorf("%s: a 1-second attempt limit took %s", stall, elapsed)
+			}
+			if !strings.Contains(stderr, "timed out after 1s") {
+				t.Errorf("%s: attempt not reported as a timeout:\n%s", stall, stderr)
+			}
 		}
 	})
 
 	t.Run("gives up after its attempts", func(t *testing.T) {
-		exit, stderr, calls := run(t, []string{"fail", "fail", "fail", "ok"}, limits...)
+		exit, stderr, calls := run(t, []string{"fail", "fail", "fail", "ok"}, append(limits, "--hint", "check the mirror")...)
 		if exit != 1 || calls != 3 {
 			t.Fatalf("exit %d after %d attempts, want exit 1 after 3:\n%s", exit, calls, stderr)
 		}
 		if strings.Count(stderr, "::warning") != 2 {
 			t.Errorf("want a retry annotation before each of the two retries:\n%s", stderr)
+		}
+		if !strings.Contains(stderr, "::error title=Fetch retry::fetch thing: attempt 3/3 exited 3 after ") || !strings.Contains(stderr, "; giving up; check the mirror\n") {
+			t.Errorf("final failure has no error annotation with its reason and hint:\n%s", stderr)
 		}
 	})
 
@@ -92,10 +102,14 @@ esac
 			{"--attempts", "2", "--backoff", "-1", "--timeout", "1"},
 			{"--attempts", "2", "--backoff", "0", "--timeout", "0"},
 			{"--attempts", "2", "--backoff", "0", "--timeout", ""},
+			{"--attempts", "2", "--backoff", "0", "--timeout", "1", "--kill-after", "0"},
 		} {
 			exit, stderr, calls := run(t, []string{"ok"}, bad...)
 			if exit != 2 || calls != 0 {
 				t.Errorf("%v: exit %d after %d attempts, want exit 2 before any:\n%s", bad, exit, calls, stderr)
+			}
+			if !strings.Contains(stderr, "::error title=Fetch retry::fetch thing: usage error: ") || strings.Contains(stderr, "giving up") {
+				t.Errorf("%v: not reported as a usage error:\n%s", bad, stderr)
 			}
 		}
 	})

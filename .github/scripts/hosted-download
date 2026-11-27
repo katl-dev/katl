@@ -6,11 +6,12 @@
 #   hosted-download release TAG DEST
 #
 # scripts/retry runs every attempt under KATL_DOWNLOAD_ATTEMPT_SECONDS
-# (default 360) and makes KATL_DOWNLOAD_ATTEMPTS (default 3) attempts,
+# (default 360), kills one that ignores SIGTERM KATL_DOWNLOAD_KILL_AFTER_SECONDS
+# (default 5) later, and makes KATL_DOWNLOAD_ATTEMPTS (default 3) attempts,
 # sleeping between them for a random time in [b, 2b) where b doubles from
 # KATL_DOWNLOAD_BACKOFF_SECONDS (default 15). With the defaults the worst case
-# is 3 * 360 s + (15..30 s) + (30..60 s) < 19.5 minutes, which is why callers
-# give the step 20 minutes.
+# is 3 * (360 + 5) s + (15..30 s) + (30..60 s) < 20 minutes, which is why
+# callers give the step 20 minutes. scripts/retry reports the final failure.
 set -euo pipefail
 
 usage() {
@@ -26,7 +27,9 @@ fail() {
 # One attempt, run by scripts/retry under its time limit. It writes into its
 # own staging directory and moves only a complete download to DEST, so a
 # partial or interrupted transfer never reaches the caller. staging is global
-# so the EXIT trap still sees it after the function returns.
+# so the EXIT trap still sees it after the function returns. Once DEST is
+# complete the attempt ignores SIGTERM, so a late timeout cannot report a
+# finished download as failed.
 attempt() {
     local dest="$1"
     shift
@@ -34,6 +37,7 @@ attempt() {
     trap 'rm -rf -- "$staging"' EXIT
     trap 'exit 143' TERM
     "$@" --dir "$staging"
+    trap '' TERM
     mv -T -- "$staging" "$dest"
     trap - EXIT
 }
@@ -70,10 +74,14 @@ if [[ "$kind" == artifact ]]; then
 else
     command=(gh release download "$subject" --repo "$repo")
 fi
+
+# An attempt killed with SIGKILL cannot run its own EXIT trap, so its staging
+# directory is removed here once scripts/retry returns.
+trap 'rm -rf -- "$dest".attempt-*' EXIT
 "$(dirname -- "${BASH_SOURCE[0]}")/../../scripts/retry" \
     --attempts "${KATL_DOWNLOAD_ATTEMPTS:-3}" \
     --timeout "${KATL_DOWNLOAD_ATTEMPT_SECONDS:-360}" \
+    --kill-after "${KATL_DOWNLOAD_KILL_AFTER_SECONDS:-5}" \
     --backoff "${KATL_DOWNLOAD_BACKOFF_SECONDS:-15}" \
-    --title 'Download retry' --what "hosted-download: $what" \
-    -- "${BASH_SOURCE[0]}" --attempt "$dest" "${command[@]}" ||
-    fail "giving up after ${KATL_DOWNLOAD_ATTEMPTS:-3} attempts"
+    --title 'Download' --what "hosted-download: $what" \
+    -- "${BASH_SOURCE[0]}" --attempt "$dest" "${command[@]}"

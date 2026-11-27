@@ -148,9 +148,9 @@ every job builds `Containerfile.mkosi` itself, without a layer cache. When the
 lock is current, a CI job must run the pinned image, so that every job of a run
 uses the same builder: it makes three pull attempts of at most ten minutes
 each, with jittered exponential backoff, and then fails. Only a local
-`scripts/mkosi` run falls back to building the file, with a warning. Each job's summary records the reference
-it ran, whether it was pulled or built, and its digest; the shared VM image job
-also keeps the record in its evidence.
+`scripts/mkosi` run falls back to building the file, with a warning. Each job's
+summary records the reference it ran, whether it was pulled or built, and its
+digest; the shared VM image job also keeps the record in its evidence.
 
 On a push to `main` that leaves the lock stale, **Builder Image** builds and
 pushes the content tag once, or reuses it when it already exists. The weekly
@@ -185,8 +185,10 @@ the image.
 Network-dependent steps retry through one owner per language. Go code uses
 `internal/retry`. Shell scripts use `scripts/retry`, which runs each attempt
 under a time limit, makes a bounded number of attempts with jittered
-exponential backoff, announces each retry as a workflow warning, and rejects a
-malformed attempt, timeout or backoff override before the first attempt.
+exponential backoff, announces each retry as a workflow warning and the final
+failure, with its reason, as a workflow error, and reports a malformed attempt,
+timeout, kill-after or backoff override as a usage error before the first
+attempt.
 `.github/scripts/hosted-download` and `scripts/mkosi-builder` call it.
 
 The shell owner exists because those scripts cannot rely on a Go module. When
