@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,10 +13,13 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/katl-dev/katl/internal/retry"
 )
 
 const (
@@ -32,6 +36,9 @@ type gh struct {
 	viewer      string
 	owner, name string
 	host        string
+	// readDelay is the first delay before a read is retried; zero uses
+	// defaultReadDelay.
+	readDelay time.Duration
 }
 
 func runGH(ctx context.Context, args ...string) ([]byte, error) {
@@ -42,7 +49,7 @@ func runGH(ctx context.Context, args ...string) ([]byte, error) {
 	if err != nil {
 		// Standard output is returned too: gh api prints a GraphQL response
 		// that carries errors, with partial data, before it exits non-zero.
-		return out, fmt.Errorf("gh %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
+		return out, &ghError{args: args, err: err, stderr: strings.TrimSpace(stderr.String())}
 	}
 	return out, nil
 }
@@ -64,6 +71,60 @@ func (g *gh) api(ctx context.Context, args ...string) ([]byte, error) {
 		args = append(args, "--hostname", g.host)
 	}
 	return runGH(ctx, append([]string{"api"}, args...)...)
+}
+
+// ghError is a failed gh invocation. It keeps gh's standard error, which is
+// where gh reports the HTTP status of a failed request.
+type ghError struct {
+	args   []string
+	err    error
+	stderr string
+}
+
+func (e *ghError) Error() string {
+	return fmt.Sprintf("gh %s: %v: %s", strings.Join(e.args, " "), e.err, e.stderr)
+}
+
+func (e *ghError) Unwrap() error { return e.err }
+
+var transientHTTPStatus = regexp.MustCompile(`\(HTTP 5\d\d\)`)
+
+// transientGH reports whether a gh failure is a GitHub server error or a
+// dropped connection, which a later identical request can succeed past.
+func transientGH(err error) bool {
+	var failed *ghError
+	if !errors.As(err, &failed) {
+		return false
+	}
+	if transientHTTPStatus.MatchString(failed.stderr) {
+		return true
+	}
+	for _, network := range []string{"connection reset", "i/o timeout", "TLS handshake timeout", "unexpected EOF"} {
+		if strings.Contains(failed.stderr, network) {
+			return true
+		}
+	}
+	return false
+}
+
+const (
+	defaultReadDelay = 2 * time.Second
+	readDelayLimit   = 30 * time.Second
+	readAttempts     = 6
+)
+
+// read makes a REST read, which is safe to repeat, and retries transient
+// failures with jittered exponential backoff. A paginated read restarts from
+// its first page.
+func (g *gh) read(ctx context.Context, args ...string) ([]byte, error) {
+	backoff := retry.NewBackoff(cmp.Or(g.readDelay, defaultReadDelay), readDelayLimit)
+	var out []byte
+	err := backoff.DoAttempts(ctx, readAttempts, func(ctx context.Context) error {
+		var err error
+		out, err = g.api(ctx, args...)
+		return err
+	}, transientGH)
+	return out, err
 }
 
 func (g *gh) repo() string {
@@ -446,7 +507,7 @@ func (g *gh) workflowRef(ctx context.Context, name string) (string, error) {
 		return name, nil
 	}
 
-	raw, err := g.api(ctx, "--paginate", "--slurp", g.repoPath()+"/actions/workflows?per_page=100")
+	raw, err := g.read(ctx, "--paginate", "--slurp", g.repoPath()+"/actions/workflows?per_page=100")
 	if err != nil {
 		return "", err
 	}
@@ -477,62 +538,67 @@ func (g *gh) workflowRef(ctx context.Context, name string) (string, error) {
 	return ref, nil
 }
 
-func (g *gh) completedRuns(ctx context.Context, window ciCostWindow) ([]int64, error) {
-	ref, err := g.workflowRef(ctx, window.Workflow)
-	if err != nil {
-		return nil, err
-	}
-	endpoint := g.repoPath() + "/actions/workflows/" + url.PathEscape(ref) + "/runs?per_page=100"
-	created := window.Since.Format(time.RFC3339) + ".." + window.Until.Format(time.RFC3339)
-	runs, err := g.workflowRuns(ctx, endpoint+"&status=completed&created="+url.QueryEscape(created))
-	if err != nil {
-		return nil, err
-	}
-	// GitHub caps searches that use status or created at 1,000 runs. Fall
-	// back to the unfiltered workflow listing so larger windows stay complete.
-	if len(runs) >= 1000 {
-		runs, err = g.workflowRuns(ctx, endpoint)
+// completedRuns lists the completed runs created in the window, of every
+// workflow unless the window names one.
+func (g *gh) completedRuns(ctx context.Context, window ciCostWindow) ([]ciRun, error) {
+	endpoint := g.repoPath() + "/actions/runs?per_page=100&status=completed"
+	if window.Workflow != "" {
+		ref, err := g.workflowRef(ctx, window.Workflow)
 		if err != nil {
 			return nil, err
 		}
+		endpoint = g.repoPath() + "/actions/workflows/" + url.PathEscape(ref) + "/runs?per_page=100&status=completed"
 	}
-	var ids []int64
-	for _, run := range runs {
-		if run.Status == "completed" && !run.Created.Before(window.Since) && !run.Created.After(window.Until) {
-			ids = append(ids, run.ID)
-		}
-	}
-	return ids, nil
+	return g.runsCreated(ctx, endpoint, window.Since, window.Until)
 }
 
-type workflowRun struct {
-	ID      int64     `json:"id"`
-	Status  string    `json:"status"`
-	Created time.Time `json:"created_at"`
-}
+// runSearchLimit is the most runs GitHub returns for a listing filtered by
+// status or creation time, however many match.
+const runSearchLimit = 1000
 
-func (g *gh) workflowRuns(ctx context.Context, endpoint string) ([]workflowRun, error) {
-	raw, err := g.api(ctx, "--paginate", "--slurp", endpoint)
+// runsCreated lists the runs created from since to until inclusive. A range
+// that reaches the search limit may be truncated, so it is split in two at a
+// whole second, which partitions it because creation times have one-second
+// resolution.
+func (g *gh) runsCreated(ctx context.Context, endpoint string, since, until time.Time) ([]ciRun, error) {
+	created := since.Format(time.RFC3339) + ".." + until.Format(time.RFC3339)
+	raw, err := g.read(ctx, "--paginate", "--slurp", endpoint+"&created="+url.QueryEscape(created))
 	if err != nil {
 		return nil, err
 	}
 	var pages []struct {
-		Runs []workflowRun `json:"workflow_runs"`
+		Runs []ciRun `json:"workflow_runs"`
 	}
 	if err := json.Unmarshal(raw, &pages); err != nil {
 		return nil, fmt.Errorf("decode workflow runs: %w", err)
 	}
-	var runs []workflowRun
+	var runs []ciRun
 	for _, page := range pages {
 		runs = append(runs, page.Runs...)
 	}
-	return runs, nil
+	if len(runs) < runSearchLimit {
+		return runs, nil
+	}
+
+	if until.Sub(since) < time.Second {
+		return nil, fmt.Errorf("GitHub lists at most %d runs created at %s", runSearchLimit, since.Format(time.RFC3339))
+	}
+	middle := since.Add(until.Sub(since) / 2).Truncate(time.Second)
+	first, err := g.runsCreated(ctx, endpoint, since, middle)
+	if err != nil {
+		return nil, err
+	}
+	second, err := g.runsCreated(ctx, endpoint, middle.Add(time.Second), until)
+	if err != nil {
+		return nil, err
+	}
+	return append(first, second...), nil
 }
 
 func (g *gh) runJobs(ctx context.Context, runID int64) ([]ciJob, error) {
 	// filter=all includes earlier attempts when a workflow was rerun.
 	endpoint := fmt.Sprintf("%s/actions/runs/%d/jobs?per_page=100&filter=all", g.repoPath(), runID)
-	raw, err := g.api(ctx, "--paginate", "--slurp", endpoint)
+	raw, err := g.read(ctx, "--paginate", "--slurp", endpoint)
 	if err != nil {
 		return nil, err
 	}
