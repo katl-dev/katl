@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -27,7 +28,10 @@ type publicationFixture struct {
 	dir      string
 	tag      string
 	readback map[string]any
+	created  int
+	onWrite  func(releaseRequest) error
 	writes   []releaseRequest
+	reads    []string
 }
 
 func publicationWorld(t *testing.T, tag string, draft bool) *publicationFixture {
@@ -39,7 +43,7 @@ func publicationWorld(t *testing.T, tag string, draft bool) *publicationFixture 
 		t.Fatal(err)
 	}
 
-	f := &publicationFixture{dir: dir, tag: tag}
+	f := &publicationFixture{dir: dir, tag: tag, created: 42}
 	f.readback = map[string]any{"id": 42, "tag_name": tag, "draft": draft, "prerelease": strings.Contains(tag, "-rc."),
 		"assets": []map[string]any{
 			{"id": 11, "name": "SHA256SUMS", "state": "uploaded", "digest": fixtureSumsDigest},
@@ -47,8 +51,7 @@ func publicationWorld(t *testing.T, tag string, draft bool) *publicationFixture 
 			{"id": 13, "name": "RELEASE_NOTES.md", "state": "uploaded", "digest": fixtureNotesDigest},
 		}}
 	f.api = &fakeGitHub{
-		t:     t,
-		pages: map[string][]any{repoPrefix + "releases?per_page=100": {[]any{}}},
+		t: t,
 		responses: map[string]any{
 			repoPrefix + "releases/42": f.readback,
 			repoPrefix + "git/ref/tags/" + tag: map[string]any{"ref": "refs/tags/" + tag,
@@ -57,14 +60,21 @@ func publicationWorld(t *testing.T, tag string, draft bool) *publicationFixture 
 		},
 		raw: map[string][]byte{repoPrefix + "releases/assets/11": sums},
 	}
+	f.list()
 	return f
 }
 
+const releaseListEndpoint = repoPrefix + "releases?per_page=100"
+
 func (f *publicationFixture) list(releases ...any) {
-	f.api.pages[repoPrefix+"releases?per_page=100"] = []any{[]any{}, releases}
+	other := []any{
+		map[string]any{"id": 21, "tag_name": "v2026.12.2", "draft": true},
+		map[string]any{"id": 22, "tag_name": "v2026.11.7", "draft": false},
+	}
+	f.api.pages = map[string][]any{releaseListEndpoint: {other, releases}}
 }
 
-func (f *publicationFixture) call(name string, args ...string) ([]byte, error) {
+func (f *publicationFixture) call(_ context.Context, name string, args ...string) ([]byte, error) {
 	f.api.t.Helper()
 	if name != "gh" || len(args) < 2 {
 		f.api.t.Fatalf("unexpected command %s %v", name, args)
@@ -85,7 +95,7 @@ func (f *publicationFixture) call(name string, args ...string) ([]byte, error) {
 	req := releaseRequest{method: args[2], endpoint: args[3], fields: map[string]string{}}
 	if strings.HasPrefix(req.endpoint, "https://uploads.github.com/") {
 		address, err := url.Parse(req.endpoint)
-		if err != nil || strings.TrimPrefix(address.Path, "/") != repoPrefix+"releases/42/assets" {
+		if err != nil || strings.TrimPrefix(address.Path, "/") != repoPrefix+"releases/"+strconv.Itoa(f.created)+"/assets" {
 			f.api.t.Fatalf("invalid upload endpoint %q: %v", req.endpoint, err)
 		}
 		index := slices.Index(args, "--input")
@@ -103,8 +113,13 @@ func (f *publicationFixture) call(name string, args ...string) ([]byte, error) {
 		}
 	}
 	f.writes = append(f.writes, req)
+	if f.onWrite != nil {
+		if err := f.onWrite(req); err != nil {
+			return nil, err
+		}
+	}
 	if req.method == "POST" && req.endpoint == repoPrefix+"releases" {
-		return json.Marshal(map[string]any{"id": 42, "tag_name": f.tag, "draft": true})
+		return json.Marshal(map[string]any{"id": f.created, "tag_name": f.tag, "draft": true})
 	}
 	// The PATCH response is intentionally uninformative. Only a fresh GET
 	// reveals the persisted release, ref and bytes.
@@ -112,12 +127,18 @@ func (f *publicationFixture) call(name string, args ...string) ([]byte, error) {
 }
 
 func (f *publicationFixture) run(action string) error {
+	r := newTestReader(f.api)
+	r.read = func(ctx context.Context, endpoint string, paginate bool, accept string) ([]byte, error) {
+		f.reads = append(f.reads, endpoint)
+		return f.api.read(ctx, endpoint, paginate, accept)
+	}
 	return runPublication(context.Background(), []string{action, strings.TrimPrefix(f.tag, "v"), testCommit, f.dir},
-		io.Discard, newTestReader(f.api), f.call)
+		io.Discard, r, f.call)
 }
 
 // Draft replaces interrupted drafts, uploads the verified bundle once, and
-// refuses to replace published bytes or accept the wrong uploaded digest.
+// leaves other tags alone. It refuses to replace published bytes or accept
+// the wrong uploaded digest.
 func TestDraftRelease(t *testing.T) {
 	for _, tc := range []struct {
 		name, tag, state, wantErr string
@@ -183,8 +204,9 @@ func TestDraftRelease(t *testing.T) {
 	}
 }
 
-// Publish sends one request with the bound tag and commit, then checks the
-// persisted tag, release and SHA256SUMS independently of the mutation response.
+// Publish sends one request with the bound tag, commit and Latest policy.
+// It leaves other tags alone, refuses an ambiguous draft, and checks persisted
+// state independently of the mutation response.
 func TestPublishRelease(t *testing.T) {
 	for _, tc := range []struct {
 		name, tag, state, wantErr string
@@ -196,6 +218,7 @@ func TestPublishRelease(t *testing.T) {
 		{name: "SHA256SUMS differs", tag: "v2026.12.1", state: "wrong-bytes", wantWrite: true, wantErr: "published SHA256SUMS of v2026.12.1 differs from the bundle"},
 		{name: "still draft", tag: "v2026.12.1", state: "still-draft", wantWrite: true, wantErr: "published release v2026.12.1 does not match"},
 		{name: "draft has wrong digest", tag: "v2026.12.1", state: "bad-draft", wantErr: "no unique draft of v2026.12.1 matches the bundle"},
+		{name: "two drafts", tag: "v2026.12.1", state: "two-drafts", wantErr: "no unique draft of v2026.12.1 matches the bundle"},
 		{name: "already published", tag: "v2026.12.1-rc.1", state: "published"},
 		{name: "absent", tag: "v2026.12.1", wantErr: "Run katl-release draft first"},
 	} {
@@ -209,6 +232,11 @@ func TestPublishRelease(t *testing.T) {
 				f.list(draft)
 				if tc.state == "bad-draft" {
 					draft["assets"] = []map[string]any{{"id": 11, "name": "SHA256SUMS", "state": "uploaded", "digest": fixtureNotesDigest}}
+				}
+				if tc.state == "two-drafts" {
+					other := maps.Clone(draft)
+					other["id"] = 43
+					f.list(draft, other)
 				}
 			}
 			if tc.state == "wrong-commit" {
@@ -225,7 +253,7 @@ func TestPublishRelease(t *testing.T) {
 				}
 				return
 			}
-			want := map[string]string{"draft": "false", "tag_name": tc.tag, "target_commitish": testCommit}
+			want := map[string]string{"draft": "false", "tag_name": tc.tag, "target_commitish": testCommit, "make_latest": "legacy"}
 			if strings.HasSuffix(tc.tag, "-rc.1") {
 				want["make_latest"] = "false"
 			}
@@ -234,6 +262,124 @@ func TestPublishRelease(t *testing.T) {
 				t.Fatalf("writes = %v, want one PATCH of release 42 with %v", f.writes, want)
 			}
 		})
+	}
+}
+
+// An upload error may leave an asset behind. Retrying just the upload can
+// collide with that asset, and giving up leaves the publication unfinished.
+func TestDraftRestartsAfterUploadFailure(t *testing.T) {
+	f := publicationWorld(t, "v2026.12.1", true)
+	var failedUpload string
+	f.onWrite = func(req releaseRequest) error {
+		switch {
+		case failedUpload == "" && strings.HasPrefix(req.endpoint, "https://uploads.github.com/"+repoPrefix+"releases/42/assets?name="):
+			failedUpload = req.endpoint
+			f.list(map[string]any{"id": 42, "tag_name": f.tag, "draft": true})
+			return ghExit("gh: Bad Gateway (HTTP 502)")
+		case req.method == "DELETE" && req.endpoint == repoPrefix+"releases/42":
+			f.created = 43
+			delete(f.api.responses, repoPrefix+"releases/42")
+			f.readback["id"] = 43
+			f.api.responses[repoPrefix+"releases/43"] = f.readback
+		}
+		return nil
+	}
+
+	requireReleaseError(t, f.run("draft"), "")
+	if failedUpload == "" {
+		t.Fatal("the first draft never attempted an upload")
+	}
+	want := []string{
+		"POST " + repoPrefix + "releases",
+		"POST " + failedUpload,
+		"DELETE " + repoPrefix + "releases/42",
+		"POST " + repoPrefix + "releases",
+		"POST https://uploads.github.com/" + repoPrefix + "releases/43/assets?name=RELEASE_NOTES.md",
+		"POST https://uploads.github.com/" + repoPrefix + "releases/43/assets?name=SHA256SUMS",
+		"POST https://uploads.github.com/" + repoPrefix + "releases/43/assets?name=payload",
+	}
+	var got []string
+	for _, req := range f.writes {
+		got = append(got, req.method+" "+req.endpoint)
+	}
+	if len(got) == len(want) {
+		slices.Sort(got[4:])
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("writes = %v, want %v", got, want)
+	}
+	if !slices.Contains(f.reads, repoPrefix+"releases/43") {
+		t.Error("the replacement draft was never read back")
+	}
+}
+
+// A lost PATCH response can precede either state. A blind retry can PATCH an
+// already published release, while giving up leaves a verified draft behind.
+// A replacement draft has a different identity and must never be patched.
+func TestPublishReconcilesPatchFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name, afterPatch, wantErr string
+		wantPatches               int
+	}{
+		{name: "already published", afterPatch: "published", wantPatches: 1},
+		{name: "same draft", afterPatch: "draft", wantPatches: 2},
+		{name: "replacement draft", afterPatch: "replacement", wantPatches: 1, wantErr: "HTTP 502"},
+		{name: "permanent error", afterPatch: "draft", wantPatches: 1, wantErr: "HTTP 422"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := publicationWorld(t, "v2026.12.1", false)
+			draft := maps.Clone(f.readback)
+			draft["draft"] = true
+			f.list(draft)
+			f.onWrite = func(req releaseRequest) error {
+				if req.method != "PATCH" || req.endpoint != repoPrefix+"releases/42" {
+					t.Fatalf("unexpected write: %v", req)
+				}
+				if len(f.writes) == 2 {
+					if len(f.reads) < 2 || f.reads[len(f.reads)-1] != releaseListEndpoint {
+						t.Fatal("the draft was patched again before its state was checked")
+					}
+					return nil
+				}
+				switch tc.afterPatch {
+				case "published":
+					f.list(f.readback)
+				case "replacement":
+					draft["id"] = 43
+				}
+				if tc.name == "permanent error" {
+					return ghExit("gh: Validation failed (HTTP 422)")
+				}
+				return ghExit("gh: Bad Gateway (HTTP 502)")
+			}
+
+			requireReleaseError(t, f.run("publish"), tc.wantErr)
+			if len(f.writes) != tc.wantPatches {
+				t.Errorf("PATCH requests = %d, want %d", len(f.writes), tc.wantPatches)
+			}
+			if len(f.reads) < 2 || f.reads[1] != releaseListEndpoint {
+				t.Errorf("the failed PATCH did not trigger a fresh release list: %v", f.reads)
+			}
+			if tc.wantErr == "" && !slices.Contains(f.reads, repoPrefix+"releases/assets/11") {
+				t.Error("successful publication was never confirmed from its published bytes")
+			}
+		})
+	}
+}
+
+// Looking up the tag only once can turn a successful publish into an error
+// while the new ref is still propagating.
+func TestPublishWaitsForTagRef(t *testing.T) {
+	f := publicationWorld(t, "v2026.12.1", false)
+	draft := maps.Clone(f.readback)
+	draft["draft"] = true
+	f.list(draft)
+	ref := repoPrefix + "git/ref/tags/" + f.tag
+	f.api.failures = map[string][]error{ref: {&apiError{status: 404, text: "gh: Not Found (HTTP 404)"}}}
+
+	requireReleaseError(t, f.run("publish"), "")
+	if len(f.writes) != 1 || f.writes[0].method != "PATCH" {
+		t.Errorf("writes = %v, want a single PATCH", f.writes)
 	}
 }
 

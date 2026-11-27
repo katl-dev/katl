@@ -273,7 +273,7 @@ func TestReleaseCallIdentity(t *testing.T) {
 		{name: "final", event: "workflow_dispatch", commit: calledCommit, version: "2026.12.0"},
 		{name: "scheduled caller", event: "schedule", commit: calledCommit, version: "2026.12.0-rc.2"},
 		{name: "tag caller", event: "push", commit: calledCommit, version: "2026.12.0-rc.3"},
-		{name: "other commit", event: "workflow_dispatch", commit: "89abcdef0123456789abcdef0123456789abcdef", version: "2026.12.0-rc.1", wantErr: "Dispatch the Release workflow on the release branch whose head is 89abcdef0123456789abcdef0123456789abcdef."},
+		{name: "other commit", event: "workflow_dispatch", commit: "89abcdef0123456789abcdef0123456789abcdef", version: "2026.12.0-rc.1", wantErr: "this run builds " + calledCommit + " from v2026.11.5. Dispatch the Release workflow on the release branch whose head is 89abcdef0123456789abcdef0123456789abcdef."},
 		{name: "invalid version", event: "workflow_dispatch", commit: calledCommit, version: "2026.12.0-rc.01", wantErr: "not canonical"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

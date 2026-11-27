@@ -181,7 +181,7 @@ jobs:
           # A called run reports its caller's event; the caller supplies the version.
           if [[ -n "${CALLED_COMMIT:-}" ]]; then
             if [[ "$CALLED_COMMIT" != "$GITHUB_SHA" ]]; then
-              echo "::error::called to build $CALLED_COMMIT, but this run builds $GITHUB_SHA. Dispatch the Release workflow on the release branch whose head is $CALLED_COMMIT."
+              echo "::error::called to build $CALLED_COMMIT, but this run builds $GITHUB_SHA from $GITHUB_REF_NAME. Dispatch the Release workflow on the release branch whose head is $CALLED_COMMIT."
               exit 1
             fi
             event=workflow_call

@@ -232,6 +232,8 @@ jobs:
       - *attempt-guard
       - *checkout
       - *setup-go
+      - name: Require a release candidate
+        run: scripts/katl-release require-candidate "$VERSION"
       - &bundle-name
         name: Resolve the bundle name
         id: bundle
@@ -329,6 +331,7 @@ jobs:
           private-key: ${{ secrets.KATL_RELEASE_APP_PRIVATE_KEY }}
           owner: ${{ github.repository_owner }}
           repositories: ${{ github.event.repository.name }}
+          permission-contents: write
       - name: Summarize the publishing credential
         run: |
           echo "Publishing credential: katl-release App." >> "$GITHUB_STEP_SUMMARY"

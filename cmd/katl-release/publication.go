@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/katl-dev/katl/internal/releasestate"
 	"github.com/katl-dev/katl/internal/releaseversion"
@@ -26,10 +27,12 @@ type publication struct {
 	digest      string
 	expected    map[string]string
 	*reader
-	call command
+	call func(context.Context, string, ...string) ([]byte, error)
 }
 
-func runPublication(ctx context.Context, args []string, stderr io.Writer, r *reader, call command) error {
+const publicationAttempts = 3
+
+func runPublication(ctx context.Context, args []string, stderr io.Writer, r *reader, call func(context.Context, string, ...string) ([]byte, error)) error {
 	if len(args) != 4 {
 		return fmt.Errorf("usage: scripts/katl-release %s VERSION COMMIT DIRECTORY", args[0])
 	}
@@ -43,7 +46,10 @@ func runPublication(ctx context.Context, args []string, stderr io.Writer, r *rea
 	}
 	p := publication{version: version, commit: commit, dir: dir, reader: r, call: call}
 	if args[0] == "draft" {
-		if err := verifyBundle(dir, releasestate.Ref(version.Base()), commit, stderr, call); err != nil {
+		verify := func(name string, args ...string) ([]byte, error) {
+			return call(ctx, name, args...)
+		}
+		if err := verifyBundle(dir, releasestate.Ref(version.Base()), commit, stderr, verify); err != nil {
 			return err
 		}
 	}
@@ -59,8 +65,16 @@ func runPublication(ctx context.Context, args []string, stderr io.Writer, r *rea
 	sum := sha256.Sum256(p.sums)
 	p.digest = hex.EncodeToString(sum[:])
 	if args[0] == "draft" {
-		return p.draft(ctx, stderr)
+		// Large bundles can take longer to upload than the publication request.
+		ctx, cancel := context.WithTimeout(ctx, 2*time.Hour)
+		defer cancel()
+		backoff := p.backoff()
+		return backoff.DoAttempts(ctx, publicationAttempts, func(ctx context.Context) error {
+			return p.draft(ctx, stderr)
+		}, transient)
 	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
 	return p.publish(ctx, stderr)
 }
 
@@ -120,12 +134,12 @@ func (p publication) draft(ctx context.Context, stderr io.Writer) error {
 	}
 	for _, draft := range drafts {
 		// A fresh draft keeps an interrupted upload from supplying any assets.
-		if _, err := p.write("DELETE", p.releaseEndpoint(draft.ID)); err != nil {
+		if _, err := p.write(ctx, "DELETE", p.releaseEndpoint(draft.ID)); err != nil {
 			return err
 		}
 	}
 	fmt.Fprintln(stderr, "Drafting", p.version.Tag())
-	created, err := p.write("POST", p.repo("releases"),
+	created, err := p.write(ctx, "POST", p.repo("releases"),
 		"-f", "tag_name="+p.version.Tag(), "-f", "target_commitish="+p.commit,
 		"-f", "name=KatlOS "+p.version.String(), "-F", "body=@"+notes,
 		"-F", "draft=true", "-F", "prerelease="+strconv.FormatBool(!p.version.IsFinal()))
@@ -148,7 +162,7 @@ func (p publication) draft(ctx context.Context, stderr io.Writer) error {
 		fmt.Fprintln(stderr, "Uploading", name)
 		// Upload by release ID so a tag lookup cannot select a different release.
 		endpoint := "https://uploads.github.com/" + p.releaseEndpoint(draft.ID) + "/assets?name=" + url.QueryEscape(name)
-		if _, err := p.write("POST", endpoint, "--input", filepath.Join(p.dir, name), "-H", "Content-Type: application/octet-stream"); err != nil {
+		if _, err := p.write(ctx, "POST", endpoint, "--input", filepath.Join(p.dir, name), "-H", "Content-Type: application/octet-stream"); err != nil {
 			return err
 		}
 	}
@@ -183,23 +197,55 @@ func (p publication) publish(ctx context.Context, stderr io.Writer) error {
 	}
 
 	draft := drafts[0]
-	fields := []string{"-F", "draft=false", "-f", "tag_name=" + p.version.Tag(), "-f", "target_commitish=" + p.commit}
-	if !p.version.IsFinal() {
-		fields = append(fields, "-f", "make_latest=false")
+	makeLatest := "false"
+	if p.version.IsFinal() {
+		makeLatest = "legacy"
 	}
-	// Publishing the draft also creates its tag at the bound commit.
-	// Do not retry the write. A later invocation can read back a completed publish.
+	fields := []string{"-F", "draft=false", "-f", "tag_name=" + p.version.Tag(),
+		"-f", "target_commitish=" + p.commit, "-f", "make_latest=" + makeLatest}
 	fmt.Fprintln(stderr, "Publishing", p.version.Tag())
-	if _, err := p.write("PATCH", p.releaseEndpoint(draft.ID), fields...); err != nil {
+
+	publishedID := draft.ID
+	backoff := p.backoff()
+	sameDraft := false
+	err = backoff.DoAttempts(ctx, publicationAttempts, func(ctx context.Context) error {
+		sameDraft = false
+		_, patchErr := p.write(ctx, "PATCH", p.releaseEndpoint(draft.ID), fields...)
+		if patchErr == nil {
+			return nil
+		}
+
+		// A failed response may follow a successful publish. Retry only while
+		// the same verified draft is still the unique release to publish.
+		published, drafts, err := p.listed(ctx)
+		if err != nil {
+			return errors.Join(patchErr, fmt.Errorf("check publication after PATCH: %w", err))
+		}
+		if published != nil {
+			if !p.matches(*published) {
+				return p.differentContents()
+			}
+			publishedID = published.ID
+			return nil
+		}
+		sameDraft = len(drafts) == 1 && drafts[0].ID == draft.ID && p.matches(drafts[0])
+		return patchErr
+	}, func(err error) bool { return sameDraft && transient(err) })
+	if err != nil {
 		return err
 	}
-	return p.confirmPublished(ctx, draft.ID)
+	return p.confirmPublished(ctx, publishedID)
 }
 
 func (p publication) confirmPublished(ctx context.Context, id int64) error {
 	tag := p.version.Tag()
 	var ref gitRef
-	if err := p.decode(ctx, p.repo("git/ref/tags/"+tag), &ref); err != nil {
+	// The tag can become visible shortly after the published release.
+	backoff := p.backoff()
+	err := backoff.DoAttempts(ctx, publicationAttempts, func(ctx context.Context) error {
+		return p.decode(ctx, p.repo("git/ref/tags/"+tag), &ref)
+	}, notFound)
+	if err != nil {
 		return err
 	}
 	commit, err := p.peel(ctx, ref)
@@ -258,8 +304,8 @@ func (p publication) matches(release restRelease) bool {
 	return content.MatchesAssets(p.digest)
 }
 
-func (p publication) write(method, endpoint string, args ...string) ([]byte, error) {
-	data, err := p.call("gh", append([]string{"api", "--method", method, endpoint}, args...)...)
+func (p publication) write(ctx context.Context, method, endpoint string, args ...string) ([]byte, error) {
+	data, err := p.call(ctx, "gh", append([]string{"api", "--method", method, endpoint}, args...)...)
 	if err != nil {
 		return nil, ghFailure("gh api "+method+" "+endpoint, err, stderrOf(err))
 	}

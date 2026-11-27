@@ -125,10 +125,11 @@ func TestReleaseCredential(t *testing.T) {
 			}
 			credential = i
 			want := map[string]string{
-				"app-id":       "${{ vars.KATL_RELEASE_APP_ID }}",
-				"private-key":  "${{ secrets.KATL_RELEASE_APP_PRIVATE_KEY }}",
-				"owner":        "${{ github.repository_owner }}",
-				"repositories": "${{ github.event.repository.name }}",
+				"app-id":              "${{ vars.KATL_RELEASE_APP_ID }}",
+				"private-key":         "${{ secrets.KATL_RELEASE_APP_PRIVATE_KEY }}",
+				"owner":               "${{ github.repository_owner }}",
+				"repositories":        "${{ github.event.repository.name }}",
+				"permission-contents": "write",
 			}
 			if step.Uses != "actions/create-github-app-token@v3" || !maps.Equal(step.With, want) ||
 				step.Run != "" || step.If != "" || step.ContinueOnError {
@@ -285,6 +286,74 @@ func runReleaseStep(dir, script string, env ...string) ([]byte, error) {
 	return cmd.CombinedOutput()
 }
 
+// The decide job cannot hand off a truncated or foreign commit, or lose the
+// recorded run ID when mapping the decision's JSON to workflow outputs.
+func TestReleaseDecisionCommit(t *testing.T) {
+	workflow, _ := readReleaseWorkflow(t)
+	job := workflow.Jobs["decide"]
+	if got, want := job.Outputs["build-run"], "${{ steps.decision.outputs.build-run }}"; got != want {
+		t.Errorf("build-run job output = %q, want %q", got, want)
+	}
+	var decision workflowStep
+	for _, step := range job.Steps {
+		if step.ID == "decision" {
+			decision = step
+		}
+	}
+	if decision.Run == "" || decision.If != "" || decision.ContinueOnError {
+		t.Fatal("missing required decision step")
+	}
+
+	for _, tc := range []struct {
+		name, commit, runSHA string
+		wantSuccess          bool
+	}{
+		{name: "matching", commit: calledCommit, runSHA: calledCommit, wantSuccess: true},
+		{name: "abbreviated", commit: calledCommit[:12], runSHA: calledCommit[:12]},
+		{name: "different", commit: strings.Repeat("a", 40), runSHA: calledCommit},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			scripts := filepath.Join(dir, "scripts")
+			if err := os.Mkdir(scripts, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			stub := "#!/bin/sh\n[ \"$*\" = 'next --retry try again' ] || exit 5\nprintf '{\"action\":\"resume-candidate\",\"commit\":\"%s\",\"build_run\":42}\n' \"$DECIDED_COMMIT\"\n"
+			if err := os.WriteFile(filepath.Join(scripts, "katl-release"), []byte(stub), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			outputs := filepath.Join(dir, "output")
+			summary := filepath.Join(dir, "summary")
+			out, err := runReleaseStep(dir, decision.Run, "DECIDED_COMMIT="+tc.commit, "GITHUB_SHA="+tc.runSHA,
+				"RETRY=try again", "GITHUB_RUN_ATTEMPT=1", "GITHUB_OUTPUT="+outputs, "GITHUB_STEP_SUMMARY="+summary)
+			if tc.wantSuccess {
+				if err != nil {
+					t.Fatalf("decision failed: %v: %s", err, out)
+				}
+				written, err := os.ReadFile(outputs)
+				if err != nil {
+					t.Fatal(err)
+				}
+				lines := strings.Split(string(written), "\n")
+				if !slices.Contains(lines, "commit="+tc.commit) || !slices.Contains(lines, "build-run=42") {
+					t.Errorf("decision outputs = %q, want the bound commit and build-run=42", written)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("decision accepted %q with GITHUB_SHA=%q", tc.commit, tc.runSHA)
+			}
+			message, readErr := os.ReadFile(summary)
+			if readErr != nil || !strings.Contains(string(message), "The decision names commit "+tc.commit+", but this run builds "+tc.runSHA) {
+				t.Errorf("decision summary = %q, %v, want commit binding refusal", message, readErr)
+			}
+			if _, err := os.Stat(outputs); !os.IsNotExist(err) {
+				t.Errorf("refused decision created outputs: %v", err)
+			}
+		})
+	}
+}
+
 // A cancelled build can return empty outputs. Only a verifiably successful
 // response proceeds, and a failure record cannot follow a successful write.
 func TestReleaseQualification(t *testing.T) {
@@ -363,23 +432,100 @@ func TestReleaseCandidateTag(t *testing.T) {
 	}
 }
 
-// All local and draft checks finish before registry writes, after which only
-// the publication step can act.
+// Publication requires the qualified digest and a fresh final decision after
+// approval. Every check must run before registry writes, and final publication
+// must inherit the default successful-dependency condition.
 func TestReleasePublicationOrder(t *testing.T) {
 	workflow, _ := readReleaseWorkflow(t)
+	publish := workflow.Jobs["publish"]
+	if status := regexp.MustCompile(`(?i)\b(always|failure|cancelled|success)\s*\(`).FindString(publish.If); status != "" {
+		t.Errorf("publish.if contains a status function %q and overrides the default condition", status)
+	}
+	requireNeeds(t, workflow, [][2]string{{"publish", "decide"}, {"publish", "qualify"}})
+	if got, want := publish.Env["DIGEST"], "${{ needs.qualify.outputs.digest }}"; got != want {
+		t.Errorf("publish DIGEST = %q, want %q", got, want)
+	}
 	for _, id := range []string{"publish-candidate", "publish"} {
+		checks := []string{"attempt guard"}
+		if id == "publish" {
+			checks = append(checks, "credential", "confirm-final", "digest check", "equivalent")
+		} else {
+			checks = append(checks, "require-candidate", "digest check")
+		}
+		commands := []string{"match-release-extensions", "katl-release draft", "publish-release-extensions", "katl-release publish"}
+		want := append(checks, commands...)
+
 		var got []string
 		for _, step := range workflow.Jobs[id].Steps {
-			for _, command := range []string{"match-release-extensions", "katl-release draft", "publish-release-extensions", "katl-release publish"} {
+			before := len(got)
+			switch {
+			case step.Env["DECISION_ATTEMPT"] != "":
+				got = append(got, "attempt guard")
+			case step.ID == "credential":
+				got = append(got, "credential")
+			case strings.Contains(step.Run, "katl-release confirm-final"):
+				got = append(got, "confirm-final")
+				if strings.TrimSpace(step.Run) != `scripts/katl-release confirm-final "$VERSION" "$COMMIT" "$DIGEST"` ||
+					step.Env["GH_TOKEN"] != "${{ github.token }}" {
+					t.Errorf("confirm-final must check this version, commit and digest with github.token: %+v", step)
+				}
+			case strings.Contains(step.Run, "katl-release require-candidate"):
+				got = append(got, "require-candidate")
+			case strings.Contains(step.Run, "sha256sum dist/SHA256SUMS") && strings.Contains(step.Run, `!= "$DIGEST"`):
+				got = append(got, "digest check")
+			case strings.Contains(step.Run, "katl-release equivalent"):
+				got = append(got, "equivalent")
+			}
+			for _, command := range commands {
 				if strings.Contains(step.Run, command) {
 					got = append(got, command)
 				}
 			}
+			if len(got) == before {
+				continue
+			}
+			if len(got) != before+1 || step.If != "" || step.ContinueOnError {
+				t.Errorf("%s requires a separate, mandatory step for %v", id, got[before:])
+			}
+			if id == "publish" && step.Env["DIGEST"] != "" {
+				t.Errorf("publish step %q overrides the qualified DIGEST", step.Name)
+			}
 		}
-		want := []string{"match-release-extensions", "katl-release draft", "publish-release-extensions", "katl-release publish"}
 		if !slices.Equal(got, want) {
 			t.Errorf("%s steps = %v, want %v", id, got, want)
 		}
+	}
+}
+
+// Even when the job condition selects the unattended path, a final or another
+// non-candidate version must stop the job before publication.
+func TestReleaseCandidatePublicationGuard(t *testing.T) {
+	workflow, _ := readReleaseWorkflow(t)
+	job := workflow.Jobs["publish-candidate"]
+	if got, want := job.Env["VERSION"], "${{ needs.decide.outputs.version }}"; got != want {
+		t.Errorf("publish-candidate VERSION = %q, want %q", got, want)
+	}
+	var guard workflowStep
+	for _, step := range job.Steps {
+		if strings.Contains(step.Run, "katl-release require-candidate") {
+			guard = step
+		}
+	}
+	if guard.Run == "" || guard.Env["VERSION"] != "" {
+		t.Fatal("missing candidate publication guard for the decided version")
+	}
+	for _, tc := range []struct{ version, wantErr string }{
+		{version: "2026.12.0-rc.1"},
+		{version: "2026.12.0", wantErr: "Automatic pre-release publication requires a release candidate"},
+		{version: "2026.12.0-beta.1", wantErr: "neither a release candidate nor a final version"},
+		{version: "2026.12.0-rc.0", wantErr: "neither a release candidate nor a final version"},
+	} {
+		t.Run(tc.version, func(t *testing.T) {
+			out, err := runReleaseStep(repoRoot(t), guard.Run, "VERSION="+tc.version)
+			if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || !strings.Contains(string(out), tc.wantErr)) {
+				t.Errorf("candidate guard = %v: %s, want error %q", err, out, tc.wantErr)
+			}
+		})
 	}
 }
 

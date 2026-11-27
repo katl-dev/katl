@@ -33,14 +33,7 @@ type command func(string, ...string) ([]byte, error)
 
 func main() {
 	call := func(name string, args ...string) ([]byte, error) {
-		cmd := exec.Command(name, args...)
-		var stderr bytes.Buffer
-		cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
-		out, err := cmd.Output()
-		if exit := (*exec.ExitError)(nil); errors.As(err, &exit) {
-			exit.Stderr = stderr.Bytes()
-		}
-		return out, err
+		return runCommand(context.Background(), name, args...)
 	}
 	if err := run(os.Args[1:], os.Stdout, os.Stderr, call); err != nil {
 		fmt.Fprintln(os.Stderr, "katl-release:", err)
@@ -48,9 +41,20 @@ func main() {
 	}
 }
 
+func runCommand(ctx context.Context, name string, args ...string) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
+	out, err := cmd.Output()
+	if exit := (*exec.ExitError)(nil); errors.As(err, &exit) {
+		exit.Stderr = stderr.Bytes()
+	}
+	return out, err
+}
+
 func run(args []string, stdout, stderr io.Writer, call command) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify [--branch] TAG COMMIT DIRECTORY\n       scripts/katl-release checksums DIRECTORY\n       scripts/katl-release equivalent BUNDLE FLAVOUR=SHA256SUMS...\n       scripts/katl-release regression VERSION COMMIT\n       scripts/katl-release next [--ref REF] [--dispatch COMMIT] [--retry REASON]\n       scripts/katl-release status VERSION\n       scripts/katl-release version VERSION\n       scripts/katl-release stable-tags [TAG...]\n       scripts/katl-release bundle-name VERSION COMMIT\n       scripts/katl-release draft VERSION COMMIT DIRECTORY\n       scripts/katl-release publish VERSION COMMIT DIRECTORY\n       scripts/katl-release confirm-final VERSION COMMIT DIGEST\n       scripts/katl-release tag-name VERSION\n       scripts/katl-release candidate-artifacts VERSION COMMIT RUN ATTEMPT\n       scripts/katl-release record VERSION building|failed|qualified [DIGEST]\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
+		fmt.Fprintln(stdout, "usage: scripts/katl-release prepare [--ref main] VERSION\n       scripts/katl-release inspect RUN_ID\n       scripts/katl-release download RUN_ID DIRECTORY\n       scripts/katl-release verify [--branch] TAG COMMIT DIRECTORY\n       scripts/katl-release checksums DIRECTORY\n       scripts/katl-release equivalent BUNDLE FLAVOUR=SHA256SUMS...\n       scripts/katl-release regression VERSION COMMIT\n       scripts/katl-release next [--ref REF] [--dispatch COMMIT] [--retry REASON]\n       scripts/katl-release status VERSION\n       scripts/katl-release version VERSION\n       scripts/katl-release require-candidate VERSION\n       scripts/katl-release stable-tags [TAG...]\n       scripts/katl-release bundle-name VERSION COMMIT\n       scripts/katl-release draft VERSION COMMIT DIRECTORY\n       scripts/katl-release publish VERSION COMMIT DIRECTORY\n       scripts/katl-release confirm-final VERSION COMMIT DIGEST\n       scripts/katl-release tag-name VERSION\n       scripts/katl-release candidate-artifacts VERSION COMMIT RUN ATTEMPT\n       scripts/katl-release record VERSION building|failed|qualified [DIGEST]\n\nPreparation is read-only. Publication follows successful VM qualification in GitHub Actions.")
 		return nil
 	}
 	if args[0] == "prepare" {
@@ -62,7 +66,7 @@ func run(args []string, stdout, stderr io.Writer, call command) error {
 	if args[0] == "record" {
 		return record(args[1:], stderr, call)
 	}
-	if args[0] == "version" || args[0] == "stable-tags" || args[0] == "bundle-name" || args[0] == "tag-name" {
+	if args[0] == "version" || args[0] == "stable-tags" || args[0] == "bundle-name" || args[0] == "tag-name" || args[0] == "require-candidate" {
 		return versionCommand(args, stdout)
 	}
 	if args[0] == "next" {
@@ -73,7 +77,7 @@ func run(args []string, stdout, stderr io.Writer, call command) error {
 	}
 	switch args[0] {
 	case "draft", "publish":
-		return runPublication(context.Background(), args, stderr, newGitHubReader(call), call)
+		return runPublication(context.Background(), args, stderr, newGitHubReader(call), runCommand)
 	case "confirm-final":
 		return confirmFinal(context.Background(), args[1:], newGitHubReader(call))
 	case "candidate-artifacts":

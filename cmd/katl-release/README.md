@@ -181,6 +181,15 @@ for every decision, a refusal included.
 The Release workflow uses these commands after qualification. Submit release
 work through the [Release workflow](../../docs/internal/release-state-machine.md#actions).
 
+### `require-candidate`
+
+```sh
+scripts/katl-release require-candidate 2026.12.1-rc.1
+```
+
+The pre-release job proceeds only if the decided version is a release
+candidate numbered 1 or higher.
+
 ### `confirm-final`
 
 ```sh
@@ -198,10 +207,11 @@ already exists, the command reports the state machine's refusal.
 scripts/katl-release draft 2026.12.1-rc.1 "$QUALIFIED_SHA" "$BUNDLE"
 ```
 
-Verifies the bundle against the release branch, then creates a draft and
-uploads the bundle. It replaces an interrupted draft of the same tag and
-checks the uploaded asset digests. An already-published release with
-matching checksums completes this step without a write.
+Verifies the bundle against the release branch, then creates a draft,
+uploads the bundle and checks the uploaded asset digests. If a transient
+failure interrupts drafting, the command starts over with a fresh draft of
+the same tag. An already-published release with matching checksums completes
+this step without a write.
 
 ### `publish`
 
@@ -211,9 +221,10 @@ scripts/katl-release publish 2026.12.1-rc.1 "$QUALIFIED_SHA" "$BUNDLE"
 
 After pushing the qualified extensions, the workflow checks the draft's
 asset digests and publishes it, creating the tag at the source commit if
-needed. It reads back the tag, release and checksum file. A candidate
-publishes as a pre-release. An already-published matching release is
-verified without a write.
+needed. If the request fails, it checks whether GitHub published the release
+and retries a transient failure only while the same verified draft remains.
+It reads back the tag, release and checksum file. A candidate publishes as a
+pre-release. An already-published matching release is verified without a write.
 
 ### `candidate-artifacts`
 

@@ -19,6 +19,18 @@ func versionCommand(args []string, stdout io.Writer) error {
 	case len(args) == 2 && args[0] == "version":
 		_, err := releaseversion.Parse(args[1])
 		return err
+	case args[0] == "require-candidate":
+		if len(args) != 2 {
+			return errors.New("usage: scripts/katl-release require-candidate VERSION")
+		}
+		version, err := publicationVersion(args[1])
+		if err != nil {
+			return err
+		}
+		if version.IsFinal() {
+			return fmt.Errorf("%s is a final version. Automatic pre-release publication requires a release candidate", version)
+		}
+		return nil
 	case len(args) == 2 && args[0] == "tag-name":
 		version, err := validateVersion(args[1])
 		if err != nil {

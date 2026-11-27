@@ -43,7 +43,7 @@ func notFound(err error) bool {
 	return errors.As(err, &api) && api.status == 404
 }
 
-// transient reports whether a failed read may succeed when repeated: a
+// transient reports whether a failed request may succeed when repeated: a
 // network failure, a server error or a rate limit, but not a refusal, a
 // missing gh or missing credentials.
 func transient(err error) bool {
@@ -138,12 +138,16 @@ func (r *reader) get(ctx context.Context, endpoint string, paginate bool, accept
 
 // retry runs one read with backoff while it fails transiently.
 func (r *reader) retry(ctx context.Context, read func(context.Context) error) error {
+	backoff := r.backoff()
+	return backoff.DoAttempts(ctx, readAttempts, read, transient)
+}
+
+func (r *reader) backoff() retry.Backoff {
 	delay := r.delay
 	if delay == 0 {
 		delay = 2 * time.Second
 	}
-	backoff := retry.NewBackoff(delay, 15*delay)
-	return backoff.DoAttempts(ctx, readAttempts, read, transient)
+	return retry.NewBackoff(delay, 15*delay)
 }
 
 func (r *reader) repo(path string) string { return "repos/" + r.repository + "/" + path }
