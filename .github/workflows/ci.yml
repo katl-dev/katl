@@ -39,7 +39,7 @@ jobs:
       pull-requests: read
       statuses: read
       actions: read
-    timeout-minutes: 40
+    timeout-minutes: 15
     outputs:
       vm-flavours: ${{ steps.plan.outputs.vm-flavours }}
       driver-flavours: ${{ steps.plan.outputs.driver-flavours }}
@@ -55,17 +55,17 @@ jobs:
       check-suffix: ${{ steps.plan.outputs.check-suffix }}
     steps:
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         with:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-        timeout-minutes: 10
+        timeout-minutes: 2
       # Read the labels and base now rather than from the event payload, which a
       # rerun repeats unchanged. A run whose payload base is stale fails below
       # rather than plan for a base it did not test.
       - name: Read pull request state
-        timeout-minutes: 3
+        timeout-minutes: 2
         id: pr
         if: github.event_name == 'pull_request'
         env:
@@ -78,7 +78,7 @@ jobs:
       # base at the time. If the pull request has been retargeted since, this run
       # tested the wrong base and must not pass for the new one.
       - name: Require the tested base
-        timeout-minutes: 3
+        timeout-minutes: 2
         if: github.event_name == 'pull_request'
         env:
           TESTED_BASE: ${{ github.base_ref }}
@@ -89,7 +89,7 @@ jobs:
             exit 1
           fi
       - name: Select validation
-        timeout-minutes: 5
+        timeout-minutes: 2
         id: plan
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
@@ -173,7 +173,7 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Resolve production identity
-        timeout-minutes: 5
+        timeout-minutes: 2
         id: production
         if: steps.plan.outputs.full-plan == 'true' || github.event_name != 'pull_request'
         env:
@@ -242,20 +242,20 @@ jobs:
   nix:
     name: Nix katlctl
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - name: Install Nix
-        timeout-minutes: 10
+        timeout-minutes: 2
         uses: ./.github/actions/install-nix
       - name: Build katlctl flake package
-        timeout-minutes: 15
+        timeout-minutes: 3
         run: nix build --option builders '' .#katlctl --out-link _build/katlctl --print-build-logs
       - name: Verify packaged CLI and completions
-        timeout-minutes: 3
+        timeout-minutes: 2
         run: |
           _build/katlctl/bin/katlctl --help
           test -s _build/katlctl/share/bash-completion/completions/katlctl.bash
@@ -337,19 +337,19 @@ jobs:
     needs: [plan, production]
     if: needs.plan.outputs.production-flavours != '[]'
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 20
     permissions:
       contents: read
       actions: read # combine-flavours downloads with hosted-download.
     steps:
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-        timeout-minutes: 10
+        timeout-minutes: 2
       - uses: ./.github/actions/combine-flavours
-        timeout-minutes: 25
+        timeout-minutes: 11
 
   result:
     name: CI${{ needs.plan.outputs.check-suffix && format(' {0}', needs.plan.outputs.check-suffix) || '' }}
@@ -359,7 +359,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Require selected validation
-        timeout-minutes: 3
+        timeout-minutes: 2
         env:
           NEEDS: ${{ toJSON(needs) }}
         run: |

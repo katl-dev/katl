@@ -12,18 +12,18 @@ permissions:
 jobs:
   plan:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 10
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
     steps:
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-        timeout-minutes: 10
+        timeout-minutes: 2
       - id: plan
-        timeout-minutes: 5
+        timeout-minutes: 2
         env:
           GH_TOKEN: ${{ github.token }}
         run: echo "matrix=$(go run ./cmd/katl-kubernetes-release discover)" >> "$GITHUB_OUTPUT"
@@ -32,20 +32,20 @@ jobs:
     name: Verify ${{ matrix.release.payloadVersion }}
     needs: plan
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
         release: ${{ fromJSON(needs.plan.outputs.matrix).include }}
     steps:
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-        timeout-minutes: 10
+        timeout-minutes: 2
       - name: Resolve through the operator compatibility path
-        timeout-minutes: 5
+        timeout-minutes: 2
         id: bundle
         env:
           PAYLOAD_VERSION: ${{ matrix.release.payloadVersion }}
@@ -58,12 +58,12 @@ jobs:
           scripts/check-public-kubernetes-bundle "$image" "$digest"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - name: Authenticate provenance client
-        timeout-minutes: 5
+        timeout-minutes: 2
         env:
           GHCR_TOKEN: ${{ github.token }}
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "${{ github.actor }}" --password-stdin
       - name: Verify provenance
-        timeout-minutes: 10
+        timeout-minutes: 2
         env:
           GH_TOKEN: ${{ github.token }}
           MANIFEST_DIGEST: ${{ steps.bundle.outputs.digest }}

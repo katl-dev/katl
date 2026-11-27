@@ -77,7 +77,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-        timeout-minutes: 10
+        timeout-minutes: 2
       - id: bundle
         timeout-minutes: 5
         env:
@@ -153,7 +153,7 @@ jobs:
     # The Release workflow already built, qualified and published tags made by the release App.
     if: inputs.qualify_run == 0 && (inputs.commit || github.event_name != 'push' || github.actor != 'katl-release[bot]')
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 15
     outputs:
       artifact-name: ${{ steps.release.outputs.artifact-name }}
       version: ${{ steps.release.outputs.version }}
@@ -163,23 +163,23 @@ jobs:
 
     steps:
       - name: Check out repository
-        timeout-minutes: 5
+        timeout-minutes: 2
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-        timeout-minutes: 10
+        timeout-minutes: 2
 
       - name: Resolve supported upgrade source
-        timeout-minutes: 5
+        timeout-minutes: 2
         id: previous
         run: |
           tag="$(scripts/katl-release-artifacts upgrade-baseline)"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Resolve release identity
-        timeout-minutes: 5
+        timeout-minutes: 2
         id: release
         shell: bash
         env:
@@ -210,7 +210,7 @@ jobs:
       # Only tag pushes may skip the regression lanes; scheduled, dispatched and
       # called runs always repeat them, because an empty decision runs the lanes.
       - name: Decide VM regression
-        timeout-minutes: 5
+        timeout-minutes: 2
         if: github.event_name == 'push' && github.ref_type == 'tag' && !inputs.commit
         id: regression
         env:
@@ -250,7 +250,7 @@ jobs:
     name: Bundle Kernel Flavours
     needs: [identity, build-standard, build-lts]
     runs-on: ubuntu-24.04
-    timeout-minutes: 60
+    timeout-minutes: 30
     permissions:
       actions: read # combine-flavours downloads with hosted-download.
       attestations: write
@@ -260,21 +260,21 @@ jobs:
       sha256sums: ${{ steps.digest.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-        timeout-minutes: 10
+        timeout-minutes: 2
       - uses: ./.github/actions/combine-flavours
-        timeout-minutes: 25
+        timeout-minutes: 10
       - name: Attest staged release artifacts
-        timeout-minutes: 5
+        timeout-minutes: 2
         if: github.event_name == 'push' && github.ref_type == 'tag' || inputs.commit
         uses: actions/attest@v4
         with:
           subject-path: dist/*
       - name: Digest release checksums
-        timeout-minutes: 3
+        timeout-minutes: 2
         id: digest
         if: inputs.commit
         run: |
@@ -312,17 +312,17 @@ jobs:
     name: Verify Qualified Bytes
     needs: [identity, bundle, qualification-standard, qualification-lts]
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    timeout-minutes: 35
     permissions:
       actions: read
       contents: read
     steps:
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-        timeout-minutes: 10
+        timeout-minutes: 2
       - name: Download the bundle
         timeout-minutes: 20
         env:
@@ -336,7 +336,7 @@ jobs:
           KATL_DOWNLOAD_ATTEMPT_SECONDS: 60
           QUALIFIED: katl-qualified-*-${{ github.sha }}
         run: .github/scripts/hosted-download artifacts "$QUALIFIED" evidence
-      - timeout-minutes: 5
+      - timeout-minutes: 2
         run: |
           scripts/katl-release equivalent dist \
             "standard=evidence/katl-qualified-standard-$GITHUB_SHA/SHA256SUMS" \
@@ -354,12 +354,12 @@ jobs:
       - qualified-bytes
       - unit
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 5
     outputs:
       result: ${{ steps.verdict.outcome }}
     steps:
       - id: verdict
-        timeout-minutes: 3
+        timeout-minutes: 2
         env:
           UNIT: ${{ needs.unit.result }}
           REGRESSION_DECISION: ${{ needs.identity.outputs.regression }}
@@ -386,18 +386,18 @@ jobs:
     if: github.event_name == 'push' && github.ref_type == 'tag' && !inputs.commit
     needs: [build-standard, build-lts, release-validation]
     runs-on: ubuntu-24.04
-    timeout-minutes: 65
+    timeout-minutes: 30
     permissions:
       actions: read
       contents: read
       packages: write
     steps:
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-        timeout-minutes: 10
+        timeout-minutes: 2
       - name: Download extension publication inputs
         timeout-minutes: 20
         env:
@@ -405,12 +405,12 @@ jobs:
           BUNDLES: katl-extension-bundles-*-${{ github.sha }}
         run: .github/scripts/hosted-download artifacts "$BUNDLES" artifacts
       - name: Authenticate publication
-        timeout-minutes: 5
+        timeout-minutes: 2
         env:
           GHCR_TOKEN: ${{ github.token }}
         run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
       - name: Publish the verified OCI bytes without rebuilding
-        timeout-minutes: 20
+        timeout-minutes: 2
         shell: bash
         run: |
           for flavour in standard lts; do
@@ -427,7 +427,7 @@ jobs:
       - bundle
       - publish-extensions
     runs-on: ubuntu-24.04
-    timeout-minutes: 70
+    timeout-minutes: 35
     permissions:
       actions: read
       attestations: read
@@ -435,11 +435,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-go
-        timeout-minutes: 10
+        timeout-minutes: 2
       - name: Download verified artifacts
         timeout-minutes: 20
         env:
@@ -448,13 +448,13 @@ jobs:
         run: .github/scripts/hosted-download artifact "$BUNDLE" dist
 
       - name: Verify release checksums and provenance
-        timeout-minutes: 10
+        timeout-minutes: 3
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/katl-release verify "$GITHUB_REF_NAME" "$GITHUB_SHA" dist
 
       - name: Publish tag release
-        timeout-minutes: 20
+        timeout-minutes: 3
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

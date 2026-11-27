@@ -19,6 +19,7 @@ var goTestTimeout = regexp.MustCompile(`-timeout (\d+)m\b`)
 
 type budgetStep struct {
 	Name            string            `yaml:"name"`
+	If              string            `yaml:"if"`
 	Uses            string            `yaml:"uses"`
 	Run             string            `yaml:"run"`
 	Env             map[string]string `yaml:"env"`
@@ -76,7 +77,6 @@ func budgetViolations(data []byte) ([]string, error) {
 		if job.Timeout <= 0 {
 			violations = append(violations, where+": no timeout-minutes")
 		}
-		var sum int
 		for i, s := range job.Steps {
 			label := s.label(i)
 			common(where, i, s)
@@ -91,18 +91,17 @@ func budgetViolations(data []byte) ([]string, error) {
 					violations = append(violations, fmt.Sprintf("%s: %s has %d minutes for downloads that may take %d seconds", where, label, s.Timeout, need))
 				}
 			}
-			sum += s.Timeout
 			if m := goTestTimeout.FindStringSubmatch(s.Run); m != nil {
 				minutes, _ := strconv.Atoi(m[1])
 				if s.Timeout <= minutes {
 					violations = append(violations, fmt.Sprintf("%s: %s has %d minutes for go test -timeout %dm", where, label, s.Timeout, minutes))
 				}
-				if setup := sum - s.Timeout; job.Timeout <= setup+minutes {
+				if setup := budgetSum(job.Steps[:i]); job.Timeout <= setup+minutes {
 					violations = append(violations, fmt.Sprintf("%s: job timeout %d does not exceed setup %d plus go test -timeout %dm", where, job.Timeout, setup, minutes))
 				}
 			}
 		}
-		if job.Timeout > 0 && job.Timeout <= sum {
+		if sum := budgetSum(job.Steps); job.Timeout > 0 && job.Timeout <= sum {
 			violations = append(violations, fmt.Sprintf("%s: job timeout %d is not above the step budgets' sum %d", where, job.Timeout, sum))
 		}
 	}
@@ -110,6 +109,39 @@ func budgetViolations(data []byte) ([]string, error) {
 }
 
 const cacheRestoreMinutes = 5
+
+var simpleComparison = regexp.MustCompile(`^(.+?)\s*(==|!=)\s*(.+)$`)
+
+// budgetSum is the longest a run of steps may take. Steps guarded by the two
+// sides of one comparison, such as x == 'a' and x != 'a', never both run, so
+// only the larger side counts; every other step is assumed to run.
+func budgetSum(steps []budgetStep) int {
+	type sides struct{ equal, unequal int }
+	pairs := map[string]*sides{}
+	var sum int
+	for _, s := range steps {
+		sum += s.Timeout
+		condition := strings.TrimSpace(s.If)
+		condition = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(condition, "${{"), "}}"))
+		m := simpleComparison.FindStringSubmatch(condition)
+		if m == nil || strings.ContainsAny(m[1]+m[3], "&|!=") {
+			continue
+		}
+		key := strings.TrimSpace(m[1]) + "\x00" + strings.TrimSpace(m[3])
+		if pairs[key] == nil {
+			pairs[key] = &sides{}
+		}
+		if m[2] == "==" {
+			pairs[key].equal += s.Timeout
+		} else {
+			pairs[key].unequal += s.Timeout
+		}
+	}
+	for _, p := range pairs {
+		sum -= min(p.equal, p.unequal)
+	}
+	return sum
+}
 
 var hostedDownloadCall = regexp.MustCompile(`hosted-download (artifacts?|release) (\S+) (\S+)`)
 
@@ -152,6 +184,70 @@ func downloadWorstCase(env map[string]string) int {
 	return worst
 }
 
+// queueJobMinutes bounds every job that a pull request or merge group runs,
+// with headroom under the merge queue's 120-minute group timeout, so a job's
+// own budget names a stall before the queue cancels the whole group.
+const queueJobMinutes = 100
+
+// queueTimeoutViolations reports jobs over queueJobMinutes in the workflows
+// that pull_request or merge_group start, and in the reusable workflows they
+// call. files maps a workflow's file name to its contents.
+func queueTimeoutViolations(files map[string][]byte) ([]string, error) {
+	type workflow struct {
+		On   yaml.Node `yaml:"on"`
+		Jobs map[string]struct {
+			Uses    string `yaml:"uses"`
+			Timeout int    `yaml:"timeout-minutes"`
+		} `yaml:"jobs"`
+	}
+	parsed := map[string]workflow{}
+	var pending []string
+	for name, data := range files {
+		var w workflow
+		if err := yaml.Unmarshal(data, &w); err != nil {
+			return nil, fmt.Errorf("parse %s: %w", name, err)
+		}
+		parsed[name] = w
+		var events []string
+		switch w.On.Kind {
+		case yaml.ScalarNode:
+			events = []string{w.On.Value}
+		case yaml.SequenceNode:
+			for _, n := range w.On.Content {
+				events = append(events, n.Value)
+			}
+		case yaml.MappingNode:
+			for i := 0; i < len(w.On.Content); i += 2 {
+				events = append(events, w.On.Content[i].Value)
+			}
+		}
+		if slices.Contains(events, "pull_request") || slices.Contains(events, "merge_group") {
+			pending = append(pending, name)
+		}
+	}
+
+	var violations []string
+	reached := map[string]bool{}
+	for len(pending) > 0 {
+		name := pending[0]
+		pending = pending[1:]
+		if reached[name] {
+			continue
+		}
+		reached[name] = true
+		for jobName, job := range parsed[name].Jobs {
+			if callee, ok := strings.CutPrefix(job.Uses, "./.github/workflows/"); ok {
+				pending = append(pending, callee)
+				continue
+			}
+			if job.Timeout > queueJobMinutes {
+				violations = append(violations, fmt.Sprintf("%s job %s: timeout %d exceeds the %d minutes a queued job may take", name, jobName, job.Timeout, queueJobMinutes))
+			}
+		}
+	}
+	return violations, nil
+}
+
 // TestWorkflowBudgets holds every workflow and composite action to the
 // budget policy, so one stalled step cannot consume its job's timeout and
 // go test reports a hung scenario before the job is cancelled.
@@ -165,6 +261,17 @@ func TestWorkflowBudgets(t *testing.T) {
 		actions, err := filepath.Glob(filepath.Join(root, ".github", "actions", "*", "action.yml"))
 		if err != nil {
 			t.Fatal(err)
+		}
+		queued := map[string][]byte{}
+		for _, path := range paths {
+			queued[filepath.Base(path)] = mustReadFile(t, path)
+		}
+		violations, err := queueTimeoutViolations(queued)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, v := range violations {
+			t.Error(v)
 		}
 		paths = append(paths, actions...)
 		if len(paths) < 10 {
@@ -221,6 +328,13 @@ func TestWorkflowBudgets(t *testing.T) {
 		{"cache restore failing the job", budgeted + `      - uses: actions/cache/restore@v6
         timeout-minutes: 5
 `, "must continue on error"},
+		{"budgets of steps with unrelated conditions", budgeted + `      - run: make
+        if: inputs.ref != ''
+        timeout-minutes: 3
+      - run: make
+        if: inputs.mode == 'fast'
+        timeout-minutes: 3
+`, "job timeout 30 is not above the step budgets' sum 31"},
 		{"cache restore over its budget", strings.Replace(budgeted, "30", "60", 1) + `      - uses: actions/cache/restore@v6
         timeout-minutes: 10
         continue-on-error: true
@@ -236,6 +350,49 @@ func TestWorkflowBudgets(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("queued jobs", func(t *testing.T) {
+		long := `
+jobs:
+  build:
+    timeout-minutes: 110
+    steps: []
+`
+		violations, err := queueTimeoutViolations(map[string][]byte{
+			"ci.yml":      []byte("on: [merge_group]\njobs:\n  call:\n    uses: ./.github/workflows/lanes.yml\n"),
+			"lanes.yml":   []byte("on: workflow_call" + long),
+			"nightly.yml": []byte("on:\n  schedule:\n    - cron: '0 3 * * *'" + long),
+			"pr.yml":      []byte("on:\n  pull_request:" + long),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		slices.Sort(violations)
+		want := []string{
+			"lanes.yml job build: timeout 110 exceeds the 100 minutes a queued job may take",
+			"pr.yml job build: timeout 110 exceeds the 100 minutes a queued job may take",
+		}
+		if !slices.Equal(violations, want) {
+			t.Errorf("violations %q; want the called lane and the pull request job, not the nightly one", violations)
+		}
+	})
+
+	t.Run("complementary steps count once", func(t *testing.T) {
+		workflow := budgeted + `      - uses: ./a
+        if: inputs.ref != ''
+        timeout-minutes: 4
+      - uses: ./b
+        if: ${{ inputs.ref == '' }}
+        timeout-minutes: 3
+`
+		violations, err := budgetViolations([]byte(workflow))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(violations) != 0 {
+			t.Errorf("violations %q; want none, since only one of the 4- and 3-minute steps runs", violations)
+		}
+	})
 
 	t.Run("compliant", func(t *testing.T) {
 		workflow := strings.Replace(budgeted, "30", "40", 1) + `      - uses: actions/cache/restore@v6

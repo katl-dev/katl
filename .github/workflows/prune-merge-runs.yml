@@ -25,18 +25,18 @@ jobs:
     # A delete event is only interesting for a merge-group branch.
     if: github.event_name != 'delete' || startsWith(github.event.ref, 'gh-readonly-queue/')
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    timeout-minutes: 15
     permissions:
       actions: write
       contents: read
     steps:
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         with:
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         if: github.event_name == 'workflow_dispatch' && github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
         with:
           ref: ${{ github.workflow_sha }}
@@ -44,13 +44,13 @@ jobs:
           persist-credentials: false
           sparse-checkout: .github/actions/setup-go
       - uses: ./_build/workflow-actions/.github/actions/setup-go
-        timeout-minutes: 10
+        timeout-minutes: 2
         if: github.event_name == 'workflow_dispatch' && github.ref != format('refs/heads/{0}', github.event.repository.default_branch)
       - uses: ./.github/actions/setup-go
-        timeout-minutes: 10
+        timeout-minutes: 2
         if: github.event_name != 'workflow_dispatch' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
       - name: Cancel runs of superseded merge groups
-        timeout-minutes: 5
+        timeout-minutes: 2
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

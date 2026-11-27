@@ -53,7 +53,7 @@ env:
 jobs:
   plan:
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 15
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       runner: ${{ steps.host.outputs.runner }}
@@ -61,13 +61,13 @@ jobs:
       source: ${{ steps.host.outputs.source }}
     steps:
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         with:
           ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
       # An explicit source ref can predate the cache policy in this workflow.
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         if: inputs.scenarios == '' && inputs.ref != ''
         with:
           ref: ${{ github.workflow_sha }}
@@ -76,13 +76,13 @@ jobs:
           sparse-checkout: |
             .github/actions/setup-go
       - uses: ./_build/workflow-actions/.github/actions/setup-go
-        timeout-minutes: 10
+        timeout-minutes: 2
         if: inputs.scenarios == '' && inputs.ref != ''
       - uses: ./.github/actions/setup-go
-        timeout-minutes: 10
+        timeout-minutes: 2
         if: inputs.scenarios == '' && inputs.ref == ''
       - name: Select VM runner
-        timeout-minutes: 3
+        timeout-minutes: 2
         id: host
         env:
           SOURCE_REF: ${{ inputs.ref }}
@@ -114,7 +114,7 @@ jobs:
           echo "prepared=$prepared" >> "$GITHUB_OUTPUT"
           echo "VM runner: $runner (prepared: $prepared)" >> "$GITHUB_STEP_SUMMARY"
       - name: Select VM groups
-        timeout-minutes: 5
+        timeout-minutes: 2
         id: plan
         env:
           SCENARIOS: ${{ inputs.scenarios }}
@@ -132,7 +132,7 @@ jobs:
   images:
     needs: plan
     runs-on: ${{ needs.plan.outputs.runner }}
-    timeout-minutes: 210
+    timeout-minutes: 75
     outputs:
       mkosi-version: ${{ steps.builder.outputs.version }}
     env:
@@ -143,13 +143,13 @@ jobs:
       KATL_VMTEST_RUN_DIR: ${{ github.workspace }}/_build/hosted-agent
     steps:
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         with:
           ref: ${{ needs.plan.outputs.source }}
           persist-credentials: false
       # An explicit source ref can predate the cache policy in this workflow.
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         if: inputs.ref != ''
         with:
           ref: ${{ github.workflow_sha }}
@@ -162,13 +162,13 @@ jobs:
             .github/actions/mkosi-builder
             scripts
       - uses: ./_build/workflow-actions/.github/actions/setup-go
-        timeout-minutes: 10
+        timeout-minutes: 2
         if: inputs.ref != ''
       - uses: ./.github/actions/setup-go
-        timeout-minutes: 10
+        timeout-minutes: 2
         if: inputs.ref == ''
       - uses: ./.github/actions/hosted-vmtest
-        timeout-minutes: 15
+        timeout-minutes: 6
         with:
           prepared: ${{ needs.plan.outputs.prepared }}
       - uses: ./_build/workflow-actions/.github/actions/image-caches
@@ -185,17 +185,17 @@ jobs:
         with:
           flavour: ${{ env.KATL_FLAVOUR }}
       - uses: ./_build/workflow-actions/.github/actions/mkosi-builder
-        timeout-minutes: 20
+        timeout-minutes: 2
         if: inputs.ref != ''
         with:
           image: ${{ env.KATL_MKOSI_IMAGE }}
       - uses: ./.github/actions/mkosi-builder
-        timeout-minutes: 20
+        timeout-minutes: 2
         if: inputs.ref == ''
         with:
           image: ${{ env.KATL_MKOSI_IMAGE }}
       - name: Record builder identity
-        timeout-minutes: 5
+        timeout-minutes: 2
         id: builder
         run: |
           cp mkosi.conf.d/ci-downloads.conf _build/mkosi-builder.txt _build/hosted-evidence/
@@ -204,7 +204,7 @@ jobs:
           printf '%s\n' "$KATL_BUILD_COMMIT" > _build/hosted-evidence/source.txt
           printf '%s\n' "$version" > _build/hosted-evidence/mkosi-version.txt
       - name: Resolve Kubernetes candidate
-        timeout-minutes: 5
+        timeout-minutes: 2
         if: inputs.kubernetes-version != ''
         env:
           PAYLOAD_VERSION: ${{ inputs.kubernetes-version }}
@@ -222,7 +222,7 @@ jobs:
             "KATL_KUBERNETES_CRITOOLS_VERSION=\(.criToolsVersion)"
           ' _build/hosted-evidence/kubernetes-candidate.json >> "$GITHUB_ENV"
       - name: Build instrumented runtime
-        timeout-minutes: 20
+        timeout-minutes: 13
         id: runtime
         run: .github/scripts/hosted-vmtest-measure build-runtime scripts/mkosi build-runtime
       - name: Prove guest agent and vsock on producer host
@@ -232,13 +232,13 @@ jobs:
             --artifact-set=runtime --no-rebuild ./internal/vmtest \
             -run '^TestDirectRuntimeVMTestAgentSmoke$' -count=1 -json -timeout 8m
       - name: Build shared installer and lifecycle inputs
-        timeout-minutes: 20
+        timeout-minutes: 11
         run: |
           .github/scripts/hosted-vmtest-measure build-install scripts/mkosi build-installer-iso
           .github/scripts/hosted-vmtest-measure build-upgrade scripts/mkosi build-katlos-upgrade-image
           .github/scripts/hosted-vmtest-measure build-kubernetes scripts/build-kubernetes-sysext
       - name: Verify and stage Kubernetes bundle
-        timeout-minutes: 10
+        timeout-minutes: 2
         run: |
           docker run --rm --volume "$GITHUB_WORKSPACE:/work" --workdir /work \
             --env KATL_KUBERNETES_MINOR --env KATL_KUBERNETES_PAYLOAD_VERSION \
@@ -248,10 +248,10 @@ jobs:
           go run ./cmd/katl-publish-kubernetes-sysext --output-dir _build/kubernetes-bundle \
             > _build/hosted-evidence/kubernetes-bundle.txt
       - name: Package immutable test inputs
-        timeout-minutes: 10
+        timeout-minutes: 2
         run: .github/scripts/hosted-vmtest-measure pack .github/scripts/hosted-vmtest-package
       - uses: actions/upload-artifact@v7
-        timeout-minutes: 10
+        timeout-minutes: 3
         with:
           name: hosted-vmtest-${{ env.KATL_FLAVOUR }}-inputs-${{ needs.plan.outputs.source }}
           path: _build/hosted-inputs/
@@ -260,12 +260,12 @@ jobs:
           if-no-files-found: error
       - name: Collect host diagnostics
         id: diagnostics
-        timeout-minutes: 5
+        timeout-minutes: 2
         if: always()
         run: |
           .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
-        timeout-minutes: 10
+        timeout-minutes: 3
         if: always() && steps.diagnostics.outcome == 'success' && steps.diagnostics.outputs.upload-dir != ''
         with:
           name: hosted-vmtest-${{ env.KATL_FLAVOUR }}-producer-evidence-${{ github.run_id }}
@@ -275,14 +275,14 @@ jobs:
       # scheduled runs: it builds every image, so its caches hold what every
       # restorer needs. The Go cache is flavour-independent; standard saves it.
       - name: Save container Go cache
-        timeout-minutes: 10
+        timeout-minutes: 2
         if: github.ref == 'refs/heads/main' && github.event_name == 'schedule' && env.KATL_FLAVOUR == 'standard' && always() && steps.runtime.outcome == 'success' && steps.caches.outcome == 'success' && steps.caches.outputs.go-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: ${{ steps.caches.outputs.go-paths }}
           key: ${{ steps.caches.outputs.go-key }}
       - name: Save mkosi RPM cache
-        timeout-minutes: 10
+        timeout-minutes: 2
         if: github.ref == 'refs/heads/main' && github.event_name == 'schedule' && always() && steps.runtime.outcome == 'success' && steps.caches.outcome == 'success' && steps.caches.outputs.rpm-hit != 'true'
         uses: actions/cache/save@v6
         with:
@@ -293,12 +293,11 @@ jobs:
     name: VM / ${{ matrix.name }}
     needs: [plan, images]
     runs-on: ${{ needs.plan.outputs.runner }}
-    # Every step has a budget so that go test's -timeout 75m, inside its
-    # 80-minute step, fires before this timeout whenever setup stays within
-    # budget: checkouts 5 + 5, the two alternative Go setups 10 + 10, host 15,
-    # inputs 20, import 5, derive 5, scenarios 80, diagnostics 5 and evidence
-    # 10 sum to 170 minutes.
-    timeout-minutes: 175
+    # Every step has a budget, so go test's -timeout 35m fires inside its
+    # 38-minute step and before this timeout whenever setup stays within
+    # budget. A lane's groups take at most laneBudget (15 minutes) in
+    # cmd/katl-vmtest-plan. Only one of the two Go setups runs.
+    timeout-minutes: 85
     permissions:
       contents: read
       actions: read # hosted-download reads this run's inputs artifact.
@@ -314,14 +313,14 @@ jobs:
       ARTIFACT_SET: install
     steps:
       - uses: actions/checkout@v7
-        timeout-minutes: 5
+        timeout-minutes: 2
         with:
           ref: ${{ needs.plan.outputs.source }}
           persist-credentials: false
       # An explicit source ref can predate the cache and download policy in this workflow.
       - uses: actions/checkout@v7
         if: inputs.ref != ''
-        timeout-minutes: 5
+        timeout-minutes: 2
         with:
           ref: ${{ github.workflow_sha }}
           path: _build/workflow-actions
@@ -333,12 +332,12 @@ jobs:
             scripts
       - uses: ./_build/workflow-actions/.github/actions/setup-go
         if: inputs.ref != ''
-        timeout-minutes: 10
+        timeout-minutes: 2
       - uses: ./.github/actions/setup-go
         if: inputs.ref == ''
-        timeout-minutes: 10
+        timeout-minutes: 2
       - uses: ./.github/actions/hosted-vmtest
-        timeout-minutes: 15
+        timeout-minutes: 10
         with:
           prepared: ${{ needs.plan.outputs.prepared }}
       - name: Download VM inputs
@@ -350,7 +349,7 @@ jobs:
         run: |
           "$WORKFLOW_SCRIPTS/hosted-download" artifact "$INPUTS" _build/import
       - name: Verify and import producer inputs
-        timeout-minutes: 5
+        timeout-minutes: 2
         run: |
           test "$(cat _build/import/source.txt)" = "$KATL_BUILD_COMMIT"
           test "$(cat _build/import/mkosi-version.txt)" = "$KATL_VMTEST_MKOSI_VERSION"
@@ -359,7 +358,7 @@ jobs:
           cp _build/import/{source.txt,mkosi-version.txt,inputs.sha256} _build/hosted-evidence/
           rm _build/import/inputs.tar
       - name: Derive component and proof inputs from the install image
-        timeout-minutes: 3
+        timeout-minutes: 2
         run: |
           image="$(jq -er '.artifacts[] | select(.kind == "katlos-install-image") | .path' _build/mkosi/artifacts.json)"
           unsquashfs -no-progress -d _build/mkosi/katlos-install-root "$image"
@@ -370,20 +369,20 @@ jobs:
             _build/mkosi/katl-runtime.efi
           (cd _build/mkosi && sha256sum --check katl-runtime-root.squashfs.sha256 katl-runtime.efi.sha256)
       - name: Run existing scenarios
-        timeout-minutes: 80
+        timeout-minutes: 38
         run: |
           .github/scripts/hosted-vmtest-measure scenarios .github/scripts/hosted-vmtest-run \
             --artifact-set="$ARTIFACT_SET" --no-rebuild "$TEST_PACKAGE" \
-            -run "^($TEST_NAMES)$" -count=1 -json -timeout 75m
+            -run "^($TEST_NAMES)$" -count=1 -json -timeout 35m
       - name: Collect host diagnostics
         id: diagnostics
         if: always()
-        timeout-minutes: 5
+        timeout-minutes: 2
         run: |
           .github/scripts/hosted-vmtest-diagnostics
       - uses: actions/upload-artifact@v7
         if: always() && steps.diagnostics.outcome == 'success' && steps.diagnostics.outputs.upload-dir != ''
-        timeout-minutes: 10
+        timeout-minutes: 2
         with:
           name: hosted-vmtest-${{ env.KATL_FLAVOUR }}-${{ matrix.name }}-evidence-${{ github.run_id }}
           path: ${{ steps.diagnostics.outputs.upload-dir }}

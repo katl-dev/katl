@@ -18,10 +18,10 @@ jobs:
   merge:
     if: (startsWith(github.event.workflow_run.head_branch, 'automation/kernels-') || startsWith(github.event.workflow_run.head_branch, 'automation/mkosi-builder-')) && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 5
     steps:
       - uses: actions/create-github-app-token@v3
-        timeout-minutes: 5
+        timeout-minutes: 2
         id: app-token
         with:
           client-id: ${{ vars.KATL_AUTOMATION_CLIENT_ID }}
@@ -32,7 +32,7 @@ jobs:
           permission-actions: read
       # Never check out or execute the proposal in this privileged workflow.
       - name: Enable auto-merge for the qualified automation-only revision
-        timeout-minutes: 3
+        timeout-minutes: 2
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_REPO: ${{ github.repository }}
