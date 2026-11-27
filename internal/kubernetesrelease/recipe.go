@@ -16,6 +16,7 @@ var recipeRoots = []string{
 	".github/workflows/kubernetes-bundles.yml",
 	"Containerfile.mkosi",
 	"cmd/katl-kubernetes-metadata",
+	"cmd/katl-mkosi-artifacts/extract_sysext.go",
 	"cmd/katl-publish-kubernetes-sysext",
 	"containers-policy.json",
 	"go.mod",
@@ -26,13 +27,13 @@ var recipeRoots = []string{
 	"internal/installer/sysextcatalog/catalog.go",
 	"internal/installer/sysextcatalog/publish.go",
 	"internal/installer/sysextcatalog/stage.go",
+	"internal/sysextimage",
 	"mkosi.conf",
 	"mkosi.profiles/kubernetes-sysext",
 	"mkosi.profiles/runtime/mkosi.conf",
 	"mkosi.profiles/runtime/os-release.in",
 	"scripts/build-kubernetes-sysext",
 	"scripts/check-kubernetes-sysext",
-	"scripts/copy-sysext-root",
 	"scripts/fedora-release",
 }
 

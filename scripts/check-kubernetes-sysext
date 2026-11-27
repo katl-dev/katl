@@ -6,6 +6,7 @@ metadata="${artifact}.json"
 checksum="${artifact}.sha256"
 runtime_root="${KATL_RUNTIME_ROOT:-_build/mkosi/katl-runtime-root}"
 kube_manifest="${KATL_KUBERNETES_MANIFEST:-mkosi.profiles/kubernetes-sysext/kubernetes.env}"
+repo_root="$(cd "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if [[ ! -f "$kube_manifest" ]]; then
     echo "error: Kubernetes manifest not found: $kube_manifest" >&2
@@ -50,22 +51,13 @@ payload_version_from_package() {
     printf "v%s" "$version"
 }
 
+# A symlink in the image names a path inside the image, so test the link itself.
 has_path() {
-    local path="$1"
-    local output
-    output="$(dump.erofs --path "$path" "$part" 2>&1)" || fail "inspect $path failed"
-    if grep -Fq "read inode failed" <<<"$output"; then
-        fail "missing sysext path: $path"
-    fi
+    [[ -e "$root$1" || -L "$root$1" ]] || fail "missing sysext path: $1"
 }
 
 misses_path() {
-    local path="$1"
-    local output
-    output="$(dump.erofs --path "$path" "$part" 2>&1)" || fail "inspect $path failed"
-    if ! grep -Fq "read inode failed" <<<"$output"; then
-        fail "unexpected sysext path: $path"
-    fi
+    [[ ! -e "$root$1" && ! -L "$root$1" ]] || fail "unexpected sysext path: $1"
 }
 
 runtime_has_path() {
@@ -74,8 +66,7 @@ runtime_has_path() {
 }
 
 need awk
-need dump.erofs
-need fsck.erofs
+need go
 need grep
 need jq
 need sha256sum
@@ -131,10 +122,11 @@ jq -e \
     fail "Kubernetes sysext metadata does not match artifact"
 
 tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
-part="$tmpdir/katl-kubernetes.erofs"
-"$(dirname -- "${BASH_SOURCE[0]}")/copy-sysext-root" "$artifact" "$part"
-fsck.erofs "$part"
+trap 'chmod -R u+w "$tmpdir" >/dev/null 2>&1 || true; rm -rf -- "$tmpdir"' EXIT
+root="$tmpdir/root"
+# Extraction also checks that every file in the EROFS root is well encoded.
+artifact_path="$(realpath -- "$artifact")"
+(cd "$repo_root" && go run ./cmd/katl-mkosi-artifacts extract-sysext "$artifact_path" "$root")
 
 for path in \
     /usr/bin/kubeadm \
@@ -156,11 +148,12 @@ do
     runtime_has_path "$path"
 done
 
-release="$(dump.erofs --cat --path /usr/lib/extension-release.d/extension-release.katl-kubernetes "$part" 2>&1)"
-grep -Fxq "ID=katlos" <<<"$release" || fail "extension-release missing ID=katlos"
-grep -Fxq "SYSEXT_LEVEL=katl-runtime-1" <<<"$release" || fail "extension-release missing SYSEXT_LEVEL=katl-runtime-1"
-grep -Fxq "SYSEXT_ID=katl-kubernetes" <<<"$release" || fail "extension-release missing SYSEXT_ID"
-grep -Fxq "ARCHITECTURE=x86-64" <<<"$release" || fail "extension-release missing architecture"
+release="$root/usr/lib/extension-release.d/extension-release.katl-kubernetes"
+[[ -f "$release" ]] || fail "missing sysext path: /usr/lib/extension-release.d/extension-release.katl-kubernetes"
+grep -Fxq "ID=katlos" "$release" || fail "extension-release missing ID=katlos"
+grep -Fxq "SYSEXT_LEVEL=katl-runtime-1" "$release" || fail "extension-release missing SYSEXT_LEVEL=katl-runtime-1"
+grep -Fxq "SYSEXT_ID=katl-kubernetes" "$release" || fail "extension-release missing SYSEXT_ID"
+grep -Fxq "ARCHITECTURE=x86-64" "$release" || fail "extension-release missing architecture"
 
 for path in \
     /etc/yum.repos.d/kubernetes.repo \

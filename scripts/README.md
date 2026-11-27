@@ -252,9 +252,10 @@ overrides or `KATL_ALLOW_STALE_INSTALLER_ARTIFACTS` before rerunning.
 Use `default` or `install` for installed-runtime tests so they have
 the KatlOS install image. Avoid concurrent `katldev` image builds in
 the same checkout while a run reads artifacts from it. Kubernetes scenarios
-use `dump.erofs` to read kubeadm from the sysext and Skopeo to cache
-the images it lists as an OCI archive. The development shell provides both
-tools. A cold image cache requires access to the Kubernetes container registry.
+extract kubeadm from the sysext with `fsck.erofs --extract` and use
+Skopeo to cache the images it lists as an OCI archive. The development shell
+provides both tools, as does Ubuntu 24.04 with `erofs-utils` and `skopeo`.
+A cold image cache requires access to the Kubernetes container registry.
 
 Use a host with system libvirt access, an active network and storage pool
 (both named `default` unless overridden), and permission to define

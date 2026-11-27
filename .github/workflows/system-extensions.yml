@@ -15,7 +15,8 @@ on:
       - internal/systemdunit/units/**
       - scripts/build-system-extension
       - scripts/check-system-extension
-      - scripts/copy-sysext-root
+      - cmd/katl-mkosi-artifacts/extract_sysext.go
+      - internal/sysextimage/**
       - scripts/fedora-release
       - scripts/mkosi
   push:
@@ -33,7 +34,8 @@ on:
       - internal/systemdunit/units/**
       - scripts/build-system-extension
       - scripts/check-system-extension
-      - scripts/copy-sysext-root
+      - cmd/katl-mkosi-artifacts/extract_sysext.go
+      - internal/sysextimage/**
       - scripts/fedora-release
       - scripts/mkosi
   workflow_dispatch:

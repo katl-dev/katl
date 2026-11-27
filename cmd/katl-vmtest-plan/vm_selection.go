@@ -144,7 +144,7 @@ func sharedVMPath(name string) bool {
 		".github/workflows/kernel-qualification.yml", ".github/workflows/release-artifacts.yml",
 		"scripts/mkosi", "scripts/fedora-release", "scripts/build-installer-iso", "scripts/build-katlos-install-image",
 		"scripts/build-endpoint-advertiser-sysext", "scripts/bind-install-manifest-image", "scripts/build-kubernetes-sysext",
-		"scripts/check-kubernetes-sysext", "scripts/copy-sysext-root", "scripts/kubernetes-repoquery",
+		"scripts/check-kubernetes-sysext", "scripts/kubernetes-repoquery",
 		"scripts/hermetic", "scripts/job-environment":
 		return true
 	}

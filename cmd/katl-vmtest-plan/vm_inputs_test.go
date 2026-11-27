@@ -38,7 +38,6 @@ func TestHostedInputInventory(t *testing.T) {
 		"scripts/build-katlos-install-image",
 		"scripts/build-kubernetes-sysext",
 		"scripts/check-kubernetes-sysext",
-		"scripts/copy-sysext-root",
 		"scripts/hermetic",
 		"scripts/job-environment",
 		"scripts/vmtest-run",

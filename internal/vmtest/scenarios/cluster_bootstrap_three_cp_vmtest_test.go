@@ -37,6 +37,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/installer/sysextcatalog"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
+	"github.com/katl-dev/katl/internal/sysextimage"
 	"github.com/katl-dev/katl/internal/vmtest"
 	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 	"github.com/opencontainers/go-digest"
@@ -144,7 +145,7 @@ func threeControlPlaneWorldSmokeRun(t *testing.T, scenarioName string, workloadP
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
-	missing := twoNodeHostToolPrereqs(exec.LookPath)
+	missing := twoNodeHostToolPrereqs(exec.LookPath, sysextimage.CheckExtractor)
 	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "three-control-plane stacked-etcd smoke prerequisites missing", missing)
 	run.KubernetesUpgrade = upgrade
 	return run, true

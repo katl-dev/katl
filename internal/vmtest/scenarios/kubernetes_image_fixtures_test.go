@@ -17,12 +17,10 @@ import (
 )
 
 func TestKubernetesImageReferencesFromSysext(t *testing.T) {
-	// The fixture and scripts/copy-sysext-root need the development shell's
-	// erofs-utils and util-linux (dump.erofs --cat, sfdisk --sector-size), which
-	// the Ubuntu runner behind scripts/check-fast lacks. Skip only when a tool
-	// is absent: an outdated tool on PATH must still fail, because the VM
-	// journey would use it.
-	for _, tool := range []string{"mkfs.erofs", "dump.erofs", "sfdisk", "jq"} {
+	// The fixture needs mkfs.erofs and an sfdisk with --sector-size, such as
+	// the development shell provides, and reading it needs fsck.erofs. Skip
+	// only when a tool is absent, so an outdated one still fails.
+	for _, tool := range []string{"mkfs.erofs", "fsck.erofs", "sfdisk"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("Kubernetes sysext fixtures require %s from nix develop: %v", tool, err)
 		}
@@ -66,9 +64,6 @@ func TestKubernetesImageReferencesFromSysext(t *testing.T) {
 func writeSysextFixture(t *testing.T, version, image string, sectorSize int, layout string) string {
 	t.Helper()
 	repo := t.TempDir()
-	if err := os.Symlink(filepath.Join(katlRepoRoot(t), "scripts"), filepath.Join(repo, "scripts")); err != nil {
-		t.Fatal(err)
-	}
 	root := filepath.Join(repo, "erofs")
 	if err := os.MkdirAll(filepath.Join(root, "usr/bin"), 0o755); err != nil {
 		t.Fatal(err)

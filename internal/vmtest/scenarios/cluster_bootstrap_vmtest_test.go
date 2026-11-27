@@ -35,6 +35,7 @@ import (
 	"github.com/katl-dev/katl/internal/installer/operation"
 	agentapi "github.com/katl-dev/katl/internal/katlc/agentapi"
 	"github.com/katl-dev/katl/internal/persistedrecord"
+	"github.com/katl-dev/katl/internal/sysextimage"
 	"github.com/katl-dev/katl/internal/vmtest"
 	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 )
@@ -128,7 +129,7 @@ func operationBackedWorldSmokeRun(t *testing.T, scenarioName string, upgrade boo
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
-	missing := twoNodeHostToolPrereqs(exec.LookPath)
+	missing := twoNodeHostToolPrereqs(exec.LookPath, sysextimage.CheckExtractor)
 	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node operation-backed bootstrap smoke prerequisites missing", missing)
 	return run, true
 }
@@ -1500,7 +1501,7 @@ func twoNodeWorldSmokeRun(t *testing.T) (twoNodeSmokeRun, bool) {
 	if err != nil {
 		failTwoNodeWorldSetup(t, run.WorldScenario, err)
 	}
-	missing := twoNodeHostToolPrereqs(exec.LookPath)
+	missing := twoNodeHostToolPrereqs(exec.LookPath, sysextimage.CheckExtractor)
 	requireSmokePrereqs(t, run.Runner, run.Scenario, run.Result, "two-node kubeadm join smoke prerequisites missing", missing)
 	return run, true
 }
@@ -1677,7 +1678,7 @@ func planStartedVMResult(t *testing.T, runner vmtest.Runner, scenario vmtest.Sce
 	return result
 }
 
-func twoNodeHostToolPrereqs(lookPath func(string) (string, error)) []vmtest.MissingPrerequisite {
+func twoNodeHostToolPrereqs(lookPath func(string) (string, error), checkExtractor func(context.Context) error) []vmtest.MissingPrerequisite {
 	var missing []vmtest.MissingPrerequisite
 	if _, err := lookPath(selectedKubectl()); err != nil {
 		missing = append(missing, vmtest.MissingPrerequisite{
@@ -1685,13 +1686,18 @@ func twoNodeHostToolPrereqs(lookPath func(string) (string, error)) []vmtest.Miss
 			Detail: "required for host-side kubeconfig verification: " + err.Error(),
 		})
 	}
-	for _, tool := range []string{"dump.erofs", "skopeo"} {
-		if _, err := lookPath(tool); err != nil {
-			missing = append(missing, vmtest.MissingPrerequisite{
-				Name:   tool,
-				Detail: "required to stage Kubernetes VM image fixtures: " + err.Error(),
-			})
-		}
+	// kubeadm, read from the Kubernetes sysext, lists the images to stage.
+	if err := checkExtractor(context.Background()); err != nil {
+		missing = append(missing, vmtest.MissingPrerequisite{
+			Name:   "fsck.erofs",
+			Detail: "required to read kubeadm from the Kubernetes sysext: " + err.Error(),
+		})
+	}
+	if _, err := lookPath("skopeo"); err != nil {
+		missing = append(missing, vmtest.MissingPrerequisite{
+			Name:   "skopeo",
+			Detail: "required to stage Kubernetes VM image fixtures: " + err.Error(),
+		})
 	}
 	return missing
 }
@@ -2354,23 +2360,11 @@ func kubernetesImageReferences(ctx context.Context, repo, version string) ([]str
 			return nil, err
 		}
 		defer os.RemoveAll(directory)
-		part := filepath.Join(directory, "root.erofs")
-		command := exec.CommandContext(ctx, filepath.Join(repo, "scripts/copy-sysext-root"), image, part)
-		if output, err := command.CombinedOutput(); err != nil {
-			return nil, fmt.Errorf("read %s sysext root: %w: %s", version, err, output)
+		root := filepath.Join(directory, "root")
+		if err := sysextimage.Extract(ctx, image, root); err != nil {
+			return nil, fmt.Errorf("read %s sysext: %w", version, err)
 		}
-		var stderr bytes.Buffer
-		command = exec.CommandContext(ctx, "dump.erofs", "--cat", "--path=/usr/bin/kubeadm", part)
-		command.Stderr = &stderr
-		binary, err := command.Output()
-		if err != nil {
-			return nil, fmt.Errorf("extract %s kubeadm: %w: %s", version, err, stderr.Bytes())
-		}
-		kubeadm := filepath.Join(directory, "kubeadm")
-		if err := os.WriteFile(kubeadm, binary, 0o700); err != nil {
-			return nil, err
-		}
-		return kubeadmImageReferences(ctx, kubeadm, version)
+		return kubeadmImageReferences(ctx, filepath.Join(root, "usr/bin/kubeadm"), version)
 	}
 	return nil, fmt.Errorf("no local Kubernetes sysext supplies kubeadm %s; build the source and target artifacts for this VM journey", version)
 }
@@ -4706,12 +4700,21 @@ func TestTwoNodeHostToolPrereqsUseSelectedKubectl(t *testing.T) {
 	missing := twoNodeHostToolPrereqs(func(name string) (string, error) {
 		checked = append(checked, name)
 		return name, nil
-	})
+	}, func(context.Context) error { return nil })
 	if len(missing) != 0 {
 		t.Fatalf("missing prereqs = %#v", missing)
 	}
 	if !slices.Contains(checked, "/tmp/selected-kubectl") {
 		t.Fatalf("checked tools = %q", checked)
+	}
+}
+
+func TestTwoNodeHostToolPrereqsReportExtractor(t *testing.T) {
+	missing := twoNodeHostToolPrereqs(func(name string) (string, error) { return name, nil }, func(context.Context) error {
+		return errors.New("fsck.erofs cannot extract images")
+	})
+	if len(missing) != 1 || missing[0].Name != "fsck.erofs" || !strings.Contains(missing[0].Detail, "cannot extract images") {
+		t.Fatalf("missing prereqs = %#v, want the extractor failure", missing)
 	}
 }
 

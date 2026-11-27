@@ -22,9 +22,8 @@ tmpdir="$(mktemp -d)"
 trap 'chmod -R u+w "$tmpdir" >/dev/null 2>&1 || true; rm -rf -- "$tmpdir"' EXIT
 mkdir -p "$tmpdir/usr/lib"
 cp -a "$runtime_root/usr/lib/systemd" "$tmpdir/usr/lib/"
-part="$tmpdir/root.erofs"
-"$repo_root/scripts/copy-sysext-root" "$artifact" "$part"
-fsck.erofs --extract="$tmpdir" --overwrite --no-preserve "$part"
+artifact_path="$(realpath -- "$artifact")"
+(cd "$repo_root" && go run ./cmd/katl-mkosi-artifacts extract-sysext "$artifact_path" "$tmpdir")
 
 release="$tmpdir/usr/lib/extension-release.d/extension-release.katl-$name"
 test -x "$tmpdir/usr/bin/$name"
