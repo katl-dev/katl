@@ -29,6 +29,11 @@ publication and any security advisory. Confirm which actions the authority
 covers and ask the coordinator for any missing authority. Never infer it
 from a previous release, the hand-off, or a passing gate.
 
+**Delivery.** Deliver the milestone's fixes under the Orchestrator's
+[parallel delivery](orchestrator.md#parallel-delivery) rule: start every
+unblocked blocker at once, and report each one's owner, state and ETA
+with the candidate ETA.
+
 ## Release milestones
 
 Follow the [release lifecycle](../README.md#release-lifecycle) for the
