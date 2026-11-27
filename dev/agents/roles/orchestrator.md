@@ -34,6 +34,22 @@ and record the unit name and printed log path in the local state. See
 the [launcher reference](../../../scripts/README.md#codex-role) for options
 and [job recovery](../../../scripts/README.md#find-and-recover-a-job).
 
+## Parallel delivery
+
+Keep every unblocked item in scope moving at once. When an item has no
+unmerged dependency, start it in its own worktree and job; never queue it
+behind unrelated work. Prepare a dependent item up to the merge, then
+rebase it when its predecessor lands, because a rebase is cheaper than the
+wait. Run local gates for one PR while another PR's checks or queue run
+proceeds. Serialise only what shares a constrained resource, such as local
+VM gates that the host guard limits, and record the reason in the local
+state.
+
+Each cycle, list every open item in scope with its owner, its state
+(running, waiting on a named dependency, or not started) and an ETA to
+merge. An item that is not started and has no dependency is a delivery
+defect: start it in the same cycle.
+
 ## Queue status
 
 Run `katl-queue status` each cycle and on resume. If an open,
