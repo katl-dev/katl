@@ -1,0 +1,59 @@
+name: Cut release
+run-name: Cut release ${{ inputs.version }} at ${{ inputs.revision }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Complete final version without a v prefix
+        type: string
+        required: true
+      revision:
+        description: Full commit SHA reachable from main
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cut-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  cut:
+    name: Create release branch
+    runs-on: ubuntu-24.04
+    environment: release-cut
+    permissions:
+      contents: read
+    steps:
+      - name: Require main
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "To cut a release, dispatch it on main."
+            exit 1
+          fi
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      # This job holds the release App token, so it restores no cache and
+      # runs only a katl-release built here from the checked-out source.
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build katl-release
+        run: go build -o "$RUNNER_TEMP/katl-release" ./cmd/katl-release
+      - name: Select the branch creation credential
+        id: credential
+        uses: ./.github/actions/release-credential
+        with:
+          app-id: ${{ vars.KATL_RELEASE_APP_ID }}
+          private-key: ${{ secrets.KATL_RELEASE_APP_PRIVATE_KEY }}
+      - name: Cut the branch
+        env:
+          GH_TOKEN: ${{ steps.credential.outputs.token }}
+          VERSION: ${{ inputs.version }}
+          REVISION: ${{ inputs.revision }}
+        run: '"$RUNNER_TEMP/katl-release" cut-branch "$VERSION" "$REVISION"'

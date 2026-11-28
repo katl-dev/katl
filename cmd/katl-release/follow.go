@@ -49,25 +49,15 @@ func release(ctx context.Context, args []string, stdout, stderr io.Writer, r *re
 	printDecision(stdout, r, d)
 
 	version, _ := releasestate.ParseRef(ref)
-	branch := releasestate.Branch(version)
-	before, err := r.newestReleaseRun(ctx, branch)
+	target := releaseDispatch(version, d.Commit)
+	var inputs []string
+	if d.Reason != "" {
+		inputs = []string{"-f", "retry=" + d.Reason}
+	}
+	run, err := dispatchWorkflow(ctx, r, call, target, inputs,
+		fmt.Sprintf("Run scripts/katl-release status %s before dispatching again.", version), waitHint(version))
 	if err != nil {
 		return err
-	}
-	dispatch := []string{"workflow", "run", path.Base(releasestate.ReleaseWorkflow), "--repo", r.repository, "--ref", branch}
-	if d.Reason != "" {
-		dispatch = append(dispatch, "-f", "retry="+d.Reason)
-	}
-	// A failed response can still mean GitHub accepted the dispatch.
-	// Repeating the write could start a second run.
-	output, err := call("gh", dispatch...)
-	if err != nil {
-		return fmt.Errorf("%w\nGitHub may have accepted the dispatch. Run scripts/katl-release status %s before dispatching again.",
-			ghFailure("gh workflow run "+path.Base(releasestate.ReleaseWorkflow), err, stderrOf(err)), version)
-	}
-	run, err := dispatchedRun(ctx, r, version, before.ID, d.Commit, string(output))
-	if err != nil {
-		return resumeWait(version, err)
 	}
 	return followRelease(ctx, r, version, run, stdout, stderr)
 }
@@ -88,7 +78,7 @@ func waitRelease(ctx context.Context, args []string, stdout, stderr io.Writer, r
 		}
 		return errors.New(d.Message)
 	}
-	run, err := r.newestReleaseRun(ctx, releasestate.Branch(version))
+	run, err := r.newestDispatch(ctx, releaseDispatch(version, ""))
 	if err != nil {
 		return err
 	}
@@ -98,22 +88,58 @@ func waitRelease(ctx context.Context, args []string, stdout, stderr io.Writer, r
 	return followRelease(ctx, r, version, run, stdout, stderr)
 }
 
-func (r *reader) dispatchedRuns(ctx context.Context, branch string) ([]restRun, error) {
-	runs, err := r.releaseRuns(ctx, branch, "event="+releaseEvent)
+// Release binds the workflow head. Cut release binds its inputs through its
+// run title because the cut commit can precede the workflow head on main.
+type workflowDispatch struct {
+	name, file, ref, head, title string
+}
+
+func releaseDispatch(version releaseversion.Version, head string) workflowDispatch {
+	return workflowDispatch{name: "Release", file: releasestate.ReleaseWorkflow, ref: releasestate.Branch(version), head: head}
+}
+
+// dispatchWorkflow adds recovery to a failed dispatch request, and resume to a
+// failure to identify the run that an accepted dispatch started.
+func dispatchWorkflow(ctx context.Context, r *reader, call command, target workflowDispatch, inputs []string, recovery, resume string) (restRun, error) {
+	before, err := r.newestDispatch(ctx, target)
+	if notFound(err) {
+		return restRun{}, fmt.Errorf("cannot find the %s workflow. Check that %s is on the repository's default branch: %w", target.name, target.file, err)
+	}
+	if err != nil {
+		return restRun{}, err
+	}
+	file := path.Base(target.file)
+	args := []string{"workflow", "run", file, "--repo", r.repository, "--ref", target.ref}
+	// A failed response can still mean GitHub accepted the dispatch.
+	// Repeating the write could start a second run.
+	output, err := call("gh", append(args, inputs...)...)
+	if err != nil {
+		return restRun{}, fmt.Errorf("%w\nGitHub may have accepted the dispatch. %s",
+			ghFailure("gh workflow run "+file, err, stderrOf(err)), recovery)
+	}
+	run, err := dispatchedRun(ctx, r, target, before.ID, string(output))
+	if err != nil {
+		return restRun{}, fmt.Errorf("%w\n%s", err, resume)
+	}
+	return run, nil
+}
+
+func (r *reader) dispatchedRuns(ctx context.Context, target workflowDispatch) ([]restRun, error) {
+	runs, err := r.workflowRuns(ctx, target.file, target.ref, "event="+releaseEvent)
 	if err != nil {
 		return nil, err
 	}
 	var dispatched []restRun
 	for _, run := range runs {
-		if run.isReleaseDispatch(branch) {
+		if target.matchesDispatch(run) {
 			dispatched = append(dispatched, run)
 		}
 	}
 	return dispatched, nil
 }
 
-func (r *reader) newestReleaseRun(ctx context.Context, branch string) (restRun, error) {
-	runs, err := r.dispatchedRuns(ctx, branch)
+func (r *reader) newestDispatch(ctx context.Context, target workflowDispatch) (restRun, error) {
+	runs, err := r.dispatchedRuns(ctx, target)
 	var newest restRun
 	for _, run := range runs {
 		if run.ID > newest.ID {
@@ -123,11 +149,12 @@ func (r *reader) newestReleaseRun(ctx context.Context, branch string) (restRun, 
 	return newest, err
 }
 
-func (run restRun) isReleaseDispatch(branch string) bool {
-	return run.ID > 0 && run.Branch == branch && run.Path == releasestate.ReleaseWorkflow && run.Event == releaseEvent
+func (target workflowDispatch) matchesDispatch(run restRun) bool {
+	return run.ID > 0 && run.Branch == target.ref && run.Path == target.file && run.Event == releaseEvent &&
+		(target.title == "" || run.DisplayTitle == target.title)
 }
 
-func dispatchedRun(ctx context.Context, r *reader, version releaseversion.Version, after int64, commit, output string) (restRun, error) {
+func dispatchedRun(ctx context.Context, r *reader, target workflowDispatch, after int64, output string) (restRun, error) {
 	// gh prints the run URL on its own line when the dispatch response has one.
 	prefix := r.server + "/" + r.repository + "/actions/runs/"
 	for line := range strings.SplitSeq(output, "\n") {
@@ -138,35 +165,44 @@ func dispatchedRun(ctx context.Context, r *reader, version releaseversion.Versio
 		number, ok := strings.CutPrefix(line, prefix)
 		id, err := strconv.ParseInt(number, 10, 64)
 		if !ok || err != nil || id <= 0 || strconv.FormatInt(id, 10) != number {
-			return restRun{}, fmt.Errorf("gh returned an invalid Release run URL %q", line)
+			return restRun{}, fmt.Errorf("gh returned an invalid %s run URL %q", target.name, line)
 		}
 
 		var run restRun
 		if err := r.decode(ctx, r.repo(fmt.Sprintf("actions/runs/%d", id)), &run); err != nil {
-			return restRun{}, fmt.Errorf("read dispatched Release run %s: %w", line, err)
+			return restRun{}, fmt.Errorf("read dispatched %s run %s: %w", target.name, line, err)
 		}
-		branch := releasestate.Branch(version)
-		if run.ID != id || !run.isReleaseDispatch(branch) || run.SHA != commit {
-			return restRun{}, fmt.Errorf("The dispatched run %s reported ID %d, branch %s, workflow %s, event %s and commit %s. Expected Release on %s at %s",
-				line, run.ID, run.Branch, run.Path, run.Event, run.SHA, branch, commit)
+		if run.ID != id || !target.matchesDispatch(run) || (target.head != "" && run.SHA != target.head) {
+			expected := fmt.Sprintf("%s on %s", target.name, target.ref)
+			if target.head != "" {
+				expected += " at " + target.head
+			}
+			if target.title != "" {
+				expected += fmt.Sprintf(" with title %q", target.title)
+			}
+			return restRun{}, fmt.Errorf("The dispatched run %s reported ID %d, branch %s, workflow %s, event %s, commit %s and title %q. Expected %s",
+				line, run.ID, run.Branch, run.Path, run.Event, run.SHA, run.DisplayTitle, expected)
 		}
 		return run, nil
 	}
-	return findDispatch(ctx, r, version, after, commit)
+	return findDispatch(ctx, r, target, after)
 }
 
 func resumeWait(version releaseversion.Version, err error) error {
-	return fmt.Errorf("%w\nRun scripts/katl-release wait %s.", err, version)
+	return fmt.Errorf("%w\n%s", err, waitHint(version))
 }
 
-func findDispatch(ctx context.Context, r *reader, version releaseversion.Version, after int64, commit string) (restRun, error) {
+func waitHint(version releaseversion.Version) string {
+	return fmt.Sprintf("Run scripts/katl-release wait %s.", version)
+}
+
+func findDispatch(ctx context.Context, r *reader, target workflowDispatch, after int64) (restRun, error) {
 	deadline, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	branch := releasestate.Branch(version)
 	backoff := retry.NewBackoff(2*time.Second, 15*time.Second)
 	var moved restRun
 	run, err := retry.Await(deadline, &backoff, func(ctx context.Context) (restRun, bool, error) {
-		runs, err := r.dispatchedRuns(ctx, branch)
+		runs, err := r.dispatchedRuns(ctx, target)
 		if err != nil {
 			return restRun{}, false, err
 		}
@@ -178,7 +214,7 @@ func findDispatch(ctx context.Context, r *reader, version releaseversion.Version
 				continue
 			}
 			seen[run.ID] = true
-			if run.SHA == commit {
+			if target.head == "" || run.SHA == target.head {
 				matching = run
 				urls = append(urls, run.HTMLURL)
 			} else if run.ID > moved.ID {
@@ -186,7 +222,7 @@ func findDispatch(ctx context.Context, r *reader, version releaseversion.Version
 			}
 		}
 		if len(urls) > 1 {
-			return restRun{}, false, fmt.Errorf("Multiple Release runs for %s at %s appeared: %s", version, commit, strings.Join(urls, ", "))
+			return restRun{}, false, fmt.Errorf("Multiple %s runs on %s appeared: %s", target.name, target.ref, strings.Join(urls, ", "))
 		}
 		return matching, matching.ID > 0, nil
 	}, nil)
@@ -195,18 +231,18 @@ func findDispatch(ctx context.Context, r *reader, version releaseversion.Version
 	}
 	if moved.ID > 0 {
 		return restRun{}, fmt.Errorf("%s moved from %s to %s between the decision and dispatch. The Release run will refuse (row 3) if its commit differs from the branch head when Decide runs: %s",
-			branch, commit, moved.SHA, moved.HTMLURL)
+			target.ref, target.head, moved.SHA, moved.HTMLURL)
 	}
-	return restRun{}, fmt.Errorf("The dispatch was accepted but no Release run for %s at %s appeared.", version, commit)
+	return restRun{}, fmt.Errorf("The dispatch was accepted but no matching %s run on %s appeared.", target.name, target.ref)
 }
 
-type releaseProgress struct {
+type workflowProgress struct {
 	attempt  int
 	jobs     map[int64]restJob
 	approval bool
 }
 
-func (p *releaseProgress) reportJobs(stderr io.Writer, attempt int, jobs []restJob) {
+func (p *workflowProgress) reportJobs(stderr io.Writer, attempt int, jobs []restJob) {
 	if attempt != p.attempt {
 		p.attempt = attempt
 		p.jobs = make(map[int64]restJob)
@@ -223,9 +259,9 @@ func (p *releaseProgress) reportJobs(stderr io.Writer, attempt int, jobs []restJ
 	}
 }
 
-func followRelease(ctx context.Context, r *reader, version releaseversion.Version, selected restRun, stdout, stderr io.Writer) error {
+func followWorkflow(ctx context.Context, r *reader, name, approvalTag string, selected restRun, stdout, stderr io.Writer) (restRun, []restJob, error) {
 	fmt.Fprintln(stdout, selected.HTMLURL)
-	var progress releaseProgress
+	var progress workflowProgress
 	var jobs []restJob
 	backoff := retry.NewBackoff(3*time.Second, time.Minute)
 	run, err := retry.Await(ctx, &backoff, func(ctx context.Context) (restRun, bool, error) {
@@ -234,7 +270,7 @@ func followRelease(ctx context.Context, r *reader, version releaseversion.Versio
 			return run, false, err
 		}
 		if run.ID != selected.ID || run.Attempt < 1 {
-			return run, false, fmt.Errorf("GitHub did not report the latest attempt of Release run %d: %s", selected.ID, selected.HTMLURL)
+			return run, false, fmt.Errorf("GitHub did not report the latest attempt of %s run %d: %s", name, selected.ID, selected.HTMLURL)
 		}
 		attempt := runstatus.Attempt{Run: run.ID, Number: run.Attempt}
 		var err error
@@ -243,18 +279,24 @@ func followRelease(ctx context.Context, r *reader, version releaseversion.Versio
 			return run, false, err
 		}
 		progress.reportJobs(stderr, run.Attempt, jobs)
-		if run.Status == "waiting" && !progress.approval {
+		if approvalTag != "" && run.Status == "waiting" && !progress.approval {
 			pending, err := r.approvalPending(ctx, run.ID)
 			if err != nil {
 				return run, false, err
 			}
 			if pending {
-				fmt.Fprintf(stderr, "%s is waiting for approval: %s\n", version.Tag(), selected.HTMLURL)
+				fmt.Fprintf(stderr, "%s is waiting for approval: %s\n", approvalTag, selected.HTMLURL)
 				progress.approval = true
 			}
 		}
 		return run, run.Status == "completed", nil
 	}, nil)
+	run.HTMLURL = selected.HTMLURL
+	return run, jobs, err
+}
+
+func followRelease(ctx context.Context, r *reader, version releaseversion.Version, selected restRun, stdout, stderr io.Writer) error {
+	run, jobs, err := followWorkflow(ctx, r, "Release", version.Tag(), selected, stdout, stderr)
 	if err != nil {
 		return resumeWait(version, err)
 	}
@@ -264,7 +306,7 @@ func followRelease(ctx context.Context, r *reader, version releaseversion.Versio
 	readback := *r
 	readback.self = run.ID
 	if run.Conclusion != "success" {
-		return releaseFailure(ctx, &readback, version, run, selected.HTMLURL, jobs, stderr)
+		return releaseFailure(ctx, &readback, version, run, jobs, stderr)
 	}
 	d, err := decide(ctx, &readback, ref, "", "")
 	if err != nil {
@@ -273,13 +315,11 @@ func followRelease(ctx context.Context, r *reader, version releaseversion.Versio
 	return confirmRelease(stdout, stderr, r, version, run, d)
 }
 
-func releaseFailure(ctx context.Context, r *reader, version releaseversion.Version, run restRun, url string, jobs []restJob, stderr io.Writer) error {
+func workflowFailure(name string, run restRun, jobs []restJob) error {
 	var failed []string
-	var refused bool
 	for _, job := range jobs {
 		if job.Conclusion == "failure" || job.Conclusion == "timed_out" {
 			failed = append(failed, job.Name)
-			refused = refused || job.Name == decideJob
 		}
 	}
 	outcome := "concluded " + run.Conclusion
@@ -289,8 +329,15 @@ func releaseFailure(ctx context.Context, r *reader, version releaseversion.Versi
 	case len(failed) > 0:
 		outcome = "failed: " + strings.Join(failed, ", ")
 	}
-	failure := fmt.Errorf("Release run %s (%s)", outcome, url)
-	if refused {
+	return fmt.Errorf("%s run %s (%s)", name, outcome, run.HTMLURL)
+}
+
+func releaseFailure(ctx context.Context, r *reader, version releaseversion.Version, run restRun, jobs []restJob, stderr io.Writer) error {
+	failure := workflowFailure("Release", run, jobs)
+	for _, job := range jobs {
+		if job.Name != decideJob || (job.Conclusion != "failure" && job.Conclusion != "timed_out") {
+			continue
+		}
 		d, err := decide(ctx, r, releasestate.Ref(version), "", "")
 		if err != nil {
 			return resumeWait(version, errors.Join(failure, fmt.Errorf("read the current release state: %w", err)))
@@ -300,6 +347,7 @@ func releaseFailure(ctx context.Context, r *reader, version releaseversion.Versi
 		if d.Action != releasestate.Refuse {
 			fmt.Fprintln(stderr, "The run's refusal no longer applies.")
 		}
+		break
 	}
 	return failure
 }

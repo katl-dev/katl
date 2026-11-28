@@ -43,6 +43,7 @@ type workflowJob struct {
 
 type workflowFile struct {
 	Name        string                 `yaml:"name"`
+	RunName     string                 `yaml:"run-name"`
 	On          yaml.Node              `yaml:"on"`
 	Permissions map[string]string      `yaml:"permissions"`
 	Concurrency yaml.Node              `yaml:"concurrency"`
