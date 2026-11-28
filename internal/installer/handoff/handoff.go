@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -533,13 +534,59 @@ func (s *HandoffServer) validateStorage(ctx context.Context, installManifest man
 	}
 	root, err := discovery.MatchTargetDisk(facts, installManifest.Install.TargetDisk.Target())
 	if err != nil {
-		return fmt.Errorf("plan storage targets: resolve install root disk: %w", err)
+		return fmt.Errorf("%s%w", rootDiskRejection, err)
 	}
 	_, err = disk.PlanVolumes(facts, root.Device, manifest.BuildVolumeRequests(installManifest.Install.Volumes), nil)
 	if err != nil {
-		return fmt.Errorf("plan storage targets: %w", err)
+		return fmt.Errorf("%s%w", storageRejection, err)
 	}
 	return nil
+}
+
+// The storage rejection text is the contract katlctl reads through
+// StorageSelectorField, so earlier installers that send the same text get the
+// same guidance.
+const (
+	storageRejection  = "plan storage targets: "
+	rootDiskRejection = storageRejection + "resolve install root disk: "
+)
+
+// StorageSelectorField names the ClusterConfig field, relative to the node,
+// whose selector failed to resolve in a storage rejection message. It reports
+// false for every other rejection, including volume rejections that editing
+// the selector would not fix.
+func StorageSelectorField(message string) (string, bool) {
+	if strings.HasPrefix(message, rootDiskRejection) {
+		// Every root disk rejection comes from resolving install.systemDisk
+		// to exactly one whole disk that is safe to erase.
+		return "install.systemDisk", true
+	}
+	rest, ok := strings.CutPrefix(message, storageRejection+"volume ")
+	if !ok {
+		return "", false
+	}
+	quoted, err := strconv.QuotedPrefix(rest)
+	if err != nil {
+		return "", false
+	}
+	name, err := strconv.Unquote(quoted)
+	if err != nil {
+		return "", false
+	}
+	field := fmt.Sprintf("storage.volumes[name=%q].selector", name)
+	rest = rest[len(quoted):]
+	if cause, ok := strings.CutPrefix(rest, " disk: "); ok {
+		// A disk volume's selector resolves through the same whole-disk match
+		// as the system disk; its other rejections concern existing partitions.
+		if strings.HasPrefix(cause, "target disk selector") || strings.HasPrefix(cause, discovery.ErrUnsafeTargetDisk.Error()) {
+			return field + ".disk", true
+		}
+		return "", false
+	}
+	if strings.HasPrefix(rest, " partition: ") {
+		return field + ".partition", true
+	}
+	return "", false
 }
 
 func ValidateInstallManifestEnvelope(data []byte) error {
