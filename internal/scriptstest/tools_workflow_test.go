@@ -63,11 +63,16 @@ func TestUnitGateJobsUseCIShell(t *testing.T) {
 
 var nixCommand = regexp.MustCompile(`(^|[\s;&|(])nix\s+(build|develop|shell|run|copy|eval|flake|path-info|profile|store)\b`)
 
-// Hosted runners have no remote builders, and a builders setting inherited
-// from elsewhere would send work to a machine the job cannot reach.
-func TestWorkflowNixCommandsDisableBuilders(t *testing.T) {
+type ciStep struct {
+	path string
+	workflowStep
+}
+
+// ciSteps returns every step of every workflow and composite action.
+func ciSteps(t *testing.T) []ciStep {
+	t.Helper()
 	root := os.DirFS(repoRoot(t))
-	var commands int
+	var steps []ciStep
 	for _, dir := range []string{".github/workflows", ".github/actions"} {
 		err := fs.WalkDir(root, dir, func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
@@ -87,19 +92,12 @@ func TestWorkflowNixCommandsDisableBuilders(t *testing.T) {
 			if err := yaml.Unmarshal(data, &file); err != nil {
 				t.Fatalf("parse %s: %v", path, err)
 			}
-			steps := file.Runs.Steps
+			fileSteps := file.Runs.Steps
 			for _, job := range file.Jobs {
-				steps = append(steps, job.Steps...)
+				fileSteps = append(fileSteps, job.Steps...)
 			}
-			for _, step := range steps {
-				for _, line := range strings.Split(step.Run, "\n") {
-					for _, match := range nixCommand.FindAllStringIndex(line, -1) {
-						commands++
-						if !strings.HasPrefix(strings.TrimLeft(line[match[1]:], " "), "--option builders ''") {
-							t.Errorf("%s: %q must pass --option builders '' right after the subcommand", path, strings.TrimSpace(line))
-						}
-					}
-				}
+			for _, step := range fileSteps {
+				steps = append(steps, ciStep{path, step})
 			}
 			return nil
 		})
@@ -107,7 +105,44 @@ func TestWorkflowNixCommandsDisableBuilders(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	return steps
+}
+
+// Hosted runners have no remote builders, and a builders setting inherited
+// from elsewhere would send work to a machine the job cannot reach.
+func TestWorkflowNixCommandsDisableBuilders(t *testing.T) {
+	var commands int
+	for _, step := range ciSteps(t) {
+		for _, line := range strings.Split(step.Run, "\n") {
+			for _, match := range nixCommand.FindAllStringIndex(line, -1) {
+				commands++
+				if !strings.HasPrefix(strings.TrimLeft(line[match[1]:], " "), "--option builders ''") {
+					t.Errorf("%s: %q must pass --option builders '' right after the subcommand", step.path, strings.TrimSpace(line))
+				}
+			}
+		}
+	}
 	if commands == 0 {
 		t.Fatal("no nix commands found in workflows or actions")
+	}
+}
+
+// The install-nix action owns CI's Nix configuration, so a job that installs
+// Nix another way would run without its substituter and network timeouts.
+func TestWorkflowsInstallNixThroughOwner(t *testing.T) {
+	const owner = ".github/actions/install-nix/action.yml"
+	var installs int
+	for _, step := range ciSteps(t) {
+		action, _, _ := strings.Cut(step.Uses, "@")
+		if action != "cachix/install-nix-action" {
+			continue
+		}
+		installs++
+		if step.path != owner {
+			t.Errorf("%s uses %s; install Nix with ./.github/actions/install-nix", step.path, action)
+		}
+	}
+	if installs != 1 {
+		t.Errorf("found %d cachix/install-nix-action steps; want exactly one, in %s", installs, owner)
 	}
 }

@@ -24,18 +24,8 @@ outputs:
 runs:
   using: composite
   steps:
-    # The installer verifies the Nix release tarball it downloads. The shell
-    # substitutes only from cache.nixos.org, so no binary cache credential is
-    # needed, and no step needs KVM. Nix's default stalled-download-timeout of
-    # 300 s outlasts a realisation attempt; at 30 s Nix abandons a stalled
-    # substitution and retries it within the attempt.
-    - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
-      with:
-        enable_kvm: false
-        extra_nix_config: |
-          substituters = https://cache.nixos.org/
-          stalled-download-timeout = 30
-          connect-timeout = 10
+    - name: Install Nix
+      uses: ./.github/actions/install-nix
     - name: Realise the ci shell
       id: shell
       shell: bash

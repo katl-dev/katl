@@ -1,0 +1,20 @@
+name: Install Nix with CI's Nix configuration
+description: >-
+  Install Nix with the configuration every CI job shares. Jobs install Nix
+  only through this action, so later nix commands in a job inherit the same
+  substituter and network timeouts from the job's nix.conf.
+runs:
+  using: composite
+  steps:
+    # The installer verifies the Nix release tarball it downloads. Jobs
+    # substitute only from cache.nixos.org, so no binary cache credential is
+    # needed, and no job needs KVM. Nix's default stalled-download-timeout of
+    # 300 s outlasts a realisation attempt; at 30 s Nix abandons a stalled
+    # substitution and retries it within the attempt.
+    - uses: cachix/install-nix-action@3dc140bfc76c49fbd4dd958429132e3746bcb086 # v31.11.5
+      with:
+        enable_kvm: false
+        extra_nix_config: |
+          substituters = https://cache.nixos.org/
+          stalled-download-timeout = 30
+          connect-timeout = 10

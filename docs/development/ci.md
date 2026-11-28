@@ -204,6 +204,21 @@ wherever it runs a caller. The setup-tools action runs before the ci shell
 provides Go, so it cannot call `internal/retry` either; its callers use full
 checkouts.
 
+## Nix setup
+
+Every job that installs Nix does so through the
+`.github/actions/install-nix` action, which owns CI's Nix configuration. It
+writes that configuration into the job's `nix.conf`, so every later nix
+command in the job inherits it: substitution only from `cache.nixos.org`, a
+`connect-timeout` of 10 s and a `stalled-download-timeout` of 30 s. Nix's
+default stall timeout of 300 s would let one stalled substitution consume most
+of a job's budget; at 30 s Nix abandons the download and fails or retries it
+within the command's own attempt, and any retry beyond that belongs to the
+caller's `scripts/retry`. `TestWorkflowsInstallNixThroughOwner` in
+`internal/scriptstest` fails when any other workflow or action uses
+`cachix/install-nix-action` directly. Like any local action, it needs a full
+checkout before the step that uses it.
+
 ## Build caches
 
 Only runs on `refs/heads/main` save GitHub Actions caches, whatever the
