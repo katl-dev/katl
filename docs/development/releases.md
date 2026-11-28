@@ -29,7 +29,18 @@ publication under the
    for an earlier version, the notes use the highest stable tag below the
    version being rendered that has a published, non-prerelease GitHub release.
 3. Cut `release/<version>` from the selected `main` commit SHA, using the
-   final version for the branch name.
+   final version for the branch name. After pushing the branch, check the
+   journey gate with the previous final release tag.
+
+   ```sh
+   scripts/katl-release journeys 2026.12.1 v2026.12.0
+   ```
+
+   A successful check prints that the gate is clear. If the command lists
+   outstanding PRs or open journey gap fixes, resolve them and repeat the
+   check before dispatching a candidate. Repeat the check after admitting
+   changes to the release branch.
+
    [Check the release credential](../../cmd/katl-release/README.md#check-the-release-credential)
    before dispatching a candidate or final release. Dispatch qualification
    from that branch and wait for it to pass. Production-image checks run only in this workflow, so

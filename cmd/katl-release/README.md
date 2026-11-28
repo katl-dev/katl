@@ -11,6 +11,17 @@ Run `scripts/katl-release --help` for command syntax.
 
 ## Prepare and retrieve a candidate
 
+### `journeys`
+
+```sh
+scripts/katl-release journeys 2026.12.1 v2026.12.0
+```
+
+Run this after pushing the release branch, with the final version and the
+previous final release tag. The command lists outstanding journey PRs in the
+release and open gap fixes, and exits nonzero if work remains or GitHub
+cannot complete the check.
+
 ### `prepare`
 
 ```sh
