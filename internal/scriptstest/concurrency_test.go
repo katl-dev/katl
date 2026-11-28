@@ -1,10 +1,13 @@
 package scriptstest
 
 import (
+	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -78,7 +81,7 @@ func TestWorkflowConcurrency(t *testing.T) {
 	}
 }
 
-var expressionPattern = regexp.MustCompile(`\$\{\{(.*?)\}\}`)
+var expressionPattern = regexp.MustCompile(`(?s)\$\{\{(.*?)\}\}`)
 
 // expandExpressions substitutes each ${{ }} in text with its value under the
 // given context. Values are strings or booleans; empty strings and false are
@@ -87,13 +90,27 @@ var expressionPattern = regexp.MustCompile(`\$\{\{(.*?)\}\}`)
 func expandExpressions(t *testing.T, text string, ctx map[string]string) string {
 	t.Helper()
 	return expressionPattern.ReplaceAllStringFunc(text, func(match string) string {
-		p := &expressionParser{src: strings.TrimSpace(expressionPattern.FindStringSubmatch(match)[1]), ctx: ctx}
-		v := p.or()
-		if p.skip(); p.pos != len(p.src) {
-			t.Fatalf("unsupported expression %q at %d", p.src, p.pos)
+		v := evaluateExpression(t, expressionPattern.FindStringSubmatch(match)[1], ctx)
+		switch v.(type) {
+		case nil:
+			return ""
+		case []any, map[string]any:
+			data, _ := json.Marshal(v)
+			return string(data)
+		default:
+			return fmt.Sprint(v)
 		}
-		return fmt.Sprint(v)
 	})
+}
+
+func evaluateExpression(t *testing.T, source string, ctx map[string]string) any {
+	t.Helper()
+	p := &expressionParser{src: strings.TrimSpace(source), ctx: ctx}
+	value := p.or()
+	if p.skip(); p.pos != len(p.src) {
+		t.Fatalf("%sunsupported expression %q at %d", ctx["expression-location"], p.src, p.pos)
+	}
+	return value
 }
 
 type expressionParser struct {
@@ -103,7 +120,7 @@ type expressionParser struct {
 }
 
 func (p *expressionParser) skip() {
-	for p.pos < len(p.src) && p.src[p.pos] == ' ' {
+	for p.pos < len(p.src) && strings.ContainsRune(" \t\n\r", rune(p.src[p.pos])) {
 		p.pos++
 	}
 }
@@ -117,7 +134,20 @@ func (p *expressionParser) take(op string) bool {
 	return false
 }
 
-func truthy(v any) bool { return v != "" && v != false }
+func truthy(v any) bool {
+	switch v := v.(type) {
+	case nil:
+		return false
+	case bool:
+		return v
+	case float64:
+		return v != 0 && !math.IsNaN(v)
+	case string:
+		return v != ""
+	default:
+		return true
+	}
+}
 
 func (p *expressionParser) or() any {
 	v := p.and()
@@ -141,21 +171,48 @@ func (p *expressionParser) and() any {
 
 func (p *expressionParser) equal() any {
 	v := p.primary()
-	if p.take("!=") {
-		return v != p.primary()
-	}
-	if p.take("==") {
-		return v == p.primary()
-	}
-	if p.take(">") {
-		return integer(v) > integer(p.primary())
+	switch {
+	case p.take("!="):
+		return !equalExpressionValues(v, p.primary())
+	case p.take("=="):
+		return equalExpressionValues(v, p.primary())
+	case p.take(">="):
+		return expressionNumber(v) >= expressionNumber(p.primary())
+	case p.take("<="):
+		return expressionNumber(v) <= expressionNumber(p.primary())
+	case p.take(">"):
+		return expressionNumber(v) > expressionNumber(p.primary())
+	case p.take("<"):
+		return expressionNumber(v) < expressionNumber(p.primary())
 	}
 	return v
 }
 
-func integer(v any) int {
-	n, _ := strconv.Atoi(fmt.Sprint(v))
-	return n
+func equalExpressionValues(left, right any) bool {
+	a, aString := left.(string)
+	b, bString := right.(string)
+	if aString && bString {
+		return strings.EqualFold(a, b)
+	}
+	return expressionNumber(left) == expressionNumber(right)
+}
+
+func expressionNumber(value any) float64 {
+	switch value {
+	case true:
+		return 1
+	case false, "", nil:
+		return 0
+	}
+	number, err := strconv.ParseFloat(fmt.Sprint(value), 64)
+	if err != nil {
+		return math.NaN()
+	}
+	return number
+}
+
+func expressionNameByte(b byte) bool {
+	return b == '.' || b == '_' || b == '-' || b >= 'a' && b <= 'z' || b >= 'A' && b <= 'Z' || b >= '0' && b <= '9'
 }
 
 func (p *expressionParser) primary() any {
@@ -167,23 +224,123 @@ func (p *expressionParser) primary() any {
 	if p.take("!") {
 		return !truthy(p.primary())
 	}
-	p.skip()
 	if p.take("'") {
-		end := strings.IndexByte(p.src[p.pos:], '\'')
-		v := p.src[p.pos : p.pos+end]
-		p.pos += end + 1
-		return v
+		var value strings.Builder
+		for p.pos < len(p.src) {
+			ch := p.src[p.pos]
+			p.pos++
+			if ch == '\'' {
+				if p.pos == len(p.src) || p.src[p.pos] != '\'' {
+					return value.String()
+				}
+				p.pos++
+			}
+			value.WriteByte(ch)
+		}
+		return value.String()
 	}
+
 	start := p.pos
-	for p.pos < len(p.src) && (p.src[p.pos] == '.' || p.src[p.pos] == '_' || p.src[p.pos] == '-' || p.src[p.pos] >= 'a' && p.src[p.pos] <= 'z' || p.src[p.pos] >= '0' && p.src[p.pos] <= '9') {
+	for p.pos < len(p.src) && expressionNameByte(p.src[p.pos]) {
 		p.pos++
 	}
-	name := p.src[start:p.pos]
-	if name == "always" && p.take("()") {
-		return true
+	name := strings.ToLower(p.src[start:p.pos])
+	if p.take("(") {
+		var args []any
+		if !p.take(")") {
+			args = append(args, p.or())
+			for p.take(",") {
+				args = append(args, p.or())
+			}
+			p.take(")")
+		}
+		if value, ok := p.call(name, args); ok {
+			for p.take("[") {
+				key := fmt.Sprint(p.or())
+				p.take("]")
+				object, _ := value.(map[string]any)
+				value = object[key]
+			}
+			return value
+		}
+		p.pos = start
+		return nil
+	}
+	if name == "true" || name == "false" {
+		return name == "true"
 	}
 	if name != "" && name[0] >= '0' && name[0] <= '9' {
-		return name
+		return expressionNumber(name)
 	}
-	return p.ctx[name]
+	for p.take("[") {
+		name += "." + strings.ToLower(fmt.Sprint(p.or()))
+		p.take("]")
+	}
+	value, ok := p.ctx[name]
+	if owner, _, output := strings.Cut(name, ".outputs."); output &&
+		(p.ctx[owner+".outcome"] == "skipped" || p.ctx[owner+".result"] == "skipped") {
+		return ""
+	}
+	if !ok && p.ctx["static-workflow"] != "" && (strings.Contains(name, ".outputs.") ||
+		strings.HasPrefix(name, "secrets.") || strings.HasPrefix(name, "vars.")) {
+		return "@" + name
+	}
+	switch p.ctx["type:"+name] {
+	case "boolean":
+		return value == "true"
+	case "number":
+		return expressionNumber(value)
+	}
+	return value
+}
+
+func (p *expressionParser) call(name string, args []any) (any, bool) {
+	switch name {
+	case "always":
+		return true, len(args) == 0
+	case "success", "failure", "cancelled":
+		status := p.ctx["status"]
+		if status == "" {
+			status = "success"
+		}
+		return status == name, len(args) == 0
+	case "fromjson":
+		if len(args) == 1 {
+			var value any
+			if err := json.Unmarshal([]byte(fmt.Sprint(args[0])), &value); err == nil {
+				return value, true
+			}
+		}
+	case "tojson":
+		if len(args) == 1 {
+			data, _ := json.Marshal(args[0])
+			return string(data), true
+		}
+	case "format":
+		if len(args) > 0 {
+			result := fmt.Sprint(args[0])
+			for i, arg := range args[1:] {
+				result = strings.ReplaceAll(result, fmt.Sprintf("{%d}", i), fmt.Sprint(arg))
+			}
+			return result, true
+		}
+	case "contains", "startswith", "endswith":
+		if len(args) == 2 {
+			if values, ok := args[0].([]any); ok && name == "contains" {
+				return slices.ContainsFunc(values, func(value any) bool { return equalExpressionValues(value, args[1]) }), true
+			}
+			left, right := strings.ToLower(fmt.Sprint(args[0])), strings.ToLower(fmt.Sprint(args[1]))
+			switch name {
+			case "contains":
+				return strings.Contains(left, right), true
+			case "startswith":
+				return strings.HasPrefix(left, right), true
+			case "endswith":
+				return strings.HasSuffix(left, right), true
+			}
+		}
+	case "hashfiles":
+		return fmt.Sprint(args), true
+	}
+	return nil, false
 }

@@ -1,6 +1,8 @@
 package releasestate
 
 import (
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 
@@ -18,6 +20,7 @@ const (
 // design's message with this world's values.
 func TestDecide(t *testing.T) {
 	runURL := testServer + "/" + testRepo + "/actions/runs/"
+	returned := map[Action]bool{}
 	for _, tc := range []struct {
 		name   string
 		world  func() *world
@@ -119,6 +122,7 @@ func TestDecide(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			returned[got.Action] = true
 			if got.Row != tc.row || got.Action != tc.action {
 				t.Fatalf("row %d (%s) %s, want row %d %s: %s %v", got.Row, got.State, got.Action, tc.row, tc.action, got.Message, got.Warnings)
 			}
@@ -132,6 +136,17 @@ func TestDecide(t *testing.T) {
 				t.Fatalf("action %s %s %s, want %s (message %q)", got.Action, got.Version, got.Commit, tc.want, got.Message)
 			}
 		})
+	}
+
+	// The release workflow is traced once per listed action, so the list
+	// must name each action the table reaches exactly once.
+	listed := slices.Sorted(slices.Values(Actions()))
+	distinct := slices.Compact(slices.Clone(listed))
+	if len(distinct) != len(listed) {
+		t.Errorf("Actions() = %v has duplicates", Actions())
+	}
+	if reached := slices.Sorted(maps.Keys(returned)); !slices.Equal(reached, distinct) {
+		t.Errorf("Decide returns %v over the state table, but Actions() = %v", reached, Actions())
 	}
 }
 
