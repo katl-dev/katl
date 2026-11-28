@@ -38,7 +38,7 @@ var lanes = []lane{
 const laneBudget = 900
 
 var groups = []group{
-	{"two-node", "./internal/vmtest/scenarios", "TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke", "two-node", 660},
+	{"two-node", "./internal/vmtest/scenarios", "TestInstalledRuntimeTwoNodeOperationBackedBootstrapSmoke", "two-node", 850},
 	{"worker-join", "./internal/vmtest/scenarios", "TestExternalWorkerJoin", "cluster", 215},
 	{"readdress", "./internal/vmtest/scenarios", "TestWorkerReaddress", "readdress", 710},
 	{"three-node-install", "./internal/vmtest/scenarios", "TestThreeNodeGeneration0InstallSmoke", "cluster", 270},
@@ -49,7 +49,7 @@ var groups = []group{
 	{"enable-mtls", "./internal/vmtest/scenarios", "TestManagementEnableMTLS", "cluster", 190},
 	{"storage", "./internal/vmtest/scenarios", "TestInstallerISOFirstInstallStorageAuthority", "two-node", 32},
 	{"volume-binding", "./internal/vmtest/scenarios", "TestVolumeBindingGate", "cluster", 150},
-	{"boot", "./internal/vmtest/scenarios", "TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke|TestInstallerESPSameDiskInstall|TestInstallerReinstallBesideOldKatlDisk", "two-node", 180},
+	{"boot", "./internal/vmtest/scenarios", "TestInstallerISOBootSmoke|TestInstallerPXEBootSmoke|TestInstallerESPSameDiskInstall|TestInstallerReinstallBesideOldKatlDisk", "readdress", 180},
 }
 
 func main() {
