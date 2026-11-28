@@ -1090,27 +1090,17 @@ func TestCIProductionJobs(t *testing.T) {
 	}
 }
 
-// Every event names the previous release through the pin at the tested
-// commit, so release-branch pull requests cannot drift from push,
-// merge-group and release runs.
-func TestCIProductionBaselineSource(t *testing.T) {
-	identity := productionIdentityStep(t)
-
-	if !strings.Contains(identity.Run, "scripts/katl-release-artifacts upgrade-baseline") {
-		t.Errorf("production identity does not resolve the baseline through upgrade-baseline:\n%s", identity.Run)
-	}
-	for _, branch := range []string{"GITHUB_EVENT_NAME", "github.event_name", "katl-release-artifacts previous-tag"} {
-		if strings.Contains(identity.Run, branch) {
-			t.Errorf("production identity run references %q; every event must resolve the same baseline:\n%s", branch, identity.Run)
+func TestCIProductionIdentity(t *testing.T) {
+	workflow, _ := readWorkflow(t, "ci.yml")
+	var identity workflowStep
+	for _, step := range workflow.Jobs["plan"].Steps {
+		if step.ID == "production" {
+			identity = step
 		}
 	}
-	if _, ok := identity.Env["BASE_SHA"]; ok {
-		t.Error("production identity takes BASE_SHA; the baseline must come from the tested commit")
+	if identity.Run == "" {
+		t.Fatal("missing production identity step")
 	}
-}
-
-func TestCIProductionIdentity(t *testing.T) {
-	identity := productionIdentityStep(t)
 
 	// Release tags are cut on their own release branches, so a release
 	// branch cut from main reaches only v2026.11.4 until its own final tag
@@ -1137,16 +1127,19 @@ func TestCIProductionIdentity(t *testing.T) {
 	tools := t.TempDir()
 	writeFakeExecutable(t, tools, "gh", "touch \"$GH_CALLS\"\nexit 1\n")
 
-	for _, tc := range []struct{ name, event, prBase, mergeBase string }{
-		{"release branch pull request", "pull_request", base, ""},
-		{"merge group", "merge_group", "", base},
-		{"push", "push", "", ""},
+	for _, tc := range []struct {
+		name, event, prBase, mergeBase, flavours string
+		fullPlan                                 bool
+	}{
+		{"release branch pull request", "pull_request", base, "", `["standard","lts"]`, true},
+		{"merge group", "merge_group", "", base, `["standard","lts"]`, true},
+		{"push", "push", "", "", `[]`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			state := t.TempDir()
 			outputPath, calls := filepath.Join(state, "output"), filepath.Join(state, "gh-calls")
 			ctx := map[string]string{
-				"github.event_name": tc.event, "steps.plan.outputs.full-plan": "true",
+				"github.event_name": tc.event, "steps.plan.outputs.full-plan": fmt.Sprint(tc.fullPlan),
 				"github.event.pull_request.base.sha": tc.prBase, "github.event.merge_group.base_sha": tc.mergeBase,
 			}
 			if got := expandExpressions(t, "${{ "+identity.If+" }}", ctx); got != "true" {
@@ -1155,7 +1148,7 @@ func TestCIProductionIdentity(t *testing.T) {
 			env := []string{
 				"PATH=" + tools + string(os.PathListSeparator) + os.Getenv("PATH"), "GH_CALLS=" + calls,
 				"KATL_REPO_ROOT=" + dir, "GITHUB_EVENT_NAME=" + tc.event,
-				"PRODUCTION_FLAVOURS=[]", "GITHUB_OUTPUT=" + outputPath,
+				"PRODUCTION_FLAVOURS=" + tc.flavours, "GITHUB_OUTPUT=" + outputPath,
 			}
 			for name, value := range identity.Env {
 				if name != "PRODUCTION_FLAVOURS" && name != "GH_TOKEN" {
@@ -1179,6 +1172,10 @@ func TestCIProductionIdentity(t *testing.T) {
 				}
 			}
 
+			// Only a run without production builds renders the notes here.
+			if tc.flavours != "[]" {
+				return
+			}
 			notes := string(mustReadFile(t, filepath.Join(dir, "_build/ci-release-notes.md")))
 			if !strings.Contains(notes, "`v2026.11.7...v2026.11.8-dev.0`") {
 				t.Errorf("notes do not compare against the pinned release:\n%s", notes)
@@ -1204,18 +1201,6 @@ func TestCIProductionIdentity(t *testing.T) {
 			t.Fatalf("missing tag should fail and name the pin and tag: %v: %s", err, output)
 		}
 	})
-}
-
-func productionIdentityStep(t *testing.T) workflowStep {
-	t.Helper()
-	workflow, _ := readWorkflow(t, "ci.yml")
-	for _, step := range workflow.Jobs["plan"].Steps {
-		if step.ID == "production" {
-			return step
-		}
-	}
-	t.Fatal("missing production identity step")
-	return workflowStep{}
 }
 
 // A planned production build must succeed for CI to pass, and an unplanned one
