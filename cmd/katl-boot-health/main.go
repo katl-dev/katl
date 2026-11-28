@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -25,17 +23,19 @@ func main() {
 	}
 }
 
+// run exits successfully on a failed boot only when the owner requested the
+// trial's one reboot: the recovery and deadline units reboot on success.
 func run(ctx context.Context, args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("katl-boot-health", flag.ContinueOnError)
 	root := flags.String("root", "/", "runtime root containing /var/lib/katl")
-	generationID := flags.String("generation", "", "selected generation id; defaults to katl.generation from cmdline")
 	cmdline := flags.String("cmdline", "/proc/cmdline", "kernel command line path")
 	result := flags.String("result", generation.BootHealthSuccess, "boot health result: success, failure, or timeout")
 	reason := flags.String("reason", "", "boot health transition reason")
-	requestReboot := flags.Bool("request-reboot", false, "allow systemd to reboot after a validated fallback is selected")
-	forceFailureFlag := flags.Bool("force-failure", false, "exit unsuccessfully on boot failure unless recovery requests a reboot")
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	if stdout == nil {
+		stdout = io.Discard
 	}
 
 	data, err := os.ReadFile(*cmdline)
@@ -43,18 +43,15 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		return fmt.Errorf("read kernel command line: %w", err)
 	}
 	commandLine := string(data)
-	selected := *generationID
-	if selected == "" {
-		selected, err = generation.SelectedGenerationFromCommandLine(commandLine)
-		if err != nil {
-			return err
-		}
+	selected, err := generation.SelectedGenerationFromCommandLine(commandLine)
+	if err != nil {
+		return err
 	}
-	bootHealthClockValue := bootHealthClock()
 	requestedResult := strings.TrimSpace(*result)
 	requestedReason := strings.TrimSpace(*reason)
-	forceFailure := *forceFailureFlag
-	if requestedResult == generation.BootHealthSuccess {
+
+	switch requestedResult {
+	case generation.BootHealthSuccess:
 		_, selectedStatus, err := generation.ReadGeneration(*root, selected)
 		if err != nil {
 			return err
@@ -62,54 +59,75 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 		// A network outage cannot invalidate a generation already proven healthy.
 		if !generation.IsKnownGood(selectedStatus) {
 			if err := waitForManagementNetwork(ctx); err != nil {
-				requestedResult = generation.BootHealthFailure
-				requestedReason = "management network unavailable: " + err.Error()
+				failure := "management network unavailable: " + err.Error()
 				if errors.Is(err, errManagementDeadlineNotArmed) {
 					// Without its deadline the link check never ran, so the
 					// trial is unproven rather than offline.
-					requestedReason = err.Error()
+					failure = err.Error()
 				}
-				forceFailure = true
+				// Only a unit that reboots on success may spend the trial's
+				// reboot, so katl-boot-recovery.service decides the failure.
+				fmt.Fprintf(stdout, "katl-boot-health generation=%s result=%s reason=%q\n", selected, generation.BootHealthFailure, failure)
+				return errors.New(failure)
 			}
 		}
-	}
-	record, err := generation.RecordBootHealth(generation.BootHealthRequest{
-		Root:           *root,
-		GenerationID:   selected,
-		Result:         requestedResult,
-		Reason:         requestedReason,
-		Now:            bootHealthClockValue,
-		CommandLine:    commandLine,
-		RequestReboot:  *requestReboot,
-		SetBootDefault: bootDefaultCommand,
-	})
-	if err != nil {
-		return err
-	}
-	if requestedResult == generation.BootHealthSuccess {
-		if err := markConfigApplyBootActive(*root, selected, bootHealthClockValue); err != nil {
+		mover, err := newBootOwner(*root, commandLine)
+		if err != nil {
 			return err
 		}
-		if err := generation.ClearBootRecovery(*root); err != nil {
+		record, err := mover.ConfirmBoot(requestedReason)
+		if err != nil {
 			return err
 		}
-	}
-	if stdout != nil {
-		fmt.Fprintf(
-			stdout, "katl-boot-health generation=%s result=%s default=%s promoted=%t failed=%t recoveryRequired=%t rebootRequested=%t\n",
-			record.GenerationID,
-			record.Result,
-			record.DefaultGeneration,
-			record.Promoted,
-			record.Failed,
-			record.RecoveryRequired,
-			record.RebootRequested,
-		)
+		if record.ReportOnly {
+			// The deadline already failed this boot's trial; the failure stands.
+			printResult(stdout, record)
+			return fmt.Errorf("generation %s already failed its boot trial on this boot, so this health success changes nothing. The boot default is generation %s and generation %s is selected for the next boot. See 'katlctl node status <node>'", record.GenerationID, record.DefaultGeneration, record.NextBootGeneration)
+		}
+		disarm(ctx)
+		if err := markConfigApplyBootActive(*root, selected, bootHealthClock()); err != nil {
+			return err
+		}
+		printResult(stdout, record)
+		return nil
+	case generation.BootHealthFailure, generation.BootHealthTimeout:
+		mover, err := newBootOwner(*root, commandLine)
+		if err != nil {
+			return err
+		}
+		record, err := mover.FailTrial(requestedReason)
+		if err != nil {
+			return err
+		}
+		record.Result = requestedResult
+		printResult(stdout, record)
 		if record.FallbackProblem != "" {
 			fmt.Fprintln(stdout, record.FallbackProblem)
 		}
+		if record.ReportOnly {
+			return reportOnly(record)
+		}
+		disarm(ctx)
+		if record.RebootRequested {
+			return nil
+		}
+		return resolvedWithoutReboot(record)
+	default:
+		return fmt.Errorf("boot health result must be success, failure, or timeout")
 	}
-	if record.KeptKnownGood && requestedResult == generation.BootHealthFailure && (*requestReboot || forceFailure) {
+}
+
+func printResult(stdout io.Writer, record generation.BootHealthResult) {
+	fmt.Fprintf(
+		stdout, "katl-boot-health generation=%s result=%s default=%s promoted=%t failed=%t recoveryRequired=%t rebootRequested=%t\n",
+		record.GenerationID, record.Result, record.DefaultGeneration, record.Promoted, record.Failed, record.RecoveryRequired, record.RebootRequested,
+	)
+}
+
+// reportOnly describes a failed boot that no trial is bound to. Boot state is
+// unchanged, so the operator fixes the cause and reboots.
+func reportOnly(record generation.BootHealthResult) error {
+	if record.KnownGood {
 		return fmt.Errorf("running generation %s stays known-good. The boot default is generation %s. "+
 			"Generation %s is selected for the next boot. No automatic reboot. "+
 			"See 'katlctl node status <node>', 'katlctl node generations list <node>' and 'systemctl --failed'. "+
@@ -117,14 +135,45 @@ func run(ctx context.Context, args []string, stdout io.Writer) error {
 			"Fix the cause, for example with 'katlctl cluster apply', then run 'katlctl node reboot <node>'",
 			record.GenerationID, record.DefaultGeneration, record.NextBootGeneration)
 	}
-	if *requestReboot && !record.RebootRequested {
-		return fmt.Errorf("automatic reboot refused: this is not an armed trial with a validated known-good fallback; preserve boot diagnostics and recover from the console")
-	}
-	if forceFailure && requestedResult == generation.BootHealthFailure && !record.RebootRequested {
-		return errors.New(requestedReason)
-	}
-	return nil
+	return fmt.Errorf("generation %s has not passed boot health and no boot trial is pending, so boot state is unchanged. "+
+		"The boot default is generation %s. Generation %s is selected for the next boot. No automatic reboot. "+
+		"See 'katlctl node status <node>' and 'systemctl --failed'. "+
+		"Use the node console or out-of-band access if remote management is unreachable. "+
+		"Fix the cause, then run 'katlctl node reboot <node>'",
+		record.GenerationID, record.DefaultGeneration, record.NextBootGeneration)
 }
+
+// resolvedWithoutReboot describes a failed trial whose reboot is unavailable.
+func resolvedWithoutReboot(record generation.BootHealthResult) error {
+	if record.RecoveryRequired {
+		return fmt.Errorf("generation %s failed boot health and no fallback could be used, so it stays the boot default and recovery is required. No automatic reboot. %s", record.GenerationID, generation.RecoveryGuidance)
+	}
+	return fmt.Errorf("generation %s failed boot health and generation %s is the boot default. "+
+		"The trial's automatic reboot was already used, so no automatic reboot follows. "+
+		"Run 'katlctl node reboot <node>' to boot generation %s", record.GenerationID, record.DefaultGeneration, record.NextBootGeneration)
+}
+
+// disarm stops the boot trial deadline once the owner decided the boot. A
+// failure leaves the timer to expire into the owner's report.
+func disarm(ctx context.Context) {
+	if err := disarmBootTrial(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "katl-boot-health: stop the boot trial deadline: %v\n", err)
+	}
+}
+
+// bootOwner is the boot-state owner's health decisions; run maps each
+// outcome to an exit status.
+type bootOwner interface {
+	ConfirmBoot(reason string) (generation.BootHealthResult, error)
+	FailTrial(reason string) (generation.BootHealthResult, error)
+}
+
+var (
+	newBootOwner = func(root, commandLine string) (bootOwner, error) {
+		return generation.NewBootMover(root, generation.BootMoverOptions{CommandLine: commandLine})
+	}
+	disarmBootTrial = deadline.DisarmBootTrial
+)
 
 var errManagementDeadlineNotArmed = errors.New("management network deadline not armed")
 
@@ -203,22 +252,4 @@ func markConfigApplyBootActive(root, generationID string, now time.Time) error {
 
 var bootHealthClock = func() time.Time {
 	return time.Now().UTC()
-}
-
-var bootDefaultCommand generation.BootDefaultSetter = func(root string, bootEntry string) error {
-	bootEntry = filepath.Base(strings.TrimSpace(bootEntry))
-	if bootEntry == "." || bootEntry == "" {
-		return fmt.Errorf("boot entry is required")
-	}
-	args := []string{"set-default", bootEntry}
-	root = strings.TrimSpace(root)
-	if root != "" && root != "/" {
-		args = append([]string{"--esp-path=" + filepath.Join(root, "efi")}, args...)
-	}
-	cmd := exec.Command("bootctl", args...)
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("bootctl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
-	}
-	return nil
 }

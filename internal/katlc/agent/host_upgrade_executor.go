@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/katl-dev/katl/internal/bootstrap/inventory"
 	"github.com/katl-dev/katl/internal/generation"
@@ -64,7 +63,7 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if err := cleanupHostUpgradeStorage(ctx, e.Root, record.HostUpgradeRequest.ImageLocalRef, e.toolRunner(), e.clock()); err != nil {
 		return fail("verify-katlos-image", fmt.Errorf("clean obsolete host upgrade workspace: %w", err))
 	}
-	if err := generation.ValidateMutationBase(e.Root, record.ExpectedCurrentGenerationID); err != nil {
+	if err := e.validateMutationBase(record.ExpectedCurrentGenerationID); err != nil {
 		return fail("verify-katlos-image", err)
 	}
 	resolve := e.ResolveHostUpgrade
@@ -164,45 +163,15 @@ func (e *Executor) executeHostUpgrade(ctx context.Context, record operation.Oper
 	if err != nil || rel != entry {
 		return fail("write-candidate-generation", fmt.Errorf("loader entry %q does not match plan %q: %w", rel, entry, err))
 	}
-	var armedAt time.Time
-	if err := generation.WithLegacyBootState(e.Root, func() error {
-		previousSelection, err := generation.ReadBootSelection(e.Root)
-		if err != nil {
-			return err
-		}
-		// The trial changes the next boot. Recovery can still run for this boot
-		// before the operator reboots into the candidate.
-		plan.BootSelection.BootedGenerationID = previousSelection.BootedGenerationID
-		plan.BootSelection.BootedBootEntry = previousSelection.BootedBootEntry
-		plan.BootSelection.BootedOneShot = previousSelection.BootedOneShot
-		plan.BootSelection.ActiveGenerationID = previousSelection.ActiveGenerationID
-		plan.BootSelection.Revision = previousSelection.Revision
-		plan.BootSelection.SpentRecoveryTrialID = previousSelection.SpentRecoveryTrialID
-		if err := generation.CheckTrialFallback(e.Root, plan.BootSelection); err != nil {
-			return err
-		}
-		if err := generation.WriteBootSelection(e.Root, plan.BootSelection); err != nil {
-			return err
-		}
-		if e.SetBootOneshot != nil {
-			if err := e.SetBootOneshot(ctx, e.Root, entry); err != nil {
-				if restoreErr := generation.WriteBootSelection(e.Root, previousSelection); restoreErr != nil {
-					err = errors.Join(err, fmt.Errorf("restore boot selection: %w", restoreErr))
-				}
-				return err
-			}
-		}
-		armedAt = e.clock()
-		plan.Status.CommitState = generation.CommitStateCommitted
-		plan.Status.BootState = generation.BootStateTrying
-		plan.Status.CommittedAt = &armedAt
-		plan.Status.CommittedByOperation = record.OperationID
-		plan.Status.UpdatedAt = armedAt
-		if err := generation.WriteGenerationStatus(e.Root, plan.Spec, plan.Status); err != nil {
-			return err
-		}
-		return nil
-	}); err != nil {
+	mover, err := e.bootMover()
+	if err != nil {
+		return fail("arm-trial-boot", err)
+	}
+	armedAt, err := mover.ArmTrial(generation.TrialRequest{
+		OperationID: record.OperationID, GenerationID: candidate, Now: e.clock(),
+		Reason: "host upgrade staged the candidate for a bounded boot trial",
+	})
+	if err != nil {
 		return fail("arm-trial-boot", err)
 	}
 	phase = "arm-trial-boot"
@@ -242,20 +211,11 @@ func (e *Executor) beginHostUpgradeMutation(ctx context.Context, operationID, ev
 	if err != nil {
 		return operation.OperationRecord{}, err
 	}
-	err = generation.InvalidateSlot(e.Root, inactivePartUUID, e.clock(),
-		func(root, entry string) error {
-			if e.SetBootDefault == nil {
-				return fmt.Errorf("boot default setter is required")
-			}
-			return e.SetBootDefault(ctx, root, entry)
-		},
-		func(root, entry string) error {
-			if e.SetBootOneshot == nil {
-				return fmt.Errorf("boot one-shot setter is required")
-			}
-			return e.SetBootOneshot(ctx, root, entry)
-		})
-	return record, err
+	mover, err := e.bootMover()
+	if err != nil {
+		return record, err
+	}
+	return record, mover.InvalidateSlot(operationID, inactivePartUUID)
 }
 
 func (e *Executor) releaseHostUpgradeImage(payload katlosimage.Payload, request operation.HostUpgrade) error {

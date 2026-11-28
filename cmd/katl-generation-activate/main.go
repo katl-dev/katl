@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/katl-dev/katl/internal/deadline"
 	"github.com/katl-dev/katl/internal/generation"
 	"github.com/katl-dev/katl/internal/katlc/agent"
 	"golang.org/x/sys/unix"
@@ -21,7 +23,7 @@ func main() {
 	}
 }
 
-func run(_ context.Context, args []string, stdout io.Writer) error {
+func run(ctx context.Context, args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("katl-generation-activate", flag.ContinueOnError)
 	root := flags.String("root", "/", "runtime root containing /var/lib/katl")
 	generationID := flags.String("generation", "", "selected generation id; defaults to katl.generation from cmdline")
@@ -32,6 +34,9 @@ func run(_ context.Context, args []string, stdout io.Writer) error {
 	preflightConfig := flags.String("prepare-upgrade-config", "", "configuration document for generation preparation")
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	if stdout == nil {
+		stdout = io.Discard
 	}
 	if *preflightImage != "" {
 		if *generationID == "" || *preflightSource == "" || *preflightOperation == "" {
@@ -45,26 +50,30 @@ func run(_ context.Context, args []string, stdout io.Writer) error {
 		return nil
 	}
 
-	selected := *generationID
-	var commandLine string
-	if selected == "" {
-		data, err := os.ReadFile(*cmdline)
-		if err != nil {
-			return fmt.Errorf("read kernel command line: %w", err)
-		}
-		commandLine = string(data)
-		selected, err = generation.SelectedGenerationFromCommandLine(commandLine)
+	if *generationID != "" {
+		// Without kernel evidence no boot state is read or written.
+		plan, err := generation.ActivateGeneration(*root, *generationID)
 		if err != nil {
 			return err
 		}
+		fmt.Fprintf(stdout, "katl-generation-activate generation=%s sysexts=%d confexts=%d trialBound=false reconciled=none\n", plan.GenerationID, len(plan.Sysexts), len(plan.Confexts))
+		return nil
 	}
-	armed, err := generation.ArmBootRecovery(*root, selected)
-	if err != nil && stdout != nil {
-		// Failure to assess the fallback is independent of candidate health.
-		// Failing activation here would run the trial's failure handler.
-		fmt.Fprintf(stdout, "katl-generation-activate could not arm boot recovery for %s: %v\n", selected, err)
+
+	data, err := os.ReadFile(*cmdline)
+	if err != nil {
+		return fmt.Errorf("read kernel command line: %w", err)
 	}
-	plan, err := generation.ActivateBootGeneration(*root, selected, commandLine)
+	commandLine := string(data)
+	selected, err := generation.SelectedGenerationFromCommandLine(commandLine)
+	if err != nil {
+		return err
+	}
+	mover, err := newBootMover(*root, generation.BootMoverOptions{CommandLine: commandLine})
+	if err != nil {
+		return err
+	}
+	plan, outcome, err := mover.Activate(selected)
 	if err != nil {
 		return err
 	}
@@ -73,15 +82,35 @@ func run(_ context.Context, args []string, stdout io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if stdout != nil && hostname != "" {
+		if hostname != "" {
 			fmt.Fprintf(stdout, "katl-generation-activate hostname=%s\n", hostname)
 		}
 	}
-	if stdout != nil {
-		fmt.Fprintf(stdout, "katl-generation-activate generation=%s sysexts=%d confexts=%d recoveryArmed=%t\n", plan.GenerationID, len(plan.Sysexts), len(plan.Confexts), armed)
+	reconciled := cmp.Or(outcome.Reconciled, "none")
+	switch {
+	case outcome.Deferred():
+		reconciled = outcome.ReconcileErr.Error()
+	case outcome.ReconcileErr != nil:
+		// Activation never rejects an accepted generation; boot health
+		// reconciles again and refuses moves until the error clears.
+		fmt.Fprintf(stdout, "katl-generation-activate could not reconcile boot state for generation %s: %v\n", selected, outcome.ReconcileErr)
+	}
+	fmt.Fprintf(stdout, "katl-generation-activate generation=%s sysexts=%d confexts=%d trialBound=%t reconciled=%s\n",
+		plan.GenerationID, len(plan.Sysexts), len(plan.Confexts), outcome.TrialBound, reconciled)
+	if outcome.TrialBound {
+		// The deadline is the only bound on a candidate that hangs before boot
+		// health, so a trial never runs without it.
+		if err := armBootTrial(ctx); err != nil {
+			return fmt.Errorf("could not start the boot deadline for the trial of generation %s: %w; failing this boot so the node returns to its fallback", selected, err)
+		}
 	}
 	return nil
 }
+
+var (
+	newBootMover = generation.NewBootMover
+	armBootTrial = deadline.ArmBootTrial
+)
 
 func activateHostname(root string, plan generation.ActivationPlan, setHostname func([]byte) error) (string, error) {
 	var hostname string

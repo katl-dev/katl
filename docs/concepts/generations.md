@@ -105,19 +105,30 @@ available for repair. After the hold ends, you can use `katlctl cluster apply`
 and `katlctl node reboot` to repair a stalled or failed boot. If the agent
 cannot read current-boot health from systemd, status reports `unknown`.
 
-When an armed trial loses management networking, fails required activation, or
-misses the 10-minute boot deadline, Katl restores the previous healthy
-generation as the default and performs **one** automatic reboot into it.
-`katl-boot-recovery.service` requests that reboot, and `katlctl` reports that
-the candidate was rejected after the node reconnects on the source generation.
+When a boot trial loses management networking, fails required activation, or
+misses the 10-minute boot deadline, Katl rejects the candidate, keeps the
+previous healthy generation as the default, and performs **one** automatic
+reboot into it. A boot deadline runs only while a boot trial is undecided.
+`katl-boot-recovery.service` or `katl-boot-deadman.service` requests that
+reboot, and `katlctl` reports that the candidate was rejected after the node
+reconnects on the source generation. The rejected generation stays listed as
+failed and unhealthy, and its journal remains in the previous boot.
 
-Katl does not reboot automatically when no healthy fallback exists, the fallback
-also fails, required state or EFI storage is unavailable, the failure occurs
-before generation activation arms recovery, or the failing boot is not a trial
-because its generation had already become healthy. The fallback does not re-arm
-recovery, so a failed fallback stops instead of boot-looping. In these cases use
-the console or out-of-band management, preserve the failed boot's journal, and
-follow [Troubleshoot KatlOS](../operations/troubleshoot.md).
+Every other failed boot reports the failure and changes nothing. That covers the
+first boot after install, a reboot of the default generation, a generation
+booted from the boot menu, and a manual selection. Boot health is `failed`, the
+default and next boot stay as they were, and the node does not reboot again.
+Fix the cause, then run `katlctl node reboot`.
+
+Katl also does not reboot automatically when no healthy fallback exists, the
+fallback's state cannot be checked, or required state or EFI storage is
+unavailable. When a failed trial has no usable fallback, the failed generation
+stays the default and the node reports that recovery is required; node
+operations such as apply are refused until a healthy boot of that generation
+clears the state. The fallback is not a trial, so a failed fallback stops
+instead of boot-looping. In these cases use the console or out-of-band
+management, preserve the failed boot's journal, and follow
+[Troubleshoot KatlOS](../operations/troubleshoot.md).
 
 ## Retention
 

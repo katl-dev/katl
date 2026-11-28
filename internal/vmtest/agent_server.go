@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootid"
 	vmtestpb "github.com/katl-dev/katl/internal/vmtest/proto"
 )
 
@@ -130,7 +131,7 @@ func (s AgentServer) health(_ context.Context, _ *vmtestpb.HealthRequest) *vmtes
 	if s.BootID != nil {
 		bootID = s.BootID()
 	} else {
-		bootID = readTrimmed("/proc/sys/kernel/random/boot_id")
+		bootID, _ = bootid.Read("/")
 	}
 	return &vmtestpb.HealthResponse{
 		AgentVersion: first(s.Version, "0.0.0-dev"),
@@ -590,14 +591,6 @@ func safeEnvName(name string) bool {
 	default:
 		return strings.HasPrefix(name, "KATL_")
 	}
-}
-
-func readTrimmed(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(data))
 }
 
 func errorResult(code string, err error, retryable bool) *vmtestpb.VmtestResponse_Error {

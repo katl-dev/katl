@@ -2,6 +2,7 @@
 package releaseversion
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"regexp"
@@ -93,3 +94,18 @@ func (v Version) String() string {
 
 // Tag is the Git tag of the version.
 func (v Version) Tag() string { return "v" + v.String() }
+
+// stageRank orders prereleases before the final they precede.
+var stageRank = map[Stage]int{Dev: 0, Alpha: 1, Beta: 2, Candidate: 3, Final: 4}
+
+// Compare orders two versions by release, with every prerelease before its
+// final. It returns -1, 0 or +1.
+func (v Version) Compare(w Version) int {
+	return cmp.Or(
+		cmp.Compare(v.Year, w.Year),
+		cmp.Compare(v.Month, w.Month),
+		cmp.Compare(v.Patch, w.Patch),
+		cmp.Compare(stageRank[v.Stage], stageRank[w.Stage]),
+		cmp.Compare(v.Number, w.Number),
+	)
+}

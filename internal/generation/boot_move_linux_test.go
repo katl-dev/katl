@@ -95,8 +95,10 @@ func TestBootStateRefusesInvalidIntent(t *testing.T) {
 				booted = "outside"
 				writeBootDisk(t, root)
 			}
-			assertIntentError(RecordBootedGeneration(root, bootHealthCommandLine(booted)))
-			assertIntentError(Select(t.Context(), SelectRequest{Root: root, GenerationID: "gen0"}))
+			m, _ := moverOn(t, root, booted)
+			_, _, err := m.Activate(booted)
+			assertIntentError(err)
+			assertIntentError(m.Select(t.Context(), SelectRequest{GenerationID: "gen0"}))
 		})
 	}
 }
@@ -108,6 +110,9 @@ func TestActivationWithBootMoveIntent(t *testing.T) {
 			selection := writeBootMoveLegacyFixture(t, root)
 			writeBootHealthGeneration(t, root, "outside", "gen0", CommitStateCommitted, BootStateGood, HealthStateHealthy, selection.UpdatedAt)
 			writeBootDisk(t, root)
+			for _, generation := range []string{"gen0", "gen1", "gen2", "gen3"} {
+				writeBootHealthFallback(t, root, generation)
+			}
 			fixture := intentFixture(t)
 			if id == "gen0" {
 				// The fallback boot can also follow a one-shot consumed after the snapshot.
@@ -115,11 +120,12 @@ func TestActivationWithBootMoveIntent(t *testing.T) {
 					`"priorOneShot": {"generationID": "gen1", "entry": "katl-gen1.conf"}`, 1)
 			}
 			writeIntentFixture(t, root, fixture)
-			efiDir := filepath.Join(root, "sys/firmware/efi/efivars")
-			writeObservedBootDefault(t, root)
+			m, efi := moverOn(t, root, id)
+			efi.entries = efiboot.Entries{Default: "firmware.conf"}
 			before := snapshotBootFiles(t, filepath.Join(root, "var"))
 
-			err := RecordBootedGeneration(root, bootHealthCommandLine(id))
+			_, outcome, err := m.Activate(id)
+
 			if id == "outside" {
 				if err == nil || !strings.Contains(err.Error(), "outside the recorded boot targets") {
 					t.Fatalf("activation of %s = %v", id, err)
@@ -127,15 +133,28 @@ func TestActivationWithBootMoveIntent(t *testing.T) {
 			} else if err != nil {
 				t.Fatal(err)
 			}
+			// The intent expects a selection revision this root never had, so
+			// it cannot complete; activation reports that and accepts the boot.
+			if id != "outside" && !errors.Is(outcome.ReconcileErr, ErrBootMoveBlocked) {
+				t.Fatalf("reconcile error = %v, want the blocked move", outcome.ReconcileErr)
+			}
 			got, recorded, err := CurrentBootGeneration(root)
 			if err != nil || recorded != (id != "outside") || (recorded && got != id) {
 				t.Fatalf("current boot = %q, %t, %v", got, recorded, err)
 			}
-			if _, err := os.Stat(filepath.Join(efiDir, "LoaderEntryOneShot-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f")); !errors.Is(err, os.ErrNotExist) {
-				t.Fatalf("one-shot should stay consumed, stat error = %v", err)
+			if efi.written || efi.entries.OneShot != "" {
+				t.Fatalf("activation wrote firmware variables: %+v", efi.entries)
 			}
-			if after := snapshotBootFiles(t, filepath.Join(root, "var")); !reflect.DeepEqual(before, after) {
-				t.Fatal("reader-only activation changed durable boot state")
+			// Activation records which generations have run the owner and
+			// nothing else.
+			after := snapshotBootFiles(t, filepath.Join(root, "var"))
+			for path := range after {
+				if strings.HasPrefix(path, filepath.Join(root, bootOwnersDir)+"/") {
+					delete(after, path)
+				}
+			}
+			if !reflect.DeepEqual(before, after) {
+				t.Fatal("activation under an intent changed durable boot state")
 			}
 		})
 	}
@@ -174,40 +193,38 @@ func TestBootMoveActivatesWithInvalidatedPredecessor(t *testing.T) {
 	if err := WriteGenerationStatus(root, spec, status); err != nil {
 		t.Fatal(err)
 	}
+	m, _ := moverOn(t, root, target.GenerationID)
 
-	if _, err := ActivateBootGeneration(root, target.GenerationID, bootHealthCommandLine(target.GenerationID)); err != nil {
+	if _, _, err := m.Activate(target.GenerationID); err != nil {
 		t.Fatal(err)
 	}
+
 	assertSymlink(t, filepath.Join(root, "run/extensions/kubernetes.raw"), target.Sysexts[0].Path)
 }
 
-func TestPendingBootMoveFencesLegacyMutations(t *testing.T) {
+func TestIncompletableIntentRefusesMovesAndReads(t *testing.T) {
 	root := t.TempDir()
 	writeBootMoveLegacyFixture(t, root)
 	writeIntentFixture(t, root, intentFixture(t))
+	m, efi := moverOn(t, root, "gen1")
+	kept := keepsBootState(t, root, efi)
 
-	setter := func(string, string) error {
-		t.Fatal("a legacy caller tried to write EFI")
-		return nil
-	}
-	for _, action := range []func() error{
-		func() error {
-			return Select(t.Context(), SelectRequest{Root: root, GenerationID: "gen0", SetDefault: setter, SetOneshot: setter})
-		},
-		func() error {
-			_, err := RecordBootHealth(BootHealthRequest{Root: root, CommandLine: bootHealthCommandLine("gen1"), Result: BootHealthFailure, SetBootDefault: setter})
-			return err
-		},
-		func() error { return ValidateMutationBase(root, "gen0") },
+	for name, action := range map[string]func() error{
+		"select":   func() error { return m.Select(t.Context(), SelectRequest{GenerationID: "gen0"}) },
+		"arm":      func() error { _, err := m.ArmTrial(TrialRequest{OperationID: "arm", GenerationID: "gen2"}); return err },
+		"promote":  func() error { return m.PromoteLive(LivePromotionRequest{GenerationID: "gen2", OperationID: "live"}) },
+		"confirm":  func() error { _, err := m.ConfirmBoot(""); return err },
+		"invalid":  func() error { return m.InvalidateSlot("upgrade", "22222222-2222-3333-4444-555555555555") },
+		"remove":   func() error { return m.Remove("gen3") },
+		"read":     func() error { return m.Read(func(BootSelectionRecord) error { return nil }) },
+		"validate": func() error { return m.ValidateMutationBase("gen0") },
 	} {
 		err := action()
-		if err == nil || !strings.Contains(err.Error(), "boot move in progress") || !strings.Contains(err.Error(), "boot a runtime that can complete the move") {
-			t.Fatalf("legacy mutation should request recovery of the pending move, got %v", err)
+		if !errors.Is(err, ErrBootMoveBlocked) || !strings.Contains(err.Error(), "node console") {
+			t.Fatalf("%s with an incompletable intent = %v, want a blocked move with console guidance", name, err)
 		}
 	}
-	if armed, err := ArmBootRecovery(root, "gen1"); err != nil || armed {
-		t.Fatalf("legacy recovery armed = %t, %v", armed, err)
-	}
+	kept()
 }
 
 func TestLegacyBootStateImport(t *testing.T) {
@@ -221,25 +238,22 @@ func TestLegacyBootStateImport(t *testing.T) {
 	}}
 
 	for range 2 {
-		err := withBootState(root, "gen0", reader.Read, func(state bootState) error {
-			legacy := state.legacy
-			if state.intent != nil || legacy == nil {
-				t.Fatalf("expected legacy state, got %#v", state)
-			}
-			if legacy.selection != selection || legacy.selection.Revision != 0 ||
-				legacy.selection.PendingTransactionID != "legacy-op" || legacy.trialGenerationID != "gen1" {
-				t.Fatalf("legacy selection = %#v, trial = %q", legacy.selection, legacy.trialGenerationID)
-			}
-			if legacy.generations["gen1"].status.BootState != BootStateTrying {
-				t.Fatalf("legacy candidate status was lost: %#v", legacy.generations["gen1"])
-			}
-			if legacy.efiErr != nil || legacy.efi.Default != "firmware.conf" || legacy.efi.OneShot != "" {
-				t.Fatalf("legacy EFI = %#v, %v", legacy.efi, legacy.efiErr)
-			}
-			return nil
-		})
+		legacy, err := readLegacyBootState(root, "gen0", reader.Read)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if legacy == nil {
+			t.Fatal("expected legacy state")
+		}
+		if legacy.selection != selection || legacy.selection.Revision != 0 ||
+			legacy.selection.PendingTransactionID != "legacy-op" || legacy.trialGenerationID != "gen1" {
+			t.Fatalf("legacy selection = %#v, trial = %q", legacy.selection, legacy.trialGenerationID)
+		}
+		if legacy.generations["gen1"].status.BootState != BootStateTrying {
+			t.Fatalf("legacy candidate status was lost: %#v", legacy.generations["gen1"])
+		}
+		if legacy.efiErr != nil || legacy.efi.Default != "firmware.conf" || legacy.efi.OneShot != "" {
+			t.Fatalf("legacy EFI = %#v, %v", legacy.efi, legacy.efiErr)
 		}
 	}
 	if after := snapshotBootFiles(t, root); !reflect.DeepEqual(before, after) {
@@ -269,51 +283,49 @@ func TestLegacyBootStateDistinguishesTrials(t *testing.T) {
 			selection := writeBootMoveLegacyFixture(t, root)
 			tc.change(&selection)
 			writeBootHealthSelection(t, root, selection)
-			err := withBootState(root, "gen0", efiboot.Reader{}.Read, func(state bootState) error {
-				if state.intent != nil || state.legacy == nil || state.legacy.trialGenerationID != "" {
-					t.Fatalf("%s unexpectedly imported as a trial", tc.name)
-				}
-				return nil
-			})
-			if err != nil {
-				t.Fatal(err)
+
+			legacy, err := readLegacyBootState(root, "gen0", efiboot.Reader{}.Read)
+
+			if err != nil || legacy == nil || legacy.trialGenerationID != "" {
+				t.Fatalf("%s unexpectedly imported as a trial: %+v, %v", tc.name, legacy, err)
 			}
 		})
 	}
 }
 
-func TestLegacyBootStateWaitsForSelectionAndStatus(t *testing.T) {
+func TestReadWaitsForBootStateLock(t *testing.T) {
 	root := t.TempDir()
 	selection := writeBootMoveLegacyFixture(t, root)
+	selection.PendingHealthValidation, selection.PendingTransactionID = false, ""
+	selection.TrialGenerationID, selection.TrialBootEntry = "", ""
+	selection.PersistentDefaultPromotion = DefaultPromotionDone
+	selection.BootedGenerationID, selection.BootedBootEntry = "gen0", "loader/entries/katl-gen0.conf"
+	writeBootHealthSelection(t, root, selection)
+	m, _ := moverOn(t, root, "gen0")
 	start := make(chan struct{})
 	done := make(chan error, 1)
-	observed := make(chan bootState, 1)
+	observed := make(chan BootSelectionRecord, 1)
 	err := withBootStateLock(root, func() error {
-		// Model a writer that publishes selection before finishing its status update.
-		selection.PendingTransactionID = "completed-operation"
+		// Model a writer that has published its selection before the lock is released.
+		selection.TargetBootGenerationID, selection.TargetBootEntry = "gen3", "loader/entries/katl-gen3.conf"
+		selection.OneShot = true
 		if err := WriteBootSelection(root, selection); err != nil {
 			return err
 		}
 		go func() {
 			close(start)
-			done <- withBootState(root, "gen0", efiboot.Reader{}.Read, func(state bootState) error {
-				observed <- state
+			done <- m.Read(func(published BootSelectionRecord) error {
+				observed <- published
 				return nil
 			})
 		}()
 		<-start
 		select {
 		case err := <-done:
-			t.Fatalf("import returned under the writer's lock, error = %v", err)
+			t.Fatalf("read returned under the writer's lock, error = %v", err)
 		case <-time.After(50 * time.Millisecond):
 		}
-		spec, status, err := ReadGeneration(root, "gen1")
-		if err != nil {
-			return err
-		}
-		status.BootState = BootStateGood
-		status.HealthState = HealthStateHealthy
-		return WriteGenerationStatus(root, spec, status)
+		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -324,14 +336,10 @@ func TestLegacyBootStateWaitsForSelectionAndStatus(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("import did not return after the writer released the lock")
+		t.Fatal("read did not return after the writer released the lock")
 	}
-	got := (<-observed).legacy
-	if got.selection.PendingTransactionID != "completed-operation" || got.generations["gen1"].status.HealthState != HealthStateHealthy {
-		t.Fatalf("import observed a split update: selection = %#v, status = %#v", got.selection, got.generations["gen1"].status)
-	}
-	if got.efiErr == nil {
-		t.Fatal("missing efivarfs was imported as proven EFI absence")
+	if got := <-observed; got.TargetBootGenerationID != "gen3" {
+		t.Fatalf("read observed %+v, want the writer's selection", got)
 	}
 }
 

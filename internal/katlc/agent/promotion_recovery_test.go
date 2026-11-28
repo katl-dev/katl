@@ -15,20 +15,24 @@ import (
 	"github.com/katl-dev/katl/internal/operatorconsole"
 )
 
-func TestPendingBootMoveDefersPromotionRecovery(t *testing.T) {
+// An intent this owner cannot read stops it from moving the boot target, so a
+// promotion waits until the intent is readable.
+func TestUnreadableBootMoveDefersPromotionRecovery(t *testing.T) {
 	server, id := interruptLivePromotion(t)
-	path := writeLivePromotionIntent(t, server.Root)
+	path := filepath.Join(server.Root, "var/lib/katl/boot/move-intent.json")
+	intent, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, path, "not a boot move intent")
 	before, err := server.Store.Read(id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	restarted := NewExecutor(server.Root, server.Store, "restarted-agent")
+	restarted := newExecutorFor(server.BootMover, server.Root, server.Store, "restarted-agent")
+	restarted.BootMover = server.restartAgent(t)
 	setDefault := false
-	restarted.SetBootDefault = func(context.Context, string, string) error {
-		setDefault = true
-		return nil
-	}
-	restarted.SetBootOneshot = func(context.Context, string, string) error { return nil }
+	server.efi.defaultHook = func(string) error { setDefault = true; return nil }
 
 	deferred, err := restarted.recoverLivePromotions(t.Context(), currentBootID())
 	if err != nil {
@@ -42,9 +46,7 @@ func TestPendingBootMoveDefersPromotionRecovery(t *testing.T) {
 		t.Fatalf("pending move changed promotion receipt or EFI: result=%s terminal=%t EFI write=%t error=%v", after.Result, after.Terminal, setDefault, err)
 	}
 
-	if err := os.Remove(path); err != nil {
-		t.Fatal(err)
-	}
+	writeTestFile(t, path, string(intent))
 	if _, err := restarted.recoverLivePromotions(t.Context(), currentBootID()); err != nil {
 		t.Fatal(err)
 	}
@@ -155,72 +157,73 @@ func writeLivePromotionIntent(t *testing.T, root string) string {
 }
 
 func TestRecoverLivePromotion(t *testing.T) {
-	for _, failure := range []bool{false, true} {
-		name := "completed"
-		if failure {
-			name = "boot default failure"
-		}
-		t.Run(name, func(t *testing.T) { testRecoverLivePromotion(t, failure) })
-	}
-}
+	// Recovery uses a fresh executor with no activation doubles: it must
+	// finish bookkeeping without attempting runtime activation again.
+	t.Run("completed", func(t *testing.T) {
+		server, operationID := interruptLivePromotion(t)
+		restarted := newExecutorFor(server.restartAgent(t), server.Root, server.Store, "restarted-agent")
 
-func testRecoverLivePromotion(t *testing.T, failure bool) {
-	server, operationID := interruptLivePromotion(t)
-
-	// Use a fresh executor with no activation doubles: recovery must finish
-	// bookkeeping without attempting runtime activation again.
-	restarted := NewExecutor(server.Root, server.Store, "restarted-agent")
-	defaultPath := filepath.Join(server.Root, "observed-boot-default")
-	restarted.SetBootOneshot = func(context.Context, string, string) error { return nil }
-	restarted.SetBootDefault = func(_ context.Context, _ string, entry string) error {
-		if failure {
-			return errors.New("boot default unavailable")
+		if _, err := restarted.recoverLivePromotions(context.Background(), currentBootID()); err != nil {
+			t.Fatal(err)
 		}
-		return os.WriteFile(defaultPath, []byte(entry), 0o600)
-	}
+		if _, err := AuditStartup(server.Store, server.Now()); err != nil {
+			t.Fatal(err)
+		}
+
+		after, err := server.GetOperation(context.Background(), &agentapi.GetOperationRequest{OperationId: operationID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !after.Terminal || after.Result != operation.ResultSucceeded || after.BootHealthPending {
+			t.Fatalf("recovered operation: %+v", after)
+		}
+		if got := server.efi.observed().Default; got != "katl-live-recovery.conf" {
+			t.Fatalf("boot default = %q", got)
+		}
+		_, state, err := generation.ReadGeneration(server.Root, "live-recovery")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !generation.IsKnownGood(state) {
+			t.Fatalf("recovered generation: %+v", state)
+		}
+		if _, err := restarted.recoverLivePromotions(context.Background(), currentBootID()); err != nil {
+			t.Fatalf("repeat recovery: %v", err)
+		}
+	})
+
+	t.Run("boot default failure", func(t *testing.T) {
+		server, operationID := interruptLivePromotion(t)
+		restarted := newExecutorFor(server.restartAgent(t), server.Root, server.Store, "restarted-agent")
+		server.efi.defaultErr = errors.New("boot default unavailable")
+
+		if _, err := restarted.recoverLivePromotions(context.Background(), currentBootID()); err == nil || !strings.Contains(err.Error(), "boot default unavailable") {
+			t.Fatalf("recovery = %v, want the boot default failure", err)
+		}
+		if after, err := server.Store.Read(operationID); err != nil || after.Terminal {
+			t.Fatalf("a failed boot default write resolved the operation: %+v, %v", after, err)
+		}
+
+		if _, err := restarted.recoverLivePromotions(context.Background(), currentBootID()); err != nil {
+			t.Fatalf("retry after the boot default failure: %v", err)
+		}
+		if after, err := server.Store.Read(operationID); err != nil || !after.Terminal || after.Result != operation.ResultSucceeded {
+			t.Fatalf("retried recovery = %+v, %v", after, err)
+		}
+	})
+
 	// A reboot into the old generation invalidates the old live-health receipt.
-	if _, err := restarted.recoverLivePromotions(context.Background(), "different-boot"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(defaultPath); !os.IsNotExist(err) {
-		t.Fatalf("old live receipt changed boot default after reboot: %v", err)
-	}
-	if _, err := restarted.recoverLivePromotions(context.Background(), currentBootID()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := AuditStartup(server.Store, server.Now()); err != nil {
-		t.Fatal(err)
-	}
-	after, err := server.GetOperation(context.Background(), &agentapi.GetOperationRequest{OperationId: operationID})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if failure {
-		if !after.Terminal || after.Result != operation.ResultFailedNeedsRepair {
-			t.Fatalf("failed recovery left operation unresolved: %+v", after)
+	t.Run("reboot into the old generation", func(t *testing.T) {
+		server, operationID := interruptLivePromotion(t)
+		restarted := newExecutorFor(server.bootAs(t, "different-boot", defaultRootPartUUID, "generation-0"), server.Root, server.Store, "restarted-agent")
+
+		if _, err := restarted.recoverLivePromotions(context.Background(), "different-boot"); err != nil {
+			t.Fatal(err)
 		}
-		return
-	}
-	if !after.Terminal || after.Result != operation.ResultSucceeded || after.BootHealthPending {
-		t.Fatalf("recovered operation: %+v", after)
-	}
-	entry, err := os.ReadFile(defaultPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(entry) != "loader/entries/katl-live-recovery.conf" {
-		t.Fatalf("boot default = %q", entry)
-	}
-	_, state, err := generation.ReadGeneration(server.Root, "live-recovery")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !generation.IsKnownGood(state) {
-		t.Fatalf("recovered generation: %+v", state)
-	}
-	if _, err := restarted.recoverLivePromotions(context.Background(), currentBootID()); err != nil {
-		t.Fatalf("repeat recovery: %v", err)
-	}
+		if after, err := server.Store.Read(operationID); err != nil || after.Terminal {
+			t.Fatalf("old live receipt resolved the operation after a reboot: %+v, %v", after, err)
+		}
+	})
 }
 
 // A reboot back into the candidate resumes promotion only when this boot's
@@ -239,29 +242,24 @@ func TestRecoverLivePromotionAfterReboot(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			server, operationID := interruptLivePromotion(t)
 
-			// The kernel selected the candidate, and the durable selection
-			// already names it as booted with no pending validation.
-			writeProcCmdline(t, server.Root, "root=PARTUUID=11111111-1111-1111-1111-111111111111 katl.generation=live-recovery")
-			selection, err := generation.ReadBootSelection(server.Root)
-			if err != nil {
+			// The kernel selected the candidate, which passed boot health, so the
+			// durable selection names it as booted with no pending validation.
+			writeProcCmdline(t, server.Root, bootCommandLine(defaultRootPartUUID, "live-recovery"))
+			mover := server.bootAs(t, "after-reboot", defaultRootPartUUID, "live-recovery")
+			if _, _, err := mover.Activate("live-recovery"); err != nil {
 				t.Fatal(err)
 			}
-			selection.BootedGenerationID = "live-recovery"
-			selection.BootedBootEntry = "loader/entries/katl-live-recovery.conf"
-			selection.PendingHealthValidation = false
-			if err := generation.WriteBootSelection(server.Root, selection); err != nil {
+			if _, err := mover.ConfirmBoot("test boot health"); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(filepath.Join(server.Root, "run/katl/boot-health/current")); err != nil {
 				t.Fatal(err)
 			}
 			if tc.activated != "" {
-				writeTestFile(t, filepath.Join(server.Root, "run/katl/boot-health/current"), `{"generationID":"`+tc.activated+`"}`+"\n")
+				recordActivation(t, server.Root, tc.activated)
 			}
 
-			restarted := NewExecutor(server.Root, server.Store, "restarted-agent")
-			defaultPath := filepath.Join(server.Root, "observed-boot-default")
-			restarted.SetBootOneshot = func(context.Context, string, string) error { return nil }
-			restarted.SetBootDefault = func(_ context.Context, _ string, entry string) error {
-				return os.WriteFile(defaultPath, []byte(entry), 0o600)
-			}
+			restarted := newExecutorFor(mover, server.Root, server.Store, "restarted-agent")
 			if _, err := restarted.recoverLivePromotions(context.Background(), "different-boot"); err != nil {
 				t.Fatal(err)
 			}
@@ -270,19 +268,8 @@ func TestRecoverLivePromotionAfterReboot(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, state, err := generation.ReadGeneration(server.Root, "live-recovery")
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, defaultErr := os.Stat(defaultPath)
-			if !tc.promoted {
-				if after.Terminal || !os.IsNotExist(defaultErr) {
-					t.Fatalf("recovery promoted without this boot's activation: terminal=%t result=%s default=%v", after.Terminal, after.Result, defaultErr)
-				}
-				return
-			}
-			if !after.Terminal || after.Result != operation.ResultSucceeded || defaultErr != nil || !generation.IsKnownGood(state) {
-				t.Fatalf("recovery did not resume promotion: terminal=%t result=%s default=%v state=%+v", after.Terminal, after.Result, defaultErr, state)
+			if after.Terminal != tc.promoted || tc.promoted && after.Result != operation.ResultSucceeded {
+				t.Fatalf("recovery resolved the operation = %t (result %q), want %t", after.Terminal, after.Result, tc.promoted)
 			}
 		})
 	}
@@ -302,13 +289,14 @@ func interruptLivePromotion(t *testing.T) (*testServer, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, server.AgentStartID)
 	executor.ConfigApplyRunner = &fakeConfigApplyRunner{}
 	executor.ConfigApplyActivator = &fakeConfigApplyActivator{}
 	// Simulate process loss after durable promotion but before the external
 	// default change. Panicking bypasses ordinary error compensation.
 	crashed := false
-	executor.SetBootDefault = func(context.Context, string, string) error { crashed = true; panic("process lost") }
+	executor.BootMover = server.BootMover
+	server.efi.defaultHook = func(string) error { crashed = true; panic("process lost") }
 	func() {
 		defer func() {
 			if recovered := recover(); recovered != "process lost" {
@@ -322,6 +310,7 @@ func interruptLivePromotion(t *testing.T) (*testServer, string) {
 	if !crashed {
 		t.Fatal("promotion interruption was not reached")
 	}
+	server.efi.defaultHook = nil
 	before, err := server.Store.Read(accepted.OperationId)
 	if err != nil {
 		t.Fatal(err)

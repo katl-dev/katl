@@ -16,26 +16,24 @@ import (
 )
 
 type HostUpgradeRequest struct {
-	ReplaceExtensions    []string
-	Sysexts              []generation.ExtensionRef
-	BundledConfexts      []generation.ExtensionRef
-	GenerationID         string
-	PreviousSpec         generation.GenerationSpec
-	PreviousStatus       generation.GenerationStatus
-	RootSlot             string
-	RootPartitionUUID    string
-	UKIPath              string
-	LoaderEntryPath      string
-	OperationID          string
-	BootCountedTrialPath string
-	Bootstrapped         bool
-	CreatedAt            time.Time
+	ReplaceExtensions []string
+	Sysexts           []generation.ExtensionRef
+	BundledConfexts   []generation.ExtensionRef
+	GenerationID      string
+	PreviousSpec      generation.GenerationSpec
+	PreviousStatus    generation.GenerationStatus
+	RootSlot          string
+	RootPartitionUUID string
+	UKIPath           string
+	LoaderEntryPath   string
+	OperationID       string
+	Bootstrapped      bool
+	CreatedAt         time.Time
 }
 
 type HostUpgradePlan struct {
 	Spec            generation.GenerationSpec
 	Status          generation.GenerationStatus
-	BootSelection   generation.BootSelectionRecord
 	PreservedAssets []PreservedAsset
 	BundledAssets   []BundledAsset
 }
@@ -155,30 +153,9 @@ func (p Payload) HostUpgradePlan(request HostUpgradeRequest) (HostUpgradePlan, e
 	if err != nil {
 		return HostUpgradePlan{}, err
 	}
-	selection := generation.BootSelectionRecord{
-		APIVersion:                    generation.APIVersion,
-		Kind:                          generation.BootSelectionKind,
-		DefaultGenerationID:           request.PreviousSpec.GenerationID,
-		TargetBootGenerationID:        generationID,
-		TrialGenerationID:             generationID,
-		PreviousKnownGoodGenerationID: request.PreviousSpec.GenerationID,
-		DefaultBootEntry:              strings.TrimSpace(request.PreviousSpec.Boot.LoaderEntryPath),
-		TargetBootEntry:               strings.TrimSpace(request.LoaderEntryPath),
-		TrialBootEntry:                strings.TrimSpace(request.LoaderEntryPath),
-		PreviousKnownGoodBootEntry:    strings.TrimSpace(request.PreviousSpec.Boot.LoaderEntryPath),
-		BootCountedTrialPath:          strings.TrimSpace(request.BootCountedTrialPath),
-		PendingTransactionID:          strings.TrimSpace(request.OperationID),
-		PendingHealthValidation:       true,
-		PersistentDefaultPromotion:    generation.DefaultPromotionPending,
-		UpdatedAt:                     createdAt.UTC(),
-	}
-	if err := generation.ValidateBootSelection(selection); err != nil {
-		return HostUpgradePlan{}, err
-	}
 	return HostUpgradePlan{
 		Spec:            spec,
 		Status:          status,
-		BootSelection:   selection,
 		PreservedAssets: append(append(sysextAssets, bundledConfextAssets...), confextAssets...),
 		BundledAssets:   bundledAssets,
 	}, nil

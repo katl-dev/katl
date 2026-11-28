@@ -2,7 +2,6 @@
 Description=Fail Katl boot health after deadline
 Documentation=man:systemd.service(5)
 SuccessAction=reboot
-ConditionPathExists=/run/katl/boot-health/pending
 Requires=var.mount
 After=var.mount
 RequiresMountsFor=/efi /var/lib/katl
@@ -11,4 +10,4 @@ RequiresMountsFor=/efi /var/lib/katl
 Type=oneshot
 StandardOutput=journal+console
 SyslogIdentifier=katl-boot-deadman
-ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=timeout --reason=katl-boot-health-deadline-expired --force-failure --request-reboot
+ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=timeout --reason=katl-boot-health-deadline-expired

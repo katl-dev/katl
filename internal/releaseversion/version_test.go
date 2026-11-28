@@ -80,3 +80,26 @@ func TestCandidate(t *testing.T) {
 		t.Fatalf("Base of %v = %v", candidate, candidate.Base())
 	}
 }
+
+func TestCompare(t *testing.T) {
+	// Each version is strictly older than the next.
+	ordered := []string{"2025.12.9", "2026.1.0-dev.3", "2026.1.0-alpha.1", "2026.1.0-beta.0", "2026.1.0-rc.1", "2026.1.0-rc.2", "2026.1.0", "2026.1.1", "2026.2.0", "2026.10.0", "2027.1.0"}
+	for i, older := range ordered {
+		a, err := Parse(older)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a.Compare(a) != 0 {
+			t.Fatalf("%s.Compare(itself) != 0", older)
+		}
+		for _, newer := range ordered[i+1:] {
+			b, err := Parse(newer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a.Compare(b) != -1 || b.Compare(a) != 1 {
+				t.Fatalf("%s should sort before %s", older, newer)
+			}
+		}
+	}
+}

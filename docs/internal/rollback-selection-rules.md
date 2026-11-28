@@ -39,13 +39,16 @@ bootState: good
 healthState: healthy
 ```
 
-The previous known-good generation is the newest generation with
+When a failed or tried generation must fall back, the previous known-good
+generation is the newest generation with
 valid `status.json.specDigest`, `healthState: healthy`, `bootState: good`, and
 `commitState: committed` or `commitState: superseded` that is not the currently
 failed or currently tried generation. Superseded means a healthy generation is
 no longer the active default, not that it is unsafe for rollback.
 `config-apply-status.json`, a client summary, or any workflow-specific status
 view is not sufficient for known-good rollback selection.
+
+A live promotion records the previous known-good generation in the boot selection from the boot that is running where it can, rather than from the generation it replaces as default. When the running generation is not the generation being promoted, is known-good, and has a loader entry, that generation and its entry are recorded, because it still boots from the boot menu after any number of live promotions in the same boot. Otherwise, such as after a menu boot of a generation that has not passed boot health, the replaced default is recorded. Promoting the generation that already is the default records nothing new, and a repeat of an already published promotion changes nothing.
 
 ## Failed Boot Rollback
 
@@ -59,9 +62,11 @@ regenerate /run extension, confext, and app status roots from previous known-goo
 boot previous known-good generation
 ```
 
-If there is no previous known-good generation, automatic rollback is not
-available. That is the first-install failure case and requires reinstall or
-repair tooling.
+If no previous known-good generation can be used, automatic rollback is not
+available. The running generation stays the default with `recoveryRequired`,
+and a healthy boot of it clears the state after the cause is repaired. The
+first boot after install is not a failed trial: it has no fallback, stays
+pending, and requires repair or reinstall.
 
 Failed boot rollback marks only the failed tried generation `failed/unhealthy`.
 The rollback target keeps its existing `good/healthy` boot health and its
@@ -119,8 +124,9 @@ stale-post-mutation and stale-ambiguous records until an explicit retry or repai
 operation clears it.
 
 When rollback cannot select a previous known-good generation, Katl reports
-recovery-required and records diagnostics for a deferred recovery operation. It
-must not invent a rollback target.
+recovery-required, publishes the running generation as the default without
+requesting a reboot, and records diagnostics for a deferred recovery operation.
+It must not invent a rollback target.
 
 ## First Install Seed
 

@@ -212,7 +212,7 @@ func renderGenerationActivateService() string {
 		"DefaultDependencies=no",
 		"Requires=var.mount",
 		"After=var.mount",
-		"# Recovery arming checks the fallback entry and UKI on the EFI partition.",
+		"# Activation reads boot state on the EFI partition.",
 		"RequiresMountsFor=/efi",
 		"Before=systemd-sysext.service systemd-confext.service",
 		"",
@@ -460,7 +460,7 @@ func renderBootRecoveryService() string {
 		"Type=oneshot",
 		"StandardOutput=journal+console",
 		"SyslogIdentifier=katl-boot-recovery",
-		"ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=failure --reason=katl-boot-health.service-failed --force-failure --request-reboot",
+		"ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=failure --reason=katl-boot-health.service-failed",
 		"",
 	}, "\n")
 }
@@ -471,7 +471,6 @@ func renderBootDeadmanService() string {
 		"Description=Fail Katl boot health after deadline",
 		"Documentation=man:systemd.service(5)",
 		"SuccessAction=reboot",
-		"ConditionPathExists=/run/katl/boot-health/pending",
 		"Requires=var.mount",
 		"After=var.mount",
 		"RequiresMountsFor=/efi /var/lib/katl",
@@ -480,7 +479,7 @@ func renderBootDeadmanService() string {
 		"Type=oneshot",
 		"StandardOutput=journal+console",
 		"SyslogIdentifier=katl-boot-deadman",
-		"ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=timeout --reason=katl-boot-health-deadline-expired --force-failure --request-reboot",
+		"ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=timeout --reason=katl-boot-health-deadline-expired",
 		"",
 	}, "\n")
 }
@@ -490,13 +489,12 @@ func renderBootDeadmanTimer() string {
 		"[Unit]",
 		"Description=Katl boot health deadline",
 		"Documentation=man:systemd.timer(5)",
+		"# Activation starts the timer only for a boot trial. OnBootSec= counts",
+		"# from boot, so a timer started late still expires on time.",
 		"",
 		"[Timer]",
 		"OnBootSec=10min",
 		"Unit=katl-boot-deadman.service",
-		"",
-		"[Install]",
-		"WantedBy=timers.target",
 		"",
 	}, "\n")
 }
@@ -670,9 +668,6 @@ func WriteState(root string, request StateRequest) (StateAssets, error) {
 		return StateAssets{}, err
 	}
 	if err := writeSymlink(root, "etc/systemd/system/katl-boot-complete.target.requires/katl-boot-health.service", "../katl-boot-health.service"); err != nil {
-		return StateAssets{}, err
-	}
-	if err := writeSymlink(root, "etc/systemd/system/timers.target.wants/katl-boot-deadman.timer", "../katl-boot-deadman.timer"); err != nil {
 		return StateAssets{}, err
 	}
 	if err := writeFile(root, "etc/systemd/system/containerd.service.d/10-katl-runtime.conf", assets.ContainerdDropIn, 0o644); err != nil {

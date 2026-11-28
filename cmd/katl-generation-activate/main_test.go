@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,12 +14,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/katl-dev/katl/internal/efiboot"
 	"github.com/katl-dev/katl/internal/generation"
 	"golang.org/x/sys/unix"
 )
 
 func TestGenerationActivateUsesSelectedMetadata(t *testing.T) {
 	root := t.TempDir()
+	useTestMover(t)
 	record := commandActivationRecord(t, root, "2026.06.05-001")
 	metadataPath, err := generation.MetadataPath(root, record.GenerationID)
 	if err != nil {
@@ -65,41 +69,81 @@ func TestGenerationActivateRejectsMismatchedMetadata(t *testing.T) {
 	}
 }
 
-func TestGenerationActivateArmsRecoveryBeforeCandidateActivation(t *testing.T) {
-	root := t.TempDir()
-	writeActivationTrial(t, root)
+func TestGenerationActivateStartsTrialDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		running          string
+		unreadableUKI    bool
+		armErr           error
+		wantArmed        bool
+		wantErr, wantOut string
+	}{
+		{name: "bound trial", running: "candidate", wantArmed: true, wantOut: "trialBound=true"},
+		// Activation defers fallback checks to boot health, so an unreadable
+		// fallback never stops the candidate from running under its deadline.
+		{name: "unreadable fallback", running: "candidate", unreadableUKI: true, wantArmed: true, wantOut: "trialBound=true"},
+		{name: "deadline fails", running: "candidate", armErr: errors.New("unit not loaded"),
+			wantArmed: true, wantErr: "could not start the boot deadline for the trial of generation candidate: unit not loaded; failing this boot"},
+		{name: "fallback boot", running: "known-good", wantOut: "trialBound=false"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeActivationTrial(t, root)
+			writeActivationGeneration(t, root, "candidate", "known-good", generation.BootStateTrying, generation.HealthStateUnknown, time.Date(2026, 9, 28, 14, 0, 0, 0, time.UTC))
+			if tc.unreadableUKI {
+				uki := filepath.Join(root, "efi/EFI/Linux/katl-known-good.efi")
+				if err := os.Remove(uki); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(uki, uki); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cmdline := filepath.Join(root, "proc-cmdline")
+			writeCommandFile(t, cmdline, "root=PARTUUID=11111111-2222-3333-4444-555555555555 katl.generation="+tc.running+"\n")
+			useTestMover(t)
+			armed := false
+			oldArm := armBootTrial
+			armBootTrial = func(context.Context) error { armed = true; return tc.armErr }
+			t.Cleanup(func() { armBootTrial = oldArm })
 
-	err := run(t.Context(), []string{"--root", root, "--generation", "candidate"}, nil)
-	if err == nil {
-		t.Fatal("activation with missing candidate metadata succeeded")
-	}
-	if _, err := os.Stat(filepath.Join(root, "run/katl/boot-health/pending")); err != nil {
-		t.Fatalf("activation failure was not recovery-armed: %v", err)
+			var stdout bytes.Buffer
+			err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, &stdout)
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("run() error = %v (%s)", err, &stdout)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("run() error = %v, want %q", err, tc.wantErr)
+			}
+			if !strings.Contains(stdout.String(), tc.wantOut) {
+				t.Fatalf("stdout = %q, want %q", &stdout, tc.wantOut)
+			}
+			if armed != tc.wantArmed {
+				t.Fatalf("deadline armed = %t, want %t", armed, tc.wantArmed)
+			}
+		})
 	}
 }
 
-func TestGenerationActivateContinuesWhenFallbackCannotBeRead(t *testing.T) {
-	root := t.TempDir()
-	writeActivationTrial(t, root)
-	writeActivationFallback(t, root, "candidate", time.Date(2026, 9, 28, 14, 0, 0, 0, time.UTC))
-	uki := filepath.Join(root, "efi/EFI/Linux/katl-known-good.efi")
-	if err := os.Remove(uki); err != nil {
-		t.Fatal(err)
+// useTestMover gives activation a fixed boot ID and EFI variables that match
+// the published default. Activation must not write them.
+func useTestMover(t *testing.T) {
+	t.Helper()
+	old := newBootMover
+	newBootMover = func(root string, options generation.BootMoverOptions) (*generation.BootMover, error) {
+		options.BootID = "boot-2"
+		options.ReadEFI = func(string) (efiboot.Entries, error) {
+			selection, err := generation.ReadBootSelection(root)
+			return efiboot.Entries{Default: filepath.Base(selection.DefaultBootEntry), OneShot: filepath.Base(selection.TrialBootEntry)}, err
+		}
+		write := func(_, entry string) error {
+			t.Errorf("activation wrote EFI entry %q", entry)
+			return nil
+		}
+		options.SetDefault, options.SetOneShot = write, write
+		return old(root, options)
 	}
-	if err := os.Symlink(uki, uki); err != nil {
-		t.Fatal(err)
-	}
-
-	var stdout bytes.Buffer
-	if err := run(t.Context(), []string{"--root", root, "--generation", "candidate"}, &stdout); err != nil {
-		t.Fatalf("unreadable fallback interrupted candidate activation: %v", err)
-	}
-	if !strings.Contains(stdout.String(), "could not arm boot recovery") || !strings.Contains(stdout.String(), "recoveryArmed=false") {
-		t.Fatalf("activation omitted the recovery diagnostic: %s", &stdout)
-	}
-	if _, err := os.Stat(filepath.Join(root, "run/katl/boot-health/pending")); !os.IsNotExist(err) {
-		t.Fatalf("unreadable fallback created an authorization: %v", err)
-	}
+	t.Cleanup(func() { newBootMover = old })
 }
 
 func writeActivationTrial(t *testing.T, root string) {
@@ -115,6 +159,7 @@ func writeActivationTrial(t *testing.T, root string) {
 		TrialGenerationID:             "candidate",
 		PreviousKnownGoodGenerationID: "known-good",
 		DefaultBootEntry:              "loader/entries/katl-known-good.conf",
+		TargetBootEntry:               "loader/entries/katl-candidate.conf",
 		TrialBootEntry:                "loader/entries/katl-candidate.conf",
 		PreviousKnownGoodBootEntry:    "loader/entries/katl-known-good.conf",
 		PendingTransactionID:          "next-boot-apply",
@@ -170,6 +215,7 @@ func TestGenerationActivateDuringSlotInvalidation(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			root := t.TempDir()
 			writeActivationDisk(t, root)
+			useTestMover(t)
 			for _, id := range []string{"gen0", "gen1", "gen2", "gen3"} {
 				writeActivationFallback(t, root, id, now.Add(-time.Minute))
 			}
@@ -209,6 +255,7 @@ func TestGenerationActivateDuringSlotInvalidation(t *testing.T) {
 
 func TestGenerationActivateRecordsFallbackBootIdentity(t *testing.T) {
 	root := t.TempDir()
+	useTestMover(t)
 	now := time.Date(2026, 10, 4, 15, 0, 0, 0, time.UTC)
 	writeActivationFallback(t, root, "known-good", now.Add(-time.Hour))
 	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
@@ -324,6 +371,11 @@ func commandActivationRecord(t *testing.T, root string, id string) generation.Re
 
 func writeActivationFallback(t *testing.T, root string, id string, updatedAt time.Time) {
 	t.Helper()
+	writeActivationGeneration(t, root, id, "", generation.BootStateGood, generation.HealthStateHealthy, updatedAt)
+}
+
+func writeActivationGeneration(t *testing.T, root, id, previous, bootState, healthState string, updatedAt time.Time) {
+	t.Helper()
 	spec := generation.GenerationSpec{
 		APIVersion:     generation.APIVersion,
 		Kind:           generation.SpecKind,
@@ -341,9 +393,10 @@ func writeActivationFallback(t *testing.T, root string, id string, updatedAt tim
 			UKIPath:         "/efi/EFI/Linux/katl-" + id + ".efi",
 			LoaderEntryPath: "loader/entries/katl-" + id + ".conf",
 		},
-		CreatedAt: updatedAt,
+		PreviousGenerationID: previous,
+		CreatedAt:            updatedAt,
 	}
-	status, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, updatedAt)
+	status, err := generation.NewGenerationStatus(spec, generation.CommitStateCommitted, bootState, healthState, updatedAt)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -380,5 +433,58 @@ func assertCommandSymlink(t *testing.T, path string, want string) {
 	}
 	if got != want {
 		t.Fatalf("%s -> %s, want %s", path, got, want)
+	}
+}
+
+// Activation falls through to observation when reconciliation fails. While
+// KatlOS 2026.11.5 runs a bootable fallback, that publish carries no field
+// 2026.11.5 rejects.
+func TestGenerationActivateObservesInLegacyForm(t *testing.T) {
+	root := t.TempDir()
+	writeActivationTrial(t, root)
+	writeActivationGeneration(t, root, "candidate", "known-good", generation.BootStateTrying, generation.HealthStateUnknown, time.Date(2026, 9, 28, 14, 0, 0, 0, time.UTC))
+	spec, status, err := generation.ReadGeneration(root, "known-good")
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec.RuntimeVersion = "2026.11.5"
+	if status.SpecDigest, err = generation.CanonicalSpecDigest(spec); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"spec.json", "status.json"} {
+		if err := os.Remove(filepath.Join(root, "var/lib/katl/generations/known-good", name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := generation.WriteGeneration(root, spec, status); err != nil {
+		t.Fatal(err)
+	}
+	cmdline := filepath.Join(root, "proc-cmdline")
+	writeCommandFile(t, cmdline, "root=PARTUUID=11111111-2222-3333-4444-555555555555 katl.generation=candidate\n")
+	old := newBootMover
+	newBootMover = func(root string, options generation.BootMoverOptions) (*generation.BootMover, error) {
+		options.BootID = "boot-2"
+		options.ReadEFI = func(string) (efiboot.Entries, error) { return efiboot.Entries{}, errors.New("efivarfs unavailable") }
+		return old(root, options)
+	}
+	t.Cleanup(func() { newBootMover = old })
+	oldArm := armBootTrial
+	armBootTrial = func(context.Context) error { return nil }
+	t.Cleanup(func() { armBootTrial = oldArm })
+
+	var stdout bytes.Buffer
+	if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, &stdout); err != nil {
+		t.Fatalf("run() error = %v (%s)", err, &stdout)
+	}
+
+	if !strings.Contains(stdout.String(), "could not reconcile boot state") {
+		t.Fatalf("stdout = %q, want a reconcile error", &stdout)
+	}
+	data, err := os.ReadFile(filepath.Join(root, "var/lib/katl/boot/selection.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"bootedGenerationID": "candidate"`) || strings.Contains(string(data), "revision") {
+		t.Fatalf("selection after activation =\n%s\nwant candidate observed without a revision", data)
 	}
 }

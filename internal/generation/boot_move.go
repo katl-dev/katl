@@ -68,28 +68,6 @@ func withBootStateLock(root string, action func() error) error {
 	return withStateLock(rootedPathUnchecked(root, bootStateDir), action)
 }
 
-// WithLegacyBootState holds the boot-state lock across an existing selection
-// operation. It fences off legacy callers until a runtime can finish the move.
-func WithLegacyBootState(root string, action func() error) error {
-	return withBootStateLock(root, func() error {
-		if err := requireBootMoveIdle(root); err != nil {
-			return err
-		}
-		return action()
-	})
-}
-
-func requireBootMoveIdle(root string) error {
-	intent, err := readBootMoveIntent(root)
-	if err != nil {
-		return err
-	}
-	if intent != nil {
-		return fmt.Errorf("%w (operation %s). From the node console, boot a runtime that can complete the move before retrying", ErrBootMoveBlocked, intent.OperationID)
-	}
-	return nil
-}
-
 func readBootMoveIntent(root string) (*bootMoveIntent, error) {
 	path := rootedPathUnchecked(root, bootMovePath)
 	intent, err := readBootMoveFile(path)

@@ -8,11 +8,13 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
 
+	"github.com/katl-dev/katl/internal/efiboot"
 	"github.com/katl-dev/katl/internal/generation"
 )
 
@@ -42,13 +44,7 @@ func TestRunPromotesGenerationFromCommandLine(t *testing.T) {
 	oldClock := bootHealthClock
 	bootHealthClock = func() time.Time { return now }
 	t.Cleanup(func() { bootHealthClock = oldClock })
-	pending := filepath.Join(root, "run/katl/boot-health/pending")
-	if err := os.MkdirAll(filepath.Dir(pending), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(pending, nil, 0o644); err != nil {
-		t.Fatal(err)
-	}
+	useTestOwner(t, "katl-gen0.conf")
 
 	var stdout bytes.Buffer
 	if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result", generation.BootHealthSuccess}, &stdout); err != nil {
@@ -63,9 +59,6 @@ func TestRunPromotesGenerationFromCommandLine(t *testing.T) {
 	}
 	if status.BootState != generation.BootStateGood || status.HealthState != generation.HealthStateHealthy {
 		t.Fatalf("status = %#v, want good/healthy", status)
-	}
-	if _, err := os.Stat(pending); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("boot deadline marker remains after success: %v", err)
 	}
 }
 
@@ -113,14 +106,7 @@ func TestRunPromotesTrialAfterManagementReadError(t *testing.T) {
 	oldClock := bootHealthClock
 	bootHealthClock = func() time.Time { return now }
 	t.Cleanup(func() { bootHealthClock = oldClock })
-	oldBootDefault := bootDefaultCommand
-	var gotRoot, gotEntry string
-	bootDefaultCommand = func(root string, bootEntry string) error {
-		gotRoot = root
-		gotEntry = bootEntry
-		return nil
-	}
-	t.Cleanup(func() { bootDefaultCommand = oldBootDefault })
+	efi := useTestOwner(t, "katl-gen0.conf")
 
 	var stdout bytes.Buffer
 	synctest.Test(t, func(t *testing.T) {
@@ -147,8 +133,8 @@ func TestRunPromotesTrialAfterManagementReadError(t *testing.T) {
 			t.Fatalf("run() after %s: %v (%s)", time.Since(started), err, &stdout)
 		}
 	})
-	if gotRoot != root || gotEntry != "loader/entries/katl-gen1.conf" {
-		t.Fatalf("boot default call = (%q, %q), want (%q, loader/entries/katl-gen1.conf)", gotRoot, gotEntry, root)
+	if efi.entries.Default != "katl-gen1.conf" {
+		t.Fatalf("EFI default = %q, want katl-gen1.conf", efi.entries.Default)
 	}
 	if !strings.Contains(stdout.String(), "generation=gen1") || !strings.Contains(stdout.String(), "promoted=true") {
 		t.Fatalf("stdout = %q", stdout.String())
@@ -185,25 +171,40 @@ func TestRunDoesNotPromoteWithoutManagementNetwork(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+			before, err := os.ReadFile(filepath.Join(root, "var/lib/katl/boot/selection.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
 			cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen0\n")
+			// Only katl-boot-recovery.service may decide a failed boot.
+			oldOwner := newBootOwner
+			newBootOwner = func(string, string) (bootOwner, error) {
+				t.Fatal("a failed link wait called the boot-state owner")
+				return nil, nil
+			}
+			t.Cleanup(func() { newBootOwner = oldOwner })
 			oldWait := waitForManagementNetwork
 			waitForManagementNetwork = func(context.Context) error { return tc.wait }
 			t.Cleanup(func() { waitForManagementNetwork = oldWait })
 
 			var stdout bytes.Buffer
-			err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, &stdout)
+			err = run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, &stdout)
 			if err == nil || err.Error() != tc.want {
 				t.Fatalf("run() error = %v, want %q", err, tc.want)
 			}
-			if !strings.Contains(stdout.String(), "result=failure") || !strings.Contains(stdout.String(), "promoted=false") {
+			if !strings.Contains(stdout.String(), "generation=gen0 result=failure") {
 				t.Fatalf("stdout = %q", stdout.String())
+			}
+			after, err := os.ReadFile(filepath.Join(root, "var/lib/katl/boot/selection.json"))
+			if err != nil || !bytes.Equal(after, before) {
+				t.Fatalf("selection changed after a failed link wait: %s, %v", after, err)
 			}
 			_, status, err := generation.ReadGeneration(root, "gen0")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if status.BootState != generation.BootStateFailed {
-				t.Fatalf("boot state = %q, want failed", status.BootState)
+			if status.BootState != generation.BootStatePending {
+				t.Fatalf("boot state = %q, want pending", status.BootState)
 			}
 		})
 	}
@@ -307,6 +308,7 @@ func TestRunKeepsKnownGoodGenerationOnNetworkOutage(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	useTestOwner(t, "katl-gen0.conf")
 	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen0\n")
 	oldWait := waitForManagementNetwork
 	waitForManagementNetwork = func(context.Context) error { return errors.New("no usable address") }
@@ -325,172 +327,163 @@ func TestRunKeepsKnownGoodGenerationOnNetworkOutage(t *testing.T) {
 	}
 }
 
-func TestRunRecoveryKeepsKnownGood(t *testing.T) {
+func TestRunFailureWithoutTrialIsReportOnly(t *testing.T) {
 	for _, tc := range []struct {
-		name, running, next string
+		name      string
+		knownGood bool
+		want      []string
 	}{
-		{name: "default", running: "gen2", next: "gen2"},
-		{name: "one-shot", running: "gen1", next: "gen2"},
-		{name: "queued trial", running: "gen2", next: "gen3"},
+		{name: "known-good", knownGood: true, want: []string{
+			"running generation gen0 stays known-good", "boot default is generation gen0",
+			"Generation gen0 is selected for the next boot", "No automatic reboot", "katlctl node reboot <node>",
+		}},
+		{name: "unproven", want: []string{
+			"generation gen0 has not passed boot health and no boot trial is pending", "boot state is unchanged",
+			"No automatic reboot", "katlctl node reboot <node>",
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			running := tc.running
 			root := t.TempDir()
 			now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
-			for _, id := range []string{"gen1", "gen2"} {
-				writeCommandGeneration(t, root, id, now.Add(-time.Hour))
-				markCommandGenerationHealthy(t, root, id, now.Add(-time.Minute))
+			writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
+			if tc.knownGood {
+				markCommandGenerationHealthy(t, root, "gen0", now.Add(-time.Minute))
 			}
-			selection := generation.BootSelectionRecord{
+			if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
 				APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind, UpdatedAt: now,
-				DefaultGenerationID: "gen2", DefaultBootEntry: "loader/entries/katl-gen2.conf",
-				PreviousKnownGoodGenerationID: "gen1", PreviousKnownGoodBootEntry: "loader/entries/katl-gen1.conf",
-				BootedGenerationID: running, BootedBootEntry: "loader/entries/katl-" + running + ".conf",
-			}
-			if running == "gen1" {
-				selection.OneShot = true
-				selection.TargetBootGenerationID = running
-				selection.TargetBootEntry = selection.BootedBootEntry
-			}
-			if tc.next == "gen3" {
-				writeCommandGeneration(t, root, tc.next, now)
-				selection.PendingHealthValidation = true
-				selection.PersistentDefaultPromotion = generation.DefaultPromotionPending
-				selection.TrialGenerationID = tc.next
-				selection.TrialBootEntry = "loader/entries/katl-gen3.conf"
-				selection.TargetBootGenerationID = tc.next
-				selection.TargetBootEntry = selection.TrialBootEntry
-			}
-			if err := generation.WriteBootSelection(root, selection); err != nil {
+				DefaultGenerationID: "gen0", DefaultBootEntry: "loader/entries/katl-gen0.conf",
+				BootedGenerationID: "gen0", BootedBootEntry: "loader/entries/katl-gen0.conf",
+			}); err != nil {
 				t.Fatal(err)
 			}
-			cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 katl.generation="+running)
-			oldDefault := bootDefaultCommand
-			t.Cleanup(func() { bootDefaultCommand = oldDefault })
-			bootDefaultCommand = func(_, entry string) error {
-				t.Fatalf("unexpected EFI default write to %s", entry)
-				return nil
+			selectionPath := filepath.Join(root, "var/lib/katl/boot/selection.json")
+			before, err := os.ReadFile(selectionPath)
+			if err != nil {
+				t.Fatal(err)
 			}
+			_, statusBefore, err := generation.ReadGeneration(root, "gen0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 katl.generation=gen0")
+			efi := useTestOwner(t, "katl-gen0.conf")
+			disarmed := stubDisarm(t)
 
 			var stdout bytes.Buffer
-			err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result=failure", "--reason=katl-boot-health.service-failed", "--force-failure", "--request-reboot"}, &stdout)
+			err = run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result=failure", "--reason=katl-boot-health.service-failed"}, &stdout)
+			// A successful exit would fire the recovery unit's SuccessAction=reboot.
 			if err == nil {
-				t.Fatal("successful exit would trigger the recovery service's SuccessAction=reboot")
+				t.Fatal("report-only failure exited successfully")
 			}
-			if tc.name == "one-shot" {
-				if !strings.Contains(err.Error(), "mount efivarfs") {
-					t.Fatalf("recovery with unreadable EFI = %v, want mount guidance", err)
-				}
-				got, err := generation.ReadBootSelection(root)
-				if err != nil || got != selection {
-					t.Fatalf("recovery with unreadable EFI changed one-shot selection: %#v, %v", got, err)
-				}
-				return
-			}
-			for _, want := range []string{
-				"running generation " + running + " stays known-good", "boot default is generation gen2",
-				"Generation " + tc.next + " is selected for the next boot", "No automatic reboot",
-				"katlctl node status <node>", "systemctl --failed", "console or out-of-band",
-				"katlctl cluster apply", "katlctl node reboot <node>",
-			} {
+			for _, want := range tc.want {
 				if !strings.Contains(err.Error(), want) {
-					t.Errorf("recovery error = %q, want %q", err, want)
+					t.Errorf("error = %q, want %q", err, want)
 				}
 			}
-			if !strings.Contains(stdout.String(), "failed=false recoveryRequired=false rebootRequested=false") {
-				t.Fatalf("boot-health result = %q, want kept generation and no reboot", stdout.String())
+
+			after, readErr := os.ReadFile(selectionPath)
+			if readErr != nil || !bytes.Equal(after, before) {
+				t.Fatalf("report-only failure changed the selection: %s, %v", after, readErr)
 			}
-			if tc.next == "gen3" {
-				got, err := generation.ReadBootSelection(root)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if got != selection {
-					t.Fatalf("recovery altered the queued trial: %#v", got)
-				}
+			_, statusAfter, err := generation.ReadGeneration(root, "gen0")
+			if err != nil || !reflect.DeepEqual(statusAfter, statusBefore) {
+				t.Fatalf("report-only failure changed gen0 status: %#v, %v", statusAfter, err)
+			}
+			if efi.entries != (efiboot.Entries{Default: "katl-gen0.conf"}) {
+				t.Fatalf("report-only failure wrote EFI entries %#v", efi.entries)
+			}
+			if *disarmed {
+				t.Fatal("report-only failure stopped the boot trial deadline")
 			}
 		})
 	}
 }
 
-func TestRunDeadmanArmsRebootForTrialFailure(t *testing.T) {
-	root := t.TempDir()
-	now := time.Date(2026, 6, 15, 18, 0, 0, 0, time.UTC)
-	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
-	markCommandGenerationHealthy(t, root, "gen0", now.Add(-45*time.Minute))
-	writeCommandGeneration(t, root, "gen1", now.Add(-30*time.Minute))
-	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
-		APIVersion:                    generation.APIVersion,
-		Kind:                          generation.BootSelectionKind,
-		DefaultGenerationID:           "gen0",
-		TargetBootGenerationID:        "gen1",
-		TrialGenerationID:             "gen1",
-		PreviousKnownGoodGenerationID: "gen0",
-		BootedGenerationID:            "gen1",
-		DefaultBootEntry:              "loader/entries/katl-gen0.conf",
-		PreviousKnownGoodBootEntry:    "loader/entries/katl-gen0.conf",
-		TrialBootEntry:                "loader/entries/katl-gen1.conf",
-		BootedBootEntry:               "loader/entries/katl-gen1.conf",
-		PendingTransactionID:          "next-boot-apply",
-		PendingHealthValidation:       true,
-		PersistentDefaultPromotion:    generation.DefaultPromotionPending,
-		UpdatedAt:                     now.Add(-15 * time.Minute),
-	}); err != nil {
-		t.Fatalf("WriteBootSelection() error = %v", err)
-	}
-	authorization := filepath.Join(root, "run/katl/boot-health/pending")
-	if err := os.MkdirAll(filepath.Dir(authorization), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(authorization, []byte(`{"trialGeneration":"gen1","fallbackGeneration":"gen0"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen1\n")
-	oldClock := bootHealthClock
-	bootHealthClock = func() time.Time { return now }
-	t.Cleanup(func() { bootHealthClock = oldClock })
+// The owner decides a failed trial; the command maps its result to the exit
+// status the unit's SuccessAction=reboot acts on.
+func TestRunFailedTrialExit(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		result  generation.BootHealthResult
+		wantErr string
+	}{
+		{name: "reboot", result: generation.BootHealthResult{
+			GenerationID: "gen1", Failed: true, RebootRequested: true, DefaultGeneration: "gen0", NextBootGeneration: "gen0",
+		}},
+		{name: "reboot spent", result: generation.BootHealthResult{
+			GenerationID: "gen1", Failed: true, DefaultGeneration: "gen0", NextBootGeneration: "gen0",
+		}, wantErr: "automatic reboot was already used"},
+		{name: "recovery required", result: generation.BootHealthResult{
+			GenerationID: "gen1", Failed: true, RecoveryRequired: true, DefaultGeneration: "gen1", NextBootGeneration: "gen1",
+		}, wantErr: "recovery is required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 katl.generation=gen1")
+			oldOwner := newBootOwner
+			newBootOwner = func(string, string) (bootOwner, error) { return fixedOwner{tc.result}, nil }
+			t.Cleanup(func() { newBootOwner = oldOwner })
+			disarmed := stubDisarm(t)
 
-	var stdout bytes.Buffer
-	if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result=timeout", "--reason=katl-boot-health-deadline-expired", "--force-failure", "--request-reboot"}, &stdout); err != nil {
-		t.Fatalf("run() error = %v", err)
-	}
-	if !strings.Contains(stdout.String(), "rebootRequested=true") {
-		t.Fatalf("stdout = %q", stdout.String())
-	}
-	selection, err := generation.ReadBootSelection(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if selection.DefaultGenerationID != "gen0" || selection.FailedBootGenerationID != "gen1" || selection.RecoveryRequired {
-		t.Fatalf("selection = %#v, want bounded fallback to gen0", selection)
+			var stdout bytes.Buffer
+			err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result=timeout", "--reason=katl-boot-health-deadline-expired"}, &stdout)
+			if tc.wantErr == "" && err != nil {
+				t.Fatalf("run() error = %v, want success so the unit reboots", err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("run() error = %v, want %q", err, tc.wantErr)
+			}
+			if !strings.Contains(stdout.String(), "generation=gen1 result=timeout") {
+				t.Fatalf("stdout = %q", stdout.String())
+			}
+			if !*disarmed {
+				t.Fatal("a decided trial left the boot trial deadline running")
+			}
+		})
 	}
 }
 
-func TestRunDeadmanRefusesRebootWithoutFallback(t *testing.T) {
-	root := t.TempDir()
-	now := time.Date(2026, 6, 15, 18, 30, 0, 0, time.UTC)
-	writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
-	if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
-		APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind,
-		DefaultGenerationID: "gen0", BootedGenerationID: "gen0",
-		DefaultBootEntry: "loader/entries/katl-gen0.conf", BootedBootEntry: "loader/entries/katl-gen0.conf",
-		UpdatedAt: now.Add(-30 * time.Minute),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 quiet katl.generation=gen0\n")
-	oldClock := bootHealthClock
-	bootHealthClock = func() time.Time { return now }
-	t.Cleanup(func() { bootHealthClock = oldClock })
+type fixedOwner struct{ result generation.BootHealthResult }
 
-	var stdout bytes.Buffer
-	err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline, "--result=timeout", "--force-failure", "--request-reboot"}, &stdout)
-	if err == nil || !strings.Contains(err.Error(), "not an armed trial") {
-		t.Fatalf("run() error = %v, want manual recovery guidance", err)
+func (o fixedOwner) ConfirmBoot(string) (generation.BootHealthResult, error) { return o.result, nil }
+func (o fixedOwner) FailTrial(string) (generation.BootHealthResult, error)   { return o.result, nil }
+
+type testEFI struct{ entries efiboot.Entries }
+
+// useTestOwner routes the command to the real owner with EFI variables held in
+// memory, starting from the given default entry.
+func useTestOwner(t *testing.T, defaultEntry string) *testEFI {
+	t.Helper()
+	efi := &testEFI{entries: efiboot.Entries{Default: defaultEntry}}
+	oldOwner := newBootOwner
+	newBootOwner = func(root, commandLine string) (bootOwner, error) {
+		return generation.NewBootMover(root, generation.BootMoverOptions{
+			BootID:      "boot-1",
+			CommandLine: commandLine,
+			Now:         bootHealthClock,
+			ReadEFI:     func(string) (efiboot.Entries, error) { return efi.entries, nil },
+			SetDefault:  func(_, entry string) error { efi.entries.Default = filepath.Base(entry); return nil },
+			SetOneShot: func(_, entry string) error {
+				efi.entries.OneShot = ""
+				if entry != "" {
+					efi.entries.OneShot = filepath.Base(entry)
+				}
+				return nil
+			},
+		})
 	}
-	if !strings.Contains(stdout.String(), "recoveryRequired=true") || !strings.Contains(stdout.String(), "rebootRequested=false") {
-		t.Fatalf("stdout = %q", stdout.String())
-	}
+	t.Cleanup(func() { newBootOwner = oldOwner })
+	stubDisarm(t)
+	return efi
+}
+
+func stubDisarm(t *testing.T) *bool {
+	t.Helper()
+	called := new(bool)
+	old := disarmBootTrial
+	disarmBootTrial = func(context.Context) error { *called = true; return nil }
+	t.Cleanup(func() { disarmBootTrial = old })
+	return called
 }
 
 func writeCommandGeneration(t *testing.T, root string, id string, created time.Time) {
@@ -573,4 +566,76 @@ func isolateLinkRecoveryRecords(t *testing.T) string {
 	linkRecoveryDir = t.TempDir()
 	t.Cleanup(func() { linkRecoveryDir = old })
 	return linkRecoveryDir
+}
+
+func TestRunSuccessStopsTrialDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		disarmErr error
+	}{
+		{name: "stopped"},
+		// The boot is decided, so a timer that will not stop is only logged.
+		{name: "stop fails", disarmErr: errors.New("unit not loaded")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubManagementNetwork(t)
+			root := t.TempDir()
+			now := time.Date(2026, 6, 15, 16, 0, 0, 0, time.UTC)
+			writeCommandGeneration(t, root, "gen0", now.Add(-time.Hour))
+			if err := generation.WriteBootSelection(root, generation.BootSelectionRecord{
+				APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind,
+				DefaultGenerationID: "gen0", DefaultBootEntry: "loader/entries/katl-gen0.conf",
+				BootedGenerationID: "gen0", BootedBootEntry: "loader/entries/katl-gen0.conf",
+				UpdatedAt: now.Add(-30 * time.Minute),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 katl.generation=gen0")
+			useTestOwner(t, "katl-gen0.conf")
+			stopped := false
+			old := disarmBootTrial
+			disarmBootTrial = func(context.Context) error { stopped = true; return tc.disarmErr }
+			t.Cleanup(func() { disarmBootTrial = old })
+
+			var stdout bytes.Buffer
+			if err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, &stdout); err != nil {
+				t.Fatalf("run() error = %v", err)
+			}
+			if !stopped {
+				t.Fatal("a confirmed boot left the trial deadline running")
+			}
+			if !strings.Contains(stdout.String(), "generation=gen0 result=success") {
+				t.Fatalf("stdout = %q", stdout.String())
+			}
+		})
+	}
+}
+
+// A success that arrives after the deadline failed this boot's trial is
+// reported as a failure and leaves the deadline running.
+func TestRunLateSuccessChangesNothing(t *testing.T) {
+	root := t.TempDir()
+	now := time.Date(2026, 6, 15, 17, 30, 0, 0, time.UTC)
+	writeCommandGeneration(t, root, "gen1", now.Add(-time.Hour))
+	cmdline := writeCommandLine(t, root, "root=PARTUUID=11111111-2222-3333-4444-555555555555 katl.generation=gen1")
+	oldOwner := newBootOwner
+	newBootOwner = func(string, string) (bootOwner, error) {
+		return fixedOwner{generation.BootHealthResult{
+			GenerationID: "gen1", Result: generation.BootHealthSuccess, ReportOnly: true, DefaultGeneration: "gen0", NextBootGeneration: "gen0",
+		}}, nil
+	}
+	t.Cleanup(func() { newBootOwner = oldOwner })
+	oldWait := waitForManagementNetwork
+	waitForManagementNetwork = func(context.Context) error { return nil }
+	t.Cleanup(func() { waitForManagementNetwork = oldWait })
+	disarmed := stubDisarm(t)
+
+	var stdout bytes.Buffer
+	err := run(t.Context(), []string{"--root", root, "--cmdline", cmdline}, &stdout)
+	if err == nil || !strings.Contains(err.Error(), "already failed its boot trial on this boot") {
+		t.Fatalf("run() error = %v, want the standing failure", err)
+	}
+	if *disarmed {
+		t.Fatal("a late success stopped the boot trial deadline")
+	}
 }

@@ -141,10 +141,10 @@ func ValidateBootSelection(selection BootSelectionRecord) error {
 		"generation0FallbackID":         selection.Generation0FallbackID,
 		"failedBootGenerationID":        selection.FailedBootGenerationID,
 	} {
-		if strings.TrimSpace(value) == "" {
+		if value == "" {
 			continue
 		}
-		if _, err := cleanSegment(name, value); err != nil {
+		if err := validateMoveID(name, value); err != nil {
 			return err
 		}
 	}

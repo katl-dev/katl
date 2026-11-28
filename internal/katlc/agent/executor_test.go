@@ -32,7 +32,7 @@ import (
 
 func TestPrepareKubernetesIdentityInstallsSharedPKIAndRemovesStaging(t *testing.T) {
 	server := newTestServer(t)
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Now = server.Now
 	bundle, err := kubernetesidentity.Generate(kubernetesidentity.GenerateOptions{ClusterName: "homelab", Now: server.clock()})
 	if err != nil {
@@ -84,8 +84,8 @@ func TestPrepareKubernetesIdentityInstallsSharedPKIAndRemovesStaging(t *testing.
 
 func TestExecutorRemovesStagedKubernetesIdentityAfterPreparationFailure(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	server.seedBootstrapRuntime(t, "control-plane")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
 	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "identity failure kubernetes sysext")
@@ -168,21 +168,13 @@ func TestExecutorRemovesStagedKubernetesIdentityAfterPreparationFailure(t *testi
 
 func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	server.seedBootstrapRuntime(t, "control-plane")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
 	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "executor init kubernetes sysext")
-	var bootDefaults []string
-	executor.SetBootDefault = func(ctx context.Context, root string, bootEntry string) error {
-		bootDefaults = append(bootDefaults, root+" "+bootEntry)
-		return nil
-	}
-	var bootOneshots []string
-	executor.SetBootOneshot = func(_ context.Context, root string, bootEntry string) error {
-		bootOneshots = append(bootOneshots, root+" "+bootEntry)
-		return nil
-	}
+	executor.BootMover = server.BootMover
+	efi := server.efi
 	ready := false
 	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
 		assertBootstrapRuntimePrepared(t, server.Root, "bootstrap-init-01-candidate")
@@ -238,11 +230,8 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 	if record.GenerationCommitState != operation.GenerationCommitCommitted || record.PostKubeadmHealthState != operation.PostKubeadmHealthPassed || record.BootHealthPending || record.ActivationState != operation.ActivationStateActiveLive {
 		t.Fatalf("lifecycle state = commit %q health %q pending %v", record.GenerationCommitState, record.PostKubeadmHealthState, record.BootHealthPending)
 	}
-	if len(bootDefaults) != 1 || bootDefaults[0] != server.Root+" loader/entries/katl-bootstrap-init-01-candidate.conf" {
-		t.Fatalf("boot default calls = %v", bootDefaults)
-	}
-	if len(bootOneshots) != 1 || bootOneshots[0] != server.Root+" loader/entries/katl-bootstrap-init-01-candidate.conf" {
-		t.Fatalf("boot one-shot calls = %v", bootOneshots)
+	if got := efi.observed(); got.Default != "katl-bootstrap-init-01-candidate.conf" || got.OneShot != "" {
+		t.Fatalf("firmware boot variables = %+v, want the candidate as default and no one-shot", got)
 	}
 	if len(record.PreExecMutationMarkers) != 1 || record.PreExecMutationMarkers[0].MarkerID != "kubeadm-init" {
 		t.Fatalf("markers = %+v", record.PreExecMutationMarkers)
@@ -269,6 +258,7 @@ func TestSubmitOperationExecutesThroughAgentExecutor(t *testing.T) {
 		t.Fatalf("mutation state = scopes %v ran %v", record.MutationScopes, record.MutatingToolRan)
 	}
 	assertBootstrapGenerationLive(t, server.Root, accepted.OperationId+"-candidate", accepted.OperationId)
+	armTrialAfterLivePromotion(t, server.Root, server.BootMover, efi, accepted.OperationId+"-candidate")
 	if got := readFirstArtifact(t, server.Store, record); strings.Contains(got, "abc.def") || !strings.Contains(got, "Bearer [REDACTED]") {
 		t.Fatalf("artifact was not redacted: %q", got)
 	}
@@ -348,7 +338,7 @@ func TestSubmitOperationExecutesDestructiveReset(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
 	var poweroffArgv []string
@@ -452,7 +442,7 @@ func TestDestructiveResetRequiresPoweroffToBeScheduled(t *testing.T) {
 	writeResetGenerationZero(t, server.Root)
 	writeTestFile(t, filepath.Join(server.Root, "efi/loader/entries/katl-0.conf"), "title Katl 0")
 
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
 	executor.RunPoweroff = func(context.Context, []string, func(int)) ToolResult {
@@ -503,9 +493,9 @@ func TestRuntimeBootRootSourcesPreferActiveVMESP(t *testing.T) {
 
 func TestExecutorDispatchSurvivesClientCancellation(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
+	server.seedBootstrapRuntime(t, "control-plane")
 	done := make(chan struct{})
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Now = server.Now
 	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "executor cancellation kubernetes sysext")
 	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
@@ -550,7 +540,7 @@ func TestExecutorDispatchSurvivesClientCancellation(t *testing.T) {
 func TestExecutorRecordsFailedChildProcess(t *testing.T) {
 	server := newTestServer(t)
 	record := createAgentOperation(t, server.Store, "op-fail")
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
 	executor.RunTool = func(ctx context.Context, argv []string, started func(int)) ToolResult {
@@ -592,7 +582,7 @@ func TestExecutorMarksMissingJournalPlanTerminal(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
 
@@ -611,9 +601,9 @@ func TestExecutorMarksMissingJournalPlanTerminal(t *testing.T) {
 
 func TestExecutorRejectsMissingPlanBeforeBootstrapRuntimePrep(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
+	server.seedBootstrapRuntime(t, "control-plane")
 	record := createBootstrapOperationWithoutPlan(t, server.Store, "op-missing-bootstrap-plan")
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
 	executor.RunReadiness = func(ctx context.Context, argv []string, started func(int)) ToolResult {
@@ -643,8 +633,8 @@ func TestExecutorRejectsMissingPlanBeforeBootstrapRuntimePrep(t *testing.T) {
 
 func TestExecutorRefusesInitRecordThatReadsInputPath(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	server.seedBootstrapRuntime(t, "control-plane")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
 	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "legacy init argv")
@@ -683,8 +673,8 @@ func TestExecutorRefusesInitRecordThatReadsInputPath(t *testing.T) {
 
 func TestExecutorStopsBeforeKubeadmWhenReadinessFails(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	server.seedBootstrapRuntime(t, "control-plane")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
 	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "readiness failure kubernetes sysext")
@@ -755,8 +745,8 @@ func TestControlPlaneHealthOperations(t *testing.T) {
 
 func TestExecutorPostKubeadmHealthFailureRequiresRepair(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	server.seedBootstrapRuntime(t, "control-plane")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
 	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "post health failure kubernetes sysext")
@@ -831,8 +821,8 @@ func TestExecutorPostKubeadmHealthFailureRequiresRepair(t *testing.T) {
 
 func TestBootstrapPromotionFailure(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	server.seedBootstrapRuntime(t, "control-plane")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Now = server.Now
 	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "bootstrap promotion failure")
 	record := createAcceptedBootstrapOperation(t, server.Store, "op-promotion-fail", "candidate-promotion-fail", source, ref, &operation.ExecutorPlan{
@@ -847,12 +837,9 @@ func TestBootstrapPromotionFailure(t *testing.T) {
 		return ToolResult{PID: 321}
 	}
 	executor.RunPostHealth = func(context.Context, []string, func(int)) ToolResult { return ToolResult{} }
-	executor.SetBootDefault = func(_ context.Context, _ string, entry string) error {
-		if entry != "loader/entries/katl-0.conf" {
-			return errors.New("EFI write failed")
-		}
-		return nil
-	}
+	executor.BootMover = server.BootMover
+	efi := server.efi
+	efi.defaultErr = errors.New("EFI write failed")
 
 	err := executor.Execute(context.Background(), record)
 	if err == nil || !strings.Contains(err.Error(), "EFI write failed") {
@@ -877,8 +864,8 @@ func TestBootstrapPromotionFailure(t *testing.T) {
 
 func TestSubmitOperationCommitsWorkerGenerationAfterJoinHealth(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRootForRole(t, server.Root, "worker")
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	server.seedBootstrapRuntime(t, "worker")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
 	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "worker join kubernetes sysext")
@@ -976,12 +963,12 @@ func TestControlPlaneJoinUsesDirectDiscovery(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			server := newTestServer(t)
-			seedBootstrapRuntimeRootForRole(t, server.Root, "control-plane")
+			server.seedBootstrapRuntime(t, "control-plane")
 			writeTestFile(t, filepath.Join(server.Root, "etc/hosts"), "127.0.0.1 localhost\n")
 			if tc.managed {
 				writeManagedEndpointTestConfig(t, server.Root)
 			}
-			executor := NewExecutor(server.Root, server.Store, "agent-test")
+			executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 			executor.Async = false
 			executor.Now = server.Now
 			source, ref := configureExecutorBundle(t, executor, "v1.35.0", "control-plane join Kubernetes sysext")
@@ -1072,9 +1059,9 @@ func TestControlPlaneJoinUsesDirectDiscovery(t *testing.T) {
 
 func TestExistingClusterControlPlaneJoinPinsStableEndpointToCoordinator(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRootForRole(t, server.Root, "control-plane")
+	server.seedBootstrapRuntime(t, "control-plane")
 	writeManagedEndpointTestConfig(t, server.Root)
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
 	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "replacement control-plane Kubernetes sysext")
@@ -1138,8 +1125,8 @@ func TestExistingClusterControlPlaneJoinPinsStableEndpointToCoordinator(t *testi
 
 func TestSubmitOperationRejectsExpiredWorkerJoinMaterialBeforeMutation(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRootForRole(t, server.Root, "worker")
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	server.seedBootstrapRuntime(t, "worker")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
 	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "expired worker join kubernetes sysext")
@@ -1176,8 +1163,8 @@ func TestSubmitOperationRejectsExpiredWorkerJoinMaterialBeforeMutation(t *testin
 
 func TestSubmitOperationPreservesFailedJoin(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRootForRole(t, server.Root, "worker")
-	executor := NewExecutor(server.Root, server.Store, "agent-test")
+	server.seedBootstrapRuntime(t, "worker")
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, "agent-test")
 	executor.Async = false
 	executor.Now = server.Now
 	source, ref := configureExecutorBundle(t, executor, "v1.35.0", "already joined worker kubernetes sysext")
@@ -1448,8 +1435,6 @@ func bootstrapInputDigest(t *testing.T, root string) string {
 
 func configureExecutorBundle(t *testing.T, executor *Executor, payloadVersion string, payload string) (string, string) {
 	t.Helper()
-	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
-	executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
 	executor.ConfigureLocalAPI = func(context.Context, string, operation.BootstrapRequest, ToolRunner) error { return nil }
 	fixture := writeExecutorKubernetesBundleFixture(t, payloadVersion, payload)
 	server := httptest.NewTLSServer(http.FileServer(http.Dir(fixture.root)))
@@ -1613,7 +1598,7 @@ func seedBootstrapRuntimeRootForRole(t *testing.T, root string, role string) {
 			Architecture:          "x86_64",
 			Slot:                  "root-a",
 			PartitionUUID:         "11111111-2222-3333-4444-555555555555",
-			RuntimeArtifactSHA256: strings.Repeat("a", 64),
+			RuntimeArtifactSHA256: testSHA(testBootRootImage()),
 		},
 		GenerationID: "0",
 		UKIPath:      "/efi/EFI/Linux/katl-0.efi",
@@ -1634,6 +1619,9 @@ func seedBootstrapRuntimeRootForRole(t *testing.T, root string, role string) {
 		t.Fatal(err)
 	}
 	spec := generation.SpecFromRecord(record)
+	spec.Boot.LoaderEntryPath = "loader/entries/katl-0.conf"
+	writeTestBootDisk(t, root, spec.Root.PartitionUUID)
+	writeTestBootArtifacts(t, root, spec)
 	digest, err := generation.CanonicalSpecDigest(spec)
 	if err != nil {
 		t.Fatal(err)

@@ -40,7 +40,11 @@ func (e *Executor) recoverLivePromotions(ctx context.Context, bootID string) ([]
 		}
 		// Boot identity and apply evidence can reflect a partially projected
 		// promotion. Keep its receipt eligible for recovery on a later startup.
-		if err := generation.WithLegacyBootState(e.Root, func() error { return nil }); err != nil {
+		mover, err := e.bootMover()
+		if err != nil {
+			return nil, err
+		}
+		if err := mover.Read(func(generation.BootSelectionRecord) error { return nil }); err != nil {
 			if errors.Is(err, generation.ErrBootMoveBlocked) {
 				deferred = append(deferred, id)
 				continue

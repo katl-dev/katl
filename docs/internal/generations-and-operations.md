@@ -924,7 +924,9 @@ live apply
   it is not authoritative. Live activation alone does not prove boot health.
   When the operation's live checks pass, live promotion commits the generation,
   marks it good and healthy, and makes it the persistent EFI default
-  immediately; only next-boot apply and host upgrade arm a one-shot trial
+  immediately; only next-boot apply and host upgrade arm a one-shot trial.
+  The previous known-good generation it records is the running generation
+  when that generation is known-good; see rollback-selection-rules.md.
 ```
 
 ## Failure And Rollback

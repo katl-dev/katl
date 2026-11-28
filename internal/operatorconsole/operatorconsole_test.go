@@ -594,9 +594,12 @@ func TestBootstrappedDashboardWithReadOnlyBootState(t *testing.T) {
 				APIVersion: generation.APIVersion, Kind: generation.BootSelectionKind,
 				DefaultGenerationID: tc.id, BootedGenerationID: "0", ActiveGenerationID: tc.id, UpdatedAt: now,
 			}
-			if err := generation.WithLegacyBootState(root, func() error {
-				return generation.WriteBootSelection(root, selection)
-			}); err != nil {
+			if err := generation.WriteBootSelection(root, selection); err != nil {
+				t.Fatal(err)
+			}
+			// A node that has run its boot-state owner holds the lock file the
+			// read-only console takes; reading under the lock creates it.
+			if _, err := generation.ReadBootTargets(root, nil); err != nil {
 				t.Fatal(err)
 			}
 			for _, path := range []string{"etc/kubernetes/kubelet.conf", "etc/kubernetes/manifests/kube-apiserver.yaml"} {

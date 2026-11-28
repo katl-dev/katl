@@ -363,26 +363,30 @@ A successful staging receipt can still report a bootability problem if the
 target changes after staging. The agent refuses to schedule the reboot when it
 cannot verify the target.
 
-Boot activation verifies the fallback's known-good health, bound root PARTUUID,
-loader entry, and UKI before granting boot-local reboot authorization. The
-activation service runs with `PrivateDevices=yes`, so this check uses sysfs
-for partition identity and relies on staging for root digest and extension
-verification. If verification fails, activation reports the fallback problem
-and continues checking the candidate. Failure selection checks known-good
-health, the loader entry, and the UKI before setting the fallback as the
-default. Slot replacement also checks the running generation's loader entry
-and UKI before redirecting EFI and allowing the overwrite.
+Boot activation does not verify the fallback. Its sandbox has no access to
+the root device and cannot write EFI variables, so it reconciles an outstanding
+move only as far as sysfs and the ESP allow, defers the rest, and binds a trial
+authority to the boot when the running generation is the trial's candidate. The
+fallback's known-good health, bound root PARTUUID, loader entry, and UKI are
+verified when the trial is armed and again when a failure selects it. Slot
+replacement also checks the running generation's loader entry and UKI before
+redirecting EFI and allowing the overwrite.
 
-A trial staged by v2026.11.5 did not receive the full fallback check at
-staging. On that upgrade, the boot-safe checks at activation can still arm
-recovery if the fallback's root bytes are damaged but its PARTUUID, loader
-entry, UKI, and known-good status survive. This matches the released behavior.
-Every trial staged by this version receives full fallback verification at
-staging.
+A host upgrade runs from any supported release, including one that cannot read
+boot-move records; the boot-state owner writes the selection in a form every
+bootable generation's release decodes, by the rule in
+[Boot selection transaction](boot-selection-transaction.md#boot-move-owner).
+A trial armed while the running generation
+is not the published default is refused unless the default generation has run a
+release with the owner, which it records as a marker file under
+`/var/lib/katl/boot/owners/` when the owner publishes that default. The default
+gets a marker when it is the running generation, or boots the same runtime
+artifact as the running generation, as a live promotion does. The fallback is always the
+published default, and a fallback that has not run the owner would not complete
+the records a failed trial leaves.
 
-The existing trial and boot-local authorization rules govern recovery when
-there is no durable intent. The boot selection transaction decision describes
-the [intent format and reader-only runtime](boot-selection-transaction.md#durable-boot-move-intent).
+The boot selection transaction decision describes the
+[intent format, trial authority, and reader-only runtime](boot-selection-transaction.md#durable-boot-move-intent).
 EFI reconciliation is tracked in [#733](https://github.com/katl-dev/katl/issues/733).
 
 ## Attempt Count
@@ -407,16 +411,19 @@ model. Rollback selection is defined in
 
 ## Failure on a known-good generation
 
-When boot health fails on a generation that was already known-good, Katl
-preserves that status and the EFI default unless the boot is armed for recovery
-or the running generation is the pending trial or target. This also applies
-when booting a superseded known-good generation from the boot menu or by
-manual selection. Katl clears a matching, consumed manual selection, whether
-one-shot or persistent. A selection queued for a future boot remains in effect.
+Only a trial authority bound to the running boot can change boot state when
+boot health fails. Every other failed boot reports health and changes nothing:
+the generation status, the persistent default, the next boot, the EFI
+variables, and the boot ID stay as they were, and no automatic reboot follows.
+This includes a known-good generation booted from the boot menu or by manual
+selection, a reboot of the default, and the boot of a manual selection that
+fails. Katl clears a matching, consumed manual selection, whether one-shot or
+persistent. A selection queued for a future boot remains in effect.
 
-The recovery service reports the running generation, the persistent default
-and the generation selected for the next boot. It exits unsuccessfully so
-systemd leaves the node running. When management is reachable, use
+`katl-boot-recovery.service` reports the running generation, the persistent
+default and the generation selected for the next boot, and the next action. It
+exits unsuccessfully so systemd leaves the node running. `katl-boot-deadman.timer`
+is not running on such a boot. When management is reachable, use
 `katlctl node status <node>` to see the failed boot and
 `katlctl node generations list <node>` to check the next boot. On the node, use
 `systemctl --failed` to investigate. If remote management is unreachable,
@@ -428,29 +435,31 @@ selects it for the next boot.
 
 ## Failed-trial recovery
 
-Katl automatically reboots once after a supported trial fails. Before allowing
-that reboot, `katl-boot-health` must validate that the previous generation is
-still `good` and `healthy` with its loader entry and UKI present, restore its
-boot entry as the default, mark the
-trial `failed` and `unhealthy`, and persist `selection.json`. The
-`katl-boot-recovery.service` unit then uses systemd's normal reboot transaction.
-The boot-health deadline uses the same path when the candidate does not reach
-the health target within 10 minutes. Generation activation creates the
-ephemeral `/run/katl/boot-health/pending` authorization only when the running
-generation matches the pending trial and its distinct known-good fallback
-passes activation's bootability check. The fallback and ordinary boots do not
-arm recovery. A successful boot removes the
-authorization. The timer may remain scheduled, but its service is
-condition-skipped without that authorization. Failure handling consumes the
-authorization before systemd requests the one reboot, so restarting a service
-cannot request another automatic reboot.
+Katl automatically reboots once after a supported trial fails. A next-boot
+configuration apply or a host upgrade arms the trial: the boot-state owner
+records a durable trial authority, keeps the source generation as the
+persistent default, and selects the candidate for one boot. Activation binds
+the authority to the first boot of the candidate after the arming boot and
+then starts `katl-boot-deadman.timer`. The timer is not enabled at install and
+runs only while a bound trial is undecided. If activation cannot start it, the
+trial fails: activation completes, reports that it could not start the boot
+deadline, and exits unsuccessfully so the failed boot health reaches the
+recovery service, because a trial must never run without its deadline.
 
-A pending trial that fails before recovery is armed can still record the trial
-failure and restore the fallback as the default after the boot-file checks
-pass. If the fallback is unavailable, Katl reports its evidence and keeps the
-default. If its evidence is indeterminate, Katl leaves selection unchanged so
-the operator can diagnose the read failure. Automatic reboot requires the
-boot-local authorization.
+When the bound boot fails, `katl-boot-health` asks the owner to fail the trial.
+A required unit that fails, a management link that stays offline for 90
+seconds, or a boot that does not reach `katl-boot-complete.target` within 10
+minutes all end this way. `katl-boot-recovery.service` handles the first two
+and `katl-boot-deadman.service` the deadline. The owner validates a fallback
+that is still `good` and `healthy` with its loader entry and UKI present and
+that passes the full bootability check. It marks the trial `failed` and
+`unhealthy`, publishes the fallback as the default, and verifies the EFI
+variables. It then spends the trial's reboot eligibility durably, before it
+publishes the selection, and requests the one reboot by exiting successfully;
+the unit's `SuccessAction=reboot` performs it. Restarting either service
+cannot request another automatic reboot, and a retry after a crash finishes the
+same move. After the trial is decided, `katl-boot-health` stops the deadline
+timer.
 
 This mechanism supports failures after PID 1 has started the boot deadline and
 `/var` and `/efi` are available. It includes an unreachable management network,
@@ -460,18 +469,28 @@ transitions, and boot-selection record remain available after fallback.
 
 Katl does not automatically reboot in these cases:
 
-- No validated previous known-good generation exists.
-- The fallback generation also fails or times out.
+- No validated previous known-good generation exists. The owner publishes the
+  running generation as the default with `recoveryRequired` and leaves the node
+  running.
+- The reboot was already used for this trial.
+- The check of a fallback is indeterminate, for example because reading the
+  root returned an I/O error. The trial stays pending and the boot target is
+  unchanged.
+- The fallback generation also fails or times out. The fallback is not a
+  trial, so its failure is report-only.
 - Firmware, the UKI, the root filesystem, PID 1, `/var`, or `/efi` fails before
   the recovery service can run.
 - Boot metadata is missing, corrupt, or does not match the running root.
 
-For a failed trial without a valid fallback, Katl sets `recoveryRequired` when
-durable state is available. A fallback boot does not recreate the trial
-authorization, so a failure follows the known-good policy above. Katl does
-not use `FailureAction=reboot`, an unbounded service restart, or a hardware
-watchdog for this policy because those mechanisms cannot prove a remaining
-known-good boot source before resetting the node.
+`recoveryRequired` is cleared only by a later healthy boot of the published
+default, such as after the operator repairs the cause and runs
+`katlctl node reboot <node>`, or of a known-good generation chosen from the
+boot menu, which becomes the default. Until then node operations such as apply and
+upgrade are refused with that step. The operator can instead boot another
+generation from the boot menu or reinstall the node. Katl does not use
+`FailureAction=reboot`, an unbounded service restart, or a hardware watchdog for
+this policy because those mechanisms cannot prove a remaining known-good boot
+source before resetting the node.
 
 ## First Install
 
@@ -491,9 +510,11 @@ bootState: good
 healthState: healthy
 ```
 
-If first boot fails, Katl records recovery-required state when possible but does
-not reboot automatically. Repair tooling or reinstall is required; A/B rollback
-only applies after a known-good generation exists.
+If first boot fails, generation 0 stays `pending` and `unknown`. Katl does not
+set `recoveryRequired` and does not reboot automatically. Node operations such
+as apply stay refused until a boot of the generation is healthy. Fix the cause
+and run `katlctl node reboot <node>`, or use repair tooling or reinstall; A/B
+rollback only applies after a known-good generation exists.
 
 The first runtime boot of generation 0 is evaluated against the
 installed-runtime profile. It must not wait for `/etc/kubernetes`, containerd,
@@ -521,7 +542,7 @@ remote attestation
 TPM measured boot policy
 multi-attempt boot counting
 automatic root cause classification
-automatic recovery before generation activation arms the trial or required
+automatic recovery before generation activation binds the trial or required
 state mounts are available
 ```
 

@@ -34,18 +34,8 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 		}
 		return nil
 	}
-	executor.SetBootDefault = func(_ context.Context, _ string, entry string) error {
-		if entry != "loader/entries/katl-gen1.conf" {
-			t.Fatalf("boot default entry = %q", entry)
-		}
-		return nil
-	}
-	executor.SetBootOneshot = func(_ context.Context, _ string, entry string) error {
-		if entry != "loader/entries/katl-gen1.conf" {
-			t.Fatalf("next boot entry = %q", entry)
-		}
-		return nil
-	}
+	mover, efi := newBootMover(t, root, "boot-1", "gen0")
+	executor.BootMover = mover
 	executor.RunTool = successfulUpgradeTool(&commands)
 	if err := executor.Execute(context.Background(), record); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -117,6 +107,10 @@ func TestExecutorRunsApplyUpgradeWithPrivateKubeadmAndGate(t *testing.T) {
 	if selection.DefaultGenerationID != "gen1" || selection.ActiveGenerationID != "gen1" || selection.BootedGenerationID != "gen0" || selection.TargetBootGenerationID != "" || selection.TrialGenerationID != "" || selection.PendingHealthValidation || selection.PersistentDefaultPromotion != generation.DefaultPromotionDone || selection.PreviousKnownGoodGenerationID != "gen0" {
 		t.Fatalf("live selection = %#v", selection)
 	}
+	if got := efi.observed(); got.Default != "katl-gen1.conf" || got.OneShot != "" {
+		t.Fatalf("firmware boot variables = %+v, want gen1 as default without a one-shot", got)
+	}
+	armTrialAfterLivePromotion(t, root, mover, efi, "gen1")
 	if len(spec.Confexts) != 1 || spec.Confexts[0].Path != "/var/lib/katl/generations/gen1/confext" {
 		t.Fatalf("candidate confext refs = %+v", spec.Confexts)
 	}
@@ -175,8 +169,7 @@ func TestKubeadmUpgradeDNSOwnership(t *testing.T) {
 			executor := newUpgradeExecutor(root, store)
 			executor.Async = false
 			executor.Now = func() time.Time { return now.Add(time.Minute) }
-			executor.SetBootDefault = func(context.Context, string, string) error { return nil }
-			executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
+			executor.BootMover, _ = newBootMover(t, root, "boot-1", "gen0")
 			var upgradeCommands []string
 			executor.RunTool = func(_ context.Context, argv []string, _ func(int)) ToolResult {
 				joined := strings.Join(argv, " ")
@@ -472,8 +465,7 @@ func TestExecutorKeepsSingleControlPlaneAvailableForKubeadm(t *testing.T) {
 	executor := newUpgradeExecutor(root, store)
 	executor.Async = false
 	executor.Now = func() time.Time { return now.Add(time.Minute) }
-	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
-	executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
+	executor.BootMover, _ = newBootMover(t, root, "boot-1", "gen0")
 	executor.WaitBeforeKubeadm = func(context.Context, time.Duration) error {
 		t.Fatal("single control plane waited for API connection drain")
 		return nil
@@ -1030,8 +1022,8 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 		t.Fatal(err)
 	}
 	previous := generation.GenerationSpec{
-		APIVersion: generation.APIVersion, Kind: generation.SpecKind, GenerationID: "gen0", RuntimeVersion: "2026.7.0-dev.0", CreatedAt: now.Add(-time.Hour),
-		Root: generation.RootSelection{Slot: "root-a", PartitionUUID: "aaaaaaaa-1111-2222-3333-444444444444", RuntimeVersion: "2026.7.0-dev.0", RuntimeInterface: "katl-runtime-1", Architecture: "x86_64", RuntimeArtifactSHA256: strings.Repeat("d", 64)},
+		APIVersion: generation.APIVersion, Kind: generation.SpecKind, GenerationID: "gen0", RuntimeVersion: "2026.11.6", CreatedAt: now.Add(-time.Hour),
+		Root: generation.RootSelection{Slot: "root-a", PartitionUUID: "aaaaaaaa-1111-2222-3333-444444444444", RuntimeVersion: "2026.11.6", RuntimeInterface: "katl-runtime-1", Architecture: "x86_64", RuntimeArtifactSHA256: testSHA(testBootRootImage())},
 		Boot: generation.BootSelection{UKIPath: "/efi/EFI/Linux/katl.efi", LoaderEntryPath: "loader/entries/katl-gen0.conf"},
 		Sysexts: []generation.ExtensionRef{
 			{Name: "kubernetes", Path: "/var/lib/katl/generations/gen0/sysext/kubernetes.raw", ActivationPath: "/run/extensions/katl-kubernetes.raw", SHA256: strings.Repeat("e", 64), ArtifactVersion: "v1.36.1", PayloadVersion: "v1.36.1", Architecture: "x86_64", Compatibility: generation.ExtensionCompatibility{RuntimeInterfaces: []string{"katl-runtime-1"}}},
@@ -1047,6 +1039,8 @@ func kubeadmUpgradeFixture(t *testing.T, role string) (string, operation.Store, 
 	if err := generation.WriteGeneration(root, previous, status); err != nil {
 		t.Fatal(err)
 	}
+	writeTestBootDisk(t, root, previous.Root.PartitionUUID)
+	writeTestBootArtifacts(t, root, previous)
 	configuration := validVolumeStatusManifest()
 	configuration.Node.Kubernetes.Kubeadm.ConfigRef = "default"
 	if err := configapply.WriteGenerationConfiguration(root, previous.GenerationID, configapply.GenerationConfiguration{

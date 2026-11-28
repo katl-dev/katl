@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/katl-dev/katl/internal/bootid"
 	"github.com/katl-dev/katl/internal/generation"
 )
 
@@ -149,15 +150,7 @@ func (r Record) validate() error {
 }
 
 func readBootID(root string) (string, error) {
-	data, err := os.ReadFile(rooted(root, "/proc/sys/kernel/random/boot_id"))
-	if err != nil {
-		return "", err
-	}
-	boot := strings.TrimSpace(string(data))
-	if boot == "" {
-		return "", fmt.Errorf("kernel boot identity is empty")
-	}
-	return boot, nil
+	return bootid.Read(root)
 }
 
 func confextTarget(root string) (string, error) {

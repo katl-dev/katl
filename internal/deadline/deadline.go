@@ -212,12 +212,32 @@ func watchRemoval(path string, cancel context.CancelCauseFunc) func() {
 	}
 }
 
+// BootTrialTimer bounds a boot trial. It elapses ten minutes after boot, so a
+// trial whose timer starts late still ends on time.
+const BootTrialTimer = "katl-boot-deadman.timer"
+
+// ArmBootTrial starts the boot trial deadline. The deadline is boot-scoped and
+// no process waits on it, so it uses no instance or marker. Activation runs
+// before units the start job may order after, so it does not wait for the job.
+func ArmBootTrial(ctx context.Context) error {
+	return systemctlArgs(ctx, "start", "--no-block", BootTrialTimer)
+}
+
+// DisarmBootTrial stops the boot trial deadline after the trial resolved.
+func DisarmBootTrial(ctx context.Context) error {
+	return systemctlArgs(ctx, "stop", BootTrialTimer)
+}
+
 func systemctl(ctx context.Context, action, unit string) error {
+	return systemctlArgs(ctx, action, unit)
+}
+
+func systemctlArgs(ctx context.Context, args ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	output, err := exec.CommandContext(ctx, "/usr/bin/systemctl", action, unit).CombinedOutput()
+	output, err := exec.CommandContext(ctx, "/usr/bin/systemctl", args...).CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("systemctl %s %s: %w: %s", action, unit, err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("systemctl %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }

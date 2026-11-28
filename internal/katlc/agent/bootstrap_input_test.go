@@ -32,7 +32,7 @@ func TestBootstrapSelectedInput(t *testing.T) {
 	} {
 		t.Run(tt.kind+"/"+tt.ref, func(t *testing.T) {
 			server := newTestServer(t)
-			seedBootstrapRuntimeRootForRole(t, server.Root, tt.role)
+			server.seedBootstrapRuntime(t, tt.role)
 			selected := publishBootstrapInput(t, server.Root, tt.role, tt.ref, tt.profile, true)
 			if tt.address != "" {
 				configuration, err := configapply.ReadLocalGenerationConfiguration(server.Root, "configured")
@@ -50,7 +50,7 @@ func TestBootstrapSelectedInput(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			executor := NewExecutor(server.Root, server.Store, "test")
+			executor := newExecutorFor(server.BootMover, server.Root, server.Store, "test")
 			source, bundle := configureExecutorBundle(t, executor, "v1.35.0", "selected input runtime")
 			server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error { return nil })
 			req := submitRequest("selected-input")
@@ -154,7 +154,7 @@ func TestBootstrapInputBinding(t *testing.T) {
 	for _, scenario := range []string{"changed selected input", "explicit wrong digest", "stale profile alias", "corrupt selected input", "broken ancestry", "legacy projected input", "legacy receipt"} {
 		t.Run(scenario, func(t *testing.T) {
 			server := newTestServer(t)
-			seedBootstrapRuntimeRoot(t, server.Root)
+			server.seedBootstrapRuntime(t, "control-plane")
 			ref := "default"
 			if scenario == "stale profile alias" {
 				ref = "changed-ref"
@@ -171,7 +171,7 @@ func TestBootstrapInputBinding(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			executor := NewExecutor(server.Root, server.Store, "test")
+			executor := newExecutorFor(server.BootMover, server.Root, server.Store, "test")
 			source, bundle := configureExecutorBundle(t, executor, "v1.35.0", "input binding runtime")
 			server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error { return nil })
 			req := submitRequest("input-binding")
@@ -236,7 +236,7 @@ func TestBootstrapInputBinding(t *testing.T) {
 
 func TestBootstrapInstalledProfileAlias(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
+	server.seedBootstrapRuntime(t, "control-plane")
 	selected := publishBootstrapInput(t, server.Root, "control-plane", "control-plane", "selected-profile", true)
 	installed := bootstrapRuntimeManifest("control-plane")
 	installed.Node.Kubernetes.Kubeadm.ConfigRef = "control-plane"

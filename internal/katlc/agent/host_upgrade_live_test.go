@@ -29,13 +29,29 @@ func TestHostUpgradeAfterLivePromotion(t *testing.T) {
 				spec.Root.RuntimeArtifactSHA256 = strings.Repeat("b", 64)
 			}
 			state, err := generation.NewGenerationStatus(spec, generation.CommitStateCandidate, generation.BootStatePending, generation.HealthStateUnknown, time.Now())
+			if tc.changedRoot {
+				state, err = generation.NewGenerationStatus(spec, generation.CommitStateCommitted, generation.BootStateGood, generation.HealthStateHealthy, time.Now())
+			}
 			if err != nil {
 				t.Fatal(err)
 			}
 			if err := generation.WriteGeneration(server.Root, spec, state); err != nil {
 				t.Fatal(err)
 			}
-			if err := generation.PromoteLiveGeneration(generation.LivePromotionRequest{Root: server.Root, GenerationID: spec.GenerationID, Now: time.Now(), SetBootDefault: func(string, string) error { return nil }, SetBootOneshot: func(string, string) error { return nil }}); err != nil {
+			writeTestBootArtifacts(t, server.Root, spec)
+			if tc.changedRoot {
+				// The owner never promotes live a candidate that boots another
+				// runtime, so write the selection such a promotion would publish.
+				selection, err := generation.ReadBootSelection(server.Root)
+				if err != nil {
+					t.Fatal(err)
+				}
+				selection.DefaultGenerationID, selection.ActiveGenerationID = spec.GenerationID, spec.GenerationID
+				selection.DefaultBootEntry = spec.Boot.LoaderEntryPath
+				if err := generation.WriteBootSelection(server.Root, selection); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := server.BootMover.PromoteLive(generation.LivePromotionRequest{GenerationID: spec.GenerationID, OperationID: "promote-live-config", Now: time.Now()}); err != nil {
 				t.Fatal(err)
 			}
 

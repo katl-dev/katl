@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -46,20 +47,7 @@ func (s *Server) SelectGeneration(ctx context.Context, req *agentapi.GenerationM
 	if err := s.mountGenerationBootRoot(ctx); err != nil {
 		return nil, err
 	}
-	// Once selection is published, EFI writes and compensation must still run
-	// if the request goes away. Bound each write so compensation has its own time.
-	setBootEntry := func(set func(context.Context, string, string) error) generation.BootDefaultSetter {
-		return func(root, entry string) error {
-			efiCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), bootRootMountTimeout)
-			defer cancel()
-			return set(efiCtx, root, entry)
-		}
-	}
-	err := generation.Select(ctx, generation.SelectRequest{
-		Root: s.Root, GenerationID: req.GenerationId, OneShot: req.OneShot, Now: s.clock(),
-		SetDefault: setBootEntry(s.SetBootDefault),
-		SetOneshot: setBootEntry(s.SetBootOneshot),
-	})
+	err := s.BootMover.Select(ctx, generation.SelectRequest{GenerationID: req.GenerationId, OneShot: req.OneShot})
 	if err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "select generation: %v", err)
 	}
@@ -112,7 +100,7 @@ func (s *Server) RemoveGeneration(ctx context.Context, req *agentapi.GenerationM
 	if err := s.mountGenerationBootRoot(ctx); err != nil {
 		return nil, err
 	}
-	if err := generation.Remove(s.Root, req.GenerationId); err != nil {
+	if err := s.BootMover.Remove(req.GenerationId); err != nil {
 		return nil, status.Errorf(codes.FailedPrecondition, "remove generation: %v", err)
 	}
 	return &agentapi.GenerationMutationResult{GenerationId: req.GenerationId}, nil
@@ -142,7 +130,7 @@ func (s *Server) validateGenerationMutation(ctx context.Context, req *agentapi.G
 }
 
 func (s *Server) mountGenerationBootRoot(ctx context.Context) error {
-	if s.MountBootRoot == nil || s.SetBootDefault == nil || s.SetBootOneshot == nil {
+	if s.MountBootRoot == nil || s.BootMover == nil {
 		return fmt.Errorf("boot management is not configured")
 	}
 	return s.MountBootRoot(ctx, filepath.Join(runtimeRoot(s.Root), "efi"))
@@ -193,9 +181,13 @@ func (s *Server) pruneGenerations(ctx context.Context) (bool, error) {
 	if err := s.mountGenerationBootRoot(ctx); err != nil {
 		return false, err
 	}
-	removed, err := generation.Prune(s.Root, policy, s.clock())
+	removed, err := s.BootMover.Prune(policy, s.clock())
 	if len(removed) > 0 {
 		log.Printf("generation cleanup removed %v", removed)
+	}
+	if errors.Is(err, generation.ErrBootMoveBlocked) {
+		// A boot move outstanding from this boot defers cleanup to a later cycle.
+		return false, nil
 	}
 	return err == nil, err
 }

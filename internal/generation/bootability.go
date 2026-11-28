@@ -25,8 +25,7 @@ const (
 type bootabilityLevel uint8
 
 const (
-	bootFiles bootabilityLevel = iota
-	bootArtifacts
+	bootArtifacts bootabilityLevel = iota
 	bootIdentity
 	bootFull
 )
@@ -67,7 +66,7 @@ func (check *bootabilityCheck) check(spec GenerationSpec, status GenerationStatu
 	if status.UnavailableReason != "" {
 		return bootability{state: bootUnavailable, evidence: status.UnavailableReason}
 	}
-	if files := checkBootFiles(check.root, spec); files.state != bootable || level == bootFiles {
+	if files := checkBootFiles(check.root, spec); files.state != bootable {
 		return files
 	}
 	if level == bootArtifacts || level == bootFull {

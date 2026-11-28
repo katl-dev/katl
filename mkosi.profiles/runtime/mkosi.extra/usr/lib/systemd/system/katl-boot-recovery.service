@@ -10,4 +10,4 @@ RequiresMountsFor=/efi /var/lib/katl
 Type=oneshot
 StandardOutput=journal+console
 SyslogIdentifier=katl-boot-recovery
-ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=failure --reason=katl-boot-health.service-failed --force-failure --request-reboot
+ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=failure --reason=katl-boot-health.service-failed

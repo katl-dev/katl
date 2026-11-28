@@ -321,7 +321,7 @@ func TestStageHostUpgradeArtifactRejectsMetadataAfterFirstChunk(t *testing.T) {
 
 func TestSubmitOperationCreatesRecord(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
+	server.seedBootstrapRuntime(t, "control-plane")
 	var dispatched atomic.Int32
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		dispatched.Add(1)
@@ -361,7 +361,7 @@ func TestSubmitOperationCreatesRecord(t *testing.T) {
 
 func TestSubmitOperationStagesKubernetesIdentityOutsideRecord(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
+	server.seedBootstrapRuntime(t, "control-plane")
 	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error { return nil })
 	bundle, err := kubernetesidentity.Generate(kubernetesidentity.GenerateOptions{ClusterName: "homelab", Now: server.clock()})
 	if err != nil {
@@ -1387,7 +1387,7 @@ func writeKnownGoodHostUpgradeSource(t *testing.T, server *testServer) {
 
 func TestSubmitOperationRecordsKubernetesBundleRequest(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
+	server.seedBootstrapRuntime(t, "control-plane")
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
 	})
@@ -1570,7 +1570,7 @@ func TestKubernetesSysextUpdateRejectsInvalidDigest(t *testing.T) {
 
 func TestKubernetesSysextUpdateCleanGenerationZeroUsesBootstrapPath(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
+	server.seedBootstrapRuntime(t, "control-plane")
 	writeCleanGenerationZeroState(t, server.Root)
 	configuration, err := configapply.ReadGenerationConfiguration(server.Root, "0")
 	if err != nil {
@@ -1655,7 +1655,7 @@ func TestStageGenerationCreatesOperationAndGenerationReadModel(t *testing.T) {
 	server := newTestServer(t)
 	writeConfigApplyBaseState(t, server.Root)
 	writeProcCmdline(t, server.Root, "root=PARTUUID=11111111-1111-1111-1111-111111111111 rootfstype=squashfs ro systemd.machine_id=0123456789abcdef0123456789abcdef katl.generation=generation-0 katl.root-slot=root-a console=ttyS0,115200n8 systemd.log_target=console loglevel=6 katl.vmtest_agent=1 katl.vmtest_debug_shell=1")
-	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, server.AgentStartID)
 	executor.Async = false
 	server.Dispatcher = executor
 
@@ -1929,7 +1929,7 @@ func TestValidateConfigAcceptsDesiredStateThatAlreadyMatches(t *testing.T) {
 func TestSubmittedConfigApplyCompletesAsNoopWhenDesiredStateAlreadyMatches(t *testing.T) {
 	server := newTestServer(t)
 	writeConfigApplyBaseState(t, server.Root)
-	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, server.AgentStartID)
 	executor.Async = false
 	server.Dispatcher = executor
 
@@ -2094,7 +2094,7 @@ func TestStageGenerationRejectsInvalidConfigBeforeRecord(t *testing.T) {
 func TestValidateConfigPlansAndDigestStagesGeneration(t *testing.T) {
 	server := newTestServer(t)
 	writeConfigApplyBaseState(t, server.Root)
-	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, server.AgentStartID)
 	executor.Async = false
 	server.Dispatcher = executor
 
@@ -2151,12 +2151,11 @@ func TestValidateConfigPlansAndDigestStagesGeneration(t *testing.T) {
 func TestValidateConfigAutoLiveDigestMatchesConcreteSubmit(t *testing.T) {
 	server := newTestServer(t)
 	writeConfigApplyBaseState(t, server.Root)
-	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, server.AgentStartID)
 	executor.Async = false
 	executor.ConfigApplyRunner = &fakeConfigApplyRunner{}
 	executor.ConfigApplyActivator = &fakeConfigApplyActivator{}
-	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
-	executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
+	executor.BootMover = server.BootMover
 	server.Dispatcher = executor
 
 	result, err := server.ValidateConfig(context.Background(), &agentapi.ValidateConfigRequest{
@@ -2252,7 +2251,7 @@ func TestValidateConfigRejectsPlanPolicyWithoutRecord(t *testing.T) {
 func TestApplyGenerationLiveRejectedRecordsPlanDiagnostics(t *testing.T) {
 	server := newTestServer(t)
 	writeConfigApplyBaseState(t, server.Root)
-	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, server.AgentStartID)
 	executor.Async = false
 	server.Dispatcher = executor
 
@@ -2304,12 +2303,11 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	writeConfigApplyBaseState(t, server.Root)
 	runner := &fakeConfigApplyRunner{}
 	activator := &fakeConfigApplyActivator{}
-	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, server.AgentStartID)
 	executor.Async = false
 	executor.ConfigApplyRunner = runner
 	executor.ConfigApplyActivator = activator
-	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
-	executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
+	executor.BootMover = server.BootMover
 	server.Dispatcher = executor
 
 	accepted, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
@@ -2378,6 +2376,7 @@ func TestApplyGenerationLiveMarksMutationAndActivationState(t *testing.T) {
 	if nextBase.CurrentRecord.GenerationID != "generation-live" || nextFile.Content == nil || !strings.Contains(*nextFile.Content, "net.ipv4.ip_forward = 1") {
 		t.Fatalf("next config apply base = generation %q manifest %#v", nextBase.CurrentRecord.GenerationID, nextBase.CurrentManifest.Node.HostConfiguration)
 	}
+	armTrialAfterLivePromotion(t, server.Root, server.BootMover, server.efi, "generation-live")
 }
 
 func TestConfigApplyBaseLoadsRetainedEndpointAdvertiser(t *testing.T) {
@@ -2513,12 +2512,11 @@ func TestSubmitOperationAutoConfigApplyRunsAcceptedLivePath(t *testing.T) {
 	writeConfigApplyBaseState(t, server.Root)
 	runner := &fakeConfigApplyRunner{}
 	activator := &fakeConfigApplyActivator{}
-	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, server.AgentStartID)
 	executor.Async = false
 	executor.ConfigApplyRunner = runner
 	executor.ConfigApplyActivator = activator
-	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
-	executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
+	executor.BootMover = server.BootMover
 	server.Dispatcher = executor
 
 	accepted, err := server.SubmitOperation(context.Background(), &agentapi.SubmitOperationRequest{
@@ -2567,12 +2565,11 @@ func TestApplyGenerationLiveLoadsInstalledKubeadmInputs(t *testing.T) {
 	writeInstalledClusterIntent(t, server.Root, "v1.35.0", "/var/lib/katl/artifacts/katlos-image/katl-kubernetes.raw")
 	runner := &fakeConfigApplyRunner{}
 	activator := &fakeConfigApplyActivator{}
-	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, server.AgentStartID)
 	executor.Async = false
 	executor.ConfigApplyRunner = runner
 	executor.ConfigApplyActivator = activator
-	executor.SetBootDefault = func(context.Context, string, string) error { return nil }
-	executor.SetBootOneshot = func(context.Context, string, string) error { return nil }
+	executor.BootMover = server.BootMover
 	server.Dispatcher = executor
 
 	accepted, err := server.ApplyGeneration(context.Background(), &agentapi.GenerationApplyRequest{
@@ -2651,7 +2648,7 @@ func TestApplyGenerationLiveFailureRecordsRollbackState(t *testing.T) {
 			}
 
 			activator := &fakeConfigApplyActivator{}
-			executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+			executor := newExecutorFor(server.BootMover, server.Root, server.Store, server.AgentStartID)
 			executor.Async = false
 			executor.ConfigApplyRunner = runner
 			executor.ConfigApplyActivator = activator
@@ -2744,7 +2741,7 @@ func TestNodeStatusAdvertisesControlPlaneJoin(t *testing.T) {
 
 func TestSubmitOperationAcceptsControlPlaneJoin(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
+	server.seedBootstrapRuntime(t, "control-plane")
 	writeStoredKubeadmConfig(t, server.Root, "default")
 	var dispatched atomic.Int32
 	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
@@ -2794,7 +2791,7 @@ func TestSubmitOperationRejectsDigestMismatch(t *testing.T) {
 
 func TestSubmitOperationIdempotentClientRequest(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
+	server.seedBootstrapRuntime(t, "control-plane")
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
 	})
@@ -2822,7 +2819,7 @@ func TestSubmitOperationIdempotentClientRequest(t *testing.T) {
 
 func TestSubmitOperationRejectsConflictingLocks(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
+	server.seedBootstrapRuntime(t, "control-plane")
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
 	})
@@ -2838,7 +2835,7 @@ func TestSubmitOperationRejectsConflictingLocks(t *testing.T) {
 
 func TestSubmitOperationRecordsWorkerJoinMaterializationFailureBeforeDispatch(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRootForRole(t, server.Root, "worker")
+	server.seedBootstrapRuntime(t, "worker")
 	writeTestFile(t, filepath.Join(server.Root, "run/katl/bootstrap-join"), "blocked")
 	var dispatched atomic.Int32
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
@@ -2875,7 +2872,7 @@ func TestSubmitOperationRecordsWorkerJoinMaterializationFailureBeforeDispatch(t 
 
 func TestSubmitOperationDoesNotPersistRawWorkerJoinMaterial(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRootForRole(t, server.Root, "worker")
+	server.seedBootstrapRuntime(t, "worker")
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
 	})
@@ -2912,7 +2909,7 @@ func TestSubmitOperationDoesNotPersistRawWorkerJoinMaterial(t *testing.T) {
 
 func TestSubmitOperationSerializesConcurrentConflicts(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
+	server.seedBootstrapRuntime(t, "control-plane")
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
 	})
@@ -3072,7 +3069,7 @@ func TestSubmitOperationValidatesRequestBodyAndUnsupportedExpectations(t *testin
 
 func TestSubmitOperationRecordsControlPlaneJoinMaterializationNextAction(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
+	server.seedBootstrapRuntime(t, "control-plane")
 	writeTestFile(t, filepath.Join(server.Root, "run/katl/bootstrap-join"), "blocked")
 	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
 		t.Fatal("dispatcher called after materialization failure")
@@ -3187,7 +3184,7 @@ func TestCreateWorkerJoinMaterialRejectsActiveOperationLock(t *testing.T) {
 
 func TestCreateWorkerJoinMaterialSerializesWithSubmitOperation(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
+	server.seedBootstrapRuntime(t, "control-plane")
 	writeJoinMaterialAdminKubeconfig(t, server.Server)
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
@@ -3288,7 +3285,7 @@ func createWorkerJoinMaterialRequest() *agentapi.CreateWorkerJoinMaterialRequest
 
 func TestSubmitOperationAcceptsExpectedGenerationAndIntentConstraints(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
+	server.seedBootstrapRuntime(t, "control-plane")
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
 	})
@@ -3334,7 +3331,7 @@ func TestSubmitOperationAcceptsExpectedGenerationAndIntentConstraints(t *testing
 
 func TestSubmitOperationDispatchFailureIsRedactedAndTerminal(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
+	server.seedBootstrapRuntime(t, "control-plane")
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return errors.New("dispatch failed")
 	})
@@ -3354,7 +3351,7 @@ func TestSubmitOperationDispatchFailureIsRedactedAndTerminal(t *testing.T) {
 
 func TestSubmitOperationDispatchFailureRemovesStagedKubernetesIdentity(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
+	server.seedBootstrapRuntime(t, "control-plane")
 	server.Dispatcher = dispatchFunc(func(context.Context, operation.OperationRecord) error {
 		return errors.New("dispatch failed")
 	})
@@ -3409,7 +3406,7 @@ func TestDryRunDoesNotCreateRecord(t *testing.T) {
 
 func TestGetOperationChecksDigest(t *testing.T) {
 	server := newTestServer(t)
-	seedBootstrapRuntimeRoot(t, server.Root)
+	server.seedBootstrapRuntime(t, "control-plane")
 	server.Dispatcher = dispatchFunc(func(ctx context.Context, record operation.OperationRecord) error {
 		return nil
 	})
@@ -3633,7 +3630,12 @@ func TestWatchOperationHonorsDiagnosticsModeAndTerminalAtCurrentSeq(t *testing.T
 	}
 }
 
-type testServer struct{ *Server }
+type testServer struct {
+	*Server
+	efi *fakeEFI
+	// The boot the server's owner observes; see bootAs.
+	bootID, rootPartUUID, running string
+}
 
 func (s *testServer) mutationDefaults(enrollmentID, nodeName, machineID, generationID *string) {
 	if *enrollmentID == "" {
@@ -3788,7 +3790,9 @@ func newTestServer(t *testing.T) *testServer {
 		next := seq.Add(1)
 		return fmt.Sprintf("%s-%02d", kind, next), nil
 	}
-	return &testServer{Server: server}
+	testServer := &testServer{Server: server, efi: &fakeEFI{root: root}}
+	testServer.bootAs(t, "boot-1", defaultRootPartUUID, "generation-0")
+	return testServer
 }
 
 func submitRequest(clientRequestID string) *agentapi.SubmitOperationRequest {
@@ -4489,10 +4493,11 @@ func TestLiveApplyPromotionFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, server.AgentStartID)
 	executor.ConfigApplyRunner = &fakeConfigApplyRunner{}
 	executor.ConfigApplyActivator = &fakeConfigApplyActivator{}
-	executor.SetBootDefault = func(context.Context, string, string) error { return fmt.Errorf("boot default unavailable") }
+	executor.BootMover = server.BootMover
+	server.efi.defaultErr = fmt.Errorf("boot default unavailable")
 	if err := executor.Execute(context.Background(), pending); err == nil {
 		t.Fatal("apply succeeded without a durable boot default")
 	}
@@ -4535,7 +4540,7 @@ func TestApplyGenerationRefusedBeforeActivationAbandonsCandidate(t *testing.T) {
 	// Reading the current sysctl value happens before activation.
 	runner := &fakeConfigApplyRunner{exitStatus: 1, stderr: "sysctl read failed", failName: "sysctl-snapshot-net.ipv4.ip_forward"}
 	activator := &fakeConfigApplyActivator{}
-	executor := NewExecutor(server.Root, server.Store, server.AgentStartID)
+	executor := newExecutorFor(server.BootMover, server.Root, server.Store, server.AgentStartID)
 	executor.Async = false
 	executor.ConfigApplyRunner = runner
 	executor.ConfigApplyActivator = activator

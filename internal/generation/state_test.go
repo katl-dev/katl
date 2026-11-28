@@ -107,7 +107,7 @@ Documentation=man:systemd-sysext(8) man:systemd-confext(8)
 DefaultDependencies=no
 Requires=var.mount
 After=var.mount
-# Recovery arming checks the fallback entry and UKI on the EFI partition.
+# Activation reads boot state on the EFI partition.
 RequiresMountsFor=/efi
 Before=systemd-sysext.service systemd-confext.service
 
@@ -270,7 +270,7 @@ RequiresMountsFor=/efi /var/lib/katl
 Type=oneshot
 StandardOutput=journal+console
 SyslogIdentifier=katl-boot-recovery
-ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=failure --reason=katl-boot-health.service-failed --force-failure --request-reboot
+ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=failure --reason=katl-boot-health.service-failed
 `
 	if assets.BootRecoveryService != wantRecovery {
 		t.Fatalf("katl-boot-recovery.service:\n%s\nwant:\n%s", assets.BootRecoveryService, wantRecovery)
@@ -279,7 +279,6 @@ ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=failure --rea
 Description=Fail Katl boot health after deadline
 Documentation=man:systemd.service(5)
 SuccessAction=reboot
-ConditionPathExists=/run/katl/boot-health/pending
 Requires=var.mount
 After=var.mount
 RequiresMountsFor=/efi /var/lib/katl
@@ -288,7 +287,7 @@ RequiresMountsFor=/efi /var/lib/katl
 Type=oneshot
 StandardOutput=journal+console
 SyslogIdentifier=katl-boot-deadman
-ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=timeout --reason=katl-boot-health-deadline-expired --force-failure --request-reboot
+ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=timeout --reason=katl-boot-health-deadline-expired
 `
 	if assets.BootDeadmanService != wantDeadman {
 		t.Fatalf("katl-boot-deadman.service:\n%s\nwant:\n%s", assets.BootDeadmanService, wantDeadman)
@@ -296,13 +295,12 @@ ExecStart=/usr/lib/katl/runtime/katl-boot-health --root=/ --result=timeout --rea
 	wantTimer := `[Unit]
 Description=Katl boot health deadline
 Documentation=man:systemd.timer(5)
+# Activation starts the timer only for a boot trial. OnBootSec= counts
+# from boot, so a timer started late still expires on time.
 
 [Timer]
 OnBootSec=10min
 Unit=katl-boot-deadman.service
-
-[Install]
-WantedBy=timers.target
 `
 	if assets.BootDeadmanTimer != wantTimer {
 		t.Fatalf("katl-boot-deadman.timer:\n%s\nwant:\n%s", assets.BootDeadmanTimer, wantTimer)
@@ -393,7 +391,10 @@ func TestWriteState(t *testing.T) {
 	assertFile(t, filepath.Join(root, "etc/systemd/system/katl-boot-deadman.timer"), assets.BootDeadmanTimer)
 	assertSymlink(t, filepath.Join(root, "etc/systemd/system/multi-user.target.wants/katl-boot-complete.target"), "../katl-boot-complete.target")
 	assertSymlink(t, filepath.Join(root, "etc/systemd/system/katl-boot-complete.target.requires/katl-boot-health.service"), "../katl-boot-health.service")
-	assertSymlink(t, filepath.Join(root, "etc/systemd/system/timers.target.wants/katl-boot-deadman.timer"), "../katl-boot-deadman.timer")
+	// Only activation starts the deadline, for a boot trial.
+	if _, err := os.Lstat(filepath.Join(root, "etc/systemd/system/timers.target.wants/katl-boot-deadman.timer")); !os.IsNotExist(err) {
+		t.Fatalf("katl-boot-deadman.timer is enabled at boot: %v", err)
+	}
 	assertFile(t, filepath.Join(root, "etc/systemd/system/containerd.service.d/10-katl-runtime.conf"), assets.ContainerdDropIn)
 	assertFile(t, filepath.Join(root, "etc/systemd/system/kubelet.service.d/10-katl-runtime.conf"), assets.KubeletDropIn)
 	assertSymlink(t, filepath.Join(root, "etc/systemd/logind.conf.d/99-kubelet.conf"), "/run/systemd/logind.conf.d/99-kubelet.conf")
@@ -468,7 +469,7 @@ func TestRuntimeStaticStateUnits(t *testing.T) {
 	assertSymlink(t, filepath.Join(systemdRoot, "multi-user.target.wants/katl-boot-complete.target"), "../katl-boot-complete.target")
 	assertSymlink(t, filepath.Join(systemdRoot, "multi-user.target.wants/katlc-agent.service"), "../katlc-agent.service")
 	assertMissing(t, filepath.Join(systemdRoot, "multi-user.target.wants/katl-state-projection-check.service"))
-	assertSymlink(t, filepath.Join(systemdRoot, "timers.target.wants/katl-boot-deadman.timer"), "../katl-boot-deadman.timer")
+	assertMissing(t, filepath.Join(systemdRoot, "timers.target.wants/katl-boot-deadman.timer"))
 	assertSymlink(t, filepath.Join(systemdRoot, "systemd-sysext.service.requires/katl-generation-activate.service"), "../katl-generation-activate.service")
 	assertSymlink(t, filepath.Join(systemdRoot, "systemd-confext.service.requires/katl-generation-activate.service"), "../katl-generation-activate.service")
 	assertSymlink(t, filepath.Join(systemdRoot, "katl-boot-complete.target.requires/katl-boot-health.service"), "../katl-boot-health.service")

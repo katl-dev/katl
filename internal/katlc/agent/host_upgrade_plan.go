@@ -42,7 +42,7 @@ func (e *Executor) planHostUpgrade(ctx context.Context, record operation.Operati
 
 func (e *Executor) planHostUpgradeWithHandoff(ctx context.Context, record operation.OperationRecord, payload katlosimage.Payload, handoff bool) (preparedHostUpgrade, error) {
 	if !handoff {
-		if err := generation.ValidateMutationBase(e.Root, record.ExpectedCurrentGenerationID); err != nil {
+		if err := e.validateMutationBase(record.ExpectedCurrentGenerationID); err != nil {
 			return preparedHostUpgrade{}, err
 		}
 	}

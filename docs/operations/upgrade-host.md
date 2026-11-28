@@ -30,6 +30,16 @@ node at a time.
   assets and CLI until you have accepted the target and no longer need its
   one-step rollback path.
 - Run the upgrade during the intended reboot window.
+- Any supported release, including 2026.11.5, upgrades directly to the new
+  release. On a node upgrading from 2026.11.5, a power loss during the new
+  release's trial boot, before its health check finishes, falls back to
+  2026.11.5 without network, so the node is reachable only at its console.
+  To recover, boot the new release from the boot menu at the console.
+- Run the upgrade from the node's default generation. If the node is
+  running another generation, for example after you chose it from the boot menu,
+  the upgrade is refused until you make it the default with
+  `katlctl node generations select RUNNING cp-1`, because the default is the
+  fallback.
 
 Before it changes the inactive slot, Katl checks the image's boot components
 and whether it fits on writable state, and it refuses a target that does not
@@ -163,17 +173,17 @@ data, and it cannot recover a damaged `/var`, ESP, firmware state, or disk. See
 
 ## Failure boundary
 
-Automatic fallback is available only once activation confirms that the node is
-booting the pending trial and that a healthy previous generation remains to fall
-back to. The source generation stays the persistent EFI default throughout the
-trial. See [boot health and fallback](../concepts/generations.md#boot-health-and-fallback)
+Automatic fallback is available only for a boot trial: the boot after the
+upgrade staged the candidate, while a healthy previous generation remains to
+fall back to. The source generation stays the persistent EFI default throughout
+the trial. See [boot health and fallback](../concepts/generations.md#boot-health-and-fallback)
 for the lifecycle.
 
 | Failure | What Katl does | What you do |
 | --- | --- | --- |
-| An armed trial loses management networking, fails required activation, or misses the 10-minute boot deadline | Selects the previous healthy generation and performs one automatic reboot. `katlctl` reports that the candidate was rejected after the node reconnects on the source generation. | Read the previous-boot journal to find why boot health failed before retrying. |
-| No healthy fallback exists, required state or EFI storage is unavailable, or the failure occurs before activation arms boot recovery | Does not reboot automatically. | Use the console or out-of-band management to preserve the failed boot's journal and inspect boot-selection state. |
-| The fallback also fails | Stops instead of boot-looping, because the fallback does not re-arm the switch. | Preserve the journal and inspect boot-selection state from the console. |
+| A boot trial loses management networking, fails required activation, or misses the 10-minute boot deadline | Rejects the candidate, keeps the previous healthy generation as the default, and performs one automatic reboot. `katlctl` reports that the candidate was rejected after the node reconnects on the source generation. | Read the previous-boot journal to find why boot health failed before retrying. |
+| No healthy fallback exists or can be checked, or required state or EFI storage is unavailable | Does not reboot automatically. When no fallback can be used, the node reports that recovery is required. | Use the console or out-of-band management to preserve the failed boot's journal and inspect boot-selection state. Repair the cause and run `katlctl node reboot`, or boot a known-good generation from the boot menu; its healthy boot makes it the default and clears recovery. |
+| The fallback also fails | Stops instead of boot-looping, because the fallback is not a trial. | Preserve the journal and inspect boot-selection state from the console. |
 | The operation record says `recoveryRequired: true`, or the node fails to return | Stops. | Stop the rollout and collect the evidence in [Troubleshoot KatlOS](troubleshoot.md). |
 | KatlOS returns but Kubernetes does not recover before the timeout | Fails the command while reporting `bootHealth` as `healthy`. | Do not schedule workloads on that node. `katlctl node status` reports whether kubelet, Node Ready, local control-plane components, or managed routing is still waiting. |
 
