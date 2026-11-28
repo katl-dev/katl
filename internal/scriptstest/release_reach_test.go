@@ -135,6 +135,7 @@ func releaseCoverageFixtures() map[string]map[string]string {
 		artifactsWorkflowPath: {
 			"needs.identity.outputs.version":        "${{ inputs.version }}",
 			"needs.identity.outputs.previous-tag":   "v2026.12.0",
+			"needs.identity.outputs.retention-days": "30",
 			"needs.build-standard.outputs.artifact": "katl-assembled-standard-" + calledCommit,
 			"needs.build-lts.outputs.artifact":      "katl-assembled-lts-" + calledCommit,
 		},

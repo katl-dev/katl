@@ -27,6 +27,16 @@ var releaseExceptions = []releaseException{
 	{workflowSite{".github/actions/mkosi-builder/action.yml", "(composite)", "Configure build downloads"}, "gap", 935, "", []string{"shell"}},
 	{workflowSite{".github/actions/mkosi-builder/action.yml", "(composite)", "builder"}, "gap", 935, "", []string{"shell"}},
 
+	// The release App credential needs the release environment's App secret.
+	{workflowSite{".github/actions/release-credential/action.yml", "(composite)", "Mint the katl-release token"}, "credential", 0, releaseRehearsal, []string{"reach"}},
+	{workflowSite{".github/actions/release-credential/action.yml", "(composite)", "Mint the katl-release token"}, "credential", 0, "TestReleaseCredentialScope", []string{
+		"with.app-id ${{ inputs.app-id }}",
+		"with.private-key ${{ inputs.private-key }}",
+		"with.repositories ${{ github.event.repository.name }}",
+	}},
+	{workflowSite{".github/actions/release-credential/action.yml", "(composite)", "Verify installation scope and repository access"}, "credential", 0, "TestReleaseCredentialScope", []string{"reach", "shell"}},
+	{workflowSite{".github/actions/release-credential/action.yml", "(composite)", "Verify the release App slug"}, "credential", 0, "TestReleaseCredentialSlug", []string{"reach", "shell"}},
+
 	{workflowSite{".github/actions/setup-go/action.yml", "(composite)", "Resolve Go cache"}, "gap", 935, "", []string{"shell"}},
 
 	{workflowSite{".github/actions/setup-tools/action.yml", "(composite)", "Realise the ci shell"}, "gap", 989, "", []string{"shell"}},
@@ -65,20 +75,14 @@ var releaseExceptions = []releaseException{
 	{workflowSite{hostedVMWorkflowPath, "scenarios", "Verify and import producer inputs"}, "gap", 989, "", []string{"shell"}},
 	{workflowSite{hostedVMWorkflowPath, "scenarios", "actions/checkout@v7 #2"}, "gap", 989, "", []string{"if inputs.ref"}},
 
-	// The production release call still selects publication and release versions.
+	// The production release call still selects release versions.
 	{workflowSite{productionWorkflowPath, "(workflow)", "(workflow)"}, "gap", 992, "TestKatlReleaseArtifactVersion", []string{"env.KATL_VERSION ${{ inputs.version }}"}},
 	{workflowSite{productionWorkflowPath, "assemble", "Assemble and verify installer ISO"}, "gap", 935, "", []string{"shell"}},
 	{workflowSite{productionWorkflowPath, "assemble", "Build katlctl"}, "gap", 935, "", []string{"shell"}},
 	{workflowSite{productionWorkflowPath, "assemble", "Package install and upgrade images concurrently"}, "gap", 935, "", []string{"shell"}},
 	{workflowSite{productionWorkflowPath, "assemble", "Record disk margin"}, "gap", 935, "", []string{"shell"}},
-	{workflowSite{productionWorkflowPath, "assemble", "Resolve artifact names"}, "gap", 935, "", []string{"env.PUBLICATION ${{ inputs.publication }}", "reach", "shell"}},
+	{workflowSite{productionWorkflowPath, "assemble", "Resolve artifact names"}, "gap", 935, "", []string{"shell"}},
 	{workflowSite{productionWorkflowPath, "assemble", "Stage supported publication artifacts"}, "gap", 992, "TestKatlReleaseArtifactStage, TestKatlReleaseArtifactNotes, TestKatlReleaseArtifactNotesSiblingRelease, TestKatlReleaseArtifactNotesAfterPromotion", []string{"version"}},
-	{workflowSite{productionWorkflowPath, "assemble", "Upload GitHub Actions artifact"}, "gap", 937, "", []string{"with.retention-days ${{ inputs.publication && (github.event_name == 'schedule' && 7 || 30) || 1 }}"}},
-	{workflowSite{productionWorkflowPath, "assemble", "Upload extension publication inputs"}, "gap", 935, "", []string{
-		"if inputs.publication",
-		"reach",
-		"with.name ${{ inputs.flavour }}",
-	}},
 	{workflowSite{productionWorkflowPath, "assemble", "Validate flavour"}, "gap", 935, "", []string{"shell"}},
 	{workflowSite{productionWorkflowPath, "assemble", "Verify KatlOS images"}, "gap", 935, "", []string{"shell"}},
 	{workflowSite{productionWorkflowPath, "extensions", "Validate flavour"}, "gap", 935, "", []string{"shell"}},
@@ -116,7 +120,6 @@ var releaseExceptions = []releaseException{
 		"shell",
 	}},
 	{workflowSite{artifactsWorkflowPath, "bundle", "actions/upload-artifact@v7 #1"}, "gap", 935, "", []string{"reach"}},
-	{workflowSite{artifactsWorkflowPath, "bundle", "actions/upload-artifact@v7 #1"}, "gap", 937, "", []string{"with.retention-days ${{ github.event_name == 'schedule' && 7 || 30 }}"}},
 	{workflowSite{artifactsWorkflowPath, "existing-bundle", "(job)"}, "gap", 907, "", []string{"if inputs.qualify_run"}},
 	{workflowSite{artifactsWorkflowPath, "existing-bundle", "actions/checkout@v7 #1"}, "gap", 907, "", []string{"inactive"}},
 	{workflowSite{artifactsWorkflowPath, "existing-bundle", "./.github/actions/setup-go #1"}, "gap", 907, "", []string{"inactive"}},
@@ -182,7 +185,7 @@ var releaseExceptions = []releaseException{
 	{workflowSite{releasestate.ReleaseWorkflow, "publish", "Require a decision from this attempt"}, "gap", 991, "", []string{"reach", "shell"}},
 	{workflowSite{releasestate.ReleaseWorkflow, "publish", "Resolve the bundle name"}, "gap", 991, "", []string{"reach", "shell"}},
 	{workflowSite{releasestate.ReleaseWorkflow, "publish", "Resolve the bundle name"}, "gap", 992, "TestKatlReleaseArtifactVersion", []string{"version"}},
-	{workflowSite{releasestate.ReleaseWorkflow, "publish", "Select the publishing credential"}, "credential", 0, releaseRehearsal, []string{"reach", "with.repositories ${{ github.event.repository.name }}"}},
+	{workflowSite{releasestate.ReleaseWorkflow, "publish", "Verify the publishing credential"}, "credential", 0, releaseRehearsal, []string{"reach"}},
 	{workflowSite{releasestate.ReleaseWorkflow, "publish", "Summarize the publishing credential"}, "gap", 991, "", []string{"reach", "shell"}},
 	{workflowSite{releasestate.ReleaseWorkflow, "publish-candidate", "./.github/actions/setup-go #1"}, "gap", 991, "", []string{"reach"}},
 	{workflowSite{releasestate.ReleaseWorkflow, "publish-candidate", "actions/checkout@v7 #1"}, "gap", 991, "", []string{"reach"}},
