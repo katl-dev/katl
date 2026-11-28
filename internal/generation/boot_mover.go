@@ -1015,10 +1015,10 @@ func projectStatusChange(status GenerationStatus, change bootStatusChange, opera
 	return status
 }
 
-// syncEFI writes the projection in a fixed order and verifies it by reading
-// both variables back. An unreadable variable never counts as a match.
-// syncEFI writes the intent's EFI targets unless the caller's observation
-// already matched them. Restricted callers defer before reaching it.
+// syncEFI writes the intent's EFI targets in a fixed order, unless the
+// caller's observation already matched them, and verifies the writes by
+// reading both variables back. An unreadable variable never counts as a
+// match. Restricted callers defer before reaching it.
 func (m *BootMover) syncEFI(intent bootMoveIntent, synced bool) error {
 	issuing := m.bootID == intent.BootID
 	if synced {
@@ -1656,15 +1656,24 @@ func (m *BootMover) Prune(policy Retention, now time.Time) ([]string, error) {
 // outstanding move that cannot complete is an error, so a caller never
 // interprets a partly projected selection.
 func (m *BootMover) Read(read func(BootSelectionRecord) error) error {
+	return m.readWithAuthority(func(selection BootSelectionRecord, _ *bootMoveIntent) error {
+		return read(selection)
+	})
+}
+
+// readWithAuthority is Read that also passes the trial authority, which alone
+// decides whether a trial is pending.
+func (m *BootMover) readWithAuthority(read func(BootSelectionRecord, *bootMoveIntent) error) error {
 	return withBootStateLock(m.root, func() error {
-		if _, _, err := m.reconcileLocked(reconcileFull); err != nil {
+		_, authority, err := m.reconcileLocked(reconcileFull)
+		if err != nil {
 			return err
 		}
 		selection, err := ReadBootSelection(m.root)
 		if err != nil {
 			return err
 		}
-		return read(selection)
+		return read(selection, authority)
 	})
 }
 

@@ -531,3 +531,38 @@ func TestArmTrialAfterLivePromotion(t *testing.T) {
 		t.Fatalf("selection = %#v, want a trial of gen2 falling back to the live-promoted gen3", got)
 	}
 }
+
+// The trial authority decides whether a trial blocks a mutation, and the
+// candidate's own boot gets no reboot advice: a reboot would end its trial.
+func TestMutationBaseDuringTrial(t *testing.T) {
+	for _, tc := range []struct {
+		name, want, refused string
+		boot                func(*testing.T, *moveWorld)
+	}{
+		{name: "armed", want: "a boot trial of generation gen2 is pending; run 'katlctl node reboot <node>' to try it"},
+		{
+			name: "candidate boot", want: "generation gen2 is in its boot trial and boot health has not decided it; wait for 'katlctl node status <node>'",
+			refused: "katlctl node reboot",
+			boot:    func(t *testing.T, w *moveWorld) { activate(t, w, "b-2", "gen2") },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := newMoveWorld(t)
+			armTrial(t, w, "apply-7", "gen2")
+			expected := "gen1"
+			if tc.boot != nil {
+				tc.boot(t, w)
+				expected = "gen2"
+			}
+
+			err := w.mover(nil).ValidateMutationBase(expected)
+
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ValidateMutationBase() = %v, want %q", err, tc.want)
+			}
+			if tc.refused != "" && strings.Contains(err.Error(), tc.refused) {
+				t.Fatalf("ValidateMutationBase() = %v, must not advise %q", err, tc.refused)
+			}
+		})
+	}
+}

@@ -146,9 +146,7 @@ func reportOnly(record generation.BootHealthResult) error {
 // resolvedWithoutReboot describes a failed trial whose reboot is unavailable.
 func resolvedWithoutReboot(record generation.BootHealthResult) error {
 	if record.RecoveryRequired {
-		return fmt.Errorf("generation %s failed boot health and no fallback could be used, so it stays the boot default and recovery is required. No automatic reboot. "+
-			"Repair the cause, then run 'katlctl node reboot <node>'; a healthy boot clears the recovery state. "+
-			"Otherwise boot a known-good generation from the boot menu; its healthy boot makes it the default and clears the recovery state. If none boots, reinstall the node", record.GenerationID)
+		return fmt.Errorf("generation %s failed boot health and no fallback could be used, so it stays the boot default and recovery is required. No automatic reboot. %s", record.GenerationID, generation.RecoveryGuidance)
 	}
 	return fmt.Errorf("generation %s failed boot health and generation %s is the boot default. "+
 		"The trial's automatic reboot was already used, so no automatic reboot follows. "+

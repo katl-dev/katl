@@ -155,6 +155,19 @@ var bootTargetAllowlist = []bootTargetAllowance{
 // a generation a boot target names. Everything else reads, or is allowlisted
 // with a reason.
 func TestBootTargetHasOneOwner(t *testing.T) {
+	problems := ownershipProblems(t, []string{"internal/generation/boot_mover.go", "internal/efiboot"}, bootTargetViolations, bootTargetAllowlist)
+	if len(problems) > 0 {
+		t.Log("change boot state through generation.BootMover; allowlist a finding only when it does not write a boot target")
+		for _, problem := range problems {
+			t.Error(problem)
+		}
+	}
+}
+
+// ownershipProblems reports each finding outside the owners that no allowlist
+// entry excuses, and each entry that excuses no finding or more than one.
+func ownershipProblems(t *testing.T, owners []string, violations func(*token.FileSet, *ast.File) []string, allowlist []bootTargetAllowance) []string {
+	t.Helper()
 	root, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -169,9 +182,8 @@ func TestBootTargetHasOneOwner(t *testing.T) {
 		}
 		root = parent
 	}
-	owners := []string{"internal/generation/boot_mover.go", "internal/efiboot"}
 
-	used := make([]int, len(bootTargetAllowlist))
+	used := make([]int, len(allowlist))
 	var problems []string
 	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
@@ -201,12 +213,12 @@ func TestBootTargetHasOneOwner(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		for _, violation := range bootTargetViolations(fset, file) {
+		for _, violation := range violations(fset, file) {
 			matches := func(allowed bootTargetAllowance) bool {
 				return allowed.path == rel && strings.Contains(violation, allowed.fragment)
 			}
 			index := -1
-			for i, allowed := range bootTargetAllowlist {
+			for i, allowed := range allowlist {
 				if matches(allowed) && (index < 0 || used[index] > 0 && used[i] == 0) {
 					index = i
 				}
@@ -222,7 +234,7 @@ func TestBootTargetHasOneOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for index, allowed := range bootTargetAllowlist {
+	for index, allowed := range allowlist {
 		switch {
 		case used[index] == 0:
 			problems = append(problems, fmt.Sprintf("%s: %q is allowlisted but no longer present; remove the entry", allowed.path, allowed.fragment))
@@ -230,8 +242,93 @@ func TestBootTargetHasOneOwner(t *testing.T) {
 			problems = append(problems, fmt.Sprintf("%s: %q allowlists %d findings; it may excuse only one", allowed.path, allowed.fragment, used[index]))
 		}
 	}
+	return problems
+}
+
+// trialPendingViolations reports each comparison that classifies a trial from
+// selection fields: TrialGenerationID tested for emptiness or compared with
+// BootedGenerationID, directly or through strings.TrimSpace.
+func trialPendingViolations(fset *token.FileSet, file *ast.File) []string {
+	field := func(expr ast.Expr) string {
+		if call, ok := expr.(*ast.CallExpr); ok && len(call.Args) == 1 {
+			if callee, ok := call.Fun.(*ast.SelectorExpr); ok && callee.Sel.Name == "TrimSpace" {
+				expr = call.Args[0]
+			}
+		}
+		switch expr := expr.(type) {
+		case *ast.SelectorExpr:
+			return expr.Sel.Name
+		case *ast.BasicLit:
+			if expr.Kind == token.STRING && expr.Value == `""` {
+				return `""`
+			}
+		}
+		return ""
+	}
+	var violations []string
+	for _, decl := range file.Decls {
+		function := "package scope"
+		if fn, ok := decl.(*ast.FuncDecl); ok {
+			function = fn.Name.Name
+			if fn.Recv != nil && len(fn.Recv.List) == 1 {
+				function = receiverName(fn.Recv.List[0].Type) + "." + function
+			}
+		}
+		ast.Inspect(decl, func(node ast.Node) bool {
+			binary, ok := node.(*ast.BinaryExpr)
+			if !ok || (binary.Op != token.EQL && binary.Op != token.NEQ) {
+				return true
+			}
+			left, right := field(binary.X), field(binary.Y)
+			if left != "TrialGenerationID" {
+				left, right = right, left
+			}
+			if left == "TrialGenerationID" && (right == `""` || right == "BootedGenerationID") {
+				violations = append(violations, fmt.Sprintf("%s: %s: compares TrialGenerationID with %s", fset.Position(binary.Pos()), function, right))
+			}
+			return true
+		})
+	}
+	return violations
+}
+
+func TestTrialPendingViolationsDetection(t *testing.T) {
+	for _, tt := range []struct {
+		name, source string
+		want         int
+	}{
+		{name: "pending", source: `package p; func f() bool { return selection.TrialGenerationID != "" }`, want: 1},
+		{name: "trimmed pending", source: `package p; func f() bool { return "" == strings.TrimSpace(s.TrialGenerationID) }`, want: 1},
+		{name: "candidate boot", source: `package p; func f() bool { return s.BootedGenerationID == s.TrialGenerationID }`, want: 1},
+		{name: "protects a generation", source: `package p; func f() bool { return s.TrialGenerationID == id }`},
+		{name: "target pending", source: `package p; func f() bool { return s.TargetBootGenerationID != "" }`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fset := token.NewFileSet()
+			file, err := parser.ParseFile(fset, "p.go", tt.source, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := trialPendingViolations(fset, file); len(got) != tt.want {
+				t.Fatalf("violations = %v, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// trialPendingAllowlist excuses selection-shape checks that classify no boot.
+var trialPendingAllowlist = []bootTargetAllowance{
+	{"internal/generation/boot_move.go", "bootMoveIntent.validateDesiredTargets: compares TrialGenerationID with \"\"", "checks that an intent's one-shot target agrees with its desired selection"},
+	{"internal/generation/boot_move.go", "bootMoveIntent.validateBindings: compares TrialGenerationID with \"\"", "checks that an intent's desired trial names its generation's loader entry"},
+	{"internal/generation/boot_selection.go", "ValidateBootSelection: compares TrialGenerationID with \"\"", "checks that a pending selection names some boot target"},
+}
+
+// The trial authority in boot_mover.go (boundTrial, pendingTrialError) alone
+// decides whether a trial is pending and whether this is the candidate's boot.
+func TestTrialPendingHasOneOwner(t *testing.T) {
+	problems := ownershipProblems(t, []string{"internal/generation/boot_mover.go"}, trialPendingViolations, trialPendingAllowlist)
 	if len(problems) > 0 {
-		t.Log("change boot state through generation.BootMover; allowlist a finding only when it does not write a boot target")
+		t.Log("decide a pending trial through the BootMover trial authority; allowlist only record-shape validation")
 		for _, problem := range problems {
 			t.Error(problem)
 		}

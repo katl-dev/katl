@@ -36,9 +36,9 @@ func TestMutationBase(t *testing.T) {
 }
 
 func TestPendingBootBlocksMutation(t *testing.T) {
-	// Each refusal names the action for its own state.
+	// Each refusal names the action for its own state. Trials are refused by
+	// the trial authority; see TestMutationBaseDuringTrial.
 	refusals := map[string]string{
-		"trial":     "a boot trial of generation next is pending; run 'katlctl node reboot <node>'",
 		"recovery":  "recovery is required: generation current failed boot health",
 		"health":    "the first boot of generation current is not yet healthy; see 'katlctl node status <node>'",
 		"selection": `generation "next" is selected for the next boot`,
@@ -51,8 +51,6 @@ func TestPendingBootBlocksMutation(t *testing.T) {
 			case "health":
 				selection.PendingHealthValidation = true
 				selection.PersistentDefaultPromotion = DefaultPromotionPending
-			case "trial":
-				selection.TrialGenerationID = "next"
 			case "selection":
 				selection.TargetBootGenerationID = "next"
 			case "recovery":

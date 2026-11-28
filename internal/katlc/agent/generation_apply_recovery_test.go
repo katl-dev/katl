@@ -22,10 +22,10 @@ func TestConfigurationMutationRefusedDuringPendingBoot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A boot target awaiting its first healthy boot. Pending trials are refused
+	// by the trial authority; see generation.TestMutationBaseDuringTrial.
 	selection.TargetBootGenerationID = "upgrade-target"
 	selection.TargetBootEntry = "loader/entries/katl-upgrade-target.conf"
-	selection.TrialGenerationID = "upgrade-target"
-	selection.TrialBootEntry = selection.TargetBootEntry
 	selection.PendingHealthValidation = true
 	selection.PendingTransactionID = "upgrade-operation"
 	selection.PersistentDefaultPromotion = generation.DefaultPromotionPending
@@ -44,7 +44,7 @@ func TestConfigurationMutationRefusedDuringPendingBoot(t *testing.T) {
 			} else {
 				_, err = server.StageGeneration(context.Background(), req)
 			}
-			if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "boot trial") {
+			if status.Code(err) != codes.FailedPrecondition || !strings.Contains(err.Error(), "the first boot of generation upgrade-target is not yet healthy") {
 				t.Fatalf("pending boot apply error = %v", err)
 			}
 		})

@@ -544,3 +544,44 @@ func TestInvalidateSlotNeedsRunningBootFiles(t *testing.T) {
 		t.Fatalf("selection after replacement = %+v", got)
 	}
 }
+
+// A persistent selection of a generation that boots another runtime records no
+// owner for it: nothing shows that runtime can return from a failed trial.
+func TestSelectOtherRuntimeRecordsNoOwner(t *testing.T) {
+	root, now := managementFixture(t)
+	managedFixture(t, root, "other", "root-b", "2", now.Add(time.Hour))
+	m, _ := moverOn(t, root, "current")
+	if err := m.Select(context.Background(), SelectRequest{GenerationID: "other"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := selectionOf(t, root); got.DefaultGenerationID != "other" {
+		t.Fatalf("default = %q, want other", got.DefaultGenerationID)
+	}
+	managedFixture(t, root, "next", "root-a", "1", now.Add(2*time.Hour))
+	next, _, err := ReadGeneration(root, "next")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := NewGenerationStatus(next, CommitStateCommitted, BootStatePending, HealthStateUnknown, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// WriteGeneration keeps an existing status, so replace the fixture's.
+	dir, err := GenerationDir(root, "next")
+	if err != nil {
+		t.Fatal(err)
+	}
+	removeBootFixture(t, filepath.Join(dir, "status.json"))
+	if err := WriteGeneration(root, next, pending); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = m.ArmTrial(TrialRequest{OperationID: "apply-7", GenerationID: "next", Reason: "trial armed"})
+
+	if err == nil || !strings.Contains(err.Error(), "select the running generation first") {
+		t.Fatalf("ArmTrial() = %v, want the select guidance", err)
+	}
+	if _, err := os.Stat(rootedPathUnchecked(root, bootOwnersDir+"/other")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("owner marker for other: %v, want none", err)
+	}
+}
