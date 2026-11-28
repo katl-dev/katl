@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/installer/configbundle"
+	"github.com/katl-dev/katl/internal/retry"
 	"github.com/katl-dev/katl/internal/vmtest"
 	"gopkg.in/yaml.v3"
 )
@@ -122,14 +123,21 @@ func runPreCNIClusterApply(t *testing.T, ctx context.Context, smoke operationBac
 
 	before := map[string]configuredKubelet{}
 	for _, name := range []string{"cp-1", "worker-1"} {
-		// Node registration can precede CSINode initialization. Establish the
-		// sole-CNI baseline through read-only observations before any apply.
-		baselineCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-		observed, err := waitForConfiguredKubelet(baselineCtx, dir, "before", smoke.Inputs.SSHPrivateKey, addresses[name], name, kubeconfig, 0, false)
+		// The apply must settle the node's kubelet health itself, so the fixture
+		// records only kubelet identity, which configz serves once the API answers.
+		var identity kubeletIdentity
+		readCtx, cancel := context.WithTimeout(ctx, time.Minute)
+		backoff := retry.NewBackoff(time.Second, 5*time.Second)
+		err := backoff.Do(readCtx, func(ctx context.Context) error {
+			var err error
+			identity, err = observeKubeletIdentity(ctx, dir, "before", smoke.Inputs.SSHPrivateKey, addresses[name], name, kubeconfig)
+			return err
+		}, func(error) bool { return true })
 		cancel()
 		if err != nil {
-			return fmt.Errorf("%s did not establish the pre-CNI baseline: %w", name, err)
+			return fmt.Errorf("%s kubelet identity before apply: %w", name, err)
 		}
+		observed := identity.configuredKubelet
 		if observed.MaxPods == 111 {
 			return fmt.Errorf("%s fixture already has the requested maxPods; apply would not exercise a kubelet change", name)
 		}
@@ -527,8 +535,90 @@ func waitForConfiguredKubelet(ctx context.Context, dir, label, privateKey, addre
 	}
 }
 
+// kubeletIdentity is the native kubelet process identity and configuration,
+// observed without judging Node or runtime health.
+type kubeletIdentity struct {
+	configuredKubelet
+	started                          time.Time
+	persistedMaxPods                 int
+	persistedHealthz, runningHealthz *int
+}
+
 func observeConfiguredKubelet(ctx context.Context, dir, label, privateKey, address, node, kubeconfig string, maxPods int, ready bool) (configuredKubelet, error) {
-	var observed configuredKubelet
+	identity, err := observeKubeletIdentity(ctx, dir, label, privateKey, address, node, kubeconfig)
+	observed := identity.configuredKubelet
+	if err != nil {
+		return observed, err
+	}
+	if maxPods != 0 && (identity.persistedMaxPods != maxPods || observed.MaxPods != maxPods) {
+		return observed, fmt.Errorf("%s maxPods persisted=%d running=%d, want %d", node, identity.persistedMaxPods, observed.MaxPods, maxPods)
+	}
+	if maxPods != 0 && (identity.persistedHealthz == nil || *identity.persistedHealthz != 0 || identity.runningHealthz == nil || *identity.runningHealthz != 0) {
+		return observed, fmt.Errorf("%s disabled native kubelet healthz was not preserved", node)
+	}
+	data, err := kubectlOutput(ctx, kubeconfig, "get", "node", node, "-o", "json")
+	if err != nil {
+		return observed, err
+	}
+	if err := os.WriteFile(filepath.Join(dir, node+"-"+label+"-node.json"), data, 0o600); err != nil {
+		return observed, err
+	}
+	var reported struct {
+		Status struct {
+			NodeInfo struct {
+				BootID string `json:"bootID"`
+			} `json:"nodeInfo"`
+			Conditions []struct {
+				Type              string
+				LastHeartbeatTime time.Time
+			} `json:"conditions"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(data, &reported); err != nil {
+		return observed, err
+	}
+	if reported.Status.NodeInfo.BootID != observed.BootID {
+		return observed, fmt.Errorf("%s Node report belongs to an earlier boot", node)
+	}
+	for _, condition := range reported.Status.Conditions {
+		if condition.Type == "Ready" {
+			observed.Heartbeat = condition.LastHeartbeatTime
+		}
+		if condition.Type == "Ready" && (condition.LastHeartbeatTime.Before(identity.started) || condition.LastHeartbeatTime.After(time.Now())) {
+			return observed, fmt.Errorf("%s Node Ready heartbeat %s predates native kubelet start %s or is in the future", node, condition.LastHeartbeatTime, identity.started)
+		}
+	}
+	if !ready {
+		cri, err := readKubeletNode(ctx, privateKey, address, node, "crictl info -o json")
+		if err != nil {
+			return observed, err
+		}
+		if err := os.WriteFile(filepath.Join(dir, node+"-"+label+"-cri.json"), cri, 0o600); err != nil {
+			return observed, err
+		}
+		return observed, verifyPreCNIHealth(data, cri)
+	}
+	var status struct {
+		Status struct {
+			Conditions []struct {
+				Type   string `json:"type"`
+				Status string `json:"status"`
+			} `json:"conditions"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(data, &status); err != nil {
+		return observed, err
+	}
+	for _, condition := range status.Status.Conditions {
+		if condition.Type == "Ready" && condition.Status == "True" {
+			return observed, nil
+		}
+	}
+	return observed, fmt.Errorf("%s Ready condition is not True: %s", node, data)
+}
+
+func observeKubeletIdentity(ctx context.Context, dir, label, privateKey, address, node, kubeconfig string) (kubeletIdentity, error) {
+	var observed kubeletIdentity
 	read := func(command string) ([]byte, error) {
 		return readKubeletNode(ctx, privateKey, address, node, command)
 	}
@@ -556,7 +646,7 @@ func observeConfiguredKubelet(ctx context.Context, dir, label, privateKey, addre
 	if err != nil {
 		return observed, err
 	}
-	started, err := time.Parse("Mon 2006-01-02 15:04:05 MST", strings.TrimSpace(string(data)))
+	observed.started, err = time.Parse("Mon 2006-01-02 15:04:05 MST", strings.TrimSpace(string(data)))
 	if err != nil {
 		return observed, fmt.Errorf("%s native kubelet start timestamp: %w", node, err)
 	}
@@ -595,71 +685,9 @@ func observeConfiguredKubelet(ctx context.Context, dir, label, privateKey, addre
 		return observed, err
 	}
 	observed.MaxPods = running.Kubelet.MaxPods
-	if maxPods != 0 && (persisted.MaxPods != maxPods || running.Kubelet.MaxPods != maxPods) {
-		return observed, fmt.Errorf("%s maxPods persisted=%d running=%d, want %d", node, persisted.MaxPods, running.Kubelet.MaxPods, maxPods)
-	}
-	if maxPods != 0 && (persisted.HealthzPort == nil || *persisted.HealthzPort != 0 || running.Kubelet.HealthzPort == nil || *running.Kubelet.HealthzPort != 0) {
-		return observed, fmt.Errorf("%s disabled native kubelet healthz was not preserved", node)
-	}
-	data, err = kubectlOutput(ctx, kubeconfig, "get", "node", node, "-o", "json")
-	if err != nil {
-		return observed, err
-	}
-	if err := os.WriteFile(filepath.Join(dir, node+"-"+label+"-node.json"), data, 0o600); err != nil {
-		return observed, err
-	}
-	var reported struct {
-		Status struct {
-			NodeInfo struct {
-				BootID string `json:"bootID"`
-			} `json:"nodeInfo"`
-			Conditions []struct {
-				Type              string
-				LastHeartbeatTime time.Time
-			} `json:"conditions"`
-		} `json:"status"`
-	}
-	if err := json.Unmarshal(data, &reported); err != nil {
-		return observed, err
-	}
-	if reported.Status.NodeInfo.BootID != observed.BootID {
-		return observed, fmt.Errorf("%s Node report belongs to an earlier boot", node)
-	}
-	for _, condition := range reported.Status.Conditions {
-		if condition.Type == "Ready" {
-			observed.Heartbeat = condition.LastHeartbeatTime
-		}
-		if condition.Type == "Ready" && (condition.LastHeartbeatTime.Before(started) || condition.LastHeartbeatTime.After(time.Now())) {
-			return observed, fmt.Errorf("%s Node Ready heartbeat %s predates native kubelet start %s or is in the future", node, condition.LastHeartbeatTime, started)
-		}
-	}
-	if !ready {
-		cri, err := read("crictl info -o json")
-		if err != nil {
-			return observed, err
-		}
-		if err := os.WriteFile(filepath.Join(dir, node+"-"+label+"-cri.json"), cri, 0o600); err != nil {
-			return observed, err
-		}
-		return observed, verifyPreCNIHealth(data, cri)
-	}
-	var status struct {
-		Status struct {
-			Conditions []struct {
-				Type   string `json:"type"`
-				Status string `json:"status"`
-			} `json:"conditions"`
-		} `json:"status"`
-	}
-	if err := json.Unmarshal(data, &status); err != nil {
-		return observed, err
-	}
-	for _, condition := range status.Status.Conditions {
-		if condition.Type == "Ready" && condition.Status == "True" {
-			return observed, nil
-		}
-	}
-	return observed, fmt.Errorf("%s Ready condition is not True: %s", node, data)
+	observed.persistedMaxPods = persisted.MaxPods
+	observed.persistedHealthz, observed.runningHealthz = persisted.HealthzPort, running.Kubelet.HealthzPort
+	return observed, nil
 }
 
 func verifyPreCNIHealth(node, cri []byte) error {

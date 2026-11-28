@@ -14,6 +14,7 @@ import (
 	"github.com/katl-dev/katl/internal/deadline"
 	"github.com/katl-dev/katl/internal/installer/operation"
 	"github.com/katl-dev/katl/internal/kubeletstartup"
+	"github.com/katl-dev/katl/internal/retry"
 )
 
 type kubeletHealthState string
@@ -26,13 +27,60 @@ const (
 	missingCNINodeMessage                            = "container runtime network not ready: NetworkReady=false reason:NetworkPluginNotReady message:" + missingCNIMessage
 )
 
+// settledReportAge is how long a NotReady report other than sole-CNI must
+// stand before it counts as kubelet's settled state rather than a startup
+// transient. Kubelet posts its Node status as soon as a condition changes, so
+// a report that has stood for three 10s status update periods has been
+// re-evaluated by kubelet without changing.
+//
+// A report has stood that long when either of two observations shows it. Its
+// heartbeat is at least this old, which classifies a long-settled report at
+// once; this assumes kubelet reposts an unchanged status no more often than
+// every settledReportAge, as with a nodeStatusReportFrequency of at least 30s.
+// The heartbeat rather than kubelet's start is used because kubelet polls the
+// API for CSINode initialization indefinitely, so after a power cut the API
+// can return long after kubelet started. Otherwise the baseline wait has
+// itself observed the same Ready status, reason and message for this long on
+// the agent clock. That second arm covers a nodeStatusReportFrequency under
+// 30s, including the one kubelet derives from an explicit
+// nodeStatusUpdateFrequency, where every read carries a fresh heartbeat. The
+// heartbeat and the agent clock are both the node's own clock.
+const settledReportAge = 30 * time.Second
+
 // pendingObservation marks an observation that a kubelet starting in this
 // boot or invocation is expected to resolve without intervention: the service
-// is still starting, the Kubernetes API is not answering yet, or the Node
-// report predates the current invocation.
+// is still starting, the Kubernetes API is not answering yet, the Node report
+// predates the current invocation, or kubelet's NotReady report is too recent
+// to be its settled state.
 type pendingObservation struct{ error }
 
 func (p pendingObservation) Unwrap() error { return p.error }
+
+// readyCondition is the content of a Node Ready condition, without its heartbeat.
+type readyCondition struct{ status, reason, message string }
+
+// reportSettling is one baseline wait's record of the Ready condition it has
+// observed unchanged, and since when on the agent clock.
+type reportSettling struct {
+	condition readyCondition
+	since     time.Time
+}
+
+// settled reports whether a NotReady report counts as kubelet's settled state;
+// see settledReportAge. A nil record has no observation history, so only the
+// heartbeat arm applies.
+func (s *reportSettling) settled(condition readyCondition, heartbeat, now time.Time) bool {
+	if now.Sub(heartbeat) >= settledReportAge {
+		return true
+	}
+	if s == nil {
+		return false
+	}
+	if s.since.IsZero() || s.condition != condition {
+		s.condition, s.since = condition, now
+	}
+	return now.Sub(s.since) >= settledReportAge
+}
 
 type kubeletHealthObservation struct {
 	state         kubeletHealthState
@@ -64,7 +112,7 @@ func (e *Executor) captureKubeletHealth(ctx context.Context, record operation.Op
 	var observed kubeletHealthObservation
 	if repair {
 		// Repair tolerates an unobservable baseline and restarts kubelet anyway.
-		observed, err = e.observeKubeletHealth(ctx, stored.KubeadmControlPlaneConfig)
+		observed, err = e.observeKubeletHealth(ctx, stored.KubeadmControlPlaneConfig, nil)
 	} else {
 		observed, err = e.awaitKubeletObservation(ctx, stored.KubeadmControlPlaneConfig)
 	}
@@ -97,34 +145,42 @@ func (e *Executor) captureKubeletHealth(ctx context.Context, record operation.Op
 
 // awaitKubeletObservation establishes the pre-mutation baseline from the
 // current kubelet invocation. A request admitted right after boot or a kubelet
-// restart would otherwise observe the previous invocation's Node report and
-// refuse a change that the next report permits.
+// restart would otherwise observe the previous invocation's Node report, or a
+// report the starting kubelet has not finished, and record a requirement that
+// the settled node cannot meet.
 func (e *Executor) awaitKubeletObservation(ctx context.Context, request *operation.KubeadmControlPlaneConfig) (kubeletHealthObservation, error) {
 	waitCtx, cancel := context.WithTimeout(ctx, postKubeadmHealthTimeout)
 	defer cancel()
+	// The caller also reads an observation that ended in error: a valid Ready
+	// report tightens the requirement even when a later probe fails.
+	var observed kubeletHealthObservation
 	var pending error
-	for {
-		observed, err := e.observeKubeletHealth(waitCtx, request)
-		switch {
-		case err == nil:
-			return observed, nil
-		case waitCtx.Err() != nil && pending != nil:
-			// An observation cut short by the deadline carries no new evidence; report the last complete one.
-		case errors.As(err, new(pendingObservation)):
+	var settling reportSettling
+	backoff := retry.NewBackoff(time.Second, time.Second)
+	_, err := retry.Await(waitCtx, &backoff, func(ctx context.Context) (struct{}, bool, error) {
+		current, err := e.observeKubeletHealth(ctx, request, &settling)
+		if retry.ContextError(ctx) != nil {
+			// An observation cut short by the deadline carries no new evidence; keep the last complete one.
+			return struct{}{}, false, err
+		}
+		observed = current
+		if isPendingObservation(err) {
 			pending = err
-		default:
-			return observed, err
 		}
-		select {
-		case <-waitCtx.Done():
-			if errors.Is(waitCtx.Err(), context.Canceled) {
-				return observed, errors.Join(pending, waitCtx.Err())
-			}
-			return observed, fmt.Errorf("kubelet did not report current health for node %s in time: %w; inspect kubelet with katlctl node logs %s --unit kubelet", request.NodeName, pending, request.NodeName)
-		case <-time.After(time.Second):
-		}
+		return struct{}{}, true, err
+	}, isPendingObservation)
+	switch {
+	case err == nil:
+		return observed, nil
+	case errors.Is(err, context.Canceled):
+		return observed, errors.Join(pending, err)
+	case errors.Is(err, context.DeadlineExceeded) && pending != nil:
+		return observed, fmt.Errorf("kubelet did not report current health for node %s in time: %w; inspect kubelet with katlctl node logs %s --unit kubelet", request.NodeName, pending, request.NodeName)
 	}
+	return observed, err
 }
+
+func isPendingObservation(err error) bool { return errors.As(err, new(pendingObservation)) }
 
 // armDeadline starts a systemd deadline timer. Unit tests replace it so they
 // do not start timers on the test host.
@@ -150,7 +206,7 @@ func (e *Executor) runKubeletConfigHealth(ctx context.Context, record operation.
 	defer cancel()
 	var lastErr error
 	for {
-		observed, err := e.observeKubeletHealth(healthCtx, record.KubeadmControlPlaneConfig)
+		observed, err := e.observeKubeletHealth(healthCtx, record.KubeadmControlPlaneConfig, nil)
 		if observed.nodeReady {
 			if record.KubeadmControlPlaneConfig.ReadinessRequirement != string(kubeletHealthReady) {
 				// A later health check or interrupted retry must not reopen the CNI
@@ -188,7 +244,9 @@ func (e *Executor) runKubeletConfigHealth(ctx context.Context, record operation.
 	}
 }
 
-func (e *Executor) observeKubeletHealth(ctx context.Context, request *operation.KubeadmControlPlaneConfig) (kubeletHealthObservation, error) {
+// observeKubeletHealth classifies the current kubelet invocation's Node
+// report. The baseline wait passes its settling record; other callers pass nil.
+func (e *Executor) observeKubeletHealth(ctx context.Context, request *operation.KubeadmControlPlaneConfig, settling *reportSettling) (kubeletHealthObservation, error) {
 	observed := kubeletHealthObservation{state: kubeletHealthUnhealthy}
 	invocation, starting, err := e.kubeletService(ctx)
 	if err != nil {
@@ -247,8 +305,9 @@ func (e *Executor) observeKubeletHealth(ctx context.Context, request *operation.
 		return observed, fmt.Errorf("expected Kubernetes node %q, observed %q", request.NodeName, node.Metadata.Name)
 	}
 	readyConditions := 0
-	cniUninitialized := false
+	cniUninitialized, notReady := false, false
 	var heartbeat time.Time
+	var ready readyCondition
 	nodeReady := false
 	for _, condition := range node.Status.Conditions {
 		if condition.Type != "Ready" {
@@ -260,17 +319,25 @@ func (e *Executor) observeKubeletHealth(ctx context.Context, request *operation.
 		}
 		nodeReady = condition.Status == "True"
 		heartbeat = condition.LastHeartbeatTime
-		cniUninitialized = condition.Status == "False" && condition.Reason == "KubeletNotReady" && condition.Message == missingCNINodeMessage
+		ready = readyCondition{condition.Status, condition.Reason, condition.Message}
+		notReady = condition.Status == "False" && condition.Reason == "KubeletNotReady"
+		cniUninitialized = notReady && condition.Message == missingCNINodeMessage
 		observed.failureReason = fmt.Sprintf("Kubernetes node %s Ready=%s: %s: %s", request.NodeName, condition.Status, condition.Reason, condition.Message)
 	}
 	if readyConditions != 1 {
 		observed.nodeReady = false
 		return observed, fmt.Errorf("expected one Kubernetes Ready condition, observed %d", readyConditions)
 	}
-	if err := startup.Verify(e.Root, invocation, node.Status.NodeInfo.BootID, heartbeat, e.clock()); errors.Is(err, kubeletstartup.ErrReportPending) {
+	now := e.clock()
+	if err := startup.Verify(e.Root, invocation, node.Status.NodeInfo.BootID, heartbeat, now); errors.Is(err, kubeletstartup.ErrReportPending) {
 		return observed, pendingObservation{err}
 	} else if err != nil {
 		return observed, err
+	}
+	// Sole-CNI is classifiable at once; any other fresh NotReady may still be a
+	// startup transient that kubelet replaces within the window.
+	if notReady && !cniUninitialized && !settling.settled(ready, heartbeat, now) {
+		return observed, pendingObservation{errors.New(observed.failureReason)}
 	}
 	observed.startup, observed.controlPlane = startup, controlPlane
 

@@ -279,7 +279,7 @@ func TestKubeletHealthProbeBudget(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 
-	observed, err := executor.observeKubeletHealth(ctx, &operation.KubeadmControlPlaneConfig{NodeName: "worker-1"})
+	observed, err := executor.observeKubeletHealth(ctx, &operation.KubeadmControlPlaneConfig{NodeName: "worker-1"}, nil)
 	if err != nil || observed.state != kubeletHealthReady {
 		t.Fatalf("individually healthy native probes exceeded a shared command budget: %+v, %v", observed, err)
 	}
