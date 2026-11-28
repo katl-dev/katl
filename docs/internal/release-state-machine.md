@@ -37,7 +37,7 @@ The decision takes these inputs for a version `V`.
 | Final release | The published GitHub release for `vV`, with its pre-release flag and assets. |
 | Active run | A run of `release.yml` on `release/V` whose status is `queued`, `in_progress`, `waiting` or `requested`, other than the run making the decision. A run that only waits for the concurrency group has status `pending` and does not count. If there are several, the oldest. |
 | Approval pending | The active run has a pending deployment to the `release` environment. |
-| Extension references | The extension bundle references that exist for version `V` in the registry: for each release extension recipe (`extensions/<name>/recipe.json`) at `H`, the tags of the recipe's repository that name the final `V` (not a candidate), each with the manifest digest it resolves to. Release publication pushes to the same repositories. The tags are read anonymously through the registry API, not the GitHub Packages API. A repository the registry does not know, or one without such a tag, holds no reference; a refused or failed read is a read failure. |
+| Extension references | The extension bundle references that exist for version `V` in the registry: for each release extension recipe (`extensions/<name>/recipe.json`) at `H`, the tags of the recipe's repository that name the final `V` (not a candidate), each with the manifest digest it resolves to. Release publication pushes to the same repositories. The tags are read anonymously through the registry API, not the GitHub Packages API. A repository the registry does not know, one whose anonymous pull token the registry refuses, or one without such a tag, holds no reference; a refusal from the registry API after a token was issued, or a failed read, is a read failure. |
 
 Tags of `V` with any other suffix are not inputs. The action neither reads nor
 refuses them.
@@ -486,6 +486,9 @@ a fact that does not hold reopens the part of the design that names it.
   whether the first case of row 10 can arise at all.
 - The registry can list the extension references of a version with their
   digests, which row 22 and check 7 read. `ghcr.io` serves the tags of a
-  public repository to an anonymous pull token, but answers a repository
-  that does not exist with the same refusal as a private one, so a release
-  extension whose repository does not exist yet fails the read.
+  public repository to an anonymous pull token, but its token endpoint
+  refuses a repository that does not exist with the same refusal as a
+  private one. The read counts that refusal as "not published", so a
+  release extension that was never published does not block release
+  decisions, and a private one is indistinguishable from it; publication
+  still refuses to overwrite a tag with different content.

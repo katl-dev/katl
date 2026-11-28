@@ -130,7 +130,11 @@ func (r *fakeRegistry) serve(w http.ResponseWriter, req *http.Request) {
 
 	if queue := r.tagStatus[name]; len(queue) > 0 {
 		r.tagStatus[name] = queue[1:]
-		registryError(w, queue[0], "UNAVAILABLE")
+		code := "UNAVAILABLE"
+		if queue[0] == http.StatusForbidden {
+			code = "DENIED"
+		}
+		registryError(w, queue[0], code)
 		return
 	}
 	if !exists {
@@ -200,10 +204,17 @@ func TestReaderExtensionReferences(t *testing.T) {
 		{name: "persistent failure", fails: true, setup: func(_ *testing.T, f *fakeGitHub, _ *reader) {
 			f.registry.tagStatus[registryPath(drbd9Repository)] = slices.Repeat([]int{http.StatusBadGateway}, readAttempts)
 		}},
-		// Catches a refused anonymous read, which ghcr.io gives for a
-		// private repository, read as "not published".
+		// Catches a token refusal taken as a failure: ghcr.io denies an
+		// anonymous token for a package that was never published, as it
+		// does for a private one, while drbd9 is still read.
+		{name: "never published", want: final, setup: func(_ *testing.T, f *fakeGitHub, _ *reader) {
+			addRecipe(f, "nvidia", nvidiaRepository)
+			f.registry.tokenStatus[registryPath(nvidiaRepository)] = http.StatusForbidden
+		}},
+		// Catches a refusal from the registry API, after a token was
+		// issued, read as "not published".
 		{name: "refused", fails: true, setup: func(_ *testing.T, f *fakeGitHub, _ *reader) {
-			f.registry.tokenStatus[registryPath(drbd9Repository)] = http.StatusForbidden
+			f.registry.tagStatus[registryPath(drbd9Repository)] = []int{http.StatusForbidden}
 		}},
 		// Catches a connection failure read as "not published".
 		{name: "unreachable", fails: true, setup: func(t *testing.T, _ *fakeGitHub, r *reader) {
