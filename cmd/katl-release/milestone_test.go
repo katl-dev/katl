@@ -5,10 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -148,6 +150,13 @@ type milestoneFixture struct {
 	moves map[int][][]string
 	// moveFailures holds the errors that the next moves of an issue return.
 	moveFailures map[int][]error
+	// staleReadbacks is how many listings after the first move still show
+	// the moved items in the source milestone.
+	staleReadbacks int
+	readbacks      int
+	// addDuringMerge opens issue #49 in the source milestone once the moves
+	// are done.
+	addDuringMerge bool
 }
 
 func newMilestoneFixture(t *testing.T) *milestoneFixture {
@@ -205,9 +214,17 @@ func (f *milestoneFixture) read(_ context.Context, endpoint string, paginate boo
 		return json.Marshal(comments)
 	case "issues?milestone=17&state=open&per_page=100":
 		pages := [][]map[string]any{}
-		for _, number := range []int{44, 45, 46, 47, 48} {
+		stale := false
+		if len(f.moves) > 0 {
+			f.readbacks++
+			stale = f.readbacks <= f.staleReadbacks
+			if f.addDuringMerge && f.items[49] == nil {
+				f.items[49] = &milestoneFixtureItem{number: 49, milestone: 17, state: "open"}
+			}
+		}
+		for _, number := range slices.Sorted(maps.Keys(f.items)) {
 			item := f.items[number]
-			if item.milestone == 17 && item.state == "open" {
+			if (item.milestone == 17 || stale && f.moves[number] != nil) && item.state == "open" {
 				pages = append(pages, []map[string]any{item.response()})
 			}
 		}
@@ -287,4 +304,43 @@ func (f *milestoneFixture) write(_ context.Context, name string, args ...string)
 	}
 	f.t.Fatalf("unexpected GitHub write %v", args)
 	return nil, nil
+}
+
+func TestMergeMilestoneWaitsForMoves(t *testing.T) {
+	// GitHub can still list an item in the source milestone just after it
+	// was moved. An item the merge did not move is refused at once.
+	const never = 1 << 30
+	for _, tc := range []struct {
+		name      string
+		stale     int
+		add       bool
+		want      string
+		readbacks int
+	}{
+		{name: "moves show late", stale: 2, readbacks: 3},
+		{name: "moves never show", stale: never, want: "v2026.12.9 still lists 2 moved items as open after " + readbackWait.String()},
+		{name: "item added during merge", add: true, want: "v2026.12.9 still has 1 open items, including issue #49", readbacks: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := newMilestoneFixture(t)
+				f.staleReadbacks, f.addDuringMerge = tc.stale, tc.add
+
+				_, err := f.run("--apply", "2026.12.9", "2026.12.10")
+
+				if tc.want == "" {
+					if err != nil || f.sourceState != "closed" || f.readbacks != tc.readbacks {
+						t.Fatalf("apply = %v, source = %s after %d listings", err, f.sourceState, f.readbacks)
+					}
+					return
+				}
+				if err == nil || !strings.Contains(err.Error(), tc.want) || f.sourceState != "open" || len(f.comments) != 0 {
+					t.Fatalf("apply = %v, source = %s, %d comments; want %q", err, f.sourceState, len(f.comments), tc.want)
+				}
+				if tc.readbacks != 0 && f.readbacks != tc.readbacks {
+					t.Fatalf("refused after %d listings; want %d", f.readbacks, tc.readbacks)
+				}
+			})
+		})
+	}
 }

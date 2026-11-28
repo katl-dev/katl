@@ -239,12 +239,29 @@ func (m milestoneMerge) apply(ctx context.Context, stdout io.Writer, r *reader, 
 		}
 		fmt.Fprintf(stdout, "Moved %s to %s.\n", item, m.target.Title)
 	}
-	remaining, err := r.openMilestoneItems(ctx, m.source.Number)
+	// GitHub can still list an item it has just moved. An item this merge
+	// did not move is refused at once.
+	moved := map[int]bool{}
+	for _, item := range m.items {
+		moved[item.Number] = true
+	}
+	remaining, err := awaitReadback(ctx, r, func(ctx context.Context) ([]milestoneItem, bool, error) {
+		remaining, err := r.openMilestoneItems(ctx, m.source.Number)
+		if err != nil {
+			return remaining, false, err
+		}
+		for _, item := range remaining {
+			if !moved[item.Number] {
+				return remaining, false, fmt.Errorf("%s still has %d open items, including %s", m.source.Title, len(remaining), item)
+			}
+		}
+		return remaining, len(remaining) == 0, nil
+	}, nil)
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		return fmt.Errorf("%s still lists %d moved items as open after %s", m.source.Title, len(remaining), readbackWait)
+	}
 	if err != nil {
 		return err
-	}
-	if len(remaining) > 0 {
-		return fmt.Errorf("%s still has %d open items", m.source.Title, len(remaining))
 	}
 	if m.pendingComment != "" {
 		// An unacknowledged POST may have succeeded. A fresh invocation

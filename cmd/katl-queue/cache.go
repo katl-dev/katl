@@ -391,8 +391,7 @@ func (g *gh) deleteCache(ctx context.Context, id int64) error {
 	// Deleting by id is safe to repeat, so it retries as a read does, and an
 	// entry already gone answers 404 and counts as deleted.
 	_, err := g.read(ctx, "-X", "DELETE", fmt.Sprintf("%s/actions/caches/%d", g.repoPath(), id))
-	var failed *ghError
-	if errors.As(err, &failed) && strings.Contains(failed.stderr, "(HTTP 404)") {
+	if notFoundGH(err) {
 		return nil
 	}
 	return err

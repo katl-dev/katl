@@ -137,7 +137,13 @@ func (g *gh) createIntakeIssue(ctx context.Context, draft issueDraft) (intakeIss
 }
 
 func (g *gh) addSubIssue(ctx context.Context, parent, child int) error {
-	raw, err := g.read(ctx, fmt.Sprintf("%s/issues/%d", g.repoPath(), child), "--jq", ".id")
+	// GitHub can answer 404 for an issue it has just created.
+	var raw []byte
+	err := g.awaitReadback(ctx, func(ctx context.Context) (bool, error) {
+		var err error
+		raw, err = g.read(ctx, fmt.Sprintf("%s/issues/%d", g.repoPath(), child), "--jq", ".id")
+		return err == nil, err
+	}, notFoundGH)
 	if err != nil {
 		return err
 	}

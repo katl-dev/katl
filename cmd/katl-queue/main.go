@@ -6,6 +6,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -25,6 +26,7 @@ import (
 	"time"
 
 	"github.com/katl-dev/katl/internal/checkoutcheck"
+	"github.com/katl-dev/katl/internal/retry"
 )
 
 const usage = `usage: katl-queue <command> [arguments]
@@ -479,19 +481,27 @@ func enqueue(ctx context.Context, g *gh, number int, allowPending bool, out io.W
 // asynchronously and not at all until the pull request's own required checks
 // pass.
 func waitQueued(ctx context.Context, g *gh, number int, out io.Writer) bool {
-	for attempt := 0; attempt < 5; attempt++ {
+	wait, cancel := context.WithTimeout(ctx, queueJoinWait)
+	defer cancel()
+	backoff := retry.NewBackoff(cmp.Or(g.readDelay, defaultReadDelay), cmp.Or(g.readDelay, defaultReadDelay))
+	// A failed read is retried like a missing entry; neither is an error.
+	pr, err := retry.Await(wait, &backoff, func(ctx context.Context) (prResponse, bool, error) {
 		pr, err := g.pullRequest(ctx, number)
-		if err == nil && pr.MergeQueueEntry != nil {
-			fmt.Fprintf(out, "#%d queued at position %d (%s)\n", number, pr.MergeQueueEntry.Position, pr.MergeQueueEntry.State)
-			return true
-		}
-		if !sleep(ctx, 2*time.Second) {
-			return false
-		}
+		return pr, err == nil && pr.MergeQueueEntry != nil, err
+	}, func(error) bool { return true })
+	if err == nil {
+		fmt.Fprintf(out, "#%d queued at position %d (%s)\n", number, pr.MergeQueueEntry.Position, pr.MergeQueueEntry.State)
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
 	}
 	fmt.Fprintf(out, "#%d auto-merge enabled; it joins the queue once its required checks pass\n", number)
 	return false
 }
+
+// queueJoinWait bounds the look for a merge-queue entry after enqueueing.
+const queueJoinWait = 10 * time.Second
 
 func watch(ctx context.Context, g *gh, numbers []int, interval time.Duration, out, errOut io.Writer) error {
 	if len(numbers) == 0 {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"slices"
 	"strings"
@@ -251,28 +252,98 @@ func TestReleaseDispatchURL(t *testing.T) {
 		{"wrong run ID", "id", 12},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := readerWorld(t)
-			f.pages[followTags] = []any{[]any{}}
-			f.pages[followQuery] = []any{runList(listedRun(5, readerHead))}
-			latestRun(f, 9, 1, "completed", "cancelled")
-			listJobs(f, 9, 1)
-			if tc.field != "" {
-				f.responses[repoPrefix+"actions/runs/9"].(map[string]any)[tc.field] = tc.value
-			}
+			synctest.Test(t, func(t *testing.T) {
+				f := readerWorld(t)
+				f.pages[followTags] = []any{[]any{}}
+				f.pages[followQuery] = []any{runList(listedRun(5, readerHead))}
+				latestRun(f, 9, 1, "completed", "cancelled")
+				listJobs(f, 9, 1)
+				if tc.field != "" {
+					f.responses[repoPrefix+"actions/runs/9"].(map[string]any)[tc.field] = tc.value
+				}
+				r := newTestReader(f)
+				reads := 0
+				r.read = func(ctx context.Context, endpoint string, page bool, accept string) ([]byte, error) {
+					if endpoint == repoPrefix+"actions/runs/9" {
+						reads++
+					}
+					return f.read(ctx, endpoint, page, accept)
+				}
 
-			var out strings.Builder
-			err := release(t.Context(), []string{followVersion}, &out, io.Discard, newTestReader(f), func(string, ...string) ([]byte, error) {
-				f.pages[followQuery] = []any{runList(listedRun(9, readerHead), listedRun(10, readerHead))}
-				return []byte(followURL + "9\n"), nil
+				var out strings.Builder
+				err := release(t.Context(), []string{followVersion}, &out, io.Discard, r, func(string, ...string) ([]byte, error) {
+					f.pages[followQuery] = []any{runList(listedRun(9, readerHead), listedRun(10, readerHead))}
+					return []byte(followURL + "9\n"), nil
+				})
+				if tc.field == "" {
+					assertErrorContains(t, err, "was cancelled ("+followURL+"9)")
+					return
+				}
+				// These fields are fixed when GitHub creates the run.
+				assertErrorContains(t, err, "The dispatched run "+followURL+"9", fmt.Sprint(tc.value), "Run scripts/katl-release wait "+followVersion)
+				if reads != 1 {
+					t.Fatalf("refused after %d reads; want 1", reads)
+				}
+				if strings.Contains(out.String(), followURL+"9") {
+					t.Fatalf("followed a mismatched run: %s", out.String())
+				}
 			})
-			if tc.field == "" {
-				assertErrorContains(t, err, "was cancelled ("+followURL+"9)")
-				return
-			}
-			assertErrorContains(t, err, "The dispatched run "+followURL+"9", fmt.Sprint(tc.value), "Run scripts/katl-release wait "+followVersion)
-			if strings.Contains(out.String(), followURL+"9") {
-				t.Fatalf("followed a mismatched run: %s", out.String())
-			}
+		})
+	}
+}
+
+func TestReleaseDispatchNotFound(t *testing.T) {
+	// GitHub can answer 404 for a run that gh has just reported dispatching.
+	const always = math.MaxInt
+	for _, tc := range []struct {
+		name     string
+		failures int
+		err      error
+		want     []string
+		reads    int
+	}{
+		{name: "found after 404s", failures: 2, err: &apiError{status: 404, text: "gh: Not Found (HTTP 404)"},
+			want: []string{"was cancelled (" + followURL + "9)"}},
+		{name: "never found", failures: always, err: &apiError{status: 404, text: "gh: Not Found (HTTP 404)"},
+			want: []string{followURL + "9", "not found after " + readbackWait.String(), "Run scripts/katl-release wait " + followVersion}},
+		{name: "refused", failures: always, err: &apiError{status: 403, text: "gh: Resource not accessible (HTTP 403)"},
+			want: []string{"read dispatched Release run " + followURL + "9", "HTTP 403", "Run scripts/katl-release wait " + followVersion}, reads: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := readerWorld(t)
+				f.pages[followTags] = []any{[]any{}}
+				f.pages[followQuery] = []any{runList(listedRun(5, readerHead))}
+				latestRun(f, 9, 1, "completed", "cancelled")
+				listJobs(f, 9, 1)
+				r := newTestReader(f)
+				reads := 0
+				r.read = func(ctx context.Context, endpoint string, page bool, accept string) ([]byte, error) {
+					if endpoint == repoPrefix+"actions/runs/9" {
+						reads++
+						if reads <= tc.failures {
+							return nil, tc.err
+						}
+					}
+					return f.read(ctx, endpoint, page, accept)
+				}
+
+				start := time.Now()
+				var out strings.Builder
+				err := release(t.Context(), []string{followVersion}, &out, io.Discard, r, func(string, ...string) ([]byte, error) {
+					f.pages[followQuery] = []any{runList(listedRun(9, readerHead))}
+					return []byte(followURL + "9\n"), nil
+				})
+				elapsed := time.Since(start)
+
+				assertErrorContains(t, err, tc.want...)
+				if tc.reads != 0 && reads != tc.reads {
+					t.Fatalf("refused after %d reads; want %d", reads, tc.reads)
+				}
+				if tc.failures == always && tc.reads == 0 && (elapsed < readbackWait || elapsed > readbackWait+time.Second) {
+					t.Fatalf("gave up after %s; want the %s deadline", elapsed, readbackWait)
+				}
+			})
 		})
 	}
 }

@@ -3,15 +3,20 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/katl-dev/katl/internal/releaseversion"
 )
 
 const (
@@ -107,58 +112,78 @@ func TestCutCheck(t *testing.T) {
 
 func TestCutBranchWrite(t *testing.T) {
 	// Trusting the POST response misses a conflicting head. Retrying a
-	// create after a race or on a rerun makes a successful cut fail.
+	// create after a race or on a rerun makes a successful cut fail. GitHub
+	// can list the refs without a ref it has just created, so an accepted
+	// create waits for the ref, while a refused one is checked once.
+	const never = -1
 	for _, tc := range []struct {
 		name, before, after string
-		writeError          error
-		want                []string
+		// pending is how many reads after the create still miss the ref.
+		pending    int
+		writeError error
+		want       []string
 	}{
 		{name: "create", after: cutCommit},
+		{name: "create shows late", after: cutCommit, pending: 2},
 		{name: "already cut", before: cutCommit},
 		{name: "wrong readback", after: movedMain, want: []string{cutCommit, movedMain}},
-		{name: "absent readback", want: []string{"did not return refs/heads/release/2026.12.1"}},
+		{name: "wrong readback shows late", after: movedMain, pending: 2, want: []string{cutCommit, movedMain}},
+		{name: "absent readback", pending: never, want: []string{"did not return refs/heads/release/2026.12.1"}},
 		{name: "raced to same commit", after: cutCommit, writeError: errors.New("already exists")},
 		{name: "raced to other commit", after: movedMain, writeError: errors.New("already exists"), want: []string{cutCommit, movedMain}},
 		{name: "creation rejected", writeError: errors.New("ref creation denied"), want: []string{"ref creation denied"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := cutWorld(t)
-			if tc.before != "" {
-				f.cutBranch(tc.before)
-			}
-			r := newTestReader(f)
-			var operations []string
-			r.read = func(ctx context.Context, endpoint string, page bool, accept string) ([]byte, error) {
-				if endpoint == followBranch {
-					operations = append(operations, "read ref")
+			synctest.Test(t, func(t *testing.T) {
+				f := cutWorld(t)
+				if tc.before != "" {
+					f.cutBranch(tc.before)
 				}
-				return f.read(ctx, endpoint, page, accept)
-			}
-			call := func(name string, args ...string) ([]byte, error) {
-				operations = append(operations, "create ref")
-				want := []string{"gh", "api", "--method", "POST", "repos/katl-dev/katl/git/refs",
-					"-f", "ref=refs/heads/release/2026.12.1", "-f", "sha=" + cutCommit}
-				if got := append([]string{name}, args...); !slices.Equal(got, want) {
-					t.Fatalf("create = %q, want %q", got, want)
+				r := newTestReader(f)
+				created := false
+				readbacks := 0
+				r.read = func(ctx context.Context, endpoint string, page bool, accept string) ([]byte, error) {
+					if endpoint == followBranch && created {
+						readbacks++
+						if tc.after != "" && tc.pending != never && readbacks > tc.pending {
+							f.cutBranch(tc.after)
+						}
+					}
+					return f.read(ctx, endpoint, page, accept)
 				}
-				if tc.after != "" {
-					f.cutBranch(tc.after)
+				call := func(name string, args ...string) ([]byte, error) {
+					want := []string{"gh", "api", "--method", "POST", "repos/katl-dev/katl/git/refs",
+						"-f", "ref=refs/heads/release/2026.12.1", "-f", "sha=" + cutCommit}
+					if got := append([]string{name}, args...); !slices.Equal(got, want) {
+						t.Fatalf("create = %q, want %q", got, want)
+					}
+					if created {
+						t.Fatal("created the ref twice")
+					}
+					created = true
+					return []byte(`{"object":{"sha":"` + cutCommit + `"}}`), tc.writeError
 				}
-				return []byte(`{"object":{"sha":"` + cutCommit + `"}}`), tc.writeError
-			}
-			err := cut(t.Context(), []string{"cut-branch", cutVersion, cutCommit}, io.Discard, io.Discard, r, call)
-			wantOps := []string{"read ref"}
-			if tc.before == "" {
-				wantOps = append(wantOps, "create ref", "read ref")
-			}
-			if !slices.Equal(operations, wantOps) {
-				t.Fatalf("operations = %v, want %v", operations, wantOps)
-			}
-			if len(tc.want) > 0 {
-				assertErrorContains(t, err, tc.want...)
-			} else if err != nil {
-				t.Fatal(err)
-			}
+
+				start := time.Now()
+				err := cut(t.Context(), []string{"cut-branch", cutVersion, cutCommit}, io.Discard, io.Discard, r, call)
+				elapsed := time.Since(start)
+
+				switch {
+				case tc.before != "" && created:
+					t.Fatal("created a ref that already existed")
+				case tc.before == "" && tc.pending == never:
+					if readbacks < 2 || elapsed != readbackWait {
+						t.Fatalf("gave up after %d reads in %s; want the %s deadline", readbacks, elapsed, readbackWait)
+					}
+				case tc.before == "" && readbacks != tc.pending+1:
+					t.Fatalf("read the ref %d times after the create; want %d", readbacks, tc.pending+1)
+				}
+				if len(tc.want) > 0 {
+					assertErrorContains(t, err, tc.want...)
+				} else if err != nil {
+					t.Fatal(err)
+				}
+			})
 		})
 	}
 }
@@ -220,31 +245,56 @@ func TestCutBindsRevision(t *testing.T) {
 }
 
 func TestCutRunOutcome(t *testing.T) {
-	// A successful run alone cannot prove the intended branch exists.
+	// A successful run alone cannot prove the intended branch exists, and
+	// GitHub can list the refs without the branch the run has just created.
 	// A failed run needs the actual job and run URL for diagnosis.
+	const never = -1
 	for _, tc := range []struct {
 		name, conclusion, head string
-		want                   []string
+		// pending is how many reads after the run still miss the branch.
+		pending int
+		want    []string
 	}{
-		{"failed job", "failure", "", []string{"failed: Create release branch", cutRunURL}},
-		{"absent branch", "success", "", []string{"release/2026.12.1 is missing", cutRunURL}},
-		{"wrong branch head", "success", movedMain, []string{cutCommit, movedMain, cutRunURL}},
+		{name: "failed job", conclusion: "failure", want: []string{"failed: Create release branch", cutRunURL}},
+		{name: "branch shows late", conclusion: "success", head: cutCommit, pending: 2},
+		{name: "absent branch", conclusion: "success", pending: never, want: []string{"release/2026.12.1 is missing", cutRunURL}},
+		{name: "wrong branch head", conclusion: "success", head: movedMain, want: []string{cutCommit, movedMain, cutRunURL}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := cutWorld(t)
-			f.responses[cutRun] = cutRunAt(9, tc.conclusion)
-			listJobs(f, 9, 1, listedJob(1, "Create release branch", "completed", tc.conclusion))
-			var out strings.Builder
-			err := cut(t.Context(), []string{"cut", cutVersion, cutCommit}, &out, io.Discard, newTestReader(f), func(string, ...string) ([]byte, error) {
-				if tc.head != "" {
-					f.cutBranch(tc.head)
+			synctest.Test(t, func(t *testing.T) {
+				f := cutWorld(t)
+				f.responses[cutRun] = cutRunAt(9, tc.conclusion)
+				listJobs(f, 9, 1, listedJob(1, "Create release branch", "completed", tc.conclusion))
+				r := newTestReader(f)
+				dispatched := false
+				readbacks := 0
+				r.read = func(ctx context.Context, endpoint string, page bool, accept string) ([]byte, error) {
+					if endpoint == followBranch && dispatched {
+						readbacks++
+						if tc.head != "" && tc.pending != never && readbacks > tc.pending {
+							f.cutBranch(tc.head)
+						}
+					}
+					return f.read(ctx, endpoint, page, accept)
 				}
-				return []byte(cutRunURL), nil
+
+				var out strings.Builder
+				err := cut(t.Context(), []string{"cut", cutVersion, cutCommit}, &out, io.Discard, r, func(string, ...string) ([]byte, error) {
+					dispatched = true
+					return []byte(cutRunURL), nil
+				})
+
+				if tc.want == nil {
+					if err != nil || readbacks != tc.pending+1 || !strings.Contains(out.String(), "release/2026.12.1 exists at "+cutCommit) {
+						t.Fatalf("cut = %q, %v after %d reads of the branch", out.String(), err, readbacks)
+					}
+					return
+				}
+				assertErrorContains(t, err, tc.want...)
+				if !strings.Contains(out.String(), cutRunURL) || strings.Contains(out.String(), "Next:") {
+					t.Errorf("cut output = %q", out.String())
+				}
 			})
-			assertErrorContains(t, err, tc.want...)
-			if !strings.Contains(out.String(), cutRunURL) || strings.Contains(out.String(), "Next:") {
-				t.Errorf("cut output = %q", out.String())
-			}
 		})
 	}
 }
@@ -252,15 +302,21 @@ func TestCutRunOutcome(t *testing.T) {
 func TestCutRunTitle(t *testing.T) {
 	// The cut follows only a run whose title the workflow renders from the
 	// same inputs, so a changed run-name would leave every cut unfollowed.
+	// Until GitHub renders it, the title is the workflow name, which the cut
+	// must recognise to wait rather than refuse.
 	data, err := os.ReadFile(filepath.Join("..", "..", cutWorkflow))
 	if err != nil {
 		t.Fatal(err)
 	}
 	var workflow struct {
+		Name    string `yaml:"name"`
 		RunName string `yaml:"run-name"`
 	}
 	if err := yaml.Unmarshal(data, &workflow); err != nil {
 		t.Fatal(err)
+	}
+	if target := cutDispatch(releaseversion.Version{}, cutCommit); workflow.Name != target.name {
+		t.Fatalf("workflow name %q, want %q", workflow.Name, target.name)
 	}
 	title := strings.NewReplacer("${{ inputs.version }}", cutVersion, "${{ inputs.revision }}", cutCommit).Replace(workflow.RunName)
 	if title == "" || strings.Contains(title, "${{") {
@@ -278,5 +334,102 @@ func TestCutRunTitle(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("cut did not follow the run titled %q: %v", title, err)
+	}
+}
+
+func TestCutDispatchedRun(t *testing.T) {
+	// GitHub titles a run with the workflow name until it evaluates
+	// run-name, and can report a fresh run with empty fields, so a single
+	// read can refuse a correct run. Waiting on a non-empty mismatch in a
+	// field fixed at creation would only delay refusing another run. Without
+	// a URL from gh, the listed run is read again before it is followed.
+	const always = math.MaxInt
+	for _, tc := range []struct {
+		name    string
+		pending int
+		// blank empties the identity fields while the title is pending.
+		blank  bool
+		listed bool
+		field  string
+		value  any
+		want   []string
+	}{
+		{name: "title converges", pending: 2},
+		{name: "title never converges", pending: always,
+			want: []string{cutRunURL, `still has the workflow name "Cut release" as its title`, "Check the Cut release runs"}},
+		{name: "fields fill in", pending: 2, blank: true},
+		{name: "fields never fill in", pending: always, blank: true,
+			want: []string{"The dispatched run " + cutRunURL, "after " + readbackWait.String(), "Check the Cut release runs"}},
+		{name: "wrong run ID", pending: always, field: "id", value: 12},
+		{name: "wrong branch", pending: always, field: "head_branch", value: "release/2026.12.1"},
+		{name: "wrong branch while fields fill in", pending: always, blank: true, field: "head_branch", value: "release/2026.12.1"},
+		{name: "wrong workflow", pending: always, field: "path", value: ".github/workflows/other.yml"},
+		{name: "wrong event", pending: always, field: "event", value: "push"},
+		{name: "another cut's title", field: "display_title", value: "Cut release 2026.12.2 at " + cutCommit},
+		{name: "listed title converges", pending: 2, listed: true},
+		{name: "listed title never converges", pending: always, listed: true,
+			want: []string{cutRunURL, `still has the workflow name "Cut release" as its title`, "Check the Cut release runs"}},
+		{name: "listed run reads differently", pending: always, listed: true, field: "head_branch", value: "release/2026.12.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				f := cutWorld(t)
+				run := cutRunAt(9, "success")
+				f.responses[cutRun] = run
+				listJobs(f, 9, 1, listedJob(1, "Create release branch", "completed", "success"))
+				r := newTestReader(f)
+				reads := 0
+				r.read = func(ctx context.Context, endpoint string, page bool, accept string) ([]byte, error) {
+					if endpoint == cutRun {
+						reads++
+						fresh := cutRunAt(9, "success")
+						for _, key := range []string{"display_title", "path", "head_branch", "event"} {
+							run[key] = fresh[key]
+						}
+						if reads <= tc.pending {
+							run["display_title"] = "Cut release"
+							if tc.blank {
+								run["path"], run["head_branch"], run["event"] = "", "", ""
+							}
+						}
+						if tc.field != "" {
+							run[tc.field] = tc.value
+						}
+					}
+					return f.read(ctx, endpoint, page, accept)
+				}
+
+				start := time.Now()
+				var out strings.Builder
+				err := cut(t.Context(), []string{"cut", cutVersion, cutCommit}, &out, io.Discard, r, func(string, ...string) ([]byte, error) {
+					f.cutBranch(cutCommit)
+					if tc.listed {
+						listed := cutRunAt(9, "success")
+						if tc.pending > 0 {
+							listed["display_title"] = "Cut release"
+						}
+						f.pages[cutRuns] = []any{runList(listed)}
+						return nil, nil
+					}
+					return []byte(cutRunURL), nil
+				})
+				elapsed := time.Since(start)
+
+				switch {
+				case tc.field != "":
+					assertErrorContains(t, err, "The dispatched run "+cutRunURL, fmt.Sprint(tc.value), "Check the Cut release runs")
+					if reads != 1 {
+						t.Fatalf("refused after %d reads; want 1", reads)
+					}
+				case tc.want != nil:
+					assertErrorContains(t, err, tc.want...)
+					if elapsed < readbackWait || elapsed > readbackWait+time.Second {
+						t.Fatalf("refused after %s; want the %s deadline", elapsed, readbackWait)
+					}
+				case err != nil || !strings.Contains(out.String(), "release/2026.12.1 exists at "+cutCommit):
+					t.Fatalf("cut = %q, %v after %d reads", out.String(), err, reads)
+				}
+			})
+		})
 	}
 }

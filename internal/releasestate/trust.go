@@ -189,30 +189,63 @@ func (in Inputs) matches(version releaseversion.Version, release Release, record
 	return true, ""
 }
 
-// MatchesAssets checks that the uploaded assets have exactly the names and
-// digests given by SHA256SUMS, including the digest of SHA256SUMS itself.
-func (r Release) MatchesAssets(digest string) bool {
+// AssetState classifies a release's assets against its SHA256SUMS.
+type AssetState int
+
+const (
+	// AssetsContradict means the assets can never come to match: SHA256SUMS
+	// is unread or lists itself, or an asset has an unexpected or repeated
+	// name or an uploaded digest that differs.
+	AssetsContradict AssetState = iota
+	// AssetsPending means no asset contradicts SHA256SUMS, but some are
+	// missing, not yet uploaded or without a digest.
+	AssetsPending
+	// AssetsMatch means the uploaded assets have exactly the names and
+	// digests given by SHA256SUMS, including the digest of SHA256SUMS itself.
+	AssetsMatch
+)
+
+// ClassifyAssets compares the assets with the files SHA256SUMS lists and with
+// digest, the digest of SHA256SUMS itself. A SHA256SUMS that lists itself
+// contradicts, so its own digest always comes from digest.
+func (r Release) ClassifyAssets(digest string) AssetState {
 	if r.Sums == nil {
-		return false
+		return AssetsContradict
 	}
 	want := map[string]string{"SHA256SUMS": digest}
 	for name, digest := range r.Sums {
 		if name == "SHA256SUMS" {
-			return false
+			return AssetsContradict
 		}
 		want[name] = digest
 	}
-	if len(r.Assets) != len(want) {
-		return false
-	}
+
+	listed := map[string]bool{}
+	shown := 0
 	for _, asset := range r.Assets {
 		digest, ok := want[asset.Name]
-		if !ok || !asset.Uploaded || asset.Digest != "sha256:"+digest {
-			return false
+		if !ok || listed[asset.Name] {
+			return AssetsContradict
 		}
-		delete(want, asset.Name)
+		listed[asset.Name] = true
+		if !asset.Uploaded || asset.Digest == "" {
+			continue
+		}
+		if asset.Digest != "sha256:"+digest {
+			return AssetsContradict
+		}
+		shown++
 	}
-	return len(want) == 0
+	if shown < len(want) {
+		return AssetsPending
+	}
+	return AssetsMatch
+}
+
+// MatchesAssets checks that the uploaded assets have exactly the names and
+// digests given by SHA256SUMS, including the digest of SHA256SUMS itself.
+func (r Release) MatchesAssets(digest string) bool {
+	return r.ClassifyAssets(digest) == AssetsMatch
 }
 
 // outcome describes how a record's attempt ended without qualifying.

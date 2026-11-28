@@ -176,14 +176,24 @@ func (p publication) draft(ctx context.Context, stderr io.Writer) error {
 		}
 	}
 
-	draft, err = p.readRelease(ctx, draft.ID)
-	if err != nil {
-		return err
+	// GitHub can answer 404 for the draft it has just created and list its
+	// assets before every upload shows.
+	_, err = awaitReadback(ctx, p.reader, func(ctx context.Context) (restRelease, bool, error) {
+		release, err := p.readRelease(ctx, draft.ID)
+		switch {
+		case err != nil:
+			return release, false, err
+		case release.Draft && p.matches(release):
+			return release, true, nil
+		case release.Draft && p.assetsPending(release):
+			return release, false, nil
+		}
+		return release, false, fmt.Errorf("draft of %s does not match the bundle's release flag and asset digests", p.version.Tag())
+	}, notFound)
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		return fmt.Errorf("draft of %s still lacks uploaded assets of the bundle after %s", p.version.Tag(), readbackWait)
 	}
-	if !draft.Draft || !p.matches(draft) {
-		return fmt.Errorf("draft of %s does not match the bundle's release flag and asset digests", p.version.Tag())
-	}
-	return nil
+	return err
 }
 
 func (p publication) publish(ctx context.Context, stderr io.Writer) error {
@@ -305,12 +315,22 @@ func (p publication) confirmPublished(ctx context.Context, id int64) error {
 		return fmt.Errorf("published tag %s points to %s, expected %s", tag, commit, p.commit)
 	}
 
-	release, err := p.readRelease(ctx, id)
+	// GitHub can still report a release it has just published as a draft.
+	release, err := awaitReadback(ctx, p.reader, func(ctx context.Context) (restRelease, bool, error) {
+		release, err := p.readRelease(ctx, id)
+		switch {
+		case err != nil:
+			return release, false, err
+		case !p.matches(release):
+			return release, false, fmt.Errorf("published release %s does not match the bundle's release flag and asset digests", tag)
+		}
+		return release, !release.Draft, nil
+	}, nil)
+	if errors.Is(err, context.DeadlineExceeded) && release.Draft {
+		return fmt.Errorf("GitHub still reports %s as a draft after %s", tag, readbackWait)
+	}
 	if err != nil {
 		return err
-	}
-	if release.Draft || !p.matches(release) {
-		return fmt.Errorf("published release %s does not match the bundle's release flag and asset digests", tag)
 	}
 	for _, asset := range release.Assets {
 		if asset.Name != "SHA256SUMS" {
@@ -372,15 +392,28 @@ func (p publication) readRelease(ctx context.Context, id int64) (restRelease, er
 	return release, err
 }
 
+// assetsPending reports a release whose assets GitHub has not finished
+// listing: no asset contradicts the bundle, but some are missing, not yet
+// uploaded or without a digest.
+func (p publication) assetsPending(release restRelease) bool {
+	return p.classify(release) == releasestate.AssetsPending
+}
+
 func (p publication) matches(release restRelease) bool {
+	return p.classify(release) == releasestate.AssetsMatch
+}
+
+// classify compares a release with the bundle. A wrong tag or release flag
+// contradicts the bundle whatever the assets show.
+func (p publication) classify(release restRelease) releasestate.AssetState {
 	if release.TagName != p.version.Tag() || release.Prerelease == p.version.IsFinal() {
-		return false
+		return releasestate.AssetsContradict
 	}
 	content := releasestate.Release{Sums: p.expected}
 	for _, asset := range release.Assets {
 		content.Assets = append(content.Assets, asset.asset())
 	}
-	return content.MatchesAssets(p.digest)
+	return content.ClassifyAssets(p.digest)
 }
 
 func (p publication) write(ctx context.Context, method, endpoint string, args ...string) ([]byte, error) {

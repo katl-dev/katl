@@ -109,6 +109,28 @@ func transientGH(err error) bool {
 	return false
 }
 
+// notFoundGH reports a gh failure that GitHub answered with 404.
+func notFoundGH(err error) bool {
+	var failed *ghError
+	return errors.As(err, &failed) && strings.Contains(failed.stderr, "(HTTP 404)")
+}
+
+// readbackWait bounds each wait for GitHub to show the result of a write.
+const readbackWait = 2 * time.Minute
+
+// awaitReadback reads GitHub after a write until observe reports that the
+// write shows, retrying the errors transient classifies, within readbackWait.
+func (g *gh) awaitReadback(ctx context.Context, observe func(context.Context) (bool, error), transient func(error) bool) error {
+	deadline, cancel := context.WithTimeout(ctx, readbackWait)
+	defer cancel()
+	backoff := retry.NewBackoff(cmp.Or(g.readDelay, defaultReadDelay), readDelayLimit)
+	_, err := retry.Await(deadline, &backoff, func(ctx context.Context) (struct{}, bool, error) {
+		shown, err := observe(ctx)
+		return struct{}{}, shown, err
+	}, transient)
+	return err
+}
+
 const (
 	defaultReadDelay = 2 * time.Second
 	readDelayLimit   = 30 * time.Second
